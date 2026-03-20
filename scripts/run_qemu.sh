@@ -52,4 +52,6 @@ qemu-system-x86_64 \
   -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
   -drive if=pflash,format=raw,file="$PROJECT_ROOT/build/OVMF_VARS.fd" \
   -drive format=raw,file=fat:rw:"$EFI_ROOT" \
-  -serial stdio
+  -serial stdio \
+  -vga std \
+  -display gtk,zoom-to-fit=on
