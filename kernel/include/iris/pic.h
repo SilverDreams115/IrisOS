@@ -5,6 +5,6 @@
 
 void pic_init(void);
 void pic_eoi(uint8_t irq);
-void pit_init(uint32_t frequency_hz);
+void pit_init(uint32_t hz);
 
 #endif
