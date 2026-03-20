@@ -13,10 +13,11 @@ static struct task *current_task = 0;
 static struct task *task_list_head = 0;
 static uint32_t next_id = 0;
 
-/* RSP guardado por tarea.
- * No tocamos task.h por ahora para mantener el parche acotado.
- */
+/* RSP guardado por tarea */
 static uint64_t task_rsp[TASK_MAX];
+
+/* ticks del timer; por ahora sólo observación, no preempción real */
+static volatile uint64_t scheduler_ticks = 0;
 
 /* tarea idle — corre cuando no hay nada más */
 static void idle_task(void) {
@@ -30,11 +31,8 @@ static void setup_initial_context(struct task *t, void (*entry)(void)) {
     stack_top &= ~0xFULL;
 
     /* Layout inicial para entrar con ret:
-     *
      * [rsp + 0] = entry
      * [rsp + 8] = return address dummy
-     *
-     * Así, después de ret, la función entra con alineación ABI razonable.
      */
     stack_top -= 16;
     ((uint64_t *)stack_top)[0] = (uint64_t)(uintptr_t)entry;
@@ -58,7 +56,6 @@ void task_init(void) {
         task_rsp[i]    = 0;
     }
 
-    /* crear tarea idle como tarea 0 */
     struct task *idle = &tasks[0];
     idle->id    = next_id++;
     idle->state = TASK_RUNNING;
@@ -71,7 +68,6 @@ void task_init(void) {
 }
 
 struct task *task_create(void (*entry)(void)) {
-    /* buscar slot libre */
     struct task *t = 0;
     for (int i = 1; i < TASK_MAX; i++) {
         if (tasks[i].state == TASK_DEAD) {
@@ -86,7 +82,6 @@ struct task *task_create(void (*entry)(void)) {
 
     setup_initial_context(t, entry);
 
-    /* insertar en la lista circular después de idle */
     struct task *tail = task_list_head;
     while (tail->next != task_list_head)
         tail = tail->next;
@@ -102,30 +97,43 @@ struct task *task_current(void) {
 
 void task_yield(void) {
     struct task *old = current_task;
-    struct task *next = old->next;
+    struct task *idle = task_list_head;
+    struct task *candidate = old->next;
+    struct task *chosen = 0;
 
-    /* buscar la próxima tarea READY o RUNNING */
-    struct task *candidate = next;
+    /* Preferir cualquier tarea runnable que NO sea idle */
     for (int i = 0; i < TASK_MAX; i++) {
-        if (candidate->state == TASK_READY ||
-            candidate->state == TASK_RUNNING) {
+        if (candidate != idle &&
+            (candidate->state == TASK_READY ||
+             candidate->state == TASK_RUNNING)) {
+            chosen = candidate;
             break;
         }
         candidate = candidate->next;
     }
 
-    if (candidate == old) return; /* nada que cambiar */
+    /* Si no hay ninguna tarea normal runnable, usar idle */
+    if (!chosen) {
+        if (idle != old &&
+            (idle->state == TASK_READY || idle->state == TASK_RUNNING)) {
+            chosen = idle;
+        } else {
+            return;
+        }
+    }
+
+    if (chosen == old) return;
 
     if (old->state == TASK_RUNNING)
         old->state = TASK_READY;
 
-    candidate->state = TASK_RUNNING;
-    current_task     = candidate;
+    chosen->state = TASK_RUNNING;
+    current_task  = chosen;
 
     int old_idx = (int)(old - tasks);
-    int new_idx = (int)(candidate - tasks);
+    int new_idx = (int)(chosen - tasks);
 
-    context_switch(&old->ctx, &candidate->ctx,
+    context_switch(&old->ctx, &chosen->ctx,
                    &task_rsp[old_idx], task_rsp[new_idx]);
 }
 
@@ -136,8 +144,11 @@ void scheduler_init(void) {
 }
 
 void scheduler_tick(void) {
-    /* llamado desde el handler de IRQ0 (timer) */
-    task_yield();
+    /* Por ahora NO hacer context switch desde IRQ.
+     * Sólo contar ticks. La preempción real vendrá cuando
+     * guardemos/restauremos interrupt frames completos y salgamos con iretq.
+     */
+    scheduler_ticks++;
 }
 
 void scheduler_add_task(void (*entry)(void)) {
