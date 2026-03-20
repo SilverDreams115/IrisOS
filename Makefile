@@ -21,7 +21,8 @@ KERNEL_ISR_OBJ       := $(BUILD_DIR)/isr_stubs.o
 KERNEL_CTX_OBJ       := $(BUILD_DIR)/context_switch.o
 KERNEL_SCHED_OBJ     := $(BUILD_DIR)/scheduler.o
 KERNEL_IPC_OBJ       := $(BUILD_DIR)/ipc.o
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_IPC_OBJ)
+KERNEL_FB_OBJ        := $(BUILD_DIR)/fb.o
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_IPC_OBJ) $(KERNEL_FB_OBJ)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -109,6 +110,10 @@ $(KERNEL_SCHED_OBJ): kernel/core/scheduler/scheduler.c | dirs
 $(KERNEL_IPC_OBJ): kernel/core/ipc/ipc.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
+$(KERNEL_FB_OBJ): kernel/drivers/fb/fb.c | dirs
+
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
 $(KERNEL_ELF): $(KERNEL_OBJS)
 	ld $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $@
 
@@ -134,3 +139,4 @@ clean:
 	rm -f $(BUILD_DIR)/*.elf
 	rm -f $(BUILD_DIR)/OVMF_VARS.fd
 	rm -rf $(BUILD_DIR)/efi_root
+
