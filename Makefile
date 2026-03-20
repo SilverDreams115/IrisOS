@@ -5,19 +5,22 @@ EFI_ROOT     := $(BUILD_DIR)/efi_root
 EFI_BOOT_DIR := $(EFI_ROOT)/EFI/BOOT
 EFI_IRIS_DIR := $(EFI_ROOT)/EFI/IRIS
 
-LOADER_OBJ        := $(BUILD_DIR)/boot_loader.o
-BOOT_SO           := $(BUILD_DIR)/BOOTX64.so
-BOOT_APP          := $(EFI_BOOT_DIR)/BOOTX64.EFI
+LOADER_OBJ           := $(BUILD_DIR)/boot_loader.o
+BOOT_SO              := $(BUILD_DIR)/BOOTX64.so
+BOOT_APP             := $(EFI_BOOT_DIR)/BOOTX64.EFI
 
-KERNEL_ENTRY_OBJ  := $(BUILD_DIR)/kernel_entry.o
-KERNEL_MAIN_OBJ   := $(BUILD_DIR)/kernel_main.o
-KERNEL_PMM_OBJ    := $(BUILD_DIR)/pmm.o
-KERNEL_PAGING_OBJ := $(BUILD_DIR)/paging.o
-KERNEL_GDT_OBJ    := $(BUILD_DIR)/gdt.o
-KERNEL_IDT_OBJ    := $(BUILD_DIR)/idt.o
+KERNEL_ENTRY_OBJ     := $(BUILD_DIR)/kernel_entry.o
+KERNEL_MAIN_OBJ      := $(BUILD_DIR)/kernel_main.o
+KERNEL_PMM_OBJ       := $(BUILD_DIR)/pmm.o
+KERNEL_PAGING_OBJ    := $(BUILD_DIR)/paging.o
+KERNEL_GDT_OBJ       := $(BUILD_DIR)/gdt.o
+KERNEL_IDT_OBJ       := $(BUILD_DIR)/idt.o
+KERNEL_PIC_OBJ       := $(BUILD_DIR)/pic.o
 KERNEL_GDT_FLUSH_OBJ := $(BUILD_DIR)/gdt_idt_flush.o
-KERNEL_ISR_OBJ    := $(BUILD_DIR)/isr_stubs.o
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ)
+KERNEL_ISR_OBJ       := $(BUILD_DIR)/isr_stubs.o
+KERNEL_CTX_OBJ       := $(BUILD_DIR)/context_switch.o
+KERNEL_SCHED_OBJ     := $(BUILD_DIR)/scheduler.o
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -87,11 +90,20 @@ $(KERNEL_GDT_OBJ): kernel/arch/x86_64/gdt.c | dirs
 $(KERNEL_IDT_OBJ): kernel/arch/x86_64/idt.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
+$(KERNEL_PIC_OBJ): kernel/arch/x86_64/pic.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
 $(KERNEL_GDT_FLUSH_OBJ): kernel/arch/x86_64/gdt_idt_flush.S | dirs
 	gcc $(KERNEL_ASFLAGS) -c $< -o $@
 
 $(KERNEL_ISR_OBJ): kernel/arch/x86_64/isr_stubs.S | dirs
 	gcc $(KERNEL_ASFLAGS) -c $< -o $@
+
+$(KERNEL_CTX_OBJ): kernel/arch/x86_64/context_switch.S | dirs
+	gcc $(KERNEL_ASFLAGS) -c $< -o $@
+
+$(KERNEL_SCHED_OBJ): kernel/core/scheduler/scheduler.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_ELF): $(KERNEL_OBJS)
 	ld $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $@

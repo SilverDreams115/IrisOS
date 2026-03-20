@@ -62,6 +62,10 @@ ISR_NOERR 31  /* reserved                  */
  * Handler común — salva todos los registros, llama a isr_handler en C,
  * restaura y retorna.
  */
+
+/* IRQ0 — timer (vector 0x20 = 32) */
+ISR_NOERR 32
+
 isr_common:
     /* salvar registros de propósito general */
     pushq %rax
