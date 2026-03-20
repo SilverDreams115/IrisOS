@@ -1,144 +1,144 @@
-# IRIS
+# IRIS OS
 
-IRIS is a custom operating system built from scratch for development and gaming.
+IRIS OS is a custom x86_64 operating system built from scratch with UEFI, focused on low-level systems development, memory management, interrupt handling, and multitasking.
 
-## Vision
+The project serves as a learning and experimentation platform for progressively building core operating system components, from boot to scheduling and beyond.
 
-IRIS is designed as a unified digital environment where low-level system control, software development, and gaming coexist inside a single platform.
-
-This project is not a generic office-oriented OS. Its direction is centered around:
-
-- low-level control and hardware ownership
-- modular microkernel architecture
-- custom boot and kernel flow
-- developer-focused workflows
-- gaming-oriented runtime design
-- broad long-term hardware ambition
-- unified authentication and system control
-
-## Core Goals
-
-- Build a real operating system from the ground up
-- Maintain a clean separation between bootloader and kernel
-- Evolve toward a high-performance modular microkernel design
-- Support a unified environment for developers and gamers
-- Keep authentication simple and consistent with a single master password per user
-- Build the system with long-term extensibility in mind
-
-## Current Technical Direction
-
-- **Architecture:** x86_64
-- **Boot model:** UEFI
-- **Kernel format:** ELF
-- **Kernel model:** modular microkernel
-- **Primary focus:** developers and gamers
-- **Authentication model:** one master password per user
-- **Branch workflow:** main / staging / silver / collab
+---
 
 ## Current Status
 
-IRIS has completed its foundation boot and memory stages.
+**Stage 7 - Stable Cooperative Multitasking**
 
-### Validated Milestones
+The current  branch includes:
 
-#### Stage 0
-- UEFI bootstrap validated in QEMU + OVMF
-- EFI entry point executes correctly
-- early kernel handoff works
+- UEFI boot through a custom bootloader
+- ExitBootServices and kernel ownership of the machine
+- Physical Memory Manager (PMM) with bitmap-based page tracking
+- Virtual memory and paging initialization
+- GDT and IDT setup
+- PIC remapping and PIT timer initialization
+- Exception handling with serial debug output
+- Stable cooperative multitasking
+- Per-task stack isolation with fixed RSP handling
+- Idle task fallback
+- Active timer IRQ as groundwork for future preemption
 
-#### Stage 1
-- loader and kernel separated into independent EFI images
-- `BOOTX64.EFI` works as the loader
-- `KERNELX64.EFI` works as a separate kernel image
-- loader successfully loads and starts the kernel in QEMU + OVMF
+---
 
-#### Stage 2
-- kernel moved from EFI image to a real ELF executable
-- UEFI loader reads and parses the ELF kernel
-- loadable ELF segments copied into memory correctly
-- basic `iris_boot_info` structure passed to the kernel
-- ELF kernel executes successfully in QEMU + OVMF
+## Project Goals
 
-#### Stage 3
-- UEFI memory map retrieved and stored in `iris_boot_info`
-- `ExitBootServices()` called successfully with correct `MapKey`
-- kernel owns the machine without active firmware services
-- 505 MB of RAM mapped and reported at boot
+IRIS OS is being developed to progressively implement:
 
-#### Stage 4
-- Physical Memory Manager (PMM) implemented as a bitmap allocator
-- 503 MB of usable RAM tracked across 128,943 pages
-- `pmm_alloc_page()` and `pmm_free_page()` validated
-- kernel correctly marks its own pages as reserved
+- Boot and firmware handoff
+- Physical and virtual memory management
+- Interrupt and exception handling
+- Task scheduling
+- Hardware abstraction foundations
+- Future userland support
+- Future graphics, drivers, and system services
 
-#### Stage 5
-- x86_64 paging initialized with 4-level page tables (PML4)
-- identity map of first 64 MB using 2 MB huge pages
-- kernel mapped in higher half: physical `0x200000` → virtual `0xFFFFFFFF80200000`
-- framebuffer mapped for future display output
-- CR3 loaded — virtual memory fully active
-- `boot_info` safely copied to kernel BSS before paging activation
+---
 
 ## Repository Structure
-```
-boot/          UEFI loader
-kernel/
-  arch/x86_64/ architecture-specific code (paging, entry, linker)
-  core/        future: ipc, scheduler, panic, tasks
-  drivers/     future: gpu, audio, input, pci, serial
-  fs/          future: vfs, ramfs, irisfs
-  include/iris/ kernel headers
-  lib/         future: string, printf, bitmap, elf
-  mm/          memory management (pmm, future vmm, heap)
-  security/    future: auth, capabilities, audit
-  uefi/        (unused — kept for reference)
-userland/      future: shell, libc, services, apps
-tools/         build and image tools
-scripts/       run_qemu.sh and helpers
-docs/          architecture, roadmap, driver compat, security
-tests/         kernel, driver, fs, security test stubs
-build/         compiled output (gitignored)
-```
 
-## Build
-```bash
-make        # build loader + kernel
-make run    # launch in QEMU with OVMF
-make check  # inspect ELF headers and segments
-make clean  # remove build artifacts
-```
+boot/  
+UEFI bootloader source  
 
-**Requirements:** `gcc`, `ld`, `objcopy`, `gnu-efi`, `qemu-system-x86_64`, `ovmf`
+kernel/  
+Kernel core, memory management, architecture-specific code, scheduler  
 
-## Branch Workflow
+userland/  
+Reserved for future user space programs and runtime components  
 
-- `main` → stable and validated state
-- `staging` → integration and testing
-- `silver` → primary development branch
-- `collab` → collaborator branch
+scripts/  
+Helper scripts for running and testing in QEMU  
 
-## Current Execution Flow
+docs/  
+Project notes and technical documentation  
 
-1. UEFI starts `BOOTX64.EFI`
-2. loader reads and parses `KERNEL.ELF`
-3. ELF loadable segments placed in memory at `0x200000`
-4. UEFI memory map retrieved into `iris_boot_info`
-5. `ExitBootServices()` called — firmware disabled
-6. control transferred to kernel entry point
-7. kernel copies `boot_info` to BSS
-8. PMM initialized — physical memory tracked
-9. paging initialized — virtual memory active
-10. kernel halts — awaiting Stage 6 (GDT + IDT)
+tests/  
+Validation and testing assets  
 
-## Next Milestone
+third_party/  
+External dependencies and bundled components  
 
-### Stage 6 — GDT + IDT
+tools/  
+Project-specific tooling  
 
-- install kernel-owned Global Descriptor Table
-- install Interrupt Descriptor Table with real ISRs
-- handle CPU exceptions: page fault, double fault, GPF
-- base for scheduler and microkernel IPC
+build/  
+Generated build artifacts  
 
-## About
+---
 
-No description, website, or topics provided.
+## Build Requirements
+
+To build and run IRIS OS, you need:
+
+- GCC for x86_64
+- GNU-EFI
+- QEMU
+- Make
+- A Linux development environment
+
+---
+
+## Build and Run
+
+
+
+---
+
+## Example Runtime Output
+
+
+
+---
+
+## Scheduling Model
+
+The current scheduler is **cooperative**, meaning tasks voluntarily yield execution.
+
+- Context switching is stable
+- Each task uses its own stack
+- Timer interrupt is active but does not enforce preemption yet
+
+---
+
+## Next Steps
+
+- Preemptive multitasking via timer interrupts
+- Interrupt frame-based context switching ()
+- Improved scheduler logic
+- Expansion of kernel subsystems
+
+---
+
+## Branch Strategy
+
+-  -> stable milestones
+-  -> validated integration
+-  -> active development
+-  -> collaboration
+
+---
+
+## Disclaimer
+
+IRIS OS is an experimental operating system project.
+
+- Not production-ready
+- No userland yet
+- Built for learning and low-level experimentation
+
+---
+
+## Author
+
+Mauricio Mendoza Molina
+
+---
+
+## License
+
+TBD
