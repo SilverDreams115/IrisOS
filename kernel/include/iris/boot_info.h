@@ -8,7 +8,6 @@
 
 #define IRIS_MMAP_MAX_ENTRIES 256
 
-/* tipos de región de memoria — espejo de EFI_MEMORY_TYPE */
 #define IRIS_MEM_USABLE          1
 #define IRIS_MEM_RESERVED        2
 #define IRIS_MEM_ACPI_RECLAIMABLE 3
