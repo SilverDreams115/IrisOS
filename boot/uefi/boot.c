@@ -67,56 +67,50 @@ static EFI_STATUS load_file_into_memory(
 
     Status = uefi_call_wrapper(SystemTable->BootServices->HandleProtocol, 3,
         ImageHandle, &LoadedImageProtocolGuid, (VOID **)&LoadedImage);
-    if (EFI_ERROR(Status) || !LoadedImage) {
-        Print(L"[IRIS][LOADER] HandleProtocol LoadedImage failed: %r\r\n", Status);
-        return Status;
-    }
+    if (EFI_ERROR(Status) || !LoadedImage) return Status;
+
     Status = uefi_call_wrapper(SystemTable->BootServices->HandleProtocol, 3,
         LoadedImage->DeviceHandle, &SimpleFileSystemProtocolGuid, (VOID **)&FileSystem);
-    if (EFI_ERROR(Status) || !FileSystem) {
-        Print(L"[IRIS][LOADER] HandleProtocol SimpleFS failed: %r\r\n", Status);
-        return Status;
-    }
+    if (EFI_ERROR(Status) || !FileSystem) return Status;
+
     Status = uefi_call_wrapper(FileSystem->OpenVolume, 2, FileSystem, &Root);
-    if (EFI_ERROR(Status)) {
-        Print(L"[IRIS][LOADER] OpenVolume failed: %r\r\n", Status);
-        return Status;
-    }
+    if (EFI_ERROR(Status)) return Status;
+
     Status = uefi_call_wrapper(Root->Open, 5, Root, &File, Path, EFI_FILE_MODE_READ, 0);
     if (EFI_ERROR(Status)) {
-        Print(L"[IRIS][LOADER] open kernel file failed: %r\r\n", Status);
         uefi_call_wrapper(Root->Close, 1, Root);
         return Status;
     }
+
     Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePool, 3,
         EfiLoaderData, FileInfoSize, (VOID **)&FileInfo);
     if (EFI_ERROR(Status)) {
-        Print(L"[IRIS][LOADER] AllocatePool(FileInfo) failed: %r\r\n", Status);
         uefi_call_wrapper(File->Close, 1, File);
         uefi_call_wrapper(Root->Close, 1, Root);
         return Status;
     }
+
     Status = uefi_call_wrapper(File->GetInfo, 4, File, &FileInfoGuid, &FileInfoSize, FileInfo);
     if (EFI_ERROR(Status)) {
-        Print(L"[IRIS][LOADER] GetInfo failed: %r\r\n", Status);
         uefi_call_wrapper(SystemTable->BootServices->FreePool, 1, FileInfo);
         uefi_call_wrapper(File->Close, 1, File);
         uefi_call_wrapper(Root->Close, 1, Root);
         return Status;
     }
+
     *BufferSize = (UINTN)FileInfo->FileSize;
+
     Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePool, 3,
         EfiLoaderData, *BufferSize, Buffer);
     if (EFI_ERROR(Status)) {
-        Print(L"[IRIS][LOADER] AllocatePool(kernel buffer) failed: %r\r\n", Status);
         uefi_call_wrapper(SystemTable->BootServices->FreePool, 1, FileInfo);
         uefi_call_wrapper(File->Close, 1, File);
         uefi_call_wrapper(Root->Close, 1, Root);
         return Status;
     }
+
     Status = uefi_call_wrapper(File->Read, 3, File, BufferSize, *Buffer);
     if (EFI_ERROR(Status)) {
-        Print(L"[IRIS][LOADER] Read failed: %r\r\n", Status);
         uefi_call_wrapper(SystemTable->BootServices->FreePool, 1, *Buffer);
         *Buffer = NULL; *BufferSize = 0;
         uefi_call_wrapper(SystemTable->BootServices->FreePool, 1, FileInfo);
@@ -124,6 +118,7 @@ static EFI_STATUS load_file_into_memory(
         uefi_call_wrapper(Root->Close, 1, Root);
         return Status;
     }
+
     uefi_call_wrapper(SystemTable->BootServices->FreePool, 1, FileInfo);
     uefi_call_wrapper(File->Close, 1, File);
     uefi_call_wrapper(Root->Close, 1, Root);
@@ -147,10 +142,8 @@ static void fill_framebuffer_info(
 
     Status = uefi_call_wrapper(SystemTable->BootServices->LocateProtocol, 3,
         &GopGuid, NULL, (VOID **)&Gop);
-    if (EFI_ERROR(Status) || !Gop || !Gop->Mode || !Gop->Mode->Info) {
-        Print(L"[IRIS][LOADER] GOP unavailable\r\n");
-        return;
-    }
+    if (EFI_ERROR(Status) || !Gop || !Gop->Mode || !Gop->Mode->Info) return;
+
     BootInfo->framebuffer.base              = (uint64_t)Gop->Mode->FrameBufferBase;
     BootInfo->framebuffer.size              = (uint64_t)Gop->Mode->FrameBufferSize;
     BootInfo->framebuffer.width             = (uint32_t)Gop->Mode->Info->HorizontalResolution;
@@ -167,27 +160,16 @@ static EFI_STATUS load_elf_segments(
     Elf64_Phdr *Phdrs;
     UINT16 Index;
 
-    if (KernelSize < sizeof(Elf64_Ehdr)) {
-        Print(L"[IRIS][LOADER] ELF too small\r\n");
-        return EFI_LOAD_ERROR;
-    }
+    if (KernelSize < sizeof(Elf64_Ehdr)) return EFI_LOAD_ERROR;
     if (Ehdr->e_ident[EI_MAG0] != ELFMAG0 || Ehdr->e_ident[EI_MAG1] != ELFMAG1 ||
-        Ehdr->e_ident[EI_MAG2] != ELFMAG2 || Ehdr->e_ident[EI_MAG3] != ELFMAG3) {
-        Print(L"[IRIS][LOADER] invalid ELF magic\r\n");
+        Ehdr->e_ident[EI_MAG2] != ELFMAG2 || Ehdr->e_ident[EI_MAG3] != ELFMAG3)
         return EFI_UNSUPPORTED;
-    }
     if (Ehdr->e_ident[EI_CLASS] != ELFCLASS64 ||
         Ehdr->e_ident[EI_DATA]  != ELFDATA2LSB ||
-        Ehdr->e_machine         != EM_X86_64) {
-        Print(L"[IRIS][LOADER] unsupported ELF format\r\n");
+        Ehdr->e_machine         != EM_X86_64)
         return EFI_UNSUPPORTED;
-    }
-    if (Ehdr->e_phoff == 0 ||
-        Ehdr->e_phentsize != sizeof(Elf64_Phdr) ||
-        Ehdr->e_phnum == 0) {
-        Print(L"[IRIS][LOADER] invalid ELF phdrs\r\n");
+    if (Ehdr->e_phoff == 0 || Ehdr->e_phentsize != sizeof(Elf64_Phdr) || Ehdr->e_phnum == 0)
         return EFI_LOAD_ERROR;
-    }
 
     Phdrs = (Elf64_Phdr *)((UINT8 *)KernelBuffer + Ehdr->e_phoff);
     for (Index = 0; Index < Ehdr->e_phnum; ++Index) {
@@ -198,10 +180,8 @@ static EFI_STATUS load_elf_segments(
         EFI_STATUS Status;
 
         if (Phdr->p_type != PT_LOAD) continue;
-        if (Phdr->p_offset + Phdr->p_filesz > KernelSize) {
-            Print(L"[IRIS][LOADER] segment exceeds file\r\n");
-            return EFI_LOAD_ERROR;
-        }
+        if (Phdr->p_offset + Phdr->p_filesz > KernelSize) return EFI_LOAD_ERROR;
+
         SegmentBase         = (EFI_PHYSICAL_ADDRESS)(Phdr->p_paddr ? Phdr->p_paddr : Phdr->p_vaddr);
         AllocBase           = (EFI_PHYSICAL_ADDRESS)align_down(SegmentBase, IRIS_PAGE_SIZE);
         SegmentOffsetInPage = (UINT64)(SegmentBase - AllocBase);
@@ -209,10 +189,8 @@ static EFI_STATUS load_elf_segments(
 
         Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePages, 4,
             AllocateAddress, EfiLoaderData, Pages, &AllocBase);
-        if (EFI_ERROR(Status)) {
-            Print(L"[IRIS][LOADER] AllocatePages failed: %r\r\n", Status);
-            return Status;
-        }
+        if (EFI_ERROR(Status)) return Status;
+
         mem_copy((VOID *)(UINTN)SegmentBase,
                  (UINT8 *)KernelBuffer + Phdr->p_offset,
                  (UINTN)Phdr->p_filesz);
@@ -245,27 +223,20 @@ static EFI_STATUS get_memory_map_safe(
 
     Status = uefi_call_wrapper(SystemTable->BootServices->GetMemoryMap, 5,
         &MapSize, NULL, &MapKey, &DescSize, &DescVersion);
-    if (Status != EFI_BUFFER_TOO_SMALL) {
-        Print(L"[IRIS][LOADER] GetMemoryMap probe failed: %r\r\n", Status);
-        return Status;
-    }
+    if (Status != EFI_BUFFER_TOO_SMALL) return Status;
 
     MapSize  += 8 * DescSize;
     BufPages  = page_count(MapSize);
 
     Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePages, 4,
         AllocateAnyPages, EfiLoaderData, BufPages, &BufAddr);
-    if (EFI_ERROR(Status)) {
-        Print(L"[IRIS][LOADER] AllocatePages(MemMap) failed: %r\r\n", Status);
-        return Status;
-    }
+    if (EFI_ERROR(Status)) return Status;
 
     MapSize = BufPages * IRIS_PAGE_SIZE;
     Status  = uefi_call_wrapper(SystemTable->BootServices->GetMemoryMap, 5,
         &MapSize, (EFI_MEMORY_DESCRIPTOR *)(UINTN)BufAddr,
         &MapKey, &DescSize, &DescVersion);
     if (EFI_ERROR(Status)) {
-        Print(L"[IRIS][LOADER] GetMemoryMap final failed: %r\r\n", Status);
         uefi_call_wrapper(SystemTable->BootServices->FreePages, 2, BufAddr, BufPages);
         return Status;
     }
@@ -288,28 +259,19 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
     uefi_call_wrapper(SystemTable->ConOut->ClearScreen, 1, SystemTable->ConOut);
 
-    Print(L"====================================\r\n");
-    Print(L"        IRIS STAGE 3 LOADER         \r\n");
-    Print(L"====================================\r\n");
-    Print(L"[IRIS][LOADER] UEFI entry OK\r\n");
-
     BootInfo.magic            = IRIS_BOOTINFO_MAGIC;
     BootInfo.version          = IRIS_BOOTINFO_VERSION;
     BootInfo.mmap_entry_count = 0;
 
-    Print(L"[IRIS][LOADER] loading ELF kernel...\r\n");
     Status = load_file_into_memory(ImageHandle, SystemTable,
                                    IRIS_KERNEL_PATH, &KernelBuffer, &KernelSize);
     if (EFI_ERROR(Status)) {
-        Print(L"[IRIS][LOADER] kernel load failed: %r\r\n", Status);
         uefi_call_wrapper(SystemTable->BootServices->Stall, 1, 5000000);
         return Status;
     }
-    Print(L"[IRIS][LOADER] ELF in memory (%llu bytes)\r\n", (unsigned long long)KernelSize);
 
     Status = load_elf_segments(SystemTable, KernelBuffer, KernelSize);
     if (EFI_ERROR(Status)) {
-        Print(L"[IRIS][LOADER] ELF segment load failed: %r\r\n", Status);
         uefi_call_wrapper(SystemTable->BootServices->Stall, 1, 5000000);
         return Status;
     }
@@ -345,10 +307,6 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
             Entry->reserved = 0;
             BootInfo.mmap_entry_count++;
         }
-
-        Print(L"[IRIS][LOADER] memory map: %llu entries\r\n",
-              (unsigned long long)BootInfo.mmap_entry_count);
-        Print(L"[IRIS][LOADER] calling ExitBootServices...\r\n");
 
         Status = uefi_call_wrapper(SystemTable->BootServices->ExitBootServices, 2,
             ImageHandle, MapKey);
