@@ -9,6 +9,8 @@
 #include <iris/scheduler.h>
 #include <iris/task.h>
 #include <iris/ipc.h>
+#include <iris/fb.h>
+#define FB_ORANGE 0x00FF8800
 
 #define COM1_PORT 0x3F8
 
@@ -168,6 +170,20 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     serial_write(" and ");
     serial_write_dec((uint64_t)ch_b_to_a);
     serial_write("\n");
+
+    serial_write("[IRIS][FB] initializing...\n");
+    fb_init(&saved_boot_info);
+    fb_fill(FB_BLACK);
+    /* franjas de colores para validar framebuffer */
+    uint32_t stripe = saved_boot_info.framebuffer.height / 7;
+    fb_draw_rect(0, stripe * 0, saved_boot_info.framebuffer.width, stripe, FB_RED);
+    fb_draw_rect(0, stripe * 1, saved_boot_info.framebuffer.width, stripe, FB_ORANGE);
+    fb_draw_rect(0, stripe * 2, saved_boot_info.framebuffer.width, stripe, FB_YELLOW);
+    fb_draw_rect(0, stripe * 3, saved_boot_info.framebuffer.width, stripe, FB_GREEN);
+    fb_draw_rect(0, stripe * 4, saved_boot_info.framebuffer.width, stripe, FB_CYAN);
+    fb_draw_rect(0, stripe * 5, saved_boot_info.framebuffer.width, stripe, FB_BLUE);
+    fb_draw_rect(0, stripe * 6, saved_boot_info.framebuffer.width, stripe, FB_IRIS);
+    serial_write("[IRIS][FB] framebuffer painted\n");
 
     serial_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
