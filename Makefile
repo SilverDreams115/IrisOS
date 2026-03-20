@@ -11,7 +11,9 @@ BOOT_APP := $(EFI_BOOT_DIR)/BOOTX64.EFI
 
 KERNEL_ENTRY_OBJ := $(BUILD_DIR)/kernel_entry.o
 KERNEL_MAIN_OBJ := $(BUILD_DIR)/kernel_main.o
+KERNEL_PMM_OBJ  := $(BUILD_DIR)/pmm.o
 KERNEL_ELF := $(BUILD_DIR)/kernel.elf
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ)
 KERNEL_DST := $(EFI_IRIS_DIR)/KERNEL.ELF
 
 CRT0 := $(firstword $(wildcard /usr/lib/crt0-efi-x86_64.o /usr/lib/x86_64-linux-gnu/gnuefi/crt0-efi-x86_64.o))
@@ -68,8 +70,11 @@ $(KERNEL_ENTRY_OBJ): kernel/arch/x86_64/boot/entry.S | dirs
 $(KERNEL_MAIN_OBJ): kernel/kernel_main.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_ELF): $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ)
-	ld $(KERNEL_LDFLAGS) $^ -o $@
+$(KERNEL_PMM_OBJ): kernel/mm/pmm/pmm.c | dirs
+	gcc $(KERNEL_CFLAGS) -I./kernel/mm/pmm -c $< -o $@
+
+$(KERNEL_ELF): $(KERNEL_OBJS)
+	ld $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $@
 
 $(KERNEL_DST): $(KERNEL_ELF) | dirs
 	cp $< $@
