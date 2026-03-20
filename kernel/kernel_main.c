@@ -8,6 +8,7 @@
 #include <iris/pic.h>
 #include <iris/scheduler.h>
 #include <iris/task.h>
+#include <iris/ipc.h>
 
 #define COM1_PORT 0x3F8
 
@@ -49,39 +50,73 @@ static void serial_write_dec(uint64_t value) {
 
 static struct iris_boot_info saved_boot_info;
 
-/* ── tareas ────────────────────────────────────────────────────────── */
+static int32_t ch_a_to_b = -1;
+static int32_t ch_b_to_a = -1;
 
-static volatile uint64_t task_a_ticks = 0;
-static volatile uint64_t task_b_ticks = 0;
-
-static void task_a(void) {
+static void task_producer(void) {
+    struct ipc_message msg;
+    uint32_t counter = 0;
     for (;;) {
-        task_a_ticks++;
-        serial_write("[TASK A] tick ");
-        serial_write_dec(task_a_ticks);
+        counter++;
+        msg.type        = IPC_MSG_DATA;
+        msg.sender_id   = 1;
+        msg.receiver_id = 2;
+        msg.data_len    = 4;
+        msg.data[0]     = (uint8_t)(counter & 0xFF);
+        msg.data[1]     = (uint8_t)((counter >> 8) & 0xFF);
+        msg.data[2]     = (uint8_t)((counter >> 16) & 0xFF);
+        msg.data[3]     = (uint8_t)((counter >> 24) & 0xFF);
+
+        int32_t r = ipc_send((uint32_t)ch_a_to_b, &msg);
+        if (r == IPC_OK) {
+            serial_write("[PRODUCER] sent #");
+            serial_write_dec(counter);
+            serial_write("\n");
+        }
+
+        struct ipc_message reply;
+        ipc_recv((uint32_t)ch_b_to_a, &reply);
+        serial_write("[PRODUCER] reply seq=");
+        serial_write_dec(reply.seq);
         serial_write("\n");
+
         task_yield();
     }
 }
 
-static void task_b(void) {
+static void task_consumer(void) {
+    struct ipc_message msg;
+    struct ipc_message reply;
     for (;;) {
-        task_b_ticks++;
-        serial_write("[TASK B] tick ");
-        serial_write_dec(task_b_ticks);
+        ipc_recv((uint32_t)ch_a_to_b, &msg);
+
+        uint32_t value = (uint32_t)msg.data[0]
+                       | ((uint32_t)msg.data[1] << 8)
+                       | ((uint32_t)msg.data[2] << 16)
+                       | ((uint32_t)msg.data[3] << 24);
+
+        serial_write("[CONSUMER] value=");
+        serial_write_dec(value);
+        serial_write(" from=");
+        serial_write_dec(msg.sender_id);
         serial_write("\n");
+
+        reply.type        = IPC_MSG_REPLY;
+        reply.sender_id   = 2;
+        reply.receiver_id = msg.sender_id;
+        reply.data_len    = 0;
+        ipc_send((uint32_t)ch_b_to_a, &reply);
+
         task_yield();
     }
 }
-
-/* ── kernel entry ─────────────────────────────────────────────────── */
 
 void iris_kernel_main(struct iris_boot_info *boot_info) {
     serial_init();
 
     serial_write("\n");
     serial_write("====================================\n");
-    serial_write("       IRIS KERNEL - STAGE 7        \n");
+    serial_write("       IRIS KERNEL - STAGE 8        \n");
     serial_write("====================================\n");
     serial_write("[IRIS][KERNEL] firmware services: OFF\n");
 
@@ -108,8 +143,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     serial_write(" MB\n");
 
     serial_write("[IRIS][PAGING] initializing...\n");
-    paging_init(saved_boot_info.framebuffer.base,
-                saved_boot_info.framebuffer.size);
+    paging_init(saved_boot_info.framebuffer.base, saved_boot_info.framebuffer.size);
     serial_write("[IRIS][PAGING] virtual memory active\n");
 
     serial_write("[IRIS][GDT] initializing...\n");
@@ -125,19 +159,27 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     idt_init();
     serial_write("[IRIS][IDT] OK\n");
 
+    serial_write("[IRIS][IPC] initializing...\n");
+    ipc_init();
+    ch_a_to_b = ipc_channel_create(1);
+    ch_b_to_a = ipc_channel_create(2);
+    serial_write("[IRIS][IPC] channels: ");
+    serial_write_dec((uint64_t)ch_a_to_b);
+    serial_write(" and ");
+    serial_write_dec((uint64_t)ch_b_to_a);
+    serial_write("\n");
+
     serial_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
-    scheduler_add_task(task_a);
-    scheduler_add_task(task_b);
-    serial_write("[IRIS][SCHED] tasks A and B created\n");
+    scheduler_add_task(task_producer);
+    scheduler_add_task(task_consumer);
+    serial_write("[IRIS][SCHED] producer + consumer created\n");
 
-    serial_write("[IRIS][SCHED] enabling interrupts...\n");
     __asm__ volatile ("sti");
-
-    serial_write("[IRIS][SCHED] running — cooperative scheduler, timer IRQ alive\n");
+    serial_write("[IRIS][SCHED] IPC running\n");
     serial_write("====================================\n");
 
-    /* primer arranque cooperativo: saltar desde idle/kernel al primer task */
+    /* ceder el CPU para que producer arranque primero */
     task_yield();
 
     for (;;) __asm__ volatile ("hlt");
