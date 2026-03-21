@@ -37,21 +37,26 @@ static uint64_t *get_or_create(uint64_t *table, uint64_t index, uint64_t flags) 
 }
 
 void paging_map(uint64_t virt, uint64_t phys, uint64_t flags) {
+    /* intermediate table flags: always P+RW, carry USER bit if leaf needs it */
+    uint64_t tbl_flags = PAGE_PRESENT | PAGE_WRITABLE;
+    if (flags & PAGE_USER) tbl_flags |= PAGE_USER;
     uint64_t *pml4 = phys_to_ptr(pml4_phys);
-    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), tbl_flags);
     if (!pdpt) return;
-    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), tbl_flags);
     if (!pd) return;
-    uint64_t *pt   = get_or_create(pd,   PD_IDX(virt),   PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    uint64_t *pt   = get_or_create(pd,   PD_IDX(virt),   tbl_flags);
     if (!pt) return;
     pt[PT_IDX(virt)] = (phys & ~0xFFFULL) | flags | PAGE_PRESENT;
 }
 
 static void paging_map_huge(uint64_t virt, uint64_t phys, uint64_t flags) {
+    uint64_t tbl_flags = PAGE_PRESENT | PAGE_WRITABLE;
+    if (flags & PAGE_USER) tbl_flags |= PAGE_USER;
     uint64_t *pml4 = phys_to_ptr(pml4_phys);
-    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), tbl_flags);
     if (!pdpt) return;
-    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), tbl_flags);
     if (!pd) return;
     pd[PD_IDX(virt)] = (phys & ~0x1FFFFFULL) | flags | PAGE_PRESENT | PAGE_HUGE;
 }
@@ -87,7 +92,7 @@ void paging_init(uint64_t fb_phys, uint64_t fb_size) {
 
     uint64_t identity_end = IDENTITY_MB * 1024ULL * 1024ULL;
     for (i = 0; i < identity_end; i += HUGE_SIZE)
-        paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+        paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE); /* kernel only */
 
     for (i = 0; i < 0x400000; i += PAGE_SIZE)
         paging_map(KERNEL_VIRT_BASE + 0x200000 + i,
@@ -98,7 +103,7 @@ void paging_init(uint64_t fb_phys, uint64_t fb_size) {
         uint64_t fb_base = fb_phys & ~(HUGE_SIZE - 1);
         uint64_t fb_end  = (fb_phys + fb_size + HUGE_SIZE - 1) & ~(HUGE_SIZE - 1);
         for (i = fb_base; i < fb_end; i += HUGE_SIZE)
-            paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+            paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE); /* kernel only */
     }
 
     __asm__ volatile ("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
