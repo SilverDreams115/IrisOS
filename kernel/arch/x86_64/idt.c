@@ -1,5 +1,6 @@
 #include <iris/idt.h>
 #include <iris/pic.h>
+#include <iris/keyboard.h>
 #include <iris/scheduler.h>
 #include <stdint.h>
 
@@ -43,6 +44,7 @@ DECLARE_ISR(20) DECLARE_ISR(21) DECLARE_ISR(22) DECLARE_ISR(23)
 DECLARE_ISR(24) DECLARE_ISR(25) DECLARE_ISR(26) DECLARE_ISR(27)
 DECLARE_ISR(28) DECLARE_ISR(29) DECLARE_ISR(30) DECLARE_ISR(31)
 extern void isr32(void); /* IRQ0 — timer */
+extern void isr33(void); /* IRQ1 — keyboard */
 
 extern void idt_flush(uint64_t idtr_addr);
 
@@ -107,9 +109,16 @@ static void panic_hex(uint64_t v) {
 
 void isr_handler(struct full_frame *frame) {
     if (frame->vector == 32) {
-        /* IRQ0 — timer */
+        /* IRQ0 — timer tick (cooperative scheduler: no forced preemption here).
+         * scheduler_tick() only increments a counter for future use. */
         pic_eoi(0);
         scheduler_tick();
+        return;
+    }
+    if (frame->vector == 33) {
+        /* IRQ1 — PS/2 keyboard */
+        kbd_irq_handler();
+        pic_eoi(1);
         return;
     }
 
@@ -142,8 +151,9 @@ void idt_init(void) {
     for (int i = 0; i < 32; i++)
         idt_set_entry(i, isrs[i]);
 
-    /* IRQ0 — timer en vector 0x20 */
+    /* IRQ0 — timer, IRQ1 — keyboard */
     idt_set_entry(32, isr32);
+    idt_set_entry(33, isr33);
 
     idtr.size   = sizeof(idt) - 1;
     idtr.offset = (uint64_t)(uintptr_t)&idt;
