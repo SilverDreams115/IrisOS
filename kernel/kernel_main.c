@@ -9,6 +9,7 @@
 #include <iris/scheduler.h>
 #include <iris/task.h>
 #include <iris/ipc.h>
+#include <iris/tss.h>
 #include <iris/fb.h>
 #include <iris/vfs.h>
 #define FB_ORANGE 0x00FF8800
@@ -226,11 +227,24 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     serial_write("\n");
     serial_write("[IRIS][VFS] OK\n");
 
+    serial_write("[IRIS][USER] preparing init process...\n");
+
     serial_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
     scheduler_add_task(task_producer);
     scheduler_add_task(task_consumer);
     serial_write("[IRIS][SCHED] producer + consumer created\n");
+
+    /* Stage 11: create user task — ring 3 */
+    extern void user_init(void);
+    struct task *ut = task_create_user((uint64_t)(uintptr_t)user_init);
+    if (ut) {
+        serial_write("[IRIS][USER] init task created, id=");
+        serial_write_dec(ut->id);
+        serial_write("\n");
+    } else {
+        serial_write("[IRIS][USER] WARN: could not create user task\n");
+    }
 
     __asm__ volatile ("sti");
     serial_write("[IRIS][SCHED] IPC running\n");

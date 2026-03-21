@@ -1,8 +1,10 @@
 #include <iris/task.h>
 #include <iris/scheduler.h>
 #include <iris/pmm.h>
+#include <iris/tss.h>
 #include <stdint.h>
 
+extern void user_entry_trampoline(void);
 extern void context_switch(struct cpu_context *old,
                            struct cpu_context *new,
                            uint64_t *old_rsp,
@@ -27,7 +29,7 @@ static void idle_task(void) {
 static void setup_initial_context(struct task *t, void (*entry)(void)) {
     int idx = (int)(t - tasks);
 
-    uint64_t stack_top = (uint64_t)(uintptr_t)(t->stack + TASK_STACK_SIZE);
+    uint64_t stack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     stack_top &= ~0xFULL;
 
     /* Layout inicial para entrar con ret:
@@ -91,6 +93,60 @@ struct task *task_create(void (*entry)(void)) {
     return t;
 }
 
+
+struct task *task_create_user(uint64_t entry) {
+    struct task *t = 0;
+    for (int i = 1; i < TASK_MAX; i++) {
+        if (tasks[i].state == TASK_DEAD) {
+            t = &tasks[i];
+            break;
+        }
+    }
+    if (!t) return 0;
+
+    t->id         = next_id++;
+    t->state      = TASK_READY;
+    t->ring       = TASK_RING3;
+    t->user_entry = entry;
+    t->cr3        = 0; /* share kernel page table for now */
+
+    /* user stack top — 16-byte aligned */
+    uint64_t ustack_top = (uint64_t)(uintptr_t)(t->ustack + TASK_USTACK_SIZE);
+    ustack_top &= ~0xFULL;
+    t->user_rsp = ustack_top;
+
+    /* kernel stack: set up so context_switch lands in user_entry_trampoline */
+    int idx = (int)(t - tasks);
+    uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
+    kstack_top &= ~0xFULL;
+
+    /* push iretq frame: SS, RSP, RFLAGS, CS, RIP */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;            /* SS  user data */
+    kstack_top -= 8; *(uint64_t *)kstack_top = t->user_rsp;     /* RSP user stack */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x202;           /* RFLAGS: IF=1 */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;            /* CS  user code */
+    kstack_top -= 8; *(uint64_t *)kstack_top = entry;           /* RIP */
+
+    /* push dummy return + entry for context_switch ret */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0; /* dummy */
+    kstack_top -= 8; *(uint64_t *)kstack_top = (uint64_t)(uintptr_t)user_entry_trampoline;
+
+    task_rsp[idx] = kstack_top;
+
+    t->ctx.r15 = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
+    t->ctx.rbx = 0; t->ctx.rbp = 0;
+    t->ctx.rip = (uint64_t)(uintptr_t)user_entry_trampoline;
+
+    /* link into task list */
+    struct task *tail = task_list_head;
+    while (tail->next != task_list_head)
+        tail = tail->next;
+    tail->next = t;
+    t->next    = task_list_head;
+
+    return t;
+}
+
 struct task *task_current(void) {
     return current_task;
 }
@@ -132,6 +188,10 @@ void task_yield(void) {
 
     int old_idx = (int)(old - tasks);
     int new_idx = (int)(chosen - tasks);
+
+    /* update TSS rsp0 to new task kernel stack top */
+    uint64_t new_kstack_top = (uint64_t)(uintptr_t)(chosen->kstack + TASK_STACK_SIZE);
+    tss_set_rsp0(new_kstack_top);
 
     context_switch(&old->ctx, &chosen->ctx,
                    &task_rsp[old_idx], task_rsp[new_idx]);
