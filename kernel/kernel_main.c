@@ -51,6 +51,16 @@ static void serial_write_dec(uint64_t value) {
     serial_write(&buf[i]);
 }
 
+static void __attribute__((unused)) serial_write_hex(uint64_t value) {
+    const char *hex = "0123456789ABCDEF";
+    char buf[19]; /* 0x + 16 digits + null */
+    buf[0] = '0'; buf[1] = 'x';
+    for (int i = 0; i < 16; i++)
+        buf[2 + i] = hex[(value >> (60 - i * 4)) & 0xF];
+    buf[18] = '\0';
+    serial_write(buf);
+}
+
 static struct iris_boot_info saved_boot_info;
 
 static int32_t ch_a_to_b = -1;
