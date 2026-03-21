@@ -5,7 +5,7 @@
  * has an iretq frame pushed by task_create_user:
  *   [rsp+0]  = RIP  (user entry)
  *   [rsp+8]  = CS   (0x1B = user code | RPL3)
- *   [rsp+16] = RFLAGS (0x202 = IF set)
+ *   [rsp+16] = RFLAGS (0x0202 = IF=1, IOPL=0)
  *   [rsp+24] = RSP  (user stack)
  *   [rsp+32] = SS   (0x23 = user data | RPL3)
  *
