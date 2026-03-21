@@ -39,6 +39,7 @@ int32_t  vfs_write(int32_t fd, const void *buf, uint32_t len);
 int32_t  vfs_close(int32_t fd);
 int32_t  vfs_stat(const char *path, uint32_t *out_size);
 int32_t  vfs_seek(int32_t fd, int32_t offset, uint32_t whence);
+int32_t  vfs_mkdir(const char *path);
 
 #define VFS_SEEK_SET 0  /* from start */
 #define VFS_SEEK_CUR 1  /* from current pos */
