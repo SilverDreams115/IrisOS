@@ -65,6 +65,12 @@ static uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return 0; /* unreachable */
 }
 
+static uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg0; (void)arg1; (void)arg2;
+    task_yield();
+    return 0;
+}
+
 static uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg0; (void)arg1; (void)arg2;
     struct task *t = task_current();
@@ -77,6 +83,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_WRITE:  return sys_write(arg0, arg1, arg2);
         case SYS_EXIT:   return sys_exit(arg0, arg1, arg2);
         case SYS_GETPID: return sys_getpid(arg0, arg1, arg2);
+        case SYS_YIELD:  return sys_yield(arg0, arg1, arg2);
         default:
             serial_write("[SYSCALL] unknown syscall=");
             serial_write_dec(num);
