@@ -65,6 +65,7 @@ ISR_NOERR 31  /* reserved                  */
 
 /* IRQ0 — timer (vector 0x20 = 32) */
 ISR_NOERR 32
+ISR_NOERR 33  /* IRQ1 — PS/2 keyboard */
 
 isr_common:
     /* salvar registros de propósito general */

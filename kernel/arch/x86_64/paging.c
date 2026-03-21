@@ -31,6 +31,11 @@ static uint64_t *get_or_create(uint64_t *table, uint64_t index, uint64_t flags) 
         uint64_t new_table = alloc_table();
         if (new_table == 0) return 0;
         table[index] = new_table | flags;
+    } else {
+        /* table already exists — OR in any new permission bits needed.
+         * Critical: if caller needs PAGE_USER, existing kernel-only
+         * intermediate tables must be upgraded or ring 3 access will fault. */
+        table[index] |= (flags & (PAGE_USER | PAGE_WRITABLE));
     }
     if (table[index] & PAGE_HUGE) return 0;
     return phys_to_ptr(table[index] & ~0xFFFULL);
@@ -109,19 +114,22 @@ void paging_init(uint64_t fb_phys, uint64_t fb_size) {
     __asm__ volatile ("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
 }
 
-uint64_t paging_create_user_space(void) {
-    /* Allocate a fresh PML4 for a user process.
-     * Copy kernel-half entries (PML4 indices 256-511) from the
-     * current kernel PML4 so the kernel remains mapped after CR3 switch.
-     * Lower half (0-255) is left zeroed — user gets its own mappings. */
-    uint64_t new_pml4_phys = alloc_table();
+uint64_t paging_create_user_space(void)
+{
+    uint64_t new_pml4_phys = pmm_alloc_pages(1);
     if (new_pml4_phys == 0) return 0;
 
     uint64_t *kernel_pml4 = phys_to_ptr(pml4_phys);
     uint64_t *user_pml4   = phys_to_ptr(new_pml4_phys);
 
-    for (uint64_t i = 256; i < 512; i++)
+    /* DIAG:
+     * Clone the entire current kernel PML4 so the child CR3 inherits
+     * every mapping the kernel might still touch during context switch,
+     * timer IRQs, exception paths, serial logging, etc.
+     */
+    for (uint64_t i = 0; i < 512; i++) {
         user_pml4[i] = kernel_pml4[i];
+    }
 
     return new_pml4_phys;
 }
