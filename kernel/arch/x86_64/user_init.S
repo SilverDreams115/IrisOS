@@ -1,28 +1,21 @@
 .global user_init
 
-/* COM1 serial direct output — no syscalls, ring0 diagnostic */
-.macro serial_char ch
-    movb  $\ch, %al
-    movw  $0x3F8, %dx
-1:  movw  $0x3FD, %dx
-    inb   %dx, %al
-    testb $0x20, %al
-    jz    1b
-    movw  $0x3F8, %dx
-    movb  $\ch, %al
-    outb  %al, %dx
-.endm
+.section .rodata
+msg_hello: .asciz "Hello from ring 3!\n"
 
 .section .text
 user_init:
-    /* write "U" to COM1 to confirm we reached USER_TEXT_BASE */
-    serial_char 'U'
-    serial_char 'S'
-    serial_char 'R'
-    serial_char '\r'
-    serial_char '\n'
+    /* SYS_WRITE */
+    movq $0, %rax
+    leaq msg_hello(%rip), %rdi
+    syscall
 
-    /* halt loop — no syscall, we're ring0 diagnostic */
+    /* SYS_EXIT */
+    movq $1, %rax
+    movq $0, %rdi
+    syscall
+
+    /* should not reach here */
 .dead:
     hlt
     jmp .dead
