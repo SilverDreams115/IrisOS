@@ -130,7 +130,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     serial_write("\n");
     serial_write("====================================\n");
-    serial_write("       IRIS KERNEL - STAGE 8        \n");
+    serial_write("       IRIS KERNEL - STAGE 11       \n");
     serial_write("====================================\n");
     serial_write("[IRIS][KERNEL] firmware services: OFF\n");
 
