@@ -4,7 +4,7 @@
 #define PAGE_SIZE   4096ULL
 #define HUGE_SIZE   (2ULL * 1024 * 1024)
 #define ENTRIES     512ULL
-#define IDENTITY_MB 64ULL
+/* IDENTITY_MB removed — use IDENTITY_MAP_END from paging.h */
 
 #define PML4_IDX(v) (((v) >> 39) & 0x1FFULL)
 #define PDPT_IDX(v) (((v) >> 30) & 0x1FFULL)
@@ -90,14 +90,14 @@ void paging_init(uint64_t fb_phys, uint64_t fb_size) {
     pml4_phys = alloc_table();
     if (pml4_phys == 0) return;
 
-    uint64_t identity_end = IDENTITY_MB * 1024ULL * 1024ULL;
-    for (i = 0; i < identity_end; i += HUGE_SIZE)
+    for (i = 0; i < IDENTITY_MAP_END; i += HUGE_SIZE)
         paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE); /* kernel only */
 
+    /* map kernel text+data: KERNEL_PHYS_BASE .. KERNEL_PHYS_BASE+4MB */
     for (i = 0; i < 0x400000; i += PAGE_SIZE)
-        paging_map(KERNEL_VIRT_BASE + 0x200000 + i,
-                   0x200000 + i,
-                   PAGE_PRESENT | PAGE_WRITABLE);
+        paging_map(KERNEL_VIRT_TEXT + i,
+                   KERNEL_PHYS_BASE + i,
+                   PAGE_PRESENT | PAGE_WRITABLE); /* W^X applied in Fix 14 */
 
     if (fb_phys != 0 && fb_size != 0) {
         uint64_t fb_base = fb_phys & ~(HUGE_SIZE - 1);
