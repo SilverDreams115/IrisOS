@@ -129,7 +129,7 @@ struct task *task_create_user(uint64_t entry) {
      * Push in reverse order (SS first, RIP last) */
     kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;            /* SS  */
     kstack_top -= 8; *(uint64_t *)kstack_top = t->user_rsp;     /* RSP */
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x3202;          /* RFLAGS: IF=1, IOPL=3 */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202;          /* RFLAGS: IF=1, IOPL=0 */
     kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;            /* CS  */
     kstack_top -= 8; *(uint64_t *)kstack_top = entry;           /* RIP */
 
