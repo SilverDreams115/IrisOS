@@ -10,6 +10,7 @@
 #include <iris/task.h>
 #include <iris/ipc.h>
 #include <iris/fb.h>
+#include <iris/vfs.h>
 #define FB_ORANGE 0x00FF8800
 
 #define COM1_PORT 0x3F8
@@ -184,6 +185,36 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     fb_draw_rect(0, stripe * 5, saved_boot_info.framebuffer.width, stripe, FB_BLUE);
     fb_draw_rect(0, stripe * 6, saved_boot_info.framebuffer.width, stripe, FB_IRIS);
     serial_write("[IRIS][FB] framebuffer painted\n");
+
+    serial_write("[IRIS][VFS] initializing...\n");
+    vfs_init();
+
+    /* crear archivo de prueba */
+    int32_t fd = vfs_open("iris.txt", VFS_O_CREATE | VFS_O_WRITE);
+    const char *msg = "Hello from IrisOS VFS!\n";
+    uint32_t msglen = 0;
+    while (msg[msglen]) msglen++;
+    vfs_write(fd, msg, msglen);
+    vfs_close(fd);
+
+    /* leer de vuelta */
+    char rdbuf[64];
+    for (int i = 0; i < 64; i++) rdbuf[i] = 0;
+    fd = vfs_open("iris.txt", VFS_O_READ);
+    int32_t n = vfs_read(fd, rdbuf, 63);
+    vfs_close(fd);
+
+    serial_write("[IRIS][VFS] read iris.txt (");
+    serial_write_dec((uint64_t)n);
+    serial_write(" bytes): ");
+    serial_write(rdbuf);
+
+    uint32_t fsize = 0;
+    vfs_stat("iris.txt", &fsize);
+    serial_write("[IRIS][VFS] stat iris.txt size=");
+    serial_write_dec(fsize);
+    serial_write("\n");
+    serial_write("[IRIS][VFS] OK\n");
 
     serial_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
