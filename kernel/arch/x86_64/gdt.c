@@ -101,7 +101,7 @@ void gdt_init(void) {
     /* 5-6: TSS (16 bytes) */
     for (uint32_t i = 0; i < sizeof(struct tss); i++)
         ((uint8_t *)&kernel_tss)[i] = 0;
-    kernel_tss.iopb_offset = 0xFFFF; /* allow all IO ports from ring 3 */
+    kernel_tss.iopb_offset = sizeof(struct tss); /* no IO ports accessible from ring 3 */
 
     gdt_set_tss((uint64_t)(uintptr_t)&kernel_tss, sizeof(struct tss) - 1);
 

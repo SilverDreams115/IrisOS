@@ -22,15 +22,27 @@ static inline uint64_t rdmsr(uint32_t msr) {
 extern void syscall_entry(void);
 
 #include <iris/serial.h>
+#include <iris/paging.h>
+#include <iris/vfs.h>
 
-/* user space is identity mapped in range [0x1000, 0x400000) */
+/* user virtual address space bounds */
 #define USER_ADDR_MIN 0x1000ULL
 #define USER_ADDR_MAX 0x400000ULL
 
+/* Check that [ptr, ptr+len) is within user range AND mapped in page table.
+ * Every page that overlaps the range is checked individually. */
 static int user_ptr_valid(uint64_t ptr, uint32_t len) {
     if (ptr == 0) return 0;
     if (ptr < USER_ADDR_MIN) return 0;
-    if (ptr + len > USER_ADDR_MAX) return 0;
+    if (len == 0) return 0;
+    if (ptr + (uint64_t)len > USER_ADDR_MAX) return 0;
+    if (ptr + (uint64_t)len < ptr) return 0; /* overflow check */
+    /* verify every page in range is present in the page table */
+    uint64_t page = ptr & ~0xFFFULL;
+    uint64_t end  = (ptr + len - 1) & ~0xFFFULL;
+    for (; page <= end; page += 0x1000ULL) {
+        if (paging_virt_to_phys(page) == 0) return 0;
+    }
     return 1;
 }
 
@@ -65,24 +77,97 @@ static uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return 0; /* unreachable */
 }
 
+static uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg0; (void)arg1; (void)arg2;
+    task_yield();
+    return 0;
+}
+
 static uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg0; (void)arg1; (void)arg2;
     struct task *t = task_current();
     return t ? t->id : 0;
 }
 
+/* per-task brk heap pointer — uses layout constants from paging.h */
+static uint64_t brk_current = USER_HEAP_BASE;
+
+static uint64_t sys_open(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    if (!user_ptr_valid(arg0, 1)) return (uint64_t)-1;
+    const char *path = (const char *)(uintptr_t)arg0;
+    /* copy path safely */
+    char buf[VFS_MAX_NAME];
+    uint32_t i = 0;
+    while (i < VFS_MAX_NAME - 1 && user_ptr_valid(arg0 + i, 1) && path[i]) {
+        buf[i] = path[i]; i++;
+    }
+    buf[i] = '\0';
+    uint32_t flags = (uint32_t)arg1;
+    int32_t fd = vfs_open(buf, flags);
+    return (uint64_t)(int64_t)fd;
+}
+
+static uint64_t sys_read(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    int32_t  fd  = (int32_t)arg0;
+    uint64_t buf = arg1;
+    uint32_t len = (uint32_t)arg2;
+    if (!user_ptr_valid(buf, len)) return (uint64_t)-1;
+    int32_t n = vfs_read(fd, (void *)(uintptr_t)buf, len);
+    return (uint64_t)(int64_t)n;
+}
+
+static uint64_t sys_close(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    int32_t fd = (int32_t)arg0;
+    return (uint64_t)(int64_t)vfs_close(fd);
+}
+
+static uint64_t sys_brk(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    /* arg0 = requested new brk; 0 = query current */
+    if (arg0 == 0) return brk_current;
+    if (arg0 < USER_HEAP_BASE) return brk_current;
+    if (arg0 > USER_HEAP_MAX)  return brk_current;
+    brk_current = arg0;
+    return brk_current;
+}
+
+static uint64_t sys_sleep(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    /* arg0 = ticks to sleep (at 100 Hz, 1 tick = 10ms) */
+    uint64_t ticks = arg0;
+    for (uint64_t i = 0; i < ticks; i++)
+        task_yield();
+    return 0;
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
+
                           uint64_t arg1, uint64_t arg2) {
     switch (num) {
         case SYS_WRITE:  return sys_write(arg0, arg1, arg2);
         case SYS_EXIT:   return sys_exit(arg0, arg1, arg2);
         case SYS_GETPID: return sys_getpid(arg0, arg1, arg2);
+        case SYS_YIELD:  return sys_yield(arg0, arg1, arg2);
+        case SYS_OPEN:   return sys_open(arg0, arg1, arg2);
+        case SYS_READ:   return sys_read(arg0, arg1, arg2);
+        case SYS_CLOSE:  return sys_close(arg0, arg1, arg2);
+        case SYS_BRK:    return sys_brk(arg0, arg1, arg2);
+        case SYS_SLEEP:  return sys_sleep(arg0, arg1, arg2);
         default:
             serial_write("[SYSCALL] unknown syscall=");
             serial_write_dec(num);
             serial_write("\n");
             return (uint64_t)-1;
     }
+}
+
+/* syscall_kstack_ptr lives in syscall_entry.S .data section */
+extern uint64_t syscall_kstack_ptr;
+
+void syscall_set_kstack(uint64_t kstack_top) {
+    syscall_kstack_ptr = kstack_top;
 }
 
 void syscall_init(void) {

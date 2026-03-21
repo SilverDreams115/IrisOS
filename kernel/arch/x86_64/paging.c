@@ -4,7 +4,7 @@
 #define PAGE_SIZE   4096ULL
 #define HUGE_SIZE   (2ULL * 1024 * 1024)
 #define ENTRIES     512ULL
-#define IDENTITY_MB 64ULL
+/* IDENTITY_MB removed — use IDENTITY_MAP_END from paging.h */
 
 #define PML4_IDX(v) (((v) >> 39) & 0x1FFULL)
 #define PDPT_IDX(v) (((v) >> 30) & 0x1FFULL)
@@ -37,21 +37,26 @@ static uint64_t *get_or_create(uint64_t *table, uint64_t index, uint64_t flags) 
 }
 
 void paging_map(uint64_t virt, uint64_t phys, uint64_t flags) {
+    /* intermediate table flags: always P+RW, carry USER bit if leaf needs it */
+    uint64_t tbl_flags = PAGE_PRESENT | PAGE_WRITABLE;
+    if (flags & PAGE_USER) tbl_flags |= PAGE_USER;
     uint64_t *pml4 = phys_to_ptr(pml4_phys);
-    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), tbl_flags);
     if (!pdpt) return;
-    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), tbl_flags);
     if (!pd) return;
-    uint64_t *pt   = get_or_create(pd,   PD_IDX(virt),   PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    uint64_t *pt   = get_or_create(pd,   PD_IDX(virt),   tbl_flags);
     if (!pt) return;
     pt[PT_IDX(virt)] = (phys & ~0xFFFULL) | flags | PAGE_PRESENT;
 }
 
 static void paging_map_huge(uint64_t virt, uint64_t phys, uint64_t flags) {
+    uint64_t tbl_flags = PAGE_PRESENT | PAGE_WRITABLE;
+    if (flags & PAGE_USER) tbl_flags |= PAGE_USER;
     uint64_t *pml4 = phys_to_ptr(pml4_phys);
-    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), tbl_flags);
     if (!pdpt) return;
-    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), tbl_flags);
     if (!pd) return;
     pd[PD_IDX(virt)] = (phys & ~0x1FFFFFULL) | flags | PAGE_PRESENT | PAGE_HUGE;
 }
@@ -85,21 +90,50 @@ void paging_init(uint64_t fb_phys, uint64_t fb_size) {
     pml4_phys = alloc_table();
     if (pml4_phys == 0) return;
 
-    uint64_t identity_end = IDENTITY_MB * 1024ULL * 1024ULL;
-    for (i = 0; i < identity_end; i += HUGE_SIZE)
-        paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    for (i = 0; i < IDENTITY_MAP_END; i += HUGE_SIZE)
+        paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE); /* kernel only */
 
+    /* map kernel text+data: KERNEL_PHYS_BASE .. KERNEL_PHYS_BASE+4MB */
     for (i = 0; i < 0x400000; i += PAGE_SIZE)
-        paging_map(KERNEL_VIRT_BASE + 0x200000 + i,
-                   0x200000 + i,
-                   PAGE_PRESENT | PAGE_WRITABLE);
+        paging_map(KERNEL_VIRT_TEXT + i,
+                   KERNEL_PHYS_BASE + i,
+                   PAGE_PRESENT | PAGE_WRITABLE); /* W^X applied in Fix 14 */
 
     if (fb_phys != 0 && fb_size != 0) {
         uint64_t fb_base = fb_phys & ~(HUGE_SIZE - 1);
         uint64_t fb_end  = (fb_phys + fb_size + HUGE_SIZE - 1) & ~(HUGE_SIZE - 1);
         for (i = fb_base; i < fb_end; i += HUGE_SIZE)
-            paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+            paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE); /* kernel only */
     }
 
     __asm__ volatile ("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
+}
+
+uint64_t paging_create_user_space(void) {
+    /* Allocate a fresh PML4 for a user process.
+     * Copy kernel-half entries (PML4 indices 256-511) from the
+     * current kernel PML4 so the kernel remains mapped after CR3 switch.
+     * Lower half (0-255) is left zeroed — user gets its own mappings. */
+    uint64_t new_pml4_phys = alloc_table();
+    if (new_pml4_phys == 0) return 0;
+
+    uint64_t *kernel_pml4 = phys_to_ptr(pml4_phys);
+    uint64_t *user_pml4   = phys_to_ptr(new_pml4_phys);
+
+    for (uint64_t i = 256; i < 512; i++)
+        user_pml4[i] = kernel_pml4[i];
+
+    return new_pml4_phys;
+}
+
+uint64_t pml4_get_current(void) {
+    return pml4_phys;
+}
+
+void paging_map_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags) {
+    /* temporarily remap using the given cr3 as root instead of pml4_phys */
+    uint64_t saved = pml4_phys;
+    pml4_phys = cr3;
+    paging_map(virt, phys, flags);
+    pml4_phys = saved;
 }
