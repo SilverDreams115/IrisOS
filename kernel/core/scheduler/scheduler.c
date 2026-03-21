@@ -2,6 +2,8 @@
 #include <iris/scheduler.h>
 #include <iris/pmm.h>
 #include <iris/tss.h>
+#include <iris/paging.h>
+#include <iris/syscall.h>
 #include <stdint.h>
 
 extern void user_entry_trampoline(void);
@@ -18,7 +20,10 @@ static uint32_t next_id = 0;
 /* RSP guardado por tarea */
 static uint64_t task_rsp[TASK_MAX];
 
-/* ticks del timer; por ahora sólo observación, no preempción real */
+/* Cooperative scheduler — tasks yield explicitly via task_yield().
+ * IRQ0 increments ticks for future timeslice accounting only.
+ * Preemption (need_resched flag + forced yield on IRQ exit) is NOT
+ * implemented yet and must be added as a separate stage. */
 static volatile uint64_t scheduler_ticks = 0;
 
 /* tarea idle — corre cuando no hay nada más */
@@ -79,8 +84,11 @@ struct task *task_create(void (*entry)(void)) {
     }
     if (!t) return 0;
 
-    t->id    = next_id++;
-    t->state = TASK_READY;
+    t->id         = next_id++;
+    t->state      = TASK_READY;
+    t->time_slice = TASK_DEFAULT_SLICE;
+    t->ticks_left = TASK_DEFAULT_SLICE;
+    t->need_resched = 0;
 
     setup_initial_context(t, entry);
 
@@ -107,13 +115,35 @@ struct task *task_create_user(uint64_t entry) {
     t->id         = next_id++;
     t->state      = TASK_READY;
     t->ring       = TASK_RING3;
+    t->time_slice = TASK_DEFAULT_SLICE;
+    t->ticks_left = TASK_DEFAULT_SLICE;
+    t->need_resched = 0;
     t->user_entry = entry;
-    t->cr3        = 0; /* share kernel page table for now */
+    t->cr3        = paging_create_user_space();
 
-    /* user stack top — 16-byte aligned */
-    uint64_t ustack_top = (uint64_t)(uintptr_t)(t->ustack + TASK_USTACK_SIZE);
-    ustack_top &= ~0xFULL;
-    t->user_rsp = ustack_top;
+    /* user stack: allocate physical pages and map into process address space.
+     * Virtual address is USER_STACK_TOP (defined in paging.h).
+     * t->ustack[] is NOT used for ring 3 — it is kernel BSS and would
+     * be unmapped in the process CR3. */
+    uint32_t ustack_pages = USER_STACK_SIZE / 4096;
+    uint64_t ustack_phys  = pmm_alloc_pages(ustack_pages);
+    if (ustack_phys == 0) return 0; /* OOM */
+
+    /* map user stack pages into the process page table */
+    uint64_t saved_cr3 = pml4_get_current(); /* save kernel CR3 */
+    (void)saved_cr3;
+    for (uint32_t pg = 0; pg < ustack_pages; pg++) {
+        uint64_t virt = USER_STACK_BASE + (uint64_t)pg * 4096;
+        uint64_t phys = ustack_phys  + (uint64_t)pg * 4096;
+        paging_map_in(t->cr3, virt, phys,
+                      PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    }
+
+    /* populate virtual stack metadata */
+    t->user_stack_base  = USER_STACK_BASE;
+    t->user_stack_top   = USER_STACK_TOP;
+    t->user_stack_pages = ustack_pages;
+    t->user_rsp         = USER_STACK_TOP & ~0xFULL;
 
     /* kernel stack: set up so context_switch lands in user_entry_trampoline */
     int idx = (int)(t - tasks);
@@ -129,7 +159,7 @@ struct task *task_create_user(uint64_t entry) {
      * Push in reverse order (SS first, RIP last) */
     kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;            /* SS  */
     kstack_top -= 8; *(uint64_t *)kstack_top = t->user_rsp;     /* RSP */
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x3202;          /* RFLAGS: IF=1, IOPL=3 */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202;          /* RFLAGS: IF=1, IOPL=0 */
     kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;            /* CS  */
     kstack_top -= 8; *(uint64_t *)kstack_top = entry;           /* RIP */
 
@@ -188,8 +218,10 @@ void task_yield(void) {
     if (old->state == TASK_RUNNING)
         old->state = TASK_READY;
 
-    chosen->state = TASK_RUNNING;
-    current_task  = chosen;
+    chosen->state      = TASK_RUNNING;
+    chosen->ticks_left = chosen->time_slice;  /* reload quantum */
+    chosen->need_resched = 0;
+    current_task       = chosen;
 
     int old_idx = (int)(old - tasks);
     int new_idx = (int)(chosen - tasks);
@@ -197,6 +229,11 @@ void task_yield(void) {
     /* update TSS rsp0 to new task kernel stack top */
     uint64_t new_kstack_top = (uint64_t)(uintptr_t)(chosen->kstack + TASK_STACK_SIZE);
     tss_set_rsp0(new_kstack_top);
+    syscall_set_kstack(new_kstack_top);  /* per-task syscall kernel stack */
+
+    /* switch CR3 if the new task has its own page table */
+    if (chosen->cr3 != 0)
+        __asm__ volatile ("mov %0, %%cr3" : : "r"(chosen->cr3) : "memory");
 
     context_switch(&old->ctx, &chosen->ctx,
                    &task_rsp[old_idx], task_rsp[new_idx]);
@@ -210,6 +247,11 @@ void scheduler_init(void) {
 
 void scheduler_tick(void) {
     scheduler_ticks++;
+    if (!current_task) return;
+    if (current_task->ticks_left > 0)
+        current_task->ticks_left--;
+    if (current_task->ticks_left == 0)
+        current_task->need_resched = 1;
 }
 
 void scheduler_add_task(void (*entry)(void)) {
