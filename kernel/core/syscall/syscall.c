@@ -89,9 +89,7 @@ static uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return t ? t->id : 0;
 }
 
-/* per-task brk heap pointer — simple bump allocator base */
-#define USER_HEAP_BASE  0x100000ULL
-#define USER_HEAP_MAX   0x200000ULL
+/* per-task brk heap pointer — uses layout constants from paging.h */
 static uint64_t brk_current = USER_HEAP_BASE;
 
 static uint64_t sys_open(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
