@@ -3,6 +3,7 @@
 #include <iris/pmm.h>
 #include <iris/tss.h>
 #include <iris/paging.h>
+#include <iris/syscall.h>
 #include <stdint.h>
 
 extern void user_entry_trampoline(void);
@@ -209,6 +210,7 @@ void task_yield(void) {
     /* update TSS rsp0 to new task kernel stack top */
     uint64_t new_kstack_top = (uint64_t)(uintptr_t)(chosen->kstack + TASK_STACK_SIZE);
     tss_set_rsp0(new_kstack_top);
+    syscall_set_kstack(new_kstack_top);  /* per-task syscall kernel stack */
 
     /* switch CR3 if the new task has its own page table */
     if (chosen->cr3 != 0)

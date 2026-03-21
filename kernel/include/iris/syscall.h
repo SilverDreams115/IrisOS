@@ -10,6 +10,7 @@
 #define SYS_YIELD   3
 
 void syscall_init(void);
+void syscall_set_kstack(uint64_t kstack_top);
 
 /* Called from ASM handler */
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
