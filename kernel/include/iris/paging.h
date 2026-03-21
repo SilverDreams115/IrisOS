@@ -54,5 +54,7 @@ void     paging_init(uint64_t fb_phys, uint64_t fb_size);
 void     paging_map(uint64_t virt, uint64_t phys, uint64_t flags);
 uint64_t paging_virt_to_phys(uint64_t virt);
 uint64_t paging_create_user_space(void);
+void     paging_map_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
+uint64_t pml4_get_current(void);
 
 #endif
