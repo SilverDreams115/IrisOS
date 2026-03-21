@@ -1,13 +1,15 @@
 .global user_init
 
-/* user_init: first user-space function
- * Runs in ring 3. No kernel access.
- * Just loops forever — validates ring 3 entry works.
- */
+.section .rodata
+msg_hello: .asciz "Hello from ring 3!\n"
+
+.section .text
 user_init:
-    /* infinite loop in user space */
+    movq $0, %rax
+    leaq msg_hello(%rip), %rdi
+    syscall
+
 .loop:
-    pause
     jmp .loop
 
 .section .note.GNU-stack,"",@progbits
