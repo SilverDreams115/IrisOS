@@ -46,3 +46,29 @@ struct inode *ramfs_lookup(const char *name) {
     }
     return (void *)0;
 }
+
+struct inode *ramfs_mkdir(const char *name) {
+    /* check if already exists */
+    if (ramfs_lookup(name)) return (void *)0;
+    for (int i = 0; i < VFS_MAX_FILES; i++) {
+        if (!ramfs_inodes[i].valid) {
+            ramfs_strncpy(ramfs_inodes[i].name, name, VFS_MAX_NAME);
+            ramfs_inodes[i].type  = VFS_TYPE_DIR;
+            ramfs_inodes[i].size  = 0;
+            ramfs_inodes[i].valid = 1;
+            return &ramfs_inodes[i];
+        }
+    }
+    return (void *)0;
+}
+
+/* lookup file 'name' inside directory 'dir' using path 'dir/name' */
+struct inode *ramfs_lookup_in(const char *dir, const char *name) {
+    char path[VFS_MAX_NAME];
+    int di = 0, ni = 0;
+    while (dir[di] && di < VFS_MAX_NAME - 2) { path[di] = dir[di]; di++; }
+    path[di++] = '/';
+    while (name[ni] && di < VFS_MAX_NAME - 1) { path[di++] = name[ni++]; }
+    path[di] = '\0';
+    return ramfs_lookup(path);
+}
