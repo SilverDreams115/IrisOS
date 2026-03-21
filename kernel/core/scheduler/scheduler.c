@@ -19,7 +19,10 @@ static uint32_t next_id = 0;
 /* RSP guardado por tarea */
 static uint64_t task_rsp[TASK_MAX];
 
-/* ticks del timer; por ahora sólo observación, no preempción real */
+/* Cooperative scheduler — tasks yield explicitly via task_yield().
+ * IRQ0 increments ticks for future timeslice accounting only.
+ * Preemption (need_resched flag + forced yield on IRQ exit) is NOT
+ * implemented yet and must be added as a separate stage. */
 static volatile uint64_t scheduler_ticks = 0;
 
 /* tarea idle — corre cuando no hay nada más */
