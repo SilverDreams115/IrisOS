@@ -37,7 +37,7 @@ void pic_init(void) {
     outb(PIC1_DATA, ICW4_8086); io_wait();
     outb(PIC2_DATA, ICW4_8086); io_wait();
 
-    outb(PIC1_DATA, mask1 & 0xFE);
+    outb(PIC1_DATA, mask1 & 0xFC); /* enable IRQ0 (timer) + IRQ1 (keyboard) */
     outb(PIC2_DATA, mask2);
 }
 
