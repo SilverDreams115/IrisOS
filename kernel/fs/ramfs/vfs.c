@@ -3,10 +3,6 @@
 
 static struct file fd_table[VFS_MAX_FDS];
 
-static int vfs_strcmp(const char *a, const char *b) {
-    while (*a && *b && *a == *b) { a++; b++; }
-    return (int)(unsigned char)*a - (int)(unsigned char)*b;
-}
 
 void vfs_init(void) {
     ramfs_init();
@@ -75,4 +71,19 @@ int32_t vfs_stat(const char *path, uint32_t *out_size) {
     if (!node) return -1;
     if (out_size) *out_size = node->size;
     return 0;
+}
+
+int32_t vfs_seek(int32_t fd, int32_t offset, uint32_t whence) {
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].valid) return -1;
+    struct file  *f = &fd_table[fd];
+    struct inode *n = f->inode;
+    int32_t new_pos;
+    if (whence == VFS_SEEK_SET)      new_pos = offset;
+    else if (whence == VFS_SEEK_CUR) new_pos = (int32_t)f->pos + offset;
+    else if (whence == VFS_SEEK_END) new_pos = (int32_t)n->size + offset;
+    else return -1;
+    if (new_pos < 0) return -1;
+    if ((uint32_t)new_pos > n->capacity) return -1;
+    f->pos = (uint32_t)new_pos;
+    return new_pos;
 }
