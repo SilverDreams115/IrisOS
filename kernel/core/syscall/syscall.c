@@ -23,28 +23,46 @@ extern void syscall_entry(void);
 
 #include <iris/serial.h>
 
+/* user space is identity mapped in range [0x1000, 0x400000) */
+#define USER_ADDR_MIN 0x1000ULL
+#define USER_ADDR_MAX 0x400000ULL
+
+static int user_ptr_valid(uint64_t ptr, uint32_t len) {
+    if (ptr == 0) return 0;
+    if (ptr < USER_ADDR_MIN) return 0;
+    if (ptr + len > USER_ADDR_MAX) return 0;
+    return 1;
+}
+
 static uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     /* arg0 = pointer to string in user space */
+    if (!user_ptr_valid(arg0, 1)) return (uint64_t)-1;
     const char *s = (const char *)(uintptr_t)arg0;
-    /* basic safety: only print if pointer looks valid */
-    if (!s) return (uint64_t)-1;
+    /* safe string print — max 256 chars */
+    char buf[257];
+    uint32_t i = 0;
+    while (i < 256 && user_ptr_valid(arg0 + i, 1) && s[i]) {
+        buf[i] = s[i];
+        i++;
+    }
+    buf[i] = '\0';
     serial_write("[USER] ");
-    serial_write(s);
-    return 0;
+    serial_write(buf);
+    return i;
 }
 
 static uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
-    serial_write("[SYSCALL] exit called with code=");
+    serial_write("[SYSCALL] exit code=");
     serial_write_dec(arg0);
     serial_write("\n");
-    /* mark current task dead */
+    /* mark current task dead and yield forever */
     struct task *t = task_current();
     if (t) t->state = TASK_DEAD;
-    /* yield — will not return to this task */
-    task_yield();
-    return 0;
+    /* loop yielding — sysretq will NOT be executed after this */
+    for (;;) task_yield();
+    return 0; /* unreachable */
 }
 
 static uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
