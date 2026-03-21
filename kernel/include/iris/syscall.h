@@ -8,6 +8,11 @@
 #define SYS_EXIT    1
 #define SYS_GETPID  2
 #define SYS_YIELD   3
+#define SYS_OPEN    4
+#define SYS_READ    5
+#define SYS_CLOSE   6
+#define SYS_BRK     7
+#define SYS_SLEEP   8
 
 void syscall_init(void);
 void syscall_set_kstack(uint64_t kstack_top);
