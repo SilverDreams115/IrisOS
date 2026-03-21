@@ -22,15 +22,26 @@ static inline uint64_t rdmsr(uint32_t msr) {
 extern void syscall_entry(void);
 
 #include <iris/serial.h>
+#include <iris/paging.h>
 
-/* user space is identity mapped in range [0x1000, 0x400000) */
+/* user virtual address space bounds */
 #define USER_ADDR_MIN 0x1000ULL
 #define USER_ADDR_MAX 0x400000ULL
 
+/* Check that [ptr, ptr+len) is within user range AND mapped in page table.
+ * Every page that overlaps the range is checked individually. */
 static int user_ptr_valid(uint64_t ptr, uint32_t len) {
     if (ptr == 0) return 0;
     if (ptr < USER_ADDR_MIN) return 0;
-    if (ptr + len > USER_ADDR_MAX) return 0;
+    if (len == 0) return 0;
+    if (ptr + (uint64_t)len > USER_ADDR_MAX) return 0;
+    if (ptr + (uint64_t)len < ptr) return 0; /* overflow check */
+    /* verify every page in range is present in the page table */
+    uint64_t page = ptr & ~0xFFFULL;
+    uint64_t end  = (ptr + len - 1) & ~0xFFFULL;
+    for (; page <= end; page += 0x1000ULL) {
+        if (paging_virt_to_phys(page) == 0) return 0;
+    }
     return 1;
 }
 
@@ -90,6 +101,13 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
             serial_write("\n");
             return (uint64_t)-1;
     }
+}
+
+/* syscall_kstack_ptr lives in syscall_entry.S .data section */
+extern uint64_t syscall_kstack_ptr;
+
+void syscall_set_kstack(uint64_t kstack_top) {
+    syscall_kstack_ptr = kstack_top;
 }
 
 void syscall_init(void) {

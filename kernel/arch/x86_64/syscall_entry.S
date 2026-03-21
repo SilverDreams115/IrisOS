@@ -2,72 +2,80 @@
 .extern syscall_dispatch
 
 /*
- * syscall_entry — IrisOS syscall handler
+ * syscall_entry — IrisOS MSR-based syscall handler
  *
- * On entry (from syscall instruction):
+ * CPU state on entry (syscall instruction):
  *   rax = syscall number
  *   rdi = arg0, rsi = arg1, rdx = arg2
- *   rcx = saved user RIP  (by CPU)
+ *   rcx = saved user RIP   (by CPU)
  *   r11 = saved user RFLAGS (by CPU)
- *   rsp = user stack
+ *   rsp = user stack        (unchanged by CPU)
+ *   IF  = 0                 (SFMASK cleared IF)
  *
- * We switch to a static kernel stack, save state, call C dispatcher,
- * restore state, and sysretq back to user.
+ * Kernel stack: we use r10 (caller-saved, not an arg) as scratch to
+ * save user rsp, then load the per-task kernel stack top from the
+ * static variable syscall_kstack, which is updated on every context
+ * switch by tss_set_rsp0() → syscall_set_kstack().
+ *
+ * Save frame layout (rsp+0 = top after all pushes):
+ *   [rsp+ 0] = syscall number  (rax)
+ *   [rsp+ 8] = arg0            (rdi)
+ *   [rsp+16] = arg1            (rsi)
+ *   [rsp+24] = arg2            (rdx)
+ *   [rsp+32] = user rip        (rcx)
+ *   [rsp+40] = user rflags     (r11)
+ *   [rsp+48] = user rsp        (r10)
  */
 
 .section .bss
 .align 16
-.space 4096
-syscall_kstack_top:
+syscall_kstack_base:
+    .space 4096
+syscall_kstack_top:          /* fallback stack, overwritten per task */
+
+.section .data
+.align 8
+.global syscall_kstack_ptr
+syscall_kstack_ptr:
+    .quad syscall_kstack_top  /* updated by syscall_set_kstack() on ctx switch */
 
 .section .text
 syscall_entry:
-    /* 1. save user rsp in r10, switch to kernel stack */
+    /* 1. save user rsp, switch to per-task kernel stack */
     movq  %rsp, %r10
-    leaq  syscall_kstack_top(%rip), %rsp
+    movq  syscall_kstack_ptr(%rip), %rsp
 
-    /* 2. save everything we need to restore for sysret */
-    pushq %r10               /* user rsp */
-    pushq %r11               /* user rflags */
-    pushq %rcx               /* user rip */
-    pushq %rdi               /* arg0 */
-    pushq %rsi               /* arg1 */
-    pushq %rdx               /* arg2 */
-    pushq %rax               /* syscall number */
+    /* 2. build save frame (7 pushes = 56 bytes) */
+    pushq %r10               /* [+48] user rsp    */
+    pushq %r11               /* [+40] user rflags */
+    pushq %rcx               /* [+32] user rip    */
+    pushq %rdx               /* [+24] arg2        */
+    pushq %rsi               /* [+16] arg1        */
+    pushq %rdi               /* [+ 8] arg0        */
+    pushq %rax               /* [+ 0] syscall num */
 
-    /* 3. call syscall_dispatch(num, arg0, arg1, arg2)
-     *    C calling convention: rdi=num, rsi=arg0, rdx=arg1, rcx=arg2
-     */
-    movq  %rax, %rdi         /* num */
-    movq  32(%rsp), %rsi     /* arg0 (saved rdi) — offset from current rsp */
-    movq  40(%rsp), %rdx     /* arg1 (saved rsi) */
-    movq  48(%rsp), %rcx     /* arg2 (saved rdx) — wait, stack grows down */
+    /* 3. 16-byte align for C ABI (56 bytes pushed: need 8 more) */
+    subq  $8, %rsp
 
-    /* Stack layout after 7 pushes (each 8 bytes):
-     * rsp+0  = rax (num)
-     * rsp+8  = rdx (arg2)
-     * rsp+16 = rsi (arg1)
-     * rsp+24 = rdi (arg0)
-     * rsp+32 = rcx (user rip)
-     * rsp+40 = r11 (user rflags)
-     * rsp+48 = r10 (user rsp)
-     */
-    movq  0(%rsp),  %rdi     /* num */
-    movq  24(%rsp), %rsi     /* arg0 */
-    movq  16(%rsp), %rdx     /* arg1 */
-    movq  8(%rsp),  %rcx     /* arg2 */
-    call  syscall_dispatch   /* rax = return value */
+    /* 4. syscall_dispatch(num, arg0, arg1, arg2) */
+    movq   8(%rsp), %rdi     /* num  */
+    movq  16(%rsp), %rsi     /* arg0 */
+    movq  24(%rsp), %rdx     /* arg1 */
+    movq  32(%rsp), %rcx     /* arg2 */
+    call  syscall_dispatch   /* return value → rax */
 
-    /* 4. restore for sysret */
-    addq  $8, %rsp           /* skip saved rax */
-    popq  %rdx               /* arg2 — discard */
-    popq  %rsi               /* arg1 — discard */
-    popq  %rdi               /* arg0 — discard */
-    popq  %rcx               /* user rip */
-    popq  %r11               /* user rflags */
+    /* 5. undo alignment */
+    addq  $8, %rsp
+
+    /* 6. restore for sysretq */
+    addq  $8,  %rsp          /* skip saved num (return val already in rax) */
+    popq  %rdi               /* discard arg0 */
+    popq  %rsi               /* discard arg1 */
+    popq  %rdx               /* discard arg2 */
+    popq  %rcx               /* user rip   → rcx */
+    popq  %r11               /* user rflags → r11 */
     popq  %rsp               /* user rsp */
 
-    /* rax already has return value from syscall_dispatch */
     sysretq
 
 .section .note.GNU-stack,"",@progbits
