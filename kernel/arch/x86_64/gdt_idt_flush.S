@@ -33,4 +33,13 @@ idt_flush:
     lidt (%rdi)
     ret
 
+/* ── tss_flush ──────────────────────────────────────────────────────────
+ * Carga el TSS en el registro TR.
+ * rdi = selector TSS (e.g. 0x28)
+ */
+.global tss_flush
+tss_flush:
+    movw %di, %ax
+    ltr  %ax
+    ret
 .section .note.GNU-stack,"",@progbits
