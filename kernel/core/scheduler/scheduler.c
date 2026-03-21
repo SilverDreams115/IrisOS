@@ -120,15 +120,20 @@ struct task *task_create_user(uint64_t entry) {
     uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     kstack_top &= ~0xFULL;
 
-    /* push iretq frame: SS, RSP, RFLAGS, CS, RIP */
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;            /* SS  user data */
-    kstack_top -= 8; *(uint64_t *)kstack_top = t->user_rsp;     /* RSP user stack */
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x202;           /* RFLAGS: IF=1 */
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;            /* CS  user code */
+    /* iretq frame layout on stack (top = low addr, popped first):
+     * [kstack_top - 8]  = RIP       <- iretq pops this first
+     * [kstack_top - 16] = CS
+     * [kstack_top - 24] = RFLAGS
+     * [kstack_top - 32] = RSP (user)
+     * [kstack_top - 40] = SS
+     * Push in reverse order (SS first, RIP last) */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;            /* SS  */
+    kstack_top -= 8; *(uint64_t *)kstack_top = t->user_rsp;     /* RSP */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x3202;          /* RFLAGS: IF=1, IOPL=3 */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;            /* CS  */
     kstack_top -= 8; *(uint64_t *)kstack_top = entry;           /* RIP */
 
-    /* push dummy return + entry for context_switch ret */
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0; /* dummy */
+    /* trampoline: context_switch will ret here, then iretq to user */
     kstack_top -= 8; *(uint64_t *)kstack_top = (uint64_t)(uintptr_t)user_entry_trampoline;
 
     task_rsp[idx] = kstack_top;
@@ -204,10 +209,6 @@ void scheduler_init(void) {
 }
 
 void scheduler_tick(void) {
-    /* Por ahora NO hacer context switch desde IRQ.
-     * Sólo contar ticks. La preempción real vendrá cuando
-     * guardemos/restauremos interrupt frames completos y salgamos con iretq.
-     */
     scheduler_ticks++;
 }
 
