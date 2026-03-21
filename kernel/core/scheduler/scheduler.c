@@ -139,8 +139,11 @@ struct task *task_create_user(uint64_t entry) {
                       PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     }
 
-    /* user_rsp points to top of virtual user stack, 16-byte aligned */
-    t->user_rsp = USER_STACK_TOP & ~0xFULL;
+    /* populate virtual stack metadata */
+    t->user_stack_base  = USER_STACK_BASE;
+    t->user_stack_top   = USER_STACK_TOP;
+    t->user_stack_pages = ustack_pages;
+    t->user_rsp         = USER_STACK_TOP & ~0xFULL;
 
     /* kernel stack: set up so context_switch lands in user_entry_trampoline */
     int idx = (int)(t - tasks);
