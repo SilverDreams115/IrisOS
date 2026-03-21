@@ -13,6 +13,7 @@
 #include <iris/tss.h>
 #include <iris/syscall.h>
 #include <iris/pci.h>
+#include <iris/keyboard.h>
 #include <iris/fb.h>
 #include <iris/vfs.h>
 #define FB_ORANGE 0x00FF8800
@@ -190,6 +191,9 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     serial_write("[IRIS][PCI] initializing...\n");
     pci_init();
+
+    serial_write("[IRIS][KBD] initializing...\n");
+    kbd_init();
 
     serial_write("[IRIS][SYSCALL] initializing...\n");
     syscall_init();
