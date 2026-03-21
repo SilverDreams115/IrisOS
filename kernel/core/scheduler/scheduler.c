@@ -134,6 +134,14 @@ struct task *task_create_user(uint64_t entry) {
     t->cr3 = paging_create_user_space();
     if (t->cr3 == 0) return 0;
 
+    /* map user code page(s) with PAGE_USER in process CR3.
+     * user_init lives in kernel .text — we need USER bit so ring 3 can fetch. */
+    uint64_t entry_page = entry & ~0xFFFULL;
+    uint64_t entry_phys = paging_virt_to_phys(entry_page);
+    if (entry_phys == 0) entry_phys = entry_page; /* identity mapped */
+    paging_map_in(t->cr3, entry_page, entry_phys,
+                  PAGE_PRESENT | PAGE_USER); /* RX for user code */
+
     /* allocate and map user stack at USER_STACK_TOP in process CR3 */
     uint32_t ustack_pages = (uint32_t)(USER_STACK_SIZE / 4096ULL);
     uint64_t ustack_phys  = pmm_alloc_pages(ustack_pages);
