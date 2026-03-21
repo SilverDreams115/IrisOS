@@ -72,18 +72,18 @@ static void pci_scan_function(uint8_t bus, uint8_t dev, uint8_t func) {
     d->bar0        = bar0;
 
     serial_write("[PCI] ");
-    serial_write_hex((uint32_t)bus);
+    serial_write_dec(bus);
     serial_write(":");
-    serial_write_hex((uint32_t)dev);
+    serial_write_dec(dev);
     serial_write(".");
     serial_write_dec(func);
     serial_write("  vendor=");
-    serial_write_hex(vendor);
+    serial_write_hex16(vendor);
     serial_write(" device=");
-    serial_write_hex(device);
-    serial_write(" class=");
+    serial_write_hex16(device);
+    serial_write(" [");
     serial_write(pci_class_name(class_code));
-    serial_write("\n");
+    serial_write("]\n");
 }
 
 static void pci_scan_device(uint8_t bus, uint8_t dev) {
