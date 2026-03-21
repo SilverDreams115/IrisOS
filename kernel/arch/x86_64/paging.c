@@ -2,10 +2,6 @@
 #include <iris/pmm.h>
 
 #define PAGE_SIZE   4096ULL
-#define PAGE_PRESENT  1ULL
-#define PAGE_WRITABLE 2ULL
-#define PAGE_USER     4ULL
-#define PAGE_HUGE     0x80ULL
 #define HUGE_SIZE   (2ULL * 1024 * 1024)
 #define ENTRIES     512ULL
 #define IDENTITY_MB 64ULL

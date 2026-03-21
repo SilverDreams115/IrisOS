@@ -87,3 +87,10 @@ int32_t vfs_seek(int32_t fd, int32_t offset, uint32_t whence) {
     f->pos = (uint32_t)new_pos;
     return new_pos;
 }
+
+int32_t vfs_mkdir(const char *path) {
+    if (!path) return -1;
+    if (ramfs_lookup(path)) return -1; /* already exists */
+    struct inode *node = ramfs_mkdir(path);
+    return node ? 0 : -1;
+}
