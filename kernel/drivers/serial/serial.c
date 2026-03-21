@@ -53,3 +53,25 @@ void serial_write_hex(uint64_t value) {
     buf[18] = '\0';
     serial_write(buf);
 }
+
+void serial_write_hex16(uint16_t value) {
+    const char *hex = "0123456789ABCDEF";
+    char buf[7]; /* 0x + 4 digits + null */
+    buf[0] = '0'; buf[1] = 'x';
+    buf[2] = hex[(value >> 12) & 0xF];
+    buf[3] = hex[(value >>  8) & 0xF];
+    buf[4] = hex[(value >>  4) & 0xF];
+    buf[5] = hex[(value >>  0) & 0xF];
+    buf[6] = '\0';
+    serial_write(buf);
+}
+
+void serial_write_hex8(uint8_t value) {
+    const char *hex = "0123456789ABCDEF";
+    char buf[5]; /* 0x + 2 digits + null */
+    buf[0] = '0'; buf[1] = 'x';
+    buf[2] = hex[(value >> 4) & 0xF];
+    buf[3] = hex[(value >> 0) & 0xF];
+    buf[4] = '\0';
+    serial_write(buf);
+}
