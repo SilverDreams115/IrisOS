@@ -5,7 +5,7 @@
 
 #define TASK_MAX         16
 #define TASK_STACK_SIZE  8192    /* kernel stack per task */
-#define TASK_USTACK_SIZE 8192    /* user stack per task */
+#define TASK_DEFAULT_SLICE   10      /* ticks per quantum at 100 Hz = 100ms */
 
 typedef enum {
     TASK_READY,
@@ -36,15 +36,20 @@ struct task {
     /* kernel stack — always present, used on interrupt entry from ring 3 */
     uint8_t           kstack[TASK_STACK_SIZE];
 
-    /* user stack — only used for ring 3 tasks */
-    uint8_t           ustack[TASK_USTACK_SIZE];
-
-    /* user entry point and stack top (for iretq) */
+    /* user entry point and virtual stack info (ring 3 only) */
     uint64_t          user_entry;
-    uint64_t          user_rsp;
+    uint64_t          user_rsp;        /* current user stack pointer (for iretq) */
+    uint64_t          user_stack_base; /* virtual base of user stack region */
+    uint64_t          user_stack_top;  /* virtual top of user stack region */
+    uint32_t          user_stack_pages; /* number of pages allocated */
 
     /* page table root (CR3) — 0 = use kernel page table */
     uint64_t          cr3;
+
+    /* cooperative scheduler quantum */
+    uint32_t          time_slice;   /* ticks per quantum (default TASK_DEFAULT_SLICE) */
+    uint32_t          ticks_left;   /* ticks remaining before need_resched */
+    uint32_t          need_resched; /* set by scheduler_tick when ticks_left hits 0 */
 
     struct task      *next;
 };

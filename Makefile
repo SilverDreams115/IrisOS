@@ -30,7 +30,8 @@ KERNEL_SYSCALL_OBJ   := $(BUILD_DIR)/syscall.o
 KERNEL_SYSCALLE_OBJ  := $(BUILD_DIR)/syscall_entry.o
 KERNEL_SERIAL_OBJ    := $(BUILD_DIR)/serial.o
 KERNEL_PCI_OBJ       := $(BUILD_DIR)/pci.o
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_IPC_OBJ) $(KERNEL_FB_OBJ) $(KERNEL_RAMFS_OBJ) $(KERNEL_VFS_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_USERINIT_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_PCI_OBJ)
+KERNEL_KBD_OBJ       := $(BUILD_DIR)/keyboard.o
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_IPC_OBJ) $(KERNEL_FB_OBJ) $(KERNEL_RAMFS_OBJ) $(KERNEL_VFS_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_USERINIT_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_PCI_OBJ) $(KERNEL_KBD_OBJ)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -129,21 +130,24 @@ $(KERNEL_VFS_OBJ): kernel/fs/ramfs/vfs.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_TRAMP_OBJ): kernel/arch/x86_64/user_trampoline.S | dirs
-	gcc $(KASM_FLAGS) -c $< -o $@
+	gcc $(KERNEL_ASFLAGS) -c $< -o $@
 
 $(KERNEL_USERINIT_OBJ): kernel/arch/x86_64/user_init.S | dirs
-	gcc $(KASM_FLAGS) -c $< -o $@
+	gcc $(KERNEL_ASFLAGS) -c $< -o $@
 
 $(KERNEL_SYSCALL_OBJ): kernel/core/syscall/syscall.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_SYSCALLE_OBJ): kernel/arch/x86_64/syscall_entry.S | dirs
-	gcc $(KASM_FLAGS) -c $< -o $@
+	gcc $(KERNEL_ASFLAGS) -c $< -o $@
 
 $(KERNEL_SERIAL_OBJ): kernel/drivers/serial/serial.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_PCI_OBJ): kernel/drivers/pci/pci.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_KBD_OBJ): kernel/drivers/keyboard/keyboard.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_ELF): $(KERNEL_OBJS)
