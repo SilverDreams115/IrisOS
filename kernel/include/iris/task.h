@@ -5,7 +5,8 @@
 
 #define TASK_MAX         16
 #define TASK_STACK_SIZE  8192    /* kernel stack per task */
-#define TASK_USTACK_SIZE 8192    /* user stack per task */
+#define TASK_USTACK_SIZE     8192    /* user stack per task */
+#define TASK_DEFAULT_SLICE   10      /* ticks per quantum at 100 Hz = 100ms */
 
 typedef enum {
     TASK_READY,
@@ -45,6 +46,11 @@ struct task {
 
     /* page table root (CR3) — 0 = use kernel page table */
     uint64_t          cr3;
+
+    /* cooperative scheduler quantum */
+    uint32_t          time_slice;   /* ticks per quantum (default TASK_DEFAULT_SLICE) */
+    uint32_t          ticks_left;   /* ticks remaining before need_resched */
+    uint32_t          need_resched; /* set by scheduler_tick when ticks_left hits 0 */
 
     struct task      *next;
 };

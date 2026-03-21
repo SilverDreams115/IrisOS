@@ -83,8 +83,11 @@ struct task *task_create(void (*entry)(void)) {
     }
     if (!t) return 0;
 
-    t->id    = next_id++;
-    t->state = TASK_READY;
+    t->id         = next_id++;
+    t->state      = TASK_READY;
+    t->time_slice = TASK_DEFAULT_SLICE;
+    t->ticks_left = TASK_DEFAULT_SLICE;
+    t->need_resched = 0;
 
     setup_initial_context(t, entry);
 
@@ -111,6 +114,9 @@ struct task *task_create_user(uint64_t entry) {
     t->id         = next_id++;
     t->state      = TASK_READY;
     t->ring       = TASK_RING3;
+    t->time_slice = TASK_DEFAULT_SLICE;
+    t->ticks_left = TASK_DEFAULT_SLICE;
+    t->need_resched = 0;
     t->user_entry = entry;
     t->cr3        = paging_create_user_space();
 
@@ -192,8 +198,10 @@ void task_yield(void) {
     if (old->state == TASK_RUNNING)
         old->state = TASK_READY;
 
-    chosen->state = TASK_RUNNING;
-    current_task  = chosen;
+    chosen->state      = TASK_RUNNING;
+    chosen->ticks_left = chosen->time_slice;  /* reload quantum */
+    chosen->need_resched = 0;
+    current_task       = chosen;
 
     int old_idx = (int)(old - tasks);
     int new_idx = (int)(chosen - tasks);
@@ -218,6 +226,11 @@ void scheduler_init(void) {
 
 void scheduler_tick(void) {
     scheduler_ticks++;
+    if (!current_task) return;
+    if (current_task->ticks_left > 0)
+        current_task->ticks_left--;
+    if (current_task->ticks_left == 0)
+        current_task->need_resched = 1;
 }
 
 void scheduler_add_task(void (*entry)(void)) {
