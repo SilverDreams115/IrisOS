@@ -8,5 +8,7 @@
 void          ramfs_init(void);
 struct inode *ramfs_create(const char *name);
 struct inode *ramfs_lookup(const char *name);
+struct inode *ramfs_mkdir(const char *name);
+struct inode *ramfs_lookup_in(const char *dir, const char *name);
 
 #endif

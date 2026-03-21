@@ -88,7 +88,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     serial_write("\n");
     serial_write("====================================\n");
-    serial_write("       IRIS KERNEL - STAGE 11       \n");
+    serial_write("       IRIS KERNEL - STAGE 12       \n");
     serial_write("====================================\n");
     serial_write("[IRIS][KERNEL] firmware services: OFF\n");
 
@@ -157,6 +157,8 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     serial_write("[IRIS][VFS] initializing...\n");
     vfs_init();
+    vfs_mkdir("dev");
+    serial_write("[IRIS][VFS] /dev created\n");
 
     /* crear archivo de prueba */
     int32_t fd = vfs_open("iris.txt", VFS_O_CREATE | VFS_O_WRITE);
