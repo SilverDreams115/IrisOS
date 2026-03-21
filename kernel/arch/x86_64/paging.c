@@ -103,3 +103,20 @@ void paging_init(uint64_t fb_phys, uint64_t fb_size) {
 
     __asm__ volatile ("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
 }
+
+uint64_t paging_create_user_space(void) {
+    /* Allocate a fresh PML4 for a user process.
+     * Copy kernel-half entries (PML4 indices 256-511) from the
+     * current kernel PML4 so the kernel remains mapped after CR3 switch.
+     * Lower half (0-255) is left zeroed — user gets its own mappings. */
+    uint64_t new_pml4_phys = alloc_table();
+    if (new_pml4_phys == 0) return 0;
+
+    uint64_t *kernel_pml4 = phys_to_ptr(pml4_phys);
+    uint64_t *user_pml4   = phys_to_ptr(new_pml4_phys);
+
+    for (uint64_t i = 256; i < 512; i++)
+        user_pml4[i] = kernel_pml4[i];
+
+    return new_pml4_phys;
+}
