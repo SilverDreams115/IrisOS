@@ -1,0 +1,93 @@
+#include <iris/syscall.h>
+#include <iris/task.h>
+
+/* MSR addresses */
+#define MSR_EFER   0xC0000080
+#define MSR_STAR   0xC0000081
+#define MSR_LSTAR  0xC0000082
+#define MSR_SFMASK 0xC0000084
+
+static inline void wrmsr(uint32_t msr, uint64_t val) {
+    uint32_t lo = (uint32_t)(val & 0xFFFFFFFF);
+    uint32_t hi = (uint32_t)(val >> 32);
+    __asm__ volatile ("wrmsr" : : "c"(msr), "a"(lo), "d"(hi));
+}
+
+static inline uint64_t rdmsr(uint32_t msr) {
+    uint32_t lo, hi;
+    __asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+extern void syscall_entry(void);
+
+#include <iris/serial.h>
+
+static uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    /* arg0 = pointer to string in user space */
+    const char *s = (const char *)(uintptr_t)arg0;
+    /* basic safety: only print if pointer looks valid */
+    if (!s) return (uint64_t)-1;
+    serial_write("[USER] ");
+    serial_write(s);
+    return 0;
+}
+
+static uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    serial_write("[SYSCALL] exit called with code=");
+    serial_write_dec(arg0);
+    serial_write("\n");
+    /* mark current task dead */
+    struct task *t = task_current();
+    if (t) t->state = TASK_DEAD;
+    /* yield — will not return to this task */
+    task_yield();
+    return 0;
+}
+
+static uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg0; (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    return t ? t->id : 0;
+}
+
+uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
+                          uint64_t arg1, uint64_t arg2) {
+    switch (num) {
+        case SYS_WRITE:  return sys_write(arg0, arg1, arg2);
+        case SYS_EXIT:   return sys_exit(arg0, arg1, arg2);
+        case SYS_GETPID: return sys_getpid(arg0, arg1, arg2);
+        default:
+            serial_write("[SYSCALL] unknown syscall=");
+            serial_write_dec(num);
+            serial_write("\n");
+            return (uint64_t)-1;
+    }
+}
+
+void syscall_init(void) {
+    /* enable SCE bit in EFER */
+    uint64_t efer = rdmsr(MSR_EFER);
+    efer |= (1ULL << 0); /* SCE = syscall enable */
+    wrmsr(MSR_EFER, efer);
+
+    /* STAR: bits 63:48 = user CS-8 (sysret CS = this+16, SS = this+8)
+     *       bits 47:32 = kernel CS (syscall CS, SS = this+8)
+     * kernel CS = 0x08, kernel SS = 0x10
+     * user   CS = 0x1B (0x18|3), user SS = 0x23 (0x20|3)
+     * STAR[47:32] = 0x0008  (kernel: CS=0x08, SS=0x10)
+     * STAR[63:48] = 0x0013  (sysret: CS=0x1B=0x13|3, SS=0x23=0x1B+8)
+     */
+    uint64_t star = 0;
+    star |= ((uint64_t)0x0008 << 32); /* kernel CS selector */
+    star |= ((uint64_t)0x0013 << 48); /* user CS-8 for sysret */
+    wrmsr(MSR_STAR, star);
+
+    /* LSTAR: syscall handler entry point */
+    wrmsr(MSR_LSTAR, (uint64_t)(uintptr_t)syscall_entry);
+
+    /* SFMASK: clear IF on syscall entry (disable interrupts) */
+    wrmsr(MSR_SFMASK, (1ULL << 9)); /* IF = bit 9 */
+}
