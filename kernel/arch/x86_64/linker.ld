@@ -11,6 +11,7 @@ PHDRS
 SECTIONS
 {
   . = 0x200000;
+  __kernel_start = .;
 
   .text : ALIGN(0x1000)
   {
@@ -28,6 +29,9 @@ SECTIONS
     *(.bss*)
     *(COMMON)
   } :data
+
+  . = ALIGN(0x1000);
+  __kernel_end = .;
 
   /DISCARD/ :
   {
