@@ -16,5 +16,6 @@
 void     paging_init(uint64_t fb_phys, uint64_t fb_size);
 void     paging_map(uint64_t virt, uint64_t phys, uint64_t flags);
 uint64_t paging_virt_to_phys(uint64_t virt);
+uint64_t paging_create_user_space(void);
 
 #endif

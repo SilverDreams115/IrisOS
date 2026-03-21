@@ -2,6 +2,7 @@
 #include <iris/scheduler.h>
 #include <iris/pmm.h>
 #include <iris/tss.h>
+#include <iris/paging.h>
 #include <stdint.h>
 
 extern void user_entry_trampoline(void);
@@ -108,7 +109,7 @@ struct task *task_create_user(uint64_t entry) {
     t->state      = TASK_READY;
     t->ring       = TASK_RING3;
     t->user_entry = entry;
-    t->cr3        = 0; /* share kernel page table for now */
+    t->cr3        = paging_create_user_space();
 
     /* user stack top — 16-byte aligned */
     uint64_t ustack_top = (uint64_t)(uintptr_t)(t->ustack + TASK_USTACK_SIZE);
@@ -197,6 +198,10 @@ void task_yield(void) {
     /* update TSS rsp0 to new task kernel stack top */
     uint64_t new_kstack_top = (uint64_t)(uintptr_t)(chosen->kstack + TASK_STACK_SIZE);
     tss_set_rsp0(new_kstack_top);
+
+    /* switch CR3 if the new task has its own page table */
+    if (chosen->cr3 != 0)
+        __asm__ volatile ("mov %0, %%cr3" : : "r"(chosen->cr3) : "memory");
 
     context_switch(&old->ctx, &chosen->ctx,
                    &task_rsp[old_idx], task_rsp[new_idx]);
