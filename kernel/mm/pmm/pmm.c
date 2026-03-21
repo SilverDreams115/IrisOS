@@ -118,6 +118,30 @@ uint64_t pmm_alloc_page(void) {
   return 0;
 }
 
+
+uint64_t pmm_alloc_pages(uint32_t n) {
+    if (n == 0) return 0;
+    uint64_t start = 0;
+    uint64_t count = 0;
+    for (uint64_t i = 1; i < PMM_MAX_PAGES; i++) {
+        if (bitmap_test(i) == 0) {
+            if (count == 0) start = i;
+            count++;
+            if (count == (uint64_t)n) {
+                /* found n contiguous free pages */
+                for (uint64_t j = start; j < start + n; j++) {
+                    bitmap_set(j);
+                    used_pages_count++;
+                }
+                return start * PMM_PAGE_SIZE;
+            }
+        } else {
+            count = 0;
+        }
+    }
+    return 0; /* not enough contiguous pages */
+}
+
 void pmm_free_page(uint64_t phys_addr) {
   uint64_t page_index;
 
