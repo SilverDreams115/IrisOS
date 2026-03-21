@@ -121,10 +121,26 @@ struct task *task_create_user(uint64_t entry) {
     t->user_entry = entry;
     t->cr3        = paging_create_user_space();
 
-    /* user stack top — 16-byte aligned */
-    uint64_t ustack_top = (uint64_t)(uintptr_t)(t->ustack + TASK_USTACK_SIZE);
-    ustack_top &= ~0xFULL;
-    t->user_rsp = ustack_top;
+    /* user stack: allocate physical pages and map into process address space.
+     * Virtual address is USER_STACK_TOP (defined in paging.h).
+     * t->ustack[] is NOT used for ring 3 — it is kernel BSS and would
+     * be unmapped in the process CR3. */
+    uint32_t ustack_pages = USER_STACK_SIZE / 4096;
+    uint64_t ustack_phys  = pmm_alloc_pages(ustack_pages);
+    if (ustack_phys == 0) return 0; /* OOM */
+
+    /* map user stack pages into the process page table */
+    uint64_t saved_cr3 = pml4_get_current(); /* save kernel CR3 */
+    (void)saved_cr3;
+    for (uint32_t pg = 0; pg < ustack_pages; pg++) {
+        uint64_t virt = USER_STACK_BASE + (uint64_t)pg * 4096;
+        uint64_t phys = ustack_phys  + (uint64_t)pg * 4096;
+        paging_map_in(t->cr3, virt, phys,
+                      PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    }
+
+    /* user_rsp points to top of virtual user stack, 16-byte aligned */
+    t->user_rsp = USER_STACK_TOP & ~0xFULL;
 
     /* kernel stack: set up so context_switch lands in user_entry_trampoline */
     int idx = (int)(t - tasks);

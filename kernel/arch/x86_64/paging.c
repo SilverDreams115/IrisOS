@@ -125,3 +125,15 @@ uint64_t paging_create_user_space(void) {
 
     return new_pml4_phys;
 }
+
+uint64_t pml4_get_current(void) {
+    return pml4_phys;
+}
+
+void paging_map_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags) {
+    /* temporarily remap using the given cr3 as root instead of pml4_phys */
+    uint64_t saved = pml4_phys;
+    pml4_phys = cr3;
+    paging_map(virt, phys, flags);
+    pml4_phys = saved;
+}
