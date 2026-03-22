@@ -1,5 +1,6 @@
 #include <iris/ipc.h>
 #include <iris/task.h>
+#include <iris/scheduler.h>
 #include <stdint.h>
 
 /*
@@ -37,6 +38,7 @@ void ipc_init(void) {
         channels[i].tail     = 0;
         channels[i].count    = 0;
         channels[i].reserved = 0;
+        channels[i].waiter   = 0;
     }
     channel_count = 0;
     next_seq      = 0;
@@ -52,6 +54,7 @@ int32_t ipc_channel_create(uint32_t owner_id) {
     ch->head     = 0;
     ch->tail     = 0;
     ch->count    = 0;
+    ch->waiter   = 0;
 
     return (int32_t)channel_count++;
 }
@@ -72,6 +75,13 @@ int32_t ipc_send(uint32_t channel_id, struct ipc_message *msg) {
     ch->tail = (ch->tail + 1) % IPC_CHANNEL_CAP;
     ch->count++;
 
+    /* microkernel: si hay una tarea bloqueada esperando, desbloquearla */
+    if (ch->waiter && (ch->waiter->state == TASK_BLOCKED ||
+                       ch->waiter->state == TASK_BLOCKED_IPC)) {
+        ch->waiter->state = TASK_READY;
+        ch->waiter = 0;
+    }
+
     return IPC_OK;
 }
 
@@ -89,16 +99,23 @@ int32_t ipc_try_recv(uint32_t channel_id, struct ipc_message *out) {
 }
 
 int32_t ipc_recv(uint32_t channel_id, struct ipc_message *out) {
-    /*
-     * Bloqueante: cede el CPU hasta que haya un mensaje.
-     * En un microkernel real esto bloquearía la tarea en el scheduler.
-     * Por ahora usamos busy-yield para no necesitar blocking scheduler.
-     */
-    int32_t result;
-    while ((result = ipc_try_recv(channel_id, out)) == IPC_ERR_EMPTY) {
+    struct ipc_channel *ch = get_channel(channel_id);
+    if (!ch) return IPC_ERR_INVALID;
+
+    while (ch->count == 0) {
+        /* Block until a message arrives.
+         * ipc_send() will set state=TASK_READY and clear waiter. */
+        struct task *t = task_current();
+        if (t) {
+            if (ch->waiter && ch->waiter != t)
+                return IPC_ERR_INVALID; /* concurrent receivers not supported */
+            ch->waiter = t;
+            t->state   = TASK_BLOCKED_IPC;
+        }
         task_yield();
     }
-    return result;
+
+    return ipc_try_recv(channel_id, out);
 }
 
 uint32_t ipc_channel_count(uint32_t channel_id) {
