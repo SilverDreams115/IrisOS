@@ -23,6 +23,7 @@ struct KChannel {
     uint32_t        head;
     uint32_t        tail;
     uint32_t        count;
+    uint8_t         closed;
     struct task    *waiter;                 /* task blocked on recv, or NULL */
 };
 

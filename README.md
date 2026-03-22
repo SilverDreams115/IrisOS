@@ -72,8 +72,10 @@ What is already true:
 - threads/tasks carry scheduler state and CPU context
 - channels are kernel objects referenced through handles
 - notifications use an explicit single-waiter policy
+- channels and notifications now expose observable close semantics for blocked waiters
 - `sys_spawn` rolls back partial children instead of publishing ambiguous state
 - `sys_vmo_map` and `sys_brk` use observable mapping failure paths in critical syscall code
+- user/kernel pointer validation now checks `PAGE_USER` and `PAGE_WRITABLE` per page where applicable
 - nameserver lookup inserts fresh handles into the caller's table
 - bootstrap services can be published and discovered by name
 
@@ -137,6 +139,7 @@ Notes:
 - user text, heap, VMOs, and stack live in the process-private window
 - user stacks are mapped in the process page table, not borrowed from kernel BSS
 - kernel mappings are not exported to ring 3 with `PAGE_USER`
+- syscall-side user pointer validation rejects merely-present kernel-only mappings
 - framebuffer/MMIO remain kernel-only
 
 ---
@@ -198,7 +201,7 @@ Current syscall numbers exposed in `kernel/include/iris/syscall.h`:
 | 18 | `SYS_SPAWN` | Spawn user process with rollback-safe bootstrap channel setup |
 | 19 | `SYS_NOTIFY_CREATE` | Create notification object |
 | 20 | `SYS_NOTIFY_SIGNAL` | Signal notification |
-| 21 | `SYS_NOTIFY_WAIT` | Wait on notification with explicit single-waiter behavior |
+| 21 | `SYS_NOTIFY_WAIT` | Wait on notification with explicit single-waiter behavior and `RIGHT_WAIT` |
 | 22 | `SYS_HANDLE_DUP` | Duplicate handle with reduced rights |
 | 23 | `SYS_HANDLE_TRANSFER` | Move handle into another process |
 | 24 | `SYS_NS_REGISTER` | Register named service |
@@ -220,6 +223,7 @@ Recent validation on the current tree confirms:
 - `kbd_server` receives `KBD_OP_HELLO` and replies correctly
 - `kbd_server` receives `KBD_OP_GET_STATUS` and replies correctly
 - `sys_exit` follows the common exit path and completes process teardown
+- blocked channel/notification waiters can now observe remote close with `IRIS_ERR_CLOSED`
 - producer/consumer IPC continues running while userland and services are alive
 
 Representative serial output:

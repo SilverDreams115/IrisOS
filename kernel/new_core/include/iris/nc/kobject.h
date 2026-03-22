@@ -15,12 +15,14 @@ typedef enum {
 struct KObject;
 
 struct KObjectOps {
+    void (*close)(struct KObject *obj);
     void (*destroy)(struct KObject *obj);
 };
 
 struct KObject {
     kobject_type_t            type;
     _Atomic uint32_t          refcount;  /* lifecycle — no estado */
+    _Atomic uint32_t          active_refs; /* handles/global published refs */
     spinlock_t                lock;      /* estado mutable — no lifecycle */
     const struct KObjectOps  *ops;       /* != NULL para objeto inicializado */
 };
@@ -39,5 +41,7 @@ void kobject_init(struct KObject *obj, kobject_type_t type,
                   const struct KObjectOps *ops);
 void kobject_retain(struct KObject *obj);
 void kobject_release(struct KObject *obj);
+void kobject_active_retain(struct KObject *obj);
+void kobject_active_release(struct KObject *obj);
 
 #endif

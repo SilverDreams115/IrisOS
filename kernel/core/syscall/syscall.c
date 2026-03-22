@@ -38,21 +38,35 @@ extern void syscall_entry(void);
 #define USER_ADDR_MIN 0x1000ULL
 #define PAGE_SIZE     0x1000ULL
 
-/* Check that [ptr, ptr+len) is within user range AND mapped in page table.
- * Every page that overlaps the range is checked individually. */
-static int user_ptr_valid(uint64_t ptr, uint32_t len) {
+static int user_range_accessible(uint64_t ptr, uint32_t len, uint64_t required_flags) {
+    uint64_t end;
+    uint64_t page;
+
     if (ptr == 0) return 0;
     if (ptr < USER_ADDR_MIN) return 0;
     if (len == 0) return 0;
-    if (ptr + (uint64_t)len > USER_SPACE_TOP) return 0;
-    if (ptr + (uint64_t)len < ptr) return 0; /* overflow check */
-    /* verify every page in range is present in the page table */
-    uint64_t page = ptr & ~0xFFFULL;
-    uint64_t end  = (ptr + len - 1) & ~0xFFFULL;
+    end = ptr + (uint64_t)len;
+    if (end < ptr) return 0;
+    if (end > USER_SPACE_TOP) return 0;
+
+    page = ptr & ~0xFFFULL;
+    end  = (end - 1ULL) & ~0xFFFULL;
     for (; page <= end; page += 0x1000ULL) {
-        if (paging_virt_to_phys(page) == 0) return 0;
+        uint64_t flags = 0;
+        if (paging_query_access(page, &flags) != 0) return 0;
+        if ((flags & PAGE_PRESENT) == 0) return 0;
+        if ((flags & PAGE_USER) == 0) return 0;
+        if ((flags & required_flags) != required_flags) return 0;
     }
     return 1;
+}
+
+static int user_range_readable(uint64_t ptr, uint32_t len) {
+    return user_range_accessible(ptr, len, 0);
+}
+
+static int user_range_writable(uint64_t ptr, uint32_t len) {
+    return user_range_accessible(ptr, len, PAGE_WRITABLE);
 }
 
 static int user_vmo_range_valid(uint64_t virt, uint64_t size) {
@@ -87,12 +101,12 @@ static void rollback_user_maps_and_free_phys(uint64_t cr3, uint64_t start, uint6
 static uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     /* arg0 = pointer to string in user space */
-    if (!user_ptr_valid(arg0, 1)) return (uint64_t)-1;
+    if (!user_range_readable(arg0, 1)) return (uint64_t)-1;
     const char *s = (const char *)(uintptr_t)arg0;
     /* safe string print — max 256 chars */
     char buf[257];
     uint32_t i = 0;
-    while (i < 256 && user_ptr_valid(arg0 + i, 1) && s[i]) {
+    while (i < 256 && user_range_readable(arg0 + i, 1) && s[i]) {
         buf[i] = s[i];
         i++;
     }
@@ -125,12 +139,12 @@ static uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 static uint64_t sys_open(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
-    if (!user_ptr_valid(arg0, 1)) return (uint64_t)-1;
+    if (!user_range_readable(arg0, 1)) return (uint64_t)-1;
     const char *path = (const char *)(uintptr_t)arg0;
     /* copy path safely */
     char buf[VFS_MAX_NAME];
     uint32_t i = 0;
-    while (i < VFS_MAX_NAME - 1 && user_ptr_valid(arg0 + i, 1) && path[i]) {
+    while (i < VFS_MAX_NAME - 1 && user_range_readable(arg0 + i, 1) && path[i]) {
         buf[i] = path[i]; i++;
     }
     buf[i] = '\0';
@@ -143,7 +157,7 @@ static uint64_t sys_read(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     int32_t  fd  = (int32_t)arg0;
     uint64_t buf = arg1;
     uint32_t len = (uint32_t)arg2;
-    if (!user_ptr_valid(buf, len)) return (uint64_t)-1;
+    if (!user_range_writable(buf, len)) return (uint64_t)-1;
     int32_t n = vfs_read(fd, (void *)(uintptr_t)buf, len);
     return (uint64_t)(int64_t)n;
 }
@@ -239,7 +253,7 @@ static uint64_t sys_chan_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
     if (!t || !t->process) return (uint64_t)IRIS_ERR_INVALID_ARG;
-    if (!user_ptr_valid(arg1, (uint32_t)sizeof(struct KChanMsg)))
+    if (!user_range_readable(arg1, (uint32_t)sizeof(struct KChanMsg)))
         return (uint64_t)IRIS_ERR_INVALID_ARG;
 
     struct KObject  *obj;
@@ -261,7 +275,7 @@ static uint64_t sys_chan_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
     if (!t || !t->process) return (uint64_t)IRIS_ERR_INVALID_ARG;
-    if (!user_ptr_valid(arg1, (uint32_t)sizeof(struct KChanMsg)))
+    if (!user_range_writable(arg1, (uint32_t)sizeof(struct KChanMsg)))
         return (uint64_t)IRIS_ERR_INVALID_ARG;
 
     struct KObject  *obj;
@@ -402,7 +416,7 @@ static uint64_t sys_notify_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!n) return (uint64_t)-1;
     handle_id_t h = handle_table_insert(&t->process->handle_table,
                                         &n->base,
-                                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
+                                        RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT | RIGHT_DUPLICATE);
     if (h == HANDLE_INVALID) { knotification_free(n); return (uint64_t)-1; }
     kobject_release(&n->base); /* table now holds the reference */
     return (uint64_t)h;
@@ -433,7 +447,7 @@ static uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
     if (!t || !t->process) return (uint64_t)IRIS_ERR_INVALID_ARG;
-    if (!user_ptr_valid(arg1, (uint32_t)sizeof(uint64_t)))
+    if (!user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
         return (uint64_t)IRIS_ERR_INVALID_ARG;
 
     struct KObject  *obj;
@@ -444,7 +458,7 @@ static uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (obj->type != KOBJ_NOTIFICATION) {
         kobject_release(obj); return (uint64_t)IRIS_ERR_WRONG_TYPE;
     }
-    if (!rights_check(rights, RIGHT_READ)) {
+    if (!rights_check(rights, RIGHT_WAIT)) {
         kobject_release(obj); return (uint64_t)IRIS_ERR_ACCESS_DENIED;
     }
     uint64_t bits = 0;
@@ -487,7 +501,7 @@ static uint64_t sys_spawn(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!parent || !parent->process) return (uint64_t)IRIS_ERR_INVALID_ARG;
 
     /* Validate optional out pointer */
-    if (arg1 != 0 && !user_ptr_valid(arg1, (uint32_t)sizeof(handle_id_t)))
+    if (arg1 != 0 && !user_range_writable(arg1, (uint32_t)sizeof(handle_id_t)))
         return (uint64_t)IRIS_ERR_INVALID_ARG;
 
     /* 1. Create child task (arg0 on child stack will be patched below) */
@@ -623,13 +637,13 @@ static uint64_t sys_ns_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->process) return (uint64_t)IRIS_ERR_INVALID_ARG;
 
-    if (!user_ptr_valid(arg0, 1)) return (uint64_t)IRIS_ERR_INVALID_ARG;
+    if (!user_range_readable(arg0, 1)) return (uint64_t)IRIS_ERR_INVALID_ARG;
 
     /* Copy name from user space */
     char name[NS_NAME_LEN];
     uint32_t i = 0;
     const char *uname = (const char *)(uintptr_t)arg0;
-    while (i < NS_NAME_LEN - 1 && user_ptr_valid(arg0 + i, 1) && uname[i]) {
+    while (i < NS_NAME_LEN - 1 && user_range_readable(arg0 + i, 1) && uname[i]) {
         name[i] = uname[i]; i++;
     }
     name[i] = '\0';
@@ -660,20 +674,21 @@ static uint64_t sys_ns_lookup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t) return (uint64_t)(int64_t)IRIS_ERR_INVALID_ARG;
 
-    if (!user_ptr_valid(arg0, 1)) return (uint64_t)(int64_t)IRIS_ERR_INVALID_ARG;
+    if (!user_range_readable(arg0, 1)) return (uint64_t)(int64_t)IRIS_ERR_INVALID_ARG;
 
     /* Copy name from user space */
     char name[NS_NAME_LEN];
     uint32_t i = 0;
     const char *uname = (const char *)(uintptr_t)arg0;
-    while (i < NS_NAME_LEN - 1 && user_ptr_valid(arg0 + i, 1) && uname[i]) {
+    while (i < NS_NAME_LEN - 1 && user_range_readable(arg0 + i, 1) && uname[i]) {
         name[i] = uname[i]; i++;
     }
     name[i] = '\0';
     if (i == 0) return (uint64_t)(int64_t)IRIS_ERR_INVALID_ARG;
 
-    handle_id_t h = ns_lookup(name, t, (iris_rights_t)arg1);
-    if (h == HANDLE_INVALID) return (uint64_t)(int64_t)IRIS_ERR_NOT_FOUND;
+    handle_id_t h = HANDLE_INVALID;
+    iris_error_t r = ns_lookup(name, t, (iris_rights_t)arg1, &h);
+    if (r != IRIS_OK) return (uint64_t)(int64_t)r;
     return (uint64_t)h;
 }
 
