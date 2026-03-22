@@ -71,12 +71,20 @@
                                         *   svcmgr creates via SYS_CHAN_CREATE,
                                         *   registers, then closes its handle.
                                         *   Empty string = no reply channel.      */
+#define SVCMGR_SPAWN_OFF_IRQ       48  /* uint8_t:     hardware IRQ line to route
+                                        *   into the service channel, or 0xFF for
+                                        *   no IRQ route.  svcmgr calls
+                                        *   SYS_IRQ_ROUTE_REGISTER(irq, chan_h, proc_h)
+                                        *   after spawn to transfer route ownership
+                                        *   from svcmgr to the child process, so that
+                                        *   kprocess_teardown auto-clears the route
+                                        *   when the service exits.               */
 
 #define SVCMGR_ACK_OFF_TASK_ID    0    /* uint32_t: spawned task id        */
 #define SVCMGR_ACK_OFF_ERR        4    /* int32_t:  0=OK, <0=iris_error_t  */
 
 /* data_len values */
-#define SVCMGR_SPAWN_MSG_LEN      48u  /* 8 + 16 + 4 + 4 + 16 */
+#define SVCMGR_SPAWN_MSG_LEN      49u  /* 8 + 16 + 4 + 4 + 16 + 1 */
 #define SVCMGR_ACK_MSG_LEN        8u   /* 4 + 4 */
 
 #endif

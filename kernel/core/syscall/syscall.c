@@ -8,6 +8,7 @@
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
 #include <iris/nameserver.h>
+#include <iris/irq_routing.h>
 #include <iris/scheduler.h>
 
 /* MSR addresses */
@@ -856,6 +857,77 @@ static uint64_t sys_sleep(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return 0;
 }
 
+/* ── IRQ route management ─────────────────────────────────────────── */
+
+/*
+ * sys_irq_route_register(irq_num, chan_handle, proc_handle) → 0 or iris_error_t
+ *
+ * Routes hardware IRQ irq_num into the KChannel behind chan_handle.
+ * The route is owned by the KProcess behind proc_handle: when that
+ * process exits, kprocess_teardown → irq_routing_unregister_owner
+ * automatically clears the route.
+ *
+ * Authority: restricted to ns_authority holders (svcmgr) — same gate
+ * as SYS_NS_REGISTER.  Only the service supervisor may rewire hardware.
+ *
+ * Call this after SYS_SPAWN to transfer IRQ ownership from svcmgr to
+ * the freshly spawned service process.  The route stays active; only
+ * the responsible owner changes.
+ */
+static uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!kprocess_has_ns_authority(t->process))
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+
+    uint8_t irq_num = (uint8_t)(arg0 & 0xFFU);
+    if (irq_num >= IRQ_ROUTE_MAX) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /* Resolve and validate the channel handle */
+    struct KObject  *ch_obj;
+    iris_rights_t    ch_rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg1, &ch_obj, &ch_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (ch_obj->type != KOBJ_CHANNEL) {
+        kobject_release(ch_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(ch_rights, RIGHT_READ | RIGHT_WRITE)) {
+        kobject_release(ch_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    /* Resolve and validate the process handle (will own the route) */
+    struct KObject  *proc_obj;
+    iris_rights_t    proc_rights;
+    r = handle_table_get_object(&t->process->handle_table,
+                                (handle_id_t)arg2, &proc_obj, &proc_rights);
+    if (r != IRIS_OK) {
+        kobject_release(ch_obj);
+        return syscall_err(r);
+    }
+    if (proc_obj->type != KOBJ_PROCESS) {
+        kobject_release(ch_obj);
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(proc_rights, RIGHT_READ)) {
+        kobject_release(ch_obj);
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    /* irq_routing_register retains ch on its own; proc is an unretained owner
+     * pointer — safe because kprocess_teardown calls unregister_owner before
+     * the process object is freed. */
+    irq_routing_register(irq_num, (struct KChannel *)ch_obj,
+                         (struct KProcess *)proc_obj);
+    kobject_release(ch_obj);
+    kobject_release(proc_obj);
+    return syscall_err(IRIS_OK);
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
 
                           uint64_t arg1, uint64_t arg2) {
@@ -884,6 +956,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_NS_REGISTER:     return sys_ns_register(arg0, arg1, arg2);
         case SYS_NS_LOOKUP:       return sys_ns_lookup(arg0, arg1, arg2);
         case SYS_PROCESS_STATUS:  return sys_process_status(arg0, arg1, arg2);
+        case SYS_IRQ_ROUTE_REGISTER: return sys_irq_route_register(arg0, arg1, arg2);
         default:
             serial_write("[SYSCALL] unknown syscall=");
             serial_write_dec(num);

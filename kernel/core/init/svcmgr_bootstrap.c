@@ -181,6 +181,11 @@ void svcmgr_bootstrap_init(void) {
             msg.data[SVCMGR_SPAWN_OFF_REPLY_NAME + 8] = 'y';
             msg.data[SVCMGR_SPAWN_OFF_REPLY_NAME + 9] = 0;
 
+            /* IRQ line: 1 = PS/2 keyboard.  svcmgr calls SYS_IRQ_ROUTE_REGISTER
+             * after spawn to transfer route ownership from svcmgr to kbd_server's
+             * KProcess, enabling kprocess_teardown to auto-clear the route. */
+            msg.data[SVCMGR_SPAWN_OFF_IRQ] = 1;
+
             msg.data_len = SVCMGR_SPAWN_MSG_LEN;
 
             iris_error_t sr = kchannel_send(svcmgr_bootstrap_ch, &msg);

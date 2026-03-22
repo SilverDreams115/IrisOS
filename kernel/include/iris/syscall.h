@@ -83,6 +83,15 @@
                                   *   Requires RIGHT_READ on proc_handle.
                                   *   Returns 0 when the process has called SYS_EXIT or been
                                   *   reaped; the handle itself remains valid for closing. */
+#define SYS_IRQ_ROUTE_REGISTER 27 /* (irq_num, chan_handle, proc_handle) → 0 or negative iris_error_t
+                                   *   Routes hardware IRQ irq_num into chan_handle, owned by
+                                   *   proc_handle.  When proc_handle's process exits,
+                                   *   kprocess_teardown auto-clears the route via
+                                   *   irq_routing_unregister_owner.
+                                   *   Requires ns_authority (restricted to svcmgr).
+                                   *   irq_num must be < IRQ_ROUTE_MAX.
+                                   *   chan_handle must be KOBJ_CHANNEL with RIGHT_READ|RIGHT_WRITE.
+                                   *   proc_handle must be KOBJ_PROCESS with RIGHT_READ. */
 
 /*
  * Bootstrap service discovery — ABI is modern/conforming (iris_error_t).
