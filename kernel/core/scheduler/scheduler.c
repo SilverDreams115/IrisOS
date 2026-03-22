@@ -54,22 +54,29 @@ static void task_reset_slot(struct task *t) {
 static void unlink_task(struct task *t) {
     if (!t || !task_list_head) return;
 
-    struct task *prev = task_list_head;
-    struct task *cur = task_list_head;
+    /* Single-node circular list: t is the only element. */
+    if (task_list_head == t && t->next == t) {
+        task_list_head = 0;
+        t->next = 0;
+        return;
+    }
+
+    /* Find the predecessor (node whose ->next == t).
+     * This correctly handles head removal (predecessor is the tail)
+     * and non-head removal (predecessor is an interior node). */
+    struct task *pred = task_list_head;
     do {
-        if (cur == t) {
-            if (cur == prev) {
-                return;
-            }
-            prev->next = cur->next;
-            if (task_list_head == cur)
-                task_list_head = cur->next;
-            cur->next = 0;
+        if (pred->next == t) {
+            pred->next = t->next;
+            if (task_list_head == t)
+                task_list_head = t->next;
+            t->next = 0;
             return;
         }
-        prev = cur;
-        cur = cur->next;
-    } while (cur && cur != task_list_head);
+        pred = pred->next;
+    } while (pred && pred != task_list_head);
+
+    /* t not found in list — no-op (safe, no corruption). */
 }
 
 static void reap_dead_task_after_switch_prep(struct task *t) {

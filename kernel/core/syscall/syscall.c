@@ -1,7 +1,6 @@
 #include <iris/syscall.h>
 #include <iris/task.h>
 #include <iris/pmm.h>
-#include <iris/svcmgr_bootstrap.h>
 #include <iris/nc/kchannel.h>
 #include <iris/nc/kvmo.h>
 #include <iris/nc/knotification.h>
@@ -746,8 +745,10 @@ static uint64_t sys_ns_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    /* Authority check: only svcmgr may register services. */
-    if (t->process != svcmgr_get_process())
+    /* Authority check: only the process granted ns_authority at bootstrap
+     * may register services.  Authority is a flag on the KProcess object;
+     * we do not compare against an external global process pointer. */
+    if (!kprocess_has_ns_authority(t->process))
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
 
     if (!user_range_readable(arg0, 1)) return syscall_err(IRIS_ERR_INVALID_ARG);

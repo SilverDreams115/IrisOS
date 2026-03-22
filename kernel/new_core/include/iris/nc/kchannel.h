@@ -5,8 +5,9 @@
 #include <iris/nc/error.h>
 #include <stdint.h>
 
-#define KCHAN_CAPACITY  16
-#define KCHAN_DATA_SIZE 64
+#define KCHAN_CAPACITY      16  /* messages per channel ring buffer */
+#define KCHAN_DATA_SIZE     64  /* bytes of payload per KChanMsg */
+#define KCHANNEL_POOL_SIZE  32  /* maximum live KChannel objects system-wide */
 
 struct KChanMsg {
     uint32_t type;

@@ -6,7 +6,9 @@
 
 struct KProcess;
 
-/* Maps hardware IRQ lines (0-15) to KChannel objects.
+#define IRQ_ROUTE_MAX 16  /* maximum routable hardware IRQ lines (0..IRQ_ROUTE_MAX-1) */
+
+/* Maps hardware IRQ lines (0-IRQ_ROUTE_MAX-1) to KChannel objects.
  * When a registered IRQ fires, the kernel sends a KChanMsg with
  * data[0] = scancode/byte into the channel instead of invoking the
  * in-kernel driver.  User-space servers receive via SYS_CHAN_RECV. */
