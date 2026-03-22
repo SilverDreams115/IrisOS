@@ -28,8 +28,11 @@ struct KProcess;
  *
  * ── What this is NOT ─────────────────────────────────────────────
  *   - Not a service supervisor: no restart, health-check, or policy.
- *   - Not access-controlled: any process can call SYS_NS_REGISTER;
- *     there is no "register capability" to restrict who may publish.
+ *   - Not open-access: SYS_NS_REGISTER is restricted at the syscall
+ *     layer to the process holding ns_authority (set on svcmgr at
+ *     bootstrap).  This is transitional kernel-enforced policy; the
+ *     final architecture moves all registration policy out of the
+ *     kernel.  See KProcess.ns_authority and kprocess_has_ns_authority().
  *   - Not a capability discovery protocol: lookup returns a handle
  *     but there is no typing or interface versioning.
  *   - Not the final naming architecture: NS_NAME_LEN=16 and the flat

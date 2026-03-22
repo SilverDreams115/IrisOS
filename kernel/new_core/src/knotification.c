@@ -2,9 +2,8 @@
 #include <iris/task.h>
 #include <stdint.h>
 
-#define POOL_SIZE 32
-static struct KNotification pool[POOL_SIZE];
-static uint8_t              pool_used[POOL_SIZE];
+static struct KNotification pool[KNOTIF_POOL_SIZE];
+static uint8_t              pool_used[KNOTIF_POOL_SIZE];
 
 static void knotification_close(struct KObject *obj) {
     struct KNotification *n = (struct KNotification *)obj;
@@ -20,7 +19,7 @@ static void knotification_close(struct KObject *obj) {
 static void knotification_destroy(struct KObject *obj) {
     knotification_close(obj);
     struct KNotification *n = (struct KNotification *)obj;
-    for (int i = 0; i < POOL_SIZE; i++) {
+    for (int i = 0; i < KNOTIF_POOL_SIZE; i++) {
         if (&pool[i] == n) { pool_used[i] = 0; return; }
     }
 }
@@ -31,7 +30,7 @@ static const struct KObjectOps knotification_ops = {
 };
 
 struct KNotification *knotification_alloc(void) {
-    for (int i = 0; i < POOL_SIZE; i++) {
+    for (int i = 0; i < KNOTIF_POOL_SIZE; i++) {
         if (!pool_used[i]) {
             pool_used[i] = 1;
             struct KNotification *n = &pool[i];

@@ -4,18 +4,17 @@
 #include <iris/nc/kprocess.h>
 #include <iris/nc/spinlock.h>
 
-#define IRQ_MAX 16
 struct irq_route_entry {
     struct KChannel *ch;
     struct KProcess *owner;
 };
 
-static struct irq_route_entry irq_table[IRQ_MAX];
+static struct irq_route_entry irq_table[IRQ_ROUTE_MAX];
 static spinlock_t irq_lock;
 
 void irq_routing_init(void) {
     spinlock_init(&irq_lock);
-    for (int i = 0; i < IRQ_MAX; i++) {
+    for (int i = 0; i < IRQ_ROUTE_MAX; i++) {
         irq_table[i].ch = 0;
         irq_table[i].owner = 0;
     }
@@ -23,7 +22,7 @@ void irq_routing_init(void) {
 
 void irq_routing_register(uint8_t irq, struct KChannel *ch, struct KProcess *owner) {
     struct KChannel *old = 0;
-    if (irq >= IRQ_MAX) return;
+    if (irq >= IRQ_ROUTE_MAX) return;
     if (ch) {
         kobject_retain(&ch->base);
         kobject_active_retain(&ch->base);
@@ -43,7 +42,7 @@ void irq_routing_register(uint8_t irq, struct KChannel *ch, struct KProcess *own
 
 int32_t irq_routing_signal(uint8_t irq, uint8_t data_byte) {
     struct KChannel *ch = 0;
-    if (irq >= IRQ_MAX) return -1;
+    if (irq >= IRQ_ROUTE_MAX) return -1;
 
     spinlock_lock(&irq_lock);
     ch = irq_table[irq].ch;
@@ -71,7 +70,7 @@ int32_t irq_routing_signal(uint8_t irq, uint8_t data_byte) {
 void irq_routing_unregister_owner(struct KProcess *owner) {
     if (!owner) return;
 
-    for (int i = 0; i < IRQ_MAX; i++) {
+    for (int i = 0; i < IRQ_ROUTE_MAX; i++) {
         struct KChannel *old = 0;
         spinlock_lock(&irq_lock);
         if (irq_table[i].owner == owner) {

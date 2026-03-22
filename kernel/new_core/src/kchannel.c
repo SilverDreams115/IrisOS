@@ -2,9 +2,8 @@
 #include <iris/task.h>
 #include <stdint.h>
 
-#define POOL_SIZE 32
-static struct KChannel pool[POOL_SIZE];
-static uint8_t         pool_used[POOL_SIZE];
+static struct KChannel pool[KCHANNEL_POOL_SIZE];
+static uint8_t         pool_used[KCHANNEL_POOL_SIZE];
 
 static void kchannel_close(struct KObject *obj) {
     struct KChannel *ch = (struct KChannel *)obj;
@@ -20,7 +19,7 @@ static void kchannel_close(struct KObject *obj) {
 static void kchannel_destroy(struct KObject *obj) {
     kchannel_close(obj);
     struct KChannel *ch = (struct KChannel *)obj;
-    for (int i = 0; i < POOL_SIZE; i++) {
+    for (int i = 0; i < KCHANNEL_POOL_SIZE; i++) {
         if (&pool[i] == ch) { pool_used[i] = 0; return; }
     }
 }
@@ -31,7 +30,7 @@ static const struct KObjectOps kchannel_ops = {
 };
 
 struct KChannel *kchannel_alloc(void) {
-    for (int i = 0; i < POOL_SIZE; i++) {
+    for (int i = 0; i < KCHANNEL_POOL_SIZE; i++) {
         if (!pool_used[i]) {
             pool_used[i] = 1;
             struct KChannel *ch = &pool[i];

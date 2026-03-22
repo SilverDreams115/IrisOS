@@ -65,7 +65,7 @@ COMMON_WARNINGS := -Wall -Wextra -Wshadow -Wundef
 UEFI_DEFINES    := -DEFI_DEBUG=0 -DEFI_DEBUG_CLEAR_MEMORY=0
 
 UEFI_CFLAGS    := -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone -fpic $(COMMON_WARNINGS) $(UEFI_DEFINES) $(UEFI_INCLUDES)
-KERNEL_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone $(COMMON_WARNINGS) $(KERNEL_INCLUDES)
+KERNEL_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone $(COMMON_WARNINGS) $(KERNEL_INCLUDES) -DIRIS_ENABLE_IPC_DEMO
 KERNEL_ASFLAGS := -ffreestanding -fno-pic -fno-pie -mno-red-zone $(KERNEL_INCLUDES)
 
 EFI_LIBDIR_FLAGS := -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/x86_64-linux-gnu/gnuefi

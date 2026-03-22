@@ -41,15 +41,12 @@
 static struct KChannel *svcmgr_bootstrap_ch = 0;
 
 /*
- * KProcess of the service manager, set once by svcmgr_bootstrap_init().
- * Used by sys_ns_register to restrict SYS_NS_REGISTER to svcmgr only.
- * See svcmgr_bootstrap.h for the authority model contract.
+ * NS authority is no longer tracked via a module-global pointer.
+ * Authority is granted by setting KProcess.ns_authority = 1 on the
+ * svcmgr process via kprocess_set_ns_authority().
+ * sys_ns_register checks kprocess_has_ns_authority(t->process) directly.
+ * svcmgr_get_process() has been removed from the public interface.
  */
-static struct KProcess *svcmgr_proc = 0;
-
-struct KProcess *svcmgr_get_process(void) {
-    return svcmgr_proc;
-}
 
 void svcmgr_bootstrap_init(void) {
     struct KChannel *ch = kchannel_alloc();
@@ -69,6 +66,12 @@ void svcmgr_bootstrap_init(void) {
     handle_id_t h = handle_table_insert(&sm->process->handle_table,
                                         &ch->base,
                                         RIGHT_READ | RIGHT_WRITE);
+    if (h == HANDLE_INVALID) {
+        serial_write("[IRIS][SVCMGR] FATAL: bootstrap handle insert failed — aborting spawn\n");
+        task_abort_spawned_user(sm);
+        kobject_release(&ch->base);
+        return;
+    }
     task_set_bootstrap_arg0(sm, (uint64_t)h);
 
     /*
@@ -80,11 +83,13 @@ void svcmgr_bootstrap_init(void) {
     svcmgr_bootstrap_ch = ch;
 
     /*
-     * Record svcmgr's KProcess for NS authority enforcement.
-     * sys_ns_register will reject callers whose process != svcmgr_proc.
+     * Grant NS registration authority to svcmgr's KProcess.
+     * sys_ns_register calls kprocess_has_ns_authority(t->process).
      * Set before any task_yield so it is visible before svcmgr runs.
+     * Authority is a property of the KProcess object, not of a global
+     * pointer — no stale-reference risk if svcmgr is ever restarted.
      */
-    svcmgr_proc = sm->process;
+    kprocess_set_ns_authority(sm->process);
 
     serial_write("[IRIS][SVCMGR] service manager spawned, id=");
     serial_write_dec(sm->id);

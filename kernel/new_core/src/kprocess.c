@@ -5,9 +5,8 @@
 #include <iris/pmm.h>
 #include <stdint.h>
 
-#define POOL_SIZE 16
-static struct KProcess pool[POOL_SIZE];
-static uint8_t         pool_used[POOL_SIZE];
+static struct KProcess pool[KPROCESS_POOL_SIZE];
+static uint8_t         pool_used[KPROCESS_POOL_SIZE];
 
 static void kprocess_destroy(struct KObject *obj) {
     struct KProcess *p = (struct KProcess *)obj;
@@ -21,7 +20,7 @@ static void kprocess_destroy(struct KObject *obj) {
         kprocess_reap_address_space(p);
     }
 
-    for (int i = 0; i < POOL_SIZE; i++) {
+    for (int i = 0; i < KPROCESS_POOL_SIZE; i++) {
         if (&pool[i] == p) { pool_used[i] = 0; return; }
     }
 }
@@ -31,7 +30,7 @@ static const struct KObjectOps kprocess_ops = {
 };
 
 struct KProcess *kprocess_alloc(void) {
-    for (int i = 0; i < POOL_SIZE; i++) {
+    for (int i = 0; i < KPROCESS_POOL_SIZE; i++) {
         if (!pool_used[i]) {
             pool_used[i] = 1;
             struct KProcess *p = &pool[i];

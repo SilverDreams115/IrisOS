@@ -26,6 +26,8 @@
  *     sees bits > 0 when it retries.
  */
 
+#define KNOTIF_POOL_SIZE 32  /* maximum live KNotification objects system-wide */
+
 struct task; /* forward */
 
 struct KNotification {

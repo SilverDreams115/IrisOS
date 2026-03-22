@@ -19,8 +19,10 @@
 #include <iris/nameserver.h>
 /* transicional bootstrap helpers */
 #include <iris/svcmgr_bootstrap.h>
-/* legacy demo (retire with ipc.c/ipc.h) */
+/* legacy demo — only included when IRIS_ENABLE_IPC_DEMO is defined */
+#ifdef IRIS_ENABLE_IPC_DEMO
 #include <iris/ipc_demo.h>
+#endif
 
 #define FB_ORANGE 0x00FF8800
 
@@ -144,7 +146,12 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     /* ── 7. Scheduler + demo tasks (legacy) ─────────────────────── */
     serial_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
-    ipc_demo_start();   /* legacy demo — retire with ipc.c/ipc.h */
+#ifdef IRIS_ENABLE_IPC_DEMO
+    /* Legacy producer/consumer IPC demo.  Gated so the real boot path
+     * can run without demo noise.  Remove IRIS_ENABLE_IPC_DEMO from
+     * KERNEL_CFLAGS in the Makefile to disable. */
+    ipc_demo_start();
+#endif
 
     /* ── 8. Bootstrap transicional: service wiring ──────────────── */
     svcmgr_bootstrap_init(); /* spawn svcmgr + queue kbd spawn request */
