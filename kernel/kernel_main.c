@@ -220,48 +220,60 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     scheduler_add_task(task_consumer);
     serial_write("[IRIS][SCHED] producer + consumer created\n");
 
-    /* keyboard server: ring-3 task that receives IRQ1 via KChannel handle */
+    /* keyboard server: ring-3 task with request/response channels */
     {
-        struct KChannel *kbd_ch = kchannel_alloc();
-        if (kbd_ch) {
-            irq_routing_register(1, kbd_ch);
+        struct KChannel *kbd_req = kchannel_alloc();
+        struct KChannel *kbd_rsp = kchannel_alloc();
+        if (kbd_req && kbd_rsp) {
+            irq_routing_register(1, kbd_req);
 
             /* Spawn the server first so its handle table is ready */
             extern void kbd_server(void);
             /* Pass handle=0 temporarily; we'll fix it after inserting into table */
             struct task *ks = task_spawn_user((uint64_t)(uintptr_t)kbd_server, 0);
             if (ks) {
-                /* Insert KChannel into kbd_server's handle table */
+                /* Insert request channel into kbd_server's handle table */
                 handle_id_t h = handle_table_insert(&ks->process->handle_table,
-                                                    &kbd_ch->base,
+                                                    &kbd_req->base,
                                                     RIGHT_READ | RIGHT_WRITE);
-                /* Patch arg0 on child's user stack using the physical address
-                 * directly — ks->process->cr3 is not active here so paging_virt_to_phys
-                 * would walk the wrong page table. ustack_phys is identity-mapped. */
-                *(uint64_t *)(uintptr_t)(ks->ustack_phys + USER_STACK_SIZE - 8) = (uint64_t)h;
+                /* Bootstrap the request handle in RBX as well.
+                 * Use the shared bootstrap helper so services don't need
+                 * one-off stack/register patching paths. */
+                task_set_bootstrap_arg0(ks, (uint64_t)h);
 
-                iris_error_t nsr = ns_register("kbd", &kbd_ch->base,
-                                               RIGHT_READ | RIGHT_WRITE);
+                iris_error_t ns_req = ns_register("kbd", &kbd_req->base, RIGHT_WRITE);
+                iris_error_t ns_rsp = ns_register("kbd.reply", &kbd_rsp->base,
+                                                  RIGHT_READ | RIGHT_WRITE);
 
                 serial_write("[IRIS][KBD-SRV] keyboard server spawned, id=");
                 serial_write_dec(ks->id);
                 serial_write(", handle=");
                 serial_write_dec((uint64_t)h);
                 serial_write("\n");
-                if (nsr == IRIS_OK) {
+                if (ns_req == IRIS_OK) {
                     serial_write("[IRIS][NS] registered service 'kbd'\n");
                 } else {
                     serial_write("[IRIS][NS] WARN: could not register 'kbd', err=");
-                    serial_write_dec((uint64_t)(int64_t)nsr);
+                    serial_write_dec((uint64_t)(int64_t)ns_req);
+                    serial_write("\n");
+                }
+                if (ns_rsp == IRIS_OK) {
+                    serial_write("[IRIS][NS] registered service 'kbd.reply'\n");
+                } else {
+                    serial_write("[IRIS][NS] WARN: could not register 'kbd.reply', err=");
+                    serial_write_dec((uint64_t)(int64_t)ns_rsp);
                     serial_write("\n");
                 }
             } else {
                 serial_write("[IRIS][KBD-SRV] WARN: could not spawn keyboard server\n");
             }
-            /* Release our local reference — the table and routing table hold theirs */
-            kobject_release(&kbd_ch->base);
+            /* Release local references — the table / nameserver / routing table hold theirs */
+            kobject_release(&kbd_req->base);
+            kobject_release(&kbd_rsp->base);
         } else {
-            serial_write("[IRIS][KBD-SRV] WARN: could not allocate KChannel\n");
+            serial_write("[IRIS][KBD-SRV] WARN: could not allocate KChannel pair\n");
+            if (kbd_req) kobject_release(&kbd_req->base);
+            if (kbd_rsp) kobject_release(&kbd_rsp->base);
         }
     }
 
