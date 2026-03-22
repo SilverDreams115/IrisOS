@@ -10,6 +10,7 @@
 typedef struct {
     char          name[NS_NAME_LEN];
     struct KObject *obj;
+    struct KProcess *owner;
     iris_rights_t  rights;
     uint8_t        used;
 } NsEntry;
@@ -43,13 +44,14 @@ void ns_init(void) {
     for (int i = 0; i < NS_MAX_ENTRIES; i++) {
         ns_table[i].used    = 0;
         ns_table[i].obj     = 0;
+        ns_table[i].owner   = 0;
         ns_table[i].rights  = 0;
         ns_table[i].name[0] = '\0';
     }
 }
 
 iris_error_t ns_register(const char *name, struct KObject *obj,
-                          iris_rights_t rights) {
+                          iris_rights_t rights, struct KProcess *owner) {
     if (!name || !obj) return IRIS_ERR_INVALID_ARG;
     if (ns_strnlen(name, NS_NAME_LEN) >= NS_NAME_LEN)
         return IRIS_ERR_INVALID_ARG;
@@ -68,6 +70,7 @@ iris_error_t ns_register(const char *name, struct KObject *obj,
             ns_strncpy(ns_table[i].name, name, NS_NAME_LEN);
             kobject_retain(obj);
             ns_table[i].obj    = obj;
+            ns_table[i].owner  = owner;
             ns_table[i].rights = rights;
             ns_table[i].used   = 1;
             spinlock_unlock(&ns_lock);
@@ -110,6 +113,7 @@ iris_error_t ns_unregister(const char *name) {
         if (ns_table[i].used && ns_strcmp(ns_table[i].name, name) == 0) {
             kobject_release(ns_table[i].obj);
             ns_table[i].obj     = 0;
+            ns_table[i].owner   = 0;
             ns_table[i].used    = 0;
             ns_table[i].name[0] = '\0';
             spinlock_unlock(&ns_lock);
@@ -119,4 +123,20 @@ iris_error_t ns_unregister(const char *name) {
 
     spinlock_unlock(&ns_lock);
     return IRIS_ERR_NOT_FOUND;
+}
+
+void ns_unregister_owner(struct KProcess *owner) {
+    if (!owner) return;
+
+    spinlock_lock(&ns_lock);
+    for (int i = 0; i < NS_MAX_ENTRIES; i++) {
+        if (!ns_table[i].used || ns_table[i].owner != owner) continue;
+        kobject_release(ns_table[i].obj);
+        ns_table[i].obj     = 0;
+        ns_table[i].owner   = 0;
+        ns_table[i].rights  = 0;
+        ns_table[i].used    = 0;
+        ns_table[i].name[0] = '\0';
+    }
+    spinlock_unlock(&ns_lock);
 }
