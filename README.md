@@ -85,12 +85,12 @@ What is already true:
 - services are spawned and registered by `svcmgr`, not by the kernel directly
 - `kbd.reply` is created and registered by `svcmgr` before `kbd_server` is spawned — no kernel-side pre-registration
 - IRQ routes carry a `KProcess` owner; `kprocess_teardown` calls `irq_routing_unregister_owner` automatically
-- `svcmgr` tracks spawned process handles in a service slot for lifecycle polling; handles are closed when death is detected or when the slot is full (single-slot limit: documented transitional constraint)
-- `SYS_PROCESS_STATUS` allows non-blocking process state queries; svcmgr polls at every recv-loop iteration
+- `svcmgr` tracks up to 4 spawned service handles in a slot table (proc_h + irq_num + name per slot); lifecycle poll at every recv-loop iteration; dead slots are closed and cleared
+- `SYS_PROCESS_STATUS` allows non-blocking process state queries; svcmgr polls all slots at every recv-loop iteration
+- `SYS_IRQ_ROUTE_REGISTER` transfers IRQ route ownership from `svcmgr` to the spawned service's `KProcess`; when the service exits, `kprocess_teardown` clears the route automatically — lifecycle cleanup follows the actual service process, not the supervisor
 
 What is still pending:
 
-- IRQ routing owner should ultimately be the service's own `KProcess`, not `svcmgr`; requires a future `SYS_IRQ_ROUTE_REGISTER` syscall
 - broader migration of services out of the kernel
 - a cleaner root-handle/capability structure beyond the current bootstrap arg0 path
 - more formal service protocols beyond the first minimal request/response contracts
@@ -220,6 +220,7 @@ Current syscall numbers exposed in `kernel/include/iris/syscall.h`:
 | 24 | `SYS_NS_REGISTER` | Register named service (restricted to `svcmgr`; returns `ACCESS_DENIED` for all other callers) |
 | 25 | `SYS_NS_LOOKUP` | Look up named service and receive handle |
 | 26 | `SYS_PROCESS_STATUS` | Non-blocking query: returns 1 (alive), 0 (dead), or negative error. Requires `RIGHT_READ` on proc handle. |
+| 27 | `SYS_IRQ_ROUTE_REGISTER` | Transfer IRQ route ownership to a process handle. Restricted to `svcmgr`. When the owning process exits, `kprocess_teardown` clears the route automatically. |
 
 ---
 
@@ -232,7 +233,7 @@ Recent validation on the current tree confirms:
 - `svcmgr` starts in ring 3, self-registers as `"svcmgr"`, and processes spawn requests
 - `svcmgr` creates and registers `kbd.reply` before spawning `kbd_server`
 - `svcmgr` spawns `kbd_server` and registers `"kbd"` via `SYS_NS_REGISTER`
-- IRQ 1 is routed to `kbd`'s channel with `svcmgr`'s `KProcess` as owner
+- IRQ 1 is routed to `kbd`'s channel; after spawn, `SYS_IRQ_ROUTE_REGISTER` transfers ownership to `kbd_server`'s `KProcess`
 - `user_init` runs in ring 3 and successfully looks up both `kbd` and `kbd.reply`
 - `kbd_server` receives `KBD_OP_HELLO` and replies correctly
 - `kbd_server` receives `KBD_OP_GET_STATUS` and replies correctly
@@ -271,14 +272,15 @@ Completed in the current stabilization batch:
 - IRQ routing with real process-scoped ownership and automatic cleanup
 - `SYS_PROCESS_STATUS` (syscall 26): non-blocking process lifecycle query
 - svcmgr polls spawned service state at every recv-loop iteration; detects and cleans up dead services
+- svcmgr multi-slot supervision table (4 slots: proc_h + irq_num + service name per slot)
+- `SYS_IRQ_ROUTE_REGISTER` (syscall 27): transfers IRQ route ownership from svcmgr to the spawned service's `KProcess`; route is cleared automatically on service exit via `kprocess_teardown`
 
 Short-term priorities:
 
-1. assign IRQ route ownership to the service's own `KProcess` rather than `svcmgr` (requires `SYS_IRQ_ROUTE_REGISTER` or equivalent)
-2. define and retire the VFS transitional surface (`SYS_OPEN/READ/CLOSE`) and `SYS_BRK` transitional path
-3. formalize service lifecycle beyond spawn: detection of service death and optional restart
-4. improve bootstrap root capability structure beyond the current `arg0/%rbx` contract
-5. migrate additional compiled-in services out of the kernel and into the svcmgr spawn model
+1. define and retire the VFS transitional surface (`SYS_OPEN/READ/CLOSE`) and `SYS_BRK` transitional path
+2. formalize service lifecycle beyond spawn: detection of service death and optional restart
+3. improve bootstrap root capability structure beyond the current `arg0/%rbx` contract
+4. migrate additional compiled-in services out of the kernel and into the svcmgr spawn model
 
 Non-goals for the immediate next step:
 
