@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+struct KProcess;
+
 #define TASK_MAX         16
 #define TASK_STACK_SIZE  8192    /* kernel stack per task */
 #define TASK_DEFAULT_SLICE   10      /* ticks per quantum at 100 Hz = 100ms */
@@ -10,20 +12,29 @@
 typedef enum {
     TASK_READY,
     TASK_RUNNING,
-    TASK_BLOCKED,
+    TASK_BLOCKED,       /* generic blocked — legacy, avoid for new code */
+    TASK_BLOCKED_IPC,   /* blocked waiting for an IPC message or KChannel recv */
+    TASK_BLOCKED_IRQ,   /* blocked waiting for a KNotification signal */
+    TASK_SLEEPING,      /* blocked until a timer tick count is reached */
     TASK_DEAD,
 } task_state_t;
+
+/* Helper: true when task is runnable (may be scheduled) */
+static inline int task_is_runnable(task_state_t s) {
+    return s == TASK_READY || s == TASK_RUNNING;
+}
 
 typedef enum {
     TASK_RING0 = 0,   /* kernel task */
     TASK_RING3 = 3,   /* user task */
 } task_ring_t;
 
-/* saved kernel-mode registers (callee-saved + rip) */
+/* saved kernel-mode registers (callee-saved + rip + rflags) */
 struct cpu_context {
     uint64_t r15, r14, r13, r12;
     uint64_t rbx, rbp;
     uint64_t rip;
+    uint64_t rflags;   /* IF state per-task — prevents IRQ preemption contamination */
 } __attribute__((packed));
 
 struct task {
@@ -42,14 +53,14 @@ struct task {
     uint64_t          user_stack_base; /* virtual base of user stack region */
     uint64_t          user_stack_top;  /* virtual top of user stack region */
     uint32_t          user_stack_pages; /* number of pages allocated */
-
-    /* page table root (CR3) — 0 = use kernel page table */
-    uint64_t          cr3;
+    uint64_t          ustack_phys;     /* physical base of user stack (identity-mapped) */
+    struct KProcess  *process;         /* owning process; NULL for kernel tasks */
 
     /* cooperative scheduler quantum */
     uint32_t          time_slice;   /* ticks per quantum (default TASK_DEFAULT_SLICE) */
     uint32_t          ticks_left;   /* ticks remaining before need_resched */
     uint32_t          need_resched; /* set by scheduler_tick when ticks_left hits 0 */
+    uint64_t          wake_tick;    /* valid when state == TASK_SLEEPING */
 
     struct task      *next;
 };
@@ -57,6 +68,7 @@ struct task {
 void         task_init(void);
 struct task *task_create(void (*entry)(void));
 struct task *task_create_user(uint64_t entry);
+struct task *task_spawn_user(uint64_t entry, uint64_t arg0);
 void         task_yield(void);
 struct task *task_current(void);
 

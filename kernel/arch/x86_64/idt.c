@@ -2,6 +2,8 @@
 #include <iris/pic.h>
 #include <iris/keyboard.h>
 #include <iris/scheduler.h>
+#include <iris/task.h>
+#include <iris/irq_routing.h>
 #include <stdint.h>
 
 #define IDT_ENTRIES        256
@@ -45,6 +47,12 @@ DECLARE_ISR(24) DECLARE_ISR(25) DECLARE_ISR(26) DECLARE_ISR(27)
 DECLARE_ISR(28) DECLARE_ISR(29) DECLARE_ISR(30) DECLARE_ISR(31)
 extern void isr32(void); /* IRQ0 — timer */
 extern void isr33(void); /* IRQ1 — keyboard */
+/* IRQ2-15: cubiertos para no triple-faultear ante IRQs espurios/inesperados */
+extern void isr34(void); extern void isr35(void); extern void isr36(void);
+extern void isr37(void); extern void isr38(void); extern void isr39(void);
+extern void isr40(void); extern void isr41(void); extern void isr42(void);
+extern void isr43(void); extern void isr44(void); extern void isr45(void);
+extern void isr46(void); extern void isr47(void);
 
 extern void idt_flush(uint64_t idtr_addr);
 
@@ -109,16 +117,34 @@ static void panic_hex(uint64_t v) {
 
 void isr_handler(struct full_frame *frame) {
     if (frame->vector == 32) {
-        /* IRQ0 — timer tick (cooperative scheduler: no forced preemption here).
-         * scheduler_tick() only increments a counter for future use. */
+        /* IRQ0 — timer tick. Enviar EOI primero para no bloquear el PIC. */
         pic_eoi(0);
         scheduler_tick();
+        /* Preemptive: si el quantum expiró, yield desde el contexto del IRQ.
+         * RFLAGS se salva/restaura en context_switch para cada tarea. */
+        struct task *ct = task_current();
+        if (ct && ct->need_resched)
+            task_yield();
         return;
     }
     if (frame->vector == 33) {
-        /* IRQ1 — PS/2 keyboard */
-        kbd_irq_handler();
+        /* IRQ1 — PS/2 keyboard: read scancode, route to user server or kernel driver */
+        uint8_t sc = inb_direct(0x60);
+        if (irq_routing_signal(1, sc) < 0) {
+            /* no channel registered — fall back to in-kernel driver */
+            kbd_irq_handler();
+        }
         pic_eoi(1);
+        return;
+    }
+
+    if (frame->vector >= 34 && frame->vector <= 47) {
+        uint8_t irq = (uint8_t)(frame->vector - 32);
+        /* IRQ7 (v39) y IRQ15 (v47) pueden ser espurios del PIC.
+         * Para IRQ15 espurio hay que enviar EOI solo al PIC1, no al PIC2.
+         * Por ahora descartamos ambos sin EOI al slave; el resto recibe EOI. */
+        if (irq != 7 && irq != 15)
+            pic_eoi(irq);
         return;
     }
 
@@ -151,9 +177,21 @@ void idt_init(void) {
     for (int i = 0; i < 32; i++)
         idt_set_entry(i, isrs[i]);
 
+    /* Use IST1 for faults that can happen during CPL3 transition.
+     * This prevents blind triple-fault resets and lets us print the real exception. */
+    idt[8].ist  = 1;   /* Double Fault */
+    idt[13].ist = 1;   /* General Protection Fault */
+    idt[14].ist = 1;   /* Page Fault */
+
     /* IRQ0 — timer, IRQ1 — keyboard */
     idt_set_entry(32, isr32);
     idt_set_entry(33, isr33);
+    /* IRQ2-15: handlers genéricos para PIC completo */
+    idt_set_entry(34, isr34); idt_set_entry(35, isr35); idt_set_entry(36, isr36);
+    idt_set_entry(37, isr37); idt_set_entry(38, isr38); idt_set_entry(39, isr39);
+    idt_set_entry(40, isr40); idt_set_entry(41, isr41); idt_set_entry(42, isr42);
+    idt_set_entry(43, isr43); idt_set_entry(44, isr44); idt_set_entry(45, isr45);
+    idt_set_entry(46, isr46); idt_set_entry(47, isr47);
 
     idtr.size   = sizeof(idt) - 1;
     idtr.offset = (uint64_t)(uintptr_t)&idt;
