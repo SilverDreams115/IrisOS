@@ -43,6 +43,7 @@ struct gdt_descriptor {
 
 /* TSS instance */
 static struct tss kernel_tss;
+static uint8_t fault_ist1_stack[16384] __attribute__((aligned(16)));
 
 static struct gdt_entry   gdt[GDT_ENTRIES];
 static struct gdt_descriptor gdtr;
@@ -98,10 +99,9 @@ void gdt_init(void) {
         GDT_PRESENT | GDT_DPL3 | GDT_DATA_SEG | GDT_RW,
         GDT_GRANULAR);
 
-    /* 5-6: TSS (16 bytes) */
-    for (uint32_t i = 0; i < sizeof(struct tss); i++)
-        ((uint8_t *)&kernel_tss)[i] = 0;
+    /* 5-6: TSS (16 bytes) — kernel_tss is static so already zero */
     kernel_tss.iopb_offset = sizeof(struct tss); /* no IO ports accessible from ring 3 */
+    kernel_tss.ist[0] = (uint64_t)(uintptr_t)(fault_ist1_stack + sizeof(fault_ist1_stack)); /* IST1 for #DF/#GP/#PF */
 
     gdt_set_tss((uint64_t)(uintptr_t)&kernel_tss, sizeof(struct tss) - 1);
 
@@ -114,6 +114,11 @@ void gdt_init(void) {
 
 void tss_init(void) {
     /* already done in gdt_init, exposed for external use */
+}
+
+void tss_set_ist(int index, uint64_t rsp) {
+    if (index < 1 || index > 7) return;
+    kernel_tss.ist[index - 1] = rsp;
 }
 
 void tss_set_rsp0(uint64_t rsp0) {

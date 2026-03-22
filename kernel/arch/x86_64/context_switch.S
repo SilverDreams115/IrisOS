@@ -4,13 +4,24 @@
  *                uint64_t *old_rsp,
  *                uint64_t new_rsp)
  *
- * rdi = old
- * rsi = new
+ * rdi = old_ctx
+ * rsi = new_ctx
  * rdx = &old_rsp
  * rcx = new_rsp
  *
- * Guarda registros callee-saved + RSP/RIP de la tarea actual
- * y restaura RSP/RIP + callee-saved de la tarea siguiente.
+ * Guarda/restaura callee-saved + RSP + RIP + RFLAGS.
+ * Guardar RFLAGS evita que un yield desde un IRQ handler (IF=0)
+ * contamine el estado de la tarea que se reanuda (debería tener IF=1).
+ *
+ * Layout de cpu_context:
+ *   [0]  r15
+ *   [8]  r14
+ *   [16] r13
+ *   [24] r12
+ *   [32] rbx
+ *   [40] rbp
+ *   [48] rip
+ *   [56] rflags
  */
 .global context_switch
 
@@ -26,11 +37,15 @@ context_switch:
     movq %rbx, 32(%rdi)
     movq %rbp, 40(%rdi)
 
-    /* guardar RIP actual: está como return address en el stack */
+    /* guardar RIP: return address en la cima del stack */
     movq (%rsp), %rax
     movq %rax, 48(%rdi)
 
-    /* restaurar registros callee-saved de la tarea que entra */
+    /* guardar RFLAGS (especialmente IF) */
+    pushfq
+    popq 56(%rdi)
+
+    /* restaurar callee-saved de la tarea entrante */
     movq 0(%rsi),  %r15
     movq 8(%rsi),  %r14
     movq 16(%rsi), %r13
@@ -38,10 +53,14 @@ context_switch:
     movq 32(%rsi), %rbx
     movq 40(%rsi), %rbp
 
+    /* restaurar RFLAGS — usa stack viejo como scratch (limpia después) */
+    pushq 56(%rsi)
+    popfq
+
     /* restaurar RSP de la nueva tarea */
     movq %rcx, %rsp
 
-    /* escribir su RIP en la cima del stack y regresar */
+    /* escribir RIP en la cima del stack nuevo y retornar */
     movq 48(%rsi), %rax
     movq %rax, (%rsp)
     ret

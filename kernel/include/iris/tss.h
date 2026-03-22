@@ -18,6 +18,7 @@ struct tss {
 
 void tss_init(void);
 void tss_set_rsp0(uint64_t rsp0);
+void tss_set_ist(int index, uint64_t rsp);
 
 /* GDT selectors */
 #define GDT_KERNEL_CODE  0x08

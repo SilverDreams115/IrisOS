@@ -38,9 +38,10 @@
 #define USER_SPACE_BASE     0x1000ULL
 #define USER_SPACE_TOP      0x0000800000000000ULL
 
-/* user heap region */
-#define USER_HEAP_BASE      0x400000ULL
-#define USER_HEAP_MAX       0x600000ULL
+/* user heap region — 1 GB virtual available for brk growth */
+#define USER_TEXT_BASE  0x0000000000200000ULL
+#define USER_HEAP_BASE      0x0000000000400000ULL
+#define USER_HEAP_MAX       0x0000000040000000ULL   /* 1 GB ceiling */
 
 /* user stack region (top, grows down) */
 #define USER_STACK_TOP      0x7FFFF000ULL
