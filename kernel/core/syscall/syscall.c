@@ -383,7 +383,8 @@ static uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *
  * Creates a new ring-3 process at entry_vaddr.
  * A bootstrap KChannel is created:
- *   - child receives its channel handle as arg0 (via user stack)
+ *   - child receives its bootstrap channel handle via the user-task
+ *     bootstrap contract (RBX on first entry, legacy stack mirror)
  *   - parent receives:
  *       return value = KProcess handle (control object)
  *       *out_chan_ptr = KChannel handle (to communicate with child)
@@ -422,9 +423,8 @@ static uint64_t sys_spawn(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return (uint64_t)IRIS_ERR_TABLE_FULL;
     }
 
-    /* 4. Patch child's user stack: write child_h where arg0 will be popped.
-     * Use ustack_phys directly — the child's CR3 may not be the active one. */
-    *(uint64_t *)(uintptr_t)(child->ustack_phys + USER_STACK_SIZE - 8) = (uint64_t)child_h;
+    /* 4. Install bootstrap arg0 for the child using the shared helper. */
+    task_set_bootstrap_arg0(child, (uint64_t)child_h);
 
     /* 5. Create KProcess wrapping the child */
     struct KProcess *proc = child->process;
