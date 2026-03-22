@@ -67,6 +67,23 @@ ISR_NOERR 31  /* reserved                  */
 ISR_NOERR 32
 ISR_NOERR 33  /* IRQ1 — PS/2 keyboard */
 
+/* IRQs 2-15 del PIC (vectores 34-47) — necesarios para no triple-faultear
+ * ante IRQs espurios o periféricos no manejados (PIC IRQ7/IRQ15 en especial). */
+ISR_NOERR 34
+ISR_NOERR 35
+ISR_NOERR 36
+ISR_NOERR 37
+ISR_NOERR 38
+ISR_NOERR 39  /* IRQ7  — spurious PIC1 */
+ISR_NOERR 40
+ISR_NOERR 41
+ISR_NOERR 42
+ISR_NOERR 43
+ISR_NOERR 44
+ISR_NOERR 45
+ISR_NOERR 46
+ISR_NOERR 47  /* IRQ15 — spurious PIC2 */
+
 isr_common:
     /* salvar registros de propósito general */
     pushq %rax

@@ -1,17 +1,14 @@
 .global user_entry_trampoline
 
-/* user_entry_trampoline:
- * Called via context_switch ret. The kernel stack at this point
- * has an iretq frame pushed by task_create_user:
- *   [rsp+0]  = RIP  (user entry)
- *   [rsp+8]  = CS   (0x1B = user code | RPL3)
- *   [rsp+16] = RFLAGS (0x0202 = IF=1, IOPL=0)
- *   [rsp+24] = RSP  (user stack)
- *   [rsp+32] = SS   (0x23 = user data | RPL3)
- *
- * Zero all general-purpose registers before jumping to user space.
- */
+.section .text
 user_entry_trampoline:
+    /* preparar segmentos de datos de usuario antes de iretq */
+    movw $0x23, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %fs
+    movw %ax, %gs
+
     xorq %rax, %rax
     xorq %rbx, %rbx
     xorq %rcx, %rcx
@@ -27,6 +24,7 @@ user_entry_trampoline:
     xorq %r14, %r14
     xorq %r15, %r15
     xorq %rbp, %rbp
+
     iretq
 
 .section .note.GNU-stack,"",@progbits
