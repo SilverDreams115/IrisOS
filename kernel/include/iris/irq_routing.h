@@ -13,8 +13,19 @@ struct KProcess;
 
 void    irq_routing_init    (void);
 
-/* Register a KChannel for the given IRQ.  The routing table retains
- * a reference to ch (kobject_retain).  Pass NULL to unregister. */
+/*
+ * Register a KChannel for the given IRQ.
+ *
+ * Ownership contract:
+ *   - The routing table retains a KObject reference to ch.
+ *   - owner is the KProcess responsible for this route.  When owner
+ *     undergoes kprocess_teardown(), irq_routing_unregister_owner(owner)
+ *     is called automatically and the route is cleared.
+ *   - Pass ch=NULL to unregister unconditionally (clears owner too).
+ *   - Pass owner=NULL only if the route is expected to live for the
+ *     duration of the kernel (no process-scoped cleanup required).
+ *     This should be the exception, not the norm.
+ */
 void    irq_routing_register(uint8_t irq, struct KChannel *ch, struct KProcess *owner);
 
 /* Called from ISR context: send a one-byte payload into the channel

@@ -59,7 +59,7 @@ int32_t irq_routing_signal(uint8_t irq, uint8_t data_byte) {
     uint8_t *p = (uint8_t *)&msg;
     for (uint32_t i = 0; i < sizeof(msg); i++) p[i] = 0;
 
-    msg.type     = 4;          /* IPC_MSG_SIGNAL equivalent */
+    msg.type     = 4;          /* KChanMsg type: hardware signal notification */
     msg.data[0]  = data_byte;
     msg.data_len = 1;
 

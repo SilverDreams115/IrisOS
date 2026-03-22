@@ -1,11 +1,21 @@
 /*
  * kbd_server.S — keyboard server in ring 3.
  *
- * The kernel creates a KChannel for IRQ1, registers it in the routing
- * table, and spawns this server with the bootstrap request handle loaded
- * via the standard ring-3 bootstrap contract.
+ * Entry contract (set by SYS_SPAWN via svcmgr):
+ *   RBX = svcmgr bootstrap channel handle (not used for service logic).
  *
- * Entry: RBX holds the bootstrap request-channel handle.
+ * Startup sequence:
+ *   1. SYS_NS_LOOKUP("kbd.reply", RIGHT_WRITE=2) → r12 (created and
+ *      registered by svcmgr before this task is spawned; kbd_server
+ *      sends responses here).
+ *   2. SYS_NS_LOOKUP("kbd",       RIGHT_READ=1)  → r13 (pre-created by
+ *      the kernel, registered by svcmgr; IRQ routing + client requests).
+ *   3. Enter recv loop on r13.
+ *
+ * Both channels are registered by svcmgr before kbd_server is spawned.
+ * "kbd.reply" is created by svcmgr via SYS_CHAN_CREATE and registered
+ * via SYS_NS_REGISTER as part of the SVCMGR_MSG_SPAWN_SERVICE handler.
+ * "kbd" is the kernel-pre-created IRQ channel registered by svcmgr.
  *
  * Protocol (minimal userland service contract):
  *   Request types:
@@ -32,18 +42,21 @@
 
 .section .text
 kbd_server:
-    /* r12 = reply channel handle (looked up via nameserver) */
+    /* r12 = reply channel handle (self-created via SYS_CHAN_CREATE) */
     movq  $0, %r12
+    /* r13 = service/IRQ channel handle (NS lookup of "kbd") */
+    movq  $0, %r13
 
     /* stack frame:
      *   [rsp+0  .. rsp+75]  KChanMsg  (76 bytes)
      *   [rsp+80 .. rsp+95]  print buffer "[KBD] 0xXX\n\0" (16 bytes)
-     *   [rsp+96 .. rsp+111] service name buffer
+     *   [rsp+96 .. rsp+111] name buffer (16 bytes)
      * Total = 112 bytes; align to 16.
      */
     subq  $112, %rsp
     andq  $~0xFULL, %rsp
 
+    /* ── print "KBD start\n" ──────────────────────────────────────── */
     leaq  80(%rsp), %rdi
     movb  $'K',  0(%rdi)
     movb  $'B',  1(%rdi)
@@ -59,7 +72,7 @@ kbd_server:
     movq  $0,    %rax
     syscall
 
-    /* nameserver lookup: "kbd.reply" with RIGHT_WRITE */
+    /* ── SYS_NS_LOOKUP("kbd.reply", RIGHT_WRITE=2) → r12 ─────────── */
     leaq  96(%rsp), %rdi
     movb  $'k', 0(%rdi)
     movb  $'b', 1(%rdi)
@@ -71,15 +84,27 @@ kbd_server:
     movb  $'l', 7(%rdi)
     movb  $'y', 8(%rdi)
     movb  $0,   9(%rdi)
-
-    movq  $25,  %rax        /* SYS_NS_LOOKUP */
-    movq  %rdi, %rdi
-    movq  $2,   %rsi        /* RIGHT_WRITE */
+    movq  $25,  %rax                   /* SYS_NS_LOOKUP */
+    movq  $2,   %rsi                   /* RIGHT_WRITE */
     syscall
     testq %rax, %rax
-    js    .kbd_reply_fail
+    js    .kbd_reply_fail               /* reply channel not in NS — fatal */
     movq  %rax, %r12
 
+    /* ── SYS_NS_LOOKUP("kbd", RIGHT_READ=1) → r13 ────────────────── */
+    leaq  96(%rsp), %rdi
+    movb  $'k', 0(%rdi)
+    movb  $'b', 1(%rdi)
+    movb  $'d', 2(%rdi)
+    movb  $0,   3(%rdi)
+    movq  $25,  %rax                   /* SYS_NS_LOOKUP */
+    movq  $1,   %rsi                   /* RIGHT_READ */
+    syscall
+    testq %rax, %rax
+    js    .kbd_reply_fail               /* service channel not in NS — fatal */
+    movq  %rax, %r13
+
+    /* ── print "KBD ready\n" ──────────────────────────────────────── */
     leaq  80(%rsp), %rdi
     movb  $'K',  0(%rdi)
     movb  $'B',  1(%rdi)
@@ -87,22 +112,19 @@ kbd_server:
     movb  $' ',  3(%rdi)
     movb  $'r',  4(%rdi)
     movb  $'e',  5(%rdi)
-    movb  $'p',  6(%rdi)
-    movb  $'l',  7(%rdi)
+    movb  $'a',  6(%rdi)
+    movb  $'d',  7(%rdi)
     movb  $'y',  8(%rdi)
-    movb  $' ',  9(%rdi)
-    movb  $'O', 10(%rdi)
-    movb  $'K', 11(%rdi)
-    movb  $'\n',12(%rdi)
-    movb  $0,   13(%rdi)
+    movb  $'\n', 9(%rdi)
+    movb  $0,   10(%rdi)
     movq  $0,    %rax
     syscall
 
 .kbd_recv:
     /* SYS_CHAN_RECV = 14 */
     movq  $14,   %rax
-    movq  %rbx,  %rdi       /* handle_id */
-    movq  %rsp,  %rsi       /* &KChanMsg */
+    movq  %r13,  %rdi                  /* service/IRQ channel (was %rbx) */
+    movq  %rsp,  %rsi                  /* &KChanMsg */
     movq  $0,    %rdx
     syscall
     testq %rax,  %rax
@@ -303,23 +325,23 @@ kbd_server:
     jmp   .kbd_recv
 
 .kbd_reply_fail:
+    /* SYS_NS_LOOKUP("kbd") failed — cannot find service channel */
     leaq  80(%rsp), %rdi
     movb  $'K',  0(%rdi)
     movb  $'B',  1(%rdi)
     movb  $'D',  2(%rdi)
     movb  $' ',  3(%rdi)
-    movb  $'r',  4(%rdi)
-    movb  $'e',  5(%rdi)
-    movb  $'p',  6(%rdi)
-    movb  $'l',  7(%rdi)
-    movb  $'y',  8(%rdi)
-    movb  $' ',  9(%rdi)
-    movb  $'F', 10(%rdi)
-    movb  $'A', 11(%rdi)
-    movb  $'I', 12(%rdi)
-    movb  $'L', 13(%rdi)
-    movb  $'\n',14(%rdi)
-    movb  $0,   15(%rdi)
+    movb  $'c',  4(%rdi)
+    movb  $'h',  5(%rdi)
+    movb  $'a',  6(%rdi)
+    movb  $'n',  7(%rdi)
+    movb  $' ',  8(%rdi)
+    movb  $'F',  9(%rdi)
+    movb  $'A', 10(%rdi)
+    movb  $'I', 11(%rdi)
+    movb  $'L', 12(%rdi)
+    movb  $'\n',13(%rdi)
+    movb  $0,   14(%rdi)
     movq  $0,    %rax
     syscall
     jmp   .kbd_dead

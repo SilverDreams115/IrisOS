@@ -1,6 +1,22 @@
 #ifndef IRIS_IPC_H
 #define IRIS_IPC_H
 
+/*
+ * ╔══════════════════════════════════════════════════════════════════╗
+ * ║  LEGACY IPC — kernel-internal use only.  Do not include this   ║
+ * ║  header from new code.  Do not add new callers.                ║
+ * ║                                                                 ║
+ * ║  This API is a pre-capability IPC mechanism used exclusively   ║
+ * ║  by the producer/consumer demo tasks in kernel_main.c.         ║
+ * ║  It is not accessible from user space (SYS_IPC_* syscalls      ║
+ * ║  were retired).                                                 ║
+ * ║                                                                 ║
+ * ║  Modern IPC:  KChannel + handle table (iris/nc/kchannel.h)     ║
+ * ║  Retirement:  remove together with the demo tasks when the     ║
+ * ║               nameserver-based service model is stable.        ║
+ * ╚══════════════════════════════════════════════════════════════════╝
+ */
+
 #include <stdint.h>
 
 struct task; /* forward declaration — evita dependencia circular con task.h */

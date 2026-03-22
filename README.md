@@ -2,7 +2,7 @@
 
 IRIS is a custom x86_64 operating system built from scratch with UEFI boot, explicit kernel/user separation, a syscall boundary, ring 3 execution, and an in-progress transition toward a capability-based microkernel architecture.
 
-The project is no longer just a "kernel base" experiment. It now has enough integrated pieces to boot, create user processes, expose kernel objects through handles, publish bootstrap services, and consume a first service from userland.
+The project is no longer just a "kernel base" experiment. It now has enough integrated pieces to boot, create user processes, expose kernel objects through handles, manage service lifecycle through a user-space service manager, and consume services from userland.
 
 ---
 
@@ -22,8 +22,10 @@ IRIS currently boots a monolithic kernel core with several services still inside
 - VMOs with user mappings
 - process objects
 - nameserver bootstrap
-- a first user-space keyboard server
-- userland lookup of the `kbd` service through the nameserver
+- a user-space service manager (`svcmgr`) that spawns and registers services
+- a user-space keyboard server spawned and registered by `svcmgr`
+- userland lookup of `kbd` and `kbd.reply` through the nameserver
+- IRQ routing with process-scoped ownership and automatic cleanup on process exit
 
 This means the project is in a **hybrid integration phase**:
 
@@ -50,8 +52,10 @@ This means the project is in a **hybrid integration phase**:
 | Ring 3 userland | Working | `user_init` runs in user mode |
 | Syscalls | Working | File, memory, IPC, notification, process, handle, nameserver paths present with stricter validation in core paths |
 | Capability core | Working | `KObject`, `KChannel`, `KProcess`, `KNotification`, `KVmo`, `HandleTable`, rights |
-| Nameserver bootstrap | Working | Kernel initializes nameserver and registers `kbd` |
-| First userland service path | Working | `user_init` does `NS_LOOKUP("kbd")` and sends a handshake |
+| Service manager | Working | `svcmgr` runs in ring 3, spawns services, registers them in the nameserver; `SYS_NS_REGISTER` is restricted to `svcmgr` |
+| Nameserver bootstrap | Working | Kernel initializes nameserver; services register themselves via `svcmgr` |
+| IRQ routing ownership | Working | Each IRQ route carries a `KProcess` owner; `kprocess_teardown` clears routes automatically |
+| First userland service path | Working | `user_init` does `NS_LOOKUP("kbd")` + `NS_LOOKUP("kbd.reply")` and completes a full request/response handshake |
 
 ---
 
@@ -77,10 +81,16 @@ What is already true:
 - `sys_vmo_map` and `sys_brk` use observable mapping failure paths in critical syscall code
 - user/kernel pointer validation now checks `PAGE_USER` and `PAGE_WRITABLE` per page where applicable
 - nameserver lookup inserts fresh handles into the caller's table
-- bootstrap services can be published and discovered by name
+- `svcmgr` runs in ring 3 and is the sole authority for `SYS_NS_REGISTER`; the kernel enforces this
+- services are spawned and registered by `svcmgr`, not by the kernel directly
+- `kbd.reply` is created and registered by `svcmgr` before `kbd_server` is spawned — no kernel-side pre-registration
+- IRQ routes carry a `KProcess` owner; `kprocess_teardown` calls `irq_routing_unregister_owner` automatically
+- `svcmgr` tracks spawned process handles in a service slot for lifecycle polling; handles are closed when death is detected or when the slot is full (single-slot limit: documented transitional constraint)
+- `SYS_PROCESS_STATUS` allows non-blocking process state queries; svcmgr polls at every recv-loop iteration
 
 What is still pending:
 
+- IRQ routing owner should ultimately be the service's own `KProcess`, not `svcmgr`; requires a future `SYS_IRQ_ROUTE_REGISTER` syscall
 - broader migration of services out of the kernel
 - a cleaner root-handle/capability structure beyond the current bootstrap arg0 path
 - more formal service protocols beyond the first minimal request/response contracts
@@ -99,7 +109,7 @@ What is still pending:
 - **IPC:** `KChannel` objects accessed through handle tables
 - **Process model:** `KProcess` owns address space, heap break, and handle table
 - **Thread/task model:** `struct task` owns execution context, stack, and scheduler state
-- **Bootstrap discovery:** kernel nameserver publishes initial services such as `kbd`
+- **Bootstrap discovery:** `svcmgr` publishes services via `SYS_NS_REGISTER`; the kernel initializes the nameserver and enforces registration authority
 
 ### Userland Bootstrap Handle Contract
 
@@ -150,16 +160,19 @@ Notes:
 boot/uefi/boot.c                          UEFI loader
 kernel/kernel_main.c                      Kernel bootstrap and subsystem bring-up
 kernel/arch/x86_64/                       x86_64 boot, paging, traps, syscall entry
-kernel/core/scheduler/scheduler.c         Timer-driven scheduler and sleep wakeups
-kernel/core/syscall/syscall.c             Syscall dispatcher and syscall implementations
-kernel/core/irq/irq_routing.c             IRQ -> KChannel routing
-kernel/core/nameserver/nameserver.c       Bootstrap nameserver
-kernel/arch/x86_64/kbd_server.S           First user-space service
-kernel/arch/x86_64/user_init.S            First user-space init path
-kernel/new_core/include/iris/nc/          Capability core headers
-kernel/new_core/src/                      KObject/KChannel/KProcess/HandleTable implementations
-kernel/fs/ramfs/                          Current in-kernel filesystem implementation
-kernel/drivers/                           Serial, framebuffer, PCI, keyboard drivers
+kernel/arch/x86_64/svcmgr.S              Ring-3 service manager entry point
+kernel/arch/x86_64/kbd_server.S          Ring-3 keyboard server
+kernel/arch/x86_64/user_init.S           Ring-3 init/test process
+kernel/core/init/svcmgr_bootstrap.c      Kernel-side svcmgr spawn and kbd IRQ wiring
+kernel/core/scheduler/scheduler.c        Timer-driven scheduler and sleep wakeups
+kernel/core/syscall/syscall.c            Syscall dispatcher and implementations
+kernel/core/irq/irq_routing.c            IRQ -> KChannel routing with owner-based cleanup
+kernel/core/nameserver/nameserver.c      Bootstrap nameserver
+kernel/include/iris/svcmgr_proto.h       svcmgr wire protocol (SVCMGR_MSG_SPAWN_SERVICE)
+kernel/new_core/include/iris/nc/         Capability core headers
+kernel/new_core/src/                     KObject/KChannel/KProcess/HandleTable/KVmo/KNotification
+kernel/fs/ramfs/                         Current in-kernel filesystem implementation
+kernel/drivers/                          Serial, framebuffer, PCI, keyboard drivers
 ```
 
 ---
@@ -204,8 +217,9 @@ Current syscall numbers exposed in `kernel/include/iris/syscall.h`:
 | 21 | `SYS_NOTIFY_WAIT` | Wait on notification with explicit single-waiter behavior and `RIGHT_WAIT` |
 | 22 | `SYS_HANDLE_DUP` | Duplicate handle with reduced rights |
 | 23 | `SYS_HANDLE_TRANSFER` | Move handle into another process |
-| 24 | `SYS_NS_REGISTER` | Register named service |
+| 24 | `SYS_NS_REGISTER` | Register named service (restricted to `svcmgr`; returns `ACCESS_DENIED` for all other callers) |
 | 25 | `SYS_NS_LOOKUP` | Look up named service and receive handle |
+| 26 | `SYS_PROCESS_STATUS` | Non-blocking query: returns 1 (alive), 0 (dead), or negative error. Requires `RIGHT_READ` on proc handle. |
 
 ---
 
@@ -215,11 +229,11 @@ Recent validation on the current tree confirms:
 
 - the kernel boots to the Stage 13 banner
 - nameserver initializes during bootstrap
-- the `kbd` service is registered in the nameserver
-- the `kbd.reply` service is registered in the nameserver
-- `user_init` runs in ring 3
-- `user_init` successfully looks up `kbd`
-- `user_init` successfully looks up `kbd.reply`
+- `svcmgr` starts in ring 3, self-registers as `"svcmgr"`, and processes spawn requests
+- `svcmgr` creates and registers `kbd.reply` before spawning `kbd_server`
+- `svcmgr` spawns `kbd_server` and registers `"kbd"` via `SYS_NS_REGISTER`
+- IRQ 1 is routed to `kbd`'s channel with `svcmgr`'s `KProcess` as owner
+- `user_init` runs in ring 3 and successfully looks up both `kbd` and `kbd.reply`
 - `kbd_server` receives `KBD_OP_HELLO` and replies correctly
 - `kbd_server` receives `KBD_OP_GET_STATUS` and replies correctly
 - `sys_exit` follows the common exit path and completes process teardown
@@ -229,22 +243,20 @@ Recent validation on the current tree confirms:
 Representative serial output:
 
 ```text
-[IRIS][NS] initializing...
-[IRIS][NS] bootstrap registry ready
-[IRIS][KBD-SRV] keyboard server spawned, id=3, handle=1024
-[IRIS][NS] registered service 'kbd'
-[IRIS][NS] registered service 'kbd.reply'
+[IRIS][SVCMGR] service manager spawned, id=3, bootstrap_handle=1024
+[IRIS][SVCMGR] kbd spawn request queued
 [IRIS][USER] init task created, id=4
-[USER] KBD start
-[USER] KBD reply OK
+[USER] [SVCMGR] started
+[USER] [SVCMGR] ready
+[USER] [SVCMGR] service spawned
 [USER] init bootstrap start
 [USER] kbd lookup OK
 [USER] kbd.reply lookup OK
+[USER] KBD start
+[USER] KBD ready
 [USER] KBD recv
 [USER] KBD bootstrap OK
 [USER] kbd hello reply OK
-[USER] KBD recv
-[USER] KBD status OK
 [USER] kbd status reply OK
 ```
 
@@ -252,19 +264,27 @@ Representative serial output:
 
 ## Roadmap
 
+Completed in the current stabilization batch:
+
+- svcmgr as the exclusive authority for `SYS_NS_REGISTER`
+- svcmgr manages `kbd.reply` registration (no kernel-side pre-registration)
+- IRQ routing with real process-scoped ownership and automatic cleanup
+- `SYS_PROCESS_STATUS` (syscall 26): non-blocking process lifecycle query
+- svcmgr polls spawned service state at every recv-loop iteration; detects and cleans up dead services
+
 Short-term priorities:
 
-1. formalize the first service protocol beyond a bootstrap handshake
-2. keep stabilizing process/thread lifecycle and resource cleanup
-3. improve bootstrap root capability structure beyond the current arg0 contract
-4. migrate additional small services out of the kernel
-5. leave VFS migration for a later, cleaner phase
+1. assign IRQ route ownership to the service's own `KProcess` rather than `svcmgr` (requires `SYS_IRQ_ROUTE_REGISTER` or equivalent)
+2. define and retire the VFS transitional surface (`SYS_OPEN/READ/CLOSE`) and `SYS_BRK` transitional path
+3. formalize service lifecycle beyond spawn: detection of service death and optional restart
+4. improve bootstrap root capability structure beyond the current `arg0/%rbx` contract
+5. migrate additional compiled-in services out of the kernel and into the svcmgr spawn model
 
 Non-goals for the immediate next step:
 
-- no cosmetic "microkernelization"
 - no large scheduler rewrite
 - no premature VFS externalization
+- no restart policy before lifecycle detection is solid
 
 ---
 
