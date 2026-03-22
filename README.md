@@ -72,9 +72,9 @@ What is already true:
 What is still pending:
 
 - broader migration of services out of the kernel
-- a cleaner root-handle/bootstrap contract
 - deeper lifecycle cleanup for processes/threads
-- more formal service protocols beyond bootstrap handshakes
+- a cleaner root-handle/capability structure beyond the current bootstrap arg0 path
+- more formal service protocols beyond the first minimal request/response contracts
 
 ---
 
@@ -90,6 +90,20 @@ What is still pending:
 - **Process model:** `KProcess` owns address space, heap break, and handle table
 - **Thread/task model:** `struct task` owns execution context, stack, and scheduler state
 - **Bootstrap discovery:** kernel nameserver publishes initial services such as `kbd`
+
+### Userland Bootstrap Handle Contract
+
+The current ring-3 bootstrap contract for an initial handle/arg0 is:
+
+- primary delivery path: `arg0` enters the task in `%rbx` on first user entry
+- compatibility path: the same value is mirrored at `USER_STACK_TOP-8`
+- installation path: the kernel uses `task_set_bootstrap_arg0(...)` to set both forms together
+
+This is intentional:
+
+- `%rbx` is the authoritative bootstrap path for current user services such as `kbd_server`
+- the stack mirror remains only as compatibility during transition
+- kernel code should not patch bootstrap registers/stacks manually in ad hoc call sites
 
 ---
 
@@ -187,9 +201,12 @@ Recent validation on the current tree confirms:
 - the kernel boots to the Stage 13 banner
 - nameserver initializes during bootstrap
 - the `kbd` service is registered in the nameserver
+- the `kbd.reply` service is registered in the nameserver
 - `user_init` runs in ring 3
 - `user_init` successfully looks up `kbd`
-- `user_init` successfully sends a bootstrap handshake over the service handle
+- `user_init` successfully looks up `kbd.reply`
+- `kbd_server` receives `KBD_OP_HELLO` and replies correctly
+- `kbd_server` receives `KBD_OP_GET_STATUS` and replies correctly
 - producer/consumer IPC continues running while userland and services are alive
 
 Representative serial output:
@@ -199,10 +216,19 @@ Representative serial output:
 [IRIS][NS] bootstrap registry ready
 [IRIS][KBD-SRV] keyboard server spawned, id=3, handle=1024
 [IRIS][NS] registered service 'kbd'
+[IRIS][NS] registered service 'kbd.reply'
 [IRIS][USER] init task created, id=4
+[USER] KBD start
+[USER] KBD reply OK
 [USER] init bootstrap start
 [USER] kbd lookup OK
-[USER] kbd handshake sent
+[USER] kbd.reply lookup OK
+[USER] KBD recv
+[USER] KBD bootstrap OK
+[USER] kbd hello reply OK
+[USER] KBD recv
+[USER] KBD status OK
+[USER] kbd status reply OK
 ```
 
 ---
@@ -213,7 +239,7 @@ Short-term priorities:
 
 1. formalize the first service protocol beyond a bootstrap handshake
 2. keep stabilizing process/thread lifecycle and resource cleanup
-3. improve bootstrap handle delivery/root capability structure
+3. improve bootstrap root capability structure beyond the current arg0 contract
 4. migrate additional small services out of the kernel
 5. leave VFS migration for a later, cleaner phase
 

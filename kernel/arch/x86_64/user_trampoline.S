@@ -10,7 +10,6 @@ user_entry_trampoline:
     movw %ax, %gs
 
     xorq %rax, %rax
-    xorq %rbx, %rbx
     xorq %rcx, %rcx
     xorq %rdx, %rdx
     xorq %rsi, %rsi
