@@ -53,7 +53,7 @@ struct task {
     uint64_t          user_stack_base; /* virtual base of user stack region */
     uint64_t          user_stack_top;  /* virtual top of user stack region */
     uint32_t          user_stack_pages; /* number of pages allocated */
-    uint64_t          ustack_phys;     /* physical base of user stack (identity-mapped) */
+    uint64_t          ustack_phys;     /* physical base of user stack */
     struct KProcess  *process;         /* owning process; NULL for kernel tasks */
 
     /* cooperative scheduler quantum */
@@ -70,6 +70,8 @@ struct task *task_create(void (*entry)(void));
 struct task *task_create_user(uint64_t entry);
 struct task *task_spawn_user(uint64_t entry, uint64_t arg0);
 void         task_set_bootstrap_arg0(struct task *t, uint64_t arg0);
+void         task_abort_spawned_user(struct task *t);
+void         task_exit_current(void);
 void         task_yield(void);
 struct task *task_current(void);
 
