@@ -119,8 +119,20 @@ struct task *task_create(void (*entry)(void)) {
 
 
 
-/* Internal: create a ring-3 task, optionally passing arg0 on the user stack.
- * arg0 is placed at USER_STACK_TOP-8; the entry code can pop it with popq. */
+/* Bootstrap contract for spawned ring-3 tasks:
+ *   - arg0 is delivered in RBX on first user entry
+ *   - a legacy mirror is also written at USER_STACK_TOP-8 during transition
+ */
+void task_set_bootstrap_arg0(struct task *t, uint64_t arg0) {
+    if (!t || t->ring != TASK_RING3) return;
+    t->ctx.rbx = arg0;
+    if (t->ustack_phys != 0) {
+        *(uint64_t *)(uintptr_t)(t->ustack_phys + USER_STACK_SIZE - 8) = arg0;
+    }
+}
+
+/* Internal: create a ring-3 task, optionally passing arg0 via the bootstrap
+ * contract above. */
 static struct task *task_create_user_impl(uint64_t entry, uint64_t arg0) {
     struct task *t = 0;
     for (int i = 1; i < TASK_MAX; i++) {
@@ -171,10 +183,6 @@ static struct task *task_create_user_impl(uint64_t entry, uint64_t arg0) {
                       PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     }
 
-    /* write arg0 at physical top of stack (virtual USER_STACK_TOP-8).
-     * The ring-3 code can "popq %reg" to receive it; RSP is then realigned. */
-    *(uint64_t *)(uintptr_t)(ustack_phys + USER_STACK_SIZE - 8) = arg0;
-
     t->user_stack_base  = USER_STACK_BASE;
     t->user_stack_top   = USER_STACK_TOP;
     t->user_stack_pages = ustack_pages;
@@ -201,6 +209,7 @@ static struct task *task_create_user_impl(uint64_t entry, uint64_t arg0) {
     t->ctx.rbx    = 0; t->ctx.rbp = 0;
     t->ctx.rip    = (uint64_t)(uintptr_t)user_entry_trampoline;
     t->ctx.rflags = 0x202ULL;
+    task_set_bootstrap_arg0(t, arg0);
 
     /* link into circular task list */
     struct task *tail = task_list_head;
@@ -216,8 +225,7 @@ struct task *task_create_user(uint64_t entry) {
     return task_create_user_impl(entry, 0);
 }
 
-/* Spawn a ring-3 process passing arg0 in its initial user stack.
- * The entry function receives arg0 by executing "popq %reg" as its first instruction. */
+/* Spawn a ring-3 process with arg0 installed via the bootstrap contract. */
 struct task *task_spawn_user(uint64_t entry, uint64_t arg0) {
     return task_create_user_impl(entry, arg0);
 }
