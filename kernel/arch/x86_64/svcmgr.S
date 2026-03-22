@@ -25,18 +25,28 @@
  *   [rsp+ 8] data[64]  (uint8_t[])
  *   [rsp+72] data_len  (uint32_t, 4 bytes)
  *
- * Stack frame (128 bytes, 16-byte aligned):
- *   [rsp+ 0 .. rsp+75]  KChanMsg receive buffer
- *   [rsp+80 .. rsp+111] scratch (proc_h, NS result, reply_chan_h)
- *   [rsp+112.. rsp+115] svc_slot[0].proc_h  (uint32_t, 0 = empty slot)
- *   [rsp+116.. rsp+127] svc_slot[0] reserved (future: name, flags)
+ * Stack frame (208 bytes, 16-byte aligned):
+ *   [rsp+  0 .. rsp+ 75]  KChanMsg receive buffer
+ *   [rsp+ 80 .. rsp+111]  scratch (proc_h@80, NS result@88, reply_chan_h@96)
+ *   [rsp+112 .. rsp+207]  svc_slot[0..3]  (4 × 24 bytes)
  *
- * svc_slot[0] is the lifecycle tracking slot for the first spawned service.
- * svcmgr stores proc_h here instead of closing it, enabling SYS_PROCESS_STATUS
- * queries at the top of each recv-loop iteration.  When the process is observed
- * dead, svcmgr closes the handle and clears the slot.
- * Transitional note: only 1 slot exists; extend to N when more services are
- * managed.  The single slot is sufficient for the current kbd-only phase.
+ * svc_slot[i] layout (24 bytes each):
+ *   [+0 .. +3]  proc_h   (uint32_t; 0 = empty slot)
+ *   [+4]        irq_num  (uint8_t;  0xFF = no IRQ route)
+ *   [+5 .. +7]  _pad
+ *   [+8 .. +23] name     (char[16]; service name for diagnostics)
+ *
+ * Slot base offsets from rsp:
+ *   slot[0] = rsp+112   slot[1] = rsp+136
+ *   slot[2] = rsp+160   slot[3] = rsp+184
+ *
+ * Lifecycle tracking:
+ *   svcmgr iterates all slots at the top of .sm_loop via SYS_PROCESS_STATUS.
+ *   On death: logs, closes proc_h, clears slot.
+ *   On spawn: finds first free slot; stores proc_h + irq_num + name.
+ *   If all slots are full on spawn: closes proc_h immediately (no tracking).
+ *   irq_num != 0xFF: calls SYS_IRQ_ROUTE_REGISTER after spawn to transfer
+ *     route ownership to the child process (auto-cleared on child exit).
  */
 
 .global svcmgr_main
@@ -52,20 +62,30 @@ sm_str_nsfail:       .asciz "[SVCMGR] WARN: ns register failed\n"
 sm_str_replyregfail: .asciz "[SVCMGR] WARN: reply chan ns register failed\n"
 sm_str_svc_exited:   .asciz "[SVCMGR] service exited\n"
 sm_str_slot_full:    .asciz "[SVCMGR] WARN: service slot full, proc_h not tracked\n"
+sm_str_irqfail:      .asciz "[SVCMGR] WARN: irq route xfer failed\n"
 sm_name_self:     .asciz "svcmgr"
 
 .section .text
 svcmgr_main:
     /* RBX = bootstrap channel handle (set by svcmgr_bootstrap.c) */
 
-    /* Allocate stack frame (128 bytes, 16-byte aligned) */
-    subq  $128, %rsp
+    /* Allocate stack frame (208 bytes, 16-byte aligned) */
+    subq  $208, %rsp
     andq  $~0xFULL, %rsp
 
-    /* Zero service slot — stack is fresh but alignment may vary */
-    movl  $0, 112(%rsp)               /* svc_slot[0].proc_h = 0 (empty) */
-    movq  $0, 116(%rsp)               /* svc_slot[0] reserved */
-    movq  $0, 124(%rsp)               /* svc_slot[0] reserved */
+    /* Zero all service slots (4 × 24 = 96 bytes at rsp+112..rsp+207) */
+    movq  $0, 112(%rsp)
+    movq  $0, 120(%rsp)
+    movq  $0, 128(%rsp)
+    movq  $0, 136(%rsp)
+    movq  $0, 144(%rsp)
+    movq  $0, 152(%rsp)
+    movq  $0, 160(%rsp)
+    movq  $0, 168(%rsp)
+    movq  $0, 176(%rsp)
+    movq  $0, 184(%rsp)
+    movq  $0, 192(%rsp)
+    movq  $0, 200(%rsp)
 
     /* ── announce start ─────────────────────────────────────── */
     movq  $0,   %rax                    /* SYS_WRITE */
@@ -97,31 +117,49 @@ svcmgr_main:
 
     /* ── bootstrap receive loop ─────────────────────────────── */
 .sm_loop:
-    /* ── lifecycle check ────────────────────────────────────────
-     * Poll any tracked service before blocking on the next recv.
-     * SYS_PROCESS_STATUS(proc_h) → 1=alive, 0=dead, <0=error.
-     * On death: log, close proc_h, clear the slot.
+    /* ── lifecycle check (all 4 slots) ──────────────────────────
+     * Iterate svc_slot[0..3].  For each non-empty slot:
+     *   SYS_PROCESS_STATUS(proc_h) → 1=alive, 0=dead, <0=error
+     * On death: log, close proc_h, clear slot fields.
      * On error or empty slot: skip silently.
+     * r14 = slot index (0..3), r15 = slot byte offset from rsp.
+     * Both registers are preserved across syscall (not rcx/r11).
      */
-    movl  112(%rsp), %edi              /* svc_slot[0].proc_h (0 = empty) */
-    testl %edi, %edi
-    jz    .sm_buf_zero                 /* slot empty — skip check */
+    movq  $0, %r14                     /* slot index = 0 */
+.sm_lifecycle_loop:
+    cmpq  $4, %r14
+    jge   .sm_buf_zero                 /* all slots checked */
 
-    movq  $26,  %rax                   /* SYS_PROCESS_STATUS */
+    movq  %r14, %r15
+    imulq $24,  %r15
+    addq  $112, %r15                   /* r15 = byte offset of slot[r14] */
+
+    movl  (%rsp,%r15), %edi            /* proc_h (0 = empty) */
+    testl %edi, %edi
+    jz    .sm_lifecycle_next           /* empty slot — skip */
+
+    movq  $26, %rax                    /* SYS_PROCESS_STATUS */
     syscall
     testq %rax, %rax
-    js    .sm_buf_zero                 /* error — skip (keep slot) */
-    jnz   .sm_buf_zero                 /* alive (1) — skip */
+    js    .sm_lifecycle_next           /* error — keep slot */
+    jnz   .sm_lifecycle_next           /* alive — skip */
 
-    /* status = 0: service exited */
+    /* status = 0: service exited — log, close, clear */
     movq  $0,   %rax                   /* SYS_WRITE */
     leaq  sm_str_svc_exited(%rip), %rdi
-    syscall
+    syscall                            /* r14 and r15 preserved */
 
-    movl  112(%rsp), %edi              /* proc_h */
+    movl  (%rsp,%r15), %edi            /* proc_h */
     movq  $15,  %rax                   /* SYS_HANDLE_CLOSE */
-    syscall
-    movl  $0, 112(%rsp)               /* clear slot */
+    syscall                            /* r14 and r15 preserved */
+    movl  $0,  (%rsp,%r15)             /* clear proc_h */
+    movb  $0,  4(%rsp,%r15)            /* clear irq_num */
+    movq  $0,  8(%rsp,%r15)            /* clear name[0..7] */
+    movq  $0, 16(%rsp,%r15)            /* clear name[8..15] */
+
+.sm_lifecycle_next:
+    incq  %r14
+    jmp   .sm_lifecycle_loop
 
 .sm_buf_zero:
     /* zero the receive buffer */
@@ -241,15 +279,57 @@ svcmgr_main:
     movq  %rax, 88(%rsp)              /* save NS result before close clobbers rax */
 
     /* ── proc_h lifecycle tracking ─────────────────────────────────
-     * Store proc_h in svc_slot[0] if empty; otherwise close it.
-     * The slot is polled at the top of .sm_loop via SYS_PROCESS_STATUS.
+     * Find a free slot (proc_h == 0) among svc_slot[0..3].
+     * Store proc_h, irq_num, and service name in the slot.
+     * If no free slot: close proc_h immediately and log warning.
+     * r14 = slot search index, r15 = slot byte offset.
      */
-    movl  112(%rsp), %eax              /* svc_slot[0].proc_h */
+    movq  $0, %r14
+.sm_find_slot:
+    cmpq  $4, %r14
+    jge   .sm_slot_full
+    movq  %r14, %r15
+    imulq $24,  %r15
+    addq  $112, %r15
+    movl  (%rsp,%r15), %eax
     testl %eax, %eax
-    jnz   .sm_slot_full                /* slot occupied — close proc_h */
+    jz    .sm_slot_found
+    incq  %r14
+    jmp   .sm_find_slot
 
+.sm_slot_found:
     movl  80(%rsp),  %eax
-    movl  %eax, 112(%rsp)             /* svc_slot[0].proc_h = proc_h */
+    movl  %eax,      (%rsp,%r15)       /* slot.proc_h = proc_h */
+    movzbl 56(%rsp), %eax              /* irq_num = data[SVCMGR_SPAWN_OFF_IRQ] */
+    movb  %al,       4(%rsp,%r15)      /* slot.irq_num */
+    movq  16(%rsp),  %rax              /* name[0..7] from data[SVCMGR_SPAWN_OFF_NAME] */
+    movq  %rax,      8(%rsp,%r15)      /* slot.name[0..7] */
+    movq  24(%rsp),  %rax              /* name[8..15] */
+    movq  %rax,     16(%rsp,%r15)      /* slot.name[8..15] */
+
+    /* ── IRQ ownership transfer ─────────────────────────────────────
+     * If irq_num != 0xFF: call SYS_IRQ_ROUTE_REGISTER(irq, chan_h, proc_h)
+     * to move the IRQ route owner from svcmgr to the child process.
+     * kprocess_teardown will auto-clear the route when the child exits.
+     * On failure: log warning and continue (route stays owned by svcmgr).
+     */
+    movzbl 4(%rsp,%r15), %eax          /* irq_num from slot */
+    cmpb  $0xFF, %al
+    je    .sm_check_ns_result          /* no IRQ route for this service */
+
+    movl  %eax,     %edi               /* arg0 = irq_num */
+    movl  36(%rsp), %esi               /* arg1 = reg_chan_h (data[SVCMGR_SPAWN_OFF_REG_CHAN]) */
+    movl  80(%rsp), %edx               /* arg2 = proc_h */
+    movq  $27,      %rax               /* SYS_IRQ_ROUTE_REGISTER */
+    syscall
+    testq %rax, %rax
+    js    .sm_irq_xfer_fail
+    jmp   .sm_check_ns_result
+
+.sm_irq_xfer_fail:
+    movq  $0,   %rax
+    leaq  sm_str_irqfail(%rip), %rdi
+    syscall
     jmp   .sm_check_ns_result
 
 .sm_slot_full:
