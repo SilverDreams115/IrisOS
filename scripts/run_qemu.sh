@@ -54,4 +54,7 @@ qemu-system-x86_64 \
   -drive format=raw,file=fat:rw:"$EFI_ROOT" \
   -serial stdio \
   -vga std \
-  -display gtk,zoom-to-fit=on
+  -display gtk,zoom-to-fit=on \
+ -no-reboot \
+ -no-shutdown \
+ -d cpu_reset

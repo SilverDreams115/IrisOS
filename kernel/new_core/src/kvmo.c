@@ -1,0 +1,65 @@
+#include <iris/nc/kvmo.h>
+#include <iris/pmm.h>
+#include <stdint.h>
+
+#define POOL_SIZE 16
+static struct KVmo pool[POOL_SIZE];
+static uint8_t     pool_used[POOL_SIZE];
+
+static void kvmo_destroy(struct KObject *obj) {
+    struct KVmo *v = (struct KVmo *)obj;
+    if (v->owned && v->phys) {
+        uint64_t pages = (v->size + 0xFFFULL) >> 12;
+        for (uint64_t i = 0; i < pages; i++)
+            pmm_free_page(v->phys + i * 0x1000ULL);
+    }
+    for (int i = 0; i < POOL_SIZE; i++) {
+        if (&pool[i] == v) { pool_used[i] = 0; return; }
+    }
+}
+
+static const struct KObjectOps kvmo_ops = { .destroy = kvmo_destroy };
+
+static struct KVmo *kvmo_alloc(void) {
+    for (int i = 0; i < POOL_SIZE; i++) {
+        if (!pool_used[i]) {
+            pool_used[i] = 1;
+            struct KVmo *v = &pool[i];
+            uint8_t *p = (uint8_t *)v;
+            for (uint32_t j = 0; j < sizeof(*v); j++) p[j] = 0;
+            kobject_init(&v->base, KOBJ_VMO, &kvmo_ops);
+            return v;
+        }
+    }
+    return 0;
+}
+
+struct KVmo *kvmo_create(uint64_t size) {
+    if (!size) return 0;
+    uint32_t pages = (uint32_t)((size + 0xFFFULL) >> 12);
+    uint64_t phys  = pmm_alloc_pages(pages);
+    if (!phys) return 0;
+    struct KVmo *v = kvmo_alloc();
+    if (!v) {
+        for (uint32_t i = 0; i < pages; i++)
+            pmm_free_page(phys + (uint64_t)i * 0x1000ULL);
+        return 0;
+    }
+    v->phys  = phys;
+    v->size  = size;
+    v->owned = 1;
+    return v;
+}
+
+struct KVmo *kvmo_wrap(uint64_t phys, uint64_t size) {
+    struct KVmo *v = kvmo_alloc();
+    if (!v) return 0;
+    v->phys  = phys;
+    v->size  = size;
+    v->owned = 0;
+    return v;
+}
+
+void kvmo_free(struct KVmo *v) {
+    kobject_release(&v->base);
+}

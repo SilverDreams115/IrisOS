@@ -16,6 +16,14 @@
 #include <iris/keyboard.h>
 #include <iris/fb.h>
 #include <iris/vfs.h>
+#include <iris/irq_routing.h>
+#include <iris/nameserver.h>
+#include <iris/nc/kchannel.h>
+#include <iris/nc/kobject.h>
+#include <iris/nc/kprocess.h>
+#include <iris/nc/handle_table.h>
+#include <iris/nc/rights.h>
+#include <iris/nc/error.h>
 #define FB_ORANGE 0x00FF8800
 
 #define COM1_PORT 0x3F8
@@ -199,7 +207,12 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     syscall_init();
     serial_write("[IRIS][SYSCALL] MSRs configured\n");
 
-    serial_write("[IRIS][USER] preparing init process...\n");
+    serial_write("[IRIS][IRQ] initializing routing table...\n");
+    irq_routing_init();
+
+    serial_write("[IRIS][NS] initializing...\n");
+    ns_init();
+    serial_write("[IRIS][NS] bootstrap registry ready\n");
 
     serial_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
@@ -207,7 +220,54 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     scheduler_add_task(task_consumer);
     serial_write("[IRIS][SCHED] producer + consumer created\n");
 
-    /* Stage 11: create user task — ring 3 */
+    /* keyboard server: ring-3 task that receives IRQ1 via KChannel handle */
+    {
+        struct KChannel *kbd_ch = kchannel_alloc();
+        if (kbd_ch) {
+            irq_routing_register(1, kbd_ch);
+
+            /* Spawn the server first so its handle table is ready */
+            extern void kbd_server(void);
+            /* Pass handle=0 temporarily; we'll fix it after inserting into table */
+            struct task *ks = task_spawn_user((uint64_t)(uintptr_t)kbd_server, 0);
+            if (ks) {
+                /* Insert KChannel into kbd_server's handle table */
+                handle_id_t h = handle_table_insert(&ks->process->handle_table,
+                                                    &kbd_ch->base,
+                                                    RIGHT_READ | RIGHT_WRITE);
+                /* Patch arg0 on child's user stack using the physical address
+                 * directly — ks->process->cr3 is not active here so paging_virt_to_phys
+                 * would walk the wrong page table. ustack_phys is identity-mapped. */
+                *(uint64_t *)(uintptr_t)(ks->ustack_phys + USER_STACK_SIZE - 8) = (uint64_t)h;
+
+                iris_error_t nsr = ns_register("kbd", &kbd_ch->base,
+                                               RIGHT_READ | RIGHT_WRITE);
+
+                serial_write("[IRIS][KBD-SRV] keyboard server spawned, id=");
+                serial_write_dec(ks->id);
+                serial_write(", handle=");
+                serial_write_dec((uint64_t)h);
+                serial_write("\n");
+                if (nsr == IRIS_OK) {
+                    serial_write("[IRIS][NS] registered service 'kbd'\n");
+                } else {
+                    serial_write("[IRIS][NS] WARN: could not register 'kbd', err=");
+                    serial_write_dec((uint64_t)(int64_t)nsr);
+                    serial_write("\n");
+                }
+            } else {
+                serial_write("[IRIS][KBD-SRV] WARN: could not spawn keyboard server\n");
+            }
+            /* Release our local reference — the table and routing table hold theirs */
+            kobject_release(&kbd_ch->base);
+        } else {
+            serial_write("[IRIS][KBD-SRV] WARN: could not allocate KChannel\n");
+        }
+    }
+
+    serial_write("[IRIS][USER] preparing init process...\n");
+
+    /* user_init: first ring-3 bootstrap process */
     extern void user_init(void);
     struct task *ut = task_create_user((uint64_t)(uintptr_t)user_init);
     if (ut) {
