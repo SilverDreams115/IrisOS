@@ -1,3 +1,18 @@
+/*
+ * ── Bootstrap service registry — transicional ────────────────────
+ *
+ * STATUS: transicional bootstrap mechanism.
+ *
+ * This file implements the kernel-resident flat name→KObject table
+ * used during the bootstrap phase.  It is NOT the final service
+ * management architecture.  See nameserver.h for the full
+ * transicional contract, limitations, and evolution path.
+ *
+ * Do not extend this table with policy logic (ACL, restart, health).
+ * New supervision features belong in a future user-space service
+ * manager, not here.
+ */
+
 #include <iris/nameserver.h>
 #include <iris/nc/spinlock.h>
 #include <iris/nc/kobject.h>
