@@ -43,7 +43,7 @@
 /* user processes reuse a small kernel-built image slice (.text + .rodata)
  * but map it into a private virtual window preserving internal offsets. */
 #define USER_IMAGE_SOURCE_BASE  KERNEL_PHYS_BASE
-#define USER_IMAGE_MAP_SIZE     0x000000000000B000ULL
+#define USER_IMAGE_MAP_SIZE     0x000000000000C000ULL
 
 /* user space bounds */
 #define USER_SPACE_BASE     0x1000ULL
@@ -77,12 +77,14 @@
 void     paging_init(uint64_t fb_phys, uint64_t fb_size);
 void     paging_map(uint64_t virt, uint64_t phys, uint64_t flags);
 uint64_t paging_virt_to_phys(uint64_t virt);
+int      paging_query_access(uint64_t virt, uint64_t *out_flags);
 uint64_t paging_create_user_space(void);
 /* Legacy best-effort mapper. Critical syscalls and rollback-sensitive paths
  * must use paging_map_checked_in() instead. */
 void     paging_map_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
 int      paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
 uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt);
+int      paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags);
 void     paging_unmap_in(uint64_t cr3, uint64_t virt);
 void     paging_write_u64_in(uint64_t cr3, uint64_t virt, uint64_t value);
 void     paging_destroy_user_space(uint64_t cr3);

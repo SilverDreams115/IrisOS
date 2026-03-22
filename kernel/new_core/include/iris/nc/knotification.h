@@ -31,6 +31,7 @@ struct task; /* forward */
 struct KNotification {
     struct KObject      base;          /* must be first */
     _Atomic uint64_t    signal_bits;   /* pending signals — bit N = signal N */
+    uint8_t             closed;
     struct task        *waiter;        /* task blocked on wait, or NULL */
 };
 

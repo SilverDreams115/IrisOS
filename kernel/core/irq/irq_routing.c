@@ -26,6 +26,7 @@ void irq_routing_register(uint8_t irq, struct KChannel *ch, struct KProcess *own
     if (irq >= IRQ_MAX) return;
     if (ch) {
         kobject_retain(&ch->base);
+        kobject_active_retain(&ch->base);
     }
 
     spinlock_lock(&irq_lock);
@@ -35,6 +36,7 @@ void irq_routing_register(uint8_t irq, struct KChannel *ch, struct KProcess *own
     spinlock_unlock(&irq_lock);
 
     if (old) {
+        kobject_active_release(&old->base);
         kobject_release(&old->base);
     }
 }
@@ -79,6 +81,7 @@ void irq_routing_unregister_owner(struct KProcess *owner) {
         }
         spinlock_unlock(&irq_lock);
         if (old) {
+            kobject_active_release(&old->base);
             kobject_release(&old->base);
         }
     }

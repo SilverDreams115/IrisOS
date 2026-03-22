@@ -69,6 +69,7 @@ iris_error_t ns_register(const char *name, struct KObject *obj,
         if (!ns_table[i].used) {
             ns_strncpy(ns_table[i].name, name, NS_NAME_LEN);
             kobject_retain(obj);
+            kobject_active_retain(obj);
             ns_table[i].obj    = obj;
             ns_table[i].owner  = owner;
             ns_table[i].rights = rights;
@@ -82,9 +83,9 @@ iris_error_t ns_register(const char *name, struct KObject *obj,
     return IRIS_ERR_TABLE_FULL;
 }
 
-handle_id_t ns_lookup(const char *name, struct task *t,
-                      iris_rights_t req_rights) {
-    if (!name || !t || !t->process) return HANDLE_INVALID;
+iris_error_t ns_lookup(const char *name, struct task *t,
+                       iris_rights_t req_rights, handle_id_t *out_handle) {
+    if (!name || !t || !t->process || !out_handle) return IRIS_ERR_INVALID_ARG;
 
     spinlock_lock(&ns_lock);
 
@@ -96,12 +97,14 @@ handle_id_t ns_lookup(const char *name, struct task *t,
             spinlock_unlock(&ns_lock);
             handle_id_t h = handle_table_insert(&t->process->handle_table, obj, rights);
             kobject_release(obj); /* table holds the reference */
-            return h;
+            if (h == HANDLE_INVALID) return IRIS_ERR_TABLE_FULL;
+            *out_handle = h;
+            return IRIS_OK;
         }
     }
 
     spinlock_unlock(&ns_lock);
-    return HANDLE_INVALID;
+    return IRIS_ERR_NOT_FOUND;
 }
 
 iris_error_t ns_unregister(const char *name) {
@@ -111,6 +114,7 @@ iris_error_t ns_unregister(const char *name) {
 
     for (int i = 0; i < NS_MAX_ENTRIES; i++) {
         if (ns_table[i].used && ns_strcmp(ns_table[i].name, name) == 0) {
+            kobject_active_release(ns_table[i].obj);
             kobject_release(ns_table[i].obj);
             ns_table[i].obj     = 0;
             ns_table[i].owner   = 0;
@@ -131,6 +135,7 @@ void ns_unregister_owner(struct KProcess *owner) {
     spinlock_lock(&ns_lock);
     for (int i = 0; i < NS_MAX_ENTRIES; i++) {
         if (!ns_table[i].used || ns_table[i].owner != owner) continue;
+        kobject_active_release(ns_table[i].obj);
         kobject_release(ns_table[i].obj);
         ns_table[i].obj     = 0;
         ns_table[i].owner   = 0;

@@ -26,6 +26,35 @@ static uint64_t read_cr3_phys(void) {
     return cr3 & ~0xFFFULL;
 }
 
+static int paging_query_access_root(uint64_t cr3, uint64_t virt, uint64_t *out_flags) {
+    uint64_t effective = PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
+    uint64_t *pml4 = phys_to_ptr(cr3);
+    uint64_t entry = pml4[PML4_IDX(virt)];
+    if (!(entry & PAGE_PRESENT)) return -1;
+    effective &= (entry & (PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER));
+
+    uint64_t *pdpt = phys_to_ptr(entry & ~0xFFFULL);
+    entry = pdpt[PDPT_IDX(virt)];
+    if (!(entry & PAGE_PRESENT)) return -1;
+    effective &= (entry & (PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER));
+
+    uint64_t *pd = phys_to_ptr(entry & ~0xFFFULL);
+    entry = pd[PD_IDX(virt)];
+    if (!(entry & PAGE_PRESENT)) return -1;
+    effective &= (entry & (PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER));
+    if (entry & PAGE_HUGE) {
+        *out_flags = effective;
+        return 0;
+    }
+
+    uint64_t *pt = phys_to_ptr(entry & ~0xFFFULL);
+    entry = pt[PT_IDX(virt)];
+    if (!(entry & PAGE_PRESENT)) return -1;
+    effective &= (entry & (PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER));
+    *out_flags = effective;
+    return 0;
+}
+
 static uint64_t *walk_pt(uint64_t cr3, uint64_t virt) {
     uint64_t *pml4 = phys_to_ptr(cr3);
     uint64_t entry = pml4[PML4_IDX(virt)];
@@ -138,6 +167,11 @@ uint64_t paging_virt_to_phys(uint64_t virt) {
     return (entry & ~0xFFFULL) | (virt & 0xFFFULL);
 }
 
+int paging_query_access(uint64_t virt, uint64_t *out_flags) {
+    if (!out_flags) return -1;
+    return paging_query_access_root(read_cr3_phys(), virt, out_flags);
+}
+
 void paging_init(uint64_t fb_phys, uint64_t fb_size) {
     uint64_t i;
 
@@ -232,6 +266,11 @@ uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt) {
     entry = pt[PT_IDX(virt)];
     if (!(entry & PAGE_PRESENT)) return 0;
     return (entry & ~0xFFFULL) | (virt & 0xFFFULL);
+}
+
+int paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags) {
+    if (cr3 == 0 || !out_flags) return -1;
+    return paging_query_access_root(cr3, virt, out_flags);
 }
 
 void paging_unmap_in(uint64_t cr3, uint64_t virt) {
