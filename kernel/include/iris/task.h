@@ -69,6 +69,7 @@ void         task_init(void);
 struct task *task_create(void (*entry)(void));
 struct task *task_create_user(uint64_t entry);
 struct task *task_spawn_user(uint64_t entry, uint64_t arg0);
+void         task_set_bootstrap_arg0(struct task *t, uint64_t arg0);
 void         task_yield(void);
 struct task *task_current(void);
 

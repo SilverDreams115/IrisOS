@@ -2,14 +2,25 @@
  * kbd_server.S — keyboard server in ring 3.
  *
  * The kernel creates a KChannel for IRQ1, registers it in the routing
- * table, and spawns this server passing the channel handle as arg0.
+ * table, and spawns this server with the bootstrap request handle loaded
+ * via the standard ring-3 bootstrap contract.
  *
- * Entry: RSP points to arg0 = handle_id (KChannel handle).
- *        First instruction: popq to receive it.
+ * Entry: RBX holds the bootstrap request-channel handle.
  *
- * Protocol (capability model):
- *   SYS_CHAN_RECV(handle, &msg)  →  msg.data[0] = scancode
- *   SYS_WRITE(&buf)              →  prints "[KBD] 0xXX\n"
+ * Protocol (minimal userland service contract):
+ *   Request types:
+ *     1 = KBD_OP_HELLO
+ *     2 = KBD_OP_GET_STATUS
+ *     4 = IRQ byte from kernel routing path
+ *
+ *   Response types:
+ *     0x80000001 = KBD_RSP_HELLO
+ *       data[0] = protocol version (1)
+ *
+ *     0x80000002 = KBD_RSP_STATUS
+ *       data[0] = status flags
+ *                 bit0 = service alive
+ *                 bit1 = IRQ routing active
  *
  * KChanMsg layout (76 bytes):
  *   [0]   type      (4 bytes)
@@ -21,16 +32,71 @@
 
 .section .text
 kbd_server:
-    /* rbx = channel handle  (callee-saved across syscalls) */
-    popq  %rbx
+    /* r12 = reply channel handle (looked up via nameserver) */
+    movq  $0, %r12
 
     /* stack frame:
      *   [rsp+0  .. rsp+75]  KChanMsg  (76 bytes)
      *   [rsp+80 .. rsp+95]  print buffer "[KBD] 0xXX\n\0" (16 bytes)
-     * Total = 96 bytes; align to 16.
+     *   [rsp+96 .. rsp+111] service name buffer
+     * Total = 112 bytes; align to 16.
      */
-    subq  $96, %rsp
+    subq  $112, %rsp
     andq  $~0xFULL, %rsp
+
+    leaq  80(%rsp), %rdi
+    movb  $'K',  0(%rdi)
+    movb  $'B',  1(%rdi)
+    movb  $'D',  2(%rdi)
+    movb  $' ',  3(%rdi)
+    movb  $'s',  4(%rdi)
+    movb  $'t',  5(%rdi)
+    movb  $'a',  6(%rdi)
+    movb  $'r',  7(%rdi)
+    movb  $'t',  8(%rdi)
+    movb  $'\n', 9(%rdi)
+    movb  $0,   10(%rdi)
+    movq  $0,    %rax
+    syscall
+
+    /* nameserver lookup: "kbd.reply" with RIGHT_WRITE */
+    leaq  96(%rsp), %rdi
+    movb  $'k', 0(%rdi)
+    movb  $'b', 1(%rdi)
+    movb  $'d', 2(%rdi)
+    movb  $'.', 3(%rdi)
+    movb  $'r', 4(%rdi)
+    movb  $'e', 5(%rdi)
+    movb  $'p', 6(%rdi)
+    movb  $'l', 7(%rdi)
+    movb  $'y', 8(%rdi)
+    movb  $0,   9(%rdi)
+
+    movq  $25,  %rax        /* SYS_NS_LOOKUP */
+    movq  %rdi, %rdi
+    movq  $2,   %rsi        /* RIGHT_WRITE */
+    syscall
+    testq %rax, %rax
+    js    .kbd_reply_fail
+    movq  %rax, %r12
+
+    leaq  80(%rsp), %rdi
+    movb  $'K',  0(%rdi)
+    movb  $'B',  1(%rdi)
+    movb  $'D',  2(%rdi)
+    movb  $' ',  3(%rdi)
+    movb  $'r',  4(%rdi)
+    movb  $'e',  5(%rdi)
+    movb  $'p',  6(%rdi)
+    movb  $'l',  7(%rdi)
+    movb  $'y',  8(%rdi)
+    movb  $' ',  9(%rdi)
+    movb  $'O', 10(%rdi)
+    movb  $'K', 11(%rdi)
+    movb  $'\n',12(%rdi)
+    movb  $0,   13(%rdi)
+    movq  $0,    %rax
+    syscall
 
 .kbd_recv:
     /* SYS_CHAN_RECV = 14 */
@@ -40,11 +106,29 @@ kbd_server:
     movq  $0,    %rdx
     syscall
     testq %rax,  %rax
-    jnz   .kbd_recv          /* error — retry */
+    jnz   .kbd_recv_err      /* error — diagnose then retry */
 
-    /* bootstrap handshake from userland */
+    leaq  80(%rsp), %rdi
+    movb  $'K',  0(%rdi)
+    movb  $'B',  1(%rdi)
+    movb  $'D',  2(%rdi)
+    movb  $' ',  3(%rdi)
+    movb  $'r',  4(%rdi)
+    movb  $'e',  5(%rdi)
+    movb  $'c',  6(%rdi)
+    movb  $'v',  7(%rdi)
+    movb  $'\n', 8(%rdi)
+    movb  $0,    9(%rdi)
+    movq  $0,    %rax
+    syscall
+
+    /* KBD_OP_HELLO from userland */
     cmpl  $1,    0(%rsp)
-    je    .kbd_bootstrap
+    je    .kbd_hello
+
+    /* KBD_OP_GET_STATUS from userland */
+    cmpl  $2,    0(%rsp)
+    je    .kbd_status
 
     /* hardware IRQ payload */
     cmpl  $4,    0(%rsp)
@@ -101,7 +185,7 @@ kbd_server:
 
     jmp   .kbd_recv
 
-.kbd_bootstrap:
+.kbd_hello:
     leaq  80(%rsp), %rdi
     movb  $'K',  0(%rdi)
     movb  $'B',  1(%rdi)
@@ -124,7 +208,121 @@ kbd_server:
 
     movq  $0,    %rax        /* SYS_WRITE */
     syscall
+
+    /* response: KBD_RSP_HELLO, version=1 */
+    movq  $0,  0(%rsp)
+    movq  $0,  8(%rsp)
+    movq  $0, 16(%rsp)
+    movq  $0, 24(%rsp)
+    movq  $0, 32(%rsp)
+    movq  $0, 40(%rsp)
+    movq  $0, 48(%rsp)
+    movq  $0, 56(%rsp)
+    movq  $0, 64(%rsp)
+    movq  $0, 72(%rsp)
+    movl  $0x80000001, 0(%rsp)
+    movb  $1,          8(%rsp)
+    movl  $1,         72(%rsp)
+
+    movq  $13,   %rax       /* SYS_CHAN_SEND */
+    movq  %r12,  %rdi
+    movq  %rsp,  %rsi
+    movq  $0,    %rdx
+    syscall
+
+    movq  $8,    %rax       /* SYS_SLEEP(1) */
+    movq  $1,    %rdi
+    syscall
     jmp   .kbd_recv
+
+.kbd_recv_err:
+    leaq  80(%rsp), %rdi
+    movb  $'K',  0(%rdi)
+    movb  $'B',  1(%rdi)
+    movb  $'D',  2(%rdi)
+    movb  $' ',  3(%rdi)
+    movb  $'r',  4(%rdi)
+    movb  $'e',  5(%rdi)
+    movb  $'c',  6(%rdi)
+    movb  $'v',  7(%rdi)
+    movb  $' ',  8(%rdi)
+    movb  $'E',  9(%rdi)
+    movb  $'R', 10(%rdi)
+    movb  $'R', 11(%rdi)
+    movb  $'\n',12(%rdi)
+    movb  $0,   13(%rdi)
+    movq  $0,    %rax
+    syscall
+    jmp   .kbd_recv
+
+.kbd_status:
+    leaq  80(%rsp), %rdi
+    movb  $'K',  0(%rdi)
+    movb  $'B',  1(%rdi)
+    movb  $'D',  2(%rdi)
+    movb  $' ',  3(%rdi)
+    movb  $'s',  4(%rdi)
+    movb  $'t',  5(%rdi)
+    movb  $'a',  6(%rdi)
+    movb  $'t',  7(%rdi)
+    movb  $'u',  8(%rdi)
+    movb  $'s',  9(%rdi)
+    movb  $' ', 10(%rdi)
+    movb  $'O', 11(%rdi)
+    movb  $'K', 12(%rdi)
+    movb  $'\n',13(%rdi)
+    movb  $0,   14(%rdi)
+
+    movq  $0,    %rax       /* SYS_WRITE */
+    syscall
+
+    /* response: KBD_RSP_STATUS, flags=alive|irq-routed = 0x03 */
+    movq  $0,  0(%rsp)
+    movq  $0,  8(%rsp)
+    movq  $0, 16(%rsp)
+    movq  $0, 24(%rsp)
+    movq  $0, 32(%rsp)
+    movq  $0, 40(%rsp)
+    movq  $0, 48(%rsp)
+    movq  $0, 56(%rsp)
+    movq  $0, 64(%rsp)
+    movq  $0, 72(%rsp)
+    movl  $0x80000002, 0(%rsp)
+    movb  $0x03,       8(%rsp)
+    movl  $1,         72(%rsp)
+
+    movq  $13,   %rax       /* SYS_CHAN_SEND */
+    movq  %r12,  %rdi
+    movq  %rsp,  %rsi
+    movq  $0,    %rdx
+    syscall
+
+    movq  $8,    %rax       /* SYS_SLEEP(1) */
+    movq  $1,    %rdi
+    syscall
+    jmp   .kbd_recv
+
+.kbd_reply_fail:
+    leaq  80(%rsp), %rdi
+    movb  $'K',  0(%rdi)
+    movb  $'B',  1(%rdi)
+    movb  $'D',  2(%rdi)
+    movb  $' ',  3(%rdi)
+    movb  $'r',  4(%rdi)
+    movb  $'e',  5(%rdi)
+    movb  $'p',  6(%rdi)
+    movb  $'l',  7(%rdi)
+    movb  $'y',  8(%rdi)
+    movb  $' ',  9(%rdi)
+    movb  $'F', 10(%rdi)
+    movb  $'A', 11(%rdi)
+    movb  $'I', 12(%rdi)
+    movb  $'L', 13(%rdi)
+    movb  $'\n',14(%rdi)
+    movb  $0,   15(%rdi)
+    movq  $0,    %rax
+    syscall
+    jmp   .kbd_dead
 
 .kbd_dead:
     movq  $1,    %rax        /* SYS_EXIT */
