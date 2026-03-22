@@ -1,157 +1,227 @@
 # IRIS OS
 
-IRIS OS is a custom x86_64 operating system built from scratch with UEFI, focused on low-level systems development, memory management, interrupt handling, multitasking, IPC, framebuffer graphics, filesystem abstractions, userland execution, syscall interface, hardware enumeration, and kernel stability.
+IRIS is a custom x86_64 operating system built from scratch with UEFI boot, explicit kernel/user separation, a syscall boundary, ring 3 execution, and an in-progress transition toward a capability-based microkernel architecture.
+
+The project is no longer just a "kernel base" experiment. It now has enough integrated pieces to boot, create user processes, expose kernel objects through handles, publish bootstrap services, and consume a first service from userland.
 
 ---
 
 ## Current Status
 
-**Stage 13 + Stability Fixes Batch 1**
+**Hybrid transition toward microkernel**
 
-The kernel has completed PCI enumeration and a full stability pass covering memory isolation, syscall hardening, scheduler architecture, and virtual address space formalization.
+IRIS currently boots a monolithic kernel core with several services still inside the kernel, but it already includes:
 
-### Completed stages
+- ring 3 user tasks
+- per-process address spaces
+- a capability-oriented object model
+- handle tables
+- channel-based IPC
+- process objects
+- nameserver bootstrap
+- a first user-space keyboard server
+- userland lookup of the `kbd` service through the nameserver
 
-| Stage | Component | Description |
-|-------|-----------|-------------|
-| 0-2 | UEFI Bootstrap | Loader parses ELF kernel, passes `iris_boot_info`, jumps to kernel |
-| 3 | ExitBootServices | Firmware OFF, kernel owns machine, full memory map passed |
-| 4 | PMM | Bitmap allocator, 503 MB tracked at 4K granularity, `pmm_alloc_pages(n)` |
-| 5 | Paging | 4-level x86_64 paging, 2MB huge pages, kernel/user separation |
-| 6 | GDT + IDT | 7-entry GDT with TSS, 256-entry IDT, exception handlers |
-| 7 | Scheduler | Round-robin cooperative scheduler, PIT at 100Hz, per-task quantum |
-| 8 | IPC | Circular buffer channels, blocking recv, producer/consumer validated |
-| 9 | Framebuffer | Direct pixel writes to UEFI GOP framebuffer, `fb_fill`, `fb_draw_rect` |
-| 10 | VFS + ramfs | Virtual filesystem, in-memory ramfs, open/read/write/close/stat/seek/mkdir |
-| 11 | Userland | TSS, kernel stack per task, `iretq` trampoline, ring 3 user_init process |
-| 12 | Syscall | MSR LSTAR/STAR/SFMASK, per-task kernel stack, SYS_WRITE/EXIT/GETPID/YIELD/OPEN/READ/CLOSE/BRK/SLEEP |
-| 13 | PCI | Bus enumeration via config space, device table, class detection |
+This means the project is in a **hybrid integration phase**:
 
-### Stability fixes applied (post-Stage 13)
+- the low-level kernel base is already established
+- the microkernel core is already partially real
+- the main work now is stabilization, integration, and gradual service extraction
 
-| Fix | Description |
-|-----|-------------|
-| Build | Unified assembler flags — `KASM_FLAGS` → `KERNEL_ASFLAGS` throughout Makefile |
-| Security | Ring 3 RFLAGS: lowered IOPL from 3 to 0 (`0x3202` → `0x0202`) |
-| Security | Closed IOPB: `iopb_offset = sizeof(tss)` — no direct I/O ports from ring 3 |
-| MM | Each ring 3 task gets its own CR3 via `paging_create_user_space()` |
-| MM | `PAGE_USER` removed from identity map, framebuffer, and intermediate tables |
-| MM | `PAGE_USER` now propagates only from leaf flags — intermediate tables follow the leaf |
-| MM | User stack mapped at `USER_STACK_TOP` in process CR3 — no longer aliased to kernel BSS |
-| MM | `ustack[]` removed from `struct task` — replaced by virtual stack metadata fields |
-| MM | Fix 13: formal virtual address space layout with named constants in `paging.h` |
-| MM | Linker script exports `__text_start/end`, `__rodata_start/end`, `__data_start/end`, `__bss_start/end` |
-| Sched | Documented as cooperative-only — IRQ0 increments ticks but does not force preemption |
-| Sched | Per-task `time_slice`, `ticks_left`, `need_resched` fields added |
-| Sched | Quantum reloaded on `task_yield()` |
-| Syscall | Per-task kernel stack for syscalls — `syscall_set_kstack()` called on every context switch |
-| Syscall | `syscall_entry.S` rewritten — clean save/restore frame, no duplicate offset blocks |
-| Syscall | User pointer validation checks page table presence via `paging_virt_to_phys()` |
-| Syscall | Added SYS_YIELD(3), SYS_OPEN(4), SYS_READ(5), SYS_CLOSE(6), SYS_BRK(7), SYS_SLEEP(8) |
+---
+
+## Implemented Subsystems
+
+| Area | Status | Notes |
+|------|--------|-------|
+| UEFI boot | Working | `BOOTX64.EFI` loads the ELF kernel and passes `iris_boot_info` |
+| PMM | Working | Bitmap allocator over the firmware memory map |
+| Paging | Working | 4-level x86_64 paging with user/kernel split |
+| GDT/TSS/IDT | Working | Ring transitions, exceptions, IRQ dispatch |
+| PIT + scheduling | Working | Timer-driven round-robin with explicit blocking |
+| Legacy IPC | Working | Producer/consumer demo still present for kernel validation |
+| Framebuffer | Working | GOP framebuffer fill + rectangle drawing |
+| VFS + ramfs | Working | Still kernel-resident; not yet externalized |
+| PCI | Working | Config-space scan and device classification |
+| Keyboard IRQ path | Working | IRQ1 routed into a `KChannel` for a user-space server |
+| Ring 3 userland | Working | `user_init` runs in user mode |
+| Syscalls | Working | File, memory, IPC, notification, process, handle, nameserver paths present |
+| Capability core | Working | `KObject`, `KChannel`, `KProcess`, `HandleTable`, rights |
+| Nameserver bootstrap | Working | Kernel initializes nameserver and registers `kbd` |
+| First userland service path | Working | `user_init` does `NS_LOOKUP("kbd")` and sends a handshake |
+
+---
+
+## Microkernel State
+
+IRIS is best described today as:
+
+- **not** a pure monolithic kernel anymore
+- **not yet** a fully service-oriented microkernel system
+- **already** a capability-based hybrid core with real user-space service bootstrap
+
+What is already true:
+
+- process ownership is separated from thread execution state
+- process-scoped handles live in `KProcess`
+- threads/tasks carry scheduler state and CPU context
+- channels are kernel objects referenced through handles
+- nameserver lookup inserts fresh handles into the caller's table
+- bootstrap services can be published and discovered by name
+
+What is still pending:
+
+- broader migration of services out of the kernel
+- a cleaner root-handle/bootstrap contract
+- deeper lifecycle cleanup for processes/threads
+- more formal service protocols beyond bootstrap handshakes
 
 ---
 
 ## Architecture
 
-- **Target:** x86_64, UEFI boot (BOOTX64.EFI)
-- **Kernel type:** Microkernel-oriented
-- **Memory model:** 4-level paging, kernel at `KERNEL_VIRT_BASE + 0x200000`, framebuffer identity-mapped kernel-only
-- **Scheduler:** Cooperative (IRQ0 ticks only, no forced preemption yet), round-robin, per-task quantum (10 ticks = 100ms at 100Hz)
-- **IPC:** In-kernel circular buffer channels
-- **Framebuffer:** UEFI GOP, `pixels_per_scanline` stride, ARGB, kernel-only access
-- **VFS:** POSIX-inspired API backed by ramfs, supports files and directories
-- **Syscall:** MSR-based (`syscall`/`sysretq`), per-task kernel stack, validated user pointers, 9 syscalls
-- **PCI:** Config space enumeration (ports 0xCF8/0xCFC), multi-function support, class detection
+- **Target:** x86_64
+- **Boot:** UEFI (`BOOTX64.EFI`)
+- **Execution model:** kernel in ring 0, user processes in ring 3
+- **Memory model:** 4-level paging with separate user CR3 per process
+- **Kernel style:** hybrid kernel transitioning toward capability-based microkernel
+- **Scheduling:** timer-driven round-robin with blocking for IPC, notifications, and sleep
+- **IPC:** `KChannel` objects accessed through handle tables
+- **Process model:** `KProcess` owns address space, heap break, and handle table
+- **Thread/task model:** `struct task` owns execution context, stack, and scheduler state
+- **Bootstrap discovery:** kernel nameserver publishes initial services such as `kbd`
 
 ---
 
 ## Virtual Address Space Layout
-```
-0x0000000000001000  user text start (identity-mapped)
-0x0000000000200000  user text/data (kernel ELF physical base)
-0x0000000000400000  user heap base  (SYS_BRK)
+
+```text
+0x0000000000001000  user text start
+0x0000000000200000  user text/data mapping base
+0x0000000000400000  user heap base
 0x0000000000600000  user heap max
-0x000000007FFF7000  user stack base (32 KB, grows down)
+0x000000007FFF7000  user stack base
 0x000000007FFFF000  user stack top
 
-0xFFFFFFFF80200000  kernel text (.text)
-0xFFFFFFFF80205000  kernel data (.data/.bss)
-
-MMIO/framebuffer    identity-mapped, kernel-only (no PAGE_USER)
+0xFFFFFFFF80200000  kernel text base
+0xFFFFFFFF80205000  kernel data/bss area
 ```
+
+Notes:
+
+- user stacks are mapped in the process page table, not borrowed from kernel BSS
+- kernel mappings are not exported to ring 3 with `PAGE_USER`
+- framebuffer/MMIO remain kernel-only
 
 ---
 
 ## Repository Structure
-```
+
+```text
 boot/uefi/boot.c                          UEFI loader
-kernel/kernel_main.c                      Kernel entry, subsystem init
-kernel/include/iris/                      All kernel headers
-kernel/include/iris/paging.h             Virtual address space constants + page flags
-kernel/mm/pmm/pmm.c                       Bitmap PMM + pmm_alloc_pages(n)
-kernel/arch/x86_64/paging.c              4-level paging, user space isolation, paging_map_in()
-kernel/arch/x86_64/linker.ld             Kernel ELF layout with exported section symbols
-kernel/arch/x86_64/gdt.c                 GDT + TSS (IOPB closed)
-kernel/arch/x86_64/idt.c                 IDT + exception/IRQ dispatch
-kernel/arch/x86_64/pic.c                 PIC remap + PIT
-kernel/arch/x86_64/syscall_entry.S       MSR syscall handler, per-task kernel stack
-kernel/arch/x86_64/user_trampoline.S     iretq trampoline to ring 3
-kernel/arch/x86_64/user_init.S           First user-space process
-kernel/arch/x86_64/context_switch.S      context_switch(old, new)
-kernel/core/scheduler/scheduler.c        Cooperative round-robin scheduler, per-task quantum
-kernel/core/ipc/ipc.c                    IPC channels
-kernel/core/syscall/syscall.c            Syscall dispatcher + user ptr validation
-kernel/drivers/fb/fb.c                   Framebuffer driver
-kernel/drivers/serial/serial.c           Serial output (hex8/hex16/hex64/dec)
-kernel/drivers/pci/pci.c                 PCI bus enumeration + device table
-kernel/drivers/keyboard/keyboard.c       PS/2 keyboard driver (IRQ1, scancode→ASCII)
-kernel/fs/ramfs/ramfs.c                  In-memory filesystem
-kernel/fs/ramfs/vfs.c                    VFS layer
+kernel/kernel_main.c                      Kernel bootstrap and subsystem bring-up
+kernel/arch/x86_64/                       x86_64 boot, paging, traps, syscall entry
+kernel/core/scheduler/scheduler.c         Timer-driven scheduler and sleep wakeups
+kernel/core/syscall/syscall.c             Syscall dispatcher and syscall implementations
+kernel/core/irq/irq_routing.c             IRQ -> KChannel routing
+kernel/core/nameserver/nameserver.c       Bootstrap nameserver
+kernel/arch/x86_64/kbd_server.S           First user-space service
+kernel/arch/x86_64/user_init.S            First user-space init path
+kernel/new_core/include/iris/nc/          Capability core headers
+kernel/new_core/src/                      KObject/KChannel/KProcess/HandleTable implementations
+kernel/fs/ramfs/                          Current in-kernel filesystem implementation
+kernel/drivers/                           Serial, framebuffer, PCI, keyboard drivers
 ```
 
 ---
 
 ## Build & Run
+
 ```bash
-make clean && make && make run
+make clean
+make
+make check
+make run
 ```
 
----
-
-## Syscall Interface
-
-| Number | Name | Args | Description |
-|--------|------|------|-------------|
-| 0 | SYS_WRITE | rdi=str_ptr | Print string to serial (validated ptr) |
-| 1 | SYS_EXIT | rdi=code | Terminate process |
-| 2 | SYS_GETPID | — | Return current task id |
-| 3 | SYS_YIELD | — | Yield CPU to next task |
-| 4 | SYS_OPEN | rdi=path, rsi=flags | Open file, return fd |
-| 5 | SYS_READ | rdi=fd, rsi=buf, rdx=len | Read from fd |
-| 6 | SYS_CLOSE | rdi=fd | Close fd |
-| 7 | SYS_BRK | rdi=new_brk | Set heap break (0 = query) |
-| 8 | SYS_SLEEP | rdi=ticks | Yield for N ticks (100Hz) |
+`make run` launches IRIS in QEMU with OVMF.
 
 ---
 
-## PCI Device Table (QEMU)
+## Syscall Surface
 
-| Bus:Dev.Func | Vendor | Device | Class |
-|-------------|--------|--------|-------|
-| 0:0.0 | 0x8086 (Intel) | 0x29C0 | Host Bridge |
-| 0:1.0 | 0x1234 (QEMU) | 0x1111 | VGA Display |
-| 0:2.0 | 0x8086 (Intel) | 0x10D3 | e1000 Network |
-| 0:31.0 | 0x8086 (Intel) | 0x2918 | ICH9 LPC Bridge |
+Current syscall numbers exposed in `kernel/include/iris/syscall.h`:
+
+| Number | Name | Description |
+|--------|------|-------------|
+| 0 | `SYS_WRITE` | Print a user string to serial |
+| 1 | `SYS_EXIT` | Terminate current task |
+| 2 | `SYS_GETPID` | Return current task id |
+| 3 | `SYS_YIELD` | Yield CPU |
+| 4 | `SYS_OPEN` | VFS open |
+| 5 | `SYS_READ` | VFS read |
+| 6 | `SYS_CLOSE` | VFS close |
+| 7 | `SYS_BRK` | Heap break management |
+| 8 | `SYS_SLEEP` | Sleep by scheduler ticks |
+| 12 | `SYS_CHAN_CREATE` | Create channel object |
+| 13 | `SYS_CHAN_SEND` | Send `KChanMsg` through a channel handle |
+| 14 | `SYS_CHAN_RECV` | Receive `KChanMsg` through a channel handle |
+| 15 | `SYS_HANDLE_CLOSE` | Close a handle |
+| 16 | `SYS_VMO_CREATE` | Create VMO |
+| 17 | `SYS_VMO_MAP` | Map VMO into caller address space |
+| 18 | `SYS_SPAWN` | Spawn user process and bootstrap channel |
+| 19 | `SYS_NOTIFY_CREATE` | Create notification object |
+| 20 | `SYS_NOTIFY_SIGNAL` | Signal notification |
+| 21 | `SYS_NOTIFY_WAIT` | Wait on notification |
+| 22 | `SYS_HANDLE_DUP` | Duplicate handle with reduced rights |
+| 23 | `SYS_HANDLE_TRANSFER` | Move handle into another process |
+| 24 | `SYS_NS_REGISTER` | Register named service |
+| 25 | `SYS_NS_LOOKUP` | Look up named service and receive handle |
+
+---
+
+## Runtime Behavior Verified
+
+Recent validation on the current tree confirms:
+
+- the kernel boots to the Stage 13 banner
+- nameserver initializes during bootstrap
+- the `kbd` service is registered in the nameserver
+- `user_init` runs in ring 3
+- `user_init` successfully looks up `kbd`
+- `user_init` successfully sends a bootstrap handshake over the service handle
+- producer/consumer IPC continues running while userland and services are alive
+
+Representative serial output:
+
+```text
+[IRIS][NS] initializing...
+[IRIS][NS] bootstrap registry ready
+[IRIS][KBD-SRV] keyboard server spawned, id=3, handle=1024
+[IRIS][NS] registered service 'kbd'
+[IRIS][USER] init task created, id=4
+[USER] init bootstrap start
+[USER] kbd lookup OK
+[USER] kbd handshake sent
+```
 
 ---
 
 ## Roadmap
-```
-Stage 14  PS/2 keyboard driver (IRQ1, in progress)
-Stage 15  Interactive shell
-Stage 16  W^X memory permissions (PAGE_NX per segment)
-Stage 17  Preemptive scheduler (need_resched + forced yield on IRQ exit)
-```
+
+Short-term priorities:
+
+1. formalize the first service protocol beyond a bootstrap handshake
+2. keep stabilizing process/thread lifecycle and resource cleanup
+3. improve bootstrap handle delivery/root capability structure
+4. migrate additional small services out of the kernel
+5. leave VFS migration for a later, cleaner phase
+
+Non-goals for the immediate next step:
+
+- no cosmetic "microkernelization"
+- no large scheduler rewrite
+- no premature VFS externalization
 
 ---
 
@@ -160,6 +230,6 @@ Stage 17  Preemptive scheduler (need_resched + forced yield on IRQ exit)
 | Branch | Purpose |
 |--------|---------|
 | `silver` | Active development |
-| `staging` | Integration + testing |
-| `main` | Stable releases |
-| `collab` | External contributors |
+| `staging` | Integration and verification |
+| `main` | Promoted stable line |
+| `collab` | Collaboration branch |
