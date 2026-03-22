@@ -1,0 +1,21 @@
+#ifndef IRIS_NC_KVMO_H
+#define IRIS_NC_KVMO_H
+
+#include <iris/nc/kobject.h>
+#include <iris/nc/error.h>
+#include <stdint.h>
+
+/* Virtual Memory Object — represents a physical memory region.
+ * Can be mapped into a process address space via SYS_VMO_MAP. */
+struct KVmo {
+    struct KObject base;    /* must be first */
+    uint64_t       phys;    /* physical base address */
+    uint64_t       size;    /* size in bytes */
+    uint8_t        owned;   /* 1 = PMM-allocated, 0 = external (MMIO/FB) */
+};
+
+struct KVmo *kvmo_create(uint64_t size);             /* allocate from PMM */
+struct KVmo *kvmo_wrap  (uint64_t phys, uint64_t size); /* wrap existing phys (MMIO) */
+void         kvmo_free  (struct KVmo *v);
+
+#endif

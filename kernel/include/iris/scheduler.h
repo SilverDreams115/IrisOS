@@ -6,5 +6,6 @@
 void scheduler_init(void);
 void scheduler_tick(void);
 void scheduler_add_task(void (*entry)(void));
+void scheduler_sleep_current(uint64_t ticks);
 
 #endif

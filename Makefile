@@ -31,7 +31,17 @@ KERNEL_SYSCALLE_OBJ  := $(BUILD_DIR)/syscall_entry.o
 KERNEL_SERIAL_OBJ    := $(BUILD_DIR)/serial.o
 KERNEL_PCI_OBJ       := $(BUILD_DIR)/pci.o
 KERNEL_KBD_OBJ       := $(BUILD_DIR)/keyboard.o
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_IPC_OBJ) $(KERNEL_FB_OBJ) $(KERNEL_RAMFS_OBJ) $(KERNEL_VFS_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_USERINIT_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_PCI_OBJ) $(KERNEL_KBD_OBJ)
+KERNEL_NC_KOBJECT_OBJ    := $(BUILD_DIR)/nc_kobject.o
+KERNEL_NC_HANDLE_OBJ     := $(BUILD_DIR)/nc_handle.o
+KERNEL_NC_HANDLETBL_OBJ  := $(BUILD_DIR)/nc_handle_table.o
+KERNEL_NC_KCHANNEL_OBJ   := $(BUILD_DIR)/nc_kchannel.o
+KERNEL_NC_KVMO_OBJ       := $(BUILD_DIR)/nc_kvmo.o
+KERNEL_NC_KNOTIF_OBJ     := $(BUILD_DIR)/nc_knotification.o
+KERNEL_NC_KPROCESS_OBJ   := $(BUILD_DIR)/nc_kprocess.o
+KERNEL_IRQROUTING_OBJ    := $(BUILD_DIR)/irq_routing.o
+KERNEL_NAMESERVER_OBJ    := $(BUILD_DIR)/nameserver.o
+KERNEL_KBDSRV_OBJ        := $(BUILD_DIR)/kbd_server.o
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_IPC_OBJ) $(KERNEL_FB_OBJ) $(KERNEL_RAMFS_OBJ) $(KERNEL_VFS_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_USERINIT_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_PCI_OBJ) $(KERNEL_KBD_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_NAMESERVER_OBJ) $(KERNEL_KBDSRV_OBJ)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -45,7 +55,7 @@ ifeq ($(strip $(EFI_LDS)),)
 $(error No se encontro elf_x86_64_efi.lds. Instala gnu-efi)
 endif
 
-KERNEL_INCLUDES := -I./kernel/include
+KERNEL_INCLUDES := -I./kernel/include -I./kernel/new_core/include
 UEFI_INCLUDES   := -I./kernel/include -isystem /usr/include/efi -isystem /usr/include/efi/x86_64
 
 COMMON_WARNINGS := -Wall -Wextra -Wshadow -Wundef
@@ -150,6 +160,36 @@ $(KERNEL_PCI_OBJ): kernel/drivers/pci/pci.c | dirs
 $(KERNEL_KBD_OBJ): kernel/drivers/keyboard/keyboard.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
+$(KERNEL_NC_KOBJECT_OBJ): kernel/new_core/src/kobject.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_HANDLE_OBJ): kernel/new_core/src/handle.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_HANDLETBL_OBJ): kernel/new_core/src/handle_table.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_KCHANNEL_OBJ): kernel/new_core/src/kchannel.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_KVMO_OBJ): kernel/new_core/src/kvmo.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_KNOTIF_OBJ): kernel/new_core/src/knotification.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_KPROCESS_OBJ): kernel/new_core/src/kprocess.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_IRQROUTING_OBJ): kernel/core/irq/irq_routing.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NAMESERVER_OBJ): kernel/core/nameserver/nameserver.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_KBDSRV_OBJ): kernel/arch/x86_64/kbd_server.S | dirs
+	gcc $(KERNEL_ASFLAGS) -c $< -o $@
+
 $(KERNEL_ELF): $(KERNEL_OBJS)
 	ld $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $@
 
@@ -175,4 +215,3 @@ clean:
 	rm -f $(BUILD_DIR)/*.elf
 	rm -f $(BUILD_DIR)/OVMF_VARS.fd
 	rm -rf $(BUILD_DIR)/efi_root
-

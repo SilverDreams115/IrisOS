@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+struct task; /* forward declaration — evita dependencia circular con task.h */
+
 #define IPC_MSG_SIZE     64
 #define IPC_CHANNEL_CAP  16
 #define IPC_MAX_CHANNELS 8
@@ -38,6 +40,7 @@ struct ipc_channel {
     uint32_t         tail;
     uint32_t         count;
     uint32_t         reserved;
+    struct task     *waiter; /* tarea bloqueada esperando recv, o NULL */
 };
 
 void     ipc_init(void);
