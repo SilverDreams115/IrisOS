@@ -225,13 +225,12 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         struct KChannel *kbd_req = kchannel_alloc();
         struct KChannel *kbd_rsp = kchannel_alloc();
         if (kbd_req && kbd_rsp) {
-            irq_routing_register(1, kbd_req);
-
             /* Spawn the server first so its handle table is ready */
             extern void kbd_server(void);
             /* Pass handle=0 temporarily; we'll fix it after inserting into table */
             struct task *ks = task_spawn_user((uint64_t)(uintptr_t)kbd_server, 0);
             if (ks) {
+                irq_routing_register(1, kbd_req, ks->process);
                 /* Insert request channel into kbd_server's handle table */
                 handle_id_t h = handle_table_insert(&ks->process->handle_table,
                                                     &kbd_req->base,
@@ -241,9 +240,10 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                  * one-off stack/register patching paths. */
                 task_set_bootstrap_arg0(ks, (uint64_t)h);
 
-                iris_error_t ns_req = ns_register("kbd", &kbd_req->base, RIGHT_WRITE);
+                iris_error_t ns_req = ns_register("kbd", &kbd_req->base,
+                                                  RIGHT_WRITE, ks->process);
                 iris_error_t ns_rsp = ns_register("kbd.reply", &kbd_rsp->base,
-                                                  RIGHT_READ | RIGHT_WRITE);
+                                                  RIGHT_READ | RIGHT_WRITE, ks->process);
 
                 serial_write("[IRIS][KBD-SRV] keyboard server spawned, id=");
                 serial_write_dec(ks->id);
@@ -265,6 +265,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     serial_write("\n");
                 }
             } else {
+                irq_routing_register(1, 0, 0);
                 serial_write("[IRIS][KBD-SRV] WARN: could not spawn keyboard server\n");
             }
             /* Release local references — the table / nameserver / routing table hold theirs */

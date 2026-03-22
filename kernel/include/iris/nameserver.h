@@ -8,6 +8,8 @@
 #include <iris/task.h>
 #include <stdint.h>
 
+struct KProcess;
+
 /*
  * Kernel-side nameserver — maps service names to KObjects.
  *
@@ -35,7 +37,7 @@ void         ns_init       (void);
 /* Register obj under name with rights.  Retains obj.
  * Returns IRIS_ERR_ALREADY_EXISTS if name is taken. */
 iris_error_t ns_register   (const char *name, struct KObject *obj,
-                             iris_rights_t rights);
+                             iris_rights_t rights, struct KProcess *owner);
 
 /* Insert a handle to the named service into task t's handle table.
  * Rights are capped to what was registered, intersected with req_rights.
@@ -46,5 +48,6 @@ handle_id_t  ns_lookup     (const char *name, struct task *t,
 
 /* Remove service by name.  Releases the retained KObject. */
 iris_error_t ns_unregister (const char *name);
+void         ns_unregister_owner(struct KProcess *owner);
 
 #endif

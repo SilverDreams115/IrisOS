@@ -84,6 +84,11 @@ iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits) {
         }
         struct task *t = task_current();
         if (t) {
+            if (n->waiter && n->waiter != t) {
+                /* Single-waiter policy: do not silently lose the first waiter. */
+                spinlock_unlock(&n->base.lock);
+                return IRIS_ERR_BUSY;
+            }
             n->waiter = t;
             t->state  = TASK_BLOCKED_IRQ;
         }

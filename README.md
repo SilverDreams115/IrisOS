@@ -14,9 +14,12 @@ IRIS currently boots a monolithic kernel core with several services still inside
 
 - ring 3 user tasks
 - per-process address spaces
+- process-owned private user mappings
 - a capability-oriented object model
 - handle tables
 - channel-based IPC
+- notification objects
+- VMOs with user mappings
 - process objects
 - nameserver bootstrap
 - a first user-space keyboard server
@@ -45,8 +48,8 @@ This means the project is in a **hybrid integration phase**:
 | PCI | Working | Config-space scan and device classification |
 | Keyboard IRQ path | Working | IRQ1 routed into a `KChannel` for a user-space server |
 | Ring 3 userland | Working | `user_init` runs in user mode |
-| Syscalls | Working | File, memory, IPC, notification, process, handle, nameserver paths present |
-| Capability core | Working | `KObject`, `KChannel`, `KProcess`, `HandleTable`, rights |
+| Syscalls | Working | File, memory, IPC, notification, process, handle, nameserver paths present with stricter validation in core paths |
+| Capability core | Working | `KObject`, `KChannel`, `KProcess`, `KNotification`, `KVmo`, `HandleTable`, rights |
 | Nameserver bootstrap | Working | Kernel initializes nameserver and registers `kbd` |
 | First userland service path | Working | `user_init` does `NS_LOOKUP("kbd")` and sends a handshake |
 
@@ -64,17 +67,22 @@ What is already true:
 
 - process ownership is separated from thread execution state
 - process-scoped handles live in `KProcess`
+- process teardown and final destroy are split explicitly
+- exited user processes release handle tables, user stack, heap pages, CR3, and private page tables
 - threads/tasks carry scheduler state and CPU context
 - channels are kernel objects referenced through handles
+- notifications use an explicit single-waiter policy
+- `sys_spawn` rolls back partial children instead of publishing ambiguous state
+- `sys_vmo_map` and `sys_brk` use observable mapping failure paths in critical syscall code
 - nameserver lookup inserts fresh handles into the caller's table
 - bootstrap services can be published and discovered by name
 
 What is still pending:
 
 - broader migration of services out of the kernel
-- deeper lifecycle cleanup for processes/threads
 - a cleaner root-handle/capability structure beyond the current bootstrap arg0 path
 - more formal service protocols beyond the first minimal request/response contracts
+- continued hardening of syscall/error coherence outside the already-fixed hot paths
 
 ---
 
@@ -110,19 +118,23 @@ This is intentional:
 ## Virtual Address Space Layout
 
 ```text
-0x0000000000001000  user text start
-0x0000000000200000  user text/data mapping base
-0x0000000000400000  user heap base
-0x0000000000600000  user heap max
-0x000000007FFF7000  user stack base
-0x000000007FFFF000  user stack top
+0x0000000000000000 - 0x0000000003FFFFFF  shared low kernel window
+0x0000008000200000                    user text base
+0x0000008000400000                    user heap base
+0x0000008040000000                    user heap max
+0x0000008050000000                    user VMO mapping window start
+0x00000080FFFF7000                    user stack base
+0x00000080FFFFF000                    user stack top
 
-0xFFFFFFFF80200000  kernel text base
-0xFFFFFFFF80205000  kernel data/bss area
+0xFFFF800000000000                    kernel physmap base
+0xFFFFFFFF80200000                    kernel text base
+0xFFFFFFFF80205000                    kernel data/bss area
 ```
 
 Notes:
 
+- the lower shared window is kernel-only and shared across CR3s
+- user text, heap, VMOs, and stack live in the process-private window
 - user stacks are mapped in the process page table, not borrowed from kernel BSS
 - kernel mappings are not exported to ring 3 with `PAGE_USER`
 - framebuffer/MMIO remain kernel-only
@@ -182,11 +194,11 @@ Current syscall numbers exposed in `kernel/include/iris/syscall.h`:
 | 14 | `SYS_CHAN_RECV` | Receive `KChanMsg` through a channel handle |
 | 15 | `SYS_HANDLE_CLOSE` | Close a handle |
 | 16 | `SYS_VMO_CREATE` | Create VMO |
-| 17 | `SYS_VMO_MAP` | Map VMO into caller address space |
-| 18 | `SYS_SPAWN` | Spawn user process and bootstrap channel |
+| 17 | `SYS_VMO_MAP` | Map VMO into caller address space with range/rights validation |
+| 18 | `SYS_SPAWN` | Spawn user process with rollback-safe bootstrap channel setup |
 | 19 | `SYS_NOTIFY_CREATE` | Create notification object |
 | 20 | `SYS_NOTIFY_SIGNAL` | Signal notification |
-| 21 | `SYS_NOTIFY_WAIT` | Wait on notification |
+| 21 | `SYS_NOTIFY_WAIT` | Wait on notification with explicit single-waiter behavior |
 | 22 | `SYS_HANDLE_DUP` | Duplicate handle with reduced rights |
 | 23 | `SYS_HANDLE_TRANSFER` | Move handle into another process |
 | 24 | `SYS_NS_REGISTER` | Register named service |
@@ -207,6 +219,7 @@ Recent validation on the current tree confirms:
 - `user_init` successfully looks up `kbd.reply`
 - `kbd_server` receives `KBD_OP_HELLO` and replies correctly
 - `kbd_server` receives `KBD_OP_GET_STATUS` and replies correctly
+- `sys_exit` follows the common exit path and completes process teardown
 - producer/consumer IPC continues running while userland and services are alive
 
 Representative serial output:
