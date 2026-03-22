@@ -6,7 +6,19 @@
 static struct KNotification pool[POOL_SIZE];
 static uint8_t              pool_used[POOL_SIZE];
 
+static void knotification_close(struct KObject *obj) {
+    struct KNotification *n = (struct KNotification *)obj;
+    spinlock_lock(&n->base.lock);
+    n->closed = 1;
+    if (n->waiter && n->waiter->state == TASK_BLOCKED_IRQ) {
+        n->waiter->state = TASK_READY;
+        n->waiter = 0;
+    }
+    spinlock_unlock(&n->base.lock);
+}
+
 static void knotification_destroy(struct KObject *obj) {
+    knotification_close(obj);
     struct KNotification *n = (struct KNotification *)obj;
     for (int i = 0; i < POOL_SIZE; i++) {
         if (&pool[i] == n) { pool_used[i] = 0; return; }
@@ -14,6 +26,7 @@ static void knotification_destroy(struct KObject *obj) {
 }
 
 static const struct KObjectOps knotification_ops = {
+    .close = knotification_close,
     .destroy = knotification_destroy
 };
 
@@ -43,11 +56,14 @@ void knotification_free(struct KNotification *n) {
  * Safe from IRQ context — uses spinlock only briefly.
  */
 void knotification_signal(struct KNotification *n, uint64_t bits) {
-    /* Atomically OR the bits in first — a racing wait will see them
-     * even if it runs before we acquire the lock. */
-    atomic_fetch_or_explicit(&n->signal_bits, bits, memory_order_release);
-
     spinlock_lock(&n->base.lock);
+    if (n->closed) {
+        spinlock_unlock(&n->base.lock);
+        return;
+    }
+    /* Atomically OR the bits in first — a racing wait will see them
+     * even if it runs before we release the lock. */
+    atomic_fetch_or_explicit(&n->signal_bits, bits, memory_order_release);
     struct task *w = n->waiter;
     if (w && w->state == TASK_BLOCKED_IRQ) {
         w->state  = TASK_READY;
@@ -78,12 +94,21 @@ iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits) {
         spinlock_lock(&n->base.lock);
         /* Re-check under lock to avoid lost wakeup. */
         bits = atomic_load_explicit(&n->signal_bits, memory_order_acquire);
+        if (bits == 0 && n->closed) {
+            spinlock_unlock(&n->base.lock);
+            return IRIS_ERR_CLOSED;
+        }
         if (bits != 0) {
             spinlock_unlock(&n->base.lock);
             continue; /* retry fast path */
         }
         struct task *t = task_current();
         if (t) {
+            if (n->waiter && n->waiter != t) {
+                /* Single-waiter policy: do not silently lose the first waiter. */
+                spinlock_unlock(&n->base.lock);
+                return IRIS_ERR_BUSY;
+            }
             n->waiter = t;
             t->state  = TASK_BLOCKED_IRQ;
         }

@@ -4,12 +4,20 @@
 #include <stdint.h>
 
 /*
- * IPC — Inter-Process Communication
+ * ── Legacy IPC implementation ─────────────────────────────────────
  *
+ * STATUS: legacy-only.  Kernel-internal use exclusively.
+ *   - No syscall surface: SYS_IPC_CREATE/SEND/RECV (9-11) retired.
+ *   - No user-space visibility.
+ *   - Single consumer: producer/consumer demo in kernel_main.c.
+ *
+ * Do not add new callers.  Do not extend this API.
+ * Modern IPC path: KChannel + handle table (iris/nc/kchannel.h).
+ * Retirement plan: remove this file together with the demo tasks
+ * once the nameserver-based service model is validated.
+ *
+ * ── Original design ──────────────────────────────────────────────
  * Canal = buffer circular de mensajes (FIFO).
- * Las tareas se comunican enviando y recibiendo mensajes
- * sin compartir memoria directamente.
- *
  * ipc_send    → no bloqueante, falla si el canal está lleno
  * ipc_recv    → bloqueante: cede el CPU hasta que haya un mensaje
  * ipc_try_recv → no bloqueante, retorna IPC_ERR_EMPTY si vacío
