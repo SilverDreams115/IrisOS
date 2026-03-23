@@ -99,7 +99,9 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     vfs_init();
     vfs_mkdir("dev");
     serial_write("[IRIS][VFS] /dev created\n");
-    /* VFS smoke test — create, write, read back, stat */
+    /* Transitional backend seed for the migrated userland VFS path.
+     * Keep the file population in the healthy path, but quarantine the
+     * old kernel-side read/stat smoke behind the runtime selftest gate. */
     {
         const char *msg = "Hello from IrisOS VFS!\n";
         uint32_t msglen = 0;
@@ -107,7 +109,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         int32_t fd = vfs_open("iris.txt", VFS_O_CREATE | VFS_O_WRITE);
         vfs_write(fd, msg, msglen);
         vfs_close(fd);
-
+#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
         char rdbuf[64];
         for (int i = 0; i < 64; i++) rdbuf[i] = 0;
         fd = vfs_open("iris.txt", VFS_O_READ);
@@ -123,7 +125,9 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         serial_write("[IRIS][VFS] stat iris.txt size=");
         serial_write_dec(fsize);
         serial_write("\n");
-        serial_write("[IRIS][VFS] OK\n");
+#else
+        serial_write("[IRIS][VFS] backend seed ready\n");
+#endif
     }
 
     serial_write("[IRIS][PCI] initializing...\n");
@@ -156,10 +160,11 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 #endif
 
     /* ── 8. Transitional bootstrap: service wiring ──────────────── */
-    svcmgr_bootstrap_init(); /* spawn svcmgr + queue kbd spawn request */
+    svcmgr_bootstrap_init(); /* spawn svcmgr and retain the root bootstrap channel */
 
-    /* ── 9. User init process ───────────────────────────────────── */
+    /* ── 9. First user task ─────────────────────────────────────── */
     serial_write("[IRIS][USER] preparing init process...\n");
+#ifndef IRIS_ENABLE_RUNTIME_SELFTESTS
     extern void user_init(void);
     struct task *ut = task_spawn_user((uint64_t)(uintptr_t)user_init, 0);
     if (ut) {
@@ -180,6 +185,30 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     } else {
         serial_write("[IRIS][USER] WARN: could not create user task\n");
     }
+#else
+    {
+        extern void user_selftest(void);
+        struct task *st = task_spawn_user((uint64_t)(uintptr_t)user_selftest, 0);
+        if (st) {
+            handle_id_t sm_bootstrap_h = HANDLE_INVALID;
+            iris_error_t br = svcmgr_bootstrap_attach_client(st, RIGHT_WRITE, &sm_bootstrap_h);
+            if (br != IRIS_OK) {
+                serial_write("[IRIS][USER] WARN: selftest bootstrap attach failed\n");
+                task_abort_spawned_user(st);
+                st = 0;
+            } else {
+                task_set_bootstrap_arg0(st, (uint64_t)sm_bootstrap_h);
+            }
+        }
+        if (st) {
+            serial_write("[IRIS][USER] selftest task created, id=");
+            serial_write_dec(st->id);
+            serial_write("\n");
+        } else {
+            serial_write("[IRIS][USER] WARN: could not create selftest task\n");
+        }
+    }
+#endif
 
     /* ── 10. Scheduler start ────────────────────────────────────── */
     __asm__ volatile ("sti");

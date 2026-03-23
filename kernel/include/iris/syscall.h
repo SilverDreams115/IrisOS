@@ -73,6 +73,12 @@
                                  *   Requires RIGHT_TRANSFER on src_handle.
                                  *   Requires RIGHT_MANAGE on dest_proc_handle.
                                  *   Consumes src_handle. new_rights ⊆ src rights. */
+#define SYS_PROCESS_WATCH   29  /* (proc_handle, chan_handle, cookie) → 0 or negative iris_error_t
+                                 *   Registers one process-exit watch for proc_handle.
+                                 *   On death, the kernel sends PROC_EVENT_MSG_EXIT to
+                                 *   chan_handle with the watched proc_handle id and cookie.
+                                 *   Requires RIGHT_READ on proc_handle and RIGHT_WRITE on
+                                 *   chan_handle. Single-subscriber per target process today. */
 #define SYS_PROCESS_SELF    28  /* () → self proc_handle or negative iris_error_t
                                  *   Returns a handle to the caller's own KProcess with
                                  *   RIGHT_READ|RIGHT_DUPLICATE|RIGHT_TRANSFER.
@@ -82,14 +88,26 @@
  * Process lifecycle query — modern/conforming (iris_error_t).
  *
  * SYS_PROCESS_STATUS is a non-blocking query: it returns immediately.
- * Callers that need to observe service death poll this in their event loop.
- * Event-driven death notification (multiplexed wait) is the intended
- * evolution; this syscall is the minimum base for that phase.
+ * Callers that do not have a process-exit watch path may still poll this.
+ * Healthy-path supervision should prefer SYS_PROCESS_WATCH where practical;
+ * this syscall remains the fallback compatibility query.
  */
 #define SYS_PROCESS_STATUS  26  /* (proc_handle) → 1=alive, 0=dead, or negative iris_error_t
                                   *   Requires RIGHT_READ on proc_handle.
                                   *   Returns 0 when the process has called SYS_EXIT or been
                                   *   reaped; the handle itself remains valid for closing. */
+
+/*
+ * Process-exit event delivered over KChannel by SYS_PROCESS_WATCH.
+ *
+ *   type                         PROC_EVENT_MSG_EXIT
+ *   data[PROC_EVENT_OFF_HANDLE]  handle_id_t watched by the subscriber
+ *   data[PROC_EVENT_OFF_COOKIE]  uint32_t subscriber-defined cookie
+ */
+#define PROC_EVENT_MSG_EXIT       0x90000001u
+#define PROC_EVENT_OFF_HANDLE     0u
+#define PROC_EVENT_OFF_COOKIE     4u
+#define PROC_EVENT_MSG_LEN        8u
 #define SYS_IRQ_ROUTE_REGISTER 27 /* (irq_num, chan_handle, proc_handle) → 0 or negative iris_error_t
                                    *   Routes hardware IRQ irq_num into chan_handle, owned by
                                    *   proc_handle.  When proc_handle's process exits,

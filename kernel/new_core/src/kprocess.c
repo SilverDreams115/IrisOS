@@ -1,12 +1,45 @@
 #include <iris/nc/kprocess.h>
+#include <iris/nc/kchannel.h>
 #include <iris/nc/handle_table.h>
+#include <iris/nc/rights.h>
 #include <iris/irq_routing.h>
 #include <iris/nameserver.h>
+#include <iris/syscall.h>
 #include <iris/pmm.h>
 #include <stdint.h>
 
 static struct KProcess pool[KPROCESS_POOL_SIZE];
 static uint8_t         pool_used[KPROCESS_POOL_SIZE];
+
+static void kprocess_clear_exit_watch(struct KProcess *p) {
+    if (!p || !p->exit_watch_armed || !p->exit_watch_ch) return;
+    kobject_release(&p->exit_watch_ch->base);
+    p->exit_watch_ch = 0;
+    p->exit_watch_handle = HANDLE_INVALID;
+    p->exit_watch_cookie = 0;
+    p->exit_watch_armed = 0;
+}
+
+static void kprocess_emit_exit_watch(struct KProcess *p) {
+    struct KChanMsg msg;
+
+    if (!p || !p->exit_watch_armed || !p->exit_watch_ch) return;
+
+    for (uint32_t i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
+    msg.type = PROC_EVENT_MSG_EXIT;
+    msg.data[PROC_EVENT_OFF_HANDLE + 0] = (uint8_t)(p->exit_watch_handle & 0xFFu);
+    msg.data[PROC_EVENT_OFF_HANDLE + 1] = (uint8_t)((p->exit_watch_handle >> 8) & 0xFFu);
+    msg.data[PROC_EVENT_OFF_HANDLE + 2] = (uint8_t)((p->exit_watch_handle >> 16) & 0xFFu);
+    msg.data[PROC_EVENT_OFF_HANDLE + 3] = (uint8_t)((p->exit_watch_handle >> 24) & 0xFFu);
+    msg.data[PROC_EVENT_OFF_COOKIE + 0] = (uint8_t)(p->exit_watch_cookie & 0xFFu);
+    msg.data[PROC_EVENT_OFF_COOKIE + 1] = (uint8_t)((p->exit_watch_cookie >> 8) & 0xFFu);
+    msg.data[PROC_EVENT_OFF_COOKIE + 2] = (uint8_t)((p->exit_watch_cookie >> 16) & 0xFFu);
+    msg.data[PROC_EVENT_OFF_COOKIE + 3] = (uint8_t)((p->exit_watch_cookie >> 24) & 0xFFu);
+    msg.data_len = PROC_EVENT_MSG_LEN;
+    msg.attached_handle = HANDLE_INVALID;
+    msg.attached_rights = RIGHT_NONE;
+    (void)kchannel_send(p->exit_watch_ch, &msg);
+}
 
 static void kprocess_destroy(struct KObject *obj) {
     struct KProcess *p = (struct KProcess *)obj;
@@ -49,9 +82,29 @@ void kprocess_free(struct KProcess *p) {
     kobject_release(&p->base);
 }
 
+iris_error_t kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
+                                 handle_id_t watched_handle, uint32_t cookie) {
+    if (!p || !ch || watched_handle == HANDLE_INVALID) return IRIS_ERR_INVALID_ARG;
+    if (p->exit_watch_armed) return IRIS_ERR_BUSY;
+
+    kobject_retain(&ch->base);
+    p->exit_watch_ch = ch;
+    p->exit_watch_handle = watched_handle;
+    p->exit_watch_cookie = cookie;
+    p->exit_watch_armed = 1;
+
+    if (!kprocess_is_alive(p)) {
+        kprocess_emit_exit_watch(p);
+        kprocess_clear_exit_watch(p);
+    }
+    return IRIS_OK;
+}
+
 void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     if (!p || p->teardown_complete) return;
 
+    kprocess_emit_exit_watch(p);
+    kprocess_clear_exit_watch(p);
     ns_unregister_owner(p);
     irq_routing_unregister_owner(p);
     handle_table_close_all(&p->handle_table);

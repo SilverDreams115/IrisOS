@@ -58,15 +58,22 @@ struct KProcess {
      * Only one process holds this flag at any given time by convention.
      */
     uint8_t         ns_authority;
+    uint8_t         exit_watch_armed; /* one death subscriber registered */
+    handle_id_t     exit_watch_handle;/* subscriber's proc_handle id for callbacks */
+    uint32_t        exit_watch_cookie;/* subscriber-defined cookie echoed on death */
+    struct KChannel *exit_watch_ch;   /* retained channel for death event delivery */
     HandleTable     handle_table;/* process-scoped handles/capabilities */
 };
 
 #define KPROCESS_POOL_SIZE 16  /* maximum live KProcess objects system-wide */
 
+struct KChannel;
 struct KProcess *kprocess_alloc(void);
 void             kprocess_free (struct KProcess *p);
 void             kprocess_teardown(struct KProcess *p, struct task *exiting_thread);
 void             kprocess_reap_address_space(struct KProcess *p);
+iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
+                                     handle_id_t watched_handle, uint32_t cookie);
 
 static inline int kprocess_is_alive(const struct KProcess *p) {
     return p && p->main_thread && p->main_thread->state != TASK_DEAD;

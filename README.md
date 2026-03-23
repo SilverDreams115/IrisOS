@@ -27,6 +27,8 @@ What is already real:
 - userland-authoritative lookup for migrated live services
 - a userland keyboard service
 - a userland VFS service with real ownership of the migrated `OPEN/READ/CLOSE` path
+- explicit shared protocols for the live `svcmgr` and `vfs` service paths
+- compact subsystem-owned status summaries for `svcmgr` and `vfs`
 - IRQ routing with process-scoped ownership and automatic cleanup
 - dead-client reclaim for migrated VFS entries
 
@@ -57,6 +59,7 @@ Current authority split:
 - keyboard service policy/lifecycle: `svcmgr` + `kbd_server`
 - migrated VFS file/session state: `vfs` service
 - VFS backend storage: kernel ramfs for now
+- service/runtime status ownership: subsystem-local `STATUS` replies from `svcmgr` and `vfs`
 
 ---
 
@@ -73,6 +76,8 @@ Current authority split:
 | Service manager | Working | `svcmgr` runs in ring 3 and owns live lookup for migrated services |
 | Keyboard path | Working | `kbd` + `kbd.reply` booted by `svcmgr` |
 | VFS migrated path | Working | `vfs` owns client-visible `file_id`, offsets, close semantics, stale-id rejection, and dead-client reclaim for the accepted subset |
+| Service protocols | Working | `svcmgr` and `vfs` now use shared protocol headers with explicit message layouts and protocol versions |
+| Service status visibility | Working | compact `STATUS` replies expose live `svcmgr` supervision state and `vfs` export/open state |
 | IRQ ownership | Working | Route ownership follows the service `KProcess`; cleanup happens on exit |
 | Bootstrap nameserver | Transitional | Still present, but no longer the normal path for bootstrapping `svcmgr` |
 
@@ -121,6 +126,7 @@ Default boot keeps a small healthy smoke path:
 - `svcmgr` startup
 - explicit bootstrap-handle handoff to `user_init`
 - `kbd` lookup and reply path
+- compact `svcmgr` / `vfs` status checks
 - migrated `vfs` lookup and `OPEN/READ/CLOSE` path
 
 Heavier proof probes are available, but not enabled by default.
@@ -165,6 +171,7 @@ The current syscall surface lives in [kernel/include/iris/syscall.h](/home/silve
 - `SYS_CHAN_CREATE`, `SYS_CHAN_SEND`, `SYS_CHAN_RECV`
 - `SYS_HANDLE_CLOSE`, `SYS_HANDLE_DUP`, `SYS_HANDLE_TRANSFER`
 - `SYS_SPAWN`
+- `SYS_PROCESS_WATCH`
 - `SYS_NOTIFY_CREATE`, `SYS_NOTIFY_SIGNAL`, `SYS_NOTIFY_WAIT`
 - `SYS_VMO_CREATE`, `SYS_VMO_MAP`
 - `SYS_PROCESS_STATUS`, `SYS_PROCESS_SELF`
@@ -175,6 +182,41 @@ Current status of the nameserver syscalls:
 
 - `SYS_NS_REGISTER` is restricted to `svcmgr`
 - `SYS_NS_LOOKUP` is now transitional bootstrap compatibility, not the intended steady-state discovery path
+
+Current lifecycle note:
+
+- healthy-path `svcmgr` supervision is no longer pure polling; service exit is watched via `SYS_PROCESS_WATCH`
+- `SYS_PROCESS_STATUS` still exists for fallback/compatibility queries and for paths not yet migrated to watch-based lifecycle
+
+---
+
+## Protocols And Status Surfaces
+
+The current live protocols are intentionally small, but they are no longer ad hoc byte soup.
+
+`svcmgr` protocol:
+
+- versioned by `SVCMGR_PROTO_VERSION`
+- shared definition in [kernel/include/iris/svcmgr_proto.h](/home/silver/projects/IRIS/kernel/include/iris/svcmgr_proto.h)
+- covers bootstrap-handle delivery, service lookup, process-exit watch events, and `STATUS`
+- `STATUS` reports:
+  - manifest entry count
+  - ready service count
+  - active supervision slot count
+  - polling-fallback slot count
+
+`vfs` protocol:
+
+- versioned by `VFS_PROTO_VERSION`
+- shared definition in [kernel/include/iris/vfs_proto.h](/home/silver/projects/IRIS/kernel/include/iris/vfs_proto.h)
+- covers `OPEN`, `READ`, `CLOSE`, reclaim probe, and `STATUS`
+- `STATUS` reports:
+  - ready export count
+  - active open-file count
+  - open-file capacity
+  - exported byte total
+
+These status replies are designed to improve operator/maintainer visibility without turning normal boot into a log dump.
 
 ---
 
@@ -190,7 +232,7 @@ kernel/core/vfs_service.c            Ring-3 VFS service logic
 kernel/core/init/svcmgr_bootstrap.c  Kernel-side svcmgr bootstrap
 kernel/core/irq/irq_routing.c        IRQ routing with owner-based cleanup
 kernel/core/nameserver/nameserver.c  Transitional bootstrap nameserver
-kernel/arch/x86_64/user_init.S       Default init + small smoke path
+kernel/arch/x86_64/user_init.S       Default init + gated selftest entrypoints
 kernel/arch/x86_64/kbd_server.S      Keyboard service
 kernel/arch/x86_64/svcmgr.S          Tiny svcmgr entry shim
 kernel/arch/x86_64/vfs_server.S      Tiny vfs entry shim
@@ -210,6 +252,7 @@ On the current tree, normal boot verifies:
 - `svcmgr` spawn and readiness
 - explicit `svcmgr` bootstrap handle handoff
 - `kbd` request/reply success
+- compact `svcmgr` and `vfs` status replies
 - migrated `vfs` open/read/close success
 
 With `ENABLE_RUNTIME_SELFTESTS=1`, the tree also verifies:
@@ -226,12 +269,13 @@ The biggest remaining architectural debt is:
 
 1. retire more of the transitional kernel bootstrap nameserver surface
 2. continue extracting VFS authority beyond the current migrated subset
-3. improve the bootstrap root-capability structure beyond the current `arg0` contract
-4. migrate additional compiled-in services into the same userland service model
+3. reduce polling-based lifecycle on paths that still have not moved to watch/event-style cleanup
+4. improve service coverage and reduce remaining compatibility-only syscall surfaces
 
 Non-goals for the immediate next step:
 
 - no large scheduler rewrite
+- no SMP bring-up in this phase
 - no broad one-shot filesystem rewrite
 - no unrelated subsystem churn
 

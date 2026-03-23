@@ -1,3 +1,4 @@
+#include <iris/svcmgr_proto.h>
 #include <iris/vfs_proto.h>
 
 #define UI_STACK_BYTES      256
@@ -5,12 +6,14 @@
 #define UI_OFF_CHILD_PROC   128
 #define UI_OFF_CHILD_BOOT   136
 #define UI_OFF_RECLAIM_IDS  144
+#define UI_OFF_MODE         152
 
 #define UI_BOOT_MSG_VFS_REQ   0x70010001
 #define UI_BOOT_MSG_VFS_REPLY 0x70010002
 #define UI_BOOT_MSG_SELF_PROC 0x70010003
 
 .global user_init
+.global user_selftest
 
 .section .rodata
 msg_start:      .asciz "init bootstrap start\n"
@@ -26,6 +29,8 @@ msg_vfs_open_ok:   .asciz "vfs open reply OK\n"
 msg_vfs_read_ok:   .asciz "vfs read reply OK\n"
 msg_vfs_close_ok:  .asciz "vfs close reply OK\n"
 msg_vfs_stale_ok:  .asciz "vfs stale id reject OK\n"
+msg_svcmgr_status_ok: .asciz "svcmgr status OK\n"
+msg_vfs_status_ok: .asciz "vfs status OK\n"
 msg_spawn_reject_ok: .asciz "spawn reject OK\n"
 msg_spawn_reject_err: .asciz "spawn reject FAILED\n"
 msg_vmo_ok:     .asciz "vmo create OK\n"
@@ -50,6 +55,14 @@ vfs_boot_data:  .asciz "Hello from IrisOS VFS!\n"
 
 .section .text
 user_init:
+    movq $0, %r10
+    jmp .ui_entry
+
+user_selftest:
+    movq $1, %r10
+    jmp .ui_entry_selftest
+
+.ui_entry:
     movq $0, %rax
     leaq msg_start(%rip), %rdi
     syscall
@@ -65,6 +78,11 @@ user_init:
     subq $UI_STACK_BYTES, %rsp
     andq $~0xFULL, %rsp
     movq %rsp, %rbp
+    movq %r10, UI_OFF_MODE(%rbp)
+    xorq %rbx, %rbx
+    xorq %r12, %r12
+    xorq %r13, %r13
+    xorq %r14, %r14
 
     movl $1, %edi
     movl $2, %esi
@@ -147,6 +165,7 @@ user_init:
     leaq msg_status_ok(%rip), %rdi
     syscall
 
+.ui_vfs_only:
     movl $3, %edi
     movl $6, %esi
     call .ui_lookup_service
@@ -169,12 +188,22 @@ user_init:
     leaq msg_vfs_reply_ok(%rip), %rdi
     syscall
 
+    cmpq $0, UI_OFF_MODE(%rbp)
+    je .ui_open_boot_file
+    call .ui_query_vfs_status
+    testq %rax, %rax
+    js .vfs_fail
+    movq $0, %rax
+    leaq msg_vfs_status_ok(%rip), %rdi
+    syscall
+
     movq $28, %rax
     syscall
     testq %rax, %rax
     js .vfs_fail
     movq %rax, UI_OFF_SELF_PROC(%rbp)
 
+.ui_open_boot_file:
     call .ui_vfs_open_boot_file
     testq %rax, %rax
     js .vfs_fail
@@ -261,6 +290,9 @@ user_init:
     movq $0, %rax
     leaq msg_vfs_close_ok(%rip), %rdi
     syscall
+
+    cmpq $0, UI_OFF_MODE(%rbp)
+    je .ui_default_done
 
 #ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
     call .ui_zero_msg
@@ -527,7 +559,8 @@ user_init:
     movq $5, %rdi
     syscall
     jmp .exit_ok
-#else
+#endif
+.ui_default_done:
     movq $15, %rax
     movq %r13, %rdi
     syscall
@@ -548,7 +581,6 @@ user_init:
     movq $5, %rdi
     syscall
     jmp .exit_ok
-#endif
 
 .svcmgr_boot_fail:
     movq $0, %rax
@@ -671,6 +703,35 @@ user_init:
     movq $0, 72(%rbp)
     movq $0, 80(%rbp)
     ret
+
+.ui_entry_selftest:
+    movq $0, %rax
+    leaq msg_start(%rip), %rdi
+    syscall
+
+    movq %rbx, %r15
+    testq %r15, %r15
+    jz .svcmgr_boot_fail
+
+    movq $0, %rax
+    leaq msg_svcmgr_boot_ok(%rip), %rdi
+    syscall
+
+    subq $UI_STACK_BYTES, %rsp
+    andq $~0xFULL, %rsp
+    movq %rsp, %rbp
+    movq %r10, UI_OFF_MODE(%rbp)
+    xorq %rbx, %rbx
+    xorq %r12, %r12
+    xorq %r13, %r13
+    xorq %r14, %r14
+    call .ui_query_svcmgr_status
+    testq %rax, %rax
+    js .vfs_fail
+    movq $0, %rax
+    leaq msg_svcmgr_status_ok(%rip), %rdi
+    syscall
+    jmp .ui_vfs_only
 
 .ui_close_if_valid:
     testq %rdi, %rdi
@@ -992,6 +1053,148 @@ user_init:
     movl 104(%rbp), %edi
     syscall
 .ui_lookup_fail_ret:
+    ret
+
+.ui_query_svcmgr_status:
+    movq $12, %rax
+    syscall
+    testq %rax, %rax
+    js .ui_status_fail_ret
+    movl %eax, 104(%rbp)
+
+    movq $22, %rax
+    movl 104(%rbp), %edi
+    movq $1, %rsi
+    syscall
+    testq %rax, %rax
+    js .ui_status_close_base
+    movl %eax, 108(%rbp)
+
+    movq $22, %rax
+    movl 104(%rbp), %edi
+    movq $10, %rsi
+    syscall
+    testq %rax, %rax
+    js .ui_status_close_recv
+    movl %eax, 112(%rbp)
+
+    movq $15, %rax
+    movl 104(%rbp), %edi
+    syscall
+
+    call .ui_zero_msg
+    movl $SVCMGR_MSG_STATUS, 0(%rbp)
+    movl $SVCMGR_STATUS_MSG_LEN, 72(%rbp)
+    movl 112(%rbp), %eax
+    movl %eax, 76(%rbp)
+    movl $2, 80(%rbp)
+
+    movq $13, %rax
+    movq %r15, %rdi
+    movq %rbp, %rsi
+    movq $0, %rdx
+    syscall
+    testq %rax, %rax
+    jnz .ui_status_close_xfer
+
+    movq $14, %rax
+    movl 108(%rbp), %edi
+    movq %rbp, %rsi
+    movq $0, %rdx
+    syscall
+    testq %rax, %rax
+    jnz .ui_status_close_recv_only
+
+    movq $15, %rax
+    movl 108(%rbp), %edi
+    syscall
+
+    cmpl $SVCMGR_MSG_STATUS_REPLY, 0(%rbp)
+    jne .ui_status_bad_reply
+    cmpl $0, 8(%rbp)
+    jne .ui_status_reply_err
+    cmpl $SVCMGR_PROTO_VERSION, 12(%rbp)
+    jne .ui_status_bad_reply
+    cmpl $2, 16(%rbp)
+    jne .ui_status_bad_reply
+    cmpl $2, 20(%rbp)
+    jne .ui_status_bad_reply
+    cmpl $2, 24(%rbp)
+    jne .ui_status_bad_reply
+    cmpl $0, 28(%rbp)
+    jne .ui_status_bad_reply
+    xorq %rax, %rax
+    ret
+
+.ui_status_reply_err:
+    movslq 8(%rbp), %rax
+    ret
+
+.ui_status_bad_reply:
+    movq $-14, %rax
+    ret
+
+.ui_status_close_xfer:
+    movl 112(%rbp), %edi
+    call .ui_close_if_valid
+.ui_status_close_recv_only:
+    movq $15, %rax
+    movl 108(%rbp), %edi
+    syscall
+    movq $-14, %rax
+    ret
+
+.ui_status_close_recv:
+    movq $15, %rax
+    movl 108(%rbp), %edi
+    syscall
+.ui_status_close_base:
+    movq $15, %rax
+    movl 104(%rbp), %edi
+    syscall
+.ui_status_fail_ret:
+    ret
+
+.ui_query_vfs_status:
+    call .ui_zero_msg
+    movl $VFS_MSG_STATUS, 0(%rbp)
+    movl $VFS_MSG_STATUS_LEN, 72(%rbp)
+
+    movq $13, %rax
+    movq %r13, %rdi
+    movq %rbp, %rsi
+    movq $0, %rdx
+    syscall
+    testq %rax, %rax
+    jnz .ui_vfs_status_fail
+
+    movq $14, %rax
+    movq %r14, %rdi
+    movq %rbp, %rsi
+    movq $0, %rdx
+    syscall
+    testq %rax, %rax
+    jnz .ui_vfs_status_fail
+
+    cmpl $VFS_MSG_STATUS_REPLY, 0(%rbp)
+    jne .ui_vfs_status_fail
+    cmpl $0, 8(%rbp)
+    jne .ui_vfs_status_fail
+    cmpl $VFS_PROTO_VERSION, 12(%rbp)
+    jne .ui_vfs_status_fail
+    cmpl $1, 16(%rbp)
+    jne .ui_vfs_status_fail
+    cmpl $0, 20(%rbp)
+    jne .ui_vfs_status_fail
+    cmpl $VFS_SERVICE_OPEN_FILES, 24(%rbp)
+    jne .ui_vfs_status_fail
+    cmpl $23, 28(%rbp)
+    jne .ui_vfs_status_fail
+    xorq %rax, %rax
+    ret
+
+.ui_vfs_status_fail:
+    movq $-14, %rax
     ret
 
 .global phase3_exit_child
