@@ -23,6 +23,9 @@
  *     into the kernel.
  *   - Kernel SYS_OPEN/SYS_READ/SYS_CLOSE remain a transitional backend only;
  *     clients do not receive kernel fd numbers on this path.
+ *   - VFS_MSG_STATUS may optionally carry a transferred one-shot reply handle
+ *     with RIGHT_WRITE. If absent, the service replies on its bootstrapped
+ *     shared reply channel for compatibility.
  */
 
 #define VFS_MSG_OPEN        0x00010001u
@@ -149,8 +152,10 @@ static inline void vfs_proto_close_reply_init(struct KChanMsg *msg,
 }
 
 static inline int vfs_proto_status_valid(const struct KChanMsg *msg) {
-    return msg && msg->type == VFS_MSG_STATUS && msg->data_len == VFS_MSG_STATUS_LEN &&
-           msg->attached_handle == HANDLE_INVALID;
+    if (!msg || msg->type != VFS_MSG_STATUS || msg->data_len != VFS_MSG_STATUS_LEN)
+        return 0;
+    if (msg->attached_handle == HANDLE_INVALID) return 1;
+    return (msg->attached_rights & RIGHT_WRITE) != 0;
 }
 
 static inline void vfs_proto_status_reply_init(struct KChanMsg *msg,

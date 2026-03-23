@@ -1,25 +1,34 @@
 /*
- * kbd_server.S — keyboard server in ring 3.
+ * kbd_server.S — keyboard service, ring 3.
  *
  * Entry contract:
  *   RBX = private bootstrap channel from svcmgr
  *
  * Startup sequence:
- *   1. receive public service handle ("kbd") over bootstrap IPC
+ *   1. receive public service/IRQ handle ("kbd") over bootstrap IPC
  *   2. receive reply channel handle ("kbd.reply") over bootstrap IPC
  *   3. close bootstrap channel
  *   4. enter recv loop on the bootstrapped service handle
  *
- * The service no longer uses SYS_NS_LOOKUP directly.  svcmgr remains the
- * userland discovery authority and bootstraps child services by attached
- * handle transfer over the private bootstrap channel.
+ * Service discovery and handle delivery is owned entirely by svcmgr.
+ * kbd does not call any nameserver or kernel registry directly.
+ *
+ * Protocol: iris/kbd_proto.h
+ *   Requests arrive on the service/IRQ channel (r13).
+ *   Replies are sent over the reply channel (r12).
+ *   Hardware IRQ scancodes also arrive on r13 (type KBD_MSG_IRQ_SCANCODE).
+ *
+ * Bootstrap framing: iris/svcmgr_proto.h  (SVCMGR_MSG_BOOTSTRAP_HANDLE)
  */
+#include <iris/svcmgr_proto.h>
+#include <iris/kbd_proto.h>
+
 .global kbd_server
 
 .section .text
 kbd_server:
-    movq  $0, %r12                     /* reply channel handle */
-    movq  $0, %r13                     /* service/IRQ channel handle */
+    movq  $0, %r12                     /* reply channel handle (from svcmgr) */
+    movq  $0, %r13                     /* service/IRQ channel handle          */
 
     subq  $128, %rsp
     andq  $~0xFULL, %rsp
@@ -39,6 +48,7 @@ kbd_server:
     movq  $0,    %rax
     syscall
 
+/* ── Bootstrap: receive service handle and reply handle ─────────────────── */
 .kbd_bootstrap_recv:
     testq %r12, %r12
     jz    .kbd_bootstrap_need
@@ -57,7 +67,7 @@ kbd_server:
     movq  $0, 72(%rsp)
     movq  $0, 80(%rsp)
 
-    movq  $14,  %rax
+    movq  $14,  %rax                   /* SYS_CHAN_RECV */
     movq  %rbx, %rdi
     movq  %rsp, %rsi
     movq  $0,   %rdx
@@ -65,28 +75,31 @@ kbd_server:
     testq %rax, %rax
     jnz   .kbd_bootstrap_fail
 
-    cmpl  $0x8002, 0(%rsp)
+    /* Validate: must be a SVCMGR_MSG_BOOTSTRAP_HANDLE message */
+    cmpl  $SVCMGR_MSG_BOOTSTRAP_HANDLE, 0(%rsp)
     jne   .kbd_bootstrap_fail
-    movl  76(%rsp), %eax
+    /* Validate: must carry a non-null handle */
+    movl  76(%rsp), %eax               /* msg.attached_handle */
     testl %eax, %eax
     jz    .kbd_bootstrap_fail
 
-    cmpl  $1, 8(%rsp)
+    /* Dispatch on endpoint kind (data[0] = SVCMGR_BOOTSTRAP_OFF_KIND) */
+    cmpl  $SVCMGR_BOOTSTRAP_KIND_SERVICE, 8(%rsp)
     je    .kbd_bootstrap_service
-    cmpl  $2, 8(%rsp)
+    cmpl  $SVCMGR_BOOTSTRAP_KIND_REPLY,   8(%rsp)
     je    .kbd_bootstrap_reply
     jmp   .kbd_bootstrap_fail
 
 .kbd_bootstrap_service:
-    movq  %rax, %r13
+    movq  %rax, %r13                   /* r13 = service/IRQ channel handle */
     jmp   .kbd_bootstrap_recv
 
 .kbd_bootstrap_reply:
-    movq  %rax, %r12
+    movq  %rax, %r12                   /* r12 = reply channel handle        */
     jmp   .kbd_bootstrap_recv
 
 .kbd_bootstrap_done:
-    movq  $15,  %rax
+    movq  $15,  %rax                   /* SYS_HANDLE_CLOSE: release bootstrap */
     movq  %rbx, %rdi
     syscall
 
@@ -105,8 +118,9 @@ kbd_server:
     movq  $0,    %rax
     syscall
 
+/* ── Main service loop ───────────────────────────────────────────────────── */
 .kbd_recv:
-    movq  $14,   %rax
+    movq  $14,   %rax                  /* SYS_CHAN_RECV */
     movq  %r13,  %rdi
     movq  %rsp,  %rsi
     movq  $0,    %rdx
@@ -128,16 +142,22 @@ kbd_server:
     movq  $0,    %rax
     syscall
 
-    cmpl  $1,    0(%rsp)
+    /* Dispatch on message type */
+    cmpl  $KBD_MSG_HELLO,        0(%rsp)
     je    .kbd_hello
-    cmpl  $2,    0(%rsp)
+    cmpl  $KBD_MSG_STATUS,       0(%rsp)
     je    .kbd_status
-    cmpl  $4,    0(%rsp)
-    jne   .kbd_recv
+    cmpl  $KBD_MSG_IRQ_SCANCODE, 0(%rsp)
+    jne   .kbd_recv                    /* unknown type: silently ignore */
 
-    movzbl 8(%rsp), %ecx
+/* ── KBD_MSG_IRQ_SCANCODE: hardware event from IRQ routing layer ─────────
+ * data[KBD_MSG_OFF_IRQ_SCANCODE] = raw PS/2 scancode byte.
+ * Key press:   scancode < 0x80
+ * Key release: scancode >= 0x80 (bit 7 set; base key = scancode & 0x7F)
+ * No reply is sent; print hex and loop.                              */
+    movzbl 8(%rsp), %ecx               /* data[0]: raw scancode */
     testb  %cl,  %cl
-    jz    .kbd_recv
+    jz    .kbd_recv                    /* scancode=0 is spurious; ignore */
 
     leaq  96(%rsp), %rdi
     movb  $'[',  0(%rdi)
@@ -180,6 +200,7 @@ kbd_server:
     syscall
     jmp   .kbd_recv
 
+/* ── KBD_MSG_HELLO: liveness probe ──────────────────────────────────────── */
 .kbd_hello:
     leaq  96(%rsp), %rdi
     movb  $'K',  0(%rdi)
@@ -203,6 +224,11 @@ kbd_server:
     movq  $0,    %rax
     syscall
 
+    /* Build KBD_MSG_HELLO_REPLY:
+     *   type     = KBD_MSG_HELLO_REPLY  (0x80020001)
+     *   data[0..3]: err = 0 (int32, OK)
+     *   data_len = KBD_MSG_HELLO_REPLY_LEN (4)
+     */
     movq  $0,  0(%rsp)
     movq  $0,  8(%rsp)
     movq  $0, 16(%rsp)
@@ -214,17 +240,17 @@ kbd_server:
     movq  $0, 64(%rsp)
     movq  $0, 72(%rsp)
     movq  $0, 80(%rsp)
-    movl  $0x80000001, 0(%rsp)
-    movb  $1,          8(%rsp)
-    movl  $1,         72(%rsp)
+    movl  $KBD_MSG_HELLO_REPLY,       0(%rsp)   /* type                  */
+    movl  $0,                         8(%rsp)   /* data[0..3]: err = 0   */
+    movl  $KBD_MSG_HELLO_REPLY_LEN,  72(%rsp)   /* data_len = 4          */
 
-    movq  $13,   %rax
+    movq  $13,   %rax                  /* SYS_CHAN_SEND */
     movq  %r12,  %rdi
     movq  %rsp,  %rsi
     movq  $0,    %rdx
     syscall
 
-    movq  $8,    %rax
+    movq  $8,    %rax                  /* SYS_SLEEP */
     movq  $1,    %rdi
     syscall
     jmp   .kbd_recv
@@ -249,26 +275,16 @@ kbd_server:
     syscall
     jmp   .kbd_recv
 
+/* ── KBD_MSG_STATUS: controller status query ─────────────────────────────
+ * Build KBD_MSG_STATUS_REPLY:
+ *   type        = KBD_MSG_STATUS_REPLY  (0x80020002)
+ *   data[0..3]: err   = 0 (int32, OK)
+ *   data[4..7]: flags = KBD_STATUS_NORMAL (KBD_STATUS_READY | KBD_STATUS_PS2_OK)
+ *   data_len    = KBD_MSG_STATUS_REPLY_LEN (8)
+ */
 .kbd_status:
-    leaq  96(%rsp), %rdi
-    movb  $'K',  0(%rdi)
-    movb  $'B',  1(%rdi)
-    movb  $'D',  2(%rdi)
-    movb  $' ',  3(%rdi)
-    movb  $'s',  4(%rdi)
-    movb  $'t',  5(%rdi)
-    movb  $'a',  6(%rdi)
-    movb  $'t',  7(%rdi)
-    movb  $'u',  8(%rdi)
-    movb  $'s',  9(%rdi)
-    movb  $' ', 10(%rdi)
-    movb  $'O', 11(%rdi)
-    movb  $'K', 12(%rdi)
-    movb  $'\n',13(%rdi)
-    movb  $0,   14(%rdi)
-    movq  $0,    %rax
-    syscall
-
+    movl  76(%rsp), %r11d                /* preserve optional reply handle */
+    movl  %r11d, 88(%rsp)
     movq  $0,  0(%rsp)
     movq  $0,  8(%rsp)
     movq  $0, 16(%rsp)
@@ -280,21 +296,36 @@ kbd_server:
     movq  $0, 64(%rsp)
     movq  $0, 72(%rsp)
     movq  $0, 80(%rsp)
-    movl  $0x80000002, 0(%rsp)
-    movb  $0x03,       8(%rsp)
-    movl  $1,         72(%rsp)
+    movl  $KBD_MSG_STATUS_REPLY,          0(%rsp)  /* type                      */
+    movl  $0,                             8(%rsp)  /* data[0..3]: err = 0       */
+    movl  $KBD_STATUS_NORMAL,            12(%rsp)  /* data[4..7]: flags         */
+    movl  $KBD_MSG_STATUS_REPLY_LEN,     72(%rsp)  /* data_len = 8              */
 
-    movq  $13,   %rax
-    movq  %r12,  %rdi
+    movl  88(%rsp), %edi                 /* optional transferred reply handle */
+    testl %edi, %edi
+    jnz   .kbd_status_send
+    movq  %r12, %rdi                     /* fallback: shared reply channel */
+
+.kbd_status_send:
+    movq  $13,   %rax                  /* SYS_CHAN_SEND */
     movq  %rsp,  %rsi
     movq  $0,    %rdx
     syscall
+    testl %edi, %edi
+    jz    .kbd_status_done
+    cmpq  %r12, %rdi
+    je    .kbd_status_done
+    movq  $15,   %rax
+    syscall
 
-    movq  $8,    %rax
+.kbd_status_done:
+
+    movq  $8,    %rax                  /* SYS_SLEEP */
     movq  $1,    %rdi
     syscall
     jmp   .kbd_recv
 
+/* ── Bootstrap failure ───────────────────────────────────────────────────── */
 .kbd_bootstrap_fail:
     leaq  96(%rsp), %rdi
     movb  $'K',  0(%rdi)
@@ -316,7 +347,7 @@ kbd_server:
     syscall
 
 .kbd_dead:
-    movq  $1,    %rax
+    movq  $1,    %rax                  /* SYS_EXIT */
     movq  $0,    %rdi
     syscall
     hlt

@@ -50,7 +50,6 @@ static const char vfs_str_owner_dead[] = "VFS owner dead detected\n";
 static const char vfs_str_reclaim[]   = "VFS reclaimed dead client\n";
 static const char vfs_str_stale_ok[]  = "VFS reclaimed stale id reject OK\n";
 static const char vfs_str_probe_fail[] = "VFS WARN: reclaim probe failed\n";
-static const char vfs_str_status_ok[] = "VFS status reply OK\n";
 
 #define VFS_PROBE_BOOT_REQ     0x70020001u
 #define VFS_PROBE_BOOT_REPLY   0x70020002u
@@ -711,13 +710,20 @@ static void vfs_handle_probe(struct vfs_state *state, const struct KChanMsg *req
 
 static void vfs_handle_status(struct vfs_state *state, const struct KChanMsg *req,
                               handle_id_t reply_h) {
+    handle_id_t dest_h = reply_h;
+
     if (!state || !vfs_proto_status_valid(req)) {
+        if (req && req->attached_handle != HANDLE_INVALID) {
+            handle_id_t unexpected = req->attached_handle;
+            vfs_close_handle_if_valid(&unexpected);
+        }
         vfs_reply_status(reply_h, IRIS_ERR_INVALID_ARG, 0, 0, 0);
         return;
     }
-    vfs_reply_status(reply_h, IRIS_OK, vfs_ready_export_count(state),
+    if (req->attached_handle != HANDLE_INVALID) dest_h = req->attached_handle;
+    vfs_reply_status(dest_h, IRIS_OK, vfs_ready_export_count(state),
                      vfs_active_open_count(state), vfs_exported_bytes(state));
-    vfs_log(vfs_str_status_ok);
+    if (req->attached_handle != HANDLE_INVALID) vfs_close_handle_if_valid(&dest_h);
 }
 
 void vfs_server_main_c(handle_id_t bootstrap_h) {

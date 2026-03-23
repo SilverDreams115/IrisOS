@@ -1,5 +1,8 @@
 #include <iris/svcmgr_proto.h>
 #include <iris/vfs_proto.h>
+#include <iris/kbd_proto.h>
+#include <iris/diag.h>
+#include <iris/syscall.h>
 
 #define UI_STACK_BYTES      256
 #define UI_OFF_SELF_PROC    120
@@ -45,6 +48,8 @@ msg_handle_xfer_ok: .asciz "handle transfer move OK\n"
 msg_handle_err: .asciz "handle transfer/dup FAILED\n"
 msg_spawn_loop_ok: .asciz "spawn exit loop OK\n"
 msg_spawn_loop_err: .asciz "spawn exit loop FAILED\n"
+msg_diag_ok:    .asciz "diag snapshot OK\n"
+msg_diag_err:   .asciz "diag snapshot FAILED\n"
 msg_lookup_err: .asciz "kbd lookup FAILED\n"
 msg_reply_err:  .asciz "kbd.reply lookup FAILED\n"
 msg_hello_err:  .asciz "kbd hello FAILED\n"
@@ -107,9 +112,8 @@ user_selftest:
     syscall
 
     call .ui_zero_msg
-    movl $1,  0(%rbp)
-    movb $'H', 8(%rbp)
-    movl $1, 72(%rbp)
+    movl $KBD_MSG_HELLO,     0(%rbp)   /* type: liveness probe (no payload) */
+    movl $KBD_MSG_HELLO_LEN, 72(%rbp)  /* data_len = 0 */
 
     movq $13, %rax
     movq %rbx, %rdi
@@ -127,42 +131,13 @@ user_selftest:
     testq %rax, %rax
     jnz .hello_fail
 
-    cmpl $0x80000001, 0(%rbp)
+    cmpl $KBD_MSG_HELLO_REPLY, 0(%rbp)    /* type check */
     jne .hello_fail
-    cmpb $1, 8(%rbp)
+    cmpl $0, 8(%rbp)                      /* err == 0 (data[0..3] = int32) */
     jne .hello_fail
 
     movq $0, %rax
     leaq msg_hello_ok(%rip), %rdi
-    syscall
-
-    call .ui_zero_msg
-    movl $2,  0(%rbp)
-    movl $0, 72(%rbp)
-
-    movq $13, %rax
-    movq %rbx, %rdi
-    movq %rbp, %rsi
-    movq $0, %rdx
-    syscall
-    testq %rax, %rax
-    jnz .status_fail
-
-    movq $14, %rax
-    movq %r12, %rdi
-    movq %rbp, %rsi
-    movq $0, %rdx
-    syscall
-    testq %rax, %rax
-    jnz .status_fail
-
-    cmpl $0x80000002, 0(%rbp)
-    jne .status_fail
-    cmpb $0x03, 8(%rbp)
-    jne .status_fail
-
-    movq $0, %rax
-    leaq msg_status_ok(%rip), %rdi
     syscall
 
 .ui_vfs_only:
@@ -188,14 +163,12 @@ user_selftest:
     leaq msg_vfs_reply_ok(%rip), %rdi
     syscall
 
+    call .ui_query_global_diag
+    testq %rax, %rax
+    js .diag_fail
+
     cmpq $0, UI_OFF_MODE(%rbp)
     je .ui_open_boot_file
-    call .ui_query_vfs_status
-    testq %rax, %rax
-    js .vfs_fail
-    movq $0, %rax
-    leaq msg_vfs_status_ok(%rip), %rdi
-    syscall
 
     movq $28, %rax
     syscall
@@ -631,6 +604,16 @@ user_selftest:
     movq $4, %rdi
     syscall
 
+.diag_fail:
+    movq $0, %rax
+    leaq msg_diag_err(%rip), %rdi
+    syscall
+    call .ui_close_local_slots
+    call .ui_close_runtime_handles
+    movq $1, %rax
+    movq $10, %rdi
+    syscall
+
 .vfs_fail:
     movq $0, %rax
     leaq msg_vfs_err(%rip), %rdi
@@ -725,12 +708,6 @@ user_selftest:
     xorq %r12, %r12
     xorq %r13, %r13
     xorq %r14, %r14
-    call .ui_query_svcmgr_status
-    testq %rax, %rax
-    js .vfs_fail
-    movq $0, %rax
-    leaq msg_svcmgr_status_ok(%rip), %rdi
-    syscall
     jmp .ui_vfs_only
 
 .ui_close_if_valid:
@@ -1055,7 +1032,7 @@ user_selftest:
 .ui_lookup_fail_ret:
     ret
 
-.ui_query_svcmgr_status:
+.ui_query_global_diag:
     movq $12, %rax
     syscall
     testq %rax, %rax
@@ -1083,8 +1060,8 @@ user_selftest:
     syscall
 
     call .ui_zero_msg
-    movl $SVCMGR_MSG_STATUS, 0(%rbp)
-    movl $SVCMGR_STATUS_MSG_LEN, 72(%rbp)
+    movl $SVCMGR_MSG_DIAG, 0(%rbp)
+    movl $SVCMGR_DIAG_MSG_LEN, 72(%rbp)
     movl 112(%rbp), %eax
     movl %eax, 76(%rbp)
     movl $2, 80(%rbp)
@@ -1109,19 +1086,35 @@ user_selftest:
     movl 108(%rbp), %edi
     syscall
 
-    cmpl $SVCMGR_MSG_STATUS_REPLY, 0(%rbp)
+    cmpl $SVCMGR_MSG_DIAG_REPLY, 0(%rbp)
     jne .ui_status_bad_reply
     cmpl $0, 8(%rbp)
     jne .ui_status_reply_err
-    cmpl $SVCMGR_PROTO_VERSION, 12(%rbp)
+    cmpl $SVCMGR_DIAG_VERSION, 12(%rbp)
     jne .ui_status_bad_reply
-    cmpl $2, 16(%rbp)
+    cmpl $0, 16(%rbp)
+    je .ui_status_bad_reply
+    cmpl $0, 20(%rbp)
+    je .ui_status_bad_reply
+    cmpl $0, 24(%rbp)
+    je .ui_status_bad_reply
+    cmpl $2, 36(%rbp)
     jne .ui_status_bad_reply
-    cmpl $2, 20(%rbp)
+    cmpl $2, 40(%rbp)
     jne .ui_status_bad_reply
-    cmpl $2, 24(%rbp)
+    cmpl $2, 44(%rbp)
     jne .ui_status_bad_reply
-    cmpl $0, 28(%rbp)
+    cmpl $0, 48(%rbp)
+    jne .ui_status_bad_reply
+    cmpl $1, 52(%rbp)
+    jne .ui_status_bad_reply
+    cmpl $0, 56(%rbp)
+    jne .ui_status_bad_reply
+    cmpl $VFS_SERVICE_OPEN_FILES, 60(%rbp)
+    jne .ui_status_bad_reply
+    cmpl $23, 64(%rbp)
+    jne .ui_status_bad_reply
+    cmpl $KBD_STATUS_NORMAL, 68(%rbp)
     jne .ui_status_bad_reply
     xorq %rax, %rax
     ret
@@ -1195,6 +1188,49 @@ user_selftest:
 
 .ui_vfs_status_fail:
     movq $-14, %rax
+    ret
+
+/*
+ * .ui_query_diag_snapshot — call SYS_DIAG_SNAPSHOT and validate the result.
+ *
+ * Uses the local message buffer at %rbp (must be zeroed by caller via
+ * .ui_zero_msg before this call; the snapshot is 64 bytes, within the 84-byte
+ * buffer area).
+ *
+ * Validates:
+ *   - magic == IRIS_DIAG_MAGIC
+ *   - version == IRIS_DIAG_VERSION
+ *   - tasks_live >= 1  (at least one scheduler task alive)
+ *   - kproc_live >= 1  (at least one KProcess alive)
+ *   - irq_routes_active >= 1  (at least IRQ1/kbd is routed)
+ *
+ * Returns 0 on success, negative on any failure.
+ * Leaves snapshot data at %rbp for caller inspection if desired.
+ */
+.ui_query_diag_snapshot:
+    movq  $SYS_DIAG_SNAPSHOT, %rax
+    movq  %rbp, %rdi                   /* user buffer = local message area (64 bytes) */
+    syscall
+    testq %rax, %rax
+    js    .ui_diag_ret                 /* syscall error: propagate */
+
+    cmpl  $IRIS_DIAG_MAGIC, IRIS_DIAG_OFF_MAGIC(%rbp)
+    jne   .ui_diag_bad
+    cmpl  $IRIS_DIAG_VERSION, IRIS_DIAG_OFF_VERSION(%rbp)
+    jne   .ui_diag_bad
+    cmpl  $0, IRIS_DIAG_OFF_TASKS_LIVE(%rbp)    /* tasks_live >= 1 */
+    je    .ui_diag_bad
+    cmpl  $0, IRIS_DIAG_OFF_KPROC_LIVE(%rbp)    /* kproc_live >= 1 */
+    je    .ui_diag_bad
+    cmpl  $0, IRIS_DIAG_OFF_IRQ_ACTIVE(%rbp)    /* irq_routes_active >= 1 */
+    je    .ui_diag_bad
+
+    xorq  %rax, %rax
+    ret
+
+.ui_diag_bad:
+    movq  $-1, %rax
+.ui_diag_ret:
     ret
 
 .global phase3_exit_child

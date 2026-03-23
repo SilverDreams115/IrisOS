@@ -11,6 +11,7 @@
 #include <iris/irq_routing.h>
 #include <iris/scheduler.h>
 #include <iris/usercopy.h>
+#include <iris/diag.h>
 
 /* MSR addresses */
 #define MSR_EFER   0xC0000080
@@ -1018,6 +1019,50 @@ static uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t ar
     return syscall_err(IRIS_OK);
 }
 
+/*
+ * sys_diag_snapshot — SYS_DIAG_SNAPSHOT implementation.
+ *
+ * Captures a compact snapshot of kernel-side diagnostics state into the
+ * caller-supplied user buffer.  Unrestricted: any task may query.
+ *
+ * arg0: user pointer to a buffer of at least IRIS_DIAG_SNAPSHOT_SIZE (64) bytes.
+ *       Must be writable user-space memory; validated before any kernel reads.
+ *
+ * The snapshot is built in a local kernel-stack struct and copied to user
+ * space atomically via copy_to_user_checked.  Callers must verify
+ * snapshot.magic == IRIS_DIAG_MAGIC and snapshot.version == IRIS_DIAG_VERSION
+ * before reading any other field.
+ *
+ * Returns IRIS_OK (0) on success, IRIS_ERR_INVALID_ARG (-1) if the buffer
+ * pointer is invalid or not writable.
+ */
+static uint64_t sys_diag_snapshot(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+
+    if (!user_range_writable(arg0, (uint32_t)IRIS_DIAG_SNAPSHOT_SIZE))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct iris_diag_snapshot snap;
+    uint8_t *raw = (uint8_t *)&snap;
+    for (uint32_t i = 0; i < (uint32_t)sizeof(snap); i++) raw[i] = 0;
+
+    snap.magic              = IRIS_DIAG_MAGIC;
+    snap.version            = IRIS_DIAG_VERSION;
+    snap.tasks_live         = sched_live_task_count();
+    snap.tasks_max          = (uint32_t)TASK_MAX;
+    snap.kproc_live         = kprocess_live_count();
+    snap.kproc_max          = (uint32_t)KPROCESS_POOL_SIZE;
+    snap.irq_routes_active  = irq_routing_active_count();
+    snap.irq_routes_max     = (uint32_t)IRQ_ROUTE_MAX;
+    uint64_t ticks          = sched_current_ticks();
+    snap.ticks_lo           = (uint32_t)(ticks & 0xFFFFFFFFu);
+    snap.ticks_hi           = (uint32_t)(ticks >> 32);
+    /* reserved[6] already zeroed */
+
+    copy_to_user_checked(arg0, &snap, (uint32_t)sizeof(snap));
+    return syscall_err(IRIS_OK);
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
 
                           uint64_t arg1, uint64_t arg2) {
@@ -1049,6 +1094,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_PROCESS_STATUS:  return sys_process_status(arg0, arg1, arg2);
         case SYS_PROCESS_WATCH:   return sys_process_watch(arg0, arg1, arg2);
         case SYS_IRQ_ROUTE_REGISTER: return sys_irq_route_register(arg0, arg1, arg2);
+        case SYS_DIAG_SNAPSHOT:  return sys_diag_snapshot(arg0, arg1, arg2);
         default:
             serial_write("[SYSCALL] unknown syscall=");
             serial_write_dec(num);

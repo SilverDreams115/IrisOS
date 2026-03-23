@@ -19,7 +19,9 @@
  *   kernel  → svcmgr : SVCMGR_MSG_PHASE3_PROBE
  *   kernel  → svcmgr : PROC_EVENT_MSG_EXIT (via SYS_PROCESS_WATCH)
  *   client  → svcmgr : SVCMGR_MSG_LOOKUP
+ *   client  → svcmgr : SVCMGR_MSG_DIAG
  *   svcmgr  → client : SVCMGR_MSG_LOOKUP_REPLY
+ *   svcmgr  → client : SVCMGR_MSG_DIAG_REPLY
  *   svcmgr  → service: SVCMGR_MSG_BOOTSTRAP_HANDLE
  *   svcmgr  → kernel : SVCMGR_MSG_ACK (phase 2)
  *
@@ -91,6 +93,35 @@
  *   attached_handle                        looked-up service handle, if err=0
  *   attached_rights                        exact rights granted to the client
  *
+ * ── SVCMGR_MSG_DIAG (client → svcmgr) ─────────────────────────────
+ * One-shot consolidated diagnostics query. The client attaches a reply
+ * channel handle with RIGHT_WRITE; svcmgr gathers:
+ *   - kernel-owned snapshot counts via SYS_DIAG_SNAPSHOT
+ *   - svcmgr-local supervision summary from its live state
+ *   - vfs status via VFS_MSG_STATUS on a temporary reply channel
+ *   - kbd status via KBD_MSG_STATUS on a temporary reply channel
+ *
+ * The reply carries a compact global-health summary. Subsystem-local status
+ * providers remain the source of truth; svcmgr only aggregates their views.
+ *
+ * ── SVCMGR_MSG_DIAG_REPLY (svcmgr → client) ───────────────────────
+ * data[0..3]   int32_t  err: 0 = OK, <0 = iris_error_t
+ * data[4..7]   uint32_t version: SVCMGR_DIAG_VERSION
+ * data[8..11]  uint32_t tasks_live
+ * data[12..15] uint32_t kproc_live
+ * data[16..19] uint32_t irq_routes_active
+ * data[20..23] uint32_t ticks_lo
+ * data[24..27] uint32_t ticks_hi
+ * data[28..31] uint32_t manifest entries
+ * data[32..35] uint32_t ready services
+ * data[36..39] uint32_t active tracked slots
+ * data[40..43] uint32_t polling fallback slots
+ * data[44..47] uint32_t vfs exports ready
+ * data[48..51] uint32_t vfs open files
+ * data[52..55] uint32_t vfs open capacity
+ * data[56..59] uint32_t vfs exported bytes
+ * data[60..63] uint32_t kbd status flags
+ *
  * ── SVCMGR_MSG_PHASE3_PROBE (kernel → svcmgr, phase 3 validation) ──
  * Bounded supervision self-check used to prove proc_h retirement and
  * slot reuse deterministically under the real svcmgr ownership path.
@@ -116,10 +147,12 @@
 #define SVCMGR_MSG_PHASE3_PROBE   0x0002u
 #define SVCMGR_MSG_LOOKUP         0x0003u
 #define SVCMGR_MSG_STATUS         0x0004u
+#define SVCMGR_MSG_DIAG           0x0005u
 #define SVCMGR_MSG_ACK            0x8001u
 #define SVCMGR_MSG_BOOTSTRAP_HANDLE 0x8002u
 #define SVCMGR_MSG_LOOKUP_REPLY   0x8003u
 #define SVCMGR_MSG_STATUS_REPLY   0x8004u
+#define SVCMGR_MSG_DIAG_REPLY     0x8005u
 
 #define SVCMGR_SERVICE_NONE       0u
 #define SVCMGR_SERVICE_KBD        1u
@@ -164,6 +197,22 @@
 #define SVCMGR_STATUS_REPLY_OFF_READY   12 /* uint32_t: ready services        */
 #define SVCMGR_STATUS_REPLY_OFF_SLOTS   16 /* uint32_t: tracked live slots    */
 #define SVCMGR_STATUS_REPLY_OFF_FALLBACK 20 /* uint32_t: polling fallback slots */
+#define SVCMGR_DIAG_REPLY_OFF_ERR       0 /* int32_t: 0=OK, <0=iris_error_t */
+#define SVCMGR_DIAG_REPLY_OFF_VERSION   4 /* uint32_t: diagnostics summary version */
+#define SVCMGR_DIAG_REPLY_OFF_TASKS     8 /* uint32_t: live scheduler tasks */
+#define SVCMGR_DIAG_REPLY_OFF_KPROC    12 /* uint32_t: live KProcess slots */
+#define SVCMGR_DIAG_REPLY_OFF_IRQ      16 /* uint32_t: active IRQ routes */
+#define SVCMGR_DIAG_REPLY_OFF_TICKS_LO 20 /* uint32_t: scheduler ticks low */
+#define SVCMGR_DIAG_REPLY_OFF_TICKS_HI 24 /* uint32_t: scheduler ticks high */
+#define SVCMGR_DIAG_REPLY_OFF_MANIFEST 28 /* uint32_t: svcmgr manifest entries */
+#define SVCMGR_DIAG_REPLY_OFF_READY    32 /* uint32_t: ready services */
+#define SVCMGR_DIAG_REPLY_OFF_SLOTS    36 /* uint32_t: tracked live slots */
+#define SVCMGR_DIAG_REPLY_OFF_FALLBACK 40 /* uint32_t: polling fallback slots */
+#define SVCMGR_DIAG_REPLY_OFF_VFS_EXPORTS 44 /* uint32_t: ready exports */
+#define SVCMGR_DIAG_REPLY_OFF_VFS_OPENS   48 /* uint32_t: live open files */
+#define SVCMGR_DIAG_REPLY_OFF_VFS_CAP     52 /* uint32_t: open-file capacity */
+#define SVCMGR_DIAG_REPLY_OFF_VFS_BYTES   56 /* uint32_t: exported bytes */
+#define SVCMGR_DIAG_REPLY_OFF_KBD_FLAGS   60 /* uint32_t: KBD_STATUS_* bits */
 
 /* data_len values */
 #define SVCMGR_SPAWN_MSG_LEN      10u  /* 4 + 4 + 1 + 1 */
@@ -174,8 +223,11 @@
 #define SVCMGR_LOOKUP_REPLY_MSG_LEN 8u /* err + endpoint */
 #define SVCMGR_STATUS_MSG_LEN     0u
 #define SVCMGR_STATUS_REPLY_MSG_LEN 24u
+#define SVCMGR_DIAG_MSG_LEN       0u
+#define SVCMGR_DIAG_REPLY_MSG_LEN 64u
 
 #define SVCMGR_PROTO_VERSION      1u
+#define SVCMGR_DIAG_VERSION       1u
 
 #ifndef __ASSEMBLER__
 static inline void svcmgr_proto_write_u32(uint8_t *dst, uint32_t value) {
@@ -234,6 +286,13 @@ static inline int svcmgr_proto_status_valid(const struct KChanMsg *msg) {
            (msg->attached_rights & RIGHT_WRITE) != 0;
 }
 
+static inline int svcmgr_proto_diag_valid(const struct KChanMsg *msg) {
+    return msg && msg->type == SVCMGR_MSG_DIAG &&
+           msg->data_len == SVCMGR_DIAG_MSG_LEN &&
+           msg->attached_handle != HANDLE_INVALID &&
+           (msg->attached_rights & RIGHT_WRITE) != 0;
+}
+
 static inline void svcmgr_proto_status_reply_init(struct KChanMsg *msg,
                                                   int32_t err,
                                                   uint32_t manifest_count,
@@ -250,6 +309,46 @@ static inline void svcmgr_proto_status_reply_init(struct KChanMsg *msg,
     svcmgr_proto_write_u32(&msg->data[SVCMGR_STATUS_REPLY_OFF_SLOTS], active_slots);
     svcmgr_proto_write_u32(&msg->data[SVCMGR_STATUS_REPLY_OFF_FALLBACK], fallback_slots);
     msg->data_len = SVCMGR_STATUS_REPLY_MSG_LEN;
+    msg->attached_handle = HANDLE_INVALID;
+    msg->attached_rights = RIGHT_NONE;
+}
+
+static inline void svcmgr_proto_diag_reply_init(struct KChanMsg *msg,
+                                                int32_t err,
+                                                uint32_t tasks_live,
+                                                uint32_t kproc_live,
+                                                uint32_t irq_routes_active,
+                                                uint32_t ticks_lo,
+                                                uint32_t ticks_hi,
+                                                uint32_t manifest_count,
+                                                uint32_t ready_services,
+                                                uint32_t active_slots,
+                                                uint32_t fallback_slots,
+                                                uint32_t vfs_exports_ready,
+                                                uint32_t vfs_open_files,
+                                                uint32_t vfs_open_capacity,
+                                                uint32_t vfs_exported_bytes,
+                                                uint32_t kbd_flags) {
+    uint8_t *raw = (uint8_t *)msg;
+    for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
+    msg->type = SVCMGR_MSG_DIAG_REPLY;
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_ERR], (uint32_t)err);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_VERSION], SVCMGR_DIAG_VERSION);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_TASKS], tasks_live);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_KPROC], kproc_live);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_IRQ], irq_routes_active);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_TICKS_LO], ticks_lo);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_TICKS_HI], ticks_hi);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_MANIFEST], manifest_count);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_READY], ready_services);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_SLOTS], active_slots);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_FALLBACK], fallback_slots);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_VFS_EXPORTS], vfs_exports_ready);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_VFS_OPENS], vfs_open_files);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_VFS_CAP], vfs_open_capacity);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_VFS_BYTES], vfs_exported_bytes);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_KBD_FLAGS], kbd_flags);
+    msg->data_len = SVCMGR_DIAG_REPLY_MSG_LEN;
     msg->attached_handle = HANDLE_INVALID;
     msg->attached_rights = RIGHT_NONE;
 }

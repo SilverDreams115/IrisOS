@@ -27,8 +27,10 @@ What is already real:
 - userland-authoritative lookup for migrated live services
 - a userland keyboard service
 - a userland VFS service with real ownership of the migrated `OPEN/READ/CLOSE` path
-- explicit shared protocols for the live `svcmgr` and `vfs` service paths
-- compact subsystem-owned status summaries for `svcmgr` and `vfs`
+- explicit shared protocols for the live `svcmgr`, `vfs`, and `kbd` service paths
+- compact subsystem-owned status summaries for `svcmgr`, `vfs`, and `kbd`
+- a compact kernel diagnostics snapshot via `SYS_DIAG_SNAPSHOT`
+- one consolidated diagnostics flow through `svcmgr` that gathers kernel + `svcmgr` + `vfs` + `kbd` health
 - IRQ routing with process-scoped ownership and automatic cleanup
 - dead-client reclaim for migrated VFS entries
 
@@ -59,7 +61,8 @@ Current authority split:
 - keyboard service policy/lifecycle: `svcmgr` + `kbd_server`
 - migrated VFS file/session state: `vfs` service
 - VFS backend storage: kernel ramfs for now
-- service/runtime status ownership: subsystem-local `STATUS` replies from `svcmgr` and `vfs`
+- service/runtime status ownership: subsystem-local `STATUS` replies from `svcmgr`, `vfs`, and `kbd`
+- global diagnostics entry point: `svcmgr` aggregation over `SYS_DIAG_SNAPSHOT` + subsystem `STATUS`
 
 ---
 
@@ -76,8 +79,8 @@ Current authority split:
 | Service manager | Working | `svcmgr` runs in ring 3 and owns live lookup for migrated services |
 | Keyboard path | Working | `kbd` + `kbd.reply` booted by `svcmgr` |
 | VFS migrated path | Working | `vfs` owns client-visible `file_id`, offsets, close semantics, stale-id rejection, and dead-client reclaim for the accepted subset |
-| Service protocols | Working | `svcmgr` and `vfs` now use shared protocol headers with explicit message layouts and protocol versions |
-| Service status visibility | Working | compact `STATUS` replies expose live `svcmgr` supervision state and `vfs` export/open state |
+| Service protocols | Working | `svcmgr`, `vfs`, and `kbd` use shared protocol headers with explicit message layouts and protocol versions |
+| Diagnostics | Working | `SYS_DIAG_SNAPSHOT` plus `svcmgr` aggregation expose compact global health without turning boot into a dump |
 | IRQ ownership | Working | Route ownership follows the service `KProcess`; cleanup happens on exit |
 | Bootstrap nameserver | Transitional | Still present, but no longer the normal path for bootstrapping `svcmgr` |
 
@@ -126,7 +129,7 @@ Default boot keeps a small healthy smoke path:
 - `svcmgr` startup
 - explicit bootstrap-handle handoff to `user_init`
 - `kbd` lookup and reply path
-- compact `svcmgr` / `vfs` status checks
+- one compact global diagnostics query through `svcmgr`
 - migrated `vfs` lookup and `OPEN/READ/CLOSE` path
 
 Heavier proof probes are available, but not enabled by default.
@@ -176,6 +179,7 @@ The current syscall surface lives in [kernel/include/iris/syscall.h](/home/silve
 - `SYS_VMO_CREATE`, `SYS_VMO_MAP`
 - `SYS_PROCESS_STATUS`, `SYS_PROCESS_SELF`
 - `SYS_IRQ_ROUTE_REGISTER`
+- `SYS_DIAG_SNAPSHOT`
 - `SYS_NS_REGISTER`, `SYS_NS_LOOKUP`
 
 Current status of the nameserver syscalls:
@@ -190,7 +194,7 @@ Current lifecycle note:
 
 ---
 
-## Protocols And Status Surfaces
+## Protocols And Diagnostics
 
 The current live protocols are intentionally small, but they are no longer ad hoc byte soup.
 
@@ -198,12 +202,17 @@ The current live protocols are intentionally small, but they are no longer ad ho
 
 - versioned by `SVCMGR_PROTO_VERSION`
 - shared definition in [kernel/include/iris/svcmgr_proto.h](/home/silver/projects/IRIS/kernel/include/iris/svcmgr_proto.h)
-- covers bootstrap-handle delivery, service lookup, process-exit watch events, and `STATUS`
+- covers bootstrap-handle delivery, service lookup, process-exit watch events, `STATUS`, and consolidated `DIAG`
 - `STATUS` reports:
   - manifest entry count
   - ready service count
   - active supervision slot count
   - polling-fallback slot count
+- `DIAG` reports one compact global summary containing:
+  - kernel snapshot counts from `SYS_DIAG_SNAPSHOT`
+  - `svcmgr` supervision summary
+  - `vfs` export/open summary
+  - `kbd` status flags
 
 `vfs` protocol:
 
@@ -216,7 +225,27 @@ The current live protocols are intentionally small, but they are no longer ad ho
   - open-file capacity
   - exported byte total
 
-These status replies are designed to improve operator/maintainer visibility without turning normal boot into a log dump.
+`kbd` protocol:
+
+- versioned by `KBD_PROTO_VERSION`
+- shared definition in [kernel/include/iris/kbd_proto.h](/home/silver/projects/IRIS/kernel/include/iris/kbd_proto.h)
+- covers `HELLO`, `STATUS`, and routed IRQ scancode delivery
+- `STATUS` reports keyboard service flags such as `KBD_STATUS_READY` and `KBD_STATUS_PS2_OK`
+
+Kernel diagnostics snapshot:
+
+- shared definition in [kernel/include/iris/diag.h](/home/silver/projects/IRIS/kernel/include/iris/diag.h)
+- exposed through `SYS_DIAG_SNAPSHOT`
+- reports compact kernel-owned counts:
+  - live scheduler tasks
+  - live `KProcess` slots
+  - active IRQ routes
+  - scheduler ticks
+
+Together these surfaces give one clean answer to “how do I ask IRIS for global health?”:
+
+- ask `svcmgr` for `DIAG` if you want the compact global view
+- use subsystem-local `STATUS` only when you need the owner-specific view directly
 
 ---
 
@@ -236,6 +265,8 @@ kernel/arch/x86_64/user_init.S       Default init + gated selftest entrypoints
 kernel/arch/x86_64/kbd_server.S      Keyboard service
 kernel/arch/x86_64/svcmgr.S          Tiny svcmgr entry shim
 kernel/arch/x86_64/vfs_server.S      Tiny vfs entry shim
+kernel/include/iris/diag.h           Kernel diagnostics snapshot contract
+kernel/include/iris/kbd_proto.h      kbd protocol
 kernel/include/iris/svcmgr_proto.h   svcmgr protocol
 kernel/include/iris/vfs_proto.h      vfs protocol
 kernel/new_core/src/                 Capability-object implementation
@@ -252,7 +283,7 @@ On the current tree, normal boot verifies:
 - `svcmgr` spawn and readiness
 - explicit `svcmgr` bootstrap handle handoff
 - `kbd` request/reply success
-- compact `svcmgr` and `vfs` status replies
+- one consolidated diagnostics query covering kernel + `svcmgr` + `vfs` + `kbd`
 - migrated `vfs` open/read/close success
 
 With `ENABLE_RUNTIME_SELFTESTS=1`, the tree also verifies:
@@ -269,8 +300,9 @@ The biggest remaining architectural debt is:
 
 1. retire more of the transitional kernel bootstrap nameserver surface
 2. continue extracting VFS authority beyond the current migrated subset
-3. reduce polling-based lifecycle on paths that still have not moved to watch/event-style cleanup
-4. improve service coverage and reduce remaining compatibility-only syscall surfaces
+3. make the consolidated diagnostics consumer less tightly coupled to exact current runtime values
+4. reduce polling-based lifecycle on paths that still have not moved to watch/event-style cleanup
+5. improve service coverage and reduce remaining compatibility-only syscall surfaces
 
 Non-goals for the immediate next step:
 

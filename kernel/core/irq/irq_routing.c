@@ -58,13 +58,24 @@ int32_t irq_routing_signal(uint8_t irq, uint8_t data_byte) {
     uint8_t *p = (uint8_t *)&msg;
     for (uint32_t i = 0; i < sizeof(msg); i++) p[i] = 0;
 
-    msg.type     = 4;          /* KChanMsg type: hardware signal notification */
+    msg.type     = IRQ_MSG_TYPE_SIGNAL; /* kbd_proto.h KBD_MSG_IRQ_SCANCODE == this */
     msg.data[0]  = data_byte;
     msg.data_len = 1;
 
     iris_error_t r = kchannel_send(ch, &msg);
     kobject_release(&ch->base);
     return (r == IRIS_OK) ? 0 : -1;
+}
+
+uint32_t irq_routing_active_count(void) {
+    uint32_t count = 0;
+    spinlock_lock(&irq_lock);
+    for (int i = 0; i < IRQ_ROUTE_MAX; i++) {
+        if (irq_table[i].ch)
+            count++;
+    }
+    spinlock_unlock(&irq_lock);
+    return count;
 }
 
 void irq_routing_unregister_owner(struct KProcess *owner) {

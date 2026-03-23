@@ -490,3 +490,36 @@ void scheduler_sleep_current(uint64_t ticks) {
     t->need_resched = 1;
     task_yield();
 }
+
+/* ── Diagnostics accessors ─────────────────────────────────────────── */
+
+/*
+ * sched_live_task_count: count task slots that are NOT in TASK_DEAD state.
+ *
+ * Iterates the static tasks[] array.  All slots are reset to TASK_DEAD by
+ * task_init() and remain TASK_DEAD until allocated; the idle task starts in
+ * TASK_RUNNING.  The count therefore reflects all slots the scheduler treats
+ * as active (runnable, blocked, sleeping, or running).
+ *
+ * Called from sys_diag_snapshot; no locks held; safe because the task array
+ * is always valid and individual state reads are single-word loads.
+ */
+uint32_t sched_live_task_count(void) {
+    uint32_t count = 0;
+    for (int i = 0; i < TASK_MAX; i++) {
+        if (tasks[i].state != TASK_DEAD)
+            count++;
+    }
+    return count;
+}
+
+/*
+ * sched_current_ticks: return the scheduler tick counter.
+ *
+ * The counter increments once per PIT tick (100 Hz by default) in
+ * scheduler_tick().  The read is a simple volatile load; callers that need
+ * monotonic delta semantics should read twice and subtract.
+ */
+uint64_t sched_current_ticks(void) {
+    return scheduler_ticks;
+}
