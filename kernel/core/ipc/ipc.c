@@ -9,7 +9,8 @@
  * STATUS: legacy-only.  Kernel-internal use exclusively.
  *   - No syscall surface: SYS_IPC_CREATE/SEND/RECV (9-11) retired.
  *   - No user-space visibility.
- *   - Single consumer: producer/consumer demo in kernel_main.c.
+ *   - Built only with ENABLE_LEGACY_IPC_DEMO=1.
+ *   - Single consumer: the opt-in producer/consumer demo island.
  *
  * Do not add new callers.  Do not extend this API.
  * Modern IPC path: KChannel + handle table (iris/nc/kchannel.h).

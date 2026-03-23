@@ -1,5 +1,8 @@
 SHELL := /usr/bin/env bash
 
+ENABLE_LEGACY_IPC_DEMO ?= 0
+ENABLE_RUNTIME_SELFTESTS ?= 0
+
 BUILD_DIR    := build
 EFI_ROOT     := $(BUILD_DIR)/efi_root
 EFI_BOOT_DIR := $(EFI_ROOT)/EFI/BOOT
@@ -20,13 +23,13 @@ KERNEL_GDT_FLUSH_OBJ := $(BUILD_DIR)/gdt_idt_flush.o
 KERNEL_ISR_OBJ       := $(BUILD_DIR)/isr_stubs.o
 KERNEL_CTX_OBJ       := $(BUILD_DIR)/context_switch.o
 KERNEL_SCHED_OBJ     := $(BUILD_DIR)/scheduler.o
-KERNEL_IPC_OBJ       := $(BUILD_DIR)/ipc.o
 KERNEL_FB_OBJ        := $(BUILD_DIR)/fb.o
 KERNEL_RAMFS_OBJ     := $(BUILD_DIR)/ramfs.o
 KERNEL_VFS_OBJ       := $(BUILD_DIR)/vfs.o
 KERNEL_TRAMP_OBJ     := $(BUILD_DIR)/user_trampoline.o
 KERNEL_USERINIT_OBJ  := $(BUILD_DIR)/user_init.o
 KERNEL_SYSCALL_OBJ   := $(BUILD_DIR)/syscall.o
+KERNEL_USERCOPY_OBJ  := $(BUILD_DIR)/usercopy.o
 KERNEL_SYSCALLE_OBJ  := $(BUILD_DIR)/syscall_entry.o
 KERNEL_SERIAL_OBJ    := $(BUILD_DIR)/serial.o
 KERNEL_PCI_OBJ       := $(BUILD_DIR)/pci.o
@@ -41,10 +44,24 @@ KERNEL_NC_KPROCESS_OBJ   := $(BUILD_DIR)/nc_kprocess.o
 KERNEL_IRQROUTING_OBJ    := $(BUILD_DIR)/irq_routing.o
 KERNEL_NAMESERVER_OBJ    := $(BUILD_DIR)/nameserver.o
 KERNEL_KBDSRV_OBJ        := $(BUILD_DIR)/kbd_server.o
-KERNEL_IPC_DEMO_OBJ       := $(BUILD_DIR)/ipc_demo.o
+KERNEL_VFSSRV_ENTRY_OBJ  := $(BUILD_DIR)/vfs_server_entry.o
+KERNEL_VFSSRV_OBJ        := $(BUILD_DIR)/vfs_service.o
+KERNEL_SVCMGR_ENTRY_OBJ   := $(BUILD_DIR)/svcmgr_entry.o
 KERNEL_SVCMGR_OBJ         := $(BUILD_DIR)/svcmgr.o
 KERNEL_SVCMGR_BOOT_OBJ    := $(BUILD_DIR)/svcmgr_bootstrap.o
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_IPC_OBJ) $(KERNEL_FB_OBJ) $(KERNEL_RAMFS_OBJ) $(KERNEL_VFS_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_USERINIT_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_PCI_OBJ) $(KERNEL_KBD_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_NAMESERVER_OBJ) $(KERNEL_KBDSRV_OBJ) $(KERNEL_IPC_DEMO_OBJ) $(KERNEL_SVCMGR_OBJ) $(KERNEL_SVCMGR_BOOT_OBJ)
+KERNEL_PHASE3_SELFTEST_OBJ := $(BUILD_DIR)/phase3_selftest.o
+KERNEL_DEMO_OBJS :=
+KERNEL_DEMO_DEFINES :=
+ifeq ($(ENABLE_LEGACY_IPC_DEMO),1)
+KERNEL_IPC_OBJ           := $(BUILD_DIR)/ipc.o
+KERNEL_IPC_DEMO_OBJ      := $(BUILD_DIR)/ipc_demo.o
+KERNEL_DEMO_OBJS         += $(KERNEL_IPC_OBJ) $(KERNEL_IPC_DEMO_OBJ)
+KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_IPC_DEMO
+endif
+ifeq ($(ENABLE_RUNTIME_SELFTESTS),1)
+KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_RUNTIME_SELFTESTS
+endif
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_FB_OBJ) $(KERNEL_RAMFS_OBJ) $(KERNEL_VFS_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_USERINIT_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_PCI_OBJ) $(KERNEL_KBD_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_NAMESERVER_OBJ) $(KERNEL_KBDSRV_OBJ) $(KERNEL_VFSSRV_ENTRY_OBJ) $(KERNEL_VFSSRV_OBJ) $(KERNEL_SVCMGR_ENTRY_OBJ) $(KERNEL_SVCMGR_OBJ) $(KERNEL_SVCMGR_BOOT_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_DEMO_OBJS)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -65,8 +82,10 @@ COMMON_WARNINGS := -Wall -Wextra -Wshadow -Wundef
 UEFI_DEFINES    := -DEFI_DEBUG=0 -DEFI_DEBUG_CLEAR_MEMORY=0
 
 UEFI_CFLAGS    := -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone -fpic $(COMMON_WARNINGS) $(UEFI_DEFINES) $(UEFI_INCLUDES)
-KERNEL_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone $(COMMON_WARNINGS) $(KERNEL_INCLUDES) -DIRIS_ENABLE_IPC_DEMO
+KERNEL_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone $(COMMON_WARNINGS) $(KERNEL_INCLUDES) $(KERNEL_DEMO_DEFINES)
 KERNEL_ASFLAGS := -ffreestanding -fno-pic -fno-pie -mno-red-zone $(KERNEL_INCLUDES)
+SVCMGR_CFLAGS  := $(filter-out -fno-pic -fno-pie,$(KERNEL_CFLAGS)) -fpie
+VFSSRV_CFLAGS  := $(filter-out -fno-pic -fno-pie,$(KERNEL_CFLAGS)) -fpie
 
 EFI_LIBDIR_FLAGS := -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/x86_64-linux-gnu/gnuefi
 LDFLAGS_EFI      := -nostdlib -znocombreloc -T $(EFI_LDS) -shared -Bsymbolic $(EFI_LIBDIR_FLAGS)
@@ -83,6 +102,10 @@ help:
 	@echo '  make run    -> arranca IRIS en QEMU con OVMF'
 	@echo '  make check  -> inspecciona headers y segmentos del kernel ELF'
 	@echo '  make clean  -> limpia artefactos generados'
+	@echo
+	@echo 'Opciones:'
+	@echo '  ENABLE_LEGACY_IPC_DEMO=1 -> compila y arranca el demo ring-0 heredado'
+	@echo '  ENABLE_RUNTIME_SELFTESTS=1 -> habilita probes/selftests pesados de runtime'
 
 dirs:
 	mkdir -p $(BUILD_DIR) $(EFI_BOOT_DIR) $(EFI_IRIS_DIR)
@@ -129,11 +152,7 @@ $(KERNEL_CTX_OBJ): kernel/arch/x86_64/context_switch.S | dirs
 $(KERNEL_SCHED_OBJ): kernel/core/scheduler/scheduler.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_IPC_OBJ): kernel/core/ipc/ipc.c | dirs
-	gcc $(KERNEL_CFLAGS) -c $< -o $@
-
 $(KERNEL_FB_OBJ): kernel/drivers/fb/fb.c | dirs
-
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_RAMFS_OBJ): kernel/fs/ramfs/ramfs.c | dirs
@@ -146,9 +165,12 @@ $(KERNEL_TRAMP_OBJ): kernel/arch/x86_64/user_trampoline.S | dirs
 	gcc $(KERNEL_ASFLAGS) -c $< -o $@
 
 $(KERNEL_USERINIT_OBJ): kernel/arch/x86_64/user_init.S | dirs
-	gcc $(KERNEL_ASFLAGS) -c $< -o $@
+	gcc $(KERNEL_ASFLAGS) $(KERNEL_DEMO_DEFINES) -c $< -o $@
 
 $(KERNEL_SYSCALL_OBJ): kernel/core/syscall/syscall.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_USERCOPY_OBJ): kernel/core/usercopy.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_SYSCALLE_OBJ): kernel/arch/x86_64/syscall_entry.S | dirs
@@ -193,14 +215,31 @@ $(KERNEL_NAMESERVER_OBJ): kernel/core/nameserver/nameserver.c | dirs
 $(KERNEL_KBDSRV_OBJ): kernel/arch/x86_64/kbd_server.S | dirs
 	gcc $(KERNEL_ASFLAGS) -c $< -o $@
 
-$(KERNEL_IPC_DEMO_OBJ): kernel/demo/ipc_demo.c | dirs
-	gcc $(KERNEL_CFLAGS) -c $< -o $@
-
-$(KERNEL_SVCMGR_OBJ): kernel/arch/x86_64/svcmgr.S | dirs
+$(KERNEL_VFSSRV_ENTRY_OBJ): kernel/arch/x86_64/vfs_server.S | dirs
 	gcc $(KERNEL_ASFLAGS) -c $< -o $@
+
+$(KERNEL_VFSSRV_OBJ): kernel/core/vfs_service.c | dirs
+	gcc $(VFSSRV_CFLAGS) -c $< -o $@
+
+$(KERNEL_SVCMGR_ENTRY_OBJ): kernel/arch/x86_64/svcmgr.S | dirs
+	gcc $(KERNEL_ASFLAGS) -c $< -o $@
+
+$(KERNEL_SVCMGR_OBJ): kernel/core/svcmgr.c | dirs
+	gcc $(SVCMGR_CFLAGS) -c $< -o $@
 
 $(KERNEL_SVCMGR_BOOT_OBJ): kernel/core/init/svcmgr_bootstrap.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_PHASE3_SELFTEST_OBJ): kernel/core/phase3_selftest.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+ifeq ($(ENABLE_LEGACY_IPC_DEMO),1)
+$(KERNEL_IPC_OBJ): kernel/core/ipc/ipc.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_IPC_DEMO_OBJ): kernel/demo/ipc_demo.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+endif
 
 $(KERNEL_ELF): $(KERNEL_OBJS)
 	ld $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $@

@@ -18,11 +18,13 @@ struct KProcess;
  * that user processes can obtain handles to well-known services by
  * name at bootstrap time.
  *
- *   - ns_register: currently called by the kernel in boot sequence
- *     to publish services (e.g. "kbd").  A future service manager
- *     process will own this instead.
- *   - ns_lookup: consumed by user processes via SYS_NS_LOOKUP to
- *     obtain a capability handle to a named service.
+ *   - ns_register: reached through SYS_NS_REGISTER by the bootstrap
+ *     service manager.  The kernel no longer chooses public service
+ *     names for compiled-in services; svcmgr owns that policy in
+ *     userland and uses this table only as the transitional bootstrap
+ *     publication backend.
+ *   - ns_lookup: compatibility/bootstrap lookup path for experiments
+ *     that still need a kernel-resident flat registry.
  *   - ns_unregister_owner: called on KProcess teardown to clean up
  *     entries owned by the dying process.
  *
@@ -40,13 +42,14 @@ struct KProcess;
  *
  * ── Evolution path ───────────────────────────────────────────────
  * The long-term target is a privileged user-space service manager
- * that owns service registration and lifecycle policy.  The kernel
- * side retains only the capability-transfer mechanism (handle table
- * + KChannel); name resolution moves out of the kernel entirely.
- * When that transition happens, ns_register (kernel-side direct
- * call) disappears; SYS_NS_REGISTER may be removed or restricted to
- * the service manager process.  SYS_NS_LOOKUP may evolve into a
- * request sent over a well-known bootstrap channel.
+ * that owns service registration and lifecycle policy.  Phase 5 moved
+ * service naming policy there.  A later pass moved normal runtime
+ * lookup of live services (`kbd`, `vfs`) into svcmgr IPC with attached
+ * handle transfer.  The current bootstrap path also no longer uses
+ * SYS_NS_LOOKUP to find svcmgr: the first client receives an explicit
+ * bootstrap handle from the kernel.  What remains here is therefore
+ * compatibility/transitional registry code, not the healthy-path first
+ * discovery authority.
  *
  * ── Implementation invariants (stable) ──────────────────────────
  *   - ns_register retains the KObject (kobject_retain).

@@ -8,6 +8,8 @@
 #include <stdint.h>
 
 extern void user_entry_trampoline(void);
+extern char __text_start;
+extern char __text_end;
 extern void context_switch(struct cpu_context *old,
                            struct cpu_context *new,
                            uint64_t *old_rsp,
@@ -16,6 +18,7 @@ extern void context_switch(struct cpu_context *old,
 static struct task tasks[TASK_MAX];
 static struct task *current_task = 0;
 static struct task *task_list_head = 0;
+static struct task *pending_reap_task = 0;
 static uint32_t next_id = 0;
 
 /* RSP guardado por tarea */
@@ -79,7 +82,7 @@ static void unlink_task(struct task *t) {
     /* t not found in list — no-op (safe, no corruption). */
 }
 
-static void reap_dead_task_after_switch_prep(struct task *t) {
+static void reap_dead_task_off_cpu(struct task *t) {
     if (!t || t->state != TASK_DEAD) return;
 
     struct KProcess *proc = t->process;
@@ -90,11 +93,23 @@ static void reap_dead_task_after_switch_prep(struct task *t) {
         kprocess_reap_address_space(proc);
     }
 
+    /* Remove the dead task from the circular run list before zeroing the
+     * slot. Otherwise predecessor->next can keep pointing at a reset slot
+     * with next == 0, and later spawn-time tail walks will hang. */
+    unlink_task(t);
     task_reset_slot(t);
 
     if (proc) {
         kprocess_free(proc);
     }
+}
+
+static void reap_pending_dead_task(void) {
+    if (!pending_reap_task || pending_reap_task == current_task) return;
+
+    struct task *t = pending_reap_task;
+    pending_reap_task = 0;
+    reap_dead_task_off_cpu(t);
 }
 
 
@@ -193,12 +208,39 @@ static void free_phys_pages_range(uint64_t base_phys, uint32_t page_count) {
         pmm_free_page(base_phys + (uint64_t)pg * 4096ULL);
 }
 
+static int user_entry_image_offset(uint64_t entry, uint64_t *out_offset) {
+    uint64_t text_start = (uint64_t)(uintptr_t)&__text_start;
+    uint64_t text_end   = (uint64_t)(uintptr_t)&__text_end;
+    uint64_t text_size;
+    uint64_t text_offset_start;
+    uint64_t text_offset_end;
+    uint64_t image_offset;
+
+    if (!out_offset || text_end < text_start) return 0;
+    text_size = text_end - text_start;
+    text_offset_start = text_start - USER_IMAGE_SOURCE_BASE;
+    text_offset_end   = text_offset_start + text_size;
+
+    if (entry >= USER_IMAGE_SOURCE_BASE && entry < USER_IMAGE_SOURCE_BASE + USER_IMAGE_MAP_SIZE) {
+        image_offset = entry - USER_IMAGE_SOURCE_BASE;
+    } else if (entry >= USER_TEXT_BASE && entry < USER_TEXT_BASE + USER_IMAGE_MAP_SIZE) {
+        image_offset = entry - USER_TEXT_BASE;
+    } else {
+        return 0;
+    }
+
+    if (image_offset < text_offset_start || image_offset >= text_offset_end) return 0;
+    *out_offset = image_offset;
+    return 1;
+}
+
 /* Internal: create a ring-3 task, optionally passing arg0 via the bootstrap
  * contract above. */
 static struct task *task_create_user_impl(uint64_t entry, uint64_t arg0) {
     struct task *t = 0;
     struct KProcess *proc = 0;
     uint64_t ustack_phys = 0;
+    uint64_t entry_offset = 0;
     uint32_t ustack_pages = (uint32_t)(USER_STACK_SIZE / 4096ULL);
     for (int i = 1; i < TASK_MAX; i++) {
         if (tasks[i].state == TASK_DEAD) {
@@ -229,7 +271,8 @@ static struct task *task_create_user_impl(uint64_t entry, uint64_t arg0) {
         if (paging_map_checked_in(proc->cr3, vp, pp, PAGE_PRESENT | PAGE_USER) != 0)
             goto fail;
     }
-    uint64_t user_entry = USER_TEXT_BASE + (entry - USER_IMAGE_SOURCE_BASE);
+    if (!user_entry_image_offset(entry, &entry_offset)) goto fail;
+    uint64_t user_entry = USER_TEXT_BASE + entry_offset;
     t->user_entry = user_entry;
 
     /* allocate and map user stack at USER_STACK_TOP */
@@ -353,6 +396,8 @@ void task_exit_current(void) {
 }
 
 void task_yield(void) {
+    reap_pending_dead_task();
+
     struct task *old = current_task;
     struct task *idle = task_list_head;
     struct task *candidate = old->next;
@@ -400,7 +445,8 @@ void task_yield(void) {
     else
         __asm__ volatile ("mov %0, %%cr3" : : "r"(kernel_cr3) : "memory");
 
-    reap_dead_task_after_switch_prep(old);
+    if (old->state == TASK_DEAD)
+        pending_reap_task = old;
 
     context_switch(&old->ctx, &chosen->ctx,
                    &task_rsp[old_idx], task_rsp[new_idx]);
@@ -413,6 +459,8 @@ void scheduler_init(void) {
 }
 
 void scheduler_tick(void) {
+    reap_pending_dead_task();
+
     scheduler_ticks++;
     for (int i = 0; i < TASK_MAX; i++) {
         if (tasks[i].state == TASK_SLEEPING && tasks[i].wake_tick <= scheduler_ticks) {

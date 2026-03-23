@@ -5,8 +5,10 @@
  *
  * This file implements the kernel-resident flat name→KObject table
  * used during the bootstrap phase.  It is NOT the final service
- * management architecture.  See nameserver.h for the full
- * transicional contract, limitations, and evolution path.
+ * management architecture.  Phase 5 narrows its role further: public
+ * service naming policy now lives in svcmgr userland code, while this
+ * table remains only the bootstrap publication backend.  See
+ * nameserver.h for the full transicional contract and evolution path.
  *
  * Do not extend this table with policy logic (ACL, restart, health).
  * New supervision features belong in a future user-space service

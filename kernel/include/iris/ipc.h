@@ -7,7 +7,8 @@
  * ║  header from new code.  Do not add new callers.                ║
  * ║                                                                 ║
  * ║  This API is a pre-capability IPC mechanism used exclusively   ║
- * ║  by the producer/consumer demo tasks in kernel_main.c.         ║
+ * ║  by the opt-in producer/consumer demo built with               ║
+ * ║  ENABLE_LEGACY_IPC_DEMO=1.                                     ║
  * ║  It is not accessible from user space (SYS_IPC_* syscalls      ║
  * ║  were retired).                                                 ║
  * ║                                                                 ║

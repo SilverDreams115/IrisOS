@@ -34,9 +34,28 @@ static struct KVmo *kvmo_alloc(void) {
     return 0;
 }
 
+iris_error_t kvmo_size_to_pages(uint64_t size, uint32_t *out_pages) {
+    uint64_t rounded;
+    uint64_t pages;
+
+    if (!out_pages) return IRIS_ERR_INVALID_ARG;
+    if (size == 0) return IRIS_ERR_INVALID_ARG;
+    if (size > KVMO_MAX_SIZE) return IRIS_ERR_INVALID_ARG;
+    if (size > UINT64_MAX - 0xFFFULL) return IRIS_ERR_INVALID_ARG;
+
+    rounded = (size + 0xFFFULL) & ~0xFFFULL;
+    pages = rounded >> 12;
+    if (pages == 0 || pages > KVMO_MAX_PAGES || pages > UINT32_MAX)
+        return IRIS_ERR_INVALID_ARG;
+
+    *out_pages = (uint32_t)pages;
+    return IRIS_OK;
+}
+
 struct KVmo *kvmo_create(uint64_t size) {
-    if (!size) return 0;
-    uint32_t pages = (uint32_t)((size + 0xFFFULL) >> 12);
+    uint32_t pages = 0;
+    if (kvmo_size_to_pages(size, &pages) != IRIS_OK)
+        return 0;
     uint64_t phys  = pmm_alloc_pages(pages);
     if (!phys) return 0;
     struct KVmo *v = kvmo_alloc();

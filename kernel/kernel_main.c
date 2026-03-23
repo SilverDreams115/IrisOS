@@ -17,9 +17,10 @@
 #include <iris/vfs.h>
 #include <iris/irq_routing.h>
 #include <iris/nameserver.h>
-/* transicional bootstrap helpers */
+#include <iris/phase3_selftest.h>
+/* Transitional bootstrap services: real current boot path. */
 #include <iris/svcmgr_bootstrap.h>
-/* legacy demo — only included when IRIS_ENABLE_IPC_DEMO is defined */
+/* Legacy demo island: opt-in only, never part of the default boot path. */
 #ifdef IRIS_ENABLE_IPC_DEMO
 #include <iris/ipc_demo.h>
 #endif
@@ -142,24 +143,36 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     serial_write("[IRIS][NS] initializing...\n");
     ns_init();
     serial_write("[IRIS][NS] bootstrap registry ready\n");
+    phase3_selftest_run();
 
-    /* ── 7. Scheduler + demo tasks (legacy) ─────────────────────── */
+    /* ── 7. Scheduler core ──────────────────────────────────────── */
     serial_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
 #ifdef IRIS_ENABLE_IPC_DEMO
-    /* Legacy producer/consumer IPC demo.  Gated so the real boot path
-     * can run without demo noise.  Remove IRIS_ENABLE_IPC_DEMO from
-     * KERNEL_CFLAGS in the Makefile to disable. */
+    /* Opt-in scaffolding only.  The default architecture is svcmgr +
+     * ring-3 services; this legacy ring-0 producer/consumer demo is
+     * available only with ENABLE_LEGACY_IPC_DEMO=1. */
     ipc_demo_start();
 #endif
 
-    /* ── 8. Bootstrap transicional: service wiring ──────────────── */
+    /* ── 8. Transitional bootstrap: service wiring ──────────────── */
     svcmgr_bootstrap_init(); /* spawn svcmgr + queue kbd spawn request */
 
     /* ── 9. User init process ───────────────────────────────────── */
     serial_write("[IRIS][USER] preparing init process...\n");
     extern void user_init(void);
-    struct task *ut = task_create_user((uint64_t)(uintptr_t)user_init);
+    struct task *ut = task_spawn_user((uint64_t)(uintptr_t)user_init, 0);
+    if (ut) {
+        handle_id_t sm_bootstrap_h = HANDLE_INVALID;
+        iris_error_t br = svcmgr_bootstrap_attach_client(ut, RIGHT_WRITE, &sm_bootstrap_h);
+        if (br != IRIS_OK) {
+            serial_write("[IRIS][USER] WARN: svcmgr bootstrap attach failed\n");
+            task_abort_spawned_user(ut);
+            ut = 0;
+        } else {
+            task_set_bootstrap_arg0(ut, (uint64_t)sm_bootstrap_h);
+        }
+    }
     if (ut) {
         serial_write("[IRIS][USER] init task created, id=");
         serial_write_dec(ut->id);
@@ -170,14 +183,14 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     /* ── 10. Scheduler start ────────────────────────────────────── */
     __asm__ volatile ("sti");
-    serial_write("[IRIS][SCHED] IPC running\n");
+    serial_write("[IRIS][SCHED] running\n");
     serial_write("====================================\n");
 
-    /* yield a few times to let all tasks run including user_init */
-    task_yield(); /* -> producer */
-    task_yield(); /* -> consumer */
-    task_yield(); /* -> user_init */
-    task_yield(); /* -> back */
+    /* Let the first wave of bootstrap tasks start before the idle loop. */
+    task_yield();
+    task_yield();
+    task_yield();
+    task_yield();
 
     for (;;) __asm__ volatile ("hlt");
 }

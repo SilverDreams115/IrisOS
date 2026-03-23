@@ -1,6 +1,12 @@
 #ifndef IRIS_SVCMGR_BOOTSTRAP_H
 #define IRIS_SVCMGR_BOOTSTRAP_H
 
+#include <iris/nc/error.h>
+#include <iris/nc/handle.h>
+#include <iris/nc/rights.h>
+
+struct task;
+
 /*
  * Kernel-side service manager bootstrap.
  *
@@ -8,9 +14,13 @@
  * KChannel, and retains the kernel-side channel reference for future
  * service spawn requests.
  *
- * svcmgr self-registers as "svcmgr" in the nameserver — the kernel
- * does NOT call ns_register for svcmgr.  This is the intended pattern:
- * services register themselves; the kernel is not the registrar.
+ * Phase 8/current bootstrap model:
+ *   - The kernel spawns svcmgr and gives it its private bootstrap
+ *     KChannel handle via the task arg0 bootstrap contract.
+ *   - The kernel may also install a narrow client handle to that same
+ *     channel into the first user task that must talk to svcmgr.
+ *   - Normal healthy boot no longer requires SYS_NS_LOOKUP("svcmgr")
+ *     to find the service manager.
  *
  * NS Authority model (transitional):
  *   svcmgr_bootstrap_init() sets KProcess.ns_authority = 1 on the
@@ -34,5 +44,8 @@
  */
 
 void svcmgr_bootstrap_init(void);
+iris_error_t svcmgr_bootstrap_attach_client(struct task *client,
+                                            iris_rights_t rights,
+                                            handle_id_t *out_handle);
 
 #endif

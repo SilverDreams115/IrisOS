@@ -56,7 +56,9 @@
 #define SYS_SPAWN        18  /* (entry_vaddr, out_chan_ptr) → proc_handle or negative iris_error_t
                               *   proc_handle = KProcess handle in caller's table
                               *   *out_chan_ptr = bootstrap KChannel handle (optional)
-                              *   child's arg0 = KChannel handle in child's table */
+                              *   child's arg0 = KChannel handle in child's table
+                              *   parent proc_handle rights:
+                              *     RIGHT_READ | RIGHT_MANAGE | RIGHT_DUPLICATE */
 /* modern/conforming: notification objects */
 #define SYS_NOTIFY_CREATE 19 /* () → handle_id or negative iris_error_t */
 #define SYS_NOTIFY_SIGNAL 20 /* (handle, bits) → 0 or negative iris_error_t */
@@ -71,6 +73,11 @@
                                  *   Requires RIGHT_TRANSFER on src_handle.
                                  *   Requires RIGHT_MANAGE on dest_proc_handle.
                                  *   Consumes src_handle. new_rights ⊆ src rights. */
+#define SYS_PROCESS_SELF    28  /* () → self proc_handle or negative iris_error_t
+                                 *   Returns a handle to the caller's own KProcess with
+                                 *   RIGHT_READ|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+                                 *   Intended for userland-owned lifecycle tracking such as
+                                 *   service-side cleanup keyed to client process death. */
 /*
  * Process lifecycle query — modern/conforming (iris_error_t).
  *
@@ -100,16 +107,20 @@
  *
  * SYS_NS_REGISTER is restricted to the service manager process (svcmgr).
  * The kernel identifies svcmgr by its KProcess* set at bootstrap.
- * All other callers receive IRIS_ERR_ACCESS_DENIED.
- * This is a transitional kernel-level policy; the final architecture
- * enforces registration authority outside the kernel entirely.
+ * All other callers receive IRIS_ERR_ACCESS_DENIED.  Since phase 5,
+ * svcmgr also owns the public naming policy for compiled-in services;
+ * the kernel path is narrowed to bootstrap publication only.
  *
  * SYS_NS_LOOKUP is unrestricted: any process may look up a service.
  *
- * Future direction: name resolution moves to a privileged user-space
- * service manager; SYS_NS_LOOKUP becomes a request over a well-known
- * bootstrap KChannel; SYS_NS_REGISTER is retired.
- * Do not design new services assuming this interface is permanent.
+ * Current status:
+ *   - Healthy boot no longer uses SYS_NS_LOOKUP to find svcmgr.
+ *   - Normal runtime discovery for migrated services already goes
+ *     through svcmgr IPC with attached-handle transfer.
+ *   - These syscalls remain only as transitional compatibility for the
+ *     kernel bootstrap registry.
+ * Do not design new services assuming this interface is part of the
+ * intended steady-state control plane.
  */
 #define SYS_NS_REGISTER     24  /* (name_uptr, handle, rights) → 0 or negative iris_error_t
                                  *   Restricted to svcmgr process; others get ACCESS_DENIED.

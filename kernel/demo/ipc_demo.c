@@ -6,8 +6,10 @@
  *   (producer/consumer) that run alongside the modern capability IPC
  *   surface.
  * SCOPE: ring-0 tasks only; no user-space visibility.
- * STATUS: scheduled for removal together with ipc.c/ipc.h once the
- *   nameserver-based KChannel service model is validated.
+ * STATUS: opt-in scaffolding only.  Built and started only with
+ *   ENABLE_LEGACY_IPC_DEMO=1; scheduled for removal together with
+ *   ipc.c/ipc.h once the nameserver-based KChannel service model is
+ *   validated.
  *
  * Do NOT add new tasks here.  New inter-task communication must use
  * KChannel (iris/nc/kchannel.h) + handle table.
