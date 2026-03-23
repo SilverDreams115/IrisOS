@@ -75,6 +75,15 @@ void             kprocess_reap_address_space(struct KProcess *p);
 iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
                                      handle_id_t watched_handle, uint32_t cookie);
 
+/*
+ * kprocess_live_count: count KProcess pool slots currently in use.
+ *
+ * Iterates pool_used[KPROCESS_POOL_SIZE].  Useful as a compact indicator of
+ * how many processes (not merely tasks) are alive.  Called from
+ * sys_diag_snapshot; safe without additional locking (byte-wide reads).
+ */
+uint32_t kprocess_live_count(void);
+
 static inline int kprocess_is_alive(const struct KProcess *p) {
     return p && p->main_thread && p->main_thread->state != TASK_DEAD;
 }

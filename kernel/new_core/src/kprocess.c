@@ -135,3 +135,20 @@ void kprocess_reap_address_space(struct KProcess *p) {
     p->brk = USER_HEAP_BASE;
     p->aspace_reaped = 1;
 }
+
+/*
+ * kprocess_live_count: count pool slots currently allocated.
+ *
+ * Iterates the pool_used[] bitmap.  A slot is live when pool_used[i] == 1,
+ * regardless of whether the process has begun teardown.  This gives a
+ * conservative upper bound on live processes useful for pressure monitoring.
+ * Called from sys_diag_snapshot; no locks held (byte reads are atomic).
+ */
+uint32_t kprocess_live_count(void) {
+    uint32_t count = 0;
+    for (int i = 0; i < KPROCESS_POOL_SIZE; i++) {
+        if (pool_used[i])
+            count++;
+    }
+    return count;
+}

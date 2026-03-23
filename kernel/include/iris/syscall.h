@@ -1,7 +1,9 @@
 #ifndef IRIS_SYSCALL_H
 #define IRIS_SYSCALL_H
 
+#ifndef __ASSEMBLER__
 #include <stdint.h>
+#endif
 
 /*
  * IRIS syscall ABI target v1
@@ -108,6 +110,23 @@
 #define PROC_EVENT_OFF_HANDLE     0u
 #define PROC_EVENT_OFF_COOKIE     4u
 #define PROC_EVENT_MSG_LEN        8u
+/*
+ * Global kernel diagnostics snapshot — modern/conforming (iris_error_t).
+ *
+ * Atomically captures a compact snapshot of kernel-side state into the
+ * caller-supplied user buffer.  Unrestricted: any task may call this.
+ *
+ * arg0 = user pointer to struct iris_diag_snapshot (IRIS_DIAG_SNAPSHOT_SIZE bytes).
+ *        Must be writable user-space memory.
+ * Returns 0 on success, negative iris_error_t on error.
+ *
+ * The snapshot covers: task count, KProcess pool usage, active IRQ routes,
+ * and scheduler tick counter.  See iris/diag.h for the full layout.
+ * For service-owned status (svcmgr/vfs/kbd), use the per-service STATUS
+ * channels defined in svcmgr_proto.h / vfs_proto.h / kbd_proto.h.
+ */
+#define SYS_DIAG_SNAPSHOT 30
+
 #define SYS_IRQ_ROUTE_REGISTER 27 /* (irq_num, chan_handle, proc_handle) → 0 or negative iris_error_t
                                    *   Routes hardware IRQ irq_num into chan_handle, owned by
                                    *   proc_handle.  When proc_handle's process exits,
@@ -149,11 +168,13 @@
                                  *   Pass RIGHT_SAME_RIGHTS to get all registered rights.
                                  *   Returns IRIS_ERR_NOT_FOUND if name is not registered. */
 
+#ifndef __ASSEMBLER__
 void syscall_init(void);
 void syscall_set_kstack(uint64_t kstack_top);
 
 /* Called from ASM handler */
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2);
+#endif /* __ASSEMBLER__ */
 
 #endif
