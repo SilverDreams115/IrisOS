@@ -31,7 +31,17 @@ struct file {
     uint32_t      valid;
 };
 
-/* VFS API */
+/*
+ * Kernel VFS API.
+ *
+ * Current staged status:
+ *   - Kernel ramfs + this API remain the transitional backing store and
+ *     compatibility surface for legacy SYS_OPEN/SYS_READ/SYS_CLOSE.
+ *   - The migrated userland VFS path now owns the client-visible file_id
+ *     namespace and open/read/close session state for its read-only service
+ *     protocol; this API is backend-only for that path.
+ *   - Do not treat this API as the only intended long-term authority.
+ */
 void     vfs_init(void);
 int32_t  vfs_open(const char *path, uint32_t flags);
 int32_t  vfs_read(int32_t fd, void *buf, uint32_t len);

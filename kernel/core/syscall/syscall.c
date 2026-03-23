@@ -10,6 +10,7 @@
 #include <iris/nameserver.h>
 #include <iris/irq_routing.h>
 #include <iris/scheduler.h>
+#include <iris/usercopy.h>
 
 /* MSR addresses */
 #define MSR_EFER   0xC0000080
@@ -30,13 +31,13 @@ static inline uint64_t rdmsr(uint32_t msr) {
 }
 
 extern void syscall_entry(void);
+extern char __text_start;
+extern char __text_end;
 
 #include <iris/serial.h>
 #include <iris/paging.h>
 #include <iris/vfs.h>
 
-/* user virtual address space bounds */
-#define USER_ADDR_MIN 0x1000ULL
 #define PAGE_SIZE     0x1000ULL
 
 /*
@@ -67,7 +68,11 @@ static inline uint64_t syscall_ok_u64(uint64_t value) {
  *
  * Boundary rule:
  *   - New syscalls must not use this encoding style.
- *   - Any future VFS extraction to userland should replace this island as a
+ *   - The userland VFS service now owns the client-visible file_id/session
+ *     model for its migrated read-only open/read/close path.
+ *   - This island remains the explicit kernel-side compatibility surface and
+ *     backend-only substrate for that path.
+ *   - Any further VFS extraction to userland should replace this island as a
  *     unit instead of letting legacy semantics spread into modern object paths.
  */
 static inline uint64_t transitional_legacy_err(void) {
@@ -89,48 +94,21 @@ static inline uint64_t transitional_brk_addr(uint64_t addr) {
     return addr;
 }
 
-static int user_range_accessible(uint64_t ptr, uint32_t len, uint64_t required_flags) {
-    uint64_t end;
-    uint64_t page;
+static int user_spawn_entry_valid(uint64_t entry_vaddr) {
+    uint64_t text_start = (uint64_t)(uintptr_t)&__text_start;
+    uint64_t text_end   = (uint64_t)(uintptr_t)&__text_end;
+    uint64_t text_size;
+    uint64_t text_user_start;
+    uint64_t text_user_end;
 
-    if (ptr == 0) return 0;
-    if (ptr < USER_ADDR_MIN) return 0;
-    if (len == 0) return 0;
-    end = ptr + (uint64_t)len;
-    if (end < ptr) return 0;
-    if (end > USER_SPACE_TOP) return 0;
+    if (text_end < text_start) return 0;
+    text_size = text_end - text_start;
+    text_user_start = USER_TEXT_BASE + (text_start - USER_IMAGE_SOURCE_BASE);
+    text_user_end   = text_user_start + text_size;
 
-    page = ptr & ~0xFFFULL;
-    end  = (end - 1ULL) & ~0xFFFULL;
-    for (; page <= end; page += 0x1000ULL) {
-        uint64_t flags = 0;
-        if (paging_query_access(page, &flags) != 0) return 0;
-        if ((flags & PAGE_PRESENT) == 0) return 0;
-        if ((flags & PAGE_USER) == 0) return 0;
-        if ((flags & required_flags) != required_flags) return 0;
-    }
-    return 1;
-}
-
-static int user_range_readable(uint64_t ptr, uint32_t len) {
-    return user_range_accessible(ptr, len, 0);
-}
-
-static int user_range_writable(uint64_t ptr, uint32_t len) {
-    return user_range_accessible(ptr, len, PAGE_WRITABLE);
-}
-
-static uint32_t copy_user_cstr_bounded(uint64_t uptr, char *dst, uint32_t cap) {
-    const char *src = (const char *)(uintptr_t)uptr;
-    uint32_t i = 0;
-
-    if (!dst || cap == 0) return 0;
-    while (i < cap - 1 && user_range_readable(uptr + i, 1) && src[i]) {
-        dst[i] = src[i];
-        i++;
-    }
-    dst[i] = '\0';
-    return i;
+    if (entry_vaddr >= text_start && entry_vaddr < text_end) return 1;
+    if (entry_vaddr >= text_user_start && entry_vaddr < text_user_end) return 1;
+    return 0;
 }
 
 static int user_vmo_range_valid(uint64_t virt, uint64_t size) {
@@ -162,7 +140,7 @@ static void rollback_user_maps_and_free_phys(uint64_t cr3, uint64_t start, uint6
     }
 }
 
-/* ── Transitional VFS/stdio syscall island ───────────────────────── */
+/* ── Frozen transitional VFS/stdio syscall island ────────────────── */
 
 static uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
@@ -197,6 +175,19 @@ static uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return t ? t->id : 0;
 }
 
+static uint64_t sys_process_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg0; (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    handle_id_t h;
+
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    h = handle_table_insert(&t->process->handle_table,
+                            &t->process->base,
+                            RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_TABLE_FULL);
+    return syscall_ok_u64((uint64_t)h);
+}
+
 static uint64_t sys_open(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     if (!user_range_readable(arg0, 1)) return transitional_legacy_err();
@@ -212,9 +203,27 @@ static uint64_t sys_read(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     int32_t  fd  = (int32_t)arg0;
     uint64_t buf = arg1;
     uint32_t len = (uint32_t)arg2;
+    uint8_t  kbuf[64];
+    uint32_t total = 0;
+
     if (!user_range_writable(buf, len)) return transitional_legacy_err();
-    int32_t n = vfs_read(fd, (void *)(uintptr_t)buf, len);
-    return transitional_vfs_result(n);
+    while (total < len) {
+        uint32_t chunk = len - total;
+        if (chunk > (uint32_t)sizeof(kbuf)) chunk = (uint32_t)sizeof(kbuf);
+
+        int32_t n = vfs_read(fd, kbuf, chunk);
+        if (n < 0) {
+            if (total != 0) return transitional_vfs_result((int32_t)total);
+            return transitional_vfs_result(n);
+        }
+        if (n == 0) break;
+        if (!copy_to_user_checked(buf + total, kbuf, (uint32_t)n))
+            return transitional_legacy_err();
+
+        total += (uint32_t)n;
+        if ((uint32_t)n < chunk) break;
+    }
+    return transitional_vfs_result((int32_t)total);
 }
 
 static uint64_t sys_close(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
@@ -294,20 +303,6 @@ static uint64_t sys_brk(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 /* ── end transitional heap-break island ─────────────────────────── */
 
-/* ── IPC syscalls — base para servidores de usuario ──────────────── */
-
-static void copy_from_user(void *dst, uint64_t src_uptr, uint32_t len) {
-    uint8_t *d = (uint8_t *)dst;
-    const uint8_t *s = (const uint8_t *)(uintptr_t)src_uptr;
-    for (uint32_t i = 0; i < len; i++) d[i] = s[i];
-}
-
-static void copy_to_user(uint64_t dst_uptr, const void *src, uint32_t len) {
-    uint8_t *d = (uint8_t *)(uintptr_t)dst_uptr;
-    const uint8_t *s = (const uint8_t *)src;
-    for (uint32_t i = 0; i < len; i++) d[i] = s[i];
-}
-
 /* ── Capability IPC (KChannel + HandleTable) ─────────────────────── */
 
 static uint64_t sys_chan_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
@@ -318,7 +313,7 @@ static uint64_t sys_chan_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!ch) return syscall_err(IRIS_ERR_NO_MEMORY);
     handle_id_t h = handle_table_insert(&t->process->handle_table,
                                         &ch->base,
-                                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
+                                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
     if (h == HANDLE_INVALID) {
         kchannel_free(ch);
         return syscall_err(IRIS_ERR_TABLE_FULL);
@@ -339,12 +334,53 @@ static uint64_t sys_chan_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_error_t r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0,
                                              &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (obj->type != KOBJ_CHANNEL) { kobject_release(obj); return syscall_err(IRIS_ERR_WRONG_TYPE); }
-    if (!rights_check(rights, RIGHT_WRITE)) { kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
+    if (obj->type != KOBJ_CHANNEL) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(rights, RIGHT_WRITE)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
 
     struct KChanMsg msg;
-    copy_from_user(&msg, arg1, (uint32_t)sizeof(msg));
-    r = kchannel_send((struct KChannel *)obj, &msg);
+    if (!copy_from_user_checked(&msg, arg1, (uint32_t)sizeof(msg)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    if (msg.attached_handle != HANDLE_INVALID) {
+        struct KObject *xfer_obj;
+        iris_rights_t   xfer_rights;
+        iris_error_t xr = handle_table_get_object(&t->process->handle_table,
+                                                  msg.attached_handle,
+                                                  &xfer_obj, &xfer_rights);
+        if (xr != IRIS_OK) { kobject_release(obj); return syscall_err(xr); }
+        if (!rights_check(xfer_rights, RIGHT_TRANSFER)) {
+            kobject_release(xfer_obj);
+            kobject_release(obj);
+            return syscall_err(IRIS_ERR_ACCESS_DENIED);
+        }
+
+        iris_rights_t moved_rights = rights_reduce(xfer_rights, msg.attached_rights);
+        if (moved_rights == RIGHT_NONE) {
+            kobject_release(xfer_obj);
+            kobject_release(obj);
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+        }
+
+        kobject_active_retain(xfer_obj);
+        r = kchannel_send_attached((struct KChannel *)obj, &msg, xfer_obj, moved_rights);
+        if (r != IRIS_OK) {
+            kobject_active_release(xfer_obj);
+            kobject_release(xfer_obj);
+            kobject_release(obj);
+            return syscall_err(r);
+        }
+
+        r = handle_table_close(&t->process->handle_table, msg.attached_handle);
+        if (r != IRIS_OK) { kobject_release(obj); return syscall_err(r); }
+    } else {
+        r = kchannel_send((struct KChannel *)obj, &msg);
+    }
     kobject_release(obj);
     return syscall_err(r);
 }
@@ -365,9 +401,10 @@ static uint64_t sys_chan_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!rights_check(rights, RIGHT_READ)) { kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
 
     struct KChanMsg msg;
-    r = kchannel_recv((struct KChannel *)obj, &msg);
+    r = kchannel_recv_into_process((struct KChannel *)obj, t->process, &msg);
     kobject_release(obj);
-    if (r == IRIS_OK) copy_to_user(arg1, &msg, (uint32_t)sizeof(msg));
+    if (r == IRIS_OK && !copy_to_user_checked(arg1, &msg, (uint32_t)sizeof(msg)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
     return syscall_err(r);
 }
 
@@ -383,12 +420,16 @@ static uint64_t sys_handle_close(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 static uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
+    uint32_t pages = 0;
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (kvmo_size_to_pages(arg0, &pages) != IRIS_OK)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    (void)pages;
     struct KVmo *v = kvmo_create(arg0);
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
     handle_id_t h = handle_table_insert(&t->process->handle_table,
                                         &v->base,
-                                        RIGHT_READ | RIGHT_WRITE);
+                                        RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
     if (h == HANDLE_INVALID) {
         kvmo_free(v);
         return syscall_err(IRIS_ERR_TABLE_FULL);
@@ -497,7 +538,8 @@ static uint64_t sys_notify_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!n) return syscall_err(IRIS_ERR_NO_MEMORY);
     handle_id_t h = handle_table_insert(&t->process->handle_table,
                                         &n->base,
-                                        RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT | RIGHT_DUPLICATE);
+                                        RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT |
+                                        RIGHT_DUPLICATE | RIGHT_TRANSFER);
     if (h == HANDLE_INVALID) {
         knotification_free(n);
         return syscall_err(IRIS_ERR_TABLE_FULL);
@@ -548,8 +590,8 @@ static uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     uint64_t bits = 0;
     r = knotification_wait((struct KNotification *)obj, &bits);
     kobject_release(obj);
-    if (r == IRIS_OK)
-        copy_to_user(arg1, &bits, (uint32_t)sizeof(bits));
+    if (r == IRIS_OK && !copy_to_user_checked(arg1, &bits, (uint32_t)sizeof(bits)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
     return syscall_err(r);
 }
 
@@ -568,13 +610,13 @@ static uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *         (only written if out_chan_ptr != 0 and is a valid user pointer)
  *
  * Rights granted:
- *   parent's KProcess handle: RIGHT_READ | RIGHT_MANAGE
+ *   parent's KProcess handle: RIGHT_READ | RIGHT_MANAGE | RIGHT_DUPLICATE
  *   parent's KChannel handle: RIGHT_READ | RIGHT_WRITE
  *   child's KChannel handle:  RIGHT_READ | RIGHT_WRITE
  */
 static uint64_t sys_spawn(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
-    if (arg0 == 0) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!user_spawn_entry_valid(arg0)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *parent = task_current();
     struct task *child = 0;
@@ -623,7 +665,7 @@ static uint64_t sys_spawn(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* 6. Insert KProcess into parent's handle table */
     proc_h = handle_table_insert(&parent->process->handle_table,
                                  &proc->base,
-                                 RIGHT_READ | RIGHT_MANAGE);
+                                 RIGHT_READ | RIGHT_MANAGE | RIGHT_DUPLICATE);
     if (proc_h == HANDLE_INVALID) {
         kobject_release(&ch->base);
         task_abort_spawned_user(child);
@@ -641,7 +683,13 @@ static uint64_t sys_spawn(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             task_abort_spawned_user(child);
             return syscall_err(IRIS_ERR_TABLE_FULL);
         }
-        copy_to_user(arg1, &parent_ch, (uint32_t)sizeof(parent_ch));
+        if (!copy_to_user_checked(arg1, &parent_ch, (uint32_t)sizeof(parent_ch))) {
+            (void)handle_table_close(&parent->process->handle_table, parent_ch);
+            (void)handle_table_close(&parent->process->handle_table, proc_h);
+            kobject_release(&ch->base);
+            task_abort_spawned_user(child);
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+        }
     }
     kobject_release(&ch->base); /* table(s) hold the reference(s) */
 
@@ -715,16 +763,17 @@ static uint64_t sys_handle_transfer(uint64_t arg0, uint64_t arg1, uint64_t arg2)
  * success (ns_lookup), 0 on success (ns_register).
  *
  * Architectural role: TRANSICIONAL.  These syscalls back the kernel-
- * resident bootstrap registry (nameserver.c).  They are the correct
- * mechanism for the current bootstrap phase but are NOT the final
- * service discovery architecture.  See nameserver.h for the full
- * transicional contract and evolution path.
+ * resident bootstrap registry (nameserver.c).  In phase 5 the kernel
+ * no longer chooses public service names for compiled-in services;
+ * svcmgr now owns that naming policy in userland and uses this path
+ * only to publish and look up bootstrap-visible objects.  They are
+ * still not the final service discovery architecture.  See
+ * nameserver.h for the full transicional contract and evolution path.
  *
- * Key limitation visible here: sys_ns_register has no caller ACL —
- * it only caps registered rights to what the caller holds on the
- * handle, but does not verify that the caller is entitled to publish
- * services at all.  A future service manager will enforce this at
- * the policy layer outside the kernel.
+ * Remaining limitation visible here: lookup still terminates in the
+ * kernel table because KChannel messages do not yet transfer handles.
+ * Registration policy, however, is now reduced to "only svcmgr may
+ * publish" while svcmgr itself decides what names exist.
  */
 
 /*
@@ -752,16 +801,8 @@ static uint64_t sys_ns_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!kprocess_has_ns_authority(t->process))
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
 
-    if (!user_range_readable(arg0, 1)) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* Copy name from user space */
     char name[NS_NAME_LEN];
-    uint32_t i = 0;
-    const char *uname = (const char *)(uintptr_t)arg0;
-    while (i < NS_NAME_LEN - 1 && user_range_readable(arg0 + i, 1) && uname[i]) {
-        name[i] = uname[i]; i++;
-    }
-    name[i] = '\0';
+    uint32_t i = copy_user_cstr_bounded(arg0, name, NS_NAME_LEN);
     if (i == 0) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /* Look up the object to register */
@@ -789,16 +830,8 @@ static uint64_t sys_ns_lookup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    if (!user_range_readable(arg0, 1)) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* Copy name from user space */
     char name[NS_NAME_LEN];
-    uint32_t i = 0;
-    const char *uname = (const char *)(uintptr_t)arg0;
-    while (i < NS_NAME_LEN - 1 && user_range_readable(arg0 + i, 1) && uname[i]) {
-        name[i] = uname[i]; i++;
-    }
-    name[i] = '\0';
+    uint32_t i = copy_user_cstr_bounded(arg0, name, NS_NAME_LEN);
     if (i == 0) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     handle_id_t h = HANDLE_INVALID;
@@ -953,6 +986,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_NOTIFY_WAIT:   return sys_notify_wait(arg0, arg1, arg2);
         case SYS_HANDLE_DUP:    return sys_handle_dup(arg0, arg1, arg2);
         case SYS_HANDLE_TRANSFER: return sys_handle_transfer(arg0, arg1, arg2);
+        case SYS_PROCESS_SELF:    return sys_process_self(arg0, arg1, arg2);
         case SYS_NS_REGISTER:     return sys_ns_register(arg0, arg1, arg2);
         case SYS_NS_LOOKUP:       return sys_ns_lookup(arg0, arg1, arg2);
         case SYS_PROCESS_STATUS:  return sys_process_status(arg0, arg1, arg2);

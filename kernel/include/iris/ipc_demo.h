@@ -6,6 +6,7 @@
  *
  * Initialises the legacy ipc_* subsystem and schedules the
  * kernel-internal producer/consumer ring-0 demo tasks.
+ * This module is opt-in only via ENABLE_LEGACY_IPC_DEMO=1.
  *
  * This module exists solely to keep the legacy ipc_* code exercised
  * while it remains compiled in.  Remove together with

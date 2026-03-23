@@ -43,7 +43,7 @@
 /* user processes reuse a small kernel-built image slice (.text + .rodata)
  * but map it into a private virtual window preserving internal offsets. */
 #define USER_IMAGE_SOURCE_BASE  KERNEL_PHYS_BASE
-#define USER_IMAGE_MAP_SIZE     0x000000000000C000ULL
+#define USER_IMAGE_MAP_SIZE     0x0000000000014000ULL
 
 /* user space bounds */
 #define USER_SPACE_BASE     0x1000ULL
