@@ -3,8 +3,8 @@
  *
  * Spawns the ring-3 service manager and gives it its bootstrap
  * KChannel.  The kernel retains a reference to that channel so that
- * it can queue early spawn requests and install one narrow bootstrap
- * client handle for the first user task that must reach svcmgr.
+ * it can install one narrow bootstrap client handle for the first
+ * user task that must reach svcmgr.
  *
  * Key architectural difference from kbd_bootstrap_init():
  *   - The kernel does NOT call ns_register here.
@@ -13,13 +13,13 @@
  *     handles over kernel nameserver lookup for the first control path.
  *
  * Phase 2 migration path:
- *   1. For each compiled-in service, call svcmgr_request_spawn()
- *      instead of spawning from the kernel directly.
- *   2. svcmgr receives SVCMGR_MSG_SPAWN_SERVICE, calls SYS_SPAWN,
- *      bootstraps the child with attached-handle IPC, and keeps
- *      normal discovery authority in userland.
- *   3. Remove kbd_bootstrap_init(); keep irq_routing_register (that
- *      stays kernel-side permanently).
+ *   1. The kernel now bootstraps only svcmgr itself and the first
+ *      client handle that must reach it.
+ *   2. svcmgr owns the auto-start manifest for compiled-in services,
+ *      creates their public channels in userland, and keeps normal
+ *      discovery authority there.
+ *   3. IRQ routing registration stays kernel-side permanently, but
+ *      steady-state service policy no longer originates in the kernel.
  *
  * See iris/svcmgr_proto.h for the full message protocol.
  */
@@ -79,7 +79,8 @@ void svcmgr_bootstrap_init(void) {
     task_set_bootstrap_arg0(sm, (uint64_t)h);
 
     /*
-     * Retain the kernel-side reference for spawn requests.
+     * Retain the kernel-side reference for bootstrap client installation
+     * and optional selftest traffic.
      * kobject_retain was already done by handle_table_insert; we keep
      * one additional reference here for the kernel's own use.
      */
@@ -107,134 +108,11 @@ void svcmgr_bootstrap_init(void) {
      * publication of "svcmgr".
      */
 
-    /* ── Queue kbd spawn request for svcmgr ─────────────────────────────
-     *
-     * kbd channels:
-     *   kbd_irq_ch  — receives IRQ 1 hardware events; also the public
-     *                 service inbox (clients send HELLO/STATUS here).
-     *                 The kernel pre-wires IRQ routing, then gives svcmgr
-     *                 one master handle with duplicate+transfer rights.
-     *                 svcmgr keeps that master handle and becomes the
-     *                 normal discovery authority for clients and children.
-     *
-     *   reply channel — svcmgr creates this in userland and retains the
-     *                   master handle itself.  The kernel does not publish
-     *                   or name it.
-     *
-     * IRQ routing ownership:
-     *   owner = sm->process (svcmgr) only for the pre-spawn bootstrap window.
-     *   svcmgr later calls SYS_IRQ_ROUTE_REGISTER(1, irq_chan_h, child_proc_h)
-     *   after the child exists, so steady-state ownership lives on the
-     *   kbd_server KProcess.  If that service exits, kprocess_teardown()
-     *   calls irq_routing_unregister_owner(child) and IRQ 1 is cleared.
-     *
-     *   This bootstrap ownership handoff keeps the route valid before the
-     *   child process exists without leaving svcmgr as the steady-state owner.
-     */
-    extern void phase3_exit_child(void);
-    struct KChannel *kbd_irq_ch = kchannel_alloc();
-    if (!kbd_irq_ch) {
-        serial_write("[IRIS][SVCMGR] WARN: kbd channel alloc failed\n");
-    } else {
-        irq_routing_register(1, kbd_irq_ch, sm->process);
-
-        handle_id_t irq_chan_h = handle_table_insert(&sm->process->handle_table,
-                                                      &kbd_irq_ch->base,
-                                                      RIGHT_READ | RIGHT_WRITE |
-                                                      RIGHT_DUPLICATE | RIGHT_TRANSFER);
-        if (irq_chan_h == HANDLE_INVALID) {
-            serial_write("[IRIS][SVCMGR] WARN: kbd.irq handle insert failed\n");
-            kobject_release(&kbd_irq_ch->base);
-        } else {
-            struct KChanMsg msg;
-            uint32_t i;
-            for (i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
-            msg.type = SVCMGR_MSG_SPAWN_SERVICE;
-
-            uint32_t service_id = SVCMGR_SERVICE_KBD;
-            for (i = 0; i < 4; i++)
-                msg.data[SVCMGR_SPAWN_OFF_SERVICE_ID + i] = ((uint8_t *)&service_id)[i];
-
-            /* pre-created public service channel handle retained by svcmgr */
-            for (i = 0; i < 4; i++)
-                msg.data[SVCMGR_SPAWN_OFF_REG_CHAN + i] = ((uint8_t *)&irq_chan_h)[i];
-
-            /* IRQ line: 1 = PS/2 keyboard.  svcmgr transfers ownership to the
-             * spawned kbd_server KProcess after spawn via SYS_IRQ_ROUTE_REGISTER. */
-            msg.data[SVCMGR_SPAWN_OFF_IRQ] = 1;
-
-            msg.data_len = SVCMGR_SPAWN_MSG_LEN;
-
-            iris_error_t sr = kchannel_send(svcmgr_bootstrap_ch, &msg);
-            if (sr == IRIS_OK) {
-                serial_write("[IRIS][SVCMGR] kbd bootstrap request queued\n");
-            } else {
-                serial_write("[IRIS][SVCMGR] WARN: kbd spawn request send failed\n");
-            }
-
-            kobject_release(&kbd_irq_ch->base);  /* svcmgr table + irq_routing hold refs */
-        }
-    }
-
-    /* ── Queue vfs bootstrap request for svcmgr ─────────────────────────────
-     *
-     * Current staged extraction step:
-     *   The kernel still owns the in-memory ramfs backing store and the
-     *   legacy open/read/close syscall island, but it is no longer the
-     *   client-visible owner of the migrated read-only open/read/close path.
-     *   svcmgr spawns a ring-3 "vfs" service that owns the file_id/session
-     *   namespace exposed to clients for that path.
-     *
-     * Bootstrap resources:
-     *   vfs_ch — public request channel inserted into svcmgr's table here.
-     *            svcmgr retains it as the master public handle and returns
-     *            duplicates to clients over attached-handle IPC.
-     *
-     * Transitional boundary:
-     *   No IRQ route is involved.  The legacy syscall island remains the
-     *   kernel-resident backend/compatibility path for now.
-     */
-    {
-        struct KChannel *vfs_ch = kchannel_alloc();
-        if (!vfs_ch) {
-            serial_write("[IRIS][SVCMGR] WARN: vfs channel alloc failed\n");
-        } else {
-            handle_id_t vfs_chan_h = handle_table_insert(&sm->process->handle_table,
-                                                         &vfs_ch->base,
-                                                         RIGHT_READ | RIGHT_WRITE |
-                                                         RIGHT_DUPLICATE | RIGHT_TRANSFER);
-            if (vfs_chan_h == HANDLE_INVALID) {
-                serial_write("[IRIS][SVCMGR] WARN: vfs handle insert failed\n");
-                kobject_release(&vfs_ch->base);
-            } else {
-                struct KChanMsg msg;
-                uint32_t i;
-                uint32_t service_id = SVCMGR_SERVICE_VFS;
-                for (i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
-                msg.type = SVCMGR_MSG_SPAWN_SERVICE;
-                for (i = 0; i < 4; i++)
-                    msg.data[SVCMGR_SPAWN_OFF_SERVICE_ID + i] = ((uint8_t *)&service_id)[i];
-                for (i = 0; i < 4; i++)
-                    msg.data[SVCMGR_SPAWN_OFF_REG_CHAN + i] = ((uint8_t *)&vfs_chan_h)[i];
-                msg.data[SVCMGR_SPAWN_OFF_IRQ] = 0xFF;
-                msg.data_len = SVCMGR_SPAWN_MSG_LEN;
-
-                iris_error_t sr = kchannel_send(svcmgr_bootstrap_ch, &msg);
-                if (sr == IRIS_OK) {
-                    serial_write("[IRIS][SVCMGR] vfs bootstrap request queued\n");
-                } else {
-                    serial_write("[IRIS][SVCMGR] WARN: vfs spawn request send failed\n");
-                }
-
-                kobject_release(&vfs_ch->base);  /* svcmgr table holds the ref */
-            }
-        }
-    }
-
 #ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
     {
         struct KChanMsg msg;
         uint32_t i;
+        extern void phase3_exit_child(void);
         uint64_t probe_entry = (uint64_t)(uintptr_t)phase3_exit_child;
 
         for (i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;

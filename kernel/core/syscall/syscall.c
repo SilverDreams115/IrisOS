@@ -882,6 +882,63 @@ static uint64_t sys_process_status(uint64_t arg0, uint64_t arg1, uint64_t arg2) 
     return syscall_ok_u64(alive ? 1 : 0);
 }
 
+/*
+ * sys_process_watch(proc_handle, chan_handle, cookie) → 0 or iris_error_t
+ *
+ * Registers a single process-exit watch for proc_handle. When the target
+ * process tears down, the kernel sends PROC_EVENT_MSG_EXIT into chan_handle.
+ *
+ * This is the current event-driven lifecycle path for service supervision.
+ * SYS_PROCESS_STATUS remains available as a fallback/non-blocking query.
+ */
+static uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    struct KObject *proc_obj;
+    struct KObject *chan_obj;
+    iris_rights_t proc_rights;
+    iris_rights_t chan_rights;
+    iris_error_t r;
+
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    r = handle_table_get_object(&t->process->handle_table,
+                                (handle_id_t)arg0, &proc_obj, &proc_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (proc_obj->type != KOBJ_PROCESS) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(proc_rights, RIGHT_READ)) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    r = handle_table_get_object(&t->process->handle_table,
+                                (handle_id_t)arg1, &chan_obj, &chan_rights);
+    if (r != IRIS_OK) {
+        kobject_release(proc_obj);
+        return syscall_err(r);
+    }
+    if (chan_obj->type != KOBJ_CHANNEL) {
+        kobject_release(proc_obj);
+        kobject_release(chan_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(chan_rights, RIGHT_WRITE)) {
+        kobject_release(proc_obj);
+        kobject_release(chan_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    r = kprocess_watch_exit((struct KProcess *)proc_obj,
+                            (struct KChannel *)chan_obj,
+                            (handle_id_t)arg0,
+                            (uint32_t)arg2);
+    kobject_release(proc_obj);
+    kobject_release(chan_obj);
+    return syscall_err(r);
+}
+
 static uint64_t sys_sleep(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     /* arg0 = ticks to sleep (at 100 Hz, 1 tick = 10ms) */
@@ -990,6 +1047,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_NS_REGISTER:     return sys_ns_register(arg0, arg1, arg2);
         case SYS_NS_LOOKUP:       return sys_ns_lookup(arg0, arg1, arg2);
         case SYS_PROCESS_STATUS:  return sys_process_status(arg0, arg1, arg2);
+        case SYS_PROCESS_WATCH:   return sys_process_watch(arg0, arg1, arg2);
         case SYS_IRQ_ROUTE_REGISTER: return sys_irq_route_register(arg0, arg1, arg2);
         default:
             serial_write("[SYSCALL] unknown syscall=");
