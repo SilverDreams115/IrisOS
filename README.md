@@ -27,6 +27,7 @@ What is already real:
 - userland-authoritative lookup for migrated live services
 - a userland keyboard service
 - a userland VFS service with real ownership of the migrated `OPEN/READ/CLOSE` path
+- a userland VFS namespace with enumerable boot exports
 - explicit shared protocols for the live `svcmgr`, `vfs`, and `kbd` service paths
 - compact subsystem-owned status summaries for `svcmgr`, `vfs`, and `kbd`
 - a compact kernel diagnostics snapshot via `SYS_DIAG_SNAPSHOT`
@@ -36,9 +37,7 @@ What is already real:
 
 What remains transitional:
 
-- the kernel bootstrap nameserver still exists as a narrow compatibility surface
-- kernel ramfs still provides backend storage for the current VFS path
-- legacy VFS syscalls still exist as backend/compatibility support
+- retired legacy VFS syscall numbers still exist as compatibility stubs that return failure
 
 ---
 
@@ -57,10 +56,13 @@ What remains transitional:
 Current authority split:
 
 - bootstrap discovery of `svcmgr`: explicit bootstrap handle from kernel
+- bundled service spawn authority: explicit bootstrap capability delivered to `svcmgr`
 - live service discovery: `svcmgr`
-- keyboard service policy/lifecycle: `svcmgr` + `kbd_server`
+- autostart service recovery: `svcmgr` with declarative restart limits
+- keyboard service policy/lifecycle: `svcmgr` + `kbd`
 - migrated VFS file/session state: `vfs` service
-- VFS backend storage: kernel ramfs for now
+- default migrated VFS content: service-owned
+- legacy kernel VFS backend: retired from the default kernel image
 - service/runtime status ownership: subsystem-local `STATUS` replies from `svcmgr`, `vfs`, and `kbd`
 - global diagnostics entry point: `svcmgr` aggregation over `SYS_DIAG_SNAPSHOT` + subsystem `STATUS`
 
@@ -75,15 +77,14 @@ Current authority split:
 | GDT/TSS/IDT | Working | Ring transitions, exceptions, IRQ dispatch |
 | Scheduler | Working | Round-robin with explicit blocking/wakeup |
 | Capability core | Working | `KObject`, `KChannel`, `KProcess`, `KNotification`, `KVmo`, handle table |
-| Syscalls | Working | Process, memory, IPC, handle, IRQ-route, and transitional bootstrap lookup surfaces |
-| Service manager | Working | `svcmgr` runs in ring 3 and owns live lookup for migrated services |
+| Syscalls | Working | Process, memory, IPC, handle, IRQ-route, and retired compatibility syscall numbers |
+| Service manager | Working | `svcmgr` runs in ring 3, owns live lookup, and can restart declarative autostart services with bounded retry policy |
+| Bootstrap authority | Working | `svcmgr` receives an explicit spawn capability; IRQ route install is authorized by target `proc_handle` rights |
 | Keyboard path | Working | `kbd` + `kbd.reply` booted by `svcmgr` |
-| VFS migrated path | Working | `vfs` owns client-visible `file_id`, offsets, close semantics, stale-id rejection, and dead-client reclaim for the accepted subset |
+| VFS migrated path | Working | `vfs` owns client-visible `file_id`, offsets, stale-id rejection, dead-client reclaim, and a small enumerable boot namespace |
 | Service protocols | Working | `svcmgr`, `vfs`, and `kbd` use shared protocol headers with explicit message layouts and protocol versions |
 | Diagnostics | Working | `SYS_DIAG_SNAPSHOT` plus `svcmgr` aggregation expose compact global health without turning boot into a dump |
 | IRQ ownership | Working | Route ownership follows the service `KProcess`; cleanup happens on exit |
-| Bootstrap nameserver | Transitional | Still present, but no longer the normal path for bootstrapping `svcmgr` |
-
 ---
 
 ## Boot And Discovery Model
@@ -91,12 +92,13 @@ Current authority split:
 Healthy boot now works like this:
 
 1. The kernel boots core subsystems and spawns `svcmgr`.
-2. The first control-plane connection to `svcmgr` is delivered explicitly as a bootstrap handle.
-3. `svcmgr` boots `kbd` and `vfs`, retains their master public handles, and owns lookup policy.
-4. `user_init` reaches `svcmgr` through the bootstrap handle, then looks up `kbd`/`vfs` over IPC.
-5. Clients receive service handles through IPC handle transfer, not through normal kernel lookup.
+2. The kernel delivers a bootstrap spawn capability to `svcmgr` over its private bootstrap channel.
+3. The first control-plane connection to `svcmgr` is delivered explicitly as a bootstrap handle.
+4. `svcmgr` boots `kbd` and `vfs`, retains their master public handles, owns lookup policy, and applies declarative restart policy if they exit.
+5. `user_init` reaches `svcmgr` through the bootstrap handle, then looks up `kbd`/`vfs` over IPC.
+6. Clients receive service handles through IPC handle transfer, not through normal kernel lookup.
 
-This means `SYS_NS_LOOKUP("svcmgr")` is no longer the healthy bootstrap path.
+This means healthy boot no longer depends on any kernel nameserver path.
 
 ---
 
@@ -107,17 +109,18 @@ The VFS transition is real but partial.
 What has moved into userland:
 
 - client-visible `OPEN/READ/CLOSE` for the migrated path
+- enumerable exported namespace via `VFS_MSG_LIST`
 - service-owned `file_id` namespace
 - per-open offset/state
 - stale-id invalidation
 - dead-client reclaim keyed to owner process death
+- default boot export content for the migrated path
 
 What remains in the kernel:
 
-- ramfs namespace and storage backend
-- legacy `SYS_OPEN` / `SYS_READ` / `SYS_CLOSE` compatibility/backend surface
+- retired syscall numbers for legacy `SYS_OPEN` / `SYS_READ` / `SYS_CLOSE`
 
-So the kernel is no longer the sole authority for the migrated client-visible path, but VFS extraction is not complete yet.
+So the healthy-path client-visible VFS authority is no longer split with the kernel. Remaining work toward a purer microkernel is now in other areas such as naming policy and hardware-driver extraction.
 
 ---
 
@@ -180,17 +183,20 @@ The current syscall surface lives in [kernel/include/iris/syscall.h](/home/silve
 - `SYS_PROCESS_STATUS`, `SYS_PROCESS_SELF`
 - `SYS_IRQ_ROUTE_REGISTER`
 - `SYS_DIAG_SNAPSHOT`
+- `SYS_SPAWN_SERVICE`
+
+Retired compatibility syscall numbers:
+
 - `SYS_NS_REGISTER`, `SYS_NS_LOOKUP`
-
-Current status of the nameserver syscalls:
-
-- `SYS_NS_REGISTER` is restricted to `svcmgr`
-- `SYS_NS_LOOKUP` is now transitional bootstrap compatibility, not the intended steady-state discovery path
+- `SYS_OPEN`, `SYS_READ`, `SYS_CLOSE`
 
 Current lifecycle note:
 
 - healthy-path `svcmgr` supervision is no longer pure polling; service exit is watched via `SYS_PROCESS_WATCH`
-- `SYS_PROCESS_STATUS` still exists for fallback/compatibility queries and for paths not yet migrated to watch-based lifecycle
+- `SYS_PROCESS_STATUS` still exists as a compatibility query, but the healthy service lifecycle path now uses `SYS_PROCESS_WATCH`
+- `SYS_DIAG_SNAPSHOT` now exposes bounded kernel pool pressure for channels, notifications, and VMOs
+- `SYS_SPAWN_SERVICE` now requires an explicit bootstrap capability handle, not a special process identity
+- `SYS_IRQ_ROUTE_REGISTER` is authorized by the target `proc_handle` carrying `RIGHT_ROUTE`
 
 ---
 
@@ -203,11 +209,12 @@ The current live protocols are intentionally small, but they are no longer ad ho
 - versioned by `SVCMGR_PROTO_VERSION`
 - shared definition in [kernel/include/iris/svcmgr_proto.h](/home/silver/projects/IRIS/kernel/include/iris/svcmgr_proto.h)
 - covers bootstrap-handle delivery, service lookup, process-exit watch events, `STATUS`, and consolidated `DIAG`
+- runtime policy comes from a shared declarative service catalog rather than a private hardcoded manifest inside `svcmgr`
 - `STATUS` reports:
-  - manifest entry count
+  - catalog entry count
   - ready service count
   - active supervision slot count
-  - polling-fallback slot count
+  - service catalog version
 - `DIAG` reports one compact global summary containing:
   - kernel snapshot counts from `SYS_DIAG_SNAPSHOT`
   - `svcmgr` supervision summary
@@ -218,7 +225,7 @@ The current live protocols are intentionally small, but they are no longer ad ho
 
 - versioned by `VFS_PROTO_VERSION`
 - shared definition in [kernel/include/iris/vfs_proto.h](/home/silver/projects/IRIS/kernel/include/iris/vfs_proto.h)
-- covers `OPEN`, `READ`, `CLOSE`, reclaim probe, and `STATUS`
+- covers `OPEN`, `READ`, `CLOSE`, `LIST`, reclaim probe, and `STATUS`
 - `STATUS` reports:
   - ready export count
   - active open-file count
@@ -239,8 +246,22 @@ Kernel diagnostics snapshot:
 - reports compact kernel-owned counts:
   - live scheduler tasks
   - live `KProcess` slots
+  - live `KChannel` slots
+  - live `KNotification` slots
+  - live `KVmo` slots
   - active IRQ routes
   - scheduler ticks
+
+Current bounded capacities in the healthy build:
+
+- `TASK_MAX = 32`
+- `KPROCESS_POOL_SIZE = 32`
+- `KCHANNEL_POOL_SIZE = 64`
+- `KCHAN_CAPACITY = 32`
+- `KNOTIF_POOL_SIZE = 64`
+- `KVMO_POOL_SIZE = 32`
+- `VFS_SERVICE_OPEN_FILES = 32`
+- `KChannel` recv now supports a bounded multi-waiter set instead of rejecting the second waiter with `IRIS_ERR_BUSY`
 
 Together these surfaces give one clean answer to “how do I ask IRIS for global health?”:
 
@@ -260,7 +281,6 @@ kernel/core/svcmgr.c                 Ring-3 service manager logic
 kernel/core/vfs_service.c            Ring-3 VFS service logic
 kernel/core/init/svcmgr_bootstrap.c  Kernel-side svcmgr bootstrap
 kernel/core/irq/irq_routing.c        IRQ routing with owner-based cleanup
-kernel/core/nameserver/nameserver.c  Transitional bootstrap nameserver
 kernel/arch/x86_64/user_init.S       Default init + gated selftest entrypoints
 kernel/arch/x86_64/kbd_server.S      Keyboard service
 kernel/arch/x86_64/svcmgr.S          Tiny svcmgr entry shim

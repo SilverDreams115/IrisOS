@@ -50,6 +50,14 @@ void knotification_free(struct KNotification *n) {
     kobject_release(&n->base);
 }
 
+uint32_t knotification_live_count(void) {
+    uint32_t live = 0;
+    for (uint32_t i = 0; i < KNOTIF_POOL_SIZE; i++) {
+        if (pool_used[i]) live++;
+    }
+    return live;
+}
+
 /*
  * Signal: set bits and wake any blocked waiter.
  * Safe from IRQ context — uses spinlock only briefly.

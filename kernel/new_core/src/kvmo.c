@@ -2,9 +2,8 @@
 #include <iris/pmm.h>
 #include <stdint.h>
 
-#define POOL_SIZE 16
-static struct KVmo pool[POOL_SIZE];
-static uint8_t     pool_used[POOL_SIZE];
+static struct KVmo pool[KVMO_POOL_SIZE];
+static uint8_t     pool_used[KVMO_POOL_SIZE];
 
 static void kvmo_destroy(struct KObject *obj) {
     struct KVmo *v = (struct KVmo *)obj;
@@ -13,7 +12,7 @@ static void kvmo_destroy(struct KObject *obj) {
         for (uint64_t i = 0; i < pages; i++)
             pmm_free_page(v->phys + i * 0x1000ULL);
     }
-    for (int i = 0; i < POOL_SIZE; i++) {
+    for (int i = 0; i < (int)KVMO_POOL_SIZE; i++) {
         if (&pool[i] == v) { pool_used[i] = 0; return; }
     }
 }
@@ -21,7 +20,7 @@ static void kvmo_destroy(struct KObject *obj) {
 static const struct KObjectOps kvmo_ops = { .destroy = kvmo_destroy };
 
 static struct KVmo *kvmo_alloc(void) {
-    for (int i = 0; i < POOL_SIZE; i++) {
+    for (int i = 0; i < (int)KVMO_POOL_SIZE; i++) {
         if (!pool_used[i]) {
             pool_used[i] = 1;
             struct KVmo *v = &pool[i];
@@ -81,4 +80,12 @@ struct KVmo *kvmo_wrap(uint64_t phys, uint64_t size) {
 
 void kvmo_free(struct KVmo *v) {
     kobject_release(&v->base);
+}
+
+uint32_t kvmo_live_count(void) {
+    uint32_t live = 0;
+    for (uint32_t i = 0; i < KVMO_POOL_SIZE; i++) {
+        if (pool_used[i]) live++;
+    }
+    return live;
 }

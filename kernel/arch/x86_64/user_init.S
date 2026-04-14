@@ -1,4 +1,5 @@
 #include <iris/svcmgr_proto.h>
+#include <iris/service_catalog.h>
 #include <iris/vfs_proto.h>
 #include <iris/kbd_proto.h>
 #include <iris/diag.h>
@@ -28,6 +29,7 @@ msg_hello_ok:   .asciz "kbd hello reply OK\n"
 msg_status_ok:  .asciz "kbd status reply OK\n"
 msg_vfs_lookup_ok: .asciz "vfs lookup OK\n"
 msg_vfs_reply_ok:  .asciz "vfs.reply lookup OK\n"
+msg_vfs_list_ok:   .asciz "vfs list reply OK\n"
 msg_vfs_open_ok:   .asciz "vfs open reply OK\n"
 msg_vfs_read_ok:   .asciz "vfs read reply OK\n"
 msg_vfs_close_ok:  .asciz "vfs close reply OK\n"
@@ -56,6 +58,7 @@ msg_hello_err:  .asciz "kbd hello FAILED\n"
 msg_status_err: .asciz "kbd status FAILED\n"
 msg_vfs_err:    .asciz "vfs read FAILED\n"
 vfs_boot_file:  .asciz "iris.txt"
+vfs_services_file: .asciz "services.txt"
 vfs_boot_data:  .asciz "Hello from IrisOS VFS!\n"
 
 .section .text
@@ -166,6 +169,14 @@ user_selftest:
     call .ui_query_global_diag
     testq %rax, %rax
     js .diag_fail
+
+    call .ui_query_vfs_list
+    testq %rax, %rax
+    js .vfs_fail
+
+    movq $0, %rax
+    leaq msg_vfs_list_ok(%rip), %rdi
+    syscall
 
     cmpq $0, UI_OFF_MODE(%rbp)
     je .ui_open_boot_file
@@ -1104,15 +1115,15 @@ user_selftest:
     jne .ui_status_bad_reply
     cmpl $2, 44(%rbp)
     jne .ui_status_bad_reply
-    cmpl $0, 48(%rbp)
+    cmpl $IRIS_SERVICE_CATALOG_VERSION, 48(%rbp)
     jne .ui_status_bad_reply
-    cmpl $1, 52(%rbp)
+    cmpl $VFS_BOOT_EXPORT_COUNT, 52(%rbp)
     jne .ui_status_bad_reply
     cmpl $0, 56(%rbp)
     jne .ui_status_bad_reply
     cmpl $VFS_SERVICE_OPEN_FILES, 60(%rbp)
     jne .ui_status_bad_reply
-    cmpl $23, 64(%rbp)
+    cmpl $VFS_BOOT_EXPORT_TOTAL_BYTES, 64(%rbp)
     jne .ui_status_bad_reply
     cmpl $KBD_STATUS_NORMAL, 68(%rbp)
     jne .ui_status_bad_reply
@@ -1175,18 +1186,126 @@ user_selftest:
     jne .ui_vfs_status_fail
     cmpl $VFS_PROTO_VERSION, 12(%rbp)
     jne .ui_vfs_status_fail
-    cmpl $1, 16(%rbp)
+    cmpl $VFS_BOOT_EXPORT_COUNT, 16(%rbp)
     jne .ui_vfs_status_fail
     cmpl $0, 20(%rbp)
     jne .ui_vfs_status_fail
     cmpl $VFS_SERVICE_OPEN_FILES, 24(%rbp)
     jne .ui_vfs_status_fail
-    cmpl $23, 28(%rbp)
+    cmpl $VFS_BOOT_EXPORT_TOTAL_BYTES, 28(%rbp)
     jne .ui_vfs_status_fail
     xorq %rax, %rax
     ret
 
 .ui_vfs_status_fail:
+    movq $-14, %rax
+    ret
+
+.ui_query_vfs_list:
+    call .ui_zero_msg
+    movl $VFS_MSG_LIST, 0(%rbp)
+    movl $0, 8(%rbp)
+    movl $VFS_MSG_LIST_LEN, 72(%rbp)
+
+    movq $13, %rax
+    movq %r13, %rdi
+    movq %rbp, %rsi
+    movq $0, %rdx
+    syscall
+    testq %rax, %rax
+    jnz .ui_vfs_list_fail
+
+    movq $14, %rax
+    movq %r14, %rdi
+    movq %rbp, %rsi
+    movq $0, %rdx
+    syscall
+    testq %rax, %rax
+    jnz .ui_vfs_list_fail
+
+    cmpl $VFS_MSG_LIST_REPLY, 0(%rbp)
+    jne .ui_vfs_list_fail
+    cmpl $0, 8(%rbp)
+    jne .ui_vfs_list_fail
+    cmpl $0, 12(%rbp)
+    jne .ui_vfs_list_fail
+    cmpl $23, 16(%rbp)
+    jne .ui_vfs_list_fail
+    cmpl $8, 20(%rbp)
+    jne .ui_vfs_list_fail
+    movq vfs_boot_file(%rip), %rax
+    cmpq %rax, 24(%rbp)
+    jne .ui_vfs_list_fail
+
+    call .ui_zero_msg
+    movl $VFS_MSG_LIST, 0(%rbp)
+    movl $1, 8(%rbp)
+    movl $VFS_MSG_LIST_LEN, 72(%rbp)
+
+    movq $13, %rax
+    movq %r13, %rdi
+    movq %rbp, %rsi
+    movq $0, %rdx
+    syscall
+    testq %rax, %rax
+    jnz .ui_vfs_list_fail
+
+    movq $14, %rax
+    movq %r14, %rdi
+    movq %rbp, %rsi
+    movq $0, %rdx
+    syscall
+    testq %rax, %rax
+    jnz .ui_vfs_list_fail
+
+    cmpl $VFS_MSG_LIST_REPLY, 0(%rbp)
+    jne .ui_vfs_list_fail
+    cmpl $0, 8(%rbp)
+    jne .ui_vfs_list_fail
+    cmpl $1, 12(%rbp)
+    jne .ui_vfs_list_fail
+    cmpl $8, 16(%rbp)
+    jne .ui_vfs_list_fail
+    cmpl $12, 20(%rbp)
+    jne .ui_vfs_list_fail
+    movq vfs_services_file(%rip), %rax
+    cmpq %rax, 24(%rbp)
+    jne .ui_vfs_list_fail
+    movl vfs_services_file+8(%rip), %eax
+    cmpl %eax, 32(%rbp)
+    jne .ui_vfs_list_fail
+
+    call .ui_zero_msg
+    movl $VFS_MSG_LIST, 0(%rbp)
+    movl $2, 8(%rbp)
+    movl $VFS_MSG_LIST_LEN, 72(%rbp)
+
+    movq $13, %rax
+    movq %r13, %rdi
+    movq %rbp, %rsi
+    movq $0, %rdx
+    syscall
+    testq %rax, %rax
+    jnz .ui_vfs_list_fail
+
+    movq $14, %rax
+    movq %r14, %rdi
+    movq %rbp, %rsi
+    movq $0, %rdx
+    syscall
+    testq %rax, %rax
+    jnz .ui_vfs_list_fail
+
+    cmpl $VFS_MSG_LIST_REPLY, 0(%rbp)
+    jne .ui_vfs_list_fail
+    cmpl $-3, 8(%rbp)
+    jne .ui_vfs_list_fail
+    cmpl $2, 12(%rbp)
+    jne .ui_vfs_list_fail
+    xorq %rax, %rax
+    ret
+
+.ui_vfs_list_fail:
     movq $-14, %rax
     ret
 
@@ -1203,6 +1322,7 @@ user_selftest:
  *   - tasks_live >= 1  (at least one scheduler task alive)
  *   - kproc_live >= 1  (at least one KProcess alive)
  *   - irq_routes_active >= 1  (at least IRQ1/kbd is routed)
+ *   - kchan_max, knotif_max, kvmo_max are non-zero
  *
  * Returns 0 on success, negative on any failure.
  * Leaves snapshot data at %rbp for caller inspection if desired.
@@ -1223,6 +1343,12 @@ user_selftest:
     cmpl  $0, IRIS_DIAG_OFF_KPROC_LIVE(%rbp)    /* kproc_live >= 1 */
     je    .ui_diag_bad
     cmpl  $0, IRIS_DIAG_OFF_IRQ_ACTIVE(%rbp)    /* irq_routes_active >= 1 */
+    je    .ui_diag_bad
+    cmpl  $0, IRIS_DIAG_OFF_KCHAN_MAX(%rbp)
+    je    .ui_diag_bad
+    cmpl  $0, IRIS_DIAG_OFF_KNOTIF_MAX(%rbp)
+    je    .ui_diag_bad
+    cmpl  $0, IRIS_DIAG_OFF_KVMO_MAX(%rbp)
     je    .ui_diag_bad
 
     xorq  %rax, %rax

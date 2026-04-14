@@ -15,8 +15,8 @@
  * Phase 2 migration path:
  *   1. The kernel now bootstraps only svcmgr itself and the first
  *      client handle that must reach it.
- *   2. svcmgr owns the auto-start manifest for compiled-in services,
- *      creates their public channels in userland, and keeps normal
+ *   2. svcmgr consumes the declarative built-in service catalog,
+ *      creates public channels in userland, and keeps normal
  *      discovery authority there.
  *   3. IRQ routing registration stays kernel-side permanently, but
  *      steady-state service policy no longer originates in the kernel.
@@ -31,41 +31,63 @@
 #include <iris/irq_routing.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kchannel.h>
+#include <iris/nc/kbootcap.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
+#include <iris/initrd.h>
+#include <iris/service_catalog.h>
+#include <iris/elf_loader.h>
+#include <iris/scheduler.h>
 
 /*
  * Kernel-side reference to the svcmgr bootstrap channel.
- * Used to send SVCMGR_MSG_SPAWN_SERVICE requests and to install the
- * first client bootstrap handle into user_init.
+ * Used to install the first client bootstrap handle into user_init and to
+ * carry bootstrap capability / lifecycle traffic into svcmgr.
  * Not released: this ref lives for the duration of the kernel.
  */
 static struct KChannel *svcmgr_bootstrap_ch = 0;
 
 /*
- * NS authority is no longer tracked via a module-global pointer.
- * Authority is granted by setting KProcess.ns_authority = 1 on the
- * svcmgr process via kprocess_set_ns_authority().
- * sys_ns_register checks kprocess_has_ns_authority(t->process) directly.
- * svcmgr_get_process() has been removed from the public interface.
+ * Bootstrap capability delivery:
+ * The kernel injects a dedicated spawn capability handle into svcmgr over the
+ * same private bootstrap channel used for later lifecycle events.
  */
 
 void svcmgr_bootstrap_init(void) {
     struct KChannel *ch = kchannel_alloc();
+    struct KBootstrapCap *spawn_cap = 0;
     if (!ch) {
         serial_write("[IRIS][SVCMGR] WARN: bootstrap channel alloc failed\n");
         return;
     }
 
-    extern void svcmgr_main(void);
-    struct task *sm = task_spawn_user((uint64_t)(uintptr_t)svcmgr_main, 0);
-    if (!sm) {
-        serial_write("[IRIS][SVCMGR] WARN: spawn failed\n");
+    /* Load svcmgr from the embedded initrd and spawn it as an ELF process. */
+    const void *elf_data = 0;
+    uint32_t    elf_size = 0;
+    if (!initrd_find(IRIS_BOOTSTRAP_SUPERVISOR_IMAGE, &elf_data, &elf_size)) {
+        serial_write("[IRIS][SVCMGR] FATAL: svcmgr not found in initrd\n");
         kobject_release(&ch->base);
         return;
     }
+
+    iris_elf_image_t img;
+    iris_error_t lerr = elf_loader_load(elf_data, elf_size, &img);
+    if (lerr != IRIS_OK) {
+        serial_write("[IRIS][SVCMGR] FATAL: elf_loader_load failed\n");
+        kobject_release(&ch->base);
+        return;
+    }
+
+    struct task *sm = task_spawn_elf(&img, 0);
+    if (!sm) {
+        serial_write("[IRIS][SVCMGR] WARN: spawn failed\n");
+        elf_loader_free_image(&img);
+        kobject_release(&ch->base);
+        return;
+    }
+    /* img is now owned by sm->process — do NOT call elf_loader_free_image */
 
     handle_id_t h = handle_table_insert(&sm->process->handle_table,
                                         &ch->base,
@@ -78,6 +100,38 @@ void svcmgr_bootstrap_init(void) {
     }
     task_set_bootstrap_arg0(sm, (uint64_t)h);
 
+    spawn_cap = kbootcap_alloc(IRIS_BOOTCAP_SPAWN_SERVICE);
+    if (!spawn_cap) {
+        serial_write("[IRIS][SVCMGR] FATAL: spawn cap alloc failed\n");
+        task_abort_spawned_user(sm);
+        kobject_release(&ch->base);
+        return;
+    }
+    {
+        struct KChanMsg msg;
+
+        for (uint32_t i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
+        msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+        svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                               SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP);
+        msg.data_len = SVCMGR_BOOTSTRAP_MSG_LEN;
+        msg.attached_handle = HANDLE_INVALID;
+        msg.attached_rights = RIGHT_READ;
+
+        kobject_retain(&spawn_cap->base);
+        kobject_active_retain(&spawn_cap->base);
+        if (kchannel_send_attached(ch, &msg, &spawn_cap->base, RIGHT_READ) != IRIS_OK) {
+            serial_write("[IRIS][SVCMGR] FATAL: spawn cap bootstrap send failed\n");
+            kobject_active_release(&spawn_cap->base);
+            kobject_release(&spawn_cap->base);
+            kbootcap_free(spawn_cap);
+            task_abort_spawned_user(sm);
+            kobject_release(&ch->base);
+            return;
+        }
+        kbootcap_free(spawn_cap);
+    }
+
     /*
      * Retain the kernel-side reference for bootstrap client installation
      * and optional selftest traffic.
@@ -86,15 +140,6 @@ void svcmgr_bootstrap_init(void) {
      */
     kobject_retain(&ch->base);
     svcmgr_bootstrap_ch = ch;
-
-    /*
-     * Grant NS registration authority to svcmgr's KProcess.
-     * sys_ns_register calls kprocess_has_ns_authority(t->process).
-     * Set before any task_yield so it is visible before svcmgr runs.
-     * Authority is a property of the KProcess object, not of a global
-     * pointer — no stale-reference risk if svcmgr is ever restarted.
-     */
-    kprocess_set_ns_authority(sm->process);
 
     serial_write("[IRIS][SVCMGR] service manager spawned, id=");
     serial_write_dec(sm->id);

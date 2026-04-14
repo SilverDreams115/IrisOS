@@ -6,6 +6,7 @@
 #include <iris/nc/handle_table.h>
 #include <iris/paging.h>
 #include <iris/task.h>
+#include <iris/elf_loader.h>
 #include <stdint.h>
 
 /*
@@ -43,29 +44,28 @@ struct KProcess {
     uint64_t        brk;         /* process heap break */
     uint8_t         teardown_complete; /* logical teardown already ran */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */
-    /*
-     * ns_authority: set once by the kernel at bootstrap time for the
-     * service manager process.  Controls whether SYS_NS_REGISTER is
-     * permitted for this process.
-     *
-     * Authority model: the flag is a property of the KProcess object
-     * itself, not of a module-global pointer.  This means authority
-     * does not become stale if the service manager is ever restarted
-     * (new KProcess → new flag grant), and there is no external
-     * coupling to a named svcmgr identity in the syscall layer.
-     *
-     * Set via kprocess_set_ns_authority().  Never cleared after set.
-     * Only one process holds this flag at any given time by convention.
-     */
-    uint8_t         ns_authority;
     uint8_t         exit_watch_armed; /* one death subscriber registered */
     handle_id_t     exit_watch_handle;/* subscriber's proc_handle id for callbacks */
     uint32_t        exit_watch_cookie;/* subscriber-defined cookie echoed on death */
     struct KChannel *exit_watch_ch;   /* retained channel for death event delivery */
     HandleTable     handle_table;/* process-scoped handles/capabilities */
+
+    /*
+     * ELF segment tracking — populated by task_spawn_elf after a successful
+     * elf_loader_load.  kprocess_reap_address_space iterates these to free
+     * segment backing pages before destroying the page tables.
+     *
+     * For kernel-linked user tasks (task_spawn_user / task_create_user_impl)
+     * elf_seg_count == 0 and these fields are unused.
+     */
+    uint32_t elf_seg_count;
+    struct {
+        uint64_t phys_base;   /* physical base of segment pages */
+        uint32_t page_count;  /* number of 4 KiB pages */
+    } elf_segs[ELF_LOADER_MAX_LOAD_SEGS];
 };
 
-#define KPROCESS_POOL_SIZE 16  /* maximum live KProcess objects system-wide */
+#define KPROCESS_POOL_SIZE 32  /* maximum live KProcess objects system-wide */
 
 struct KChannel;
 struct KProcess *kprocess_alloc(void);
@@ -90,24 +90,6 @@ static inline int kprocess_is_alive(const struct KProcess *p) {
 
 static inline int kprocess_teardown_complete(const struct KProcess *p) {
     return p && p->teardown_complete;
-}
-
-/*
- * kprocess_set_ns_authority: grant NS registration authority to p.
- * Must be called exactly once, at bootstrap time, for the service
- * manager process.  Must be called before svcmgr runs (before any
- * task_yield after the spawn), to ensure visibility.
- */
-static inline void kprocess_set_ns_authority(struct KProcess *p) {
-    if (p) p->ns_authority = 1;
-}
-
-/*
- * kprocess_has_ns_authority: returns non-zero if p may call
- * SYS_NS_REGISTER.  Used by sys_ns_register to enforce authority.
- */
-static inline int kprocess_has_ns_authority(const struct KProcess *p) {
-    return p && p->ns_authority;
 }
 
 #endif

@@ -128,12 +128,9 @@ void isr_handler(struct full_frame *frame) {
         return;
     }
     if (frame->vector == 33) {
-        /* IRQ1 — PS/2 keyboard: read scancode, route to user server or kernel driver */
+        /* IRQ1 — PS/2 keyboard: route raw scancode to the userland kbd service. */
         uint8_t sc = inb_direct(0x60);
-        if (irq_routing_signal(1, sc) < 0) {
-            /* no channel registered — fall back to in-kernel driver */
-            kbd_irq_handler();
-        }
+        (void)irq_routing_signal(1, sc);
         pic_eoi(1);
         return;
     }

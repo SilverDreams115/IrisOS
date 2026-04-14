@@ -5,6 +5,7 @@
 #include <iris/nc/error.h>
 #include <stdint.h>
 
+#define KVMO_POOL_SIZE 32u
 #define KVMO_MAX_PAGES (1024ULL * 1024ULL)
 #define KVMO_MAX_SIZE  (KVMO_MAX_PAGES * 0x1000ULL)
 
@@ -21,5 +22,6 @@ iris_error_t kvmo_size_to_pages(uint64_t size, uint32_t *out_pages);
 struct KVmo *kvmo_create(uint64_t size);             /* allocate from PMM */
 struct KVmo *kvmo_wrap  (uint64_t phys, uint64_t size); /* wrap existing phys (MMIO) */
 void         kvmo_free  (struct KVmo *v);
+uint32_t     kvmo_live_count(void);
 
 #endif

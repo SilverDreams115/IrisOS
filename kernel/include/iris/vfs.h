@@ -2,8 +2,12 @@
 #define IRIS_VFS_H
 
 #include <stdint.h>
-#include <stddef.h>
 
+/*
+ * VFS constants shared between kernel and userland services.
+ * These constants define the namespace visible to both the kernel VFS
+ * backend and the userland VFS service.
+ */
 #define VFS_MAX_NAME    64
 #define VFS_MAX_FILES   32
 #define VFS_MAX_FDS     16
@@ -14,6 +18,23 @@
 #define VFS_O_READ      0x01
 #define VFS_O_WRITE     0x02
 #define VFS_O_CREATE    0x04
+
+#define VFS_SEEK_SET 0  /* from start */
+#define VFS_SEEK_CUR 1  /* from current pos */
+#define VFS_SEEK_END 2  /* from end */
+
+#ifdef __KERNEL__
+/*
+ * Kernel-internal VFS structures and API.
+ *
+ * RETIRED compatibility API.
+ *
+ * The healthy-path VFS implementation now lives entirely in the ring-3 `vfs`
+ * service. These declarations remain only so the retired kernel ramfs/VFS
+ * implementation files can stay in-tree during the transition to full
+ * deletion. They are no longer built into the default kernel image.
+ */
+#include <stddef.h>
 
 struct inode {
     char     name[VFS_MAX_NAME];
@@ -31,17 +52,6 @@ struct file {
     uint32_t      valid;
 };
 
-/*
- * Kernel VFS API.
- *
- * Current staged status:
- *   - Kernel ramfs + this API remain the transitional backing store and
- *     compatibility surface for legacy SYS_OPEN/SYS_READ/SYS_CLOSE.
- *   - The migrated userland VFS path now owns the client-visible file_id
- *     namespace and open/read/close session state for its read-only service
- *     protocol; this API is backend-only for that path.
- *   - Do not treat this API as the only intended long-term authority.
- */
 void     vfs_init(void);
 int32_t  vfs_open(const char *path, uint32_t flags);
 int32_t  vfs_read(int32_t fd, void *buf, uint32_t len);
@@ -50,9 +60,6 @@ int32_t  vfs_close(int32_t fd);
 int32_t  vfs_stat(const char *path, uint32_t *out_size);
 int32_t  vfs_seek(int32_t fd, int32_t offset, uint32_t whence);
 int32_t  vfs_mkdir(const char *path);
+#endif /* __KERNEL__ */
 
-#define VFS_SEEK_SET 0  /* from start */
-#define VFS_SEEK_CUR 1  /* from current pos */
-#define VFS_SEEK_END 2  /* from end */
-
-#endif
+#endif /* IRIS_VFS_H */

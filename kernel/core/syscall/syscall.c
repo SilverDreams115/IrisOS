@@ -2,16 +2,18 @@
 #include <iris/task.h>
 #include <iris/pmm.h>
 #include <iris/nc/kchannel.h>
+#include <iris/nc/kbootcap.h>
 #include <iris/nc/kvmo.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
-#include <iris/nameserver.h>
 #include <iris/irq_routing.h>
 #include <iris/scheduler.h>
 #include <iris/usercopy.h>
 #include <iris/diag.h>
+#include <iris/initrd.h>
+#include <iris/elf_loader.h>
 
 /* MSR addresses */
 #define MSR_EFER   0xC0000080
@@ -37,7 +39,6 @@ extern char __text_end;
 
 #include <iris/serial.h>
 #include <iris/paging.h>
-#include <iris/vfs.h>
 
 #define PAGE_SIZE     0x1000ULL
 
@@ -62,26 +63,19 @@ static inline uint64_t syscall_ok_u64(uint64_t value) {
  * Transitional VFS/stdio syscall island.
  *
  * External contract:
- *   - Preserves the pre-v1 legacy syscall behavior for SYS_WRITE/OPEN/READ/CLOSE.
+ *   - Preserves the pre-v1 legacy syscall behavior for SYS_WRITE.
  *   - Uses generic -1 for syscall-side user pointer validation failures where
  *     that behavior already exists.
- *   - Passes through the internal VFS return values unchanged otherwise.
  *
  * Boundary rule:
  *   - New syscalls must not use this encoding style.
- *   - The userland VFS service now owns the client-visible file_id/session
- *     model for its migrated read-only open/read/close path.
- *   - This island remains the explicit kernel-side compatibility surface and
- *     backend-only substrate for that path.
- *   - Any further VFS extraction to userland should replace this island as a
- *     unit instead of letting legacy semantics spread into modern object paths.
+ *   - The userland VFS service owns the healthy-path file namespace and
+ *     open/read/close session model.
+ *   - SYS_OPEN/SYS_READ/SYS_CLOSE are now retired compatibility stubs and
+ *     must not be revived as an in-kernel backend.
  */
 static inline uint64_t transitional_legacy_err(void) {
     return (uint64_t)-1;
-}
-
-static inline uint64_t transitional_vfs_result(int32_t value) {
-    return (uint64_t)(int64_t)value;
 }
 
 /*
@@ -141,7 +135,7 @@ static void rollback_user_maps_and_free_phys(uint64_t cr3, uint64_t start, uint6
     }
 }
 
-/* ── Frozen transitional VFS/stdio syscall island ────────────────── */
+/* ── Transitional stdio / retired VFS syscall island ─────────────── */
 
 static uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
@@ -190,47 +184,18 @@ static uint64_t sys_process_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 static uint64_t sys_open(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
-    if (!user_range_readable(arg0, 1)) return transitional_legacy_err();
-    /* copy path safely */
-    char buf[VFS_MAX_NAME];
-    (void)copy_user_cstr_bounded(arg0, buf, VFS_MAX_NAME);
-    uint32_t flags = (uint32_t)arg1;
-    int32_t fd = vfs_open(buf, flags);
-    return transitional_vfs_result(fd);
+    (void)arg0; (void)arg1; (void)arg2;
+    return transitional_legacy_err();
 }
 
 static uint64_t sys_read(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    int32_t  fd  = (int32_t)arg0;
-    uint64_t buf = arg1;
-    uint32_t len = (uint32_t)arg2;
-    uint8_t  kbuf[64];
-    uint32_t total = 0;
-
-    if (!user_range_writable(buf, len)) return transitional_legacy_err();
-    while (total < len) {
-        uint32_t chunk = len - total;
-        if (chunk > (uint32_t)sizeof(kbuf)) chunk = (uint32_t)sizeof(kbuf);
-
-        int32_t n = vfs_read(fd, kbuf, chunk);
-        if (n < 0) {
-            if (total != 0) return transitional_vfs_result((int32_t)total);
-            return transitional_vfs_result(n);
-        }
-        if (n == 0) break;
-        if (!copy_to_user_checked(buf + total, kbuf, (uint32_t)n))
-            return transitional_legacy_err();
-
-        total += (uint32_t)n;
-        if ((uint32_t)n < chunk) break;
-    }
-    return transitional_vfs_result((int32_t)total);
+    (void)arg0; (void)arg1; (void)arg2;
+    return transitional_legacy_err();
 }
 
 static uint64_t sys_close(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    int32_t fd = (int32_t)arg0;
-    return transitional_vfs_result(vfs_close(fd));
+    (void)arg0; (void)arg1; (void)arg2;
+    return transitional_legacy_err();
 }
 
 /* ── Transitional heap-break syscall island ─────────────────────── */
@@ -611,7 +576,7 @@ static uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *         (only written if out_chan_ptr != 0 and is a valid user pointer)
  *
  * Rights granted:
- *   parent's KProcess handle: RIGHT_READ | RIGHT_MANAGE | RIGHT_DUPLICATE
+ *   parent's KProcess handle: RIGHT_READ | RIGHT_ROUTE | RIGHT_MANAGE | RIGHT_DUPLICATE
  *   parent's KChannel handle: RIGHT_READ | RIGHT_WRITE
  *   child's KChannel handle:  RIGHT_READ | RIGHT_WRITE
  */
@@ -697,6 +662,139 @@ static uint64_t sys_spawn(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_ok_u64((uint64_t)proc_h);
 }
 
+/* ── ELF service spawning ─────────────────────────────────────────── */
+
+/*
+ * sys_spawn_service(name_uptr, out_chan_ptr) → proc_handle or iris_error_t
+ *
+ * Spawns a named service from the kernel initrd. Restricted by an explicit
+ * bootstrap capability handle delivered during svcmgr bootstrap.
+ *
+ * Semantics match sys_spawn except that the child process is loaded from a
+ * named ELF image instead of executing a kernel-text function pointer.
+ *
+ * Steps:
+ *   1. Authority check — caller must present a bootstrap spawn capability.
+ *   2. Copy service name from user space (max INITRD_NAME_MAX chars).
+ *   3. Look up the named ELF image in the initrd.
+ *   4. Load the ELF into a new isolated address space via elf_loader_load().
+ *   5. Create a bootstrap KChannel pair.
+ *   6. Spawn a ring-3 task from the loaded image via task_spawn_elf().
+ *   7. Install handles into parent and child tables.
+ *   8. Return proc_handle to the parent; write chan_handle to *out_chan_ptr.
+ *
+ * On any failure all allocated resources are rolled back.
+ */
+
+#define SPAWN_SVC_NAME_MAX 32u  /* max service name length including NUL */
+
+static uint64_t sys_spawn_service(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task   *parent = task_current();
+    struct KChannel *ch   = 0;
+    handle_id_t    proc_h      = HANDLE_INVALID;
+    handle_id_t    parent_ch   = HANDLE_INVALID;
+    handle_id_t    child_h     = HANDLE_INVALID;
+    iris_elf_image_t img;
+    struct task    *child = 0;
+
+    if (!parent || !parent->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    {
+        struct KObject *auth_obj;
+        iris_rights_t auth_rights;
+        iris_error_t auth_r = handle_table_get_object(&parent->process->handle_table,
+                                                      (handle_id_t)arg2,
+                                                      &auth_obj, &auth_rights);
+        if (auth_r != IRIS_OK) return syscall_err(auth_r);
+        if (auth_obj->type != KOBJ_BOOTSTRAP_CAP) {
+            kobject_release(auth_obj);
+            return syscall_err(IRIS_ERR_WRONG_TYPE);
+        }
+        if (!rights_check(auth_rights, RIGHT_READ) ||
+            !kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_SPAWN_SERVICE)) {
+            kobject_release(auth_obj);
+            return syscall_err(IRIS_ERR_ACCESS_DENIED);
+        }
+        kobject_release(auth_obj);
+    }
+
+    /* Validate optional out pointer */
+    if (arg1 != 0 && !user_range_writable(arg1, (uint32_t)sizeof(handle_id_t)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /* Read service name from user space */
+    char name[SPAWN_SVC_NAME_MAX];
+    uint32_t name_len = copy_user_cstr_bounded(arg0, name, SPAWN_SVC_NAME_MAX);
+    if (name_len == 0) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /* Find the ELF image in the initrd */
+    const void *elf_data = 0;
+    uint32_t    elf_size = 0;
+    if (!initrd_find(name, &elf_data, &elf_size))
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+
+    /* Load the ELF into a new isolated address space */
+    iris_error_t lerr = elf_loader_load(elf_data, elf_size, &img);
+    if (lerr != IRIS_OK) return syscall_err(lerr);
+
+    /* Allocate bootstrap channel */
+    ch = kchannel_alloc();
+    if (!ch) { elf_loader_free_image(&img); return syscall_err(IRIS_ERR_NO_MEMORY); }
+
+    /* Spawn the child task from the ELF image (arg0 patched below) */
+    child = task_spawn_elf(&img, 0);
+    if (!child) {
+        kchannel_free(ch);
+        elf_loader_free_image(&img);
+        return syscall_err(IRIS_ERR_NO_MEMORY);
+    }
+    /* img.cr3_phys and img.segs are now owned by child->process */
+
+    /* Insert bootstrap channel handle into child's table */
+    child_h = handle_table_insert(&child->process->handle_table,
+                                  &ch->base, RIGHT_READ | RIGHT_WRITE);
+    if (child_h == HANDLE_INVALID) {
+        kchannel_free(ch);
+        task_abort_spawned_user(child);
+        return syscall_err(IRIS_ERR_TABLE_FULL);
+    }
+
+    /* Deliver bootstrap handle as child's arg0 */
+    task_set_bootstrap_arg0(child, (uint64_t)child_h);
+
+    /* Insert KProcess into parent's handle table */
+    proc_h = handle_table_insert(&parent->process->handle_table,
+                                 &child->process->base,
+                                 RIGHT_READ | RIGHT_ROUTE | RIGHT_MANAGE | RIGHT_DUPLICATE);
+    if (proc_h == HANDLE_INVALID) {
+        kobject_release(&ch->base);
+        task_abort_spawned_user(child);
+        return syscall_err(IRIS_ERR_TABLE_FULL);
+    }
+
+    /* Optionally install parent-side channel handle */
+    if (arg1 != 0) {
+        parent_ch = handle_table_insert(&parent->process->handle_table,
+                                        &ch->base, RIGHT_READ | RIGHT_WRITE);
+        if (parent_ch == HANDLE_INVALID) {
+            (void)handle_table_close(&parent->process->handle_table, proc_h);
+            kobject_release(&ch->base);
+            task_abort_spawned_user(child);
+            return syscall_err(IRIS_ERR_TABLE_FULL);
+        }
+        if (!copy_to_user_checked(arg1, &parent_ch, (uint32_t)sizeof(parent_ch))) {
+            (void)handle_table_close(&parent->process->handle_table, parent_ch);
+            (void)handle_table_close(&parent->process->handle_table, proc_h);
+            kobject_release(&ch->base);
+            task_abort_spawned_user(child);
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+        }
+    }
+    kobject_release(&ch->base);
+
+    return syscall_ok_u64((uint64_t)proc_h);
+}
+
 /* ── Handle transfer ──────────────────────────────────────────────── */
 
 /*
@@ -758,87 +856,15 @@ static uint64_t sys_handle_transfer(uint64_t arg0, uint64_t arg1, uint64_t arg2)
     return syscall_ok_u64((uint64_t)new_h);
 }
 
-/* ── Bootstrap name registry syscalls (transicional) ─────────────── */
-/*
- * ABI: modern/conforming — returns iris_error_t on failure, handle_id on
- * success (ns_lookup), 0 on success (ns_register).
- *
- * Architectural role: TRANSICIONAL.  These syscalls back the kernel-
- * resident bootstrap registry (nameserver.c).  In phase 5 the kernel
- * no longer chooses public service names for compiled-in services;
- * svcmgr now owns that naming policy in userland and uses this path
- * only to publish and look up bootstrap-visible objects.  They are
- * still not the final service discovery architecture.  See
- * nameserver.h for the full transicional contract and evolution path.
- *
- * Remaining limitation visible here: lookup still terminates in the
- * kernel table because KChannel messages do not yet transfer handles.
- * Registration policy, however, is now reduced to "only svcmgr may
- * publish" while svcmgr itself decides what names exist.
- */
-
-/*
- * sys_ns_register(name_uptr, handle, rights) → error_code
- *
- * Registers the KObject behind handle in the nameserver under name.
- * rights is capped to what the caller holds on handle.
- *
- * Authority (transitional):
- *   Only the service manager process (svcmgr) may call this syscall.
- *   The kernel identifies svcmgr by the KProcess* set at bootstrap.
- *   Returns IRIS_ERR_ACCESS_DENIED for all other callers.
- *
- *   This is a kernel-enforced transitional policy: the kernel knows
- *   about svcmgr specifically.  The final architecture moves this
- *   enforcement outside the kernel entirely.
- */
+/* ── Retired bootstrap nameserver syscalls ───────────────────────── */
 static uint64_t sys_ns_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* Authority check: only the process granted ns_authority at bootstrap
-     * may register services.  Authority is a flag on the KProcess object;
-     * we do not compare against an external global process pointer. */
-    if (!kprocess_has_ns_authority(t->process))
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-
-    char name[NS_NAME_LEN];
-    uint32_t i = copy_user_cstr_bounded(arg0, name, NS_NAME_LEN);
-    if (i == 0) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* Look up the object to register */
-    struct KObject *obj;
-    iris_rights_t   rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg1,
-                                             &obj, &rights);
-    if (r != IRIS_OK) return syscall_err(r);
-
-    /* Cap registered rights to what the caller actually holds */
-    iris_rights_t reg_rights = rights_reduce(rights, (iris_rights_t)arg2);
-    r = ns_register(name, obj, reg_rights, t->process);
-    kobject_release(obj);
-    return syscall_err(r);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
-/*
- * sys_ns_lookup(name_uptr, req_rights) → handle_id or error_code
- *
- * Looks up name in the nameserver; inserts a new handle into caller's table.
- * Returns the handle_id on success, or iris_error_t cast to uint64_t on failure.
- */
 static uint64_t sys_ns_lookup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
-    struct task *t = task_current();
-    if (!t) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    char name[NS_NAME_LEN];
-    uint32_t i = copy_user_cstr_bounded(arg0, name, NS_NAME_LEN);
-    if (i == 0) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    handle_id_t h = HANDLE_INVALID;
-    iris_error_t r = ns_lookup(name, t, (iris_rights_t)arg1, &h);
-    if (r != IRIS_OK) return syscall_err(r);
-    return syscall_ok_u64((uint64_t)h);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 /* ── Process lifecycle query ──────────────────────────────────────── */
@@ -958,18 +984,17 @@ static uint64_t sys_sleep(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * process exits, kprocess_teardown → irq_routing_unregister_owner
  * automatically clears the route.
  *
- * Authority: restricted to ns_authority holders (svcmgr) — same gate
- * as SYS_NS_REGISTER.  Only the service supervisor may rewire hardware.
+ * Capability-driven authority:
+ *   - chan_handle must carry RIGHT_READ|RIGHT_WRITE on a KChannel.
+ *   - proc_handle must carry RIGHT_READ|RIGHT_ROUTE on the target child.
  *
- * Call this after SYS_SPAWN to transfer IRQ ownership from svcmgr to
- * the freshly spawned service process.  The route stays active; only
- * the responsible owner changes.
+ * Call this after SYS_SPAWN_SERVICE to transfer IRQ ownership to the freshly
+ * spawned service process. The route stays active; only the responsible owner
+ * changes.
  */
 static uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (!kprocess_has_ns_authority(t->process))
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
 
     uint8_t irq_num = (uint8_t)(arg0 & 0xFFU);
     if (irq_num >= IRQ_ROUTE_MAX) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -1003,7 +1028,7 @@ static uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t ar
         kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_WRONG_TYPE);
     }
-    if (!rights_check(proc_rights, RIGHT_READ)) {
+    if (!rights_check(proc_rights, RIGHT_READ | RIGHT_ROUTE)) {
         kobject_release(ch_obj);
         kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -1057,7 +1082,12 @@ static uint64_t sys_diag_snapshot(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     uint64_t ticks          = sched_current_ticks();
     snap.ticks_lo           = (uint32_t)(ticks & 0xFFFFFFFFu);
     snap.ticks_hi           = (uint32_t)(ticks >> 32);
-    /* reserved[6] already zeroed */
+    snap.kchan_live         = kchannel_live_count();
+    snap.kchan_max          = (uint32_t)KCHANNEL_POOL_SIZE;
+    snap.knotif_live        = knotification_live_count();
+    snap.knotif_max         = (uint32_t)KNOTIF_POOL_SIZE;
+    snap.kvmo_live          = kvmo_live_count();
+    snap.kvmo_max           = (uint32_t)KVMO_POOL_SIZE;
 
     copy_to_user_checked(arg0, &snap, (uint32_t)sizeof(snap));
     return syscall_err(IRIS_OK);
@@ -1083,6 +1113,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_VMO_CREATE:  return sys_vmo_create(arg0, arg1, arg2);
         case SYS_VMO_MAP:     return sys_vmo_map(arg0, arg1, arg2);
         case SYS_SPAWN:         return sys_spawn(arg0, arg1, arg2);
+        case SYS_SPAWN_SERVICE: return sys_spawn_service(arg0, arg1, arg2);
         case SYS_NOTIFY_CREATE: return sys_notify_create(arg0, arg1, arg2);
         case SYS_NOTIFY_SIGNAL: return sys_notify_signal(arg0, arg1, arg2);
         case SYS_NOTIFY_WAIT:   return sys_notify_wait(arg0, arg1, arg2);

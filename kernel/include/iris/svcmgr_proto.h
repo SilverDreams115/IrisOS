@@ -27,7 +27,7 @@
  *
  * Healthy-path bootstrap no longer uses kernel → svcmgr spawn requests
  * for compiled-in services.  The kernel now bootstraps only svcmgr and
- * the first client capability; svcmgr owns the auto-start manifest for
+ * the first client capability; svcmgr consumes the declarative service catalog for
  * compiled-in services and reads selftest/bootstrap traffic, process-exit
  * watch events, and client lookup requests from its bootstrap channel.
  *
@@ -67,8 +67,9 @@
  * child's private bootstrap channel.  The handle is attached to the message
  * and is MOVE-only from svcmgr to the child:
  *
- *   data[SVCMGR_BOOTSTRAP_OFF_KIND] uint32_t endpoint role selector
- *                                   (service inbox vs reply channel).
+ *   data[SVCMGR_BOOTSTRAP_OFF_KIND] uint32_t bootstrap role selector
+ *                                   (service inbox, reply channel,
+ *                                   or bootstrap capability).
  *   attached_handle                 duplicated temp handle in svcmgr,
  *                                   consumed by SYS_CHAN_SEND and installed
  *                                   into the child on SYS_CHAN_RECV.
@@ -112,10 +113,10 @@
  * data[16..19] uint32_t irq_routes_active
  * data[20..23] uint32_t ticks_lo
  * data[24..27] uint32_t ticks_hi
- * data[28..31] uint32_t manifest entries
+ * data[28..31] uint32_t catalog entries
  * data[32..35] uint32_t ready services
  * data[36..39] uint32_t active tracked slots
- * data[40..43] uint32_t polling fallback slots
+ * data[40..43] uint32_t service catalog version
  * data[44..47] uint32_t vfs exports ready
  * data[48..51] uint32_t vfs open files
  * data[52..55] uint32_t vfs open capacity
@@ -131,13 +132,13 @@
  *
  * ── Phase status ─────────────────────────────────────────────────
  * Phase 8/current: svcmgr is the userland-authoritative discovery service
- * for normal clients and also owns the auto-start manifest for compiled-in
+ * for normal clients and consumes a declarative catalog for compiled-in
  * services (`kbd`, `vfs`).  The kernel bootstrap registry is transitional
  * only and no longer participates in the healthy path to reach svcmgr.
- * Other well-known service handles are kept in svcmgr's own manifest/registry
+ * Other well-known service handles are kept in svcmgr's runtime registry
  * and are returned over IPC with attached handle transfer. Service exit on the
  * healthy path is supervised by PROC_EVENT_MSG_EXIT over svcmgr's bootstrap
- * channel; SYS_PROCESS_STATUS remains a fallback-only query for watch failure.
+ * channel; svcmgr itself no longer polls for child lifecycle.
  * IRQ routing stays kernel-side (permanent kernel concern). irq_routing owner
  * = child service KProcess after SYS_IRQ_ROUTE_REGISTER; auto-cleanup fires
  * when a service exits via kprocess_teardown → irq_routing_unregister_owner.
@@ -167,6 +168,7 @@
 #define SVCMGR_BOOTSTRAP_KIND_NONE    0u
 #define SVCMGR_BOOTSTRAP_KIND_SERVICE 1u
 #define SVCMGR_BOOTSTRAP_KIND_REPLY   2u
+#define SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP 3u
 
 /* Byte offsets within KChanMsg.data[64] */
 #define SVCMGR_SPAWN_OFF_SERVICE_ID 0  /* uint32_t:    service kind selector       */
@@ -193,10 +195,10 @@
 #define SVCMGR_LOOKUP_REPLY_OFF_ENDPOINT 4 /* uint32_t: echoed endpoint id   */
 #define SVCMGR_STATUS_REPLY_OFF_ERR      0 /* int32_t: 0=OK, <0=iris_error_t */
 #define SVCMGR_STATUS_REPLY_OFF_VERSION  4 /* uint32_t: protocol version      */
-#define SVCMGR_STATUS_REPLY_OFF_MANIFEST 8 /* uint32_t: manifest entries      */
+#define SVCMGR_STATUS_REPLY_OFF_MANIFEST 8 /* uint32_t: catalog entries       */
 #define SVCMGR_STATUS_REPLY_OFF_READY   12 /* uint32_t: ready services        */
 #define SVCMGR_STATUS_REPLY_OFF_SLOTS   16 /* uint32_t: tracked live slots    */
-#define SVCMGR_STATUS_REPLY_OFF_FALLBACK 20 /* uint32_t: polling fallback slots */
+#define SVCMGR_STATUS_REPLY_OFF_CATALOG 20 /* uint32_t: service catalog version */
 #define SVCMGR_DIAG_REPLY_OFF_ERR       0 /* int32_t: 0=OK, <0=iris_error_t */
 #define SVCMGR_DIAG_REPLY_OFF_VERSION   4 /* uint32_t: diagnostics summary version */
 #define SVCMGR_DIAG_REPLY_OFF_TASKS     8 /* uint32_t: live scheduler tasks */
@@ -204,10 +206,10 @@
 #define SVCMGR_DIAG_REPLY_OFF_IRQ      16 /* uint32_t: active IRQ routes */
 #define SVCMGR_DIAG_REPLY_OFF_TICKS_LO 20 /* uint32_t: scheduler ticks low */
 #define SVCMGR_DIAG_REPLY_OFF_TICKS_HI 24 /* uint32_t: scheduler ticks high */
-#define SVCMGR_DIAG_REPLY_OFF_MANIFEST 28 /* uint32_t: svcmgr manifest entries */
+#define SVCMGR_DIAG_REPLY_OFF_MANIFEST 28 /* uint32_t: service catalog entries */
 #define SVCMGR_DIAG_REPLY_OFF_READY    32 /* uint32_t: ready services */
 #define SVCMGR_DIAG_REPLY_OFF_SLOTS    36 /* uint32_t: tracked live slots */
-#define SVCMGR_DIAG_REPLY_OFF_FALLBACK 40 /* uint32_t: polling fallback slots */
+#define SVCMGR_DIAG_REPLY_OFF_CATALOG 40 /* uint32_t: service catalog version */
 #define SVCMGR_DIAG_REPLY_OFF_VFS_EXPORTS 44 /* uint32_t: ready exports */
 #define SVCMGR_DIAG_REPLY_OFF_VFS_OPENS   48 /* uint32_t: live open files */
 #define SVCMGR_DIAG_REPLY_OFF_VFS_CAP     52 /* uint32_t: open-file capacity */
@@ -226,8 +228,8 @@
 #define SVCMGR_DIAG_MSG_LEN       0u
 #define SVCMGR_DIAG_REPLY_MSG_LEN 64u
 
-#define SVCMGR_PROTO_VERSION      1u
-#define SVCMGR_DIAG_VERSION       1u
+#define SVCMGR_PROTO_VERSION      2u
+#define SVCMGR_DIAG_VERSION       2u
 
 #ifndef __ASSEMBLER__
 static inline void svcmgr_proto_write_u32(uint8_t *dst, uint32_t value) {
@@ -298,7 +300,7 @@ static inline void svcmgr_proto_status_reply_init(struct KChanMsg *msg,
                                                   uint32_t manifest_count,
                                                   uint32_t ready_services,
                                                   uint32_t active_slots,
-                                                  uint32_t fallback_slots) {
+                                                  uint32_t catalog_version) {
     uint8_t *raw = (uint8_t *)msg;
     for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
     msg->type = SVCMGR_MSG_STATUS_REPLY;
@@ -307,7 +309,7 @@ static inline void svcmgr_proto_status_reply_init(struct KChanMsg *msg,
     svcmgr_proto_write_u32(&msg->data[SVCMGR_STATUS_REPLY_OFF_MANIFEST], manifest_count);
     svcmgr_proto_write_u32(&msg->data[SVCMGR_STATUS_REPLY_OFF_READY], ready_services);
     svcmgr_proto_write_u32(&msg->data[SVCMGR_STATUS_REPLY_OFF_SLOTS], active_slots);
-    svcmgr_proto_write_u32(&msg->data[SVCMGR_STATUS_REPLY_OFF_FALLBACK], fallback_slots);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_STATUS_REPLY_OFF_CATALOG], catalog_version);
     msg->data_len = SVCMGR_STATUS_REPLY_MSG_LEN;
     msg->attached_handle = HANDLE_INVALID;
     msg->attached_rights = RIGHT_NONE;
@@ -323,7 +325,7 @@ static inline void svcmgr_proto_diag_reply_init(struct KChanMsg *msg,
                                                 uint32_t manifest_count,
                                                 uint32_t ready_services,
                                                 uint32_t active_slots,
-                                                uint32_t fallback_slots,
+                                                uint32_t catalog_version,
                                                 uint32_t vfs_exports_ready,
                                                 uint32_t vfs_open_files,
                                                 uint32_t vfs_open_capacity,
@@ -342,7 +344,7 @@ static inline void svcmgr_proto_diag_reply_init(struct KChanMsg *msg,
     svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_MANIFEST], manifest_count);
     svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_READY], ready_services);
     svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_SLOTS], active_slots);
-    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_FALLBACK], fallback_slots);
+    svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_CATALOG], catalog_version);
     svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_VFS_EXPORTS], vfs_exports_ready);
     svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_VFS_OPENS], vfs_open_files);
     svcmgr_proto_write_u32(&msg->data[SVCMGR_DIAG_REPLY_OFF_VFS_CAP], vfs_open_capacity);

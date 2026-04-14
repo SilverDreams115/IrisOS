@@ -14,15 +14,13 @@
  *   - Clients talk to the ring-3 vfs service over the public request channel.
  *   - The service owns the client-visible file_id namespace and per-client
  *     open-file state for the migrated read-only open/read/close path.
- *   - The service now also owns namespace/open decisions for the exported
- *     boot-file subset it seeds at startup from the kernel backend.
- *     After that one-time seed, normal OPEN/READ on that subset do not ask
- *     the kernel VFS to resolve names or per-open state.
+ *   - The service also owns the default exported boot-file subset it seeds
+ *     from service-local data at startup.
  *   - OPEN carries an attached self proc_handle with RIGHT_READ so the
- *     service can reclaim dead-client state without taking ownership back
- *     into the kernel.
- *   - Kernel SYS_OPEN/SYS_READ/SYS_CLOSE remain a transitional backend only;
- *     clients do not receive kernel fd numbers on this path.
+ *     service can arm a process-exit watch and reclaim dead-client state
+ *     without taking ownership back into the kernel.
+ *   - Kernel SYS_OPEN/SYS_READ/SYS_CLOSE are retired compatibility stubs;
+ *     clients never receive kernel fd numbers on this path.
  *   - VFS_MSG_STATUS may optionally carry a transferred one-shot reply handle
  *     with RIGHT_WRITE. If absent, the service replies on its bootstrapped
  *     shared reply channel for compatibility.
@@ -33,12 +31,14 @@
 #define VFS_MSG_CLOSE       0x00010003u
 #define VFS_MSG_RECLAIM_PROBE 0x00010004u
 #define VFS_MSG_STATUS      0x00010005u
+#define VFS_MSG_LIST        0x00010006u
 
 #define VFS_MSG_OPEN_REPLY  0x80010001u
 #define VFS_MSG_READ_REPLY  0x80010002u
 #define VFS_MSG_CLOSE_REPLY 0x80010003u
 #define VFS_MSG_RECLAIM_PROBE_REPLY 0x80010004u
 #define VFS_MSG_STATUS_REPLY 0x80010005u
+#define VFS_MSG_LIST_REPLY   0x80010006u
 
 #define VFS_MSG_OFF_OPEN_FLAGS        0u
 #define VFS_MSG_OFF_OPEN_PATH         4u
@@ -67,6 +67,14 @@
 #define VFS_MSG_OFF_STATUS_REPLY_CAP     16u
 #define VFS_MSG_OFF_STATUS_REPLY_BYTES   20u
 
+#define VFS_MSG_OFF_LIST_INDEX            0u
+#define VFS_MSG_OFF_LIST_REPLY_ERR        0u
+#define VFS_MSG_OFF_LIST_REPLY_INDEX      4u
+#define VFS_MSG_OFF_LIST_REPLY_SIZE       8u
+#define VFS_MSG_OFF_LIST_REPLY_NAME_LEN  12u
+#define VFS_MSG_OFF_LIST_REPLY_NAME      16u
+#define VFS_MSG_LIST_REPLY_NAME_MAX      48u
+
 #define VFS_MSG_OPEN_MIN_LEN        5u
 #define VFS_MSG_OPEN_REPLY_LEN      8u
 #define VFS_MSG_READ_LEN            8u
@@ -77,9 +85,14 @@
 #define VFS_MSG_RECLAIM_PROBE_REPLY_LEN 4u
 #define VFS_MSG_STATUS_LEN          0u
 #define VFS_MSG_STATUS_REPLY_LEN    24u
+#define VFS_MSG_LIST_LEN            4u
+#define VFS_MSG_LIST_REPLY_BASE_LEN 16u
 
-#define VFS_SERVICE_OPEN_FILES      16u
-#define VFS_PROTO_VERSION           1u
+#define VFS_SERVICE_EXPORTS         4u
+#define VFS_SERVICE_OPEN_FILES      32u
+#define VFS_BOOT_EXPORT_COUNT       2u
+#define VFS_BOOT_EXPORT_TOTAL_BYTES 31u
+#define VFS_PROTO_VERSION           2u
 
 #ifndef __ASSEMBLER__
 static inline void vfs_proto_write_u32(uint8_t *dst, uint32_t value) {
@@ -151,6 +164,12 @@ static inline void vfs_proto_close_reply_init(struct KChanMsg *msg,
     msg->attached_rights = RIGHT_NONE;
 }
 
+static inline int vfs_proto_list_valid(const struct KChanMsg *msg) {
+    return msg && msg->type == VFS_MSG_LIST &&
+           msg->data_len == VFS_MSG_LIST_LEN &&
+           msg->attached_handle == HANDLE_INVALID;
+}
+
 static inline int vfs_proto_status_valid(const struct KChanMsg *msg) {
     if (!msg || msg->type != VFS_MSG_STATUS || msg->data_len != VFS_MSG_STATUS_LEN)
         return 0;
@@ -174,6 +193,31 @@ static inline void vfs_proto_status_reply_init(struct KChanMsg *msg,
     vfs_proto_write_u32(&msg->data[VFS_MSG_OFF_STATUS_REPLY_CAP], open_capacity);
     vfs_proto_write_u32(&msg->data[VFS_MSG_OFF_STATUS_REPLY_BYTES], exported_bytes);
     msg->data_len = VFS_MSG_STATUS_REPLY_LEN;
+    msg->attached_handle = HANDLE_INVALID;
+    msg->attached_rights = RIGHT_NONE;
+}
+
+static inline void vfs_proto_list_reply_init(struct KChanMsg *msg,
+                                             int32_t err,
+                                             uint32_t index,
+                                             uint32_t export_size,
+                                             const char *name,
+                                             uint32_t name_len) {
+    uint8_t *raw = (uint8_t *)msg;
+    for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
+    if (name_len > (VFS_MSG_LIST_REPLY_NAME_MAX - 1u))
+        name_len = VFS_MSG_LIST_REPLY_NAME_MAX - 1u;
+    msg->type = VFS_MSG_LIST_REPLY;
+    vfs_proto_write_u32(&msg->data[VFS_MSG_OFF_LIST_REPLY_ERR], (uint32_t)err);
+    vfs_proto_write_u32(&msg->data[VFS_MSG_OFF_LIST_REPLY_INDEX], index);
+    vfs_proto_write_u32(&msg->data[VFS_MSG_OFF_LIST_REPLY_SIZE], export_size);
+    vfs_proto_write_u32(&msg->data[VFS_MSG_OFF_LIST_REPLY_NAME_LEN], name_len);
+    if (name && name_len) {
+        for (uint32_t i = 0; i < name_len; i++)
+            msg->data[VFS_MSG_OFF_LIST_REPLY_NAME + i] = (uint8_t)name[i];
+    }
+    msg->data[VFS_MSG_OFF_LIST_REPLY_NAME + name_len] = 0;
+    msg->data_len = VFS_MSG_LIST_REPLY_BASE_LEN + name_len + 1u;
     msg->attached_handle = HANDLE_INVALID;
     msg->attached_rights = RIGHT_NONE;
 }
