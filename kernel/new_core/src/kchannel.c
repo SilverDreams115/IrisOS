@@ -7,6 +7,44 @@
 static struct KChannel pool[KCHANNEL_POOL_SIZE];
 static uint8_t         pool_used[KCHANNEL_POOL_SIZE];
 
+static void kchannel_waiters_clear(struct KChannel *ch) {
+    if (!ch) return;
+    for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) ch->waiters[i] = 0;
+    ch->waiter_count = 0;
+}
+
+static void kchannel_waiters_wake_all(struct KChannel *ch) {
+    if (!ch) return;
+    for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) {
+        struct task *w = ch->waiters[i];
+        if (!w) continue;
+        if (w->state == TASK_BLOCKED || w->state == TASK_BLOCKED_IPC)
+            w->state = TASK_READY;
+        ch->waiters[i] = 0;
+    }
+    ch->waiter_count = 0;
+}
+
+static int kchannel_waiters_contains(const struct KChannel *ch, const struct task *t) {
+    if (!ch || !t) return 0;
+    for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) {
+        if (ch->waiters[i] == t) return 1;
+    }
+    return 0;
+}
+
+static iris_error_t kchannel_waiters_enqueue(struct KChannel *ch, struct task *t) {
+    if (!ch || !t) return IRIS_ERR_INVALID_ARG;
+    if (kchannel_waiters_contains(ch, t)) return IRIS_OK;
+    for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) {
+        if (ch->waiters[i]) continue;
+        ch->waiters[i] = t;
+        ch->waiter_count++;
+        return IRIS_OK;
+    }
+    return IRIS_ERR_TABLE_FULL;
+}
+
 static void queued_handle_reset(struct KChanQueuedHandle *qh) {
     if (!qh || !qh->present) return;
     if (qh->object) {
@@ -22,10 +60,7 @@ static void kchannel_close(struct KObject *obj) {
     struct KChannel *ch = (struct KChannel *)obj;
     spinlock_lock(&ch->base.lock);
     ch->closed = 1;
-    if (ch->waiter && (ch->waiter->state == TASK_BLOCKED || ch->waiter->state == TASK_BLOCKED_IPC)) {
-        ch->waiter->state = TASK_READY;
-        ch->waiter = 0;
-    }
+    kchannel_waiters_wake_all(ch);
     spinlock_unlock(&ch->base.lock);
 }
 
@@ -53,6 +88,7 @@ struct KChannel *kchannel_alloc(void) {
             uint8_t *p = (uint8_t *)ch;
             for (uint32_t j = 0; j < sizeof(*ch); j++) p[j] = 0;
             kobject_init(&ch->base, KOBJ_CHANNEL, &kchannel_ops);
+            kchannel_waiters_clear(ch);
             return ch;
         }
     }
@@ -133,12 +169,8 @@ iris_error_t kchannel_send_attached(struct KChannel *ch, const struct KChanMsg *
     ch->tail  = (ch->tail + 1) % KCHAN_CAPACITY;
     ch->count++;
 
-    /* wake blocked receiver */
-    struct task *w = ch->waiter;
-    if (w && (w->state == TASK_BLOCKED || w->state == TASK_BLOCKED_IPC)) {
-        w->state   = TASK_READY;
-        ch->waiter = 0;
-    }
+    /* wake all blocked receivers; one will win the next recv race */
+    kchannel_waiters_wake_all(ch);
     spinlock_unlock(&ch->base.lock);
     return IRIS_OK;
 }
@@ -162,15 +194,12 @@ iris_error_t kchannel_recv_into_process(struct KChannel *ch, struct KProcess *pr
         }
         if (ch->count == 0) {
             struct task *t = task_current();
-            if (ch->waiter && ch->waiter != t) {
-                /* Another task is already blocked on this channel.
-                 * Multiple concurrent receivers are not supported — fail fast
-                 * rather than silently overwriting the existing waiter. */
-                spinlock_unlock(&ch->base.lock);
-                return IRIS_ERR_BUSY;
-            }
             if (t) {
-                ch->waiter = t;
+                r = kchannel_waiters_enqueue(ch, t);
+                if (r != IRIS_OK) {
+                    spinlock_unlock(&ch->base.lock);
+                    return r;
+                }
                 t->state   = TASK_BLOCKED_IPC;
             }
             spinlock_unlock(&ch->base.lock);
@@ -180,4 +209,12 @@ iris_error_t kchannel_recv_into_process(struct KChannel *ch, struct KProcess *pr
             spinlock_unlock(&ch->base.lock);
         }
     }
+}
+
+uint32_t kchannel_live_count(void) {
+    uint32_t live = 0;
+    for (uint32_t i = 0; i < KCHANNEL_POOL_SIZE; i++) {
+        if (pool_used[i]) live++;
+    }
+    return live;
 }

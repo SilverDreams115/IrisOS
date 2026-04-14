@@ -33,9 +33,9 @@
 #define SYS_EXIT    1   /* modern/conforming: success path does not return */
 #define SYS_GETPID  2   /* modern/conforming: returns pid >= 0 */
 #define SYS_YIELD   3   /* modern/conforming: returns 0 on success */
-#define SYS_OPEN    4   /* transitional: VFS-style fd or legacy negative error */
-#define SYS_READ    5   /* transitional: VFS-style byte count or legacy negative error */
-#define SYS_CLOSE   6   /* transitional: VFS-style 0 / negative legacy error */
+#define SYS_OPEN    4   /* retired compatibility stub: returns legacy -1 */
+#define SYS_READ    5   /* retired compatibility stub: returns legacy -1 */
+#define SYS_CLOSE   6   /* retired compatibility stub: returns legacy -1 */
 #define SYS_BRK     7   /* transitional/brk: address-as-value return, NOT iris_error_t.
                           *   arg0=0 → query (returns current brk).
                           *   arg0=addr → move brk; success → addr, failure → old brk.
@@ -127,54 +127,61 @@
  */
 #define SYS_DIAG_SNAPSHOT 30
 
+/*
+ * ELF service spawning — modern/conforming (iris_error_t).
+ *
+ * SYS_SPAWN_SERVICE: spawn a named service from the kernel initrd.
+ * Restricted by an explicit bootstrap capability handle.
+ * Semantics mirror SYS_SPAWN but load the named ELF from the initrd
+ * rather than executing a kernel-text function pointer.
+ *
+ *   arg0 = name_uptr   — user pointer to NUL-terminated service name (≤ 31 chars)
+ *   arg1 = out_chan_ptr — user pointer to handle_id_t; filled with parent's
+ *                        bootstrap channel handle on success (may be NULL)
+ *   arg2 = auth_handle   — bootstrap capability handle with RIGHT_READ and
+ *                         IRIS_BOOTCAP_SPAWN_SERVICE permission
+ *   returns: proc_handle or negative iris_error_t
+ *
+ *   On success:
+ *     - A new process is created from the named ELF in the initrd.
+ *     - Child receives its bootstrap KChannel handle as arg0 (RBX).
+ *     - Parent receives the other end of that channel via *out_chan_ptr.
+ *     - Parent receives a proc_handle with
+ *       RIGHT_READ|RIGHT_ROUTE|RIGHT_MANAGE|RIGHT_DUPLICATE.
+ *   On failure: all resources are rolled back.
+ *
+ * Authority: auth_handle must resolve to a KOBJ_BOOTSTRAP_CAP with
+ * IRIS_BOOTCAP_SPAWN_SERVICE permission.
+ */
+#define SYS_SPAWN_SERVICE   31
+
 #define SYS_IRQ_ROUTE_REGISTER 27 /* (irq_num, chan_handle, proc_handle) → 0 or negative iris_error_t
                                    *   Routes hardware IRQ irq_num into chan_handle, owned by
                                    *   proc_handle.  When proc_handle's process exits,
                                    *   kprocess_teardown auto-clears the route via
                                    *   irq_routing_unregister_owner.
-                                   *   Requires ns_authority (restricted to svcmgr).
+                                   *   Capability-driven authorization:
+                                   *   proc_handle must carry RIGHT_READ|RIGHT_ROUTE.
                                    *   irq_num must be < IRQ_ROUTE_MAX.
                                    *   chan_handle must be KOBJ_CHANNEL with RIGHT_READ|RIGHT_WRITE.
-                                   *   proc_handle must be KOBJ_PROCESS with RIGHT_READ. */
+                                   *   proc_handle must be KOBJ_PROCESS with
+                                   *   RIGHT_READ|RIGHT_ROUTE. */
 
-/*
- * Bootstrap service discovery — ABI is modern/conforming (iris_error_t).
- * The ARCHITECTURAL role is transicional: these syscalls back a kernel-
- * resident flat registry used for early bootstrap only.
- *
- * SYS_NS_REGISTER is restricted to the service manager process (svcmgr).
- * The kernel identifies svcmgr by its KProcess* set at bootstrap.
- * All other callers receive IRIS_ERR_ACCESS_DENIED.  Since phase 5,
- * svcmgr also owns the public naming policy for compiled-in services;
- * the kernel path is narrowed to bootstrap publication only.
- *
- * SYS_NS_LOOKUP is unrestricted: any process may look up a service.
- *
- * Current status:
- *   - Healthy boot no longer uses SYS_NS_LOOKUP to find svcmgr.
- *   - Normal runtime discovery for migrated services already goes
- *     through svcmgr IPC with attached-handle transfer.
- *   - These syscalls remain only as transitional compatibility for the
- *     kernel bootstrap registry.
- * Do not design new services assuming this interface is part of the
- * intended steady-state control plane.
- */
-#define SYS_NS_REGISTER     24  /* (name_uptr, handle, rights) → 0 or negative iris_error_t
-                                 *   Restricted to svcmgr process; others get ACCESS_DENIED.
-                                 *   Publishes handle's KObject under name with rights.
-                                 *   rights must be a subset of caller's rights on handle. */
-#define SYS_NS_LOOKUP       25  /* (name_uptr, req_rights) → handle_id or negative iris_error_t
-                                 *   Looks up name; inserts a new handle into caller's table.
-                                 *   Pass RIGHT_SAME_RIGHTS to get all registered rights.
-                                 *   Returns IRIS_ERR_NOT_FOUND if name is not registered. */
+/* Retired bootstrap nameserver syscalls.
+ * These numbers remain reserved for ABI stability but the implementation now
+ * returns IRIS_ERR_NOT_SUPPORTED. Service discovery lives in svcmgr IPC. */
+#define SYS_NS_REGISTER     24
+#define SYS_NS_LOOKUP       25
 
 #ifndef __ASSEMBLER__
+#ifdef __KERNEL__
 void syscall_init(void);
 void syscall_set_kstack(uint64_t kstack_top);
 
 /* Called from ASM handler */
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2);
+#endif /* __KERNEL__ */
 #endif /* __ASSEMBLER__ */
 
 #endif

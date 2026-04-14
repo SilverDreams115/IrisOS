@@ -24,15 +24,12 @@ KERNEL_ISR_OBJ       := $(BUILD_DIR)/isr_stubs.o
 KERNEL_CTX_OBJ       := $(BUILD_DIR)/context_switch.o
 KERNEL_SCHED_OBJ     := $(BUILD_DIR)/scheduler.o
 KERNEL_FB_OBJ        := $(BUILD_DIR)/fb.o
-KERNEL_RAMFS_OBJ     := $(BUILD_DIR)/ramfs.o
-KERNEL_VFS_OBJ       := $(BUILD_DIR)/vfs.o
 KERNEL_TRAMP_OBJ     := $(BUILD_DIR)/user_trampoline.o
 KERNEL_USERINIT_OBJ  := $(BUILD_DIR)/user_init.o
 KERNEL_SYSCALL_OBJ   := $(BUILD_DIR)/syscall.o
 KERNEL_USERCOPY_OBJ  := $(BUILD_DIR)/usercopy.o
 KERNEL_SYSCALLE_OBJ  := $(BUILD_DIR)/syscall_entry.o
 KERNEL_SERIAL_OBJ    := $(BUILD_DIR)/serial.o
-KERNEL_PCI_OBJ       := $(BUILD_DIR)/pci.o
 KERNEL_KBD_OBJ       := $(BUILD_DIR)/keyboard.o
 KERNEL_NC_KOBJECT_OBJ    := $(BUILD_DIR)/nc_kobject.o
 KERNEL_NC_HANDLE_OBJ     := $(BUILD_DIR)/nc_handle.o
@@ -40,16 +37,23 @@ KERNEL_NC_HANDLETBL_OBJ  := $(BUILD_DIR)/nc_handle_table.o
 KERNEL_NC_KCHANNEL_OBJ   := $(BUILD_DIR)/nc_kchannel.o
 KERNEL_NC_KVMO_OBJ       := $(BUILD_DIR)/nc_kvmo.o
 KERNEL_NC_KNOTIF_OBJ     := $(BUILD_DIR)/nc_knotification.o
+KERNEL_NC_KBOOTCAP_OBJ   := $(BUILD_DIR)/nc_kbootcap.o
 KERNEL_NC_KPROCESS_OBJ   := $(BUILD_DIR)/nc_kprocess.o
 KERNEL_IRQROUTING_OBJ    := $(BUILD_DIR)/irq_routing.o
-KERNEL_NAMESERVER_OBJ    := $(BUILD_DIR)/nameserver.o
-KERNEL_KBDSRV_OBJ        := $(BUILD_DIR)/kbd_server.o
-KERNEL_VFSSRV_ENTRY_OBJ  := $(BUILD_DIR)/vfs_server_entry.o
-KERNEL_VFSSRV_OBJ        := $(BUILD_DIR)/vfs_service.o
-KERNEL_SVCMGR_ENTRY_OBJ   := $(BUILD_DIR)/svcmgr_entry.o
-KERNEL_SVCMGR_OBJ         := $(BUILD_DIR)/svcmgr.o
 KERNEL_SVCMGR_BOOT_OBJ    := $(BUILD_DIR)/svcmgr_bootstrap.o
 KERNEL_PHASE3_SELFTEST_OBJ := $(BUILD_DIR)/phase3_selftest.o
+KERNEL_ELF_LOADER_OBJ     := $(BUILD_DIR)/elf_loader.o
+KERNEL_INITRD_OBJ         := $(BUILD_DIR)/initrd.o
+# Service ELF binaries — output directly into their source directories so that
+# the objcopy -I binary relative path (services/xxx/xxx.elf) matches the symbol
+# name mangling expected by kernel/core/initrd/initrd.c.
+SERVICE_SVCMGR_ELF := services/svcmgr/svcmgr.elf
+SERVICE_KBD_ELF    := services/kbd/kbd.elf
+SERVICE_VFS_ELF    := services/vfs/vfs.elf
+# objcopy-embedded initrd object files (binary blobs → linkable .o)
+KERNEL_SVCMGR_BIN_OBJ := $(BUILD_DIR)/svcmgr_bin.o
+KERNEL_KBD_BIN_OBJ    := $(BUILD_DIR)/kbd_bin.o
+KERNEL_VFS_BIN_OBJ    := $(BUILD_DIR)/vfs_bin.o
 KERNEL_DEMO_OBJS :=
 KERNEL_DEMO_DEFINES :=
 ifeq ($(ENABLE_LEGACY_IPC_DEMO),1)
@@ -61,7 +65,7 @@ endif
 ifeq ($(ENABLE_RUNTIME_SELFTESTS),1)
 KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_RUNTIME_SELFTESTS
 endif
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_FB_OBJ) $(KERNEL_RAMFS_OBJ) $(KERNEL_VFS_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_USERINIT_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_PCI_OBJ) $(KERNEL_KBD_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_NAMESERVER_OBJ) $(KERNEL_KBDSRV_OBJ) $(KERNEL_VFSSRV_ENTRY_OBJ) $(KERNEL_VFSSRV_OBJ) $(KERNEL_SVCMGR_ENTRY_OBJ) $(KERNEL_SVCMGR_OBJ) $(KERNEL_SVCMGR_BOOT_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_DEMO_OBJS)
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_FB_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_USERINIT_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_KBD_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_SVCMGR_BOOT_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_ELF_LOADER_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_DEMO_OBJS)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -77,19 +81,27 @@ endif
 
 KERNEL_INCLUDES := -I./kernel/include -I./kernel/new_core/include
 UEFI_INCLUDES   := -I./kernel/include -isystem /usr/include/efi -isystem /usr/include/efi/x86_64
+SERVICE_INCLUDES := -I./kernel/include -I./kernel/new_core/include
 
 COMMON_WARNINGS := -Wall -Wextra -Wshadow -Wundef
 UEFI_DEFINES    := -DEFI_DEBUG=0 -DEFI_DEBUG_CLEAR_MEMORY=0
 
 UEFI_CFLAGS    := -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone -fpic $(COMMON_WARNINGS) $(UEFI_DEFINES) $(UEFI_INCLUDES)
-KERNEL_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone $(COMMON_WARNINGS) $(KERNEL_INCLUDES) $(KERNEL_DEMO_DEFINES)
-KERNEL_ASFLAGS := -ffreestanding -fno-pic -fno-pie -mno-red-zone $(KERNEL_INCLUDES)
-SVCMGR_CFLAGS  := $(filter-out -fno-pic -fno-pie,$(KERNEL_CFLAGS)) -fpie
-VFSSRV_CFLAGS  := $(filter-out -fno-pic -fno-pie,$(KERNEL_CFLAGS)) -fpie
+KERNEL_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone $(COMMON_WARNINGS) -D__KERNEL__ $(KERNEL_INCLUDES) $(KERNEL_DEMO_DEFINES)
+KERNEL_ASFLAGS := -ffreestanding -fno-pic -fno-pie -mno-red-zone -D__KERNEL__ $(KERNEL_INCLUDES)
+# Service binaries: freestanding static ELFs; no kernel-internal symbols.
+# -D__KERNEL__ is explicitly absent so headers expose only the userland ABI.
+# -mcmodel=large: services link at 0x0000008000100000 (> 4 GB), which exceeds
+# the 32-bit address range assumed by the default small code model.  The large
+# model emits 64-bit absolute relocations (R_X86_64_64) for all symbol
+# references, so .rodata and function addresses are correctly resolved.
+SERVICE_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone -mcmodel=large $(COMMON_WARNINGS) $(SERVICE_INCLUDES)
+SERVICE_ASFLAGS := -ffreestanding -fno-pic -fno-pie -mno-red-zone $(SERVICE_INCLUDES)
+SERVICE_LDFLAGS := -nostdlib -static -T services/link_service.ld
 
 EFI_LIBDIR_FLAGS := -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/x86_64-linux-gnu/gnuefi
 LDFLAGS_EFI      := -nostdlib -znocombreloc -T $(EFI_LDS) -shared -Bsymbolic $(EFI_LIBDIR_FLAGS)
-KERNEL_LDFLAGS   := -nostdlib -z max-page-size=0x1000 -T kernel/arch/x86_64/linker.ld
+KERNEL_LDFLAGS   := -nostdlib -z max-page-size=0x1000 -z noexecstack -T kernel/arch/x86_64/linker.ld
 OBJCOPY_FLAGS    := -j .text -j .sdata -j .data -j .dynamic -j .dynsym -j .rel -j .rela -j .reloc --target=efi-app-x86_64
 
 .PHONY: all dirs run clean help check
@@ -155,12 +167,6 @@ $(KERNEL_SCHED_OBJ): kernel/core/scheduler/scheduler.c | dirs
 $(KERNEL_FB_OBJ): kernel/drivers/fb/fb.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_RAMFS_OBJ): kernel/fs/ramfs/ramfs.c | dirs
-	gcc $(KERNEL_CFLAGS) -c $< -o $@
-
-$(KERNEL_VFS_OBJ): kernel/fs/ramfs/vfs.c | dirs
-	gcc $(KERNEL_CFLAGS) -c $< -o $@
-
 $(KERNEL_TRAMP_OBJ): kernel/arch/x86_64/user_trampoline.S | dirs
 	gcc $(KERNEL_ASFLAGS) -c $< -o $@
 
@@ -177,9 +183,6 @@ $(KERNEL_SYSCALLE_OBJ): kernel/arch/x86_64/syscall_entry.S | dirs
 	gcc $(KERNEL_ASFLAGS) -c $< -o $@
 
 $(KERNEL_SERIAL_OBJ): kernel/drivers/serial/serial.c | dirs
-	gcc $(KERNEL_CFLAGS) -c $< -o $@
-
-$(KERNEL_PCI_OBJ): kernel/drivers/pci/pci.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_KBD_OBJ): kernel/drivers/keyboard/keyboard.c | dirs
@@ -203,13 +206,13 @@ $(KERNEL_NC_KVMO_OBJ): kernel/new_core/src/kvmo.c | dirs
 $(KERNEL_NC_KNOTIF_OBJ): kernel/new_core/src/knotification.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
+$(KERNEL_NC_KBOOTCAP_OBJ): kernel/new_core/src/kbootcap.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
 $(KERNEL_NC_KPROCESS_OBJ): kernel/new_core/src/kprocess.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_IRQROUTING_OBJ): kernel/core/irq/irq_routing.c | dirs
-	gcc $(KERNEL_CFLAGS) -c $< -o $@
-
-$(KERNEL_NAMESERVER_OBJ): kernel/core/nameserver/nameserver.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_KBDSRV_OBJ): kernel/arch/x86_64/kbd_server.S | dirs
@@ -232,6 +235,72 @@ $(KERNEL_SVCMGR_BOOT_OBJ): kernel/core/init/svcmgr_bootstrap.c | dirs
 
 $(KERNEL_PHASE3_SELFTEST_OBJ): kernel/core/phase3_selftest.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_ELF_LOADER_OBJ): kernel/core/loader/elf_loader.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_INITRD_OBJ): kernel/core/initrd/initrd.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+# ── Service ELF build rules ─────────────────────────────────────────────────
+#
+# Each service is a standalone static ELF64 ET_EXEC binary linked at
+# SERVICE_LOAD_BASE (0x0000008000100000).  The compiled object files are fed
+# to ld with services/link_service.ld.  The resulting ELF is then embedded
+# into the kernel binary as a binary blob via objcopy -I binary.
+#
+# objcopy mangling rule: every non-alphanumeric character in the input path
+# becomes '_', producing the symbol prefix:
+#   services/svcmgr/svcmgr.elf  →  _binary_services_svcmgr_svcmgr_elf_{start,end,size}
+#   services/kbd/kbd.elf        →  _binary_services_kbd_kbd_elf_{start,end,size}
+#   services/vfs/vfs.elf        →  _binary_services_vfs_vfs_elf_{start,end,size}
+#
+# The objcopy command is run from the project root so the relative path of the
+# input file determines the mangled symbol name.  The service ELFs must be
+# built before the kernel objects that reference them (initrd.o, svcmgr_bin.o,
+# etc.) — the explicit order dependency below enforces this.
+
+# ── svcmgr service ──────────────────────────────────────────────────────────
+$(BUILD_DIR)/svcmgr_entry.o: services/svcmgr/entry.S | dirs
+	gcc $(SERVICE_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/svcmgr_main.o: kernel/core/svcmgr.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_SVCMGR_ELF): $(BUILD_DIR)/svcmgr_entry.o $(BUILD_DIR)/svcmgr_main.o
+	ld $(SERVICE_LDFLAGS) $^ -o $@
+
+$(KERNEL_SVCMGR_BIN_OBJ): $(SERVICE_SVCMGR_ELF) | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    $(SERVICE_SVCMGR_ELF) $@
+
+# ── kbd service ─────────────────────────────────────────────────────────────
+$(BUILD_DIR)/kbd_main.o: services/kbd/main.S | dirs
+	gcc $(SERVICE_ASFLAGS) -c $< -o $@
+
+$(SERVICE_KBD_ELF): $(BUILD_DIR)/kbd_main.o
+	ld $(SERVICE_LDFLAGS) $^ -o $@
+
+$(KERNEL_KBD_BIN_OBJ): $(SERVICE_KBD_ELF) | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    $(SERVICE_KBD_ELF) $@
+
+# ── vfs service ─────────────────────────────────────────────────────────────
+$(BUILD_DIR)/vfs_entry.o: services/vfs/entry.S | dirs
+	gcc $(SERVICE_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/vfs_main.o: kernel/core/vfs_service.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_VFS_ELF): $(BUILD_DIR)/vfs_entry.o $(BUILD_DIR)/vfs_main.o
+	ld $(SERVICE_LDFLAGS) $^ -o $@
+
+$(KERNEL_VFS_BIN_OBJ): $(SERVICE_VFS_ELF) | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    $(SERVICE_VFS_ELF) $@
 
 ifeq ($(ENABLE_LEGACY_IPC_DEMO),1)
 $(KERNEL_IPC_OBJ): kernel/core/ipc/ipc.c | dirs
@@ -266,3 +335,4 @@ clean:
 	rm -f $(BUILD_DIR)/*.elf
 	rm -f $(BUILD_DIR)/OVMF_VARS.fd
 	rm -rf $(BUILD_DIR)/efi_root
+	rm -f $(SERVICE_SVCMGR_ELF) $(SERVICE_KBD_ELF) $(SERVICE_VFS_ELF)

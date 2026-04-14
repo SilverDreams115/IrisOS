@@ -3,6 +3,7 @@
 #include <iris/nc/kobject.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/spinlock.h>
+#include <iris/pic.h>
 
 struct irq_route_entry {
     struct KChannel *ch;
@@ -38,6 +39,9 @@ void irq_routing_register(uint8_t irq, struct KChannel *ch, struct KProcess *own
         kobject_active_release(&old->base);
         kobject_release(&old->base);
     }
+
+    if (irq < 16)
+        pic_set_irq_mask(irq, ch ? 0 : 1);
 }
 
 int32_t irq_routing_signal(uint8_t irq, uint8_t data_byte) {
@@ -94,5 +98,7 @@ void irq_routing_unregister_owner(struct KProcess *owner) {
             kobject_active_release(&old->base);
             kobject_release(&old->base);
         }
+        if (i < 16)
+            pic_set_irq_mask((uint8_t)i, 1);
     }
 }

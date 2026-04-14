@@ -26,7 +26,7 @@
  *     sees bits > 0 when it retries.
  */
 
-#define KNOTIF_POOL_SIZE 32  /* maximum live KNotification objects system-wide */
+#define KNOTIF_POOL_SIZE 64  /* maximum live KNotification objects system-wide */
 
 struct task; /* forward */
 
@@ -50,5 +50,6 @@ iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits);
 
 /* Non-blocking: returns pending bits (clearing them) or 0 if none pending. */
 uint64_t     knotification_poll(struct KNotification *n);
+uint32_t     knotification_live_count(void);
 
 #endif

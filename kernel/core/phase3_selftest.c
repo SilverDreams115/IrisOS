@@ -103,7 +103,7 @@ static int phase3_channel_selftest(void) {
     struct KChannel *ch = kchannel_alloc();
     struct KNotification *notif = 0;
     struct KChanMsg msg;
-    struct task fake_waiter;
+    struct task fake_waiters[2];
     handle_id_t close_h = HANDLE_INVALID;
     struct KObject *obj = 0;
     iris_rights_t rights = RIGHT_NONE;
@@ -155,16 +155,20 @@ static int phase3_channel_selftest(void) {
     if (handle_table_get_object(&phase3_channel_recv_proc.handle_table,
                                 msg.attached_handle, &obj, &rights) != IRIS_ERR_BAD_HANDLE) goto out;
 
-    for (uint32_t i = 0; i < sizeof(fake_waiter); i++) ((uint8_t *)&fake_waiter)[i] = 0;
-    fake_waiter.state = TASK_BLOCKED_IPC;
-    ch->waiter = &fake_waiter;
+    for (uint32_t i = 0; i < sizeof(fake_waiters); i++) ((uint8_t *)&fake_waiters)[i] = 0;
+    fake_waiters[0].state = TASK_BLOCKED_IPC;
+    fake_waiters[1].state = TASK_BLOCKED_IPC;
+    ch->waiters[0] = &fake_waiters[0];
+    ch->waiters[1] = &fake_waiters[1];
+    ch->waiter_count = 2;
     close_h = handle_table_insert(&phase3_channel_close_ht, &ch->base, RIGHT_READ | RIGHT_WRITE);
     if (close_h == HANDLE_INVALID) goto out;
     if (handle_table_close(&phase3_channel_close_ht, close_h) != IRIS_OK) goto out;
     close_h = HANDLE_INVALID;
     if (!ch->closed) goto out;
-    if (fake_waiter.state != TASK_READY) goto out;
-    if (ch->waiter != 0) goto out;
+    if (fake_waiters[0].state != TASK_READY) goto out;
+    if (fake_waiters[1].state != TASK_READY) goto out;
+    if (ch->waiter_count != 0) goto out;
     if (kchannel_try_recv(ch, &msg) != IRIS_ERR_CLOSED) goto out;
     if (kchannel_send(ch, &msg) != IRIS_ERR_CLOSED) goto out;
 

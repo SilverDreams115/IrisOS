@@ -2,7 +2,7 @@
 #define IRIS_NC_HANDLE_H
 
 #include <stdint.h>
-#include <iris/nc/kobject.h>
+#include <iris/nc/kobject.h>  /* forward-declares struct KObject for both kernel and user */
 #include <iris/nc/rights.h>
 
 /*
@@ -32,6 +32,7 @@ static inline handle_id_t handle_id_make(uint32_t slot, uint32_t gen) {
     return (handle_id_t)((gen << HANDLE_GEN_SHIFT) | (slot & HANDLE_SLOT_MASK));
 }
 
+#ifdef __KERNEL__
 /*
  * HandleEntry: entrada interna del kernel.
  * Vive exclusivamente dentro de una HandleTable
@@ -53,5 +54,6 @@ struct HandleEntry {
 void handle_entry_init(struct HandleEntry *e, struct KObject *obj,
                        iris_rights_t rights, uint32_t gen);
 void handle_entry_reset(struct HandleEntry *e);
+#endif /* __KERNEL__ */
 
-#endif
+#endif /* IRIS_NC_HANDLE_H */

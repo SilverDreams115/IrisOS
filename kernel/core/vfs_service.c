@@ -11,12 +11,20 @@
 struct vfs_open_file {
     uint32_t owner_task_id;
     uint32_t offset;
-    handle_id_t owner_proc_h;
     uint16_t generation;
     uint8_t  active;
     uint8_t  flags;
     uint8_t  export_id;
-    uint8_t  reserved[3];
+    uint8_t  client_slot;
+    uint8_t  reserved[2];
+};
+
+struct vfs_client {
+    uint32_t owner_task_id;
+    handle_id_t owner_proc_h;
+    uint16_t open_refs;
+    uint8_t active;
+    uint8_t reserved;
 };
 
 struct vfs_export {
@@ -30,7 +38,8 @@ struct vfs_state {
     handle_id_t bootstrap_h;
     handle_id_t service_h;
     handle_id_t reply_h;
-    struct vfs_export exports[1];
+    struct vfs_export exports[VFS_SERVICE_EXPORTS];
+    struct vfs_client clients[VFS_SERVICE_OPEN_FILES];
     struct vfs_open_file files[VFS_SERVICE_OPEN_FILES];
 };
 
@@ -39,6 +48,12 @@ static const char vfs_str_ready[]     = "VFS ready\n";
 static const char vfs_str_boot_ok[]   = "VFS bootstrap OK\n";
 static const char vfs_str_boot_fail[] = "VFS bootstrap FAIL\n";
 static const char vfs_boot_export_iris[] = "iris.txt";
+static const uint8_t vfs_boot_export_iris_data[] = "Hello from IrisOS VFS!\n";
+static const char vfs_boot_export_services[] = "services.txt";
+static const uint8_t vfs_boot_export_services_data[] = "kbd\nvfs\n";
+static const char vfs_str_reclaim[]   = "VFS reclaimed dead client\n";
+
+#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
 static const char vfs_str_probe_open[] = "VFS probe open OK\n";
 static const char vfs_str_probe_start[] = "VFS probe start\n";
 static const char vfs_str_probe_channels[] = "VFS probe channels ready\n";
@@ -46,10 +61,9 @@ static const char vfs_str_probe_spawning[] = "VFS probe spawning child\n";
 static const char vfs_str_probe_spawned[] = "VFS probe child spawned\n";
 static const char vfs_str_probe_req[] = "VFS probe request received\n";
 static const char vfs_str_probe_report[] = "VFS probe file report received\n";
-static const char vfs_str_owner_dead[] = "VFS owner dead detected\n";
-static const char vfs_str_reclaim[]   = "VFS reclaimed dead client\n";
 static const char vfs_str_stale_ok[]  = "VFS reclaimed stale id reject OK\n";
 static const char vfs_str_probe_fail[] = "VFS WARN: reclaim probe failed\n";
+#endif /* IRIS_ENABLE_RUNTIME_SELFTESTS */
 
 #define VFS_PROBE_BOOT_REQ     0x70020001u
 #define VFS_PROBE_BOOT_REPLY   0x70020002u
@@ -92,9 +106,11 @@ static void vfs_close_handle_if_valid(handle_id_t *h) {
     *h = HANDLE_INVALID;
 }
 
+#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
 static int64_t vfs_sleep_ticks(uint64_t ticks) {
     return vfs_syscall1(SYS_SLEEP, ticks);
 }
+#endif /* IRIS_ENABLE_RUNTIME_SELFTESTS */
 
 static void vfs_copy_cstr(char *dst, const uint8_t *src, uint32_t len) {
     uint32_t i = 0;
@@ -160,8 +176,34 @@ static void vfs_reply_status(handle_id_t reply_h, int32_t err,
     (void)vfs_syscall2(SYS_CHAN_SEND, reply_h, (uint64_t)(uintptr_t)&msg);
 }
 
+static void vfs_reply_list(handle_id_t reply_h, int32_t err, uint32_t index,
+                           const struct vfs_export *export_file) {
+    struct KChanMsg msg;
+    const char *name = 0;
+    uint32_t name_len = 0;
+    uint32_t export_size = 0;
+
+    if (export_file && export_file->ready) {
+        while (name_len < VFS_MAX_NAME && export_file->name[name_len]) name_len++;
+        name = export_file->name;
+        export_size = export_file->size;
+    }
+    vfs_proto_list_reply_init(&msg, err, index, export_size, name, name_len);
+    (void)vfs_syscall2(SYS_CHAN_SEND, reply_h, (uint64_t)(uintptr_t)&msg);
+}
+
 static uint32_t vfs_encode_file_id(uint32_t slot, uint16_t generation) {
     return ((uint32_t)generation << 16) | (slot + 1u);
+}
+
+static uint32_t vfs_client_cookie(uint32_t slot) {
+    return slot + 1u;
+}
+
+static int vfs_client_slot_from_cookie(uint32_t cookie, uint32_t *slot_out) {
+    if (cookie == 0 || cookie > VFS_SERVICE_OPEN_FILES) return 0;
+    if (slot_out) *slot_out = cookie - 1u;
+    return 1;
 }
 
 static struct vfs_open_file *vfs_lookup_file(struct vfs_state *state,
@@ -182,8 +224,84 @@ static struct vfs_open_file *vfs_lookup_file(struct vfs_state *state,
     return file;
 }
 
+static struct vfs_client *vfs_find_client(struct vfs_state *state, uint32_t sender_id,
+                                          uint32_t *slot_out) {
+    if (!state) return 0;
+    for (uint32_t i = 0; i < VFS_SERVICE_OPEN_FILES; i++) {
+        if (!state->clients[i].active) continue;
+        if (state->clients[i].owner_task_id != sender_id) continue;
+        if (slot_out) *slot_out = i;
+        return &state->clients[i];
+    }
+    return 0;
+}
+
+static void vfs_clear_client(struct vfs_client *client) {
+    if (!client) return;
+    vfs_close_handle_if_valid(&client->owner_proc_h);
+    client->owner_task_id = 0;
+    client->open_refs = 0;
+    client->active = 0;
+}
+
+static int32_t vfs_attach_client(struct vfs_state *state, uint32_t sender_id,
+                                 handle_id_t owner_proc_h, uint32_t *slot_out) {
+    struct vfs_client *client;
+    uint32_t slot = 0;
+    int64_t watch_rc;
+
+    if (!state || !slot_out || owner_proc_h == HANDLE_INVALID)
+        return IRIS_ERR_INVALID_ARG;
+
+    client = vfs_find_client(state, sender_id, &slot);
+    if (client) {
+        if (client->open_refs == UINT16_MAX) {
+            vfs_close_handle_if_valid(&owner_proc_h);
+            return IRIS_ERR_TABLE_FULL;
+        }
+        client->open_refs++;
+        vfs_close_handle_if_valid(&owner_proc_h);
+        *slot_out = slot;
+        return IRIS_OK;
+    }
+
+    for (slot = 0; slot < VFS_SERVICE_OPEN_FILES; slot++) {
+        if (!state->clients[slot].active) break;
+    }
+    if (slot == VFS_SERVICE_OPEN_FILES) {
+        vfs_close_handle_if_valid(&owner_proc_h);
+        return IRIS_ERR_TABLE_FULL;
+    }
+
+    client = &state->clients[slot];
+    client->owner_task_id = sender_id;
+    client->owner_proc_h = owner_proc_h;
+    client->open_refs = 1;
+    client->active = 1;
+
+    watch_rc = vfs_syscall3(SYS_PROCESS_WATCH, owner_proc_h, state->service_h,
+                            vfs_client_cookie(slot));
+    if (watch_rc != IRIS_OK) {
+        vfs_clear_client(client);
+        return (int32_t)watch_rc;
+    }
+
+    *slot_out = slot;
+    return IRIS_OK;
+}
+
+static void vfs_release_client_ref(struct vfs_state *state, uint32_t client_slot) {
+    struct vfs_client *client;
+
+    if (!state || client_slot >= VFS_SERVICE_OPEN_FILES) return;
+    client = &state->clients[client_slot];
+    if (!client->active || client->open_refs == 0) return;
+    client->open_refs--;
+    if (client->open_refs == 0) vfs_clear_client(client);
+}
+
 static uint32_t vfs_alloc_file(struct vfs_state *state, uint32_t sender_id,
-                               handle_id_t owner_proc_h, uint32_t flags,
+                               uint32_t client_slot, uint32_t flags,
                                uint8_t export_id) {
     for (uint32_t i = 0; i < VFS_SERVICE_OPEN_FILES; i++) {
         struct vfs_open_file *file = &state->files[i];
@@ -193,9 +311,9 @@ static uint32_t vfs_alloc_file(struct vfs_state *state, uint32_t sender_id,
         file->active = 1;
         file->owner_task_id = sender_id;
         file->offset = 0;
-        file->owner_proc_h = owner_proc_h;
         file->flags = (uint8_t)flags;
         file->export_id = export_id;
+        file->client_slot = (uint8_t)client_slot;
         return vfs_encode_file_id(i, file->generation);
     }
     return 0;
@@ -203,34 +321,12 @@ static uint32_t vfs_alloc_file(struct vfs_state *state, uint32_t sender_id,
 
 static void vfs_retire_file(struct vfs_open_file *file) {
     if (!file) return;
-    vfs_close_handle_if_valid(&file->owner_proc_h);
     file->active = 0;
     file->owner_task_id = 0;
     file->offset = 0;
     file->flags = 0;
     file->export_id = 0;
-}
-
-static int64_t vfs_owner_status(handle_id_t proc_h) {
-    if (proc_h == HANDLE_INVALID) return IRIS_ERR_BAD_HANDLE;
-    return vfs_syscall1(SYS_PROCESS_STATUS, proc_h);
-}
-
-static void vfs_reclaim_dead_files(struct vfs_state *state) {
-    if (!state) return;
-    for (uint32_t i = 0; i < VFS_SERVICE_OPEN_FILES; i++) {
-        struct vfs_open_file *file = &state->files[i];
-        int64_t status;
-
-        if (!file->active) continue;
-        status = vfs_owner_status(file->owner_proc_h);
-        if (status > 0) continue;
-        if (status == IRIS_ERR_ACCESS_DENIED) continue;
-
-        vfs_log(vfs_str_owner_dead);
-        vfs_retire_file(file);
-        vfs_log(vfs_str_reclaim);
-    }
+    file->client_slot = 0;
 }
 
 static uint32_t vfs_active_open_count(const struct vfs_state *state) {
@@ -260,32 +356,16 @@ static uint32_t vfs_exported_bytes(const struct vfs_state *state) {
     return total;
 }
 
-static int32_t vfs_backend_open_readonly(const char *path) {
-    int64_t fd = vfs_syscall2(SYS_OPEN, (uint64_t)(uintptr_t)path, VFS_O_READ);
-    if (fd < 0) return -1;
-    return (int32_t)fd;
-}
+static struct vfs_export *vfs_export_at_visible_index(struct vfs_state *state, uint32_t index) {
+    uint32_t visible = 0;
 
-static int32_t vfs_backend_read_all(const char *path, uint8_t *out, uint32_t max_len) {
-    int32_t fd = vfs_backend_open_readonly(path);
-    uint32_t total = 0;
-
-    if (fd < 0) return -1;
-
-    while (total < max_len) {
-        int64_t n = vfs_syscall3(SYS_READ, (uint64_t)fd,
-                                 (uint64_t)(uintptr_t)(out + total),
-                                 max_len - total);
-        if (n < 0) {
-            (void)vfs_syscall1(SYS_CLOSE, (uint64_t)fd);
-            return -1;
-        }
-        if (n == 0) break;
-        total += (uint32_t)n;
+    if (!state) return 0;
+    for (uint32_t i = 0; i < (uint32_t)(sizeof(state->exports) / sizeof(state->exports[0])); i++) {
+        if (!state->exports[i].ready) continue;
+        if (visible == index) return &state->exports[i];
+        visible++;
     }
-
-    (void)vfs_syscall1(SYS_CLOSE, (uint64_t)fd);
-    return (int32_t)total;
+    return 0;
 }
 
 static struct vfs_export *vfs_find_export(struct vfs_state *state, const char *path,
@@ -300,20 +380,29 @@ static struct vfs_export *vfs_find_export(struct vfs_state *state, const char *p
     return 0;
 }
 
+static int vfs_seed_one_export(struct vfs_export *export_file,
+                               const char *name,
+                               const uint8_t *data,
+                               uint32_t data_len) {
+    if (!export_file || !name || !data) return 0;
+    vfs_copy_cstr(export_file->name, (const uint8_t *)name, (uint32_t)VFS_MAX_NAME);
+    if (data_len > (uint32_t)sizeof(export_file->data)) return 0;
+    vfs_copy_bytes(export_file->data, data, data_len);
+    export_file->size = data_len;
+    export_file->ready = 1;
+    return 1;
+}
+
 static int vfs_seed_exports(struct vfs_state *state) {
-    struct vfs_export *export_iris;
-    int32_t n;
+    uint32_t data_len;
 
     if (!state) return 0;
-    export_iris = &state->exports[0];
-    vfs_copy_cstr(export_iris->name,
-                  (const uint8_t *)vfs_boot_export_iris,
-                  (uint32_t)sizeof(vfs_boot_export_iris));
-    n = vfs_backend_read_all(export_iris->name, export_iris->data,
-                             (uint32_t)sizeof(export_iris->data));
-    if (n < 0) return 0;
-    export_iris->size = (uint32_t)n;
-    export_iris->ready = 1;
+    data_len = (uint32_t)(sizeof(vfs_boot_export_iris_data) - 1u);
+    if (!vfs_seed_one_export(&state->exports[0], vfs_boot_export_iris,
+                             vfs_boot_export_iris_data, data_len)) return 0;
+    data_len = (uint32_t)(sizeof(vfs_boot_export_services_data) - 1u);
+    if (!vfs_seed_one_export(&state->exports[1], vfs_boot_export_services,
+                             vfs_boot_export_services_data, data_len)) return 0;
     return 1;
 }
 
@@ -323,8 +412,9 @@ static void vfs_handle_open(struct vfs_state *state, const struct KChanMsg *req,
     char path[VFS_MAX_NAME];
     struct vfs_export *export_file;
     uint32_t file_id;
-    int64_t owner_status;
     handle_id_t owner_proc_h;
+    uint32_t client_slot = 0;
+    int32_t client_rc;
     uint8_t export_id = 0;
 
     if (!state || !req) return;
@@ -352,15 +442,6 @@ static void vfs_handle_open(struct vfs_state *state, const struct KChanMsg *req,
     }
 
     owner_proc_h = req->attached_handle;
-    owner_status = vfs_owner_status(owner_proc_h);
-    if (owner_status <= 0) {
-        vfs_close_handle_if_valid(&owner_proc_h);
-        vfs_reply_open(reply_h,
-                       owner_status == 0 ? IRIS_ERR_BAD_HANDLE : (int32_t)owner_status,
-                       0);
-        return;
-    }
-
     vfs_copy_cstr(path, &req->data[VFS_MSG_OFF_OPEN_PATH],
                   req->data_len - VFS_MSG_OFF_OPEN_PATH);
     export_file = vfs_find_export(state, path, &export_id);
@@ -370,10 +451,16 @@ static void vfs_handle_open(struct vfs_state *state, const struct KChanMsg *req,
         return;
     }
 
-    file_id = vfs_alloc_file(state, req->sender_id, owner_proc_h, flags,
+    client_rc = vfs_attach_client(state, req->sender_id, owner_proc_h, &client_slot);
+    if (client_rc != IRIS_OK) {
+        vfs_reply_open(reply_h, client_rc, 0);
+        return;
+    }
+
+    file_id = vfs_alloc_file(state, req->sender_id, client_slot, flags,
                              export_id);
     if (file_id == 0) {
-        vfs_close_handle_if_valid(&owner_proc_h);
+        vfs_release_client_ref(state, client_slot);
         vfs_reply_open(reply_h, IRIS_ERR_TABLE_FULL, 0);
         return;
     }
@@ -461,10 +548,45 @@ static void vfs_handle_close(struct vfs_state *state, const struct KChanMsg *req
         return;
     }
 
+    vfs_release_client_ref(state, file->client_slot);
     vfs_retire_file(file);
     vfs_reply_close(reply_h, IRIS_OK, file_id);
 }
 
+static void vfs_reclaim_client(struct vfs_state *state, uint32_t client_slot,
+                               handle_id_t watched_h) {
+    struct vfs_client *client;
+
+    if (!state || client_slot >= VFS_SERVICE_OPEN_FILES) return;
+    client = &state->clients[client_slot];
+    if (!client->active) return;
+    if (watched_h != HANDLE_INVALID && client->owner_proc_h != watched_h) return;
+
+    for (uint32_t i = 0; i < VFS_SERVICE_OPEN_FILES; i++) {
+        struct vfs_open_file *file = &state->files[i];
+        if (!file->active) continue;
+        if (file->client_slot != client_slot) continue;
+        vfs_retire_file(file);
+    }
+
+    vfs_clear_client(client);
+    vfs_log(vfs_str_reclaim);
+}
+
+static void vfs_handle_proc_exit(struct vfs_state *state, const struct KChanMsg *msg) {
+    handle_id_t watched_h = HANDLE_INVALID;
+    uint32_t cookie = 0;
+    uint32_t client_slot = 0;
+
+    if (!state || !msg) return;
+    if (msg->type != PROC_EVENT_MSG_EXIT || msg->data_len != PROC_EVENT_MSG_LEN) return;
+    watched_h = (handle_id_t)vfs_proto_read_u32(&msg->data[PROC_EVENT_OFF_HANDLE]);
+    cookie = vfs_proto_read_u32(&msg->data[PROC_EVENT_OFF_COOKIE]);
+    if (!vfs_client_slot_from_cookie(cookie, &client_slot)) return;
+    vfs_reclaim_client(state, client_slot, watched_h);
+}
+
+#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
 static int64_t vfs_make_channel_pair(iris_rights_t server_rights,
                                      iris_rights_t client_rights,
                                      handle_id_t *server_h,
@@ -535,16 +657,6 @@ static int64_t vfs_recv_msg(handle_id_t recv_h, struct KChanMsg *msg) {
     return vfs_syscall2(SYS_CHAN_RECV, recv_h, (uint64_t)(uintptr_t)msg);
 }
 
-static int64_t vfs_wait_proc_dead(handle_id_t proc_h) {
-    for (uint32_t i = 0; i < 64u; i++) {
-        int64_t status = vfs_owner_status(proc_h);
-        if (status < 0) return status;
-        if (status == 0) return IRIS_OK;
-        (void)vfs_sleep_ticks(1);
-    }
-    return IRIS_ERR_WOULD_BLOCK;
-}
-
 static int vfs_probe_recv_file_id(handle_id_t report_h, uint32_t *file_id) {
     struct KChanMsg msg;
 
@@ -598,6 +710,10 @@ static int vfs_probe_verify_stale(struct vfs_state *state,
     if (vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_READ_REPLY_FILE_ID]) != file_id) return 0;
     return 1;
 }
+
+#endif /* IRIS_ENABLE_RUNTIME_SELFTESTS (probe helpers) */
+
+#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
 
 extern void vfs_probe_child(void);
 
@@ -656,8 +772,13 @@ static int vfs_run_reclaim_probe(struct vfs_state *state) {
     vfs_log(vfs_str_probe_report);
     vfs_log(vfs_str_probe_open);
 
-    if (vfs_wait_proc_dead(child_proc_h) != IRIS_OK) goto fail;
-    vfs_reclaim_dead_files(state);
+    for (;;) {
+        struct KChanMsg event_msg;
+        if (vfs_recv_msg(state->service_h, &event_msg) != IRIS_OK) goto fail;
+        if (event_msg.type != PROC_EVENT_MSG_EXIT) continue;
+        vfs_handle_proc_exit(state, &event_msg);
+        break;
+    }
     if (!vfs_probe_verify_stale(state, leaked_sender_id, leaked_file_id)) goto fail;
     vfs_log(vfs_str_stale_ok);
 
@@ -680,6 +801,8 @@ fail:
     return 0;
 }
 
+#endif /* IRIS_ENABLE_RUNTIME_SELFTESTS */
+
 static void vfs_handle_probe(struct vfs_state *state, const struct KChanMsg *req,
                              handle_id_t reply_h) {
     if (!state || !req) {
@@ -701,11 +824,15 @@ static void vfs_handle_probe(struct vfs_state *state, const struct KChanMsg *req
         return;
     }
 
+#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
     if (vfs_run_reclaim_probe(state)) {
         vfs_reply_probe(reply_h, IRIS_OK);
     } else {
         vfs_reply_probe(reply_h, IRIS_ERR_INTERNAL);
     }
+#else
+    vfs_reply_probe(reply_h, IRIS_ERR_NOT_SUPPORTED);
+#endif
 }
 
 static void vfs_handle_status(struct vfs_state *state, const struct KChanMsg *req,
@@ -726,6 +853,29 @@ static void vfs_handle_status(struct vfs_state *state, const struct KChanMsg *re
     if (req->attached_handle != HANDLE_INVALID) vfs_close_handle_if_valid(&dest_h);
 }
 
+static void vfs_handle_list(struct vfs_state *state, const struct KChanMsg *req,
+                            handle_id_t reply_h) {
+    uint32_t index;
+    struct vfs_export *export_file;
+
+    if (!state || !vfs_proto_list_valid(req)) {
+        if (req && req->attached_handle != HANDLE_INVALID) {
+            handle_id_t unexpected = req->attached_handle;
+            vfs_close_handle_if_valid(&unexpected);
+        }
+        vfs_reply_list(reply_h, IRIS_ERR_INVALID_ARG, 0, 0);
+        return;
+    }
+
+    index = vfs_proto_read_u32(&req->data[VFS_MSG_OFF_LIST_INDEX]);
+    export_file = vfs_export_at_visible_index(state, index);
+    if (!export_file) {
+        vfs_reply_list(reply_h, IRIS_ERR_NOT_FOUND, index, 0);
+        return;
+    }
+    vfs_reply_list(reply_h, IRIS_OK, index, export_file);
+}
+
 void vfs_server_main_c(handle_id_t bootstrap_h) {
     struct vfs_state state;
     struct KChanMsg msg;
@@ -734,6 +884,9 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
     state.bootstrap_h = bootstrap_h;
     state.service_h = HANDLE_INVALID;
     state.reply_h = HANDLE_INVALID;
+    for (uint32_t i = 0; i < VFS_SERVICE_OPEN_FILES; i++) {
+        state.clients[i].owner_proc_h = HANDLE_INVALID;
+    }
     for (uint32_t i = 0; i < VFS_SERVICE_OPEN_FILES; i++) {
         state.files[i].generation = 1;
     }
@@ -775,9 +928,11 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
         }
         if (vfs_syscall2(SYS_CHAN_RECV, state.service_h, (uint64_t)(uintptr_t)&msg) != IRIS_OK)
             continue;
-        vfs_reclaim_dead_files(&state);
 
         switch (msg.type) {
+            case PROC_EVENT_MSG_EXIT:
+                vfs_handle_proc_exit(&state, &msg);
+                break;
             case VFS_MSG_OPEN:
                 vfs_handle_open(&state, &msg, state.reply_h);
                 break;
@@ -789,6 +944,9 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
                 break;
             case VFS_MSG_STATUS:
                 vfs_handle_status(&state, &msg, state.reply_h);
+                break;
+            case VFS_MSG_LIST:
+                vfs_handle_list(&state, &msg, state.reply_h);
                 break;
             case VFS_MSG_RECLAIM_PROBE:
                 vfs_handle_probe(&state, &msg, state.reply_h);
@@ -803,6 +961,7 @@ fail:
     for (;;) __asm__ volatile ("hlt");
 }
 
+#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
 void vfs_probe_child_main_c(handle_id_t bootstrap_h) {
     struct KChanMsg msg;
     handle_id_t req_h = HANDLE_INVALID;
@@ -878,3 +1037,4 @@ fail:
     (void)vfs_syscall1(SYS_EXIT, 21);
     for (;;) __asm__ volatile ("hlt");
 }
+#endif /* IRIS_ENABLE_RUNTIME_SELFTESTS */

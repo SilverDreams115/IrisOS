@@ -5,6 +5,7 @@
 #include <iris/paging.h>
 #include <iris/syscall.h>
 #include <iris/nc/kprocess.h>
+#include <iris/elf_loader.h>
 #include <stdint.h>
 
 extern void user_entry_trampoline(void);
@@ -342,6 +343,126 @@ fail:
 
 struct task *task_create_user(uint64_t entry) {
     return task_create_user_impl(entry, 0);
+}
+
+/*
+ * task_spawn_elf — create a ring-3 task from an ELF-loaded image.
+ *
+ * Unlike task_create_user_impl, this path:
+ *   - Does NOT create a new CR3 — the ELF loader already created one.
+ *   - Does NOT map any shared kernel text slice.
+ *   - Uses img->entry_vaddr (ELF e_entry) directly as the user entry point.
+ *   - Records ELF segment info into the KProcess for teardown cleanup.
+ *
+ * Ownership transfer:
+ *   On success the KProcess owns img->cr3_phys and img->segs[].
+ *   The caller must NOT call elf_loader_free_image after a successful return.
+ *   On failure this function does NOT call elf_loader_free_image; the caller
+ *   must do so.
+ */
+struct task *task_spawn_elf(iris_elf_image_t *img, uint64_t arg0) {
+    struct task    *t = 0;
+    struct KProcess *proc = 0;
+    uint64_t ustack_phys = 0;
+    uint32_t ustack_pages = (uint32_t)(USER_STACK_SIZE / 4096ULL);
+
+    if (!img || img->cr3_phys == 0 || img->seg_count == 0) return 0;
+
+    /* Find a free task slot */
+    for (int i = 1; i < TASK_MAX; i++) {
+        if (tasks[i].state == TASK_DEAD) { t = &tasks[i]; break; }
+    }
+    if (!t) return 0;
+
+    task_reset_slot(t);
+    t->id         = next_id++;
+    t->state      = TASK_READY;
+    t->ring       = TASK_RING3;
+    t->time_slice = TASK_DEFAULT_SLICE;
+    t->ticks_left = TASK_DEFAULT_SLICE;
+
+    proc = kprocess_alloc();
+    if (!proc) goto fail;
+
+    /* Transfer CR3 ownership from the ELF image to the process. */
+    proc->cr3 = img->cr3_phys;
+
+    /* Allocate and map the user stack */
+    ustack_phys = pmm_alloc_pages(ustack_pages);
+    if (ustack_phys == 0) goto fail;
+
+    for (uint32_t pg = 0; pg < ustack_pages; pg++) {
+        uint64_t virt = USER_STACK_BASE + (uint64_t)pg * 4096ULL;
+        uint64_t phys = ustack_phys     + (uint64_t)pg * 4096ULL;
+        if (paging_map_checked_in(proc->cr3, virt, phys,
+                                  PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) != 0)
+            goto fail;
+    }
+
+    t->user_stack_base  = USER_STACK_BASE;
+    t->user_stack_top   = USER_STACK_TOP;
+    t->user_stack_pages = ustack_pages;
+    t->ustack_phys      = ustack_phys;
+    t->user_rsp         = USER_STACK_TOP - 8;
+    t->user_entry       = img->entry_vaddr;
+    t->process          = proc;
+    proc->main_thread   = t;
+
+    /* Copy ELF segment info into the process for teardown cleanup */
+    proc->elf_seg_count = img->seg_count;
+    for (uint32_t i = 0; i < img->seg_count; i++) {
+        proc->elf_segs[i].phys_base  = img->segs[i].phys_base;
+        proc->elf_segs[i].page_count = img->segs[i].page_count;
+    }
+    /* Zero the original img segs so elf_loader_free_image (if called by
+     * mistake) does not double-free.  CR3 is now owned by proc. */
+    img->cr3_phys    = 0;
+    img->seg_count   = 0;
+
+    /* Build the iretq frame on the kernel stack */
+    int idx = (int)(t - tasks);
+    uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
+    kstack_top &= ~0xFULL;
+
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;              /* ss */
+    kstack_top -= 8; *(uint64_t *)kstack_top = t->user_rsp;       /* rsp */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202;            /* rflags */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;              /* cs */
+    kstack_top -= 8; *(uint64_t *)kstack_top = img->entry_vaddr;  /* rip */
+    kstack_top -= 8; *(uint64_t *)kstack_top =
+        (uint64_t)(uintptr_t)user_entry_trampoline;
+
+    task_rsp[idx] = kstack_top;
+
+    t->ctx.r15    = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
+    t->ctx.rbx    = 0; t->ctx.rbp = 0;
+    t->ctx.rip    = (uint64_t)(uintptr_t)user_entry_trampoline;
+    t->ctx.rflags = 0x202ULL;
+    task_set_bootstrap_arg0(t, arg0);
+
+    /* Commit: link into the run queue */
+    struct task *tail = task_list_head;
+    while (tail->next != task_list_head)
+        tail = tail->next;
+    tail->next = t;
+    t->next    = task_list_head;
+
+    return t;
+
+fail:
+    if (proc) proc->main_thread = 0;
+    if (t)    t->process = 0;
+    free_phys_pages_range(ustack_phys, ustack_pages);
+    if (proc) {
+        /* proc->cr3 may already point to img->cr3_phys; clear it so
+         * kprocess_reap_address_space does not double-destroy the CR3
+         * (the caller is responsible for calling elf_loader_free_image). */
+        if (proc->cr3 == img->cr3_phys)
+            proc->cr3 = 0;
+        kprocess_free(proc);
+    }
+    if (t) task_reset_slot(t);
+    return 0;
 }
 
 /* Spawn a ring-3 process with arg0 installed via the bootstrap contract. */

@@ -22,25 +22,12 @@ struct task;
  *   - Normal healthy boot no longer requires SYS_NS_LOOKUP("svcmgr")
  *     to find the service manager.
  *
- * NS Authority model (transitional):
- *   svcmgr_bootstrap_init() sets KProcess.ns_authority = 1 on the
- *   spawned process via kprocess_set_ns_authority().  sys_ns_register
- *   checks kprocess_has_ns_authority(t->process) to restrict the
- *   syscall to svcmgr only.
+ * Bootstrap capability model:
+ *   svcmgr_bootstrap_init() injects an explicit bootstrap capability handle
+ *   into svcmgr over its private bootstrap channel.
  *
- *   Authority is a property of the KProcess object itself, not of an
- *   external global pointer.  This means:
- *     - Authority does not become stale if svcmgr is restarted.
- *     - The syscall layer has no coupling to a named svcmgr identity.
- *     - Any process granted the flag gains authority (by design, only
- *       svcmgr receives it at bootstrap time).
- *
- *   In the final architecture, service registration policy moves
- *   entirely outside the kernel.
- *
- * Note: svcmgr_get_process() has been intentionally removed.
- *   It is no longer needed; callers that previously used it to check
- *   NS authority should use kprocess_has_ns_authority() instead.
+ *   That handle authorizes only SYS_SPAWN_SERVICE. IRQ route installation is
+ *   authorized by the target child proc_handle carrying RIGHT_ROUTE.
  */
 
 void svcmgr_bootstrap_init(void);

@@ -11,6 +11,7 @@ typedef uint32_t iris_rights_t;
 #define RIGHT_DUPLICATE   ((iris_rights_t)0x00000004)
 #define RIGHT_TRANSFER    ((iris_rights_t)0x00000008)  /* move handle to another process */
 #define RIGHT_WAIT        ((iris_rights_t)0x00000010)
+#define RIGHT_ROUTE       ((iris_rights_t)0x00000020)  /* authorize one hardware route install for target proc */
 #define RIGHT_MANAGE      ((iris_rights_t)0x00000040)
 
 /* Flag de solicitud para duplicación — nunca almacenar en HandleEntry.rights */

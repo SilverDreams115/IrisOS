@@ -11,13 +11,12 @@
 #include <iris/task.h>
 #include <iris/tss.h>
 #include <iris/syscall.h>
-#include <iris/pci.h>
 #include <iris/keyboard.h>
 #include <iris/fb.h>
-#include <iris/vfs.h>
 #include <iris/irq_routing.h>
-#include <iris/nameserver.h>
+#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
 #include <iris/phase3_selftest.h>
+#endif
 /* Transitional bootstrap services: real current boot path. */
 #include <iris/svcmgr_bootstrap.h>
 /* Legacy demo island: opt-in only, never part of the default boot path. */
@@ -35,7 +34,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     serial_init();
     serial_write("\n");
     serial_write("====================================\n");
-    serial_write("       IRIS KERNEL - STAGE 13       \n");
+    serial_write("       IRIS KERNEL - STAGE 14       \n");
     serial_write("====================================\n");
     serial_write("[IRIS][KERNEL] firmware services: OFF\n");
 
@@ -95,43 +94,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     }
     serial_write("[IRIS][FB] framebuffer painted\n");
 
-    serial_write("[IRIS][VFS] initializing...\n");
-    vfs_init();
-    vfs_mkdir("dev");
-    serial_write("[IRIS][VFS] /dev created\n");
-    /* Transitional backend seed for the migrated userland VFS path.
-     * Keep the file population in the healthy path, but quarantine the
-     * old kernel-side read/stat smoke behind the runtime selftest gate. */
-    {
-        const char *msg = "Hello from IrisOS VFS!\n";
-        uint32_t msglen = 0;
-        while (msg[msglen]) msglen++;
-        int32_t fd = vfs_open("iris.txt", VFS_O_CREATE | VFS_O_WRITE);
-        vfs_write(fd, msg, msglen);
-        vfs_close(fd);
-#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
-        char rdbuf[64];
-        for (int i = 0; i < 64; i++) rdbuf[i] = 0;
-        fd = vfs_open("iris.txt", VFS_O_READ);
-        int32_t n = vfs_read(fd, rdbuf, 63);
-        vfs_close(fd);
-        serial_write("[IRIS][VFS] read iris.txt (");
-        serial_write_dec((uint64_t)n);
-        serial_write(" bytes): ");
-        serial_write(rdbuf);
-
-        uint32_t fsize = 0;
-        vfs_stat("iris.txt", &fsize);
-        serial_write("[IRIS][VFS] stat iris.txt size=");
-        serial_write_dec(fsize);
-        serial_write("\n");
-#else
-        serial_write("[IRIS][VFS] backend seed ready\n");
-#endif
-    }
-
-    serial_write("[IRIS][PCI] initializing...\n");
-    pci_init();
+    serial_write("[IRIS][VFS] kernel backend retired from healthy boot\n");
 
     serial_write("[IRIS][KBD] initializing...\n");
     kbd_init();
@@ -144,10 +107,9 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     serial_write("[IRIS][IRQ] initializing routing table...\n");
     irq_routing_init();
 
-    serial_write("[IRIS][NS] initializing...\n");
-    ns_init();
-    serial_write("[IRIS][NS] bootstrap registry ready\n");
+#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
     phase3_selftest_run();
+#endif
 
     /* ── 7. Scheduler core ──────────────────────────────────────── */
     serial_write("[IRIS][SCHED] initializing...\n");

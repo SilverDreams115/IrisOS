@@ -11,7 +11,7 @@
  * Design principles:
  *   - One syscall, one atomic snapshot; no partial reads.
  *   - Unrestricted: any task may query (observability ≠ authority).
- *   - Compact: 64 bytes, versioned, with reserved fields for future growth.
+ *   - Compact: 64 bytes, versioned, with bounded pool-pressure counters.
  *   - Bounded: summarises, does not dump raw internals.
  *   - No service IPC required for the kernel-owned portion of the picture.
  *
@@ -19,7 +19,8 @@
  *
  *   Kernel-owned state (this header):
  *     Queried via SYS_DIAG_SNAPSHOT → iris_diag_snapshot written to user buffer.
- *     Includes: task count, KProcess pool, IRQ routes, scheduler ticks.
+ *     Includes: task count, KProcess/KChannel/KNotification/KVmo pools,
+ *     IRQ routes, and scheduler ticks.
  *
  *   Service-owned state (per-service STATUS channels):
  *     svcmgr:  SVCMGR_MSG_STATUS → SVCMGR_MSG_STATUS_REPLY  (svcmgr_proto.h)
@@ -30,30 +31,34 @@
  *
  * ── iris_diag_snapshot wire layout (64 bytes) ────────────────────────────────
  *   off  0: uint32_t magic           IRIS_DIAG_MAGIC — integrity marker
- *   off  4: uint32_t version         IRIS_DIAG_VERSION (1)
+ *   off  4: uint32_t version         IRIS_DIAG_VERSION (2)
  *   off  8: uint32_t tasks_live      non-DEAD scheduler tasks
- *   off 12: uint32_t tasks_max       TASK_MAX ceiling (16)
+ *   off 12: uint32_t tasks_max       TASK_MAX ceiling
  *   off 16: uint32_t kproc_live      KProcess pool slots in use
- *   off 20: uint32_t kproc_max       KPROCESS_POOL_SIZE ceiling (16)
+ *   off 20: uint32_t kproc_max       KPROCESS_POOL_SIZE ceiling
  *   off 24: uint32_t irq_routes_active  routed hardware IRQ lines
  *   off 28: uint32_t irq_routes_max     IRQ_ROUTE_MAX ceiling
  *   off 32: uint32_t ticks_lo        scheduler_ticks low  32 bits
  *   off 36: uint32_t ticks_hi        scheduler_ticks high 32 bits
- *   off 40: uint32_t reserved[6]     must be zero; reserved for future fields
+ *   off 40: uint32_t kchan_live      KChannel pool slots in use
+ *   off 44: uint32_t kchan_max       KCHANNEL_POOL_SIZE ceiling
+ *   off 48: uint32_t knotif_live     KNotification pool slots in use
+ *   off 52: uint32_t knotif_max      KNOTIF_POOL_SIZE ceiling
+ *   off 56: uint32_t kvmo_live       KVmo pool slots in use
+ *   off 60: uint32_t kvmo_max        KVMO_POOL_SIZE ceiling
  *
  * ── Version ──────────────────────────────────────────────────────────────────
  *   Bump IRIS_DIAG_VERSION when any field layout changes.
  *   Clients must validate magic and version before reading other fields.
- *   Reserved fields are zero in this version; future versions may fill them.
  *
  * ── Phase status ─────────────────────────────────────────────────────────────
- *   Phase 11/current: initial diagnostics surface.  Covers kernel-side counts
- *   only.  Service-owned status (svcmgr/vfs/kbd) queried separately via IPC.
+ *   Phase 12/current: diagnostics now expose bounded pool pressure for
+ *   channels, notifications, and VMOs in addition to task/process/IRQ counts.
  */
 
 /* Integrity marker and version */
 #define IRIS_DIAG_MAGIC    0xD1A60001
-#define IRIS_DIAG_VERSION  1
+#define IRIS_DIAG_VERSION  2
 
 /* Byte offsets within iris_diag_snapshot — usable from assembly without 'u' suffix */
 #define IRIS_DIAG_OFF_MAGIC        0
@@ -66,7 +71,12 @@
 #define IRIS_DIAG_OFF_IRQ_MAX     28
 #define IRIS_DIAG_OFF_TICKS_LO    32
 #define IRIS_DIAG_OFF_TICKS_HI    36
-/* offsets 40–63: reserved[6] */
+#define IRIS_DIAG_OFF_KCHAN_LIVE  40
+#define IRIS_DIAG_OFF_KCHAN_MAX   44
+#define IRIS_DIAG_OFF_KNOTIF_LIVE 48
+#define IRIS_DIAG_OFF_KNOTIF_MAX  52
+#define IRIS_DIAG_OFF_KVMO_LIVE   56
+#define IRIS_DIAG_OFF_KVMO_MAX    60
 
 #define IRIS_DIAG_SNAPSHOT_SIZE   64  /* total buffer size in bytes */
 
@@ -83,7 +93,7 @@
  */
 struct iris_diag_snapshot {
     uint32_t magic;               /* IRIS_DIAG_MAGIC: integrity marker         */
-    uint32_t version;             /* IRIS_DIAG_VERSION (1)                     */
+    uint32_t version;             /* IRIS_DIAG_VERSION (2)                     */
     uint32_t tasks_live;          /* tasks in non-DEAD scheduler states        */
     uint32_t tasks_max;           /* TASK_MAX ceiling                          */
     uint32_t kproc_live;          /* KProcess pool slots in use                */
@@ -92,7 +102,12 @@ struct iris_diag_snapshot {
     uint32_t irq_routes_max;      /* IRQ_ROUTE_MAX ceiling                     */
     uint32_t ticks_lo;            /* scheduler_ticks low  32 bits              */
     uint32_t ticks_hi;            /* scheduler_ticks high 32 bits              */
-    uint32_t reserved[6];         /* zero; reserved for future minor additions */
+    uint32_t kchan_live;          /* KChannel pool slots in use                */
+    uint32_t kchan_max;           /* KCHANNEL_POOL_SIZE ceiling                */
+    uint32_t knotif_live;         /* KNotification pool slots in use           */
+    uint32_t knotif_max;          /* KNOTIF_POOL_SIZE ceiling                  */
+    uint32_t kvmo_live;           /* KVmo pool slots in use                    */
+    uint32_t kvmo_max;            /* KVMO_POOL_SIZE ceiling                    */
 };  /* 64 bytes */
 
 #endif /* !__ASSEMBLER__ */

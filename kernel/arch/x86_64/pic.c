@@ -24,6 +24,28 @@ static inline uint8_t inb(uint16_t port) {
 }
 static inline void io_wait(void) { outb(0x80, 0); }
 
+void pic_set_irq_mask(uint8_t irq, int masked) {
+    uint16_t data_port;
+    uint8_t bit;
+    uint8_t mask;
+
+    if (irq >= 16) return;
+    if (irq < 8) {
+        data_port = PIC1_DATA;
+        bit = irq;
+    } else {
+        data_port = PIC2_DATA;
+        bit = (uint8_t)(irq - 8);
+    }
+
+    mask = inb(data_port);
+    if (masked)
+        mask = (uint8_t)(mask | (uint8_t)(1u << bit));
+    else
+        mask = (uint8_t)(mask & (uint8_t)~(uint8_t)(1u << bit));
+    outb(data_port, mask);
+}
+
 void pic_init(void) {
     uint8_t mask1 = inb(PIC1_DATA);
     uint8_t mask2 = inb(PIC2_DATA);
@@ -37,7 +59,7 @@ void pic_init(void) {
     outb(PIC1_DATA, ICW4_8086); io_wait();
     outb(PIC2_DATA, ICW4_8086); io_wait();
 
-    outb(PIC1_DATA, mask1 & 0xFC); /* enable IRQ0 (timer) + IRQ1 (keyboard) */
+    outb(PIC1_DATA, mask1 & 0xFE); /* enable IRQ0 (timer); keep IRQ1 masked until routed */
     outb(PIC2_DATA, mask2);
 }
 

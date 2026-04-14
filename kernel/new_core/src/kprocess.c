@@ -3,7 +3,6 @@
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
 #include <iris/irq_routing.h>
-#include <iris/nameserver.h>
 #include <iris/syscall.h>
 #include <iris/pmm.h>
 #include <stdint.h>
@@ -105,7 +104,6 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
 
     kprocess_emit_exit_watch(p);
     kprocess_clear_exit_watch(p);
-    ns_unregister_owner(p);
     irq_routing_unregister_owner(p);
     handle_table_close_all(&p->handle_table);
 
@@ -129,6 +127,20 @@ void kprocess_reap_address_space(struct KProcess *p) {
             pmm_free_page(phys & ~0xFFFULL);
         }
     }
+
+    /* Free ELF segment backing pages for ELF-loaded processes.
+     * paging_destroy_user_space only frees page table structure pages (PML4/
+     * PDPT/PD/PT), not leaf physical pages.  For kernel-linked user tasks the
+     * leaf pages are the shared kernel text (never freed) and the user stack
+     * (freed by task_exit_current before we reach here).  For ELF tasks the
+     * segment pages are exclusively owned by this process and must be freed
+     * before the page tables are torn down. */
+    for (uint32_t i = 0; i < p->elf_seg_count; i++) {
+        for (uint32_t pg = 0; pg < p->elf_segs[i].page_count; pg++) {
+            pmm_free_page(p->elf_segs[i].phys_base + (uint64_t)pg * 0x1000ULL);
+        }
+    }
+    p->elf_seg_count = 0;
 
     paging_destroy_user_space(p->cr3);
     p->cr3 = 0;
