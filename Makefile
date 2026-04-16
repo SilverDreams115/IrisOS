@@ -6,6 +6,8 @@ BUILD_DIR    := build
 EFI_ROOT     := $(BUILD_DIR)/efi_root
 EFI_BOOT_DIR := $(EFI_ROOT)/EFI/BOOT
 EFI_IRIS_DIR := $(EFI_ROOT)/EFI/IRIS
+BUILD_CONFIG_STAMP := $(BUILD_DIR)/.build_config
+BUILD_CONFIG_MODE  := ENABLE_RUNTIME_SELFTESTS=$(ENABLE_RUNTIME_SELFTESTS)
 
 LOADER_OBJ           := $(BUILD_DIR)/boot_loader.o
 BOOT_SO              := $(BUILD_DIR)/BOOTX64.so
@@ -102,15 +104,18 @@ LDFLAGS_EFI      := -nostdlib -znocombreloc -T $(EFI_LDS) -shared -Bsymbolic $(E
 KERNEL_LDFLAGS   := -nostdlib -z max-page-size=0x1000 -z noexecstack -T kernel/arch/x86_64/linker.ld
 OBJCOPY_FLAGS    := -j .text -j .sdata -j .data -j .dynamic -j .dynsym -j .rel -j .rela -j .reloc --target=efi-app-x86_64
 
-.PHONY: all dirs run clean help check
+.PHONY: all dirs run run-headless clean help check smoke smoke-runtime config-sync
 
-all: $(BOOT_APP) $(KERNEL_DST)
+all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
 help:
 	@echo 'Available targets:'
 	@echo '  make        -> build EFI loader and kernel ELF'
 	@echo '  make run    -> launch IRIS in QEMU with OVMF'
+	@echo '  make run-headless -> launch IRIS in headless QEMU with serial log capture'
 	@echo '  make check  -> inspect kernel ELF headers and segments'
+	@echo '  make smoke  -> reproducible local build smoke (default + selftest build)'
+	@echo '  make smoke-runtime -> headless runtime smoke with healthy-boot log assertion'
 	@echo '  make clean  -> remove all build artifacts'
 	@echo
 	@echo 'Options:'
@@ -118,6 +123,16 @@ help:
 
 dirs:
 	mkdir -p $(BUILD_DIR) $(EFI_BOOT_DIR) $(EFI_IRIS_DIR)
+
+config-sync:
+	@mkdir -p $(BUILD_DIR)
+	@if [ -f $(BUILD_CONFIG_STAMP) ] && [ "$$(cat $(BUILD_CONFIG_STAMP))" != "$(BUILD_CONFIG_MODE)" ]; then \
+		echo "[build] configuration changed to $(BUILD_CONFIG_MODE); cleaning stale artifacts"; \
+		rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.so $(BUILD_DIR)/*.elf $(BUILD_DIR)/*.d $(BUILD_DIR)/OVMF_VARS.fd; \
+		rm -rf $(EFI_ROOT); \
+		rm -f $(SERVICE_SVCMGR_ELF) $(SERVICE_KBD_ELF) $(SERVICE_VFS_ELF) $(SERVICE_INIT_ELF); \
+	fi
+	@printf '%s\n' "$(BUILD_CONFIG_MODE)" > $(BUILD_CONFIG_STAMP)
 
 $(LOADER_OBJ): boot/uefi/boot.c | dirs
 	gcc $(UEFI_CFLAGS) -c $< -o $@
@@ -300,10 +315,13 @@ $(KERNEL_VFS_BIN_OBJ): $(SERVICE_VFS_ELF) | dirs
 	    $(SERVICE_VFS_ELF) $@
 
 # ── init service ─────────────────────────────────────────────────────────────
-$(BUILD_DIR)/init_main.o: services/init/main.S | dirs
+$(BUILD_DIR)/init_entry.o: services/init/entry.S | dirs
 	gcc $(SERVICE_ASFLAGS) -c $< -o $@
 
-$(SERVICE_INIT_ELF): $(BUILD_DIR)/init_main.o
+$(BUILD_DIR)/init_main.o: services/init/main.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_INIT_ELF): $(BUILD_DIR)/init_entry.o $(BUILD_DIR)/init_main.o
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_INIT_BIN_OBJ): $(SERVICE_INIT_ELF) | dirs
@@ -317,7 +335,7 @@ $(KERNEL_ELF): $(KERNEL_OBJS)
 $(KERNEL_DST): $(KERNEL_ELF) | dirs
 	cp $< $@
 
-check: $(KERNEL_ELF)
+check: config-sync $(KERNEL_ELF)
 	@echo '== ELF header =='
 	readelf -h $(KERNEL_ELF)
 	@echo
@@ -327,14 +345,24 @@ check: $(KERNEL_ELF)
 	@echo '== Sections =='
 	readelf -S $(KERNEL_ELF)
 
+smoke:
+	bash scripts/smoke_local.sh
+
+smoke-runtime: all
+	bash scripts/run_qemu_headless.sh
+
 run: all
 	bash scripts/run_qemu.sh
+
+run-headless: all
+	bash scripts/run_qemu_headless.sh
 
 clean:
 	rm -f $(BUILD_DIR)/*.o
 	rm -f $(BUILD_DIR)/*.so
 	rm -f $(BUILD_DIR)/*.elf
 	rm -f $(BUILD_DIR)/*.d
+	rm -f $(BUILD_CONFIG_STAMP)
 	rm -f $(BUILD_DIR)/OVMF_VARS.fd
 	rm -rf $(BUILD_DIR)/efi_root
 	rm -f $(SERVICE_SVCMGR_ELF) $(SERVICE_KBD_ELF) $(SERVICE_VFS_ELF) $(SERVICE_INIT_ELF)

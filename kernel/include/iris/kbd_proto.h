@@ -125,6 +125,35 @@
 #define KBD_MSG_OFF_IRQ_SCANCODE  0u   /* uint8_t: raw PS/2 scancode byte */
 #define KBD_MSG_IRQ_SCANCODE_LEN  1u
 
+/* ── KBD_MSG_SUBSCRIBE (0x00020003) client → service ─────────────────────
+ *   Subscribe to raw scancode events.  The client attaches a KChannel write
+ *   handle (RIGHT_WRITE | RIGHT_TRANSFER).  kbd stores the handle and
+ *   forwards one KBD_MSG_SCANCODE_EVENT per key event until the handle is
+ *   replaced by a new SUBSCRIBE or the channel is sealed.
+ *   Only one subscriber at a time; a new SUBSCRIBE replaces the old one.
+ *   data_len = KBD_MSG_SUBSCRIBE_LEN (0; no payload beyond attached handle).
+ *   Receives KBD_MSG_SUBSCRIBE_REPLY.
+ */
+#define KBD_MSG_SUBSCRIBE         0x00020003u
+
+/* ── KBD_MSG_SUBSCRIBE_REPLY (0x80020003) service → client ──────────────
+ *   data[0..3] int32_t err: 0 = OK, <0 = iris_error_t.
+ */
+#define KBD_MSG_SUBSCRIBE_REPLY   0x80020003u
+
+/* ── KBD_MSG_SCANCODE_EVENT (0x80020004) service → subscriber  [no reply]
+ *   Forwarded by kbd to the subscriber channel on every PS/2 scancode.
+ *   data[KBD_MSG_OFF_SC_EVENT_CODE] uint8_t: raw PS/2 byte
+ *     (same encoding as KBD_MSG_IRQ_SCANCODE: bit 7 = key release).
+ */
+#define KBD_MSG_SCANCODE_EVENT    0x80020004u
+
+#define KBD_MSG_SUBSCRIBE_LEN           0u
+#define KBD_MSG_OFF_SUBSCRIBE_REPLY_ERR 0u
+#define KBD_MSG_SUBSCRIBE_REPLY_LEN     4u
+#define KBD_MSG_OFF_SC_EVENT_CODE       0u
+#define KBD_MSG_SCANCODE_EVENT_LEN      1u
+
 /* ── C-only helpers ─────────────────────────────────────────────────────── */
 #ifndef __ASSEMBLER__
 

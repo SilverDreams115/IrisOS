@@ -105,6 +105,18 @@ User-space boot:
 
 Healthy boot no longer depends on any kernel nameserver path. All service discovery is IPC handle transfer through `svcmgr`.
 
+## Technical Contracts
+
+Current executable contracts are documented here:
+
+- [docs/contracts/boot.md](docs/contracts/boot.md)
+- [docs/contracts/bootstrap.md](docs/contracts/bootstrap.md)
+- [docs/contracts/svcmgr.md](docs/contracts/svcmgr.md)
+- [docs/contracts/vfs.md](docs/contracts/vfs.md)
+- [docs/contracts/kbd.md](docs/contracts/kbd.md)
+- [docs/contracts/diag.md](docs/contracts/diag.md)
+- [docs/contracts/hardening.md](docs/contracts/hardening.md)
+
 ---
 
 ## Syscall Surface
@@ -231,6 +243,9 @@ Versioned by `KBD_PROTO_VERSION`. Covers:
 ```bash
 make clean && make   # full build (header deps auto-tracked)
 make run             # launch in QEMU with OVMF
+make run-headless    # headless QEMU run with serial log capture
+make smoke           # local smoke: default build + selftest-enabled build
+make smoke-runtime   # headless runtime smoke with healthy-boot assertion
 ```
 
 With selftests:
@@ -240,6 +255,8 @@ make clean
 make ENABLE_RUNTIME_SELFTESTS=1
 make run
 ```
+
+CI currently validates `make clean`, `make`, `make check`, and a headless runtime smoke that asserts the healthy boot signature from serial logs. See [docs/testing.md](docs/testing.md).
 
 Selftest mode additionally verifies:
 
@@ -289,7 +306,7 @@ kernel/include/iris/service_catalog.h      Declarative service catalog
 services/svcmgr/svcmgr.c + entry.S        Ring-3 service manager
 services/vfs/vfs.c + entry.S               Ring-3 VFS service
 services/kbd/main.S                        Ring-3 keyboard service
-services/init/main.S                       Ring-3 init process (ELF, spawned from initrd)
+services/init/main.c + entry.S             Ring-3 init process (ELF, spawned from initrd)
 services/link_service.ld                   Shared linker script for all service ELFs
 ```
 
@@ -303,3 +320,9 @@ services/link_service.ld                   Shared linker script for all service 
 | `silver` | Active development |
 | `staging` | Integration and verification |
 | `collab` | Collaboration branch |
+
+Governance references:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [docs/branching.md](docs/branching.md)
+- [docs/roadmap/initial-backlog.md](docs/roadmap/initial-backlog.md)

@@ -108,6 +108,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     serial_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
     /* ── 8. Transitional bootstrap: service wiring ──────────────── */
+    serial_write("[IRIS][BOOT] handoff: kernel -> svcmgr/init\n");
     svcmgr_bootstrap_init(); /* spawn svcmgr and retain the root bootstrap channel */
 
     /* ── 9. First user task ─────────────────────────────────────── */
@@ -181,6 +182,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     /* ── 10. Scheduler start ────────────────────────────────────── */
     __asm__ volatile ("sti");
     serial_write("[IRIS][SCHED] running\n");
+    serial_write("[IRIS][BOOT] waiting for first userland wave\n");
     serial_write("====================================\n");
 
     /* Let the first wave of bootstrap tasks start before the idle loop. */
