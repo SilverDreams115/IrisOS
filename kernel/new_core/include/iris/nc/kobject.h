@@ -21,8 +21,9 @@ typedef enum {
     KOBJ_NOTIFICATION,
     KOBJ_BOOTSTRAP_CAP,
     KOBJ_VMO,
-    KOBJ_IRQ_CAP,   /* authorizes routing a specific hardware IRQ line */
-    KOBJ_IOPORT,    /* authorizes IN/OUT access to a contiguous I/O port range */
+    KOBJ_IRQ_CAP,      /* authorizes routing a specific hardware IRQ line */
+    KOBJ_IOPORT,       /* authorizes IN/OUT access to a contiguous I/O port range */
+    KOBJ_INITRD_ENTRY, /* immutable reference to a named ELF image in the kernel initrd */
 } kobject_type_t;
 
 struct KObject;

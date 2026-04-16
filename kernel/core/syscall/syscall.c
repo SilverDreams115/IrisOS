@@ -8,6 +8,7 @@
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kirqcap.h>
 #include <iris/nc/kioport.h>
+#include <iris/nc/kinitrdentry.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
 #include <iris/irq_routing.h>
@@ -83,21 +84,17 @@ static void rollback_user_maps(uint64_t cr3, uint64_t start, uint64_t end) {
 
 static uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
-    /* arg0 = pointer to string in user space */
+    /* Debug output: writes user string directly to serial. Transitional
+     * facility only — production I/O must go through the console service. */
     if (!user_range_readable(arg0, 1)) return syscall_err(IRIS_ERR_INVALID_ARG);
-    /* safe string print — max 256 chars */
     char buf[257];
     uint32_t i = copy_user_cstr_bounded(arg0, buf, (uint32_t)sizeof(buf));
-    serial_write("[USER] ");
     serial_write(buf);
     return syscall_ok_u64(i);
 }
 
 static uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    serial_write("[SYSCALL] exit code=");
-    serial_write_dec(arg0);
-    serial_write("\n");
+    (void)arg0; (void)arg1; (void)arg2;
     task_exit_current();
     return 0; /* unreachable */
 }
@@ -1200,6 +1197,361 @@ static uint64_t sys_chan_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_ok_u64(0);
 }
 
+/* ── Hardware capability creation (C2: policy moved to svcmgr) ──────── */
+
+static uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    handle_id_t    cap_h   = (handle_id_t)arg0;
+    uint8_t        irq_num = (uint8_t)(arg1 & 0xFFu);
+    struct task   *t       = task_current();
+    struct KObject *auth   = 0;
+    iris_rights_t   auth_r;
+    struct KIrqCap *irqcap;
+    handle_id_t     out_h;
+    (void)arg2;
+
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (irq_num > 15u)     return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    if (handle_table_get_object(&t->process->handle_table, cap_h, &auth, &auth_r) != IRIS_OK)
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+    if (auth->type != KOBJ_BOOTSTRAP_CAP ||
+        !kbootcap_allows((struct KBootstrapCap *)auth, IRIS_BOOTCAP_HW_ACCESS)) {
+        kobject_release(auth);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    kobject_release(auth);
+
+    irqcap = kirqcap_alloc(irq_num);
+    if (!irqcap) return syscall_err(IRIS_ERR_NO_MEMORY);
+
+    out_h = handle_table_insert(&t->process->handle_table, &irqcap->base, RIGHT_ROUTE);
+    if (out_h == HANDLE_INVALID) {
+        kirqcap_free(irqcap);
+        return syscall_err(IRIS_ERR_TABLE_FULL);
+    }
+    kobject_release(&irqcap->base);
+    return syscall_ok_u64((uint64_t)out_h);
+}
+
+static uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    handle_id_t    cap_h = (handle_id_t)arg0;
+    uint16_t       base  = (uint16_t)(arg1 & 0xFFFFu);
+    uint16_t       count = (uint16_t)(arg2 & 0xFFFFu);
+    struct task   *t     = task_current();
+    struct KObject *auth = 0;
+    iris_rights_t   auth_r;
+    struct KIoPort *ioport;
+    handle_id_t     out_h;
+
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (count == 0u || (uint32_t)base + count > 0x10000u)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    if (handle_table_get_object(&t->process->handle_table, cap_h, &auth, &auth_r) != IRIS_OK)
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+    if (auth->type != KOBJ_BOOTSTRAP_CAP ||
+        !kbootcap_allows((struct KBootstrapCap *)auth, IRIS_BOOTCAP_HW_ACCESS)) {
+        kobject_release(auth);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    kobject_release(auth);
+
+    ioport = kioport_alloc(base, count);
+    if (!ioport) return syscall_err(IRIS_ERR_NO_MEMORY);
+
+    out_h = handle_table_insert(&t->process->handle_table, &ioport->base,
+                                RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+    if (out_h == HANDLE_INVALID) {
+        kioport_free(ioport);
+        return syscall_err(IRIS_ERR_TABLE_FULL);
+    }
+    kobject_release(&ioport->base);
+    return syscall_ok_u64((uint64_t)out_h);
+}
+
+/* ── Initrd entry lookup and ELF spawn (A3) ──────────────────────── */
+
+/*
+ * sys_initrd_lookup(auth_h, name_uptr) → entry_handle or iris_error_t
+ *
+ * Authenticates via KOBJ_BOOTSTRAP_CAP (IRIS_BOOTCAP_SPAWN_SERVICE), locates
+ * the named ELF in the initrd, and returns a KInitrdEntry handle (RIGHT_READ).
+ */
+static uint64_t sys_initrd_lookup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject   *auth_obj;
+    iris_rights_t     auth_rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &auth_obj, &auth_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (auth_obj->type != KOBJ_BOOTSTRAP_CAP ||
+        !kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_SPAWN_SERVICE)) {
+        kobject_release(auth_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    kobject_release(auth_obj);
+
+    char name[SPAWN_SVC_NAME_MAX];
+    if (copy_user_cstr_bounded(arg1, name, SPAWN_SVC_NAME_MAX) == 0)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    const void *elf_data = 0;
+    uint32_t    elf_size = 0;
+    if (!initrd_find(name, &elf_data, &elf_size))
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+
+    struct KInitrdEntry *entry = kinitrdentry_alloc(elf_data, elf_size);
+    if (!entry) return syscall_err(IRIS_ERR_NO_MEMORY);
+
+    handle_id_t h = handle_table_insert(&t->process->handle_table,
+                                        &entry->base, RIGHT_READ);
+    if (h == HANDLE_INVALID) {
+        kinitrdentry_free(entry);
+        return syscall_err(IRIS_ERR_TABLE_FULL);
+    }
+    kobject_release(&entry->base);
+    return syscall_ok_u64((uint64_t)h);
+}
+
+/*
+ * sys_spawn_elf(entry_h, out_chan_uptr) → proc_handle or iris_error_t
+ *
+ * Spawns a new process from a KInitrdEntry obtained via SYS_INITRD_LOOKUP.
+ * Requires RIGHT_READ on entry_h.  Identical flow to sys_spawn_service after
+ * the initrd_find step.
+ */
+static uint64_t sys_spawn_elf(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task     *parent  = task_current();
+    struct KChannel *ch      = 0;
+    handle_id_t      proc_h    = HANDLE_INVALID;
+    handle_id_t      parent_ch = HANDLE_INVALID;
+    handle_id_t      child_h   = HANDLE_INVALID;
+    iris_elf_image_t img;
+    struct task     *child   = 0;
+
+    if (!parent || !parent->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *entry_obj;
+    iris_rights_t   entry_rights;
+    iris_error_t r = handle_table_get_object(&parent->process->handle_table,
+                                             (handle_id_t)arg0, &entry_obj, &entry_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (entry_obj->type != KOBJ_INITRD_ENTRY) {
+        kobject_release(entry_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(entry_rights, RIGHT_READ)) {
+        kobject_release(entry_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    const void *elf_data = ((struct KInitrdEntry *)entry_obj)->data;
+    uint32_t    elf_size = ((struct KInitrdEntry *)entry_obj)->size;
+    kobject_release(entry_obj);
+
+    if (arg1 != 0 && !user_range_writable(arg1, (uint32_t)sizeof(handle_id_t)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    r = elf_loader_load(elf_data, elf_size, &img);
+    if (r != IRIS_OK) return syscall_err(r);
+
+    ch = kchannel_alloc();
+    if (!ch) { elf_loader_free_image(&img); return syscall_err(IRIS_ERR_NO_MEMORY); }
+
+    child = task_spawn_elf(&img, 0);
+    if (!child) {
+        kchannel_free(ch);
+        elf_loader_free_image(&img);
+        return syscall_err(IRIS_ERR_NO_MEMORY);
+    }
+
+    child_h = handle_table_insert(&child->process->handle_table,
+                                  &ch->base, RIGHT_READ | RIGHT_WRITE);
+    if (child_h == HANDLE_INVALID) {
+        kchannel_free(ch);
+        task_abort_spawned_user(child);
+        return syscall_err(IRIS_ERR_TABLE_FULL);
+    }
+    task_set_bootstrap_arg0(child, (uint64_t)child_h);
+
+    proc_h = handle_table_insert(&parent->process->handle_table,
+                                 &child->process->base,
+                                 RIGHT_READ | RIGHT_ROUTE | RIGHT_MANAGE | RIGHT_DUPLICATE);
+    if (proc_h == HANDLE_INVALID) {
+        kobject_release(&ch->base);
+        task_abort_spawned_user(child);
+        return syscall_err(IRIS_ERR_TABLE_FULL);
+    }
+
+    if (arg1 != 0) {
+        parent_ch = handle_table_insert(&parent->process->handle_table,
+                                        &ch->base, RIGHT_READ | RIGHT_WRITE);
+        if (parent_ch == HANDLE_INVALID) {
+            (void)handle_table_close(&parent->process->handle_table, proc_h);
+            kobject_release(&ch->base);
+            task_abort_spawned_user(child);
+            return syscall_err(IRIS_ERR_TABLE_FULL);
+        }
+        if (!copy_to_user_checked(arg1, &parent_ch, (uint32_t)sizeof(parent_ch))) {
+            (void)handle_table_close(&parent->process->handle_table, parent_ch);
+            (void)handle_table_close(&parent->process->handle_table, proc_h);
+            kobject_release(&ch->base);
+            task_abort_spawned_user(child);
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+        }
+    }
+    kobject_release(&ch->base);
+    return syscall_ok_u64((uint64_t)proc_h);
+}
+
+/* ── I/O port sub-delegation (A4) ───────────────────────────────────── */
+
+/*
+ * sys_ioport_restrict(ioport_h, offset, count) → new_handle or iris_error_t
+ *
+ * Creates a narrower KIoPort from an existing one.  Requires RIGHT_READ |
+ * RIGHT_DUPLICATE on ioport_h.  offset + count must fit within the parent range.
+ */
+static uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *obj;
+    iris_rights_t   rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (obj->type != KOBJ_IOPORT) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(rights, RIGHT_READ | RIGHT_DUPLICATE)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KIoPort *parent = (struct KIoPort *)obj;
+    uint16_t offset = (uint16_t)(arg1 & 0xFFFFu);
+    uint16_t count  = (uint16_t)(arg2 & 0xFFFFu);
+
+    if (count == 0 || (uint32_t)offset + count > (uint32_t)parent->count) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    uint16_t new_base = (uint16_t)(parent->base_port + offset);
+    kobject_release(obj);
+
+    struct KIoPort *sub = kioport_alloc(new_base, count);
+    if (!sub) return syscall_err(IRIS_ERR_NO_MEMORY);
+
+    handle_id_t h = handle_table_insert(&t->process->handle_table, &sub->base,
+                                        RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+    if (h == HANDLE_INVALID) {
+        kioport_free(sub);
+        return syscall_err(IRIS_ERR_TABLE_FULL);
+    }
+    kobject_release(&sub->base);
+    return syscall_ok_u64((uint64_t)h);
+}
+
+/* ── Multi-channel readable wait (A5) ───────────────────────────────── */
+
+#define WAIT_ANY_MAX_CHANNELS 8u
+
+/*
+ * sys_wait_any(handles_uptr, count, out_index_uptr) → 0 or iris_error_t
+ *
+ * Blocks until at least one of the watched KChannels has a pending message,
+ * then writes its 0-based index to *out_index_uptr and returns 0.
+ * Does NOT consume the message — caller follows up with CHAN_RECV / CHAN_RECV_NB.
+ */
+static uint64_t sys_wait_any(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    uint32_t count = (uint32_t)(arg1 & 0xFFu);
+    if (count == 0 || count > WAIT_ANY_MAX_CHANNELS)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    if (!user_range_readable(arg0, (uint32_t)(count * sizeof(handle_id_t))))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!user_range_writable(arg2, (uint32_t)sizeof(uint32_t)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    handle_id_t handles[WAIT_ANY_MAX_CHANNELS];
+    if (!copy_from_user_checked(handles, arg0, (uint32_t)(count * sizeof(handle_id_t))))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KChannel *chans[WAIT_ANY_MAX_CHANNELS];
+    for (uint32_t i = 0; i < count; i++) chans[i] = 0;
+
+    for (uint32_t i = 0; i < count; i++) {
+        struct KObject *obj;
+        iris_rights_t   rights;
+        iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                                 handles[i], &obj, &rights);
+        if (r != IRIS_OK) {
+            for (uint32_t j = 0; j < i; j++) kobject_release(&chans[j]->base);
+            return syscall_err(r);
+        }
+        if (obj->type != KOBJ_CHANNEL) {
+            kobject_release(obj);
+            for (uint32_t j = 0; j < i; j++) kobject_release(&chans[j]->base);
+            return syscall_err(IRIS_ERR_WRONG_TYPE);
+        }
+        if (!rights_check(rights, RIGHT_READ)) {
+            kobject_release(obj);
+            for (uint32_t j = 0; j < i; j++) kobject_release(&chans[j]->base);
+            return syscall_err(IRIS_ERR_ACCESS_DENIED);
+        }
+        chans[i] = (struct KChannel *)obj;
+    }
+
+    /* Phase 1: non-blocking scan */
+    for (uint32_t i = 0; i < count; i++) {
+        if (kchannel_is_readable(chans[i])) {
+            uint32_t idx = i;
+            for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+            if (!copy_to_user_checked(arg2, &idx, (uint32_t)sizeof(idx)))
+                return syscall_err(IRIS_ERR_INVALID_ARG);
+            return syscall_ok_u64(0);
+        }
+    }
+
+    /* Phase 2: enqueue on all, yield, retry */
+    for (;;) {
+        for (uint32_t i = 0; i < count; i++)
+            (void)kchannel_waiters_add_checked(chans[i], t);
+        t->state = TASK_BLOCKED_IPC;
+        task_yield();
+
+        for (uint32_t i = 0; i < count; i++)
+            kchannel_waiters_remove_task(chans[i], t);
+
+        for (uint32_t i = 0; i < count; i++) {
+            if (kchannel_is_readable(chans[i])) {
+                uint32_t idx = i;
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                if (!copy_to_user_checked(arg2, &idx, (uint32_t)sizeof(idx)))
+                    return syscall_err(IRIS_ERR_INVALID_ARG);
+                return syscall_ok_u64(0);
+            }
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            if (chans[i]->closed) {
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                return syscall_err(IRIS_ERR_CLOSED);
+            }
+        }
+        /* spurious wakeup — retry */
+    }
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
 
                           uint64_t arg1, uint64_t arg2) {
@@ -1234,11 +1586,14 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_PROCESS_KILL:        return sys_process_kill(arg0, arg1, arg2);
         case SYS_DIAG_SNAPSHOT:  return sys_diag_snapshot(arg0, arg1, arg2);
         case SYS_CHAN_SEAL:       return sys_chan_seal(arg0, arg1, arg2);
-        case SYS_CHAN_CALL:       return sys_chan_call(arg0, arg1, arg2);
+        case SYS_CHAN_CALL:            return sys_chan_call(arg0, arg1, arg2);
+        case SYS_CAP_CREATE_IRQCAP:   return sys_cap_create_irqcap(arg0, arg1, arg2);
+        case SYS_CAP_CREATE_IOPORT:   return sys_cap_create_ioport(arg0, arg1, arg2);
+        case SYS_INITRD_LOOKUP:        return sys_initrd_lookup(arg0, arg1, arg2);
+        case SYS_SPAWN_ELF:            return sys_spawn_elf(arg0, arg1, arg2);
+        case SYS_IOPORT_RESTRICT:      return sys_ioport_restrict(arg0, arg1, arg2);
+        case SYS_WAIT_ANY:             return sys_wait_any(arg0, arg1, arg2);
         default:
-            serial_write("[SYSCALL] unknown syscall=");
-            serial_write_dec(num);
-            serial_write("\n");
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }
 }

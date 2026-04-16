@@ -25,6 +25,22 @@ static void kchannel_waiters_wake_all(struct KChannel *ch) {
     ch->waiter_count = 0;
 }
 
+/* Wake exactly one blocked receiver; remove it from the array.
+ * Used by send: one message → one receiver, no thundering herd. */
+static void kchannel_waiters_wake_one(struct KChannel *ch) {
+    if (!ch) return;
+    for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) {
+        struct task *w = ch->waiters[i];
+        if (!w) continue;
+        if (w->state == TASK_BLOCKED || w->state == TASK_BLOCKED_IPC) {
+            w->state      = TASK_READY;
+            ch->waiters[i] = 0;
+            if (ch->waiter_count) ch->waiter_count--;
+            return;
+        }
+    }
+}
+
 static int kchannel_waiters_contains(const struct KChannel *ch, const struct task *t) {
     if (!ch || !t) return 0;
     for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) {
@@ -43,6 +59,26 @@ static iris_error_t kchannel_waiters_enqueue(struct KChannel *ch, struct task *t
         return IRIS_OK;
     }
     return IRIS_ERR_TABLE_FULL;
+}
+
+void kchannel_cancel_waiter(struct task *t) {
+    if (!t) return;
+
+    for (int i = 0; i < KCHANNEL_POOL_SIZE; i++) {
+        struct KChannel *ch;
+
+        if (!pool_used[i]) continue;
+        ch = &pool[i];
+
+        spinlock_lock(&ch->base.lock);
+        for (uint32_t j = 0; j < KCHANNEL_WAITERS_MAX; j++) {
+            if (ch->waiters[j] != t) continue;
+            ch->waiters[j] = 0;
+            if (ch->waiter_count != 0)
+                ch->waiter_count--;
+        }
+        spinlock_unlock(&ch->base.lock);
+    }
 }
 
 static void queued_handle_reset(struct KChanQueuedHandle *qh) {
@@ -97,6 +133,35 @@ struct KChannel *kchannel_alloc(void) {
 
 void kchannel_free(struct KChannel *ch) {
     kobject_release(&ch->base);
+}
+
+int kchannel_is_readable(struct KChannel *ch) {
+    int r;
+    if (!ch) return 0;
+    spinlock_lock(&ch->base.lock);
+    r = (ch->count > 0) ? 1 : 0;
+    spinlock_unlock(&ch->base.lock);
+    return r;
+}
+
+iris_error_t kchannel_waiters_add_checked(struct KChannel *ch, struct task *t) {
+    iris_error_t r;
+    if (!ch || !t) return IRIS_ERR_INVALID_ARG;
+    spinlock_lock(&ch->base.lock);
+    r = kchannel_waiters_enqueue(ch, t);
+    spinlock_unlock(&ch->base.lock);
+    return r;
+}
+
+void kchannel_waiters_remove_task(struct KChannel *ch, struct task *t) {
+    if (!ch || !t) return;
+    spinlock_lock(&ch->base.lock);
+    for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) {
+        if (ch->waiters[i] != t) continue;
+        ch->waiters[i] = 0;
+        if (ch->waiter_count) ch->waiter_count--;
+    }
+    spinlock_unlock(&ch->base.lock);
 }
 
 void kchannel_seal(struct KChannel *ch) {
@@ -177,8 +242,8 @@ iris_error_t kchannel_send_attached(struct KChannel *ch, const struct KChanMsg *
     ch->tail  = (ch->tail + 1) % KCHAN_CAPACITY;
     ch->count++;
 
-    /* wake all blocked receivers; one will win the next recv race */
-    kchannel_waiters_wake_all(ch);
+    /* wake one blocked receiver: one message, one wakeup, no thundering herd */
+    kchannel_waiters_wake_one(ch);
     spinlock_unlock(&ch->base.lock);
     return IRIS_OK;
 }

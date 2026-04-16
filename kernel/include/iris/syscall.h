@@ -183,6 +183,75 @@
 #define SYS_CHAN_CALL  38  /* (req_chan, msg_uptr, reply_chan) → 0 or negative iris_error_t */
 
 /*
+ * Hardware capability creation — modern/conforming (iris_error_t).
+ * Both syscalls require a bootstrap capability handle with IRIS_BOOTCAP_HW_ACCESS
+ * permission.  Policy (which service gets which resource) lives in svcmgr; the
+ * kernel only validates ranges and creates the cap object.
+ *
+ * SYS_CAP_CREATE_IRQCAP(auth_handle, irq_num) → handle_id_t or negative iris_error_t
+ *   auth_handle: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_HW_ACCESS.
+ *   irq_num: hardware IRQ line (0–15).
+ *   Returns a KIrqCap handle with RIGHT_ROUTE.
+ *
+ * SYS_CAP_CREATE_IOPORT(auth_handle, base, count) → handle_id_t or negative iris_error_t
+ *   auth_handle: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_HW_ACCESS.
+ *   base: first I/O port in the range (0–0xFFFF).
+ *   count: number of consecutive ports (1–0x10000, base+count ≤ 0x10000).
+ *   Returns a KIoPort handle with RIGHT_READ|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ */
+#define SYS_CAP_CREATE_IRQCAP  39
+#define SYS_CAP_CREATE_IOPORT  40
+
+/*
+ * Initrd-entry capability and ELF spawn — modern/conforming (iris_error_t).
+ *
+ * SYS_INITRD_LOOKUP(auth_h, name_uptr) → entry_handle_id or negative iris_error_t
+ *   auth_h: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_SPAWN_SERVICE.
+ *   name_uptr: user pointer to NUL-terminated initrd image name (≤ 31 chars).
+ *   Returns a KOBJ_INITRD_ENTRY handle with RIGHT_READ on success.
+ *   Separating lookup from spawn lets svcmgr verify existence first,
+ *   and allows delegating the spawn step without handing out the bootstrap cap.
+ *
+ * SYS_SPAWN_ELF(entry_h, out_chan_uptr) → proc_handle_id or negative iris_error_t
+ *   entry_h: KOBJ_INITRD_ENTRY with RIGHT_READ.
+ *   out_chan_uptr: optional user pointer to handle_id_t; receives parent bootstrap
+ *                 channel handle (may be NULL / 0).
+ *   Identical spawn flow to SYS_SPAWN_SERVICE after the initrd lookup step.
+ *   Child receives its bootstrap channel handle as arg0 (RBX).
+ *   Returns proc_handle with RIGHT_READ|RIGHT_ROUTE|RIGHT_MANAGE|RIGHT_DUPLICATE.
+ */
+#define SYS_INITRD_LOOKUP  41
+#define SYS_SPAWN_ELF      42
+
+/*
+ * I/O port sub-delegation — modern/conforming (iris_error_t).
+ *
+ * SYS_IOPORT_RESTRICT(ioport_h, offset, count) → new_handle_id or negative iris_error_t
+ *   ioport_h: KOBJ_IOPORT with RIGHT_READ | RIGHT_DUPLICATE.
+ *   offset: port offset within the parent range (0 ≤ offset < parent.count).
+ *   count: ports in the sub-range (1 ≤ count; offset + count ≤ parent.count).
+ *   Returns a new KOBJ_IOPORT handle for [parent.base + offset, +count) with
+ *   RIGHT_READ|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *   Use case: svcmgr delegates a narrow sub-range to a service that only needs
+ *   one specific port within a wider authorized range.
+ */
+#define SYS_IOPORT_RESTRICT  43
+
+/*
+ * Multi-channel readable wait — modern/conforming (iris_error_t).
+ *
+ * SYS_WAIT_ANY(handles_uptr, count, out_index_uptr) → 0 or negative iris_error_t
+ *   handles_uptr: user pointer to an array of count handle_id_t values (max 8).
+ *   count: number of handles to watch (1–8); each must be KOBJ_CHANNEL + RIGHT_READ.
+ *   out_index_uptr: user pointer to uint32_t; receives the 0-based index of the
+ *                   first channel found to have a pending message.
+ *   Blocks until at least one channel has a message; does NOT consume the message.
+ *   Caller must follow up with SYS_CHAN_RECV / SYS_CHAN_RECV_NB to read it.
+ *   Returns IRIS_ERR_CLOSED if any watched channel is sealed while waiting.
+ */
+#define SYS_WAIT_ANY  44
+
+/*
  * VMO unmap — modern/conforming (iris_error_t).
  *
  * SYS_VMO_UNMAP(vaddr, size) → 0 or negative iris_error_t

@@ -8,6 +8,7 @@
 
 #define IRIS_BOOTCAP_NONE          0u
 #define IRIS_BOOTCAP_SPAWN_SERVICE (1u << 0)
+#define IRIS_BOOTCAP_HW_ACCESS     (1u << 1)  /* may request IRQ/ioport caps via syscall */
 
 struct KBootstrapCap {
     struct KObject base;

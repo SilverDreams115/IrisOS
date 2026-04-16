@@ -147,103 +147,81 @@ static void svcmgr_close_handle_if_valid(handle_id_t *h) {
 }
 
 /*
- * Receive all kernel bootstrap capability messages from the bootstrap channel.
- * The kernel sends exactly:
- *   - one SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP message
- *   - one SVCMGR_BOOTSTRAP_KIND_IRQ_CAP message per catalog entry with irq_num != 0xFF
- *   - one SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP message per catalog entry with ioport_count > 0
+ * Receive kernel bootstrap capability messages from the bootstrap channel.
+ * The kernel now sends exactly one message: SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP.
+ * IRQ and I/O port caps are obtained later via SYS_CAP_CREATE_IRQCAP /
+ * SYS_CAP_CREATE_IOPORT, keeping hardware resource policy in svcmgr.
  *
- * Returns 1 if the spawn capability was received (minimum requirement to proceed),
- * 0 on failure.  IRQ/ioport cap delivery is best-effort; missing caps log a warning at
- * svcmgr_track_spawn time.
+ * Returns 1 if the spawn capability was received, 0 on failure.
  */
 static int svcmgr_recv_bootstrap_caps(struct svcmgr_state *state) {
-    uint32_t irq_cap_expected = 0;
-    uint32_t ioport_cap_expected = 0;
-    int got_spawn_cap = 0;
-    uint32_t got_irq_caps = 0;
-    uint32_t got_ioport_caps = 0;
-    uint32_t max_recv;
     uint32_t recv_count = 0;
-    uint32_t ci;
+    const uint32_t max_recv = 8u; /* headroom for future bootstrap message kinds */
 
     if (!state || state->bootstrap_h == HANDLE_INVALID) return 0;
 
-    for (ci = 0; ci < iris_service_catalog_count(); ci++) {
-        const struct iris_service_catalog_entry *e = iris_service_catalog_at(ci);
-        if (e && e->irq_num != 0xFFu) irq_cap_expected++;
-        if (e && e->ioport_count > 0u) ioport_cap_expected++;
-    }
-
-    /* 1 spawn_cap + N irq_caps + M ioport_caps + small headroom */
-    max_recv = 1u + irq_cap_expected + ioport_cap_expected + 4u;
-
-    while (recv_count < max_recv &&
-           (!got_spawn_cap || got_irq_caps < irq_cap_expected ||
-            got_ioport_caps < ioport_cap_expected)) {
+    while (recv_count < max_recv) {
         struct KChanMsg msg;
         uint32_t kind;
 
         for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
         if (svcmgr_syscall2(SYS_CHAN_RECV, state->bootstrap_h,
                             (uint64_t)(uintptr_t)&msg) != IRIS_OK)
-            return got_spawn_cap;
+            return 0;
         recv_count++;
 
-        if (msg.type != SVCMGR_MSG_BOOTSTRAP_HANDLE) continue;
-        if (msg.data_len < SVCMGR_BOOTSTRAP_MSG_LEN) {
+        if (msg.type != SVCMGR_MSG_BOOTSTRAP_HANDLE ||
+            msg.data_len < SVCMGR_BOOTSTRAP_MSG_LEN ||
+            msg.attached_handle == HANDLE_INVALID) {
             if (msg.attached_handle != HANDLE_INVALID)
                 (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, msg.attached_handle);
             continue;
         }
-        if (msg.attached_handle == HANDLE_INVALID) continue;
 
         kind = svcmgr_proto_read_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND]);
-
-        if (kind == SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP) {
-            if (!rights_check(msg.attached_rights, RIGHT_READ)) {
-                (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, msg.attached_handle);
-                continue;
-            }
+        if (kind == SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP &&
+            rights_check(msg.attached_rights, RIGHT_READ)) {
             state->spawn_cap_h = msg.attached_handle;
-            got_spawn_cap = 1;
-        } else if (kind == SVCMGR_BOOTSTRAP_KIND_IRQ_CAP) {
-            uint8_t irq_num;
-            if (msg.data_len < SVCMGR_BOOTSTRAP_IRQ_CAP_MSG_LEN) {
-                (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, msg.attached_handle);
-                continue;
-            }
-            irq_num = msg.data[SVCMGR_BOOTSTRAP_OFF_IRQ_NUM];
-            if (irq_num >= SVCMGR_IRQ_CAPS_TABLE_SIZE ||
-                state->irq_caps[irq_num] != HANDLE_INVALID) {
-                /* duplicate or out-of-range: close the spurious handle */
-                (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, msg.attached_handle);
-                continue;
-            }
-            state->irq_caps[irq_num] = msg.attached_handle;
-            got_irq_caps++;
-        } else if (kind == SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP) {
-            uint8_t svc_id;
-            if (msg.data_len < SVCMGR_BOOTSTRAP_IOPORT_CAP_MSG_LEN) {
-                (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, msg.attached_handle);
-                continue;
-            }
-            svc_id = msg.data[SVCMGR_BOOTSTRAP_OFF_IOPORT_SVC];
-            if (svc_id >= SVCMGR_IOPORT_CAPS_TABLE_SIZE ||
-                state->ioport_caps[svc_id] != HANDLE_INVALID) {
-                /* duplicate or out-of-range: close the spurious handle */
-                (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, msg.attached_handle);
-                continue;
-            }
-            state->ioport_caps[svc_id] = msg.attached_handle;
-            got_ioport_caps++;
-        } else {
-            /* unknown bootstrap kind: discard */
-            (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, msg.attached_handle);
+            return 1;
         }
+        /* unexpected kind: discard and keep waiting */
+        (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, msg.attached_handle);
     }
 
-    return got_spawn_cap;
+    return 0;
+}
+
+/*
+ * Request hardware capabilities from the kernel using the spawn cap as authority.
+ * Policy (which service gets which IRQ / port range) comes from the service catalog
+ * here in svcmgr, not from the kernel.
+ */
+static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
+    uint32_t ci;
+
+    if (!state || state->spawn_cap_h == HANDLE_INVALID) return;
+
+    for (ci = 0; ci < iris_service_catalog_count(); ci++) {
+        const struct iris_service_catalog_entry *e = iris_service_catalog_at(ci);
+        if (!e) continue;
+
+        if (e->irq_num != 0xFFu && e->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE &&
+            state->irq_caps[e->irq_num] == HANDLE_INVALID) {
+            int64_t h = svcmgr_syscall2(SYS_CAP_CREATE_IRQCAP,
+                                        state->spawn_cap_h, e->irq_num);
+            if (h >= 0)
+                state->irq_caps[e->irq_num] = (handle_id_t)h;
+        }
+
+        if (e->ioport_count > 0u && e->service_id < SVCMGR_IOPORT_CAPS_TABLE_SIZE &&
+            state->ioport_caps[e->service_id] == HANDLE_INVALID) {
+            int64_t h = svcmgr_syscall3(SYS_CAP_CREATE_IOPORT,
+                                        state->spawn_cap_h,
+                                        e->ioport_base, e->ioport_count);
+            if (h >= 0)
+                state->ioport_caps[e->service_id] = (handle_id_t)h;
+        }
+    }
 }
 
 static struct svcmgr_service_state *svcmgr_service_state(struct svcmgr_state *state,
@@ -817,10 +795,20 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
     }
     svc->reply_h = (handle_id_t)reply_h;
 
-    proc_h = svcmgr_syscall3(SYS_SPAWN_SERVICE,
-                             (uint64_t)(uintptr_t)manifest->image_name,
-                             (uint64_t)(uintptr_t)&child_boot_h,
-                             state->spawn_cap_h);
+    {
+        int64_t entry_h = svcmgr_syscall2(SYS_INITRD_LOOKUP,
+                                          state->spawn_cap_h,
+                                          (uint64_t)(uintptr_t)manifest->image_name);
+        if (entry_h < 0) {
+            svcmgr_clear_service_masters(state, manifest->service_id);
+            svcmgr_log(sm_str_spawnfail);
+            return;
+        }
+        proc_h = svcmgr_syscall2(SYS_SPAWN_ELF,
+                                 (uint64_t)entry_h,
+                                 (uint64_t)(uintptr_t)&child_boot_h);
+        (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, (uint64_t)entry_h);
+    }
     if (proc_h < 0) {
         svcmgr_clear_service_masters(state, manifest->service_id);
         svcmgr_close_handle_if_valid(&child_boot_h);
@@ -1071,6 +1059,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         svcmgr_log(sm_str_bootcapfail);
         return;
     }
+    svcmgr_request_hardware_caps(&state);
     svcmgr_autostart_services(&state);
     svcmgr_log(sm_str_ready);
 

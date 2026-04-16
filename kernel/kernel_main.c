@@ -113,7 +113,6 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     /* ── 9. First user task ─────────────────────────────────────── */
     serial_write("[IRIS][USER] preparing init process...\n");
-#ifndef IRIS_ENABLE_RUNTIME_SELFTESTS
     /* Phase 21: spawn init as an ELF service from the initrd. */
     {
         const void *init_elf = 0;
@@ -154,30 +153,6 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             serial_write("[IRIS][USER] WARN: could not create init task\n");
         }
     }
-#else
-    {
-        extern void user_selftest(void);
-        struct task *st = task_spawn_user((uint64_t)(uintptr_t)user_selftest, 0);
-        if (st) {
-            handle_id_t sm_bootstrap_h = HANDLE_INVALID;
-            iris_error_t br = svcmgr_bootstrap_attach_client(st, RIGHT_WRITE, &sm_bootstrap_h);
-            if (br != IRIS_OK) {
-                serial_write("[IRIS][USER] WARN: selftest bootstrap attach failed\n");
-                task_abort_spawned_user(st);
-                st = 0;
-            } else {
-                task_set_bootstrap_arg0(st, (uint64_t)sm_bootstrap_h);
-            }
-        }
-        if (st) {
-            serial_write("[IRIS][USER] selftest task created, id=");
-            serial_write_dec(st->id);
-            serial_write("\n");
-        } else {
-            serial_write("[IRIS][USER] WARN: could not create selftest task\n");
-        }
-    }
-#endif
 
     /* ── 10. Scheduler start ────────────────────────────────────── */
     __asm__ volatile ("sti");
