@@ -39,6 +39,10 @@ extern const uint8_t _binary_services_kbd_kbd_elf_end[];
 extern const uint8_t _binary_services_vfs_vfs_elf_start[];
 extern const uint8_t _binary_services_vfs_vfs_elf_end[];
 
+/* init — ring-3 init process (Phase 21: moved from kernel-linked to ELF) */
+extern const uint8_t _binary_services_init_init_elf_start[];
+extern const uint8_t _binary_services_init_init_elf_end[];
+
 /* ── Initrd registry ─────────────────────────────────────────────────────── */
 
 struct initrd_entry {
@@ -54,6 +58,8 @@ static const struct initrd_entry g_initrd[] = {
                 _binary_services_kbd_kbd_elf_end },
     { IRIS_SERVICE_IMAGE_VFS, _binary_services_vfs_vfs_elf_start,
                 _binary_services_vfs_vfs_elf_end },
+    { "init", _binary_services_init_init_elf_start,
+               _binary_services_init_init_elf_end },
 };
 
 #define INITRD_ENTRY_COUNT \

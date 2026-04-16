@@ -6,6 +6,8 @@
 #include <iris/nc/kvmo.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
+#include <iris/nc/kirqcap.h>
+#include <iris/nc/kioport.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
 #include <iris/irq_routing.h>
@@ -34,8 +36,6 @@ static inline uint64_t rdmsr(uint32_t msr) {
 }
 
 extern void syscall_entry(void);
-extern char __text_start;
-extern char __text_end;
 
 #include <iris/serial.h>
 #include <iris/paging.h>
@@ -45,8 +45,8 @@ extern char __text_end;
 /*
  * Syscall ABI status in this file:
  *   - Capability/object syscalls use iris_error_t on failure.
- *   - Legacy VFS/stdio-style syscalls still expose transitional ad hoc returns
- *     (-1 or unchanged brk) and are kept as-is for compatibility.
+ *   - Legacy VFS/stdio-style syscalls (SYS_WRITE) still expose transitional
+ *     ad hoc returns and are kept as-is for compatibility.
  * Keep new kernel/object paths on the iris_error_t contract; do not add more
  * generic -1 returns outside the legacy compatibility surface.
  */
@@ -57,53 +57,6 @@ static inline uint64_t syscall_err(iris_error_t err) {
 
 static inline uint64_t syscall_ok_u64(uint64_t value) {
     return value;
-}
-
-/*
- * Transitional VFS/stdio syscall island.
- *
- * External contract:
- *   - Preserves the pre-v1 legacy syscall behavior for SYS_WRITE.
- *   - Uses generic -1 for syscall-side user pointer validation failures where
- *     that behavior already exists.
- *
- * Boundary rule:
- *   - New syscalls must not use this encoding style.
- *   - The userland VFS service owns the healthy-path file namespace and
- *     open/read/close session model.
- *   - SYS_OPEN/SYS_READ/SYS_CLOSE are now retired compatibility stubs and
- *     must not be revived as an in-kernel backend.
- */
-static inline uint64_t transitional_legacy_err(void) {
-    return (uint64_t)-1;
-}
-
-/*
- * Transitional brk address encoding.
- * Returns a virtual address, not a status code.  The caller detects failure
- * by comparing the result to the requested address.  This helper makes the
- * address-as-value convention visible at every return site so that audits can
- * distinguish brk returns from iris_error_t returns at a glance.
- */
-static inline uint64_t transitional_brk_addr(uint64_t addr) {
-    return addr;
-}
-
-static int user_spawn_entry_valid(uint64_t entry_vaddr) {
-    uint64_t text_start = (uint64_t)(uintptr_t)&__text_start;
-    uint64_t text_end   = (uint64_t)(uintptr_t)&__text_end;
-    uint64_t text_size;
-    uint64_t text_user_start;
-    uint64_t text_user_end;
-
-    if (text_end < text_start) return 0;
-    text_size = text_end - text_start;
-    text_user_start = USER_TEXT_BASE + (text_start - USER_IMAGE_SOURCE_BASE);
-    text_user_end   = text_user_start + text_size;
-
-    if (entry_vaddr >= text_start && entry_vaddr < text_end) return 1;
-    if (entry_vaddr >= text_user_start && entry_vaddr < text_user_end) return 1;
-    return 0;
 }
 
 static int user_vmo_range_valid(uint64_t virt, uint64_t size) {
@@ -126,21 +79,12 @@ static void rollback_user_maps(uint64_t cr3, uint64_t start, uint64_t end) {
         paging_unmap_in(cr3, virt);
 }
 
-static void rollback_user_maps_and_free_phys(uint64_t cr3, uint64_t start, uint64_t end) {
-    for (uint64_t virt = start; virt < end; virt += PAGE_SIZE) {
-        uint64_t phys = paging_virt_to_phys_in(cr3, virt);
-        if (!phys) continue;
-        paging_unmap_in(cr3, virt);
-        pmm_free_page(phys & ~0xFFFULL);
-    }
-}
-
 /* ── Transitional stdio / retired VFS syscall island ─────────────── */
 
 static uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     /* arg0 = pointer to string in user space */
-    if (!user_range_readable(arg0, 1)) return transitional_legacy_err();
+    if (!user_range_readable(arg0, 1)) return syscall_err(IRIS_ERR_INVALID_ARG);
     /* safe string print — max 256 chars */
     char buf[257];
     uint32_t i = copy_user_cstr_bounded(arg0, buf, (uint32_t)sizeof(buf));
@@ -182,92 +126,6 @@ static uint64_t sys_process_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_TABLE_FULL);
     return syscall_ok_u64((uint64_t)h);
 }
-
-static uint64_t sys_open(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return transitional_legacy_err();
-}
-
-static uint64_t sys_read(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return transitional_legacy_err();
-}
-
-static uint64_t sys_close(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return transitional_legacy_err();
-}
-
-/* ── Transitional heap-break syscall island ─────────────────────── */
-/*
- * External contract (inherited from POSIX brk(2), NOT iris_error_t):
- *   arg0 = 0            → query: returns current brk, no side effects.
- *   arg0 = new address  → attempt to move brk to that address.
- *                         Success: returns new_brk (== arg0).
- *                         Failure: returns old_brk (unchanged); caller
- *                                  detects failure by result != arg0.
- *   No process context  → returns transitional_legacy_err() (-1).
- *
- * The return value is always a virtual address or -1.  It is never an
- * iris_error_t.  Do not interpret it as one.
- *
- * Boundary rules:
- *   - New memory management syscalls must use VMO + SYS_VMO_MAP instead.
- *   - Do not extend this island or copy its address-as-value convention.
- *   - Future convergence path: replace with a VMO-backed heap and retire
- *     this syscall as a unit.
- */
-static uint64_t sys_brk(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    struct KProcess *proc = t ? t->process : 0;
-    if (!proc) return transitional_legacy_err();
-    /* arg0 = requested new brk; 0 = query current */
-    if (arg0 == 0) return transitional_brk_addr(proc->brk);
-    if (arg0 < USER_HEAP_BASE) return transitional_brk_addr(proc->brk);
-    if (arg0 > USER_HEAP_MAX)  return transitional_brk_addr(proc->brk);
-
-    uint64_t old_brk = proc->brk;
-    uint64_t new_brk = arg0;
-
-    /* map new pages when heap grows */
-    if (new_brk > old_brk) {
-        uint64_t first = (old_brk + 0xFFFULL) & ~0xFFFULL;  /* round up */
-        uint64_t last  = (new_brk - 1ULL)      & ~0xFFFULL;  /* round down */
-        uint64_t mapped_until = first;
-        for (uint64_t v = first; v <= last; v += 0x1000ULL) {
-            uint64_t phys = pmm_alloc_page();
-            if (!phys) {
-                for (uint64_t rollback = first; rollback < mapped_until; rollback += 0x1000ULL) {
-                    uint64_t rollback_phys = paging_virt_to_phys_in(proc->cr3, rollback);
-                    if (!rollback_phys) continue;
-                    paging_unmap_in(proc->cr3, rollback);
-                    pmm_free_page(rollback_phys & ~0xFFFULL);
-                }
-                return transitional_brk_addr(old_brk);  /* OOM — return unchanged brk */
-            }
-            if (paging_map_checked_in(proc->cr3, v, phys,
-                                      PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) != 0) {
-                pmm_free_page(phys);
-                rollback_user_maps_and_free_phys(proc->cr3, first, mapped_until);
-                return transitional_brk_addr(old_brk);
-            }
-            mapped_until = v + 0x1000ULL;
-        }
-    } else if (new_brk < old_brk) {
-        uint64_t first = (new_brk + 0xFFFULL) & ~0xFFFULL;   /* first page no longer needed */
-        uint64_t last  = (old_brk - 1ULL)    & ~0xFFFULL;    /* last mapped page in old heap */
-        for (uint64_t v = first; v <= last; v += 0x1000ULL) {
-            uint64_t phys = paging_virt_to_phys_in(proc->cr3, v);
-            if (!phys) continue;
-            paging_unmap_in(proc->cr3, v);
-            pmm_free_page(phys & ~0xFFFULL);
-        }
-    }
-    proc->brk = new_brk;
-    return transitional_brk_addr(new_brk);
-}
-/* ── end transitional heap-break island ─────────────────────────── */
 
 /* ── Capability IPC (KChannel + HandleTable) ─────────────────────── */
 
@@ -374,6 +232,36 @@ static uint64_t sys_chan_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_err(r);
 }
 
+/*
+ * sys_chan_recv_nb — non-blocking channel receive.
+ *
+ * Identical to sys_chan_recv except it calls kchannel_try_recv_into_process
+ * (no blocking).  Returns IRIS_ERR_WOULD_BLOCK immediately if the channel is
+ * empty.  Useful for polling loops and supervisor-side drain passes.
+ */
+static uint64_t sys_chan_recv_nb(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!user_range_writable(arg1, (uint32_t)sizeof(struct KChanMsg)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject  *obj;
+    iris_rights_t    rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0,
+                                             &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (obj->type != KOBJ_CHANNEL) { kobject_release(obj); return syscall_err(IRIS_ERR_WRONG_TYPE); }
+    if (!rights_check(rights, RIGHT_READ)) { kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
+
+    struct KChanMsg msg;
+    r = kchannel_try_recv_into_process((struct KChannel *)obj, t->process, &msg);
+    kobject_release(obj);
+    if (r == IRIS_OK && !copy_to_user_checked(arg1, &msg, (uint32_t)sizeof(msg)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    return syscall_err(r);
+}
+
 static uint64_t sys_handle_close(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
@@ -457,6 +345,34 @@ static uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         mapped_until = arg1 + off + PAGE_SIZE;
     }
     kobject_release(obj);
+    return syscall_ok_u64(0);
+}
+
+/*
+ * sys_vmo_unmap(vaddr, size) → 0 or iris_error_t
+ *
+ * Removes [vaddr, vaddr+size) PTEs from the caller's page table.
+ * Physical pages are NOT freed — the KVmo still owns them; they are released
+ * when the last handle to the VMO is closed.
+ *
+ * The range is validated to lie entirely within [USER_VMO_BASE, USER_VMO_TOP).
+ * This prevents accidentally unmapping kernel-shared regions or the user stack.
+ * Unmapped pages within the range are silently skipped.
+ */
+static uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process || !t->process->cr3) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    uint64_t vaddr = arg0;
+    uint64_t size  = arg1;
+
+    if (!user_vmo_range_valid(vaddr, size)) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    uint64_t map_size = (size + (PAGE_SIZE - 1ULL)) & ~(PAGE_SIZE - 1ULL);
+    for (uint64_t off = 0; off < map_size; off += PAGE_SIZE)
+        paging_unmap_in(t->process->cr3, vaddr + off);
+
     return syscall_ok_u64(0);
 }
 
@@ -559,107 +475,6 @@ static uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (r == IRIS_OK && !copy_to_user_checked(arg1, &bits, (uint32_t)sizeof(bits)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
     return syscall_err(r);
-}
-
-/* ── Process spawn ────────────────────────────────────────────────── */
-
-/*
- * sys_spawn(entry_vaddr, out_chan_ptr) → proc_handle
- *
- * Creates a new ring-3 process at entry_vaddr.
- * A bootstrap KChannel is created:
- *   - child receives its bootstrap channel handle via the user-task
- *     bootstrap contract (RBX on first entry, legacy stack mirror)
- *   - parent receives:
- *       return value = KProcess handle (control object)
- *       *out_chan_ptr = KChannel handle (to communicate with child)
- *         (only written if out_chan_ptr != 0 and is a valid user pointer)
- *
- * Rights granted:
- *   parent's KProcess handle: RIGHT_READ | RIGHT_ROUTE | RIGHT_MANAGE | RIGHT_DUPLICATE
- *   parent's KChannel handle: RIGHT_READ | RIGHT_WRITE
- *   child's KChannel handle:  RIGHT_READ | RIGHT_WRITE
- */
-static uint64_t sys_spawn(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
-    if (!user_spawn_entry_valid(arg0)) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct task *parent = task_current();
-    struct task *child = 0;
-    struct KChannel *ch = 0;
-    struct KProcess *proc = 0;
-    handle_id_t proc_h = HANDLE_INVALID;
-    handle_id_t parent_ch = HANDLE_INVALID;
-    if (!parent || !parent->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* Validate optional out pointer */
-    if (arg1 != 0 && !user_range_writable(arg1, (uint32_t)sizeof(handle_id_t)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* 1. Create child task (arg0 on child stack will be patched below) */
-    child = task_spawn_user(arg0, 0);
-    if (!child) return syscall_err(IRIS_ERR_NO_MEMORY);
-
-    /* 2. Allocate bootstrap channel */
-    ch = kchannel_alloc();
-    if (!ch) {
-        task_abort_spawned_user(child);
-        return syscall_err(IRIS_ERR_NO_MEMORY);
-    }
-
-    /* 3. Insert KChannel into child's handle table */
-    handle_id_t child_h = handle_table_insert(&child->process->handle_table,
-                                              &ch->base,
-                                              RIGHT_READ | RIGHT_WRITE);
-    if (child_h == HANDLE_INVALID) {
-        kchannel_free(ch);
-        task_abort_spawned_user(child);
-        return syscall_err(IRIS_ERR_TABLE_FULL);
-    }
-
-    /* 4. Install bootstrap arg0 for the child using the shared helper. */
-    task_set_bootstrap_arg0(child, (uint64_t)child_h);
-
-    /* 5. Child becomes externally valid only after parent-facing handles exist. */
-    proc = child->process;
-    if (!proc) {
-        kobject_release(&ch->base);
-        task_abort_spawned_user(child);
-        return syscall_err(IRIS_ERR_INTERNAL);
-    }
-
-    /* 6. Insert KProcess into parent's handle table */
-    proc_h = handle_table_insert(&parent->process->handle_table,
-                                 &proc->base,
-                                 RIGHT_READ | RIGHT_MANAGE | RIGHT_DUPLICATE);
-    if (proc_h == HANDLE_INVALID) {
-        kobject_release(&ch->base);
-        task_abort_spawned_user(child);
-        return syscall_err(IRIS_ERR_TABLE_FULL);
-    }
-
-    /* 7. Optionally give parent a handle to the bootstrap channel */
-    if (arg1 != 0) {
-        parent_ch = handle_table_insert(&parent->process->handle_table,
-                                        &ch->base,
-                                        RIGHT_READ | RIGHT_WRITE);
-        if (parent_ch == HANDLE_INVALID) {
-            (void)handle_table_close(&parent->process->handle_table, proc_h);
-            kobject_release(&ch->base);
-            task_abort_spawned_user(child);
-            return syscall_err(IRIS_ERR_TABLE_FULL);
-        }
-        if (!copy_to_user_checked(arg1, &parent_ch, (uint32_t)sizeof(parent_ch))) {
-            (void)handle_table_close(&parent->process->handle_table, parent_ch);
-            (void)handle_table_close(&parent->process->handle_table, proc_h);
-            kobject_release(&ch->base);
-            task_abort_spawned_user(child);
-            return syscall_err(IRIS_ERR_INVALID_ARG);
-        }
-    }
-    kobject_release(&ch->base); /* table(s) hold the reference(s) */
-
-    return syscall_ok_u64((uint64_t)proc_h);
 }
 
 /* ── ELF service spawning ─────────────────────────────────────────── */
@@ -856,17 +671,6 @@ static uint64_t sys_handle_transfer(uint64_t arg0, uint64_t arg1, uint64_t arg2)
     return syscall_ok_u64((uint64_t)new_h);
 }
 
-/* ── Retired bootstrap nameserver syscalls ───────────────────────── */
-static uint64_t sys_ns_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-static uint64_t sys_ns_lookup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
 /* ── Process lifecycle query ──────────────────────────────────────── */
 
 /*
@@ -974,36 +778,112 @@ static uint64_t sys_sleep(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return 0;
 }
 
+/* ── Process termination ──────────────────────────────────────────── */
+
+/*
+ * sys_process_kill(proc_handle) → 0 or iris_error_t
+ *
+ * Requires RIGHT_MANAGE on proc_handle.
+ * Cannot be used for self-termination — use SYS_EXIT for that (IRIS_ERR_INVALID_ARG).
+ * Idempotent: if the target is already dead, returns 0 immediately.
+ *
+ * Internally calls task_kill_external which: runs kprocess_teardown (fires exit
+ * watches, closes the process's own handle table, unregisters IRQ routes),
+ * frees user stack pages, reaps the address space (safe since the caller's CR3
+ * is different from the target's), and releases the kernel's creation reference.
+ *
+ * The caller's handle to the proc remains valid until the caller closes it;
+ * the KProcess object is freed when all handles to it are closed.
+ */
+static uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *obj;
+    iris_rights_t   rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+
+    if (obj->type != KOBJ_PROCESS) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(rights, RIGHT_MANAGE)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KProcess *target = (struct KProcess *)obj;
+
+    /* Prevent suicide — caller must use SYS_EXIT for self-termination. */
+    if (target == t->process) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    /* Idempotent: already dead. */
+    if (!kprocess_is_alive(target)) {
+        kobject_release(obj);
+        return syscall_ok_u64(0);
+    }
+
+    task_kill_external(target->main_thread);
+    kobject_release(obj);
+    return syscall_ok_u64(0);
+}
+
 /* ── IRQ route management ─────────────────────────────────────────── */
 
 /*
- * sys_irq_route_register(irq_num, chan_handle, proc_handle) → 0 or iris_error_t
+ * sys_irq_route_register(irqcap_handle, chan_handle, proc_handle) → 0 or iris_error_t
  *
- * Routes hardware IRQ irq_num into the KChannel behind chan_handle.
- * The route is owned by the KProcess behind proc_handle: when that
- * process exits, kprocess_teardown → irq_routing_unregister_owner
- * automatically clears the route.
+ * Routes the hardware IRQ line embedded in irqcap_handle into the KChannel
+ * behind chan_handle.  The IRQ number is extracted from the KIrqCap object;
+ * callers cannot supply an arbitrary vector — they are bound to whatever the
+ * kernel encoded into the capability at boot.
  *
- * Capability-driven authority:
- *   - chan_handle must carry RIGHT_READ|RIGHT_WRITE on a KChannel.
- *   - proc_handle must carry RIGHT_READ|RIGHT_ROUTE on the target child.
+ * The route is owned by the KProcess behind proc_handle: when that process
+ * exits, kprocess_teardown → irq_routing_unregister_owner clears the route
+ * automatically.
  *
- * Call this after SYS_SPAWN_SERVICE to transfer IRQ ownership to the freshly
- * spawned service process. The route stays active; only the responsible owner
- * changes.
+ * The irqcap_handle is not consumed — svcmgr may reuse it across service
+ * restarts without requesting a new capability.
+ *
+ * Authority:
+ *   irqcap_handle — KOBJ_IRQ_CAP with RIGHT_ROUTE.
+ *   chan_handle   — KOBJ_CHANNEL with RIGHT_READ|RIGHT_WRITE.
+ *   proc_handle   — KOBJ_PROCESS with RIGHT_READ|RIGHT_ROUTE.
  */
 static uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    uint8_t irq_num = (uint8_t)(arg0 & 0xFFU);
+    /* Resolve the IRQ capability — it carries the authorized IRQ number */
+    struct KObject  *irqcap_obj;
+    iris_rights_t    irqcap_rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &irqcap_obj, &irqcap_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (irqcap_obj->type != KOBJ_IRQ_CAP) {
+        kobject_release(irqcap_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(irqcap_rights, RIGHT_ROUTE)) {
+        kobject_release(irqcap_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    uint8_t irq_num = ((struct KIrqCap *)irqcap_obj)->irq_num;
+    kobject_release(irqcap_obj);
+
     if (irq_num >= IRQ_ROUTE_MAX) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /* Resolve and validate the channel handle */
     struct KObject  *ch_obj;
     iris_rights_t    ch_rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg1, &ch_obj, &ch_rights);
+    r = handle_table_get_object(&t->process->handle_table,
+                                (handle_id_t)arg1, &ch_obj, &ch_rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (ch_obj->type != KOBJ_CHANNEL) {
         kobject_release(ch_obj);
@@ -1042,6 +922,88 @@ static uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t ar
     kobject_release(ch_obj);
     kobject_release(proc_obj);
     return syscall_err(IRIS_OK);
+}
+
+/* ── I/O port access via KIoPort capability ──────────────────────── */
+
+/*
+ * sys_ioport_in(ioport_handle, port_offset) → uint8_t value or iris_error_t
+ *
+ * Executes the x86 IN instruction for one byte from:
+ *   cap->base_port + port_offset
+ * Returns the byte in bits [7:0] of the result on success.
+ * Requires RIGHT_READ on ioport_handle.
+ */
+static uint64_t sys_ioport_in(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject  *obj;
+    iris_rights_t    rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (obj->type != KOBJ_IOPORT) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(rights, RIGHT_READ)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KIoPort *port = (struct KIoPort *)obj;
+    uint32_t offset = (uint32_t)(arg1 & 0xFFFFu);
+    if (offset >= (uint32_t)port->count) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    uint16_t io_port = (uint16_t)(port->base_port + (uint16_t)offset);
+    uint8_t value;
+    __asm__ volatile ("inb %1, %0" : "=a"(value) : "Nd"(io_port));
+    kobject_release(obj);
+    return syscall_ok_u64((uint64_t)value);
+}
+
+/*
+ * sys_ioport_out(ioport_handle, port_offset, value) → 0 or iris_error_t
+ *
+ * Executes the x86 OUT instruction, writing the low byte of value to:
+ *   cap->base_port + port_offset
+ * Requires RIGHT_WRITE on ioport_handle.
+ */
+static uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject  *obj;
+    iris_rights_t    rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (obj->type != KOBJ_IOPORT) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(rights, RIGHT_WRITE)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KIoPort *port = (struct KIoPort *)obj;
+    uint32_t offset = (uint32_t)(arg1 & 0xFFFFu);
+    if (offset >= (uint32_t)port->count) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    uint16_t io_port = (uint16_t)(port->base_port + (uint16_t)offset);
+    uint8_t  value   = (uint8_t)(arg2 & 0xFFu);
+    __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(io_port));
+    kobject_release(obj);
+    return syscall_ok_u64(0);
 }
 
 /*
@@ -1093,6 +1055,140 @@ static uint64_t sys_diag_snapshot(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_err(IRIS_OK);
 }
 
+/* ── Channel seal ─────────────────────────────────────────────────── */
+
+/*
+ * sys_chan_seal(chan_handle) → 0 or iris_error_t
+ *
+ * Requires RIGHT_WRITE on chan_handle.
+ * Explicitly closes the channel (marks it sealed) and wakes all blocked
+ * receivers, which return IRIS_ERR_CLOSED.  Future sends also return
+ * IRIS_ERR_CLOSED.  Already-buffered messages can still be drained.
+ *
+ * The handle itself is NOT consumed; close it with SYS_HANDLE_CLOSE afterwards.
+ * Idempotent: sealing an already-sealed channel returns 0.
+ *
+ * Primary use: svcmgr poisons old service channels before a restart so stale
+ * client handles fail fast instead of silently queuing to a dead endpoint.
+ */
+static uint64_t sys_chan_seal(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject  *obj;
+    iris_rights_t    rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (obj->type != KOBJ_CHANNEL) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(rights, RIGHT_WRITE)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    kchannel_seal((struct KChannel *)obj);
+    kobject_release(obj);
+    return syscall_ok_u64(0);
+}
+
+/* ── Synchronous channel call ─────────────────────────────────────── */
+
+/*
+ * sys_chan_call(req_chan, msg_uptr, reply_chan) → 0 or iris_error_t
+ *
+ * Requires RIGHT_WRITE on req_chan and RIGHT_READ on reply_chan.
+ * Sends *msg_uptr on req_chan, then blocks on reply_chan until a reply
+ * arrives; the reply overwrites *msg_uptr in place.
+ *
+ * The outbound request may NOT carry an attached handle (msg->attached_handle
+ * is forced to HANDLE_INVALID before sending).  The inbound reply MAY carry
+ * an attached handle, which is installed in the caller's handle table and
+ * written into msg->attached_handle on return.
+ *
+ * req_chan and reply_chan are NOT consumed — both handles remain valid after
+ * the call.  This is a convenience wrapper equivalent to:
+ *   SYS_CHAN_SEND(req_chan, msg) + SYS_CHAN_RECV(reply_chan, msg)
+ * but in a single syscall to minimize ring transitions.
+ */
+static uint64_t sys_chan_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /* Validate the user message buffer — read for send, write for recv */
+    if (!user_range_readable(arg1, (uint32_t)sizeof(struct KChanMsg)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!user_range_writable(arg1, (uint32_t)sizeof(struct KChanMsg)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /* Resolve req_chan — requires RIGHT_WRITE */
+    struct KObject  *req_obj;
+    iris_rights_t    req_rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &req_obj, &req_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (req_obj->type != KOBJ_CHANNEL) {
+        kobject_release(req_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(req_rights, RIGHT_WRITE)) {
+        kobject_release(req_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    /* Resolve reply_chan — requires RIGHT_READ */
+    struct KObject  *rep_obj;
+    iris_rights_t    rep_rights;
+    r = handle_table_get_object(&t->process->handle_table,
+                                (handle_id_t)arg2, &rep_obj, &rep_rights);
+    if (r != IRIS_OK) {
+        kobject_release(req_obj);
+        return syscall_err(r);
+    }
+    if (rep_obj->type != KOBJ_CHANNEL) {
+        kobject_release(req_obj);
+        kobject_release(rep_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(rep_rights, RIGHT_READ)) {
+        kobject_release(req_obj);
+        kobject_release(rep_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    /* Copy request from user, clear attached handle (no transfer on request path) */
+    struct KChanMsg msg;
+    if (!copy_from_user_checked(&msg, arg1, (uint32_t)sizeof(msg))) {
+        kobject_release(req_obj);
+        kobject_release(rep_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+    msg.attached_handle = HANDLE_INVALID;
+    msg.attached_rights = RIGHT_NONE;
+
+    /* Send the request — no handle transfer */
+    r = kchannel_send((struct KChannel *)req_obj, &msg);
+    kobject_release(req_obj);
+    if (r != IRIS_OK) {
+        kobject_release(rep_obj);
+        return syscall_err(r);
+    }
+
+    /* Block until a reply arrives, installing any attached handle into our table */
+    r = kchannel_recv_into_process((struct KChannel *)rep_obj, t->process, &msg);
+    kobject_release(rep_obj);
+    if (r != IRIS_OK) return syscall_err(r);
+
+    /* Write the reply back to the user buffer in place */
+    if (!copy_to_user_checked(arg1, &msg, (uint32_t)sizeof(msg)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    return syscall_ok_u64(0);
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
 
                           uint64_t arg1, uint64_t arg2) {
@@ -1101,10 +1197,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_EXIT:   return sys_exit(arg0, arg1, arg2);
         case SYS_GETPID: return sys_getpid(arg0, arg1, arg2);
         case SYS_YIELD:  return sys_yield(arg0, arg1, arg2);
-        case SYS_OPEN:   return sys_open(arg0, arg1, arg2);
-        case SYS_READ:   return sys_read(arg0, arg1, arg2);
-        case SYS_CLOSE:  return sys_close(arg0, arg1, arg2);
-        case SYS_BRK:        return sys_brk(arg0, arg1, arg2);
+        case SYS_BRK:        return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 20 */
         case SYS_SLEEP:      return sys_sleep(arg0, arg1, arg2);
         case SYS_CHAN_CREATE:  return sys_chan_create(arg0, arg1, arg2);
         case SYS_CHAN_SEND:    return sys_chan_send(arg0, arg1, arg2);
@@ -1112,7 +1205,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_HANDLE_CLOSE: return sys_handle_close(arg0, arg1, arg2);
         case SYS_VMO_CREATE:  return sys_vmo_create(arg0, arg1, arg2);
         case SYS_VMO_MAP:     return sys_vmo_map(arg0, arg1, arg2);
-        case SYS_SPAWN:         return sys_spawn(arg0, arg1, arg2);
+        case SYS_VMO_UNMAP:   return sys_vmo_unmap(arg0, arg1, arg2);
+        case SYS_SPAWN:         return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 19 */
         case SYS_SPAWN_SERVICE: return sys_spawn_service(arg0, arg1, arg2);
         case SYS_NOTIFY_CREATE: return sys_notify_create(arg0, arg1, arg2);
         case SYS_NOTIFY_SIGNAL: return sys_notify_signal(arg0, arg1, arg2);
@@ -1120,12 +1214,16 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_HANDLE_DUP:    return sys_handle_dup(arg0, arg1, arg2);
         case SYS_HANDLE_TRANSFER: return sys_handle_transfer(arg0, arg1, arg2);
         case SYS_PROCESS_SELF:    return sys_process_self(arg0, arg1, arg2);
-        case SYS_NS_REGISTER:     return sys_ns_register(arg0, arg1, arg2);
-        case SYS_NS_LOOKUP:       return sys_ns_lookup(arg0, arg1, arg2);
         case SYS_PROCESS_STATUS:  return sys_process_status(arg0, arg1, arg2);
         case SYS_PROCESS_WATCH:   return sys_process_watch(arg0, arg1, arg2);
         case SYS_IRQ_ROUTE_REGISTER: return sys_irq_route_register(arg0, arg1, arg2);
+        case SYS_IOPORT_IN:          return sys_ioport_in(arg0, arg1, arg2);
+        case SYS_IOPORT_OUT:         return sys_ioport_out(arg0, arg1, arg2);
+        case SYS_CHAN_RECV_NB:        return sys_chan_recv_nb(arg0, arg1, arg2);
+        case SYS_PROCESS_KILL:        return sys_process_kill(arg0, arg1, arg2);
         case SYS_DIAG_SNAPSHOT:  return sys_diag_snapshot(arg0, arg1, arg2);
+        case SYS_CHAN_SEAL:       return sys_chan_seal(arg0, arg1, arg2);
+        case SYS_CHAN_CALL:       return sys_chan_call(arg0, arg1, arg2);
         default:
             serial_write("[SYSCALL] unknown syscall=");
             serial_write_dec(num);

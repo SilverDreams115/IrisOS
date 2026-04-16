@@ -236,8 +236,8 @@ void paging_map_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags) {
 int paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags) {
     if (cr3 == 0) return -1;
 
-    /* Deshabilitar interrupciones mientras modificamos page tables ajenas,
-     * manteniendo atomica la secuencia para callers de bootstrap/rollback. */
+    /* Disable interrupts while modifying a foreign page table to keep the
+     * map sequence atomic for bootstrap/rollback callers. */
     uint64_t rflags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
     int rc = paging_map_root(cr3, virt, phys, flags);
@@ -277,6 +277,7 @@ void paging_unmap_in(uint64_t cr3, uint64_t virt) {
     uint64_t *pt = walk_pt(cr3, virt);
     if (!pt) return;
     pt[PT_IDX(virt)] = 0;
+    __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
 }
 
 void paging_write_u64_in(uint64_t cr3, uint64_t virt, uint64_t value) {

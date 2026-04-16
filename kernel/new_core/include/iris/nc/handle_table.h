@@ -16,14 +16,14 @@ typedef struct {
 } HandleTable;
 
 /*
- * Invariantes:
- *   - HANDLE_INVALID nunca asignado
- *   - gen[slot] >= 1 para slots usados al menos una vez
- *   - gen[slot] salta 0 en wrap
- *   - handle_table_get_object retorna referencia fuerte (retenida)
- *   - Toda operación toma table->lock internamente
- *   - HANDLE_TABLE_MAX es el techo absoluto — sin crecimiento
- *   - handle_table_close_all es la única forma de vaciado masivo
+ * Invariants:
+ *   - HANDLE_INVALID is never assigned to a live slot
+ *   - gen[slot] >= 1 for slots that have been used at least once
+ *   - gen[slot] wraps by skipping 0
+ *   - handle_table_get_object returns a strong (retained) reference
+ *   - Every operation acquires table->lock internally
+ *   - HANDLE_TABLE_MAX is the absolute ceiling — no dynamic growth
+ *   - handle_table_close_all is the only bulk-close path
  */
 
 void         handle_table_init(HandleTable *ht);

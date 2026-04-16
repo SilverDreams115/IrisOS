@@ -27,23 +27,22 @@ static inline uint32_t handle_id_gen(handle_id_t id) {
     return (uint32_t)(id >> HANDLE_GEN_SHIFT);
 }
 static inline handle_id_t handle_id_make(uint32_t slot, uint32_t gen) {
-    /* generation 0 prohibida — si wrap, salta a 1 */
+    /* generation 0 is forbidden — wrap skips to 1 */
     if (gen == 0u) gen = 1u;
     return (handle_id_t)((gen << HANDLE_GEN_SHIFT) | (slot & HANDLE_SLOT_MASK));
 }
 
 #ifdef __KERNEL__
 /*
- * HandleEntry: entrada interna del kernel.
- * Vive exclusivamente dentro de una HandleTable
- * o en tránsito por Channel (lote 1.1).
- * El id NO vive aquí — es el token de la tabla.
+ * HandleEntry: kernel-internal handle slot.
+ * Lives exclusively inside a HandleTable or in transit through a KChannel.
+ * The handle_id_t token is NOT stored here — it is the table's address space.
  *
- * Invariantes:
- *   - object != NULL para entrada en uso
- *   - rights inmutables tras init
- *   - gen coincide con gen de la HandleTable para ese slot
- *   - Solo HandleTable crea y destruye HandleEntry
+ * Invariants:
+ *   - object != NULL for a slot that is in use
+ *   - rights are immutable after initialisation
+ *   - gen matches the generation counter of the HandleTable for this slot
+ *   - Only HandleTable creates and destroys HandleEntry instances
  */
 struct HandleEntry {
     struct KObject *object;

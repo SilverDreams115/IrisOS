@@ -32,6 +32,8 @@
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kchannel.h>
 #include <iris/nc/kbootcap.h>
+#include <iris/nc/kirqcap.h>
+#include <iris/nc/kioport.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
@@ -133,6 +135,109 @@ void svcmgr_bootstrap_init(void) {
     }
 
     /*
+     * Deliver one KIrqCap capability per catalog entry that requires IRQ routing.
+     * Each message uses SVCMGR_BOOTSTRAP_KIND_IRQ_CAP so svcmgr can store the
+     * handle in its irq_caps[] table and later pass it to SYS_IRQ_ROUTE_REGISTER.
+     */
+    {
+        uint32_t ci;
+        for (ci = 0; ci < iris_service_catalog_count(); ci++) {
+            const struct iris_service_catalog_entry *e = iris_service_catalog_at(ci);
+            struct KIrqCap *irqcap;
+            struct KChanMsg irq_msg;
+            uint32_t j;
+
+            if (!e || e->irq_num == 0xFFu) continue;
+
+            irqcap = kirqcap_alloc(e->irq_num);
+            if (!irqcap) {
+                serial_write("[IRIS][SVCMGR] WARN: kirqcap alloc failed for irq=");
+                serial_write_dec((uint64_t)e->irq_num);
+                serial_write("\n");
+                continue;
+            }
+
+            for (j = 0; j < sizeof(irq_msg); j++) ((uint8_t *)&irq_msg)[j] = 0;
+            irq_msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+            svcmgr_proto_write_u32(&irq_msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                                   SVCMGR_BOOTSTRAP_KIND_IRQ_CAP);
+            irq_msg.data[SVCMGR_BOOTSTRAP_OFF_IRQ_NUM] = e->irq_num;
+            irq_msg.data_len = SVCMGR_BOOTSTRAP_IRQ_CAP_MSG_LEN;
+            irq_msg.attached_handle = HANDLE_INVALID;
+            irq_msg.attached_rights = RIGHT_ROUTE;
+
+            kobject_retain(&irqcap->base);
+            kobject_active_retain(&irqcap->base);
+            if (kchannel_send_attached(ch, &irq_msg, &irqcap->base, RIGHT_ROUTE) != IRIS_OK) {
+                serial_write("[IRIS][SVCMGR] WARN: kirqcap bootstrap send failed\n");
+                kobject_active_release(&irqcap->base);
+                kobject_release(&irqcap->base);
+                kirqcap_free(irqcap);
+                continue;
+            }
+            kirqcap_free(irqcap);
+
+            serial_write("[IRIS][SVCMGR] irqcap sent for irq=");
+            serial_write_dec((uint64_t)e->irq_num);
+            serial_write("\n");
+        }
+    }
+
+    /*
+     * Deliver one KIoPort capability per catalog entry that requires I/O port access.
+     * Each message uses SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP so svcmgr can store the
+     * handle in its ioport_caps[] table and later forward it to the child service.
+     */
+    {
+        uint32_t ci;
+        for (ci = 0; ci < iris_service_catalog_count(); ci++) {
+            const struct iris_service_catalog_entry *e = iris_service_catalog_at(ci);
+            struct KIoPort *ioport;
+            struct KChanMsg io_msg;
+            uint32_t j;
+
+            if (!e || e->ioport_count == 0u) continue;
+
+            ioport = kioport_alloc((uint16_t)e->ioport_base, (uint16_t)e->ioport_count);
+            if (!ioport) {
+                serial_write("[IRIS][SVCMGR] WARN: kioport alloc failed for svc=");
+                serial_write_dec((uint64_t)e->service_id);
+                serial_write("\n");
+                continue;
+            }
+
+            for (j = 0; j < sizeof(io_msg); j++) ((uint8_t *)&io_msg)[j] = 0;
+            io_msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+            svcmgr_proto_write_u32(&io_msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                                   SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP);
+            io_msg.data[SVCMGR_BOOTSTRAP_OFF_IOPORT_SVC] = (uint8_t)e->service_id;
+            io_msg.data_len = SVCMGR_BOOTSTRAP_IOPORT_CAP_MSG_LEN;
+            io_msg.attached_handle = HANDLE_INVALID;
+            io_msg.attached_rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+
+            kobject_retain(&ioport->base);
+            kobject_active_retain(&ioport->base);
+            if (kchannel_send_attached(ch, &io_msg, &ioport->base,
+                                       RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER) != IRIS_OK) {
+                serial_write("[IRIS][SVCMGR] WARN: kioport bootstrap send failed\n");
+                kobject_active_release(&ioport->base);
+                kobject_release(&ioport->base);
+                kioport_free(ioport);
+                continue;
+            }
+            kioport_free(ioport);
+
+            serial_write("[IRIS][SVCMGR] ioport cap sent for svc=");
+            serial_write_dec((uint64_t)e->service_id);
+            serial_write(" base=");
+            serial_write_hex((uint64_t)e->ioport_base);
+            serial_write(" count=");
+            serial_write_dec((uint64_t)e->ioport_count);
+            serial_write("\n");
+        }
+    }
+
+    /*
      * Retain the kernel-side reference for bootstrap client installation
      * and optional selftest traffic.
      * kobject_retain was already done by handle_table_insert; we keep
@@ -152,28 +257,6 @@ void svcmgr_bootstrap_init(void) {
      * explicit bootstrap handle delivery, not through kernel nameserver
      * publication of "svcmgr".
      */
-
-#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
-    {
-        struct KChanMsg msg;
-        uint32_t i;
-        extern void phase3_exit_child(void);
-        uint64_t probe_entry = (uint64_t)(uintptr_t)phase3_exit_child;
-
-        for (i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
-        msg.type = SVCMGR_MSG_PHASE3_PROBE;
-        for (i = 0; i < 8; i++)
-            msg.data[SVCMGR_P3_OFF_ENTRY + i] = ((uint8_t *)&probe_entry)[i];
-        msg.data_len = SVCMGR_P3_MSG_LEN;
-
-        iris_error_t sr = kchannel_send(svcmgr_bootstrap_ch, &msg);
-        if (sr == IRIS_OK) {
-            serial_write("[IRIS][SVCMGR] phase3 probe queued\n");
-        } else {
-            serial_write("[IRIS][SVCMGR] WARN: phase3 probe send failed\n");
-        }
-    }
-#endif
 
     kobject_release(&ch->base);  /* release local alloc ref; kernel ref above + table ref remain */
 }

@@ -21,6 +21,8 @@ typedef enum {
     KOBJ_NOTIFICATION,
     KOBJ_BOOTSTRAP_CAP,
     KOBJ_VMO,
+    KOBJ_IRQ_CAP,   /* authorizes routing a specific hardware IRQ line */
+    KOBJ_IOPORT,    /* authorizes IN/OUT access to a contiguous I/O port range */
 } kobject_type_t;
 
 struct KObject;
@@ -32,20 +34,20 @@ struct KObjectOps {
 
 struct KObject {
     kobject_type_t            type;
-    _Atomic uint32_t          refcount;  /* lifecycle — no estado */
-    _Atomic uint32_t          active_refs; /* handles/global published refs */
-    spinlock_t                lock;      /* estado mutable — no lifecycle */
-    const struct KObjectOps  *ops;       /* != NULL para objeto inicializado */
+    _Atomic uint32_t          refcount;    /* lifecycle ref — not visible to callers */
+    _Atomic uint32_t          active_refs; /* published handle/global refs */
+    spinlock_t                lock;        /* guards mutable state — separate from lifecycle */
+    const struct KObjectOps  *ops;         /* non-NULL for every initialized object */
 };
 
 /*
- * Invariantes:
- *   - ops != NULL para todo KObject inicializado
- *   - ops->destroy() es la única ruta de destrucción real
- *   - refcount >= 1 mientras exista HandleEntry apuntando al objeto
- *   - ops->destroy() se llama exactamente una vez, cuando refcount llega a 0
- *   - ops->destroy() nunca toca refcount
- *   - refcount y lock protegen cosas distintas — nunca se usan para lo mismo
+ * Invariants:
+ *   - ops != NULL for every initialized KObject
+ *   - ops->destroy() is the only real destruction path
+ *   - refcount >= 1 while any HandleEntry points to this object
+ *   - ops->destroy() is called exactly once, when refcount reaches 0
+ *   - ops->destroy() must not touch refcount
+ *   - refcount and lock protect different things — never used interchangeably
  */
 
 void kobject_init(struct KObject *obj, kobject_type_t type,

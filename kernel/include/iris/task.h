@@ -75,4 +75,16 @@ void         task_exit_current(void);
 void         task_yield(void);
 struct task *task_current(void);
 
+/*
+ * task_kill_external — forcibly terminate a task that is NOT the current task.
+ *
+ * Safe to call only when the target is blocked or ready (not running).
+ * Because the caller is executing on a different CR3, address-space reap
+ * is performed immediately rather than via the pending_reap deferred path.
+ *
+ * Idempotent: if t is already TASK_DEAD this is a no-op.
+ * Must NOT be called with t == task_current(); use task_exit_current() instead.
+ */
+void task_kill_external(struct task *t);
+
 #endif

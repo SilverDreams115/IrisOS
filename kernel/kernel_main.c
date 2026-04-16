@@ -1,6 +1,5 @@
 #include <stdint.h>
 #include <iris/serial.h>
-#include <iris/kernel.h>
 #include <iris/boot_info.h>
 #include <iris/pmm.h>
 #include <iris/paging.h>
@@ -11,18 +10,15 @@
 #include <iris/task.h>
 #include <iris/tss.h>
 #include <iris/syscall.h>
-#include <iris/keyboard.h>
 #include <iris/fb.h>
 #include <iris/irq_routing.h>
+#include <iris/initrd.h>
+#include <iris/elf_loader.h>
 #ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
 #include <iris/phase3_selftest.h>
 #endif
 /* Transitional bootstrap services: real current boot path. */
 #include <iris/svcmgr_bootstrap.h>
-/* Legacy demo island: opt-in only, never part of the default boot path. */
-#ifdef IRIS_ENABLE_IPC_DEMO
-#include <iris/ipc_demo.h>
-#endif
 
 #define FB_ORANGE 0x00FF8800
 
@@ -96,9 +92,6 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     serial_write("[IRIS][VFS] kernel backend retired from healthy boot\n");
 
-    serial_write("[IRIS][KBD] initializing...\n");
-    kbd_init();
-
     /* ── 6. Kernel services ─────────────────────────────────────── */
     serial_write("[IRIS][SYSCALL] initializing...\n");
     syscall_init();
@@ -114,38 +107,51 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     /* ── 7. Scheduler core ──────────────────────────────────────── */
     serial_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
-#ifdef IRIS_ENABLE_IPC_DEMO
-    /* Opt-in scaffolding only.  The default architecture is svcmgr +
-     * ring-3 services; this legacy ring-0 producer/consumer demo is
-     * available only with ENABLE_LEGACY_IPC_DEMO=1. */
-    ipc_demo_start();
-#endif
-
     /* ── 8. Transitional bootstrap: service wiring ──────────────── */
     svcmgr_bootstrap_init(); /* spawn svcmgr and retain the root bootstrap channel */
 
     /* ── 9. First user task ─────────────────────────────────────── */
     serial_write("[IRIS][USER] preparing init process...\n");
 #ifndef IRIS_ENABLE_RUNTIME_SELFTESTS
-    extern void user_init(void);
-    struct task *ut = task_spawn_user((uint64_t)(uintptr_t)user_init, 0);
-    if (ut) {
-        handle_id_t sm_bootstrap_h = HANDLE_INVALID;
-        iris_error_t br = svcmgr_bootstrap_attach_client(ut, RIGHT_WRITE, &sm_bootstrap_h);
-        if (br != IRIS_OK) {
-            serial_write("[IRIS][USER] WARN: svcmgr bootstrap attach failed\n");
-            task_abort_spawned_user(ut);
-            ut = 0;
+    /* Phase 21: spawn init as an ELF service from the initrd. */
+    {
+        const void *init_elf = 0;
+        uint32_t    init_sz  = 0;
+        struct task *ut = 0;
+
+        if (!initrd_find("init", &init_elf, &init_sz)) {
+            serial_write("[IRIS][USER] FATAL: init not found in initrd\n");
         } else {
-            task_set_bootstrap_arg0(ut, (uint64_t)sm_bootstrap_h);
+            iris_elf_image_t img;
+            iris_error_t lerr = elf_loader_load(init_elf, init_sz, &img);
+            if (lerr != IRIS_OK) {
+                serial_write("[IRIS][USER] FATAL: elf_loader_load(init) failed\n");
+            } else {
+                handle_id_t sm_bootstrap_h = HANDLE_INVALID;
+                ut = task_spawn_elf(&img, 0);
+                if (!ut) {
+                    serial_write("[IRIS][USER] FATAL: task_spawn_elf(init) failed\n");
+                    elf_loader_free_image(&img);
+                } else {
+                    iris_error_t br = svcmgr_bootstrap_attach_client(ut, RIGHT_WRITE,
+                                                                      &sm_bootstrap_h);
+                    if (br != IRIS_OK) {
+                        serial_write("[IRIS][USER] WARN: svcmgr bootstrap attach failed\n");
+                        task_abort_spawned_user(ut);
+                        ut = 0;
+                    } else {
+                        task_set_bootstrap_arg0(ut, (uint64_t)sm_bootstrap_h);
+                    }
+                }
+            }
         }
-    }
-    if (ut) {
-        serial_write("[IRIS][USER] init task created, id=");
-        serial_write_dec(ut->id);
-        serial_write("\n");
-    } else {
-        serial_write("[IRIS][USER] WARN: could not create user task\n");
+        if (ut) {
+            serial_write("[IRIS][USER] init task created (ELF), id=");
+            serial_write_dec(ut->id);
+            serial_write("\n");
+        } else {
+            serial_write("[IRIS][USER] WARN: could not create init task\n");
+        }
     }
 #else
     {

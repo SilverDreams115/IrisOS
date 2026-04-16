@@ -99,6 +99,14 @@ void kchannel_free(struct KChannel *ch) {
     kobject_release(&ch->base);
 }
 
+void kchannel_seal(struct KChannel *ch) {
+    if (!ch) return;
+    spinlock_lock(&ch->base.lock);
+    ch->closed = 1;
+    kchannel_waiters_wake_all(ch);
+    spinlock_unlock(&ch->base.lock);
+}
+
 static void msg_copy(struct KChanMsg *dst, const struct KChanMsg *src) {
     const uint8_t *s = (const uint8_t *)src;
     uint8_t       *d = (uint8_t *)dst;

@@ -22,7 +22,7 @@ static struct task *task_list_head = 0;
 static struct task *pending_reap_task = 0;
 static uint32_t next_id = 0;
 
-/* RSP guardado por tarea */
+/* Per-task saved kernel RSP */
 static uint64_t task_rsp[TASK_MAX];
 static uint64_t kernel_cr3 = 0;
 
@@ -33,7 +33,7 @@ static uint64_t kernel_cr3 = 0;
  * This is a small timer-driven scheduler, not cooperative-only anymore. */
 static volatile uint64_t scheduler_ticks = 0;
 
-/* tarea idle — corre cuando no hay nada más */
+/* Idle task — runs when no other task is runnable */
 static void idle_task(void) {
     for (;;) __asm__ volatile ("hlt");
 }
@@ -499,6 +499,31 @@ struct task *task_current(void) {
     return current_task;
 }
 
+void task_kill_external(struct task *t) {
+    if (!t || t == current_task) return;
+    if (t->state == TASK_DEAD) return;  /* idempotent */
+
+    struct KProcess *proc = t->process;
+    if (proc) {
+        kprocess_teardown(proc, t);
+    }
+
+    free_user_stack_pages(t);
+
+    /* Caller runs on a different CR3 from the target, so address-space reap
+     * is safe here without going through the pending_reap deferred path. */
+    if (proc) {
+        kprocess_reap_address_space(proc);
+    }
+
+    unlink_task(t);
+    task_reset_slot(t);
+
+    if (proc) {
+        kprocess_free(proc);  /* release kernel's creation reference */
+    }
+}
+
 void task_exit_current(void) {
     struct task *t = task_current();
     if (!t) return;
@@ -524,7 +549,7 @@ void task_yield(void) {
     struct task *candidate = old->next;
     struct task *chosen = 0;
 
-    /* Preferir cualquier tarea runnable que NO sea idle */
+    /* Prefer any runnable task that is NOT the idle task */
     for (int i = 0; i < TASK_MAX; i++) {
         if (candidate != idle && task_is_runnable(candidate->state)) {
             chosen = candidate;
@@ -533,7 +558,7 @@ void task_yield(void) {
         candidate = candidate->next;
     }
 
-    /* Si no hay ninguna tarea normal runnable, usar idle */
+    /* No normal runnable task found; fall back to idle */
     if (!chosen) {
         if (idle != old && task_is_runnable(idle->state)) {
             chosen = idle;

@@ -35,6 +35,8 @@ struct iris_service_catalog_entry {
     iris_rights_t  child_reply_rights;
     iris_rights_t  client_service_rights;
     iris_rights_t  client_reply_rights;
+    uint16_t       ioport_base;   /* base I/O port (0 = none) */
+    uint16_t       ioport_count;  /* number of consecutive ports (0 = none) */
 };
 
 static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
@@ -51,6 +53,8 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .child_reply_rights = RIGHT_WRITE,
         .client_service_rights = RIGHT_WRITE,
         .client_reply_rights = RIGHT_READ,
+        .ioport_base = 0x60u,
+        .ioport_count = 5u,
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_VFS,
@@ -65,6 +69,8 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .child_reply_rights = RIGHT_WRITE,
         .client_service_rights = RIGHT_WRITE | RIGHT_DUPLICATE,
         .client_reply_rights = RIGHT_READ | RIGHT_DUPLICATE,
+        .ioport_base = 0u,
+        .ioport_count = 0u,
     },
 };
 
