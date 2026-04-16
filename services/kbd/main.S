@@ -31,6 +31,7 @@ _start:
     movq  $0, %r12                     /* reply channel handle (from svcmgr) */
     movq  $0, %r13                     /* service/IRQ channel handle          */
     movq  $0, %r14                     /* KIoPort handle (from svcmgr)        */
+    movq  $0, %r15                     /* subscriber channel handle (0 = none) */
 
     subq  $128, %rsp
     andq  $~0xFULL, %rsp
@@ -185,6 +186,8 @@ _start:
     je    .kbd_hello
     cmpl  $KBD_MSG_STATUS,       0(%rsp)
     je    .kbd_status
+    cmpl  $KBD_MSG_SUBSCRIBE,    0(%rsp)
+    je    .kbd_subscribe
     cmpl  $KBD_MSG_IRQ_SCANCODE, 0(%rsp)
     jne   .kbd_recv                    /* unknown type: silently ignore */
 
@@ -236,6 +239,36 @@ _start:
     movq  $0,    %rsi
     movq  $0,    %rdx
     syscall
+
+    /* Forward scancode to subscriber if one is registered */
+    testq %r15,  %r15
+    jz    .kbd_recv
+    movzbl 8(%rsp), %r11d              /* reload raw scancode from recv buffer  */
+    movq  $0,  0(%rsp)
+    movq  $0,  8(%rsp)
+    movq  $0, 16(%rsp)
+    movq  $0, 24(%rsp)
+    movq  $0, 32(%rsp)
+    movq  $0, 40(%rsp)
+    movq  $0, 48(%rsp)
+    movq  $0, 56(%rsp)
+    movq  $0, 64(%rsp)
+    movq  $0, 72(%rsp)
+    movq  $0, 80(%rsp)
+    movl  $KBD_MSG_SCANCODE_EVENT,     0(%rsp)   /* type                      */
+    movb  %r11b,                       8(%rsp)   /* data[0] = raw scancode    */
+    movl  $KBD_MSG_SCANCODE_EVENT_LEN, 72(%rsp)  /* data_len = 1              */
+    movq  $13,   %rax                  /* SYS_CHAN_SEND */
+    movq  %r15,  %rdi
+    movq  %rsp,  %rsi
+    movq  $0,    %rdx
+    syscall
+    testq %rax,  %rax
+    jz    .kbd_recv                    /* send OK: loop                        */
+    movq  $15,   %rax                  /* SYS_HANDLE_CLOSE: subscriber gone    */
+    movq  %r15,  %rdi
+    syscall
+    movq  $0,    %r15
     jmp   .kbd_recv
 
 /* ── KBD_MSG_HELLO: liveness probe ──────────────────────────────────────── */
@@ -358,6 +391,48 @@ _start:
 
 .kbd_status_done:
     movq  $8,    %rax                  /* SYS_SLEEP */
+    movq  $1,    %rdi
+    syscall
+    jmp   .kbd_recv
+
+/* ── KBD_MSG_SUBSCRIBE: register a scancode event subscriber ────────────────
+ * attached_handle (76(%rsp)): write end of a KChannel the client reads from.
+ * A new SUBSCRIBE replaces the previous subscriber (old handle closed first).
+ * handle = 0 means unsubscribe: close existing subscriber and reply OK.
+ * Reply is always KBD_MSG_SUBSCRIBE_REPLY on the shared reply channel (r12).
+ */
+.kbd_subscribe:
+    movl  76(%rsp), %r11d               /* incoming subscriber handle          */
+    movl  %r11d,   88(%rsp)             /* stash in scratch slot (survives syscall) */
+    testq %r15, %r15
+    jz    .kbd_subscribe_store
+    movq  $15,   %rax                   /* SYS_HANDLE_CLOSE: close old sub     */
+    movq  %r15,  %rdi
+    syscall
+    movq  $0,    %r15
+.kbd_subscribe_store:
+    movl  88(%rsp), %r11d
+    movq  %r11,    %r15                 /* r15 = new subscriber (0 = none)     */
+    movq  $0,  0(%rsp)
+    movq  $0,  8(%rsp)
+    movq  $0, 16(%rsp)
+    movq  $0, 24(%rsp)
+    movq  $0, 32(%rsp)
+    movq  $0, 40(%rsp)
+    movq  $0, 48(%rsp)
+    movq  $0, 56(%rsp)
+    movq  $0, 64(%rsp)
+    movq  $0, 72(%rsp)
+    movq  $0, 80(%rsp)
+    movl  $KBD_MSG_SUBSCRIBE_REPLY,           0(%rsp)  /* type                */
+    movl  $0,                                 8(%rsp)  /* err = 0             */
+    movl  $KBD_MSG_SUBSCRIBE_REPLY_LEN,      72(%rsp)  /* data_len = 4        */
+    movq  $13,   %rax                   /* SYS_CHAN_SEND */
+    movq  %r12,  %rdi
+    movq  %rsp,  %rsi
+    movq  $0,    %rdx
+    syscall
+    movq  $8,    %rax                   /* SYS_SLEEP */
     movq  $1,    %rdi
     syscall
     jmp   .kbd_recv

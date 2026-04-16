@@ -384,6 +384,7 @@ static uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * Duplicates src_handle into a new handle in the caller's own table.
  * new_rights must be a subset of the caller's existing rights on src_handle.
  * Pass RIGHT_SAME_RIGHTS to keep the same rights (rights_reduce handles this).
+ * The reduced rights set must not collapse to RIGHT_NONE.
  * Requires RIGHT_DUPLICATE on the source handle.
  */
 static uint64_t sys_handle_dup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
@@ -403,6 +404,10 @@ static uint64_t sys_handle_dup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     iris_rights_t new_rights = rights_reduce(rights, (iris_rights_t)arg1);
+    if (new_rights == RIGHT_NONE) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
     handle_id_t   new_h      = handle_table_insert(&t->process->handle_table, obj, new_rights);
     kobject_release(obj);
 
@@ -619,6 +624,7 @@ static uint64_t sys_spawn_service(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * Requires RIGHT_TRANSFER on src_handle.
  * Requires RIGHT_MANAGE on dest_proc_handle.
  * new_rights must be a subset of src rights (or RIGHT_SAME_RIGHTS).
+ * The reduced rights set must not collapse to RIGHT_NONE.
  * Consumes (closes) src_handle in caller's table on success.
  * Returns new handle_id in dest's table, or iris_error_t cast to uint64_t on failure.
  */
@@ -659,6 +665,11 @@ static uint64_t sys_handle_transfer(uint64_t arg0, uint64_t arg1, uint64_t arg2)
     }
 
     iris_rights_t new_rights = rights_reduce(src_rights, (iris_rights_t)arg2);
+    if (new_rights == RIGHT_NONE) {
+        kobject_release(src_obj);
+        kobject_release(dest_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
     handle_id_t   new_h      = handle_table_insert(&dest_proc->handle_table,
                                                    src_obj, new_rights);
     kobject_release(src_obj);

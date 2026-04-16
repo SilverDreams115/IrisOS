@@ -65,12 +65,14 @@
 #define SYS_HANDLE_DUP      22  /* (src_handle, new_rights) → new_handle_id or negative iris_error_t
                                  *   Requires RIGHT_DUPLICATE on src_handle.
                                  *   new_rights must be a subset of existing rights.
+                                 *   RIGHT_NONE is rejected.
                                  *   Pass RIGHT_SAME_RIGHTS to keep the same rights. */
 #define SYS_HANDLE_TRANSFER 23  /* (src_handle, dest_proc_handle, new_rights) → new_handle_id
                                  *   or negative iris_error_t.
                                  *   Requires RIGHT_TRANSFER on src_handle.
                                  *   Requires RIGHT_MANAGE on dest_proc_handle.
-                                 *   Consumes src_handle. new_rights ⊆ src rights. */
+                                 *   Consumes src_handle. new_rights ⊆ src rights.
+                                 *   RIGHT_NONE is rejected. */
 #define SYS_PROCESS_WATCH   29  /* (proc_handle, chan_handle, cookie) → 0 or negative iris_error_t
                                  *   Registers one process-exit watch for proc_handle.
                                  *   On death, the kernel sends PROC_EVENT_MSG_EXIT to

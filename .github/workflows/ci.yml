@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - silver
+      - staging
+      - collab
+  pull_request:
+
+jobs:
+  build-and-check:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install toolchain dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils \
+            gcc \
+            gnu-efi \
+            make
+
+      - name: Clean build tree
+        run: make clean
+
+      - name: Build IRIS
+        run: make
+
+      - name: Inspect kernel ELF
+        run: make check
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iris-build-artifacts
+          path: |
+            build/kernel.elf
+            build/efi_root/EFI/BOOT/BOOTX64.EFI
+            build/efi_root/EFI/IRIS/KERNEL.ELF
+
+  smoke-selftests-build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install toolchain dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils \
+            gcc \
+            gnu-efi \
+            make \
+            ovmf \
+            qemu-system-x86
+
+      - name: Compile smoke matrix
+        run: make smoke
+
+  runtime-smoke:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install toolchain and runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils \
+            gcc \
+            gnu-efi \
+            make \
+            ovmf \
+            qemu-system-x86 \
+            coreutils
+
+      - name: Run headless runtime smoke
+        run: make smoke-runtime
+
+      - name: Upload runtime serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iris-runtime-log
+          path: build/qemu-headless.log
