@@ -104,6 +104,7 @@ static int phase3_channel_selftest(void) {
     struct KNotification *notif = 0;
     struct KChanMsg msg;
     struct task fake_waiters[2];
+    struct task cancelled_waiter;
     handle_id_t close_h = HANDLE_INVALID;
     struct KObject *obj = 0;
     iris_rights_t rights = RIGHT_NONE;
@@ -172,6 +173,17 @@ static int phase3_channel_selftest(void) {
     if (kchannel_try_recv(ch, &msg) != IRIS_ERR_CLOSED) goto out;
     if (kchannel_send(ch, &msg) != IRIS_ERR_CLOSED) goto out;
 
+    ch->closed = 0;
+    for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) ch->waiters[i] = 0;
+    ch->waiter_count = 0;
+    for (uint32_t i = 0; i < sizeof(cancelled_waiter); i++) ((uint8_t *)&cancelled_waiter)[i] = 0;
+    cancelled_waiter.state = TASK_BLOCKED_IPC;
+    ch->waiters[3] = &cancelled_waiter;
+    ch->waiter_count = 1;
+    kchannel_cancel_waiter(&cancelled_waiter);
+    if (ch->waiters[3] != 0) goto out;
+    if (ch->waiter_count != 0) goto out;
+
     ok = 1;
 out:
     if (obj) kobject_release(obj);
@@ -185,6 +197,7 @@ out:
 static int phase3_notification_selftest(void) {
     struct KNotification *n = knotification_alloc();
     struct task fake_waiter;
+    struct task cancelled_waiter;
     uint64_t bits = 0;
     int ok = 0;
 
@@ -196,13 +209,22 @@ static int phase3_notification_selftest(void) {
 
     for (uint32_t i = 0; i < sizeof(fake_waiter); i++) ((uint8_t *)&fake_waiter)[i] = 0;
     fake_waiter.state = TASK_BLOCKED_IRQ;
-    n->waiter = &fake_waiter;
+    n->waiters[0] = &fake_waiter;
+    n->waiter_count = 1;
     kobject_active_retain(&n->base);
     kobject_active_release(&n->base);
     if (!n->closed) goto out;
     if (fake_waiter.state != TASK_READY) goto out;
-    if (n->waiter != 0) goto out;
+    if (n->waiters[0] != 0) goto out;
     if (knotification_wait(n, &bits) != IRIS_ERR_CLOSED) goto out;
+
+    n->closed = 0;
+    for (uint32_t i = 0; i < sizeof(cancelled_waiter); i++) ((uint8_t *)&cancelled_waiter)[i] = 0;
+    cancelled_waiter.state = TASK_BLOCKED_IRQ;
+    n->waiters[0] = &cancelled_waiter;
+    n->waiter_count = 1;
+    knotification_cancel_waiter(&cancelled_waiter);
+    if (n->waiters[0] != 0) goto out;
 
     ok = 1;
 out:

@@ -4,6 +4,8 @@
 #include <iris/tss.h>
 #include <iris/paging.h>
 #include <iris/syscall.h>
+#include <iris/nc/kchannel.h>
+#include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
 #include <iris/elf_loader.h>
 #include <stdint.h>
@@ -81,6 +83,16 @@ static void unlink_task(struct task *t) {
     } while (pred && pred != task_list_head);
 
     /* t not found in list — no-op (safe, no corruption). */
+}
+
+static void task_cancel_blocked_waits(struct task *t) {
+    if (!t) return;
+
+    /* Teardown must remove blocked wait registrations before the task slot is
+     * reset; otherwise KChannel/KNotification can retain stale task pointers
+     * outside the process handle table lifecycle. */
+    kchannel_cancel_waiter(t);
+    knotification_cancel_waiter(t);
 }
 
 static void reap_dead_task_off_cpu(struct task *t) {
@@ -478,6 +490,7 @@ void task_abort_spawned_user(struct task *t) {
         kprocess_teardown(proc, t);
     }
 
+    task_cancel_blocked_waits(t);
     free_user_stack_pages(t);
     if (proc) {
         kprocess_reap_address_space(proc);
@@ -508,6 +521,7 @@ void task_kill_external(struct task *t) {
         kprocess_teardown(proc, t);
     }
 
+    task_cancel_blocked_waits(t);
     free_user_stack_pages(t);
 
     /* Caller runs on a different CR3 from the target, so address-space reap
@@ -535,6 +549,7 @@ void task_exit_current(void) {
         kprocess_teardown(proc, t);
     }
 
+    task_cancel_blocked_waits(t);
     free_user_stack_pages(t);
     t->state = TASK_DEAD;
 

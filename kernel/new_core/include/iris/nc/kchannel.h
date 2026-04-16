@@ -81,6 +81,7 @@ void             kchannel_free      (struct KChannel *ch);
  * normal handle lifecycle (kobject_active_release → kobject_release).
  */
 void             kchannel_seal      (struct KChannel *ch);
+void             kchannel_cancel_waiter(struct task *t);
 
 iris_error_t     kchannel_send      (struct KChannel *ch, const struct KChanMsg *msg);
 iris_error_t     kchannel_send_attached(struct KChannel *ch, const struct KChanMsg *msg,
@@ -92,6 +93,11 @@ iris_error_t     kchannel_recv_into_process(struct KChannel *ch, struct KProcess
 iris_error_t     kchannel_try_recv_into_process(struct KChannel *ch, struct KProcess *proc,
                                                 struct KChanMsg *out);
 uint32_t         kchannel_live_count(void);
+
+/* Multi-channel wait helpers used by SYS_WAIT_ANY */
+int          kchannel_is_readable       (struct KChannel *ch);
+iris_error_t kchannel_waiters_add_checked(struct KChannel *ch, struct task *t);
+void         kchannel_waiters_remove_task(struct KChannel *ch, struct task *t);
 #endif /* __KERNEL__ */
 
 #endif /* IRIS_NC_KCHANNEL_H */

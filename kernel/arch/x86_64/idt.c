@@ -113,6 +113,13 @@ static void panic_hex(uint64_t v) {
     buf[i] = 0;
     panic_write(buf);
 }
+static void panic_dec(uint32_t v) {
+    char buf[12]; int i = 11;
+    buf[i] = 0;
+    if (v == 0) { buf[--i] = '0'; }
+    else { while (v) { buf[--i] = (char)('0' + v % 10); v /= 10; } }
+    panic_write(buf + i);
+}
 
 void isr_handler(struct full_frame *frame) {
     if (frame->vector == 32) {
@@ -145,7 +152,33 @@ void isr_handler(struct full_frame *frame) {
     }
 
     if (frame->vector < 32) {
-        /* excepción CPU */
+        /* Detect origin: ring-3 user fault vs ring-0 kernel fault.
+         * Double Fault (#DF=8), NMI (2), and Machine Check (18) are always
+         * fatal regardless of CPL — they indicate unrecoverable hardware or
+         * kernel state. All other exceptions from ring-3 kill only the
+         * faulting task and let the scheduler continue. */
+        int from_ring3 = (frame->cs & 3) == 3;
+        int always_fatal = (frame->vector == 2 ||
+                            frame->vector == 8 ||
+                            frame->vector == 18);
+
+        if (from_ring3 && !always_fatal) {
+            struct task *ct = task_current();
+            panic_write("[IRIS][FAULT] userland exception: ");
+            panic_write(exception_names[frame->vector]);
+            panic_write(" task=");
+            panic_dec(ct ? ct->id : 0xFFFFFFFFu);
+            panic_write(" rip="); panic_hex(frame->rip);
+            if (frame->vector == 14) {
+                panic_write(" cr2="); panic_hex(read_cr2());
+            }
+            panic_write(" err="); panic_hex(frame->error_code);
+            panic_write("\n");
+            task_exit_current();
+            /* unreachable — task_exit_current() calls task_yield() */
+        }
+
+        /* Kernel exception or always-fatal: halt the machine. */
         panic_write("\n====================================\n");
         panic_write("[IRIS][EXCEPTION] ");
         panic_write(exception_names[frame->vector]);
