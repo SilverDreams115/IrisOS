@@ -70,7 +70,6 @@ struct KProcess *kprocess_alloc(void) {
             for (uint32_t j = 0; j < sizeof(*p); j++) raw[j] = 0;
             kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
             handle_table_init(&p->handle_table);
-            p->brk = USER_HEAP_BASE;
             return p;
         }
     }
@@ -118,16 +117,6 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
 void kprocess_reap_address_space(struct KProcess *p) {
     if (!p || p->aspace_reaped) return;
 
-    if (p->brk > USER_HEAP_BASE) {
-        uint64_t heap_end = (p->brk - 1ULL) & ~0xFFFULL;
-        for (uint64_t virt = USER_HEAP_BASE; virt <= heap_end; virt += 0x1000ULL) {
-            uint64_t phys = paging_virt_to_phys_in(p->cr3, virt);
-            if (!phys) continue;
-            paging_unmap_in(p->cr3, virt);
-            pmm_free_page(phys & ~0xFFFULL);
-        }
-    }
-
     /* Free ELF segment backing pages for ELF-loaded processes.
      * paging_destroy_user_space only frees page table structure pages (PML4/
      * PDPT/PD/PT), not leaf physical pages.  For kernel-linked user tasks the
@@ -144,7 +133,6 @@ void kprocess_reap_address_space(struct KProcess *p) {
 
     paging_destroy_user_space(p->cr3);
     p->cr3 = 0;
-    p->brk = USER_HEAP_BASE;
     p->aspace_reaped = 1;
 }
 

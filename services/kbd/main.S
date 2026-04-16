@@ -20,6 +20,7 @@
  *
  * Bootstrap framing: iris/svcmgr_proto.h  (SVCMGR_MSG_BOOTSTRAP_HANDLE)
  */
+#include <iris/syscall.h>
 #include <iris/svcmgr_proto.h>
 #include <iris/kbd_proto.h>
 
@@ -29,6 +30,7 @@
 _start:
     movq  $0, %r12                     /* reply channel handle (from svcmgr) */
     movq  $0, %r13                     /* service/IRQ channel handle          */
+    movq  $0, %r14                     /* KIoPort handle (from svcmgr)        */
 
     subq  $128, %rsp
     andq  $~0xFULL, %rsp
@@ -48,11 +50,13 @@ _start:
     movq  $0,    %rax
     syscall
 
-/* ── Bootstrap: receive service handle and reply handle ─────────────────── */
+/* ── Bootstrap: receive service/reply/ioport handles ────────────────────── */
 .kbd_bootstrap_recv:
     testq %r12, %r12
     jz    .kbd_bootstrap_need
     testq %r13, %r13
+    jz    .kbd_bootstrap_need
+    testq %r14, %r14
     jnz   .kbd_bootstrap_done
 .kbd_bootstrap_need:
     movq  $0,  0(%rsp)
@@ -84,10 +88,12 @@ _start:
     jz    .kbd_bootstrap_fail
 
     /* Dispatch on endpoint kind (data[0] = SVCMGR_BOOTSTRAP_OFF_KIND) */
-    cmpl  $SVCMGR_BOOTSTRAP_KIND_SERVICE, 8(%rsp)
+    cmpl  $SVCMGR_BOOTSTRAP_KIND_SERVICE,    8(%rsp)
     je    .kbd_bootstrap_service
-    cmpl  $SVCMGR_BOOTSTRAP_KIND_REPLY,   8(%rsp)
+    cmpl  $SVCMGR_BOOTSTRAP_KIND_REPLY,      8(%rsp)
     je    .kbd_bootstrap_reply
+    cmpl  $SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP, 8(%rsp)
+    je    .kbd_bootstrap_ioport
     jmp   .kbd_bootstrap_fail
 
 .kbd_bootstrap_service:
@@ -98,10 +104,42 @@ _start:
     movq  %rax, %r12                   /* r12 = reply channel handle        */
     jmp   .kbd_bootstrap_recv
 
+.kbd_bootstrap_ioport:
+    movq  %rax, %r14                   /* r14 = KIoPort handle              */
+    jmp   .kbd_bootstrap_recv
+
 .kbd_bootstrap_done:
     movq  $15,  %rax                   /* SYS_HANDLE_CLOSE: release bootstrap */
     movq  %rbx, %rdi
     syscall
+
+/* ── PS/2 flush: drain controller output buffer before entering main loop ── */
+/* SYS_IOPORT_IN(r14, 4) reads port 0x64 (status); bit 0 = OBF (data ready).
+ * SYS_IOPORT_IN(r14, 0) reads port 0x60 (data) to discard the stale byte.
+ * Bounded: at most 16 iterations so stuck hardware cannot spin indefinitely.
+ * r11d is used as the countdown counter (caller-saved; no live value here). */
+.kbd_ps2_flush:
+    testq %r14, %r14
+    jz    .kbd_ps2_flush_done
+    movl  $16,  %r11d                  /* max drain iterations */
+.kbd_ps2_flush_loop:
+    testl %r11d, %r11d
+    jz    .kbd_ps2_flush_done          /* iteration limit reached */
+    decl  %r11d
+    movq  $SYS_IOPORT_IN, %rax
+    movq  %r14, %rdi
+    movq  $4,   %rsi                   /* offset 4 = port 0x64 (status) */
+    syscall
+    testq %rax, %rax
+    js    .kbd_ps2_flush_done          /* syscall error → stop */
+    testb $1,   %al                    /* OBF set? */
+    jz    .kbd_ps2_flush_done          /* no pending data → done */
+    movq  $SYS_IOPORT_IN, %rax
+    movq  %r14, %rdi
+    movq  $0,   %rsi                   /* offset 0 = port 0x60 (data) */
+    syscall
+    jmp   .kbd_ps2_flush_loop
+.kbd_ps2_flush_done:
 
     leaq  96(%rsp), %rdi
     movb  $'K',  0(%rdi)

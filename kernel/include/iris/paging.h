@@ -18,8 +18,7 @@
  *
  *  0x0000008000000000 - 0x000000FFFFFFFFFF  private user process window
  *    0x0000008000200000  user text base
- *    0x0000008000400000  user heap base
- *    0x0000008040000000  user heap max
+ *    0x0000008000400000  (formerly heap base — retired Phase 20)
  *    0x00000080FFFFF000  user stack top
  *
  *  0xFFFFFFFF80000000 - 0xFFFFFFFFFFFFFFFF  kernel space (higher half)
@@ -55,10 +54,10 @@
 #define USER_PRIVATE_BASE        0x0000008000000000ULL
 #define USER_PRIVATE_SIZE        (1ULL << 39) /* one full PML4 slot = 512 GB */
 
-/* user heap region — private per-process mappings */
+/* user text base */
 #define USER_TEXT_BASE      (USER_PRIVATE_BASE + 0x00200000ULL)
-#define USER_HEAP_BASE      (USER_PRIVATE_BASE + 0x00400000ULL)
-#define USER_HEAP_MAX       (USER_PRIVATE_BASE + 0x40000000ULL)
+/* USER_HEAP_BASE and USER_HEAP_MAX retired in Phase 20 — SYS_BRK removed.
+ * Heap memory is now managed via SYS_VMO_CREATE + SYS_VMO_MAP. */
 
 /* user VMO mappings — caller-chosen virtual addresses must stay inside this
  * private per-process window and never overlap fixed text/heap/stack regions. */

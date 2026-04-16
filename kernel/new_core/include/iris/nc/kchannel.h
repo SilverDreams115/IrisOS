@@ -67,6 +67,21 @@ struct KChannel {
 struct KChannel *kchannel_alloc     (void);
 void             kchannel_free      (struct KChannel *ch);
 
+/*
+ * kchannel_seal — explicit half-close: mark closed and wake all blocked receivers.
+ *
+ * Unlike kobject_active_release (which triggers close when active_refs hits zero),
+ * seal is an explicit, immediate operation.  Use it when a supervising process
+ * (e.g. svcmgr) wants to poison old service channels before a restart, so that
+ * clients get IRIS_ERR_CLOSED on their next send or recv rather than silently
+ * queuing to a dead service.
+ *
+ * Idempotent — safe to call on an already-sealed channel.
+ * Does NOT drop any refcount or free the channel; close + destroy still follow
+ * normal handle lifecycle (kobject_active_release → kobject_release).
+ */
+void             kchannel_seal      (struct KChannel *ch);
+
 iris_error_t     kchannel_send      (struct KChannel *ch, const struct KChanMsg *msg);
 iris_error_t     kchannel_send_attached(struct KChannel *ch, const struct KChanMsg *msg,
                                         struct KObject *obj, iris_rights_t rights);

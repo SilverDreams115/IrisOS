@@ -145,7 +145,7 @@
  */
 
 #define SVCMGR_MSG_SPAWN_SERVICE  0x0001u
-#define SVCMGR_MSG_PHASE3_PROBE   0x0002u
+/* 0x0002 retired (Phase 19: SVCMGR_MSG_PHASE3_PROBE removed with SYS_SPAWN) */
 #define SVCMGR_MSG_LOOKUP         0x0003u
 #define SVCMGR_MSG_STATUS         0x0004u
 #define SVCMGR_MSG_DIAG           0x0005u
@@ -165,10 +165,12 @@
 #define SVCMGR_ENDPOINT_VFS         3u
 #define SVCMGR_ENDPOINT_VFS_REPLY   4u
 
-#define SVCMGR_BOOTSTRAP_KIND_NONE    0u
-#define SVCMGR_BOOTSTRAP_KIND_SERVICE 1u
-#define SVCMGR_BOOTSTRAP_KIND_REPLY   2u
+#define SVCMGR_BOOTSTRAP_KIND_NONE      0u
+#define SVCMGR_BOOTSTRAP_KIND_SERVICE   1u
+#define SVCMGR_BOOTSTRAP_KIND_REPLY     2u
 #define SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP 3u
+#define SVCMGR_BOOTSTRAP_KIND_IRQ_CAP   4u  /* KIrqCap capability for IRQ routing */
+#define SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP 5u /* KIoPort capability for I/O port access */
 
 /* Byte offsets within KChanMsg.data[64] */
 #define SVCMGR_SPAWN_OFF_SERVICE_ID 0  /* uint32_t:    service kind selector       */
@@ -178,16 +180,25 @@
 #define SVCMGR_SPAWN_OFF_IRQ        8  /* uint8_t:     hardware IRQ line to route
                                         *   into the service channel, or 0xFF for
                                         *   no IRQ route.  svcmgr calls
-                                        *   SYS_IRQ_ROUTE_REGISTER(irq, chan_h, proc_h)
+                                        *   SYS_IRQ_ROUTE_REGISTER(irqcap_h, chan_h, proc_h)
                                         *   after spawn to transfer route ownership
                                         *   from svcmgr to the child process, so that
                                         *   kprocess_teardown auto-clears the route
-                                        *   when the service exits.               */
+                                        *   when the service exits.
+                                        *   irqcap_h is received at bootstrap time via
+                                        *   SVCMGR_BOOTSTRAP_KIND_IRQ_CAP.         */
 #define SVCMGR_SPAWN_OFF_FLAGS      9  /* uint8_t:     bootstrap flags; 0 = none   */
+
+/* Additional byte offsets for SVCMGR_BOOTSTRAP_KIND_IRQ_CAP messages */
+#define SVCMGR_BOOTSTRAP_OFF_IRQ_NUM     4   /* uint8_t: hardware IRQ number (0-15) */
+#define SVCMGR_BOOTSTRAP_IRQ_CAP_MSG_LEN 5u  /* kind(4 bytes) + irq_num(1 byte)    */
+
+/* Additional byte offsets for SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP messages */
+#define SVCMGR_BOOTSTRAP_OFF_IOPORT_SVC  4   /* uint8_t: service_id that owns this cap */
+#define SVCMGR_BOOTSTRAP_IOPORT_CAP_MSG_LEN 5u /* kind(4 bytes) + service_id(1 byte) */
 
 #define SVCMGR_ACK_OFF_TASK_ID    0    /* uint32_t: spawned task id        */
 #define SVCMGR_ACK_OFF_ERR        4    /* int32_t:  0=OK, <0=iris_error_t  */
-#define SVCMGR_P3_OFF_ENTRY       0    /* uint64_t: entry for supervision probe */
 #define SVCMGR_BOOTSTRAP_OFF_KIND 0    /* uint32_t: endpoint role selector */
 #define SVCMGR_LOOKUP_OFF_ENDPOINT 0   /* uint32_t: requested endpoint id  */
 #define SVCMGR_LOOKUP_OFF_RIGHTS   4   /* uint32_t: requested rights cap   */
@@ -219,8 +230,8 @@
 /* data_len values */
 #define SVCMGR_SPAWN_MSG_LEN      10u  /* 4 + 4 + 1 + 1 */
 #define SVCMGR_ACK_MSG_LEN        8u   /* 4 + 4 */
-#define SVCMGR_P3_MSG_LEN         8u   /* entry only */
-#define SVCMGR_BOOTSTRAP_MSG_LEN  4u   /* kind only */
+#define SVCMGR_BOOTSTRAP_MSG_LEN  4u   /* kind only (SPAWN_CAP, SERVICE, REPLY) */
+/* SVCMGR_BOOTSTRAP_IRQ_CAP_MSG_LEN = 5u is defined above with its offset constants */
 #define SVCMGR_LOOKUP_MSG_LEN     8u   /* endpoint + rights */
 #define SVCMGR_LOOKUP_REPLY_MSG_LEN 8u /* err + endpoint */
 #define SVCMGR_STATUS_MSG_LEN     0u

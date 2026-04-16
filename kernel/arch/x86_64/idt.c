@@ -1,6 +1,5 @@
 #include <iris/idt.h>
 #include <iris/pic.h>
-#include <iris/keyboard.h>
 #include <iris/scheduler.h>
 #include <iris/task.h>
 #include <iris/irq_routing.h>

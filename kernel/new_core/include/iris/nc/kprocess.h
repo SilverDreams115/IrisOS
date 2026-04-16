@@ -41,7 +41,6 @@ struct KProcess {
     struct KObject  base;   /* must be first */
     struct task    *main_thread; /* may be NULL briefly during bootstrap */
     uint64_t        cr3;         /* page table root for the process */
-    uint64_t        brk;         /* process heap break */
     uint8_t         teardown_complete; /* logical teardown already ran */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */
     uint8_t         exit_watch_armed; /* one death subscriber registered */

@@ -1,3 +1,23 @@
+/*
+ * services/init/main.S — ring-3 init process (ELF service).
+ *
+ * Entry point: _start (ELF e_entry, arg0 = svcmgr bootstrap handle in RBX).
+ *
+ * Responsibilities:
+ *   - Probe kbd and vfs services via svcmgr lookup.
+ *   - Validate health of both services (hello, list, open, read, close).
+ *   - Validate global kernel diagnostics (SYS_DIAG_SNAPSHOT).
+ *   - Run syscall regression checks (VMO, handle, retired syscalls).
+ *   - Exit 0 on success, non-zero on any failure.
+ *
+ * This file is compiled as a standalone ELF via services/link_service.ld.
+ * It is NOT linked into the kernel binary directly.  The kernel embeds it
+ * as a binary blob via objcopy and spawns it via task_spawn_elf().
+ *
+ * Phase 21: extracted from kernel/arch/x86_64/user_init.S.
+ * Selftest-only code (user_selftest, vfs_leak_child) stays in user_init.S.
+ */
+
 #include <iris/svcmgr_proto.h>
 #include <iris/service_catalog.h>
 #include <iris/vfs_proto.h>
@@ -16,8 +36,7 @@
 #define UI_BOOT_MSG_VFS_REPLY 0x70010002
 #define UI_BOOT_MSG_SELF_PROC 0x70010003
 
-/* user_init global removed in Phase 21 — init is now services/init/main.S (ELF). */
-.global user_selftest
+.global _start
 
 .section .rodata
 msg_start:      .asciz "init bootstrap start\n"
@@ -63,11 +82,9 @@ vfs_services_file: .asciz "services.txt"
 vfs_boot_data:  .asciz "Hello from IrisOS VFS!\n"
 
 .section .text
-/* user_init: removed in Phase 21 — init process is now services/init/main.S (ELF). */
-
-user_selftest:
-    movq $1, %r10
-    jmp .ui_entry_selftest
+_start:
+    movq $0, %r10
+    /* fall through to .ui_entry */
 
 .ui_entry:
     movq $0, %rax
@@ -169,16 +186,18 @@ user_selftest:
     leaq msg_vfs_list_ok(%rip), %rdi
     syscall
 
-    cmpq $0, UI_OFF_MODE(%rbp)
-    je .ui_open_boot_file
-
-    movq $28, %rax
+    /* UI_OFF_MODE is always 0 for the init ELF — jump directly to open */
+.ui_open_boot_file:
+    /* VFS open requires the caller's KProcess handle (for SYS_PROCESS_WATCH).
+     * Obtain it via SYS_PROCESS_SELF and store in UI_OFF_SELF_PROC so that
+     * .ui_vfs_open_boot_file can dup and embed it in the open message.
+     * .ui_close_local_slots will release it on exit. */
+    movq $SYS_PROCESS_SELF, %rax
     syscall
     testq %rax, %rax
     js .vfs_fail
     movq %rax, UI_OFF_SELF_PROC(%rbp)
 
-.ui_open_boot_file:
     call .ui_vfs_open_boot_file
     testq %rax, %rax
     js .vfs_fail
@@ -250,178 +269,7 @@ user_selftest:
     leaq msg_vfs_close_ok(%rip), %rdi
     syscall
 
-    cmpq $0, UI_OFF_MODE(%rbp)
-    je .ui_default_done
-
-#ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
-    call .ui_zero_msg
-    movl $VFS_MSG_READ, 0(%rbp)
-    movl 116(%rbp), %eax
-    movl %eax, 8(%rbp)
-    movl $16, 12(%rbp)
-    movl $8, 72(%rbp)
-
-    movq $SYS_CHAN_CALL, %rax           /* send on vfs service, recv on vfs.reply */
-    movq %r13, %rdi
-    movq %rbp, %rsi
-    movq %r14, %rdx
-    syscall
-    testq %rax, %rax
-    jnz .vfs_fail
-
-    cmpl $VFS_MSG_READ_REPLY, 0(%rbp)
-    jne .vfs_fail
-    cmpl $-4, 8(%rbp)
-    jne .vfs_fail
-
-    movq $0, %rax
-    leaq msg_vfs_stale_ok(%rip), %rdi
-    syscall
-
-    call .ui_zero_msg
-    movl $VFS_MSG_RECLAIM_PROBE, 0(%rbp)
-    movl $VFS_MSG_RECLAIM_PROBE_LEN, 72(%rbp)
-
-    movq $SYS_CHAN_CALL, %rax           /* send on vfs service, recv on vfs.reply */
-    movq %r13, %rdi
-    movq %rbp, %rsi
-    movq %r14, %rdx
-    syscall
-    testq %rax, %rax
-    jnz .vfs_fail
-
-    cmpl $VFS_MSG_RECLAIM_PROBE_REPLY, 0(%rbp)
-    jne .vfs_fail
-    cmpl $0, 8(%rbp)
-    jne .vfs_fail
-
-    movq $15, %rax
-    movq %r13, %rdi
-    syscall
-    movq $15, %rax
-    movq %r14, %rdi
-    syscall
-    xorq %r13, %r13
-    xorq %r14, %r14
-
-    /* SYS_SPAWN retired in Phase 19 — any call returns IRIS_ERR_NOT_SUPPORTED (-11) */
-    movq $18, %rax
-    movq $1,  %rdi
-    movq $0,  %rsi
-    syscall
-    cmpq $-11, %rax
-    jne .spawn_reject_fail
-
-    movq $0, %rax
-    leaq msg_spawn_reject_ok(%rip), %rdi
-    syscall
-
-    movq $16,   %rax
-    movq $4096, %rdi
-    syscall
-    testq %rax, %rax
-    js .vmo_fail
-    movq %rax, %r13
-
-    movq $15,  %rax
-    movq %r13, %rdi
-    syscall
-    xorq %r13, %r13
-
-    movq $0, %rax
-    leaq msg_vmo_ok(%rip), %rdi
-    syscall
-
-    movq $16, %rax
-    movq $0,  %rdi
-    syscall
-    cmpq $-1, %rax
-    jne .vmo_fail
-
-    movq $0, %rax
-    leaq msg_vmo_zero_ok(%rip), %rdi
-    syscall
-
-    movq $16, %rax
-    movq $0xFFFFFFFFFFFFF000, %rdi
-    syscall
-    cmpq $-1, %rax
-    jne .vmo_fail
-
-    movq $0, %rax
-    leaq msg_vmo_huge_ok(%rip), %rdi
-    syscall
-
-    movq $19, %rax
-    syscall
-    testq %rax, %rax
-    js .handle_fail
-    movq %rax, %r13
-
-    movq $22, %rax
-    movq %r13, %rdi
-    movq $1,   %rsi
-    syscall
-    testq %rax, %rax
-    js .handle_fail
-    movq %rax, %r14
-
-    movq $20, %rax
-    movq %r14, %rdi
-    movq $1,   %rsi
-    syscall
-    cmpq $-5, %rax
-    jne .handle_fail
-
-    movq $0, %rax
-    leaq msg_handle_dup_ok(%rip), %rdi
-    syscall
-
-    movq $26, %rax
-    movq %r14, %rdi
-    syscall
-    cmpq $-9, %rax
-    jne .handle_fail
-
-    movq $0, %rax
-    leaq msg_handle_type_ok(%rip), %rdi
-    syscall
-
-    movq $15, %rax
-    movq %r14, %rdi
-    syscall
-    xorq %r14, %r14
-
-    /* Phase 19: SYS_SPAWN retired — handle-xfer and spawn-loop tests removed.
-     * Close the notification handle, print skip notice, and proceed to cleanup. */
-    movq $15, %rax
-    movq %r13, %rdi
-    syscall
-    xorq %r13, %r13
-
-    movq $0, %rax
-    leaq msg_spawn_p19_skip(%rip), %rdi
-    syscall
-
-    movq $15, %rax
-    movq %rbx, %rdi
-    syscall
-    movq $15, %rax
-    movq %r12, %rdi
-    syscall
-    movq $15, %rax
-    movq %r15, %rdi
-    syscall
-    call .ui_close_local_slots
-    xorq %rbx, %rbx
-    xorq %r12, %r12
-    xorq %r15, %r15
-
-    movq $8, %rax
-    movq $5, %rdi
-    syscall
-    jmp .exit_ok
-#endif
+    /* Mode is always 0 for this ELF — fall through to default done */
 .ui_default_done:
     movq $15, %rax
     movq %r13, %rdi
@@ -575,29 +423,6 @@ user_selftest:
     movq $0, 72(%rbp)
     movq $0, 80(%rbp)
     ret
-
-.ui_entry_selftest:
-    movq $0, %rax
-    leaq msg_start(%rip), %rdi
-    syscall
-
-    movq %rbx, %r15
-    testq %r15, %r15
-    jz .svcmgr_boot_fail
-
-    movq $0, %rax
-    leaq msg_svcmgr_boot_ok(%rip), %rdi
-    syscall
-
-    subq $UI_STACK_BYTES, %rsp
-    andq $~0xFULL, %rsp
-    movq %rsp, %rbp
-    movq %r10, UI_OFF_MODE(%rbp)
-    xorq %rbx, %rbx
-    xorq %r12, %r12
-    xorq %r13, %r13
-    xorq %r14, %r14
-    jmp .ui_vfs_only
 
 .ui_close_if_valid:
     testq %rdi, %rdi
@@ -1193,60 +1018,6 @@ user_selftest:
     ret
 
 .ui_diag_bad:
-    movq  $-1, %rax
+    movq $-1, %rax
 .ui_diag_ret:
     ret
-
-/* phase3_exit_child and phase3_sleep_child removed in Phase 19 (SYS_SPAWN retired) */
-
-.global vfs_leak_child
-vfs_leak_child:
-    movq %rbx, %r15
-    subq $UI_STACK_BYTES, %rsp
-    andq $~0xFULL, %rsp
-    movq %rsp, %rbp
-
-    movl $0, UI_OFF_SELF_PROC(%rbp)
-    movl $0, UI_OFF_CHILD_PROC(%rbp)
-    movl $0, UI_OFF_CHILD_BOOT(%rbp)
-
-    movl $UI_BOOT_MSG_VFS_REQ, %edi
-    call .ui_recv_boot_handle
-    testq %rax, %rax
-    js .vfs_leak_child_fail
-    movq %rax, %r13
-
-    movl $UI_BOOT_MSG_VFS_REPLY, %edi
-    call .ui_recv_boot_handle
-    testq %rax, %rax
-    js .vfs_leak_child_fail
-    movq %rax, %r14
-
-    movl $UI_BOOT_MSG_SELF_PROC, %edi
-    call .ui_recv_boot_handle
-    testq %rax, %rax
-    js .vfs_leak_child_fail
-    movq %rax, UI_OFF_SELF_PROC(%rbp)
-
-    movq %r15, %rdi
-    call .ui_close_if_valid
-    xorq %r15, %r15
-
-    call .ui_vfs_open_boot_file
-    testq %rax, %rax
-    js .vfs_leak_child_fail
-
-    movq $1, %rax
-    movq $0, %rdi
-    syscall
-
-.vfs_leak_child_fail:
-    movq $1, %rax
-    movq $11, %rdi
-    syscall
-
-.vfs_leak_child_dead:
-    hlt
-    jmp .vfs_leak_child_dead
-
-.section .note.GNU-stack,"",@progbits

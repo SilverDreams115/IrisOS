@@ -10,11 +10,11 @@ typedef struct spinlock {
 } spinlock_t;
 
 /*
- * Invariantes:
- *   - Protege estado mutable, no lifecycle
- *   - No es reentrante
- *   - No debe adquirirse dos veces por el mismo thread
- *   - Busy-wait aceptable en esta fase temprana
+ * Invariants:
+ *   - Protects mutable state, not object lifecycle
+ *   - Not reentrant
+ *   - Must not be acquired twice by the same thread
+ *   - Busy-wait is acceptable at this early stage
  */
 static inline void spinlock_init(spinlock_t *lock) {
     atomic_flag_clear(&lock->flag);

@@ -33,14 +33,14 @@
 #define SYS_EXIT    1   /* modern/conforming: success path does not return */
 #define SYS_GETPID  2   /* modern/conforming: returns pid >= 0 */
 #define SYS_YIELD   3   /* modern/conforming: returns 0 on success */
-#define SYS_OPEN    4   /* retired compatibility stub: returns legacy -1 */
-#define SYS_READ    5   /* retired compatibility stub: returns legacy -1 */
-#define SYS_CLOSE   6   /* retired compatibility stub: returns legacy -1 */
-#define SYS_BRK     7   /* transitional/brk: address-as-value return, NOT iris_error_t.
-                          *   arg0=0 → query (returns current brk).
-                          *   arg0=addr → move brk; success → addr, failure → old brk.
-                          *   No process context → -1 (raw sentinel, not an error code).
-                          *   Future heap ops must use SYS_VMO_CREATE + SYS_VMO_MAP. */
+/* Numbers 4, 5, 6 are permanently reserved; the dispatch returns
+ * IRIS_ERR_NOT_SUPPORTED.  File I/O uses the VFS service over KChannel. */
+#define SYS_OPEN    4
+#define SYS_READ    5
+#define SYS_CLOSE   6
+/* SYS_BRK 7 retired in Phase 20 — permanently reserved, returns IRIS_ERR_NOT_SUPPORTED.
+ * All heap memory must be managed via SYS_VMO_CREATE + SYS_VMO_MAP. */
+#define SYS_BRK     7
 #define SYS_SLEEP   8   /* modern/conforming: returns 0 on success */
 /* legacy: removed from user-space dispatch; internal use only */
 /* SYS_IPC_CREATE  9  (retired) */
@@ -54,13 +54,9 @@
 /* modern/conforming: Virtual Memory Objects */
 #define SYS_VMO_CREATE   16  /* (size) → handle_id or negative iris_error_t */
 #define SYS_VMO_MAP      17  /* (handle, virt_addr, flags) → 0 or negative iris_error_t */
-/* modern/conforming: process management */
-#define SYS_SPAWN        18  /* (entry_vaddr, out_chan_ptr) → proc_handle or negative iris_error_t
-                              *   proc_handle = KProcess handle in caller's table
-                              *   *out_chan_ptr = bootstrap KChannel handle (optional)
-                              *   child's arg0 = KChannel handle in child's table
-                              *   parent proc_handle rights:
-                              *     RIGHT_READ | RIGHT_MANAGE | RIGHT_DUPLICATE */
+/* SYS_SPAWN 18 retired in Phase 19 — permanently reserved, returns IRIS_ERR_NOT_SUPPORTED.
+ * All userland process creation must go through SYS_SPAWN_SERVICE (31). */
+#define SYS_SPAWN        18
 /* modern/conforming: notification objects */
 #define SYS_NOTIFY_CREATE 19 /* () → handle_id or negative iris_error_t */
 #define SYS_NOTIFY_SIGNAL 20 /* (handle, bits) → 0 or negative iris_error_t */
@@ -128,6 +124,108 @@
 #define SYS_DIAG_SNAPSHOT 30
 
 /*
+ * I/O port access via KIoPort capability — modern/conforming (iris_error_t).
+ *
+ * Both syscalls resolve arg0 as a KIoPort handle and validate that
+ * arg1 (port_offset) is within the authorized range (0 <= offset < cap->count).
+ * The actual IN/OUT instruction executes in ring 0 on behalf of the caller.
+ *
+ * SYS_IOPORT_IN(ioport_handle, port_offset) → uint8_t value or negative iris_error_t
+ *   Requires RIGHT_READ on ioport_handle.
+ *   Returns the byte read in the low 8 bits of the result on success.
+ *
+ * SYS_IOPORT_OUT(ioport_handle, port_offset, value) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on ioport_handle.
+ *   Writes the low byte of value to base_port + port_offset.
+ */
+#define SYS_IOPORT_IN  32
+#define SYS_IOPORT_OUT 33
+
+/*
+ * Channel seal — modern/conforming (iris_error_t).
+ *
+ * SYS_CHAN_SEAL(chan_handle) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on chan_handle.
+ *   Immediately marks the channel closed and wakes all blocked receivers,
+ *   which return IRIS_ERR_CLOSED.  Future sends also return IRIS_ERR_CLOSED.
+ *   Already-buffered messages can still be drained by existing receivers.
+ *   The handle itself remains valid and must still be closed with SYS_HANDLE_CLOSE.
+ *   Idempotent: sealing an already-sealed channel returns 0.
+ *
+ *   Primary use case: supervisor (svcmgr) poisons old service channels before
+ *   restarting a crashed service, ensuring stale client handles fail fast instead
+ *   of silently queuing to a dead endpoint.
+ */
+#define SYS_CHAN_SEAL  37  /* (chan_handle) → 0 or negative iris_error_t */
+
+/*
+ * Synchronous channel call — modern/conforming (iris_error_t).
+ *
+ * SYS_CHAN_CALL(req_chan, msg_uptr, reply_chan) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on req_chan and RIGHT_READ on reply_chan.
+ *   Sends the message at *msg_uptr on req_chan, then blocks on reply_chan
+ *   until a reply arrives; the reply overwrites *msg_uptr in place.
+ *
+ *   Limitation: the outbound request may not carry an attached handle
+ *   (msg->attached_handle is ignored / forced to HANDLE_INVALID).
+ *   The inbound reply may carry an attached handle, which is installed in
+ *   the caller's handle table and written to msg->attached_handle on return.
+ *
+ *   Lifecycle: req_chan and reply_chan are NOT consumed; both handles remain
+ *   valid after the call.  The caller is responsible for closing them.
+ *
+ *   This is a convenience primitive — the equivalent of:
+ *     SYS_CHAN_SEND(req_chan, msg) + SYS_CHAN_RECV(reply_chan, msg)
+ *   but in a single syscall to minimize round-trips through ring-0.
+ */
+#define SYS_CHAN_CALL  38  /* (req_chan, msg_uptr, reply_chan) → 0 or negative iris_error_t */
+
+/*
+ * VMO unmap — modern/conforming (iris_error_t).
+ *
+ * SYS_VMO_UNMAP(vaddr, size) → 0 or negative iris_error_t
+ *   Removes the virtual-to-physical mappings for [vaddr, vaddr+size) from the
+ *   caller's address space.  Does NOT free the backing physical pages — those
+ *   remain owned by the KVmo object and are released when the last handle to
+ *   the VMO is closed.
+ *
+ *   Constraints:
+ *     - vaddr and size must be page-aligned (4 KiB boundary).
+ *     - [vaddr, vaddr+size) must lie entirely within [USER_VMO_BASE, USER_VMO_TOP).
+ *     - Pages that are not currently mapped are silently skipped (idempotent).
+ *     - No capability handle required: the caller owns their own address space.
+ *
+ *   Lifecycle contract:
+ *     SYS_VMO_CREATE → SYS_VMO_MAP → (use) → SYS_VMO_UNMAP → SYS_HANDLE_CLOSE
+ *     UNMAP removes the virtual alias; HANDLE_CLOSE triggers physical page free.
+ */
+#define SYS_VMO_UNMAP 36  /* (vaddr, size) → 0 or negative iris_error_t */
+
+/*
+ * Non-blocking channel receive — modern/conforming (iris_error_t).
+ *
+ * SYS_CHAN_RECV_NB(chan_handle, msg_uptr) → 0 or negative iris_error_t
+ *   Requires RIGHT_READ on chan_handle.
+ *   Returns IRIS_ERR_WOULD_BLOCK immediately when the channel is empty instead
+ *   of blocking the calling task.  All other semantics (attached handle
+ *   installation, closed-channel detection) are identical to SYS_CHAN_RECV.
+ */
+#define SYS_CHAN_RECV_NB  34  /* (handle, msg_uptr) → 0 or negative iris_error_t */
+
+/*
+ * Process termination — modern/conforming (iris_error_t).
+ *
+ * SYS_PROCESS_KILL(proc_handle) → 0 or negative iris_error_t
+ *   Requires RIGHT_MANAGE on proc_handle.
+ *   Forcibly tears down the target process: closes its handle table, frees
+ *   its address space, removes it from the scheduler, and fires any registered
+ *   exit watch (SYS_PROCESS_WATCH).
+ *   Cannot be used for self-termination — use SYS_EXIT for that.
+ *   Idempotent: returns 0 if the process is already dead.
+ */
+#define SYS_PROCESS_KILL  35  /* (proc_handle) → 0 or negative iris_error_t */
+
+/*
  * ELF service spawning — modern/conforming (iris_error_t).
  *
  * SYS_SPAWN_SERVICE: spawn a named service from the kernel initrd.
@@ -155,21 +253,17 @@
  */
 #define SYS_SPAWN_SERVICE   31
 
-#define SYS_IRQ_ROUTE_REGISTER 27 /* (irq_num, chan_handle, proc_handle) → 0 or negative iris_error_t
-                                   *   Routes hardware IRQ irq_num into chan_handle, owned by
-                                   *   proc_handle.  When proc_handle's process exits,
-                                   *   kprocess_teardown auto-clears the route via
-                                   *   irq_routing_unregister_owner.
-                                   *   Capability-driven authorization:
-                                   *   proc_handle must carry RIGHT_READ|RIGHT_ROUTE.
-                                   *   irq_num must be < IRQ_ROUTE_MAX.
-                                   *   chan_handle must be KOBJ_CHANNEL with RIGHT_READ|RIGHT_WRITE.
-                                   *   proc_handle must be KOBJ_PROCESS with
-                                   *   RIGHT_READ|RIGHT_ROUTE. */
+#define SYS_IRQ_ROUTE_REGISTER 27 /* (irqcap_handle, chan_handle, proc_handle) → 0 or iris_error_t
+                                   *   irqcap_handle: KOBJ_IRQ_CAP with RIGHT_ROUTE.
+                                   *     The IRQ vector is embedded in the cap; callers cannot
+                                   *     forge a different vector.
+                                   *   chan_handle: KOBJ_CHANNEL with RIGHT_READ|RIGHT_WRITE.
+                                   *     IRQ signals are delivered here.
+                                   *   proc_handle: KOBJ_PROCESS with RIGHT_READ|RIGHT_ROUTE.
+                                   *     Owns the route; kprocess_teardown auto-clears it. */
 
-/* Retired bootstrap nameserver syscalls.
- * These numbers remain reserved for ABI stability but the implementation now
- * returns IRIS_ERR_NOT_SUPPORTED. Service discovery lives in svcmgr IPC. */
+/* Numbers 24, 25 permanently reserved; dispatch returns IRIS_ERR_NOT_SUPPORTED.
+ * Service discovery uses svcmgr IPC over KChannel. */
 #define SYS_NS_REGISTER     24
 #define SYS_NS_LOOKUP       25
 
