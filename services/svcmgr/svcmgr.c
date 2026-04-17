@@ -1,7 +1,7 @@
 #include <iris/svcmgr_proto.h>
 #include <iris/diag.h>
 #include <iris/kbd_proto.h>
-#include <iris/service_catalog.h>
+#include "service_catalog.h"
 #include <iris/syscall.h>
 #include <iris/vfs_proto.h>
 #include <iris/nc/error.h>

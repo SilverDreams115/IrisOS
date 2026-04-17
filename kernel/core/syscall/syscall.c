@@ -479,139 +479,6 @@ static uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_err(r);
 }
 
-/* ── ELF service spawning ─────────────────────────────────────────── */
-
-/*
- * sys_spawn_service(name_uptr, out_chan_ptr) → proc_handle or iris_error_t
- *
- * Spawns a named service from the kernel initrd. Restricted by an explicit
- * bootstrap capability handle delivered during svcmgr bootstrap.
- *
- * Semantics match sys_spawn except that the child process is loaded from a
- * named ELF image instead of executing a kernel-text function pointer.
- *
- * Steps:
- *   1. Authority check — caller must present a bootstrap spawn capability.
- *   2. Copy service name from user space (max INITRD_NAME_MAX chars).
- *   3. Look up the named ELF image in the initrd.
- *   4. Load the ELF into a new isolated address space via elf_loader_load().
- *   5. Create a bootstrap KChannel pair.
- *   6. Spawn a ring-3 task from the loaded image via task_spawn_elf().
- *   7. Install handles into parent and child tables.
- *   8. Return proc_handle to the parent; write chan_handle to *out_chan_ptr.
- *
- * On any failure all allocated resources are rolled back.
- */
-
-#define SPAWN_SVC_NAME_MAX 32u  /* max service name length including NUL */
-
-static uint64_t sys_spawn_service(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
-    struct task   *parent = task_current();
-    struct KChannel *ch   = 0;
-    handle_id_t    proc_h      = HANDLE_INVALID;
-    handle_id_t    parent_ch   = HANDLE_INVALID;
-    handle_id_t    child_h     = HANDLE_INVALID;
-    iris_elf_image_t img;
-    struct task    *child = 0;
-
-    if (!parent || !parent->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    {
-        struct KObject *auth_obj;
-        iris_rights_t auth_rights;
-        iris_error_t auth_r = handle_table_get_object(&parent->process->handle_table,
-                                                      (handle_id_t)arg2,
-                                                      &auth_obj, &auth_rights);
-        if (auth_r != IRIS_OK) return syscall_err(auth_r);
-        if (auth_obj->type != KOBJ_BOOTSTRAP_CAP) {
-            kobject_release(auth_obj);
-            return syscall_err(IRIS_ERR_WRONG_TYPE);
-        }
-        if (!rights_check(auth_rights, RIGHT_READ) ||
-            !kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_SPAWN_SERVICE)) {
-            kobject_release(auth_obj);
-            return syscall_err(IRIS_ERR_ACCESS_DENIED);
-        }
-        kobject_release(auth_obj);
-    }
-
-    /* Validate optional out pointer */
-    if (arg1 != 0 && !user_range_writable(arg1, (uint32_t)sizeof(handle_id_t)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* Read service name from user space */
-    char name[SPAWN_SVC_NAME_MAX];
-    uint32_t name_len = copy_user_cstr_bounded(arg0, name, SPAWN_SVC_NAME_MAX);
-    if (name_len == 0) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* Find the ELF image in the initrd */
-    const void *elf_data = 0;
-    uint32_t    elf_size = 0;
-    if (!initrd_find(name, &elf_data, &elf_size))
-        return syscall_err(IRIS_ERR_NOT_FOUND);
-
-    /* Load the ELF into a new isolated address space */
-    iris_error_t lerr = elf_loader_load(elf_data, elf_size, &img);
-    if (lerr != IRIS_OK) return syscall_err(lerr);
-
-    /* Allocate bootstrap channel */
-    ch = kchannel_alloc();
-    if (!ch) { elf_loader_free_image(&img); return syscall_err(IRIS_ERR_NO_MEMORY); }
-
-    /* Spawn the child task from the ELF image (arg0 patched below) */
-    child = task_spawn_elf(&img, 0);
-    if (!child) {
-        kchannel_free(ch);
-        elf_loader_free_image(&img);
-        return syscall_err(IRIS_ERR_NO_MEMORY);
-    }
-    /* img.cr3_phys and img.segs are now owned by child->process */
-
-    /* Insert bootstrap channel handle into child's table */
-    child_h = handle_table_insert(&child->process->handle_table,
-                                  &ch->base, RIGHT_READ | RIGHT_WRITE);
-    if (child_h == HANDLE_INVALID) {
-        kchannel_free(ch);
-        task_abort_spawned_user(child);
-        return syscall_err(IRIS_ERR_TABLE_FULL);
-    }
-
-    /* Deliver bootstrap handle as child's arg0 */
-    task_set_bootstrap_arg0(child, (uint64_t)child_h);
-
-    /* Insert KProcess into parent's handle table */
-    proc_h = handle_table_insert(&parent->process->handle_table,
-                                 &child->process->base,
-                                 RIGHT_READ | RIGHT_ROUTE | RIGHT_MANAGE | RIGHT_DUPLICATE);
-    if (proc_h == HANDLE_INVALID) {
-        kobject_release(&ch->base);
-        task_abort_spawned_user(child);
-        return syscall_err(IRIS_ERR_TABLE_FULL);
-    }
-
-    /* Optionally install parent-side channel handle */
-    if (arg1 != 0) {
-        parent_ch = handle_table_insert(&parent->process->handle_table,
-                                        &ch->base, RIGHT_READ | RIGHT_WRITE);
-        if (parent_ch == HANDLE_INVALID) {
-            (void)handle_table_close(&parent->process->handle_table, proc_h);
-            kobject_release(&ch->base);
-            task_abort_spawned_user(child);
-            return syscall_err(IRIS_ERR_TABLE_FULL);
-        }
-        if (!copy_to_user_checked(arg1, &parent_ch, (uint32_t)sizeof(parent_ch))) {
-            (void)handle_table_close(&parent->process->handle_table, parent_ch);
-            (void)handle_table_close(&parent->process->handle_table, proc_h);
-            kobject_release(&ch->base);
-            task_abort_spawned_user(child);
-            return syscall_err(IRIS_ERR_INVALID_ARG);
-        }
-    }
-    kobject_release(&ch->base);
-
-    return syscall_ok_u64((uint64_t)proc_h);
-}
-
 /* ── Handle transfer ──────────────────────────────────────────────── */
 
 /*
@@ -1271,6 +1138,8 @@ static uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg
 
 /* ── Initrd entry lookup and ELF spawn (A3) ──────────────────────── */
 
+#define SPAWN_SVC_NAME_MAX 32u  /* max service/initrd name length including NUL */
+
 /*
  * sys_initrd_lookup(auth_h, name_uptr) → entry_handle or iris_error_t
  *
@@ -1570,7 +1439,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_VMO_MAP:     return sys_vmo_map(arg0, arg1, arg2);
         case SYS_VMO_UNMAP:   return sys_vmo_unmap(arg0, arg1, arg2);
         case SYS_SPAWN:         return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 19 */
-        case SYS_SPAWN_SERVICE: return sys_spawn_service(arg0, arg1, arg2);
+        case SYS_SPAWN_SERVICE: return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 22 */
         case SYS_NOTIFY_CREATE: return sys_notify_create(arg0, arg1, arg2);
         case SYS_NOTIFY_SIGNAL: return sys_notify_signal(arg0, arg1, arg2);
         case SYS_NOTIFY_WAIT:   return sys_notify_wait(arg0, arg1, arg2);
