@@ -3,6 +3,7 @@
 #include <iris/scheduler.h>
 #include <iris/task.h>
 #include <iris/irq_routing.h>
+#include <iris/nc/kprocess.h>
 #include <stdint.h>
 
 #define IDT_ENTRIES        256
@@ -174,6 +175,11 @@ void isr_handler(struct full_frame *frame) {
             }
             panic_write(" err="); panic_hex(frame->error_code);
             panic_write("\n");
+            if (ct) {
+                uint64_t cr2 = (frame->vector == 14) ? read_cr2() : 0;
+                kprocess_notify_fault(ct, frame->vector, frame->error_code,
+                                      frame->rip, cr2);
+            }
             task_exit_current();
             /* unreachable — task_exit_current() calls task_yield() */
         }
