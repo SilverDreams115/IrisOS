@@ -7,7 +7,12 @@ static uint8_t     pool_used[KVMO_POOL_SIZE];
 
 static void kvmo_destroy(struct KObject *obj) {
     struct KVmo *v = (struct KVmo *)obj;
-    if (v->owned && v->phys) {
+    if (v->demand) {
+        for (uint32_t i = 0; i < 256u; i++) {
+            if (v->pages[i])
+                pmm_free_page(v->pages[i]);
+        }
+    } else if (v->owned && v->phys) {
         uint64_t pages = (v->size + 0xFFFULL) >> 12;
         for (uint64_t i = 0; i < pages; i++)
             pmm_free_page(v->phys + i * 0x1000ULL);
@@ -55,17 +60,11 @@ struct KVmo *kvmo_create(uint64_t size) {
     uint32_t pages = 0;
     if (kvmo_size_to_pages(size, &pages) != IRIS_OK)
         return 0;
-    uint64_t phys  = pmm_alloc_pages(pages);
-    if (!phys) return 0;
     struct KVmo *v = kvmo_alloc();
-    if (!v) {
-        for (uint32_t i = 0; i < pages; i++)
-            pmm_free_page(phys + (uint64_t)i * 0x1000ULL);
-        return 0;
-    }
-    v->phys  = phys;
-    v->size  = size;
-    v->owned = 1;
+    if (!v) return 0;
+    v->size   = size;
+    v->owned  = 1;
+    v->demand = 1;
     return v;
 }
 

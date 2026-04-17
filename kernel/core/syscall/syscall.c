@@ -323,6 +323,31 @@ static uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     map_size = (v->size + (PAGE_SIZE - 1ULL)) & ~(PAGE_SIZE - 1ULL);
+
+    if (v->demand) {
+        /* Demand path: check for PTE collision and demand-mapping overlap */
+        uint32_t mi;
+        for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
+            if (paging_virt_to_phys_in(t->process->cr3, arg1 + off) != 0) {
+                kobject_release(obj);
+                return syscall_err(IRIS_ERR_BUSY);
+            }
+        }
+        for (mi = 0; mi < KPROCESS_VMO_MAP_MAX; mi++) {
+            struct KVmoMapping *m = &t->process->vmo_mappings[mi];
+            if (!m->vmo) continue;
+            if (arg1 + map_size <= m->virt_base) continue;
+            if (arg1 >= m->virt_base + m->size) continue;
+            kobject_release(obj);
+            return syscall_err(IRIS_ERR_BUSY);
+        }
+        r = kprocess_register_vmo_map(t->process, arg1, map_size,
+                                      (struct KVmo *)obj, flags);
+        kobject_release(obj);
+        return syscall_err(r);
+    }
+
+    /* Eager path (wrap/MMIO VMOs) */
     for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
         if (paging_virt_to_phys_in(t->process->cr3, arg1 + off) != 0) {
             kobject_release(obj);
@@ -330,17 +355,19 @@ static uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
     }
 
-    uint64_t mapped_until = arg1;
-    for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
-        if (paging_map_checked_in(t->process->cr3,
-                                  arg1 + off,
-                                  v->phys + off,
-                                  flags) != 0) {
-            rollback_user_maps(t->process->cr3, arg1, mapped_until);
-            kobject_release(obj);
-            return syscall_err(IRIS_ERR_NO_MEMORY);
+    {
+        uint64_t mapped_until = arg1;
+        for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
+            if (paging_map_checked_in(t->process->cr3,
+                                      arg1 + off,
+                                      v->phys + off,
+                                      flags) != 0) {
+                rollback_user_maps(t->process->cr3, arg1, mapped_until);
+                kobject_release(obj);
+                return syscall_err(IRIS_ERR_NO_MEMORY);
+            }
+            mapped_until = arg1 + off + PAGE_SIZE;
         }
-        mapped_until = arg1 + off + PAGE_SIZE;
     }
     kobject_release(obj);
     return syscall_ok_u64(0);
@@ -371,6 +398,7 @@ static uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     for (uint64_t off = 0; off < map_size; off += PAGE_SIZE)
         paging_unmap_in(t->process->cr3, vaddr + off);
 
+    kprocess_unregister_vmo_map(t->process, vaddr);
     return syscall_ok_u64(0);
 }
 

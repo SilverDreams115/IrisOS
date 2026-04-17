@@ -1,10 +1,12 @@
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kchannel.h>
+#include <iris/nc/kvmo.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
 #include <iris/irq_routing.h>
 #include <iris/syscall.h>
 #include <iris/pmm.h>
+#include <iris/paging.h>
 #include <iris/fault_proto.h>
 #include <stdint.h>
 
@@ -147,12 +149,97 @@ void kprocess_notify_fault(struct task *t, uint64_t vector,
     (void)kchannel_send(p->exception_chan, &msg);
 }
 
+iris_error_t kprocess_register_vmo_map(struct KProcess *p, uint64_t virt_base,
+                                        uint64_t size, struct KVmo *vmo,
+                                        uint64_t page_flags) {
+    uint32_t i;
+    if (!p || !vmo || size == 0) return IRIS_ERR_INVALID_ARG;
+    for (i = 0; i < KPROCESS_VMO_MAP_MAX; i++) {
+        if (p->vmo_mappings[i].vmo) continue;
+        p->vmo_mappings[i].virt_base   = virt_base;
+        p->vmo_mappings[i].size        = size;
+        p->vmo_mappings[i].vmo         = vmo;
+        p->vmo_mappings[i].page_flags  = page_flags;
+        kobject_retain(&vmo->base);
+        return IRIS_OK;
+    }
+    return IRIS_ERR_TABLE_FULL;
+}
+
+void kprocess_unregister_vmo_map(struct KProcess *p, uint64_t virt_base) {
+    uint32_t i;
+    if (!p) return;
+    for (i = 0; i < KPROCESS_VMO_MAP_MAX; i++) {
+        if (!p->vmo_mappings[i].vmo) continue;
+        if (p->vmo_mappings[i].virt_base != virt_base) continue;
+        kobject_release(&p->vmo_mappings[i].vmo->base);
+        p->vmo_mappings[i].vmo = 0;
+        p->vmo_mappings[i].virt_base = 0;
+        p->vmo_mappings[i].size = 0;
+        p->vmo_mappings[i].page_flags = 0;
+        return;
+    }
+}
+
+iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) {
+    struct KProcess *p;
+    struct KVmoMapping *m;
+    uint32_t i;
+    uint64_t page_base, page_idx, phys;
+
+    if (!t || !t->process || !t->process->cr3) return IRIS_ERR_INVALID_ARG;
+    p = t->process;
+    page_base = fault_addr & ~0xFFFULL;
+
+    for (i = 0; i < KPROCESS_VMO_MAP_MAX; i++) {
+        m = &p->vmo_mappings[i];
+        if (!m->vmo) continue;
+        if (page_base < m->virt_base) continue;
+        if (page_base >= m->virt_base + m->size) continue;
+
+        page_idx = (page_base - m->virt_base) >> 12;
+        if (page_idx >= 256u) return IRIS_ERR_INVALID_ARG;
+
+        if (m->vmo->pages[page_idx] == 0) {
+            uint8_t *kva;
+            int k;
+            phys = pmm_alloc_page();
+            if (!phys) return IRIS_ERR_NO_MEMORY;
+            kva = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
+            for (k = 0; k < 4096; k++) kva[k] = 0;
+            m->vmo->pages[page_idx] = phys;
+        } else {
+            phys = m->vmo->pages[page_idx];
+        }
+
+        if (paging_map_checked_in(p->cr3, page_base, phys, m->page_flags) != 0) {
+            /* could not install PTE (OOM in page table allocator) */
+            if (m->vmo->pages[page_idx] == phys) {
+                pmm_free_page(phys);
+                m->vmo->pages[page_idx] = 0;
+            }
+            return IRIS_ERR_NO_MEMORY;
+        }
+        return IRIS_OK;
+    }
+    return IRIS_ERR_NOT_FOUND;
+}
+
 void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     if (!p || p->teardown_complete) return;
 
     kprocess_emit_exit_watch(p);
     kprocess_clear_exit_watch(p);
     kprocess_clear_exception_chan(p);
+    {
+        uint32_t i;
+        for (i = 0; i < KPROCESS_VMO_MAP_MAX; i++) {
+            if (p->vmo_mappings[i].vmo) {
+                kobject_release(&p->vmo_mappings[i].vmo->base);
+                p->vmo_mappings[i].vmo = 0;
+            }
+        }
+    }
     irq_routing_unregister_owner(p);
     handle_table_close_all(&p->handle_table);
 
