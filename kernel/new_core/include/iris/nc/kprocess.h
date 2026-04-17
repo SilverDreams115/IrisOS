@@ -49,6 +49,10 @@ struct KProcess {
     struct KChannel *exit_watch_ch;   /* retained channel for death event delivery */
     HandleTable     handle_table;/* process-scoped handles/capabilities */
 
+    /* Exception handler channel: if non-NULL, receives a FAULT_MSG_NOTIFY
+     * message before the faulting task is killed.  Retained by the process. */
+    struct KChannel *exception_chan;
+
     /*
      * ELF segment tracking — populated by task_spawn_elf after a successful
      * elf_loader_load.  kprocess_reap_address_space iterates these to free
@@ -73,6 +77,9 @@ void             kprocess_teardown(struct KProcess *p, struct task *exiting_thre
 void             kprocess_reap_address_space(struct KProcess *p);
 iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
                                      handle_id_t watched_handle, uint32_t cookie);
+iris_error_t     kprocess_set_exception_handler(struct KProcess *p, struct KChannel *ch);
+void             kprocess_notify_fault(struct task *t, uint64_t vector,
+                                       uint64_t error_code, uint64_t rip, uint64_t cr2);
 
 /*
  * kprocess_live_count: count KProcess pool slots currently in use.

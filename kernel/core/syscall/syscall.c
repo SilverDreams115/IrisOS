@@ -280,7 +280,8 @@ static uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
     handle_id_t h = handle_table_insert(&t->process->handle_table,
                                         &v->base,
-                                        RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
+                                        RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER |
+                                        RIGHT_DUPLICATE);
     if (h == HANDLE_INVALID) {
         kvmo_free(v);
         return syscall_err(IRIS_ERR_TABLE_FULL);
@@ -1421,6 +1422,134 @@ static uint64_t sys_wait_any(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 }
 
+/* ── B3: bootstrap cap permission restriction ─────────────────────── */
+
+static uint64_t sys_bootcap_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *obj;
+    iris_rights_t rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (obj->type != KOBJ_BOOTSTRAP_CAP) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(rights, RIGHT_READ)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    struct KBootstrapCap *cap = (struct KBootstrapCap *)obj;
+    spinlock_lock(&cap->base.lock);
+    cap->permissions &= (uint32_t)arg1;
+    spinlock_unlock(&cap->base.lock);
+    kobject_release(obj);
+    return syscall_ok_u64(0);
+}
+
+/* ── B4: VMO inter-process share ──────────────────────────────────── */
+
+static uint64_t sys_vmo_share(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *vmo_obj;
+    iris_rights_t vmo_rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &vmo_obj, &vmo_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (vmo_obj->type != KOBJ_VMO) {
+        kobject_release(vmo_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(vmo_rights, RIGHT_READ | RIGHT_DUPLICATE)) {
+        kobject_release(vmo_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KObject *proc_obj;
+    iris_rights_t proc_rights;
+    r = handle_table_get_object(&t->process->handle_table,
+                                (handle_id_t)arg1, &proc_obj, &proc_rights);
+    if (r != IRIS_OK) { kobject_release(vmo_obj); return syscall_err(r); }
+    if (proc_obj->type != KOBJ_PROCESS) {
+        kobject_release(vmo_obj);
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(proc_rights, RIGHT_MANAGE)) {
+        kobject_release(vmo_obj);
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    if (!kprocess_is_alive((struct KProcess *)proc_obj)) {
+        kobject_release(vmo_obj);
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_BAD_HANDLE);
+    }
+
+    iris_rights_t granted = rights_reduce(vmo_rights, (iris_rights_t)arg2);
+    if (granted == RIGHT_NONE) {
+        kobject_release(vmo_obj);
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    struct KProcess *dest = (struct KProcess *)proc_obj;
+    handle_id_t new_h = handle_table_insert(&dest->handle_table, vmo_obj, granted);
+    kobject_release(vmo_obj);
+    kobject_release(proc_obj);
+    if (new_h == HANDLE_INVALID) return syscall_err(IRIS_ERR_TABLE_FULL);
+    return syscall_ok_u64((uint64_t)new_h);
+}
+
+/* ── B5: exception handler registration ───────────────────────────── */
+
+static uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *proc_obj;
+    iris_rights_t proc_rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &proc_obj, &proc_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (proc_obj->type != KOBJ_PROCESS) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(proc_rights, RIGHT_MANAGE)) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KObject *chan_obj;
+    iris_rights_t chan_rights;
+    r = handle_table_get_object(&t->process->handle_table,
+                                (handle_id_t)arg1, &chan_obj, &chan_rights);
+    if (r != IRIS_OK) { kobject_release(proc_obj); return syscall_err(r); }
+    if (chan_obj->type != KOBJ_CHANNEL) {
+        kobject_release(proc_obj);
+        kobject_release(chan_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(chan_rights, RIGHT_WRITE)) {
+        kobject_release(proc_obj);
+        kobject_release(chan_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    r = kprocess_set_exception_handler((struct KProcess *)proc_obj,
+                                       (struct KChannel *)chan_obj);
+    kobject_release(proc_obj);
+    kobject_release(chan_obj);
+    return syscall_err(r);
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
 
                           uint64_t arg1, uint64_t arg2) {
@@ -1462,6 +1591,9 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_SPAWN_ELF:            return sys_spawn_elf(arg0, arg1, arg2);
         case SYS_IOPORT_RESTRICT:      return sys_ioport_restrict(arg0, arg1, arg2);
         case SYS_WAIT_ANY:             return sys_wait_any(arg0, arg1, arg2);
+        case SYS_BOOTCAP_RESTRICT:     return sys_bootcap_restrict(arg0, arg1, arg2);
+        case SYS_VMO_SHARE:            return sys_vmo_share(arg0, arg1, arg2);
+        case SYS_EXCEPTION_HANDLER:    return sys_exception_handler(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }

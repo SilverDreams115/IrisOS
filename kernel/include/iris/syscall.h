@@ -338,6 +338,55 @@
 #define SYS_NS_REGISTER     24
 #define SYS_NS_LOOKUP       25
 
+/* Bootstrap capability permission bits — used as arg1 for SYS_BOOTCAP_RESTRICT
+ * and visible to userland so callers can reference symbolic constants. */
+#define IRIS_BOOTCAP_NONE          0u
+#define IRIS_BOOTCAP_SPAWN_SERVICE (1u << 0)
+#define IRIS_BOOTCAP_HW_ACCESS     (1u << 1)
+
+/*
+ * Bootstrap capability permission restriction — modern/conforming (iris_error_t).
+ *
+ * SYS_BOOTCAP_RESTRICT(cap_h, new_perms) → 0 or negative iris_error_t
+ *   cap_h: KOBJ_BOOTSTRAP_CAP with RIGHT_READ.
+ *   new_perms: IRIS_BOOTCAP_* bitmask; applied as: cap->permissions &= new_perms.
+ *   Cannot add permissions — only AND-reduces the existing set.
+ *   Idempotent: restricting to the same mask is a no-op.
+ *   Use case: svcmgr strips IRIS_BOOTCAP_HW_ACCESS after claiming all hardware
+ *   caps during bootstrap, so a compromised svcmgr cannot create new hw caps.
+ */
+#define SYS_BOOTCAP_RESTRICT  45
+
+/*
+ * VMO inter-process share — modern/conforming (iris_error_t).
+ *
+ * SYS_VMO_SHARE(vmo_h, dest_proc_h, rights) → new_handle_id or negative iris_error_t
+ *   vmo_h: KOBJ_VMO with RIGHT_READ | RIGHT_DUPLICATE.
+ *   dest_proc_h: KOBJ_PROCESS with RIGHT_MANAGE; target must be alive.
+ *   rights: effective rights granted = rights_reduce(caller_vmo_rights, arg2).
+ *   Does NOT consume vmo_h — non-destructive dup into dest's handle table.
+ *   Returns the new handle_id in dest's table, visible to dest after next recv
+ *   or when passed explicitly (e.g. via a channel notification from caller).
+ *   RIGHT_NONE result is rejected with IRIS_ERR_INVALID_ARG.
+ */
+#define SYS_VMO_SHARE  46
+
+/*
+ * User-level exception handler registration — modern/conforming (iris_error_t).
+ *
+ * SYS_EXCEPTION_HANDLER(proc_h, chan_h) → 0 or negative iris_error_t
+ *   proc_h: KOBJ_PROCESS with RIGHT_MANAGE; identifies the process to watch.
+ *   chan_h: KOBJ_CHANNEL with RIGHT_WRITE; receives FAULT_MSG_NOTIFY messages.
+ *   Registers chan_h as the exception handler channel for the process.
+ *   Replaces any previously registered handler.
+ *   On a ring-3 hardware exception the kernel sends a FAULT_MSG_NOTIFY message
+ *   (see iris/fault_proto.h) to the channel, then kills the faulting task.
+ *   The handler can use the task_id and proc info to decide how to respond
+ *   (e.g. log the fault and restart the service via SYS_SPAWN_ELF).
+ *   If no handler is registered, faults kill the task silently (current behaviour).
+ */
+#define SYS_EXCEPTION_HANDLER  47
+
 #ifndef __ASSEMBLER__
 #ifdef __KERNEL__
 void syscall_init(void);

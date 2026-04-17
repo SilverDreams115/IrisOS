@@ -5,10 +5,18 @@
 #include <iris/irq_routing.h>
 #include <iris/syscall.h>
 #include <iris/pmm.h>
+#include <iris/fault_proto.h>
 #include <stdint.h>
 
 static struct KProcess pool[KPROCESS_POOL_SIZE];
 static uint8_t         pool_used[KPROCESS_POOL_SIZE];
+
+static void kprocess_clear_exception_chan(struct KProcess *p) {
+    if (!p || !p->exception_chan) return;
+    kobject_active_release(&p->exception_chan->base);
+    kobject_release(&p->exception_chan->base);
+    p->exception_chan = 0;
+}
 
 static void kprocess_clear_exit_watch(struct KProcess *p) {
     if (!p || !p->exit_watch_armed || !p->exit_watch_ch) return;
@@ -98,11 +106,53 @@ iris_error_t kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
     return IRIS_OK;
 }
 
+iris_error_t kprocess_set_exception_handler(struct KProcess *p, struct KChannel *ch) {
+    if (!p || !ch) return IRIS_ERR_INVALID_ARG;
+    kprocess_clear_exception_chan(p);
+    kobject_retain(&ch->base);
+    kobject_active_retain(&ch->base);
+    p->exception_chan = ch;
+    return IRIS_OK;
+}
+
+void kprocess_notify_fault(struct task *t, uint64_t vector,
+                            uint64_t error_code, uint64_t rip, uint64_t cr2) {
+    struct KChanMsg msg;
+    struct KProcess *p;
+    int i;
+
+    if (!t || !t->process) return;
+    p = t->process;
+    if (!p->exception_chan) return;
+
+    for (i = 0; i < (int)sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
+    msg.type = FAULT_MSG_NOTIFY;
+    msg.data[FAULT_OFF_VECTOR + 0] = (uint8_t)(vector & 0xFFu);
+    msg.data[FAULT_OFF_VECTOR + 1] = (uint8_t)((vector >> 8) & 0xFFu);
+    msg.data[FAULT_OFF_VECTOR + 2] = (uint8_t)((vector >> 16) & 0xFFu);
+    msg.data[FAULT_OFF_VECTOR + 3] = (uint8_t)((vector >> 24) & 0xFFu);
+    msg.data[FAULT_OFF_TASK_ID + 0] = (uint8_t)(t->id & 0xFFu);
+    msg.data[FAULT_OFF_TASK_ID + 1] = (uint8_t)((t->id >> 8) & 0xFFu);
+    msg.data[FAULT_OFF_TASK_ID + 2] = (uint8_t)((t->id >> 16) & 0xFFu);
+    msg.data[FAULT_OFF_TASK_ID + 3] = (uint8_t)((t->id >> 24) & 0xFFu);
+    for (i = 0; i < 8; i++) msg.data[FAULT_OFF_RIP + i] = (uint8_t)((rip >> (i * 8)) & 0xFFu);
+    msg.data[FAULT_OFF_ERROR + 0] = (uint8_t)(error_code & 0xFFu);
+    msg.data[FAULT_OFF_ERROR + 1] = (uint8_t)((error_code >> 8) & 0xFFu);
+    msg.data[FAULT_OFF_ERROR + 2] = (uint8_t)((error_code >> 16) & 0xFFu);
+    msg.data[FAULT_OFF_ERROR + 3] = (uint8_t)((error_code >> 24) & 0xFFu);
+    for (i = 0; i < 8; i++) msg.data[FAULT_OFF_CR2 + i] = (uint8_t)((cr2 >> (i * 8)) & 0xFFu);
+    msg.data_len = FAULT_MSG_LEN;
+    msg.attached_handle = HANDLE_INVALID;
+    msg.attached_rights = RIGHT_NONE;
+    (void)kchannel_send(p->exception_chan, &msg);
+}
+
 void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     if (!p || p->teardown_complete) return;
 
     kprocess_emit_exit_watch(p);
     kprocess_clear_exit_watch(p);
+    kprocess_clear_exception_chan(p);
     irq_routing_unregister_owner(p);
     handle_table_close_all(&p->handle_table);
 

@@ -222,6 +222,11 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
                 state->ioport_caps[e->service_id] = (handle_id_t)h;
         }
     }
+
+    /* B3: strip HW_ACCESS from spawn cap — hardware cap creation no longer needed */
+    (void)svcmgr_syscall2(SYS_BOOTCAP_RESTRICT,
+                          state->spawn_cap_h,
+                          IRIS_BOOTCAP_SPAWN_SERVICE);
 }
 
 static struct svcmgr_service_state *svcmgr_service_state(struct svcmgr_state *state,
