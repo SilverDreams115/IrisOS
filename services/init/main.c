@@ -24,7 +24,6 @@
 #include <iris/svcmgr_proto.h>
 #include <iris/vfs_proto.h>
 #include <iris/kbd_proto.h>
-#include <iris/service_catalog.h>
 #include <iris/vfs.h>
 
 /* ── Raw syscall helpers ────────────────────────────────────────────────── */

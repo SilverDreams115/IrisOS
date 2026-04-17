@@ -22,7 +22,6 @@
  */
 
 #include <iris/initrd.h>
-#include <iris/service_catalog.h>
 #include <stdint.h>
 
 /* ── Embedded service symbol declarations ───────────────────────────────── */
@@ -52,14 +51,14 @@ struct initrd_entry {
 };
 
 static const struct initrd_entry g_initrd[] = {
-    { IRIS_BOOTSTRAP_SUPERVISOR_IMAGE, _binary_services_svcmgr_svcmgr_elf_start,
+    { "svcmgr", _binary_services_svcmgr_svcmgr_elf_start,
                 _binary_services_svcmgr_svcmgr_elf_end },
-    { IRIS_SERVICE_IMAGE_KBD, _binary_services_kbd_kbd_elf_start,
+    { "kbd",    _binary_services_kbd_kbd_elf_start,
                 _binary_services_kbd_kbd_elf_end },
-    { IRIS_SERVICE_IMAGE_VFS, _binary_services_vfs_vfs_elf_start,
+    { "vfs",    _binary_services_vfs_vfs_elf_start,
                 _binary_services_vfs_vfs_elf_end },
-    { "init", _binary_services_init_init_elf_start,
-               _binary_services_init_init_elf_end },
+    { "init",   _binary_services_init_init_elf_start,
+                _binary_services_init_init_elf_end },
 };
 
 #define INITRD_ENTRY_COUNT \

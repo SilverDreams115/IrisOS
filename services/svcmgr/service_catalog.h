@@ -1,27 +1,15 @@
-#ifndef IRIS_SERVICE_CATALOG_H
-#define IRIS_SERVICE_CATALOG_H
+#ifndef SVCMGR_SERVICE_CATALOG_H
+#define SVCMGR_SERVICE_CATALOG_H
 
-#ifndef __ASSEMBLER__
-#include <iris/nc/rights.h>
 #include <stdint.h>
+#include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
-#endif
 
-/*
- * Declarative built-in service catalog.
- *
- * This header is the single source of truth for userland-managed built-in
- * services. The kernel uses it to describe embedded service images and the
- * ring-3 service manager uses it to derive its runtime policy.
- */
-
-#define IRIS_SERVICE_CATALOG_VERSION 1u
 #define IRIS_BOOTSTRAP_SUPERVISOR_IMAGE "svcmgr"
-#define IRIS_SERVICE_IMAGE_KBD "kbd"
-#define IRIS_SERVICE_IMAGE_VFS "vfs"
+#define IRIS_SERVICE_IMAGE_KBD          "kbd"
+#define IRIS_SERVICE_IMAGE_VFS          "vfs"
 #define IRIS_SERVICE_RUNTIME_SLOT_COUNT 3u
 
-#ifndef __ASSEMBLER__
 struct iris_service_catalog_entry {
     const char    *image_name;
     uint32_t       service_id;
@@ -35,8 +23,8 @@ struct iris_service_catalog_entry {
     iris_rights_t  child_reply_rights;
     iris_rights_t  client_service_rights;
     iris_rights_t  client_reply_rights;
-    uint16_t       ioport_base;   /* base I/O port (0 = none) */
-    uint16_t       ioport_count;  /* number of consecutive ports (0 = none) */
+    uint16_t       ioport_base;
+    uint16_t       ioport_count;
 };
 
 static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
@@ -106,6 +94,4 @@ static inline const struct iris_service_catalog_entry *iris_service_catalog_find
     return 0;
 }
 
-#endif /* !__ASSEMBLER__ */
-
-#endif /* IRIS_SERVICE_CATALOG_H */
+#endif /* SVCMGR_SERVICE_CATALOG_H */

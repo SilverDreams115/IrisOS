@@ -241,6 +241,7 @@
 
 #define SVCMGR_PROTO_VERSION      2u
 #define SVCMGR_DIAG_VERSION       2u
+#define IRIS_SERVICE_CATALOG_VERSION 1u
 
 #ifndef __ASSEMBLER__
 static inline void svcmgr_proto_write_u32(uint8_t *dst, uint32_t value) {
