@@ -9,6 +9,17 @@
 #include <iris/elf_loader.h>
 #include <stdint.h>
 
+struct KVmo;
+
+#define KPROCESS_VMO_MAP_MAX 8u
+
+struct KVmoMapping {
+    uint64_t     virt_base;
+    uint64_t     size;
+    struct KVmo *vmo;         /* NULL = free slot */
+    uint64_t     page_flags;
+};
+
 /*
  * KProcess — process control object.
  *
@@ -47,6 +58,7 @@ struct KProcess {
     handle_id_t     exit_watch_handle;/* subscriber's proc_handle id for callbacks */
     uint32_t        exit_watch_cookie;/* subscriber-defined cookie echoed on death */
     struct KChannel *exit_watch_ch;   /* retained channel for death event delivery */
+    struct KVmoMapping vmo_mappings[KPROCESS_VMO_MAP_MAX]; /* demand VMO registrations */
     HandleTable     handle_table;/* process-scoped handles/capabilities */
 
     /* Exception handler channel: if non-NULL, receives a FAULT_MSG_NOTIFY
@@ -80,6 +92,11 @@ iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
 iris_error_t     kprocess_set_exception_handler(struct KProcess *p, struct KChannel *ch);
 void             kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
+iris_error_t     kprocess_register_vmo_map  (struct KProcess *p, uint64_t virt_base,
+                                              uint64_t size, struct KVmo *vmo,
+                                              uint64_t page_flags);
+void             kprocess_unregister_vmo_map(struct KProcess *p, uint64_t virt_base);
+iris_error_t     kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr);
 
 /*
  * kprocess_live_count: count KProcess pool slots currently in use.
