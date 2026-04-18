@@ -15,7 +15,7 @@ The system boots cleanly to a healthy interactive state. All subsystems run in r
 - Pure microkernel boot: kernel spawns only `init`; `init` spawns `svcmgr`; `svcmgr` spawns all other services
 - Ring-3 user tasks with per-process isolated address spaces and capability handle tables
 - Multi-threading: `SYS_THREAD_CREATE` / `SYS_THREAD_EXIT`; `KProcess.thread_count` tracks live threads; process teardown fires only on last thread exit
-- Futex: `SYS_FUTEX_WAIT` / `SYS_FUTEX_WAKE`; 64-entry table keyed by `(virtual_address, owning_process)` — cross-process safe
+- Futex: `SYS_FUTEX_WAIT` / `SYS_FUTEX_WAKE`; 256-entry table keyed by `(virtual_address, owning_process)` — cross-process safe
 - Demand paging: VMO pages are allocated lazily on first access; PTEs installed on fault; zero-cost for unaccessed regions
 - `KChannel` IPC with attached-handle transfer and explicit rights capping
 - `KNotification` event objects: 64-bit signal bits, up to 4 concurrent waiters, wake-one on signal
@@ -47,7 +47,7 @@ The system boots cleanly to a healthy interactive state. All subsystems run in r
 | **Execution model** | Kernel in ring 0; all user processes in ring 3 |
 | **Memory model** | 4-level paging, per-process user mappings, higher-half kernel, demand-paged VMOs |
 | **Scheduling** | Timer-driven round-robin (100 Hz) with explicit blocking for IPC, notifications, IRQ, futex, and sleep |
-| **IPC** | `KChannel` ring-buffer, up to 32 messages, wake-one on send |
+| **IPC** | `KChannel` ring-buffer, up to 128 messages, wake-one on send |
 | **Handle transfer** | Attached handles move across IPC with explicit rights reduction |
 | **Process model** | `KProcess` owns address space and handle table; `struct task` owns CPU context and scheduler state; `thread_count` tracks live threads |
 | **Capability objects** | `KObject`, `KChannel`, `KVmo`, `KNotification`, `KIrqCap`, `KIoPort`, `KProcess`, `KBootstrapCap`, `KInitrdEntry` |
@@ -199,20 +199,22 @@ Rights are per-handle: `RIGHT_READ`, `RIGHT_WRITE`, `RIGHT_MANAGE`, `RIGHT_TRANS
 | Resource | Capacity |
 |----------|----------|
 | `TASK_MAX` | 64 |
-| `KPROCESS_POOL_SIZE` | 32 |
+| `KPROCESS_POOL_SIZE` | 64 |
 | `KPROCESS_EXIT_WATCH_MAX` | 4 subscribers per process |
+| `KPROCESS_VMO_MAP_MAX` | 64 demand-paged VMO mappings per process |
 | `KCHANNEL_POOL_SIZE` | 64 |
-| `KCHAN_CAPACITY` | 32 messages per channel |
+| `KCHAN_CAPACITY` | 128 messages per channel |
 | `KCHANNEL_WAITERS_MAX` | 64 (= TASK_MAX) |
 | `KNOTIF_POOL_SIZE` | 64 |
 | `KNOTIF_WAITERS_MAX` | 4 concurrent waiters per notification |
-| `KVMO_POOL_SIZE` | 32 |
+| `KVMO_POOL_SIZE` | 128 |
+| `KVMO_MAX_PAGES` | 16384 pages per VMO (64 MiB demand-paged ceiling) |
 | `KIRQCAP_POOL_SIZE` | 16 |
 | `KIOPORT_POOL_SIZE` | 16 |
 | `KINITRDENTRY_POOL_SIZE` | 8 |
 | `KBOOTCAP_POOL_SIZE` | 4 |
 | `HANDLE_TABLE_MAX` | 1024 slots per process |
-| `FUTEX_TABLE_SIZE` | 64 entries |
+| `FUTEX_TABLE_SIZE` | 256 entries |
 | `WAIT_ANY_MAX_CHANNELS` | 64 channels per call |
 | `VFS_SERVICE_OPEN_FILES` | 32 |
 

@@ -11,7 +11,7 @@
 
 struct KVmo;
 
-#define KPROCESS_VMO_MAP_MAX    8u
+#define KPROCESS_VMO_MAP_MAX    64u
 #define KPROCESS_EXIT_WATCH_MAX 4u
 
 struct KExitWatch {
@@ -85,7 +85,7 @@ struct KProcess {
     } elf_segs[ELF_LOADER_MAX_LOAD_SEGS];
 };
 
-#define KPROCESS_POOL_SIZE 32  /* maximum live KProcess objects system-wide */
+#define KPROCESS_POOL_SIZE 64  /* maximum live KProcess objects system-wide */
 
 struct KChannel;
 struct KProcess *kprocess_alloc(void);

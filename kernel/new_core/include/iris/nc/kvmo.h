@@ -5,9 +5,9 @@
 #include <iris/nc/error.h>
 #include <stdint.h>
 
-#define KVMO_POOL_SIZE 32u
-#define KVMO_MAX_PAGES 256u
-#define KVMO_MAX_SIZE  (256ULL * 0x1000ULL)
+#define KVMO_POOL_SIZE 128u
+#define KVMO_MAX_PAGES 16384u
+#define KVMO_MAX_SIZE  ((uint64_t)KVMO_MAX_PAGES * 0x1000ULL)
 
 /* Virtual Memory Object — represents a physical memory region.
  * Can be mapped into a process address space via SYS_VMO_MAP. */
@@ -17,7 +17,10 @@ struct KVmo {
     uint64_t       size;    /* size in bytes */
     uint8_t        owned;   /* 1 = PMM-allocated, 0 = external (MMIO/FB) */
     uint8_t        demand;  /* 1 = lazy per-page allocation */
-    uint64_t       pages[256]; /* phys per page; 0 = not yet allocated */
+    uint32_t       page_capacity;     /* slots in pages[] for demand VMOs */
+    uint32_t       pages_meta_pages;  /* PMM pages backing pages[] metadata */
+    uint64_t       pages_meta_phys;   /* physical base of pages[] metadata */
+    uint64_t      *pages;             /* phys per page; 0 = not yet allocated */
 };
 
 iris_error_t kvmo_size_to_pages(uint64_t size, uint32_t *out_pages);
