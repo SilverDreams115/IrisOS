@@ -21,33 +21,37 @@ static void kprocess_clear_exception_chan(struct KProcess *p) {
 }
 
 static void kprocess_clear_exit_watch(struct KProcess *p) {
-    if (!p || !p->exit_watch_armed || !p->exit_watch_ch) return;
-    kobject_release(&p->exit_watch_ch->base);
-    p->exit_watch_ch = 0;
-    p->exit_watch_handle = HANDLE_INVALID;
-    p->exit_watch_cookie = 0;
-    p->exit_watch_armed = 0;
+    if (!p) return;
+    for (uint32_t i = 0; i < KPROCESS_EXIT_WATCH_MAX; i++) {
+        struct KExitWatch *w = &p->exit_watches[i];
+        if (!w->armed) continue;
+        kobject_release(&w->ch->base);
+        w->ch = 0;
+        w->armed = 0;
+    }
 }
 
 static void kprocess_emit_exit_watch(struct KProcess *p) {
-    struct KChanMsg msg;
-
-    if (!p || !p->exit_watch_armed || !p->exit_watch_ch) return;
-
-    for (uint32_t i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
-    msg.type = PROC_EVENT_MSG_EXIT;
-    msg.data[PROC_EVENT_OFF_HANDLE + 0] = (uint8_t)(p->exit_watch_handle & 0xFFu);
-    msg.data[PROC_EVENT_OFF_HANDLE + 1] = (uint8_t)((p->exit_watch_handle >> 8) & 0xFFu);
-    msg.data[PROC_EVENT_OFF_HANDLE + 2] = (uint8_t)((p->exit_watch_handle >> 16) & 0xFFu);
-    msg.data[PROC_EVENT_OFF_HANDLE + 3] = (uint8_t)((p->exit_watch_handle >> 24) & 0xFFu);
-    msg.data[PROC_EVENT_OFF_COOKIE + 0] = (uint8_t)(p->exit_watch_cookie & 0xFFu);
-    msg.data[PROC_EVENT_OFF_COOKIE + 1] = (uint8_t)((p->exit_watch_cookie >> 8) & 0xFFu);
-    msg.data[PROC_EVENT_OFF_COOKIE + 2] = (uint8_t)((p->exit_watch_cookie >> 16) & 0xFFu);
-    msg.data[PROC_EVENT_OFF_COOKIE + 3] = (uint8_t)((p->exit_watch_cookie >> 24) & 0xFFu);
-    msg.data_len = PROC_EVENT_MSG_LEN;
-    msg.attached_handle = HANDLE_INVALID;
-    msg.attached_rights = RIGHT_NONE;
-    (void)kchannel_send(p->exit_watch_ch, &msg);
+    if (!p) return;
+    for (uint32_t i = 0; i < KPROCESS_EXIT_WATCH_MAX; i++) {
+        struct KExitWatch *w = &p->exit_watches[i];
+        struct KChanMsg msg;
+        if (!w->armed || !w->ch) continue;
+        for (uint32_t j = 0; j < sizeof(msg); j++) ((uint8_t *)&msg)[j] = 0;
+        msg.type = PROC_EVENT_MSG_EXIT;
+        msg.data[PROC_EVENT_OFF_HANDLE + 0] = (uint8_t)(w->watched_handle & 0xFFu);
+        msg.data[PROC_EVENT_OFF_HANDLE + 1] = (uint8_t)((w->watched_handle >> 8) & 0xFFu);
+        msg.data[PROC_EVENT_OFF_HANDLE + 2] = (uint8_t)((w->watched_handle >> 16) & 0xFFu);
+        msg.data[PROC_EVENT_OFF_HANDLE + 3] = (uint8_t)((w->watched_handle >> 24) & 0xFFu);
+        msg.data[PROC_EVENT_OFF_COOKIE + 0] = (uint8_t)(w->cookie & 0xFFu);
+        msg.data[PROC_EVENT_OFF_COOKIE + 1] = (uint8_t)((w->cookie >> 8) & 0xFFu);
+        msg.data[PROC_EVENT_OFF_COOKIE + 2] = (uint8_t)((w->cookie >> 16) & 0xFFu);
+        msg.data[PROC_EVENT_OFF_COOKIE + 3] = (uint8_t)((w->cookie >> 24) & 0xFFu);
+        msg.data_len = PROC_EVENT_MSG_LEN;
+        msg.attached_handle = HANDLE_INVALID;
+        msg.attached_rights = RIGHT_NONE;
+        (void)kchannel_send(w->ch, &msg);
+    }
 }
 
 static void kprocess_destroy(struct KObject *obj) {
@@ -93,13 +97,18 @@ void kprocess_free(struct KProcess *p) {
 iris_error_t kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
                                  handle_id_t watched_handle, uint32_t cookie) {
     if (!p || !ch || watched_handle == HANDLE_INVALID) return IRIS_ERR_INVALID_ARG;
-    if (p->exit_watch_armed) return IRIS_ERR_BUSY;
+
+    uint32_t slot = KPROCESS_EXIT_WATCH_MAX;
+    for (uint32_t i = 0; i < KPROCESS_EXIT_WATCH_MAX; i++) {
+        if (!p->exit_watches[i].armed) { slot = i; break; }
+    }
+    if (slot == KPROCESS_EXIT_WATCH_MAX) return IRIS_ERR_TABLE_FULL;
 
     kobject_retain(&ch->base);
-    p->exit_watch_ch = ch;
-    p->exit_watch_handle = watched_handle;
-    p->exit_watch_cookie = cookie;
-    p->exit_watch_armed = 1;
+    p->exit_watches[slot].ch = ch;
+    p->exit_watches[slot].watched_handle = watched_handle;
+    p->exit_watches[slot].cookie = cookie;
+    p->exit_watches[slot].armed = 1;
 
     if (!kprocess_is_alive(p)) {
         kprocess_emit_exit_watch(p);

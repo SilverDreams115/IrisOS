@@ -11,7 +11,15 @@
 
 struct KVmo;
 
-#define KPROCESS_VMO_MAP_MAX 8u
+#define KPROCESS_VMO_MAP_MAX    8u
+#define KPROCESS_EXIT_WATCH_MAX 4u
+
+struct KExitWatch {
+    struct KChannel *ch;
+    handle_id_t      watched_handle;
+    uint32_t         cookie;
+    uint8_t          armed;
+};
 
 struct KVmoMapping {
     uint64_t     virt_base;
@@ -54,10 +62,7 @@ struct KProcess {
     uint64_t        cr3;          /* page table root for the process */
     uint8_t         teardown_complete; /* logical teardown already ran */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */
-    uint8_t         exit_watch_armed; /* one death subscriber registered */
-    handle_id_t     exit_watch_handle;/* subscriber's proc_handle id for callbacks */
-    uint32_t        exit_watch_cookie;/* subscriber-defined cookie echoed on death */
-    struct KChannel *exit_watch_ch;   /* retained channel for death event delivery */
+    struct KExitWatch exit_watches[KPROCESS_EXIT_WATCH_MAX]; /* up to 4 death subscribers */
     struct KVmoMapping vmo_mappings[KPROCESS_VMO_MAP_MAX]; /* demand VMO registrations */
     HandleTable     handle_table;/* process-scoped handles/capabilities */
 

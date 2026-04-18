@@ -1360,7 +1360,7 @@ static uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2)
 
 /* ── Multi-channel readable wait (A5) ───────────────────────────────── */
 
-#define WAIT_ANY_MAX_CHANNELS 8u
+#define WAIT_ANY_MAX_CHANNELS 64u
 
 /*
  * sys_wait_any(handles_uptr, count, out_index_uptr) → 0 or iris_error_t
