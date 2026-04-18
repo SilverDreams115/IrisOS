@@ -243,11 +243,7 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     irq_routing_unregister_owner(p);
     handle_table_close_all(&p->handle_table);
 
-    if (p->main_thread == exiting_thread)
-        p->main_thread = 0;
-    else if (!exiting_thread)
-        p->main_thread = 0;
-
+    (void)exiting_thread; /* thread_count tracks liveness; no per-thread ref needed */
     p->teardown_complete = 1;
 }
 

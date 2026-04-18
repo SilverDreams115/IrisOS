@@ -14,6 +14,7 @@
 #include <iris/irq_routing.h>
 #include <iris/scheduler.h>
 #include <iris/usercopy.h>
+#include <iris/futex.h>
 #include <iris/diag.h>
 #include <iris/initrd.h>
 #include <iris/elf_loader.h>
@@ -733,7 +734,7 @@ static uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_ok_u64(0);
     }
 
-    task_kill_external(target->main_thread);
+    task_kill_process(target);
     kobject_release(obj);
     return syscall_ok_u64(0);
 }
@@ -1578,6 +1579,60 @@ static uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg
     return syscall_err(r);
 }
 
+/* ── Threading (D2) ──────────────────────────────────────────────── */
+
+static uint64_t sys_thread_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    uint64_t entry_vaddr = arg0;
+    uint64_t user_rsp    = arg1;
+    uint64_t arg         = arg2;
+
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (entry_vaddr < USER_SPACE_BASE || entry_vaddr >= USER_SPACE_TOP)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (user_rsp < USER_SPACE_BASE || user_rsp > USER_SPACE_TOP)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (user_rsp & 0x7ULL)
+        return syscall_err(IRIS_ERR_INVALID_ARG);  /* must be 8-byte aligned */
+
+    struct task *nt = task_thread_create(t->process, entry_vaddr, user_rsp, arg);
+    if (!nt) return syscall_err(IRIS_ERR_NO_MEMORY);
+    return syscall_ok_u64((uint64_t)nt->id);
+}
+
+static uint64_t sys_thread_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg0; (void)arg1; (void)arg2;
+    task_exit_current();
+    return 0;  /* unreachable */
+}
+
+/* ── Futex (D3) ──────────────────────────────────────────────────── */
+
+static uint64_t sys_futex_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    uint64_t uaddr    = arg0;
+    uint32_t expected = (uint32_t)arg1;
+
+    if (uaddr < USER_SPACE_BASE || uaddr >= USER_SPACE_TOP)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (uaddr & 0x3ULL)
+        return syscall_err(IRIS_ERR_INVALID_ARG);  /* must be 4-byte aligned */
+
+    return syscall_err(futex_wait(uaddr, expected));
+}
+
+static uint64_t sys_futex_wake(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    uint64_t uaddr = arg0;
+    uint32_t count = (uint32_t)arg1;
+
+    if (uaddr & 0x3ULL)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (count == 0) return syscall_ok_u64(0);
+
+    return syscall_ok_u64((uint64_t)futex_wake(uaddr, count));
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
 
                           uint64_t arg1, uint64_t arg2) {
@@ -1622,6 +1677,10 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_BOOTCAP_RESTRICT:     return sys_bootcap_restrict(arg0, arg1, arg2);
         case SYS_VMO_SHARE:            return sys_vmo_share(arg0, arg1, arg2);
         case SYS_EXCEPTION_HANDLER:    return sys_exception_handler(arg0, arg1, arg2);
+        case SYS_THREAD_CREATE:        return sys_thread_create(arg0, arg1, arg2);
+        case SYS_THREAD_EXIT:          return sys_thread_exit(arg0, arg1, arg2);
+        case SYS_FUTEX_WAIT:           return sys_futex_wait(arg0, arg1, arg2);
+        case SYS_FUTEX_WAKE:           return sys_futex_wake(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }

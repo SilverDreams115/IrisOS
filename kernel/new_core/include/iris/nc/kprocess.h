@@ -27,31 +27,31 @@ struct KVmoMapping {
  * (which lives in the kernel's static tasks[] array).
  *
  * The KProcess and the initial thread have independent lifecycles:
- *   - main_thread->state becomes TASK_DEAD when the process exits.
+ *   - thread_count hits 0 when the last thread calls task_exit_current.
  *   - The KProcess (and handles pointing to it) lives until its
  *     refcount drops to zero (all handles closed).
  *
  * Lifecycle split:
- *   - kprocess_teardown(): logical process teardown while task/context still
- *     exists; closes process-scoped handles and unregisters global ownership.
+ *   - kprocess_teardown(): logical teardown when thread_count reaches 0;
+ *     closes process-scoped handles and unregisters global ownership.
  *   - kprocess_reap_address_space(): runs only after switching away from the
- *     exiting task's CR3; frees the process-owned address space.
+ *     last thread's CR3; frees the process-owned address space.
  *   - destroy(): final object cleanup when refcount reaches zero. It may finish
  *     any missing idempotent cleanup, but must not touch task-local resources
  *     such as the user stack or scheduler linkage.
  *
  * Invariants:
  *   - base must be first (KObject cast rules).
- *   - main_thread is set after thread creation and cleared once teardown starts.
+ *   - thread_count tracks live threads; 0 means process is fully exited.
  *   - teardown_complete == 1 means logical teardown already ran.
  *   - aspace_reaped == 1 means cr3-owned memory is already gone.
  *   - Before final destroy of an exited process, task-local resources must
  *     already have been released by task_exit_current()/reaper paths.
  */
 struct KProcess {
-    struct KObject  base;   /* must be first */
-    struct task    *main_thread; /* may be NULL briefly during bootstrap */
-    uint64_t        cr3;         /* page table root for the process */
+    struct KObject  base;       /* must be first */
+    uint32_t        thread_count; /* live threads in this process; 0 = dead */
+    uint64_t        cr3;          /* page table root for the process */
     uint8_t         teardown_complete; /* logical teardown already ran */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */
     uint8_t         exit_watch_armed; /* one death subscriber registered */
@@ -108,7 +108,7 @@ iris_error_t     kprocess_resolve_demand_fault(struct task *t, uint64_t fault_ad
 uint32_t kprocess_live_count(void);
 
 static inline int kprocess_is_alive(const struct KProcess *p) {
-    return p && p->main_thread && p->main_thread->state != TASK_DEAD;
+    return p && p->thread_count > 0;
 }
 
 static inline int kprocess_teardown_complete(const struct KProcess *p) {

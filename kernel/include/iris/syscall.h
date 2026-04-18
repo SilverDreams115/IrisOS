@@ -387,6 +387,51 @@
  */
 #define SYS_EXCEPTION_HANDLER  47
 
+/*
+ * Thread creation — modern/conforming (iris_error_t).
+ *
+ * SYS_THREAD_CREATE(entry_vaddr, user_rsp, arg) → tid or negative iris_error_t
+ *   entry_vaddr: user virtual address where the new thread begins executing.
+ *   user_rsp:    user stack pointer for the new thread; must be 8-byte aligned.
+ *                Caller is responsible for allocating a stack (e.g. via VMO).
+ *   arg:         value delivered to the thread in RBX on first execution.
+ *   Returns the new thread's task ID (≥ 0) on success.
+ *   The new thread shares the caller's KProcess: same address space and
+ *   handle table.  No new process is created.
+ *   Use SYS_THREAD_EXIT or SYS_EXIT to terminate the thread.
+ */
+#define SYS_THREAD_CREATE  48
+
+/*
+ * Thread exit — modern/conforming (iris_error_t).
+ *
+ * SYS_THREAD_EXIT() — does not return.
+ *   Exits the calling thread.  If this is the last thread in the process,
+ *   the process is torn down (equivalent to SYS_EXIT).
+ *   Pending blocked waits (IPC, futex) on this thread are cancelled.
+ */
+#define SYS_THREAD_EXIT  49
+
+/*
+ * Futex wait/wake — modern/conforming (iris_error_t).
+ *
+ * SYS_FUTEX_WAIT(uaddr, expected) → 0 or negative iris_error_t
+ *   uaddr:    user pointer to a 4-byte aligned uint32_t in the caller's aspace.
+ *   expected: the value the kernel checks at *uaddr before blocking.
+ *   If *uaddr == expected, the calling thread blocks until woken by
+ *   SYS_FUTEX_WAKE on the same uaddr.
+ *   If *uaddr != expected, returns IRIS_ERR_WOULD_BLOCK immediately.
+ *   Returns 0 on successful wake.
+ *
+ * SYS_FUTEX_WAKE(uaddr, count) → number of threads woken (≥ 0)
+ *   uaddr: must be 4-byte aligned; identifies the wait queue.
+ *   count: maximum number of waiting threads to wake.
+ *   Returns the number of threads actually woken (0 if none were waiting).
+ *   Does NOT access *uaddr — only uses the address as a wait queue key.
+ */
+#define SYS_FUTEX_WAIT  50
+#define SYS_FUTEX_WAKE  51
+
 #ifndef __ASSEMBLER__
 #ifdef __KERNEL__
 void syscall_init(void);
