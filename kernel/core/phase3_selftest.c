@@ -9,6 +9,8 @@
 #include <iris/nc/knotification.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kprocess.h>
+#include <iris/nc/kvmo.h>
+#include <iris/paging.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -18,6 +20,91 @@ static HandleTable phase3_full_ht;
 static HandleTable phase3_channel_close_ht;
 static struct KProcess phase3_channel_recv_proc;
 static handle_id_t phase3_fill_ids[HANDLE_TABLE_MAX];
+
+static int phase3_process_selftest(void) {
+    struct KProcess *proc = 0;
+    struct KChannel *ch = 0;
+    struct KVmo *vmo = 0;
+    struct KVmo *large_vmo = 0;
+    struct KVmo *map_vmo = 0;
+    struct task fake_task;
+    uint64_t ref_before;
+    uint64_t active_before;
+    uint64_t first_phys = 0;
+    const uint64_t fault_addr = USER_VMO_BASE;
+    const uint64_t large_fault_addr = USER_VMO_BASE + 0x00200000ULL;
+    const uint64_t large_fault_last = large_fault_addr + 0x1FF000ULL;
+    int ok = 0;
+
+    proc = kprocess_alloc();
+    ch = kchannel_alloc();
+    vmo = kvmo_create(0x1000ULL);
+    large_vmo = kvmo_create(0x200000ULL);
+    map_vmo = kvmo_create(0x1000ULL);
+    if (!proc || !ch || !vmo || !large_vmo || !map_vmo) goto out;
+    if (large_vmo->page_capacity < 512u) goto out;
+
+    ref_before = atomic_load_explicit(&ch->base.refcount, memory_order_relaxed);
+    active_before = atomic_load_explicit(&ch->base.active_refs, memory_order_relaxed);
+    if (kprocess_set_exception_handler(proc, ch) != IRIS_OK) goto out;
+    if (kprocess_set_exception_handler(proc, ch) != IRIS_OK) goto out;
+    if (proc->exception_chan != ch) goto out;
+    if (atomic_load_explicit(&ch->base.refcount, memory_order_relaxed) != ref_before + 1u) goto out;
+    if (atomic_load_explicit(&ch->base.active_refs, memory_order_relaxed) != active_before + 1u) goto out;
+
+    proc->cr3 = paging_create_user_space();
+    if (!proc->cr3) goto out;
+    if (kprocess_register_vmo_map(proc, fault_addr, 0x1000ULL, vmo,
+                                  PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE) != IRIS_OK) goto out;
+    if (kprocess_register_vmo_map(proc, large_fault_addr, 0x200000ULL, large_vmo,
+                                  PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE) != IRIS_OK) goto out;
+    for (uint32_t i = 2; i < KPROCESS_VMO_MAP_MAX; i++) {
+        uint64_t virt = USER_VMO_BASE + ((uint64_t)i * 0x00200000ULL);
+        if (kprocess_register_vmo_map(proc, virt, 0x1000ULL, map_vmo,
+                                      PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE) != IRIS_OK) goto out;
+    }
+    if (kprocess_register_vmo_map(proc,
+                                  USER_VMO_BASE + ((uint64_t)KPROCESS_VMO_MAP_MAX * 0x00200000ULL),
+                                  0x1000ULL,
+                                  map_vmo,
+                                  PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE) != IRIS_ERR_NO_MEMORY) goto out;
+
+    for (uint32_t i = 0; i < sizeof(fake_task); i++) ((uint8_t *)&fake_task)[i] = 0;
+    fake_task.process = proc;
+
+    if (kprocess_resolve_demand_fault(&fake_task, fault_addr) != IRIS_OK) goto out;
+    first_phys = vmo->pages[0];
+    if (!first_phys) goto out;
+    if (paging_virt_to_phys_in(proc->cr3, fault_addr) != first_phys) goto out;
+
+    if (kprocess_resolve_demand_fault(&fake_task, fault_addr) != IRIS_OK) goto out;
+    if (vmo->pages[0] != first_phys) goto out;
+    if (paging_virt_to_phys_in(proc->cr3, fault_addr) != first_phys) goto out;
+
+    if (kprocess_resolve_demand_fault(&fake_task, large_fault_last) != IRIS_OK) goto out;
+    if (!large_vmo->pages[511]) goto out;
+    if (paging_virt_to_phys_in(proc->cr3, large_fault_last) != large_vmo->pages[511]) goto out;
+
+    kprocess_teardown(proc, 0);
+    if (vmo->pages[0] != first_phys) goto out;
+    if (!large_vmo->pages[511]) goto out;
+    if (proc->exception_chan != 0) goto out;
+    if (atomic_load_explicit(&ch->base.refcount, memory_order_relaxed) != ref_before) goto out;
+    if (atomic_load_explicit(&ch->base.active_refs, memory_order_relaxed) != active_before) goto out;
+
+    ok = 1;
+out:
+    if (proc) {
+        kprocess_teardown(proc, 0);
+        kprocess_reap_address_space(proc);
+        kprocess_free(proc);
+    }
+    if (ch) kchannel_free(ch);
+    if (vmo) kvmo_free(vmo);
+    if (large_vmo) kvmo_free(large_vmo);
+    if (map_vmo) kvmo_free(map_vmo);
+    return ok;
+}
 
 static int phase3_handle_selftest(void) {
     struct KObject *obj = 0;
@@ -184,6 +271,28 @@ static int phase3_channel_selftest(void) {
     if (ch->waiters[3] != 0) goto out;
     if (ch->waiter_count != 0) goto out;
 
+    ch->closed = 1;
+    if (kchannel_waiters_add_or_closed(ch, &cancelled_waiter) != IRIS_ERR_CLOSED) goto out;
+    if (ch->waiter_count != 0) goto out;
+    ch->closed = 0;
+
+    for (uint32_t i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0xA5u;
+    kobject_retain(&notif->base);
+    kobject_active_retain(&notif->base);
+    if (kchannel_send_attached(ch, &msg, &notif->base, RIGHT_WAIT) != IRIS_OK) {
+        kobject_active_release(&notif->base);
+        kobject_release(&notif->base);
+        goto out;
+    }
+    msg.type = 0xDEADBEEFu;
+    msg.attached_handle = 0xFFFFFFFFu;
+    msg.attached_rights = RIGHT_TRANSFER;
+    if (kchannel_try_recv_into_process(ch, 0, &msg) != IRIS_ERR_INVALID_ARG) goto out;
+    if (msg.type != 0xDEADBEEFu) goto out;
+    if (msg.attached_handle != 0xFFFFFFFFu) goto out;
+    if (msg.attached_rights != RIGHT_TRANSFER) goto out;
+    if (kchannel_try_recv_into_process(ch, &phase3_channel_recv_proc, &msg) != IRIS_OK) goto out;
+
     ok = 1;
 out:
     if (obj) kobject_release(obj);
@@ -243,6 +352,10 @@ int phase3_selftest_run(void) {
     }
     if (!phase3_notification_selftest()) {
         serial_write("[IRIS][P3] WARN: notification selftest failed\n");
+        return 0;
+    }
+    if (!phase3_process_selftest()) {
+        serial_write("[IRIS][P3] WARN: process selftest failed\n");
         return 0;
     }
 

@@ -14,10 +14,17 @@ static struct KProcess pool[KPROCESS_POOL_SIZE];
 static uint8_t         pool_used[KPROCESS_POOL_SIZE];
 
 static void kprocess_clear_exception_chan(struct KProcess *p) {
-    if (!p || !p->exception_chan) return;
-    kobject_active_release(&p->exception_chan->base);
-    kobject_release(&p->exception_chan->base);
+    struct KChannel *old = 0;
+    if (!p) return;
+
+    spinlock_lock(&p->base.lock);
+    old = p->exception_chan;
     p->exception_chan = 0;
+    spinlock_unlock(&p->base.lock);
+
+    if (!old) return;
+    kobject_active_release(&old->base);
+    kobject_release(&old->base);
 }
 
 static void kprocess_clear_exit_watch(struct KProcess *p) {
@@ -118,11 +125,34 @@ iris_error_t kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
 }
 
 iris_error_t kprocess_set_exception_handler(struct KProcess *p, struct KChannel *ch) {
+    struct KChannel *old;
     if (!p || !ch) return IRIS_ERR_INVALID_ARG;
-    kprocess_clear_exception_chan(p);
+
+    spinlock_lock(&p->base.lock);
+    if (p->exception_chan == ch) {
+        spinlock_unlock(&p->base.lock);
+        return IRIS_OK;
+    }
+    spinlock_unlock(&p->base.lock);
+
     kobject_retain(&ch->base);
     kobject_active_retain(&ch->base);
+
+    spinlock_lock(&p->base.lock);
+    if (p->exception_chan == ch) {
+        spinlock_unlock(&p->base.lock);
+        kobject_active_release(&ch->base);
+        kobject_release(&ch->base);
+        return IRIS_OK;
+    }
+    old = p->exception_chan;
     p->exception_chan = ch;
+    spinlock_unlock(&p->base.lock);
+
+    if (old) {
+        kobject_active_release(&old->base);
+        kobject_release(&old->base);
+    }
     return IRIS_OK;
 }
 
@@ -130,11 +160,17 @@ void kprocess_notify_fault(struct task *t, uint64_t vector,
                             uint64_t error_code, uint64_t rip, uint64_t cr2) {
     struct KChanMsg msg;
     struct KProcess *p;
+    struct KChannel *ch;
     int i;
 
     if (!t || !t->process) return;
     p = t->process;
-    if (!p->exception_chan) return;
+
+    spinlock_lock(&p->base.lock);
+    ch = p->exception_chan;
+    if (ch) kobject_retain(&ch->base);
+    spinlock_unlock(&p->base.lock);
+    if (!ch) return;
 
     for (i = 0; i < (int)sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
     msg.type = FAULT_MSG_NOTIFY;
@@ -155,7 +191,8 @@ void kprocess_notify_fault(struct task *t, uint64_t vector,
     msg.data_len = FAULT_MSG_LEN;
     msg.attached_handle = HANDLE_INVALID;
     msg.attached_rights = RIGHT_NONE;
-    (void)kchannel_send(p->exception_chan, &msg);
+    (void)kchannel_send(ch, &msg);
+    kobject_release(&ch->base);
 }
 
 iris_error_t kprocess_register_vmo_map(struct KProcess *p, uint64_t virt_base,
@@ -195,6 +232,7 @@ iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) 
     struct KVmoMapping *m;
     uint32_t i;
     uint64_t page_base, page_idx, phys;
+    uint8_t published;
 
     if (!t || !t->process || !t->process->cr3) return IRIS_ERR_INVALID_ARG;
     p = t->process;
@@ -207,28 +245,34 @@ iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) 
         if (page_base >= m->virt_base + m->size) continue;
 
         page_idx = (page_base - m->virt_base) >> 12;
-        if (page_idx >= 256u) return IRIS_ERR_INVALID_ARG;
+        if (page_idx >= KVMO_MAX_PAGES) return IRIS_ERR_INVALID_ARG;
 
-        if (m->vmo->pages[page_idx] == 0) {
+        published = 0;
+        spinlock_lock(&m->vmo->base.lock);
+        phys = m->vmo->pages[page_idx];
+        if (phys == 0) {
             uint8_t *kva;
             int k;
             phys = pmm_alloc_page();
-            if (!phys) return IRIS_ERR_NO_MEMORY;
+            if (!phys) {
+                spinlock_unlock(&m->vmo->base.lock);
+                return IRIS_ERR_NO_MEMORY;
+            }
             kva = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
             for (k = 0; k < 4096; k++) kva[k] = 0;
             m->vmo->pages[page_idx] = phys;
-        } else {
-            phys = m->vmo->pages[page_idx];
+            published = 1;
         }
 
         if (paging_map_checked_in(p->cr3, page_base, phys, m->page_flags) != 0) {
-            /* could not install PTE (OOM in page table allocator) */
-            if (m->vmo->pages[page_idx] == phys) {
+            if (published && m->vmo->pages[page_idx] == phys) {
                 pmm_free_page(phys);
                 m->vmo->pages[page_idx] = 0;
             }
+            spinlock_unlock(&m->vmo->base.lock);
             return IRIS_ERR_NO_MEMORY;
         }
+        spinlock_unlock(&m->vmo->base.lock);
         return IRIS_OK;
     }
     return IRIS_ERR_NOT_FOUND;

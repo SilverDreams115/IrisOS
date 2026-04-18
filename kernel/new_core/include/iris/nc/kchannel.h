@@ -14,7 +14,7 @@
 #include <iris/nc/rights.h>
 #include <stdint.h>
 
-#define KCHAN_CAPACITY      32  /* messages per channel ring buffer */
+#define KCHAN_CAPACITY      128 /* messages per channel ring buffer */
 #define KCHAN_DATA_SIZE     64  /* bytes of payload per KChanMsg */
 #define KCHANNEL_POOL_SIZE  64  /* maximum live KChannel objects system-wide */
 
@@ -97,6 +97,7 @@ uint32_t         kchannel_live_count(void);
 /* Multi-channel wait helpers used by SYS_WAIT_ANY */
 int          kchannel_is_readable       (struct KChannel *ch);
 iris_error_t kchannel_waiters_add_checked(struct KChannel *ch, struct task *t);
+iris_error_t kchannel_waiters_add_or_closed(struct KChannel *ch, struct task *t);
 void         kchannel_waiters_remove_task(struct KChannel *ch, struct task *t);
 #endif /* __KERNEL__ */
 

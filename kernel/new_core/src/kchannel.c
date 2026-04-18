@@ -153,6 +153,20 @@ iris_error_t kchannel_waiters_add_checked(struct KChannel *ch, struct task *t) {
     return r;
 }
 
+iris_error_t kchannel_waiters_add_or_closed(struct KChannel *ch, struct task *t) {
+    iris_error_t r = IRIS_OK;
+    if (!ch || !t) return IRIS_ERR_INVALID_ARG;
+
+    spinlock_lock(&ch->base.lock);
+    if (ch->closed && ch->count == 0) {
+        r = IRIS_ERR_CLOSED;
+    } else if (ch->count == 0) {
+        r = kchannel_waiters_enqueue(ch, t);
+    }
+    spinlock_unlock(&ch->base.lock);
+    return r;
+}
+
 void kchannel_waiters_remove_task(struct KChannel *ch, struct task *t) {
     if (!ch || !t) return;
     spinlock_lock(&ch->base.lock);
@@ -184,6 +198,9 @@ iris_error_t kchannel_try_recv(struct KChannel *ch, struct KChanMsg *out) {
 
 iris_error_t kchannel_try_recv_into_process(struct KChannel *ch, struct KProcess *proc,
                                             struct KChanMsg *out) {
+    struct KChanMsg msg;
+
+    if (!ch || !out) return IRIS_ERR_INVALID_ARG;
     spinlock_lock(&ch->base.lock);
     if (ch->count == 0 && ch->closed) {
         spinlock_unlock(&ch->base.lock);
@@ -193,7 +210,7 @@ iris_error_t kchannel_try_recv_into_process(struct KChannel *ch, struct KProcess
         spinlock_unlock(&ch->base.lock);
         return IRIS_ERR_WOULD_BLOCK;
     }
-    msg_copy(out, &ch->buf[ch->head]);
+
     if (ch->attached[ch->head].present) {
         if (!proc) {
             spinlock_unlock(&ch->base.lock);
@@ -207,15 +224,18 @@ iris_error_t kchannel_try_recv_into_process(struct KChannel *ch, struct KProcess
             spinlock_unlock(&ch->base.lock);
             return IRIS_ERR_TABLE_FULL;
         }
-        out->attached_handle = h;
-        out->attached_rights = ch->attached[ch->head].rights;
+        msg_copy(&msg, &ch->buf[ch->head]);
+        msg.attached_handle = h;
+        msg.attached_rights = ch->attached[ch->head].rights;
         queued_handle_reset(&ch->attached[ch->head]);
     } else {
-        out->attached_handle = HANDLE_INVALID;
-        out->attached_rights = RIGHT_NONE;
+        msg_copy(&msg, &ch->buf[ch->head]);
+        msg.attached_handle = HANDLE_INVALID;
+        msg.attached_rights = RIGHT_NONE;
     }
     ch->head  = (ch->head + 1) % KCHAN_CAPACITY;
     ch->count--;
+    msg_copy(out, &msg);
     spinlock_unlock(&ch->base.lock);
     return IRIS_OK;
 }

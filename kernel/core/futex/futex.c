@@ -5,7 +5,7 @@
 #include <iris/nc/kprocess.h>
 #include <stdint.h>
 
-#define FUTEX_TABLE_SIZE 64
+#define FUTEX_TABLE_SIZE 256
 
 struct futex_entry {
     uint64_t         uaddr;
@@ -33,10 +33,13 @@ iris_error_t futex_wait(uint64_t uaddr, uint32_t expected) {
         return IRIS_ERR_TABLE_FULL;
 
     struct task *t = task_current();
+    if (!t || !t->process)
+        return IRIS_ERR_INVALID_ARG;
+
+    t->state = TASK_BLOCKED_IPC;
     futex_table[slot].uaddr  = uaddr;
     futex_table[slot].waiter = t;
     futex_table[slot].owner  = t->process;
-    t->state = TASK_BLOCKED_IPC;
     task_yield();
 
     /* Woken by futex_wake or cancelled by futex_cancel_waiter. */

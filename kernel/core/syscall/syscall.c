@@ -1424,9 +1424,46 @@ static uint64_t sys_wait_any(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     /* Phase 2: enqueue on all, yield, retry */
     for (;;) {
-        for (uint32_t i = 0; i < count; i++)
-            (void)kchannel_waiters_add_checked(chans[i], t);
         t->state = TASK_BLOCKED_IPC;
+        for (uint32_t i = 0; i < count; i++) {
+            iris_error_t r = kchannel_waiters_add_or_closed(chans[i], t);
+            if (r == IRIS_ERR_CLOSED) {
+                t->state = TASK_READY;
+                for (uint32_t j = 0; j <= i; j++)
+                    kchannel_waiters_remove_task(chans[j], t);
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                return syscall_err(IRIS_ERR_CLOSED);
+            }
+            if (r != IRIS_OK) {
+                t->state = TASK_READY;
+                for (uint32_t j = 0; j <= i; j++)
+                    kchannel_waiters_remove_task(chans[j], t);
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                return syscall_err(r);
+            }
+        }
+
+        for (uint32_t i = 0; i < count; i++) {
+            if (kchannel_is_readable(chans[i])) {
+                uint32_t idx = i;
+                t->state = TASK_READY;
+                for (uint32_t j = 0; j < count; j++)
+                    kchannel_waiters_remove_task(chans[j], t);
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                if (!copy_to_user_checked(arg2, &idx, (uint32_t)sizeof(idx)))
+                    return syscall_err(IRIS_ERR_INVALID_ARG);
+                return syscall_ok_u64(0);
+            }
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            if (chans[i]->closed) {
+                t->state = TASK_READY;
+                for (uint32_t j = 0; j < count; j++)
+                    kchannel_waiters_remove_task(chans[j], t);
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                return syscall_err(IRIS_ERR_CLOSED);
+            }
+        }
         task_yield();
 
         for (uint32_t i = 0; i < count; i++)
