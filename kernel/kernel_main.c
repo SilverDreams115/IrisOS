@@ -14,11 +14,14 @@
 #include <iris/irq_routing.h>
 #include <iris/initrd.h>
 #include <iris/elf_loader.h>
+#include <iris/nc/kbootcap.h>
+#include <iris/nc/kprocess.h>
+#include <iris/nc/handle_table.h>
+#include <iris/nc/kobject.h>
+#include <iris/nc/rights.h>
 #ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
 #include <iris/phase3_selftest.h>
 #endif
-/* Transitional bootstrap services: real current boot path. */
-#include <iris/svcmgr_bootstrap.h>
 
 #define FB_ORANGE 0x00FF8800
 
@@ -107,13 +110,9 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     /* ── 7. Scheduler core ──────────────────────────────────────── */
     serial_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
-    /* ── 8. Transitional bootstrap: service wiring ──────────────── */
-    serial_write("[IRIS][BOOT] handoff: kernel -> svcmgr/init\n");
-    svcmgr_bootstrap_init(); /* spawn svcmgr and retain the root bootstrap channel */
 
-    /* ── 9. First user task ─────────────────────────────────────── */
+    /* ── 8. First user task ─────────────────────────────────────── */
     serial_write("[IRIS][USER] preparing init process...\n");
-    /* Phase 21: spawn init as an ELF service from the initrd. */
     {
         const void *init_elf = 0;
         uint32_t    init_sz  = 0;
@@ -127,20 +126,29 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             if (lerr != IRIS_OK) {
                 serial_write("[IRIS][USER] FATAL: elf_loader_load(init) failed\n");
             } else {
-                handle_id_t sm_bootstrap_h = HANDLE_INVALID;
                 ut = task_spawn_elf(&img, 0);
                 if (!ut) {
                     serial_write("[IRIS][USER] FATAL: task_spawn_elf(init) failed\n");
                     elf_loader_free_image(&img);
                 } else {
-                    iris_error_t br = svcmgr_bootstrap_attach_client(ut, RIGHT_WRITE,
-                                                                      &sm_bootstrap_h);
-                    if (br != IRIS_OK) {
-                        serial_write("[IRIS][USER] WARN: svcmgr bootstrap attach failed\n");
+                    struct KBootstrapCap *cap = kbootcap_alloc(
+                        IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS);
+                    if (!cap) {
+                        serial_write("[IRIS][USER] FATAL: kbootcap_alloc failed\n");
                         task_abort_spawned_user(ut);
                         ut = 0;
                     } else {
-                        task_set_bootstrap_arg0(ut, (uint64_t)sm_bootstrap_h);
+                        handle_id_t cap_h = handle_table_insert(
+                            &ut->process->handle_table, &cap->base,
+                            RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                        kobject_release(&cap->base);
+                        if (cap_h == HANDLE_INVALID) {
+                            serial_write("[IRIS][USER] FATAL: cap handle insert failed\n");
+                            task_abort_spawned_user(ut);
+                            ut = 0;
+                        } else {
+                            task_set_bootstrap_arg0(ut, (uint64_t)cap_h);
+                        }
                     }
                 }
             }
@@ -154,7 +162,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         }
     }
 
-    /* ── 10. Scheduler start ────────────────────────────────────── */
+    /* ── 9. Scheduler start ─────────────────────────────────────── */
     __asm__ volatile ("sti");
     serial_write("[IRIS][SCHED] running\n");
     serial_write("[IRIS][BOOT] waiting for first userland wave\n");
