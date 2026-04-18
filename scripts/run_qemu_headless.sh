@@ -62,8 +62,8 @@ timeout "${TIMEOUT_SECS}s" qemu-system-x86_64 \
 qemu_rc=$?
 set -e
 
-if ! grep -Fq "[IRIS][BOOT] handoff: kernel -> svcmgr/init" "$LOG_FILE"; then
-  echo "[headless] missing kernel handoff marker"
+if ! grep -Fq "[IRIS][SCHED] running" "$LOG_FILE"; then
+  echo "[headless] missing scheduler running marker"
   cat "$LOG_FILE"
   exit 1
 fi

@@ -100,6 +100,53 @@ static long init_chan_send_recv(handle_id_t send_h, handle_id_t recv_h,
     return init_sys2(SYS_CHAN_RECV, (long)recv_h, (long)msg);
 }
 
+/* ── svcmgr spawn (E2: init launches svcmgr, not the kernel) ───────────── */
+
+static handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
+    handle_id_t svcmgr_entry_h = HANDLE_INVALID;
+    handle_id_t svcmgr_proc_h  = HANDLE_INVALID;
+    handle_id_t svcmgr_chan_h  = HANDLE_INVALID;
+    handle_id_t dup_cap_h      = HANDLE_INVALID;
+    struct KChanMsg msg;
+    long r;
+
+    r = init_sys2(SYS_INITRD_LOOKUP, (long)spawn_cap_h, (long)"svcmgr");
+    if (r < 0) goto fail;
+    svcmgr_entry_h = (handle_id_t)r;
+
+    r = init_sys2(SYS_SPAWN_ELF, (long)svcmgr_entry_h, (long)&svcmgr_chan_h);
+    if (r < 0) goto fail;
+    svcmgr_proc_h = (handle_id_t)r;
+
+    r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
+                  (long)(RIGHT_READ | RIGHT_TRANSFER));
+    if (r < 0) goto fail;
+    dup_cap_h = (handle_id_t)r;
+
+    init_msg_zero(&msg);
+    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                           SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP);
+    msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
+    msg.attached_handle = dup_cap_h;
+    msg.attached_rights = RIGHT_READ;
+
+    r = init_sys2(SYS_CHAN_SEND, (long)svcmgr_chan_h, (long)&msg);
+    if (r < 0) goto fail;
+    dup_cap_h = HANDLE_INVALID;
+
+    init_close(&svcmgr_entry_h);
+    init_close(&svcmgr_proc_h);
+    return svcmgr_chan_h;
+
+fail:
+    init_close(&svcmgr_entry_h);
+    init_close(&svcmgr_proc_h);
+    init_close(&svcmgr_chan_h);
+    if (dup_cap_h != HANDLE_INVALID) init_close(&dup_cap_h);
+    return HANDLE_INVALID;
+}
+
 /* ── svcmgr lookup ──────────────────────────────────────────────────────── */
 /*
  * Create a one-shot reply channel, dup the write end into svcmgr's table via
@@ -536,9 +583,13 @@ void init_main(handle_id_t bootstrap_h) {
     handle_id_t vfs_reply_h = HANDLE_INVALID;
     handle_id_t scan_recv_h = HANDLE_INVALID;
 
-    sm_h = bootstrap_h;
-
     init_log("[USER] init bootstrap start\n");
+
+    sm_h = init_spawn_svcmgr(bootstrap_h);
+    if (sm_h == HANDLE_INVALID) {
+        init_log("[USER] svcmgr spawn FAILED\n");
+        init_exit(1);
+    }
 
     /* ── Service discovery ── */
     init_log(init_stage_lookup);

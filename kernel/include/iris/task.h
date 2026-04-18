@@ -5,7 +5,7 @@
 
 struct KProcess;
 
-#define TASK_MAX         32
+#define TASK_MAX         64
 #define TASK_STACK_SIZE  8192    /* kernel stack per task */
 #define TASK_DEFAULT_SLICE   10      /* ticks per quantum at 100 Hz = 100ms */
 
