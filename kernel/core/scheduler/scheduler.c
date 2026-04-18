@@ -8,6 +8,7 @@
 #include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
 #include <iris/elf_loader.h>
+#include <iris/futex.h>
 #include <stdint.h>
 
 extern void user_entry_trampoline(void);
@@ -89,30 +90,30 @@ static void task_cancel_blocked_waits(struct task *t) {
     if (!t) return;
 
     /* Teardown must remove blocked wait registrations before the task slot is
-     * reset; otherwise KChannel/KNotification can retain stale task pointers
-     * outside the process handle table lifecycle. */
+     * reset; otherwise KChannel/KNotification/futex can retain stale task
+     * pointers outside the process handle table lifecycle. */
     kchannel_cancel_waiter(t);
     knotification_cancel_waiter(t);
+    futex_cancel_waiter(t);
 }
 
 static void reap_dead_task_off_cpu(struct task *t) {
     if (!t || t->state != TASK_DEAD) return;
 
     struct KProcess *proc = t->process;
+    /* Process-level cleanup only when this was the last thread.
+     * thread_count was decremented in task_exit_current before TASK_DEAD was set,
+     * so 0 here means no other threads are alive. */
+    int is_last = proc && (proc->thread_count == 0);
 
-    /* Runs after CR3 already switched away from the dead task. Only process
-     * address-space/object cleanup belongs here; task-local resources are gone. */
-    if (proc) {
+    if (is_last) {
         kprocess_reap_address_space(proc);
     }
 
-    /* Remove the dead task from the circular run list before zeroing the
-     * slot. Otherwise predecessor->next can keep pointing at a reset slot
-     * with next == 0, and later spawn-time tail walks will hang. */
     unlink_task(t);
     task_reset_slot(t);
 
-    if (proc) {
+    if (is_last) {
         kprocess_free(proc);
     }
 }
@@ -306,7 +307,7 @@ static struct task *task_create_user_impl(uint64_t entry, uint64_t arg0) {
     t->ustack_phys      = ustack_phys;          /* physical base — identity-mapped */
     t->user_rsp         = USER_STACK_TOP - 8;   /* points to arg0 */
     t->process          = proc;
-    proc->main_thread   = t;
+    proc->thread_count  = 1;
 
     /* kernel stack: iretq frame for user_entry_trampoline */
     int idx = (int)(t - tasks);
@@ -339,8 +340,6 @@ static struct task *task_create_user_impl(uint64_t entry, uint64_t arg0) {
     return t;
 
 fail:
-    if (proc)
-        proc->main_thread = 0;
     if (t)
         t->process = 0;
     free_phys_pages_range(ustack_phys, ustack_pages);
@@ -418,7 +417,7 @@ struct task *task_spawn_elf(iris_elf_image_t *img, uint64_t arg0) {
     t->user_rsp         = USER_STACK_TOP - 8;
     t->user_entry       = img->entry_vaddr;
     t->process          = proc;
-    proc->main_thread   = t;
+    proc->thread_count  = 1;
 
     /* Copy ELF segment info into the process for teardown cleanup */
     proc->elf_seg_count = img->seg_count;
@@ -462,7 +461,6 @@ struct task *task_spawn_elf(iris_elf_image_t *img, uint64_t arg0) {
     return t;
 
 fail:
-    if (proc) proc->main_thread = 0;
     if (t)    t->process = 0;
     free_phys_pages_range(ustack_phys, ustack_pages);
     if (proc) {
@@ -487,6 +485,7 @@ void task_abort_spawned_user(struct task *t) {
 
     struct KProcess *proc = t->process;
     if (proc) {
+        if (proc->thread_count > 0) proc->thread_count--;
         kprocess_teardown(proc, t);
     }
 
@@ -508,6 +507,68 @@ void task_abort_spawned_user(struct task *t) {
 
 
 
+/*
+ * task_thread_create — create a new thread inside an existing process.
+ *
+ * Shares proc's CR3 and handle_table.  The caller supplies the user stack
+ * pointer; no stack pages are allocated here.  arg is delivered in RBX
+ * on first execution (same convention as the process bootstrap arg0).
+ *
+ * On success increments proc->thread_count and returns the new task.
+ * On failure returns NULL with no side effects.
+ */
+struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
+                                uint64_t user_rsp, uint64_t arg) {
+    if (!proc || !proc->cr3 || proc->teardown_complete) return 0;
+
+    struct task *t = 0;
+    for (int i = 1; i < TASK_MAX; i++) {
+        if (tasks[i].state == TASK_DEAD) { t = &tasks[i]; break; }
+    }
+    if (!t) return 0;
+
+    task_reset_slot(t);
+    t->id         = next_id++;
+    t->state      = TASK_READY;
+    t->ring       = TASK_RING3;
+    t->time_slice = TASK_DEFAULT_SLICE;
+    t->ticks_left = TASK_DEFAULT_SLICE;
+    t->user_entry = entry_vaddr;
+    t->user_rsp   = user_rsp;
+    t->process    = proc;
+    /* user_stack_pages = 0: caller owns the stack; free_user_stack_pages is no-op */
+
+    int idx = (int)(t - tasks);
+    uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
+    kstack_top &= ~0xFULL;
+
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;              /* ss */
+    kstack_top -= 8; *(uint64_t *)kstack_top = user_rsp;          /* rsp */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202;            /* rflags */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;              /* cs */
+    kstack_top -= 8; *(uint64_t *)kstack_top = entry_vaddr;       /* rip */
+    kstack_top -= 8; *(uint64_t *)kstack_top =
+        (uint64_t)(uintptr_t)user_entry_trampoline;
+
+    task_rsp[idx] = kstack_top;
+
+    t->ctx.r15    = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
+    t->ctx.rbp    = 0;
+    t->ctx.rbx    = arg;  /* thread arg delivered in RBX */
+    t->ctx.rip    = (uint64_t)(uintptr_t)user_entry_trampoline;
+    t->ctx.rflags = 0x202ULL;
+
+    proc->thread_count++;
+
+    struct task *tail = task_list_head;
+    while (tail->next != task_list_head)
+        tail = tail->next;
+    tail->next = t;
+    t->next    = task_list_head;
+
+    return t;
+}
+
 struct task *task_current(void) {
     return current_task;
 }
@@ -517,24 +578,27 @@ void task_kill_external(struct task *t) {
     if (t->state == TASK_DEAD) return;  /* idempotent */
 
     struct KProcess *proc = t->process;
-    if (proc) {
-        kprocess_teardown(proc, t);
-    }
 
     task_cancel_blocked_waits(t);
     free_user_stack_pages(t);
 
-    /* Caller runs on a different CR3 from the target, so address-space reap
-     * is safe here without going through the pending_reap deferred path. */
-    if (proc) {
+    int do_teardown = 0;
+    if (proc && proc->thread_count > 0) {
+        proc->thread_count--;
+        if (proc->thread_count == 0) do_teardown = 1;
+    }
+
+    if (do_teardown) {
+        kprocess_teardown(proc, t);
+        /* Caller runs on a different CR3, so address-space reap is safe here. */
         kprocess_reap_address_space(proc);
     }
 
     unlink_task(t);
     task_reset_slot(t);
 
-    if (proc) {
-        kprocess_free(proc);  /* release kernel's creation reference */
+    if (do_teardown) {
+        kprocess_free(proc);
     }
 }
 
@@ -543,16 +607,18 @@ void task_exit_current(void) {
     if (!t) return;
 
     struct KProcess *proc = t->process;
-    /* Pre-switch exit phase: logical process teardown while task context is
-     * still available, then release task-local stack pages. */
-    if (proc) {
-        kprocess_teardown(proc, t);
-    }
 
     task_cancel_blocked_waits(t);
-    free_user_stack_pages(t);
-    t->state = TASK_DEAD;
+    free_user_stack_pages(t);  /* no-op if user_stack_pages == 0 (extra threads) */
 
+    /* Decrement thread count; only tear down the process when last thread exits. */
+    if (proc && proc->thread_count > 0) {
+        proc->thread_count--;
+        if (proc->thread_count == 0)
+            kprocess_teardown(proc, t);
+    }
+
+    t->state = TASK_DEAD;
     for (;;) task_yield();
 }
 
@@ -611,6 +677,17 @@ void task_yield(void) {
 
     context_switch(&old->ctx, &chosen->ctx,
                    &task_rsp[old_idx], task_rsp[new_idx]);
+}
+
+void task_kill_process(struct KProcess *proc) {
+    if (!proc) return;
+    /* Iterate the full task pool; kill every live task that belongs to proc.
+     * We must not stop after the first match because with D2 multi-threading
+     * a process may have several live threads. */
+    for (int i = 0; i < TASK_MAX; i++) {
+        if (tasks[i].state != TASK_DEAD && tasks[i].process == proc)
+            task_kill_external(&tasks[i]);
+    }
 }
 
 /* ── scheduler ────────────────────────────────────────────────────── */

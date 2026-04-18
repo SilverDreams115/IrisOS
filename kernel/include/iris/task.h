@@ -69,11 +69,23 @@ void         task_init(void);
 struct task *task_create(void (*entry)(void));
 struct task *task_create_user(uint64_t entry);
 struct task *task_spawn_user(uint64_t entry, uint64_t arg0);
+struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
+                                uint64_t user_rsp, uint64_t arg);
 void         task_set_bootstrap_arg0(struct task *t, uint64_t arg0);
 void         task_abort_spawned_user(struct task *t);
 void         task_exit_current(void);
 void         task_yield(void);
 struct task *task_current(void);
+
+/*
+ * task_kill_process — forcibly terminate all threads of a process.
+ *
+ * Iterates the task pool and calls task_kill_external on every task whose
+ * process pointer matches proc.  Safe to call when none of proc's threads
+ * is the current_task (i.e. only from an external caller).
+ * Idempotent: already-dead tasks are skipped.
+ */
+void task_kill_process(struct KProcess *proc);
 
 /*
  * task_kill_external — forcibly terminate a task that is NOT the current task.
