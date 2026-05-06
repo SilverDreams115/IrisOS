@@ -1,10 +1,12 @@
 #include <iris/nc/kvmo.h>
+#include <iris/nc/kprocess.h>
+#include <iris/kpage.h>
 #include <iris/paging.h>
 #include <iris/pmm.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
-static struct KVmo pool[KVMO_POOL_SIZE];
-static uint8_t     pool_used[KVMO_POOL_SIZE];
+static _Atomic uint32_t kvmo_live;
 
 static void kvmo_destroy(struct KObject *obj) {
     struct KVmo *v = (struct KVmo *)obj;
@@ -22,25 +24,24 @@ static void kvmo_destroy(struct KObject *obj) {
         for (uint64_t i = 0; i < pages; i++)
             pmm_free_page(v->phys + i * 0x1000ULL);
     }
-    for (int i = 0; i < (int)KVMO_POOL_SIZE; i++) {
-        if (&pool[i] == v) { pool_used[i] = 0; return; }
+    if (v->owner) {
+        struct KProcess *owner = v->owner;
+        v->owner = 0;
+        kprocess_quota_release_vmo(owner);
+        kobject_release(&owner->base);
     }
+    atomic_fetch_sub_explicit(&kvmo_live, 1u, memory_order_relaxed);
+    kpage_free(v, (uint32_t)sizeof(struct KVmo));
 }
 
 static const struct KObjectOps kvmo_ops = { .destroy = kvmo_destroy };
 
 static struct KVmo *kvmo_alloc(void) {
-    for (int i = 0; i < (int)KVMO_POOL_SIZE; i++) {
-        if (!pool_used[i]) {
-            pool_used[i] = 1;
-            struct KVmo *v = &pool[i];
-            uint8_t *p = (uint8_t *)v;
-            for (uint32_t j = 0; j < sizeof(*v); j++) p[j] = 0;
-            kobject_init(&v->base, KOBJ_VMO, &kvmo_ops);
-            return v;
-        }
-    }
-    return 0;
+    struct KVmo *v = kpage_alloc((uint32_t)sizeof(struct KVmo));
+    if (!v) return 0;
+    kobject_init(&v->base, KOBJ_VMO, &kvmo_ops);
+    atomic_fetch_add_explicit(&kvmo_live, 1u, memory_order_relaxed);
+    return v;
 }
 
 iris_error_t kvmo_size_to_pages(uint64_t size, uint32_t *out_pages) {
@@ -103,14 +104,38 @@ struct KVmo *kvmo_wrap(uint64_t phys, uint64_t size) {
     return v;
 }
 
+iris_error_t kvmo_bind_owner(struct KVmo *v, struct KProcess *owner) {
+    iris_error_t r;
+    if (!v || !owner) return IRIS_ERR_INVALID_ARG;
+
+    spinlock_lock(&v->base.lock);
+    if (v->owner) {
+        r = (v->owner == owner) ? IRIS_OK : IRIS_ERR_BUSY;
+        spinlock_unlock(&v->base.lock);
+        return r;
+    }
+    spinlock_unlock(&v->base.lock);
+
+    r = kprocess_quota_acquire_vmo(owner);
+    if (r != IRIS_OK) return r;
+    kobject_retain(&owner->base);
+
+    spinlock_lock(&v->base.lock);
+    if (v->owner) {
+        spinlock_unlock(&v->base.lock);
+        kobject_release(&owner->base);
+        kprocess_quota_release_vmo(owner);
+        return (v->owner == owner) ? IRIS_OK : IRIS_ERR_BUSY;
+    }
+    v->owner = owner;
+    spinlock_unlock(&v->base.lock);
+    return IRIS_OK;
+}
+
 void kvmo_free(struct KVmo *v) {
     kobject_release(&v->base);
 }
 
 uint32_t kvmo_live_count(void) {
-    uint32_t live = 0;
-    for (uint32_t i = 0; i < KVMO_POOL_SIZE; i++) {
-        if (pool_used[i]) live++;
-    }
-    return live;
+    return atomic_load_explicit(&kvmo_live, memory_order_relaxed);
 }

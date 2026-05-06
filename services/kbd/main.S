@@ -320,10 +320,6 @@ _start:
     movq  %rsp,  %rsi
     movq  $0,    %rdx
     syscall
-
-    movq  $8,    %rax                  /* SYS_SLEEP */
-    movq  $1,    %rdi
-    syscall
     jmp   .kbd_recv
 
 .kbd_recv_err:
@@ -390,9 +386,6 @@ _start:
     syscall
 
 .kbd_status_done:
-    movq  $8,    %rax                  /* SYS_SLEEP */
-    movq  $1,    %rdi
-    syscall
     jmp   .kbd_recv
 
 /* ── KBD_MSG_SUBSCRIBE: register a scancode event subscriber ────────────────

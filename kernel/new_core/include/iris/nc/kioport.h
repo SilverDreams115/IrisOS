@@ -26,7 +26,7 @@
 #include <iris/nc/kobject.h>
 #include <stdint.h>
 
-#define KIOPORT_POOL_SIZE 16u
+#define KIOPORT_POOL_SIZE 0u
 
 struct KIoPort {
     struct KObject base;

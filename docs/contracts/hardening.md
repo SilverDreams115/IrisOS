@@ -88,20 +88,26 @@ Operational consequence:
 
 Current delivery path:
 
-- kernel -> `svcmgr` private bootstrap channel
-- attached rights: `RIGHT_READ`
-- permission bit: `IRIS_BOOTCAP_SPAWN_SERVICE`
+- kernel -> first user task at spawn time
+- handle rights: `RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER`
+- permission bits:
+  - `IRIS_BOOTCAP_SPAWN_SERVICE`
+  - `IRIS_BOOTCAP_HW_ACCESS`
+  - `IRIS_BOOTCAP_KDEBUG`
 
 Current use:
 
-- only authorizes `SYS_SPAWN_SERVICE`
+- authorizes `SYS_INITRD_LOOKUP`
+- authorizes hardware cap creation until userland narrows it with `SYS_BOOTCAP_RESTRICT`
+- authorizes privileged serial debug while the handle retains `IRIS_BOOTCAP_KDEBUG`
 - does not grant general process-management authority
 
 ### `KIoPort`
 
 Current healthy-path delivery:
 
-- kernel -> `svcmgr` bootstrap channel
+- kernel -> first user task via `KBootstrapCap` authority
+- first user task -> `svcmgr` by handle transfer
 - `svcmgr` -> child service bootstrap channel
 
 Current rights:
@@ -115,21 +121,6 @@ Current consequence:
 - `kbd` may not execute `SYS_IOPORT_OUT` under the currently delivered child rights
 
 This is a real current invariant of the code. If `kbd` ever needs output port writes on the healthy path, the delivered rights contract must change deliberately.
-
-### First-client bootstrap handle to `svcmgr`
-
-Current delivery path:
-
-- kernel inserts the retained `svcmgr` bootstrap channel into `init`
-
-Current rights:
-
-- only `RIGHT_WRITE`
-
-Current consequence:
-
-- `init` can send requests into `svcmgr`
-- `init` cannot read from or manage the bootstrap channel directly
 
 ## Residual risks still present
 

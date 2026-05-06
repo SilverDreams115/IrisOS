@@ -18,7 +18,7 @@
 #include <iris/nc/kobject.h>
 #include <stdint.h>
 
-#define KINITRDENTRY_POOL_SIZE 8u
+#define KINITRDENTRY_POOL_SIZE 0u
 
 struct KInitrdEntry {
     struct KObject  base;

@@ -83,10 +83,34 @@ static void rollback_user_maps(uint64_t cr3, uint64_t start, uint64_t end) {
 
 /* ── Transitional stdio / retired VFS syscall island ─────────────── */
 
+/*
+ * task_has_kdebug_cap — check whether task t holds a KBootstrapCap with
+ * IRIS_BOOTCAP_KDEBUG.  Scans the handle table under its spinlock so that
+ * no entry can be closed while the check runs.  The table's own reference
+ * prevents any live slot's object from being freed while used[i] is true.
+ * Only init (which receives KDEBUG at boot) and handles it delegates can
+ * pass this check; ordinary services without a bootstrap cap cannot.
+ */
+static int task_has_kdebug_cap(struct task *t) {
+    if (!t || !t->process) return 0;
+    HandleTable *ht = &t->process->handle_table;
+    int found = 0;
+    spinlock_lock(&ht->lock);
+    for (uint32_t i = 0; i < HANDLE_TABLE_MAX && !found; i++) {
+        if (!ht->used[i]) continue;
+        struct KObject *obj = ht->slots[i].object;
+        if (!obj || obj->type != KOBJ_BOOTSTRAP_CAP) continue;
+        if (kbootcap_allows((struct KBootstrapCap *)obj, IRIS_BOOTCAP_KDEBUG))
+            found = 1;
+    }
+    spinlock_unlock(&ht->lock);
+    return found;
+}
+
 static uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
-    /* Debug output: writes user string directly to serial. Transitional
-     * facility only — production I/O must go through the console service. */
+    struct task *t = task_current();
+    if (!task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
     if (!user_range_readable(arg0, 1)) return syscall_err(IRIS_ERR_INVALID_ARG);
     char buf[257];
     uint32_t i = copy_user_cstr_bounded(arg0, buf, (uint32_t)sizeof(buf));
@@ -133,6 +157,11 @@ static uint64_t sys_chan_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
     struct KChannel *ch = kchannel_alloc();
     if (!ch) return syscall_err(IRIS_ERR_NO_MEMORY);
+    iris_error_t r = kchannel_bind_owner(ch, t->process);
+    if (r != IRIS_OK) {
+        kchannel_free(ch);
+        return syscall_err(r);
+    }
     handle_id_t h = handle_table_insert(&t->process->handle_table,
                                         &ch->base,
                                         RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
@@ -279,6 +308,11 @@ static uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)pages;
     struct KVmo *v = kvmo_create(arg0);
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
+    iris_error_t r = kvmo_bind_owner(v, t->process);
+    if (r != IRIS_OK) {
+        kvmo_free(v);
+        return syscall_err(r);
+    }
     handle_id_t h = handle_table_insert(&t->process->handle_table,
                                         &v->base,
                                         RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER |
@@ -327,16 +361,13 @@ static uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (v->demand) {
         /* Demand path: check for PTE collision and demand-mapping overlap */
-        uint32_t mi;
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
             if (paging_virt_to_phys_in(t->process->cr3, arg1 + off) != 0) {
                 kobject_release(obj);
                 return syscall_err(IRIS_ERR_BUSY);
             }
         }
-        for (mi = 0; mi < KPROCESS_VMO_MAP_MAX; mi++) {
-            struct KVmoMapping *m = &t->process->vmo_mappings[mi];
-            if (!m->vmo) continue;
+        for (struct KVmoMapping *m = t->process->vmo_mappings; m; m = m->next) {
             if (arg1 + map_size <= m->virt_base) continue;
             if (arg1 >= m->virt_base + m->size) continue;
             kobject_release(obj);
@@ -450,6 +481,11 @@ static uint64_t sys_notify_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
     struct KNotification *n = knotification_alloc();
     if (!n) return syscall_err(IRIS_ERR_NO_MEMORY);
+    iris_error_t r = knotification_bind_owner(n, t->process);
+    if (r != IRIS_OK) {
+        knotification_free(n);
+        return syscall_err(r);
+    }
     handle_id_t h = handle_table_insert(&t->process->handle_table,
                                         &n->base,
                                         RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT |
@@ -1508,11 +1544,17 @@ static uint64_t sys_bootcap_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
-    struct KBootstrapCap *cap = (struct KBootstrapCap *)obj;
-    spinlock_lock(&cap->base.lock);
-    cap->permissions &= (uint32_t)arg1;
-    spinlock_unlock(&cap->base.lock);
+    struct KBootstrapCap *restricted =
+        kbootcap_clone_restricted((struct KBootstrapCap *)obj, (uint32_t)arg1);
+    if (!restricted) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_NO_MEMORY);
+    }
+
+    r = handle_table_replace(&t->process->handle_table, (handle_id_t)arg0, &restricted->base);
+    kobject_release(&restricted->base);
     kobject_release(obj);
+    if (r != IRIS_OK) return syscall_err(r);
     return syscall_ok_u64(0);
 }
 
@@ -1643,6 +1685,50 @@ static uint64_t sys_thread_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return 0;  /* unreachable */
 }
 
+static uint64_t sys_handle_type(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    struct KObject *obj;
+    iris_rights_t rights;
+    iris_error_t r;
+    uint64_t type;
+
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0, &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    (void)rights;
+    type = (uint64_t)obj->type;
+    kobject_release(obj);
+    return syscall_ok_u64(type);
+}
+
+static uint64_t sys_handle_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    struct KObject *obj_a;
+    struct KObject *obj_b;
+    iris_rights_t rights_a;
+    iris_rights_t rights_b;
+    iris_error_t r;
+    uint64_t same;
+
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0, &obj_a, &rights_a);
+    if (r != IRIS_OK) return syscall_err(r);
+    r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg1, &obj_b, &rights_b);
+    if (r != IRIS_OK) {
+        kobject_release(obj_a);
+        return syscall_err(r);
+    }
+    (void)rights_a;
+    (void)rights_b;
+    same = (obj_a == obj_b) ? 1u : 0u;
+    kobject_release(obj_b);
+    kobject_release(obj_a);
+    return syscall_ok_u64(same);
+}
+
 /* ── Futex (D3) ──────────────────────────────────────────────────── */
 
 static uint64_t sys_futex_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
@@ -1718,6 +1804,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_THREAD_EXIT:          return sys_thread_exit(arg0, arg1, arg2);
         case SYS_FUTEX_WAIT:           return sys_futex_wait(arg0, arg1, arg2);
         case SYS_FUTEX_WAKE:           return sys_futex_wake(arg0, arg1, arg2);
+        case SYS_HANDLE_TYPE:          return sys_handle_type(arg0, arg1, arg2);
+        case SYS_HANDLE_SAME_OBJECT:   return sys_handle_same_object(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }

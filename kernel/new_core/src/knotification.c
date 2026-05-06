@@ -1,9 +1,32 @@
 #include <iris/nc/knotification.h>
+#include <iris/nc/kprocess.h>
+#include <iris/kpage.h>
 #include <iris/task.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
-static struct KNotification pool[KNOTIF_POOL_SIZE];
-static uint8_t              pool_used[KNOTIF_POOL_SIZE];
+static struct KNotification *live_head = 0;
+static spinlock_t            live_lock;
+static _Atomic uint32_t      knotif_live;
+
+static void knotif_live_link(struct KNotification *n) {
+    spinlock_lock(&live_lock);
+    n->live_next = live_head;
+    n->live_prev = 0;
+    if (live_head) live_head->live_prev = n;
+    live_head = n;
+    spinlock_unlock(&live_lock);
+}
+
+static void knotif_live_unlink(struct KNotification *n) {
+    spinlock_lock(&live_lock);
+    if (n->live_prev) n->live_prev->live_next = n->live_next;
+    else              live_head = n->live_next;
+    if (n->live_next) n->live_next->live_prev = n->live_prev;
+    n->live_prev = 0;
+    n->live_next = 0;
+    spinlock_unlock(&live_lock);
+}
 
 /* ── waiter array helpers ─────────────────────────────────────── */
 
@@ -70,12 +93,27 @@ static void knotification_close(struct KObject *obj) {
     spinlock_unlock(&n->base.lock);
 }
 
+static void knotification_owner_release(struct KNotification *n) {
+    struct KProcess *owner;
+    if (!n) return;
+
+    spinlock_lock(&n->base.lock);
+    owner = n->owner;
+    n->owner = 0;
+    spinlock_unlock(&n->base.lock);
+
+    if (!owner) return;
+    kprocess_quota_release_notification(owner);
+    kobject_release(&owner->base);
+}
+
 static void knotification_destroy(struct KObject *obj) {
     knotification_close(obj);
     struct KNotification *n = (struct KNotification *)obj;
-    for (int i = 0; i < KNOTIF_POOL_SIZE; i++) {
-        if (&pool[i] == n) { pool_used[i] = 0; return; }
-    }
+    knotification_owner_release(n);
+    knotif_live_unlink(n);
+    atomic_fetch_sub_explicit(&knotif_live, 1u, memory_order_relaxed);
+    kpage_free(n, (uint32_t)sizeof(struct KNotification));
 }
 
 static const struct KObjectOps knotification_ops = {
@@ -86,19 +124,42 @@ static const struct KObjectOps knotification_ops = {
 /* ── Public API ───────────────────────────────────────────────── */
 
 struct KNotification *knotification_alloc(void) {
-    for (int i = 0; i < KNOTIF_POOL_SIZE; i++) {
-        if (!pool_used[i]) {
-            pool_used[i] = 1;
-            struct KNotification *n = &pool[i];
-            uint8_t *p = (uint8_t *)n;
-            for (uint32_t j = 0; j < sizeof(*n); j++) p[j] = 0;
-            kobject_init(&n->base, KOBJ_NOTIFICATION, &knotification_ops);
-            atomic_store_explicit(&n->signal_bits, 0, memory_order_relaxed);
-            knotif_waiters_clear(n);
-            return n;
-        }
+    struct KNotification *n = kpage_alloc((uint32_t)sizeof(struct KNotification));
+    if (!n) return 0;
+    kobject_init(&n->base, KOBJ_NOTIFICATION, &knotification_ops);
+    atomic_store_explicit(&n->signal_bits, 0, memory_order_relaxed);
+    knotif_waiters_clear(n);
+    knotif_live_link(n);
+    atomic_fetch_add_explicit(&knotif_live, 1u, memory_order_relaxed);
+    return n;
+}
+
+iris_error_t knotification_bind_owner(struct KNotification *n, struct KProcess *owner) {
+    iris_error_t r;
+    if (!n || !owner) return IRIS_ERR_INVALID_ARG;
+
+    spinlock_lock(&n->base.lock);
+    if (n->owner) {
+        r = (n->owner == owner) ? IRIS_OK : IRIS_ERR_BUSY;
+        spinlock_unlock(&n->base.lock);
+        return r;
     }
-    return 0;
+    spinlock_unlock(&n->base.lock);
+
+    r = kprocess_quota_acquire_notification(owner);
+    if (r != IRIS_OK) return r;
+    kobject_retain(&owner->base);
+
+    spinlock_lock(&n->base.lock);
+    if (n->owner) {
+        spinlock_unlock(&n->base.lock);
+        kobject_release(&owner->base);
+        kprocess_quota_release_notification(owner);
+        return (n->owner == owner) ? IRIS_OK : IRIS_ERR_BUSY;
+    }
+    n->owner = owner;
+    spinlock_unlock(&n->base.lock);
+    return IRIS_OK;
 }
 
 void knotification_free(struct KNotification *n) {
@@ -107,21 +168,20 @@ void knotification_free(struct KNotification *n) {
 
 void knotification_cancel_waiter(struct task *t) {
     if (!t) return;
-    for (int i = 0; i < KNOTIF_POOL_SIZE; i++) {
-        if (!pool_used[i]) continue;
-        struct KNotification *n = &pool[i];
+    spinlock_lock(&live_lock);
+    struct KNotification *n = live_head;
+    while (n) {
+        struct KNotification *next = n->live_next;
         spinlock_lock(&n->base.lock);
         knotif_waiters_remove(n, t);
         spinlock_unlock(&n->base.lock);
+        n = next;
     }
+    spinlock_unlock(&live_lock);
 }
 
 uint32_t knotification_live_count(void) {
-    uint32_t live = 0;
-    for (uint32_t i = 0; i < KNOTIF_POOL_SIZE; i++) {
-        if (pool_used[i]) live++;
-    }
-    return live;
+    return atomic_load_explicit(&knotif_live, memory_order_relaxed);
 }
 
 /*

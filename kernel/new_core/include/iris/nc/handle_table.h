@@ -32,6 +32,8 @@ handle_id_t  handle_table_insert(HandleTable *ht, struct KObject *obj,
 iris_error_t handle_table_get_object(HandleTable *ht, handle_id_t id,
                                      struct KObject **out_obj,
                                      iris_rights_t   *out_rights);
+iris_error_t handle_table_replace(HandleTable *ht, handle_id_t id,
+                                  struct KObject *new_obj);
 iris_error_t handle_table_close(HandleTable *ht, handle_id_t id);
 void         handle_table_close_all(HandleTable *ht);
 

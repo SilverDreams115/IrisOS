@@ -94,3 +94,32 @@ jobs:
         with:
           name: iris-runtime-log
           path: build/qemu-headless.log
+
+  runtime-smoke-selftests:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install toolchain and runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils \
+            gcc \
+            gnu-efi \
+            make \
+            ovmf \
+            qemu-system-x86 \
+            coreutils
+
+      - name: Run selftest-enabled headless runtime smoke
+        run: make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
+
+      - name: Upload selftest runtime serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iris-runtime-selftests-log
+          path: build/qemu-headless-selftests.log

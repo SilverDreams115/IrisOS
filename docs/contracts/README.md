@@ -18,5 +18,5 @@ These documents describe what the code does today, not an aspirational future de
 
 - If code and docs disagree, code wins until the docs are corrected.
 - Protocol layouts are sourced from headers under `kernel/include/iris/`.
-- Bootstrap ownership and sequencing are sourced from `kernel/kernel_main.c`, `kernel/core/init/svcmgr_bootstrap.c`, `kernel/core/syscall/syscall.c`, and the service entrypoints.
+- Bootstrap ownership and sequencing are sourced from `kernel/kernel_main.c`, `kernel/core/initrd/initrd.c`, `kernel/core/syscall/syscall.c`, and the service entrypoints.
 - These contracts intentionally describe the current internal compatibility surface. They are not a promise of external ABI stability yet.

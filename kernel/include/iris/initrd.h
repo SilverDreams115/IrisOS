@@ -2,25 +2,32 @@
 #define IRIS_INITRD_H
 
 /*
- * initrd.h — kernel initrd lookup API.
+ * initrd.h — kernel initrd catalog API.
  *
- * The initrd is a read-only table of named ELF images embedded into the
- * kernel binary via `objcopy -I binary`.  Each entry maps a short name
- * (≤ 31 bytes, NUL-terminated) to a contiguous byte range in the kernel
- * image.
+ * The initrd is a read-only table of ELF images embedded into the kernel
+ * binary via `objcopy -I binary`. Userland-visible lookup remains named
+ * because SYS_INITRD_LOOKUP exposes a generic catalog service to bootstrap
+ * code.
  *
- * Usage:
- *   const void *data; uint32_t size;
- *   if (initrd_find("svcmgr", &data, &size) == 0) { // not found }
- *   iris_error_t err = elf_loader_load(data, size, &img);
+ * The kernel boot path must not depend on service names. It consumes one
+ * opaque bootstrap image selected by initrd_bootstrap_image().
  */
 
 #include <stdint.h>
 
 /*
- * initrd_find — look up a named service image in the embedded initrd.
+ * initrd_bootstrap_image — return the kernel-selected bootstrap ELF image.
  *
- * @name   NUL-terminated service name (case-sensitive, max 31 chars).
+ * This is the only initrd API the kernel boot path should consume directly.
+ * The returned image is opaque to the caller; boot sequencing policy beyond
+ * "spawn the bootstrap image" lives in userland.
+ */
+int initrd_bootstrap_image(const void **out_data, uint32_t *out_size);
+
+/*
+ * initrd_find — look up a named ELF image in the embedded initrd catalog.
+ *
+ * @name      NUL-terminated image name (case-sensitive, max 31 chars).
  * @out_data  Set to a pointer to the first byte of the ELF image.
  * @out_size  Set to the byte length of the ELF image.
  *

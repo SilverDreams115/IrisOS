@@ -1,11 +1,55 @@
 #include <iris/nc/kchannel.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/kprocess.h>
+#include <iris/kpage.h>
 #include <iris/task.h>
 #include <stdint.h>
 
-static struct KChannel pool[KCHANNEL_POOL_SIZE];
-static uint8_t         pool_used[KCHANNEL_POOL_SIZE];
+/* ── Live-list state ─────────────────────────────────────────────────────────
+ *
+ * All live KChannel objects are linked into a doubly-linked list protected by
+ * live_lock.  This replaces the static pool[] + pool_used[] arrays, removing
+ * the hard KCHANNEL_POOL_SIZE ceiling.
+ *
+ * Lock ordering (must be respected everywhere to prevent deadlock):
+ *   live_lock  →  ch->base.lock
+ *
+ * Never acquire live_lock while already holding ch->base.lock.
+ * ─────────────────────────────────────────────────────────────────────────── */
+static struct KChannel *live_head = 0;
+static spinlock_t       live_lock;   /* zero-initialized = unlocked (BSS) */
+
+static void live_link(struct KChannel *ch) {
+    spinlock_lock(&live_lock);
+    ch->live_next = live_head;
+    ch->live_prev = 0;
+    if (live_head) live_head->live_prev = ch;
+    live_head = ch;
+    spinlock_unlock(&live_lock);
+}
+
+static void live_unlink(struct KChannel *ch) {
+    spinlock_lock(&live_lock);
+    if (ch->live_prev) ch->live_prev->live_next = ch->live_next;
+    else               live_head = ch->live_next;
+    if (ch->live_next) ch->live_next->live_prev = ch->live_prev;
+    ch->live_prev = ch->live_next = 0;
+    spinlock_unlock(&live_lock);
+}
+
+static void kchannel_owner_release(struct KChannel *ch) {
+    struct KProcess *owner;
+    if (!ch) return;
+
+    spinlock_lock(&ch->base.lock);
+    owner = ch->owner;
+    ch->owner = 0;
+    spinlock_unlock(&ch->base.lock);
+
+    if (!owner) return;
+    kprocess_quota_release_channel(owner);
+    kobject_release(&owner->base);
+}
 
 static void kchannel_waiters_clear(struct KChannel *ch) {
     if (!ch) return;
@@ -61,15 +105,19 @@ static iris_error_t kchannel_waiters_enqueue(struct KChannel *ch, struct task *t
     return IRIS_ERR_TABLE_FULL;
 }
 
+/*
+ * kchannel_cancel_waiter — remove task t from every live channel's waiter set.
+ *
+ * Iterates the live list under live_lock, then takes each channel's base.lock
+ * to mutate waiters[].  Lock ordering (live_lock → base.lock) is respected.
+ */
 void kchannel_cancel_waiter(struct task *t) {
     if (!t) return;
 
-    for (int i = 0; i < KCHANNEL_POOL_SIZE; i++) {
-        struct KChannel *ch;
-
-        if (!pool_used[i]) continue;
-        ch = &pool[i];
-
+    spinlock_lock(&live_lock);
+    struct KChannel *ch = live_head;
+    while (ch) {
+        struct KChannel *next = ch->live_next;
         spinlock_lock(&ch->base.lock);
         for (uint32_t j = 0; j < KCHANNEL_WAITERS_MAX; j++) {
             if (ch->waiters[j] != t) continue;
@@ -78,7 +126,9 @@ void kchannel_cancel_waiter(struct task *t) {
                 ch->waiter_count--;
         }
         spinlock_unlock(&ch->base.lock);
+        ch = next;
     }
+    spinlock_unlock(&live_lock);
 }
 
 static void queued_handle_reset(struct KChanQueuedHandle *qh) {
@@ -100,14 +150,37 @@ static void kchannel_close(struct KObject *obj) {
     spinlock_unlock(&ch->base.lock);
 }
 
+/*
+ * kchannel_destroy — called by kobject_release when refcount reaches 0.
+ *
+ * Steps (lock ordering enforced throughout):
+ *   1. Unlink from live list (live_lock, then release).
+ *   2. Close + wake all blocked receivers (base.lock).
+ *   3. Drop any in-flight queued handles.
+ *   4. Release process owner reference.
+ *   5. Return pages to PMM via kpage_free.
+ */
 static void kchannel_destroy(struct KObject *obj) {
-    kchannel_close(obj);
     struct KChannel *ch = (struct KChannel *)obj;
+
+    /* Step 1: remove from live list before touching any other state. */
+    live_unlink(ch);
+
+    /* Step 2: close and wake all blocked waiters. */
+    spinlock_lock(&ch->base.lock);
+    ch->closed = 1;
+    kchannel_waiters_wake_all(ch);
+    spinlock_unlock(&ch->base.lock);
+
+    /* Step 3: drop in-flight queued handles. */
     for (uint32_t i = 0; i < KCHAN_CAPACITY; i++)
         queued_handle_reset(&ch->attached[i]);
-    for (int i = 0; i < KCHANNEL_POOL_SIZE; i++) {
-        if (&pool[i] == ch) { pool_used[i] = 0; return; }
-    }
+
+    /* Step 4: release process owner reference. */
+    kchannel_owner_release(ch);
+
+    /* Step 5: return pages to PMM. */
+    kpage_free(ch, sizeof(struct KChannel));
 }
 
 static const struct KObjectOps kchannel_ops = {
@@ -116,19 +189,41 @@ static const struct KObjectOps kchannel_ops = {
 };
 
 struct KChannel *kchannel_alloc(void) {
-    for (int i = 0; i < KCHANNEL_POOL_SIZE; i++) {
-        if (!pool_used[i]) {
-            pool_used[i] = 1;
-            struct KChannel *ch = &pool[i];
-            /* zero all fields */
-            uint8_t *p = (uint8_t *)ch;
-            for (uint32_t j = 0; j < sizeof(*ch); j++) p[j] = 0;
-            kobject_init(&ch->base, KOBJ_CHANNEL, &kchannel_ops);
-            kchannel_waiters_clear(ch);
-            return ch;
-        }
+    struct KChannel *ch = kpage_alloc(sizeof(struct KChannel));
+    if (!ch) return 0;
+    /* kpage_alloc zeroes the allocation — all fields start at 0. */
+    kobject_init(&ch->base, KOBJ_CHANNEL, &kchannel_ops);
+    kchannel_waiters_clear(ch);
+    live_link(ch);
+    return ch;
+}
+
+iris_error_t kchannel_bind_owner(struct KChannel *ch, struct KProcess *owner) {
+    iris_error_t r;
+    if (!ch || !owner) return IRIS_ERR_INVALID_ARG;
+
+    spinlock_lock(&ch->base.lock);
+    if (ch->owner) {
+        r = (ch->owner == owner) ? IRIS_OK : IRIS_ERR_BUSY;
+        spinlock_unlock(&ch->base.lock);
+        return r;
     }
-    return 0;
+    spinlock_unlock(&ch->base.lock);
+
+    r = kprocess_quota_acquire_channel(owner);
+    if (r != IRIS_OK) return r;
+    kobject_retain(&owner->base);
+
+    spinlock_lock(&ch->base.lock);
+    if (ch->owner) {
+        spinlock_unlock(&ch->base.lock);
+        kobject_release(&owner->base);
+        kprocess_quota_release_channel(owner);
+        return (ch->owner == owner) ? IRIS_OK : IRIS_ERR_BUSY;
+    }
+    ch->owner = owner;
+    spinlock_unlock(&ch->base.lock);
+    return IRIS_OK;
 }
 
 void kchannel_free(struct KChannel *ch) {
@@ -306,8 +401,9 @@ iris_error_t kchannel_recv_into_process(struct KChannel *ch, struct KProcess *pr
 
 uint32_t kchannel_live_count(void) {
     uint32_t live = 0;
-    for (uint32_t i = 0; i < KCHANNEL_POOL_SIZE; i++) {
-        if (pool_used[i]) live++;
-    }
+    spinlock_lock(&live_lock);
+    struct KChannel *ch = live_head;
+    while (ch) { live++; ch = ch->live_next; }
+    spinlock_unlock(&live_lock);
     return live;
 }

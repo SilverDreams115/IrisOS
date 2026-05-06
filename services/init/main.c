@@ -60,13 +60,18 @@ static void init_log(const char *s) {
 static const char init_stage_lookup[]    = "[USER][INIT][S1] service lookup\n";
 static const char init_stage_hello[]     = "[USER][INIT][S2] kbd hello\n";
 static const char init_stage_diag[]      = "[USER][INIT][S3] global diag\n";
-static const char init_stage_vfs_list[]  = "[USER][INIT][S4] vfs list\n";
-static const char init_stage_vfs_rw[]    = "[USER][INIT][S5] vfs rw\n";
-static const char init_stage_subscribe[] = "[USER][INIT][S6] kbd subscribe\n";
+static const char init_stage_dynamic[]   = "[USER][INIT][S4] dynamic registry\n";
+static const char init_stage_vfs_list[]  = "[USER][INIT][S5] vfs list\n";
+static const char init_stage_vfs_rw[]    = "[USER][INIT][S6] vfs rw\n";
+static const char init_stage_subscribe[] = "[USER][INIT][S7] kbd subscribe\n";
 static const char init_stage_healthy[]   = "[USER][INIT][BOOT] healthy path OK\n";
+static const char init_diag_req[]        = "[USER][INIT][DIAG] request\n";
+static const char init_diag_sent[]       = "[USER][INIT][DIAG] sent\n";
+static const char init_diag_reply[]      = "[USER][INIT][DIAG] reply\n";
 
 #define INIT_RETRY_LIMIT 100
 #define INIT_RETRY_SLEEP_TICKS 2
+#define INIT_RUNTIME_ENDPOINT 0x8001u
 
 static void init_exit(long code) {
     init_sys1(SYS_EXIT, code);
@@ -217,6 +222,211 @@ static handle_id_t init_lookup_wait(handle_id_t sm_h, uint32_t endpoint,
     return HANDLE_INVALID;
 }
 
+static handle_id_t init_lookup_name(handle_id_t sm_h, const char *name,
+                                    iris_rights_t rights) {
+    struct KChanMsg msg;
+    handle_id_t base_h = HANDLE_INVALID;
+    handle_id_t recv_h = HANDLE_INVALID;
+    handle_id_t xfer_h = HANDLE_INVALID;
+    handle_id_t result = HANDLE_INVALID;
+    long r;
+    uint32_t i = 0;
+
+    if (!name || !name[0]) return HANDLE_INVALID;
+
+    r = init_sys0(SYS_CHAN_CREATE);
+    if (r < 0) goto fail;
+    base_h = (handle_id_t)r;
+
+    r = init_sys2(SYS_HANDLE_DUP, (long)base_h, (long)RIGHT_READ);
+    if (r < 0) goto fail;
+    recv_h = (handle_id_t)r;
+
+    r = init_sys2(SYS_HANDLE_DUP, (long)base_h, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (r < 0) goto fail;
+    xfer_h = (handle_id_t)r;
+
+    init_msg_zero(&msg);
+    msg.type = SVCMGR_MSG_LOOKUP_NAME;
+    while (i + 1u < SVCMGR_SERVICE_NAME_CAP && name[i]) {
+        msg.data[SVCMGR_LOOKUP_NAME_OFF_NAME + i] = (uint8_t)name[i];
+        i++;
+    }
+    msg.data[SVCMGR_LOOKUP_NAME_OFF_NAME + i] = '\0';
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_LOOKUP_NAME_OFF_RIGHTS], (uint32_t)rights);
+    msg.data_len = SVCMGR_LOOKUP_NAME_MSG_LEN;
+    msg.attached_handle = xfer_h;
+    msg.attached_rights = RIGHT_WRITE | RIGHT_TRANSFER;
+
+    r = init_sys2(SYS_CHAN_SEND, (long)sm_h, (long)&msg);
+    if (r < 0) goto fail;
+    xfer_h = HANDLE_INVALID;
+
+    init_msg_zero(&msg);
+    r = init_sys2(SYS_CHAN_RECV, (long)recv_h, (long)&msg);
+    if (r < 0) goto fail;
+    if (msg.type != SVCMGR_MSG_LOOKUP_REPLY) goto fail;
+    if ((int32_t)svcmgr_proto_read_u32(&msg.data[SVCMGR_LOOKUP_REPLY_OFF_ERR]) != 0) goto fail;
+    result = msg.attached_handle;
+
+fail:
+    init_close(&base_h);
+    init_close(&recv_h);
+    if (xfer_h != HANDLE_INVALID) init_close(&xfer_h);
+    return result;
+}
+
+static int init_check_dynamic_registry(handle_id_t sm_h) {
+    static const char runtime_name[] = "init.echo";
+    struct KChanMsg msg;
+    handle_id_t base_h = HANDLE_INVALID;
+    handle_id_t publish_h = HANDLE_INVALID;
+    handle_id_t proof_h = HANDLE_INVALID;
+    handle_id_t proof2_h = HANDLE_INVALID;
+    handle_id_t client_h = HANDLE_INVALID;
+    handle_id_t base2_h = HANDLE_INVALID;
+    handle_id_t publish2_h = HANDLE_INVALID;
+    handle_id_t client2_h = HANDLE_INVALID;
+    long r;
+
+    r = init_sys0(SYS_CHAN_CREATE);
+    if (r < 0) goto fail;
+    base_h = (handle_id_t)r;
+
+    r = init_sys2(SYS_HANDLE_DUP, (long)base_h,
+                  (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER));
+    if (r < 0) goto fail;
+    publish_h = (handle_id_t)r;
+
+    init_msg_zero(&msg);
+    msg.type = SVCMGR_MSG_REGISTER;
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_REGISTER_OFF_ENDPOINT], INIT_RUNTIME_ENDPOINT);
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_REGISTER_OFF_RIGHTS], RIGHT_WRITE);
+    for (uint32_t i = 0; i + 1u < SVCMGR_SERVICE_NAME_CAP && runtime_name[i]; i++)
+        msg.data[SVCMGR_REGISTER_OFF_NAME + i] = (uint8_t)runtime_name[i];
+    msg.data_len = SVCMGR_REGISTER_MSG_LEN;
+    msg.attached_handle = publish_h;
+    msg.attached_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+
+    r = init_sys2(SYS_CHAN_SEND, (long)sm_h, (long)&msg);
+    if (r < 0) goto fail;
+    publish_h = HANDLE_INVALID;
+
+    client_h = init_lookup_name(sm_h, runtime_name, RIGHT_WRITE);
+    if (client_h == HANDLE_INVALID) goto fail;
+
+    init_msg_zero(&msg);
+    msg.type = 0xA551u;
+    msg.data[0] = 'o';
+    msg.data[1] = 'k';
+    msg.data_len = 2u;
+    msg.attached_handle = HANDLE_INVALID;
+    r = init_sys2(SYS_CHAN_SEND, (long)client_h, (long)&msg);
+    if (r < 0) goto fail;
+
+    init_msg_zero(&msg);
+    r = init_sys2(SYS_CHAN_RECV, (long)base_h, (long)&msg);
+    if (r < 0) goto fail;
+    if (msg.type != 0xA551u) goto fail;
+    if (msg.data_len != 2u || msg.data[0] != 'o' || msg.data[1] != 'k') goto fail;
+
+    r = init_sys2(SYS_HANDLE_DUP, (long)base_h, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (r < 0) goto fail;
+    proof_h = (handle_id_t)r;
+
+    init_msg_zero(&msg);
+    msg.type = SVCMGR_MSG_UNREGISTER;
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_UNREGISTER_OFF_ENDPOINT], INIT_RUNTIME_ENDPOINT);
+    msg.data_len = SVCMGR_UNREGISTER_MSG_LEN;
+    msg.attached_handle = proof_h;
+    msg.attached_rights = RIGHT_WRITE | RIGHT_TRANSFER;
+    r = init_sys2(SYS_CHAN_SEND, (long)sm_h, (long)&msg);
+    if (r < 0) goto fail;
+    proof_h = HANDLE_INVALID;
+
+    if (init_lookup_name(sm_h, runtime_name, RIGHT_WRITE) != HANDLE_INVALID) goto fail;
+    init_msg_zero(&msg);
+    msg.type = 0xA553u;
+    msg.data_len = 0u;
+    msg.attached_handle = HANDLE_INVALID;
+    if (init_sys2(SYS_CHAN_SEND, (long)client_h, (long)&msg) >= 0) goto fail;
+
+    r = init_sys2(SYS_HANDLE_DUP, (long)base_h, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (r < 0) goto fail;
+    proof2_h = (handle_id_t)r;
+    init_msg_zero(&msg);
+    msg.type = SVCMGR_MSG_UNREGISTER;
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_UNREGISTER_OFF_ENDPOINT], INIT_RUNTIME_ENDPOINT);
+    msg.data_len = SVCMGR_UNREGISTER_MSG_LEN;
+    msg.attached_handle = proof2_h;
+    msg.attached_rights = RIGHT_WRITE | RIGHT_TRANSFER;
+    r = init_sys2(SYS_CHAN_SEND, (long)sm_h, (long)&msg);
+    if (r < 0) goto fail;
+    proof2_h = HANDLE_INVALID;
+
+    r = init_sys0(SYS_CHAN_CREATE);
+    if (r < 0) goto fail;
+    base2_h = (handle_id_t)r;
+    r = init_sys2(SYS_HANDLE_DUP, (long)base2_h,
+                  (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER));
+    if (r < 0) goto fail;
+    publish2_h = (handle_id_t)r;
+
+    init_msg_zero(&msg);
+    msg.type = SVCMGR_MSG_REGISTER;
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_REGISTER_OFF_ENDPOINT], INIT_RUNTIME_ENDPOINT);
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_REGISTER_OFF_RIGHTS], RIGHT_WRITE);
+    for (uint32_t i = 0; i + 1u < SVCMGR_SERVICE_NAME_CAP && runtime_name[i]; i++)
+        msg.data[SVCMGR_REGISTER_OFF_NAME + i] = (uint8_t)runtime_name[i];
+    msg.data_len = SVCMGR_REGISTER_MSG_LEN;
+    msg.attached_handle = publish2_h;
+    msg.attached_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+    r = init_sys2(SYS_CHAN_SEND, (long)sm_h, (long)&msg);
+    if (r < 0) goto fail;
+    publish2_h = HANDLE_INVALID;
+
+    client2_h = init_lookup_name(sm_h, runtime_name, RIGHT_WRITE);
+    if (client2_h == HANDLE_INVALID) goto fail;
+    init_msg_zero(&msg);
+    msg.type = 0xA552u;
+    msg.data[0] = 'r';
+    msg.data[1] = 'e';
+    msg.data_len = 2u;
+    msg.attached_handle = HANDLE_INVALID;
+    r = init_sys2(SYS_CHAN_SEND, (long)client2_h, (long)&msg);
+    if (r < 0) goto fail;
+    init_msg_zero(&msg);
+    r = init_sys2(SYS_CHAN_RECV, (long)base2_h, (long)&msg);
+    if (r < 0) goto fail;
+    if (msg.type != 0xA552u) goto fail;
+    if (msg.data_len != 2u || msg.data[0] != 'r' || msg.data[1] != 'e') goto fail;
+
+    init_close(&client2_h);
+    init_close(&base2_h);
+    init_close(&client_h);
+    init_close(&base_h);
+    return 1;
+
+fail:
+    init_close(&client2_h);
+    if (publish2_h != HANDLE_INVALID) init_close(&publish2_h);
+    init_close(&base2_h);
+    init_close(&client_h);
+    if (proof_h != HANDLE_INVALID) init_close(&proof_h);
+    if (proof2_h != HANDLE_INVALID) init_close(&proof2_h);
+    if (publish_h != HANDLE_INVALID) init_close(&publish_h);
+    init_close(&base_h);
+    return 0;
+}
+
+static int init_wait_dynamic_registry(handle_id_t sm_h) {
+    for (uint32_t attempt = 0; attempt < INIT_RETRY_LIMIT; attempt++) {
+        if (init_check_dynamic_registry(sm_h)) return 1;
+        init_retry_pause();
+    }
+    return 0;
+}
+
 /* ── Diagnostics check ──────────────────────────────────────────────────── */
 
 static int init_check_diag(handle_id_t sm_h) {
@@ -247,13 +457,16 @@ static int init_check_diag(handle_id_t sm_h) {
     msg.attached_handle = xfer_h;
     msg.attached_rights = RIGHT_WRITE | RIGHT_TRANSFER;
 
+    init_log(init_diag_req);
     r = init_sys2(SYS_CHAN_SEND, (long)sm_h, (long)&msg);
     if (r < 0) goto done;
     xfer_h = HANDLE_INVALID;
 
+    init_log(init_diag_sent);
     init_msg_zero(&msg);
     r = init_sys2(SYS_CHAN_RECV, (long)recv_h, (long)&msg);
     if (r < 0) goto done;
+    init_log(init_diag_reply);
     if (msg.type != SVCMGR_MSG_DIAG_REPLY) goto done;
 
     {
@@ -637,11 +850,18 @@ void init_main(handle_id_t bootstrap_h) {
     }
     init_log("[USER] diag OK\n");
 
+    init_log(init_stage_dynamic);
+    if (!init_wait_dynamic_registry(sm_h)) {
+        init_log("[USER] dynamic registry FAILED\n");
+        init_exit(8);
+    }
+    init_log("[USER] dynamic registry OK\n");
+
     /* ── VFS LIST ── */
     init_log(init_stage_vfs_list);
     if (!init_wait_vfs_list(vfs_h, vfs_reply_h)) {
         init_log("[USER] vfs list FAILED\n");
-        init_exit(8);
+        init_exit(9);
     }
     init_log("[USER] vfs list reply OK\n");
 
@@ -649,7 +869,7 @@ void init_main(handle_id_t bootstrap_h) {
     init_log(init_stage_vfs_rw);
     if (!init_wait_vfs_rw(vfs_h, vfs_reply_h)) {
         init_log("[USER] vfs rw FAILED\n");
-        init_exit(9);
+        init_exit(10);
     }
     init_log("[USER] vfs open reply OK\n");
     init_log("[USER] vfs read reply OK\n");
@@ -660,7 +880,7 @@ void init_main(handle_id_t bootstrap_h) {
     scan_recv_h = init_wait_kbd_subscribe(kbd_h, kbd_reply_h);
     if (scan_recv_h == HANDLE_INVALID) {
         init_log("[USER] kbd subscribe FAILED\n");
-        init_exit(10);
+        init_exit(11);
     }
     init_log("[USER] kbd subscribe OK\n");
     init_log(init_stage_healthy);

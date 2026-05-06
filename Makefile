@@ -47,6 +47,7 @@ KERNEL_PHASE3_SELFTEST_OBJ := $(BUILD_DIR)/phase3_selftest.o
 KERNEL_ELF_LOADER_OBJ     := $(BUILD_DIR)/elf_loader.o
 KERNEL_INITRD_OBJ         := $(BUILD_DIR)/initrd.o
 KERNEL_FUTEX_OBJ          := $(BUILD_DIR)/futex.o
+KERNEL_KPAGE_OBJ          := $(BUILD_DIR)/kpage.o
 # Service ELF binaries — output directly into their source directories so that
 # the objcopy -I binary relative path (services/xxx/xxx.elf) matches the symbol
 # name mangling expected by kernel/core/initrd/initrd.c.
@@ -66,7 +67,7 @@ KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_RUNTIME_SELFTESTS
 # user_init.S contains user_selftest + vfs_leak_child — only needed for selftests.
 KERNEL_DEMO_OBJS         += $(KERNEL_USERINIT_OBJ)
 endif
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_FB_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_ELF_LOADER_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_DEMO_OBJS)
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_FB_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_ELF_LOADER_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_DEMO_OBJS)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -105,7 +106,7 @@ LDFLAGS_EFI      := -nostdlib -znocombreloc -T $(EFI_LDS) -shared -Bsymbolic $(E
 KERNEL_LDFLAGS   := -nostdlib -z max-page-size=0x1000 -z noexecstack -T kernel/arch/x86_64/linker.ld
 OBJCOPY_FLAGS    := -j .text -j .sdata -j .data -j .dynamic -j .dynsym -j .rel -j .rela -j .reloc --target=efi-app-x86_64
 
-.PHONY: all dirs run run-headless clean help check smoke smoke-runtime config-sync
+.PHONY: all dirs run run-headless clean help check smoke smoke-runtime smoke-runtime-selftests config-sync
 
 all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
@@ -117,6 +118,7 @@ help:
 	@echo '  make check  -> inspect kernel ELF headers and segments'
 	@echo '  make smoke  -> reproducible local build smoke (default + selftest build)'
 	@echo '  make smoke-runtime -> headless runtime smoke with healthy-boot log assertion'
+	@echo '  make smoke-runtime-selftests -> headless runtime smoke for ENABLE_RUNTIME_SELFTESTS=1'
 	@echo '  make clean  -> remove all build artifacts'
 	@echo
 	@echo 'Options:'
@@ -258,6 +260,9 @@ $(KERNEL_INITRD_OBJ): kernel/core/initrd/initrd.c | dirs
 $(KERNEL_FUTEX_OBJ): kernel/core/futex/futex.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
+$(KERNEL_KPAGE_OBJ): kernel/mm/kpage/kpage.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
 # ── Service ELF build rules ─────────────────────────────────────────────────
 #
 # Each service is a standalone static ELF64 ET_EXEC binary linked at
@@ -354,6 +359,11 @@ smoke:
 
 smoke-runtime: all
 	bash scripts/run_qemu_headless.sh
+
+smoke-runtime-selftests: all
+	IRIS_QEMU_TIMEOUT_SECS=35 IRIS_QEMU_EXPECT_SELFTESTS=1 \
+		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-selftests.log \
+		bash scripts/run_qemu_headless.sh
 
 run: all
 	bash scripts/run_qemu.sh

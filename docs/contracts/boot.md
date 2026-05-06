@@ -27,20 +27,26 @@ Current stage order in `kernel/kernel_main.c`:
 8. IRQ routing table init.
 9. Optional runtime selftests when `ENABLE_RUNTIME_SELFTESTS=1`.
 10. Scheduler init.
-11. `svcmgr` bootstrap.
-12. `init` bootstrap from the embedded initrd.
+11. Bootstrap image selection from the embedded initrd.
+12. First user task spawn from that opaque bootstrap image.
 13. `sti`, scheduler start, and initial cooperative yields.
 
 ## Embedded initrd contract
 
 The healthy boot path requires these embedded ELF images to exist in the kernel initrd:
 
+- `init` (current bootstrap image)
 - `svcmgr`
 - `kbd`
 - `vfs`
-- `init`
 
-The initrd is a static, read-only registry compiled into the kernel image via `objcopy -I binary`.
+The initrd is a static, read-only image catalog compiled into the kernel image via `objcopy -I binary`.
+
+Kernel-side rule:
+
+- the kernel boot path consumes exactly one opaque bootstrap image via `initrd_bootstrap_image()`
+- the kernel boot path must not select services by name
+- named lookup remains available only as the generic catalog mechanism behind `SYS_INITRD_LOOKUP`
 
 ## Ring-3 bootstrap register contract
 
@@ -54,9 +60,9 @@ Service entrypoints currently consume `RBX` by moving it to `RDI` before calling
 ## Healthy-path boot invariants
 
 - Healthy boot does not require kernel nameserver lookup for `svcmgr`.
-- The kernel boots only the supervisor path explicitly:
-  - spawn `svcmgr`
-  - attach narrow bootstrap client handle to `init`
+- The kernel boots only one user task explicitly:
+  - spawn the opaque bootstrap image
+  - attach the bootstrap capability to that task
 - `svcmgr` autostarts `kbd` and `vfs` from the declarative service catalog.
 - `init` validates service reachability and health before entering its interactive loop.
 
@@ -79,6 +85,15 @@ Current log signature to search for:
   - `[IRIS][BOOT] waiting for first userland wave`
 - final healthy-path confirmation from `init`:
   - `[USER][INIT][BOOT] healthy path OK`
+
+Current CI boot lanes:
+
+- default runtime lane:
+  - `make smoke-runtime`
+  - log artifact: `build/qemu-headless.log`
+- selftest-enabled runtime lane:
+  - `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests`
+  - log artifact: `build/qemu-headless-selftests.log`
 
 ## Non-goals of this contract
 

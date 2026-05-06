@@ -1,19 +1,25 @@
 /*
- * context_switch(struct cpu_context *old,
- *                struct cpu_context *new,
- *                uint64_t *old_rsp,
- *                uint64_t new_rsp)
+ * context_switch(struct cpu_context *old,  // rdi
+ *                struct cpu_context *new,  // rsi
+ *                uint64_t *old_rsp,        // rdx
+ *                uint64_t  new_rsp,        // rcx
+ *                uint8_t  *old_fpu,        // r8  — 512-byte FXSAVE buffer, 16-byte aligned
+ *                uint8_t  *new_fpu)        // r9  — 512-byte FXSAVE buffer, 16-byte aligned
  *
- * rdi = old_ctx
- * rsi = new_ctx
- * rdx = &old_rsp
- * rcx = new_rsp
+ * Saves the FPU/SSE state (FXSAVE), callee-saved integer registers,
+ * kernel RSP, RIP, and RFLAGS of the outgoing task, then restores
+ * the same set for the incoming task (FXRSTOR).
  *
- * Guarda/restaura callee-saved + RSP + RIP + RFLAGS.
- * Guardar RFLAGS evita que un yield desde un IRQ handler (IF=0)
- * contamine el estado de la tarea que se reanuda (debería tener IF=1).
+ * RSP is switched to the new task's kernel stack BEFORE restoring RFLAGS.
+ * This ensures that if an interrupt fires after RFLAGS is restored (with
+ * IF possibly re-enabled), the CPU is already on the correct kernel stack
+ * for the incoming task.
  *
- * Layout de cpu_context:
+ * r8 (old_fpu) and r9 (new_fpu) are caller-saved registers not included in
+ * cpu_context, so they retain their parameter values through the entire
+ * function body.
+ *
+ * cpu_context layout:
  *   [0]  r15
  *   [8]  r14
  *   [16] r13
@@ -26,10 +32,13 @@
 .global context_switch
 
 context_switch:
-    /* guardar RSP actual de la tarea que sale */
+    /* Save outgoing FPU/SSE state — must be first, before touching rsp */
+    fxsaveq (%r8)
+
+    /* Save outgoing RSP */
     movq %rsp, (%rdx)
 
-    /* guardar registros callee-saved */
+    /* Save outgoing callee-saved integer registers */
     movq %r15, 0(%rdi)
     movq %r14, 8(%rdi)
     movq %r13, 16(%rdi)
@@ -37,15 +46,15 @@ context_switch:
     movq %rbx, 32(%rdi)
     movq %rbp, 40(%rdi)
 
-    /* guardar RIP: return address en la cima del stack */
+    /* Save RIP: the return address sitting on top of the outgoing stack */
     movq (%rsp), %rax
     movq %rax, 48(%rdi)
 
-    /* guardar RFLAGS (especialmente IF) */
+    /* Save RFLAGS (preserves per-task IF state) */
     pushfq
     popq 56(%rdi)
 
-    /* restaurar callee-saved de la tarea entrante */
+    /* Restore incoming callee-saved integer registers */
     movq 0(%rsi),  %r15
     movq 8(%rsi),  %r14
     movq 16(%rsi), %r13
@@ -53,14 +62,18 @@ context_switch:
     movq 32(%rsi), %rbx
     movq 40(%rsi), %rbp
 
-    /* restaurar RFLAGS — usa stack viejo como scratch (limpia después) */
+    /* Switch to the incoming task's kernel stack BEFORE restoring RFLAGS.
+     * Any interrupt that fires after popfq will run on the correct stack. */
+    movq %rcx, %rsp
+
+    /* Restore incoming RFLAGS — uses the new stack for the transient push */
     pushq 56(%rsi)
     popfq
 
-    /* restaurar RSP de la nueva tarea */
-    movq %rcx, %rsp
+    /* Restore incoming FPU/SSE state — r9 still holds new_fpu */
+    fxrstorq (%r9)
 
-    /* escribir RIP en la cima del stack nuevo y retornar */
+    /* Write incoming RIP to the top of the new stack and return into it */
     movq 48(%rsi), %rax
     movq %rax, (%rsp)
     ret

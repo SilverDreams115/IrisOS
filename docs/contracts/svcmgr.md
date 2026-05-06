@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines the current service-manager contract for discovery, bootstrap delegation, supervision, and global status aggregation.
+Defines the current service-manager contract for discovery, runtime publication, bootstrap delegation, supervision, and global status aggregation.
 
 ## Responsibilities
 
@@ -10,6 +10,7 @@ Defines the current service-manager contract for discovery, bootstrap delegation
 
 - autostart of built-in userland services from the service catalog
 - runtime service discovery for normal clients
+- first-cut dynamic runtime publication of extra service endpoints
 - service endpoint rights reduction for lookup replies
 - service lifecycle supervision through `SYS_PROCESS_WATCH`
 - bounded restart policy for autostart services
@@ -38,7 +39,10 @@ Without the spawn capability, `svcmgr` exits immediately after logging a fatal b
 
 ## Runtime endpoint model
 
-Discovery is endpoint-based, not name-string-based at runtime.
+Discovery now supports both:
+
+- fixed endpoint lookup (`SVCMGR_MSG_LOOKUP`)
+- fixed/dynamic name lookup (`SVCMGR_MSG_LOOKUP_NAME`)
 
 Current endpoints:
 
@@ -47,7 +51,8 @@ Current endpoints:
 - `SVCMGR_ENDPOINT_VFS`
 - `SVCMGR_ENDPOINT_VFS_REPLY`
 
-Each endpoint resolves through the service catalog to one service master handle and one allowed-rights mask.
+Built-in endpoints resolve through the service catalog to one service master handle and one allowed-rights mask.
+Runtime-published endpoints are stored in `svcmgr` state as `(endpoint, name, public_h, client_rights)` entries.
 
 ## Lookup contract
 
@@ -77,6 +82,38 @@ Client-facing allowed rights currently come from the service catalog:
 - `vfs`
   - service endpoint: `RIGHT_WRITE | RIGHT_DUPLICATE`
   - reply endpoint: `RIGHT_READ | RIGHT_DUPLICATE`
+
+## Dynamic publication contract
+
+`SVCMGR_MSG_REGISTER` / `SVCMGR_MSG_UNREGISTER` are the first cut of a general runtime registry.
+
+Publisher request:
+
+- message type: `SVCMGR_MSG_REGISTER`
+- payload:
+  - runtime endpoint id
+  - allowed client-rights mask
+  - fixed-size service name
+- attached handle:
+  - one service master handle moved into `svcmgr`
+  - attached rights must include `RIGHT_DUPLICATE`
+
+Registration behavior:
+
+- collisions with built-in endpoint ids are rejected
+- collisions with built-in names (`kbd`, `vfs`) are rejected
+- collisions with existing runtime endpoint ids or names are rejected
+- only `KChannel` publications are accepted in this cut
+
+Current first-cut semantics:
+
+- publication is possession-based: if the caller can move a duplicable handle into `svcmgr`, it can publish it
+- lookup by endpoint and lookup by name both work for dynamic entries
+- unregister is proof-of-possession based: the caller must move a handle for the same published channel object
+- successful unregister seals the published channel before dropping the registry entry
+- sealing invalidates already-distributed channel duplicates with `IRIS_ERR_CLOSED`
+- repeated unregister of an already-removed entry is a no-op
+- automatic cleanup on publisher death is not implemented in this cut
 
 ## Status contract
 

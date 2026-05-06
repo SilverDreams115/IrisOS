@@ -18,30 +18,52 @@ static struct futex_entry futex_table[FUTEX_TABLE_SIZE];
 iris_error_t futex_wait(uint64_t uaddr, uint32_t expected) {
     uint32_t val;
     int slot;
+    uint64_t saved_flags;
 
+    /* Pre-check outside the lock — avoids the page walk under cli. */
     if (!copy_from_user_checked(&val, uaddr, sizeof(val)))
         return IRIS_ERR_INVALID_ARG;
-
     if (val != expected)
-        return IRIS_ERR_WOULD_BLOCK;  /* value changed; retry in userspace */
+        return IRIS_ERR_WOULD_BLOCK;
+
+    /* Re-read under IRQ disable to close the TOCTOU window between the
+     * value check above and the slot registration below.  futex_wake must
+     * run on the same core to clear a slot, so cli makes check+register
+     * atomic with respect to any concurrent wake on this CPU. */
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(saved_flags) :: "memory");
+
+    if (!copy_from_user_checked(&val, uaddr, sizeof(val))) {
+        __asm__ volatile ("pushq %0; popfq" :: "r"(saved_flags) : "memory");
+        return IRIS_ERR_INVALID_ARG;
+    }
+    if (val != expected) {
+        __asm__ volatile ("pushq %0; popfq" :: "r"(saved_flags) : "memory");
+        return IRIS_ERR_WOULD_BLOCK;
+    }
 
     slot = -1;
     for (int i = 0; i < FUTEX_TABLE_SIZE; i++) {
         if (futex_table[i].uaddr == 0) { slot = i; break; }
     }
-    if (slot < 0)
+    if (slot < 0) {
+        __asm__ volatile ("pushq %0; popfq" :: "r"(saved_flags) : "memory");
         return IRIS_ERR_TABLE_FULL;
+    }
 
     struct task *t = task_current();
-    if (!t || !t->process)
+    if (!t || !t->process) {
+        __asm__ volatile ("pushq %0; popfq" :: "r"(saved_flags) : "memory");
         return IRIS_ERR_INVALID_ARG;
+    }
 
-    t->state = TASK_BLOCKED_IPC;
     futex_table[slot].uaddr  = uaddr;
     futex_table[slot].waiter = t;
     futex_table[slot].owner  = t->process;
-    task_yield();
+    t->state = TASK_BLOCKED_IPC;
 
+    __asm__ volatile ("pushq %0; popfq" :: "r"(saved_flags) : "memory");
+
+    task_yield();
     /* Woken by futex_wake or cancelled by futex_cancel_waiter. */
     return IRIS_OK;
 }

@@ -55,7 +55,8 @@
 #define SYS_VMO_CREATE   16  /* (size) → handle_id or negative iris_error_t */
 #define SYS_VMO_MAP      17  /* (handle, virt_addr, flags) → 0 or negative iris_error_t */
 /* SYS_SPAWN 18 retired in Phase 19 — permanently reserved, returns IRIS_ERR_NOT_SUPPORTED.
- * All userland process creation must go through SYS_SPAWN_SERVICE (31). */
+ * All healthy-path userland process creation must go through
+ * SYS_INITRD_LOOKUP (41) + SYS_SPAWN_ELF (42). */
 #define SYS_SPAWN        18
 /* modern/conforming: notification objects */
 #define SYS_NOTIFY_CREATE 19 /* () → handle_id or negative iris_error_t */
@@ -216,7 +217,8 @@
  *   entry_h: KOBJ_INITRD_ENTRY with RIGHT_READ.
  *   out_chan_uptr: optional user pointer to handle_id_t; receives parent bootstrap
  *                 channel handle (may be NULL / 0).
- *   Identical spawn flow to SYS_SPAWN_SERVICE after the initrd lookup step.
+ *   Identical spawn flow to the old retired named-spawn path after the
+ *   initrd lookup step.
  *   Child receives its bootstrap channel handle as arg0 (RBX).
  *   Returns proc_handle with RIGHT_READ|RIGHT_ROUTE|RIGHT_MANAGE|RIGHT_DUPLICATE.
  */
@@ -241,8 +243,8 @@
  * Multi-channel readable wait — modern/conforming (iris_error_t).
  *
  * SYS_WAIT_ANY(handles_uptr, count, out_index_uptr) → 0 or negative iris_error_t
- *   handles_uptr: user pointer to an array of count handle_id_t values (max 8).
- *   count: number of handles to watch (1–8); each must be KOBJ_CHANNEL + RIGHT_READ.
+ *   handles_uptr: user pointer to an array of count handle_id_t values (max 64).
+ *   count: number of handles to watch (1–64); each must be KOBJ_CHANNEL + RIGHT_READ.
  *   out_index_uptr: user pointer to uint32_t; receives the 0-based index of the
  *                   first channel found to have a pending message.
  *   Blocks until at least one channel has a message; does NOT consume the message.
@@ -296,32 +298,9 @@
  */
 #define SYS_PROCESS_KILL  35  /* (proc_handle) → 0 or negative iris_error_t */
 
-/*
- * ELF service spawning — modern/conforming (iris_error_t).
- *
- * SYS_SPAWN_SERVICE: spawn a named service from the kernel initrd.
- * Restricted by an explicit bootstrap capability handle.
- * Semantics mirror SYS_SPAWN but load the named ELF from the initrd
- * rather than executing a kernel-text function pointer.
- *
- *   arg0 = name_uptr   — user pointer to NUL-terminated service name (≤ 31 chars)
- *   arg1 = out_chan_ptr — user pointer to handle_id_t; filled with parent's
- *                        bootstrap channel handle on success (may be NULL)
- *   arg2 = auth_handle   — bootstrap capability handle with RIGHT_READ and
- *                         IRIS_BOOTCAP_SPAWN_SERVICE permission
- *   returns: proc_handle or negative iris_error_t
- *
- *   On success:
- *     - A new process is created from the named ELF in the initrd.
- *     - Child receives its bootstrap KChannel handle as arg0 (RBX).
- *     - Parent receives the other end of that channel via *out_chan_ptr.
- *     - Parent receives a proc_handle with
- *       RIGHT_READ|RIGHT_ROUTE|RIGHT_MANAGE|RIGHT_DUPLICATE.
- *   On failure: all resources are rolled back.
- *
- * Authority: auth_handle must resolve to a KOBJ_BOOTSTRAP_CAP with
- * IRIS_BOOTCAP_SPAWN_SERVICE permission.
- */
+/* SYS_SPAWN_SERVICE 31 retired in Phase 22 — permanently reserved and returns
+ * IRIS_ERR_NOT_SUPPORTED. Named initrd spawning now uses
+ * SYS_INITRD_LOOKUP + SYS_SPAWN_ELF. */
 #define SYS_SPAWN_SERVICE   31
 
 #define SYS_IRQ_ROUTE_REGISTER 27 /* (irqcap_handle, chan_handle, proc_handle) → 0 or iris_error_t
@@ -343,15 +322,17 @@
 #define IRIS_BOOTCAP_NONE          0u
 #define IRIS_BOOTCAP_SPAWN_SERVICE (1u << 0)
 #define IRIS_BOOTCAP_HW_ACCESS     (1u << 1)
+#define IRIS_BOOTCAP_KDEBUG        (1u << 2)  /* may call SYS_WRITE for serial debug output */
 
 /*
  * Bootstrap capability permission restriction — modern/conforming (iris_error_t).
  *
  * SYS_BOOTCAP_RESTRICT(cap_h, new_perms) → 0 or negative iris_error_t
  *   cap_h: KOBJ_BOOTSTRAP_CAP with RIGHT_READ.
- *   new_perms: IRIS_BOOTCAP_* bitmask; applied as: cap->permissions &= new_perms.
+ *   new_perms: IRIS_BOOTCAP_* bitmask; applied as: new_cap->permissions = old & new_perms.
  *   Cannot add permissions — only AND-reduces the existing set.
- *   Idempotent: restricting to the same mask is a no-op.
+ *   The caller's handle is rebound to a restricted copy; aliased handles in
+ *   other tables keep their original permissions.
  *   Use case: svcmgr strips IRIS_BOOTCAP_HW_ACCESS after claiming all hardware
  *   caps during bootstrap, so a compromised svcmgr cannot create new hw caps.
  */
@@ -431,6 +412,30 @@
  */
 #define SYS_FUTEX_WAIT  50
 #define SYS_FUTEX_WAKE  51
+
+/*
+ * Handle inspection helpers — modern/conforming (iris_error_t).
+ *
+ * SYS_HANDLE_TYPE(handle) → kobject_type_t or negative iris_error_t
+ *   Returns the underlying KObject type for a live handle in the caller's
+ *   table. Useful for userland supervisors that need to narrow protocol
+ *   behavior without dereferencing kernel objects.
+ *
+ * SYS_HANDLE_SAME_OBJECT(handle_a, handle_b) → 1 if both handles reference the
+ * same KObject, 0 if they do not, or negative iris_error_t on failure.
+ *   This is identity comparison only; it does not compare rights.
+ */
+#define SYS_HANDLE_TYPE        52
+#define SYS_HANDLE_SAME_OBJECT 53
+
+#define IRIS_HANDLE_TYPE_PROCESS      0u
+#define IRIS_HANDLE_TYPE_CHANNEL      1u
+#define IRIS_HANDLE_TYPE_NOTIFICATION 2u
+#define IRIS_HANDLE_TYPE_BOOTSTRAP_CAP 3u
+#define IRIS_HANDLE_TYPE_VMO          4u
+#define IRIS_HANDLE_TYPE_IRQ_CAP      5u
+#define IRIS_HANDLE_TYPE_IOPORT       6u
+#define IRIS_HANDLE_TYPE_INITRD_ENTRY 7u
 
 #ifndef __ASSEMBLER__
 #ifdef __KERNEL__

@@ -73,6 +73,30 @@
 #define IDENTITY_MAP_END    (64ULL * 1024 * 1024)  /* 64 MB */
 #define PHYS_WINDOW_END     (4ULL * 1024 * 1024 * 1024) /* 4 GB */
 
+/* ── Kernel stack virtual region ───────────────────────────────────
+ *
+ * Each task gets a slot of KSTACK_SLOT_SIZE bytes:
+ *   [slot_base + 0               ..  slot_base + PAGE_SIZE)      guard page — NOT mapped
+ *   [slot_base + PAGE_SIZE       ..  slot_base + PAGE_SIZE*2)    kstack page 0
+ *   [slot_base + PAGE_SIZE*2     ..  slot_base + PAGE_SIZE*3)    kstack page 1
+ *
+ * A stack overflow that writes past kstack[0] immediately hits the
+ * unmapped guard page, producing a #PF instead of silent corruption.
+ *
+ * Region starts at PHYS_WINDOW_END (= PHYS_TO_VIRT(4 GB)), which is
+ * right above the physmap window and well below KERNEL_VIRT_BASE.
+ * Both are within PML4 entry 256, sharing the kernel PDPT, so
+ * mappings added here propagate to every process address space.
+ *
+ * Total virtual footprint: TASK_MAX * KSTACK_SLOT_SIZE = 64 * 12288 = 768 KB.
+ * ─────────────────────────────────────────────────────────────────── */
+#define KSTACK_VIRT_BASE  (KERNEL_PHYS_WINDOW_BASE + PHYS_WINDOW_END)  /* 0xFFFF800100000000 */
+#define KSTACK_SLOT_SIZE  (3ULL * 4096ULL)   /* guard + 2 stack pages = 12 288 bytes */
+
+/* Set to 1 by paging_init() when SMAP is active in CR4.
+ * Checked by usercopy.c to emit STAC/CLAC around user memory accesses. */
+extern int iris_smap_enabled;
+
 void     paging_init(uint64_t fb_phys, uint64_t fb_size);
 void     paging_map(uint64_t virt, uint64_t phys, uint64_t flags);
 uint64_t paging_virt_to_phys(uint64_t virt);
