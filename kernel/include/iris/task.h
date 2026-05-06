@@ -44,8 +44,13 @@ struct task {
 
     struct cpu_context ctx;
 
-    /* kernel stack — always present, used on interrupt entry from ring 3 */
-    uint8_t           kstack[TASK_STACK_SIZE];
+    /* kernel stack — allocated from the kstack virtual region in paging.h.
+     * kstack points to the lowest byte of the usable stack (the guard page
+     * sits one page below this address and is intentionally not mapped).
+     * kstack_phys is the physical base used to free the PMM pages on teardown.
+     * Both fields are 0 for an uninitialized/dead task slot. */
+    uint8_t          *kstack;
+    uint64_t          kstack_phys;
 
     /* user entry point and virtual stack info (ring 3 only) */
     uint64_t          user_entry;
@@ -61,6 +66,11 @@ struct task {
     uint32_t          ticks_left;   /* ticks remaining before need_resched */
     uint32_t          need_resched; /* set by scheduler_tick when ticks_left hits 0 */
     uint64_t          wake_tick;    /* valid when state == TASK_SLEEPING */
+
+    /* FPU/SSE state — 512-byte FXSAVE image, must be 16-byte aligned.
+     * Saved and restored on every context switch so FPU state never leaks
+     * across task boundaries. Placed last to keep alignment padding minimal. */
+    uint8_t           fpu_state[512] __attribute__((aligned(16)));
 
     struct task      *next;
 };

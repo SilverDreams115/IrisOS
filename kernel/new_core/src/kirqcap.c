@@ -1,23 +1,18 @@
 #include <iris/nc/kirqcap.h>
 #include <iris/nc/kobject.h>
+#include <iris/kpage.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
-static struct KIrqCap pool[KIRQCAP_POOL_SIZE];
-static uint8_t        pool_used[KIRQCAP_POOL_SIZE];
+static _Atomic uint32_t kirqcap_live;
 
 static void kirqcap_close(struct KObject *obj) {
     (void)obj;
 }
 
 static void kirqcap_destroy(struct KObject *obj) {
-    struct KIrqCap *cap = (struct KIrqCap *)obj;
-    uint32_t i;
-    for (i = 0; i < KIRQCAP_POOL_SIZE; i++) {
-        if (&pool[i] == cap) {
-            pool_used[i] = 0;
-            return;
-        }
-    }
+    atomic_fetch_sub_explicit(&kirqcap_live, 1u, memory_order_relaxed);
+    kpage_free((struct KIrqCap *)obj, (uint32_t)sizeof(struct KIrqCap));
 }
 
 static const struct KObjectOps kirqcap_ops = {
@@ -26,21 +21,12 @@ static const struct KObjectOps kirqcap_ops = {
 };
 
 struct KIrqCap *kirqcap_alloc(uint8_t irq_num) {
-    uint32_t i;
-    for (i = 0; i < KIRQCAP_POOL_SIZE; i++) {
-        if (pool_used[i]) continue;
-        pool_used[i] = 1;
-        {
-            struct KIrqCap *cap = &pool[i];
-            uint8_t *raw = (uint8_t *)cap;
-            uint32_t j;
-            for (j = 0; j < sizeof(*cap); j++) raw[j] = 0;
-            kobject_init(&cap->base, KOBJ_IRQ_CAP, &kirqcap_ops);
-            cap->irq_num = irq_num;
-            return cap;
-        }
-    }
-    return 0;
+    struct KIrqCap *cap = kpage_alloc((uint32_t)sizeof(struct KIrqCap));
+    if (!cap) return 0;
+    kobject_init(&cap->base, KOBJ_IRQ_CAP, &kirqcap_ops);
+    cap->irq_num = irq_num;
+    atomic_fetch_add_explicit(&kirqcap_live, 1u, memory_order_relaxed);
+    return cap;
 }
 
 void kirqcap_free(struct KIrqCap *cap) {
@@ -49,10 +35,5 @@ void kirqcap_free(struct KIrqCap *cap) {
 }
 
 uint32_t kirqcap_live_count(void) {
-    uint32_t count = 0;
-    uint32_t i;
-    for (i = 0; i < KIRQCAP_POOL_SIZE; i++) {
-        if (pool_used[i]) count++;
-    }
-    return count;
+    return atomic_load_explicit(&kirqcap_live, memory_order_relaxed);
 }

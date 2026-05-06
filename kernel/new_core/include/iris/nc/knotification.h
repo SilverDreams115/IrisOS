@@ -24,20 +24,25 @@
  *   - knotification_wait() must only be called from task context.
  */
 
-#define KNOTIF_POOL_SIZE    64  /* maximum live KNotification objects system-wide */
+#define KNOTIF_POOL_SIZE     0  /* no static pool — kpage-backed; 0 = unbounded allocator ceiling */
 #define KNOTIF_WAITERS_MAX   4  /* max tasks blocked on one notification at once */
 
 struct task; /* forward */
+struct KProcess;
 
 struct KNotification {
     struct KObject      base;                        /* must be first */
     _Atomic uint64_t    signal_bits;                 /* pending signals — bit N = signal N */
+    struct KProcess    *owner;
     uint8_t             closed;
     uint32_t            waiter_count;
     struct task        *waiters[KNOTIF_WAITERS_MAX]; /* tasks blocked on wait */
+    struct KNotification *live_prev;
+    struct KNotification *live_next;
 };
 
 struct KNotification *knotification_alloc(void);
+iris_error_t          knotification_bind_owner(struct KNotification *n, struct KProcess *owner);
 void                  knotification_free (struct KNotification *n);
 void                  knotification_cancel_waiter(struct task *t);
 

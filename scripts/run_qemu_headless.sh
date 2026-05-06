@@ -5,6 +5,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EFI_ROOT="$PROJECT_ROOT/build/efi_root"
 LOG_FILE="${IRIS_QEMU_LOG:-$PROJECT_ROOT/build/qemu-headless.log}"
 TIMEOUT_SECS="${IRIS_QEMU_TIMEOUT_SECS:-25}"
+EXPECT_SELFTESTS="${IRIS_QEMU_EXPECT_SELFTESTS:-0}"
 
 pick_first() {
   for f in "$@"; do
@@ -78,6 +79,24 @@ if ! grep -Fq "[USER][INIT][BOOT] healthy path OK" "$LOG_FILE"; then
   echo "[headless] missing healthy-path marker"
   cat "$LOG_FILE"
   exit 1
+fi
+
+if [ "$EXPECT_SELFTESTS" = "1" ]; then
+  if ! grep -Fq "[IRIS][P3] handle/lifecycle selftests OK" "$LOG_FILE"; then
+    echo "[headless] missing phase-3 selftest marker"
+    cat "$LOG_FILE"
+    exit 1
+  fi
+  if ! grep -Fq "[USER][INIT][DIAG] reply" "$LOG_FILE"; then
+    echo "[headless] missing init diag reply marker"
+    cat "$LOG_FILE"
+    exit 1
+  fi
+  if ! grep -Fq "[SVCMGR][DIAG] kbd status OK" "$LOG_FILE"; then
+    echo "[headless] missing svcmgr kbd diag marker"
+    cat "$LOG_FILE"
+    exit 1
+  fi
 fi
 
 if [ "$qemu_rc" -ne 0 ] && [ "$qemu_rc" -ne 124 ]; then

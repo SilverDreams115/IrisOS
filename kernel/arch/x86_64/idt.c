@@ -222,6 +222,12 @@ void idt_init(void) {
     idt[13].ist = 1;   /* General Protection Fault */
     idt[14].ist = 1;   /* Page Fault */
 
+    /* NMI and Machine Check can fire at any point, including while IST1 is in
+     * use by a fault handler.  Give them their own dedicated IST2 stack so a
+     * simultaneous NMI during a #PF handler never corrupts the fault stack. */
+    idt[2].ist  = 2;   /* NMI */
+    idt[18].ist = 2;   /* Machine Check */
+
     /* IRQ0 — timer, IRQ1 — keyboard */
     idt_set_entry(32, isr32);
     idt_set_entry(33, isr33);

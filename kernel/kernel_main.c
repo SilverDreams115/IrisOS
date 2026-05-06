@@ -118,21 +118,22 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         uint32_t    init_sz  = 0;
         struct task *ut = 0;
 
-        if (!initrd_find("init", &init_elf, &init_sz)) {
-            serial_write("[IRIS][USER] FATAL: init not found in initrd\n");
+        if (!initrd_bootstrap_image(&init_elf, &init_sz)) {
+            serial_write("[IRIS][USER] FATAL: bootstrap image not available\n");
         } else {
             iris_elf_image_t img;
             iris_error_t lerr = elf_loader_load(init_elf, init_sz, &img);
             if (lerr != IRIS_OK) {
-                serial_write("[IRIS][USER] FATAL: elf_loader_load(init) failed\n");
+                serial_write("[IRIS][USER] FATAL: elf_loader_load(bootstrap) failed\n");
             } else {
                 ut = task_spawn_elf(&img, 0);
                 if (!ut) {
-                    serial_write("[IRIS][USER] FATAL: task_spawn_elf(init) failed\n");
+                    serial_write("[IRIS][USER] FATAL: task_spawn_elf(bootstrap) failed\n");
                     elf_loader_free_image(&img);
                 } else {
                     struct KBootstrapCap *cap = kbootcap_alloc(
-                        IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS);
+                        IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS |
+                        IRIS_BOOTCAP_KDEBUG);
                     if (!cap) {
                         serial_write("[IRIS][USER] FATAL: kbootcap_alloc failed\n");
                         task_abort_spawned_user(ut);
@@ -154,11 +155,11 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             }
         }
         if (ut) {
-            serial_write("[IRIS][USER] init task created (ELF), id=");
+            serial_write("[IRIS][USER] bootstrap task created (ELF), id=");
             serial_write_dec(ut->id);
             serial_write("\n");
         } else {
-            serial_write("[IRIS][USER] WARN: could not create init task\n");
+            serial_write("[IRIS][USER] WARN: could not create bootstrap task\n");
         }
     }
 

@@ -14,6 +14,8 @@
 static uint64_t pml4_phys = 0;
 static int phys_window_ready = 0;
 
+int iris_smap_enabled = 0;
+
 static uint64_t *phys_to_ptr(uint64_t phys) {
     if (!phys_window_ready)
         return (uint64_t *)(uintptr_t)phys;
@@ -199,6 +201,28 @@ void paging_init(uint64_t fb_phys, uint64_t fb_size) {
 
     __asm__ volatile ("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
     phys_window_ready = 1;
+
+    /* Enable SMEP and SMAP if the CPU supports them (CPUID leaf 7, EBX).
+     * SMEP (CR4[20]): prevents kernel from executing user-page code.
+     * SMAP (CR4[21]): faults on kernel access to user pages without STAC.
+     * Both checked independently so we get SMEP even on CPUs without SMAP. */
+    {
+        uint32_t ebx7 = 0;
+        {
+            uint32_t eax_r, ecx_r = 0, edx_r;
+            __asm__ volatile ("cpuid"
+                : "=a"(eax_r), "=b"(ebx7), "=c"(ecx_r), "=d"(edx_r)
+                : "a"(7u), "c"(0u));
+        }
+        uint64_t cr4;
+        __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+        if (ebx7 & (1u << 7))  cr4 |= (1ULL << 20);   /* SMEP */
+        if (ebx7 & (1u << 20)) {
+            cr4 |= (1ULL << 21);                        /* SMAP */
+            iris_smap_enabled = 1;
+        }
+        __asm__ volatile ("mov %0, %%cr4" : : "r"(cr4) : "memory");
+    }
 }
 
 uint64_t paging_create_user_space(void)

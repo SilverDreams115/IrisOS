@@ -13,16 +13,14 @@
  *   RIGHT_ROUTE   — may call SYS_IRQ_ROUTE_REGISTER with this cap as arg0.
  *   RIGHT_DUPLICATE / RIGHT_TRANSFER — may copy or move the handle.
  *
- * Pool:
- *   KIRQCAP_POOL_SIZE objects are statically allocated.  Each hardware IRQ
- *   line (0..IRQ_ROUTE_MAX-1) that the kernel wishes to delegate to userland
- *   has at most one KIrqCap object alive at a time.
+ * Allocation:
+ *   KIrqCap objects are kpage-backed; there is no fixed allocator pool cap.
  */
 
 #include <iris/nc/kobject.h>
 #include <stdint.h>
 
-#define KIRQCAP_POOL_SIZE 16u
+#define KIRQCAP_POOL_SIZE 0u
 
 struct KIrqCap {
     struct KObject base;

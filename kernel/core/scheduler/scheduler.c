@@ -9,6 +9,7 @@
 #include <iris/nc/kprocess.h>
 #include <iris/elf_loader.h>
 #include <iris/futex.h>
+#include <iris/serial.h>
 #include <stdint.h>
 
 extern void user_entry_trampoline(void);
@@ -17,7 +18,9 @@ extern char __text_end;
 extern void context_switch(struct cpu_context *old,
                            struct cpu_context *new,
                            uint64_t *old_rsp,
-                           uint64_t new_rsp);
+                           uint64_t  new_rsp,
+                           uint8_t  *old_fpu,
+                           uint8_t  *new_fpu);
 
 static struct task tasks[TASK_MAX];
 static struct task *current_task = 0;
@@ -28,6 +31,92 @@ static uint32_t next_id = 0;
 /* Per-task saved kernel RSP */
 static uint64_t task_rsp[TASK_MAX];
 static uint64_t kernel_cr3 = 0;
+
+/* ── Kernel stack management (DT-P5) ──────────────────────────────────────
+ *
+ * Each task slot i owns a 3-page virtual region in the kstack area:
+ *   KSTACK_VIRT_BASE + i * KSTACK_SLOT_SIZE + 0          guard page (unmapped)
+ *   KSTACK_VIRT_BASE + i * KSTACK_SLOT_SIZE + PAGE_SIZE  kstack page 0
+ *   KSTACK_VIRT_BASE + i * KSTACK_SLOT_SIZE + PAGE_SIZE*2 kstack page 1
+ *
+ * The guard page is never mapped; any stack overflow that writes past
+ * kstack[0] immediately generates a #PF instead of silently corrupting
+ * an adjacent task slot.
+ *
+ * Invariant: t->kstack == 0 iff no kstack is allocated for this slot.
+ * kstack_alloc sets both t->kstack and t->kstack_phys; kstack_free clears them.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+#define KSTACK_PAGE_SIZE 0x1000ULL
+
+static void kstack_panic(const char *msg) {
+    serial_write("[IRIS][KSTACK] FATAL: ");
+    serial_write(msg);
+    serial_write("\n");
+    for (;;) __asm__ volatile ("hlt");
+}
+
+/*
+ * kstack_alloc — allocate and map two kstack pages for task slot idx.
+ *
+ * Allocates two contiguous physical pages from PMM, maps them at the
+ * deterministic virtual address for slot idx in the kstack region, and
+ * stores the virtual pointer and physical base in t->kstack / t->kstack_phys.
+ *
+ * The page immediately below t->kstack (the guard page) is not mapped.
+ * Any access to it from an overflowing stack will fault cleanly.
+ *
+ * Returns 0 on success, -1 on PMM exhaustion or mapping failure.
+ */
+static int kstack_alloc(struct task *t, int idx) {
+    uint64_t virt_base = KSTACK_VIRT_BASE + (uint64_t)idx * KSTACK_SLOT_SIZE;
+    uint64_t phys = pmm_alloc_pages(2);
+    if (phys == 0) return -1;
+
+    uint64_t virt_pg0 = virt_base + KSTACK_PAGE_SIZE;
+    uint64_t virt_pg1 = virt_base + KSTACK_PAGE_SIZE * 2;
+
+    if (paging_map_checked_in(kernel_cr3, virt_pg0, phys, PAGE_PRESENT | PAGE_WRITABLE) != 0 ||
+        paging_map_checked_in(kernel_cr3, virt_pg1, phys + KSTACK_PAGE_SIZE,
+                              PAGE_PRESENT | PAGE_WRITABLE) != 0) {
+        pmm_free_page(phys);
+        pmm_free_page(phys + KSTACK_PAGE_SIZE);
+        return -1;
+    }
+
+    t->kstack      = (uint8_t *)(uintptr_t)virt_pg0;
+    t->kstack_phys = phys;
+    return 0;
+}
+
+/*
+ * kstack_free — unmap and release the kstack pages for task slot idx.
+ *
+ * paging_unmap_in issues an invlpg for each address, keeping the TLB
+ * coherent on the current CPU.  Both physical pages are returned to PMM.
+ * Fields are zeroed so a subsequent kstack_free on the same slot is a no-op.
+ */
+static void kstack_free(struct task *t, int idx) {
+    if (!t->kstack || t->kstack_phys == 0) return;
+    uint64_t virt_base = KSTACK_VIRT_BASE + (uint64_t)idx * KSTACK_SLOT_SIZE;
+    paging_unmap_in(kernel_cr3, virt_base + KSTACK_PAGE_SIZE);
+    paging_unmap_in(kernel_cr3, virt_base + KSTACK_PAGE_SIZE * 2);
+    pmm_free_page(t->kstack_phys);
+    pmm_free_page(t->kstack_phys + KSTACK_PAGE_SIZE);
+    t->kstack      = 0;
+    t->kstack_phys = 0;
+}
+
+/* Initial FPU state captured at boot; copied into every new task so that
+ * the first FXRSTOR always loads a valid, CPU-reset-equivalent image with
+ * sane FCW (0x037F) and MXCSR (0x1F80). */
+static uint8_t initial_fpu_state[512] __attribute__((aligned(16)));
+
+static void task_init_fpu_state(struct task *t) {
+    uint8_t *dst = t->fpu_state;
+    const uint8_t *src = initial_fpu_state;
+    for (uint32_t i = 0; i < 512; i++) dst[i] = src[i];
+}
 
 /* Current scheduler semantics:
  * - Runnable tasks are time-sliced by IRQ0.
@@ -51,6 +140,9 @@ static void free_user_stack_pages(struct task *t) {
 static void task_reset_slot(struct task *t) {
     if (!t) return;
     int idx = (int)(t - tasks);
+    /* Free the kstack first — kstack_free reads t->kstack and t->kstack_phys.
+     * These fields must be read before the struct is zeroed below. */
+    kstack_free(t, idx);
     uint8_t *raw = (uint8_t *)t;
     for (uint32_t i = 0; i < sizeof(*t); i++) raw[i] = 0;
     t->state = TASK_DEAD;
@@ -158,7 +250,15 @@ static void setup_initial_context(struct task *t, void (*entry)(void)) {
 
 void task_init(void)
 {
+    /* Capture the CPU's current FPU state as a template for all new tasks.
+     * At this point (early boot, before any user code runs) the FPU holds
+     * its hardware-reset defaults: FCW=0x037F, MXCSR=0x1F80. */
+    __asm__ volatile ("fxsaveq (%0)" : : "r"(initial_fpu_state) : "memory");
+
     kernel_cr3 = pml4_get_current();
+
+    /* BSS zero-init means all task slots start with kstack=0/kstack_phys=0,
+     * so the kstack_free calls inside task_reset_slot are no-ops here. */
     for (int i = 0; i < TASK_MAX; i++) {
         task_reset_slot(&tasks[i]);
     }
@@ -168,7 +268,13 @@ void task_init(void)
     idle->state = TASK_RUNNING;
     idle->next  = idle;
 
+    /* Allocate the idle task's kernel stack from the guarded kstack region.
+     * kernel_cr3 is set above, so paging_map_checked_in is now safe to call. */
+    if (kstack_alloc(idle, 0) != 0)
+        kstack_panic("cannot allocate idle task kstack");
+
     setup_initial_context(idle, idle_task);
+    task_init_fpu_state(idle);
 
     task_list_head = idle;
     current_task   = idle;
@@ -176,15 +282,21 @@ void task_init(void)
 
 struct task *task_create(void (*entry)(void)) {
     struct task *t = 0;
+    int idx = -1;
     for (int i = 1; i < TASK_MAX; i++) {
         if (tasks[i].state == TASK_DEAD) {
             t = &tasks[i];
+            idx = i;
             break;
         }
     }
     if (!t) return 0;
 
     task_reset_slot(t);
+
+    if (kstack_alloc(t, idx) != 0) return 0;
+
+    task_init_fpu_state(t);
     t->id         = next_id++;
     t->state      = TASK_READY;
     t->time_slice = TASK_DEFAULT_SLICE;
@@ -213,7 +325,14 @@ struct task *task_create(void (*entry)(void)) {
 void task_set_bootstrap_arg0(struct task *t, uint64_t arg0) {
     if (!t || t->ring != TASK_RING3 || !t->process || !t->process->cr3) return;
     t->ctx.rbx = arg0;
-    paging_write_u64_in(t->process->cr3, USER_STACK_TOP - 8, arg0);
+    /* Write via the physmap window (kernel-only pages, no PAGE_USER) so SMAP
+     * never fires.  paging_write_u64_in writes to a USER-flagged virtual page
+     * which SMAP blocks after paging_init() enables CR4.SMAP. */
+    if (t->ustack_phys != 0) {
+        uint64_t *kptr = (uint64_t *)(uintptr_t)PHYS_TO_VIRT(
+                             t->ustack_phys + USER_STACK_SIZE - 8);
+        *kptr = arg0;
+    }
 }
 
 static void free_phys_pages_range(uint64_t base_phys, uint32_t page_count) {
@@ -252,6 +371,7 @@ static int user_entry_image_offset(uint64_t entry, uint64_t *out_offset) {
  * contract above. */
 static struct task *task_create_user_impl(uint64_t entry, uint64_t arg0) {
     struct task *t = 0;
+    int idx = -1;
     struct KProcess *proc = 0;
     uint64_t ustack_phys = 0;
     uint64_t entry_offset = 0;
@@ -259,12 +379,17 @@ static struct task *task_create_user_impl(uint64_t entry, uint64_t arg0) {
     for (int i = 1; i < TASK_MAX; i++) {
         if (tasks[i].state == TASK_DEAD) {
             t = &tasks[i];
+            idx = i;
             break;
         }
     }
     if (!t) return 0;
 
     task_reset_slot(t);
+
+    if (kstack_alloc(t, idx) != 0) return 0;
+
+    task_init_fpu_state(t);
     t->id           = next_id++;
     t->state        = TASK_READY;
     t->ring         = TASK_RING3;
@@ -310,7 +435,6 @@ static struct task *task_create_user_impl(uint64_t entry, uint64_t arg0) {
     proc->thread_count  = 1;
 
     /* kernel stack: iretq frame for user_entry_trampoline */
-    int idx = (int)(t - tasks);
     uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     kstack_top &= ~0xFULL;
 
@@ -373,6 +497,7 @@ struct task *task_create_user(uint64_t entry) {
  */
 struct task *task_spawn_elf(iris_elf_image_t *img, uint64_t arg0) {
     struct task    *t = 0;
+    int idx = -1;
     struct KProcess *proc = 0;
     uint64_t ustack_phys = 0;
     uint32_t ustack_pages = (uint32_t)(USER_STACK_SIZE / 4096ULL);
@@ -381,11 +506,13 @@ struct task *task_spawn_elf(iris_elf_image_t *img, uint64_t arg0) {
 
     /* Find a free task slot */
     for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD) { t = &tasks[i]; break; }
+        if (tasks[i].state == TASK_DEAD) { t = &tasks[i]; idx = i; break; }
     }
     if (!t) return 0;
 
     task_reset_slot(t);
+    if (kstack_alloc(t, idx) != 0) return 0;
+    task_init_fpu_state(t);
     t->id         = next_id++;
     t->state      = TASK_READY;
     t->ring       = TASK_RING3;
@@ -431,7 +558,6 @@ struct task *task_spawn_elf(iris_elf_image_t *img, uint64_t arg0) {
     img->seg_count   = 0;
 
     /* Build the iretq frame on the kernel stack */
-    int idx = (int)(t - tasks);
     uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     kstack_top &= ~0xFULL;
 
@@ -522,12 +648,15 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
     if (!proc || !proc->cr3 || proc->teardown_complete) return 0;
 
     struct task *t = 0;
+    int idx = -1;
     for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD) { t = &tasks[i]; break; }
+        if (tasks[i].state == TASK_DEAD) { t = &tasks[i]; idx = i; break; }
     }
     if (!t) return 0;
 
     task_reset_slot(t);
+    if (kstack_alloc(t, idx) != 0) return 0;
+    task_init_fpu_state(t);
     t->id         = next_id++;
     t->state      = TASK_READY;
     t->ring       = TASK_RING3;
@@ -538,7 +667,6 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
     t->process    = proc;
     /* user_stack_pages = 0: caller owns the stack; free_user_stack_pages is no-op */
 
-    int idx = (int)(t - tasks);
     uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     kstack_top &= ~0xFULL;
 
@@ -623,6 +751,18 @@ void task_exit_current(void) {
 }
 
 void task_yield(void) {
+    /* Disable IRQs for the duration of the scheduler critical section.
+     * This prevents IRQ0 from firing inside task_yield while we are
+     * modifying scheduler state (current_task, task states, run queue).
+     * RFLAGS is saved and restored so each task's IF state is preserved:
+     * tasks coming from syscall context resume with IF=0 (SFMASK masked it);
+     * tasks coming from kernel paths with IF=1 resume with IF=1.
+     * context_switch itself restores the incoming task's RFLAGS, and if an
+     * IRQ fires after that popfq (on the correct new kernel stack), the IRQ
+     * runs harmlessly and returns via iretq before context_switch's ret. */
+    uint64_t saved_flags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(saved_flags) : : "memory");
+
     reap_pending_dead_task();
 
     struct task *old = current_task;
@@ -644,29 +784,31 @@ void task_yield(void) {
         if (idle != old && task_is_runnable(idle->state)) {
             chosen = idle;
         } else {
+            __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
             return;
         }
     }
 
-    if (chosen == old) return;
+    if (chosen == old) {
+        __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
+        return;
+    }
 
     if (old->state == TASK_RUNNING)
         old->state = TASK_READY;
 
     chosen->state      = TASK_RUNNING;
-    chosen->ticks_left = chosen->time_slice;  /* reload quantum */
+    chosen->ticks_left = chosen->time_slice;
     chosen->need_resched = 0;
     current_task       = chosen;
 
     int old_idx = (int)(old - tasks);
     int new_idx = (int)(chosen - tasks);
 
-    /* update TSS rsp0 to new task kernel stack top */
     uint64_t new_kstack_top = (uint64_t)(uintptr_t)(chosen->kstack + TASK_STACK_SIZE);
     tss_set_rsp0(new_kstack_top);
-    syscall_set_kstack(new_kstack_top);  /* per-task syscall kernel stack */
+    syscall_set_kstack(new_kstack_top);
 
-    /* switch CR3: user task gets its own page table, kernel tasks go back to kernel CR3 */
     if (chosen->process && chosen->process->cr3 != 0)
         __asm__ volatile ("mov %0, %%cr3" : : "r"(chosen->process->cr3) : "memory");
     else
@@ -676,7 +818,11 @@ void task_yield(void) {
         pending_reap_task = old;
 
     context_switch(&old->ctx, &chosen->ctx,
-                   &task_rsp[old_idx], task_rsp[new_idx]);
+                   &task_rsp[old_idx], task_rsp[new_idx],
+                   old->fpu_state, chosen->fpu_state);
+
+    /* Restore the caller's original interrupt flag after resuming. */
+    __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
 }
 
 void task_kill_process(struct KProcess *proc) {

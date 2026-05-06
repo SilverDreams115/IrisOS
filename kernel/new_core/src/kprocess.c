@@ -5,13 +5,35 @@
 #include <iris/nc/rights.h>
 #include <iris/irq_routing.h>
 #include <iris/syscall.h>
+#include <iris/kpage.h>
 #include <iris/pmm.h>
 #include <iris/paging.h>
 #include <iris/fault_proto.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
-static struct KProcess pool[KPROCESS_POOL_SIZE];
-static uint8_t         pool_used[KPROCESS_POOL_SIZE];
+static _Atomic uint32_t kprocess_live;
+
+static iris_error_t kprocess_quota_acquire(uint32_t *counter, uint32_t limit,
+                                           struct KProcess *p) {
+    iris_error_t r = IRIS_OK;
+    if (!counter || !p) return IRIS_ERR_INVALID_ARG;
+    spinlock_lock(&p->base.lock);
+    if (*counter >= limit)
+        r = IRIS_ERR_NO_MEMORY;
+    else
+        (*counter)++;
+    spinlock_unlock(&p->base.lock);
+    return r;
+}
+
+static void kprocess_quota_release(uint32_t *counter, struct KProcess *p) {
+    if (!counter || !p) return;
+    spinlock_lock(&p->base.lock);
+    if (*counter != 0)
+        (*counter)--;
+    spinlock_unlock(&p->base.lock);
+}
 
 static void kprocess_clear_exception_chan(struct KProcess *p) {
     struct KChannel *old = 0;
@@ -61,6 +83,20 @@ static void kprocess_emit_exit_watch(struct KProcess *p) {
     }
 }
 
+static void kprocess_clear_vmo_mappings(struct KProcess *p) {
+    struct KVmoMapping *m;
+    if (!p) return;
+
+    while (p->vmo_mappings) {
+        m = p->vmo_mappings;
+        p->vmo_mappings = m->next;
+        if (m->vmo)
+            kobject_release(&m->vmo->base);
+        kpage_free(m, (uint32_t)sizeof(*m));
+    }
+    p->vmo_mapping_count = 0;
+}
+
 static void kprocess_destroy(struct KObject *obj) {
     struct KProcess *p = (struct KProcess *)obj;
 
@@ -72,10 +108,8 @@ static void kprocess_destroy(struct KObject *obj) {
     if (!p->aspace_reaped) {
         kprocess_reap_address_space(p);
     }
-
-    for (int i = 0; i < KPROCESS_POOL_SIZE; i++) {
-        if (&pool[i] == p) { pool_used[i] = 0; return; }
-    }
+    atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+    kpage_free(p, (uint32_t)sizeof(struct KProcess));
 }
 
 static const struct KObjectOps kprocess_ops = {
@@ -83,22 +117,41 @@ static const struct KObjectOps kprocess_ops = {
 };
 
 struct KProcess *kprocess_alloc(void) {
-    for (int i = 0; i < KPROCESS_POOL_SIZE; i++) {
-        if (!pool_used[i]) {
-            pool_used[i] = 1;
-            struct KProcess *p = &pool[i];
-            uint8_t *raw = (uint8_t *)p;
-            for (uint32_t j = 0; j < sizeof(*p); j++) raw[j] = 0;
-            kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
-            handle_table_init(&p->handle_table);
-            return p;
-        }
-    }
-    return 0;
+    struct KProcess *p = kpage_alloc((uint32_t)sizeof(struct KProcess));
+    if (!p) return 0;
+    kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
+    handle_table_init(&p->handle_table);
+    atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
+    return p;
 }
 
 void kprocess_free(struct KProcess *p) {
     kobject_release(&p->base);
+}
+
+iris_error_t kprocess_quota_acquire_channel(struct KProcess *p) {
+    return kprocess_quota_acquire(&p->owned_channels, KPROCESS_CHANNEL_QUOTA, p);
+}
+
+void kprocess_quota_release_channel(struct KProcess *p) {
+    kprocess_quota_release(&p->owned_channels, p);
+}
+
+iris_error_t kprocess_quota_acquire_notification(struct KProcess *p) {
+    return kprocess_quota_acquire(&p->owned_notifications,
+                                  KPROCESS_NOTIFICATION_QUOTA, p);
+}
+
+void kprocess_quota_release_notification(struct KProcess *p) {
+    kprocess_quota_release(&p->owned_notifications, p);
+}
+
+iris_error_t kprocess_quota_acquire_vmo(struct KProcess *p) {
+    return kprocess_quota_acquire(&p->owned_vmos, KPROCESS_VMO_QUOTA, p);
+}
+
+void kprocess_quota_release_vmo(struct KProcess *p) {
+    kprocess_quota_release(&p->owned_vmos, p);
 }
 
 iris_error_t kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
@@ -198,31 +251,38 @@ void kprocess_notify_fault(struct task *t, uint64_t vector,
 iris_error_t kprocess_register_vmo_map(struct KProcess *p, uint64_t virt_base,
                                         uint64_t size, struct KVmo *vmo,
                                         uint64_t page_flags) {
-    uint32_t i;
+    struct KVmoMapping *m;
     if (!p || !vmo || size == 0) return IRIS_ERR_INVALID_ARG;
-    for (i = 0; i < KPROCESS_VMO_MAP_MAX; i++) {
-        if (p->vmo_mappings[i].vmo) continue;
-        p->vmo_mappings[i].virt_base   = virt_base;
-        p->vmo_mappings[i].size        = size;
-        p->vmo_mappings[i].vmo         = vmo;
-        p->vmo_mappings[i].page_flags  = page_flags;
-        kobject_retain(&vmo->base);
-        return IRIS_OK;
-    }
-    return IRIS_ERR_TABLE_FULL;
+    m = kpage_alloc((uint32_t)sizeof(*m));
+    if (!m) return IRIS_ERR_NO_MEMORY;
+    m->virt_base  = virt_base;
+    m->size       = size;
+    m->vmo        = vmo;
+    m->page_flags = page_flags;
+    kobject_retain(&vmo->base);
+    m->next = p->vmo_mappings;
+    p->vmo_mappings = m;
+    p->vmo_mapping_count++;
+    return IRIS_OK;
 }
 
 void kprocess_unregister_vmo_map(struct KProcess *p, uint64_t virt_base) {
-    uint32_t i;
+    struct KVmoMapping **link;
+    struct KVmoMapping *m;
     if (!p) return;
-    for (i = 0; i < KPROCESS_VMO_MAP_MAX; i++) {
-        if (!p->vmo_mappings[i].vmo) continue;
-        if (p->vmo_mappings[i].virt_base != virt_base) continue;
-        kobject_release(&p->vmo_mappings[i].vmo->base);
-        p->vmo_mappings[i].vmo = 0;
-        p->vmo_mappings[i].virt_base = 0;
-        p->vmo_mappings[i].size = 0;
-        p->vmo_mappings[i].page_flags = 0;
+    link = &p->vmo_mappings;
+    while (*link) {
+        m = *link;
+        if (m->virt_base != virt_base) {
+            link = &m->next;
+            continue;
+        }
+        *link = m->next;
+        if (m->vmo)
+            kobject_release(&m->vmo->base);
+        kpage_free(m, (uint32_t)sizeof(*m));
+        if (p->vmo_mapping_count)
+            p->vmo_mapping_count--;
         return;
     }
 }
@@ -230,7 +290,6 @@ void kprocess_unregister_vmo_map(struct KProcess *p, uint64_t virt_base) {
 iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) {
     struct KProcess *p;
     struct KVmoMapping *m;
-    uint32_t i;
     uint64_t page_base, page_idx, phys;
     uint8_t published;
 
@@ -238,9 +297,7 @@ iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) 
     p = t->process;
     page_base = fault_addr & ~0xFFFULL;
 
-    for (i = 0; i < KPROCESS_VMO_MAP_MAX; i++) {
-        m = &p->vmo_mappings[i];
-        if (!m->vmo) continue;
+    for (m = p->vmo_mappings; m; m = m->next) {
         if (page_base < m->virt_base) continue;
         if (page_base >= m->virt_base + m->size) continue;
 
@@ -284,15 +341,7 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     kprocess_emit_exit_watch(p);
     kprocess_clear_exit_watch(p);
     kprocess_clear_exception_chan(p);
-    {
-        uint32_t i;
-        for (i = 0; i < KPROCESS_VMO_MAP_MAX; i++) {
-            if (p->vmo_mappings[i].vmo) {
-                kobject_release(&p->vmo_mappings[i].vmo->base);
-                p->vmo_mappings[i].vmo = 0;
-            }
-        }
-    }
+    kprocess_clear_vmo_mappings(p);
     irq_routing_unregister_owner(p);
     handle_table_close_all(&p->handle_table);
 
@@ -323,18 +372,8 @@ void kprocess_reap_address_space(struct KProcess *p) {
 }
 
 /*
- * kprocess_live_count: count pool slots currently allocated.
- *
- * Iterates the pool_used[] bitmap.  A slot is live when pool_used[i] == 1,
- * regardless of whether the process has begun teardown.  This gives a
- * conservative upper bound on live processes useful for pressure monitoring.
- * Called from sys_diag_snapshot; no locks held (byte reads are atomic).
+ * kprocess_live_count: count live kpage-backed process objects.
  */
 uint32_t kprocess_live_count(void) {
-    uint32_t count = 0;
-    for (int i = 0; i < KPROCESS_POOL_SIZE; i++) {
-        if (pool_used[i])
-            count++;
-    }
-    return count;
+    return atomic_load_explicit(&kprocess_live, memory_order_relaxed);
 }

@@ -81,6 +81,30 @@ iris_error_t handle_table_get_object(HandleTable *ht, handle_id_t id,
     return IRIS_OK;
 }
 
+iris_error_t handle_table_replace(HandleTable *ht, handle_id_t id,
+                                  struct KObject *new_obj) {
+    if (!ht || !id || !new_obj) return IRIS_ERR_INVALID_ARG;
+
+    uint32_t slot = handle_id_slot(id);
+    uint32_t gen  = handle_id_gen(id);
+
+    if (slot >= HANDLE_TABLE_MAX) return IRIS_ERR_BAD_HANDLE;
+
+    spinlock_lock(&ht->lock);
+
+    if (!ht->used[slot] || ht->gen[slot] != gen) {
+        spinlock_unlock(&ht->lock);
+        return IRIS_ERR_BAD_HANDLE;
+    }
+
+    iris_rights_t rights = ht->slots[slot].rights;
+    handle_entry_reset(&ht->slots[slot]);
+    handle_entry_init(&ht->slots[slot], new_obj, rights, gen);
+
+    spinlock_unlock(&ht->lock);
+    return IRIS_OK;
+}
+
 iris_error_t handle_table_close(HandleTable *ht, handle_id_t id) {
     if (!id) return IRIS_ERR_INVALID_ARG;
 

@@ -44,6 +44,9 @@ struct gdt_descriptor {
 /* TSS instance */
 static struct tss kernel_tss;
 static uint8_t fault_ist1_stack[16384] __attribute__((aligned(16)));
+/* Dedicated stack for NMI (IST2).  NMI can fire at any time, including
+ * while IST1 is in use by a #PF/#GP handler, so it must have its own stack. */
+static uint8_t nmi_ist2_stack[4096] __attribute__((aligned(16)));
 
 static struct gdt_entry   gdt[GDT_ENTRIES];
 static struct gdt_descriptor gdtr;
@@ -102,6 +105,7 @@ void gdt_init(void) {
     /* 5-6: TSS (16 bytes) — kernel_tss is static so already zero */
     kernel_tss.iopb_offset = sizeof(struct tss); /* no IO ports accessible from ring 3 */
     kernel_tss.ist[0] = (uint64_t)(uintptr_t)(fault_ist1_stack + sizeof(fault_ist1_stack)); /* IST1 for #DF/#GP/#PF */
+    kernel_tss.ist[1] = (uint64_t)(uintptr_t)(nmi_ist2_stack   + sizeof(nmi_ist2_stack));   /* IST2 for NMI/#MC */
 
     gdt_set_tss((uint64_t)(uintptr_t)&kernel_tss, sizeof(struct tss) - 1);
 

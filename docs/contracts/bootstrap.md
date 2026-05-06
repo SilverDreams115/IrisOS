@@ -2,69 +2,32 @@
 
 ## Purpose
 
-Defines how the kernel, `svcmgr`, and child services exchange bootstrap authority and initial handles.
+Defines how the kernel, `init`, `svcmgr`, and child services exchange bootstrap authority and initial handles in the healthy path.
 
 ## Root bootstrap model
 
-The current healthy-path bootstrap is two-tier:
+The current healthy-path bootstrap is three-stage:
 
-1. Kernel bootstraps `svcmgr`.
-2. Kernel attaches a narrow client handle to the first user task (`init`).
-3. `svcmgr` bootstraps the remaining built-in services from the service catalog.
+1. The kernel spawns one opaque bootstrap image from the embedded initrd catalog.
+2. The kernel injects one `KBootstrapCap` into that first user task.
+3. In the current healthy path, that task is `init`, which spawns `svcmgr`; `svcmgr` then bootstraps the remaining built-in services from the service catalog.
 
-This means normal runtime discovery is userland-owned, but the first control path is still kernel-seeded.
+This keeps runtime discovery and service topology in userland while leaving one minimal kernel-seeded entry point.
 
-## `svcmgr` bootstrap channel contract
+## Kernel bootstrap authority contract
 
-The kernel allocates one private `KChannel` for `svcmgr` and inserts it into `svcmgr` with:
+The kernel injects one `KBootstrapCap` into the first user task with:
 
-- rights: `RIGHT_READ | RIGHT_WRITE`
-- delivery: `task_set_bootstrap_arg0(sm, h)`
+- handle rights: `RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER`
+- capability permissions: `IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS | IRIS_BOOTCAP_KDEBUG`
 
-The kernel retains its own reference to the same channel for:
+This is the only healthy-path service/bootstrap policy retained by the kernel.
+Image selection after that point is fully userland-driven through `SYS_INITRD_LOOKUP`
+and `SYS_SPAWN_ELF`.
 
-- initial client attachment
-- bootstrap capability delivery
-- lifecycle watch traffic
+## `SYS_INITRD_LOOKUP` + `SYS_SPAWN_ELF` contract
 
-## Kernel-to-`svcmgr` bootstrap payloads
-
-Current mandatory bootstrap message:
-
-- `SVCMGR_MSG_BOOTSTRAP_HANDLE`
-  - `kind = SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP`
-  - attached handle rights: `RIGHT_READ`
-
-Current optional/best-effort bootstrap messages:
-
-- `SVCMGR_BOOTSTRAP_KIND_IRQ_CAP`
-  - one per catalog entry with `irq_num != 0xFF`
-  - attached handle rights: `RIGHT_ROUTE`
-- `SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP`
-  - one per catalog entry with `ioport_count > 0`
-  - attached handle rights: `RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER`
-
-`svcmgr` requires the spawn capability to proceed. Missing IRQ or I/O port capabilities degrade service bootstrap for the affected service.
-
-## First-client attachment contract
-
-The kernel may attach a client-visible handle to the retained `svcmgr` bootstrap channel into another process via `svcmgr_bootstrap_attach_client()`.
-
-Current healthy path uses:
-
-- target process: `init`
-- granted rights: `RIGHT_WRITE`
-
-The attach helper rejects:
-
-- zero rights
-- any rights outside `RIGHT_WRITE`
-
-This is intentionally narrow: the first client can talk to `svcmgr`, but it is not granted broader authority over the bootstrap channel.
-
-## `SYS_SPAWN_SERVICE` contract
-
-`SYS_SPAWN_SERVICE` is restricted by an explicit bootstrap capability handle.
+Service spawn is restricted by an explicit bootstrap capability handle.
 
 The caller must present:
 
@@ -74,13 +37,10 @@ The caller must present:
 
 On success:
 
-- the named ELF is loaded from the kernel initrd
-- a fresh child process is created
-- a new bootstrap channel pair is allocated
+- `SYS_INITRD_LOOKUP` resolves a named initrd catalog entry to `KOBJ_INITRD_ENTRY`
+- `SYS_SPAWN_ELF` loads that ELF in kernel-space and creates a fresh child process
 - the child receives its bootstrap handle in `RBX`
-- the parent receives:
-  - a `KProcess` handle with `RIGHT_READ | RIGHT_ROUTE | RIGHT_MANAGE | RIGHT_DUPLICATE`
-  - optionally, a parent-side bootstrap channel handle if requested
+- the parent receives a `KProcess` handle and, optionally, a bootstrap channel handle
 
 ## `svcmgr` child bootstrap contract
 
@@ -118,9 +78,21 @@ The lifecycle consequence is:
 - exit notifications are delivered back to `svcmgr` over its bootstrap channel
 - IRQ route cleanup remains kernel-side and is tied to child process ownership
 
+## Pragmatic kernel-side mechanisms
+
+The following mechanisms remain in the kernel in the current architecture:
+
+- `elf_loader.c`
+  - rationale: process creation still requires trusted ELF validation, page-table construction, and segment mapping in the same failure domain as `task_spawn_elf()`
+  - phase-4 decision: stays in kernel for pragmatism; not extracted in this phase
+- `irq_routing.c`
+  - rationale: interrupt delivery, masking, ISR-context dispatch, and owner-tied teardown still need a small kernel-resident mechanism
+  - phase-4 decision: stays in kernel for pragmatism; policy for who owns which IRQ remains in `svcmgr`
+
 ## Current bootstrap invariants
 
-- `svcmgr` is the only healthy-path caller of `SYS_SPAWN_SERVICE`.
-- The kernel does not publish `svcmgr` through the old nameserver path for healthy boot.
-- Child bootstrap handles are private and are not reused as normal runtime service handles.
-- The service catalog is the source of truth for built-in service policy.
+- the kernel healthy path consumes one opaque bootstrap image and does not select `svcmgr`, `kbd`, or `vfs` by name
+- `init` is the current bootstrap image, but that is an initrd catalog decision, not a `kernel_main.c` string dependency
+- child bootstrap handles are private and are not reused as normal runtime service handles
+- the service catalog is the source of truth for built-in service policy
+- bootstrap-cap restriction is per-handle; narrowing one alias must not silently reduce authority held through another alias

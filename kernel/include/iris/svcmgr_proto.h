@@ -19,6 +19,9 @@
  *   kernel  → svcmgr : SVCMGR_MSG_PHASE3_PROBE
  *   kernel  → svcmgr : PROC_EVENT_MSG_EXIT (via SYS_PROCESS_WATCH)
  *   client  → svcmgr : SVCMGR_MSG_LOOKUP
+ *   client  → svcmgr : SVCMGR_MSG_LOOKUP_NAME
+ *   service → svcmgr : SVCMGR_MSG_REGISTER
+ *   service → svcmgr : SVCMGR_MSG_UNREGISTER
  *   client  → svcmgr : SVCMGR_MSG_DIAG
  *   svcmgr  → client : SVCMGR_MSG_LOOKUP_REPLY
  *   svcmgr  → client : SVCMGR_MSG_DIAG_REPLY
@@ -94,6 +97,43 @@
  *   attached_handle                        looked-up service handle, if err=0
  *   attached_rights                        exact rights granted to the client
  *
+ * ── SVCMGR_MSG_LOOKUP_NAME (client → svcmgr) ──────────────────────
+ * Name-based runtime discovery. Fixed catalog services and runtime-registered
+ * services share the same namespace. The client attaches a one-shot reply
+ * channel with RIGHT_WRITE.
+ *
+ *   data[SVCMGR_LOOKUP_NAME_OFF_NAME]      fixed-size NUL-terminated service name
+ *   data[SVCMGR_LOOKUP_NAME_OFF_RIGHTS]    uint32_t requested rights cap
+ *   attached_handle                        reply channel handle moved into svcmgr
+ *   attached_rights                        RIGHT_WRITE for that reply channel copy
+ *
+ * ── SVCMGR_MSG_REGISTER (service → svcmgr) ────────────────────────
+ * First-cut dynamic publication path. A publisher moves one master handle into
+ * svcmgr and binds it to a runtime `(endpoint, name)` entry plus an allowed
+ * client-rights mask.
+ *
+ *   data[SVCMGR_REGISTER_OFF_ENDPOINT]     uint32_t published endpoint id
+ *   data[SVCMGR_REGISTER_OFF_RIGHTS]       uint32_t allowed client-rights mask
+ *   data[SVCMGR_REGISTER_OFF_NAME]         fixed-size NUL-terminated service name
+ *   attached_handle                        service master handle moved into svcmgr
+ *   attached_rights                        must include RIGHT_DUPLICATE
+ *
+ * This first cut does not define a secure unregister path. sender_id is not
+ * treated as an authority signal.
+ *
+ * ── SVCMGR_MSG_UNREGISTER (service → svcmgr) ──────────────────────
+ * First-cut withdrawal path for runtime-published channel endpoints.
+ * The publisher moves a proof handle for the same published channel object;
+ * svcmgr compares object identity against the registered master handle.
+ *
+ *   data[SVCMGR_UNREGISTER_OFF_ENDPOINT]   uint32_t published endpoint id
+ *   attached_handle                        proof handle for the same channel object
+ *   attached_rights                        must include RIGHT_WRITE
+ *
+ * On success, svcmgr seals the published channel before dropping its master
+ * reference. That makes future lookups fail and forces already-distributed
+ * channel duplicates to observe CLOSED.
+ *
  * ── SVCMGR_MSG_DIAG (client → svcmgr) ─────────────────────────────
  * One-shot consolidated diagnostics query. The client attaches a reply
  * channel handle with RIGHT_WRITE; svcmgr gathers:
@@ -149,11 +189,16 @@
 #define SVCMGR_MSG_LOOKUP         0x0003u
 #define SVCMGR_MSG_STATUS         0x0004u
 #define SVCMGR_MSG_DIAG           0x0005u
+#define SVCMGR_MSG_LOOKUP_NAME    0x0006u
+#define SVCMGR_MSG_REGISTER       0x0007u
+#define SVCMGR_MSG_UNREGISTER     0x0008u
 #define SVCMGR_MSG_ACK            0x8001u
 #define SVCMGR_MSG_BOOTSTRAP_HANDLE 0x8002u
 #define SVCMGR_MSG_LOOKUP_REPLY   0x8003u
 #define SVCMGR_MSG_STATUS_REPLY   0x8004u
 #define SVCMGR_MSG_DIAG_REPLY     0x8005u
+
+#define SVCMGR_SERVICE_NAME_CAP     16u
 
 #define SVCMGR_SERVICE_NONE       0u
 #define SVCMGR_SERVICE_KBD        1u
@@ -202,6 +247,12 @@
 #define SVCMGR_BOOTSTRAP_OFF_KIND 0    /* uint32_t: endpoint role selector */
 #define SVCMGR_LOOKUP_OFF_ENDPOINT 0   /* uint32_t: requested endpoint id  */
 #define SVCMGR_LOOKUP_OFF_RIGHTS   4   /* uint32_t: requested rights cap   */
+#define SVCMGR_LOOKUP_NAME_OFF_NAME   0  /* char[16]: requested service name */
+#define SVCMGR_LOOKUP_NAME_OFF_RIGHTS 16 /* uint32_t: requested rights cap   */
+#define SVCMGR_REGISTER_OFF_ENDPOINT  0  /* uint32_t: published endpoint id  */
+#define SVCMGR_REGISTER_OFF_RIGHTS    4  /* uint32_t: allowed client rights  */
+#define SVCMGR_REGISTER_OFF_NAME      8  /* char[16]: published service name */
+#define SVCMGR_UNREGISTER_OFF_ENDPOINT 0 /* uint32_t: published endpoint id  */
 #define SVCMGR_LOOKUP_REPLY_OFF_ERR      0 /* int32_t: 0=OK, <0=iris_error_t */
 #define SVCMGR_LOOKUP_REPLY_OFF_ENDPOINT 4 /* uint32_t: echoed endpoint id   */
 #define SVCMGR_STATUS_REPLY_OFF_ERR      0 /* int32_t: 0=OK, <0=iris_error_t */
@@ -233,13 +284,16 @@
 #define SVCMGR_BOOTSTRAP_MSG_LEN  4u   /* kind only (SPAWN_CAP, SERVICE, REPLY) */
 /* SVCMGR_BOOTSTRAP_IRQ_CAP_MSG_LEN = 5u is defined above with its offset constants */
 #define SVCMGR_LOOKUP_MSG_LEN     8u   /* endpoint + rights */
+#define SVCMGR_LOOKUP_NAME_MSG_LEN 20u /* name + rights */
+#define SVCMGR_REGISTER_MSG_LEN   24u  /* endpoint + rights + name */
+#define SVCMGR_UNREGISTER_MSG_LEN 4u   /* endpoint only */
 #define SVCMGR_LOOKUP_REPLY_MSG_LEN 8u /* err + endpoint */
 #define SVCMGR_STATUS_MSG_LEN     0u
 #define SVCMGR_STATUS_REPLY_MSG_LEN 24u
 #define SVCMGR_DIAG_MSG_LEN       0u
 #define SVCMGR_DIAG_REPLY_MSG_LEN 64u
 
-#define SVCMGR_PROTO_VERSION      2u
+#define SVCMGR_PROTO_VERSION      3u
 #define SVCMGR_DIAG_VERSION       2u
 #define IRIS_SERVICE_CATALOG_VERSION 1u
 
@@ -271,11 +325,39 @@ static inline int svcmgr_proto_lookup_valid(const struct KChanMsg *msg) {
            (msg->attached_rights & RIGHT_WRITE) != 0;
 }
 
+static inline int svcmgr_proto_service_name_valid_bytes(const uint8_t *src) {
+    if (!src) return 0;
+    for (uint32_t i = 0; i < SVCMGR_SERVICE_NAME_CAP; i++) {
+        if (src[i] == '\0')
+            return i != 0u;
+    }
+    return 0;
+}
+
 static inline void svcmgr_proto_lookup_decode(const struct KChanMsg *msg,
                                               uint32_t *endpoint,
                                               iris_rights_t *rights) {
     if (endpoint) *endpoint = svcmgr_proto_read_u32(&msg->data[SVCMGR_LOOKUP_OFF_ENDPOINT]);
     if (rights) *rights = (iris_rights_t)svcmgr_proto_read_u32(&msg->data[SVCMGR_LOOKUP_OFF_RIGHTS]);
+}
+
+static inline int svcmgr_proto_lookup_name_valid(const struct KChanMsg *msg) {
+    return msg && msg->type == SVCMGR_MSG_LOOKUP_NAME &&
+           msg->data_len == SVCMGR_LOOKUP_NAME_MSG_LEN &&
+           msg->attached_handle != HANDLE_INVALID &&
+           (msg->attached_rights & RIGHT_WRITE) != 0 &&
+           svcmgr_proto_service_name_valid_bytes(&msg->data[SVCMGR_LOOKUP_NAME_OFF_NAME]);
+}
+
+static inline void svcmgr_proto_lookup_name_decode(const struct KChanMsg *msg,
+                                                   char *name_out,
+                                                   iris_rights_t *rights) {
+    if (name_out) {
+        for (uint32_t i = 0; i < SVCMGR_SERVICE_NAME_CAP; i++)
+            name_out[i] = (char)msg->data[SVCMGR_LOOKUP_NAME_OFF_NAME + i];
+    }
+    if (rights)
+        *rights = (iris_rights_t)svcmgr_proto_read_u32(&msg->data[SVCMGR_LOOKUP_NAME_OFF_RIGHTS]);
 }
 
 static inline void svcmgr_proto_lookup_reply_init(struct KChanMsg *msg,
@@ -298,6 +380,38 @@ static inline int svcmgr_proto_status_valid(const struct KChanMsg *msg) {
            msg->data_len == SVCMGR_STATUS_MSG_LEN &&
            msg->attached_handle != HANDLE_INVALID &&
            (msg->attached_rights & RIGHT_WRITE) != 0;
+}
+
+static inline int svcmgr_proto_register_valid(const struct KChanMsg *msg) {
+    return msg && msg->type == SVCMGR_MSG_REGISTER &&
+           msg->data_len == SVCMGR_REGISTER_MSG_LEN &&
+           msg->attached_handle != HANDLE_INVALID &&
+           svcmgr_proto_service_name_valid_bytes(&msg->data[SVCMGR_REGISTER_OFF_NAME]);
+}
+
+static inline void svcmgr_proto_register_decode(const struct KChanMsg *msg,
+                                                uint32_t *endpoint,
+                                                iris_rights_t *rights,
+                                                char *name_out) {
+    if (endpoint)
+        *endpoint = svcmgr_proto_read_u32(&msg->data[SVCMGR_REGISTER_OFF_ENDPOINT]);
+    if (rights)
+        *rights = (iris_rights_t)svcmgr_proto_read_u32(&msg->data[SVCMGR_REGISTER_OFF_RIGHTS]);
+    if (name_out) {
+        for (uint32_t i = 0; i < SVCMGR_SERVICE_NAME_CAP; i++)
+            name_out[i] = (char)msg->data[SVCMGR_REGISTER_OFF_NAME + i];
+    }
+}
+
+static inline int svcmgr_proto_unregister_valid(const struct KChanMsg *msg) {
+    return msg && msg->type == SVCMGR_MSG_UNREGISTER &&
+           msg->data_len == SVCMGR_UNREGISTER_MSG_LEN &&
+           msg->attached_handle != HANDLE_INVALID &&
+           (msg->attached_rights & RIGHT_WRITE) != 0;
+}
+
+static inline uint32_t svcmgr_proto_unregister_endpoint(const struct KChanMsg *msg) {
+    return msg ? svcmgr_proto_read_u32(&msg->data[SVCMGR_UNREGISTER_OFF_ENDPOINT]) : 0u;
 }
 
 static inline int svcmgr_proto_diag_valid(const struct KChanMsg *msg) {

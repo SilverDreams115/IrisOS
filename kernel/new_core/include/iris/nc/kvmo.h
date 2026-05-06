@@ -5,7 +5,9 @@
 #include <iris/nc/error.h>
 #include <stdint.h>
 
-#define KVMO_POOL_SIZE 128u
+struct KProcess;
+
+#define KVMO_POOL_SIZE 0u
 #define KVMO_MAX_PAGES 16384u
 #define KVMO_MAX_SIZE  ((uint64_t)KVMO_MAX_PAGES * 0x1000ULL)
 
@@ -17,6 +19,7 @@ struct KVmo {
     uint64_t       size;    /* size in bytes */
     uint8_t        owned;   /* 1 = PMM-allocated, 0 = external (MMIO/FB) */
     uint8_t        demand;  /* 1 = lazy per-page allocation */
+    struct KProcess *owner; /* creator retained for quota accounting */
     uint32_t       page_capacity;     /* slots in pages[] for demand VMOs */
     uint32_t       pages_meta_pages;  /* PMM pages backing pages[] metadata */
     uint64_t       pages_meta_phys;   /* physical base of pages[] metadata */
@@ -26,6 +29,7 @@ struct KVmo {
 iris_error_t kvmo_size_to_pages(uint64_t size, uint32_t *out_pages);
 struct KVmo *kvmo_create(uint64_t size);             /* allocate from PMM */
 struct KVmo *kvmo_wrap  (uint64_t phys, uint64_t size); /* wrap existing phys (MMIO) */
+iris_error_t kvmo_bind_owner(struct KVmo *v, struct KProcess *owner);
 void         kvmo_free  (struct KVmo *v);
 uint32_t     kvmo_live_count(void);
 

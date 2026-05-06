@@ -10,9 +10,13 @@
 #include <stdint.h>
 
 struct KVmo;
+struct KNotification;
 
-#define KPROCESS_VMO_MAP_MAX    64u
+#define KPROCESS_VMO_MAP_MAX    0u  /* no fixed ceiling — kpage-backed linked list */
 #define KPROCESS_EXIT_WATCH_MAX 4u
+#define KPROCESS_CHANNEL_QUOTA  16u
+#define KPROCESS_NOTIFICATION_QUOTA 16u
+#define KPROCESS_VMO_QUOTA      32u
 
 struct KExitWatch {
     struct KChannel *ch;
@@ -24,8 +28,9 @@ struct KExitWatch {
 struct KVmoMapping {
     uint64_t     virt_base;
     uint64_t     size;
-    struct KVmo *vmo;         /* NULL = free slot */
+    struct KVmo *vmo;
     uint64_t     page_flags;
+    struct KVmoMapping *next;
 };
 
 /*
@@ -63,12 +68,16 @@ struct KProcess {
     uint8_t         teardown_complete; /* logical teardown already ran */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */
     struct KExitWatch exit_watches[KPROCESS_EXIT_WATCH_MAX]; /* up to 4 death subscribers */
-    struct KVmoMapping vmo_mappings[KPROCESS_VMO_MAP_MAX]; /* demand VMO registrations */
+    struct KVmoMapping *vmo_mappings;  /* demand VMO registrations */
+    uint32_t        vmo_mapping_count;
     HandleTable     handle_table;/* process-scoped handles/capabilities */
 
     /* Exception handler channel: if non-NULL, receives a FAULT_MSG_NOTIFY
      * message before the faulting task is killed.  Retained by the process. */
     struct KChannel *exception_chan;
+    uint32_t owned_channels;
+    uint32_t owned_notifications;
+    uint32_t owned_vmos;
 
     /*
      * ELF segment tracking — populated by task_spawn_elf after a successful
@@ -85,13 +94,19 @@ struct KProcess {
     } elf_segs[ELF_LOADER_MAX_LOAD_SEGS];
 };
 
-#define KPROCESS_POOL_SIZE 64  /* maximum live KProcess objects system-wide */
+#define KPROCESS_POOL_SIZE 0u  /* no static pool — kpage-backed; 0 = unbounded allocator ceiling */
 
 struct KChannel;
 struct KProcess *kprocess_alloc(void);
 void             kprocess_free (struct KProcess *p);
 void             kprocess_teardown(struct KProcess *p, struct task *exiting_thread);
 void             kprocess_reap_address_space(struct KProcess *p);
+iris_error_t     kprocess_quota_acquire_channel(struct KProcess *p);
+void             kprocess_quota_release_channel(struct KProcess *p);
+iris_error_t     kprocess_quota_acquire_notification(struct KProcess *p);
+void             kprocess_quota_release_notification(struct KProcess *p);
+iris_error_t     kprocess_quota_acquire_vmo(struct KProcess *p);
+void             kprocess_quota_release_vmo(struct KProcess *p);
 iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
                                      handle_id_t watched_handle, uint32_t cookie);
 iris_error_t     kprocess_set_exception_handler(struct KProcess *p, struct KChannel *ch);
@@ -104,11 +119,10 @@ void             kprocess_unregister_vmo_map(struct KProcess *p, uint64_t virt_b
 iris_error_t     kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr);
 
 /*
- * kprocess_live_count: count KProcess pool slots currently in use.
+ * kprocess_live_count: count live KProcess objects currently allocated.
  *
- * Iterates pool_used[KPROCESS_POOL_SIZE].  Useful as a compact indicator of
- * how many processes (not merely tasks) are alive.  Called from
- * sys_diag_snapshot; safe without additional locking (byte-wide reads).
+ * Backed by an internal atomic counter updated on alloc/destroy. Useful as a
+ * compact indicator of how many processes (not merely tasks) are alive.
  */
 uint32_t kprocess_live_count(void);
 

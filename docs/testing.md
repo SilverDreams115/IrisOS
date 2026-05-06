@@ -23,6 +23,7 @@ IRIS currently has three practical validation layers:
    - `make run`
    - `make run-headless`
    - `make smoke-runtime`
+   - `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests`
    - Optional deeper local path:
      - `make clean`
      - `make ENABLE_RUNTIME_SELFTESTS=1`
@@ -35,12 +36,23 @@ IRIS currently has three practical validation layers:
 
 ## CI runtime path
 
-GitHub Actions now uses `make smoke-runtime`, which:
+GitHub Actions now uses two runtime boot lanes:
 
-- boots the built image in headless QEMU
-- captures the serial log to `build/qemu-headless.log`
-- accepts QEMU timeout exit `124` because IRIS intentionally keeps running
-- fails if the healthy boot signature is missing
+- default lane: `make smoke-runtime`
+- selftest lane: `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests`
+
+Both lanes:
+
+- boot the built image in headless QEMU
+- capture the serial log to a build artifact
+- accept QEMU timeout exit `124` because IRIS intentionally keeps running
+- fail if the healthy boot signature is missing
+
+The selftest lane additionally asserts:
+
+- `[IRIS][P3] handle/lifecycle selftests OK`
+- `[USER][INIT][DIAG] reply`
+- `[SVCMGR][DIAG] kbd status OK`
 
 The interactive `make run` path remains local and developer-oriented.
 
@@ -59,10 +71,11 @@ For changes that specifically touch lifecycle, diagnostics, IPC, handle transfer
   - `make ENABLE_RUNTIME_SELFTESTS=1`
   - `make run`
 
-## Immediate testing roadmap
+## Current gaps worth closing next
 
-The next testing increments should stay small and verifiable:
+The baseline above is the minimum that should stay green. The next additions
+should remain small and directly auditable:
 
-1. Promote selected selftest-enabled runtime checks into a second automated CI boot lane.
-2. Add stronger serial assertions for failure-stage localization, not only success markers.
-3. Add focused host-side tests for protocol encoding/decoding helpers and rights reduction logic where that can be done without emulation.
+1. Add host-side coverage for protocol packing helpers and authority-reduction helpers that do not require QEMU to validate.
+2. Decide whether service-side `IRIS_ENABLE_RUNTIME_SELFTESTS` code should be compiled into the selftest lane as well, and document that policy explicitly.
+3. If more boot phases become critical, extend the headless assertion set with one marker per phase boundary rather than relying on free-form log inspection.

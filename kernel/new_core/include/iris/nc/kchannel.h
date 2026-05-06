@@ -16,7 +16,7 @@
 
 #define KCHAN_CAPACITY      128 /* messages per channel ring buffer */
 #define KCHAN_DATA_SIZE     64  /* bytes of payload per KChanMsg */
-#define KCHANNEL_POOL_SIZE  64  /* maximum live KChannel objects system-wide */
+#define KCHANNEL_POOL_SIZE  0   /* no static pool — kpage-backed; 0 = unbounded ceiling */
 
 /*
  * KChanMsg — IPC message wire format.
@@ -39,6 +39,7 @@ struct KChanMsg {
  * Not visible to userland services.
  */
 #include <iris/nc/kobject.h>
+#include <iris/kpage.h>
 #include <iris/task.h>
 
 struct task;    /* forward declaration — no circular include */
@@ -54,8 +55,13 @@ struct KChanQueuedHandle {
 
 struct KChannel {
     struct KObject  base;                   /* must be first */
+    /* Live-list links — protected by live_lock in kchannel.c (lock ordering:
+     * live_lock must be acquired before base.lock, never after). */
+    struct KChannel *live_prev;
+    struct KChannel *live_next;
     struct KChanMsg buf[KCHAN_CAPACITY];
     struct KChanQueuedHandle attached[KCHAN_CAPACITY];
+    struct KProcess *owner;
     uint32_t        head;
     uint32_t        tail;
     uint32_t        count;
@@ -65,6 +71,7 @@ struct KChannel {
 };
 
 struct KChannel *kchannel_alloc     (void);
+iris_error_t     kchannel_bind_owner(struct KChannel *ch, struct KProcess *owner);
 void             kchannel_free      (struct KChannel *ch);
 
 /*
