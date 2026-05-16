@@ -74,13 +74,26 @@ uint32_t copy_user_cstr_bounded(uint64_t uptr, char *dst, uint32_t cap) {
     uint32_t i = 0;
 
     if (!dst || cap == 0) return 0;
-    while (i < cap - 1 && user_range_readable(uptr + i, 1)) {
+
+    /* Validate and copy one page-aligned chunk at a time to avoid an
+     * O(n) page-table walk per byte.  Each iteration checks exactly the
+     * pages spanned by the remaining bytes of the current 4 KiB page. */
+    while (i < cap - 1) {
+        uint64_t cur_ptr  = uptr + i;
+        uint32_t page_rem = (uint32_t)(0x1000ULL - (cur_ptr & 0xFFFULL));
+        uint32_t avail    = cap - 1 - i;
+        uint32_t chunk    = (page_rem < avail) ? page_rem : avail;
+
+        if (!user_range_readable(cur_ptr, chunk)) break;
+
         user_access_begin();
-        char c = src[i];
+        for (uint32_t j = 0; j < chunk; j++) {
+            char c = src[i + j];
+            if (!c) { user_access_end(); dst[i + j] = '\0'; return i + j; }
+            dst[i + j] = c;
+        }
         user_access_end();
-        if (!c) break;
-        dst[i] = c;
-        i++;
+        i += chunk;
     }
     dst[i] = '\0';
     return i;

@@ -123,23 +123,46 @@ uint64_t pmm_alloc_pages(uint32_t n) {
     if (n == 0) return 0;
     uint64_t start = 0;
     uint64_t count = 0;
-    for (uint64_t i = 1; i < PMM_MAX_PAGES; i++) {
+    uint64_t from = (last_search_index > 0) ? last_search_index : 1;
+
+    /* Phase 1: from last_search_index to end of bitmap */
+    for (uint64_t i = from; i < PMM_MAX_PAGES; i++) {
         if (bitmap_test(i) == 0) {
             if (count == 0) start = i;
             count++;
             if (count == (uint64_t)n) {
-                /* found n contiguous free pages */
                 for (uint64_t j = start; j < start + n; j++) {
                     bitmap_set(j);
                     used_pages_count++;
                 }
+                last_search_index = start + n;
                 return start * PMM_PAGE_SIZE;
             }
         } else {
             count = 0;
         }
     }
-    return 0; /* not enough contiguous pages */
+
+    /* Phase 2: wrap around from page 1 to last_search_index */
+    count = 0;
+    for (uint64_t i = 1; i < from; i++) {
+        if (bitmap_test(i) == 0) {
+            if (count == 0) start = i;
+            count++;
+            if (count == (uint64_t)n) {
+                for (uint64_t j = start; j < start + n; j++) {
+                    bitmap_set(j);
+                    used_pages_count++;
+                }
+                last_search_index = start + n;
+                return start * PMM_PAGE_SIZE;
+            }
+        } else {
+            count = 0;
+        }
+    }
+
+    return 0;
 }
 
 void pmm_free_page(uint64_t phys_addr) {

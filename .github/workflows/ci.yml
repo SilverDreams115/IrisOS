@@ -86,7 +86,7 @@ jobs:
             coreutils
 
       - name: Run headless runtime smoke
-        run: make smoke-runtime
+        run: IRIS_QEMU_TIMEOUT_SECS=60 make smoke-runtime
 
       - name: Upload runtime serial log
         if: always()
@@ -115,7 +115,7 @@ jobs:
             coreutils
 
       - name: Run selftest-enabled headless runtime smoke
-        run: make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
+        run: IRIS_QEMU_TIMEOUT_SECS=60 make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests
 
       - name: Upload selftest runtime serial log
         if: always()

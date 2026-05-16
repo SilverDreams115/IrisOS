@@ -4,17 +4,31 @@
 #define PAGE_SIZE   4096ULL
 #define HUGE_SIZE   (2ULL * 1024 * 1024)
 #define ENTRIES     512ULL
-/* IDENTITY_MB removed — use IDENTITY_MAP_END from paging.h */
 
 #define PML4_IDX(v) (((v) >> 39) & 0x1FFULL)
 #define PDPT_IDX(v) (((v) >> 30) & 0x1FFULL)
 #define PD_IDX(v)   (((v) >> 21) & 0x1FFULL)
 #define PT_IDX(v)   (((v) >> 12) & 0x1FFULL)
 
+/* Linker-script section boundary symbols — used to apply W^X permissions. */
+extern char __text_start, __text_end;
+extern char __rodata_start, __rodata_end;
+extern char __data_start;
+extern char __kernel_end;
+
 static uint64_t pml4_phys = 0;
 static int phys_window_ready = 0;
 
 int iris_smap_enabled = 0;
+
+/* Enable IA32_EFER.NXE so PAGE_NX (bit 63) in PTEs is honoured.
+ * Must be called before any NX-flagged page table entry is loaded into the TLB. */
+static void paging_enable_nxe(void) {
+    uint32_t lo, hi;
+    __asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000080u));
+    lo |= (1u << 11);  /* NXE bit */
+    __asm__ volatile ("wrmsr" : : "c"(0xC0000080u), "a"(lo), "d"(hi));
+}
 
 static uint64_t *phys_to_ptr(uint64_t phys) {
     if (!phys_window_ready)
@@ -176,27 +190,57 @@ int paging_query_access(uint64_t virt, uint64_t *out_flags) {
 
 void paging_init(uint64_t fb_phys, uint64_t fb_size) {
     uint64_t i;
+    uint64_t text_phys_start   = (uint64_t)&__text_start;
+    uint64_t rodata_phys_start = (uint64_t)&__rodata_start;
+    uint64_t data_phys_start   = (uint64_t)&__data_start;
+    uint64_t kernel_phys_end   = (uint64_t)&__kernel_end;
+
+    /* NXE must be set in IA32_EFER before any NX-flagged PTE reaches the TLB. */
+    paging_enable_nxe();
 
     pml4_phys = alloc_table();
     if (pml4_phys == 0) return;
 
-    for (i = 0; i < IDENTITY_MAP_END; i += HUGE_SIZE)
-        paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE); /* kernel only */
+    /* Pre-kernel identity map: 0 .. KERNEL_PHYS_BASE.
+     * KERNEL_PHYS_BASE == HUGE_SIZE (2 MiB) → exactly one huge page; NX because
+     * no kernel code executes from physical 0..2MiB. */
+    for (i = 0; i < KERNEL_PHYS_BASE; i += HUGE_SIZE)
+        paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE | PAGE_NX);
 
+    /* Kernel identity map: per-section W^X with 4 KiB granularity.
+     *   .text                   R-X   (executable, not writable)
+     *   .rodata                 R--   (NX, not writable)
+     *   .data + .bss            RW-   (NX, writable)  */
+    for (i = text_phys_start; i < rodata_phys_start; i += PAGE_SIZE)
+        paging_map(i, i, PAGE_PRESENT);
+    for (i = rodata_phys_start; i < data_phys_start; i += PAGE_SIZE)
+        paging_map(i, i, PAGE_PRESENT | PAGE_NX);
+    for (i = data_phys_start; i < kernel_phys_end; i += PAGE_SIZE)
+        paging_map(i, i, PAGE_PRESENT | PAGE_WRITABLE | PAGE_NX);
+
+    /* Post-kernel identity map: rounded-up-to-2MiB boundary .. IDENTITY_MAP_END. */
+    uint64_t post_kernel = (kernel_phys_end + HUGE_SIZE - 1) & ~(HUGE_SIZE - 1);
+    for (i = post_kernel; i < IDENTITY_MAP_END; i += HUGE_SIZE)
+        paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE | PAGE_NX);
+
+    /* Physmap window: full 4 GiB physical space, NX (data only). */
     for (i = 0; i < PHYS_WINDOW_END; i += HUGE_SIZE)
-        paging_map_huge(PHYS_TO_VIRT(i), i, PAGE_PRESENT | PAGE_WRITABLE);
+        paging_map_huge(PHYS_TO_VIRT(i), i, PAGE_PRESENT | PAGE_WRITABLE | PAGE_NX);
 
-    /* map kernel text+data: KERNEL_PHYS_BASE .. KERNEL_PHYS_BASE+4MB */
-    for (i = 0; i < 0x400000; i += PAGE_SIZE)
-        paging_map(KERNEL_VIRT_TEXT + i,
-                   KERNEL_PHYS_BASE + i,
-                   PAGE_PRESENT | PAGE_WRITABLE); /* W^X applied in Fix 14 */
+    /* KERNEL_VIRT_TEXT alias: same per-section W^X as identity map above. */
+    for (i = text_phys_start; i < rodata_phys_start; i += PAGE_SIZE)
+        paging_map(KERNEL_VIRT_TEXT + (i - KERNEL_PHYS_BASE), i, PAGE_PRESENT);
+    for (i = rodata_phys_start; i < data_phys_start; i += PAGE_SIZE)
+        paging_map(KERNEL_VIRT_TEXT + (i - KERNEL_PHYS_BASE), i, PAGE_PRESENT | PAGE_NX);
+    for (i = data_phys_start; i < kernel_phys_end; i += PAGE_SIZE)
+        paging_map(KERNEL_VIRT_TEXT + (i - KERNEL_PHYS_BASE), i, PAGE_PRESENT | PAGE_WRITABLE | PAGE_NX);
 
+    /* Framebuffer: identity mapped, writable, NX (MMIO — no code). */
     if (fb_phys != 0 && fb_size != 0) {
         uint64_t fb_base = fb_phys & ~(HUGE_SIZE - 1);
         uint64_t fb_end  = (fb_phys + fb_size + HUGE_SIZE - 1) & ~(HUGE_SIZE - 1);
         for (i = fb_base; i < fb_end; i += HUGE_SIZE)
-            paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE); /* kernel only */
+            paging_map_huge(i, i, PAGE_PRESENT | PAGE_WRITABLE | PAGE_NX);
     }
 
     __asm__ volatile ("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");

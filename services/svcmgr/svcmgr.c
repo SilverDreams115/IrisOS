@@ -8,6 +8,8 @@
 #include <iris/nc/handle.h>
 #include <iris/nc/kchannel.h>
 #include <stdint.h>
+#include "../common/svc_loader.h"
+#include "../common/console_client.h"
 
 /*
  * Runtime-published services are bounded by the same per-process handle-table
@@ -38,6 +40,7 @@ struct svcmgr_dynamic_service {
 struct svcmgr_state {
     handle_id_t bootstrap_h;
     handle_id_t spawn_cap_h;
+    handle_id_t console_h;                                    /* write end of console channel */
     handle_id_t irq_caps[SVCMGR_IRQ_CAPS_TABLE_SIZE];       /* indexed by IRQ number  */
     handle_id_t ioport_caps[SVCMGR_IOPORT_CAPS_TABLE_SIZE]; /* indexed by service_id  */
     struct svcmgr_service_state services[IRIS_SERVICE_RUNTIME_SLOT_COUNT];
@@ -57,6 +60,7 @@ static const char sm_str_bootdupfail[]  = "[SVCMGR] WARN: child bootstrap dup fa
 static const char sm_str_bootsendfail[] = "[SVCMGR] WARN: child bootstrap send failed\n";
 static const char sm_str_lookupok[]     = "[SVCMGR] lookup reply OK\n";
 static const char sm_str_lookupfail[]   = "[SVCMGR] WARN: lookup failed\n";
+static const char sm_str_lookupsendfail[] = "[SVCMGR] WARN: lookup reply send failed\n";
 static const char sm_str_diag_fail[]    = "[SVCMGR] WARN: diagnostics query failed\n";
 static const char sm_str_svc_exited[]   = "[SVCMGR] service exited\n";
 static const char sm_str_irqfail[]      = "[SVCMGR] WARN: irq route xfer failed\n";
@@ -100,7 +104,7 @@ static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1
 }
 
 static void svcmgr_log(const char *msg) {
-    (void)svcmgr_syscall1(SYS_WRITE, (uint64_t)(uintptr_t)msg);
+    console_write(g_svcmgr_state.console_h, msg);
 }
 
 static void svcmgr_log_u32(uint32_t value) {
@@ -164,16 +168,17 @@ static void svcmgr_close_handle_if_valid(handle_id_t *h) {
 }
 
 /*
- * Receive kernel bootstrap capability messages from the bootstrap channel.
- * The kernel now sends exactly one message: SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP.
- * IRQ and I/O port caps are obtained later via SYS_CAP_CREATE_IRQCAP /
- * SYS_CAP_CREATE_IOPORT, keeping hardware resource policy in svcmgr.
+ * Receive bootstrap messages from the bootstrap channel.
+ * init sends two messages before svcmgr starts:
+ *   1. SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP — write end of the console channel
+ *   2. SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP   — hardware/spawn authority cap
  *
- * Returns 1 if the spawn capability was received, 0 on failure.
+ * Returns 1 once SPAWN_CAP has been received (CONSOLE_CAP is optional;
+ * if missing, console_h stays HANDLE_INVALID and svcmgr_log is silent).
  */
 static int svcmgr_recv_bootstrap_caps(struct svcmgr_state *state) {
     uint32_t recv_count = 0;
-    const uint32_t max_recv = 8u; /* headroom for future bootstrap message kinds */
+    const uint32_t max_recv = 8u;
 
     if (!state || state->bootstrap_h == HANDLE_INVALID) return 0;
 
@@ -196,6 +201,10 @@ static int svcmgr_recv_bootstrap_caps(struct svcmgr_state *state) {
         }
 
         kind = svcmgr_proto_read_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND]);
+        if (kind == SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP) {
+            state->console_h = msg.attached_handle;
+            continue; /* keep reading — SPAWN_CAP comes next */
+        }
         if (kind == SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP &&
             rights_check(msg.attached_rights, RIGHT_READ)) {
             state->spawn_cap_h = msg.attached_handle;
@@ -240,9 +249,9 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
         }
     }
 
-    /* B3: strip HW_ACCESS once bootstrap is done, but preserve KDEBUG.
-     * init and svcmgr currently share the same bootstrap-cap object, so
-     * removing KDEBUG here would silence both processes mid-boot. */
+    /* B3: strip HW_ACCESS (and FRAMEBUFFER) once bootstrap is done.
+     * Preserve SPAWN_SERVICE (needed for SYS_INITRD_VMO) and KDEBUG (for SYS_POWEROFF).
+     * BOOTCAP_RESTRICT creates a new cap object; init's original cap is unaffected. */
     (void)svcmgr_syscall2(SYS_BOOTCAP_RESTRICT,
                           state->spawn_cap_h,
                           IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_KDEBUG);
@@ -415,6 +424,40 @@ static int64_t svcmgr_send_bootstrap_endpoint(handle_id_t child_boot_h,
     return IRIS_OK;
 }
 
+static int64_t svcmgr_send_console_cap(handle_id_t child_boot_h, handle_id_t console_h) {
+    struct KChanMsg msg;
+    int64_t dup_h;
+
+    if (console_h == HANDLE_INVALID) return (int64_t)IRIS_ERR_INVALID_ARG;
+
+    dup_h = svcmgr_syscall2(SYS_HANDLE_DUP, console_h,
+                            RIGHT_WRITE | RIGHT_TRANSFER);
+    if (dup_h < 0) {
+        svcmgr_log(sm_str_bootdupfail);
+        return dup_h;
+    }
+
+    {
+        uint8_t *raw = (uint8_t *)&msg;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
+    }
+    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                           SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP);
+    msg.data_len = SVCMGR_BOOTSTRAP_MSG_LEN;
+    msg.attached_handle = (handle_id_t)dup_h;
+    msg.attached_rights = RIGHT_WRITE;
+
+    if (svcmgr_syscall2(SYS_CHAN_SEND, child_boot_h, (uint64_t)(uintptr_t)&msg) < 0) {
+        handle_id_t tmp = (handle_id_t)dup_h;
+        svcmgr_close_handle_if_valid(&tmp);
+        svcmgr_log(sm_str_bootsendfail);
+        return (int64_t)IRIS_ERR_WOULD_BLOCK;
+    }
+
+    return IRIS_OK;
+}
+
 static int64_t svcmgr_send_ioport_cap(handle_id_t child_boot_h, handle_id_t master_h) {
     struct KChanMsg msg;
     int64_t dup_h;
@@ -457,6 +500,12 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
 
     if (!svc) return IRIS_ERR_INVALID_ARG;
 
+    /* Send console channel FIRST so the child can store it before SERVICE/REPLY. */
+    if (manifest->give_console && state->console_h != HANDLE_INVALID) {
+        r = svcmgr_send_console_cap(child_boot_h, state->console_h);
+        if (r != IRIS_OK) return r;
+    }
+
     r = svcmgr_send_bootstrap_endpoint(child_boot_h, svc->public_h,
                                        manifest->child_service_rights,
                                        manifest->service_endpoint);
@@ -482,16 +531,55 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
         }
     }
 
+    /* Forward kbd channel to services that request it (e.g. sh). */
+    if (manifest->give_kbd) {
+        struct svcmgr_service_state *kbd_svc = svcmgr_service_state(state, SVCMGR_SERVICE_KBD);
+        if (kbd_svc && kbd_svc->public_h != HANDLE_INVALID) {
+            r = svcmgr_send_bootstrap_endpoint(child_boot_h, kbd_svc->public_h,
+                                               RIGHT_WRITE,
+                                               SVCMGR_BOOTSTRAP_KIND_KBD_CAP);
+            if (r != IRIS_OK) {
+                svcmgr_close_handle_if_valid(&child_boot_h);
+                return r;
+            }
+        }
+    }
+
+    /* Forward vfs service+reply channels to services that request them (e.g. sh). */
+    if (manifest->give_vfs) {
+        struct svcmgr_service_state *vfs_svc = svcmgr_service_state(state, SVCMGR_SERVICE_VFS);
+        if (vfs_svc) {
+            if (vfs_svc->public_h != HANDLE_INVALID) {
+                r = svcmgr_send_bootstrap_endpoint(child_boot_h, vfs_svc->public_h,
+                                                   RIGHT_WRITE,
+                                                   SVCMGR_BOOTSTRAP_KIND_VFS_CAP);
+                if (r != IRIS_OK) {
+                    svcmgr_close_handle_if_valid(&child_boot_h);
+                    return r;
+                }
+            }
+            if (vfs_svc->reply_h != HANDLE_INVALID) {
+                r = svcmgr_send_bootstrap_endpoint(child_boot_h, vfs_svc->reply_h,
+                                                   RIGHT_READ,
+                                                   SVCMGR_BOOTSTRAP_KIND_VFS_REPLY_CAP);
+                if (r != IRIS_OK) {
+                    svcmgr_close_handle_if_valid(&child_boot_h);
+                    return r;
+                }
+            }
+        }
+    }
+
     svcmgr_close_handle_if_valid(&child_boot_h);
     return IRIS_OK;
 }
 
-static void svcmgr_send_lookup_reply(handle_id_t reply_h, uint32_t endpoint,
-                                     int32_t err, handle_id_t attached_h,
-                                     iris_rights_t attached_rights) {
+static int64_t svcmgr_send_lookup_reply(handle_id_t reply_h, uint32_t endpoint,
+                                        int32_t err, handle_id_t attached_h,
+                                        iris_rights_t attached_rights) {
     struct KChanMsg msg;
     svcmgr_proto_lookup_reply_init(&msg, endpoint, err, attached_h, attached_rights);
-    (void)svcmgr_syscall2(SYS_CHAN_SEND, reply_h, (uint64_t)(uintptr_t)&msg);
+    return svcmgr_syscall2(SYS_CHAN_SEND, reply_h, (uint64_t)(uintptr_t)&msg);
 }
 
 static void svcmgr_send_status_reply(handle_id_t reply_h,
@@ -877,24 +965,17 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
     svc->reply_h = (handle_id_t)reply_h;
 
     {
-        int64_t entry_h = svcmgr_syscall2(SYS_INITRD_LOOKUP,
-                                          state->spawn_cap_h,
-                                          (uint64_t)(uintptr_t)manifest->image_name);
-        if (entry_h < 0) {
+        handle_id_t loaded_proc_h = HANDLE_INVALID;
+        handle_id_t loaded_chan_h = HANDLE_INVALID;
+        long r = svc_load(state->spawn_cap_h, manifest->image_name,
+                          &loaded_proc_h, &loaded_chan_h);
+        if (r < 0) {
             svcmgr_clear_service_masters(state, manifest->service_id);
             svcmgr_log(sm_str_spawnfail);
             return;
         }
-        proc_h = svcmgr_syscall2(SYS_SPAWN_ELF,
-                                 (uint64_t)entry_h,
-                                 (uint64_t)(uintptr_t)&child_boot_h);
-        (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, (uint64_t)entry_h);
-    }
-    if (proc_h < 0) {
-        svcmgr_clear_service_masters(state, manifest->service_id);
-        svcmgr_close_handle_if_valid(&child_boot_h);
-        svcmgr_log(sm_str_spawnfail);
-        return;
+        proc_h       = (int64_t)loaded_proc_h;
+        child_boot_h = loaded_chan_h;
     }
 
     if (svcmgr_bootstrap_child(state, manifest, child_boot_h) == IRIS_OK) {
@@ -940,7 +1021,8 @@ static void svcmgr_handle_lookup(struct svcmgr_state *state, const struct KChanM
         dynamic = svcmgr_dynamic_find_endpoint(state, endpoint);
 
     if (!manifest && !dynamic) {
-        svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_NOT_FOUND, HANDLE_INVALID, RIGHT_NONE);
+        if (svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_NOT_FOUND, HANDLE_INVALID, RIGHT_NONE) < 0)
+            svcmgr_log(sm_str_lookupsendfail);
         svcmgr_close_handle_if_valid(&reply_h);
         svcmgr_log(sm_str_lookupfail);
         return;
@@ -952,7 +1034,8 @@ static void svcmgr_handle_lookup(struct svcmgr_state *state, const struct KChanM
     } else {
         svc = svcmgr_service_state(state, manifest->service_id);
         if (!svc) {
-            svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_INVALID_ARG, HANDLE_INVALID, RIGHT_NONE);
+            if (svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_INVALID_ARG, HANDLE_INVALID, RIGHT_NONE) < 0)
+                svcmgr_log(sm_str_lookupsendfail);
             svcmgr_close_handle_if_valid(&reply_h);
             svcmgr_log(sm_str_lookupfail);
             return;
@@ -969,7 +1052,8 @@ static void svcmgr_handle_lookup(struct svcmgr_state *state, const struct KChanM
 
     granted = svcmgr_reduce_lookup_rights(requested, allowed);
     if (master_h == HANDLE_INVALID || granted == RIGHT_NONE) {
-        svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_INVALID_ARG, HANDLE_INVALID, RIGHT_NONE);
+        if (svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_INVALID_ARG, HANDLE_INVALID, RIGHT_NONE) < 0)
+            svcmgr_log(sm_str_lookupsendfail);
         svcmgr_close_handle_if_valid(&reply_h);
         svcmgr_log(sm_str_lookupfail);
         return;
@@ -977,13 +1061,15 @@ static void svcmgr_handle_lookup(struct svcmgr_state *state, const struct KChanM
 
     xfer_h = svcmgr_syscall2(SYS_HANDLE_DUP, master_h, granted | RIGHT_TRANSFER);
     if (xfer_h < 0) {
-        svcmgr_send_lookup_reply(reply_h, endpoint, (int32_t)xfer_h, HANDLE_INVALID, RIGHT_NONE);
+        if (svcmgr_send_lookup_reply(reply_h, endpoint, (int32_t)xfer_h, HANDLE_INVALID, RIGHT_NONE) < 0)
+            svcmgr_log(sm_str_lookupsendfail);
         svcmgr_close_handle_if_valid(&reply_h);
         svcmgr_log(sm_str_lookupfail);
         return;
     }
 
-    svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_OK, (handle_id_t)xfer_h, granted);
+    if (svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_OK, (handle_id_t)xfer_h, granted) < 0)
+        svcmgr_log(sm_str_lookupsendfail);
     svcmgr_close_handle_if_valid(&reply_h);
     svcmgr_log(sm_str_lookupok);
 }
@@ -1291,6 +1377,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
 
     state->bootstrap_h = bootstrap_h;
     state->spawn_cap_h = HANDLE_INVALID;
+    state->console_h   = HANDLE_INVALID;
     for (uint32_t i = 0; i < SVCMGR_IRQ_CAPS_TABLE_SIZE; i++)
         state->irq_caps[i] = HANDLE_INVALID;
     for (uint32_t i = 0; i < SVCMGR_IOPORT_CAPS_TABLE_SIZE; i++)

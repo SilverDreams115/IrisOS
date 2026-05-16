@@ -53,6 +53,8 @@ void         knotification_signal(struct KNotification *n, uint64_t bits);
  * and returns them in *out_bits. Up to KNOTIF_WAITERS_MAX tasks may block
  * concurrently; returns IRIS_ERR_BUSY if the waiter table is full. */
 iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits);
+iris_error_t knotification_wait_timeout(struct KNotification *n, uint64_t *out_bits,
+                                        uint64_t deadline_ticks);
 
 /* Non-blocking: returns pending bits (clearing them) or 0 if none pending. */
 uint64_t     knotification_poll(struct KNotification *n);

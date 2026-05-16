@@ -39,10 +39,9 @@
 #define KERNEL_PHYS_BASE    0x200000ULL
 #define KERNEL_VIRT_TEXT    (KERNEL_VIRT_BASE + KERNEL_PHYS_BASE)
 
-/* user processes reuse a small kernel-built image slice (.text + .rodata)
- * but map it into a private virtual window preserving internal offsets. */
-#define USER_IMAGE_SOURCE_BASE  KERNEL_PHYS_BASE
-#define USER_IMAGE_MAP_SIZE     0x0000000000014000ULL
+/* The first bootstrap task maps a dedicated userboot image slice compiled into
+ * the kernel ELF. scheduler.c resolves its size from linker symbols so the
+ * mapped window only covers that explicit userboot payload. */
 
 /* user space bounds */
 #define USER_SPACE_BASE     0x1000ULL
@@ -64,10 +63,11 @@
 #define USER_VMO_BASE       (USER_PRIVATE_BASE + 0x50000000ULL)
 
 /* user stack region (top, grows down) */
-#define USER_STACK_TOP      (USER_PRIVATE_BASE + USER_PRIVATE_SIZE - 0x1000ULL)
-#define USER_STACK_SIZE     0x8000ULL        /* 32 KB */
-#define USER_STACK_BASE     (USER_STACK_TOP - USER_STACK_SIZE)
-#define USER_VMO_TOP        USER_STACK_BASE
+#define USER_STACK_TOP        (USER_PRIVATE_BASE + USER_PRIVATE_SIZE - 0x1000ULL)
+#define USER_STACK_SIZE       0x8000ULL        /* 32 KB total virtual range */
+#define USER_STACK_BASE       (USER_STACK_TOP - USER_STACK_SIZE)
+#define USER_STACK_GUARD_PAGES 1ULL            /* bottom page unmapped: overflow → fault */
+#define USER_VMO_TOP          USER_STACK_BASE
 
 /* identity-mapped low memory ceiling (kernel-only) */
 #define IDENTITY_MAP_END    (64ULL * 1024 * 1024)  /* 64 MB */

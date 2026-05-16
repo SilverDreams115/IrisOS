@@ -29,7 +29,9 @@
  */
 
 /* Syscall numbers */
-#define SYS_WRITE   0   /* transitional: returns byte count, generic -1 on bad user pointer */
+/* SYS_WRITE 0 permanently retired in Phase 30 — returns IRIS_ERR_NOT_SUPPORTED.
+ * Serial output is now handled by the ring-3 console service over KChannel. */
+#define SYS_WRITE   0
 #define SYS_EXIT    1   /* modern/conforming: success path does not return */
 #define SYS_GETPID  2   /* modern/conforming: returns pid >= 0 */
 #define SYS_YIELD   3   /* modern/conforming: returns 0 on success */
@@ -53,7 +55,10 @@
 #define SYS_HANDLE_CLOSE 15  /* (handle) → 0 or negative iris_error_t */
 /* modern/conforming: Virtual Memory Objects */
 #define SYS_VMO_CREATE   16  /* (size) → handle_id or negative iris_error_t */
-#define SYS_VMO_MAP      17  /* (handle, virt_addr, flags) → 0 or negative iris_error_t */
+#define SYS_VMO_MAP      17  /* (handle, virt_addr, flags) → 0 or negative iris_error_t
+                               * flags bit 0: MAP_WRITABLE  — map with PAGE_WRITABLE
+                               * flags bit 1: MAP_EXEC      — map without PAGE_NX (executable)
+                               * W^X enforced: bit 0 + bit 1 simultaneously → ERR_INVALID_ARG */
 /* SYS_SPAWN 18 retired in Phase 19 — permanently reserved, returns IRIS_ERR_NOT_SUPPORTED.
  * All healthy-path userland process creation must go through
  * SYS_INITRD_LOOKUP (41) + SYS_SPAWN_ELF (42). */
@@ -203,27 +208,121 @@
 #define SYS_CAP_CREATE_IRQCAP  39
 #define SYS_CAP_CREATE_IOPORT  40
 
-/*
- * Initrd-entry capability and ELF spawn — modern/conforming (iris_error_t).
- *
- * SYS_INITRD_LOOKUP(auth_h, name_uptr) → entry_handle_id or negative iris_error_t
- *   auth_h: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_SPAWN_SERVICE.
- *   name_uptr: user pointer to NUL-terminated initrd image name (≤ 31 chars).
- *   Returns a KOBJ_INITRD_ENTRY handle with RIGHT_READ on success.
- *   Separating lookup from spawn lets svcmgr verify existence first,
- *   and allows delegating the spawn step without handing out the bootstrap cap.
- *
- * SYS_SPAWN_ELF(entry_h, out_chan_uptr) → proc_handle_id or negative iris_error_t
- *   entry_h: KOBJ_INITRD_ENTRY with RIGHT_READ.
- *   out_chan_uptr: optional user pointer to handle_id_t; receives parent bootstrap
- *                 channel handle (may be NULL / 0).
- *   Identical spawn flow to the old retired named-spawn path after the
- *   initrd lookup step.
- *   Child receives its bootstrap channel handle as arg0 (RBX).
- *   Returns proc_handle with RIGHT_READ|RIGHT_ROUTE|RIGHT_MANAGE|RIGHT_DUPLICATE.
- */
+/* SYS_INITRD_LOOKUP 41 retired Phase 29 — permanently reserved, returns ERR_NOT_SUPPORTED.
+ * SYS_SPAWN_ELF    42 retired Phase 29 — permanently reserved, returns ERR_NOT_SUPPORTED.
+ * ELF loading is now performed entirely in ring-3 via the new primitives below
+ * (SYS_INITRD_VMO / SYS_PROCESS_CREATE / SYS_VMO_MAP_INTO / SYS_THREAD_START /
+ * SYS_HANDLE_INSERT). */
 #define SYS_INITRD_LOOKUP  41
 #define SYS_SPAWN_ELF      42
+
+/*
+ * Pure-microkernel process construction primitives — modern/conforming (iris_error_t).
+ * These replace the kernel-side SYS_INITRD_LOOKUP + SYS_SPAWN_ELF with a set of
+ * composable ring-3-usable primitives.  ELF parsing and loading happen in user
+ * space; the kernel only exposes raw memory and process management operations.
+ *
+ * SYS_INITRD_VMO(auth_h, index) → vmo_handle or negative iris_error_t
+ *   auth_h: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_SPAWN_SERVICE.
+ *   index: integer initrd catalog index (name→index mapping is a ring-3 concern).
+ *   Returns a KOBJ_VMO (eager wrap, owned=0) covering the embedded ELF bytes.
+ *   The VMO is read-only (RIGHT_READ only); map with flags=0 for read access.
+ *   Physical pages are the kernel's initrd blob — never freed by this VMO.
+ *
+ * SYS_PROCESS_CREATE() → proc_handle or negative iris_error_t
+ *   Creates an empty KProcess with a fresh user address space (new CR3).
+ *   No threads are started; caller must call SYS_THREAD_START to begin execution.
+ *   Returns proc handle with RIGHT_READ|RIGHT_WRITE|RIGHT_MANAGE|
+ *           RIGHT_DUPLICATE|RIGHT_TRANSFER|RIGHT_ROUTE.
+ *
+ * SYS_VMO_MAP_INTO(vmo_h, proc_h, vaddr, flags) → 0 or negative iris_error_t
+ *   vmo_h:   KOBJ_VMO with RIGHT_READ (plus RIGHT_WRITE for MAP_WRITABLE).
+ *   proc_h:  KOBJ_PROCESS with RIGHT_MANAGE; must not be torn down.
+ *   vaddr:   page-aligned target virtual address in proc's address space.
+ *   flags:   bit 0 = MAP_WRITABLE, bit 1 = MAP_EXEC; W^X enforced.
+ *   For demand VMOs: registers mapping in proc's vmo_mappings (demand fault path).
+ *   For eager VMOs:  maps physical pages directly into proc's page table.
+ *   Uses 4-arg syscall ABI (arg3 = flags via r10).
+ *
+ * SYS_THREAD_START(proc_h, entry_vaddr, stack_top, boot_arg) → 0 or iris_error_t
+ *   proc_h:      KOBJ_PROCESS with RIGHT_MANAGE; must have 0 live threads.
+ *   entry_vaddr: user virtual address where the thread begins executing.
+ *   stack_top:   initial RSP for the thread (caller-allocated stack).
+ *   boot_arg:    value delivered to the thread in RBX on first execution.
+ *   Uses 4-arg syscall ABI (arg3 = boot_arg via r10).
+ *
+ * SYS_HANDLE_INSERT(proc_h, obj_h, rights) → handle_id in child or iris_error_t
+ *   proc_h:  KOBJ_PROCESS with RIGHT_MANAGE.
+ *   obj_h:   any live handle with RIGHT_TRANSFER.
+ *   rights:  effective rights in child = rights_reduce(obj_rights, rights); RIGHT_NONE rejected.
+ *   Non-destructive: caller retains obj_h; child receives an independent handle slot.
+ *   Returns the new handle_id as it appears in the child's handle table.
+ */
+#define SYS_INITRD_VMO      55
+#define SYS_PROCESS_CREATE  56
+#define SYS_VMO_MAP_INTO    57
+#define SYS_THREAD_START    58
+#define SYS_HANDLE_INSERT   59
+
+/*
+ * Framebuffer VMO claim — modern/conforming (iris_error_t).
+ *
+ * SYS_FRAMEBUFFER_VMO(auth_h, info_uptr) → vmo_handle or negative iris_error_t
+ *   auth_h:    KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_FRAMEBUFFER.
+ *   info_uptr: user pointer to struct iris_fb_params (see iris/fb_info.h);
+ *              filled with physical base, size, and pixel geometry on success.
+ *   Returns a KOBJ_VMO (eager wrap, owned=0) covering the framebuffer region
+ *   with RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *   One-shot: the kernel clears the framebuffer-valid flag on first call so that
+ *   only the first caller can claim the physical framebuffer window.
+ */
+#define SYS_FRAMEBUFFER_VMO 60
+
+/*
+ * Initrd catalog count — modern/conforming (iris_error_t).
+ *
+ * SYS_INITRD_COUNT(auth_h) → uint32_t count or negative iris_error_t
+ *   auth_h: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_SPAWN_SERVICE.
+ *   Returns the number of entries in the kernel's initrd catalog.
+ *   Ring-3 uses this at startup to verify its local name→index table is
+ *   consistent with the kernel build.
+ */
+#define SYS_INITRD_COUNT    61
+
+/*
+ * Monotonic clock — modern/conforming (iris_error_t).
+ *
+ * SYS_CLOCK_GET() → uint64_t nanoseconds since boot, or negative iris_error_t.
+ *   No arguments required.  Returns a monotonically increasing nanosecond
+ *   timestamp derived from the scheduler tick counter (100 Hz; 10 ms resolution).
+ *   Safe to call from any ring-3 context; does not block.
+ *   Overflow wraps at UINT64_MAX (~584 years of uptime at 100 Hz).
+ */
+#define SYS_CLOCK_GET       62
+
+/*
+ * Timed channel receive (Phase 42).
+ *
+ * SYS_CHAN_RECV_TIMEOUT(chan_h, msg_uptr, timeout_ns) → 0 or negative iris_error_t.
+ *   Blocks until a message is available on chan_h or timeout_ns nanoseconds
+ *   have elapsed since the call.  Resolution is one scheduler tick (10 ms at
+ *   100 Hz); timeouts are rounded up to the next tick boundary.
+ *   Returns IRIS_ERR_TIMED_OUT (-15) if the deadline expires before a message
+ *   arrives.  All other semantics are identical to SYS_CHAN_RECV.
+ *   Requires RIGHT_READ on chan_h.
+ */
+#define SYS_CHAN_RECV_TIMEOUT 63
+
+/*
+ * Timed notification wait (Phase 43).
+ *
+ * SYS_NOTIFY_WAIT_TIMEOUT(notify_h, bits_uptr, timeout_ns) → 0 or negative iris_error_t.
+ *   Blocks until the KNotification has at least one signal bit set, or until
+ *   timeout_ns nanoseconds elapse.  Returns IRIS_ERR_TIMED_OUT if the deadline
+ *   expires before any signal arrives.  bits_uptr receives the consumed bits on
+ *   success (same as SYS_NOTIFY_WAIT).  Requires RIGHT_WAIT on notify_h.
+ */
+#define SYS_NOTIFY_WAIT_TIMEOUT 64
 
 /*
  * I/O port sub-delegation — modern/conforming (iris_error_t).
@@ -322,7 +421,8 @@
 #define IRIS_BOOTCAP_NONE          0u
 #define IRIS_BOOTCAP_SPAWN_SERVICE (1u << 0)
 #define IRIS_BOOTCAP_HW_ACCESS     (1u << 1)
-#define IRIS_BOOTCAP_KDEBUG        (1u << 2)  /* may call SYS_WRITE for serial debug output */
+#define IRIS_BOOTCAP_KDEBUG        (1u << 2)  /* may call SYS_POWEROFF */
+#define IRIS_BOOTCAP_FRAMEBUFFER   (1u << 3)  /* may call SYS_FRAMEBUFFER_VMO (one-shot) */
 
 /*
  * Bootstrap capability permission restriction — modern/conforming (iris_error_t).
@@ -428,6 +528,17 @@
 #define SYS_HANDLE_TYPE        52
 #define SYS_HANDLE_SAME_OBJECT 53
 
+/*
+ * Graceful system power-off — modern/conforming (iris_error_t).
+ *
+ * SYS_POWEROFF(type, arg0, arg1) → does not return on success, or negative iris_error_t.
+ *   Requires IRIS_BOOTCAP_KDEBUG in the caller's bootstrap capability.
+ *   type 0: ACPI S5 soft-off (writes 0x2000 to port 0x604; QEMU ACPI).
+ *   type 1: legacy QEMU ISA debug exit (writes 0x01 to port 0xB004; any arg0/arg1 ignored).
+ *   Any type not listed above returns IRIS_ERR_INVALID_ARG.
+ */
+#define SYS_POWEROFF           54
+
 #define IRIS_HANDLE_TYPE_PROCESS      0u
 #define IRIS_HANDLE_TYPE_CHANNEL      1u
 #define IRIS_HANDLE_TYPE_NOTIFICATION 2u
@@ -442,9 +553,9 @@
 void syscall_init(void);
 void syscall_set_kstack(uint64_t kstack_top);
 
-/* Called from ASM handler */
+/* Called from ASM handler — 5 params: num + 4 user args (arg3 via r10) */
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
-                          uint64_t arg1, uint64_t arg2);
+                          uint64_t arg1, uint64_t arg2, uint64_t arg3);
 #endif /* __KERNEL__ */
 #endif /* __ASSEMBLER__ */
 

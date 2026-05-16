@@ -7,12 +7,11 @@ struct KProcess;
 
 #define TASK_MAX         64
 #define TASK_STACK_SIZE  8192    /* kernel stack per task */
-#define TASK_DEFAULT_SLICE   10      /* ticks per quantum at 100 Hz = 100ms */
+#define TASK_DEFAULT_SLICE    2      /* ticks per quantum at 100 Hz = 20ms */
 
 typedef enum {
     TASK_READY,
     TASK_RUNNING,
-    TASK_BLOCKED,       /* generic blocked — legacy, avoid for new code */
     TASK_BLOCKED_IPC,   /* blocked waiting for an IPC message or KChannel recv */
     TASK_BLOCKED_IRQ,   /* blocked waiting for a KNotification signal */
     TASK_SLEEPING,      /* blocked until a timer tick count is reached */
@@ -59,13 +58,16 @@ struct task {
     uint64_t          user_stack_top;  /* virtual top of user stack region */
     uint32_t          user_stack_pages; /* number of pages allocated */
     uint64_t          ustack_phys;     /* physical base of user stack */
+    uint64_t          utext_phys;      /* physical base of userboot text copy (ring-3 only) */
+    uint32_t          utext_pages;     /* page count at utext_phys; 0 if not applicable */
     struct KProcess  *process;         /* owning process; NULL for kernel tasks */
 
     /* cooperative scheduler quantum */
     uint32_t          time_slice;   /* ticks per quantum (default TASK_DEFAULT_SLICE) */
     uint32_t          ticks_left;   /* ticks remaining before need_resched */
     uint32_t          need_resched; /* set by scheduler_tick when ticks_left hits 0 */
-    uint64_t          wake_tick;    /* valid when state == TASK_SLEEPING */
+    uint32_t          timed_out;   /* set by scheduler_tick when a timed block expires */
+    uint64_t          wake_tick;   /* deadline tick: valid for TASK_SLEEPING and timed BLOCKED_IPC/IRQ */
 
     /* FPU/SSE state — 512-byte FXSAVE image, must be 16-byte aligned.
      * Saved and restored on every context switch so FPU state never leaks
@@ -77,8 +79,7 @@ struct task {
 
 void         task_init(void);
 struct task *task_create(void (*entry)(void));
-struct task *task_create_user(uint64_t entry);
-struct task *task_spawn_user(uint64_t entry, uint64_t arg0);
+struct task *task_spawn_user(uint64_t arg0);
 struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
                                 uint64_t user_rsp, uint64_t arg);
 void         task_set_bootstrap_arg0(struct task *t, uint64_t arg0);

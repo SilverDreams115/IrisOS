@@ -4,36 +4,22 @@
 /*
  * initrd.h — kernel initrd catalog API.
  *
- * The initrd is a read-only table of ELF images embedded into the kernel
- * binary via `objcopy -I binary`. Userland-visible lookup remains named
- * because SYS_INITRD_LOOKUP exposes a generic catalog service to bootstrap
- * code.
+ * The initrd is a read-only table of binary images embedded into the kernel
+ * via `objcopy -I binary`. Images are identified by index only; the kernel
+ * has no knowledge of service names or file formats.
  *
- * The kernel boot path must not depend on service names. It consumes one
- * opaque bootstrap image selected by initrd_bootstrap_image().
+ * Name→index mapping lives entirely in ring-3 (services/common/svc_loader.c).
  */
 
 #include <stdint.h>
 
-/*
- * initrd_bootstrap_image — return the kernel-selected bootstrap ELF image.
- *
- * This is the only initrd API the kernel boot path should consume directly.
- * The returned image is opaque to the caller; boot sequencing policy beyond
- * "spawn the bootstrap image" lives in userland.
- */
+/* initrd_bootstrap_image — return the bootstrap image (always index 0). */
 int initrd_bootstrap_image(const void **out_data, uint32_t *out_size);
 
-/*
- * initrd_find — look up a named ELF image in the embedded initrd catalog.
- *
- * @name      NUL-terminated image name (case-sensitive, max 31 chars).
- * @out_data  Set to a pointer to the first byte of the ELF image.
- * @out_size  Set to the byte length of the ELF image.
- *
- * Returns 1 if found, 0 if not found or if out pointers are NULL.
- * The returned data pointer is valid for the lifetime of the kernel.
- */
-int initrd_find(const char *name, const void **out_data, uint32_t *out_size);
+/* initrd_get — return the image at the given index. Returns 1 on success. */
+int initrd_get(uint32_t index, const void **out_data, uint32_t *out_size);
+
+/* initrd_count — return the total number of embedded images. */
+uint32_t initrd_count(void);
 
 #endif /* IRIS_INITRD_H */

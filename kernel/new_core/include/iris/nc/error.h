@@ -21,6 +21,7 @@ enum {
     IRIS_ERR_CLOSED        = -12,
     IRIS_ERR_WOULD_BLOCK   = -13,
     IRIS_ERR_INTERNAL      = -14,
+    IRIS_ERR_TIMED_OUT     = -15,
 };
 
 static inline int iris_is_ok(iris_error_t err)  { return err == IRIS_OK; }
