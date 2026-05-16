@@ -1,7 +1,7 @@
 /*
  * initrd.c — kernel initrd image catalog.
  *
- * Service ELF binaries are embedded into the kernel image via the Makefile:
+ * Service binaries are embedded into the kernel image via the Makefile:
  *
  *   objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
  *       services/svcmgr/svcmgr.elf $(BUILD_DIR)/svcmgr_bin.o
@@ -9,100 +9,96 @@
  * objcopy creates three linker symbols per input file:
  *   _binary_<mangled_path>_start  — pointer to first byte
  *   _binary_<mangled_path>_end    — pointer one past last byte
- *   _binary_<mangled_path>_size   — size in bytes (symbol value, not address)
  *
- * The path is mangled: every character that is not alphanumeric becomes '_'.
- * For a file compiled from services/svcmgr/svcmgr.elf embedded as
- * build/svcmgr_bin.o the mangled name is:
- *   _binary_services_svcmgr_svcmgr_elf_{start,end,size}
+ * The kernel exposes images by index only. Name→index mapping is a ring-3
+ * concern (services/common/svc_loader.c). The kernel has zero knowledge of
+ * service names or file formats — it is a pure image catalog.
  *
- * This file declares those extern symbols and maps image names to them in a
- * static table. initrd_find() does a linear search — acceptable given the
- * small table size.
- *
- * The first entry is the opaque bootstrap image consumed by the kernel boot
- * path. The remaining entries form the named catalog exposed to userland via
- * SYS_INITRD_LOOKUP.
+ * Index layout (must match the ring-3 catalog in svc_loader.c):
+ *   [0] userboot — bootstrap stub (flat binary, loaded directly by kernel)
+ *   [1] init
+ *   [2] svcmgr
+ *   [3] kbd
+ *   [4] vfs
+ *   [5] console
+ *   [6] fb
+ *   [7] sh
  */
 
 #include <iris/initrd.h>
 #include <stdint.h>
 
-/* ── Embedded service symbol declarations ───────────────────────────────── */
+/* ── Embedded image symbol declarations ─────────────────────────────────── */
 
-/* svcmgr */
-extern const uint8_t _binary_services_svcmgr_svcmgr_elf_start[];
-extern const uint8_t _binary_services_svcmgr_svcmgr_elf_end[];
+extern const uint8_t _binary_services_userboot_userboot_bin_start[];
+extern const uint8_t _binary_services_userboot_userboot_bin_end[];
 
-/* kbd */
-extern const uint8_t _binary_services_kbd_kbd_elf_start[];
-extern const uint8_t _binary_services_kbd_kbd_elf_end[];
-
-/* vfs */
-extern const uint8_t _binary_services_vfs_vfs_elf_start[];
-extern const uint8_t _binary_services_vfs_vfs_elf_end[];
-
-/* init — ring-3 init process (Phase 21: moved from kernel-linked to ELF) */
 extern const uint8_t _binary_services_init_init_elf_start[];
 extern const uint8_t _binary_services_init_init_elf_end[];
 
-/* ── Initrd catalog ─────────────────────────────────────────────────────── */
+extern const uint8_t _binary_services_svcmgr_svcmgr_elf_start[];
+extern const uint8_t _binary_services_svcmgr_svcmgr_elf_end[];
+
+extern const uint8_t _binary_services_kbd_kbd_elf_start[];
+extern const uint8_t _binary_services_kbd_kbd_elf_end[];
+
+extern const uint8_t _binary_services_vfs_vfs_elf_start[];
+extern const uint8_t _binary_services_vfs_vfs_elf_end[];
+
+extern const uint8_t _binary_services_console_console_elf_start[];
+extern const uint8_t _binary_services_console_console_elf_end[];
+
+extern const uint8_t _binary_services_fb_fb_elf_start[];
+extern const uint8_t _binary_services_fb_fb_elf_end[];
+
+extern const uint8_t _binary_services_sh_sh_elf_start[];
+extern const uint8_t _binary_services_sh_sh_elf_end[];
+
+/* ── Initrd catalog (index-only, no names) ──────────────────────────────── */
 
 struct initrd_entry {
-    const char    *name;
     const uint8_t *start;
     const uint8_t *end;
 };
 
 static const struct initrd_entry g_initrd[] = {
-    { "init",   _binary_services_init_init_elf_start,
-                _binary_services_init_init_elf_end },
-    { "svcmgr", _binary_services_svcmgr_svcmgr_elf_start,
-                _binary_services_svcmgr_svcmgr_elf_end },
-    { "kbd",    _binary_services_kbd_kbd_elf_start,
-                _binary_services_kbd_kbd_elf_end },
-    { "vfs",    _binary_services_vfs_vfs_elf_start,
-                _binary_services_vfs_vfs_elf_end },
+    /* [0] */ { _binary_services_userboot_userboot_bin_start,
+                _binary_services_userboot_userboot_bin_end  },
+    /* [1] */ { _binary_services_init_init_elf_start,
+                _binary_services_init_init_elf_end          },
+    /* [2] */ { _binary_services_svcmgr_svcmgr_elf_start,
+                _binary_services_svcmgr_svcmgr_elf_end      },
+    /* [3] */ { _binary_services_kbd_kbd_elf_start,
+                _binary_services_kbd_kbd_elf_end             },
+    /* [4] */ { _binary_services_vfs_vfs_elf_start,
+                _binary_services_vfs_vfs_elf_end             },
+    /* [5] */ { _binary_services_console_console_elf_start,
+                _binary_services_console_console_elf_end     },
+    /* [6] */ { _binary_services_fb_fb_elf_start,
+                _binary_services_fb_fb_elf_end               },
+    /* [7] */ { _binary_services_sh_sh_elf_start,
+                _binary_services_sh_sh_elf_end               },
 };
 
 #define INITRD_ENTRY_COUNT \
     ((uint32_t)(sizeof(g_initrd) / sizeof(g_initrd[0])))
 
-/* ── Simple string equality helper ──────────────────────────────────────── */
-
-static int initrd_streq(const char *a, const char *b) {
-    while (*a && *b) {
-        if (*a != *b) return 0;
-        a++; b++;
-    }
-    return (*a == '\0' && *b == '\0');
-}
-
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 int initrd_bootstrap_image(const void **out_data, uint32_t *out_size) {
-    if (!out_data || !out_size) return 0;
+    return initrd_get(0, out_data, out_size);
+}
 
-    *out_data = (const void *)g_initrd[0].start;
-    if (g_initrd[0].end > g_initrd[0].start)
-        *out_size = (uint32_t)(g_initrd[0].end - g_initrd[0].start);
+int initrd_get(uint32_t index, const void **out_data, uint32_t *out_size) {
+    if (!out_data || !out_size || index >= INITRD_ENTRY_COUNT) return 0;
+    *out_data = (const void *)g_initrd[index].start;
+    if (g_initrd[index].end > g_initrd[index].start)
+        *out_size = (uint32_t)(g_initrd[index].end - g_initrd[index].start);
     else
         *out_size = 0;
     return 1;
 }
 
-int initrd_find(const char *name, const void **out_data, uint32_t *out_size) {
-    if (!name || !out_data || !out_size) return 0;
-
-    for (uint32_t i = 0; i < INITRD_ENTRY_COUNT; i++) {
-        if (initrd_streq(name, g_initrd[i].name)) {
-            *out_data = (const void *)g_initrd[i].start;
-            if (g_initrd[i].end > g_initrd[i].start)
-                *out_size = (uint32_t)(g_initrd[i].end - g_initrd[i].start);
-            else
-                *out_size = 0;
-            return 1;
-        }
-    }
-    return 0;
+uint32_t initrd_count(void) {
+    return INITRD_ENTRY_COUNT;
 }

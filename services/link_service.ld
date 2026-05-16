@@ -1,55 +1,76 @@
 /*
  * link_service.ld — linker script for IRIS userland service ELF binaries.
  *
- * Services are static ELF64 ET_EXEC binaries linked at a fixed virtual address
- * (SERVICE_LOAD_BASE = USER_PRIVATE_BASE + 0x100000 = 0x0000008000100000).
+ * Services are static PIE (ET_DYN) ELF64 binaries linked at base address 0.
+ * The kernel ELF loader applies an RDTSC-seeded ASLR bias at load time and
+ * processes R_X86_64_RELATIVE RELA relocations before the task starts.
  *
- * Each service runs in its own isolated address space (unique CR3), so all
- * services may share the same load address without conflict.
- *
- * The kernel's elf_vaddr_in_user_private() validation requires:
- *   vaddr >= USER_PRIVATE_BASE (0x0000008000000000) ✓
- *   vaddr + memsz <= USER_STACK_BASE (near 0x10000000000)  ✓ for any sane service
+ * Each service runs in its own isolated address space (unique CR3), so the
+ * loader picks an independent bias for every spawn.
  *
  * Sections:
- *   .text   — executable, read-only
- *   .rodata — read-only data (constants, string literals)
- *   .data   — read-write initialised data
- *   .bss    — zero-initialised data (loader zeroes all pages, so explicit zeroing
- *             is not needed here — the ELF BSS tail is already zero from the
- *             elf_loader_load page allocation path)
+ *   .text        — executable, read-only (PF_R|PF_X)
+ *   .rodata      — read-only constants
+ *   .data.rel.ro — global pointer initialisers (RO after relocation)
+ *   .dynamic     — DT_RELA / DT_RELASZ / DT_RELAENT entries (for PT_DYNAMIC)
+ *   .rela.dyn    — R_X86_64_RELATIVE RELA table
+ *   .got         — global offset table (static, resolved at load time)
+ *   .data        — read-write initialised data
+ *   .bss         — zero-initialised data
  */
 
 OUTPUT_FORMAT("elf64-x86-64")
 OUTPUT_ARCH(i386:x86-64)
 ENTRY(_start)
 
-SERVICE_LOAD_BASE = 0x0000008000100000;
-
 SECTIONS {
-    . = SERVICE_LOAD_BASE;
+    . = 0;
 
+    /* ── Executable segment (PF_R|PF_X) ─────────────────────────────── */
     .text : {
         *(.text._start)
-        *(.text*)
+        *(.text .text.*)
     }
 
     . = ALIGN(0x1000);
 
+    /* ── Read-only segment (PF_R) ────────────────────────────────────── */
     .rodata : {
-        *(.rodata*)
+        *(.rodata .rodata.*)
+    }
+
+    /* Read-only after relocation: global pointer initialisers */
+    .data.rel.ro : {
+        *(.data.rel.ro .data.rel.ro.*)
+    }
+
+    /* Dynamic section — consumed by elf_apply_relocations via PT_DYNAMIC */
+    .dynamic : {
+        *(.dynamic)
+    }
+
+    /* RELA relocation table for R_X86_64_RELATIVE entries */
+    .rela.dyn : {
+        *(.rela.dyn)
     }
 
     . = ALIGN(0x1000);
+
+    /* ── Read-write segment (PF_R|PF_W) ─────────────────────────────── */
+    .got : {
+        *(.got)
+        *(.igot)
+        *(.got.plt)
+    }
 
     .data : {
-        *(.data*)
+        *(.data .data.*)
     }
 
     . = ALIGN(0x1000);
 
     .bss : {
-        *(.bss*)
+        *(.bss .bss.*)
         *(COMMON)
     }
 
@@ -58,6 +79,12 @@ SECTIONS {
     /DISCARD/ : {
         *(.note.GNU-stack)
         *(.comment)
-        *(.eh_frame*)
+        *(.eh_frame .eh_frame_hdr)
+        *(.gnu.version*)
+        *(.gnu.hash)
+        *(.dynsym)
+        *(.dynstr)
+        *(.interp)
+        *(.plt .plt.*)
     }
 }

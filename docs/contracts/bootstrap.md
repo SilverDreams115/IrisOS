@@ -6,26 +6,31 @@ Defines how the kernel, `init`, `svcmgr`, and child services exchange bootstrap 
 
 ## Root bootstrap model
 
-The current healthy-path bootstrap is three-stage:
+The current healthy-path bootstrap is four-stage:
 
-1. The kernel spawns one opaque bootstrap image from the embedded initrd catalog.
+1. The kernel spawns one minimal ring-3 bootstrap task from the dedicated linked `userboot` image slice.
 2. The kernel injects one `KBootstrapCap` into that first user task.
-3. In the current healthy path, that task is `init`, which spawns `svcmgr`; `svcmgr` then bootstraps the remaining built-in services from the service catalog.
+3. `userboot` resolves `init` from the embedded initrd with `SYS_INITRD_VMO` and starts it via the ring-3 loader path.
+4. `init` spawns `svcmgr`; `svcmgr` then bootstraps the remaining built-in services from the service catalog.
 
-This keeps runtime discovery and service topology in userland while leaving one minimal kernel-seeded entry point.
+This keeps normal service image loading and topology in userland while leaving only one minimal kernel-seeded root task.
 
 ## Kernel bootstrap authority contract
 
-The kernel injects one `KBootstrapCap` into the first user task with:
+The kernel injects one `KBootstrapCap` into the first user task (`userboot`) with:
 
 - handle rights: `RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER`
-- capability permissions: `IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS | IRIS_BOOTCAP_KDEBUG`
+- capability permissions: `IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS | IRIS_BOOTCAP_KDEBUG | IRIS_BOOTCAP_FRAMEBUFFER`
 
-This is the only healthy-path service/bootstrap policy retained by the kernel.
-Image selection after that point is fully userland-driven through `SYS_INITRD_LOOKUP`
-and `SYS_SPAWN_ELF`.
+This is the only healthy-path bootstrap authority retained by the kernel.
+After that point, child image selection is userland-driven through the composable
+spawn primitives rooted in `SYS_INITRD_VMO`.
 
-## `SYS_INITRD_LOOKUP` + `SYS_SPAWN_ELF` contract
+`userboot` uses that capability only long enough to load `init`, forwards the same
+bootstrap authority to `init`, closes its own handles, and parks. That keeps the
+root bootstrap task inert on the healthy path after handoff.
+
+## Ring-3 child spawn contract
 
 Service spawn is restricted by an explicit bootstrap capability handle.
 
@@ -37,10 +42,14 @@ The caller must present:
 
 On success:
 
-- `SYS_INITRD_LOOKUP` resolves a named initrd catalog entry to `KOBJ_INITRD_ENTRY`
-- `SYS_SPAWN_ELF` loads that ELF in kernel-space and creates a fresh child process
+- `SYS_INITRD_VMO` resolves a named initrd catalog entry to a read-only ELF VMO
+- userland parses and relocates the ELF image
+- `SYS_PROCESS_CREATE` creates a fresh child process
+- `SYS_VMO_MAP_INTO` maps prepared segments into that process
+- `SYS_THREAD_START` starts the first thread
+- `SYS_HANDLE_INSERT` transfers bootstrap objects into the child handle table
 - the child receives its bootstrap handle in `RBX`
-- the parent receives a `KProcess` handle and, optionally, a bootstrap channel handle
+- the parent retains the process handle and any bootstrap channels it created
 
 ## `svcmgr` child bootstrap contract
 
@@ -63,6 +72,8 @@ Child rights come from the declarative service catalog:
 - `vfs`
   - service handle: `RIGHT_READ | RIGHT_WRITE`
   - reply handle: `RIGHT_WRITE`
+- `sh`
+  - receives console, kbd service, and vfs service/reply handles as explicit bootstrap gifts
 
 ## Lifecycle ownership contract
 
@@ -82,17 +93,18 @@ The lifecycle consequence is:
 
 The following mechanisms remain in the kernel in the current architecture:
 
-- `elf_loader.c`
-  - rationale: process creation still requires trusted ELF validation, page-table construction, and segment mapping in the same failure domain as `task_spawn_elf()`
-  - phase-4 decision: stays in kernel for pragmatism; not extracted in this phase
+- linked `userboot` image mapping and first-task creation
+  - rationale: the kernel still seeds one root ring-3 task directly
+  - implication: IRIS is closer to a pure microkernel, but the very first task still depends on a kernel-owned bootstrap path
 - `irq_routing.c`
   - rationale: interrupt delivery, masking, ISR-context dispatch, and owner-tied teardown still need a small kernel-resident mechanism
   - phase-4 decision: stays in kernel for pragmatism; policy for who owns which IRQ remains in `svcmgr`
 
 ## Current bootstrap invariants
 
-- the kernel healthy path consumes one opaque bootstrap image and does not select `svcmgr`, `kbd`, or `vfs` by name
-- `init` is the current bootstrap image, but that is an initrd catalog decision, not a `kernel_main.c` string dependency
+- the kernel healthy path seeds one fixed `userboot` root task and does not select `svcmgr`, `kbd`, or `vfs` by name
+- `init` is now loaded by `userboot` through the ring-3 loader path, not by `kernel_main.c`
+- `userboot` does not retain bootstrap authority after handoff; it parks with no live handles
 - child bootstrap handles are private and are not reused as normal runtime service handles
 - the service catalog is the source of truth for built-in service policy
 - bootstrap-cap restriction is per-handle; narrowing one alias must not silently reduce authority held through another alias

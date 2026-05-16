@@ -1,5 +1,6 @@
 #include <iris/vfs_proto.h>
 #include <iris/svcmgr_proto.h>
+#include <iris/console_proto.h>
 #include <iris/syscall.h>
 #include <iris/vfs.h>
 #include <iris/nc/error.h>
@@ -7,6 +8,7 @@
 #include <iris/nc/kchannel.h>
 #include <iris/nc/rights.h>
 #include <stdint.h>
+#include "../common/console_client.h"
 
 struct vfs_open_file {
     uint32_t owner_task_id;
@@ -38,6 +40,7 @@ struct vfs_state {
     handle_id_t bootstrap_h;
     handle_id_t service_h;
     handle_id_t reply_h;
+    handle_id_t console_h;
     struct vfs_export exports[VFS_SERVICE_EXPORTS];
     struct vfs_client clients[VFS_SERVICE_OPEN_FILES];
     struct vfs_open_file files[VFS_SERVICE_OPEN_FILES];
@@ -92,8 +95,10 @@ static inline int64_t vfs_syscall0(uint64_t num) {
     return vfs_syscall3(num, 0, 0, 0);
 }
 
+static handle_id_t g_vfs_console_h = HANDLE_INVALID;
+
 static void vfs_log(const char *msg) {
-    (void)vfs_syscall1(SYS_WRITE, (uint64_t)(uintptr_t)msg);
+    console_write(g_vfs_console_h, msg);
 }
 
 static void vfs_copy_bytes(uint8_t *dst, const uint8_t *src, uint32_t len) {
@@ -884,6 +889,7 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
     state.bootstrap_h = bootstrap_h;
     state.service_h = HANDLE_INVALID;
     state.reply_h = HANDLE_INVALID;
+    state.console_h = HANDLE_INVALID;
     for (uint32_t i = 0; i < VFS_SERVICE_OPEN_FILES; i++) {
         state.clients[i].owner_proc_h = HANDLE_INVALID;
     }
@@ -911,8 +917,14 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
             case SVCMGR_ENDPOINT_VFS_REPLY:
                 state.reply_h = msg.attached_handle;
                 break;
+            case SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP:
+                state.console_h = msg.attached_handle;
+                g_vfs_console_h = state.console_h;
+                break;
             default:
-                goto fail;
+                /* Unknown kind: close attached handle and keep receiving. */
+                vfs_close_handle_if_valid(&msg.attached_handle);
+                break;
         }
     }
 

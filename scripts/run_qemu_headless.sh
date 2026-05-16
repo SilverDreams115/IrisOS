@@ -81,14 +81,38 @@ if ! grep -Fq "[USER][INIT][BOOT] healthy path OK" "$LOG_FILE"; then
   exit 1
 fi
 
+if ! grep -Fq "[USER] kbd shared reply OK" "$LOG_FILE"; then
+  echo "[headless] missing shared-reply guard marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "VFS ready" "$LOG_FILE"; then
+  echo "[headless] missing VFS ready marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[USER][INIT][DIAG] reply" "$LOG_FILE"; then
+  echo "[headless] missing init diag reply marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[USER][INIT][TIMED] recv timeout OK" "$LOG_FILE"; then
+  echo "[headless] missing timed-IPC selftest marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 if [ "$EXPECT_SELFTESTS" = "1" ]; then
   if ! grep -Fq "[IRIS][P3] handle/lifecycle selftests OK" "$LOG_FILE"; then
     echo "[headless] missing phase-3 selftest marker"
     cat "$LOG_FILE"
     exit 1
   fi
-  if ! grep -Fq "[USER][INIT][DIAG] reply" "$LOG_FILE"; then
-    echo "[headless] missing init diag reply marker"
+  if ! grep -Fq "[IRIS][P41] rights selftests OK" "$LOG_FILE"; then
+    echo "[headless] missing phase-41 rights selftest marker"
     cat "$LOG_FILE"
     exit 1
   fi

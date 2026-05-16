@@ -19,6 +19,7 @@ static HandleTable phase3_ht;
 static HandleTable phase3_dest_ht;
 static HandleTable phase3_full_ht;
 static HandleTable phase3_channel_close_ht;
+static HandleTable phase41_ht;
 static struct KProcess phase3_channel_recv_proc;
 static handle_id_t phase3_fill_ids[HANDLE_TABLE_MAX];
 
@@ -438,6 +439,86 @@ out:
     return ok;
 }
 
+/*
+ * phase41_rights_selftest — focused tests for handle rights invariants.
+ *
+ * Covers:
+ *   1. rights_reduce: RIGHT_SAME_RIGHTS, subset, superset (no elevation), RIGHT_NONE
+ *   2. rights_check: partial-bit miss, exact match, superset satisfies, RIGHT_NONE
+ *   3. Handle table stores exactly the rights given (no inflation)
+ *   4. Reduced-rights handle cannot see bits that were removed
+ *   5. Stale handle rejected after close (generation check)
+ */
+static int phase41_rights_selftest(void) {
+    struct KNotification *n = 0;
+    struct KObject *obj = 0;
+    iris_rights_t stored = RIGHT_NONE;
+    handle_id_t h_full = HANDLE_INVALID;
+    handle_id_t h_reduced = HANDLE_INVALID;
+    int ok = 0;
+
+    handle_table_init(&phase41_ht);
+    n = knotification_alloc();
+    if (!n) goto out;
+
+    /* 1. rights_reduce invariants */
+    if (rights_reduce(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE,
+                      RIGHT_SAME_RIGHTS) !=
+        (RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) goto out;
+
+    if (rights_reduce(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE,
+                      RIGHT_READ) != RIGHT_READ) goto out;
+
+    /* superset request is capped — no elevation */
+    if (rights_reduce(RIGHT_READ, RIGHT_READ | RIGHT_WRITE) != RIGHT_READ) goto out;
+
+    if (rights_reduce(RIGHT_READ | RIGHT_WRITE, RIGHT_NONE) != RIGHT_NONE) goto out;
+
+    /* RIGHT_NONE base stays empty regardless of request */
+    if (rights_reduce(RIGHT_NONE, RIGHT_READ | RIGHT_WRITE) != RIGHT_NONE) goto out;
+
+    /* 2. rights_check edge cases */
+    if (rights_check(RIGHT_READ, RIGHT_READ | RIGHT_WRITE)) goto out;  /* partial miss */
+    if (!rights_check(RIGHT_READ | RIGHT_WRITE, RIGHT_READ | RIGHT_WRITE)) goto out; /* exact */
+    if (!rights_check(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE, RIGHT_READ)) goto out; /* superset */
+    if (rights_check(RIGHT_NONE, RIGHT_READ)) goto out;
+    if (rights_check(RIGHT_NONE, RIGHT_NONE)) goto out; /* RIGHT_NONE never satisfies */
+
+    /* 3. Handle stores exactly the inserted rights — no inflation */
+    h_full = handle_table_insert(&phase41_ht, &n->base,
+                                 RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
+    if (h_full == HANDLE_INVALID) goto out;
+    if (handle_table_get_object(&phase41_ht, h_full, &obj, &stored) != IRIS_OK) goto out;
+    if (stored != (RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) goto out;
+    kobject_release(obj); obj = 0;
+
+    /* 4. Reduced handle has only the bits it was given — no bleed from full handle */
+    h_reduced = handle_table_insert(&phase41_ht, &n->base,
+                                    rights_reduce(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE,
+                                                  RIGHT_READ));
+    if (h_reduced == HANDLE_INVALID) goto out;
+    if (handle_table_get_object(&phase41_ht, h_reduced, &obj, &stored) != IRIS_OK) goto out;
+    if (stored != RIGHT_READ) goto out;
+    if (rights_check(stored, RIGHT_WRITE)) goto out;      /* no elevation */
+    if (rights_check(stored, RIGHT_DUPLICATE)) goto out;  /* no elevation */
+    kobject_release(obj); obj = 0;
+
+    /* 5. Stale handle rejected after close */
+    if (handle_table_close(&phase41_ht, h_full) != IRIS_OK) goto out;
+    if (handle_table_get_object(&phase41_ht, h_full, &obj, &stored) != IRIS_ERR_BAD_HANDLE) goto out;
+    /* Reduced handle still live; full handle (same or different slot) is stale */
+    if (handle_table_get_object(&phase41_ht, h_reduced, &obj, &stored) != IRIS_OK) goto out;
+    if (stored != RIGHT_READ) goto out;
+    kobject_release(obj); obj = 0;
+
+    ok = 1;
+out:
+    if (obj) kobject_release(obj);
+    handle_table_close_all(&phase41_ht);
+    if (n) knotification_free(n);
+    return ok;
+}
+
 int phase3_selftest_run(void) {
     if (!phase3_handle_selftest()) {
         serial_write("[IRIS][P3] WARN: handle selftest failed\n");
@@ -459,7 +540,12 @@ int phase3_selftest_run(void) {
         serial_write("[IRIS][P3] WARN: quota selftest failed\n");
         return 0;
     }
+    if (!phase41_rights_selftest()) {
+        serial_write("[IRIS][P41] WARN: rights selftests failed\n");
+        return 0;
+    }
 
     serial_write("[IRIS][P3] handle/lifecycle selftests OK\n");
+    serial_write("[IRIS][P41] rights selftests OK\n");
     return 1;
 }

@@ -97,6 +97,8 @@ iris_error_t     kchannel_recv      (struct KChannel *ch, struct KChanMsg *out);
 iris_error_t     kchannel_try_recv  (struct KChannel *ch, struct KChanMsg *out);
 iris_error_t     kchannel_recv_into_process(struct KChannel *ch, struct KProcess *proc,
                                             struct KChanMsg *out);
+iris_error_t     kchannel_recv_timeout_into_process(struct KChannel *ch, struct KProcess *proc,
+                                                    struct KChanMsg *out, uint64_t deadline_ticks);
 iris_error_t     kchannel_try_recv_into_process(struct KChannel *ch, struct KProcess *proc,
                                                 struct KChanMsg *out);
 uint32_t         kchannel_live_count(void);

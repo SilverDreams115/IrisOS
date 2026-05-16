@@ -17,7 +17,7 @@
 #include <iris/futex.h>
 #include <iris/diag.h>
 #include <iris/initrd.h>
-#include <iris/elf_loader.h>
+#include <iris/fb_info.h>
 
 /* MSR addresses */
 #define MSR_EFER   0xC0000080
@@ -44,14 +44,7 @@ extern void syscall_entry(void);
 
 #define PAGE_SIZE     0x1000ULL
 
-/*
- * Syscall ABI status in this file:
- *   - Capability/object syscalls use iris_error_t on failure.
- *   - Legacy VFS/stdio-style syscalls (SYS_WRITE) still expose transitional
- *     ad hoc returns and are kept as-is for compatibility.
- * Keep new kernel/object paths on the iris_error_t contract; do not add more
- * generic -1 returns outside the legacy compatibility surface.
- */
+/* All syscall handlers use iris_error_t for capability/object paths. */
 
 static inline uint64_t syscall_err(iris_error_t err) {
     return (uint64_t)(int64_t)err;
@@ -107,15 +100,10 @@ static int task_has_kdebug_cap(struct task *t) {
     return found;
 }
 
+/* SYS_WRITE retired in Phase 30: serial output moved to ring-3 console service. */
 static uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    if (!task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    if (!user_range_readable(arg0, 1)) return syscall_err(IRIS_ERR_INVALID_ARG);
-    char buf[257];
-    uint32_t i = copy_user_cstr_bounded(arg0, buf, (uint32_t)sizeof(buf));
-    serial_write(buf);
-    return syscall_ok_u64(i);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 static uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
@@ -197,6 +185,7 @@ static uint64_t sys_chan_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct KChanMsg msg;
     if (!copy_from_user_checked(&msg, arg1, (uint32_t)sizeof(msg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
+    msg.sender_id = t->id; /* kernel stamps verified sender; ring-3 cannot forge */
 
     if (msg.attached_handle != HANDLE_INVALID) {
         struct KObject *xfer_obj;
@@ -338,8 +327,11 @@ static uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KVmo *v = (struct KVmo *)obj;
     uint64_t map_size;
+    int writable   = (arg2 & 1) != 0;
+    int executable = (arg2 & 2) != 0;
+    if (writable && executable) { kobject_release(obj); return syscall_err(IRIS_ERR_INVALID_ARG); }
     uint64_t flags = PAGE_PRESENT | PAGE_USER;
-    int writable = (arg2 & 1) != 0;
+    if (!executable) flags |= PAGE_NX;
     if (!rights_check(rights, RIGHT_READ)) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -360,7 +352,6 @@ static uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     map_size = (v->size + (PAGE_SIZE - 1ULL)) & ~(PAGE_SIZE - 1ULL);
 
     if (v->demand) {
-        /* Demand path: check for PTE collision and demand-mapping overlap */
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
             if (paging_virt_to_phys_in(t->process->cr3, arg1 + off) != 0) {
                 kobject_release(obj);
@@ -951,7 +942,7 @@ static uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * sys_diag_snapshot — SYS_DIAG_SNAPSHOT implementation.
  *
  * Captures a compact snapshot of kernel-side diagnostics state into the
- * caller-supplied user buffer.  Unrestricted: any task may query.
+ * caller-supplied user buffer.  Requires IRIS_BOOTCAP_KDEBUG.
  *
  * arg0: user pointer to a buffer of at least IRIS_DIAG_SNAPSHOT_SIZE (64) bytes.
  *       Must be writable user-space memory; validated before any kernel reads.
@@ -961,11 +952,13 @@ static uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * snapshot.magic == IRIS_DIAG_MAGIC and snapshot.version == IRIS_DIAG_VERSION
  * before reading any other field.
  *
- * Returns IRIS_OK (0) on success, IRIS_ERR_INVALID_ARG (-1) if the buffer
- * pointer is invalid or not writable.
+ * Returns IRIS_OK (0) on success, IRIS_ERR_ACCESS_DENIED if caller lacks
+ * KDEBUG cap, IRIS_ERR_INVALID_ARG if the buffer pointer is invalid.
  */
 static uint64_t sys_diag_snapshot(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (!t || !task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
 
     if (!user_range_writable(arg0, (uint32_t)IRIS_DIAG_SNAPSHOT_SIZE))
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -1107,6 +1100,7 @@ static uint64_t sys_chan_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(rep_obj);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
+    msg.sender_id = t->id; /* kernel stamps verified sender; ring-3 cannot forge */
     msg.attached_handle = HANDLE_INVALID;
     msg.attached_rights = RIGHT_NONE;
 
@@ -1166,6 +1160,28 @@ static uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg
     return syscall_ok_u64((uint64_t)out_h);
 }
 
+/*
+ * Whitelist of port ranges ring-3 services may claim via SYS_CAP_CREATE_IOPORT.
+ * A request must fall entirely within one entry ([base, base+count)).
+ * The kernel itself owns PIC/PIT; those are not listed here.
+ */
+static const struct { uint16_t base; uint16_t count; } kioport_whitelist[] = {
+    { 0x0060u, 5u },   /* PS/2: data(0x60) + status/cmd(0x64) */
+    { 0x02F8u, 8u },   /* COM2 serial */
+    { 0x03F8u, 8u },   /* COM1 serial */
+    { 0x0600u, 8u },   /* QEMU ACPI power management (0x604 poweroff) */
+};
+
+static int kioport_in_whitelist(uint16_t base, uint16_t count) {
+    uint32_t req_end = (uint32_t)base + (uint32_t)count;
+    for (uint32_t i = 0; i < sizeof(kioport_whitelist)/sizeof(kioport_whitelist[0]); i++) {
+        uint32_t wl_end = (uint32_t)kioport_whitelist[i].base + (uint32_t)kioport_whitelist[i].count;
+        if ((uint32_t)base >= (uint32_t)kioport_whitelist[i].base && req_end <= wl_end)
+            return 1;
+    }
+    return 0;
+}
+
 static uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     handle_id_t    cap_h = (handle_id_t)arg0;
     uint16_t       base  = (uint16_t)(arg1 & 0xFFFFu);
@@ -1179,6 +1195,8 @@ static uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (count == 0u || (uint32_t)base + count > 0x10000u)
         return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!kioport_in_whitelist(base, count))
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
 
     if (handle_table_get_object(&t->process->handle_table, cap_h, &auth, &auth_r) != IRIS_OK)
         return syscall_err(IRIS_ERR_NOT_FOUND);
@@ -1193,7 +1211,7 @@ static uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg
     if (!ioport) return syscall_err(IRIS_ERR_NO_MEMORY);
 
     out_h = handle_table_insert(&t->process->handle_table, &ioport->base,
-                                RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                                RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
     if (out_h == HANDLE_INVALID) {
         kioport_free(ioport);
         return syscall_err(IRIS_ERR_TABLE_FULL);
@@ -1202,18 +1220,25 @@ static uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg
     return syscall_ok_u64((uint64_t)out_h);
 }
 
-/* ── Initrd entry lookup and ELF spawn (A3) ──────────────────────── */
+/* ── Initrd/spawn syscalls: retired Phase 29 ─────────────────────── */
 
-#define SPAWN_SVC_NAME_MAX 32u  /* max service/initrd name length including NUL */
+/* SYS_INITRD_LOOKUP(41) and SYS_SPAWN_ELF(42) are permanently retired.
+ * Ring-3 loaders use SYS_INITRD_VMO(55) + SYS_PROCESS_CREATE(56) +
+ * SYS_VMO_MAP_INTO(57) + SYS_THREAD_START(58) + SYS_HANDLE_INSERT(59). */
+
+/* ── Phase 29 composable spawn primitives ────────────────────────── */
 
 /*
- * sys_initrd_lookup(auth_h, name_uptr) → entry_handle or iris_error_t
+ * sys_initrd_vmo(auth_h, index) → vmo_handle or iris_error_t
  *
- * Authenticates via KOBJ_BOOTSTRAP_CAP (IRIS_BOOTCAP_SPAWN_SERVICE), locates
- * the named ELF in the initrd, and returns a KInitrdEntry handle (RIGHT_READ).
+ * Authenticates via KOBJ_BOOTSTRAP_CAP (IRIS_BOOTCAP_SPAWN_SERVICE), retrieves
+ * the initrd image at the given integer index, and returns a read-only eager
+ * KVmo handle wrapping the raw ELF bytes.
+ * Name→index mapping is a ring-3 concern (services/common/svc_loader.c).
  */
-static uint64_t sys_initrd_lookup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
+static uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
+                               uint64_t arg2, uint64_t arg3) {
+    (void)arg2; (void)arg3;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -1229,118 +1254,416 @@ static uint64_t sys_initrd_lookup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
     kobject_release(auth_obj);
 
-    char name[SPAWN_SVC_NAME_MAX];
-    if (copy_user_cstr_bounded(arg1, name, SPAWN_SVC_NAME_MAX) == 0)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
     const void *elf_data = 0;
     uint32_t    elf_size = 0;
-    if (!initrd_find(name, &elf_data, &elf_size))
+    if (!initrd_get((uint32_t)arg1, &elf_data, &elf_size))
         return syscall_err(IRIS_ERR_NOT_FOUND);
 
-    struct KInitrdEntry *entry = kinitrdentry_alloc(elf_data, elf_size);
-    if (!entry) return syscall_err(IRIS_ERR_NO_MEMORY);
+    /* Create a demand VMO and copy ELF bytes into pre-populated pages.
+     * initrd_get returns a kernel virtual address (identity-mapped) that is
+     * NOT guaranteed to be page-aligned.  Rather than wrapping the raw
+     * physical address (which paging_map_checked_in would align down, causing
+     * a read offset bug), we copy into freshly-allocated page-aligned pages. */
+    struct KVmo *v = kvmo_create((uint64_t)elf_size);
+    if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
+
+    {
+        const uint8_t *src = (const uint8_t *)elf_data;
+        uint32_t pg;
+        for (pg = 0; pg < v->page_capacity; pg++) {
+            uint64_t phys = pmm_alloc_page();
+            if (!phys) { kvmo_free(v); return syscall_err(IRIS_ERR_NO_MEMORY); }
+            uint8_t *dst = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
+            uint64_t off = (uint64_t)pg * PAGE_SIZE;
+            uint64_t cp  = elf_size - (uint32_t)off;
+            if (cp > PAGE_SIZE) cp = PAGE_SIZE;
+            for (uint64_t j = 0; j < cp; j++)  dst[j] = src[off + j];
+            for (uint64_t j = cp; j < PAGE_SIZE; j++) dst[j] = 0;
+            v->pages[pg] = phys;
+        }
+    }
 
     handle_id_t h = handle_table_insert(&t->process->handle_table,
-                                        &entry->base, RIGHT_READ);
+                                        &v->base, RIGHT_READ);
     if (h == HANDLE_INVALID) {
-        kinitrdentry_free(entry);
+        kvmo_free(v);
         return syscall_err(IRIS_ERR_TABLE_FULL);
     }
-    kobject_release(&entry->base);
+    kobject_release(&v->base);
     return syscall_ok_u64((uint64_t)h);
 }
 
 /*
- * sys_spawn_elf(entry_h, out_chan_uptr) → proc_handle or iris_error_t
+ * sys_initrd_count(auth_h) → uint32_t count or iris_error_t
  *
- * Spawns a new process from a KInitrdEntry obtained via SYS_INITRD_LOOKUP.
- * Requires RIGHT_READ on entry_h.  Identical flow to sys_spawn_service after
- * the initrd_find step.
+ * Authenticates via KOBJ_BOOTSTRAP_CAP (IRIS_BOOTCAP_SPAWN_SERVICE).
+ * Returns the number of entries in the kernel's initrd catalog so that
+ * ring-3 can verify its local name→index table is consistent at startup.
  */
-static uint64_t sys_spawn_elf(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
-    struct task     *parent  = task_current();
-    struct KChannel *ch      = 0;
-    handle_id_t      proc_h    = HANDLE_INVALID;
-    handle_id_t      parent_ch = HANDLE_INVALID;
-    handle_id_t      child_h   = HANDLE_INVALID;
-    iris_elf_image_t img;
-    struct task     *child   = 0;
+static uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
+                                 uint64_t arg2, uint64_t arg3) {
+    (void)arg1; (void)arg2; (void)arg3;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    if (!parent || !parent->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KObject *entry_obj;
-    iris_rights_t   entry_rights;
-    iris_error_t r = handle_table_get_object(&parent->process->handle_table,
-                                             (handle_id_t)arg0, &entry_obj, &entry_rights);
+    struct KObject   *auth_obj;
+    iris_rights_t     auth_rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &auth_obj, &auth_rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (entry_obj->type != KOBJ_INITRD_ENTRY) {
-        kobject_release(entry_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
-    if (!rights_check(entry_rights, RIGHT_READ)) {
-        kobject_release(entry_obj);
+    if (auth_obj->type != KOBJ_BOOTSTRAP_CAP ||
+        !kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_SPAWN_SERVICE)) {
+        kobject_release(auth_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
+    kobject_release(auth_obj);
+    return syscall_ok_u64((uint64_t)initrd_count());
+}
 
-    const void *elf_data = ((struct KInitrdEntry *)entry_obj)->data;
-    uint32_t    elf_size = ((struct KInitrdEntry *)entry_obj)->size;
-    kobject_release(entry_obj);
+/*
+ * sys_clock_get() → uint64_t nanoseconds since boot or iris_error_t
+ *
+ * Returns a monotonically increasing timestamp derived from the scheduler tick
+ * counter (100 Hz; 10 ms resolution).  No capability required — any task may
+ * query.  Does not block.
+ */
+static uint64_t sys_clock_get(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg0; (void)arg1; (void)arg2;
+    /* wall_ticks is incremented only by the real PIT ISR; it is never
+     * fast-forwarded by the idle-loop clock workaround in task_yield. */
+    return syscall_ok_u64(sched_wall_ticks() * 10000000ULL);
+}
 
-    if (arg1 != 0 && !user_range_writable(arg1, (uint32_t)sizeof(handle_id_t)))
+/*
+ * sys_chan_recv_timeout(chan_h, msg_uptr, timeout_ns) → 0 or iris_error_t
+ *
+ * Identical to SYS_CHAN_RECV but returns IRIS_ERR_TIMED_OUT (-15) if no
+ * message arrives within timeout_ns nanoseconds.  Resolution: 10 ms (one
+ * scheduler tick at 100 Hz).
+ */
+static uint64_t sys_chan_recv_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!user_range_writable(arg1, (uint32_t)sizeof(struct KChanMsg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    r = elf_loader_load(elf_data, elf_size, &img);
+    struct KObject  *obj;
+    iris_rights_t    rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0,
+                                             &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
+    if (obj->type != KOBJ_CHANNEL) { kobject_release(obj); return syscall_err(IRIS_ERR_WRONG_TYPE); }
+    if (!rights_check(rights, RIGHT_READ)) { kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
 
-    ch = kchannel_alloc();
-    if (!ch) { elf_loader_free_image(&img); return syscall_err(IRIS_ERR_NO_MEMORY); }
+    /* Convert timeout_ns to an absolute tick deadline.  Round up by +1 tick so
+     * a caller requesting 10 ms gets at least one full tick of wait time. */
+    uint64_t timeout_ns = arg2;
+    uint64_t deadline_ticks = sched_current_ticks() + timeout_ns / 10000000ULL + 1u;
 
-    child = task_spawn_elf(&img, 0);
-    if (!child) {
-        kchannel_free(ch);
-        elf_loader_free_image(&img);
+    struct KChanMsg msg;
+    r = kchannel_recv_timeout_into_process((struct KChannel *)obj, t->process, &msg, deadline_ticks);
+    kobject_release(obj);
+    if (r == IRIS_OK && !copy_to_user_checked(arg1, &msg, (uint32_t)sizeof(msg)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    return syscall_err(r);
+}
+
+/*
+ * sys_notify_wait_timeout(notify_h, bits_uptr, timeout_ns) → 0 or iris_error_t
+ *
+ * Identical to SYS_NOTIFY_WAIT but returns IRIS_ERR_TIMED_OUT (-15) if no
+ * signal arrives within timeout_ns nanoseconds.
+ */
+static uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject  *obj;
+    iris_rights_t    rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0,
+                                             &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (obj->type != KOBJ_NOTIFICATION) { kobject_release(obj); return syscall_err(IRIS_ERR_WRONG_TYPE); }
+    if (!rights_check(rights, RIGHT_WAIT)) { kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
+
+    uint64_t timeout_ns = arg2;
+    uint64_t deadline_ticks = sched_current_ticks() + timeout_ns / 10000000ULL + 1u;
+
+    struct KNotification *notif = (struct KNotification *)obj;
+    uint64_t bits = 0;
+    r = knotification_wait_timeout(notif, &bits, deadline_ticks);
+    kobject_release(obj);
+    if (r == IRIS_OK) {
+        if (!copy_to_user_checked(arg1, &bits, (uint32_t)sizeof(bits)))
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+    return syscall_err(r);
+}
+
+/*
+ * sys_process_create() → proc_handle or iris_error_t
+ *
+ * Allocates a new empty KProcess with a fresh user address space (new CR3).
+ * No threads are created.  The caller uses sys_vmo_map_into to populate the
+ * address space and sys_thread_start to launch the first thread.
+ */
+static uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
+                                   uint64_t arg2, uint64_t arg3) {
+    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KProcess *proc = kprocess_alloc();
+    if (!proc) return syscall_err(IRIS_ERR_NO_MEMORY);
+
+    proc->cr3 = paging_create_user_space();
+    if (!proc->cr3) {
+        kprocess_free(proc);
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
 
-    child_h = handle_table_insert(&child->process->handle_table,
-                                  &ch->base, RIGHT_READ | RIGHT_WRITE);
-    if (child_h == HANDLE_INVALID) {
-        kchannel_free(ch);
-        task_abort_spawned_user(child);
+    handle_id_t h = handle_table_insert(&t->process->handle_table, &proc->base,
+                                        RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |
+                                        RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_ROUTE);
+    /* Do NOT kobject_release: initial ref is the thread-lifecycle reference,
+     * released by reap_dead_task_off_cpu → kprocess_free when last thread exits. */
+    if (h == HANDLE_INVALID) {
+        kprocess_free(proc);
         return syscall_err(IRIS_ERR_TABLE_FULL);
     }
-    task_set_bootstrap_arg0(child, (uint64_t)child_h);
+    return syscall_ok_u64((uint64_t)h);
+}
 
-    proc_h = handle_table_insert(&parent->process->handle_table,
-                                 &child->process->base,
-                                 RIGHT_READ | RIGHT_ROUTE | RIGHT_MANAGE | RIGHT_DUPLICATE);
-    if (proc_h == HANDLE_INVALID) {
-        kobject_release(&ch->base);
-        task_abort_spawned_user(child);
-        return syscall_err(IRIS_ERR_TABLE_FULL);
+/*
+ * sys_vmo_map_into(vmo_h, proc_h, vaddr, flags) → 0 or iris_error_t
+ *
+ * Maps VMO pages into a target process's address space.  Requires RIGHT_READ
+ * (+ RIGHT_WRITE if writable) on vmo_h and RIGHT_MANAGE on proc_h.
+ * W^X enforced: WRITABLE + EXEC simultaneously → ERR_INVALID_ARG.
+ * vaddr must be page-aligned within [USER_PRIVATE_BASE, USER_STACK_TOP).
+ */
+static uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
+                                 uint64_t arg2, uint64_t arg3) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *vmo_obj;
+    iris_rights_t   vmo_rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &vmo_obj, &vmo_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (vmo_obj->type != KOBJ_VMO) {
+        kobject_release(vmo_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
     }
 
-    if (arg1 != 0) {
-        parent_ch = handle_table_insert(&parent->process->handle_table,
-                                        &ch->base, RIGHT_READ | RIGHT_WRITE);
-        if (parent_ch == HANDLE_INVALID) {
-            (void)handle_table_close(&parent->process->handle_table, proc_h);
-            kobject_release(&ch->base);
-            task_abort_spawned_user(child);
-            return syscall_err(IRIS_ERR_TABLE_FULL);
+    struct KObject *proc_obj;
+    iris_rights_t   proc_rights;
+    r = handle_table_get_object(&t->process->handle_table,
+                                (handle_id_t)arg1, &proc_obj, &proc_rights);
+    if (r != IRIS_OK) { kobject_release(vmo_obj); return syscall_err(r); }
+    if (proc_obj->type != KOBJ_PROCESS) {
+        kobject_release(vmo_obj); kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(proc_rights, RIGHT_MANAGE)) {
+        kobject_release(vmo_obj); kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KVmo     *v    = (struct KVmo *)vmo_obj;
+    struct KProcess *proc = (struct KProcess *)proc_obj;
+
+    /* Accept fresh (thread_count=0) processes that haven't been torn down. */
+    if (kprocess_teardown_complete(proc)) {
+        kobject_release(vmo_obj); kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_BAD_HANDLE);
+    }
+
+    int writable   = (arg3 & 1) != 0;
+    int executable = (arg3 & 2) != 0;
+    if (writable && executable) {
+        kobject_release(vmo_obj); kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+    uint64_t flags = PAGE_PRESENT | PAGE_USER;
+    if (!executable) flags |= PAGE_NX;
+    if (!rights_check(vmo_rights, RIGHT_READ)) {
+        kobject_release(vmo_obj); kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    if (writable) {
+        if (!rights_check(vmo_rights, RIGHT_WRITE)) {
+            kobject_release(vmo_obj); kobject_release(proc_obj);
+            return syscall_err(IRIS_ERR_ACCESS_DENIED);
         }
-        if (!copy_to_user_checked(arg1, &parent_ch, (uint32_t)sizeof(parent_ch))) {
-            (void)handle_table_close(&parent->process->handle_table, parent_ch);
-            (void)handle_table_close(&parent->process->handle_table, proc_h);
-            kobject_release(&ch->base);
-            task_abort_spawned_user(child);
-            return syscall_err(IRIS_ERR_INVALID_ARG);
+        flags |= PAGE_WRITABLE;
+    }
+
+    uint64_t vaddr = arg2;
+    if (v->size == 0 || (vaddr & (PAGE_SIZE - 1ULL)) != 0 ||
+        vaddr < USER_PRIVATE_BASE) {
+        kobject_release(vmo_obj); kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+    uint64_t map_size = (v->size + (PAGE_SIZE - 1ULL)) & ~(PAGE_SIZE - 1ULL);
+    if (vaddr + map_size < vaddr || vaddr + map_size > USER_STACK_TOP) {
+        kobject_release(vmo_obj); kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    if (v->demand) {
+        for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
+            if (paging_virt_to_phys_in(proc->cr3, vaddr + off) != 0) {
+                kobject_release(vmo_obj); kobject_release(proc_obj);
+                return syscall_err(IRIS_ERR_BUSY);
+            }
+        }
+        for (struct KVmoMapping *m = proc->vmo_mappings; m; m = m->next) {
+            if (vaddr + map_size <= m->virt_base) continue;
+            if (vaddr >= m->virt_base + m->size) continue;
+            kobject_release(vmo_obj); kobject_release(proc_obj);
+            return syscall_err(IRIS_ERR_BUSY);
+        }
+        r = kprocess_register_vmo_map(proc, vaddr, map_size, v, flags);
+        kobject_release(vmo_obj);
+        kobject_release(proc_obj);
+        return syscall_err(r);
+    }
+
+    /* Eager path (wrap/MMIO VMOs) */
+    for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
+        if (paging_virt_to_phys_in(proc->cr3, vaddr + off) != 0) {
+            kobject_release(vmo_obj); kobject_release(proc_obj);
+            return syscall_err(IRIS_ERR_BUSY);
         }
     }
-    kobject_release(&ch->base);
-    return syscall_ok_u64((uint64_t)proc_h);
+    {
+        uint64_t mapped_until = vaddr;
+        for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
+            if (paging_map_checked_in(proc->cr3, vaddr + off,
+                                      v->phys + off, flags) != 0) {
+                rollback_user_maps(proc->cr3, vaddr, mapped_until);
+                kobject_release(vmo_obj); kobject_release(proc_obj);
+                return syscall_err(IRIS_ERR_NO_MEMORY);
+            }
+            mapped_until = vaddr + off + PAGE_SIZE;
+        }
+    }
+    kobject_release(vmo_obj);
+    kobject_release(proc_obj);
+    return syscall_ok_u64(0);
+}
+
+/*
+ * sys_thread_start(proc_h, entry_vaddr, stack_top, boot_arg) → 0 or iris_error_t
+ *
+ * Creates a new ring-3 thread in the process identified by proc_h.
+ * entry_vaddr and stack_top must be within user space and stack_top 8-byte aligned.
+ * boot_arg is delivered in RBX on first execution.
+ * Requires RIGHT_MANAGE on proc_h.
+ */
+static uint64_t sys_thread_start(uint64_t arg0, uint64_t arg1,
+                                 uint64_t arg2, uint64_t arg3) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    uint64_t entry_vaddr = arg1;
+    uint64_t user_rsp    = arg2;
+
+    if (entry_vaddr < USER_SPACE_BASE || entry_vaddr >= USER_SPACE_TOP)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (user_rsp < USER_SPACE_BASE || user_rsp > USER_SPACE_TOP)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (user_rsp & 0x7ULL)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *proc_obj;
+    iris_rights_t   proc_rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &proc_obj, &proc_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (proc_obj->type != KOBJ_PROCESS) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(proc_rights, RIGHT_MANAGE)) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KProcess *proc = (struct KProcess *)proc_obj;
+    /* Accept fresh (thread_count=0) processes that haven't been torn down. */
+    if (kprocess_teardown_complete(proc)) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_BAD_HANDLE);
+    }
+
+    struct task *nt = task_thread_create(proc, entry_vaddr, user_rsp, arg3);
+    kobject_release(proc_obj);
+    if (!nt) return syscall_err(IRIS_ERR_NO_MEMORY);
+    return syscall_ok_u64(0);
+}
+
+/*
+ * sys_handle_insert(proc_h, obj_h, rights, _) → new_handle_id or iris_error_t
+ *
+ * Copies obj_h into the target process's handle table with the specified rights
+ * (a subset of obj_h's current rights).  Requires RIGHT_MANAGE on proc_h and
+ * RIGHT_DUPLICATE on obj_h.  The source handle is NOT consumed.
+ * Returns the new handle_id assigned in the target process.
+ */
+static uint64_t sys_handle_insert(uint64_t arg0, uint64_t arg1,
+                                  uint64_t arg2, uint64_t arg3) {
+    (void)arg3;
+    struct task *caller = task_current();
+    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *proc_obj;
+    iris_rights_t   proc_rights;
+    iris_error_t r = handle_table_get_object(&caller->process->handle_table,
+                                             (handle_id_t)arg0, &proc_obj, &proc_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (proc_obj->type != KOBJ_PROCESS) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(proc_rights, RIGHT_MANAGE)) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KProcess *proc = (struct KProcess *)proc_obj;
+    /* Accept fresh (thread_count=0) processes that haven't been torn down. */
+    if (kprocess_teardown_complete(proc)) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_BAD_HANDLE);
+    }
+
+    struct KObject *src_obj;
+    iris_rights_t   src_rights;
+    r = handle_table_get_object(&caller->process->handle_table,
+                                (handle_id_t)arg1, &src_obj, &src_rights);
+    if (r != IRIS_OK) { kobject_release(proc_obj); return syscall_err(r); }
+    if (!rights_check(src_rights, RIGHT_DUPLICATE)) {
+        kobject_release(src_obj); kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    iris_rights_t new_rights = rights_reduce(src_rights, (iris_rights_t)arg2);
+    if (new_rights == RIGHT_NONE) {
+        kobject_release(src_obj); kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    handle_id_t new_h = handle_table_insert(&proc->handle_table, src_obj, new_rights);
+    kobject_release(src_obj);
+    kobject_release(proc_obj);
+
+    if (new_h == HANDLE_INVALID) return syscall_err(IRIS_ERR_TABLE_FULL);
+    return syscall_ok_u64((uint64_t)new_h);
 }
 
 /* ── I/O port sub-delegation (A4) ───────────────────────────────────── */
@@ -1350,6 +1673,7 @@ static uint64_t sys_spawn_elf(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *
  * Creates a narrower KIoPort from an existing one.  Requires RIGHT_READ |
  * RIGHT_DUPLICATE on ioport_h.  offset + count must fit within the parent range.
+ * The derived cap is granted READ|WRITE|DUPLICATE|TRANSFER so it can do both IN and OUT.
  */
 static uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
@@ -1385,7 +1709,7 @@ static uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2)
     if (!sub) return syscall_err(IRIS_ERR_NO_MEMORY);
 
     handle_id_t h = handle_table_insert(&t->process->handle_table, &sub->base,
-                                        RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
     if (h == HANDLE_INVALID) {
         kioport_free(sub);
         return syscall_err(IRIS_ERR_TABLE_FULL);
@@ -1756,9 +2080,74 @@ static uint64_t sys_futex_wake(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_ok_u64((uint64_t)futex_wake(uaddr, count));
 }
 
-uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
+/*
+ * sys_framebuffer_vmo(auth_h, info_uptr) → vmo_handle or iris_error_t
+ *
+ * Claims the physical framebuffer as an MMIO VMO (one-shot).  Requires a
+ * KBootstrapCap with IRIS_BOOTCAP_FRAMEBUFFER.  Writes struct iris_fb_params to
+ * info_uptr in user space, then returns a non-owning KVmo handle.
+ * Clears g_iris_fb_params_valid so the framebuffer can only be claimed once.
+ */
+static uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1,
+                                    uint64_t arg2, uint64_t arg3) {
+    (void)arg2; (void)arg3;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-                          uint64_t arg1, uint64_t arg2) {
+    struct KObject *auth_obj;
+    iris_rights_t   auth_rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &auth_obj, &auth_rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (auth_obj->type != KOBJ_BOOTSTRAP_CAP ||
+        !kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_FRAMEBUFFER)) {
+        kobject_release(auth_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    kobject_release(auth_obj);
+
+    if (!g_iris_fb_params_valid) return syscall_err(IRIS_ERR_NOT_FOUND);
+
+    /* One-shot: clear immediately so no second caller can claim it. */
+    g_iris_fb_params_valid = 0;
+
+    if (!copy_to_user_checked(arg1, &g_iris_fb_params, (uint32_t)sizeof(g_iris_fb_params)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KVmo *v = kvmo_wrap(g_iris_fb_params.phys, g_iris_fb_params.size);
+    if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
+
+    handle_id_t h = handle_table_insert(&t->process->handle_table, &v->base,
+                                        RIGHT_READ | RIGHT_WRITE |
+                                        RIGHT_DUPLICATE | RIGHT_TRANSFER);
+    if (h == HANDLE_INVALID) {
+        kobject_release(&v->base);
+        return syscall_err(IRIS_ERR_TABLE_FULL);
+    }
+    kobject_release(&v->base);
+    return syscall_ok_u64((uint64_t)h);
+}
+
+/*
+ * sys_poweroff — privileged machine halt.  Requires KDEBUG cap.
+ *
+ * Hardware power-off (ACPI S5, ISA debug exit) is intentionally NOT performed
+ * here.  Ring-3 processes that need ACPI shutdown create a KIoPort cap for
+ * 0x0604 via SYS_CAP_CREATE_IOPORT and issue the write themselves via
+ * SYS_IOPORT_OUT.  The kernel owns no ACPI state after early boot.
+ *
+ * arg0 is reserved for future use (ignored).
+ */
+static uint64_t sys_poweroff(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg0; (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (!t || !task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    for (;;) __asm__ volatile ("hlt");
+    return syscall_ok_u64(0); /* unreachable */
+}
+
+uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
+                          uint64_t arg1, uint64_t arg2, uint64_t arg3) {
     switch (num) {
         case SYS_WRITE:  return sys_write(arg0, arg1, arg2);
         case SYS_EXIT:   return sys_exit(arg0, arg1, arg2);
@@ -1793,8 +2182,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_CHAN_CALL:            return sys_chan_call(arg0, arg1, arg2);
         case SYS_CAP_CREATE_IRQCAP:   return sys_cap_create_irqcap(arg0, arg1, arg2);
         case SYS_CAP_CREATE_IOPORT:   return sys_cap_create_ioport(arg0, arg1, arg2);
-        case SYS_INITRD_LOOKUP:        return sys_initrd_lookup(arg0, arg1, arg2);
-        case SYS_SPAWN_ELF:            return sys_spawn_elf(arg0, arg1, arg2);
+        case SYS_INITRD_LOOKUP: return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 29 */
+        case SYS_SPAWN_ELF:     return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 29 */
         case SYS_IOPORT_RESTRICT:      return sys_ioport_restrict(arg0, arg1, arg2);
         case SYS_WAIT_ANY:             return sys_wait_any(arg0, arg1, arg2);
         case SYS_BOOTCAP_RESTRICT:     return sys_bootcap_restrict(arg0, arg1, arg2);
@@ -1806,6 +2195,17 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_FUTEX_WAKE:           return sys_futex_wake(arg0, arg1, arg2);
         case SYS_HANDLE_TYPE:          return sys_handle_type(arg0, arg1, arg2);
         case SYS_HANDLE_SAME_OBJECT:   return sys_handle_same_object(arg0, arg1, arg2);
+        case SYS_POWEROFF:             return sys_poweroff(arg0, arg1, arg2);
+        case SYS_INITRD_VMO:    return sys_initrd_vmo(arg0, arg1, arg2, arg3);
+        case SYS_INITRD_COUNT:  return sys_initrd_count(arg0, arg1, arg2, arg3);
+        case SYS_PROCESS_CREATE: return sys_process_create(arg0, arg1, arg2, arg3);
+        case SYS_VMO_MAP_INTO:  return sys_vmo_map_into(arg0, arg1, arg2, arg3);
+        case SYS_THREAD_START:  return sys_thread_start(arg0, arg1, arg2, arg3);
+        case SYS_HANDLE_INSERT: return sys_handle_insert(arg0, arg1, arg2, arg3);
+        case SYS_FRAMEBUFFER_VMO: return sys_framebuffer_vmo(arg0, arg1, arg2, arg3);
+        case SYS_CLOCK_GET:           return sys_clock_get(arg0, arg1, arg2);
+        case SYS_CHAN_RECV_TIMEOUT:   return sys_chan_recv_timeout(arg0, arg1, arg2);
+        case SYS_NOTIFY_WAIT_TIMEOUT: return sys_notify_wait_timeout(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }

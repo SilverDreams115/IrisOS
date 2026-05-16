@@ -118,8 +118,8 @@
  *   attached_handle                        service master handle moved into svcmgr
  *   attached_rights                        must include RIGHT_DUPLICATE
  *
- * This first cut does not define a secure unregister path. sender_id is not
- * treated as an authority signal.
+ * sender_id is kernel-stamped (Phase 38); it carries the verified task_id of
+ * the sender and cannot be forged by ring-3 code.
  *
  * ── SVCMGR_MSG_UNREGISTER (service → svcmgr) ──────────────────────
  * First-cut withdrawal path for runtime-published channel endpoints.
@@ -203,12 +203,15 @@
 #define SVCMGR_SERVICE_NONE       0u
 #define SVCMGR_SERVICE_KBD        1u
 #define SVCMGR_SERVICE_VFS        2u
+#define SVCMGR_SERVICE_SH         3u
 
 #define SVCMGR_ENDPOINT_NONE        0u
 #define SVCMGR_ENDPOINT_KBD         1u
 #define SVCMGR_ENDPOINT_KBD_REPLY   2u
 #define SVCMGR_ENDPOINT_VFS         3u
 #define SVCMGR_ENDPOINT_VFS_REPLY   4u
+#define SVCMGR_ENDPOINT_SH          7u
+#define SVCMGR_ENDPOINT_SH_REPLY    8u
 
 #define SVCMGR_BOOTSTRAP_KIND_NONE      0u
 #define SVCMGR_BOOTSTRAP_KIND_SERVICE   1u
@@ -216,6 +219,10 @@
 #define SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP 3u
 #define SVCMGR_BOOTSTRAP_KIND_IRQ_CAP   4u  /* KIrqCap capability for IRQ routing */
 #define SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP 5u /* KIoPort capability for I/O port access */
+#define SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP 6u /* KChannel write-end for console service */
+#define SVCMGR_BOOTSTRAP_KIND_KBD_CAP    9u  /* KChannel write-end for kbd service */
+#define SVCMGR_BOOTSTRAP_KIND_VFS_CAP   10u  /* KChannel write-end for vfs service */
+#define SVCMGR_BOOTSTRAP_KIND_VFS_REPLY_CAP 11u /* KChannel read-end for vfs reply */
 
 /* Byte offsets within KChanMsg.data[64] */
 #define SVCMGR_SPAWN_OFF_SERVICE_ID 0  /* uint32_t:    service kind selector       */

@@ -3,6 +3,7 @@
 #include <iris/nc/kprocess.h>
 #include <iris/kpage.h>
 #include <iris/task.h>
+#include <iris/serial.h>
 #include <stdint.h>
 
 /* ── Live-list state ─────────────────────────────────────────────────────────
@@ -62,7 +63,7 @@ static void kchannel_waiters_wake_all(struct KChannel *ch) {
     for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) {
         struct task *w = ch->waiters[i];
         if (!w) continue;
-        if (w->state == TASK_BLOCKED || w->state == TASK_BLOCKED_IPC)
+        if (w->state == TASK_BLOCKED_IPC)
             w->state = TASK_READY;
         ch->waiters[i] = 0;
     }
@@ -76,7 +77,7 @@ static void kchannel_waiters_wake_one(struct KChannel *ch) {
     for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) {
         struct task *w = ch->waiters[i];
         if (!w) continue;
-        if (w->state == TASK_BLOCKED || w->state == TASK_BLOCKED_IPC) {
+        if (w->state == TASK_BLOCKED_IPC) {
             w->state      = TASK_READY;
             ch->waiters[i] = 0;
             if (ch->waiter_count) ch->waiter_count--;
@@ -395,6 +396,62 @@ iris_error_t kchannel_recv_into_process(struct KChannel *ch, struct KProcess *pr
             /* resumed by sender; outer loop will retry kchannel_try_recv */
         } else {
             spinlock_unlock(&ch->base.lock);
+        }
+    }
+}
+
+/*
+ * kchannel_recv_timeout_into_process — blocking recv with tick deadline.
+ *
+ * If the channel has a message, returns it immediately.
+ * Otherwise blocks (TASK_BLOCKED_IPC) until a message arrives or
+ * deadline_ticks is reached (absolute scheduler_ticks value).
+ * Returns IRIS_ERR_TIMED_OUT when the deadline fires before a message
+ * arrives; all other return semantics are identical to
+ * kchannel_recv_into_process.
+ */
+iris_error_t kchannel_recv_timeout_into_process(struct KChannel *ch,
+                                                struct KProcess *proc,
+                                                struct KChanMsg *out,
+                                                uint64_t deadline_ticks) {
+    for (;;) {
+        iris_error_t r = kchannel_try_recv_into_process(ch, proc, out);
+        if (r == IRIS_OK || r == IRIS_ERR_CLOSED) return r;
+        if (r == IRIS_ERR_TABLE_FULL || r == IRIS_ERR_INVALID_ARG) return r;
+
+        spinlock_lock(&ch->base.lock);
+        if (ch->closed && ch->count == 0) {
+            spinlock_unlock(&ch->base.lock);
+            return IRIS_ERR_CLOSED;
+        }
+        if (ch->count != 0) {
+            spinlock_unlock(&ch->base.lock);
+            continue;
+        }
+
+        struct task *t = task_current();
+        if (!t) {
+            spinlock_unlock(&ch->base.lock);
+            return IRIS_ERR_INTERNAL;
+        }
+        r = kchannel_waiters_enqueue(ch, t);
+        if (r != IRIS_OK) {
+            spinlock_unlock(&ch->base.lock);
+            return r;
+        }
+        t->state     = TASK_BLOCKED_IPC;
+        t->wake_tick = deadline_ticks;
+        t->timed_out = 0;
+        spinlock_unlock(&ch->base.lock);
+        task_yield();
+
+        if (t->timed_out) {
+            t->timed_out = 0;
+            t->wake_tick = 0;
+            /* Remove self from waiter list in task context (IRQ-safe — spinlock
+             * is CAS-only; cannot be called from scheduler_tick). */
+            kchannel_cancel_waiter(t);
+            return IRIS_ERR_TIMED_OUT;
         }
     }
 }

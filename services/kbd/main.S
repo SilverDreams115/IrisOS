@@ -391,8 +391,9 @@ _start:
 /* ── KBD_MSG_SUBSCRIBE: register a scancode event subscriber ────────────────
  * attached_handle (76(%rsp)): write end of a KChannel the client reads from.
  * A new SUBSCRIBE replaces the previous subscriber (old handle closed first).
- * handle = 0 means unsubscribe: close existing subscriber and reply OK.
- * Reply is always KBD_MSG_SUBSCRIBE_REPLY on the shared reply channel (r12).
+ * handle = 0 means unsubscribe: close existing subscriber.
+ * Fire-and-forget: no reply is emitted, avoiding cross-client reply races on
+ * the shared kbd reply channel.
  */
 .kbd_subscribe:
     movl  76(%rsp), %r11d               /* incoming subscriber handle          */
@@ -406,28 +407,6 @@ _start:
 .kbd_subscribe_store:
     movl  88(%rsp), %r11d
     movq  %r11,    %r15                 /* r15 = new subscriber (0 = none)     */
-    movq  $0,  0(%rsp)
-    movq  $0,  8(%rsp)
-    movq  $0, 16(%rsp)
-    movq  $0, 24(%rsp)
-    movq  $0, 32(%rsp)
-    movq  $0, 40(%rsp)
-    movq  $0, 48(%rsp)
-    movq  $0, 56(%rsp)
-    movq  $0, 64(%rsp)
-    movq  $0, 72(%rsp)
-    movq  $0, 80(%rsp)
-    movl  $KBD_MSG_SUBSCRIBE_REPLY,           0(%rsp)  /* type                */
-    movl  $0,                                 8(%rsp)  /* err = 0             */
-    movl  $KBD_MSG_SUBSCRIBE_REPLY_LEN,      72(%rsp)  /* data_len = 4        */
-    movq  $13,   %rax                   /* SYS_CHAN_SEND */
-    movq  %r12,  %rdi
-    movq  %rsp,  %rsi
-    movq  $0,    %rdx
-    syscall
-    movq  $8,    %rax                   /* SYS_SLEEP */
-    movq  $1,    %rdi
-    syscall
     jmp   .kbd_recv
 
 /* ── Bootstrap failure ───────────────────────────────────────────────────── */

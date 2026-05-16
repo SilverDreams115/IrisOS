@@ -10,10 +10,8 @@
 #include <iris/task.h>
 #include <iris/tss.h>
 #include <iris/syscall.h>
-#include <iris/fb.h>
+#include <iris/fb_info.h>
 #include <iris/irq_routing.h>
-#include <iris/initrd.h>
-#include <iris/elf_loader.h>
 #include <iris/nc/kbootcap.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/handle_table.h>
@@ -23,9 +21,10 @@
 #include <iris/phase3_selftest.h>
 #endif
 
-#define FB_ORANGE 0x00FF8800
-
 static struct iris_boot_info saved_boot_info;
+
+struct iris_fb_params g_iris_fb_params;
+int                   g_iris_fb_params_valid = 0;
 
 void iris_kernel_main(struct iris_boot_info *boot_info) {
 
@@ -33,7 +32,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     serial_init();
     serial_write("\n");
     serial_write("====================================\n");
-    serial_write("       IRIS KERNEL - STAGE 14       \n");
+    serial_write("       IRIS KERNEL - PHASE 50       \n");
     serial_write("====================================\n");
     serial_write("[IRIS][KERNEL] firmware services: OFF\n");
 
@@ -77,21 +76,15 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     idt_init();
     serial_write("[IRIS][IDT] OK\n");
 
-    /* ── 5. Drivers ─────────────────────────────────────────────── */
-    serial_write("[IRIS][FB] initializing...\n");
-    fb_init(&saved_boot_info);
-    fb_fill(FB_BLACK);
-    {
-        uint32_t stripe = saved_boot_info.framebuffer.height / 7;
-        fb_draw_rect(0, stripe * 0, saved_boot_info.framebuffer.width, stripe, FB_RED);
-        fb_draw_rect(0, stripe * 1, saved_boot_info.framebuffer.width, stripe, FB_ORANGE);
-        fb_draw_rect(0, stripe * 2, saved_boot_info.framebuffer.width, stripe, FB_YELLOW);
-        fb_draw_rect(0, stripe * 3, saved_boot_info.framebuffer.width, stripe, FB_GREEN);
-        fb_draw_rect(0, stripe * 4, saved_boot_info.framebuffer.width, stripe, FB_CYAN);
-        fb_draw_rect(0, stripe * 5, saved_boot_info.framebuffer.width, stripe, FB_BLUE);
-        fb_draw_rect(0, stripe * 6, saved_boot_info.framebuffer.width, stripe, FB_IRIS);
-    }
-    serial_write("[IRIS][FB] framebuffer painted\n");
+    /* ── 5. Framebuffer params ─────────────────────────────────────── */
+    serial_write("[IRIS][FB] saving params for ring-3 fb service\n");
+    g_iris_fb_params.phys   = saved_boot_info.framebuffer.base;
+    g_iris_fb_params.size   = saved_boot_info.framebuffer.size;
+    g_iris_fb_params.width  = saved_boot_info.framebuffer.width;
+    g_iris_fb_params.height = saved_boot_info.framebuffer.height;
+    g_iris_fb_params.stride = saved_boot_info.framebuffer.pixels_per_scanline;
+    g_iris_fb_params.bpp    = 4u;
+    g_iris_fb_params_valid  = 1;
 
     serial_write("[IRIS][VFS] kernel backend retired from healthy boot\n");
 
@@ -112,50 +105,37 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     scheduler_init();
 
     /* ── 8. First user task ─────────────────────────────────────── */
-    serial_write("[IRIS][USER] preparing init process...\n");
+    serial_write("[IRIS][USER] preparing bootstrap task...\n");
     {
-        const void *init_elf = 0;
-        uint32_t    init_sz  = 0;
         struct task *ut = 0;
 
-        if (!initrd_bootstrap_image(&init_elf, &init_sz)) {
-            serial_write("[IRIS][USER] FATAL: bootstrap image not available\n");
+        ut = task_spawn_user(0);
+        if (!ut) {
+            serial_write("[IRIS][USER] FATAL: task_spawn_user(userboot) failed\n");
         } else {
-            iris_elf_image_t img;
-            iris_error_t lerr = elf_loader_load(init_elf, init_sz, &img);
-            if (lerr != IRIS_OK) {
-                serial_write("[IRIS][USER] FATAL: elf_loader_load(bootstrap) failed\n");
+            struct KBootstrapCap *cap = kbootcap_alloc(
+                IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS |
+                IRIS_BOOTCAP_KDEBUG | IRIS_BOOTCAP_FRAMEBUFFER);
+            if (!cap) {
+                serial_write("[IRIS][USER] FATAL: kbootcap_alloc failed\n");
+                task_abort_spawned_user(ut);
+                ut = 0;
             } else {
-                ut = task_spawn_elf(&img, 0);
-                if (!ut) {
-                    serial_write("[IRIS][USER] FATAL: task_spawn_elf(bootstrap) failed\n");
-                    elf_loader_free_image(&img);
+                handle_id_t cap_h = handle_table_insert(
+                    &ut->process->handle_table, &cap->base,
+                    RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                kobject_release(&cap->base);
+                if (cap_h == HANDLE_INVALID) {
+                    serial_write("[IRIS][USER] FATAL: cap handle insert failed\n");
+                    task_abort_spawned_user(ut);
+                    ut = 0;
                 } else {
-                    struct KBootstrapCap *cap = kbootcap_alloc(
-                        IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS |
-                        IRIS_BOOTCAP_KDEBUG);
-                    if (!cap) {
-                        serial_write("[IRIS][USER] FATAL: kbootcap_alloc failed\n");
-                        task_abort_spawned_user(ut);
-                        ut = 0;
-                    } else {
-                        handle_id_t cap_h = handle_table_insert(
-                            &ut->process->handle_table, &cap->base,
-                            RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-                        kobject_release(&cap->base);
-                        if (cap_h == HANDLE_INVALID) {
-                            serial_write("[IRIS][USER] FATAL: cap handle insert failed\n");
-                            task_abort_spawned_user(ut);
-                            ut = 0;
-                        } else {
-                            task_set_bootstrap_arg0(ut, (uint64_t)cap_h);
-                        }
-                    }
+                    task_set_bootstrap_arg0(ut, (uint64_t)cap_h);
                 }
             }
         }
         if (ut) {
-            serial_write("[IRIS][USER] bootstrap task created (ELF), id=");
+            serial_write("[IRIS][USER] bootstrap task created (ring-3 loader), id=");
             serial_write_dec(ut->id);
             serial_write("\n");
         } else {
@@ -175,5 +155,8 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     task_yield();
     task_yield();
 
-    for (;;) __asm__ volatile ("hlt");
+    for (;;) {
+        __asm__ volatile ("sti");
+        task_yield();
+    }
 }

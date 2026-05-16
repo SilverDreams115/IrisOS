@@ -246,6 +246,68 @@ iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits) {
     }
 }
 
+/*
+ * knotification_wait_timeout — blocking wait with tick deadline.
+ *
+ * Identical to knotification_wait() but returns IRIS_ERR_TIMED_OUT when
+ * deadline_ticks (absolute scheduler_ticks value) is reached before any
+ * signal arrives.  out_bits is written only on IRIS_OK.
+ */
+iris_error_t knotification_wait_timeout(struct KNotification *n, uint64_t *out_bits,
+                                        uint64_t deadline_ticks) {
+    for (;;) {
+        uint64_t bits = atomic_load_explicit(&n->signal_bits, memory_order_acquire);
+        if (bits != 0) {
+            uint64_t got = atomic_exchange_explicit(&n->signal_bits, 0,
+                                                    memory_order_acq_rel);
+            if (got != 0) {
+                *out_bits = got;
+                return IRIS_OK;
+            }
+        }
+
+        spinlock_lock(&n->base.lock);
+        bits = atomic_load_explicit(&n->signal_bits, memory_order_acquire);
+        if (bits == 0 && n->closed) {
+            spinlock_unlock(&n->base.lock);
+            return IRIS_ERR_CLOSED;
+        }
+        if (bits != 0) {
+            spinlock_unlock(&n->base.lock);
+            continue;
+        }
+        struct task *t = task_current();
+        if (!t) {
+            spinlock_unlock(&n->base.lock);
+            return IRIS_ERR_INTERNAL;
+        }
+        iris_error_t r = knotif_waiters_enqueue(n, t);
+        if (r != IRIS_OK) {
+            spinlock_unlock(&n->base.lock);
+            return r;
+        }
+        t->state     = TASK_BLOCKED_IRQ;
+        t->wake_tick = deadline_ticks;
+        t->timed_out = 0;
+        spinlock_unlock(&n->base.lock);
+        task_yield();
+
+        if (t->timed_out) {
+            t->timed_out = 0;
+            t->wake_tick = 0;
+            spinlock_lock(&n->base.lock);
+            knotif_waiters_remove(n, t);
+            spinlock_unlock(&n->base.lock);
+            return IRIS_ERR_TIMED_OUT;
+        }
+
+        /* Woken by signal or close; remove self in case close didn't. */
+        spinlock_lock(&n->base.lock);
+        knotif_waiters_remove(n, t);
+        spinlock_unlock(&n->base.lock);
+    }
+}
+
 uint64_t knotification_poll(struct KNotification *n) {
     uint64_t bits = atomic_load_explicit(&n->signal_bits, memory_order_acquire);
     if (bits == 0) return 0;

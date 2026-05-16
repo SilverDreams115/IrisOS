@@ -1,776 +1,37 @@
-#include <iris/task.h>
-#include <iris/scheduler.h>
-#include <iris/pmm.h>
+#include "scheduler_priv.h"
 #include <iris/tss.h>
 #include <iris/paging.h>
 #include <iris/syscall.h>
-#include <iris/nc/kchannel.h>
-#include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
-#include <iris/elf_loader.h>
-#include <iris/futex.h>
-#include <iris/serial.h>
 #include <stdint.h>
 
-extern void user_entry_trampoline(void);
-extern char __text_start;
-extern char __text_end;
-extern void context_switch(struct cpu_context *old,
-                           struct cpu_context *new,
-                           uint64_t *old_rsp,
-                           uint64_t  new_rsp,
-                           uint8_t  *old_fpu,
-                           uint8_t  *new_fpu);
-
-static struct task tasks[TASK_MAX];
-static struct task *current_task = 0;
-static struct task *task_list_head = 0;
-static struct task *pending_reap_task = 0;
-static uint32_t next_id = 0;
-
-/* Per-task saved kernel RSP */
-static uint64_t task_rsp[TASK_MAX];
-static uint64_t kernel_cr3 = 0;
-
-/* ── Kernel stack management (DT-P5) ──────────────────────────────────────
- *
- * Each task slot i owns a 3-page virtual region in the kstack area:
- *   KSTACK_VIRT_BASE + i * KSTACK_SLOT_SIZE + 0          guard page (unmapped)
- *   KSTACK_VIRT_BASE + i * KSTACK_SLOT_SIZE + PAGE_SIZE  kstack page 0
- *   KSTACK_VIRT_BASE + i * KSTACK_SLOT_SIZE + PAGE_SIZE*2 kstack page 1
- *
- * The guard page is never mapped; any stack overflow that writes past
- * kstack[0] immediately generates a #PF instead of silently corrupting
- * an adjacent task slot.
- *
- * Invariant: t->kstack == 0 iff no kstack is allocated for this slot.
- * kstack_alloc sets both t->kstack and t->kstack_phys; kstack_free clears them.
- * ─────────────────────────────────────────────────────────────────────────── */
-
-#define KSTACK_PAGE_SIZE 0x1000ULL
-
-static void kstack_panic(const char *msg) {
-    serial_write("[IRIS][KSTACK] FATAL: ");
-    serial_write(msg);
-    serial_write("\n");
-    for (;;) __asm__ volatile ("hlt");
-}
-
 /*
- * kstack_alloc — allocate and map two kstack pages for task slot idx.
+ * scheduler.c — scheduler loop: yield, tick, sleep, diagnostics.
  *
- * Allocates two contiguous physical pages from PMM, maps them at the
- * deterministic virtual address for slot idx in the kstack region, and
- * stores the virtual pointer and physical base in t->kstack / t->kstack_phys.
- *
- * The page immediately below t->kstack (the guard page) is not mapped.
- * Any access to it from an overflowing stack will fault cleanly.
- *
- * Returns 0 on success, -1 on PMM exhaustion or mapping failure.
+ * Task creation/teardown lives in task_lifecycle.c.
+ * Kernel stack management lives in kstack.c.
  */
-static int kstack_alloc(struct task *t, int idx) {
-    uint64_t virt_base = KSTACK_VIRT_BASE + (uint64_t)idx * KSTACK_SLOT_SIZE;
-    uint64_t phys = pmm_alloc_pages(2);
-    if (phys == 0) return -1;
 
-    uint64_t virt_pg0 = virt_base + KSTACK_PAGE_SIZE;
-    uint64_t virt_pg1 = virt_base + KSTACK_PAGE_SIZE * 2;
-
-    if (paging_map_checked_in(kernel_cr3, virt_pg0, phys, PAGE_PRESENT | PAGE_WRITABLE) != 0 ||
-        paging_map_checked_in(kernel_cr3, virt_pg1, phys + KSTACK_PAGE_SIZE,
-                              PAGE_PRESENT | PAGE_WRITABLE) != 0) {
-        pmm_free_page(phys);
-        pmm_free_page(phys + KSTACK_PAGE_SIZE);
-        return -1;
-    }
-
-    t->kstack      = (uint8_t *)(uintptr_t)virt_pg0;
-    t->kstack_phys = phys;
-    return 0;
-}
-
-/*
- * kstack_free — unmap and release the kstack pages for task slot idx.
- *
- * paging_unmap_in issues an invlpg for each address, keeping the TLB
- * coherent on the current CPU.  Both physical pages are returned to PMM.
- * Fields are zeroed so a subsequent kstack_free on the same slot is a no-op.
- */
-static void kstack_free(struct task *t, int idx) {
-    if (!t->kstack || t->kstack_phys == 0) return;
-    uint64_t virt_base = KSTACK_VIRT_BASE + (uint64_t)idx * KSTACK_SLOT_SIZE;
-    paging_unmap_in(kernel_cr3, virt_base + KSTACK_PAGE_SIZE);
-    paging_unmap_in(kernel_cr3, virt_base + KSTACK_PAGE_SIZE * 2);
-    pmm_free_page(t->kstack_phys);
-    pmm_free_page(t->kstack_phys + KSTACK_PAGE_SIZE);
-    t->kstack      = 0;
-    t->kstack_phys = 0;
-}
-
-/* Initial FPU state captured at boot; copied into every new task so that
- * the first FXRSTOR always loads a valid, CPU-reset-equivalent image with
- * sane FCW (0x037F) and MXCSR (0x1F80). */
-static uint8_t initial_fpu_state[512] __attribute__((aligned(16)));
-
-static void task_init_fpu_state(struct task *t) {
-    uint8_t *dst = t->fpu_state;
-    const uint8_t *src = initial_fpu_state;
-    for (uint32_t i = 0; i < 512; i++) dst[i] = src[i];
-}
-
-/* Current scheduler semantics:
- * - Runnable tasks are time-sliced by IRQ0.
- * - When the current task exhausts its quantum, IRQ exit can switch tasks.
- * - Tasks may also block explicitly (IPC/IRQ/sleep) and yield cooperatively.
- * This is a small timer-driven scheduler, not cooperative-only anymore. */
-static volatile uint64_t scheduler_ticks = 0;
-
-/* Idle task — runs when no other task is runnable */
-static void idle_task(void) {
-    for (;;) __asm__ volatile ("hlt");
-}
-
-static void free_user_stack_pages(struct task *t) {
-    if (!t || t->ustack_phys == 0 || t->user_stack_pages == 0) return;
-    for (uint32_t pg = 0; pg < t->user_stack_pages; pg++) {
-        pmm_free_page(t->ustack_phys + (uint64_t)pg * 4096ULL);
-    }
-}
-
-static void task_reset_slot(struct task *t) {
-    if (!t) return;
-    int idx = (int)(t - tasks);
-    /* Free the kstack first — kstack_free reads t->kstack and t->kstack_phys.
-     * These fields must be read before the struct is zeroed below. */
-    kstack_free(t, idx);
-    uint8_t *raw = (uint8_t *)t;
-    for (uint32_t i = 0; i < sizeof(*t); i++) raw[i] = 0;
-    t->state = TASK_DEAD;
-    t->ring  = TASK_RING0;
-    task_rsp[idx] = 0;
-}
-
-static void unlink_task(struct task *t) {
-    if (!t || !task_list_head) return;
-
-    /* Single-node circular list: t is the only element. */
-    if (task_list_head == t && t->next == t) {
-        task_list_head = 0;
-        t->next = 0;
-        return;
-    }
-
-    /* Find the predecessor (node whose ->next == t).
-     * This correctly handles head removal (predecessor is the tail)
-     * and non-head removal (predecessor is an interior node). */
-    struct task *pred = task_list_head;
-    do {
-        if (pred->next == t) {
-            pred->next = t->next;
-            if (task_list_head == t)
-                task_list_head = t->next;
-            t->next = 0;
-            return;
-        }
-        pred = pred->next;
-    } while (pred && pred != task_list_head);
-
-    /* t not found in list — no-op (safe, no corruption). */
-}
-
-static void task_cancel_blocked_waits(struct task *t) {
-    if (!t) return;
-
-    /* Teardown must remove blocked wait registrations before the task slot is
-     * reset; otherwise KChannel/KNotification/futex can retain stale task
-     * pointers outside the process handle table lifecycle. */
-    kchannel_cancel_waiter(t);
-    knotification_cancel_waiter(t);
-    futex_cancel_waiter(t);
-}
-
-static void reap_dead_task_off_cpu(struct task *t) {
-    if (!t || t->state != TASK_DEAD) return;
-
-    struct KProcess *proc = t->process;
-    /* Process-level cleanup only when this was the last thread.
-     * thread_count was decremented in task_exit_current before TASK_DEAD was set,
-     * so 0 here means no other threads are alive. */
-    int is_last = proc && (proc->thread_count == 0);
-
-    if (is_last) {
-        kprocess_reap_address_space(proc);
-    }
-
-    unlink_task(t);
-    task_reset_slot(t);
-
-    if (is_last) {
-        kprocess_free(proc);
-    }
-}
-
-static void reap_pending_dead_task(void) {
-    if (!pending_reap_task || pending_reap_task == current_task) return;
-
-    struct task *t = pending_reap_task;
-    pending_reap_task = 0;
-    reap_dead_task_off_cpu(t);
-}
-
-
-
-static void setup_initial_context(struct task *t, void (*entry)(void)) {
-    int idx = (int)(t - tasks);
-
-    uint64_t stack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
-    stack_top &= ~0xFULL;
-
-    /* Layout inicial para entrar con ret:
-     * [rsp + 0] = entry
-     * [rsp + 8] = return address dummy
-     */
-    stack_top -= 16;
-    ((uint64_t *)stack_top)[0] = (uint64_t)(uintptr_t)entry;
-    ((uint64_t *)stack_top)[1] = 0;
-
-    task_rsp[idx] = stack_top;
-
-    t->ctx.r15    = 0;
-    t->ctx.r14    = 0;
-    t->ctx.r13    = 0;
-    t->ctx.r12    = 0;
-    t->ctx.rbx    = 0;
-    t->ctx.rbp    = 0;
-    t->ctx.rip    = (uint64_t)(uintptr_t)entry;
-    t->ctx.rflags = 0x202ULL;  /* IF=1, reserved bit 1 — interrupts enabled */
-}
-
-
-
-void task_init(void)
-{
-    /* Capture the CPU's current FPU state as a template for all new tasks.
-     * At this point (early boot, before any user code runs) the FPU holds
-     * its hardware-reset defaults: FCW=0x037F, MXCSR=0x1F80. */
-    __asm__ volatile ("fxsaveq (%0)" : : "r"(initial_fpu_state) : "memory");
-
-    kernel_cr3 = pml4_get_current();
-
-    /* BSS zero-init means all task slots start with kstack=0/kstack_phys=0,
-     * so the kstack_free calls inside task_reset_slot are no-ops here. */
-    for (int i = 0; i < TASK_MAX; i++) {
-        task_reset_slot(&tasks[i]);
-    }
-
-    struct task *idle = &tasks[0];
-    idle->id    = next_id++;
-    idle->state = TASK_RUNNING;
-    idle->next  = idle;
-
-    /* Allocate the idle task's kernel stack from the guarded kstack region.
-     * kernel_cr3 is set above, so paging_map_checked_in is now safe to call. */
-    if (kstack_alloc(idle, 0) != 0)
-        kstack_panic("cannot allocate idle task kstack");
-
-    setup_initial_context(idle, idle_task);
-    task_init_fpu_state(idle);
-
-    task_list_head = idle;
-    current_task   = idle;
-}
-
-struct task *task_create(void (*entry)(void)) {
-    struct task *t = 0;
-    int idx = -1;
-    for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD) {
-            t = &tasks[i];
-            idx = i;
-            break;
-        }
-    }
-    if (!t) return 0;
-
-    task_reset_slot(t);
-
-    if (kstack_alloc(t, idx) != 0) return 0;
-
-    task_init_fpu_state(t);
-    t->id         = next_id++;
-    t->state      = TASK_READY;
-    t->time_slice = TASK_DEFAULT_SLICE;
-    t->ticks_left = TASK_DEFAULT_SLICE;
-
-    setup_initial_context(t, entry);
-
-    struct task *tail = task_list_head;
-    while (tail->next != task_list_head)
-        tail = tail->next;
-    tail->next = t;
-    t->next    = task_list_head;
-
-    return t;
-}
-
-
-
-
-
-
-/* Bootstrap contract for spawned ring-3 tasks:
- *   - arg0 is delivered in RBX on first user entry
- *   - a legacy mirror is also written at USER_STACK_TOP-8 during transition
- */
-void task_set_bootstrap_arg0(struct task *t, uint64_t arg0) {
-    if (!t || t->ring != TASK_RING3 || !t->process || !t->process->cr3) return;
-    t->ctx.rbx = arg0;
-    /* Write via the physmap window (kernel-only pages, no PAGE_USER) so SMAP
-     * never fires.  paging_write_u64_in writes to a USER-flagged virtual page
-     * which SMAP blocks after paging_init() enables CR4.SMAP. */
-    if (t->ustack_phys != 0) {
-        uint64_t *kptr = (uint64_t *)(uintptr_t)PHYS_TO_VIRT(
-                             t->ustack_phys + USER_STACK_SIZE - 8);
-        *kptr = arg0;
-    }
-}
-
-static void free_phys_pages_range(uint64_t base_phys, uint32_t page_count) {
-    if (base_phys == 0) return;
-    for (uint32_t pg = 0; pg < page_count; pg++)
-        pmm_free_page(base_phys + (uint64_t)pg * 4096ULL);
-}
-
-static int user_entry_image_offset(uint64_t entry, uint64_t *out_offset) {
-    uint64_t text_start = (uint64_t)(uintptr_t)&__text_start;
-    uint64_t text_end   = (uint64_t)(uintptr_t)&__text_end;
-    uint64_t text_size;
-    uint64_t text_offset_start;
-    uint64_t text_offset_end;
-    uint64_t image_offset;
-
-    if (!out_offset || text_end < text_start) return 0;
-    text_size = text_end - text_start;
-    text_offset_start = text_start - USER_IMAGE_SOURCE_BASE;
-    text_offset_end   = text_offset_start + text_size;
-
-    if (entry >= USER_IMAGE_SOURCE_BASE && entry < USER_IMAGE_SOURCE_BASE + USER_IMAGE_MAP_SIZE) {
-        image_offset = entry - USER_IMAGE_SOURCE_BASE;
-    } else if (entry >= USER_TEXT_BASE && entry < USER_TEXT_BASE + USER_IMAGE_MAP_SIZE) {
-        image_offset = entry - USER_TEXT_BASE;
-    } else {
-        return 0;
-    }
-
-    if (image_offset < text_offset_start || image_offset >= text_offset_end) return 0;
-    *out_offset = image_offset;
-    return 1;
-}
-
-/* Internal: create a ring-3 task, optionally passing arg0 via the bootstrap
- * contract above. */
-static struct task *task_create_user_impl(uint64_t entry, uint64_t arg0) {
-    struct task *t = 0;
-    int idx = -1;
-    struct KProcess *proc = 0;
-    uint64_t ustack_phys = 0;
-    uint64_t entry_offset = 0;
-    uint32_t ustack_pages = (uint32_t)(USER_STACK_SIZE / 4096ULL);
-    for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD) {
-            t = &tasks[i];
-            idx = i;
-            break;
-        }
-    }
-    if (!t) return 0;
-
-    task_reset_slot(t);
-
-    if (kstack_alloc(t, idx) != 0) return 0;
-
-    task_init_fpu_state(t);
-    t->id           = next_id++;
-    t->state        = TASK_READY;
-    t->ring         = TASK_RING3;
-    t->time_slice   = TASK_DEFAULT_SLICE;
-    t->ticks_left   = TASK_DEFAULT_SLICE;
-
-    proc = kprocess_alloc();
-    if (!proc) goto fail;
-
-    proc->cr3 = paging_create_user_space();
-    if (proc->cr3 == 0) goto fail;
-
-    /* Map the entire shared user image slice preserving original offsets so
-     * RIP-relative references into .rodata keep working after relocation. */
-    for (uint64_t off = 0; off < USER_IMAGE_MAP_SIZE; off += 0x1000ULL) {
-        uint64_t vp = USER_TEXT_BASE + off;
-        uint64_t pp = USER_IMAGE_SOURCE_BASE + off;
-        if (paging_map_checked_in(proc->cr3, vp, pp, PAGE_PRESENT | PAGE_USER) != 0)
-            goto fail;
-    }
-    if (!user_entry_image_offset(entry, &entry_offset)) goto fail;
-    uint64_t user_entry = USER_TEXT_BASE + entry_offset;
-    t->user_entry = user_entry;
-
-    /* allocate and map user stack at USER_STACK_TOP */
-    ustack_phys = pmm_alloc_pages(ustack_pages);
-    if (ustack_phys == 0) goto fail;
-
-    for (uint32_t pg = 0; pg < ustack_pages; pg++) {
-        uint64_t virt = USER_STACK_BASE + (uint64_t)pg * 4096ULL;
-        uint64_t phys = ustack_phys     + (uint64_t)pg * 4096ULL;
-        if (paging_map_checked_in(proc->cr3, virt, phys,
-                                  PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) != 0)
-            goto fail;
-    }
-
-    t->user_stack_base  = USER_STACK_BASE;
-    t->user_stack_top   = USER_STACK_TOP;
-    t->user_stack_pages = ustack_pages;
-    t->ustack_phys      = ustack_phys;          /* physical base — identity-mapped */
-    t->user_rsp         = USER_STACK_TOP - 8;   /* points to arg0 */
-    t->process          = proc;
-    proc->thread_count  = 1;
-
-    /* kernel stack: iretq frame for user_entry_trampoline */
-    uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
-    kstack_top &= ~0xFULL;
-
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;
-    kstack_top -= 8; *(uint64_t *)kstack_top = t->user_rsp;
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202;
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;
-    kstack_top -= 8; *(uint64_t *)kstack_top = user_entry;
-    kstack_top -= 8; *(uint64_t *)kstack_top = (uint64_t)(uintptr_t)user_entry_trampoline;
-
-    task_rsp[idx] = kstack_top;
-
-    t->ctx.r15    = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
-    t->ctx.rbx    = 0; t->ctx.rbp = 0;
-    t->ctx.rip    = (uint64_t)(uintptr_t)user_entry_trampoline;
-    t->ctx.rflags = 0x202ULL;
-    task_set_bootstrap_arg0(t, arg0);
-
-    /* Commit point: only publish the task after slot, process, private
-     * address space, stack, and bootstrap state are all coherent. */
-    struct task *tail = task_list_head;
-    while (tail->next != task_list_head)
-        tail = tail->next;
-    tail->next = t;
-    t->next    = task_list_head;
-
-    return t;
-
-fail:
-    if (t)
-        t->process = 0;
-    free_phys_pages_range(ustack_phys, ustack_pages);
-    if (proc) {
-        kprocess_reap_address_space(proc);
-        kprocess_free(proc);
-    }
-    if (t)
-        task_reset_slot(t);
-    return 0;
-}
-
-struct task *task_create_user(uint64_t entry) {
-    return task_create_user_impl(entry, 0);
-}
-
-/*
- * task_spawn_elf — create a ring-3 task from an ELF-loaded image.
- *
- * Unlike task_create_user_impl, this path:
- *   - Does NOT create a new CR3 — the ELF loader already created one.
- *   - Does NOT map any shared kernel text slice.
- *   - Uses img->entry_vaddr (ELF e_entry) directly as the user entry point.
- *   - Records ELF segment info into the KProcess for teardown cleanup.
- *
- * Ownership transfer:
- *   On success the KProcess owns img->cr3_phys and img->segs[].
- *   The caller must NOT call elf_loader_free_image after a successful return.
- *   On failure this function does NOT call elf_loader_free_image; the caller
- *   must do so.
- */
-struct task *task_spawn_elf(iris_elf_image_t *img, uint64_t arg0) {
-    struct task    *t = 0;
-    int idx = -1;
-    struct KProcess *proc = 0;
-    uint64_t ustack_phys = 0;
-    uint32_t ustack_pages = (uint32_t)(USER_STACK_SIZE / 4096ULL);
-
-    if (!img || img->cr3_phys == 0 || img->seg_count == 0) return 0;
-
-    /* Find a free task slot */
-    for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD) { t = &tasks[i]; idx = i; break; }
-    }
-    if (!t) return 0;
-
-    task_reset_slot(t);
-    if (kstack_alloc(t, idx) != 0) return 0;
-    task_init_fpu_state(t);
-    t->id         = next_id++;
-    t->state      = TASK_READY;
-    t->ring       = TASK_RING3;
-    t->time_slice = TASK_DEFAULT_SLICE;
-    t->ticks_left = TASK_DEFAULT_SLICE;
-
-    proc = kprocess_alloc();
-    if (!proc) goto fail;
-
-    /* Transfer CR3 ownership from the ELF image to the process. */
-    proc->cr3 = img->cr3_phys;
-
-    /* Allocate and map the user stack */
-    ustack_phys = pmm_alloc_pages(ustack_pages);
-    if (ustack_phys == 0) goto fail;
-
-    for (uint32_t pg = 0; pg < ustack_pages; pg++) {
-        uint64_t virt = USER_STACK_BASE + (uint64_t)pg * 4096ULL;
-        uint64_t phys = ustack_phys     + (uint64_t)pg * 4096ULL;
-        if (paging_map_checked_in(proc->cr3, virt, phys,
-                                  PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) != 0)
-            goto fail;
-    }
-
-    t->user_stack_base  = USER_STACK_BASE;
-    t->user_stack_top   = USER_STACK_TOP;
-    t->user_stack_pages = ustack_pages;
-    t->ustack_phys      = ustack_phys;
-    t->user_rsp         = USER_STACK_TOP - 8;
-    t->user_entry       = img->entry_vaddr;
-    t->process          = proc;
-    proc->thread_count  = 1;
-
-    /* Copy ELF segment info into the process for teardown cleanup */
-    proc->elf_seg_count = img->seg_count;
-    for (uint32_t i = 0; i < img->seg_count; i++) {
-        proc->elf_segs[i].phys_base  = img->segs[i].phys_base;
-        proc->elf_segs[i].page_count = img->segs[i].page_count;
-    }
-    /* Zero the original img segs so elf_loader_free_image (if called by
-     * mistake) does not double-free.  CR3 is now owned by proc. */
-    img->cr3_phys    = 0;
-    img->seg_count   = 0;
-
-    /* Build the iretq frame on the kernel stack */
-    uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
-    kstack_top &= ~0xFULL;
-
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;              /* ss */
-    kstack_top -= 8; *(uint64_t *)kstack_top = t->user_rsp;       /* rsp */
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202;            /* rflags */
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;              /* cs */
-    kstack_top -= 8; *(uint64_t *)kstack_top = img->entry_vaddr;  /* rip */
-    kstack_top -= 8; *(uint64_t *)kstack_top =
-        (uint64_t)(uintptr_t)user_entry_trampoline;
-
-    task_rsp[idx] = kstack_top;
-
-    t->ctx.r15    = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
-    t->ctx.rbx    = 0; t->ctx.rbp = 0;
-    t->ctx.rip    = (uint64_t)(uintptr_t)user_entry_trampoline;
-    t->ctx.rflags = 0x202ULL;
-    task_set_bootstrap_arg0(t, arg0);
-
-    /* Commit: link into the run queue */
-    struct task *tail = task_list_head;
-    while (tail->next != task_list_head)
-        tail = tail->next;
-    tail->next = t;
-    t->next    = task_list_head;
-
-    return t;
-
-fail:
-    if (t)    t->process = 0;
-    free_phys_pages_range(ustack_phys, ustack_pages);
-    if (proc) {
-        /* proc->cr3 may already point to img->cr3_phys; clear it so
-         * kprocess_reap_address_space does not double-destroy the CR3
-         * (the caller is responsible for calling elf_loader_free_image). */
-        if (proc->cr3 == img->cr3_phys)
-            proc->cr3 = 0;
-        kprocess_free(proc);
-    }
-    if (t) task_reset_slot(t);
-    return 0;
-}
-
-/* Spawn a ring-3 process with arg0 installed via the bootstrap contract. */
-struct task *task_spawn_user(uint64_t entry, uint64_t arg0) {
-    return task_create_user_impl(entry, arg0);
-}
-
-void task_abort_spawned_user(struct task *t) {
-    if (!t) return;
-
-    struct KProcess *proc = t->process;
-    if (proc) {
-        if (proc->thread_count > 0) proc->thread_count--;
-        kprocess_teardown(proc, t);
-    }
-
-    task_cancel_blocked_waits(t);
-    free_user_stack_pages(t);
-    if (proc) {
-        kprocess_reap_address_space(proc);
-    }
-
-    unlink_task(t);
-    task_reset_slot(t);
-
-    if (proc) {
-        kprocess_free(proc);
-    }
-}
-
-
-
-
-
-/*
- * task_thread_create — create a new thread inside an existing process.
- *
- * Shares proc's CR3 and handle_table.  The caller supplies the user stack
- * pointer; no stack pages are allocated here.  arg is delivered in RBX
- * on first execution (same convention as the process bootstrap arg0).
- *
- * On success increments proc->thread_count and returns the new task.
- * On failure returns NULL with no side effects.
- */
-struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
-                                uint64_t user_rsp, uint64_t arg) {
-    if (!proc || !proc->cr3 || proc->teardown_complete) return 0;
-
-    struct task *t = 0;
-    int idx = -1;
-    for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD) { t = &tasks[i]; idx = i; break; }
-    }
-    if (!t) return 0;
-
-    task_reset_slot(t);
-    if (kstack_alloc(t, idx) != 0) return 0;
-    task_init_fpu_state(t);
-    t->id         = next_id++;
-    t->state      = TASK_READY;
-    t->ring       = TASK_RING3;
-    t->time_slice = TASK_DEFAULT_SLICE;
-    t->ticks_left = TASK_DEFAULT_SLICE;
-    t->user_entry = entry_vaddr;
-    t->user_rsp   = user_rsp;
-    t->process    = proc;
-    /* user_stack_pages = 0: caller owns the stack; free_user_stack_pages is no-op */
-
-    uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
-    kstack_top &= ~0xFULL;
-
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;              /* ss */
-    kstack_top -= 8; *(uint64_t *)kstack_top = user_rsp;          /* rsp */
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202;            /* rflags */
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;              /* cs */
-    kstack_top -= 8; *(uint64_t *)kstack_top = entry_vaddr;       /* rip */
-    kstack_top -= 8; *(uint64_t *)kstack_top =
-        (uint64_t)(uintptr_t)user_entry_trampoline;
-
-    task_rsp[idx] = kstack_top;
-
-    t->ctx.r15    = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
-    t->ctx.rbp    = 0;
-    t->ctx.rbx    = arg;  /* thread arg delivered in RBX */
-    t->ctx.rip    = (uint64_t)(uintptr_t)user_entry_trampoline;
-    t->ctx.rflags = 0x202ULL;
-
-    proc->thread_count++;
-
-    struct task *tail = task_list_head;
-    while (tail->next != task_list_head)
-        tail = tail->next;
-    tail->next = t;
-    t->next    = task_list_head;
-
-    return t;
-}
-
-struct task *task_current(void) {
-    return current_task;
-}
-
-void task_kill_external(struct task *t) {
-    if (!t || t == current_task) return;
-    if (t->state == TASK_DEAD) return;  /* idempotent */
-
-    struct KProcess *proc = t->process;
-
-    task_cancel_blocked_waits(t);
-    free_user_stack_pages(t);
-
-    int do_teardown = 0;
-    if (proc && proc->thread_count > 0) {
-        proc->thread_count--;
-        if (proc->thread_count == 0) do_teardown = 1;
-    }
-
-    if (do_teardown) {
-        kprocess_teardown(proc, t);
-        /* Caller runs on a different CR3, so address-space reap is safe here. */
-        kprocess_reap_address_space(proc);
-    }
-
-    unlink_task(t);
-    task_reset_slot(t);
-
-    if (do_teardown) {
-        kprocess_free(proc);
-    }
-}
-
-void task_exit_current(void) {
-    struct task *t = task_current();
-    if (!t) return;
-
-    struct KProcess *proc = t->process;
-
-    task_cancel_blocked_waits(t);
-    free_user_stack_pages(t);  /* no-op if user_stack_pages == 0 (extra threads) */
-
-    /* Decrement thread count; only tear down the process when last thread exits. */
-    if (proc && proc->thread_count > 0) {
-        proc->thread_count--;
-        if (proc->thread_count == 0)
-            kprocess_teardown(proc, t);
-    }
-
-    t->state = TASK_DEAD;
-    for (;;) task_yield();
-}
+volatile uint64_t scheduler_ticks = 0;
+/* wall_ticks is incremented only by the real PIT ISR path (scheduler_tick).
+ * Unlike scheduler_ticks it is never fast-forwarded by the idle-loop clock
+ * workaround, so it reflects real elapsed time and is used by SYS_CLOCK_GET. */
+static volatile uint64_t wall_ticks = 0;
 
 void task_yield(void) {
-    /* Disable IRQs for the duration of the scheduler critical section.
-     * This prevents IRQ0 from firing inside task_yield while we are
-     * modifying scheduler state (current_task, task states, run queue).
-     * RFLAGS is saved and restored so each task's IF state is preserved:
-     * tasks coming from syscall context resume with IF=0 (SFMASK masked it);
-     * tasks coming from kernel paths with IF=1 resume with IF=1.
-     * context_switch itself restores the incoming task's RFLAGS, and if an
-     * IRQ fires after that popfq (on the correct new kernel stack), the IRQ
-     * runs harmlessly and returns via iretq before context_switch's ret. */
+    /* Save and clear IF for the scheduler critical section; restore on exit.
+     * Each task's IF state is preserved across context switches via RFLAGS
+     * save/restore in context_switch. */
     uint64_t saved_flags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(saved_flags) : : "memory");
 
     reap_pending_dead_task();
 
-    struct task *old = current_task;
+    struct task *old  = current_task;
     struct task *idle = task_list_head;
     struct task *candidate = old->next;
     struct task *chosen = 0;
 
-    /* Prefer any runnable task that is NOT the idle task */
     for (int i = 0; i < TASK_MAX; i++) {
         if (candidate != idle && task_is_runnable(candidate->state)) {
             chosen = candidate;
@@ -779,13 +40,52 @@ void task_yield(void) {
         candidate = candidate->next;
     }
 
-    /* No normal runnable task found; fall back to idle */
     if (!chosen) {
-        if (idle != old && task_is_runnable(idle->state)) {
-            chosen = idle;
-        } else {
-            __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
-            return;
+        /* No non-idle runnable task.  When idle is current, fast-forward
+         * scheduler_ticks to the nearest wake_tick deadline so timed-out
+         * tasks become READY even when the timer ISR does not fire (e.g.,
+         * QEMU TCG: no IRQs delivered during ring-0 spin). */
+        if (old == idle) {
+            uint64_t min_wake = UINT64_MAX;
+            for (int j = 0; j < TASK_MAX; j++) {
+                if (tasks[j].wake_tick != 0 && tasks[j].wake_tick < min_wake)
+                    min_wake = tasks[j].wake_tick;
+            }
+            if (min_wake != UINT64_MAX && min_wake > scheduler_ticks)
+                scheduler_ticks = min_wake;
+            for (int j = 0; j < TASK_MAX; j++) {
+                if (tasks[j].state == TASK_SLEEPING &&
+                    tasks[j].wake_tick != 0 &&
+                    tasks[j].wake_tick <= scheduler_ticks) {
+                    tasks[j].state     = TASK_READY;
+                    tasks[j].wake_tick = 0;
+                }
+                if ((tasks[j].state == TASK_BLOCKED_IPC ||
+                     tasks[j].state == TASK_BLOCKED_IRQ) &&
+                    tasks[j].wake_tick != 0 &&
+                    tasks[j].wake_tick <= scheduler_ticks) {
+                    tasks[j].timed_out = 1;
+                    tasks[j].state     = TASK_READY;
+                    tasks[j].wake_tick = 0;
+                }
+            }
+            /* Re-scan for newly runnable tasks after the fast-forward. */
+            candidate = old->next;
+            for (int i = 0; i < TASK_MAX; i++) {
+                if (candidate != idle && task_is_runnable(candidate->state)) {
+                    chosen = candidate;
+                    break;
+                }
+                candidate = candidate->next;
+            }
+        }
+        if (!chosen) {
+            if (idle != old && task_is_runnable(idle->state)) {
+                chosen = idle;
+            } else {
+                __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
+                return;
+            }
         }
     }
 
@@ -821,22 +121,8 @@ void task_yield(void) {
                    &task_rsp[old_idx], task_rsp[new_idx],
                    old->fpu_state, chosen->fpu_state);
 
-    /* Restore the caller's original interrupt flag after resuming. */
     __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
 }
-
-void task_kill_process(struct KProcess *proc) {
-    if (!proc) return;
-    /* Iterate the full task pool; kill every live task that belongs to proc.
-     * We must not stop after the first match because with D2 multi-threading
-     * a process may have several live threads. */
-    for (int i = 0; i < TASK_MAX; i++) {
-        if (tasks[i].state != TASK_DEAD && tasks[i].process == proc)
-            task_kill_external(&tasks[i]);
-    }
-}
-
-/* ── scheduler ────────────────────────────────────────────────────── */
 
 void scheduler_init(void) {
     task_init();
@@ -846,9 +132,23 @@ void scheduler_tick(void) {
     reap_pending_dead_task();
 
     scheduler_ticks++;
+    wall_ticks++;
     for (int i = 0; i < TASK_MAX; i++) {
         if (tasks[i].state == TASK_SLEEPING && tasks[i].wake_tick <= scheduler_ticks) {
-            tasks[i].state = TASK_READY;
+            tasks[i].state     = TASK_READY;
+            tasks[i].wake_tick = 0;
+        }
+        /* Timed block expired (channel or notification).
+         * spinlock_lock uses CAS without CLI — calling kchannel_cancel_waiter /
+         * knotification_cancel_waiter here would deadlock if any task holds
+         * live_lock at this IRQ boundary.  We only set the signal; the woken
+         * task removes itself from the waiter list in task context. */
+        if ((tasks[i].state == TASK_BLOCKED_IPC ||
+             tasks[i].state == TASK_BLOCKED_IRQ) &&
+            tasks[i].wake_tick != 0 &&
+            tasks[i].wake_tick <= scheduler_ticks) {
+            tasks[i].timed_out = 1;
+            tasks[i].state     = TASK_READY;
             tasks[i].wake_tick = 0;
         }
     }
@@ -870,24 +170,11 @@ void scheduler_sleep_current(uint64_t ticks) {
     t->wake_tick = scheduler_ticks + ticks;
     if (t->wake_tick < scheduler_ticks)
         t->wake_tick = UINT64_MAX;
-    t->state = TASK_SLEEPING;
+    t->state        = TASK_SLEEPING;
     t->need_resched = 1;
     task_yield();
 }
 
-/* ── Diagnostics accessors ─────────────────────────────────────────── */
-
-/*
- * sched_live_task_count: count task slots that are NOT in TASK_DEAD state.
- *
- * Iterates the static tasks[] array.  All slots are reset to TASK_DEAD by
- * task_init() and remain TASK_DEAD until allocated; the idle task starts in
- * TASK_RUNNING.  The count therefore reflects all slots the scheduler treats
- * as active (runnable, blocked, sleeping, or running).
- *
- * Called from sys_diag_snapshot; no locks held; safe because the task array
- * is always valid and individual state reads are single-word loads.
- */
 uint32_t sched_live_task_count(void) {
     uint32_t count = 0;
     for (int i = 0; i < TASK_MAX; i++) {
@@ -897,13 +184,10 @@ uint32_t sched_live_task_count(void) {
     return count;
 }
 
-/*
- * sched_current_ticks: return the scheduler tick counter.
- *
- * The counter increments once per PIT tick (100 Hz by default) in
- * scheduler_tick().  The read is a simple volatile load; callers that need
- * monotonic delta semantics should read twice and subtract.
- */
 uint64_t sched_current_ticks(void) {
     return scheduler_ticks;
+}
+
+uint64_t sched_wall_ticks(void) {
+    return wall_ticks;
 }

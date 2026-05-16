@@ -8,7 +8,8 @@
 #define IRIS_BOOTSTRAP_SUPERVISOR_IMAGE "svcmgr"
 #define IRIS_SERVICE_IMAGE_KBD          "kbd"
 #define IRIS_SERVICE_IMAGE_VFS          "vfs"
-#define IRIS_SERVICE_RUNTIME_SLOT_COUNT 3u
+#define IRIS_SERVICE_IMAGE_SH           "sh"
+#define IRIS_SERVICE_RUNTIME_SLOT_COUNT 4u
 
 struct iris_service_catalog_entry {
     const char    *image_name;
@@ -25,6 +26,10 @@ struct iris_service_catalog_entry {
     iris_rights_t  client_reply_rights;
     uint16_t       ioport_base;
     uint16_t       ioport_count;
+    uint8_t        give_console; /* 1 = forward console channel during bootstrap */
+    uint8_t        give_kbd;     /* 1 = forward kbd service channel during bootstrap */
+    uint8_t        give_vfs;     /* 1 = forward vfs service+reply channels during bootstrap */
+    uint8_t        reserved[1];
 };
 
 static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
@@ -43,6 +48,7 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .client_reply_rights = RIGHT_READ,
         .ioport_base = 0x60u,
         .ioport_count = 5u,
+        .give_console = 0u,
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_VFS,
@@ -59,6 +65,26 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .client_reply_rights = RIGHT_READ | RIGHT_DUPLICATE,
         .ioport_base = 0u,
         .ioport_count = 0u,
+        .give_console = 1u,
+    },
+    {
+        .image_name = IRIS_SERVICE_IMAGE_SH,
+        .service_id = SVCMGR_SERVICE_SH,
+        .service_endpoint = SVCMGR_ENDPOINT_SH,
+        .reply_endpoint = SVCMGR_ENDPOINT_SH_REPLY,
+        .irq_num = 0xFFu,
+        .autostart = 1u,
+        .restart_on_exit = 0u,
+        .restart_limit = 0u,
+        .child_service_rights = RIGHT_READ,
+        .child_reply_rights = RIGHT_WRITE,
+        .client_service_rights = RIGHT_WRITE,
+        .client_reply_rights = RIGHT_READ,
+        .ioport_base = 0u,
+        .ioport_count = 0u,
+        .give_console = 1u,
+        .give_kbd = 1u,
+        .give_vfs = 1u,
     },
 };
 

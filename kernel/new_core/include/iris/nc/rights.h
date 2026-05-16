@@ -26,6 +26,7 @@ typedef uint32_t iris_rights_t;
  */
 
 static inline int rights_check(iris_rights_t rights, iris_rights_t required) {
+    if (required == RIGHT_NONE) return 0;
     return (rights & required) == required;
 }
 

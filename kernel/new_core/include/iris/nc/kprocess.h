@@ -6,7 +6,6 @@
 #include <iris/nc/handle_table.h>
 #include <iris/paging.h>
 #include <iris/task.h>
-#include <iris/elf_loader.h>
 #include <stdint.h>
 
 struct KVmo;
@@ -79,19 +78,6 @@ struct KProcess {
     uint32_t owned_notifications;
     uint32_t owned_vmos;
 
-    /*
-     * ELF segment tracking — populated by task_spawn_elf after a successful
-     * elf_loader_load.  kprocess_reap_address_space iterates these to free
-     * segment backing pages before destroying the page tables.
-     *
-     * For kernel-linked user tasks (task_spawn_user / task_create_user_impl)
-     * elf_seg_count == 0 and these fields are unused.
-     */
-    uint32_t elf_seg_count;
-    struct {
-        uint64_t phys_base;   /* physical base of segment pages */
-        uint32_t page_count;  /* number of 4 KiB pages */
-    } elf_segs[ELF_LOADER_MAX_LOAD_SEGS];
 };
 
 #define KPROCESS_POOL_SIZE 0u  /* no static pool — kpage-backed; 0 = unbounded allocator ceiling */

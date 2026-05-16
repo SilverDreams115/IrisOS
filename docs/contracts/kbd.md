@@ -54,7 +54,6 @@ Current replies/events:
 
 - `KBD_MSG_HELLO_REPLY`
 - `KBD_MSG_STATUS_REPLY`
-- `KBD_MSG_SUBSCRIBE_REPLY`
 - `KBD_MSG_SCANCODE_EVENT`
 
 ## `HELLO` contract
@@ -90,8 +89,10 @@ Current semantics:
 - only one subscriber is active at a time
 - a new subscription replaces the previous one
 - subsequent key events are forwarded as `KBD_MSG_SCANCODE_EVENT`
+- fire-and-forget: no reply is emitted on the shared `kbd.reply` channel
 
-Healthy path currently uses `init` as the subscriber.
+Healthy path currently lets `init` validate the path first; `sh` may also subscribe
+without racing on shared replies because `SUBSCRIBE` no longer produces one.
 
 ## Current invariants
 
