@@ -20,12 +20,12 @@
  *     iris_error_t values and must not introduce new generic -1 error returns
  *     outside explicitly transitional legacy paths.
  *
- * Surface status:
- *   - modern/conforming: already on the v1 error model
- *   - modern/non-conforming: modern surface still requiring ABI cleanup
- *   - transitional: compatibility-preserving legacy contract scheduled to
- *     converge later; do not expand this style
- *   - legacy: retired or kernel-internal only
+ * Surface status used in this header:
+ *   - live/conforming: current supported surface on the v1 error model
+ *   - live/transitional: current supported surface with compatibility notes
+ *   - retired: permanently reserved; returns IRIS_ERR_NOT_SUPPORTED
+ *
+ * Current exported syscall number surface: 0..67.
  */
 
 /* Syscall numbers */
@@ -59,11 +59,12 @@
                                * flags bit 0: MAP_WRITABLE  — map with PAGE_WRITABLE
                                * flags bit 1: MAP_EXEC      — map without PAGE_NX (executable)
                                * W^X enforced: bit 0 + bit 1 simultaneously → ERR_INVALID_ARG */
-/* SYS_SPAWN 18 retired in Phase 19 — permanently reserved, returns IRIS_ERR_NOT_SUPPORTED.
- * All healthy-path userland process creation must go through
- * SYS_INITRD_LOOKUP (41) + SYS_SPAWN_ELF (42). */
+/* SYS_SPAWN 18 retired in Phase 19 — permanently reserved, returns
+ * IRIS_ERR_NOT_SUPPORTED. Healthy-path process creation now uses the
+ * composable primitives rooted in SYS_INITRD_VMO / SYS_PROCESS_CREATE /
+ * SYS_VMO_MAP_INTO / SYS_THREAD_START / SYS_HANDLE_INSERT. */
 #define SYS_SPAWN        18
-/* modern/conforming: notification objects */
+/* live/conforming: notification objects */
 #define SYS_NOTIFY_CREATE 19 /* () → handle_id or negative iris_error_t */
 #define SYS_NOTIFY_SIGNAL 20 /* (handle, bits) → 0 or negative iris_error_t */
 #define SYS_NOTIFY_WAIT   21 /* (handle, *out_bits) → 0 or negative iris_error_t */
@@ -114,21 +115,10 @@
 #define PROC_EVENT_OFF_HANDLE     0u
 #define PROC_EVENT_OFF_COOKIE     4u
 #define PROC_EVENT_MSG_LEN        8u
-/*
- * Global kernel diagnostics snapshot — modern/conforming (iris_error_t).
- *
- * Atomically captures a compact snapshot of kernel-side state into the
- * caller-supplied user buffer.  Unrestricted: any task may call this.
- *
- * arg0 = user pointer to struct iris_diag_snapshot (IRIS_DIAG_SNAPSHOT_SIZE bytes).
- *        Must be writable user-space memory.
- * Returns 0 on success, negative iris_error_t on error.
- *
- * The snapshot covers: task count, KProcess pool usage, active IRQ routes,
- * and scheduler tick counter.  See iris/diag.h for the full layout.
- * For service-owned status (svcmgr/vfs/kbd), use the per-service STATUS
- * channels defined in svcmgr_proto.h / vfs_proto.h / kbd_proto.h.
- */
+/* SYS_DIAG_SNAPSHOT 30 retired Phase 51 — permanently reserved, returns
+ * IRIS_ERR_NOT_SUPPORTED.  Aggregated diagnostics are now provided entirely
+ * through SVCMGR_MSG_DIAG over IPC; the kernel no longer exposes a raw
+ * user-buffer snapshot path on the healthy boot surface. */
 #define SYS_DIAG_SNAPSHOT 30
 
 /*
@@ -208,8 +198,10 @@
 #define SYS_CAP_CREATE_IRQCAP  39
 #define SYS_CAP_CREATE_IOPORT  40
 
-/* SYS_INITRD_LOOKUP 41 retired Phase 29 — permanently reserved, returns ERR_NOT_SUPPORTED.
- * SYS_SPAWN_ELF    42 retired Phase 29 — permanently reserved, returns ERR_NOT_SUPPORTED.
+/* SYS_INITRD_LOOKUP 41 retired Phase 29 — permanently reserved, returns
+ * IRIS_ERR_NOT_SUPPORTED.
+ * SYS_SPAWN_ELF    42 retired Phase 29 — permanently reserved, returns
+ * IRIS_ERR_NOT_SUPPORTED.
  * ELF loading is now performed entirely in ring-3 via the new primitives below
  * (SYS_INITRD_VMO / SYS_PROCESS_CREATE / SYS_VMO_MAP_INTO / SYS_THREAD_START /
  * SYS_HANDLE_INSERT). */
@@ -294,9 +286,11 @@
  *
  * SYS_CLOCK_GET() → uint64_t nanoseconds since boot, or negative iris_error_t.
  *   No arguments required.  Returns a monotonically increasing nanosecond
- *   timestamp derived from the scheduler tick counter (100 Hz; 10 ms resolution).
- *   Safe to call from any ring-3 context; does not block.
- *   Overflow wraps at UINT64_MAX (~584 years of uptime at 100 Hz).
+ *   timestamp.  When the TSC has been calibrated at boot (via PIT CH2 one-shot),
+ *   the value is derived from RDTSC and carries sub-millisecond resolution.
+ *   When calibration fails, the implementation falls back to the 100 Hz scheduler
+ *   tick counter (10 ms resolution).  Safe to call from any ring-3 context; does
+ *   not block.  Overflow wraps at UINT64_MAX.
  */
 #define SYS_CLOCK_GET       62
 
@@ -323,6 +317,18 @@
  *   success (same as SYS_NOTIFY_WAIT).  Requires RIGHT_WAIT on notify_h.
  */
 #define SYS_NOTIFY_WAIT_TIMEOUT 64
+
+/*
+ * Kernel boot-log drain — modern/conforming (iris_error_t).
+ *
+ * SYS_KLOG_DRAIN(buf_uptr, max_bytes) → bytes_copied or negative iris_error_t.
+ *   Copies up to max_bytes bytes from the kernel boot-log buffer into the
+ *   caller-supplied user buffer, then clears the buffer (destructive read).
+ *   Returns the number of bytes actually copied (0 if the buffer is empty).
+ *   Requires IRIS_BOOTCAP_KDEBUG.
+ *   max_bytes must be > 0 and ≤ KLOG_BUF_SIZE (4096).
+ */
+#define SYS_KLOG_DRAIN 65
 
 /*
  * I/O port sub-delegation — modern/conforming (iris_error_t).
@@ -398,8 +404,8 @@
 #define SYS_PROCESS_KILL  35  /* (proc_handle) → 0 or negative iris_error_t */
 
 /* SYS_SPAWN_SERVICE 31 retired in Phase 22 — permanently reserved and returns
- * IRIS_ERR_NOT_SUPPORTED. Named initrd spawning now uses
- * SYS_INITRD_LOOKUP + SYS_SPAWN_ELF. */
+ * IRIS_ERR_NOT_SUPPORTED. Named image loading is now a ring-3 concern layered
+ * over SYS_INITRD_VMO plus the process/VMO/thread primitives. */
 #define SYS_SPAWN_SERVICE   31
 
 #define SYS_IRQ_ROUTE_REGISTER 27 /* (irqcap_handle, chan_handle, proc_handle) → 0 or iris_error_t
@@ -421,7 +427,7 @@
 #define IRIS_BOOTCAP_NONE          0u
 #define IRIS_BOOTCAP_SPAWN_SERVICE (1u << 0)
 #define IRIS_BOOTCAP_HW_ACCESS     (1u << 1)
-#define IRIS_BOOTCAP_KDEBUG        (1u << 2)  /* may call SYS_POWEROFF */
+#define IRIS_BOOTCAP_KDEBUG        (1u << 2)  /* may call SYS_POWEROFF and SYS_KLOG_DRAIN */
 #define IRIS_BOOTCAP_FRAMEBUFFER   (1u << 3)  /* may call SYS_FRAMEBUFFER_VMO (one-shot) */
 
 /*
@@ -456,17 +462,39 @@
  * User-level exception handler registration — modern/conforming (iris_error_t).
  *
  * SYS_EXCEPTION_HANDLER(proc_h, chan_h) → 0 or negative iris_error_t
- *   proc_h: KOBJ_PROCESS with RIGHT_MANAGE; identifies the process to watch.
+ *   proc_h: KOBJ_PROCESS with RIGHT_MANAGE, or HANDLE_INVALID for own process.
  *   chan_h: KOBJ_CHANNEL with RIGHT_WRITE; receives FAULT_MSG_NOTIFY messages.
  *   Registers chan_h as the exception handler channel for the process.
  *   Replaces any previously registered handler.
  *   On a ring-3 hardware exception the kernel sends a FAULT_MSG_NOTIFY message
- *   (see iris/fault_proto.h) to the channel, then kills the faulting task.
- *   The handler can use the task_id and proc info to decide how to respond
- *   (e.g. log the fault and restart the service via SYS_SPAWN_ELF).
+ *   (see iris/fault_proto.h) and suspends the faulting task in TASK_BLOCKED_FAULT.
+ *   The handler must call SYS_EXCEPTION_RESUME to resume or kill the faulting task.
  *   If no handler is registered, faults kill the task silently (current behaviour).
  */
 #define SYS_EXCEPTION_HANDLER  47
+
+/*
+ * Exception resume — modern/conforming (iris_error_t).
+ *
+ * SYS_EXCEPTION_RESUME(proc_h, task_id, action) → 0 or negative iris_error_t
+ *   proc_h:  KOBJ_PROCESS with RIGHT_MANAGE, or HANDLE_INVALID for own process.
+ *   task_id: task ID from the FAULT_MSG_NOTIFY message.
+ *   action:  0 = resume the task at the faulting RIP; 1 = kill the task.
+ *   The target task must belong to the specified process and be in BLOCKED_FAULT.
+ *   Returns IRIS_ERR_NOT_FOUND if no matching suspended task exists.
+ */
+#define SYS_EXCEPTION_RESUME   66
+
+/*
+ * VMO size query — modern/conforming (iris_error_t).
+ *
+ * SYS_VMO_SIZE(vmo_h) → uint64_t byte size or negative iris_error_t
+ *   vmo_h: KOBJ_VMO with RIGHT_READ.
+ *   Returns the byte size of the VMO as it was created.
+ *   For initrd VMOs this is the exact size of the embedded binary.
+ *   For heap VMOs this is the value passed to SYS_VMO_CREATE.
+ */
+#define SYS_VMO_SIZE   67
 
 /*
  * Thread creation — modern/conforming (iris_error_t).

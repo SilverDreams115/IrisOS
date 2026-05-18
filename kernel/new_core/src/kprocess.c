@@ -117,10 +117,13 @@ static const struct KObjectOps kprocess_ops = {
 };
 
 struct KProcess *kprocess_alloc(void) {
+    if (atomic_load_explicit(&kprocess_live, memory_order_relaxed) >= KPROCESS_MAX_LIVE)
+        return 0;
     struct KProcess *p = kpage_alloc((uint32_t)sizeof(struct KProcess));
     if (!p) return 0;
     kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
     handle_table_init(&p->handle_table);
+    p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;
     atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
     return p;
 }
@@ -154,21 +157,34 @@ void kprocess_quota_release_vmo(struct KProcess *p) {
     kprocess_quota_release(&p->owned_vmos, p);
 }
 
+iris_error_t kprocess_quota_acquire_page(struct KProcess *p) {
+    if (!p) return IRIS_ERR_INVALID_ARG;
+    return kprocess_quota_acquire(&p->phys_pages_charged, p->phys_pages_limit, p);
+}
+
+void kprocess_quota_release_page(struct KProcess *p) {
+    kprocess_quota_release(&p->phys_pages_charged, p);
+}
+
 iris_error_t kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
                                  handle_id_t watched_handle, uint32_t cookie) {
     if (!p || !ch || watched_handle == HANDLE_INVALID) return IRIS_ERR_INVALID_ARG;
 
+    spinlock_lock(&p->base.lock);
     uint32_t slot = KPROCESS_EXIT_WATCH_MAX;
     for (uint32_t i = 0; i < KPROCESS_EXIT_WATCH_MAX; i++) {
         if (!p->exit_watches[i].armed) { slot = i; break; }
     }
-    if (slot == KPROCESS_EXIT_WATCH_MAX) return IRIS_ERR_TABLE_FULL;
-
+    if (slot == KPROCESS_EXIT_WATCH_MAX) {
+        spinlock_unlock(&p->base.lock);
+        return IRIS_ERR_TABLE_FULL;
+    }
     kobject_retain(&ch->base);
     p->exit_watches[slot].ch = ch;
     p->exit_watches[slot].watched_handle = watched_handle;
     p->exit_watches[slot].cookie = cookie;
     p->exit_watches[slot].armed = 1;
+    spinlock_unlock(&p->base.lock);
 
     if (!kprocess_is_alive(p)) {
         kprocess_emit_exit_watch(p);
@@ -209,21 +225,21 @@ iris_error_t kprocess_set_exception_handler(struct KProcess *p, struct KChannel 
     return IRIS_OK;
 }
 
-void kprocess_notify_fault(struct task *t, uint64_t vector,
-                            uint64_t error_code, uint64_t rip, uint64_t cr2) {
+int kprocess_notify_fault(struct task *t, uint64_t vector,
+                           uint64_t error_code, uint64_t rip, uint64_t cr2) {
     struct KChanMsg msg;
     struct KProcess *p;
     struct KChannel *ch;
     int i;
 
-    if (!t || !t->process) return;
+    if (!t || !t->process) return 0;
     p = t->process;
 
     spinlock_lock(&p->base.lock);
     ch = p->exception_chan;
     if (ch) kobject_retain(&ch->base);
     spinlock_unlock(&p->base.lock);
-    if (!ch) return;
+    if (!ch) return 0;
 
     for (i = 0; i < (int)sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
     msg.type = FAULT_MSG_NOTIFY;
@@ -246,6 +262,7 @@ void kprocess_notify_fault(struct task *t, uint64_t vector,
     msg.attached_rights = RIGHT_NONE;
     (void)kchannel_send(ch, &msg);
     kobject_release(&ch->base);
+    return 1;
 }
 
 iris_error_t kprocess_register_vmo_map(struct KProcess *p, uint64_t virt_base,
@@ -310,8 +327,13 @@ iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) 
         if (phys == 0) {
             uint8_t *kva;
             int k;
+            if (kprocess_quota_acquire_page(p) != IRIS_OK) {
+                spinlock_unlock(&m->vmo->base.lock);
+                return IRIS_ERR_NO_MEMORY;
+            }
             phys = pmm_alloc_page();
             if (!phys) {
+                kprocess_quota_release_page(p);
                 spinlock_unlock(&m->vmo->base.lock);
                 return IRIS_ERR_NO_MEMORY;
             }
@@ -323,6 +345,7 @@ iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) 
 
         if (paging_map_checked_in(p->cr3, page_base, phys, m->page_flags) != 0) {
             if (published && m->vmo->pages[page_idx] == phys) {
+                kprocess_quota_release_page(p);
                 pmm_free_page(phys);
                 m->vmo->pages[page_idx] = 0;
             }
@@ -335,6 +358,10 @@ iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) 
     return IRIS_ERR_NOT_FOUND;
 }
 
+/* Ordering: emit_exit_watch fires before handle_table_close_all so that
+ * watchers receive a handle ID that is still live in the sender's table.
+ * teardown_complete provides idempotency; this function is called from both
+ * task_exit_current (normal exit) and kprocess_destroy (fallback path). */
 void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     if (!p || p->teardown_complete) return;
 

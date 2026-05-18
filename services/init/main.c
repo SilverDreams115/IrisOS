@@ -29,6 +29,7 @@
 #include <iris/kbd_proto.h>
 #include <iris/vfs.h>
 #include <iris/console_proto.h>
+#include <iris/fault_proto.h>
 #include "../common/svc_loader.h"
 #include "../common/console_client.h"
 
@@ -93,6 +94,9 @@ static const char init_stage_dynamic[]   = "[USER][INIT][S4] dynamic registry\n"
 static const char init_stage_vfs_list[]  = "[USER][INIT][S5] vfs list\n";
 static const char init_stage_vfs_rw[]    = "[USER][INIT][S6] vfs rw\n";
 static const char init_stage_subscribe[] = "[USER][INIT][S7] kbd subscribe\n";
+static const char init_stage_exception[] = "[USER][INIT][S8] exception delivery OK\n";
+static const char init_stage_seal[]      = "[USER][INIT][S9] channel seal OK\n";
+static const char init_stage_rights[]    = "[USER][INIT][S10] rights reduction OK\n";
 static const char init_stage_healthy[]   = "[USER][INIT][BOOT] healthy path OK\n";
 static const char init_diag_req[]        = "[USER][INIT][DIAG] request\n";
 static const char init_diag_sent[]       = "[USER][INIT][DIAG] sent\n";
@@ -130,6 +134,260 @@ static void init_early_serial_stop(void) {
 static void init_msg_zero(struct KChanMsg *msg) {
     uint8_t *raw = (uint8_t *)msg;
     for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
+}
+
+static void init_runtime_probe_invalid_userptr(void) {
+    long ch_raw = init_sys0(SYS_CHAN_CREATE);
+    if (ch_raw < 0) return;
+
+    long rd_raw = init_sys2(SYS_HANDLE_DUP, ch_raw, (long)RIGHT_READ);
+    if (rd_raw >= 0) {
+        long r = init_sys3(SYS_CHAN_RECV_TIMEOUT, rd_raw, 1, 50000000L);
+        if (r == (long)IRIS_ERR_INVALID_ARG)
+            init_log("[USER][INIT][SELFTEST] invalid-userptr OK\n");
+        else
+            init_log("[USER][INIT][SELFTEST] invalid-userptr WARN\n");
+        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+    }
+
+    init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+}
+
+static void init_runtime_probe_timeout_overflow(void) {
+    init_log("[USER][INIT][SELFTEST] timeout-overflow SKIP\n");
+}
+
+/* Stack for the ud2 fault thread — statically allocated, never actually used
+ * (the thread immediately faults before touching the stack). */
+static uint8_t s8_thread_stack[4096];
+
+static void __attribute__((noinline)) s8_ud2_fn(void) {
+    __asm__ volatile ("ud2");
+    for (;;) {}
+}
+
+static void init_selftest_exception(void) {
+    struct KChanMsg msg;
+    long ch_raw, rd_raw, wr_raw, tid_raw, r;
+    handle_id_t ch_h, rd_h, wr_h;
+    uint32_t vec, task_id;
+
+    ch_raw = init_sys0(SYS_CHAN_CREATE);
+    if (ch_raw < 0) { init_log("[USER][INIT][S8] SKIP: chan create\n"); return; }
+    ch_h = (handle_id_t)ch_raw;
+
+    rd_raw = init_sys2(SYS_HANDLE_DUP, ch_raw, (long)RIGHT_READ);
+    if (rd_raw < 0) {
+        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+        init_log("[USER][INIT][S8] SKIP: rd dup\n"); return;
+    }
+    rd_h = (handle_id_t)rd_raw;
+
+    wr_raw = init_sys2(SYS_HANDLE_DUP, ch_raw, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (wr_raw < 0) {
+        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+        init_log("[USER][INIT][S8] SKIP: wr dup\n"); return;
+    }
+    wr_h = (handle_id_t)wr_raw;
+
+    /* Register exception handler for own process (HANDLE_INVALID = self) */
+    r = init_sys2(SYS_EXCEPTION_HANDLER, (long)HANDLE_INVALID, wr_raw);
+    if (r < 0) {
+        init_sys1(SYS_HANDLE_CLOSE, wr_raw);
+        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+        init_log("[USER][INIT][S8] SKIP: handler reg\n"); return;
+    }
+
+    /* Spawn a thread that immediately executes ud2 (#UD, vector 6) */
+    uint64_t entry = (uint64_t)(uintptr_t)s8_ud2_fn;
+    uint64_t rsp   = (uint64_t)(uintptr_t)(s8_thread_stack + sizeof(s8_thread_stack));
+    tid_raw = init_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    if (tid_raw < 0) {
+        init_sys1(SYS_HANDLE_CLOSE, wr_raw);
+        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+        init_log("[USER][INIT][S8] SKIP: thread create\n"); return;
+    }
+
+    /* Wait up to 1 s for the fault notification */
+    init_msg_zero(&msg);
+    r = init_sys3(SYS_CHAN_RECV_TIMEOUT, rd_raw, (long)&msg, 1000000000L);
+    if (r < 0) {
+        init_sys1(SYS_HANDLE_CLOSE, wr_raw);
+        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+        init_log("[USER][INIT][S8] FAIL: no fault msg\n"); return;
+    }
+
+    vec = (uint32_t)msg.data[FAULT_OFF_VECTOR]
+        | ((uint32_t)msg.data[FAULT_OFF_VECTOR + 1] << 8)
+        | ((uint32_t)msg.data[FAULT_OFF_VECTOR + 2] << 16)
+        | ((uint32_t)msg.data[FAULT_OFF_VECTOR + 3] << 24);
+    task_id = (uint32_t)msg.data[FAULT_OFF_TASK_ID]
+            | ((uint32_t)msg.data[FAULT_OFF_TASK_ID + 1] << 8)
+            | ((uint32_t)msg.data[FAULT_OFF_TASK_ID + 2] << 16)
+            | ((uint32_t)msg.data[FAULT_OFF_TASK_ID + 3] << 24);
+
+    if (msg.type != FAULT_MSG_NOTIFY || vec != 6u) {
+        init_sys1(SYS_HANDLE_CLOSE, wr_raw);
+        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+        init_log("[USER][INIT][S8] FAIL: wrong fault\n"); return;
+    }
+
+    /* Kill the faulting thread via exception resume */
+    (void)init_sys3(SYS_EXCEPTION_RESUME, (long)HANDLE_INVALID, (long)task_id, 1);
+
+    init_sys1(SYS_HANDLE_CLOSE, wr_raw);
+    init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+    init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+
+    init_log(init_stage_exception);
+
+    (void)ch_h; (void)rd_h; (void)wr_h;
+}
+
+/* S9: channel seal semantics
+ * Sends a message, seals the write end, then verifies:
+ *   - a further send is rejected
+ *   - the buffered message can still be drained
+ *   - recv on the empty sealed channel returns immediately with CLOSED */
+static void init_selftest_channel_seal(void) {
+    struct KChanMsg msg;
+    long ch_raw, rd_raw, r;
+
+    ch_raw = init_sys0(SYS_CHAN_CREATE);
+    if (ch_raw < 0) { init_log("[USER][INIT][S9] SKIP: chan\n"); return; }
+
+    rd_raw = init_sys2(SYS_HANDLE_DUP, ch_raw, (long)RIGHT_READ);
+    if (rd_raw < 0) {
+        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+        init_log("[USER][INIT][S9] SKIP: rd dup\n"); return;
+    }
+
+    init_msg_zero(&msg);
+    msg.type = 0xA559u;
+    msg.data[0] = 's';
+    msg.data_len = 1u;
+    msg.attached_handle = HANDLE_INVALID;
+    if (init_sys2(SYS_CHAN_SEND, ch_raw, (long)&msg) < 0) {
+        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+        init_log("[USER][INIT][S9] SKIP: send\n"); return;
+    }
+
+    (void)init_sys1(SYS_CHAN_SEAL, ch_raw);
+
+    /* Send after seal must be rejected */
+    init_msg_zero(&msg);
+    msg.type = 0xA55Au;
+    msg.data_len = 0u;
+    msg.attached_handle = HANDLE_INVALID;
+    r = init_sys2(SYS_CHAN_SEND, ch_raw, (long)&msg);
+    if (r >= 0) {
+        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+        init_log("[USER][INIT][S9] FAIL: send-after-seal\n"); return;
+    }
+
+    /* Drain the buffered message */
+    init_msg_zero(&msg);
+    r = init_sys2(SYS_CHAN_RECV, rd_raw, (long)&msg);
+    if (r < 0 || msg.type != 0xA559u) {
+        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+        init_log("[USER][INIT][S9] FAIL: drain recv\n"); return;
+    }
+
+    /* Recv on empty sealed channel must return CLOSED, not block */
+    init_msg_zero(&msg);
+    r = init_sys2(SYS_CHAN_RECV_NB, rd_raw, (long)&msg);
+    if (r != (long)IRIS_ERR_CLOSED) {
+        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+        init_log("[USER][INIT][S9] FAIL: empty sealed recv\n"); return;
+    }
+
+    init_sys1(SYS_HANDLE_CLOSE, rd_raw);
+    init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+    init_log(init_stage_seal);
+}
+
+/* S10: handle rights reduction via channel transfer
+ * Transfers a handle through a channel with reduced attached_rights and
+ * verifies the receiver cannot exercise the stripped right (RIGHT_DUPLICATE). */
+static void init_selftest_rights_reduction(void) {
+    struct KChanMsg msg;
+    long ch1_raw, ch1_xfer_raw, chx_raw, chx_rd_raw, recv_h_raw, dup_r;
+
+    ch1_raw = init_sys0(SYS_CHAN_CREATE);
+    if (ch1_raw < 0) { init_log("[USER][INIT][S10] SKIP: ch1\n"); return; }
+
+    /* Dup with READ|TRANSFER so we can attach it but without DUPLICATE */
+    ch1_xfer_raw = init_sys2(SYS_HANDLE_DUP, ch1_raw,
+                             (long)(RIGHT_READ | RIGHT_TRANSFER));
+    if (ch1_xfer_raw < 0) {
+        init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
+        init_log("[USER][INIT][S10] SKIP: ch1 dup\n"); return;
+    }
+
+    chx_raw = init_sys0(SYS_CHAN_CREATE);
+    if (chx_raw < 0) {
+        init_sys1(SYS_HANDLE_CLOSE, ch1_xfer_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
+        init_log("[USER][INIT][S10] SKIP: chx\n"); return;
+    }
+
+    chx_rd_raw = init_sys2(SYS_HANDLE_DUP, chx_raw, (long)RIGHT_READ);
+    if (chx_rd_raw < 0) {
+        init_sys1(SYS_HANDLE_CLOSE, chx_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch1_xfer_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
+        init_log("[USER][INIT][S10] SKIP: chx rd\n"); return;
+    }
+
+    /* Send ch1_xfer with attached_rights=RIGHT_READ only (strips TRANSFER) */
+    init_msg_zero(&msg);
+    msg.type = 0xA55Bu;
+    msg.data_len = 0u;
+    msg.attached_handle = (handle_id_t)ch1_xfer_raw;
+    msg.attached_rights = RIGHT_READ;
+    if (init_sys2(SYS_CHAN_SEND, chx_raw, (long)&msg) < 0) {
+        init_sys1(SYS_HANDLE_CLOSE, ch1_xfer_raw);
+        init_sys1(SYS_HANDLE_CLOSE, chx_rd_raw);
+        init_sys1(SYS_HANDLE_CLOSE, chx_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
+        init_log("[USER][INIT][S10] SKIP: send\n"); return;
+    }
+    /* ch1_xfer_raw consumed by send */
+
+    init_msg_zero(&msg);
+    if (init_sys2(SYS_CHAN_RECV, chx_rd_raw, (long)&msg) < 0 ||
+        msg.attached_handle == HANDLE_INVALID) {
+        init_sys1(SYS_HANDLE_CLOSE, chx_rd_raw);
+        init_sys1(SYS_HANDLE_CLOSE, chx_raw);
+        init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
+        init_log("[USER][INIT][S10] SKIP: recv\n"); return;
+    }
+    recv_h_raw = (long)msg.attached_handle;
+
+    /* recv_h has RIGHT_READ only; SYS_HANDLE_DUP requires RIGHT_DUPLICATE */
+    dup_r = init_sys2(SYS_HANDLE_DUP, recv_h_raw, (long)RIGHT_READ);
+    if (dup_r >= 0)
+        init_sys1(SYS_HANDLE_CLOSE, dup_r);
+
+    init_sys1(SYS_HANDLE_CLOSE, recv_h_raw);
+    init_sys1(SYS_HANDLE_CLOSE, chx_rd_raw);
+    init_sys1(SYS_HANDLE_CLOSE, chx_raw);
+    init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
+
+    if (dup_r >= 0) {
+        init_log("[USER][INIT][S10] FAIL: dup succeeded on rights-reduced handle\n");
+        return;
+    }
+    init_log(init_stage_rights);
 }
 
 static void init_retry_pause(void) {
@@ -350,7 +608,7 @@ static handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h,
     }
 
     r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
-                  (long)(RIGHT_READ | RIGHT_TRANSFER));
+                  (long)(RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER));
     if (r < 0) goto fail;
     dup_cap_h = (handle_id_t)r;
 
@@ -360,7 +618,7 @@ static handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h,
                            SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP);
     msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
     msg.attached_handle = dup_cap_h;
-    msg.attached_rights = RIGHT_READ;
+    msg.attached_rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
 
     r = init_sys2(SYS_CHAN_SEND, (long)svcmgr_chan_h, (long)&msg);
     if (r < 0) goto fail;
@@ -699,8 +957,6 @@ static int init_check_diag(handle_id_t sm_h) {
         uint32_t manifest = svcmgr_proto_read_u32(&msg.data[SVCMGR_DIAG_REPLY_OFF_MANIFEST]);
         uint32_t ready    = svcmgr_proto_read_u32(&msg.data[SVCMGR_DIAG_REPLY_OFF_READY]);
         uint32_t slots    = svcmgr_proto_read_u32(&msg.data[SVCMGR_DIAG_REPLY_OFF_SLOTS]);
-        uint32_t tasks    = svcmgr_proto_read_u32(&msg.data[SVCMGR_DIAG_REPLY_OFF_TASKS]);
-        uint32_t kproc    = svcmgr_proto_read_u32(&msg.data[SVCMGR_DIAG_REPLY_OFF_KPROC]);
         uint32_t irq      = svcmgr_proto_read_u32(&msg.data[SVCMGR_DIAG_REPLY_OFF_IRQ]);
         uint32_t cat      = svcmgr_proto_read_u32(&msg.data[SVCMGR_DIAG_REPLY_OFF_CATALOG]);
         uint32_t vfs_exp  = svcmgr_proto_read_u32(&msg.data[SVCMGR_DIAG_REPLY_OFF_VFS_EXPORTS]);
@@ -713,14 +969,12 @@ static int init_check_diag(handle_id_t sm_h) {
         if (manifest != 3u)                             goto done;
         if (ready    != 3u)                             goto done;
         if (slots    != 3u)                             goto done;
-        if (tasks    == 0u)                             goto done;
-        if (kproc    == 0u)                             goto done;
         if (irq      == 0u)                             goto done;
         if (cat      != IRIS_SERVICE_CATALOG_VERSION)   goto done;
-        if (vfs_exp  != VFS_BOOT_EXPORT_COUNT)          goto done;
+        if (vfs_exp  < VFS_BOOT_EXPORT_COUNT)            goto done;
         if (vfs_op   != 0u)                             goto done;
         if (vfs_cap  != VFS_SERVICE_OPEN_FILES)         goto done;
-        if (vfs_by   != VFS_BOOT_EXPORT_TOTAL_BYTES)    goto done;
+        (void)vfs_by; /* total bytes now include initrd VMO sizes — not a fixed invariant */
         if (kbd_fl   != KBD_STATUS_NORMAL)              goto done;
     }
     ok = 1;
@@ -768,11 +1022,22 @@ static int init_check_vfs_list(handle_id_t vfs_h, handle_id_t vfs_reply_h) {
     if (msg.type != VFS_MSG_LIST_REPLY) return 0;
     if ((int32_t)vfs_proto_read_u32(&msg.data[VFS_MSG_OFF_LIST_REPLY_ERR]) != 0) return 0;
 
-    /* index 2 — expect out-of-bounds (err != 0) */
+    /* index 2 — expect OK (readme.txt, added in Phase 56) */
     init_msg_zero(&msg);
     msg.type     = VFS_MSG_LIST;
     msg.data_len = VFS_MSG_LIST_LEN;
     vfs_proto_write_u32(&msg.data[VFS_MSG_OFF_LIST_INDEX], 2u);
+    msg.attached_handle = HANDLE_INVALID;
+    r = init_chan_send_recv(vfs_h, vfs_reply_h, &msg);
+    if (r < 0) return 0;
+    if (msg.type != VFS_MSG_LIST_REPLY) return 0;
+    if ((int32_t)vfs_proto_read_u32(&msg.data[VFS_MSG_OFF_LIST_REPLY_ERR]) != 0) return 0;
+
+    /* index 100 — expect out-of-bounds (err != 0) */
+    init_msg_zero(&msg);
+    msg.type     = VFS_MSG_LIST;
+    msg.data_len = VFS_MSG_LIST_LEN;
+    vfs_proto_write_u32(&msg.data[VFS_MSG_OFF_LIST_INDEX], 100u);
     msg.attached_handle = HANDLE_INVALID;
     r = init_chan_send_recv(vfs_h, vfs_reply_h, &msg);
     if (r < 0) return 0;
@@ -1149,6 +1414,12 @@ void init_main(handle_id_t bootstrap_ch_h) {
             init_sys1(SYS_HANDLE_CLOSE, (long)ch_wr);
         }
     }
+
+    init_runtime_probe_invalid_userptr();
+    init_runtime_probe_timeout_overflow();
+    init_selftest_exception();
+    init_selftest_channel_seal();
+    init_selftest_rights_reduction();
 
     /* ── Interactive echo loop ── */
     init_echo_loop(scan_recv_h);

@@ -97,8 +97,8 @@ void irq_routing_unregister_owner(struct KProcess *owner) {
         if (old) {
             kobject_active_release(&old->base);
             kobject_release(&old->base);
+            if (i < 16)
+                pic_set_irq_mask((uint8_t)i, 1);
         }
-        if (i < 16)
-            pic_set_irq_mask((uint8_t)i, 1);
     }
 }

@@ -75,10 +75,17 @@
  *   KBD_PROTO_VERSION 1
  *   Bump when any wire-level field layout changes.
  *
- * ── Phase status ─────────────────────────────────────────────────────────────
- *   Phase 10/current: protocol formalized.  kbd_server.S and user_init.S
- *   both consume this header and use named constants throughout.
- *   irq_routing.c uses IRQ_MSG_TYPE_SIGNAL from irq_routing.h.
+ * Ownership rules:
+ *   - HELLO and STATUS carry no required attached handles.
+ *   - STATUS may optionally attach a one-shot reply channel with RIGHT_WRITE;
+ *     sending the request move-consumes that handle on successful SYS_CHAN_SEND.
+ *   - SUBSCRIBE requires the client to attach a KChannel write handle with
+ *     RIGHT_WRITE | RIGHT_TRANSFER; kbd takes ownership of that attached
+ *     handle and replaces any previous subscriber.
+ *
+ * ── Current status ───────────────────────────────────────────────────────────
+ *   The protocol is live and consumed by the current `kbd` service and clients.
+ *   `irq_routing.c` uses IRQ_MSG_TYPE_SIGNAL from irq_routing.h.
  */
 
 /* Protocol version */

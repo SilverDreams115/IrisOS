@@ -105,6 +105,24 @@ if ! grep -Fq "[USER][INIT][TIMED] recv timeout OK" "$LOG_FILE"; then
   exit 1
 fi
 
+if ! grep -Fq "[USER][INIT][S8] exception delivery OK" "$LOG_FILE"; then
+  echo "[headless] missing exception delivery selftest marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[USER][INIT][S9] channel seal OK" "$LOG_FILE"; then
+  echo "[headless] missing channel-seal selftest marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[USER][INIT][S10] rights reduction OK" "$LOG_FILE"; then
+  echo "[headless] missing rights-reduction selftest marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 if [ "$EXPECT_SELFTESTS" = "1" ]; then
   if ! grep -Fq "[IRIS][P3] handle/lifecycle selftests OK" "$LOG_FILE"; then
     echo "[headless] missing phase-3 selftest marker"

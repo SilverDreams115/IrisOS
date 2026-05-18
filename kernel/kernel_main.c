@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <iris/klog.h>
 #include <iris/serial.h>
 #include <iris/boot_info.h>
 #include <iris/pmm.h>
@@ -30,15 +31,15 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     /* ── 1. Serial + banner ─────────────────────────────────────── */
     serial_init();
-    serial_write("\n");
-    serial_write("====================================\n");
-    serial_write("       IRIS KERNEL - PHASE 50       \n");
-    serial_write("====================================\n");
-    serial_write("[IRIS][KERNEL] firmware services: OFF\n");
+    klog_write("\n");
+    klog_write("====================================\n");
+    klog_write("       IRIS KERNEL - PHASE 55       \n");
+    klog_write("====================================\n");
+    klog_write("[IRIS][KERNEL] firmware services: OFF\n");
 
     /* ── 2. Boot info validation ────────────────────────────────── */
     if (!boot_info || boot_info->magic != IRIS_BOOTINFO_MAGIC) {
-        serial_write("[IRIS][KERNEL] FATAL: invalid boot protocol\n");
+        klog_write("[IRIS][KERNEL] FATAL: invalid boot protocol\n");
         for (;;) __asm__ volatile ("hlt");
     }
     {
@@ -47,37 +48,37 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         uint64_t  words = sizeof(struct iris_boot_info) / sizeof(uint64_t);
         for (uint64_t i = 0; i < words; i++) dst[i] = src[i];
     }
-    serial_write("[IRIS][KERNEL] boot protocol OK (v");
-    serial_write_dec(saved_boot_info.version);
-    serial_write(")\n");
+    klog_write("[IRIS][KERNEL] boot protocol OK (v");
+    klog_write_dec(saved_boot_info.version);
+    klog_write(")\n");
 
     /* ── 3. Core memory subsystems ──────────────────────────────── */
-    serial_write("[IRIS][PMM] initializing...\n");
+    klog_write("[IRIS][PMM] initializing...\n");
     pmm_init(&saved_boot_info);
-    serial_write("[IRIS][PMM] free RAM: ");
-    serial_write_dec((pmm_free_pages() * 4096) / (1024 * 1024));
-    serial_write(" MB\n");
+    klog_write("[IRIS][PMM] free RAM: ");
+    klog_write_dec((pmm_free_pages() * 4096) / (1024 * 1024));
+    klog_write(" MB\n");
 
-    serial_write("[IRIS][PAGING] initializing...\n");
+    klog_write("[IRIS][PAGING] initializing...\n");
     paging_init(saved_boot_info.framebuffer.base, saved_boot_info.framebuffer.size);
-    serial_write("[IRIS][PAGING] virtual memory active\n");
+    klog_write("[IRIS][PAGING] virtual memory active\n");
 
     /* ── 4. CPU tables + interrupt infrastructure ───────────────── */
-    serial_write("[IRIS][GDT] initializing...\n");
+    klog_write("[IRIS][GDT] initializing...\n");
     gdt_init();
-    serial_write("[IRIS][GDT] OK\n");
+    klog_write("[IRIS][GDT] OK\n");
 
-    serial_write("[IRIS][PIC] remapping IRQs...\n");
+    klog_write("[IRIS][PIC] remapping IRQs...\n");
     pic_init();
-    serial_write("[IRIS][PIT] timer at 100 Hz...\n");
+    klog_write("[IRIS][PIT] timer at 100 Hz...\n");
     pit_init(100);
 
-    serial_write("[IRIS][IDT] initializing...\n");
+    klog_write("[IRIS][IDT] initializing...\n");
     idt_init();
-    serial_write("[IRIS][IDT] OK\n");
+    klog_write("[IRIS][IDT] OK\n");
 
     /* ── 5. Framebuffer params ─────────────────────────────────────── */
-    serial_write("[IRIS][FB] saving params for ring-3 fb service\n");
+    klog_write("[IRIS][FB] saving params for ring-3 fb service\n");
     g_iris_fb_params.phys   = saved_boot_info.framebuffer.base;
     g_iris_fb_params.size   = saved_boot_info.framebuffer.size;
     g_iris_fb_params.width  = saved_boot_info.framebuffer.width;
@@ -86,14 +87,14 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     g_iris_fb_params.bpp    = 4u;
     g_iris_fb_params_valid  = 1;
 
-    serial_write("[IRIS][VFS] kernel backend retired from healthy boot\n");
+    klog_write("[IRIS][VFS] kernel backend retired from healthy boot\n");
 
     /* ── 6. Kernel services ─────────────────────────────────────── */
-    serial_write("[IRIS][SYSCALL] initializing...\n");
+    klog_write("[IRIS][SYSCALL] initializing...\n");
     syscall_init();
-    serial_write("[IRIS][SYSCALL] MSRs configured\n");
+    klog_write("[IRIS][SYSCALL] MSRs configured\n");
 
-    serial_write("[IRIS][IRQ] initializing routing table...\n");
+    klog_write("[IRIS][IRQ] initializing routing table...\n");
     irq_routing_init();
 
 #ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
@@ -101,23 +102,23 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 #endif
 
     /* ── 7. Scheduler core ──────────────────────────────────────── */
-    serial_write("[IRIS][SCHED] initializing...\n");
+    klog_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
 
     /* ── 8. First user task ─────────────────────────────────────── */
-    serial_write("[IRIS][USER] preparing bootstrap task...\n");
+    klog_write("[IRIS][USER] preparing bootstrap task...\n");
     {
         struct task *ut = 0;
 
         ut = task_spawn_user(0);
         if (!ut) {
-            serial_write("[IRIS][USER] FATAL: task_spawn_user(userboot) failed\n");
+            klog_write("[IRIS][USER] FATAL: task_spawn_user(userboot) failed\n");
         } else {
             struct KBootstrapCap *cap = kbootcap_alloc(
                 IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS |
                 IRIS_BOOTCAP_KDEBUG | IRIS_BOOTCAP_FRAMEBUFFER);
             if (!cap) {
-                serial_write("[IRIS][USER] FATAL: kbootcap_alloc failed\n");
+                klog_write("[IRIS][USER] FATAL: kbootcap_alloc failed\n");
                 task_abort_spawned_user(ut);
                 ut = 0;
             } else {
@@ -126,7 +127,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
                 kobject_release(&cap->base);
                 if (cap_h == HANDLE_INVALID) {
-                    serial_write("[IRIS][USER] FATAL: cap handle insert failed\n");
+                    klog_write("[IRIS][USER] FATAL: cap handle insert failed\n");
                     task_abort_spawned_user(ut);
                     ut = 0;
                 } else {
@@ -135,19 +136,19 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             }
         }
         if (ut) {
-            serial_write("[IRIS][USER] bootstrap task created (ring-3 loader), id=");
-            serial_write_dec(ut->id);
-            serial_write("\n");
+            klog_write("[IRIS][USER] bootstrap task created (ring-3 loader), id=");
+            klog_write_dec(ut->id);
+            klog_write("\n");
         } else {
-            serial_write("[IRIS][USER] WARN: could not create bootstrap task\n");
+            klog_write("[IRIS][USER] WARN: could not create bootstrap task\n");
         }
     }
 
     /* ── 9. Scheduler start ─────────────────────────────────────── */
+    klog_write("[IRIS][SCHED] running\n");
+    klog_write("[IRIS][BOOT] waiting for first userland wave\n");
+    klog_write("====================================\n");
     __asm__ volatile ("sti");
-    serial_write("[IRIS][SCHED] running\n");
-    serial_write("[IRIS][BOOT] waiting for first userland wave\n");
-    serial_write("====================================\n");
 
     /* Let the first wave of bootstrap tasks start before the idle loop. */
     task_yield();

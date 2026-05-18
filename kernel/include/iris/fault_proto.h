@@ -13,8 +13,9 @@
  *   offset 20: uint32_t _pad
  *   offset 24: uint64_t cr2        — fault address (#PF only; 0 otherwise)
  *
- * After sending the notification the kernel kills the faulting task.
- * The handler is responsible for any recovery (e.g. spawning a replacement).
+ * After sending the notification the kernel suspends the faulting task in
+ * TASK_BLOCKED_FAULT state.  The handler must call SYS_EXCEPTION_RESUME(66)
+ * with action=0 (resume) or action=1 (kill) to unblock the task.
  */
 #define FAULT_MSG_NOTIFY     0xF0000001u
 #define FAULT_OFF_VECTOR      0   /* uint32_t: exception vector */

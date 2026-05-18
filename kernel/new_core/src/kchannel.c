@@ -3,7 +3,6 @@
 #include <iris/nc/kprocess.h>
 #include <iris/kpage.h>
 #include <iris/task.h>
-#include <iris/serial.h>
 #include <stdint.h>
 
 /* ── Live-list state ─────────────────────────────────────────────────────────
@@ -240,6 +239,46 @@ int kchannel_is_readable(struct KChannel *ch) {
     return r;
 }
 
+int kchannel_is_closed(struct KChannel *ch) {
+    int r;
+    if (!ch) return 0;
+    spinlock_lock(&ch->base.lock);
+    r = (ch->closed && ch->count == 0) ? 1 : 0;
+    spinlock_unlock(&ch->base.lock);
+    return r;
+}
+
+/*
+ * kchannel_waiters_add_or_closed_atomic — enqueue t and set t->state =
+ * TASK_BLOCKED_IPC under the same lock acquisition.
+ *
+ * Setting the task state inside the lock closes the preemption window that
+ * exists in plain kchannel_waiters_add_or_closed: on a system where IRQ0
+ * calls task_yield(), the scheduler can preempt between the state change and
+ * the enqueue and see a task that is BLOCKED_IPC but in no waiter list,
+ * causing a permanent stall.
+ *
+ * Returns:
+ *   IRIS_OK        — enqueued (t->state set to TASK_BLOCKED_IPC), or channel
+ *                    non-empty (no enqueue needed, t->state unchanged)
+ *   IRIS_ERR_CLOSED — channel is closed and empty (t->state unchanged)
+ *   other           — enqueue failed (t->state unchanged)
+ */
+iris_error_t kchannel_waiters_add_or_closed_atomic(struct KChannel *ch, struct task *t) {
+    iris_error_t r = IRIS_OK;
+    if (!ch || !t) return IRIS_ERR_INVALID_ARG;
+    spinlock_lock(&ch->base.lock);
+    if (ch->closed && ch->count == 0) {
+        r = IRIS_ERR_CLOSED;
+    } else if (ch->count == 0) {
+        r = kchannel_waiters_enqueue(ch, t);
+        if (r == IRIS_OK)
+            t->state = TASK_BLOCKED_IPC;
+    }
+    spinlock_unlock(&ch->base.lock);
+    return r;
+}
+
 iris_error_t kchannel_waiters_add_checked(struct KChannel *ch, struct task *t) {
     iris_error_t r;
     if (!ch || !t) return IRIS_ERR_INVALID_ARG;
@@ -274,6 +313,10 @@ void kchannel_waiters_remove_task(struct KChannel *ch, struct task *t) {
     spinlock_unlock(&ch->base.lock);
 }
 
+/* User-triggered seal: closed=1 prevents new sends, but buffered messages
+ * remain drainable until empty.  Identical mechanics to the kobject .close op
+ * (kchannel_close), which is called internally when all active references are
+ * released; the distinction is semantic, not behavioral. */
 void kchannel_seal(struct KChannel *ch) {
     if (!ch) return;
     spinlock_lock(&ch->base.lock);

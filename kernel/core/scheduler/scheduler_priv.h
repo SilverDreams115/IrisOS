@@ -7,6 +7,11 @@
  *
  * Nothing in this header is part of the public kernel API.  Include
  * <iris/task.h> or <iris/scheduler.h> from external callers instead.
+ *
+ * SMP invariant: IRIS is currently single-CPU.  All spinlocks are CAS-only and
+ * do NOT disable IRQs.  Any SMP port MUST replace them with IRQ-disabling
+ * spinlocks (cli + cmpxchg + sti on release) to close the window between the
+ * lock acquisition and IRQ delivery on the same core.
  */
 
 #include <iris/task.h>

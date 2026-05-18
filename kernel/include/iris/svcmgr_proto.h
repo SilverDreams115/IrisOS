@@ -13,10 +13,9 @@
  * IRIS Service Manager Bootstrap Protocol
  *
  * ── Overview ─────────────────────────────────────────────────────
- * Messages flow over the svcmgr bootstrap KChannel between the kernel
- * and the ring-3 service manager process.
+ * Messages flow over KChannels between clients, services, and the ring-3
+ * service manager process.
  *
- *   kernel  → svcmgr : SVCMGR_MSG_PHASE3_PROBE
  *   kernel  → svcmgr : PROC_EVENT_MSG_EXIT (via SYS_PROCESS_WATCH)
  *   client  → svcmgr : SVCMGR_MSG_LOOKUP
  *   client  → svcmgr : SVCMGR_MSG_LOOKUP_NAME
@@ -26,13 +25,11 @@
  *   svcmgr  → client : SVCMGR_MSG_LOOKUP_REPLY
  *   svcmgr  → client : SVCMGR_MSG_DIAG_REPLY
  *   svcmgr  → service: SVCMGR_MSG_BOOTSTRAP_HANDLE
- *   svcmgr  → kernel : SVCMGR_MSG_ACK (phase 2)
  *
- * Healthy-path bootstrap no longer uses kernel → svcmgr spawn requests
- * for compiled-in services.  The kernel now bootstraps only svcmgr and
- * the first client capability; svcmgr consumes the declarative service catalog for
- * compiled-in services and reads selftest/bootstrap traffic, process-exit
- * watch events, and client lookup requests from its bootstrap channel.
+ * Healthy-path bootstrap no longer uses kernel → svcmgr spawn requests for
+ * compiled-in services. The kernel seeds only the first user task and one
+ * bootstrap capability. `init` then spawns `svcmgr`, and `svcmgr` uses the
+ * declarative service catalog for built-in services.
  *
  * ── KChanMsg wire layout (84 bytes) ─────────────────────────────
  *   offset  0: uint32_t type      → SVCMGR_MSG_* opcode
@@ -42,9 +39,9 @@
  *   offset 76: handle_id_t attached_handle  → optional moved handle
  *   offset 80: iris_rights_t attached_rights → rights delivered to receiver
  *
- * ── SVCMGR_MSG_SPAWN_SERVICE (transitional compatibility) ────────
- * Legacy/bootstrap compatibility message kept for staged evolution.
- * Healthy-path boot no longer uses it for compiled-in service startup.
+ * ── SVCMGR_MSG_SPAWN_SERVICE (retired compatibility) ─────────────
+ * This message number remains reserved for ABI continuity only.
+ * Healthy-path boot does not use it.
  *
  *   data[SVCMGR_SPAWN_OFF_SERVICE_ID] uint32_t    service kind selector.
  *                                                 svcmgr resolves this to
@@ -65,15 +62,15 @@
  *   data[SVCMGR_ACK_OFF_TASK_ID]  uint32_t  spawned task id (0 = failed)
  *   data[SVCMGR_ACK_OFF_ERR]      int32_t   0 = OK, negative = iris_error_t
 
- * ── SVCMGR_MSG_BOOTSTRAP_HANDLE (svcmgr → child service) ─────────
+ * ── SVCMGR_MSG_BOOTSTRAP_HANDLE (parent → child service) ─────────
  * Delivers one public service handle to a freshly spawned child over the
- * child's private bootstrap channel.  The handle is attached to the message
- * and is MOVE-only from svcmgr to the child:
+ * child's private bootstrap channel. The handle is attached to the message
+ * and is move-only from sender to child:
  *
  *   data[SVCMGR_BOOTSTRAP_OFF_KIND] uint32_t bootstrap role selector
  *                                   (service inbox, reply channel,
  *                                   or bootstrap capability).
- *   attached_handle                 duplicated temp handle in svcmgr,
+ *   attached_handle                 duplicated temp handle in sender,
  *                                   consumed by SYS_CHAN_SEND and installed
  *                                   into the child on SYS_CHAN_RECV.
  *   attached_rights                exact rights granted to the child.
@@ -90,7 +87,8 @@
  *   attached_rights                  RIGHT_WRITE for that reply channel copy.
 
  * ── SVCMGR_MSG_LOOKUP_REPLY (svcmgr → client) ────────────────────
- * Lookup result sent over the transferred reply channel.
+ * Lookup result sent over the transferred reply channel. `svcmgr` does not
+ * consume the looked-up master endpoint; it duplicates a reduced-rights copy.
  *
  *   data[SVCMGR_LOOKUP_REPLY_OFF_ERR]      int32_t 0 = OK, <0 = iris_error_t
  *   data[SVCMGR_LOOKUP_REPLY_OFF_ENDPOINT] uint32_t echoed endpoint id
@@ -118,7 +116,7 @@
  *   attached_handle                        service master handle moved into svcmgr
  *   attached_rights                        must include RIGHT_DUPLICATE
  *
- * sender_id is kernel-stamped (Phase 38); it carries the verified task_id of
+ * sender_id is kernel-stamped; it carries the verified task_id of
  * the sender and cannot be forged by ring-3 code.
  *
  * ── SVCMGR_MSG_UNREGISTER (service → svcmgr) ──────────────────────
@@ -163,28 +161,16 @@
  * data[56..59] uint32_t vfs exported bytes
  * data[60..63] uint32_t kbd status flags
  *
- * ── SVCMGR_MSG_PHASE3_PROBE (kernel → svcmgr, phase 3 validation) ──
- * Bounded supervision self-check used to prove proc_h retirement and
- * slot reuse deterministically under the real svcmgr ownership path.
- *
- *   data[SVCMGR_P3_OFF_ENTRY]  uint64_t  ring-3 entry_vaddr for a child
- *                                        that exits quickly.
- *
  * ── Phase status ─────────────────────────────────────────────────
- * Phase 8/current: svcmgr is the userland-authoritative discovery service
- * for normal clients and consumes a declarative catalog for compiled-in
- * services (`kbd`, `vfs`).  The kernel bootstrap registry is transitional
- * only and no longer participates in the healthy path to reach svcmgr.
- * Other well-known service handles are kept in svcmgr's runtime registry
- * and are returned over IPC with attached handle transfer. Service exit on the
- * healthy path is supervised by PROC_EVENT_MSG_EXIT over svcmgr's bootstrap
- * channel; svcmgr itself no longer polls for child lifecycle.
- * IRQ routing stays kernel-side (permanent kernel concern). irq_routing owner
- * = child service KProcess after SYS_IRQ_ROUTE_REGISTER; auto-cleanup fires
- * when a service exits via kprocess_teardown → irq_routing_unregister_owner.
+ * Current healthy path: `svcmgr` is the discovery and supervision authority
+ * for built-in and runtime-published services. Well-known service handles are
+ * kept in `svcmgr` state and returned over IPC with attached-handle transfer.
+ * Service exit is supervised through PROC_EVENT_MSG_EXIT over `svcmgr`'s
+ * bootstrap channel. IRQ routing remains kernel-side, but route ownership is
+ * transferred to the child `KProcess` so teardown remains process-scoped.
  */
 
-#define SVCMGR_MSG_SPAWN_SERVICE  0x0001u
+#define SVCMGR_MSG_SPAWN_SERVICE  0x0001u /* retired compatibility */
 /* 0x0002 retired (Phase 19: SVCMGR_MSG_PHASE3_PROBE removed with SYS_SPAWN) */
 #define SVCMGR_MSG_LOOKUP         0x0003u
 #define SVCMGR_MSG_STATUS         0x0004u
@@ -223,6 +209,7 @@
 #define SVCMGR_BOOTSTRAP_KIND_KBD_CAP    9u  /* KChannel write-end for kbd service */
 #define SVCMGR_BOOTSTRAP_KIND_VFS_CAP   10u  /* KChannel write-end for vfs service */
 #define SVCMGR_BOOTSTRAP_KIND_VFS_REPLY_CAP 11u /* KChannel read-end for vfs reply */
+#define SVCMGR_BOOTSTRAP_KIND_INITRD_CAP 12u /* KBootstrapCap (SPAWN_SERVICE) for initrd access */
 
 /* Byte offsets within KChanMsg.data[64] */
 #define SVCMGR_SPAWN_OFF_SERVICE_ID 0  /* uint32_t:    service kind selector       */

@@ -169,6 +169,18 @@ void isr_handler(struct full_frame *frame) {
                 if (kprocess_resolve_demand_fault(ct, read_cr2()) == IRIS_OK)
                     return; /* PTE installed; CPU will retry the faulting instruction */
             }
+            if (ct) {
+                uint64_t cr2 = (frame->vector == 14) ? read_cr2() : 0;
+                int notified = kprocess_notify_fault(ct, frame->vector,
+                                                     frame->error_code,
+                                                     frame->rip, cr2);
+                if (notified) {
+                    ct->state = TASK_BLOCKED_FAULT;
+                    task_yield();
+                    return;
+                }
+            }
+            /* No exception handler registered — log and terminate the task. */
             panic_write("[IRIS][FAULT] userland exception: ");
             panic_write(exception_names[frame->vector]);
             panic_write(" task=");
@@ -179,11 +191,6 @@ void isr_handler(struct full_frame *frame) {
             }
             panic_write(" err="); panic_hex(frame->error_code);
             panic_write("\n");
-            if (ct) {
-                uint64_t cr2 = (frame->vector == 14) ? read_cr2() : 0;
-                kprocess_notify_fault(ct, frame->vector, frame->error_code,
-                                      frame->rip, cr2);
-            }
             task_exit_current();
             /* unreachable — task_exit_current() calls task_yield() */
         }

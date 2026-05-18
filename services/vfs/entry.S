@@ -11,6 +11,10 @@
 .section .text._start
 _start:
     andq  $~0xFULL, %rsp   /* align stack to 16 bytes */
+    rdtsc                  /* seed stack canary: EAX=lo, EDX=hi */
+    shlq  $32, %rdx
+    orq   %rdx, %rax
+    movq  %rax, __stack_chk_guard(%rip)
     movq  %rbx, %rdi       /* arg0 = bootstrap handle */
     call  vfs_server_main_c
 

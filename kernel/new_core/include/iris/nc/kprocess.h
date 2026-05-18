@@ -12,10 +12,12 @@ struct KVmo;
 struct KNotification;
 
 #define KPROCESS_VMO_MAP_MAX    0u  /* no fixed ceiling — kpage-backed linked list */
-#define KPROCESS_EXIT_WATCH_MAX 4u
+#define KPROCESS_EXIT_WATCH_MAX 8u
+#define KPROCESS_MAX_LIVE       64u /* bounded by TASK_MAX; enforced in kprocess_alloc */
 #define KPROCESS_CHANNEL_QUOTA  16u
 #define KPROCESS_NOTIFICATION_QUOTA 16u
 #define KPROCESS_VMO_QUOTA      32u
+#define KPROCESS_PHYS_PAGES_LIMIT 2048u /* 8MB per process; set in kprocess_alloc */
 
 struct KExitWatch {
     struct KChannel *ch;
@@ -77,6 +79,8 @@ struct KProcess {
     uint32_t owned_channels;
     uint32_t owned_notifications;
     uint32_t owned_vmos;
+    uint32_t phys_pages_charged; /* pages allocated by demand fault; vs phys_pages_limit */
+    uint32_t phys_pages_limit;   /* set to KPROCESS_PHYS_PAGES_LIMIT at alloc */
 
 };
 
@@ -93,10 +97,12 @@ iris_error_t     kprocess_quota_acquire_notification(struct KProcess *p);
 void             kprocess_quota_release_notification(struct KProcess *p);
 iris_error_t     kprocess_quota_acquire_vmo(struct KProcess *p);
 void             kprocess_quota_release_vmo(struct KProcess *p);
+iris_error_t     kprocess_quota_acquire_page(struct KProcess *p);
+void             kprocess_quota_release_page(struct KProcess *p);
 iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
                                      handle_id_t watched_handle, uint32_t cookie);
 iris_error_t     kprocess_set_exception_handler(struct KProcess *p, struct KChannel *ch);
-void             kprocess_notify_fault(struct task *t, uint64_t vector,
+int              kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
 iris_error_t     kprocess_register_vmo_map  (struct KProcess *p, uint64_t virt_base,
                                               uint64_t size, struct KVmo *vmo,

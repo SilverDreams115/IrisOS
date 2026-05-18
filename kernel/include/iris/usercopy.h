@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+/* On x86-64, PAGE_WRITABLE implies readable.  Use user_range_writable when
+ * the caller will both read and write the region. */
 int      user_range_readable(uint64_t ptr, uint32_t len);
 int      user_range_writable(uint64_t ptr, uint32_t len);
 int      copy_from_user_checked(void *dst, uint64_t src_uptr, uint32_t len);

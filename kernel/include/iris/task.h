@@ -15,6 +15,7 @@ typedef enum {
     TASK_BLOCKED_IPC,   /* blocked waiting for an IPC message or KChannel recv */
     TASK_BLOCKED_IRQ,   /* blocked waiting for a KNotification signal */
     TASK_SLEEPING,      /* blocked until a timer tick count is reached */
+    TASK_BLOCKED_FAULT, /* suspended pending exception handler decision */
     TASK_DEAD,
 } task_state_t;
 
@@ -78,6 +79,7 @@ struct task {
 };
 
 void         task_init(void);
+struct task *task_find_by_id(uint32_t id);
 struct task *task_create(void (*entry)(void));
 struct task *task_spawn_user(uint64_t arg0);
 struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,

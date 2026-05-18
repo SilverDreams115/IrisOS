@@ -69,7 +69,9 @@ iris_error_t futex_wait(uint64_t uaddr, uint32_t expected) {
 }
 
 uint32_t futex_wake(uint64_t uaddr, uint32_t count) {
-    struct KProcess *caller_proc = task_current()->process;
+    struct task *t = task_current();
+    if (!t || !t->process) return 0;
+    struct KProcess *caller_proc = t->process;
     uint32_t woken = 0;
     for (int i = 0; i < FUTEX_TABLE_SIZE && woken < count; i++) {
         if (futex_table[i].uaddr != uaddr || !futex_table[i].waiter)
@@ -77,12 +79,12 @@ uint32_t futex_wake(uint64_t uaddr, uint32_t count) {
         /* Only wake waiters within the same address space. */
         if (futex_table[i].owner != caller_proc)
             continue;
-        struct task *t = futex_table[i].waiter;
+        struct task *w = futex_table[i].waiter;
         futex_table[i].uaddr  = 0;
         futex_table[i].waiter = 0;
         futex_table[i].owner  = 0;
-        if (t->state == TASK_BLOCKED_IPC)
-            t->state = TASK_READY;
+        if (w->state == TASK_BLOCKED_IPC)
+            w->state = TASK_READY;
         woken++;
     }
     return woken;

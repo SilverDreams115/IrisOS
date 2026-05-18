@@ -26,7 +26,6 @@ KERNEL_CTX_OBJ       := $(BUILD_DIR)/context_switch.o
 KERNEL_SCHED_OBJ     := $(BUILD_DIR)/scheduler.o
 KERNEL_KSTACK_OBJ    := $(BUILD_DIR)/kstack.o
 KERNEL_LIFECYCLE_OBJ := $(BUILD_DIR)/task_lifecycle.o
-KERNEL_FB_OBJ        := $(BUILD_DIR)/fb.o
 KERNEL_TRAMP_OBJ     := $(BUILD_DIR)/user_trampoline.o
 KERNEL_USERINIT_OBJ  := $(BUILD_DIR)/user_init.o
 KERNEL_SYSCALL_OBJ   := $(BUILD_DIR)/syscall.o
@@ -49,6 +48,8 @@ KERNEL_PHASE3_SELFTEST_OBJ := $(BUILD_DIR)/phase3_selftest.o
 KERNEL_INITRD_OBJ         := $(BUILD_DIR)/initrd.o
 KERNEL_FUTEX_OBJ          := $(BUILD_DIR)/futex.o
 KERNEL_KPAGE_OBJ          := $(BUILD_DIR)/kpage.o
+KERNEL_KLOG_OBJ           := $(BUILD_DIR)/klog.o
+STACK_GUARD_OBJ           := $(BUILD_DIR)/stack_guard.o
 # Service ELF binaries — output directly into their source directories so that
 # the objcopy -I binary relative path (services/xxx/xxx.elf) matches the symbol
 # name mangling expected by kernel/core/initrd/initrd.c.
@@ -77,7 +78,7 @@ KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_RUNTIME_SELFTESTS
 # user_init.S contains user_selftest + vfs_leak_child — only needed for selftests.
 KERNEL_DEMO_OBJS         += $(KERNEL_USERINIT_OBJ)
 endif
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_DEMO_OBJS)
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_DEMO_OBJS)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -107,7 +108,10 @@ KERNEL_ASFLAGS := -ffreestanding -fno-pic -fno-pie -mno-red-zone -D__KERNEL__ $(
 #   and R_X86_64_RELATIVE relocations before the task starts.
 # -static -pie: ET_DYN binary with no shared library dependencies; the default
 #   small code model works because all symbols are within the PIE itself.
-SERVICE_CFLAGS  := -ffreestanding -fno-stack-protector -fPIE -mno-red-zone $(COMMON_WARNINGS) $(SERVICE_INCLUDES) -MMD -MP
+SERVICE_CFLAGS  := -ffreestanding -fstack-protector-strong -mstack-protector-guard=global -fPIE -mno-red-zone $(COMMON_WARNINGS) $(SERVICE_INCLUDES) -MMD -MP
+# userboot is a flat binary (no ELF, no CRT); stack-protector requires __stack_chk_guard
+# which userboot does not link. Keep -fno-stack-protector for userboot only.
+USERBOOT_CFLAGS := -ffreestanding -fno-stack-protector -fPIE -mno-red-zone $(COMMON_WARNINGS) $(SERVICE_INCLUDES) -MMD -MP
 SERVICE_ASFLAGS := -ffreestanding -mno-red-zone $(SERVICE_INCLUDES)
 SERVICE_LDFLAGS := -nostdlib -static -pie -T services/link_service.ld
 
@@ -195,9 +199,6 @@ $(KERNEL_KSTACK_OBJ): kernel/core/scheduler/kstack.c | dirs
 $(KERNEL_LIFECYCLE_OBJ): kernel/core/scheduler/task_lifecycle.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_FB_OBJ): kernel/drivers/fb/fb.c | dirs
-	gcc $(KERNEL_CFLAGS) -c $< -o $@
-
 $(KERNEL_TRAMP_OBJ): kernel/arch/x86_64/user_trampoline.S | dirs
 	gcc $(KERNEL_ASFLAGS) -c $< -o $@
 
@@ -265,6 +266,9 @@ $(KERNEL_FUTEX_OBJ): kernel/core/futex/futex.c | dirs
 $(KERNEL_KPAGE_OBJ): kernel/mm/kpage/kpage.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
+$(KERNEL_KLOG_OBJ): kernel/core/klog/klog.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
 # ── userboot — ring-3 bootstrap; built as raw flat binary for direct kernel mapping ─
 # Linked with OUTPUT_FORMAT(binary) so byte 0 = _start (no ELF header overhead).
 # -nostdlib -static only (no -pie: binary format is not ELF).
@@ -272,10 +276,10 @@ $(BUILD_DIR)/ub_entry.o: services/userboot/entry.S | dirs
 	gcc $(SERVICE_ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/ub_main.o: services/userboot/main.c | dirs
-	gcc $(SERVICE_CFLAGS) -c $< -o $@
+	gcc $(USERBOOT_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/ub_svc_loader.o: services/common/svc_loader.c | dirs
-	gcc $(SERVICE_CFLAGS) -c $< -o $@
+	gcc $(USERBOOT_CFLAGS) -c $< -o $@
 
 $(SERVICE_USERBOOT_BIN): $(BUILD_DIR)/ub_entry.o $(BUILD_DIR)/ub_main.o $(BUILD_DIR)/ub_svc_loader.o services/userboot/link_userboot.ld
 	ld -nostdlib -static -T services/userboot/link_userboot.ld \
@@ -309,6 +313,9 @@ $(KERNEL_USERBOOT_BIN_OBJ): $(SERVICE_USERBOOT_BIN) | dirs
 $(BUILD_DIR)/svc_loader.o: services/common/svc_loader.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
+$(STACK_GUARD_OBJ): services/common/stack_guard.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
 # ── svcmgr service ──────────────────────────────────────────────────────────
 $(BUILD_DIR)/svcmgr_entry.o: services/svcmgr/entry.S | dirs
 	gcc $(SERVICE_ASFLAGS) -c $< -o $@
@@ -316,7 +323,7 @@ $(BUILD_DIR)/svcmgr_entry.o: services/svcmgr/entry.S | dirs
 $(BUILD_DIR)/svcmgr_main.o: services/svcmgr/svcmgr.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_SVCMGR_ELF): $(BUILD_DIR)/svcmgr_entry.o $(BUILD_DIR)/svcmgr_main.o $(BUILD_DIR)/svc_loader.o
+$(SERVICE_SVCMGR_ELF): $(BUILD_DIR)/svcmgr_entry.o $(BUILD_DIR)/svcmgr_main.o $(BUILD_DIR)/svc_loader.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_SVCMGR_BIN_OBJ): $(SERVICE_SVCMGR_ELF) | dirs
@@ -343,7 +350,7 @@ $(BUILD_DIR)/vfs_entry.o: services/vfs/entry.S | dirs
 $(BUILD_DIR)/vfs_main.o: services/vfs/vfs.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_VFS_ELF): $(BUILD_DIR)/vfs_entry.o $(BUILD_DIR)/vfs_main.o
+$(SERVICE_VFS_ELF): $(BUILD_DIR)/vfs_entry.o $(BUILD_DIR)/vfs_main.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_VFS_BIN_OBJ): $(SERVICE_VFS_ELF) | dirs
@@ -358,7 +365,7 @@ $(BUILD_DIR)/init_entry.o: services/init/entry.S | dirs
 $(BUILD_DIR)/init_main.o: services/init/main.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_INIT_ELF): $(BUILD_DIR)/init_entry.o $(BUILD_DIR)/init_main.o $(BUILD_DIR)/svc_loader.o
+$(SERVICE_INIT_ELF): $(BUILD_DIR)/init_entry.o $(BUILD_DIR)/init_main.o $(BUILD_DIR)/svc_loader.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_INIT_BIN_OBJ): $(SERVICE_INIT_ELF) | dirs
@@ -373,7 +380,7 @@ $(BUILD_DIR)/console_entry.o: services/console/entry.S | dirs
 $(BUILD_DIR)/console_main.o: services/console/main.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_CONSOLE_ELF): $(BUILD_DIR)/console_entry.o $(BUILD_DIR)/console_main.o
+$(SERVICE_CONSOLE_ELF): $(BUILD_DIR)/console_entry.o $(BUILD_DIR)/console_main.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_CONSOLE_BIN_OBJ): $(SERVICE_CONSOLE_ELF) | dirs
@@ -388,7 +395,7 @@ $(BUILD_DIR)/fb_svc_entry.o: services/fb/entry.S | dirs
 $(BUILD_DIR)/fb_svc_main.o: services/fb/main.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_FB_ELF): $(BUILD_DIR)/fb_svc_entry.o $(BUILD_DIR)/fb_svc_main.o
+$(SERVICE_FB_ELF): $(BUILD_DIR)/fb_svc_entry.o $(BUILD_DIR)/fb_svc_main.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_FB_SVC_BIN_OBJ): $(SERVICE_FB_ELF) | dirs
@@ -403,7 +410,7 @@ $(BUILD_DIR)/sh_entry.o: services/sh/entry.S | dirs
 $(BUILD_DIR)/sh_main.o: services/sh/main.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_SH_ELF): $(BUILD_DIR)/sh_entry.o $(BUILD_DIR)/sh_main.o
+$(SERVICE_SH_ELF): $(BUILD_DIR)/sh_entry.o $(BUILD_DIR)/sh_main.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_SH_BIN_OBJ): $(SERVICE_SH_ELF) | dirs
@@ -436,6 +443,16 @@ smoke-runtime: all
 smoke-runtime-selftests: all
 	IRIS_QEMU_TIMEOUT_SECS=35 IRIS_QEMU_EXPECT_SELFTESTS=1 \
 		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-selftests.log \
+		bash scripts/run_qemu_headless.sh
+
+smoke-full: all
+	IRIS_QEMU_TIMEOUT_SECS=90 \
+		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-full.log \
+		bash scripts/run_qemu_headless.sh
+
+smoke-full-selftests: all
+	IRIS_QEMU_TIMEOUT_SECS=90 IRIS_QEMU_EXPECT_SELFTESTS=1 \
+		IRIS_QEMU_LOG=$(BUILD_DIR)/qemu-headless-full-selftests.log \
 		bash scripts/run_qemu_headless.sh
 
 run: all

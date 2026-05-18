@@ -40,6 +40,14 @@ static void idle_task(void) {
     }
 }
 
+struct task *task_find_by_id(uint32_t id) {
+    for (int i = 0; i < TASK_MAX; i++) {
+        if (tasks[i].state != TASK_DEAD && tasks[i].id == id)
+            return &tasks[i];
+    }
+    return 0;
+}
+
 void task_init_fpu_state(struct task *t) {
     uint8_t *dst       = t->fpu_state;
     const uint8_t *src = initial_fpu_state;
@@ -89,6 +97,9 @@ static void task_cancel_blocked_waits(struct task *t) {
     futex_cancel_waiter(t);
 }
 
+/* Called from reap_pending_dead_task, which runs on the next scheduler tick
+ * after task_exit_current sets TASK_DEAD.  The reaped task is always off-CPU
+ * at that point, so task_reset_slot needs no additional lock. */
 static void reap_dead_task_off_cpu(struct task *t) {
     if (!t || t->state != TASK_DEAD) return;
 
@@ -413,6 +424,9 @@ struct task *task_current(void) {
     return current_task;
 }
 
+/* Must not be called on current_task: this function frees resources that the
+ * calling stack may still reference.  task_kill_process skips current_task
+ * automatically when iterating tasks[]. */
 void task_kill_external(struct task *t) {
     if (!t || t == current_task) return;
     if (t->state == TASK_DEAD) return;
@@ -451,6 +465,9 @@ void task_exit_current(void) {
     free_user_stack_pages(t);
     free_user_text_pages(t);
 
+    /* thread_count is mutated only from single-CPU scheduler context on this
+     * arch.  The TASK_DEAD spin below ensures the slot is not reused before
+     * the scheduler calls reap_dead_task_off_cpu on the next tick. */
     if (proc && proc->thread_count > 0) {
         proc->thread_count--;
         if (proc->thread_count == 0)
