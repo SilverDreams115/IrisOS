@@ -1,5 +1,6 @@
 #include <iris/pic.h>
 #include <iris/tsc.h>
+#include <iris/klog.h>
 #include <stdint.h>
 
 #define PIC1_CMD  0x20
@@ -94,4 +95,7 @@ void pit_init(uint32_t hz) {
 
     tsc_hz   = (t1 - t0) * (uint64_t)PIT_HZ / (uint64_t)PIT_CH2_CAL_DIV;
     tsc_boot = t0;
+    klog_write("[IRIS][TSC] calibrated: ");
+    klog_write_dec(tsc_hz / 1000000ULL);
+    klog_write(" MHz\n");
 }

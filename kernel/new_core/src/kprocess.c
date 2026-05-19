@@ -77,6 +77,10 @@ static void kprocess_emit_exit_watch(struct KProcess *p) {
         msg.data[PROC_EVENT_OFF_COOKIE + 1] = (uint8_t)((w->cookie >> 8) & 0xFFu);
         msg.data[PROC_EVENT_OFF_COOKIE + 2] = (uint8_t)((w->cookie >> 16) & 0xFFu);
         msg.data[PROC_EVENT_OFF_COOKIE + 3] = (uint8_t)((w->cookie >> 24) & 0xFFu);
+        msg.data[PROC_EVENT_OFF_EXIT_CODE + 0] = (uint8_t)(p->exit_code & 0xFFu);
+        msg.data[PROC_EVENT_OFF_EXIT_CODE + 1] = (uint8_t)((p->exit_code >> 8) & 0xFFu);
+        msg.data[PROC_EVENT_OFF_EXIT_CODE + 2] = (uint8_t)((p->exit_code >> 16) & 0xFFu);
+        msg.data[PROC_EVENT_OFF_EXIT_CODE + 3] = (uint8_t)((p->exit_code >> 24) & 0xFFu);
         msg.data_len = PROC_EVENT_MSG_LEN;
         msg.attached_handle = HANDLE_INVALID;
         msg.attached_rights = RIGHT_NONE;

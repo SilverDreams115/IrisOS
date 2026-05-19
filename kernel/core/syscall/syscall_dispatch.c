@@ -92,6 +92,9 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_VMO_SIZE:            return sys_vmo_size(arg0, arg1, arg2);
         case SYS_IRQ_ACK:             return sys_irq_ack(arg0, arg1, arg2);
         case SYS_SCHED_INFO:          return sys_sched_info(arg0, arg1, arg2);
+        case SYS_CLOCK_NANOSLEEP:     return sys_clock_nanosleep(arg0, arg1, arg2);
+        case SYS_PROCESS_EXIT_CODE:   return sys_process_exit_code(arg0, arg1, arg2);
+        case SYS_WAIT_ANY_TIMEOUT:    return sys_wait_any_timeout(arg0, arg1, arg2, arg3);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }

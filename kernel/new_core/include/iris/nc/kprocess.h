@@ -68,6 +68,7 @@ struct KProcess {
     uint64_t        cr3;          /* page table root for the process */
     uint16_t        pcid;         /* PCID assigned at alloc (0 = unused/PCID disabled) */
     uint8_t         teardown_complete; /* logical teardown already ran */
+    uint32_t        exit_code;    /* exit code from SYS_EXIT; 0 if killed externally */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */
     struct KExitWatch exit_watches[KPROCESS_EXIT_WATCH_MAX]; /* up to 4 death subscribers */
     struct KVmoMapping *vmo_mappings;  /* demand VMO registrations */

@@ -25,7 +25,7 @@
  *   - live/transitional: current supported surface with compatibility notes
  *   - retired: permanently reserved; returns IRIS_ERR_NOT_SUPPORTED
  *
- * Current exported syscall number surface: 0..69.
+ * Current exported syscall number surface: 0..72.
  */
 
 /* Syscall numbers */
@@ -114,7 +114,8 @@
 #define PROC_EVENT_MSG_EXIT       0x90000001u
 #define PROC_EVENT_OFF_HANDLE     0u
 #define PROC_EVENT_OFF_COOKIE     4u
-#define PROC_EVENT_MSG_LEN        8u
+#define PROC_EVENT_OFF_EXIT_CODE  8u
+#define PROC_EVENT_MSG_LEN        12u
 /* SYS_DIAG_SNAPSHOT 30 retired Phase 51 — permanently reserved, returns
  * IRIS_ERR_NOT_SUPPORTED.  Aggregated diagnostics are now provided entirely
  * through SVCMGR_MSG_DIAG over IPC; the kernel no longer exposes a raw
@@ -527,6 +528,39 @@
  *   Returns 0 on success.
  */
 #define SYS_SCHED_INFO 69
+
+/*
+ * Nanosleep — modern/conforming (iris_error_t).
+ *
+ * SYS_CLOCK_NANOSLEEP(duration_ns) → 0 or negative iris_error_t
+ *   Suspends the calling task for approximately duration_ns nanoseconds.
+ *   Resolution is one scheduler tick (10 ms at 100 Hz); durations shorter than
+ *   one tick sleep for exactly one tick.  Passing 0 returns immediately (no sleep).
+ *   Does not return IRIS_ERR_INTERRUPTED; always sleeps the full requested duration.
+ */
+#define SYS_CLOCK_NANOSLEEP 70
+
+/*
+ * Process exit code query — modern/conforming (iris_error_t).
+ *
+ * SYS_PROCESS_EXIT_CODE(proc_handle) → uint32_t exit_code or negative iris_error_t
+ *   proc_handle: KOBJ_PROCESS with RIGHT_READ.
+ *   Returns the exit code supplied to SYS_EXIT by the process.
+ *   Returns IRIS_ERR_WOULD_BLOCK if the process is still alive.
+ *   The exit code is 0 for processes terminated by SYS_PROCESS_KILL.
+ */
+#define SYS_PROCESS_EXIT_CODE 71
+
+/*
+ * Timed multi-channel wait — modern/conforming (iris_error_t).
+ *
+ * SYS_WAIT_ANY_TIMEOUT(handles_uptr, count, out_index_uptr, timeout_ns) → 0 or iris_error_t
+ *   Same semantics as SYS_WAIT_ANY plus a deadline expressed in nanoseconds.
+ *   Returns IRIS_ERR_TIMED_OUT (-15) if no channel becomes readable within timeout_ns.
+ *   timeout_ns == 0 is equivalent to a non-blocking scan (no sleep).
+ *   Uses 4-arg syscall ABI (arg3 = timeout_ns via r10).
+ */
+#define SYS_WAIT_ANY_TIMEOUT 72
 
 /*
  * Thread creation — modern/conforming (iris_error_t).

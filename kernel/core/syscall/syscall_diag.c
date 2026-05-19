@@ -21,6 +21,16 @@ uint64_t sys_clock_get(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
+uint64_t sys_clock_nanosleep(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    if (arg0 == 0) return syscall_ok_u64(0);
+    uint64_t ticks = arg0 / 10000000ULL;
+    if (ticks == 0) ticks = 1;
+    scheduler_sleep_current(ticks);
+    return syscall_ok_u64(0);
+}
+
+
 uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();

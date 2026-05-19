@@ -184,6 +184,7 @@ uint64_t sys_process_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_status(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_create(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_thread_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_thread_start(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
@@ -203,6 +204,7 @@ uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_wait_any(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_wait_any_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_futex_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_futex_wake(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
@@ -239,6 +241,7 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — diag ─────────────────────────────────── */
 uint64_t sys_clock_get(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_clock_nanosleep(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_poweroff(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);

@@ -10,7 +10,10 @@ uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 
 uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
+    (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (t && t->process)
+        t->process->exit_code = (uint32_t)arg0;
     task_exit_current();
     return 0; /* unreachable */
 }
@@ -337,4 +340,34 @@ uint64_t sys_thread_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg0; (void)arg1; (void)arg2;
     task_exit_current();
     return 0;  /* unreachable */
+}
+
+
+uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *obj;
+    iris_rights_t   rights;
+    iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                             (handle_id_t)arg0, &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (obj->type != KOBJ_PROCESS) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(rights, RIGHT_READ)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KProcess *proc = (struct KProcess *)obj;
+    if (kprocess_is_alive(proc)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_WOULD_BLOCK);
+    }
+    uint32_t code = proc->exit_code;
+    kobject_release(obj);
+    return syscall_ok_u64((uint64_t)code);
 }

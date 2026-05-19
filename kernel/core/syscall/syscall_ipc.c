@@ -573,6 +573,154 @@ uint64_t sys_wait_any(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
+/*
+ * sys_wait_any_timeout(handles_uptr, count, out_index_uptr, timeout_ns)
+ *
+ * Like sys_wait_any but returns IRIS_ERR_TIMED_OUT if no channel becomes
+ * readable within timeout_ns nanoseconds.  timeout_ns == 0 is a non-blocking
+ * scan (returns IRIS_ERR_TIMED_OUT immediately if nothing is ready).
+ */
+uint64_t sys_wait_any_timeout(uint64_t arg0, uint64_t arg1,
+                               uint64_t arg2, uint64_t arg3) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    uint32_t count = (uint32_t)arg1;
+    if (count == 0 || count > WAIT_ANY_MAX_CHANNELS)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    if (!user_range_readable(arg0, (uint32_t)(count * sizeof(handle_id_t))))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!user_range_writable(arg2, (uint32_t)sizeof(uint32_t)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    handle_id_t handles[WAIT_ANY_MAX_CHANNELS];
+    if (!copy_from_user_checked(handles, arg0, (uint32_t)(count * sizeof(handle_id_t))))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    uint64_t deadline_ticks = 0;
+    int has_deadline = (arg3 != 0);
+    if (has_deadline && !timeout_ns_to_deadline_ticks(arg3, &deadline_ticks))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KChannel *chans[WAIT_ANY_MAX_CHANNELS];
+    for (uint32_t i = 0; i < count; i++) chans[i] = 0;
+
+    for (uint32_t i = 0; i < count; i++) {
+        struct KObject *obj;
+        iris_rights_t   rights;
+        iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                                 handles[i], &obj, &rights);
+        if (r != IRIS_OK) {
+            for (uint32_t j = 0; j < i; j++) kobject_release(&chans[j]->base);
+            return syscall_err(r);
+        }
+        if (obj->type != KOBJ_CHANNEL) {
+            kobject_release(obj);
+            for (uint32_t j = 0; j < i; j++) kobject_release(&chans[j]->base);
+            return syscall_err(IRIS_ERR_WRONG_TYPE);
+        }
+        if (!rights_check(rights, RIGHT_READ)) {
+            kobject_release(obj);
+            for (uint32_t j = 0; j < i; j++) kobject_release(&chans[j]->base);
+            return syscall_err(IRIS_ERR_ACCESS_DENIED);
+        }
+        chans[i] = (struct KChannel *)obj;
+    }
+
+    /* Non-blocking scan first */
+    for (uint32_t i = 0; i < count; i++) {
+        if (kchannel_is_readable(chans[i])) {
+            uint32_t idx = i;
+            for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+            if (!copy_u32_to_user_checked(arg2, idx))
+                return syscall_err(IRIS_ERR_INVALID_ARG);
+            return syscall_ok_u64(0);
+        }
+    }
+
+    /* Zero timeout: nothing ready → timed out */
+    if (!has_deadline) {
+        for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+        return syscall_err(IRIS_ERR_TIMED_OUT);
+    }
+
+    for (;;) {
+        for (uint32_t i = 0; i < count; i++) {
+            iris_error_t r = kchannel_waiters_add_or_closed_atomic(chans[i], t);
+            if (r == IRIS_ERR_CLOSED) {
+                t->state = TASK_READY;
+                for (uint32_t j = 0; j <= i; j++)
+                    kchannel_waiters_remove_task(chans[j], t);
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                return syscall_err(IRIS_ERR_CLOSED);
+            }
+            if (r != IRIS_OK) {
+                t->state = TASK_READY;
+                for (uint32_t j = 0; j <= i; j++)
+                    kchannel_waiters_remove_task(chans[j], t);
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                return syscall_err(r);
+            }
+        }
+
+        /* Re-scan after enqueueing */
+        for (uint32_t i = 0; i < count; i++) {
+            if (kchannel_is_readable(chans[i])) {
+                uint32_t idx = i;
+                t->state = TASK_READY;
+                for (uint32_t j = 0; j < count; j++)
+                    kchannel_waiters_remove_task(chans[j], t);
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                if (!copy_u32_to_user_checked(arg2, idx))
+                    return syscall_err(IRIS_ERR_INVALID_ARG);
+                return syscall_ok_u64(0);
+            }
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            if (kchannel_is_closed(chans[i])) {
+                t->state = TASK_READY;
+                for (uint32_t j = 0; j < count; j++)
+                    kchannel_waiters_remove_task(chans[j], t);
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                return syscall_err(IRIS_ERR_CLOSED);
+            }
+        }
+
+        t->wake_tick  = deadline_ticks;
+        t->timed_out  = 0;
+        task_yield();
+
+        for (uint32_t i = 0; i < count; i++)
+            kchannel_waiters_remove_task(chans[i], t);
+
+        if (t->timed_out) {
+            t->timed_out = 0;
+            t->wake_tick = 0;
+            for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+            return syscall_err(IRIS_ERR_TIMED_OUT);
+        }
+
+        for (uint32_t i = 0; i < count; i++) {
+            if (kchannel_is_readable(chans[i])) {
+                uint32_t idx = i;
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                if (!copy_u32_to_user_checked(arg2, idx))
+                    return syscall_err(IRIS_ERR_INVALID_ARG);
+                return syscall_ok_u64(0);
+            }
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            if (kchannel_is_closed(chans[i])) {
+                for (uint32_t j = 0; j < count; j++) kobject_release(&chans[j]->base);
+                return syscall_err(IRIS_ERR_CLOSED);
+            }
+        }
+        /* spurious wakeup — retry */
+    }
+}
+
+
 /* ── Futex (D3) ──────────────────────────────────────────────────── */
 
 uint64_t sys_futex_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
