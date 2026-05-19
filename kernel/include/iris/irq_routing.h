@@ -16,8 +16,9 @@ struct KProcess;
 
 /* Maps hardware IRQ lines (0-IRQ_ROUTE_MAX-1) to KChannel objects.
  * When a registered IRQ fires, the kernel sends a KChanMsg with
- * type = IRQ_MSG_TYPE_SIGNAL and data[0] = scancode/byte into the channel
- * instead of invoking the in-kernel driver.  User-space servers receive
+ * type = IRQ_MSG_TYPE_SIGNAL into the channel. The data_byte payload
+ * is 0 — the handler process is responsible for reading hardware
+ * registers directly via its KIoPort cap. User-space servers receive
  * via SYS_CHAN_RECV.                                                   */
 
 void    irq_routing_init    (void);
@@ -51,5 +52,11 @@ void    irq_routing_register(uint8_t irq, struct KChannel *ch, struct KProcess *
  * registered for irq.  Returns 0 if sent, -1 if no channel or full. */
 int32_t irq_routing_signal  (uint8_t irq, uint8_t data_byte);
 void    irq_routing_unregister_owner(struct KProcess *owner);
+
+/* Called from sys_irq_ack: unmask the hardware IRQ line so new interrupts
+ * can fire.  No-op if irq >= IRQ_ROUTE_MAX.  This is the "re-enable" half of
+ * the seL4-style deferred ACK: the kernel masks before signalling, ring-3
+ * calls SYS_IRQ_ACK after consuming the event to unmask. */
+void    irq_routing_ack     (uint8_t irq);
 
 #endif

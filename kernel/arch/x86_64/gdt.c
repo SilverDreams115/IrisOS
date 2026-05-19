@@ -1,6 +1,10 @@
 #include <iris/gdt.h>
 #include <iris/tss.h>
+#include <iris/cpu_local.h>
 #include <stdint.h>
+
+/* Per-CPU data blocks; cpu_local[0] is the BSP block initialised in gdt_init. */
+struct iris_cpu_local cpu_local[MAX_CPUS];
 
 #define GDT_ENTRIES 7   /* null, kcode, kdata, ucode, udata, tss_low, tss_high */
 
@@ -114,6 +118,22 @@ void gdt_init(void) {
 
     gdt_flush((uint64_t)(uintptr_t)&gdtr);
     tss_flush(GDT_TSS_SEL);
+
+    /* Wire IA32_GS_BASE to the BSP cpu_local block so per-CPU state is
+     * reachable via GS-relative addressing from any ring-0 context.
+     * IA32_KERNEL_GS_BASE is kept in sync for future SWAPGS readiness.
+     *
+     * cpu_local[0].self must be set BEFORE any code calls cpu_self(),
+     * which reads GS:0 to obtain the pointer. */
+    cpu_local[0].self    = &cpu_local[0];
+    cpu_local[0].cpu_id  = 0;
+    {
+        uint64_t addr = (uint64_t)(uintptr_t)&cpu_local[0];
+        uint32_t lo   = (uint32_t)(addr & 0xFFFFFFFFULL);
+        uint32_t hi   = (uint32_t)(addr >> 32);
+        __asm__ volatile ("wrmsr" :: "c"(0xC0000101u), "a"(lo), "d"(hi)); /* IA32_GS_BASE        */
+        __asm__ volatile ("wrmsr" :: "c"(0xC0000102u), "a"(lo), "d"(hi)); /* IA32_KERNEL_GS_BASE */
+    }
 }
 
 void tss_init(void) {

@@ -135,20 +135,27 @@ void isr_handler(struct full_frame *frame) {
         return;
     }
     if (frame->vector == 33) {
-        /* IRQ1 — PS/2 keyboard: route raw scancode to the userland kbd service. */
-        uint8_t sc = inb_direct(0x60);
-        (void)irq_routing_signal(1, sc);
+        /* IRQ1 — PS/2 keyboard: seL4-style deferred ACK.
+         * Mask the IRQ line BEFORE sending EOI so the PIC cannot re-assert
+         * IRQ1 between EOI and ring-3 reading port 0x60.  The handler calls
+         * SYS_IRQ_ACK to unmask after consuming the byte. */
+        pic_set_irq_mask(1, 1);
         pic_eoi(1);
+        if (irq_routing_signal(1, 0) < 0)
+            pic_set_irq_mask(1, 0); /* no handler: unmask immediately */
         return;
     }
 
     if (frame->vector >= 34 && frame->vector <= 47) {
         uint8_t irq = (uint8_t)(frame->vector - 32);
-        /* IRQ7 (v39) y IRQ15 (v47) pueden ser espurios del PIC.
-         * Para IRQ15 espurio hay que enviar EOI solo al PIC1, no al PIC2.
-         * Por ahora descartamos ambos sin EOI al slave; el resto recibe EOI. */
-        if (irq != 7 && irq != 15)
-            pic_eoi(irq);
+        /* IRQ7/IRQ15 can be spurious; discard without EOI to avoid
+         * acknowledging a real IRQ that hasn't fired. */
+        if (irq == 7 || irq == 15) return;
+        /* Deferred ACK: mask before EOI, signal, unmask if undelivered. */
+        pic_set_irq_mask(irq, 1);
+        pic_eoi(irq);
+        if (irq_routing_signal(irq, 0) < 0)
+            pic_set_irq_mask(irq, 0);
         return;
     }
 

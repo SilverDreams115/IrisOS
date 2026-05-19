@@ -18,6 +18,51 @@ volatile uint64_t scheduler_ticks = 0;
  * workaround, so it reflects real elapsed time and is used by SYS_CLOCK_GET. */
 static volatile uint64_t wall_ticks = 0;
 
+/*
+ * sched_handle_idle — fast-forward clock when the idle task is current and no
+ * non-idle task is runnable.  Advances scheduler_ticks to the nearest sleeping
+ * task's wake_tick so timed-out tasks become READY even when the timer ISR does
+ * not fire (QEMU TCG: no IRQs delivered during ring-0 spin).
+ *
+ * On return *out_chosen is set to the first runnable non-idle task found after
+ * the fast-forward, or remains NULL if none.
+ */
+static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
+    uint64_t min_wake = UINT64_MAX;
+    for (int j = 0; j < TASK_MAX; j++) {
+        if (tasks[j].wake_tick != 0 && tasks[j].wake_tick < min_wake)
+            min_wake = tasks[j].wake_tick;
+    }
+    if (min_wake != UINT64_MAX && min_wake > scheduler_ticks)
+        scheduler_ticks = min_wake;
+
+    for (int j = 0; j < TASK_MAX; j++) {
+        if (tasks[j].state == TASK_SLEEPING &&
+            tasks[j].wake_tick != 0 &&
+            tasks[j].wake_tick <= scheduler_ticks) {
+            tasks[j].state     = TASK_READY;
+            tasks[j].wake_tick = 0;
+        }
+        if ((tasks[j].state == TASK_BLOCKED_IPC ||
+             tasks[j].state == TASK_BLOCKED_IRQ) &&
+            tasks[j].wake_tick != 0 &&
+            tasks[j].wake_tick <= scheduler_ticks) {
+            tasks[j].timed_out = 1;
+            tasks[j].state     = TASK_READY;
+            tasks[j].wake_tick = 0;
+        }
+    }
+
+    struct task *candidate = idle->next;
+    for (int i = 0; i < TASK_MAX; i++) {
+        if (candidate != idle && task_is_runnable(candidate->state)) {
+            *out_chosen = candidate;
+            return;
+        }
+        candidate = candidate->next;
+    }
+}
+
 void task_yield(void) {
     /* Save and clear IF for the scheduler critical section; restore on exit.
      * Each task's IF state is preserved across context switches via RFLAGS
@@ -45,40 +90,9 @@ void task_yield(void) {
          * scheduler_ticks to the nearest wake_tick deadline so timed-out
          * tasks become READY even when the timer ISR does not fire (e.g.,
          * QEMU TCG: no IRQs delivered during ring-0 spin). */
-        if (old == idle) {
-            uint64_t min_wake = UINT64_MAX;
-            for (int j = 0; j < TASK_MAX; j++) {
-                if (tasks[j].wake_tick != 0 && tasks[j].wake_tick < min_wake)
-                    min_wake = tasks[j].wake_tick;
-            }
-            if (min_wake != UINT64_MAX && min_wake > scheduler_ticks)
-                scheduler_ticks = min_wake;
-            for (int j = 0; j < TASK_MAX; j++) {
-                if (tasks[j].state == TASK_SLEEPING &&
-                    tasks[j].wake_tick != 0 &&
-                    tasks[j].wake_tick <= scheduler_ticks) {
-                    tasks[j].state     = TASK_READY;
-                    tasks[j].wake_tick = 0;
-                }
-                if ((tasks[j].state == TASK_BLOCKED_IPC ||
-                     tasks[j].state == TASK_BLOCKED_IRQ) &&
-                    tasks[j].wake_tick != 0 &&
-                    tasks[j].wake_tick <= scheduler_ticks) {
-                    tasks[j].timed_out = 1;
-                    tasks[j].state     = TASK_READY;
-                    tasks[j].wake_tick = 0;
-                }
-            }
-            /* Re-scan for newly runnable tasks after the fast-forward. */
-            candidate = old->next;
-            for (int i = 0; i < TASK_MAX; i++) {
-                if (candidate != idle && task_is_runnable(candidate->state)) {
-                    chosen = candidate;
-                    break;
-                }
-                candidate = candidate->next;
-            }
-        }
+        if (old == idle)
+            sched_handle_idle(idle, &chosen);
+
         if (!chosen) {
             if (idle != old && task_is_runnable(idle->state)) {
                 chosen = idle;
@@ -100,7 +114,8 @@ void task_yield(void) {
     chosen->state      = TASK_RUNNING;
     chosen->ticks_left = chosen->time_slice;
     chosen->need_resched = 0;
-    current_task       = chosen;
+    set_current_task(chosen);
+    cpu_self()->context_switches++;
 
     int old_idx = (int)(old - tasks);
     int new_idx = (int)(chosen - tasks);
@@ -109,13 +124,17 @@ void task_yield(void) {
     tss_set_rsp0(new_kstack_top);
     syscall_set_kstack(new_kstack_top);
 
-    if (chosen->process && chosen->process->cr3 != 0)
-        __asm__ volatile ("mov %0, %%cr3" : : "r"(chosen->process->cr3) : "memory");
-    else
+    if (chosen->process && chosen->process->cr3 != 0) {
+        uint64_t cr3 = chosen->process->cr3;
+        if (iris_pcid_enabled)
+            cr3 |= (uint64_t)chosen->process->pcid;
+        __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
+    } else {
         __asm__ volatile ("mov %0, %%cr3" : : "r"(kernel_cr3) : "memory");
+    }
 
     if (old->state == TASK_DEAD)
-        pending_reap_task = old;
+        atomic_store_explicit(&pending_reap_task, old, memory_order_release);
 
     context_switch(&old->ctx, &chosen->ctx,
                    &task_rsp[old_idx], task_rsp[new_idx],
@@ -133,6 +152,8 @@ void scheduler_tick(void) {
 
     scheduler_ticks++;
     wall_ticks++;
+    if (current_task == task_list_head)
+        cpu_local[0].idle_ticks++;
     for (int i = 0; i < TASK_MAX; i++) {
         if (tasks[i].state == TASK_SLEEPING && tasks[i].wake_tick <= scheduler_ticks) {
             tasks[i].state     = TASK_READY;
@@ -190,4 +211,12 @@ uint64_t sched_current_ticks(void) {
 
 uint64_t sched_wall_ticks(void) {
     return wall_ticks;
+}
+
+uint64_t sched_context_switches(void) {
+    return cpu_local[0].context_switches;
+}
+
+uint64_t sched_idle_ticks(void) {
+    return cpu_local[0].idle_ticks;
 }

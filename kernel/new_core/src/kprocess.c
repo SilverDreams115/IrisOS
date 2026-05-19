@@ -13,6 +13,7 @@
 #include <stdint.h>
 
 static _Atomic uint32_t kprocess_live;
+static _Atomic uint32_t pcid_counter = 1;  /* next PCID to assign; 0 = kernel */
 
 static iris_error_t kprocess_quota_acquire(uint32_t *counter, uint32_t limit,
                                            struct KProcess *p) {
@@ -117,14 +118,31 @@ static const struct KObjectOps kprocess_ops = {
 };
 
 struct KProcess *kprocess_alloc(void) {
-    if (atomic_load_explicit(&kprocess_live, memory_order_relaxed) >= KPROCESS_MAX_LIVE)
+    /* Atomically reserve a slot before allocating memory.  The previous
+     * load+check+alloc+increment pattern had a TOCTOU window where concurrent
+     * callers could all pass the check before any incremented the counter,
+     * allowing live process count to exceed KPROCESS_MAX_LIVE.
+     *
+     * Strategy: fetch-add first, then roll back if the old value was already
+     * at the limit.  This is safe because kprocess_destroy always decrements,
+     * so the counter never permanently overshoots if we roll back here. */
+    uint32_t prev = atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
+    if (prev >= KPROCESS_MAX_LIVE) {
+        atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
         return 0;
+    }
     struct KProcess *p = kpage_alloc((uint32_t)sizeof(struct KProcess));
-    if (!p) return 0;
+    if (!p) {
+        atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+        return 0;
+    }
     kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
     handle_table_init(&p->handle_table);
     p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;
-    atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
+    if (iris_pcid_enabled) {
+        uint32_t raw = atomic_fetch_add_explicit(&pcid_counter, 1u, memory_order_relaxed);
+        p->pcid = (uint16_t)((raw % 4094u) + 1u);
+    }
     return p;
 }
 
@@ -322,19 +340,26 @@ iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) 
         if (page_idx >= KVMO_MAX_PAGES) return IRIS_ERR_INVALID_ARG;
 
         published = 0;
-        spinlock_lock(&m->vmo->base.lock);
+
+        /* Use the per-page shard lock rather than the VMO-level base.lock.
+         * This allows concurrent demand faults on different pages of the same
+         * VMO to allocate physical memory in parallel (within different shards),
+         * reducing contention when multiple threads of a process fault at once.
+         * base.lock continues to protect VMO metadata (owner binding, etc.). */
+        spinlock_t *shard = &m->vmo->page_shards[page_idx & (KVMO_PAGE_SHARDS - 1u)];
+        spinlock_lock(shard);
         phys = m->vmo->pages[page_idx];
         if (phys == 0) {
             uint8_t *kva;
             int k;
             if (kprocess_quota_acquire_page(p) != IRIS_OK) {
-                spinlock_unlock(&m->vmo->base.lock);
+                spinlock_unlock(shard);
                 return IRIS_ERR_NO_MEMORY;
             }
             phys = pmm_alloc_page();
             if (!phys) {
                 kprocess_quota_release_page(p);
-                spinlock_unlock(&m->vmo->base.lock);
+                spinlock_unlock(shard);
                 return IRIS_ERR_NO_MEMORY;
             }
             kva = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
@@ -349,10 +374,10 @@ iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) 
                 pmm_free_page(phys);
                 m->vmo->pages[page_idx] = 0;
             }
-            spinlock_unlock(&m->vmo->base.lock);
+            spinlock_unlock(shard);
             return IRIS_ERR_NO_MEMORY;
         }
-        spinlock_unlock(&m->vmo->base.lock);
+        spinlock_unlock(shard);
         return IRIS_OK;
     }
     return IRIS_ERR_NOT_FOUND;

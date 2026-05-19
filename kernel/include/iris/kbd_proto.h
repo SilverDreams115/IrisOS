@@ -61,7 +61,8 @@
  *   KBD_MSG_IRQ_SCANCODE (0x00000004) kernel → service  [no reply]
  *     Sent by irq_routing_signal() when hardware IRQ1 fires.
  *     Value matches IRQ_MSG_TYPE_SIGNAL (irq_routing.h); must stay in sync.
- *     data[0] uint8_t: raw PS/2 scancode byte.
+ *     data[0]: always 0 — kernel does not read port 0x60.
+ *     The kbd service reads the scancode from port 0x60 via its KIoPort cap.
  *       Bit 7 set: key release (scancode & 0x7F = base key code).
  *       Bit 7 clr: key press.
  *     No reply is sent; the service processes and loops.

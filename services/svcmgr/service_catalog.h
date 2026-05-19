@@ -30,6 +30,7 @@ struct iris_service_catalog_entry {
     uint8_t        give_kbd;        /* 1 = forward kbd service channel during bootstrap */
     uint8_t        give_vfs;        /* 1 = forward vfs service+reply channels during bootstrap */
     uint8_t        give_spawn_cap;  /* 1 = forward spawn cap so service can load initrd VMOs */
+    uint8_t        give_irqcap;     /* 1 = forward KIrqCap so service can call SYS_IRQ_ACK */
 };
 
 static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
@@ -49,6 +50,7 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .ioport_base = 0x60u,
         .ioport_count = 5u,
         .give_console = 0u,
+        .give_irqcap = 1u,
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_VFS,

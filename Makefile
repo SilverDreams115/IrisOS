@@ -28,7 +28,13 @@ KERNEL_KSTACK_OBJ    := $(BUILD_DIR)/kstack.o
 KERNEL_LIFECYCLE_OBJ := $(BUILD_DIR)/task_lifecycle.o
 KERNEL_TRAMP_OBJ     := $(BUILD_DIR)/user_trampoline.o
 KERNEL_USERINIT_OBJ  := $(BUILD_DIR)/user_init.o
-KERNEL_SYSCALL_OBJ   := $(BUILD_DIR)/syscall.o
+KERNEL_SYSCALL_DISPATCH_OBJ := $(BUILD_DIR)/syscall_dispatch.o
+KERNEL_SYSCALL_IPC_OBJ      := $(BUILD_DIR)/syscall_ipc.o
+KERNEL_SYSCALL_VM_OBJ       := $(BUILD_DIR)/syscall_vm.o
+KERNEL_SYSCALL_PROC_OBJ     := $(BUILD_DIR)/syscall_proc.o
+KERNEL_SYSCALL_CAP_OBJ      := $(BUILD_DIR)/syscall_cap.o
+KERNEL_SYSCALL_IRQ_OBJ      := $(BUILD_DIR)/syscall_irq.o
+KERNEL_SYSCALL_DIAG_OBJ     := $(BUILD_DIR)/syscall_diag.o
 KERNEL_USERCOPY_OBJ  := $(BUILD_DIR)/usercopy.o
 KERNEL_SYSCALLE_OBJ  := $(BUILD_DIR)/syscall_entry.o
 KERNEL_SERIAL_OBJ    := $(BUILD_DIR)/serial.o
@@ -49,6 +55,8 @@ KERNEL_INITRD_OBJ         := $(BUILD_DIR)/initrd.o
 KERNEL_FUTEX_OBJ          := $(BUILD_DIR)/futex.o
 KERNEL_KPAGE_OBJ          := $(BUILD_DIR)/kpage.o
 KERNEL_KLOG_OBJ           := $(BUILD_DIR)/klog.o
+KERNEL_PANIC_OBJ          := $(BUILD_DIR)/panic.o
+KERNEL_LAPIC_OBJ          := $(BUILD_DIR)/lapic.o
 STACK_GUARD_OBJ           := $(BUILD_DIR)/stack_guard.o
 # Service ELF binaries — output directly into their source directories so that
 # the objcopy -I binary relative path (services/xxx/xxx.elf) matches the symbol
@@ -78,7 +86,7 @@ KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_RUNTIME_SELFTESTS
 # user_init.S contains user_selftest + vfs_leak_child — only needed for selftests.
 KERNEL_DEMO_OBJS         += $(KERNEL_USERINIT_OBJ)
 endif
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_DEMO_OBJS)
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_DEMO_OBJS)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -205,7 +213,25 @@ $(KERNEL_TRAMP_OBJ): kernel/arch/x86_64/user_trampoline.S | dirs
 $(KERNEL_USERINIT_OBJ): kernel/arch/x86_64/user_init.S | dirs
 	gcc $(KERNEL_ASFLAGS) $(KERNEL_DEMO_DEFINES) -c $< -o $@
 
-$(KERNEL_SYSCALL_OBJ): kernel/core/syscall/syscall.c | dirs
+$(KERNEL_SYSCALL_DISPATCH_OBJ): kernel/core/syscall/syscall_dispatch.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_IPC_OBJ): kernel/core/syscall/syscall_ipc.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_VM_OBJ): kernel/core/syscall/syscall_vm.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_PROC_OBJ): kernel/core/syscall/syscall_proc.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_CAP_OBJ): kernel/core/syscall/syscall_cap.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_IRQ_OBJ): kernel/core/syscall/syscall_irq.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_DIAG_OBJ): kernel/core/syscall/syscall_diag.c kernel/core/syscall/syscall_priv.h | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_USERCOPY_OBJ): kernel/core/usercopy.c | dirs
@@ -267,6 +293,12 @@ $(KERNEL_KPAGE_OBJ): kernel/mm/kpage/kpage.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_KLOG_OBJ): kernel/core/klog/klog.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_PANIC_OBJ): kernel/core/panic/panic.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_LAPIC_OBJ): kernel/arch/x86_64/lapic.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 # ── userboot — ring-3 bootstrap; built as raw flat binary for direct kernel mapping ─

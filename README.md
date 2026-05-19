@@ -6,7 +6,7 @@ IRIS is an `x86_64` operating system built around a capability-based microkernel
 
 ```
 UEFI → BOOTX64.EFI → KERNEL.ELF
-  kernel: PMM, paging, GDT/IDT/PIC/PIT, scheduler, syscalls, initrd catalog
+  kernel: PMM, paging, PCID, GDT/IDT/PIC/PIT, LAPIC, scheduler, syscalls, initrd catalog
     → userboot (ring-3 flat binary, injected KBootstrapCap)
       → init
         → fb          (framebuffer painter, fire-and-forget)
@@ -23,23 +23,25 @@ Every service from `init` onward is a ring-3 ELF binary loaded by `svc_loader` u
 
 The system reaches a fully interactive runtime with all of the following active:
 
-- **Kernel**: PMM, 4-level paging, per-process address spaces, GDT/IDT, 8259A PIC, PIT at 100 Hz, round-robin + preemptive scheduler, `syscall`/`sysret` dispatch, capability enforcement
+- **Kernel**: PMM, 4-level paging with PCID (CR4.PCIDE), per-process address spaces, GDT/IDT, 8259A PIC, PIT at 100 Hz, LAPIC detected and software-enabled, round-robin + preemptive scheduler, `syscall`/`sysret` dispatch, capability enforcement
+- **SMP foundation**: per-CPU `iris_cpu_local` struct (GS-relative via IA32_GS_BASE), LAPIC ID stored per-CPU, context-switch and idle-tick counters; AP bringup deferred
 - **IPC**: `KChannel` ring-buffer IPC (capacity 128), attached-handle transfer with rights reduction, `KNotification` signal/wait, `SYS_CHAN_CALL` synchronous IPC, `SYS_CHAN_RECV_TIMEOUT`, `SYS_WAIT_ANY` (up to 64 channels)
-- **Memory**: demand-paged VMOs, `SYS_VMO_MAP`, `SYS_VMO_UNMAP`, `SYS_VMO_SHARE`, `SYS_VMO_SIZE`, per-process 8 MB physical page quota
+- **Memory**: demand-paged VMOs, `SYS_VMO_MAP`, `SYS_VMO_UNMAP`, `SYS_VMO_SHARE`, `SYS_VMO_SIZE`, per-process 8 MB physical page quota, VMO page-shard locks (16 shards)
 - **Process and thread management**: `SYS_PROCESS_CREATE`, `SYS_THREAD_CREATE`, `SYS_THREAD_START`, `SYS_THREAD_EXIT`, `SYS_PROCESS_WATCH`, `SYS_PROCESS_KILL`, `SYS_PROCESS_STATUS`, automatic teardown on last-thread exit
 - **Capability system**: per-handle rights (READ, WRITE, DUPLICATE, TRANSFER, ROUTE, MANAGE), rights reduction on dup/transfer, generation-stamped handle IDs, stale-handle detection
 - **Hardware capabilities**: `KIrqCap` (IRQ routing, capability-gated), `KIoPort` (I/O port range, whitelist-validated), `KBootstrapCap` (per-bit permission flags, one-shot framebuffer claim)
 - **Futex**: 256-entry futex table with per-process ownership, `SYS_FUTEX_WAIT` / `SYS_FUTEX_WAKE`
 - **Fault delivery**: ring-3 faults delivered as `FAULT_MSG_NOTIFY` on a registered exception channel; supervisor resumes or kills via `SYS_EXCEPTION_RESUME`
-- **Clock**: TSC calibrated at boot via PIT CH2 one-shot (~10 ms); `SYS_CLOCK_GET` returns monotonic nanoseconds; fallback to wall ticks if TSC unavailable
+- **Clock**: `SYS_CLOCK_GET` returns monotonic nanoseconds derived from TSC (when calibrated) or 100 Hz wall ticks (fallback)
+- **Scheduler diagnostics**: `SYS_SCHED_INFO` returns a 40-byte snapshot (ticks, wall\_ticks, context\_switches, idle\_ticks, live\_task\_count); requires `IRIS_BOOTCAP_KDEBUG`
 - **ASLR**: per-service load bias via RDTSC + xorshift64; R_X86_64_RELATIVE relocations applied at load time
-- **Stack protection**: `-fstack-protector-strong -mstack-protector-guard=global`; RDTSC-seeded canary per service, `__stack_chk_fail` calls `SYS_EXIT(255)`
-- **VFS**: 4 static boot files + 8 initrd-backed VMO-mapped files = 12 exports at runtime; demand-fault transparent for mapped entries
-- **Diagnostics**: `SYS_KLOG_DRAIN` (KDEBUG-gated); `SVCMGR_MSG_DIAG` aggregates service status from VFS and kbd directly; diag summary logged after every DIAG request
+- **Stack protection**: `-fstack-protector-strong -mstack-protector-guard=global`; RDTSC-seeded canary per service
+- **VFS**: 4 static boot files + 8 initrd-backed VMO-mapped files = 12 exports at runtime
+- **Diagnostics**: `SYS_KLOG_DRAIN` (KDEBUG-gated); `SVCMGR_MSG_DIAG` aggregates service status
 
 ## Syscall Surface
 
-68 syscall slots (0–67). Active:
+70 syscall slots (0–69). Active:
 
 | Number | Name | Notes |
 |--------|------|-------|
@@ -90,12 +92,14 @@ The system reaches a fully interactive runtime with all of the following active:
 | 59 | `SYS_HANDLE_INSERT` | |
 | 60 | `SYS_FRAMEBUFFER_VMO` | one-shot; requires `IRIS_BOOTCAP_FRAMEBUFFER` |
 | 61 | `SYS_INITRD_COUNT` | requires `IRIS_BOOTCAP_SPAWN_SERVICE` |
-| 62 | `SYS_CLOCK_GET` | monotonic ns via TSC |
+| 62 | `SYS_CLOCK_GET` | monotonic ns; TSC or wall-tick fallback |
 | 63 | `SYS_CHAN_RECV_TIMEOUT` | ns deadline |
 | 64 | `SYS_NOTIFY_WAIT_TIMEOUT` | ns deadline |
 | 65 | `SYS_KLOG_DRAIN` | requires `IRIS_BOOTCAP_KDEBUG` |
 | 66 | `SYS_EXCEPTION_RESUME` | action=0 resume, action=1 kill |
 | 67 | `SYS_VMO_SIZE` | returns VMO byte size |
+| 68 | `SYS_IRQ_ACK` | unmask IRQ line after handler consumes event |
+| 69 | `SYS_SCHED_INFO` | 40-byte scheduler snapshot; requires `IRIS_BOOTCAP_KDEBUG` |
 
 Retired (return `IRIS_ERR_NOT_SUPPORTED`): `SYS_WRITE(0)`, `SYS_BRK(7)`, `SYS_SPAWN(18)`, `SYS_NS_REGISTER(24)`, `SYS_NS_LOOKUP(25)`, `SYS_DIAG_SNAPSHOT(30)`, `SYS_SPAWN_SERVICE(31)`, `SYS_INITRD_LOOKUP(41)`, `SYS_SPAWN_ELF(42)`.
 
@@ -106,9 +110,9 @@ Retired (return `IRIS_ERR_NOT_SUPPORTED`): `SYS_WRITE(0)`, `SYS_BRK(7)`, `SYS_SP
 | Type | Description |
 |------|-------------|
 | `KOBJ_CHANNEL` | Ring-buffer IPC channel; capacity 128 messages |
-| `KOBJ_VMO` | Memory object; demand-paged, up to 512 pages |
+| `KOBJ_VMO` | Memory object; demand-paged or eager, up to 16384 pages |
 | `KOBJ_NOTIFICATION` | Lightweight signal/wait |
-| `KOBJ_PROCESS` | Process container; owns address space and handle table |
+| `KOBJ_PROCESS` | Process container; owns address space (CR3 + PCID) and handle table |
 | `KOBJ_IRQ_CAP` | Hardware IRQ routing capability |
 | `KOBJ_IOPORT` | I/O port range capability (whitelist-validated) |
 | `KOBJ_BOOTSTRAP_CAP` | First-task authority cap with per-bit permission flags |
@@ -130,9 +134,19 @@ Rights are stored per-handle, not per-object. When a handle is duplicated or tra
 `KBootstrapCap` delivered to `userboot` with flags:
 
 - `IRIS_BOOTCAP_SPAWN_SERVICE` — authorizes `SYS_INITRD_COUNT`, `SYS_INITRD_VMO`, `SYS_PROCESS_CREATE`
-- `IRIS_BOOTCAP_HW_ACCESS` — authorizes `SYS_CAP_CREATE_IRQCAP`, `SYS_CAP_CREATE_IOPORT` until `svcmgr` narrows it via `SYS_BOOTCAP_RESTRICT`
-- `IRIS_BOOTCAP_KDEBUG` — authorizes `SYS_POWEROFF`, `SYS_KLOG_DRAIN`
+- `IRIS_BOOTCAP_HW_ACCESS` — authorizes `SYS_CAP_CREATE_IRQCAP`, `SYS_CAP_CREATE_IOPORT`; `svcmgr` strips this via `SYS_BOOTCAP_RESTRICT` after claiming all hardware caps
+- `IRIS_BOOTCAP_KDEBUG` — authorizes `SYS_POWEROFF`, `SYS_KLOG_DRAIN`, `SYS_SCHED_INFO`
 - `IRIS_BOOTCAP_FRAMEBUFFER` — authorizes `SYS_FRAMEBUFFER_VMO` (one-shot; kernel clears flag after first claim)
+
+### PCID — Process Context Identifiers
+
+When the CPU supports CPUID.01H:ECX[17], the kernel enables CR4.PCIDE at boot. Each `KProcess` is assigned a unique PCID (range 1–4094) from an atomic counter; the kernel itself always runs with PCID 0. The scheduler includes the PCID in every CR3 load, so TLB entries for other live processes are not evicted on a context switch. CR3 is loaded with bit 63 = 0 (flush) on every switch; the no-flush optimization is deferred to a later phase. On CPUs without PCID the kernel falls back to full TLB flushes.
+
+### SMP Foundation
+
+`struct iris_cpu_local` is stored at GS:0 on the boot CPU (IA32_GS_BASE = `&cpu_local[0]`). It tracks the current task, LAPIC ID, context-switch count, and idle-tick count per CPU. The LAPIC is probed via CPUID and IA32_APIC_BASE, mapped through the physmap window, and software-enabled after `idt_init()`. The PIC and PIT remain the active interrupt source; AP bringup and the LAPIC timer are deferred.
+
+`cpu_self()` (GS-relative read) is safe from task context. It is not used from the bare IRQ handler stack to avoid a crash on the boot CPU's entry stack where GS semantics are not yet fully controlled.
 
 ### Process Lifecycle
 
@@ -144,6 +158,17 @@ Process teardown is ordered and automatic:
 4. `kprocess_free`: release kernel object
 
 Exit watches (`SYS_PROCESS_WATCH`) fire before the handle table is closed, so watchers receive a handle ID that is still live at notification time. Up to 8 watchers per process.
+
+### IRQ Delivery — Deferred ACK Model
+
+IRQ delivery follows a seL4-style deferred ACK contract:
+
+1. Kernel masks the IRQ line and sends EOI to clear the PIC ISR bit
+2. Kernel signals the registered `KChannel` (via `irq_routing_signal`)
+3. Ring-3 handler reads hardware registers (e.g. port 0x60 via `SYS_IOPORT_IN`)
+4. Ring-3 calls `SYS_IRQ_ACK` to unmask the line, re-enabling subsequent interrupts
+
+If the handler never calls `SYS_IRQ_ACK` the IRQ line stays masked permanently, giving the handler full control over delivery rate.
 
 ### IPC Invariants
 
@@ -159,6 +184,8 @@ Exit watches (`SYS_PROCESS_WATCH`) fire before the handle table is closed, so wa
 - IRQ route ownership is process-scoped: `kprocess_teardown` always calls `irq_routing_unregister_owner`, which only masks the PIC line if a route was actually registered to that process
 - `SYS_FRAMEBUFFER_VMO` clears the valid flag before copying the params struct to prevent TOCTOU double-claim
 - usercopy validates pages through the current process VMO mapping list, resolving demand faults before checking PTEs
+- PMM double-free calls `iris_panic`; `irq_spinlock_t` guards all PMM, futex, and klog operations
+- Stack RSP for bootstrap tasks is randomized by 0–240 bytes (16-byte aligned, RDTSC entropy) to reduce stack-layout predictability
 
 ## Services
 
@@ -182,7 +209,7 @@ Exit watches (`SYS_PROCESS_WATCH`) fire before the handle table is closed, so wa
 
 ### `kbd`
 
-- PS/2 keyboard driver; IRQ 1 routed via `KIrqCap`
+- PS/2 keyboard driver; IRQ 1 routed via `KIrqCap`; deferred ACK via `SYS_IRQ_ACK`
 - Protocols: `KBD_MSG_HELLO`, `KBD_MSG_STATUS`, `KBD_MSG_SUBSCRIBE`
 - Scancode events forwarded to all subscribers via `KBD_MSG_SCANCODE_EVENT`
 
@@ -205,18 +232,21 @@ Exit watches (`SYS_PROCESS_WATCH`) fire before the handle table is closed, so wa
 
 | Constant | Value |
 |----------|-------|
-| `TASK_MAX` | 64 |
+| `TASK_MAX` | 256 |
 | `KPROCESS_MAX_LIVE` | 64 |
 | `HANDLE_TABLE_MAX` | 1024 |
 | `KCHAN_CAPACITY` | 128 messages |
 | `KCHANNEL_WAITERS_MAX` | 8 per channel |
 | `KPROCESS_EXIT_WATCH_MAX` | 8 per process |
 | `KPROCESS_PHYS_PAGES_LIMIT` | 2048 pages (8 MB per process) |
+| `KVMO_MAX_PAGES` | 16384 pages (64 MB per VMO) |
+| `KVMO_PAGE_SHARDS` | 16 shard locks per VMO |
 | `FUTEX_TABLE_SIZE` | 256 |
 | `VFS_SERVICE_EXPORTS` | 16 slots |
 | `VFS_SERVICE_OPEN_FILES` | 32 |
 | `WAIT_ANY_MAX_CHANNELS` | 64 |
 | `IRQ_ROUTE_MAX` | 16 |
+| `PCID range` | 1–4094 per process; 0 = kernel |
 
 ## Key Address Space Constants
 
@@ -225,24 +255,27 @@ Exit watches (`SYS_PROCESS_WATCH`) fire before the handle table is closed, so wa
 | `USER_TEXT_BASE` | `0x8000200000` |
 | `USER_STACK_SIZE` | 32 KB (28 KB usable; 1 guard page) |
 | `USER_VMO_BASE` | `0x8050000000` |
-| VFS initrd slot stride | 8 MB per slot |
 | `KERNEL_VIRT_BASE` | `0xFFFFFFFF80000000` |
+| `PHYS_TO_VIRT(p)` | `p + 0xFFFF800000000000` |
+| `KSTACK_VIRT_BASE` | `0xFFFF800100000000` |
+| Kernel stack slot | 12288 bytes (1 guard + 2 data pages × 256 tasks = 3 MB virtual) |
 
 ## Build
 
 **Requirements:**
 
-- `gcc`, `ld`, `objcopy`, `readelf`
+- `gcc`, `ld`, `objcopy`
 - `gnu-efi`
 - `qemu-system-x86_64`
 - OVMF firmware
 
-**Build and check:**
+**Full rebuild:**
 
 ```bash
-make
-make check
+make clean && make
 ```
+
+Zero warnings policy: the build is treated as broken if `gcc -Wall -Wextra -Wshadow -Wundef` produces any diagnostic.
 
 **Run interactively:**
 
@@ -250,13 +283,12 @@ make check
 make run
 ```
 
-**Headless validation:**
+**Headless CI lanes:**
 
 ```bash
-make smoke-runtime          # 25 s default lane
-make smoke-runtime-selftests # 35 s selftest lane
-make smoke-full             # 90 s extended default lane
-make smoke-full-selftests   # 90 s extended selftest lane
+make smoke-runtime                      # 25 s default lane
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests   # 35 s selftest lane
+make smoke-full                         # 90 s extended lane
 ```
 
 ## Runtime Validation
@@ -266,10 +298,8 @@ The default CI lane (`smoke-runtime`, `smoke-full`) validates the following mark
 - `[IRIS][SCHED] running` — scheduler reached
 - `[SVCMGR] ready` — svcmgr bootstrapped all catalog services
 - `[USER][INIT][BOOT] healthy path OK` — init completed all staged health checks
-- `[USER] kbd shared reply OK` — shared kbd reply channel confirmed live
-- `VFS ready` — VFS exported all expected files
 - `[USER][INIT][DIAG] reply` — diagnostics round-trip completed
-- `[USER][INIT][TIMED] recv timeout OK` — timed IPC selftest (S-series)
+- `[USER][INIT][TIMED] recv timeout OK` — timed IPC selftest
 - `[USER][INIT][S8] exception delivery OK` — fault delivery and exception resume
 - `[USER][INIT][S9] channel seal OK` — seal semantics (drain-then-close)
 - `[USER][INIT][S10] rights reduction OK` — attached-handle rights reduction enforced
@@ -286,17 +316,17 @@ IRIS is not a general-purpose OS. The current tree does not provide:
 
 - persistent disk filesystem
 - networking stack
-- SMP / multicore
+- full SMP / AP bringup (infrastructure present; scheduler and IRQ delivery are single-CPU)
 - userland ELF loading from external storage
 - dynamic linker or shared libraries
 - POSIX compatibility layer
-- production crash recovery or observability
-- broad hardware platform support
+- production crash recovery or observability tooling
+- broad hardware platform support beyond QEMU x86-64
 
 ## Positioning
 
-IRIS is a capability-based microkernel project with a real user-space service boundary. It is not a toy kernel and it is not production software. It is a serious experimental system: architecturally coherent, headless-validated, and built to be a real platform for systems research.
+IRIS is a capability-based microkernel project with a real user-space service boundary. It is not a toy kernel and it is not production software. It is a serious experimental system: architecturally coherent, headless-validated on every commit, and built to be a real platform for systems research.
 
-The kernel owns: boot, PMM, paging, GDT/IDT, PIC/PIT, scheduler, syscall dispatch, capability enforcement, IRQ routing mechanism, initrd catalog, and first-task creation.
+The kernel owns: boot, PMM, 4-level paging with PCID, GDT/IDT, PIC/PIT, LAPIC detection, scheduler with preemption, syscall dispatch, capability enforcement, IRQ routing, initrd catalog, and first-task creation.
 
 The kernel does not own: VFS logic, keyboard handling, serial console output, runtime service discovery, service supervision, or shell behavior. All of that lives in ring 3.

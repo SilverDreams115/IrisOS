@@ -490,6 +490,40 @@ static int64_t svcmgr_send_ioport_cap(handle_id_t child_boot_h, handle_id_t mast
     return IRIS_OK;
 }
 
+static int64_t svcmgr_send_irqcap(handle_id_t child_boot_h, handle_id_t master_h) {
+    struct KChanMsg msg;
+    int64_t dup_h;
+
+    if (master_h == HANDLE_INVALID) return (int64_t)IRIS_ERR_INVALID_ARG;
+
+    /* Dup with RIGHT_ROUTE|RIGHT_TRANSFER; child receives RIGHT_ROUTE only. */
+    dup_h = svcmgr_syscall2(SYS_HANDLE_DUP, master_h, RIGHT_ROUTE | RIGHT_TRANSFER);
+    if (dup_h < 0) {
+        svcmgr_log(sm_str_bootdupfail);
+        return dup_h;
+    }
+
+    {
+        uint8_t *raw = (uint8_t *)&msg;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
+    }
+    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                           SVCMGR_BOOTSTRAP_KIND_IRQ_CAP);
+    msg.data_len = SVCMGR_BOOTSTRAP_MSG_LEN;
+    msg.attached_handle = (handle_id_t)dup_h;
+    msg.attached_rights = RIGHT_ROUTE;
+
+    if (svcmgr_syscall2(SYS_CHAN_SEND, child_boot_h, (uint64_t)(uintptr_t)&msg) < 0) {
+        handle_id_t tmp = (handle_id_t)dup_h;
+        svcmgr_close_handle_if_valid(&tmp);
+        svcmgr_log(sm_str_bootsendfail);
+        return (int64_t)IRIS_ERR_WOULD_BLOCK;
+    }
+
+    return IRIS_OK;
+}
+
 static int64_t svcmgr_send_spawn_cap(handle_id_t child_boot_h, handle_id_t master_h) {
     struct KChanMsg msg;
     int64_t dup_h;
@@ -555,6 +589,21 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
             : HANDLE_INVALID;
         if (ioport_master_h != HANDLE_INVALID) {
             r = svcmgr_send_ioport_cap(child_boot_h, ioport_master_h);
+            if (r != IRIS_OK) {
+                svcmgr_close_handle_if_valid(&child_boot_h);
+                return r;
+            }
+        }
+    }
+
+    /* Forward IRQ capability so service can call SYS_IRQ_ACK (deferred ACK). */
+    if (manifest->give_irqcap && manifest->irq_num != 0xFFu) {
+        handle_id_t irqcap_master_h =
+            (manifest->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE)
+            ? state->irq_caps[manifest->irq_num]
+            : HANDLE_INVALID;
+        if (irqcap_master_h != HANDLE_INVALID) {
+            r = svcmgr_send_irqcap(child_boot_h, irqcap_master_h);
             if (r != IRIS_OK) {
                 svcmgr_close_handle_if_valid(&child_boot_h);
                 return r;

@@ -40,6 +40,8 @@ static struct KVmo *kvmo_alloc(void) {
     struct KVmo *v = kpage_alloc((uint32_t)sizeof(struct KVmo));
     if (!v) return 0;
     kobject_init(&v->base, KOBJ_VMO, &kvmo_ops);
+    for (uint32_t i = 0; i < KVMO_PAGE_SHARDS; i++)
+        spinlock_init(&v->page_shards[i]);
     atomic_fetch_add_explicit(&kvmo_live, 1u, memory_order_relaxed);
     return v;
 }

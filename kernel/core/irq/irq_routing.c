@@ -82,6 +82,11 @@ uint32_t irq_routing_active_count(void) {
     return count;
 }
 
+void irq_routing_ack(uint8_t irq) {
+    if (irq >= IRQ_ROUTE_MAX) return;
+    pic_set_irq_mask(irq, 0);
+}
+
 void irq_routing_unregister_owner(struct KProcess *owner) {
     if (!owner) return;
 

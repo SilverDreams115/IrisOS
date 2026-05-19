@@ -22,5 +22,7 @@ void     scheduler_sleep_current(uint64_t ticks);
 uint32_t sched_live_task_count(void);
 uint64_t sched_current_ticks(void);
 uint64_t sched_wall_ticks(void);
+uint64_t sched_context_switches(void);
+uint64_t sched_idle_ticks(void);
 
 #endif

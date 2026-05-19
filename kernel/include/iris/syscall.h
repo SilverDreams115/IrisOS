@@ -25,7 +25,7 @@
  *   - live/transitional: current supported surface with compatibility notes
  *   - retired: permanently reserved; returns IRIS_ERR_NOT_SUPPORTED
  *
- * Current exported syscall number surface: 0..67.
+ * Current exported syscall number surface: 0..69.
  */
 
 /* Syscall numbers */
@@ -187,7 +187,7 @@
  * SYS_CAP_CREATE_IRQCAP(auth_handle, irq_num) → handle_id_t or negative iris_error_t
  *   auth_handle: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_HW_ACCESS.
  *   irq_num: hardware IRQ line (0–15).
- *   Returns a KIrqCap handle with RIGHT_ROUTE.
+ *   Returns a KIrqCap handle with RIGHT_ROUTE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
  *
  * SYS_CAP_CREATE_IOPORT(auth_handle, base, count) → handle_id_t or negative iris_error_t
  *   auth_handle: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_HW_ACCESS.
@@ -495,6 +495,38 @@
  *   For heap VMOs this is the value passed to SYS_VMO_CREATE.
  */
 #define SYS_VMO_SIZE   67
+
+/*
+ * IRQ deferred ACK — modern/conforming (iris_error_t).
+ *
+ * SYS_IRQ_ACK(irqcap_h) → 0 or negative iris_error_t
+ *   irqcap_h: KOBJ_IRQ_CAP with RIGHT_ROUTE.
+ *   Unmasks the hardware IRQ line recorded in irqcap_h, re-enabling delivery
+ *   to the registered KChannel.  Must be called after consuming the IRQ
+ *   (reading hardware registers) to allow subsequent interrupts to fire.
+ *
+ *   seL4-style deferred ACK contract:
+ *     1. Kernel masks the IRQ line and sends EOI to clear the PIC ISR bit.
+ *     2. Kernel signals the route channel (SYS_IRQ_ACK is not needed for delivery).
+ *     3. Ring-3 handler reads hardware (e.g. PS/2 port 0x60 via SYS_IOPORT_IN).
+ *     4. Ring-3 calls SYS_IRQ_ACK to unmask so subsequent IRQs can fire.
+ *
+ *   If ring-3 never calls SYS_IRQ_ACK the IRQ line stays masked permanently.
+ *   This gives the handler full control over IRQ delivery rate.
+ */
+#define SYS_IRQ_ACK    68
+
+/*
+ * Scheduler diagnostic snapshot — modern/conforming (iris_error_t).
+ *
+ * SYS_SCHED_INFO(buf_uptr, buf_size) → 0 or negative iris_error_t
+ *   buf_uptr:  user pointer to a buffer of at least 40 bytes.
+ *   buf_size:  byte size of the buffer; must be ≥ sizeof(struct iris_sched_info).
+ *   Requires IRIS_BOOTCAP_KDEBUG.
+ *   Fills the buffer with a snapshot of scheduler counters (see iris/sched_info.h).
+ *   Returns 0 on success.
+ */
+#define SYS_SCHED_INFO 69
 
 /*
  * Thread creation — modern/conforming (iris_error_t).

@@ -18,6 +18,8 @@
 #include <iris/nc/handle_table.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/rights.h>
+#include <iris/cpu_local.h>
+#include <iris/lapic.h>
 #ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
 #include <iris/phase3_selftest.h>
 #endif
@@ -33,7 +35,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     serial_init();
     klog_write("\n");
     klog_write("====================================\n");
-    klog_write("       IRIS KERNEL - PHASE 55       \n");
+    klog_write("       IRIS KERNEL - PHASE 62       \n");
     klog_write("====================================\n");
     klog_write("[IRIS][KERNEL] firmware services: OFF\n");
 
@@ -61,12 +63,22 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     klog_write("[IRIS][PAGING] initializing...\n");
     paging_init(saved_boot_info.framebuffer.base, saved_boot_info.framebuffer.size);
+    paging_enable_pcid();
     klog_write("[IRIS][PAGING] virtual memory active\n");
 
     /* ── 4. CPU tables + interrupt infrastructure ───────────────── */
     klog_write("[IRIS][GDT] initializing...\n");
     gdt_init();
     klog_write("[IRIS][GDT] OK\n");
+
+    klog_write("[IRIS][CPU] probing LAPIC...\n");
+    int lp = lapic_probe();
+    if (lp) {
+        cpu_local[0].lapic_id = lapic_id();
+        klog_write("[IRIS][CPU] LAPIC present (PIC/PIT remain active as timer source)\n");
+    } else {
+        klog_write("[IRIS][CPU] no LAPIC (legacy PIC mode)\n");
+    }
 
     klog_write("[IRIS][PIC] remapping IRQs...\n");
     pic_init();
@@ -76,6 +88,9 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     klog_write("[IRIS][IDT] initializing...\n");
     idt_init();
     klog_write("[IRIS][IDT] OK\n");
+
+    if (lapic_is_active())
+        lapic_software_enable();
 
     /* ── 5. Framebuffer params ─────────────────────────────────────── */
     klog_write("[IRIS][FB] saving params for ring-3 fb service\n");

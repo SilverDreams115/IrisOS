@@ -88,7 +88,7 @@
  * Both are within PML4 entry 256, sharing the kernel PDPT, so
  * mappings added here propagate to every process address space.
  *
- * Total virtual footprint: TASK_MAX * KSTACK_SLOT_SIZE = 64 * 12288 = 768 KB.
+ * Total virtual footprint: TASK_MAX * KSTACK_SLOT_SIZE = 256 * 12288 = 3 MB.
  * ─────────────────────────────────────────────────────────────────── */
 #define KSTACK_VIRT_BASE  (KERNEL_PHYS_WINDOW_BASE + PHYS_WINDOW_END)  /* 0xFFFF800100000000 */
 #define KSTACK_SLOT_SIZE  (3ULL * 4096ULL)   /* guard + 2 stack pages = 12 288 bytes */
@@ -97,7 +97,12 @@
  * Checked by usercopy.c to emit STAC/CLAC around user memory accesses. */
 extern int iris_smap_enabled;
 
+/* Set to 1 by paging_enable_pcid() when CR4.PCIDE is active.
+ * Checked by the scheduler to OR the process PCID into CR3 loads. */
+extern int iris_pcid_enabled;
+
 void     paging_init(uint64_t fb_phys, uint64_t fb_size);
+void     paging_enable_pcid(void);
 void     paging_map(uint64_t virt, uint64_t phys, uint64_t flags);
 uint64_t paging_virt_to_phys(uint64_t virt);
 int      paging_query_access(uint64_t virt, uint64_t *out_flags);

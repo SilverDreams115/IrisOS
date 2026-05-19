@@ -1,6 +1,16 @@
 #include <iris/serial.h>
 #include <stdint.h>
 
+/*
+ * Early-boot serial driver — ring-0, boot-phase and fatal-path ONLY.
+ *
+ * serial_init()  : called once by kernel_main before ring-3 exists.
+ * serial_write() : used by fatal/panic paths (kstack, kpage, phase3_selftest).
+ *
+ * Normal output goes through klog → SYS_KLOG_DRAIN → ring-3 console service.
+ * No serial I/O should happen in ring-0 after the first task switch.
+ */
+
 #define COM1_PORT 0x3F8
 
 static inline void outb(uint16_t port, uint8_t value) {
@@ -34,44 +44,4 @@ void serial_write(const char *s) {
         if (*s == '\n') serial_putc('\r');
         serial_putc(*s++);
     }
-}
-
-void serial_write_dec(uint64_t value) {
-    char buf[21]; int i = 20;
-    buf[i] = '\0';
-    if (value == 0) { buf[--i] = '0'; }
-    else { while (value > 0) { buf[--i] = '0' + (int)(value % 10); value /= 10; } }
-    serial_write(&buf[i]);
-}
-
-void serial_write_hex(uint64_t value) {
-    const char *hex = "0123456789ABCDEF";
-    char buf[19];
-    buf[0] = '0'; buf[1] = 'x';
-    for (int i = 0; i < 16; i++)
-        buf[2 + i] = hex[(value >> (60 - i * 4)) & 0xF];
-    buf[18] = '\0';
-    serial_write(buf);
-}
-
-void serial_write_hex16(uint16_t value) {
-    const char *hex = "0123456789ABCDEF";
-    char buf[7]; /* 0x + 4 digits + null */
-    buf[0] = '0'; buf[1] = 'x';
-    buf[2] = hex[(value >> 12) & 0xF];
-    buf[3] = hex[(value >>  8) & 0xF];
-    buf[4] = hex[(value >>  4) & 0xF];
-    buf[5] = hex[(value >>  0) & 0xF];
-    buf[6] = '\0';
-    serial_write(buf);
-}
-
-void serial_write_hex8(uint8_t value) {
-    const char *hex = "0123456789ABCDEF";
-    char buf[5]; /* 0x + 2 digits + null */
-    buf[0] = '0'; buf[1] = 'x';
-    buf[2] = hex[(value >> 4) & 0xF];
-    buf[3] = hex[(value >> 0) & 0xF];
-    buf[4] = '\0';
-    serial_write(buf);
 }

@@ -19,14 +19,14 @@
 
 /* ── Shared state definitions ────────────────────────────────────────────── */
 
-struct task      tasks[TASK_MAX];
-struct task     *current_task    = 0;
-struct task     *task_list_head  = 0;
-struct task     *task_list_tail  = 0;
-struct task     *pending_reap_task = 0;
-uint32_t         next_id         = 0;
-uint64_t         task_rsp[TASK_MAX];
-uint64_t         kernel_cr3      = 0;
+struct task         tasks[TASK_MAX];
+struct task        *current_task    = 0;
+struct task        *task_list_head  = 0;
+struct task        *task_list_tail  = 0;
+_Atomic(struct task *) pending_reap_task;  /* zero-initialized by C11 static storage */
+uint32_t            next_id         = 0;
+uint64_t            task_rsp[TASK_MAX];
+uint64_t            kernel_cr3      = 0;
 
 /* Initial FPU state captured at boot; copied into every new task. */
 uint8_t initial_fpu_state[512] __attribute__((aligned(16)));
@@ -117,10 +117,13 @@ static void reap_dead_task_off_cpu(struct task *t) {
 }
 
 void reap_pending_dead_task(void) {
-    if (!pending_reap_task || pending_reap_task == current_task) return;
-
-    struct task *t = pending_reap_task;
-    pending_reap_task = 0;
+    struct task *t = atomic_exchange_explicit(&pending_reap_task,
+                                              (struct task *)0,
+                                              memory_order_acq_rel);
+    if (!t || t == current_task) {
+        if (t) atomic_store_explicit(&pending_reap_task, t, memory_order_release);
+        return;
+    }
     reap_dead_task_off_cpu(t);
 }
 
@@ -188,7 +191,7 @@ void task_init(void) {
 
     task_list_head = idle;
     task_list_tail = idle;
-    current_task   = idle;
+    set_current_task(idle);
 }
 
 struct task *task_create(void (*entry)(void)) {
@@ -220,9 +223,13 @@ struct task *task_create(void (*entry)(void)) {
 void task_set_bootstrap_arg0(struct task *t, uint64_t arg0) {
     if (!t || t->ring != TASK_RING3 || !t->process || !t->process->cr3) return;
     t->ctx.rbx = arg0;
-    if (t->ustack_phys != 0) {
-        uint64_t *kptr = (uint64_t *)(uintptr_t)PHYS_TO_VIRT(
-                             t->ustack_phys + (uint64_t)t->user_stack_pages * 4096ULL - 8);
+    /* Write arg0 at the physical page corresponding to t->user_rsp.
+     * RSP entropy may have shifted user_rsp below the original stack top, so
+     * we compute the physical address from user_rsp rather than from
+     * user_stack_pages*4096-8 (which would target the wrong location). */
+    if (t->ustack_phys != 0 && t->user_rsp >= t->user_stack_base) {
+        uint64_t offset = t->user_rsp - t->user_stack_base;
+        uint64_t *kptr  = (uint64_t *)(uintptr_t)PHYS_TO_VIRT(t->ustack_phys + offset);
         *kptr = arg0;
     }
 }
@@ -298,7 +305,18 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     t->user_stack_top   = USER_STACK_TOP;
     t->user_stack_pages = ustack_pages;
     t->ustack_phys      = ustack_phys;
-    t->user_rsp         = USER_STACK_TOP - 8;
+
+    /* Stack RSP ASLR: randomize starting offset by 0..15 * 16 bytes (0..240).
+     * Uses RDTSC as an entropy source; the low bits vary per boot and per task.
+     * The offset is 16-byte aligned so the ABI requirement (RSP mod 16 == 8
+     * before the call instruction) is preserved.  The entropy range (≤240 bytes)
+     * keeps user_rsp well within the allocated stack region. */
+    {
+        uint32_t tsc_lo, tsc_hi;
+        __asm__ volatile ("rdtsc" : "=a"(tsc_lo), "=d"(tsc_hi));
+        uint64_t entropy = (uint64_t)tsc_lo & 0xFULL; /* 0..15 */
+        t->user_rsp = USER_STACK_TOP - 8 - (entropy << 4);
+    }
     t->process          = proc;
     proc->thread_count  = 1;
 
