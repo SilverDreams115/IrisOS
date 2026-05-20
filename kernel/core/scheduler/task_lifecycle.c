@@ -6,6 +6,7 @@
 #include <iris/nc/kchannel.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
+#include <iris/nc/kendpoint.h>
 #include <iris/futex.h>
 #include <iris/initrd.h>
 #include <stdint.h>
@@ -95,6 +96,7 @@ static void task_cancel_blocked_waits(struct task *t) {
     kchannel_cancel_waiter(t);
     knotification_cancel_waiter(t);
     futex_cancel_waiter(t);
+    kendpoint_cancel_waiter(t);
 }
 
 /* Called from reap_pending_dead_task, which runs on the next scheduler tick

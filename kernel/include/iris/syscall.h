@@ -25,7 +25,7 @@
  *   - live/transitional: current supported surface with compatibility notes
  *   - retired: permanently reserved; returns IRIS_ERR_NOT_SUPPORTED
  *
- * Current exported syscall number surface: 0..72.
+ * Current exported syscall number surface: 0..77.
  */
 
 /* Syscall numbers */
@@ -633,6 +633,40 @@
  */
 #define SYS_POWEROFF           54
 
+/*
+ * Synchronous endpoint IPC — modern/conforming (iris_error_t).
+ *
+ * KEndpoint is a seL4-style rendezvous IPC primitive.  Unlike KChannel it has
+ * no message queue: every send blocks until a receiver is ready (or vice versa).
+ * Message delivery is atomic — both sides unblock in the same scheduler step.
+ *
+ * SYS_ENDPOINT_CREATE() → handle_id or negative iris_error_t
+ *   Creates a new KEndpoint with RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *
+ * SYS_EP_SEND(ep_h, msg_uptr) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE.  Blocks until a receiver is ready (rendezvous).
+ *   msg_uptr: user pointer to struct IrisMsg (48 bytes).
+ *   Returns IRIS_ERR_CLOSED if the endpoint is closed while blocked.
+ *
+ * SYS_EP_RECV(ep_h, msg_uptr) → 0 or negative iris_error_t
+ *   Requires RIGHT_READ.  Blocks until a sender is ready (rendezvous).
+ *   msg_uptr: user pointer to struct IrisMsg; filled with the received message.
+ *   Returns IRIS_ERR_CLOSED if the endpoint is closed while blocked.
+ *
+ * SYS_EP_NB_SEND(ep_h, msg_uptr) → 0 or negative iris_error_t
+ *   Non-blocking send: returns IRIS_ERR_WOULD_BLOCK immediately if no receiver
+ *   is already waiting.  Otherwise identical to SYS_EP_SEND.
+ *
+ * SYS_EP_NB_RECV(ep_h, msg_uptr) → 0 or negative iris_error_t
+ *   Non-blocking receive: returns IRIS_ERR_WOULD_BLOCK immediately if no sender
+ *   is already waiting.  Otherwise identical to SYS_EP_RECV.
+ */
+#define SYS_ENDPOINT_CREATE 73
+#define SYS_EP_SEND         74
+#define SYS_EP_RECV         75
+#define SYS_EP_NB_SEND      76
+#define SYS_EP_NB_RECV      77
+
 #define IRIS_HANDLE_TYPE_PROCESS      0u
 #define IRIS_HANDLE_TYPE_CHANNEL      1u
 #define IRIS_HANDLE_TYPE_NOTIFICATION 2u
@@ -641,6 +675,7 @@
 #define IRIS_HANDLE_TYPE_IRQ_CAP      5u
 #define IRIS_HANDLE_TYPE_IOPORT       6u
 #define IRIS_HANDLE_TYPE_INITRD_ENTRY 7u
+#define IRIS_HANDLE_TYPE_ENDPOINT     8u
 
 #ifndef __ASSEMBLER__
 #ifdef __KERNEL__

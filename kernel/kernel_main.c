@@ -35,7 +35,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     serial_init();
     klog_write("\n");
     klog_write("====================================\n");
-    klog_write("       IRIS KERNEL - PHASE 65       \n");
+    klog_write("       IRIS KERNEL - PHASE 66       \n");
     klog_write("====================================\n");
     klog_write("[IRIS][KERNEL] firmware services: OFF\n");
 

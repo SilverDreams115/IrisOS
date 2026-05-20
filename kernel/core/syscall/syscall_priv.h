@@ -20,6 +20,7 @@
 #include <iris/nc/kirqcap.h>
 #include <iris/nc/kioport.h>
 #include <iris/nc/kinitrdentry.h>
+#include <iris/nc/kendpoint.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
 #include <iris/irq_routing.h>
@@ -238,6 +239,13 @@ uint64_t sys_ioport_in(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+
+/* ── Forward declarations — endpoint IPC ─────────────────────────── */
+uint64_t sys_endpoint_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — diag ─────────────────────────────────── */
 uint64_t sys_clock_get(uint64_t arg0, uint64_t arg1, uint64_t arg2);

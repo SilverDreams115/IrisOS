@@ -2,8 +2,10 @@
 #define IRIS_TASK_H
 
 #include <stdint.h>
+#include <iris/ipc_msg.h>
 
 struct KProcess;
+struct KEndpoint;
 
 #define TASK_MAX         256
 #define TASK_STACK_SIZE  8192    /* kernel stack per task */
@@ -16,6 +18,8 @@ typedef enum {
     TASK_BLOCKED_IRQ,   /* blocked waiting for a KNotification signal */
     TASK_SLEEPING,      /* blocked until a timer tick count is reached */
     TASK_BLOCKED_FAULT, /* suspended pending exception handler decision */
+    TASK_BLOCKED_SEND,  /* blocked waiting for a receiver on a KEndpoint */
+    TASK_BLOCKED_RECV,  /* blocked waiting for a sender on a KEndpoint */
     TASK_DEAD,
 } task_state_t;
 
@@ -69,6 +73,13 @@ struct task {
     uint32_t          need_resched; /* set by scheduler_tick when ticks_left hits 0 */
     uint32_t          timed_out;   /* set by scheduler_tick when a timed block expires */
     uint64_t          wake_tick;   /* deadline tick: valid for TASK_SLEEPING and timed BLOCKED_IPC/IRQ */
+
+    /* Synchronous endpoint IPC staging. */
+    struct IrisMsg      ipc_msg;        /* 48-byte staging/delivery buffer */
+    uint32_t            ipc_msg_ready;  /* set by sender on successful rendezvous */
+    uint32_t            ipc_ep_closed;  /* set by kendpoint_close while task was blocked */
+    struct task        *ep_next;        /* intrusive link for endpoint queue */
+    struct KEndpoint   *blocking_ep;    /* endpoint where task is blocked, or NULL */
 
     /* FPU/SSE state — 512-byte FXSAVE image, must be 16-byte aligned.
      * Saved and restored on every context switch so FPU state never leaks
