@@ -6,6 +6,7 @@
 
 struct KProcess;
 struct KEndpoint;
+struct KObject;
 
 #define TASK_MAX         256
 #define TASK_STACK_SIZE  8192    /* kernel stack per task */
@@ -74,12 +75,19 @@ struct task {
     uint32_t          timed_out;   /* set by scheduler_tick when a timed block expires */
     uint64_t          wake_tick;   /* deadline tick: valid for TASK_SLEEPING and timed BLOCKED_IPC/IRQ */
 
-    /* Synchronous endpoint IPC staging. */
-    struct IrisMsg      ipc_msg;        /* 48-byte staging/delivery buffer */
-    uint32_t            ipc_msg_ready;  /* set by sender on successful rendezvous */
-    uint32_t            ipc_ep_closed;  /* set by kendpoint_close while task was blocked */
-    struct task        *ep_next;        /* intrusive link for endpoint queue */
-    struct KEndpoint   *blocking_ep;    /* endpoint where task is blocked, or NULL */
+    /* Synchronous endpoint IPC staging (Ph66+). */
+    struct IrisMsg      ipc_msg;         /* 64-byte staging/delivery buffer */
+    uint32_t            ipc_msg_ready;   /* set by sender on successful rendezvous */
+    uint32_t            ipc_ep_closed;   /* set by kendpoint_close while task was blocked */
+    struct task        *ep_next;         /* intrusive link for endpoint queue */
+    struct KEndpoint   *blocking_ep;     /* endpoint where task is blocked, or NULL */
+    /* Ph68: capability staged for transfer during a blocking send */
+    struct KObject     *ep_cap_obj;      /* kobject being transferred; NULL = none */
+    uint32_t            ep_cap_rights;   /* rights to grant on ep_cap_obj */
+    /* Ph69: IPC buffer staging */
+    uint32_t            ipc_kbuf_len;    /* valid bytes in ipc_kbuf */
+    uint64_t            ep_recv_buf_uptr;/* receiver's output buffer user addr (set at EP_RECV) */
+    uint8_t             ipc_kbuf[IRIS_IPC_BUF_SIZE]; /* kernel-side bulk payload staging */
 
     /* FPU/SSE state — 512-byte FXSAVE image, must be 16-byte aligned.
      * Saved and restored on every context switch so FPU state never leaks

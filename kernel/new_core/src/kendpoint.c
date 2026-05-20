@@ -12,10 +12,15 @@ static void kendpoint_obj_close(struct KObject *obj) {
     uint64_t flags = irq_spinlock_lock(&ep->lock);
     ep->closed = 1;
 
-    /* Wake all blocked senders and receivers so they return IRIS_ERR_CLOSED. */
+    /* Wake all blocked tasks; release any staged caps from blocking senders. */
     struct task *t = ep->queue_head;
     while (t) {
         struct task *nxt = t->ep_next;
+        if (t->ep_cap_obj) {
+            kobject_release(t->ep_cap_obj);
+            t->ep_cap_obj    = 0;
+            t->ep_cap_rights = 0;
+        }
         t->ep_next       = 0;
         t->blocking_ep   = 0;
         t->ipc_ep_closed = 1;
@@ -59,8 +64,8 @@ void kendpoint_close(struct KEndpoint *ep) {
 
 /*
  * kendpoint_cancel_waiter — remove task t from the endpoint queue it is
- * blocked on (if any).  Called from task_cancel_blocked_waits when a task
- * is forcibly killed; does NOT change t->state (caller handles that).
+ * blocked on.  Called from task_cancel_blocked_waits on forcible kill.
+ * Releases any staged cap (ep_cap_obj).  Does NOT change t->state.
  */
 void kendpoint_cancel_waiter(struct task *t) {
     if (!t) return;
@@ -92,5 +97,13 @@ void kendpoint_cancel_waiter(struct task *t) {
     t->ep_next     = 0;
     t->blocking_ep = 0;
 
+    /* Release staged cap now that the send is being cancelled. */
+    struct KObject *staged_cap = t->ep_cap_obj;
+    t->ep_cap_obj    = 0;
+    t->ep_cap_rights = 0;
+
     irq_spinlock_unlock(&ep->lock, flags);
+
+    if (staged_cap)
+        kobject_release(staged_cap);
 }
