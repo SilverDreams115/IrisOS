@@ -1,4 +1,5 @@
 #include "scheduler_priv.h"
+#include <iris/lapic.h>
 #include <iris/pmm.h>
 #include <iris/tss.h>
 #include <iris/paging.h>
@@ -7,6 +8,8 @@
 #include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kendpoint.h>
+#include <iris/nc/kschedctx.h>
+#include <iris/nc/kreply.h>
 #include <iris/futex.h>
 #include <iris/initrd.h>
 #include <stdint.h>
@@ -28,6 +31,101 @@ _Atomic(struct task *) pending_reap_task;  /* zero-initialized by C11 static sto
 uint32_t            next_id         = 0;
 uint64_t            task_rsp[TASK_MAX];
 uint64_t            kernel_cr3      = 0;
+
+/* ── O(1) per-CPU run queue ──────────────────────────────────────────────── */
+
+static struct CpuRunQueue cpu_rqs[MAX_CPUS];
+_Atomic uint32_t          sched_live_count;
+
+void rq_enqueue(struct task *t) {
+    struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
+    if (!rq) return;
+    int idx  = (int)(t - tasks);
+    int prio = (int)(uint8_t)t->priority;
+    uint64_t flags = irq_spinlock_lock(&rq->lock);
+    if (rq->queued[idx]) { irq_spinlock_unlock(&rq->lock, flags); return; }
+    rq->queued[idx] = 1;
+    rq->next[idx]   = -1;
+    if (rq->head[prio] == -1) {
+        rq->head[prio] = idx;
+        rq->tail[prio] = idx;
+        rq->mask[prio >> 6] |= (1ULL << (prio & 63));
+    } else {
+        rq->next[rq->tail[prio]] = idx;
+        rq->tail[prio]           = idx;
+    }
+    irq_spinlock_unlock(&rq->lock, flags);
+}
+
+void rq_remove(struct task *t) {
+    struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
+    if (!rq) return;
+    int idx = (int)(t - tasks);
+    uint64_t flags = irq_spinlock_lock(&rq->lock);
+    if (!rq->queued[idx]) { irq_spinlock_unlock(&rq->lock, flags); return; }
+    int prio = (int)(uint8_t)t->priority;
+    int prev = -1, cur = rq->head[prio];
+    while (cur != -1 && cur != idx) { prev = cur; cur = rq->next[cur]; }
+    if (cur == -1) { rq->queued[idx] = 0; irq_spinlock_unlock(&rq->lock, flags); return; }
+    int nxt = rq->next[idx];
+    if (prev == -1)              rq->head[prio] = nxt;
+    else                         rq->next[prev]  = nxt;
+    if (rq->tail[prio] == idx)   rq->tail[prio]  = prev;
+    if (rq->head[prio] == -1)
+        rq->mask[prio >> 6] &= ~(1ULL << (prio & 63));
+    rq->queued[idx] = 0;
+    rq->next[idx]   = -1;
+    irq_spinlock_unlock(&rq->lock, flags);
+}
+
+struct task *rq_dequeue_best(void) {
+    struct CpuRunQueue *rq = cpu_self()->rq;
+    if (!rq) return 0;
+    uint64_t flags = irq_spinlock_lock(&rq->lock);
+    for (int w = 3; w >= 0; w--) {
+        if (!rq->mask[w]) continue;
+        int bit  = 63 - __builtin_clzll(rq->mask[w]);
+        int prio = w * 64 + bit;
+        int idx  = rq->head[prio];
+        int nxt  = rq->next[idx];
+        rq->head[prio] = nxt;
+        if (nxt == -1) {
+            rq->tail[prio] = -1;
+            rq->mask[w] &= ~(1ULL << bit);
+        }
+        rq->queued[idx] = 0;
+        rq->next[idx]   = -1;
+        irq_spinlock_unlock(&rq->lock, flags);
+        return &tasks[idx];
+    }
+    irq_spinlock_unlock(&rq->lock, flags);
+    return 0;
+}
+
+int rq_top_priority(void) {
+    struct CpuRunQueue *rq = cpu_self()->rq;
+    if (!rq) return -1;
+    uint64_t flags = irq_spinlock_lock(&rq->lock);
+    int result = -1;
+    for (int w = 3; w >= 0; w--) {
+        if (rq->mask[w]) {
+            result = w * 64 + (63 - __builtin_clzll(rq->mask[w]));
+            break;
+        }
+    }
+    irq_spinlock_unlock(&rq->lock, flags);
+    return result;
+}
+
+void task_wakeup(struct task *t) {
+    if (!t || t->state == TASK_DEAD) return;
+    t->state = TASK_READY;
+    if (t != task_list_head) {
+        rq_enqueue(t);
+        if (t->home_cpu != cpu_self()->cpu_id)
+            lapic_send_ipi(cpu_local[t->home_cpu].lapic_id, RESCHEDULE_IPI_VECTOR);
+    }
+}
 
 /* Initial FPU state captured at boot; copied into every new task. */
 uint8_t initial_fpu_state[512] __attribute__((aligned(16)));
@@ -58,6 +156,7 @@ void task_init_fpu_state(struct task *t) {
 void task_reset_slot(struct task *t) {
     if (!t) return;
     int idx = (int)(t - tasks);
+    rq_remove(t);  /* ensure task is dequeued before slot is zeroed */
     kstack_free(t, idx);
     uint8_t *raw = (uint8_t *)t;
     for (uint32_t i = 0; i < sizeof(*t); i++) raw[i] = 0;
@@ -97,6 +196,21 @@ static void task_cancel_blocked_waits(struct task *t) {
     knotification_cancel_waiter(t);
     futex_cancel_waiter(t);
     kendpoint_cancel_waiter(t);
+    /* Ph85: cancel pending KReply (task was in TASK_BLOCKED_REPLY). */
+    if (t->pending_kreply) {
+        struct KReply *r = t->pending_kreply;
+        t->pending_kreply = 0;
+        kreply_cancel_caller(r); /* clears r->caller; sets caller READY (no-op here) */
+        kobject_release(&r->base);
+    }
+}
+
+/* Release the sched_ctx retained ref and clear the pointer. */
+static void task_release_sched_ctx(struct task *t) {
+    if (t->sched_ctx) {
+        kobject_release(&t->sched_ctx->base);
+        t->sched_ctx = 0;
+    }
 }
 
 /* Called from reap_pending_dead_task, which runs on the next scheduler tick
@@ -111,7 +225,9 @@ static void reap_dead_task_off_cpu(struct task *t) {
     if (is_last)
         kprocess_reap_address_space(proc);
 
+    atomic_fetch_sub_explicit(&sched_live_count, 1u, memory_order_relaxed);
     unlink_task(t);
+    task_release_sched_ctx(t);
     task_reset_slot(t);
 
     if (is_last)
@@ -131,20 +247,17 @@ void reap_pending_dead_task(void) {
 
 static void free_user_stack_pages(struct task *t) {
     if (!t || t->ustack_phys == 0 || t->user_stack_pages == 0) return;
-    for (uint32_t pg = 0; pg < t->user_stack_pages; pg++)
-        pmm_free_page(t->ustack_phys + (uint64_t)pg * 4096ULL);
+    pmm_free_contig(t->ustack_phys, t->user_stack_pages);
 }
 
 static void free_user_text_pages(struct task *t) {
     if (!t || t->utext_phys == 0 || t->utext_pages == 0) return;
-    for (uint32_t pg = 0; pg < t->utext_pages; pg++)
-        pmm_free_page(t->utext_phys + (uint64_t)pg * 4096ULL);
+    pmm_free_contig(t->utext_phys, t->utext_pages);
 }
 
 static void free_phys_pages_range(uint64_t base_phys, uint32_t page_count) {
-    if (base_phys == 0) return;
-    for (uint32_t pg = 0; pg < page_count; pg++)
-        pmm_free_page(base_phys + (uint64_t)pg * 4096ULL);
+    if (base_phys == 0 || page_count == 0) return;
+    pmm_free_contig(base_phys, page_count);
 }
 
 void setup_initial_context(struct task *t, void (*entry)(void)) {
@@ -176,6 +289,16 @@ void task_init(void) {
     __asm__ volatile ("fxsaveq (%0)" : : "r"(initial_fpu_state) : "memory");
 
     kernel_cr3 = pml4_get_current();
+
+    /* Initialize CPU 0's run queue and wire it before any rq_* call. */
+    struct CpuRunQueue *rq0 = &cpu_rqs[0];
+    irq_spinlock_init(&rq0->lock);
+    for (int i = 0; i < 256; i++) { rq0->head[i] = -1; rq0->tail[i] = -1; }
+    for (int i = 0; i < TASK_MAX; i++) { rq0->next[i] = -1; rq0->queued[i] = 0; }
+    rq0->mask[0] = rq0->mask[1] = rq0->mask[2] = rq0->mask[3] = 0;
+    cpu_local[0].rq = rq0;
+
+    atomic_store_explicit(&sched_live_count, 1u, memory_order_relaxed); /* idle */
 
     for (int i = 0; i < TASK_MAX; i++)
         task_reset_slot(&tasks[i]);
@@ -210,10 +333,15 @@ struct task *task_create(void (*entry)(void)) {
     task_init_fpu_state(t);
     t->id         = next_id++;
     t->state      = TASK_READY;
+    t->priority   = TASK_PRIORITY_DEFAULT;
     t->time_slice = TASK_DEFAULT_SLICE;
     t->ticks_left = TASK_DEFAULT_SLICE;
+    t->home_cpu   = 0;
 
     setup_initial_context(t, entry);
+
+    rq_enqueue(t);
+    atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
 
     task_list_tail->next = t;
     t->next              = task_list_head;
@@ -261,14 +389,17 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     t->id         = next_id++;
     t->state      = TASK_READY;
     t->ring       = TASK_RING3;
+    t->priority   = TASK_PRIORITY_DEFAULT;
     t->time_slice = TASK_DEFAULT_SLICE;
     t->ticks_left = TASK_DEFAULT_SLICE;
+    t->home_cpu   = 0;
 
     proc = kprocess_alloc();
     if (!proc) goto fail;
 
     proc->cr3 = paging_create_user_space();
     if (proc->cr3 == 0) goto fail;
+    proc->user_cr3 = paging_make_user_cr3(proc->cr3, proc->pcid);
 
     /* Copy userboot binary to page-aligned PMM pages. The binary symbol is in
      * kernel .rodata at an unaligned offset; paging_map_checked_in requires
@@ -343,6 +474,9 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     t->utext_phys  = ub_copy_phys;
     t->utext_pages = ub_pages;
 
+    rq_enqueue(t);
+    atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
+
     task_list_tail->next = t;
     t->next              = task_list_head;
     task_list_tail       = t;
@@ -380,7 +514,9 @@ void task_abort_spawned_user(struct task *t) {
     if (proc)
         kprocess_reap_address_space(proc);
 
+    atomic_fetch_sub_explicit(&sched_live_count, 1u, memory_order_relaxed);
     unlink_task(t);
+    task_release_sched_ctx(t);
     task_reset_slot(t);
 
     if (proc)
@@ -404,8 +540,10 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
     t->id         = next_id++;
     t->state      = TASK_READY;
     t->ring       = TASK_RING3;
+    t->priority   = TASK_PRIORITY_DEFAULT;
     t->time_slice = TASK_DEFAULT_SLICE;
     t->ticks_left = TASK_DEFAULT_SLICE;
+    t->home_cpu   = 0;
     t->user_entry = entry_vaddr;
     t->user_rsp   = user_rsp;
     t->process    = proc;
@@ -430,6 +568,9 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
     t->ctx.rflags = 0x202ULL;
 
     proc->thread_count++;
+
+    rq_enqueue(t);
+    atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
 
     task_list_tail->next = t;
     t->next              = task_list_head;
@@ -468,7 +609,9 @@ void task_kill_external(struct task *t) {
         kprocess_reap_address_space(proc);
     }
 
+    atomic_fetch_sub_explicit(&sched_live_count, 1u, memory_order_relaxed);
     unlink_task(t);
+    task_release_sched_ctx(t);
     task_reset_slot(t);
 
     if (do_teardown)

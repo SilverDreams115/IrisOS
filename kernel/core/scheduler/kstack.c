@@ -33,8 +33,7 @@ int kstack_alloc(struct task *t, int idx) {
                               PAGE_PRESENT | PAGE_WRITABLE | PAGE_NX) != 0 ||
         paging_map_checked_in(kernel_cr3, virt_pg1, phys + KSTACK_PAGE_SIZE,
                               PAGE_PRESENT | PAGE_WRITABLE | PAGE_NX) != 0) {
-        pmm_free_page(phys);
-        pmm_free_page(phys + KSTACK_PAGE_SIZE);
+        pmm_free_contig(phys, 2);
         return -1;
     }
 
@@ -48,8 +47,7 @@ void kstack_free(struct task *t, int idx) {
     uint64_t virt_base = KSTACK_VIRT_BASE + (uint64_t)idx * KSTACK_SLOT_SIZE;
     paging_unmap_in(kernel_cr3, virt_base + KSTACK_PAGE_SIZE);
     paging_unmap_in(kernel_cr3, virt_base + KSTACK_PAGE_SIZE * 2);
-    pmm_free_page(t->kstack_phys);
-    pmm_free_page(t->kstack_phys + KSTACK_PAGE_SIZE);
+    pmm_free_contig(t->kstack_phys, 2);
     t->kstack      = 0;
     t->kstack_phys = 0;
 }

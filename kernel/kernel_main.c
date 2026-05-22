@@ -17,6 +17,7 @@
 #include <iris/nc/kprocess.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kuntyped.h>
 #include <iris/nc/rights.h>
 #include <iris/cpu_local.h>
 #include <iris/lapic.h>
@@ -29,17 +30,25 @@ static struct iris_boot_info saved_boot_info;
 struct iris_fb_params g_iris_fb_params;
 int                   g_iris_fb_params_valid = 0;
 
+static inline void _early_putc(char c) {
+    __asm__ volatile("outb %0, %1" : : "a"((uint8_t)c), "Nd"((uint16_t)0x3F8));
+}
+
 void iris_kernel_main(struct iris_boot_info *boot_info) {
+
+    _early_putc('K'); /* raw serial: reached kernel_main */
 
     /* ── 1. Serial + banner ─────────────────────────────────────── */
     serial_init();
+    _early_putc('S'); /* raw serial: serial_init returned */
     klog_write("\n");
     klog_write("====================================\n");
-    klog_write("       IRIS KERNEL - PHASE 69       \n");
+    klog_write("       IRIS KERNEL - PHASE 92\n");
     klog_write("====================================\n");
     klog_write("[IRIS][KERNEL] firmware services: OFF\n");
 
     /* ── 2. Boot info validation ────────────────────────────────── */
+    _early_putc('B'); /* raw serial: boot_info validation */
     if (!boot_info || boot_info->magic != IRIS_BOOTINFO_MAGIC) {
         klog_write("[IRIS][KERNEL] FATAL: invalid boot protocol\n");
         for (;;) __asm__ volatile ("hlt");
@@ -55,16 +64,23 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     klog_write(")\n");
 
     /* ── 3. Core memory subsystems ──────────────────────────────── */
+    _early_putc('P'); /* raw serial: pmm_init */
     klog_write("[IRIS][PMM] initializing...\n");
     pmm_init(&saved_boot_info);
     klog_write("[IRIS][PMM] free RAM: ");
     klog_write_dec((pmm_free_pages() * 4096) / (1024 * 1024));
     klog_write(" MB\n");
 
+    _early_putc('G'); /* raw serial: paging_init */
     klog_write("[IRIS][PAGING] initializing...\n");
     paging_init(saved_boot_info.framebuffer.base, saved_boot_info.framebuffer.size);
     paging_enable_pcid();
+    _early_putc('g'); /* raw serial: paging done */
     klog_write("[IRIS][PAGING] virtual memory active\n");
+
+    /* Activate the O(log N) buddy allocator now that the physmap is live. */
+    pmm_buddy_setup();
+    klog_write("[IRIS][PMM] buddy allocator active\n");
 
     /* ── 4. CPU tables + interrupt infrastructure ───────────────── */
     klog_write("[IRIS][GDT] initializing...\n");
@@ -154,6 +170,40 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             klog_write("[IRIS][USER] bootstrap task created (ring-3 loader), id=");
             klog_write_dec(ut->id);
             klog_write("\n");
+
+            /* Ph76+: drain all buddy blocks ≥ 4 MB into KUntyped caps for init.
+             * Blocks smaller than 1024 pages (4 MB) are left in the PMM for
+             * kernel dynamic allocation (kpage_alloc).  Phases 5-6 will remove
+             * the kpage_alloc dependency and allow full drain. */
+            {
+                uint32_t ut_count = 0;
+                for (;;) {
+                    uint32_t order;
+                    uint64_t blk_phys = pmm_alloc_block(&order);
+                    if (blk_phys == 0) break;
+                    uint32_t blk_pages = 1u << order;
+                    if (blk_pages < 1024u) {
+                        /* Block is < 4 MB — return to PMM for kernel use */
+                        pmm_free_contig(blk_phys, blk_pages);
+                        break;
+                    }
+                    uint64_t size = (uint64_t)blk_pages * 4096u;
+                    struct KUntyped *boot_ut = kuntyped_create(blk_phys, size, 0);
+                    if (!boot_ut) {
+                        pmm_free_contig(blk_phys, blk_pages);
+                        break;
+                    }
+                    handle_id_t ut_h = handle_table_insert(
+                        &ut->process->handle_table, &boot_ut->base,
+                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                    kobject_release(&boot_ut->base);
+                    if (ut_h == HANDLE_INVALID) break;
+                    ut_count++;
+                }
+                klog_write("[IRIS][USER] boot untyped blocks handed to init: ");
+                klog_write_dec(ut_count);
+                klog_write("\n");
+            }
         } else {
             klog_write("[IRIS][USER] WARN: could not create bootstrap task\n");
         }

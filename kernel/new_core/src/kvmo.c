@@ -15,10 +15,8 @@ static void kvmo_destroy(struct KObject *obj) {
             if (v->pages[i])
                 pmm_free_page(v->pages[i]);
         }
-        if (v->pages_meta_phys) {
-            for (uint32_t i = 0; i < v->pages_meta_pages; i++)
-                pmm_free_page(v->pages_meta_phys + (uint64_t)i * PMM_PAGE_SIZE);
-        }
+        if (v->pages_meta_phys)
+            pmm_free_contig(v->pages_meta_phys, v->pages_meta_pages);
     } else if (v->owned && v->phys) {
         uint64_t pages = (v->size + 0xFFFULL) >> 12;
         for (uint64_t i = 0; i < pages; i++)

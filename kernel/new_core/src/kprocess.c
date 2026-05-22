@@ -13,7 +13,18 @@
 #include <stdint.h>
 
 static _Atomic uint32_t kprocess_live;
-static _Atomic uint32_t pcid_counter = 1;  /* next PCID to assign; 0 = kernel */
+
+/* PCID allocation bitmap: 64 words × 64 bits = PCIDs 0–4095.
+ * Bit 0 (PCID 0 = kernel) and bit 4095 (reserved) are pre-set.
+ * PCIDs 1–4094 are available for user processes.
+ * Protected by pcid_lock (irq_spinlock) so alloc/free are safe
+ * from any context.  BSS zero-init of atomic_flag == unlocked. */
+#define PCID_BITMAP_WORDS 64u
+static uint64_t      pcid_bitmap[PCID_BITMAP_WORDS] = {
+    [0]  = 1ULL,           /* PCID 0 = kernel, always reserved */
+    [63] = (1ULL << 63),   /* PCID 4095, reserved */
+};
+static irq_spinlock_t pcid_lock; /* BSS zero = unlocked */
 
 static iris_error_t kprocess_quota_acquire(uint32_t *counter, uint32_t limit,
                                            struct KProcess *p) {
@@ -114,6 +125,15 @@ static void kprocess_destroy(struct KObject *obj) {
         kprocess_reap_address_space(p);
     }
     atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+
+    /* Return PCID to the free pool so it can be reused. */
+    if (p->pcid) {
+        uint64_t flags = irq_spinlock_lock(&pcid_lock);
+        pcid_bitmap[p->pcid / 64u] &= ~(1ULL << (p->pcid % 64u));
+        irq_spinlock_unlock(&pcid_lock, flags);
+        p->pcid = 0;
+    }
+
     kpage_free(p, (uint32_t)sizeof(struct KProcess));
 }
 
@@ -144,8 +164,26 @@ struct KProcess *kprocess_alloc(void) {
     handle_table_init(&p->handle_table);
     p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;
     if (iris_pcid_enabled) {
-        uint32_t raw = atomic_fetch_add_explicit(&pcid_counter, 1u, memory_order_relaxed);
-        p->pcid = (uint16_t)((raw % 4094u) + 1u);
+        uint64_t flags = irq_spinlock_lock(&pcid_lock);
+        uint16_t pcid = 0;
+        for (uint32_t w = 0; w < PCID_BITMAP_WORDS && !pcid; w++) {
+            uint64_t free_bits = ~pcid_bitmap[w];
+            if (!free_bits) continue;
+            uint32_t bit = (uint32_t)__builtin_ctzll(free_bits);
+            uint32_t id  = w * 64u + bit;
+            if (id >= 1u && id <= 4094u) {
+                pcid_bitmap[w] |= (1ULL << bit);
+                pcid = (uint16_t)id;
+            }
+        }
+        irq_spinlock_unlock(&pcid_lock, flags);
+        if (!pcid) {
+            /* All 4094 PCIDs in use — cannot happen with KPROCESS_MAX_LIVE=64 */
+            atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+            kpage_free(p, (uint32_t)sizeof(struct KProcess));
+            return 0;
+        }
+        p->pcid = pcid;
     }
     return p;
 }
@@ -410,6 +448,7 @@ void kprocess_reap_address_space(struct KProcess *p) {
 
     paging_destroy_user_space(p->cr3);
     p->cr3 = 0;
+    p->user_cr3 = 0;
     p->aspace_reaped = 1;
 }
 
