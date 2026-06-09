@@ -270,10 +270,10 @@ static void sh_dispatch(handle_id_t con, handle_id_t vfs_h, handle_id_t vfs_repl
         return;
     }
     if (sh_word_eq(line, "ver")) {
-        console_write(con, "IRIS Phase 45 — pure microkernel shell\r\n"
+        console_write(con, "IRIS Phase 55 — pure microkernel shell\r\n"
                            "  kernel:   x86_64 ring-0/3, cooperative+preemptive\r\n"
                            "  services: init svcmgr kbd vfs console fb sh\r\n"
-                           "  syscalls: SYS_CHAN_RECV_TIMEOUT(63) SYS_NOTIFY_WAIT_TIMEOUT(64)\r\n");
+                           "  syscalls: SYS_KLOG_DRAIN(65) SYS_EXCEPTION_RESUME(66) SYS_VMO_SIZE(67)\r\n");
         return;
     }
     if (sh_word_eq(line, "uptime")) {
@@ -423,7 +423,7 @@ void sh_main_c(handle_id_t bootstrap_h) {
     /* Print banner */
     console_write(console_h,
         "\r\n"
-        "IRIS shell (Phase 45) — 'help' for commands\r\n"
+        "IRIS shell (Phase 55) — 'help' for commands\r\n"
         "> ");
 
     /* REPL main loop */

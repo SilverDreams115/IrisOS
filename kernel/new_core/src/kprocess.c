@@ -1,11 +1,13 @@
 #include <iris/nc/kprocess.h>
+#include <iris/nc/kcnode.h>
 #include <iris/nc/kchannel.h>
 #include <iris/nc/kvmo.h>
+#include <iris/nc/kvspace.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
 #include <iris/irq_routing.h>
 #include <iris/syscall.h>
-#include <iris/kpage.h>
+#include <iris/kslab.h>
 #include <iris/pmm.h>
 #include <iris/paging.h>
 #include <iris/fault_proto.h>
@@ -13,6 +15,18 @@
 #include <stdint.h>
 
 static _Atomic uint32_t kprocess_live;
+
+/* PCID allocation bitmap: 64 words × 64 bits = PCIDs 0–4095.
+ * Bit 0 (PCID 0 = kernel) and bit 4095 (reserved) are pre-set.
+ * PCIDs 1–4094 are available for user processes.
+ * Protected by pcid_lock (irq_spinlock) so alloc/free are safe
+ * from any context.  BSS zero-init of atomic_flag == unlocked. */
+#define PCID_BITMAP_WORDS 64u
+static uint64_t      pcid_bitmap[PCID_BITMAP_WORDS] = {
+    [0]  = 1ULL,           /* PCID 0 = kernel, always reserved */
+    [63] = (1ULL << 63),   /* PCID 4095, reserved */
+};
+static irq_spinlock_t pcid_lock; /* BSS zero = unlocked */
 
 static iris_error_t kprocess_quota_acquire(uint32_t *counter, uint32_t limit,
                                            struct KProcess *p) {
@@ -76,6 +90,10 @@ static void kprocess_emit_exit_watch(struct KProcess *p) {
         msg.data[PROC_EVENT_OFF_COOKIE + 1] = (uint8_t)((w->cookie >> 8) & 0xFFu);
         msg.data[PROC_EVENT_OFF_COOKIE + 2] = (uint8_t)((w->cookie >> 16) & 0xFFu);
         msg.data[PROC_EVENT_OFF_COOKIE + 3] = (uint8_t)((w->cookie >> 24) & 0xFFu);
+        msg.data[PROC_EVENT_OFF_EXIT_CODE + 0] = (uint8_t)(p->exit_code & 0xFFu);
+        msg.data[PROC_EVENT_OFF_EXIT_CODE + 1] = (uint8_t)((p->exit_code >> 8) & 0xFFu);
+        msg.data[PROC_EVENT_OFF_EXIT_CODE + 2] = (uint8_t)((p->exit_code >> 16) & 0xFFu);
+        msg.data[PROC_EVENT_OFF_EXIT_CODE + 3] = (uint8_t)((p->exit_code >> 24) & 0xFFu);
         msg.data_len = PROC_EVENT_MSG_LEN;
         msg.attached_handle = HANDLE_INVALID;
         msg.attached_rights = RIGHT_NONE;
@@ -92,7 +110,7 @@ static void kprocess_clear_vmo_mappings(struct KProcess *p) {
         p->vmo_mappings = m->next;
         if (m->vmo)
             kobject_release(&m->vmo->base);
-        kpage_free(m, (uint32_t)sizeof(*m));
+        kslab_free(m, (uint32_t)sizeof(*m));
     }
     p->vmo_mapping_count = 0;
 }
@@ -109,7 +127,16 @@ static void kprocess_destroy(struct KObject *obj) {
         kprocess_reap_address_space(p);
     }
     atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
-    kpage_free(p, (uint32_t)sizeof(struct KProcess));
+
+    /* Return PCID to the free pool so it can be reused. */
+    if (p->pcid) {
+        uint64_t flags = irq_spinlock_lock(&pcid_lock);
+        pcid_bitmap[p->pcid / 64u] &= ~(1ULL << (p->pcid % 64u));
+        irq_spinlock_unlock(&pcid_lock, flags);
+        p->pcid = 0;
+    }
+
+    kslab_free(p, (uint32_t)sizeof(struct KProcess));
 }
 
 static const struct KObjectOps kprocess_ops = {
@@ -117,11 +144,65 @@ static const struct KObjectOps kprocess_ops = {
 };
 
 struct KProcess *kprocess_alloc(void) {
-    struct KProcess *p = kpage_alloc((uint32_t)sizeof(struct KProcess));
-    if (!p) return 0;
+    /* Atomically reserve a slot before allocating memory.  The previous
+     * load+check+alloc+increment pattern had a TOCTOU window where concurrent
+     * callers could all pass the check before any incremented the counter,
+     * allowing live process count to exceed KPROCESS_MAX_LIVE.
+     *
+     * Strategy: fetch-add first, then roll back if the old value was already
+     * at the limit.  This is safe because kprocess_destroy always decrements,
+     * so the counter never permanently overshoots if we roll back here. */
+    uint32_t prev = atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
+    if (prev >= KPROCESS_MAX_LIVE) {
+        atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+        return 0;
+    }
+    struct KProcess *p = kslab_alloc((uint32_t)sizeof(struct KProcess));
+    if (!p) {
+        atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+        return 0;
+    }
     kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
     handle_table_init(&p->handle_table);
-    atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
+    p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;
+    if (iris_pcid_enabled) {
+        uint64_t flags = irq_spinlock_lock(&pcid_lock);
+        uint16_t pcid = 0;
+        for (uint32_t w = 0; w < PCID_BITMAP_WORDS && !pcid; w++) {
+            uint64_t free_bits = ~pcid_bitmap[w];
+            if (!free_bits) continue;
+            uint32_t bit = (uint32_t)__builtin_ctzll(free_bits);
+            uint32_t id  = w * 64u + bit;
+            if (id >= 1u && id <= 4094u) {
+                pcid_bitmap[w] |= (1ULL << bit);
+                pcid = (uint16_t)id;
+            }
+        }
+        irq_spinlock_unlock(&pcid_lock, flags);
+        if (!pcid) {
+            /* All 4094 PCIDs in use — cannot happen with KPROCESS_MAX_LIVE=64 */
+            atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+            kslab_free(p, (uint32_t)sizeof(struct KProcess));
+            return 0;
+        }
+        p->pcid = pcid;
+    }
+
+    /* Ph95: root CNode for hierarchical CSpace.  Soft-fail: if alloc OOMs
+     * the process still works, but cspace_root_h stays HANDLE_INVALID. */
+    p->cspace_root_h = HANDLE_INVALID;
+    {
+        struct KCNode *root_cn = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
+        if (root_cn) {
+            handle_id_t rh = handle_table_insert(
+                &p->handle_table, &root_cn->base,
+                RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+            kobject_release(&root_cn->base);
+            if (rh != HANDLE_INVALID)
+                p->cspace_root_h = rh;
+        }
+    }
+
     return p;
 }
 
@@ -154,21 +235,34 @@ void kprocess_quota_release_vmo(struct KProcess *p) {
     kprocess_quota_release(&p->owned_vmos, p);
 }
 
+iris_error_t kprocess_quota_acquire_page(struct KProcess *p) {
+    if (!p) return IRIS_ERR_INVALID_ARG;
+    return kprocess_quota_acquire(&p->phys_pages_charged, p->phys_pages_limit, p);
+}
+
+void kprocess_quota_release_page(struct KProcess *p) {
+    kprocess_quota_release(&p->phys_pages_charged, p);
+}
+
 iris_error_t kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
                                  handle_id_t watched_handle, uint32_t cookie) {
     if (!p || !ch || watched_handle == HANDLE_INVALID) return IRIS_ERR_INVALID_ARG;
 
+    spinlock_lock(&p->base.lock);
     uint32_t slot = KPROCESS_EXIT_WATCH_MAX;
     for (uint32_t i = 0; i < KPROCESS_EXIT_WATCH_MAX; i++) {
         if (!p->exit_watches[i].armed) { slot = i; break; }
     }
-    if (slot == KPROCESS_EXIT_WATCH_MAX) return IRIS_ERR_TABLE_FULL;
-
+    if (slot == KPROCESS_EXIT_WATCH_MAX) {
+        spinlock_unlock(&p->base.lock);
+        return IRIS_ERR_TABLE_FULL;
+    }
     kobject_retain(&ch->base);
     p->exit_watches[slot].ch = ch;
     p->exit_watches[slot].watched_handle = watched_handle;
     p->exit_watches[slot].cookie = cookie;
     p->exit_watches[slot].armed = 1;
+    spinlock_unlock(&p->base.lock);
 
     if (!kprocess_is_alive(p)) {
         kprocess_emit_exit_watch(p);
@@ -209,21 +303,21 @@ iris_error_t kprocess_set_exception_handler(struct KProcess *p, struct KChannel 
     return IRIS_OK;
 }
 
-void kprocess_notify_fault(struct task *t, uint64_t vector,
-                            uint64_t error_code, uint64_t rip, uint64_t cr2) {
+int kprocess_notify_fault(struct task *t, uint64_t vector,
+                           uint64_t error_code, uint64_t rip, uint64_t cr2) {
     struct KChanMsg msg;
     struct KProcess *p;
     struct KChannel *ch;
     int i;
 
-    if (!t || !t->process) return;
+    if (!t || !t->process) return 0;
     p = t->process;
 
     spinlock_lock(&p->base.lock);
     ch = p->exception_chan;
     if (ch) kobject_retain(&ch->base);
     spinlock_unlock(&p->base.lock);
-    if (!ch) return;
+    if (!ch) return 0;
 
     for (i = 0; i < (int)sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
     msg.type = FAULT_MSG_NOTIFY;
@@ -246,6 +340,7 @@ void kprocess_notify_fault(struct task *t, uint64_t vector,
     msg.attached_rights = RIGHT_NONE;
     (void)kchannel_send(ch, &msg);
     kobject_release(&ch->base);
+    return 1;
 }
 
 iris_error_t kprocess_register_vmo_map(struct KProcess *p, uint64_t virt_base,
@@ -253,7 +348,7 @@ iris_error_t kprocess_register_vmo_map(struct KProcess *p, uint64_t virt_base,
                                         uint64_t page_flags) {
     struct KVmoMapping *m;
     if (!p || !vmo || size == 0) return IRIS_ERR_INVALID_ARG;
-    m = kpage_alloc((uint32_t)sizeof(*m));
+    m = kslab_alloc((uint32_t)sizeof(*m));
     if (!m) return IRIS_ERR_NO_MEMORY;
     m->virt_base  = virt_base;
     m->size       = size;
@@ -280,7 +375,7 @@ void kprocess_unregister_vmo_map(struct KProcess *p, uint64_t virt_base) {
         *link = m->next;
         if (m->vmo)
             kobject_release(&m->vmo->base);
-        kpage_free(m, (uint32_t)sizeof(*m));
+        kslab_free(m, (uint32_t)sizeof(*m));
         if (p->vmo_mapping_count)
             p->vmo_mapping_count--;
         return;
@@ -305,14 +400,26 @@ iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) 
         if (page_idx >= KVMO_MAX_PAGES) return IRIS_ERR_INVALID_ARG;
 
         published = 0;
-        spinlock_lock(&m->vmo->base.lock);
+
+        /* Use the per-page shard lock rather than the VMO-level base.lock.
+         * This allows concurrent demand faults on different pages of the same
+         * VMO to allocate physical memory in parallel (within different shards),
+         * reducing contention when multiple threads of a process fault at once.
+         * base.lock continues to protect VMO metadata (owner binding, etc.). */
+        spinlock_t *shard = &m->vmo->page_shards[page_idx & (KVMO_PAGE_SHARDS - 1u)];
+        spinlock_lock(shard);
         phys = m->vmo->pages[page_idx];
         if (phys == 0) {
             uint8_t *kva;
             int k;
+            if (kprocess_quota_acquire_page(p) != IRIS_OK) {
+                spinlock_unlock(shard);
+                return IRIS_ERR_NO_MEMORY;
+            }
             phys = pmm_alloc_page();
             if (!phys) {
-                spinlock_unlock(&m->vmo->base.lock);
+                kprocess_quota_release_page(p);
+                spinlock_unlock(shard);
                 return IRIS_ERR_NO_MEMORY;
             }
             kva = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
@@ -323,18 +430,23 @@ iris_error_t kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr) 
 
         if (paging_map_checked_in(p->cr3, page_base, phys, m->page_flags) != 0) {
             if (published && m->vmo->pages[page_idx] == phys) {
+                kprocess_quota_release_page(p);
                 pmm_free_page(phys);
                 m->vmo->pages[page_idx] = 0;
             }
-            spinlock_unlock(&m->vmo->base.lock);
+            spinlock_unlock(shard);
             return IRIS_ERR_NO_MEMORY;
         }
-        spinlock_unlock(&m->vmo->base.lock);
+        spinlock_unlock(shard);
         return IRIS_OK;
     }
     return IRIS_ERR_NOT_FOUND;
 }
 
+/* Ordering: emit_exit_watch fires before handle_table_close_all so that
+ * watchers receive a handle ID that is still live in the sender's table.
+ * teardown_complete provides idempotency; this function is called from both
+ * task_exit_current (normal exit) and kprocess_destroy (fallback path). */
 void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     if (!p || p->teardown_complete) return;
 
@@ -352,8 +464,19 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
 void kprocess_reap_address_space(struct KProcess *p) {
     if (!p || p->aspace_reaped) return;
 
-    paging_destroy_user_space(p->cr3);
+    uint64_t cr3 = p->cr3;
+
+    /* Fase 4: invalidate the VSpace capability before destroying page tables.
+     * Any capability holder that checks vs->valid after this point sees 0. */
+    if (p->vspace) {
+        kvspace_invalidate(p->vspace);
+        kobject_release(&p->vspace->base);
+        p->vspace = 0;
+    }
+
+    paging_destroy_user_space(cr3);
     p->cr3 = 0;
+    p->user_cr3 = 0;
     p->aspace_reaped = 1;
 }
 

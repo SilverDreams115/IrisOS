@@ -1,9 +1,9 @@
 #include <iris/nc/kchannel.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/kprocess.h>
-#include <iris/kpage.h>
+#include <iris/nc/kuntyped.h>
+#include <iris/kslab.h>
 #include <iris/task.h>
-#include <iris/serial.h>
 #include <stdint.h>
 
 /* ── Live-list state ─────────────────────────────────────────────────────────
@@ -63,9 +63,9 @@ static void kchannel_waiters_wake_all(struct KChannel *ch) {
     for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) {
         struct task *w = ch->waiters[i];
         if (!w) continue;
-        if (w->state == TASK_BLOCKED_IPC)
-            w->state = TASK_READY;
         ch->waiters[i] = 0;
+        if (w->state == TASK_BLOCKED_IPC)
+            task_wakeup(w);
     }
     ch->waiter_count = 0;
 }
@@ -78,9 +78,9 @@ static void kchannel_waiters_wake_one(struct KChannel *ch) {
         struct task *w = ch->waiters[i];
         if (!w) continue;
         if (w->state == TASK_BLOCKED_IPC) {
-            w->state      = TASK_READY;
             ch->waiters[i] = 0;
             if (ch->waiter_count) ch->waiter_count--;
+            task_wakeup(w);
             return;
         }
     }
@@ -159,7 +159,7 @@ static void kchannel_close(struct KObject *obj) {
  *   2. Close + wake all blocked receivers (base.lock).
  *   3. Drop any in-flight queued handles.
  *   4. Release process owner reference.
- *   5. Return pages to PMM via kpage_free.
+ *   5. Return to kernel slab via kslab_free.
  */
 static void kchannel_destroy(struct KObject *obj) {
     struct KChannel *ch = (struct KChannel *)obj;
@@ -181,7 +181,7 @@ static void kchannel_destroy(struct KObject *obj) {
     kchannel_owner_release(ch);
 
     /* Step 5: return pages to PMM. */
-    kpage_free(ch, sizeof(struct KChannel));
+    kslab_free(ch, sizeof(struct KChannel));
 }
 
 static const struct KObjectOps kchannel_ops = {
@@ -189,8 +189,38 @@ static const struct KObjectOps kchannel_ops = {
     .destroy = kchannel_destroy
 };
 
+/* ── Untyped-backed variant (Ph81) ──────────────────────────────── */
+
+static void kchannel_destroy_ut(struct KObject *obj) {
+    struct KChannel *ch = (struct KChannel *)obj;
+    live_unlink(ch);
+    spinlock_lock(&ch->base.lock);
+    ch->closed = 1;
+    kchannel_waiters_wake_all(ch);
+    spinlock_unlock(&ch->base.lock);
+    for (uint32_t i = 0; i < KCHAN_CAPACITY; i++)
+        queued_handle_reset(&ch->attached[i]);
+    kchannel_owner_release(ch);
+    kuntyped_release_child(obj, sizeof(struct KChannel));
+}
+
+static const struct KObjectOps kchannel_ops_ut = {
+    .close   = kchannel_close,
+    .destroy = kchannel_destroy_ut,
+};
+
+struct KChannel *kchannel_alloc_at(void *mem) {
+    if (!mem) return 0;
+    struct KChannel *ch = (struct KChannel *)mem;
+    /* mem was already zeroed by kuntyped_alloc_child */
+    kobject_init(&ch->base, KOBJ_CHANNEL, &kchannel_ops_ut);
+    kchannel_waiters_clear(ch);
+    live_link(ch);
+    return ch;
+}
+
 struct KChannel *kchannel_alloc(void) {
-    struct KChannel *ch = kpage_alloc(sizeof(struct KChannel));
+    struct KChannel *ch = kslab_alloc(sizeof(struct KChannel));
     if (!ch) return 0;
     /* kpage_alloc zeroes the allocation — all fields start at 0. */
     kobject_init(&ch->base, KOBJ_CHANNEL, &kchannel_ops);
@@ -240,6 +270,46 @@ int kchannel_is_readable(struct KChannel *ch) {
     return r;
 }
 
+int kchannel_is_closed(struct KChannel *ch) {
+    int r;
+    if (!ch) return 0;
+    spinlock_lock(&ch->base.lock);
+    r = (ch->closed && ch->count == 0) ? 1 : 0;
+    spinlock_unlock(&ch->base.lock);
+    return r;
+}
+
+/*
+ * kchannel_waiters_add_or_closed_atomic — enqueue t and set t->state =
+ * TASK_BLOCKED_IPC under the same lock acquisition.
+ *
+ * Setting the task state inside the lock closes the preemption window that
+ * exists in plain kchannel_waiters_add_or_closed: on a system where IRQ0
+ * calls task_yield(), the scheduler can preempt between the state change and
+ * the enqueue and see a task that is BLOCKED_IPC but in no waiter list,
+ * causing a permanent stall.
+ *
+ * Returns:
+ *   IRIS_OK        — enqueued (t->state set to TASK_BLOCKED_IPC), or channel
+ *                    non-empty (no enqueue needed, t->state unchanged)
+ *   IRIS_ERR_CLOSED — channel is closed and empty (t->state unchanged)
+ *   other           — enqueue failed (t->state unchanged)
+ */
+iris_error_t kchannel_waiters_add_or_closed_atomic(struct KChannel *ch, struct task *t) {
+    iris_error_t r = IRIS_OK;
+    if (!ch || !t) return IRIS_ERR_INVALID_ARG;
+    spinlock_lock(&ch->base.lock);
+    if (ch->closed && ch->count == 0) {
+        r = IRIS_ERR_CLOSED;
+    } else if (ch->count == 0) {
+        r = kchannel_waiters_enqueue(ch, t);
+        if (r == IRIS_OK)
+            t->state = TASK_BLOCKED_IPC;
+    }
+    spinlock_unlock(&ch->base.lock);
+    return r;
+}
+
 iris_error_t kchannel_waiters_add_checked(struct KChannel *ch, struct task *t) {
     iris_error_t r;
     if (!ch || !t) return IRIS_ERR_INVALID_ARG;
@@ -274,6 +344,10 @@ void kchannel_waiters_remove_task(struct KChannel *ch, struct task *t) {
     spinlock_unlock(&ch->base.lock);
 }
 
+/* User-triggered seal: closed=1 prevents new sends, but buffered messages
+ * remain drainable until empty.  Identical mechanics to the kobject .close op
+ * (kchannel_close), which is called internally when all active references are
+ * released; the distinction is semantic, not behavioral. */
 void kchannel_seal(struct KChannel *ch) {
     if (!ch) return;
     spinlock_lock(&ch->base.lock);

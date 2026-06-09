@@ -88,7 +88,7 @@
  * Both are within PML4 entry 256, sharing the kernel PDPT, so
  * mappings added here propagate to every process address space.
  *
- * Total virtual footprint: TASK_MAX * KSTACK_SLOT_SIZE = 64 * 12288 = 768 KB.
+ * Total virtual footprint: TASK_MAX * KSTACK_SLOT_SIZE = 256 * 12288 = 3 MB.
  * ─────────────────────────────────────────────────────────────────── */
 #define KSTACK_VIRT_BASE  (KERNEL_PHYS_WINDOW_BASE + PHYS_WINDOW_END)  /* 0xFFFF800100000000 */
 #define KSTACK_SLOT_SIZE  (3ULL * 4096ULL)   /* guard + 2 stack pages = 12 288 bytes */
@@ -97,7 +97,12 @@
  * Checked by usercopy.c to emit STAC/CLAC around user memory accesses. */
 extern int iris_smap_enabled;
 
+/* Set to 1 by paging_enable_pcid() when CR4.PCIDE is active.
+ * Checked by the scheduler to OR the process PCID into CR3 loads. */
+extern int iris_pcid_enabled;
+
 void     paging_init(uint64_t fb_phys, uint64_t fb_size);
+void     paging_enable_pcid(void);
 void     paging_map(uint64_t virt, uint64_t phys, uint64_t flags);
 uint64_t paging_virt_to_phys(uint64_t virt);
 int      paging_query_access(uint64_t virt, uint64_t *out_flags);
@@ -109,8 +114,15 @@ int      paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint6
 uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt);
 int      paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags);
 void     paging_unmap_in(uint64_t cr3, uint64_t virt);
-void     paging_write_u64_in(uint64_t cr3, uint64_t virt, uint64_t value);
 void     paging_destroy_user_space(uint64_t cr3);
 uint64_t pml4_get_current(void);
+
+/* Build the no-flush user CR3: kernel→user iretq uses this so TLB entries
+ * tagged with the process PCID are preserved across the transition.
+ * task_yield uses cr3|pcid WITHOUT bit 63 so PCID recycling forces a flush. */
+static inline uint64_t paging_make_user_cr3(uint64_t cr3, uint16_t pcid) {
+    if (!iris_pcid_enabled) return cr3;
+    return (cr3 & ~0xFFFULL) | (uint64_t)pcid | (1ULL << 63);
+}
 
 #endif

@@ -1,6 +1,6 @@
 #include <iris/nc/kirqcap.h>
 #include <iris/nc/kobject.h>
-#include <iris/kpage.h>
+#include <iris/kslab.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -12,7 +12,7 @@ static void kirqcap_close(struct KObject *obj) {
 
 static void kirqcap_destroy(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kirqcap_live, 1u, memory_order_relaxed);
-    kpage_free((struct KIrqCap *)obj, (uint32_t)sizeof(struct KIrqCap));
+    kslab_free((struct KIrqCap *)obj, (uint32_t)sizeof(struct KIrqCap));
 }
 
 static const struct KObjectOps kirqcap_ops = {
@@ -21,7 +21,7 @@ static const struct KObjectOps kirqcap_ops = {
 };
 
 struct KIrqCap *kirqcap_alloc(uint8_t irq_num) {
-    struct KIrqCap *cap = kpage_alloc((uint32_t)sizeof(struct KIrqCap));
+    struct KIrqCap *cap = kslab_alloc((uint32_t)sizeof(struct KIrqCap));
     if (!cap) return 0;
     kobject_init(&cap->base, KOBJ_IRQ_CAP, &kirqcap_ops);
     cap->irq_num = irq_num;

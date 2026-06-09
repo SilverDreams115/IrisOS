@@ -71,6 +71,7 @@ struct KChannel {
 };
 
 struct KChannel *kchannel_alloc     (void);
+struct KChannel *kchannel_alloc_at  (void *mem); /* Ph81: untyped-backed */
 iris_error_t     kchannel_bind_owner(struct KChannel *ch, struct KProcess *owner);
 void             kchannel_free      (struct KChannel *ch);
 
@@ -104,10 +105,12 @@ iris_error_t     kchannel_try_recv_into_process(struct KChannel *ch, struct KPro
 uint32_t         kchannel_live_count(void);
 
 /* Multi-channel wait helpers used by SYS_WAIT_ANY */
-int          kchannel_is_readable       (struct KChannel *ch);
-iris_error_t kchannel_waiters_add_checked(struct KChannel *ch, struct task *t);
-iris_error_t kchannel_waiters_add_or_closed(struct KChannel *ch, struct task *t);
-void         kchannel_waiters_remove_task(struct KChannel *ch, struct task *t);
+int          kchannel_is_readable            (struct KChannel *ch);
+int          kchannel_is_closed              (struct KChannel *ch);
+iris_error_t kchannel_waiters_add_checked    (struct KChannel *ch, struct task *t);
+iris_error_t kchannel_waiters_add_or_closed  (struct KChannel *ch, struct task *t);
+iris_error_t kchannel_waiters_add_or_closed_atomic(struct KChannel *ch, struct task *t);
+void         kchannel_waiters_remove_task    (struct KChannel *ch, struct task *t);
 #endif /* __KERNEL__ */
 
 #endif /* IRIS_NC_KCHANNEL_H */

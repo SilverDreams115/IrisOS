@@ -6,6 +6,7 @@ These documents describe what the code does today, not an aspirational future de
 
 ## Contracts
 
+- [abi.md](./abi.md): current syscall compatibility surface and retirement map
 - [boot.md](./boot.md): kernel boot contract from UEFI handoff to scheduler start
 - [bootstrap.md](./bootstrap.md): ring-3 bootstrap handle and service-spawn contract
 - [svcmgr.md](./svcmgr.md): service manager discovery, supervision, and aggregation contract

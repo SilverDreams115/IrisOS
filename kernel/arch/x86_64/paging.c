@@ -20,6 +20,7 @@ static uint64_t pml4_phys = 0;
 static int phys_window_ready = 0;
 
 int iris_smap_enabled = 0;
+int iris_pcid_enabled = 0;
 
 /* Enable IA32_EFER.NXE so PAGE_NX (bit 63) in PTEs is honoured.
  * Must be called before any NX-flagged page table entry is loaded into the TLB. */
@@ -348,17 +349,6 @@ void paging_unmap_in(uint64_t cr3, uint64_t virt) {
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
 }
 
-void paging_write_u64_in(uint64_t cr3, uint64_t virt, uint64_t value) {
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
-    uint64_t saved_cr3;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(saved_cr3));
-    __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
-    *(volatile uint64_t *)(uintptr_t)virt = value;
-    __asm__ volatile ("mov %0, %%cr3" : : "r"(saved_cr3) : "memory");
-    __asm__ volatile ("pushq %0; popfq" : : "r"(rflags) : "memory");
-}
-
 void paging_destroy_user_space(uint64_t cr3) {
     if (cr3 == 0) return;
 
@@ -370,4 +360,22 @@ void paging_destroy_user_space(uint64_t cr3) {
     }
 
     pmm_free_page(cr3);
+}
+
+/* paging_enable_pcid — enable CR4.PCIDE (Process Context Identifiers).
+ * Called from kernel_main after paging_init().  No-op if the CPU lacks PCID
+ * support (CPUID.01H:ECX[17]).  Sets iris_pcid_enabled = 1 on success so the
+ * scheduler ORs the per-process PCID into CR3 loads. */
+void paging_enable_pcid(void) {
+    uint32_t eax, ebx, ecx, edx;
+    __asm__ volatile ("cpuid"
+        : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+        : "a"(1u), "c"(0u));
+    if (!((ecx >> 17) & 1u)) return;  /* CPUID.01H:ECX[17] = PCID feature */
+
+    uint64_t cr4;
+    __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1ULL << 17);   /* CR4.PCIDE */
+    __asm__ volatile ("mov %0, %%cr4" : : "r"(cr4) : "memory");
+    iris_pcid_enabled = 1;
 }

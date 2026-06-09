@@ -42,6 +42,7 @@ struct KNotification {
 };
 
 struct KNotification *knotification_alloc(void);
+struct KNotification *knotification_alloc_at(void *mem); /* Ph78: create in untyped-backed memory */
 iris_error_t          knotification_bind_owner(struct KNotification *n, struct KProcess *owner);
 void                  knotification_free (struct KNotification *n);
 void                  knotification_cancel_waiter(struct task *t);

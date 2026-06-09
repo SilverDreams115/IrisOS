@@ -24,6 +24,13 @@ typedef enum {
     KOBJ_IRQ_CAP,      /* authorizes routing a specific hardware IRQ line */
     KOBJ_IOPORT,       /* authorizes IN/OUT access to a contiguous I/O port range */
     KOBJ_INITRD_ENTRY, /* immutable reference to a named ELF image in the kernel initrd */
+    KOBJ_ENDPOINT,       /* seL4-style synchronous IPC rendezvous point */
+    KOBJ_CNODE,          /* seL4-style capability node — fixed array of capability slots */
+    KOBJ_SCHED_CONTEXT,  /* Ph74: scheduling context — budget/period for time protection */
+    KOBJ_UNTYPED,        /* Ph76: seL4-style untyped memory cap — physical region for typed-object creation */
+    KOBJ_REPLY,          /* Ph85: seL4-style one-shot reply capability — delivered by EP_CALL rendezvous */
+    KOBJ_TCB,            /* Ph96: thread control block capability — wraps a live struct task */
+    KOBJ_VSPACE,         /* Fase 4: virtual address space capability — wraps a process PML4 */
 } kobject_type_t;
 
 struct KObject;

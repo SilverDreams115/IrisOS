@@ -1,5 +1,7 @@
 #include <iris/usercopy.h>
 #include <iris/paging.h>
+#include <iris/task.h>
+#include <iris/nc/kprocess.h>
 #include <stdint.h>
 
 #define USER_ADDR_MIN 0x1000ULL
@@ -31,7 +33,11 @@ static int user_range_accessible(uint64_t ptr, uint32_t len, uint64_t required_f
     end  = (end - 1ULL) & ~0xFFFULL;
     for (; page <= end; page += 0x1000ULL) {
         uint64_t flags = 0;
-        if (paging_query_access(page, &flags) != 0) return 0;
+        if (paging_query_access(page, &flags) != 0) {
+            struct task *t = task_current();
+            if (!t || kprocess_resolve_demand_fault(t, page) != IRIS_OK) return 0;
+            if (paging_query_access(page, &flags) != 0) return 0;
+        }
         if ((flags & PAGE_PRESENT) == 0) return 0;
         if ((flags & PAGE_USER) == 0) return 0;
         if ((flags & required_flags) != required_flags) return 0;
@@ -46,6 +52,9 @@ int user_range_readable(uint64_t ptr, uint32_t len) {
 int user_range_writable(uint64_t ptr, uint32_t len) {
     return user_range_accessible(ptr, len, PAGE_WRITABLE);
 }
+
+/* user_range_readwrite: removed — on x86-64, PAGE_WRITABLE implies readable;
+ * callers that need read+write access use user_range_writable. */
 
 int copy_from_user_checked(void *dst, uint64_t src_uptr, uint32_t len) {
     uint8_t *d = (uint8_t *)dst;

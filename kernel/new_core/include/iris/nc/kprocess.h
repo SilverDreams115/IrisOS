@@ -10,12 +10,15 @@
 
 struct KVmo;
 struct KNotification;
+struct KVSpace;
 
 #define KPROCESS_VMO_MAP_MAX    0u  /* no fixed ceiling — kpage-backed linked list */
-#define KPROCESS_EXIT_WATCH_MAX 4u
+#define KPROCESS_EXIT_WATCH_MAX 8u
+#define KPROCESS_MAX_LIVE       64u /* bounded by TASK_MAX; enforced in kprocess_alloc */
 #define KPROCESS_CHANNEL_QUOTA  16u
 #define KPROCESS_NOTIFICATION_QUOTA 16u
 #define KPROCESS_VMO_QUOTA      32u
+#define KPROCESS_PHYS_PAGES_LIMIT 2048u /* 8MB per process; set in kprocess_alloc */
 
 struct KExitWatch {
     struct KChannel *ch;
@@ -64,7 +67,10 @@ struct KProcess {
     struct KObject  base;       /* must be first */
     uint32_t        thread_count; /* live threads in this process; 0 = dead */
     uint64_t        cr3;          /* page table root for the process */
+    uint64_t        user_cr3;     /* cr3|pcid|(1<<63 if PCID) — no-flush variant for iretq */
+    uint16_t        pcid;         /* PCID assigned at alloc (0 = unused/PCID disabled) */
     uint8_t         teardown_complete; /* logical teardown already ran */
+    uint32_t        exit_code;    /* exit code from SYS_EXIT; 0 if killed externally */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */
     struct KExitWatch exit_watches[KPROCESS_EXIT_WATCH_MAX]; /* up to 4 death subscribers */
     struct KVmoMapping *vmo_mappings;  /* demand VMO registrations */
@@ -77,6 +83,17 @@ struct KProcess {
     uint32_t owned_channels;
     uint32_t owned_notifications;
     uint32_t owned_vmos;
+    uint32_t phys_pages_charged; /* pages allocated by demand fault; vs phys_pages_limit */
+    uint32_t phys_pages_limit;   /* set to KPROCESS_PHYS_PAGES_LIMIT at alloc */
+
+    /* Ph95 (Phase 8): root CNode handle for hierarchical CSpace traversal.
+     * HANDLE_INVALID if not yet allocated (e.g. kpage_alloc OOM at creation). */
+    handle_id_t cspace_root_h;
+
+    /* Fase 4: VSpace capability wrapping this process's address space.
+     * Holds one lifecycle ref (kobject_retain).  NULL if kvspace_alloc OOM'd at
+     * creation or if the process has not yet had its CR3 assigned. */
+    struct KVSpace *vspace;
 
 };
 
@@ -93,10 +110,12 @@ iris_error_t     kprocess_quota_acquire_notification(struct KProcess *p);
 void             kprocess_quota_release_notification(struct KProcess *p);
 iris_error_t     kprocess_quota_acquire_vmo(struct KProcess *p);
 void             kprocess_quota_release_vmo(struct KProcess *p);
+iris_error_t     kprocess_quota_acquire_page(struct KProcess *p);
+void             kprocess_quota_release_page(struct KProcess *p);
 iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
                                      handle_id_t watched_handle, uint32_t cookie);
 iris_error_t     kprocess_set_exception_handler(struct KProcess *p, struct KChannel *ch);
-void             kprocess_notify_fault(struct task *t, uint64_t vector,
+int              kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
 iris_error_t     kprocess_register_vmo_map  (struct KProcess *p, uint64_t virt_base,
                                               uint64_t size, struct KVmo *vmo,

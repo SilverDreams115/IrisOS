@@ -20,12 +20,12 @@
  *     iris_error_t values and must not introduce new generic -1 error returns
  *     outside explicitly transitional legacy paths.
  *
- * Surface status:
- *   - modern/conforming: already on the v1 error model
- *   - modern/non-conforming: modern surface still requiring ABI cleanup
- *   - transitional: compatibility-preserving legacy contract scheduled to
- *     converge later; do not expand this style
- *   - legacy: retired or kernel-internal only
+ * Surface status used in this header:
+ *   - live/conforming: current supported surface on the v1 error model
+ *   - live/transitional: current supported surface with compatibility notes
+ *   - retired: permanently reserved; returns IRIS_ERR_NOT_SUPPORTED
+ *
+ * Current exported syscall number surface: 0..94.
  */
 
 /* Syscall numbers */
@@ -59,11 +59,12 @@
                                * flags bit 0: MAP_WRITABLE  — map with PAGE_WRITABLE
                                * flags bit 1: MAP_EXEC      — map without PAGE_NX (executable)
                                * W^X enforced: bit 0 + bit 1 simultaneously → ERR_INVALID_ARG */
-/* SYS_SPAWN 18 retired in Phase 19 — permanently reserved, returns IRIS_ERR_NOT_SUPPORTED.
- * All healthy-path userland process creation must go through
- * SYS_INITRD_LOOKUP (41) + SYS_SPAWN_ELF (42). */
+/* SYS_SPAWN 18 retired in Phase 19 — permanently reserved, returns
+ * IRIS_ERR_NOT_SUPPORTED. Healthy-path process creation now uses the
+ * composable primitives rooted in SYS_INITRD_VMO / SYS_PROCESS_CREATE /
+ * SYS_VMO_MAP_INTO / SYS_THREAD_START / SYS_HANDLE_INSERT. */
 #define SYS_SPAWN        18
-/* modern/conforming: notification objects */
+/* live/conforming: notification objects */
 #define SYS_NOTIFY_CREATE 19 /* () → handle_id or negative iris_error_t */
 #define SYS_NOTIFY_SIGNAL 20 /* (handle, bits) → 0 or negative iris_error_t */
 #define SYS_NOTIFY_WAIT   21 /* (handle, *out_bits) → 0 or negative iris_error_t */
@@ -113,22 +114,12 @@
 #define PROC_EVENT_MSG_EXIT       0x90000001u
 #define PROC_EVENT_OFF_HANDLE     0u
 #define PROC_EVENT_OFF_COOKIE     4u
-#define PROC_EVENT_MSG_LEN        8u
-/*
- * Global kernel diagnostics snapshot — modern/conforming (iris_error_t).
- *
- * Atomically captures a compact snapshot of kernel-side state into the
- * caller-supplied user buffer.  Unrestricted: any task may call this.
- *
- * arg0 = user pointer to struct iris_diag_snapshot (IRIS_DIAG_SNAPSHOT_SIZE bytes).
- *        Must be writable user-space memory.
- * Returns 0 on success, negative iris_error_t on error.
- *
- * The snapshot covers: task count, KProcess pool usage, active IRQ routes,
- * and scheduler tick counter.  See iris/diag.h for the full layout.
- * For service-owned status (svcmgr/vfs/kbd), use the per-service STATUS
- * channels defined in svcmgr_proto.h / vfs_proto.h / kbd_proto.h.
- */
+#define PROC_EVENT_OFF_EXIT_CODE  8u
+#define PROC_EVENT_MSG_LEN        12u
+/* SYS_DIAG_SNAPSHOT 30 retired Phase 51 — permanently reserved, returns
+ * IRIS_ERR_NOT_SUPPORTED.  Aggregated diagnostics are now provided entirely
+ * through SVCMGR_MSG_DIAG over IPC; the kernel no longer exposes a raw
+ * user-buffer snapshot path on the healthy boot surface. */
 #define SYS_DIAG_SNAPSHOT 30
 
 /*
@@ -197,7 +188,7 @@
  * SYS_CAP_CREATE_IRQCAP(auth_handle, irq_num) → handle_id_t or negative iris_error_t
  *   auth_handle: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_HW_ACCESS.
  *   irq_num: hardware IRQ line (0–15).
- *   Returns a KIrqCap handle with RIGHT_ROUTE.
+ *   Returns a KIrqCap handle with RIGHT_ROUTE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
  *
  * SYS_CAP_CREATE_IOPORT(auth_handle, base, count) → handle_id_t or negative iris_error_t
  *   auth_handle: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_HW_ACCESS.
@@ -208,8 +199,10 @@
 #define SYS_CAP_CREATE_IRQCAP  39
 #define SYS_CAP_CREATE_IOPORT  40
 
-/* SYS_INITRD_LOOKUP 41 retired Phase 29 — permanently reserved, returns ERR_NOT_SUPPORTED.
- * SYS_SPAWN_ELF    42 retired Phase 29 — permanently reserved, returns ERR_NOT_SUPPORTED.
+/* SYS_INITRD_LOOKUP 41 retired Phase 29 — permanently reserved, returns
+ * IRIS_ERR_NOT_SUPPORTED.
+ * SYS_SPAWN_ELF    42 retired Phase 29 — permanently reserved, returns
+ * IRIS_ERR_NOT_SUPPORTED.
  * ELF loading is now performed entirely in ring-3 via the new primitives below
  * (SYS_INITRD_VMO / SYS_PROCESS_CREATE / SYS_VMO_MAP_INTO / SYS_THREAD_START /
  * SYS_HANDLE_INSERT). */
@@ -294,9 +287,11 @@
  *
  * SYS_CLOCK_GET() → uint64_t nanoseconds since boot, or negative iris_error_t.
  *   No arguments required.  Returns a monotonically increasing nanosecond
- *   timestamp derived from the scheduler tick counter (100 Hz; 10 ms resolution).
- *   Safe to call from any ring-3 context; does not block.
- *   Overflow wraps at UINT64_MAX (~584 years of uptime at 100 Hz).
+ *   timestamp.  When the TSC has been calibrated at boot (via PIT CH2 one-shot),
+ *   the value is derived from RDTSC and carries sub-millisecond resolution.
+ *   When calibration fails, the implementation falls back to the 100 Hz scheduler
+ *   tick counter (10 ms resolution).  Safe to call from any ring-3 context; does
+ *   not block.  Overflow wraps at UINT64_MAX.
  */
 #define SYS_CLOCK_GET       62
 
@@ -323,6 +318,18 @@
  *   success (same as SYS_NOTIFY_WAIT).  Requires RIGHT_WAIT on notify_h.
  */
 #define SYS_NOTIFY_WAIT_TIMEOUT 64
+
+/*
+ * Kernel boot-log drain — modern/conforming (iris_error_t).
+ *
+ * SYS_KLOG_DRAIN(buf_uptr, max_bytes) → bytes_copied or negative iris_error_t.
+ *   Copies up to max_bytes bytes from the kernel boot-log buffer into the
+ *   caller-supplied user buffer, then clears the buffer (destructive read).
+ *   Returns the number of bytes actually copied (0 if the buffer is empty).
+ *   Requires IRIS_BOOTCAP_KDEBUG.
+ *   max_bytes must be > 0 and ≤ KLOG_BUF_SIZE (4096).
+ */
+#define SYS_KLOG_DRAIN 65
 
 /*
  * I/O port sub-delegation — modern/conforming (iris_error_t).
@@ -398,8 +405,8 @@
 #define SYS_PROCESS_KILL  35  /* (proc_handle) → 0 or negative iris_error_t */
 
 /* SYS_SPAWN_SERVICE 31 retired in Phase 22 — permanently reserved and returns
- * IRIS_ERR_NOT_SUPPORTED. Named initrd spawning now uses
- * SYS_INITRD_LOOKUP + SYS_SPAWN_ELF. */
+ * IRIS_ERR_NOT_SUPPORTED. Named image loading is now a ring-3 concern layered
+ * over SYS_INITRD_VMO plus the process/VMO/thread primitives. */
 #define SYS_SPAWN_SERVICE   31
 
 #define SYS_IRQ_ROUTE_REGISTER 27 /* (irqcap_handle, chan_handle, proc_handle) → 0 or iris_error_t
@@ -421,7 +428,7 @@
 #define IRIS_BOOTCAP_NONE          0u
 #define IRIS_BOOTCAP_SPAWN_SERVICE (1u << 0)
 #define IRIS_BOOTCAP_HW_ACCESS     (1u << 1)
-#define IRIS_BOOTCAP_KDEBUG        (1u << 2)  /* may call SYS_POWEROFF */
+#define IRIS_BOOTCAP_KDEBUG        (1u << 2)  /* may call SYS_POWEROFF and SYS_KLOG_DRAIN */
 #define IRIS_BOOTCAP_FRAMEBUFFER   (1u << 3)  /* may call SYS_FRAMEBUFFER_VMO (one-shot) */
 
 /*
@@ -456,17 +463,104 @@
  * User-level exception handler registration — modern/conforming (iris_error_t).
  *
  * SYS_EXCEPTION_HANDLER(proc_h, chan_h) → 0 or negative iris_error_t
- *   proc_h: KOBJ_PROCESS with RIGHT_MANAGE; identifies the process to watch.
+ *   proc_h: KOBJ_PROCESS with RIGHT_MANAGE, or HANDLE_INVALID for own process.
  *   chan_h: KOBJ_CHANNEL with RIGHT_WRITE; receives FAULT_MSG_NOTIFY messages.
  *   Registers chan_h as the exception handler channel for the process.
  *   Replaces any previously registered handler.
  *   On a ring-3 hardware exception the kernel sends a FAULT_MSG_NOTIFY message
- *   (see iris/fault_proto.h) to the channel, then kills the faulting task.
- *   The handler can use the task_id and proc info to decide how to respond
- *   (e.g. log the fault and restart the service via SYS_SPAWN_ELF).
+ *   (see iris/fault_proto.h) and suspends the faulting task in TASK_BLOCKED_FAULT.
+ *   The handler must call SYS_EXCEPTION_RESUME to resume or kill the faulting task.
  *   If no handler is registered, faults kill the task silently (current behaviour).
  */
 #define SYS_EXCEPTION_HANDLER  47
+
+/*
+ * Exception resume — modern/conforming (iris_error_t).
+ *
+ * SYS_EXCEPTION_RESUME(proc_h, task_id, action) → 0 or negative iris_error_t
+ *   proc_h:  KOBJ_PROCESS with RIGHT_MANAGE, or HANDLE_INVALID for own process.
+ *   task_id: task ID from the FAULT_MSG_NOTIFY message.
+ *   action:  0 = resume the task at the faulting RIP; 1 = kill the task.
+ *   The target task must belong to the specified process and be in BLOCKED_FAULT.
+ *   Returns IRIS_ERR_NOT_FOUND if no matching suspended task exists.
+ */
+#define SYS_EXCEPTION_RESUME   66
+
+/*
+ * VMO size query — modern/conforming (iris_error_t).
+ *
+ * SYS_VMO_SIZE(vmo_h) → uint64_t byte size or negative iris_error_t
+ *   vmo_h: KOBJ_VMO with RIGHT_READ.
+ *   Returns the byte size of the VMO as it was created.
+ *   For initrd VMOs this is the exact size of the embedded binary.
+ *   For heap VMOs this is the value passed to SYS_VMO_CREATE.
+ */
+#define SYS_VMO_SIZE   67
+
+/*
+ * IRQ deferred ACK — modern/conforming (iris_error_t).
+ *
+ * SYS_IRQ_ACK(irqcap_h) → 0 or negative iris_error_t
+ *   irqcap_h: KOBJ_IRQ_CAP with RIGHT_ROUTE.
+ *   Unmasks the hardware IRQ line recorded in irqcap_h, re-enabling delivery
+ *   to the registered KChannel.  Must be called after consuming the IRQ
+ *   (reading hardware registers) to allow subsequent interrupts to fire.
+ *
+ *   seL4-style deferred ACK contract:
+ *     1. Kernel masks the IRQ line and sends EOI to clear the PIC ISR bit.
+ *     2. Kernel signals the route channel (SYS_IRQ_ACK is not needed for delivery).
+ *     3. Ring-3 handler reads hardware (e.g. PS/2 port 0x60 via SYS_IOPORT_IN).
+ *     4. Ring-3 calls SYS_IRQ_ACK to unmask so subsequent IRQs can fire.
+ *
+ *   If ring-3 never calls SYS_IRQ_ACK the IRQ line stays masked permanently.
+ *   This gives the handler full control over IRQ delivery rate.
+ */
+#define SYS_IRQ_ACK    68
+
+/*
+ * Scheduler diagnostic snapshot — modern/conforming (iris_error_t).
+ *
+ * SYS_SCHED_INFO(buf_uptr, buf_size) → 0 or negative iris_error_t
+ *   buf_uptr:  user pointer to a buffer of at least 40 bytes.
+ *   buf_size:  byte size of the buffer; must be ≥ sizeof(struct iris_sched_info).
+ *   Requires IRIS_BOOTCAP_KDEBUG.
+ *   Fills the buffer with a snapshot of scheduler counters (see iris/sched_info.h).
+ *   Returns 0 on success.
+ */
+#define SYS_SCHED_INFO 69
+
+/*
+ * Nanosleep — modern/conforming (iris_error_t).
+ *
+ * SYS_CLOCK_NANOSLEEP(duration_ns) → 0 or negative iris_error_t
+ *   Suspends the calling task for approximately duration_ns nanoseconds.
+ *   Resolution is one scheduler tick (10 ms at 100 Hz); durations shorter than
+ *   one tick sleep for exactly one tick.  Passing 0 returns immediately (no sleep).
+ *   Does not return IRIS_ERR_INTERRUPTED; always sleeps the full requested duration.
+ */
+#define SYS_CLOCK_NANOSLEEP 70
+
+/*
+ * Process exit code query — modern/conforming (iris_error_t).
+ *
+ * SYS_PROCESS_EXIT_CODE(proc_handle) → uint32_t exit_code or negative iris_error_t
+ *   proc_handle: KOBJ_PROCESS with RIGHT_READ.
+ *   Returns the exit code supplied to SYS_EXIT by the process.
+ *   Returns IRIS_ERR_WOULD_BLOCK if the process is still alive.
+ *   The exit code is 0 for processes terminated by SYS_PROCESS_KILL.
+ */
+#define SYS_PROCESS_EXIT_CODE 71
+
+/*
+ * Timed multi-channel wait — modern/conforming (iris_error_t).
+ *
+ * SYS_WAIT_ANY_TIMEOUT(handles_uptr, count, out_index_uptr, timeout_ns) → 0 or iris_error_t
+ *   Same semantics as SYS_WAIT_ANY plus a deadline expressed in nanoseconds.
+ *   Returns IRIS_ERR_TIMED_OUT (-15) if no channel becomes readable within timeout_ns.
+ *   timeout_ns == 0 is equivalent to a non-blocking scan (no sleep).
+ *   Uses 4-arg syscall ABI (arg3 = timeout_ns via r10).
+ */
+#define SYS_WAIT_ANY_TIMEOUT 72
 
 /*
  * Thread creation — modern/conforming (iris_error_t).
@@ -539,19 +633,259 @@
  */
 #define SYS_POWEROFF           54
 
-#define IRIS_HANDLE_TYPE_PROCESS      0u
-#define IRIS_HANDLE_TYPE_CHANNEL      1u
-#define IRIS_HANDLE_TYPE_NOTIFICATION 2u
-#define IRIS_HANDLE_TYPE_BOOTSTRAP_CAP 3u
-#define IRIS_HANDLE_TYPE_VMO          4u
-#define IRIS_HANDLE_TYPE_IRQ_CAP      5u
-#define IRIS_HANDLE_TYPE_IOPORT       6u
-#define IRIS_HANDLE_TYPE_INITRD_ENTRY 7u
+/*
+ * Synchronous endpoint IPC — modern/conforming (iris_error_t).
+ *
+ * KEndpoint is a seL4-style rendezvous IPC primitive.  Unlike KChannel it has
+ * no message queue: every send blocks until a receiver is ready (or vice versa).
+ * Message delivery is atomic — both sides unblock in the same scheduler step.
+ *
+ * SYS_ENDPOINT_CREATE() → handle_id or negative iris_error_t
+ *   Creates a new KEndpoint with RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *
+ * SYS_EP_SEND(ep_h, msg_uptr) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE.  Blocks until a receiver is ready (rendezvous).
+ *   msg_uptr: user pointer to struct IrisMsg (48 bytes).
+ *   Returns IRIS_ERR_CLOSED if the endpoint is closed while blocked.
+ *
+ * SYS_EP_RECV(ep_h, msg_uptr) → 0 or negative iris_error_t
+ *   Requires RIGHT_READ.  Blocks until a sender is ready (rendezvous).
+ *   msg_uptr: user pointer to struct IrisMsg; filled with the received message.
+ *   Returns IRIS_ERR_CLOSED if the endpoint is closed while blocked.
+ *
+ * SYS_EP_NB_SEND(ep_h, msg_uptr) → 0 or negative iris_error_t
+ *   Non-blocking send: returns IRIS_ERR_WOULD_BLOCK immediately if no receiver
+ *   is already waiting.  Otherwise identical to SYS_EP_SEND.
+ *
+ * SYS_EP_NB_RECV(ep_h, msg_uptr) → 0 or negative iris_error_t
+ *   Non-blocking receive: returns IRIS_ERR_WOULD_BLOCK immediately if no sender
+ *   is already waiting.  Otherwise identical to SYS_EP_RECV.
+ */
+#define SYS_ENDPOINT_CREATE 73
+#define SYS_EP_SEND         74
+#define SYS_EP_RECV         75
+#define SYS_EP_NB_SEND      76
+#define SYS_EP_NB_RECV      77
+
+/*
+ * CSpace — capability derivation and revocation (Phase 70-72).
+ *
+ * SYS_CAP_DERIVE(src_h, new_rights) → handle_id or negative iris_error_t
+ *   Requires RIGHT_DUPLICATE on src_h.
+ *   new_rights must be a non-empty subset of src_h's current rights.
+ *   Returns a new handle to the same object with reduced rights.
+ *   The new handle participates in the derivation tree: SYS_CAP_REVOKE on
+ *   src_h will cascade-delete derived handles.
+ *
+ * SYS_CAP_REVOKE(h) → 0 or negative iris_error_t
+ *   Deletes all handles transitively derived from h via SYS_CAP_DERIVE.
+ *   h itself is NOT deleted and remains valid after the call.
+ *   O(N) scan over the caller's handle table where N = HANDLE_TABLE_MAX.
+ *
+ * SYS_CNODE_CREATE(num_slots) → handle_id or negative iris_error_t
+ *   Creates a KCNode with num_slots (1..KCNODE_MAX_SLOTS=64) empty slots.
+ *   Returns a handle with RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *
+ * SYS_CNODE_MINT(cnode_h, slot_idx, src_h, new_rights) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on cnode_h; RIGHT_DUPLICATE on src_h.
+ *   Mints a capability from src_h into KCNode slot slot_idx with new_rights
+ *   (must be a non-empty subset of src_h's rights).
+ *   If the slot was occupied the old capability reference is released first.
+ *   Uses 4-arg syscall ABI (new_rights via r10).
+ */
+#define SYS_CAP_DERIVE    78
+#define SYS_CAP_REVOKE    79
+#define SYS_CNODE_CREATE  80
+#define SYS_CNODE_MINT    81
+
+/*
+ * Block 3 — Scheduler (Phase 73-75).
+ *
+ * SYS_THREAD_PRIORITY(new_prio) → old_priority or negative iris_error_t
+ *   Sets the calling thread's scheduling priority (0=lowest, 255=highest).
+ *   Returns the previous priority on success.
+ *   Default priority for all user threads is 128.  The idle task runs at 0.
+ *
+ * SYS_SC_CREATE() → handle_id or negative iris_error_t
+ *   Creates a KSchedContext with default budget (5 ticks) and period (20 ticks).
+ *   Returns handle with RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *
+ * SYS_SC_CONFIGURE(sc_h, budget_ticks, period_ticks) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on sc_h.
+ *   budget_ticks: ticks the bound task may run per period (1 .. period_ticks-1).
+ *   period_ticks: length of the period in scheduler ticks (> budget_ticks).
+ *   Resets remaining_budget to budget_ticks immediately.
+ *
+ * SYS_THREAD_SET_SC(sc_h) → 0 or negative iris_error_t
+ *   Binds sc_h to the calling thread.  Pass 0 to unbind.
+ *   When bound, the thread's remaining_budget is decremented each scheduler
+ *   tick; when exhausted the thread is suspended (TASK_BUDGET_EXHAUSTED)
+ *   until the next refill at remaining_budget + period_ticks.
+ */
+#define SYS_THREAD_PRIORITY 82
+#define SYS_SC_CREATE       83
+#define SYS_SC_CONFIGURE    84
+#define SYS_THREAD_SET_SC   85
+
+/*
+ * Block 4 — Untyped Memory (Ph76-78)
+ *
+ * SYS_UNTYPED_INFO(ut_h, out_phys_uptr, out_avail_uptr) → 0 or error
+ *   Writes phys_base and available bytes to the provided user pointers
+ *   (either may be NULL to skip that field).
+ *
+ * SYS_UNTYPED_RETYPE(ut_h, obj_type, obj_arg) → handle_id or error
+ *   Carves memory from the untyped region and creates a typed kernel object
+ *   without touching the kernel heap (kpage-free path for typed objects).
+ *   obj_arg: for KOBJ_UNTYPED  = size of sub-region in bytes (page-aligned)
+ *             for KOBJ_CNODE   = num_slots (NOT YET — use SYS_CNODE_CREATE)
+ *             otherwise        = 0
+ *   Supported obj_type values: KOBJ_ENDPOINT(8), KOBJ_NOTIFICATION(2), KOBJ_UNTYPED(11)
+ */
+#define SYS_UNTYPED_INFO   86
+#define SYS_UNTYPED_RETYPE 87
+#define SYS_UNTYPED_RESET  88
+
+/*
+ * Block 6 — CNode slot operations (Ph82-84).
+ *
+ * SYS_CNODE_MOVE(cnode_h, slot_idx, src_h) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on cnode_h.
+ *   Moves the capability from the caller's HT handle src_h into CNode slot slot_idx.
+ *   src_h is consumed (removed from HT) — seL4 Move semantics.
+ *   If slot_idx was occupied, the old capability is released.
+ *
+ * SYS_CNODE_FETCH(cnode_h, slot_idx) → new_handle_id or negative iris_error_t
+ *   Requires RIGHT_READ on cnode_h.
+ *   Copies the CNode slot capability into a new HT handle entry.
+ *   The CNode slot remains populated (non-destructive).
+ *   Returns IRIS_ERR_NOT_FOUND if the slot is empty.
+ *
+ * SYS_CNODE_DELETE(cnode_h, slot_idx) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on cnode_h.
+ *   Clears CNode slot slot_idx, releasing its capability reference.
+ *   Idempotent: deleting an already-empty slot returns 0.
+ *
+ * SYS_CNODE_SWAP(cnode_h, slot_a, slot_b) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on cnode_h.
+ *   Atomically swaps the contents of slot_a and slot_b within the same CNode.
+ *   slot_a must not equal slot_b (returns IRIS_ERR_INVALID_ARG if they match).
+ *   No capability references change — only slot pointers are exchanged.
+ */
+#define SYS_CNODE_MOVE    89
+#define SYS_CNODE_FETCH   90
+#define SYS_CNODE_DELETE  91
+#define SYS_CNODE_SWAP    92
+
+/*
+ * Block 7 — Reply Capabilities (Ph85-87).
+ *
+ * SYS_EP_CALL(ep_h, msg_uptr) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on ep_h.
+ *   Sends message on ep_h and blocks waiting for a reply via a KReply token.
+ *   The kernel creates a KReply during rendezvous and delivers it to the
+ *   receiver's handle table in msg.attached_handle.
+ *   msg_uptr is both input (send message) and output (reply message).
+ *   buf_uptr in the send message is used as the reply bulk destination.
+ *   EP_CALL does NOT support simultaneous capability transfer.
+ *   Returns IRIS_ERR_CLOSED if the endpoint is closed or the server drops
+ *   the KReply handle without calling SYS_REPLY.
+ *
+ * SYS_REPLY(kreply_h, msg_uptr) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on kreply_h (a KOBJ_REPLY handle).
+ *   Sends reply_msg to the blocked EP_CALL caller and unblocks it.
+ *   One-shot: the KReply is consumed; future SYS_REPLY on same handle
+ *   returns IRIS_ERR_NOT_FOUND.
+ *   Does NOT require RIGHT_READ on kreply_h — server may hold write-only reply cap.
+ */
+#define SYS_EP_CALL  93
+#define SYS_REPLY    94
+
+/*
+ * Hierarchical CSpace traversal — modern/conforming (iris_error_t).
+ *
+ * SYS_CSPACE_RESOLVE(cptr) → handle_id or negative iris_error_t
+ *   cptr: capability pointer into the process's CNode tree.
+ *   Starting from the process root CNode (installed at creation), extracts
+ *   ctzll(slot_count) bits per level to select a slot index, descends if the
+ *   slot holds another CNode and bits remain, or materializes the leaf
+ *   capability into a new flat handle-table entry and returns the handle_id.
+ *   Max traversal depth: 8 levels.
+ *   Returns IRIS_ERR_NOT_FOUND if the process has no root CNode or a slot
+ *   is empty.  Returns IRIS_ERR_INVALID_ARG if the cptr exhausts all CNode
+ *   levels without reaching a leaf.
+ */
+#define SYS_CSPACE_RESOLVE 95
+
+/*
+ * Block 8 — TCB capabilities (Ph96-101).
+ *
+ * Each user thread receives a KTcb at creation time; handles are installed
+ * in the owning process's handle table automatically.
+ *
+ * SYS_TCB_SELF() → handle_id or negative iris_error_t
+ *   Returns a new handle to the calling thread's KTcb with
+ *   RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *
+ * SYS_TCB_SUSPEND(tcb_h) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE.  Transitions the target thread to TASK_SUSPENDED
+ *   and removes it from the run queue.  If the caller suspends itself the
+ *   syscall yields before returning; execution resumes after SYS_TCB_RESUME.
+ *   Returns IRIS_ERR_NOT_FOUND if the thread is already dead.
+ *
+ * SYS_TCB_RESUME(tcb_h) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE.  Transitions a TASK_SUSPENDED thread to TASK_READY.
+ *   No-op if the thread is already runnable.
+ *   Returns IRIS_ERR_NOT_FOUND if the thread is dead.
+ *
+ * SYS_TCB_SET_PRIORITY(tcb_h, prio) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE.  Sets the thread scheduling priority (0–255).
+ *   Returns IRIS_ERR_NOT_FOUND if the thread is dead.
+ *
+ * SYS_TCB_EXIT(tcb_h) → 0 or negative iris_error_t; does not return for self.
+ *   Requires RIGHT_WRITE.  Forcibly terminates the target thread.
+ *   If the target is the caller, equivalent to SYS_EXIT (does not return).
+ *
+ * SYS_TCB_GET_INFO(tcb_h, info_uptr) → 0 or negative iris_error_t
+ *   Requires RIGHT_READ.  Writes struct iris_tcb_info at info_uptr.
+ */
+#define SYS_TCB_SELF          96
+#define SYS_TCB_SUSPEND       97
+#define SYS_TCB_RESUME        98
+#define SYS_TCB_SET_PRIORITY  99
+#define SYS_TCB_EXIT         100
+#define SYS_TCB_GET_INFO     101
+
+#ifndef __ASSEMBLER__
+struct iris_tcb_info {
+    uint32_t task_id;
+    uint8_t  priority;
+    uint8_t  state;    /* task_state_t cast to uint8_t */
+    uint8_t  _pad[2];
+};
+#endif
+
+#define IRIS_HANDLE_TYPE_PROCESS        0u
+#define IRIS_HANDLE_TYPE_CHANNEL        1u
+#define IRIS_HANDLE_TYPE_NOTIFICATION   2u
+#define IRIS_HANDLE_TYPE_BOOTSTRAP_CAP  3u
+#define IRIS_HANDLE_TYPE_VMO            4u
+#define IRIS_HANDLE_TYPE_IRQ_CAP        5u
+#define IRIS_HANDLE_TYPE_IOPORT         6u
+#define IRIS_HANDLE_TYPE_INITRD_ENTRY   7u
+#define IRIS_HANDLE_TYPE_ENDPOINT       8u
+#define IRIS_HANDLE_TYPE_CNODE          9u
+#define IRIS_HANDLE_TYPE_SCHED_CONTEXT  10u
+#define IRIS_HANDLE_TYPE_UNTYPED        11u
+#define IRIS_HANDLE_TYPE_REPLY          12u
+#define IRIS_HANDLE_TYPE_TCB            13u
+#define IRIS_HANDLE_TYPE_VSPACE         14u  /* Fase 4: KVSpace — virtual address space */
 
 #ifndef __ASSEMBLER__
 #ifdef __KERNEL__
 void syscall_init(void);
 void syscall_set_kstack(uint64_t kstack_top);
+void syscall_set_user_cr3(uint64_t val);
 
 /* Called from ASM handler — 5 params: num + 4 user args (arg3 via r10) */
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,

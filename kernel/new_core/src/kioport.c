@@ -1,6 +1,6 @@
 #include <iris/nc/kioport.h>
 #include <iris/nc/kobject.h>
-#include <iris/kpage.h>
+#include <iris/kslab.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -12,7 +12,7 @@ static void kioport_close(struct KObject *obj) {
 
 static void kioport_destroy(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kioport_live, 1u, memory_order_relaxed);
-    kpage_free((struct KIoPort *)obj, (uint32_t)sizeof(struct KIoPort));
+    kslab_free((struct KIoPort *)obj, (uint32_t)sizeof(struct KIoPort));
 }
 
 static const struct KObjectOps kioport_ops = {
@@ -22,7 +22,7 @@ static const struct KObjectOps kioport_ops = {
 
 struct KIoPort *kioport_alloc(uint16_t base_port, uint16_t count) {
     if (count == 0) return 0;
-    struct KIoPort *port = kpage_alloc((uint32_t)sizeof(struct KIoPort));
+    struct KIoPort *port = kslab_alloc((uint32_t)sizeof(struct KIoPort));
     if (!port) return 0;
     kobject_init(&port->base, KOBJ_IOPORT, &kioport_ops);
     port->base_port = base_port;

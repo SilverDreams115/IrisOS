@@ -1,14 +1,10 @@
 #ifndef IRIS_SERIAL_H
 #define IRIS_SERIAL_H
 
-#include <stdint.h>
-
+/* Early-boot serial: ring-0, boot-phase and fatal/panic paths only.
+ * Normal output uses klog → SYS_KLOG_DRAIN → ring-3 console service. */
 void serial_init(void);
 void serial_putc(char c);
 void serial_write(const char *s);
-void serial_write_dec(uint64_t value);
-void serial_write_hex(uint64_t value);
-void serial_write_hex16(uint16_t value);
-void serial_write_hex8(uint8_t value);
 
 #endif

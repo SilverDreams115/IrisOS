@@ -84,7 +84,57 @@ ISR_NOERR 45
 ISR_NOERR 46
 ISR_NOERR 47  /* IRQ15 — spurious PIC2 */
 
+ISR_NOERR 240 /* RESCHEDULE_IPI_VECTOR (0xF0) — cross-CPU reschedule */
+
 isr_common:
+    /*
+     * SWAPGS ABI: at ISR entry the stack (after stub pushes) is:
+     *   RSP+0  = vector, RSP+8 = error, RSP+16 = RIP, RSP+24 = CS, ...
+     * CS bits[1:0] == 3 → came from ring-3 → must SWAPGS to get kernel GS.
+     * CS bits[1:0] == 0 → came from ring-0 → GS already kernel, no SWAPGS.
+     *
+     * NMI PARANOID_ENTRY debt (Fase 2.1):
+     *
+     *   Fase 2 ABI: ring-0 always has GS_BASE = &cpu_local.  The CS-check is
+     *   therefore CORRECT for the overwhelmingly common cases:
+     *     · ring-3 user code → CS bits=3 → SWAPGS → GS_BASE=&cpu_local ✓
+     *     · ring-0 normal (idle loop, ring-0 ISRs) → CS bits=0, GS already ✓
+     *
+     *   Two tiny residual windows remain where CS bits=0 but GS_BASE=0:
+     *
+     *   Window 1 — between the SYSCALL instruction and the first `swapgs` in
+     *   syscall_entry.S (~2 instructions: swapgs + movq %rsp,%r8).
+     *   The SYSCALL instruction sets CS to ring-0 but does NOT swap GS.
+     *   User's GS_BASE was 0 → still 0 here.  An NMI here sees CS=ring-0 and
+     *   skips SWAPGS → handler runs with GS_BASE=0.
+     *
+     *   Window 2 — between the exit `swapgs` and SYSRETQ/IRETQ in
+     *   syscall_entry.S (~3 instructions).  Exit SWAPGS sets GS_BASE=0 before
+     *   SYSRETQ; CS is still ring-0; NMI sees CS=ring-0 and skips SWAPGS.
+     *
+     *   Identical issue exists for the window between ISR exit SWAPGS and IRETQ
+     *   when returning to ring-3 from an interrupt.
+     *
+     *   Safe for current IRIS because:
+     *     a) NMI always panics (always_fatal in isr_handler); the panic path
+     *        uses direct IO port writes — no GS-relative access at all.
+     *     b) QEMU does not generate NMIs in normal operation.
+     *     c) Windows are 2-3 instructions: statistically negligible on hardware.
+     *
+     *   Fix required before NMI can use cpu_self() or any GS-relative access:
+     *     Implement PARANOID_ENTRY for NMI and #MC: replace the CS-check with
+     *     RDGSBASE, check if GS_BASE >= KERNEL_BASE (canonical kernel address),
+     *     and SWAPGS only if it is not.  This handles all windows correctly
+     *     regardless of CS.  Alternatively, use a per-CPU scratch MSR or a
+     *     fixed per-CPU mapped byte as "in-SWAPGS-window" flag.
+     *     RDGSBASE requires FSGSBASE (CPUID.07H:EBX[0]=1); verify on target.
+     *     Until implemented, NMI must not call cpu_self() or klog_write().
+     */
+    testb $3, 24(%rsp)
+    jz .Lisr_from_ring0
+    swapgs
+.Lisr_from_ring0:
+
     /* salvar registros de propósito general */
     pushq %rax
     pushq %rbx
@@ -122,6 +172,15 @@ isr_common:
     popq %rcx
     popq %rbx
     popq %rax
+
+    /*
+     * Mirror the entry check: if returning to ring-3, SWAPGS to restore user GS.
+     * Stack layout here (after all pops) is identical to entry layout.
+     */
+    testb $3, 24(%rsp)
+    jz .Lisr_exit_ring0
+    swapgs
+.Lisr_exit_ring0:
 
     /* sacar vector e error code del stack */
     addq $16, %rsp

@@ -50,6 +50,8 @@ Current endpoints:
 - `SVCMGR_ENDPOINT_KBD_REPLY`
 - `SVCMGR_ENDPOINT_VFS`
 - `SVCMGR_ENDPOINT_VFS_REPLY`
+- `SVCMGR_ENDPOINT_SH`
+- `SVCMGR_ENDPOINT_SH_REPLY`
 
 Built-in endpoints resolve through the service catalog to one service master handle and one allowed-rights mask.
 Runtime-published endpoints are stored in `svcmgr` state as `(endpoint, name, public_h, client_rights)` entries.
@@ -82,6 +84,9 @@ Client-facing allowed rights currently come from the service catalog:
 - `vfs`
   - service endpoint: `RIGHT_WRITE | RIGHT_DUPLICATE`
   - reply endpoint: `RIGHT_READ | RIGHT_DUPLICATE`
+- `sh`
+  - service endpoint: `RIGHT_WRITE`
+  - reply endpoint: `RIGHT_READ`
 
 ## Dynamic publication contract
 
@@ -135,11 +140,11 @@ Current reply fields:
 
 To satisfy it, `svcmgr` must:
 
-1. call `SYS_DIAG_SNAPSHOT`
-2. query `vfs` with `VFS_MSG_STATUS`
-3. query `kbd` with `KBD_MSG_STATUS`
-4. combine those results with its own live state
+1. query `vfs` with `VFS_MSG_STATUS`
+2. query `kbd` with `KBD_MSG_STATUS`
+3. combine those results with its own internal counters (task count, process count, IRQ routes, tick snapshot)
 
+`SYS_DIAG_SNAPSHOT` is not called; it was retired in Phase 51 and returns `IRIS_ERR_NOT_SUPPORTED`.
 The reply is a compact aggregate view. It does not replace service-local status as source of truth.
 
 ## Supervision and restart contract
@@ -164,11 +169,15 @@ Restart policy is declarative:
 - controlled by `restart_on_exit`
 - bounded by `restart_limit`
 
-Current built-in services both restart up to 3 times.
+Current built-in services:
+
+- `kbd`: restart up to 3 times
+- `vfs`: restart up to 3 times
+- `sh`: autostarted, no restart budget in the current catalog
 
 ## Current invariants
 
-- `svcmgr` is the healthy-path discovery authority for `kbd` and `vfs`.
+- `svcmgr` is the healthy-path discovery authority for `kbd`, `vfs`, and `sh`.
 - `svcmgr` supervises service exit by watch events, not by polling.
 - Stale master endpoints are sealed before replacement so blocked clients fail fast.
 - `svcmgr` can aggregate health only if both kernel diagnostics and service-local status paths are functioning.

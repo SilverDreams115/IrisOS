@@ -1,5 +1,5 @@
 #include <iris/nc/kbootcap.h>
-#include <iris/kpage.h>
+#include <iris/kslab.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -8,7 +8,7 @@ static void kbootcap_close(struct KObject *obj) {
 }
 
 static void kbootcap_destroy(struct KObject *obj) {
-    kpage_free((struct KBootstrapCap *)obj, (uint32_t)sizeof(struct KBootstrapCap));
+    kslab_free((struct KBootstrapCap *)obj, (uint32_t)sizeof(struct KBootstrapCap));
 }
 
 static const struct KObjectOps kbootcap_ops = {
@@ -17,7 +17,7 @@ static const struct KObjectOps kbootcap_ops = {
 };
 
 struct KBootstrapCap *kbootcap_alloc(uint32_t permissions) {
-    struct KBootstrapCap *cap = kpage_alloc((uint32_t)sizeof(struct KBootstrapCap));
+    struct KBootstrapCap *cap = kslab_alloc((uint32_t)sizeof(struct KBootstrapCap));
     if (!cap) return 0;
     kobject_init(&cap->base, KOBJ_BOOTSTRAP_CAP, &kbootcap_ops);
     cap->permissions = permissions;

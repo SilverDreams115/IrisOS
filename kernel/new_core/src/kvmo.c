@@ -1,6 +1,6 @@
 #include <iris/nc/kvmo.h>
 #include <iris/nc/kprocess.h>
-#include <iris/kpage.h>
+#include <iris/kslab.h>
 #include <iris/paging.h>
 #include <iris/pmm.h>
 #include <stdatomic.h>
@@ -15,10 +15,8 @@ static void kvmo_destroy(struct KObject *obj) {
             if (v->pages[i])
                 pmm_free_page(v->pages[i]);
         }
-        if (v->pages_meta_phys) {
-            for (uint32_t i = 0; i < v->pages_meta_pages; i++)
-                pmm_free_page(v->pages_meta_phys + (uint64_t)i * PMM_PAGE_SIZE);
-        }
+        if (v->pages_meta_phys)
+            pmm_free_contig(v->pages_meta_phys, v->pages_meta_pages);
     } else if (v->owned && v->phys) {
         uint64_t pages = (v->size + 0xFFFULL) >> 12;
         for (uint64_t i = 0; i < pages; i++)
@@ -31,15 +29,17 @@ static void kvmo_destroy(struct KObject *obj) {
         kobject_release(&owner->base);
     }
     atomic_fetch_sub_explicit(&kvmo_live, 1u, memory_order_relaxed);
-    kpage_free(v, (uint32_t)sizeof(struct KVmo));
+    kslab_free(v, (uint32_t)sizeof(struct KVmo));
 }
 
 static const struct KObjectOps kvmo_ops = { .destroy = kvmo_destroy };
 
 static struct KVmo *kvmo_alloc(void) {
-    struct KVmo *v = kpage_alloc((uint32_t)sizeof(struct KVmo));
+    struct KVmo *v = kslab_alloc((uint32_t)sizeof(struct KVmo));
     if (!v) return 0;
     kobject_init(&v->base, KOBJ_VMO, &kvmo_ops);
+    for (uint32_t i = 0; i < KVMO_PAGE_SHARDS; i++)
+        spinlock_init(&v->page_shards[i]);
     atomic_fetch_add_explicit(&kvmo_live, 1u, memory_order_relaxed);
     return v;
 }

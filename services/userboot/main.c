@@ -4,6 +4,7 @@
 #include <iris/nc/rights.h>
 #include <iris/nc/kchannel.h>
 #include <iris/svcmgr_proto.h>
+#include <iris/boot_info.h>
 #include "../../services/common/svc_loader.h"
 
 static inline long ub_sys0(long nr) {
@@ -94,6 +95,37 @@ void iris_userboot_main(handle_id_t bootstrap_cap_h) {
     /* Verify kernel catalog size matches the ring-3 table before loading anything. */
     if (svc_initrd_count(bootstrap_cap_h) != (long)SL_CATALOG_COUNT)
         goto fail;
+
+    /* Fase 3.4: CPtr probe — exercise the root CSpace path for boot KUntyped.
+     * BOOT_CPTR_UNTYPED_START names the first boot KUntyped slot in the root
+     * CNode that kernel_main populated during the Ph76 drain.  A successful
+     * SYS_UNTYPED_INFO call (return >= 0) confirms the CSpace grant is live.
+     * Boot is not gated on this: if the kernel ran without CSpace grants the
+     * legacy handle path still works and all downstream services are unaffected. */
+    (void)ub_sys3(SYS_UNTYPED_INFO, (long)BOOT_CPTR_UNTYPED_START, 0, 0);
+
+    /* Fase 3.5: CPtr probe for KBootstrapCap in well-known slot 1.
+     * SYS_CSPACE_RESOLVE materialises the CNode slot into a new handle-table
+     * entry without altering the CNode.  If it returns >= 0 the slot is live;
+     * the handle is closed immediately so the main flow is unchanged.
+     * Boot is not gated on this probe. */
+    {
+        long bprobe_h = ub_sys1(SYS_CSPACE_RESOLVE,
+                                (long)BOOT_CPTR_BOOTSTRAP_CAP);
+        if (bprobe_h >= 0)
+            ub_close((handle_id_t)bprobe_h);
+    }
+
+    /* Fase 4: CPtr probe for KVSpace in well-known slot 2 (BOOT_CPTR_VSPACE).
+     * Non-destructive: materialises the slot, then closes the handle immediately.
+     * Confirms that userland can traverse the CSpace grant inserted by kernel_main.
+     * Boot is not gated on this probe. */
+    {
+        long vsprobe_h = ub_sys1(SYS_CSPACE_RESOLVE,
+                                 (long)BOOT_CPTR_VSPACE);
+        if (vsprobe_h >= 0)
+            ub_close((handle_id_t)vsprobe_h);
+    }
 
     if (svc_load(bootstrap_cap_h, "init", &init_proc_h, &init_boot_h) < 0)
         goto fail;

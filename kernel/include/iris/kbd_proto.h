@@ -61,7 +61,8 @@
  *   KBD_MSG_IRQ_SCANCODE (0x00000004) kernel → service  [no reply]
  *     Sent by irq_routing_signal() when hardware IRQ1 fires.
  *     Value matches IRQ_MSG_TYPE_SIGNAL (irq_routing.h); must stay in sync.
- *     data[0] uint8_t: raw PS/2 scancode byte.
+ *     data[0]: always 0 — kernel does not read port 0x60.
+ *     The kbd service reads the scancode from port 0x60 via its KIoPort cap.
  *       Bit 7 set: key release (scancode & 0x7F = base key code).
  *       Bit 7 clr: key press.
  *     No reply is sent; the service processes and loops.
@@ -75,10 +76,17 @@
  *   KBD_PROTO_VERSION 1
  *   Bump when any wire-level field layout changes.
  *
- * ── Phase status ─────────────────────────────────────────────────────────────
- *   Phase 10/current: protocol formalized.  kbd_server.S and user_init.S
- *   both consume this header and use named constants throughout.
- *   irq_routing.c uses IRQ_MSG_TYPE_SIGNAL from irq_routing.h.
+ * Ownership rules:
+ *   - HELLO and STATUS carry no required attached handles.
+ *   - STATUS may optionally attach a one-shot reply channel with RIGHT_WRITE;
+ *     sending the request move-consumes that handle on successful SYS_CHAN_SEND.
+ *   - SUBSCRIBE requires the client to attach a KChannel write handle with
+ *     RIGHT_WRITE | RIGHT_TRANSFER; kbd takes ownership of that attached
+ *     handle and replaces any previous subscriber.
+ *
+ * ── Current status ───────────────────────────────────────────────────────────
+ *   The protocol is live and consumed by the current `kbd` service and clients.
+ *   `irq_routing.c` uses IRQ_MSG_TYPE_SIGNAL from irq_routing.h.
  */
 
 /* Protocol version */

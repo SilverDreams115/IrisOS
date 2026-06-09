@@ -24,7 +24,8 @@ OVMF_CODE="$(pick_first \
   /usr/share/qemu/OVMF_CODE_4M.fd \
   /usr/share/qemu/OVMF_CODE.fd \
   /usr/share/edk2/ovmf/OVMF_CODE.fd \
-  /usr/share/edk2/x64/OVMF_CODE.fd
+  /usr/share/edk2/x64/OVMF_CODE.fd \
+  /usr/share/edk2/x64/OVMF_CODE.4m.fd
 )"
 
 OVMF_VARS_TEMPLATE="$(pick_first \
@@ -34,7 +35,8 @@ OVMF_VARS_TEMPLATE="$(pick_first \
   /usr/share/qemu/OVMF_VARS_4M.fd \
   /usr/share/qemu/OVMF_VARS.fd \
   /usr/share/edk2/ovmf/OVMF_VARS.fd \
-  /usr/share/edk2/x64/OVMF_VARS.fd
+  /usr/share/edk2/x64/OVMF_VARS.fd \
+  /usr/share/edk2/x64/OVMF_VARS.4m.fd
 )"
 
 if [ -z "${OVMF_CODE:-}" ] || [ -z "${OVMF_VARS_TEMPLATE:-}" ]; then
@@ -101,6 +103,48 @@ fi
 
 if ! grep -Fq "[USER][INIT][TIMED] recv timeout OK" "$LOG_FILE"; then
   echo "[headless] missing timed-IPC selftest marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[USER][INIT][S8] exception delivery OK" "$LOG_FILE"; then
+  echo "[headless] missing exception delivery selftest marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[USER][INIT][S9] channel seal OK" "$LOG_FILE"; then
+  echo "[headless] missing channel-seal selftest marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[USER][INIT][S10] rights reduction OK" "$LOG_FILE"; then
+  echo "[headless] missing rights-reduction selftest marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[IRIS][TEST] SUITE PASS" "$LOG_FILE"; then
+  echo "[headless] missing iris_test SUITE PASS marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[IRIS][USER] boot untyped CSpace grants:" "$LOG_FILE"; then
+  echo "[headless] missing boot-untyped-CSpace-grants marker (Fase 3.4)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[IRIS][USER] boot bootstrap cap CSpace grants OK" "$LOG_FILE"; then
+  echo "[headless] missing boot-bootstrap-cap-CSpace-grants marker (Fase 3.5)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[IRIS][USER] boot vspace CSpace grants OK" "$LOG_FILE"; then
+  echo "[headless] missing boot-vspace-CSpace-grants marker (Fase 4)"
   cat "$LOG_FILE"
   exit 1
 fi

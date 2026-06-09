@@ -51,13 +51,15 @@ _start:
     movq  $0,    %rax
     syscall
 
-/* ── Bootstrap: receive service/reply/ioport handles ────────────────────── */
+/* ── Bootstrap: receive service/reply/ioport/irqcap handles ─────────────── */
 .kbd_bootstrap_recv:
     testq %r12, %r12
     jz    .kbd_bootstrap_need
     testq %r13, %r13
     jz    .kbd_bootstrap_need
     testq %r14, %r14
+    jz    .kbd_bootstrap_need
+    cmpl  $0, 84(%rsp)
     jnz   .kbd_bootstrap_done
 .kbd_bootstrap_need:
     movq  $0,  0(%rsp)
@@ -95,6 +97,8 @@ _start:
     je    .kbd_bootstrap_reply
     cmpl  $SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP, 8(%rsp)
     je    .kbd_bootstrap_ioport
+    cmpl  $SVCMGR_BOOTSTRAP_KIND_IRQ_CAP,    8(%rsp)
+    je    .kbd_bootstrap_irqcap
     jmp   .kbd_bootstrap_fail
 
 .kbd_bootstrap_service:
@@ -109,10 +113,15 @@ _start:
     movq  %rax, %r14                   /* r14 = KIoPort handle              */
     jmp   .kbd_bootstrap_recv
 
+.kbd_bootstrap_irqcap:
+    movl  %eax, 84(%rsp)               /* 84(%rsp) = IRQ cap handle (SYS_IRQ_ACK) */
+    jmp   .kbd_bootstrap_recv
+
 .kbd_bootstrap_done:
     movq  $15,  %rax                   /* SYS_HANDLE_CLOSE: release bootstrap */
     movq  %rbx, %rdi
     syscall
+    movl  84(%rsp), %ebx               /* rbx = irqcap handle for SYS_IRQ_ACK */
 
 /* ── PS/2 flush: drain controller output buffer before entering main loop ── */
 /* SYS_IOPORT_IN(r14, 4) reads port 0x64 (status); bit 0 = OBF (data ready).
@@ -192,13 +201,23 @@ _start:
     jne   .kbd_recv                    /* unknown type: silently ignore */
 
 /* ── KBD_MSG_IRQ_SCANCODE: hardware event from IRQ routing layer ─────────
- * data[KBD_MSG_OFF_IRQ_SCANCODE] = raw PS/2 scancode byte.
+ * Kernel delivers the IRQ notification; ring-3 reads port 0x60 via KIoPort.
  * Key press:   scancode < 0x80
  * Key release: scancode >= 0x80 (bit 7 set; base key = scancode & 0x7F)
  * No reply is sent; print hex and loop.                              */
-    movzbl 8(%rsp), %ecx               /* data[0]: raw scancode */
-    testb  %cl,  %cl
-    jz    .kbd_recv                    /* scancode=0 is spurious; ignore */
+    movq  $SYS_IOPORT_IN, %rax        /* read PS/2 data register via KIoPort */
+    movq  %r14, %rdi
+    movq  $0,   %rsi                   /* offset 0 = port 0x60 */
+    syscall
+    testq %rax, %rax
+    js    .kbd_recv                    /* I/O error: IRQ stays masked (stall) */
+    movb  %al,  88(%rsp)               /* stash scancode above msg struct */
+    movq  $SYS_IRQ_ACK, %rax          /* unmask IRQ1: byte consumed, safe to re-arm */
+    movq  %rbx, %rdi
+    syscall
+    movzbl 88(%rsp), %ecx             /* ecx = scancode (reload; rax clobbered) */
+    testb %cl,  %cl
+    jz    .kbd_recv                    /* scancode 0 is spurious */
 
     leaq  96(%rsp), %rdi
     movb  $'[',  0(%rdi)
@@ -243,7 +262,7 @@ _start:
     /* Forward scancode to subscriber if one is registered */
     testq %r15,  %r15
     jz    .kbd_recv
-    movzbl 8(%rsp), %r11d              /* reload raw scancode from recv buffer  */
+    movzbl 88(%rsp), %r11d             /* reload scancode (captured from KIoPort) */
     movq  $0,  0(%rsp)
     movq  $0,  8(%rsp)
     movq  $0, 16(%rsp)

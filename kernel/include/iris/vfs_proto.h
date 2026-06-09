@@ -10,7 +10,7 @@
 /*
  * Userland VFS protocol.
  *
- * Phase 9/current:
+ * Current contract:
  *   - Clients talk to the ring-3 vfs service over the public request channel.
  *   - The service owns the client-visible file_id namespace and per-client
  *     open-file state for the migrated read-only open/read/close path.
@@ -19,11 +19,15 @@
  *   - OPEN carries an attached self proc_handle with RIGHT_READ so the
  *     service can arm a process-exit watch and reclaim dead-client state
  *     without taking ownership back into the kernel.
+ *   - OPEN move-consumes that attached proc_handle on successful SYS_CHAN_SEND.
  *   - Kernel SYS_OPEN/SYS_READ/SYS_CLOSE are retired compatibility stubs;
  *     clients never receive kernel fd numbers on this path.
  *   - VFS_MSG_STATUS may optionally carry a transferred one-shot reply handle
  *     with RIGHT_WRITE. If absent, the service replies on its bootstrapped
  *     shared reply channel for compatibility.
+ *   - Replies on the shared reply channel do not consume any client-owned
+ *     handles; replies with an attached handle would use normal KChannel
+ *     transfer semantics, but the current VFS protocol does not attach one.
  */
 
 #define VFS_MSG_OPEN        0x00010001u
@@ -88,9 +92,9 @@
 #define VFS_MSG_LIST_LEN            4u
 #define VFS_MSG_LIST_REPLY_BASE_LEN 16u
 
-#define VFS_SERVICE_EXPORTS         4u
+#define VFS_SERVICE_EXPORTS         16u
 #define VFS_SERVICE_OPEN_FILES      32u
-#define VFS_BOOT_EXPORT_COUNT       2u
+#define VFS_BOOT_EXPORT_COUNT       4u
 #define VFS_BOOT_EXPORT_TOTAL_BYTES 31u
 #define VFS_PROTO_VERSION           2u
 

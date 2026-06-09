@@ -1,5 +1,4 @@
 #include <iris/svcmgr_proto.h>
-#include <iris/diag.h>
 #include <iris/kbd_proto.h>
 #include "service_catalog.h"
 #include <iris/syscall.h>
@@ -62,7 +61,7 @@ static const char sm_str_lookupok[]     = "[SVCMGR] lookup reply OK\n";
 static const char sm_str_lookupfail[]   = "[SVCMGR] WARN: lookup failed\n";
 static const char sm_str_lookupsendfail[] = "[SVCMGR] WARN: lookup reply send failed\n";
 static const char sm_str_diag_fail[]    = "[SVCMGR] WARN: diagnostics query failed\n";
-static const char sm_str_svc_exited[]   = "[SVCMGR] service exited\n";
+/* sm_str_svc_exited replaced by inline format in svcmgr_release_service (logs name) */
 static const char sm_str_irqfail[]      = "[SVCMGR] WARN: irq route xfer failed\n";
 static const char sm_str_svc_unknown[]  = "[SVCMGR] WARN: unknown bootstrap service\n";
 static const char sm_str_watchok[]      = "[SVCMGR] lifecycle watch armed\n";
@@ -76,7 +75,6 @@ static const char sm_str_lookup_name_ok[]    = "[SVCMGR] lookup-name reply OK\n"
 static const char sm_str_unregister_ok[]     = "[SVCMGR] runtime withdraw OK\n";
 static const char sm_str_unregister_fail[]   = "[SVCMGR] WARN: runtime withdraw failed\n";
 static const char sm_str_diag_req[]          = "[SVCMGR][DIAG] request\n";
-static const char sm_str_diag_snap[]         = "[SVCMGR][DIAG] kernel snapshot OK\n";
 static const char sm_str_diag_vfs[]          = "[SVCMGR][DIAG] vfs status OK\n";
 static const char sm_str_diag_kbd[]          = "[SVCMGR][DIAG] kbd status OK\n";
 static const char sm_str_diag_done[]         = "[SVCMGR][DIAG] reply sent\n";
@@ -108,45 +106,33 @@ static void svcmgr_log(const char *msg) {
 }
 
 static void svcmgr_log_u32(uint32_t value) {
-    char buf[11];
-    uint32_t i = 0;
-
+    char buf[12];
+    uint32_t i = 11;
+    buf[i] = '\0';
     if (value == 0) {
-        svcmgr_log("0");
-        return;
+        buf[--i] = '0';
+    } else {
+        while (value != 0) {
+            buf[--i] = (char)('0' + (value % 10u));
+            value /= 10u;
+        }
     }
-
-    while (value != 0 && i < (uint32_t)sizeof(buf)) {
-        buf[i++] = (char)('0' + (value % 10u));
-        value /= 10u;
-    }
-    while (i != 0) {
-        char out[2];
-        out[0] = buf[--i];
-        out[1] = '\0';
-        svcmgr_log(out);
-    }
+    svcmgr_log(buf + i);
 }
 
 static void svcmgr_log_u64(uint64_t value) {
-    char buf[21];
-    uint32_t i = 0;
-
+    char buf[22];
+    uint32_t i = 21;
+    buf[i] = '\0';
     if (value == 0) {
-        svcmgr_log("0");
-        return;
+        buf[--i] = '0';
+    } else {
+        while (value != 0) {
+            buf[--i] = (char)('0' + (uint32_t)(value % 10u));
+            value /= 10u;
+        }
     }
-
-    while (value != 0 && i < (uint32_t)sizeof(buf)) {
-        buf[i++] = (char)('0' + (value % 10u));
-        value /= 10u;
-    }
-    while (i != 0) {
-        char out[2];
-        out[0] = buf[--i];
-        out[1] = '\0';
-        svcmgr_log(out);
-    }
+    svcmgr_log(buf + i);
 }
 
 static void svcmgr_log_hex8(uint32_t value) {
@@ -492,6 +478,73 @@ static int64_t svcmgr_send_ioport_cap(handle_id_t child_boot_h, handle_id_t mast
     return IRIS_OK;
 }
 
+static int64_t svcmgr_send_irqcap(handle_id_t child_boot_h, handle_id_t master_h) {
+    struct KChanMsg msg;
+    int64_t dup_h;
+
+    if (master_h == HANDLE_INVALID) return (int64_t)IRIS_ERR_INVALID_ARG;
+
+    /* Dup with RIGHT_ROUTE|RIGHT_TRANSFER; child receives RIGHT_ROUTE only. */
+    dup_h = svcmgr_syscall2(SYS_HANDLE_DUP, master_h, RIGHT_ROUTE | RIGHT_TRANSFER);
+    if (dup_h < 0) {
+        svcmgr_log(sm_str_bootdupfail);
+        return dup_h;
+    }
+
+    {
+        uint8_t *raw = (uint8_t *)&msg;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
+    }
+    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                           SVCMGR_BOOTSTRAP_KIND_IRQ_CAP);
+    msg.data_len = SVCMGR_BOOTSTRAP_MSG_LEN;
+    msg.attached_handle = (handle_id_t)dup_h;
+    msg.attached_rights = RIGHT_ROUTE;
+
+    if (svcmgr_syscall2(SYS_CHAN_SEND, child_boot_h, (uint64_t)(uintptr_t)&msg) < 0) {
+        handle_id_t tmp = (handle_id_t)dup_h;
+        svcmgr_close_handle_if_valid(&tmp);
+        svcmgr_log(sm_str_bootsendfail);
+        return (int64_t)IRIS_ERR_WOULD_BLOCK;
+    }
+
+    return IRIS_OK;
+}
+
+static int64_t svcmgr_send_spawn_cap(handle_id_t child_boot_h, handle_id_t master_h) {
+    struct KChanMsg msg;
+    int64_t dup_h;
+
+    if (master_h == HANDLE_INVALID) return (int64_t)IRIS_ERR_INVALID_ARG;
+
+    dup_h = svcmgr_syscall2(SYS_HANDLE_DUP, master_h, RIGHT_READ | RIGHT_TRANSFER);
+    if (dup_h < 0) {
+        svcmgr_log(sm_str_bootdupfail);
+        return dup_h;
+    }
+
+    {
+        uint8_t *raw = (uint8_t *)&msg;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
+    }
+    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                           SVCMGR_BOOTSTRAP_KIND_INITRD_CAP);
+    msg.data_len = SVCMGR_BOOTSTRAP_MSG_LEN;
+    msg.attached_handle = (handle_id_t)dup_h;
+    msg.attached_rights = RIGHT_READ;
+
+    if (svcmgr_syscall2(SYS_CHAN_SEND, child_boot_h, (uint64_t)(uintptr_t)&msg) < 0) {
+        handle_id_t tmp = (handle_id_t)dup_h;
+        svcmgr_close_handle_if_valid(&tmp);
+        svcmgr_log(sm_str_bootsendfail);
+        return (int64_t)IRIS_ERR_WOULD_BLOCK;
+    }
+
+    return IRIS_OK;
+}
+
 static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
                                       const struct iris_service_catalog_entry *manifest,
                                       handle_id_t child_boot_h) {
@@ -524,6 +577,21 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
             : HANDLE_INVALID;
         if (ioport_master_h != HANDLE_INVALID) {
             r = svcmgr_send_ioport_cap(child_boot_h, ioport_master_h);
+            if (r != IRIS_OK) {
+                svcmgr_close_handle_if_valid(&child_boot_h);
+                return r;
+            }
+        }
+    }
+
+    /* Forward IRQ capability so service can call SYS_IRQ_ACK (deferred ACK). */
+    if (manifest->give_irqcap && manifest->irq_num != 0xFFu) {
+        handle_id_t irqcap_master_h =
+            (manifest->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE)
+            ? state->irq_caps[manifest->irq_num]
+            : HANDLE_INVALID;
+        if (irqcap_master_h != HANDLE_INVALID) {
+            r = svcmgr_send_irqcap(child_boot_h, irqcap_master_h);
             if (r != IRIS_OK) {
                 svcmgr_close_handle_if_valid(&child_boot_h);
                 return r;
@@ -567,6 +635,15 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
                     return r;
                 }
             }
+        }
+    }
+
+    /* Forward spawn cap to services that need to access initrd VMOs (e.g. VFS). */
+    if (manifest->give_spawn_cap && state->spawn_cap_h != HANDLE_INVALID) {
+        r = svcmgr_send_spawn_cap(child_boot_h, state->spawn_cap_h);
+        if (r != IRIS_OK) {
+            svcmgr_close_handle_if_valid(&child_boot_h);
+            return r;
         }
     }
 
@@ -781,6 +858,19 @@ out:
     return rc;
 }
 
+static uint32_t svcmgr_irq_route_count(const struct svcmgr_state *state) {
+    uint32_t count = 0;
+    if (!state) return 0;
+    for (uint32_t i = 0; i < iris_service_catalog_count(); i++) {
+        const struct iris_service_catalog_entry *e = iris_service_catalog_at(i);
+        if (!e || e->irq_num == 0xFFu) continue;
+        if (e->service_id < IRIS_SERVICE_RUNTIME_SLOT_COUNT &&
+            state->services[e->service_id].proc_h != HANDLE_INVALID)
+            count++;
+    }
+    return count;
+}
+
 static int64_t svcmgr_collect_diag(const struct svcmgr_state *state,
                                    uint32_t *out_tasks_live,
                                    uint32_t *out_kproc_live,
@@ -796,7 +886,6 @@ static int64_t svcmgr_collect_diag(const struct svcmgr_state *state,
                                    uint32_t *out_vfs_open_capacity,
                                    uint32_t *out_vfs_exported_bytes,
                                    uint32_t *out_kbd_flags) {
-    struct iris_diag_snapshot snap;
     int64_t rc;
 
     if (!state || !out_tasks_live || !out_kproc_live || !out_irq_routes_active ||
@@ -806,12 +895,6 @@ static int64_t svcmgr_collect_diag(const struct svcmgr_state *state,
         !out_kbd_flags)
         return IRIS_ERR_INVALID_ARG;
 
-    rc = svcmgr_syscall1(SYS_DIAG_SNAPSHOT, (uint64_t)(uintptr_t)&snap);
-    if (rc != IRIS_OK) return rc;
-    if (snap.magic != IRIS_DIAG_MAGIC || snap.version != IRIS_DIAG_VERSION)
-        return IRIS_ERR_INTERNAL;
-    svcmgr_log(sm_str_diag_snap);
-
     rc = svcmgr_query_vfs_status(state, out_vfs_exports_ready, out_vfs_open_files,
                                  out_vfs_open_capacity, out_vfs_exported_bytes);
     if (rc != IRIS_OK) return rc;
@@ -820,15 +903,15 @@ static int64_t svcmgr_collect_diag(const struct svcmgr_state *state,
     if (rc != IRIS_OK) return rc;
     svcmgr_log(sm_str_diag_kbd);
 
-    *out_tasks_live = snap.tasks_live;
-    *out_kproc_live = snap.kproc_live;
-    *out_irq_routes_active = snap.irq_routes_active;
-    *out_ticks_lo = snap.ticks_lo;
-    *out_ticks_hi = snap.ticks_hi;
-    *out_manifest_count = iris_service_catalog_count();
-    *out_ready_services = svcmgr_ready_service_count(state);
-    *out_active_slots = svcmgr_active_slot_count(state);
-    *out_catalog_version = IRIS_SERVICE_CATALOG_VERSION;
+    *out_tasks_live        = svcmgr_active_slot_count(state) + 1u;
+    *out_kproc_live        = svcmgr_active_slot_count(state) + 1u;
+    *out_irq_routes_active = svcmgr_irq_route_count(state);
+    *out_ticks_lo          = 0u;
+    *out_ticks_hi          = 0u;
+    *out_manifest_count    = iris_service_catalog_count();
+    *out_ready_services    = svcmgr_ready_service_count(state);
+    *out_active_slots      = svcmgr_active_slot_count(state);
+    *out_catalog_version   = IRIS_SERVICE_CATALOG_VERSION;
     return IRIS_OK;
 }
 
@@ -1301,9 +1384,13 @@ static void svcmgr_handle_diag(struct svcmgr_state *state, const struct KChanMsg
 static void svcmgr_release_service(struct svcmgr_state *state,
                                    uint32_t service_id,
                                    struct svcmgr_service_state *svc) {
+    const struct iris_service_catalog_entry *manifest;
     if (!svc || svc->proc_h == HANDLE_INVALID) return;
 
-    svcmgr_log(sm_str_svc_exited);
+    manifest = iris_service_catalog_find_by_service_id(service_id);
+    svcmgr_log("[SVCMGR] service exited: ");
+    if (manifest && manifest->image_name) svcmgr_log(manifest->image_name);
+    svcmgr_log("\n");
     svcmgr_clear_service_masters(state, service_id);
     svcmgr_close_handle_if_valid(&svc->proc_h);
 }
@@ -1400,6 +1487,19 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         svcmgr_log(sm_str_bootcapfail);
         return;
     }
+
+    /* Drain kernel boot log to console now that console_h is available. */
+    {
+        static uint8_t klog_drain_buf[4097]; /* KLOG_BUF_SIZE + 1 for NUL */
+        int64_t n = svcmgr_syscall2(SYS_KLOG_DRAIN,
+                                    (uint64_t)(uintptr_t)klog_drain_buf,
+                                    4096u);
+        if (n > 0) {
+            klog_drain_buf[n] = 0u;
+            console_write(state->console_h, (const char *)klog_drain_buf);
+        }
+    }
+
     svcmgr_request_hardware_caps(state);
     svcmgr_autostart_services(state);
     svcmgr_log(sm_str_ready);

@@ -2,6 +2,7 @@
 #define IRIS_NC_KVMO_H
 
 #include <iris/nc/kobject.h>
+#include <iris/nc/spinlock.h>
 #include <iris/nc/error.h>
 #include <stdint.h>
 
@@ -10,6 +11,19 @@ struct KProcess;
 #define KVMO_POOL_SIZE 0u
 #define KVMO_MAX_PAGES 16384u
 #define KVMO_MAX_SIZE  ((uint64_t)KVMO_MAX_PAGES * 0x1000ULL)
+
+/*
+ * Number of per-page shard locks in each demand VMO.
+ *
+ * A single base.lock for all demand-page allocations creates a bottleneck when
+ * multiple threads of the same process fault on different pages simultaneously.
+ * Shard locks reduce contention: page_idx is hashed to a shard with a bitmask,
+ * so pages that fall in different shards can be allocated concurrently.
+ *
+ * 16 shards (4-bit hash) balances struct size against concurrency benefit.
+ * Must be a power of two.
+ */
+#define KVMO_PAGE_SHARDS 16u
 
 /* Virtual Memory Object — represents a physical memory region.
  * Can be mapped into a process address space via SYS_VMO_MAP. */
@@ -24,6 +38,11 @@ struct KVmo {
     uint32_t       pages_meta_pages;  /* PMM pages backing pages[] metadata */
     uint64_t       pages_meta_phys;   /* physical base of pages[] metadata */
     uint64_t      *pages;             /* phys per page; 0 = not yet allocated */
+
+    /* Per-page shard spinlocks for demand VMOs.
+     * Lock: page_shards[page_idx & (KVMO_PAGE_SHARDS - 1)]
+     * base.lock is still used for VMO-level metadata (owner binding, etc.). */
+    spinlock_t     page_shards[KVMO_PAGE_SHARDS];
 };
 
 iris_error_t kvmo_size_to_pages(uint64_t size, uint32_t *out_pages);

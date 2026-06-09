@@ -94,12 +94,14 @@ Current delivery path:
   - `IRIS_BOOTCAP_SPAWN_SERVICE`
   - `IRIS_BOOTCAP_HW_ACCESS`
   - `IRIS_BOOTCAP_KDEBUG`
+  - `IRIS_BOOTCAP_FRAMEBUFFER`
 
 Current use:
 
-- authorizes `SYS_INITRD_LOOKUP`
-- authorizes hardware cap creation until userland narrows it with `SYS_BOOTCAP_RESTRICT`
-- authorizes privileged serial debug while the handle retains `IRIS_BOOTCAP_KDEBUG`
+- `IRIS_BOOTCAP_SPAWN_SERVICE`: authorizes `SYS_INITRD_COUNT` and `SYS_INITRD_VMO`
+- `IRIS_BOOTCAP_HW_ACCESS`: authorizes hardware cap creation (`SYS_CAP_CREATE_IRQCAP`, `SYS_CAP_CREATE_IOPORT`) until userland narrows it with `SYS_BOOTCAP_RESTRICT`
+- `IRIS_BOOTCAP_KDEBUG`: authorizes `SYS_POWEROFF` and `SYS_KLOG_DRAIN`
+- `IRIS_BOOTCAP_FRAMEBUFFER`: authorizes `SYS_FRAMEBUFFER_VMO` (one-shot; kernel clears the flag after first claim)
 - does not grant general process-management authority
 
 ### `KIoPort`

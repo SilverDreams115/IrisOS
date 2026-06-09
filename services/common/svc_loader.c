@@ -175,6 +175,14 @@ static uint64_t sl_choose_bias(uint64_t max_vend) {
     return (bias_min + (rand % range)) & ~(page - 1ULL);
 }
 
+static uint64_t sl_page_floor(uint64_t v) {
+    return v & ~0xFFFULL;
+}
+
+static uint64_t sl_page_ceil(uint64_t v) {
+    return (v + 0xFFFULL) & ~0xFFFULL;
+}
+
 /* Find file offset of a given vaddr in an ET_DYN (base-0) ELF. */
 static uint64_t sl_vaddr_to_foff(const Elf64_Ehdr *eh, uint64_t vaddr) {
     const Elf64_Phdr *phdrs =
@@ -210,7 +218,8 @@ static long sl_name_to_index(const char *name) {
     if (sl_streq(name, "vfs"))      return 4;
     if (sl_streq(name, "console"))  return 5;
     if (sl_streq(name, "fb"))       return 6;
-    if (sl_streq(name, "sh"))       return 7;
+    if (sl_streq(name, "sh"))        return 7;
+    if (sl_streq(name, "iris_test")) return 8;
     return -1;
 }
 
@@ -242,11 +251,17 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
     uint64_t    seg_p_filesz[SL_MAX_SEGS];
     uint64_t    seg_p_offset[SL_MAX_SEGS];
     uint32_t    seg_p_flags [SL_MAX_SEGS];
+    uint64_t    seg_map_base [SL_MAX_SEGS];
+    uint64_t    seg_map_size [SL_MAX_SEGS];
+    uint64_t    seg_page_off [SL_MAX_SEGS];
     long        r = (long)IRIS_ERR_INVALID_ARG;
 
     for (uint32_t i = 0; i < SL_MAX_SEGS; i++) {
         seg_vmo[i]     = HANDLE_INVALID;
         seg_p_memsz[i] = 0;
+        seg_map_base[i] = 0;
+        seg_map_size[i] = 0;
+        seg_page_off[i] = 0;
     }
 
     /* 1. Get read-only eager VMO wrapping the ELF bytes in the initrd. */
@@ -277,14 +292,27 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
         uint64_t max_vend = 0;
         for (uint16_t i = 0; i < eh->e_phnum && seg_count < SL_MAX_SEGS; i++) {
             const Elf64_Phdr *ph = &phs[i];
+            uint64_t map_base, map_end, map_size, page_off;
             if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
+            if (ph->p_filesz > ph->p_memsz) goto out;
+            map_base = sl_page_floor(ph->p_vaddr);
+            map_end  = sl_page_ceil(ph->p_vaddr + ph->p_memsz);
+            map_size = map_end - map_base;
+            page_off = ph->p_vaddr - map_base;
+            if (map_size == 0 || map_size > SL_SEG_SLOT_SIZE) goto out;
             seg_p_vaddr [seg_count] = ph->p_vaddr;
             seg_p_memsz [seg_count] = ph->p_memsz;
             seg_p_filesz[seg_count] = ph->p_filesz;
             seg_p_offset[seg_count] = ph->p_offset;
             seg_p_flags [seg_count] = ph->p_flags;
-            uint64_t vend = ph->p_vaddr + ph->p_memsz;
-            if (vend > max_vend) max_vend = vend;
+            seg_map_base [seg_count] = map_base;
+            seg_map_size [seg_count] = map_size;
+            seg_page_off [seg_count] = page_off;
+            {
+                uint64_t vend = map_base + map_size;
+                if (vend < map_base) goto out;
+                if (vend > max_vend) max_vend = vend;
+            }
             seg_count++;
         }
         if (seg_count == 0) goto out;
@@ -294,7 +322,7 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
 
         /* 6. Create a demand VMO for each segment. */
         for (uint32_t i = 0; i < seg_count; i++) {
-            r = sl_sys1(SYS_VMO_CREATE, (long)seg_p_memsz[i]);
+            r = sl_sys1(SYS_VMO_CREATE, (long)seg_map_size[i]);
             if (r < 0) goto out;
             seg_vmo[i] = (handle_id_t)r;
         }
@@ -311,7 +339,7 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
          *    in the loader → populates seg_vmo[i]->pages[]). */
         for (uint32_t i = 0; i < seg_count; i++) {
             uint64_t slot = SL_SEG_VADDR_BASE + (uint64_t)i * SL_SEG_SLOT_SIZE;
-            uint8_t *dst  = (uint8_t *)(uintptr_t)slot;
+            uint8_t *dst  = (uint8_t *)(uintptr_t)(slot + seg_page_off[i]);
             const uint8_t *src =
                 (const uint8_t *)(uintptr_t)(SL_ELF_VADDR + seg_p_offset[i]);
             if (seg_p_filesz[i] > 0)
@@ -362,7 +390,7 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
                 /* Loader address of the patch site */
                 uint64_t slot = SL_SEG_VADDR_BASE + (uint64_t)si * SL_SEG_SLOT_SIZE;
                 uint8_t *patch = (uint8_t *)(uintptr_t)
-                                     (slot + rel->r_offset - seg_p_vaddr[si]);
+                                     (slot + rel->r_offset - seg_map_base[si]);
                 uint64_t val = bias + (uint64_t)rel->r_addend;
                 sl_memcpy(patch, &val, sizeof(val));
             }
@@ -379,7 +407,7 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
         elf_h = HANDLE_INVALID;
 
         /* 12. Create empty target process. */
-        r = sl_sys0(SYS_PROCESS_CREATE);
+        r = sl_sys1(SYS_PROCESS_CREATE, (long)spawn_cap_h);
         if (r < 0) goto out;
         proc_h = (handle_id_t)r;
 
@@ -407,7 +435,7 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
             if ((seg_p_flags[i] & (PF_W | PF_X)) == (PF_W | PF_X)) flags = 1;
             r = sl_sys4(SYS_VMO_MAP_INTO,
                         (long)seg_vmo[i], (long)proc_h,
-                        (long)(bias + seg_p_vaddr[i]), flags);
+                        (long)(bias + seg_map_base[i]), flags);
             if (r < 0) goto out;
         }
 

@@ -26,11 +26,13 @@ From `svcmgr`, `vfs` receives over that bootstrap channel:
 
 - one public request handle for the VFS service endpoint
 - one reply handle for VFS replies
+- one `KBootstrapCap` (INITRD_CAP kind) for initrd VMO access
 
 Current child rights from the service catalog:
 
 - service handle: `RIGHT_READ | RIGHT_WRITE`
 - reply handle: `RIGHT_WRITE`
+- spawn cap: `RIGHT_READ` (used to call `SYS_INITRD_COUNT` and `SYS_INITRD_VMO`)
 
 ## Request/response surface
 
@@ -92,14 +94,17 @@ After close:
 
 Current healthy-path expectations checked by `init`:
 
-- index `0` succeeds
-- index `1` succeeds
-- index `2` fails as out-of-bounds
+- index `0` succeeds (iris.txt)
+- index `1` succeeds (services.txt)
+- index `2` succeeds (readme.txt)
+- index `100` fails as out-of-bounds
 
 Current boot export invariants:
 
-- `VFS_BOOT_EXPORT_COUNT == 2`
-- `VFS_BOOT_EXPORT_TOTAL_BYTES == 31`
+- `VFS_BOOT_EXPORT_COUNT == 4` (static boot files: iris.txt, services.txt, readme.txt, catalog.txt)
+- At runtime `vfs` registers 8 additional initrd-backed exports (one per initrd image)
+- Total runtime export count is `12` (4 static + 8 initrd) given the current initrd catalog
+- Total exported bytes are not a fixed invariant; initrd ELF sizes vary by build
 
 ## `STATUS` contract
 
@@ -118,4 +123,6 @@ If a one-shot reply handle is attached, it must grant `RIGHT_WRITE`. If not atta
 - `vfs` is the source of truth for boot-file export metadata.
 - `vfs` capacity is bounded by `VFS_SERVICE_OPEN_FILES`.
 - `vfs` is responsible for reclaiming dead-client state rather than delegating that ownership back to the kernel.
-- Healthy boot currently expects `vfs` status values to match the constants used by `init` and `svcmgr` diagnostics.
+- Healthy boot requires at least `VFS_BOOT_EXPORT_COUNT` exports; the exact runtime count is `>= VFS_BOOT_EXPORT_COUNT`.
+- Initrd-backed exports are demand-mapped: page faults on their virtual range are resolved transparently by the kernel without a VFS quota charge.
+- `vfs_bytes` reported by `VFS_MSG_STATUS` is not a fixed invariant; it includes initrd ELF sizes which vary by build.
