@@ -390,6 +390,95 @@ static void init_selftest_rights_reduction(void) {
     init_log(init_stage_rights);
 }
 
+/* ── iris_test spawn + wait ──────────────────────────────────────────────── */
+/*
+ * Spawns iris_test using spawn_cap_h (a dup of bootstrap_h kept before it is
+ * closed).  Sends the cap via bootstrap channel, then waits up to 12 seconds
+ * for iris_test to exit.  Logs the final pass/fail result.
+ */
+static void init_spawn_iris_test(handle_id_t spawn_cap_h) {
+    handle_id_t proc_h      = HANDLE_INVALID;
+    handle_id_t boot_h      = HANDLE_INVALID;
+    handle_id_t cap_dup     = HANDLE_INVALID;
+    handle_id_t watch_base_h = HANDLE_INVALID;
+    handle_id_t watch_rd_h  = HANDLE_INVALID;
+    handle_id_t watch_wr_h  = HANDLE_INVALID;
+    struct KChanMsg msg;
+    long r;
+
+    r = svc_load(spawn_cap_h, "iris_test", &proc_h, &boot_h);
+    if (r < 0) {
+        init_log("[USER][INIT] iris_test load FAILED\n");
+        goto out;
+    }
+
+    /* Send spawn_cap to iris_test */
+    r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
+                  (long)(RIGHT_READ | RIGHT_TRANSFER));
+    if (r < 0) goto out;
+    cap_dup = (handle_id_t)r;
+
+    init_msg_zero(&msg);
+    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                           SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP);
+    msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
+    msg.attached_handle = cap_dup;
+    msg.attached_rights = RIGHT_READ | RIGHT_TRANSFER;
+    r = init_sys2(SYS_CHAN_SEND, (long)boot_h, (long)&msg);
+    if (r < 0) goto out;
+    cap_dup = HANDLE_INVALID; /* consumed by send */
+
+    init_close(&boot_h);
+
+    /* Create channel pair for process-exit watch */
+    r = init_sys0(SYS_CHAN_CREATE);
+    if (r < 0) goto out;
+    watch_base_h = (handle_id_t)r;
+
+    r = init_sys2(SYS_HANDLE_DUP, (long)watch_base_h, (long)RIGHT_READ);
+    if (r < 0) goto out;
+    watch_rd_h = (handle_id_t)r;
+
+    r = init_sys2(SYS_HANDLE_DUP, (long)watch_base_h,
+                  (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (r < 0) goto out;
+    watch_wr_h = (handle_id_t)r;
+    init_close(&watch_base_h);
+
+    /* Register exit watch — kernel retains the channel object */
+    r = init_sys3(SYS_PROCESS_WATCH, (long)proc_h, (long)watch_wr_h, 0);
+    if (r < 0) {
+        init_log("[USER][INIT] iris_test watch FAILED\n");
+        goto out;
+    }
+    /* Close our watch write handle; kernel's ref keeps channel alive */
+    init_close(&watch_wr_h);
+
+    /* Wait up to 12 seconds for iris_test to exit */
+    init_msg_zero(&msg);
+    r = init_sys3(SYS_CHAN_RECV_TIMEOUT, (long)watch_rd_h, (long)&msg,
+                  12000000000LL);
+    if (r < 0) {
+        init_log("[USER][INIT] iris_test wait TIMEOUT\n");
+    } else {
+        long ec = init_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h);
+        if (ec == 0)
+            init_log("[USER][INIT] iris_test PASS\n");
+        else
+            init_log("[USER][INIT] iris_test FAIL\n");
+    }
+
+out:
+    init_close(&proc_h);
+    init_close(&boot_h);
+    init_close(&watch_base_h);
+    init_close(&watch_rd_h);
+    init_close(&watch_wr_h);
+    if (cap_dup != HANDLE_INVALID) init_close(&cap_dup);
+    init_close(&spawn_cap_h);
+}
+
 static void init_retry_pause(void) {
     (void)init_sys1(SYS_SLEEP, INIT_RETRY_SLEEP_TICKS);
 }
@@ -1271,13 +1360,14 @@ static void init_echo_loop(handle_id_t scan_recv_h) {
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void init_main(handle_id_t bootstrap_ch_h) {
-    handle_id_t bootstrap_h = HANDLE_INVALID;
-    handle_id_t sm_h        = HANDLE_INVALID;
-    handle_id_t kbd_h       = HANDLE_INVALID;
-    handle_id_t kbd_reply_h = HANDLE_INVALID;
-    handle_id_t vfs_h       = HANDLE_INVALID;
-    handle_id_t vfs_reply_h = HANDLE_INVALID;
-    handle_id_t scan_recv_h = HANDLE_INVALID;
+    handle_id_t bootstrap_h        = HANDLE_INVALID;
+    handle_id_t sm_h               = HANDLE_INVALID;
+    handle_id_t kbd_h              = HANDLE_INVALID;
+    handle_id_t kbd_reply_h        = HANDLE_INVALID;
+    handle_id_t vfs_h              = HANDLE_INVALID;
+    handle_id_t vfs_reply_h        = HANDLE_INVALID;
+    handle_id_t scan_recv_h        = HANDLE_INVALID;
+    handle_id_t iris_test_spawn_h  = HANDLE_INVALID;
 
     bootstrap_h = init_recv_spawn_cap(bootstrap_ch_h);
     init_close(&bootstrap_ch_h);
@@ -1304,6 +1394,14 @@ void init_main(handle_id_t bootstrap_ch_h) {
         init_log("[USER] svcmgr spawn FAILED\n");
         init_exit(1);
     }
+
+    /* Dup spawn_cap for iris_test before releasing bootstrap_h */
+    {
+        long r = init_sys2(SYS_HANDLE_DUP, (long)bootstrap_h,
+                           (long)(RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER));
+        if (r >= 0) iris_test_spawn_h = (handle_id_t)r;
+    }
+
     init_close(&bootstrap_h);
 
     /* ── Service discovery ── */
@@ -1420,6 +1518,12 @@ void init_main(handle_id_t bootstrap_ch_h) {
     init_selftest_exception();
     init_selftest_channel_seal();
     init_selftest_rights_reduction();
+
+    /* ── Block 8: iris_test ring-3 syscall test suite ── */
+    if (iris_test_spawn_h != HANDLE_INVALID) {
+        init_spawn_iris_test(iris_test_spawn_h);
+        iris_test_spawn_h = HANDLE_INVALID;
+    }
 
     /* ── Interactive echo loop ── */
     init_echo_loop(scan_recv_h);

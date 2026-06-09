@@ -71,6 +71,7 @@ struct KChannel {
 };
 
 struct KChannel *kchannel_alloc     (void);
+struct KChannel *kchannel_alloc_at  (void *mem); /* Ph81: untyped-backed */
 iris_error_t     kchannel_bind_owner(struct KChannel *ch, struct KProcess *owner);
 void             kchannel_free      (struct KChannel *ch);
 

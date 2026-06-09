@@ -21,8 +21,14 @@
 #include <iris/nc/kioport.h>
 #include <iris/nc/kinitrdentry.h>
 #include <iris/nc/kendpoint.h>
+#include <iris/nc/kcnode.h>
+#include <iris/nc/kschedctx.h>
+#include <iris/nc/kuntyped.h>
+#include <iris/nc/kreply.h>
+#include <iris/nc/ktcb.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
+#include <iris/nc/cspace.h>
 #include <iris/irq_routing.h>
 #include <iris/scheduler.h>
 #include <iris/usercopy.h>
@@ -177,7 +183,6 @@ static inline int kioport_in_whitelist(uint16_t base, uint16_t count) {
 }
 
 /* ── Forward declarations — proc ─────────────────────────────────── */
-uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -246,6 +251,40 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+
+/* ── Forward declarations — Block 7 reply caps (Ph85-87) ────────── */
+uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+
+/* ── Forward declarations — CSpace (Ph70-72, Ph82-84, Ph95) ─────── */
+uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_cap_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_cnode_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
+uint64_t sys_cnode_move(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_cnode_fetch(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+
+/* ── Forward declarations — Block 3 scheduler (Ph73-75) ─────────── */
+uint64_t sys_thread_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_sc_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+
+/* ── Forward declarations — Block 4+5 untyped memory (Ph76-81) ───── */
+uint64_t sys_untyped_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+
+/* ── Forward declarations — TCB caps (Ph96-101) ──────────────────── */
+uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_tcb_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — diag ─────────────────────────────────── */
 uint64_t sys_clock_get(uint64_t arg0, uint64_t arg1, uint64_t arg2);

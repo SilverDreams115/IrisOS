@@ -10,6 +10,7 @@
 
 struct KVmo;
 struct KNotification;
+struct KVSpace;
 
 #define KPROCESS_VMO_MAP_MAX    0u  /* no fixed ceiling — kpage-backed linked list */
 #define KPROCESS_EXIT_WATCH_MAX 8u
@@ -66,6 +67,7 @@ struct KProcess {
     struct KObject  base;       /* must be first */
     uint32_t        thread_count; /* live threads in this process; 0 = dead */
     uint64_t        cr3;          /* page table root for the process */
+    uint64_t        user_cr3;     /* cr3|pcid|(1<<63 if PCID) — no-flush variant for iretq */
     uint16_t        pcid;         /* PCID assigned at alloc (0 = unused/PCID disabled) */
     uint8_t         teardown_complete; /* logical teardown already ran */
     uint32_t        exit_code;    /* exit code from SYS_EXIT; 0 if killed externally */
@@ -83,6 +85,15 @@ struct KProcess {
     uint32_t owned_vmos;
     uint32_t phys_pages_charged; /* pages allocated by demand fault; vs phys_pages_limit */
     uint32_t phys_pages_limit;   /* set to KPROCESS_PHYS_PAGES_LIMIT at alloc */
+
+    /* Ph95 (Phase 8): root CNode handle for hierarchical CSpace traversal.
+     * HANDLE_INVALID if not yet allocated (e.g. kpage_alloc OOM at creation). */
+    handle_id_t cspace_root_h;
+
+    /* Fase 4: VSpace capability wrapping this process's address space.
+     * Holds one lifecycle ref (kobject_retain).  NULL if kvspace_alloc OOM'd at
+     * creation or if the process has not yet had its CR3 assigned. */
+    struct KVSpace *vspace;
 
 };
 

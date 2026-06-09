@@ -114,8 +114,15 @@ int      paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint6
 uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt);
 int      paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags);
 void     paging_unmap_in(uint64_t cr3, uint64_t virt);
-void     paging_write_u64_in(uint64_t cr3, uint64_t virt, uint64_t value);
 void     paging_destroy_user_space(uint64_t cr3);
 uint64_t pml4_get_current(void);
+
+/* Build the no-flush user CR3: kernel→user iretq uses this so TLB entries
+ * tagged with the process PCID are preserved across the transition.
+ * task_yield uses cr3|pcid WITHOUT bit 63 so PCID recycling forces a flush. */
+static inline uint64_t paging_make_user_cr3(uint64_t cr3, uint16_t pcid) {
+    if (!iris_pcid_enabled) return cr3;
+    return (cr3 & ~0xFFFULL) | (uint64_t)pcid | (1ULL << 63);
+}
 
 #endif

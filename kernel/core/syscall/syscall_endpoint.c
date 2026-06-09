@@ -1,43 +1,23 @@
 #include "syscall_priv.h"
 #include <iris/nc/kendpoint.h>
+#include <iris/nc/kreply.h>
 #include <iris/ipc_msg.h>
 
 /* ── Internal helpers ────────────────────────────────────────────────── */
 
-static inline void copy_irismsg(struct IrisMsg *dst, const struct IrisMsg *src) {
-    uint8_t       *d = (uint8_t *)dst;
-    const uint8_t *s = (const uint8_t *)src;
-    for (uint32_t i = 0; i < (uint32_t)sizeof(struct IrisMsg); i++)
-        d[i] = s[i];
+/* IrisMsg = 64 bytes = 8 × uint64_t — word copy avoids byte-loop overhead. */
+static inline void irismsg_copy64(struct IrisMsg *dst, const struct IrisMsg *src) {
+    const uint64_t *s = (const uint64_t *)src;
+    uint64_t       *d = (uint64_t *)dst;
+    d[0]=s[0]; d[1]=s[1]; d[2]=s[2]; d[3]=s[3];
+    d[4]=s[4]; d[5]=s[5]; d[6]=s[6]; d[7]=s[7];
 }
 
 static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) dst[i] = src[i];
 }
 
-/*
- * ep_get — look up endpoint handle, validate type and required rights.
- * Returns the KEndpoint* with the kobject lifecycle ref bumped by get_object.
- * Caller must kobject_release() when done.
- */
-static struct KEndpoint *ep_get(struct task *t, handle_id_t h,
-                                iris_rights_t need, iris_error_t *out_err) {
-    struct KObject *obj;
-    iris_rights_t   rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table, h, &obj, &rights);
-    if (r != IRIS_OK) { *out_err = r; return 0; }
-    if (obj->type != KOBJ_ENDPOINT) {
-        kobject_release(obj);
-        *out_err = IRIS_ERR_WRONG_TYPE;
-        return 0;
-    }
-    if (!rights_check(rights, need)) {
-        kobject_release(obj);
-        *out_err = IRIS_ERR_ACCESS_DENIED;
-        return 0;
-    }
-    return (struct KEndpoint *)obj;
-}
+/* ep_get removed — use cspace_or_handle_resolve_endpoint (Fase 3.2) */
 
 /*
  * stage_send_cap — validate and detach an attached cap from the sender's
@@ -81,6 +61,66 @@ static uint32_t deliver_cap(struct task *receiver,
     return (uint32_t)new_h;
 }
 
+/*
+ * ep_send_fastpath — no-cap, no-bulk rendezvous fast path.
+ * Precondition: t->ipc_msg already read from user; buf_len==0 and
+ * attached_handle==IRIS_MSG_NO_CAP verified by caller.
+ * Returns 1 (IPC done, ep released) or 0 (fall through to slow path).
+ */
+static int ep_send_fastpath(struct task *t, struct KEndpoint *ep) {
+    uint64_t fl = irq_spinlock_lock(&ep->lock);
+    if (ep->closed || ep->ep_state != EP_STATE_RECV) {
+        irq_spinlock_unlock(&ep->lock, fl);
+        return 0;
+    }
+    struct task *receiver = ep->queue_head;
+    ep->queue_head = receiver->ep_next;
+    if (!ep->queue_head) { ep->queue_tail = 0; ep->ep_state = EP_STATE_IDLE; }
+    receiver->ep_next = 0;
+    receiver->blocking_ep = 0;
+
+    irismsg_copy64(&receiver->ipc_msg, &t->ipc_msg);
+    receiver->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+    receiver->ipc_msg_ready           = 1;
+    receiver->ipc_kbuf_len            = 0;
+
+    irq_spinlock_unlock(&ep->lock, fl);
+    task_wakeup(receiver);
+    kobject_release(&ep->base);
+    return 1;
+}
+
+/*
+ * ep_recv_fastpath — no-cap, no-bulk, non-EP_CALL rendezvous fast path.
+ * Returns 1 and fills t->ipc_msg if a matching sender is ready;
+ * does NOT release ep (caller handles it). Returns 0 to fall through.
+ */
+static int ep_recv_fastpath(struct task *t, struct KEndpoint *ep) {
+    uint64_t fl = irq_spinlock_lock(&ep->lock);
+    if (ep->closed || ep->ep_state != EP_STATE_SEND) {
+        irq_spinlock_unlock(&ep->lock, fl);
+        return 0;
+    }
+    struct task *sender = ep->queue_head;
+    if (sender->ep_cap_obj || sender->ipc_kbuf_len || sender->ep_call_mode) {
+        irq_spinlock_unlock(&ep->lock, fl);
+        return 0;
+    }
+    ep->queue_head = sender->ep_next;
+    if (!ep->queue_head) { ep->queue_tail = 0; ep->ep_state = EP_STATE_IDLE; }
+    sender->ep_next = 0;
+    sender->blocking_ep = 0;
+
+    irismsg_copy64(&t->ipc_msg, &sender->ipc_msg);
+    t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+    t->ipc_kbuf_len            = 0;
+    sender->ipc_kbuf_len       = 0;
+
+    irq_spinlock_unlock(&ep->lock, fl);
+    task_wakeup(sender);
+    return 1;
+}
+
 /* ── SYS_ENDPOINT_CREATE ─────────────────────────────────────────────── */
 
 uint64_t sys_endpoint_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
@@ -110,15 +150,21 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    iris_error_t err;
-    struct KEndpoint *ep = ep_get(t, (handle_id_t)arg0, RIGHT_WRITE, &err);
-    if (!ep) return syscall_err(err);
+    struct KEndpoint *ep; iris_rights_t _ep_r;
+    iris_error_t err = cspace_or_handle_resolve_endpoint(t->process, (iris_cptr_t)arg0,
+                                                          RIGHT_WRITE, &ep, &_ep_r);
+    if (err != IRIS_OK) return syscall_err(err);
 
     /* Copy sender's message. */
     if (!copy_from_user_checked(&t->ipc_msg, arg1, (uint32_t)sizeof(struct IrisMsg))) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
+
+    /* Fastpath: no cap, no bulk buffer, receiver already waiting. */
+    if (t->ipc_msg.attached_handle == IRIS_MSG_NO_CAP && t->ipc_msg.buf_len == 0)
+        if (ep_send_fastpath(t, ep))
+            return syscall_ok_u64(0);
 
     /* Ph69: stage bulk payload in kernel buffer. */
     t->ipc_kbuf_len = 0;
@@ -165,7 +211,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         receiver->ep_next     = 0;
         receiver->blocking_ep = 0;
 
-        copy_irismsg(&receiver->ipc_msg, &t->ipc_msg);
+        irismsg_copy64(&receiver->ipc_msg, &t->ipc_msg);
         receiver->ipc_msg.attached_handle = IRIS_MSG_NO_CAP; /* will update after unlock */
         receiver->ipc_msg_ready           = 1;
 
@@ -186,7 +232,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
 
         /* Wake receiver only after all data is consistent. */
-        receiver->state = TASK_READY;
+        task_wakeup(receiver);
         kobject_release(&ep->base);
         return syscall_ok_u64(0);
     }
@@ -224,9 +270,10 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!user_range_writable(arg1, (uint32_t)sizeof(struct IrisMsg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    iris_error_t err;
-    struct KEndpoint *ep = ep_get(t, (handle_id_t)arg0, RIGHT_READ, &err);
-    if (!ep) return syscall_err(err);
+    struct KEndpoint *ep; iris_rights_t _ep_r;
+    iris_error_t err = cspace_or_handle_resolve_endpoint(t->process, (iris_cptr_t)arg0,
+                                                          RIGHT_READ, &ep, &_ep_r);
+    if (err != IRIS_OK) return syscall_err(err);
 
     /* Ph69: read receiver's hints (buf_uptr = where to put bulk data). */
     t->ep_recv_buf_uptr = 0;
@@ -236,6 +283,14 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         if (user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)) &&
             copy_from_user_checked(&hints, arg1, (uint32_t)sizeof(struct IrisMsg)))
             t->ep_recv_buf_uptr = hints.buf_uptr;
+    }
+
+    /* Fastpath: no-cap, no-bulk, non-EP_CALL sender already waiting. */
+    if (ep_recv_fastpath(t, ep)) {
+        kobject_release(&ep->base);
+        if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+        return syscall_ok_u64(0);
     }
 
     uint64_t flags = irq_spinlock_lock(&ep->lock);
@@ -254,7 +309,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         sender->ep_next     = 0;
         sender->blocking_ep = 0;
 
-        copy_irismsg(&t->ipc_msg, &sender->ipc_msg);
+        irismsg_copy64(&t->ipc_msg, &sender->ipc_msg);
         t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP; /* will update after unlock */
 
         /* Ph69: receiver is in their own CR3 — copy kbuf directly to user space. */
@@ -285,8 +340,34 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             t->ipc_msg.attached_handle = new_h;
         }
 
-        /* Wake sender after all data is set. */
-        sender->state = TASK_READY;
+        /* Ph85: if sender used EP_CALL, create KReply and keep sender blocked. */
+        if (sender->ep_call_mode) {
+            sender->ep_call_mode = 0u;
+            struct KReply *rp = kreply_alloc(sender);
+            if (rp) {
+                kobject_retain(&rp->base);         /* sender's own lifecycle ref */
+                sender->pending_kreply = rp;
+                handle_id_t rh = handle_table_insert(&t->process->handle_table,
+                                                      &rp->base,
+                                                      RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
+                kobject_release(&rp->base);        /* drop alloc ref; HT holds its own */
+                if (rh != HANDLE_INVALID) {
+                    t->ipc_msg.attached_handle = (uint32_t)rh;
+                    sender->state = TASK_BLOCKED_REPLY;
+                } else {
+                    kobject_release(&sender->pending_kreply->base);
+                    sender->pending_kreply = 0;
+                    sender->ipc_ep_closed  = 1u;
+                    task_wakeup(sender);
+                }
+            } else {
+                sender->ipc_ep_closed = 1u;
+                task_wakeup(sender);
+            }
+        } else {
+            task_wakeup(sender);
+        }
+
         kobject_release(&ep->base);
 
         if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
@@ -340,9 +421,10 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    iris_error_t err;
-    struct KEndpoint *ep = ep_get(t, (handle_id_t)arg0, RIGHT_WRITE, &err);
-    if (!ep) return syscall_err(err);
+    struct KEndpoint *ep; iris_rights_t _ep_r;
+    iris_error_t err = cspace_or_handle_resolve_endpoint(t->process, (iris_cptr_t)arg0,
+                                                          RIGHT_WRITE, &ep, &_ep_r);
+    if (err != IRIS_OK) return syscall_err(err);
 
     if (!copy_from_user_checked(&t->ipc_msg, arg1, (uint32_t)sizeof(struct IrisMsg))) {
         kobject_release(&ep->base);
@@ -396,7 +478,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     receiver->ep_next     = 0;
     receiver->blocking_ep = 0;
 
-    copy_irismsg(&receiver->ipc_msg, &t->ipc_msg);
+    irismsg_copy64(&receiver->ipc_msg, &t->ipc_msg);
     receiver->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
     receiver->ipc_msg_ready           = 1;
 
@@ -414,7 +496,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         receiver->ipc_msg.attached_handle = new_h;
     }
 
-    receiver->state = TASK_READY;
+    task_wakeup(receiver);
     kobject_release(&ep->base);
     return syscall_ok_u64(0);
 }
@@ -429,9 +511,10 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!user_range_writable(arg1, (uint32_t)sizeof(struct IrisMsg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    iris_error_t err;
-    struct KEndpoint *ep = ep_get(t, (handle_id_t)arg0, RIGHT_READ, &err);
-    if (!ep) return syscall_err(err);
+    struct KEndpoint *ep; iris_rights_t _ep_r;
+    iris_error_t err = cspace_or_handle_resolve_endpoint(t->process, (iris_cptr_t)arg0,
+                                                          RIGHT_READ, &ep, &_ep_r);
+    if (err != IRIS_OK) return syscall_err(err);
 
     /* Ph69: read receiver's hint. */
     uint64_t recv_buf = 0;
@@ -462,7 +545,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     sender->ep_next     = 0;
     sender->blocking_ep = 0;
 
-    copy_irismsg(&t->ipc_msg, &sender->ipc_msg);
+    irismsg_copy64(&t->ipc_msg, &sender->ipc_msg);
     t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
 
     /* Ph69: direct copy to receiver's user space (correct CR3). */
@@ -491,7 +574,34 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ipc_msg.attached_handle = new_h;
     }
 
-    sender->state = TASK_READY;
+    /* Ph85: ep_call_mode senders block until replied to. */
+    if (sender->ep_call_mode) {
+        sender->ep_call_mode = 0u;
+        struct KReply *rp = kreply_alloc(sender);
+        if (rp) {
+            kobject_retain(&rp->base);
+            sender->pending_kreply = rp;
+            handle_id_t rh = handle_table_insert(&t->process->handle_table,
+                                                  &rp->base,
+                                                  RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
+            kobject_release(&rp->base);
+            if (rh != HANDLE_INVALID) {
+                t->ipc_msg.attached_handle = (uint32_t)rh;
+                sender->state = TASK_BLOCKED_REPLY;
+            } else {
+                kobject_release(&sender->pending_kreply->base);
+                sender->pending_kreply = 0;
+                sender->ipc_ep_closed  = 1u;
+                task_wakeup(sender);
+            }
+        } else {
+            sender->ipc_ep_closed = 1u;
+            task_wakeup(sender);
+        }
+    } else {
+        task_wakeup(sender);
+    }
+
     kobject_release(&ep->base);
 
     if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))

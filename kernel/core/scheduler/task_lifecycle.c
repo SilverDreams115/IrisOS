@@ -10,6 +10,9 @@
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kschedctx.h>
 #include <iris/nc/kreply.h>
+#include <iris/nc/ktcb.h>
+#include <iris/nc/rights.h>
+#include <iris/nc/handle_table.h>
 #include <iris/futex.h>
 #include <iris/initrd.h>
 #include <stdint.h>
@@ -27,10 +30,31 @@ struct task         tasks[TASK_MAX];
 struct task        *current_task    = 0;
 struct task        *task_list_head  = 0;
 struct task        *task_list_tail  = 0;
-_Atomic(struct task *) pending_reap_task;  /* zero-initialized by C11 static storage */
 uint32_t            next_id         = 0;
 uint64_t            task_rsp[TASK_MAX];
 uint64_t            kernel_cr3      = 0;
+
+/*
+ * Dead-task reap queue — replaces the old single-pointer pending_reap_task.
+ *
+ * A dying task cannot free its own stack (it's still executing on it).
+ * Instead it sets TASK_DEAD and loops on task_yield(), which enqueues the
+ * task here after context-switching away.  reap_pending_dead_task() dequeues
+ * and frees one entry per call; it is invoked at the top of every task_yield()
+ * and every scheduler_tick().
+ *
+ * Single-CPU correctness: only one task runs at a time, so only one task can
+ * be dying between two reap calls.  REAP_QUEUE_SIZE > 1 provides headroom and
+ * correctness under SMP where multiple CPUs can each have a dying task.
+ *
+ * SMP TODO (Phase 1): replace with per-CPU dead lists drained on each CPU's
+ * scheduler tick; cross-CPU reap then requires an IPI or a work queue.
+ */
+#define REAP_QUEUE_SIZE 8  /* power of two; 8 > realistic concurrent deaths */
+static struct task    *reap_queue[REAP_QUEUE_SIZE];
+static unsigned int    reap_queue_head = 0;   /* producer index (write) */
+static unsigned int    reap_queue_tail = 0;   /* consumer index (read)  */
+static irq_spinlock_t  reap_queue_lock;
 
 /* ── O(1) per-CPU run queue ──────────────────────────────────────────────── */
 
@@ -127,6 +151,12 @@ void task_wakeup(struct task *t) {
     }
 }
 
+void task_suspend(struct task *t) {
+    if (!t || t->state == TASK_DEAD) return;
+    t->state = TASK_SUSPENDED;
+    rq_remove(t);
+}
+
 /* Initial FPU state captured at boot; copied into every new task. */
 uint8_t initial_fpu_state[512] __attribute__((aligned(16)));
 
@@ -213,6 +243,14 @@ static void task_release_sched_ctx(struct task *t) {
     }
 }
 
+/* Nullify the KTcb task pointer and release the task's lifetime ref. */
+static void task_release_ktcb(struct task *t) {
+    if (!t->ktcb) return;
+    ktcb_nullify(t->ktcb);
+    kobject_release(&t->ktcb->base);
+    t->ktcb = 0;
+}
+
 /* Called from reap_pending_dead_task, which runs on the next scheduler tick
  * after task_exit_current sets TASK_DEAD.  The reaped task is always off-CPU
  * at that point, so task_reset_slot needs no additional lock. */
@@ -234,12 +272,33 @@ static void reap_dead_task_off_cpu(struct task *t) {
         kprocess_free(proc);
 }
 
+void reap_enqueue_dead(struct task *t) {
+    uint64_t flags = irq_spinlock_lock(&reap_queue_lock);
+    unsigned int next = (reap_queue_head + 1u) & (REAP_QUEUE_SIZE - 1u);
+    if (next != reap_queue_tail) {
+        reap_queue[reap_queue_head] = t;
+        reap_queue_head = next;
+    }
+    /* Queue full: slot leaks until a subsequent reap drains it.
+     * Cannot occur on single-CPU (one death per yield interval). */
+    irq_spinlock_unlock(&reap_queue_lock, flags);
+}
+
 void reap_pending_dead_task(void) {
-    struct task *t = atomic_exchange_explicit(&pending_reap_task,
-                                              (struct task *)0,
-                                              memory_order_acq_rel);
-    if (!t || t == current_task) {
-        if (t) atomic_store_explicit(&pending_reap_task, t, memory_order_release);
+    uint64_t flags = irq_spinlock_lock(&reap_queue_lock);
+    if (reap_queue_tail == reap_queue_head) {
+        irq_spinlock_unlock(&reap_queue_lock, flags);
+        return;
+    }
+    struct task *t = reap_queue[reap_queue_tail];
+    reap_queue[reap_queue_tail] = 0;
+    reap_queue_tail = (reap_queue_tail + 1u) & (REAP_QUEUE_SIZE - 1u);
+    irq_spinlock_unlock(&reap_queue_lock, flags);
+
+    if (!t) return;
+    if (t == current_task) {
+        /* Task hasn't context-switched off-CPU yet; re-enqueue for next call. */
+        reap_enqueue_dead(t);
         return;
     }
     reap_dead_task_off_cpu(t);
@@ -288,6 +347,7 @@ void setup_initial_context(struct task *t, void (*entry)(void)) {
 void task_init(void) {
     __asm__ volatile ("fxsaveq (%0)" : : "r"(initial_fpu_state) : "memory");
 
+    irq_spinlock_init(&reap_queue_lock);
     kernel_cr3 = pml4_get_current();
 
     /* Initialize CPU 0's run queue and wire it before any rq_* call. */
@@ -316,7 +376,10 @@ void task_init(void) {
 
     task_list_head = idle;
     task_list_tail = idle;
-    set_current_task(idle);
+    /* Boot-time BSP init: GS_BASE = 0 here (pre-SWAPGS), so cpu_self() is not
+     * yet safe.  Set both the global and the BSP cpu_local slot directly. */
+    current_task = idle;
+    cpu_local[0].current_task = idle;
 }
 
 struct task *task_create(void (*entry)(void)) {
@@ -456,10 +519,10 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     kstack_top &= ~0xFULL;
 
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;  /* SS: user data (sysretq) */
     kstack_top -= 8; *(uint64_t *)kstack_top = t->user_rsp;
     kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202;
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;  /* CS: user code (sysretq) */
     kstack_top -= 8; *(uint64_t *)kstack_top = USER_TEXT_BASE;
     kstack_top -= 8; *(uint64_t *)kstack_top = (uint64_t)(uintptr_t)user_entry_trampoline;
 
@@ -473,6 +536,21 @@ static struct task *task_create_user_impl(uint64_t arg0) {
 
     t->utext_phys  = ub_copy_phys;
     t->utext_pages = ub_pages;
+
+    /* Ph96: create KTcb and hand a handle to the process; keep task's own ref. */
+    {
+        struct KTcb *tcb = ktcb_alloc(t);
+        if (tcb) {
+            handle_id_t tcb_h = handle_table_insert(
+                &proc->handle_table, &tcb->base,
+                RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+            kobject_release(&tcb->base); /* drop alloc ref; HT holds its own */
+            if (tcb_h != HANDLE_INVALID) {
+                kobject_retain(&tcb->base); /* task's own lifetime ref */
+                t->ktcb = tcb;
+            }
+        }
+    }
 
     rq_enqueue(t);
     atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
@@ -517,6 +595,7 @@ void task_abort_spawned_user(struct task *t) {
     atomic_fetch_sub_explicit(&sched_live_count, 1u, memory_order_relaxed);
     unlink_task(t);
     task_release_sched_ctx(t);
+    task_release_ktcb(t);
     task_reset_slot(t);
 
     if (proc)
@@ -551,10 +630,10 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
     uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     kstack_top &= ~0xFULL;
 
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;  /* SS: user data (sysretq) */
     kstack_top -= 8; *(uint64_t *)kstack_top = user_rsp;
     kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202;
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;  /* CS: user code (sysretq) */
     kstack_top -= 8; *(uint64_t *)kstack_top = entry_vaddr;
     kstack_top -= 8; *(uint64_t *)kstack_top =
         (uint64_t)(uintptr_t)user_entry_trampoline;
@@ -568,6 +647,21 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
     t->ctx.rflags = 0x202ULL;
 
     proc->thread_count++;
+
+    /* Ph96: create KTcb and hand a handle to the process; keep task's own ref. */
+    {
+        struct KTcb *tcb = ktcb_alloc(t);
+        if (tcb) {
+            handle_id_t tcb_h = handle_table_insert(
+                &proc->handle_table, &tcb->base,
+                RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+            kobject_release(&tcb->base);
+            if (tcb_h != HANDLE_INVALID) {
+                kobject_retain(&tcb->base);
+                t->ktcb = tcb;
+            }
+        }
+    }
 
     rq_enqueue(t);
     atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
@@ -612,6 +706,7 @@ void task_kill_external(struct task *t) {
     atomic_fetch_sub_explicit(&sched_live_count, 1u, memory_order_relaxed);
     unlink_task(t);
     task_release_sched_ctx(t);
+    task_release_ktcb(t);
     task_reset_slot(t);
 
     if (do_teardown)
@@ -627,6 +722,7 @@ void task_exit_current(void) {
     task_cancel_blocked_waits(t);
     free_user_stack_pages(t);
     free_user_text_pages(t);
+    task_release_ktcb(t);
 
     /* thread_count is mutated only from single-CPU scheduler context on this
      * arch.  The TASK_DEAD spin below ensures the slot is not reused before

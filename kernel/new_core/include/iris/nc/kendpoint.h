@@ -23,6 +23,7 @@ struct KEndpoint {
 };
 
 struct KEndpoint *kendpoint_alloc(void);
+struct KEndpoint *kendpoint_alloc_at(void *mem); /* Ph78: create in untyped-backed memory */
 void              kendpoint_close(struct KEndpoint *ep);
 void              kendpoint_cancel_waiter(struct task *t);
 

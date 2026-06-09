@@ -218,7 +218,8 @@ static long sl_name_to_index(const char *name) {
     if (sl_streq(name, "vfs"))      return 4;
     if (sl_streq(name, "console"))  return 5;
     if (sl_streq(name, "fb"))       return 6;
-    if (sl_streq(name, "sh"))       return 7;
+    if (sl_streq(name, "sh"))        return 7;
+    if (sl_streq(name, "iris_test")) return 8;
     return -1;
 }
 

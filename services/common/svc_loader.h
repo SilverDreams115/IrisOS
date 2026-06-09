@@ -3,7 +3,7 @@
 #include <iris/nc/handle.h>
 
 /* Number of entries in the ring-3 name→index catalog (must match initrd.c). */
-#define SL_CATALOG_COUNT 8u
+#define SL_CATALOG_COUNT 9u
 
 /*
  * svc_initrd_count — query the kernel initrd catalog entry count.

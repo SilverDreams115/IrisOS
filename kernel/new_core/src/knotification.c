@@ -1,6 +1,7 @@
 #include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
-#include <iris/kpage.h>
+#include <iris/nc/kuntyped.h>
+#include <iris/kslab.h>
 #include <iris/task.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -64,9 +65,9 @@ static void knotif_waiters_wake_one(struct KNotification *n) {
         struct task *w = n->waiters[i];
         if (!w) continue;
         if (w->state == TASK_BLOCKED_IRQ) {
-            w->state    = TASK_READY;
             n->waiters[i] = 0;
             if (n->waiter_count) n->waiter_count--;
+            task_wakeup(w);
             return;
         }
     }
@@ -76,9 +77,9 @@ static void knotif_waiters_wake_one(struct KNotification *n) {
 static void knotif_waiters_wake_all(struct KNotification *n) {
     for (uint32_t i = 0; i < KNOTIF_WAITERS_MAX; i++) {
         struct task *w = n->waiters[i];
-        if (w && w->state == TASK_BLOCKED_IRQ)
-            w->state = TASK_READY;
         n->waiters[i] = 0;
+        if (w && w->state == TASK_BLOCKED_IRQ)
+            task_wakeup(w);
     }
     n->waiter_count = 0;
 }
@@ -113,7 +114,15 @@ static void knotification_destroy(struct KObject *obj) {
     knotification_owner_release(n);
     knotif_live_unlink(n);
     atomic_fetch_sub_explicit(&knotif_live, 1u, memory_order_relaxed);
-    kpage_free(n, (uint32_t)sizeof(struct KNotification));
+    kslab_free(n, (uint32_t)sizeof(struct KNotification));
+}
+
+static void knotification_destroy_ut(struct KObject *obj) {
+    struct KNotification *n = (struct KNotification *)obj;
+    knotification_owner_release(n);
+    knotif_live_unlink(n);
+    atomic_fetch_sub_explicit(&knotif_live, 1u, memory_order_relaxed);
+    kuntyped_release_child(obj, sizeof(struct KNotification));
 }
 
 static const struct KObjectOps knotification_ops = {
@@ -121,10 +130,25 @@ static const struct KObjectOps knotification_ops = {
     .destroy = knotification_destroy
 };
 
+static const struct KObjectOps knotification_ops_ut = {
+    .close   = knotification_close,
+    .destroy = knotification_destroy_ut,
+};
+
 /* ── Public API ───────────────────────────────────────────────── */
 
+struct KNotification *knotification_alloc_at(void *mem) {
+    if (!mem) return 0;
+    struct KNotification *n = (struct KNotification *)mem;
+    /* mem was already zeroed by kuntyped_bump_alloc */
+    kobject_init(&n->base, KOBJ_NOTIFICATION, &knotification_ops_ut);
+    knotif_live_link(n);
+    atomic_fetch_add_explicit(&knotif_live, 1u, memory_order_relaxed);
+    return n;
+}
+
 struct KNotification *knotification_alloc(void) {
-    struct KNotification *n = kpage_alloc((uint32_t)sizeof(struct KNotification));
+    struct KNotification *n = kslab_alloc((uint32_t)sizeof(struct KNotification));
     if (!n) return 0;
     kobject_init(&n->base, KOBJ_NOTIFICATION, &knotification_ops);
     atomic_store_explicit(&n->signal_bits, 0, memory_order_relaxed);

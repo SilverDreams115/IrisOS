@@ -184,19 +184,12 @@ uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    struct KObject  *obj;
-    iris_rights_t    rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0,
-                                             &obj, &rights);
+    struct KNotification *notif; iris_rights_t notif_r;
+    iris_error_t r = cspace_or_handle_resolve_notification(t->process, (iris_cptr_t)arg0,
+                                                            RIGHT_WRITE, &notif, &notif_r);
     if (r != IRIS_OK) return syscall_err(r);
-    if (obj->type != KOBJ_NOTIFICATION) {
-        kobject_release(obj); return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
-    if (!rights_check(rights, RIGHT_WRITE)) {
-        kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-    knotification_signal((struct KNotification *)obj, arg1);
-    kobject_release(obj);
+    knotification_signal(notif, arg1);
+    kobject_release(&notif->base);
     return syscall_ok_u64(IRIS_OK);
 }
 
@@ -208,20 +201,13 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    struct KObject  *obj;
-    iris_rights_t    rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0,
-                                             &obj, &rights);
+    struct KNotification *notif; iris_rights_t notif_r;
+    iris_error_t r = cspace_or_handle_resolve_notification(t->process, (iris_cptr_t)arg0,
+                                                            RIGHT_WAIT, &notif, &notif_r);
     if (r != IRIS_OK) return syscall_err(r);
-    if (obj->type != KOBJ_NOTIFICATION) {
-        kobject_release(obj); return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
-    if (!rights_check(rights, RIGHT_WAIT)) {
-        kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
     uint64_t bits = 0;
-    r = knotification_wait((struct KNotification *)obj, &bits);
-    kobject_release(obj);
+    r = knotification_wait(notif, &bits);
+    kobject_release(&notif->base);
     if (r == IRIS_OK && !copy_u64_to_user_checked(arg1, bits))
         return syscall_err(IRIS_ERR_INVALID_ARG);
     return syscall_err(r);
@@ -413,24 +399,20 @@ uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    struct KObject  *obj;
-    iris_rights_t    rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0,
-                                             &obj, &rights);
+    struct KNotification *notif; iris_rights_t notif_r;
+    iris_error_t r = cspace_or_handle_resolve_notification(t->process, (iris_cptr_t)arg0,
+                                                            RIGHT_WAIT, &notif, &notif_r);
     if (r != IRIS_OK) return syscall_err(r);
-    if (obj->type != KOBJ_NOTIFICATION) { kobject_release(obj); return syscall_err(IRIS_ERR_WRONG_TYPE); }
-    if (!rights_check(rights, RIGHT_WAIT)) { kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
 
     uint64_t deadline_ticks = 0;
     if (!timeout_ns_to_deadline_ticks(arg2, &deadline_ticks)) {
-        kobject_release(obj);
+        kobject_release(&notif->base);
         return syscall_err(IRIS_ERR_OVERFLOW);
     }
 
-    struct KNotification *notif = (struct KNotification *)obj;
     uint64_t bits = 0;
     r = knotification_wait_timeout(notif, &bits, deadline_ticks);
-    kobject_release(obj);
+    kobject_release(&notif->base);
     if (r == IRIS_OK) {
         if (!copy_u64_to_user_checked(arg1, bits))
             return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -724,7 +706,6 @@ uint64_t sys_wait_any_timeout(uint64_t arg0, uint64_t arg1,
 /* ── Futex (D3) ──────────────────────────────────────────────────── */
 
 uint64_t sys_futex_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
     uint64_t uaddr    = arg0;
     uint32_t expected = (uint32_t)arg1;
 
@@ -733,7 +714,11 @@ uint64_t sys_futex_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (uaddr & 0x3ULL)
         return syscall_err(IRIS_ERR_INVALID_ARG);  /* must be 4-byte aligned */
 
-    return syscall_err(futex_wait(uaddr, expected));
+    uint64_t deadline_ticks = 0;
+    if (arg2 != 0 && !timeout_ns_to_deadline_ticks(arg2, &deadline_ticks))
+        return syscall_err(IRIS_ERR_OVERFLOW);
+
+    return syscall_err(futex_wait(uaddr, expected, deadline_ticks));
 }
 
 

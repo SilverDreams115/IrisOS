@@ -25,7 +25,7 @@
  *   - live/transitional: current supported surface with compatibility notes
  *   - retired: permanently reserved; returns IRIS_ERR_NOT_SUPPORTED
  *
- * Current exported syscall number surface: 0..77.
+ * Current exported syscall number surface: 0..94.
  */
 
 /* Syscall numbers */
@@ -667,20 +667,225 @@
 #define SYS_EP_NB_SEND      76
 #define SYS_EP_NB_RECV      77
 
-#define IRIS_HANDLE_TYPE_PROCESS      0u
-#define IRIS_HANDLE_TYPE_CHANNEL      1u
-#define IRIS_HANDLE_TYPE_NOTIFICATION 2u
-#define IRIS_HANDLE_TYPE_BOOTSTRAP_CAP 3u
-#define IRIS_HANDLE_TYPE_VMO          4u
-#define IRIS_HANDLE_TYPE_IRQ_CAP      5u
-#define IRIS_HANDLE_TYPE_IOPORT       6u
-#define IRIS_HANDLE_TYPE_INITRD_ENTRY 7u
-#define IRIS_HANDLE_TYPE_ENDPOINT     8u
+/*
+ * CSpace — capability derivation and revocation (Phase 70-72).
+ *
+ * SYS_CAP_DERIVE(src_h, new_rights) → handle_id or negative iris_error_t
+ *   Requires RIGHT_DUPLICATE on src_h.
+ *   new_rights must be a non-empty subset of src_h's current rights.
+ *   Returns a new handle to the same object with reduced rights.
+ *   The new handle participates in the derivation tree: SYS_CAP_REVOKE on
+ *   src_h will cascade-delete derived handles.
+ *
+ * SYS_CAP_REVOKE(h) → 0 or negative iris_error_t
+ *   Deletes all handles transitively derived from h via SYS_CAP_DERIVE.
+ *   h itself is NOT deleted and remains valid after the call.
+ *   O(N) scan over the caller's handle table where N = HANDLE_TABLE_MAX.
+ *
+ * SYS_CNODE_CREATE(num_slots) → handle_id or negative iris_error_t
+ *   Creates a KCNode with num_slots (1..KCNODE_MAX_SLOTS=64) empty slots.
+ *   Returns a handle with RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *
+ * SYS_CNODE_MINT(cnode_h, slot_idx, src_h, new_rights) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on cnode_h; RIGHT_DUPLICATE on src_h.
+ *   Mints a capability from src_h into KCNode slot slot_idx with new_rights
+ *   (must be a non-empty subset of src_h's rights).
+ *   If the slot was occupied the old capability reference is released first.
+ *   Uses 4-arg syscall ABI (new_rights via r10).
+ */
+#define SYS_CAP_DERIVE    78
+#define SYS_CAP_REVOKE    79
+#define SYS_CNODE_CREATE  80
+#define SYS_CNODE_MINT    81
+
+/*
+ * Block 3 — Scheduler (Phase 73-75).
+ *
+ * SYS_THREAD_PRIORITY(new_prio) → old_priority or negative iris_error_t
+ *   Sets the calling thread's scheduling priority (0=lowest, 255=highest).
+ *   Returns the previous priority on success.
+ *   Default priority for all user threads is 128.  The idle task runs at 0.
+ *
+ * SYS_SC_CREATE() → handle_id or negative iris_error_t
+ *   Creates a KSchedContext with default budget (5 ticks) and period (20 ticks).
+ *   Returns handle with RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *
+ * SYS_SC_CONFIGURE(sc_h, budget_ticks, period_ticks) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on sc_h.
+ *   budget_ticks: ticks the bound task may run per period (1 .. period_ticks-1).
+ *   period_ticks: length of the period in scheduler ticks (> budget_ticks).
+ *   Resets remaining_budget to budget_ticks immediately.
+ *
+ * SYS_THREAD_SET_SC(sc_h) → 0 or negative iris_error_t
+ *   Binds sc_h to the calling thread.  Pass 0 to unbind.
+ *   When bound, the thread's remaining_budget is decremented each scheduler
+ *   tick; when exhausted the thread is suspended (TASK_BUDGET_EXHAUSTED)
+ *   until the next refill at remaining_budget + period_ticks.
+ */
+#define SYS_THREAD_PRIORITY 82
+#define SYS_SC_CREATE       83
+#define SYS_SC_CONFIGURE    84
+#define SYS_THREAD_SET_SC   85
+
+/*
+ * Block 4 — Untyped Memory (Ph76-78)
+ *
+ * SYS_UNTYPED_INFO(ut_h, out_phys_uptr, out_avail_uptr) → 0 or error
+ *   Writes phys_base and available bytes to the provided user pointers
+ *   (either may be NULL to skip that field).
+ *
+ * SYS_UNTYPED_RETYPE(ut_h, obj_type, obj_arg) → handle_id or error
+ *   Carves memory from the untyped region and creates a typed kernel object
+ *   without touching the kernel heap (kpage-free path for typed objects).
+ *   obj_arg: for KOBJ_UNTYPED  = size of sub-region in bytes (page-aligned)
+ *             for KOBJ_CNODE   = num_slots (NOT YET — use SYS_CNODE_CREATE)
+ *             otherwise        = 0
+ *   Supported obj_type values: KOBJ_ENDPOINT(8), KOBJ_NOTIFICATION(2), KOBJ_UNTYPED(11)
+ */
+#define SYS_UNTYPED_INFO   86
+#define SYS_UNTYPED_RETYPE 87
+#define SYS_UNTYPED_RESET  88
+
+/*
+ * Block 6 — CNode slot operations (Ph82-84).
+ *
+ * SYS_CNODE_MOVE(cnode_h, slot_idx, src_h) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on cnode_h.
+ *   Moves the capability from the caller's HT handle src_h into CNode slot slot_idx.
+ *   src_h is consumed (removed from HT) — seL4 Move semantics.
+ *   If slot_idx was occupied, the old capability is released.
+ *
+ * SYS_CNODE_FETCH(cnode_h, slot_idx) → new_handle_id or negative iris_error_t
+ *   Requires RIGHT_READ on cnode_h.
+ *   Copies the CNode slot capability into a new HT handle entry.
+ *   The CNode slot remains populated (non-destructive).
+ *   Returns IRIS_ERR_NOT_FOUND if the slot is empty.
+ *
+ * SYS_CNODE_DELETE(cnode_h, slot_idx) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on cnode_h.
+ *   Clears CNode slot slot_idx, releasing its capability reference.
+ *   Idempotent: deleting an already-empty slot returns 0.
+ *
+ * SYS_CNODE_SWAP(cnode_h, slot_a, slot_b) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on cnode_h.
+ *   Atomically swaps the contents of slot_a and slot_b within the same CNode.
+ *   slot_a must not equal slot_b (returns IRIS_ERR_INVALID_ARG if they match).
+ *   No capability references change — only slot pointers are exchanged.
+ */
+#define SYS_CNODE_MOVE    89
+#define SYS_CNODE_FETCH   90
+#define SYS_CNODE_DELETE  91
+#define SYS_CNODE_SWAP    92
+
+/*
+ * Block 7 — Reply Capabilities (Ph85-87).
+ *
+ * SYS_EP_CALL(ep_h, msg_uptr) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on ep_h.
+ *   Sends message on ep_h and blocks waiting for a reply via a KReply token.
+ *   The kernel creates a KReply during rendezvous and delivers it to the
+ *   receiver's handle table in msg.attached_handle.
+ *   msg_uptr is both input (send message) and output (reply message).
+ *   buf_uptr in the send message is used as the reply bulk destination.
+ *   EP_CALL does NOT support simultaneous capability transfer.
+ *   Returns IRIS_ERR_CLOSED if the endpoint is closed or the server drops
+ *   the KReply handle without calling SYS_REPLY.
+ *
+ * SYS_REPLY(kreply_h, msg_uptr) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE on kreply_h (a KOBJ_REPLY handle).
+ *   Sends reply_msg to the blocked EP_CALL caller and unblocks it.
+ *   One-shot: the KReply is consumed; future SYS_REPLY on same handle
+ *   returns IRIS_ERR_NOT_FOUND.
+ *   Does NOT require RIGHT_READ on kreply_h — server may hold write-only reply cap.
+ */
+#define SYS_EP_CALL  93
+#define SYS_REPLY    94
+
+/*
+ * Hierarchical CSpace traversal — modern/conforming (iris_error_t).
+ *
+ * SYS_CSPACE_RESOLVE(cptr) → handle_id or negative iris_error_t
+ *   cptr: capability pointer into the process's CNode tree.
+ *   Starting from the process root CNode (installed at creation), extracts
+ *   ctzll(slot_count) bits per level to select a slot index, descends if the
+ *   slot holds another CNode and bits remain, or materializes the leaf
+ *   capability into a new flat handle-table entry and returns the handle_id.
+ *   Max traversal depth: 8 levels.
+ *   Returns IRIS_ERR_NOT_FOUND if the process has no root CNode or a slot
+ *   is empty.  Returns IRIS_ERR_INVALID_ARG if the cptr exhausts all CNode
+ *   levels without reaching a leaf.
+ */
+#define SYS_CSPACE_RESOLVE 95
+
+/*
+ * Block 8 — TCB capabilities (Ph96-101).
+ *
+ * Each user thread receives a KTcb at creation time; handles are installed
+ * in the owning process's handle table automatically.
+ *
+ * SYS_TCB_SELF() → handle_id or negative iris_error_t
+ *   Returns a new handle to the calling thread's KTcb with
+ *   RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *
+ * SYS_TCB_SUSPEND(tcb_h) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE.  Transitions the target thread to TASK_SUSPENDED
+ *   and removes it from the run queue.  If the caller suspends itself the
+ *   syscall yields before returning; execution resumes after SYS_TCB_RESUME.
+ *   Returns IRIS_ERR_NOT_FOUND if the thread is already dead.
+ *
+ * SYS_TCB_RESUME(tcb_h) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE.  Transitions a TASK_SUSPENDED thread to TASK_READY.
+ *   No-op if the thread is already runnable.
+ *   Returns IRIS_ERR_NOT_FOUND if the thread is dead.
+ *
+ * SYS_TCB_SET_PRIORITY(tcb_h, prio) → 0 or negative iris_error_t
+ *   Requires RIGHT_WRITE.  Sets the thread scheduling priority (0–255).
+ *   Returns IRIS_ERR_NOT_FOUND if the thread is dead.
+ *
+ * SYS_TCB_EXIT(tcb_h) → 0 or negative iris_error_t; does not return for self.
+ *   Requires RIGHT_WRITE.  Forcibly terminates the target thread.
+ *   If the target is the caller, equivalent to SYS_EXIT (does not return).
+ *
+ * SYS_TCB_GET_INFO(tcb_h, info_uptr) → 0 or negative iris_error_t
+ *   Requires RIGHT_READ.  Writes struct iris_tcb_info at info_uptr.
+ */
+#define SYS_TCB_SELF          96
+#define SYS_TCB_SUSPEND       97
+#define SYS_TCB_RESUME        98
+#define SYS_TCB_SET_PRIORITY  99
+#define SYS_TCB_EXIT         100
+#define SYS_TCB_GET_INFO     101
+
+#ifndef __ASSEMBLER__
+struct iris_tcb_info {
+    uint32_t task_id;
+    uint8_t  priority;
+    uint8_t  state;    /* task_state_t cast to uint8_t */
+    uint8_t  _pad[2];
+};
+#endif
+
+#define IRIS_HANDLE_TYPE_PROCESS        0u
+#define IRIS_HANDLE_TYPE_CHANNEL        1u
+#define IRIS_HANDLE_TYPE_NOTIFICATION   2u
+#define IRIS_HANDLE_TYPE_BOOTSTRAP_CAP  3u
+#define IRIS_HANDLE_TYPE_VMO            4u
+#define IRIS_HANDLE_TYPE_IRQ_CAP        5u
+#define IRIS_HANDLE_TYPE_IOPORT         6u
+#define IRIS_HANDLE_TYPE_INITRD_ENTRY   7u
+#define IRIS_HANDLE_TYPE_ENDPOINT       8u
+#define IRIS_HANDLE_TYPE_CNODE          9u
+#define IRIS_HANDLE_TYPE_SCHED_CONTEXT  10u
+#define IRIS_HANDLE_TYPE_UNTYPED        11u
+#define IRIS_HANDLE_TYPE_REPLY          12u
+#define IRIS_HANDLE_TYPE_TCB            13u
+#define IRIS_HANDLE_TYPE_VSPACE         14u  /* Fase 4: KVSpace — virtual address space */
 
 #ifndef __ASSEMBLER__
 #ifdef __KERNEL__
 void syscall_init(void);
 void syscall_set_kstack(uint64_t kstack_top);
+void syscall_set_user_cr3(uint64_t val);
 
 /* Called from ASM handler — 5 params: num + 4 user args (arg3 via r10) */
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,

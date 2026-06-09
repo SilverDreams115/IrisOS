@@ -21,7 +21,8 @@ OVMF_CODE="$(pick_first \
   /usr/share/qemu/OVMF_CODE_4M.fd \
   /usr/share/qemu/OVMF_CODE.fd \
   /usr/share/edk2/ovmf/OVMF_CODE.fd \
-  /usr/share/edk2/x64/OVMF_CODE.fd
+  /usr/share/edk2/x64/OVMF_CODE.fd \
+  /usr/share/edk2/x64/OVMF_CODE.4m.fd
 )"
 
 OVMF_VARS_TEMPLATE="$(pick_first \
@@ -31,7 +32,8 @@ OVMF_VARS_TEMPLATE="$(pick_first \
   /usr/share/qemu/OVMF_VARS_4M.fd \
   /usr/share/qemu/OVMF_VARS.fd \
   /usr/share/edk2/ovmf/OVMF_VARS.fd \
-  /usr/share/edk2/x64/OVMF_VARS.fd
+  /usr/share/edk2/x64/OVMF_VARS.fd \
+  /usr/share/edk2/x64/OVMF_VARS.4m.fd
 )"
 
 if [ -z "${OVMF_CODE:-}" ] || [ -z "${OVMF_VARS_TEMPLATE:-}" ]; then

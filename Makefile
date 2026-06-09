@@ -56,10 +56,24 @@ KERNEL_PHASE3_SELFTEST_OBJ := $(BUILD_DIR)/phase3_selftest.o
 KERNEL_INITRD_OBJ         := $(BUILD_DIR)/initrd.o
 KERNEL_FUTEX_OBJ          := $(BUILD_DIR)/futex.o
 KERNEL_KPAGE_OBJ          := $(BUILD_DIR)/kpage.o
+KERNEL_KSLAB_OBJ          := $(BUILD_DIR)/kslab.o
 KERNEL_KLOG_OBJ           := $(BUILD_DIR)/klog.o
 KERNEL_PANIC_OBJ          := $(BUILD_DIR)/panic.o
 KERNEL_LAPIC_OBJ          := $(BUILD_DIR)/lapic.o
 STACK_GUARD_OBJ           := $(BUILD_DIR)/stack_guard.o
+KERNEL_NC_KREPLY_OBJ         := $(BUILD_DIR)/nc_kreply.o
+KERNEL_NC_KCNODE_OBJ         := $(BUILD_DIR)/nc_kcnode.o
+KERNEL_NC_KSCHEDCTX_OBJ      := $(BUILD_DIR)/nc_kschedctx.o
+KERNEL_NC_KUNTYPED_OBJ       := $(BUILD_DIR)/nc_kuntyped.o
+KERNEL_SYSCALL_CSPACE_OBJ    := $(BUILD_DIR)/syscall_cspace.o
+KERNEL_SYSCALL_SCHED_OBJ     := $(BUILD_DIR)/syscall_sched.o
+KERNEL_SYSCALL_UNTYPED_OBJ   := $(BUILD_DIR)/syscall_untyped.o
+KERNEL_SYSCALL_REPLY_OBJ     := $(BUILD_DIR)/syscall_reply.o
+KERNEL_SYSCALL_CNODE_OPS_OBJ := $(BUILD_DIR)/syscall_cnode_ops.o
+KERNEL_NC_KTCB_OBJ           := $(BUILD_DIR)/nc_ktcb.o
+KERNEL_SYSCALL_TCB_OBJ       := $(BUILD_DIR)/syscall_tcb.o
+KERNEL_NC_CSPACE_OBJ         := $(BUILD_DIR)/nc_cspace.o
+KERNEL_NC_KVSPACE_OBJ        := $(BUILD_DIR)/nc_kvspace.o
 # Service ELF binaries — output directly into their source directories so that
 # the objcopy -I binary relative path (services/xxx/xxx.elf) matches the symbol
 # name mangling expected by kernel/core/initrd/initrd.c.
@@ -70,6 +84,7 @@ SERVICE_INIT_ELF      := services/init/init.elf
 SERVICE_CONSOLE_ELF   := services/console/console.elf
 SERVICE_FB_ELF        := services/fb/fb.elf
 SERVICE_SH_ELF        := services/sh/sh.elf
+SERVICE_IRIS_TEST_ELF := services/iris_test/iris_test.elf
 # userboot: linked as raw flat binary (OUTPUT_FORMAT(binary)) for direct kernel mapping
 SERVICE_USERBOOT_BIN  := services/userboot/userboot.bin
 # objcopy-embedded initrd object files (binary blobs → linkable .o)
@@ -80,6 +95,7 @@ KERNEL_INIT_BIN_OBJ       := $(BUILD_DIR)/init_bin.o
 KERNEL_CONSOLE_BIN_OBJ    := $(BUILD_DIR)/console_bin.o
 KERNEL_FB_SVC_BIN_OBJ     := $(BUILD_DIR)/fb_svc_bin.o
 KERNEL_SH_BIN_OBJ         := $(BUILD_DIR)/sh_bin.o
+KERNEL_IRIS_TEST_BIN_OBJ  := $(BUILD_DIR)/iris_test_bin.o
 KERNEL_USERBOOT_BIN_OBJ   := $(BUILD_DIR)/userboot_bin.o
 KERNEL_DEMO_OBJS :=
 KERNEL_DEMO_DEFINES :=
@@ -88,7 +104,7 @@ KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_RUNTIME_SELFTESTS
 # user_init.S contains user_selftest + vfs_leak_child — only needed for selftests.
 KERNEL_DEMO_OBJS         += $(KERNEL_USERINIT_OBJ)
 endif
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_DEMO_OBJS)
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_KSLAB_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_NC_KREPLY_OBJ) $(KERNEL_NC_KCNODE_OBJ) $(KERNEL_NC_KSCHEDCTX_OBJ) $(KERNEL_NC_KUNTYPED_OBJ) $(KERNEL_SYSCALL_CSPACE_OBJ) $(KERNEL_SYSCALL_SCHED_OBJ) $(KERNEL_SYSCALL_UNTYPED_OBJ) $(KERNEL_SYSCALL_REPLY_OBJ) $(KERNEL_SYSCALL_CNODE_OPS_OBJ) $(KERNEL_NC_KTCB_OBJ) $(KERNEL_SYSCALL_TCB_OBJ) $(KERNEL_NC_CSPACE_OBJ) $(KERNEL_NC_KVSPACE_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_IRIS_TEST_BIN_OBJ) $(KERNEL_DEMO_OBJS)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -128,9 +144,49 @@ SERVICE_LDFLAGS := -nostdlib -static -pie -T services/link_service.ld
 EFI_LIBDIR_FLAGS := -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/x86_64-linux-gnu/gnuefi
 LDFLAGS_EFI      := -nostdlib -znocombreloc -T $(EFI_LDS) -shared -Bsymbolic $(EFI_LIBDIR_FLAGS)
 KERNEL_LDFLAGS   := -nostdlib -z max-page-size=0x1000 -z noexecstack -T kernel/arch/x86_64/linker.ld
-OBJCOPY_FLAGS    := -j .text -j .sdata -j .data -j .dynamic -j .dynsym -j .rel -j .rela -j .reloc --target=efi-app-x86_64
+OBJCOPY_FLAGS    := -I elf64-x86-64 -O pei-x86-64 --subsystem=10 -j .text -j .sdata -j .data -j .dynamic -j .dynsym -j .rel -j .rela -j .reloc -j .rodata
 
-.PHONY: all dirs run run-headless clean help check smoke smoke-runtime smoke-runtime-selftests config-sync
+# ── Host unit-test build ────────────────────────────────────────────────────
+TEST_UNIT_INCS  := -I tests/kernel/include -I kernel/new_core/include -I kernel/include -I tests/kernel
+TEST_UNIT_CFLAGS := -D__KERNEL__ -Wall -Wextra -Wshadow -std=c11 \
+    -Wno-unused-function \
+    $(TEST_UNIT_INCS)
+TEST_UNIT_SRCS  := \
+    tests/kernel/stubs.c \
+    kernel/new_core/src/kobject.c \
+    kernel/new_core/src/handle.c \
+    kernel/new_core/src/handle_table.c \
+    kernel/new_core/src/kcnode.c \
+    kernel/new_core/src/kuntyped.c \
+    kernel/new_core/src/kbootcap.c \
+    kernel/new_core/src/kendpoint.c \
+    kernel/new_core/src/kchannel.c \
+    kernel/new_core/src/knotification.c \
+    kernel/new_core/src/kreply.c \
+    kernel/new_core/src/kschedctx.c \
+    kernel/new_core/src/cspace.c \
+    kernel/new_core/src/kvspace.c \
+    tests/kernel/test_rights.c \
+    tests/kernel/test_kobject.c \
+    tests/kernel/test_kcnode.c \
+    tests/kernel/test_kuntyped.c \
+    tests/kernel/test_handle_table.c \
+    tests/kernel/test_kendpoint.c \
+    tests/kernel/test_kchannel.c \
+    tests/kernel/test_knotification.c \
+    tests/kernel/test_kreply.c \
+    tests/kernel/test_kschedctx.c \
+    tests/kernel/test_cspace.c \
+    tests/kernel/test_ipc_cspace.c \
+    tests/kernel/test_untyped_cspace.c \
+    tests/kernel/test_boot_cspace.c \
+    tests/kernel/test_vspace_cspace.c \
+    tests/kernel/test_klog.c \
+    kernel/core/klog/klog.c \
+    tests/kernel/test_main.c
+TEST_UNIT_BIN   := $(BUILD_DIR)/test_unit
+
+.PHONY: all dirs run run-headless clean help check smoke smoke-runtime smoke-runtime-selftests config-sync test-unit
 
 all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
@@ -300,6 +356,9 @@ $(KERNEL_FUTEX_OBJ): kernel/core/futex/futex.c | dirs
 $(KERNEL_KPAGE_OBJ): kernel/mm/kpage/kpage.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
+$(KERNEL_KSLAB_OBJ): kernel/mm/kslab/kslab.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
 $(KERNEL_KLOG_OBJ): kernel/core/klog/klog.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
@@ -307,6 +366,45 @@ $(KERNEL_PANIC_OBJ): kernel/core/panic/panic.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_LAPIC_OBJ): kernel/arch/x86_64/lapic.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_KREPLY_OBJ): kernel/new_core/src/kreply.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_KCNODE_OBJ): kernel/new_core/src/kcnode.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_KSCHEDCTX_OBJ): kernel/new_core/src/kschedctx.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_KUNTYPED_OBJ): kernel/new_core/src/kuntyped.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_CSPACE_OBJ): kernel/core/syscall/syscall_cspace.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_SCHED_OBJ): kernel/core/syscall/syscall_sched.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_UNTYPED_OBJ): kernel/core/syscall/syscall_untyped.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_REPLY_OBJ): kernel/core/syscall/syscall_reply.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_CNODE_OPS_OBJ): kernel/core/syscall/syscall_cnode_ops.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_KTCB_OBJ): kernel/new_core/src/ktcb.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_TCB_OBJ): kernel/core/syscall/syscall_tcb.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_CSPACE_OBJ): kernel/new_core/src/cspace.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_NC_KVSPACE_OBJ): kernel/new_core/src/kvspace.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
 # ── userboot — ring-3 bootstrap; built as raw flat binary for direct kernel mapping ─
@@ -458,6 +556,22 @@ $(KERNEL_SH_BIN_OBJ): $(SERVICE_SH_ELF) | dirs
 	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
 	    $(SERVICE_SH_ELF) $@
 
+# ── iris_test service (ring-3 syscall test suite, Block 8) ───────────────────
+$(BUILD_DIR)/iris_test_entry.o: services/iris_test/entry.S | dirs
+	gcc $(SERVICE_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/iris_test_main.o: services/iris_test/main.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_IRIS_TEST_ELF): $(BUILD_DIR)/iris_test_entry.o $(BUILD_DIR)/iris_test_main.o $(STACK_GUARD_OBJ)
+	ld $(SERVICE_LDFLAGS) $^ -o $@
+	strip --strip-all $@
+
+$(KERNEL_IRIS_TEST_BIN_OBJ): $(SERVICE_IRIS_TEST_ELF) | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    $(SERVICE_IRIS_TEST_ELF) $@
+
 $(KERNEL_ELF): $(KERNEL_OBJS)
 	ld $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $@
 
@@ -509,7 +623,13 @@ clean:
 	rm -f $(BUILD_CONFIG_STAMP)
 	rm -f $(BUILD_DIR)/OVMF_VARS.fd
 	rm -rf $(BUILD_DIR)/efi_root
-	rm -f $(SERVICE_SVCMGR_ELF) $(SERVICE_KBD_ELF) $(SERVICE_VFS_ELF) $(SERVICE_INIT_ELF) $(SERVICE_SH_ELF)
+	rm -f $(SERVICE_SVCMGR_ELF) $(SERVICE_KBD_ELF) $(SERVICE_VFS_ELF) $(SERVICE_INIT_ELF) $(SERVICE_SH_ELF) $(SERVICE_IRIS_TEST_ELF)
+
+$(TEST_UNIT_BIN): $(TEST_UNIT_SRCS) | dirs
+	gcc $(TEST_UNIT_CFLAGS) $(TEST_UNIT_SRCS) -o $@
+
+test-unit: $(TEST_UNIT_BIN)
+	@$(TEST_UNIT_BIN)
 
 # ── Header dependency tracking ──────────────────────────────────────────────
 # Generated by -MMD -MP in KERNEL_CFLAGS and SERVICE_CFLAGS.

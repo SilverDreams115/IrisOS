@@ -306,7 +306,7 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     if (action == 0) {
-        ft->state = TASK_READY;
+        task_wakeup(ft);
     } else {
         task_kill_external(ft);
     }

@@ -17,10 +17,13 @@
 #include <iris/nc/kprocess.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kcnode.h>
 #include <iris/nc/kuntyped.h>
+#include <iris/nc/kvspace.h>
 #include <iris/nc/rights.h>
 #include <iris/cpu_local.h>
 #include <iris/lapic.h>
+#include <iris/kslab.h>
 #ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
 #include <iris/phase3_selftest.h>
 #endif
@@ -43,7 +46,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     _early_putc('S'); /* raw serial: serial_init returned */
     klog_write("\n");
     klog_write("====================================\n");
-    klog_write("       IRIS KERNEL - PHASE 92\n");
+    klog_write("       IRIS KERNEL - PHASE 102\n");
     klog_write("====================================\n");
     klog_write("[IRIS][KERNEL] firmware services: OFF\n");
 
@@ -81,6 +84,20 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     /* Activate the O(log N) buddy allocator now that the physmap is live. */
     pmm_buddy_setup();
     klog_write("[IRIS][PMM] buddy allocator active\n");
+
+    /* Reserve 4 MB (1024 pages) from the PMM as the kernel object slab.
+     * All typed kernel object headers (KProcess, KChannel, KEndpoint, …) are
+     * allocated from this pool via kslab_alloc instead of directly from the PMM,
+     * allowing all remaining PMM blocks to be handed to userspace as KUntyped caps. */
+    {
+        uint64_t kslab_phys = pmm_alloc_pages(1024u);
+        if (kslab_phys == 0) {
+            klog_write("[IRIS][KSLAB] FATAL: cannot reserve kernel slab backing\n");
+            for (;;) __asm__ volatile ("hlt");
+        }
+        kslab_init(kslab_phys, 1024u);
+        klog_write("[IRIS][KSLAB] kernel object slab active (4 MB)\n");
+    }
 
     /* ── 4. CPU tables + interrupt infrastructure ───────────────── */
     klog_write("[IRIS][GDT] initializing...\n");
@@ -163,6 +180,38 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     ut = 0;
                 } else {
                     task_set_bootstrap_arg0(ut, (uint64_t)cap_h);
+                    /*
+                     * Fase 3.5: dual insert — also publish KBootstrapCap in
+                     * root CNode slot BOOT_CPTR_BOOTSTRAP_CAP (slot 1).
+                     * kcnode_mint takes its own kobject_retain+active_retain,
+                     * giving the CNode slot independent ownership from the
+                     * legacy handle.  Refcount after:
+                     *   handle owns retain+active = 1+1
+                     *   CNode  owns retain+active = 1+1
+                     * Boot failure on CSpace insert is non-fatal: KBootstrapCap
+                     * remains accessible via the legacy bootstrap_cap_h handle.
+                     */
+                    if (ut->process->cspace_root_h != HANDLE_INVALID) {
+                        struct KObject *broot_obj = 0;
+                        iris_rights_t   broot_r;
+                        if (handle_table_get_object(
+                                &ut->process->handle_table,
+                                ut->process->cspace_root_h,
+                                &broot_obj, &broot_r) == IRIS_OK) {
+                            if (broot_obj->type == KOBJ_CNODE) {
+                                iris_error_t bme = kcnode_mint(
+                                    (struct KCNode *)broot_obj,
+                                    BOOT_CPTR_BOOTSTRAP_CAP,
+                                    &cap->base,
+                                    RIGHT_READ | RIGHT_DUPLICATE |
+                                    RIGHT_TRANSFER);
+                                if (bme == IRIS_OK)
+                                    klog_write("[IRIS][USER] boot bootstrap"
+                                               " cap CSpace grants OK\n");
+                            }
+                            kobject_release(broot_obj);
+                        }
+                    }
                 }
             }
         }
@@ -171,19 +220,95 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             klog_write_dec(ut->id);
             klog_write("\n");
 
-            /* Ph76+: drain all buddy blocks ≥ 4 MB into KUntyped caps for init.
-             * Blocks smaller than 1024 pages (4 MB) are left in the PMM for
-             * kernel dynamic allocation (kpage_alloc).  Phases 5-6 will remove
-             * the kpage_alloc dependency and allow full drain. */
+                    /*
+                     * Fase 4: create KVSpace for userboot/root task and publish
+                     * it in root CNode slot BOOT_CPTR_VSPACE (slot 2).
+                     *
+                     * KVSpace is a non-owning wrapper in Fase 4: it records the
+                     * cr3 value and an invalidation flag.  Page tables remain
+                     * owned by KProcess; KVSpace does NOT free them.
+                     *
+                     * Ref-count after this block:
+                     *   process->vspace lifecycle ref   → refcount=1
+                     *   kcnode_mint (retain+active)     → refcount=2, active=1
+                     *
+                     * Boot failure on OOM or CSpace insert is non-fatal: the
+                     * process still boots and demand paging is unaffected.
+                     */
+                    if (ut->process->cr3 && ut->process->cspace_root_h != HANDLE_INVALID) {
+                        struct KVSpace *vs = kvspace_alloc(ut->process->cr3);
+                        if (vs) {
+                            /* Store lifecycle ref in process. */
+                            kobject_retain(&vs->base);
+                            ut->process->vspace = vs;
+                            kobject_release(&vs->base); /* drop alloc ref */
+
+                            /* Also publish in root CNode slot 2 (BOOT_CPTR_VSPACE). */
+                            struct KObject *vroot_obj = 0;
+                            iris_rights_t   vroot_r;
+                            if (handle_table_get_object(
+                                    &ut->process->handle_table,
+                                    ut->process->cspace_root_h,
+                                    &vroot_obj, &vroot_r) == IRIS_OK) {
+                                if (vroot_obj->type == KOBJ_CNODE) {
+                                    iris_error_t vme = kcnode_mint(
+                                        (struct KCNode *)vroot_obj,
+                                        BOOT_CPTR_VSPACE,
+                                        &vs->base,
+                                        RIGHT_READ | RIGHT_DUPLICATE |
+                                        RIGHT_TRANSFER);
+                                    if (vme == IRIS_OK)
+                                        klog_write("[IRIS][USER] boot vspace"
+                                                   " CSpace grants OK\n");
+                                }
+                                kobject_release(vroot_obj);
+                            }
+                        }
+                    }
+
+            /*
+             * Ph76: drain free buddy blocks into KUntyped caps for userboot.
+             *
+             * IRIS_PMM_KERNEL_RUNTIME_RESERVE pages are kept in the PMM for
+             * kernel-internal runtime allocators that bypass the KUntyped model:
+             *
+             *   • paging_map_checked_in: page-table intermediate pages (PDPT/PD/PT)
+             *   • kprocess_resolve_demand_fault: one page per user demand-fault
+             *   • kvmo_create: pages[] metadata array (pmm_alloc_pages)
+             *   • sys_initrd_vmo: ELF copy pages (pmm_alloc_page × page_capacity)
+             *   • kstack_alloc: 2 pages per task kernel stack
+             *   • paging_create_user: 1 page per process PML4
+             *
+             * The post-alloc check (after pmm_alloc_block) handles the case
+             * where a large block would push pmm_free_pages below the reserve;
+             * that block is returned to the buddy and the drain stops.
+             *
+             * PHASE-1-DEBT: as long as IRIS uses kernel-side demand paging the
+             * PMM reserve must persist indefinitely.  The seL4-correct fix is to
+             * remove demand paging and require userspace to retype frames
+             * explicitly via SYS_UNTYPED_RETYPE before mapping them.
+             *
+             * Fase 3.4 (dual mode): every boot KUntyped is also inserted into
+             * slot (BOOT_CPTR_UNTYPED_START + drain_index) of the process's
+             * root CNode so userboot can discover it via CPtr.  The legacy
+             * handle-table insert is kept for backward compatibility.
+             * Rights are identical on both paths; neither reference has greater
+             * authority than the other.  Boot failure on CSpace insert is
+             * non-fatal: the block remains accessible via the legacy handle.
+             */
+#define IRIS_PMM_KERNEL_RUNTIME_RESERVE  4096u  /* 16 MB for kernel runtime */
             {
-                uint32_t ut_count = 0;
+                uint32_t ut_count        = 0;
+                uint32_t ut_cspace_count = 0;
                 for (;;) {
+                    if (pmm_free_pages() <= IRIS_PMM_KERNEL_RUNTIME_RESERVE)
+                        break;
                     uint32_t order;
                     uint64_t blk_phys = pmm_alloc_block(&order);
                     if (blk_phys == 0) break;
                     uint32_t blk_pages = 1u << order;
-                    if (blk_pages < 1024u) {
-                        /* Block is < 4 MB — return to PMM for kernel use */
+                    /* Post-check: if this block violated the reserve, return it. */
+                    if (pmm_free_pages() < IRIS_PMM_KERNEL_RUNTIME_RESERVE) {
                         pmm_free_contig(blk_phys, blk_pages);
                         break;
                     }
@@ -193,16 +318,50 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                         pmm_free_contig(blk_phys, blk_pages);
                         break;
                     }
+                    /* Legacy handle-table insert (dual mode: kept for compatibility). */
                     handle_id_t ut_h = handle_table_insert(
                         &ut->process->handle_table, &boot_ut->base,
                         RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
                     kobject_release(&boot_ut->base);
                     if (ut_h == HANDLE_INVALID) break;
+
+                    /* Fase 3.4: also publish into root CNode slot for CPtr discovery.
+                     * Slot = BOOT_CPTR_UNTYPED_START + drain_index.
+                     * kcnode_mint takes its own kobject_retain + kobject_active_retain
+                     * giving the CNode slot independent ownership from the handle.
+                     * Refcount after: 2 (handle) + 2 (CNode) = two balanced owners. */
+                    uint32_t cspace_slot = BOOT_CPTR_UNTYPED_START + ut_count;
+                    if (ut->process->cspace_root_h != HANDLE_INVALID &&
+                        cspace_slot < KCNODE_DEFAULT_SLOTS) {
+                        struct KObject *root_obj = 0;
+                        iris_rights_t   root_r;
+                        if (handle_table_get_object(&ut->process->handle_table,
+                                                    ut->process->cspace_root_h,
+                                                    &root_obj, &root_r) == IRIS_OK) {
+                            if (root_obj->type == KOBJ_CNODE) {
+                                iris_error_t me = kcnode_mint(
+                                    (struct KCNode *)root_obj, cspace_slot,
+                                    &boot_ut->base,
+                                    RIGHT_READ | RIGHT_WRITE |
+                                    RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                                if (me == IRIS_OK)
+                                    ut_cspace_count++;
+                            }
+                            kobject_release(root_obj);
+                        }
+                    }
+
                     ut_count++;
                 }
                 klog_write("[IRIS][USER] boot untyped blocks handed to init: ");
                 klog_write_dec(ut_count);
                 klog_write("\n");
+                if (ut_cspace_count > 0) {
+                    klog_write("[IRIS][USER] boot untyped CSpace grants: ");
+                    klog_write_dec(ut_cspace_count);
+                    klog_write("\n");
+                    klog_write("[IRIS][USER] boot untyped CSpace grants OK\n");
+                }
             }
         } else {
             klog_write("[IRIS][USER] WARN: could not create bootstrap task\n");

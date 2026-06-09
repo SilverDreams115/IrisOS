@@ -7,20 +7,29 @@
 struct KProcess;
 struct KEndpoint;
 struct KObject;
+struct KSchedContext;
+struct KReply;
+struct KTcb;
 
-#define TASK_MAX         256
-#define TASK_STACK_SIZE  8192    /* kernel stack per task */
-#define TASK_DEFAULT_SLICE    2      /* ticks per quantum at 100 Hz = 20ms */
+#define TASK_MAX              256
+#define TASK_STACK_SIZE       8192  /* kernel stack per task */
+#define TASK_DEFAULT_SLICE    2     /* ticks per quantum at 100 Hz = 20ms */
+#define TASK_PRIORITY_DEFAULT 128u  /* default scheduling priority */
+#define TASK_PRIORITY_MAX     255u  /* highest scheduling priority */
+#define TASK_PRIORITY_MIN     0u    /* lowest (idle task) */
 
 typedef enum {
     TASK_READY,
     TASK_RUNNING,
-    TASK_BLOCKED_IPC,   /* blocked waiting for an IPC message or KChannel recv */
-    TASK_BLOCKED_IRQ,   /* blocked waiting for a KNotification signal */
-    TASK_SLEEPING,      /* blocked until a timer tick count is reached */
-    TASK_BLOCKED_FAULT, /* suspended pending exception handler decision */
-    TASK_BLOCKED_SEND,  /* blocked waiting for a receiver on a KEndpoint */
-    TASK_BLOCKED_RECV,  /* blocked waiting for a sender on a KEndpoint */
+    TASK_BLOCKED_IPC,       /* blocked waiting for an IPC message or KChannel recv */
+    TASK_BLOCKED_IRQ,       /* blocked waiting for a KNotification signal */
+    TASK_SLEEPING,          /* blocked until a timer tick count is reached */
+    TASK_BLOCKED_FAULT,     /* suspended pending exception handler decision */
+    TASK_BLOCKED_SEND,      /* blocked waiting for a receiver on a KEndpoint */
+    TASK_BLOCKED_RECV,      /* blocked waiting for a sender on a KEndpoint */
+    TASK_BUDGET_EXHAUSTED,  /* Ph75: SC budget spent; sleeping until refill tick */
+    TASK_BLOCKED_REPLY,     /* Ph85: EP_CALL caller blocked waiting for KReply invocation */
+    TASK_SUSPENDED,         /* Ph96: explicitly suspended via SYS_TCB_SUSPEND */
     TASK_DEAD,
 } task_state_t;
 
@@ -46,6 +55,7 @@ struct task {
     uint32_t          id;
     task_state_t      state;
     task_ring_t       ring;
+    uint8_t           priority;  /* Ph73: 0=lowest, 255=highest; idle=0, user=128 */
 
     struct cpu_context ctx;
 
@@ -88,6 +98,17 @@ struct task {
     uint32_t            ipc_kbuf_len;    /* valid bytes in ipc_kbuf */
     uint64_t            ep_recv_buf_uptr;/* receiver's output buffer user addr (set at EP_RECV) */
     uint8_t             ipc_kbuf[IRIS_IPC_BUF_SIZE]; /* kernel-side bulk payload staging */
+    /* Ph74: optional scheduling context — retained KSchedContext ref (NULL = best-effort) */
+    struct KSchedContext *sched_ctx;
+    /* Ph85: reply capability fields */
+    uint32_t       ep_call_mode;    /* 1 if task entered EP via SYS_EP_CALL (wants reply) */
+    struct KReply *pending_kreply;  /* non-NULL while state == TASK_BLOCKED_REPLY (task holds a ref) */
+    /* Ph96: TCB capability — retained ref; NULL for kernel tasks and tasks without KTcb */
+    struct KTcb   *ktcb;
+
+    /* SMP: CPU this task is homed to (its run queue owner).
+     * Set at creation time; stays constant for the task's lifetime. */
+    uint8_t           home_cpu;
 
     /* FPU/SSE state — 512-byte FXSAVE image, must be 16-byte aligned.
      * Saved and restored on every context switch so FPU state never leaks
@@ -130,5 +151,19 @@ void task_kill_process(struct KProcess *proc);
  * Must NOT be called with t == task_current(); use task_exit_current() instead.
  */
 void task_kill_external(struct task *t);
+
+/*
+ * task_wakeup — transition a blocked/sleeping task to READY and enqueue it
+ * in the O(1) priority run queue.  No-op for TASK_DEAD or TASK_RUNNING.
+ * Must be called with IRQs disabled or from a single-CPU context.
+ */
+void task_wakeup(struct task *t);
+
+/*
+ * task_suspend — move a task to TASK_SUSPENDED and remove it from the run
+ * queue.  No-op for TASK_DEAD.  Caller must yield afterwards if t is the
+ * current task, so that a different task is scheduled.
+ */
+void task_suspend(struct task *t);
 
 #endif

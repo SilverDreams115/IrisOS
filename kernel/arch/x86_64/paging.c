@@ -349,17 +349,6 @@ void paging_unmap_in(uint64_t cr3, uint64_t virt) {
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
 }
 
-void paging_write_u64_in(uint64_t cr3, uint64_t virt, uint64_t value) {
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
-    uint64_t saved_cr3;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(saved_cr3));
-    __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
-    *(volatile uint64_t *)(uintptr_t)virt = value;
-    __asm__ volatile ("mov %0, %%cr3" : : "r"(saved_cr3) : "memory");
-    __asm__ volatile ("pushq %0; popfq" : : "r"(rflags) : "memory");
-}
-
 void paging_destroy_user_space(uint64_t cr3) {
     if (cr3 == 0) return;
 

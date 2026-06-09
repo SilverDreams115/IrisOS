@@ -5,6 +5,7 @@
 #include <iris/boot_info.h>
 
 #define IRIS_KERNEL_PATH  L"\\EFI\\IRIS\\KERNEL.ELF"
+
 #define IRIS_PAGE_SIZE    4096ULL
 
 static void *mem_copy(void *dst, const void *src, UINTN size) {
@@ -100,18 +101,28 @@ static EFI_STATUS load_file_into_memory(
 
     *BufferSize = (UINTN)FileInfo->FileSize;
 
-    Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePool, 3,
-        EfiLoaderData, *BufferSize, Buffer);
-    if (EFI_ERROR(Status)) {
-        uefi_call_wrapper(SystemTable->BootServices->FreePool, 1, FileInfo);
-        uefi_call_wrapper(File->Close, 1, File);
-        uefi_call_wrapper(Root->Close, 1, Root);
-        return Status;
+    {
+        /* Allocate the file buffer at a high physical address so it does not
+         * conflict with the kernel's LOAD segments at 0x200000.  AllocatePool
+         * often returns memory near 0x200000 on OVMF/q35, which then blocks
+         * the subsequent AllocateAddress calls for the kernel segments. */
+        EFI_PHYSICAL_ADDRESS BufAddr = 0xFFFFFFFFULL;
+        UINTN BufPages = page_count(*BufferSize);
+        Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePages, 4,
+            AllocateMaxAddress, EfiLoaderData, BufPages, &BufAddr);
+        if (EFI_ERROR(Status)) {
+            uefi_call_wrapper(SystemTable->BootServices->FreePool, 1, FileInfo);
+            uefi_call_wrapper(File->Close, 1, File);
+            uefi_call_wrapper(Root->Close, 1, Root);
+            return Status;
+        }
+        *Buffer = (VOID *)(UINTN)BufAddr;
     }
 
     Status = uefi_call_wrapper(File->Read, 3, File, BufferSize, *Buffer);
     if (EFI_ERROR(Status)) {
-        uefi_call_wrapper(SystemTable->BootServices->FreePool, 1, *Buffer);
+        uefi_call_wrapper(SystemTable->BootServices->FreePages, 2,
+            (EFI_PHYSICAL_ADDRESS)(UINTN)*Buffer, page_count(*BufferSize));
         *Buffer = NULL; *BufferSize = 0;
         uefi_call_wrapper(SystemTable->BootServices->FreePool, 1, FileInfo);
         uefi_call_wrapper(File->Close, 1, File);

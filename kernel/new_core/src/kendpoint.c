@@ -1,6 +1,7 @@
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kobject.h>
-#include <iris/kpage.h>
+#include <iris/nc/kuntyped.h>
+#include <iris/kslab.h>
 #include <iris/task.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -24,7 +25,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
         t->ep_next       = 0;
         t->blocking_ep   = 0;
         t->ipc_ep_closed = 1;
-        t->state         = TASK_READY;
+        task_wakeup(t);
         t = nxt;
     }
     ep->queue_head = 0;
@@ -36,7 +37,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
 
 static void kendpoint_obj_destroy(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kendpoint_live, 1u, memory_order_relaxed);
-    kpage_free((struct KEndpoint *)obj, (uint32_t)sizeof(struct KEndpoint));
+    kslab_free((struct KEndpoint *)obj, (uint32_t)sizeof(struct KEndpoint));
 }
 
 static const struct KObjectOps kendpoint_ops = {
@@ -45,7 +46,7 @@ static const struct KObjectOps kendpoint_ops = {
 };
 
 struct KEndpoint *kendpoint_alloc(void) {
-    struct KEndpoint *ep = kpage_alloc((uint32_t)sizeof(struct KEndpoint));
+    struct KEndpoint *ep = kslab_alloc((uint32_t)sizeof(struct KEndpoint));
     if (!ep) return 0;
     kobject_init(&ep->base, KOBJ_ENDPOINT, &kendpoint_ops);
     irq_spinlock_init(&ep->lock);
@@ -53,6 +54,28 @@ struct KEndpoint *kendpoint_alloc(void) {
     ep->closed     = 0;
     ep->queue_head = 0;
     ep->queue_tail = 0;
+    atomic_fetch_add_explicit(&kendpoint_live, 1u, memory_order_relaxed);
+    return ep;
+}
+
+/* ── Untyped-backed variant (Ph78) ──────────────────────────────── */
+
+static void kendpoint_obj_destroy_ut(struct KObject *obj) {
+    atomic_fetch_sub_explicit(&kendpoint_live, 1u, memory_order_relaxed);
+    kuntyped_release_child(obj, sizeof(struct KEndpoint));
+}
+
+static const struct KObjectOps kendpoint_ops_ut = {
+    .close   = kendpoint_obj_close,
+    .destroy = kendpoint_obj_destroy_ut,
+};
+
+struct KEndpoint *kendpoint_alloc_at(void *mem) {
+    if (!mem) return 0;
+    struct KEndpoint *ep = (struct KEndpoint *)mem;
+    kobject_init(&ep->base, KOBJ_ENDPOINT, &kendpoint_ops_ut);
+    irq_spinlock_init(&ep->lock);
+    /* ep_state, closed, queue_head/tail already zero (kuntyped_bump_alloc zeroes) */
     atomic_fetch_add_explicit(&kendpoint_live, 1u, memory_order_relaxed);
     return ep;
 }

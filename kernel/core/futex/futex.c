@@ -6,26 +6,39 @@
 #include <iris/nc/spinlock.h>
 #include <stdint.h>
 
-#define FUTEX_TABLE_SIZE 256
+/*
+ * Futex wait table — hash-bucketed for per-address-group locking.
+ *
+ * 32 buckets × 8 slots = 256 total waiters (same capacity as before).
+ * Each bucket has its own irq_spinlock so futex_wait and futex_wake on
+ * different addresses never contend.  futex_cancel_waiter still walks
+ * all buckets but each lock hold is short.
+ *
+ * Zero-initialization is sufficient: atomic_flag starts cleared (unlocked)
+ * in C11, so no explicit init call is required.
+ */
+#define FUTEX_BUCKETS    32u
+#define FUTEX_BUCKET_CAP  8u
 
 struct futex_entry {
     uint64_t         uaddr;
     struct task     *waiter;
-    struct KProcess *owner;  /* process whose address space owns uaddr */
+    struct KProcess *owner;
 };
 
-static struct futex_entry futex_table[FUTEX_TABLE_SIZE];
+struct futex_bucket {
+    irq_spinlock_t    lock;
+    struct futex_entry entries[FUTEX_BUCKET_CAP];
+};
 
-/* IRQ-disabling spinlock: futex_wake may be called from task context while
- * futex_wait's check+register sequence must be atomic with respect to wakes
- * on the same CPU.  Disabling IRQs prevents the timer ISR (which calls
- * reap_pending_dead_task) from observing a partially-registered slot.
- *
- * Static zero-initialization is correct: atomic_flag starts cleared (=unlocked)
- * in C11, so no explicit futex_init() call is required. */
-static irq_spinlock_t futex_lock;
+static struct futex_bucket futex_buckets[FUTEX_BUCKETS];
 
-iris_error_t futex_wait(uint64_t uaddr, uint32_t expected) {
+static inline uint32_t futex_hash(uint64_t uaddr) {
+    /* Mix page-level and cache-line-level bits into FUTEX_BUCKETS slots. */
+    return (uint32_t)((uaddr >> 2) ^ (uaddr >> 12)) & (FUTEX_BUCKETS - 1u);
+}
+
+iris_error_t futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline_ticks) {
     uint32_t val;
 
     /* Pre-check outside the lock — avoids the user copy under IRQ disable. */
@@ -34,44 +47,48 @@ iris_error_t futex_wait(uint64_t uaddr, uint32_t expected) {
     if (val != expected)
         return IRIS_ERR_WOULD_BLOCK;
 
-    /* Re-read under lock to close the TOCTOU window between the value check
-     * above and the slot registration below.  The lock disables IRQs so no
-     * futex_wake can interleave between check and register on this CPU. */
-    uint64_t saved = irq_spinlock_lock(&futex_lock);
+    struct futex_bucket *bucket = &futex_buckets[futex_hash(uaddr)];
+    uint64_t saved = irq_spinlock_lock(&bucket->lock);
 
+    /* Re-read under lock to close the TOCTOU window. */
     if (!copy_from_user_checked(&val, uaddr, sizeof(val))) {
-        irq_spinlock_unlock(&futex_lock, saved);
+        irq_spinlock_unlock(&bucket->lock, saved);
         return IRIS_ERR_INVALID_ARG;
     }
     if (val != expected) {
-        irq_spinlock_unlock(&futex_lock, saved);
+        irq_spinlock_unlock(&bucket->lock, saved);
         return IRIS_ERR_WOULD_BLOCK;
     }
 
     int slot = -1;
-    for (int i = 0; i < FUTEX_TABLE_SIZE; i++) {
-        if (futex_table[i].uaddr == 0) { slot = i; break; }
+    for (int i = 0; i < (int)FUTEX_BUCKET_CAP; i++) {
+        if (bucket->entries[i].uaddr == 0) { slot = i; break; }
     }
     if (slot < 0) {
-        irq_spinlock_unlock(&futex_lock, saved);
+        irq_spinlock_unlock(&bucket->lock, saved);
         return IRIS_ERR_TABLE_FULL;
     }
 
     struct task *t = task_current();
     if (!t || !t->process) {
-        irq_spinlock_unlock(&futex_lock, saved);
+        irq_spinlock_unlock(&bucket->lock, saved);
         return IRIS_ERR_INVALID_ARG;
     }
 
-    futex_table[slot].uaddr  = uaddr;
-    futex_table[slot].waiter = t;
-    futex_table[slot].owner  = t->process;
-    t->state = TASK_BLOCKED_IPC;
+    bucket->entries[slot].uaddr  = uaddr;
+    bucket->entries[slot].waiter = t;
+    bucket->entries[slot].owner  = t->process;
+    t->state     = TASK_BLOCKED_IPC;
+    t->wake_tick = deadline_ticks;
 
-    irq_spinlock_unlock(&futex_lock, saved);
+    irq_spinlock_unlock(&bucket->lock, saved);
 
     task_yield();
-    /* Woken by futex_wake or cancelled by futex_cancel_waiter. */
+    if (t->timed_out) {
+        t->timed_out = 0;
+        futex_cancel_waiter(t);
+        return IRIS_ERR_TIMED_OUT;
+    }
     return IRIS_OK;
 }
 
@@ -81,33 +98,39 @@ uint32_t futex_wake(uint64_t uaddr, uint32_t count) {
     struct KProcess *caller_proc = t->process;
     uint32_t woken = 0;
 
-    uint64_t saved = irq_spinlock_lock(&futex_lock);
-    for (int i = 0; i < FUTEX_TABLE_SIZE && woken < count; i++) {
-        if (futex_table[i].uaddr != uaddr || !futex_table[i].waiter)
+    struct futex_bucket *bucket = &futex_buckets[futex_hash(uaddr)];
+    uint64_t saved = irq_spinlock_lock(&bucket->lock);
+
+    for (int i = 0; i < (int)FUTEX_BUCKET_CAP && woken < count; i++) {
+        if (bucket->entries[i].uaddr != uaddr || !bucket->entries[i].waiter)
             continue;
-        if (futex_table[i].owner != caller_proc)
+        if (bucket->entries[i].owner != caller_proc)
             continue;
-        struct task *w = futex_table[i].waiter;
-        futex_table[i].uaddr  = 0;
-        futex_table[i].waiter = 0;
-        futex_table[i].owner  = 0;
+        struct task *w = bucket->entries[i].waiter;
+        bucket->entries[i].uaddr  = 0;
+        bucket->entries[i].waiter = 0;
+        bucket->entries[i].owner  = 0;
         if (w->state == TASK_BLOCKED_IPC)
-            w->state = TASK_READY;
+            task_wakeup(w);
         woken++;
     }
-    irq_spinlock_unlock(&futex_lock, saved);
+
+    irq_spinlock_unlock(&bucket->lock, saved);
     return woken;
 }
 
 void futex_cancel_waiter(struct task *t) {
     if (!t) return;
-    uint64_t saved = irq_spinlock_lock(&futex_lock);
-    for (int i = 0; i < FUTEX_TABLE_SIZE; i++) {
-        if (futex_table[i].waiter == t) {
-            futex_table[i].uaddr  = 0;
-            futex_table[i].waiter = 0;
-            futex_table[i].owner  = 0;
+    for (uint32_t b = 0; b < FUTEX_BUCKETS; b++) {
+        struct futex_bucket *bucket = &futex_buckets[b];
+        uint64_t saved = irq_spinlock_lock(&bucket->lock);
+        for (uint32_t i = 0; i < FUTEX_BUCKET_CAP; i++) {
+            if (bucket->entries[i].waiter == t) {
+                bucket->entries[i].uaddr  = 0;
+                bucket->entries[i].waiter = 0;
+                bucket->entries[i].owner  = 0;
+            }
         }
+        irq_spinlock_unlock(&bucket->lock, saved);
     }
-    irq_spinlock_unlock(&futex_lock, saved);
 }

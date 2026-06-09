@@ -75,3 +75,12 @@ uint8_t lapic_id(void) {
     if (!lapic_active) return 0;
     return (uint8_t)(lapic_base[LAPIC_REG_ID / 4] >> 24);
 }
+
+#define LAPIC_REG_ICR_LO  0x300u
+#define LAPIC_REG_ICR_HI  0x310u
+
+void lapic_send_ipi(uint8_t dest_lapic_id, uint8_t vector) {
+    if (!lapic_active) return;
+    lapic_base[LAPIC_REG_ICR_HI / 4] = (uint32_t)dest_lapic_id << 24;
+    lapic_base[LAPIC_REG_ICR_LO / 4] = (uint32_t)vector; /* Fixed delivery, edge, assert */
+}

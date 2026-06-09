@@ -1,7 +1,8 @@
 #include <iris/nc/kchannel.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/kprocess.h>
-#include <iris/kpage.h>
+#include <iris/nc/kuntyped.h>
+#include <iris/kslab.h>
 #include <iris/task.h>
 #include <stdint.h>
 
@@ -62,9 +63,9 @@ static void kchannel_waiters_wake_all(struct KChannel *ch) {
     for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) {
         struct task *w = ch->waiters[i];
         if (!w) continue;
-        if (w->state == TASK_BLOCKED_IPC)
-            w->state = TASK_READY;
         ch->waiters[i] = 0;
+        if (w->state == TASK_BLOCKED_IPC)
+            task_wakeup(w);
     }
     ch->waiter_count = 0;
 }
@@ -77,9 +78,9 @@ static void kchannel_waiters_wake_one(struct KChannel *ch) {
         struct task *w = ch->waiters[i];
         if (!w) continue;
         if (w->state == TASK_BLOCKED_IPC) {
-            w->state      = TASK_READY;
             ch->waiters[i] = 0;
             if (ch->waiter_count) ch->waiter_count--;
+            task_wakeup(w);
             return;
         }
     }
@@ -158,7 +159,7 @@ static void kchannel_close(struct KObject *obj) {
  *   2. Close + wake all blocked receivers (base.lock).
  *   3. Drop any in-flight queued handles.
  *   4. Release process owner reference.
- *   5. Return pages to PMM via kpage_free.
+ *   5. Return to kernel slab via kslab_free.
  */
 static void kchannel_destroy(struct KObject *obj) {
     struct KChannel *ch = (struct KChannel *)obj;
@@ -180,7 +181,7 @@ static void kchannel_destroy(struct KObject *obj) {
     kchannel_owner_release(ch);
 
     /* Step 5: return pages to PMM. */
-    kpage_free(ch, sizeof(struct KChannel));
+    kslab_free(ch, sizeof(struct KChannel));
 }
 
 static const struct KObjectOps kchannel_ops = {
@@ -188,8 +189,38 @@ static const struct KObjectOps kchannel_ops = {
     .destroy = kchannel_destroy
 };
 
+/* ── Untyped-backed variant (Ph81) ──────────────────────────────── */
+
+static void kchannel_destroy_ut(struct KObject *obj) {
+    struct KChannel *ch = (struct KChannel *)obj;
+    live_unlink(ch);
+    spinlock_lock(&ch->base.lock);
+    ch->closed = 1;
+    kchannel_waiters_wake_all(ch);
+    spinlock_unlock(&ch->base.lock);
+    for (uint32_t i = 0; i < KCHAN_CAPACITY; i++)
+        queued_handle_reset(&ch->attached[i]);
+    kchannel_owner_release(ch);
+    kuntyped_release_child(obj, sizeof(struct KChannel));
+}
+
+static const struct KObjectOps kchannel_ops_ut = {
+    .close   = kchannel_close,
+    .destroy = kchannel_destroy_ut,
+};
+
+struct KChannel *kchannel_alloc_at(void *mem) {
+    if (!mem) return 0;
+    struct KChannel *ch = (struct KChannel *)mem;
+    /* mem was already zeroed by kuntyped_alloc_child */
+    kobject_init(&ch->base, KOBJ_CHANNEL, &kchannel_ops_ut);
+    kchannel_waiters_clear(ch);
+    live_link(ch);
+    return ch;
+}
+
 struct KChannel *kchannel_alloc(void) {
-    struct KChannel *ch = kpage_alloc(sizeof(struct KChannel));
+    struct KChannel *ch = kslab_alloc(sizeof(struct KChannel));
     if (!ch) return 0;
     /* kpage_alloc zeroes the allocation — all fields start at 0. */
     kobject_init(&ch->base, KOBJ_CHANNEL, &kchannel_ops);

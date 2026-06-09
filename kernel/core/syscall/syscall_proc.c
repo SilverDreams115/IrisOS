@@ -1,14 +1,5 @@
 #include "syscall_priv.h"
 
-
-
-/* SYS_WRITE retired in Phase 30: serial output moved to ring-3 console service. */
-uint64_t sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-
 uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
@@ -247,6 +238,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
         kprocess_free(proc);
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
+    proc->user_cr3 = paging_make_user_cr3(proc->cr3, proc->pcid);
 
     handle_id_t h = handle_table_insert(&t->process->handle_table, &proc->base,
                                         RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |

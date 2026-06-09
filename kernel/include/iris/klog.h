@@ -10,8 +10,8 @@
  * Ring-3 drains via SYS_KLOG_DRAIN(65) (KDEBUG-gated) into a user buffer.
  * The drain is destructive: the buffer is cleared after each call.
  *
- * Buffer: 4096-byte flat BSS array.  Overflow is silently dropped.
- * No locking: klog_write is called before ring-3 is up (single-threaded).
+ * Buffer: 4096-byte ring (klog_buf + klog_out).  Overflow overwrites oldest bytes.
+ * IRQ-safe spinlock: safe from early boot, IRQ context, and SMP syscall paths.
  */
 
 #define KLOG_BUF_SIZE 4096u

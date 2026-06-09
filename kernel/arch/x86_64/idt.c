@@ -3,6 +3,7 @@
 #include <iris/scheduler.h>
 #include <iris/task.h>
 #include <iris/irq_routing.h>
+#include <iris/lapic.h>
 #include <iris/nc/kprocess.h>
 #include <stdint.h>
 
@@ -53,6 +54,7 @@ extern void isr37(void); extern void isr38(void); extern void isr39(void);
 extern void isr40(void); extern void isr41(void); extern void isr42(void);
 extern void isr43(void); extern void isr44(void); extern void isr45(void);
 extern void isr46(void); extern void isr47(void);
+extern void isr240(void); /* RESCHEDULE_IPI_VECTOR */
 
 extern void idt_flush(uint64_t idtr_addr);
 
@@ -146,6 +148,13 @@ void isr_handler(struct full_frame *frame) {
         return;
     }
 
+    if (frame->vector == RESCHEDULE_IPI_VECTOR) {
+        lapic_eoi();
+        struct task *ct = task_current();
+        if (ct) ct->need_resched = 1;
+        return;
+    }
+
     if (frame->vector >= 34 && frame->vector <= 47) {
         uint8_t irq = (uint8_t)(frame->vector - 32);
         /* IRQ7/IRQ15 can be spurious; discard without EOI to avoid
@@ -230,17 +239,22 @@ void idt_init(void) {
     for (int i = 0; i < 32; i++)
         idt_set_entry(i, isrs[i]);
 
-    /* Use IST1 for faults that can happen during CPL3 transition.
-     * This prevents blind triple-fault resets and lets us print the real exception. */
-    idt[8].ist  = 1;   /* Double Fault */
+    /* IST1 — #GP and #PF: must not trust the faulting RSP (it may be corrupted
+     * or user-controlled at the CPL3→CPL0 boundary).  16 KB per CPU in gdt.c. */
     idt[13].ist = 1;   /* General Protection Fault */
     idt[14].ist = 1;   /* Page Fault */
 
-    /* NMI and Machine Check can fire at any point, including while IST1 is in
-     * use by a fault handler.  Give them their own dedicated IST2 stack so a
-     * simultaneous NMI during a #PF handler never corrupts the fault stack. */
+    /* IST2 — NMI and Machine Check: can fire at any time, including while IST1
+     * is active.  Separate stack prevents corruption of an in-flight #PF/#GP frame. */
     idt[2].ist  = 2;   /* NMI */
     idt[18].ist = 2;   /* Machine Check */
+
+    /* IST3 — #DF: Double Fault fires precisely when fault delivery itself faulted,
+     * which means IST1 may already have an active frame.  Giving #DF its own IST3
+     * ensures the double-fault panic output is coherent even if IST1 is in use.
+     * Without this, a #DF during a #PF handler would reset RSP to IST1-top and
+     * overwrite the live handler frame, garbling the crash dump. */
+    idt[8].ist  = 3;   /* Double Fault */
 
     /* IRQ0 — timer, IRQ1 — keyboard */
     idt_set_entry(32, isr32);
@@ -251,6 +265,7 @@ void idt_init(void) {
     idt_set_entry(40, isr40); idt_set_entry(41, isr41); idt_set_entry(42, isr42);
     idt_set_entry(43, isr43); idt_set_entry(44, isr44); idt_set_entry(45, isr45);
     idt_set_entry(46, isr46); idt_set_entry(47, isr47);
+    idt_set_entry(RESCHEDULE_IPI_VECTOR, isr240);
 
     idtr.size   = sizeof(idt) - 1;
     idtr.offset = (uint64_t)(uintptr_t)&idt;

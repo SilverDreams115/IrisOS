@@ -106,45 +106,33 @@ static void svcmgr_log(const char *msg) {
 }
 
 static void svcmgr_log_u32(uint32_t value) {
-    char buf[11];
-    uint32_t i = 0;
-
+    char buf[12];
+    uint32_t i = 11;
+    buf[i] = '\0';
     if (value == 0) {
-        svcmgr_log("0");
-        return;
+        buf[--i] = '0';
+    } else {
+        while (value != 0) {
+            buf[--i] = (char)('0' + (value % 10u));
+            value /= 10u;
+        }
     }
-
-    while (value != 0 && i < (uint32_t)sizeof(buf)) {
-        buf[i++] = (char)('0' + (value % 10u));
-        value /= 10u;
-    }
-    while (i != 0) {
-        char out[2];
-        out[0] = buf[--i];
-        out[1] = '\0';
-        svcmgr_log(out);
-    }
+    svcmgr_log(buf + i);
 }
 
 static void svcmgr_log_u64(uint64_t value) {
-    char buf[21];
-    uint32_t i = 0;
-
+    char buf[22];
+    uint32_t i = 21;
+    buf[i] = '\0';
     if (value == 0) {
-        svcmgr_log("0");
-        return;
+        buf[--i] = '0';
+    } else {
+        while (value != 0) {
+            buf[--i] = (char)('0' + (uint32_t)(value % 10u));
+            value /= 10u;
+        }
     }
-
-    while (value != 0 && i < (uint32_t)sizeof(buf)) {
-        buf[i++] = (char)('0' + (value % 10u));
-        value /= 10u;
-    }
-    while (i != 0) {
-        char out[2];
-        out[0] = buf[--i];
-        out[1] = '\0';
-        svcmgr_log(out);
-    }
+    svcmgr_log(buf + i);
 }
 
 static void svcmgr_log_hex8(uint32_t value) {

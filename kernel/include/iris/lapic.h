@@ -34,4 +34,17 @@ void     lapic_software_enable(void);
 void     lapic_eoi(void);
 uint8_t  lapic_id(void);
 
+/*
+ * lapic_send_ipi — deliver an inter-processor interrupt to a specific CPU.
+ *
+ * lapic_id: hardware LAPIC ID of the target CPU (from cpu_local[n].lapic_id).
+ * vector:   IDT vector to raise on the target (use RESCHEDULE_IPI_VECTOR = 0xF0).
+ *
+ * Uses the LAPIC ICR (Interrupt Command Register) Fixed delivery mode.
+ * No-op when LAPIC is not active.
+ */
+#define RESCHEDULE_IPI_VECTOR 0xF0u
+
+void lapic_send_ipi(uint8_t lapic_id, uint8_t vector);
+
 #endif

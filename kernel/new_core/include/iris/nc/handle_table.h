@@ -9,8 +9,9 @@
 
 typedef struct {
     struct HandleEntry slots[HANDLE_TABLE_MAX];
-    uint32_t           gen[HANDLE_TABLE_MAX];   /* generation por slot */
+    uint32_t           gen[HANDLE_TABLE_MAX];              /* generation por slot */
     uint8_t            used[HANDLE_TABLE_MAX];
+    handle_id_t        derivation_parent[HANDLE_TABLE_MAX]; /* HANDLE_INVALID = root cap */
     uint32_t           next_hint;
     spinlock_t         lock;
 } HandleTable;
@@ -29,6 +30,9 @@ typedef struct {
 void         handle_table_init(HandleTable *ht);
 handle_id_t  handle_table_insert(HandleTable *ht, struct KObject *obj,
                                  iris_rights_t rights);
+handle_id_t  handle_table_insert_derived(HandleTable *ht, struct KObject *obj,
+                                          iris_rights_t rights,
+                                          handle_id_t parent_handle);
 iris_error_t handle_table_get_object(HandleTable *ht, handle_id_t id,
                                      struct KObject **out_obj,
                                      iris_rights_t   *out_rights);
@@ -36,5 +40,6 @@ iris_error_t handle_table_replace(HandleTable *ht, handle_id_t id,
                                   struct KObject *new_obj);
 iris_error_t handle_table_close(HandleTable *ht, handle_id_t id);
 void         handle_table_close_all(HandleTable *ht);
+void         handle_table_revoke_children(HandleTable *ht, handle_id_t parent_h);
 
 #endif

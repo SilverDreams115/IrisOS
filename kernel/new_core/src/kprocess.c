@@ -1,11 +1,13 @@
 #include <iris/nc/kprocess.h>
+#include <iris/nc/kcnode.h>
 #include <iris/nc/kchannel.h>
 #include <iris/nc/kvmo.h>
+#include <iris/nc/kvspace.h>
 #include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
 #include <iris/irq_routing.h>
 #include <iris/syscall.h>
-#include <iris/kpage.h>
+#include <iris/kslab.h>
 #include <iris/pmm.h>
 #include <iris/paging.h>
 #include <iris/fault_proto.h>
@@ -108,7 +110,7 @@ static void kprocess_clear_vmo_mappings(struct KProcess *p) {
         p->vmo_mappings = m->next;
         if (m->vmo)
             kobject_release(&m->vmo->base);
-        kpage_free(m, (uint32_t)sizeof(*m));
+        kslab_free(m, (uint32_t)sizeof(*m));
     }
     p->vmo_mapping_count = 0;
 }
@@ -134,7 +136,7 @@ static void kprocess_destroy(struct KObject *obj) {
         p->pcid = 0;
     }
 
-    kpage_free(p, (uint32_t)sizeof(struct KProcess));
+    kslab_free(p, (uint32_t)sizeof(struct KProcess));
 }
 
 static const struct KObjectOps kprocess_ops = {
@@ -155,7 +157,7 @@ struct KProcess *kprocess_alloc(void) {
         atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
         return 0;
     }
-    struct KProcess *p = kpage_alloc((uint32_t)sizeof(struct KProcess));
+    struct KProcess *p = kslab_alloc((uint32_t)sizeof(struct KProcess));
     if (!p) {
         atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
         return 0;
@@ -180,11 +182,27 @@ struct KProcess *kprocess_alloc(void) {
         if (!pcid) {
             /* All 4094 PCIDs in use — cannot happen with KPROCESS_MAX_LIVE=64 */
             atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
-            kpage_free(p, (uint32_t)sizeof(struct KProcess));
+            kslab_free(p, (uint32_t)sizeof(struct KProcess));
             return 0;
         }
         p->pcid = pcid;
     }
+
+    /* Ph95: root CNode for hierarchical CSpace.  Soft-fail: if alloc OOMs
+     * the process still works, but cspace_root_h stays HANDLE_INVALID. */
+    p->cspace_root_h = HANDLE_INVALID;
+    {
+        struct KCNode *root_cn = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
+        if (root_cn) {
+            handle_id_t rh = handle_table_insert(
+                &p->handle_table, &root_cn->base,
+                RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+            kobject_release(&root_cn->base);
+            if (rh != HANDLE_INVALID)
+                p->cspace_root_h = rh;
+        }
+    }
+
     return p;
 }
 
@@ -330,7 +348,7 @@ iris_error_t kprocess_register_vmo_map(struct KProcess *p, uint64_t virt_base,
                                         uint64_t page_flags) {
     struct KVmoMapping *m;
     if (!p || !vmo || size == 0) return IRIS_ERR_INVALID_ARG;
-    m = kpage_alloc((uint32_t)sizeof(*m));
+    m = kslab_alloc((uint32_t)sizeof(*m));
     if (!m) return IRIS_ERR_NO_MEMORY;
     m->virt_base  = virt_base;
     m->size       = size;
@@ -357,7 +375,7 @@ void kprocess_unregister_vmo_map(struct KProcess *p, uint64_t virt_base) {
         *link = m->next;
         if (m->vmo)
             kobject_release(&m->vmo->base);
-        kpage_free(m, (uint32_t)sizeof(*m));
+        kslab_free(m, (uint32_t)sizeof(*m));
         if (p->vmo_mapping_count)
             p->vmo_mapping_count--;
         return;
@@ -446,7 +464,17 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
 void kprocess_reap_address_space(struct KProcess *p) {
     if (!p || p->aspace_reaped) return;
 
-    paging_destroy_user_space(p->cr3);
+    uint64_t cr3 = p->cr3;
+
+    /* Fase 4: invalidate the VSpace capability before destroying page tables.
+     * Any capability holder that checks vs->valid after this point sees 0. */
+    if (p->vspace) {
+        kvspace_invalidate(p->vspace);
+        kobject_release(&p->vspace->base);
+        p->vspace = 0;
+    }
+
+    paging_destroy_user_space(cr3);
     p->cr3 = 0;
     p->user_cr3 = 0;
     p->aspace_reaped = 1;

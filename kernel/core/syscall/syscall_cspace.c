@@ -1,0 +1,155 @@
+#include "syscall_priv.h"
+#include <iris/nc/cspace.h>
+
+uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    handle_id_t   src_h     = (handle_id_t)arg0;
+    iris_rights_t new_rights = (iris_rights_t)arg1;
+    (void)arg2;
+
+    if (!src_h) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    HandleTable *ht = &t->process->handle_table;
+
+    struct KObject *obj;
+    iris_rights_t   cur_rights;
+    iris_error_t err = handle_table_get_object(ht, src_h, &obj, &cur_rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    if (!rights_check(cur_rights, RIGHT_DUPLICATE)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    iris_rights_t effective = rights_reduce(cur_rights, new_rights);
+    if (effective == RIGHT_NONE) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    /* handle_table_insert_derived bumps refcount via handle_entry_init. */
+    handle_id_t new_h = handle_table_insert_derived(ht, obj, effective, src_h);
+    kobject_release(obj);   /* drop the get_object-retained ref */
+
+    if (new_h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
+    return (uint64_t)new_h;
+}
+
+uint64_t sys_cap_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    handle_id_t h = (handle_id_t)arg0;
+    (void)arg1; (void)arg2;
+
+    if (!h) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    HandleTable *ht = &t->process->handle_table;
+
+    /* Validate h before revoking its children. */
+    struct KObject *obj;
+    iris_rights_t   rights;
+    iris_error_t err = handle_table_get_object(ht, h, &obj, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+    kobject_release(obj);
+
+    handle_table_revoke_children(ht, h);
+    return 0;
+}
+
+uint64_t sys_cnode_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    uint32_t num_slots = (uint32_t)arg0;
+    (void)arg1; (void)arg2;
+
+    if (num_slots == 0u || num_slots > KCNODE_MAX_SLOTS ||
+        (num_slots & (num_slots - 1u)) != 0u)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KCNode *cn = kcnode_alloc(num_slots);
+    if (!cn) return syscall_err(IRIS_ERR_NO_MEMORY);
+
+    handle_id_t h = handle_table_insert(
+        &t->process->handle_table, &cn->base,
+        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+    kobject_release(&cn->base);
+
+    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
+    return (uint64_t)h;
+}
+
+uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    iris_cptr_t cptr = (iris_cptr_t)arg0;
+    (void)arg1; (void)arg2;
+
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    struct KProcess *proc = t->process;
+
+    struct KObject *obj;
+    iris_rights_t   rights;
+    iris_error_t err = cspace_resolve_cap(proc, cptr, RIGHT_NONE, &obj, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    handle_id_t h = handle_table_insert(&proc->handle_table, obj, rights);
+    kobject_active_release(obj);
+    kobject_release(obj);
+    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
+    return (uint64_t)h;
+}
+
+uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
+    iris_cptr_t   cptr_or_h = (iris_cptr_t)arg0;
+    uint32_t      slot_idx  = (uint32_t)arg1;
+    handle_id_t   src_h     = (handle_id_t)arg2;
+    iris_rights_t new_rights = (iris_rights_t)arg3;
+
+    if (!cptr_or_h || !src_h) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    struct KProcess *proc = t->process;
+    HandleTable     *ht   = &proc->handle_table;
+
+    struct KCNode  *cn;
+    iris_rights_t   cn_rights;
+    iris_error_t err = cspace_or_handle_resolve_cnode(proc, cptr_or_h,
+                                                       RIGHT_WRITE, &cn, &cn_rights);
+    if (err != IRIS_OK)
+        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+
+    struct KObject *src_obj;
+    iris_rights_t   src_rights;
+    err = handle_table_get_object(ht, src_h, &src_obj, &src_rights);
+    if (err != IRIS_OK) {
+        kobject_active_release(&cn->base);
+        kobject_release(&cn->base);
+        return syscall_err(err);
+    }
+
+    if (!rights_check(src_rights, RIGHT_DUPLICATE)) {
+        kobject_release(src_obj);
+        kobject_active_release(&cn->base);
+        kobject_release(&cn->base);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    iris_rights_t effective = rights_reduce(src_rights, new_rights);
+    if (effective == RIGHT_NONE) {
+        kobject_release(src_obj);
+        kobject_active_release(&cn->base);
+        kobject_release(&cn->base);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    /* kcnode_mint takes its own refs (active_retain+retain) on src_obj;
+     * we always drop our get_object lifecycle ref regardless of result. */
+    err = kcnode_mint(cn, slot_idx, src_obj, effective);
+    kobject_release(src_obj);
+    kobject_active_release(&cn->base);
+    kobject_release(&cn->base);
+    if (err != IRIS_OK) return syscall_err(err);
+    return 0;
+}

@@ -23,6 +23,7 @@
  *   [5] console
  *   [6] fb
  *   [7] sh
+ *   [8] iris_test — ring-3 syscall test suite (Block 8)
  */
 
 #include <iris/initrd.h>
@@ -54,6 +55,9 @@ extern const uint8_t _binary_services_fb_fb_elf_end[];
 extern const uint8_t _binary_services_sh_sh_elf_start[];
 extern const uint8_t _binary_services_sh_sh_elf_end[];
 
+extern const uint8_t _binary_services_iris_test_iris_test_elf_start[];
+extern const uint8_t _binary_services_iris_test_iris_test_elf_end[];
+
 /* ── Initrd catalog (index-only, no names) ──────────────────────────────── */
 
 struct initrd_entry {
@@ -78,6 +82,8 @@ static const struct initrd_entry g_initrd[] = {
                 _binary_services_fb_fb_elf_end               },
     /* [7] */ { _binary_services_sh_sh_elf_start,
                 _binary_services_sh_sh_elf_end               },
+    /* [8] */ { _binary_services_iris_test_iris_test_elf_start,
+                _binary_services_iris_test_iris_test_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

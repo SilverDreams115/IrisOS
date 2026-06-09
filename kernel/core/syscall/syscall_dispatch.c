@@ -6,6 +6,7 @@
  * All sys_* implementations live in the syscall_*.c subsystem files.
  */
 #include "syscall_priv.h"
+#include <iris/cpu_local.h>
 
 /* MSR addresses */
 #define MSR_EFER   0xC0000080
@@ -27,15 +28,20 @@ static inline uint64_t rdmsr(uint32_t msr) {
 
 extern void syscall_entry(void);
 
+static inline void _sc_putc(char c) {
+    uint8_t s;
+    do { __asm__ volatile ("inb %1,%0":"=a"(s):"Nd"((uint16_t)0x3FD)); } while (!(s&0x20));
+    __asm__ volatile ("outb %0,%1"::"a"((uint8_t)c),"Nd"((uint16_t)0x3F8));
+}
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2, uint64_t arg3) {
+    static int _once = 0; if (!_once) { _once=1; _sc_putc('X'); } /* diag: first syscall */
     switch (num) {
-        case SYS_WRITE:  return sys_write(arg0, arg1, arg2);
-        case SYS_EXIT:   return sys_exit(arg0, arg1, arg2);
+        /* SYS_WRITE(0), SYS_BRK(7) — retired, fall to default */
         case SYS_GETPID: return sys_getpid(arg0, arg1, arg2);
-        case SYS_YIELD:  return sys_yield(arg0, arg1, arg2);
-        case SYS_BRK:        return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 20 */
-        case SYS_SLEEP:      return sys_sleep(arg0, arg1, arg2);
+        case SYS_EXIT:  return sys_exit(arg0, arg1, arg2);
+        case SYS_YIELD: return sys_yield(arg0, arg1, arg2);
+        case SYS_SLEEP: return sys_sleep(arg0, arg1, arg2);
         case SYS_CHAN_CREATE:  return sys_chan_create(arg0, arg1, arg2);
         case SYS_CHAN_SEND:    return sys_chan_send(arg0, arg1, arg2);
         case SYS_CHAN_RECV:    return sys_chan_recv(arg0, arg1, arg2);
@@ -43,8 +49,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_VMO_CREATE:  return sys_vmo_create(arg0, arg1, arg2);
         case SYS_VMO_MAP:     return sys_vmo_map(arg0, arg1, arg2);
         case SYS_VMO_UNMAP:   return sys_vmo_unmap(arg0, arg1, arg2);
-        case SYS_SPAWN:         return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 19 */
-        case SYS_SPAWN_SERVICE: return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 22 */
+        /* SYS_SPAWN(18), SYS_SPAWN_SERVICE(31) — retired, fall to default */
         case SYS_NOTIFY_CREATE: return sys_notify_create(arg0, arg1, arg2);
         case SYS_NOTIFY_SIGNAL: return sys_notify_signal(arg0, arg1, arg2);
         case SYS_NOTIFY_WAIT:   return sys_notify_wait(arg0, arg1, arg2);
@@ -58,13 +63,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_IOPORT_OUT:         return sys_ioport_out(arg0, arg1, arg2);
         case SYS_CHAN_RECV_NB:        return sys_chan_recv_nb(arg0, arg1, arg2);
         case SYS_PROCESS_KILL:        return sys_process_kill(arg0, arg1, arg2);
-        case SYS_DIAG_SNAPSHOT:  return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 51 */
+        /* SYS_DIAG_SNAPSHOT(30) — retired, fall to default */
         case SYS_CHAN_SEAL:       return sys_chan_seal(arg0, arg1, arg2);
         case SYS_CHAN_CALL:            return sys_chan_call(arg0, arg1, arg2);
         case SYS_CAP_CREATE_IRQCAP:   return sys_cap_create_irqcap(arg0, arg1, arg2);
         case SYS_CAP_CREATE_IOPORT:   return sys_cap_create_ioport(arg0, arg1, arg2);
-        case SYS_INITRD_LOOKUP: return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 29 */
-        case SYS_SPAWN_ELF:     return syscall_err(IRIS_ERR_NOT_SUPPORTED); /* retired Phase 29 */
+        /* SYS_INITRD_LOOKUP(41), SYS_SPAWN_ELF(42) — retired, fall to default */
         case SYS_IOPORT_RESTRICT:      return sys_ioport_restrict(arg0, arg1, arg2);
         case SYS_WAIT_ANY:             return sys_wait_any(arg0, arg1, arg2);
         case SYS_BOOTCAP_RESTRICT:     return sys_bootcap_restrict(arg0, arg1, arg2);
@@ -100,16 +104,55 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_EP_RECV:             return sys_ep_recv(arg0, arg1, arg2);
         case SYS_EP_NB_SEND:          return sys_ep_nb_send(arg0, arg1, arg2);
         case SYS_EP_NB_RECV:          return sys_ep_nb_recv(arg0, arg1, arg2);
+        case SYS_CAP_DERIVE:          return sys_cap_derive(arg0, arg1, arg2);
+        case SYS_CAP_REVOKE:          return sys_cap_revoke(arg0, arg1, arg2);
+        case SYS_CNODE_CREATE:        return sys_cnode_create(arg0, arg1, arg2);
+        case SYS_CNODE_MINT:          return sys_cnode_mint(arg0, arg1, arg2, arg3);
+        case SYS_THREAD_PRIORITY:     return sys_thread_priority(arg0, arg1, arg2);
+        case SYS_SC_CREATE:           return sys_sc_create(arg0, arg1, arg2);
+        case SYS_SC_CONFIGURE:        return sys_sc_configure(arg0, arg1, arg2);
+        case SYS_THREAD_SET_SC:       return sys_thread_set_sc(arg0, arg1, arg2);
+        case SYS_UNTYPED_INFO:        return sys_untyped_info(arg0, arg1, arg2);
+        case SYS_UNTYPED_RETYPE:      return sys_untyped_retype(arg0, arg1, arg2);
+        case SYS_UNTYPED_RESET:       return sys_untyped_reset(arg0, arg1, arg2);
+        case SYS_CNODE_MOVE:          return sys_cnode_move(arg0, arg1, arg2);
+        case SYS_CNODE_FETCH:         return sys_cnode_fetch(arg0, arg1, arg2);
+        case SYS_CNODE_DELETE:        return sys_cnode_delete(arg0, arg1, arg2);
+        case SYS_CNODE_SWAP:          return sys_cnode_swap(arg0, arg1, arg2);
+        case SYS_EP_CALL:             return sys_ep_call(arg0, arg1, arg2);
+        case SYS_REPLY:               return sys_reply(arg0, arg1, arg2);
+        case SYS_CSPACE_RESOLVE:      return sys_cspace_resolve(arg0, arg1, arg2);
+        case SYS_TCB_SELF:            return sys_tcb_self(arg0, arg1, arg2);
+        case SYS_TCB_SUSPEND:         return sys_tcb_suspend(arg0, arg1, arg2);
+        case SYS_TCB_RESUME:          return sys_tcb_resume(arg0, arg1, arg2);
+        case SYS_TCB_SET_PRIORITY:    return sys_tcb_set_priority(arg0, arg1, arg2);
+        case SYS_TCB_EXIT:            return sys_tcb_exit(arg0, arg1, arg2);
+        case SYS_TCB_GET_INFO:        return sys_tcb_get_info(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }
 }
 
-/* syscall_kstack_ptr lives in syscall_entry.S .data section */
+/* syscall_kstack_ptr / syscall_user_cr3: RIP-relative shadow globals in
+ * syscall_entry.S .data, kept in sync for debug.  The live read path in
+ * syscall_entry.S uses GS-relative access (cpu_local.syscall_kstack at %gs:48,
+ * cpu_local.syscall_user_cr3 at %gs:56) after SWAPGS at syscall entry.
+ *
+ * SMP note: syscall_set_kstack / syscall_set_user_cr3 are always called from
+ * task_yield() which runs post-SWAPGS.  cpu_self() here resolves to the current
+ * CPU's block — correct for any CPU once per-CPU GS is initialized.
+ */
 extern uint64_t syscall_kstack_ptr;
+extern uint64_t syscall_user_cr3;
 
 void syscall_set_kstack(uint64_t kstack_top) {
     syscall_kstack_ptr = kstack_top;
+    cpu_self()->syscall_kstack = kstack_top;
+}
+
+void syscall_set_user_cr3(uint64_t val) {
+    syscall_user_cr3 = val;
+    cpu_self()->syscall_user_cr3 = val;
 }
 
 void syscall_init(void) {
@@ -118,16 +161,15 @@ void syscall_init(void) {
     efer |= (1ULL << 0); /* SCE = syscall enable */
     wrmsr(MSR_EFER, efer);
 
-    /* STAR: bits 63:48 = user CS-8 (sysret CS = this+16, SS = this+8)
-     *       bits 47:32 = kernel CS (syscall CS, SS = this+8)
-     * kernel CS = 0x08, kernel SS = 0x10
-     * user   CS = 0x1B (0x18|3), user SS = 0x23 (0x20|3)
-     * STAR[47:32] = 0x0008  (kernel: CS=0x08, SS=0x10)
-     * STAR[63:48] = 0x0013  (sysret: CS=0x1B=0x13|3, SS=0x23=0x1B+8)
+    /* STAR: bits 47:32 = kernel CS (syscall: CS=this, SS=this+8)
+     *       bits 63:48 = X       (sysretq: CS=X+16|3, SS=X+8|3)
+     * GDT layout: slot3=user_data(0x1B), slot4=user_code(0x23)
+     * STAR[47:32] = 0x0008  (syscall:  CS=0x08, SS=0x10)
+     * STAR[63:48] = 0x0013  (sysretq: CS=(0x13+16)|3=0x23, SS=(0x13+8)|3=0x1B)
      */
     uint64_t star = 0;
     star |= ((uint64_t)0x0008 << 32); /* kernel CS selector */
-    star |= ((uint64_t)0x0013 << 48); /* user CS-8 for sysret */
+    star |= ((uint64_t)0x0013 << 48); /* sysretq: CS=0x23 (user code), SS=0x1B (user data) */
     wrmsr(MSR_STAR, star);
 
     /* LSTAR: syscall handler entry point */
