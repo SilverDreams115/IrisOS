@@ -47,11 +47,6 @@ static inline long sh_sys2(long nr, long a0, long a1) { return sh_sys3(nr, a0, a
 static inline long sh_sys1(long nr, long a0)           { return sh_sys3(nr, a0, 0, 0); }
 static inline long sh_sys0(long nr)                    { return sh_sys3(nr, 0, 0, 0); }
 
-static void sh_msg_zero(struct KChanMsg *msg) {
-    uint8_t *raw = (uint8_t *)msg;
-    for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
-}
-
 static void sh_imsg_zero(struct IrisMsg *msg) {
     uint8_t *raw = (uint8_t *)msg;
     for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
@@ -66,18 +61,17 @@ static handle_id_t g_sh_vfs_ep_h = HANDLE_INVALID;
  * share the buffer — EP_CALL reuses buf_uptr in both directions). */
 static uint8_t g_sh_ep_buf[VFS_EP_DATA_MAX + 1u];
 
-/* Console endpoint path (Fase 7.3): all sh console output goes through
- * "console.ep" once resolved; the legacy KChannel cap only carries the
- * pre-lookup boot line and the loud FAILED marker. */
-static handle_id_t g_sh_con_ep_h = HANDLE_INVALID;
+/* Console endpoint path (Fase 8): sh is a pure CPtr-first client — ALL
+ * console output goes through the well-known slot IRIS_CPTR_CONSOLE_EP.
+ * There is no legacy console cap anymore: if the slot is broken, sh stays
+ * silent and every gated "[SH] ... OK" marker is missing, which fails the
+ * smoke run. The `con` parameter is kept so call sites stay unchanged. */
+static handle_id_t g_sh_con_ep_h = (handle_id_t)IRIS_CPTR_CONSOLE_EP;
 static uint8_t g_sh_con_ep_buf[IRIS_IPC_BUF_SIZE];
 
 static void sh_cout(handle_id_t con, const char *s) {
-    if (g_sh_con_ep_h != HANDLE_INVALID) {
-        (void)console_ep_write(g_sh_con_ep_h, g_sh_con_ep_buf, s);
-        return;
-    }
-    console_write(con, s);
+    (void)con;
+    (void)console_ep_write(g_sh_con_ep_h, g_sh_con_ep_buf, s);
 }
 
 /* ── PS/2 Set-1 scancode tables ──────────────────────────────────── */
@@ -158,37 +152,8 @@ static void sh_write_u32(handle_id_t con, uint32_t v) {
 
 /* ── VFS endpoint path (Fase 7.1) ────────────────────────────────── */
 
-/*
- * Resolve the VFS endpoint via the svcmgr discovery endpoint:
- * EP_CALL(svcmgr_ep, IRIS_SVCMGR_EP_LOOKUP_NAME, "vfs.ep"). The reply
- * carries the endpoint cap (RIGHT_WRITE) via SYS_REPLY cap transfer.
- */
-static handle_id_t sh_svc_ep_lookup(handle_id_t svcmgr_ep_h,
-                                    const char *ep_name) {
-    struct IrisMsg msg;
-    uint32_t len = 0;
-
-    if (svcmgr_ep_h == HANDLE_INVALID) return HANDLE_INVALID;
-
-    while (ep_name[len]) {
-        g_sh_ep_buf[len] = (uint8_t)ep_name[len];
-        len++;
-    }
-    g_sh_ep_buf[len++] = 0u;  /* include NUL */
-
-    sh_imsg_zero(&msg);
-    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_sh_ep_buf;
-    msg.buf_len  = len;
-
-    if (sh_sys2(SYS_EP_CALL, (long)svcmgr_ep_h, (long)&msg) != IRIS_OK)
-        return HANDLE_INVALID;
-    if (msg.label != IRIS_EP_REPLY_OK)
-        return HANDLE_INVALID;
-    if (msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP)
-        return HANDLE_INVALID;
-    return (handle_id_t)msg.attached_handle;
-}
+/* (Fase 8: sh_svc_ep_lookup removed — sh discovers nothing at runtime;
+ * every core service cap is a well-known CSpace slot.) */
 
 /*
  * One VFS endpoint call. The path (when non-NULL) is staged into g_sh_ep_buf;
@@ -338,121 +303,63 @@ static void sh_dispatch(handle_id_t con, const char *line) {
 /* ── Main entry ──────────────────────────────────────────────────── */
 
 void sh_main_c(handle_id_t bootstrap_h) {
-    handle_id_t console_h     = HANDLE_INVALID;
+    handle_id_t console_h     = HANDLE_INVALID;  /* unused: pure CPtr client */
     handle_id_t kbd_ep_h      = HANDLE_INVALID;
-    handle_id_t svcmgr_ep_h   = HANDLE_INVALID;
 
-    /* Bootstrap: receive channels from svcmgr. Timed recv so a missing
-     * message degrades to a degraded-but-running shell instead of hanging
-     * boot (a missing discovery EP then surfaces as "[SH] vfs ep FAILED"). */
-    uint32_t recv_count;
-    for (recv_count = 0; recv_count < 16u; recv_count++) {
-        struct KChanMsg msg;
-        sh_msg_zero(&msg);
-        if (sh_sys3(SYS_CHAN_RECV_TIMEOUT, (long)bootstrap_h, (long)&msg,
-                    500000000L) != IRIS_OK)
-            break;
-
-        if (msg.type != SVCMGR_MSG_BOOTSTRAP_HANDLE) {
-            if (msg.attached_handle != HANDLE_INVALID)
-                (void)sh_sys1(SYS_HANDLE_CLOSE, (long)msg.attached_handle);
-            continue;
-        }
-
-        uint32_t kind = (uint32_t)msg.data[0] | ((uint32_t)msg.data[1] << 8) |
-                        ((uint32_t)msg.data[2] << 16) | ((uint32_t)msg.data[3] << 24);
-        handle_id_t h = msg.attached_handle;
-
-        switch (kind) {
-        case SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP:     /* 6 */
-            if (h != HANDLE_INVALID && console_h == HANDLE_INVALID)
-                console_h = h;
-            else if (h != HANDLE_INVALID)
-                (void)sh_sys1(SYS_HANDLE_CLOSE, (long)h);
-            break;
-        case SVCMGR_ENDPOINT_SH:                    /* 7 — own service channel (unused) */
-        case SVCMGR_ENDPOINT_SH_REPLY:              /* 8 — own reply channel (unused) */
-            if (h != HANDLE_INVALID)
-                (void)sh_sys1(SYS_HANDLE_CLOSE, (long)h);
-            break;
-        case SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP:       /* 0x20 — discovery EP */
-            if (h != HANDLE_INVALID && svcmgr_ep_h == HANDLE_INVALID)
-                svcmgr_ep_h = h;
-            else if (h != HANDLE_INVALID)
-                (void)sh_sys1(SYS_HANDLE_CLOSE, (long)h);
-            break;
-        default:
-            if (h != HANDLE_INVALID)
-                (void)sh_sys1(SYS_HANDLE_CLOSE, (long)h);
-            break;
-        }
-
-        if (console_h != HANDLE_INVALID && svcmgr_ep_h != HANDLE_INVALID)
-            break;
-    }
+    /* Fase 8: sh is a pure CPtr-first client. The bootstrap bag is empty
+     * (catalog: endpoint_only without an own endpoint) — everything sh
+     * needs was minted into its root CNode before it ran:
+     *   slot 1 svcmgr discovery, slot 2 vfs.ep, slot 3 console.ep,
+     *   slot 4 kbd.ep.  Close the (empty) bootstrap channel and verify
+     * each slot with a PING; every marker below is a smoke gate, so a
+     * broken slot cannot hide.  No lookup, no handle fallback. */
     (void)sh_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_h);
-
-    if (console_h == HANDLE_INVALID) return;
 
     sh_cout(console_h, "[SH] boot\n");
 
-    /* Fase 8: CPtr-first discovery. svcmgr minted its discovery endpoint
-     * into our root CNode at IRIS_CPTR_SVCMGR_EP; verify with a PING and
-     * prefer the CPtr over the kind-0x20 bootstrap handle. The legacy
-     * handle remains only as a loud fallback — the smoke gate requires
-     * "[SH] svcmgr cptr OK", so a broken CPtr path cannot hide. */
-    handle_id_t svcmgr_disc_h = svcmgr_ep_h;
-    uint8_t     svcmgr_cptr_ok = 0u;
     {
         struct IrisMsg pmsg;
         sh_imsg_zero(&pmsg);
         pmsg.label = IRIS_EP_OP_PING;
         if (sh_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&pmsg) == IRIS_OK &&
+            pmsg.label == IRIS_EP_REPLY_OK)
+            sh_cout(console_h, "[SH] svcmgr cptr OK\n");
+        else
+            sh_cout(console_h, "[SH] svcmgr cptr FAILED\n");
+
+        sh_imsg_zero(&pmsg);
+        pmsg.label = IRIS_EP_OP_PING;
+        if (sh_sys2(SYS_EP_CALL, (long)IRIS_CPTR_VFS_EP, (long)&pmsg) == IRIS_OK &&
             pmsg.label == IRIS_EP_REPLY_OK) {
-            svcmgr_disc_h  = (handle_id_t)IRIS_CPTR_SVCMGR_EP;
-            svcmgr_cptr_ok = 1u;
+            g_sh_vfs_ep_h = (handle_id_t)IRIS_CPTR_VFS_EP;
+            sh_cout(console_h, "[SH] vfs cptr OK\n");
+        } else {
+            sh_cout(console_h, "[SH] vfs cptr FAILED\n");
         }
+
+        sh_imsg_zero(&pmsg);
+        pmsg.label = IRIS_EP_OP_PING;
+        if (sh_sys2(SYS_EP_CALL, (long)IRIS_CPTR_KBD_EP, (long)&pmsg) == IRIS_OK &&
+            pmsg.label == IRIS_EP_REPLY_OK) {
+            kbd_ep_h = (handle_id_t)IRIS_CPTR_KBD_EP;
+            sh_cout(console_h, "[SH] kbd cptr OK\n");
+        } else {
+            sh_cout(console_h, "[SH] kbd cptr FAILED\n");
+        }
+
+        /* console: every sh_cout above already exercised slot 3; PING for
+         * the symmetric gated marker. */
+        sh_imsg_zero(&pmsg);
+        pmsg.label = IRIS_EP_OP_PING;
+        if (sh_sys2(SYS_EP_CALL, (long)IRIS_CPTR_CONSOLE_EP, (long)&pmsg) == IRIS_OK &&
+            pmsg.label == IRIS_EP_REPLY_OK)
+            sh_cout(console_h, "[SH] console cptr OK\n");
+        else
+            sh_cout(console_h, "[SH] console cptr FAILED\n");
     }
 
-    /* Fase 7.2: resolve the VFS endpoint — the only VFS path. A failure is
-     * reported loudly (the smoke gate requires "[SH] vfs ep OK") and ls/cat
-     * surface the error per command instead of masking it. */
-    g_sh_vfs_ep_h = sh_svc_ep_lookup(svcmgr_disc_h, VFS_EP_SVC_NAME);
-    if (g_sh_vfs_ep_h != HANDLE_INVALID)
-        sh_cout(console_h, "[SH] vfs ep OK\n");
-    else
-        sh_cout(console_h, "[SH] vfs ep FAILED\n");
-
-    /* Fase 7.4: resolve the kbd endpoint — the only key-event path. The
-     * REPL pulls events with EP_CALL(KBD_EP_OP_READ); there is no legacy
-     * KChannel subscribe fallback, a broken endpoint is reported loudly. */
-    kbd_ep_h = sh_svc_ep_lookup(svcmgr_disc_h, KBD_EP_SVC_NAME);
-    if (kbd_ep_h != HANDLE_INVALID)
-        sh_cout(console_h, "[SH] kbd ep OK\n");
-    else
-        sh_cout(console_h, "[SH] kbd ep FAILED\n");
-
-    /* Fase 7.3: console output switches to "console.ep" (synchronous EP
-     * writes). Failure stays on the legacy cap and is gated by smoke. */
-    g_sh_con_ep_h = sh_svc_ep_lookup(svcmgr_disc_h, CONSOLE_EP_SVC_NAME);
-    if (g_sh_con_ep_h != HANDLE_INVALID)
-        sh_cout(console_h, "[SH] console ep OK\n");
-    else
-        sh_cout(console_h, "[SH] console ep FAILED\n");
-
-    if (svcmgr_cptr_ok)
-        sh_cout(console_h, "[SH] svcmgr cptr OK\n");
-    else
-        sh_cout(console_h, "[SH] svcmgr cptr FAILED\n");
-
-    /* The legacy kind-0x20 handle is closed in both cases: with the CPtr
-     * verified it is unused; without it the FAILED marker already tripped
-     * the smoke gate (lookups above used the handle as loud fallback). */
-    if (svcmgr_ep_h != HANDLE_INVALID)
-        (void)sh_sys1(SYS_HANDLE_CLOSE, (long)svcmgr_ep_h);
-
     /* Print banner */
-    console_write(console_h,
+    sh_cout(console_h,
         "\r\n"
         "IRIS shell (Phase 55) — 'help' for commands\r\n"
         "> ");

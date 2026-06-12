@@ -107,6 +107,30 @@ TYPED_RESOLVE(cspace_resolve_schedctx,    struct KSchedContext,KOBJ_SCHED_CONTEX
 TYPED_RESOLVE(cspace_resolve_vspace,      struct KVSpace,      KOBJ_VSPACE)
 TYPED_RESOLVE(cspace_resolve_frame,       struct KFrame,       KOBJ_FRAME)
 
+/*
+ * Fase 8: CPtr/handle namespace split for the DUAL resolvers.
+ *
+ * handle_ids are slot | generation<<HANDLE_GEN_SHIFT with generation >= 1,
+ * so every live handle is >= 1024 and every direct CPtr argument is < 1024.
+ * Before this split the dual resolvers fed handle values straight into
+ * cspace_resolve_cap, whose radix walk MASKS the index (cptr & slot_count-1)
+ * — a handle like 1027 silently aliased root slot 3 once Fase 8 populated
+ * the low slots (wrong-object IPC / WRONG_TYPE hard stops).  The split makes
+ * the documented ABI real:
+ *   value <  1024 → CSpace namespace ONLY (no handle-table fallback; a
+ *                   missing slot fails cleanly, ACCESS_DENIED stays a
+ *                   hard stop);
+ *   value >= 1024 → handle-table namespace ONLY (never walks the CSpace).
+ * Deep multi-level CPtr paths (>= 1024) remain reachable through the pure
+ * CSpace syscalls (SYS_CSPACE_RESOLVE, CNode ops), which take unambiguous
+ * CPtr arguments.
+ */
+#define CSPACE_DIRECT_CPTR_LIMIT ((iris_cptr_t)1u << HANDLE_GEN_SHIFT)
+
+static inline int cspace_value_is_cptr(iris_cptr_t v) {
+    return v != CPTR_NULL && v < CSPACE_DIRECT_CPTR_LIMIT;
+}
+
 iris_error_t cspace_or_handle_resolve_cnode(struct KProcess *proc,
                                              iris_cptr_t      cptr_or_handle,
                                              iris_rights_t    required,
@@ -119,26 +143,24 @@ iris_error_t cspace_or_handle_resolve_cnode(struct KProcess *proc,
 
     if (!proc || !out || !rights_out) return IRIS_ERR_INVALID_ARG;
 
-    /* Try CSpace when a root is configured and cptr is non-null. */
-    if (cptr_or_handle != CPTR_NULL && proc->cspace_root_h != HANDLE_INVALID) {
+    /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
+    if (cspace_value_is_cptr(cptr_or_handle)) {
+        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
         err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);
-        if (err == IRIS_OK) {
-            if (obj->type != KOBJ_CNODE) {
-                kobject_active_release(obj);
-                kobject_release(obj);
-                return IRIS_ERR_WRONG_TYPE;
-            }
-            *out = (struct KCNode *)obj;
-            *rights_out = r;
-            return IRIS_OK;
+        if (err != IRIS_OK) return err;
+        if (obj->type != KOBJ_CNODE) {
+            kobject_active_release(obj);
+            kobject_release(obj);
+            return IRIS_ERR_WRONG_TYPE;
         }
-        /* Hard stop on authorization failure — do not fall through. */
-        if (err == IRIS_ERR_ACCESS_DENIED) return err;
-        /* Any other failure (NOT_FOUND, INVALID_ARG, …) → try handle table. */
+        *out = (struct KCNode *)obj;
+        *rights_out = r;
+        return IRIS_OK;
     }
 
-    /* Handle-table fallback. handle_table_get_object gives lifecycle retain only;
-     * we add kobject_active_retain to match the cspace_resolve_cap return contract
+    /* Handle namespace (>= 1024): handle table only — never walks CSpace.
+     * handle_table_get_object gives lifecycle retain only; we add
+     * kobject_active_retain to match the cspace_resolve_cap return contract
      * (caller must release both). */
     err = handle_table_get_object(&proc->handle_table,
                                    (handle_id_t)cptr_or_handle, &obj, &r);
@@ -175,19 +197,20 @@ iris_error_t fn(struct KProcess *proc, iris_cptr_t cptr_or_handle,              
 {                                                                                  \
     struct KObject *obj; iris_rights_t r; iris_error_t err;                       \
     if (!proc || !out || !rights_out) return IRIS_ERR_INVALID_ARG;                \
-    if (cptr_or_handle != CPTR_NULL && proc->cspace_root_h != HANDLE_INVALID) {  \
+    /* CPtr namespace (< 1024): CSpace only, no handle-table fallback. */         \
+    if (cspace_value_is_cptr(cptr_or_handle)) {                                   \
+        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;     \
         err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);       \
-        if (err == IRIS_OK) {                                                      \
-            if (obj->type != (kobj_tag)) {                                        \
-                kobject_active_release(obj); kobject_release(obj);                \
-                return IRIS_ERR_WRONG_TYPE;                                       \
-            }                                                                      \
-            kobject_active_release(obj); /* IPC: must not hold active ref */      \
-            *out = (member_type *)obj; *rights_out = r;                           \
-            return IRIS_OK;                                                        \
+        if (err != IRIS_OK) return err;                                            \
+        if (obj->type != (kobj_tag)) {                                            \
+            kobject_active_release(obj); kobject_release(obj);                    \
+            return IRIS_ERR_WRONG_TYPE;                                           \
         }                                                                          \
-        if (err == IRIS_ERR_ACCESS_DENIED) return err;                            \
+        kobject_active_release(obj); /* IPC: must not hold active ref */          \
+        *out = (member_type *)obj; *rights_out = r;                               \
+        return IRIS_OK;                                                            \
     }                                                                              \
+    /* Handle namespace (>= 1024): handle table only. */                          \
     err = handle_table_get_object(&proc->handle_table,                            \
                                    (handle_id_t)cptr_or_handle, &obj, &r);       \
     if (err != IRIS_OK) return err;                                                \
@@ -226,25 +249,22 @@ iris_error_t cspace_or_handle_resolve_untyped(struct KProcess  *proc,
 
     if (!proc || !out || !rights_out) return IRIS_ERR_INVALID_ARG;
 
-    /* CSpace-first: try traversal when a root is configured and cptr is non-null. */
-    if (cptr_or_handle != CPTR_NULL && proc->cspace_root_h != HANDLE_INVALID) {
+    /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
+    if (cspace_value_is_cptr(cptr_or_handle)) {
+        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
         err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);
-        if (err == IRIS_OK) {
-            if (obj->type != KOBJ_UNTYPED) {
-                kobject_active_release(obj);
-                kobject_release(obj);
-                return IRIS_ERR_WRONG_TYPE;
-            }
-            *out = (struct KUntyped *)obj;
-            *rights_out = r;
-            return IRIS_OK;
+        if (err != IRIS_OK) return err;
+        if (obj->type != KOBJ_UNTYPED) {
+            kobject_active_release(obj);
+            kobject_release(obj);
+            return IRIS_ERR_WRONG_TYPE;
         }
-        /* Hard stop: ACCESS_DENIED from CSpace blocks fallback. */
-        if (err == IRIS_ERR_ACCESS_DENIED) return err;
-        /* Any other failure (NOT_FOUND, INVALID_ARG) → fall through to handle table. */
+        *out = (struct KUntyped *)obj;
+        *rights_out = r;
+        return IRIS_OK;
     }
 
-    /* Handle-table fallback: lifecycle retain only; add active_retain to match contract. */
+    /* Handle namespace (>= 1024): lifecycle retain only; add active_retain to match contract. */
     err = handle_table_get_object(&proc->handle_table,
                                    (handle_id_t)cptr_or_handle, &obj, &r);
     if (err != IRIS_OK) return err;
@@ -281,19 +301,19 @@ iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
 
     if (!proc || !out || !rights_out) return IRIS_ERR_INVALID_ARG;
 
-    if (cptr_or_handle != CPTR_NULL && proc->cspace_root_h != HANDLE_INVALID) {
+    /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
+    if (cspace_value_is_cptr(cptr_or_handle)) {
+        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
         err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);
-        if (err == IRIS_OK) {
-            if (obj->type != KOBJ_FRAME) {
-                kobject_active_release(obj);
-                kobject_release(obj);
-                return IRIS_ERR_WRONG_TYPE;
-            }
-            *out = (struct KFrame *)obj;
-            *rights_out = r;
-            return IRIS_OK;
+        if (err != IRIS_OK) return err;
+        if (obj->type != KOBJ_FRAME) {
+            kobject_active_release(obj);
+            kobject_release(obj);
+            return IRIS_ERR_WRONG_TYPE;
         }
-        if (err == IRIS_ERR_ACCESS_DENIED) return err;
+        *out = (struct KFrame *)obj;
+        *rights_out = r;
+        return IRIS_OK;
     }
 
     err = handle_table_get_object(&proc->handle_table,

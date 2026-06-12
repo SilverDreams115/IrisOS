@@ -151,25 +151,41 @@ msg.words[0] = service_id (uint32_t)
 CPtr-first bootstrap handoff: the spawner mints capabilities directly into
 the child's root CNode with `SYS_PROC_CSPACE_MINT(proc_h, slot, src_h,
 rights)` (syscall 104; needs `RIGHT_WRITE` on the child process cap and
-`RIGHT_DUPLICATE` on the source cap; rights can only be reduced). The child
-invokes the cap **by CPtr** — e.g. `SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)` —
-with no KChannel handle transfer.
+`RIGHT_DUPLICATE` on the source cap; rights can only be reduced; an occupied
+destination slot fails `ALREADY_EXISTS`). Minting happens **pre-start**
+(`svc_load_minted`, between process creation and `SYS_THREAD_START`), so the
+child sees its slots populated from its first instruction — no bootstrap
+barrier, no races. The child invokes the cap **by CPtr** — e.g.
+`SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)` — with no KChannel handle transfer.
 
-CPtrs and handle_ids share one argument namespace without ambiguity: handles
-are always ≥ 1024 (`slot | generation << 10`, generation ≥ 1), so low CNode
-slots can never alias a live handle. Slot 0 is the null slot. The dual
-resolver is CSpace-first and does **not** fall back to the handle table on a
-rights failure (verified by iris_test T040).
+CPtrs and handle_ids share one argument namespace; since Fase 8 the dual
+resolvers **enforce** it: values < 1024 resolve through the CSpace only
+(missing slot fails cleanly, `ACCESS_DENIED` is a hard stop, no
+handle-table fallback) and values ≥ 1024 (`slot | generation << 10`,
+generation ≥ 1) resolve through the handle table only — they never walk the
+CSpace, so populated low slots cannot be aliased by handle bit patterns.
+
+Full slot layout, per-service bootstrap flows and the remaining handle
+boundary: **`docs/cptr-first-services.md`**. Summary:
 
 | Slot | Name | Carries |
 |------|------|---------|
 | 0 | `CPTR_NULL` | always invalid |
-| 1 | `IRIS_CPTR_SVCMGR_EP` | svcmgr discovery endpoint, `RIGHT_WRITE` — minted by svcmgr into every catalog child and by init into iris_test/sh |
+| 1 | `IRIS_CPTR_SVCMGR_EP` | svcmgr discovery endpoint (call side, WRITE) |
+| 2 | `IRIS_CPTR_VFS_EP` | `"vfs.ep"` (call side, WRITE) |
+| 3 | `IRIS_CPTR_CONSOLE_EP` | `"console.ep"` (call side, WRITE; svcmgr's copy adds DUPLICATE\|TRANSFER) |
+| 4 | `IRIS_CPTR_KBD_EP` | `"kbd.ep"` (call side, WRITE) |
+| 5 | `IRIS_CPTR_OWN_EP` | the service's own endpoint (recv side, READ) |
+| 7 | `IRIS_CPTR_IRQ_NOTIFY` | IRQ KNotification (WAIT side) |
+| 30/31 | `IRIS_CPTR_TEST_FIX_A/B` | iris_test failure fixtures |
 
-Runtime coverage: sh probes the slot with a PING and prints the gated
-`[SH] svcmgr cptr OK`; iris_test T039 (positive: PING + LOOKUP_NAME by CPtr)
-and T040 (failure semantics: null slot, wrong-type slot, insufficient-rights
-slot → clean errors, no handle-table fallback).
+Bootstrap kinds 0x20/0x21/0x22/0x23 are **retired** (replaced by these
+mints); their values stay reserved.
+
+Runtime coverage: gated markers `[SH] svcmgr/vfs/console/kbd cptr OK`,
+`[VFS] console cptr OK`, `[IRIS][TEST] console cptr write OK`; tests
+T039–T046 (positive paths per service, null/wrong-type/denied without
+fallback, slot typing, client-slot rights reduction, legacy lookup interop).
 
 ## Opcode ranges
 

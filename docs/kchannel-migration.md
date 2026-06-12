@@ -2,21 +2,21 @@
 
 KChannel is the legacy IPC mechanism in IRIS (ring buffer, 128 msgs × 84 bytes). This document tracks the migration to KEndpoint and documents the debt classification for each KChannel user.
 
-## Current inventory (as of Fase 7.3/7.6 + Fase 8 start)
+## Current inventory (as of Fase 8)
 
 The table below lists every service that calls `SYS_CHAN_*` in production code
 (counts are raw `SYS_CHAN_` occurrences per service tree).
 
 | Service | Call sites | Role of KChannel | Migration stage |
 |---------|-----------|-----------------|----------------|
-| `svcmgr` | 15 | Bootstrap delivery, dynamic registration, service activation, legacy main loop, legacy console writes | **Fase 7.5** state + 7.3/8: receives the console EP send side (kind 0x22) and publishes `"console.ep"`; mints the discovery EP into every child's root CNode (`SYS_PROC_CSPACE_MINT`, slot 1); still the last legacy console **writer** |
-| `vfs` | 2 | Bootstrap receive only | **Fase 7.5 DONE** — endpoint-only service; **7.3**: console output over `"console.ep"` (`[VFS] console ep OK`) |
-| `sh` | 1 | Bootstrap receive only | **Fase 7.4 DONE (kbd)**; **7.3**: console output over `"console.ep"` (`[SH] console ep OK`); **Fase 8**: svcmgr discovery via CPtr slot 1 (`[SH] svcmgr cptr OK`) |
-| `init` | 61 | Console bootstrap; svcmgr channel; kbd legacy probes (S2/S7); IPC selftests; `.ep` spoof-register probe | **Fase 7.2 (S5/S6)**; **7.3**: init creates/owns the console endpoint and logs through it when up (`[USER] console ep OK`); **Fase 8**: mints CPtr fixtures into iris_test (slots 1/2/3) |
-| `console` | 4 | Bootstrap receive; legacy receive path (svcmgr writes + SYNC v2) | **Fase 7.3 DONE** — endpoint-first loop (`CONSOLE_EP_OP_WRITE`/`SYNC`/PING, see `docs/console-endpoint.md`); EP writes are synchronous (per-write flush barrier); legacy path remains only for svcmgr |
-| `fb` | 1 | Bootstrap receive | Pending |
-| `userboot` | 1 | Single `SYS_CHAN_SEND` to child bootstrap channel | Pending |
-| `kbd` | 5 | Legacy HELLO/STATUS/SUBSCRIBE probes (non-blocking drain), bootstrap | **Fase 7.4 + 7.6 DONE** — events to sh via `"kbd.ep"` (ring + parked KReply); IRQ1 arrives as a KNotification signal (kind 0x23, `SYS_NOTIFY_WAIT_TIMEOUT`); `KBD_MSG_IRQ_SCANCODE` no longer dispatched |
+| `svcmgr` | 15 | Bootstrap delivery (handle-boundary caps only), dynamic registration, service activation, legacy main loop, legacy console writes | **Fase 8**: console.ep arrives as CSpace mint (kind 0x22 retired); mints slots 1–5/7 into every catalog child pre-start; kinds 0x20/0x21/0x23 retired; still the last legacy console **writer** |
+| `vfs` | 1 | Bootstrap receive of INITRD_CAP only | **Fase 8**: own EP = slot 5, console = slot 3, no lookups; KBootstrapCap is the documented handle boundary |
+| `sh` | **0** | — | **Fase 8 DONE** — pure CPtr-first client: empty bootstrap bag (endpoint_only, no own ep), slots 1–4, zero KChannel call sites |
+| `init` | 58 | Console bootstrap; svcmgr channel; kbd legacy probes (S2/S7); IPC selftests; `.ep` spoof-register probe | **Fase 8**: pre-start mints into console (slot 5), svcmgr (slot 3) and iris_test (1–4, 30/31); kind 0x20 forward retired; remains the orchestrator and largest debtor |
+| `console` | 4 | Bootstrap receive (KIoPort + service channel); legacy receive path (svcmgr writes + SYNC v2) | **Fase 8**: own EP recv = slot 5 (kind 0x21 retired); legacy path remains only for svcmgr |
+| `fb` | 1 | Bootstrap receive | One-shot painter; not a migration target |
+| `userboot` | 1 | Single `SYS_CHAN_SEND` to init's bootstrap channel | Pending (Phase F) |
+| `kbd` | 5 | Legacy HELLO/STATUS/SUBSCRIBE probes (non-blocking drain), bootstrap (KIoPort/KIrqCap/channels) | **Fase 8**: own EP = slot 5, IRQ notification = slot 7 (kinds 0x21/0x23 retired); channel carries only probes + handle-boundary caps |
 
 `iris_test` KChannel tests (T001–T012) are regression tests for the KChannel syscall layer; they are kept indefinitely.
 
@@ -27,7 +27,7 @@ The table below lists every service that calls `SYS_CHAN_*` in production code
 3. Services that have not migrated continue to use KChannel unchanged. The svcmgr main loop drains EP requests first (NB), then falls through to `SYS_CHAN_RECV_TIMEOUT(10ms)` for legacy clients. The VFS uses the same pattern (`vfs_ep_drain` burst, then `SYS_CHAN_RECV_TIMEOUT(5ms)`), and degrades to a plain blocking legacy loop if its endpoint dies (`[VFS] ep lost`).
 4. **Fase 7.2 update:** the VFS endpoint path is now *mandatory* for sh and init. sh prints `[SH] vfs ep FAILED` (and the smoke gate fails) when the lookup fails — there is no silent fallback. init exits with code 5 if `"vfs.ep"` cannot be resolved.
 5. Both lookup paths (EP and legacy) must resolve `".ep"` names identically; dynamic registration of `".ep"` names is rejected (runtime-tested: init S4 register-side probe + iris_test T031 lookup-side probe). This includes `"console.ep"` (Fase 7.3), which is bootstrap-delivered by init (kind 0x22), never runtime-registered.
-6. **Fase 8 update:** CPtr-first discovery coexists with handle-based discovery. svcmgr mints its discovery EP into every child's root CNode (slot `IRIS_CPTR_SVCMGR_EP` = 1) *in addition to* the kind-0x20 bootstrap cap; consumers that adopt the CPtr gate loudly (`[SH] svcmgr cptr OK`). The mint is non-fatal so non-CSpace children keep booting.
+6. **Fase 8 update:** core service discovery is CPtr-first — the spawner pre-start-mints slots 1–4 (see `docs/cptr-first-services.md`); the kind-0x20 bootstrap cap is retired. Name lookup (`IRIS_SVCMGR_EP_LOOKUP_NAME`, legacy `SVCMGR_MSG_LOOKUP_NAME`) stays alive for dynamic services and as the redistribution path (init re-mints looked-up `.ep` caps into iris_test); its handle results stay first-class (T046). Mints are non-fatal; every CPtr consumer gates loudly.
 
 ## Debt classification
 
@@ -40,11 +40,18 @@ svcmgr still uses KChannel for:
 
 The EP path (`svcmgr_handle_ep_request`) handles the same operations but over KEndpoint. Both paths are maintained until all callers switch to `IRIS_SVCMGR_EP_LOOKUP_NAME`. The legacy path should be removed once `init`, `sh`, and other callers have migrated.
 
-### Class B — service bootstrap phase (all services)
+### Class B — service bootstrap phase (Fase 8: largely replaced by CSpace mints)
 
-Every service receives bootstrap parameters via `SYS_CHAN_RECV` on a one-shot bootstrap channel. This pattern is used by: `console`, `fb`, `vfs`, `sh`, and `svcmgr` itself.
+Bootstrap parameters now arrive primarily as **pre-start CSpace mints**
+(`svc_load_minted`, see `docs/cptr-first-services.md`): sh has an EMPTY
+bootstrap bag (0 KChannel sites), vfs receives only INITRD_CAP, kbd/console
+only their handle-boundary caps (KIoPort, KIrqCap, legacy channels).
 
-The bootstrap channel is inherently short-lived (one receive, then closed). Migration here means replacing the bootstrap message format with an EP_CALL to svcmgr or a structured boot capability object. Lower priority than the operational loops.
+The residual Class B surface is exactly the **handle boundary**: KChannel,
+KIoPort, KIrqCap, KBootstrapCap and KProcess caps cannot live in CSpace
+slots (the dual resolver covers IPC objects, CNode, Untyped, Frame only).
+Eliminating the residue means extending the resolver to those types — slot
+6 is reserved for the initrd cap when that happens.
 
 ### Class C — operational request/reply loops (Fase 7.1: VFS/SH migrated)
 
@@ -124,9 +131,13 @@ Phase G (7.4+7.6):   kbd event channel sh←kbd DONE (EP pull + parked reply);
 Phase H (7.5 DONE):  clientless VFS stateful protocol removed (vfs_proto.h
                      deleted, vfs endpoint_only, svcmgr status via EP);
                      svcmgr legacy loop still pending
-Phase I (8, started): CPtr-first handoff — SYS_PROC_CSPACE_MINT + well-known
-                     slot IRIS_CPTR_SVCMGR_EP; sh discovers svcmgr by CPtr;
-                     next: replace bootstrap KChannel caps with minted slots
+Phase I (8 DONE):    CPtr-first handoff — full well-known slot layout
+                     (1-5,7,30/31), pre-start minting via svc_load_minted,
+                     kinds 0x20-0x23 retired, sh at ZERO KChannel sites,
+                     kernel namespace split (handles never alias slots)
+Phase J (next):      extend the dual resolver to KBootstrapCap (slot 6) to
+                     drop vfs/iris_test bootstrap one-shots; then init
+                     orchestration (Phase F) and the svcmgr legacy loop
 ```
 
 ## What must NOT happen during migration

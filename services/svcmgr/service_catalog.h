@@ -39,8 +39,12 @@ struct iris_service_catalog_entry {
     uint8_t        endpoint_only;   /* 1 = no legacy KChannel service/reply pair: svcmgr
                                      *     creates neither channel and bootstrap sends no
                                      *     SERVICE/REPLY kinds; lookups by the service's
-                                     *     endpoint ids fail. Requires own_service_ep=1.
-                                     *     (Fase 7.5: vfs) */
+                                     *     endpoint ids fail.
+                                     *     With own_service_ep=1: an endpoint server
+                                     *     (Fase 7.5: vfs — ready when ep_h exists).
+                                     *     With own_service_ep=0: a pure CPtr-first
+                                     *     client (Fase 8: sh — empty bootstrap bag,
+                                     *     ready when proc_h is alive). */
 };
 
 static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
@@ -82,7 +86,7 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .client_reply_rights = RIGHT_READ | RIGHT_DUPLICATE,
         .ioport_base = 0u,
         .ioport_count = 0u,
-        .give_console = 1u,
+        .give_console = 0u,  /* Fase 8: vfs logs via IRIS_CPTR_CONSOLE_EP */
         .give_spawn_cap = 1u,
         .own_service_ep = 1u,
         /* Fase 7.5: vfs is endpoint-only — no legacy service/reply channels. */
@@ -103,10 +107,15 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .client_reply_rights = RIGHT_READ,
         .ioport_base = 0u,
         .ioport_count = 0u,
-        .give_console = 1u,
+        .give_console = 0u,
         /* sh reaches VFS only through "vfs.ep" (Fase 7.2) and kbd only
          * through "kbd.ep" (Fase 7.4); the legacy give_vfs/give_kbd
-         * forwarding flags were removed in 7.5/7.4. */
+         * forwarding flags were removed in 7.5/7.4.
+         * Fase 8: sh is a pure CPtr-first client — endpoint_only without
+         * an own endpoint means no legacy channel pair and an empty
+         * bootstrap bag; everything sh needs arrives as well-known CSpace
+         * slots 1..4. Readiness tracks proc_h (svcmgr_ready_service_count). */
+        .endpoint_only = 1u,
     },
 };
 

@@ -78,7 +78,6 @@ static const char sm_str_lookupsendfail[] = "[SVCMGR] WARN: lookup reply send fa
 static const char sm_str_diag_fail[]    = "[SVCMGR] WARN: diagnostics query failed\n";
 /* sm_str_svc_exited replaced by inline format in svcmgr_release_service (logs name) */
 static const char sm_str_irqfail[]      = "[SVCMGR] WARN: irq route xfer failed\n";
-static const char sm_str_cptrfail[] = "[SVCMGR] cptr mint FAILED\n";
 static const char sm_str_svc_unknown[]  = "[SVCMGR] WARN: unknown bootstrap service\n";
 static const char sm_str_watchok[]      = "[SVCMGR] lifecycle watch armed\n";
 static const char sm_str_bootcapfail[]  = "[SVCMGR] FATAL: missing spawn capability\n";
@@ -219,10 +218,9 @@ static int svcmgr_recv_bootstrap_caps(struct svcmgr_state *state) {
             state->console_h = msg.attached_handle;
             continue; /* keep reading — SPAWN_CAP comes next */
         }
-        if (kind == SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP) {
-            state->console_ep_h = msg.attached_handle;  /* Fase 7.3 */
-            continue;
-        }
+        /* Fase 8: kind 0x22 (CONSOLE_EP) retired — init now mints the
+         * console endpoint into our root CNode at IRIS_CPTR_CONSOLE_EP;
+         * svcmgr_main_c materializes it via SYS_CSPACE_RESOLVE. */
         if (kind == SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP &&
             rights_check(msg.attached_rights, RIGHT_READ)) {
             state->spawn_cap_h = msg.attached_handle;
@@ -408,7 +406,9 @@ static int svcmgr_resolve_ep_name(struct svcmgr_state *state, const char *name,
     if (svcmgr_name_equal(name, "console.ep")) {
         if (state->console_ep_h == HANDLE_INVALID) return 0;
         *master_h = state->console_ep_h;
-        *allowed  = RIGHT_WRITE;
+        /* DUPLICATE (Fase 8) lets holders re-mint the send cap into CSpace
+         * slots; it adds no receive authority. */
+        *allowed  = RIGHT_WRITE | RIGHT_DUPLICATE;
         return 1;
     }
 
@@ -426,7 +426,9 @@ static int svcmgr_resolve_ep_name(struct svcmgr_state *state, const char *name,
         svc = svcmgr_service_state(state, manifest->service_id);
         if (!svc || svc->ep_h == HANDLE_INVALID) return 0;
         *master_h = svc->ep_h;
-        *allowed  = RIGHT_WRITE;  /* clients get the send/call side only */
+        /* Send/call side only; DUPLICATE (Fase 8) allows CSpace re-minting
+         * (e.g. init mints vfs.ep/kbd.ep into iris_test's fixtures). */
+        *allowed  = RIGHT_WRITE | RIGHT_DUPLICATE;
         return 1;
     }
 }
@@ -768,22 +770,10 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
         if (r != IRIS_OK) return r;
     }
 
-    /* Fase 7.1: recv side of the service's own KEndpoint. Must be sent
-     * before INITRD_CAP — vfs exits its bootstrap loop once ep/spawn caps
-     * are present. Non-fatal for legacy services; an endpoint_only child
-     * that never receives it fails its own bootstrap loudly. */
-    if (manifest->own_service_ep && svc->ep_h != HANDLE_INVALID)
-        (void)svcmgr_send_bootstrap_endpoint(child_boot_h, svc->ep_h,
-                                             RIGHT_READ,
-                                             SVCMGR_BOOTSTRAP_KIND_SERVICE_EP);
-
-    /* Fase 7.6: WAIT side of the IRQ KNotification (kbd). Mandatory for
-     * irq_notify services — without it the child cannot see IRQs; its
-     * bootstrap fails loudly and smoke catches the dead keyboard. */
-    if (manifest->irq_notify && svc->irq_notif_h != HANDLE_INVALID)
-        (void)svcmgr_send_bootstrap_endpoint(child_boot_h, svc->irq_notif_h,
-                                             RIGHT_WAIT,
-                                             SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY);
+    /* Fase 8: kinds 0x21 (SERVICE_EP) and 0x23 (IRQ_NOTIFY) retired — the
+     * service's own endpoint recv side and the IRQ KNotification WAIT side
+     * now reach the child as CSpace mints (IRIS_CPTR_OWN_EP /
+     * IRIS_CPTR_IRQ_NOTIFY, see svcmgr_mint_core_slots). */
 
     /* Forward I/O port capability if this service requires hardware I/O. */
     if (manifest->ioport_count > 0u) {
@@ -824,15 +814,64 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
         }
     }
 
-    /* Forward svcmgr endpoint to all catalog services for EP-based discovery.
-     * Non-fatal: child falls back to KChannel lookup if the send fails. */
-    if (state->ep_h != HANDLE_INVALID)
-        (void)svcmgr_send_bootstrap_endpoint(child_boot_h, state->ep_h,
-                                             RIGHT_WRITE,
-                                             SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP);
+    /* Fase 8: kind 0x20 (SVCMGR_EP) retired — every catalog child gets the
+     * discovery endpoint as a CSpace mint at IRIS_CPTR_SVCMGR_EP. */
 
     svcmgr_close_handle_if_valid(&child_boot_h);
     return IRIS_OK;
+}
+
+/*
+ * Fase 8: build the well-known CPtr mint table for a catalog child (see
+ * endpoint_proto.h for the layout).  Slots 1..4 carry the client side of
+ * the core service endpoints (RIGHT_WRITE); slot 5 the child's OWN
+ * endpoint recv side; slot 7 the IRQ KNotification WAIT side.  The table
+ * is consumed by svc_load_minted, which mints BEFORE the child's first
+ * thread starts — no bootstrap-message barrier is needed.
+ */
+#define SVCMGR_CORE_MINT_MAX 6u
+static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
+                                        const struct iris_service_catalog_entry *manifest,
+                                        struct svc_mint *mints) {
+    struct svcmgr_service_state *svc =
+        svcmgr_service_state(state, manifest->service_id);
+    handle_id_t vfs_ep =
+        (SVCMGR_SERVICE_VFS < (uint32_t)(sizeof(state->services) / sizeof(state->services[0])))
+        ? state->services[SVCMGR_SERVICE_VFS].ep_h : HANDLE_INVALID;
+    handle_id_t kbd_ep =
+        (SVCMGR_SERVICE_KBD < (uint32_t)(sizeof(state->services) / sizeof(state->services[0])))
+        ? state->services[SVCMGR_SERVICE_KBD].ep_h : HANDLE_INVALID;
+    uint32_t n = 0;
+
+    mints[n].slot = IRIS_CPTR_SVCMGR_EP;
+    mints[n].src_h = state->ep_h;
+    mints[n].rights = RIGHT_WRITE;
+    n++;
+    mints[n].slot = IRIS_CPTR_VFS_EP;
+    mints[n].src_h = vfs_ep;
+    mints[n].rights = RIGHT_WRITE;
+    n++;
+    mints[n].slot = IRIS_CPTR_CONSOLE_EP;
+    mints[n].src_h = state->console_ep_h;
+    mints[n].rights = RIGHT_WRITE;
+    n++;
+    mints[n].slot = IRIS_CPTR_KBD_EP;
+    mints[n].src_h = kbd_ep;
+    mints[n].rights = RIGHT_WRITE;
+    n++;
+    if (manifest->own_service_ep && svc) {
+        mints[n].slot = IRIS_CPTR_OWN_EP;
+        mints[n].src_h = svc->ep_h;
+        mints[n].rights = RIGHT_READ;
+        n++;
+    }
+    if (manifest->irq_notify && svc) {
+        mints[n].slot = IRIS_CPTR_IRQ_NOTIFY;
+        mints[n].src_h = svc->irq_notif_h;
+        mints[n].rights = RIGHT_WAIT;
+        n++;
+    }
+    return n;
 }
 
 static int64_t svcmgr_send_lookup_reply(handle_id_t reply_h, uint32_t endpoint,
@@ -887,8 +926,14 @@ static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state) {
             iris_service_catalog_find_by_service_id(i);
         if (manifest && manifest->endpoint_only) {
             /* Fase 7.5: endpoint_only services have no legacy pair; their
-             * KEndpoint is the readiness entry point. */
-            if (state->services[i].ep_h != HANDLE_INVALID) ready++;
+             * KEndpoint is the readiness entry point.  Fase 8: pure-client
+             * services (endpoint_only without an own endpoint, e.g. sh) are
+             * ready when their process is alive. */
+            if (manifest->own_service_ep) {
+                if (state->services[i].ep_h != HANDLE_INVALID) ready++;
+            } else {
+                if (state->services[i].proc_h != HANDLE_INVALID) ready++;
+            }
             continue;
         }
         if (state->services[i].public_h != HANDLE_INVALID &&
@@ -1211,8 +1256,15 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
     {
         handle_id_t loaded_proc_h = HANDLE_INVALID;
         handle_id_t loaded_chan_h = HANDLE_INVALID;
-        long r = svc_load(state->spawn_cap_h, manifest->image_name,
-                          &loaded_proc_h, &loaded_chan_h);
+        /* Fase 8: CPtr-first handoff — the well-known slots (discovery +
+         * core service eps + own ep + irq notify) are minted into the
+         * child's root CNode BEFORE its first thread starts, so even a
+         * bag-less child (sh) finds them populated deterministically. */
+        struct svc_mint mints[SVCMGR_CORE_MINT_MAX];
+        uint32_t mint_count = svcmgr_build_core_mints(state, manifest, mints);
+        long r = svc_load_minted(state->spawn_cap_h, manifest->image_name,
+                                 &loaded_proc_h, &loaded_chan_h,
+                                 mints, mint_count);
         if (r < 0) {
             svcmgr_clear_service_masters(state, manifest->service_id);
             svcmgr_log(sm_str_spawnfail);
@@ -1220,16 +1272,6 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
         }
         proc_h       = (int64_t)loaded_proc_h;
         child_boot_h = loaded_chan_h;
-    }
-
-    /* Fase 8: CPtr-first handoff — mint the discovery endpoint into the
-     * child's root CNode at the well-known slot. The child can EP_CALL
-     * svcmgr by CPtr without the kind-0x20 bootstrap handle. Non-fatal:
-     * the legacy bootstrap cap still ships; CPtr consumers gate loudly. */
-    if (state->ep_h != HANDLE_INVALID) {
-        if (svcmgr_syscall4(SYS_PROC_CSPACE_MINT, (uint64_t)proc_h,
-                            IRIS_CPTR_SVCMGR_EP, state->ep_h, RIGHT_WRITE) != IRIS_OK)
-            svcmgr_log(sm_str_cptrfail);
     }
 
     if (svcmgr_bootstrap_child(state, manifest, child_boot_h) == IRIS_OK) {
@@ -1691,6 +1733,34 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     {
         int64_t ep_r = svcmgr_syscall0(SYS_ENDPOINT_CREATE);
         state->ep_h = (ep_r >= 0) ? (handle_id_t)ep_r : HANDLE_INVALID;
+    }
+
+    /* Fase 8: materialize the console endpoint from the well-known slot
+     * (init minted IRIS_CPTR_CONSOLE_EP with DUPLICATE|TRANSFER so svcmgr
+     * can keep publishing "console.ep" and minting it into children).
+     * Replaces the retired bootstrap kind 0x22. */
+    if (state->console_ep_h == HANDLE_INVALID) {
+        int64_t ch = svcmgr_syscall1(SYS_CSPACE_RESOLVE, IRIS_CPTR_CONSOLE_EP);
+        state->console_ep_h = (ch >= 0) ? (handle_id_t)ch : HANDLE_INVALID;
+    }
+
+    /* Fase 8: pre-create ALL service endpoint / IRQ-notification masters
+     * before autostart, so the first child booted can already receive the
+     * full well-known slot set (vfs.ep / kbd.ep exist before any spawn). */
+    for (uint32_t ci = 0; ci < iris_service_catalog_count(); ci++) {
+        const struct iris_service_catalog_entry *d = iris_service_catalog_at(ci);
+        struct svcmgr_service_state *s;
+        if (!d) continue;
+        s = svcmgr_service_state(state, d->service_id);
+        if (!s) continue;
+        if (d->own_service_ep && s->ep_h == HANDLE_INVALID) {
+            int64_t r0 = svcmgr_syscall0(SYS_ENDPOINT_CREATE);
+            s->ep_h = (r0 >= 0) ? (handle_id_t)r0 : HANDLE_INVALID;
+        }
+        if (d->irq_notify && s->irq_notif_h == HANDLE_INVALID) {
+            int64_t r0 = svcmgr_syscall0(SYS_NOTIFY_CREATE);
+            s->irq_notif_h = (r0 >= 0) ? (handle_id_t)r0 : HANDLE_INVALID;
+        }
     }
 
     svcmgr_autostart_services(state);

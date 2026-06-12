@@ -37,8 +37,9 @@ Keyboard IRQ delivery uses the generic IRQ routing layer with a
 **KNotification** destination (catalog flag `irq_notify = 1`):
 
 - svcmgr owns the notification master (kept across restarts) and registers
-  it as the IRQ1 route; the WAIT side reaches `kbd` at bootstrap as
-  `SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY` (0x23) — mandatory for startup
+  it as the IRQ1 route; the WAIT side reaches `kbd` as a pre-start CSpace
+  mint at `IRIS_CPTR_IRQ_NOTIFY` (slot 7; bootstrap kind 0x23 retired in
+  Fase 8)
 - on each IRQ the kernel signals bit `1 << irq` (signal-only; no message)
 - `kbd` wakes from `SYS_NOTIFY_WAIT_TIMEOUT`, reads the scancode byte from
   port 0x60 via its `KIoPort` cap and re-arms with `SYS_IRQ_ACK`

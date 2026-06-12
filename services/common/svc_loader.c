@@ -231,6 +231,12 @@ long svc_initrd_count(handle_id_t spawn_cap_h) {
 
 long svc_load(handle_id_t spawn_cap_h, const char *name,
               handle_id_t *out_proc_h, handle_id_t *out_chan_h) {
+    return svc_load_minted(spawn_cap_h, name, out_proc_h, out_chan_h, 0, 0);
+}
+
+long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
+                     handle_id_t *out_proc_h, handle_id_t *out_chan_h,
+                     const struct svc_mint *mints, uint32_t mint_count) {
     *out_proc_h = HANDLE_INVALID;
     *out_chan_h = HANDLE_INVALID;
 
@@ -461,6 +467,20 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
                     0);
         if (r < 0) goto out;
         handle_id_t child_ch_id = (handle_id_t)r;
+
+        /* 18b (Fase 8). Mint the well-known CSpace slots BEFORE the first
+         * thread starts: the child sees its slots populated from its first
+         * instruction — no bootstrap barrier, no retry loop, no race.
+         * Mint failures are deliberately non-fatal (consumers gate loudly
+         * in smoke); invalid sources are skipped. */
+        for (uint32_t mi = 0; mi < mint_count; mi++) {
+            if (!mints || mints[mi].src_h == HANDLE_INVALID) continue;
+            (void)sl_sys4(SYS_PROC_CSPACE_MINT,
+                          (long)proc_h,
+                          (long)mints[mi].slot,
+                          (long)mints[mi].src_h,
+                          (long)mints[mi].rights);
+        }
 
         /* 19. Start first thread: entry at bias+e_entry, RSP = stack top - 8,
          *     RBX = child_ch_id (bootstrap convention from entry.S). */

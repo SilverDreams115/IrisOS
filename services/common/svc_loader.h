@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <iris/nc/handle.h>
+#include <iris/nc/rights.h>
 
 /* Number of entries in the ring-3 name→index catalog (must match initrd.c). */
 #define SL_CATALOG_COUNT 9u
@@ -32,3 +33,24 @@ long svc_initrd_count(handle_id_t spawn_cap_h);
  */
 long svc_load(handle_id_t spawn_cap_h, const char *name,
               handle_id_t *out_proc_h, handle_id_t *out_chan_h);
+
+/*
+ * Fase 8: pre-start CSpace mint table.
+ *
+ * svc_load_minted behaves like svc_load but additionally mints the given
+ * capabilities into the child's root CNode (SYS_PROC_CSPACE_MINT) BEFORE
+ * the first thread starts — the child observes its well-known slots fully
+ * populated from its first instruction, with no bootstrap-message barrier
+ * and no retry loops.  Mint failures are non-fatal (slots stay empty and
+ * the consumer's smoke gates fail loudly); src_h == HANDLE_INVALID entries
+ * are skipped.
+ */
+struct svc_mint {
+    uint64_t      slot;    /* destination CPtr slot in the child root CNode */
+    handle_id_t   src_h;   /* source cap in the CALLER's handle table */
+    iris_rights_t rights;  /* rights mask (reduced against src rights) */
+};
+
+long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
+                     handle_id_t *out_proc_h, handle_id_t *out_chan_h,
+                     const struct svc_mint *mints, uint32_t mint_count);

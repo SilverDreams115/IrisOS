@@ -22,16 +22,17 @@ The console is spawned by **init** (not from the svcmgr catalog), so the
 `own_service_ep` machinery does not apply. Init plays the svcmgr role:
 
 1. init creates the endpoint (`SYS_ENDPOINT_CREATE`) and keeps the master.
-2. The **recv** side goes to console at bootstrap (kind
-   `SVCMGR_BOOTSTRAP_KIND_SERVICE_EP` = 0x21, `RIGHT_READ`). Console's
-   bootstrap loop *requires* it: a missing endpoint fails the smoke gates.
-3. The **send** side goes to svcmgr at bootstrap (kind
-   `SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP` = 0x22), which publishes it as
-   `"console.ep"` (`RIGHT_WRITE`) through both lookup paths.
+2. (Fase 8) The **recv** side is pre-start-minted into the console's root
+   CNode at `IRIS_CPTR_OWN_EP` (slot 5, `RIGHT_READ`); the console serves
+   the slot directly. Bootstrap kind 0x21 is retired.
+3. (Fase 8) The **send** side is pre-start-minted into svcmgr's root CNode
+   at `IRIS_CPTR_CONSOLE_EP` (slot 3, `RIGHT_WRITE|DUPLICATE|TRANSFER`);
+   svcmgr publishes it as `"console.ep"` through both lookup paths and
+   re-mints it (WRITE) into every catalog child. Kind 0x22 is retired.
 
-Because the name is bootstrap-delivered and never runtime-registered, the
-`".ep"` anti-spoof rule (`SVCMGR_MSG_REGISTER` rejects `".ep"` names) holds
-for the console exactly as for catalog services.
+Because the cap is spawner-minted and never runtime-registered, the `".ep"`
+anti-spoof rule (`SVCMGR_MSG_REGISTER` rejects `".ep"` names) holds for the
+console exactly as for catalog services.
 
 ## Operations
 
@@ -69,14 +70,16 @@ replying, so the FIFO guarantee spans both paths.
 - `services/common/console_client.h` provides `console_ep_write()` (chunks by
   `IRIS_IPC_BUF_SIZE`, needs a caller staging buffer — EP bulk payloads are
   read from user memory) and `console_ep_sync()`.
-- **init**: creates the endpoint, logs through it when available
+- **init**: creates the endpoint, logs through the master handle
   (`init_log` prefers the EP path), prints the gated `[USER] console ep OK`.
-- **sh**: looks up `"console.ep"` at boot; prints `[SH] console ep OK`.
-- **vfs**: looks up `"console.ep"` via its discovery EP (kind 0x20);
-  prints `[VFS] console ep OK`.
-- **iris_test**: T036 (lookup + PING), T037 (EP WRITE — the gated marker
-  `[IRIS][TEST] console ep write OK` itself travels over the endpoint),
-  T038 (SYNC + malformed-request semantics).
+- **sh** (Fase 8): writes through slot `IRIS_CPTR_CONSOLE_EP` from its
+  first instruction; prints the gated `[SH] console cptr OK`.
+- **vfs** (Fase 8): writes through slot 3, verified by PING; prints the
+  gated `[VFS] console cptr OK`.
+- **iris_test**: T036 (lookup + PING — name lookup stays alive), T037/T038
+  (EP WRITE / SYNC + malformed semantics via the looked-up handle), T043
+  (EP WRITE via slot 3 — the gated marker
+  `[IRIS][TEST] console cptr write OK` travels over the slot).
 
 All four markers are smoke-gated in `scripts/run_qemu_headless.sh`; a broken
 console EP path cannot pass CI.

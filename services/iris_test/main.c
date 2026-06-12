@@ -1141,7 +1141,9 @@ static void test_t025(void) {
 
 /* ── Fase 7.1: EP-based service path (svcmgr discovery + VFS) ───────────── */
 
-static handle_id_t g_svcmgr_ep_h = HANDLE_INVALID;  /* from bootstrap 0x20 */
+/* Fase 8: the discovery endpoint is the well-known CPtr slot (kind 0x20
+ * retired); it is a CNode slot index, NOT a handle — never close it. */
+static handle_id_t g_svcmgr_ep_h = (handle_id_t)IRIS_CPTR_SVCMGR_EP;
 static handle_id_t g_vfs_ep_h    = HANDLE_INVALID;  /* from T026 lookup   */
 static handle_id_t g_kbd_ep_h    = HANDLE_INVALID;  /* from T034 lookup   */
 static handle_id_t g_con_ep_h    = HANDLE_INVALID;  /* from T036 lookup   */
@@ -1677,13 +1679,14 @@ static void test_t039(void) {
 /* ── T040: CPtr failure semantics (Fase 8) ──────────────────────────────── */
 
 /*
- * slot 2 = console KChannel cap (wrong type), slot 3 = svcmgr ep with
- * RIGHT_TRANSFER only (insufficient for EP_CALL's RIGHT_WRITE).
+ * slot 30 (IRIS_CPTR_TEST_FIX_A) = console KChannel cap (wrong type),
+ * slot 31 (IRIS_CPTR_TEST_FIX_B) = svcmgr ep with RIGHT_TRANSFER only
+ * (insufficient for EP_CALL's RIGHT_WRITE).
  *   - CPTR_NULL → clean negative error (never a crash);
  *   - wrong type → IRIS_ERR_WRONG_TYPE from the CSpace path;
  *   - ACCESS_DENIED → hard stop: the dual resolver must NOT fall back to
  *     the handle table (a fallback would yield BAD_HANDLE instead, since
- *     raw value 3 is never a live handle — generations start at 1).
+ *     raw values 30/31 are never live handles — generations start at 1).
  */
 static void test_t040(void) {
     struct IrisMsg msg;
@@ -1696,12 +1699,12 @@ static void test_t040(void) {
 
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    r = it_sys2(SYS_EP_CALL, 2L, (long)&msg);
+    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_FIX_A, (long)&msg);
     if (r != (long)IRIS_ERR_WRONG_TYPE) ok = 0;
 
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
-    r = it_sys2(SYS_EP_CALL, 3L, (long)&msg);
+    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_FIX_B, (long)&msg);
     if (r != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
 
     if (ok)
@@ -1710,19 +1713,172 @@ static void test_t040(void) {
         it_fail("T040", "cptr failure semantics");
 }
 
+/* ── T041: well-known CPtr slots resolve with the right type (Fase 8) ───── */
+
+/*
+ * SYS_CSPACE_RESOLVE materializes a slot into a handle; slots 1..4 must all
+ * be live KEndpoints and a reserved-but-unminted slot must fail cleanly.
+ */
+static void test_t041(void) {
+    static const uint64_t slots[4] = {
+        IRIS_CPTR_SVCMGR_EP, IRIS_CPTR_VFS_EP,
+        IRIS_CPTR_CONSOLE_EP, IRIS_CPTR_KBD_EP,
+    };
+    int ok = 1;
+    for (uint32_t i = 0; i < 4u; i++) {
+        long h = it_sys1(SYS_CSPACE_RESOLVE, (long)slots[i]);
+        if (h < 0) { ok = 0; break; }
+        if (it_sys1(SYS_HANDLE_TYPE, h) != (long)IRIS_HANDLE_TYPE_ENDPOINT)
+            ok = 0;
+        handle_id_t hh = (handle_id_t)h;
+        it_close(&hh);
+        if (!ok) break;
+    }
+    /* unminted reserved slot fails cleanly (no crash, negative error) */
+    if (it_sys1(SYS_CSPACE_RESOLVE, 29L) >= 0) ok = 0;
+
+    if (ok)
+        it_pass("T041");
+    else
+        it_fail("T041", "well-known slot resolve");
+}
+
+/* ── T042: VFS READ_AT directly via IRIS_CPTR_VFS_EP (Fase 8) ───────────── */
+
+static void test_t042(void) {
+    static const char expect[] = "Hello from IrisOS VFS!\n";
+    const uint32_t expect_len = (uint32_t)(sizeof(expect) - 1u);
+
+    uint32_t len = it_stage_path("iris.txt");
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label      = VFS_EP_OP_READ_AT;
+    msg.words[0]   = 0;
+    msg.words[1]   = VFS_EP_DATA_MAX;
+    msg.word_count = 2;
+    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len    = len;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_VFS_EP, (long)&msg);
+
+    int ok = (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+              msg.words[1] == (uint64_t)expect_len &&
+              msg.buf_len == expect_len);
+    if (ok) {
+        for (uint32_t i = 0; i < expect_len; i++) {
+            if (g_ep_io_buf[i] != (uint8_t)expect[i]) { ok = 0; break; }
+        }
+    }
+    if (ok)
+        it_pass("T042");
+    else
+        it_fail("T042", "vfs via cptr");
+}
+
+/* ── T043: console EP WRITE via IRIS_CPTR_CONSOLE_EP — gated marker ─────── */
+
+static void test_t043(void) {
+    static const char line[] = "[IRIS][TEST] console cptr write OK\n";
+    const uint32_t line_len = (uint32_t)(sizeof(line) - 1u);
+
+    for (uint32_t i = 0; i < line_len; i++) g_ep_io_buf[i] = (uint8_t)line[i];
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = CONSOLE_EP_OP_WRITE;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = line_len;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_CONSOLE_EP, (long)&msg);
+
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
+        it_pass("T043");
+    else
+        it_fail("T043", "console via cptr");
+}
+
+/* ── T044: kbd PING via IRIS_CPTR_KBD_EP (Fase 8) ───────────────────────── */
+
+static void test_t044(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_EP_OP_PING;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_KBD_EP, (long)&msg);
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
+        it_pass("T044");
+    else
+        it_fail("T044", "kbd via cptr");
+}
+
+/* ── T045: client slots carry WRITE only — recv is denied, no fallback ──── */
+
+/*
+ * Slot 2 was minted RIGHT_WRITE (client side).  EP_NB_RECV needs READ, so
+ * the CSpace path must return ACCESS_DENIED as a hard stop; a handle-table
+ * fallback would surface BAD_HANDLE (raw 2 is never a live handle).
+ */
+static void test_t045(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    long r = it_sys2(SYS_EP_NB_RECV, (long)IRIS_CPTR_VFS_EP, (long)&msg);
+    if (r == (long)IRIS_ERR_ACCESS_DENIED)
+        it_pass("T045");
+    else
+        it_fail("T045", "rights reduction on client slot");
+}
+
+/* ── T046: legacy handle path interop — lookup still yields real handles ─ */
+
+/*
+ * Discovery by name must keep working alongside CPtr slots: a LOOKUP_NAME
+ * through slot 1 returns a REAL handle (>= 1024 — generation >= 1), which
+ * must be invocable and closable like any legacy cap.
+ */
+static void test_t046(void) {
+    uint32_t len = it_stage_path(CONSOLE_EP_SVC_NAME);
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+
+    int ok = 0;
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP &&
+        msg.attached_handle >= 1024u) {
+        struct IrisMsg ping;
+        it_iris_msg_zero(&ping);
+        ping.label = IRIS_EP_OP_PING;
+        if (it_sys2(SYS_EP_CALL, (long)msg.attached_handle, (long)&ping) == 0 &&
+            ping.label == IRIS_EP_REPLY_OK)
+            ok = 1;
+        handle_id_t h = (handle_id_t)msg.attached_handle;
+        it_close(&h);
+    }
+    if (ok)
+        it_pass("T046");
+    else
+        it_fail("T046", "legacy lookup handle interop");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
- * Receives both bootstrap caps from init: SPAWN_CAP (serial/test loading) and
- * SVCMGR_EP (kind 0x20, EP-based discovery for T026+).  Timeout-bounded so a
- * missing message degrades to HANDLE_INVALID — the EP tests then FAIL loudly
- * instead of hanging boot or being silently skipped.
+ * Receives the SPAWN_CAP bootstrap cap from init (serial/test loading).
+ * Timeout-bounded so a missing message degrades to HANDLE_INVALID — the
+ * dependent tests then FAIL loudly instead of hanging boot or being
+ * silently skipped.  (Fase 8: the discovery endpoint no longer arrives
+ * here; it is the well-known slot IRIS_CPTR_SVCMGR_EP.)
  */
 static handle_id_t it_recv_bootstrap(handle_id_t boot_ch) {
     struct KChanMsg msg;
     handle_id_t spawn_cap_h = HANDLE_INVALID;
+    /* Fase 8: only the spawn cap travels over the bootstrap channel
+     * (KBootstrapCap is outside the dual resolver — handle boundary).
+     * The svcmgr discovery endpoint is the well-known slot
+     * IRIS_CPTR_SVCMGR_EP; bootstrap kind 0x20 is retired. */
     for (uint32_t attempt = 0; attempt < 8u; attempt++) {
-        if (spawn_cap_h != HANDLE_INVALID && g_svcmgr_ep_h != HANDLE_INVALID)
+        if (spawn_cap_h != HANDLE_INVALID)
             break;
         it_chan_msg_zero(&msg);
         if (it_sys3(SYS_CHAN_RECV_TIMEOUT, (long)boot_ch, (long)&msg,
@@ -1737,9 +1893,6 @@ static handle_id_t it_recv_bootstrap(handle_id_t boot_ch) {
         if (kind == SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP &&
             spawn_cap_h == HANDLE_INVALID) {
             spawn_cap_h = (handle_id_t)msg.attached_handle;
-        } else if (kind == SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP &&
-                   g_svcmgr_ep_h == HANDLE_INVALID) {
-            g_svcmgr_ep_h = (handle_id_t)msg.attached_handle;
         } else {
             handle_id_t discard = (handle_id_t)msg.attached_handle;
             it_close(&discard);
@@ -1805,9 +1958,15 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t038();
     test_t039();
     test_t040();
+    test_t041();
+    test_t042();
+    test_t043();
+    test_t044();
+    test_t045();
+    test_t046();
 
+    /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
-    it_close(&g_svcmgr_ep_h);
 
     /* Final summary marker */
     if (g_pass == g_total) {

@@ -88,6 +88,28 @@ void test_kcnode(void) {
     ASSERT_EQ(kcnode_mint(cn, 3, c, RIGHT_NONE), IRIS_ERR_INVALID_ARG);
     kobject_release(c);
 
+    /* ── exclusive mint (Fase 8: SYS_PROC_CSPACE_MINT backend) ── */
+    struct KObject *e1 = make_obj(KOBJ_ENDPOINT);
+    struct KObject *e2 = make_obj(KOBJ_ENDPOINT);
+    ASSERT_EQ(kcnode_mint_excl(cn, 3, e1, RIGHT_WRITE), IRIS_OK);
+    /* occupied destination fails and does NOT replace or leak */
+    uint32_t e2_refs_before = atomic_load(&e2->refcount);
+    ASSERT_EQ(kcnode_mint_excl(cn, 3, e2, RIGHT_WRITE), IRIS_ERR_ALREADY_EXISTS);
+    ASSERT_EQ(atomic_load(&e2->refcount), e2_refs_before);   /* no leak */
+    ASSERT_EQ(kcnode_fetch(cn, 3, &out, &rout), IRIS_OK);
+    ASSERT_TRUE(out == e1);                                  /* not replaced */
+    ASSERT_EQ(rout, RIGHT_WRITE);
+    kobject_active_release(out); kobject_release(out);
+    /* out-of-bounds and zero-rights behave like kcnode_mint */
+    ASSERT_EQ(kcnode_mint_excl(cn, 8, e2, RIGHT_WRITE), IRIS_ERR_INVALID_ARG);
+    ASSERT_EQ(kcnode_mint_excl(cn, 4, e2, RIGHT_NONE), IRIS_ERR_INVALID_ARG);
+    /* empty slot succeeds */
+    ASSERT_EQ(kcnode_mint_excl(cn, 4, e2, RIGHT_READ), IRIS_OK);
+    kobject_release(e1);
+    kobject_release(e2);
+    ASSERT_EQ(kcnode_delete(cn, 3), IRIS_OK);
+    ASSERT_EQ(kcnode_delete(cn, 4), IRIS_OK);
+
     /* ── close releases all slots ── */
     g_obj_destroyed = 0;
     kcnode_close(cn); /* refcount 1→0 → destroy → closes all slots */

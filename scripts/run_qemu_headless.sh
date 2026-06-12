@@ -101,15 +101,17 @@ if ! grep -Fq "[VFS] ep ready" "$LOG_FILE"; then
   exit 1
 fi
 
-if ! grep -Fq "[SH] vfs ep OK" "$LOG_FILE"; then
-  echo "[headless] missing SH vfs-endpoint marker (Fase 7.1; mandatory since 7.2)"
+# Fase 8: sh is a pure CPtr-first client — every core service path is gated
+# on a "cptr OK" marker printed only after a live PING through the slot.
+if ! grep -Fq "[SH] vfs cptr OK" "$LOG_FILE"; then
+  echo "[headless] missing SH vfs-CPtr marker (Fase 8)"
   cat "$LOG_FILE"
   exit 1
 fi
 
 # NOTE: kbd itself has no console cap (give_console=0), so its boot prints
-# never reach this log; kbd.ep liveness is covered by "[SH] kbd ep OK" and
-# iris_test T034/T035 instead.
+# never reach this log; kbd.ep liveness is covered by "[SH] kbd cptr OK" and
+# iris_test T034/T035/T044 instead.
 
 if ! grep -Fq "[USER] console ep OK" "$LOG_FILE"; then
   echo "[headless] missing init console-endpoint marker (Fase 7.3)"
@@ -117,20 +119,20 @@ if ! grep -Fq "[USER] console ep OK" "$LOG_FILE"; then
   exit 1
 fi
 
-if ! grep -Fq "[SH] console ep OK" "$LOG_FILE"; then
-  echo "[headless] missing SH console-endpoint marker (Fase 7.3)"
+if ! grep -Fq "[SH] console cptr OK" "$LOG_FILE"; then
+  echo "[headless] missing SH console-CPtr marker (Fase 8)"
   cat "$LOG_FILE"
   exit 1
 fi
 
-if ! grep -Fq "[VFS] console ep OK" "$LOG_FILE"; then
-  echo "[headless] missing VFS console-endpoint marker (Fase 7.3)"
+if ! grep -Fq "[VFS] console cptr OK" "$LOG_FILE"; then
+  echo "[headless] missing VFS console-CPtr marker (Fase 8)"
   cat "$LOG_FILE"
   exit 1
 fi
 
-if ! grep -Fq "[IRIS][TEST] console ep write OK" "$LOG_FILE"; then
-  echo "[headless] missing iris_test console-endpoint write marker (Fase 7.3)"
+if ! grep -Fq "[IRIS][TEST] console cptr write OK" "$LOG_FILE"; then
+  echo "[headless] missing iris_test console-CPtr write marker (Fase 8 / T043)"
   cat "$LOG_FILE"
   exit 1
 fi
@@ -141,8 +143,8 @@ if ! grep -Fq "[SH] svcmgr cptr OK" "$LOG_FILE"; then
   exit 1
 fi
 
-if ! grep -Fq "[SH] kbd ep OK" "$LOG_FILE"; then
-  echo "[headless] missing SH kbd-endpoint marker (Fase 7.4)"
+if ! grep -Fq "[SH] kbd cptr OK" "$LOG_FILE"; then
+  echo "[headless] missing SH kbd-CPtr marker (Fase 8)"
   cat "$LOG_FILE"
   exit 1
 fi

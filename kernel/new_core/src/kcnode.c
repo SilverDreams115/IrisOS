@@ -111,6 +111,35 @@ iris_error_t kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
     return IRIS_OK;
 }
 
+iris_error_t kcnode_mint_excl(struct KCNode *cn, uint32_t slot_idx,
+                              struct KObject *obj, iris_rights_t rights) {
+    if (!cn || !obj || rights == RIGHT_NONE) return IRIS_ERR_INVALID_ARG;
+
+    kobject_retain(obj);
+    kobject_active_retain(obj);
+
+    uint64_t flags = irq_spinlock_lock(&cn->lock);
+
+    if (slot_idx >= cn->slot_count) {
+        irq_spinlock_unlock(&cn->lock, flags);
+        kobject_active_release(obj);
+        kobject_release(obj);
+        return IRIS_ERR_INVALID_ARG;
+    }
+    if (cn->slots[slot_idx].object) {
+        irq_spinlock_unlock(&cn->lock, flags);
+        kobject_active_release(obj);
+        kobject_release(obj);
+        return IRIS_ERR_ALREADY_EXISTS;
+    }
+
+    cn->slots[slot_idx].object = obj;
+    cn->slots[slot_idx].rights = rights;
+
+    irq_spinlock_unlock(&cn->lock, flags);
+    return IRIS_OK;
+}
+
 iris_error_t kcnode_fetch(struct KCNode *cn, uint32_t slot_idx,
                            struct KObject **out_obj, iris_rights_t *out_rights) {
     if (!cn || !out_obj || !out_rights) return IRIS_ERR_INVALID_ARG;

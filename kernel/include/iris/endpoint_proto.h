@@ -82,6 +82,8 @@
  * can use IRIS_SVCMGR_EP_LOOKUP_NAME for EP-based service discovery.
  * Coexists with the legacy SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP / VFS_CAP etc.
  */
+/* RETIRED in Fase 8: the discovery endpoint now arrives as the pre-start
+ * CSpace mint IRIS_CPTR_SVCMGR_EP.  Kind value reserved; do not reuse. */
 #define SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP  UINT32_C(0x20)
 
 /*
@@ -92,6 +94,8 @@
  * respawned.  Clients obtain the send side via service-name lookup of
  * "<image_name>.ep" (see below).
  */
+/* RETIRED in Fase 8: the service's own endpoint recv side now arrives as
+ * the pre-start CSpace mint IRIS_CPTR_OWN_EP.  Reserved; do not reuse. */
 #define SVCMGR_BOOTSTRAP_KIND_SERVICE_EP UINT32_C(0x21)
 
 /*
@@ -104,6 +108,8 @@
  * master, so the anti-spoof rule (no runtime registration of ".ep" names)
  * holds for the console too.
  */
+/* RETIRED in Fase 8: init now mints the console endpoint send side into
+ * svcmgr's root CNode at IRIS_CPTR_CONSOLE_EP.  Reserved; do not reuse. */
 #define SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP UINT32_C(0x22)
 
 /*
@@ -113,10 +119,45 @@
  * SYS_PROC_CSPACE_MINT; the child invokes them directly by CPtr — e.g.
  * SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg) — with no KChannel handle
  * transfer. CPtrs and handle_ids share one argument namespace: handles are
- * always >= 1024 (slot | generation<<10, generation >= 1), so low CNode
- * slots can never alias a live handle. Slot 0 is the null slot.
+ * always >= 1024 (slot | generation<<10, generation >= 1).  Since Fase 8
+ * the dual resolvers ENFORCE the split (kernel/new_core/src/cspace.c):
+ * values < 1024 resolve through the CSpace ONLY (no handle-table fallback;
+ * missing slot fails cleanly, ACCESS_DENIED is a hard stop) and values
+ * >= 1024 resolve through the handle table ONLY (they never walk the
+ * CSpace, so populated low slots cannot be aliased by handle bit patterns).
+ * Slot 0 is the null slot.
+ *
+ * Layout (root CNode has KCNODE_DEFAULT_SLOTS = 256 slots):
+ *   0          CPTR_NULL (always invalid)
+ *   1..4       core service endpoints, client side (RIGHT_WRITE):
+ *              svcmgr discovery, vfs, console, kbd.  svcmgr mints 1..4
+ *              into every catalog child; init mints them into the
+ *              processes it spawns itself (svcmgr gets slot 3 with
+ *              DUPLICATE|TRANSFER so it can keep publishing "console.ep").
+ *   5          the service's OWN endpoint, receive side (RIGHT_READ) —
+ *              only for services that serve one (own_service_ep / console).
+ *   6          reserved (future: initrd/bootstrap cap, once KBootstrapCap
+ *              joins the dual resolver).
+ *   7          IRQ KNotification WAIT side (irq_notify services: kbd).
+ *   8..15      reserved for future core services.
+ *   16..29     reserved (dynamic/per-service use, unassigned).
+ *   30..31     test fixtures (iris_test only; minted by init): wrong-type
+ *              cap and insufficient-rights cap for CPtr failure tests.
+ *
+ * Cap kinds that CANNOT live in slots (handle/bootstrap boundary): KChannel,
+ * KIoPort, KIrqCap, KBootstrapCap, KProcess — the dual resolver
+ * (cspace_or_handle_resolve_*) only covers IPC objects (endpoint, reply,
+ * notification), CNode, Untyped and Frame.  Services needing those caps
+ * keep a bootstrap one-shot channel.
  */
-#define IRIS_CPTR_SVCMGR_EP ((uint64_t)1)
+#define IRIS_CPTR_SVCMGR_EP   ((uint64_t)1)
+#define IRIS_CPTR_VFS_EP      ((uint64_t)2)
+#define IRIS_CPTR_CONSOLE_EP  ((uint64_t)3)
+#define IRIS_CPTR_KBD_EP      ((uint64_t)4)
+#define IRIS_CPTR_OWN_EP      ((uint64_t)5)
+#define IRIS_CPTR_IRQ_NOTIFY  ((uint64_t)7)
+#define IRIS_CPTR_TEST_FIX_A  ((uint64_t)30)
+#define IRIS_CPTR_TEST_FIX_B  ((uint64_t)31)
 
 /*
  * Reserved name suffix ".ep": IRIS_SVCMGR_EP_LOOKUP_NAME and the legacy

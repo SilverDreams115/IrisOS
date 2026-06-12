@@ -232,7 +232,7 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    err = kcnode_mint((struct KCNode *)cn_obj, slot_idx, src_obj, effective);
+    err = kcnode_mint_excl((struct KCNode *)cn_obj, slot_idx, src_obj, effective);
     kobject_release(src_obj);
     kobject_release(cn_obj);
     kobject_release(proc_obj);

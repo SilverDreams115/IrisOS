@@ -164,14 +164,15 @@ static void con_serve_ep_msg(handle_id_t ioport_h, handle_id_t service_h,
 void console_main_c(handle_id_t bootstrap_h) {
     handle_id_t ioport_h  = HANDLE_INVALID;
     handle_id_t service_h = HANDLE_INVALID;
-    handle_id_t ep_h      = HANDLE_INVALID;
+    /* Fase 8: the endpoint recv side is minted by init at IRIS_CPTR_OWN_EP
+     * (bootstrap kind 0x21 retired); the slot is invoked directly. */
+    handle_id_t ep_h      = (handle_id_t)IRIS_CPTR_OWN_EP;
     struct KChanMsg msg;
 
-    /* Bootstrap: receive IOPORT_CAP, SERVICE and SERVICE_EP handles.
-     * SERVICE_EP is sent last by init, so requiring it keeps the loop
-     * bounded; a missing endpoint fails the smoke gates loudly. */
-    while (ioport_h == HANDLE_INVALID || service_h == HANDLE_INVALID ||
-           ep_h == HANDLE_INVALID) {
+    /* Bootstrap: receive IOPORT_CAP and SERVICE handles — the unavoidable
+     * handle boundary (KIoPort and KChannel caps cannot live in CSpace
+     * slots; see endpoint_proto.h). */
+    while (ioport_h == HANDLE_INVALID || service_h == HANDLE_INVALID) {
         con_msg_zero(&msg);
         if (con_sys2(SYS_CHAN_RECV, (long)bootstrap_h, (long)&msg) != IRIS_OK)
             break;
@@ -189,8 +190,6 @@ void console_main_c(handle_id_t bootstrap_h) {
             ioport_h = msg.attached_handle;
         } else if (kind == SVCMGR_BOOTSTRAP_KIND_SERVICE && service_h == HANDLE_INVALID) {
             service_h = msg.attached_handle;
-        } else if (kind == SVCMGR_BOOTSTRAP_KIND_SERVICE_EP && ep_h == HANDLE_INVALID) {
-            ep_h = msg.attached_handle;
         } else {
             (void)con_sys1(SYS_HANDLE_CLOSE, (long)msg.attached_handle);
         }

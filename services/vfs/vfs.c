@@ -31,7 +31,6 @@ struct vfs_state {
     handle_id_t console_h;
     handle_id_t spawn_cap_h;
     handle_id_t ep_h;          /* recv side of our KEndpoint (Fase 7.1) */
-    handle_id_t svcmgr_ep_h;   /* discovery EP (kind 0x20; Fase 7.3) */
     struct vfs_export exports[VFS_SERVICE_EXPORTS];
 };
 
@@ -90,8 +89,9 @@ static inline int64_t vfs_syscall1(uint64_t num, uint64_t arg0) {
 }
 
 static handle_id_t g_vfs_console_h = HANDLE_INVALID;
-/* Console endpoint (Fase 7.3): resolved via "console.ep" after bootstrap;
- * pre-lookup boot lines go over the legacy console cap. */
+/* Console endpoint (Fase 8): the well-known slot IRIS_CPTR_CONSOLE_EP,
+ * verified with a PING after bootstrap; pre-verification boot lines are
+ * dropped (vfs no longer receives a legacy console cap). */
 static handle_id_t g_vfs_console_ep_h = HANDLE_INVALID;
 static uint8_t g_vfs_con_ep_buf[IRIS_IPC_BUF_SIZE];
 
@@ -101,31 +101,6 @@ static void vfs_log(const char *msg) {
         return;
     }
     console_write(g_vfs_console_h, msg);
-}
-
-/* Resolve "console.ep" through the svcmgr discovery endpoint (Fase 7.3). */
-static handle_id_t vfs_lookup_console_ep(handle_id_t svcmgr_ep_h) {
-    static const char ep_name[] = CONSOLE_EP_SVC_NAME;
-    struct IrisMsg msg;
-
-    if (svcmgr_ep_h == HANDLE_INVALID) return HANDLE_INVALID;
-
-    for (uint32_t i = 0; i < (uint32_t)sizeof(ep_name); i++)
-        g_vfs_con_ep_buf[i] = (uint8_t)ep_name[i];
-
-    {
-        uint8_t *raw = (uint8_t *)&msg;
-        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
-    }
-    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_vfs_con_ep_buf;
-    msg.buf_len  = (uint32_t)sizeof(ep_name);  /* includes NUL */
-
-    if (vfs_syscall2(SYS_EP_CALL, svcmgr_ep_h, (uint64_t)(uintptr_t)&msg) != IRIS_OK)
-        return HANDLE_INVALID;
-    if (msg.label != IRIS_EP_REPLY_OK) return HANDLE_INVALID;
-    if (msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) return HANDLE_INVALID;
-    return (handle_id_t)msg.attached_handle;
 }
 
 static void vfs_copy_bytes(uint8_t *dst, const uint8_t *src, uint32_t len) {
@@ -266,14 +241,18 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
     state.console_h = HANDLE_INVALID;
     state.spawn_cap_h = HANDLE_INVALID;
     state.ep_h = HANDLE_INVALID;
-    state.svcmgr_ep_h = HANDLE_INVALID;
 
     vfs_log(vfs_str_started);
 
-    /* Bootstrap one-shot: svcmgr delivers console cap, our KEndpoint recv
-     * side, and the initrd spawn cap. The endpoint is mandatory — there is
-     * no legacy fallback to hide a broken EP delivery. */
-    while (state.ep_h == HANDLE_INVALID || state.spawn_cap_h == HANDLE_INVALID) {
+    /* Fase 8: everything except the initrd spawn cap arrives as well-known
+     * CSpace slots — slot 5 is our endpoint's recv side (kind 0x21
+     * retired), slot 3 the console endpoint (kind 0x20 + lookup retired).
+     * The bootstrap one-shot below remains ONLY for the initrd
+     * KBootstrapCap: bootstrap caps are outside the dual resolver (see
+     * endpoint_proto.h), the documented handle boundary. */
+    state.ep_h = (handle_id_t)IRIS_CPTR_OWN_EP;
+
+    while (state.spawn_cap_h == HANDLE_INVALID) {
         {
             uint8_t *raw = (uint8_t *)&msg;
             for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
@@ -285,24 +264,8 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
             goto fail;
 
         switch (svcmgr_proto_read_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND])) {
-            case SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP:
-                state.console_h = msg.attached_handle;
-                g_vfs_console_h = state.console_h;
-                break;
             case SVCMGR_BOOTSTRAP_KIND_INITRD_CAP:
                 state.spawn_cap_h = msg.attached_handle;
-                break;
-            case SVCMGR_BOOTSTRAP_KIND_SERVICE_EP:
-                if (state.ep_h == HANDLE_INVALID)
-                    state.ep_h = msg.attached_handle;
-                else
-                    vfs_close_handle_if_valid(&msg.attached_handle);
-                break;
-            case SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP:
-                if (state.svcmgr_ep_h == HANDLE_INVALID)
-                    state.svcmgr_ep_h = msg.attached_handle;
-                else
-                    vfs_close_handle_if_valid(&msg.attached_handle);
                 break;
             default:
                 /* Unknown kind: close attached handle and keep receiving. */
@@ -311,35 +274,22 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
         }
     }
 
-    /* Drain any bootstrap messages queued after the required set. The
-     * svcmgr discovery EP (kind 0x20) is sent last; capture it here for
-     * the console.ep lookup (Fase 7.3). */
-    for (;;) {
-        {
-            uint8_t *raw = (uint8_t *)&msg;
-            for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
-        }
-        if (vfs_syscall2(SYS_CHAN_RECV_NB, state.bootstrap_h,
-                         (uint64_t)(uintptr_t)&msg) != IRIS_OK)
-            break;
-        if (vfs_bootstrap_handle(&msg) == HANDLE_INVALID) continue;
-        if (svcmgr_proto_read_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND]) ==
-                SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP &&
-            state.svcmgr_ep_h == HANDLE_INVALID) {
-            state.svcmgr_ep_h = msg.attached_handle;
-            continue;
-        }
-        vfs_close_handle_if_valid(&msg.attached_handle);
+    /* Fase 8: console output goes through the minted console-endpoint
+     * slot; a PING proves the slot is live before the gated marker. */
+    {
+        struct IrisMsg pmsg;
+        uint8_t *p = (uint8_t *)&pmsg;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(pmsg); i++) p[i] = 0;
+        pmsg.label = IRIS_EP_OP_PING;
+        if (vfs_syscall2(SYS_EP_CALL, IRIS_CPTR_CONSOLE_EP,
+                         (uint64_t)(uintptr_t)&pmsg) == IRIS_OK &&
+            pmsg.label == IRIS_EP_REPLY_OK)
+            g_vfs_console_ep_h = (handle_id_t)IRIS_CPTR_CONSOLE_EP;
     }
-
-    /* Fase 7.3: console output switches to "console.ep"; failure is loud
-     * (the smoke gate requires "[VFS] console ep OK"). */
-    g_vfs_console_ep_h = vfs_lookup_console_ep(state.svcmgr_ep_h);
-    vfs_close_handle_if_valid(&state.svcmgr_ep_h);
     if (g_vfs_console_ep_h != HANDLE_INVALID)
-        vfs_log("[VFS] console ep OK\n");
+        vfs_log("[VFS] console cptr OK\n");
     else
-        vfs_log("[VFS] console ep FAILED\n");
+        vfs_log("[VFS] console cptr FAILED\n");
 
     if (!vfs_seed_exports(&state)) goto fail;
     vfs_seed_initrd_exports(&state);

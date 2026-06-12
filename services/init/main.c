@@ -430,14 +430,60 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
     handle_id_t proc_h      = HANDLE_INVALID;
     handle_id_t boot_h      = HANDLE_INVALID;
     handle_id_t cap_dup     = HANDLE_INVALID;
-    handle_id_t svcmgr_ep_h = HANDLE_INVALID;
     handle_id_t watch_base_h = HANDLE_INVALID;
     handle_id_t watch_rd_h  = HANDLE_INVALID;
     handle_id_t watch_wr_h  = HANDLE_INVALID;
     struct KChanMsg msg;
     long r;
 
-    r = svc_load(spawn_cap_h, "iris_test", &proc_h, &boot_h);
+    /* Fase 8: the full well-known slot set is pre-start-minted into
+     * iris_test (the kind-0x20 bootstrap forward is retired — slot 1 is
+     * the only discovery path):
+     *   slot 1  — svcmgr discovery ep, RIGHT_WRITE   → T026+/T039/T041
+     *   slot 2  — vfs.ep,     RIGHT_WRITE            → T042/T045
+     *   slot 3  — console.ep, RIGHT_WRITE            → T043
+     *   slot 4  — kbd.ep,     RIGHT_WRITE            → T044
+     *   slot 30 — console KChannel cap (wrong type)  → T040 WRONG_TYPE
+     *   slot 31 — svcmgr ep, RIGHT_TRANSFER only     → T040 ACCESS_DENIED
+     *             (the dual resolver must NOT fall back to handles).
+     * vfs.ep / kbd.ep come from legacy lookup (WRITE|DUPLICATE) — that
+     * lookup path staying alive is itself part of the test surface.
+     * Missing caps leave slots empty: the tests FAIL loudly, never skip. */
+    handle_id_t lk_svcmgr = init_lookup_name(sm_h, "svcmgr.ep",
+                                RIGHT_WRITE | RIGHT_TRANSFER | RIGHT_DUPLICATE);
+    handle_id_t lk_vfs    = init_lookup_name(sm_h, "vfs.ep",
+                                RIGHT_WRITE | RIGHT_DUPLICATE);
+    handle_id_t lk_kbd    = init_lookup_name(sm_h, "kbd.ep",
+                                RIGHT_WRITE | RIGHT_DUPLICATE);
+    if (lk_svcmgr == HANDLE_INVALID)
+        init_log("[USER][INIT] svcmgr.ep lookup FAILED\n");
+
+    {
+        struct svc_mint it_mints[6];
+        it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
+        it_mints[0].src_h = lk_svcmgr;
+        it_mints[0].rights = RIGHT_WRITE;
+        it_mints[1].slot = IRIS_CPTR_VFS_EP;
+        it_mints[1].src_h = lk_vfs;
+        it_mints[1].rights = RIGHT_WRITE;
+        it_mints[2].slot = IRIS_CPTR_CONSOLE_EP;
+        it_mints[2].src_h = g_init_console_ep_h;
+        it_mints[2].rights = RIGHT_WRITE;
+        it_mints[3].slot = IRIS_CPTR_KBD_EP;
+        it_mints[3].src_h = lk_kbd;
+        it_mints[3].rights = RIGHT_WRITE;
+        it_mints[4].slot = IRIS_CPTR_TEST_FIX_A;
+        it_mints[4].src_h = g_init_console_h;          /* wrong type */
+        it_mints[4].rights = RIGHT_WRITE;
+        it_mints[5].slot = IRIS_CPTR_TEST_FIX_B;
+        it_mints[5].src_h = lk_svcmgr;                 /* TRANSFER only */
+        it_mints[5].rights = RIGHT_TRANSFER;
+        r = svc_load_minted(spawn_cap_h, "iris_test", &proc_h, &boot_h,
+                            it_mints, 6u);
+    }
+    init_close(&lk_svcmgr);
+    init_close(&lk_vfs);
+    init_close(&lk_kbd);
     if (r < 0) {
         init_log("[USER][INIT] iris_test load FAILED\n");
         goto out;
@@ -459,45 +505,6 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
     r = init_sys2(SYS_CHAN_SEND, (long)boot_h, (long)&msg);
     if (r < 0) goto out;
     cap_dup = HANDLE_INVALID; /* consumed by send */
-
-    /* Forward the svcmgr discovery endpoint (Fase 7.1). Non-fatal on lookup
-     * failure: the EP-path tests then fail loudly instead of being skipped. */
-    svcmgr_ep_h = init_lookup_name(sm_h, "svcmgr.ep",
-                                   RIGHT_WRITE | RIGHT_TRANSFER | RIGHT_DUPLICATE);
-
-    /* Fase 8: CPtr-first test fixtures in iris_test's root CNode (T039/T040):
-     *   slot 1 — svcmgr discovery ep, RIGHT_WRITE     → positive CPtr path
-     *   slot 2 — console KChannel cap (wrong type)    → WRONG_TYPE, clean
-     *   slot 3 — svcmgr ep, RIGHT_TRANSFER only       → ACCESS_DENIED, and
-     *            the dual resolver must NOT fall back to the handle table.
-     * Non-fatal: missing slots make T039/T040 fail loudly, not skip. */
-    if (svcmgr_ep_h != HANDLE_INVALID) {
-        (void)init_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h,
-                        (long)IRIS_CPTR_SVCMGR_EP, (long)svcmgr_ep_h,
-                        (long)RIGHT_WRITE);
-        (void)init_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, 3L,
-                        (long)svcmgr_ep_h, (long)RIGHT_TRANSFER);
-    }
-    if (g_init_console_h != HANDLE_INVALID)
-        (void)init_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, 2L,
-                        (long)g_init_console_h, (long)RIGHT_WRITE);
-
-    if (svcmgr_ep_h != HANDLE_INVALID) {
-        init_msg_zero(&msg);
-        msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-        svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                               SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP);
-        msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
-        msg.attached_handle = svcmgr_ep_h;
-        msg.attached_rights = RIGHT_WRITE;
-        r = init_sys2(SYS_CHAN_SEND, (long)boot_h, (long)&msg);
-        if (r < 0)
-            init_close(&svcmgr_ep_h);
-        else
-            svcmgr_ep_h = HANDLE_INVALID; /* consumed by send */
-    } else {
-        init_log("[USER][INIT] svcmgr.ep lookup FAILED\n");
-    }
 
     init_close(&boot_h);
 
@@ -645,7 +652,24 @@ static handle_id_t init_spawn_console(handle_id_t spawn_cap_h) {
     struct KChanMsg msg;
     long r;
 
-    r = svc_load(spawn_cap_h, "console", &con_proc_h, &con_boot_h);
+    /* Console KEndpoint (Fase 7.3/8): init owns the master.  Created BEFORE
+     * the spawn so the recv side can be pre-start-minted into the console's
+     * root CNode (IRIS_CPTR_OWN_EP) — kind 0x21 retired. */
+    r = init_sys0(SYS_ENDPOINT_CREATE);
+    if (r < 0) {
+        init_early_serial_write(init_console_chan_fail);
+        goto fail;
+    }
+    g_init_console_ep_h = (handle_id_t)r;
+
+    {
+        struct svc_mint con_mints[1];
+        con_mints[0].slot   = IRIS_CPTR_OWN_EP;
+        con_mints[0].src_h  = g_init_console_ep_h;
+        con_mints[0].rights = RIGHT_READ;
+        r = svc_load_minted(spawn_cap_h, "console", &con_proc_h, &con_boot_h,
+                            con_mints, 1u);
+    }
     if (r < 0) {
         init_early_serial_write(init_console_load_fail);
         goto fail;
@@ -688,15 +712,6 @@ static handle_id_t init_spawn_console(handle_id_t spawn_cap_h) {
     con_write_h = (handle_id_t)r;
     init_close(&con_base_h); /* no longer need the full-rights base */
 
-    /* Console KEndpoint (Fase 7.3): init owns the master; console gets the
-     * recv side; svcmgr later gets a send-side dup to publish "console.ep". */
-    r = init_sys0(SYS_ENDPOINT_CREATE);
-    if (r < 0) {
-        init_early_serial_write(init_console_chan_fail);
-        goto fail;
-    }
-    g_init_console_ep_h = (handle_id_t)r;
-
     /* Send IOPORT_CAP to console server. */
     init_msg_zero(&msg);
     msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
@@ -727,28 +742,6 @@ static handle_id_t init_spawn_console(handle_id_t spawn_cap_h) {
     }
     con_read_h = HANDLE_INVALID;
 
-    /* Send SERVICE_EP (recv side of the console endpoint, Fase 7.3). */
-    if (g_init_console_ep_h != HANDLE_INVALID) {
-        r = init_sys2(SYS_HANDLE_DUP, (long)g_init_console_ep_h,
-                      (long)(RIGHT_READ | RIGHT_TRANSFER));
-        if (r >= 0) {
-            init_msg_zero(&msg);
-            msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-            svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                                   SVCMGR_BOOTSTRAP_KIND_SERVICE_EP);
-            msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
-            msg.attached_handle = (handle_id_t)r;
-            msg.attached_rights = RIGHT_READ;
-            if (init_sys2(SYS_CHAN_SEND, (long)con_boot_h, (long)&msg) < 0) {
-                handle_id_t eh = (handle_id_t)r;
-                init_close(&eh);
-                init_close(&g_init_console_ep_h);
-            }
-        } else {
-            init_close(&g_init_console_ep_h);
-        }
-    }
-
     init_close(&con_proc_h);
     init_close(&con_boot_h);
     return con_write_h;
@@ -774,7 +767,18 @@ static handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h,
     struct KChanMsg msg;
     long r;
 
-    r = svc_load(spawn_cap_h, "svcmgr", &svcmgr_proc_h, &svcmgr_chan_h);
+    /* Fase 8: the console endpoint send side is pre-start-minted into
+     * svcmgr's root CNode at IRIS_CPTR_CONSOLE_EP (bootstrap kind 0x22
+     * retired).  DUPLICATE|TRANSFER so svcmgr can publish "console.ep" and
+     * re-mint it into catalog children. */
+    {
+        struct svc_mint sm_mints[1];
+        sm_mints[0].slot   = IRIS_CPTR_CONSOLE_EP;
+        sm_mints[0].src_h  = g_init_console_ep_h;
+        sm_mints[0].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        r = svc_load_minted(spawn_cap_h, "svcmgr", &svcmgr_proc_h,
+                            &svcmgr_chan_h, sm_mints, 1u);
+    }
     if (r < 0) goto fail;
 
     /* Send CONSOLE_CAP first so svcmgr can log as soon as it receives SPAWN_CAP. */
@@ -797,25 +801,6 @@ static handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h,
         con_dup_h = HANDLE_INVALID;
     }
 
-    /* Console endpoint send side (Fase 7.3): svcmgr publishes "console.ep".
-     * Non-fatal — a missing cap surfaces as failed lookups + smoke gates. */
-    if (g_init_console_ep_h != HANDLE_INVALID) {
-        r = init_sys2(SYS_HANDLE_DUP, (long)g_init_console_ep_h,
-                      (long)(RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER));
-        if (r >= 0) {
-            init_msg_zero(&msg);
-            msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-            svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                                   SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP);
-            msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
-            msg.attached_handle = (handle_id_t)r;
-            msg.attached_rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-            if (init_sys2(SYS_CHAN_SEND, (long)svcmgr_chan_h, (long)&msg) < 0) {
-                handle_id_t eh = (handle_id_t)r;
-                init_close(&eh);
-            }
-        }
-    }
 
     r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
                   (long)(RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER));

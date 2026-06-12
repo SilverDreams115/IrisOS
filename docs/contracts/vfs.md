@@ -31,10 +31,13 @@ no dead-client reclaim — nothing to reclaim.
 and `endpoint_only = 1`:
 
 - it receives in `RBX` a private bootstrap channel handle;
-- over that channel it receives the **receive side of its KEndpoint**
-  (kind `SVCMGR_BOOTSTRAP_KIND_SERVICE_EP` = 0x21, `RIGHT_READ`, sent before
-  `INITRD_CAP`), the svcmgr discovery endpoint (kind 0x20) and one
-  `KBootstrapCap` (INITRD_CAP kind, `RIGHT_READ`) for initrd VMO access;
+- (Fase 8) its well-known CSpace slots are **pre-start-minted**: slot 5
+  (`IRIS_CPTR_OWN_EP`) = the receive side of its KEndpoint (`RIGHT_READ`),
+  slot 3 = the console endpoint, slots 1/2/4 = the other core service
+  endpoints (see `docs/cptr-first-services.md`);
+- over the bootstrap channel it receives ONLY one `KBootstrapCap`
+  (INITRD_CAP kind, `RIGHT_READ`) for initrd VMO access — the documented
+  handle boundary (bootstrap caps are outside the dual resolver);
 - **no legacy service/reply channel pair is created** (`endpoint_only`).
 
 The endpoint is mandatory: without it the service has no request surface and

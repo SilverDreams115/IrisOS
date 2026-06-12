@@ -48,6 +48,11 @@ struct KCNode *kcnode_alloc_at(void *mem, uint32_t num_slots); /* untyped-backed
 void           kcnode_close(struct KCNode *cn);
 iris_error_t   kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
                             struct KObject *obj, iris_rights_t rights);
+/* Exclusive mint (Fase 8): fails with IRIS_ERR_ALREADY_EXISTS if the slot
+ * is occupied instead of silently replacing the cap.  Used by
+ * SYS_PROC_CSPACE_MINT so a spawner cannot clobber a child's slots. */
+iris_error_t   kcnode_mint_excl(struct KCNode *cn, uint32_t slot_idx,
+                                 struct KObject *obj, iris_rights_t rights);
 iris_error_t   kcnode_fetch(struct KCNode *cn, uint32_t slot_idx,
                              struct KObject **out_obj, iris_rights_t *out_rights);
 iris_error_t   kcnode_delete(struct KCNode *cn, uint32_t slot_idx);

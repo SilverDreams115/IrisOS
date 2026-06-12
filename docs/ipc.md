@@ -134,17 +134,23 @@ kbd (catalog flag `irq_notify = 1`, WAIT side delivered at bootstrap kind
 ## CPtr-first invocation (Fase 8)
 
 The IPC, CNode, Untyped and Frame syscalls (via `cspace_or_handle_resolve_*`)
-resolve their capability argument CSpace-first: values below 1024 are
-root-CNode slot indices (CPtrs), values ≥ 1024 are legacy handle ids
-(`slot | generation << 10`, generation ≥ 1 — the namespaces can never
-alias). An `ACCESS_DENIED` from the CSpace path is a hard stop: the resolver
-never falls back to the handle table on an authorization failure.
+take one capability argument with a kernel-enforced namespace split (Fase 8):
+values below 1024 are root-CNode slot indices (CPtrs) and resolve through
+the CSpace **only** — a missing slot fails cleanly and `ACCESS_DENIED` is a
+hard stop, with no handle-table fallback; values ≥ 1024 are handle ids
+(`slot | generation << 10`, generation ≥ 1) and resolve through the handle
+table **only** — they never walk the CSpace, so handle bit patterns cannot
+alias populated slots. (Before the split, the radix walker masked the index
+and a handle like 1027 could alias slot 3 — found and fixed in Fase 8;
+regression-tested in `test_ipc_cspace.c`.)
 
-A spawner can mint a cap directly into a child's root CNode with
-`SYS_PROC_CSPACE_MINT` (syscall 104), letting the child invoke it by CPtr —
+A spawner mints caps directly into a child's root CNode with
+`SYS_PROC_CSPACE_MINT` (syscall 104, exclusive: occupied slot →
+`ALREADY_EXISTS`), normally **pre-start** via `svc_load_minted` so the child
+sees its slots from its first instruction. The child invokes them by CPtr —
 e.g. `SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)` — with no KChannel handle
-transfer. See `docs/endpoint-protocol.md` ("Well-known CPtr slots") for the
-slot map, authority rules and runtime coverage (T039/T040).
+transfer. See `docs/cptr-first-services.md` for the slot map, per-service
+bootstrap flows and runtime coverage (T039–T046).
 
 ---
 

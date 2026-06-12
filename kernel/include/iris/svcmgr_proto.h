@@ -210,12 +210,11 @@
  * Do not reuse this kind value. */
 /* 10u/11u (VFS_CAP / VFS_REPLY_CAP) retired in Fase 7.5: vfs is endpoint_only.
  * Do not reuse these kind values. */
-#define SVCMGR_BOOTSTRAP_KIND_INITRD_CAP 12u
-/* Fase 7.6: WAIT side of the IRQ KNotification (manifest irq_notify=1).
- * The kernel signals it on each routed IRQ; the service drains device
- * state via its KIoPort cap and re-arms with SYS_IRQ_ACK. Plain numeric:
- * included from assembly (services/kbd/main.S). */
-#define SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY 0x23u /* KBootstrapCap (SPAWN_SERVICE) for initrd access */
+#define SVCMGR_BOOTSTRAP_KIND_INITRD_CAP 12u /* KBootstrapCap (SPAWN_SERVICE) for initrd access */
+/* 0x23 (IRQ_NOTIFY, Fase 7.6) RETIRED in Fase 8: the IRQ KNotification
+ * WAIT side now arrives as the pre-start CSpace mint IRIS_CPTR_IRQ_NOTIFY
+ * (slot 7).  Reserved; do not reuse this kind value. */
+#define SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY 0x23u
 
 /* Byte offsets within KChanMsg.data[64] */
 #define SVCMGR_SPAWN_OFF_SERVICE_ID 0  /* uint32_t:    service kind selector       */

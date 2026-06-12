@@ -75,6 +75,14 @@ _start:
     movq  $0,    %rax
     syscall
 
+/* ── Fase 8: CPtr well-known slots — minted before we run ────────────────
+ * kbd_ep_h    = IRIS_CPTR_OWN_EP (5):     recv side of "kbd.ep"
+ * kbd_notif_h = IRIS_CPTR_IRQ_NOTIFY (7): WAIT side of the IRQ notification
+ * Bootstrap kinds 0x21/0x23 are retired; the channel below only delivers
+ * the handle-boundary caps (service/reply KChannels, KIoPort, KIrqCap). */
+    movl  $5, kbd_ep_h(%rip)
+    movl  $7, kbd_notif_h(%rip)
+
 /* ── Bootstrap: receive service/reply/ioport/irqcap handles ─────────────── */
 .kbd_bootstrap_recv:
     testq %r12, %r12
@@ -82,9 +90,6 @@ _start:
     testq %r13, %r13
     jz    .kbd_bootstrap_need
     testq %r14, %r14
-    jz    .kbd_bootstrap_need
-    movl  kbd_notif_h(%rip), %eax      /* IRQ KNotification (7.6): required */
-    testl %eax, %eax
     jz    .kbd_bootstrap_need
     cmpl  $0, 84(%rsp)
     jnz   .kbd_bootstrap_done
@@ -126,10 +131,6 @@ _start:
     je    .kbd_bootstrap_ioport
     cmpl  $SVCMGR_BOOTSTRAP_KIND_IRQ_CAP,    8(%rsp)
     je    .kbd_bootstrap_irqcap
-    cmpl  $KBD_EP_KIND_SERVICE_EP,           8(%rsp)
-    je    .kbd_bootstrap_ep
-    cmpl  $SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY, 8(%rsp)
-    je    .kbd_bootstrap_notif
     jmp   .kbd_bootstrap_fail
 
 .kbd_bootstrap_service:
@@ -146,14 +147,6 @@ _start:
 
 .kbd_bootstrap_irqcap:
     movl  %eax, 84(%rsp)               /* 84(%rsp) = IRQ cap handle (SYS_IRQ_ACK) */
-    jmp   .kbd_bootstrap_recv
-
-.kbd_bootstrap_ep:
-    movl  %eax, kbd_ep_h(%rip)         /* recv side of the kbd KEndpoint (7.4) */
-    jmp   .kbd_bootstrap_recv
-
-.kbd_bootstrap_notif:
-    movl  %eax, kbd_notif_h(%rip)      /* WAIT side of the IRQ notification (7.6) */
     jmp   .kbd_bootstrap_recv
 
 .kbd_bootstrap_done:

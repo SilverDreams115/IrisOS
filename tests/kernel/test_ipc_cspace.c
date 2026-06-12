@@ -435,6 +435,57 @@ void test_ipc_cspace(void) {
         free_proc(p);
     }
 
+    /* ── [Fase 8] namespace split: handle values never alias CSpace slots ──
+     * Regression for the Fase-8 boot bug: cspace_resolve_cap's radix walk
+     * masks the index (cptr & slot_count-1), so a HANDLE like 0x403 (1027)
+     * used to land on root slot 3 once low slots were populated.  The dual
+     * resolvers must treat >= 1024 as handle-table-only. */
+    {
+        struct KProcess *p = make_proc();
+        ASSERT_NOT_NULL(p);
+        struct KCNode *root = setup_cspace(p, 8);
+        ASSERT_NOT_NULL(root);
+
+        /* Occupy slot 3 with a WRONG-TYPE object (notification). */
+        struct KNotification *n = knotification_alloc();
+        ASSERT_NOT_NULL(n);
+        ASSERT_EQ(kcnode_mint(root, 3, &n->base, RIGHT_WAIT), IRIS_OK);
+        kobject_release(&n->base);
+
+        /* Insert an endpoint whose HANDLE id has low bits == 3.  Handle ids
+         * are slot | gen<<10; force the table slot to 3 by filling 0..2. */
+        struct KEndpoint *eps[4];
+        handle_id_t hs[4];
+        for (uint32_t i = 0; i < 4u; i++) {
+            eps[i] = kendpoint_alloc();
+            ASSERT_NOT_NULL(eps[i]);
+            hs[i] = handle_table_insert(&p->handle_table, &eps[i]->base,
+                                        RIGHT_READ | RIGHT_WRITE);
+            kobject_release(&eps[i]->base);
+        }
+        /* hs[2] sits in table slot 3 (slot 0 = cspace root handle). */
+        handle_id_t h_alias = hs[2];
+        ASSERT_EQ((uint32_t)(h_alias & 0x3FFu), 3u);
+
+        /* OLD bug: resolve walked CSpace, hit slot 3 (notification) and
+         * returned WRONG_TYPE.  NEW: >= 1024 goes straight to the handle
+         * table and resolves the REAL endpoint. */
+        struct KEndpoint *out; iris_rights_t rout;
+        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, (iris_cptr_t)h_alias,
+                                                    RIGHT_WRITE, &out, &rout),
+                  IRIS_OK);
+        ASSERT_TRUE(out == eps[2]);
+        kobject_release(&out->base);
+
+        /* And a true CPtr (< 1024) into an EMPTY slot must fail cleanly
+         * WITHOUT falling back to the handle table. */
+        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, 5u, RIGHT_NONE,
+                                                    &out, &rout),
+                  IRIS_ERR_NOT_FOUND);
+
+        free_proc(p);
+    }
+
     /* ── [EP] IPC lifecycle: active_refs NOT held after resolve ── */
     {
         /* Verifies that the IPC helpers release active_refs before returning.

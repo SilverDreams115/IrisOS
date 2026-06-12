@@ -35,8 +35,9 @@ The VFS does **not** create its own endpoint. svcmgr creates one KEndpoint per
 catalog service with `own_service_ep = 1` (today: vfs), keeps the master handle
 across restarts, and:
 
-- sends the **receive side** (`RIGHT_READ`) to the service at bootstrap, kind
-  `SVCMGR_BOOTSTRAP_KIND_SERVICE_EP` (0x21), delivered before `INITRD_CAP`;
+- pre-start-mints the **receive side** (`RIGHT_READ`) into the service's
+  root CNode at `IRIS_CPTR_OWN_EP` (slot 5; bootstrap kind 0x21 retired in
+  Fase 8);
 - publishes the **send side** (`RIGHT_WRITE`) under the reserved name
   `"vfs.ep"`, resolvable through both `IRIS_SVCMGR_EP_LOOKUP_NAME` and the
   legacy `SVCMGR_MSG_LOOKUP_NAME`.
@@ -136,12 +137,11 @@ for (;;) {
 
 ## Clients (endpoint-only since Fase 7.2)
 
-- **sh**: looks up `"vfs.ep"` once at boot through the svcmgr discovery
-  endpoint (bootstrap kind 0x20) and prints `[SH] vfs ep OK` /
-  `[SH] vfs ep FAILED`. `ls` and `cat` use LIST / READ_AT exclusively — the
-  legacy fallback was removed in Fase 7.2 and svcmgr no longer forwards the
-  vfs service/reply channels to sh (`give_vfs = 0`). A missing endpoint fails
-  the `[SH] vfs ep OK` smoke gate instead of being masked.
+- **sh** (Fase 8): reaches vfs through the well-known slot
+  `IRIS_CPTR_VFS_EP` (2), verified with a PING at boot — no lookup at all;
+  prints `[SH] vfs cptr OK` / `FAILED`. `ls` and `cat` use LIST / READ_AT
+  exclusively — the legacy fallback was removed in Fase 7.2. A broken slot
+  fails the `[SH] vfs cptr OK` smoke gate instead of being masked.
 - **init**: the S5/S6 healthy-path probes (Fase 7.2) resolve `"svcmgr.ep"`
   over the legacy lookup once, then EP_CALL `LOOKUP_NAME("vfs.ep")` with the
   standard retry/pause loop. S5 checks LIST 0–2 + out-of-range `NOT_FOUND`;
