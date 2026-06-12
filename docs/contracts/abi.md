@@ -147,6 +147,7 @@ These syscall families carry the highest near-term hardening risk and should be 
 - `kernel/include/iris/syscall.h`
 - `kernel/core/syscall/syscall.c`
 - `kernel/include/iris/svcmgr_proto.h`
-- `kernel/include/iris/vfs_proto.h`
-- `kernel/include/iris/kbd_proto.h`
-- `kernel/include/iris/console_proto.h`
+- `kernel/include/iris/vfs_ep_proto.h` (replaced `vfs_proto.h`, removed in Fase 7.5)
+- `kernel/include/iris/kbd_proto.h` (legacy probes) + `kbd_ep_proto.h` (event ABI, Fase 7.4)
+- `kernel/include/iris/console_proto.h` (legacy writer) + `console_ep_proto.h` (EP ABI, Fase 7.3)
+- `kernel/include/iris/endpoint_proto.h` (endpoint/bootstrap-kind/CPtr ABI)

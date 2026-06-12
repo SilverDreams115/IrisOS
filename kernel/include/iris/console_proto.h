@@ -2,7 +2,12 @@
 #define IRIS_CONSOLE_PROTO_H
 
 /*
- * Ring-3 serial console protocol.
+ * Ring-3 serial console protocol (LEGACY KChannel path).
+ *
+ * Since Fase 7.3 the console is endpoint-first: endpoint clients (init, sh,
+ * vfs, iris_test) use CONSOLE_EP_OP_WRITE/SYNC over "console.ep"
+ * (iris/console_ep_proto.h).  This KChannel protocol remains only for
+ * svcmgr (which still runs its legacy loop) and retires with it.
  *
  * Current contract:
  *   - clients send CONSOLE_MSG_WRITE over a KChannel handle with RIGHT_WRITE

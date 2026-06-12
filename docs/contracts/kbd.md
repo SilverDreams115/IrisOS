@@ -31,16 +31,26 @@ From `svcmgr`, `kbd` expects these bootstrap deliveries:
 
 If bootstrap delivery is incomplete, `kbd` fails its startup path.
 
-## IRQ-facing contract
+## IRQ-facing contract (Fase 7.6: KNotification)
 
-Keyboard IRQ delivery uses the generic IRQ routing layer:
+Keyboard IRQ delivery uses the generic IRQ routing layer with a
+**KNotification** destination (catalog flag `irq_notify = 1`):
 
-- IRQ1 is routed to the `kbd` public service channel
-- routed hardware events arrive as `KBD_MSG_IRQ_SCANCODE`
-- payload:
-  - one raw PS/2 scancode byte
+- svcmgr owns the notification master (kept across restarts) and registers
+  it as the IRQ1 route; the WAIT side reaches `kbd` at bootstrap as
+  `SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY` (0x23) — mandatory for startup
+- on each IRQ the kernel signals bit `1 << irq` (signal-only; no message)
+- `kbd` wakes from `SYS_NOTIFY_WAIT_TIMEOUT`, reads the scancode byte from
+  port 0x60 via its `KIoPort` cap and re-arms with `SYS_IRQ_ACK`
 
-The message opcode is shared with the generic routing layer value and must remain in sync with `IRQ_MSG_TYPE_SIGNAL`.
+> **Historical (retired in Fase 7.6):** IRQ1 used to be routed to the kbd
+> public service channel as `KBD_MSG_IRQ_SCANCODE` messages. That delivery
+> path is no longer dispatched; the opcode remains defined only as a
+> historical constant.
+
+Key events reach consumers over the `"kbd.ep"` KEndpoint
+(`KBD_EP_OP_POLL` / `KBD_EP_OP_READ` with parked KReply — see
+`docs/kbd-endpoint.md`); the legacy channel below carries only probes.
 
 ## Client request/response surface
 

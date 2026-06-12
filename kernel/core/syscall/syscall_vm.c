@@ -95,8 +95,8 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_OVERFLOW);
     }
 
-    if (v->demand) {
-        /* Demand VMO: allocate physical pages eagerly; map via KFrame. */
+    if (v->sparse) {
+        /* Sparse VMO: allocate physical pages eagerly; map via KFrame. */
 
         /* Pre-check: no VA in the range must already have a PTE. */
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
@@ -280,7 +280,7 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
     if (!initrd_get((uint32_t)arg1, &elf_data, &elf_size))
         return syscall_err(IRIS_ERR_NOT_FOUND);
 
-    /* Create a demand VMO and copy ELF bytes into pre-populated pages.
+    /* Create a sparse VMO and copy ELF bytes into pre-populated pages.
      * initrd_get returns a kernel virtual address (identity-mapped) that is
      * NOT guaranteed to be page-aligned.  Rather than wrapping the raw
      * physical address (which paging_map_checked_in would align down, causing
@@ -423,7 +423,7 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    if (v->demand) {
+    if (v->sparse) {
         /* Pre-check: no VA in the range must already have a PTE. */
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
             if (paging_virt_to_phys_in(proc->cr3, vaddr + off) != 0) {

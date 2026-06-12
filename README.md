@@ -26,7 +26,7 @@ The system reaches a fully interactive runtime with all of the following active:
 - **Kernel**: PMM, 4-level paging with PCID (CR4.PCIDE), per-process address spaces, GDT/IDT, 8259A PIC, PIT at 100 Hz, LAPIC detected and software-enabled, round-robin + preemptive scheduler, `syscall`/`sysret` dispatch, capability enforcement
 - **SMP foundation**: per-CPU `iris_cpu_local` struct (GS-relative via IA32_GS_BASE), LAPIC ID stored per-CPU, context-switch and idle-tick counters; AP bringup deferred
 - **IPC**: `KChannel` ring-buffer IPC (capacity 128), attached-handle transfer with rights reduction, `KNotification` signal/wait, `SYS_CHAN_CALL` synchronous IPC, `SYS_CHAN_RECV_TIMEOUT`, `SYS_WAIT_ANY` (up to 64 channels)
-- **Memory**: demand-paged VMOs, `SYS_VMO_MAP`, `SYS_VMO_UNMAP`, `SYS_VMO_SHARE`, `SYS_VMO_SIZE`, per-process 8 MB physical page quota, VMO page-shard locks (16 shards)
+- **Memory**: sparse VMOs with eager map-time allocation (no demand paging), `SYS_VMO_MAP`, `SYS_VMO_UNMAP`, `SYS_VMO_SHARE`, `SYS_VMO_SIZE`, per-process 8 MB physical page quota, VMO page-shard locks (16 shards)
 - **Process and thread management**: `SYS_PROCESS_CREATE`, `SYS_THREAD_CREATE`, `SYS_THREAD_START`, `SYS_THREAD_EXIT`, `SYS_PROCESS_WATCH`, `SYS_PROCESS_KILL`, `SYS_PROCESS_STATUS`, automatic teardown on last-thread exit
 - **Capability system**: per-handle rights (READ, WRITE, DUPLICATE, TRANSFER, ROUTE, MANAGE), rights reduction on dup/transfer, generation-stamped handle IDs, stale-handle detection
 - **Hardware capabilities**: `KIrqCap` (IRQ routing, capability-gated), `KIoPort` (I/O port range, whitelist-validated), `KBootstrapCap` (per-bit permission flags, one-shot framebuffer claim)
@@ -110,7 +110,7 @@ Retired (return `IRIS_ERR_NOT_SUPPORTED`): `SYS_WRITE(0)`, `SYS_BRK(7)`, `SYS_SP
 | Type | Description |
 |------|-------------|
 | `KOBJ_CHANNEL` | Ring-buffer IPC channel; capacity 128 messages |
-| `KOBJ_VMO` | Memory object; demand-paged or eager, up to 16384 pages |
+| `KOBJ_VMO` | Memory object; sparse (eagerly populated at map time) or contiguous/MMIO wrap, up to 16384 pages |
 | `KOBJ_NOTIFICATION` | Lightweight signal/wait |
 | `KOBJ_PROCESS` | Process container; owns address space (CR3 + PCID) and handle table |
 | `KOBJ_IRQ_CAP` | Hardware IRQ routing capability |
@@ -183,7 +183,7 @@ If the handler never calls `SYS_IRQ_ACK` the IRQ line stays masked permanently, 
 - `SYS_IRQ_ROUTE_REGISTER` requires `KIrqCap` with `RIGHT_ROUTE`, a channel with `RIGHT_READ | RIGHT_WRITE`, and a process handle with `RIGHT_ROUTE`; the caller never chooses the IRQ number directly
 - IRQ route ownership is process-scoped: `kprocess_teardown` always calls `irq_routing_unregister_owner`, which only masks the PIC line if a route was actually registered to that process
 - `SYS_FRAMEBUFFER_VMO` clears the valid flag before copying the params struct to prevent TOCTOU double-claim
-- usercopy validates pages through the current process VMO mapping list, resolving demand faults before checking PTEs
+- usercopy validates pages through the current process VMO mapping list and PTEs; it never allocates pages (demand paging was removed in Fase 6.1)
 - PMM double-free calls `iris_panic`; `irq_spinlock_t` guards all PMM, futex, and klog operations
 - Stack RSP for bootstrap tasks is randomized by 0–240 bytes (16-byte aligned, RDTSC entropy) to reduce stack-layout predictability
 

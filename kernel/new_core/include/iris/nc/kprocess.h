@@ -79,7 +79,8 @@ struct KProcess {
     uint32_t owned_channels;
     uint32_t owned_notifications;
     uint32_t owned_vmos;
-    uint32_t phys_pages_charged; /* pages allocated by demand fault; vs phys_pages_limit */
+    uint32_t phys_pages_charged; /* sparse-VMO pages charged at eager map-time
+                                  * allocation; vs phys_pages_limit */
     uint32_t phys_pages_limit;   /* set to KPROCESS_PHYS_PAGES_LIMIT at alloc */
 
     /* Ph95 (Phase 8): root CNode handle for hierarchical CSpace traversal.

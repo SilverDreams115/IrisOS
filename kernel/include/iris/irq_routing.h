@@ -9,10 +9,12 @@ struct KNotification;
 
 #define IRQ_ROUTE_MAX 16  /* maximum routable hardware IRQ lines (0..IRQ_ROUTE_MAX-1) */
 
-/* Message type placed in KChanMsg.type for all routed IRQ notifications.
- * Each service that consumes a routed IRQ must recognise this opcode.
- * kbd_proto.h defines KBD_MSG_IRQ_SCANCODE with the same value for the
- * keyboard service; the two must stay in sync.                        */
+/* Message type placed in KChanMsg.type for IRQs routed to a KChannel.
+ * Each service that consumes a channel-routed IRQ must recognise this
+ * opcode. kbd_proto.h defines KBD_MSG_IRQ_SCANCODE with the same value;
+ * the two must stay in sync. NOTE: since Fase 7.6 routes can target a
+ * KNotification instead (irq_routing_register_notification) — those
+ * signal bit 1<<irq and carry no message; kbd uses that path now.    */
 #define IRQ_MSG_TYPE_SIGNAL  0x4u
 
 /* Maps hardware IRQ lines (0-IRQ_ROUTE_MAX-1) to KChannel objects.

@@ -97,7 +97,7 @@ void kprocess_release_bootstrap_frames(struct KProcess *p) {
 }
 
 /* ── Minimal test VMO stub ─────────────────────────────────────────────────
- * Creates a bare-bones KVmo (demand=0, owned=0, no pages[], no PMM) suitable
+ * Creates a bare-bones KVmo (sparse=0, owned=0, no pages[], no PMM) suitable
  * for unit tests that exercise kframe_alloc_vmo_page / kframe_obj_destroy
  * without pulling full kvmo.c (which needs pmm_alloc_pages / PHYS_TO_VIRT).
  * Destroy calls kslab_free only — no PMM.

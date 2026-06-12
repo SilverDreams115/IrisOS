@@ -2,127 +2,74 @@
 
 ## Purpose
 
-Defines the current userland VFS contract for boot exports, client-visible file state, and dead-client cleanup.
+Defines the current userland VFS contract: an **endpoint-only, stateless**
+read-only namespace service (since Fase 7.2/7.5).
+
+> **Historical note (retired ABI).** Until Fase 7.5 the VFS spoke a stateful
+> KChannel protocol (`vfs_proto.h`: `VFS_MSG_OPEN/READ/CLOSE/STATUS/LIST`
+> with per-client `file_id` state and process-watch dead-client reclaim).
+> That protocol and its header were **removed in Fase 7.5** and are no longer
+> ABI. This document used to describe it; see git history if you need the old
+> contract. The wire protocol of record is now `iris/vfs_ep_proto.h`,
+> documented in `docs/vfs-endpoint.md`.
 
 ## Ownership
 
 `vfs` owns:
 
-- client-visible `file_id` namespace
-- per-client open-file state
-- exported boot namespace
-- offsets and stale-id rejection
-- dead-client reclaim through process-watch events
+- the exported boot namespace (static boot files + initrd-backed exports)
+- export metadata (name, size, readiness)
 
-The kernel no longer owns the healthy-path `OPEN/READ/CLOSE` semantics for normal clients.
+`vfs` deliberately owns **no per-client state**: the endpoint protocol is
+stateless (full addressing in every request), because `IrisMsg` carries no
+sender identity. There are no `file_id`s, no open-file table, and therefore
+no dead-client reclaim — nothing to reclaim.
 
 ## Bootstrap contract
 
-`vfs` is spawned by `svcmgr` as an ELF service and receives in `RBX`:
+`vfs` is spawned by `svcmgr` as a catalog service with `own_service_ep = 1`
+and `endpoint_only = 1`:
 
-- a private bootstrap channel handle
+- it receives in `RBX` a private bootstrap channel handle;
+- over that channel it receives the **receive side of its KEndpoint**
+  (kind `SVCMGR_BOOTSTRAP_KIND_SERVICE_EP` = 0x21, `RIGHT_READ`, sent before
+  `INITRD_CAP`), the svcmgr discovery endpoint (kind 0x20) and one
+  `KBootstrapCap` (INITRD_CAP kind, `RIGHT_READ`) for initrd VMO access;
+- **no legacy service/reply channel pair is created** (`endpoint_only`).
 
-From `svcmgr`, `vfs` receives over that bootstrap channel:
+The endpoint is mandatory: without it the service has no request surface and
+the smoke gate (`[VFS] ep ready`) fails.
 
-- one public request handle for the VFS service endpoint
-- one reply handle for VFS replies
-- one `KBootstrapCap` (INITRD_CAP kind) for initrd VMO access
+## Request/response surface (current ABI)
 
-Current child rights from the service catalog:
+Wire format `struct IrisMsg` over `SYS_EP_CALL` / `SYS_REPLY`; opcodes in
+`iris/vfs_ep_proto.h`; full semantics in `docs/vfs-endpoint.md`:
 
-- service handle: `RIGHT_READ | RIGHT_WRITE`
-- reply handle: `RIGHT_WRITE`
-- spawn cap: `RIGHT_READ` (used to call `SYS_INITRD_COUNT` and `SYS_INITRD_VMO`)
+- `VFS_EP_OP_LIST` (0x0101) — enumerate exports by visible index
+- `VFS_EP_OP_STAT` (0x0102) — size of a named export
+- `VFS_EP_OP_READ_AT` (0x0103) — stateless read: path + offset + length
+- `VFS_EP_OP_STATUS` (0x0104) — bounded service summary (Fase 7.5)
+- `IRIS_EP_OP_PING` (0xFF01) — health check
 
-## Request/response surface
+Replies: `IRIS_EP_REPLY_OK`, or `IRIS_EP_REPLY_ERR` with
+`words[0] = (uint32_t)iris_error_t`. Exactly one reply per request; malformed
+requests fail cleanly with `IRIS_ERR_INVALID_ARG`.
 
-Current request opcodes:
+## Boot export invariants
 
-- `VFS_MSG_OPEN`
-- `VFS_MSG_READ`
-- `VFS_MSG_CLOSE`
-- `VFS_MSG_STATUS`
-- `VFS_MSG_LIST`
+- 4 static boot files: `iris.txt`, `services.txt`, `readme.txt`, `catalog.txt`.
+- At runtime `vfs` seeds 8 additional initrd-backed exports (one per initrd
+  image: userboot, init, svcmgr, kbd, vfs, console, fb, sh) — total 12 of a
+  capacity of `VFS_SERVICE_EXPORTS` (16).
+- Initrd-backed exports are read through eagerly-established VMO mappings
+  (`SYS_INITRD_VMO` + `SYS_VMO_MAP` at seed time; `is_mapped`/`virt_base` in
+  `struct vfs_export`). There is **no** fault-driven mapping involved.
+- Total exported bytes are not a fixed invariant; initrd ELF sizes vary by
+  build.
 
-Current reply opcodes:
+## Clients
 
-- `VFS_MSG_OPEN_REPLY`
-- `VFS_MSG_READ_REPLY`
-- `VFS_MSG_CLOSE_REPLY`
-- `VFS_MSG_STATUS_REPLY`
-- `VFS_MSG_LIST_REPLY`
-
-## `OPEN` contract
-
-`VFS_MSG_OPEN` requires:
-
-- a NUL-terminated path
-- path length within `VFS_MSG_OPEN_PATH_MAX`
-- an attached caller `KProcess` handle
-
-The attached caller handle must carry `RIGHT_READ` so `vfs` can arm a process-exit watch.
-
-Current healthy-path client behavior:
-
-- `init` opens `iris.txt`
-- `init` duplicates `SYS_PROCESS_SELF` with `RIGHT_READ | RIGHT_TRANSFER`
-- `vfs` uses that proc handle to reclaim state if the client dies
-
-## `READ` contract
-
-`VFS_MSG_READ` addresses an existing `file_id` and requested byte length.
-
-Current reply contract:
-
-- reply echoes `file_id`
-- carries `err`
-- carries actual returned byte count
-- payload bytes are bounded by `VFS_MSG_READ_REPLY_DATA_MAX`
-
-## `CLOSE` contract
-
-`VFS_MSG_CLOSE` retires a client-visible `file_id`.
-
-After close:
-
-- that `file_id` must not remain usable by the client
-- stale-id access is treated as invalid
-
-## `LIST` contract
-
-`VFS_MSG_LIST` enumerates the boot export namespace by index.
-
-Current healthy-path expectations checked by `init`:
-
-- index `0` succeeds (iris.txt)
-- index `1` succeeds (services.txt)
-- index `2` succeeds (readme.txt)
-- index `100` fails as out-of-bounds
-
-Current boot export invariants:
-
-- `VFS_BOOT_EXPORT_COUNT == 4` (static boot files: iris.txt, services.txt, readme.txt, catalog.txt)
-- At runtime `vfs` registers 8 additional initrd-backed exports (one per initrd image)
-- Total runtime export count is `12` (4 static + 8 initrd) given the current initrd catalog
-- Total exported bytes are not a fixed invariant; initrd ELF sizes vary by build
-
-## `STATUS` contract
-
-`VFS_MSG_STATUS` returns bounded service-local summary fields:
-
-- protocol version
-- ready export count
-- live open file count
-- open file capacity
-- total exported bytes
-
-If a one-shot reply handle is attached, it must grant `RIGHT_WRITE`. If not attached, the service may use the bootstrapped shared reply channel for compatibility.
-
-## Current invariants
-
-- `vfs` is the source of truth for boot-file export metadata.
-- `vfs` capacity is bounded by `VFS_SERVICE_OPEN_FILES`.
-- `vfs` is responsible for reclaiming dead-client state rather than delegating that ownership back to the kernel.
-- Healthy boot requires at least `VFS_BOOT_EXPORT_COUNT` exports; the exact runtime count is `>= VFS_BOOT_EXPORT_COUNT`.
-- Initrd-backed exports are demand-mapped: page faults on their virtual range are resolved transparently by the kernel without a VFS quota charge.
-- `vfs_bytes` reported by `VFS_MSG_STATUS` is not a fixed invariant; it includes initrd ELF sizes which vary by build.
+- `sh`: `ls` / `cat` via EP_CALL on `"vfs.ep"` (endpoint-only since 7.2).
+- `init`: S5/S6 healthy-path probes (LIST / STAT / READ_AT), fail-fast.
+- `svcmgr`: diagnostics via `VFS_EP_OP_STATUS` (Fase 7.5).
+- `iris_test`: T026–T030 protocol conformance, T031 `.ep` anti-spoof.

@@ -140,7 +140,7 @@ Current reply fields:
 
 To satisfy it, `svcmgr` must:
 
-1. query `vfs` with `VFS_MSG_STATUS`
+1. query `vfs` with `VFS_EP_OP_STATUS` over `"vfs.ep"` (EP_CALL; the legacy `VFS_MSG_STATUS` was retired with `vfs_proto.h` in Fase 7.5)
 2. query `kbd` with `KBD_MSG_STATUS`
 3. combine those results with its own internal counters (task count, process count, IRQ routes, tick snapshot)
 

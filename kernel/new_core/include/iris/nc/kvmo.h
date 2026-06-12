@@ -13,10 +13,11 @@ struct KProcess;
 #define KVMO_MAX_SIZE  ((uint64_t)KVMO_MAX_PAGES * 0x1000ULL)
 
 /*
- * Number of per-page shard locks in each demand VMO.
+ * Number of per-page shard locks in each sparse VMO.
  *
- * A single base.lock for all demand-page allocations creates a bottleneck when
- * multiple threads of the same process fault on different pages simultaneously.
+ * A single base.lock for all sparse per-page allocations creates a bottleneck
+ * when multiple threads of the same process touch different pages
+ * simultaneously (e.g. concurrent SYS_VMO_MAP population).
  * Shard locks reduce contention: page_idx is hashed to a shard with a bitmask,
  * so pages that fall in different shards can be allocated concurrently.
  *
@@ -29,17 +30,20 @@ struct KProcess;
  * Can be mapped into a process address space via SYS_VMO_MAP. */
 struct KVmo {
     struct KObject base;    /* must be first */
-    uint64_t       phys;    /* physical base address (0 for demand VMOs) */
+    uint64_t       phys;    /* physical base address (0 for sparse VMOs) */
     uint64_t       size;    /* size in bytes */
     uint8_t        owned;   /* 1 = PMM-allocated, 0 = external (MMIO/FB) */
-    uint8_t        demand;  /* 1 = lazy per-page allocation */
+    uint8_t        sparse;  /* 1 = sparse VMO: per-page physical frames
+                             * (pages[]), allocated EAGERLY at map time —
+                             * there is NO fault-driven demand paging
+                             * (Fase 6.1 removed it; FR-41 regression). */
     struct KProcess *owner; /* creator retained for quota accounting */
-    uint32_t       page_capacity;     /* slots in pages[] for demand VMOs */
+    uint32_t       page_capacity;     /* slots in pages[] for sparse VMOs */
     uint32_t       pages_meta_pages;  /* PMM pages backing pages[] metadata */
     uint64_t       pages_meta_phys;   /* physical base of pages[] metadata */
     uint64_t      *pages;             /* phys per page; 0 = not yet allocated */
 
-    /* Per-page shard spinlocks for demand VMOs.
+    /* Per-page shard spinlocks for sparse VMOs.
      * Lock: page_shards[page_idx & (KVMO_PAGE_SHARDS - 1)]
      * base.lock is still used for VMO-level metadata (owner binding, etc.). */
     spinlock_t     page_shards[KVMO_PAGE_SHARDS];

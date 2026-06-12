@@ -31,7 +31,7 @@ The current single-layer model:
   - live task and process counts (maintained internally)
   - active IRQ route count (maintained internally)
   - scheduler tick snapshot (maintained internally)
-- `vfs` status values from `VFS_MSG_STATUS`
+- `vfs` status values from `VFS_EP_OP_STATUS` (EP_CALL on `"vfs.ep"`; legacy `VFS_MSG_STATUS` retired in Fase 7.5)
 - `kbd` status values from `KBD_MSG_STATUS`
 
 The resulting `SVCMGR_MSG_DIAG_REPLY` is the current system-health gate used by `init`.

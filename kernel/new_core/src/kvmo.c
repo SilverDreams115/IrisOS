@@ -10,7 +10,7 @@ static _Atomic uint32_t kvmo_live;
 
 static void kvmo_destroy(struct KObject *obj) {
     struct KVmo *v = (struct KVmo *)obj;
-    if (v->demand) {
+    if (v->sparse) {
         for (uint32_t i = 0; i < v->page_capacity; i++) {
             if (v->pages[i])
                 pmm_free_page(v->pages[i]);
@@ -87,7 +87,7 @@ struct KVmo *kvmo_create(uint64_t size) {
 
     v->size   = size;
     v->owned  = 1;
-    v->demand = 1;
+    v->sparse = 1;
     v->page_capacity = pages;
     v->pages_meta_pages = meta_pages;
     v->pages_meta_phys = meta_phys;

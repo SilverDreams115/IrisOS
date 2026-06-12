@@ -161,7 +161,7 @@ If `bootstrap_kframe_map` fails mid-loop:
 
 Both syscalls now eagerly install KFrame-backed PTEs:
 
-- Demand VMOs: each page allocated via `pmm_alloc_page` if not yet present,
+- Sparse VMOs (named "demand" before Fase V1): each page allocated via `pmm_alloc_page` if not yet present,
   then wrapped in a `KFrame` created by `kframe_alloc_vmo_page(phys, v)`.
   The VMO retain in `f->vmo_owner` defers `kvmo_destroy` until after all frames
   for that VMO's pages are released.

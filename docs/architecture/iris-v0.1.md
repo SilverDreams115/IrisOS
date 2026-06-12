@@ -41,7 +41,7 @@ It is intentionally concise and must stay aligned with the live code.
 ## Core kernel objects
 
 - `KChannel`: bounded IPC queue with attached-handle transfer
-- `KVmo`: demand-paged virtual memory object
+- `KVmo`: virtual memory object (sparse per-page or contiguous; populated eagerly at map time — no demand paging since Fase 6.1)
 - `KNotification`: event object with signal bits and waiter slots
 - `KProcess`: address space, handle table, and thread ownership
 - `KIrqCap`: IRQ routing authority

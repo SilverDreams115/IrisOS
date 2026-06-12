@@ -71,6 +71,18 @@ For changes that specifically touch lifecycle, diagnostics, IPC, handle transfer
   - `make ENABLE_RUNTIME_SELFTESTS=1`
   - `make run`
 
+## Build-configuration toggling guarantee
+
+Toggling `ENABLE_RUNTIME_SELFTESTS` between invocations is safe and must
+keep working on the FIRST `make` after the flip. Stale-artifact cleanup runs
+at Makefile **parse time** (see the `BUILD_CONFIG_ON_DISK` block at the top
+of the Makefile): a recipe-time cleanup used to delete objects make had
+already stat-cached, making the first link after a flip fail on missing
+`*_bin.o` until a second invocation. That race is fixed; verified in
+Fase V1 with four consecutive first-invocation toggles
+(0→1, 1→0, 0→1, 1→0 — all RC=0, zero errors). If a first-invocation toggle
+ever fails again, treat it as a regression of this guarantee.
+
 ## Current gaps worth closing next
 
 The baseline above is the minimum that should stay green. The next additions

@@ -18,13 +18,17 @@ creation through mapping, copying, and teardown.
 
 ## VMO Kinds
 
-**Demand VMO** (`kvmo_create`, `v->demand == 1`, `v->owned == 1`)  
+**Sparse VMO** (`kvmo_create`, `v->sparse == 1`, `v->owned == 1`)  
 Backed by PMM pages.  Pages in `v->pages[]` are either 0 (unallocated) or a physical address.
 `sys_vmo_map` and `sys_vmo_map_into` allocate any zero entries via `pmm_alloc_page` before
-installing PTEs.  `kframe_alloc_vmo_page(phys, v)` creates the KFrame and retains the VMO so
+installing PTEs — allocation is **eager at map time**; there is no fault-driven demand paging
+(removed in Fase 6.1, guarded by the FR-41 regression test).
+`kframe_alloc_vmo_page(phys, v)` creates the KFrame and retains the VMO so
 that `kvmo_destroy` (and thus `pmm_free_page`) cannot run while the mapping is live.
+(The field was named `demand` until Fase V1; it was renamed because the old
+name suggested fault-time paging that does not exist.)
 
-**Wrap/MMIO VMO** (`kvmo_wrap`, `v->demand == 0`, `v->owned == 0`)  
+**Wrap/MMIO VMO** (`kvmo_wrap`, `v->sparse == 0`, `v->owned == 0`)  
 Wraps a contiguous physical range (e.g. framebuffer).  Pages are not PMM-owned.  Each page is
 mapped via `kframe_alloc(phys + off, 4096, NULL)` — no `vmo_owner` set, so the frame's destroy
 path never calls `pmm_free_page`.
@@ -36,8 +40,8 @@ Both syscalls use the same eager-mapping strategy:
 1. Pre-check: walk `[vaddr, vaddr+map_size)` to verify no existing PTEs (returns `IRIS_ERR_BUSY`
    if any page is already mapped).
 2. For each page in the VMO:
-   - Demand: if `v->pages[i] == 0`, allocate with `pmm_alloc_page` and zero the page.
-   - Call `kframe_alloc_vmo_page(phys, v)` (demand) or `kframe_alloc(phys, 4096, NULL)` (MMIO).
+   - Sparse: if `v->pages[i] == 0`, allocate with `pmm_alloc_page` and zero the page.
+   - Call `kframe_alloc_vmo_page(phys, v)` (sparse) or `kframe_alloc(phys, 4096, NULL)` (MMIO).
    - Call `kframe_map_page(f, vs, va, flags)` — this installs the PTE inside `vs->lock`, adds a
      `KFrameMapping` node to `vs->mappings`, retains the frame, and increments `mapped_count`.
    - Call `kobject_release(&f->base)` to drop the alloc retain; the mapping retain remains.

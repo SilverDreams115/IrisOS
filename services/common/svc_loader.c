@@ -320,7 +320,7 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
         /* 5. Choose page-aligned ASLR bias. */
         uint64_t bias = sl_choose_bias(max_vend);
 
-        /* 6. Create a demand VMO for each segment. */
+        /* 6. Create a sparse VMO for each segment (populated eagerly at map). */
         for (uint32_t i = 0; i < seg_count; i++) {
             r = sl_sys1(SYS_VMO_CREATE, (long)seg_map_size[i]);
             if (r < 0) goto out;
@@ -416,7 +416,7 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
         if (r < 0) goto out;
         ch_h = (handle_id_t)r;
 
-        /* 14. Create user stack demand VMO and map into child. */
+        /* 14. Create user stack sparse VMO and map into child. */
         r = sl_sys1(SYS_VMO_CREATE, (long)USER_STACK_SIZE);
         if (r < 0) goto out;
         stack_vmo_h = (handle_id_t)r;
@@ -426,7 +426,7 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
                     (long)USER_STACK_BASE, 1 /*WRITABLE*/);
         if (r < 0) goto out;
 
-        /* 15. Map each segment demand VMO into child with correct W^X flags. */
+        /* 15. Map each segment sparse VMO into child with correct W^X flags. */
         for (uint32_t i = 0; i < seg_count; i++) {
             long flags = 0;
             if (seg_p_flags[i] & PF_W) flags |= 1; /* WRITABLE */
