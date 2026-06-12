@@ -5,6 +5,7 @@
 #include <iris/nc/kchannel.h>
 
 struct KProcess;
+struct KNotification;
 
 #define IRQ_ROUTE_MAX 16  /* maximum routable hardware IRQ lines (0..IRQ_ROUTE_MAX-1) */
 
@@ -22,6 +23,15 @@ struct KProcess;
  * via SYS_CHAN_RECV.                                                   */
 
 void    irq_routing_init    (void);
+
+/* Fase 7.6: route an IRQ to a KNotification instead of a KChannel. When the
+ * IRQ fires the kernel calls knotification_signal(notif, 1u << irq) — no
+ * message, no queue; the consumer drains device state via its KIoPort cap
+ * and re-arms with SYS_IRQ_ACK. A route holds either a channel or a
+ * notification, never both (registering one replaces the other). */
+void    irq_routing_register_notification(uint8_t irq,
+                                          struct KNotification *notif,
+                                          struct KProcess *owner);
 
 /*
  * irq_routing_active_count: count IRQ routing table entries with a live channel.

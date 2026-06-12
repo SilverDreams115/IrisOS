@@ -38,3 +38,6 @@ out/
 
 # Local agent instructions
 AGENTS.md
+
+# Local agent state
+.codex

@@ -31,6 +31,10 @@ struct svcmgr_service_state {
      * stay valid; recv side goes to the child at bootstrap (kind 0x21) and
      * the send side is published as "<image_name>.ep". */
     handle_id_t ep_h;
+    /* IRQ KNotification master (Fase 7.6; manifest irq_notify=1). Created
+     * once and kept across restarts; the kernel signals it per IRQ and the
+     * WAIT side goes to the child at bootstrap (kind 0x23). */
+    handle_id_t irq_notif_h;
     uint8_t restart_count;
     uint8_t reserved[3];
 };
@@ -47,6 +51,9 @@ struct svcmgr_state {
     handle_id_t bootstrap_h;
     handle_id_t spawn_cap_h;
     handle_id_t console_h;                                    /* write end of console channel */
+    handle_id_t console_ep_h;  /* console KEndpoint send side (Fase 7.3):
+                                * delivered by init at bootstrap (kind 0x22),
+                                * published as "console.ep". */
     handle_id_t ep_h;                                         /* svcmgr KEndpoint for EP-based discovery */
     handle_id_t irq_caps[SVCMGR_IRQ_CAPS_TABLE_SIZE];       /* indexed by IRQ number  */
     handle_id_t ioport_caps[SVCMGR_IOPORT_CAPS_TABLE_SIZE]; /* indexed by service_id  */
@@ -71,6 +78,7 @@ static const char sm_str_lookupsendfail[] = "[SVCMGR] WARN: lookup reply send fa
 static const char sm_str_diag_fail[]    = "[SVCMGR] WARN: diagnostics query failed\n";
 /* sm_str_svc_exited replaced by inline format in svcmgr_release_service (logs name) */
 static const char sm_str_irqfail[]      = "[SVCMGR] WARN: irq route xfer failed\n";
+static const char sm_str_cptrfail[] = "[SVCMGR] cptr mint FAILED\n";
 static const char sm_str_svc_unknown[]  = "[SVCMGR] WARN: unknown bootstrap service\n";
 static const char sm_str_watchok[]      = "[SVCMGR] lifecycle watch armed\n";
 static const char sm_str_bootcapfail[]  = "[SVCMGR] FATAL: missing spawn capability\n";
@@ -87,6 +95,17 @@ static const char sm_str_diag_req[]          = "[SVCMGR][DIAG] request\n";
 static const char sm_str_diag_vfs[]          = "[SVCMGR][DIAG] vfs status OK\n";
 static const char sm_str_diag_kbd[]          = "[SVCMGR][DIAG] kbd status OK\n";
 static const char sm_str_diag_done[]         = "[SVCMGR][DIAG] reply sent\n";
+
+static inline int64_t svcmgr_syscall4(uint64_t num, uint64_t arg0, uint64_t arg1,
+                                      uint64_t arg2, uint64_t arg3) {
+    int64_t ret;
+    register uint64_t _a3 __asm__("r10") = arg3;
+    __asm__ volatile ("syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(arg0), "S"(arg1), "d"(arg2), "r"(_a3)
+        : "rcx", "r11", "memory");
+    return ret;
+}
 
 static inline int64_t svcmgr_syscall3(uint64_t num, uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     int64_t ret;
@@ -199,6 +218,10 @@ static int svcmgr_recv_bootstrap_caps(struct svcmgr_state *state) {
         if (kind == SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP) {
             state->console_h = msg.attached_handle;
             continue; /* keep reading — SPAWN_CAP comes next */
+        }
+        if (kind == SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP) {
+            state->console_ep_h = msg.attached_handle;  /* Fase 7.3 */
+            continue;
         }
         if (kind == SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP &&
             rights_check(msg.attached_rights, RIGHT_READ)) {
@@ -372,8 +395,20 @@ static int svcmgr_resolve_ep_name(struct svcmgr_state *state, const char *name,
         if (state->ep_h == HANDLE_INVALID) return 0;
         *master_h = state->ep_h;
         /* Discovery cap: TRANSFER allows holders (e.g. init) to distribute
-         * it to children; it only grants EP_CALL on svcmgr, never recv. */
-        *allowed  = RIGHT_WRITE | RIGHT_TRANSFER;
+         * it to children — including by CSpace mint (Fase 8), which needs
+         * DUPLICATE. It only grants EP_CALL on svcmgr, never recv. */
+        *allowed  = RIGHT_WRITE | RIGHT_TRANSFER | RIGHT_DUPLICATE;
+        return 1;
+    }
+
+    /* "console.ep" (Fase 7.3): the console is spawned by init, not from the
+     * catalog; init delivers the send side at bootstrap (kind 0x22). Same
+     * anti-spoof property as catalog ".ep" names: bootstrap-delivered,
+     * never runtime-registered. */
+    if (svcmgr_name_equal(name, "console.ep")) {
+        if (state->console_ep_h == HANDLE_INVALID) return 0;
+        *master_h = state->console_ep_h;
+        *allowed  = RIGHT_WRITE;
         return 1;
     }
 
@@ -678,6 +713,12 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
         }
         break;
     }
+    case IRIS_EP_OP_PING:
+        /* Health check (Fase 8: also the CPtr-first discovery probe). */
+        reply.label      = IRIS_EP_REPLY_OK;
+        reply.words[0]   = 0u;
+        reply.word_count = 1u;
+        break;
     default:
         reply.label    = IRIS_EP_REPLY_ERR;
         reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG;
@@ -735,6 +776,14 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
         (void)svcmgr_send_bootstrap_endpoint(child_boot_h, svc->ep_h,
                                              RIGHT_READ,
                                              SVCMGR_BOOTSTRAP_KIND_SERVICE_EP);
+
+    /* Fase 7.6: WAIT side of the IRQ KNotification (kbd). Mandatory for
+     * irq_notify services — without it the child cannot see IRQs; its
+     * bootstrap fails loudly and smoke catches the dead keyboard. */
+    if (manifest->irq_notify && svc->irq_notif_h != HANDLE_INVALID)
+        (void)svcmgr_send_bootstrap_endpoint(child_boot_h, svc->irq_notif_h,
+                                             RIGHT_WAIT,
+                                             SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY);
 
     /* Forward I/O port capability if this service requires hardware I/O. */
     if (manifest->ioport_count > 0u) {
@@ -1063,8 +1112,18 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
         handle_id_t irqcap_h = (manifest->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE)
                                 ? state->irq_caps[manifest->irq_num]
                                 : HANDLE_INVALID;
-        if (irqcap_h == HANDLE_INVALID ||
-            svcmgr_syscall3(SYS_IRQ_ROUTE_REGISTER, irqcap_h, public_h, proc_h) < 0) {
+        handle_id_t route_h = public_h;
+        if (manifest->irq_notify) {
+            /* Fase 7.6: IRQ → KNotification. Created once, reused across
+             * restarts so the kernel route only needs re-registering. */
+            if (svc->irq_notif_h == HANDLE_INVALID) {
+                int64_t nr = svcmgr_syscall0(SYS_NOTIFY_CREATE);
+                svc->irq_notif_h = (nr >= 0) ? (handle_id_t)nr : HANDLE_INVALID;
+            }
+            route_h = svc->irq_notif_h;
+        }
+        if (irqcap_h == HANDLE_INVALID || route_h == HANDLE_INVALID ||
+            svcmgr_syscall3(SYS_IRQ_ROUTE_REGISTER, irqcap_h, route_h, proc_h) < 0) {
             svc->proc_h = HANDLE_INVALID;
             svcmgr_close_handle_if_valid(&proc_h);
             svcmgr_log(sm_str_irqfail);
@@ -1114,6 +1173,14 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
         svc->ep_h = (ep_r >= 0) ? (handle_id_t)ep_r : HANDLE_INVALID;
     }
 
+    /* Fase 7.6: the IRQ KNotification must exist BEFORE bootstrap caps are
+     * sent (the WAIT side ships with them); the kernel route is registered
+     * later in track_spawn. Created once, survives restarts. */
+    if (manifest->irq_notify && svc->irq_notif_h == HANDLE_INVALID) {
+        int64_t nr = svcmgr_syscall0(SYS_NOTIFY_CREATE);
+        svc->irq_notif_h = (nr >= 0) ? (handle_id_t)nr : HANDLE_INVALID;
+    }
+
     /* endpoint_only services (Fase 7.5: vfs) get no legacy KChannel pair —
      * their KEndpoint is the whole service surface. */
     if (!manifest->endpoint_only) {
@@ -1153,6 +1220,16 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
         }
         proc_h       = (int64_t)loaded_proc_h;
         child_boot_h = loaded_chan_h;
+    }
+
+    /* Fase 8: CPtr-first handoff — mint the discovery endpoint into the
+     * child's root CNode at the well-known slot. The child can EP_CALL
+     * svcmgr by CPtr without the kind-0x20 bootstrap handle. Non-fatal:
+     * the legacy bootstrap cap still ships; CPtr consumers gate loudly. */
+    if (state->ep_h != HANDLE_INVALID) {
+        if (svcmgr_syscall4(SYS_PROC_CSPACE_MINT, (uint64_t)proc_h,
+                            IRIS_CPTR_SVCMGR_EP, state->ep_h, RIGHT_WRITE) != IRIS_OK)
+            svcmgr_log(sm_str_cptrfail);
     }
 
     if (svcmgr_bootstrap_child(state, manifest, child_boot_h) == IRIS_OK) {
@@ -1570,6 +1647,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     state->bootstrap_h = bootstrap_h;
     state->spawn_cap_h = HANDLE_INVALID;
     state->console_h   = HANDLE_INVALID;
+    state->console_ep_h = HANDLE_INVALID;
     state->ep_h        = HANDLE_INVALID;
     for (uint32_t i = 0; i < SVCMGR_IRQ_CAPS_TABLE_SIZE; i++)
         state->irq_caps[i] = HANDLE_INVALID;

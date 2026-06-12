@@ -111,6 +111,36 @@ fi
 # never reach this log; kbd.ep liveness is covered by "[SH] kbd ep OK" and
 # iris_test T034/T035 instead.
 
+if ! grep -Fq "[USER] console ep OK" "$LOG_FILE"; then
+  echo "[headless] missing init console-endpoint marker (Fase 7.3)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[SH] console ep OK" "$LOG_FILE"; then
+  echo "[headless] missing SH console-endpoint marker (Fase 7.3)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[VFS] console ep OK" "$LOG_FILE"; then
+  echo "[headless] missing VFS console-endpoint marker (Fase 7.3)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[IRIS][TEST] console ep write OK" "$LOG_FILE"; then
+  echo "[headless] missing iris_test console-endpoint write marker (Fase 7.3)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[SH] svcmgr cptr OK" "$LOG_FILE"; then
+  echo "[headless] missing SH CPtr-first discovery marker (Fase 8)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 if ! grep -Fq "[SH] kbd ep OK" "$LOG_FILE"; then
   echo "[headless] missing SH kbd-endpoint marker (Fase 7.4)"
   cat "$LOG_FILE"

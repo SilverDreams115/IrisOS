@@ -66,6 +66,20 @@ static handle_id_t g_sh_vfs_ep_h = HANDLE_INVALID;
  * share the buffer — EP_CALL reuses buf_uptr in both directions). */
 static uint8_t g_sh_ep_buf[VFS_EP_DATA_MAX + 1u];
 
+/* Console endpoint path (Fase 7.3): all sh console output goes through
+ * "console.ep" once resolved; the legacy KChannel cap only carries the
+ * pre-lookup boot line and the loud FAILED marker. */
+static handle_id_t g_sh_con_ep_h = HANDLE_INVALID;
+static uint8_t g_sh_con_ep_buf[IRIS_IPC_BUF_SIZE];
+
+static void sh_cout(handle_id_t con, const char *s) {
+    if (g_sh_con_ep_h != HANDLE_INVALID) {
+        (void)console_ep_write(g_sh_con_ep_h, g_sh_con_ep_buf, s);
+        return;
+    }
+    console_write(con, s);
+}
+
 /* ── PS/2 Set-1 scancode tables ──────────────────────────────────── */
 
 static const char sc_lower[0x80] = {
@@ -133,13 +147,13 @@ static uint32_t sh_strlen(const char *s) {
 static void sh_write_u32(handle_id_t con, uint32_t v) {
     char buf[11];
     uint32_t i = 0;
-    if (v == 0) { console_write(con, "0"); return; }
+    if (v == 0) { sh_cout(con, "0"); return; }
     while (v && i < (uint32_t)sizeof(buf)) {
         buf[i++] = (char)('0' + (v % 10u));
         v /= 10u;
     }
     char out[2] = {0, 0};
-    while (i) { out[0] = buf[--i]; console_write(con, out); }
+    while (i) { out[0] = buf[--i]; sh_cout(con, out); }
 }
 
 /* ── VFS endpoint path (Fase 7.1) ────────────────────────────────── */
@@ -202,7 +216,7 @@ static void sh_cmd_ls_ep(handle_id_t con) {
         msg.word_count = 1u;
 
         if (sh_vfs_ep_call(&msg, 0) != IRIS_OK) {
-            console_write(con, "ls: vfs ep call failed\r\n");
+            sh_cout(con, "ls: vfs ep call failed\r\n");
             return;
         }
         if (msg.label != IRIS_EP_REPLY_OK)
@@ -213,11 +227,11 @@ static void sh_cmd_ls_ep(handle_id_t con) {
         if (name_len >= VFS_EP_PATH_MAX) name_len = VFS_EP_PATH_MAX - 1u;
         g_sh_ep_buf[name_len] = 0u;
 
-        console_write(con, "  ");
-        console_write(con, (const char *)g_sh_ep_buf);
-        console_write(con, "  (");
+        sh_cout(con, "  ");
+        sh_cout(con, (const char *)g_sh_ep_buf);
+        sh_cout(con, "  (");
         sh_write_u32(con, size);
-        console_write(con, " bytes)\r\n");
+        sh_cout(con, " bytes)\r\n");
     }
 }
 
@@ -233,14 +247,14 @@ static void sh_cmd_cat_ep(handle_id_t con, const char *path) {
         msg.word_count = 2u;
 
         if (sh_vfs_ep_call(&msg, path) != IRIS_OK) {
-            console_write(con, "cat: vfs ep call failed\r\n");
+            sh_cout(con, "cat: vfs ep call failed\r\n");
             return;
         }
         if (msg.label != IRIS_EP_REPLY_OK) {
             if (offset == 0)
-                console_write(con, "cat: not found\r\n");
+                sh_cout(con, "cat: not found\r\n");
             else
-                console_write(con, "cat: read error\r\n");
+                sh_cout(con, "cat: read error\r\n");
             return;
         }
 
@@ -250,7 +264,7 @@ static void sh_cmd_cat_ep(handle_id_t con, const char *path) {
         if (bytes > VFS_EP_DATA_MAX) bytes = VFS_EP_DATA_MAX;
 
         g_sh_ep_buf[bytes] = 0u;
-        console_write(con, (const char *)g_sh_ep_buf);
+        sh_cout(con, (const char *)g_sh_ep_buf);
 
         offset += bytes;
         if (offset >= total) return;
@@ -261,7 +275,7 @@ static void sh_cmd_cat_ep(handle_id_t con, const char *path) {
 
 static void sh_dispatch(handle_id_t con, const char *line) {
     if (sh_word_eq(line, "help")) {
-        console_write(con, "Commands:\r\n"
+        sh_cout(con, "Commands:\r\n"
                            "  help          this message\r\n"
                            "  ver           version info\r\n"
                            "  uptime        seconds since boot\r\n"
@@ -271,7 +285,7 @@ static void sh_dispatch(handle_id_t con, const char *line) {
         return;
     }
     if (sh_word_eq(line, "ver")) {
-        console_write(con, "IRIS Phase 55 — pure microkernel shell\r\n"
+        sh_cout(con, "IRIS Phase 55 — pure microkernel shell\r\n"
                            "  kernel:   x86_64 ring-0/3, cooperative+preemptive\r\n"
                            "  services: init svcmgr kbd vfs console fb sh\r\n"
                            "  syscalls: SYS_KLOG_DRAIN(65) SYS_EXCEPTION_RESUME(66) SYS_VMO_SIZE(67)\r\n");
@@ -280,19 +294,19 @@ static void sh_dispatch(handle_id_t con, const char *line) {
     if (sh_word_eq(line, "uptime")) {
         long ns = sh_sys0(SYS_CLOCK_GET);
         if (ns < 0) {
-            console_write(con, "uptime: clock unavailable\r\n");
+            sh_cout(con, "uptime: clock unavailable\r\n");
         } else {
             uint64_t secs = (uint64_t)ns / 1000000000ULL;
-            console_write(con, "uptime: ");
+            sh_cout(con, "uptime: ");
             sh_write_u32(con, (uint32_t)secs);
-            console_write(con, " s\r\n");
+            sh_cout(con, " s\r\n");
         }
         return;
     }
     if (sh_word_eq(line, "ls")) {
         /* Endpoint-only path (Fase 7.2): no legacy KChannel fallback. */
         if (g_sh_vfs_ep_h == HANDLE_INVALID) {
-            console_write(con, "ls: VFS endpoint unavailable\r\n");
+            sh_cout(con, "ls: VFS endpoint unavailable\r\n");
             return;
         }
         sh_cmd_ls_ep(con);
@@ -301,24 +315,24 @@ static void sh_dispatch(handle_id_t con, const char *line) {
     if (sh_word_eq(line, "cat")) {
         const char *path = sh_skip_word(line);
         if (*path == '\0') {
-            console_write(con, "usage: cat <filename>\r\n");
+            sh_cout(con, "usage: cat <filename>\r\n");
             return;
         }
         if (g_sh_vfs_ep_h == HANDLE_INVALID) {
-            console_write(con, "cat: VFS endpoint unavailable\r\n");
+            sh_cout(con, "cat: VFS endpoint unavailable\r\n");
             return;
         }
         sh_cmd_cat_ep(con, path);
-        console_write(con, "\r\n");
+        sh_cout(con, "\r\n");
         return;
     }
     if (sh_word_eq(line, "clear")) {
-        console_write(con, "\033[2J\033[H");
+        sh_cout(con, "\033[2J\033[H");
         return;
     }
-    console_write(con, "unknown command: ");
-    console_write(con, line);
-    console_write(con, "\r\n");
+    sh_cout(con, "unknown command: ");
+    sh_cout(con, line);
+    sh_cout(con, "\r\n");
 }
 
 /* ── Main entry ──────────────────────────────────────────────────── */
@@ -380,26 +394,60 @@ void sh_main_c(handle_id_t bootstrap_h) {
 
     if (console_h == HANDLE_INVALID) return;
 
-    console_write(console_h, "[SH] boot\n");
+    sh_cout(console_h, "[SH] boot\n");
+
+    /* Fase 8: CPtr-first discovery. svcmgr minted its discovery endpoint
+     * into our root CNode at IRIS_CPTR_SVCMGR_EP; verify with a PING and
+     * prefer the CPtr over the kind-0x20 bootstrap handle. The legacy
+     * handle remains only as a loud fallback — the smoke gate requires
+     * "[SH] svcmgr cptr OK", so a broken CPtr path cannot hide. */
+    handle_id_t svcmgr_disc_h = svcmgr_ep_h;
+    uint8_t     svcmgr_cptr_ok = 0u;
+    {
+        struct IrisMsg pmsg;
+        sh_imsg_zero(&pmsg);
+        pmsg.label = IRIS_EP_OP_PING;
+        if (sh_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&pmsg) == IRIS_OK &&
+            pmsg.label == IRIS_EP_REPLY_OK) {
+            svcmgr_disc_h  = (handle_id_t)IRIS_CPTR_SVCMGR_EP;
+            svcmgr_cptr_ok = 1u;
+        }
+    }
 
     /* Fase 7.2: resolve the VFS endpoint — the only VFS path. A failure is
      * reported loudly (the smoke gate requires "[SH] vfs ep OK") and ls/cat
      * surface the error per command instead of masking it. */
-    g_sh_vfs_ep_h = sh_svc_ep_lookup(svcmgr_ep_h, VFS_EP_SVC_NAME);
+    g_sh_vfs_ep_h = sh_svc_ep_lookup(svcmgr_disc_h, VFS_EP_SVC_NAME);
     if (g_sh_vfs_ep_h != HANDLE_INVALID)
-        console_write(console_h, "[SH] vfs ep OK\n");
+        sh_cout(console_h, "[SH] vfs ep OK\n");
     else
-        console_write(console_h, "[SH] vfs ep FAILED\n");
+        sh_cout(console_h, "[SH] vfs ep FAILED\n");
 
     /* Fase 7.4: resolve the kbd endpoint — the only key-event path. The
      * REPL pulls events with EP_CALL(KBD_EP_OP_READ); there is no legacy
      * KChannel subscribe fallback, a broken endpoint is reported loudly. */
-    kbd_ep_h = sh_svc_ep_lookup(svcmgr_ep_h, KBD_EP_SVC_NAME);
+    kbd_ep_h = sh_svc_ep_lookup(svcmgr_disc_h, KBD_EP_SVC_NAME);
     if (kbd_ep_h != HANDLE_INVALID)
-        console_write(console_h, "[SH] kbd ep OK\n");
+        sh_cout(console_h, "[SH] kbd ep OK\n");
     else
-        console_write(console_h, "[SH] kbd ep FAILED\n");
+        sh_cout(console_h, "[SH] kbd ep FAILED\n");
 
+    /* Fase 7.3: console output switches to "console.ep" (synchronous EP
+     * writes). Failure stays on the legacy cap and is gated by smoke. */
+    g_sh_con_ep_h = sh_svc_ep_lookup(svcmgr_disc_h, CONSOLE_EP_SVC_NAME);
+    if (g_sh_con_ep_h != HANDLE_INVALID)
+        sh_cout(console_h, "[SH] console ep OK\n");
+    else
+        sh_cout(console_h, "[SH] console ep FAILED\n");
+
+    if (svcmgr_cptr_ok)
+        sh_cout(console_h, "[SH] svcmgr cptr OK\n");
+    else
+        sh_cout(console_h, "[SH] svcmgr cptr FAILED\n");
+
+    /* The legacy kind-0x20 handle is closed in both cases: with the CPtr
+     * verified it is unused; without it the FAILED marker already tripped
+     * the smoke gate (lookups above used the handle as loud fallback). */
     if (svcmgr_ep_h != HANDLE_INVALID)
         (void)sh_sys1(SYS_HANDLE_CLOSE, (long)svcmgr_ep_h);
 
@@ -453,26 +501,26 @@ void sh_main_c(handle_id_t bootstrap_h) {
         if (c == '\b') {
             if (line_len > 0) {
                 line_len--;
-                console_write(console_h, "\b \b");
+                sh_cout(console_h, "\b \b");
             }
             continue;
         }
 
         if (c == '\r') {
-            console_write(console_h, "\r\n");
+            sh_cout(console_h, "\r\n");
             if (line_len > 0) {
                 line[line_len] = '\0';
                 sh_dispatch(console_h, line);
                 line_len = 0;
             }
-            console_write(console_h, "> ");
+            sh_cout(console_h, "> ");
             continue;
         }
 
         if (line_len < 127u) {
             line[line_len++] = c;
             char echo[2] = {c, '\0'};
-            console_write(console_h, echo);
+            sh_cout(console_h, echo);
         }
     }
 }

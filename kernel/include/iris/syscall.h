@@ -829,6 +829,24 @@
 #define SYS_CSPACE_RESOLVE 95
 
 /*
+ * SYS_PROC_CSPACE_MINT(proc_h, slot_idx, src_h, new_rights) → 0 or negative
+ * iris_error_t.  Fase 8: CPtr-first bootstrap handoff.
+ *
+ *   Mints the caller's src_h capability into the ROOT CNode of the process
+ *   referenced by proc_h, at slot slot_idx, with rights reduced to
+ *   (src_rights & new_rights).  The child can then invoke the capability
+ *   directly by CPtr (e.g. SYS_EP_CALL with arg0 = slot_idx) without any
+ *   handle transfer over a KChannel.
+ *
+ *   Authority: caller needs RIGHT_WRITE on proc_h (spawner authority) and
+ *   RIGHT_DUPLICATE on src_h.  Rights can only be reduced, never amplified.
+ *   Fails NOT_FOUND if the target process has no root CNode; INVALID_ARG on
+ *   slot 0 (null slot) or empty effective rights; ALREADY_EXISTS if the
+ *   slot is occupied.
+ */
+#define SYS_PROC_CSPACE_MINT 104
+
+/*
  * Block 9 — Frame capabilities (Fase 5 / 5.1).
  *
  * SYS_FRAME_MAP(frame_cptr, vspace_cptr, user_va, flags) → 0 or negative iris_error_t

@@ -2,21 +2,21 @@
 
 KChannel is the legacy IPC mechanism in IRIS (ring buffer, 128 msgs × 84 bytes). This document tracks the migration to KEndpoint and documents the debt classification for each KChannel user.
 
-## Current inventory (as of Fase 7.4/7.5)
+## Current inventory (as of Fase 7.3/7.6 + Fase 8 start)
 
 The table below lists every service that calls `SYS_CHAN_*` in production code
 (counts are raw `SYS_CHAN_` occurrences per service tree).
 
 | Service | Call sites | Role of KChannel | Migration stage |
 |---------|-----------|-----------------|----------------|
-| `svcmgr` | 15 (was 18) | Bootstrap delivery, dynamic registration, service activation, legacy main loop | **Fase 7.5** — VFS status query migrated to `VFS_EP_OP_STATUS` EP_CALL; vfs is `endpoint_only` (no legacy pair created); `give_kbd` forwarding removed (7.4) |
-| `vfs` | 2 (was 10) | Bootstrap receive only | **Fase 7.5 DONE** — legacy stateful protocol REMOVED (`vfs_proto.h` deleted); endpoint-only service (`endpoint_only = 1`); remaining 2 sites are the bootstrap one-shot |
-| `sh` | 1 (was 4) | Bootstrap receive only | **Fase 7.4 DONE (kbd)** — key events pulled via `"kbd.ep"` `EP_CALL(KBD_EP_OP_READ)`; KChannel subscribe path REMOVED; remaining site is the bootstrap one-shot |
-| `init` | 58 | Console bootstrap; svcmgr channel; kbd legacy probes (S2/S7); IPC selftests; `.ep` spoof-register probe | **Fase 7.2 (S5/S6 migrated)** — VFS probes use `"vfs.ep"` EP_CALL; 7.4 adds an S7 unsubscribe (sh owns key delivery via EP) |
-| `console` | 3 | Bootstrap receive; service receive loop (+ SYNC flush barrier, proto v2) | Pending |
+| `svcmgr` | 15 | Bootstrap delivery, dynamic registration, service activation, legacy main loop, legacy console writes | **Fase 7.5** state + 7.3/8: receives the console EP send side (kind 0x22) and publishes `"console.ep"`; mints the discovery EP into every child's root CNode (`SYS_PROC_CSPACE_MINT`, slot 1); still the last legacy console **writer** |
+| `vfs` | 2 | Bootstrap receive only | **Fase 7.5 DONE** — endpoint-only service; **7.3**: console output over `"console.ep"` (`[VFS] console ep OK`) |
+| `sh` | 1 | Bootstrap receive only | **Fase 7.4 DONE (kbd)**; **7.3**: console output over `"console.ep"` (`[SH] console ep OK`); **Fase 8**: svcmgr discovery via CPtr slot 1 (`[SH] svcmgr cptr OK`) |
+| `init` | 61 | Console bootstrap; svcmgr channel; kbd legacy probes (S2/S7); IPC selftests; `.ep` spoof-register probe | **Fase 7.2 (S5/S6)**; **7.3**: init creates/owns the console endpoint and logs through it when up (`[USER] console ep OK`); **Fase 8**: mints CPtr fixtures into iris_test (slots 1/2/3) |
+| `console` | 4 | Bootstrap receive; legacy receive path (svcmgr writes + SYNC v2) | **Fase 7.3 DONE** — endpoint-first loop (`CONSOLE_EP_OP_WRITE`/`SYNC`/PING, see `docs/console-endpoint.md`); EP writes are synchronous (per-write flush barrier); legacy path remains only for svcmgr |
 | `fb` | 1 | Bootstrap receive | Pending |
 | `userboot` | 1 | Single `SYS_CHAN_SEND` to child bootstrap channel | Pending |
-| `kbd` | 5 | Kernel IRQ delivery (`KBD_MSG_IRQ_SCANCODE`), legacy HELLO/STATUS/SUBSCRIBE loop, bootstrap | **Fase 7.4** — event delivery to sh is endpoint-only (ring + parked KReply); KChannel remains for kernel IRQ→kbd delivery and init/svcmgr probes (Class D residue, see Phase G) |
+| `kbd` | 5 | Legacy HELLO/STATUS/SUBSCRIBE probes (non-blocking drain), bootstrap | **Fase 7.4 + 7.6 DONE** — events to sh via `"kbd.ep"` (ring + parked KReply); IRQ1 arrives as a KNotification signal (kind 0x23, `SYS_NOTIFY_WAIT_TIMEOUT`); `KBD_MSG_IRQ_SCANCODE` no longer dispatched |
 
 `iris_test` KChannel tests (T001–T012) are regression tests for the KChannel syscall layer; they are kept indefinitely.
 
@@ -26,7 +26,8 @@ The table below lists every service that calls `SYS_CHAN_*` in production code
 2. svcmgr creates its KEndpoint (`state->ep_h`) **before** `svcmgr_autostart_services` so every catalog service receives the ep cap in its bootstrap bag. Fase 7.1 adds per-service endpoints (`own_service_ep`, bootstrap kind 0x21) created lazily in `boot_service` and kept across restarts.
 3. Services that have not migrated continue to use KChannel unchanged. The svcmgr main loop drains EP requests first (NB), then falls through to `SYS_CHAN_RECV_TIMEOUT(10ms)` for legacy clients. The VFS uses the same pattern (`vfs_ep_drain` burst, then `SYS_CHAN_RECV_TIMEOUT(5ms)`), and degrades to a plain blocking legacy loop if its endpoint dies (`[VFS] ep lost`).
 4. **Fase 7.2 update:** the VFS endpoint path is now *mandatory* for sh and init. sh prints `[SH] vfs ep FAILED` (and the smoke gate fails) when the lookup fails — there is no silent fallback. init exits with code 5 if `"vfs.ep"` cannot be resolved.
-5. Both lookup paths (EP and legacy) must resolve `".ep"` names identically; dynamic registration of `".ep"` names is rejected (runtime-tested: init S4 register-side probe + iris_test T031 lookup-side probe).
+5. Both lookup paths (EP and legacy) must resolve `".ep"` names identically; dynamic registration of `".ep"` names is rejected (runtime-tested: init S4 register-side probe + iris_test T031 lookup-side probe). This includes `"console.ep"` (Fase 7.3), which is bootstrap-delivered by init (kind 0x22), never runtime-registered.
+6. **Fase 8 update:** CPtr-first discovery coexists with handle-based discovery. svcmgr mints its discovery EP into every child's root CNode (slot `IRIS_CPTR_SVCMGR_EP` = 1) *in addition to* the kind-0x20 bootstrap cap; consumers that adopt the CPtr gate loudly (`[SH] svcmgr cptr OK`). The mint is non-fatal so non-CSpace children keep booting.
 
 ## Debt classification
 
@@ -73,11 +74,23 @@ The `sh ← kbd` event KChannel is gone: sh pulls one event per
 ring and parks the per-call KReply when the ring is empty, answering it from
 the next IRQ scancode (see `docs/kbd-endpoint.md`).
 
-Class D residue (NOT yet migrated):
-- kernel IRQ routing still delivers `KBD_MSG_IRQ_SCANCODE` to kbd over its
-  legacy KChannel (kernel IRQ→KNotification work, Phase G);
+Class D residue after Fase 7.6:
+- ~~kernel IRQ routing delivers `KBD_MSG_IRQ_SCANCODE` over KChannel~~ —
+  **RESOLVED (Fase 7.6)**: `SYS_IRQ_ROUTE_REGISTER` now accepts a
+  KNotification destination; svcmgr owns the master (catalog flag
+  `irq_notify = 1`), the kernel signals `1 << irq` from IRQ context and kbd
+  waits on `SYS_NOTIFY_WAIT_TIMEOUT` (see `docs/kbd-endpoint.md`);
 - init S2/S7 probes and the svcmgr STATUS query still use kbd's legacy
   channel pair (init unsubscribes after S7 so sh is the only key consumer).
+
+### Class E — console write path (Fase 7.3: endpoint-first)
+
+The console serves `CONSOLE_EP_OP_WRITE` / `SYNC` / PING over its endpoint
+(`"console.ep"`, created by init since console is init-spawned — see
+`docs/console-endpoint.md`). init, sh, vfs and iris_test write through it;
+EP writes are synchronous, so each call is its own flush barrier (the
+Fase 7.1 interleaving class of bugs cannot recur on this path). Remaining
+legacy writer: svcmgr (retires with its legacy loop).
 
 ## Migration steps for a Class C service (procedure as executed for vfs, Fase 7.1)
 
@@ -100,15 +113,20 @@ Phase C (complete*): sh vfs operations over EP (Fase 7.1)
                      *kbd event channel deferred to Phase G
 Phase C2 (complete): init S5/S6 VFS probes over EP; sh fallback removed;
                      VFS legacy protocol left clientless (Fase 7.2)
-Phase D:             console (bootstrap-only; simple)
+Phase D (7.3 DONE):  console endpoint ("console.ep": EP WRITE/SYNC/PING;
+                     init/sh/vfs/iris_test endpoint-first; svcmgr is the
+                     last legacy writer)
 Phase E:             fb, userboot (single-call; trivial)
 Phase F:             init remaining channels (orchestrator; requires all above)
-Phase G (7.4 part):  kbd event channel sh←kbd DONE (EP pull + parked reply);
-                     residue: kernel IRQ→kbd KChannel delivery (needs
-                     IRQ→KNotification kernel work) + init/svcmgr kbd probes
+Phase G (7.4+7.6):   kbd event channel sh←kbd DONE (EP pull + parked reply);
+                     kernel IRQ→kbd DONE (IRQ→KNotification, kind 0x23);
+                     residue: init/svcmgr kbd HELLO/STATUS probes
 Phase H (7.5 DONE):  clientless VFS stateful protocol removed (vfs_proto.h
                      deleted, vfs endpoint_only, svcmgr status via EP);
                      svcmgr legacy loop still pending
+Phase I (8, started): CPtr-first handoff — SYS_PROC_CSPACE_MINT + well-known
+                     slot IRIS_CPTR_SVCMGR_EP; sh discovers svcmgr by CPtr;
+                     next: replace bootstrap KChannel caps with minted slots
 ```
 
 ## What must NOT happen during migration

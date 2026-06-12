@@ -17,6 +17,7 @@
 #include <iris/endpoint_proto.h>
 #include <iris/vfs_ep_proto.h>
 #include <iris/kbd_ep_proto.h>
+#include <iris/console_ep_proto.h>
 
 /* ── Syscall helpers ────────────────────────────────────────────────────── */
 
@@ -1143,6 +1144,7 @@ static void test_t025(void) {
 static handle_id_t g_svcmgr_ep_h = HANDLE_INVALID;  /* from bootstrap 0x20 */
 static handle_id_t g_vfs_ep_h    = HANDLE_INVALID;  /* from T026 lookup   */
 static handle_id_t g_kbd_ep_h    = HANDLE_INVALID;  /* from T034 lookup   */
+static handle_id_t g_con_ep_h    = HANDLE_INVALID;  /* from T036 lookup   */
 
 /* EP_CALL buffer reuse: request payload AND reply bulk destination. */
 static uint8_t g_ep_io_buf[VFS_EP_DATA_MAX];
@@ -1530,6 +1532,184 @@ static void test_t035(void) {
         it_fail("T035", "kbd ep semantics");
 }
 
+/* ── T036: svcmgr EP LOOKUP_NAME("console.ep") → endpoint cap + PING (7.3) ─ */
+
+static void test_t036(void) {
+    if (g_svcmgr_ep_h == HANDLE_INVALID) {
+        it_fail("T036", "svcmgr ep missing"); return;
+    }
+
+    uint32_t len = it_stage_path(CONSOLE_EP_SVC_NAME);
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)g_svcmgr_ep_h, (long)&msg);
+
+    long ty = -1;
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP)
+        ty = it_sys1(SYS_HANDLE_TYPE, (long)msg.attached_handle);
+
+    if (ty != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+        if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+            handle_id_t h = (handle_id_t)msg.attached_handle;
+            it_close(&h);
+        }
+        it_fail("T036", "console.ep lookup");
+        return;
+    }
+    g_con_ep_h = (handle_id_t)msg.attached_handle;
+
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_EP_OP_PING;
+    r = it_sys2(SYS_EP_CALL, (long)g_con_ep_h, (long)&msg);
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
+        it_pass("T036");
+    else
+        it_fail("T036", "console ping");
+}
+
+/* ── T037: console EP WRITE — gated marker lands on the UART (7.3) ──────── */
+
+static void test_t037(void) {
+    if (g_con_ep_h == HANDLE_INVALID) {
+        it_fail("T037", "console ep missing"); return;
+    }
+
+    static const char line[] = "[IRIS][TEST] console ep write OK\n";
+    uint32_t len = (uint32_t)sizeof(line) - 1u;
+    for (uint32_t i = 0; i < len; i++) g_ep_io_buf[i] = (uint8_t)line[i];
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = CONSOLE_EP_OP_WRITE;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)g_con_ep_h, (long)&msg);
+
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
+        it_pass("T037");
+    else
+        it_fail("T037", "console ep write");
+}
+
+/* ── T038: console EP SYNC + malformed requests (7.3) ───────────────────── */
+
+static void test_t038(void) {
+    if (g_con_ep_h == HANDLE_INVALID) {
+        it_fail("T038", "console ep missing"); return;
+    }
+
+    struct IrisMsg msg;
+    int ok = 1;
+
+    /* SYNC: deterministic barrier, no payload */
+    it_iris_msg_zero(&msg);
+    msg.label = CONSOLE_EP_OP_SYNC;
+    if (it_sys2(SYS_EP_CALL, (long)g_con_ep_h, (long)&msg) != 0 ||
+        msg.label != IRIS_EP_REPLY_OK) ok = 0;
+
+    /* SYNC with bulk payload → INVALID_ARG */
+    uint32_t len = it_stage_path("junk");
+    it_iris_msg_zero(&msg);
+    msg.label    = CONSOLE_EP_OP_SYNC;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    if (it_sys2(SYS_EP_CALL, (long)g_con_ep_h, (long)&msg) != 0 ||
+        msg.label != IRIS_EP_REPLY_ERR ||
+        (uint32_t)msg.words[0] != (uint32_t)IRIS_ERR_INVALID_ARG) ok = 0;
+
+    /* unknown opcode → NOT_SUPPORTED */
+    it_iris_msg_zero(&msg);
+    msg.label = 0x6666;
+    if (it_sys2(SYS_EP_CALL, (long)g_con_ep_h, (long)&msg) != 0 ||
+        msg.label != IRIS_EP_REPLY_ERR ||
+        (uint32_t)msg.words[0] != (uint32_t)IRIS_ERR_NOT_SUPPORTED) ok = 0;
+
+    if (ok)
+        it_pass("T038");
+    else
+        it_fail("T038", "console ep semantics");
+}
+
+/* ── T039: CPtr-first svcmgr discovery (Fase 8) ─────────────────────────── */
+
+/*
+ * init minted the svcmgr discovery endpoint into our root CNode at
+ * IRIS_CPTR_SVCMGR_EP (slot 1, RIGHT_WRITE). EP_CALL resolves CSpace-first,
+ * so the raw CPtr — never delivered as a handle — must work end to end:
+ * PING, then a LOOKUP_NAME("vfs.ep") that returns a real endpoint cap.
+ */
+static void test_t039(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_EP_OP_PING;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (r != 0 || msg.label != IRIS_EP_REPLY_OK) {
+        it_fail("T039", "cptr ping");
+        return;
+    }
+
+    uint32_t len = it_stage_path(VFS_EP_SVC_NAME);
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+
+    long ty = -1;
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP)
+        ty = it_sys1(SYS_HANDLE_TYPE, (long)msg.attached_handle);
+
+    if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+        handle_id_t h = (handle_id_t)msg.attached_handle;
+        it_close(&h);
+    }
+    if (ty == (long)IRIS_HANDLE_TYPE_ENDPOINT)
+        it_pass("T039");
+    else
+        it_fail("T039", "cptr lookup");
+}
+
+/* ── T040: CPtr failure semantics (Fase 8) ──────────────────────────────── */
+
+/*
+ * slot 2 = console KChannel cap (wrong type), slot 3 = svcmgr ep with
+ * RIGHT_TRANSFER only (insufficient for EP_CALL's RIGHT_WRITE).
+ *   - CPTR_NULL → clean negative error (never a crash);
+ *   - wrong type → IRIS_ERR_WRONG_TYPE from the CSpace path;
+ *   - ACCESS_DENIED → hard stop: the dual resolver must NOT fall back to
+ *     the handle table (a fallback would yield BAD_HANDLE instead, since
+ *     raw value 3 is never a live handle — generations start at 1).
+ */
+static void test_t040(void) {
+    struct IrisMsg msg;
+    int ok = 1;
+
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_EP_OP_PING;
+    long r = it_sys2(SYS_EP_CALL, 0L /* CPTR_NULL */, (long)&msg);
+    if (r >= 0) ok = 0;
+
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_EP_OP_PING;
+    r = it_sys2(SYS_EP_CALL, 2L, (long)&msg);
+    if (r != (long)IRIS_ERR_WRONG_TYPE) ok = 0;
+
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_EP_OP_PING;
+    r = it_sys2(SYS_EP_CALL, 3L, (long)&msg);
+    if (r != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+
+    if (ok)
+        it_pass("T040");
+    else
+        it_fail("T040", "cptr failure semantics");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -1620,6 +1800,11 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t033();
     test_t034();
     test_t035();
+    test_t036();
+    test_t037();
+    test_t038();
+    test_t039();
+    test_t040();
 
     it_close(&g_vfs_ep_h);
     it_close(&g_svcmgr_ep_h);

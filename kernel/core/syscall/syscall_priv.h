@@ -268,6 +268,7 @@ uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
+uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_cnode_move(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_fetch(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2);

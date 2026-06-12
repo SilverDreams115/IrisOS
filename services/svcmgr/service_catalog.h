@@ -29,6 +29,10 @@ struct iris_service_catalog_entry {
     uint8_t        give_console;    /* 1 = forward console channel during bootstrap */
     uint8_t        give_spawn_cap;  /* 1 = forward spawn cap so service can load initrd VMOs */
     uint8_t        give_irqcap;     /* 1 = forward KIrqCap so service can call SYS_IRQ_ACK */
+    uint8_t        irq_notify;      /* 1 = route the IRQ to a KNotification owned by svcmgr
+                                     *     (Fase 7.6) instead of the legacy service KChannel;
+                                     *     the WAIT side reaches the child at bootstrap as
+                                     *     SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY. */
     uint8_t        own_service_ep;  /* 1 = svcmgr creates a KEndpoint for this service,
                                      *     sends the recv side at bootstrap (kind 0x21)
                                      *     and publishes it as "<image_name>.ep" (Fase 7.1) */
@@ -58,9 +62,10 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .give_console = 0u,
         .give_irqcap = 1u,
         /* Fase 7.4: kbd owns a KEndpoint ("kbd.ep"); sh pulls key events
-         * through it. The legacy channel pair stays for IRQ delivery and
-         * the init/svcmgr HELLO/STATUS probes. */
+         * through it. Fase 7.6: the IRQ reaches kbd as a KNotification —
+         * the legacy channel pair only carries init/svcmgr HELLO/STATUS. */
         .own_service_ep = 1u,
+        .irq_notify = 1u,
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_VFS,

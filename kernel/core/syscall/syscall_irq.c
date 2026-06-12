@@ -47,17 +47,24 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (irq_num >= IRQ_ROUTE_MAX) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    /* Resolve and validate the channel handle */
+    /* Resolve and validate the destination handle: a KChannel (legacy
+     * message route) or, since Fase 7.6, a KNotification (signal route). */
     struct KObject  *ch_obj;
     iris_rights_t    ch_rights;
     r = handle_table_get_object(&t->process->handle_table,
                                 (handle_id_t)arg1, &ch_obj, &ch_rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (ch_obj->type != KOBJ_CHANNEL) {
+    if (ch_obj->type != KOBJ_CHANNEL && ch_obj->type != KOBJ_NOTIFICATION) {
         kobject_release(ch_obj);
         return syscall_err(IRIS_ERR_WRONG_TYPE);
     }
-    if (!rights_check(ch_rights, RIGHT_READ | RIGHT_WRITE)) {
+    if (ch_obj->type == KOBJ_CHANNEL &&
+        !rights_check(ch_rights, RIGHT_READ | RIGHT_WRITE)) {
+        kobject_release(ch_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    if (ch_obj->type == KOBJ_NOTIFICATION &&
+        !rights_check(ch_rights, RIGHT_WRITE)) {
         kobject_release(ch_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
@@ -82,11 +89,15 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    /* irq_routing_register retains ch on its own; proc is an unretained owner
-     * pointer — safe because kprocess_teardown calls unregister_owner before
-     * the process object is freed. */
-    irq_routing_register(irq_num, (struct KChannel *)ch_obj,
-                         (struct KProcess *)proc_obj);
+    /* irq_routing_register retains the destination on its own; proc is an
+     * unretained owner pointer — safe because kprocess_teardown calls
+     * unregister_owner before the process object is freed. */
+    if (ch_obj->type == KOBJ_NOTIFICATION)
+        irq_routing_register_notification(irq_num, (struct KNotification *)ch_obj,
+                                          (struct KProcess *)proc_obj);
+    else
+        irq_routing_register(irq_num, (struct KChannel *)ch_obj,
+                             (struct KProcess *)proc_obj);
     kobject_release(ch_obj);
     kobject_release(proc_obj);
     return syscall_err(IRIS_OK);

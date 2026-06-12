@@ -36,6 +36,16 @@
 
 /* ── Raw syscall helpers ────────────────────────────────────────────────── */
 
+static inline long init_sys4(long nr, long a0, long a1, long a2, long a3) {
+    long ret;
+    register long _a3 __asm__("r10") = a3;
+    __asm__ volatile ("syscall"
+        : "=a"(ret)
+        : "a"(nr), "D"(a0), "S"(a1), "d"(a2), "r"(_a3)
+        : "rcx", "r11", "memory");
+    return ret;
+}
+
 static inline long init_sys3(long nr, long a0, long a1, long a2) {
     long ret;
     __asm__ volatile (
@@ -62,9 +72,21 @@ static inline long init_sys0(long nr) {
 /* ── Utilities ──────────────────────────────────────────────────────────── */
 
 static handle_id_t g_init_console_h = HANDLE_INVALID;
+/* Console KEndpoint master (Fase 7.3): init creates it, console serves it,
+ * svcmgr publishes the send side as "console.ep". */
+static handle_id_t g_init_console_ep_h = HANDLE_INVALID;
+static uint8_t g_init_con_ep_buf[IRIS_IPC_BUF_SIZE];
 static handle_id_t g_init_early_serial_h = HANDLE_INVALID;
 
 static void init_log(const char *s) {
+    /* Endpoint-first (Fase 7.3): synchronous EP write once the console
+     * endpoint is verified; the legacy KChannel only carries pre-EP boot
+     * lines. No silent fallback after verification — a broken EP drops the
+     * gated markers and fails smoke. */
+    if (g_init_console_ep_h != HANDLE_INVALID) {
+        (void)console_ep_write(g_init_console_ep_h, g_init_con_ep_buf, s);
+        return;
+    }
     console_write(g_init_console_h, s);
 }
 
@@ -441,7 +463,25 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
     /* Forward the svcmgr discovery endpoint (Fase 7.1). Non-fatal on lookup
      * failure: the EP-path tests then fail loudly instead of being skipped. */
     svcmgr_ep_h = init_lookup_name(sm_h, "svcmgr.ep",
-                                   RIGHT_WRITE | RIGHT_TRANSFER);
+                                   RIGHT_WRITE | RIGHT_TRANSFER | RIGHT_DUPLICATE);
+
+    /* Fase 8: CPtr-first test fixtures in iris_test's root CNode (T039/T040):
+     *   slot 1 — svcmgr discovery ep, RIGHT_WRITE     → positive CPtr path
+     *   slot 2 — console KChannel cap (wrong type)    → WRONG_TYPE, clean
+     *   slot 3 — svcmgr ep, RIGHT_TRANSFER only       → ACCESS_DENIED, and
+     *            the dual resolver must NOT fall back to the handle table.
+     * Non-fatal: missing slots make T039/T040 fail loudly, not skip. */
+    if (svcmgr_ep_h != HANDLE_INVALID) {
+        (void)init_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h,
+                        (long)IRIS_CPTR_SVCMGR_EP, (long)svcmgr_ep_h,
+                        (long)RIGHT_WRITE);
+        (void)init_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, 3L,
+                        (long)svcmgr_ep_h, (long)RIGHT_TRANSFER);
+    }
+    if (g_init_console_h != HANDLE_INVALID)
+        (void)init_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, 2L,
+                        (long)g_init_console_h, (long)RIGHT_WRITE);
+
     if (svcmgr_ep_h != HANDLE_INVALID) {
         init_msg_zero(&msg);
         msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
@@ -648,6 +688,15 @@ static handle_id_t init_spawn_console(handle_id_t spawn_cap_h) {
     con_write_h = (handle_id_t)r;
     init_close(&con_base_h); /* no longer need the full-rights base */
 
+    /* Console KEndpoint (Fase 7.3): init owns the master; console gets the
+     * recv side; svcmgr later gets a send-side dup to publish "console.ep". */
+    r = init_sys0(SYS_ENDPOINT_CREATE);
+    if (r < 0) {
+        init_early_serial_write(init_console_chan_fail);
+        goto fail;
+    }
+    g_init_console_ep_h = (handle_id_t)r;
+
     /* Send IOPORT_CAP to console server. */
     init_msg_zero(&msg);
     msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
@@ -677,6 +726,28 @@ static handle_id_t init_spawn_console(handle_id_t spawn_cap_h) {
         goto fail;
     }
     con_read_h = HANDLE_INVALID;
+
+    /* Send SERVICE_EP (recv side of the console endpoint, Fase 7.3). */
+    if (g_init_console_ep_h != HANDLE_INVALID) {
+        r = init_sys2(SYS_HANDLE_DUP, (long)g_init_console_ep_h,
+                      (long)(RIGHT_READ | RIGHT_TRANSFER));
+        if (r >= 0) {
+            init_msg_zero(&msg);
+            msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+            svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                                   SVCMGR_BOOTSTRAP_KIND_SERVICE_EP);
+            msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
+            msg.attached_handle = (handle_id_t)r;
+            msg.attached_rights = RIGHT_READ;
+            if (init_sys2(SYS_CHAN_SEND, (long)con_boot_h, (long)&msg) < 0) {
+                handle_id_t eh = (handle_id_t)r;
+                init_close(&eh);
+                init_close(&g_init_console_ep_h);
+            }
+        } else {
+            init_close(&g_init_console_ep_h);
+        }
+    }
 
     init_close(&con_proc_h);
     init_close(&con_boot_h);
@@ -724,6 +795,26 @@ static handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h,
         r = init_sys2(SYS_CHAN_SEND, (long)svcmgr_chan_h, (long)&msg);
         if (r < 0) goto fail;
         con_dup_h = HANDLE_INVALID;
+    }
+
+    /* Console endpoint send side (Fase 7.3): svcmgr publishes "console.ep".
+     * Non-fatal — a missing cap surfaces as failed lookups + smoke gates. */
+    if (g_init_console_ep_h != HANDLE_INVALID) {
+        r = init_sys2(SYS_HANDLE_DUP, (long)g_init_console_ep_h,
+                      (long)(RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER));
+        if (r >= 0) {
+            init_msg_zero(&msg);
+            msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+            svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                                   SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP);
+            msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
+            msg.attached_handle = (handle_id_t)r;
+            msg.attached_rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+            if (init_sys2(SYS_CHAN_SEND, (long)svcmgr_chan_h, (long)&msg) < 0) {
+                handle_id_t eh = (handle_id_t)r;
+                init_close(&eh);
+            }
+        }
     }
 
     r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
@@ -1474,6 +1565,20 @@ void init_main(handle_id_t bootstrap_ch_h) {
     init_early_serial_stop();
     /* From here all init_log() calls go through the console service. */
 
+    /* Verify the console endpoint with the first gated write (Fase 7.3):
+     * the EP_CALL blocks until the console serves it, so this also
+     * synchronizes with console boot. On failure: drop to the legacy
+     * channel LOUDLY — the missing OK marker fails smoke. */
+    if (g_init_console_ep_h != HANDLE_INVALID) {
+        if (console_ep_write(g_init_console_ep_h, g_init_con_ep_buf,
+                             "[USER] console ep OK\n") != 0) {
+            init_close(&g_init_console_ep_h);
+            console_write(g_init_console_h, "[USER] console ep FAILED\n");
+        }
+    } else {
+        console_write(g_init_console_h, "[USER] console ep FAILED\n");
+    }
+
     init_log("[USER] init bootstrap start\n");
 
     sm_h = init_spawn_svcmgr(bootstrap_h, g_init_console_h);
@@ -1630,7 +1735,10 @@ void init_main(handle_id_t bootstrap_ch_h) {
         /* Drain our queued console output first: iris_test writes raw to
          * COM1, and a half-flushed backlog line (e.g. the S10 marker) would
          * otherwise interleave mid-line with test output under load. */
-        console_sync(g_init_console_h);
+        if (g_init_console_ep_h != HANDLE_INVALID)
+            (void)console_ep_sync(g_init_console_ep_h);
+        else
+            console_sync(g_init_console_h);
         init_spawn_iris_test(iris_test_spawn_h, sm_h);
         iris_test_spawn_h = HANDLE_INVALID;
     }

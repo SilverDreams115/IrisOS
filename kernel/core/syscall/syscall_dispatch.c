@@ -121,6 +121,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_EP_CALL:             return sys_ep_call(arg0, arg1, arg2);
         case SYS_REPLY:               return sys_reply(arg0, arg1, arg2);
         case SYS_CSPACE_RESOLVE:      return sys_cspace_resolve(arg0, arg1, arg2);
+        case SYS_PROC_CSPACE_MINT:    return sys_proc_cspace_mint(arg0, arg1, arg2, arg3);
         case SYS_TCB_SELF:            return sys_tcb_self(arg0, arg1, arg2);
         case SYS_TCB_SUSPEND:         return sys_tcb_suspend(arg0, arg1, arg2);
         case SYS_TCB_RESUME:          return sys_tcb_resume(arg0, arg1, arg2);

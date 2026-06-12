@@ -119,6 +119,33 @@ KChannel remains fully supported. See `docs/kchannel-migration.md` for the migra
 
 KNotification provides signal-bit signaling (bitmask OR semantics). Used for IRQ delivery and async events. See `kernel/new_core/include/iris/nc/knotification.h`.
 
+Since Fase 7.6, `SYS_IRQ_ROUTE_REGISTER` accepts a KNotification destination
+(`RIGHT_WRITE`) in addition to the legacy KChannel: the kernel then signals
+bit `1 << irq` from IRQ context (signal-only — no allocation, no blocking)
+instead of enqueuing a message. The service blocks on
+`SYS_NOTIFY_WAIT_TIMEOUT`, drains device state through its KIoPort cap and
+re-arms with `SYS_IRQ_ACK`. A route holds either a channel or a
+notification, never both (registering one replaces the other). First user:
+kbd (catalog flag `irq_notify = 1`, WAIT side delivered at bootstrap kind
+0x23).
+
+---
+
+## CPtr-first invocation (Fase 8)
+
+The IPC, CNode, Untyped and Frame syscalls (via `cspace_or_handle_resolve_*`)
+resolve their capability argument CSpace-first: values below 1024 are
+root-CNode slot indices (CPtrs), values ≥ 1024 are legacy handle ids
+(`slot | generation << 10`, generation ≥ 1 — the namespaces can never
+alias). An `ACCESS_DENIED` from the CSpace path is a hard stop: the resolver
+never falls back to the handle table on an authorization failure.
+
+A spawner can mint a cap directly into a child's root CNode with
+`SYS_PROC_CSPACE_MINT` (syscall 104), letting the child invoke it by CPtr —
+e.g. `SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)` — with no KChannel handle
+transfer. See `docs/endpoint-protocol.md` ("Well-known CPtr slots") for the
+slot map, authority rules and runtime coverage (T039/T040).
+
 ---
 
 ## Choosing between KEndpoint and KChannel
@@ -131,5 +158,5 @@ KNotification provides signal-bit signaling (bitmask OR semantics). Used for IRQ
 | Reply pattern | Built-in (KReply) | Manual second channel |
 | Multi-client | Yes (queue of callers) | Yes (multiple senders) |
 | Close behavior | Wakes all blocked tasks | Seals: receivers get CLOSED |
-| IRQ delivery | Not supported | Via KChannel to service |
+| IRQ delivery | Not supported (cannot block in IRQ context) | Legacy route; new routes use KNotification (Fase 7.6) |
 | Status | **Preferred for new code** | **Legacy, use in existing code** |

@@ -16,7 +16,8 @@
  * Protocol: iris/kbd_proto.h
  *   Requests arrive on the service/IRQ channel (r13).
  *   Replies are sent over the reply channel (r12).
- *   Hardware IRQ scancodes also arrive on r13 (type KBD_MSG_IRQ_SCANCODE).
+ *   Hardware IRQ scancodes arrive via the IRQ KNotification (Fase 7.6);
+ *   r13 only carries init/svcmgr HELLO/STATUS/SUBSCRIBE probes.
  *
  * Bootstrap framing: iris/svcmgr_proto.h  (SVCMGR_MSG_BOOTSTRAP_HANDLE)
  */
@@ -46,6 +47,8 @@ kbd_ring_head:  .skip 4
 kbd_ring_count: .skip 4
 kbd_park:       .skip 4
 kbd_ep_h:       .skip 4
+kbd_notif_h:    .skip 4
+kbd_notif_bits: .skip 8
 
 .section .text._start
 _start:
@@ -79,6 +82,9 @@ _start:
     testq %r13, %r13
     jz    .kbd_bootstrap_need
     testq %r14, %r14
+    jz    .kbd_bootstrap_need
+    movl  kbd_notif_h(%rip), %eax      /* IRQ KNotification (7.6): required */
+    testl %eax, %eax
     jz    .kbd_bootstrap_need
     cmpl  $0, 84(%rsp)
     jnz   .kbd_bootstrap_done
@@ -122,6 +128,8 @@ _start:
     je    .kbd_bootstrap_irqcap
     cmpl  $KBD_EP_KIND_SERVICE_EP,           8(%rsp)
     je    .kbd_bootstrap_ep
+    cmpl  $SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY, 8(%rsp)
+    je    .kbd_bootstrap_notif
     jmp   .kbd_bootstrap_fail
 
 .kbd_bootstrap_service:
@@ -142,6 +150,10 @@ _start:
 
 .kbd_bootstrap_ep:
     movl  %eax, kbd_ep_h(%rip)         /* recv side of the kbd KEndpoint (7.4) */
+    jmp   .kbd_bootstrap_recv
+
+.kbd_bootstrap_notif:
+    movl  %eax, kbd_notif_h(%rip)      /* WAIT side of the IRQ notification (7.6) */
     jmp   .kbd_bootstrap_recv
 
 .kbd_bootstrap_done:
@@ -340,6 +352,9 @@ _start:
     jmp   .kbd_ep_drain
 
 /* ── Legacy service/IRQ channel (10 ms timeout keeps the EP drain alive) ── */
+/* Legacy probes (HELLO/STATUS/SUBSCRIBE) are drained non-blocking; the only
+ * blocking point is the IRQ KNotification (10 ms timeout keeps the EP and
+ * channel drains alive). Fase 7.6: no KChannel IRQ delivery remains. */
 .kbd_chan_wait:
     movq  $0,  0(%rsp)
     movq  $0,  8(%rsp)
@@ -352,16 +367,23 @@ _start:
     movq  $0, 64(%rsp)
     movq  $0, 72(%rsp)
     movq  $0, 80(%rsp)
-    movq  $SYS_CHAN_RECV_TIMEOUT, %rax
+    movq  $SYS_CHAN_RECV_NB, %rax
     movq  %r13,  %rdi
     movq  %rsp,  %rsi
+    syscall
+    testq %rax,  %rax
+    jz    .kbd_chan_msg                /* got a legacy probe: dispatch     */
+
+    movl  kbd_notif_h(%rip), %edi      /* block on the IRQ notification    */
+    testl %edi, %edi
+    jz    .kbd_recv
+    leaq  kbd_notif_bits(%rip), %rsi
+    movq  $SYS_NOTIFY_WAIT_TIMEOUT, %rax
     movq  $10000000, %rdx              /* 10 ms */
     syscall
     testq %rax,  %rax
-    jz    .kbd_chan_msg
-    cmpq  $-15,  %rax                  /* IRIS_ERR_TIMED_OUT: quiet loop   */
-    je    .kbd_recv
-    jmp   .kbd_recv_err
+    jz    .kbd_scancode                /* IRQ fired: consume the byte      */
+    jmp   .kbd_recv                    /* TIMED_OUT/err: quiet loop        */
 .kbd_chan_msg:
 
     leaq  96(%rsp), %rdi
@@ -385,14 +407,14 @@ _start:
     je    .kbd_status
     cmpl  $KBD_MSG_SUBSCRIBE,    0(%rsp)
     je    .kbd_subscribe
-    cmpl  $KBD_MSG_IRQ_SCANCODE, 0(%rsp)
-    jne   .kbd_recv                    /* unknown type: silently ignore */
+    jmp   .kbd_recv                    /* unknown type: silently ignore */
 
-/* ── KBD_MSG_IRQ_SCANCODE: hardware event from IRQ routing layer ─────────
- * Kernel delivers the IRQ notification; ring-3 reads port 0x60 via KIoPort.
+/* ── Scancode path: woken by the IRQ KNotification (Fase 7.6) ────────────
+ * The kernel masks IRQ1, signals the notification and EOIs; ring-3 reads
+ * port 0x60 via KIoPort and re-arms with SYS_IRQ_ACK.
  * Key press:   scancode < 0x80
- * Key release: scancode >= 0x80 (bit 7 set; base key = scancode & 0x7F)
- * No reply is sent; print hex and loop.                              */
+ * Key release: scancode >= 0x80 (bit 7 set; base key = scancode & 0x7F) */
+.kbd_scancode:
     movq  $SYS_IOPORT_IN, %rax        /* read PS/2 data register via KIoPort */
     movq  %r14, %rdi
     movq  $0,   %rsi                   /* offset 0 = port 0x60 */

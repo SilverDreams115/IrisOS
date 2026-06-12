@@ -75,8 +75,9 @@ through **both** `IRIS_SVCMGR_EP_LOOKUP_NAME` and the legacy
 
 | Name | Resolves to | Granted rights |
 |------|------------|----------------|
-| `"svcmgr.ep"` | svcmgr's own discovery endpoint | `RIGHT_WRITE \| RIGHT_TRANSFER` (distributable discovery cap; only grants EP_CALL, never recv) |
-| `"<image_name>.ep"` | the service's endpoint, if its catalog entry has `own_service_ep = 1` (today: `"vfs.ep"`) | `RIGHT_WRITE` |
+| `"svcmgr.ep"` | svcmgr's own discovery endpoint | `RIGHT_WRITE \| RIGHT_TRANSFER \| RIGHT_DUPLICATE` (distributable discovery cap — TRANSFER for KChannel attach, DUPLICATE for CSpace mint; only grants EP_CALL, never recv) |
+| `"<image_name>.ep"` | the service's endpoint, if its catalog entry has `own_service_ep = 1` (today: `"vfs.ep"`, `"kbd.ep"`) | `RIGHT_WRITE` |
+| `"console.ep"` | the console endpoint (Fase 7.3) — console is init-spawned, not catalog, so **init** creates the endpoint and delivers the send side to svcmgr at bootstrap (kind 0x22); see `docs/console-endpoint.md` | `RIGHT_WRITE` |
 
 `SVCMGR_MSG_REGISTER` rejects dynamic names ending in `".ep"` with
 `IRIS_ERR_INVALID_ARG` so a rogue service cannot shadow an endpoint name.
@@ -141,14 +142,41 @@ msg.words[0] = service_id (uint32_t)
 | Kind | Value | Carries |
 |------|-------|---------|
 | `SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP` | 0x20 | svcmgr discovery endpoint (send side) — every catalog service receives it; init forwards it to iris_test |
-| `SVCMGR_BOOTSTRAP_KIND_SERVICE_EP` | 0x21 | the service's **own** endpoint (receive side, `RIGHT_READ`) for catalog entries with `own_service_ep = 1`; sent **before** `INITRD_CAP` so bootstrap loops that exit on the initrd cap still see it |
+| `SVCMGR_BOOTSTRAP_KIND_SERVICE_EP` | 0x21 | the service's **own** endpoint (receive side, `RIGHT_READ`) for catalog entries with `own_service_ep = 1`; sent **before** `INITRD_CAP` so bootstrap loops that exit on the initrd cap still see it. Also reused by init→console for the console endpoint's receive side (Fase 7.3) |
+| `SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP` | 0x22 | send side of the console endpoint (`RIGHT_WRITE \| RIGHT_DUPLICATE \| RIGHT_TRANSFER`), init → svcmgr; svcmgr publishes it as `"console.ep"` (Fase 7.3) |
+| `SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY` | 0x23 | WAIT side of the IRQ KNotification for catalog entries with `irq_notify = 1` (Fase 7.6; today: kbd). The kernel signals bit `1 << irq` on each routed IRQ; the service drains device state via its KIoPort cap and re-arms with `SYS_IRQ_ACK` |
+
+## Well-known CPtr slots (Fase 8)
+
+CPtr-first bootstrap handoff: the spawner mints capabilities directly into
+the child's root CNode with `SYS_PROC_CSPACE_MINT(proc_h, slot, src_h,
+rights)` (syscall 104; needs `RIGHT_WRITE` on the child process cap and
+`RIGHT_DUPLICATE` on the source cap; rights can only be reduced). The child
+invokes the cap **by CPtr** — e.g. `SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)` —
+with no KChannel handle transfer.
+
+CPtrs and handle_ids share one argument namespace without ambiguity: handles
+are always ≥ 1024 (`slot | generation << 10`, generation ≥ 1), so low CNode
+slots can never alias a live handle. Slot 0 is the null slot. The dual
+resolver is CSpace-first and does **not** fall back to the handle table on a
+rights failure (verified by iris_test T040).
+
+| Slot | Name | Carries |
+|------|------|---------|
+| 0 | `CPTR_NULL` | always invalid |
+| 1 | `IRIS_CPTR_SVCMGR_EP` | svcmgr discovery endpoint, `RIGHT_WRITE` — minted by svcmgr into every catalog child and by init into iris_test/sh |
+
+Runtime coverage: sh probes the slot with a PING and prints the gated
+`[SH] svcmgr cptr OK`; iris_test T039 (positive: PING + LOOKUP_NAME by CPtr)
+and T040 (failure semantics: null slot, wrong-type slot, insufficient-rights
+slot → clean errors, no handle-table fallback).
 
 ## Opcode ranges
 
 | Range | Owner |
 |-------|-------|
 | 0x0000–0x00FF | Standard protocol (reserved) |
-| 0x0100–0xEFFF | Individual services (VFS owns 0x01xx — `docs/vfs-endpoint.md`; KBD owns 0x02xx — `docs/kbd-endpoint.md`) |
+| 0x0100–0xEFFF | Individual services (VFS owns 0x01xx — `docs/vfs-endpoint.md`; KBD owns 0x02xx — `docs/kbd-endpoint.md`; console owns 0x03xx — `docs/console-endpoint.md`) |
 | 0xF000–0xFEFF | Svcmgr endpoint protocol |
 | 0xFF00–0xFFFF | Generic service management (ping, shutdown) |
 

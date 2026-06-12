@@ -153,3 +153,89 @@ uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t ar
     if (err != IRIS_OK) return syscall_err(err);
     return 0;
 }
+
+/*
+ * SYS_PROC_CSPACE_MINT — Fase 8: mint a caller capability into a CHILD
+ * process's root CNode so the child can invoke it CPtr-first (no KChannel
+ * handle transfer). Mirrors sys_cnode_mint's reduction semantics; the only
+ * new authority is RIGHT_WRITE on the child process capability.
+ */
+uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                              uint64_t arg3) {
+    handle_id_t   proc_h     = (handle_id_t)arg0;
+    uint32_t      slot_idx   = (uint32_t)arg1;
+    handle_id_t   src_h      = (handle_id_t)arg2;
+    iris_rights_t new_rights = (iris_rights_t)arg3;
+
+    if (!proc_h || !src_h || slot_idx == 0u)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    HandleTable *ht = &t->process->handle_table;
+
+    /* Child process capability — spawner authority required. */
+    struct KObject *proc_obj;
+    iris_rights_t   proc_rights;
+    iris_error_t err = handle_table_get_object(ht, proc_h, &proc_obj, &proc_rights);
+    if (err != IRIS_OK) return syscall_err(err);
+    if (proc_obj->type != KOBJ_PROCESS) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_WRONG_TYPE);
+    }
+    if (!rights_check(proc_rights, RIGHT_WRITE)) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    struct KProcess *child = (struct KProcess *)proc_obj;
+
+    /* Child's root CNode (created at kprocess_create; soft-fail = absent). */
+    if (child->cspace_root_h == HANDLE_INVALID) {
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+    }
+    struct KObject *cn_obj;
+    iris_rights_t   cn_rights;
+    err = handle_table_get_object(&child->handle_table, child->cspace_root_h,
+                                  &cn_obj, &cn_rights);
+    if (err != IRIS_OK) {
+        kobject_release(proc_obj);
+        return syscall_err(err);
+    }
+    if (cn_obj->type != KOBJ_CNODE) {
+        kobject_release(cn_obj);
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_INTERNAL);
+    }
+
+    /* Source capability from the CALLER's table. */
+    struct KObject *src_obj;
+    iris_rights_t   src_rights;
+    err = handle_table_get_object(ht, src_h, &src_obj, &src_rights);
+    if (err != IRIS_OK) {
+        kobject_release(cn_obj);
+        kobject_release(proc_obj);
+        return syscall_err(err);
+    }
+    if (!rights_check(src_rights, RIGHT_DUPLICATE)) {
+        kobject_release(src_obj);
+        kobject_release(cn_obj);
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    iris_rights_t effective = rights_reduce(src_rights, new_rights);
+    if (effective == RIGHT_NONE) {
+        kobject_release(src_obj);
+        kobject_release(cn_obj);
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    err = kcnode_mint((struct KCNode *)cn_obj, slot_idx, src_obj, effective);
+    kobject_release(src_obj);
+    kobject_release(cn_obj);
+    kobject_release(proc_obj);
+    if (err != IRIS_OK) return syscall_err(err);
+    return 0;
+}

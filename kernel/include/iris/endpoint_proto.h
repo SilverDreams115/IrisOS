@@ -95,6 +95,30 @@
 #define SVCMGR_BOOTSTRAP_KIND_SERVICE_EP UINT32_C(0x21)
 
 /*
+ * SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP — bootstrap handle kind carrying the
+ * SEND side (RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER) of the console
+ * KEndpoint (Fase 7.3).  The console service is spawned by init (not
+ * svcmgr), so init creates the endpoint, hands the recv side to console
+ * (kind 0x21) and delivers the send side to svcmgr with this kind; svcmgr
+ * publishes it as "console.ep".  Bootstrap-delivered like every ".ep"
+ * master, so the anti-spoof rule (no runtime registration of ".ep" names)
+ * holds for the console too.
+ */
+#define SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP UINT32_C(0x22)
+
+/*
+ * Well-known CSpace slots (Fase 8: CPtr-first bootstrap handoff).
+ *
+ * The spawner mints capabilities into the child's root CNode via
+ * SYS_PROC_CSPACE_MINT; the child invokes them directly by CPtr — e.g.
+ * SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg) — with no KChannel handle
+ * transfer. CPtrs and handle_ids share one argument namespace: handles are
+ * always >= 1024 (slot | generation<<10, generation >= 1), so low CNode
+ * slots can never alias a live handle. Slot 0 is the null slot.
+ */
+#define IRIS_CPTR_SVCMGR_EP ((uint64_t)1)
+
+/*
  * Reserved name suffix ".ep": IRIS_SVCMGR_EP_LOOKUP_NAME and the legacy
  * SVCMGR_MSG_LOOKUP_NAME resolve "<image_name>.ep" to the service's
  * KEndpoint (RIGHT_WRITE) and "svcmgr.ep" to svcmgr's own endpoint.

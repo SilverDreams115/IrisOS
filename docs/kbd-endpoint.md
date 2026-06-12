@@ -58,13 +58,19 @@ Health check; replies `IRIS_EP_REPLY_OK`. Served even while a READ is parked.
 for (;;) {
     while (SYS_EP_NB_RECV(kbd_ep_h) == OK)   /* drain EP requests */
         dispatch → SYS_REPLY (or park);
-    SYS_CHAN_RECV_TIMEOUT(service_h, 10ms);  /* IRQ + legacy probes */
-    on KBD_MSG_IRQ_SCANCODE:
+    SYS_CHAN_RECV_NB(service_h);             /* legacy probes only (7.6) */
+    on HELLO/STATUS/SUBSCRIBE: dispatch;
+    SYS_NOTIFY_WAIT_TIMEOUT(notif_h, 10ms);  /* IRQ KNotification (7.6) */
+    on signal:
         read port 0x60, SYS_IRQ_ACK;
         parked reply? answer it : push ring (drop-oldest);
         forward to legacy subscriber if one is registered;
 }
 ```
+
+Fase 7.6 moved the blocking point from the legacy channel to the IRQ
+KNotification: the channel is drained non-blocking (probes only), and the
+10 ms timeout on `SYS_NOTIFY_WAIT_TIMEOUT` keeps both drains alive.
 
 EP constants are mirrored as plain hex for the assembler
 (`KBD_EP_PING_OP`, `KBD_EP_E_*`, `KBD_EP_KIND_SERVICE_EP`) and sync-checked
@@ -81,16 +87,26 @@ is included from C (iris_test does).
 - `SVCMGR_BOOTSTRAP_KIND_KBD_CAP` (9) and the `give_kbd` catalog flag are
   retired; svcmgr no longer forwards the kbd write-end to sh.
 
+## IRQ delivery (Fase 7.6: KNotification)
+
+IRQ1 no longer arrives as a `KBD_MSG_IRQ_SCANCODE` KChannel message. The
+catalog flags kbd `irq_notify = 1`: svcmgr creates a KNotification master
+(kept across restarts), registers it as the kernel IRQ route
+(`SYS_IRQ_ROUTE_REGISTER` accepts a KNotification with `RIGHT_WRITE` since
+Fase 7.6) and ships the WAIT side at bootstrap (kind
+`SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY` = 0x23 — mandatory: kbd's bootstrap loop
+requires it). On each IRQ the kernel masks the line, signals bit `1 << irq`
+(signal-only — safe from IRQ context, no allocation) and EOIs; kbd wakes
+from `SYS_NOTIFY_WAIT_TIMEOUT`, reads port 0x60 via its KIoPort cap and
+re-arms with `SYS_IRQ_ACK`. `KBD_MSG_IRQ_SCANCODE` is no longer dispatched.
+
 ## What remains on KChannel (Class D residue)
 
-- **Kernel IRQ delivery**: IRQ1 still arrives as `KBD_MSG_IRQ_SCANCODE` on
-  kbd's legacy service channel. Moving this to IRQ→KNotification is kernel
-  work (proposed Fase 7.6) — `EP_CALL`/`SYS_REPLY` must never run in IRQ
-  context.
 - **init S2/S7 probes** (`HELLO`, `SUBSCRIBE`) and **svcmgr STATUS** stay on
   the legacy pair. init **unsubscribes after the S7 gate** so sh's EP pull is
   the only live key consumer (no double echo); the subscriber path remains
   only as a probed legacy mechanism.
+- The bootstrap one-shot channel (Class B, like every service).
 
 ## Tests
 
