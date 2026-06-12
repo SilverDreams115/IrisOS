@@ -146,6 +146,35 @@ uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             new_obj = &sub->base;
             break;
         }
+        case KOBJ_FRAME: {
+            /* Carve a PAGE_SIZE-aligned physical region from the parent KUntyped.
+             * obj_arg is the frame size in bytes: must be >= 4096 and PAGE_SIZE aligned.
+             * The KFrame header is slab-allocated separately; the physical region
+             * is the frame content (not the header storage). */
+            uint64_t fsize = obj_arg;
+            if (fsize < 4096u || (fsize & 4095u)) {
+                kobject_active_release(&ut->base);
+                kobject_release(&ut->base);
+                return syscall_err(IRIS_ERR_INVALID_ARG);
+            }
+            uint64_t phys = kuntyped_bump_alloc_phys_page(ut, fsize);
+            if (!phys) {
+                kobject_active_release(&ut->base);
+                kobject_release(&ut->base);
+                return syscall_err(IRIS_ERR_NO_MEMORY);
+            }
+            struct KFrame *frm = kframe_alloc(phys, fsize, ut);
+            if (!frm) {
+                /* phys is already consumed from the bump; cannot un-bump.
+                 * The wasted region will be reclaimed on next SYS_UNTYPED_RESET
+                 * (which still requires child_count == 0, which remains valid). */
+                kobject_active_release(&ut->base);
+                kobject_release(&ut->base);
+                return syscall_err(IRIS_ERR_NO_MEMORY);
+            }
+            new_obj = &frm->base;
+            break;
+        }
         default:
             kobject_active_release(&ut->base);
             kobject_release(&ut->base);

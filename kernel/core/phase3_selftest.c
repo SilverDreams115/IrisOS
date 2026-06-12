@@ -92,24 +92,18 @@ static int phase3_process_selftest(void) {
     struct KChannel *ch = 0;
     struct KVmo *vmo = 0;
     struct KVmo *large_vmo = 0;
-    struct KVmo *map_vmo = 0;
-    struct task fake_task;
     uint64_t ref_before;
     uint64_t active_before;
-    uint64_t first_phys = 0;
-    const uint64_t fault_addr = USER_VMO_BASE;
-    const uint64_t large_fault_addr = USER_VMO_BASE + 0x00200000ULL;
-    const uint64_t large_fault_last = large_fault_addr + 0x1FF000ULL;
     int ok = 0;
 
     proc = kprocess_alloc();
     ch = kchannel_alloc();
     vmo = kvmo_create(0x1000ULL);
     large_vmo = kvmo_create(0x200000ULL);
-    map_vmo = kvmo_create(0x1000ULL);
-    if (!proc || !ch || !vmo || !large_vmo || !map_vmo) goto out;
+    if (!proc || !ch || !vmo || !large_vmo) goto out;
     if (large_vmo->page_capacity < 512u) goto out;
 
+    /* Exception channel: set twice — second call must be idempotent. */
     ref_before = atomic_load_explicit(&ch->base.refcount, memory_order_relaxed);
     active_before = atomic_load_explicit(&ch->base.active_refs, memory_order_relaxed);
     if (kprocess_set_exception_handler(proc, ch) != IRIS_OK) goto out;
@@ -120,36 +114,15 @@ static int phase3_process_selftest(void) {
 
     proc->cr3 = paging_create_user_space();
     if (!proc->cr3) goto out;
-    if (kprocess_register_vmo_map(proc, fault_addr, 0x1000ULL, vmo,
-                                  PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE) != IRIS_OK) goto out;
-    if (kprocess_register_vmo_map(proc, large_fault_addr, 0x200000ULL, large_vmo,
-                                  PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE) != IRIS_OK) goto out;
-    for (uint32_t i = 2; i < 80u; i++) {
-        uint64_t virt = USER_VMO_BASE + ((uint64_t)i * 0x00200000ULL);
-        if (kprocess_register_vmo_map(proc, virt, 0x1000ULL, map_vmo,
-                                      PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE) != IRIS_OK) goto out;
-    }
-    if (proc->vmo_mapping_count < 80u) goto out;
 
-    for (uint32_t i = 0; i < sizeof(fake_task); i++) ((uint8_t *)&fake_task)[i] = 0;
-    fake_task.process = proc;
+    /* Verify VMOs have no physical pages allocated (no demand paging). */
+    if (vmo->pages[0] != 0) goto out;
+    if (large_vmo->pages[511] != 0) goto out;
 
-    if (kprocess_resolve_demand_fault(&fake_task, fault_addr) != IRIS_OK) goto out;
-    first_phys = vmo->pages[0];
-    if (!first_phys) goto out;
-    if (paging_virt_to_phys_in(proc->cr3, fault_addr) != first_phys) goto out;
-
-    if (kprocess_resolve_demand_fault(&fake_task, fault_addr) != IRIS_OK) goto out;
-    if (vmo->pages[0] != first_phys) goto out;
-    if (paging_virt_to_phys_in(proc->cr3, fault_addr) != first_phys) goto out;
-
-    if (kprocess_resolve_demand_fault(&fake_task, large_fault_last) != IRIS_OK) goto out;
-    if (!large_vmo->pages[511]) goto out;
-    if (paging_virt_to_phys_in(proc->cr3, large_fault_last) != large_vmo->pages[511]) goto out;
-
+    /* Teardown must clear exception channel and restore refcounts.
+     * KVSpace.mappings (dynamic linked list) is cleaned up by
+     * kvspace_invalidate called from kprocess_teardown. */
     kprocess_teardown(proc, 0);
-    if (vmo->pages[0] != first_phys) goto out;
-    if (!large_vmo->pages[511]) goto out;
     if (proc->exception_chan != 0) goto out;
     if (atomic_load_explicit(&ch->base.refcount, memory_order_relaxed) != ref_before) goto out;
     if (atomic_load_explicit(&ch->base.active_refs, memory_order_relaxed) != active_before) goto out;
@@ -164,7 +137,6 @@ out:
     if (ch) kchannel_free(ch);
     if (vmo) kvmo_free(vmo);
     if (large_vmo) kvmo_free(large_vmo);
-    if (map_vmo) kvmo_free(map_vmo);
     return ok;
 }
 

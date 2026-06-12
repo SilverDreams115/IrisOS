@@ -38,6 +38,7 @@ struct KTcb;
 struct KUntyped;
 struct KSchedContext;
 struct KVSpace;
+struct KFrame;
 
 /*
  * cspace_resolve_cap — kernel-internal CSpace traversal.
@@ -104,6 +105,28 @@ iris_error_t cspace_resolve_schedctx(struct KProcess     *proc, iris_cptr_t cptr
 iris_error_t cspace_resolve_vspace(struct KProcess  *proc, iris_cptr_t cptr,
                                     iris_rights_t     required,
                                     struct KVSpace  **out, iris_rights_t *rights_out);
+iris_error_t cspace_resolve_frame(struct KProcess *proc, iris_cptr_t cptr,
+                                   iris_rights_t    required,
+                                   struct KFrame  **out, iris_rights_t *rights_out);
+
+/*
+ * cspace_or_handle_resolve_frame — dual-resolution helper for KFrame syscalls.
+ *
+ * Tries CSpace traversal first (CSpace-first authority).  Falls back to the
+ * handle table if CSpace fails with NOT_FOUND or INVALID_ARG (legacy handle).
+ * ACCESS_DENIED from CSpace is a hard stop — no fallback.
+ *
+ * Ref-count contract: active + lifecycle (same as cspace_or_handle_resolve_untyped).
+ * KFrame operations do not block, so holding active_refs is safe.
+ * Caller MUST release both:
+ *   kobject_active_release(&(*out)->base);
+ *   kobject_release(&(*out)->base);
+ */
+iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
+                                             iris_cptr_t      cptr_or_handle,
+                                             iris_rights_t    required,
+                                             struct KFrame  **out,
+                                             iris_rights_t   *rights_out);
 
 /*
  * cspace_or_handle_resolve_cnode — dual-resolution helper for CNode syscalls.

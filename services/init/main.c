@@ -9,11 +9,11 @@
  *
  * Boot sequence validated:
  *   1. Lookup kbd service (write end) and kbd reply channel (read end)
- *   2. Lookup vfs service (write end) and vfs reply channel (read end)
+ *   2. Resolve "vfs.ep" via the svcmgr discovery endpoint (Fase 7.2)
  *   3. Diagnostics check via svcmgr DIAG
  *   4. KBD HELLO liveness probe
- *   5. VFS LIST x3 (index 0, 1, 2-OOB)
- *   6. VFS OPEN / READ / CLOSE of the boot file
+ *   5. VFS EP LIST x3 (index 0, 1, 2) + out-of-range index rejection
+ *   6. VFS EP STAT / READ_AT of the boot file (stateless; no open/close)
  *   7. KBD SUBSCRIBE — attach a scancode event channel
  *   8. Echo loop: SYS_CHAN_RECV_NB on event channel + SYS_WRITE one char per keypress
  */
@@ -25,7 +25,8 @@
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
 #include <iris/svcmgr_proto.h>
-#include <iris/vfs_proto.h>
+#include <iris/endpoint_proto.h>
+#include <iris/vfs_ep_proto.h>
 #include <iris/kbd_proto.h>
 #include <iris/vfs.h>
 #include <iris/console_proto.h>
@@ -91,8 +92,8 @@ static const char init_stage_lookup[]    = "[USER][INIT][S1] service lookup\n";
 static const char init_stage_hello[]     = "[USER][INIT][S2] kbd hello\n";
 static const char init_stage_diag[]      = "[USER][INIT][S3] global diag\n";
 static const char init_stage_dynamic[]   = "[USER][INIT][S4] dynamic registry\n";
-static const char init_stage_vfs_list[]  = "[USER][INIT][S5] vfs list\n";
-static const char init_stage_vfs_rw[]    = "[USER][INIT][S6] vfs rw\n";
+static const char init_stage_vfs_list[]  = "[USER][INIT][S5] vfs ep list\n";
+static const char init_stage_vfs_rw[]    = "[USER][INIT][S6] vfs ep rw\n";
 static const char init_stage_subscribe[] = "[USER][INIT][S7] kbd subscribe\n";
 static const char init_stage_exception[] = "[USER][INIT][S8] exception delivery OK\n";
 static const char init_stage_seal[]      = "[USER][INIT][S9] channel seal OK\n";
@@ -391,15 +392,23 @@ static void init_selftest_rights_reduction(void) {
 }
 
 /* ── iris_test spawn + wait ──────────────────────────────────────────────── */
+
+/* Defined below (svcmgr lookup section); used here to fetch "svcmgr.ep". */
+static handle_id_t init_lookup_name(handle_id_t sm_h, const char *name,
+                                    iris_rights_t rights);
+
 /*
  * Spawns iris_test using spawn_cap_h (a dup of bootstrap_h kept before it is
- * closed).  Sends the cap via bootstrap channel, then waits up to 12 seconds
- * for iris_test to exit.  Logs the final pass/fail result.
+ * closed).  Sends the cap via bootstrap channel, plus the svcmgr discovery
+ * endpoint (looked up as "svcmgr.ep" over the legacy channel) so the suite
+ * can exercise the EP-based service path (T026+).  Then waits up to 12
+ * seconds for iris_test to exit and logs the final pass/fail result.
  */
-static void init_spawn_iris_test(handle_id_t spawn_cap_h) {
+static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
     handle_id_t proc_h      = HANDLE_INVALID;
     handle_id_t boot_h      = HANDLE_INVALID;
     handle_id_t cap_dup     = HANDLE_INVALID;
+    handle_id_t svcmgr_ep_h = HANDLE_INVALID;
     handle_id_t watch_base_h = HANDLE_INVALID;
     handle_id_t watch_rd_h  = HANDLE_INVALID;
     handle_id_t watch_wr_h  = HANDLE_INVALID;
@@ -428,6 +437,27 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h) {
     r = init_sys2(SYS_CHAN_SEND, (long)boot_h, (long)&msg);
     if (r < 0) goto out;
     cap_dup = HANDLE_INVALID; /* consumed by send */
+
+    /* Forward the svcmgr discovery endpoint (Fase 7.1). Non-fatal on lookup
+     * failure: the EP-path tests then fail loudly instead of being skipped. */
+    svcmgr_ep_h = init_lookup_name(sm_h, "svcmgr.ep",
+                                   RIGHT_WRITE | RIGHT_TRANSFER);
+    if (svcmgr_ep_h != HANDLE_INVALID) {
+        init_msg_zero(&msg);
+        msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
+        svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
+                               SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP);
+        msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
+        msg.attached_handle = svcmgr_ep_h;
+        msg.attached_rights = RIGHT_WRITE;
+        r = init_sys2(SYS_CHAN_SEND, (long)boot_h, (long)&msg);
+        if (r < 0)
+            init_close(&svcmgr_ep_h);
+        else
+            svcmgr_ep_h = HANDLE_INVALID; /* consumed by send */
+    } else {
+        init_log("[USER][INIT] svcmgr.ep lookup FAILED\n");
+    }
 
     init_close(&boot_h);
 
@@ -848,6 +878,50 @@ fail:
     return result;
 }
 
+/*
+ * Fase 7.2: runtime registration of a reserved ".ep" name must be rejected
+ * by svcmgr, and the name must stay unresolvable afterwards (anti-spoofing).
+ * Channel ordering guarantees the register is processed before the lookup.
+ */
+static int init_check_ep_register_rejected(handle_id_t sm_h) {
+    static const char spoof_name[] = "spoof.ep";
+    struct KChanMsg msg;
+    handle_id_t base_h    = HANDLE_INVALID;
+    handle_id_t publish_h = HANDLE_INVALID;
+    int ok = 0;
+    long r;
+
+    r = init_sys0(SYS_CHAN_CREATE);
+    if (r < 0) goto done;
+    base_h = (handle_id_t)r;
+
+    r = init_sys2(SYS_HANDLE_DUP, (long)base_h,
+                  (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER));
+    if (r < 0) goto done;
+    publish_h = (handle_id_t)r;
+
+    init_msg_zero(&msg);
+    msg.type = SVCMGR_MSG_REGISTER;
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_REGISTER_OFF_ENDPOINT], INIT_RUNTIME_ENDPOINT);
+    svcmgr_proto_write_u32(&msg.data[SVCMGR_REGISTER_OFF_RIGHTS], RIGHT_WRITE);
+    for (uint32_t i = 0; i + 1u < SVCMGR_SERVICE_NAME_CAP && spoof_name[i]; i++)
+        msg.data[SVCMGR_REGISTER_OFF_NAME + i] = (uint8_t)spoof_name[i];
+    msg.data_len = SVCMGR_REGISTER_MSG_LEN;
+    msg.attached_handle = publish_h;
+    msg.attached_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+    r = init_sys2(SYS_CHAN_SEND, (long)sm_h, (long)&msg);
+    if (r < 0) goto done;
+    publish_h = HANDLE_INVALID; /* consumed by send; svcmgr closes it on reject */
+
+    if (init_lookup_name(sm_h, spoof_name, RIGHT_WRITE) != HANDLE_INVALID) goto done;
+    ok = 1;
+
+done:
+    if (publish_h != HANDLE_INVALID) init_close(&publish_h);
+    init_close(&base_h);
+    return ok;
+}
+
 static int init_check_dynamic_registry(handle_id_t sm_h) {
     static const char runtime_name[] = "init.echo";
     struct KChanMsg msg;
@@ -860,6 +934,9 @@ static int init_check_dynamic_registry(handle_id_t sm_h) {
     handle_id_t publish2_h = HANDLE_INVALID;
     handle_id_t client2_h = HANDLE_INVALID;
     long r;
+
+    /* Fase 7.2: reserved ".ep" namespace must reject runtime registration. */
+    if (!init_check_ep_register_rejected(sm_h)) return 0;
 
     r = init_sys0(SYS_CHAN_CREATE);
     if (r < 0) goto fail;
@@ -1061,8 +1138,9 @@ static int init_check_diag(handle_id_t sm_h) {
         if (irq      == 0u)                             goto done;
         if (cat      != IRIS_SERVICE_CATALOG_VERSION)   goto done;
         if (vfs_exp  < VFS_BOOT_EXPORT_COUNT)            goto done;
+        /* Fase 7.5: stateless VFS has no open-file table; both report 0. */
         if (vfs_op   != 0u)                             goto done;
-        if (vfs_cap  != VFS_SERVICE_OPEN_FILES)         goto done;
+        if (vfs_cap  != 0u)                             goto done;
         (void)vfs_by; /* total bytes now include initrd VMO sizes — not a fixed invariant */
         if (kbd_fl   != KBD_STATUS_NORMAL)              goto done;
     }
@@ -1083,141 +1161,151 @@ static int init_wait_diag(handle_id_t sm_h) {
     return 0;
 }
 
-/* ── VFS LIST check ─────────────────────────────────────────────────────── */
+/* ── VFS endpoint client (Fase 7.2) ─────────────────────────────────────── */
 
-static int init_check_vfs_list(handle_id_t vfs_h, handle_id_t vfs_reply_h) {
-    struct KChanMsg msg;
-    long r;
+/* EP_CALL bulk buffer: the request path and the reply data share this buffer
+ * (EP_CALL reuses buf_uptr in both directions). +1 for a guard NUL. */
+static uint8_t g_init_ep_buf[VFS_EP_DATA_MAX + 1u];
 
-    /* index 0 — expect OK */
-    init_msg_zero(&msg);
-    msg.type     = VFS_MSG_LIST;
-    msg.data_len = VFS_MSG_LIST_LEN;
-    vfs_proto_write_u32(&msg.data[VFS_MSG_OFF_LIST_INDEX], 0u);
-    msg.attached_handle = HANDLE_INVALID;
-    r = init_chan_send_recv(vfs_h, vfs_reply_h, &msg);
-    if (r < 0) return 0;
-    if (msg.type != VFS_MSG_LIST_REPLY) return 0;
-    if ((int32_t)vfs_proto_read_u32(&msg.data[VFS_MSG_OFF_LIST_REPLY_ERR]) != 0) return 0;
+static void init_imsg_zero(struct IrisMsg *msg) {
+    uint8_t *raw = (uint8_t *)msg;
+    for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
+}
 
-    /* index 1 — expect OK */
-    init_msg_zero(&msg);
-    msg.type     = VFS_MSG_LIST;
-    msg.data_len = VFS_MSG_LIST_LEN;
-    vfs_proto_write_u32(&msg.data[VFS_MSG_OFF_LIST_INDEX], 1u);
-    msg.attached_handle = HANDLE_INVALID;
-    r = init_chan_send_recv(vfs_h, vfs_reply_h, &msg);
-    if (r < 0) return 0;
-    if (msg.type != VFS_MSG_LIST_REPLY) return 0;
-    if ((int32_t)vfs_proto_read_u32(&msg.data[VFS_MSG_OFF_LIST_REPLY_ERR]) != 0) return 0;
+/*
+ * Resolve "vfs.ep" through the svcmgr discovery endpoint:
+ * EP_CALL(svcmgr_ep, IRIS_SVCMGR_EP_LOOKUP_NAME, "vfs.ep"). The reply carries
+ * the endpoint cap (RIGHT_WRITE) via SYS_REPLY cap transfer. Returns
+ * HANDLE_INVALID on any failure (caller retries / fails fast).
+ */
+static handle_id_t init_vfs_ep_lookup(handle_id_t svcmgr_ep_h) {
+    static const char ep_name[] = VFS_EP_SVC_NAME;
+    struct IrisMsg msg;
 
-    /* index 2 — expect OK (readme.txt, added in Phase 56) */
-    init_msg_zero(&msg);
-    msg.type     = VFS_MSG_LIST;
-    msg.data_len = VFS_MSG_LIST_LEN;
-    vfs_proto_write_u32(&msg.data[VFS_MSG_OFF_LIST_INDEX], 2u);
-    msg.attached_handle = HANDLE_INVALID;
-    r = init_chan_send_recv(vfs_h, vfs_reply_h, &msg);
-    if (r < 0) return 0;
-    if (msg.type != VFS_MSG_LIST_REPLY) return 0;
-    if ((int32_t)vfs_proto_read_u32(&msg.data[VFS_MSG_OFF_LIST_REPLY_ERR]) != 0) return 0;
+    if (svcmgr_ep_h == HANDLE_INVALID) return HANDLE_INVALID;
 
-    /* index 100 — expect out-of-bounds (err != 0) */
-    init_msg_zero(&msg);
-    msg.type     = VFS_MSG_LIST;
-    msg.data_len = VFS_MSG_LIST_LEN;
-    vfs_proto_write_u32(&msg.data[VFS_MSG_OFF_LIST_INDEX], 100u);
-    msg.attached_handle = HANDLE_INVALID;
-    r = init_chan_send_recv(vfs_h, vfs_reply_h, &msg);
-    if (r < 0) return 0;
-    if (msg.type != VFS_MSG_LIST_REPLY) return 0;
-    if ((int32_t)vfs_proto_read_u32(&msg.data[VFS_MSG_OFF_LIST_REPLY_ERR]) == 0) return 0;
+    for (uint32_t i = 0; i < (uint32_t)sizeof(ep_name); i++)
+        g_init_ep_buf[i] = (uint8_t)ep_name[i];
+
+    init_imsg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_init_ep_buf;
+    msg.buf_len  = (uint32_t)sizeof(ep_name);  /* includes NUL */
+
+    if (init_sys2(SYS_EP_CALL, (long)svcmgr_ep_h, (long)&msg) != IRIS_OK)
+        return HANDLE_INVALID;
+    if (msg.label != IRIS_EP_REPLY_OK)
+        return HANDLE_INVALID;
+    if (msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP)
+        return HANDLE_INVALID;
+    return (handle_id_t)msg.attached_handle;
+}
+
+/*
+ * One VFS endpoint round trip. The path (when non-NULL) is staged into
+ * g_init_ep_buf; reply bulk data lands in the same buffer.
+ */
+static int init_vfs_ep_call(handle_id_t vfs_ep_h, struct IrisMsg *msg,
+                            const char *path) {
+    msg->buf_uptr = (uint64_t)(uintptr_t)g_init_ep_buf;
+    if (path) {
+        uint32_t plen = 0;
+        while (path[plen]) plen++;
+        if (plen + 1u > VFS_EP_PATH_MAX) return (int)IRIS_ERR_INVALID_ARG;
+        for (uint32_t i = 0; i < plen; i++) g_init_ep_buf[i] = (uint8_t)path[i];
+        g_init_ep_buf[plen] = 0u;
+        msg->buf_len = plen + 1u;
+    }
+    return (int)init_sys2(SYS_EP_CALL, (long)vfs_ep_h, (long)msg);
+}
+
+/* ── VFS EP LIST check (S5) ─────────────────────────────────────────────── */
+
+static int init_check_vfs_list_ep(handle_id_t vfs_ep_h) {
+    struct IrisMsg msg;
+
+    /* indices 0..2 — expect OK with a non-empty name */
+    for (uint64_t idx = 0; idx < 3u; idx++) {
+        init_imsg_zero(&msg);
+        msg.label      = VFS_EP_OP_LIST;
+        msg.words[0]   = idx;
+        msg.word_count = 1u;
+        if (init_vfs_ep_call(vfs_ep_h, &msg, 0) != IRIS_OK) return 0;
+        if (msg.label != IRIS_EP_REPLY_OK) return 0;
+        if (msg.words[2] == 0u) return 0;  /* name length */
+    }
+
+    /* index 100 — expect NOT_FOUND (end-of-listing semantics) */
+    init_imsg_zero(&msg);
+    msg.label      = VFS_EP_OP_LIST;
+    msg.words[0]   = 100u;
+    msg.word_count = 1u;
+    if (init_vfs_ep_call(vfs_ep_h, &msg, 0) != IRIS_OK) return 0;
+    if (msg.label != IRIS_EP_REPLY_ERR) return 0;
+    if (msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) return 0;
 
     return 1;
 }
 
-static int init_wait_vfs_list(handle_id_t vfs_h, handle_id_t vfs_reply_h) {
+static int init_wait_vfs_list_ep(handle_id_t vfs_ep_h) {
     for (uint32_t attempt = 0; attempt < INIT_RETRY_LIMIT; attempt++) {
-        if (init_check_vfs_list(vfs_h, vfs_reply_h)) return 1;
+        if (init_check_vfs_list_ep(vfs_ep_h)) return 1;
         init_retry_pause();
     }
     return 0;
 }
 
-/* ── VFS OPEN / READ / CLOSE check ─────────────────────────────────────── */
+/* ── VFS EP STAT / READ_AT check (S6) ───────────────────────────────────── */
 
-static int init_check_vfs_rw(handle_id_t vfs_h, handle_id_t vfs_reply_h) {
-    struct KChanMsg msg;
-    handle_id_t proc_h  = HANDLE_INVALID;
-    handle_id_t xfer_h  = HANDLE_INVALID;
-    uint32_t    file_id = 0;
-    long r;
+static int init_check_vfs_rw_ep(handle_id_t vfs_ep_h) {
+    struct IrisMsg msg;
+    uint64_t size;
 
-    /* SYS_PROCESS_SELF → proc_h */
-    r = init_sys0(SYS_PROCESS_SELF);
-    if (r < 0) return 0;
-    proc_h = (handle_id_t)r;
+    /* STAT of the boot file — expect OK with a sane size */
+    init_imsg_zero(&msg);
+    msg.label = VFS_EP_OP_STAT;
+    if (init_vfs_ep_call(vfs_ep_h, &msg, "iris.txt") != IRIS_OK) return 0;
+    if (msg.label != IRIS_EP_REPLY_OK) return 0;
+    size = msg.words[1];
+    if (size == 0u || size > VFS_EP_DATA_MAX) return 0;
 
-    /* Dup proc handle with RIGHT_READ for VFS open watch */
-    r = init_sys2(SYS_HANDLE_DUP, (long)proc_h, (long)(RIGHT_READ | RIGHT_TRANSFER));
-    if (r < 0) { init_close(&proc_h); return 0; }
-    xfer_h = (handle_id_t)r;
+    /* READ_AT offset 0 — full content in one reply */
+    init_imsg_zero(&msg);
+    msg.label      = VFS_EP_OP_READ_AT;
+    msg.words[0]   = 0u;
+    msg.words[1]   = VFS_EP_DATA_MAX;
+    msg.word_count = 2u;
+    if (init_vfs_ep_call(vfs_ep_h, &msg, "iris.txt") != IRIS_OK) return 0;
+    if (msg.label != IRIS_EP_REPLY_OK) return 0;
+    if (msg.words[1] != size || msg.words[2] != size) return 0;
+    if (msg.buf_len != (uint32_t)size) return 0;
 
-    /* VFS_MSG_OPEN */
-    init_msg_zero(&msg);
-    msg.type = VFS_MSG_OPEN;
-    vfs_proto_write_u32(&msg.data[VFS_MSG_OFF_OPEN_FLAGS], (uint32_t)VFS_O_READ);
-    {
-        const char path[] = "iris.txt";
-        uint32_t plen = 0;
-        while (path[plen]) plen++;
-        plen++; /* include NUL */
-        for (uint32_t i = 0; i < plen; i++)
-            msg.data[VFS_MSG_OFF_OPEN_PATH + i] = (uint8_t)path[i];
-        msg.data_len = VFS_MSG_OFF_OPEN_PATH + plen;
-    }
-    msg.attached_handle = xfer_h;
-    msg.attached_rights = RIGHT_READ | RIGHT_TRANSFER;
+    /* READ_AT offset == size — EOF (0 bytes), not an error */
+    init_imsg_zero(&msg);
+    msg.label      = VFS_EP_OP_READ_AT;
+    msg.words[0]   = size;
+    msg.words[1]   = VFS_EP_DATA_MAX;
+    msg.word_count = 2u;
+    if (init_vfs_ep_call(vfs_ep_h, &msg, "iris.txt") != IRIS_OK) return 0;
+    if (msg.label != IRIS_EP_REPLY_OK) return 0;
+    if (msg.words[1] != 0u || msg.words[2] != size) return 0;
 
-    r = init_chan_send_recv(vfs_h, vfs_reply_h, &msg);
-    xfer_h = HANDLE_INVALID; /* consumed */
-    init_close(&proc_h);
-    if (r < 0) return 0;
-    if (msg.type != VFS_MSG_OPEN_REPLY) return 0;
-    if ((int32_t)vfs_proto_read_u32(&msg.data[VFS_MSG_OFF_OPEN_REPLY_ERR]) != 0) return 0;
-    file_id = vfs_proto_read_u32(&msg.data[VFS_MSG_OFF_OPEN_REPLY_FILE_ID]);
-
-    /* VFS_MSG_READ */
-    init_msg_zero(&msg);
-    msg.type = VFS_MSG_READ;
-    vfs_proto_write_u32(&msg.data[VFS_MSG_OFF_READ_FILE_ID], file_id);
-    vfs_proto_write_u32(&msg.data[VFS_MSG_OFF_READ_LEN], VFS_MSG_READ_REPLY_DATA_MAX);
-    msg.data_len        = VFS_MSG_READ_LEN;
-    msg.attached_handle = HANDLE_INVALID;
-
-    r = init_chan_send_recv(vfs_h, vfs_reply_h, &msg);
-    if (r < 0) return 0;
-    if (msg.type != VFS_MSG_READ_REPLY) return 0;
-    if ((int32_t)vfs_proto_read_u32(&msg.data[VFS_MSG_OFF_READ_REPLY_ERR]) != 0) return 0;
-
-    /* VFS_MSG_CLOSE */
-    init_msg_zero(&msg);
-    msg.type = VFS_MSG_CLOSE;
-    vfs_proto_write_u32(&msg.data[VFS_MSG_OFF_CLOSE_FILE_ID], file_id);
-    msg.data_len        = VFS_MSG_CLOSE_LEN;
-    msg.attached_handle = HANDLE_INVALID;
-
-    r = init_chan_send_recv(vfs_h, vfs_reply_h, &msg);
-    if (r < 0) return 0;
-    if (msg.type != VFS_MSG_CLOSE_REPLY) return 0;
-    if ((int32_t)vfs_proto_read_u32(&msg.data[VFS_MSG_OFF_CLOSE_REPLY_ERR]) != 0) return 0;
+    /* READ_AT of a missing export — NOT_FOUND */
+    init_imsg_zero(&msg);
+    msg.label      = VFS_EP_OP_READ_AT;
+    msg.words[0]   = 0u;
+    msg.words[1]   = VFS_EP_DATA_MAX;
+    msg.word_count = 2u;
+    if (init_vfs_ep_call(vfs_ep_h, &msg, "no-such-file") != IRIS_OK) return 0;
+    if (msg.label != IRIS_EP_REPLY_ERR) return 0;
+    if (msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) return 0;
 
     return 1;
 }
 
-static int init_wait_vfs_rw(handle_id_t vfs_h, handle_id_t vfs_reply_h) {
+static int init_wait_vfs_rw_ep(handle_id_t vfs_ep_h) {
     for (uint32_t attempt = 0; attempt < INIT_RETRY_LIMIT; attempt++) {
-        if (init_check_vfs_rw(vfs_h, vfs_reply_h)) return 1;
+        if (init_check_vfs_rw_ep(vfs_ep_h)) return 1;
         init_retry_pause();
     }
     return 0;
@@ -1364,8 +1452,7 @@ void init_main(handle_id_t bootstrap_ch_h) {
     handle_id_t sm_h               = HANDLE_INVALID;
     handle_id_t kbd_h              = HANDLE_INVALID;
     handle_id_t kbd_reply_h        = HANDLE_INVALID;
-    handle_id_t vfs_h              = HANDLE_INVALID;
-    handle_id_t vfs_reply_h        = HANDLE_INVALID;
+    handle_id_t vfs_ep_h           = HANDLE_INVALID;
     handle_id_t scan_recv_h        = HANDLE_INVALID;
     handle_id_t iris_test_spawn_h  = HANDLE_INVALID;
 
@@ -1420,18 +1507,26 @@ void init_main(handle_id_t bootstrap_ch_h) {
         init_exit(3);
     }
 
-    vfs_h = init_lookup_wait(sm_h, SVCMGR_ENDPOINT_VFS,
-                             RIGHT_WRITE | RIGHT_DUPLICATE);
-    if (vfs_h == HANDLE_INVALID) {
-        init_log("[USER] vfs lookup FAILED\n");
-        init_exit(4);
-    }
-
-    vfs_reply_h = init_lookup_wait(sm_h, SVCMGR_ENDPOINT_VFS_REPLY,
-                                   RIGHT_READ | RIGHT_DUPLICATE);
-    if (vfs_reply_h == HANDLE_INVALID) {
-        init_log("[USER] vfs reply lookup FAILED\n");
-        init_exit(5);
+    /* Fase 7.2: the VFS endpoint is the mandatory operational path. Resolve
+     * the svcmgr discovery endpoint once, then look up "vfs.ep" through it
+     * (retrying until VFS has bootstrapped). Fail-fast: no legacy fallback. */
+    {
+        handle_id_t svcmgr_ep_h = init_lookup_name(sm_h, "svcmgr.ep",
+                                                   RIGHT_WRITE);
+        if (svcmgr_ep_h == HANDLE_INVALID) {
+            init_log("[USER] svcmgr.ep lookup FAILED\n");
+            init_exit(4);
+        }
+        for (uint32_t attempt = 0; attempt < INIT_RETRY_LIMIT; attempt++) {
+            vfs_ep_h = init_vfs_ep_lookup(svcmgr_ep_h);
+            if (vfs_ep_h != HANDLE_INVALID) break;
+            init_retry_pause();
+        }
+        init_close(&svcmgr_ep_h);
+        if (vfs_ep_h == HANDLE_INVALID) {
+            init_log("[USER] vfs.ep lookup FAILED\n");
+            init_exit(5);
+        }
     }
 
     /* ── KBD HELLO ── */
@@ -1457,23 +1552,22 @@ void init_main(handle_id_t bootstrap_ch_h) {
     }
     init_log("[USER] dynamic registry OK\n");
 
-    /* ── VFS LIST ── */
+    /* ── VFS EP LIST ── */
     init_log(init_stage_vfs_list);
-    if (!init_wait_vfs_list(vfs_h, vfs_reply_h)) {
-        init_log("[USER] vfs list FAILED\n");
+    if (!init_wait_vfs_list_ep(vfs_ep_h)) {
+        init_log("[USER] vfs ep list FAILED\n");
         init_exit(9);
     }
-    init_log("[USER] vfs list reply OK\n");
+    init_log("[USER] vfs ep list OK\n");
 
-    /* ── VFS OPEN / READ / CLOSE ── */
+    /* ── VFS EP STAT / READ_AT ── */
     init_log(init_stage_vfs_rw);
-    if (!init_wait_vfs_rw(vfs_h, vfs_reply_h)) {
-        init_log("[USER] vfs rw FAILED\n");
+    if (!init_wait_vfs_rw_ep(vfs_ep_h)) {
+        init_log("[USER] vfs ep rw FAILED\n");
         init_exit(10);
     }
-    init_log("[USER] vfs open reply OK\n");
-    init_log("[USER] vfs read reply OK\n");
-    init_log("[USER] vfs close reply OK\n");
+    init_log("[USER] vfs ep stat OK\n");
+    init_log("[USER] vfs ep read OK\n");
 
     /* ── KBD SUBSCRIBE ── */
     init_log(init_stage_subscribe);
@@ -1488,6 +1582,18 @@ void init_main(handle_id_t bootstrap_ch_h) {
         init_exit(12);
     }
     init_log("[USER] kbd shared reply OK\n");
+
+    /* Fase 7.4: sh consumes key events via "kbd.ep" (pull). Drop our S7
+     * subscription (handle 0 = unsubscribe) so init's fallback echo loop
+     * does not double-deliver keystrokes next to sh; the loop below then
+     * just idles on the (now silent) scan channel. */
+    {
+        struct KChanMsg umsg;
+        init_msg_zero(&umsg);
+        umsg.type     = KBD_MSG_SUBSCRIBE;
+        umsg.data_len = KBD_MSG_SUBSCRIBE_LEN;
+        (void)init_sys2(SYS_CHAN_SEND, (long)kbd_h, (long)&umsg);
+    }
     init_log(init_stage_healthy);
 
     /* ── Phase 44: ring-3 timed IPC selftest ─────────────────────── */
@@ -1521,7 +1627,11 @@ void init_main(handle_id_t bootstrap_ch_h) {
 
     /* ── Block 8: iris_test ring-3 syscall test suite ── */
     if (iris_test_spawn_h != HANDLE_INVALID) {
-        init_spawn_iris_test(iris_test_spawn_h);
+        /* Drain our queued console output first: iris_test writes raw to
+         * COM1, and a half-flushed backlog line (e.g. the S10 marker) would
+         * otherwise interleave mid-line with test output under load. */
+        console_sync(g_init_console_h);
+        init_spawn_iris_test(iris_test_spawn_h, sm_h);
         iris_test_spawn_h = HANDLE_INVALID;
     }
 

@@ -9,6 +9,7 @@
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kschedctx.h>
 #include <iris/nc/kvspace.h>
+#include <iris/nc/kframe.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/rights.h>
 
@@ -104,6 +105,7 @@ TYPED_RESOLVE(cspace_resolve_tcb,         struct KTcb,         KOBJ_TCB)
 TYPED_RESOLVE(cspace_resolve_untyped,     struct KUntyped,     KOBJ_UNTYPED)
 TYPED_RESOLVE(cspace_resolve_schedctx,    struct KSchedContext,KOBJ_SCHED_CONTEXT)
 TYPED_RESOLVE(cspace_resolve_vspace,      struct KVSpace,      KOBJ_VSPACE)
+TYPED_RESOLVE(cspace_resolve_frame,       struct KFrame,       KOBJ_FRAME)
 
 iris_error_t cspace_or_handle_resolve_cnode(struct KProcess *proc,
                                              iris_cptr_t      cptr_or_handle,
@@ -256,6 +258,57 @@ iris_error_t cspace_or_handle_resolve_untyped(struct KProcess  *proc,
     }
     kobject_active_retain(obj);
     *out = (struct KUntyped *)obj;
+    *rights_out = r;
+    return IRIS_OK;
+}
+
+/*
+ * cspace_or_handle_resolve_frame — active+lifecycle ref contract.
+ *
+ * KFrame is a Fase 5 object; no IPC blocking occurs in frame operations.
+ * CSpace-first; ACCESS_DENIED is a hard stop.  Handle-table fallback adds
+ * kobject_active_retain to match the cspace_resolve_cap return contract.
+ */
+iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
+                                             iris_cptr_t      cptr_or_handle,
+                                             iris_rights_t    required,
+                                             struct KFrame  **out,
+                                             iris_rights_t   *rights_out)
+{
+    struct KObject *obj;
+    iris_rights_t   r;
+    iris_error_t    err;
+
+    if (!proc || !out || !rights_out) return IRIS_ERR_INVALID_ARG;
+
+    if (cptr_or_handle != CPTR_NULL && proc->cspace_root_h != HANDLE_INVALID) {
+        err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);
+        if (err == IRIS_OK) {
+            if (obj->type != KOBJ_FRAME) {
+                kobject_active_release(obj);
+                kobject_release(obj);
+                return IRIS_ERR_WRONG_TYPE;
+            }
+            *out = (struct KFrame *)obj;
+            *rights_out = r;
+            return IRIS_OK;
+        }
+        if (err == IRIS_ERR_ACCESS_DENIED) return err;
+    }
+
+    err = handle_table_get_object(&proc->handle_table,
+                                   (handle_id_t)cptr_or_handle, &obj, &r);
+    if (err != IRIS_OK) return err;
+    if (obj->type != KOBJ_FRAME) {
+        kobject_release(obj);
+        return IRIS_ERR_WRONG_TYPE;
+    }
+    if (required != RIGHT_NONE && !rights_check(r, required)) {
+        kobject_release(obj);
+        return IRIS_ERR_ACCESS_DENIED;
+    }
+    kobject_active_retain(obj);
+    *out = (struct KFrame *)obj;
     *rights_out = r;
     return IRIS_OK;
 }

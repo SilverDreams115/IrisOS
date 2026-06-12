@@ -2,10 +2,12 @@
 #include <iris/kbd_proto.h>
 #include "service_catalog.h"
 #include <iris/syscall.h>
-#include <iris/vfs_proto.h>
+#include <iris/vfs_ep_proto.h>
 #include <iris/nc/error.h>
 #include <iris/nc/handle.h>
 #include <iris/nc/kchannel.h>
+#include <iris/ipc_msg.h>
+#include <iris/endpoint_proto.h>
 #include <stdint.h>
 #include "../common/svc_loader.h"
 #include "../common/console_client.h"
@@ -24,6 +26,11 @@ struct svcmgr_service_state {
     handle_id_t public_h;
     handle_id_t reply_h;
     handle_id_t proc_h;
+    /* Service-owned KEndpoint master (Fase 7.1; manifest own_service_ep=1).
+     * Created once at first boot and kept across restarts so client caps
+     * stay valid; recv side goes to the child at bootstrap (kind 0x21) and
+     * the send side is published as "<image_name>.ep". */
+    handle_id_t ep_h;
     uint8_t restart_count;
     uint8_t reserved[3];
 };
@@ -40,6 +47,7 @@ struct svcmgr_state {
     handle_id_t bootstrap_h;
     handle_id_t spawn_cap_h;
     handle_id_t console_h;                                    /* write end of console channel */
+    handle_id_t ep_h;                                         /* svcmgr KEndpoint for EP-based discovery */
     handle_id_t irq_caps[SVCMGR_IRQ_CAPS_TABLE_SIZE];       /* indexed by IRQ number  */
     handle_id_t ioport_caps[SVCMGR_IOPORT_CAPS_TABLE_SIZE]; /* indexed by service_id  */
     struct svcmgr_service_state services[IRIS_SERVICE_RUNTIME_SLOT_COUNT];
@@ -71,6 +79,7 @@ static const char sm_str_restart_exhausted[] = "[SVCMGR] WARN: restart budget ex
 static const char sm_str_register_ok[]       = "[SVCMGR] runtime publish OK\n";
 static const char sm_str_register_fail[]     = "[SVCMGR] WARN: runtime publish failed\n";
 static const char sm_str_register_full[]     = "[SVCMGR] WARN: runtime registry full\n";
+static const char sm_str_ep_ready[]          = "[SVCMGR] ep ready\n";
 static const char sm_str_lookup_name_ok[]    = "[SVCMGR] lookup-name reply OK\n";
 static const char sm_str_unregister_ok[]     = "[SVCMGR] runtime withdraw OK\n";
 static const char sm_str_unregister_fail[]   = "[SVCMGR] WARN: runtime withdraw failed\n";
@@ -337,6 +346,56 @@ static struct svcmgr_dynamic_service *svcmgr_dynamic_find_name(struct svcmgr_sta
     return 0;
 }
 
+/* True iff name ends in the reserved ".ep" suffix (Fase 7.1). */
+static int svcmgr_name_has_ep_suffix(const char *name) {
+    uint32_t len = 0;
+    if (!name) return 0;
+    while (len < SVCMGR_SERVICE_NAME_CAP && name[len]) len++;
+    if (len < 4u || len >= SVCMGR_SERVICE_NAME_CAP) return 0;
+    return name[len - 3u] == '.' && name[len - 2u] == 'e' && name[len - 1u] == 'p';
+}
+
+/*
+ * Resolve reserved endpoint names (Fase 7.1):
+ *   "svcmgr.ep"       → svcmgr's own discovery KEndpoint
+ *   "<image_name>.ep" → the service's KEndpoint (own_service_ep catalog flag)
+ * Returns 1 and fills master/allowed on success. These names take precedence
+ * over (and are rejected from) the dynamic registry, so they cannot be
+ * spoofed by runtime registration.
+ */
+static int svcmgr_resolve_ep_name(struct svcmgr_state *state, const char *name,
+                                  handle_id_t *master_h, iris_rights_t *allowed) {
+    if (!state || !master_h || !allowed) return 0;
+    if (!svcmgr_name_has_ep_suffix(name)) return 0;
+
+    if (svcmgr_name_equal(name, "svcmgr.ep")) {
+        if (state->ep_h == HANDLE_INVALID) return 0;
+        *master_h = state->ep_h;
+        /* Discovery cap: TRANSFER allows holders (e.g. init) to distribute
+         * it to children; it only grants EP_CALL on svcmgr, never recv. */
+        *allowed  = RIGHT_WRITE | RIGHT_TRANSFER;
+        return 1;
+    }
+
+    {
+        char base[SVCMGR_SERVICE_NAME_CAP];
+        const struct iris_service_catalog_entry *manifest;
+        struct svcmgr_service_state *svc;
+        uint32_t len = 0;
+        while (len < SVCMGR_SERVICE_NAME_CAP && name[len]) len++;
+        for (uint32_t i = 0; i < len - 3u; i++) base[i] = name[i];
+        base[len - 3u] = '\0';
+
+        manifest = svcmgr_catalog_find_name(base);
+        if (!manifest || !manifest->own_service_ep) return 0;
+        svc = svcmgr_service_state(state, manifest->service_id);
+        if (!svc || svc->ep_h == HANDLE_INVALID) return 0;
+        *master_h = svc->ep_h;
+        *allowed  = RIGHT_WRITE;  /* clients get the send/call side only */
+        return 1;
+    }
+}
+
 static struct svcmgr_dynamic_service *svcmgr_dynamic_alloc_slot(struct svcmgr_state *state) {
     if (!state) return 0;
     for (uint32_t i = 0; i < SVCMGR_DYNAMIC_SERVICE_CAP; i++) {
@@ -545,6 +604,102 @@ static int64_t svcmgr_send_spawn_cap(handle_id_t child_boot_h, handle_id_t maste
     return IRIS_OK;
 }
 
+/* ── EP-based service discovery path ────────────────────────────────────
+ *
+ * svcmgr creates one KEndpoint and distributes it to all catalog services
+ * during bootstrap.  Services call EP_CALL with IRIS_SVCMGR_EP_LOOKUP_NAME
+ * to look up a service by name without the KChannel round-trip.
+ *
+ * The drain loop in the main body calls EP_NB_RECV periodically (after each
+ * CHAN_RECV_TIMEOUT wakeup) to handle queued endpoint requests.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/* Receive buffer for bulk kbuf (service name) in EP_NB_RECV drain */
+static uint8_t g_ep_recv_buf[IRIS_EP_SVCNAME_MAX];
+
+static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg *msg) {
+    struct IrisMsg reply;
+    uint32_t i;
+    handle_id_t reply_h;
+
+    if (!msg || msg->attached_handle == (uint32_t)IRIS_MSG_NO_CAP) return;
+    reply_h = (handle_id_t)msg->attached_handle;
+
+    for (i = 0; i < (uint32_t)sizeof(reply); i++) ((uint8_t *)&reply)[i] = 0;
+
+    switch (msg->label) {
+    case IRIS_SVCMGR_EP_LOOKUP_NAME: {
+        /* Name is in g_ep_recv_buf (set up before EP_NB_RECV call); NUL-terminate. */
+        uint32_t namelen = msg->buf_len < IRIS_EP_SVCNAME_MAX
+                           ? msg->buf_len : IRIS_EP_SVCNAME_MAX - 1u;
+        g_ep_recv_buf[namelen] = '\0';
+
+        handle_id_t master_h  = HANDLE_INVALID;
+        iris_rights_t granted = RIGHT_NONE;
+
+        /* Reserved "<name>.ep" endpoint names resolve first (Fase 7.1). */
+        if (!svcmgr_resolve_ep_name(state, (const char *)g_ep_recv_buf,
+                                    &master_h, &granted)) {
+            struct svcmgr_dynamic_service *dyn =
+                svcmgr_dynamic_find_name(state, (const char *)g_ep_recv_buf);
+            const struct iris_service_catalog_entry *cat =
+                (!dyn) ? svcmgr_catalog_find_name((const char *)g_ep_recv_buf) : 0;
+
+            if (dyn && dyn->public_h != HANDLE_INVALID) {
+                master_h = dyn->public_h;
+                granted  = dyn->client_rights;
+            } else if (cat) {
+                struct svcmgr_service_state *svc =
+                    svcmgr_service_state(state, cat->service_id);
+                if (svc && svc->public_h != HANDLE_INVALID) {
+                    master_h = svc->public_h;
+                    granted  = cat->client_service_rights;
+                }
+            }
+        }
+
+        if (master_h != HANDLE_INVALID && granted != RIGHT_NONE) {
+            int64_t dup = svcmgr_syscall2(SYS_HANDLE_DUP, master_h,
+                                          (uint64_t)(granted | RIGHT_TRANSFER));
+            if (dup >= 0) {
+                reply.label              = IRIS_EP_REPLY_OK;
+                reply.words[0]           = 0u;
+                reply.attached_handle    = (uint32_t)dup;
+                reply.attached_rights    = (uint32_t)granted;
+                svcmgr_log(sm_str_lookup_name_ok);
+            } else {
+                reply.label    = IRIS_EP_REPLY_ERR;
+                reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NO_MEMORY;
+            }
+        } else {
+            reply.label    = IRIS_EP_REPLY_ERR;
+            reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND;
+            svcmgr_log(sm_str_lookupfail);
+        }
+        break;
+    }
+    default:
+        reply.label    = IRIS_EP_REPLY_ERR;
+        reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG;
+        break;
+    }
+
+    {
+        int64_t rr = svcmgr_syscall2(SYS_REPLY, (uint64_t)reply_h,
+                                     (uint64_t)(uintptr_t)&reply);
+        /* Reply-cap contract (SYS_REPLY, Fase 7.1): on success the attached
+         * dup is consumed; on IRIS_ERR_NOT_FOUND it was staged and destroyed.
+         * Any other error happens before staging — close the dup here so a
+         * failed reply does not leak the looked-up cap into svcmgr's table. */
+        if (rr != IRIS_OK && rr != (int64_t)IRIS_ERR_NOT_FOUND &&
+            reply.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+            handle_id_t orphan = (handle_id_t)reply.attached_handle;
+            svcmgr_close_handle_if_valid(&orphan);
+        }
+    }
+    (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, (uint64_t)reply_h);
+}
+
 static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
                                       const struct iris_service_catalog_entry *manifest,
                                       handle_id_t child_boot_h) {
@@ -559,15 +714,27 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
         if (r != IRIS_OK) return r;
     }
 
-    r = svcmgr_send_bootstrap_endpoint(child_boot_h, svc->public_h,
-                                       manifest->child_service_rights,
-                                       manifest->service_endpoint);
-    if (r != IRIS_OK) return r;
+    /* endpoint_only services (Fase 7.5: vfs) have no legacy channel pair. */
+    if (!manifest->endpoint_only) {
+        r = svcmgr_send_bootstrap_endpoint(child_boot_h, svc->public_h,
+                                           manifest->child_service_rights,
+                                           manifest->service_endpoint);
+        if (r != IRIS_OK) return r;
 
-    r = svcmgr_send_bootstrap_endpoint(child_boot_h, svc->reply_h,
-                                       manifest->child_reply_rights,
-                                       manifest->reply_endpoint);
-    if (r != IRIS_OK) return r;
+        r = svcmgr_send_bootstrap_endpoint(child_boot_h, svc->reply_h,
+                                           manifest->child_reply_rights,
+                                           manifest->reply_endpoint);
+        if (r != IRIS_OK) return r;
+    }
+
+    /* Fase 7.1: recv side of the service's own KEndpoint. Must be sent
+     * before INITRD_CAP — vfs exits its bootstrap loop once ep/spawn caps
+     * are present. Non-fatal for legacy services; an endpoint_only child
+     * that never receives it fails its own bootstrap loudly. */
+    if (manifest->own_service_ep && svc->ep_h != HANDLE_INVALID)
+        (void)svcmgr_send_bootstrap_endpoint(child_boot_h, svc->ep_h,
+                                             RIGHT_READ,
+                                             SVCMGR_BOOTSTRAP_KIND_SERVICE_EP);
 
     /* Forward I/O port capability if this service requires hardware I/O. */
     if (manifest->ioport_count > 0u) {
@@ -599,45 +766,6 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
         }
     }
 
-    /* Forward kbd channel to services that request it (e.g. sh). */
-    if (manifest->give_kbd) {
-        struct svcmgr_service_state *kbd_svc = svcmgr_service_state(state, SVCMGR_SERVICE_KBD);
-        if (kbd_svc && kbd_svc->public_h != HANDLE_INVALID) {
-            r = svcmgr_send_bootstrap_endpoint(child_boot_h, kbd_svc->public_h,
-                                               RIGHT_WRITE,
-                                               SVCMGR_BOOTSTRAP_KIND_KBD_CAP);
-            if (r != IRIS_OK) {
-                svcmgr_close_handle_if_valid(&child_boot_h);
-                return r;
-            }
-        }
-    }
-
-    /* Forward vfs service+reply channels to services that request them (e.g. sh). */
-    if (manifest->give_vfs) {
-        struct svcmgr_service_state *vfs_svc = svcmgr_service_state(state, SVCMGR_SERVICE_VFS);
-        if (vfs_svc) {
-            if (vfs_svc->public_h != HANDLE_INVALID) {
-                r = svcmgr_send_bootstrap_endpoint(child_boot_h, vfs_svc->public_h,
-                                                   RIGHT_WRITE,
-                                                   SVCMGR_BOOTSTRAP_KIND_VFS_CAP);
-                if (r != IRIS_OK) {
-                    svcmgr_close_handle_if_valid(&child_boot_h);
-                    return r;
-                }
-            }
-            if (vfs_svc->reply_h != HANDLE_INVALID) {
-                r = svcmgr_send_bootstrap_endpoint(child_boot_h, vfs_svc->reply_h,
-                                                   RIGHT_READ,
-                                                   SVCMGR_BOOTSTRAP_KIND_VFS_REPLY_CAP);
-                if (r != IRIS_OK) {
-                    svcmgr_close_handle_if_valid(&child_boot_h);
-                    return r;
-                }
-            }
-        }
-    }
-
     /* Forward spawn cap to services that need to access initrd VMOs (e.g. VFS). */
     if (manifest->give_spawn_cap && state->spawn_cap_h != HANDLE_INVALID) {
         r = svcmgr_send_spawn_cap(child_boot_h, state->spawn_cap_h);
@@ -646,6 +774,13 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
             return r;
         }
     }
+
+    /* Forward svcmgr endpoint to all catalog services for EP-based discovery.
+     * Non-fatal: child falls back to KChannel lookup if the send fails. */
+    if (state->ep_h != HANDLE_INVALID)
+        (void)svcmgr_send_bootstrap_endpoint(child_boot_h, state->ep_h,
+                                             RIGHT_WRITE,
+                                             SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP);
 
     svcmgr_close_handle_if_valid(&child_boot_h);
     return IRIS_OK;
@@ -699,6 +834,14 @@ static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state) {
     uint32_t ready = 0;
     if (!state) return 0;
     for (uint32_t i = 0; i < (uint32_t)(sizeof(state->services) / sizeof(state->services[0])); i++) {
+        const struct iris_service_catalog_entry *manifest =
+            iris_service_catalog_find_by_service_id(i);
+        if (manifest && manifest->endpoint_only) {
+            /* Fase 7.5: endpoint_only services have no legacy pair; their
+             * KEndpoint is the readiness entry point. */
+            if (state->services[i].ep_h != HANDLE_INVALID) ready++;
+            continue;
+        }
         if (state->services[i].public_h != HANDLE_INVALID &&
             state->services[i].reply_h != HANDLE_INVALID) ready++;
     }
@@ -714,43 +857,6 @@ static uint32_t svcmgr_active_slot_count(const struct svcmgr_state *state) {
         if (state->services[i].proc_h != HANDLE_INVALID) active++;
     }
     return active;
-}
-
-static int64_t svcmgr_make_status_reply_pair(handle_id_t *recv_h,
-                                             handle_id_t *xfer_h) {
-    int64_t base_h;
-    int64_t local_recv_h;
-    int64_t local_xfer_h;
-
-    if (!recv_h || !xfer_h) return IRIS_ERR_INVALID_ARG;
-    *recv_h = HANDLE_INVALID;
-    *xfer_h = HANDLE_INVALID;
-
-    base_h = svcmgr_syscall0(SYS_CHAN_CREATE);
-    if (base_h < 0) return base_h;
-
-    local_recv_h = svcmgr_syscall2(SYS_HANDLE_DUP, (handle_id_t)base_h, RIGHT_READ);
-    if (local_recv_h < 0) {
-        handle_id_t tmp = (handle_id_t)base_h;
-        svcmgr_close_handle_if_valid(&tmp);
-        return local_recv_h;
-    }
-
-    local_xfer_h = svcmgr_syscall2(SYS_HANDLE_DUP, (handle_id_t)base_h,
-                                   RIGHT_WRITE | RIGHT_TRANSFER);
-    {
-        handle_id_t tmp = (handle_id_t)base_h;
-        svcmgr_close_handle_if_valid(&tmp);
-    }
-    if (local_xfer_h < 0) {
-        handle_id_t tmp = (handle_id_t)local_recv_h;
-        svcmgr_close_handle_if_valid(&tmp);
-        return local_xfer_h;
-    }
-
-    *recv_h = (handle_id_t)local_recv_h;
-    *xfer_h = (handle_id_t)local_xfer_h;
-    return IRIS_OK;
 }
 
 static int64_t svcmgr_query_kbd_status(const struct svcmgr_state *state,
@@ -794,16 +900,16 @@ static int64_t svcmgr_query_kbd_status(const struct svcmgr_state *state,
     return IRIS_OK;
 }
 
+/* Fase 7.5: VFS health is queried over the stateless endpoint
+ * (VFS_EP_OP_STATUS on the master ep cap svcmgr already holds). The
+ * stateless protocol has no open-file table, so opens/capacity report 0. */
 static int64_t svcmgr_query_vfs_status(const struct svcmgr_state *state,
                                        uint32_t *out_exports_ready,
                                        uint32_t *out_open_files,
                                        uint32_t *out_open_capacity,
                                        uint32_t *out_exported_bytes) {
-    struct KChanMsg req;
-    struct KChanMsg reply;
+    struct IrisMsg msg;
     const struct svcmgr_service_state *svc;
-    handle_id_t recv_h = HANDLE_INVALID;
-    handle_id_t xfer_h = HANDLE_INVALID;
     int64_t rc;
 
     if (!state || !out_exports_ready || !out_open_files ||
@@ -815,47 +921,21 @@ static int64_t svcmgr_query_vfs_status(const struct svcmgr_state *state,
     *out_exported_bytes = 0;
 
     svc = svcmgr_service_state((struct svcmgr_state *)state, SVCMGR_SERVICE_VFS);
-    if (!svc || svc->public_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+    if (!svc || svc->ep_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
 
-    rc = svcmgr_make_status_reply_pair(&recv_h, &xfer_h);
+    {
+        uint8_t *raw = (uint8_t *)&msg;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
+    }
+    msg.label = VFS_EP_OP_STATUS;
+
+    rc = svcmgr_syscall2(SYS_EP_CALL, svc->ep_h, (uint64_t)(uintptr_t)&msg);
     if (rc != IRIS_OK) return rc;
+    if (msg.label != IRIS_EP_REPLY_OK) return IRIS_ERR_INTERNAL;
 
-    {
-        uint8_t *raw = (uint8_t *)&req;
-        for (uint32_t i = 0; i < (uint32_t)sizeof(req); i++) raw[i] = 0;
-    }
-    req.type = VFS_MSG_STATUS;
-    req.data_len = VFS_MSG_STATUS_LEN;
-    req.attached_handle = xfer_h;
-    req.attached_rights = RIGHT_WRITE;
-
-    rc = svcmgr_syscall2(SYS_CHAN_SEND, svc->public_h, (uint64_t)(uintptr_t)&req);
-    if (rc < 0) goto out;
-    xfer_h = HANDLE_INVALID;
-
-    {
-        uint8_t *raw = (uint8_t *)&reply;
-        for (uint32_t i = 0; i < (uint32_t)sizeof(reply); i++) raw[i] = 0;
-    }
-    rc = svcmgr_syscall2(SYS_CHAN_RECV, recv_h, (uint64_t)(uintptr_t)&reply);
-    if (rc < 0) goto out;
-    if (reply.type != VFS_MSG_STATUS_REPLY || reply.data_len != VFS_MSG_STATUS_REPLY_LEN) {
-        rc = IRIS_ERR_INTERNAL;
-        goto out;
-    }
-
-    rc = (int32_t)vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_STATUS_REPLY_ERR]);
-    if (rc != IRIS_OK) goto out;
-    *out_exports_ready = vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_STATUS_REPLY_EXPORTS]);
-    *out_open_files = vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_STATUS_REPLY_OPENS]);
-    *out_open_capacity = vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_STATUS_REPLY_CAP]);
-    *out_exported_bytes = vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_STATUS_REPLY_BYTES]);
-    rc = IRIS_OK;
-
-out:
-    svcmgr_close_handle_if_valid(&xfer_h);
-    svcmgr_close_handle_if_valid(&recv_h);
-    return rc;
+    *out_exports_ready = (uint32_t)msg.words[1];
+    *out_exported_bytes = (uint32_t)msg.words[2];
+    return IRIS_OK;
 }
 
 static uint32_t svcmgr_irq_route_count(const struct svcmgr_state *state) {
@@ -1009,8 +1089,8 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
                                 const struct iris_service_catalog_entry *manifest) {
     struct svcmgr_service_state *svc;
     handle_id_t child_boot_h = HANDLE_INVALID;
-    int64_t public_h;
-    int64_t reply_h;
+    int64_t public_h = HANDLE_INVALID;
+    int64_t reply_h = HANDLE_INVALID;
     int64_t proc_h;
 
     if (!manifest) {
@@ -1026,12 +1106,24 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
 
     svcmgr_clear_service_masters(state, manifest->service_id);
 
-    public_h = svcmgr_syscall0(SYS_CHAN_CREATE);
-    if (public_h < 0) {
-        svcmgr_log(sm_str_spawnfail);
-        return;
+    /* Fase 7.1: create the service's KEndpoint once; it survives restarts
+     * (clear_service_masters does not touch ep_h) so client caps obtained
+     * via "<name>.ep" lookup stay valid across a respawn. Non-fatal. */
+    if (manifest->own_service_ep && svc->ep_h == HANDLE_INVALID) {
+        int64_t ep_r = svcmgr_syscall0(SYS_ENDPOINT_CREATE);
+        svc->ep_h = (ep_r >= 0) ? (handle_id_t)ep_r : HANDLE_INVALID;
     }
-    svc->public_h = (handle_id_t)public_h;
+
+    /* endpoint_only services (Fase 7.5: vfs) get no legacy KChannel pair —
+     * their KEndpoint is the whole service surface. */
+    if (!manifest->endpoint_only) {
+        public_h = svcmgr_syscall0(SYS_CHAN_CREATE);
+        if (public_h < 0) {
+            svcmgr_log(sm_str_spawnfail);
+            return;
+        }
+        svc->public_h = (handle_id_t)public_h;
+    }
 
     if (!manifest->image_name) {
         svcmgr_clear_service_masters(state, manifest->service_id);
@@ -1039,13 +1131,15 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
         return;
     }
 
-    reply_h = svcmgr_syscall0(SYS_CHAN_CREATE);
-    if (reply_h < 0) {
-        svcmgr_clear_service_masters(state, manifest->service_id);
-        svcmgr_log(sm_str_spawnfail);
-        return;
+    if (!manifest->endpoint_only) {
+        reply_h = svcmgr_syscall0(SYS_CHAN_CREATE);
+        if (reply_h < 0) {
+            svcmgr_clear_service_masters(state, manifest->service_id);
+            svcmgr_log(sm_str_spawnfail);
+            return;
+        }
+        svc->reply_h = (handle_id_t)reply_h;
     }
-    svc->reply_h = (handle_id_t)reply_h;
 
     {
         handle_id_t loaded_proc_h = HANDLE_INVALID;
@@ -1176,32 +1270,37 @@ static void svcmgr_handle_lookup_name(struct svcmgr_state *state, const struct K
     }
 
     svcmgr_proto_lookup_name_decode(msg, name, &requested);
-    manifest = svcmgr_catalog_find_name(name);
-    if (!manifest)
-        dynamic = svcmgr_dynamic_find_name(state, name);
 
-    if (!manifest && !dynamic) {
-        svcmgr_send_lookup_reply(reply_h, 0u, IRIS_ERR_NOT_FOUND, HANDLE_INVALID, RIGHT_NONE);
-        svcmgr_close_handle_if_valid(&reply_h);
-        svcmgr_log(sm_str_lookupfail);
-        return;
-    }
+    /* Reserved "<name>.ep" endpoint names resolve first (Fase 7.1); they
+     * have no numeric endpoint id (echoed as 0 in the reply). */
+    if (!svcmgr_resolve_ep_name(state, name, &master_h, &allowed)) {
+        manifest = svcmgr_catalog_find_name(name);
+        if (!manifest)
+            dynamic = svcmgr_dynamic_find_name(state, name);
 
-    if (dynamic) {
-        endpoint = dynamic->endpoint;
-        master_h = dynamic->public_h;
-        allowed = dynamic->client_rights;
-    } else {
-        endpoint = manifest->service_endpoint;
-        svc = svcmgr_service_state(state, manifest->service_id);
-        if (!svc) {
-            svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_INVALID_ARG, HANDLE_INVALID, RIGHT_NONE);
+        if (!manifest && !dynamic) {
+            svcmgr_send_lookup_reply(reply_h, 0u, IRIS_ERR_NOT_FOUND, HANDLE_INVALID, RIGHT_NONE);
             svcmgr_close_handle_if_valid(&reply_h);
             svcmgr_log(sm_str_lookupfail);
             return;
         }
-        master_h = svc->public_h;
-        allowed = manifest->client_service_rights;
+
+        if (dynamic) {
+            endpoint = dynamic->endpoint;
+            master_h = dynamic->public_h;
+            allowed = dynamic->client_rights;
+        } else {
+            endpoint = manifest->service_endpoint;
+            svc = svcmgr_service_state(state, manifest->service_id);
+            if (!svc) {
+                svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_INVALID_ARG, HANDLE_INVALID, RIGHT_NONE);
+                svcmgr_close_handle_if_valid(&reply_h);
+                svcmgr_log(sm_str_lookupfail);
+                return;
+            }
+            master_h = svc->public_h;
+            allowed = manifest->client_service_rights;
+        }
     }
 
     granted = svcmgr_reduce_lookup_rights(requested, allowed);
@@ -1226,7 +1325,9 @@ static void svcmgr_handle_lookup_name(struct svcmgr_state *state, const struct K
 }
 
 static void svcmgr_handle_register(struct svcmgr_state *state, const struct KChanMsg *msg) {
-    struct svcmgr_dynamic_service *slot;
+    /* NULL until a slot is allocated: the reject path below reads it after
+     * early "goto out" jumps that happen before allocation. */
+    struct svcmgr_dynamic_service *slot = 0;
     handle_id_t public_h = msg ? msg->attached_handle : HANDLE_INVALID;
     uint32_t endpoint = 0;
     iris_rights_t allowed = RIGHT_NONE;
@@ -1252,6 +1353,10 @@ static void svcmgr_handle_register(struct svcmgr_state *state, const struct KCha
     if (iris_service_catalog_find_by_endpoint(endpoint, 0) != 0)
         goto out;
     if (svcmgr_name_is_catalog(name))
+        goto out;
+    /* ".ep" names are reserved for svcmgr-published KEndpoints (Fase 7.1);
+     * rejecting them here prevents endpoint spoofing via runtime publish. */
+    if (svcmgr_name_has_ep_suffix(name))
         goto out;
     if (svcmgr_dynamic_find_endpoint(state, endpoint) != 0)
         goto out;
@@ -1465,6 +1570,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     state->bootstrap_h = bootstrap_h;
     state->spawn_cap_h = HANDLE_INVALID;
     state->console_h   = HANDLE_INVALID;
+    state->ep_h        = HANDLE_INVALID;
     for (uint32_t i = 0; i < SVCMGR_IRQ_CAPS_TABLE_SIZE; i++)
         state->irq_caps[i] = HANDLE_INVALID;
     for (uint32_t i = 0; i < SVCMGR_IOPORT_CAPS_TABLE_SIZE; i++)
@@ -1473,6 +1579,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         state->services[i].public_h = HANDLE_INVALID;
         state->services[i].reply_h = HANDLE_INVALID;
         state->services[i].proc_h = HANDLE_INVALID;
+        state->services[i].ep_h = HANDLE_INVALID;
     }
     for (uint32_t i = 0; i < SVCMGR_DYNAMIC_SERVICE_CAP; i++) {
         state->dynamic[i].endpoint = 0;
@@ -1501,17 +1608,50 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     }
 
     svcmgr_request_hardware_caps(state);
+
+    /* Create svcmgr endpoint before autostart so catalog services receive it. */
+    {
+        int64_t ep_r = svcmgr_syscall0(SYS_ENDPOINT_CREATE);
+        state->ep_h = (ep_r >= 0) ? (handle_id_t)ep_r : HANDLE_INVALID;
+    }
+
     svcmgr_autostart_services(state);
     svcmgr_log(sm_str_ready);
+    if (state->ep_h != HANDLE_INVALID)
+        svcmgr_log(sm_str_ep_ready);
 
     for (;;) {
+        /* Drain all pending EP_CALL requests before blocking on KChannel. */
+        while (state->ep_h != HANDLE_INVALID) {
+            struct IrisMsg ep_msg;
+            int64_t ep_r;
+            uint32_t k;
+            for (k = 0; k < IRIS_EP_SVCNAME_MAX; k++) g_ep_recv_buf[k] = 0;
+            {
+                uint8_t *p = (uint8_t *)&ep_msg;
+                for (k = 0; k < (uint32_t)sizeof(ep_msg); k++) p[k] = 0;
+            }
+            ep_msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_recv_buf;
+            ep_r = svcmgr_syscall2(SYS_EP_NB_RECV, state->ep_h,
+                                    (uint64_t)(uintptr_t)&ep_msg);
+            if (ep_r != IRIS_OK) break;
+            svcmgr_handle_ep_request(state, &ep_msg);
+        }
+
         {
             uint8_t *raw = (uint8_t *)&msg;
             for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
         }
-        if (svcmgr_syscall2(SYS_CHAN_RECV, state->bootstrap_h, (uint64_t)(uintptr_t)&msg) != IRIS_OK) {
-            svcmgr_log(sm_str_recverr);
-            continue;
+        /* Use timeout so the endpoint drain loop runs even with no KChannel traffic. */
+        {
+            int64_t cr = svcmgr_syscall3(SYS_CHAN_RECV_TIMEOUT, state->bootstrap_h,
+                                          (uint64_t)(uintptr_t)&msg, 10000000ULL);
+            if (cr != IRIS_OK) {
+                /* TIMED_OUT is expected; any other error is logged. */
+                if (cr != (int64_t)IRIS_ERR_TIMED_OUT)
+                    svcmgr_log(sm_str_recverr);
+                continue;
+            }
         }
 
         switch (msg.type) {

@@ -141,3 +141,20 @@ uint64_t kuntyped_available(struct KUntyped *u) {
     irq_spinlock_unlock(&u->lock, flags);
     return avail;
 }
+
+uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size) {
+    /* size must be non-zero and PAGE_SIZE-aligned. */
+    if (!u || !size || (size & 0xFFFULL)) return 0;
+
+    uint64_t irqfl = irq_spinlock_lock(&u->lock);
+    /* Round current bump pointer up to the next PAGE_SIZE boundary. */
+    uint64_t aligned_start = (u->used + 0xFFFULL) & ~0xFFFULL;
+    if (aligned_start + size > u->total_size) {
+        irq_spinlock_unlock(&u->lock, irqfl);
+        return 0;
+    }
+    u->used = aligned_start + size;
+    uint64_t phys = u->phys_base + aligned_start;
+    irq_spinlock_unlock(&u->lock, irqfl);
+    return phys;
+}

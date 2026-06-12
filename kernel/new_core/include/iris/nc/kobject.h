@@ -31,6 +31,7 @@ typedef enum {
     KOBJ_REPLY,          /* Ph85: seL4-style one-shot reply capability — delivered by EP_CALL rendezvous */
     KOBJ_TCB,            /* Ph96: thread control block capability — wraps a live struct task */
     KOBJ_VSPACE,         /* Fase 4: virtual address space capability — wraps a process PML4 */
+    KOBJ_FRAME,          /* Fase 5: physical memory frame capability — typed region from KUntyped */
 } kobject_type_t;
 
 struct KObject;

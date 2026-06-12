@@ -11,8 +11,8 @@
 struct KVmo;
 struct KNotification;
 struct KVSpace;
+struct KFrame;
 
-#define KPROCESS_VMO_MAP_MAX    0u  /* no fixed ceiling — kpage-backed linked list */
 #define KPROCESS_EXIT_WATCH_MAX 8u
 #define KPROCESS_MAX_LIVE       64u /* bounded by TASK_MAX; enforced in kprocess_alloc */
 #define KPROCESS_CHANNEL_QUOTA  16u
@@ -20,19 +20,15 @@ struct KVSpace;
 #define KPROCESS_VMO_QUOTA      32u
 #define KPROCESS_PHYS_PAGES_LIMIT 2048u /* 8MB per process; set in kprocess_alloc */
 
+/* Maximum bootstrap KFrame retains stored in KProcess.bootstrap_frames[].
+ * Enforced by the upfront guard in task_create_user_impl. */
+#define KPROCESS_BOOTSTRAP_FRAME_MAX 32u
+
 struct KExitWatch {
     struct KChannel *ch;
     handle_id_t      watched_handle;
     uint32_t         cookie;
     uint8_t          armed;
-};
-
-struct KVmoMapping {
-    uint64_t     virt_base;
-    uint64_t     size;
-    struct KVmo *vmo;
-    uint64_t     page_flags;
-    struct KVmoMapping *next;
 };
 
 /*
@@ -73,8 +69,8 @@ struct KProcess {
     uint32_t        exit_code;    /* exit code from SYS_EXIT; 0 if killed externally */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */
     struct KExitWatch exit_watches[KPROCESS_EXIT_WATCH_MAX]; /* up to 4 death subscribers */
-    struct KVmoMapping *vmo_mappings;  /* demand VMO registrations */
-    uint32_t        vmo_mapping_count;
+    /* Fase 6.3: vmo_mappings removed — VMO pages are now KFrame-backed and
+     * tracked in KVSpace.mappings; kvspace_invalidate handles teardown. */
     HandleTable     handle_table;/* process-scoped handles/capabilities */
 
     /* Exception handler channel: if non-NULL, receives a FAULT_MSG_NOTIFY
@@ -94,6 +90,14 @@ struct KProcess {
      * Holds one lifecycle ref (kobject_retain).  NULL if kvspace_alloc OOM'd at
      * creation or if the process has not yet had its CR3 assigned. */
     struct KVSpace *vspace;
+
+    /* Fase 6.2: Bootstrap KFrame alloc retains.
+     * Populated by task_create_user_impl for each page mapped via
+     * bootstrap_kframe_map.  Released by kprocess_release_bootstrap_frames
+     * inside kprocess_reap_address_space, always AFTER kvspace_invalidate
+     * so mapped_count is 0 at the time each alloc retain is dropped. */
+    struct KFrame   *bootstrap_frames[KPROCESS_BOOTSTRAP_FRAME_MAX];
+    uint32_t         bootstrap_frame_count;
 
 };
 
@@ -117,11 +121,12 @@ iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
 iris_error_t     kprocess_set_exception_handler(struct KProcess *p, struct KChannel *ch);
 int              kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
-iris_error_t     kprocess_register_vmo_map  (struct KProcess *p, uint64_t virt_base,
-                                              uint64_t size, struct KVmo *vmo,
-                                              uint64_t page_flags);
-void             kprocess_unregister_vmo_map(struct KProcess *p, uint64_t virt_base);
-iris_error_t     kprocess_resolve_demand_fault(struct task *t, uint64_t fault_addr);
+/* Fase 6.2: Bootstrap frame tracking.
+ * kprocess_register_bootstrap_frame stores one alloc retain in bootstrap_frames[].
+ * kprocess_release_bootstrap_frames drops all alloc retains; must be called after
+ * kvspace_invalidate so that mapped_count is 0 when each frame is released. */
+iris_error_t kprocess_register_bootstrap_frame(struct KProcess *p, struct KFrame *f);
+void         kprocess_release_bootstrap_frames(struct KProcess *p);
 
 /*
  * kprocess_live_count: count live KProcess objects currently allocated.

@@ -335,8 +335,8 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
             segs_in_loader |= (1u << i);
         }
 
-        /* 8. Copy ELF file data into each segment slot (triggers demand faults
-         *    in the loader → populates seg_vmo[i]->pages[]). */
+        /* 8. Copy ELF file data into each segment slot.  SYS_VMO_MAP eagerly
+         *    allocated and installed all pages, so this is a direct write. */
         for (uint32_t i = 0; i < seg_count; i++) {
             uint64_t slot = SL_SEG_VADDR_BASE + (uint64_t)i * SL_SEG_SLOT_SIZE;
             uint8_t *dst  = (uint8_t *)(uintptr_t)(slot + seg_page_off[i]);

@@ -7,6 +7,8 @@
 #include <iris/nc/kchannel.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
+#include <iris/nc/kframe.h>
+#include <iris/nc/kvspace.h>
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kschedctx.h>
 #include <iris/nc/kreply.h>
@@ -464,10 +466,24 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     if (proc->cr3 == 0) goto fail;
     proc->user_cr3 = paging_make_user_cr3(proc->cr3, proc->pcid);
 
+    /* Fase 6.2: create KVSpace before bootstrap maps so bootstrap_kframe_map
+     * can register mapping back-refs via kframe_map_page. */
+    {
+        struct KVSpace *vs = kvspace_alloc(proc->cr3);
+        if (!vs) goto fail;
+        kobject_retain(&vs->base);
+        proc->vspace = vs;
+        kobject_release(&vs->base);
+    }
+
     /* Copy userboot binary to page-aligned PMM pages. The binary symbol is in
      * kernel .rodata at an unaligned offset; paging_map_checked_in requires
      * page-aligned physical addresses, so a fresh aligned copy is mandatory. */
     ub_pages = (uint32_t)((ub_size + 0xFFFU) >> 12);
+
+    /* Guard: verify the total bootstrap page count fits in KProcess.bootstrap_frames[]. */
+    if (ub_pages + ustack_pages > KPROCESS_BOOTSTRAP_FRAME_MAX) goto fail;
+
     ub_copy_phys = pmm_alloc_pages(ub_pages);
     if (ub_copy_phys == 0) goto fail;
     {
@@ -476,25 +492,43 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         for (uint32_t b = 0; b < ub_size; b++) dst[b] = src[b];
         for (uint32_t b = ub_size; b < (uint32_t)(ub_pages << 12); b++) dst[b] = 0;
     }
+    /* Fase 6.2: Bootstrap Frame-backed mapping: userboot text (r--x).
+     * Each page gets a KFrame (alloc_parent=NULL) mapped via kframe_map_page.
+     * The alloc retain is stored in proc->bootstrap_frames[] and released by
+     * kprocess_release_bootstrap_frames inside kprocess_reap_address_space,
+     * after kvspace_invalidate has decremented mapped_count to 0.
+     * Physical memory lifetime tracked by t->utext_phys; freed by
+     * free_user_text_pages on the teardown paths that precede reap. */
     for (uint32_t pg = 0; pg < ub_pages; pg++) {
-        if (paging_map_checked_in(proc->cr3,
-                                  USER_TEXT_BASE + (uint64_t)pg * 0x1000ULL,
-                                  ub_copy_phys   + (uint64_t)pg * 0x1000ULL,
-                                  PAGE_PRESENT | PAGE_USER) != 0)
+        uint64_t va   = USER_TEXT_BASE + (uint64_t)pg * 0x1000ULL;
+        uint64_t phys = ub_copy_phys   + (uint64_t)pg * 0x1000ULL;
+        struct KFrame *f = bootstrap_kframe_map(proc->vspace, phys, va, 2ULL /* MAP_EXEC */);
+        if (!f) goto fail_copy;
+        if (kprocess_register_bootstrap_frame(proc, f) != IRIS_OK) {
+            kframe_unmap_page(f, proc->vspace, va);
+            kobject_release(&f->base);
             goto fail_copy;
+        }
     }
     t->user_entry = USER_TEXT_BASE;
 
     ustack_phys = pmm_alloc_pages(ustack_pages);
     if (ustack_phys == 0) goto fail;
 
+    /* Fase 6.2: Bootstrap Frame-backed mapping: initial user stack (rw-nx).
+     * Same KFrame-backed pattern as the text mapping above.
+     * Physical memory tracked by t->ustack_phys. */
     for (uint32_t pg = 0; pg < ustack_pages; pg++) {
-        uint64_t virt = USER_STACK_BASE + 4096ULL * USER_STACK_GUARD_PAGES +
+        uint64_t va   = USER_STACK_BASE + 4096ULL * USER_STACK_GUARD_PAGES +
                         (uint64_t)pg * 4096ULL;
-        uint64_t phys = ustack_phys     + (uint64_t)pg * 4096ULL;
-        if (paging_map_checked_in(proc->cr3, virt, phys,
-                                  PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER | PAGE_NX) != 0)
+        uint64_t phys = ustack_phys + (uint64_t)pg * 4096ULL;
+        struct KFrame *f = bootstrap_kframe_map(proc->vspace, phys, va, 1ULL /* MAP_WRITABLE */);
+        if (!f) goto fail;
+        if (kprocess_register_bootstrap_frame(proc, f) != IRIS_OK) {
+            kframe_unmap_page(f, proc->vspace, va);
+            kobject_release(&f->base);
             goto fail;
+        }
     }
 
     t->user_stack_base  = USER_STACK_BASE + 4096ULL * USER_STACK_GUARD_PAGES;

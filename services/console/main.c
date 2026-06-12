@@ -95,6 +95,19 @@ void console_main_c(handle_id_t bootstrap_h) {
         con_msg_zero(&msg);
         if (con_sys2(SYS_CHAN_RECV, (long)service_h, (long)&msg) != IRIS_OK)
             continue;
+        if (msg.type == CONSOLE_MSG_SYNC) {
+            /* Flush barrier: every WRITE queued before this SYNC has already
+             * been emitted (the service channel is FIFO) — ack and move on. */
+            if (msg.attached_handle != HANDLE_INVALID) {
+                struct KChanMsg ack;
+                con_msg_zero(&ack);
+                ack.type = CONSOLE_MSG_SYNC_ACK;
+                (void)con_sys2(SYS_CHAN_SEND,
+                               (long)msg.attached_handle, (long)&ack);
+                (void)con_sys1(SYS_HANDLE_CLOSE, (long)msg.attached_handle);
+            }
+            continue;
+        }
         if (msg.type != CONSOLE_MSG_WRITE) continue;
         if (msg.data_len < 4u) continue;
 

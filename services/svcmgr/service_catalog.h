@@ -27,10 +27,16 @@ struct iris_service_catalog_entry {
     uint16_t       ioport_base;
     uint16_t       ioport_count;
     uint8_t        give_console;    /* 1 = forward console channel during bootstrap */
-    uint8_t        give_kbd;        /* 1 = forward kbd service channel during bootstrap */
-    uint8_t        give_vfs;        /* 1 = forward vfs service+reply channels during bootstrap */
     uint8_t        give_spawn_cap;  /* 1 = forward spawn cap so service can load initrd VMOs */
     uint8_t        give_irqcap;     /* 1 = forward KIrqCap so service can call SYS_IRQ_ACK */
+    uint8_t        own_service_ep;  /* 1 = svcmgr creates a KEndpoint for this service,
+                                     *     sends the recv side at bootstrap (kind 0x21)
+                                     *     and publishes it as "<image_name>.ep" (Fase 7.1) */
+    uint8_t        endpoint_only;   /* 1 = no legacy KChannel service/reply pair: svcmgr
+                                     *     creates neither channel and bootstrap sends no
+                                     *     SERVICE/REPLY kinds; lookups by the service's
+                                     *     endpoint ids fail. Requires own_service_ep=1.
+                                     *     (Fase 7.5: vfs) */
 };
 
 static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
@@ -51,6 +57,10 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .ioport_count = 5u,
         .give_console = 0u,
         .give_irqcap = 1u,
+        /* Fase 7.4: kbd owns a KEndpoint ("kbd.ep"); sh pulls key events
+         * through it. The legacy channel pair stays for IRQ delivery and
+         * the init/svcmgr HELLO/STATUS probes. */
+        .own_service_ep = 1u,
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_VFS,
@@ -69,6 +79,9 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .ioport_count = 0u,
         .give_console = 1u,
         .give_spawn_cap = 1u,
+        .own_service_ep = 1u,
+        /* Fase 7.5: vfs is endpoint-only — no legacy service/reply channels. */
+        .endpoint_only = 1u,
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_SH,
@@ -86,8 +99,9 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .ioport_base = 0u,
         .ioport_count = 0u,
         .give_console = 1u,
-        .give_kbd = 1u,
-        .give_vfs = 1u,
+        /* sh reaches VFS only through "vfs.ep" (Fase 7.2) and kbd only
+         * through "kbd.ep" (Fase 7.4); the legacy give_vfs/give_kbd
+         * forwarding flags were removed in 7.5/7.4. */
     },
 };
 

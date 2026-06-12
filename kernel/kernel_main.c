@@ -221,48 +221,39 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             klog_write("\n");
 
                     /*
-                     * Fase 4: create KVSpace for userboot/root task and publish
-                     * it in root CNode slot BOOT_CPTR_VSPACE (slot 2).
+                     * Fase 6.2: KVSpace is now created inside task_create_user_impl
+                     * (before bootstrap maps so kframe_map_page can register back-refs).
+                     * Here we only publish the existing vspace in root CNode slot
+                     * BOOT_CPTR_VSPACE (slot 2).
                      *
-                     * KVSpace is a non-owning wrapper in Fase 4: it records the
-                     * cr3 value and an invalidation flag.  Page tables remain
-                     * owned by KProcess; KVSpace does NOT free them.
-                     *
-                     * Ref-count after this block:
+                     * Ref-count after this block (same as Fase 4):
                      *   process->vspace lifecycle ref   → refcount=1
                      *   kcnode_mint (retain+active)     → refcount=2, active=1
                      *
-                     * Boot failure on OOM or CSpace insert is non-fatal: the
-                     * process still boots and demand paging is unaffected.
+                     * Boot failure on CSpace insert is non-fatal: KVSpace was
+                     * already created and bootstrap maps are registered.
                      */
-                    if (ut->process->cr3 && ut->process->cspace_root_h != HANDLE_INVALID) {
-                        struct KVSpace *vs = kvspace_alloc(ut->process->cr3);
-                        if (vs) {
-                            /* Store lifecycle ref in process. */
-                            kobject_retain(&vs->base);
-                            ut->process->vspace = vs;
-                            kobject_release(&vs->base); /* drop alloc ref */
-
-                            /* Also publish in root CNode slot 2 (BOOT_CPTR_VSPACE). */
-                            struct KObject *vroot_obj = 0;
-                            iris_rights_t   vroot_r;
-                            if (handle_table_get_object(
-                                    &ut->process->handle_table,
-                                    ut->process->cspace_root_h,
-                                    &vroot_obj, &vroot_r) == IRIS_OK) {
-                                if (vroot_obj->type == KOBJ_CNODE) {
-                                    iris_error_t vme = kcnode_mint(
-                                        (struct KCNode *)vroot_obj,
-                                        BOOT_CPTR_VSPACE,
-                                        &vs->base,
-                                        RIGHT_READ | RIGHT_DUPLICATE |
-                                        RIGHT_TRANSFER);
-                                    if (vme == IRIS_OK)
-                                        klog_write("[IRIS][USER] boot vspace"
-                                                   " CSpace grants OK\n");
-                                }
-                                kobject_release(vroot_obj);
+                    if (ut->process->vspace &&
+                        ut->process->cspace_root_h != HANDLE_INVALID) {
+                        struct KVSpace *vs = ut->process->vspace;
+                        struct KObject *vroot_obj = 0;
+                        iris_rights_t   vroot_r;
+                        if (handle_table_get_object(
+                                &ut->process->handle_table,
+                                ut->process->cspace_root_h,
+                                &vroot_obj, &vroot_r) == IRIS_OK) {
+                            if (vroot_obj->type == KOBJ_CNODE) {
+                                iris_error_t vme = kcnode_mint(
+                                    (struct KCNode *)vroot_obj,
+                                    BOOT_CPTR_VSPACE,
+                                    &vs->base,
+                                    RIGHT_READ | RIGHT_DUPLICATE |
+                                    RIGHT_TRANSFER);
+                                if (vme == IRIS_OK)
+                                    klog_write("[IRIS][USER] boot vspace"
+                                               " CSpace grants OK\n");
                             }
+                            kobject_release(vroot_obj);
                         }
                     }
 
@@ -273,20 +264,19 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
              * kernel-internal runtime allocators that bypass the KUntyped model:
              *
              *   • paging_map_checked_in: page-table intermediate pages (PDPT/PD/PT)
-             *   • kprocess_resolve_demand_fault: one page per user demand-fault
              *   • kvmo_create: pages[] metadata array (pmm_alloc_pages)
              *   • sys_initrd_vmo: ELF copy pages (pmm_alloc_page × page_capacity)
              *   • kstack_alloc: 2 pages per task kernel stack
              *   • paging_create_user: 1 page per process PML4
              *
+             * Fase 6: kernel-side demand paging has been removed.  User pages are
+             * now allocated eagerly in sys_vmo_map / sys_vmo_map_into and charged
+             * against the process quota at syscall time, not at fault time.  The
+             * PMM reserve covers only the kernel-internal allocators listed above.
+             *
              * The post-alloc check (after pmm_alloc_block) handles the case
              * where a large block would push pmm_free_pages below the reserve;
              * that block is returned to the buddy and the drain stops.
-             *
-             * PHASE-1-DEBT: as long as IRIS uses kernel-side demand paging the
-             * PMM reserve must persist indefinitely.  The seL4-correct fix is to
-             * remove demand paging and require userspace to retype frames
-             * explicitly via SYS_UNTYPED_RETYPE before mapping them.
              *
              * Fase 3.4 (dual mode): every boot KUntyped is also inserted into
              * slot (BOOT_CPTR_UNTYPED_START + drain_index) of the process's

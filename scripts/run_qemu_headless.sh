@@ -95,6 +95,40 @@ if ! grep -Fq "VFS ready" "$LOG_FILE"; then
   exit 1
 fi
 
+if ! grep -Fq "[VFS] ep ready" "$LOG_FILE"; then
+  echo "[headless] missing VFS endpoint-ready marker (Fase 7.1)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[SH] vfs ep OK" "$LOG_FILE"; then
+  echo "[headless] missing SH vfs-endpoint marker (Fase 7.1; mandatory since 7.2)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+# NOTE: kbd itself has no console cap (give_console=0), so its boot prints
+# never reach this log; kbd.ep liveness is covered by "[SH] kbd ep OK" and
+# iris_test T034/T035 instead.
+
+if ! grep -Fq "[SH] kbd ep OK" "$LOG_FILE"; then
+  echo "[headless] missing SH kbd-endpoint marker (Fase 7.4)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[USER] vfs ep list OK" "$LOG_FILE"; then
+  echo "[headless] missing init VFS-endpoint LIST marker (Fase 7.2)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[USER] vfs ep read OK" "$LOG_FILE"; then
+  echo "[headless] missing init VFS-endpoint READ_AT marker (Fase 7.2)"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
 if ! grep -Fq "[USER][INIT][DIAG] reply" "$LOG_FILE"; then
   echo "[headless] missing init diag reply marker"
   cat "$LOG_FILE"
@@ -127,6 +161,12 @@ fi
 
 if ! grep -Fq "[IRIS][TEST] SUITE PASS" "$LOG_FILE"; then
   echo "[headless] missing iris_test SUITE PASS marker"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+if ! grep -Fq "[SVCMGR] ep ready" "$LOG_FILE"; then
+  echo "[headless] missing svcmgr endpoint-ready marker (Fase 7)"
   cat "$LOG_FILE"
   exit 1
 fi

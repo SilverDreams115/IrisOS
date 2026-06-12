@@ -9,6 +9,23 @@ EFI_IRIS_DIR := $(EFI_ROOT)/EFI/IRIS
 BUILD_CONFIG_STAMP := $(BUILD_DIR)/.build_config
 BUILD_CONFIG_MODE  := ENABLE_RUNTIME_SELFTESTS=$(ENABLE_RUNTIME_SELFTESTS)
 
+# Stale-config cleanup must run at PARSE time, not as a recipe: GNU make
+# stat-caches targets while building the dependency graph, so a recipe-time
+# `rm build/*.o` (the old config-sync) deleted objects make had already seen
+# as up to date — the first link after toggling ENABLE_RUNTIME_SELFTESTS
+# failed on missing *_bin.o and only the second invocation passed. Running
+# the cleanup here, before any target is considered (and before the *.d
+# includes at the bottom are expanded), removes the race entirely.
+BUILD_CONFIG_ON_DISK := $(strip $(shell cat $(BUILD_CONFIG_STAMP) 2>/dev/null))
+ifneq ($(BUILD_CONFIG_ON_DISK),$(BUILD_CONFIG_MODE))
+  $(info [build] configuration changed to $(BUILD_CONFIG_MODE); cleaning stale artifacts)
+  $(shell rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.so $(BUILD_DIR)/*.elf $(BUILD_DIR)/*.d $(BUILD_DIR)/OVMF_VARS.fd)
+  $(shell rm -rf $(BUILD_DIR)/efi_root)
+  $(shell rm -f services/svcmgr/svcmgr.elf services/kbd/kbd.elf services/vfs/vfs.elf services/init/init.elf services/console/console.elf services/fb/fb.elf services/sh/sh.elf services/iris_test/iris_test.elf services/userboot/userboot.bin)
+  $(shell mkdir -p $(BUILD_DIR))
+  $(shell printf '%s\n' "$(BUILD_CONFIG_MODE)" > $(BUILD_CONFIG_STAMP))
+endif
+
 LOADER_OBJ           := $(BUILD_DIR)/boot_loader.o
 BOOT_SO              := $(BUILD_DIR)/BOOTX64.so
 BOOT_APP             := $(EFI_BOOT_DIR)/BOOTX64.EFI
@@ -27,7 +44,6 @@ KERNEL_SCHED_OBJ     := $(BUILD_DIR)/scheduler.o
 KERNEL_KSTACK_OBJ    := $(BUILD_DIR)/kstack.o
 KERNEL_LIFECYCLE_OBJ := $(BUILD_DIR)/task_lifecycle.o
 KERNEL_TRAMP_OBJ     := $(BUILD_DIR)/user_trampoline.o
-KERNEL_USERINIT_OBJ  := $(BUILD_DIR)/user_init.o
 KERNEL_SYSCALL_DISPATCH_OBJ := $(BUILD_DIR)/syscall_dispatch.o
 KERNEL_SYSCALL_IPC_OBJ      := $(BUILD_DIR)/syscall_ipc.o
 KERNEL_SYSCALL_VM_OBJ       := $(BUILD_DIR)/syscall_vm.o
@@ -74,6 +90,8 @@ KERNEL_NC_KTCB_OBJ           := $(BUILD_DIR)/nc_ktcb.o
 KERNEL_SYSCALL_TCB_OBJ       := $(BUILD_DIR)/syscall_tcb.o
 KERNEL_NC_CSPACE_OBJ         := $(BUILD_DIR)/nc_cspace.o
 KERNEL_NC_KVSPACE_OBJ        := $(BUILD_DIR)/nc_kvspace.o
+KERNEL_NC_KFRAME_OBJ         := $(BUILD_DIR)/nc_kframe.o
+KERNEL_SYSCALL_FRAME_OBJ     := $(BUILD_DIR)/syscall_frame.o
 # Service ELF binaries — output directly into their source directories so that
 # the objcopy -I binary relative path (services/xxx/xxx.elf) matches the symbol
 # name mangling expected by kernel/core/initrd/initrd.c.
@@ -101,10 +119,8 @@ KERNEL_DEMO_OBJS :=
 KERNEL_DEMO_DEFINES :=
 ifeq ($(ENABLE_RUNTIME_SELFTESTS),1)
 KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_RUNTIME_SELFTESTS
-# user_init.S contains user_selftest + vfs_leak_child — only needed for selftests.
-KERNEL_DEMO_OBJS         += $(KERNEL_USERINIT_OBJ)
 endif
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_KSLAB_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_NC_KREPLY_OBJ) $(KERNEL_NC_KCNODE_OBJ) $(KERNEL_NC_KSCHEDCTX_OBJ) $(KERNEL_NC_KUNTYPED_OBJ) $(KERNEL_SYSCALL_CSPACE_OBJ) $(KERNEL_SYSCALL_SCHED_OBJ) $(KERNEL_SYSCALL_UNTYPED_OBJ) $(KERNEL_SYSCALL_REPLY_OBJ) $(KERNEL_SYSCALL_CNODE_OPS_OBJ) $(KERNEL_NC_KTCB_OBJ) $(KERNEL_SYSCALL_TCB_OBJ) $(KERNEL_NC_CSPACE_OBJ) $(KERNEL_NC_KVSPACE_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_IRIS_TEST_BIN_OBJ) $(KERNEL_DEMO_OBJS)
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_KSLAB_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KCHANNEL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_NC_KREPLY_OBJ) $(KERNEL_NC_KCNODE_OBJ) $(KERNEL_NC_KSCHEDCTX_OBJ) $(KERNEL_NC_KUNTYPED_OBJ) $(KERNEL_SYSCALL_CSPACE_OBJ) $(KERNEL_SYSCALL_SCHED_OBJ) $(KERNEL_SYSCALL_UNTYPED_OBJ) $(KERNEL_SYSCALL_REPLY_OBJ) $(KERNEL_SYSCALL_CNODE_OPS_OBJ) $(KERNEL_NC_KTCB_OBJ) $(KERNEL_SYSCALL_TCB_OBJ) $(KERNEL_NC_CSPACE_OBJ) $(KERNEL_NC_KVSPACE_OBJ) $(KERNEL_NC_KFRAME_OBJ) $(KERNEL_SYSCALL_FRAME_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_IRIS_TEST_BIN_OBJ) $(KERNEL_DEMO_OBJS)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -166,6 +182,7 @@ TEST_UNIT_SRCS  := \
     kernel/new_core/src/kschedctx.c \
     kernel/new_core/src/cspace.c \
     kernel/new_core/src/kvspace.c \
+    kernel/new_core/src/kframe.c \
     tests/kernel/test_rights.c \
     tests/kernel/test_kobject.c \
     tests/kernel/test_kcnode.c \
@@ -181,8 +198,11 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_untyped_cspace.c \
     tests/kernel/test_boot_cspace.c \
     tests/kernel/test_vspace_cspace.c \
+    tests/kernel/test_kframe.c \
     tests/kernel/test_klog.c \
     kernel/core/klog/klog.c \
+    services/vfs/vfs_ep.c \
+    tests/kernel/test_vfs_ep.c \
     tests/kernel/test_main.c
 TEST_UNIT_BIN   := $(BUILD_DIR)/test_unit
 
@@ -207,14 +227,10 @@ help:
 dirs:
 	mkdir -p $(BUILD_DIR) $(EFI_BOOT_DIR) $(EFI_IRIS_DIR)
 
+# Cleanup of stale artifacts happens at parse time (see BUILD_CONFIG_ON_DISK
+# above); this target only records the configuration the build ran with.
 config-sync:
 	@mkdir -p $(BUILD_DIR)
-	@if [ -f $(BUILD_CONFIG_STAMP) ] && [ "$$(cat $(BUILD_CONFIG_STAMP))" != "$(BUILD_CONFIG_MODE)" ]; then \
-		echo "[build] configuration changed to $(BUILD_CONFIG_MODE); cleaning stale artifacts"; \
-		rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.so $(BUILD_DIR)/*.elf $(BUILD_DIR)/*.d $(BUILD_DIR)/OVMF_VARS.fd; \
-		rm -rf $(EFI_ROOT); \
-		rm -f $(SERVICE_SVCMGR_ELF) $(SERVICE_KBD_ELF) $(SERVICE_VFS_ELF) $(SERVICE_INIT_ELF) $(SERVICE_CONSOLE_ELF) $(SERVICE_FB_ELF) $(SERVICE_SH_ELF) $(SERVICE_LIFECYCLE_PROBE_ELF) $(SERVICE_USERBOOT_BIN); \
-	fi
 	@printf '%s\n' "$(BUILD_CONFIG_MODE)" > $(BUILD_CONFIG_STAMP)
 
 $(LOADER_OBJ): boot/uefi/boot.c | dirs
@@ -267,9 +283,6 @@ $(KERNEL_LIFECYCLE_OBJ): kernel/core/scheduler/task_lifecycle.c | dirs
 
 $(KERNEL_TRAMP_OBJ): kernel/arch/x86_64/user_trampoline.S | dirs
 	gcc $(KERNEL_ASFLAGS) -c $< -o $@
-
-$(KERNEL_USERINIT_OBJ): kernel/arch/x86_64/user_init.S | dirs
-	gcc $(KERNEL_ASFLAGS) $(KERNEL_DEMO_DEFINES) -c $< -o $@
 
 $(KERNEL_SYSCALL_DISPATCH_OBJ): kernel/core/syscall/syscall_dispatch.c kernel/core/syscall/syscall_priv.h | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
@@ -407,6 +420,12 @@ $(KERNEL_NC_CSPACE_OBJ): kernel/new_core/src/cspace.c | dirs
 $(KERNEL_NC_KVSPACE_OBJ): kernel/new_core/src/kvspace.c | dirs
 	gcc $(KERNEL_CFLAGS) -c $< -o $@
 
+$(KERNEL_NC_KFRAME_OBJ): kernel/new_core/src/kframe.c | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_SYSCALL_FRAME_OBJ): kernel/core/syscall/syscall_frame.c kernel/core/syscall/syscall_priv.h | dirs
+	gcc $(KERNEL_CFLAGS) -c $< -o $@
+
 # ── userboot — ring-3 bootstrap; built as raw flat binary for direct kernel mapping ─
 # Linked with OUTPUT_FORMAT(binary) so byte 0 = _start (no ELF header overhead).
 # -nostdlib -static only (no -pie: binary format is not ELF).
@@ -488,7 +507,10 @@ $(BUILD_DIR)/vfs_entry.o: services/vfs/entry.S | dirs
 $(BUILD_DIR)/vfs_main.o: services/vfs/vfs.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_VFS_ELF): $(BUILD_DIR)/vfs_entry.o $(BUILD_DIR)/vfs_main.o $(STACK_GUARD_OBJ)
+$(BUILD_DIR)/vfs_ep.o: services/vfs/vfs_ep.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_VFS_ELF): $(BUILD_DIR)/vfs_entry.o $(BUILD_DIR)/vfs_main.o $(BUILD_DIR)/vfs_ep.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_VFS_BIN_OBJ): $(SERVICE_VFS_ELF) | dirs

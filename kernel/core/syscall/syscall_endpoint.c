@@ -20,12 +20,13 @@ static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
 /* ep_get removed — use cspace_or_handle_resolve_endpoint (Fase 3.2) */
 
 /*
- * stage_send_cap — validate and detach an attached cap from the sender's
+ * syscall_ipc_stage_cap — validate and detach an attached cap from the sender's
  * handle table, storing the kobject + rights for later delivery to a receiver.
  * On success: sender's handle is closed; *out_obj holds the ownership ref.
  * On failure: *out_obj = NULL; caller's handle is untouched; returns error.
+ * Shared by EP_SEND / EP_NB_SEND / SYS_REPLY (declared in syscall_priv.h).
  */
-static iris_error_t stage_send_cap(struct task *t, uint32_t src_h,
+iris_error_t syscall_ipc_stage_cap(struct task *t, uint32_t src_h,
                                    uint32_t requested_rights,
                                    struct KObject **out_obj,
                                    uint32_t *out_rights) {
@@ -47,13 +48,14 @@ static iris_error_t stage_send_cap(struct task *t, uint32_t src_h,
 }
 
 /*
- * deliver_cap — install a staged cap into the receiver's handle table.
- * Releases the staging ref regardless of success.
+ * syscall_ipc_deliver_cap — install a staged cap into the receiver's handle
+ * table. Releases the staging ref regardless of success.
  * Returns HANDLE_INVALID on failure (table full); caller should treat it as
  * a soft error and deliver the message without the capability.
+ * Shared by EP_SEND / EP_NB_SEND / SYS_REPLY (declared in syscall_priv.h).
  */
-static uint32_t deliver_cap(struct task *receiver,
-                             struct KObject *xo, uint32_t cap_rights) {
+uint32_t syscall_ipc_deliver_cap(struct task *receiver,
+                                 struct KObject *xo, uint32_t cap_rights) {
     if (!xo) return IRIS_MSG_NO_CAP;
     handle_id_t new_h = handle_table_insert(&receiver->process->handle_table,
                                             xo, (iris_rights_t)cap_rights);
@@ -184,7 +186,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct KObject *xfer_obj    = 0;
     uint32_t        xfer_rights = 0;
     if (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP) {
-        iris_error_t cr = stage_send_cap(t, t->ipc_msg.attached_handle,
+        iris_error_t cr = syscall_ipc_stage_cap(t, t->ipc_msg.attached_handle,
                                          t->ipc_msg.attached_rights,
                                          &xfer_obj, &xfer_rights);
         if (cr != IRIS_OK) {
@@ -227,7 +229,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Ph68: install cap in receiver's handle table (outside lock). */
         if (xfer_obj) {
-            uint32_t new_h = deliver_cap(receiver, xfer_obj, xfer_rights);
+            uint32_t new_h = syscall_ipc_deliver_cap(receiver, xfer_obj, xfer_rights);
             receiver->ipc_msg.attached_handle = new_h;
         }
 
@@ -336,7 +338,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Ph68: install in receiver's handle table (outside lock). */
         if (xfer_obj) {
-            uint32_t new_h = deliver_cap(t, xfer_obj, xfer_rights);
+            uint32_t new_h = syscall_ipc_deliver_cap(t, xfer_obj, xfer_rights);
             t->ipc_msg.attached_handle = new_h;
         }
 
@@ -449,7 +451,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct KObject *xfer_obj    = 0;
     uint32_t        xfer_rights = 0;
     if (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP) {
-        iris_error_t cr = stage_send_cap(t, t->ipc_msg.attached_handle,
+        iris_error_t cr = syscall_ipc_stage_cap(t, t->ipc_msg.attached_handle,
                                          t->ipc_msg.attached_rights,
                                          &xfer_obj, &xfer_rights);
         if (cr != IRIS_OK) { kobject_release(&ep->base); return syscall_err(cr); }
@@ -492,7 +494,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     irq_spinlock_unlock(&ep->lock, flags);
 
     if (xfer_obj) {
-        uint32_t new_h = deliver_cap(receiver, xfer_obj, xfer_rights);
+        uint32_t new_h = syscall_ipc_deliver_cap(receiver, xfer_obj, xfer_rights);
         receiver->ipc_msg.attached_handle = new_h;
     }
 
@@ -570,7 +572,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     irq_spinlock_unlock(&ep->lock, flags);
 
     if (xfer_obj) {
-        uint32_t new_h = deliver_cap(t, xfer_obj, xfer_rights);
+        uint32_t new_h = syscall_ipc_deliver_cap(t, xfer_obj, xfer_rights);
         t->ipc_msg.attached_handle = new_h;
     }
 

@@ -4,14 +4,6 @@
 
 .section .text
 user_entry_trampoline:
-    /* diag: direct serial write 'T' to confirm trampoline reached */
-    movw $0x3F8+5, %dx
-1:  inb %dx, %al
-    testb $0x20, %al
-    jz 1b
-    movw $0x3F8, %dx
-    movb $'T', %al
-    outb %al, %dx
     /* preparar segmentos de datos de usuario antes de iretq */
     movw $0x1B, %ax    /* user data selector (GDT[3]) — matches iretq SS */
     movw %ax, %ds
@@ -56,15 +48,6 @@ user_entry_trampoline:
     xorq %r14, %r14
     xorq %r15, %r15
     xorq %rbp, %rbp
-
-    /* diag: 'U' = IRETQ about to fire — remove after smoke test diagnosis */
-    movw $0x3F8+5, %dx
-2:  inb %dx, %al
-    testb $0x20, %al
-    jz 2b
-    movw $0x3F8, %dx
-    movb $'U', %al
-    outb %al, %dx
 
     iretq
 

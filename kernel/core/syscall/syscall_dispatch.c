@@ -35,7 +35,6 @@ static inline void _sc_putc(char c) {
 }
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2, uint64_t arg3) {
-    static int _once = 0; if (!_once) { _once=1; _sc_putc('X'); } /* diag: first syscall */
     switch (num) {
         /* SYS_WRITE(0), SYS_BRK(7) — retired, fall to default */
         case SYS_GETPID: return sys_getpid(arg0, arg1, arg2);
@@ -128,6 +127,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_TCB_SET_PRIORITY:    return sys_tcb_set_priority(arg0, arg1, arg2);
         case SYS_TCB_EXIT:            return sys_tcb_exit(arg0, arg1, arg2);
         case SYS_TCB_GET_INFO:        return sys_tcb_get_info(arg0, arg1, arg2);
+        case SYS_FRAME_MAP:           return sys_frame_map(arg0, arg1, arg2, arg3);
+        case SYS_FRAME_UNMAP:         return sys_frame_unmap(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }

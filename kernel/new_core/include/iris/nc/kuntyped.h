@@ -57,5 +57,11 @@ void  kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes);
 
 uint64_t kuntyped_available(struct KUntyped *u);
 
+/* Carve a PAGE_SIZE-aligned physical region of 'size' bytes from the bump
+ * pointer.  Rounds up the current 'used' offset to the next PAGE_SIZE boundary
+ * before carving.  'size' must be > 0 and a multiple of PAGE_SIZE (4096).
+ * Returns physical base address, or 0 on insufficient space or bad alignment. */
+uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size);
+
 #endif /* __KERNEL__ */
 #endif /* IRIS_NC_KUNTYPED_H */

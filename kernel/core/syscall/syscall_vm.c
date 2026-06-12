@@ -1,4 +1,8 @@
 #include "syscall_priv.h"
+#include <iris/nc/kframe.h>
+#include <iris/nc/kvspace.h>
+#include <iris/nc/kvmo.h>
+#include <stddef.h>
 
 
 
@@ -32,6 +36,21 @@ uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
+/*
+ * rollback_vmo_maps — unmap pages in [start, end) from vs.
+ *
+ * Called on error paths in sys_vmo_map / sys_vmo_map_into to remove
+ * KFrame-backed pages that were successfully installed before the failure.
+ * kvspace_unmap_page handles PTE removal, mapped_count decrement, frame
+ * release, and KFrameMapping node deallocation atomically.
+ * Pages not found (e.g. never mapped) are silently skipped.
+ */
+static void rollback_vmo_maps(struct KVSpace *vs, uint64_t start, uint64_t end) {
+    for (uint64_t va = start; va < end; va += PAGE_SIZE)
+        (void)kvspace_unmap_page(vs, va);
+}
+
+
 uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->process || !t->process->cr3) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -43,23 +62,27 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (r != IRIS_OK) return syscall_err(r);
     if (obj->type != KOBJ_VMO) { kobject_release(obj); return syscall_err(IRIS_ERR_WRONG_TYPE); }
 
+    struct KVSpace *vs = t->process->vspace;
+    if (!vs) { kobject_release(obj); return syscall_err(IRIS_ERR_INVALID_ARG); }
+
     struct KVmo *v = (struct KVmo *)obj;
     uint64_t map_size;
     int writable   = (arg2 & 1) != 0;
     int executable = (arg2 & 2) != 0;
     if (writable && executable) { kobject_release(obj); return syscall_err(IRIS_ERR_INVALID_ARG); }
-    uint64_t flags = PAGE_PRESENT | PAGE_USER;
-    if (!executable) flags |= PAGE_NX;
+
+    /* map_flags for kframe_map_page: bit 0 = WRITABLE, bit 1 = EXEC */
+    uint64_t map_flags = 0;
+    if (writable)   map_flags |= 1u;
+    if (executable) map_flags |= 2u;
+
     if (!rights_check(rights, RIGHT_READ)) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
-    if (writable) {
-        if (!rights_check(rights, RIGHT_WRITE)) {
-            kobject_release(obj);
-            return syscall_err(IRIS_ERR_ACCESS_DENIED);
-        }
-        flags |= PAGE_WRITABLE;
+    if (writable && !rights_check(rights, RIGHT_WRITE)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
     if (v->size == 0 || !user_vmo_range_valid(arg1, v->size)) {
@@ -73,25 +96,62 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     if (v->demand) {
+        /* Demand VMO: allocate physical pages eagerly; map via KFrame. */
+
+        /* Pre-check: no VA in the range must already have a PTE. */
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
             if (paging_virt_to_phys_in(t->process->cr3, arg1 + off) != 0) {
                 kobject_release(obj);
                 return syscall_err(IRIS_ERR_BUSY);
             }
         }
-        for (struct KVmoMapping *m = t->process->vmo_mappings; m; m = m->next) {
-            if (arg1 + map_size <= m->virt_base) continue;
-            if (arg1 >= m->virt_base + m->size) continue;
-            kobject_release(obj);
-            return syscall_err(IRIS_ERR_BUSY);
+
+        uint64_t mapped_until = arg1;
+        for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
+            uint32_t page_idx = (uint32_t)(off >> 12);
+
+            if (v->pages[page_idx] == 0) {
+                if (kprocess_quota_acquire_page(t->process) != IRIS_OK) {
+                    rollback_vmo_maps(vs, arg1, mapped_until);
+                    kobject_release(obj);
+                    return syscall_err(IRIS_ERR_NO_MEMORY);
+                }
+                uint64_t phys = pmm_alloc_page();
+                if (!phys) {
+                    kprocess_quota_release_page(t->process);
+                    rollback_vmo_maps(vs, arg1, mapped_until);
+                    kobject_release(obj);
+                    return syscall_err(IRIS_ERR_NO_MEMORY);
+                }
+                uint8_t *kva = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
+                for (int k = 0; k < 4096; k++) kva[k] = 0;
+                v->pages[page_idx] = phys;
+            }
+
+            /* Create a KFrame backed by this VMO page.  The KFrame retains
+             * the VMO so that kvmo_destroy (and thus pmm_free_page) is deferred
+             * until after all KFrames for this VMO's pages are released. */
+            struct KFrame *f = kframe_alloc_vmo_page(v->pages[page_idx], v);
+            if (!f) {
+                rollback_vmo_maps(vs, arg1, mapped_until);
+                kobject_release(obj);
+                return syscall_err(IRIS_ERR_NO_MEMORY);
+            }
+            iris_error_t mr = kframe_map_page(f, vs, arg1 + off, map_flags);
+            kobject_release(&f->base); /* drop alloc retain; mapping retain held by vs->mappings */
+            if (mr != IRIS_OK) {
+                rollback_vmo_maps(vs, arg1, mapped_until);
+                kobject_release(obj);
+                return syscall_err(mr);
+            }
+            mapped_until = arg1 + off + PAGE_SIZE;
         }
-        r = kprocess_register_vmo_map(t->process, arg1, map_size,
-                                      (struct KVmo *)obj, flags);
+
         kobject_release(obj);
-        return syscall_err(r);
+        return syscall_ok_u64(0);
     }
 
-    /* Eager path (wrap/MMIO VMOs) */
+    /* Wrap/MMIO VMO: map each physical page via KFrame (no PMM ownership). */
     for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
         if (paging_virt_to_phys_in(t->process->cr3, arg1 + off) != 0) {
             kobject_release(obj);
@@ -102,13 +162,20 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     {
         uint64_t mapped_until = arg1;
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
-            if (paging_map_checked_in(t->process->cr3,
-                                      arg1 + off,
-                                      v->phys + off,
-                                      flags) != 0) {
-                rollback_user_maps(t->process->cr3, arg1, mapped_until);
+            /* MMIO pages are not PMM-owned; create a KFrame with no vmo_owner.
+             * kframe_obj_destroy will call only kslab_free — no physical free. */
+            struct KFrame *f = kframe_alloc(v->phys + off, 4096u, NULL);
+            if (!f) {
+                rollback_vmo_maps(vs, arg1, mapped_until);
                 kobject_release(obj);
                 return syscall_err(IRIS_ERR_NO_MEMORY);
+            }
+            iris_error_t mr = kframe_map_page(f, vs, arg1 + off, map_flags);
+            kobject_release(&f->base);
+            if (mr != IRIS_OK) {
+                rollback_vmo_maps(vs, arg1, mapped_until);
+                kobject_release(obj);
+                return syscall_err(mr);
             }
             mapped_until = arg1 + off + PAGE_SIZE;
         }
@@ -121,13 +188,15 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /*
  * sys_vmo_unmap(vaddr, size) → 0 or iris_error_t
  *
- * Removes [vaddr, vaddr+size) PTEs from the caller's page table.
- * Physical pages are NOT freed — the KVmo still owns them; they are released
- * when the last handle to the VMO is closed.
+ * Removes [vaddr, vaddr+size) KFrame mappings from the caller's VSpace.
+ * Each kvspace_unmap_page call removes the PTE, decrements mapped_count, and
+ * releases the frame retain (which may trigger kframe_obj_destroy → release
+ * of the VMO retain → kvmo_destroy if this was the last reference).
  *
- * The range is validated to lie entirely within [USER_VMO_BASE, USER_VMO_TOP).
- * This prevents accidentally unmapping kernel-shared regions or the user stack.
- * Unmapped pages within the range are silently skipped.
+ * Physical pages are NOT freed here — the KVmo still owns them; they are
+ * released when the last handle to the VMO is closed.
+ *
+ * Pages not mapped in the VSpace (VA absent) are silently skipped.
  */
 uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
@@ -139,21 +208,21 @@ uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (!user_vmo_range_valid(vaddr, size)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
+    struct KVSpace *vs = t->process->vspace;
+    if (!vs) return syscall_err(IRIS_ERR_INVALID_ARG);
+
     uint64_t map_size = 0;
     if (!page_round_up_u64(size, &map_size)) return syscall_err(IRIS_ERR_OVERFLOW);
-    for (uint64_t off = 0; off < map_size; off += PAGE_SIZE)
-        paging_unmap_in(t->process->cr3, vaddr + off);
 
-    kprocess_unregister_vmo_map(t->process, vaddr);
+    for (uint64_t off = 0; off < map_size; off += PAGE_SIZE)
+        (void)kvspace_unmap_page(vs, vaddr + off);
+
     return syscall_ok_u64(0);
 }
 
 
 /*
  * sys_vmo_size(vmo_h) → uint64_t byte size or iris_error_t
- *
- * Returns the byte size of the VMO as it was created.
- * Requires RIGHT_READ on vmo_h.
  */
 uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
@@ -187,11 +256,6 @@ uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /*
  * sys_initrd_vmo(auth_h, index) → vmo_handle or iris_error_t
- *
- * Authenticates via KOBJ_BOOTSTRAP_CAP (IRIS_BOOTCAP_SPAWN_SERVICE), retrieves
- * the initrd image at the given integer index, and returns a read-only eager
- * KVmo handle wrapping the raw ELF bytes.
- * Name→index mapping is a ring-3 concern (services/common/svc_loader.c).
  */
 uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
                                uint64_t arg2, uint64_t arg3) {
@@ -253,10 +317,6 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
 
 /*
  * sys_initrd_count(auth_h) → uint32_t count or iris_error_t
- *
- * Authenticates via KOBJ_BOOTSTRAP_CAP (IRIS_BOOTCAP_SPAWN_SERVICE).
- * Returns the number of entries in the kernel's initrd catalog so that
- * ring-3 can verify its local name→index table is consistent at startup.
  */
 uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
                                  uint64_t arg2, uint64_t arg3) {
@@ -282,10 +342,9 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
 /*
  * sys_vmo_map_into(vmo_h, proc_h, vaddr, flags) → 0 or iris_error_t
  *
- * Maps VMO pages into a target process's address space.  Requires RIGHT_READ
- * (+ RIGHT_WRITE if writable) on vmo_h and RIGHT_MANAGE on proc_h.
- * W^X enforced: WRITABLE + EXEC simultaneously → ERR_INVALID_ARG.
- * vaddr must be page-aligned within [USER_PRIVATE_BASE, USER_STACK_TOP).
+ * Maps VMO pages into a target process's address space via KFrame capabilities.
+ * Requires RIGHT_READ (+ RIGHT_WRITE if writable) on vmo_h and RIGHT_MANAGE
+ * on proc_h.  W^X enforced.
  */
 uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
                                  uint64_t arg2, uint64_t arg3) {
@@ -321,10 +380,15 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
     uint64_t         vaddr = arg2;
     uint64_t         map_size = 0;
 
-    /* Accept fresh (thread_count=0) processes that haven't been torn down. */
     if (kprocess_teardown_complete(proc)) {
         kobject_release(vmo_obj); kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_BAD_HANDLE);
+    }
+
+    struct KVSpace *target_vs = proc->vspace;
+    if (!target_vs) {
+        kobject_release(vmo_obj); kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
     int writable   = (arg3 & 1) != 0;
@@ -333,18 +397,17 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
         kobject_release(vmo_obj); kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
-    uint64_t flags = PAGE_PRESENT | PAGE_USER;
-    if (!executable) flags |= PAGE_NX;
+    uint64_t map_flags = 0;
+    if (writable)   map_flags |= 1u;
+    if (executable) map_flags |= 2u;
+
     if (!rights_check(vmo_rights, RIGHT_READ)) {
         kobject_release(vmo_obj); kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
-    if (writable) {
-        if (!rights_check(vmo_rights, RIGHT_WRITE)) {
-            kobject_release(vmo_obj); kobject_release(proc_obj);
-            return syscall_err(IRIS_ERR_ACCESS_DENIED);
-        }
-        flags |= PAGE_WRITABLE;
+    if (writable && !rights_check(vmo_rights, RIGHT_WRITE)) {
+        kobject_release(vmo_obj); kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
     if (v->size == 0) {
@@ -361,25 +424,58 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
     }
 
     if (v->demand) {
+        /* Pre-check: no VA in the range must already have a PTE. */
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
             if (paging_virt_to_phys_in(proc->cr3, vaddr + off) != 0) {
                 kobject_release(vmo_obj); kobject_release(proc_obj);
                 return syscall_err(IRIS_ERR_BUSY);
             }
         }
-        for (struct KVmoMapping *m = proc->vmo_mappings; m; m = m->next) {
-            if (vaddr + map_size <= m->virt_base) continue;
-            if (vaddr >= m->virt_base + m->size) continue;
-            kobject_release(vmo_obj); kobject_release(proc_obj);
-            return syscall_err(IRIS_ERR_BUSY);
+
+        uint64_t mapped_until = vaddr;
+        for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
+            uint32_t page_idx = (uint32_t)(off >> 12);
+
+            if (v->pages[page_idx] == 0) {
+                if (kprocess_quota_acquire_page(proc) != IRIS_OK) {
+                    rollback_vmo_maps(target_vs, vaddr, mapped_until);
+                    kobject_release(vmo_obj); kobject_release(proc_obj);
+                    return syscall_err(IRIS_ERR_NO_MEMORY);
+                }
+                uint64_t phys = pmm_alloc_page();
+                if (!phys) {
+                    kprocess_quota_release_page(proc);
+                    rollback_vmo_maps(target_vs, vaddr, mapped_until);
+                    kobject_release(vmo_obj); kobject_release(proc_obj);
+                    return syscall_err(IRIS_ERR_NO_MEMORY);
+                }
+                uint8_t *kva = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
+                for (int k = 0; k < 4096; k++) kva[k] = 0;
+                v->pages[page_idx] = phys;
+            }
+
+            struct KFrame *f = kframe_alloc_vmo_page(v->pages[page_idx], v);
+            if (!f) {
+                rollback_vmo_maps(target_vs, vaddr, mapped_until);
+                kobject_release(vmo_obj); kobject_release(proc_obj);
+                return syscall_err(IRIS_ERR_NO_MEMORY);
+            }
+            iris_error_t mr = kframe_map_page(f, target_vs, vaddr + off, map_flags);
+            kobject_release(&f->base);
+            if (mr != IRIS_OK) {
+                rollback_vmo_maps(target_vs, vaddr, mapped_until);
+                kobject_release(vmo_obj); kobject_release(proc_obj);
+                return syscall_err(mr);
+            }
+            mapped_until = vaddr + off + PAGE_SIZE;
         }
-        r = kprocess_register_vmo_map(proc, vaddr, map_size, v, flags);
+
         kobject_release(vmo_obj);
         kobject_release(proc_obj);
-        return syscall_err(r);
+        return syscall_ok_u64(0);
     }
 
-    /* Eager path (wrap/MMIO VMOs) */
+    /* Wrap/MMIO VMO path */
     for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
         if (paging_virt_to_phys_in(proc->cr3, vaddr + off) != 0) {
             kobject_release(vmo_obj); kobject_release(proc_obj);
@@ -389,11 +485,18 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
     {
         uint64_t mapped_until = vaddr;
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
-            if (paging_map_checked_in(proc->cr3, vaddr + off,
-                                      v->phys + off, flags) != 0) {
-                rollback_user_maps(proc->cr3, vaddr, mapped_until);
+            struct KFrame *f = kframe_alloc(v->phys + off, 4096u, NULL);
+            if (!f) {
+                rollback_vmo_maps(target_vs, vaddr, mapped_until);
                 kobject_release(vmo_obj); kobject_release(proc_obj);
                 return syscall_err(IRIS_ERR_NO_MEMORY);
+            }
+            iris_error_t mr = kframe_map_page(f, target_vs, vaddr + off, map_flags);
+            kobject_release(&f->base);
+            if (mr != IRIS_OK) {
+                rollback_vmo_maps(target_vs, vaddr, mapped_until);
+                kobject_release(vmo_obj); kobject_release(proc_obj);
+                return syscall_err(mr);
             }
             mapped_until = vaddr + off + PAGE_SIZE;
         }
@@ -463,11 +566,6 @@ uint64_t sys_vmo_share(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /*
  * sys_framebuffer_vmo(auth_h, info_uptr) → vmo_handle or iris_error_t
- *
- * Claims the physical framebuffer as an MMIO VMO (one-shot).  Requires a
- * KBootstrapCap with IRIS_BOOTCAP_FRAMEBUFFER.  Writes struct iris_fb_params to
- * info_uptr in user space, then returns a non-owning KVmo handle.
- * Clears g_iris_fb_params_valid so the framebuffer can only be claimed once.
  */
 uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1,
                                     uint64_t arg2, uint64_t arg3) {
@@ -488,8 +586,6 @@ uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1,
     kobject_release(auth_obj);
 
     if (!g_iris_fb_params_valid) return syscall_err(IRIS_ERR_NOT_FOUND);
-    /* Commit the one-shot claim before the copy so a concurrent second caller
-     * sees NOT_FOUND even if this call is still in progress. */
     g_iris_fb_params_valid = 0;
     if (!copy_to_user_checked(arg1, &g_iris_fb_params, (uint32_t)sizeof(g_iris_fb_params)))
         return syscall_err(IRIS_ERR_INVALID_ARG);

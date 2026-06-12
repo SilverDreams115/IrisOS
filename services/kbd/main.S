@@ -23,8 +23,29 @@
 #include <iris/syscall.h>
 #include <iris/svcmgr_proto.h>
 #include <iris/kbd_proto.h>
+#include <iris/kbd_ep_proto.h>
 
 .global _start
+
+/* ── Endpoint state (Fase 7.4) ─────────────────────────────────────────────
+ * kbd_ep_msg:  struct IrisMsg (64 B) staging area for EP recv/reply.
+ *              offsets: label 0, words[0..3] 8/16/24/32, word_count 40,
+ *              buf_len 44, buf_uptr 48, attached_handle 56, rights 60.
+ * kbd_ep_buf:  bulk landing zone (IRIS_IPC_BUF_SIZE); requests carrying bulk
+ *              are rejected, the buffer only keeps the kernel copy in-bounds.
+ * kbd_ring:    scancode ring, KBD_EP_RING_CAP deep, drop-oldest on overflow.
+ * kbd_park:    parked KReply cap for a blocking KBD_EP_OP_READ (0 = none).
+ * kbd_ep_h:    recv side of the service KEndpoint (0 = not granted).
+ */
+.section .bss
+.align 8
+kbd_ep_msg:     .skip 64
+kbd_ep_buf:     .skip 256
+kbd_ring:       .skip KBD_EP_RING_CAP
+kbd_ring_head:  .skip 4
+kbd_ring_count: .skip 4
+kbd_park:       .skip 4
+kbd_ep_h:       .skip 4
 
 .section .text._start
 _start:
@@ -99,6 +120,8 @@ _start:
     je    .kbd_bootstrap_ioport
     cmpl  $SVCMGR_BOOTSTRAP_KIND_IRQ_CAP,    8(%rsp)
     je    .kbd_bootstrap_irqcap
+    cmpl  $KBD_EP_KIND_SERVICE_EP,           8(%rsp)
+    je    .kbd_bootstrap_ep
     jmp   .kbd_bootstrap_fail
 
 .kbd_bootstrap_service:
@@ -115,6 +138,10 @@ _start:
 
 .kbd_bootstrap_irqcap:
     movl  %eax, 84(%rsp)               /* 84(%rsp) = IRQ cap handle (SYS_IRQ_ACK) */
+    jmp   .kbd_bootstrap_recv
+
+.kbd_bootstrap_ep:
+    movl  %eax, kbd_ep_h(%rip)         /* recv side of the kbd KEndpoint (7.4) */
     jmp   .kbd_bootstrap_recv
 
 .kbd_bootstrap_done:
@@ -166,15 +193,176 @@ _start:
     movq  $0,    %rax
     syscall
 
-/* ── Main service loop ───────────────────────────────────────────────────── */
+    /* "KBD ep ready" — endpoint recv side granted (Fase 7.4 smoke marker). */
+    movl  kbd_ep_h(%rip), %eax
+    testl %eax, %eax
+    jz    .kbd_recv
+    leaq  96(%rsp), %rdi
+    movb  $'K',  0(%rdi)
+    movb  $'B',  1(%rdi)
+    movb  $'D',  2(%rdi)
+    movb  $' ',  3(%rdi)
+    movb  $'e',  4(%rdi)
+    movb  $'p',  5(%rdi)
+    movb  $' ',  6(%rdi)
+    movb  $'r',  7(%rdi)
+    movb  $'e',  8(%rdi)
+    movb  $'a',  9(%rdi)
+    movb  $'d', 10(%rdi)
+    movb  $'y', 11(%rdi)
+    movb  $'\n',12(%rdi)
+    movb  $0,   13(%rdi)
+    movq  $0,    %rax
+    syscall
+
+/* ── Main service loop (Fase 7.4) ─────────────────────────────────────────
+ * Multiplexes two sources without ever blocking event delivery:
+ *   1. drain all pending endpoint requests (SYS_EP_NB_RECV);
+ *   2. wait on the legacy service/IRQ KChannel with a 10 ms timeout so the
+ *      endpoint drain keeps running even with no channel traffic.
+ */
 .kbd_recv:
-    movq  $14,   %rax                  /* SYS_CHAN_RECV */
+.kbd_ep_drain:
+    movl  kbd_ep_h(%rip), %edi
+    testl %edi, %edi
+    jz    .kbd_chan_wait               /* no endpoint granted: legacy only */
+    leaq  kbd_ep_msg(%rip), %rsi       /* zero IrisMsg, stage bulk buffer  */
+    movq  $0,  0(%rsi)
+    movq  $0,  8(%rsi)
+    movq  $0, 16(%rsi)
+    movq  $0, 24(%rsi)
+    movq  $0, 32(%rsi)
+    movq  $0, 40(%rsi)
+    movq  $0, 56(%rsi)
+    leaq  kbd_ep_buf(%rip), %rax
+    movq  %rax, 48(%rsi)               /* buf_uptr = kbd_ep_buf            */
+    movq  $SYS_EP_NB_RECV, %rax
+    syscall
+    testq %rax, %rax
+    jnz   .kbd_chan_wait               /* WOULD_BLOCK/err: nothing pending */
+
+    leaq  kbd_ep_msg(%rip), %rsi
+    movl  56(%rsi), %eax               /* per-call KReply capability       */
+    movl  %eax, 92(%rsp)               /* stash reply cap                  */
+    cmpl  $0, 44(%rsi)                 /* bulk payload attached?           */
+    jne   .kbd_ep_inval
+    movq  0(%rsi), %rax                /* dispatch on label                */
+    cmpq  $KBD_EP_PING_OP, %rax
+    je    .kbd_ep_ping
+    cmpq  $KBD_EP_OP_POLL, %rax
+    je    .kbd_ep_poll
+    cmpq  $KBD_EP_OP_READ, %rax
+    je    .kbd_ep_read
+    movl  $KBD_EP_E_NOT_SUPPORTED, %edx
+    jmp   .kbd_ep_reply_err
+.kbd_ep_inval:
+    movl  $KBD_EP_E_INVALID_ARG, %edx
+    jmp   .kbd_ep_reply_err
+
+.kbd_ep_ping:                          /* PING → OK, no event payload      */
+    leaq  kbd_ep_msg(%rip), %rsi
+    movq  $0,  0(%rsi)                 /* label = IRIS_EP_REPLY_OK         */
+    movq  $0,  8(%rsi)                 /* words[0] = 0                     */
+    movq  $0, 16(%rsi)
+    movq  $0, 24(%rsi)
+    movq  $0, 32(%rsi)
+    movq  $0, 40(%rsi)
+    movq  $0, 48(%rsi)
+    movq  $0, 56(%rsi)
+    movl  $1, 40(%rsi)                 /* word_count = 1                   */
+    jmp   .kbd_ep_send_reply
+
+.kbd_ep_poll:                          /* POLL → event or WOULD_BLOCK      */
+    movl  kbd_ring_count(%rip), %ecx
+    testl %ecx, %ecx
+    jnz   .kbd_ep_pop_reply
+    movl  $KBD_EP_E_WOULD_BLOCK, %edx
+    jmp   .kbd_ep_reply_err
+
+.kbd_ep_read:                          /* READ → event, park, or busy      */
+    movl  kbd_ring_count(%rip), %ecx
+    testl %ecx, %ecx
+    jnz   .kbd_ep_pop_reply
+    movl  kbd_park(%rip), %eax
+    testl %eax, %eax
+    jnz   .kbd_ep_read_busy            /* one parked reply max             */
+    movl  92(%rsp), %eax               /* park the reply cap: answered     */
+    movl  %eax, kbd_park(%rip)         /* from the next IRQ scancode       */
+    jmp   .kbd_ep_drain
+.kbd_ep_read_busy:
+    movl  $KBD_EP_E_WOULD_BLOCK, %edx
+    jmp   .kbd_ep_reply_err
+
+.kbd_ep_pop_reply:                     /* ecx = ring count (nonzero)       */
+    movl  kbd_ring_head(%rip), %eax    /* oldest = (head - count) & mask   */
+    subl  %ecx, %eax
+    andl  $(KBD_EP_RING_CAP - 1), %eax
+    leaq  kbd_ring(%rip), %rdx
+    movzbl (%rdx,%rax,1), %edx         /* edx = scancode                   */
+    decl  %ecx
+    movl  %ecx, kbd_ring_count(%rip)
+    leaq  kbd_ep_msg(%rip), %rsi       /* OK reply: words[1] = scancode    */
+    movq  $0,  0(%rsi)
+    movq  $0,  8(%rsi)
+    movq  $0, 16(%rsi)
+    movq  $0, 24(%rsi)
+    movq  $0, 32(%rsi)
+    movq  $0, 40(%rsi)
+    movq  $0, 48(%rsi)
+    movq  $0, 56(%rsi)
+    movl  %edx, 16(%rsi)               /* words[1]                         */
+    movl  $2, 40(%rsi)                 /* word_count = 2                   */
+    jmp   .kbd_ep_send_reply
+
+.kbd_ep_reply_err:                     /* edx = uint32_t error image       */
+    leaq  kbd_ep_msg(%rip), %rsi
+    movq  $0,  0(%rsi)
+    movq  $0,  8(%rsi)
+    movq  $0, 16(%rsi)
+    movq  $0, 24(%rsi)
+    movq  $0, 32(%rsi)
+    movq  $0, 40(%rsi)
+    movq  $0, 48(%rsi)
+    movq  $0, 56(%rsi)
+    movq  $KBD_EP_REPLY_ERR_LABEL, %rax
+    movq  %rax, 0(%rsi)                /* label = IRIS_EP_REPLY_ERR        */
+    movl  %edx, 8(%rsi)                /* words[0] = error                 */
+    movl  $1, 40(%rsi)                 /* word_count = 1                   */
+
+.kbd_ep_send_reply:
+    movl  92(%rsp), %edi
+    leaq  kbd_ep_msg(%rip), %rsi
+    movq  $SYS_REPLY, %rax
+    syscall                            /* failure tolerated: caller died   */
+    movl  92(%rsp), %edi
+    movq  $15, %rax                    /* SYS_HANDLE_CLOSE: drop reply cap */
+    syscall
+    jmp   .kbd_ep_drain
+
+/* ── Legacy service/IRQ channel (10 ms timeout keeps the EP drain alive) ── */
+.kbd_chan_wait:
+    movq  $0,  0(%rsp)
+    movq  $0,  8(%rsp)
+    movq  $0, 16(%rsp)
+    movq  $0, 24(%rsp)
+    movq  $0, 32(%rsp)
+    movq  $0, 40(%rsp)
+    movq  $0, 48(%rsp)
+    movq  $0, 56(%rsp)
+    movq  $0, 64(%rsp)
+    movq  $0, 72(%rsp)
+    movq  $0, 80(%rsp)
+    movq  $SYS_CHAN_RECV_TIMEOUT, %rax
     movq  %r13,  %rdi
     movq  %rsp,  %rsi
-    movq  $0,    %rdx
+    movq  $10000000, %rdx              /* 10 ms */
     syscall
     testq %rax,  %rax
-    jnz   .kbd_recv_err
+    jz    .kbd_chan_msg
+    cmpq  $-15,  %rax                  /* IRIS_ERR_TIMED_OUT: quiet loop   */
+    je    .kbd_recv
+    jmp   .kbd_recv_err
+.kbd_chan_msg:
 
     leaq  96(%rsp), %rdi
     movb  $'K',  0(%rdi)
@@ -259,7 +447,46 @@ _start:
     movq  $0,    %rdx
     syscall
 
-    /* Forward scancode to subscriber if one is registered */
+    /* ── EP delivery (Fase 7.4): parked READ reply first, else ring ────── */
+    movl  kbd_park(%rip), %eax
+    testl %eax, %eax
+    jz    .kbd_irq_ring
+    leaq  kbd_ep_msg(%rip), %rsi       /* OK reply: words[1] = scancode    */
+    movq  $0,  0(%rsi)
+    movq  $0,  8(%rsi)
+    movq  $0, 16(%rsi)
+    movq  $0, 24(%rsi)
+    movq  $0, 32(%rsi)
+    movq  $0, 40(%rsi)
+    movq  $0, 48(%rsi)
+    movq  $0, 56(%rsi)
+    movzbl 88(%rsp), %eax
+    movl  %eax, 16(%rsi)               /* words[1] = scancode              */
+    movl  $2, 40(%rsi)                 /* word_count = 2                   */
+    movl  kbd_park(%rip), %edi
+    movq  $SYS_REPLY, %rax
+    syscall                            /* failure tolerated: caller died   */
+    movl  kbd_park(%rip), %edi
+    movq  $15, %rax                    /* SYS_HANDLE_CLOSE: drop reply cap */
+    syscall
+    movl  $0, kbd_park(%rip)
+    jmp   .kbd_irq_legacy
+.kbd_irq_ring:                         /* push; drop OLDEST when full      */
+    movzbl 88(%rsp), %eax
+    movl  kbd_ring_head(%rip), %ecx
+    leaq  kbd_ring(%rip), %rdx
+    movb  %al, (%rdx,%rcx,1)
+    incl  %ecx
+    andl  $(KBD_EP_RING_CAP - 1), %ecx
+    movl  %ecx, kbd_ring_head(%rip)
+    movl  kbd_ring_count(%rip), %ecx
+    cmpl  $KBD_EP_RING_CAP, %ecx
+    jae   .kbd_irq_legacy              /* full: head advanced over oldest  */
+    incl  %ecx
+    movl  %ecx, kbd_ring_count(%rip)
+.kbd_irq_legacy:
+    /* Forward scancode to legacy subscriber if one is registered (init's
+     * S7 path; sh is endpoint-only since Fase 7.4). */
     testq %r15,  %r15
     jz    .kbd_recv
     movzbl 88(%rsp), %r11d             /* reload scancode (captured from KIoPort) */

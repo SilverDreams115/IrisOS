@@ -181,10 +181,6 @@ void isr_handler(struct full_frame *frame) {
 
         if (from_ring3 && !always_fatal) {
             struct task *ct = task_current();
-            if (frame->vector == 14 && ct) {
-                if (kprocess_resolve_demand_fault(ct, read_cr2()) == IRIS_OK)
-                    return; /* PTE installed; CPU will retry the faulting instruction */
-            }
             if (ct) {
                 uint64_t cr2 = (frame->vector == 14) ? read_cr2() : 0;
                 int notified = kprocess_notify_fault(ct, frame->vector,

@@ -24,7 +24,7 @@
  *
  *   Service-owned state (per-service STATUS channels):
  *     svcmgr:  SVCMGR_MSG_STATUS → SVCMGR_MSG_STATUS_REPLY  (svcmgr_proto.h)
- *     vfs:     VFS_MSG_STATUS    → VFS_MSG_STATUS_REPLY      (vfs_proto.h)
+ *     vfs:     VFS_EP_OP_STATUS over "vfs.ep" KEndpoint     (vfs_ep_proto.h)
  *     kbd:     KBD_MSG_STATUS    → KBD_MSG_STATUS_REPLY      (kbd_proto.h)
  *
  *   Together these form the full diagnostics picture.

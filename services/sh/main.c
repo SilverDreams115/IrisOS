@@ -5,12 +5,19 @@
  *   recv SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP (6) → console_h  (RIGHT_WRITE)
  *   recv SVCMGR_ENDPOINT_SH        (7)        → own service_h (closed; unused)
  *   recv SVCMGR_ENDPOINT_SH_REPLY  (8)        → own reply_h  (closed; unused)
- *   recv SVCMGR_BOOTSTRAP_KIND_KBD_CAP  (9)  → kbd_service_h (RIGHT_WRITE; for SUBSCRIBE)
- *   recv SVCMGR_BOOTSTRAP_KIND_VFS_CAP  (10) → vfs_h         (RIGHT_WRITE)
- *   recv SVCMGR_BOOTSTRAP_KIND_VFS_REPLY_CAP (11) → vfs_reply_h (RIGHT_READ)
+ *   recv SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP (0x20) → svcmgr discovery endpoint
  *
- * After bootstrap: subscribes to keyboard scancodes, enters REPL loop.
- * Commands: help, ver, ls, cat <file>, clear
+ * VFS access (Fase 7.2): endpoint-only. "vfs.ep" is resolved through the
+ * svcmgr discovery endpoint; ls/cat use the stateless VFS EP protocol
+ * (iris/vfs_ep_proto.h). There is no legacy KChannel fallback — if the
+ * endpoint is missing, ls/cat report the error instead of masking it.
+ *
+ * Keyboard (Fase 7.4): endpoint-only. "kbd.ep" is resolved through the
+ * svcmgr discovery endpoint; the REPL pulls one key event per
+ * EP_CALL(KBD_EP_OP_READ) — kbd parks the reply until a key arrives, so the
+ * call doubles as the blocking wait. No legacy KChannel subscribe fallback.
+ *
+ * Commands: help, ver, uptime, ls, cat <file>, clear
  */
 
 #include <stdint.h>
@@ -20,8 +27,10 @@
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
 #include <iris/svcmgr_proto.h>
-#include <iris/kbd_proto.h>
-#include <iris/vfs_proto.h>
+#include <iris/kbd_ep_proto.h>
+#include <iris/ipc_msg.h>
+#include <iris/endpoint_proto.h>
+#include <iris/vfs_ep_proto.h>
 #include "../common/console_client.h"
 
 /* ── Syscall helpers ─────────────────────────────────────────────── */
@@ -42,6 +51,20 @@ static void sh_msg_zero(struct KChanMsg *msg) {
     uint8_t *raw = (uint8_t *)msg;
     for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
 }
+
+static void sh_imsg_zero(struct IrisMsg *msg) {
+    uint8_t *raw = (uint8_t *)msg;
+    for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
+}
+
+/* VFS endpoint handle (Fase 7.1; mandatory since Fase 7.2). Resolved once
+ * after bootstrap via the svcmgr discovery endpoint; HANDLE_INVALID means
+ * VFS is unavailable — ls/cat fail loudly, there is no legacy fallback. */
+static handle_id_t g_sh_vfs_ep_h = HANDLE_INVALID;
+
+/* IPC bulk buffer for EP_CALL round trips (request payload and reply data
+ * share the buffer — EP_CALL reuses buf_uptr in both directions). */
+static uint8_t g_sh_ep_buf[VFS_EP_DATA_MAX + 1u];
 
 /* ── PS/2 Set-1 scancode tables ──────────────────────────────────── */
 
@@ -119,146 +142,124 @@ static void sh_write_u32(handle_id_t con, uint32_t v) {
     while (i) { out[0] = buf[--i]; console_write(con, out); }
 }
 
-/* ── VFS helpers ─────────────────────────────────────────────────── */
+/* ── VFS endpoint path (Fase 7.1) ────────────────────────────────── */
 
-static void sh_cmd_ls(handle_id_t con, handle_id_t vfs_h, handle_id_t vfs_reply_h) {
-    struct KChanMsg req, reply;
-    uint32_t idx;
+/*
+ * Resolve the VFS endpoint via the svcmgr discovery endpoint:
+ * EP_CALL(svcmgr_ep, IRIS_SVCMGR_EP_LOOKUP_NAME, "vfs.ep"). The reply
+ * carries the endpoint cap (RIGHT_WRITE) via SYS_REPLY cap transfer.
+ */
+static handle_id_t sh_svc_ep_lookup(handle_id_t svcmgr_ep_h,
+                                    const char *ep_name) {
+    struct IrisMsg msg;
+    uint32_t len = 0;
 
-    for (idx = 0; idx < 64u; idx++) {
-        sh_msg_zero(&req);
-        req.type = VFS_MSG_LIST;
-        vfs_proto_write_u32(&req.data[VFS_MSG_OFF_LIST_INDEX], idx);
-        req.data_len = VFS_MSG_LIST_LEN;
-        req.attached_handle = HANDLE_INVALID;
-        req.attached_rights = RIGHT_NONE;
+    if (svcmgr_ep_h == HANDLE_INVALID) return HANDLE_INVALID;
 
-        if (sh_sys2(SYS_CHAN_SEND, (long)vfs_h, (long)&req) != IRIS_OK) break;
+    while (ep_name[len]) {
+        g_sh_ep_buf[len] = (uint8_t)ep_name[len];
+        len++;
+    }
+    g_sh_ep_buf[len++] = 0u;  /* include NUL */
 
-        sh_msg_zero(&reply);
-        if (sh_sys2(SYS_CHAN_RECV, (long)vfs_reply_h, (long)&reply) != IRIS_OK) break;
-        if (reply.type != VFS_MSG_LIST_REPLY) break;
+    sh_imsg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_sh_ep_buf;
+    msg.buf_len  = len;
 
-        int32_t err = (int32_t)vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_LIST_REPLY_ERR]);
-        if (err != 0) break;
+    if (sh_sys2(SYS_EP_CALL, (long)svcmgr_ep_h, (long)&msg) != IRIS_OK)
+        return HANDLE_INVALID;
+    if (msg.label != IRIS_EP_REPLY_OK)
+        return HANDLE_INVALID;
+    if (msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP)
+        return HANDLE_INVALID;
+    return (handle_id_t)msg.attached_handle;
+}
 
-        uint32_t size     = vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_LIST_REPLY_SIZE]);
-        uint32_t name_len = vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_LIST_REPLY_NAME_LEN]);
-        if (name_len > VFS_MSG_LIST_REPLY_NAME_MAX - 1u)
-            name_len = VFS_MSG_LIST_REPLY_NAME_MAX - 1u;
+/*
+ * One VFS endpoint call. The path (when non-NULL) is staged into g_sh_ep_buf;
+ * reply bulk data lands in the same buffer. Returns IRIS_OK and fills *msg on
+ * a served round trip (msg->label distinguishes OK from protocol error).
+ */
+static int sh_vfs_ep_call(struct IrisMsg *msg, const char *path) {
+    msg->buf_uptr = (uint64_t)(uintptr_t)g_sh_ep_buf;
+    if (path) {
+        uint32_t plen = sh_strlen(path);
+        if (plen + 1u > VFS_EP_PATH_MAX) return (int)IRIS_ERR_INVALID_ARG;
+        for (uint32_t i = 0; i < plen; i++) g_sh_ep_buf[i] = (uint8_t)path[i];
+        g_sh_ep_buf[plen] = 0u;
+        msg->buf_len = plen + 1u;
+    }
+    return (int)sh_sys2(SYS_EP_CALL, (long)g_sh_vfs_ep_h, (long)msg);
+}
 
-        char namebuf[VFS_MSG_LIST_REPLY_NAME_MAX];
-        uint32_t ni;
-        for (ni = 0; ni < name_len; ni++)
-            namebuf[ni] = (char)reply.data[VFS_MSG_OFF_LIST_REPLY_NAME + ni];
-        namebuf[name_len] = '\0';
+static void sh_cmd_ls_ep(handle_id_t con) {
+    for (uint32_t idx = 0; idx < 64u; idx++) {
+        struct IrisMsg msg;
+        sh_imsg_zero(&msg);
+        msg.label      = VFS_EP_OP_LIST;
+        msg.words[0]   = idx;
+        msg.word_count = 1u;
+
+        if (sh_vfs_ep_call(&msg, 0) != IRIS_OK) {
+            console_write(con, "ls: vfs ep call failed\r\n");
+            return;
+        }
+        if (msg.label != IRIS_EP_REPLY_OK)
+            return;  /* NOT_FOUND past the last export — end of listing */
+
+        uint32_t size     = (uint32_t)msg.words[1];
+        uint32_t name_len = (uint32_t)msg.words[2];
+        if (name_len >= VFS_EP_PATH_MAX) name_len = VFS_EP_PATH_MAX - 1u;
+        g_sh_ep_buf[name_len] = 0u;
 
         console_write(con, "  ");
-        console_write(con, namebuf);
+        console_write(con, (const char *)g_sh_ep_buf);
         console_write(con, "  (");
         sh_write_u32(con, size);
         console_write(con, " bytes)\r\n");
     }
 }
 
-static void sh_cmd_cat(handle_id_t con, handle_id_t vfs_h, handle_id_t vfs_reply_h,
-                       const char *path) {
-    struct KChanMsg req, reply;
-    uint32_t file_id = 0;
-    int opened = 0;
+static void sh_cmd_cat_ep(handle_id_t con, const char *path) {
+    uint64_t offset = 0;
 
-    /* Acquire own process handle for VFS_MSG_OPEN attachment. */
-    long self_h = sh_sys0(SYS_PROCESS_SELF);
-    if (self_h < 0) {
-        console_write(con, "cat: SYS_PROCESS_SELF failed\r\n");
-        return;
-    }
-
-    /* VFS_MSG_OPEN */
-    sh_msg_zero(&req);
-    req.type = VFS_MSG_OPEN;
-    vfs_proto_write_u32(&req.data[VFS_MSG_OFF_OPEN_FLAGS], 0u);
-
-    uint32_t plen = sh_strlen(path);
-    if (plen >= VFS_MSG_OPEN_PATH_MAX) plen = VFS_MSG_OPEN_PATH_MAX - 1u;
-    uint32_t pi;
-    for (pi = 0; pi < plen; pi++)
-        req.data[VFS_MSG_OFF_OPEN_PATH + pi] = (uint8_t)path[pi];
-    req.data[VFS_MSG_OFF_OPEN_PATH + plen] = 0;
-    req.data_len = VFS_MSG_OFF_OPEN_PATH + plen + 1u;
-    req.attached_handle = (handle_id_t)self_h;
-    req.attached_rights = RIGHT_READ;
-
-    if (sh_sys2(SYS_CHAN_SEND, (long)vfs_h, (long)&req) != IRIS_OK) {
-        console_write(con, "cat: open send failed\r\n");
-        sh_sys1(SYS_HANDLE_CLOSE, self_h);
-        return;
-    }
-    /* self_h was moved into the channel on send */
-
-    sh_msg_zero(&reply);
-    if (sh_sys2(SYS_CHAN_RECV, (long)vfs_reply_h, (long)&reply) != IRIS_OK ||
-        reply.type != VFS_MSG_OPEN_REPLY) {
-        console_write(con, "cat: open reply error\r\n");
-        return;
-    }
-    int32_t err = (int32_t)vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_OPEN_REPLY_ERR]);
-    if (err != 0) {
-        console_write(con, "cat: not found\r\n");
-        return;
-    }
-    file_id = vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_OPEN_REPLY_FILE_ID]);
-    opened = 1;
-
-    /* VFS_MSG_READ loop */
     for (;;) {
-        sh_msg_zero(&req);
-        req.type = VFS_MSG_READ;
-        vfs_proto_write_u32(&req.data[VFS_MSG_OFF_READ_FILE_ID], file_id);
-        vfs_proto_write_u32(&req.data[VFS_MSG_OFF_READ_LEN], VFS_MSG_READ_REPLY_DATA_MAX);
-        req.data_len = VFS_MSG_READ_LEN;
-        req.attached_handle = HANDLE_INVALID;
-        req.attached_rights = RIGHT_NONE;
+        struct IrisMsg msg;
+        sh_imsg_zero(&msg);
+        msg.label      = VFS_EP_OP_READ_AT;
+        msg.words[0]   = offset;
+        msg.words[1]   = VFS_EP_DATA_MAX;
+        msg.word_count = 2u;
 
-        if (sh_sys2(SYS_CHAN_SEND, (long)vfs_h, (long)&req) != IRIS_OK) break;
+        if (sh_vfs_ep_call(&msg, path) != IRIS_OK) {
+            console_write(con, "cat: vfs ep call failed\r\n");
+            return;
+        }
+        if (msg.label != IRIS_EP_REPLY_OK) {
+            if (offset == 0)
+                console_write(con, "cat: not found\r\n");
+            else
+                console_write(con, "cat: read error\r\n");
+            return;
+        }
 
-        sh_msg_zero(&reply);
-        if (sh_sys2(SYS_CHAN_RECV, (long)vfs_reply_h, (long)&reply) != IRIS_OK) break;
-        if (reply.type != VFS_MSG_READ_REPLY) break;
+        uint32_t bytes = (uint32_t)msg.words[1];
+        uint64_t total = msg.words[2];
+        if (bytes == 0) return;  /* EOF */
+        if (bytes > VFS_EP_DATA_MAX) bytes = VFS_EP_DATA_MAX;
 
-        err = (int32_t)vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_READ_REPLY_ERR]);
-        if (err != 0) break;
+        g_sh_ep_buf[bytes] = 0u;
+        console_write(con, (const char *)g_sh_ep_buf);
 
-        uint32_t rlen = vfs_proto_read_u32(&reply.data[VFS_MSG_OFF_READ_REPLY_LEN]);
-        if (rlen == 0) break;  /* EOF */
-
-        /* Copy bytes into null-terminated buffer and write to console. */
-        char buf[VFS_MSG_READ_REPLY_DATA_MAX + 1u];
-        uint32_t bi;
-        for (bi = 0; bi < rlen && bi < VFS_MSG_READ_REPLY_DATA_MAX; bi++)
-            buf[bi] = (char)reply.data[VFS_MSG_OFF_READ_REPLY_DATA + bi];
-        buf[bi] = '\0';
-        console_write(con, buf);
-    }
-
-    /* VFS_MSG_CLOSE */
-    if (opened) {
-        sh_msg_zero(&req);
-        req.type = VFS_MSG_CLOSE;
-        vfs_proto_write_u32(&req.data[VFS_MSG_OFF_CLOSE_FILE_ID], file_id);
-        req.data_len = VFS_MSG_CLOSE_LEN;
-        req.attached_handle = HANDLE_INVALID;
-        req.attached_rights = RIGHT_NONE;
-        (void)sh_sys2(SYS_CHAN_SEND, (long)vfs_h, (long)&req);
-        sh_msg_zero(&reply);
-        (void)sh_sys2(SYS_CHAN_RECV, (long)vfs_reply_h, (long)&reply);
+        offset += bytes;
+        if (offset >= total) return;
     }
 }
 
 /* ── Command dispatch ────────────────────────────────────────────── */
 
-static void sh_dispatch(handle_id_t con, handle_id_t vfs_h, handle_id_t vfs_reply_h,
-                        const char *line) {
+static void sh_dispatch(handle_id_t con, const char *line) {
     if (sh_word_eq(line, "help")) {
         console_write(con, "Commands:\r\n"
                            "  help          this message\r\n"
@@ -289,11 +290,12 @@ static void sh_dispatch(handle_id_t con, handle_id_t vfs_h, handle_id_t vfs_repl
         return;
     }
     if (sh_word_eq(line, "ls")) {
-        if (vfs_h == HANDLE_INVALID || vfs_reply_h == HANDLE_INVALID) {
-            console_write(con, "ls: VFS unavailable\r\n");
+        /* Endpoint-only path (Fase 7.2): no legacy KChannel fallback. */
+        if (g_sh_vfs_ep_h == HANDLE_INVALID) {
+            console_write(con, "ls: VFS endpoint unavailable\r\n");
             return;
         }
-        sh_cmd_ls(con, vfs_h, vfs_reply_h);
+        sh_cmd_ls_ep(con);
         return;
     }
     if (sh_word_eq(line, "cat")) {
@@ -302,11 +304,11 @@ static void sh_dispatch(handle_id_t con, handle_id_t vfs_h, handle_id_t vfs_repl
             console_write(con, "usage: cat <filename>\r\n");
             return;
         }
-        if (vfs_h == HANDLE_INVALID || vfs_reply_h == HANDLE_INVALID) {
-            console_write(con, "cat: VFS unavailable\r\n");
+        if (g_sh_vfs_ep_h == HANDLE_INVALID) {
+            console_write(con, "cat: VFS endpoint unavailable\r\n");
             return;
         }
-        sh_cmd_cat(con, vfs_h, vfs_reply_h, path);
+        sh_cmd_cat_ep(con, path);
         console_write(con, "\r\n");
         return;
     }
@@ -323,17 +325,18 @@ static void sh_dispatch(handle_id_t con, handle_id_t vfs_h, handle_id_t vfs_repl
 
 void sh_main_c(handle_id_t bootstrap_h) {
     handle_id_t console_h     = HANDLE_INVALID;
-    handle_id_t kbd_service_h = HANDLE_INVALID;
-    handle_id_t vfs_h         = HANDLE_INVALID;
-    handle_id_t vfs_reply_h   = HANDLE_INVALID;
-    handle_id_t kbd_sub_h     = HANDLE_INVALID;
+    handle_id_t kbd_ep_h      = HANDLE_INVALID;
+    handle_id_t svcmgr_ep_h   = HANDLE_INVALID;
 
-    /* Bootstrap: receive channels from svcmgr. */
+    /* Bootstrap: receive channels from svcmgr. Timed recv so a missing
+     * message degrades to a degraded-but-running shell instead of hanging
+     * boot (a missing discovery EP then surfaces as "[SH] vfs ep FAILED"). */
     uint32_t recv_count;
     for (recv_count = 0; recv_count < 16u; recv_count++) {
         struct KChanMsg msg;
         sh_msg_zero(&msg);
-        if (sh_sys2(SYS_CHAN_RECV, (long)bootstrap_h, (long)&msg) != IRIS_OK)
+        if (sh_sys3(SYS_CHAN_RECV_TIMEOUT, (long)bootstrap_h, (long)&msg,
+                    500000000L) != IRIS_OK)
             break;
 
         if (msg.type != SVCMGR_MSG_BOOTSTRAP_HANDLE) {
@@ -358,21 +361,9 @@ void sh_main_c(handle_id_t bootstrap_h) {
             if (h != HANDLE_INVALID)
                 (void)sh_sys1(SYS_HANDLE_CLOSE, (long)h);
             break;
-        case SVCMGR_BOOTSTRAP_KIND_KBD_CAP:         /* 9 */
-            if (h != HANDLE_INVALID && kbd_service_h == HANDLE_INVALID)
-                kbd_service_h = h;
-            else if (h != HANDLE_INVALID)
-                (void)sh_sys1(SYS_HANDLE_CLOSE, (long)h);
-            break;
-        case SVCMGR_BOOTSTRAP_KIND_VFS_CAP:         /* 10 */
-            if (h != HANDLE_INVALID && vfs_h == HANDLE_INVALID)
-                vfs_h = h;
-            else if (h != HANDLE_INVALID)
-                (void)sh_sys1(SYS_HANDLE_CLOSE, (long)h);
-            break;
-        case SVCMGR_BOOTSTRAP_KIND_VFS_REPLY_CAP:   /* 11 */
-            if (h != HANDLE_INVALID && vfs_reply_h == HANDLE_INVALID)
-                vfs_reply_h = h;
+        case SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP:       /* 0x20 — discovery EP */
+            if (h != HANDLE_INVALID && svcmgr_ep_h == HANDLE_INVALID)
+                svcmgr_ep_h = h;
             else if (h != HANDLE_INVALID)
                 (void)sh_sys1(SYS_HANDLE_CLOSE, (long)h);
             break;
@@ -382,8 +373,7 @@ void sh_main_c(handle_id_t bootstrap_h) {
             break;
         }
 
-        if (console_h != HANDLE_INVALID && kbd_service_h != HANDLE_INVALID &&
-            vfs_h != HANDLE_INVALID && vfs_reply_h != HANDLE_INVALID)
+        if (console_h != HANDLE_INVALID && svcmgr_ep_h != HANDLE_INVALID)
             break;
     }
     (void)sh_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_h);
@@ -392,33 +382,26 @@ void sh_main_c(handle_id_t bootstrap_h) {
 
     console_write(console_h, "[SH] boot\n");
 
-    /* Subscribe to keyboard scancode events. */
-    if (kbd_service_h != HANDLE_INVALID) {
-        long base_h = sh_sys0(SYS_CHAN_CREATE);
-        if (base_h >= 0) {
-            long sub_read  = sh_sys2(SYS_HANDLE_DUP, base_h, (long)(RIGHT_READ));
-            long sub_write = sh_sys2(SYS_HANDLE_DUP, base_h,
-                                     (long)(RIGHT_WRITE | RIGHT_TRANSFER));
-            (void)sh_sys1(SYS_HANDLE_CLOSE, base_h);
+    /* Fase 7.2: resolve the VFS endpoint — the only VFS path. A failure is
+     * reported loudly (the smoke gate requires "[SH] vfs ep OK") and ls/cat
+     * surface the error per command instead of masking it. */
+    g_sh_vfs_ep_h = sh_svc_ep_lookup(svcmgr_ep_h, VFS_EP_SVC_NAME);
+    if (g_sh_vfs_ep_h != HANDLE_INVALID)
+        console_write(console_h, "[SH] vfs ep OK\n");
+    else
+        console_write(console_h, "[SH] vfs ep FAILED\n");
 
-            if (sub_read >= 0 && sub_write >= 0) {
-                struct KChanMsg smsg;
-                sh_msg_zero(&smsg);
-                smsg.type = KBD_MSG_SUBSCRIBE;
-                smsg.data_len = KBD_MSG_SUBSCRIBE_LEN;
-                smsg.attached_handle = (handle_id_t)sub_write;
-                smsg.attached_rights = RIGHT_WRITE;
-                if (sh_sys2(SYS_CHAN_SEND, (long)kbd_service_h, (long)&smsg) == IRIS_OK) {
-                    kbd_sub_h = (handle_id_t)sub_read;
-                    sub_read = -1;  /* retained locally; don't close */
-                }
-            }
-            if (sub_read >= 0)
-                (void)sh_sys1(SYS_HANDLE_CLOSE, sub_read);
-            /* sub_write was moved into the channel message; do not close it */
-        }
-        (void)sh_sys1(SYS_HANDLE_CLOSE, (long)kbd_service_h);
-    }
+    /* Fase 7.4: resolve the kbd endpoint — the only key-event path. The
+     * REPL pulls events with EP_CALL(KBD_EP_OP_READ); there is no legacy
+     * KChannel subscribe fallback, a broken endpoint is reported loudly. */
+    kbd_ep_h = sh_svc_ep_lookup(svcmgr_ep_h, KBD_EP_SVC_NAME);
+    if (kbd_ep_h != HANDLE_INVALID)
+        console_write(console_h, "[SH] kbd ep OK\n");
+    else
+        console_write(console_h, "[SH] kbd ep FAILED\n");
+
+    if (svcmgr_ep_h != HANDLE_INVALID)
+        (void)sh_sys1(SYS_HANDLE_CLOSE, (long)svcmgr_ep_h);
 
     /* Print banner */
     console_write(console_h,
@@ -432,19 +415,27 @@ void sh_main_c(handle_id_t bootstrap_h) {
     uint8_t shift = 0;
 
     for (;;) {
-        if (kbd_sub_h == HANDLE_INVALID) {
+        if (kbd_ep_h == HANDLE_INVALID) {
             (void)sh_sys0(SYS_YIELD);
             continue;
         }
 
-        struct KChanMsg msg;
-        sh_msg_zero(&msg);
-        if (sh_sys2(SYS_CHAN_RECV, (long)kbd_sub_h, (long)&msg) != IRIS_OK)
+        /* Blocking pull: kbd parks the reply until a key event arrives.
+         * WOULD_BLOCK (park slot taken by a concurrent caller) and call
+         * errors yield-and-retry; this never spins on an immediate reply. */
+        struct IrisMsg msg;
+        sh_imsg_zero(&msg);
+        msg.label = KBD_EP_OP_READ;
+        if (sh_sys2(SYS_EP_CALL, (long)kbd_ep_h, (long)&msg) != IRIS_OK) {
+            (void)sh_sys0(SYS_YIELD);
             continue;
-        if (msg.type != KBD_MSG_SCANCODE_EVENT || msg.data_len < 1u)
+        }
+        if (msg.label != IRIS_EP_REPLY_OK || msg.word_count < 2u) {
+            (void)sh_sys0(SYS_YIELD);
             continue;
+        }
 
-        uint8_t sc      = msg.data[KBD_MSG_OFF_SC_EVENT_CODE];
+        uint8_t sc      = (uint8_t)msg.words[1];
         uint8_t release = sc & 0x80u;
         uint8_t base    = sc & 0x7Fu;
 
@@ -471,7 +462,7 @@ void sh_main_c(handle_id_t bootstrap_h) {
             console_write(console_h, "\r\n");
             if (line_len > 0) {
                 line[line_len] = '\0';
-                sh_dispatch(console_h, vfs_h, vfs_reply_h, line);
+                sh_dispatch(console_h, line);
                 line_len = 0;
             }
             console_write(console_h, "> ");

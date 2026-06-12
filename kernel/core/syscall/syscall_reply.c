@@ -13,6 +13,17 @@
  *   - Clears caller->pending_kreply (releases task's own KReply ref).
  *   - Transitions caller to TASK_READY.
  *   - Returns IRIS_ERR_NOT_FOUND if the KReply was already invoked.
+ *
+ * Reply-cap transfer (Fase 7.1): a reply MAY carry one capability in
+ * msg.attached_handle / msg.attached_rights, with EP_SEND staging semantics:
+ *   - The server handle must have RIGHT_TRANSFER; it is consumed on success.
+ *   - The cap is installed in the EP_CALL caller's handle table; the caller
+ *     sees the new handle id in msg.attached_handle (IRIS_MSG_NO_CAP if the
+ *     caller's table is full — soft failure, message still delivered).
+ *   - If SYS_REPLY fails before staging (bad KReply handle, unreadable msg,
+ *     stage validation error) the server handle is NOT consumed.
+ *   - If the KReply was already invoked (IRIS_ERR_NOT_FOUND) the staged cap
+ *     is destroyed: the server handle IS consumed.
  */
 #include "syscall_priv.h"
 #include <iris/nc/kreply.h>
@@ -217,12 +228,28 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
+    /* Stage attached reply cap (if any) before consuming the one-shot KReply,
+     * so staging errors leave the reply invocable and the handle untouched. */
+    struct KObject *xfer_obj    = 0;
+    uint32_t        xfer_rights = 0;
+    if (reply_msg.attached_handle != IRIS_MSG_NO_CAP) {
+        iris_error_t cr = syscall_ipc_stage_cap(t, reply_msg.attached_handle,
+                                                reply_msg.attached_rights,
+                                                &xfer_obj, &xfer_rights);
+        if (cr != IRIS_OK) {
+            kobject_release(&rp->base);
+            return syscall_err(cr);
+        }
+        reply_msg.attached_handle = IRIS_MSG_NO_CAP;
+    }
+
     uint64_t flags  = irq_spinlock_lock(&rp->lock);
     struct task *caller = rp->caller;
     rp->caller          = 0;
     irq_spinlock_unlock(&rp->lock, flags);
 
     if (!caller) {
+        if (xfer_obj) kobject_release(xfer_obj); /* staged cap destroyed */
         kobject_release(&rp->base);
         return syscall_err(IRIS_ERR_NOT_FOUND); /* already replied */
     }
@@ -230,6 +257,12 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Deliver reply message into caller's staging (caller is blocked — safe). */
     copy_irismsg_r(&caller->ipc_msg, &reply_msg);
     caller->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+
+    /* Install the staged reply cap in the caller's handle table. */
+    if (xfer_obj) {
+        uint32_t new_h = syscall_ipc_deliver_cap(caller, xfer_obj, xfer_rights);
+        caller->ipc_msg.attached_handle = new_h;
+    }
 
     /* Stage reply bulk directly into caller's ipc_kbuf (server's CR3 → kernel memory). */
     caller->ipc_kbuf_len = 0u;

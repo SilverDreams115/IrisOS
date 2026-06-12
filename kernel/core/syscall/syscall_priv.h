@@ -24,6 +24,8 @@
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kschedctx.h>
 #include <iris/nc/kuntyped.h>
+#include <iris/nc/kframe.h>
+#include <iris/nc/kvspace.h>
 #include <iris/nc/kreply.h>
 #include <iris/nc/ktcb.h>
 #include <iris/nc/handle_table.h>
@@ -131,11 +133,6 @@ static inline int page_round_up_u64(uint64_t size, uint64_t *out_rounded) {
     if (rounded < size) return 0;
     *out_rounded = rounded;
     return 1;
-}
-
-static inline void rollback_user_maps(uint64_t cr3, uint64_t start, uint64_t end) {
-    for (uint64_t virt = start; virt < end; virt += PAGE_SIZE)
-        paging_unmap_in(cr3, virt);
 }
 
 /*
@@ -256,6 +253,16 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
+/* ── Shared IPC cap-transfer helpers (defined in syscall_endpoint.c) ──
+ * Used by EP_SEND / EP_NB_SEND and by SYS_REPLY (reply-cap transfer).
+ */
+iris_error_t syscall_ipc_stage_cap(struct task *t, uint32_t src_h,
+                                   uint32_t requested_rights,
+                                   struct KObject **out_obj,
+                                   uint32_t *out_rights);
+uint32_t syscall_ipc_deliver_cap(struct task *receiver,
+                                 struct KObject *xo, uint32_t cap_rights);
+
 /* ── Forward declarations — CSpace (Ph70-72, Ph82-84, Ph95) ─────── */
 uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -277,6 +284,10 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_untyped_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+
+/* ── Forward declarations — Block 9 frame capabilities (Fase 5 / 5.1) ── */
+uint64_t sys_frame_map  (uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
+uint64_t sys_frame_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — TCB caps (Ph96-101) ──────────────────── */
 uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);

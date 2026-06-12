@@ -2,6 +2,7 @@
 #include <iris/nc/kreply.h>
 #include <iris/nc/kobject.h>
 #include <iris/task.h>
+#include <iris/paging.h>
 #include <stdatomic.h>
 
 void test_kreply(void) {
@@ -51,4 +52,10 @@ void test_kreply(void) {
 
     /* ── kreply_cancel_caller(NULL) is safe ── */
     kreply_cancel_caller(NULL);
+
+    /* ── alloc failure injection ── */
+    kslab_fail_after(0);
+    struct KReply *rf = kreply_alloc(NULL);
+    ASSERT_NULL(rf);
+    kslab_clear_fail();
 }

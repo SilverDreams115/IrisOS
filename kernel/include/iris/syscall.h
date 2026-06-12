@@ -233,8 +233,8 @@
  *   proc_h:  KOBJ_PROCESS with RIGHT_MANAGE; must not be torn down.
  *   vaddr:   page-aligned target virtual address in proc's address space.
  *   flags:   bit 0 = MAP_WRITABLE, bit 1 = MAP_EXEC; W^X enforced.
- *   For demand VMOs: registers mapping in proc's vmo_mappings (demand fault path).
- *   For eager VMOs:  maps physical pages directly into proc's page table.
+ *   Eagerly allocates and maps all pages into proc's page table at call time.
+ *   Also registers the mapping descriptor in proc's vmo_mappings for teardown.
  *   Uses 4-arg syscall ABI (arg3 = flags via r10).
  *
  * SYS_THREAD_START(proc_h, entry_vaddr, stack_top, boot_arg) → 0 or iris_error_t
@@ -797,6 +797,17 @@
  *   One-shot: the KReply is consumed; future SYS_REPLY on same handle
  *   returns IRIS_ERR_NOT_FOUND.
  *   Does NOT require RIGHT_READ on kreply_h — server may hold write-only reply cap.
+ *
+ *   Reply-cap transfer (Fase 7.1 ABI extension): the reply MAY carry one
+ *   capability in msg.attached_handle / msg.attached_rights, with the same
+ *   staging semantics as SYS_EP_SEND (server handle needs RIGHT_TRANSFER and
+ *   is consumed; rights are reduced by msg.attached_rights). The cap is
+ *   installed in the EP_CALL caller's handle table; the caller observes the
+ *   new handle id in msg.attached_handle after EP_CALL returns. On errors
+ *   before staging (bad kreply_h, unreadable msg, stage validation failure)
+ *   the server handle is NOT consumed; on IRIS_ERR_NOT_FOUND (KReply already
+ *   invoked) the staged cap is destroyed and the handle IS consumed.
+ *   Before Fase 7.1 the attached_handle field was ignored on replies.
  */
 #define SYS_EP_CALL  93
 #define SYS_REPLY    94
@@ -816,6 +827,44 @@
  *   levels without reaching a leaf.
  */
 #define SYS_CSPACE_RESOLVE 95
+
+/*
+ * Block 9 — Frame capabilities (Fase 5 / 5.1).
+ *
+ * SYS_FRAME_MAP(frame_cptr, vspace_cptr, user_va, flags) → 0 or negative iris_error_t
+ *   frame_cptr:  KOBJ_FRAME with RIGHT_READ (+ RIGHT_WRITE if flags bit 0 set).
+ *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE to install the PTE.
+ *   user_va:     page-aligned target virtual address in the VSpace's address space.
+ *                Must be in [USER_PRIVATE_BASE, USER_SPACE_TOP).
+ *   flags:       bit 0 = MAP_WRITABLE, bit 1 = MAP_EXEC; W^X enforced.
+ *   Maps one page from the Frame into the VSpace's page tables.
+ *   Increments frame->mapped_count on success.
+ *   Returns IRIS_ERR_BUSY if user_va is already mapped.
+ *   Returns IRIS_ERR_INVALID_ARG for bad VA alignment, kernel address, bad flags.
+ *   Returns IRIS_ERR_ACCESS_DENIED if required rights are absent.
+ *   Returns IRIS_ERR_BAD_HANDLE if the VSpace has been invalidated (process dead).
+ *   Returns IRIS_ERR_NO_MEMORY if page table allocation fails.
+ *   Uses 4-arg syscall ABI (flags via r10).
+ */
+#define SYS_FRAME_MAP 102
+
+/*
+ * SYS_FRAME_UNMAP(frame_cptr, vspace_cptr, user_va) → 0 or negative iris_error_t
+ *   Removes the PTE at user_va in the given VSpace, but only if it maps
+ *   exactly this frame's physical page (paddr).  Decrements frame->mapped_count.
+ *   Issues invlpg for the unmapped VA (TLB invalidation; sufficient for single-core).
+ *
+ *   frame_cptr:  KOBJ_FRAME with RIGHT_READ.
+ *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE.
+ *   user_va:     page-aligned VA that was previously mapped via SYS_FRAME_MAP.
+ *
+ *   Returns IRIS_ERR_NOT_FOUND   — user_va has no PTE in this VSpace.
+ *   Returns IRIS_ERR_INVALID_ARG — VA unaligned, or VA maps a different frame.
+ *   Returns IRIS_ERR_BAD_HANDLE  — VSpace invalidated (process dead).
+ *   Returns IRIS_ERR_ACCESS_DENIED if required rights are absent.
+ *   Idempotent with respect to error: a failed unmap leaves mapped_count unchanged.
+ */
+#define SYS_FRAME_UNMAP 103
 
 /*
  * Block 8 — TCB capabilities (Ph96-101).
@@ -880,6 +929,7 @@ struct iris_tcb_info {
 #define IRIS_HANDLE_TYPE_REPLY          12u
 #define IRIS_HANDLE_TYPE_TCB            13u
 #define IRIS_HANDLE_TYPE_VSPACE         14u  /* Fase 4: KVSpace — virtual address space */
+#define IRIS_HANDLE_TYPE_FRAME          15u  /* Fase 5: KFrame  — physical memory frame */
 
 #ifndef __ASSEMBLER__
 #ifdef __KERNEL__

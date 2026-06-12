@@ -137,7 +137,7 @@
  * channel handle with RIGHT_WRITE; svcmgr gathers:
  *   - kernel-owned snapshot counts via SYS_DIAG_SNAPSHOT
  *   - svcmgr-local supervision summary from its live state
- *   - vfs status via VFS_MSG_STATUS on a temporary reply channel
+ *   - vfs status via VFS_EP_OP_STATUS EP_CALL on the vfs KEndpoint (Fase 7.5)
  *   - kbd status via KBD_MSG_STATUS on a temporary reply channel
  *
  * The reply carries a compact global-health summary. Subsystem-local status
@@ -206,9 +206,10 @@
 #define SVCMGR_BOOTSTRAP_KIND_IRQ_CAP   4u  /* KIrqCap capability for IRQ routing */
 #define SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP 5u /* KIoPort capability for I/O port access */
 #define SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP 6u /* KChannel write-end for console service */
-#define SVCMGR_BOOTSTRAP_KIND_KBD_CAP    9u  /* KChannel write-end for kbd service */
-#define SVCMGR_BOOTSTRAP_KIND_VFS_CAP   10u  /* KChannel write-end for vfs service */
-#define SVCMGR_BOOTSTRAP_KIND_VFS_REPLY_CAP 11u /* KChannel read-end for vfs reply */
+/* 9u (KBD_CAP) retired in Fase 7.4: sh pulls key events via "kbd.ep".
+ * Do not reuse this kind value. */
+/* 10u/11u (VFS_CAP / VFS_REPLY_CAP) retired in Fase 7.5: vfs is endpoint_only.
+ * Do not reuse these kind values. */
 #define SVCMGR_BOOTSTRAP_KIND_INITRD_CAP 12u /* KBootstrapCap (SPAWN_SERVICE) for initrd access */
 
 /* Byte offsets within KChanMsg.data[64] */

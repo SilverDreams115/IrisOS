@@ -14,6 +14,9 @@
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
 #include <iris/ipc_msg.h>
+#include <iris/endpoint_proto.h>
+#include <iris/vfs_ep_proto.h>
+#include <iris/kbd_ep_proto.h>
 
 /* ── Syscall helpers ────────────────────────────────────────────────────── */
 
@@ -623,6 +626,330 @@ static void test_t016(void) {
         it_fail("T016", "ep_call/reply");
 }
 
+/* ── T018: EP_NB_SEND on empty endpoint → WOULD_BLOCK ──────────────────── */
+
+static void test_t018(void) {
+    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep_raw < 0) { it_fail("T018", "ep create"); return; }
+    handle_id_t ep_h = (handle_id_t)ep_raw;
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = 0x1818ULL;
+    long r = it_sys2(SYS_EP_NB_SEND, ep_raw, (long)&msg);
+
+    it_close(&ep_h);
+
+    if (r == (long)IRIS_ERR_WOULD_BLOCK)
+        it_pass("T018");
+    else
+        it_fail("T018", "expected WOULD_BLOCK");
+}
+
+/* ── T019: endpoint close wakes blocked EP_RECV thread ──────────────────── */
+
+static handle_id_t g_t019_ep_h    = HANDLE_INVALID;
+static volatile int g_t019_done   = 0;
+static          int g_t019_result = 0;
+static uint8_t      g_t019_stack[8192];
+
+static void t019_thread(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    long r = it_sys2(SYS_EP_RECV, (long)g_t019_ep_h, (long)&msg);
+    g_t019_result = (int)r;
+    g_t019_done   = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+
+static void test_t019(void) {
+    g_t019_done   = 0;
+    g_t019_result = 0;
+
+    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep_raw < 0) { it_fail("T019", "ep create"); return; }
+    g_t019_ep_h = (handle_id_t)ep_raw;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t019_thread;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t019_stack + sizeof(g_t019_stack))) & ~0xFULL;
+    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    if (tid < 0) {
+        it_close(&g_t019_ep_h);
+        it_fail("T019", "thread create"); return;
+    }
+    handle_id_t tid_h = (handle_id_t)tid;
+
+    /* Let thread enter EP_RECV and block */
+    it_sys1(SYS_SLEEP, 5);
+
+    /* Close handle → active_refs → 0 → endpoint close fires → thread wakes */
+    it_close(&g_t019_ep_h);
+
+    for (int i = 0; i < 200 && !g_t019_done; i++)
+        it_sys1(SYS_SLEEP, 1);
+
+    it_close(&tid_h);
+
+    if (g_t019_result == (int)IRIS_ERR_CLOSED)
+        it_pass("T019");
+    else
+        it_fail("T019", "expected CLOSED on blocked recv");
+}
+
+/* ── T020: endpoint close wakes blocked EP_SEND thread ──────────────────── */
+
+static handle_id_t g_t020_ep_h    = HANDLE_INVALID;
+static volatile int g_t020_done   = 0;
+static          int g_t020_result = 0;
+static uint8_t      g_t020_stack[8192];
+
+static void t020_thread(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = 0x2020ULL;
+    long r = it_sys2(SYS_EP_SEND, (long)g_t020_ep_h, (long)&msg);
+    g_t020_result = (int)r;
+    g_t020_done   = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+
+static void test_t020(void) {
+    g_t020_done   = 0;
+    g_t020_result = 0;
+
+    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep_raw < 0) { it_fail("T020", "ep create"); return; }
+    g_t020_ep_h = (handle_id_t)ep_raw;
+
+    /* Dup to get a second handle — active_refs = 2 */
+    long ep2_raw = it_sys2(SYS_HANDLE_DUP, ep_raw,
+                           (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+    if (ep2_raw < 0) {
+        it_close(&g_t020_ep_h);
+        it_fail("T020", "dup"); return;
+    }
+    handle_id_t ep2_h = (handle_id_t)ep2_raw;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t020_thread;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t020_stack + sizeof(g_t020_stack))) & ~0xFULL;
+    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    if (tid < 0) {
+        it_close(&ep2_h);
+        it_close(&g_t020_ep_h);
+        it_fail("T020", "thread create"); return;
+    }
+    handle_id_t tid_h = (handle_id_t)tid;
+
+    /* Let thread enter EP_SEND and block (no receiver present) */
+    it_sys1(SYS_SLEEP, 5);
+
+    /* Close both handles: active_refs 2→1→0 → endpoint close → thread wakes */
+    it_close(&ep2_h);
+    it_close(&g_t020_ep_h);
+
+    for (int i = 0; i < 200 && !g_t020_done; i++)
+        it_sys1(SYS_SLEEP, 1);
+
+    it_close(&tid_h);
+
+    if (g_t020_result == (int)IRIS_ERR_CLOSED)
+        it_pass("T020");
+    else
+        it_fail("T020", "expected CLOSED on blocked send");
+}
+
+/* ── T021: SYS_REPLY twice → second returns NOT_FOUND ───────────────────── */
+
+static handle_id_t g_t021_ep_h   = HANDLE_INVALID;
+static volatile int g_t021_done  = 0;
+static          int g_t021_ok    = 0;
+static uint8_t      g_t021_stack[8192];
+
+static void t021_client(void) {
+    uint8_t rbuf[64];
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = 0x2121ULL;
+    msg.buf_uptr = (uint64_t)(uintptr_t)rbuf;
+    long r = it_sys2(SYS_EP_CALL, (long)g_t021_ep_h, (long)&msg);
+    g_t021_ok   = (r == 0);
+    g_t021_done = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+
+static void test_t021(void) {
+    g_t021_done = 0;
+    g_t021_ok   = 0;
+
+    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep_raw < 0) { it_fail("T021", "ep create"); return; }
+    g_t021_ep_h = (handle_id_t)ep_raw;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t021_client;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t021_stack + sizeof(g_t021_stack))) & ~0xFULL;
+    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    if (tid < 0) {
+        it_close(&g_t021_ep_h);
+        it_fail("T021", "thread create"); return;
+    }
+    handle_id_t tid_h = (handle_id_t)tid;
+
+    /* Main is server: receive the EP_CALL and get reply_h */
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    long r = it_sys2(SYS_EP_RECV, ep_raw, (long)&msg);
+    if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+        it_close(&tid_h);
+        it_close(&g_t021_ep_h);
+        it_fail("T021", "ep_recv"); return;
+    }
+
+    handle_id_t reply_h = (handle_id_t)msg.attached_handle;
+
+    /* First SYS_REPLY → client unblocks */
+    struct IrisMsg reply;
+    it_iris_msg_zero(&reply);
+    reply.label = 0xCAFEULL;
+    long r1 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+
+    /* Wait for client to record EP_CALL result */
+    for (int i = 0; i < 200 && !g_t021_done; i++)
+        it_sys1(SYS_SLEEP, 1);
+
+    /* Second SYS_REPLY on same handle → NOT_FOUND (caller pointer is NULL) */
+    it_iris_msg_zero(&reply);
+    long r2 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+
+    it_close(&reply_h);
+    it_close(&tid_h);
+    it_close(&g_t021_ep_h);
+
+    if (r1 == 0 && g_t021_ok && r2 == (long)IRIS_ERR_NOT_FOUND)
+        it_pass("T021");
+    else
+        it_fail("T021", "reply-twice");
+}
+
+/* ── T022: EP_CALL + bulk kbuf round-trip ───────────────────────────────── */
+
+static handle_id_t g_t022_ep_h   = HANDLE_INVALID;
+static volatile int g_t022_done  = 0;
+static          int g_t022_ok    = 0;
+static uint8_t      g_t022_stack[8192];
+
+static uint8_t g_t022_srv_recv[4];
+static uint8_t g_t022_srv_reply[4];
+
+static void t022_server(void) {
+    struct IrisMsg rmsg;
+    it_iris_msg_zero(&rmsg);
+    rmsg.buf_uptr = (uint64_t)(uintptr_t)g_t022_srv_recv;
+    long r = it_sys2(SYS_EP_RECV, (long)g_t022_ep_h, (long)&rmsg);
+    if (r < 0 || rmsg.buf_len != 4u ||
+            rmsg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+        g_t022_done = 1;
+        it_sys1(SYS_THREAD_EXIT, 0);
+        for (;;) {}
+    }
+
+    int recv_ok = (g_t022_srv_recv[0] == 0x10 && g_t022_srv_recv[1] == 0x20 &&
+                   g_t022_srv_recv[2] == 0x30 && g_t022_srv_recv[3] == 0x40);
+
+    g_t022_srv_reply[0] = (uint8_t)(g_t022_srv_recv[0] + 1u);
+    g_t022_srv_reply[1] = (uint8_t)(g_t022_srv_recv[1] + 1u);
+    g_t022_srv_reply[2] = (uint8_t)(g_t022_srv_recv[2] + 1u);
+    g_t022_srv_reply[3] = (uint8_t)(g_t022_srv_recv[3] + 1u);
+
+    handle_id_t reply_h = (handle_id_t)rmsg.attached_handle;
+    struct IrisMsg repl;
+    it_iris_msg_zero(&repl);
+    repl.label   = 0xB01FULL;
+    repl.buf_uptr = (uint64_t)(uintptr_t)g_t022_srv_reply;
+    repl.buf_len  = 4u;
+    long rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&repl);
+    it_sys1(SYS_HANDLE_CLOSE, (long)reply_h);
+
+    g_t022_ok   = (recv_ok && rr == 0);
+    g_t022_done = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+
+static void test_t022(void) {
+    g_t022_done = 0;
+    g_t022_ok   = 0;
+
+    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep_raw < 0) { it_fail("T022", "ep create"); return; }
+    g_t022_ep_h = (handle_id_t)ep_raw;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t022_server;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t022_stack + sizeof(g_t022_stack))) & ~0xFULL;
+    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    if (tid < 0) {
+        it_close(&g_t022_ep_h);
+        it_fail("T022", "thread create"); return;
+    }
+    handle_id_t tid_h = (handle_id_t)tid;
+
+    uint8_t client_buf[4];
+    client_buf[0] = 0x10; client_buf[1] = 0x20;
+    client_buf[2] = 0x30; client_buf[3] = 0x40;
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = 0xCA11ULL;
+    msg.buf_uptr = (uint64_t)(uintptr_t)client_buf;
+    msg.buf_len  = 4u;
+    long r = it_sys2(SYS_EP_CALL, ep_raw, (long)&msg);
+
+    for (int i = 0; i < 200 && !g_t022_done; i++)
+        it_sys1(SYS_SLEEP, 1);
+
+    it_close(&tid_h);
+    it_close(&g_t022_ep_h);
+
+    int bulk_ok = (client_buf[0] == 0x11 && client_buf[1] == 0x21 &&
+                   client_buf[2] == 0x31 && client_buf[3] == 0x41);
+
+    if (r == 0 && g_t022_ok && bulk_ok)
+        it_pass("T022");
+    else
+        it_fail("T022", "ep_call bulk round-trip");
+}
+
+/* ── T023: EP_SEND on read-only endpoint handle → ACCESS_DENIED ─────────── */
+
+static void test_t023(void) {
+    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep_raw < 0) { it_fail("T023", "ep create"); return; }
+    handle_id_t ep_h = (handle_id_t)ep_raw;
+
+    /* Dup with READ-only (no WRITE right) */
+    long ro_raw = it_sys2(SYS_HANDLE_DUP, ep_raw, (long)RIGHT_READ);
+    if (ro_raw < 0) {
+        it_close(&ep_h);
+        it_fail("T023", "ro dup"); return;
+    }
+    handle_id_t ro_h = (handle_id_t)ro_raw;
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = 0x2323ULL;
+    long r = it_sys2(SYS_EP_SEND, ro_raw, (long)&msg);
+
+    it_close(&ro_h);
+    it_close(&ep_h);
+
+    if (r == (long)IRIS_ERR_ACCESS_DENIED)
+        it_pass("T023");
+    else
+        it_fail("T023", "expected ACCESS_DENIED");
+}
+
 /* ── T017: FUTEX_WAIT timeout ───────────────────────────────────────────── */
 
 static volatile uint32_t g_t017_futex = 99u;
@@ -640,33 +967,612 @@ static void test_t017(void) {
         it_fail("T017", "expected TIMED_OUT");
 }
 
+/* ── T024: SYS_REPLY transfers an attached cap to the EP_CALL caller ────── */
+
+static handle_id_t g_t024_ep_h   = HANDLE_INVALID;
+static volatile int g_t024_done  = 0;
+static          int g_t024_ok    = 0;
+static uint32_t     g_t024_got_h = 0;
+static uint8_t      g_t024_stack[8192];
+
+static void t024_client(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = 0x2424ULL;
+    long r = it_sys2(SYS_EP_CALL, (long)g_t024_ep_h, (long)&msg);
+    g_t024_ok    = (r == 0 && msg.label == IRIS_EP_REPLY_OK);
+    g_t024_got_h = msg.attached_handle;
+    g_t024_done  = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+
+static void test_t024(void) {
+    g_t024_done = 0; g_t024_ok = 0; g_t024_got_h = 0;
+
+    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep_raw < 0) { it_fail("T024", "ep create"); return; }
+    g_t024_ep_h = (handle_id_t)ep_raw;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t024_client;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t024_stack + sizeof(g_t024_stack))) & ~0xFULL;
+    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    if (tid < 0) {
+        it_close(&g_t024_ep_h);
+        it_fail("T024", "thread create"); return;
+    }
+    handle_id_t tid_h = (handle_id_t)tid;
+
+    /* Main is server: receive the call, reply with an attached notification */
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    long r = it_sys2(SYS_EP_RECV, ep_raw, (long)&msg);
+    if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+        it_close(&tid_h);
+        it_close(&g_t024_ep_h);
+        it_fail("T024", "ep_recv"); return;
+    }
+    handle_id_t reply_h = (handle_id_t)msg.attached_handle;
+
+    long rr = -1;
+    long notif_raw = it_sys0(SYS_NOTIFY_CREATE);
+    if (notif_raw >= 0) {
+        struct IrisMsg reply;
+        it_iris_msg_zero(&reply);
+        reply.label           = IRIS_EP_REPLY_OK;
+        reply.attached_handle = (uint32_t)notif_raw;
+        reply.attached_rights = RIGHT_WRITE | RIGHT_WAIT;
+        rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+        if (rr != 0) {
+            /* not consumed on pre-staging error */
+            handle_id_t nh = (handle_id_t)notif_raw;
+            it_close(&nh);
+        }
+    }
+
+    for (int i = 0; i < 200 && !g_t024_done; i++)
+        it_sys1(SYS_SLEEP, 1);
+
+    long ty = -1;
+    if (g_t024_got_h != (uint32_t)IRIS_MSG_NO_CAP)
+        ty = it_sys1(SYS_HANDLE_TYPE, (long)g_t024_got_h);
+
+    handle_id_t got_h = (handle_id_t)g_t024_got_h;
+    it_close(&got_h);
+    it_close(&reply_h);
+    it_close(&tid_h);
+    it_close(&g_t024_ep_h);
+
+    if (rr == 0 && g_t024_ok &&
+        g_t024_got_h != (uint32_t)IRIS_MSG_NO_CAP &&
+        ty == (long)IRIS_HANDLE_TYPE_NOTIFICATION)
+        it_pass("T024");
+    else
+        it_fail("T024", "reply-cap transfer");
+}
+
+/* ── T025: SYS_REPLY with non-transferable cap → ACCESS_DENIED, KReply
+ *          survives the failed attempt and a clean reply still unblocks ──── */
+
+static handle_id_t g_t025_ep_h  = HANDLE_INVALID;
+static volatile int g_t025_done = 0;
+static          int g_t025_ok   = 0;
+static uint8_t      g_t025_stack[8192];
+
+static void t025_client(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = 0x2525ULL;
+    long r = it_sys2(SYS_EP_CALL, (long)g_t025_ep_h, (long)&msg);
+    g_t025_ok   = (r == 0 &&
+                   msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP);
+    g_t025_done = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+
+static void test_t025(void) {
+    g_t025_done = 0; g_t025_ok = 0;
+
+    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep_raw < 0) { it_fail("T025", "ep create"); return; }
+    g_t025_ep_h = (handle_id_t)ep_raw;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t025_client;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t025_stack + sizeof(g_t025_stack))) & ~0xFULL;
+    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    if (tid < 0) {
+        it_close(&g_t025_ep_h);
+        it_fail("T025", "thread create"); return;
+    }
+    handle_id_t tid_h = (handle_id_t)tid;
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    long r = it_sys2(SYS_EP_RECV, ep_raw, (long)&msg);
+    if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+        it_close(&tid_h);
+        it_close(&g_t025_ep_h);
+        it_fail("T025", "ep_recv"); return;
+    }
+    handle_id_t reply_h = (handle_id_t)msg.attached_handle;
+
+    /* Notification dup WITHOUT RIGHT_TRANSFER → staging must fail */
+    handle_id_t notif_h = HANDLE_INVALID;
+    handle_id_t nt_h    = HANDLE_INVALID;
+    long r1 = -1;
+    long notif_raw = it_sys0(SYS_NOTIFY_CREATE);
+    if (notif_raw >= 0) {
+        notif_h = (handle_id_t)notif_raw;
+        long nt_raw = it_sys2(SYS_HANDLE_DUP, notif_raw,
+                              (long)(RIGHT_WRITE | RIGHT_WAIT));
+        if (nt_raw >= 0) {
+            nt_h = (handle_id_t)nt_raw;
+            struct IrisMsg reply;
+            it_iris_msg_zero(&reply);
+            reply.label           = IRIS_EP_REPLY_OK;
+            reply.attached_handle = (uint32_t)nt_h;
+            reply.attached_rights = RIGHT_WRITE | RIGHT_WAIT;
+            r1 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+        }
+    }
+
+    /* Clean reply on the SAME KReply handle must still succeed */
+    struct IrisMsg reply;
+    it_iris_msg_zero(&reply);
+    reply.label = IRIS_EP_REPLY_OK;
+    long r2 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+
+    for (int i = 0; i < 200 && !g_t025_done; i++)
+        it_sys1(SYS_SLEEP, 1);
+
+    it_close(&nt_h);    /* not consumed by the denied staging */
+    it_close(&notif_h);
+    it_close(&reply_h);
+    it_close(&tid_h);
+    it_close(&g_t025_ep_h);
+
+    if (r1 == (long)IRIS_ERR_ACCESS_DENIED && r2 == 0 && g_t025_ok)
+        it_pass("T025");
+    else
+        it_fail("T025", "non-transferable reply cap");
+}
+
+/* ── Fase 7.1: EP-based service path (svcmgr discovery + VFS) ───────────── */
+
+static handle_id_t g_svcmgr_ep_h = HANDLE_INVALID;  /* from bootstrap 0x20 */
+static handle_id_t g_vfs_ep_h    = HANDLE_INVALID;  /* from T026 lookup   */
+static handle_id_t g_kbd_ep_h    = HANDLE_INVALID;  /* from T034 lookup   */
+
+/* EP_CALL buffer reuse: request payload AND reply bulk destination. */
+static uint8_t g_ep_io_buf[VFS_EP_DATA_MAX];
+
+static uint32_t it_stage_path(const char *path) {
+    uint32_t n = 0;
+    while (path[n] && n + 1u < (uint32_t)sizeof(g_ep_io_buf)) {
+        g_ep_io_buf[n] = (uint8_t)path[n];
+        n++;
+    }
+    g_ep_io_buf[n] = 0u;
+    return n + 1u;
+}
+
+/* ── T026: svcmgr EP LOOKUP_NAME("vfs.ep") → endpoint cap ───────────────── */
+
+static void test_t026(void) {
+    if (g_svcmgr_ep_h == HANDLE_INVALID) {
+        it_fail("T026", "svcmgr ep missing"); return;
+    }
+
+    uint32_t len = it_stage_path(VFS_EP_SVC_NAME);
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)g_svcmgr_ep_h, (long)&msg);
+
+    long ty = -1;
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP)
+        ty = it_sys1(SYS_HANDLE_TYPE, (long)msg.attached_handle);
+
+    if (ty == (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+        g_vfs_ep_h = (handle_id_t)msg.attached_handle;
+        it_pass("T026");
+    } else {
+        if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+            handle_id_t h = (handle_id_t)msg.attached_handle;
+            it_close(&h);
+        }
+        it_fail("T026", "vfs.ep lookup");
+    }
+}
+
+/* ── T027: VFS EP ping ──────────────────────────────────────────────────── */
+
+static void test_t027(void) {
+    if (g_vfs_ep_h == HANDLE_INVALID) {
+        it_fail("T027", "vfs ep missing"); return;
+    }
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_EP_OP_PING;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    long r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
+        it_pass("T027");
+    else
+        it_fail("T027", "vfs ping");
+}
+
+/* ── T028: VFS EP READ_AT("iris.txt") content + EOF semantics ───────────── */
+
+static void test_t028(void) {
+    if (g_vfs_ep_h == HANDLE_INVALID) {
+        it_fail("T028", "vfs ep missing"); return;
+    }
+
+    static const char expect[] = "Hello from IrisOS VFS!\n";
+    const uint32_t expect_len = (uint32_t)(sizeof(expect) - 1u);
+
+    uint32_t len = it_stage_path("iris.txt");
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label      = VFS_EP_OP_READ_AT;
+    msg.words[0]   = 0;                 /* offset */
+    msg.words[1]   = VFS_EP_DATA_MAX;   /* len (server clamps) */
+    msg.word_count = 2;
+    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len    = len;
+    long r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+
+    int ok = (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+              msg.words[1] == (uint64_t)expect_len &&
+              msg.words[2] == (uint64_t)expect_len &&
+              msg.buf_len == expect_len);
+    if (ok) {
+        for (uint32_t i = 0; i < expect_len; i++) {
+            if (g_ep_io_buf[i] != (uint8_t)expect[i]) { ok = 0; break; }
+        }
+    }
+
+    /* offset == size → EOF (bytes 0), not an error */
+    int eof_ok = 0;
+    if (ok) {
+        len = it_stage_path("iris.txt");
+        it_iris_msg_zero(&msg);
+        msg.label      = VFS_EP_OP_READ_AT;
+        msg.words[0]   = expect_len;
+        msg.words[1]   = VFS_EP_DATA_MAX;
+        msg.word_count = 2;
+        msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
+        msg.buf_len    = len;
+        r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+        eof_ok = (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+                  msg.words[1] == 0 &&
+                  msg.words[2] == (uint64_t)expect_len);
+    }
+
+    if (ok && eof_ok)
+        it_pass("T028");
+    else
+        it_fail("T028", "read_at iris.txt");
+}
+
+/* ── T029: VFS EP unknown opcode → NOT_SUPPORTED; LIST oob → NOT_FOUND ──── */
+
+static void test_t029(void) {
+    if (g_vfs_ep_h == HANDLE_INVALID) {
+        it_fail("T029", "vfs ep missing"); return;
+    }
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = UINT64_C(0x0EEE);  /* not a VFS opcode */
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    long r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+    int unk_ok = (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+                  msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_SUPPORTED);
+
+    it_iris_msg_zero(&msg);
+    msg.label      = VFS_EP_OP_LIST;
+    msg.words[0]   = 999;
+    msg.word_count = 1;
+    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
+    r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+    int oob_ok = (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+                  msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND);
+
+    if (unk_ok && oob_ok)
+        it_pass("T029");
+    else
+        it_fail("T029", "vfs ep error codes");
+}
+
+/* ── T030: VFS EP malformed READ_AT paths → INVALID_ARG ─────────────────── */
+
+static int t030_expect_inval(struct IrisMsg *msg) {
+    long r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)msg);
+    return (r == 0 && msg->label == IRIS_EP_REPLY_ERR &&
+            msg->words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG);
+}
+
+static void test_t030(void) {
+    if (g_vfs_ep_h == HANDLE_INVALID) {
+        it_fail("T030", "vfs ep missing"); return;
+    }
+
+    struct IrisMsg msg;
+    int ok = 1;
+
+    /* (a) READ_AT with no path payload */
+    it_iris_msg_zero(&msg);
+    msg.label      = VFS_EP_OP_READ_AT;
+    msg.words[0]   = 0;
+    msg.words[1]   = 16;
+    msg.word_count = 2;
+    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len    = 0;
+    if (!t030_expect_inval(&msg)) ok = 0;
+
+    /* (b) path not NUL-terminated (drop the NUL from buf_len) */
+    uint32_t len = it_stage_path("iris.txt");
+    it_iris_msg_zero(&msg);
+    msg.label      = VFS_EP_OP_READ_AT;
+    msg.words[0]   = 0;
+    msg.words[1]   = 16;
+    msg.word_count = 2;
+    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len    = len - 1u;
+    if (!t030_expect_inval(&msg)) ok = 0;
+
+    /* (c) oversized path (buf_len > VFS_EP_PATH_MAX) */
+    for (uint32_t i = 0; i < VFS_EP_PATH_MAX; i++) g_ep_io_buf[i] = (uint8_t)'a';
+    g_ep_io_buf[VFS_EP_PATH_MAX] = 0u;
+    it_iris_msg_zero(&msg);
+    msg.label      = VFS_EP_OP_READ_AT;
+    msg.words[0]   = 0;
+    msg.words[1]   = 16;
+    msg.word_count = 2;
+    msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len    = VFS_EP_PATH_MAX + 1u;
+    if (!t030_expect_inval(&msg)) ok = 0;
+
+    if (ok)
+        it_pass("T030");
+    else
+        it_fail("T030", "malformed read_at");
+}
+
+/* ── T031: reserved ".ep" names cannot be spoofed via EP lookup ─────────── */
+
+/*
+ * "spoof.ep" matches neither svcmgr's own endpoint, a catalog service with
+ * own_service_ep, nor a dynamic registration (svcmgr rejects ".ep" names at
+ * register time — covered on the register side by init S4). The lookup must
+ * return NOT_FOUND with no capability attached: a resolvable ".ep" name here
+ * would mean a fabricated/spoofed endpoint.
+ */
+static void test_t031(void) {
+    if (g_svcmgr_ep_h == HANDLE_INVALID) {
+        it_fail("T031", "svcmgr ep missing"); return;
+    }
+
+    uint32_t len = it_stage_path("spoof.ep");
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)g_svcmgr_ep_h, (long)&msg);
+
+    if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+        msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND &&
+        msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+        it_pass("T031");
+    } else {
+        if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+            handle_id_t h = (handle_id_t)msg.attached_handle;
+            it_close(&h);
+        }
+        it_fail("T031", "spoof.ep lookup must NOT resolve");
+    }
+}
+
+/* ── T032: legacy "vfs" KChannel name must no longer resolve (Fase 7.5) ─── */
+
+/*
+ * vfs is endpoint_only: svcmgr never creates the legacy service/reply
+ * KChannel pair, so a lookup of the bare "vfs" name must return NOT_FOUND
+ * with no capability attached. A resolvable "vfs" here would mean a stale
+ * legacy KChannel route back into the stateful protocol.
+ */
+static void test_t032(void) {
+    if (g_svcmgr_ep_h == HANDLE_INVALID) {
+        it_fail("T032", "svcmgr ep missing"); return;
+    }
+
+    uint32_t len = it_stage_path("vfs");
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)g_svcmgr_ep_h, (long)&msg);
+
+    if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+        msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND &&
+        msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+        it_pass("T032");
+    } else {
+        if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+            handle_id_t h = (handle_id_t)msg.attached_handle;
+            it_close(&h);
+        }
+        it_fail("T032", "legacy vfs name must NOT resolve");
+    }
+}
+
+/* ── T033: VFS EP STATUS (Fase 7.5) ─────────────────────────────────────── */
+
+static void test_t033(void) {
+    if (g_vfs_ep_h == HANDLE_INVALID) {
+        it_fail("T033", "vfs ep missing"); return;
+    }
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = VFS_EP_OP_STATUS;
+    long r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+
+    if (r != 0 || msg.label != IRIS_EP_REPLY_OK ||
+        msg.words[1] < (uint64_t)VFS_BOOT_EXPORT_COUNT) {
+        it_fail("T033", "vfs ep status");
+        return;
+    }
+
+    /* STATUS with a bulk payload is malformed → INVALID_ARG */
+    uint32_t len = it_stage_path("junk");
+    it_iris_msg_zero(&msg);
+    msg.label    = VFS_EP_OP_STATUS;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    r = it_sys2(SYS_EP_CALL, (long)g_vfs_ep_h, (long)&msg);
+
+    if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+        msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)
+        it_pass("T033");
+    else
+        it_fail("T033", "status payload must be rejected");
+}
+
+/* ── T034: svcmgr EP LOOKUP_NAME("kbd.ep") → endpoint cap + PING (7.4) ─── */
+
+static void test_t034(void) {
+    if (g_svcmgr_ep_h == HANDLE_INVALID) {
+        it_fail("T034", "svcmgr ep missing"); return;
+    }
+
+    uint32_t len = it_stage_path(KBD_EP_SVC_NAME);
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)g_svcmgr_ep_h, (long)&msg);
+
+    long ty = -1;
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP)
+        ty = it_sys1(SYS_HANDLE_TYPE, (long)msg.attached_handle);
+
+    if (ty != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+        if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+            handle_id_t h = (handle_id_t)msg.attached_handle;
+            it_close(&h);
+        }
+        it_fail("T034", "kbd.ep lookup");
+        return;
+    }
+    g_kbd_ep_h = (handle_id_t)msg.attached_handle;
+
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_EP_OP_PING;
+    r = it_sys2(SYS_EP_CALL, (long)g_kbd_ep_h, (long)&msg);
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
+        it_pass("T034");
+    else
+        it_fail("T034", "kbd ping");
+}
+
+/* ── T035: kbd EP semantics — empty POLL, malformed requests (7.4) ────── */
+
+static int t035_expect_err(struct IrisMsg *msg, uint32_t want) {
+    return msg->label == IRIS_EP_REPLY_ERR &&
+           (uint32_t)msg->words[0] == want;
+}
+
+static void test_t035(void) {
+    if (g_kbd_ep_h == HANDLE_INVALID) {
+        it_fail("T035", "kbd ep missing"); return;
+    }
+
+    struct IrisMsg msg;
+    int ok = 1;
+
+    /* POLL on an idle keyboard (headless: no keys) → WOULD_BLOCK, clean */
+    it_iris_msg_zero(&msg);
+    msg.label = KBD_EP_OP_POLL;
+    if (it_sys2(SYS_EP_CALL, (long)g_kbd_ep_h, (long)&msg) != 0 ||
+        !t035_expect_err(&msg, KBD_EP_E_WOULD_BLOCK)) ok = 0;
+
+    /* unknown opcode → NOT_SUPPORTED */
+    it_iris_msg_zero(&msg);
+    msg.label = 0x7777;
+    if (it_sys2(SYS_EP_CALL, (long)g_kbd_ep_h, (long)&msg) != 0 ||
+        !t035_expect_err(&msg, KBD_EP_E_NOT_SUPPORTED)) ok = 0;
+
+    /* bulk payload on POLL → INVALID_ARG */
+    uint32_t len = it_stage_path("junk");
+    it_iris_msg_zero(&msg);
+    msg.label    = KBD_EP_OP_POLL;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    if (it_sys2(SYS_EP_CALL, (long)g_kbd_ep_h, (long)&msg) != 0 ||
+        !t035_expect_err(&msg, KBD_EP_E_INVALID_ARG)) ok = 0;
+
+    if (ok)
+        it_pass("T035");
+    else
+        it_fail("T035", "kbd ep semantics");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
-static handle_id_t it_recv_spawn_cap(handle_id_t boot_ch) {
+/*
+ * Receives both bootstrap caps from init: SPAWN_CAP (serial/test loading) and
+ * SVCMGR_EP (kind 0x20, EP-based discovery for T026+).  Timeout-bounded so a
+ * missing message degrades to HANDLE_INVALID — the EP tests then FAIL loudly
+ * instead of hanging boot or being silently skipped.
+ */
+static handle_id_t it_recv_bootstrap(handle_id_t boot_ch) {
     struct KChanMsg msg;
+    handle_id_t spawn_cap_h = HANDLE_INVALID;
     for (uint32_t attempt = 0; attempt < 8u; attempt++) {
+        if (spawn_cap_h != HANDLE_INVALID && g_svcmgr_ep_h != HANDLE_INVALID)
+            break;
         it_chan_msg_zero(&msg);
-        if (it_sys2(SYS_CHAN_RECV, (long)boot_ch, (long)&msg) < 0)
-            return HANDLE_INVALID;
-        if (msg.type == SVCMGR_MSG_BOOTSTRAP_HANDLE &&
-            msg.data_len >= SVCMGR_BOOTSTRAP_MSG_LEN &&
-            msg.attached_handle != HANDLE_INVALID) {
-            uint32_t kind = svcmgr_proto_read_u32(
-                &msg.data[SVCMGR_BOOTSTRAP_OFF_KIND]);
-            if (kind == SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP)
-                return (handle_id_t)msg.attached_handle;
+        if (it_sys3(SYS_CHAN_RECV_TIMEOUT, (long)boot_ch, (long)&msg,
+                    500000000L) < 0)
+            break;
+        if (msg.type != SVCMGR_MSG_BOOTSTRAP_HANDLE ||
+            msg.data_len < SVCMGR_BOOTSTRAP_MSG_LEN ||
+            msg.attached_handle == HANDLE_INVALID)
+            continue;
+        uint32_t kind = svcmgr_proto_read_u32(
+            &msg.data[SVCMGR_BOOTSTRAP_OFF_KIND]);
+        if (kind == SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP &&
+            spawn_cap_h == HANDLE_INVALID) {
+            spawn_cap_h = (handle_id_t)msg.attached_handle;
+        } else if (kind == SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP &&
+                   g_svcmgr_ep_h == HANDLE_INVALID) {
+            g_svcmgr_ep_h = (handle_id_t)msg.attached_handle;
+        } else {
             handle_id_t discard = (handle_id_t)msg.attached_handle;
             it_close(&discard);
         }
     }
-    return HANDLE_INVALID;
+    return spawn_cap_h;
 }
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
-    /* Receive spawn_cap from init */
-    handle_id_t spawn_cap_h = it_recv_spawn_cap(bootstrap_ch_h);
+    /* Receive spawn_cap + svcmgr discovery endpoint from init */
+    handle_id_t spawn_cap_h = it_recv_bootstrap(bootstrap_ch_h);
     it_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_ch_h);
 
     /* Open COM1 serial port for test output */
@@ -696,6 +1602,27 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t015();
     test_t016();
     test_t017();
+    test_t018();
+    test_t019();
+    test_t020();
+    test_t021();
+    test_t022();
+    test_t023();
+    test_t024();
+    test_t025();
+    test_t026();
+    test_t027();
+    test_t028();
+    test_t029();
+    test_t030();
+    test_t031();
+    test_t032();
+    test_t033();
+    test_t034();
+    test_t035();
+
+    it_close(&g_vfs_ep_h);
+    it_close(&g_svcmgr_ep_h);
 
     /* Final summary marker */
     if (g_pass == g_total) {

@@ -240,6 +240,16 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     }
     proc->user_cr3 = paging_make_user_cr3(proc->cr3, proc->pcid);
 
+    /* Fase 6.3: every child process needs a KVSpace so that sys_vmo_map_into
+     * can install KFrame-backed PTEs into it.  kvspace_alloc returns refcount=1;
+     * kprocess_reap_address_space calls kvspace_invalidate + kobject_release. */
+    struct KVSpace *vs = kvspace_alloc(proc->cr3);
+    if (!vs) {
+        kprocess_free(proc);
+        return syscall_err(IRIS_ERR_NO_MEMORY);
+    }
+    proc->vspace = vs;
+
     handle_id_t h = handle_table_insert(&t->process->handle_table, &proc->base,
                                         RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |
                                         RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_ROUTE);
