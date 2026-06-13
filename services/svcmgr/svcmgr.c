@@ -139,8 +139,12 @@ static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1
     return svcmgr_syscall3(num, arg0, arg1, 0);
 }
 
+/* Fase 13: svcmgr logs over console.ep (CONSOLE_EP_OP_WRITE), not the legacy
+ * KChannel console writer.  Synchronous per-write flush; if console.ep is not
+ * yet wired the line is dropped (same as the old early-boot behaviour). */
+static uint8_t g_svcmgr_log_buf[IRIS_IPC_BUF_SIZE];
 static void svcmgr_log(const char *msg) {
-    console_write(g_svcmgr_state.console_h, msg);
+    (void)console_ep_write(g_svcmgr_state.console_ep_h, g_svcmgr_log_buf, msg);
 }
 
 static void svcmgr_log_u32(uint32_t value) {
