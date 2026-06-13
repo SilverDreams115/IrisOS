@@ -631,12 +631,10 @@ fail:
 
 /* ── svcmgr spawn (Phase 29: ring-3 loader; Phase 30: also sends console) ── */
 
-static handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h,
-                                     handle_id_t console_h) {
+static handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     handle_id_t svcmgr_proc_h  = HANDLE_INVALID;
     handle_id_t svcmgr_chan_h  = HANDLE_INVALID;
     handle_id_t dup_cap_h      = HANDLE_INVALID;
-    handle_id_t con_dup_h      = HANDLE_INVALID;
     struct KChanMsg msg;
     long r;
 
@@ -657,26 +655,9 @@ static handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h,
     }
     if (r < 0) goto fail;
 
-    /* Send CONSOLE_CAP first so svcmgr can log as soon as it receives SPAWN_CAP. */
-    if (console_h != HANDLE_INVALID) {
-        r = init_sys2(SYS_HANDLE_DUP, (long)console_h,
-                      (long)(RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER));
-        if (r < 0) goto fail;
-        con_dup_h = (handle_id_t)r;
-
-        init_msg_zero(&msg);
-        msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-        svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                               SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP);
-        msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
-        msg.attached_handle = con_dup_h;
-        msg.attached_rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-
-        r = init_sys2(SYS_CHAN_SEND, (long)svcmgr_chan_h, (long)&msg);
-        if (r < 0) goto fail;
-        con_dup_h = HANDLE_INVALID;
-    }
-
+    /* Fase 13 (Track I): the legacy CONSOLE_CAP send is retired — svcmgr now
+     * drains the klog and logs over console.ep (IRIS_CPTR_CONSOLE_EP), so it no
+     * longer needs the legacy console KChannel write-end. */
 
     r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
                   (long)(RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER));
@@ -702,7 +683,6 @@ fail:
     init_close(&svcmgr_proc_h);
     init_close(&svcmgr_chan_h);
     if (dup_cap_h != HANDLE_INVALID) init_close(&dup_cap_h);
-    if (con_dup_h != HANDLE_INVALID) init_close(&con_dup_h);
     return HANDLE_INVALID;
 }
 
@@ -1160,7 +1140,7 @@ void init_main(handle_id_t bootstrap_ch_h) {
 
     init_log("[USER] init bootstrap start\n");
 
-    sm_h = init_spawn_svcmgr(bootstrap_h, g_init_console_h);
+    sm_h = init_spawn_svcmgr(bootstrap_h);
     if (sm_h == HANDLE_INVALID) {
         init_log("[USER] svcmgr spawn FAILED\n");
         init_exit(1);

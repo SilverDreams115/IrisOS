@@ -61,7 +61,6 @@ struct svcmgr_dynamic_service {
 struct svcmgr_state {
     handle_id_t bootstrap_h;
     handle_id_t spawn_cap_h;
-    handle_id_t console_h;                                    /* write end of console channel */
     handle_id_t console_ep_h;  /* console KEndpoint send side (Fase 7.3):
                                 * delivered by init at bootstrap (kind 0x22),
                                 * published as "console.ep". */
@@ -162,12 +161,11 @@ static void svcmgr_close_handle_if_valid(handle_id_t *h) {
 
 /*
  * Receive bootstrap messages from the bootstrap channel.
- * init sends two messages before svcmgr starts:
- *   1. SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP — write end of the console channel
- *   2. SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP   — hardware/spawn authority cap
+ * init sends one message before svcmgr starts:
+ *   SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP — hardware/spawn authority cap.
+ * (Fase 13/Track I: KIND_CONSOLE_CAP retired — svcmgr logs over console.ep.)
  *
- * Returns 1 once SPAWN_CAP has been received (CONSOLE_CAP is optional;
- * if missing, console_h stays HANDLE_INVALID and svcmgr_log is silent).
+ * Returns 1 once SPAWN_CAP has been received.
  */
 static int svcmgr_recv_bootstrap_caps(struct svcmgr_state *state) {
     uint32_t recv_count = 0;
@@ -194,13 +192,10 @@ static int svcmgr_recv_bootstrap_caps(struct svcmgr_state *state) {
         }
 
         kind = svcmgr_proto_read_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND]);
-        if (kind == SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP) {
-            state->console_h = msg.attached_handle;
-            continue; /* keep reading — SPAWN_CAP comes next */
-        }
-        /* Fase 8: kind 0x22 (CONSOLE_EP) retired — init now mints the
-         * console endpoint into our root CNode at IRIS_CPTR_CONSOLE_EP;
-         * svcmgr_main_c materializes it via SYS_CSPACE_RESOLVE. */
+        /* Fase 13 (Track I): KIND_CONSOLE_CAP retired — svcmgr logs and drains
+         * the klog over console.ep (IRIS_CPTR_CONSOLE_EP), never the legacy
+         * console KChannel.  Fase 8: kind 0x22 (CONSOLE_EP) also retired —
+         * the console endpoint is the IRIS_CPTR_CONSOLE_EP CSpace mint. */
         if (kind == SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP &&
             rights_check(msg.attached_rights, RIGHT_READ)) {
             state->spawn_cap_h = msg.attached_handle;
@@ -1292,7 +1287,6 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
 
     state->bootstrap_h = bootstrap_h;
     state->spawn_cap_h = HANDLE_INVALID;
-    state->console_h   = HANDLE_INVALID;
     state->console_ep_h = HANDLE_INVALID;
     state->ep_h        = HANDLE_INVALID;
     state->death_notif_h = HANDLE_INVALID;
@@ -1320,15 +1314,29 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         return;
     }
 
-    /* Drain kernel boot log to console now that console_h is available. */
+    /* Fase 8: materialize the console endpoint from the well-known slot
+     * (init minted IRIS_CPTR_CONSOLE_EP with DUPLICATE|TRANSFER so svcmgr
+     * can keep publishing "console.ep" and minting it into children).
+     * Resolved BEFORE the klog drain so the drain itself goes over console.ep. */
+    if (state->console_ep_h == HANDLE_INVALID) {
+        int64_t ch = svcmgr_syscall1(SYS_CSPACE_RESOLVE, IRIS_CPTR_CONSOLE_EP);
+        state->console_ep_h = (ch >= 0) ? (handle_id_t)ch : HANDLE_INVALID;
+    }
+
+    /* Drain kernel boot log to console over console.ep (Fase 13/Track I).
+     * console_ep_write is a synchronous per-chunk flush barrier — every byte is
+     * on the UART before EP_CALL returns — so no early kernel marker (e.g.
+     * "boot vspace CSpace grants OK") can be dropped in an async send window.
+     * Replaces the legacy console_h KChannel writer (no SYS_CHAN). */
     {
         static uint8_t klog_drain_buf[4097]; /* KLOG_BUF_SIZE + 1 for NUL */
         int64_t n = svcmgr_syscall2(SYS_KLOG_DRAIN,
                                     (uint64_t)(uintptr_t)klog_drain_buf,
                                     4096u);
-        if (n > 0) {
+        if (n > 0 && state->console_ep_h != HANDLE_INVALID) {
             klog_drain_buf[n] = 0u;
-            console_write(state->console_h, (const char *)klog_drain_buf);
+            (void)console_ep_write(state->console_ep_h, g_svcmgr_log_buf,
+                                   (const char *)klog_drain_buf);
         }
     }
 
@@ -1338,15 +1346,6 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     {
         int64_t ep_r = svcmgr_syscall0(SYS_ENDPOINT_CREATE);
         state->ep_h = (ep_r >= 0) ? (handle_id_t)ep_r : HANDLE_INVALID;
-    }
-
-    /* Fase 8: materialize the console endpoint from the well-known slot
-     * (init minted IRIS_CPTR_CONSOLE_EP with DUPLICATE|TRANSFER so svcmgr
-     * can keep publishing "console.ep" and minting it into children).
-     * Replaces the retired bootstrap kind 0x22. */
-    if (state->console_ep_h == HANDLE_INVALID) {
-        int64_t ch = svcmgr_syscall1(SYS_CSPACE_RESOLVE, IRIS_CPTR_CONSOLE_EP);
-        state->console_ep_h = (ch >= 0) ? (handle_id_t)ch : HANDLE_INVALID;
     }
 
     /* Fase 8: pre-create ALL service endpoint / IRQ-notification masters
