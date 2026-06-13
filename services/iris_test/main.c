@@ -2353,6 +2353,20 @@ static void test_t069(void) {
         it_fail("T069", "device cap via cptr");
 }
 
+/* ── Fase 13 / Track G: retired SYS_CHAN ABI (T070) ─────────────────────── */
+
+/* T070: the zero-caller channel syscalls retired in Track G — SYS_CHAN_CALL,
+ * SYS_WAIT_ANY, SYS_WAIT_ANY_TIMEOUT — fall through the dispatch to
+ * IRIS_ERR_NOT_SUPPORTED.  Args are irrelevant: the dispatch rejects the
+ * syscall number before touching them.  Locks the reservation. */
+static void test_t070(void) {
+    int ok = 1;
+    if (it_sys3(SYS_CHAN_CALL, 0, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
+    if (it_sys3(SYS_WAIT_ANY, 0, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
+    if (it_sys3(SYS_WAIT_ANY_TIMEOUT, 0, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
+    if (ok) it_pass("T070"); else it_fail("T070", "retired SYS_CHAN ABI");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2479,6 +2493,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t067();
     test_t068();
     test_t069();
+    test_t070();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

@@ -64,12 +64,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_PROCESS_KILL:        return sys_process_kill(arg0, arg1, arg2);
         /* SYS_DIAG_SNAPSHOT(30) — retired, fall to default */
         case SYS_CHAN_SEAL:       return sys_chan_seal(arg0, arg1, arg2);
-        case SYS_CHAN_CALL:            return sys_chan_call(arg0, arg1, arg2);
+        /* SYS_CHAN_CALL(38) — retired Fase 13/Track G (zero callers), fall to default */
         case SYS_CAP_CREATE_IRQCAP:   return sys_cap_create_irqcap(arg0, arg1, arg2);
         case SYS_CAP_CREATE_IOPORT:   return sys_cap_create_ioport(arg0, arg1, arg2);
         /* SYS_INITRD_LOOKUP(41), SYS_SPAWN_ELF(42) — retired, fall to default */
         case SYS_IOPORT_RESTRICT:      return sys_ioport_restrict(arg0, arg1, arg2);
-        case SYS_WAIT_ANY:             return sys_wait_any(arg0, arg1, arg2);
+        /* SYS_WAIT_ANY(44) — retired Fase 13/Track G (zero callers), fall to default */
         case SYS_BOOTCAP_RESTRICT:     return sys_bootcap_restrict(arg0, arg1, arg2);
         case SYS_VMO_SHARE:            return sys_vmo_share(arg0, arg1, arg2);
         case SYS_EXCEPTION_HANDLER:    return sys_exception_handler(arg0, arg1, arg2);
@@ -97,7 +97,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_SCHED_INFO:          return sys_sched_info(arg0, arg1, arg2);
         case SYS_CLOCK_NANOSLEEP:     return sys_clock_nanosleep(arg0, arg1, arg2);
         case SYS_PROCESS_EXIT_CODE:   return sys_process_exit_code(arg0, arg1, arg2);
-        case SYS_WAIT_ANY_TIMEOUT:    return sys_wait_any_timeout(arg0, arg1, arg2, arg3);
+        /* SYS_WAIT_ANY_TIMEOUT(72) — retired Fase 13/Track G (zero callers), fall to default */
         case SYS_ENDPOINT_CREATE:     return sys_endpoint_create(arg0, arg1, arg2);
         case SYS_EP_SEND:             return sys_ep_send(arg0, arg1, arg2);
         case SYS_EP_RECV:             return sys_ep_recv(arg0, arg1, arg2);

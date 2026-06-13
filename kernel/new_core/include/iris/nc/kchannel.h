@@ -104,7 +104,8 @@ iris_error_t     kchannel_try_recv_into_process(struct KChannel *ch, struct KPro
                                                 struct KChanMsg *out);
 uint32_t         kchannel_live_count(void);
 
-/* Multi-channel wait helpers used by SYS_WAIT_ANY */
+/* Multi-channel readiness/waiter helpers (formerly backed SYS_WAIT_ANY,
+ * retired in Fase 13/Track G; still used internally by the channel core). */
 int          kchannel_is_readable            (struct KChannel *ch);
 int          kchannel_is_closed              (struct KChannel *ch);
 iris_error_t kchannel_waiters_add_checked    (struct KChannel *ch, struct task *t);

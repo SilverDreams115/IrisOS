@@ -153,24 +153,11 @@
 /*
  * Synchronous channel call — modern/conforming (iris_error_t).
  *
- * SYS_CHAN_CALL(req_chan, msg_uptr, reply_chan) → 0 or negative iris_error_t
- *   Requires RIGHT_WRITE on req_chan and RIGHT_READ on reply_chan.
- *   Sends the message at *msg_uptr on req_chan, then blocks on reply_chan
- *   until a reply arrives; the reply overwrites *msg_uptr in place.
- *
- *   Limitation: the outbound request may not carry an attached handle
- *   (msg->attached_handle is ignored / forced to HANDLE_INVALID).
- *   The inbound reply may carry an attached handle, which is installed in
- *   the caller's handle table and written to msg->attached_handle on return.
- *
- *   Lifecycle: req_chan and reply_chan are NOT consumed; both handles remain
- *   valid after the call.  The caller is responsible for closing them.
- *
- *   This is a convenience primitive — the equivalent of:
- *     SYS_CHAN_SEND(req_chan, msg) + SYS_CHAN_RECV(reply_chan, msg)
- *   but in a single syscall to minimize round-trips through ring-0.
+ * SYS_CHAN_CALL(38) — retired in Fase 13/Track G (zero callers; the productive
+ * request/reply path is the KEndpoint SYS_EP_CALL).  Permanently reserved:
+ * the dispatch falls through to IRIS_ERR_NOT_SUPPORTED.  Do not reuse 38.
  */
-#define SYS_CHAN_CALL  38  /* (req_chan, msg_uptr, reply_chan) → 0 or negative iris_error_t */
+#define SYS_CHAN_CALL  38  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * Hardware capability creation — modern/conforming (iris_error_t).
@@ -339,18 +326,10 @@
 #define SYS_IOPORT_RESTRICT  43
 
 /*
- * Multi-channel readable wait — modern/conforming (iris_error_t).
- *
- * SYS_WAIT_ANY(handles_uptr, count, out_index_uptr) → 0 or negative iris_error_t
- *   handles_uptr: user pointer to an array of count handle_id_t values (max 64).
- *   count: number of handles to watch (1–64); each must be KOBJ_CHANNEL + RIGHT_READ.
- *   out_index_uptr: user pointer to uint32_t; receives the 0-based index of the
- *                   first channel found to have a pending message.
- *   Blocks until at least one channel has a message; does NOT consume the message.
- *   Caller must follow up with SYS_CHAN_RECV / SYS_CHAN_RECV_NB to read it.
- *   Returns IRIS_ERR_CLOSED if any watched channel is sealed while waiting.
+ * SYS_WAIT_ANY(44) — retired in Fase 13/Track G (zero callers).  Permanently
+ * reserved: the dispatch falls through to IRIS_ERR_NOT_SUPPORTED.  Do not reuse.
  */
-#define SYS_WAIT_ANY  44
+#define SYS_WAIT_ANY  44  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * VMO unmap — modern/conforming (iris_error_t).
@@ -545,15 +524,10 @@
 #define SYS_PROCESS_EXIT_CODE 71
 
 /*
- * Timed multi-channel wait — modern/conforming (iris_error_t).
- *
- * SYS_WAIT_ANY_TIMEOUT(handles_uptr, count, out_index_uptr, timeout_ns) → 0 or iris_error_t
- *   Same semantics as SYS_WAIT_ANY plus a deadline expressed in nanoseconds.
- *   Returns IRIS_ERR_TIMED_OUT (-15) if no channel becomes readable within timeout_ns.
- *   timeout_ns == 0 is equivalent to a non-blocking scan (no sleep).
- *   Uses 4-arg syscall ABI (arg3 = timeout_ns via r10).
+ * SYS_WAIT_ANY_TIMEOUT(72) — retired in Fase 13/Track G (zero callers).
+ * Permanently reserved: the dispatch falls through to IRIS_ERR_NOT_SUPPORTED.
  */
-#define SYS_WAIT_ANY_TIMEOUT 72
+#define SYS_WAIT_ANY_TIMEOUT 72  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * Thread creation — modern/conforming (iris_error_t).

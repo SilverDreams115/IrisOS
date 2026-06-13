@@ -42,7 +42,7 @@
 #include <iris/paging.h>
 
 #define PAGE_SIZE             0x1000ULL
-#define WAIT_ANY_MAX_CHANNELS 64u
+/* WAIT_ANY_MAX_CHANNELS retired with SYS_WAIT_ANY — Fase 13/Track G */
 
 /* ── Shared helper functions ─────────────────────────────────────────
  * All static inline to avoid unused-function warnings when a given
@@ -200,14 +200,13 @@ uint64_t sys_chan_send(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_chan_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_chan_recv_nb(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_chan_seal(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_chan_call(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+/* sys_chan_call retired — Fase 13/Track G */
 uint64_t sys_chan_recv_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_wait_any(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_wait_any_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
+/* sys_wait_any / sys_wait_any_timeout retired — Fase 13/Track G */
 uint64_t sys_futex_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_futex_wake(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
