@@ -83,8 +83,8 @@ static const char sm_str_spawnok[]      = "[SVCMGR] service spawned\n";
 static const char sm_str_spawnfail[]    = "[SVCMGR] WARN: spawn failed\n";
 static const char sm_str_bootok[]       = "[SVCMGR] child bootstrap OK\n";
 static const char sm_str_bootfail[]     = "[SVCMGR] WARN: child bootstrap failed\n";
-static const char sm_str_bootdupfail[]  = "[SVCMGR] WARN: child bootstrap dup failed\n";
-static const char sm_str_bootsendfail[] = "[SVCMGR] WARN: child bootstrap send failed\n";
+/* Fase 13 (Track C): sm_str_bootdupfail/bootsendfail retired with the
+ * KChannel bootstrap senders — bootstrap caps are now pre-start CSpace mints. */
 static const char sm_str_lookupok[]     = "[SVCMGR] lookup reply OK\n";
 static const char sm_str_lookupfail[]   = "[SVCMGR] WARN: lookup failed\n";
 static const char sm_str_lookupsendfail[] = "[SVCMGR] WARN: lookup reply send failed\n";
@@ -451,110 +451,6 @@ static iris_rights_t svcmgr_reduce_lookup_rights(iris_rights_t requested, iris_r
     return requested & allowed;
 }
 
-static int64_t svcmgr_send_bootstrap_endpoint(handle_id_t child_boot_h,
-                                              handle_id_t master_h,
-                                              iris_rights_t child_rights,
-                                              uint32_t endpoint_id) {
-    struct KChanMsg msg;
-    int64_t dup_h;
-
-    if (master_h == HANDLE_INVALID) return (int64_t)IRIS_ERR_INVALID_ARG;
-
-    dup_h = svcmgr_syscall2(SYS_HANDLE_DUP, master_h, child_rights | RIGHT_TRANSFER);
-    if (dup_h < 0) {
-        svcmgr_log(sm_str_bootdupfail);
-        return dup_h;
-    }
-
-    {
-        uint8_t *raw = (uint8_t *)&msg;
-        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
-    }
-    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND], endpoint_id);
-    msg.data_len = SVCMGR_BOOTSTRAP_MSG_LEN;
-    msg.attached_handle = (handle_id_t)dup_h;
-    msg.attached_rights = child_rights;
-
-    if (svcmgr_syscall2(SYS_CHAN_SEND, child_boot_h, (uint64_t)(uintptr_t)&msg) < 0) {
-        handle_id_t tmp = (handle_id_t)dup_h;
-        svcmgr_close_handle_if_valid(&tmp);
-        svcmgr_log(sm_str_bootsendfail);
-        return (int64_t)IRIS_ERR_WOULD_BLOCK;
-    }
-
-    return IRIS_OK;
-}
-
-/* Fase 12: svcmgr_send_console_cap retired with the give_console branch. */
-
-static int64_t svcmgr_send_ioport_cap(handle_id_t child_boot_h, handle_id_t master_h) {
-    struct KChanMsg msg;
-    int64_t dup_h;
-
-    if (master_h == HANDLE_INVALID) return (int64_t)IRIS_ERR_INVALID_ARG;
-
-    /* Duplicate with RIGHT_READ|RIGHT_TRANSFER so the child gets RIGHT_READ only. */
-    dup_h = svcmgr_syscall2(SYS_HANDLE_DUP, master_h, RIGHT_READ | RIGHT_TRANSFER);
-    if (dup_h < 0) {
-        svcmgr_log(sm_str_bootdupfail);
-        return dup_h;
-    }
-
-    {
-        uint8_t *raw = (uint8_t *)&msg;
-        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
-    }
-    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                           SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP);
-    msg.data_len = SVCMGR_BOOTSTRAP_MSG_LEN;
-    msg.attached_handle = (handle_id_t)dup_h;
-    msg.attached_rights = RIGHT_READ;
-
-    if (svcmgr_syscall2(SYS_CHAN_SEND, child_boot_h, (uint64_t)(uintptr_t)&msg) < 0) {
-        handle_id_t tmp = (handle_id_t)dup_h;
-        svcmgr_close_handle_if_valid(&tmp);
-        svcmgr_log(sm_str_bootsendfail);
-        return (int64_t)IRIS_ERR_WOULD_BLOCK;
-    }
-
-    return IRIS_OK;
-}
-
-static int64_t svcmgr_send_irqcap(handle_id_t child_boot_h, handle_id_t master_h) {
-    struct KChanMsg msg;
-    int64_t dup_h;
-
-    if (master_h == HANDLE_INVALID) return (int64_t)IRIS_ERR_INVALID_ARG;
-
-    /* Dup with RIGHT_ROUTE|RIGHT_TRANSFER; child receives RIGHT_ROUTE only. */
-    dup_h = svcmgr_syscall2(SYS_HANDLE_DUP, master_h, RIGHT_ROUTE | RIGHT_TRANSFER);
-    if (dup_h < 0) {
-        svcmgr_log(sm_str_bootdupfail);
-        return dup_h;
-    }
-
-    {
-        uint8_t *raw = (uint8_t *)&msg;
-        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
-    }
-    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                           SVCMGR_BOOTSTRAP_KIND_IRQ_CAP);
-    msg.data_len = SVCMGR_BOOTSTRAP_MSG_LEN;
-    msg.attached_handle = (handle_id_t)dup_h;
-    msg.attached_rights = RIGHT_ROUTE;
-
-    if (svcmgr_syscall2(SYS_CHAN_SEND, child_boot_h, (uint64_t)(uintptr_t)&msg) < 0) {
-        handle_id_t tmp = (handle_id_t)dup_h;
-        svcmgr_close_handle_if_valid(&tmp);
-        svcmgr_log(sm_str_bootsendfail);
-        return (int64_t)IRIS_ERR_WOULD_BLOCK;
-    }
-
-    return IRIS_OK;
-}
 
 /* Fase 13 (Track C): svcmgr_send_spawn_cap retired — the initrd spawn cap is
  * now delivered as the IRIS_CPTR_SPAWN_CAP pre-start mint. */
@@ -847,69 +743,14 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
                                       const struct iris_service_catalog_entry *manifest,
                                       handle_id_t child_boot_h) {
     struct svcmgr_service_state *svc = svcmgr_service_state(state, manifest->service_id);
-    int64_t r;
 
     if (!svc) return IRIS_ERR_INVALID_ARG;
 
-    /* Fase 12: the give_console bootstrap branch is retired — every catalog
-     * service has give_console=0 (children log via the console endpoint, not a
-     * forwarded KChannel console writer).  See svcmgr_send_console_cap removal. */
-
-    /* endpoint_only services (Fase 7.5: vfs) have no legacy channel pair. */
-    if (!manifest->endpoint_only) {
-        r = svcmgr_send_bootstrap_endpoint(child_boot_h, svc->public_h,
-                                           manifest->child_service_rights,
-                                           manifest->service_endpoint);
-        if (r != IRIS_OK) return r;
-
-        r = svcmgr_send_bootstrap_endpoint(child_boot_h, svc->reply_h,
-                                           manifest->child_reply_rights,
-                                           manifest->reply_endpoint);
-        if (r != IRIS_OK) return r;
-    }
-
-    /* Fase 8: kinds 0x21 (SERVICE_EP) and 0x23 (IRQ_NOTIFY) retired — the
-     * service's own endpoint recv side and the IRQ KNotification WAIT side
-     * now reach the child as CSpace mints (IRIS_CPTR_OWN_EP /
-     * IRIS_CPTR_IRQ_NOTIFY, see svcmgr_mint_core_slots). */
-
-    /* Forward I/O port capability if this service requires hardware I/O. */
-    if (manifest->ioport_count > 0u) {
-        handle_id_t ioport_master_h =
-            (manifest->service_id < SVCMGR_IOPORT_CAPS_TABLE_SIZE)
-            ? state->ioport_caps[manifest->service_id]
-            : HANDLE_INVALID;
-        if (ioport_master_h != HANDLE_INVALID) {
-            r = svcmgr_send_ioport_cap(child_boot_h, ioport_master_h);
-            if (r != IRIS_OK) {
-                svcmgr_close_handle_if_valid(&child_boot_h);
-                return r;
-            }
-        }
-    }
-
-    /* Forward IRQ capability so service can call SYS_IRQ_ACK (deferred ACK). */
-    if (manifest->give_irqcap && manifest->irq_num != 0xFFu) {
-        handle_id_t irqcap_master_h =
-            (manifest->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE)
-            ? state->irq_caps[manifest->irq_num]
-            : HANDLE_INVALID;
-        if (irqcap_master_h != HANDLE_INVALID) {
-            r = svcmgr_send_irqcap(child_boot_h, irqcap_master_h);
-            if (r != IRIS_OK) {
-                svcmgr_close_handle_if_valid(&child_boot_h);
-                return r;
-            }
-        }
-    }
-
-    /* Fase 13 (Track C): the initrd spawn cap (KIND_INITRD_CAP) is retired
-     * from the bootstrap KChannel — it now arrives as the IRIS_CPTR_SPAWN_CAP
-     * pre-start mint (svcmgr_build_core_mints). */
-
-    /* Fase 8: kind 0x20 (SVCMGR_EP) retired — every catalog child gets the
-     * discovery endpoint as a CSpace mint at IRIS_CPTR_SVCMGR_EP. */
-
+    /* Fase 13 (Track C): every bootstrap cap is now a pre-start CSpace mint
+     * (svcmgr_build_core_mints) — the well-known endpoints (Fase 8), the vfs
+     * spawn cap (C1) and the kbd service/reply KChannels + KIoPort/KIrqCap (C2).
+     * Nothing is sent over the bootstrap KChannel anymore; svcmgr just drops its
+     * end.  The channel itself is retired in a later increment (Track C3). */
     svcmgr_close_handle_if_valid(&child_boot_h);
     return IRIS_OK;
 }
@@ -922,7 +763,7 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
  * is consumed by svc_load_minted, which mints BEFORE the child's first
  * thread starts — no bootstrap-message barrier is needed.
  */
-#define SVCMGR_CORE_MINT_MAX 7u
+#define SVCMGR_CORE_MINT_MAX 10u
 static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
                                         const struct iris_service_catalog_entry *manifest,
                                         struct svc_mint *mints) {
@@ -983,6 +824,44 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         mints[n].slot = IRIS_CPTR_SPAWN_CAP;
         mints[n].src_h = state->spawn_cap_h;
         mints[n].rights = RIGHT_READ;
+        mints[n].badge = 0;
+        n++;
+    }
+    /* Fase 13 (Track C): the legacy handle-boundary caps for a non-endpoint_only
+     * service (kbd) — its service/reply KChannel pair and KIoPort/KIrqCap device
+     * caps — arrive as pre-start mints instead of post-spawn KChannel sends.
+     * Rights mirror the retired svcmgr_send_* helpers; all unbadged. */
+    if (!manifest->endpoint_only && svc) {
+        if (svc->public_h != HANDLE_INVALID) {
+            mints[n].slot = IRIS_CPTR_SVC_CHAN;
+            mints[n].src_h = svc->public_h;
+            mints[n].rights = manifest->child_service_rights;
+            mints[n].badge = 0;
+            n++;
+        }
+        if (svc->reply_h != HANDLE_INVALID) {
+            mints[n].slot = IRIS_CPTR_SVC_REPLY;
+            mints[n].src_h = svc->reply_h;
+            mints[n].rights = manifest->child_reply_rights;
+            mints[n].badge = 0;
+            n++;
+        }
+    }
+    if (manifest->ioport_count > 0u &&
+        manifest->service_id < SVCMGR_IOPORT_CAPS_TABLE_SIZE &&
+        state->ioport_caps[manifest->service_id] != HANDLE_INVALID) {
+        mints[n].slot = IRIS_CPTR_IOPORT;
+        mints[n].src_h = state->ioport_caps[manifest->service_id];
+        mints[n].rights = RIGHT_READ;
+        mints[n].badge = 0;
+        n++;
+    }
+    if (manifest->give_irqcap && manifest->irq_num != 0xFFu &&
+        manifest->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE &&
+        state->irq_caps[manifest->irq_num] != HANDLE_INVALID) {
+        mints[n].slot = IRIS_CPTR_IRQ_CAP;
+        mints[n].src_h = state->irq_caps[manifest->irq_num];
+        mints[n].rights = RIGHT_ROUTE;
         mints[n].badge = 0;
         n++;
     }

@@ -2,13 +2,15 @@
  * main.S — keyboard service, ring 3 (standalone ELF binary).
  *
  * Entry contract (ELF process bootstrap):
- *   RBX = private bootstrap channel handle from svcmgr
+ *   RBX = private bootstrap channel handle from svcmgr (closed at startup,
+ *         unused — Fase 13/Track C delivers every cap as a pre-start CSpace
+ *         slot, see endpoint_proto.h IRIS_CPTR_*).
  *
  * Startup sequence:
- *   1. receive public service/IRQ handle ("kbd") over bootstrap IPC
- *   2. receive reply channel handle ("kbd.reply") over bootstrap IPC
- *   3. close bootstrap channel
- *   4. enter recv loop on the bootstrapped service handle
+ *   1. close the (unused) bootstrap channel
+ *   2. resolve service/reply KChannel slots (8/9) to handles
+ *   3. adopt KIoPort/KIrqCap CPtr slots (10/11) directly
+ *   4. enter recv loop on the service handle
  *
  * Service discovery and handle delivery is owned entirely by svcmgr.
  * kbd does not call any nameserver or kernel registry directly.
@@ -83,77 +85,36 @@ _start:
     movl  $5, kbd_ep_h(%rip)
     movl  $7, kbd_notif_h(%rip)
 
-/* ── Bootstrap: receive service/reply/ioport/irqcap handles ─────────────── */
-.kbd_bootstrap_recv:
-    testq %r12, %r12
-    jz    .kbd_bootstrap_need
-    testq %r13, %r13
-    jz    .kbd_bootstrap_need
-    testq %r14, %r14
-    jz    .kbd_bootstrap_need
-    cmpl  $0, 84(%rsp)
-    jnz   .kbd_bootstrap_done
-.kbd_bootstrap_need:
-    movq  $0,  0(%rsp)
-    movq  $0,  8(%rsp)
-    movq  $0, 16(%rsp)
-    movq  $0, 24(%rsp)
-    movq  $0, 32(%rsp)
-    movq  $0, 40(%rsp)
-    movq  $0, 48(%rsp)
-    movq  $0, 56(%rsp)
-    movq  $0, 64(%rsp)
-    movq  $0, 72(%rsp)
-    movq  $0, 80(%rsp)
-
-    movq  $14,  %rax                   /* SYS_CHAN_RECV */
+/* ── Fase 13 (Track C): bootstrap caps as pre-start CSpace slots ─────────────
+ * No bootstrap KChannel recv loop.  Resolve the legacy service/reply KChannels
+ * to handle-table handles (CHAN_RECV/SEND require handles); the KIoPort/KIrqCap
+ * device caps stay CPtrs — SYS_IOPORT_IN / SYS_IRQ_ACK accept them via the
+ * device-cap dual resolver.
+ *   slot 8  IRIS_CPTR_SVC_CHAN  → r13 (service/IRQ probe channel)
+ *   slot 9  IRIS_CPTR_SVC_REPLY → r12 (reply channel)
+ *   slot 10 IRIS_CPTR_IOPORT    → r14 (CPtr)
+ *   slot 11 IRIS_CPTR_IRQ_CAP   → rbx (CPtr, SYS_IRQ_ACK) */
+    /* release the now-unused bootstrap KChannel (entry RBX) before reusing rbx */
+    movq  $SYS_HANDLE_CLOSE, %rax
     movq  %rbx, %rdi
-    movq  %rsp, %rsi
-    movq  $0,   %rdx
+    syscall
+
+    movq  $SYS_CSPACE_RESOLVE, %rax
+    movq  $8,   %rdi                   /* IRIS_CPTR_SVC_CHAN  */
     syscall
     testq %rax, %rax
-    jnz   .kbd_bootstrap_fail
+    js    .kbd_bootstrap_fail
+    movq  %rax, %r13
 
-    /* Validate: must be a SVCMGR_MSG_BOOTSTRAP_HANDLE message */
-    cmpl  $SVCMGR_MSG_BOOTSTRAP_HANDLE, 0(%rsp)
-    jne   .kbd_bootstrap_fail
-    /* Validate: must carry a non-null handle */
-    movl  76(%rsp), %eax               /* msg.attached_handle */
-    testl %eax, %eax
-    jz    .kbd_bootstrap_fail
-
-    /* Dispatch on endpoint kind (data[0] = SVCMGR_BOOTSTRAP_OFF_KIND) */
-    cmpl  $SVCMGR_BOOTSTRAP_KIND_SERVICE,    8(%rsp)
-    je    .kbd_bootstrap_service
-    cmpl  $SVCMGR_BOOTSTRAP_KIND_REPLY,      8(%rsp)
-    je    .kbd_bootstrap_reply
-    cmpl  $SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP, 8(%rsp)
-    je    .kbd_bootstrap_ioport
-    cmpl  $SVCMGR_BOOTSTRAP_KIND_IRQ_CAP,    8(%rsp)
-    je    .kbd_bootstrap_irqcap
-    jmp   .kbd_bootstrap_fail
-
-.kbd_bootstrap_service:
-    movq  %rax, %r13                   /* r13 = service/IRQ channel handle */
-    jmp   .kbd_bootstrap_recv
-
-.kbd_bootstrap_reply:
-    movq  %rax, %r12                   /* r12 = reply channel handle        */
-    jmp   .kbd_bootstrap_recv
-
-.kbd_bootstrap_ioport:
-    movq  %rax, %r14                   /* r14 = KIoPort handle              */
-    jmp   .kbd_bootstrap_recv
-
-.kbd_bootstrap_irqcap:
-    movl  %eax, 84(%rsp)               /* 84(%rsp) = IRQ cap handle (SYS_IRQ_ACK) */
-    jmp   .kbd_bootstrap_recv
-
-.kbd_bootstrap_done:
-    movq  $15,  %rax                   /* SYS_HANDLE_CLOSE: release bootstrap */
-    movq  %rbx, %rdi
+    movq  $SYS_CSPACE_RESOLVE, %rax
+    movq  $9,   %rdi                   /* IRIS_CPTR_SVC_REPLY */
     syscall
-    movl  84(%rsp), %ebx               /* rbx = irqcap handle for SYS_IRQ_ACK */
+    testq %rax, %rax
+    js    .kbd_bootstrap_fail
+    movq  %rax, %r12
+
+    movq  $10,  %r14                   /* IRIS_CPTR_IOPORT  (CPtr) */
+    movq  $11,  %rbx                   /* IRIS_CPTR_IRQ_CAP (CPtr) */
 
 /* ── PS/2 flush: drain controller output buffer before entering main loop ── */
 /* SYS_IOPORT_IN(r14, 4) reads port 0x64 (status); bit 0 = OBF (data ready).

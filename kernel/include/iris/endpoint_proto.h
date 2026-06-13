@@ -253,6 +253,16 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * resolver (cspace_or_handle_resolve_obj), so SYS_INITRD_* accept it by CPtr. */
 #define IRIS_CPTR_SPAWN_CAP   ((uint64_t)6)
 #define IRIS_CPTR_IRQ_NOTIFY  ((uint64_t)7)
+/* Fase 13 (Track C): the legacy handle-boundary caps for a non-endpoint_only
+ * service (kbd) — its service/reply KChannels and KIoPort/KIrqCap device caps —
+ * now arrive as pre-start CSpace mints instead of post-spawn KChannel
+ * SVCMGR_BOOTSTRAP_KIND_{SERVICE,REPLY,IOPORT_CAP,IRQ_CAP} messages.  The
+ * KChannel slots are resolved to handles (CHAN_RECV/SEND need handle-table
+ * handles); the device caps resolve by CPtr (cspace_or_handle_resolve_obj). */
+#define IRIS_CPTR_SVC_CHAN    ((uint64_t)8)
+#define IRIS_CPTR_SVC_REPLY   ((uint64_t)9)
+#define IRIS_CPTR_IOPORT      ((uint64_t)10)
+#define IRIS_CPTR_IRQ_CAP     ((uint64_t)11)
 #define IRIS_CPTR_TEST_FIX_A  ((uint64_t)30)
 #define IRIS_CPTR_TEST_FIX_B  ((uint64_t)31)
 /* Fase 9: second badged cap to the svcmgr endpoint (badge IRIS_BADGE_TEST_B)
