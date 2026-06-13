@@ -37,6 +37,11 @@ struct svcmgr_service_state {
     handle_id_t irq_notif_h;
     uint8_t restart_count;
     uint8_t reserved[3];
+    /* Fase 10: service generation — starts at 1 when first booted and bumps
+     * on every restart (death→respawn) and on an explicit RESTART request.
+     * A client that cached a generation can detect, via IRIS_SVCMGR_EP_STATUS,
+     * that the service it holds a cap to has since been restarted. */
+    uint32_t generation;
 };
 
 struct svcmgr_dynamic_service {
@@ -45,6 +50,12 @@ struct svcmgr_dynamic_service {
     iris_rights_t client_rights;
     char name[SVCMGR_SERVICE_NAME_CAP];
     uint8_t active;
+    /* Fase 10: badge of the client that registered this service (sender_badge
+     * stamped by the kernel on the EP REGISTER call).  UNREGISTER over the EP
+     * requires a matching owner badge; legacy KChannel registrations are
+     * owner_badge 0 (unidentified). generation supports logical revocation. */
+    uint64_t owner_badge;
+    uint32_t generation;
 };
 
 struct svcmgr_state {
@@ -654,6 +665,54 @@ static int64_t svcmgr_send_spawn_cap(handle_id_t child_boot_h, handle_id_t maste
 /* Receive buffer for bulk kbuf (service name) in EP_NB_RECV drain */
 static uint8_t g_ep_recv_buf[IRIS_EP_SVCNAME_MAX];
 
+/* Fase 10: dynamic (runtime-registered) service ids are reported as
+ * SVCMGR_DYNAMIC_ID_BASE + slot_index so they never collide with the small
+ * catalog ids (0..3) used by STATUS/RESTART. */
+#define SVCMGR_DYNAMIC_ID_BASE 0x40u
+
+/* Liveness of a catalog service per the kernel (Fase 10 STATUS oracle). */
+static int svcmgr_service_alive(struct svcmgr_state *state, uint32_t service_id) {
+    struct svcmgr_service_state *svc = svcmgr_service_state(state, service_id);
+    if (!svc || svc->proc_h == HANDLE_INVALID) return 0;
+    return svcmgr_syscall1(SYS_PROCESS_STATUS, (uint64_t)svc->proc_h) == 1;
+}
+
+/* Resolve a name to its current {alive, generation} (Fase 10 STATUS).
+ * Returns 1 on found. Handles ".ep"/catalog names and dynamic registrations. */
+static int svcmgr_name_status(struct svcmgr_state *state, const char *name,
+                              uint32_t *alive_out, uint32_t *gen_out) {
+    char base[SVCMGR_SERVICE_NAME_CAP];
+    const struct iris_service_catalog_entry *cat;
+    struct svcmgr_dynamic_service *dyn;
+    uint32_t len = 0;
+
+    if (!state || !name) return 0;
+
+    /* "<image>.ep" or bare catalog name → the catalog service behind it. */
+    while (len < SVCMGR_SERVICE_NAME_CAP && name[len]) len++;
+    if (svcmgr_name_has_ep_suffix(name) && len > 3u) {
+        for (uint32_t i = 0; i < len - 3u; i++) base[i] = name[i];
+        base[len - 3u] = '\0';
+        cat = svcmgr_catalog_find_name(base);
+    } else {
+        cat = svcmgr_catalog_find_name(name);
+    }
+    if (cat) {
+        struct svcmgr_service_state *svc = svcmgr_service_state(state, cat->service_id);
+        if (gen_out)   *gen_out   = svc ? svc->generation : 0u;
+        if (alive_out) *alive_out = (uint32_t)svcmgr_service_alive(state, cat->service_id);
+        return 1;
+    }
+
+    dyn = svcmgr_dynamic_find_name(state, name);
+    if (dyn && dyn->active) {
+        if (gen_out)   *gen_out   = dyn->generation;
+        if (alive_out) *alive_out = 1u;     /* registered ⇒ owner-alive by contract */
+        return 1;
+    }
+    return 0;
+}
+
 static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg *msg) {
     struct IrisMsg reply;
     uint32_t i;
@@ -696,13 +755,22 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
         }
 
         if (master_h != HANDLE_INVALID && granted != RIGHT_NONE) {
+            /* Fase 10 grant tightening: an ordinary client receives a
+             * call-only cap (RIGHT_WRITE).  RIGHT_DUPLICATE/RIGHT_TRANSFER —
+             * the authority to re-mint or hand the cap onward — is granted
+             * ONLY to supervisor badges (init/svcmgr/unbadged bootstrap).
+             * The legacy KChannel lookup path keeps the old wide grant for
+             * bootstrap re-minting (T046). */
+            iris_rights_t client_rights = granted;
+            if (!iris_badge_is_supervisor(msg->sender_badge))
+                client_rights &= ~(iris_rights_t)(RIGHT_DUPLICATE | RIGHT_TRANSFER);
             int64_t dup = svcmgr_syscall2(SYS_HANDLE_DUP, master_h,
-                                          (uint64_t)(granted | RIGHT_TRANSFER));
+                                          (uint64_t)(client_rights | RIGHT_TRANSFER));
             if (dup >= 0) {
                 reply.label              = IRIS_EP_REPLY_OK;
                 reply.words[0]           = 0u;
                 reply.attached_handle    = (uint32_t)dup;
-                reply.attached_rights    = (uint32_t)granted;
+                reply.attached_rights    = (uint32_t)client_rights;
                 svcmgr_log(sm_str_lookup_name_ok);
             } else {
                 reply.label    = IRIS_EP_REPLY_ERR;
@@ -723,6 +791,104 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
         reply.words[1]   = msg->sender_badge;
         reply.word_count = 2u;
         break;
+    case IRIS_SVCMGR_EP_STATUS: {
+        /* Fase 10: read-only liveness/generation oracle. Name in kbuf.
+         * Open to any caller — it is how a client polls a restart without
+         * blocking on a possibly-dead endpoint. */
+        uint32_t nl = msg->buf_len < IRIS_EP_SVCNAME_MAX
+                      ? msg->buf_len : IRIS_EP_SVCNAME_MAX - 1u;
+        uint32_t alive = 0u, gen = 0u;
+        g_ep_recv_buf[nl] = '\0';
+        if (svcmgr_name_status(state, (const char *)g_ep_recv_buf, &alive, &gen)) {
+            reply.label      = IRIS_EP_REPLY_OK;
+            reply.words[0]   = alive;
+            reply.words[1]   = gen;
+            reply.word_count = 2u;
+        } else {
+            reply.label    = IRIS_EP_REPLY_ERR;
+            reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND;
+        }
+        break;
+    }
+    case IRIS_SVCMGR_EP_RESTART: {
+        /* Fase 10 PRIVILEGED: supervisor badges only. Kills the service; the
+         * existing SYS_PROCESS_WATCH path respawns it and bumps generation. */
+        uint32_t sid = (uint32_t)msg->words[0];
+        const struct iris_service_catalog_entry *m =
+            iris_service_catalog_find_by_service_id(sid);
+        struct svcmgr_service_state *svc = svcmgr_service_state(state, sid);
+        if (!iris_badge_is_supervisor(msg->sender_badge)) {
+            reply.label    = IRIS_EP_REPLY_ERR;
+            reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED;
+        } else if (!m || !svc || svc->proc_h == HANDLE_INVALID) {
+            reply.label    = IRIS_EP_REPLY_ERR;
+            reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND;
+        } else {
+            reply.label      = IRIS_EP_REPLY_OK;
+            reply.words[0]   = svc->generation;   /* caller polls STATUS for +1 */
+            reply.word_count = 1u;
+            (void)svcmgr_syscall1(SYS_PROCESS_KILL, (uint64_t)svc->proc_h);
+        }
+        break;
+    }
+    case IRIS_SVCMGR_EP_REGISTER: {
+        /* Fase 10 badge-authenticated NAME CLAIM. EP_CALL cannot transfer a
+         * capability (reply cap occupies attached_handle), so a cap-backed
+         * registration uses the legacy KChannel path; the EP path claims a
+         * name bound to the caller's badge and enforces the reserved-name
+         * policy (".ep" endpoints and catalog names are never claimable). */
+        uint32_t nl = msg->buf_len < IRIS_EP_SVCNAME_MAX
+                      ? msg->buf_len : IRIS_EP_SVCNAME_MAX - 1u;
+        const char *nm = (const char *)g_ep_recv_buf;
+        g_ep_recv_buf[nl] = '\0';
+        if (nl == 0u || svcmgr_name_has_ep_suffix(nm) || svcmgr_name_is_catalog(nm)) {
+            reply.label    = IRIS_EP_REPLY_ERR;
+            reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED;
+        } else if (svcmgr_dynamic_find_name(state, nm)) {
+            reply.label    = IRIS_EP_REPLY_ERR;
+            reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_BUSY;
+        } else {
+            struct svcmgr_dynamic_service *slot = svcmgr_dynamic_alloc_slot(state);
+            if (!slot) {
+                reply.label    = IRIS_EP_REPLY_ERR;
+                reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NO_MEMORY;
+            } else {
+                svcmgr_copy_name(slot->name, nm);
+                slot->endpoint      = 0u;
+                slot->public_h      = HANDLE_INVALID;
+                slot->client_rights = RIGHT_WRITE;
+                slot->owner_badge   = msg->sender_badge;
+                slot->generation    = 1u;
+                slot->active        = 1u;
+                reply.label      = IRIS_EP_REPLY_OK;
+                reply.words[0]   = SVCMGR_DYNAMIC_ID_BASE +
+                                   (uint32_t)(slot - state->dynamic);
+                reply.word_count = 1u;
+            }
+        }
+        break;
+    }
+    case IRIS_SVCMGR_EP_UNREGISTER: {
+        /* Fase 10 badge-authenticated: only the owner badge (or a supervisor)
+         * may unregister. words[0] = dynamic id from REGISTER. */
+        uint32_t did = (uint32_t)msg->words[0];
+        struct svcmgr_dynamic_service *slot = 0;
+        if (did >= SVCMGR_DYNAMIC_ID_BASE &&
+            (did - SVCMGR_DYNAMIC_ID_BASE) < SVCMGR_DYNAMIC_SERVICE_CAP)
+            slot = &state->dynamic[did - SVCMGR_DYNAMIC_ID_BASE];
+        if (!slot || !slot->active) {
+            reply.label    = IRIS_EP_REPLY_ERR;
+            reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND;
+        } else if (msg->sender_badge != slot->owner_badge &&
+                   !iris_badge_is_supervisor(msg->sender_badge)) {
+            reply.label    = IRIS_EP_REPLY_ERR;
+            reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED;
+        } else {
+            svcmgr_dynamic_clear(slot, 0);
+            reply.label = IRIS_EP_REPLY_OK;
+        }
+        break;
+    }
     default:
         reply.label    = IRIS_EP_REPLY_ERR;
         reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG;
@@ -1198,6 +1364,11 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
         return 0;
     }
 
+    /* Fase 10: first successful boot establishes generation 1; restarts bump
+     * it in svcmgr_handle_proc_exit before re-entering svcmgr_boot_service. */
+    if (svc->generation == 0u)
+        svc->generation = 1u;
+
     svcmgr_log(sm_str_watchok);
     svcmgr_log(sm_str_spawnok);
     return 1;
@@ -1508,6 +1679,11 @@ static void svcmgr_handle_register(struct svcmgr_state *state, const struct KCha
     if (slot->client_rights == RIGHT_NONE)
         goto out;
     svcmgr_copy_name(slot->name, name);
+    /* Fase 10: legacy KChannel registrations are unauthenticated (no badge),
+     * so owner_badge stays 0 (unidentified) — but the reserved-name policy
+     * above (catalog + ".ep" rejection) still prevents spoofing core names. */
+    slot->owner_badge = IRIS_BADGE_NONE;
+    slot->generation  = 1u;
     slot->active = 1u;
     reject = 0;
     svcmgr_log(sm_str_register_ok);
@@ -1682,6 +1858,9 @@ static void svcmgr_handle_proc_exit(struct svcmgr_state *state, const struct KCh
     svc = svcmgr_service_state(state, service_id);
     if (!svc) return;
     svc->restart_count++;
+    /* Fase 10: death→respawn bumps the generation so any client holding a cap
+     * to the previous instance can detect the change via STATUS and relookup. */
+    svc->generation++;
 
     svcmgr_log(sm_str_restart);
     if (manifest->image_name) svcmgr_log(manifest->image_name);

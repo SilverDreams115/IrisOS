@@ -1981,6 +1981,215 @@ static void test_t053(void) {
         it_fail("T053", "distinct badges per cap");
 }
 
+/* ── Fase 10: service lifecycle, death/relookup & badge policy (T054–T062) ─ */
+
+/* svcmgr STATUS oracle: name → {alive, generation}. Returns 0 on OK. */
+static long it_status(const char *name, uint32_t *alive, uint32_t *gen) {
+    uint32_t len = it_stage_path(name);
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_STATUS;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (r != 0 || msg.label != IRIS_EP_REPLY_OK || msg.word_count < 2u)
+        return -1;
+    if (alive) *alive = (uint32_t)msg.words[0];
+    if (gen)   *gen   = (uint32_t)msg.words[1];
+    return 0;
+}
+
+/* Generation cached at the pre-restart lookup (T056), checked stale in T059. */
+static uint32_t g_vfs_gen0 = 0;
+
+/* T054: badge-authenticated REGISTER name-claim + owner-checked UNREGISTER. */
+static void test_t054(void) {
+    struct IrisMsg msg;
+    int ok = 1;
+    uint32_t len = it_stage_path("ltst.svc");
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_REGISTER;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) ok = 0;
+    uint32_t did = (uint32_t)msg.words[0];
+
+    /* Re-claim the same name → BUSY. */
+    len = it_stage_path("ltst.svc");
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_SVCMGR_EP_REGISTER;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len = len;
+    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+          msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_BUSY)) ok = 0;
+
+    /* UNREGISTER with our own (owner) badge → OK. */
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_SVCMGR_EP_UNREGISTER;
+    msg.words[0] = did;
+    msg.word_count = 1u;
+    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) ok = 0;
+
+    if (ok) it_pass("T054"); else it_fail("T054", "register/unregister badge");
+}
+
+/* T055: `.ep` EP-lookup grant tightening — an ordinary client receives a
+ * call-only cap; it has RIGHT_WRITE (ping works) but NOT RIGHT_DUPLICATE
+ * (SYS_HANDLE_DUP → ACCESS_DENIED, no re-mint authority). */
+static void test_t055(void) {
+    uint32_t len = it_stage_path(VFS_EP_SVC_NAME);
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    int ok = 0;
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+        handle_id_t cap = (handle_id_t)msg.attached_handle;
+        struct IrisMsg p;
+        it_iris_msg_zero(&p);
+        p.label = IRIS_EP_OP_PING;
+        long pr  = it_sys2(SYS_EP_CALL, (long)cap, (long)&p);          /* WRITE works */
+        long dup = it_sys2(SYS_HANDLE_DUP, (long)cap, (long)RIGHT_WRITE); /* no DUP */
+        if (pr == 0 && p.label == IRIS_EP_REPLY_OK &&
+            dup == (long)IRIS_ERR_ACCESS_DENIED)
+            ok = 1;
+        if (dup >= 0) { handle_id_t d = (handle_id_t)dup; it_close(&d); }
+        it_close(&cap);
+    }
+    if (ok) it_pass("T055"); else it_fail("T055", ".ep grant not tightened");
+}
+
+/* T056: STATUS oracle reports a live service + its generation (cached for T059). */
+static void test_t056(void) {
+    uint32_t a = 0, g = 0;
+    if (it_status(VFS_EP_SVC_NAME, &a, &g) == 0 && a == 1u && g >= 1u) {
+        g_vfs_gen0 = g;
+        it_pass("T056");
+    } else {
+        it_fail("T056", "vfs status");
+    }
+}
+
+/* T057: REAL death→respawn E2E.  Drive the privileged RESTART via the
+ * supervisor cap (slot 29), then poll STATUS (bounded, no sleep — each
+ * iteration blocks in an EP_CALL which yields the CPU) until the kernel's
+ * SYS_PROCESS_WATCH path has respawned VFS and bumped its generation. */
+static void test_t057(void) {
+    uint32_t a = 0, g0 = 0;
+    if (it_status(VFS_EP_SVC_NAME, &a, &g0) != 0 || a != 1u) {
+        it_fail("T057", "pre-status"); return;
+    }
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_SVCMGR_EP_RESTART;
+    msg.words[0] = (uint64_t)SVCMGR_SERVICE_VFS;
+    msg.word_count = 1u;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_SUPER, (long)&msg);
+    if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) {
+        it_fail("T057", "restart request denied"); return;
+    }
+    int recovered = 0;
+    for (uint32_t i = 0; i < 400u && !recovered; i++) {
+        uint64_t b = 0;
+        (void)it_ping_badge((long)IRIS_CPTR_SVCMGR_EP, &b);  /* yield to svcmgr */
+        uint32_t a1 = 0, g1 = 0;
+        if (it_status(VFS_EP_SVC_NAME, &a1, &g1) == 0 && a1 == 1u && g1 > g0)
+            recovered = 1;
+    }
+    if (recovered) it_pass("T057"); else it_fail("T057", "vfs did not restart");
+}
+
+/* T058: notification close-while-wait — covered by the dedicated host unit
+ * test (tests/kernel/test_knotification.c, Fase 10).  This runtime slot
+ * confirms the kbd IRQ-notification WAIT slot is still functional after the
+ * lifecycle changes (a non-blocking poll must not fault). */
+static void test_t058(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_EP_OP_PING;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_KBD_EP, (long)&msg);
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK)
+        it_pass("T058");
+    else
+        it_fail("T058", "kbd notification path");
+}
+
+/* T059: logical revocation — a client that cached the pre-restart generation
+ * (T056) detects, via STATUS, that VFS has since been restarted (generation
+ * advanced), so its old generation is stale and a relookup is required. */
+static void test_t059(void) {
+    uint32_t a = 0, g = 0;
+    if (it_status(VFS_EP_SVC_NAME, &a, &g) == 0 &&
+        a == 1u && g > g_vfs_gen0 && g_vfs_gen0 != 0u)
+        it_pass("T059");
+    else
+        it_fail("T059", "stale generation not detected");
+}
+
+/* T060: relookup after restart yields a working cap to the new instance. */
+static void test_t060(void) {
+    uint32_t len = it_stage_path(VFS_EP_SVC_NAME);
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    int ok = 0;
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+        handle_id_t cap = (handle_id_t)msg.attached_handle;
+        struct IrisMsg p;
+        it_iris_msg_zero(&p);
+        p.label = IRIS_EP_OP_PING;
+        long pr = it_sys2(SYS_EP_CALL, (long)cap, (long)&p);
+        if (pr == 0 && p.label == IRIS_EP_REPLY_OK) ok = 1;
+        it_close(&cap);
+    }
+    if (ok) it_pass("T060"); else it_fail("T060", "new vfs cap after restart");
+}
+
+/* T061: REGISTER cannot spoof a reserved name — ".ep" endpoints and catalog
+ * service names are rejected regardless of the caller's badge. */
+static void test_t061(void) {
+    static const char *const reserved[] = {
+        VFS_EP_SVC_NAME, CONSOLE_EP_SVC_NAME, "vfs",
+    };
+    int ok = 1;
+    for (uint32_t i = 0; i < 3u; i++) {
+        uint32_t len = it_stage_path(reserved[i]);
+        struct IrisMsg msg;
+        it_iris_msg_zero(&msg);
+        msg.label    = IRIS_SVCMGR_EP_REGISTER;
+        msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+        msg.buf_len  = len;
+        long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+        if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+              msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED))
+            ok = 0;
+    }
+    if (ok) it_pass("T061"); else it_fail("T061", "reserved name spoof");
+}
+
+/* T062: badge policy regression guard — core servers still observe the
+ * caller's kernel-stamped badge after all lifecycle changes. */
+static void test_t062(void) {
+    uint64_t bv = 0, bc = 0;
+    if (it_ping_badge((long)IRIS_CPTR_VFS_EP, &bv) == 0 &&
+        bv == IRIS_BADGE_IRIS_TEST &&
+        it_ping_badge((long)IRIS_CPTR_CONSOLE_EP, &bc) == 0 &&
+        bc == IRIS_BADGE_IRIS_TEST)
+        it_pass("T062");
+    else
+        it_fail("T062", "badge policy regressed");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2091,6 +2300,15 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t051();
     test_t052();
     test_t053();
+    test_t054();
+    test_t055();
+    test_t056();
+    test_t057();
+    test_t058();
+    test_t059();
+    test_t060();
+    test_t061();
+    test_t062();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

@@ -109,3 +109,11 @@ assembly) replies to `IRIS_EP_OP_PING` with
 - **Stateful protocols**: per-client server state keyed by badge becomes
   safe (the Fase 7 "stateless because no identity" constraint is lifted).
 - **Revocation**: per-badge cap accounting.
+
+## Fase 10 follow-up
+
+Fase 10 consumes these badges as **policy** (see
+[service-lifecycle.md](service-lifecycle.md)): `iris_badge_is_supervisor()`
+gates `.ep` lookup DUPLICATE grants and the privileged RESTART op; EP REGISTER
+binds an `owner_badge`; UNREGISTER checks it; and the STATUS/generation oracle
+plus real `SYS_PROCESS_KILL`-driven respawn give death detection and relookup.

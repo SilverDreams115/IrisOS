@@ -463,7 +463,7 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[7];
+        struct svc_mint it_mints[8];
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -492,8 +492,14 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
         it_mints[6].src_h = lk_svcmgr;                 /* badge B fixture */
         it_mints[6].rights = RIGHT_WRITE;
         it_mints[6].badge = IRIS_BADGE_TEST_B;
+        /* Fase 10: supervisor-badged svcmgr cap so iris_test can drive the
+         * privileged RESTART path (real death→respawn E2E, T057/T060). */
+        it_mints[7].slot = IRIS_CPTR_TEST_SUPER;
+        it_mints[7].src_h = lk_svcmgr;
+        it_mints[7].rights = RIGHT_WRITE;
+        it_mints[7].badge = IRIS_BADGE_INIT;
         r = svc_load_minted(spawn_cap_h, "iris_test", &proc_h, &boot_h,
-                            it_mints, 7u);
+                            it_mints, 8u);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);

@@ -74,6 +74,27 @@
  */
 #define IRIS_SVCMGR_EP_LOOKUP_ID    UINT64_C(0xF004)
 
+/*
+ * Fase 10 lifecycle opcodes.
+ *
+ * IRIS_SVCMGR_EP_STATUS — query the liveness/generation of a service.
+ *   Request:  words[0] = service_id  (catalog id, or a dynamic id >= 0x40).
+ *   Reply OK: words[0] = alive (1/0), words[1] = generation (bumps on every
+ *             restart/revoke so a client can detect a stale cap), word_count=2.
+ *   Reply ERR: words[0] = IRIS_ERR_NOT_FOUND.
+ *   Available to any caller — STATUS is a read-only liveness oracle and is
+ *   what lets a client poll a restart without blocking on a dead endpoint.
+ *
+ * IRIS_SVCMGR_EP_RESTART — force a service to be killed and respawned.
+ *   Request:  words[0] = service_id.
+ *   Reply OK: words[0] = new generation.
+ *   Reply ERR: words[0] = IRIS_ERR_ACCESS_DENIED (caller badge not a
+ *             supervisor) or IRIS_ERR_NOT_FOUND / IRIS_ERR_INVALID_ARG.
+ *   PRIVILEGED: only iris_badge_is_supervisor() caps may invoke it.
+ */
+#define IRIS_SVCMGR_EP_STATUS       UINT64_C(0xF005)
+#define IRIS_SVCMGR_EP_RESTART      UINT64_C(0xF006)
+
 /* ── Bootstrap kind for svcmgr endpoint ────────────────────────────── */
 
 /*
@@ -176,9 +197,37 @@
  */
 #define IRIS_BADGE_NONE       ((uint64_t)0)
 #define IRIS_BADGE_SVC(id)    ((uint64_t)0x100 + (uint64_t)(id))
+/* Fase 10: named reserved badges. The 0x100+service_id scheme (Fase 9) is
+ * kept; these aliases make the service-identity policy in svcmgr explicit.
+ *   kbd  = SVCMGR_SERVICE_KBD(1), vfs = VFS(2), sh = SH(3)  → 0x101..0x103.
+ * console is spawned by init (not the catalog) so it gets its own value;
+ * init is the root spawner and holds the unbadged masters but is also given
+ * an explicit identity for the supervisor-authority policy below. */
+#define IRIS_BADGE_KBD        IRIS_BADGE_SVC(1)   /* 0x101 */
+#define IRIS_BADGE_VFS        IRIS_BADGE_SVC(2)   /* 0x102 */
+#define IRIS_BADGE_SH         IRIS_BADGE_SVC(3)   /* 0x103 */
+#define IRIS_BADGE_CONSOLE    ((uint64_t)0x104)
+#define IRIS_BADGE_INIT       ((uint64_t)0x111)
 #define IRIS_BADGE_SVCMGR     ((uint64_t)0x110)
 #define IRIS_BADGE_IRIS_TEST  ((uint64_t)0x1F0)
 #define IRIS_BADGE_TEST_B     ((uint64_t)0xB2)
+/* Dynamic services registered at runtime are assigned badges from this base
+ * upward (svcmgr owner-badge accounting); never overlaps the reserved range. */
+#define IRIS_BADGE_DYNAMIC_BASE ((uint64_t)0x200)
+
+/*
+ * Supervisor authority (Fase 10).  Only these badges may receive a cap with
+ * RIGHT_DUPLICATE/RIGHT_TRANSFER from a `.ep` lookup (re-minting authority)
+ * or drive privileged lifecycle ops (restart/revoke).  Everyone else is an
+ * ordinary client and gets WRITE-only caps.  Badge 0 = the unbadged bootstrap
+ * caps held by init before it acquires its identity badge, and svcmgr's own
+ * master — both legitimately re-mint service caps into children.
+ */
+static inline int iris_badge_is_supervisor(uint64_t badge) {
+    return badge == IRIS_BADGE_NONE  ||
+           badge == IRIS_BADGE_INIT  ||
+           badge == IRIS_BADGE_SVCMGR;
+}
 
 #define IRIS_CPTR_SVCMGR_EP   ((uint64_t)1)
 #define IRIS_CPTR_VFS_EP      ((uint64_t)2)
@@ -191,6 +240,11 @@
 /* Fase 9: second badged cap to the svcmgr endpoint (badge IRIS_BADGE_TEST_B)
  * — proves two caps to ONE endpoint deliver different badges (T053). */
 #define IRIS_CPTR_TEST_FIX_C  ((uint64_t)28)
+/* Fase 10: a THIRD cap to the svcmgr endpoint carrying a SUPERVISOR badge
+ * (IRIS_BADGE_INIT), minted by init into iris_test so the lifecycle tests can
+ * drive the privileged IRIS_SVCMGR_EP_RESTART path.  Slot 27 (slot 29 stays
+ * the reserved-but-unminted probe used by T041). */
+#define IRIS_CPTR_TEST_SUPER  ((uint64_t)27)
 
 /*
  * Reserved name suffix ".ep": IRIS_SVCMGR_EP_LOOKUP_NAME and the legacy

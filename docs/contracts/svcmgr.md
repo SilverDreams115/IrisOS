@@ -181,3 +181,15 @@ Current built-in services:
 - `svcmgr` supervises service exit by watch events, not by polling.
 - Stale master endpoints are sealed before replacement so blocked clients fail fast.
 - `svcmgr` can aggregate health only if both kernel diagnostics and service-local status paths are functioning.
+
+## Fase 10 — lifecycle & badge policy
+
+- EP opcodes added: `IRIS_SVCMGR_EP_STATUS` (0xF005, open: name → {alive,
+  generation}), `IRIS_SVCMGR_EP_RESTART` (0xF006, **supervisor-only**: kill +
+  watch-driven respawn, bumps generation), badge-authenticated
+  `IRIS_SVCMGR_EP_REGISTER`/`UNREGISTER` (name claim + `owner_badge`).
+- `.ep` lookups grant `RIGHT_WRITE` only to ordinary clients; `DUPLICATE`/
+  `TRANSFER` requires `iris_badge_is_supervisor()` (init/svcmgr/unbadged).
+- Reserved names (`*.ep`, catalog names) are never runtime-registrable on
+  either transport. The legacy KChannel loop is a compatibility boundary
+  (`owner_badge = 0`). See [service-lifecycle.md](../service-lifecycle.md).
