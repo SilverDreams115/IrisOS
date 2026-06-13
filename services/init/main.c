@@ -116,8 +116,7 @@ static const char init_stage_vfs_list[]  = "[USER][INIT][S5] vfs ep list\n";
 static const char init_stage_vfs_rw[]    = "[USER][INIT][S6] vfs ep rw\n";
 static const char init_stage_subscribe[] = "[USER][INIT][S7] kbd subscribe\n";
 static const char init_stage_exception[] = "[USER][INIT][S8] exception delivery OK\n";
-static const char init_stage_seal[]      = "[USER][INIT][S9] channel seal OK\n";
-static const char init_stage_rights[]    = "[USER][INIT][S10] rights reduction OK\n";
+/* init_stage_seal/init_stage_rights (S9/S10) retired — Fase 13/Track F */
 static const char init_stage_healthy[]   = "[USER][INIT][BOOT] healthy path OK\n";
 static const char init_console_load_fail[] = "[INIT] console load FAILED\r\n";
 static const char init_console_ioport_fail[] = "[INIT] console ioport FAILED\r\n";
@@ -267,146 +266,10 @@ static void init_selftest_exception(void) {
     (void)ch_h; (void)rd_h; (void)wr_h;
 }
 
-/* S9: channel seal semantics
- * Sends a message, seals the write end, then verifies:
- *   - a further send is rejected
- *   - the buffered message can still be drained
- *   - recv on the empty sealed channel returns immediately with CLOSED */
-static void init_selftest_channel_seal(void) {
-    struct KChanMsg msg;
-    long ch_raw, rd_raw, r;
-
-    ch_raw = init_sys0(SYS_CHAN_CREATE);
-    if (ch_raw < 0) { init_log("[USER][INIT][S9] SKIP: chan\n"); return; }
-
-    rd_raw = init_sys2(SYS_HANDLE_DUP, ch_raw, (long)RIGHT_READ);
-    if (rd_raw < 0) {
-        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
-        init_log("[USER][INIT][S9] SKIP: rd dup\n"); return;
-    }
-
-    init_msg_zero(&msg);
-    msg.type = 0xA559u;
-    msg.data[0] = 's';
-    msg.data_len = 1u;
-    msg.attached_handle = HANDLE_INVALID;
-    if (init_sys2(SYS_CHAN_SEND, ch_raw, (long)&msg) < 0) {
-        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
-        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
-        init_log("[USER][INIT][S9] SKIP: send\n"); return;
-    }
-
-    (void)init_sys1(SYS_CHAN_SEAL, ch_raw);
-
-    /* Send after seal must be rejected */
-    init_msg_zero(&msg);
-    msg.type = 0xA55Au;
-    msg.data_len = 0u;
-    msg.attached_handle = HANDLE_INVALID;
-    r = init_sys2(SYS_CHAN_SEND, ch_raw, (long)&msg);
-    if (r >= 0) {
-        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
-        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
-        init_log("[USER][INIT][S9] FAIL: send-after-seal\n"); return;
-    }
-
-    /* Drain the buffered message */
-    init_msg_zero(&msg);
-    r = init_sys2(SYS_CHAN_RECV, rd_raw, (long)&msg);
-    if (r < 0 || msg.type != 0xA559u) {
-        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
-        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
-        init_log("[USER][INIT][S9] FAIL: drain recv\n"); return;
-    }
-
-    /* Recv on empty sealed channel must return CLOSED, not block */
-    init_msg_zero(&msg);
-    r = init_sys2(SYS_CHAN_RECV_NB, rd_raw, (long)&msg);
-    if (r != (long)IRIS_ERR_CLOSED) {
-        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
-        init_sys1(SYS_HANDLE_CLOSE, ch_raw);
-        init_log("[USER][INIT][S9] FAIL: empty sealed recv\n"); return;
-    }
-
-    init_sys1(SYS_HANDLE_CLOSE, rd_raw);
-    init_sys1(SYS_HANDLE_CLOSE, ch_raw);
-    init_log(init_stage_seal);
-}
-
-/* S10: handle rights reduction via channel transfer
- * Transfers a handle through a channel with reduced attached_rights and
- * verifies the receiver cannot exercise the stripped right (RIGHT_DUPLICATE). */
-static void init_selftest_rights_reduction(void) {
-    struct KChanMsg msg;
-    long ch1_raw, ch1_xfer_raw, chx_raw, chx_rd_raw, recv_h_raw, dup_r;
-
-    ch1_raw = init_sys0(SYS_CHAN_CREATE);
-    if (ch1_raw < 0) { init_log("[USER][INIT][S10] SKIP: ch1\n"); return; }
-
-    /* Dup with READ|TRANSFER so we can attach it but without DUPLICATE */
-    ch1_xfer_raw = init_sys2(SYS_HANDLE_DUP, ch1_raw,
-                             (long)(RIGHT_READ | RIGHT_TRANSFER));
-    if (ch1_xfer_raw < 0) {
-        init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
-        init_log("[USER][INIT][S10] SKIP: ch1 dup\n"); return;
-    }
-
-    chx_raw = init_sys0(SYS_CHAN_CREATE);
-    if (chx_raw < 0) {
-        init_sys1(SYS_HANDLE_CLOSE, ch1_xfer_raw);
-        init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
-        init_log("[USER][INIT][S10] SKIP: chx\n"); return;
-    }
-
-    chx_rd_raw = init_sys2(SYS_HANDLE_DUP, chx_raw, (long)RIGHT_READ);
-    if (chx_rd_raw < 0) {
-        init_sys1(SYS_HANDLE_CLOSE, chx_raw);
-        init_sys1(SYS_HANDLE_CLOSE, ch1_xfer_raw);
-        init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
-        init_log("[USER][INIT][S10] SKIP: chx rd\n"); return;
-    }
-
-    /* Send ch1_xfer with attached_rights=RIGHT_READ only (strips TRANSFER) */
-    init_msg_zero(&msg);
-    msg.type = 0xA55Bu;
-    msg.data_len = 0u;
-    msg.attached_handle = (handle_id_t)ch1_xfer_raw;
-    msg.attached_rights = RIGHT_READ;
-    if (init_sys2(SYS_CHAN_SEND, chx_raw, (long)&msg) < 0) {
-        init_sys1(SYS_HANDLE_CLOSE, ch1_xfer_raw);
-        init_sys1(SYS_HANDLE_CLOSE, chx_rd_raw);
-        init_sys1(SYS_HANDLE_CLOSE, chx_raw);
-        init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
-        init_log("[USER][INIT][S10] SKIP: send\n"); return;
-    }
-    /* ch1_xfer_raw consumed by send */
-
-    init_msg_zero(&msg);
-    if (init_sys2(SYS_CHAN_RECV, chx_rd_raw, (long)&msg) < 0 ||
-        msg.attached_handle == HANDLE_INVALID) {
-        init_sys1(SYS_HANDLE_CLOSE, chx_rd_raw);
-        init_sys1(SYS_HANDLE_CLOSE, chx_raw);
-        init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
-        init_log("[USER][INIT][S10] SKIP: recv\n"); return;
-    }
-    recv_h_raw = (long)msg.attached_handle;
-
-    /* recv_h has RIGHT_READ only; SYS_HANDLE_DUP requires RIGHT_DUPLICATE */
-    dup_r = init_sys2(SYS_HANDLE_DUP, recv_h_raw, (long)RIGHT_READ);
-    if (dup_r >= 0)
-        init_sys1(SYS_HANDLE_CLOSE, dup_r);
-
-    init_sys1(SYS_HANDLE_CLOSE, recv_h_raw);
-    init_sys1(SYS_HANDLE_CLOSE, chx_rd_raw);
-    init_sys1(SYS_HANDLE_CLOSE, chx_raw);
-    init_sys1(SYS_HANDLE_CLOSE, ch1_raw);
-
-    if (dup_r >= 0) {
-        init_log("[USER][INIT][S10] FAIL: dup succeeded on rights-reduced handle\n");
-        return;
-    }
-    init_log(init_stage_rights);
-}
+/* Fase 13 (Track F): init S9 (channel seal) and S10 (rights reduction)
+ * KChannel selftests retired — the seal/close and rights-reduction
+ * semantics are covered by the endpoint/cap-transfer runtime tests in
+ * iris_test (T019 close-wakes-waiter, T052/T064 rights+transfer). */
 
 /* ── iris_test spawn + wait ──────────────────────────────────────────────── */
 
@@ -1406,34 +1269,12 @@ void init_main(handle_id_t bootstrap_ch_h) {
     }
     init_log(init_stage_healthy);
 
-    /* ── Phase 44: ring-3 timed IPC selftest ─────────────────────── */
-    {
-        long ch_raw = init_sys0(SYS_CHAN_CREATE);
-        if (ch_raw >= 0) {
-            handle_id_t ch_wr = (handle_id_t)ch_raw;
-            long rd_raw = init_sys2(SYS_HANDLE_DUP, ch_raw, (long)(RIGHT_READ));
-            if (rd_raw >= 0) {
-                struct KChanMsg tmsg;
-                uint8_t *tp = (uint8_t *)&tmsg;
-                for (uint32_t i = 0; i < (uint32_t)sizeof(tmsg); i++) tp[i] = 0;
-                /* 50 ms timeout on an empty channel — must return TIMED_OUT */
-                long tr = init_sys3(SYS_CHAN_RECV_TIMEOUT, rd_raw,
-                                    (long)&tmsg, 50000000L);
-                if (tr == (long)IRIS_ERR_TIMED_OUT)
-                    init_log("[USER][INIT][TIMED] recv timeout OK\n");
-                else
-                    init_log("[USER][INIT][TIMED] recv timeout WARN: unexpected result\n");
-                init_sys1(SYS_HANDLE_CLOSE, rd_raw);
-            }
-            init_sys1(SYS_HANDLE_CLOSE, (long)ch_wr);
-        }
-    }
+    /* Fase 13 (Track F): the ring-3 timed-IPC KChannel selftest (CHAN_RECV_TIMEOUT
+     * → TIMED_OUT) is retired — covered by iris_test T010 (NOTIFY_WAIT_TIMEOUT). */
 
     init_runtime_probe_invalid_userptr();
     init_runtime_probe_timeout_overflow();
     init_selftest_exception();
-    init_selftest_channel_seal();
-    init_selftest_rights_reduction();
 
     /* ── Block 8: iris_test ring-3 syscall test suite ── */
     if (iris_test_spawn_h != HANDLE_INVALID) {

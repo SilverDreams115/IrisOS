@@ -154,163 +154,11 @@ static void test_t003(void) {
         it_fail("T003", "yield non-zero");
 }
 
-/* ── T004: KChannel loopback ────────────────────────────────────────────── */
-
-static void test_t004(void) {
-    long ch_raw = it_sys0(SYS_CHAN_CREATE);
-    if (ch_raw < 0) { it_fail("T004", "chan create"); return; }
-    handle_id_t ch_h = (handle_id_t)ch_raw;
-
-    long rd_raw = it_sys2(SYS_HANDLE_DUP, ch_raw, (long)RIGHT_READ);
-    if (rd_raw < 0) {
-        it_close(&ch_h);
-        it_fail("T004", "rd dup"); return;
-    }
-    handle_id_t rd_h = (handle_id_t)rd_raw;
-
-    struct KChanMsg msg;
-    it_chan_msg_zero(&msg);
-    msg.type     = 0xA5A5u;
-    msg.data[0]  = 0x42u;
-    msg.data_len = 1u;
-    msg.attached_handle = HANDLE_INVALID;
-
-    long r = it_sys2(SYS_CHAN_SEND, ch_raw, (long)&msg);
-    if (r < 0) {
-        it_close(&rd_h);
-        it_close(&ch_h);
-        it_fail("T004", "send"); return;
-    }
-
-    it_chan_msg_zero(&msg);
-    r = it_sys2(SYS_CHAN_RECV, rd_raw, (long)&msg);
-
-    it_close(&rd_h);
-    it_close(&ch_h);
-
-    if (r < 0 || msg.type != 0xA5A5u || msg.data[0] != 0x42u)
-        it_fail("T004", "recv mismatch");
-    else
-        it_pass("T004");
-}
-
-/* ── T005: CHAN_RECV_NB on empty ────────────────────────────────────────── */
-
-static void test_t005(void) {
-    long ch_raw = it_sys0(SYS_CHAN_CREATE);
-    if (ch_raw < 0) { it_fail("T005", "chan create"); return; }
-    handle_id_t ch_h = (handle_id_t)ch_raw;
-
-    long rd_raw = it_sys2(SYS_HANDLE_DUP, ch_raw, (long)RIGHT_READ);
-    if (rd_raw < 0) {
-        it_close(&ch_h);
-        it_fail("T005", "rd dup"); return;
-    }
-    handle_id_t rd_h = (handle_id_t)rd_raw;
-
-    struct KChanMsg msg;
-    it_chan_msg_zero(&msg);
-    long r = it_sys2(SYS_CHAN_RECV_NB, rd_raw, (long)&msg);
-
-    it_close(&rd_h);
-    it_close(&ch_h);
-
-    if (r == (long)IRIS_ERR_WOULD_BLOCK)
-        it_pass("T005");
-    else
-        it_fail("T005", "expected WOULD_BLOCK");
-}
-
-/* ── T006: CHAN_RECV_TIMEOUT → TIMED_OUT ────────────────────────────────── */
-
-static void test_t006(void) {
-    long ch_raw = it_sys0(SYS_CHAN_CREATE);
-    if (ch_raw < 0) { it_fail("T006", "chan create"); return; }
-    handle_id_t ch_h = (handle_id_t)ch_raw;
-
-    long rd_raw = it_sys2(SYS_HANDLE_DUP, ch_raw, (long)RIGHT_READ);
-    if (rd_raw < 0) {
-        it_close(&ch_h);
-        it_fail("T006", "rd dup"); return;
-    }
-    handle_id_t rd_h = (handle_id_t)rd_raw;
-
-    struct KChanMsg msg;
-    it_chan_msg_zero(&msg);
-    /* 50 ms timeout on an empty channel */
-    long r = it_sys3(SYS_CHAN_RECV_TIMEOUT, rd_raw, (long)&msg, 50000000L);
-
-    it_close(&rd_h);
-    it_close(&ch_h);
-
-    if (r == (long)IRIS_ERR_TIMED_OUT)
-        it_pass("T006");
-    else
-        it_fail("T006", "expected TIMED_OUT");
-}
-
-/* ── T007: CHAN_SEAL semantics ──────────────────────────────────────────── */
-
-static void test_t007(void) {
-    long ch_raw = it_sys0(SYS_CHAN_CREATE);
-    if (ch_raw < 0) { it_fail("T007", "chan create"); return; }
-    handle_id_t ch_h = (handle_id_t)ch_raw;
-
-    long rd_raw = it_sys2(SYS_HANDLE_DUP, ch_raw, (long)RIGHT_READ);
-    if (rd_raw < 0) {
-        it_close(&ch_h);
-        it_fail("T007", "rd dup"); return;
-    }
-    handle_id_t rd_h = (handle_id_t)rd_raw;
-
-    /* Send one message then seal */
-    struct KChanMsg msg;
-    it_chan_msg_zero(&msg);
-    msg.type     = 0x1234u;
-    msg.data_len = 0u;
-    msg.attached_handle = HANDLE_INVALID;
-    long r = it_sys2(SYS_CHAN_SEND, ch_raw, (long)&msg);
-    if (r < 0) {
-        it_close(&rd_h);
-        it_close(&ch_h);
-        it_fail("T007", "send"); return;
-    }
-
-    (void)it_sys1(SYS_CHAN_SEAL, ch_raw);
-
-    /* Second send must fail */
-    it_chan_msg_zero(&msg);
-    msg.type     = 0x5678u;
-    msg.data_len = 0u;
-    msg.attached_handle = HANDLE_INVALID;
-    long r2 = it_sys2(SYS_CHAN_SEND, ch_raw, (long)&msg);
-    if (r2 >= 0) {
-        it_close(&rd_h);
-        it_close(&ch_h);
-        it_fail("T007", "send-after-seal"); return;
-    }
-
-    /* Drain the original message */
-    it_chan_msg_zero(&msg);
-    long r3 = it_sys2(SYS_CHAN_RECV, rd_raw, (long)&msg);
-    if (r3 < 0 || msg.type != 0x1234u) {
-        it_close(&rd_h);
-        it_close(&ch_h);
-        it_fail("T007", "drain recv"); return;
-    }
-
-    /* Recv on empty sealed channel must return CLOSED */
-    it_chan_msg_zero(&msg);
-    long r4 = it_sys2(SYS_CHAN_RECV_NB, rd_raw, (long)&msg);
-
-    it_close(&rd_h);
-    it_close(&ch_h);
-
-    if (r4 == (long)IRIS_ERR_CLOSED)
-        it_pass("T007");
-    else
-        it_fail("T007", "sealed empty not CLOSED");
-}
+/* ── T004-T007 retired (Fase 13/Track F) ───────────────────────────────
+ * The KChannel-specific tests (loopback, NB-recv-empty, recv-timeout,
+ * seal) are superseded by endpoint/notification equivalents:
+ *   T004 → T015 (EP_SEND/RECV)      T005 → T014 (EP_NB_RECV empty)
+ *   T006 → T010 (NOTIFY_WAIT_TIMEOUT) T007 → T019 (endpoint close).      */
 
 /* ── T008: VMO create + map + rw + unmap ────────────────────────────────── */
 
@@ -395,54 +243,54 @@ static void test_t010(void) {
         it_fail("T010", "expected TIMED_OUT");
 }
 
-/* ── T011: HANDLE_TYPE on channel ───────────────────────────────────────── */
+/* ── T011: HANDLE_TYPE on endpoint (Fase 13/Track F: KChannel→KEndpoint) ── */
 
 static void test_t011(void) {
-    long ch_raw = it_sys0(SYS_CHAN_CREATE);
-    if (ch_raw < 0) { it_fail("T011", "chan create"); return; }
-    handle_id_t ch_h = (handle_id_t)ch_raw;
+    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep_raw < 0) { it_fail("T011", "ep create"); return; }
+    handle_id_t ep_h = (handle_id_t)ep_raw;
 
-    long ty = it_sys1(SYS_HANDLE_TYPE, ch_raw);
+    long ty = it_sys1(SYS_HANDLE_TYPE, ep_raw);
 
-    it_close(&ch_h);
+    it_close(&ep_h);
 
-    if (ty == (long)IRIS_HANDLE_TYPE_CHANNEL)
+    if (ty == (long)IRIS_HANDLE_TYPE_ENDPOINT)
         it_pass("T011");
     else
         it_fail("T011", "wrong type");
 }
 
-/* ── T012: HANDLE_SAME_OBJECT ───────────────────────────────────────────── */
+/* ── T012: HANDLE_SAME_OBJECT on endpoints (Fase 13/Track F) ─────────────── */
 
 static void test_t012(void) {
-    long ch_raw = it_sys0(SYS_CHAN_CREATE);
-    if (ch_raw < 0) { it_fail("T012", "chan create"); return; }
-    handle_id_t ch_h = (handle_id_t)ch_raw;
+    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep_raw < 0) { it_fail("T012", "ep create"); return; }
+    handle_id_t ep_h = (handle_id_t)ep_raw;
 
-    long dup_raw = it_sys2(SYS_HANDLE_DUP, ch_raw,
+    long dup_raw = it_sys2(SYS_HANDLE_DUP, ep_raw,
                            (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
     if (dup_raw < 0) {
-        it_close(&ch_h);
+        it_close(&ep_h);
         it_fail("T012", "dup"); return;
     }
     handle_id_t dup_h = (handle_id_t)dup_raw;
 
-    long ch2_raw = it_sys0(SYS_CHAN_CREATE);
-    if (ch2_raw < 0) {
+    long ep2_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep2_raw < 0) {
         it_close(&dup_h);
-        it_close(&ch_h);
-        it_fail("T012", "ch2 create"); return;
+        it_close(&ep_h);
+        it_fail("T012", "ep2 create"); return;
     }
-    handle_id_t ch2_h = (handle_id_t)ch2_raw;
+    handle_id_t ep2_h = (handle_id_t)ep2_raw;
 
-    /* ch_h and dup_h → same object */
-    long same = it_sys2(SYS_HANDLE_SAME_OBJECT, ch_raw, dup_raw);
-    /* ch_h and ch2_h → different objects */
-    long diff = it_sys2(SYS_HANDLE_SAME_OBJECT, ch_raw, ch2_raw);
+    /* ep_h and dup_h → same object */
+    long same = it_sys2(SYS_HANDLE_SAME_OBJECT, ep_raw, dup_raw);
+    /* ep_h and ep2_h → different objects */
+    long diff = it_sys2(SYS_HANDLE_SAME_OBJECT, ep_raw, ep2_raw);
 
-    it_close(&ch2_h);
+    it_close(&ep2_h);
     it_close(&dup_h);
-    it_close(&ch_h);
+    it_close(&ep_h);
 
     if (same == 1 && diff == 0)
         it_pass("T012");
@@ -2427,10 +2275,11 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t001();
     test_t002();
     test_t003();
-    test_t004();
-    test_t005();
-    test_t006();
-    test_t007();
+    /* T004-T007 retired (Fase 13/Track F): the KChannel send/recv, NB-recv,
+     * recv-timeout and seal/close semantics are covered by the endpoint /
+     * notification equivalents — T015 (EP_SEND/RECV), T014 (EP_NB_RECV empty
+     * → WOULD_BLOCK), T016 (EP_CALL/REPLY), T019 (endpoint close wakes a
+     * blocked recv) and T010 (NOTIFY_WAIT_TIMEOUT → TIMED_OUT). */
     test_t008();
     test_t009();
     test_t010();

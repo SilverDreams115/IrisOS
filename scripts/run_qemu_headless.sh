@@ -164,26 +164,12 @@ fi
 # Fase 13 (Track E/F): legacy KChannel DIAG marker retired — diagnostics are
 # now served over IRIS_SVCMGR_EP_DIAG and covered by runtime test T067.
 
-if ! grep -Fq "[USER][INIT][TIMED] recv timeout OK" "$LOG_FILE"; then
-  echo "[headless] missing timed-IPC selftest marker"
-  cat "$LOG_FILE"
-  exit 1
-fi
+# Fase 13 (Track F): the init TIMED / S9 (channel seal) / S10 (rights reduction)
+# KChannel selftests are retired — their coverage moved to iris_test endpoint /
+# notification / cap-transfer tests (T010/T019/T052/T064).
 
 if ! grep -Fq "[USER][INIT][S8] exception delivery OK" "$LOG_FILE"; then
   echo "[headless] missing exception delivery selftest marker"
-  cat "$LOG_FILE"
-  exit 1
-fi
-
-if ! grep -Fq "[USER][INIT][S9] channel seal OK" "$LOG_FILE"; then
-  echo "[headless] missing channel-seal selftest marker"
-  cat "$LOG_FILE"
-  exit 1
-fi
-
-if ! grep -Fq "[USER][INIT][S10] rights reduction OK" "$LOG_FILE"; then
-  echo "[headless] missing rights-reduction selftest marker"
   cat "$LOG_FILE"
   exit 1
 fi
