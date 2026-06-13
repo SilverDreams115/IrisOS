@@ -120,12 +120,8 @@ static void vfs_copy_cstr(char *dst, const uint8_t *src, uint32_t len) {
     for (i++; i < VFS_EP_PATH_MAX; i++) dst[i] = '\0';
 }
 
-static handle_id_t vfs_bootstrap_handle(struct KChanMsg *msg) {
-    if (!msg) return HANDLE_INVALID;
-    if (msg->type != SVCMGR_MSG_BOOTSTRAP_HANDLE) return HANDLE_INVALID;
-    if (msg->attached_handle == HANDLE_INVALID) return HANDLE_INVALID;
-    return msg->attached_handle;
-}
+/* Fase 13 (Track C): vfs_bootstrap_handle retired — the initrd spawn cap now
+ * arrives as the IRIS_CPTR_SPAWN_CAP pre-start mint, no KChannel one-shot. */
 
 static int vfs_seed_one_export(struct vfs_export *export_file,
                                const char *name,
@@ -234,7 +230,6 @@ static void vfs_ep_serve(struct vfs_state *state, struct IrisMsg *req) {
 
 void vfs_server_main_c(handle_id_t bootstrap_h) {
     struct vfs_state state;
-    struct KChanMsg msg;
 
     for (uint32_t i = 0; i < (uint32_t)sizeof(state); i++) ((uint8_t *)&state)[i] = 0;
     state.bootstrap_h = bootstrap_h;
@@ -244,35 +239,13 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
 
     vfs_log(vfs_str_started);
 
-    /* Fase 8: everything except the initrd spawn cap arrives as well-known
-     * CSpace slots — slot 5 is our endpoint's recv side (kind 0x21
-     * retired), slot 3 the console endpoint (kind 0x20 + lookup retired).
-     * The bootstrap one-shot below remains ONLY for the initrd
-     * KBootstrapCap: bootstrap caps are outside the dual resolver (see
-     * endpoint_proto.h), the documented handle boundary. */
+    /* Fase 8/13: every cap arrives as a well-known pre-start CSpace slot —
+     * slot 5 our endpoint recv side, slot 3 the console endpoint, and (Track C)
+     * slot 6 the initrd-access spawn KBootstrapCap.  The spawn cap resolves
+     * through the device-cap dual resolver, so SYS_INITRD_* accept it by CPtr;
+     * no bootstrap KChannel one-shot is needed. */
     state.ep_h = (handle_id_t)IRIS_CPTR_OWN_EP;
-
-    while (state.spawn_cap_h == HANDLE_INVALID) {
-        {
-            uint8_t *raw = (uint8_t *)&msg;
-            for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
-        }
-        if (vfs_syscall2(SYS_CHAN_RECV, state.bootstrap_h, (uint64_t)(uintptr_t)&msg) != IRIS_OK)
-            goto fail;
-
-        if (vfs_bootstrap_handle(&msg) == HANDLE_INVALID)
-            goto fail;
-
-        switch (svcmgr_proto_read_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND])) {
-            case SVCMGR_BOOTSTRAP_KIND_INITRD_CAP:
-                state.spawn_cap_h = msg.attached_handle;
-                break;
-            default:
-                /* Unknown kind: close attached handle and keep receiving. */
-                vfs_close_handle_if_valid(&msg.attached_handle);
-                break;
-        }
-    }
+    state.spawn_cap_h = (handle_id_t)IRIS_CPTR_SPAWN_CAP;
 
     /* Fase 8: console output goes through the minted console-endpoint
      * slot; a PING proves the slot is live before the gated marker. */
@@ -293,7 +266,8 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
 
     if (!vfs_seed_exports(&state)) goto fail;
     vfs_seed_initrd_exports(&state);
-    vfs_close_handle_if_valid(&state.spawn_cap_h);
+    /* spawn_cap_h is the IRIS_CPTR_SPAWN_CAP CSpace slot, not an owned handle —
+     * it is reaped with the address space, nothing to close here (Track C). */
     vfs_log(vfs_str_boot_ok);
     vfs_close_handle_if_valid(&state.bootstrap_h);
     vfs_log(vfs_str_ep_ready);

@@ -247,6 +247,11 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 #define IRIS_CPTR_CONSOLE_EP  ((uint64_t)3)
 #define IRIS_CPTR_KBD_EP      ((uint64_t)4)
 #define IRIS_CPTR_OWN_EP      ((uint64_t)5)
+/* Fase 13 (Track C): the initrd-access KBootstrapCap (SPAWN_SERVICE) is minted
+ * into this slot before the child starts — replaces the post-spawn KChannel
+ * SVCMGR_BOOTSTRAP_KIND_INITRD_CAP delivery.  Resolves via the device-cap dual
+ * resolver (cspace_or_handle_resolve_obj), so SYS_INITRD_* accept it by CPtr. */
+#define IRIS_CPTR_SPAWN_CAP   ((uint64_t)6)
 #define IRIS_CPTR_IRQ_NOTIFY  ((uint64_t)7)
 #define IRIS_CPTR_TEST_FIX_A  ((uint64_t)30)
 #define IRIS_CPTR_TEST_FIX_B  ((uint64_t)31)

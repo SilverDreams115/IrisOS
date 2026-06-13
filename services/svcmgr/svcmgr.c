@@ -556,38 +556,8 @@ static int64_t svcmgr_send_irqcap(handle_id_t child_boot_h, handle_id_t master_h
     return IRIS_OK;
 }
 
-static int64_t svcmgr_send_spawn_cap(handle_id_t child_boot_h, handle_id_t master_h) {
-    struct KChanMsg msg;
-    int64_t dup_h;
-
-    if (master_h == HANDLE_INVALID) return (int64_t)IRIS_ERR_INVALID_ARG;
-
-    dup_h = svcmgr_syscall2(SYS_HANDLE_DUP, master_h, RIGHT_READ | RIGHT_TRANSFER);
-    if (dup_h < 0) {
-        svcmgr_log(sm_str_bootdupfail);
-        return dup_h;
-    }
-
-    {
-        uint8_t *raw = (uint8_t *)&msg;
-        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
-    }
-    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                           SVCMGR_BOOTSTRAP_KIND_INITRD_CAP);
-    msg.data_len = SVCMGR_BOOTSTRAP_MSG_LEN;
-    msg.attached_handle = (handle_id_t)dup_h;
-    msg.attached_rights = RIGHT_READ;
-
-    if (svcmgr_syscall2(SYS_CHAN_SEND, child_boot_h, (uint64_t)(uintptr_t)&msg) < 0) {
-        handle_id_t tmp = (handle_id_t)dup_h;
-        svcmgr_close_handle_if_valid(&tmp);
-        svcmgr_log(sm_str_bootsendfail);
-        return (int64_t)IRIS_ERR_WOULD_BLOCK;
-    }
-
-    return IRIS_OK;
-}
+/* Fase 13 (Track C): svcmgr_send_spawn_cap retired — the initrd spawn cap is
+ * now delivered as the IRIS_CPTR_SPAWN_CAP pre-start mint. */
 
 /* ── EP-based service discovery path ────────────────────────────────────
  *
@@ -933,14 +903,9 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
         }
     }
 
-    /* Forward spawn cap to services that need to access initrd VMOs (e.g. VFS). */
-    if (manifest->give_spawn_cap && state->spawn_cap_h != HANDLE_INVALID) {
-        r = svcmgr_send_spawn_cap(child_boot_h, state->spawn_cap_h);
-        if (r != IRIS_OK) {
-            svcmgr_close_handle_if_valid(&child_boot_h);
-            return r;
-        }
-    }
+    /* Fase 13 (Track C): the initrd spawn cap (KIND_INITRD_CAP) is retired
+     * from the bootstrap KChannel — it now arrives as the IRIS_CPTR_SPAWN_CAP
+     * pre-start mint (svcmgr_build_core_mints). */
 
     /* Fase 8: kind 0x20 (SVCMGR_EP) retired — every catalog child gets the
      * discovery endpoint as a CSpace mint at IRIS_CPTR_SVCMGR_EP. */
@@ -957,7 +922,7 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
  * is consumed by svc_load_minted, which mints BEFORE the child's first
  * thread starts — no bootstrap-message barrier is needed.
  */
-#define SVCMGR_CORE_MINT_MAX 6u
+#define SVCMGR_CORE_MINT_MAX 7u
 static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
                                         const struct iris_service_catalog_entry *manifest,
                                         struct svc_mint *mints) {
@@ -1008,6 +973,16 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         mints[n].slot = IRIS_CPTR_IRQ_NOTIFY;
         mints[n].src_h = svc->irq_notif_h;
         mints[n].rights = RIGHT_WAIT;
+        mints[n].badge = 0;
+        n++;
+    }
+    /* Fase 13 (Track C): the initrd-access spawn cap (vfs) arrives as a
+     * pre-start CSpace mint instead of a post-spawn KChannel INITRD_CAP
+     * message.  RIGHT_READ matches the legacy delivery; unbadged. */
+    if (manifest->give_spawn_cap && state->spawn_cap_h != HANDLE_INVALID) {
+        mints[n].slot = IRIS_CPTR_SPAWN_CAP;
+        mints[n].src_h = state->spawn_cap_h;
+        mints[n].rights = RIGHT_READ;
         mints[n].badge = 0;
         n++;
     }
