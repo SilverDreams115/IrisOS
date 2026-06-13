@@ -161,11 +161,8 @@ if ! grep -Fq "[USER] vfs ep read OK" "$LOG_FILE"; then
   exit 1
 fi
 
-if ! grep -Fq "[USER][INIT][DIAG] reply" "$LOG_FILE"; then
-  echo "[headless] missing init diag reply marker"
-  cat "$LOG_FILE"
-  exit 1
-fi
+# Fase 13 (Track E/F): legacy KChannel DIAG marker retired — diagnostics are
+# now served over IRIS_SVCMGR_EP_DIAG and covered by runtime test T067.
 
 if ! grep -Fq "[USER][INIT][TIMED] recv timeout OK" "$LOG_FILE"; then
   echo "[headless] missing timed-IPC selftest marker"
@@ -232,11 +229,8 @@ if [ "$EXPECT_SELFTESTS" = "1" ]; then
     cat "$LOG_FILE"
     exit 1
   fi
-  if ! grep -Fq "[SVCMGR][DIAG] kbd status OK" "$LOG_FILE"; then
-    echo "[headless] missing svcmgr kbd diag marker"
-    cat "$LOG_FILE"
-    exit 1
-  fi
+  # Fase 13 (Track E/F): legacy svcmgr KChannel DIAG kbd-status aggregation
+  # retired; svcmgr diagnostics are served over IRIS_SVCMGR_EP_DIAG (T067).
 fi
 
 if [ "$qemu_rc" -ne 0 ] && [ "$qemu_rc" -ne 124 ]; then
