@@ -822,26 +822,9 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         mints[n].badge = 0;
         n++;
     }
-    /* Fase 13 (Track C): the legacy handle-boundary caps for a non-endpoint_only
-     * service (kbd) — its service/reply KChannel pair and KIoPort/KIrqCap device
-     * caps — arrive as pre-start mints instead of post-spawn KChannel sends.
-     * Rights mirror the retired svcmgr_send_* helpers; all unbadged. */
-    if (!manifest->endpoint_only && svc) {
-        if (svc->public_h != HANDLE_INVALID) {
-            mints[n].slot = IRIS_CPTR_SVC_CHAN;
-            mints[n].src_h = svc->public_h;
-            mints[n].rights = manifest->child_service_rights;
-            mints[n].badge = 0;
-            n++;
-        }
-        if (svc->reply_h != HANDLE_INVALID) {
-            mints[n].slot = IRIS_CPTR_SVC_REPLY;
-            mints[n].src_h = svc->reply_h;
-            mints[n].rights = manifest->child_reply_rights;
-            mints[n].badge = 0;
-            n++;
-        }
-    }
+    /* Fase 13 (Track I): the legacy service/reply KChannel pair (IRIS_CPTR_SVC_CHAN
+     * / SVC_REPLY) is retired — every catalog service is endpoint_only, so no
+     * service-channel mint is emitted.  Device caps (KIoPort/KIrqCap) below. */
     if (manifest->ioport_count > 0u &&
         manifest->service_id < SVCMGR_IOPORT_CAPS_TABLE_SIZE &&
         state->ioport_caps[manifest->service_id] != HANDLE_INVALID) {
@@ -974,8 +957,6 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
                                 const struct iris_service_catalog_entry *manifest) {
     struct svcmgr_service_state *svc;
     handle_id_t child_boot_h = HANDLE_INVALID;
-    int64_t public_h = HANDLE_INVALID;
-    int64_t reply_h = HANDLE_INVALID;
     int64_t proc_h;
 
     if (!manifest) {
@@ -1007,31 +988,15 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
         svc->irq_notif_h = (nr >= 0) ? (handle_id_t)nr : HANDLE_INVALID;
     }
 
-    /* endpoint_only services (Fase 7.5: vfs) get no legacy KChannel pair —
-     * their KEndpoint is the whole service surface. */
-    if (!manifest->endpoint_only) {
-        public_h = svcmgr_syscall0(SYS_CHAN_CREATE);
-        if (public_h < 0) {
-            svcmgr_log(sm_str_spawnfail);
-            return;
-        }
-        svc->public_h = (handle_id_t)public_h;
-    }
+    /* Fase 13 (Track I): every catalog service is endpoint_only now — the
+     * legacy service/reply KChannel pair is fully retired (no SYS_CHAN_CREATE).
+     * Each service's KEndpoint (+ IRQ notification for kbd) is its whole
+     * surface. */
 
     if (!manifest->image_name) {
         svcmgr_clear_service_masters(state, manifest->service_id);
         svcmgr_log(sm_str_svc_unknown);
         return;
-    }
-
-    if (!manifest->endpoint_only) {
-        reply_h = svcmgr_syscall0(SYS_CHAN_CREATE);
-        if (reply_h < 0) {
-            svcmgr_clear_service_masters(state, manifest->service_id);
-            svcmgr_log(sm_str_spawnfail);
-            return;
-        }
-        svc->reply_h = (handle_id_t)reply_h;
     }
 
     {
@@ -1062,7 +1027,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
         svcmgr_log(sm_str_bootfail);
     }
 
-    if (!svcmgr_track_spawn(state, manifest, (handle_id_t)proc_h, (handle_id_t)public_h)) {
+    if (!svcmgr_track_spawn(state, manifest, (handle_id_t)proc_h, HANDLE_INVALID)) {
         svcmgr_clear_service_masters(state, manifest->service_id);
     }
 }

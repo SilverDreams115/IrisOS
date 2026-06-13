@@ -83,11 +83,9 @@ if ! grep -Fq "[USER][INIT][BOOT] healthy path OK" "$LOG_FILE"; then
   exit 1
 fi
 
-if ! grep -Fq "[USER] kbd shared reply OK" "$LOG_FILE"; then
-  echo "[headless] missing shared-reply guard marker"
-  cat "$LOG_FILE"
-  exit 1
-fi
+# Fase 13 (Track I): the init "[USER] kbd shared reply OK" legacy-KChannel probe
+# is retired — kbd is endpoint-only. kbd.ep liveness is covered by
+# "[SH] kbd cptr OK" plus iris_test T034/T035/T044/T058.
 
 if ! grep -Fq "VFS ready" "$LOG_FILE"; then
   echo "[headless] missing VFS ready marker"

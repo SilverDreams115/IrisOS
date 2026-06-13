@@ -2,30 +2,24 @@
  * main.S — keyboard service, ring 3 (standalone ELF binary).
  *
  * Entry contract (ELF process bootstrap):
- *   RBX = private bootstrap channel handle from svcmgr (closed at startup,
- *         unused — Fase 13/Track C delivers every cap as a pre-start CSpace
- *         slot, see endpoint_proto.h IRIS_CPTR_*).
+ *   RBX = bootstrap channel handle from the loader (closed at startup, unused —
+ *         every cap is a pre-start CSpace slot, see endpoint_proto.h IRIS_CPTR_*).
+ *
+ * Fase 13/Track I: kbd is endpoint + IRQ-notification only — the legacy
+ * service/reply KChannel pair (HELLO/STATUS/SUBSCRIBE) is fully retired.
  *
  * Startup sequence:
  *   1. close the (unused) bootstrap channel
- *   2. resolve service/reply KChannel slots (8/9) to handles
- *   3. adopt KIoPort/KIrqCap CPtr slots (10/11) directly
- *   4. enter recv loop on the service handle
+ *   2. adopt the CPtr slots: kbd.ep recv (5), IRQ notification (7),
+ *      KIoPort (10, r14), KIrqCap (11, rbx)
+ *   3. enter the endpoint+notification loop
  *
- * Service discovery and handle delivery is owned entirely by svcmgr.
- * kbd does not call any nameserver or kernel registry directly.
- *
- * Protocol: iris/kbd_proto.h
- *   Requests arrive on the service/IRQ channel (r13).
- *   Replies are sent over the reply channel (r12).
- *   Hardware IRQ scancodes arrive via the IRQ KNotification (Fase 7.6);
- *   r13 only carries init/svcmgr HELLO/STATUS/SUBSCRIBE probes.
- *
- * Bootstrap framing: iris/svcmgr_proto.h  (SVCMGR_MSG_BOOTSTRAP_HANDLE)
+ * Protocol: iris/kbd_ep_proto.h (KBD_EP_OP_POLL/READ + IRIS_EP_OP_PING).
+ *   Clients pull scancodes via the endpoint; the IRQ KNotification feeds the
+ *   scancode ring and answers a parked blocking READ.  Service discovery and
+ *   cap delivery is owned entirely by svcmgr/init (no nameserver calls).
  */
 #include <iris/syscall.h>
-#include <iris/svcmgr_proto.h>
-#include <iris/kbd_proto.h>
 #include <iris/kbd_ep_proto.h>
 
 .global _start
@@ -54,10 +48,7 @@ kbd_notif_bits: .skip 8
 
 .section .text._start
 _start:
-    movq  $0, %r12                     /* reply channel handle (from svcmgr) */
-    movq  $0, %r13                     /* service/IRQ channel handle          */
-    movq  $0, %r14                     /* KIoPort handle (from svcmgr)        */
-    movq  $0, %r15                     /* subscriber channel handle (0 = none) */
+    movq  $0, %r14                     /* KIoPort CPtr (set in bootstrap)     */
 
     subq  $128, %rsp
     andq  $~0xFULL, %rsp
@@ -77,44 +68,25 @@ _start:
     movq  $0,    %rax
     syscall
 
-/* ── Fase 8: CPtr well-known slots — minted before we run ────────────────
- * kbd_ep_h    = IRIS_CPTR_OWN_EP (5):     recv side of "kbd.ep"
+/* ── Fase 13 (Track I): endpoint/notification-only — all caps are CPtr slots ──
+ * kbd_ep_h    = IRIS_CPTR_OWN_EP   (5):  recv side of "kbd.ep"
  * kbd_notif_h = IRIS_CPTR_IRQ_NOTIFY (7): WAIT side of the IRQ notification
- * Bootstrap kinds 0x21/0x23 are retired; the channel below only delivers
- * the handle-boundary caps (service/reply KChannels, KIoPort, KIrqCap). */
+ * r14         = IRIS_CPTR_IOPORT  (10):  KIoPort (CPtr; SYS_IOPORT_IN/OUT)
+ * rbx         = IRIS_CPTR_IRQ_CAP (11):  KIrqCap (CPtr; SYS_IRQ_ACK)
+ * The legacy service/reply KChannel pair (slots 8/9) is retired — kbd no
+ * longer serves HELLO/STATUS/SUBSCRIBE; clients use the endpoint (POLL/READ/
+ * PING) and the IRQ notification feeds the scancode ring. */
     movl  $5, kbd_ep_h(%rip)
     movl  $7, kbd_notif_h(%rip)
 
-/* ── Fase 13 (Track C): bootstrap caps as pre-start CSpace slots ─────────────
- * No bootstrap KChannel recv loop.  Resolve the legacy service/reply KChannels
- * to handle-table handles (CHAN_RECV/SEND require handles); the KIoPort/KIrqCap
- * device caps stay CPtrs — SYS_IOPORT_IN / SYS_IRQ_ACK accept them via the
- * device-cap dual resolver.
- *   slot 8  IRIS_CPTR_SVC_CHAN  → r13 (service/IRQ probe channel)
- *   slot 9  IRIS_CPTR_SVC_REPLY → r12 (reply channel)
- *   slot 10 IRIS_CPTR_IOPORT    → r14 (CPtr)
- *   slot 11 IRIS_CPTR_IRQ_CAP   → rbx (CPtr, SYS_IRQ_ACK) */
-    /* release the now-unused bootstrap KChannel (entry RBX) before reusing rbx */
+    /* release the unused bootstrap KChannel handle (entry RBX) BEFORE rbx is
+     * reused for the irqcap CPtr — the bootstrap channel carries nothing now. */
     movq  $SYS_HANDLE_CLOSE, %rax
     movq  %rbx, %rdi
     syscall
 
-    movq  $SYS_CSPACE_RESOLVE, %rax
-    movq  $8,   %rdi                   /* IRIS_CPTR_SVC_CHAN  */
-    syscall
-    testq %rax, %rax
-    js    .kbd_bootstrap_fail
-    movq  %rax, %r13
-
-    movq  $SYS_CSPACE_RESOLVE, %rax
-    movq  $9,   %rdi                   /* IRIS_CPTR_SVC_REPLY */
-    syscall
-    testq %rax, %rax
-    js    .kbd_bootstrap_fail
-    movq  %rax, %r12
-
-    movq  $10,  %r14                   /* IRIS_CPTR_IOPORT  (CPtr) */
-    movq  $11,  %rbx                   /* IRIS_CPTR_IRQ_CAP (CPtr) */
+    movq  $10, %r14                    /* IRIS_CPTR_IOPORT  (CPtr) */
+    movq  $11, %rbx                    /* IRIS_CPTR_IRQ_CAP (CPtr) */
 
 /* ── PS/2 flush: drain controller output buffer before entering main loop ── */
 /* SYS_IOPORT_IN(r14, 4) reads port 0x64 (status); bit 0 = OBF (data ready).
@@ -181,17 +153,16 @@ _start:
     movq  $0,    %rax
     syscall
 
-/* ── Main service loop (Fase 7.4) ─────────────────────────────────────────
- * Multiplexes two sources without ever blocking event delivery:
+/* ── Main service loop (Fase 13/Track I: endpoint + IRQ notification only) ──
  *   1. drain all pending endpoint requests (SYS_EP_NB_RECV);
- *   2. wait on the legacy service/IRQ KChannel with a 10 ms timeout so the
- *      endpoint drain keeps running even with no channel traffic.
+ *   2. block on the IRQ KNotification (10 ms timeout) so the endpoint drain
+ *      keeps running even with no key traffic.
  */
 .kbd_recv:
 .kbd_ep_drain:
     movl  kbd_ep_h(%rip), %edi
     testl %edi, %edi
-    jz    .kbd_chan_wait               /* no endpoint granted: legacy only */
+    jz    .kbd_wait                    /* no endpoint granted: wait on IRQ */
     leaq  kbd_ep_msg(%rip), %rsi       /* zero IrisMsg, stage bulk buffer  */
     movq  $0,  0(%rsi)
     movq  $0,  8(%rsi)
@@ -206,7 +177,7 @@ _start:
     movq  $SYS_EP_NB_RECV, %rax
     syscall
     testq %rax, %rax
-    jnz   .kbd_chan_wait               /* WOULD_BLOCK/err: nothing pending */
+    jnz   .kbd_wait               /* WOULD_BLOCK/err: nothing pending */
 
     leaq  kbd_ep_msg(%rip), %rsi
     movl  56(%rsi), %eax               /* per-call KReply capability       */
@@ -309,29 +280,11 @@ _start:
     syscall
     jmp   .kbd_ep_drain
 
-/* ── Legacy service/IRQ channel (10 ms timeout keeps the EP drain alive) ── */
-/* Legacy probes (HELLO/STATUS/SUBSCRIBE) are drained non-blocking; the only
- * blocking point is the IRQ KNotification (10 ms timeout keeps the EP and
- * channel drains alive). Fase 7.6: no KChannel IRQ delivery remains. */
-.kbd_chan_wait:
-    movq  $0,  0(%rsp)
-    movq  $0,  8(%rsp)
-    movq  $0, 16(%rsp)
-    movq  $0, 24(%rsp)
-    movq  $0, 32(%rsp)
-    movq  $0, 40(%rsp)
-    movq  $0, 48(%rsp)
-    movq  $0, 56(%rsp)
-    movq  $0, 64(%rsp)
-    movq  $0, 72(%rsp)
-    movq  $0, 80(%rsp)
-    movq  $SYS_CHAN_RECV_NB, %rax
-    movq  %r13,  %rdi
-    movq  %rsp,  %rsi
-    syscall
-    testq %rax,  %rax
-    jz    .kbd_chan_msg                /* got a legacy probe: dispatch     */
-
+/* ── Wait on the IRQ KNotification (Fase 13/Track I) ──────────────────────
+ * The endpoint drain above is non-blocking; the only blocking point is the IRQ
+ * KNotification (10 ms timeout so the EP drain keeps running with no key
+ * traffic).  No legacy service KChannel — clients use the endpoint. */
+.kbd_wait:
     movl  kbd_notif_h(%rip), %edi      /* block on the IRQ notification    */
     testl %edi, %edi
     jz    .kbd_recv
@@ -342,30 +295,6 @@ _start:
     testq %rax,  %rax
     jz    .kbd_scancode                /* IRQ fired: consume the byte      */
     jmp   .kbd_recv                    /* TIMED_OUT/err: quiet loop        */
-.kbd_chan_msg:
-
-    leaq  96(%rsp), %rdi
-    movb  $'K',  0(%rdi)
-    movb  $'B',  1(%rdi)
-    movb  $'D',  2(%rdi)
-    movb  $' ',  3(%rdi)
-    movb  $'r',  4(%rdi)
-    movb  $'e',  5(%rdi)
-    movb  $'c',  6(%rdi)
-    movb  $'v',  7(%rdi)
-    movb  $'\n', 8(%rdi)
-    movb  $0,    9(%rdi)
-    movq  $0,    %rax
-    syscall
-
-    /* Dispatch on message type */
-    cmpl  $KBD_MSG_HELLO,        0(%rsp)
-    je    .kbd_hello
-    cmpl  $KBD_MSG_STATUS,       0(%rsp)
-    je    .kbd_status
-    cmpl  $KBD_MSG_SUBSCRIBE,    0(%rsp)
-    je    .kbd_subscribe
-    jmp   .kbd_recv                    /* unknown type: silently ignore */
 
 /* ── Scancode path: woken by the IRQ KNotification (Fase 7.6) ────────────
  * The kernel masks IRQ1, signals the notification and EOIs; ring-3 reads
@@ -450,7 +379,7 @@ _start:
     movq  $15, %rax                    /* SYS_HANDLE_CLOSE: drop reply cap */
     syscall
     movl  $0, kbd_park(%rip)
-    jmp   .kbd_irq_legacy
+    jmp   .kbd_recv
 .kbd_irq_ring:                         /* push; drop OLDEST when full      */
     movzbl 88(%rsp), %eax
     movl  kbd_ring_head(%rip), %ecx
@@ -461,181 +390,15 @@ _start:
     movl  %ecx, kbd_ring_head(%rip)
     movl  kbd_ring_count(%rip), %ecx
     cmpl  $KBD_EP_RING_CAP, %ecx
-    jae   .kbd_irq_legacy              /* full: head advanced over oldest  */
+    jae   .kbd_recv                    /* full: head advanced over oldest  */
     incl  %ecx
     movl  %ecx, kbd_ring_count(%rip)
-.kbd_irq_legacy:
-    /* Forward scancode to legacy subscriber if one is registered (init's
-     * S7 path; sh is endpoint-only since Fase 7.4). */
-    testq %r15,  %r15
-    jz    .kbd_recv
-    movzbl 88(%rsp), %r11d             /* reload scancode (captured from KIoPort) */
-    movq  $0,  0(%rsp)
-    movq  $0,  8(%rsp)
-    movq  $0, 16(%rsp)
-    movq  $0, 24(%rsp)
-    movq  $0, 32(%rsp)
-    movq  $0, 40(%rsp)
-    movq  $0, 48(%rsp)
-    movq  $0, 56(%rsp)
-    movq  $0, 64(%rsp)
-    movq  $0, 72(%rsp)
-    movq  $0, 80(%rsp)
-    movl  $KBD_MSG_SCANCODE_EVENT,     0(%rsp)   /* type                      */
-    movb  %r11b,                       8(%rsp)   /* data[0] = raw scancode    */
-    movl  $KBD_MSG_SCANCODE_EVENT_LEN, 72(%rsp)  /* data_len = 1              */
-    movq  $13,   %rax                  /* SYS_CHAN_SEND */
-    movq  %r15,  %rdi
-    movq  %rsp,  %rsi
-    movq  $0,    %rdx
-    syscall
-    testq %rax,  %rax
-    jz    .kbd_recv                    /* send OK: loop                        */
-    movq  $15,   %rax                  /* SYS_HANDLE_CLOSE: subscriber gone    */
-    movq  %r15,  %rdi
-    syscall
-    movq  $0,    %r15
     jmp   .kbd_recv
 
-/* ── KBD_MSG_HELLO: liveness probe ──────────────────────────────────────── */
-.kbd_hello:
-    leaq  96(%rsp), %rdi
-    movb  $'K',  0(%rdi)
-    movb  $'B',  1(%rdi)
-    movb  $'D',  2(%rdi)
-    movb  $' ',  3(%rdi)
-    movb  $'b',  4(%rdi)
-    movb  $'o',  5(%rdi)
-    movb  $'o',  6(%rdi)
-    movb  $'t',  7(%rdi)
-    movb  $'s',  8(%rdi)
-    movb  $'t',  9(%rdi)
-    movb  $'r', 10(%rdi)
-    movb  $'a', 11(%rdi)
-    movb  $'p', 12(%rdi)
-    movb  $' ', 13(%rdi)
-    movb  $'O', 14(%rdi)
-    movb  $'K', 15(%rdi)
-    movb  $'\n',16(%rdi)
-    movb  $0,   17(%rdi)
-    movq  $0,    %rax
-    syscall
-
-    /* Build KBD_MSG_HELLO_REPLY:
-     *   type     = KBD_MSG_HELLO_REPLY  (0x80020001)
-     *   data[0..3]: err = 0 (int32, OK)
-     *   data_len = KBD_MSG_HELLO_REPLY_LEN (4)
-     */
-    movq  $0,  0(%rsp)
-    movq  $0,  8(%rsp)
-    movq  $0, 16(%rsp)
-    movq  $0, 24(%rsp)
-    movq  $0, 32(%rsp)
-    movq  $0, 40(%rsp)
-    movq  $0, 48(%rsp)
-    movq  $0, 56(%rsp)
-    movq  $0, 64(%rsp)
-    movq  $0, 72(%rsp)
-    movq  $0, 80(%rsp)
-    movl  $KBD_MSG_HELLO_REPLY,       0(%rsp)   /* type                  */
-    movl  $0,                         8(%rsp)   /* data[0..3]: err = 0   */
-    movl  $KBD_MSG_HELLO_REPLY_LEN,  72(%rsp)   /* data_len = 4          */
-
-    movq  $13,   %rax                  /* SYS_CHAN_SEND */
-    movq  %r12,  %rdi
-    movq  %rsp,  %rsi
-    movq  $0,    %rdx
-    syscall
-    jmp   .kbd_recv
-
-.kbd_recv_err:
-    leaq  96(%rsp), %rdi
-    movb  $'K',  0(%rdi)
-    movb  $'B',  1(%rdi)
-    movb  $'D',  2(%rdi)
-    movb  $' ',  3(%rdi)
-    movb  $'r',  4(%rdi)
-    movb  $'e',  5(%rdi)
-    movb  $'c',  6(%rdi)
-    movb  $'v',  7(%rdi)
-    movb  $' ',  8(%rdi)
-    movb  $'E',  9(%rdi)
-    movb  $'R', 10(%rdi)
-    movb  $'R', 11(%rdi)
-    movb  $'\n',12(%rdi)
-    movb  $0,   13(%rdi)
-    movq  $0,    %rax
-    syscall
-    jmp   .kbd_recv
-
-/* ── KBD_MSG_STATUS: controller status query ─────────────────────────────
- * Build KBD_MSG_STATUS_REPLY:
- *   type        = KBD_MSG_STATUS_REPLY  (0x80020002)
- *   data[0..3]: err   = 0 (int32, OK)
- *   data[4..7]: flags = KBD_STATUS_NORMAL (KBD_STATUS_READY | KBD_STATUS_PS2_OK)
- *   data_len    = KBD_MSG_STATUS_REPLY_LEN (8)
- */
-.kbd_status:
-    movl  76(%rsp), %r11d                /* preserve optional reply handle */
-    movl  %r11d, 88(%rsp)
-    movq  $0,  0(%rsp)
-    movq  $0,  8(%rsp)
-    movq  $0, 16(%rsp)
-    movq  $0, 24(%rsp)
-    movq  $0, 32(%rsp)
-    movq  $0, 40(%rsp)
-    movq  $0, 48(%rsp)
-    movq  $0, 56(%rsp)
-    movq  $0, 64(%rsp)
-    movq  $0, 72(%rsp)
-    movq  $0, 80(%rsp)
-    movl  $KBD_MSG_STATUS_REPLY,          0(%rsp)  /* type                      */
-    movl  $0,                             8(%rsp)  /* data[0..3]: err = 0       */
-    movl  $KBD_STATUS_NORMAL,            12(%rsp)  /* data[4..7]: flags         */
-    movl  $KBD_MSG_STATUS_REPLY_LEN,     72(%rsp)  /* data_len = 8              */
-
-    movl  88(%rsp), %edi                 /* optional transferred reply handle */
-    testl %edi, %edi
-    jnz   .kbd_status_send
-    movq  %r12, %rdi                     /* fallback: shared reply channel */
-
-.kbd_status_send:
-    movq  $13,   %rax                  /* SYS_CHAN_SEND */
-    movq  %rsp,  %rsi
-    movq  $0,    %rdx
-    syscall
-    testl %edi, %edi
-    jz    .kbd_status_done
-    cmpq  %r12, %rdi
-    je    .kbd_status_done
-    movq  $15,   %rax
-    syscall
-
-.kbd_status_done:
-    jmp   .kbd_recv
-
-/* ── KBD_MSG_SUBSCRIBE: register a scancode event subscriber ────────────────
- * attached_handle (76(%rsp)): write end of a KChannel the client reads from.
- * A new SUBSCRIBE replaces the previous subscriber (old handle closed first).
- * handle = 0 means unsubscribe: close existing subscriber.
- * Fire-and-forget: no reply is emitted, avoiding cross-client reply races on
- * the shared kbd reply channel.
- */
-.kbd_subscribe:
-    movl  76(%rsp), %r11d               /* incoming subscriber handle          */
-    movl  %r11d,   88(%rsp)             /* stash in scratch slot (survives syscall) */
-    testq %r15, %r15
-    jz    .kbd_subscribe_store
-    movq  $15,   %rax                   /* SYS_HANDLE_CLOSE: close old sub     */
-    movq  %r15,  %rdi
-    syscall
-    movq  $0,    %r15
-.kbd_subscribe_store:
-    movl  88(%rsp), %r11d
-    movq  %r11,    %r15                 /* r15 = new subscriber (0 = none)     */
-    jmp   .kbd_recv
-
-/* ── Bootstrap failure ───────────────────────────────────────────────────── */
+/* ── Fase 13 (Track I): legacy KChannel handlers retired ──────────────────
+ * The HELLO/STATUS/SUBSCRIBE handlers, the .kbd_irq_legacy subscriber push and
+ * .kbd_recv_err are gone — kbd serves only the endpoint (POLL/READ/PING) and
+ * the IRQ notification.  Liveness is covered by clients' kbd.ep PING. */
 .kbd_bootstrap_fail:
     leaq  96(%rsp), %rdi
     movb  $'K',  0(%rdi)

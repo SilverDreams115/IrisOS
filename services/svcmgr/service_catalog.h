@@ -66,10 +66,12 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .give_console = 0u,
         .give_irqcap = 1u,
         /* Fase 7.4: kbd owns a KEndpoint ("kbd.ep"); sh pulls key events
-         * through it. Fase 7.6: the IRQ reaches kbd as a KNotification —
-         * the legacy channel pair only carries init/svcmgr HELLO/STATUS. */
+         * through it. Fase 7.6: the IRQ reaches kbd as a KNotification.
+         * Fase 13/Track I: the legacy service/reply KChannel pair is retired —
+         * kbd is endpoint-only (HELLO/STATUS/SUBSCRIBE gone). */
         .own_service_ep = 1u,
         .irq_notify = 1u,
+        .endpoint_only = 1u,
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_VFS,
