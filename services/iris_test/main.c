@@ -2304,6 +2304,38 @@ static void test_t066(void) {
     if (ok) it_pass("T066"); else it_fail("T066", "lookup after unregister");
 }
 
+/* ── Fase 12: endpoint-first svcmgr — DIAG over EP + no legacy fallback ──── */
+
+/* T067: svcmgr DIAG over the endpoint (replaces legacy KChannel SVCMGR_MSG_DIAG
+ * as the productive path) returns the expected catalog snapshot. */
+static void test_t067(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_SVCMGR_EP_DIAG;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK && msg.word_count >= 4u &&
+        msg.words[0] == 3u &&                       /* catalog: kbd/vfs/sh */
+        msg.words[1] >= 3u &&                       /* all core services ready */
+        msg.words[3] == (uint64_t)IRIS_SERVICE_CATALOG_VERSION)
+        it_pass("T067");
+    else
+        it_fail("T067", "ep diag snapshot");
+}
+
+/* T068: an unknown/malformed svcmgr EP opcode fails cleanly with INVALID_ARG —
+ * there is NO silent fallback to a legacy path and no hang/crash. */
+static void test_t068(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = UINT64_C(0xF0FE);                   /* not a real svcmgr opcode */
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+        msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)
+        it_pass("T068");
+    else
+        it_fail("T068", "unknown opcode no-fallback");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2427,6 +2459,8 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t064();
     test_t065();
     test_t066();
+    test_t067();
+    test_t068();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

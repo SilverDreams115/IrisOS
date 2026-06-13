@@ -517,39 +517,7 @@ static int64_t svcmgr_send_bootstrap_endpoint(handle_id_t child_boot_h,
     return IRIS_OK;
 }
 
-static int64_t svcmgr_send_console_cap(handle_id_t child_boot_h, handle_id_t console_h) {
-    struct KChanMsg msg;
-    int64_t dup_h;
-
-    if (console_h == HANDLE_INVALID) return (int64_t)IRIS_ERR_INVALID_ARG;
-
-    dup_h = svcmgr_syscall2(SYS_HANDLE_DUP, console_h,
-                            RIGHT_WRITE | RIGHT_TRANSFER);
-    if (dup_h < 0) {
-        svcmgr_log(sm_str_bootdupfail);
-        return dup_h;
-    }
-
-    {
-        uint8_t *raw = (uint8_t *)&msg;
-        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
-    }
-    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                           SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP);
-    msg.data_len = SVCMGR_BOOTSTRAP_MSG_LEN;
-    msg.attached_handle = (handle_id_t)dup_h;
-    msg.attached_rights = RIGHT_WRITE;
-
-    if (svcmgr_syscall2(SYS_CHAN_SEND, child_boot_h, (uint64_t)(uintptr_t)&msg) < 0) {
-        handle_id_t tmp = (handle_id_t)dup_h;
-        svcmgr_close_handle_if_valid(&tmp);
-        svcmgr_log(sm_str_bootsendfail);
-        return (int64_t)IRIS_ERR_WOULD_BLOCK;
-    }
-
-    return IRIS_OK;
-}
+/* Fase 12: svcmgr_send_console_cap retired with the give_console branch. */
 
 static int64_t svcmgr_send_ioport_cap(handle_id_t child_boot_h, handle_id_t master_h) {
     struct KChanMsg msg;
@@ -669,6 +637,10 @@ static uint8_t g_ep_recv_buf[IRIS_EP_SVCNAME_MAX];
  * SVCMGR_DYNAMIC_ID_BASE + slot_index so they never collide with the small
  * catalog ids (0..3) used by STATUS/RESTART. */
 #define SVCMGR_DYNAMIC_ID_BASE 0x40u
+
+/* Defined later; used by the EP DIAG handler (Fase 12). */
+static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state);
+static uint32_t svcmgr_active_slot_count(const struct svcmgr_state *state);
 
 /* Liveness of a catalog service per the kernel (Fase 10 STATUS oracle). */
 static int svcmgr_service_alive(struct svcmgr_state *state, uint32_t service_id) {
@@ -810,6 +782,17 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
         }
         break;
     }
+    case IRIS_SVCMGR_EP_DIAG: {
+        /* Fase 12: endpoint-native snapshot — the productive diagnostics path
+         * (replaces legacy KChannel SVCMGR_MSG_DIAG). No KChannel round-trip. */
+        reply.label      = IRIS_EP_REPLY_OK;
+        reply.words[0]   = (uint64_t)iris_service_catalog_count();
+        reply.words[1]   = (uint64_t)svcmgr_ready_service_count(state);
+        reply.words[2]   = (uint64_t)svcmgr_active_slot_count(state);
+        reply.words[3]   = (uint64_t)IRIS_SERVICE_CATALOG_VERSION;
+        reply.word_count = 4u;
+        break;
+    }
     case IRIS_SVCMGR_EP_RESTART: {
         /* Fase 10 PRIVILEGED: supervisor badges only. Kills the service; the
          * existing SYS_PROCESS_WATCH path respawns it and bumps generation. */
@@ -929,11 +912,9 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
 
     if (!svc) return IRIS_ERR_INVALID_ARG;
 
-    /* Send console channel FIRST so the child can store it before SERVICE/REPLY. */
-    if (manifest->give_console && state->console_h != HANDLE_INVALID) {
-        r = svcmgr_send_console_cap(child_boot_h, state->console_h);
-        if (r != IRIS_OK) return r;
-    }
+    /* Fase 12: the give_console bootstrap branch is retired — every catalog
+     * service has give_console=0 (children log via the console endpoint, not a
+     * forwarded KChannel console writer).  See svcmgr_send_console_cap removal. */
 
     /* endpoint_only services (Fase 7.5: vfs) have no legacy channel pair. */
     if (!manifest->endpoint_only) {
@@ -1072,16 +1053,6 @@ static int64_t svcmgr_send_lookup_reply(handle_id_t reply_h, uint32_t endpoint,
     return svcmgr_syscall2(SYS_CHAN_SEND, reply_h, (uint64_t)(uintptr_t)&msg);
 }
 
-static void svcmgr_send_status_reply(handle_id_t reply_h,
-                                     uint32_t manifest_count,
-                                     uint32_t ready_services,
-                                     uint32_t active_slots,
-                                     uint32_t catalog_version) {
-    struct KChanMsg msg;
-    svcmgr_proto_status_reply_init(&msg, IRIS_OK, manifest_count, ready_services,
-                                   active_slots, catalog_version);
-    (void)svcmgr_syscall2(SYS_CHAN_SEND, reply_h, (uint64_t)(uintptr_t)&msg);
-}
 
 static void svcmgr_send_diag_reply(handle_id_t reply_h,
                                    int32_t err,
@@ -1740,21 +1711,8 @@ static void svcmgr_handle_unregister(struct svcmgr_state *state, const struct KC
     svcmgr_log(sm_str_unregister_ok);
 }
 
-static void svcmgr_handle_status(struct svcmgr_state *state, const struct KChanMsg *msg) {
-    handle_id_t reply_h = msg ? msg->attached_handle : HANDLE_INVALID;
-
-    if (!svcmgr_proto_status_valid(msg)) {
-        svcmgr_log(sm_str_lookupfail);
-        return;
-    }
-
-    svcmgr_send_status_reply(reply_h,
-                             iris_service_catalog_count(),
-                             svcmgr_ready_service_count(state),
-                             svcmgr_active_slot_count(state),
-                             IRIS_SERVICE_CATALOG_VERSION);
-    svcmgr_close_handle_if_valid(&reply_h);
-}
+/* Fase 12: legacy SVCMGR_MSG_STATUS retired (zero senders) — the productive
+ * status/snapshot path is IRIS_SVCMGR_EP_STATUS / IRIS_SVCMGR_EP_DIAG. */
 
 static void svcmgr_handle_diag(struct svcmgr_state *state, const struct KChanMsg *msg) {
     handle_id_t reply_h = msg ? msg->attached_handle : HANDLE_INVALID;
@@ -2005,6 +1963,17 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
             }
         }
 
+        /* Fase 12 — KChannel dispatch classification:
+         *   PROC_EVENT_MSG_EXIT : LIVE (SYS_PROCESS_WATCH delivery; lifecycle).
+         *   LOOKUP / LOOKUP_NAME : COMPAT — init bootstrap re-mint + T046.
+         *   REGISTER / UNREGISTER: COMPAT/TEST boundary — only init's registry
+         *                          self-test exercises them; the PRODUCTIVE
+         *                          path is the cap-backed EP REGISTER (Fase 11).
+         *   DIAG                 : COMPAT — init's full diag self-test; the
+         *                          productive snapshot is IRIS_SVCMGR_EP_DIAG.
+         *   STATUS               : RETIRED (Fase 12, zero senders).
+         * No productive route falls back to this loop; EP requests never reach
+         * it (they are drained from state->ep_h above). */
         switch (msg.type) {
             case PROC_EVENT_MSG_EXIT:
                 svcmgr_handle_proc_exit(state, &msg);
@@ -2020,9 +1989,6 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
                 break;
             case SVCMGR_MSG_UNREGISTER:
                 svcmgr_handle_unregister(state, &msg);
-                break;
-            case SVCMGR_MSG_STATUS:
-                svcmgr_handle_status(state, &msg);
                 break;
             case SVCMGR_MSG_DIAG:
                 svcmgr_handle_diag(state, &msg);

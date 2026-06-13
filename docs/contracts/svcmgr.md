@@ -206,3 +206,13 @@ Current built-in services:
 - `UNREGISTER` over EP requires the owner badge (or a supervisor); the stored
   cap is closed on unregister. Legacy KChannel REGISTER/UNREGISTER is a
   compatibility boundary (`owner_badge = 0`).
+
+## Fase 12 — endpoint-first svcmgr
+
+- `IRIS_SVCMGR_EP_DIAG` (0xF007) is the productive snapshot path (replaces
+  legacy `SVCMGR_MSG_DIAG`): words[0]=catalog count, [1]=ready, [2]=active
+  dynamic, [3]=catalog version. No KChannel.
+- Unknown/malformed EP opcodes fail with `INVALID_ARG` — never a silent
+  fallback to the legacy loop (T068).
+- Legacy KChannel REGISTER/UNREGISTER/LOOKUP/DIAG are a compatibility/test
+  boundary (init self-tests + T046); `SVCMGR_MSG_STATUS` retired.

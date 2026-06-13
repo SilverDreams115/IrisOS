@@ -95,6 +95,16 @@
 #define IRIS_SVCMGR_EP_STATUS       UINT64_C(0xF005)
 #define IRIS_SVCMGR_EP_RESTART      UINT64_C(0xF006)
 
+/*
+ * IRIS_SVCMGR_EP_DIAG — endpoint-native svcmgr snapshot (Fase 12).  Replaces
+ * the legacy KChannel SVCMGR_MSG_DIAG as the productive diagnostics path; no
+ * KChannel round-trip.  Open to any caller (read-only).
+ *   Reply OK: words[0] = catalog service count, words[1] = ready services,
+ *             words[2] = active dynamic registrations,
+ *             words[3] = catalog version.  word_count = 4.
+ */
+#define IRIS_SVCMGR_EP_DIAG         UINT64_C(0xF007)
+
 /* ── Bootstrap kind for svcmgr endpoint ────────────────────────────── */
 
 /*

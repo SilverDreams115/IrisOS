@@ -156,3 +156,26 @@ real cap now works over the EP path (`IRIS_SVCMGR_EP_REGISTER` consumes
 by the reserved-name policy (`owner_badge = 0`), but new dynamic services
 should register over the EP. Legacy LOOKUP stays for T046. Full KChannel
 retirement remains a later phase.
+
+## Fase 12 — svcmgr legacy-loop retirement & classification
+
+The svcmgr KChannel dispatch is now strictly classified (comment at the loop):
+
+| KChannel path | Estado final | Por qué queda |
+|---|---|---|
+| PROC_EVENT_MSG_EXIT | **live** | `SYS_PROCESS_WATCH` delivery — service lifecycle |
+| LOOKUP / LOOKUP_NAME | **compat** | init bootstrap re-mint + T046 |
+| REGISTER / UNREGISTER | **compat/test** | only init's registry self-test; productive = EP cap-backed REGISTER |
+| DIAG | **compat** | init full diag self-test; productive = `IRIS_SVCMGR_EP_DIAG` |
+| STATUS | **retired** | zero senders (removed) |
+
+Retired in Fase 12 (dead code): `SVCMGR_MSG_STATUS` handler and the
+`give_console` bootstrap branch + `svcmgr_send_console_cap` (every catalog
+entry has `give_console=0`). **svcmgr `SYS_CHAN` count: 15 → 13.** No
+productive route falls back to the legacy loop; EP requests are drained
+separately from `state->ep_h` and never reach the KChannel switch.
+
+Remaining KChannel in svcmgr is bootstrap handle delivery, the proc-exit
+watch, the legacy console writer (svcmgr's own logging), and the compat
+registry/diag paths above — all targets for the (future) total KChannel
+retirement once init is deconstructed.
