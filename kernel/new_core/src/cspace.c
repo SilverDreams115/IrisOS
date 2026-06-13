@@ -13,11 +13,12 @@
 #include <iris/nc/kobject.h>
 #include <iris/nc/rights.h>
 
-iris_error_t cspace_resolve_cap(struct KProcess   *proc,
-                                 iris_cptr_t        cptr,
-                                 iris_rights_t      required,
-                                 struct KObject   **obj_out,
-                                 iris_rights_t     *rights_out)
+iris_error_t cspace_resolve_cap_badged(struct KProcess   *proc,
+                                        iris_cptr_t        cptr,
+                                        iris_rights_t      required,
+                                        struct KObject   **obj_out,
+                                        iris_rights_t     *rights_out,
+                                        uint64_t          *badge_out)
 {
     if (!proc || !obj_out || !rights_out) return IRIS_ERR_INVALID_ARG;
     if (cptr == CPTR_NULL) return IRIS_ERR_INVALID_ARG;
@@ -49,7 +50,9 @@ iris_error_t cspace_resolve_cap(struct KProcess   *proc,
 
         struct KObject *slot_obj;
         iris_rights_t   slot_rights;
-        err = kcnode_fetch(cur, idx, &slot_obj, &slot_rights);
+        uint64_t slot_badge = 0;
+        err = kcnode_fetch_badged(cur, idx, &slot_obj, &slot_rights,
+                                  &slot_badge);
         kobject_active_release(&cur->base);
         kobject_release(&cur->base);
         cur = 0;
@@ -65,6 +68,8 @@ iris_error_t cspace_resolve_cap(struct KProcess   *proc,
             }
             *obj_out    = slot_obj;
             *rights_out = slot_rights;
+            if (badge_out)
+                *badge_out = slot_badge;
             return IRIS_OK;
         }
 
@@ -79,6 +84,17 @@ iris_error_t cspace_resolve_cap(struct KProcess   *proc,
     }
     return IRIS_ERR_INVALID_ARG;
 }
+
+iris_error_t cspace_resolve_cap(struct KProcess   *proc,
+                                 iris_cptr_t        cptr,
+                                 iris_rights_t      required,
+                                 struct KObject   **obj_out,
+                                 iris_rights_t     *rights_out)
+{
+    return cspace_resolve_cap_badged(proc, cptr, required, obj_out,
+                                     rights_out, 0);
+}
+
 
 /* Typed resolve helper — validates object type after generic traversal. */
 #define TYPED_RESOLVE(fn, member_type, kobj_tag)                         \
@@ -330,5 +346,61 @@ iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
     kobject_active_retain(obj);
     *out = (struct KFrame *)obj;
     *rights_out = r;
+    return IRIS_OK;
+}
+
+/*
+ * Fase 9: badge-aware dual endpoint resolver for the EP send/call paths.
+ * Same namespace split and lifecycle-only refcount contract as the
+ * DUAL_RESOLVE_IPC endpoint resolver; additionally returns the badge of
+ * the capability that was invoked (slot badge on the CSpace path, handle
+ * badge on the handle path; 0 = unbadged).
+ */
+iris_error_t cspace_or_handle_resolve_endpoint_badged(struct KProcess  *proc,
+                                                       iris_cptr_t       cptr_or_handle,
+                                                       iris_rights_t     required,
+                                                       struct KEndpoint **out,
+                                                       iris_rights_t    *rights_out,
+                                                       uint64_t         *badge_out)
+{
+    struct KObject *obj; iris_rights_t r; iris_error_t err;
+    uint64_t badge = 0;
+
+    if (!proc || !out || !rights_out) return IRIS_ERR_INVALID_ARG;
+
+    /* CPtr namespace (< 1024): CSpace only, no handle-table fallback. */
+    if (cspace_value_is_cptr(cptr_or_handle)) {
+        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+        err = cspace_resolve_cap_badged(proc, cptr_or_handle, required,
+                                        &obj, &r, &badge);
+        if (err != IRIS_OK) return err;
+        if (obj->type != KOBJ_ENDPOINT) {
+            kobject_active_release(obj); kobject_release(obj);
+            return IRIS_ERR_WRONG_TYPE;
+        }
+        kobject_active_release(obj); /* IPC: must not hold active ref */
+        *out = (struct KEndpoint *)obj;
+        *rights_out = r;
+        if (badge_out) *badge_out = badge;
+        return IRIS_OK;
+    }
+
+    /* Handle namespace (>= 1024): handle table only. */
+    err = handle_table_get_object(&proc->handle_table,
+                                   (handle_id_t)cptr_or_handle, &obj, &r);
+    if (err != IRIS_OK) return err;
+    if (obj->type != KOBJ_ENDPOINT) {
+        kobject_release(obj);
+        return IRIS_ERR_WRONG_TYPE;
+    }
+    if (required != RIGHT_NONE && !rights_check(r, required)) {
+        kobject_release(obj);
+        return IRIS_ERR_ACCESS_DENIED;
+    }
+    *out = (struct KEndpoint *)obj;
+    *rights_out = r;
+    if (badge_out)
+        *badge_out = handle_table_get_badge(&proc->handle_table,
+                                            (handle_id_t)cptr_or_handle);
     return IRIS_OK;
 }

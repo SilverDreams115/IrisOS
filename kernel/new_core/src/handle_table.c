@@ -13,6 +13,7 @@ void handle_table_init(HandleTable *ht) {
     for (uint32_t i = 0u; i < HANDLE_TABLE_MAX; i++) {
         ht->used[i]               = 0u;
         ht->gen[i]                = 0u;
+        ht->badge[i]              = 0u;   /* Fase 9 */
         ht->derivation_parent[i]  = HANDLE_INVALID;
         ht->slots[i].object       = 0;
         ht->slots[i].rights       = RIGHT_NONE;
@@ -54,6 +55,36 @@ handle_id_t handle_table_insert(HandleTable *ht, struct KObject *obj,
     handle_id_t id = handle_id_make(slot, g);
     spinlock_unlock(&ht->lock);
     return id;
+}
+
+/* Fase 9: insertion preserving an explicit badge (cap transfer, slot
+ * materialization, dup).  Identical to handle_table_insert otherwise.
+ * Handle-side badges are 32-bit (parallel array — see handle_table.h). */
+handle_id_t handle_table_insert_badged(HandleTable *ht, struct KObject *obj,
+                                       iris_rights_t rights, uint64_t badge) {
+    handle_id_t id = handle_table_insert(ht, obj, rights);
+    if (id == HANDLE_INVALID || badge == 0u) return id;
+    spinlock_lock(&ht->lock);
+    {
+        uint32_t slot = handle_id_slot(id);
+        if (ht->used[slot] && ht->gen[slot] == handle_id_gen(id))
+            ht->badge[slot] = (uint32_t)badge;
+    }
+    spinlock_unlock(&ht->lock);
+    return id;
+}
+
+/* Fase 9: read the badge of a live handle (0 = unbadged / not found). */
+uint64_t handle_table_get_badge(HandleTable *ht, handle_id_t id) {
+    if (!ht || !id) return 0u;
+    uint32_t slot = handle_id_slot(id);
+    uint32_t gen  = handle_id_gen(id);
+    if (slot >= HANDLE_TABLE_MAX) return 0u;
+    spinlock_lock(&ht->lock);
+    uint64_t b = (ht->used[slot] && ht->gen[slot] == gen)
+                 ? (uint64_t)ht->badge[slot] : 0u;
+    spinlock_unlock(&ht->lock);
+    return b;
 }
 
 handle_id_t handle_table_insert_derived(HandleTable *ht, struct KObject *obj,
@@ -160,6 +191,7 @@ iris_error_t handle_table_close(HandleTable *ht, handle_id_t id) {
     handle_entry_reset(&ht->slots[slot]);
     ht->used[slot]              = 0u;
     ht->gen[slot]               = next_gen(ht->gen[slot]);
+    ht->badge[slot]             = 0u;   /* Fase 9: no stale identity */
     ht->derivation_parent[slot] = HANDLE_INVALID;
 
     spinlock_unlock(&ht->lock);
@@ -173,6 +205,7 @@ void handle_table_close_all(HandleTable *ht) {
             handle_entry_reset(&ht->slots[i]);
             ht->used[i]              = 0u;
             ht->gen[i]               = next_gen(ht->gen[i]);
+            ht->badge[i]             = 0u;   /* Fase 9 */
             ht->derivation_parent[i] = HANDLE_INVALID;
         }
     }

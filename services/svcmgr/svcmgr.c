@@ -716,10 +716,12 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
         break;
     }
     case IRIS_EP_OP_PING:
-        /* Health check (Fase 8: also the CPtr-first discovery probe). */
+        /* Health check (Fase 8: also the CPtr-first discovery probe).
+         * Fase 9 PING convention: echo the kernel-stamped sender badge. */
         reply.label      = IRIS_EP_REPLY_OK;
         reply.words[0]   = 0u;
-        reply.word_count = 1u;
+        reply.words[1]   = msg->sender_badge;
+        reply.word_count = 2u;
         break;
     default:
         reply.label    = IRIS_EP_REPLY_ERR;
@@ -843,32 +845,44 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         ? state->services[SVCMGR_SERVICE_KBD].ep_h : HANDLE_INVALID;
     uint32_t n = 0;
 
+    /* Fase 9: the client-side slots (1..4) carry the CHILD's identity badge
+     * — every message the child sends through them is kernel-stamped with
+     * IRIS_BADGE_SVC(service_id).  Server-side caps (own EP recv, IRQ
+     * notification) stay unbadged. */
+    uint64_t child_badge = IRIS_BADGE_SVC(manifest->service_id);
+
     mints[n].slot = IRIS_CPTR_SVCMGR_EP;
     mints[n].src_h = state->ep_h;
     mints[n].rights = RIGHT_WRITE;
+    mints[n].badge = child_badge;
     n++;
     mints[n].slot = IRIS_CPTR_VFS_EP;
     mints[n].src_h = vfs_ep;
     mints[n].rights = RIGHT_WRITE;
+    mints[n].badge = child_badge;
     n++;
     mints[n].slot = IRIS_CPTR_CONSOLE_EP;
     mints[n].src_h = state->console_ep_h;
     mints[n].rights = RIGHT_WRITE;
+    mints[n].badge = child_badge;
     n++;
     mints[n].slot = IRIS_CPTR_KBD_EP;
     mints[n].src_h = kbd_ep;
     mints[n].rights = RIGHT_WRITE;
+    mints[n].badge = child_badge;
     n++;
     if (manifest->own_service_ep && svc) {
         mints[n].slot = IRIS_CPTR_OWN_EP;
         mints[n].src_h = svc->ep_h;
         mints[n].rights = RIGHT_READ;
+        mints[n].badge = 0;
         n++;
     }
     if (manifest->irq_notify && svc) {
         mints[n].slot = IRIS_CPTR_IRQ_NOTIFY;
         mints[n].src_h = svc->irq_notif_h;
         mints[n].rights = RIGHT_WAIT;
+        mints[n].badge = 0;
         n++;
     }
     return n;

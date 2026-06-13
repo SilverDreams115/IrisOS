@@ -238,7 +238,9 @@ void vfs_ep_dispatch(const struct vfs_export *exports, uint32_t export_count,
         vfs_ep_msg_clear(reply);
         reply->label      = IRIS_EP_REPLY_OK;
         reply->words[0]   = 0u;
-        reply->word_count = 1u;
+        /* Fase 9 PING convention: echo the kernel-stamped sender badge. */
+        reply->words[1]   = req->sender_badge;
+        reply->word_count = 2u;
         return;
     default:
         vfs_ep_reply_err(reply, IRIS_ERR_NOT_SUPPORTED);

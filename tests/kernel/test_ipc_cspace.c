@@ -486,6 +486,90 @@ void test_ipc_cspace(void) {
         free_proc(p);
     }
 
+    /* ── [Fase 9] badges: per-cap identity ───────────────────────────── */
+    {
+        struct KProcess *p = make_proc();
+        ASSERT_NOT_NULL(p);
+        struct KCNode *root = setup_cspace(p, 8);
+        ASSERT_NOT_NULL(root);
+
+        struct KEndpoint *ep = kendpoint_alloc();
+        ASSERT_NOT_NULL(ep);
+
+        /* Two caps to the SAME endpoint with DIFFERENT badges. */
+        ASSERT_EQ(kcnode_mint_excl_badged(root, 1, &ep->base, RIGHT_WRITE,
+                                          0xAAu), IRIS_OK);
+        ASSERT_EQ(kcnode_mint_excl_badged(root, 2, &ep->base, RIGHT_WRITE,
+                                          0xBBu), IRIS_OK);
+        /* Unbadged third cap. */
+        ASSERT_EQ(kcnode_mint_excl(root, 3, &ep->base, RIGHT_WRITE), IRIS_OK);
+
+        struct KEndpoint *out; iris_rights_t rout; uint64_t badge;
+        badge = 99u;
+        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, 1u, RIGHT_WRITE,
+                                                           &out, &rout, &badge),
+                  IRIS_OK);
+        ASSERT_EQ(badge, 0xAAu);
+        kobject_release(&out->base);
+
+        badge = 99u;
+        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, 2u, RIGHT_WRITE,
+                                                           &out, &rout, &badge),
+                  IRIS_OK);
+        ASSERT_EQ(badge, 0xBBu);
+        kobject_release(&out->base);
+
+        badge = 99u;
+        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, 3u, RIGHT_WRITE,
+                                                           &out, &rout, &badge),
+                  IRIS_OK);
+        ASSERT_EQ(badge, 0u);                 /* unbadged cap delivers 0 */
+        kobject_release(&out->base);
+
+        /* swap preserves badges; delete clears only its own slot. */
+        ASSERT_EQ(kcnode_swap(root, 1, 2), IRIS_OK);
+        uint64_t b1 = 0, b2 = 0; struct KObject *o; iris_rights_t rr;
+        ASSERT_EQ(kcnode_fetch_badged(root, 1, &o, &rr, &b1), IRIS_OK);
+        kobject_active_release(o); kobject_release(o);
+        ASSERT_EQ(kcnode_fetch_badged(root, 2, &o, &rr, &b2), IRIS_OK);
+        kobject_active_release(o); kobject_release(o);
+        ASSERT_EQ(b1, 0xBBu);
+        ASSERT_EQ(b2, 0xAAu);
+        ASSERT_EQ(kcnode_delete(root, 1), IRIS_OK);
+        ASSERT_EQ(kcnode_fetch_badged(root, 2, &o, &rr, &b2), IRIS_OK);
+        kobject_active_release(o); kobject_release(o);
+        ASSERT_EQ(b2, 0xAAu);                 /* unaffected by delete */
+
+        /* Handle namespace: badged handle resolves with its badge; a badged
+         * cap in a slot does NOT leak its badge to handle lookups. */
+        kobject_retain(&ep->base);
+        handle_id_t hb = handle_table_insert_badged(&p->handle_table,
+                                                    &ep->base,
+                                                    RIGHT_WRITE, 0xCCu);
+        kobject_release(&ep->base);
+        ASSERT_TRUE(hb != HANDLE_INVALID);
+        ASSERT_EQ(handle_table_get_badge(&p->handle_table, hb), 0xCCu);
+        badge = 99u;
+        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, (iris_cptr_t)hb,
+                                                           RIGHT_WRITE,
+                                                           &out, &rout, &badge),
+                  IRIS_OK);
+        ASSERT_EQ(badge, 0xCCu);
+        kobject_release(&out->base);
+
+        /* ACCESS_DENIED on a badged slot stays a hard stop, no badge leak. */
+        ASSERT_EQ(kcnode_mint_excl_badged(root, 4, &ep->base, RIGHT_READ,
+                                          0xDDu), IRIS_OK);
+        badge = 99u;
+        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, 4u, RIGHT_WRITE,
+                                                           &out, &rout, &badge),
+                  IRIS_ERR_ACCESS_DENIED);
+        ASSERT_EQ(badge, 99u);                /* untouched on failure */
+
+        kobject_release(&ep->base);           /* drop alloc ref */
+        free_proc(p);
+    }
+
     /* ── [EP] IPC lifecycle: active_refs NOT held after resolve ── */
     {
         /* Verifies that the IPC helpers release active_refs before returning.

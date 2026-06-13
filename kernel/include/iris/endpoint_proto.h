@@ -150,6 +150,36 @@
  * notification), CNode, Untyped and Frame.  Services needing those caps
  * keep a bootstrap one-shot channel.
  */
+/*
+ * Well-known sender badges (Fase 9).
+ *
+ * A badge is per-cap metadata stamped by the KERNEL into
+ * IrisMsg.sender_badge on every EP_SEND / EP_NB_SEND / EP_CALL — it is
+ * taken from the capability the sender invoked, never from the payload,
+ * so it cannot be forged by writing the field.  Badges are assigned at
+ * mint time by the spawner (SYS_PROC_CSPACE_MINT arg3 high bits); a badged
+ * cap can never be re-badged.  0 = unbadged (legacy / master caps; servers
+ * treat it as "unidentified legacy client").
+ *
+ * Assignment scheme:
+ *   0x100 + service_id  → core catalog services (kbd 0x101, vfs 0x102,
+ *                         sh 0x103) — stamped on the slots svcmgr mints.
+ *   IRIS_BADGE_SVCMGR   → svcmgr itself (its console.ep cap from init...
+ *                         kept unbadged for redistribution; reserved).
+ *   IRIS_BADGE_IRIS_TEST→ iris_test (slots minted by init).
+ *   IRIS_BADGE_TEST_B   → iris_test secondary fixture (two caps to the
+ *                         same endpoint must deliver different badges).
+ *
+ * PING convention (Fase 9): every core EP server replies to
+ * IRIS_EP_OP_PING with words[1] = the sender_badge it observed, making
+ * identity testable end to end (T047+).
+ */
+#define IRIS_BADGE_NONE       ((uint64_t)0)
+#define IRIS_BADGE_SVC(id)    ((uint64_t)0x100 + (uint64_t)(id))
+#define IRIS_BADGE_SVCMGR     ((uint64_t)0x110)
+#define IRIS_BADGE_IRIS_TEST  ((uint64_t)0x1F0)
+#define IRIS_BADGE_TEST_B     ((uint64_t)0xB2)
+
 #define IRIS_CPTR_SVCMGR_EP   ((uint64_t)1)
 #define IRIS_CPTR_VFS_EP      ((uint64_t)2)
 #define IRIS_CPTR_CONSOLE_EP  ((uint64_t)3)
@@ -158,6 +188,9 @@
 #define IRIS_CPTR_IRQ_NOTIFY  ((uint64_t)7)
 #define IRIS_CPTR_TEST_FIX_A  ((uint64_t)30)
 #define IRIS_CPTR_TEST_FIX_B  ((uint64_t)31)
+/* Fase 9: second badged cap to the svcmgr endpoint (badge IRIS_BADGE_TEST_B)
+ * — proves two caps to ONE endpoint deliver different badges (T053). */
+#define IRIS_CPTR_TEST_FIX_C  ((uint64_t)28)
 
 /*
  * Reserved name suffix ".ep": IRIS_SVCMGR_EP_LOOKUP_NAME and the legacy

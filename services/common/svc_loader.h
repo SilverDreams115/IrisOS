@@ -49,6 +49,11 @@ struct svc_mint {
     uint64_t      slot;    /* destination CPtr slot in the child root CNode */
     handle_id_t   src_h;   /* source cap in the CALLER's handle table */
     iris_rights_t rights;  /* rights mask (reduced against src rights) */
+    uint64_t      badge;   /* Fase 9: sender badge for the minted cap
+                            * (0 = inherit source badge / unbadged).
+                            * Packed into SYS_PROC_CSPACE_MINT arg3 high
+                            * bits; subject to the kernel's no-re-badge
+                            * rule. */
 };
 
 long svc_load_minted(handle_id_t spawn_cap_h, const char *name,

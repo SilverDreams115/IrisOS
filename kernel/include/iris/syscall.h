@@ -829,14 +829,22 @@
 #define SYS_CSPACE_RESOLVE 95
 
 /*
- * SYS_PROC_CSPACE_MINT(proc_h, slot_idx, src_h, new_rights) → 0 or negative
- * iris_error_t.  Fase 8: CPtr-first bootstrap handoff.
+ * SYS_PROC_CSPACE_MINT(proc_h, slot_idx, src_h, rights_and_badge) → 0 or
+ * negative iris_error_t.  Fase 8: CPtr-first bootstrap handoff.
  *
  *   Mints the caller's src_h capability into the ROOT CNode of the process
  *   referenced by proc_h, at slot slot_idx, with rights reduced to
  *   (src_rights & new_rights).  The child can then invoke the capability
  *   directly by CPtr (e.g. SYS_EP_CALL with arg0 = slot_idx) without any
  *   handle transfer over a KChannel.
+ *
+ *   Fase 9 packing: arg3 low 32 bits = rights mask; HIGH 32 bits = badge.
+ *   Badge rules (sender identity, see iris/endpoint_proto.h):
+ *     badge 0      → inherit the source cap's badge (preservation);
+ *     badge != 0   → only if the source is UNBADGED and is an
+ *                    endpoint/notification; re-badging an already-badged
+ *                    cap fails ACCESS_DENIED (identities cannot be forged
+ *                    by holders), wrong type fails INVALID_ARG.
  *
  *   Authority: caller needs RIGHT_WRITE on proc_h (spawner authority) and
  *   RIGHT_DUPLICATE on src_h.  Rights can only be reduced, never amplified.

@@ -73,6 +73,27 @@ iris_error_t cspace_resolve_cap(struct KProcess   *proc,
                                  struct KObject   **obj_out,
                                  iris_rights_t     *rights_out);
 
+/* Fase 9: like cspace_resolve_cap but also returns the terminal slot's
+ * badge (badge_out may be NULL). */
+iris_error_t cspace_resolve_cap_badged(struct KProcess   *proc,
+                                        iris_cptr_t        cptr,
+                                        iris_rights_t      required,
+                                        struct KObject   **obj_out,
+                                        iris_rights_t     *rights_out,
+                                        uint64_t          *badge_out);
+
+/* Fase 9: badge-aware dual endpoint resolver for the EP send/call paths.
+ * Same namespace + refcount contract as cspace_or_handle_resolve_endpoint
+ * (lifecycle-only ref); additionally returns the badge of the capability
+ * that was invoked (slot badge on the CSpace path, handle badge on the
+ * handle path; 0 = unbadged). */
+iris_error_t cspace_or_handle_resolve_endpoint_badged(struct KProcess  *proc,
+                                                       iris_cptr_t       cptr_or_handle,
+                                                       iris_rights_t     required,
+                                                       struct KEndpoint **out,
+                                                       iris_rights_t    *rights_out,
+                                                       uint64_t         *badge_out);
+
 /*
  * Typed resolve helpers — call cspace_resolve_cap, validate object type,
  * return cast pointer.  Same ref-count contract as cspace_resolve_cap:

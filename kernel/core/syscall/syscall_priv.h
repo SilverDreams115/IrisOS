@@ -262,6 +262,15 @@ iris_error_t syscall_ipc_stage_cap(struct task *t, uint32_t src_h,
                                    uint32_t *out_rights);
 uint32_t syscall_ipc_deliver_cap(struct task *receiver,
                                  struct KObject *xo, uint32_t cap_rights);
+/* Fase 9: badge-preserving variants (transferred caps keep their badge). */
+iris_error_t syscall_ipc_stage_cap_badged(struct task *t, uint32_t src_h,
+                                          uint32_t requested_rights,
+                                          struct KObject **out_obj,
+                                          uint32_t *out_rights,
+                                          uint64_t *out_badge);
+uint32_t syscall_ipc_deliver_cap_badged(struct task *receiver,
+                                        struct KObject *xo,
+                                        uint32_t cap_rights, uint64_t badge);
 
 /* ── Forward declarations — CSpace (Ph70-72, Ph82-84, Ph95) ─────── */
 uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2);

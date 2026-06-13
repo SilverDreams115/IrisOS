@@ -55,14 +55,19 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
-    iris_error_t err = cspace_or_handle_resolve_endpoint(t->process, (iris_cptr_t)arg0,
-                                                          RIGHT_WRITE, &ep, &_ep_r);
+    uint64_t ep_badge = 0;
+    iris_error_t err = cspace_or_handle_resolve_endpoint_badged(
+        t->process, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
     if (!copy_from_user_checked(&t->ipc_msg, arg1, (uint32_t)sizeof(struct IrisMsg))) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
+
+    /* Fase 9: stamp the caller badge from the invoked cap (anti-spoofing);
+     * the server observes it on EP_RECV / EP_NB_RECV. */
+    t->ipc_msg.sender_badge = ep_badge;
 
     /* EP_CALL does not allow simultaneous cap transfer. */
     if (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP) {
@@ -160,6 +165,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ipc_msg_ready = 0u;
         t->ep_cap_obj    = 0;
         t->ep_cap_rights = 0u;
+        t->ep_cap_badge  = 0u;
 
         if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
         else                { ep->queue_head = t; ep->queue_tail = t; }
@@ -232,10 +238,11 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * so staging errors leave the reply invocable and the handle untouched. */
     struct KObject *xfer_obj    = 0;
     uint32_t        xfer_rights = 0;
+    uint64_t        xfer_badge  = 0;
     if (reply_msg.attached_handle != IRIS_MSG_NO_CAP) {
-        iris_error_t cr = syscall_ipc_stage_cap(t, reply_msg.attached_handle,
+        iris_error_t cr = syscall_ipc_stage_cap_badged(t, reply_msg.attached_handle,
                                                 reply_msg.attached_rights,
-                                                &xfer_obj, &xfer_rights);
+                                                &xfer_obj, &xfer_rights, &xfer_badge);
         if (cr != IRIS_OK) {
             kobject_release(&rp->base);
             return syscall_err(cr);
@@ -257,10 +264,15 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Deliver reply message into caller's staging (caller is blocked — safe). */
     copy_irismsg_r(&caller->ipc_msg, &reply_msg);
     caller->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+    /* Fase 9: replies carry NO sender identity — the kernel forces badge 0
+     * so a server cannot spoof a badge into its caller (reply identity is
+     * implied by the one-shot KReply itself). */
+    caller->ipc_msg.sender_badge = 0u;
 
     /* Install the staged reply cap in the caller's handle table. */
     if (xfer_obj) {
-        uint32_t new_h = syscall_ipc_deliver_cap(caller, xfer_obj, xfer_rights);
+        uint32_t new_h = syscall_ipc_deliver_cap_badged(caller, xfer_obj,
+                                                        xfer_rights, xfer_badge);
         caller->ipc_msg.attached_handle = new_h;
     }
 

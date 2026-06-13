@@ -90,10 +90,14 @@ uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t err = cspace_resolve_cap(proc, cptr, RIGHT_NONE, &obj, &rights);
+    uint64_t        badge = 0;
+    iris_error_t err = cspace_resolve_cap_badged(proc, cptr, RIGHT_NONE,
+                                                 &obj, &rights, &badge);
     if (err != IRIS_OK) return syscall_err(err);
 
-    handle_id_t h = handle_table_insert(&proc->handle_table, obj, rights);
+    /* Fase 9: materialization preserves the slot badge. */
+    handle_id_t h = handle_table_insert_badged(&proc->handle_table, obj,
+                                               rights, badge);
     kobject_active_release(obj);
     kobject_release(obj);
     if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
@@ -159,13 +163,25 @@ uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t ar
  * process's root CNode so the child can invoke it CPtr-first (no KChannel
  * handle transfer). Mirrors sys_cnode_mint's reduction semantics; the only
  * new authority is RIGHT_WRITE on the child process capability.
+ *
+ * Fase 9 — badge packing: arg3 low 32 bits = rights mask, high 32 bits =
+ * badge.  Badge semantics:
+ *   badge == 0          → INHERIT the source cap's badge (preservation).
+ *   badge != 0, src unbadged
+ *                       → assign the new badge.  Only ENDPOINT and
+ *                         NOTIFICATION caps may carry a fresh badge
+ *                         (INVALID_ARG otherwise).
+ *   badge != 0, src already badged with a DIFFERENT value
+ *                       → ACCESS_DENIED: a badged cap can NEVER be
+ *                         re-badged — holders cannot forge identities.
  */
 uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                               uint64_t arg3) {
     handle_id_t   proc_h     = (handle_id_t)arg0;
     uint32_t      slot_idx   = (uint32_t)arg1;
     handle_id_t   src_h      = (handle_id_t)arg2;
-    iris_rights_t new_rights = (iris_rights_t)arg3;
+    iris_rights_t new_rights = (iris_rights_t)(arg3 & 0xFFFFFFFFu);
+    uint64_t      new_badge  = arg3 >> 32;
 
     if (!proc_h || !src_h || slot_idx == 0u)
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -232,7 +248,31 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    err = kcnode_mint_excl((struct KCNode *)cn_obj, slot_idx, src_obj, effective);
+    /* Fase 9: badge derivation rules (no escalation, no forging). */
+    uint64_t src_badge = handle_table_get_badge(ht, src_h);
+    uint64_t effective_badge;
+    if (new_badge == 0u) {
+        effective_badge = src_badge;          /* inherit (0 stays 0) */
+    } else if (src_badge != 0u && src_badge != new_badge) {
+        /* A badged cap can never be re-badged. */
+        kobject_release(src_obj);
+        kobject_release(cn_obj);
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    } else {
+        /* Fresh badge: only identity-bearing IPC objects accept one. */
+        if (src_obj->type != KOBJ_ENDPOINT &&
+            src_obj->type != KOBJ_NOTIFICATION) {
+            kobject_release(src_obj);
+            kobject_release(cn_obj);
+            kobject_release(proc_obj);
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+        }
+        effective_badge = new_badge;
+    }
+
+    err = kcnode_mint_excl_badged((struct KCNode *)cn_obj, slot_idx, src_obj,
+                                  effective, effective_badge);
     kobject_release(src_obj);
     kobject_release(cn_obj);
     kobject_release(proc_obj);

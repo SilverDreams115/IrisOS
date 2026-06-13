@@ -148,7 +148,9 @@ static void con_serve_ep_msg(handle_id_t ioport_h, handle_id_t service_h,
     case IRIS_EP_OP_PING:
         con_imsg_zero(&reply);
         reply.label      = IRIS_EP_REPLY_OK;
-        reply.word_count = 1u;
+        /* Fase 9 PING convention: echo the kernel-stamped sender badge. */
+        reply.words[1]   = req->sender_badge;
+        reply.word_count = 2u;
         break;
     default:
         con_ep_reply_err(&reply, IRIS_ERR_NOT_SUPPORTED);

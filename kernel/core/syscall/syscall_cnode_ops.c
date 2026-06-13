@@ -42,8 +42,10 @@ uint64_t sys_cnode_move(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(err);
     }
 
-    /* kcnode_mint takes its own active+lifecycle refs; we drop our temp ref. */
-    err = kcnode_mint(cn, slot_idx, src_obj, src_rights);
+    /* kcnode_mint takes its own active+lifecycle refs; we drop our temp ref.
+     * Fase 9: MOVE preserves the badge across the handle→slot crossing. */
+    err = kcnode_mint_badged(cn, slot_idx, src_obj, src_rights,
+                             handle_table_get_badge(ht, src_h));
     kobject_release(src_obj);
     if (err != IRIS_OK) {
         kobject_active_release(&cn->base);
@@ -78,15 +80,18 @@ uint64_t sys_cnode_fetch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *slot_obj;
     iris_rights_t   slot_rights;
-    err = kcnode_fetch(cn, slot_idx, &slot_obj, &slot_rights);
+    uint64_t        slot_badge = 0;
+    err = kcnode_fetch_badged(cn, slot_idx, &slot_obj, &slot_rights, &slot_badge);
     kobject_active_release(&cn->base);
     kobject_release(&cn->base);
     if (err != IRIS_OK) return syscall_err(err);
 
     /* slot_obj: kcnode_fetch gave us active+lifecycle working refs.
      * handle_table_insert → handle_entry_init adds another active+lifecycle pair.
-     * We drop our working refs after the insert. */
-    handle_id_t h = handle_table_insert(ht, slot_obj, slot_rights);
+     * We drop our working refs after the insert.  Fase 9: the badge follows
+     * the cap from the slot into the handle table. */
+    handle_id_t h = handle_table_insert_badged(ht, slot_obj, slot_rights,
+                                               slot_badge);
     kobject_active_release(slot_obj);
     kobject_release(slot_obj);
 

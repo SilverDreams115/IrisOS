@@ -21,6 +21,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
             kobject_release(t->ep_cap_obj);
             t->ep_cap_obj    = 0;
             t->ep_cap_rights = 0;
+            t->ep_cap_badge  = 0;
         }
         t->ep_next       = 0;
         t->blocking_ep   = 0;
@@ -124,6 +125,7 @@ void kendpoint_cancel_waiter(struct task *t) {
     struct KObject *staged_cap = t->ep_cap_obj;
     t->ep_cap_obj    = 0;
     t->ep_cap_rights = 0;
+    t->ep_cap_badge  = 0;
 
     irq_spinlock_unlock(&ep->lock, flags);
 

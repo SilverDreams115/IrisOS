@@ -17,6 +17,10 @@
 struct KCSlot {
     struct KObject *object;
     iris_rights_t   rights;
+    uint64_t        badge;   /* Fase 9: per-cap sender identity.  0 =
+                              * unbadged.  Set only at mint time by the
+                              * minting authority; copy/move/swap preserve
+                              * it; it never crosses to other caps. */
 };
 
 /*
@@ -53,8 +57,22 @@ iris_error_t   kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
  * SYS_PROC_CSPACE_MINT so a spawner cannot clobber a child's slots. */
 iris_error_t   kcnode_mint_excl(struct KCNode *cn, uint32_t slot_idx,
                                  struct KObject *obj, iris_rights_t rights);
+/* Overwrite mint preserving an explicit badge (Fase 9; MOVE path). */
+iris_error_t   kcnode_mint_badged(struct KCNode *cn, uint32_t slot_idx,
+                                   struct KObject *obj, iris_rights_t rights,
+                                   uint64_t badge);
+/* Badged exclusive mint (Fase 9): like kcnode_mint_excl but also records
+ * the per-cap badge in the slot. */
+iris_error_t   kcnode_mint_excl_badged(struct KCNode *cn, uint32_t slot_idx,
+                                        struct KObject *obj,
+                                        iris_rights_t rights, uint64_t badge);
 iris_error_t   kcnode_fetch(struct KCNode *cn, uint32_t slot_idx,
                              struct KObject **out_obj, iris_rights_t *out_rights);
+/* Badge-aware fetch (Fase 9): also returns the slot badge. */
+iris_error_t   kcnode_fetch_badged(struct KCNode *cn, uint32_t slot_idx,
+                                    struct KObject **out_obj,
+                                    iris_rights_t *out_rights,
+                                    uint64_t *out_badge);
 iris_error_t   kcnode_delete(struct KCNode *cn, uint32_t slot_idx);
 iris_error_t   kcnode_swap(struct KCNode *cn, uint32_t slot_a, uint32_t slot_b);
 

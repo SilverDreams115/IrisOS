@@ -101,6 +101,7 @@ iris_error_t kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
     struct KObject *old        = cn->slots[slot_idx].object;
     cn->slots[slot_idx].object = obj;
     cn->slots[slot_idx].rights = rights;
+    cn->slots[slot_idx].badge  = 0;   /* plain mint = unbadged (Fase 9) */
 
     irq_spinlock_unlock(&cn->lock, flags);
 
@@ -111,8 +112,43 @@ iris_error_t kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
     return IRIS_OK;
 }
 
-iris_error_t kcnode_mint_excl(struct KCNode *cn, uint32_t slot_idx,
-                              struct KObject *obj, iris_rights_t rights) {
+/* Overwrite mint preserving an explicit badge (Fase 9) — used by MOVE so a
+ * badged cap keeps its identity when it crosses from the handle table into
+ * a CNode slot. */
+iris_error_t kcnode_mint_badged(struct KCNode *cn, uint32_t slot_idx,
+                                struct KObject *obj, iris_rights_t rights,
+                                uint64_t badge) {
+    if (!cn || !obj || rights == RIGHT_NONE) return IRIS_ERR_INVALID_ARG;
+
+    kobject_retain(obj);
+    kobject_active_retain(obj);
+
+    uint64_t flags = irq_spinlock_lock(&cn->lock);
+
+    if (slot_idx >= cn->slot_count) {
+        irq_spinlock_unlock(&cn->lock, flags);
+        kobject_active_release(obj);
+        kobject_release(obj);
+        return IRIS_ERR_INVALID_ARG;
+    }
+
+    struct KObject *old        = cn->slots[slot_idx].object;
+    cn->slots[slot_idx].object = obj;
+    cn->slots[slot_idx].rights = rights;
+    cn->slots[slot_idx].badge  = badge;
+
+    irq_spinlock_unlock(&cn->lock, flags);
+
+    if (old) {
+        kobject_active_release(old);
+        kobject_release(old);
+    }
+    return IRIS_OK;
+}
+
+iris_error_t kcnode_mint_excl_badged(struct KCNode *cn, uint32_t slot_idx,
+                                     struct KObject *obj,
+                                     iris_rights_t rights, uint64_t badge) {
     if (!cn || !obj || rights == RIGHT_NONE) return IRIS_ERR_INVALID_ARG;
 
     kobject_retain(obj);
@@ -135,13 +171,21 @@ iris_error_t kcnode_mint_excl(struct KCNode *cn, uint32_t slot_idx,
 
     cn->slots[slot_idx].object = obj;
     cn->slots[slot_idx].rights = rights;
+    cn->slots[slot_idx].badge  = badge;
 
     irq_spinlock_unlock(&cn->lock, flags);
     return IRIS_OK;
 }
 
-iris_error_t kcnode_fetch(struct KCNode *cn, uint32_t slot_idx,
-                           struct KObject **out_obj, iris_rights_t *out_rights) {
+iris_error_t kcnode_mint_excl(struct KCNode *cn, uint32_t slot_idx,
+                              struct KObject *obj, iris_rights_t rights) {
+    return kcnode_mint_excl_badged(cn, slot_idx, obj, rights, 0);
+}
+
+iris_error_t kcnode_fetch_badged(struct KCNode *cn, uint32_t slot_idx,
+                                 struct KObject **out_obj,
+                                 iris_rights_t *out_rights,
+                                 uint64_t *out_badge) {
     if (!cn || !out_obj || !out_rights) return IRIS_ERR_INVALID_ARG;
 
     uint64_t flags = irq_spinlock_lock(&cn->lock);
@@ -161,9 +205,16 @@ iris_error_t kcnode_fetch(struct KCNode *cn, uint32_t slot_idx,
     kobject_active_retain(obj);
     *out_obj    = obj;
     *out_rights = cn->slots[slot_idx].rights;
+    if (out_badge)
+        *out_badge = cn->slots[slot_idx].badge;
 
     irq_spinlock_unlock(&cn->lock, flags);
     return IRIS_OK;
+}
+
+iris_error_t kcnode_fetch(struct KCNode *cn, uint32_t slot_idx,
+                           struct KObject **out_obj, iris_rights_t *out_rights) {
+    return kcnode_fetch_badged(cn, slot_idx, out_obj, out_rights, 0);
 }
 
 iris_error_t kcnode_swap(struct KCNode *cn, uint32_t slot_a, uint32_t slot_b) {
@@ -197,6 +248,7 @@ iris_error_t kcnode_delete(struct KCNode *cn, uint32_t slot_idx) {
     struct KObject *old = cn->slots[slot_idx].object;
     cn->slots[slot_idx].object = 0;
     cn->slots[slot_idx].rights = RIGHT_NONE;
+    cn->slots[slot_idx].badge  = 0;
     irq_spinlock_unlock(&cn->lock, flags);
 
     if (old) {

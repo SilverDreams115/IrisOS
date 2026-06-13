@@ -459,27 +459,41 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
         init_log("[USER][INIT] svcmgr.ep lookup FAILED\n");
 
     {
-        struct svc_mint it_mints[6];
+        /* Fase 9: slots 1-4 carry IRIS_BADGE_IRIS_TEST so every server can
+         * verify who is calling; slot 28 is a SECOND cap to the svcmgr
+         * endpoint with a different badge (T053: two caps, same endpoint,
+         * different identities). */
+        struct svc_mint it_mints[7];
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
+        it_mints[0].badge = IRIS_BADGE_IRIS_TEST;
         it_mints[1].slot = IRIS_CPTR_VFS_EP;
         it_mints[1].src_h = lk_vfs;
         it_mints[1].rights = RIGHT_WRITE;
+        it_mints[1].badge = IRIS_BADGE_IRIS_TEST;
         it_mints[2].slot = IRIS_CPTR_CONSOLE_EP;
         it_mints[2].src_h = g_init_console_ep_h;
         it_mints[2].rights = RIGHT_WRITE;
+        it_mints[2].badge = IRIS_BADGE_IRIS_TEST;
         it_mints[3].slot = IRIS_CPTR_KBD_EP;
         it_mints[3].src_h = lk_kbd;
         it_mints[3].rights = RIGHT_WRITE;
+        it_mints[3].badge = IRIS_BADGE_IRIS_TEST;
         it_mints[4].slot = IRIS_CPTR_TEST_FIX_A;
         it_mints[4].src_h = g_init_console_h;          /* wrong type */
         it_mints[4].rights = RIGHT_WRITE;
+        it_mints[4].badge = 0;
         it_mints[5].slot = IRIS_CPTR_TEST_FIX_B;
         it_mints[5].src_h = lk_svcmgr;                 /* TRANSFER only */
         it_mints[5].rights = RIGHT_TRANSFER;
+        it_mints[5].badge = 0;
+        it_mints[6].slot = IRIS_CPTR_TEST_FIX_C;
+        it_mints[6].src_h = lk_svcmgr;                 /* badge B fixture */
+        it_mints[6].rights = RIGHT_WRITE;
+        it_mints[6].badge = IRIS_BADGE_TEST_B;
         r = svc_load_minted(spawn_cap_h, "iris_test", &proc_h, &boot_h,
-                            it_mints, 6u);
+                            it_mints, 7u);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);
@@ -667,6 +681,7 @@ static handle_id_t init_spawn_console(handle_id_t spawn_cap_h) {
         con_mints[0].slot   = IRIS_CPTR_OWN_EP;
         con_mints[0].src_h  = g_init_console_ep_h;
         con_mints[0].rights = RIGHT_READ;
+        con_mints[0].badge  = 0;   /* server-side cap: unbadged */
         r = svc_load_minted(spawn_cap_h, "console", &con_proc_h, &con_boot_h,
                             con_mints, 1u);
     }
@@ -776,6 +791,9 @@ static handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h,
         sm_mints[0].slot   = IRIS_CPTR_CONSOLE_EP;
         sm_mints[0].src_h  = g_init_console_ep_h;
         sm_mints[0].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[0].badge  = 0;   /* MUST stay unbadged: svcmgr re-mints it
+                                   * per child with each child's badge (a
+                                   * badged cap can never be re-badged). */
         r = svc_load_minted(spawn_cap_h, "svcmgr", &svcmgr_proc_h,
                             &svcmgr_chan_h, sm_mints, 1u);
     }

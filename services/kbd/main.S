@@ -29,7 +29,7 @@
 .global _start
 
 /* ── Endpoint state (Fase 7.4) ─────────────────────────────────────────────
- * kbd_ep_msg:  struct IrisMsg (64 B) staging area for EP recv/reply.
+ * kbd_ep_msg:  struct IrisMsg (72 B, Fase 9) staging area for EP recv/reply.
  *              offsets: label 0, words[0..3] 8/16/24/32, word_count 40,
  *              buf_len 44, buf_uptr 48, attached_handle 56, rights 60.
  * kbd_ep_buf:  bulk landing zone (IRIS_IPC_BUF_SIZE); requests carrying bulk
@@ -40,7 +40,7 @@
  */
 .section .bss
 .align 8
-kbd_ep_msg:     .skip 64
+kbd_ep_msg:     .skip 72               /* struct IrisMsg (72 B, Fase 9)    */
 kbd_ep_buf:     .skip 256
 kbd_ring:       .skip KBD_EP_RING_CAP
 kbd_ring_head:  .skip 4
@@ -239,6 +239,7 @@ _start:
     movq  $0, 32(%rsi)
     movq  $0, 40(%rsi)
     movq  $0, 56(%rsi)
+    movq  $0, 64(%rsi)                 /* sender_badge (kernel overwrites) */
     leaq  kbd_ep_buf(%rip), %rax
     movq  %rax, 48(%rsi)               /* buf_uptr = kbd_ep_buf            */
     movq  $SYS_EP_NB_RECV, %rax
@@ -264,17 +265,20 @@ _start:
     movl  $KBD_EP_E_INVALID_ARG, %edx
     jmp   .kbd_ep_reply_err
 
-.kbd_ep_ping:                          /* PING → OK, no event payload      */
+.kbd_ep_ping:                          /* PING → OK; words[1] = sender badge */
     leaq  kbd_ep_msg(%rip), %rsi
+    movq  64(%rsi), %rcx               /* req sender_badge (Fase 9) — read */
+                                       /* BEFORE the reply reuses the buf  */
     movq  $0,  0(%rsi)                 /* label = IRIS_EP_REPLY_OK         */
     movq  $0,  8(%rsi)                 /* words[0] = 0                     */
-    movq  $0, 16(%rsi)
+    movq  %rcx, 16(%rsi)               /* words[1] = observed badge        */
     movq  $0, 24(%rsi)
     movq  $0, 32(%rsi)
     movq  $0, 40(%rsi)
     movq  $0, 48(%rsi)
     movq  $0, 56(%rsi)
-    movl  $1, 40(%rsi)                 /* word_count = 1                   */
+    movq  $0, 64(%rsi)                 /* sender_badge: kernel-owned       */
+    movl  $2, 40(%rsi)                 /* word_count = 2                   */
     jmp   .kbd_ep_send_reply
 
 .kbd_ep_poll:                          /* POLL → event or WOULD_BLOCK      */

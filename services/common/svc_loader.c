@@ -479,7 +479,8 @@ long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
                           (long)proc_h,
                           (long)mints[mi].slot,
                           (long)mints[mi].src_h,
-                          (long)mints[mi].rights);
+                          (long)((mints[mi].badge << 32) |
+                                 (uint64_t)mints[mi].rights));
         }
 
         /* 19. Start first thread: entry at bias+e_entry, RSP = stack top - 8,

@@ -5,12 +5,16 @@
 
 /* ── Internal helpers ────────────────────────────────────────────────── */
 
-/* IrisMsg = 64 bytes = 8 × uint64_t — word copy avoids byte-loop overhead. */
+/* IrisMsg = 72 bytes = 9 × uint64_t (Fase 9: +sender_badge) — word copy
+ * avoids byte-loop overhead. */
 static inline void irismsg_copy64(struct IrisMsg *dst, const struct IrisMsg *src) {
     const uint64_t *s = (const uint64_t *)src;
     uint64_t       *d = (uint64_t *)dst;
     d[0]=s[0]; d[1]=s[1]; d[2]=s[2]; d[3]=s[3];
     d[4]=s[4]; d[5]=s[5]; d[6]=s[6]; d[7]=s[7];
+    d[8]=s[8];
+    _Static_assert(sizeof(struct IrisMsg) == 9u * sizeof(uint64_t),
+                   "irismsg_copy64 word count");
 }
 
 static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
@@ -26,10 +30,11 @@ static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
  * On failure: *out_obj = NULL; caller's handle is untouched; returns error.
  * Shared by EP_SEND / EP_NB_SEND / SYS_REPLY (declared in syscall_priv.h).
  */
-iris_error_t syscall_ipc_stage_cap(struct task *t, uint32_t src_h,
-                                   uint32_t requested_rights,
-                                   struct KObject **out_obj,
-                                   uint32_t *out_rights) {
+iris_error_t syscall_ipc_stage_cap_badged(struct task *t, uint32_t src_h,
+                                          uint32_t requested_rights,
+                                          struct KObject **out_obj,
+                                          uint32_t *out_rights,
+                                          uint64_t *out_badge) {
     struct KObject *xo;
     iris_rights_t   xr;
     iris_error_t r = handle_table_get_object(&t->process->handle_table,
@@ -40,11 +45,24 @@ iris_error_t syscall_ipc_stage_cap(struct task *t, uint32_t src_h,
     iris_rights_t cap_rights = rights_reduce(xr, (iris_rights_t)requested_rights);
     if (cap_rights == RIGHT_NONE) { kobject_release(xo); return IRIS_ERR_INVALID_ARG; }
 
+    /* Fase 9: the transferred cap keeps its badge across the transfer. */
+    if (out_badge)
+        *out_badge = handle_table_get_badge(&t->process->handle_table,
+                                            (handle_id_t)src_h);
+
     /* Close sender's handle; the get_object lifecycle ref becomes the staging ref. */
     handle_table_close(&t->process->handle_table, (handle_id_t)src_h);
     *out_obj    = xo;
     *out_rights = (uint32_t)cap_rights;
     return IRIS_OK;
+}
+
+iris_error_t syscall_ipc_stage_cap(struct task *t, uint32_t src_h,
+                                   uint32_t requested_rights,
+                                   struct KObject **out_obj,
+                                   uint32_t *out_rights) {
+    return syscall_ipc_stage_cap_badged(t, src_h, requested_rights,
+                                        out_obj, out_rights, 0);
 }
 
 /*
@@ -54,13 +72,19 @@ iris_error_t syscall_ipc_stage_cap(struct task *t, uint32_t src_h,
  * a soft error and deliver the message without the capability.
  * Shared by EP_SEND / EP_NB_SEND / SYS_REPLY (declared in syscall_priv.h).
  */
-uint32_t syscall_ipc_deliver_cap(struct task *receiver,
-                                 struct KObject *xo, uint32_t cap_rights) {
+uint32_t syscall_ipc_deliver_cap_badged(struct task *receiver,
+                                        struct KObject *xo,
+                                        uint32_t cap_rights, uint64_t badge) {
     if (!xo) return IRIS_MSG_NO_CAP;
-    handle_id_t new_h = handle_table_insert(&receiver->process->handle_table,
-                                            xo, (iris_rights_t)cap_rights);
+    handle_id_t new_h = handle_table_insert_badged(
+        &receiver->process->handle_table, xo, (iris_rights_t)cap_rights, badge);
     kobject_release(xo); /* release staging ref; table holds its own ref */
     return (uint32_t)new_h;
+}
+
+uint32_t syscall_ipc_deliver_cap(struct task *receiver,
+                                 struct KObject *xo, uint32_t cap_rights) {
+    return syscall_ipc_deliver_cap_badged(receiver, xo, cap_rights, 0);
 }
 
 /*
@@ -153,8 +177,9 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
-    iris_error_t err = cspace_or_handle_resolve_endpoint(t->process, (iris_cptr_t)arg0,
-                                                          RIGHT_WRITE, &ep, &_ep_r);
+    uint64_t ep_badge = 0;
+    iris_error_t err = cspace_or_handle_resolve_endpoint_badged(
+        t->process, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
     /* Copy sender's message. */
@@ -162,6 +187,10 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
+
+    /* Fase 9: STAMP the sender badge from the invoked capability — whatever
+     * the sender wrote in the field is discarded (anti-spoofing). */
+    t->ipc_msg.sender_badge = ep_badge;
 
     /* Fastpath: no cap, no bulk buffer, receiver already waiting. */
     if (t->ipc_msg.attached_handle == IRIS_MSG_NO_CAP && t->ipc_msg.buf_len == 0)
@@ -185,10 +214,11 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Ph68: validate and stage attached cap before taking the spinlock. */
     struct KObject *xfer_obj    = 0;
     uint32_t        xfer_rights = 0;
+    uint64_t        xfer_badge  = 0;
     if (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP) {
-        iris_error_t cr = syscall_ipc_stage_cap(t, t->ipc_msg.attached_handle,
+        iris_error_t cr = syscall_ipc_stage_cap_badged(t, t->ipc_msg.attached_handle,
                                          t->ipc_msg.attached_rights,
-                                         &xfer_obj, &xfer_rights);
+                                         &xfer_obj, &xfer_rights, &xfer_badge);
         if (cr != IRIS_OK) {
             kobject_release(&ep->base);
             return syscall_err(cr);
@@ -229,7 +259,8 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Ph68: install cap in receiver's handle table (outside lock). */
         if (xfer_obj) {
-            uint32_t new_h = syscall_ipc_deliver_cap(receiver, xfer_obj, xfer_rights);
+            uint32_t new_h = syscall_ipc_deliver_cap_badged(receiver, xfer_obj,
+                                                            xfer_rights, xfer_badge);
             receiver->ipc_msg.attached_handle = new_h;
         }
 
@@ -247,6 +278,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     t->ipc_ep_closed = 0;
     t->ep_cap_obj    = xfer_obj;    /* staging ref; released by receiver or cancel */
     t->ep_cap_rights = xfer_rights;
+    t->ep_cap_badge  = xfer_badge;
 
     if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
     else                { ep->queue_head = t; ep->queue_tail = t; }
@@ -331,14 +363,17 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         /* Ph68: take sender's staged cap. */
         struct KObject *xfer_obj    = sender->ep_cap_obj;
         uint32_t        xfer_rights = sender->ep_cap_rights;
+        uint64_t        xfer_badge  = sender->ep_cap_badge;
         sender->ep_cap_obj    = 0;
         sender->ep_cap_rights = 0;
+        sender->ep_cap_badge  = 0;
 
         irq_spinlock_unlock(&ep->lock, flags);
 
         /* Ph68: install in receiver's handle table (outside lock). */
         if (xfer_obj) {
-            uint32_t new_h = syscall_ipc_deliver_cap(t, xfer_obj, xfer_rights);
+            uint32_t new_h = syscall_ipc_deliver_cap_badged(t, xfer_obj,
+                                                            xfer_rights, xfer_badge);
             t->ipc_msg.attached_handle = new_h;
         }
 
@@ -424,14 +459,18 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
-    iris_error_t err = cspace_or_handle_resolve_endpoint(t->process, (iris_cptr_t)arg0,
-                                                          RIGHT_WRITE, &ep, &_ep_r);
+    uint64_t ep_badge = 0;
+    iris_error_t err = cspace_or_handle_resolve_endpoint_badged(
+        t->process, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
     if (!copy_from_user_checked(&t->ipc_msg, arg1, (uint32_t)sizeof(struct IrisMsg))) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
+
+    /* Fase 9: stamp the sender badge from the invoked cap (anti-spoofing). */
+    t->ipc_msg.sender_badge = ep_badge;
 
     /* Ph69: stage kbuf. */
     t->ipc_kbuf_len = 0;
@@ -450,10 +489,11 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Ph68: stage cap before taking lock. */
     struct KObject *xfer_obj    = 0;
     uint32_t        xfer_rights = 0;
+    uint64_t        xfer_badge  = 0;
     if (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP) {
-        iris_error_t cr = syscall_ipc_stage_cap(t, t->ipc_msg.attached_handle,
+        iris_error_t cr = syscall_ipc_stage_cap_badged(t, t->ipc_msg.attached_handle,
                                          t->ipc_msg.attached_rights,
-                                         &xfer_obj, &xfer_rights);
+                                         &xfer_obj, &xfer_rights, &xfer_badge);
         if (cr != IRIS_OK) { kobject_release(&ep->base); return syscall_err(cr); }
         t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
     }
@@ -494,7 +534,8 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     irq_spinlock_unlock(&ep->lock, flags);
 
     if (xfer_obj) {
-        uint32_t new_h = syscall_ipc_deliver_cap(receiver, xfer_obj, xfer_rights);
+        uint32_t new_h = syscall_ipc_deliver_cap_badged(receiver, xfer_obj,
+                                                        xfer_rights, xfer_badge);
         receiver->ipc_msg.attached_handle = new_h;
     }
 
@@ -566,13 +607,16 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Ph68: take sender's staged cap. */
     struct KObject *xfer_obj    = sender->ep_cap_obj;
     uint32_t        xfer_rights = sender->ep_cap_rights;
+    uint64_t        xfer_badge  = sender->ep_cap_badge;
     sender->ep_cap_obj    = 0;
     sender->ep_cap_rights = 0;
+    sender->ep_cap_badge  = 0;
 
     irq_spinlock_unlock(&ep->lock, flags);
 
     if (xfer_obj) {
-        uint32_t new_h = syscall_ipc_deliver_cap(t, xfer_obj, xfer_rights);
+        uint32_t new_h = syscall_ipc_deliver_cap_badged(t, xfer_obj,
+                                                        xfer_rights, xfer_badge);
         t->ipc_msg.attached_handle = new_h;
     }
 

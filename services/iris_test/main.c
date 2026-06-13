@@ -1861,6 +1861,126 @@ static void test_t046(void) {
         it_fail("T046", "legacy lookup handle interop");
 }
 
+/* ── Fase 9: badges & sender identity (T047–T053) ───────────────────────── */
+
+/* PING a slot and return the badge the server says it observed (words[1]);
+ * stores -1 on transport/protocol failure. */
+static long it_ping_badge(long cptr, uint64_t *out_badge) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_EP_OP_PING;
+    long r = it_sys2(SYS_EP_CALL, cptr, (long)&msg);
+    if (r != 0 || msg.label != IRIS_EP_REPLY_OK || msg.word_count < 2u)
+        return -1;
+    *out_badge = msg.words[1];
+    return 0;
+}
+
+/* T047: svcmgr observes our kernel-stamped badge on the discovery slot. */
+static void test_t047(void) {
+    uint64_t b = 0;
+    if (it_ping_badge((long)IRIS_CPTR_SVCMGR_EP, &b) == 0 &&
+        b == IRIS_BADGE_IRIS_TEST)
+        it_pass("T047");
+    else
+        it_fail("T047", "svcmgr badge");
+}
+
+/* T048: VFS observes the expected badge. */
+static void test_t048(void) {
+    uint64_t b = 0;
+    if (it_ping_badge((long)IRIS_CPTR_VFS_EP, &b) == 0 &&
+        b == IRIS_BADGE_IRIS_TEST)
+        it_pass("T048");
+    else
+        it_fail("T048", "vfs badge");
+}
+
+/* T049: console observes the expected badge. */
+static void test_t049(void) {
+    uint64_t b = 0;
+    if (it_ping_badge((long)IRIS_CPTR_CONSOLE_EP, &b) == 0 &&
+        b == IRIS_BADGE_IRIS_TEST)
+        it_pass("T049");
+    else
+        it_fail("T049", "console badge");
+}
+
+/* T050: kbd (assembly server) observes the expected badge. */
+static void test_t050(void) {
+    uint64_t b = 0;
+    if (it_ping_badge((long)IRIS_CPTR_KBD_EP, &b) == 0 &&
+        b == IRIS_BADGE_IRIS_TEST)
+        it_pass("T050");
+    else
+        it_fail("T050", "kbd badge");
+}
+
+/* T051: payload spoofing is impossible — whatever we write into
+ * sender_badge is overwritten by the kernel at send time. */
+static void test_t051(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label        = IRIS_EP_OP_PING;
+    msg.sender_badge = 0xDEADBEEFu;          /* forged identity attempt */
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+        msg.word_count >= 2u && msg.words[1] == IRIS_BADGE_IRIS_TEST)
+        it_pass("T051");
+    else
+        it_fail("T051", "payload badge spoof must not work");
+}
+
+/* T052: legacy unbadged path stays compatible — a cap obtained via name
+ * lookup (handle >= 1024, unbadged master dup) delivers badge 0. */
+static void test_t052(void) {
+    uint32_t len = it_stage_path(CONSOLE_EP_SVC_NAME);
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+
+    int ok = 0;
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+        uint64_t b = 0xFFu;
+        if (it_ping_badge((long)msg.attached_handle, &b) == 0 && b == 0u)
+            ok = 1;
+        handle_id_t h = (handle_id_t)msg.attached_handle;
+        it_close(&h);
+    }
+    if (ok)
+        it_pass("T052");
+    else
+        it_fail("T052", "legacy unbadged path");
+}
+
+/* T053: two caps to the SAME endpoint deliver DIFFERENT badges (slot 1 vs
+ * fixture slot 28), and a badged cap still honours rights (slot 31 is
+ * TRANSFER-only: EP_CALL stays ACCESS_DENIED, no fallback). */
+static void test_t053(void) {
+    uint64_t b1 = 0, b2 = 0;
+    int ok = 1;
+    if (it_ping_badge((long)IRIS_CPTR_SVCMGR_EP, &b1) != 0) ok = 0;
+    if (it_ping_badge((long)IRIS_CPTR_TEST_FIX_C, &b2) != 0) ok = 0;
+    if (b1 != IRIS_BADGE_IRIS_TEST || b2 != IRIS_BADGE_TEST_B || b1 == b2)
+        ok = 0;
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_EP_OP_PING;
+    if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_FIX_B, (long)&msg) !=
+        (long)IRIS_ERR_ACCESS_DENIED)
+        ok = 0;
+
+    if (ok)
+        it_pass("T053");
+    else
+        it_fail("T053", "distinct badges per cap");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -1964,6 +2084,13 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t044();
     test_t045();
     test_t046();
+    test_t047();
+    test_t048();
+    test_t049();
+    test_t050();
+    test_t051();
+    test_t052();
+    test_t053();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

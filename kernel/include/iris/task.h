@@ -94,6 +94,7 @@ struct task {
     /* Ph68: capability staged for transfer during a blocking send */
     struct KObject     *ep_cap_obj;      /* kobject being transferred; NULL = none */
     uint32_t            ep_cap_rights;   /* rights to grant on ep_cap_obj */
+    uint64_t            ep_cap_badge;    /* Fase 9: badge carried by the staged cap */
     /* Ph69: IPC buffer staging */
     uint32_t            ipc_kbuf_len;    /* valid bytes in ipc_kbuf */
     uint64_t            ep_recv_buf_uptr;/* receiver's output buffer user addr (set at EP_RECV) */

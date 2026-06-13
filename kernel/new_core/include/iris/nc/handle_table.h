@@ -10,6 +10,8 @@
 typedef struct {
     struct HandleEntry slots[HANDLE_TABLE_MAX];
     uint32_t           gen[HANDLE_TABLE_MAX];              /* generation por slot */
+    uint32_t           badge[HANDLE_TABLE_MAX];            /* Fase 9: per-cap badge
+                                                            * (32-bit, 0 = unbadged) */
     uint8_t            used[HANDLE_TABLE_MAX];
     handle_id_t        derivation_parent[HANDLE_TABLE_MAX]; /* HANDLE_INVALID = root cap */
     uint32_t           next_hint;
@@ -30,6 +32,11 @@ typedef struct {
 void         handle_table_init(HandleTable *ht);
 handle_id_t  handle_table_insert(HandleTable *ht, struct KObject *obj,
                                  iris_rights_t rights);
+/* Fase 9: insertion preserving an explicit badge; read a handle's badge
+ * (0 = unbadged or not found). */
+handle_id_t  handle_table_insert_badged(HandleTable *ht, struct KObject *obj,
+                                        iris_rights_t rights, uint64_t badge);
+uint64_t     handle_table_get_badge(HandleTable *ht, handle_id_t id);
 handle_id_t  handle_table_insert_derived(HandleTable *ht, struct KObject *obj,
                                           iris_rights_t rights,
                                           handle_id_t parent_handle);

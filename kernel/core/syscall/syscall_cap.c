@@ -42,7 +42,11 @@ uint64_t sys_handle_dup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
-    handle_id_t   new_h      = handle_table_insert(&t->process->handle_table, obj, new_rights);
+    /* Fase 9: duplication preserves the badge (a copy keeps its identity). */
+    uint64_t      src_badge  = handle_table_get_badge(&t->process->handle_table,
+                                                      (handle_id_t)arg0);
+    handle_id_t   new_h      = handle_table_insert_badged(&t->process->handle_table,
+                                                          obj, new_rights, src_badge);
     kobject_release(obj);
 
     if (new_h == HANDLE_INVALID) return syscall_err(IRIS_ERR_TABLE_FULL);
