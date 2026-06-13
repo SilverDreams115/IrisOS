@@ -96,3 +96,17 @@ fallback), T041 (slots resolve with right type; empty slot fails),
 T042–T044 (vfs/console/kbd served via slots), T045 (client slots are
 WRITE-only: recv denied), T046 (legacy lookup still yields real handles
 ≥ 1024 that work and close).
+
+## Fase 13 prerequisite — device caps resolve through CSpace
+
+`cspace_or_handle_resolve_obj()` (generic, lifecycle-only ref contract) extends
+the dual-resolution model to **device/authority caps** — `KIoPort`, `KIrqCap`,
+`KBootstrapCap`. The device-access syscalls (`SYS_IOPORT_IN/OUT`,
+`SYS_IRQ_ROUTE_REGISTER`, `SYS_IRQ_ACK`, `SYS_INITRD_VMO/COUNT`,
+`SYS_PROCESS_CREATE`, `SYS_CAP_CREATE_IRQCAP/IOPORT`, `SYS_BOOTCAP_RESTRICT`,
+`SYS_FRAMEBUFFER_VMO`) now accept a CPtr slot (`<1024`, CSpace-only) or a handle
+(`>=1024`, handle-table-only); the namespace split and `ACCESS_DENIED`-no-fallback
+contract are preserved (wrong-type CPtr → `ACCESS_DENIED`). This is the
+prerequisite that lets device caps be pre-minted into a child's CSpace instead
+of delivered over a KChannel — unblocking full KChannel retirement.
+Runtime proof: **T069**. Still handle-only: `KChannel`, `KProcess`.

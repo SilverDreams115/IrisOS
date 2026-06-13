@@ -2336,6 +2336,23 @@ static void test_t068(void) {
         it_fail("T068", "unknown opcode no-fallback");
 }
 
+/* ── Fase 13: device-cap CPtr resolution (T069) ─────────────────────────── */
+
+/* T069: a device/authority cap (the spawn KBootstrapCap) minted into a CPtr
+ * slot is invocable BY CPtr — SYS_INITRD_COUNT resolves it through CSpace
+ * (cspace_or_handle_resolve_obj).  A wrong-type CPtr slot (slot 1 = endpoint)
+ * is rejected with ACCESS_DENIED: the namespace split holds and there is no
+ * fallback.  This is the prerequisite that lets device caps stop travelling
+ * over KChannel at bootstrap. */
+static void test_t069(void) {
+    long ok_cnt = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_TEST_SPAWN);
+    long wrong  = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_SVCMGR_EP);
+    if (ok_cnt >= 0 && wrong == (long)IRIS_ERR_ACCESS_DENIED)
+        it_pass("T069");
+    else
+        it_fail("T069", "device cap via cptr");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2461,6 +2478,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t066();
     test_t067();
     test_t068();
+    test_t069();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

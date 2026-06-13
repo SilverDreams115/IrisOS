@@ -265,11 +265,12 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg0, &auth_obj, &auth_rights);
+    /* Fase 13: dual resolver — spawn cap may be a CPtr slot or a handle. */
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
+    if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
-    if (auth_obj->type != KOBJ_BOOTSTRAP_CAP ||
-        !kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_SPAWN_SERVICE)) {
+    if (!kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_SPAWN_SERVICE)) {
         kobject_release(auth_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
@@ -326,11 +327,12 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg0, &auth_obj, &auth_rights);
+    /* Fase 13: dual resolver — spawn cap may be a CPtr slot or a handle. */
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
+    if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
-    if (auth_obj->type != KOBJ_BOOTSTRAP_CAP ||
-        !kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_SPAWN_SERVICE)) {
+    if (!kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_SPAWN_SERVICE)) {
         kobject_release(auth_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
@@ -575,11 +577,11 @@ uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1,
 
     struct KObject *auth_obj;
     iris_rights_t   auth_rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg0, &auth_obj, &auth_rights);
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
+    if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
-    if (auth_obj->type != KOBJ_BOOTSTRAP_CAP ||
-        !kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_FRAMEBUFFER)) {
+    if (!kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_FRAMEBUFFER)) {
         kobject_release(auth_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }

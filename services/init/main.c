@@ -463,7 +463,7 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[8];
+        struct svc_mint it_mints[9];
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -498,8 +498,15 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
         it_mints[7].src_h = lk_svcmgr;
         it_mints[7].rights = RIGHT_WRITE;
         it_mints[7].badge = IRIS_BADGE_INIT;
+        /* Fase 13: a device/authority cap (the spawn KBootstrapCap) in a CPtr
+         * slot — iris_test invokes it by CPtr to prove device caps resolve via
+         * CSpace (T069). */
+        it_mints[8].slot = IRIS_CPTR_TEST_SPAWN;
+        it_mints[8].src_h = spawn_cap_h;
+        it_mints[8].rights = RIGHT_READ;
+        it_mints[8].badge = 0;
         r = svc_load_minted(spawn_cap_h, "iris_test", &proc_h, &boot_h,
-                            it_mints, 8u);
+                            it_mints, 9u);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);

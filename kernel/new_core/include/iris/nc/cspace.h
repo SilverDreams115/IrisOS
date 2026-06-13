@@ -150,6 +150,19 @@ iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
                                              iris_rights_t   *rights_out);
 
 /*
+ * Fase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
+ * KBootstrapCap).  Namespace split as usual; LIFECYCLE-ONLY ref contract
+ * (same as handle_table_get_object) — release with a single kobject_release.
+ * required==RIGHT_NONE defers the rights check to the caller.
+ */
+iris_error_t cspace_or_handle_resolve_obj(struct KProcess  *proc,
+                                          iris_cptr_t       cptr_or_handle,
+                                          iris_rights_t     required,
+                                          uint32_t          expected_type,
+                                          struct KObject  **out,
+                                          iris_rights_t    *rights_out);
+
+/*
  * cspace_or_handle_resolve_cnode — dual-resolution helper for CNode syscalls.
  *
  * Tries CSpace traversal first (if proc->cspace_root_h is set and

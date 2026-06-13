@@ -137,10 +137,14 @@ uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (irq_num > 15u)     return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    if (handle_table_get_object(&t->process->handle_table, cap_h, &auth, &auth_r) != IRIS_OK)
-        return syscall_err(IRIS_ERR_NOT_FOUND);
-    if (auth->type != KOBJ_BOOTSTRAP_CAP ||
-        !kbootcap_allows((struct KBootstrapCap *)auth, IRIS_BOOTCAP_HW_ACCESS)) {
+    {
+        /* Fase 13: dual resolver — HW cap may be a CPtr slot or a handle. */
+        iris_error_t ar = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)cap_h,
+                                 RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth, &auth_r);
+        if (ar == IRIS_ERR_WRONG_TYPE) ar = IRIS_ERR_ACCESS_DENIED;
+        if (ar != IRIS_OK) return syscall_err(ar);
+    }
+    if (!kbootcap_allows((struct KBootstrapCap *)auth, IRIS_BOOTCAP_HW_ACCESS)) {
         kobject_release(auth);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
@@ -176,10 +180,14 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!kioport_in_whitelist(base, count))
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
 
-    if (handle_table_get_object(&t->process->handle_table, cap_h, &auth, &auth_r) != IRIS_OK)
-        return syscall_err(IRIS_ERR_NOT_FOUND);
-    if (auth->type != KOBJ_BOOTSTRAP_CAP ||
-        !kbootcap_allows((struct KBootstrapCap *)auth, IRIS_BOOTCAP_HW_ACCESS)) {
+    {
+        /* Fase 13: dual resolver — HW cap may be a CPtr slot or a handle. */
+        iris_error_t ar = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)cap_h,
+                                 RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth, &auth_r);
+        if (ar == IRIS_ERR_WRONG_TYPE) ar = IRIS_ERR_ACCESS_DENIED;
+        if (ar != IRIS_OK) return syscall_err(ar);
+    }
+    if (!kbootcap_allows((struct KBootstrapCap *)auth, IRIS_BOOTCAP_HW_ACCESS)) {
         kobject_release(auth);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
@@ -274,13 +282,9 @@ uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg0, &obj, &rights);
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_IOPORT, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (obj->type != KOBJ_IOPORT) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(rights, RIGHT_READ | RIGHT_DUPLICATE)) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -321,13 +325,9 @@ uint64_t sys_bootcap_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg0, &obj, &rights);
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (obj->type != KOBJ_BOOTSTRAP_CAP) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(rights, RIGHT_READ)) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);

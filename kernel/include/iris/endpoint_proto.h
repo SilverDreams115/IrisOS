@@ -175,11 +175,14 @@
  *   30..31     test fixtures (iris_test only; minted by init): wrong-type
  *              cap and insufficient-rights cap for CPtr failure tests.
  *
- * Cap kinds that CANNOT live in slots (handle/bootstrap boundary): KChannel,
- * KIoPort, KIrqCap, KBootstrapCap, KProcess — the dual resolver
- * (cspace_or_handle_resolve_*) only covers IPC objects (endpoint, reply,
- * notification), CNode, Untyped and Frame.  Services needing those caps
- * keep a bootstrap one-shot channel.
+ * Fase 13: KIoPort, KIrqCap and KBootstrapCap NOW resolve through CSpace via
+ * the generic dual resolver cspace_or_handle_resolve_obj() — the device-access
+ * syscalls (SYS_IOPORT_IN/OUT, SYS_IRQ_ROUTE_REGISTER, SYS_IRQ_ACK,
+ * SYS_INITRD_*, SYS_PROCESS_CREATE, SYS_CAP_CREATE_*, SYS_BOOTCAP_RESTRICT,
+ * SYS_FRAMEBUFFER_VMO) accept a CPtr slot or a handle.  This removes the last
+ * reason device caps had to travel over a KChannel at bootstrap (the
+ * prerequisite for full KChannel retirement).  Still outside the resolver:
+ * KChannel and KProcess.
  */
 /*
  * Well-known sender badges (Fase 9).
@@ -255,6 +258,10 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * drive the privileged IRIS_SVCMGR_EP_RESTART path.  Slot 27 (slot 29 stays
  * the reserved-but-unminted probe used by T041). */
 #define IRIS_CPTR_TEST_SUPER  ((uint64_t)27)
+/* Fase 13: a device/authority cap (the spawn KBootstrapCap) minted into a
+ * CPtr slot, proving device caps resolve via CSpace (cspace_or_handle_resolve_obj)
+ * and are invocable by CPtr — the prerequisite for KChannel-free bootstrap. */
+#define IRIS_CPTR_TEST_SPAWN  ((uint64_t)26)
 
 /*
  * Reserved name suffix ".ep": IRIS_SVCMGR_EP_LOOKUP_NAME and the legacy

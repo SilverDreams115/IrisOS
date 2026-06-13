@@ -350,6 +350,62 @@ iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
 }
 
 /*
+ * Fase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
+ * KBootstrapCap, …).  Same namespace split as the typed resolvers (CPtr < 1024
+ * → CSpace only; >= 1024 → handle table only) but **lifecycle-only** ref
+ * contract — identical to handle_table_get_object — so callers that already
+ * use that helper can switch with no change to their kobject_release path.
+ * This lets device caps be CPtr-minted into a child's CNode and invoked by
+ * CPtr, removing the last reason device caps had to travel over KChannel.
+ * required==RIGHT_NONE leaves the rights check to the caller (preserving each
+ * device syscall's existing rights logic).
+ */
+iris_error_t cspace_or_handle_resolve_obj(struct KProcess  *proc,
+                                          iris_cptr_t       cptr_or_handle,
+                                          iris_rights_t     required,
+                                          uint32_t          expected_type,
+                                          struct KObject  **out,
+                                          iris_rights_t    *rights_out)
+{
+    struct KObject *obj;
+    iris_rights_t   r;
+    iris_error_t    err;
+
+    if (!proc || !out || !rights_out) return IRIS_ERR_INVALID_ARG;
+
+    if (cspace_value_is_cptr(cptr_or_handle)) {
+        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+        err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);
+        if (err != IRIS_OK) return err;
+        if (obj->type != expected_type) {
+            kobject_active_release(obj);
+            kobject_release(obj);
+            return IRIS_ERR_WRONG_TYPE;
+        }
+        /* Drop the traversal's active ref → lifecycle-only (handle contract). */
+        kobject_active_release(obj);
+        *out = obj;
+        *rights_out = r;
+        return IRIS_OK;
+    }
+
+    err = handle_table_get_object(&proc->handle_table,
+                                   (handle_id_t)cptr_or_handle, &obj, &r);
+    if (err != IRIS_OK) return err;
+    if (obj->type != expected_type) {
+        kobject_release(obj);
+        return IRIS_ERR_WRONG_TYPE;
+    }
+    if (required != RIGHT_NONE && !rights_check(r, required)) {
+        kobject_release(obj);
+        return IRIS_ERR_ACCESS_DENIED;
+    }
+    *out = obj;
+    *rights_out = r;
+    return IRIS_OK;
+}
+
+/*
  * Fase 9: badge-aware dual endpoint resolver for the EP send/call paths.
  * Same namespace split and lifecycle-only refcount contract as the
  * DUAL_RESOLVE_IPC endpoint resolver; additionally returns the badge of
