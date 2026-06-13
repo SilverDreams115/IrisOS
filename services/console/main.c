@@ -46,11 +46,6 @@ static inline long con_sys1(long nr, long a0) {
     return con_sys2(nr, a0, 0);
 }
 
-static void con_msg_zero(struct KChanMsg *msg) {
-    uint8_t *raw = (uint8_t *)msg;
-    uint32_t i;
-    for (i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
-}
 
 /* Poll the UART Line Status Register (offset 5) until bit 5 (THRE) is set,
  * then write one byte to the Transmit Holding Register (offset 0). */
@@ -63,43 +58,9 @@ static void con_uart_write_byte(handle_id_t ioport_h, uint8_t byte) {
     (void)con_sys3(SYS_IOPORT_OUT, (long)ioport_h, 0, (long)byte);
 }
 
-/* Serve one legacy KChannel message (CONSOLE_MSG_WRITE / SYNC). */
-static void con_serve_chan_msg(handle_id_t ioport_h, struct KChanMsg *msg) {
-    if (msg->type == CONSOLE_MSG_SYNC) {
-        /* Flush barrier: every WRITE queued before this SYNC has already
-         * been emitted (the service channel is FIFO) — ack and move on. */
-        if (msg->attached_handle != HANDLE_INVALID) {
-            struct KChanMsg ack;
-            con_msg_zero(&ack);
-            ack.type = CONSOLE_MSG_SYNC_ACK;
-            (void)con_sys2(SYS_CHAN_SEND,
-                           (long)msg->attached_handle, (long)&ack);
-            (void)con_sys1(SYS_HANDLE_CLOSE, (long)msg->attached_handle);
-        }
-        return;
-    }
-    if (msg->type != CONSOLE_MSG_WRITE) return;
-    if (msg->data_len < 4u) return;
-
-    uint32_t len = (uint32_t)msg->data[0] |
-                   ((uint32_t)msg->data[1] << 8);
-    if (len > CONSOLE_WRITE_MAX) len = CONSOLE_WRITE_MAX;
-
-    uint32_t i;
-    for (i = 0; i < len; i++)
-        con_uart_write_byte(ioport_h, msg->data[4 + i]);
-}
-
-/* Drain every queued legacy message without blocking (EP SYNC barrier). */
-static void con_drain_chan(handle_id_t ioport_h, handle_id_t service_h) {
-    struct KChanMsg msg;
-    for (;;) {
-        con_msg_zero(&msg);
-        if (con_sys2(SYS_CHAN_RECV_NB, (long)service_h, (long)&msg) != IRIS_OK)
-            return;
-        con_serve_chan_msg(ioport_h, &msg);
-    }
-}
+/* Fase 13 (Track I): the legacy KChannel write path (con_serve_chan_msg /
+ * con_drain_chan, CONSOLE_MSG_WRITE/SYNC) is retired — console is endpoint-only.
+ * Its sole writers (svcmgr klog drain, init logging) now use console.ep. */
 
 static uint8_t g_con_ep_buf[IRIS_IPC_BUF_SIZE];
 
@@ -117,8 +78,7 @@ static void con_ep_reply_err(struct IrisMsg *reply, int32_t err) {
 }
 
 /* Serve one endpoint request; exactly one reply per request. */
-static void con_serve_ep_msg(handle_id_t ioport_h, handle_id_t service_h,
-                             struct IrisMsg *req) {
+static void con_serve_ep_msg(handle_id_t ioport_h, struct IrisMsg *req) {
     struct IrisMsg reply;
     handle_id_t reply_h = (handle_id_t)req->attached_handle;
 
@@ -138,9 +98,8 @@ static void con_serve_ep_msg(handle_id_t ioport_h, handle_id_t service_h,
             con_ep_reply_err(&reply, IRIS_ERR_INVALID_ARG);
             break;
         }
-        /* Cross-path barrier: emit everything legacy writers queued
-         * before this point, then acknowledge. */
-        con_drain_chan(ioport_h, service_h);
+        /* Fase 13 (Track I): no legacy KChannel writers remain — EP writes are
+         * synchronous by construction, so SYNC is a trivial acknowledge. */
         con_imsg_zero(&reply);
         reply.label      = IRIS_EP_REPLY_OK;
         reply.word_count = 1u;
@@ -164,59 +123,23 @@ static void con_serve_ep_msg(handle_id_t ioport_h, handle_id_t service_h,
 }
 
 void console_main_c(handle_id_t bootstrap_h) {
-    handle_id_t ioport_h  = HANDLE_INVALID;
-    handle_id_t service_h = HANDLE_INVALID;
-    /* Fase 8: the endpoint recv side is minted by init at IRIS_CPTR_OWN_EP
-     * (bootstrap kind 0x21 retired); the slot is invoked directly. */
-    handle_id_t ep_h      = (handle_id_t)IRIS_CPTR_OWN_EP;
-    struct KChanMsg msg;
+    /* Fase 13 (Track I): console is endpoint-only and fully CPtr-provisioned —
+     * the endpoint recv side is the IRIS_CPTR_OWN_EP mint (slot 5) and the
+     * KIoPort for 0x3F8..0x3FF the IRIS_CPTR_IOPORT mint (slot 10), resolved by
+     * CPtr through the device-cap dual resolver (SYS_IOPORT_IN/OUT).  No
+     * bootstrap KChannel recv, no legacy service channel. */
+    handle_id_t ioport_h = (handle_id_t)IRIS_CPTR_IOPORT;
+    handle_id_t ep_h     = (handle_id_t)IRIS_CPTR_OWN_EP;
 
-    /* Bootstrap: receive IOPORT_CAP and SERVICE handles — the unavoidable
-     * handle boundary (KIoPort and KChannel caps cannot live in CSpace
-     * slots; see endpoint_proto.h). */
-    while (ioport_h == HANDLE_INVALID || service_h == HANDLE_INVALID) {
-        con_msg_zero(&msg);
-        if (con_sys2(SYS_CHAN_RECV, (long)bootstrap_h, (long)&msg) != IRIS_OK)
-            break;
-        if (msg.type != SVCMGR_MSG_BOOTSTRAP_HANDLE ||
-            msg.attached_handle == HANDLE_INVALID) {
-            if (msg.attached_handle != HANDLE_INVALID)
-                (void)con_sys1(SYS_HANDLE_CLOSE, (long)msg.attached_handle);
-            continue;
-        }
-        uint32_t kind = (uint32_t)msg.data[0] |
-                        ((uint32_t)msg.data[1] << 8) |
-                        ((uint32_t)msg.data[2] << 16) |
-                        ((uint32_t)msg.data[3] << 24);
-        if (kind == SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP && ioport_h == HANDLE_INVALID) {
-            ioport_h = msg.attached_handle;
-        } else if (kind == SVCMGR_BOOTSTRAP_KIND_SERVICE && service_h == HANDLE_INVALID) {
-            service_h = msg.attached_handle;
-        } else {
-            (void)con_sys1(SYS_HANDLE_CLOSE, (long)msg.attached_handle);
-        }
-    }
     (void)con_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_h);
 
-    if (ioport_h == HANDLE_INVALID || service_h == HANDLE_INVALID)
-        return;
-
-    /* Main loop: endpoint-first, legacy KChannel with timeout (Fase 7.3). */
+    /* Endpoint-only main loop: block on the KEndpoint, serve, reply. */
     for (;;) {
-        while (ep_h != HANDLE_INVALID) {
-            struct IrisMsg req;
-            con_imsg_zero(&req);
-            req.buf_uptr = (uint64_t)(uintptr_t)g_con_ep_buf;
-            if (con_sys2(SYS_EP_NB_RECV, (long)ep_h, (long)&req) != IRIS_OK)
-                break;
-            con_serve_ep_msg(ioport_h, service_h, &req);
-        }
-
-        con_msg_zero(&msg);
-        long r = con_sys3(SYS_CHAN_RECV_TIMEOUT, (long)service_h, (long)&msg,
-                          5000000L /* 5 ms */);
-        if (r != IRIS_OK)
-            continue;  /* TIMED_OUT keeps the EP drain alive */
-        con_serve_chan_msg(ioport_h, &msg);
+        struct IrisMsg req;
+        con_imsg_zero(&req);
+        req.buf_uptr = (uint64_t)(uintptr_t)g_con_ep_buf;
+        if (con_sys2(SYS_EP_RECV, (long)ep_h, (long)&req) != IRIS_OK)
+            continue;
+        con_serve_ep_msg(ioport_h, &req);
     }
 }

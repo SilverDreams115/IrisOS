@@ -71,23 +71,26 @@ static inline long init_sys0(long nr) {
 
 /* ── Utilities ──────────────────────────────────────────────────────────── */
 
-static handle_id_t g_init_console_h = HANDLE_INVALID;
 /* Console KEndpoint master (Fase 7.3): init creates it, console serves it,
- * svcmgr publishes the send side as "console.ep". */
+ * svcmgr publishes the send side as "console.ep".  Fase 13/Track I: the legacy
+ * console KChannel write handle (g_init_console_h) is retired — init logs over
+ * console.ep, with early-serial as the only pre-console.ep fallback. */
 static handle_id_t g_init_console_ep_h = HANDLE_INVALID;
 static uint8_t g_init_con_ep_buf[IRIS_IPC_BUF_SIZE];
 static handle_id_t g_init_early_serial_h = HANDLE_INVALID;
+static void init_early_serial_write(const char *s);
 
 static void init_log(const char *s) {
-    /* Endpoint-first (Fase 7.3): synchronous EP write once the console
-     * endpoint is verified; the legacy KChannel only carries pre-EP boot
-     * lines. No silent fallback after verification — a broken EP drops the
-     * gated markers and fails smoke. */
+    /* Fase 13 (Track I): endpoint-first over console.ep (synchronous flush
+     * barrier) once it exists; the only pre-console.ep fallback is the direct
+     * UART (early-serial) — never the legacy console KChannel.  No silent
+     * fallback after verification: a broken EP drops the gated markers and
+     * fails smoke. */
     if (g_init_console_ep_h != HANDLE_INVALID) {
         (void)console_ep_write(g_init_console_ep_h, g_init_con_ep_buf, s);
         return;
     }
-    console_write(g_init_console_h, s);
+    init_early_serial_write(s);
 }
 
 static void init_early_serial_write(const char *s) {
@@ -120,11 +123,9 @@ static const char init_stage_exception[] = "[USER][INIT][S8] exception delivery 
 static const char init_stage_healthy[]   = "[USER][INIT][BOOT] healthy path OK\n";
 static const char init_console_load_fail[] = "[INIT] console load FAILED\r\n";
 static const char init_console_ioport_fail[] = "[INIT] console ioport FAILED\r\n";
-static const char init_console_chan_fail[] = "[INIT] console chan FAILED\r\n";
-static const char init_console_readdup_fail[] = "[INIT] console read dup FAILED\r\n";
-static const char init_console_writedup_fail[] = "[INIT] console write dup FAILED\r\n";
-static const char init_console_boot_ioport_fail[] = "[INIT] console boot i/o FAILED\r\n";
-static const char init_console_boot_service_fail[] = "[INIT] console boot service FAILED\r\n";
+static const char init_console_chan_fail[] = "[INIT] console ep FAILED\r\n";
+/* Fase 13/Track I: readdup/writedup/boot_ioport/boot_service fail strings
+ * retired with the legacy console KChannel bootstrap. */
 static const char init_fb_load_fail[] = "[INIT] fb load FAILED\r\n";
 
 #define INIT_RETRY_LIMIT 100
@@ -299,7 +300,7 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
      *   slot 2  — vfs.ep,     RIGHT_WRITE            → T042/T045
      *   slot 3  — console.ep, RIGHT_WRITE            → T043
      *   slot 4  — kbd.ep,     RIGHT_WRITE            → T044
-     *   slot 30 — console KChannel cap (wrong type)  → T040 WRONG_TYPE
+     *   slot 30 — KNotification, RIGHT_WRITE (wrong type) → T040 WRONG_TYPE
      *   slot 31 — svcmgr ep, RIGHT_TRANSFER only     → T040 ACCESS_DENIED
      *             (the dual resolver must NOT fall back to handles).
      * vfs.ep / kbd.ep come from legacy lookup (WRITE|DUPLICATE) — that
@@ -311,6 +312,15 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
                                 RIGHT_WRITE | RIGHT_DUPLICATE);
     handle_id_t lk_kbd    = init_lookup_name(sm_h, "kbd.ep",
                                 RIGHT_WRITE | RIGHT_DUPLICATE);
+    /* Fase 13/Track I: a KNotification serves as the slot-30 wrong-type fixture
+     * for T040 (replaces the retired console KChannel cap).  It carries
+     * RIGHT_WRITE so EP_CALL passes the rights check and fails on TYPE
+     * (WRONG_TYPE), not ACCESS_DENIED. */
+    handle_id_t fix_wrongtype = HANDLE_INVALID;
+    {
+        long nr = init_sys0(SYS_NOTIFY_CREATE);
+        if (nr >= 0) fix_wrongtype = (handle_id_t)nr;
+    }
     if (lk_svcmgr == HANDLE_INVALID)
         init_log("[USER][INIT] svcmgr.ep lookup FAILED\n");
 
@@ -337,8 +347,8 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
         it_mints[3].rights = RIGHT_WRITE;
         it_mints[3].badge = IRIS_BADGE_IRIS_TEST;
         it_mints[4].slot = IRIS_CPTR_TEST_FIX_A;
-        it_mints[4].src_h = g_init_console_h;          /* wrong type */
-        it_mints[4].rights = RIGHT_WRITE;
+        it_mints[4].src_h = fix_wrongtype;             /* wrong type (KNotification, not endpoint) */
+        it_mints[4].rights = RIGHT_WRITE;              /* WRITE so EP_CALL fails on TYPE, not rights */
         it_mints[4].badge = 0;
         it_mints[5].slot = IRIS_CPTR_TEST_FIX_B;
         it_mints[5].src_h = lk_svcmgr;                 /* TRANSFER only */
@@ -367,6 +377,7 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);
     init_close(&lk_kbd);
+    if (fix_wrongtype != HANDLE_INVALID) init_close(&fix_wrongtype);
     if (r < 0) {
         init_log("[USER][INIT] iris_test load FAILED\n");
         goto out;
@@ -514,19 +525,17 @@ out:
 
 /* ── console spawn (Phase 30: ring-3 serial console service) ────────────── */
 
-static handle_id_t init_spawn_console(handle_id_t spawn_cap_h) {
+/* Fase 13 (Track I): console is endpoint-only and CPtr-provisioned — its
+ * endpoint recv side (IRIS_CPTR_OWN_EP) and its 0x3F8 UART KIoPort
+ * (IRIS_CPTR_IOPORT) are pre-start mints; no legacy console KChannel pair, no
+ * bootstrap sends.  Returns 1 on success, 0 on failure. */
+static int init_spawn_console(handle_id_t spawn_cap_h) {
     handle_id_t con_proc_h  = HANDLE_INVALID;
     handle_id_t con_boot_h  = HANDLE_INVALID;
     handle_id_t ioport_h    = HANDLE_INVALID;
-    handle_id_t con_base_h  = HANDLE_INVALID;
-    handle_id_t con_read_h  = HANDLE_INVALID;
-    handle_id_t con_write_h = HANDLE_INVALID;
-    struct KChanMsg msg;
     long r;
 
-    /* Console KEndpoint (Fase 7.3/8): init owns the master.  Created BEFORE
-     * the spawn so the recv side can be pre-start-minted into the console's
-     * root CNode (IRIS_CPTR_OWN_EP) — kind 0x21 retired. */
+    /* Console KEndpoint master (init owns it); recv side minted to the child. */
     r = init_sys0(SYS_ENDPOINT_CREATE);
     if (r < 0) {
         init_early_serial_write(init_console_chan_fail);
@@ -534,21 +543,7 @@ static handle_id_t init_spawn_console(handle_id_t spawn_cap_h) {
     }
     g_init_console_ep_h = (handle_id_t)r;
 
-    {
-        struct svc_mint con_mints[1];
-        con_mints[0].slot   = IRIS_CPTR_OWN_EP;
-        con_mints[0].src_h  = g_init_console_ep_h;
-        con_mints[0].rights = RIGHT_READ;
-        con_mints[0].badge  = 0;   /* server-side cap: unbadged */
-        r = svc_load_minted(spawn_cap_h, "console", &con_proc_h, &con_boot_h,
-                            con_mints, 1u);
-    }
-    if (r < 0) {
-        init_early_serial_write(init_console_load_fail);
-        goto fail;
-    }
-
-    /* I/O port capability for the 8 UART registers at 0x3F8..0x3FF. */
+    /* KIoPort for the 8 UART registers at 0x3F8..0x3FF (IN poll LSR + OUT THR). */
     r = init_sys3(SYS_CAP_CREATE_IOPORT, (long)spawn_cap_h, 0x3F8, 8);
     if (r < 0) {
         init_early_serial_write(init_console_ioport_fail);
@@ -556,77 +551,34 @@ static handle_id_t init_spawn_console(handle_id_t spawn_cap_h) {
     }
     ioport_h = (handle_id_t)r;
 
-    /* Create the console message channel. */
-    r = init_sys0(SYS_CHAN_CREATE);
+    {
+        struct svc_mint con_mints[2];
+        con_mints[0].slot   = IRIS_CPTR_OWN_EP;
+        con_mints[0].src_h  = g_init_console_ep_h;
+        con_mints[0].rights = RIGHT_READ;
+        con_mints[0].badge  = 0;   /* server-side cap: unbadged */
+        con_mints[1].slot   = IRIS_CPTR_IOPORT;
+        con_mints[1].src_h  = ioport_h;
+        con_mints[1].rights = RIGHT_READ | RIGHT_WRITE;
+        con_mints[1].badge  = 0;
+        r = svc_load_minted(spawn_cap_h, "console", &con_proc_h, &con_boot_h,
+                            con_mints, 2u);
+    }
     if (r < 0) {
-        init_early_serial_write(init_console_chan_fail);
+        init_early_serial_write(init_console_load_fail);
         goto fail;
     }
-    con_base_h = (handle_id_t)r;
 
-    /* Read end for the console server.
-     * RIGHT_TRANSFER is needed so init can pass this via SYS_CHAN_SEND;
-     * msg.attached_rights=RIGHT_READ ensures the receiver only gets READ. */
-    r = init_sys2(SYS_HANDLE_DUP, (long)con_base_h,
-                  (long)(RIGHT_READ | RIGHT_TRANSFER));
-    if (r < 0) {
-        init_early_serial_write(init_console_readdup_fail);
-        goto fail;
-    }
-    con_read_h = (handle_id_t)r;
-
-    /* Write end for init to keep (RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER). */
-    r = init_sys2(SYS_HANDLE_DUP, (long)con_base_h,
-                  (long)(RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER));
-    if (r < 0) {
-        init_early_serial_write(init_console_writedup_fail);
-        goto fail;
-    }
-    con_write_h = (handle_id_t)r;
-    init_close(&con_base_h); /* no longer need the full-rights base */
-
-    /* Send IOPORT_CAP to console server. */
-    init_msg_zero(&msg);
-    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                           SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP);
-    msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
-    msg.attached_handle = ioport_h;
-    msg.attached_rights = RIGHT_READ | RIGHT_WRITE; /* IN (poll LSR) + OUT (write THR) */
-    r = init_sys2(SYS_CHAN_SEND, (long)con_boot_h, (long)&msg);
-    if (r < 0) {
-        init_early_serial_write(init_console_boot_ioport_fail);
-        goto fail;
-    }
-    ioport_h = HANDLE_INVALID;
-
-    /* Send SERVICE (read end of console channel) to console server. */
-    init_msg_zero(&msg);
-    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                           SVCMGR_BOOTSTRAP_KIND_SERVICE);
-    msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
-    msg.attached_handle = con_read_h;
-    msg.attached_rights = RIGHT_READ;
-    r = init_sys2(SYS_CHAN_SEND, (long)con_boot_h, (long)&msg);
-    if (r < 0) {
-        init_early_serial_write(init_console_boot_service_fail);
-        goto fail;
-    }
-    con_read_h = HANDLE_INVALID;
-
+    init_close(&ioport_h);    /* console holds the slot-10 mint now */
     init_close(&con_proc_h);
     init_close(&con_boot_h);
-    return con_write_h;
+    return 1;
 
 fail:
     init_close(&con_proc_h);
     init_close(&con_boot_h);
-    if (ioport_h    != HANDLE_INVALID) init_close(&ioport_h);
-    if (con_base_h  != HANDLE_INVALID) init_close(&con_base_h);
-    if (con_read_h  != HANDLE_INVALID) init_close(&con_read_h);
-    if (con_write_h != HANDLE_INVALID) init_close(&con_write_h);
-    return HANDLE_INVALID;
+    if (ioport_h != HANDLE_INVALID) init_close(&ioport_h);
+    return 0;
 }
 
 /* ── svcmgr spawn (Phase 29: ring-3 loader; Phase 30: also sends console) ── */
@@ -1086,7 +1038,7 @@ static void init_echo_loop(handle_id_t scan_recv_h) {
                     if (ch != 0) {
                         buf[0] = ch;
                         buf[1] = 0;
-                        console_write(g_init_console_h, buf);
+                        init_log(buf);   /* echo over console.ep (Track I) */
                     }
                 }
             }
@@ -1115,28 +1067,28 @@ void init_main(handle_id_t bootstrap_ch_h) {
     /* Spawn fb first (fire-and-forget): it claims the framebuffer and exits. */
     init_spawn_fb(bootstrap_h);
 
-    /* Spawn console: creates the console service and returns the write channel. */
-    g_init_console_h = init_spawn_console(bootstrap_h);
-    if (g_init_console_h == HANDLE_INVALID) {
+    /* Spawn console: endpoint-only, CPtr-provisioned (Fase 13/Track I). */
+    if (!init_spawn_console(bootstrap_h)) {
         init_early_serial_write("[INIT] console spawn FAILED\r\n");
         init_exit(1);
     }
-    init_early_serial_stop();
-    /* From here all init_log() calls go through the console service. */
 
-    /* Verify the console endpoint with the first gated write (Fase 7.3):
-     * the EP_CALL blocks until the console serves it, so this also
-     * synchronizes with console boot. On failure: drop to the legacy
-     * channel LOUDLY — the missing OK marker fails smoke. */
+    /* Verify the console endpoint with the first gated write (Fase 7.3): the
+     * EP_CALL blocks until console serves it, so this also synchronizes with
+     * console boot.  Done BEFORE early-serial is stopped so a broken EP can
+     * still report LOUDLY over the direct UART (the missing OK marker fails
+     * smoke either way — no legacy console KChannel fallback). */
     if (g_init_console_ep_h != HANDLE_INVALID) {
         if (console_ep_write(g_init_console_ep_h, g_init_con_ep_buf,
                              "[USER] console ep OK\n") != 0) {
             init_close(&g_init_console_ep_h);
-            console_write(g_init_console_h, "[USER] console ep FAILED\n");
+            init_early_serial_write("[USER] console ep FAILED\n");
         }
     } else {
-        console_write(g_init_console_h, "[USER] console ep FAILED\n");
+        init_early_serial_write("[USER] console ep FAILED\n");
     }
+    init_early_serial_stop();
+    /* From here all init_log() calls go through console.ep. */
 
     init_log("[USER] init bootstrap start\n");
 
@@ -1259,12 +1211,10 @@ void init_main(handle_id_t bootstrap_ch_h) {
     /* ── Block 8: iris_test ring-3 syscall test suite ── */
     if (iris_test_spawn_h != HANDLE_INVALID) {
         /* Drain our queued console output first: iris_test writes raw to
-         * COM1, and a half-flushed backlog line (e.g. the S10 marker) would
-         * otherwise interleave mid-line with test output under load. */
+         * COM1, and a half-flushed backlog line would otherwise interleave
+         * mid-line with test output under load. */
         if (g_init_console_ep_h != HANDLE_INVALID)
             (void)console_ep_sync(g_init_console_ep_h);
-        else
-            console_sync(g_init_console_h);
         init_spawn_iris_test(iris_test_spawn_h, sm_h);
         iris_test_spawn_h = HANDLE_INVALID;
     }
