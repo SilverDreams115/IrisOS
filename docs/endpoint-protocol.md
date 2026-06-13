@@ -222,3 +222,28 @@ static handle_id_t ep_lookup_name(handle_id_t svcmgr_ep, const char *name) {
 ```
 
 Note: `EP_CALL` reuses `msg.buf_uptr` as both the send buffer and the reply receive buffer. If the lookup reply includes bulk data, it overwrites the name buffer.
+
+## Fase 11 — endpoint capability transfer
+
+`struct IrisMsg` grew to **80 bytes** with a second cap slot
+`attached_cap` (+`attached_cap_rights`) at offset 72 (all prior offsets
+unchanged; `_Static_assert`s in `iris/ipc_msg.h`; kbd asm buffer bumped to 80).
+
+- On **EP_CALL** the reply cap occupies `attached_handle`, so the client puts
+  the capability it wants to transfer in `attached_cap`. The kernel **stages**
+  it (the caller must really hold it; rights are reduced to
+  `attached_cap_rights`; badge preserved) and clears the raw `attached_cap`
+  number — it is never delivered as written (anti-spoof, same contract as
+  `attached_handle`).
+- The **server** receives the transferred cap as a real handle in
+  `attached_cap` and the reply cap in `attached_handle` — the two never
+  collide. Move vs duplicate is governed by the rights the sender grants
+  (TRANSFER moves authority onward; DUPLICATE lets svcmgr re-hand it).
+- **EP_SEND/EP_NB_SEND/EP_REPLY** are unchanged — they keep using
+  `attached_handle` for their single transferred cap.
+- KReply is unchanged: still one-shot, reply still forces `sender_badge = 0`.
+
+This unblocks **cap-backed `IRIS_SVCMGR_EP_REGISTER`**: a client transfers its
+service endpoint over the EP and svcmgr stores the real cap (validated as
+`KOBJ_ENDPOINT`), so a later `LOOKUP_NAME` returns a usable cap to the same
+object. See [service-lifecycle.md](service-lifecycle.md).

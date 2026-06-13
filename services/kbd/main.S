@@ -40,7 +40,7 @@
  */
 .section .bss
 .align 8
-kbd_ep_msg:     .skip 72               /* struct IrisMsg (72 B, Fase 9)    */
+kbd_ep_msg:     .skip 80               /* struct IrisMsg (80 B, Fase 11)   */
 kbd_ep_buf:     .skip 256
 kbd_ring:       .skip KBD_EP_RING_CAP
 kbd_ring_head:  .skip 4

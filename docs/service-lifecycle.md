@@ -33,12 +33,12 @@ privileged lifecycle ops (RESTART).
   (`vfs`, `kbd`, `sh`, …) can never be registered at runtime
   (`IRIS_ERR_ACCESS_DENIED`). This is the anti-spoofing rule that keeps a
   looked-up `vfs.ep` authoritative.
-- **EP REGISTER** (`0xF002`) is a **badge-authenticated name claim**: the
-  kernel-stamped `sender_badge` becomes the registration's `owner_badge`.
-  (EP_CALL cannot carry a transferred capability — the reply cap occupies
-  `attached_handle` — so a cap-backed publication still uses the legacy
-  KChannel path; that path is unauthenticated, `owner_badge = 0`, but is
-  fenced by the same reserved-name rule.)
+- **EP REGISTER** (`0xF002`) is **badge-authenticated and cap-backed** (Fase 11):
+  the caller transfers its service endpoint in `IrisMsg.attached_cap`; svcmgr
+  validates it is an endpoint and stores the real cap, so `LOOKUP_NAME` returns
+  a usable cap. The kernel-stamped `sender_badge` becomes the `owner_badge`. A
+  REGISTER without a cap, or with a wrong-type cap, fails. (The legacy KChannel
+  REGISTER remains only as a compatibility boundary, `owner_badge = 0`.)
 - **EP UNREGISTER** (`0xF003`) requires `sender_badge == owner_badge` (or a
   supervisor) — a client cannot unregister another identity's service.
 

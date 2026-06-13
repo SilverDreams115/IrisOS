@@ -69,11 +69,26 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * the server observes it on EP_RECV / EP_NB_RECV. */
     t->ipc_msg.sender_badge = ep_badge;
 
-    /* EP_CALL does not allow simultaneous cap transfer. */
+    /* attached_handle is reserved for the reply cap on EP_CALL. */
     if (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
+
+    /* Fase 11: stage a transferred cap from attached_cap (separate field so the
+     * reply cap and the transferred cap never collide).  Staging validates the
+     * caller really holds it and reduces to the requested rights; the raw
+     * attached_cap number is then cleared so it can never be delivered as-is. */
+    struct KObject *xfer_obj    = 0;
+    uint32_t        xfer_rights = 0;
+    uint64_t        xfer_badge  = 0;
+    if (t->ipc_msg.attached_cap != IRIS_MSG_NO_CAP) {
+        iris_error_t cr = syscall_ipc_stage_cap_badged(
+            t, t->ipc_msg.attached_cap, t->ipc_msg.attached_cap_rights,
+            &xfer_obj, &xfer_rights, &xfer_badge);
+        if (cr != IRIS_OK) { kobject_release(&ep->base); return syscall_err(cr); }
+    }
+    t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
 
     /* Save reply bulk destination before staging the send bulk (same buf_uptr field). */
     uint64_t reply_buf_uptr = t->ipc_msg.buf_uptr;
@@ -115,6 +130,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         copy_irismsg_r(&receiver->ipc_msg, &t->ipc_msg);
         receiver->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+        receiver->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
         receiver->ipc_msg_ready           = 1u;
 
         if (t->ipc_kbuf_len > 0u) {
@@ -126,6 +142,15 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         t->ep_call_mode = 0u;
         irq_spinlock_unlock(&ep->lock, flags);
+
+        /* Fase 11: deliver the staged transferred cap into the receiver's
+         * attached_cap (the reply cap below takes attached_handle). */
+        if (xfer_obj) {
+            uint32_t nh = syscall_ipc_deliver_cap_badged(receiver, xfer_obj,
+                                                         xfer_rights, xfer_badge);
+            receiver->ipc_msg.attached_cap        = nh;
+            receiver->ipc_msg.attached_cap_rights = xfer_rights;
+        }
 
         /* Create KReply and deliver to receiver's handle table. */
         struct KReply *r = kreply_alloc(t);
@@ -163,9 +188,11 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ep_next       = 0;
         t->blocking_ep   = ep;
         t->ipc_msg_ready = 0u;
-        t->ep_cap_obj    = 0;
-        t->ep_cap_rights = 0u;
-        t->ep_cap_badge  = 0u;
+        /* Fase 11: carry the staged transferred cap to the receiver (delivered
+         * into attached_cap by sys_ep_recv / sys_ep_nb_recv). */
+        t->ep_cap_obj    = xfer_obj;
+        t->ep_cap_rights = xfer_rights;
+        t->ep_cap_badge  = xfer_badge;
 
         if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
         else                { ep->queue_head = t; ep->queue_tail = t; }

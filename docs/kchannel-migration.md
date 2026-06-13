@@ -146,3 +146,13 @@ Phase J (next):      extend the dual resolver to KBootstrapCap (slot 6) to
 - Do not migrate the bootstrap channel in the same commit as the operational loop (two independent changes).
 - Do not add `SYS_EP_CALL` inside IRQ context (IRQ handlers cannot block; use KNotification instead).
 - Do not change the kernel memory model (no KFrame/KVSpace lifecycle changes) as part of IPC migration.
+
+## Fase 11 — REGISTER moved off KChannel
+
+With endpoint capability transfer (`IrisMsg.attached_cap`), `REGISTER` with a
+real cap now works over the EP path (`IRIS_SVCMGR_EP_REGISTER` consumes
+`attached_cap`). The KChannel `SVCMGR_MSG_REGISTER/UNREGISTER` loop is now a
+**compatibility boundary only**: it remains for T001–T012 and is still fenced
+by the reserved-name policy (`owner_badge = 0`), but new dynamic services
+should register over the EP. Legacy LOOKUP stays for T046. Full KChannel
+retirement remains a later phase.

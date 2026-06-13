@@ -2002,38 +2002,51 @@ static long it_status(const char *name, uint32_t *alive, uint32_t *gen) {
 /* Generation cached at the pre-restart lookup (T056), checked stale in T059. */
 static uint32_t g_vfs_gen0 = 0;
 
-/* T054: badge-authenticated REGISTER name-claim + owner-checked UNREGISTER. */
-static void test_t054(void) {
+/* Fase 11: a dynamic test service registered by cap-transfer (T054), reused by
+ * the lookup/unregister tests T063–T066. */
+static handle_id_t g_ltst_ep = (handle_id_t)0;   /* HANDLE_INVALID */
+static uint32_t    g_ltst_id = 0;
+
+/* Register endpoint `ep` under `name` via EP_CALL cap-transfer (attached_cap).
+ * The dup is consumed by staging; returns the dynamic id, or -(error code). */
+static long it_register_ep(const char *name, handle_id_t ep) {
+    /* The master svcmgr keeps must carry DUPLICATE so it can hand each client a
+     * fresh WRITE cap on lookup (+TRANSFER so the cap is deliverable to it). */
+    iris_rights_t mr = (iris_rights_t)(RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+    long d = it_sys2(SYS_HANDLE_DUP, (long)ep, (long)mr);
+    if (d < 0) return d;
+    uint32_t len = it_stage_path(name);
     struct IrisMsg msg;
-    int ok = 1;
-    uint32_t len = it_stage_path("ltst.svc");
     it_iris_msg_zero(&msg);
-    msg.label    = IRIS_SVCMGR_EP_REGISTER;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    msg.buf_len  = len;
+    msg.label               = IRIS_SVCMGR_EP_REGISTER;
+    msg.buf_uptr            = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len             = len;
+    msg.attached_cap        = (uint32_t)d;
+    msg.attached_cap_rights = (uint32_t)mr;
     long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
-    if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) ok = 0;
-    uint32_t did = (uint32_t)msg.words[0];
+    if (r != 0) return r;
+    if (msg.label != IRIS_EP_REPLY_OK) return -(long)(uint32_t)msg.words[0];
+    return (long)(uint32_t)msg.words[0];
+}
 
-    /* Re-claim the same name → BUSY. */
-    len = it_stage_path("ltst.svc");
-    it_iris_msg_zero(&msg);
-    msg.label = IRIS_SVCMGR_EP_REGISTER;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    msg.buf_len = len;
-    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
-    if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
-          msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_BUSY)) ok = 0;
+/* T054: cap-backed REGISTER over EP — the caller transfers a REAL endpoint cap
+ * (attached_cap) and still gets a working reply (KReply + transfer coexist). */
+static void test_t054(void) {
+    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    if (e < 0) { it_fail("T054", "endpoint create"); return; }
+    g_ltst_ep = (handle_id_t)e;
 
-    /* UNREGISTER with our own (owner) badge → OK. */
-    it_iris_msg_zero(&msg);
-    msg.label = IRIS_SVCMGR_EP_UNREGISTER;
-    msg.words[0] = did;
-    msg.word_count = 1u;
-    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
-    if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) ok = 0;
+    long id = it_register_ep("ltst.svc", g_ltst_ep);
+    if (id < 0) { it_fail("T054", "cap register"); return; }
+    g_ltst_id = (uint32_t)id;
 
-    if (ok) it_pass("T054"); else it_fail("T054", "register/unregister badge");
+    /* Re-register the same name (with another cap) → BUSY; the rejected cap is
+     * closed by svcmgr (no leak). */
+    long busy = it_register_ep("ltst.svc", g_ltst_ep);
+    if (busy == -(long)(uint32_t)IRIS_ERR_BUSY)
+        it_pass("T054");
+    else
+        it_fail("T054", "re-register not BUSY");
 }
 
 /* T055: `.ep` EP-lookup grant tightening — an ordinary client receives a
@@ -2190,6 +2203,107 @@ static void test_t062(void) {
         it_fail("T062", "badge policy regressed");
 }
 
+/* ── Fase 11: endpoint cap-transfer & cap-backed REGISTER (T063–T066) ────── */
+
+/* T063: LOOKUP of the cap-registered name returns a REAL, usable endpoint cap —
+ * SYS_HANDLE_SAME_OBJECT proves it is the very endpoint object iris_test
+ * created and transferred (not a forged number, and not the reply cap). */
+static void test_t063(void) {
+    if (g_ltst_ep == (handle_id_t)0) { it_fail("T063", "no ltst ep"); return; }
+    uint32_t len = it_stage_path("ltst.svc");
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    int ok = 0;
+    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
+        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+        handle_id_t got = (handle_id_t)msg.attached_handle;
+        long ty   = it_sys1(SYS_HANDLE_TYPE, (long)got);
+        long same = it_sys2(SYS_HANDLE_SAME_OBJECT, (long)got, (long)g_ltst_ep);
+        if (ty == (long)IRIS_HANDLE_TYPE_ENDPOINT && same == 1) ok = 1;
+        it_close(&got);
+    }
+    if (ok) it_pass("T063"); else it_fail("T063", "lookup real cap");
+}
+
+/* T064: REGISTER without a cap fails (INVALID_ARG); REGISTER of a wrong-type
+ * cap (a notification) also fails — only endpoints are registrable. */
+static void test_t064(void) {
+    int ok = 1;
+    /* no cap */
+    uint32_t len = it_stage_path("nocap.svc");
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_REGISTER;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;                        /* attached_cap = NO_CAP */
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+          msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)) ok = 0;
+
+    /* wrong type: transfer a notification cap */
+    long n = it_sys0(SYS_NOTIFY_CREATE);
+    if (n < 0) { it_fail("T064", "notify create"); return; }
+    handle_id_t notif = (handle_id_t)n;
+    long d = it_sys2(SYS_HANDLE_DUP, (long)notif, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    len = it_stage_path("wrongtype.svc");
+    it_iris_msg_zero(&msg);
+    msg.label               = IRIS_SVCMGR_EP_REGISTER;
+    msg.buf_uptr            = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len             = len;
+    msg.attached_cap        = (uint32_t)d;
+    msg.attached_cap_rights = (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER);
+    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+          msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)) ok = 0;
+    it_close(&notif);
+
+    if (ok) it_pass("T064"); else it_fail("T064", "register reject paths");
+}
+
+/* T065: UNREGISTER by a non-owner, non-supervisor badge (TEST_B via fixture
+ * slot 28) is denied; UNREGISTER by the owner succeeds. */
+static void test_t065(void) {
+    int ok = 1;
+    struct IrisMsg msg;
+    /* wrong badge (0xB2) via the second-identity fixture → ACCESS_DENIED */
+    it_iris_msg_zero(&msg);
+    msg.label      = IRIS_SVCMGR_EP_UNREGISTER;
+    msg.words[0]   = g_ltst_id;
+    msg.word_count = 1u;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_FIX_C, (long)&msg);
+    if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+          msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED)) ok = 0;
+
+    /* owner badge (IRIS_TEST via slot 1) → OK */
+    it_iris_msg_zero(&msg);
+    msg.label      = IRIS_SVCMGR_EP_UNREGISTER;
+    msg.words[0]   = g_ltst_id;
+    msg.word_count = 1u;
+    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) ok = 0;
+
+    if (ok) it_pass("T065"); else it_fail("T065", "unregister owner policy");
+}
+
+/* T066: after UNREGISTER the name no longer resolves (NOT_FOUND). */
+static void test_t066(void) {
+    uint32_t len = it_stage_path("ltst.svc");
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len  = len;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    int ok = (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
+              msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND);
+    if (g_ltst_ep != (handle_id_t)0) it_close(&g_ltst_ep);
+    if (ok) it_pass("T066"); else it_fail("T066", "lookup after unregister");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2309,6 +2423,10 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t060();
     test_t061();
     test_t062();
+    test_t063();
+    test_t064();
+    test_t065();
+    test_t066();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

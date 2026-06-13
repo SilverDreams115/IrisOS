@@ -12,8 +12,8 @@ static inline void irismsg_copy64(struct IrisMsg *dst, const struct IrisMsg *src
     uint64_t       *d = (uint64_t *)dst;
     d[0]=s[0]; d[1]=s[1]; d[2]=s[2]; d[3]=s[3];
     d[4]=s[4]; d[5]=s[5]; d[6]=s[6]; d[7]=s[7];
-    d[8]=s[8];
-    _Static_assert(sizeof(struct IrisMsg) == 9u * sizeof(uint64_t),
+    d[8]=s[8]; d[9]=s[9];          /* Fase 11: sender_badge + attached_cap pair */
+    _Static_assert(sizeof(struct IrisMsg) == 10u * sizeof(uint64_t),
                    "irismsg_copy64 word count");
 }
 
@@ -370,11 +370,19 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         irq_spinlock_unlock(&ep->lock, flags);
 
-        /* Ph68: install in receiver's handle table (outside lock). */
+        /* Ph68/Fase11: install sender's transferred cap.  For an EP_CALL the
+         * reply cap takes attached_handle, so the transferred cap is delivered
+         * into the separate attached_cap field; EP_SEND keeps attached_handle. */
+        t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
         if (xfer_obj) {
             uint32_t new_h = syscall_ipc_deliver_cap_badged(t, xfer_obj,
                                                             xfer_rights, xfer_badge);
-            t->ipc_msg.attached_handle = new_h;
+            if (sender->ep_call_mode) {
+                t->ipc_msg.attached_cap        = new_h;
+                t->ipc_msg.attached_cap_rights = xfer_rights;
+            } else {
+                t->ipc_msg.attached_handle = new_h;
+            }
         }
 
         /* Ph85: if sender used EP_CALL, create KReply and keep sender blocked. */
@@ -614,10 +622,17 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     irq_spinlock_unlock(&ep->lock, flags);
 
+    /* Fase 11: EP_CALL transferred cap → attached_cap; EP_SEND → attached_handle. */
+    t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
     if (xfer_obj) {
         uint32_t new_h = syscall_ipc_deliver_cap_badged(t, xfer_obj,
                                                         xfer_rights, xfer_badge);
-        t->ipc_msg.attached_handle = new_h;
+        if (sender->ep_call_mode) {
+            t->ipc_msg.attached_cap        = new_h;
+            t->ipc_msg.attached_cap_rights = xfer_rights;
+        } else {
+            t->ipc_msg.attached_handle = new_h;
+        }
     }
 
     /* Ph85: ep_call_mode senders block until replied to. */

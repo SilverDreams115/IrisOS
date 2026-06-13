@@ -193,3 +193,16 @@ Current built-in services:
 - Reserved names (`*.ep`, catalog names) are never runtime-registrable on
   either transport. The legacy KChannel loop is a compatibility boundary
   (`owner_badge = 0`). See [service-lifecycle.md](../service-lifecycle.md).
+
+## Fase 11 — endpoint cap-transfer & REGISTER over EP
+
+- `IrisMsg.attached_cap` (offset 72, ABI 80 B) carries a capability transferred
+  by an `EP_CALL` (the reply cap keeps `attached_handle`). Kernel-staged,
+  anti-spoof, KReply-compatible.
+- `IRIS_SVCMGR_EP_REGISTER` now consumes a real transferred **endpoint** cap
+  (validated `KOBJ_ENDPOINT`); LOOKUP returns a same-object cap. Reject paths:
+  reserved name → ACCESS_DENIED, no cap / wrong type → INVALID_ARG, name taken
+  → BUSY (transferred cap closed on every reject, no leak).
+- `UNREGISTER` over EP requires the owner badge (or a supervisor); the stored
+  cap is closed on unregister. Legacy KChannel REGISTER/UNREGISTER is a
+  compatibility boundary (`owner_badge = 0`).

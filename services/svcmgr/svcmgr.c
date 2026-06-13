@@ -832,39 +832,49 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
         break;
     }
     case IRIS_SVCMGR_EP_REGISTER: {
-        /* Fase 10 badge-authenticated NAME CLAIM. EP_CALL cannot transfer a
-         * capability (reply cap occupies attached_handle), so a cap-backed
-         * registration uses the legacy KChannel path; the EP path claims a
-         * name bound to the caller's badge and enforces the reserved-name
-         * policy (".ep" endpoints and catalog names are never claimable). */
+        /* Fase 11 cap-backed registration: the caller transfers its service
+         * endpoint in attached_cap (kernel-delivered as a real handle, never a
+         * forgeable number) and svcmgr stores it so LOOKUP returns a usable
+         * cap.  Badge-authenticated (sender_badge → owner_badge); reserved
+         * names are rejected first (catalog + ".ep"); a cap is required. */
         uint32_t nl = msg->buf_len < IRIS_EP_SVCNAME_MAX
                       ? msg->buf_len : IRIS_EP_SVCNAME_MAX - 1u;
-        const char *nm = (const char *)g_ep_recv_buf;
+        const char *nm   = (const char *)g_ep_recv_buf;
+        handle_id_t cap_h = (handle_id_t)msg->attached_cap;
+        iris_error_t rej  = IRIS_OK;
         g_ep_recv_buf[nl] = '\0';
-        if (nl == 0u || svcmgr_name_has_ep_suffix(nm) || svcmgr_name_is_catalog(nm)) {
+
+        if (nl == 0u || svcmgr_name_has_ep_suffix(nm) || svcmgr_name_is_catalog(nm))
+            rej = IRIS_ERR_ACCESS_DENIED;            /* reserved name (T061) */
+        else if (cap_h == (handle_id_t)IRIS_MSG_NO_CAP)
+            rej = IRIS_ERR_INVALID_ARG;              /* a cap is required */
+        else if (svcmgr_syscall1(SYS_HANDLE_TYPE, (uint64_t)cap_h) !=
+                 (int64_t)IRIS_HANDLE_TYPE_ENDPOINT)
+            rej = IRIS_ERR_INVALID_ARG;              /* must be an endpoint */
+        else if (svcmgr_dynamic_find_name(state, nm))
+            rej = IRIS_ERR_BUSY;
+
+        struct svcmgr_dynamic_service *slot =
+            (rej == IRIS_OK) ? svcmgr_dynamic_alloc_slot(state) : 0;
+        if (rej == IRIS_OK && !slot) rej = IRIS_ERR_NO_MEMORY;
+
+        if (rej != IRIS_OK) {
+            if (cap_h != (handle_id_t)IRIS_MSG_NO_CAP)
+                svcmgr_close_handle_if_valid(&cap_h);  /* no leak on reject */
             reply.label    = IRIS_EP_REPLY_ERR;
-            reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_ACCESS_DENIED;
-        } else if (svcmgr_dynamic_find_name(state, nm)) {
-            reply.label    = IRIS_EP_REPLY_ERR;
-            reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_BUSY;
+            reply.words[0] = (uint64_t)(uint32_t)rej;
         } else {
-            struct svcmgr_dynamic_service *slot = svcmgr_dynamic_alloc_slot(state);
-            if (!slot) {
-                reply.label    = IRIS_EP_REPLY_ERR;
-                reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NO_MEMORY;
-            } else {
-                svcmgr_copy_name(slot->name, nm);
-                slot->endpoint      = 0u;
-                slot->public_h      = HANDLE_INVALID;
-                slot->client_rights = RIGHT_WRITE;
-                slot->owner_badge   = msg->sender_badge;
-                slot->generation    = 1u;
-                slot->active        = 1u;
-                reply.label      = IRIS_EP_REPLY_OK;
-                reply.words[0]   = SVCMGR_DYNAMIC_ID_BASE +
-                                   (uint32_t)(slot - state->dynamic);
-                reply.word_count = 1u;
-            }
+            svcmgr_copy_name(slot->name, nm);
+            slot->endpoint      = SVCMGR_DYNAMIC_ID_BASE +
+                                  (uint32_t)(slot - state->dynamic);
+            slot->public_h      = cap_h;             /* real transferred endpoint */
+            slot->client_rights = RIGHT_WRITE;
+            slot->owner_badge   = msg->sender_badge;
+            slot->generation    = 1u;
+            slot->active        = 1u;
+            reply.label      = IRIS_EP_REPLY_OK;
+            reply.words[0]   = slot->endpoint;       /* dynamic service id */
+            reply.word_count = 1u;
         }
         break;
     }
