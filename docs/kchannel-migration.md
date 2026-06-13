@@ -163,7 +163,7 @@ The svcmgr KChannel dispatch is now strictly classified (comment at the loop):
 
 | KChannel path | Estado final | Por qué queda |
 |---|---|---|
-| PROC_EVENT_MSG_EXIT | **live** | `SYS_PROCESS_WATCH` delivery — service lifecycle |
+| ~~PROC_EVENT_MSG_EXIT~~ | **retired (Fase 13 / Track B)** | death is now a KNotification signal — see below |
 | LOOKUP / LOOKUP_NAME | **compat** | init bootstrap re-mint + T046 |
 | REGISTER / UNREGISTER | **compat/test** | only init's registry self-test; productive = EP cap-backed REGISTER |
 | DIAG | **compat** | init full diag self-test; productive = `IRIS_SVCMGR_EP_DIAG` |
@@ -175,7 +175,18 @@ entry has `give_console=0`). **svcmgr `SYS_CHAN` count: 15 → 13.** No
 productive route falls back to the legacy loop; EP requests are drained
 separately from `state->ep_h` and never reach the KChannel switch.
 
-Remaining KChannel in svcmgr is bootstrap handle delivery, the proc-exit
-watch, the legacy console writer (svcmgr's own logging), and the compat
-registry/diag paths above — all targets for the (future) total KChannel
+Remaining KChannel in svcmgr is bootstrap handle delivery and the compat
+LOOKUP path above — all targets for the (future) total KChannel
 retirement once init is deconstructed.
+
+## Fase 13 — Track B: proc-exit watch → KNotification
+
+`SYS_PROCESS_WATCH(proc, notify, signal_bits)` now signals a KNotification
+instead of sending a `PROC_EVENT_MSG_EXIT` KChannel message. `svcmgr` owns
+one death notification and arms each service's watch with `1<<service_id`;
+its main loop blocks on `SYS_NOTIFY_WAIT_TIMEOUT(10ms)` (the new idle driver)
+and the legacy bootstrap KChannel is now drained non-blocking
+(`SYS_CHAN_RECV_NB`) for the residual LOOKUP traffic. `init` watches
+`iris_test` the same way (one notification, bit 0) and reads the result via
+`SYS_PROCESS_EXIT_CODE`. The kernel `KExitWatch` struct, the
+`PROC_EVENT_MSG_*` constants, and `svcmgr_proto_proc_exit_*` are retired.

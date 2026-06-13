@@ -156,9 +156,10 @@ For each tracked service slot, `svcmgr` stores:
 - `service_id`
 - short service name
 
-On `PROC_EVENT_MSG_EXIT`:
+On the death KNotification signal (Fase 13 / Track B — the kernel signals
+bit `1<<service_id` on `svcmgr`'s death notification; the bit index names
+the exiting slot directly):
 
-- the exiting slot is matched by watched `proc_h`
 - current master service handles for that service are sealed and closed
 - the tracked `proc_h` is released
 - if the service is autostarted and restart budget remains, `svcmgr` respawns it

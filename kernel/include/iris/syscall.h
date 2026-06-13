@@ -80,12 +80,14 @@
                                  *   Requires RIGHT_MANAGE on dest_proc_handle.
                                  *   Consumes src_handle. new_rights ⊆ src rights.
                                  *   RIGHT_NONE is rejected. */
-#define SYS_PROCESS_WATCH   29  /* (proc_handle, chan_handle, cookie) → 0 or negative iris_error_t
+#define SYS_PROCESS_WATCH   29  /* (proc_handle, notify_handle, signal_bits) → 0 or negative iris_error_t
                                  *   Registers one process-exit watch for proc_handle.
-                                 *   On death, the kernel sends PROC_EVENT_MSG_EXIT to
-                                 *   chan_handle with the watched proc_handle id and cookie.
+                                 *   On death, the kernel signals signal_bits on notify_handle
+                                 *   (Fase 13 / Track B — a KNotification signal, no message).
+                                 *   The watcher names the dead process by which bit is set and
+                                 *   queries SYS_PROCESS_EXIT_CODE / STATUS for detail.
                                  *   Requires RIGHT_READ on proc_handle and RIGHT_WRITE on
-                                 *   chan_handle. Single-subscriber per target process today. */
+                                 *   notify_handle. signal_bits must be non-zero. */
 #define SYS_PROCESS_SELF    28  /* () → self proc_handle or negative iris_error_t
                                  *   Returns a handle to the caller's own KProcess with
                                  *   RIGHT_READ|RIGHT_DUPLICATE|RIGHT_TRANSFER.
@@ -104,18 +106,9 @@
                                   *   Returns 0 when the process has called SYS_EXIT or been
                                   *   reaped; the handle itself remains valid for closing. */
 
-/*
- * Process-exit event delivered over KChannel by SYS_PROCESS_WATCH.
- *
- *   type                         PROC_EVENT_MSG_EXIT
- *   data[PROC_EVENT_OFF_HANDLE]  handle_id_t watched by the subscriber
- *   data[PROC_EVENT_OFF_COOKIE]  uint32_t subscriber-defined cookie
- */
-#define PROC_EVENT_MSG_EXIT       0x90000001u
-#define PROC_EVENT_OFF_HANDLE     0u
-#define PROC_EVENT_OFF_COOKIE     4u
-#define PROC_EVENT_OFF_EXIT_CODE  8u
-#define PROC_EVENT_MSG_LEN        12u
+/* Fase 13 (Track B): the legacy PROC_EVENT_MSG_EXIT KChannel event is retired.
+ * Process death is now delivered as a KNotification signal — see
+ * SYS_PROCESS_WATCH above. */
 /* SYS_DIAG_SNAPSHOT 30 retired Phase 51 — permanently reserved, returns
  * IRIS_ERR_NOT_SUPPORTED.  Aggregated diagnostics are now provided entirely
  * through SVCMGR_MSG_DIAG over IPC; the kernel no longer exposes a raw

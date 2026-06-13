@@ -82,20 +82,21 @@ uint64_t sys_process_status(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 
 /*
- * sys_process_watch(proc_handle, chan_handle, cookie) → 0 or iris_error_t
+ * sys_process_watch(proc_handle, notify_handle, signal_bits) → 0 or iris_error_t
  *
  * Registers a single process-exit watch for proc_handle. When the target
- * process tears down, the kernel sends PROC_EVENT_MSG_EXIT into chan_handle.
- *
- * This is the current event-driven lifecycle path for service supervision.
- * SYS_PROCESS_STATUS remains available as a fallback/non-blocking query.
+ * process tears down, the kernel signals signal_bits on notify_handle
+ * (Fase 13 / Track B — death is a KNotification signal, no longer a
+ * PROC_EVENT_MSG_EXIT KChannel message).  The watcher identifies the dead
+ * process by which bit is set and queries SYS_PROCESS_EXIT_CODE / STATUS
+ * for detail.  signal_bits must be non-zero.
  */
 uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     struct KObject *proc_obj;
-    struct KObject *chan_obj;
+    struct KObject *notif_obj;
     iris_rights_t proc_rights;
-    iris_rights_t chan_rights;
+    iris_rights_t notif_rights;
     iris_error_t r;
 
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -113,28 +114,27 @@ uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     r = handle_table_get_object(&t->process->handle_table,
-                                (handle_id_t)arg1, &chan_obj, &chan_rights);
+                                (handle_id_t)arg1, &notif_obj, &notif_rights);
     if (r != IRIS_OK) {
         kobject_release(proc_obj);
         return syscall_err(r);
     }
-    if (chan_obj->type != KOBJ_CHANNEL) {
+    if (notif_obj->type != KOBJ_NOTIFICATION) {
         kobject_release(proc_obj);
-        kobject_release(chan_obj);
+        kobject_release(notif_obj);
         return syscall_err(IRIS_ERR_WRONG_TYPE);
     }
-    if (!rights_check(chan_rights, RIGHT_WRITE)) {
+    if (!rights_check(notif_rights, RIGHT_WRITE)) {
         kobject_release(proc_obj);
-        kobject_release(chan_obj);
+        kobject_release(notif_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
     r = kprocess_watch_exit((struct KProcess *)proc_obj,
-                            (struct KChannel *)chan_obj,
-                            (handle_id_t)arg0,
-                            (uint32_t)arg2);
+                            (struct KNotification *)notif_obj,
+                            arg2);
     kobject_release(proc_obj);
-    kobject_release(chan_obj);
+    kobject_release(notif_obj);
     return syscall_err(r);
 }
 

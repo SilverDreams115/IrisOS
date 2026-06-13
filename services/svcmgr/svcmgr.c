@@ -66,6 +66,8 @@ struct svcmgr_state {
                                 * delivered by init at bootstrap (kind 0x22),
                                 * published as "console.ep". */
     handle_id_t ep_h;                                         /* svcmgr KEndpoint for EP-based discovery */
+    handle_id_t death_notif_h;  /* Track B: one KNotification; bit (1<<service_id)
+                                 * signalled by the kernel on each service exit. */
     handle_id_t irq_caps[SVCMGR_IRQ_CAPS_TABLE_SIZE];       /* indexed by IRQ number  */
     handle_id_t ioport_caps[SVCMGR_IOPORT_CAPS_TABLE_SIZE]; /* indexed by service_id  */
     struct svcmgr_service_state services[IRIS_SERVICE_RUNTIME_SLOT_COUNT];
@@ -1101,8 +1103,8 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
         }
     }
 
-    if (svcmgr_syscall3(SYS_PROCESS_WATCH, proc_h, state->bootstrap_h,
-                        (uint64_t)manifest->service_id) != IRIS_OK) {
+    if (svcmgr_syscall3(SYS_PROCESS_WATCH, proc_h, state->death_notif_h,
+                        (uint64_t)1u << manifest->service_id) != IRIS_OK) {
         svc->proc_h = HANDLE_INVALID;
         svcmgr_close_handle_if_valid(&proc_h);
         svcmgr_log(sm_str_spawnfail);
@@ -1110,7 +1112,7 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
     }
 
     /* Fase 10: first successful boot establishes generation 1; restarts bump
-     * it in svcmgr_handle_proc_exit before re-entering svcmgr_boot_service. */
+     * it in svcmgr_handle_service_death before re-entering svcmgr_boot_service. */
     if (svc->generation == 0u)
         svc->generation = 1u;
 
@@ -1387,40 +1389,17 @@ static void svcmgr_release_service(struct svcmgr_state *state,
     svcmgr_close_handle_if_valid(&svc->proc_h);
 }
 
-static void svcmgr_handle_proc_exit(struct svcmgr_state *state, const struct KChanMsg *msg) {
-    handle_id_t watched_h = HANDLE_INVALID;
-    uint32_t cookie = 0;
-    uint32_t service_id;
+/* Track B: the dead service is named directly by the signalled bit index. */
+static void svcmgr_handle_service_death(struct svcmgr_state *state, uint32_t service_id) {
     const struct iris_service_catalog_entry *manifest;
     struct svcmgr_service_state *svc;
 
-    if (!svcmgr_proto_proc_exit_valid(msg)) return;
-    svcmgr_proto_proc_exit_decode(msg, &watched_h, &cookie);
+    manifest = iris_service_catalog_find_by_service_id(service_id);
+    svc      = svcmgr_service_state(state, service_id);
 
-    /*
-     * Fast path: cookie encodes the service_id set at watch-registration time.
-     * Resolve the manifest in O(1) rather than after the slot scan.
-     * Still verify proc_h to guard against spurious or replayed messages.
-     */
-    service_id = cookie;
-    manifest   = iris_service_catalog_find_by_service_id(service_id);
-    svc        = svcmgr_service_state(state, service_id);
-
-    if (!manifest || !svc || svc->proc_h != watched_h) {
-        manifest = 0;
-        svc = 0;
-        for (uint32_t i = 0;
-             i < (uint32_t)(sizeof(state->services) / sizeof(state->services[0]));
-             i++) {
-            if (state->services[i].proc_h != watched_h) continue;
-            service_id = i;
-            svc = &state->services[i];
-            manifest = iris_service_catalog_find_by_service_id(service_id);
-            break;
-        }
-    }
-
-    if (!svc) return;  /* spurious exit event — no matching tracked service */
+    /* Only act once per death: a still-armed watch has a live proc_h. A bit
+     * for an already-released (or never-booted) slot is ignored. */
+    if (!svc || svc->proc_h == HANDLE_INVALID) return;
 
     svcmgr_release_service(state, service_id, svc);
 
@@ -1462,6 +1441,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     state->console_h   = HANDLE_INVALID;
     state->console_ep_h = HANDLE_INVALID;
     state->ep_h        = HANDLE_INVALID;
+    state->death_notif_h = HANDLE_INVALID;
     for (uint32_t i = 0; i < SVCMGR_IRQ_CAPS_TABLE_SIZE; i++)
         state->irq_caps[i] = HANDLE_INVALID;
     for (uint32_t i = 0; i < SVCMGR_IOPORT_CAPS_TABLE_SIZE; i++)
@@ -1534,6 +1514,13 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         }
     }
 
+    /* Track B: the single death notification must exist before any service
+     * boots (svcmgr_boot_service arms the watch against it). */
+    {
+        int64_t nr = svcmgr_syscall0(SYS_NOTIFY_CREATE);
+        state->death_notif_h = (nr >= 0) ? (handle_id_t)nr : HANDLE_INVALID;
+    }
+
     svcmgr_autostart_services(state);
     svcmgr_log(sm_str_ready);
     if (state->ep_h != HANDLE_INVALID)
@@ -1557,48 +1544,55 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
             svcmgr_handle_ep_request(state, &ep_msg);
         }
 
-        {
-            uint8_t *raw = (uint8_t *)&msg;
-            for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
-        }
-        /* Use timeout so the endpoint drain loop runs even with no KChannel traffic. */
-        {
-            int64_t cr = svcmgr_syscall3(SYS_CHAN_RECV_TIMEOUT, state->bootstrap_h,
-                                          (uint64_t)(uintptr_t)&msg, 10000000ULL);
+        /* Non-blocking poll of the legacy bootstrap KChannel — it now carries
+         * only COMPAT LOOKUP / LOOKUP_NAME (init bootstrap re-mint + T046).
+         * Drain everything pending so traffic never starves behind the wait. */
+        for (;;) {
+            int64_t cr;
+            {
+                uint8_t *raw = (uint8_t *)&msg;
+                for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
+            }
+            cr = svcmgr_syscall2(SYS_CHAN_RECV_NB, state->bootstrap_h,
+                                 (uint64_t)(uintptr_t)&msg);
             if (cr != IRIS_OK) {
-                /* TIMED_OUT is expected; any other error is logged. */
-                if (cr != (int64_t)IRIS_ERR_TIMED_OUT)
+                if (cr != (int64_t)IRIS_ERR_TIMED_OUT &&
+                    cr != (int64_t)IRIS_ERR_WOULD_BLOCK)
                     svcmgr_log(sm_str_recverr);
-                continue;
+                break;
+            }
+            switch (msg.type) {
+                case SVCMGR_MSG_LOOKUP:
+                    svcmgr_handle_lookup(state, &msg);
+                    break;
+                case SVCMGR_MSG_LOOKUP_NAME:
+                    svcmgr_handle_lookup_name(state, &msg);
+                    break;
+                /* Fase 13: PROC_EVENT_MSG_EXIT (now a KNotification, Track B)
+                 * and the retired REGISTER/UNREGISTER/DIAG no longer arrive
+                 * here.  The productive paths are the cap-backed EP API. */
+                default:
+                    break;
             }
         }
 
-        /* Fase 12 — KChannel dispatch classification:
-         *   PROC_EVENT_MSG_EXIT : LIVE (SYS_PROCESS_WATCH delivery; lifecycle).
-         *   LOOKUP / LOOKUP_NAME : COMPAT — init bootstrap re-mint + T046.
-         *   REGISTER / UNREGISTER: COMPAT/TEST boundary — only init's registry
-         *                          self-test exercises them; the PRODUCTIVE
-         *                          path is the cap-backed EP REGISTER (Fase 11).
-         *   DIAG                 : COMPAT — init's full diag self-test; the
-         *                          productive snapshot is IRIS_SVCMGR_EP_DIAG.
-         *   STATUS               : RETIRED (Fase 12, zero senders).
-         * No productive route falls back to this loop; EP requests never reach
-         * it (they are drained from state->ep_h above). */
-        switch (msg.type) {
-            case PROC_EVENT_MSG_EXIT:
-                svcmgr_handle_proc_exit(state, &msg);
-                break;
-            case SVCMGR_MSG_LOOKUP:
-                svcmgr_handle_lookup(state, &msg);
-                break;
-            case SVCMGR_MSG_LOOKUP_NAME:
-                svcmgr_handle_lookup_name(state, &msg);
-                break;
-            /* Fase 13 (Track E): legacy REGISTER/UNREGISTER/DIAG retired — the
-             * productive paths are the cap-backed EP REGISTER/UNREGISTER and
-             * IRIS_SVCMGR_EP_DIAG.  LOOKUP stays for init bootstrap re-mint. */
-            default:
-                break;
+        /* Track B: block on the death notification (10ms) — this is the loop's
+         * idle driver, replacing the old CHAN_RECV_TIMEOUT.  Each set bit is a
+         * service exit; the bit index is the service_id. */
+        {
+            uint64_t bits = 0;
+            int64_t nr = svcmgr_syscall3(SYS_NOTIFY_WAIT_TIMEOUT,
+                                         state->death_notif_h,
+                                         (uint64_t)(uintptr_t)&bits, 10000000ULL);
+            if (nr == IRIS_OK) {
+                for (uint32_t sid = 0; sid < 64u && bits; sid++) {
+                    if (bits & ((uint64_t)1u << sid))
+                        svcmgr_handle_service_death(state, sid);
+                    bits &= ~((uint64_t)1u << sid);
+                }
+            } else if (nr != (int64_t)IRIS_ERR_TIMED_OUT) {
+                svcmgr_log(sm_str_recverr);
+            }
         }
     }
 }

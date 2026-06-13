@@ -2,6 +2,7 @@
 #include <iris/nc/kframe.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kchannel.h>
+#include <iris/nc/knotification.h>
 #include <iris/nc/kvmo.h>
 #include <iris/nc/kvspace.h>
 #include <iris/nc/handle_table.h>
@@ -69,8 +70,8 @@ static void kprocess_clear_exit_watch(struct KProcess *p) {
     for (uint32_t i = 0; i < KPROCESS_EXIT_WATCH_MAX; i++) {
         struct KExitWatch *w = &p->exit_watches[i];
         if (!w->armed) continue;
-        kobject_release(&w->ch->base);
-        w->ch = 0;
+        kobject_release(&w->notif->base);
+        w->notif = 0;
         w->armed = 0;
     }
 }
@@ -79,26 +80,11 @@ static void kprocess_emit_exit_watch(struct KProcess *p) {
     if (!p) return;
     for (uint32_t i = 0; i < KPROCESS_EXIT_WATCH_MAX; i++) {
         struct KExitWatch *w = &p->exit_watches[i];
-        struct KChanMsg msg;
-        if (!w->armed || !w->ch) continue;
-        for (uint32_t j = 0; j < sizeof(msg); j++) ((uint8_t *)&msg)[j] = 0;
-        msg.type = PROC_EVENT_MSG_EXIT;
-        msg.data[PROC_EVENT_OFF_HANDLE + 0] = (uint8_t)(w->watched_handle & 0xFFu);
-        msg.data[PROC_EVENT_OFF_HANDLE + 1] = (uint8_t)((w->watched_handle >> 8) & 0xFFu);
-        msg.data[PROC_EVENT_OFF_HANDLE + 2] = (uint8_t)((w->watched_handle >> 16) & 0xFFu);
-        msg.data[PROC_EVENT_OFF_HANDLE + 3] = (uint8_t)((w->watched_handle >> 24) & 0xFFu);
-        msg.data[PROC_EVENT_OFF_COOKIE + 0] = (uint8_t)(w->cookie & 0xFFu);
-        msg.data[PROC_EVENT_OFF_COOKIE + 1] = (uint8_t)((w->cookie >> 8) & 0xFFu);
-        msg.data[PROC_EVENT_OFF_COOKIE + 2] = (uint8_t)((w->cookie >> 16) & 0xFFu);
-        msg.data[PROC_EVENT_OFF_COOKIE + 3] = (uint8_t)((w->cookie >> 24) & 0xFFu);
-        msg.data[PROC_EVENT_OFF_EXIT_CODE + 0] = (uint8_t)(p->exit_code & 0xFFu);
-        msg.data[PROC_EVENT_OFF_EXIT_CODE + 1] = (uint8_t)((p->exit_code >> 8) & 0xFFu);
-        msg.data[PROC_EVENT_OFF_EXIT_CODE + 2] = (uint8_t)((p->exit_code >> 16) & 0xFFu);
-        msg.data[PROC_EVENT_OFF_EXIT_CODE + 3] = (uint8_t)((p->exit_code >> 24) & 0xFFu);
-        msg.data_len = PROC_EVENT_MSG_LEN;
-        msg.attached_handle = HANDLE_INVALID;
-        msg.attached_rights = RIGHT_NONE;
-        (void)kchannel_send(w->ch, &msg);
+        if (!w->armed || !w->notif) continue;
+        /* Fase 13 (Track B): death is delivered as a KNotification signal —
+         * the watcher identifies the dead service by which bit is set and
+         * re-queries SYS_PROCESS_EXIT_CODE / STATUS for detail. */
+        knotification_signal(w->notif, w->signal_bits);
     }
 }
 
@@ -231,9 +217,9 @@ void kprocess_quota_release_page(struct KProcess *p) {
     kprocess_quota_release(&p->phys_pages_charged, p);
 }
 
-iris_error_t kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
-                                 handle_id_t watched_handle, uint32_t cookie) {
-    if (!p || !ch || watched_handle == HANDLE_INVALID) return IRIS_ERR_INVALID_ARG;
+iris_error_t kprocess_watch_exit(struct KProcess *p, struct KNotification *notif,
+                                 uint64_t signal_bits) {
+    if (!p || !notif || signal_bits == 0) return IRIS_ERR_INVALID_ARG;
 
     spinlock_lock(&p->base.lock);
     uint32_t slot = KPROCESS_EXIT_WATCH_MAX;
@@ -244,10 +230,9 @@ iris_error_t kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
         spinlock_unlock(&p->base.lock);
         return IRIS_ERR_TABLE_FULL;
     }
-    kobject_retain(&ch->base);
-    p->exit_watches[slot].ch = ch;
-    p->exit_watches[slot].watched_handle = watched_handle;
-    p->exit_watches[slot].cookie = cookie;
+    kobject_retain(&notif->base);
+    p->exit_watches[slot].notif = notif;
+    p->exit_watches[slot].signal_bits = signal_bits;
     p->exit_watches[slot].armed = 1;
     spinlock_unlock(&p->base.lock);
 
@@ -330,8 +315,8 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
     return 1;
 }
 
-/* Ordering: emit_exit_watch fires before handle_table_close_all so that
- * watchers receive a handle ID that is still live in the sender's table.
+/* Ordering: emit_exit_watch (Track B: a KNotification signal) fires before
+ * handle_table_close_all so the exit_code is already set when watchers wake.
  * teardown_complete provides idempotency; this function is called from both
  * task_exit_current (normal exit) and kprocess_destroy (fallback path). */
 void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {

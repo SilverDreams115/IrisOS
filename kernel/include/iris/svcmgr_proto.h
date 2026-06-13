@@ -16,7 +16,7 @@
  * Messages flow over KChannels between clients, services, and the ring-3
  * service manager process.
  *
- *   kernel  → svcmgr : PROC_EVENT_MSG_EXIT (via SYS_PROCESS_WATCH)
+ *   kernel  → svcmgr : death KNotification signal (via SYS_PROCESS_WATCH)
  *   client  → svcmgr : SVCMGR_MSG_LOOKUP
  *   client  → svcmgr : SVCMGR_MSG_LOOKUP_NAME
  *   service → svcmgr : SVCMGR_MSG_REGISTER
@@ -165,8 +165,8 @@
  * Current healthy path: `svcmgr` is the discovery and supervision authority
  * for built-in and runtime-published services. Well-known service handles are
  * kept in `svcmgr` state and returned over IPC with attached-handle transfer.
- * Service exit is supervised through PROC_EVENT_MSG_EXIT over `svcmgr`'s
- * bootstrap channel. IRQ routing remains kernel-side, but route ownership is
+ * Service exit is supervised through a death KNotification (SYS_PROCESS_WATCH
+ * signals bit 1<<service_id; Track B). IRQ routing remains kernel-side, but route ownership is
  * transferred to the child `KProcess` so teardown remains process-scoped.
  */
 
@@ -480,16 +480,9 @@ static inline void svcmgr_proto_diag_reply_init(struct KChanMsg *msg,
     msg->attached_rights = RIGHT_NONE;
 }
 
-static inline int svcmgr_proto_proc_exit_valid(const struct KChanMsg *msg) {
-    return msg && msg->type == PROC_EVENT_MSG_EXIT && msg->data_len == PROC_EVENT_MSG_LEN;
-}
-
-static inline void svcmgr_proto_proc_exit_decode(const struct KChanMsg *msg,
-                                                 handle_id_t *watched_h,
-                                                 uint32_t *cookie) {
-    if (watched_h) *watched_h = (handle_id_t)svcmgr_proto_read_u32(&msg->data[PROC_EVENT_OFF_HANDLE]);
-    if (cookie) *cookie = svcmgr_proto_read_u32(&msg->data[PROC_EVENT_OFF_COOKIE]);
-}
+/* Fase 13 (Track B): svcmgr_proto_proc_exit_valid/decode retired — process
+ * death is now a KNotification signal (bit index = service_id), not a
+ * PROC_EVENT_MSG_EXIT KChannel message. */
 #endif
 
 #endif

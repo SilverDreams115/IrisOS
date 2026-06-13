@@ -425,9 +425,7 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
     handle_id_t proc_h      = HANDLE_INVALID;
     handle_id_t boot_h      = HANDLE_INVALID;
     handle_id_t cap_dup     = HANDLE_INVALID;
-    handle_id_t watch_base_h = HANDLE_INVALID;
-    handle_id_t watch_rd_h  = HANDLE_INVALID;
-    handle_id_t watch_wr_h  = HANDLE_INVALID;
+    handle_id_t watch_base_h = HANDLE_INVALID; /* death notification (Track B) */
     struct KChanMsg msg;
     long r;
 
@@ -530,34 +528,25 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
 
     init_close(&boot_h);
 
-    /* Create channel pair for process-exit watch */
-    r = init_sys0(SYS_CHAN_CREATE);
+    /* Fase 13 (Track B): process-exit watch is delivered as a KNotification
+     * signal.  One notification (full rights) serves both the watch arm
+     * (RIGHT_WRITE) and our own wait (RIGHT_WAIT); bit 0 marks iris_test. */
+    r = init_sys0(SYS_NOTIFY_CREATE);
     if (r < 0) goto out;
     watch_base_h = (handle_id_t)r;
 
-    r = init_sys2(SYS_HANDLE_DUP, (long)watch_base_h, (long)RIGHT_READ);
-    if (r < 0) goto out;
-    watch_rd_h = (handle_id_t)r;
-
-    r = init_sys2(SYS_HANDLE_DUP, (long)watch_base_h,
-                  (long)(RIGHT_WRITE | RIGHT_TRANSFER));
-    if (r < 0) goto out;
-    watch_wr_h = (handle_id_t)r;
-    init_close(&watch_base_h);
-
-    /* Register exit watch — kernel retains the channel object */
-    r = init_sys3(SYS_PROCESS_WATCH, (long)proc_h, (long)watch_wr_h, 0);
+    r = init_sys3(SYS_PROCESS_WATCH, (long)proc_h, (long)watch_base_h, 1);
     if (r < 0) {
         init_log("[USER][INIT] iris_test watch FAILED\n");
         goto out;
     }
-    /* Close our watch write handle; kernel's ref keeps channel alive */
-    init_close(&watch_wr_h);
 
     /* Wait up to 12 seconds for iris_test to exit */
-    init_msg_zero(&msg);
-    r = init_sys3(SYS_CHAN_RECV_TIMEOUT, (long)watch_rd_h, (long)&msg,
-                  12000000000LL);
+    {
+        uint64_t bits = 0;
+        r = init_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)watch_base_h,
+                      (long)&bits, 12000000000LL);
+    }
     if (r < 0) {
         init_log("[USER][INIT] iris_test wait TIMEOUT\n");
     } else {
@@ -572,8 +561,6 @@ out:
     init_close(&proc_h);
     init_close(&boot_h);
     init_close(&watch_base_h);
-    init_close(&watch_rd_h);
-    init_close(&watch_wr_h);
     if (cap_dup != HANDLE_INVALID) init_close(&cap_dup);
     init_close(&spawn_cap_h);
 }

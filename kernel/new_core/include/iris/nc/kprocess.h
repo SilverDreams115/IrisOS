@@ -25,10 +25,9 @@ struct KFrame;
 #define KPROCESS_BOOTSTRAP_FRAME_MAX 32u
 
 struct KExitWatch {
-    struct KChannel *ch;
-    handle_id_t      watched_handle;
-    uint32_t         cookie;
-    uint8_t          armed;
+    struct KNotification *notif;       /* signalled on watched-process death */
+    uint64_t              signal_bits; /* bits OR'd into notif on exit */
+    uint8_t               armed;
 };
 
 /*
@@ -117,8 +116,8 @@ iris_error_t     kprocess_quota_acquire_vmo(struct KProcess *p);
 void             kprocess_quota_release_vmo(struct KProcess *p);
 iris_error_t     kprocess_quota_acquire_page(struct KProcess *p);
 void             kprocess_quota_release_page(struct KProcess *p);
-iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KChannel *ch,
-                                     handle_id_t watched_handle, uint32_t cookie);
+iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KNotification *notif,
+                                     uint64_t signal_bits);
 iris_error_t     kprocess_set_exception_handler(struct KProcess *p, struct KChannel *ch);
 int              kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
