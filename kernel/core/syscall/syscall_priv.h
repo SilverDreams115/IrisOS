@@ -196,13 +196,7 @@ uint64_t sys_thread_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sleep(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — IPC ──────────────────────────────────── */
-uint64_t sys_chan_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_chan_send(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_chan_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_chan_recv_nb(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_chan_seal(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* sys_chan_call retired — Fase 13/Track G */
-uint64_t sys_chan_recv_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);

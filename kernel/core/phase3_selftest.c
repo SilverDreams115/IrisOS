@@ -18,36 +18,22 @@
 static HandleTable phase3_ht;
 static HandleTable phase3_dest_ht;
 static HandleTable phase3_full_ht;
-static HandleTable phase3_channel_close_ht;
 static HandleTable phase41_ht;
-static struct KProcess phase3_channel_recv_proc;
 static handle_id_t phase3_fill_ids[HANDLE_TABLE_MAX];
 
+/* Fase 13/Track G: the channel-quota portion is retired with the KChannel
+ * object; this selftest now covers the notification and VMO quotas. */
 static int phase3_quota_selftest(void) {
     struct KProcess *proc = 0;
-    struct KChannel *channels[KPROCESS_CHANNEL_QUOTA + 1];
     struct KNotification *notifs[KPROCESS_NOTIFICATION_QUOTA + 1];
     struct KVmo *vmos[KPROCESS_VMO_QUOTA + 1];
     int ok = 0;
 
-    for (uint32_t i = 0; i < KPROCESS_CHANNEL_QUOTA + 1; i++) channels[i] = 0;
     for (uint32_t i = 0; i < KPROCESS_NOTIFICATION_QUOTA + 1; i++) notifs[i] = 0;
     for (uint32_t i = 0; i < KPROCESS_VMO_QUOTA + 1; i++) vmos[i] = 0;
 
     proc = kprocess_alloc();
     if (!proc) goto out;
-
-    for (uint32_t i = 0; i < KPROCESS_CHANNEL_QUOTA; i++) {
-        channels[i] = kchannel_alloc();
-        if (!channels[i]) goto out;
-        if (kchannel_bind_owner(channels[i], proc) != IRIS_OK) goto out;
-    }
-    channels[KPROCESS_CHANNEL_QUOTA] = kchannel_alloc();
-    if (!channels[KPROCESS_CHANNEL_QUOTA]) goto out;
-    if (kchannel_bind_owner(channels[KPROCESS_CHANNEL_QUOTA], proc) != IRIS_ERR_NO_MEMORY) goto out;
-    kchannel_free(channels[0]);
-    channels[0] = 0;
-    if (kchannel_bind_owner(channels[KPROCESS_CHANNEL_QUOTA], proc) != IRIS_OK) goto out;
 
     for (uint32_t i = 0; i < KPROCESS_NOTIFICATION_QUOTA; i++) {
         notifs[i] = knotification_alloc();
@@ -67,16 +53,12 @@ static int phase3_quota_selftest(void) {
     if (!vmos[KPROCESS_VMO_QUOTA]) goto out;
     if (kvmo_bind_owner(vmos[KPROCESS_VMO_QUOTA], proc) != IRIS_ERR_NO_MEMORY) goto out;
 
-    if (proc->owned_channels != KPROCESS_CHANNEL_QUOTA) goto out;
     if (proc->owned_notifications != KPROCESS_NOTIFICATION_QUOTA) goto out;
     if (proc->owned_vmos != KPROCESS_VMO_QUOTA) goto out;
 
     ok = 1;
 
 out:
-    for (uint32_t i = 0; i < KPROCESS_CHANNEL_QUOTA + 1; i++) {
-        if (channels[i]) kchannel_free(channels[i]);
-    }
     for (uint32_t i = 0; i < KPROCESS_NOTIFICATION_QUOTA + 1; i++) {
         if (notifs[i]) knotification_free(notifs[i]);
     }
@@ -256,122 +238,7 @@ out:
     return ok;
 }
 
-static int phase3_channel_selftest(void) {
-    struct KChannel *ch = kchannel_alloc();
-    struct KNotification *notif = 0;
-    struct KChanMsg msg;
-    struct task fake_waiters[2];
-    struct task cancelled_waiter;
-    handle_id_t close_h = HANDLE_INVALID;
-    struct KObject *obj = 0;
-    iris_rights_t rights = RIGHT_NONE;
-    int ok = 0;
-
-    if (!ch) return 0;
-    notif = knotification_alloc();
-    if (!notif) goto out;
-
-    for (uint32_t i = 0; i < sizeof(phase3_channel_recv_proc); i++)
-        ((uint8_t *)&phase3_channel_recv_proc)[i] = 0;
-    handle_table_init(&phase3_channel_recv_proc.handle_table);
-    handle_table_init(&phase3_channel_close_ht);
-
-    for (uint32_t i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
-    if (kchannel_try_recv(ch, &msg) != IRIS_ERR_WOULD_BLOCK) goto out;
-
-    for (uint32_t i = 0; i < KCHAN_CAPACITY; i++) {
-        msg.type = i + 1;
-        if (kchannel_send(ch, &msg) != IRIS_OK) goto out;
-    }
-    if (kchannel_send(ch, &msg) != IRIS_ERR_OVERFLOW) goto out;
-    for (uint32_t i = 0; i < KCHAN_CAPACITY; i++) {
-        if (kchannel_try_recv(ch, &msg) != IRIS_OK) goto out;
-    }
-    if (kchannel_try_recv(ch, &msg) != IRIS_ERR_WOULD_BLOCK) goto out;
-
-    for (uint32_t i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
-    msg.type = 0x33;
-    kobject_retain(&notif->base);
-    kobject_active_retain(&notif->base);
-    if (kchannel_send_attached(ch, &msg, &notif->base, RIGHT_WAIT) != IRIS_OK) {
-        kobject_active_release(&notif->base);
-        kobject_release(&notif->base);
-        goto out;
-    }
-    if (kchannel_try_recv(ch, &msg) != IRIS_ERR_INVALID_ARG) goto out;
-    if (kchannel_try_recv_into_process(ch, &phase3_channel_recv_proc, &msg) != IRIS_OK) goto out;
-    if (msg.type != 0x33) goto out;
-    if (msg.attached_handle == HANDLE_INVALID) goto out;
-    if (msg.attached_rights != RIGHT_WAIT) goto out;
-    if (handle_table_get_object(&phase3_channel_recv_proc.handle_table,
-                                msg.attached_handle, &obj, &rights) != IRIS_OK) goto out;
-    if (obj->type != KOBJ_NOTIFICATION) goto out;
-    if (rights != RIGHT_WAIT) goto out;
-    kobject_release(obj);
-    obj = 0;
-    if (handle_table_close(&phase3_channel_recv_proc.handle_table, msg.attached_handle) != IRIS_OK) goto out;
-    if (handle_table_get_object(&phase3_channel_recv_proc.handle_table,
-                                msg.attached_handle, &obj, &rights) != IRIS_ERR_BAD_HANDLE) goto out;
-
-    for (uint32_t i = 0; i < sizeof(fake_waiters); i++) ((uint8_t *)&fake_waiters)[i] = 0;
-    fake_waiters[0].state = TASK_BLOCKED_IPC;
-    fake_waiters[1].state = TASK_BLOCKED_IPC;
-    ch->waiters[0] = &fake_waiters[0];
-    ch->waiters[1] = &fake_waiters[1];
-    ch->waiter_count = 2;
-    close_h = handle_table_insert(&phase3_channel_close_ht, &ch->base, RIGHT_READ | RIGHT_WRITE);
-    if (close_h == HANDLE_INVALID) goto out;
-    if (handle_table_close(&phase3_channel_close_ht, close_h) != IRIS_OK) goto out;
-    close_h = HANDLE_INVALID;
-    if (!ch->closed) goto out;
-    if (fake_waiters[0].state != TASK_READY) goto out;
-    if (fake_waiters[1].state != TASK_READY) goto out;
-    if (ch->waiter_count != 0) goto out;
-    if (kchannel_try_recv(ch, &msg) != IRIS_ERR_CLOSED) goto out;
-    if (kchannel_send(ch, &msg) != IRIS_ERR_CLOSED) goto out;
-
-    ch->closed = 0;
-    for (uint32_t i = 0; i < KCHANNEL_WAITERS_MAX; i++) ch->waiters[i] = 0;
-    ch->waiter_count = 0;
-    for (uint32_t i = 0; i < sizeof(cancelled_waiter); i++) ((uint8_t *)&cancelled_waiter)[i] = 0;
-    cancelled_waiter.state = TASK_BLOCKED_IPC;
-    ch->waiters[3] = &cancelled_waiter;
-    ch->waiter_count = 1;
-    kchannel_cancel_waiter(&cancelled_waiter);
-    if (ch->waiters[3] != 0) goto out;
-    if (ch->waiter_count != 0) goto out;
-
-    ch->closed = 1;
-    if (kchannel_waiters_add_or_closed(ch, &cancelled_waiter) != IRIS_ERR_CLOSED) goto out;
-    if (ch->waiter_count != 0) goto out;
-    ch->closed = 0;
-
-    for (uint32_t i = 0; i < sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0xA5u;
-    kobject_retain(&notif->base);
-    kobject_active_retain(&notif->base);
-    if (kchannel_send_attached(ch, &msg, &notif->base, RIGHT_WAIT) != IRIS_OK) {
-        kobject_active_release(&notif->base);
-        kobject_release(&notif->base);
-        goto out;
-    }
-    msg.type = 0xDEADBEEFu;
-    msg.attached_handle = 0xFFFFFFFFu;
-    msg.attached_rights = RIGHT_TRANSFER;
-    if (kchannel_try_recv_into_process(ch, 0, &msg) != IRIS_ERR_INVALID_ARG) goto out;
-    if (msg.type != 0xDEADBEEFu) goto out;
-    if (msg.attached_handle != 0xFFFFFFFFu) goto out;
-    if (msg.attached_rights != RIGHT_TRANSFER) goto out;
-    if (kchannel_try_recv_into_process(ch, &phase3_channel_recv_proc, &msg) != IRIS_OK) goto out;
-
-    ok = 1;
-out:
-    if (obj) kobject_release(obj);
-    handle_table_close_all(&phase3_channel_recv_proc.handle_table);
-    handle_table_close_all(&phase3_channel_close_ht);
-    kchannel_free(ch);
-    if (notif) knotification_free(notif);
-    return ok;
-}
+/* phase3_channel_selftest retired — Fase 13/Track G (KChannel object removed). */
 
 static int phase3_notification_selftest(void) {
     struct KNotification *n = knotification_alloc();
@@ -494,10 +361,6 @@ out:
 int phase3_selftest_run(void) {
     if (!phase3_handle_selftest()) {
         serial_write("[IRIS][P3] WARN: handle selftest failed\n");
-        return 0;
-    }
-    if (!phase3_channel_selftest()) {
-        serial_write("[IRIS][P3] WARN: channel selftest failed\n");
         return 0;
     }
     if (!phase3_notification_selftest()) {

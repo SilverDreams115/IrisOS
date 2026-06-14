@@ -2,27 +2,16 @@
 #define IRIS_IRQ_ROUTING_H
 
 #include <stdint.h>
-#include <iris/nc/kchannel.h>
 
 struct KProcess;
 struct KNotification;
 
 #define IRQ_ROUTE_MAX 16  /* maximum routable hardware IRQ lines (0..IRQ_ROUTE_MAX-1) */
 
-/* Message type placed in KChanMsg.type for IRQs routed to a KChannel.
- * Each service that consumes a channel-routed IRQ must recognise this
- * opcode. kbd_proto.h defines KBD_MSG_IRQ_SCANCODE with the same value;
- * the two must stay in sync. NOTE: since Fase 7.6 routes can target a
- * KNotification instead (irq_routing_register_notification) — those
- * signal bit 1<<irq and carry no message; kbd uses that path now.    */
-#define IRQ_MSG_TYPE_SIGNAL  0x4u
-
-/* Maps hardware IRQ lines (0-IRQ_ROUTE_MAX-1) to KChannel objects.
- * When a registered IRQ fires, the kernel sends a KChanMsg with
- * type = IRQ_MSG_TYPE_SIGNAL into the channel. The data_byte payload
- * is 0 — the handler process is responsible for reading hardware
- * registers directly via its KIoPort cap. User-space servers receive
- * via SYS_CHAN_RECV.                                                   */
+/* Fase 13/Track G: IRQ routing is KNotification-only — the legacy KChannel
+ * message route (IRQ_MSG_TYPE_SIGNAL / SYS_CHAN_RECV) is fully retired.  An IRQ
+ * fires → knotification_signal(notif, 1<<irq); the consumer drains device state
+ * via its KIoPort cap and re-arms with SYS_IRQ_ACK. */
 
 void    irq_routing_init    (void);
 
@@ -45,20 +34,9 @@ void    irq_routing_register_notification(uint8_t irq,
  */
 uint32_t irq_routing_active_count(void);
 
-/*
- * Register a KChannel for the given IRQ.
- *
- * Ownership contract:
- *   - The routing table retains a KObject reference to ch.
- *   - owner is the KProcess responsible for this route.  When owner
- *     undergoes kprocess_teardown(), irq_routing_unregister_owner(owner)
- *     is called automatically and the route is cleared.
- *   - Pass ch=NULL to unregister unconditionally (clears owner too).
- *   - Pass owner=NULL only if the route is expected to live for the
- *     duration of the kernel (no process-scoped cleanup required).
- *     This should be the exception, not the norm.
- */
-void    irq_routing_register(uint8_t irq, struct KChannel *ch, struct KProcess *owner);
+/* irq_routing_register (KChannel) retired — Fase 13/Track G.  Routes are
+ * registered via irq_routing_register_notification; teardown clears them via
+ * irq_routing_unregister_owner. */
 
 /* Called from ISR context: send a one-byte payload into the channel
  * registered for irq.  Returns 0 if sent, -1 if no channel or full. */

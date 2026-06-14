@@ -109,16 +109,7 @@ uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             new_obj = &kschedctx_alloc_at(mem)->base;
             break;
         }
-        case KOBJ_CHANNEL: {
-            void *mem = kuntyped_alloc_child(ut, sizeof(struct KChannel));
-            if (!mem) {
-                kobject_active_release(&ut->base);
-                kobject_release(&ut->base);
-                return syscall_err(IRIS_ERR_NO_MEMORY);
-            }
-            new_obj = &kchannel_alloc_at(mem)->base;
-            break;
-        }
+        /* KOBJ_CHANNEL retype retired — Fase 13/Track G (KChannel removed). */
         case KOBJ_UNTYPED: {
             /* Sub-untyped: carve a page-aligned physical sub-region from the parent. */
             uint64_t size = obj_arg;

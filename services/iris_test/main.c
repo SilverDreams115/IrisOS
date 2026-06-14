@@ -2200,15 +2200,21 @@ static void test_t069(void) {
 
 /* ── Fase 13 / Track G: retired SYS_CHAN ABI (T070) ─────────────────────── */
 
-/* T070: the zero-caller channel syscalls retired in Track G — SYS_CHAN_CALL,
- * SYS_WAIT_ANY, SYS_WAIT_ANY_TIMEOUT — fall through the dispatch to
- * IRIS_ERR_NOT_SUPPORTED.  Args are irrelevant: the dispatch rejects the
- * syscall number before touching them.  Locks the reservation. */
+/* T070: the ENTIRE SYS_CHAN_* ABI is retired in Track G — KChannel is no longer
+ * a productive IPC mechanism.  Every channel syscall number falls through the
+ * dispatch to IRIS_ERR_NOT_SUPPORTED.  Args are irrelevant: the dispatch rejects
+ * the syscall number before touching them.  Locks the reservation. */
 static void test_t070(void) {
     int ok = 1;
-    if (it_sys3(SYS_CHAN_CALL, 0, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
-    if (it_sys3(SYS_WAIT_ANY, 0, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
-    if (it_sys3(SYS_WAIT_ANY_TIMEOUT, 0, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
+    static const long chan_syscalls[] = {
+        SYS_CHAN_CREATE, SYS_CHAN_SEND, SYS_CHAN_RECV, SYS_CHAN_RECV_NB,
+        SYS_CHAN_SEAL, SYS_CHAN_RECV_TIMEOUT, SYS_CHAN_CALL,
+        SYS_WAIT_ANY, SYS_WAIT_ANY_TIMEOUT,
+    };
+    for (uint32_t i = 0; i < sizeof(chan_syscalls) / sizeof(chan_syscalls[0]); i++) {
+        if (it_sys3(chan_syscalls[i], 0, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED)
+            ok = 0;
+    }
     if (ok) it_pass("T070"); else it_fail("T070", "retired SYS_CHAN ABI");
 }
 

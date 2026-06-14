@@ -41,9 +41,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_EXIT:  return sys_exit(arg0, arg1, arg2);
         case SYS_YIELD: return sys_yield(arg0, arg1, arg2);
         case SYS_SLEEP: return sys_sleep(arg0, arg1, arg2);
-        case SYS_CHAN_CREATE:  return sys_chan_create(arg0, arg1, arg2);
-        case SYS_CHAN_SEND:    return sys_chan_send(arg0, arg1, arg2);
-        case SYS_CHAN_RECV:    return sys_chan_recv(arg0, arg1, arg2);
+        /* SYS_CHAN_CREATE(12)/SEND(13)/RECV(14) — retired Fase 13/Track G
+         * (KChannel fully retired), fall to default → NOT_SUPPORTED */
         case SYS_HANDLE_CLOSE: return sys_handle_close(arg0, arg1, arg2);
         case SYS_VMO_CREATE:  return sys_vmo_create(arg0, arg1, arg2);
         case SYS_VMO_MAP:     return sys_vmo_map(arg0, arg1, arg2);
@@ -60,10 +59,10 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_IRQ_ROUTE_REGISTER: return sys_irq_route_register(arg0, arg1, arg2);
         case SYS_IOPORT_IN:          return sys_ioport_in(arg0, arg1, arg2);
         case SYS_IOPORT_OUT:         return sys_ioport_out(arg0, arg1, arg2);
-        case SYS_CHAN_RECV_NB:        return sys_chan_recv_nb(arg0, arg1, arg2);
+        /* SYS_CHAN_RECV_NB retired — Fase 13/Track G, fall to default (NOT_SUPPORTED) */
         case SYS_PROCESS_KILL:        return sys_process_kill(arg0, arg1, arg2);
         /* SYS_DIAG_SNAPSHOT(30) — retired, fall to default */
-        case SYS_CHAN_SEAL:       return sys_chan_seal(arg0, arg1, arg2);
+        /* SYS_CHAN_SEAL retired — Fase 13/Track G, fall to default (NOT_SUPPORTED) */
         /* SYS_CHAN_CALL(38) — retired Fase 13/Track G (zero callers), fall to default */
         case SYS_CAP_CREATE_IRQCAP:   return sys_cap_create_irqcap(arg0, arg1, arg2);
         case SYS_CAP_CREATE_IOPORT:   return sys_cap_create_ioport(arg0, arg1, arg2);
@@ -88,7 +87,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_HANDLE_INSERT: return sys_handle_insert(arg0, arg1, arg2, arg3);
         case SYS_FRAMEBUFFER_VMO: return sys_framebuffer_vmo(arg0, arg1, arg2, arg3);
         case SYS_CLOCK_GET:           return sys_clock_get(arg0, arg1, arg2);
-        case SYS_CHAN_RECV_TIMEOUT:   return sys_chan_recv_timeout(arg0, arg1, arg2);
+        /* SYS_CHAN_RECV_TIMEOUT retired — Fase 13/Track G, fall to default (NOT_SUPPORTED) */
         case SYS_NOTIFY_WAIT_TIMEOUT: return sys_notify_wait_timeout(arg0, arg1, arg2);
         case SYS_KLOG_DRAIN:          return sys_klog_drain(arg0, arg1, arg2);
         case SYS_EXCEPTION_RESUME:    return sys_exception_resume(arg0, arg1, arg2);

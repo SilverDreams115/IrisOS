@@ -88,7 +88,7 @@ static inline int64_t vfs_syscall1(uint64_t num, uint64_t arg0) {
     return vfs_syscall3(num, arg0, 0, 0);
 }
 
-static handle_id_t g_vfs_console_h = HANDLE_INVALID;
+/* g_vfs_console_h retired — Fase 13/Track G (console.ep only). */
 /* Console endpoint (Fase 8): the well-known slot IRIS_CPTR_CONSOLE_EP,
  * verified with a PING after bootstrap; pre-verification boot lines are
  * dropped (vfs no longer receives a legacy console cap). */
@@ -96,11 +96,11 @@ static handle_id_t g_vfs_console_ep_h = HANDLE_INVALID;
 static uint8_t g_vfs_con_ep_buf[IRIS_IPC_BUF_SIZE];
 
 static void vfs_log(const char *msg) {
-    if (g_vfs_console_ep_h != HANDLE_INVALID) {
+    /* Fase 13/Track G: vfs logs over console.ep only — the legacy console
+     * KChannel writer is retired (vfs is endpoint_only; g_vfs_console_h was
+     * always invalid). */
+    if (g_vfs_console_ep_h != HANDLE_INVALID)
         (void)console_ep_write(g_vfs_console_ep_h, g_vfs_con_ep_buf, msg);
-        return;
-    }
-    console_write(g_vfs_console_h, msg);
 }
 
 static void vfs_copy_bytes(uint8_t *dst, const uint8_t *src, uint32_t len) {
