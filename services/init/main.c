@@ -151,21 +151,18 @@ static void init_msg_zero(struct KChanMsg *msg) {
     for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
 }
 
+/* Fase 13 (Track I): the invalid-userptr selftest now exercises the kernel's
+ * user-pointer validation over a KNotification (SYS_NOTIFY_WAIT_TIMEOUT with a
+ * bogus out_bits pointer → IRIS_ERR_INVALID_ARG) instead of a KChannel. */
 static void init_runtime_probe_invalid_userptr(void) {
-    long ch_raw = init_sys0(SYS_CHAN_CREATE);
-    if (ch_raw < 0) return;
-
-    long rd_raw = init_sys2(SYS_HANDLE_DUP, ch_raw, (long)RIGHT_READ);
-    if (rd_raw >= 0) {
-        long r = init_sys3(SYS_CHAN_RECV_TIMEOUT, rd_raw, 1, 50000000L);
-        if (r == (long)IRIS_ERR_INVALID_ARG)
-            init_log("[USER][INIT][SELFTEST] invalid-userptr OK\n");
-        else
-            init_log("[USER][INIT][SELFTEST] invalid-userptr WARN\n");
-        init_sys1(SYS_HANDLE_CLOSE, rd_raw);
-    }
-
-    init_sys1(SYS_HANDLE_CLOSE, ch_raw);
+    long n = init_sys0(SYS_NOTIFY_CREATE);
+    if (n < 0) return;
+    long r = init_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, 1 /* bogus user ptr */, 50000000L);
+    if (r == (long)IRIS_ERR_INVALID_ARG)
+        init_log("[USER][INIT][SELFTEST] invalid-userptr OK\n");
+    else
+        init_log("[USER][INIT][SELFTEST] invalid-userptr WARN\n");
+    init_sys1(SYS_HANDLE_CLOSE, n);
 }
 
 static void init_runtime_probe_timeout_overflow(void) {
@@ -286,9 +283,7 @@ static handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name
 static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
     handle_id_t proc_h      = HANDLE_INVALID;
     handle_id_t boot_h      = HANDLE_INVALID;
-    handle_id_t cap_dup     = HANDLE_INVALID;
     handle_id_t watch_base_h = HANDLE_INVALID; /* death notification (Track B) */
-    struct KChanMsg msg;
     long r;
 
     /* Fase 8: the full well-known slot set is pre-start-minted into
@@ -325,7 +320,7 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[9];
+        struct svc_mint it_mints[10];
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -367,8 +362,14 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
         it_mints[8].src_h = spawn_cap_h;
         it_mints[8].rights = RIGHT_READ;
         it_mints[8].badge = 0;
+        /* Fase 13 (Track I): the operational spawn cap (serial KIoPort +
+         * INITRD access) is a pre-start mint too — no bootstrap KChannel send. */
+        it_mints[9].slot = IRIS_CPTR_SPAWN_CAP;
+        it_mints[9].src_h = spawn_cap_h;
+        it_mints[9].rights = RIGHT_READ;
+        it_mints[9].badge = 0;
         r = svc_load_minted(spawn_cap_h, "iris_test", &proc_h, &boot_h,
-                            it_mints, 9u);
+                            it_mints, 10u);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);
@@ -379,23 +380,8 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
         goto out;
     }
 
-    /* Send spawn_cap to iris_test */
-    r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
-                  (long)(RIGHT_READ | RIGHT_TRANSFER));
-    if (r < 0) goto out;
-    cap_dup = (handle_id_t)r;
-
-    init_msg_zero(&msg);
-    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                           SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP);
-    msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
-    msg.attached_handle = cap_dup;
-    msg.attached_rights = RIGHT_READ | RIGHT_TRANSFER;
-    r = init_sys2(SYS_CHAN_SEND, (long)boot_h, (long)&msg);
-    if (r < 0) goto out;
-    cap_dup = HANDLE_INVALID; /* consumed by send */
-
+    /* Fase 13 (Track I): the iris_test spawn cap is delivered as the
+     * IRIS_CPTR_SPAWN_CAP pre-start mint above — no KChannel SPAWN_CAP send. */
     init_close(&boot_h);
 
     /* Fase 13 (Track B): process-exit watch is delivered as a KNotification
@@ -431,7 +417,6 @@ out:
     init_close(&proc_h);
     init_close(&boot_h);
     init_close(&watch_base_h);
-    if (cap_dup != HANDLE_INVALID) init_close(&cap_dup);
     init_close(&spawn_cap_h);
 }
 

@@ -107,10 +107,7 @@ static void it_fail(const char *id, const char *reason) {
 
 /* ── Message helpers ────────────────────────────────────────────────────── */
 
-static void it_chan_msg_zero(struct KChanMsg *m) {
-    uint8_t *p = (uint8_t *)m;
-    for (uint32_t i = 0; i < (uint32_t)sizeof(*m); i++) p[i] = 0;
-}
+/* it_chan_msg_zero retired — Fase 13/Track I (no KChannel tests remain). */
 
 static void it_iris_msg_zero(struct IrisMsg *m) {
     uint8_t *p = (uint8_t *)m;
@@ -298,31 +295,31 @@ static void test_t012(void) {
         it_fail("T012", "same-obj wrong");
 }
 
-/* ── T013: Rights enforcement (no WRITE → send fails) ──────────────────── */
-
+/* ── T013: Rights enforcement on an endpoint (no WRITE → EP_SEND fails) ──── */
+/* Fase 13/Track I: rewritten from KChannel to KEndpoint — EP_SEND requires
+ * RIGHT_WRITE, so a READ-only cap is rejected with ACCESS_DENIED (same
+ * rights-enforcement guarantee, no SYS_CHAN). */
 static void test_t013(void) {
-    long ch_raw = it_sys0(SYS_CHAN_CREATE);
-    if (ch_raw < 0) { it_fail("T013", "chan create"); return; }
-    handle_id_t ch_h = (handle_id_t)ch_raw;
+    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep_raw < 0) { it_fail("T013", "ep create"); return; }
+    handle_id_t ep_h = (handle_id_t)ep_raw;
 
     /* Dup with READ-only (no WRITE right) */
-    long ro_raw = it_sys2(SYS_HANDLE_DUP, ch_raw, (long)RIGHT_READ);
+    long ro_raw = it_sys2(SYS_HANDLE_DUP, ep_raw, (long)RIGHT_READ);
     if (ro_raw < 0) {
-        it_close(&ch_h);
+        it_close(&ep_h);
         it_fail("T013", "ro dup"); return;
     }
     handle_id_t ro_h = (handle_id_t)ro_raw;
 
-    struct KChanMsg msg;
-    it_chan_msg_zero(&msg);
-    msg.type     = 0xFFFFu;
-    msg.data_len = 0u;
-    msg.attached_handle = HANDLE_INVALID;
-    /* Send on read-only handle must fail */
-    long r = it_sys2(SYS_CHAN_SEND, ro_raw, (long)&msg);
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = IRIS_EP_OP_PING;
+    /* EP_SEND on a read-only endpoint cap must fail with ACCESS_DENIED. */
+    long r = it_sys2(SYS_EP_SEND, ro_raw, (long)&msg);
 
     it_close(&ro_h);
-    it_close(&ch_h);
+    it_close(&ep_h);
 
     if (r == (long)IRIS_ERR_ACCESS_DENIED)
         it_pass("T013");
@@ -2224,49 +2221,22 @@ static void test_t070(void) {
  * silently skipped.  (Fase 8: the discovery endpoint no longer arrives
  * here; it is the well-known slot IRIS_CPTR_SVCMGR_EP.)
  */
-static handle_id_t it_recv_bootstrap(handle_id_t boot_ch) {
-    struct KChanMsg msg;
-    handle_id_t spawn_cap_h = HANDLE_INVALID;
-    /* Fase 8: only the spawn cap travels over the bootstrap channel
-     * (KBootstrapCap is outside the dual resolver — handle boundary).
-     * The svcmgr discovery endpoint is the well-known slot
-     * IRIS_CPTR_SVCMGR_EP; bootstrap kind 0x20 is retired. */
-    for (uint32_t attempt = 0; attempt < 8u; attempt++) {
-        if (spawn_cap_h != HANDLE_INVALID)
-            break;
-        it_chan_msg_zero(&msg);
-        if (it_sys3(SYS_CHAN_RECV_TIMEOUT, (long)boot_ch, (long)&msg,
-                    500000000L) < 0)
-            break;
-        if (msg.type != SVCMGR_MSG_BOOTSTRAP_HANDLE ||
-            msg.data_len < SVCMGR_BOOTSTRAP_MSG_LEN ||
-            msg.attached_handle == HANDLE_INVALID)
-            continue;
-        uint32_t kind = svcmgr_proto_read_u32(
-            &msg.data[SVCMGR_BOOTSTRAP_OFF_KIND]);
-        if (kind == SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP &&
-            spawn_cap_h == HANDLE_INVALID) {
-            spawn_cap_h = (handle_id_t)msg.attached_handle;
-        } else {
-            handle_id_t discard = (handle_id_t)msg.attached_handle;
-            it_close(&discard);
-        }
-    }
-    return spawn_cap_h;
-}
+/* it_recv_bootstrap retired — Fase 13/Track I: the spawn cap is the
+ * IRIS_CPTR_SPAWN_CAP pre-start mint, not a bootstrap KChannel message. */
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
-    /* Receive spawn_cap + svcmgr discovery endpoint from init */
-    handle_id_t spawn_cap_h = it_recv_bootstrap(bootstrap_ch_h);
+    /* Fase 13 (Track I): the spawn/authority cap arrives as the
+     * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint — no bootstrap KChannel.
+     * SYS_CAP_CREATE_IOPORT resolves it by CPtr via the device-cap dual
+     * resolver (the serial KIoPort for test output). */
     it_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_ch_h);
 
-    /* Open COM1 serial port for test output */
-    if (spawn_cap_h != HANDLE_INVALID) {
-        long h = it_sys3(SYS_CAP_CREATE_IOPORT, (long)spawn_cap_h, 0x3F8, 8);
+    {
+        long h = it_sys3(SYS_CAP_CREATE_IOPORT,
+                         (long)IRIS_CPTR_SPAWN_CAP, 0x3F8, 8);
         if (h >= 0) g_serial_h = (handle_id_t)h;
-        it_sys1(SYS_HANDLE_CLOSE, (long)spawn_cap_h);
     }
 
     it_serial_write("[IRIS][TEST] start\n");
