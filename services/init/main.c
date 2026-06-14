@@ -440,30 +440,14 @@ static void init_retry_pause(void) {
     (void)init_sys1(SYS_SLEEP, INIT_RETRY_SLEEP_TICKS);
 }
 
+/* Fase 13 (Track I): init's spawn/bootstrap KBootstrapCap arrives as the
+ * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint from userboot — not over a
+ * bootstrap KChannel.  Resolve the slot to a handle (init DUPs/restricts it for
+ * its children, which needs a handle-table handle, not a bare CPtr). */
 static handle_id_t init_recv_spawn_cap(handle_id_t bootstrap_ch_h) {
-    struct KChanMsg msg;
-
-    if (bootstrap_ch_h == HANDLE_INVALID) return HANDLE_INVALID;
-
-    for (uint32_t attempt = 0; attempt < 8u; attempt++) {
-        init_msg_zero(&msg);
-        if (init_sys2(SYS_CHAN_RECV, (long)bootstrap_ch_h, (long)&msg) < 0)
-            return HANDLE_INVALID;
-        if (msg.type != SVCMGR_MSG_BOOTSTRAP_HANDLE ||
-            msg.data_len < SVCMGR_BOOTSTRAP_MSG_LEN ||
-            msg.attached_handle == HANDLE_INVALID) {
-            if (msg.attached_handle != HANDLE_INVALID)
-                init_close(&msg.attached_handle);
-            continue;
-        }
-        if (svcmgr_proto_read_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND]) ==
-            SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP) {
-            return msg.attached_handle;
-        }
-        init_close(&msg.attached_handle);
-    }
-
-    return HANDLE_INVALID;
+    (void)bootstrap_ch_h;
+    long h = init_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
+    return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
 }
 
 /* ── Channel helper: send msg, recv reply (SYS_CHAN_SEND + SYS_CHAN_RECV) ── */
@@ -477,19 +461,18 @@ static void init_spawn_fb(handle_id_t spawn_cap_h) {
     handle_id_t fb_proc_h  = HANDLE_INVALID;
     handle_id_t fb_boot_h  = HANDLE_INVALID;
     handle_id_t fb_cap_h   = HANDLE_INVALID;
-    struct KChanMsg msg;
     long r;
 
-    r = svc_load(spawn_cap_h, "fb", &fb_proc_h, &fb_boot_h);
+    /* Fase 13 (Track I): fb gets its FRAMEBUFFER-restricted KBootstrapCap as a
+     * pre-start CSpace mint (IRIS_CPTR_SPAWN_CAP) instead of a post-spawn
+     * KChannel SPAWN_CAP send.  Build + restrict the cap BEFORE the load so it
+     * can be minted into the child's root CNode. */
+    r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
+                  (long)(RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER));
     if (r < 0) {
         init_early_serial_write(init_fb_load_fail);
         goto out;
     }
-
-    /* Create restricted bootcap with FRAMEBUFFER only for the fb service. */
-    r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
-                  (long)(RIGHT_READ | RIGHT_TRANSFER));
-    if (r < 0) goto out;
     fb_cap_h = (handle_id_t)r;
 
     /* Restrict to FRAMEBUFFER only; original spawn_cap_h is unaffected. */
@@ -497,17 +480,19 @@ static void init_spawn_fb(handle_id_t spawn_cap_h) {
                   (long)IRIS_BOOTCAP_FRAMEBUFFER);
     if (r < 0) goto out;
 
-    init_msg_zero(&msg);
-    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                           SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP);
-    msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
-    msg.attached_handle = fb_cap_h;
-    msg.attached_rights = RIGHT_READ;
-
-    r = init_sys2(SYS_CHAN_SEND, (long)fb_boot_h, (long)&msg);
-    if (r < 0) goto out;
-    fb_cap_h = HANDLE_INVALID; /* consumed by send */
+    {
+        struct svc_mint fb_mints[1];
+        fb_mints[0].slot   = IRIS_CPTR_SPAWN_CAP;
+        fb_mints[0].src_h  = fb_cap_h;
+        fb_mints[0].rights = RIGHT_READ;
+        fb_mints[0].badge  = 0;
+        r = svc_load_minted(spawn_cap_h, "fb", &fb_proc_h, &fb_boot_h,
+                            fb_mints, 1u);
+    }
+    if (r < 0) {
+        init_early_serial_write(init_fb_load_fail);
+        goto out;
+    }
 
 out:
     init_close(&fb_proc_h);

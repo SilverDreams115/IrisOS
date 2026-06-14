@@ -16,6 +16,7 @@
 #include <iris/nc/kchannel.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
+#include <iris/endpoint_proto.h>
 #include <iris/fb_info.h>
 #include <iris/nc/error.h>
 #include <iris/paging.h>
@@ -79,30 +80,13 @@ static void fb_draw_rect(uint32_t *pixels, uint32_t stride,
 }
 
 void fb_main_c(handle_id_t bootstrap_h) {
-    handle_id_t cap_h  = HANDLE_INVALID;
+    /* Fase 13 (Track I): the framebuffer KBootstrapCap arrives as the
+     * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint — SYS_FRAMEBUFFER_VMO resolves
+     * it by CPtr through the device-cap dual resolver.  No bootstrap KChannel. */
+    handle_id_t cap_h  = (handle_id_t)IRIS_CPTR_SPAWN_CAP;
     handle_id_t vmo_h  = HANDLE_INVALID;
-    struct KChanMsg msg;
     struct iris_fb_params params;
 
-    /* ── Bootstrap: receive framebuffer bootstrap cap ─────────────── */
-    {
-        uint8_t *raw = (uint8_t *)&msg;
-        uint32_t i;
-        for (i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
-    }
-    if (fb_sys2(SYS_CHAN_RECV, (long)bootstrap_h, (long)&msg) != IRIS_OK)
-        goto out;
-    if (msg.type != SVCMGR_MSG_BOOTSTRAP_HANDLE ||
-        msg.attached_handle == HANDLE_INVALID)
-        goto out;
-    {
-        uint32_t kind = (uint32_t)msg.data[0] |
-                        ((uint32_t)msg.data[1] << 8) |
-                        ((uint32_t)msg.data[2] << 16) |
-                        ((uint32_t)msg.data[3] << 24);
-        if (kind != SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP) goto out;
-    }
-    cap_h = msg.attached_handle;
     (void)fb_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_h);
     bootstrap_h = HANDLE_INVALID;
 
@@ -118,7 +102,8 @@ void fb_main_c(handle_id_t bootstrap_h) {
         if (r < 0) goto out;
         vmo_h = (handle_id_t)r;
     }
-    (void)fb_sys1(SYS_HANDLE_CLOSE, (long)cap_h);
+    /* cap_h is the IRIS_CPTR_SPAWN_CAP CSpace slot, not an owned handle —
+     * reaped with the address space, nothing to close (Track I). */
     cap_h = HANDLE_INVALID;
 
     if (params.width == 0 || params.height == 0 || params.size == 0) goto out;
