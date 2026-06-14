@@ -5,7 +5,6 @@
 #include <iris/nc/rights.h>
 #include <iris/nc/handle.h>
 #include <iris/nc/handle_table.h>
-#include <iris/nc/kchannel.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kbootcap.h>

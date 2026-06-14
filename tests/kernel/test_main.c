@@ -10,7 +10,6 @@ void test_kcnode(void);
 void test_kuntyped(void);
 void test_handle_table(void);
 void test_kendpoint(void);
-void test_kchannel(void);
 void test_knotification(void);
 void test_kreply(void);
 void test_kschedctx(void);
@@ -30,7 +29,6 @@ int main(void) {
     test_kuntyped();
     test_handle_table();
     test_kendpoint();
-    test_kchannel();
     test_knotification();
     test_kreply();
     test_kschedctx();

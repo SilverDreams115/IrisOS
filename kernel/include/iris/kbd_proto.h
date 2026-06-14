@@ -3,7 +3,6 @@
 
 #ifndef __ASSEMBLER__
 #include <stdint.h>
-#include <iris/nc/kchannel.h>
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 #endif
@@ -166,70 +165,8 @@
 #define KBD_MSG_SCANCODE_EVENT_LEN      1u
 
 /* ── C-only helpers ─────────────────────────────────────────────────────── */
-#ifndef __ASSEMBLER__
-
-static inline void kbd_proto_write_u32(uint8_t *dst, uint32_t value) {
-    dst[0] = (uint8_t)(value & 0xFFu);
-    dst[1] = (uint8_t)((value >>  8) & 0xFFu);
-    dst[2] = (uint8_t)((value >> 16) & 0xFFu);
-    dst[3] = (uint8_t)((value >> 24) & 0xFFu);
-}
-
-static inline uint32_t kbd_proto_read_u32(const uint8_t *src) {
-    return ((uint32_t)src[0])          |
-           ((uint32_t)src[1] <<  8)    |
-           ((uint32_t)src[2] << 16)    |
-           ((uint32_t)src[3] << 24);
-}
-
-/* Validate an inbound KBD_MSG_HELLO request. */
-static inline int kbd_proto_hello_valid(const struct KChanMsg *msg) {
-    return msg != 0 &&
-           msg->type     == KBD_MSG_HELLO &&
-           msg->data_len == KBD_MSG_HELLO_LEN;
-}
-
-/* Initialise a KBD_MSG_HELLO_REPLY message in *msg. */
-static inline void kbd_proto_hello_reply_init(struct KChanMsg *msg, int32_t err) {
-    uint8_t *raw = (uint8_t *)msg;
-    for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
-    msg->type = KBD_MSG_HELLO_REPLY;
-    kbd_proto_write_u32(&msg->data[KBD_MSG_OFF_HELLO_REPLY_ERR], (uint32_t)err);
-    msg->data_len        = KBD_MSG_HELLO_REPLY_LEN;
-    msg->attached_handle = HANDLE_INVALID;
-    msg->attached_rights = RIGHT_NONE;
-}
-
-/* Validate an inbound KBD_MSG_STATUS request. */
-static inline int kbd_proto_status_valid(const struct KChanMsg *msg) {
-    return msg != 0 &&
-           msg->type     == KBD_MSG_STATUS &&
-           msg->data_len == KBD_MSG_STATUS_LEN &&
-           (msg->attached_handle == HANDLE_INVALID ||
-            (msg->attached_rights & RIGHT_WRITE) != 0);
-}
-
-/* Initialise a KBD_MSG_STATUS_REPLY message in *msg. */
-static inline void kbd_proto_status_reply_init(struct KChanMsg *msg,
-                                               int32_t err,
-                                               uint32_t flags) {
-    uint8_t *raw = (uint8_t *)msg;
-    for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
-    msg->type = KBD_MSG_STATUS_REPLY;
-    kbd_proto_write_u32(&msg->data[KBD_MSG_OFF_STATUS_REPLY_ERR],   (uint32_t)err);
-    kbd_proto_write_u32(&msg->data[KBD_MSG_OFF_STATUS_REPLY_FLAGS], flags);
-    msg->data_len        = KBD_MSG_STATUS_REPLY_LEN;
-    msg->attached_handle = HANDLE_INVALID;
-    msg->attached_rights = RIGHT_NONE;
-}
-
-/* Validate an inbound KBD_MSG_IRQ_SCANCODE notification. */
-static inline int kbd_proto_irq_scancode_valid(const struct KChanMsg *msg) {
-    return msg != 0 &&
-           msg->type     == KBD_MSG_IRQ_SCANCODE &&
-           msg->data_len == KBD_MSG_IRQ_SCANCODE_LEN;
-}
-
-#endif /* !__ASSEMBLER__ */
+/* Fase 13/Track G: the KChanMsg-based kbd_proto_* inline helpers (HELLO/
+ * STATUS/IRQ_SCANCODE builders+decoders) are retired with the KChannel
+ * object — kbd is endpoint + notification only (kbd_ep_proto.h). */
 
 #endif /* IRIS_KBD_PROTO_H */

@@ -69,8 +69,6 @@ void         task_yield(void)            { }
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kframe.h>
 #include <iris/nc/kobject.h>
-iris_error_t kprocess_quota_acquire_channel(struct KProcess *p)    { (void)p; return IRIS_OK; }
-void         kprocess_quota_release_channel(struct KProcess *p)    { (void)p; }
 iris_error_t kprocess_quota_acquire_notification(struct KProcess *p){ (void)p; return IRIS_OK; }
 void         kprocess_quota_release_notification(struct KProcess *p){ (void)p; }
 iris_error_t kprocess_quota_acquire_vmo(struct KProcess *p)        { (void)p; return IRIS_OK; }

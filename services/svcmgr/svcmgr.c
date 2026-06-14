@@ -5,7 +5,6 @@
 #include <iris/vfs_ep_proto.h>
 #include <iris/nc/error.h>
 #include <iris/nc/handle.h>
-#include <iris/nc/kchannel.h>
 #include <iris/ipc_msg.h>
 #include <iris/endpoint_proto.h>
 #include <stdint.h>

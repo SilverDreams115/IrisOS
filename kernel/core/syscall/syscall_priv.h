@@ -12,7 +12,6 @@
 #include <iris/syscall.h>
 #include <iris/task.h>
 #include <iris/pmm.h>
-#include <iris/nc/kchannel.h>
 #include <iris/nc/kbootcap.h>
 #include <iris/nc/kvmo.h>
 #include <iris/nc/knotification.h>
@@ -57,21 +56,8 @@ static inline uint64_t syscall_ok_u64(uint64_t value) {
     return value;
 }
 
-static inline int user_kchanmsg_readable(uint64_t uptr) {
-    return user_range_readable(uptr, (uint32_t)sizeof(struct KChanMsg));
-}
-
-static inline int user_kchanmsg_writable(uint64_t uptr) {
-    return user_range_writable(uptr, (uint32_t)sizeof(struct KChanMsg));
-}
-
-static inline int copy_kchanmsg_from_user(struct KChanMsg *dst, uint64_t src_uptr) {
-    return copy_from_user_checked(dst, src_uptr, (uint32_t)sizeof(*dst));
-}
-
-static inline int copy_kchanmsg_to_user(uint64_t dst_uptr, const struct KChanMsg *src) {
-    return copy_to_user_checked(dst_uptr, src, (uint32_t)sizeof(*src));
-}
+/* Fase 13/Track G: user_kchanmsg_* / copy_kchanmsg_* helpers retired with the
+ * KChannel object. */
 
 static inline int copy_u32_to_user_checked(uint64_t dst_uptr, uint32_t value) {
     return copy_to_user_checked(dst_uptr, &value, (uint32_t)sizeof(value));

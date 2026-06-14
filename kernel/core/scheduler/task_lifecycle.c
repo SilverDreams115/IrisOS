@@ -4,7 +4,6 @@
 #include <iris/tss.h>
 #include <iris/paging.h>
 #include <iris/syscall.h>
-#include <iris/nc/kchannel.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kframe.h>
@@ -224,7 +223,8 @@ void unlink_task(struct task *t) {
 
 static void task_cancel_blocked_waits(struct task *t) {
     if (!t) return;
-    kchannel_cancel_waiter(t);
+    /* Fase 13/Track G: kchannel_cancel_waiter retired — no task blocks on a
+     * KChannel (the object is gone). */
     knotification_cancel_waiter(t);
     futex_cancel_waiter(t);
     kendpoint_cancel_waiter(t);

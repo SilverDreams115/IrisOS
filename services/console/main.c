@@ -16,7 +16,6 @@
 #include <stdint.h>
 #include <iris/syscall.h>
 #include <iris/nc/handle.h>
-#include <iris/nc/kchannel.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
 #include <iris/console_proto.h>

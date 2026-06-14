@@ -18,7 +18,6 @@
 
 #include <stdint.h>
 #include <iris/syscall.h>
-#include <iris/nc/kchannel.h>
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>

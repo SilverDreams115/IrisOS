@@ -15,7 +15,6 @@ struct KFrame;
 
 #define KPROCESS_EXIT_WATCH_MAX 8u
 #define KPROCESS_MAX_LIVE       64u /* bounded by TASK_MAX; enforced in kprocess_alloc */
-#define KPROCESS_CHANNEL_QUOTA  16u
 #define KPROCESS_NOTIFICATION_QUOTA 16u
 #define KPROCESS_VMO_QUOTA      32u
 #define KPROCESS_PHYS_PAGES_LIMIT 2048u /* 8MB per process; set in kprocess_alloc */
@@ -84,7 +83,6 @@ struct KProcess {
     uint32_t fault_error;
     uint64_t fault_cr2;
     uint8_t  fault_valid;
-    uint32_t owned_channels;
     uint32_t owned_notifications;
     uint32_t owned_vmos;
     uint32_t phys_pages_charged; /* sparse-VMO pages charged at eager map-time
@@ -112,13 +110,10 @@ struct KProcess {
 
 #define KPROCESS_POOL_SIZE 0u  /* no static pool — kpage-backed; 0 = unbounded allocator ceiling */
 
-struct KChannel;
 struct KProcess *kprocess_alloc(void);
 void             kprocess_free (struct KProcess *p);
 void             kprocess_teardown(struct KProcess *p, struct task *exiting_thread);
 void             kprocess_reap_address_space(struct KProcess *p);
-iris_error_t     kprocess_quota_acquire_channel(struct KProcess *p);
-void             kprocess_quota_release_channel(struct KProcess *p);
 iris_error_t     kprocess_quota_acquire_notification(struct KProcess *p);
 void             kprocess_quota_release_notification(struct KProcess *p);
 iris_error_t     kprocess_quota_acquire_vmo(struct KProcess *p);

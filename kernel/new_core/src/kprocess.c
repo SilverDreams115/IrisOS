@@ -1,7 +1,6 @@
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kframe.h>
 #include <iris/nc/kcnode.h>
-#include <iris/nc/kchannel.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kvmo.h>
 #include <iris/nc/kvspace.h>
@@ -181,14 +180,6 @@ struct KProcess *kprocess_alloc(void) {
 
 void kprocess_free(struct KProcess *p) {
     kobject_release(&p->base);
-}
-
-iris_error_t kprocess_quota_acquire_channel(struct KProcess *p) {
-    return kprocess_quota_acquire(&p->owned_channels, KPROCESS_CHANNEL_QUOTA, p);
-}
-
-void kprocess_quota_release_channel(struct KProcess *p) {
-    kprocess_quota_release(&p->owned_channels, p);
 }
 
 iris_error_t kprocess_quota_acquire_notification(struct KProcess *p) {
