@@ -59,7 +59,6 @@ struct svcmgr_dynamic_service {
 };
 
 struct svcmgr_state {
-    handle_id_t bootstrap_h;
     handle_id_t spawn_cap_h;
     handle_id_t console_ep_h;  /* console KEndpoint send side (Fase 7.3):
                                 * delivered by init at bootstrap (kind 0x22),
@@ -84,9 +83,7 @@ static const char sm_str_bootok[]       = "[SVCMGR] child bootstrap OK\n";
 static const char sm_str_bootfail[]     = "[SVCMGR] WARN: child bootstrap failed\n";
 /* Fase 13 (Track C): sm_str_bootdupfail/bootsendfail retired with the
  * KChannel bootstrap senders — bootstrap caps are now pre-start CSpace mints. */
-static const char sm_str_lookupok[]     = "[SVCMGR] lookup reply OK\n";
 static const char sm_str_lookupfail[]   = "[SVCMGR] WARN: lookup failed\n";
-static const char sm_str_lookupsendfail[] = "[SVCMGR] WARN: lookup reply send failed\n";
 /* sm_str_svc_exited replaced by inline format in svcmgr_release_service (logs name) */
 static const char sm_str_irqfail[]      = "[SVCMGR] WARN: irq route xfer failed\n";
 static const char sm_str_svc_unknown[]  = "[SVCMGR] WARN: unknown bootstrap service\n";
@@ -167,46 +164,7 @@ static void svcmgr_close_handle_if_valid(handle_id_t *h) {
  *
  * Returns 1 once SPAWN_CAP has been received.
  */
-static int svcmgr_recv_bootstrap_caps(struct svcmgr_state *state) {
-    uint32_t recv_count = 0;
-    const uint32_t max_recv = 8u;
-
-    if (!state || state->bootstrap_h == HANDLE_INVALID) return 0;
-
-    while (recv_count < max_recv) {
-        struct KChanMsg msg;
-        uint32_t kind;
-
-        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
-        if (svcmgr_syscall2(SYS_CHAN_RECV, state->bootstrap_h,
-                            (uint64_t)(uintptr_t)&msg) != IRIS_OK)
-            return 0;
-        recv_count++;
-
-        if (msg.type != SVCMGR_MSG_BOOTSTRAP_HANDLE ||
-            msg.data_len < SVCMGR_BOOTSTRAP_MSG_LEN ||
-            msg.attached_handle == HANDLE_INVALID) {
-            if (msg.attached_handle != HANDLE_INVALID)
-                (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, msg.attached_handle);
-            continue;
-        }
-
-        kind = svcmgr_proto_read_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND]);
-        /* Fase 13 (Track I): KIND_CONSOLE_CAP retired — svcmgr logs and drains
-         * the klog over console.ep (IRIS_CPTR_CONSOLE_EP), never the legacy
-         * console KChannel.  Fase 8: kind 0x22 (CONSOLE_EP) also retired —
-         * the console endpoint is the IRIS_CPTR_CONSOLE_EP CSpace mint. */
-        if (kind == SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP &&
-            rights_check(msg.attached_rights, RIGHT_READ)) {
-            state->spawn_cap_h = msg.attached_handle;
-            return 1;
-        }
-        /* unexpected kind: discard and keep waiting */
-        (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, msg.attached_handle);
-    }
-
-    return 0;
-}
+/* int svcmgr_recv_bootstrap_caps retired — Fase 13/Track I (legacy KChannel LOOKUP / bootstrap recv). */
 
 /*
  * Request hardware capabilities from the kernel using the spawn cap as authority.
@@ -264,17 +222,14 @@ static struct svcmgr_service_state *svcmgr_service_state(struct svcmgr_state *st
  * stale client handles fail fast instead of silently queuing to a dead service.
  * The handle is then closed normally to drop the master reference.
  */
-static void svcmgr_seal_handle_if_valid(handle_id_t *h) {
-    if (!h || *h == HANDLE_INVALID) return;
-    (void)svcmgr_syscall1(SYS_CHAN_SEAL, *h);
-    svcmgr_close_handle_if_valid(h);
-}
-
+/* Fase 13 (Track I): svcmgr_seal_handle_if_valid retired — the only sealable
+ * KChannels were the legacy service/reply pair, now gone (every service is
+ * endpoint_only).  Dynamic masters are KEndpoint caps, which are just closed. */
 static void svcmgr_clear_service_masters(struct svcmgr_state *state, uint32_t service_id) {
     struct svcmgr_service_state *svc = svcmgr_service_state(state, service_id);
     if (!svc) return;
-    svcmgr_seal_handle_if_valid(&svc->public_h);
-    svcmgr_seal_handle_if_valid(&svc->reply_h);
+    svcmgr_close_handle_if_valid(&svc->public_h);
+    svcmgr_close_handle_if_valid(&svc->reply_h);
 }
 
 static int svcmgr_should_restart_service(struct svcmgr_state *state,
@@ -322,15 +277,7 @@ static const struct iris_service_catalog_entry *svcmgr_catalog_find_name(const c
     return 0;
 }
 
-static struct svcmgr_dynamic_service *svcmgr_dynamic_find_endpoint(struct svcmgr_state *state,
-                                                                   uint32_t endpoint) {
-    if (!state || endpoint == 0u) return 0;
-    for (uint32_t i = 0; i < SVCMGR_DYNAMIC_SERVICE_CAP; i++) {
-        if (state->dynamic[i].active && state->dynamic[i].endpoint == endpoint)
-            return &state->dynamic[i];
-    }
-    return 0;
-}
+/* *svcmgr_dynamic_find_endpoint retired — Fase 13/Track I */
 
 static struct svcmgr_dynamic_service *svcmgr_dynamic_find_name(struct svcmgr_state *state,
                                                                const char *name) {
@@ -429,22 +376,16 @@ static uint32_t svcmgr_dynamic_ready_count(const struct svcmgr_state *state) {
 
 static void svcmgr_dynamic_clear(struct svcmgr_dynamic_service *svc, int seal) {
     if (!svc || !svc->active) return;
-    if (svc->public_h != HANDLE_INVALID) {
-        if (seal)
-            svcmgr_seal_handle_if_valid(&svc->public_h);
-        else
-            svcmgr_close_handle_if_valid(&svc->public_h);
-    }
+    (void)seal;  /* Track I: dynamic masters are KEndpoints — always closed. */
+    if (svc->public_h != HANDLE_INVALID)
+        svcmgr_close_handle_if_valid(&svc->public_h);
     svc->endpoint = 0;
     svc->client_rights = RIGHT_NONE;
     svc->active = 0;
     for (uint32_t i = 0; i < SVCMGR_SERVICE_NAME_CAP; i++) svc->name[i] = '\0';
 }
 
-static iris_rights_t svcmgr_reduce_lookup_rights(iris_rights_t requested, iris_rights_t allowed) {
-    if (requested & RIGHT_SAME_RIGHTS) return allowed;
-    return requested & allowed;
-}
+/* svcmgr_reduce_lookup_rights retired — Fase 13/Track I */
 
 
 /* Fase 13 (Track C): svcmgr_send_spawn_cap retired — the initrd spawn cap is
@@ -846,13 +787,7 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
     return n;
 }
 
-static int64_t svcmgr_send_lookup_reply(handle_id_t reply_h, uint32_t endpoint,
-                                        int32_t err, handle_id_t attached_h,
-                                        iris_rights_t attached_rights) {
-    struct KChanMsg msg;
-    svcmgr_proto_lookup_reply_init(&msg, endpoint, err, attached_h, attached_rights);
-    return svcmgr_syscall2(SYS_CHAN_SEND, reply_h, (uint64_t)(uintptr_t)&msg);
-}
+/* int64_t svcmgr_send_lookup_reply retired — Fase 13/Track I (legacy KChannel LOOKUP / bootstrap recv). */
 
 
 static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state) {
@@ -1040,154 +975,9 @@ static void svcmgr_autostart_services(struct svcmgr_state *state) {
     }
 }
 
-static void svcmgr_handle_lookup(struct svcmgr_state *state, const struct KChanMsg *msg) {
-    handle_id_t reply_h = msg->attached_handle;
-    uint32_t endpoint = 0;
-    iris_rights_t requested = RIGHT_NONE;
-    int is_reply = 0;
-    const struct iris_service_catalog_entry *manifest;
-    struct svcmgr_dynamic_service *dynamic = 0;
-    struct svcmgr_service_state *svc;
-    handle_id_t master_h = HANDLE_INVALID;
-    iris_rights_t allowed = RIGHT_NONE;
-    iris_rights_t granted;
-    int64_t xfer_h;
+/* void svcmgr_handle_lookup retired — Fase 13/Track I (legacy KChannel LOOKUP / bootstrap recv). */
 
-    if (!svcmgr_proto_lookup_valid(msg)) {
-        svcmgr_log(sm_str_lookupfail);
-        return;
-    }
-    svcmgr_proto_lookup_decode(msg, &endpoint, &requested);
-    manifest = iris_service_catalog_find_by_endpoint(endpoint, &is_reply);
-    if (!manifest)
-        dynamic = svcmgr_dynamic_find_endpoint(state, endpoint);
-
-    if (!manifest && !dynamic) {
-        if (svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_NOT_FOUND, HANDLE_INVALID, RIGHT_NONE) < 0)
-            svcmgr_log(sm_str_lookupsendfail);
-        svcmgr_close_handle_if_valid(&reply_h);
-        svcmgr_log(sm_str_lookupfail);
-        return;
-    }
-
-    if (dynamic) {
-        master_h = dynamic->public_h;
-        allowed = dynamic->client_rights;
-    } else {
-        svc = svcmgr_service_state(state, manifest->service_id);
-        if (!svc) {
-            if (svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_INVALID_ARG, HANDLE_INVALID, RIGHT_NONE) < 0)
-                svcmgr_log(sm_str_lookupsendfail);
-            svcmgr_close_handle_if_valid(&reply_h);
-            svcmgr_log(sm_str_lookupfail);
-            return;
-        }
-
-        if (is_reply) {
-            master_h = svc->reply_h;
-            allowed = manifest->client_reply_rights;
-        } else {
-            master_h = svc->public_h;
-            allowed = manifest->client_service_rights;
-        }
-    }
-
-    granted = svcmgr_reduce_lookup_rights(requested, allowed);
-    if (master_h == HANDLE_INVALID || granted == RIGHT_NONE) {
-        if (svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_INVALID_ARG, HANDLE_INVALID, RIGHT_NONE) < 0)
-            svcmgr_log(sm_str_lookupsendfail);
-        svcmgr_close_handle_if_valid(&reply_h);
-        svcmgr_log(sm_str_lookupfail);
-        return;
-    }
-
-    xfer_h = svcmgr_syscall2(SYS_HANDLE_DUP, master_h, granted | RIGHT_TRANSFER);
-    if (xfer_h < 0) {
-        if (svcmgr_send_lookup_reply(reply_h, endpoint, (int32_t)xfer_h, HANDLE_INVALID, RIGHT_NONE) < 0)
-            svcmgr_log(sm_str_lookupsendfail);
-        svcmgr_close_handle_if_valid(&reply_h);
-        svcmgr_log(sm_str_lookupfail);
-        return;
-    }
-
-    if (svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_OK, (handle_id_t)xfer_h, granted) < 0)
-        svcmgr_log(sm_str_lookupsendfail);
-    svcmgr_close_handle_if_valid(&reply_h);
-    svcmgr_log(sm_str_lookupok);
-}
-
-static void svcmgr_handle_lookup_name(struct svcmgr_state *state, const struct KChanMsg *msg) {
-    char name[SVCMGR_SERVICE_NAME_CAP];
-    handle_id_t reply_h = msg->attached_handle;
-    const struct iris_service_catalog_entry *manifest;
-    struct svcmgr_dynamic_service *dynamic = 0;
-    struct svcmgr_service_state *svc;
-    handle_id_t master_h = HANDLE_INVALID;
-    iris_rights_t requested = RIGHT_NONE;
-    iris_rights_t allowed = RIGHT_NONE;
-    iris_rights_t granted;
-    uint32_t endpoint = 0;
-    int64_t xfer_h;
-
-    if (!svcmgr_proto_lookup_name_valid(msg)) {
-        svcmgr_log(sm_str_lookupfail);
-        return;
-    }
-
-    svcmgr_proto_lookup_name_decode(msg, name, &requested);
-
-    /* Reserved "<name>.ep" endpoint names resolve first (Fase 7.1); they
-     * have no numeric endpoint id (echoed as 0 in the reply). */
-    if (!svcmgr_resolve_ep_name(state, name, &master_h, &allowed)) {
-        manifest = svcmgr_catalog_find_name(name);
-        if (!manifest)
-            dynamic = svcmgr_dynamic_find_name(state, name);
-
-        if (!manifest && !dynamic) {
-            svcmgr_send_lookup_reply(reply_h, 0u, IRIS_ERR_NOT_FOUND, HANDLE_INVALID, RIGHT_NONE);
-            svcmgr_close_handle_if_valid(&reply_h);
-            svcmgr_log(sm_str_lookupfail);
-            return;
-        }
-
-        if (dynamic) {
-            endpoint = dynamic->endpoint;
-            master_h = dynamic->public_h;
-            allowed = dynamic->client_rights;
-        } else {
-            endpoint = manifest->service_endpoint;
-            svc = svcmgr_service_state(state, manifest->service_id);
-            if (!svc) {
-                svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_INVALID_ARG, HANDLE_INVALID, RIGHT_NONE);
-                svcmgr_close_handle_if_valid(&reply_h);
-                svcmgr_log(sm_str_lookupfail);
-                return;
-            }
-            master_h = svc->public_h;
-            allowed = manifest->client_service_rights;
-        }
-    }
-
-    granted = svcmgr_reduce_lookup_rights(requested, allowed);
-    if (master_h == HANDLE_INVALID || granted == RIGHT_NONE) {
-        svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_ERR_INVALID_ARG, HANDLE_INVALID, RIGHT_NONE);
-        svcmgr_close_handle_if_valid(&reply_h);
-        svcmgr_log(sm_str_lookupfail);
-        return;
-    }
-
-    xfer_h = svcmgr_syscall2(SYS_HANDLE_DUP, master_h, granted | RIGHT_TRANSFER);
-    if (xfer_h < 0) {
-        svcmgr_send_lookup_reply(reply_h, endpoint, (int32_t)xfer_h, HANDLE_INVALID, RIGHT_NONE);
-        svcmgr_close_handle_if_valid(&reply_h);
-        svcmgr_log(sm_str_lookupfail);
-        return;
-    }
-
-    svcmgr_send_lookup_reply(reply_h, endpoint, IRIS_OK, (handle_id_t)xfer_h, granted);
-    svcmgr_close_handle_if_valid(&reply_h);
-    svcmgr_log(sm_str_lookup_name_ok);
-}
+/* void svcmgr_handle_lookup_name retired — Fase 13/Track I (legacy KChannel LOOKUP / bootstrap recv). */
 
 static void svcmgr_release_service(struct svcmgr_state *state,
                                    uint32_t service_id,
@@ -1246,11 +1036,14 @@ static void svcmgr_handle_service_death(struct svcmgr_state *state, uint32_t ser
 
 void svcmgr_main_c(handle_id_t bootstrap_h) {
     struct svcmgr_state *state = &g_svcmgr_state;
-    struct KChanMsg msg;
+
+    /* Fase 13 (Track I): the entry bootstrap KChannel is unused — every cap is a
+     * pre-start CSpace mint.  Close it; svcmgr is endpoint + notification only. */
+    if (bootstrap_h != HANDLE_INVALID)
+        (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, bootstrap_h);
 
     for (uint32_t i = 0; i < (uint32_t)sizeof(*state); i++) ((uint8_t *)state)[i] = 0;
 
-    state->bootstrap_h = bootstrap_h;
     state->spawn_cap_h = HANDLE_INVALID;
     state->console_ep_h = HANDLE_INVALID;
     state->ep_h        = HANDLE_INVALID;
@@ -1274,18 +1067,25 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     }
 
     svcmgr_log(sm_str_started);
-    if (!svcmgr_recv_bootstrap_caps(state)) {
-        svcmgr_log(sm_str_bootcapfail);
-        return;
-    }
 
-    /* Fase 8: materialize the console endpoint from the well-known slot
-     * (init minted IRIS_CPTR_CONSOLE_EP with DUPLICATE|TRANSFER so svcmgr
-     * can keep publishing "console.ep" and minting it into children).
-     * Resolved BEFORE the klog drain so the drain itself goes over console.ep. */
-    if (state->console_ep_h == HANDLE_INVALID) {
+    /* Fase 13 (Track I): every bootstrap cap is a pre-start CSpace mint from
+     * init — no bootstrap KChannel.  Resolve the well-known slots to handles:
+     *   slot 3 (CONSOLE_EP) — console.ep send side (log + re-mint to children);
+     *   slot 5 (OWN_EP)     — svcmgr's discovery endpoint recv+mint side,
+     *                         published as "svcmgr.ep" and minted as
+     *                         IRIS_CPTR_SVCMGR_EP into catalog children;
+     *   slot 6 (SPAWN_CAP)  — spawn/authority cap (initrd, ioport/irq caps). */
+    {
         int64_t ch = svcmgr_syscall1(SYS_CSPACE_RESOLVE, IRIS_CPTR_CONSOLE_EP);
         state->console_ep_h = (ch >= 0) ? (handle_id_t)ch : HANDLE_INVALID;
+        int64_t er = svcmgr_syscall1(SYS_CSPACE_RESOLVE, IRIS_CPTR_OWN_EP);
+        state->ep_h = (er >= 0) ? (handle_id_t)er : HANDLE_INVALID;
+        int64_t sr = svcmgr_syscall1(SYS_CSPACE_RESOLVE, IRIS_CPTR_SPAWN_CAP);
+        state->spawn_cap_h = (sr >= 0) ? (handle_id_t)sr : HANDLE_INVALID;
+    }
+    if (state->spawn_cap_h == HANDLE_INVALID) {
+        svcmgr_log(sm_str_bootcapfail);
+        return;
     }
 
     /* Drain kernel boot log to console over console.ep (Fase 13/Track I).
@@ -1307,11 +1107,8 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
 
     svcmgr_request_hardware_caps(state);
 
-    /* Create svcmgr endpoint before autostart so catalog services receive it. */
-    {
-        int64_t ep_r = svcmgr_syscall0(SYS_ENDPOINT_CREATE);
-        state->ep_h = (ep_r >= 0) ? (handle_id_t)ep_r : HANDLE_INVALID;
-    }
+    /* svcmgr's discovery endpoint (state->ep_h) is the IRIS_CPTR_OWN_EP mint
+     * resolved above — no SYS_ENDPOINT_CREATE. */
 
     /* Fase 8: pre-create ALL service endpoint / IRQ-notification masters
      * before autostart, so the first child booted can already receive the
@@ -1362,37 +1159,10 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
             svcmgr_handle_ep_request(state, &ep_msg);
         }
 
-        /* Non-blocking poll of the legacy bootstrap KChannel — it now carries
-         * only COMPAT LOOKUP / LOOKUP_NAME (init bootstrap re-mint + T046).
-         * Drain everything pending so traffic never starves behind the wait. */
-        for (;;) {
-            int64_t cr;
-            {
-                uint8_t *raw = (uint8_t *)&msg;
-                for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
-            }
-            cr = svcmgr_syscall2(SYS_CHAN_RECV_NB, state->bootstrap_h,
-                                 (uint64_t)(uintptr_t)&msg);
-            if (cr != IRIS_OK) {
-                if (cr != (int64_t)IRIS_ERR_TIMED_OUT &&
-                    cr != (int64_t)IRIS_ERR_WOULD_BLOCK)
-                    svcmgr_log(sm_str_recverr);
-                break;
-            }
-            switch (msg.type) {
-                case SVCMGR_MSG_LOOKUP:
-                    svcmgr_handle_lookup(state, &msg);
-                    break;
-                case SVCMGR_MSG_LOOKUP_NAME:
-                    svcmgr_handle_lookup_name(state, &msg);
-                    break;
-                /* Fase 13: PROC_EVENT_MSG_EXIT (now a KNotification, Track B)
-                 * and the retired REGISTER/UNREGISTER/DIAG no longer arrive
-                 * here.  The productive paths are the cap-backed EP API. */
-                default:
-                    break;
-            }
-        }
+        /* Fase 13 (Track I): the legacy bootstrap KChannel is fully retired —
+         * discovery is the cap-backed EP API (IRIS_SVCMGR_EP_LOOKUP_NAME, served
+         * in svcmgr_handle_ep_request above) and death is a KNotification.
+         * svcmgr has no productive SYS_CHAN. */
 
         /* Track B: block on the death notification (10ms) — this is the loop's
          * idle driver, replacing the old CHAN_RECV_TIMEOUT.  Each set bit is a

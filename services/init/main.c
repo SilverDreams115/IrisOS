@@ -271,9 +271,10 @@ static void init_selftest_exception(void) {
 
 /* ── iris_test spawn + wait ──────────────────────────────────────────────── */
 
-/* Defined below (svcmgr lookup section); used here to fetch "svcmgr.ep". */
-static handle_id_t init_lookup_name(handle_id_t sm_h, const char *name,
-                                    iris_rights_t rights);
+/* Defined below; resolves a service name over svcmgr.ep via EP_LOOKUP_NAME.
+ * init holds a supervisor badge so it receives the full granted rights
+ * (WRITE|DUPLICATE|TRANSFER for svcmgr.ep, WRITE|DUPLICATE for vfs/kbd.ep). */
+static handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name);
 
 /*
  * Spawns iris_test using spawn_cap_h (a dup of bootstrap_h kept before it is
@@ -300,15 +301,13 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
      *   slot 30 — KNotification, RIGHT_WRITE (wrong type) → T040 WRONG_TYPE
      *   slot 31 — svcmgr ep, RIGHT_TRANSFER only     → T040 ACCESS_DENIED
      *             (the dual resolver must NOT fall back to handles).
-     * vfs.ep / kbd.ep come from legacy lookup (WRITE|DUPLICATE) — that
-     * lookup path staying alive is itself part of the test surface.
-     * Missing caps leave slots empty: the tests FAIL loudly, never skip. */
-    handle_id_t lk_svcmgr = init_lookup_name(sm_h, "svcmgr.ep",
-                                RIGHT_WRITE | RIGHT_TRANSFER | RIGHT_DUPLICATE);
-    handle_id_t lk_vfs    = init_lookup_name(sm_h, "vfs.ep",
-                                RIGHT_WRITE | RIGHT_DUPLICATE);
-    handle_id_t lk_kbd    = init_lookup_name(sm_h, "kbd.ep",
-                                RIGHT_WRITE | RIGHT_DUPLICATE);
+     * Fase 13/Track I: svcmgr.ep/vfs.ep/kbd.ep come from EP_LOOKUP_NAME over
+     * init's svcmgr.ep (init holds a supervisor badge → full granted rights,
+     * including DUPLICATE for the mint).  Missing caps leave slots empty: the
+     * tests FAIL loudly, never skip. */
+    handle_id_t lk_svcmgr = init_ep_lookup_name(sm_h, "svcmgr.ep");
+    handle_id_t lk_vfs    = init_ep_lookup_name(sm_h, "vfs.ep");
+    handle_id_t lk_kbd    = init_ep_lookup_name(sm_h, "kbd.ep");
     /* Fase 13/Track I: a KNotification serves as the slot-30 wrong-type fixture
      * for T040 (replaces the retired console KChannel cap).  It carries
      * RIGHT_WRITE so EP_CALL passes the rights check and fails on TYPE
@@ -560,58 +559,62 @@ fail:
 
 /* ── svcmgr spawn (Phase 29: ring-3 loader; Phase 30: also sends console) ── */
 
+/* Fase 13 (Track I): init owns svcmgr's discovery endpoint ("svcmgr.ep").  It
+ * creates the endpoint, mints the recv+mint side into svcmgr (IRIS_CPTR_OWN_EP)
+ * and keeps the send side for its own EP_LOOKUP_NAME calls.  All of svcmgr's
+ * bootstrap caps arrive as pre-start CSpace mints (no bootstrap KChannel):
+ *   slot 3 (CONSOLE_EP)  — console.ep, WRITE|DUP|TRANSFER (re-mint to children);
+ *   slot 5 (OWN_EP)      — svcmgr.ep recv side, READ|WRITE|DUP (recv + re-mint
+ *                          IRIS_CPTR_SVCMGR_EP into catalog children);
+ *   slot 6 (SPAWN_CAP)   — spawn/authority cap, READ|DUP|TRANSFER.
+ * Returns the svcmgr.ep send side (init's discovery handle), or HANDLE_INVALID. */
 static handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     handle_id_t svcmgr_proc_h  = HANDLE_INVALID;
     handle_id_t svcmgr_chan_h  = HANDLE_INVALID;
-    handle_id_t dup_cap_h      = HANDLE_INVALID;
-    struct KChanMsg msg;
+    handle_id_t svcmgr_ep_h    = HANDLE_INVALID;
+    handle_id_t spawn_dup_h    = HANDLE_INVALID;
     long r;
 
-    /* Fase 8: the console endpoint send side is pre-start-minted into
-     * svcmgr's root CNode at IRIS_CPTR_CONSOLE_EP (bootstrap kind 0x22
-     * retired).  DUPLICATE|TRANSFER so svcmgr can publish "console.ep" and
-     * re-mint it into catalog children. */
-    {
-        struct svc_mint sm_mints[1];
-        sm_mints[0].slot   = IRIS_CPTR_CONSOLE_EP;
-        sm_mints[0].src_h  = g_init_console_ep_h;
-        sm_mints[0].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-        sm_mints[0].badge  = 0;   /* MUST stay unbadged: svcmgr re-mints it
-                                   * per child with each child's badge (a
-                                   * badged cap can never be re-badged). */
-        r = svc_load_minted(spawn_cap_h, "svcmgr", &svcmgr_proc_h,
-                            &svcmgr_chan_h, sm_mints, 1u);
-    }
+    r = init_sys0(SYS_ENDPOINT_CREATE);
     if (r < 0) goto fail;
-
-    /* Fase 13 (Track I): the legacy CONSOLE_CAP send is retired — svcmgr now
-     * drains the klog and logs over console.ep (IRIS_CPTR_CONSOLE_EP), so it no
-     * longer needs the legacy console KChannel write-end. */
+    svcmgr_ep_h = (handle_id_t)r;
 
     r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
                   (long)(RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER));
     if (r < 0) goto fail;
-    dup_cap_h = (handle_id_t)r;
+    spawn_dup_h = (handle_id_t)r;
 
-    init_msg_zero(&msg);
-    msg.type = SVCMGR_MSG_BOOTSTRAP_HANDLE;
-    svcmgr_proto_write_u32(&msg.data[SVCMGR_BOOTSTRAP_OFF_KIND],
-                           SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP);
-    msg.data_len        = SVCMGR_BOOTSTRAP_MSG_LEN;
-    msg.attached_handle = dup_cap_h;
-    msg.attached_rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-
-    r = init_sys2(SYS_CHAN_SEND, (long)svcmgr_chan_h, (long)&msg);
+    {
+        struct svc_mint sm_mints[3];
+        sm_mints[0].slot   = IRIS_CPTR_CONSOLE_EP;
+        sm_mints[0].src_h  = g_init_console_ep_h;
+        sm_mints[0].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[0].badge  = 0;   /* unbadged: svcmgr re-mints per child badge */
+        sm_mints[1].slot   = IRIS_CPTR_OWN_EP;
+        sm_mints[1].src_h  = svcmgr_ep_h;
+        /* TRANSFER is required so svcmgr can hand out dup'd "svcmgr.ep" caps via
+         * SYS_REPLY cap-transfer (EP_LOOKUP_NAME of "svcmgr.ep"). */
+        sm_mints[1].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[1].badge  = 0;   /* unbadged: svcmgr re-mints per child badge */
+        sm_mints[2].slot   = IRIS_CPTR_SPAWN_CAP;
+        sm_mints[2].src_h  = spawn_dup_h;
+        sm_mints[2].rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[2].badge  = 0;
+        r = svc_load_minted(spawn_cap_h, "svcmgr", &svcmgr_proc_h,
+                            &svcmgr_chan_h, sm_mints, 3u);
+    }
     if (r < 0) goto fail;
-    dup_cap_h = HANDLE_INVALID;
 
+    init_close(&spawn_dup_h);
+    init_close(&svcmgr_chan_h);   /* bootstrap channel unused — svcmgr is CPtr-only */
     init_close(&svcmgr_proc_h);
-    return svcmgr_chan_h;
+    return svcmgr_ep_h;
 
 fail:
     init_close(&svcmgr_proc_h);
     init_close(&svcmgr_chan_h);
-    if (dup_cap_h != HANDLE_INVALID) init_close(&dup_cap_h);
+    if (spawn_dup_h != HANDLE_INVALID) init_close(&spawn_dup_h);
+    if (svcmgr_ep_h != HANDLE_INVALID) init_close(&svcmgr_ep_h);
     return HANDLE_INVALID;
 }
 
@@ -621,66 +624,10 @@ fail:
  * handle-transfer, send SVCMGR_MSG_LOOKUP, receive SVCMGR_MSG_LOOKUP_REPLY on
  * the read end.  Returns the attached handle on success, HANDLE_INVALID on error.
  */
-/* init_lookup (legacy KChannel reply-pair LOOKUP) retired — Fase 13/Track I.
- * init's only legacy lookups were the kbd service/reply pair; EP discovery
- * (init_lookup_name over svcmgr.ep) stays for vfs.ep. */
-
-/* init_lookup_wait retired — Fase 13/Track I (its callers were the kbd
- * service/reply legacy lookups). init_lookup_name (EP) stays for vfs.ep. */
-
-static handle_id_t init_lookup_name(handle_id_t sm_h, const char *name,
-                                    iris_rights_t rights) {
-    struct KChanMsg msg;
-    handle_id_t base_h = HANDLE_INVALID;
-    handle_id_t recv_h = HANDLE_INVALID;
-    handle_id_t xfer_h = HANDLE_INVALID;
-    handle_id_t result = HANDLE_INVALID;
-    long r;
-    uint32_t i = 0;
-
-    if (!name || !name[0]) return HANDLE_INVALID;
-
-    r = init_sys0(SYS_CHAN_CREATE);
-    if (r < 0) goto fail;
-    base_h = (handle_id_t)r;
-
-    r = init_sys2(SYS_HANDLE_DUP, (long)base_h, (long)RIGHT_READ);
-    if (r < 0) goto fail;
-    recv_h = (handle_id_t)r;
-
-    r = init_sys2(SYS_HANDLE_DUP, (long)base_h, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
-    if (r < 0) goto fail;
-    xfer_h = (handle_id_t)r;
-
-    init_msg_zero(&msg);
-    msg.type = SVCMGR_MSG_LOOKUP_NAME;
-    while (i + 1u < SVCMGR_SERVICE_NAME_CAP && name[i]) {
-        msg.data[SVCMGR_LOOKUP_NAME_OFF_NAME + i] = (uint8_t)name[i];
-        i++;
-    }
-    msg.data[SVCMGR_LOOKUP_NAME_OFF_NAME + i] = '\0';
-    svcmgr_proto_write_u32(&msg.data[SVCMGR_LOOKUP_NAME_OFF_RIGHTS], (uint32_t)rights);
-    msg.data_len = SVCMGR_LOOKUP_NAME_MSG_LEN;
-    msg.attached_handle = xfer_h;
-    msg.attached_rights = RIGHT_WRITE | RIGHT_TRANSFER;
-
-    r = init_sys2(SYS_CHAN_SEND, (long)sm_h, (long)&msg);
-    if (r < 0) goto fail;
-    xfer_h = HANDLE_INVALID;
-
-    init_msg_zero(&msg);
-    r = init_sys2(SYS_CHAN_RECV, (long)recv_h, (long)&msg);
-    if (r < 0) goto fail;
-    if (msg.type != SVCMGR_MSG_LOOKUP_REPLY) goto fail;
-    if ((int32_t)svcmgr_proto_read_u32(&msg.data[SVCMGR_LOOKUP_REPLY_OFF_ERR]) != 0) goto fail;
-    result = msg.attached_handle;
-
-fail:
-    init_close(&base_h);
-    init_close(&recv_h);
-    if (xfer_h != HANDLE_INVALID) init_close(&xfer_h);
-    return result;
-}
+/* Fase 13/Track I: init_lookup / init_lookup_wait / init_lookup_name (the
+ * legacy KChannel SVCMGR_MSG_LOOKUP[_NAME] discovery) are fully retired —
+ * init discovers services via EP_LOOKUP_NAME over svcmgr.ep
+ * (init_ep_lookup_name).  No legacy LOOKUP, no fallback. */
 
 
 /* ── VFS endpoint client (Fase 7.2) ─────────────────────────────────────── */
@@ -695,24 +642,26 @@ static void init_imsg_zero(struct IrisMsg *msg) {
 }
 
 /*
- * Resolve "vfs.ep" through the svcmgr discovery endpoint:
- * EP_CALL(svcmgr_ep, IRIS_SVCMGR_EP_LOOKUP_NAME, "vfs.ep"). The reply carries
- * the endpoint cap (RIGHT_WRITE) via SYS_REPLY cap transfer. Returns
- * HANDLE_INVALID on any failure (caller retries / fails fast).
- */
-static handle_id_t init_vfs_ep_lookup(handle_id_t svcmgr_ep_h) {
-    static const char ep_name[] = VFS_EP_SVC_NAME;
+ * Resolve a service name (e.g. "vfs.ep") through the svcmgr discovery endpoint:
+ * EP_CALL(svcmgr_ep, IRIS_SVCMGR_EP_LOOKUP_NAME, name).  The reply carries the
+ * endpoint cap via SYS_REPLY cap transfer.  Returns HANDLE_INVALID on any
+ * failure (caller retries / fails fast).  Fase 13/Track I: this EP_LOOKUP_NAME
+ * path replaces the retired legacy KChannel LOOKUP_NAME (init_lookup_name). */
+static handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name) {
     struct IrisMsg msg;
+    uint32_t n = 0;
 
-    if (svcmgr_ep_h == HANDLE_INVALID) return HANDLE_INVALID;
-
-    for (uint32_t i = 0; i < (uint32_t)sizeof(ep_name); i++)
-        g_init_ep_buf[i] = (uint8_t)ep_name[i];
+    if (svcmgr_ep_h == HANDLE_INVALID || !name) return HANDLE_INVALID;
+    while (name[n] && n + 1u < (uint32_t)sizeof(g_init_ep_buf)) {
+        g_init_ep_buf[n] = (uint8_t)name[n];
+        n++;
+    }
+    g_init_ep_buf[n] = 0u;
 
     init_imsg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_init_ep_buf;
-    msg.buf_len  = (uint32_t)sizeof(ep_name);  /* includes NUL */
+    msg.buf_len  = n + 1u;  /* includes NUL */
 
     if (init_sys2(SYS_EP_CALL, (long)svcmgr_ep_h, (long)&msg) != IRIS_OK)
         return HANDLE_INVALID;
@@ -913,26 +862,18 @@ void init_main(handle_id_t bootstrap_ch_h) {
      * KChannel — kbd is endpoint/notification-only.  kbd liveness is covered by
      * sh's "[SH] kbd cptr OK" (a kbd.ep PING) and by T034/T035/T044/T058. */
 
-    /* Fase 7.2: the VFS endpoint is the mandatory operational path. Resolve
-     * the svcmgr discovery endpoint once, then look up "vfs.ep" through it
-     * (retrying until VFS has bootstrapped). Fail-fast: no legacy fallback. */
-    {
-        handle_id_t svcmgr_ep_h = init_lookup_name(sm_h, "svcmgr.ep",
-                                                   RIGHT_WRITE);
-        if (svcmgr_ep_h == HANDLE_INVALID) {
-            init_log("[USER] svcmgr.ep lookup FAILED\n");
-            init_exit(4);
-        }
-        for (uint32_t attempt = 0; attempt < INIT_RETRY_LIMIT; attempt++) {
-            vfs_ep_h = init_vfs_ep_lookup(svcmgr_ep_h);
-            if (vfs_ep_h != HANDLE_INVALID) break;
-            init_retry_pause();
-        }
-        init_close(&svcmgr_ep_h);
-        if (vfs_ep_h == HANDLE_INVALID) {
-            init_log("[USER] vfs.ep lookup FAILED\n");
-            init_exit(5);
-        }
+    /* Fase 7.2/13: the VFS endpoint is the mandatory operational path.  sm_h is
+     * svcmgr's discovery endpoint ("svcmgr.ep", owned by init) — look up "vfs.ep"
+     * through it via EP_LOOKUP_NAME (retrying until VFS has bootstrapped).
+     * Fail-fast: no legacy fallback. */
+    for (uint32_t attempt = 0; attempt < INIT_RETRY_LIMIT; attempt++) {
+        vfs_ep_h = init_ep_lookup_name(sm_h, VFS_EP_SVC_NAME);
+        if (vfs_ep_h != HANDLE_INVALID) break;
+        init_retry_pause();
+    }
+    if (vfs_ep_h == HANDLE_INVALID) {
+        init_log("[USER] vfs.ep lookup FAILED\n");
+        init_exit(5);
     }
 
     /* Fase 13 (Track E/F): the legacy KChannel diagnostics + dynamic-registry
