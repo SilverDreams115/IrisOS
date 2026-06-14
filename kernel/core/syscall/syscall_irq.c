@@ -213,7 +213,6 @@ uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /* ── B5: exception handler registration ───────────────────────────── */
 
 uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -240,25 +239,29 @@ uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         target_proc = (struct KProcess *)proc_obj;
     }
 
-    struct KObject *chan_obj;
-    iris_rights_t chan_rights;
+    /* Fase 13 (Track I): the handler is a KNotification (arg1) signalled with
+     * signal_bits (arg2) on fault — not a KChannel.  The handler reads the fault
+     * details via SYS_PROCESS_FAULT_INFO. */
+    struct KObject *notif_obj;
+    iris_rights_t notif_rights;
     iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg1, &chan_obj, &chan_rights);
+                                             (handle_id_t)arg1, &notif_obj, &notif_rights);
     if (r != IRIS_OK) { kobject_release(&target_proc->base); return syscall_err(r); }
-    if (chan_obj->type != KOBJ_CHANNEL) {
+    if (notif_obj->type != KOBJ_NOTIFICATION) {
         kobject_release(&target_proc->base);
-        kobject_release(chan_obj);
+        kobject_release(notif_obj);
         return syscall_err(IRIS_ERR_WRONG_TYPE);
     }
-    if (!rights_check(chan_rights, RIGHT_WRITE)) {
+    if (!rights_check(notif_rights, RIGHT_WRITE)) {
         kobject_release(&target_proc->base);
-        kobject_release(chan_obj);
+        kobject_release(notif_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    r = kprocess_set_exception_handler(target_proc, (struct KChannel *)chan_obj);
+    r = kprocess_set_exception_handler(target_proc,
+                                       (struct KNotification *)notif_obj, arg2);
     kobject_release(&target_proc->base);
-    kobject_release(chan_obj);
+    kobject_release(notif_obj);
     return syscall_err(r);
 }
 

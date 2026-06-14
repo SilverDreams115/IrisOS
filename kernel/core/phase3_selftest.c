@@ -89,7 +89,7 @@ out:
 
 static int phase3_process_selftest(void) {
     struct KProcess *proc = 0;
-    struct KChannel *ch = 0;
+    struct KNotification *xnotif = 0;
     struct KVmo *vmo = 0;
     struct KVmo *large_vmo = 0;
     uint64_t ref_before;
@@ -97,20 +97,20 @@ static int phase3_process_selftest(void) {
     int ok = 0;
 
     proc = kprocess_alloc();
-    ch = kchannel_alloc();
+    xnotif = knotification_alloc();
     vmo = kvmo_create(0x1000ULL);
     large_vmo = kvmo_create(0x200000ULL);
-    if (!proc || !ch || !vmo || !large_vmo) goto out;
+    if (!proc || !xnotif || !vmo || !large_vmo) goto out;
     if (large_vmo->page_capacity < 512u) goto out;
 
-    /* Exception channel: set twice — second call must be idempotent. */
-    ref_before = atomic_load_explicit(&ch->base.refcount, memory_order_relaxed);
-    active_before = atomic_load_explicit(&ch->base.active_refs, memory_order_relaxed);
-    if (kprocess_set_exception_handler(proc, ch) != IRIS_OK) goto out;
-    if (kprocess_set_exception_handler(proc, ch) != IRIS_OK) goto out;
-    if (proc->exception_chan != ch) goto out;
-    if (atomic_load_explicit(&ch->base.refcount, memory_order_relaxed) != ref_before + 1u) goto out;
-    if (atomic_load_explicit(&ch->base.active_refs, memory_order_relaxed) != active_before + 1u) goto out;
+    /* Exception handler notification: set twice — idempotent (Track I). */
+    ref_before = atomic_load_explicit(&xnotif->base.refcount, memory_order_relaxed);
+    active_before = atomic_load_explicit(&xnotif->base.active_refs, memory_order_relaxed);
+    if (kprocess_set_exception_handler(proc, xnotif, 1u) != IRIS_OK) goto out;
+    if (kprocess_set_exception_handler(proc, xnotif, 1u) != IRIS_OK) goto out;
+    if (proc->exception_notif != xnotif) goto out;
+    if (atomic_load_explicit(&xnotif->base.refcount, memory_order_relaxed) != ref_before + 1u) goto out;
+    if (atomic_load_explicit(&xnotif->base.active_refs, memory_order_relaxed) != active_before + 1u) goto out;
 
     proc->cr3 = paging_create_user_space();
     if (!proc->cr3) goto out;
@@ -119,13 +119,13 @@ static int phase3_process_selftest(void) {
     if (vmo->pages[0] != 0) goto out;
     if (large_vmo->pages[511] != 0) goto out;
 
-    /* Teardown must clear exception channel and restore refcounts.
+    /* Teardown must clear exception notification and restore refcounts.
      * KVSpace.mappings (dynamic linked list) is cleaned up by
      * kvspace_invalidate called from kprocess_teardown. */
     kprocess_teardown(proc, 0);
-    if (proc->exception_chan != 0) goto out;
-    if (atomic_load_explicit(&ch->base.refcount, memory_order_relaxed) != ref_before) goto out;
-    if (atomic_load_explicit(&ch->base.active_refs, memory_order_relaxed) != active_before) goto out;
+    if (proc->exception_notif != 0) goto out;
+    if (atomic_load_explicit(&xnotif->base.refcount, memory_order_relaxed) != ref_before) goto out;
+    if (atomic_load_explicit(&xnotif->base.active_refs, memory_order_relaxed) != active_before) goto out;
 
     ok = 1;
 out:
@@ -134,7 +134,7 @@ out:
         kprocess_reap_address_space(proc);
         kprocess_free(proc);
     }
-    if (ch) kchannel_free(ch);
+    if (xnotif) knotification_free(xnotif);
     if (vmo) kvmo_free(vmo);
     if (large_vmo) kvmo_free(large_vmo);
     return ok;

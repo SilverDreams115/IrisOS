@@ -72,9 +72,18 @@ struct KProcess {
      * tracked in KVSpace.mappings; kvspace_invalidate handles teardown. */
     HandleTable     handle_table;/* process-scoped handles/capabilities */
 
-    /* Exception handler channel: if non-NULL, receives a FAULT_MSG_NOTIFY
-     * message before the faulting task is killed.  Retained by the process. */
-    struct KChannel *exception_chan;
+    /* Exception handler (Fase 13/Track I: KNotification, no longer a KChannel).
+     * If exception_notif is non-NULL, the kernel records the fault details in
+     * fault_* and signals exception_signal_bits on it before the faulting task
+     * is killed; the handler reads the details via SYS_PROCESS_FAULT_INFO. */
+    struct KNotification *exception_notif;
+    uint64_t exception_signal_bits;
+    uint32_t fault_vector;
+    uint32_t fault_task_id;
+    uint64_t fault_rip;
+    uint32_t fault_error;
+    uint64_t fault_cr2;
+    uint8_t  fault_valid;
     uint32_t owned_channels;
     uint32_t owned_notifications;
     uint32_t owned_vmos;
@@ -118,7 +127,9 @@ iris_error_t     kprocess_quota_acquire_page(struct KProcess *p);
 void             kprocess_quota_release_page(struct KProcess *p);
 iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KNotification *notif,
                                      uint64_t signal_bits);
-iris_error_t     kprocess_set_exception_handler(struct KProcess *p, struct KChannel *ch);
+iris_error_t     kprocess_set_exception_handler(struct KProcess *p,
+                                                 struct KNotification *notif,
+                                                 uint64_t signal_bits);
 int              kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
 /* Fase 6.2: Bootstrap frame tracking.

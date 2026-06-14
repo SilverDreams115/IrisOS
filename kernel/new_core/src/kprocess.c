@@ -52,12 +52,12 @@ static void kprocess_quota_release(uint32_t *counter, struct KProcess *p) {
 }
 
 static void kprocess_clear_exception_chan(struct KProcess *p) {
-    struct KChannel *old = 0;
+    struct KNotification *old = 0;
     if (!p) return;
 
     spinlock_lock(&p->base.lock);
-    old = p->exception_chan;
-    p->exception_chan = 0;
+    old = p->exception_notif;
+    p->exception_notif = 0;
     spinlock_unlock(&p->base.lock);
 
     if (!old) return;
@@ -243,29 +243,26 @@ iris_error_t kprocess_watch_exit(struct KProcess *p, struct KNotification *notif
     return IRIS_OK;
 }
 
-iris_error_t kprocess_set_exception_handler(struct KProcess *p, struct KChannel *ch) {
-    struct KChannel *old;
-    if (!p || !ch) return IRIS_ERR_INVALID_ARG;
+iris_error_t kprocess_set_exception_handler(struct KProcess *p,
+                                            struct KNotification *notif,
+                                            uint64_t signal_bits) {
+    struct KNotification *old;
+    if (!p || !notif || signal_bits == 0) return IRIS_ERR_INVALID_ARG;
+
+    kobject_retain(&notif->base);
+    kobject_active_retain(&notif->base);
 
     spinlock_lock(&p->base.lock);
-    if (p->exception_chan == ch) {
+    old = (p->exception_notif == notif) ? 0 : p->exception_notif;
+    if (p->exception_notif == notif) {
+        /* already set: drop the extra ref we took */
         spinlock_unlock(&p->base.lock);
+        kobject_active_release(&notif->base);
+        kobject_release(&notif->base);
         return IRIS_OK;
     }
-    spinlock_unlock(&p->base.lock);
-
-    kobject_retain(&ch->base);
-    kobject_active_retain(&ch->base);
-
-    spinlock_lock(&p->base.lock);
-    if (p->exception_chan == ch) {
-        spinlock_unlock(&p->base.lock);
-        kobject_active_release(&ch->base);
-        kobject_release(&ch->base);
-        return IRIS_OK;
-    }
-    old = p->exception_chan;
-    p->exception_chan = ch;
+    p->exception_notif = notif;
+    p->exception_signal_bits = signal_bits;
     spinlock_unlock(&p->base.lock);
 
     if (old) {
@@ -277,41 +274,34 @@ iris_error_t kprocess_set_exception_handler(struct KProcess *p, struct KChannel 
 
 int kprocess_notify_fault(struct task *t, uint64_t vector,
                            uint64_t error_code, uint64_t rip, uint64_t cr2) {
-    struct KChanMsg msg;
     struct KProcess *p;
-    struct KChannel *ch;
-    int i;
+    struct KNotification *notif;
+    uint64_t bits;
 
     if (!t || !t->process) return 0;
     p = t->process;
 
+    /* Fase 13 (Track I): record the fault details in the KProcess and signal the
+     * handler's KNotification — the handler reads the details via
+     * SYS_PROCESS_FAULT_INFO and resumes/kills via SYS_EXCEPTION_RESUME.  No
+     * KChannel. */
     spinlock_lock(&p->base.lock);
-    ch = p->exception_chan;
-    if (ch) kobject_retain(&ch->base);
+    notif = p->exception_notif;
+    bits  = p->exception_signal_bits;
+    if (notif) {
+        p->fault_vector  = (uint32_t)vector;
+        p->fault_task_id = t->id;
+        p->fault_rip     = rip;
+        p->fault_error   = (uint32_t)error_code;
+        p->fault_cr2     = cr2;
+        p->fault_valid   = 1;
+        kobject_retain(&notif->base);
+    }
     spinlock_unlock(&p->base.lock);
-    if (!ch) return 0;
+    if (!notif) return 0;
 
-    for (i = 0; i < (int)sizeof(msg); i++) ((uint8_t *)&msg)[i] = 0;
-    msg.type = FAULT_MSG_NOTIFY;
-    msg.data[FAULT_OFF_VECTOR + 0] = (uint8_t)(vector & 0xFFu);
-    msg.data[FAULT_OFF_VECTOR + 1] = (uint8_t)((vector >> 8) & 0xFFu);
-    msg.data[FAULT_OFF_VECTOR + 2] = (uint8_t)((vector >> 16) & 0xFFu);
-    msg.data[FAULT_OFF_VECTOR + 3] = (uint8_t)((vector >> 24) & 0xFFu);
-    msg.data[FAULT_OFF_TASK_ID + 0] = (uint8_t)(t->id & 0xFFu);
-    msg.data[FAULT_OFF_TASK_ID + 1] = (uint8_t)((t->id >> 8) & 0xFFu);
-    msg.data[FAULT_OFF_TASK_ID + 2] = (uint8_t)((t->id >> 16) & 0xFFu);
-    msg.data[FAULT_OFF_TASK_ID + 3] = (uint8_t)((t->id >> 24) & 0xFFu);
-    for (i = 0; i < 8; i++) msg.data[FAULT_OFF_RIP + i] = (uint8_t)((rip >> (i * 8)) & 0xFFu);
-    msg.data[FAULT_OFF_ERROR + 0] = (uint8_t)(error_code & 0xFFu);
-    msg.data[FAULT_OFF_ERROR + 1] = (uint8_t)((error_code >> 8) & 0xFFu);
-    msg.data[FAULT_OFF_ERROR + 2] = (uint8_t)((error_code >> 16) & 0xFFu);
-    msg.data[FAULT_OFF_ERROR + 3] = (uint8_t)((error_code >> 24) & 0xFFu);
-    for (i = 0; i < 8; i++) msg.data[FAULT_OFF_CR2 + i] = (uint8_t)((cr2 >> (i * 8)) & 0xFFu);
-    msg.data_len = FAULT_MSG_LEN;
-    msg.attached_handle = HANDLE_INVALID;
-    msg.attached_rights = RIGHT_NONE;
-    (void)kchannel_send(ch, &msg);
-    kobject_release(&ch->base);
+    knotification_signal(notif, bits);
+    kobject_release(&notif->base);
     return 1;
 }
 

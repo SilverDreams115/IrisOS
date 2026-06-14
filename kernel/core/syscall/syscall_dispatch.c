@@ -97,6 +97,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_SCHED_INFO:          return sys_sched_info(arg0, arg1, arg2);
         case SYS_CLOCK_NANOSLEEP:     return sys_clock_nanosleep(arg0, arg1, arg2);
         case SYS_PROCESS_EXIT_CODE:   return sys_process_exit_code(arg0, arg1, arg2);
+        case SYS_PROCESS_FAULT_INFO:  return sys_process_fault_info(arg0, arg1, arg2);
         /* SYS_WAIT_ANY_TIMEOUT(72) — retired Fase 13/Track G (zero callers), fall to default */
         case SYS_ENDPOINT_CREATE:     return sys_endpoint_create(arg0, arg1, arg2);
         case SYS_EP_SEND:             return sys_ep_send(arg0, arg1, arg2);

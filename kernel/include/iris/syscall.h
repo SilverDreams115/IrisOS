@@ -434,17 +434,26 @@
 /*
  * User-level exception handler registration — modern/conforming (iris_error_t).
  *
- * SYS_EXCEPTION_HANDLER(proc_h, chan_h) → 0 or negative iris_error_t
+ * SYS_EXCEPTION_HANDLER(proc_h, notify_h, signal_bits) → 0 or negative iris_error_t
  *   proc_h: KOBJ_PROCESS with RIGHT_MANAGE, or HANDLE_INVALID for own process.
- *   chan_h: KOBJ_CHANNEL with RIGHT_WRITE; receives FAULT_MSG_NOTIFY messages.
- *   Registers chan_h as the exception handler channel for the process.
- *   Replaces any previously registered handler.
- *   On a ring-3 hardware exception the kernel sends a FAULT_MSG_NOTIFY message
- *   (see iris/fault_proto.h) and suspends the faulting task in TASK_BLOCKED_FAULT.
- *   The handler must call SYS_EXCEPTION_RESUME to resume or kill the faulting task.
- *   If no handler is registered, faults kill the task silently (current behaviour).
+ *   notify_h: KOBJ_NOTIFICATION with RIGHT_WRITE.  signal_bits must be non-zero.
+ *   Fase 13/Track I: on a ring-3 hardware exception the kernel records the fault
+ *   details in the process and signals signal_bits on notify_h (no KChannel),
+ *   then suspends the faulting task in TASK_BLOCKED_FAULT.  The handler reads the
+ *   details with SYS_PROCESS_FAULT_INFO and resumes/kills via SYS_EXCEPTION_RESUME.
+ *   If no handler is registered, faults kill the task silently.
  */
 #define SYS_EXCEPTION_HANDLER  47
+
+/*
+ * SYS_PROCESS_FAULT_INFO(proc_h, out_uptr) → 0 or negative iris_error_t
+ *   proc_h: KOBJ_PROCESS with RIGHT_READ, or HANDLE_INVALID for own process.
+ *   out_uptr: 32-byte user buffer filled per iris/fault_proto.h
+ *             (FAULT_OFF_VECTOR/TASK_ID/RIP/ERROR/CR2).
+ *   Returns IRIS_ERR_WOULD_BLOCK if no fault is pending.  Pairs with the
+ *   exception-handler KNotification (SYS_EXCEPTION_HANDLER).
+ */
+#define SYS_PROCESS_FAULT_INFO 105
 
 /*
  * Exception resume — modern/conforming (iris_error_t).

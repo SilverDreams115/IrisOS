@@ -1,4 +1,5 @@
 #include "syscall_priv.h"
+#include <iris/fault_proto.h>
 
 uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
@@ -373,4 +374,66 @@ uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     uint32_t code = proc->exit_code;
     kobject_release(obj);
     return syscall_ok_u64((uint64_t)code);
+}
+
+
+/*
+ * sys_process_fault_info(proc_handle, out_uptr) → 0 or iris_error_t
+ *
+ * Fase 13 (Track I): reads the last fault recorded for proc_handle (or self when
+ * proc_handle == HANDLE_INVALID) into a 32-byte user buffer laid out per
+ * iris/fault_proto.h (FAULT_OFF_VECTOR/TASK_ID/RIP/ERROR/CR2).  The exception
+ * handler calls this after its KNotification fires.  Returns IRIS_ERR_WOULD_BLOCK
+ * if no fault is pending.  Requires RIGHT_READ on a non-self proc_handle.
+ */
+uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!user_range_writable(arg1, FAULT_MSG_LEN))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KProcess *proc;
+    struct KObject  *obj = 0;
+    if ((handle_id_t)arg0 == HANDLE_INVALID) {
+        proc = t->process;
+        kobject_retain(&proc->base);
+    } else {
+        iris_rights_t rights;
+        iris_error_t r = handle_table_get_object(&t->process->handle_table,
+                                                 (handle_id_t)arg0, &obj, &rights);
+        if (r != IRIS_OK) return syscall_err(r);
+        if (obj->type != KOBJ_PROCESS) {
+            kobject_release(obj);
+            return syscall_err(IRIS_ERR_WRONG_TYPE);
+        }
+        if (!rights_check(rights, RIGHT_READ)) {
+            kobject_release(obj);
+            return syscall_err(IRIS_ERR_ACCESS_DENIED);
+        }
+        proc = (struct KProcess *)obj;
+    }
+
+    uint8_t buf[FAULT_MSG_LEN];
+    for (uint32_t i = 0; i < FAULT_MSG_LEN; i++) buf[i] = 0;
+
+    spinlock_lock(&proc->base.lock);
+    int valid = proc->fault_valid;
+    uint32_t vector = proc->fault_vector, task_id = proc->fault_task_id,
+             error = proc->fault_error;
+    uint64_t rip = proc->fault_rip, cr2 = proc->fault_cr2;
+    spinlock_unlock(&proc->base.lock);
+    kobject_release(&proc->base);
+
+    if (!valid) return syscall_err(IRIS_ERR_WOULD_BLOCK);
+
+    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_VECTOR + i]  = (uint8_t)(vector >> (i * 8));
+    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_TASK_ID + i] = (uint8_t)(task_id >> (i * 8));
+    for (uint32_t i = 0; i < 8u; i++) buf[FAULT_OFF_RIP + i]     = (uint8_t)(rip >> (i * 8));
+    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_ERROR + i]   = (uint8_t)(error >> (i * 8));
+    for (uint32_t i = 0; i < 8u; i++) buf[FAULT_OFF_CR2 + i]     = (uint8_t)(cr2 >> (i * 8));
+
+    if (!copy_to_user_checked(arg1, buf, FAULT_MSG_LEN))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    return syscall_ok_u64(IRIS_OK);
 }

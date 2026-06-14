@@ -417,10 +417,9 @@ long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
         if (r < 0) goto out;
         proc_h = (handle_id_t)r;
 
-        /* 13. Create IPC bootstrap channel (parent end = ch_h). */
-        r = sl_sys0(SYS_CHAN_CREATE);
-        if (r < 0) goto out;
-        ch_h = (handle_id_t)r;
+        /* Fase 13 (Track I): the per-child bootstrap KChannel is retired — every
+         * cap is a pre-start CSpace mint, so no channel is created or inserted
+         * and the child starts with RBX = 0 (no bootstrap handle). */
 
         /* 14. Create user stack sparse VMO and map into child. */
         r = sl_sys1(SYS_VMO_CREATE, (long)USER_STACK_SIZE);
@@ -459,14 +458,7 @@ long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
             sl_close(seg_vmo[i]); seg_vmo[i] = HANDLE_INVALID;
         }
 
-        /* 18. Insert the channel handle into the child's handle table. */
-        r = sl_sys4(SYS_HANDLE_INSERT,
-                    (long)proc_h, (long)ch_h,
-                    (long)(RIGHT_READ | RIGHT_WRITE |
-                           RIGHT_DUPLICATE | RIGHT_TRANSFER),
-                    0);
-        if (r < 0) goto out;
-        handle_id_t child_ch_id = (handle_id_t)r;
+        /* 18. (Track I) No bootstrap channel to insert — the child gets RBX = 0. */
 
         /* 18b (Fase 8). Mint the well-known CSpace slots BEFORE the first
          * thread starts: the child sees its slots populated from its first
@@ -484,17 +476,17 @@ long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
         }
 
         /* 19. Start first thread: entry at bias+e_entry, RSP = stack top - 8,
-         *     RBX = child_ch_id (bootstrap convention from entry.S). */
+         *     RBX = 0 (Track I: no bootstrap channel; every cap is a CSpace mint). */
         r = sl_sys4(SYS_THREAD_START,
                     (long)proc_h,
                     (long)(bias + elf_entry),
                     (long)(USER_STACK_TOP - 8ULL),
-                    (long)child_ch_id);
+                    0);
         if (r < 0) goto out;
     }
 
     *out_proc_h = proc_h;
-    *out_chan_h  = ch_h;
+    *out_chan_h  = HANDLE_INVALID;
     return 0;
 
 out:
