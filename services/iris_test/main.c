@@ -2529,6 +2529,49 @@ static void test_t077(void) {
         it_fail("T077", "blocked child kill cleanup");
 }
 
+/* ── T078: server death → client recovery (reply-cap cleanup cross-process) ──
+ * The parent is the CLIENT: it SYS_EP_CALLs the child's command endpoint.  The
+ * child receives the call (obtaining the one-shot reply cap) and then exits
+ * WITHOUT replying.  The child's teardown drops the reply cap, whose close
+ * callback must wake this blocked call with IRIS_ERR_CLOSED — proving a client
+ * cannot be stranded when its server dies mid-request. */
+static void test_t078(void) {
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { it_fail("T078", "ep create"); return; }
+    handle_id_t cmd_ep_h = (handle_id_t)ep;
+
+    handle_id_t proc_h = HANDLE_INVALID;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+        it_close(&cmd_ep_h);
+        it_fail("T078", "spawn"); return;
+    }
+
+    /* Client call: rendezvous with the child's recv, then the child exits
+     * unanswered.  EP_CALL must return CLOSED, not hang. */
+    uint8_t reply_buf[64];
+    for (uint32_t i = 0; i < 64; i++) reply_buf[i] = 0;
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = 0x78;
+    msg.buf_uptr = (uint64_t)(uintptr_t)reply_buf;
+    long r = it_sys2(SYS_EP_CALL, (long)cmd_ep_h, (long)&msg);
+
+    /* Confirm the child actually died (bounded). */
+    int dead = 0;
+    for (int i = 0; i < 200 && !dead; i++) {
+        if (it_sys1(SYS_PROCESS_STATUS, (long)proc_h) == 0) dead = 1;
+        else it_sys1(SYS_SLEEP, 1);
+    }
+
+    it_close(&proc_h);
+    it_close(&cmd_ep_h);
+
+    if (r == (long)IRIS_ERR_CLOSED && dead)
+        it_pass("T078");
+    else
+        it_fail("T078", "server death client recovery");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2636,6 +2679,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t074();
     test_t075();
     test_t077();
+    test_t078();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
