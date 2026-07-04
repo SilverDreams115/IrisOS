@@ -232,10 +232,10 @@ uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject  *obj;
     iris_rights_t    rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0,
-                                             &obj, &rights);
+    /* A1 Increment 1b: dual resolver — the VMO may be a CPtr slot or a handle. */
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_VMO, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (obj->type != KOBJ_VMO) { kobject_release(obj); return syscall_err(IRIS_ERR_WRONG_TYPE); }
     if (!rights_check(rights, RIGHT_READ)) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -356,13 +356,11 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
 
     struct KObject *vmo_obj;
     iris_rights_t   vmo_rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg0, &vmo_obj, &vmo_rights);
+    /* A1 Increment 1b: dual resolver on the VMO argument only — the target
+     * process stays handle-only until the Process family migrates. */
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_VMO, &vmo_obj, &vmo_rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (vmo_obj->type != KOBJ_VMO) {
-        kobject_release(vmo_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
 
     struct KObject *proc_obj;
     iris_rights_t   proc_rights;
@@ -518,13 +516,11 @@ uint64_t sys_vmo_share(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *vmo_obj;
     iris_rights_t vmo_rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg0, &vmo_obj, &vmo_rights);
+    /* A1 Increment 1b: dual resolver on the source VMO only — the destination
+     * process stays handle-only until the Process family migrates. */
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_VMO, &vmo_obj, &vmo_rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (vmo_obj->type != KOBJ_VMO) {
-        kobject_release(vmo_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(vmo_rights, RIGHT_READ | RIGHT_DUPLICATE)) {
         kobject_release(vmo_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);

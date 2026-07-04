@@ -2722,6 +2722,97 @@ static void test_t079(void) {
     if (ok) it_pass("T079"); else it_fail("T079", "vmo map by cptr");
 }
 
+/* ── T080: VMO remaining syscalls by CPtr (A1 Increment 1b) ─────────────────
+ * SYS_VMO_SIZE / SYS_VMO_SHARE / SYS_VMO_MAP_INTO now resolve their VMO
+ * argument through the dual resolver (the target/destination process stays
+ * handle-only).  Reuses the T079 fixture: the self-proc cap at
+ * IRIS_CPTR_TEST_PROC mints a runtime VMO into own slots — 19 (READ|WRITE|
+ * DUPLICATE) and 20 (READ only) — and the lifecycle_probe child is the
+ * SHARE/MAP_INTO target.  Proofs per syscall:
+ *   SIZE:     CPtr returns the real size; empty slot / wrong type fail;
+ *             raw handle still works.
+ *   SHARE:    CPtr shares into the child; READ-only slot → ACCESS_DENIED
+ *             (needs READ|DUPLICATE); wrong type fails; handle still works.
+ *   MAP_INTO: CPtr maps into the child; re-mapping the same VA → BUSY proves
+ *             PTEs were really installed; READ-only slot + writable flags →
+ *             ACCESS_DENIED; empty slot / wrong type fail.  (Handle-path
+ *             MAP_INTO stays covered by T076.) */
+
+#define T080_SLOT_RWD   19L               /* dynamic slot: VMO, READ|WRITE|DUP */
+#define T080_SLOT_RO    20L               /* dynamic slot: VMO, READ only      */
+#define T080_VMO_SIZE   8192U             /* 2 pages: distinct from other tests */
+
+static void test_t080(void) {
+    long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
+    if (selfp < 0) { it_fail("T080", "self proc cptr"); return; }
+    handle_id_t selfp_h = (handle_id_t)selfp;
+
+    long vmo = it_sys1(SYS_VMO_CREATE, T080_VMO_SIZE);
+    if (vmo < 0) { it_close(&selfp_h); it_fail("T080", "vmo create"); return; }
+    handle_id_t vmo_h = (handle_id_t)vmo;
+
+    int ok = 1;
+
+    /* Mint the VMO into our own CSpace: slot 19 rw+dup, slot 20 read-only. */
+    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, T080_SLOT_RWD, vmo,
+                (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) ok = 0;
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, T080_SLOT_RO,
+                      vmo, (long)RIGHT_READ) != 0) ok = 0;
+
+    /* ── SYS_VMO_SIZE ── */
+    if (ok && it_sys1(SYS_VMO_SIZE, T080_SLOT_RWD) != (long)T080_VMO_SIZE)
+        ok = 0;
+    if (ok && it_sys1(SYS_VMO_SIZE, T079_SLOT_EMPTY) >= 0) ok = 0;
+    if (ok && it_sys1(SYS_VMO_SIZE, (long)IRIS_CPTR_TEST_FIX_A) !=
+              (long)IRIS_ERR_WRONG_TYPE) ok = 0;
+    if (ok && it_sys1(SYS_VMO_SIZE, vmo) != (long)T080_VMO_SIZE) ok = 0;
+
+    /* SHARE/MAP_INTO target: a lifecycle_probe child (blocks in EP_RECV). */
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { it_close(&vmo_h); it_close(&selfp_h);
+                  it_fail("T080", "ep create"); return; }
+    handle_id_t cmd_ep_h = (handle_id_t)ep;
+    handle_id_t proc_h   = HANDLE_INVALID;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+        it_close(&cmd_ep_h); it_close(&vmo_h); it_close(&selfp_h);
+        it_fail("T080", "spawn"); return;
+    }
+
+    /* ── SYS_VMO_SHARE (vmo by CPtr; dest process stays a handle) ── */
+    if (ok && it_sys3(SYS_VMO_SHARE, T080_SLOT_RWD, (long)proc_h,
+                      (long)(RIGHT_READ | RIGHT_WRITE)) < 0) ok = 0;
+    if (ok && it_sys3(SYS_VMO_SHARE, T080_SLOT_RO, (long)proc_h,
+                      (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+    if (ok && it_sys3(SYS_VMO_SHARE, (long)IRIS_CPTR_TEST_FIX_A, (long)proc_h,
+                      (long)RIGHT_READ) != (long)IRIS_ERR_WRONG_TYPE) ok = 0;
+    if (ok && it_sys3(SYS_VMO_SHARE, vmo, (long)proc_h,
+                      (long)RIGHT_READ) < 0) ok = 0;
+
+    /* ── SYS_VMO_MAP_INTO (vmo by CPtr; target process stays a handle) ── */
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RWD, (long)proc_h,
+                      (long)LP_MAP_VA, 1) != 0) ok = 0;
+    /* Same VA again → BUSY: the CPtr mapping really installed PTEs. */
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RWD, (long)proc_h,
+                      (long)LP_MAP_VA, 1) != (long)IRIS_ERR_BUSY) ok = 0;
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RO, (long)proc_h,
+                      (long)(LP_MAP_VA + 0x10000ULL), 1) !=
+              (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T079_SLOT_EMPTY, (long)proc_h,
+                      (long)(LP_MAP_VA + 0x10000ULL), 1) >= 0) ok = 0;
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, (long)IRIS_CPTR_TEST_FIX_A, (long)proc_h,
+                      (long)(LP_MAP_VA + 0x10000ULL), 1) !=
+              (long)IRIS_ERR_WRONG_TYPE) ok = 0;
+
+    /* Cleanup: kill the child (auto-unmaps, T076-proven), close everything. */
+    (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
+    it_close(&proc_h);
+    it_close(&cmd_ep_h);
+    it_close(&vmo_h);
+    it_close(&selfp_h);
+
+    if (ok) it_pass("T080"); else it_fail("T080", "vmo family by cptr");
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -2820,6 +2911,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t077();
     test_t078();
     test_t079();
+    test_t080();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
