@@ -19,8 +19,9 @@
  *
  *   Kernel-owned state (this header):
  *     Queried via SYS_DIAG_SNAPSHOT → iris_diag_snapshot written to user buffer.
- *     Includes: task count, KProcess/KChannel/KNotification/KVmo live/max
- *     pressure, IRQ routes, and scheduler ticks.
+ *     Includes: task count, KProcess/KNotification/KVmo live/max pressure,
+ *     IRQ routes, and scheduler ticks.  (The KChannel slots are retired,
+ *     Fase 13/Track G — kept at their offsets, always 0.)
  *
  *   Service-owned state (per-service STATUS channels):
  *     svcmgr:  SVCMGR_MSG_STATUS → SVCMGR_MSG_STATUS_REPLY  (svcmgr_proto.h)
@@ -40,8 +41,9 @@
  *   off 28: uint32_t irq_routes_max     IRQ_ROUTE_MAX ceiling
  *   off 32: uint32_t ticks_lo        scheduler_ticks low  32 bits
  *   off 36: uint32_t ticks_hi        scheduler_ticks high 32 bits
- *   off 40: uint32_t kchan_live      live KChannel objects
- *   off 44: uint32_t kchan_max       KCHANNEL_POOL_SIZE ceiling
+ *   off 40: uint32_t kchan_live      RETIRED (KChannel removed, Fase 13/Track G)
+ *                                    — reserved slot, always 0
+ *   off 44: uint32_t kchan_max       RETIRED — reserved slot, always 0
  *   off 48: uint32_t knotif_live     live KNotification objects
  *   off 52: uint32_t knotif_max      0 => no static allocator ceiling
  *   off 56: uint32_t kvmo_live       live KVmo objects
@@ -52,9 +54,11 @@
  *   Clients must validate magic and version before reading other fields.
  *
  * ── Phase status ─────────────────────────────────────────────────────────────
- *   Phase 12/current: diagnostics expose object pressure for channels,
- *   notifications, and VMOs in addition to task/process/IRQ counts. A max
- *   field of 0 means the object no longer uses a static allocator ceiling.
+ *   Phase 12/current: diagnostics expose object pressure for notifications and
+ *   VMOs in addition to task/process/IRQ counts. A max field of 0 means the
+ *   object no longer uses a static allocator ceiling.  The kchan_live/kchan_max
+ *   slots are retired (KChannel removed, Fase 13/Track G) but kept at their
+ *   original offsets — always 0 — so the snapshot byte layout stays stable.
  */
 
 /* Integrity marker and version */
@@ -103,8 +107,8 @@ struct iris_diag_snapshot {
     uint32_t irq_routes_max;      /* IRQ_ROUTE_MAX ceiling                     */
     uint32_t ticks_lo;            /* scheduler_ticks low  32 bits              */
     uint32_t ticks_hi;            /* scheduler_ticks high 32 bits              */
-    uint32_t kchan_live;          /* live KChannel objects                     */
-    uint32_t kchan_max;           /* KCHANNEL_POOL_SIZE ceiling                */
+    uint32_t kchan_live;          /* RETIRED (KChannel removed) — reserved, 0   */
+    uint32_t kchan_max;           /* RETIRED — reserved, 0                      */
     uint32_t knotif_live;         /* live KNotification objects                */
     uint32_t knotif_max;          /* 0 => no static allocator ceiling          */
     uint32_t kvmo_live;           /* live KVmo objects                         */

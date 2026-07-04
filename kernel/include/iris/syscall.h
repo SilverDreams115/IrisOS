@@ -30,13 +30,15 @@
 
 /* Syscall numbers */
 /* SYS_WRITE 0 permanently retired in Phase 30 — returns IRIS_ERR_NOT_SUPPORTED.
- * Serial output is now handled by the ring-3 console service over KChannel. */
+ * Serial output is now handled by the ring-3 console service over its
+ * KEndpoint ("console.ep", iris/console_ep_proto.h). */
 #define SYS_WRITE   0
 #define SYS_EXIT    1   /* modern/conforming: success path does not return */
 #define SYS_GETPID  2   /* modern/conforming: returns pid >= 0 */
 #define SYS_YIELD   3   /* modern/conforming: returns 0 on success */
 /* Numbers 4, 5, 6 are permanently reserved; the dispatch returns
- * IRIS_ERR_NOT_SUPPORTED.  File I/O uses the VFS service over KChannel. */
+ * IRIS_ERR_NOT_SUPPORTED.  File I/O uses the VFS service over its KEndpoint
+ * ("vfs.ep", iris/vfs_ep_proto.h). */
 #define SYS_OPEN    4
 #define SYS_READ    5
 #define SYS_CLOSE   6
@@ -376,7 +378,7 @@
                                    *     Owns the route; kprocess_teardown auto-clears it. */
 
 /* Numbers 24, 25 permanently reserved; dispatch returns IRIS_ERR_NOT_SUPPORTED.
- * Service discovery uses svcmgr IPC over KChannel. */
+ * Service discovery uses svcmgr IPC over its KEndpoint (endpoint_proto.h). */
 #define SYS_NS_REGISTER     24
 #define SYS_NS_LOOKUP       25
 
@@ -469,7 +471,7 @@
  * SYS_IRQ_ACK(irqcap_h) → 0 or negative iris_error_t
  *   irqcap_h: KOBJ_IRQ_CAP with RIGHT_ROUTE.
  *   Unmasks the hardware IRQ line recorded in irqcap_h, re-enabling delivery
- *   to the registered KChannel.  Must be called after consuming the IRQ
+ *   to the registered KNotification.  Must be called after consuming the IRQ
  *   (reading hardware registers) to allow subsequent interrupts to fire.
  *
  *   seL4-style deferred ACK contract:

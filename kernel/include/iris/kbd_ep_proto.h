@@ -35,9 +35,10 @@
  *
  * IRIS_EP_OP_PING (0xFF01, endpoint_proto.h) is also served: reply OK.
  *
- * Liveness: kbd never blocks on event delivery. IRQ scancodes, legacy
- * KChannel requests (HELLO/STATUS, iris/kbd_proto.h) and endpoint requests
- * are multiplexed in one loop (EP drain + SYS_CHAN_RECV_TIMEOUT).
+ * Liveness: kbd never blocks on event delivery. IRQ scancodes (KNotification)
+ * and endpoint requests are multiplexed in one loop (EP drain + notification
+ * poll).  The legacy KChannel HELLO/STATUS path (iris/kbd_proto.h) is retired
+ * and no longer part of this loop (Fase 13/Track G).
  *
  * Discovery: svcmgr publishes the endpoint as "kbd.ep"
  * (IRIS_SVCMGR_EP_LOOKUP_NAME); the recv side reaches kbd at bootstrap via

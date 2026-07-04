@@ -1,9 +1,10 @@
 /*
  * main.c — init service (ring-3 ELF, phase 22+).
  *
- * Receives a private bootstrap channel handle in %rdi (set by entry.S from %rbx).
- * The ring-3 userboot loader delivers the spawn/bootstrap capability over that
- * channel before `init` starts the rest of the healthy path.
+ * Receives a legacy bootstrap handle in %rdi (set by entry.S from %rbx).  That
+ * handle is now vestigial — init closes it immediately.  The real spawn/bootstrap
+ * capability arrives as a pre-start CPtr mint (IRIS_CPTR_SPAWN_CAP) in init's
+ * CSpace, resolved via SYS_CSPACE_RESOLVE — no KChannel is involved.
  *
  * Fase 13/Track I: init no longer talks to kbd over a legacy KChannel — kbd is
  * endpoint-only and sh is the keystroke consumer (kbd.ep pull).  init validates
@@ -282,7 +283,7 @@ static handle_id_t init_recv_spawn_cap(handle_id_t bootstrap_ch_h) {
     return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
 }
 
-/* ── Channel helper: send msg, recv reply (SYS_CHAN_SEND + SYS_CHAN_RECV) ── */
+/* ── Legacy channel send/recv helper (retired) ──────────────────────────── */
 
 /* init_chan_send_recv retired — Fase 13/Track I (kbd HELLO/STATUS was its
  * only caller; kbd is endpoint-only now). */

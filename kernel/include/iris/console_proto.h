@@ -2,32 +2,22 @@
 #define IRIS_CONSOLE_PROTO_H
 
 /*
- * Ring-3 serial console protocol (LEGACY KChannel path).
+ * Ring-3 serial console protocol — RETIRED (historical reference only).
  *
- * Since Fase 7.3 the console is endpoint-first: endpoint clients (init, sh,
- * vfs, iris_test) use CONSOLE_EP_OP_WRITE/SYNC over "console.ep"
- * (iris/console_ep_proto.h).  This KChannel protocol remains only for
- * svcmgr (which still runs its legacy loop) and retires with it.
+ * This was the KChannel-based console write path.  It is NON-FUNCTIONAL: the
+ * KChannel object was removed and every SYS_CHAN_* syscall returns
+ * IRIS_ERR_NOT_SUPPORTED (Fase 13/Track G).  The console is endpoint-only —
+ * all clients (init, sh, vfs, iris_test, and svcmgr's klog drain) use
+ * CONSOLE_EP_OP_WRITE/SYNC over "console.ep" (iris/console_ep_proto.h).
  *
- * Current contract:
- *   - clients send CONSOLE_MSG_WRITE over a KChannel handle with RIGHT_WRITE
- *   - CONSOLE_MSG_WRITE does not use attached handles
- *   - each message carries a little-endian payload length followed by bytes
- *   - writes are best-effort message deliveries; acknowledgement is not part
- *     of the current protocol
+ * The opcode/length constants below are retained only so historical wire
+ * layouts stay documented; no live code sends or receives them.
  *
- * Flush barrier (Fase 7.1 ABI extension, protocol version 2):
- *   - CONSOLE_MSG_SYNC carries an attached KChannel cap (RIGHT_WRITE).  The
- *     service channel is a FIFO ring, so by the time the console dequeues the
- *     SYNC every preceding CONSOLE_MSG_WRITE has already been emitted to the
- *     UART.  The console then sends one CONSOLE_MSG_SYNC_ACK on the attached
- *     cap and closes it.
- *   - Clients use this to serialize their queued console output against raw
- *     serial writers (e.g. init drains its log backlog before spawning
- *     iris_test, so gated markers cannot be interleaved mid-line).
- *   - A SYNC without an attached cap is ignored.  Old consoles drop unknown
- *     message types, so the barrier degrades to a no-op (callers must use a
- *     timeout when waiting for the ack).
+ * Historical contract (no longer served):
+ *   - clients sent CONSOLE_MSG_WRITE over a KChannel handle with RIGHT_WRITE;
+ *     each message carried a little-endian length prefix followed by bytes.
+ *   - CONSOLE_MSG_SYNC carried an attached cap and produced a
+ *     CONSOLE_MSG_SYNC_ACK flush barrier.
  */
 
 #define CONSOLE_PROTO_VERSION 2u

@@ -7,7 +7,7 @@
  * kpage — page-granular kernel object allocator.
  *
  * Replaces fixed BSS pool arrays for kernel objects whose size is in the
- * 1–64 KB range (KChannel, KProcess, KVmo, etc.).  Objects are allocated
+ * 1–64 KB range (KProcess, KEndpoint, KVmo, etc.).  Objects are allocated
  * directly from the PMM and returned as physmap-virtual pointers.
  *
  * Contract:

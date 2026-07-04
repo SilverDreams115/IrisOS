@@ -8,8 +8,9 @@
  * its last clients in this phase; svcmgr no longer creates the legacy
  * service/reply channels for VFS (catalog endpoint_only flag).
  *
- * KChannel remains only for the svcmgr bootstrap one-shot (handle delivery)
- * and console logging — neither is part of the VFS service protocol.
+ * KChannel is fully retired (Fase 13/Track G): vfs receives its bootstrap
+ * capability as a pre-start CPtr mint (IRIS_CPTR_SPAWN_CAP) and logs over
+ * console.ep — neither path uses a channel.
  */
 #include <iris/svcmgr_proto.h>
 #include <iris/console_proto.h>

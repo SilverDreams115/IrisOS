@@ -12,13 +12,15 @@
  * IRIS Service Manager Bootstrap Protocol
  *
  * ── Overview ─────────────────────────────────────────────────────
- * Messages flow over KChannels between clients, services, and the ring-3
- * service manager process.
+ * The productive svcmgr path is endpoint-based: discovery over the svcmgr
+ * KEndpoint (endpoint_proto.h) and bootstrap grants via pre-start CPtr mints.
+ * KChannel is retired (Fase 13/Track G): the SVCMGR_MSG_* opcodes below and
+ * their KChannel transport are historical and no longer served.
  *
- *   kernel  → svcmgr : death KNotification signal (via SYS_PROCESS_WATCH)
- *   client  → svcmgr : SVCMGR_MSG_LOOKUP
- *   client  → svcmgr : SVCMGR_MSG_LOOKUP_NAME
- *   service → svcmgr : SVCMGR_MSG_REGISTER
+ *   kernel  → svcmgr : death KNotification signal (via SYS_PROCESS_WATCH)  [live]
+ *   client  → svcmgr : SVCMGR_MSG_LOOKUP        [retired — use the EP discovery API]
+ *   client  → svcmgr : SVCMGR_MSG_LOOKUP_NAME   [retired — use the EP discovery API]
+ *   service → svcmgr : SVCMGR_MSG_REGISTER      [retired]
  *   service → svcmgr : SVCMGR_MSG_UNREGISTER
  *   client  → svcmgr : SVCMGR_MSG_DIAG
  *   svcmgr  → client : SVCMGR_MSG_LOOKUP_REPLY
@@ -69,9 +71,10 @@
  *   data[SVCMGR_BOOTSTRAP_OFF_KIND] uint32_t bootstrap role selector
  *                                   (service inbox, reply channel,
  *                                   or bootstrap capability).
- *   attached_handle                 duplicated temp handle in sender,
- *                                   consumed by SYS_CHAN_SEND and installed
- *                                   into the child on SYS_CHAN_RECV.
+ *   attached_handle                 duplicated temp handle in sender, delivered
+ *                                   to the child as a pre-start CPtr mint into
+ *                                   its CSpace (the historical KChannel
+ *                                   SYS_CHAN_SEND/RECV delivery is retired).
  *   attached_rights                exact rights granted to the child.
 
  * ── SVCMGR_MSG_LOOKUP (client → svcmgr) ──────────────────────────
@@ -204,7 +207,8 @@
 #define SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP 3u
 #define SVCMGR_BOOTSTRAP_KIND_IRQ_CAP   4u  /* KIrqCap capability for IRQ routing */
 #define SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP 5u /* KIoPort capability for I/O port access */
-#define SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP 6u /* KChannel write-end for console service */
+#define SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP 6u /* retired (Fase 13/Track I): writers
+                                              * log over console.ep. Do not reuse. */
 /* 9u (KBD_CAP) retired in Fase 7.4: sh pulls key events via "kbd.ep".
  * Do not reuse this kind value. */
 /* 10u/11u (VFS_CAP / VFS_REPLY_CAP) retired in Fase 7.5: vfs is endpoint_only.

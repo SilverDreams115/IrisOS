@@ -21,7 +21,7 @@ struct KTcb;
 typedef enum {
     TASK_READY,
     TASK_RUNNING,
-    TASK_BLOCKED_IPC,       /* blocked waiting for an IPC message or KChannel recv */
+    TASK_BLOCKED_IPC,       /* blocked waiting for an endpoint IPC rendezvous */
     TASK_BLOCKED_IRQ,       /* blocked waiting for a KNotification signal */
     TASK_SLEEPING,          /* blocked until a timer tick count is reached */
     TASK_BLOCKED_FAULT,     /* suspended pending exception handler decision */

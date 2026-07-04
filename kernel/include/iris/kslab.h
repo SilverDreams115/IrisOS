@@ -7,7 +7,7 @@
  * kslab — power-of-2 slab allocator for kernel objects.
  *
  * Backed by a single contiguous physical region reserved from the PMM at boot.
- * All typed kernel object headers (KProcess, KChannel, KEndpoint, ...) allocate
+ * All typed kernel object headers (KProcess, KEndpoint, KNotification, ...) allocate
  * through kslab_alloc instead of the PMM directly, allowing the PMM to be fully
  * drained into user-visible KUntyped caps.
  *

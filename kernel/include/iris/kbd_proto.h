@@ -8,20 +8,25 @@
 #endif
 
 /*
- * IRIS Keyboard Service Protocol
+ * IRIS Keyboard Service Protocol — RETIRED (historical reference only).
  *
- * ── Overview ─────────────────────────────────────────────────────────────────
- * The keyboard service (kbd) is a ring-3 process that:
- *   1. Receives raw PS/2 scancodes from the kernel IRQ routing layer via a
+ * ── Retirement notice ────────────────────────────────────────────────────────
+ * This KChannel-based kbd protocol is NON-FUNCTIONAL.  The KChannel object was
+ * removed and every SYS_CHAN_* syscall returns IRIS_ERR_NOT_SUPPORTED
+ * (Fase 13/Track G).  The live keyboard service is endpoint + notification
+ * only: requests over "kbd.ep" and IRQ1 delivery over a KNotification
+ * (iris/kbd_ep_proto.h).  IRQ routing was moved off KChannel in Fase 7.6.
+ *
+ * The opcode / payload-offset constants below are retained only to keep the
+ * historical wire layout documented; no live code builds or dispatches them.
+ *
+ * ── Historical overview (no longer served) ───────────────────────────────────
+ * The keyboard service (kbd) was a ring-3 process that:
+ *   1. Received raw PS/2 scancodes from the kernel IRQ routing layer via a
  *      dedicated KChannel (service/IRQ channel).
- *   2. Accepts request messages from clients on the same service channel.
- *   3. Replies to clients over a separate reply channel whose handle is
+ *   2. Accepted request messages from clients on the same service channel.
+ *   3. Replied to clients over a separate reply channel whose handle was
  *      delivered to the client by svcmgr at discovery time.
- *
- * Service startup is handled by svcmgr using SVCMGR_MSG_BOOTSTRAP_HANDLE
- * (defined in svcmgr_proto.h).  kbd itself does not participate in discovery;
- * it only waits for two handle deliveries over its private bootstrap channel
- * and then enters its main service loop.
  *
  * ── KChanMsg wire layout (84 bytes total) ────────────────────────────────────
  *   offset  0: uint32_t type             → KBD_MSG_* opcode
@@ -86,8 +91,10 @@
  *     handle and replaces any previous subscriber.
  *
  * ── Current status ───────────────────────────────────────────────────────────
- *   The protocol is live and consumed by the current `kbd` service and clients.
- *   `irq_routing.c` uses IRQ_MSG_TYPE_SIGNAL from irq_routing.h.
+ *   RETIRED: this KChannel protocol is no longer served by any code.  The live
+ *   kbd service and its clients (sh) use "kbd.ep" + a KNotification
+ *   (iris/kbd_ep_proto.h).  `irq_routing.c` still uses IRQ_MSG_TYPE_SIGNAL from
+ *   irq_routing.h for the generic (non-kbd) routing path.
  */
 
 /* Protocol version */

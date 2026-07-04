@@ -7,10 +7,10 @@
  * console_ep_proto.h — KEndpoint protocol for the serial console (Fase 7.3).
  *
  * Wire format: struct IrisMsg (iris/ipc_msg.h), msg.label = opcode.
- * Replaces the legacy CONSOLE_MSG_WRITE/SYNC KChannel path for endpoint
- * clients (init, sh, vfs, iris_test). svcmgr keeps the legacy KChannel
- * write path until its legacy loop is retired (Fase 8) — see
- * docs/console-endpoint.md.
+ * This is the ONLY console write path.  It fully replaced the legacy
+ * CONSOLE_MSG_WRITE/SYNC KChannel protocol (iris/console_proto.h), which is
+ * retired and non-functional (Fase 13/Track G).  All writers — init, sh, vfs,
+ * iris_test, and svcmgr's klog drain — use this endpoint.
  *
  * CONSOLE_EP_OP_WRITE — synchronous write.
  *   Request:  bulk payload = raw bytes (buf_len = length, up to
@@ -19,13 +19,12 @@
  *   Reply OK: sent only after every byte has been emitted to the UART —
  *             the call itself is a per-write flush barrier.
  *
- * CONSOLE_EP_OP_SYNC — cross-path flush barrier.
+ * CONSOLE_EP_OP_SYNC — flush barrier.
  *   Request:  no payload; a bulk payload is rejected (IRIS_ERR_INVALID_ARG).
- *   Reply OK: sent after the console has drained every legacy KChannel
- *             WRITE queued at that moment (non-blocking drain) — so EP
- *             clients can order themselves against legacy writers
- *             (currently svcmgr). EP writes need no barrier: they are
- *             synchronous by construction.
+ *   Reply OK: sent once the console has flushed all output queued at that
+ *             moment.  Retained as an explicit barrier primitive; with the
+ *             legacy KChannel writers gone, EP writes are already synchronous
+ *             by construction, so a plain WRITE is self-flushing.
  *
  * IRIS_EP_OP_PING is served: reply OK.
  * Unknown opcodes → IRIS_ERR_NOT_SUPPORTED. Exactly one reply per request.

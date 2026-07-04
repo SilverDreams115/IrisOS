@@ -1,16 +1,16 @@
 /*
  * console/main.c — ring-3 serial console service.
  *
- * Bootstrap protocol (over bootstrap channel from svc_loader):
+ * Bootstrap deliveries from svc_loader:
  *   recv SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP → ioport_h (KIoPort for 0x3F8..0x3FF)
- *   recv SVCMGR_BOOTSTRAP_KIND_SERVICE    → service_h (KChannel, RIGHT_READ)
  *   recv SVCMGR_BOOTSTRAP_KIND_SERVICE_EP → ep_h (KEndpoint recv, Fase 7.3)
  *
- * Main loop (Fase 7.3): endpoint-first. Drain pending EP requests
- * (CONSOLE_EP_OP_WRITE / SYNC / PING — iris/console_ep_proto.h), then wait
- * on the legacy KChannel with a 5 ms timeout for the remaining legacy
- * writer (svcmgr). EP WRITE replies only after the bytes hit the UART;
- * EP SYNC drains the legacy queue before replying (cross-path barrier).
+ * Main loop: endpoint-only. Drain EP requests (CONSOLE_EP_OP_WRITE / SYNC /
+ * PING — iris/console_ep_proto.h). EP WRITE replies only after the bytes hit
+ * the UART; EP SYNC is an explicit flush barrier. The legacy KChannel write
+ * path (CONSOLE_MSG_WRITE/SYNC, iris/console_proto.h) is retired and no longer
+ * served — every writer, including svcmgr's klog drain, uses console.ep
+ * (Fase 13/Track G).
  */
 
 #include <stdint.h>
