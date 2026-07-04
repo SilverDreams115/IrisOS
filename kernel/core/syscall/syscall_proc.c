@@ -63,14 +63,12 @@ uint64_t sys_process_status(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg0, &obj, &rights);
+    /* A1 Increment 2a: dual resolver — the process may be a CPtr slot or a
+     * handle.  RIGHT_NONE defers to the existing rights checks below. */
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
 
-    if (obj->type != KOBJ_PROCESS) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(rights, RIGHT_READ)) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -102,13 +100,10 @@ uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    r = handle_table_get_object(&t->process->handle_table,
-                                (handle_id_t)arg0, &proc_obj, &proc_rights);
+    /* A1 Increment 2a: dual resolver on the watched process. */
+    r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                     RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (proc_obj->type != KOBJ_PROCESS) {
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(proc_rights, RIGHT_READ)) {
         kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -173,14 +168,11 @@ uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg0, &obj, &rights);
+    /* A1 Increment 2a: dual resolver on the kill target. */
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
 
-    if (obj->type != KOBJ_PROCESS) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(rights, RIGHT_MANAGE)) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -292,13 +284,10 @@ uint64_t sys_thread_start(uint64_t arg0, uint64_t arg1,
 
     struct KObject *proc_obj;
     iris_rights_t   proc_rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg0, &proc_obj, &proc_rights);
+    /* A1 Increment 2a: dual resolver on the target process. */
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (proc_obj->type != KOBJ_PROCESS) {
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(proc_rights, RIGHT_MANAGE)) {
         kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -354,13 +343,10 @@ uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg0, &obj, &rights);
+    /* A1 Increment 2a: dual resolver on the queried process. */
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (obj->type != KOBJ_PROCESS) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(rights, RIGHT_READ)) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -400,13 +386,11 @@ uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_retain(&proc->base);
     } else {
         iris_rights_t rights;
-        iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                                 (handle_id_t)arg0, &obj, &rights);
+        /* A1 Increment 2a: dual resolver on the non-self process.  The self
+         * path above owns arg0 == 0 (HANDLE_INVALID == CPTR_NULL). */
+        iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                     RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
         if (r != IRIS_OK) return syscall_err(r);
-        if (obj->type != KOBJ_PROCESS) {
-            kobject_release(obj);
-            return syscall_err(IRIS_ERR_WRONG_TYPE);
-        }
         if (!rights_check(rights, RIGHT_READ)) {
             kobject_release(obj);
             return syscall_err(IRIS_ERR_ACCESS_DENIED);

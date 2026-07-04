@@ -364,13 +364,10 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
 
     struct KObject *proc_obj;
     iris_rights_t   proc_rights;
-    r = handle_table_get_object(&t->process->handle_table,
-                                (handle_id_t)arg1, &proc_obj, &proc_rights);
+    /* A1 Increment 2a: dual resolver on the target process too. */
+    r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg1,
+                                     RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (r != IRIS_OK) { kobject_release(vmo_obj); return syscall_err(r); }
-    if (proc_obj->type != KOBJ_PROCESS) {
-        kobject_release(vmo_obj); kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(proc_rights, RIGHT_MANAGE)) {
         kobject_release(vmo_obj); kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -528,14 +525,10 @@ uint64_t sys_vmo_share(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *proc_obj;
     iris_rights_t proc_rights;
-    r = handle_table_get_object(&t->process->handle_table,
-                                (handle_id_t)arg1, &proc_obj, &proc_rights);
+    /* A1 Increment 2a: dual resolver on the destination process too. */
+    r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg1,
+                                     RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (r != IRIS_OK) { kobject_release(vmo_obj); return syscall_err(r); }
-    if (proc_obj->type != KOBJ_PROCESS) {
-        kobject_release(vmo_obj);
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(proc_rights, RIGHT_MANAGE)) {
         kobject_release(vmo_obj);
         kobject_release(proc_obj);

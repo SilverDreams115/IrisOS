@@ -60,19 +60,15 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    /* Resolve and validate the process handle (will own the route) */
+    /* Resolve and validate the process cap (will own the route).
+     * A1 Increment 2a: dual resolver — CPtr slot or handle. */
     struct KObject  *proc_obj;
     iris_rights_t    proc_rights;
-    r = handle_table_get_object(&t->process->handle_table,
-                                (handle_id_t)arg2, &proc_obj, &proc_rights);
+    r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg2,
+                                     RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (r != IRIS_OK) {
         kobject_release(ch_obj);
         return syscall_err(r);
-    }
-    if (proc_obj->type != KOBJ_PROCESS) {
-        kobject_release(ch_obj);
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
     }
     if (!rights_check(proc_rights, RIGHT_READ | RIGHT_ROUTE)) {
         kobject_release(ch_obj);
@@ -215,13 +211,11 @@ uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_retain(&target_proc->base);
     } else {
         iris_rights_t proc_rights;
-        iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                                 (handle_id_t)arg0, &proc_obj, &proc_rights);
+        /* A1 Increment 2a: dual resolver on the non-self process.  The self
+         * path above owns arg0 == 0 (HANDLE_INVALID == CPTR_NULL). */
+        iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                     RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
         if (r != IRIS_OK) return syscall_err(r);
-        if (proc_obj->type != KOBJ_PROCESS) {
-            kobject_release(proc_obj);
-            return syscall_err(IRIS_ERR_WRONG_TYPE);
-        }
         if (!rights_check(proc_rights, RIGHT_MANAGE)) {
             kobject_release(proc_obj);
             return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -274,13 +268,11 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_retain(&target_proc->base);
     } else {
         iris_rights_t proc_rights;
-        iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                                 (handle_id_t)arg0, &proc_obj, &proc_rights);
+        /* A1 Increment 2a: dual resolver on the non-self process.  The self
+         * path above owns arg0 == 0 (HANDLE_INVALID == CPTR_NULL). */
+        iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                     RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
         if (r != IRIS_OK) return syscall_err(r);
-        if (proc_obj->type != KOBJ_PROCESS) {
-            kobject_release(proc_obj);
-            return syscall_err(IRIS_ERR_WRONG_TYPE);
-        }
         if (!rights_check(proc_rights, RIGHT_MANAGE)) {
             kobject_release(proc_obj);
             return syscall_err(IRIS_ERR_ACCESS_DENIED);

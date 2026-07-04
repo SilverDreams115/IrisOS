@@ -190,15 +190,14 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
     HandleTable *ht = &t->process->handle_table;
 
-    /* Child process capability — spawner authority required. */
+    /* Child process capability — spawner authority required.
+     * A1 Increment 2a: dual resolver — the target process may be a CPtr slot
+     * or a handle.  The RIGHT_WRITE requirement below is unchanged. */
     struct KObject *proc_obj;
     iris_rights_t   proc_rights;
-    iris_error_t err = handle_table_get_object(ht, proc_h, &proc_obj, &proc_rights);
+    iris_error_t err = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)proc_h,
+                                 RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (err != IRIS_OK) return syscall_err(err);
-    if (proc_obj->type != KOBJ_PROCESS) {
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(proc_rights, RIGHT_WRITE)) {
         kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
