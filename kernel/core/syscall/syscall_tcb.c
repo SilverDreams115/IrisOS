@@ -33,10 +33,12 @@ uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t err = handle_table_get_object(&caller->process->handle_table,
-                                                tcb_h, &obj, &rights);
+    /* A1 Increment 2b: dual resolver — the TCB may be a CPtr slot or a handle.
+     * WRONG_TYPE maps to INVALID_ARG to preserve this family's error code. */
+    iris_error_t err = cspace_or_handle_resolve_obj(caller->process, (iris_cptr_t)tcb_h,
+                                 RIGHT_NONE, KOBJ_TCB, &obj, &rights);
+    if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return syscall_err(err);
-    if (obj->type != KOBJ_TCB) { kobject_release(obj); return syscall_err(IRIS_ERR_INVALID_ARG); }
     if (!rights_check(rights, RIGHT_WRITE)) { kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
 
     struct KTcb *tcb = (struct KTcb *)obj;
@@ -63,10 +65,12 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t err = handle_table_get_object(&caller->process->handle_table,
-                                                tcb_h, &obj, &rights);
+    /* A1 Increment 2b: dual resolver — the TCB may be a CPtr slot or a handle.
+     * WRONG_TYPE maps to INVALID_ARG to preserve this family's error code. */
+    iris_error_t err = cspace_or_handle_resolve_obj(caller->process, (iris_cptr_t)tcb_h,
+                                 RIGHT_NONE, KOBJ_TCB, &obj, &rights);
+    if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return syscall_err(err);
-    if (obj->type != KOBJ_TCB) { kobject_release(obj); return syscall_err(IRIS_ERR_INVALID_ARG); }
     if (!rights_check(rights, RIGHT_WRITE)) { kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
 
     struct KTcb *tcb = (struct KTcb *)obj;
@@ -97,10 +101,12 @@ uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t err = handle_table_get_object(&caller->process->handle_table,
-                                                tcb_h, &obj, &rights);
+    /* A1 Increment 2b: dual resolver — the TCB may be a CPtr slot or a handle.
+     * WRONG_TYPE maps to INVALID_ARG to preserve this family's error code. */
+    iris_error_t err = cspace_or_handle_resolve_obj(caller->process, (iris_cptr_t)tcb_h,
+                                 RIGHT_NONE, KOBJ_TCB, &obj, &rights);
+    if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return syscall_err(err);
-    if (obj->type != KOBJ_TCB) { kobject_release(obj); return syscall_err(IRIS_ERR_INVALID_ARG); }
     if (!rights_check(rights, RIGHT_WRITE)) { kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
 
     struct KTcb *tcb = (struct KTcb *)obj;
@@ -129,10 +135,12 @@ uint64_t sys_tcb_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t err = handle_table_get_object(&caller->process->handle_table,
-                                                tcb_h, &obj, &rights);
+    /* A1 Increment 2b: dual resolver — the TCB may be a CPtr slot or a handle.
+     * WRONG_TYPE maps to INVALID_ARG to preserve this family's error code. */
+    iris_error_t err = cspace_or_handle_resolve_obj(caller->process, (iris_cptr_t)tcb_h,
+                                 RIGHT_NONE, KOBJ_TCB, &obj, &rights);
+    if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return syscall_err(err);
-    if (obj->type != KOBJ_TCB) { kobject_release(obj); return syscall_err(IRIS_ERR_INVALID_ARG); }
     if (!rights_check(rights, RIGHT_WRITE)) { kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
 
     struct KTcb *tcb = (struct KTcb *)obj;
@@ -169,10 +177,12 @@ uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t err = handle_table_get_object(&caller->process->handle_table,
-                                                tcb_h, &obj, &rights);
+    /* A1 Increment 2b: dual resolver — the TCB may be a CPtr slot or a handle.
+     * WRONG_TYPE maps to INVALID_ARG to preserve this family's error code. */
+    iris_error_t err = cspace_or_handle_resolve_obj(caller->process, (iris_cptr_t)tcb_h,
+                                 RIGHT_NONE, KOBJ_TCB, &obj, &rights);
+    if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return syscall_err(err);
-    if (obj->type != KOBJ_TCB) { kobject_release(obj); return syscall_err(IRIS_ERR_INVALID_ARG); }
     if (!rights_check(rights, RIGHT_READ)) { kobject_release(obj); return syscall_err(IRIS_ERR_ACCESS_DENIED); }
 
     struct KTcb *tcb = (struct KTcb *)obj;

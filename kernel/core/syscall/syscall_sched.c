@@ -45,14 +45,13 @@ uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t err = handle_table_get_object(&t->process->handle_table,
-                                               sc_h, &obj, &rights);
+    /* A1 Increment 2b: dual resolver — the SchedContext may be a CPtr slot or
+     * a handle.  WRONG_TYPE maps to INVALID_ARG (this family's error code). */
+    iris_error_t err = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)sc_h,
+                                 RIGHT_NONE, KOBJ_SCHED_CONTEXT, &obj, &rights);
+    if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return syscall_err(err);
 
-    if (obj->type != KOBJ_SCHED_CONTEXT) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
     if (!rights_check(rights, RIGHT_WRITE)) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -75,15 +74,15 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (sc_h != 0) {
         struct KObject *obj;
         iris_rights_t   rights;
-        iris_error_t err = handle_table_get_object(&t->process->handle_table,
-                                                   sc_h, &obj, &rights);
+        /* A1 Increment 2b: dual resolver (CPtr slot or handle); sc_h == 0
+         * stays the unbind path above.  WRONG_TYPE maps to INVALID_ARG. */
+        iris_error_t err = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)sc_h,
+                                     RIGHT_NONE, KOBJ_SCHED_CONTEXT, &obj, &rights);
+        if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
         if (err != IRIS_OK) return syscall_err(err);
 
-        if (obj->type != KOBJ_SCHED_CONTEXT) {
-            kobject_release(obj);
-            return syscall_err(IRIS_ERR_INVALID_ARG);
-        }
-        /* Ownership of the retained ref (from get_object) transfers to t->sched_ctx */
+        /* Ownership of the retained ref (lifecycle-only, same contract as
+         * handle_table_get_object) transfers to t->sched_ctx */
         new_sc = (struct KSchedContext *)obj;
     }
 
