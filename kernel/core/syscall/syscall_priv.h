@@ -251,6 +251,16 @@ iris_error_t syscall_ipc_stage_cap_badged(struct task *t, uint32_t src_h,
 uint32_t syscall_ipc_deliver_cap_badged(struct task *receiver,
                                         struct KObject *xo,
                                         uint32_t cap_rights, uint64_t badge);
+/* A1.5: receive-slot support (defined in syscall_endpoint.c).
+ * _recv_slot_declare validates + records a receiver-declared CSpace slot
+ * (fail-fast; endpoint untouched on error).  _deliver_cap_routed delivers a
+ * staged cap into the receiver's declared slot when one is set — falling
+ * back to handle materialization on a delivery-time race — and returns the
+ * msg discriminator: 0 = no cap, <1024 = slot CPtr, >=1024 = handle. */
+iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared);
+uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
+                                        struct KObject *xo,
+                                        uint32_t cap_rights, uint64_t badge);
 
 /* ── Forward declarations — CSpace (Ph70-72, Ph82-84, Ph95) ─────── */
 uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2);

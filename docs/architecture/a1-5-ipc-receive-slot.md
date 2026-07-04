@@ -15,9 +15,9 @@ root CNode: *"if this receive delivers a transferred cap, install it there."*
 - The declared slot must be a **direct root-CNode slot** (single-level CPtr,
   `1..slot_count-1`); multi-level receive paths are out of scope
   (`IRIS_ERR_INVALID_ARG`).
-- The slot must be **empty at declaration time** (fail-fast: `IRIS_ERR_BUSY`
-  before the endpoint is touched, so a failed declaration never involves the
-  sender and never consumes the sender's cap).
+- The slot must be **empty at declaration time** (fail-fast:
+  `IRIS_ERR_ALREADY_EXISTS` before the endpoint is touched, so a failed
+  declaration never involves the sender and never consumes the sender's cap).
 - The **sender is oblivious**: nothing changes on the send side; staging
   (RIGHT_TRANSFER check, `rights_reduce`, badge capture) is identical.
 
@@ -60,9 +60,9 @@ Output discriminator (both `attached_handle` and `attached_cap`):
 
 ## Slot policy
 
-- Empty required.  Occupied at declaration → `IRIS_ERR_BUSY`, fail-fast,
+- Empty required.  Occupied at declaration → `IRIS_ERR_ALREADY_EXISTS` (canonical occupied-slot error in IRIS, used instead of the generic BUSY), fail-fast,
   endpoint untouched, sender untouched.  **No overwrite, ever** — the
-  install primitive (`kcnode_install_empty_badged`) is check-and-install
+  install primitive (`kcnode_mint_excl_badged`, the SYS_PROC_CSPACE_MINT backend) is check-and-install
   under the CNode lock, unlike `kcnode_mint*` which has MOVE/overwrite
   semantics.
 - Out-of-range slot (or CPTR-namespace value that is not a direct root
@@ -88,7 +88,7 @@ any receive-slot logic:
 - the installed slot's rights gate every later CPtr invocation through the
   A1 dual resolvers;
 - **badge**: the staged badge (kernel-read from the sender's handle) is
-  installed verbatim in the slot (`kcnode_install_empty_badged`), same
+  installed verbatim in the slot (`kcnode_mint_excl_badged`, the SYS_PROC_CSPACE_MINT backend), same
   preservation contract as handle delivery.  `sender_badge` stamping is
   untouched — receive-slot never lets userland forge a badge.
 
@@ -96,7 +96,7 @@ any receive-slot logic:
 
 | Failure | When | Outcome |
 |---|---|---|
-| slot occupied / invalid / no root CNode | declaration (recv entry) | recv syscall fails `BUSY`/`INVALID_ARG`/`NOT_FOUND` before touching the endpoint; sender (if any) stays queued with its staged cap; nothing consumed |
+| slot occupied / invalid / no root CNode | declaration (recv entry) | recv syscall fails `ALREADY_EXISTS`/`INVALID_ARG`/`NOT_FOUND` before touching the endpoint; sender (if any) stays queued with its staged cap; nothing consumed |
 | sender lacks `RIGHT_TRANSFER` / rights reduce to none | staging (send entry) | unchanged: send fails, sender keeps its handle |
 | slot filled between declaration and delivery | delivery | fallback to handle materialization; discriminator tells the receiver |
 | receiver's handle table full on fallback | delivery | unchanged soft failure: cap destroyed, field = `IRIS_MSG_NO_CAP` |
@@ -129,8 +129,8 @@ passed to the legacy handle path.
 - **T085** — rights reduction: notification cap transferred WRITE-only into
   slot 37 → `NOTIFY_SIGNAL` by CPtr works, `NOTIFY_WAIT` → `ACCESS_DENIED`.
 - **T086** — occupied/invalid atomicity: declaring occupied slot 36 →
-  `BUSY` fail-fast; slot 300 → `INVALID_ARG`; the blocked sender is
-  unharmed and a follow-up good declaration receives its cap intact.
+  `ALREADY_EXISTS` fail-fast; slot 300 → `INVALID_ARG`; the blocked sender
+  is unharmed and a follow-up good declaration receives its cap intact.
 - **T087** — EP_CALL: caller transfers a cap into the server's slot 38;
   reply transfers a cap into the caller's declared reply-slot 39; the
   reply cap itself stays a one-shot handle (`>= 1024`, second reply →
@@ -140,5 +140,5 @@ passed to the legacy handle path.
   later real transfer into the same slot works; endpoint-close variant
   wakes the receiver with `CLOSED` and leaves the slot empty.
 
-Host tests: `kcnode_install_empty_badged` primitive (empty install, BUSY on
+Host tests: `kcnode_mint_excl_badged` primitive (empty install, ALREADY_EXISTS on
 occupied with slot content untouched, out-of-range, refcount/badge/rights).

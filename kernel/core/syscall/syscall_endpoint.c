@@ -87,6 +87,96 @@ uint32_t syscall_ipc_deliver_cap(struct task *receiver,
     return syscall_ipc_deliver_cap_badged(receiver, xo, cap_rights, 0);
 }
 
+/* ── A1.5: receive-slot support ──────────────────────────────────────── */
+
+/* Resolve a process's root CNode (lifecycle ref only; release with a single
+ * kobject_release).  NULL if the process has no root CNode (OOM-degraded). */
+static struct KCNode *ipc_root_cnode_of(struct KProcess *proc) {
+    struct KObject *obj;
+    iris_rights_t   r;
+    if (!proc || proc->cspace_root_h == HANDLE_INVALID) return 0;
+    if (handle_table_get_object(&proc->handle_table, proc->cspace_root_h,
+                                &obj, &r) != IRIS_OK) return 0;
+    if (obj->type != KOBJ_CNODE) { kobject_release(obj); return 0; }
+    return (struct KCNode *)obj;
+}
+
+/*
+ * syscall_ipc_recv_slot_declare — validate + record a receive-slot declared
+ * by a recv-family syscall (EP_RECV / EP_NB_RECV / EP_CALL).
+ *
+ * declared == 0 or >= 1024: no declaration (legacy).  Values >= 1024 are
+ * IGNORED, not rejected: receivers that reuse a msg buffer without zeroing
+ * carry a stale *output* value in the hint field, and outputs are always 0
+ * or a handle >= 1024 — never 1..1023 — so no legacy pattern can
+ * accidentally declare a slot.  (EP_CALL rejects >= 1024 itself, keeping
+ * its historical INVALID_ARG contract for that field.)
+ *
+ * Fail-fast contract: on error the endpoint has NOT been touched, so a
+ * queued sender keeps its staged cap and nothing is consumed.
+ *   - out-of-range direct slot        → IRIS_ERR_INVALID_ARG
+ *   - slot already occupied           → IRIS_ERR_ALREADY_EXISTS
+ *   - process has no root CNode       → IRIS_ERR_NOT_FOUND
+ */
+iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared) {
+    t->ep_recv_slot = 0;
+    if (declared == 0u || declared >= 1024u) return IRIS_OK;
+
+    struct KCNode *root = ipc_root_cnode_of(t->process);
+    if (!root) return IRIS_ERR_NOT_FOUND;
+
+    /* Occupancy probe: fetch returns NOT_FOUND for an empty in-range slot.
+     * TOCTOU between here and delivery is handled by the exclusive install
+     * (kcnode_mint_excl_badged) + handle fallback in the routed delivery. */
+    struct KObject *probe;
+    iris_rights_t   pr;
+    iris_error_t e = kcnode_fetch(root, declared, &probe, &pr);
+    kobject_release(&root->base);
+    if (e == IRIS_OK) {
+        kobject_active_release(probe);
+        kobject_release(probe);
+        return IRIS_ERR_ALREADY_EXISTS;
+    }
+    if (e != IRIS_ERR_NOT_FOUND) return IRIS_ERR_INVALID_ARG;
+
+    t->ep_recv_slot = declared;
+    return IRIS_OK;
+}
+
+/*
+ * syscall_ipc_deliver_cap_routed — deliver a staged cap honouring the
+ * receiver's declared receive-slot.  Consumes the declaration.  If the slot
+ * install races (filled since declaration) or the root CNode is gone, the
+ * cap falls back to handle materialization — a delivery-location
+ * degradation that loses no authority and installs no partial state.
+ * Returns the msg discriminator: 0 = no cap (or destroyed on soft failure),
+ * < 1024 = CSpace slot CPtr, >= 1024 = handle.  Reply caps never come
+ * through here — their handle_table_insert sites are untouched (A1.5).
+ */
+uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
+                                        struct KObject *xo,
+                                        uint32_t cap_rights, uint64_t badge) {
+    if (!xo) return IRIS_MSG_NO_CAP;
+
+    uint32_t slot = receiver->ep_recv_slot;
+    if (slot != 0u && slot < 1024u) {
+        receiver->ep_recv_slot = 0;   /* one delivery consumes the declaration */
+        struct KCNode *root = ipc_root_cnode_of(receiver->process);
+        if (root) {
+            iris_error_t e = kcnode_mint_excl_badged(root, slot, xo,
+                                                     (iris_rights_t)cap_rights,
+                                                     badge);
+            kobject_release(&root->base);
+            if (e == IRIS_OK) {
+                kobject_release(xo);  /* staging ref; the slot holds its own */
+                return slot;
+            }
+        }
+        /* raced/occupied/no-root → legacy handle materialization below */
+    }
+    return syscall_ipc_deliver_cap_badged(receiver, xo, cap_rights, badge);
+}
+
 /*
  * ep_send_fastpath — no-cap, no-bulk rendezvous fast path.
  * Precondition: t->ipc_msg already read from user; buf_len==0 and

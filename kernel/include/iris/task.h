@@ -98,6 +98,11 @@ struct task {
     /* Ph69: IPC buffer staging */
     uint32_t            ipc_kbuf_len;    /* valid bytes in ipc_kbuf */
     uint64_t            ep_recv_buf_uptr;/* receiver's output buffer user addr (set at EP_RECV) */
+    /* A1.5: receiver-declared receive-slot (direct root-CNode CPtr, 1..1023;
+     * 0 = none/legacy).  Written by EVERY recv-family syscall entry
+     * (EP_RECV / EP_NB_RECV / EP_CALL) and consumed by at most one routed
+     * cap delivery, so it can never leak across operations. */
+    uint32_t            ep_recv_slot;
     uint8_t             ipc_kbuf[IRIS_IPC_BUF_SIZE]; /* kernel-side bulk payload staging */
     /* Ph74: optional scheduling context — retained KSchedContext ref (NULL = best-effort) */
     struct KSchedContext *sched_ctx;
