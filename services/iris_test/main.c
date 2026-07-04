@@ -3235,6 +3235,188 @@ static void test_t084(void) {
     if (ok) it_pass("T084"); else it_fail("T084", "recv-slot basic");
 }
 
+/* ── T085: receive-slot rights reduction (A1.5) ─────────────────────────────
+ * The slot receives rights_reduce(sender_rights, requested) — never more.
+ * A notification cap (R|W|WAIT|DUP|TRANSFER at creation) is transferred
+ * WRITE-only into slot 37: NOTIFY_SIGNAL by CPtr works and the ORIGINAL
+ * handle observes the signalled bits (same kernel object — the invocation
+ * is real), while NOTIFY_WAIT by CPtr fails ACCESS_DENIED (RIGHT_WAIT was
+ * reduced away). */
+
+#define T085_SLOT  37u
+
+static handle_id_t  g_t085_cmd_ep = HANDLE_INVALID;
+static handle_id_t  g_t085_cap    = HANDLE_INVALID;
+static volatile int g_t085_s1 = 999, g_t085_done = 0;
+static uint8_t      g_t085_stack[8192];
+
+static void t085_sender(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label           = 0x85;
+    m.attached_handle = (uint32_t)g_t085_cap;
+    m.attached_rights = RIGHT_WRITE;            /* reduce: drop WAIT et al. */
+    g_t085_s1 = (int)it_sys2(SYS_EP_SEND, (long)g_t085_cmd_ep, (long)&m);
+    g_t085_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+
+static void test_t085(void) {
+    g_t085_s1 = 999; g_t085_done = 0;
+
+    long n   = it_sys0(SYS_NOTIFY_CREATE);
+    long cmd = it_sys0(SYS_ENDPOINT_CREATE);
+    if (n < 0 || cmd < 0) { it_fail("T085", "create"); return; }
+    handle_id_t n_h = (handle_id_t)n;
+    g_t085_cmd_ep = (handle_id_t)cmd;
+
+    long c = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (c < 0) {
+        it_close(&n_h); it_close(&g_t085_cmd_ep);
+        it_fail("T085", "dup"); return;
+    }
+    g_t085_cap = (handle_id_t)c;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t085_sender;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t085_stack + sizeof(g_t085_stack))) & ~0xFULL;
+    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+        it_close(&n_h); it_close(&g_t085_cmd_ep);
+        it_fail("T085", "thread create"); return;
+    }
+    it_sys1(SYS_SLEEP, 2);
+
+    int ok = 1;
+    struct IrisMsg r;
+    it_iris_msg_zero(&r);
+    r.attached_cap = T085_SLOT;
+    if (it_sys2(SYS_EP_RECV, (long)g_t085_cmd_ep, (long)&r) != 0) ok = 0;
+    if (ok && r.attached_handle != T085_SLOT) ok = 0;
+
+    /* Permitted op by CPtr: SIGNAL (RIGHT_WRITE survived the reduce). */
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T085_SLOT, 0x85) != 0) ok = 0;
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+            bits != 0x85u) ok = 0;   /* original handle sees it: same object */
+    }
+
+    /* Denied op by CPtr: WAIT (RIGHT_WAIT was reduced away). */
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_WAIT, (long)T085_SLOT, (long)(uintptr_t)&bits) !=
+            (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+    }
+
+    for (int i = 0; i < 200 && !g_t085_done; i++) it_sys0(SYS_YIELD);
+    if (!g_t085_done || g_t085_s1 != 0) ok = 0;
+
+    it_close(&n_h);
+    it_close(&g_t085_cmd_ep);
+
+    if (ok) it_pass("T085"); else it_fail("T085", "recv-slot rights");
+}
+
+/* ── T086: receive-slot occupied / invalid — fail-fast atomicity (A1.5) ─────
+ * A bad declaration must fail BEFORE the endpoint is touched: the queued
+ * sender stays blocked with its staged cap intact and nothing is consumed.
+ * With a sender queued (attached notification cap):
+ *   - declaring slot 36 (occupied since T084) → ALREADY_EXISTS (the
+ *     canonical occupied-slot error, same as SYS_PROC_CSPACE_MINT);
+ *   - declaring slot 300 (< 1024 but beyond the 256-slot root CNode) →
+ *     INVALID_ARG;  EP_NB_RECV validates identically;
+ *   - sender still blocked after both failures (result flag untouched);
+ *   - a good declaration (slot 42) then receives the SAME cap intact and
+ *     invokes it by CPtr — the failed attempts consumed nothing. */
+
+#define T086_SLOT  42u
+
+static handle_id_t  g_t086_cmd_ep = HANDLE_INVALID;
+static handle_id_t  g_t086_cap    = HANDLE_INVALID;
+static volatile int g_t086_s1 = 999, g_t086_done = 0;
+static uint8_t      g_t086_stack[8192];
+
+static void t086_sender(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label           = 0x86;
+    m.attached_handle = (uint32_t)g_t086_cap;
+    m.attached_rights = RIGHT_WRITE;
+    g_t086_s1 = (int)it_sys2(SYS_EP_SEND, (long)g_t086_cmd_ep, (long)&m);
+    g_t086_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+
+static void test_t086(void) {
+    g_t086_s1 = 999; g_t086_done = 0;
+
+    long n   = it_sys0(SYS_NOTIFY_CREATE);
+    long cmd = it_sys0(SYS_ENDPOINT_CREATE);
+    if (n < 0 || cmd < 0) { it_fail("T086", "create"); return; }
+    handle_id_t n_h = (handle_id_t)n;
+    g_t086_cmd_ep = (handle_id_t)cmd;
+
+    long c = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (c < 0) {
+        it_close(&n_h); it_close(&g_t086_cmd_ep);
+        it_fail("T086", "dup"); return;
+    }
+    g_t086_cap = (handle_id_t)c;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t086_sender;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t086_stack + sizeof(g_t086_stack))) & ~0xFULL;
+    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+        it_close(&n_h); it_close(&g_t086_cmd_ep);
+        it_fail("T086", "thread create"); return;
+    }
+    it_sys1(SYS_SLEEP, 2);   /* sender is now queued with its staged cap */
+
+    int ok = 1;
+    struct IrisMsg r;
+
+    /* Occupied slot → ALREADY_EXISTS, fail-fast. */
+    it_iris_msg_zero(&r);
+    r.attached_cap = T084_SLOT;                   /* occupied since T084 */
+    if (it_sys2(SYS_EP_RECV, (long)g_t086_cmd_ep, (long)&r) !=
+        (long)IRIS_ERR_ALREADY_EXISTS) ok = 0;
+
+    /* Out-of-range direct slot → INVALID_ARG (root CNode has 256 slots). */
+    it_iris_msg_zero(&r);
+    r.attached_cap = 300u;
+    if (ok && it_sys2(SYS_EP_RECV, (long)g_t086_cmd_ep, (long)&r) !=
+              (long)IRIS_ERR_INVALID_ARG) ok = 0;
+
+    /* EP_NB_RECV validates the declaration the same way. */
+    it_iris_msg_zero(&r);
+    r.attached_cap = T084_SLOT;
+    if (ok && it_sys2(SYS_EP_NB_RECV, (long)g_t086_cmd_ep, (long)&r) !=
+              (long)IRIS_ERR_ALREADY_EXISTS) ok = 0;
+
+    /* Atomicity: the sender is still blocked — nothing was consumed. */
+    if (ok && g_t086_s1 != 999) ok = 0;
+
+    /* A good declaration now receives the SAME cap, intact. */
+    it_iris_msg_zero(&r);
+    r.attached_cap = T086_SLOT;
+    if (ok && it_sys2(SYS_EP_RECV, (long)g_t086_cmd_ep, (long)&r) != 0) ok = 0;
+    if (ok && r.attached_handle != T086_SLOT) ok = 0;
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T086_SLOT, 0x86) != 0) ok = 0;
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+            bits != 0x86u) ok = 0;
+    }
+
+    for (int i = 0; i < 200 && !g_t086_done; i++) it_sys0(SYS_YIELD);
+    if (!g_t086_done || g_t086_s1 != 0) ok = 0;
+
+    it_close(&n_h);
+    it_close(&g_t086_cmd_ep);
+
+    if (ok) it_pass("T086"); else it_fail("T086", "recv-slot atomicity");
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -3338,6 +3520,8 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t082();
     test_t083();
     test_t084();
+    test_t085();
+    test_t086();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
