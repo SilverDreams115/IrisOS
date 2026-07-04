@@ -2344,6 +2344,77 @@ static void test_t073(void) {
         it_fail("T073", "staged cap failure cleanup");
 }
 
+/* ── T074: reply capability one-shot lifecycle ──────────────────────────────
+ *
+ * A KReply capability delivered by EP_CALL rendezvous is one-shot: it may unblock
+ * its caller exactly once.  A server thread receives the call, replies once, then
+ * invokes SYS_REPLY again on the same (now-consumed) reply cap.  The main thread's
+ * EP_CALL must return 0 (first reply landed); the second SYS_REPLY must fail with
+ * IRIS_ERR_NOT_FOUND — proving the reply cap cannot re-unblock a caller and leaves
+ * no dangling reply authority.  (Mirrors the T016 EP_CALL/REPLY rendezvous.) */
+static handle_id_t g_t074_ep_h  = HANDLE_INVALID;
+static volatile int g_t074_done = 0;
+static          int g_t074_r1   = 999;
+static          int g_t074_r2   = 999;
+static uint8_t      g_t074_stack[8192];
+
+static void t074_server(void) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    long rr = it_sys2(SYS_EP_RECV, (long)g_t074_ep_h, (long)&msg);
+    if (rr == 0) {
+        handle_id_t reply_h = (handle_id_t)msg.attached_handle;
+        struct IrisMsg rmsg;
+        it_iris_msg_zero(&rmsg);
+        rmsg.label = 0x74;
+        g_t074_r1 = (int)it_sys2(SYS_REPLY, (long)reply_h, (long)&rmsg);
+        /* Second reply on the consumed one-shot cap must be rejected. */
+        struct IrisMsg rmsg2;
+        it_iris_msg_zero(&rmsg2);
+        rmsg2.label = 0x74;
+        g_t074_r2 = (int)it_sys2(SYS_REPLY, (long)reply_h, (long)&rmsg2);
+    } else {
+        g_t074_r1 = (int)rr;
+    }
+    g_t074_done = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+
+static void test_t074(void) {
+    g_t074_done = 0; g_t074_r1 = 999; g_t074_r2 = 999;
+
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { it_fail("T074", "ep create"); return; }
+    g_t074_ep_h = (handle_id_t)ep;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t074_server;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t074_stack + sizeof(g_t074_stack))) & ~0xFULL;
+    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    if (tid < 0) { it_close(&g_t074_ep_h); it_fail("T074", "thread create"); return; }
+    handle_id_t tid_h = (handle_id_t)tid;
+
+    uint8_t reply_buf[64];
+    for (uint32_t i = 0; i < 64; i++) reply_buf[i] = 0;
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label    = 0x74;
+    msg.buf_uptr = (uint64_t)(uintptr_t)reply_buf;
+    long r = it_sys2(SYS_EP_CALL, ep, (long)&msg);
+
+    for (int i = 0; i < 200 && !g_t074_done; i++)
+        it_sys1(SYS_SLEEP, 1);
+
+    it_close(&tid_h);
+    it_close(&g_t074_ep_h);
+
+    if (r == 0 && g_t074_r1 == 0 && g_t074_r2 == (int)IRIS_ERR_NOT_FOUND)
+        it_pass("T074");
+    else
+        it_fail("T074", "reply one-shot");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2448,6 +2519,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t071();
     test_t072();
     test_t073();
+    test_t074();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
