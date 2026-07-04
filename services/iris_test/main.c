@@ -2990,6 +2990,154 @@ static void test_t082(void) {
     if (ok) it_pass("T082"); else it_fail("T082", "vmo ops proc by cptr");
 }
 
+/* ── T083: TCB and SchedContext by CPtr (A1 Increment 2b) ───────────────────
+ * The TCB / SchedContext syscalls now resolve their cap through the dual
+ * resolver.  A helper thread publishes its own TCB handle (SYS_TCB_SELF) and
+ * spins a progress counter; we mint that TCB into own slots 32 (READ|WRITE|
+ * DUP) and 33 (READ only) and drive it by CPtr: GET_INFO (task_id real,
+ * priority round-trip), SET_PRIORITY, SUSPEND (counter freezes), RESUME
+ * (counter advances), and finally TCB_EXIT on the helper — non-self, so it is
+ * safe to run (self TCB_EXIT would tear down the harness thread; the self
+ * branch shares the same resolver + rights code, so runtime-testing it adds
+ * nothing).  A SchedContext is minted into slots 34 (rw) / 35 (ro):
+ * SC_CONFIGURE by CPtr, THREAD_SET_SC binds the CALLING thread to the SC by
+ * CPtr and 0 unbinds (THREAD_SET_SC takes no TCB argument — it always
+ * operates on the caller).  Authority is not relaxed: WRITE ops through the
+ * READ-only slots → ACCESS_DENIED (THREAD_SET_SC has no rights check today;
+ * unchanged).  Wrong type → INVALID_ARG (this family's historical code, kept
+ * by the migration); empty slot fails cleanly.  Slots 32..39: the 16..29
+ * dynamic pool is exhausted by T079-T082 (slots are mint-once). */
+
+#define T083_SLOT_TCB     32L             /* helper TCB: READ|WRITE|DUP */
+#define T083_SLOT_TCB_RO  33L             /* helper TCB: READ only      */
+#define T083_SLOT_SC      34L             /* SchedContext: READ|WRITE|DUP */
+#define T083_SLOT_SC_RO   35L             /* SchedContext: READ only    */
+
+static volatile uint64_t g_t083_count = 0;
+static volatile int      g_t083_ready = 0;
+static long              g_t083_tcb   = -1;
+static uint8_t           g_t083_stack[8192];
+
+static void t083_helper(void) {
+    g_t083_tcb   = it_sys0(SYS_TCB_SELF);
+    g_t083_ready = 1;
+    for (;;) {
+        g_t083_count++;
+        it_sys0(SYS_YIELD);
+    }
+}
+
+static void test_t083(void) {
+    g_t083_count = 0; g_t083_ready = 0; g_t083_tcb = -1;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t083_helper;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t083_stack + sizeof(g_t083_stack))) & ~0xFULL;
+    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    if (tid < 0) { it_fail("T083", "thread create"); return; }
+
+    for (int i = 0; i < 200 && !g_t083_ready; i++) it_sys0(SYS_YIELD);
+    if (!g_t083_ready || g_t083_tcb < 0) { it_fail("T083", "tcb self"); return; }
+    handle_id_t tcb_h = (handle_id_t)g_t083_tcb;
+
+    int ok = 1;
+
+    /* Mint the helper's TCB: slot 32 rw+dup, slot 33 read-only. */
+    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC, T083_SLOT_TCB,
+                (long)tcb_h,
+                (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) ok = 0;
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
+                      T083_SLOT_TCB_RO, (long)tcb_h, (long)RIGHT_READ) != 0)
+        ok = 0;
+
+    /* GET_INFO by CPtr (both slots — READ suffices); handle path unchanged. */
+    struct iris_tcb_info info;
+    if (ok && it_sys2(SYS_TCB_GET_INFO, T083_SLOT_TCB,
+                      (long)(uintptr_t)&info) != 0) ok = 0;
+    if (ok && info.task_id != (uint32_t)tid) ok = 0;
+    if (ok && it_sys2(SYS_TCB_GET_INFO, T083_SLOT_TCB_RO,
+                      (long)(uintptr_t)&info) != 0) ok = 0;
+    if (ok && it_sys2(SYS_TCB_GET_INFO, (long)tcb_h,
+                      (long)(uintptr_t)&info) != 0) ok = 0;
+
+    /* SET_PRIORITY by CPtr: change, verify via GET_INFO, restore. */
+    uint8_t old_prio = info.priority;
+    if (ok && it_sys2(SYS_TCB_SET_PRIORITY, T083_SLOT_TCB,
+                      (long)(old_prio + 1u)) != 0) ok = 0;
+    if (ok && (it_sys2(SYS_TCB_GET_INFO, T083_SLOT_TCB,
+                       (long)(uintptr_t)&info) != 0 ||
+               info.priority != (uint8_t)(old_prio + 1u))) ok = 0;
+    if (ok && it_sys2(SYS_TCB_SET_PRIORITY, T083_SLOT_TCB, (long)old_prio) != 0)
+        ok = 0;
+
+    /* SUSPEND by CPtr: the helper's counter must freeze. */
+    if (ok && it_sys1(SYS_TCB_SUSPEND, T083_SLOT_TCB) != 0) ok = 0;
+    if (ok) {
+        uint64_t before = g_t083_count;
+        it_sys1(SYS_SLEEP, 5);
+        if (g_t083_count != before) ok = 0;
+    }
+
+    /* RESUME by CPtr: the counter must advance again. */
+    if (ok && it_sys1(SYS_TCB_RESUME, T083_SLOT_TCB) != 0) ok = 0;
+    if (ok) {
+        uint64_t before = g_t083_count;
+        it_sys1(SYS_SLEEP, 5);
+        if (g_t083_count == before) ok = 0;
+    }
+
+    /* Authority not relaxed + failure paths (TCB). */
+    if (ok && it_sys1(SYS_TCB_SUSPEND, T083_SLOT_TCB_RO) !=
+              (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+    if (ok && it_sys2(SYS_TCB_SET_PRIORITY, T083_SLOT_TCB_RO, 1) !=
+              (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+    if (ok && it_sys1(SYS_TCB_SUSPEND, T079_SLOT_EMPTY) >= 0) ok = 0;
+    if (ok && it_sys1(SYS_TCB_SUSPEND, (long)IRIS_CPTR_TEST_FIX_A) !=
+              (long)IRIS_ERR_INVALID_ARG) ok = 0;
+
+    /* ── SchedContext ── */
+    long sc = it_sys0(SYS_SC_CREATE);
+    if (sc < 0) ok = 0;
+    handle_id_t sc_h = (sc >= 0) ? (handle_id_t)sc : HANDLE_INVALID;
+
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
+                      T083_SLOT_SC, (long)sc_h,
+                      (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
+        ok = 0;
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
+                      T083_SLOT_SC_RO, (long)sc_h, (long)RIGHT_READ) != 0)
+        ok = 0;
+
+    /* SC_CONFIGURE by CPtr (budget < period required); handle path too. */
+    if (ok && it_sys3(SYS_SC_CONFIGURE, T083_SLOT_SC, 50, 100) != 0) ok = 0;
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc_h, 50, 100) != 0) ok = 0;
+    if (ok && it_sys3(SYS_SC_CONFIGURE, T083_SLOT_SC_RO, 50, 100) !=
+              (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+    if (ok && it_sys3(SYS_SC_CONFIGURE, T079_SLOT_EMPTY, 50, 100) >= 0) ok = 0;
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)IRIS_CPTR_TEST_FIX_A, 50, 100) !=
+              (long)IRIS_ERR_INVALID_ARG) ok = 0;
+
+    /* THREAD_SET_SC by CPtr: bind the calling thread, then unbind (0). */
+    if (ok && it_sys1(SYS_THREAD_SET_SC, T083_SLOT_SC) != 0) ok = 0;
+    if (ok && it_sys1(SYS_THREAD_SET_SC, 0) != 0) ok = 0;
+    if (ok && it_sys1(SYS_THREAD_SET_SC, (long)IRIS_CPTR_TEST_FIX_A) !=
+              (long)IRIS_ERR_INVALID_ARG) ok = 0;
+    if (ok && it_sys1(SYS_THREAD_SET_SC, T079_SLOT_EMPTY) >= 0) ok = 0;
+
+    /* TCB_EXIT by CPtr on the helper (non-self): counter freezes for good. */
+    if (ok && it_sys1(SYS_TCB_EXIT, T083_SLOT_TCB) != 0) ok = 0;
+    if (ok) {
+        it_sys1(SYS_SLEEP, 2);
+        uint64_t before = g_t083_count;
+        it_sys1(SYS_SLEEP, 5);
+        if (g_t083_count != before) ok = 0;
+    }
+
+    it_close(&sc_h);
+    { handle_id_t th = tcb_h; it_close(&th); }
+
+    if (ok) it_pass("T083"); else it_fail("T083", "tcb/sc by cptr");
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -3091,6 +3239,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t080();
     test_t081();
     test_t082();
+    test_t083();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
