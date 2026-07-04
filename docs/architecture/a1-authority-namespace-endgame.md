@@ -1,6 +1,9 @@
 # A1 Design — Authority Namespace Endgame
 
-Status: **ACCEPTED** as architectural direction.
+Status: **IMPLEMENTED — resolution endgame reached** (A1 closeout).
+Originally accepted as architectural direction; increments 1, 1b, 2a and 2b
+landed the full dual-resolution matrix (commits `5c92039`, `3442e9b`,
+`0d1b185`, `a4eb78e` + runtime tests T079–T083).
 
 Decision:
 
@@ -75,27 +78,60 @@ order in which subsystems were migrated, not a design rule:
   the handle table can be frozen, bounded and reasoned about as a pure
   working-set cache.
 
-## Per-object matrix (state at time of acceptance)
+## Per-object matrix (state after A1 closeout)
 
-| Object | Syscalls | Resolution today | A1 target |
+| Object | Syscalls | Resolution | Landed in |
 |---|---|---|---|
-| KEndpoint | `SYS_EP_SEND/RECV/CALL/NB_*` | dual, badged (`cspace_or_handle_resolve_endpoint[_badged]`) | done |
-| KNotification | `SYS_NOTIFY_SIGNAL/WAIT[_TIMEOUT]` | dual (`syscall_ipc.c`) | done |
-| KCNode | `SYS_CNODE_MINT/MOVE/FETCH/DELETE/SWAP` | dual (`cspace_or_handle_resolve_cnode`) | done |
-| KUntyped | `SYS_UNTYPED_INFO/RETYPE/RESET` | dual (`cspace_or_handle_resolve_untyped`) | done |
-| KFrame | `SYS_FRAME_MAP/UNMAP` | dual (`cspace_or_handle_resolve_frame`) | done |
-| KVSpace | `SYS_FRAME_MAP` target | CSpace-only (`cspace_resolve_vspace`) | done |
-| KIoPort / KIrqCap / KBootstrapCap | `SYS_IOPORT_*`, `SYS_IRQ_*`, `SYS_INITRD_*`, `SYS_FRAMEBUFFER_VMO`, `SYS_PROCESS_CREATE` auth | dual, generic (`cspace_or_handle_resolve_obj`, Fase 13) | done |
-| KReply | `SYS_REPLY` | dual exists, but the cap is *delivered* as a fresh handle by `EP_RECV` | stays ephemeral (see below) |
-| **KVmo** | `SYS_VMO_MAP/UNMAP/SIZE/MAP_INTO/SHARE` | **handle-only** (`handle_table_get_object`) | **migrate — Increment 1 starts here** |
-| **KProcess** | `SYS_PROCESS_STATUS/WATCH/KILL/...`, proc args of `VMO_MAP_INTO/SHARE`, `PROC_CSPACE_MINT` | **handle-only** | migrate (later increment) |
-| **KTcb** | `SYS_TCB_SUSPEND/RESUME/...` | **handle-only** (`syscall_tcb.c`) | migrate (later increment) |
-| **KSchedContext** | `SYS_SC_CONFIGURE`, `SYS_THREAD_SET_SC` | **handle-only** (`syscall_sched.c`) | migrate (later increment) |
+| KEndpoint | `SYS_EP_SEND/RECV/CALL/NB_*` | dual, badged (`cspace_or_handle_resolve_endpoint[_badged]`) | pre-A1 (Fase 8/9) |
+| KNotification | `SYS_NOTIFY_SIGNAL/WAIT[_TIMEOUT]` | dual (`syscall_ipc.c`); three secondary-arg sites still handle-only (see audit) | pre-A1 (Fase 13) |
+| KCNode | `SYS_CNODE_MINT/MOVE/FETCH/DELETE/SWAP` | dual (`cspace_or_handle_resolve_cnode`) | pre-A1 |
+| KUntyped | `SYS_UNTYPED_INFO/RETYPE/RESET` | dual (`cspace_or_handle_resolve_untyped`) | pre-A1 |
+| KFrame | `SYS_FRAME_MAP/UNMAP` | dual (`cspace_or_handle_resolve_frame`) | pre-A1 (Fase 5) |
+| KVSpace | `SYS_FRAME_MAP` target | CSpace-only (`cspace_resolve_vspace`) | pre-A1 |
+| KIoPort / KIrqCap / KBootstrapCap | `SYS_IOPORT_*`, `SYS_IRQ_*`, `SYS_INITRD_*`, `SYS_FRAMEBUFFER_VMO`, `SYS_PROCESS_CREATE` auth | dual, generic (`cspace_or_handle_resolve_obj`) | pre-A1 (Fase 13) |
+| KReply | `SYS_REPLY` | delivered as a fresh handle by `EP_RECV`; stays ephemeral **by design** (see below) | n/a |
+| KVmo | `SYS_VMO_MAP/SIZE/MAP_INTO/SHARE` (vmo arg) | **dual — done** (T079, T080) | Inc 1 `5c92039`, Inc 1b `3442e9b` |
+| KProcess | `SYS_PROCESS_STATUS/WATCH/KILL/EXIT_CODE/FAULT_INFO`, `SYS_THREAD_START`, proc args of `VMO_MAP_INTO/SHARE`, `SYS_PROC_CSPACE_MINT`, `SYS_HANDLE_TRANSFER/INSERT` dest, `SYS_IRQ_ROUTE_REGISTER` owner, `SYS_EXCEPTION_HANDLER/RESUME` (14 sites) | **dual — done** (T081, T082) | Inc 2a `0d1b185` |
+| KTcb | `SYS_TCB_SUSPEND/RESUME/SET_PRIORITY/EXIT/GET_INFO` | **dual — done** (T083) | Inc 2b `a4eb78e` |
+| KSchedContext | `SYS_SC_CONFIGURE`, `SYS_THREAD_SET_SC` | **dual — done** (T083) | Inc 2b `a4eb78e` |
 
 Handle-table-intrinsic syscalls (`SYS_HANDLE_CLOSE/DUP/TRANSFER/INSERT/
-TYPE/SAME_OBJECT`, `SYS_CAP_DERIVE/REVOKE`) operate *on the handle layer
-itself* and stay handle-native; they are part of the formalized
-ephemeral layer, not migration targets.
+TYPE/SAME_OBJECT`, `SYS_CAP_DERIVE/REVOKE`, and the src args of
+`SYS_CNODE_MINT/MOVE`, `SYS_PROC_CSPACE_MINT`, IPC cap staging) operate
+*on the handle layer itself* and stay handle-native; they are part of
+the formalized ephemeral layer, not migration targets.
+
+`SYS_VMO_UNMAP` takes `(vaddr, size)` — no capability argument, so A1
+does not apply to it.
+
+## Implementation nuances (discovered during increments)
+
+- **Error-code preservation**: the TCB and SchedContext families
+  historically return `IRIS_ERR_INVALID_ARG` (not `WRONG_TYPE`) on a
+  type mismatch.  The migrated sites remap `WRONG_TYPE → INVALID_ARG`
+  after the resolver so the handle path stays bit-for-bit compatible
+  (and the CPtr path follows the same per-family convention).
+- **`SYS_THREAD_SET_SC` takes no TCB argument**: it always binds the
+  *calling* thread; its single cap argument is the SchedContext (now
+  dual).  `0` remains the unbind path (`HANDLE_INVALID == CPTR_NULL ==
+  0`, so it never reaches a resolver).  It performs no rights check on
+  the SC — pre-existing semantics, deliberately not changed by A1.
+- **Self-path guards stay ahead of the resolver**: `SYS_PROCESS_FAULT_INFO`,
+  `SYS_EXCEPTION_HANDLER` and `SYS_EXCEPTION_RESUME` treat `arg0 == 0`
+  as "self"; since 0 is also `CPTR_NULL`, the dual resolvers never see
+  it and the special case is unambiguous.
+- **The ref contract made the swaps mechanical**: every migrated site
+  used `handle_table_get_object` (lifecycle-only ref) and
+  `cspace_or_handle_resolve_obj` intentionally matches that contract,
+  so no `kobject_release` path changed — including the ownership
+  transfer in `SYS_THREAD_SET_SC` where the resolved ref becomes
+  `t->sched_ctx`.
+- **Test-slot scarcity**: a process cannot write (or delete) slots in
+  its own root CNode without external help, so runtime tests self-mint
+  through an init-provided fixture (`IRIS_CPTR_TEST_PROC`, slot 25 — the
+  suite's own process cap with `RIGHT_WRITE`) and slots are mint-once.
+  The 16..29 dynamic pool was exhausted by T079–T082; T083+ uses 32..39
+  (documented in `endpoint_proto.h`).
 
 ## Reply caps — dedicated decision
 
@@ -121,28 +157,77 @@ formalized* rather than tolerated: reply caps, `SYS_CSPACE_RESOLVE`
 materializations, and IPC-delivered caps are the working set; the
 CSpace is the estate.
 
-## Migration plan (small increments, no big-bang)
+## Migration plan — COMPLETED
 
-Each increment: one resolver swap family + one runtime test, all gates
-green (`make`, `make test-unit`, `make smoke-runtime`,
-`ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests`), no syscall
-signature or number changes ever.
+Each increment shipped as one resolver swap family + one runtime test,
+all gates green (`make`, `make test-unit`, `make smoke-runtime`,
+`ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests`), zero syscall
+signature or number changes.
 
-1. **VMO family** — swap `handle_table_get_object` →
-   `cspace_or_handle_resolve_obj(..., KOBJ_VMO, ...)`:
-   1a. `SYS_VMO_MAP` (this increment, T079);
-   1b. `SYS_VMO_SIZE`, `SYS_VMO_SHARE` (vmo arg), `SYS_VMO_MAP_INTO`
-       (vmo arg). `SYS_VMO_UNMAP` takes `(vaddr, size)` — no cap
-       argument, nothing to migrate.
-2. **Process family** — proc args of `SYS_VMO_MAP_INTO` / `SYS_VMO_SHARE`
-   / `SYS_PROC_CSPACE_MINT`, then `SYS_PROCESS_*` lifecycle syscalls.
-3. **TCB + SchedContext** — `syscall_tcb.c`, `syscall_sched.c`
-   (typed resolvers `cspace_resolve_tcb` / `cspace_resolve_schedctx`
-   already exist for the CSpace leg).
-4. **Handle-layer formalization** — enumerate and document the closed
-   list of handle producers; add a debug-build assertion/audit that no
-   other path inserts long-lived handles; freeze `HANDLE_TABLE_MAX`
-   sizing rationale as working-set-only.
+1. **VMO family** — done.  1a: `SYS_VMO_MAP` (`5c92039`, T079).
+   1b: `SYS_VMO_SIZE` / `SYS_VMO_SHARE` / `SYS_VMO_MAP_INTO` vmo args
+   (`3442e9b`, T080).
+2. **Process family** — done (`0d1b185`, T081/T082): 14 call-sites
+   across `syscall_proc.c`, `syscall_vm.c`, `syscall_cspace.c`,
+   `syscall_cap.c`, `syscall_irq.c`.
+3. **TCB + SchedContext** — done (`a4eb78e`, T083): 7 call-sites in
+   `syscall_tcb.c` + `syscall_sched.c`.
+4. **Handle-layer formalization** — this closeout: the closed producer
+   list below, the namespace-contract comments in
+   `kernel/new_core/src/cspace.c` and
+   `kernel/new_core/include/iris/nc/handle_table.h`, and the audit
+   verdict.  No debug assert was added: every producer call-site is on
+   the closed list already, so an insert-path assert would only be able
+   to re-check what the audit verified statically, while running on hot
+   paths (IPC delivery) — cost without detection value.
+
+## Handle producers — the closed list
+
+After A1, a handle (`>= 1024`) can only come into existence through
+these producers.  "Ephemeral" means the handle is working-set by
+nature; "compat" means it carries authority that a future phase should
+deliver via CSpace instead.
+
+| Producer | File/function | Object types | Why allowed | Persistent authority? | Future direction |
+|---|---|---|---|---|---|
+| Object-creation returns | `SYS_VMO_CREATE`, `SYS_ENDPOINT_CREATE`, `SYS_NOTIFY_CREATE`, `SYS_SC_CREATE`, `SYS_CNODE_CREATE`, `SYS_PROCESS_CREATE`, `SYS_UNTYPED_RETYPE`, `SYS_CAP_CREATE_*`, `SYS_INITRD_VMO`, `SYS_FRAMEBUFFER_VMO` | all | creator needs an initial reference; CSpace placement is a separate deliberate act (`SYS_CNODE_MINT` / `SYS_PROC_CSPACE_MINT`) | transitional working set — holder decides | keep; creation-into-slot could be added later but is not required |
+| Self-references | `SYS_PROCESS_SELF`, `SYS_TCB_SELF` | KProcess, KTcb | self-introspection; no delegation implied | ephemeral | keep |
+| Handle-layer ops | `SYS_HANDLE_DUP`, `SYS_CAP_DERIVE` (`handle_table_insert_derived`) | all | operate on the handle layer by definition | mirrors source | keep |
+| Cross-process placement | `SYS_HANDLE_TRANSFER` / `SYS_HANDLE_INSERT` dest, `SYS_VMO_SHARE` dest | all / KVmo | legacy delegation path; dest process cap now resolves dual | **compat — persistent authority delivered as a handle** | prefer `SYS_PROC_CSPACE_MINT`; candidates to retire once no service depends on them |
+| IPC cap delivery | `syscall_ipc_deliver_cap[_badged]` (`syscall_endpoint.c`) — EP_SEND/REPLY attached caps | transferable types | no receive-slot protocol exists yet | **compat — persistent authority delivered as a handle** | the post-A1 receive-slot design replaces this landing zone |
+| Reply-cap delivery | `EP_RECV`/`EP_CALL` path (`syscall_endpoint.c`, `syscall_reply.c`) | KReply | one-shot, bound to an in-flight call — the anchor ephemeral case | ephemeral **by design** | permanent; never migrates |
+| CSpace materialization | `SYS_CSPACE_RESOLVE` (`syscall_cspace.c`), `SYS_CNODE_FETCH` (`syscall_cnode_ops.c`) | all | the sanctioned CSpace→handle bridge for APIs that want a working handle | ephemeral (authority already lives in the slot) | keep |
+| Kernel bootstrap | `kernel_main.c` (init's KBootstrapCap), `kprocess_create` (root CNode handle), `task_thread_create`/`task_create` (KTcb auto-insert) | KBootstrapCap, KCNode, KTcb | pre-userland injection; notably the CSpace itself is *rooted* in a handle (`proc->cspace_root_h`) | infrastructure | keep; root-CNode-as-handle is an implementation detail invisible to userland |
+| Kernel selftests | `phase3_selftest.c` | various | debug-gated kernel selftest | test-only | keep |
+
+## Final audit — remaining handle-only call-sites
+
+Scan basis: every `handle_table_get_object` call in `kernel/core/` at
+closeout.  Classification:
+
+- **Handle-layer intrinsic (allowed)**: `SYS_HANDLE_CLOSE/DUP/TYPE/
+  SAME_OBJECT`, `SYS_CAP_DERIVE/REVOKE`, src args of `SYS_HANDLE_
+  TRANSFER/INSERT`, `SYS_CNODE_MINT/MOVE` src, `SYS_PROC_CSPACE_MINT`
+  src, IPC cap staging (`syscall_ipc_stage_cap*`).  These *are* the
+  ephemeral layer's API.
+- **Kernel-internal (allowed)**: the handle legs inside the dual
+  resolvers (`kernel/new_core/src/cspace.c`), `sys_proc_cspace_mint`'s
+  fetch of the child's root CNode from the *child's* table,
+  `handle_table.c` internals, `phase3_selftest.c`.
+- **Transitional gap (documented, small)**: exactly three secondary
+  `KNotification` arguments are still handle-only —
+  `SYS_PROCESS_WATCH` arg1, `SYS_IRQ_ROUTE_REGISTER` arg1,
+  `SYS_EXCEPTION_HANDLER` arg1.  KNotification is dual-capable in its
+  own family, and a CSpace-held notification reaches these three sites
+  via `SYS_CSPACE_RESOLVE`, so no authority is trapped in the handle
+  namespace; they are a mechanical one-increment follow-up, out of
+  scope for closeout (kernel code freeze except comments).
+- **Bugs/regressions found**: none.
+
+**Verdict: no persistent authority is invocable only by handle**, except
+the documented compat producers (cross-process placement, IPC cap
+delivery) whose replacement is the receive-slot design, and the three
+notification secondary args above which have a sanctioned CSpace path.
 
 ## Invariants
 
@@ -165,14 +250,35 @@ signature or number changes ever.
   reply-cap delivery, `SYS_CSPACE_RESOLVE`).
 - **I7 — every increment lands with a runtime test** proving the new
   CPtr path AND leaving all prior handle-path tests green.
+- **I8 — closed producer list** (closeout): a handle may only be
+  created/materialized by the producers table above.  New code that
+  inserts into a handle table outside those categories is a design
+  regression, not a convenience.
+- **I9 — per-family error codes survive migration**: where a family
+  used `INVALID_ARG` for type mismatch (TCB, SchedContext), the dual
+  sites remap `WRONG_TYPE → INVALID_ARG`; nothing observable changed on
+  the handle path.
 
-## First recommended increment
+All of I1–I7 held through increments 1–2b with zero exceptions; I8/I9
+were added at closeout from implementation experience.
 
-`SYS_VMO_MAP` dual resolver (family 1a): smallest possible slice — one
-call-site swap in `sys_vmo_map` (`kernel/core/syscall/syscall_vm.c`),
-`RIGHT_NONE` + `KOBJ_VMO` through `cspace_or_handle_resolve_obj`,
-existing `RIGHT_READ`/`RIGHT_WRITE` checks and mapping semantics
-untouched. Runtime test T079: create a VMO, mint it into an own-CSpace
-slot, `SYS_VMO_MAP` by CPtr, write/read the mapping, and verify the
-failure paths (empty slot, wrong type, insufficient rights) plus the
-unchanged handle path (T008).
+## Status and remaining post-A1 work
+
+The resolution endgame is reached: every object with persistent,
+delegable authority is CSpace-invocable, and the handle table is an
+ephemeral/bounded working set with a closed producer list.  Runtime
+coverage: T079–T083 (CPtr paths + authority-not-relaxed + failure
+paths), T001–T078 (handle paths unchanged), 79/79 green.
+
+Out of scope for A1 resolution closeout, tracked as follow-ups:
+
+1. **IPC receive-slot design** — replace the two "compat" producers
+   (IPC cap delivery, cross-process placement) with caps landing
+   directly in the receiver's CSpace.  Protocol decisions needed: slot
+   allocation, collision policy, cleanup on failed delivery.  Reply
+   caps explicitly stay out (I5).
+2. **Notification secondary args** — make the three remaining
+   `KNotification` handle-only sites dual (one mechanical increment).
+3. **Handle-table shrink/freeze** — with the working set formalized,
+   revisit `HANDLE_TABLE_MAX` sizing; deferred until receive-slot
+   removes the IPC-delivery producer (today's biggest handle source).
