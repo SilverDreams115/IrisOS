@@ -2490,6 +2490,45 @@ static void test_t075(void) {
         it_fail("T075", "spawn/exit smoke");
 }
 
+/* ── T077: blocked-IPC child kill cleanup ───────────────────────────────────
+ * Spawn the child, let it block in SYS_EP_RECV, then SYS_PROCESS_KILL it while
+ * blocked.  The kernel's teardown must cancel the blocked recv: the child dies
+ * and the parent's endpoint is left clean — a non-blocking send now reports
+ * WOULD_BLOCK (no stale receiver to rendezvous with a dead task). */
+static void test_t077(void) {
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { it_fail("T077", "ep create"); return; }
+    handle_id_t cmd_ep_h = (handle_id_t)ep;
+
+    handle_id_t proc_h = HANDLE_INVALID;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+        it_close(&cmd_ep_h);
+        it_fail("T077", "spawn"); return;
+    }
+
+    /* Let the child reach EP_RECV and block. */
+    it_sys1(SYS_SLEEP, 10);
+
+    /* Kill the child while it is blocked (RIGHT_MANAGE on the child handle). */
+    long kr   = it_sys1(SYS_PROCESS_KILL, (long)proc_h);
+    int  dead = (it_sys1(SYS_PROCESS_STATUS, (long)proc_h) == 0);
+
+    /* Blocked recv must have been cancelled: no stale receiver remains. */
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = 0x77;
+    long s = it_sys2(SYS_EP_NB_SEND, (long)cmd_ep_h, (long)&msg);
+    int  ep_clean = (s == (long)IRIS_ERR_WOULD_BLOCK);
+
+    it_close(&proc_h);
+    it_close(&cmd_ep_h);
+
+    if (kr == 0 && dead && ep_clean)
+        it_pass("T077");
+    else
+        it_fail("T077", "blocked child kill cleanup");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2596,6 +2635,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t073();
     test_t074();
     test_t075();
+    test_t077();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
