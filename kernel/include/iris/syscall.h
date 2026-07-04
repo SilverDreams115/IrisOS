@@ -48,10 +48,13 @@
 /* SYS_IPC_CREATE  9  (retired) */
 /* SYS_IPC_SEND   10  (retired) */
 /* SYS_IPC_RECV   11  (retired) */
-/* modern/conforming: capability IPC over KObjects/handles */
-#define SYS_CHAN_CREATE  12  /* () → handle_id or negative iris_error_t */
-#define SYS_CHAN_SEND    13  /* (handle, msg_uptr) → 0 or negative iris_error_t */
-#define SYS_CHAN_RECV    14  /* (handle, msg_uptr) → 0 or negative iris_error_t */
+/* SYS_CHAN_CREATE(12)/SEND(13)/RECV(14) — retired in Fase 13/Track G with the
+ * KChannel object.  Permanently reserved: the dispatch falls through to
+ * IRIS_ERR_NOT_SUPPORTED.  Do not reuse 12-14.  Productive IPC is the KEndpoint
+ * family (SYS_EP_SEND/RECV/CALL) + KNotification. */
+#define SYS_CHAN_CREATE  12  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
+#define SYS_CHAN_SEND    13  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
+#define SYS_CHAN_RECV    14  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 #define SYS_HANDLE_CLOSE 15  /* (handle) → 0 or negative iris_error_t */
 /* modern/conforming: Virtual Memory Objects */
 #define SYS_VMO_CREATE   16  /* (size) → handle_id or negative iris_error_t */
@@ -134,21 +137,12 @@
 #define SYS_IOPORT_OUT 33
 
 /*
- * Channel seal — modern/conforming (iris_error_t).
- *
- * SYS_CHAN_SEAL(chan_handle) → 0 or negative iris_error_t
- *   Requires RIGHT_WRITE on chan_handle.
- *   Immediately marks the channel closed and wakes all blocked receivers,
- *   which return IRIS_ERR_CLOSED.  Future sends also return IRIS_ERR_CLOSED.
- *   Already-buffered messages can still be drained by existing receivers.
- *   The handle itself remains valid and must still be closed with SYS_HANDLE_CLOSE.
- *   Idempotent: sealing an already-sealed channel returns 0.
- *
- *   Primary use case: supervisor (svcmgr) poisons old service channels before
- *   restarting a crashed service, ensuring stale client handles fail fast instead
- *   of silently queuing to a dead endpoint.
+ * SYS_CHAN_SEAL(37) — retired in Fase 13/Track G with the KChannel object.
+ * Permanently reserved: the dispatch falls through to IRIS_ERR_NOT_SUPPORTED.
+ * Do not reuse 37.  (Service teardown now relies on KEndpoint close semantics,
+ * which wake blocked peers with IRIS_ERR_CLOSED.)
  */
-#define SYS_CHAN_SEAL  37  /* (chan_handle) → 0 or negative iris_error_t */
+#define SYS_CHAN_SEAL  37  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * Synchronous channel call — modern/conforming (iris_error_t).
@@ -276,17 +270,12 @@
 #define SYS_CLOCK_GET       62
 
 /*
- * Timed channel receive (Phase 42).
- *
- * SYS_CHAN_RECV_TIMEOUT(chan_h, msg_uptr, timeout_ns) → 0 or negative iris_error_t.
- *   Blocks until a message is available on chan_h or timeout_ns nanoseconds
- *   have elapsed since the call.  Resolution is one scheduler tick (10 ms at
- *   100 Hz); timeouts are rounded up to the next tick boundary.
- *   Returns IRIS_ERR_TIMED_OUT (-15) if the deadline expires before a message
- *   arrives.  All other semantics are identical to SYS_CHAN_RECV.
- *   Requires RIGHT_READ on chan_h.
+ * SYS_CHAN_RECV_TIMEOUT(63) — retired in Fase 13/Track G with the KChannel
+ * object.  Permanently reserved: the dispatch falls through to
+ * IRIS_ERR_NOT_SUPPORTED.  Do not reuse 63.  (Timed blocking now uses
+ * SYS_NOTIFY_WAIT_TIMEOUT on a KNotification.)
  */
-#define SYS_CHAN_RECV_TIMEOUT 63
+#define SYS_CHAN_RECV_TIMEOUT 63  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * Timed notification wait (Phase 43).
@@ -353,15 +342,11 @@
 #define SYS_VMO_UNMAP 36  /* (vaddr, size) → 0 or negative iris_error_t */
 
 /*
- * Non-blocking channel receive — modern/conforming (iris_error_t).
- *
- * SYS_CHAN_RECV_NB(chan_handle, msg_uptr) → 0 or negative iris_error_t
- *   Requires RIGHT_READ on chan_handle.
- *   Returns IRIS_ERR_WOULD_BLOCK immediately when the channel is empty instead
- *   of blocking the calling task.  All other semantics (attached handle
- *   installation, closed-channel detection) are identical to SYS_CHAN_RECV.
+ * SYS_CHAN_RECV_NB(34) — retired in Fase 13/Track G with the KChannel object.
+ * Permanently reserved: the dispatch falls through to IRIS_ERR_NOT_SUPPORTED.
+ * Do not reuse 34.  (Non-blocking receive is now SYS_EP_NB_RECV on a KEndpoint.)
  */
-#define SYS_CHAN_RECV_NB  34  /* (handle, msg_uptr) → 0 or negative iris_error_t */
+#define SYS_CHAN_RECV_NB  34  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * Process termination — modern/conforming (iris_error_t).
