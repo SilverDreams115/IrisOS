@@ -2294,6 +2294,56 @@ static void test_t072(void) {
         it_fail("T072", "derive rights / revoke error paths");
 }
 
+/* ── T073: IPC staged-cap cleanup on failure paths ──────────────────────────
+ *
+ * A capability attached to an outbound IPC message is "staged" (validated and
+ * detached from the sender) before delivery.  This proves the staging FAILURE
+ * paths leave no phantom authority and no half-transferred handle:
+ *   (a) attaching a cap without RIGHT_TRANSFER → ACCESS_DENIED, and the source
+ *       handle is NOT consumed (still resolvable afterwards);
+ *   (b) attaching a stale handle → BAD_HANDLE, clean failure.
+ * EP_NB_SEND is used so the call never blocks: the staging check runs and fails
+ * before any rendezvous or enqueue. */
+static void test_t073(void) {
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { it_fail("T073", "ep create"); return; }
+    handle_id_t ep_h = (handle_id_t)ep;
+
+    /* (a) A cap WITHOUT RIGHT_TRANSFER: dup the endpoint down to READ only. */
+    long notrans = it_sys2(SYS_HANDLE_DUP, ep, (long)RIGHT_READ);
+    if (notrans < 0) { it_close(&ep_h); it_fail("T073", "dup"); return; }
+    handle_id_t notrans_h = (handle_id_t)notrans;
+
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label           = 0x73;
+    msg.attached_handle = (uint32_t)notrans;
+    msg.attached_rights = (uint32_t)RIGHT_READ;
+    long a = it_sys2(SYS_EP_NB_SEND, ep, (long)&msg);
+    int  denied    = (a == (long)IRIS_ERR_ACCESS_DENIED);
+    int  preserved = (it_sys1(SYS_HANDLE_TYPE, notrans) >= 0);  /* not consumed */
+
+    /* (b) Stale attached handle → clean BAD_HANDLE.  Create+close to make the
+     * id deterministically invalid. */
+    long stale = it_sys0(SYS_ENDPOINT_CREATE);
+    if (stale >= 0) it_sys1(SYS_HANDLE_CLOSE, stale);
+    struct IrisMsg msg2;
+    it_iris_msg_zero(&msg2);
+    msg2.label           = 0x73;
+    msg2.attached_handle = (uint32_t)stale;
+    msg2.attached_rights = (uint32_t)RIGHT_TRANSFER;
+    long b = it_sys2(SYS_EP_NB_SEND, ep, (long)&msg2);
+    int  bogus_clean = (b == (long)IRIS_ERR_BAD_HANDLE);
+
+    it_close(&notrans_h);
+    it_close(&ep_h);
+
+    if (denied && preserved && bogus_clean)
+        it_pass("T073");
+    else
+        it_fail("T073", "staged cap failure cleanup");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2397,6 +2447,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t070();
     test_t071();
     test_t072();
+    test_t073();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
