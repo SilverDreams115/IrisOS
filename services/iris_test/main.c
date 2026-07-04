@@ -3138,6 +3138,103 @@ static void test_t083(void) {
     if (ok) it_pass("T083"); else it_fail("T083", "tcb/sc by cptr");
 }
 
+/* ── T084: IPC receive-slot — basic endpoint cap delivery (A1.5) ────────────
+ * A receiver can declare an empty own-CSpace slot in the EP_RECV hint field
+ * msg.attached_cap (1..1023; 0 = legacy): a cap attached by the sender then
+ * lands IN THE SLOT and the receiver gets the CPtr back in attached_handle
+ * (the <1024 / >=1024 namespace split is the discriminator — no new msg
+ * fields).  A sender thread EP_SENDs the same endpoint cap twice (WRITE,
+ * TRANSFER-consumed dups): recv #1 declares slot 36 → attached_handle == 36
+ * and EP_NB_SEND by that CPtr resolves (WOULD_BLOCK = resolution + rights
+ * OK, no receiver on that ep); recv #2 declares nothing → legacy handle
+ * >= 1024, exactly as before A1.5. */
+
+#define T084_SLOT  36u
+
+static handle_id_t  g_t084_cmd_ep = HANDLE_INVALID;
+static handle_id_t  g_t084_cap1   = HANDLE_INVALID;
+static handle_id_t  g_t084_cap2   = HANDLE_INVALID;
+static volatile int g_t084_s1 = 999, g_t084_s2 = 999, g_t084_done = 0;
+static uint8_t      g_t084_stack[8192];
+
+static void t084_sender(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label           = 0x84;
+    m.attached_handle = (uint32_t)g_t084_cap1;
+    m.attached_rights = RIGHT_WRITE;
+    g_t084_s1 = (int)it_sys2(SYS_EP_SEND, (long)g_t084_cmd_ep, (long)&m);
+    it_iris_msg_zero(&m);
+    m.label           = 0x84;
+    m.attached_handle = (uint32_t)g_t084_cap2;
+    m.attached_rights = RIGHT_WRITE;
+    g_t084_s2 = (int)it_sys2(SYS_EP_SEND, (long)g_t084_cmd_ep, (long)&m);
+    g_t084_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+
+static void test_t084(void) {
+    g_t084_s1 = 999; g_t084_s2 = 999; g_t084_done = 0;
+
+    long epx = it_sys0(SYS_ENDPOINT_CREATE);   /* the cap being transferred */
+    long cmd = it_sys0(SYS_ENDPOINT_CREATE);   /* the transfer channel */
+    if (epx < 0 || cmd < 0) { it_fail("T084", "ep create"); return; }
+    handle_id_t epx_h = (handle_id_t)epx;
+    g_t084_cmd_ep = (handle_id_t)cmd;
+
+    /* Dups to attach (EP_SEND consumes the attached handle). */
+    long c1 = it_sys2(SYS_HANDLE_DUP, epx, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    long c2 = it_sys2(SYS_HANDLE_DUP, epx, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (c1 < 0 || c2 < 0) {
+        it_close(&epx_h); it_close(&g_t084_cmd_ep);
+        it_fail("T084", "dup"); return;
+    }
+    g_t084_cap1 = (handle_id_t)c1;
+    g_t084_cap2 = (handle_id_t)c2;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t084_sender;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t084_stack + sizeof(g_t084_stack))) & ~0xFULL;
+    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+        it_close(&epx_h); it_close(&g_t084_cmd_ep);
+        it_fail("T084", "thread create"); return;
+    }
+    it_sys1(SYS_SLEEP, 2);   /* let the sender queue its first send */
+
+    int ok = 1;
+    struct IrisMsg r;
+
+    /* recv #1: declare slot 36 → the cap must land there, as a CPtr. */
+    it_iris_msg_zero(&r);
+    r.attached_cap = T084_SLOT;
+    if (it_sys2(SYS_EP_RECV, (long)g_t084_cmd_ep, (long)&r) != 0) ok = 0;
+    if (ok && r.attached_handle != T084_SLOT) ok = 0;
+    if (ok) {
+        struct IrisMsg probe;
+        it_iris_msg_zero(&probe);
+        probe.label = 0x84;
+        if (it_sys2(SYS_EP_NB_SEND, (long)T084_SLOT, (long)&probe) !=
+            (long)IRIS_ERR_WOULD_BLOCK) ok = 0;   /* resolves via CSpace */
+    }
+
+    /* recv #2: no declaration → legacy handle materialization. */
+    it_iris_msg_zero(&r);
+    if (ok && it_sys2(SYS_EP_RECV, (long)g_t084_cmd_ep, (long)&r) != 0) ok = 0;
+    if (ok && !(r.attached_handle >= 1024u)) ok = 0;
+    if (ok) {
+        handle_id_t lh = (handle_id_t)r.attached_handle;
+        it_close(&lh);
+    }
+
+    for (int i = 0; i < 200 && !g_t084_done; i++) it_sys0(SYS_YIELD);
+    if (!g_t084_done || g_t084_s1 != 0 || g_t084_s2 != 0) ok = 0;
+
+    it_close(&epx_h);
+    it_close(&g_t084_cmd_ep);
+
+    if (ok) it_pass("T084"); else it_fail("T084", "recv-slot basic");
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -3240,6 +3337,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t081();
     test_t082();
     test_t083();
+    test_t084();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

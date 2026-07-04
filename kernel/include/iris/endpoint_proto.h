@@ -174,8 +174,9 @@
  *   16..29     reserved (dynamic/per-service use, unassigned).
  *   30..31     test fixtures (iris_test only; minted by init): wrong-type
  *              cap and insufficient-rights cap for CPtr failure tests.
- *   32..39     runtime-test dynamic mints (iris_test T083+ self-mints via
- *              IRIS_CPTR_TEST_PROC; the 16..29 pool is exhausted).
+ *   32..47     runtime-test dynamic mints and A1.5 receive-slots (iris_test
+ *              T083+ self-mints via IRIS_CPTR_TEST_PROC / T084+ IPC
+ *              receive-slot deliveries; the 16..29 pool is exhausted).
  *
  * Fase 13: KIoPort, KIrqCap and KBootstrapCap NOW resolve through CSpace via
  * the generic dual resolver cspace_or_handle_resolve_obj() — the device-access
