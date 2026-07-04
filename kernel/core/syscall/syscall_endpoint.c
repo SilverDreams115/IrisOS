@@ -347,9 +347,10 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         irq_spinlock_unlock(&ep->lock, flags);
 
-        /* Ph68: install cap in receiver's handle table (outside lock). */
+        /* Ph68: install cap (outside lock).  A1.5: routed — lands in the
+         * receiver's declared receive-slot (CPtr) or its handle table. */
         if (xfer_obj) {
-            uint32_t new_h = syscall_ipc_deliver_cap_badged(receiver, xfer_obj,
+            uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                             xfer_rights, xfer_badge);
             receiver->ipc_msg.attached_handle = new_h;
         }
@@ -399,18 +400,29 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                           RIGHT_READ, &ep, &_ep_r);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* Ph69: read receiver's hints (buf_uptr = where to put bulk data). */
+    /* Ph69: read receiver's hints (buf_uptr = where to put bulk data).
+     * A1.5: attached_cap is a second hint — the receive-slot declaration. */
     t->ep_recv_buf_uptr = 0;
     t->ipc_kbuf_len     = 0;
+    t->ep_recv_slot     = 0;
     {
         struct IrisMsg hints;
         if (user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)) &&
-            copy_from_user_checked(&hints, arg1, (uint32_t)sizeof(struct IrisMsg)))
+            copy_from_user_checked(&hints, arg1, (uint32_t)sizeof(struct IrisMsg))) {
             t->ep_recv_buf_uptr = hints.buf_uptr;
+            /* Fail-fast: a bad slot declaration fails BEFORE the endpoint is
+             * touched — a queued sender keeps its staged cap untouched. */
+            err = syscall_ipc_recv_slot_declare(t, hints.attached_cap);
+            if (err != IRIS_OK) {
+                kobject_release(&ep->base);
+                return syscall_err(err);
+            }
+        }
     }
 
     /* Fastpath: no-cap, no-bulk, non-EP_CALL sender already waiting. */
     if (ep_recv_fastpath(t, ep)) {
+        t->ep_recv_slot = 0;   /* no cap on the fastpath — drop the declaration */
         kobject_release(&ep->base);
         if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
             return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -462,10 +474,11 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Ph68/Fase11: install sender's transferred cap.  For an EP_CALL the
          * reply cap takes attached_handle, so the transferred cap is delivered
-         * into the separate attached_cap field; EP_SEND keeps attached_handle. */
+         * into the separate attached_cap field; EP_SEND keeps attached_handle.
+         * A1.5: routed — honours our declared receive-slot (CPtr < 1024). */
         t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
         if (xfer_obj) {
-            uint32_t new_h = syscall_ipc_deliver_cap_badged(t, xfer_obj,
+            uint32_t new_h = syscall_ipc_deliver_cap_routed(t, xfer_obj,
                                                             xfer_rights, xfer_badge);
             if (sender->ep_call_mode) {
                 t->ipc_msg.attached_cap        = new_h;
@@ -474,6 +487,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                 t->ipc_msg.attached_handle = new_h;
             }
         }
+        t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 
         /* Ph85: if sender used EP_CALL, create KReply and keep sender blocked. */
         if (sender->ep_call_mode) {
@@ -526,6 +540,10 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     task_yield();
 
     kobject_release(&ep->base);
+
+    /* A1.5: any routed delivery already consumed the declaration from the
+     * sender's context; make sure it never survives this recv either way. */
+    t->ep_recv_slot = 0;
 
     if (t->ipc_ep_closed) { t->ipc_ep_closed = 0; return syscall_err(IRIS_ERR_CLOSED); }
 
@@ -631,8 +649,9 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     irq_spinlock_unlock(&ep->lock, flags);
 
+    /* A1.5: routed — receiver's declared receive-slot or handle table. */
     if (xfer_obj) {
-        uint32_t new_h = syscall_ipc_deliver_cap_badged(receiver, xfer_obj,
+        uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                         xfer_rights, xfer_badge);
         receiver->ipc_msg.attached_handle = new_h;
     }
@@ -657,25 +676,34 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                           RIGHT_READ, &ep, &_ep_r);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* Ph69: read receiver's hint. */
+    /* Ph69: read receiver's hint.  A1.5: attached_cap declares a receive-slot. */
     uint64_t recv_buf = 0;
+    t->ep_recv_slot = 0;
     {
         struct IrisMsg hints;
         if (user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)) &&
-            copy_from_user_checked(&hints, arg1, (uint32_t)sizeof(struct IrisMsg)))
+            copy_from_user_checked(&hints, arg1, (uint32_t)sizeof(struct IrisMsg))) {
             recv_buf = hints.buf_uptr;
+            err = syscall_ipc_recv_slot_declare(t, hints.attached_cap);
+            if (err != IRIS_OK) {
+                kobject_release(&ep->base);
+                return syscall_err(err);
+            }
+        }
     }
 
     uint64_t flags = irq_spinlock_lock(&ep->lock);
 
     if (ep->closed) {
         irq_spinlock_unlock(&ep->lock, flags);
+        t->ep_recv_slot = 0;
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_CLOSED);
     }
 
     if (ep->ep_state != EP_STATE_SEND) {
         irq_spinlock_unlock(&ep->lock, flags);
+        t->ep_recv_slot = 0;
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_WOULD_BLOCK);
     }
@@ -712,10 +740,11 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     irq_spinlock_unlock(&ep->lock, flags);
 
-    /* Fase 11: EP_CALL transferred cap → attached_cap; EP_SEND → attached_handle. */
+    /* Fase 11: EP_CALL transferred cap → attached_cap; EP_SEND → attached_handle.
+     * A1.5: routed — honours our declared receive-slot (CPtr < 1024). */
     t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
     if (xfer_obj) {
-        uint32_t new_h = syscall_ipc_deliver_cap_badged(t, xfer_obj,
+        uint32_t new_h = syscall_ipc_deliver_cap_routed(t, xfer_obj,
                                                         xfer_rights, xfer_badge);
         if (sender->ep_call_mode) {
             t->ipc_msg.attached_cap        = new_h;
@@ -724,6 +753,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             t->ipc_msg.attached_handle = new_h;
         }
     }
+    t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 
     /* Ph85: ep_call_mode senders block until replied to. */
     if (sender->ep_call_mode) {
