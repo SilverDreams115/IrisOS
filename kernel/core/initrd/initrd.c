@@ -24,6 +24,8 @@
  *   [6] fb
  *   [7] sh
  *   [8] iris_test — ring-3 syscall test suite (Block 8)
+ *   [9] lifecycle_probe — minimal ring-3 TEST child spawned by iris_test to
+ *       exercise cross-process lifecycle paths (not a productive service)
  */
 
 #include <iris/initrd.h>
@@ -58,6 +60,9 @@ extern const uint8_t _binary_services_sh_sh_elf_end[];
 extern const uint8_t _binary_services_iris_test_iris_test_elf_start[];
 extern const uint8_t _binary_services_iris_test_iris_test_elf_end[];
 
+extern const uint8_t _binary_services_lifecycle_probe_lifecycle_probe_elf_start[];
+extern const uint8_t _binary_services_lifecycle_probe_lifecycle_probe_elf_end[];
+
 /* ── Initrd catalog (index-only, no names) ──────────────────────────────── */
 
 struct initrd_entry {
@@ -84,6 +89,8 @@ static const struct initrd_entry g_initrd[] = {
                 _binary_services_sh_sh_elf_end               },
     /* [8] */ { _binary_services_iris_test_iris_test_elf_start,
                 _binary_services_iris_test_iris_test_elf_end  },
+    /* [9] */ { _binary_services_lifecycle_probe_lifecycle_probe_elf_start,
+                _binary_services_lifecycle_probe_lifecycle_probe_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

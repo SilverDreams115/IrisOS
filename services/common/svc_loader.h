@@ -3,8 +3,9 @@
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 
-/* Number of entries in the ring-3 name→index catalog (must match initrd.c). */
-#define SL_CATALOG_COUNT 9u
+/* Number of entries in the ring-3 name→index catalog (must match initrd.c).
+ * Index 9 = lifecycle_probe, a TEST-only child spawned by iris_test. */
+#define SL_CATALOG_COUNT 10u
 
 /*
  * svc_initrd_count — query the kernel initrd catalog entry count.

@@ -21,7 +21,7 @@ ifneq ($(BUILD_CONFIG_ON_DISK),$(BUILD_CONFIG_MODE))
   $(info [build] configuration changed to $(BUILD_CONFIG_MODE); cleaning stale artifacts)
   $(shell rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.so $(BUILD_DIR)/*.elf $(BUILD_DIR)/*.d $(BUILD_DIR)/OVMF_VARS.fd)
   $(shell rm -rf $(BUILD_DIR)/efi_root)
-  $(shell rm -f services/svcmgr/svcmgr.elf services/kbd/kbd.elf services/vfs/vfs.elf services/init/init.elf services/console/console.elf services/fb/fb.elf services/sh/sh.elf services/iris_test/iris_test.elf services/userboot/userboot.bin)
+  $(shell rm -f services/svcmgr/svcmgr.elf services/kbd/kbd.elf services/vfs/vfs.elf services/init/init.elf services/console/console.elf services/fb/fb.elf services/sh/sh.elf services/iris_test/iris_test.elf services/lifecycle_probe/lifecycle_probe.elf services/userboot/userboot.bin)
   $(shell mkdir -p $(BUILD_DIR))
   $(shell printf '%s\n' "$(BUILD_CONFIG_MODE)" > $(BUILD_CONFIG_STAMP))
 endif
@@ -102,6 +102,7 @@ SERVICE_CONSOLE_ELF   := services/console/console.elf
 SERVICE_FB_ELF        := services/fb/fb.elf
 SERVICE_SH_ELF        := services/sh/sh.elf
 SERVICE_IRIS_TEST_ELF := services/iris_test/iris_test.elf
+SERVICE_LIFECYCLE_PROBE_ELF := services/lifecycle_probe/lifecycle_probe.elf
 # userboot: linked as raw flat binary (OUTPUT_FORMAT(binary)) for direct kernel mapping
 SERVICE_USERBOOT_BIN  := services/userboot/userboot.bin
 # objcopy-embedded initrd object files (binary blobs → linkable .o)
@@ -113,13 +114,14 @@ KERNEL_CONSOLE_BIN_OBJ    := $(BUILD_DIR)/console_bin.o
 KERNEL_FB_SVC_BIN_OBJ     := $(BUILD_DIR)/fb_svc_bin.o
 KERNEL_SH_BIN_OBJ         := $(BUILD_DIR)/sh_bin.o
 KERNEL_IRIS_TEST_BIN_OBJ  := $(BUILD_DIR)/iris_test_bin.o
+KERNEL_LIFECYCLE_PROBE_BIN_OBJ := $(BUILD_DIR)/lifecycle_probe_bin.o
 KERNEL_USERBOOT_BIN_OBJ   := $(BUILD_DIR)/userboot_bin.o
 KERNEL_DEMO_OBJS :=
 KERNEL_DEMO_DEFINES :=
 ifeq ($(ENABLE_RUNTIME_SELFTESTS),1)
 KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_RUNTIME_SELFTESTS
 endif
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_KSLAB_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_NC_KREPLY_OBJ) $(KERNEL_NC_KCNODE_OBJ) $(KERNEL_NC_KSCHEDCTX_OBJ) $(KERNEL_NC_KUNTYPED_OBJ) $(KERNEL_SYSCALL_CSPACE_OBJ) $(KERNEL_SYSCALL_SCHED_OBJ) $(KERNEL_SYSCALL_UNTYPED_OBJ) $(KERNEL_SYSCALL_REPLY_OBJ) $(KERNEL_SYSCALL_CNODE_OPS_OBJ) $(KERNEL_NC_KTCB_OBJ) $(KERNEL_SYSCALL_TCB_OBJ) $(KERNEL_NC_CSPACE_OBJ) $(KERNEL_NC_KVSPACE_OBJ) $(KERNEL_NC_KFRAME_OBJ) $(KERNEL_SYSCALL_FRAME_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_IRIS_TEST_BIN_OBJ) $(KERNEL_DEMO_OBJS)
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_KSLAB_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_NC_KREPLY_OBJ) $(KERNEL_NC_KCNODE_OBJ) $(KERNEL_NC_KSCHEDCTX_OBJ) $(KERNEL_NC_KUNTYPED_OBJ) $(KERNEL_SYSCALL_CSPACE_OBJ) $(KERNEL_SYSCALL_SCHED_OBJ) $(KERNEL_SYSCALL_UNTYPED_OBJ) $(KERNEL_SYSCALL_REPLY_OBJ) $(KERNEL_SYSCALL_CNODE_OPS_OBJ) $(KERNEL_NC_KTCB_OBJ) $(KERNEL_SYSCALL_TCB_OBJ) $(KERNEL_NC_CSPACE_OBJ) $(KERNEL_NC_KVSPACE_OBJ) $(KERNEL_NC_KFRAME_OBJ) $(KERNEL_SYSCALL_FRAME_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_IRIS_TEST_BIN_OBJ) $(KERNEL_LIFECYCLE_PROBE_BIN_OBJ) $(KERNEL_DEMO_OBJS)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -561,6 +563,21 @@ $(KERNEL_FB_SVC_BIN_OBJ): $(SERVICE_FB_ELF) | dirs
 	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
 	    $(SERVICE_FB_ELF) $@
 
+# ── lifecycle_probe (ring-3 TEST child for the spawn/kill lifecycle harness) ──
+$(BUILD_DIR)/lifecycle_probe_entry.o: services/lifecycle_probe/entry.S | dirs
+	gcc $(SERVICE_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lifecycle_probe_main.o: services/lifecycle_probe/main.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_LIFECYCLE_PROBE_ELF): $(BUILD_DIR)/lifecycle_probe_entry.o $(BUILD_DIR)/lifecycle_probe_main.o $(STACK_GUARD_OBJ)
+	ld $(SERVICE_LDFLAGS) $^ -o $@
+
+$(KERNEL_LIFECYCLE_PROBE_BIN_OBJ): $(SERVICE_LIFECYCLE_PROBE_ELF) | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    $(SERVICE_LIFECYCLE_PROBE_ELF) $@
+
 # ── sh service (ring-3 interactive shell) ────────────────────────────────────
 $(BUILD_DIR)/sh_entry.o: services/sh/entry.S | dirs
 	gcc $(SERVICE_ASFLAGS) -c $< -o $@
@@ -583,7 +600,7 @@ $(BUILD_DIR)/iris_test_entry.o: services/iris_test/entry.S | dirs
 $(BUILD_DIR)/iris_test_main.o: services/iris_test/main.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_IRIS_TEST_ELF): $(BUILD_DIR)/iris_test_entry.o $(BUILD_DIR)/iris_test_main.o $(STACK_GUARD_OBJ)
+$(SERVICE_IRIS_TEST_ELF): $(BUILD_DIR)/iris_test_entry.o $(BUILD_DIR)/iris_test_main.o $(BUILD_DIR)/svc_loader.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 	strip --strip-all $@
 

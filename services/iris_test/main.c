@@ -17,6 +17,7 @@
 #include <iris/vfs_ep_proto.h>
 #include <iris/kbd_ep_proto.h>
 #include <iris/console_ep_proto.h>
+#include "../common/svc_loader.h"
 
 /* ── Syscall helpers ────────────────────────────────────────────────────── */
 
@@ -2415,6 +2416,80 @@ static void test_t074(void) {
         it_fail("T074", "reply one-shot");
 }
 
+/* ── Ring-3 spawn/kill lifecycle harness (T075+) ────────────────────────────
+ *
+ * iris_test acts as the PARENT: using only its own IRIS_CPTR_SPAWN_CAP
+ * KBootstrapCap it spawns the minimal `lifecycle_probe` child (svc_load), hands
+ * it exactly one command endpoint (minted into the child's CPtr slot
+ * LP_CPTR_CMD_EP), and observes the child's lifecycle via SYS_PROCESS_WATCH /
+ * SYS_PROCESS_EXIT_CODE / SYS_PROCESS_KILL — all capability-scoped, no global
+ * authority.  These constants must match services/lifecycle_probe/main.c. */
+#define LP_CPTR_CMD_EP  3u
+#define LP_EXIT_MARKER  0x1E57
+
+/* Spawn a lifecycle_probe child, minting `cmd_ep_h` into its command slot.
+ * Returns 0 and fills *out_proc_h on success, or a negative error. */
+static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
+    struct svc_mint mints[1];
+    mints[0].slot   = LP_CPTR_CMD_EP;
+    mints[0].src_h  = cmd_ep_h;
+    mints[0].rights = RIGHT_READ | RIGHT_WRITE;
+    mints[0].badge  = 0;
+    handle_id_t boot_h = HANDLE_INVALID;
+    *out_proc_h = HANDLE_INVALID;
+    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+                             out_proc_h, &boot_h, mints, 1u);
+    it_close(&boot_h);   /* Track I: no bootstrap channel (HANDLE_INVALID anyway) */
+    return r;
+}
+
+/* ── T075: spawn/exit smoke ─────────────────────────────────────────────────
+ * Foundation test: spawn the child, drive it to run and exit via one command
+ * endpoint, and observe its exit code — proving the harness works end to end. */
+static void test_t075(void) {
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { it_fail("T075", "ep create"); return; }
+    handle_id_t cmd_ep_h = (handle_id_t)ep;
+
+    handle_id_t proc_h = HANDLE_INVALID;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+        it_close(&cmd_ep_h);
+        it_fail("T075", "spawn"); return;
+    }
+
+    /* Watch the child for exit on a notification, bit 0. */
+    long n = it_sys0(SYS_NOTIFY_CREATE);
+    handle_id_t watch_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+    int watch_ok = (watch_h != HANDLE_INVALID) &&
+                   (it_sys3(SYS_PROCESS_WATCH, (long)proc_h, (long)watch_h, 1) == 0);
+
+    /* Drive the child: EP_NB_SEND until it is blocked in EP_RECV (bounded). */
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label = 0x75;
+    int sent = 0;
+    for (int i = 0; i < 300 && !sent; i++) {
+        if (it_sys2(SYS_EP_NB_SEND, (long)cmd_ep_h, (long)&msg) == 0) sent = 1;
+        else it_sys1(SYS_SLEEP, 1);
+    }
+
+    /* Wait (bounded) for the death signal, then read the exit code. */
+    uint64_t bits = 0;
+    long ws = watch_ok
+        ? it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)watch_h, (long)(uintptr_t)&bits, 2000000000L)
+        : -1;
+    long code = it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h);
+
+    it_close(&watch_h);
+    it_close(&proc_h);
+    it_close(&cmd_ep_h);
+
+    if (sent && watch_ok && ws == 0 && (bits & 1u) && code == LP_EXIT_MARKER)
+        it_pass("T075");
+    else
+        it_fail("T075", "spawn/exit smoke");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2520,6 +2595,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t072();
     test_t073();
     test_t074();
+    test_t075();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

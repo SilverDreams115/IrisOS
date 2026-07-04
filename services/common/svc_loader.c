@@ -220,6 +220,7 @@ static long sl_name_to_index(const char *name) {
     if (sl_streq(name, "fb"))       return 6;
     if (sl_streq(name, "sh"))        return 7;
     if (sl_streq(name, "iris_test")) return 8;
+    if (sl_streq(name, "lifecycle_probe")) return 9;
     return -1;
 }
 
