@@ -57,10 +57,11 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject  *obj;
     iris_rights_t    rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0,
-                                             &obj, &rights);
+    /* A1 Increment 1: dual resolver — the VMO may be a CPtr slot or a handle.
+     * RIGHT_NONE defers to the READ/WRITE checks below (unchanged). */
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_VMO, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (obj->type != KOBJ_VMO) { kobject_release(obj); return syscall_err(IRIS_ERR_WRONG_TYPE); }
 
     struct KVSpace *vs = t->process->vspace;
     if (!vs) { kobject_release(obj); return syscall_err(IRIS_ERR_INVALID_ARG); }

@@ -277,6 +277,10 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * CPtr slot, proving device caps resolve via CSpace (cspace_or_handle_resolve_obj)
  * and are invocable by CPtr — the prerequisite for KChannel-free bootstrap. */
 #define IRIS_CPTR_TEST_SPAWN  ((uint64_t)26)
+/* A1 Increment 1: iris_test's OWN process cap (RIGHT_WRITE|RIGHT_DUPLICATE),
+ * minted by init post-load, so the suite can SYS_PROC_CSPACE_MINT runtime-made
+ * caps into its own CSpace slots (T079 mints a VMO and maps it by CPtr). */
+#define IRIS_CPTR_TEST_PROC   ((uint64_t)25)
 
 /*
  * Reserved name suffix ".ep": IRIS_SVCMGR_EP_LOOKUP_NAME and the legacy

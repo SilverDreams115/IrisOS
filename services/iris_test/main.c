@@ -2648,6 +2648,80 @@ static void test_t076(void) {
 /* it_recv_bootstrap retired — Fase 13/Track I: the spawn cap is the
  * IRIS_CPTR_SPAWN_CAP pre-start mint, not a bootstrap KChannel message. */
 
+/* ── T079: VMO map by CPtr (A1 Increment 1) ─────────────────────────────────
+ * SYS_VMO_MAP now resolves the VMO through the dual resolver: a CSpace slot
+ * (< 1024) must work exactly like a handle (>= 1024).  init mints our OWN
+ * process cap (RIGHT_WRITE) at IRIS_CPTR_TEST_PROC; we use it to
+ * SYS_PROC_CSPACE_MINT a runtime-created VMO into our own slots, map by CPtr
+ * and prove the mapping is real (write, then read the same pages back through
+ * a second raw-handle mapping — which also re-proves the old handle path).
+ * Failure paths: empty slot (clean error), wrong type (slot 30 is a
+ * KNotification → WRONG_TYPE), insufficient rights (read-only mint + writable
+ * map flags → ACCESS_DENIED). */
+
+#define T079_SLOT_RW    16L               /* dynamic slot: VMO, READ|WRITE */
+#define T079_SLOT_RO    17L               /* dynamic slot: VMO, READ only  */
+#define T079_SLOT_EMPTY 18L               /* never minted — must not resolve */
+#define T079_VA_CPTR    0x8060000000ULL
+#define T079_VA_HANDLE  0x8061000000ULL
+
+static void test_t079(void) {
+    /* init mints the self-proc cap post-load; retry briefly, then FAIL loud. */
+    long selfp = -1;
+    for (int i = 0; i < 50 && selfp < 0; i++) {
+        selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
+        if (selfp < 0) it_sys1(SYS_SLEEP, 2);
+    }
+    if (selfp < 0) { it_fail("T079", "self proc cptr"); return; }
+    handle_id_t selfp_h = (handle_id_t)selfp;
+
+    long vmo = it_sys1(SYS_VMO_CREATE, 4096);
+    if (vmo < 0) { it_close(&selfp_h); it_fail("T079", "vmo create"); return; }
+    handle_id_t vmo_h = (handle_id_t)vmo;
+
+    int ok = 1;
+
+    /* Mint the VMO into our own CSpace: slot 16 rw, slot 17 read-only. */
+    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, T079_SLOT_RW,
+                vmo, (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, T079_SLOT_RO,
+                      vmo, (long)RIGHT_READ) != 0) ok = 0;
+
+    /* Map by CPtr (writable) and write through the mapping. */
+    if (ok && it_sys3(SYS_VMO_MAP, T079_SLOT_RW, (long)T079_VA_CPTR, 1) != 0)
+        ok = 0;
+    if (ok) {
+        volatile uint64_t *p = (volatile uint64_t *)(uintptr_t)T079_VA_CPTR;
+        *p = 0xA1C0FFEE00000079ULL;
+        if (*p != 0xA1C0FFEE00000079ULL) ok = 0;
+    }
+
+    /* Failure paths: empty slot, wrong type, insufficient rights. */
+    if (ok && it_sys3(SYS_VMO_MAP, T079_SLOT_EMPTY,
+                      (long)T079_VA_HANDLE, 1) >= 0) ok = 0;
+    if (ok && it_sys3(SYS_VMO_MAP, (long)IRIS_CPTR_TEST_FIX_A,
+                      (long)T079_VA_HANDLE, 1) != (long)IRIS_ERR_WRONG_TYPE)
+        ok = 0;
+    if (ok && it_sys3(SYS_VMO_MAP, T079_SLOT_RO,
+                      (long)T079_VA_HANDLE, 1) != (long)IRIS_ERR_ACCESS_DENIED)
+        ok = 0;
+
+    /* Handle path unchanged: map the same VMO by raw handle at a second VA
+     * and read back what the CPtr mapping wrote (same physical pages). */
+    if (ok && it_sys3(SYS_VMO_MAP, vmo, (long)T079_VA_HANDLE, 1) != 0) ok = 0;
+    if (ok) {
+        volatile uint64_t *q = (volatile uint64_t *)(uintptr_t)T079_VA_HANDLE;
+        if (*q != 0xA1C0FFEE00000079ULL) ok = 0;
+    }
+
+    (void)it_sys2(SYS_VMO_UNMAP, (long)T079_VA_CPTR, 4096);
+    (void)it_sys2(SYS_VMO_UNMAP, (long)T079_VA_HANDLE, 4096);
+    it_close(&vmo_h);
+    it_close(&selfp_h);
+
+    if (ok) it_pass("T079"); else it_fail("T079", "vmo map by cptr");
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -2745,6 +2819,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t076();
     test_t077();
     test_t078();
+    test_t079();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

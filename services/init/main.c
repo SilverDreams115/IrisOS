@@ -229,6 +229,16 @@ static void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
         goto out;
     }
 
+    /* A1 Increment 1: mint iris_test's OWN process cap (RIGHT_WRITE) into its
+     * CSpace (slot 25) so the suite can SYS_PROC_CSPACE_MINT runtime-created
+     * caps into its own slots — T079 mints a VMO and maps it by CPtr.  The
+     * source handle only exists after the load, hence post-start; T079 runs
+     * late in the suite and retries the resolve, then FAILS loudly. */
+    if (init_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h,
+                  (long)IRIS_CPTR_TEST_PROC, (long)proc_h,
+                  (long)RIGHT_WRITE) != 0)
+        init_log("[USER][INIT] iris_test self-proc mint FAILED\n");
+
     /* Fase 13 (Track I): the iris_test spawn cap is delivered as the
      * IRIS_CPTR_SPAWN_CAP pre-start mint above — no KChannel SPAWN_CAP send. */
     init_close(&boot_h);
