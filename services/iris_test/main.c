@@ -2813,6 +2813,183 @@ static void test_t080(void) {
     if (ok) it_pass("T080"); else it_fail("T080", "vmo family by cptr");
 }
 
+/* ── T081: Process syscalls by CPtr (A1 Increment 2a) ───────────────────────
+ * The process-cap argument of the lifecycle syscalls now resolves through the
+ * dual resolver.  Spawn a lifecycle_probe child and mint ITS process cap into
+ * our own CSpace — slot 21 (READ|WRITE|MANAGE|DUPLICATE) and slot 22 (READ
+ * only) — using SYS_PROC_CSPACE_MINT with the TARGET process given by CPtr
+ * (our self-proc cap, slot 25), which is itself one of the migrated paths.
+ * Then drive the whole lifecycle by CPtr: STATUS (alive), WATCH, EXIT_CODE
+ * (alive → WOULD_BLOCK), FAULT_INFO (no fault → WOULD_BLOCK), KILL, watch
+ * fires, STATUS (dead), EXIT_CODE (dead → code), KILL again (idempotent 0),
+ * THREAD_START on the dead child (→ BAD_HANDLE).  Authority is not relaxed:
+ * KILL / THREAD_START via the READ-only slot 22 → ACCESS_DENIED, and minting
+ * INTO the child via slot 22 (no RIGHT_WRITE) → ACCESS_DENIED.  Failure
+ * paths: empty slot and wrong-type slot fail cleanly. */
+
+#define T081_SLOT_PROC  21L               /* child proc: READ|WRITE|MANAGE|DUP */
+#define T081_SLOT_RO    22L               /* child proc: READ only             */
+
+static void test_t081(void) {
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { it_fail("T081", "ep create"); return; }
+    handle_id_t cmd_ep_h = (handle_id_t)ep;
+
+    handle_id_t proc_h = HANDLE_INVALID;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+        it_close(&cmd_ep_h);
+        it_fail("T081", "spawn"); return;
+    }
+
+    int ok = 1;
+
+    /* Mint the child's proc cap into our CSpace — target proc by CPtr (25). */
+    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC, T081_SLOT_PROC,
+                (long)proc_h,
+                (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE | RIGHT_DUPLICATE)) != 0)
+        ok = 0;
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC, T081_SLOT_RO,
+                      (long)proc_h, (long)RIGHT_READ) != 0) ok = 0;
+
+    /* Authority not relaxed: minting INTO the child through the READ-only
+     * child cap (no RIGHT_WRITE) must be denied. */
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, T081_SLOT_RO, 60L, (long)proc_h,
+                      (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+
+    /* STATUS by CPtr: alive via both slots; empty / wrong-type fail. */
+    if (ok && it_sys1(SYS_PROCESS_STATUS, T081_SLOT_PROC) != 1) ok = 0;
+    if (ok && it_sys1(SYS_PROCESS_STATUS, T081_SLOT_RO) != 1) ok = 0;
+    if (ok && it_sys1(SYS_PROCESS_STATUS, T079_SLOT_EMPTY) >= 0) ok = 0;
+    if (ok && it_sys1(SYS_PROCESS_STATUS, (long)IRIS_CPTR_TEST_FIX_A) !=
+              (long)IRIS_ERR_WRONG_TYPE) ok = 0;
+
+    /* EXIT_CODE by CPtr while alive → WOULD_BLOCK; FAULT_INFO → WOULD_BLOCK. */
+    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, T081_SLOT_PROC) !=
+              (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
+    {
+        static uint8_t fault_buf[32];
+        if (ok && it_sys2(SYS_PROCESS_FAULT_INFO, T081_SLOT_PROC,
+                          (long)(uintptr_t)fault_buf) !=
+                  (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
+    }
+
+    /* KILL / THREAD_START via the READ-only slot → ACCESS_DENIED (both need
+     * RIGHT_MANAGE; entry/rsp are valid so resolution+rights are what fail). */
+    if (ok && it_sys1(SYS_PROCESS_KILL, T081_SLOT_RO) !=
+              (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+    if (ok && it_sys4(SYS_THREAD_START, T081_SLOT_RO, 0x8000200000L,
+                      0x8000300000L, 0) != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+
+    /* WATCH by CPtr, then KILL by CPtr; the watch must fire. */
+    long n = it_sys0(SYS_NOTIFY_CREATE);
+    handle_id_t watch_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+    if (watch_h == HANDLE_INVALID) ok = 0;
+    if (ok && it_sys3(SYS_PROCESS_WATCH, T081_SLOT_PROC, (long)watch_h, 1) != 0)
+        ok = 0;
+    if (ok && it_sys1(SYS_PROCESS_KILL, T081_SLOT_PROC) != 0) ok = 0;
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)watch_h,
+                    (long)(uintptr_t)&bits, 2000000000L) != 0 || !(bits & 1u))
+            ok = 0;
+    }
+
+    /* Dead child by CPtr: STATUS 0, EXIT_CODE readable, KILL idempotent,
+     * THREAD_START on a torn-down process → BAD_HANDLE. */
+    if (ok && it_sys1(SYS_PROCESS_STATUS, T081_SLOT_PROC) != 0) ok = 0;
+    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, T081_SLOT_PROC) < 0) ok = 0;
+    if (ok && it_sys1(SYS_PROCESS_KILL, T081_SLOT_PROC) != 0) ok = 0;
+    if (ok && it_sys4(SYS_THREAD_START, T081_SLOT_PROC, 0x8000200000L,
+                      0x8000300000L, 0) != (long)IRIS_ERR_BAD_HANDLE) ok = 0;
+
+    it_close(&watch_h);
+    it_close(&proc_h);
+    it_close(&cmd_ep_h);
+
+    if (ok) it_pass("T081"); else it_fail("T081", "process by cptr");
+}
+
+/* ── T082: Process target by CPtr for VMO/handle operations (A1 Inc 2a) ─────
+ * The destination-process argument of SYS_VMO_MAP_INTO / SYS_VMO_SHARE /
+ * SYS_HANDLE_INSERT now resolves through the dual resolver, so a fully
+ * CPtr-based delegation works: VMO by CPtr (slot 23) + process by CPtr
+ * (slot 24).  Re-mapping the same VA → BUSY proves the PTEs were really
+ * installed.  Authority is not relaxed: the self-proc cap (slot 25, WRITE
+ * only — no MANAGE) is rejected as MAP_INTO/SHARE target with ACCESS_DENIED;
+ * a wrong-type slot and an empty slot fail cleanly; and the pure handle path
+ * (both args as handles) still works. */
+
+#define T082_SLOT_VMO   23L               /* VMO: READ|WRITE|DUPLICATE  */
+#define T082_SLOT_PROC  24L               /* child2 proc: full authority */
+#define T082_MAP_VA2    (LP_MAP_VA + 0x10000ULL)
+
+static void test_t082(void) {
+    long vmo = it_sys1(SYS_VMO_CREATE, 4096);
+    if (vmo < 0) { it_fail("T082", "vmo create"); return; }
+    handle_id_t vmo_h = (handle_id_t)vmo;
+
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { it_close(&vmo_h); it_fail("T082", "ep create"); return; }
+    handle_id_t cmd_ep_h = (handle_id_t)ep;
+
+    handle_id_t proc_h = HANDLE_INVALID;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+        it_close(&cmd_ep_h); it_close(&vmo_h);
+        it_fail("T082", "spawn"); return;
+    }
+
+    int ok = 1;
+
+    /* Mint fixtures (target proc by CPtr 25): VMO → 23, child proc → 24. */
+    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC, T082_SLOT_VMO,
+                vmo, (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
+        ok = 0;
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
+                      T082_SLOT_PROC, (long)proc_h,
+                      (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |
+                             RIGHT_DUPLICATE)) != 0) ok = 0;
+
+    /* MAP_INTO: VMO by CPtr + process by CPtr; repeat → BUSY (PTEs real). */
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, T082_SLOT_PROC,
+                      (long)LP_MAP_VA, 1) != 0) ok = 0;
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, T082_SLOT_PROC,
+                      (long)LP_MAP_VA, 1) != (long)IRIS_ERR_BUSY) ok = 0;
+
+    /* SHARE: VMO by CPtr + process by CPtr → handle in the child's table. */
+    if (ok && it_sys3(SYS_VMO_SHARE, T082_SLOT_VMO, T082_SLOT_PROC,
+                      (long)(RIGHT_READ | RIGHT_WRITE)) < 0) ok = 0;
+
+    /* HANDLE_INSERT: destination process by CPtr (src stays a handle). */
+    if (ok && it_sys4(SYS_HANDLE_INSERT, T082_SLOT_PROC, vmo,
+                      (long)RIGHT_READ, 0) < 0) ok = 0;
+
+    /* Authority not relaxed: self-proc slot 25 carries WRITE only (no
+     * MANAGE) → MAP_INTO/SHARE reject it; wrong type / empty slot fail. */
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, (long)IRIS_CPTR_TEST_PROC,
+                      (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_ACCESS_DENIED)
+        ok = 0;
+    if (ok && it_sys3(SYS_VMO_SHARE, T082_SLOT_VMO, (long)IRIS_CPTR_TEST_PROC,
+                      (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, (long)IRIS_CPTR_TEST_FIX_A,
+                      (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_WRONG_TYPE) ok = 0;
+    if (ok && it_sys3(SYS_VMO_SHARE, T082_SLOT_VMO, T079_SLOT_EMPTY,
+                      (long)RIGHT_READ) >= 0) ok = 0;
+
+    /* Pure handle path unchanged: both args as raw handles. */
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo, (long)proc_h,
+                      (long)T082_MAP_VA2, 1) != 0) ok = 0;
+
+    /* Cleanup: kill via the old handle path (still must work). */
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) ok = 0;
+    if (ok && it_sys1(SYS_PROCESS_STATUS, (long)proc_h) != 0) ok = 0;
+
+    it_close(&proc_h);
+    it_close(&cmd_ep_h);
+    it_close(&vmo_h);
+
+    if (ok) it_pass("T082"); else it_fail("T082", "vmo ops proc by cptr");
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -2912,6 +3089,8 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t078();
     test_t079();
     test_t080();
+    test_t081();
+    test_t082();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
