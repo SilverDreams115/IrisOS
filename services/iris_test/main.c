@@ -2217,6 +2217,83 @@ static void test_t070(void) {
     if (ok) it_pass("T070"); else it_fail("T070", "retired SYS_CHAN ABI");
 }
 
+/* ── T071: cascade revoke — SYS_CAP_DERIVE tree torn down by SYS_CAP_REVOKE ──
+ *
+ * Runtime coverage for the derivation-tree revoke path (SYS_CAP_DERIVE(78) /
+ * SYS_CAP_REVOKE(79)), which previously had zero ring-3 coverage.  Proves that
+ * revoking a root cap transitively invalidates every handle derived from it
+ * (child + grandchild) while the root itself survives, and that the revoked
+ * handles fail cleanly with IRIS_ERR_BAD_HANDLE (slot generation bumped) rather
+ * than resolving to phantom authority. */
+static void test_t071(void) {
+    long root = it_sys0(SYS_ENDPOINT_CREATE);
+    if (root < 0) { it_fail("T071", "ep create"); return; }
+    handle_id_t root_h = (handle_id_t)root;
+
+    /* child derived from root; grandchild derived from child.  RIGHT_SAME_RIGHTS
+     * keeps RIGHT_DUPLICATE so the child can itself be a derivation source. */
+    long child  = it_sys2(SYS_CAP_DERIVE, root,  (long)RIGHT_SAME_RIGHTS);
+    long gchild = (child >= 0)
+                ? it_sys2(SYS_CAP_DERIVE, child, (long)RIGHT_SAME_RIGHTS)
+                : -1;
+
+    int before_ok = (child >= 0) && (gchild >= 0)
+                 && (it_sys1(SYS_HANDLE_TYPE, child)  >= 0)
+                 && (it_sys1(SYS_HANDLE_TYPE, gchild) >= 0)
+                 && (it_sys2(SYS_HANDLE_SAME_OBJECT, root, child) == 1);
+
+    /* Revoke transitively deletes child + grandchild; root is not a child of
+     * itself and must remain valid. */
+    long rv = it_sys1(SYS_CAP_REVOKE, root);
+
+    int child_dead  = (it_sys1(SYS_HANDLE_TYPE, child)  == (long)IRIS_ERR_BAD_HANDLE);
+    int gchild_dead = (it_sys1(SYS_HANDLE_TYPE, gchild) == (long)IRIS_ERR_BAD_HANDLE);
+    int root_alive  = (it_sys1(SYS_HANDLE_TYPE, root)   >= 0);
+
+    it_close(&root_h);
+
+    if (before_ok && rv == 0 && child_dead && gchild_dead && root_alive)
+        it_pass("T071");
+    else
+        it_fail("T071", "cascade revoke");
+}
+
+/* ── T072: derivation rights reduction + revoke failure paths ───────────────
+ *
+ * Proves (a) a cap derived with reduced rights cannot itself be a derivation
+ * source once RIGHT_DUPLICATE is dropped (ACCESS_DENIED — no rights escalation),
+ * (b) SYS_CAP_REVOKE on a stale handle fails cleanly (negative error, no panic),
+ * and (c) a valid revoke tears down the one child that exists. */
+static void test_t072(void) {
+    long root = it_sys0(SYS_ENDPOINT_CREATE);
+    if (root < 0) { it_fail("T072", "ep create"); return; }
+    handle_id_t root_h = (handle_id_t)root;
+
+    /* Read-only child (drops DUPLICATE/TRANSFER). */
+    long ro = it_sys2(SYS_CAP_DERIVE, root, (long)RIGHT_READ);
+    /* Deriving from a cap without RIGHT_DUPLICATE must be denied. */
+    long escalate = (ro >= 0)
+                  ? it_sys2(SYS_CAP_DERIVE, ro, (long)RIGHT_SAME_RIGHTS)
+                  : 0;
+
+    /* Stale handle → clean BAD_HANDLE (create+close to guarantee staleness). */
+    long tmp = it_sys0(SYS_ENDPOINT_CREATE);
+    if (tmp >= 0) it_sys1(SYS_HANDLE_CLOSE, tmp);
+    long bad_revoke = (tmp >= 0) ? it_sys1(SYS_CAP_REVOKE, tmp) : -1;
+
+    /* Valid revoke of root deletes its single child (ro). */
+    long ok_revoke = it_sys1(SYS_CAP_REVOKE, root);
+    int  ro_dead   = (it_sys1(SYS_HANDLE_TYPE, ro) == (long)IRIS_ERR_BAD_HANDLE);
+
+    it_close(&root_h);
+
+    if (ro >= 0 && escalate == (long)IRIS_ERR_ACCESS_DENIED &&
+        bad_revoke < 0 && ok_revoke == 0 && ro_dead)
+        it_pass("T072");
+    else
+        it_fail("T072", "derive rights / revoke error paths");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2318,6 +2395,8 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t068();
     test_t069();
     test_t070();
+    test_t071();
+    test_t072();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
