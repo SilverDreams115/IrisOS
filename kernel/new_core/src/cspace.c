@@ -140,6 +140,26 @@ TYPED_RESOLVE(cspace_resolve_frame,       struct KFrame,       KOBJ_FRAME)
  * Deep multi-level CPtr paths (>= 1024) remain reachable through the pure
  * CSpace syscalls (SYS_CSPACE_RESOLVE, CNode ops), which take unambiguous
  * CPtr arguments.
+ *
+ * A1 closeout — authority namespace contract (docs/architecture/
+ * a1-authority-namespace-endgame.md):
+ *   value <  1024 → CPtr: the CSpace is the CANONICAL namespace for
+ *                   persistent, delegable authority.
+ *   value >= 1024 → handle: a per-process EPHEMERAL materialization
+ *                   (working set), never a second canonical namespace.
+ * Rules that follow from it:
+ *   - Every object type that carries persistent authority resolves through
+ *     a dual resolver in its syscalls; NEW persistent object types MUST be
+ *     CSpace-invocable from day one (add a dual resolver call, not a
+ *     handle_table_get_object call).
+ *   - Reply caps are the intentional ephemeral exception: one-shot,
+ *     delivered by EP_RECV as a handle, never minted into a CNode.
+ *   - SYS_CSPACE_RESOLVE / SYS_CNODE_FETCH materialize handles on purpose —
+ *     that is the sanctioned CSpace→handle bridge, not a leak.
+ *   - ACCESS_DENIED from the CSpace leg is a hard stop; there is NO
+ *     fallback to the handle table (and none in the other direction).
+ *   - Handles may only be created by the closed producer list documented
+ *     in the A1 design doc; extending that list is a design decision.
  */
 #define CSPACE_DIRECT_CPTR_LIMIT ((iris_cptr_t)1u << HANDLE_GEN_SHIFT)
 

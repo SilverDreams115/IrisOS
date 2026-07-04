@@ -27,6 +27,21 @@ typedef struct {
  *   - Every operation acquires table->lock internally
  *   - HANDLE_TABLE_MAX is the absolute ceiling — no dynamic growth
  *   - handle_table_close_all is the only bulk-close path
+ *
+ * A1 closeout — role of this table (docs/architecture/
+ * a1-authority-namespace-endgame.md):
+ *   The handle table is the process's EPHEMERAL working set, not a
+ *   canonical authority namespace.  Persistent, delegable authority lives
+ *   in the process's CSpace (root CNode) and is invoked by CPtr (< 1024);
+ *   handle ids (slot | gen << HANDLE_GEN_SHIFT, always >= 1024) are
+ *   materializations with a closed producer list: object-creation returns,
+ *   handle-layer ops (DUP/DERIVE), IPC cap delivery, one-shot reply caps
+ *   (intentional ephemeral exception), SYS_CSPACE_RESOLVE / SYS_CNODE_FETCH
+ *   (the sanctioned CSpace→handle bridge), and kernel bootstrap.
+ *   Do NOT route new persistent authority through this table: new object
+ *   types get a dual resolver (cspace_or_handle_resolve_*) so they are
+ *   CSpace-invocable; handle-only resolution of a persistent cap is a
+ *   design regression.
  */
 
 void         handle_table_init(HandleTable *ht);
