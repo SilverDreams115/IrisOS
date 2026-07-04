@@ -53,6 +53,15 @@ static inline long it_sys3(long nr, long a0, long a1, long a2) {
     return ret;
 }
 
+static inline long it_sys4(long nr, long a0, long a1, long a2, long a3) {
+    long ret;
+    register long _a3 __asm__("r10") = a3;
+    __asm__ volatile ("syscall"
+        : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(a2), "r"(_a3)
+        : "rcx", "r11", "memory");
+    return ret;
+}
+
 /* ── Serial output ──────────────────────────────────────────────────────── */
 
 static handle_id_t g_serial_h = HANDLE_INVALID;
@@ -2572,6 +2581,61 @@ static void test_t078(void) {
         it_fail("T078", "server death client recovery");
 }
 
+/* ── T076: child mapping teardown ───────────────────────────────────────────
+ * Map a parent-owned VMO into the child's address space, let the child block
+ * with the mapping live, then kill the child.  The kernel's teardown must reap
+ * the child's address space (auto-unmapping the VMO) without freeing the VMO
+ * itself — the parent still owns it.  Verified by re-mapping the same VMO into
+ * the PARENT afterwards and reading/writing it: no panic, no stale mapping, no
+ * corrupted refcount.  (LP_MAP_VA = USER_VMO_BASE, the same known-good VA T008
+ * maps at; child and parent live in different address spaces.) */
+#define LP_MAP_VA  0x8050000000ULL
+
+static void test_t076(void) {
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { it_fail("T076", "ep create"); return; }
+    handle_id_t cmd_ep_h = (handle_id_t)ep;
+
+    handle_id_t proc_h = HANDLE_INVALID;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+        it_close(&cmd_ep_h);
+        it_fail("T076", "spawn"); return;
+    }
+
+    /* One-page VMO mapped writable into the CHILD's address space. */
+    long vmo = it_sys1(SYS_VMO_CREATE, 4096);
+    handle_id_t vmo_h = (vmo >= 0) ? (handle_id_t)vmo : HANDLE_INVALID;
+    long mi = (vmo_h != HANDLE_INVALID)
+        ? it_sys4(SYS_VMO_MAP_INTO, (long)vmo_h, (long)proc_h, (long)LP_MAP_VA, 1)
+        : -1;
+
+    /* Let the child reach EP_RECV and block (mapping stays live). */
+    it_sys1(SYS_SLEEP, 10);
+
+    /* Kill the child while the mapping is live — teardown must auto-unmap it. */
+    long kr   = it_sys1(SYS_PROCESS_KILL, (long)proc_h);
+    int  dead = (it_sys1(SYS_PROCESS_STATUS, (long)proc_h) == 0);
+
+    /* VMO must have survived intact: re-map into the PARENT and read/write it. */
+    int reusable = 0;
+    long pm = it_sys3(SYS_VMO_MAP, (long)vmo_h, (long)LP_MAP_VA, 1);
+    if (pm == 0) {
+        volatile uint8_t *p = (volatile uint8_t *)(uintptr_t)LP_MAP_VA;
+        p[0] = 0xA5; p[4095] = 0x5A;
+        reusable = (p[0] == 0xA5 && p[4095] == 0x5A);
+        it_sys2(SYS_VMO_UNMAP, (long)LP_MAP_VA, 4096);
+    }
+
+    it_close(&vmo_h);
+    it_close(&proc_h);
+    it_close(&cmd_ep_h);
+
+    if (mi == 0 && kr == 0 && dead && reusable)
+        it_pass("T076");
+    else
+        it_fail("T076", "child mapping teardown");
+}
+
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
 /*
@@ -2678,6 +2742,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t073();
     test_t074();
     test_t075();
+    test_t076();
     test_t077();
     test_t078();
 
