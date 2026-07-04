@@ -69,11 +69,23 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * the server observes it on EP_RECV / EP_NB_RECV. */
     t->ipc_msg.sender_badge = ep_badge;
 
-    /* attached_handle is reserved for the reply cap on EP_CALL. */
-    if (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP) {
+    /* attached_handle is reserved for the reply cap on EP_CALL.  A1.5: a
+     * value 1..1023 declares the caller's receive-slot for a cap the REPLY
+     * transfers back (the KReply itself always stays a handle); >= 1024
+     * keeps the historical INVALID_ARG contract, so legacy callers (forced
+     * to pass 0) are unaffected. */
+    if (t->ipc_msg.attached_handle >= 1024u) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
+    {
+        iris_error_t se = syscall_ipc_recv_slot_declare(t, t->ipc_msg.attached_handle);
+        if (se != IRIS_OK) {
+            kobject_release(&ep->base);
+            return syscall_err(se);
+        }
+    }
+    t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
 
     /* Fase 11: stage a transferred cap from attached_cap (separate field so the
      * reply cap and the transferred cap never collide).  Staging validates the
@@ -144,9 +156,11 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         irq_spinlock_unlock(&ep->lock, flags);
 
         /* Fase 11: deliver the staged transferred cap into the receiver's
-         * attached_cap (the reply cap below takes attached_handle). */
+         * attached_cap (the reply cap below takes attached_handle).
+         * A1.5: routed — lands in the receiver's declared receive-slot
+         * (CPtr) or its handle table. */
         if (xfer_obj) {
-            uint32_t nh = syscall_ipc_deliver_cap_badged(receiver, xfer_obj,
+            uint32_t nh = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                          xfer_rights, xfer_badge);
             receiver->ipc_msg.attached_cap        = nh;
             receiver->ipc_msg.attached_cap_rights = xfer_rights;
@@ -211,6 +225,10 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(&t->pending_kreply->base);
         t->pending_kreply = 0;
     }
+
+    /* A1.5: a reply cap delivery already consumed the declaration from the
+     * server's context; make sure it never survives this call either way. */
+    t->ep_recv_slot = 0;
 
     if (t->ipc_ep_closed) {
         t->ipc_ep_closed    = 0u;
@@ -296,9 +314,10 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * implied by the one-shot KReply itself). */
     caller->ipc_msg.sender_badge = 0u;
 
-    /* Install the staged reply cap in the caller's handle table. */
+    /* Install the staged reply cap.  A1.5: routed — lands in the caller's
+     * receive-slot declared at EP_CALL entry (CPtr) or its handle table. */
     if (xfer_obj) {
-        uint32_t new_h = syscall_ipc_deliver_cap_badged(caller, xfer_obj,
+        uint32_t new_h = syscall_ipc_deliver_cap_routed(caller, xfer_obj,
                                                         xfer_rights, xfer_badge);
         caller->ipc_msg.attached_handle = new_h;
     }
