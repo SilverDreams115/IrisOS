@@ -283,15 +283,19 @@ path bit-for-bit intact when no slot is declared, reply caps untouched
 into an opt-out: it only fires when the receiver declines (or on the
 documented TOCTOU fallback).
 
+**A1.6 shipped** (see `a1-5-ipc-receive-slot.md` § in-tree adoption):
+svcmgr stores REGISTER caps CSpace-canonically via declared
+receive-slots (pool 64..255, released on UNREGISTER), init's boot VFS
+session lands as a CPtr in its own CSpace, and T089–T092 cover the
+service flows plus legacy compat.  Suite: 88/88.
+
 Remaining follow-ups:
 
-1. **Receive-slot adoption** — migrate in-tree services (svcmgr, vfs,
-   init bootstrap) to declare receive-slots, shrinking the remaining
-   IPC-delivery handle producer in practice; then revisit the
-   cross-process placement producer (`SYS_HANDLE_TRANSFER`/`INSERT`
-   dest) whose CSpace replacement is `SYS_PROC_CSPACE_MINT`.
+1. **Cross-process placement retirement** — revisit the
+   `SYS_HANDLE_TRANSFER`/`INSERT` dest producer, whose CSpace
+   replacement is `SYS_PROC_CSPACE_MINT`; and consider a sanctioned
+   own-root-CNode accessor so services need not type-probe for it.
 2. **Notification secondary args** — make the three remaining
    `KNotification` handle-only sites dual (one mechanical increment).
-3. **Handle-table shrink/freeze** — with the working set formalized and
-   the IPC-delivery producer now opt-out, revisit `HANDLE_TABLE_MAX`
-   sizing once in-tree services adopt receive-slots.
+3. **Handle-table shrink/freeze** — with services adopted, measure the
+   live working set and revisit `HANDLE_TABLE_MAX` sizing.

@@ -142,3 +142,42 @@ passed to the legacy handle path.
 
 Host tests: `kcnode_mint_excl_badged` primitive (empty install, ALREADY_EXISTS on
 occupied with slot content untouched, out-of-range, refcount/badge/rights).
+
+## A1.6 — in-tree adoption
+
+Receive-slots are service practice, not just a kernel/test mechanism.
+Userland declares and discriminates through `iris/ipc_recv_slot.h`
+(input-only helpers over the protocol above; no new surface).
+
+- **svcmgr** declares a receive-slot on every discovery-endpoint recv:
+  a REGISTER-transferred endpoint cap lands directly in its root CNode
+  (registration pool: slots 64..255, one per live dynamic service) and
+  is stored CSpace-canonically (`public_cptr`).  LOOKUP materializes a
+  per-request ephemeral master via `SYS_CSPACE_RESOLVE` (the sanctioned
+  bridge) for the reduced-rights DUP and closes it; UNREGISTER releases
+  the pool slot with `SYS_CNODE_DELETE`.  svcmgr finds its own
+  root-CNode handle (inserted by `kprocess_create` as every process's
+  first handle) by a startup type probe; probe failure or pool
+  exhaustion degrades to the legacy handle path.  A cap attached to a
+  non-REGISTER opcode is discarded in both landing modes (previously it
+  leaked into the handle table).
+- **init**'s productive `vfs.ep` lookup declares a reply receive-slot
+  (slot 16 of the free 16..29 per-process pool); the session cap lands
+  in init's CSpace and every boot-path VFS EP_CALL invokes it by CPtr.
+  The three supervisor lookups stay on handle delivery deliberately:
+  they feed `SYS_PROC_CSPACE_MINT` as source handles (handle-layer
+  working set by design).
+- **vfs** needs no change: its endpoints already arrive as pre-start
+  CSpace mints (Fase 8) and the only caps it receives are KReply caps
+  (ephemeral by design).  Its *clients* adopt receive-slots (init, T091).
+- **Tests**: T089 (svcmgr CSpace-backed registration lifecycle + slot
+  reuse via a legacy client), T090 (reply-slot lookup lands as CPtr;
+  occupied slot fails fast ALREADY_EXISTS; NOT_FOUND leaves the slot
+  empty), T091 (vfs.ep by reply-slot + real VFS READ_AT by CPtr),
+  T092 (slotless client still gets the legacy handle).  Suite: 88/88.
+
+Remaining handle producers after adoption: object-creation returns,
+self-references, handle-layer ops, reply caps (permanent), the
+sanctioned `SYS_CSPACE_RESOLVE`/`SYS_CNODE_FETCH` bridges, supervisor
+mint-source lookups, and slotless legacy clients (sh's kbd/console use
+is pre-start mints already; dynamic clients choose per call).
