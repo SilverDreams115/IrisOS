@@ -6,6 +6,7 @@
 #include <iris/nc/error.h>
 #include <iris/nc/handle.h>
 #include <iris/ipc_msg.h>
+#include <iris/ipc_recv_slot.h>
 #include <iris/endpoint_proto.h>
 #include <stdint.h>
 #include "../common/svc_loader.h"
@@ -46,6 +47,13 @@ struct svcmgr_service_state {
 struct svcmgr_dynamic_service {
     uint32_t endpoint;
     handle_id_t public_h;
+    /* A1.6: canonical CSpace storage for the registered master.  When the
+     * REGISTER cap arrives through a declared receive-slot it lives in
+     * svcmgr's root CNode at this CPtr (1..1023) and public_h stays
+     * HANDLE_INVALID; when it arrives as a legacy handle (no slot available,
+     * or the TOCTOU fallback) public_h holds it and public_cptr is 0.
+     * Exactly one of the two is set while active. */
+    uint32_t public_cptr;
     iris_rights_t client_rights;
     char name[SVCMGR_SERVICE_NAME_CAP];
     uint8_t active;
@@ -65,6 +73,11 @@ struct svcmgr_state {
     handle_id_t ep_h;                                         /* svcmgr KEndpoint for EP-based discovery */
     handle_id_t death_notif_h;  /* Track B: one KNotification; bit (1<<service_id)
                                  * signalled by the kernel on each service exit. */
+    /* A1.6: svcmgr's OWN root CNode handle, discovered at startup by a
+     * handle-type probe (kprocess_create inserts it as the first handle of
+     * every process).  Needed for SYS_CNODE_DELETE on receive-slot cleanup;
+     * HANDLE_INVALID degrades every declaration to the legacy handle path. */
+    handle_id_t root_cnode_h;
     handle_id_t irq_caps[SVCMGR_IRQ_CAPS_TABLE_SIZE];       /* indexed by IRQ number  */
     handle_id_t ioport_caps[SVCMGR_IOPORT_CAPS_TABLE_SIZE]; /* indexed by service_id  */
     struct svcmgr_service_state services[IRIS_SERVICE_RUNTIME_SLOT_COUNT];
@@ -367,10 +380,93 @@ static uint32_t svcmgr_dynamic_ready_count(const struct svcmgr_state *state) {
     uint32_t ready = 0;
     if (!state) return 0;
     for (uint32_t i = 0; i < SVCMGR_DYNAMIC_SERVICE_CAP; i++) {
-        if (state->dynamic[i].active && state->dynamic[i].public_h != HANDLE_INVALID)
+        if (state->dynamic[i].active &&
+            (state->dynamic[i].public_h != HANDLE_INVALID ||
+             state->dynamic[i].public_cptr != 0u))
             ready++;
     }
     return ready;
+}
+
+/* ── A1.6: receive-slot support ─────────────────────────────────────────
+ *
+ * svcmgr declares a receive-slot on every discovery-endpoint recv so a
+ * REGISTER cap lands directly in its root CNode (CSpace-canonical storage,
+ * no handle materialized at delivery).  Slots SVCMGR_RSLOT_BASE..LIMIT-1
+ * are the registration pool — one per live CSpace-backed registration.
+ * When the pool is exhausted (or the root CNode handle was not found) the
+ * declaration degrades to 0 = legacy handle delivery, which keeps working.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+#define SVCMGR_RSLOT_BASE  64u   /* below: well-known bootstrap slots (Fase 8) */
+#define SVCMGR_RSLOT_LIMIT 256u  /* root CNode has KCNODE_DEFAULT_SLOTS = 256 */
+
+/* Discover svcmgr's own root-CNode handle.  kprocess_create inserts the
+ * root CNode as the FIRST handle of every process (generation 1); svcmgr
+ * never creates another KCNode, so a type probe over the first few
+ * generation-1 ids finds it unambiguously.  Uses only svcmgr's own table
+ * and the rights granted to it at creation. */
+static void svcmgr_find_root_cnode(struct svcmgr_state *state) {
+    state->root_cnode_h = HANDLE_INVALID;
+    for (uint32_t slot = 0; slot < 16u; slot++) {
+        handle_id_t h = handle_id_make(slot, 1u);
+        if (svcmgr_syscall1(SYS_HANDLE_TYPE, (uint64_t)h) ==
+            (int64_t)IRIS_HANDLE_TYPE_CNODE) {
+            state->root_cnode_h = h;
+            return;
+        }
+    }
+}
+
+/* Pick the receive-slot to declare for the next recv: the first pool slot
+ * not owned by a live CSpace-backed registration.  0 = declare nothing. */
+static uint32_t svcmgr_next_recv_slot(const struct svcmgr_state *state) {
+    uint8_t used[(SVCMGR_RSLOT_LIMIT - SVCMGR_RSLOT_BASE + 7u) / 8u] = {0};
+    if (state->root_cnode_h == HANDLE_INVALID) return 0;
+    for (uint32_t i = 0; i < SVCMGR_DYNAMIC_SERVICE_CAP; i++) {
+        uint32_t c = state->dynamic[i].public_cptr;
+        if (state->dynamic[i].active &&
+            c >= SVCMGR_RSLOT_BASE && c < SVCMGR_RSLOT_LIMIT)
+            used[(c - SVCMGR_RSLOT_BASE) / 8u] |=
+                (uint8_t)(1u << ((c - SVCMGR_RSLOT_BASE) % 8u));
+    }
+    for (uint32_t s = SVCMGR_RSLOT_BASE; s < SVCMGR_RSLOT_LIMIT; s++) {
+        if (!(used[(s - SVCMGR_RSLOT_BASE) / 8u] &
+              (uint8_t)(1u << ((s - SVCMGR_RSLOT_BASE) % 8u))))
+            return s;
+    }
+    return 0;
+}
+
+/* Type of a delivered cap (CPtr or handle) without consuming it.  The CPtr
+ * leg goes through the sanctioned CSpace→handle bridge (SYS_CSPACE_RESOLVE)
+ * for the check only; the ephemeral handle is closed immediately. */
+static int64_t svcmgr_delivered_cap_type(uint32_t v) {
+    if (iris_msg_cap_is_cptr(v)) {
+        int64_t rh = svcmgr_syscall1(SYS_CSPACE_RESOLVE, (uint64_t)v);
+        int64_t t;
+        handle_id_t tmp;
+        if (rh < 0) return rh;
+        t = svcmgr_syscall1(SYS_HANDLE_TYPE, (uint64_t)rh);
+        tmp = (handle_id_t)rh;
+        svcmgr_close_handle_if_valid(&tmp);
+        return t;
+    }
+    return svcmgr_syscall1(SYS_HANDLE_TYPE, (uint64_t)v);
+}
+
+/* Discard a delivered cap svcmgr will not keep: CNODE_DELETE for a CPtr
+ * (frees the pool slot), close for a legacy handle.  No-op on no-cap. */
+static void svcmgr_discard_delivered_cap(struct svcmgr_state *state, uint32_t v) {
+    if (v == (uint32_t)IRIS_MSG_NO_CAP) return;
+    if (iris_msg_cap_is_cptr(v)) {
+        if (state->root_cnode_h != HANDLE_INVALID)
+            (void)svcmgr_syscall2(SYS_CNODE_DELETE,
+                                  (uint64_t)state->root_cnode_h, (uint64_t)v);
+    } else {
+        handle_id_t h = (handle_id_t)v;
+        svcmgr_close_handle_if_valid(&h);
+    }
 }
 
 static void svcmgr_dynamic_clear(struct svcmgr_dynamic_service *svc, int seal) {
@@ -378,6 +474,14 @@ static void svcmgr_dynamic_clear(struct svcmgr_dynamic_service *svc, int seal) {
     (void)seal;  /* Track I: dynamic masters are KEndpoints — always closed. */
     if (svc->public_h != HANDLE_INVALID)
         svcmgr_close_handle_if_valid(&svc->public_h);
+    /* A1.6: release the CSpace-held master — the CNode slot owns its own
+     * reference, so deleting the slot is the release; the pool slot becomes
+     * declarable again on the next recv. */
+    if (svc->public_cptr != 0u && g_svcmgr_state.root_cnode_h != HANDLE_INVALID)
+        (void)svcmgr_syscall2(SYS_CNODE_DELETE,
+                              (uint64_t)g_svcmgr_state.root_cnode_h,
+                              (uint64_t)svc->public_cptr);
+    svc->public_cptr = 0u;
     svc->endpoint = 0;
     svc->client_rights = RIGHT_NONE;
     svc->active = 0;
@@ -459,9 +563,20 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
     struct IrisMsg reply;
     uint32_t i;
     handle_id_t reply_h;
+    /* A1.6: master handles materialized from CSpace for this request only
+     * (SYS_CSPACE_RESOLVE bridge); closed before returning. */
+    handle_id_t ephemeral_master_h = HANDLE_INVALID;
 
     if (!msg || msg->attached_handle == (uint32_t)IRIS_MSG_NO_CAP) return;
     reply_h = (handle_id_t)msg->attached_handle;
+
+    /* A1.6: only REGISTER consumes a transferred cap.  A cap attached to any
+     * other opcode used to leak into svcmgr's handle table (the delivered
+     * handle was silently ignored); with receive-slots it would leak a pool
+     * slot instead.  Discard it up front in both landing modes. */
+    if (msg->label != IRIS_SVCMGR_EP_REGISTER &&
+        msg->attached_cap != (uint32_t)IRIS_MSG_NO_CAP)
+        svcmgr_discard_delivered_cap(state, msg->attached_cap);
 
     for (i = 0; i < (uint32_t)sizeof(reply); i++) ((uint8_t *)&reply)[i] = 0;
 
@@ -483,7 +598,17 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
             const struct iris_service_catalog_entry *cat =
                 (!dyn) ? svcmgr_catalog_find_name((const char *)g_ep_recv_buf) : 0;
 
-            if (dyn && dyn->public_h != HANDLE_INVALID) {
+            if (dyn && dyn->public_cptr != 0u) {
+                /* A1.6: CSpace-backed registration — materialize an ephemeral
+                 * master through the sanctioned bridge for the DUP below. */
+                int64_t rr = svcmgr_syscall1(SYS_CSPACE_RESOLVE,
+                                             (uint64_t)dyn->public_cptr);
+                if (rr >= 0) {
+                    ephemeral_master_h = (handle_id_t)rr;
+                    master_h = ephemeral_master_h;
+                    granted  = dyn->client_rights;
+                }
+            } else if (dyn && dyn->public_h != HANDLE_INVALID) {
                 master_h = dyn->public_h;
                 granted  = dyn->client_rights;
             } else if (cat) {
@@ -586,22 +711,27 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
     }
     case IRIS_SVCMGR_EP_REGISTER: {
         /* Fase 11 cap-backed registration: the caller transfers its service
-         * endpoint in attached_cap (kernel-delivered as a real handle, never a
-         * forgeable number) and svcmgr stores it so LOOKUP returns a usable
-         * cap.  Badge-authenticated (sender_badge → owner_badge); reserved
-         * names are rejected first (catalog + ".ep"); a cap is required. */
+         * endpoint in attached_cap (kernel-delivered, never a forgeable
+         * number) and svcmgr stores it so LOOKUP returns a usable cap.
+         * A1.6: the drain loop declares a receive-slot, so the cap normally
+         * lands in svcmgr's root CNode (attached_cap < 1024 = the CPtr) and
+         * is stored CSpace-canonically; a legacy-handle landing (>= 1024:
+         * pool exhausted, no root CNode, or the TOCTOU fallback) keeps the
+         * old handle storage.  Badge-authenticated (sender_badge →
+         * owner_badge); reserved names are rejected first (catalog + ".ep");
+         * a cap is required. */
         uint32_t nl = msg->buf_len < IRIS_EP_SVCNAME_MAX
                       ? msg->buf_len : IRIS_EP_SVCNAME_MAX - 1u;
         const char *nm   = (const char *)g_ep_recv_buf;
-        handle_id_t cap_h = (handle_id_t)msg->attached_cap;
+        uint32_t cap_v   = msg->attached_cap;
         iris_error_t rej  = IRIS_OK;
         g_ep_recv_buf[nl] = '\0';
 
         if (nl == 0u || svcmgr_name_has_ep_suffix(nm) || svcmgr_name_is_catalog(nm))
             rej = IRIS_ERR_ACCESS_DENIED;            /* reserved name (T061) */
-        else if (cap_h == (handle_id_t)IRIS_MSG_NO_CAP)
+        else if (cap_v == (uint32_t)IRIS_MSG_NO_CAP)
             rej = IRIS_ERR_INVALID_ARG;              /* a cap is required */
-        else if (svcmgr_syscall1(SYS_HANDLE_TYPE, (uint64_t)cap_h) !=
+        else if (svcmgr_delivered_cap_type(cap_v) !=
                  (int64_t)IRIS_HANDLE_TYPE_ENDPOINT)
             rej = IRIS_ERR_INVALID_ARG;              /* must be an endpoint */
         else if (svcmgr_dynamic_find_name(state, nm))
@@ -612,15 +742,22 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
         if (rej == IRIS_OK && !slot) rej = IRIS_ERR_NO_MEMORY;
 
         if (rej != IRIS_OK) {
-            if (cap_h != (handle_id_t)IRIS_MSG_NO_CAP)
-                svcmgr_close_handle_if_valid(&cap_h);  /* no leak on reject */
+            /* No leak on reject: frees the CSpace pool slot or closes the
+             * legacy handle. */
+            svcmgr_discard_delivered_cap(state, cap_v);
             reply.label    = IRIS_EP_REPLY_ERR;
             reply.words[0] = (uint64_t)(uint32_t)rej;
         } else {
             svcmgr_copy_name(slot->name, nm);
             slot->endpoint      = SVCMGR_DYNAMIC_ID_BASE +
                                   (uint32_t)(slot - state->dynamic);
-            slot->public_h      = cap_h;             /* real transferred endpoint */
+            if (iris_msg_cap_is_cptr(cap_v)) {
+                slot->public_cptr = cap_v;           /* CSpace-canonical master */
+                slot->public_h    = HANDLE_INVALID;
+            } else {
+                slot->public_h    = (handle_id_t)cap_v; /* legacy handle master */
+                slot->public_cptr = 0u;
+            }
             slot->client_rights = RIGHT_WRITE;
             slot->owner_badge   = msg->sender_badge;
             slot->generation    = 1u;
@@ -671,6 +808,9 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
             svcmgr_close_handle_if_valid(&orphan);
         }
     }
+    /* A1.6: the CSpace slot keeps the authority; the resolved master was a
+     * per-request working handle only. */
+    svcmgr_close_handle_if_valid(&ephemeral_master_h);
     (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, (uint64_t)reply_h);
 }
 
@@ -1060,10 +1200,15 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     for (uint32_t i = 0; i < SVCMGR_DYNAMIC_SERVICE_CAP; i++) {
         state->dynamic[i].endpoint = 0;
         state->dynamic[i].public_h = HANDLE_INVALID;
+        state->dynamic[i].public_cptr = 0u;
         state->dynamic[i].client_rights = RIGHT_NONE;
         state->dynamic[i].active = 0;
         for (uint32_t j = 0; j < SVCMGR_SERVICE_NAME_CAP; j++) state->dynamic[i].name[j] = '\0';
     }
+
+    /* A1.6: locate the creation-time root-CNode handle so receive-slot
+     * registrations can be stored (and later deleted) in svcmgr's CSpace. */
+    svcmgr_find_root_cnode(state);
 
     svcmgr_log(sm_str_started);
 
@@ -1152,6 +1297,10 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
                 for (k = 0; k < (uint32_t)sizeof(ep_msg); k++) p[k] = 0;
             }
             ep_msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_recv_buf;
+            /* A1.6: declare a registration receive-slot so a REGISTER cap
+             * lands in the CSpace pool instead of the handle table.  0 (pool
+             * exhausted / no root CNode) keeps legacy handle delivery. */
+            iris_msg_declare_recv_slot(&ep_msg, svcmgr_next_recv_slot(state));
             ep_r = svcmgr_syscall2(SYS_EP_NB_RECV, state->ep_h,
                                     (uint64_t)(uintptr_t)&ep_msg);
             if (ep_r != IRIS_OK) break;
