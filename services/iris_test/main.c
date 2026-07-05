@@ -3417,6 +3417,262 @@ static void test_t086(void) {
     if (ok) it_pass("T086"); else it_fail("T086", "recv-slot atomicity");
 }
 
+/* ── T087: EP_CALL receive-slot keeps the reply cap ephemeral (A1.5) ────────
+ * Both call-direction transfers use receive-slots while the KReply stays a
+ * one-shot HANDLE:
+ *   - the server's EP_RECV declares slot 38 → the cap the caller attaches
+ *     via EP_CALL attached_cap lands there (CPtr);
+ *   - the caller's EP_CALL declares slot 39 in attached_handle (previously
+ *     a forced-zero field; >= 1024 still fails INVALID_ARG) → the cap the
+ *     REPLY transfers lands there;
+ *   - the reply cap itself is delivered to the server as a handle >= 1024
+ *     (asserted) and keeps the T074 one-shot contract: first SYS_REPLY ok,
+ *     second → NOT_FOUND.  receive-slot never converts a reply cap. */
+
+#define T087_SRV_SLOT    38u
+#define T087_REPLY_SLOT  39u
+
+static handle_id_t       g_t087_ep   = HANDLE_INVALID;
+static handle_id_t       g_t087_capB = HANDLE_INVALID;
+static volatile uint32_t g_t087_got_cap = 0, g_t087_reply_h = 0;
+static volatile int      g_t087_sig = 999, g_t087_r1 = 999, g_t087_r2 = 999;
+static volatile int      g_t087_done = 0;
+static uint8_t           g_t087_stack[8192];
+
+static void t087_server(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.attached_cap = T087_SRV_SLOT;              /* receive-slot declaration */
+    long rr = it_sys2(SYS_EP_RECV, (long)g_t087_ep, (long)&m);
+    if (rr == 0) {
+        g_t087_got_cap = m.attached_cap;         /* caller's transferred cap */
+        g_t087_reply_h = m.attached_handle;      /* reply cap — MUST be a handle */
+        g_t087_sig = (int)it_sys2(SYS_NOTIFY_SIGNAL, (long)m.attached_cap, 0x87);
+
+        struct IrisMsg rm;
+        it_iris_msg_zero(&rm);
+        rm.label           = 0x87;
+        rm.attached_handle = (uint32_t)g_t087_capB;   /* cap back to caller */
+        rm.attached_rights = RIGHT_WRITE;
+        g_t087_r1 = (int)it_sys2(SYS_REPLY, (long)g_t087_reply_h, (long)&rm);
+
+        it_iris_msg_zero(&rm);
+        rm.label  = 0x87;
+        g_t087_r2 = (int)it_sys2(SYS_REPLY, (long)g_t087_reply_h, (long)&rm);
+    }
+    g_t087_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+
+static void test_t087(void) {
+    g_t087_got_cap = 0; g_t087_reply_h = 0;
+    g_t087_sig = 999; g_t087_r1 = 999; g_t087_r2 = 999; g_t087_done = 0;
+
+    long nA = it_sys0(SYS_NOTIFY_CREATE);
+    long nB = it_sys0(SYS_NOTIFY_CREATE);
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (nA < 0 || nB < 0 || ep < 0) { it_fail("T087", "create"); return; }
+    handle_id_t nA_h = (handle_id_t)nA, nB_h = (handle_id_t)nB;
+    g_t087_ep = (handle_id_t)ep;
+
+    long cA = it_sys2(SYS_HANDLE_DUP, nA, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    long cB = it_sys2(SYS_HANDLE_DUP, nB, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (cA < 0 || cB < 0) {
+        it_close(&nA_h); it_close(&nB_h); it_close(&g_t087_ep);
+        it_fail("T087", "dup"); return;
+    }
+    g_t087_capB = (handle_id_t)cB;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t087_server;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t087_stack + sizeof(g_t087_stack))) & ~0xFULL;
+    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+        it_close(&nA_h); it_close(&nB_h); it_close(&g_t087_ep);
+        it_fail("T087", "thread create"); return;
+    }
+    it_sys1(SYS_SLEEP, 2);   /* server blocks with slot 38 declared */
+
+    int ok = 1;
+    struct IrisMsg cm;
+    it_iris_msg_zero(&cm);
+    cm.label              = 0x87;
+    cm.attached_handle    = T087_REPLY_SLOT;      /* reply receive-slot */
+    cm.attached_cap       = (uint32_t)cA;         /* cap to the server */
+    cm.attached_cap_rights = RIGHT_WRITE;
+    if (it_sys2(SYS_EP_CALL, (long)g_t087_ep, (long)&cm) != 0) ok = 0;
+
+    /* Reply's transferred cap landed in OUR declared slot 39. */
+    if (ok && cm.attached_handle != T087_REPLY_SLOT) ok = 0;
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T087_REPLY_SLOT, 0x99) != 0) ok = 0;
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_WAIT, nB, (long)(uintptr_t)&bits) != 0 ||
+            bits != 0x99u) ok = 0;
+    }
+    /* Server signalled notifA through its slot-38 CPtr. */
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_WAIT, nA, (long)(uintptr_t)&bits) != 0 ||
+            bits != 0x87u) ok = 0;
+    }
+
+    for (int i = 0; i < 200 && !g_t087_done; i++) it_sys0(SYS_YIELD);
+    if (!g_t087_done) ok = 0;
+    if (ok && g_t087_got_cap != T087_SRV_SLOT) ok = 0;      /* landed as CPtr */
+    if (ok && !(g_t087_reply_h >= 1024u)) ok = 0;           /* reply cap = handle */
+    if (ok && g_t087_sig != 0) ok = 0;                      /* invocable by CPtr */
+    if (ok && g_t087_r1 != 0) ok = 0;                       /* first reply ok */
+    if (ok && g_t087_r2 != (int)IRIS_ERR_NOT_FOUND) ok = 0; /* one-shot (T074) */
+
+    it_close(&nA_h);
+    it_close(&nB_h);
+    it_close(&g_t087_ep);
+
+    if (ok) it_pass("T087"); else it_fail("T087", "recv-slot ep_call");
+}
+
+/* ── T088: death cleanup with receive-slot (A1.5) ───────────────────────────
+ * A declared receive-slot must leave NO trace when the receive never
+ * completes:
+ *   A. receiver thread killed while blocked with slot 40 declared → slot 40
+ *      has no ghost cap (SYS_CSPACE_RESOLVE fails), the endpoint is clean
+ *      (EP_NB_SEND → WOULD_BLOCK, the T077 probe);
+ *   B. the SAME slot 40 then serves a real transfer: a fresh receiver
+ *      declares it and blocks FIRST, the sender delivers from its own
+ *      context (send-side routed path) → cap lands as CPtr 40, invocable —
+ *      no partially-installed state survived sub-case A;
+ *   C. endpoint closed while a receiver waits with slot 41 declared → the
+ *      receiver wakes with CLOSED and slot 41 stays empty. */
+
+#define T088_SLOT_A  40u
+#define T088_SLOT_C  41u
+
+static handle_id_t       g_t088_ep  = HANDLE_INVALID;
+static handle_id_t       g_t088_ep2 = HANDLE_INVALID;
+static long              g_t088_r1_tcb = -1;
+static volatile int      g_t088_r1_ready = 0;
+static volatile uint32_t g_t088_r2_got = 0;
+static volatile int      g_t088_r2_sig = 999, g_t088_r2_done = 0;
+static volatile long     g_t088_r3_rr = 999;
+static volatile int      g_t088_r3_done = 0;
+static uint8_t           g_t088_stack1[8192];
+static uint8_t           g_t088_stack2[8192];
+static uint8_t           g_t088_stack3[8192];
+
+static void t088_recv1(void) {   /* killed while blocked with slot declared */
+    struct IrisMsg m;
+    g_t088_r1_tcb   = it_sys0(SYS_TCB_SELF);
+    g_t088_r1_ready = 1;
+    it_iris_msg_zero(&m);
+    m.attached_cap = T088_SLOT_A;
+    (void)it_sys2(SYS_EP_RECV, (long)g_t088_ep, (long)&m);
+    it_sys0(SYS_THREAD_EXIT);    /* not reached: killed while blocked */
+    for (;;) {}
+}
+
+static void t088_recv2(void) {   /* real transfer into the same slot */
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.attached_cap = T088_SLOT_A;
+    if (it_sys2(SYS_EP_RECV, (long)g_t088_ep, (long)&m) == 0) {
+        g_t088_r2_got = m.attached_handle;
+        g_t088_r2_sig = (int)it_sys2(SYS_NOTIFY_SIGNAL, (long)m.attached_handle, 0x88);
+    }
+    g_t088_r2_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+
+static void t088_recv3(void) {   /* endpoint closed under a declared slot */
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.attached_cap = T088_SLOT_C;
+    g_t088_r3_rr   = it_sys2(SYS_EP_RECV, (long)g_t088_ep2, (long)&m);
+    g_t088_r3_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+
+static void test_t088(void) {
+    g_t088_r1_tcb = -1; g_t088_r1_ready = 0;
+    g_t088_r2_got = 0; g_t088_r2_sig = 999; g_t088_r2_done = 0;
+    g_t088_r3_rr = 999; g_t088_r3_done = 0;
+
+    long n   = it_sys0(SYS_NOTIFY_CREATE);
+    long ep  = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep2 = it_sys0(SYS_ENDPOINT_CREATE);
+    if (n < 0 || ep < 0 || ep2 < 0) { it_fail("T088", "create"); return; }
+    handle_id_t n_h = (handle_id_t)n;
+    g_t088_ep  = (handle_id_t)ep;
+    g_t088_ep2 = (handle_id_t)ep2;
+
+    int ok = 1;
+
+    /* ── A: kill a receiver blocked with a declared slot ── */
+    {
+        uint64_t entry = (uint64_t)(uintptr_t)t088_recv1;
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack1 + sizeof(g_t088_stack1))) & ~0xFULL;
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) ok = 0;
+        for (int i = 0; i < 200 && !g_t088_r1_ready; i++) it_sys0(SYS_YIELD);
+        it_sys1(SYS_SLEEP, 2);            /* let it block in EP_RECV */
+        if (ok && (g_t088_r1_tcb < 0 ||
+                   it_sys1(SYS_TCB_EXIT, g_t088_r1_tcb) != 0)) ok = 0;
+        /* No ghost cap in the slot; no stale receiver on the endpoint. */
+        if (ok && it_sys1(SYS_CSPACE_RESOLVE, (long)T088_SLOT_A) >= 0) ok = 0;
+        if (ok) {
+            struct IrisMsg p;
+            it_iris_msg_zero(&p);
+            p.label = 0x88;
+            if (it_sys2(SYS_EP_NB_SEND, (long)g_t088_ep, (long)&p) !=
+                (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
+        }
+    }
+
+    /* ── B: the same slot serves a real transfer (send-side delivery) ── */
+    if (ok) {
+        uint64_t entry = (uint64_t)(uintptr_t)t088_recv2;
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack2 + sizeof(g_t088_stack2))) & ~0xFULL;
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) ok = 0;
+        it_sys1(SYS_SLEEP, 2);            /* receiver blocks FIRST */
+        long c = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        if (c < 0) ok = 0;
+        if (ok) {
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label           = 0x88;
+            m.attached_handle = (uint32_t)c;
+            m.attached_rights = RIGHT_WRITE;
+            if (it_sys2(SYS_EP_SEND, (long)g_t088_ep, (long)&m) != 0) ok = 0;
+        }
+        for (int i = 0; i < 200 && !g_t088_r2_done; i++) it_sys0(SYS_YIELD);
+        if (!g_t088_r2_done || g_t088_r2_got != T088_SLOT_A ||
+            g_t088_r2_sig != 0) ok = 0;
+        if (ok) {
+            uint64_t bits = 0;
+            if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+                bits != 0x88u) ok = 0;
+        }
+    }
+
+    /* ── C: endpoint close under a declared slot ── */
+    if (ok) {
+        uint64_t entry = (uint64_t)(uintptr_t)t088_recv3;
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack3 + sizeof(g_t088_stack3))) & ~0xFULL;
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) ok = 0;
+        it_sys1(SYS_SLEEP, 2);            /* let it block with slot 41 declared */
+        it_close(&g_t088_ep2);            /* close wakes the blocked receiver */
+        for (int i = 0; i < 200 && !g_t088_r3_done; i++) it_sys0(SYS_YIELD);
+        if (!g_t088_r3_done || g_t088_r3_rr != (long)IRIS_ERR_CLOSED) ok = 0;
+        if (ok && it_sys1(SYS_CSPACE_RESOLVE, (long)T088_SLOT_C) >= 0) ok = 0;
+    }
+
+    it_close(&n_h);
+    it_close(&g_t088_ep);
+    it_close(&g_t088_ep2);
+
+    if (ok) it_pass("T088"); else it_fail("T088", "recv-slot death cleanup");
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -3522,6 +3778,8 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t084();
     test_t085();
     test_t086();
+    test_t087();
+    test_t088();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
