@@ -20,6 +20,7 @@
 #include "init.h"
 #include <iris/svcmgr_proto.h>
 #include <iris/endpoint_proto.h>
+#include <iris/ipc_recv_slot.h>
 #include <iris/vfs_ep_proto.h>
 #include <iris/kbd_proto.h>
 #include <iris/vfs.h>
@@ -485,13 +486,27 @@ static void init_imsg_zero(struct IrisMsg *msg) {
     for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
 }
 
+/* A1.6: init's own CSpace receive-slot for the productive vfs.ep session cap.
+ * Init is the root spawner — nothing mints into its CSpace — so the 16..29
+ * per-process pool (endpoint_proto.h layout) is free.  The slot is declared
+ * once, holds the cap for init's whole lifetime, and is never deleted. */
+#define INIT_RSLOT_VFS_EP 16u
+
 /*
  * Resolve a service name (e.g. "vfs.ep") through the svcmgr discovery endpoint:
  * EP_CALL(svcmgr_ep, IRIS_SVCMGR_EP_LOOKUP_NAME, name).  The reply carries the
  * endpoint cap via SYS_REPLY cap transfer.  Returns HANDLE_INVALID on any
  * failure (caller retries / fails fast).  Fase 13/Track I: this EP_LOOKUP_NAME
- * path replaces the retired legacy KChannel LOOKUP_NAME (init_lookup_name). */
-static handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name) {
+ * path replaces the retired legacy KChannel LOOKUP_NAME (init_lookup_name).
+ *
+ * A1.6: reply_slot != 0 declares a receive-slot for the looked-up cap — it
+ * lands in init's CSpace and the return value is the CPtr (< 1024), directly
+ * invocable through the dual resolvers.  reply_slot = 0 keeps the legacy
+ * handle delivery; the supervisor lookups that feed SYS_PROC_CSPACE_MINT use
+ * it deliberately (mint sources are handle-layer working set by design). */
+static handle_id_t init_ep_lookup_name_slot(handle_id_t svcmgr_ep_h,
+                                            const char *name,
+                                            uint32_t reply_slot) {
     struct IrisMsg msg;
     uint32_t n = 0;
 
@@ -506,6 +521,7 @@ static handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_init_ep_buf;
     msg.buf_len  = n + 1u;  /* includes NUL */
+    iris_msg_declare_reply_slot(&msg, reply_slot);
 
     if (init_sys2(SYS_EP_CALL, (long)svcmgr_ep_h, (long)&msg) != IRIS_OK)
         return HANDLE_INVALID;
@@ -513,7 +529,11 @@ static handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name
         return HANDLE_INVALID;
     if (msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP)
         return HANDLE_INVALID;
-    return (handle_id_t)msg.attached_handle;
+    return (handle_id_t)msg.attached_handle;   /* CPtr or handle — dual-invocable */
+}
+
+static handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name) {
+    return init_ep_lookup_name_slot(svcmgr_ep_h, name, 0u);
 }
 
 /*
@@ -709,9 +729,14 @@ void init_main(handle_id_t bootstrap_ch_h) {
     /* Fase 7.2/13: the VFS endpoint is the mandatory operational path.  sm_h is
      * svcmgr's discovery endpoint ("svcmgr.ep", owned by init) — look up "vfs.ep"
      * through it via EP_LOOKUP_NAME (retrying until VFS has bootstrapped).
-     * Fail-fast: no legacy fallback. */
+     * Fail-fast: no legacy fallback.
+     * A1.6: the session cap lands in init's CSpace (INIT_RSLOT_VFS_EP) and
+     * every init VFS EP_CALL below invokes it by CPtr — no handle is created.
+     * A failed attempt (EP_CALL error or reply ERR) transfers no cap and
+     * leaves the slot empty, so the retry re-declares it safely. */
     for (uint32_t attempt = 0; attempt < INIT_RETRY_LIMIT; attempt++) {
-        vfs_ep_h = init_ep_lookup_name(sm_h, VFS_EP_SVC_NAME);
+        vfs_ep_h = init_ep_lookup_name_slot(sm_h, VFS_EP_SVC_NAME,
+                                            INIT_RSLOT_VFS_EP);
         if (vfs_ep_h != HANDLE_INVALID) break;
         init_retry_pause();
     }
