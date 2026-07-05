@@ -13,6 +13,7 @@
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
 #include <iris/ipc_msg.h>
+#include <iris/ipc_recv_slot.h>
 #include <iris/endpoint_proto.h>
 #include <iris/vfs_ep_proto.h>
 #include <iris/kbd_ep_proto.h>
@@ -3673,6 +3674,208 @@ static void test_t088(void) {
     if (ok) it_pass("T088"); else it_fail("T088", "recv-slot death cleanup");
 }
 
+/* ── A1.6: in-tree receive-slot service flows (T089–T092) ───────────────────
+ * The receive-slot mechanism (T084–T088) as used by REAL services: svcmgr
+ * stores REGISTER caps in its own CSpace (pool slots 64..255) and clients
+ * receive LOOKUP caps into declared reply-slots.  Test slots here: 48..50. */
+
+/* LOOKUP `name` over svcmgr.ep declaring `reply_slot` (0 = legacy). */
+static long it_lookup_name_slot(const char *name, uint32_t reply_slot,
+                                struct IrisMsg *msg) {
+    uint32_t len = it_stage_path(name);
+    it_iris_msg_zero(msg);
+    msg->label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg->buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg->buf_len  = len;
+    iris_msg_declare_reply_slot(msg, reply_slot);
+    return it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)msg);
+}
+
+/* UNREGISTER dynamic id; 0 on success, -(error) on reply ERR. */
+static long it_unregister_id(uint32_t id) {
+    struct IrisMsg msg;
+    it_iris_msg_zero(&msg);
+    msg.label      = IRIS_SVCMGR_EP_UNREGISTER;
+    msg.words[0]   = id;
+    msg.word_count = 1u;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (r != 0) return r;
+    return (msg.label == IRIS_EP_REPLY_OK) ? 0 : -(long)(uint32_t)msg.words[0];
+}
+
+/* ── T089: svcmgr CSpace-backed registration lifecycle (A1.6) ───────────────
+ * The REGISTER cap now lands in svcmgr's CSpace via its declared
+ * receive-slot.  A legacy client (no reply-slot) must observe identical
+ * behavior end to end: register → lookup returns a working handle (>= 1024)
+ * duplicated from the CSpace-held master → unregister releases the pool slot
+ * (lookup → NOT_FOUND) → the same name registers again (slot reuse). */
+static void test_t089(void) {
+    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    if (e < 0) { it_fail("T089", "ep create"); return; }
+    handle_id_t ep = (handle_id_t)e;
+    int ok = 1;
+
+    long id = it_register_ep("t89.svc", ep);
+    if (id < 0) ok = 0;
+
+    struct IrisMsg msg;
+    if (ok) {
+        /* Legacy lookup: handle >= 1024, dup'd from the CSpace master. */
+        if (it_lookup_name_slot("t89.svc", 0u, &msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_OK ||
+            !iris_msg_cap_is_handle(msg.attached_handle)) ok = 0;
+        if (ok) {
+            /* Invocable: no receiver on the endpoint → WOULD_BLOCK proves
+             * resolution + rights (T084 probe). */
+            struct IrisMsg p;
+            it_iris_msg_zero(&p);
+            p.label = 0x89;
+            if (it_sys2(SYS_EP_NB_SEND, (long)msg.attached_handle, (long)&p) !=
+                (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
+            handle_id_t cap = (handle_id_t)msg.attached_handle;
+            it_close(&cap);
+        }
+    }
+
+    /* Unregister releases svcmgr's CSpace pool slot cleanly. */
+    if (ok && it_unregister_id((uint32_t)id) != 0) ok = 0;
+    if (ok) {
+        if (it_lookup_name_slot("t89.svc", 0u, &msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_ERR ||
+            msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) ok = 0;
+    }
+
+    /* Slot reuse: the same name registers again after the release. */
+    if (ok) {
+        long id2 = it_register_ep("t89.svc", ep);
+        if (id2 < 0) ok = 0;
+        else if (it_unregister_id((uint32_t)id2) != 0) ok = 0;
+    }
+
+    it_close(&ep);
+    if (ok) it_pass("T089"); else it_fail("T089", "cspace-backed register");
+}
+
+/* ── T090: LOOKUP into a client reply receive-slot (A1.6) ───────────────────
+ * The looked-up cap lands in the CLIENT's CSpace as a CPtr; an occupied
+ * reply-slot fails fast (ALREADY_EXISTS, endpoint untouched) and legacy
+ * lookup keeps working after it; a failed lookup (NOT_FOUND) with a declared
+ * slot leaves the slot empty. */
+#define T090_SLOT   48u
+#define T090_SLOT_B 49u
+
+static void test_t090(void) {
+    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    if (e < 0) { it_fail("T090", "ep create"); return; }
+    handle_id_t ep = (handle_id_t)e;
+    int ok = 1;
+
+    long id = it_register_ep("t90.svc", ep);
+    if (id < 0) ok = 0;
+
+    struct IrisMsg msg;
+    if (ok) {
+        /* Reply-slot lookup: the cap arrives as CPtr T090_SLOT, no handle. */
+        if (it_lookup_name_slot("t90.svc", T090_SLOT, &msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_OK ||
+            msg.attached_handle != T090_SLOT) ok = 0;
+        if (ok) {
+            struct IrisMsg p;
+            it_iris_msg_zero(&p);
+            p.label = 0x90;
+            if (it_sys2(SYS_EP_NB_SEND, (long)T090_SLOT, (long)&p) !=
+                (long)IRIS_ERR_WOULD_BLOCK) ok = 0;   /* invocable by CPtr */
+        }
+    }
+
+    /* Occupied reply-slot → EP_CALL fails fast, before any send. */
+    if (ok && it_lookup_name_slot("t90.svc", T090_SLOT, &msg) !=
+        (long)IRIS_ERR_ALREADY_EXISTS) ok = 0;
+    /* Legacy lookup still works after the failed declaration. */
+    if (ok) {
+        if (it_lookup_name_slot("t90.svc", 0u, &msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_OK ||
+            !iris_msg_cap_is_handle(msg.attached_handle)) ok = 0;
+        else {
+            handle_id_t cap = (handle_id_t)msg.attached_handle;
+            it_close(&cap);
+        }
+    }
+
+    /* NOT_FOUND with a declared slot: no cap, slot stays empty. */
+    if (ok) {
+        if (it_lookup_name_slot("t90.nope", T090_SLOT_B, &msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_ERR ||
+            msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) ok = 0;
+        if (ok && it_sys1(SYS_CSPACE_RESOLVE, (long)T090_SLOT_B) >= 0) ok = 0;
+    }
+
+    if (id >= 0) (void)it_unregister_id((uint32_t)id);
+    it_close(&ep);
+    if (ok) it_pass("T090"); else it_fail("T090", "recv-slot lookup");
+}
+
+/* ── T091: vfs.ep session by CPtr receive-slot (A1.6) ───────────────────────
+ * The real in-tree client flow init now uses at boot: look up "vfs.ep" into
+ * a declared reply-slot and drive a REAL VFS operation through the CPtr. */
+#define T091_SLOT 50u
+
+static void test_t091(void) {
+    static const char expect[] = "Hello from IrisOS VFS!\n";
+    const uint32_t expect_len = (uint32_t)(sizeof(expect) - 1u);
+    int ok = 1;
+
+    struct IrisMsg msg;
+    if (it_lookup_name_slot(VFS_EP_SVC_NAME, T091_SLOT, &msg) != 0 ||
+        msg.label != IRIS_EP_REPLY_OK ||
+        msg.attached_handle != T091_SLOT) ok = 0;
+
+    if (ok) {
+        uint32_t len = it_stage_path("iris.txt");
+        it_iris_msg_zero(&msg);
+        msg.label      = VFS_EP_OP_READ_AT;
+        msg.words[0]   = 0;
+        msg.words[1]   = VFS_EP_DATA_MAX;
+        msg.word_count = 2;
+        msg.buf_uptr   = (uint64_t)(uintptr_t)g_ep_io_buf;
+        msg.buf_len    = len;
+        if (it_sys2(SYS_EP_CALL, (long)T091_SLOT, (long)&msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_OK ||
+            msg.words[1] != (uint64_t)expect_len ||
+            msg.buf_len != expect_len) ok = 0;
+        if (ok) {
+            for (uint32_t i = 0; i < expect_len; i++) {
+                if (g_ep_io_buf[i] != (uint8_t)expect[i]) { ok = 0; break; }
+            }
+        }
+    }
+    if (ok) it_pass("T091"); else it_fail("T091", "vfs.ep by cptr slot");
+}
+
+/* ── T092: legacy attached-handle service IPC still works (A1.6) ────────────
+ * A client that declares NO slot gets the exact pre-A1.6 behavior from the
+ * migrated services: the vfs.ep cap materializes as a handle >= 1024 and
+ * drives the same VFS operation. */
+static void test_t092(void) {
+    int ok = 1;
+    struct IrisMsg msg;
+    handle_id_t cap = HANDLE_INVALID;
+
+    if (it_lookup_name_slot(VFS_EP_SVC_NAME, 0u, &msg) != 0 ||
+        msg.label != IRIS_EP_REPLY_OK ||
+        !iris_msg_cap_is_handle(msg.attached_handle)) ok = 0;
+    else cap = (handle_id_t)msg.attached_handle;
+
+    if (ok) {
+        it_iris_msg_zero(&msg);
+        msg.label = VFS_EP_OP_STATUS;
+        if (it_sys2(SYS_EP_CALL, (long)cap, (long)&msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_OK) ok = 0;
+    }
+    it_close(&cap);
+    if (ok) it_pass("T092"); else it_fail("T092", "legacy handle lookup");
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -3780,6 +3983,10 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t086();
     test_t087();
     test_t088();
+    test_t089();
+    test_t090();
+    test_t091();
+    test_t092();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
