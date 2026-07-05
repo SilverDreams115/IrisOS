@@ -145,10 +145,11 @@ Rationale:
   ephemeral authority — the opposite of what a CNode slot models.
 - Delivery is synchronous and per-message: `EP_RECV` materializes the
   reply cap directly into the receiver's handle table
-  (`syscall_ipc_deliver_cap*`). Routing it through CSpace would require
-  a receive-slot protocol (slot allocation, collision policy, cleanup
-  on failed delivery) for zero delegation benefit — a reply cap must
-  not be delegable or persistent.
+  (`syscall_ipc_deliver_cap*`). The A1.5 receive-slot protocol
+  (`a1-5-ipc-receive-slot.md`) deliberately excludes it: routing a
+  reply cap through CSpace would buy zero delegation benefit — a reply
+  cap must not be delegable or persistent (verified at runtime by
+  T087).
 - Kernel-side cleanup on process death walks the handle table today;
   moving reply caps would split that invariant across two structures.
 
@@ -194,7 +195,7 @@ deliver via CSpace instead.
 | Self-references | `SYS_PROCESS_SELF`, `SYS_TCB_SELF` | KProcess, KTcb | self-introspection; no delegation implied | ephemeral | keep |
 | Handle-layer ops | `SYS_HANDLE_DUP`, `SYS_CAP_DERIVE` (`handle_table_insert_derived`) | all | operate on the handle layer by definition | mirrors source | keep |
 | Cross-process placement | `SYS_HANDLE_TRANSFER` / `SYS_HANDLE_INSERT` dest, `SYS_VMO_SHARE` dest | all / KVmo | legacy delegation path; dest process cap now resolves dual | **compat — persistent authority delivered as a handle** | prefer `SYS_PROC_CSPACE_MINT`; candidates to retire once no service depends on them |
-| IPC cap delivery | `syscall_ipc_deliver_cap[_badged]` (`syscall_endpoint.c`) — EP_SEND/REPLY attached caps | transferable types | no receive-slot protocol exists yet | **compat — persistent authority delivered as a handle** | the post-A1 receive-slot design replaces this landing zone |
+| IPC cap delivery (no slot declared) | `syscall_ipc_deliver_cap[_badged]` (`syscall_endpoint.c`) — EP_SEND/REPLY attached caps when the receiver declared no receive-slot, or as TOCTOU fallback when the declared slot was filled between declaration and delivery | transferable types | legacy compatibility; A1.5 receive-slot (`a1-5-ipc-receive-slot.md`) is the CSpace landing zone when declared | **compat — persistent authority delivered as a handle, receiver's choice** | receivers migrate to declaring receive-slots; producer shrinks as services adopt them |
 | Reply-cap delivery | `EP_RECV`/`EP_CALL` path (`syscall_endpoint.c`, `syscall_reply.c`) | KReply | one-shot, bound to an in-flight call — the anchor ephemeral case | ephemeral **by design** | permanent; never migrates |
 | CSpace materialization | `SYS_CSPACE_RESOLVE` (`syscall_cspace.c`), `SYS_CNODE_FETCH` (`syscall_cnode_ops.c`) | all | the sanctioned CSpace→handle bridge for APIs that want a working handle | ephemeral (authority already lives in the slot) | keep |
 | Kernel bootstrap | `kernel_main.c` (init's KBootstrapCap), `kprocess_create` (root CNode handle), `task_thread_create`/`task_create` (KTcb auto-insert) | KBootstrapCap, KCNode, KTcb | pre-userland injection; notably the CSpace itself is *rooted* in a handle (`proc->cspace_root_h`) | infrastructure | keep; root-CNode-as-handle is an implementation detail invisible to userland |
@@ -225,8 +226,9 @@ closeout.  Classification:
 - **Bugs/regressions found**: none.
 
 **Verdict: no persistent authority is invocable only by handle**, except
-the documented compat producers (cross-process placement, IPC cap
-delivery) whose replacement is the receive-slot design, and the three
+the documented compat producers (cross-process placement, and IPC cap
+delivery when the receiver declares no receive-slot — since A1.5 the
+receiver can opt into direct CSpace delivery instead), and the three
 notification secondary args above which have a sanctioned CSpace path.
 
 ## Invariants
@@ -246,8 +248,9 @@ notification secondary args above which have a sanctioned CSpace path.
 - **I5 — reply caps are handle-table-only**, one-shot, never minted
   into a CNode.
 - **I6 — ephemeral layer is bounded**: the handle table only grows from
-  the closed producer list (object creation returns, IPC cap delivery,
-  reply-cap delivery, `SYS_CSPACE_RESOLVE`).
+  the closed producer list (object creation returns, IPC cap delivery
+  without a declared receive-slot, reply-cap delivery,
+  `SYS_CSPACE_RESOLVE`).
 - **I7 — every increment lands with a runtime test** proving the new
   CPtr path AND leaving all prior handle-path tests green.
 - **I8 — closed producer list** (closeout): a handle may only be
@@ -268,17 +271,27 @@ The resolution endgame is reached: every object with persistent,
 delegable authority is CSpace-invocable, and the handle table is an
 ephemeral/bounded working set with a closed producer list.  Runtime
 coverage: T079–T083 (CPtr paths + authority-not-relaxed + failure
-paths), T001–T078 (handle paths unchanged), 79/79 green.
+paths), T084–T088 (A1.5 receive-slot delivery, rights, atomicity,
+call/reply separation, death cleanup), T001–T078 (handle paths
+unchanged), 84/84 green.
 
-Out of scope for A1 resolution closeout, tracked as follow-ups:
+**A1.5 shipped** (`a1-5-ipc-receive-slot.md`): the receiver can declare
+a per-receive CSpace slot so IPC-transferred caps land as CPtrs instead
+of handles — zero ABI change (two previously-dead input fields), legacy
+path bit-for-bit intact when no slot is declared, reply caps untouched
+(I5 holds, T087).  This turns the "IPC cap delivery" compat producer
+into an opt-out: it only fires when the receiver declines (or on the
+documented TOCTOU fallback).
 
-1. **IPC receive-slot design** — replace the two "compat" producers
-   (IPC cap delivery, cross-process placement) with caps landing
-   directly in the receiver's CSpace.  Protocol decisions needed: slot
-   allocation, collision policy, cleanup on failed delivery.  Reply
-   caps explicitly stay out (I5).
+Remaining follow-ups:
+
+1. **Receive-slot adoption** — migrate in-tree services (svcmgr, vfs,
+   init bootstrap) to declare receive-slots, shrinking the remaining
+   IPC-delivery handle producer in practice; then revisit the
+   cross-process placement producer (`SYS_HANDLE_TRANSFER`/`INSERT`
+   dest) whose CSpace replacement is `SYS_PROC_CSPACE_MINT`.
 2. **Notification secondary args** — make the three remaining
    `KNotification` handle-only sites dual (one mechanical increment).
-3. **Handle-table shrink/freeze** — with the working set formalized,
-   revisit `HANDLE_TABLE_MAX` sizing; deferred until receive-slot
-   removes the IPC-delivery producer (today's biggest handle source).
+3. **Handle-table shrink/freeze** — with the working set formalized and
+   the IPC-delivery producer now opt-out, revisit `HANDLE_TABLE_MAX`
+   sizing once in-tree services adopt receive-slots.
