@@ -248,6 +248,15 @@ iris_error_t syscall_ipc_stage_cap_badged(struct task *t, uint32_t src_h,
                                           struct KObject **out_obj,
                                           uint32_t *out_rights,
                                           uint64_t *out_badge);
+/* A1.9: two-phase staging for the non-blocking send path — peek validates
+ * and retains WITHOUT consuming the sender's handle; commit consumes it once
+ * delivery is committed.  A failed NB send releases the peeked ref only. */
+iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_h,
+                                               uint32_t requested_rights,
+                                               struct KObject **out_obj,
+                                               uint32_t *out_rights,
+                                               uint64_t *out_badge);
+void syscall_ipc_stage_cap_commit(struct task *t, uint32_t src_h);
 uint32_t syscall_ipc_deliver_cap_badged(struct task *receiver,
                                         struct KObject *xo,
                                         uint32_t cap_rights, uint64_t badge);

@@ -30,11 +30,16 @@ static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
  * On failure: *out_obj = NULL; caller's handle is untouched; returns error.
  * Shared by EP_SEND / EP_NB_SEND / SYS_REPLY (declared in syscall_priv.h).
  */
-iris_error_t syscall_ipc_stage_cap_badged(struct task *t, uint32_t src_h,
-                                          uint32_t requested_rights,
-                                          struct KObject **out_obj,
-                                          uint32_t *out_rights,
-                                          uint64_t *out_badge) {
+/* A1.9: validate + retain WITHOUT consuming the sender's handle.  Used by
+ * the non-blocking send path so a failed send (WOULD_BLOCK / CLOSED after
+ * staging) leaves the sender's cap untouched — the handle is consumed only
+ * once delivery is committed (syscall_ipc_stage_cap_commit).  The returned
+ * object ref is the staging ref; release it on any non-delivery exit. */
+iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_h,
+                                               uint32_t requested_rights,
+                                               struct KObject **out_obj,
+                                               uint32_t *out_rights,
+                                               uint64_t *out_badge) {
     struct KObject *xo;
     iris_rights_t   xr;
     iris_error_t r = handle_table_get_object(&t->process->handle_table,
@@ -50,10 +55,28 @@ iris_error_t syscall_ipc_stage_cap_badged(struct task *t, uint32_t src_h,
         *out_badge = handle_table_get_badge(&t->process->handle_table,
                                             (handle_id_t)src_h);
 
-    /* Close sender's handle; the get_object lifecycle ref becomes the staging ref. */
-    handle_table_close(&t->process->handle_table, (handle_id_t)src_h);
     *out_obj    = xo;
     *out_rights = (uint32_t)cap_rights;
+    return IRIS_OK;
+}
+
+/* Consume the peeked source handle once delivery is committed.  Generation-
+ * guarded: if another thread already closed/reused the slot this is a benign
+ * no-op (the staged ref still delivers, same as the historical semantics). */
+void syscall_ipc_stage_cap_commit(struct task *t, uint32_t src_h) {
+    (void)handle_table_close(&t->process->handle_table, (handle_id_t)src_h);
+}
+
+iris_error_t syscall_ipc_stage_cap_badged(struct task *t, uint32_t src_h,
+                                          uint32_t requested_rights,
+                                          struct KObject **out_obj,
+                                          uint32_t *out_rights,
+                                          uint64_t *out_badge) {
+    iris_error_t r = syscall_ipc_stage_cap_peek_badged(t, src_h, requested_rights,
+                                                       out_obj, out_rights, out_badge);
+    if (r != IRIS_OK) return r;
+    /* Close sender's handle; the get_object lifecycle ref becomes the staging ref. */
+    syscall_ipc_stage_cap_commit(t, src_h);
     return IRIS_OK;
 }
 
@@ -622,12 +645,17 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ipc_msg.buf_len = n;
     }
 
-    /* Ph68: stage cap before taking lock. */
+    /* Ph68: stage cap before taking lock.  A1.9: PEEK only — the sender's
+     * handle is consumed at the commit point below, so a send that fails
+     * with CLOSED / WOULD_BLOCK leaves the sender's cap untouched (A1.5
+     * atomicity rule: the source cap is never consumed by a failed
+     * delivery).  The peeked object ref is released on those exits. */
     struct KObject *xfer_obj    = 0;
     uint32_t        xfer_rights = 0;
     uint64_t        xfer_badge  = 0;
+    uint32_t        xfer_src_h  = t->ipc_msg.attached_handle;
     if (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP) {
-        iris_error_t cr = syscall_ipc_stage_cap_badged(t, t->ipc_msg.attached_handle,
+        iris_error_t cr = syscall_ipc_stage_cap_peek_badged(t, t->ipc_msg.attached_handle,
                                          t->ipc_msg.attached_rights,
                                          &xfer_obj, &xfer_rights, &xfer_badge);
         if (cr != IRIS_OK) { kobject_release(&ep->base); return syscall_err(cr); }
@@ -638,14 +666,14 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (ep->closed) {
         irq_spinlock_unlock(&ep->lock, flags);
-        if (xfer_obj) kobject_release(xfer_obj);
+        if (xfer_obj) kobject_release(xfer_obj);   /* handle NOT consumed */
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_CLOSED);
     }
 
     if (ep->ep_state != EP_STATE_RECV) {
         irq_spinlock_unlock(&ep->lock, flags);
-        if (xfer_obj) kobject_release(xfer_obj);
+        if (xfer_obj) kobject_release(xfer_obj);   /* handle NOT consumed */
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_WOULD_BLOCK);
     }
@@ -669,8 +697,11 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     irq_spinlock_unlock(&ep->lock, flags);
 
-    /* A1.5: routed — receiver's declared receive-slot or handle table. */
+    /* A1.5: routed — receiver's declared receive-slot or handle table.
+     * A1.9: delivery is committed (receiver dequeued) — consume the
+     * sender's source handle now (move semantics preserved). */
     if (xfer_obj) {
+        syscall_ipc_stage_cap_commit(t, xfer_src_h);
         uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                         xfer_rights, xfer_badge);
         receiver->ipc_msg.attached_handle = new_h;
