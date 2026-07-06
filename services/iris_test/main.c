@@ -5755,6 +5755,221 @@ static void test_t109(void) {
     else    { fz_note("T109", T109_SEED, it_n); it_fail("T109", why); }
 }
 
+/* ── T110: svcmgr register/lookup receive-slot stress ───────────────────────
+ * 18 PRNG-driven rounds over THREE temporary service names whose expected
+ * registration state is tracked exactly: register / re-register (BUSY, the
+ * rejected cap closed by svcmgr) / slot lookup (fresh slot, invocable CPtr)
+ * / legacy lookup (handle >= 1024) / NOT_FOUND lookup with a declared slot
+ * (the SAME reusable slot every time — it must stay empty) / occupied-slot
+ * lookup (fail-fast, then legacy still works) / unregister + full
+ * re-register cycle (svcmgr's CSpace pool frees and reuses, no ghost from
+ * the previous generation).  The reply-caps counter balances EXACTLY: one
+ * KReply per svcmgr rendezvous PLUS one per served lookup — svcmgr_log()
+ * emits one console_ep_write EP_CALL per LOOKUP_NAME (OK and NOT_FOUND;
+ * REGISTER/UNREGISTER do not log) — and none for the fail-fast occupied
+ * rounds, which never reach svcmgr at all.
+ * Invariants: I1, I3, I4, I11-I13, I16-I18. */
+#define T110_SEED  0xA1110110u
+#define T110_ITERS 18u
+
+static void test_t110(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T110", "sched ext"); return; }
+    g_fz_seed = T110_SEED;
+    int ok = 1;
+    const char *why = "svcmgr rslot stress";
+    uint32_t it_n = 0;
+    uint32_t exp_slot = 0, exp_hand = 0, exp_reply = 0, exp_log = 0;
+
+    long ep    = it_sys0(SYS_ENDPOINT_CREATE);
+    long nf    = it_sys0(SYS_NOTIFY_CREATE);
+    long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
+    handle_id_t ep_h = (handle_id_t)ep, nf_h = (handle_id_t)nf;
+    handle_id_t selfp_h = (handle_id_t)selfp;
+    if (ep < 0 || nf < 0 || selfp < 0) { it_fail("T110", "create"); return; }
+
+    /* Fixtures: one slot that must stay EMPTY across every NOT_FOUND round
+     * and one pre-minted slot that is occupied forever. */
+    uint32_t nfslot = fz_slot_alloc();
+    uint32_t occ    = fz_slot_alloc();
+    if (nfslot == 0u || occ == 0u ||
+        it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, (long)occ,
+                nf, (long)RIGHT_WRITE) != 0) {
+        it_fail("T110", "fixtures"); return;
+    }
+
+    char name[5] = { 'f', 'z', '.', 'a', '\0' };
+    long ids[3]  = { -1, -1, -1 };
+    int  reg[3]  = { 0, 0, 0 };
+    struct IrisMsg msg;
+
+    /* Registered-name legacy lookup: handle >= 1024, invocable, closed. */
+    #define T110_LEGACY_OK()                                                  \
+        do {                                                                  \
+            if (it_lookup_name_slot(name, 0u, &msg) != 0 ||                   \
+                msg.label != IRIS_EP_REPLY_OK ||                              \
+                !iris_msg_cap_is_handle(msg.attached_handle)) {               \
+                ok = 0; why = "legacy lookup";                                \
+            } else {                                                          \
+                struct IrisMsg p;                                             \
+                it_iris_msg_zero(&p);                                         \
+                p.label = 0x110;                                              \
+                if (it_sys2(SYS_EP_NB_SEND, (long)msg.attached_handle,        \
+                            (long)&p) != (long)IRIS_ERR_WOULD_BLOCK) {        \
+                    ok = 0; why = "legacy cap dead";                          \
+                }                                                             \
+                handle_id_t ch = (handle_id_t)msg.attached_handle;            \
+                it_close(&ch);                                                \
+                exp_hand++;                                                   \
+            }                                                                 \
+            exp_reply++; exp_log++;                                           \
+        } while (0)
+
+    /* Unregistered-name lookup into the reusable slot: ERR + slot empty. */
+    #define T110_NOTFOUND()                                                   \
+        do {                                                                  \
+            if (it_lookup_name_slot(name, nfslot, &msg) != 0 ||               \
+                msg.label != IRIS_EP_REPLY_ERR ||                             \
+                msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) {     \
+                ok = 0; why = "not-found lookup";                             \
+            } else if (it_sys1(SYS_CSPACE_RESOLVE, (long)nfslot) >= 0) {      \
+                ok = 0; why = "ghost cap";                                    \
+            }                                                                 \
+            exp_reply++; exp_log++;                                           \
+        } while (0)
+
+    for (it_n = 0; ok && it_n < T110_ITERS; it_n++) {
+        uint32_t pick = fz_rand() % 6u;
+        uint32_t i    = fz_rand() % 3u;
+        name[3] = (char)('a' + i);
+
+        if (pick == 0u) {
+            /* Register, or re-register while live → BUSY (rejected cap is
+             * closed by svcmgr — the final live-balance check proves it). */
+            long r = it_register_ep(name, ep_h);
+            exp_reply++;
+            if (!reg[i]) {
+                if (r < 0) { ok = 0; why = "register"; }
+                else { ids[i] = r; reg[i] = 1; }
+            } else if (r != -(long)(uint32_t)IRIS_ERR_BUSY) {
+                ok = 0; why = "re-register not BUSY";
+            }
+
+        } else if (pick == 1u) {
+            /* Slot lookup: fresh slot on success (occupied forever after —
+             * the CPtr is the proof), reusable slot on NOT_FOUND. */
+            if (reg[i]) {
+                uint32_t s = fz_slot_alloc();
+                if (s == 0u) { ok = 0; why = "slot budget"; break; }
+                if (it_lookup_name_slot(name, s, &msg) != 0 ||
+                    msg.label != IRIS_EP_REPLY_OK ||
+                    msg.attached_handle != s) { ok = 0; why = "slot lookup"; }
+                exp_reply++; exp_log++;
+                if (ok) {
+                    struct IrisMsg p;
+                    it_iris_msg_zero(&p);
+                    p.label = 0x110;
+                    if (it_sys2(SYS_EP_NB_SEND, (long)s, (long)&p) !=
+                        (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "cptr dead"; }
+                    exp_slot++;
+                }
+            } else {
+                T110_NOTFOUND();
+            }
+
+        } else if (pick == 2u) {
+            if (reg[i]) T110_LEGACY_OK(); else T110_NOTFOUND();
+
+        } else if (pick == 3u) {
+            /* Unregister removes authority: the very next lookup fails. */
+            if (reg[i]) {
+                if (it_unregister_id((uint32_t)ids[i]) != 0) {
+                    ok = 0; why = "unregister";
+                }
+                exp_reply++;
+                reg[i] = 0;
+                if (ok) T110_NOTFOUND();
+            } else {
+                T110_NOTFOUND();
+            }
+
+        } else if (pick == 4u) {
+            /* Occupied-slot lookup: fail-fast BEFORE any send (no KReply,
+             * no reply counter tick), then legacy still works. */
+            if (reg[i]) {
+                if (it_lookup_name_slot(name, occ, &msg) !=
+                    (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occ not rejected"; }
+                if (ok) T110_LEGACY_OK();
+            } else {
+                T110_NOTFOUND();
+            }
+
+        } else {
+            /* Full unregister → register cycle: the svcmgr pool slot is
+             * freed and reused with no ghost of the previous generation. */
+            if (reg[i]) {
+                if (it_unregister_id((uint32_t)ids[i]) != 0) {
+                    ok = 0; why = "cycle unreg";
+                }
+                exp_reply++;
+                reg[i] = 0;
+                if (ok) T110_NOTFOUND();
+            }
+            if (ok) {
+                long r = it_register_ep(name, ep_h);
+                exp_reply++;
+                if (r < 0) { ok = 0; why = "cycle register"; }
+                else { ids[i] = r; reg[i] = 1; }
+            }
+            if (ok) T110_LEGACY_OK();
+        }
+    }
+
+    /* Teardown: unregister the survivors; every name must end NOT_FOUND. */
+    for (uint32_t i = 0; i < 3u; i++) {
+        name[3] = (char)('a' + i);
+        if (ok && reg[i]) {
+            if (it_unregister_id((uint32_t)ids[i]) != 0) { ok = 0; why = "final unreg"; }
+            exp_reply++;
+            reg[i] = 0;
+        }
+        if (ok) T110_NOTFOUND();
+    }
+    #undef T110_LEGACY_OK
+    #undef T110_NOTFOUND
+
+    it_close(&ep_h);
+    it_close(&nf_h);
+    it_close(&selfp_h);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    /* I16: exact balance — svcmgr consumed/closed every staged cap. */
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
+    /* One KReply per svcmgr rendezvous + one per served lookup (svcmgr_log
+     * console EP_CALL), zero per fail-fast (exact). */
+    if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY] + exp_reply + exp_log) {
+        it_serial_write("[IRIS][TEST] T110 reply delta=");
+        it_log_num(after[IT_SI_REPLY] - before[IT_SI_REPLY]);
+        it_serial_write(" exp=");
+        it_log_num(exp_reply + exp_log);
+        it_serial_write("\n");
+        ok = 0; why = "reply count";
+    }
+    /* I18: directional delivery deltas (registers also move SLOTDEL —
+     * svcmgr's own pool receive-slots — hence >=). */
+    if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
+        ok = 0; why = "slot count";
+    }
+    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + exp_hand) {
+        ok = 0; why = "hand count";
+    }
+    /* I17: T095 high-water rule. */
+    if (ok && after[IT_SI_GHWM] * 4u > after[IT_SI_MAX]) { ok = 0; why = "hwm"; }
+
+    if (ok) { it_pass("T110"); }
+    else    { fz_note("T110", T110_SEED, it_n); it_fail("T110", why); }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -5883,6 +6098,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t107();
     test_t108();
     test_t109();
+    test_t110();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
