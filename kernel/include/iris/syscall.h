@@ -79,12 +79,11 @@
                                  *   new_rights must be a subset of existing rights.
                                  *   RIGHT_NONE is rejected.
                                  *   Pass RIGHT_SAME_RIGHTS to keep the same rights. */
-#define SYS_HANDLE_TRANSFER 23  /* (src_handle, dest_proc_handle, new_rights) → new_handle_id
-                                 *   or negative iris_error_t.
-                                 *   Requires RIGHT_TRANSFER on src_handle.
-                                 *   Requires RIGHT_MANAGE on dest_proc_handle.
-                                 *   Consumes src_handle. new_rights ⊆ src rights.
-                                 *   RIGHT_NONE is rejected. */
+#define SYS_HANDLE_TRANSFER 23  /* RETIRED A1.8 — permanently reserved, returns
+                                 *   IRIS_ERR_NOT_SUPPORTED.  Zero in-tree
+                                 *   callers; cross-process placement is
+                                 *   SYS_PROC_CSPACE_MINT (CSpace-canonical)
+                                 *   or an IPC receive-slot (A1.5/A1.6). */
 #define SYS_PROCESS_WATCH   29  /* (proc_handle, notify_handle, signal_bits) → 0 or negative iris_error_t
                                  *   Registers one process-exit watch for proc_handle.
                                  *   On death, the kernel signals signal_bits on notify_handle
@@ -226,6 +225,10 @@
  *   rights:  effective rights in child = rights_reduce(obj_rights, rights); RIGHT_NONE rejected.
  *   Non-destructive: caller retains obj_h; child receives an independent handle slot.
  *   Returns the new handle_id as it appears in the child's handle table.
+ *   DEPRECATED (A1.8): legacy compat producer — it plants persistent
+ *   authority as a handle in the destination table.  No in-tree service
+ *   uses it (T082 keeps it covered as the dual-resolver compat path).
+ *   New code uses SYS_PROC_CSPACE_MINT or an IPC receive-slot instead.
  */
 #define SYS_INITRD_VMO      55
 #define SYS_PROCESS_CREATE  56
@@ -415,6 +418,10 @@
  *   Returns the new handle_id in dest's table, visible to dest after next recv
  *   or when passed explicitly (e.g. via a channel notification from caller).
  *   RIGHT_NONE result is rejected with IRIS_ERR_INVALID_ARG.
+ *   DEPRECATED (A1.8): legacy compat producer — it plants persistent
+ *   authority as a handle in the destination table.  No in-tree service
+ *   uses it (T080/T082/T098 keep it covered).  New code uses
+ *   SYS_PROC_CSPACE_MINT into a destination CSpace slot instead.
  */
 #define SYS_VMO_SHARE  46
 

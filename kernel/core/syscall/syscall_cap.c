@@ -56,67 +56,11 @@ uint64_t sys_handle_dup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /* ── Handle transfer ──────────────────────────────────────────────── */
 
-/*
- * sys_handle_transfer(src_handle, dest_proc_handle, new_rights) → new_handle_id
- *
- * Moves src_handle from caller's table into dest process's table.
- * Requires RIGHT_TRANSFER on src_handle.
- * Requires RIGHT_MANAGE on dest_proc_handle.
- * new_rights must be a subset of src rights (or RIGHT_SAME_RIGHTS).
- * The reduced rights set must not collapse to RIGHT_NONE.
- * Consumes (closes) src_handle in caller's table on success.
- * Returns new handle_id in dest's table, or iris_error_t cast to uint64_t on failure.
- */
-uint64_t sys_handle_transfer(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* Get source object — requires RIGHT_TRANSFER */
-    struct KObject *src_obj;
-    iris_rights_t   src_rights;
-    iris_error_t r = handle_table_get_object(&caller->process->handle_table, (handle_id_t)arg0,
-                                             &src_obj, &src_rights);
-    if (r != IRIS_OK) return syscall_err(r);
-    if (!rights_check(src_rights, RIGHT_TRANSFER)) {
-        kobject_release(src_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    /* Get destination KProcess — requires RIGHT_MANAGE.
-     * A1 Increment 2a: dual resolver — CPtr slot or handle. */
-    struct KObject *dest_obj;
-    iris_rights_t   dest_rights;
-    r = cspace_or_handle_resolve_obj(caller->process, (iris_cptr_t)arg1,
-                                     RIGHT_NONE, KOBJ_PROCESS, &dest_obj, &dest_rights);
-    if (r != IRIS_OK) { kobject_release(src_obj); return syscall_err(r); }
-    if (!rights_check(dest_rights, RIGHT_MANAGE)) {
-        kobject_release(src_obj); kobject_release(dest_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    struct KProcess *dest_proc = (struct KProcess *)dest_obj;
-    if (!kprocess_is_alive(dest_proc)) {
-        kobject_release(src_obj); kobject_release(dest_obj);
-        return syscall_err(IRIS_ERR_BAD_HANDLE);
-    }
-
-    iris_rights_t new_rights = rights_reduce(src_rights, (iris_rights_t)arg2);
-    if (new_rights == RIGHT_NONE) {
-        kobject_release(src_obj);
-        kobject_release(dest_obj);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-    handle_id_t   new_h      = handle_table_insert(&dest_proc->handle_table,
-                                                   src_obj, new_rights);
-    kobject_release(src_obj);
-    kobject_release(dest_obj);
-
-    if (new_h == HANDLE_INVALID) return syscall_err(IRIS_ERR_TABLE_FULL);
-
-    /* Consume the source handle — transfer is move, not copy */
-    handle_table_close(&caller->process->handle_table, (handle_id_t)arg0);
-    return syscall_ok_u64((uint64_t)new_h);
-}
+/* sys_handle_transfer RETIRED — A1.8.  Zero in-tree callers survived the A1
+ * arc: cross-process placement is SYS_PROC_CSPACE_MINT (CSpace-canonical,
+ * badge-capable, fail-fast on occupied slots) or an IPC receive-slot.  The
+ * dispatcher falls to default (NOT_SUPPORTED); syscall number 23 is
+ * permanently reserved.  See docs/architecture/handle-table-freeze.md. */
 
 
 /* ── Hardware capability creation (C2: policy moved to svcmgr) ──────── */

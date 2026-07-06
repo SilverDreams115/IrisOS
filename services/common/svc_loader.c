@@ -3,7 +3,8 @@
  *
  * Implements svc_load() using the Phase 29 composable spawn primitives:
  *   SYS_INITRD_VMO(55) + SYS_PROCESS_CREATE(56) + SYS_VMO_MAP_INTO(57) +
- *   SYS_THREAD_START(58) + SYS_HANDLE_INSERT(59)
+ *   SYS_THREAD_START(58); pre-start caps are SYS_PROC_CSPACE_MINT CSpace
+ *   mints (Fase 8) — the legacy SYS_HANDLE_INSERT step is gone (A1.8).
  *
  * Supports ET_DYN (static PIE, base=0) ELF64 x86-64 with R_X86_64_RELATIVE
  * RELA relocations.  RDTSC-seeded Xorshift64 ASLR bias applied per spawn.

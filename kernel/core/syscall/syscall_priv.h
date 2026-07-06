@@ -205,7 +205,7 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t 
 /* ── Forward declarations — cap / handle ─────────────────────────── */
 uint64_t sys_handle_close(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_handle_dup(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_handle_transfer(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+/* sys_handle_transfer retired — A1.8 (dispatcher falls to NOT_SUPPORTED). */
 uint64_t sys_handle_insert(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_handle_type(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_handle_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);

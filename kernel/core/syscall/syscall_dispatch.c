@@ -52,7 +52,9 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_NOTIFY_SIGNAL: return sys_notify_signal(arg0, arg1, arg2);
         case SYS_NOTIFY_WAIT:   return sys_notify_wait(arg0, arg1, arg2);
         case SYS_HANDLE_DUP:    return sys_handle_dup(arg0, arg1, arg2);
-        case SYS_HANDLE_TRANSFER: return sys_handle_transfer(arg0, arg1, arg2);
+        /* SYS_HANDLE_TRANSFER(23) — retired A1.8 (zero in-tree callers; the
+         * cross-process placement path is SYS_PROC_CSPACE_MINT), fall to
+         * default (NOT_SUPPORTED).  Number permanently reserved. */
         case SYS_PROCESS_SELF:    return sys_process_self(arg0, arg1, arg2);
         case SYS_PROCESS_STATUS:  return sys_process_status(arg0, arg1, arg2);
         case SYS_PROCESS_WATCH:   return sys_process_watch(arg0, arg1, arg2);
