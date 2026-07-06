@@ -1,6 +1,9 @@
 #include "syscall_priv.h"
 #include <iris/nc/cspace.h>
 
+/* A1.7: successful SYS_CSPACE_RESOLVE materializations (diagnostic). */
+uint32_t iris_cspace_stat_resolves = 0u;
+
 uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     handle_id_t   src_h     = (handle_id_t)arg0;
     iris_rights_t new_rights = (iris_rights_t)arg1;
@@ -101,6 +104,7 @@ uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     kobject_active_release(obj);
     kobject_release(obj);
     if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
+    __atomic_fetch_add(&iris_cspace_stat_resolves, 1u, __ATOMIC_RELAXED);
     return (uint64_t)h;
 }
 

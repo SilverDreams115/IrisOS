@@ -72,6 +72,21 @@ iris_error_t syscall_ipc_stage_cap(struct task *t, uint32_t src_h,
  * a soft error and deliver the message without the capability.
  * Shared by EP_SEND / EP_NB_SEND / SYS_REPLY (declared in syscall_priv.h).
  */
+/* A1.7 diagnostic counters (relaxed atomics; no behavior depends on them).
+ * slot/handle/toctou partition every transferred-cap delivery: installed in
+ * a declared receive-slot / materialized as a handle with no declaration /
+ * the declared-slot-raced handle fallback (also counted in handle).
+ * reply_caps counts successful KReply insertions (the intentional ephemeral
+ * producer).  Read by sys_sched_info (extended layout). */
+uint32_t iris_ipc_stat_slot_deliveries   = 0u;
+uint32_t iris_ipc_stat_handle_deliveries = 0u;
+uint32_t iris_ipc_stat_toctou_fallbacks  = 0u;
+uint32_t iris_ipc_stat_reply_caps        = 0u;
+
+static void ipc_stat_bump(uint32_t *c) {
+    __atomic_fetch_add(c, 1u, __ATOMIC_RELAXED);
+}
+
 uint32_t syscall_ipc_deliver_cap_badged(struct task *receiver,
                                         struct KObject *xo,
                                         uint32_t cap_rights, uint64_t badge) {
@@ -79,6 +94,8 @@ uint32_t syscall_ipc_deliver_cap_badged(struct task *receiver,
     handle_id_t new_h = handle_table_insert_badged(
         &receiver->process->handle_table, xo, (iris_rights_t)cap_rights, badge);
     kobject_release(xo); /* release staging ref; table holds its own ref */
+    if (new_h != HANDLE_INVALID)
+        ipc_stat_bump(&iris_ipc_stat_handle_deliveries);
     return (uint32_t)new_h;
 }
 
@@ -169,10 +186,12 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
             kobject_release(&root->base);
             if (e == IRIS_OK) {
                 kobject_release(xo);  /* staging ref; the slot holds its own */
+                ipc_stat_bump(&iris_ipc_stat_slot_deliveries);
                 return slot;
             }
         }
         /* raced/occupied/no-root → legacy handle materialization below */
+        ipc_stat_bump(&iris_ipc_stat_toctou_fallbacks);
     }
     return syscall_ipc_deliver_cap_badged(receiver, xo, cap_rights, badge);
 }
@@ -501,6 +520,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                       RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
                 kobject_release(&rp->base);        /* drop alloc ref; HT holds its own */
                 if (rh != HANDLE_INVALID) {
+                    ipc_stat_bump(&iris_ipc_stat_reply_caps);
                     t->ipc_msg.attached_handle = (uint32_t)rh;
                     sender->state = TASK_BLOCKED_REPLY;
                 } else {
@@ -767,6 +787,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                   RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
             kobject_release(&rp->base);
             if (rh != HANDLE_INVALID) {
+                ipc_stat_bump(&iris_ipc_stat_reply_caps);
                 t->ipc_msg.attached_handle = (uint32_t)rh;
                 sender->state = TASK_BLOCKED_REPLY;
             } else {

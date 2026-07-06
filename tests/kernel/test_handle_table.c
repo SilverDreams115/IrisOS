@@ -134,4 +134,60 @@ void test_handle_table(void) {
         handle_table_close_all(&ht2);
         for (int i = 0; i < 16; i++) kobject_release(objs[i]);
     }
+
+    /* ── A1.7 instrumentation counters ── */
+    {
+        HandleTable ht3;
+        handle_table_init(&ht3);
+        ASSERT_EQ(ht3.live, 0u);
+        ASSERT_EQ(ht3.hwm, 0u);
+        ASSERT_EQ(ht3.inserts, 0u);
+        ASSERT_EQ(ht3.removes, 0u);
+
+        uint32_t g0  = handle_table_global_hwm;
+        uint32_t ti0 = handle_table_type_inserts[KOBJ_NOTIFICATION];
+        uint32_t tr0 = handle_table_type_removes[KOBJ_NOTIFICATION];
+
+        struct KObject *o1 = make_ht_obj(KOBJ_NOTIFICATION);
+        struct KObject *o2 = make_ht_obj(KOBJ_NOTIFICATION);
+        ASSERT_NOT_NULL(o1);
+        ASSERT_NOT_NULL(o2);
+        handle_id_t a = handle_table_insert(&ht3, o1, RIGHT_READ);
+        handle_id_t b = handle_table_insert_derived(&ht3, o2, RIGHT_READ, a);
+        ASSERT_NE(a, (handle_id_t)HANDLE_INVALID);
+        ASSERT_NE(b, (handle_id_t)HANDLE_INVALID);
+        ASSERT_EQ(ht3.live, 2u);
+        ASSERT_EQ(ht3.hwm, 2u);
+        ASSERT_EQ(ht3.inserts, 2u);
+        ASSERT_EQ(handle_table_type_inserts[KOBJ_NOTIFICATION], ti0 + 2u);
+        ASSERT_TRUE(handle_table_global_hwm >= 2u);
+        ASSERT_TRUE(handle_table_global_hwm >= g0);
+
+        /* close decrements live but hwm is sticky */
+        ASSERT_EQ(handle_table_close(&ht3, b), IRIS_OK);
+        ASSERT_EQ(ht3.live, 1u);
+        ASSERT_EQ(ht3.hwm, 2u);
+        ASSERT_EQ(ht3.removes, 1u);
+        ASSERT_EQ(handle_table_type_removes[KOBJ_NOTIFICATION], tr0 + 1u);
+
+        /* re-insert to the old peak: hwm unchanged; one past it: hwm rises */
+        handle_id_t c = handle_table_insert(&ht3, o2, RIGHT_READ);
+        ASSERT_NE(c, (handle_id_t)HANDLE_INVALID);
+        ASSERT_EQ(ht3.live, 2u);
+        ASSERT_EQ(ht3.hwm, 2u);
+        handle_id_t d = handle_table_insert(&ht3, o1, RIGHT_READ);
+        ASSERT_NE(d, (handle_id_t)HANDLE_INVALID);
+        ASSERT_EQ(ht3.hwm, 3u);
+
+        /* bulk close balances the books */
+        handle_table_close_all(&ht3);
+        ASSERT_EQ(ht3.live, 0u);
+        ASSERT_EQ(ht3.inserts, 4u);
+        ASSERT_EQ(ht3.removes, 4u);
+        ASSERT_EQ(handle_table_type_inserts[KOBJ_NOTIFICATION], ti0 + 4u);
+        ASSERT_EQ(handle_table_type_removes[KOBJ_NOTIFICATION], tr0 + 4u);
+
+        kobject_release(o1);
+        kobject_release(o2);
+    }
 }

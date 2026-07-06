@@ -262,6 +262,16 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
                                         struct KObject *xo,
                                         uint32_t cap_rights, uint64_t badge);
 
+/* A1.7 diagnostic counters (relaxed atomics; diagnostic only — read by the
+ * sys_sched_info extended layout).  slot/handle/toctou partition transferred
+ * -cap deliveries; reply_caps counts KReply insertions; resolves counts
+ * successful SYS_CSPACE_RESOLVE materializations. */
+extern uint32_t iris_ipc_stat_slot_deliveries;    /* syscall_endpoint.c */
+extern uint32_t iris_ipc_stat_handle_deliveries;
+extern uint32_t iris_ipc_stat_toctou_fallbacks;
+extern uint32_t iris_ipc_stat_reply_caps;
+extern uint32_t iris_cspace_stat_resolves;        /* syscall_cspace.c */
+
 /* ── Forward declarations — CSpace (Ph70-72, Ph82-84, Ph95) ─────── */
 uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);

@@ -61,16 +61,39 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 24: uint64_t idle_ticks
  *   offset 32: uint32_t live_task_count
  *   offset 36: uint32_t _pad
- * Total: 40 bytes.
+ * Base total: 40 bytes.
+ *
+ * A1.7 additive extension — written ONLY when the caller passes
+ * buf_size >= 88 (a legacy caller passing 40..87 gets the exact historical
+ * 40 bytes; no signature or number change — same additive style as the
+ * A1.5 message-field reinterpretation):
+ *   offset 40: uint32_t self_handles_live     — caller's handle table
+ *   offset 44: uint32_t self_handles_hwm
+ *   offset 48: uint32_t self_handle_inserts   — cumulative
+ *   offset 52: uint32_t self_handle_removes
+ *   offset 56: uint32_t handle_global_hwm     — max hwm across ALL tables
+ *   offset 60: uint32_t handle_table_max      — HANDLE_TABLE_MAX ceiling
+ *   offset 64: uint32_t ipc_cap_slot_deliveries    — receive-slot installs
+ *   offset 68: uint32_t ipc_cap_handle_deliveries  — handle materializations
+ *   offset 72: uint32_t ipc_cap_toctou_fallbacks   — declared-slot races
+ *   offset 76: uint32_t reply_caps_created
+ *   offset 80: uint32_t cspace_resolves
+ *   offset 84: uint32_t _pad0
+ * Extended total: 88 bytes.
  */
+#define SCHED_INFO_BASE_BYTES 40u
+#define SCHED_INFO_EXT_BYTES  88u
+
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
     if (!t || !task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    if (arg1 < 40u) return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (!user_range_writable(arg0, 40u)) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (arg1 < SCHED_INFO_BASE_BYTES) return syscall_err(IRIS_ERR_INVALID_ARG);
+    uint32_t want = (arg1 >= SCHED_INFO_EXT_BYTES) ? SCHED_INFO_EXT_BYTES
+                                                   : SCHED_INFO_BASE_BYTES;
+    if (!user_range_writable(arg0, want)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    uint64_t buf[5];
+    uint64_t buf[11];
     buf[0] = sched_current_ticks();
     buf[1] = sched_wall_ticks();
     buf[2] = sched_context_switches();
@@ -79,7 +102,28 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     uint32_t pad  = 0;
     buf[4] = (uint64_t)live | ((uint64_t)pad << 32);
 
-    if (!copy_to_user_checked(arg0, buf, 40u))
+    if (want >= SCHED_INFO_EXT_BYTES) {
+        HandleTable *ht = &t->process->handle_table;
+        uint32_t w[12];
+        spinlock_lock(&ht->lock);
+        w[0] = ht->live;
+        w[1] = ht->hwm;
+        w[2] = ht->inserts;
+        w[3] = ht->removes;
+        spinlock_unlock(&ht->lock);
+        w[4]  = __atomic_load_n(&handle_table_global_hwm, __ATOMIC_RELAXED);
+        w[5]  = HANDLE_TABLE_MAX;
+        w[6]  = __atomic_load_n(&iris_ipc_stat_slot_deliveries, __ATOMIC_RELAXED);
+        w[7]  = __atomic_load_n(&iris_ipc_stat_handle_deliveries, __ATOMIC_RELAXED);
+        w[8]  = __atomic_load_n(&iris_ipc_stat_toctou_fallbacks, __ATOMIC_RELAXED);
+        w[9]  = __atomic_load_n(&iris_ipc_stat_reply_caps, __ATOMIC_RELAXED);
+        w[10] = __atomic_load_n(&iris_cspace_stat_resolves, __ATOMIC_RELAXED);
+        w[11] = 0u;
+        for (uint32_t i = 0; i < 6u; i++)
+            buf[5u + i] = (uint64_t)w[2u * i] | ((uint64_t)w[2u * i + 1u] << 32);
+    }
+
+    if (!copy_to_user_checked(arg0, buf, want))
         return syscall_err(IRIS_ERR_INVALID_ARG);
     return syscall_ok_u64(0);
 }

@@ -175,6 +175,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                   RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
             kobject_release(&r->base);     /* drop alloc ref; HT has its own */
             if (rh != HANDLE_INVALID) {
+                __atomic_fetch_add(&iris_ipc_stat_reply_caps, 1u, __ATOMIC_RELAXED);
                 receiver->ipc_msg.attached_handle = (uint32_t)rh;
             } else {
                 kobject_release(&t->pending_kreply->base);

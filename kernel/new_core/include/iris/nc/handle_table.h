@@ -16,7 +16,26 @@ typedef struct {
     handle_id_t        derivation_parent[HANDLE_TABLE_MAX]; /* HANDLE_INVALID = root cap */
     uint32_t           next_hint;
     spinlock_t         lock;
+    /* A1.7 instrumentation — updated under lock at every slot claim/clear.
+     * Diagnostic only: no behavior depends on these.  hwm is the table's
+     * historical maximum of live; inserts/removes are cumulative
+     * (handle_table_replace swaps an object in place — neither). */
+    uint32_t           live;
+    uint32_t           hwm;
+    uint32_t           inserts;
+    uint32_t           removes;
 } HandleTable;
+
+/* A1.7 kernel-global diagnostics.
+ * handle_table_global_hwm — max `hwm` ever observed across ALL tables
+ * (atomic max at insert; survives table teardown, so it is THE sizing
+ * datum for HANDLE_TABLE_MAX).
+ * handle_table_type_inserts/removes — cumulative per-KObject-type flows
+ * (index = obj->type, clamped to the bound; diagnostic only). */
+#define HANDLE_TYPE_STAT_BOUND 24u
+extern uint32_t handle_table_global_hwm;
+extern uint32_t handle_table_type_inserts[HANDLE_TYPE_STAT_BOUND];
+extern uint32_t handle_table_type_removes[HANDLE_TYPE_STAT_BOUND];
 
 /*
  * Invariants:

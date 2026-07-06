@@ -1,4 +1,5 @@
 #include <iris/nc/handle_table.h>
+#include <iris/nc/kobject.h>
 
 /* genera el siguiente gen para un slot — nunca retorna 0 */
 static uint32_t next_gen(uint32_t g) {
@@ -7,9 +8,50 @@ static uint32_t next_gen(uint32_t g) {
     return g;
 }
 
+/* ── A1.7 diagnostics ───────────────────────────────────────────────────
+ * Cross-table globals.  Per-table counters live in the HandleTable and are
+ * updated under its lock; the global hwm uses an atomic max because
+ * different tables hold different locks. */
+uint32_t handle_table_global_hwm = 0u;
+uint32_t handle_table_type_inserts[HANDLE_TYPE_STAT_BOUND] = {0};
+uint32_t handle_table_type_removes[HANDLE_TYPE_STAT_BOUND] = {0};
+
+static void ht_global_hwm_note(uint32_t v) {
+    uint32_t cur = __atomic_load_n(&handle_table_global_hwm, __ATOMIC_RELAXED);
+    while (v > cur &&
+           !__atomic_compare_exchange_n(&handle_table_global_hwm, &cur, v, 0,
+                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
+
+static uint32_t ht_type_idx(const struct KObject *obj) {
+    uint32_t ty = obj ? (uint32_t)obj->type : 0u;
+    return (ty < HANDLE_TYPE_STAT_BOUND) ? ty : (HANDLE_TYPE_STAT_BOUND - 1u);
+}
+
+/* Called under ht->lock at every slot claim / clear. */
+static void ht_stat_insert(HandleTable *ht, const struct KObject *obj) {
+    ht->inserts++;
+    ht->live++;
+    if (ht->live > ht->hwm) ht->hwm = ht->live;
+    ht_global_hwm_note(ht->hwm);
+    __atomic_fetch_add(&handle_table_type_inserts[ht_type_idx(obj)], 1u,
+                       __ATOMIC_RELAXED);
+}
+
+static void ht_stat_remove(HandleTable *ht, const struct KObject *obj) {
+    ht->removes++;
+    if (ht->live) ht->live--;
+    __atomic_fetch_add(&handle_table_type_removes[ht_type_idx(obj)], 1u,
+                       __ATOMIC_RELAXED);
+}
+
 void handle_table_init(HandleTable *ht) {
     spinlock_init(&ht->lock);
     ht->next_hint = 0u;
+    ht->live = 0u;
+    ht->hwm = 0u;
+    ht->inserts = 0u;
+    ht->removes = 0u;
     for (uint32_t i = 0u; i < HANDLE_TABLE_MAX; i++) {
         ht->used[i]               = 0u;
         ht->gen[i]                = 0u;
@@ -51,6 +93,7 @@ handle_id_t handle_table_insert(HandleTable *ht, struct KObject *obj,
     handle_entry_init(&ht->slots[slot], obj, rights, g);
     ht->used[slot] = 1u;
     ht->next_hint  = (slot + 1u) % HANDLE_TABLE_MAX;
+    ht_stat_insert(ht, obj);
 
     handle_id_t id = handle_id_make(slot, g);
     spinlock_unlock(&ht->lock);
@@ -117,6 +160,7 @@ handle_id_t handle_table_insert_derived(HandleTable *ht, struct KObject *obj,
     ht->used[slot]              = 1u;
     ht->derivation_parent[slot] = parent_handle;
     ht->next_hint               = (slot + 1u) % HANDLE_TABLE_MAX;
+    ht_stat_insert(ht, obj);
 
     handle_id_t id = handle_id_make(slot, g);
     spinlock_unlock(&ht->lock);
@@ -188,6 +232,7 @@ iris_error_t handle_table_close(HandleTable *ht, handle_id_t id) {
         return IRIS_ERR_BAD_HANDLE;
     }
 
+    ht_stat_remove(ht, ht->slots[slot].object);
     handle_entry_reset(&ht->slots[slot]);
     ht->used[slot]              = 0u;
     ht->gen[slot]               = next_gen(ht->gen[slot]);
@@ -202,6 +247,7 @@ void handle_table_close_all(HandleTable *ht) {
     spinlock_lock(&ht->lock);
     for (uint32_t i = 0u; i < HANDLE_TABLE_MAX; i++) {
         if (ht->used[i]) {
+            ht_stat_remove(ht, ht->slots[i].object);
             handle_entry_reset(&ht->slots[i]);
             ht->used[i]              = 0u;
             ht->gen[i]               = next_gen(ht->gen[i]);
@@ -250,6 +296,7 @@ void handle_table_revoke_children(HandleTable *ht, handle_id_t parent_h) {
     /* Sweep: close all marked slots */
     for (uint32_t i = 0u; i < HANDLE_TABLE_MAX; i++) {
         if (!to_revoke[i]) continue;
+        ht_stat_remove(ht, ht->slots[i].object);
         handle_entry_reset(&ht->slots[i]);
         ht->used[i]              = 0u;
         ht->gen[i]               = next_gen(ht->gen[i]);

@@ -494,6 +494,10 @@
  *   Requires IRIS_BOOTCAP_KDEBUG.
  *   Fills the buffer with a snapshot of scheduler counters (see iris/sched_info.h).
  *   Returns 0 on success.
+ *   A1.7 additive extension: buf_size >= 88 additionally fills handle-table
+ *   and IPC-delivery diagnostics at offsets 40..87 (see syscall_diag.c for
+ *   the field layout).  Callers passing 40..87 get the exact historical
+ *   40-byte snapshot — no signature, number, or legacy-behavior change.
  */
 #define SYS_SCHED_INFO 69
 
