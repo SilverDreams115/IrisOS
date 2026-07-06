@@ -16,7 +16,13 @@
  * Runtime-published services are bounded by the same per-process handle-table
  * ceiling as the rest of the system, not by an arbitrary local cap.
  */
-#define SVCMGR_DYNAMIC_SERVICE_CAP 1024u /* mirrors HANDLE_TABLE_MAX */
+#define SVCMGR_DYNAMIC_SERVICE_CAP 256u /* mirrors HANDLE_TABLE_MAX (A1.7).
+                                         * CSpace-pool registrations (slots
+                                         * 64..255) cover the first 192; the
+                                         * legacy-handle overflow shares the
+                                         * shrunken table with the working
+                                         * set, which the A1.7 measurements
+                                         * bound at ~33 entries. */
 /* Indexed by IRQ number (0–15); mirrors KIRQCAP_POOL_SIZE in kirqcap.h. */
 #define SVCMGR_IRQ_CAPS_TABLE_SIZE 16u
 /* Indexed by service_id (0–2); mirrors IRIS_SERVICE_RUNTIME_SLOT_COUNT. */

@@ -5,7 +5,16 @@
 #include <iris/nc/spinlock.h>
 #include <iris/nc/error.h>
 
-#define HANDLE_TABLE_MAX 1024u
+/* A1.7 shrink: 1024 → 256.  Evidence (T095, full boot + 92-test suite —
+ * the heaviest workload the system has): busiest table ever peaked at 33
+ * live handles, so 256 keeps a ~7.8x margin while bounding the ephemeral
+ * layer at a quarter of the CPtr-boundary encoding space.  The handle-id
+ * encoding (HANDLE_SLOT_BITS = 10, ids >= 1024) and the CPtr namespace
+ * split (CSPACE_DIRECT_CPTR_LIMIT = 1 << HANDLE_GEN_SHIFT) are UNCHANGED —
+ * they derive from the encoding, not from this ceiling.  Raising this
+ * again requires new high-water evidence, not aesthetics
+ * (docs/architecture/handle-table-freeze.md). */
+#define HANDLE_TABLE_MAX 256u
 
 typedef struct {
     struct HandleEntry slots[HANDLE_TABLE_MAX];
