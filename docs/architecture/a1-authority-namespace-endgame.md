@@ -289,6 +289,15 @@ receive-slots (pool 64..255, released on UNREGISTER), init's boot VFS
 session lands as a CPtr in its own CSpace, and T089–T092 cover the
 service flows plus legacy compat.  Suite: 88/88.
 
+**A1.7 shipped** (`handle-table-freeze.md`): the ephemeral layer is now
+measured (busiest table ever: 33 live handles across boot + the 92-test
+suite), instrumented (per-table + global counters, `sys_sched_info`
+additive extension), stress-tested (T093–T096: pool reuse, forced
+TOCTOU fallback, high-water bound, legacy pressure with zero leak), and
+**shrunk**: `HANDLE_TABLE_MAX` 1024 → 256 (~7.8× margin; encoding and
+CPtr boundary untouched).  The producer list is frozen with an explicit
+review rule.
+
 Remaining follow-ups:
 
 1. **Cross-process placement retirement** — revisit the
@@ -297,5 +306,3 @@ Remaining follow-ups:
    own-root-CNode accessor so services need not type-probe for it.
 2. **Notification secondary args** — make the three remaining
    `KNotification` handle-only sites dual (one mechanical increment).
-3. **Handle-table shrink/freeze** — with services adopted, measure the
-   live working set and revisit `HANDLE_TABLE_MAX` sizing.
