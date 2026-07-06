@@ -4147,6 +4147,158 @@ static void test_t096(void) {
     if (ok) it_pass("T096"); else it_fail("T096", "legacy pressure");
 }
 
+/* ── A1.8: legacy handle producer cleanup (T097–T098) ───────────────────────
+ * SYS_HANDLE_TRANSFER is retired (NOT_SUPPORTED); SYS_HANDLE_INSERT /
+ * SYS_VMO_SHARE stay as deprecated compat.  The canonical cross-process
+ * placement is SYS_PROC_CSPACE_MINT into a destination CSpace slot.
+ * Destination child slots 60..62 (lifecycle_probe children only receive the
+ * LP_CPTR_CMD_EP=3 mint, so these are guaranteed empty). */
+
+#define T097_DST_SLOT   60L
+#define T097_DST_SLOT2  61L
+#define T097_DST_SLOT3  62L
+
+/* ── T097: PROC_CSPACE_MINT replaces the legacy handle insert path ──────────
+ * The canonical placement covers what SYS_HANDLE_TRANSFER used to do, with
+ * CSpace-canonical delivery: mint lands in the child's root CNode (no handle
+ * produced in the destination table), an occupied slot fails fast, authority
+ * cannot escalate (empty effective rights → INVALID_ARG), a wrong-type
+ * destination fails, a dead destination fails — and the retired
+ * SYS_HANDLE_TRANSFER itself now returns NOT_SUPPORTED. */
+static void test_t097(void) {
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { it_fail("T097", "ep create"); return; }
+    handle_id_t cmd_ep_h = (handle_id_t)ep;
+    handle_id_t proc_h = HANDLE_INVALID;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+        it_close(&cmd_ep_h);
+        it_fail("T097", "spawn"); return;
+    }
+    long vmo = it_sys1(SYS_VMO_CREATE, 4096);
+    if (vmo < 0) {
+        (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
+        it_close(&proc_h); it_close(&cmd_ep_h);
+        it_fail("T097", "vmo create"); return;
+    }
+    handle_id_t vmo_h = (handle_id_t)vmo;
+    int ok = 1;
+    const char *why = "canonical placement";
+
+    /* Canonical placement: the cap lands in the child's CSpace — no handle
+     * is created in the destination table. */
+    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT,
+                vmo, (long)(RIGHT_READ | RIGHT_WRITE)) != 0) {
+        ok = 0; why = "mint";
+    }
+    /* Occupied destination slot → fail-fast, no overwrite. */
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT,
+                      vmo, (long)RIGHT_READ) !=
+        (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occupied"; }
+    /* Authority cannot escalate: READ-only source + WRITE request →
+     * empty effective rights → INVALID_ARG (never a widened grant). */
+    if (ok) {
+        long ro = it_sys2(SYS_HANDLE_DUP, vmo,
+                          (long)(RIGHT_READ | RIGHT_DUPLICATE));
+        if (ro < 0) { ok = 0; why = "dup"; }
+        else {
+            if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT2,
+                        ro, (long)RIGHT_WRITE) !=
+                (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "escalation"; }
+            handle_id_t roh = (handle_id_t)ro;
+            it_close(&roh);
+        }
+    }
+    /* Wrong-type destination (the slot-30 KNotification fixture). */
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_FIX_A,
+                      T097_DST_SLOT2, vmo, (long)RIGHT_READ) !=
+        (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type"; }
+    /* The retired legacy producer is gone: NOT_SUPPORTED, nothing placed. */
+    if (ok && it_sys3(SYS_HANDLE_TRANSFER, vmo, (long)proc_h,
+                      (long)RIGHT_READ) !=
+        (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "transfer not retired"; }
+    /* Dead destination fails cleanly. */
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT3,
+                      vmo, (long)RIGHT_READ) >= 0) { ok = 0; why = "dead dest"; }
+
+    if (!ok && proc_h != HANDLE_INVALID)
+        (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
+    it_close(&vmo_h);
+    it_close(&proc_h);
+    it_close(&cmd_ep_h);
+    if (ok) it_pass("T097"); else it_fail("T097", why);
+}
+
+/* ── T098: VMO share destination via CSpace, legacy compat intact ───────────
+ * The CSpace-canonical way to share a VMO with another process is a mint
+ * into a destination slot (no handle produced); the deprecated
+ * SYS_VMO_SHARE compat path still works for a slotless consumer and stays
+ * rights-monotonic (missing DUPLICATE → ACCESS_DENIED; disjoint rights →
+ * INVALID_ARG; dead destination → BAD_HANDLE). */
+static void test_t098(void) {
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { it_fail("T098", "ep create"); return; }
+    handle_id_t cmd_ep_h = (handle_id_t)ep;
+    handle_id_t proc_h = HANDLE_INVALID;
+    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+        it_close(&cmd_ep_h);
+        it_fail("T098", "spawn"); return;
+    }
+    long vmo = it_sys1(SYS_VMO_CREATE, 4096);
+    if (vmo < 0) {
+        (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
+        it_close(&proc_h); it_close(&cmd_ep_h);
+        it_fail("T098", "vmo create"); return;
+    }
+    handle_id_t vmo_h = (handle_id_t)vmo;
+    int ok = 1;
+    const char *why = "vmo share cspace";
+
+    /* Canonical: the shared VMO lands in the destination CSpace. */
+    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT,
+                vmo, (long)RIGHT_READ) != 0) { ok = 0; why = "mint"; }
+
+    /* Deprecated compat still works: a handle (>= 1024) in the dest table. */
+    if (ok) {
+        long sh = it_sys3(SYS_VMO_SHARE, vmo, (long)proc_h, (long)RIGHT_READ);
+        if (sh < 1024) { ok = 0; why = "legacy share"; }
+    }
+    /* Rights monotonic on the compat path: no DUPLICATE → ACCESS_DENIED. */
+    if (ok) {
+        long ro = it_sys2(SYS_HANDLE_DUP, vmo, (long)RIGHT_READ);
+        if (ro < 0) { ok = 0; why = "dup ro"; }
+        else {
+            if (it_sys3(SYS_VMO_SHARE, ro, (long)proc_h, (long)RIGHT_READ) !=
+                (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "share no-dup"; }
+            handle_id_t roh = (handle_id_t)ro;
+            it_close(&roh);
+        }
+    }
+    /* Disjoint rights request → INVALID_ARG (never a widened grant). */
+    if (ok) {
+        long rd = it_sys2(SYS_HANDLE_DUP, vmo,
+                          (long)(RIGHT_READ | RIGHT_DUPLICATE));
+        if (rd < 0) { ok = 0; why = "dup rd"; }
+        else {
+            if (it_sys3(SYS_VMO_SHARE, rd, (long)proc_h, (long)RIGHT_MANAGE) !=
+                (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "share disjoint"; }
+            handle_id_t rdh = (handle_id_t)rd;
+            it_close(&rdh);
+        }
+    }
+    /* Dead destination → BAD_HANDLE on the compat path too. */
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
+    if (ok && it_sys3(SYS_VMO_SHARE, vmo, (long)proc_h, (long)RIGHT_READ) !=
+        (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "dead dest"; }
+
+    if (!ok && proc_h != HANDLE_INVALID)
+        (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
+    it_close(&vmo_h);
+    it_close(&proc_h);
+    it_close(&cmd_ep_h);
+    if (ok) it_pass("T098"); else it_fail("T098", why);
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -4262,6 +4414,8 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t094();
     test_t095();
     test_t096();
+    test_t097();
+    test_t098();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
