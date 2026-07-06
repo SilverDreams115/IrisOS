@@ -3876,6 +3876,277 @@ static void test_t092(void) {
     if (ok) it_pass("T092"); else it_fail("T092", "legacy handle lookup");
 }
 
+/* ── A1.7: handle-table shrink/freeze evidence (T093–T096) ──────────────────
+ * Stress the receive-slot pool, force the documented TOCTOU fallback, and
+ * read the sys_sched_info extended diagnostics to prove the handle table is
+ * a small, bounded working set.  Test slot: 51 (T094). */
+
+/* Read the A1.7 extended sched_info words (offsets 40..87 as 12 uint32).
+ * The KDEBUG authority comes from the spawn bootcap (slot 6), resolved for
+ * the duration of the call — identical churn on every invocation, so
+ * before/after comparisons of self_live are exact. */
+static int it_sched_ext(uint32_t w[12]) {
+    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
+    if (bh < 0) return 0;
+    uint8_t buf[88];
+    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 88);
+    handle_id_t h = (handle_id_t)bh;
+    it_close(&h);
+    if (r != 0) return 0;
+    for (uint32_t i = 0; i < 12u; i++) {
+        uint32_t o = 40u + 4u * i;
+        w[i] = (uint32_t)buf[o] | ((uint32_t)buf[o + 1u] << 8) |
+               ((uint32_t)buf[o + 2u] << 16) | ((uint32_t)buf[o + 3u] << 24);
+    }
+    return 1;
+}
+
+/* Extended-word indices (see syscall_diag.c layout). */
+#define IT_SI_LIVE     0u
+#define IT_SI_HWM      1u
+#define IT_SI_INSERTS  2u
+#define IT_SI_REMOVES  3u
+#define IT_SI_GHWM     4u
+#define IT_SI_MAX      5u
+#define IT_SI_SLOTDEL  6u
+#define IT_SI_HANDDEL  7u
+#define IT_SI_TOCTOU   8u
+#define IT_SI_REPLY    9u
+#define IT_SI_RESOLVE 10u
+
+/* ── T093: svcmgr receive-slot pool stress (A1.7) ───────────────────────────
+ * Three full cycles of 8 concurrent registrations: every REGISTER lands in
+ * svcmgr's CSpace pool, lookups serve from it, UNREGISTER releases the pool
+ * slot, and the next cycle re-registers the same names (clean reuse).  After
+ * the last cycle nothing resolves (no ghost caps, no leaked slots). */
+static void test_t093(void) {
+    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    if (e < 0) { it_fail("T093", "ep create"); return; }
+    handle_id_t ep = (handle_id_t)e;
+    int ok = 1;
+    long ids[8];
+    char name[6] = { 't', '9', '3', '.', 'a', '\0' };
+
+    for (int cycle = 0; ok && cycle < 3; cycle++) {
+        for (int i = 0; ok && i < 8; i++) {
+            name[4] = (char)('a' + i);
+            ids[i] = it_register_ep(name, ep);
+            if (ids[i] < 0) ok = 0;
+        }
+        /* spot-check two: served from CSpace storage, invocable */
+        for (int i = 0; ok && i < 8; i += 7) {
+            struct IrisMsg msg;
+            name[4] = (char)('a' + i);
+            if (it_lookup_name_slot(name, 0u, &msg) != 0 ||
+                msg.label != IRIS_EP_REPLY_OK ||
+                !iris_msg_cap_is_handle(msg.attached_handle)) { ok = 0; break; }
+            struct IrisMsg p;
+            it_iris_msg_zero(&p);
+            p.label = 0x93;
+            if (it_sys2(SYS_EP_NB_SEND, (long)msg.attached_handle, (long)&p) !=
+                (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
+            handle_id_t cap = (handle_id_t)msg.attached_handle;
+            it_close(&cap);
+        }
+        for (int i = 0; ok && i < 8; i++) {
+            if (it_unregister_id((uint32_t)ids[i]) != 0) ok = 0;
+        }
+    }
+
+    /* after the last unregister wave nothing resolves */
+    if (ok) {
+        struct IrisMsg msg;
+        name[4] = 'a';
+        if (it_lookup_name_slot(name, 0u, &msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_ERR ||
+            msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) ok = 0;
+    }
+
+    it_close(&ep);
+    if (ok) it_pass("T093"); else it_fail("T093", "recv-slot pool stress");
+}
+
+/* ── T094: receive-slot TOCTOU fallback (A1.7) ──────────────────────────────
+ * A receiver declares slot 51 and blocks; before the sender delivers, the
+ * process fills slot 51 itself (self-mint via the own-process cap).  The
+ * delivery must take the DOCUMENTED fallback: the transferred cap arrives as
+ * a handle >= 1024 (full authority, nothing lost), the slot keeps exactly
+ * the cap that won the race (same object, right type), and no duplicate
+ * authority appears in the slot. */
+#define T094_SLOT 51L
+
+static handle_id_t       g_t094_ep = HANDLE_INVALID;
+static volatile uint32_t g_t094_got = 0;
+static volatile int      g_t094_ready = 0, g_t094_done = 0;
+static uint8_t           g_t094_stack[8192];
+
+static void t094_recv(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.attached_cap = (uint32_t)T094_SLOT;      /* receive-slot declaration */
+    g_t094_ready = 1;
+    if (it_sys2(SYS_EP_RECV, (long)g_t094_ep, (long)&m) == 0)
+        g_t094_got = m.attached_handle;        /* EP_SEND caps land here */
+    g_t094_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+
+static void test_t094(void) {
+    g_t094_got = 0; g_t094_ready = 0; g_t094_done = 0;
+
+    long nA = it_sys0(SYS_NOTIFY_CREATE);      /* the cap to transfer */
+    long nB = it_sys0(SYS_NOTIFY_CREATE);      /* the slot-race winner */
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
+    if (nA < 0 || nB < 0 || ep < 0 || selfp < 0) { it_fail("T094", "create"); return; }
+    handle_id_t nA_h = (handle_id_t)nA, nB_h = (handle_id_t)nB;
+    handle_id_t selfp_h = (handle_id_t)selfp;
+    g_t094_ep = (handle_id_t)ep;
+    int ok = 1;
+    const char *why = "toctou fallback";
+
+    uint64_t entry = (uint64_t)(uintptr_t)t094_recv;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t094_stack + sizeof(g_t094_stack))) & ~0xFULL;
+    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+        ok = 0; why = "thread create";
+    }
+    for (int i = 0; i < 200 && !g_t094_ready; i++) it_sys0(SYS_YIELD);
+    it_sys1(SYS_SLEEP, 2);                     /* blocked with slot 51 declared */
+
+    /* Fill the declared slot BEFORE delivery (the TOCTOU race). */
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, T094_SLOT,
+                      nB, (long)RIGHT_WRITE) != 0) {
+        ok = 0; why = "self mint";
+    }
+
+    if (ok) {
+        long d = it_sys2(SYS_HANDLE_DUP, nA, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        if (d < 0) { ok = 0; why = "dup"; }
+        else {
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label           = 0x94;
+            m.attached_handle = (uint32_t)d;
+            m.attached_rights = RIGHT_WRITE;
+            if (it_sys2(SYS_EP_SEND, (long)g_t094_ep, (long)&m) != 0) {
+                ok = 0; why = "send";
+            }
+        }
+    }
+    for (int i = 0; i < 200 && !g_t094_done; i++) it_sys0(SYS_YIELD);
+    if (ok && !g_t094_done) { ok = 0; why = "recv incomplete"; }
+
+    /* Documented fallback: handle >= 1024, full authority preserved. */
+    if (ok && !(g_t094_got >= 1024u)) { ok = 0; why = "not handle fallback"; }
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)g_t094_got, 0x94) != 0) {
+        ok = 0; why = "fallback cap dead";
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_WAIT, nA, (long)(uintptr_t)&bits) != 0 ||
+            bits != 0x94u) { ok = 0; why = "signal lost"; }
+    }
+    /* The slot keeps exactly the race winner: nB, a notification. */
+    if (ok) {
+        long rh = it_sys1(SYS_CSPACE_RESOLVE, T094_SLOT);
+        if (rh < 0) { ok = 0; why = "slot lost"; }
+        else {
+            if (it_sys2(SYS_HANDLE_SAME_OBJECT, rh, nB) != 1) {
+                ok = 0; why = "slot object changed";
+            }
+            handle_id_t r = (handle_id_t)rh;
+            it_close(&r);
+        }
+    }
+
+    if (g_t094_got >= 1024u) { handle_id_t g = (handle_id_t)g_t094_got; it_close(&g); }
+    it_close(&nA_h);
+    it_close(&nB_h);
+    it_close(&g_t094_ep);
+    it_close(&selfp_h);
+    if (ok) it_pass("T094"); else it_fail("T094", why);
+}
+
+/* ── T095: handle high-water smoke (A1.7) ───────────────────────────────────
+ * By this point the suite has exercised every producer: creation returns,
+ * DUP/derive, IPC transfers (slot + handle + TOCTOU), reply caps, resolves,
+ * spawns, deaths.  Read the extended diagnostics, log the real numbers (the
+ * evidence for the HANDLE_TABLE_MAX decision), and assert the working set is
+ * bounded: the busiest table ever seen must fit in a quarter of the ceiling. */
+static void test_t095(void) {
+    uint32_t w[12];
+    if (!it_sched_ext(w)) { it_fail("T095", "sched_info ext"); return; }
+
+    it_serial_write("[IRIS][TEST] T095 hwm self=");
+    it_log_num(w[IT_SI_HWM]);
+    it_serial_write(" live=");
+    it_log_num(w[IT_SI_LIVE]);
+    it_serial_write(" global=");
+    it_log_num(w[IT_SI_GHWM]);
+    it_serial_write(" max=");
+    it_log_num(w[IT_SI_MAX]);
+    it_serial_write(" slot=");
+    it_log_num(w[IT_SI_SLOTDEL]);
+    it_serial_write(" hand=");
+    it_log_num(w[IT_SI_HANDDEL]);
+    it_serial_write(" toctou=");
+    it_log_num(w[IT_SI_TOCTOU]);
+    it_serial_write(" reply=");
+    it_log_num(w[IT_SI_REPLY]);
+    it_serial_write(" resolve=");
+    it_log_num(w[IT_SI_RESOLVE]);
+    it_serial_write("\n");
+
+    int ok = 1;
+    if (!(w[IT_SI_LIVE] > 0u)) ok = 0;                       /* we hold handles */
+    if (w[IT_SI_HWM] < w[IT_SI_LIVE]) ok = 0;                /* hwm ≥ live */
+    if (w[IT_SI_GHWM] < w[IT_SI_HWM]) ok = 0;                /* global ≥ self */
+    if (w[IT_SI_INSERTS] < w[IT_SI_REMOVES]) ok = 0;         /* books balance */
+    if (w[IT_SI_INSERTS] - w[IT_SI_REMOVES] != w[IT_SI_LIVE]) ok = 0;
+    if (w[IT_SI_SLOTDEL] < 8u) ok = 0;      /* T084+ / svcmgr registrations */
+    if (w[IT_SI_HANDDEL] < 8u) ok = 0;      /* legacy deliveries all along */
+    if (w[IT_SI_TOCTOU] < 1u) ok = 0;       /* T094 forced exactly this */
+    if (w[IT_SI_REPLY] < 50u) ok = 0;       /* hundreds of EP_CALLs by now */
+    if (w[IT_SI_RESOLVE] < 4u) ok = 0;      /* sanctioned bridge in use */
+    /* The bound: busiest table ever ≤ MAX/4 — real margin, not aesthetics. */
+    if (w[IT_SI_GHWM] * 4u > w[IT_SI_MAX]) ok = 0;
+
+    if (ok) it_pass("T095"); else it_fail("T095", "handle high-water");
+}
+
+/* ── T096: legacy client compatibility under pressure (A1.7) ────────────────
+ * 32 slotless lookup+close cycles: every one materializes a real handle and
+ * releases it.  self_live must return exactly to its starting value (zero
+ * leak), and the legacy path keeps serving a working cap on the last lap. */
+static void test_t096(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T096", "sched_info ext"); return; }
+
+    int ok = 1;
+    for (int i = 0; ok && i < 32; i++) {
+        struct IrisMsg msg;
+        if (it_lookup_name_slot(VFS_EP_SVC_NAME, 0u, &msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_OK ||
+            !iris_msg_cap_is_handle(msg.attached_handle)) { ok = 0; break; }
+        handle_id_t cap = (handle_id_t)msg.attached_handle;
+        if (i == 31) {          /* the last cap still actually works */
+            struct IrisMsg p;
+            it_iris_msg_zero(&p);
+            p.label = IRIS_EP_OP_PING;
+            if (it_sys2(SYS_EP_CALL, (long)cap, (long)&p) != 0 ||
+                p.label != IRIS_EP_REPLY_OK) ok = 0;
+        }
+        it_close(&cap);
+    }
+
+    if (ok && !it_sched_ext(after)) ok = 0;
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) ok = 0;   /* zero leak */
+    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + 32u) ok = 0;
+
+    if (ok) it_pass("T096"); else it_fail("T096", "legacy pressure");
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -3987,6 +4258,10 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t090();
     test_t091();
     test_t092();
+    test_t093();
+    test_t094();
+    test_t095();
+    test_t096();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
