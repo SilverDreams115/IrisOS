@@ -4990,7 +4990,7 @@ static void test_t106(void) {
     if (ok) it_pass("T106"); else it_fail("T106", why);
 }
 
-/* ── A1.11: deterministic IPC fuzz/stress harness (T107–T111) ───────────────
+/* ── A1.11: deterministic IPC fuzz/stress harness (T107–T112) ───────────────
  *
  * Goal: break IPC/lifecycle/cap-transfer if a bug exists, reproducibly.
  * Design:
@@ -6122,6 +6122,64 @@ static void test_t111(void) {
     else    { fz_note("T111", T111_SEED, it_n); it_fail("T111", why); }
 }
 
+/* ── T112: spawn/exit churn — deferred-reap slot-reuse regression ───────────
+ * 24 back-to-back spawn → natural-exit → IMMEDIATE respawn cycles.  A task
+ * that exits by itself cannot reap its own address space (it is still
+ * running on it), so it parks TASK_DEAD in the deferred reap queue; the
+ * immediate respawn races the reaper for that task slot.  Before the A1.11
+ * fix the slot allocator treated dead-but-unreaped slots as free: the reuse
+ * wiped t->process, the reaper's TASK_DEAD guard then skipped the stale
+ * entry silently, and every lost race leaked the child KProcess + address
+ * space (~20 pages) — this loop, plus the earlier suite spawns, reliably
+ * drove SYS_PROCESS_CREATE into NO_MEMORY.  Locks: spawn never fails under
+ * churn, exit codes intact, parent books balance, high-water bounded.
+ * Invariants: I15, I16, I17. */
+#define T112_CYCLES 24u
+
+static void test_t112(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T112", "sched ext"); return; }
+    int ok = 1;
+    const char *why = "spawn/exit churn";
+    uint32_t i = 0;
+
+    for (i = 0; ok && i < T112_CYCLES; i++) {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        handle_id_t ep_h = (handle_id_t)ep;
+        handle_id_t proc_h = HANDLE_INVALID;
+        if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
+            ok = 0; why = "spawn";
+            it_close(&ep_h);
+            break;
+        }
+        /* Natural exit: a plain send releases the child's first recv. */
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label = 0x112;
+        if (it_sys2(SYS_EP_SEND, (long)ep_h, (long)&m) != 0) {
+            ok = 0; why = "send";
+        }
+        if (ok && it_lp_wait_exit(proc_h) != (long)LP_EXIT_MARKER) {
+            ok = 0; why = "exit code";
+        }
+        it_close(&proc_h);
+        it_close(&ep_h);
+        /* No pause here: the immediate respawn IS the race being locked. */
+    }
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
+    if (ok && after[IT_SI_GHWM] * 4u > after[IT_SI_MAX]) { ok = 0; why = "hwm"; }
+
+    if (ok) { it_pass("T112"); }
+    else {
+        it_serial_write("[IRIS][TEST] T112 cycle=");
+        it_log_num(i);
+        it_serial_write("\n");
+        it_fail("T112", why);
+    }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -6252,6 +6310,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t109();
     test_t110();
     test_t111();
+    test_t112();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
