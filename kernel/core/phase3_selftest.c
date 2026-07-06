@@ -207,20 +207,29 @@ static int phase3_handle_selftest(void) {
     obj = 0;
     obj2 = 0;
 
-    fill_notif = knotification_alloc();
-    if (!fill_notif) goto out;
-    for (uint32_t i = 0; i < HANDLE_TABLE_MAX; i++) {
-        phase3_fill_ids[i] = handle_table_insert(&phase3_full_ht, &fill_notif->base, RIGHT_READ);
-        if (phase3_fill_ids[i] == HANDLE_INVALID) goto out;
+    /* A1.7: this fixture DELIBERATELY fills a local table to the ceiling to
+     * exercise the full-table boundary — it is not workload data.  Snapshot
+     * and restore the global high-water diagnostic so the HANDLE_TABLE_MAX
+     * sizing datum keeps measuring real processes only. */
+    {
+        uint32_t saved_ghwm =
+            __atomic_load_n(&handle_table_global_hwm, __ATOMIC_RELAXED);
+        fill_notif = knotification_alloc();
+        if (!fill_notif) goto out;
+        for (uint32_t i = 0; i < HANDLE_TABLE_MAX; i++) {
+            phase3_fill_ids[i] = handle_table_insert(&phase3_full_ht, &fill_notif->base, RIGHT_READ);
+            if (phase3_fill_ids[i] == HANDLE_INVALID) goto out;
+        }
+        if (handle_table_insert(&phase3_full_ht, &fill_notif->base, RIGHT_READ) != HANDLE_INVALID) goto out;
+        for (uint32_t i = 0; i < HANDLE_TABLE_MAX; i++) {
+            if (handle_table_close(&phase3_full_ht, phase3_fill_ids[i]) != IRIS_OK) goto out;
+        }
+        if (atomic_load_explicit(&fill_notif->base.active_refs, memory_order_relaxed) != 0u) goto out;
+        h = handle_table_insert(&phase3_full_ht, &fill_notif->base, RIGHT_READ);
+        if (h == HANDLE_INVALID) goto out;
+        if (handle_table_close(&phase3_full_ht, h) != IRIS_OK) goto out;
+        __atomic_store_n(&handle_table_global_hwm, saved_ghwm, __ATOMIC_RELAXED);
     }
-    if (handle_table_insert(&phase3_full_ht, &fill_notif->base, RIGHT_READ) != HANDLE_INVALID) goto out;
-    for (uint32_t i = 0; i < HANDLE_TABLE_MAX; i++) {
-        if (handle_table_close(&phase3_full_ht, phase3_fill_ids[i]) != IRIS_OK) goto out;
-    }
-    if (atomic_load_explicit(&fill_notif->base.active_refs, memory_order_relaxed) != 0u) goto out;
-    h = handle_table_insert(&phase3_full_ht, &fill_notif->base, RIGHT_READ);
-    if (h == HANDLE_INVALID) goto out;
-    if (handle_table_close(&phase3_full_ht, h) != IRIS_OK) goto out;
 
     ok = 1;
 
