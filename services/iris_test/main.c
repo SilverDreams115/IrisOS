@@ -5411,6 +5411,160 @@ static void test_t107(void) {
     else    { fz_note("T107", T107_SEED, it_n); it_fail("T107", why); }
 }
 
+/* ── T108: randomized close/cancel staged-cap stress ────────────────────────
+ * 16 PRNG-driven rounds; each round creates a FRESH endpoint, parks one or
+ * two workers on it (blocking send with staged cap, EP_CALL with staged cap,
+ * declared-slot recv, legacy recv) and closes the endpoint mid-flight.
+ * Every waiter must wake with CLOSED, every staged source cap must survive
+ * with its owner (release exactly once — a double release would corrupt the
+ * books), a canceled declared slot must stay empty and reusable, and no
+ * KReply may ever be minted (no call rendezvouses).  Thread/process death
+ * cancellation is T101/T111 territory — this test owns endpoint close.
+ * Invariants: I5-I8, I14, I16, I17 (+ I4 via the reused empty slot). */
+#define T108_SEED   0xA1110108u
+#define T108_ROUNDS 16u
+
+static void test_t108(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T108", "sched ext"); return; }
+    g_fz_seed = T108_SEED;
+    int ok = 1;
+    const char *why = "close/cancel stress";
+    uint32_t it_n = 0;
+
+    long n = it_sys0(SYS_NOTIFY_CREATE);
+    handle_id_t n_h = (handle_id_t)n;
+    if (n < 0) { it_fail("T108", "create"); return; }
+    /* One reusable declared slot: every cancellation must leave it EMPTY,
+     * so the same slot serves every pick-3 round (that IS the assert). */
+    uint32_t rslot = fz_slot_alloc();
+    if (rslot == 0u) { it_close(&n_h); it_fail("T108", "slot budget"); return; }
+    if (!fz_workers_start(2)) { it_close(&n_h); it_fail("T108", "worker"); return; }
+
+    for (it_n = 0; ok && it_n < T108_ROUNDS; it_n++) {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        if (ep < 0) { ok = 0; why = "ep create"; break; }
+        g_fz_data_ep = (handle_id_t)ep;
+        uint32_t pick = fz_rand() % 5u;
+
+        if (pick == 0u || pick == 1u) {
+            /* One waiter with a staged cap: blocking EP_SEND (pick 0) or
+             * EP_CALL (pick 1); close cancels it before any rendezvous. */
+            long d = fz_dup_xfer(n);
+            if (d < 0) { ok = 0; why = "dup"; break; }
+            int sent = (pick == 0u)
+                ? fz_cmd(0, FZ_OP_SEND_CAP, (uint64_t)d, RIGHT_WRITE, 0x108)
+                : fz_cmd(0, FZ_OP_CALL,     (uint64_t)d, RIGHT_WRITE, 0);
+            if (!sent) { ok = 0; why = "cmd"; break; }
+            it_sys1(SYS_SLEEP, 5);            /* waiter queues its staged cap */
+            it_close(&g_fz_data_ep);
+            if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (ok && g_fz_res[0] != (long)IRIS_ERR_CLOSED) {
+                ok = 0; why = "not CLOSED";
+            }
+            /* I5/I7: no delivery commit → the source cap survives. */
+            if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
+                (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "cap consumed"; }
+            { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
+
+        } else if (pick == 2u) {
+            /* TWO staged waiters (send + call) canceled by one close: every
+             * staging ref released exactly once (I8). */
+            long da = fz_dup_xfer(n), db = fz_dup_xfer(n);
+            if (da < 0 || db < 0) { ok = 0; why = "dup2"; break; }
+            if (!fz_cmd(0, FZ_OP_SEND_CAP, (uint64_t)da, RIGHT_WRITE, 0x208) ||
+                !fz_cmd(1, FZ_OP_CALL,     (uint64_t)db, RIGHT_WRITE, 0)) {
+                ok = 0; why = "cmd2"; break;
+            }
+            it_sys1(SYS_SLEEP, 5);            /* both queue staged caps */
+            it_close(&g_fz_data_ep);
+            if (!fz_wait(0) || !fz_wait(1)) { ok = 0; why = "worker hang"; }
+            if (ok && (g_fz_res[0] != (long)IRIS_ERR_CLOSED ||
+                       g_fz_res[1] != (long)IRIS_ERR_CLOSED)) {
+                ok = 0; why = "not CLOSED x2";
+            }
+            if (ok && (it_sys1(SYS_HANDLE_TYPE, da) !=
+                       (long)IRIS_HANDLE_TYPE_NOTIFICATION ||
+                       it_sys1(SYS_HANDLE_TYPE, db) !=
+                       (long)IRIS_HANDLE_TYPE_NOTIFICATION)) {
+                ok = 0; why = "cap consumed x2";
+            }
+            { handle_id_t dh = (handle_id_t)da; it_close(&dh); }
+            { handle_id_t dh = (handle_id_t)db; it_close(&dh); }
+
+        } else if (pick == 3u) {
+            /* Receiver with a DECLARED slot canceled by close: wakes CLOSED,
+             * gains nothing (I6), and the slot stays empty — the next pick-3
+             * round re-declares the very same slot. */
+            if (!fz_cmd(0, FZ_OP_RECV, rslot, 0, 0)) { ok = 0; why = "cmd"; break; }
+            it_sys1(SYS_SLEEP, 5);            /* receiver blocks, slot declared */
+            it_close(&g_fz_data_ep);
+            if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (ok && g_fz_res[0] != (long)IRIS_ERR_CLOSED) {
+                ok = 0; why = "recv not CLOSED";
+            }
+            if (ok && g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP) {
+                ok = 0; why = "ghost cap";
+            }
+            if (ok && it_sys1(SYS_CSPACE_RESOLVE, (long)rslot) >= 0) {
+                ok = 0; why = "slot not empty";
+            }
+
+        } else {
+            /* Legacy (slot 0) receiver canceled by close. */
+            if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "cmd"; break; }
+            it_sys1(SYS_SLEEP, 5);
+            it_close(&g_fz_data_ep);
+            if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (ok && g_fz_res[0] != (long)IRIS_ERR_CLOSED) {
+                ok = 0; why = "legacy not CLOSED";
+            }
+            if (ok && g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP) {
+                ok = 0; why = "legacy ghost cap";
+            }
+        }
+        it_close(&g_fz_data_ep);   /* no-op on the already-closed rounds */
+    }
+
+    /* Post-stress health: a fresh endpoint still rendezvouses normally. */
+    if (ok) {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        if (ep < 0) { ok = 0; why = "final ep"; }
+        else {
+            g_fz_data_ep = (handle_id_t)ep;
+            if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "final cmd"; }
+            if (ok) {
+                it_sys1(SYS_SLEEP, 2);        /* receiver re-blocks on data ep */
+                struct IrisMsg m;
+                it_iris_msg_zero(&m);
+                m.label = 0x308;
+                if (it_sys2(SYS_EP_SEND, (long)g_fz_data_ep, (long)&m) != 0 ||
+                    !fz_wait(0) || g_fz_res[0] != 0 ||
+                    g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP) {
+                    ok = 0; why = "ep not reusable";
+                }
+            }
+            it_close(&g_fz_data_ep);
+        }
+    }
+
+    fz_workers_stop(2);
+    it_close(&n_h);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    /* I16: exact balance; +2 = the two workers' KTcb handles (Ph96). */
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 2u) { ok = 0; why = "leak"; }
+    /* No call ever rendezvoused → not one KReply minted (T104 rule). */
+    if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY]) {
+        ok = 0; why = "ghost kreply";
+    }
+    /* I17: T095 high-water rule. */
+    if (ok && after[IT_SI_GHWM] * 4u > after[IT_SI_MAX]) { ok = 0; why = "hwm"; }
+
+    if (ok) { it_pass("T108"); }
+    else    { fz_note("T108", T108_SEED, it_n); it_fail("T108", why); }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -5537,6 +5691,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t105();
     test_t106();
     test_t107();
+    test_t108();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
