@@ -5970,6 +5970,158 @@ static void test_t110(void) {
     else    { fz_note("T110", T110_SEED, it_n); it_fail("T110", why); }
 }
 
+/* ── T111: cross-process receive-slot fuzz with lifecycle_probe ─────────────
+ * Six lifecycle_probe children, one scenario each: a coverage-forced prefix
+ * (kinds 0-3, every class runs exactly once regardless of the seed) plus a
+ * PRNG-chosen tail — deterministic AND fully covered.  Kinds:
+ *   0 rslot+notification : cap lands in the CHILD's CSpace at the declared
+ *     CPtr (exit code == slot), child invokes it ACROSS the process
+ *     boundary (signal observed by the parent);
+ *   1 rslot+endpoint cap : same landing proof with an endpoint cap; the
+ *     child's death then releases its CSpace ref — the parent's endpoint
+ *     stays fully usable;
+ *   2 kill before delivery: child killed while blocked with a declared
+ *     slot — no dead waiter remains (NB probe), the sender's cap survives
+ *     the attempted delivery;
+ *   3 legacy slot 0      : cap materializes as a handle >= 1024 in the
+ *     child, invoked across the boundary, torn down with the child.
+ * Parent books balance EXACTLY (no thread helpers here — delta 0).
+ * Invariants: I1, I5, I6, I11, I12, I15-I18. */
+#define T111_SEED 0xA1110111u
+#define T111_TAIL 2u
+
+static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
+                      const char **why) {
+    int ok = 1;
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    long e2 = (kind == 1u) ? it_sys0(SYS_ENDPOINT_CREATE) : -1;
+    handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
+    handle_id_t e2_h = (kind == 1u) ? (handle_id_t)e2 : HANDLE_INVALID;
+    handle_id_t proc_h = HANDLE_INVALID;
+
+    if (ep < 0 || n < 0 || (kind == 1u && e2 < 0) ||
+        lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; *why = "spawn"; }
+
+    if (ok && it_lp_cmd_rslot(ep_h, (kind == 3u) ? 0u : T099_CHILD_SLOT) != 0) {
+        ok = 0; *why = "cmd";
+    }
+
+    if (ok && (kind == 0u || kind == 3u)) {
+        /* Deliver a notification cap; the child invokes it (bits 1 = CPtr
+         * landing, bits 2 = legacy handle landing) and reports where it
+         * landed via its exit code. */
+        if (it_lp_send_cap(ep_h, n) != 0) { ok = 0; *why = "send cap"; }
+        if (ok) {
+            uint64_t bits = 0;
+            uint64_t want = (kind == 0u) ? 1u : 2u;
+            if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+                bits != want) { ok = 0; *why = "x-proc signal"; }
+        }
+        if (ok) {
+            long ec = it_lp_wait_exit(proc_h);
+            if (kind == 0u && ec != (long)T099_CHILD_SLOT) {
+                ok = 0; *why = "cptr landing";
+            }
+            if (kind == 3u && ec < (long)IRIS_CPTR_LIMIT) {
+                ok = 0; *why = "legacy landing";
+            }
+        }
+        if (ok) { if (kind == 0u) (*exp_slot)++; else (*exp_hand)++; }
+
+    } else if (ok && kind == 1u) {
+        /* Deliver an endpoint cap into the child's declared slot: the exit
+         * code proves the CSpace landing (the child's blind NOTIFY_SIGNAL
+         * on it fails and is ignored by design). */
+        if (it_lp_send_cap(ep_h, e2) != 0) { ok = 0; *why = "send ep cap"; }
+        if (ok && it_lp_wait_exit(proc_h) != (long)T099_CHILD_SLOT) {
+            ok = 0; *why = "ep cptr landing";
+        }
+        /* Child death released its CSpace ref; the parent's endpoint is
+         * still alive and clean (no waiter, no corruption). */
+        if (ok) {
+            struct IrisMsg p;
+            it_iris_msg_zero(&p);
+            p.label = 0x111;
+            if (it_sys2(SYS_EP_NB_SEND, (long)e2_h, (long)&p) !=
+                (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; *why = "parent ep broken"; }
+        }
+        if (ok) (*exp_slot)++;
+
+    } else if (ok) {
+        /* Kill the child while it blocks with its slot declared: the wait
+         * dies with it (no dead waiter) and a sender's delivery attempt
+         * fails WITHOUT consuming the source cap. */
+        it_sys1(SYS_SLEEP, 2);      /* child re-blocks, slot 40 declared */
+        if (it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) {
+            ok = 0; *why = "kill";
+        }
+        if (ok && it_sys1(SYS_PROCESS_STATUS, (long)proc_h) != 0) {
+            ok = 0; *why = "still alive";
+        }
+        if (ok) {
+            long d = fz_dup_xfer(n);
+            if (d < 0) { ok = 0; *why = "dup"; }
+            else {
+                struct IrisMsg m;
+                it_iris_msg_zero(&m);
+                m.label           = 0x211;
+                m.attached_handle = (uint32_t)d;
+                m.attached_rights = RIGHT_WRITE;
+                if (it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&m) !=
+                    (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; *why = "dead waiter"; }
+                if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
+                    (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+                    ok = 0; *why = "cap consumed";
+                }
+                handle_id_t dh = (handle_id_t)d;
+                it_close(&dh);
+            }
+        }
+    }
+
+    if (!ok && proc_h != HANDLE_INVALID)
+        (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
+    it_close(&proc_h);
+    it_close(&e2_h);
+    it_close(&n_h);
+    it_close(&ep_h);
+    return ok;
+}
+
+static void test_t111(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T111", "sched ext"); return; }
+    g_fz_seed = T111_SEED;
+    int ok = 1;
+    const char *why = "x-proc rslot fuzz";
+    uint32_t it_n = 0;
+    uint32_t exp_slot = 0, exp_hand = 0;
+
+    /* Coverage-forced prefix: every scenario class exactly once. */
+    for (it_n = 0; ok && it_n < 4u; it_n++)
+        ok = t111_round(it_n, &exp_slot, &exp_hand, &why);
+    /* PRNG tail. */
+    for (; ok && it_n < 4u + T111_TAIL; it_n++)
+        ok = t111_round(fz_rand() % 4u, &exp_slot, &exp_hand, &why);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    /* I16: exact balance — no helper threads here, so delta must be 0. */
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
+    /* I18: directional cross-process delivery deltas. */
+    if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
+        ok = 0; why = "slot count";
+    }
+    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + exp_hand) {
+        ok = 0; why = "hand count";
+    }
+    /* I17: T095 high-water rule. */
+    if (ok && after[IT_SI_GHWM] * 4u > after[IT_SI_MAX]) { ok = 0; why = "hwm"; }
+
+    if (ok) { it_pass("T111"); }
+    else    { fz_note("T111", T111_SEED, it_n); it_fail("T111", why); }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -6099,6 +6251,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t108();
     test_t109();
     test_t110();
+    test_t111();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
