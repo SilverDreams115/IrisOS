@@ -4990,6 +4990,427 @@ static void test_t106(void) {
     if (ok) it_pass("T106"); else it_fail("T106", why);
 }
 
+/* ── A1.11: deterministic IPC fuzz/stress harness (T107–T111) ───────────────
+ *
+ * Goal: break IPC/lifecycle/cap-transfer if a bug exists, reproducibly.
+ * Design:
+ *   - xorshift32 PRNG with a FIXED per-test seed: the operation sequence is
+ *     identical on every run; a failure logs "FZ <test> seed=<s> iter=<i>".
+ *   - bounded iterations; bounded retry/poll loops (no unbounded waits);
+ *   - synchronization is the blocking-endpoint rendezvous itself: command
+ *     handoff over a control endpoint blocks until the worker is at its
+ *     recv, so no fragile external timing is needed.  The only sleeps are
+ *     the short "let the worker reach its blocking syscall" pauses already
+ *     used by T019/T020/T101/T103.
+ *   - CSpace slots CANNOT be deleted from userland (no root-CNode accessor
+ *     by design), so delivered/occupied slots are allocated monotonically
+ *     from a budgeted window (FZ_SLOT_BASE..FZ_SLOT_LIMIT) — deterministic
+ *     and bounded; the budget check fails loudly if a test overdraws.
+ *   - every test snapshots the A1.7 counters before/after and asserts
+ *     exact live-handle balance (KTcb handles from worker threads are a
+ *     documented +N, as in A1.10), directional slot/handle-delivery deltas
+ *     (>=: background services also move the global counters), and the
+ *     T095 high-water rule (global_hwm * 4 <= max).
+ *
+ * Invariants (docs/architecture/ipc-stress-invariants.md): I1 no authority
+ * without cap; I2 no fallback after ACCESS_DENIED; I3 no silent slot
+ * overwrite; I4 occupied slot fails/degrades per contract; I5 sender keeps
+ * cap without delivery commit; I6 receiver gains nothing on failure; I7 no
+ * staged-cap leak; I8 no double release; I9 reply one-shot; I10 second
+ * reply keeps server cap; I11 legacy slot-0 delivery; I12 slot delivery is
+ * an invocable CPtr; I13 NOT_FOUND installs nothing; I14 close wakes
+ * waiters; I15 death leaves no dead waiters; I16 live back to baseline;
+ * I17 hwm bounded; I18 delivery counters move as expected. */
+
+/* xorshift32 — deterministic, seeded per test. */
+static uint32_t g_fz_seed;
+static uint32_t fz_rand(void) {
+    uint32_t x = g_fz_seed;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    g_fz_seed = x;
+    return x;
+}
+
+/* Monotonic fresh-slot allocator (slots are never deleted — see header). */
+#define FZ_SLOT_BASE  100u
+#define FZ_SLOT_LIMIT 240u
+static uint32_t g_fz_slot_next = FZ_SLOT_BASE;
+static uint32_t fz_slot_alloc(void) {
+    if (g_fz_slot_next >= FZ_SLOT_LIMIT) return 0;   /* budget blown → caller fails */
+    return g_fz_slot_next++;
+}
+
+/* Failure locator: printed ONLY on failure, right before it_fail. */
+static void fz_note(const char *t, uint32_t seed, uint32_t iter) {
+    it_serial_write("[IRIS][TEST] FZ ");
+    it_serial_write(t);
+    it_serial_write(" seed=");
+    it_log_num(seed);
+    it_serial_write(" iter=");
+    it_log_num(iter);
+    it_serial_write("\n");
+}
+
+/* ── Command-driven persistent workers ──────────────────────────────────────
+ * One worker thread per index, driven over its own control endpoint.  A
+ * command is one blocking EP_SEND on the ctl ep (rendezvous == the worker is
+ * ready); the worker runs the op against g_fz_data_ep, publishes results in
+ * its result slots and re-blocks on ctl.  Workers are started/stopped per
+ * test; each leaves the process KTcb handle behind by design (Ph96) — the
+ * per-test live delta documents it. */
+#define FZ_OP_EXIT       0u
+#define FZ_OP_RECV       1u   /* w1 = receive-slot declaration (0 = legacy) */
+#define FZ_OP_SEND_CAP   2u   /* w1 = handle (0 = none), w2 = rights, w3 = label */
+#define FZ_OP_CALL       3u   /* w1 = attached_cap (0 = none), w2 = rights, w3 = reply slot */
+
+static handle_id_t       g_fz_ctl[2]  = { HANDLE_INVALID, HANDLE_INVALID };
+static handle_id_t       g_fz_data_ep = HANDLE_INVALID;
+static volatile long     g_fz_res[2];
+static volatile uint32_t g_fz_att[2];      /* msg.attached_handle seen by worker */
+static volatile uint32_t g_fz_attcap[2];   /* msg.attached_cap seen by worker */
+static volatile int      g_fz_done[2];
+static uint8_t           g_fz_stk[2][8192];
+
+static void fz_worker(int idx) {
+    for (;;) {
+        struct IrisMsg c;
+        it_iris_msg_zero(&c);
+        if (it_sys2(SYS_EP_RECV, (long)g_fz_ctl[idx], (long)&c) != 0) break;
+        uint32_t op = (uint32_t)c.words[0];
+        if (op == FZ_OP_EXIT) break;
+
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        long r = -1;
+        if (op == FZ_OP_RECV) {
+            m.attached_cap = (uint32_t)c.words[1];   /* slot hint (0 = legacy) */
+            r = it_sys2(SYS_EP_RECV, (long)g_fz_data_ep, (long)&m);
+        } else if (op == FZ_OP_SEND_CAP) {
+            m.label = c.words[3];
+            if (c.words[1]) {
+                m.attached_handle = (uint32_t)c.words[1];
+                m.attached_rights = (uint32_t)c.words[2];
+            }
+            r = it_sys2(SYS_EP_SEND, (long)g_fz_data_ep, (long)&m);
+        } else if (op == FZ_OP_CALL) {
+            m.label = 0xF2;
+            if (c.words[1]) {
+                m.attached_cap        = (uint32_t)c.words[1];
+                m.attached_cap_rights = (uint32_t)c.words[2];
+            }
+            m.attached_handle = (uint32_t)c.words[3]; /* reply slot (0 = legacy) */
+            r = it_sys2(SYS_EP_CALL, (long)g_fz_data_ep, (long)&m);
+        }
+        g_fz_att[idx]    = m.attached_handle;
+        g_fz_attcap[idx] = m.attached_cap;
+        g_fz_res[idx]    = r;
+        __asm__ volatile ("" ::: "memory");
+        g_fz_done[idx]   = 1;
+    }
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+static void fz_worker0(void) { fz_worker(0); }
+static void fz_worker1(void) { fz_worker(1); }
+
+/* Start `n` workers (1 or 2).  Returns 1 on success. */
+static int fz_workers_start(int n) {
+    static void (*const entries[2])(void) = { fz_worker0, fz_worker1 };
+    for (int i = 0; i < n; i++) {
+        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        if (e < 0) return 0;
+        g_fz_ctl[i] = (handle_id_t)e;
+        uint64_t entry = (uint64_t)(uintptr_t)entries[i];
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_fz_stk[i] + sizeof(g_fz_stk[i]))) & ~0xFULL;
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) return 0;
+    }
+    return 1;
+}
+
+/* Send a command to worker `idx`; blocks until the worker picks it up. */
+static int fz_cmd(int idx, uint32_t op, uint64_t a, uint64_t b, uint64_t c) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label      = 0xFC;
+    m.words[0]   = op;
+    m.words[1]   = a;
+    m.words[2]   = b;
+    m.words[3]   = c;
+    m.word_count = 4u;
+    g_fz_done[idx] = 0;
+    return it_sys2(SYS_EP_SEND, (long)g_fz_ctl[idx], (long)&m) == 0;
+}
+
+/* Bounded wait for worker `idx` to publish a result. */
+static int fz_wait(int idx) {
+    for (int i = 0; i < 4000 && !g_fz_done[idx]; i++) it_sys0(SYS_YIELD);
+    return g_fz_done[idx];
+}
+
+static void fz_workers_stop(int n) {
+    for (int i = 0; i < n; i++) {
+        if (g_fz_ctl[i] != HANDLE_INVALID) {
+            (void)fz_cmd(i, FZ_OP_EXIT, 0, 0, 0);
+            it_close(&g_fz_ctl[i]);
+        }
+    }
+}
+
+/* Dup a WRITE|TRANSFER cap of `src` for staging (returns handle or -err). */
+static long fz_dup_xfer(long src) {
+    return it_sys2(SYS_HANDLE_DUP, src, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+}
+
+/* ── T107: randomized receive-slot IPC stress ───────────────────────────────
+ * 48 PRNG-driven iterations over one endpoint and one worker mixing
+ * EP_SEND / EP_NB_SEND / EP_RECV with notification AND endpoint caps into
+ * fresh slots, occupied slots, invalid slots, legacy slot-0 and rights-
+ * degraded staging.  Invariants: I1-I8, I11, I12, I16-I18. */
+#define T107_SEED  0xA1110107u
+#define T107_ITERS 48u
+
+static void test_t107(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T107", "sched ext"); return; }
+    g_fz_seed = T107_SEED;
+    int ok = 1;
+    const char *why = "rslot stress";
+    uint32_t it_n = 0;
+    uint32_t exp_slot = 0, exp_hand = 0;
+
+    long ep    = it_sys0(SYS_ENDPOINT_CREATE);   /* data endpoint */
+    long n     = it_sys0(SYS_NOTIFY_CREATE);     /* transferable notification */
+    long ep2   = it_sys0(SYS_ENDPOINT_CREATE);   /* transferable endpoint */
+    long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
+    handle_id_t n_h = (handle_id_t)n, ep2_h = (handle_id_t)ep2;
+    handle_id_t selfp_h = (handle_id_t)selfp;
+    g_fz_data_ep = (handle_id_t)ep;
+    if (ep < 0 || n < 0 || ep2 < 0 || selfp < 0) { it_fail("T107", "create"); return; }
+    if (!fz_workers_start(1)) { it_fail("T107", "worker"); return; }
+
+    for (it_n = 0; ok && it_n < T107_ITERS; it_n++) {
+        uint32_t pick = fz_rand() % 8u;
+
+        if (pick == 0u) {
+            /* NB send, no receiver → WOULD_BLOCK; nothing changes. */
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label = 0xF0;
+            if (it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m) !=
+                (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "nb empty"; }
+
+        } else if (pick == 1u || pick == 7u) {
+            /* Blocking EP_SEND of a cap into a FRESH declared slot.
+             * pick 1 = notification cap, pick 7 = endpoint cap. */
+            uint32_t s = fz_slot_alloc();
+            long src = (pick == 1u) ? n : ep2;
+            long d = fz_dup_xfer(src);
+            if (s == 0u || d < 0) { ok = 0; why = "slot/dup"; break; }
+            if (!fz_cmd(0, FZ_OP_RECV, s, 0, 0)) { ok = 0; why = "cmd"; break; }
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label           = 0xF1;
+            m.attached_handle = (uint32_t)d;
+            m.attached_rights = RIGHT_WRITE;
+            if (it_sys2(SYS_EP_SEND, (long)g_fz_data_ep, (long)&m) != 0) {
+                ok = 0; why = "send";
+            }
+            if (ok && !fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (ok && (g_fz_res[0] != 0 || g_fz_att[0] != s)) {
+                ok = 0; why = "slot landing";
+            }
+            /* I12: the CPtr is invocable. */
+            if (ok && pick == 1u &&
+                it_sys2(SYS_NOTIFY_SIGNAL, (long)s, 1) != 0) {
+                ok = 0; why = "cptr signal";
+            }
+            if (ok && pick == 1u) {
+                uint64_t bits = 0;
+                if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+                    bits == 0u) { ok = 0; why = "signal lost"; }
+            }
+            if (ok && pick == 7u) {
+                struct IrisMsg pm;
+                it_iris_msg_zero(&pm);     /* clean probe: no stale attached cap */
+                pm.label = 0xF9;
+                if (it_sys2(SYS_EP_NB_SEND, (long)s, (long)&pm) !=
+                    (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "cptr ep"; }
+            }
+            /* move semantics: source dup consumed at delivery commit */
+            if (ok && it_sys1(SYS_HANDLE_TYPE, d) >= 0) {
+                ok = 0; why = "dup not consumed";
+            }
+            exp_slot++;
+
+        } else if (pick == 2u) {
+            /* NB_SEND of a cap to a slot-declared receiver (bounded retry
+             * until the worker is queued). */
+            uint32_t s = fz_slot_alloc();
+            long d = fz_dup_xfer(n);
+            if (s == 0u || d < 0) { ok = 0; why = "slot/dup"; break; }
+            if (!fz_cmd(0, FZ_OP_RECV, s, 0, 0)) { ok = 0; why = "cmd"; break; }
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label           = 0xF3;
+            m.attached_handle = (uint32_t)d;
+            m.attached_rights = RIGHT_WRITE;
+            long r = (long)IRIS_ERR_WOULD_BLOCK;
+            for (int i = 0; i < 400 && r == (long)IRIS_ERR_WOULD_BLOCK; i++) {
+                r = it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m);
+                if (r == (long)IRIS_ERR_WOULD_BLOCK) it_sys0(SYS_YIELD);
+            }
+            if (r != 0) { ok = 0; why = "nb send"; }
+            if (ok && !fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (ok && (g_fz_res[0] != 0 || g_fz_att[0] != s)) {
+                ok = 0; why = "nb slot landing";
+            }
+            /* A1.9 commit rule: NB source consumed once delivery commits. */
+            if (ok && it_sys1(SYS_HANDLE_TYPE, d) >= 0) {
+                ok = 0; why = "nb dup not consumed";
+            }
+            exp_slot++;
+
+        } else if (pick == 3u) {
+            /* Occupied slot: recv fails fast; sender's NB attempt finds no
+             * waiter; source kept; occupant untouched (I3, I4, I5). */
+            uint32_t s = fz_slot_alloc();
+            if (s == 0u) { ok = 0; why = "slot budget"; break; }
+            if (it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, (long)s,
+                        n, (long)RIGHT_WRITE) != 0) { ok = 0; why = "premint"; break; }
+            if (!fz_cmd(0, FZ_OP_RECV, s, 0, 0)) { ok = 0; why = "cmd"; break; }
+            if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (ok && g_fz_res[0] != (long)IRIS_ERR_ALREADY_EXISTS) {
+                ok = 0; why = "occupied not rejected";
+            }
+            long d = fz_dup_xfer(n);
+            if (ok && d >= 0) {
+                struct IrisMsg m;
+                it_iris_msg_zero(&m);
+                m.label           = 0xF4;
+                m.attached_handle = (uint32_t)d;
+                m.attached_rights = RIGHT_WRITE;
+                if (it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m) !=
+                    (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "dead waiter"; }
+                if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
+                    (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+                    ok = 0; why = "cap consumed on fail";
+                }
+                handle_id_t dh = (handle_id_t)d;
+                it_close(&dh);
+            }
+            /* I3: the occupant is still exactly our pre-minted cap. */
+            if (ok) {
+                long rh = it_sys1(SYS_CSPACE_RESOLVE, (long)s);
+                if (rh < 0 || it_sys2(SYS_HANDLE_SAME_OBJECT, rh, n) != 1) {
+                    ok = 0; why = "occupant changed";
+                }
+                if (rh >= 0) { handle_id_t r2 = (handle_id_t)rh; it_close(&r2); }
+            }
+
+        } else if (pick == 4u) {
+            /* Invalid (out-of-range) slot declaration → INVALID_ARG fail-
+             * fast; the endpoint is untouched. */
+            if (!fz_cmd(0, FZ_OP_RECV, 300u, 0, 0)) { ok = 0; why = "cmd"; break; }
+            if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (ok && g_fz_res[0] != (long)IRIS_ERR_INVALID_ARG) {
+                ok = 0; why = "invalid slot";
+            }
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label = 0xF5;
+            if (ok && it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m) !=
+                (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep touched"; }
+
+        } else if (pick == 5u) {
+            /* Legacy slot 0: the cap materializes as a handle >= 1024 (I11). */
+            long d = fz_dup_xfer(n);
+            if (d < 0) { ok = 0; why = "dup"; break; }
+            if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "cmd"; break; }
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label           = 0xF6;
+            m.attached_handle = (uint32_t)d;
+            m.attached_rights = RIGHT_WRITE;
+            if (it_sys2(SYS_EP_SEND, (long)g_fz_data_ep, (long)&m) != 0) {
+                ok = 0; why = "legacy send";
+            }
+            if (ok && !fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (ok && (g_fz_res[0] != 0 || g_fz_att[0] < 1024u)) {
+                ok = 0; why = "legacy landing";
+            }
+            if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)g_fz_att[0], 2) != 0) {
+                ok = 0; why = "legacy cap dead";
+            }
+            if (ok) {
+                uint64_t bits = 0;
+                (void)it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits);
+                handle_id_t gh = (handle_id_t)g_fz_att[0];
+                it_close(&gh);
+            }
+            exp_hand++;
+
+        } else {
+            /* pick 6: staging without RIGHT_TRANSFER → ACCESS_DENIED; the
+             * blocked receiver gains NOTHING and then gets a clean plain
+             * message (I1, I2, I6); the degraded dup survives. */
+            long bad = it_sys2(SYS_HANDLE_DUP, n, (long)RIGHT_WRITE);
+            if (bad < 0) { ok = 0; why = "bad dup"; break; }
+            if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "cmd"; break; }
+            it_sys1(SYS_SLEEP, 2);   /* worker re-blocks on the data ep */
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label           = 0xF7;
+            m.attached_handle = (uint32_t)bad;
+            m.attached_rights = RIGHT_WRITE;
+            if (it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m) !=
+                (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no ACCESS_DENIED"; }
+            if (ok && it_sys1(SYS_HANDLE_TYPE, bad) !=
+                (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+                ok = 0; why = "bad dup consumed";
+            }
+            /* unblock the still-waiting receiver with a plain message */
+            if (ok) {
+                it_iris_msg_zero(&m);
+                m.label = 0xF8;
+                if (it_sys2(SYS_EP_SEND, (long)g_fz_data_ep, (long)&m) != 0) {
+                    ok = 0; why = "plain send";
+                }
+                if (ok && !fz_wait(0)) { ok = 0; why = "worker hang"; }
+                if (ok && (g_fz_res[0] != 0 ||
+                           g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP)) {
+                    ok = 0; why = "ghost cap";
+                }
+            }
+            {
+                handle_id_t bh = (handle_id_t)bad;
+                it_close(&bh);
+            }
+        }
+    }
+
+    fz_workers_stop(1);
+    it_close(&n_h);
+    it_close(&ep2_h);
+    it_close(&selfp_h);
+    it_close(&g_fz_data_ep);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    /* I16: exact balance; +1 = the worker's KTcb handle (Ph96, A1.10 note). */
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 1u) { ok = 0; why = "leak"; }
+    /* I18: directional counter deltas (>=: background services also count). */
+    if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
+        ok = 0; why = "slot count";
+    }
+    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + exp_hand) {
+        ok = 0; why = "hand count";
+    }
+    /* I17: T095 high-water rule. */
+    if (ok && after[IT_SI_GHWM] * 4u > after[IT_SI_MAX]) { ok = 0; why = "hwm"; }
+
+    if (ok) { it_pass("T107"); }
+    else    { fz_note("T107", T107_SEED, it_n); it_fail("T107", why); }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -5115,6 +5536,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t104();
     test_t105();
     test_t106();
+    test_t107();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
