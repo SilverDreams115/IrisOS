@@ -185,10 +185,11 @@ fail:
 
 /*
  * Spawns iris_test using spawn_cap_h (a dup of bootstrap_h kept before it is
- * closed).  Sends the cap via bootstrap channel, plus the svcmgr discovery
- * endpoint (looked up as "svcmgr.ep" over the legacy channel) so the suite
- * can exercise the EP-based service path (T026+).  Then waits up to 12
- * seconds for iris_test to exit and logs the final pass/fail result.
+ * closed; consumed here).  Every capability the suite needs — spawn cap,
+ * svcmgr/vfs/console/kbd endpoints, test fixtures — is delivered as a
+ * pre-start CSpace mint (table below); no bootstrap-channel sends remain
+ * (Fase 13/Track I).  Then waits up to 12 seconds for iris_test to exit and
+ * logs the final pass/fail result.
  */
 void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
     handle_id_t proc_h      = HANDLE_INVALID;

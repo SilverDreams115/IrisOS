@@ -1,14 +1,16 @@
 /*
- * main.c — init service (ring-3 ELF, phase 22+).
+ * main.c — init service boot supervisor (ring-3 ELF, phase 22+).
+ *
+ * Fase 14: orchestrator ONLY.  Every helper lives in its module (see the
+ * split contract in init.h): init_bootstrap.c (spawn-cap / early-serial /
+ * discovery / S5-S6 VFS validation), init_launch.c (fb / console / svcmgr /
+ * iris_test spawns), init_test.c (runtime probes + S8).  main.c owns the
+ * boot sequence, the log sink and the tiny process utilities — nothing else.
  *
  * Receives a legacy bootstrap handle in %rdi (set by entry.S from %rbx).  That
  * handle is now vestigial — init closes it immediately.  The real spawn/bootstrap
  * capability arrives as a pre-start CPtr mint (IRIS_CPTR_SPAWN_CAP) in init's
  * CSpace, resolved via SYS_CSPACE_RESOLVE — no KChannel is involved.
- *
- * Fase 13/Track I: init no longer talks to kbd over a legacy KChannel — kbd is
- * endpoint-only and sh is the keystroke consumer (kbd.ep pull).  init validates
- * system health, runs the iris_test suite, then enters a quiet idle loop.
  *
  * Boot sequence validated:
  *   1. Resolve "vfs.ep" via the svcmgr discovery endpoint (Fase 7.2)
@@ -18,15 +20,8 @@
  */
 
 #include "init.h"
-#include <iris/svcmgr_proto.h>
-#include <iris/endpoint_proto.h>
-#include <iris/ipc_recv_slot.h>
-#include <iris/vfs_ep_proto.h>
-#include <iris/kbd_proto.h>
-#include <iris/vfs.h>
-#include <iris/console_proto.h>
-#include "../common/svc_loader.h"
-#include "../common/console_client.h"
+#include <iris/vfs_ep_proto.h>          /* VFS_EP_SVC_NAME (S5/S6 lookup) */
+#include "../common/console_client.h"   /* console.ep log sink */
 
 /* ── Utilities ──────────────────────────────────────────────────────────── */
 
@@ -60,8 +55,6 @@ static const char init_stage_healthy[]   = "[USER][INIT][BOOT] healthy path OK\n
 /* Fase 13/Track I: readdup/writedup/boot_ioport/boot_service fail strings
  * retired with the legacy console KChannel bootstrap.  The console/fb spawn
  * fail strings moved to init_launch.c with their users — Fase 14. */
-
-#define INIT_RUNTIME_ENDPOINT 0x8001u
 
 void init_exit(long code) {
     init_sys1(SYS_EXIT, code);
@@ -99,15 +92,11 @@ void init_close(handle_id_t *h) {
 /* ── fb / console / svcmgr spawns moved to init_launch.c — Fase 14 ──────── */
 
 /* ── svcmgr lookup ──────────────────────────────────────────────────────── */
-/*
- * Create a one-shot reply channel, dup the write end into svcmgr's table via
- * handle-transfer, send SVCMGR_MSG_LOOKUP, receive SVCMGR_MSG_LOOKUP_REPLY on
- * the read end.  Returns the attached handle on success, HANDLE_INVALID on error.
- */
+
 /* Fase 13/Track I: init_lookup / init_lookup_wait / init_lookup_name (the
  * legacy KChannel SVCMGR_MSG_LOOKUP[_NAME] discovery) are fully retired —
  * init discovers services via EP_LOOKUP_NAME over svcmgr.ep
- * (init_ep_lookup_name).  No legacy LOOKUP, no fallback. */
+ * (init_ep_lookup_name, init_bootstrap.c).  No legacy LOOKUP, no fallback. */
 
 
 /* ── VFS endpoint client + S5/S6 boot-health checks ─────────────────────── */

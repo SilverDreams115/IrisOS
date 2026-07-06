@@ -9,6 +9,14 @@
  *     reply receive-slot variant;
  *   - the S5/S6 VFS endpoint boot-health validation (LIST / STAT / READ_AT)
  *     with their retry waits.
+ *
+ * S5/S6 live HERE, not in init_test.c (Fase 14 decision): they are
+ * boot-GATING checks — main.c exits (codes 9/10) if they fail, and their
+ * retry loops double as the "wait until VFS is up" boot synchronization —
+ * while init_test.c holds post-healthy-path probes that never gate boot.
+ * They also share the VFS EP client (init_vfs_ep_call / g_init_ep_buf)
+ * with the discovery lookups above; moving them would split that client
+ * across modules for no boundary gain.
  */
 
 #include "init.h"
