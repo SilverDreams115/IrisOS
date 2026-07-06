@@ -4627,6 +4627,369 @@ static void test_t102(void) {
     if (ok) it_pass("T102"); else it_fail("T102", why);
 }
 
+/* ── A1.10: staged-cap atomicity for blocking IPC paths (T103–T106) ─────────
+ * The A1.9 rule locked for EP_NB_SEND — "a failed delivery never consumes
+ * the source cap" — extended to the blocking paths: a sender canceled while
+ * queued (endpoint close), an EP_CALL canceled before rendezvous, and a
+ * reply that loses the one-shot race all keep their source cap; endpoint
+ * close with multiple staged waiters releases every staging ref exactly
+ * once.  Two-thread pattern (T019/T020 style): the victim blocks with an
+ * attached cap, the main thread cancels, and the source handle is probed
+ * with SYS_HANDLE_TYPE afterwards. */
+
+static handle_id_t  g_t103_ep_h   = HANDLE_INVALID;
+static long         g_t103_dup    = -1;
+static volatile int g_t103_done   = 0;
+static          int g_t103_result = 0;
+static uint8_t      g_t103_stack[8192];
+
+static void t103_sender(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label           = 0x103;
+    m.attached_handle = (uint32_t)g_t103_dup;
+    m.attached_rights = RIGHT_WRITE;
+    long r = it_sys2(SYS_EP_SEND, (long)g_t103_ep_h, (long)&m);
+    g_t103_result = (int)r;
+    g_t103_done   = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+
+/* ── T103: blocking send canceled before delivery preserves source cap ──────
+ * A sender blocks in EP_SEND with an attached cap (no receiver ever shows
+ * up); the endpoint is then closed.  The sender must wake with CLOSED, its
+ * source handle must still be alive (never consumed — the A1.10 two-phase
+ * commit), no cap can have appeared anywhere, and the handle books must
+ * return exactly to baseline (no staged-ref leak). */
+static void test_t103(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T103", "sched ext"); return; }
+    g_t103_done = 0; g_t103_result = 0;
+    int ok = 1;
+    const char *why = "blocking send cancel";
+
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    g_t103_ep_h = (handle_id_t)ep;
+    handle_id_t n_h = (handle_id_t)n;
+    if (ep < 0 || n < 0) { it_fail("T103", "create"); return; }
+
+    g_t103_dup = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (g_t103_dup < 0) { ok = 0; why = "dup"; }
+
+    if (ok) {
+        uint64_t entry = (uint64_t)(uintptr_t)t103_sender;
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t103_stack + sizeof(g_t103_stack))) & ~0xFULL;
+        /* returns a task id, not a handle — nothing to close */
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+            ok = 0; why = "thread";
+        }
+    }
+
+    if (ok) {
+        it_sys1(SYS_SLEEP, 5);           /* sender queues with staged cap */
+        it_close(&g_t103_ep_h);          /* last ref → close → wakes sender */
+        for (int i = 0; i < 200 && !g_t103_done; i++)
+            it_sys1(SYS_SLEEP, 1);
+        if (!g_t103_done || g_t103_result != (int)IRIS_ERR_CLOSED) {
+            ok = 0; why = "not CLOSED";
+        }
+    }
+
+    /* Source cap preserved: the dup is still a live notification handle. */
+    if (ok && it_sys1(SYS_HANDLE_TYPE, g_t103_dup) !=
+        (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "cap consumed"; }
+    /* And it still works: signal through it, observe on the original. */
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_SIGNAL, g_t103_dup, 1) != 0 ||
+            it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+            bits != 1u) { ok = 0; why = "cap dead"; }
+    }
+
+    if (g_t103_dup >= 0) { handle_id_t d = (handle_id_t)g_t103_dup; it_close(&d); }
+    it_close(&n_h);
+    it_close(&g_t103_ep_h);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    /* Exact balance: +1 = the exited thread's KTcb handle, which stays with
+     * the process by design (Ph96).  Anything above that is a staged leak. */
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 1u) { ok = 0; why = "leak"; }
+    if (ok) it_pass("T103"); else it_fail("T103", why);
+}
+
+static handle_id_t  g_t104_ep_h   = HANDLE_INVALID;
+static long         g_t104_dup    = -1;
+static volatile int g_t104_done   = 0;
+static          int g_t104_result = 0;
+static uint8_t      g_t104_stack[8192];
+
+static void t104_caller(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label               = 0x104;
+    m.attached_cap        = (uint32_t)g_t104_dup;
+    m.attached_cap_rights = RIGHT_WRITE;
+    long r = it_sys2(SYS_EP_CALL, (long)g_t104_ep_h, (long)&m);
+    g_t104_result = (int)r;
+    g_t104_done   = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+
+/* ── T104: EP_CALL canceled before server receive preserves attached cap ────
+ * A caller blocks in EP_CALL carrying a transferred cap (attached_cap);
+ * the endpoint closes before any server ever receives.  The caller must
+ * wake with CLOSED, keep its source cap, and no KReply may have been
+ * created (the reply-caps counter stays flat — reply cleanup is trivially
+ * correct because rendezvous never happened). */
+static void test_t104(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T104", "sched ext"); return; }
+    g_t104_done = 0; g_t104_result = 0;
+    int ok = 1;
+    const char *why = "ep_call cancel";
+
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    g_t104_ep_h = (handle_id_t)ep;
+    handle_id_t n_h = (handle_id_t)n;
+    if (ep < 0 || n < 0) { it_fail("T104", "create"); return; }
+
+    g_t104_dup = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (g_t104_dup < 0) { ok = 0; why = "dup"; }
+
+    if (ok) {
+        uint64_t entry = (uint64_t)(uintptr_t)t104_caller;
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t104_stack + sizeof(g_t104_stack))) & ~0xFULL;
+        /* returns a task id, not a handle — nothing to close */
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+            ok = 0; why = "thread";
+        }
+    }
+
+    if (ok) {
+        it_sys1(SYS_SLEEP, 5);           /* caller queues (SEND, call mode) */
+        it_close(&g_t104_ep_h);
+        for (int i = 0; i < 200 && !g_t104_done; i++)
+            it_sys1(SYS_SLEEP, 1);
+        if (!g_t104_done || g_t104_result != (int)IRIS_ERR_CLOSED) {
+            ok = 0; why = "not CLOSED";
+        }
+    }
+
+    if (ok && it_sys1(SYS_HANDLE_TYPE, g_t104_dup) !=
+        (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "cap consumed"; }
+
+    if (g_t104_dup >= 0) { handle_id_t d = (handle_id_t)g_t104_dup; it_close(&d); }
+    it_close(&n_h);
+    it_close(&g_t104_ep_h);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    /* +1 = the exited thread's KTcb handle (stays with the process, Ph96). */
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 1u) { ok = 0; why = "leak"; }
+    if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY]) {
+        ok = 0; why = "ghost kreply";
+    }
+    if (ok) it_pass("T104"); else it_fail("T104", why);
+}
+
+static handle_id_t  g_t105_ep_h   = HANDLE_INVALID;
+static volatile int g_t105_done   = 0;
+static          int g_t105_result = 0;
+static uint8_t      g_t105_stack[8192];
+
+static void t105_caller(void) {
+    uint8_t rbuf[32];
+    for (uint32_t i = 0; i < 32; i++) rbuf[i] = 0;
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label    = 0x105;
+    m.buf_uptr = (uint64_t)(uintptr_t)rbuf;
+    long r = it_sys2(SYS_EP_CALL, (long)g_t105_ep_h, (long)&m);
+    g_t105_result = (int)(r == 0 && m.label == 0x5A5AULL);
+    g_t105_done   = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+
+/* ── T105: reply cap transfer failure is atomic ─────────────────────────────
+ * EP_REPLY supports one attached cap (Fase 7.1).  The deterministic failed
+ * delivery is the lost one-shot race: reply once without a cap (consumes
+ * the KReply), then reply AGAIN with an attached cap.  The second reply
+ * must fail NOT_FOUND, the server must KEEP its source cap (A1.10 — before,
+ * this path destroyed it), and the first reply's one-shot semantics and
+ * bookkeeping stay intact. */
+static void test_t105(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T105", "sched ext"); return; }
+    g_t105_done = 0; g_t105_result = 0;
+    int ok = 1;
+    const char *why = "reply cap atomic";
+
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    g_t105_ep_h = (handle_id_t)ep;
+    handle_id_t n_h = (handle_id_t)n;
+    if (ep < 0 || n < 0) { it_fail("T105", "create"); return; }
+
+    handle_id_t reply_h = HANDLE_INVALID;
+    {
+        uint64_t entry = (uint64_t)(uintptr_t)t105_caller;
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t105_stack + sizeof(g_t105_stack))) & ~0xFULL;
+        /* returns a task id, not a handle — nothing to close */
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+            ok = 0; why = "thread";
+        }
+    }
+
+    /* Serve the call: the reply cap arrives in attached_handle. */
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        if (it_sys2(SYS_EP_RECV, (long)g_t105_ep_h, (long)&m) != 0 ||
+            m.label != 0x105ULL || m.attached_handle == IRIS_MSG_NO_CAP) {
+            ok = 0; why = "recv call";
+        } else {
+            reply_h = (handle_id_t)m.attached_handle;
+        }
+    }
+
+    /* First reply (no cap) succeeds and unblocks the caller. */
+    if (ok) {
+        struct IrisMsg rm;
+        it_iris_msg_zero(&rm);
+        rm.label = 0x5A5A;
+        if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) != 0) {
+            ok = 0; why = "first reply";
+        }
+        for (int i = 0; ok && i < 200 && !g_t105_done; i++)
+            it_sys1(SYS_SLEEP, 1);
+        if (ok && (!g_t105_done || !g_t105_result)) { ok = 0; why = "caller"; }
+    }
+
+    /* Second reply WITH a cap loses the one-shot race: NOT_FOUND and the
+     * server's source cap must survive un-consumed. */
+    long d = -1;
+    if (ok) {
+        d = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        if (d < 0) { ok = 0; why = "dup"; }
+    }
+    if (ok) {
+        struct IrisMsg rm;
+        it_iris_msg_zero(&rm);
+        rm.label           = 0xDEAD;
+        rm.attached_handle = (uint32_t)d;
+        rm.attached_rights = RIGHT_WRITE;
+        if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) !=
+            (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "not one-shot"; }
+        if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
+            (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "cap consumed"; }
+    }
+
+    if (d >= 0) { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
+    it_close(&reply_h);
+    it_close(&n_h);
+    it_close(&g_t105_ep_h);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    /* +1 = the exited thread's KTcb handle (stays with the process, Ph96). */
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 1u) { ok = 0; why = "leak"; }
+    if (ok) it_pass("T105"); else it_fail("T105", why);
+}
+
+static handle_id_t  g_t106_ep_h = HANDLE_INVALID;
+static long         g_t106_dup[2]    = { -1, -1 };
+static volatile int g_t106_done[2]   = { 0, 0 };
+static          int g_t106_result[2] = { 0, 0 };
+static uint8_t      g_t106_stack_a[8192];
+static uint8_t      g_t106_stack_b[8192];
+
+static void t106_send_idx(int idx) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label           = 0x106;
+    m.attached_handle = (uint32_t)g_t106_dup[idx];
+    m.attached_rights = RIGHT_WRITE;
+    long r = it_sys2(SYS_EP_SEND, (long)g_t106_ep_h, (long)&m);
+    g_t106_result[idx] = (int)r;
+    g_t106_done[idx]   = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+static void t106_sender_a(void) { t106_send_idx(0); }
+static void t106_sender_b(void) { t106_send_idx(1); }
+
+/* ── T106: endpoint close cancels staged waiters cleanly ────────────────────
+ * TWO senders queue on the same endpoint, each with its own staged cap;
+ * the endpoint closes.  Both must wake with CLOSED, both source caps must
+ * survive with their owners, and the books must balance exactly (each
+ * staging ref released exactly once — a double-release would show up as a
+ * refcount crash or a negative live delta). */
+static void test_t106(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T106", "sched ext"); return; }
+    g_t106_done[0] = g_t106_done[1] = 0;
+    g_t106_result[0] = g_t106_result[1] = 0;
+    int ok = 1;
+    const char *why = "close staged waiters";
+
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    g_t106_ep_h = (handle_id_t)ep;
+    handle_id_t n_h = (handle_id_t)n;
+    if (ep < 0 || n < 0) { it_fail("T106", "create"); return; }
+
+    for (int i = 0; ok && i < 2; i++) {
+        g_t106_dup[i] = it_sys2(SYS_HANDLE_DUP, n,
+                                (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        if (g_t106_dup[i] < 0) { ok = 0; why = "dup"; }
+    }
+
+    if (ok) {
+        uint64_t ea = (uint64_t)(uintptr_t)t106_sender_a;
+        uint64_t eb = (uint64_t)(uintptr_t)t106_sender_b;
+        uint64_t ra = ((uint64_t)(uintptr_t)(g_t106_stack_a + sizeof(g_t106_stack_a))) & ~0xFULL;
+        uint64_t rb = ((uint64_t)(uintptr_t)(g_t106_stack_b + sizeof(g_t106_stack_b))) & ~0xFULL;
+        /* returns task ids, not handles — nothing to close */
+        long ta = it_sys3(SYS_THREAD_CREATE, (long)ea, (long)ra, 0);
+        long tb = it_sys3(SYS_THREAD_CREATE, (long)eb, (long)rb, 0);
+        if (ta < 0 || tb < 0) { ok = 0; why = "thread"; }
+    }
+
+    if (ok) {
+        it_sys1(SYS_SLEEP, 5);           /* both senders queue staged caps */
+        it_close(&g_t106_ep_h);
+        for (int i = 0; i < 200 && !(g_t106_done[0] && g_t106_done[1]); i++)
+            it_sys1(SYS_SLEEP, 1);
+        if (!g_t106_done[0] || !g_t106_done[1] ||
+            g_t106_result[0] != (int)IRIS_ERR_CLOSED ||
+            g_t106_result[1] != (int)IRIS_ERR_CLOSED) {
+            ok = 0; why = "not CLOSED";
+        }
+    }
+
+    for (int i = 0; ok && i < 2; i++) {
+        if (it_sys1(SYS_HANDLE_TYPE, g_t106_dup[i]) !=
+            (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "cap consumed"; }
+    }
+
+    for (int i = 0; i < 2; i++) {
+        if (g_t106_dup[i] >= 0) {
+            handle_id_t dh = (handle_id_t)g_t106_dup[i];
+            it_close(&dh);
+        }
+    }
+    it_close(&n_h);
+    it_close(&g_t106_ep_h);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    /* +2 = the two exited threads' KTcb handles (stay with the process, Ph96). */
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 2u) { ok = 0; why = "leak"; }
+    if (ok) it_pass("T106"); else it_fail("T106", why);
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -4748,6 +5111,10 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t100();
     test_t101();
     test_t102();
+    test_t103();
+    test_t104();
+    test_t105();
+    test_t106();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
