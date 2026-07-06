@@ -4299,6 +4299,334 @@ static void test_t098(void) {
     if (ok) it_pass("T098"); else it_fail("T098", why);
 }
 
+/* ── A1.9: multi-child receive-slot stress (T099–T102) ──────────────────────
+ * Receive-slots across REAL process boundaries: lifecycle_probe children
+ * declare parent-chosen slots (LP_CMD_RSLOT_RECV mode), receive transferred
+ * caps in their own CSpace, invoke them by CPtr, and report the landing
+ * discriminator via their exit code.  Child-side slot: 40 (children only
+ * receive the LP_CPTR_CMD_EP=3 mint).  Parent-side lookup slots: 43..47. */
+
+#define LP_CMD_RSLOT_RECV      0x1099u   /* must match lifecycle_probe */
+#define LP_EXIT_RECV_ERR_BASE  0x0B00L
+#define T099_CHILD_SLOT        40u
+
+/* Command a child into receive-slot mode (second recv declares `slot`). */
+static long it_lp_cmd_rslot(handle_id_t cmd_ep_h, uint32_t slot) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label      = LP_CMD_RSLOT_RECV;
+    m.words[0]   = slot;
+    m.word_count = 1u;
+    return it_sys2(SYS_EP_SEND, (long)cmd_ep_h, (long)&m);
+}
+
+/* Transfer a WRITE|TRANSFER dup of `notif` to the child (blocks until the
+ * child's declared recv rendezvouses — natural synchronization). */
+static long it_lp_send_cap(handle_id_t cmd_ep_h, long notif) {
+    long d = it_sys2(SYS_HANDLE_DUP, notif,
+                     (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (d < 0) return d;
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label           = 0x99;
+    m.attached_handle = (uint32_t)d;
+    m.attached_rights = RIGHT_WRITE;
+    return it_sys2(SYS_EP_SEND, (long)cmd_ep_h, (long)&m);
+}
+
+/* Wait (≤ 2s) for a child to exit; returns its exit code or -1. */
+static long it_lp_wait_exit(handle_id_t proc_h) {
+    long n = it_sys0(SYS_NOTIFY_CREATE);
+    if (n < 0) return -1;
+    handle_id_t n_h = (handle_id_t)n;
+    long ec = -1;
+    if (it_sys3(SYS_PROCESS_WATCH, (long)proc_h, n, 1) == 0) {
+        uint64_t bits = 0;
+        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, (long)(uintptr_t)&bits,
+                    2000000000LL) == 0)
+            ec = it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h);
+    }
+    it_close(&n_h);
+    return ec;
+}
+
+/* ── T099: multi-child receive-slot endpoint transfer ───────────────────────
+ * Three children each receive a transferred notification cap INTO THEIR OWN
+ * CSpace (exit code == the declared CPtr, never a handle) and invoke it by
+ * CPtr across the process boundary (signal bits 1 observed by the parent).
+ * Failure paths: a child whose declared slot the parent pre-filled fails
+ * fast (ALREADY_EXISTS, endpoint left clean); an out-of-range declaration
+ * fails INVALID_ARG.  Parent handle books balance exactly. */
+static void test_t099(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T099", "sched ext"); return; }
+    int ok = 1;
+    const char *why = "multi-child rslot";
+
+    for (int i = 0; ok && i < 3; i++) {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long n  = it_sys0(SYS_NOTIFY_CREATE);
+        handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
+        handle_id_t proc_h = HANDLE_INVALID;
+        if (ep < 0 || n < 0 ||
+            lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
+        if (ok && it_lp_cmd_rslot(ep_h, T099_CHILD_SLOT) != 0) {
+            ok = 0; why = "cmd";
+        }
+        if (ok && it_lp_send_cap(ep_h, n) != 0) { ok = 0; why = "send cap"; }
+        if (ok) {
+            uint64_t bits = 0;
+            if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+                bits != 1u) { ok = 0; why = "cptr signal"; }
+        }
+        if (ok && it_lp_wait_exit(proc_h) != (long)T099_CHILD_SLOT) {
+            ok = 0; why = "landing";
+        }
+        it_close(&proc_h);
+        it_close(&n_h);
+        it_close(&ep_h);
+    }
+
+    /* Occupied child slot → the child's declared recv fails fast and the
+     * endpoint keeps no dead waiter. */
+    if (ok) {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long n2 = it_sys0(SYS_NOTIFY_CREATE);
+        handle_id_t ep_h = (handle_id_t)ep, n2_h = (handle_id_t)n2;
+        handle_id_t proc_h = HANDLE_INVALID;
+        if (ep < 0 || n2 < 0 ||
+            lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn occ"; }
+        if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h,
+                          (long)T099_CHILD_SLOT, n2,
+                          (long)RIGHT_WRITE) != 0) { ok = 0; why = "prefill"; }
+        if (ok && it_lp_cmd_rslot(ep_h, T099_CHILD_SLOT) != 0) {
+            ok = 0; why = "cmd occ";
+        }
+        if (ok && it_lp_wait_exit(proc_h) !=
+            (LP_EXIT_RECV_ERR_BASE | (long)-IRIS_ERR_ALREADY_EXISTS)) {
+            ok = 0; why = "occupied";
+        }
+        if (ok) {
+            struct IrisMsg pr;
+            it_iris_msg_zero(&pr);
+            pr.label = 0x99;
+            if (it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&pr) !=
+                (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "dead waiter"; }
+        }
+        it_close(&proc_h);
+        it_close(&n2_h);
+        it_close(&ep_h);
+    }
+
+    /* Out-of-range declaration (slot 300, T086 fixture value) → INVALID_ARG. */
+    if (ok) {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        handle_id_t ep_h = (handle_id_t)ep;
+        handle_id_t proc_h = HANDLE_INVALID;
+        if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
+            ok = 0; why = "spawn inv";
+        }
+        if (ok && it_lp_cmd_rslot(ep_h, 300u) != 0) { ok = 0; why = "cmd inv"; }
+        if (ok && it_lp_wait_exit(proc_h) !=
+            (LP_EXIT_RECV_ERR_BASE | (long)-IRIS_ERR_INVALID_ARG)) {
+            ok = 0; why = "invalid slot";
+        }
+        it_close(&proc_h);
+        it_close(&ep_h);
+    }
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    /* Parent books balance (dups consumed by staging; everything closed)
+     * and the three cross-process deliveries were receive-slot installs. */
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
+    if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + 3u) {
+        ok = 0; why = "slot count";
+    }
+    if (ok) it_pass("T099"); else it_fail("T099", why);
+}
+
+/* ── T100: svcmgr lookup receive-slot stress ────────────────────────────────
+ * Four concurrent registrations served into distinct client reply-slots;
+ * unregister under pressure; a post-unregister lookup with a declared slot
+ * fails WITHOUT installing anything (the same slot then serves the
+ * re-registered service — proof it stayed genuinely empty); legacy lookup
+ * confirms the final NOT_FOUND. */
+static void test_t100(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T100", "sched ext"); return; }
+    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    if (e < 0) { it_fail("T100", "ep create"); return; }
+    handle_id_t ep = (handle_id_t)e;
+    int ok = 1;
+    const char *why = "lookup rslot stress";
+    long ids[4];
+    char name[7] = { 't', '1', '0', '0', '.', 'a', '\0' };
+    struct IrisMsg msg;
+
+    for (int i = 0; ok && i < 4; i++) {
+        name[5] = (char)('a' + i);
+        ids[i] = it_register_ep(name, ep);
+        if (ids[i] < 0) { ok = 0; why = "register"; }
+    }
+    for (int i = 0; ok && i < 4; i++) {
+        uint32_t slot = 44u + (uint32_t)i;
+        name[5] = (char)('a' + i);
+        if (it_lookup_name_slot(name, slot, &msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_OK ||
+            msg.attached_handle != slot) { ok = 0; why = "slot lookup"; }
+        if (ok) {
+            struct IrisMsg p;
+            it_iris_msg_zero(&p);
+            p.label = 0xA0;
+            if (it_sys2(SYS_EP_NB_SEND, (long)slot, (long)&p) !=
+                (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "cptr dead"; }
+        }
+    }
+    for (int i = 0; ok && i < 4; i++) {
+        if (it_unregister_id((uint32_t)ids[i]) != 0) { ok = 0; why = "unreg"; }
+    }
+
+    /* Post-unregister lookup with a declared slot: ERR and nothing lands. */
+    if (ok) {
+        name[5] = 'a';
+        if (it_lookup_name_slot(name, 43u, &msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_ERR ||
+            msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) {
+            ok = 0; why = "post-unreg lookup";
+        }
+        if (ok && it_sys1(SYS_CSPACE_RESOLVE, 43L) >= 0) {
+            ok = 0; why = "ghost cap";
+        }
+    }
+    /* The untouched slot then serves the re-registered service. */
+    if (ok) {
+        long id2 = it_register_ep("t100.a", ep);
+        if (id2 < 0) { ok = 0; why = "re-register"; }
+        else {
+            if (it_lookup_name_slot("t100.a", 43u, &msg) != 0 ||
+                msg.label != IRIS_EP_REPLY_OK ||
+                msg.attached_handle != 43u) { ok = 0; why = "slot reuse"; }
+            (void)it_unregister_id((uint32_t)id2);
+        }
+    }
+    if (ok) {
+        if (it_lookup_name_slot("t100.a", 0u, &msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_ERR) { ok = 0; why = "final legacy"; }
+    }
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + 5u) {
+        ok = 0; why = "slot count";
+    }
+    it_close(&ep);
+    if (ok) it_pass("T100"); else it_fail("T100", why);
+}
+
+/* ── T101: cross-process receive-slot death cleanup ─────────────────────────
+ * A child killed while blocked with a declared receive-slot leaves a clean
+ * endpoint (no dead waiter), the sender's cap survives an attempted
+ * delivery (WOULD_BLOCK, handle intact), and the handle books show no
+ * staged-cap leak and no runaway high-water. */
+static void test_t101(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T101", "sched ext"); return; }
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
+    handle_id_t proc_h = HANDLE_INVALID;
+    int ok = 1;
+    const char *why = "death cleanup";
+
+    if (ep < 0 || n < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
+        ok = 0; why = "spawn";
+    }
+    if (ok && it_lp_cmd_rslot(ep_h, T099_CHILD_SLOT) != 0) { ok = 0; why = "cmd"; }
+    it_sys1(SYS_SLEEP, 2);   /* child re-blocks with slot 40 declared */
+
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
+    if (ok && it_sys1(SYS_PROCESS_STATUS, (long)proc_h) != 0) {
+        ok = 0; why = "still alive";
+    }
+
+    /* Sender does not lose its cap on the failed delivery attempt. */
+    if (ok) {
+        long d = it_sys2(SYS_HANDLE_DUP, n,
+                         (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        if (d < 0) { ok = 0; why = "dup"; }
+        else {
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label           = 0x99;
+            m.attached_handle = (uint32_t)d;
+            m.attached_rights = RIGHT_WRITE;
+            if (it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&m) !=
+                (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "dead waiter"; }
+            if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
+                (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+                ok = 0; why = "cap consumed";
+            }
+            handle_id_t dh = (handle_id_t)d;
+            it_close(&dh);
+        }
+    }
+
+    it_close(&proc_h);
+    it_close(&n_h);
+    it_close(&ep_h);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) {
+        ok = 0; why = "staged leak";
+    }
+    /* No runaway high-water: still bounded by the T095 rule. */
+    if (ok && after[IT_SI_GHWM] * 4u > after[IT_SI_MAX]) {
+        ok = 0; why = "hwm runaway";
+    }
+    if (ok) it_pass("T101"); else it_fail("T101", why);
+}
+
+/* ── T102: legacy slotless children under multi-child pressure ──────────────
+ * Two children run the same command protocol with slot 0 (= legacy): each
+ * receives the transferred cap as a handle >= 1024, invokes it through that
+ * handle across the process boundary (signal bits 2), and child teardown
+ * releases everything — parent live handles return exactly to baseline. */
+static void test_t102(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T102", "sched ext"); return; }
+    int ok = 1;
+    const char *why = "legacy children";
+
+    for (int i = 0; ok && i < 2; i++) {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long n  = it_sys0(SYS_NOTIFY_CREATE);
+        handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
+        handle_id_t proc_h = HANDLE_INVALID;
+        if (ep < 0 || n < 0 ||
+            lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
+        if (ok && it_lp_cmd_rslot(ep_h, 0u) != 0) { ok = 0; why = "cmd"; }
+        if (ok && it_lp_send_cap(ep_h, n) != 0) { ok = 0; why = "send cap"; }
+        if (ok) {
+            uint64_t bits = 0;
+            if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+                bits != 2u) { ok = 0; why = "handle signal"; }
+        }
+        if (ok) {
+            long ec = it_lp_wait_exit(proc_h);
+            if (ec < 1024) { ok = 0; why = "not legacy handle"; }
+        }
+        it_close(&proc_h);
+        it_close(&n_h);
+        it_close(&ep_h);
+    }
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
+    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + 2u) {
+        ok = 0; why = "hand count";
+    }
+    if (ok) it_pass("T102"); else it_fail("T102", why);
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -4416,6 +4744,10 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t096();
     test_t097();
     test_t098();
+    test_t099();
+    test_t100();
+    test_t101();
+    test_t102();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

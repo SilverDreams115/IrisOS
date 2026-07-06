@@ -19,6 +19,16 @@
  *      never reaches the exit — the kernel's process teardown cancels the
  *      blocked wait, which is exactly what the harness verifies.
  *
+ * A1.9 receive-slot mode (opt-in per run; every other label keeps the exact
+ * legacy behaviour above): if the first message is LP_CMD_RSLOT_RECV, the
+ * child performs a SECOND recv on the command endpoint declaring the
+ * receive-slot the parent chose in words[0] (0 = legacy handle delivery),
+ * then invokes the delivered cap by whatever it received — NOTIFY_SIGNAL
+ * with bits 1 for a CSpace CPtr landing, bits 2 for a handle landing — and
+ * exits with the raw attached_handle discriminator so the parent can assert
+ * where the cap landed.  A failed declared recv (occupied / invalid slot)
+ * exits with LP_EXIT_RECV_ERR_BASE | -err instead.
+ *
  * The child holds no authority beyond the single command endpoint (and, for the
  * mapping-teardown test, whatever the parent maps into its address space).  It
  * has no spawn cap, no device caps, and never touches global state.
@@ -33,6 +43,12 @@
 #define LP_CPTR_CMD_EP   3u
 /* Exit marker the parent checks — "arbitrary but recognisable". */
 #define LP_EXIT_MARKER   0x1E57
+/* A1.9: first-message label selecting receive-slot mode (words[0] = slot to
+ * declare on the second recv; 0 = legacy).  Must match iris_test. */
+#define LP_CMD_RSLOT_RECV      0x1099u
+/* A1.9: exit code base when the declared second recv fails; low byte = -err
+ * (e.g. occupied slot → 0x0B07 = base | -IRIS_ERR_ALREADY_EXISTS). */
+#define LP_EXIT_RECV_ERR_BASE  0x0B00
 
 static inline long lp_sys1(long nr, long a0) {
     long ret;
@@ -58,6 +74,23 @@ void lp_main(handle_id_t bootstrap_ch_h) {
 
     /* Block until the parent sends/calls — or until the parent kills us. */
     (void)lp_sys2(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)&msg);
+
+    /* A1.9 receive-slot mode: a second recv with the parent-chosen slot
+     * declared, then invoke + report the delivered cap (see header). */
+    if (msg.label == (uint64_t)LP_CMD_RSLOT_RECV) {
+        uint32_t slot = (uint32_t)msg.words[0];
+        for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) p[i] = 0;
+        msg.attached_cap = slot;               /* receive-slot declaration */
+        long rr = lp_sys2(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)&msg);
+        if (rr != 0)
+            lp_sys1(SYS_EXIT, (long)(LP_EXIT_RECV_ERR_BASE | (uint32_t)-rr));
+        uint32_t got = msg.attached_handle;    /* 0 / CPtr / handle */
+        if (got != 0u)
+            (void)lp_sys2(SYS_NOTIFY_SIGNAL, (long)got,
+                          (got < 1024u) ? 1L : 2L);
+        lp_sys1(SYS_EXIT, (long)got);
+        for (;;) {}
+    }
 
     /* Reached only when the recv returned: exit with the marker.  Any reply cap
      * delivered by an EP_CALL is dropped unanswered here on purpose. */
