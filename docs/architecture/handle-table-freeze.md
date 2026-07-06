@@ -58,7 +58,7 @@ Census basis: every `handle_table_insert*` call site at freeze time.
 | Object-creation returns | `SYS_VMO_CREATE`/`SYS_ENDPOINT_CREATE`/`SYS_NOTIFY_CREATE`/`SYS_SC_CREATE`/`SYS_CNODE_CREATE`/`SYS_PROCESS_CREATE`/`SYS_UNTYPED_RETYPE`/`SYS_CAP_CREATE_*`/`SYS_BOOTCAP_RESTRICT`/`SYS_INITRD_VMO`/`SYS_FRAMEBUFFER_VMO` (`syscall_vm.c`, `syscall_endpoint.c:250`, `syscall_ipc.c:23`, `syscall_sched.c:27`, `syscall_cspace.c:74`, `syscall_proc.c:247`, `syscall_untyped.c:179`, `syscall_cap.c`) | all | WORKING_SET_OK | keep; creation-into-slot possible later, not required |
 | Self-references | `SYS_PROCESS_SELF` (`syscall_proc.c:34`), `SYS_TCB_SELF` | KProcess, KTcb | EPHEMERAL_OK | keep |
 | Handle-layer ops | `SYS_HANDLE_DUP` (`syscall_cap.c:48`), `SYS_CAP_DERIVE` (`syscall_cspace.c:32`, insert_derived) | all | WORKING_SET_OK | keep — they ARE the layer's API |
-| Cross-process placement | `SYS_HANDLE_TRANSFER`/`SYS_HANDLE_INSERT` dest (`syscall_cap.c:109,255`), `SYS_VMO_SHARE` dest (`syscall_vm.c:551`) | all / KVmo | LEGACY_COMPAT | retire once no service depends on them; replacement is `SYS_PROC_CSPACE_MINT` |
+| Cross-process placement | `SYS_HANDLE_INSERT` dest (`syscall_cap.c`), `SYS_VMO_SHARE` dest (`syscall_vm.c`) | all / KVmo | LEGACY_COMPAT (**deprecated**, A1.8) | no in-tree service users; T082/T097/T098 keep them covered; `SYS_HANDLE_TRANSFER` was **RETIRED** in A1.8 (zero callers, number 23 permanently reserved → NOT_SUPPORTED); replacement is `SYS_PROC_CSPACE_MINT` |
 | IPC cap delivery, slotless / TOCTOU | `syscall_ipc_deliver_cap_badged` (`syscall_endpoint.c`) — only reachable through `_routed` | transferable types | LEGACY_COMPAT (opt-out since A1.6) | shrinks as clients adopt receive-slots; measured 24 + 1 |
 | Reply-cap delivery | `syscall_endpoint.c:499,765`, `syscall_reply.c:174` | KReply | EPHEMERAL_OK **by design** (invariant I5) | permanent; never migrates |
 | CSpace materialization | `SYS_CSPACE_RESOLVE` (`syscall_cspace.c`), `SYS_CNODE_FETCH` (`syscall_cnode_ops.c:93`) | all | EPHEMERAL_OK | keep — the sanctioned CSpace→handle bridge |
@@ -100,11 +100,27 @@ handle-table only, never minted into a CNode — verified by T074/T087.
 indefinitely; the path is opt-out, measured, and covered by T092/T096.
 It is not deprecated by this freeze.
 
+## A1.8 — legacy producer cleanup (applied)
+
+- `SYS_HANDLE_TRANSFER(23)`: **RETIRED** — zero in-tree callers survived
+  the A1 arc; dispatcher falls to NOT_SUPPORTED, number permanently
+  reserved (Fase 13/Track G pattern).  T097 asserts the retirement and
+  that `SYS_PROC_CSPACE_MINT` covers the placement semantics with
+  fail-fast occupied slots, monotonic rights, and clean wrong-type /
+  dead-destination failures.
+- `SYS_HANDLE_INSERT(59)` / `SYS_VMO_SHARE(46)`: **deprecated compat** —
+  no in-tree service users (the T080/T082/T098 dual-resolver coverage
+  tests are the only callers); deprecation notes in `syscall.h`.  Kept
+  because they are the exercised slotless-consumer path; removal
+  requires a decision to drop that compat, not a migration.
+- No internal `CPtr → CSPACE_RESOLVE → handle → placement` detours
+  existed to convert (the A1.6 adoption already eliminated them).
+
 ## Remaining candidates (beyond this freeze)
 
-1. Cross-process placement retirement (`SYS_HANDLE_TRANSFER`/`INSERT`,
-   `SYS_VMO_SHARE` dest) once in-tree users migrate to
-   `SYS_PROC_CSPACE_MINT`.
+1. Drop the deprecated `SYS_HANDLE_INSERT`/`SYS_VMO_SHARE` compat
+   producers entirely once slotless consumers are declared unsupported
+   (a policy decision; no migration remains).
 2. A sanctioned own-root-CNode accessor, replacing the svcmgr
    handle-type probe.
 3. Notification secondary args (three handle-only sites) → dual.
