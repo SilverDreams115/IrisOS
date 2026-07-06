@@ -37,6 +37,7 @@ struct task {
     struct KObject   *ep_cap_obj;
     uint32_t          ep_cap_rights;
     uint64_t          ep_cap_badge;   /* Fase 9 */
+    uint32_t          ep_cap_src_h;   /* A1.10: two-phase staging source handle */
     uint32_t          ipc_kbuf_len;
     uint32_t          ep_call_mode;
     struct KReply    *pending_kreply;

@@ -24,17 +24,18 @@ static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
 /* ep_get removed — use cspace_or_handle_resolve_endpoint (Fase 3.2) */
 
 /*
- * syscall_ipc_stage_cap — validate and detach an attached cap from the sender's
- * handle table, storing the kobject + rights for later delivery to a receiver.
- * On success: sender's handle is closed; *out_obj holds the ownership ref.
- * On failure: *out_obj = NULL; caller's handle is untouched; returns error.
- * Shared by EP_SEND / EP_NB_SEND / SYS_REPLY (declared in syscall_priv.h).
- */
-/* A1.9: validate + retain WITHOUT consuming the sender's handle.  Used by
- * the non-blocking send path so a failed send (WOULD_BLOCK / CLOSED after
- * staging) leaves the sender's cap untouched — the handle is consumed only
- * once delivery is committed (syscall_ipc_stage_cap_commit).  The returned
- * object ref is the staging ref; release it on any non-delivery exit. */
+ * A1.9/A1.10 two-phase cap staging — shared by EP_SEND / EP_NB_SEND /
+ * EP_CALL / SYS_REPLY (declared in syscall_priv.h).
+ *
+ * peek: validate + retain WITHOUT consuming the sender's handle.  The
+ * returned object ref is the staging ref; release it on any non-delivery
+ * exit (CLOSED / WOULD_BLOCK / endpoint close / waiter cancel / lost
+ * one-shot reply race) and the sender keeps its cap.
+ *
+ * commit: consume the source handle only once delivery is committed — the
+ * receiver is dequeued (immediate rendezvous) or the receiver takes the
+ * staged cap from a queued sender.  Blocking paths carry the source handle
+ * in task->ep_cap_src_h next to the staged object. */
 iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_h,
                                                uint32_t requested_rights,
                                                struct KObject **out_obj,
@@ -67,26 +68,9 @@ void syscall_ipc_stage_cap_commit(struct task *t, uint32_t src_h) {
     (void)handle_table_close(&t->process->handle_table, (handle_id_t)src_h);
 }
 
-iris_error_t syscall_ipc_stage_cap_badged(struct task *t, uint32_t src_h,
-                                          uint32_t requested_rights,
-                                          struct KObject **out_obj,
-                                          uint32_t *out_rights,
-                                          uint64_t *out_badge) {
-    iris_error_t r = syscall_ipc_stage_cap_peek_badged(t, src_h, requested_rights,
-                                                       out_obj, out_rights, out_badge);
-    if (r != IRIS_OK) return r;
-    /* Close sender's handle; the get_object lifecycle ref becomes the staging ref. */
-    syscall_ipc_stage_cap_commit(t, src_h);
-    return IRIS_OK;
-}
-
-iris_error_t syscall_ipc_stage_cap(struct task *t, uint32_t src_h,
-                                   uint32_t requested_rights,
-                                   struct KObject **out_obj,
-                                   uint32_t *out_rights) {
-    return syscall_ipc_stage_cap_badged(t, src_h, requested_rights,
-                                        out_obj, out_rights, 0);
-}
+/* A1.10: the consume-at-stage wrappers (stage_cap / stage_cap_badged =
+ * peek + immediate commit) are retired — every transfer path now commits
+ * only at its delivery point. */
 
 /*
  * syscall_ipc_deliver_cap — install a staged cap into the receiver's handle
@@ -343,12 +327,18 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ipc_msg.buf_len = n;
     }
 
-    /* Ph68: validate and stage attached cap before taking the spinlock. */
+    /* Ph68: validate and stage attached cap before taking the spinlock.
+     * A1.10: PEEK only (two-phase, same as EP_NB_SEND since A1.9) — the
+     * sender's handle is consumed at a commit point only once a receiver
+     * is determined: here for an immediate rendezvous, or by the receiver
+     * when it takes the staged cap from a queued sender.  CLOSED before
+     * delivery / endpoint close / cancel leave the sender's cap untouched. */
     struct KObject *xfer_obj    = 0;
     uint32_t        xfer_rights = 0;
     uint64_t        xfer_badge  = 0;
+    uint32_t        xfer_src_h  = t->ipc_msg.attached_handle;
     if (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP) {
-        iris_error_t cr = syscall_ipc_stage_cap_badged(t, t->ipc_msg.attached_handle,
+        iris_error_t cr = syscall_ipc_stage_cap_peek_badged(t, t->ipc_msg.attached_handle,
                                          t->ipc_msg.attached_rights,
                                          &xfer_obj, &xfer_rights, &xfer_badge);
         if (cr != IRIS_OK) {
@@ -362,7 +352,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (ep->closed) {
         irq_spinlock_unlock(&ep->lock, flags);
-        if (xfer_obj) kobject_release(xfer_obj);
+        if (xfer_obj) kobject_release(xfer_obj);   /* handle NOT consumed */
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_CLOSED);
     }
@@ -390,8 +380,11 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         irq_spinlock_unlock(&ep->lock, flags);
 
         /* Ph68: install cap (outside lock).  A1.5: routed — lands in the
-         * receiver's declared receive-slot (CPtr) or its handle table. */
+         * receiver's declared receive-slot (CPtr) or its handle table.
+         * A1.10: delivery committed (receiver dequeued) — consume the
+         * sender's source handle now (move semantics preserved). */
         if (xfer_obj) {
+            syscall_ipc_stage_cap_commit(t, xfer_src_h);
             uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                             xfer_rights, xfer_badge);
             receiver->ipc_msg.attached_handle = new_h;
@@ -403,7 +396,8 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_ok_u64(0);
     }
 
-    /* No receiver: stage cap in task and block. */
+    /* No receiver: stage cap in task and block.  A1.10: the source handle
+     * rides along un-consumed; the receiver commits it at take time. */
     ep->ep_state     = EP_STATE_SEND;
     t->ep_next       = 0;
     t->blocking_ep   = ep;
@@ -412,6 +406,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     t->ep_cap_obj    = xfer_obj;    /* staging ref; released by receiver or cancel */
     t->ep_cap_rights = xfer_rights;
     t->ep_cap_badge  = xfer_badge;
+    t->ep_cap_src_h  = xfer_obj ? xfer_src_h : 0;
 
     if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
     else                { ep->queue_head = t; ep->queue_tail = t; }
@@ -508,11 +503,20 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         struct KObject *xfer_obj    = sender->ep_cap_obj;
         uint32_t        xfer_rights = sender->ep_cap_rights;
         uint64_t        xfer_badge  = sender->ep_cap_badge;
+        uint32_t        xfer_src_h  = sender->ep_cap_src_h;
         sender->ep_cap_obj    = 0;
         sender->ep_cap_rights = 0;
         sender->ep_cap_badge  = 0;
+        sender->ep_cap_src_h  = 0;
 
         irq_spinlock_unlock(&ep->lock, flags);
+
+        /* A1.10: delivery committed (staged cap taken; sender is dequeued
+         * and still blocked) — consume the sender's source handle.  Outside
+         * ep->lock: handle close can fire object close callbacks that take
+         * endpoint locks (ht->lock → ep->lock ordering must not invert). */
+        if (xfer_obj && xfer_src_h)
+            syscall_ipc_stage_cap_commit(sender, xfer_src_h);
 
         /* Ph68/Fase11: install sender's transferred cap.  For an EP_CALL the
          * reply cap takes attached_handle, so the transferred cap is delivered
@@ -785,11 +789,18 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct KObject *xfer_obj    = sender->ep_cap_obj;
     uint32_t        xfer_rights = sender->ep_cap_rights;
     uint64_t        xfer_badge  = sender->ep_cap_badge;
+    uint32_t        xfer_src_h  = sender->ep_cap_src_h;
     sender->ep_cap_obj    = 0;
     sender->ep_cap_rights = 0;
     sender->ep_cap_badge  = 0;
+    sender->ep_cap_src_h  = 0;
 
     irq_spinlock_unlock(&ep->lock, flags);
+
+    /* A1.10: staged cap taken → delivery committed; consume the sender's
+     * source handle (outside ep->lock — see sys_ep_recv). */
+    if (xfer_obj && xfer_src_h)
+        syscall_ipc_stage_cap_commit(sender, xfer_src_h);
 
     /* Fase 11: EP_CALL transferred cap → attached_cap; EP_SEND → attached_handle.
      * A1.5: routed — honours our declared receive-slot (CPtr < 1024). */

@@ -95,6 +95,12 @@ struct task {
     struct KObject     *ep_cap_obj;      /* kobject being transferred; NULL = none */
     uint32_t            ep_cap_rights;   /* rights to grant on ep_cap_obj */
     uint64_t            ep_cap_badge;    /* Fase 9: badge carried by the staged cap */
+    /* A1.10: source handle backing ep_cap_obj (two-phase staging).  The
+     * sender's handle stays in its table while queued; the receiver commits
+     * (closes) it only when it takes the staged cap for delivery.  Cancel /
+     * endpoint-close paths clear it without consuming, so the sender keeps
+     * its cap when nothing was delivered.  0 = none. */
+    uint32_t            ep_cap_src_h;
     /* Ph69: IPC buffer staging */
     uint32_t            ipc_kbuf_len;    /* valid bytes in ipc_kbuf */
     uint64_t            ep_recv_buf_uptr;/* receiver's output buffer user addr (set at EP_RECV) */

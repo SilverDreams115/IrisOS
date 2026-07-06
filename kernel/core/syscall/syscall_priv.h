@@ -234,23 +234,18 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Shared IPC cap-transfer helpers (defined in syscall_endpoint.c) ──
- * Used by EP_SEND / EP_NB_SEND and by SYS_REPLY (reply-cap transfer).
+ * Used by EP_SEND / EP_NB_SEND / EP_CALL and by SYS_REPLY (reply-cap
+ * transfer).
  */
-iris_error_t syscall_ipc_stage_cap(struct task *t, uint32_t src_h,
-                                   uint32_t requested_rights,
-                                   struct KObject **out_obj,
-                                   uint32_t *out_rights);
 uint32_t syscall_ipc_deliver_cap(struct task *receiver,
                                  struct KObject *xo, uint32_t cap_rights);
-/* Fase 9: badge-preserving variants (transferred caps keep their badge). */
-iris_error_t syscall_ipc_stage_cap_badged(struct task *t, uint32_t src_h,
-                                          uint32_t requested_rights,
-                                          struct KObject **out_obj,
-                                          uint32_t *out_rights,
-                                          uint64_t *out_badge);
-/* A1.9: two-phase staging for the non-blocking send path — peek validates
- * and retains WITHOUT consuming the sender's handle; commit consumes it once
- * delivery is committed.  A failed NB send releases the peeked ref only. */
+/* A1.9/A1.10: two-phase staging — EVERY transfer path stages with peek
+ * (validate + retain WITHOUT consuming the source handle) and consumes it
+ * via commit only once delivery is committed (receiver determined).  Any
+ * non-delivery exit — CLOSED, WOULD_BLOCK, endpoint close, waiter cancel,
+ * lost one-shot reply race — releases the peeked ref only, so the source
+ * cap always stays with its owner.  The single-shot consume-at-stage
+ * wrappers were retired in A1.10 (zero callers; do not reintroduce). */
 iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_h,
                                                uint32_t requested_rights,
                                                struct KObject **out_obj,

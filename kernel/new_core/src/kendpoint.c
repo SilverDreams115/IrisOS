@@ -13,7 +13,10 @@ static void kendpoint_obj_close(struct KObject *obj) {
     uint64_t flags = irq_spinlock_lock(&ep->lock);
     ep->closed = 1;
 
-    /* Wake all blocked tasks; release any staged caps from blocking senders. */
+    /* Wake all blocked tasks; release any staged caps from blocking senders.
+     * A1.10: the staging ref is dropped but the source handle is NOT
+     * consumed (ep_cap_src_h just clears) — nothing was delivered, so the
+     * sender keeps its cap and wakes with IRIS_ERR_CLOSED. */
     struct task *t = ep->queue_head;
     while (t) {
         struct task *nxt = t->ep_next;
@@ -23,6 +26,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
             t->ep_cap_rights = 0;
             t->ep_cap_badge  = 0;
         }
+        t->ep_cap_src_h  = 0;
         t->ep_next       = 0;
         t->blocking_ep   = 0;
         t->ipc_ep_closed = 1;
@@ -89,7 +93,11 @@ void kendpoint_close(struct KEndpoint *ep) {
 /*
  * kendpoint_cancel_waiter — remove task t from the endpoint queue it is
  * blocked on.  Called from task_cancel_blocked_waits on forcible kill.
- * Releases any staged cap (ep_cap_obj).  Does NOT change t->state.
+ * Releases any staged cap (ep_cap_obj) WITHOUT consuming the source
+ * handle (A1.10: nothing was delivered; the handle is torn down with the
+ * process, or stays valid if only this thread dies).  Idempotent — a
+ * second call finds blocking_ep == NULL and returns.  Does NOT change
+ * t->state.
  */
 void kendpoint_cancel_waiter(struct task *t) {
     if (!t) return;
@@ -121,11 +129,13 @@ void kendpoint_cancel_waiter(struct task *t) {
     t->ep_next     = 0;
     t->blocking_ep = 0;
 
-    /* Release staged cap now that the send is being cancelled. */
+    /* Release staged cap now that the send is being cancelled.  A1.10:
+     * source handle NOT consumed — no delivery happened. */
     struct KObject *staged_cap = t->ep_cap_obj;
     t->ep_cap_obj    = 0;
     t->ep_cap_rights = 0;
     t->ep_cap_badge  = 0;
+    t->ep_cap_src_h  = 0;
 
     irq_spinlock_unlock(&ep->lock, flags);
 

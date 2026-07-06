@@ -22,8 +22,10 @@
  *     caller's table is full — soft failure, message still delivered).
  *   - If SYS_REPLY fails before staging (bad KReply handle, unreadable msg,
  *     stage validation error) the server handle is NOT consumed.
- *   - If the KReply was already invoked (IRIS_ERR_NOT_FOUND) the staged cap
- *     is destroyed: the server handle IS consumed.
+ *   - A1.10: if the KReply was already invoked (IRIS_ERR_NOT_FOUND) nothing
+ *     is delivered and the server handle is NOT consumed either — the source
+ *     cap is consumed only when a blocked caller is determined (two-phase
+ *     staging; before A1.10 this path destroyed the staged cap).
  */
 #include "syscall_priv.h"
 #include <iris/nc/kreply.h>
@@ -90,12 +92,16 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Fase 11: stage a transferred cap from attached_cap (separate field so the
      * reply cap and the transferred cap never collide).  Staging validates the
      * caller really holds it and reduces to the requested rights; the raw
-     * attached_cap number is then cleared so it can never be delivered as-is. */
+     * attached_cap number is then cleared so it can never be delivered as-is.
+     * A1.10: PEEK only — the caller's handle is consumed at a commit point
+     * (immediate rendezvous here, or the receiver's take of a queued caller),
+     * so CLOSED / endpoint close / cancel before delivery leave it intact. */
     struct KObject *xfer_obj    = 0;
     uint32_t        xfer_rights = 0;
     uint64_t        xfer_badge  = 0;
+    uint32_t        xfer_src_h  = t->ipc_msg.attached_cap;
     if (t->ipc_msg.attached_cap != IRIS_MSG_NO_CAP) {
-        iris_error_t cr = syscall_ipc_stage_cap_badged(
+        iris_error_t cr = syscall_ipc_stage_cap_peek_badged(
             t, t->ipc_msg.attached_cap, t->ipc_msg.attached_cap_rights,
             &xfer_obj, &xfer_rights, &xfer_badge);
         if (cr != IRIS_OK) { kobject_release(&ep->base); return syscall_err(cr); }
@@ -128,6 +134,10 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (ep->closed) {
         irq_spinlock_unlock(&ep->lock, flags);
         t->ep_call_mode = 0u;
+        /* A1.10: nothing delivered — drop the staging ref; the caller's
+         * source handle was never consumed (also fixes the pre-A1.10 leak
+         * of the staged ref on this exit). */
+        if (xfer_obj) kobject_release(xfer_obj);
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_CLOSED);
     }
@@ -158,8 +168,10 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         /* Fase 11: deliver the staged transferred cap into the receiver's
          * attached_cap (the reply cap below takes attached_handle).
          * A1.5: routed — lands in the receiver's declared receive-slot
-         * (CPtr) or its handle table. */
+         * (CPtr) or its handle table.  A1.10: receiver dequeued → delivery
+         * committed; consume the caller's source handle now. */
         if (xfer_obj) {
+            syscall_ipc_stage_cap_commit(t, xfer_src_h);
             uint32_t nh = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                          xfer_rights, xfer_badge);
             receiver->ipc_msg.attached_cap        = nh;
@@ -204,10 +216,13 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->blocking_ep   = ep;
         t->ipc_msg_ready = 0u;
         /* Fase 11: carry the staged transferred cap to the receiver (delivered
-         * into attached_cap by sys_ep_recv / sys_ep_nb_recv). */
+         * into attached_cap by sys_ep_recv / sys_ep_nb_recv).  A1.10: the
+         * source handle rides along un-consumed; the receiver commits it at
+         * take time, and close/cancel paths clear it without consuming. */
         t->ep_cap_obj    = xfer_obj;
         t->ep_cap_rights = xfer_rights;
         t->ep_cap_badge  = xfer_badge;
+        t->ep_cap_src_h  = xfer_obj ? xfer_src_h : 0;
 
         if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
         else                { ep->queue_head = t; ep->queue_tail = t; }
@@ -281,12 +296,16 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     /* Stage attached reply cap (if any) before consuming the one-shot KReply,
-     * so staging errors leave the reply invocable and the handle untouched. */
+     * so staging errors leave the reply invocable and the handle untouched.
+     * A1.10: PEEK only — the server's handle is consumed just below, once
+     * the caller is determined (delivery committed).  A reply that loses the
+     * one-shot race (NOT_FOUND) no longer destroys the server's cap. */
     struct KObject *xfer_obj    = 0;
     uint32_t        xfer_rights = 0;
     uint64_t        xfer_badge  = 0;
+    uint32_t        xfer_src_h  = reply_msg.attached_handle;
     if (reply_msg.attached_handle != IRIS_MSG_NO_CAP) {
-        iris_error_t cr = syscall_ipc_stage_cap_badged(t, reply_msg.attached_handle,
+        iris_error_t cr = syscall_ipc_stage_cap_peek_badged(t, reply_msg.attached_handle,
                                                 reply_msg.attached_rights,
                                                 &xfer_obj, &xfer_rights, &xfer_badge);
         if (cr != IRIS_OK) {
@@ -302,10 +321,17 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     irq_spinlock_unlock(&rp->lock, flags);
 
     if (!caller) {
-        if (xfer_obj) kobject_release(xfer_obj); /* staged cap destroyed */
+        /* Already replied / caller gone: nothing delivered, so the peeked
+         * staging ref is dropped and the server KEEPS its source handle. */
+        if (xfer_obj) kobject_release(xfer_obj);
         kobject_release(&rp->base);
-        return syscall_err(IRIS_ERR_NOT_FOUND); /* already replied */
+        return syscall_err(IRIS_ERR_NOT_FOUND);
     }
+
+    /* A1.10: caller determined and still blocked — delivery is committed;
+     * consume the server's source handle (outside rp->lock). */
+    if (xfer_obj)
+        syscall_ipc_stage_cap_commit(t, xfer_src_h);
 
     /* Deliver reply message into caller's staging (caller is blocked — safe). */
     copy_irismsg_r(&caller->ipc_msg, &reply_msg);

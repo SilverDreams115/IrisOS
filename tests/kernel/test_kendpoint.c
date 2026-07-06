@@ -106,12 +106,14 @@ void test_kendpoint(void) {
         ASSERT_NOT_NULL(e);
         ASSERT_NOT_NULL(cap);
 
-        /* simulate stage_send_cap: get_object retained a ref */
+        /* simulate two-phase staging: get_object retained a ref, and the
+         * un-consumed source handle rides in ep_cap_src_h (A1.10) */
         kobject_retain(&cap->base);        /* cap refcount: 1 → 2 */
 
         struct task t = { 0 };
         t.ep_cap_obj    = &cap->base;
         t.ep_cap_rights = 7u;
+        t.ep_cap_src_h  = 0x11223344u;
         eq_enqueue(e, &t, EP_STATE_SEND);
 
         kobject_active_retain(&e->base);
@@ -119,6 +121,10 @@ void test_kendpoint(void) {
 
         ASSERT_NULL(t.ep_cap_obj);
         ASSERT_EQ(t.ep_cap_rights, 0u);
+        /* A1.10: close drops ONLY the staging ref — exactly one release
+         * (2→1, no double-release) and the source handle is not consumed
+         * (src_h cleared, nothing else touched). */
+        ASSERT_EQ(t.ep_cap_src_h, 0u);
         ASSERT_EQ((int)atomic_load(&cap->base.refcount), 1);
 
         kobject_release(&e->base);
@@ -169,7 +175,7 @@ void test_kendpoint(void) {
         kendpoint_close(e);
     }
 
-    /* ── cancel_waiter: releases staged cap ─────────────────────────── */
+    /* ── cancel_waiter: releases staged cap, never consumes the source ── */
     {
         struct KEndpoint *e   = kendpoint_alloc();
         struct KEndpoint *cap = kendpoint_alloc();
@@ -181,13 +187,21 @@ void test_kendpoint(void) {
         struct task t = { 0 };
         t.ep_cap_obj    = &cap->base;
         t.ep_cap_rights = 3u;
+        t.ep_cap_src_h  = 0xCAFEu;    /* A1.10: un-consumed source handle */
         eq_enqueue(e, &t, EP_STATE_SEND);
 
         kendpoint_cancel_waiter(&t);
 
         ASSERT_NULL(t.ep_cap_obj);
         ASSERT_EQ(t.ep_cap_rights, 0u);
+        ASSERT_EQ(t.ep_cap_src_h, 0u);  /* cleared, not consumed */
         ASSERT_EQ((int)atomic_load(&cap->base.refcount), 1); /* cancel released the ref */
+
+        /* A1.10: double cancel is a benign no-op (blocking_ep already NULL):
+         * no second release, no queue corruption. */
+        kendpoint_cancel_waiter(&t);
+        ASSERT_NULL(t.ep_cap_obj);
+        ASSERT_EQ((int)atomic_load(&cap->base.refcount), 1);
 
         kendpoint_close(e);
         kendpoint_close(cap);
