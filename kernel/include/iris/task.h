@@ -56,6 +56,11 @@ struct task {
     task_state_t      state;
     task_ring_t       ring;
     uint8_t           priority;  /* Ph73: 0=lowest, 255=highest; idle=0, user=128 */
+    uint8_t           awaiting_reap; /* A1.11: TASK_DEAD but still queued for the
+                                      * deferred reaper — the slot is NOT free yet.
+                                      * Set by task_exit_current, cleared by the
+                                      * reaper's task_reset_slot (which zeroes the
+                                      * struct).  task_create* must skip it. */
 
     struct cpu_context ctx;
 

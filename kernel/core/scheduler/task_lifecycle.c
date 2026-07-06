@@ -388,7 +388,9 @@ struct task *task_create(void (*entry)(void)) {
     struct task *t = 0;
     int idx = -1;
     for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD) { t = &tasks[i]; idx = i; break; }
+        if (tasks[i].state == TASK_DEAD && !tasks[i].awaiting_reap) {
+            t = &tasks[i]; idx = i; break;
+        }
     }
     if (!t) return 0;
 
@@ -443,7 +445,9 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     if (!initrd_bootstrap_image(&ub_data, &ub_size) || ub_size == 0) return 0;
 
     for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD) { t = &tasks[i]; idx = i; break; }
+        if (tasks[i].state == TASK_DEAD && !tasks[i].awaiting_reap) {
+            t = &tasks[i]; idx = i; break;
+        }
     }
     if (!t) return 0;
 
@@ -643,7 +647,9 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
     struct task *t = 0;
     int idx = -1;
     for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD) { t = &tasks[i]; idx = i; break; }
+        if (tasks[i].state == TASK_DEAD && !tasks[i].awaiting_reap) {
+            t = &tasks[i]; idx = i; break;
+        }
     }
     if (!t) return 0;
 
@@ -767,6 +773,12 @@ void task_exit_current(void) {
             kprocess_teardown(proc, t);
     }
 
+    /* A1.11: the slot stays reserved until the deferred reaper runs.
+     * Without this, an immediate task_create could recycle the slot, wipe
+     * t->process, and the reaper's TASK_DEAD guard would silently skip the
+     * stale queue entry — leaking the KProcess, its address space, the
+     * sched_ctx ref and the live count (found by T112 spawn/exit churn). */
+    t->awaiting_reap = 1;
     t->state = TASK_DEAD;
     for (;;) task_yield();
 }
