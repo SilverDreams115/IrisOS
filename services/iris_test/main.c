@@ -5565,6 +5565,196 @@ static void test_t108(void) {
     else    { fz_note("T108", T108_SEED, it_n); it_fail("T108", why); }
 }
 
+/* ── T109: randomized reply one-shot + attached cap stress ──────────────────
+ * 20 PRNG-driven EP_CALLs from one worker; the main thread serves each one
+ * and ALWAYS attempts a second reply.  Mix: plain reply + second reply WITH
+ * a cap (the A1.10 T105 case), cap reply into a declared fresh slot, cap
+ * reply into legacy slot 0, and a call declaring an OCCUPIED reply slot
+ * (fail-fast before any send — the server never even sees a message).
+ * The reply-caps counter must balance EXACTLY: one KReply per rendezvous,
+ * none for the fail-fast rounds.  Caller-death/close during a call is
+ * T108/T111 territory.  Invariants: I3-I7, I9, I10, I12, I16-I18. */
+#define T109_SEED  0xA1110109u
+#define T109_ITERS 20u
+
+static void test_t109(void) {
+    uint32_t before[12], after[12];
+    if (!it_sched_ext(before)) { it_fail("T109", "sched ext"); return; }
+    g_fz_seed = T109_SEED;
+    int ok = 1;
+    const char *why = "reply one-shot stress";
+    uint32_t it_n = 0;
+    uint32_t exp_slot = 0, exp_hand = 0, exp_reply = 0;
+
+    long ep    = it_sys0(SYS_ENDPOINT_CREATE);
+    long n     = it_sys0(SYS_NOTIFY_CREATE);
+    long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
+    handle_id_t n_h = (handle_id_t)n, selfp_h = (handle_id_t)selfp;
+    g_fz_data_ep = (handle_id_t)ep;
+    if (ep < 0 || n < 0 || selfp < 0) { it_fail("T109", "create"); return; }
+    /* Occupied reply-slot fixture: pre-minted once, occupied forever. */
+    uint32_t occ = fz_slot_alloc();
+    if (occ == 0u ||
+        it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, (long)occ,
+                n, (long)RIGHT_WRITE) != 0) {
+        it_fail("T109", "occ fixture"); return;
+    }
+    if (!fz_workers_start(1)) { it_fail("T109", "worker"); return; }
+
+    for (it_n = 0; ok && it_n < T109_ITERS; it_n++) {
+        uint32_t pick = fz_rand() % 4u;
+
+        if (pick == 3u) {
+            /* Call declaring the OCCUPIED reply slot: fail-fast before any
+             * send (I3/I4) — no message lands, no KReply is minted, and the
+             * occupant is still exactly the fixture cap. */
+            if (!fz_cmd(0, FZ_OP_CALL, 0, 0, occ)) { ok = 0; why = "cmd"; break; }
+            if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
+            if (ok && g_fz_res[0] != (long)IRIS_ERR_ALREADY_EXISTS) {
+                ok = 0; why = "occupied not rejected";
+            }
+            if (ok) {
+                struct IrisMsg m;
+                it_iris_msg_zero(&m);
+                if (it_sys2(SYS_EP_NB_RECV, (long)g_fz_data_ep, (long)&m) !=
+                    (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ghost msg"; }
+            }
+            if (ok) {
+                long rh = it_sys1(SYS_CSPACE_RESOLVE, (long)occ);
+                if (rh < 0 || it_sys2(SYS_HANDLE_SAME_OBJECT, rh, n) != 1) {
+                    ok = 0; why = "occupant changed";
+                }
+                if (rh >= 0) { handle_id_t r2 = (handle_id_t)rh; it_close(&r2); }
+            }
+            continue;
+        }
+
+        /* Rendezvous rounds: the worker calls, we serve. */
+        uint32_t s = 0;
+        if (pick == 1u) {
+            s = fz_slot_alloc();
+            if (s == 0u) { ok = 0; why = "slot budget"; break; }
+        }
+        if (!fz_cmd(0, FZ_OP_CALL, 0, 0, s)) { ok = 0; why = "cmd"; break; }
+
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        if (it_sys2(SYS_EP_RECV, (long)g_fz_data_ep, (long)&m) != 0 ||
+            m.label != 0xF2ULL ||
+            !iris_msg_cap_is_handle(m.attached_handle)) {
+            ok = 0; why = "recv call"; break;
+        }
+        handle_id_t reply_h = (handle_id_t)m.attached_handle;
+        exp_reply++;                       /* exactly one KReply per rendezvous */
+
+        long d = -1;
+        if (pick != 0u) {
+            d = fz_dup_xfer(n);
+            if (d < 0) { ok = 0; why = "dup"; }
+        }
+
+        /* First reply: plain (pick 0) or carrying the dup (picks 1-2). */
+        if (ok) {
+            struct IrisMsg rm;
+            it_iris_msg_zero(&rm);
+            rm.label = 0x5109;
+            if (d >= 0) {
+                rm.attached_handle = (uint32_t)d;
+                rm.attached_rights = RIGHT_WRITE;
+            }
+            if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) != 0) {
+                ok = 0; why = "first reply";
+            }
+        }
+        if (ok && !fz_wait(0)) { ok = 0; why = "worker hang"; }
+        if (ok && g_fz_res[0] != 0) { ok = 0; why = "caller err"; }
+
+        if (ok && pick == 0u) {
+            /* Plain reply delivers no cap. */
+            if (g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP) { ok = 0; why = "ghost cap"; }
+        } else if (ok && pick == 1u) {
+            /* I12: the reply cap landed at the declared slot, invocable. */
+            if (g_fz_att[0] != s) { ok = 0; why = "slot landing"; }
+            uint64_t bits = 0;
+            if (ok && (it_sys2(SYS_NOTIFY_SIGNAL, (long)s, 1) != 0 ||
+                       it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+                       bits != 1u)) { ok = 0; why = "cptr dead"; }
+            if (ok && it_sys1(SYS_HANDLE_TYPE, d) >= 0) {
+                ok = 0; why = "dup not consumed";
+            }
+            if (ok) { d = -1; exp_slot++; }
+        } else if (ok) {
+            /* I11 on the reply path: legacy handle >= 1024, invocable. */
+            if (!iris_msg_cap_is_handle(g_fz_att[0])) { ok = 0; why = "legacy landing"; }
+            uint64_t bits = 0;
+            if (ok && (it_sys2(SYS_NOTIFY_SIGNAL, (long)g_fz_att[0], 2) != 0 ||
+                       it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+                       bits != 2u)) { ok = 0; why = "legacy cap dead"; }
+            if (ok) {
+                handle_id_t gh = (handle_id_t)g_fz_att[0];
+                it_close(&gh);
+            }
+            if (ok && it_sys1(SYS_HANDLE_TYPE, d) >= 0) {
+                ok = 0; why = "dup not consumed";
+            }
+            if (ok) { d = -1; exp_hand++; }
+        }
+
+        /* SECOND reply — one-shot must hold (I9); when it carries a cap the
+         * server keeps it (I10, the A1.10 T105 rule under stress). */
+        if (ok) {
+            long d2 = -1;
+            if (pick == 0u) {
+                d2 = fz_dup_xfer(n);
+                if (d2 < 0) { ok = 0; why = "dup2"; }
+            }
+            if (ok) {
+                struct IrisMsg rm;
+                it_iris_msg_zero(&rm);
+                rm.label = 0xDEAD;
+                if (d2 >= 0) {
+                    rm.attached_handle = (uint32_t)d2;
+                    rm.attached_rights = RIGHT_WRITE;
+                }
+                if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) !=
+                    (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "not one-shot"; }
+                if (ok && d2 >= 0 && it_sys1(SYS_HANDLE_TYPE, d2) !=
+                    (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+                    ok = 0; why = "second reply ate cap";
+                }
+            }
+            if (d2 >= 0) { handle_id_t dh = (handle_id_t)d2; it_close(&dh); }
+        }
+        if (d >= 0) { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
+        it_close(&reply_h);
+    }
+
+    fz_workers_stop(1);
+    it_close(&n_h);
+    it_close(&selfp_h);
+    it_close(&g_fz_data_ep);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    /* I16: exact balance; +1 = the worker's KTcb handle (Ph96). */
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 1u) { ok = 0; why = "leak"; }
+    /* Reply caps balance EXACTLY: one per rendezvous, zero per fail-fast. */
+    if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY] + exp_reply) {
+        ok = 0; why = "reply count";
+    }
+    /* I18: directional delivery deltas. */
+    if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
+        ok = 0; why = "slot count";
+    }
+    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + exp_hand) {
+        ok = 0; why = "hand count";
+    }
+    /* I17: T095 high-water rule. */
+    if (ok && after[IT_SI_GHWM] * 4u > after[IT_SI_MAX]) { ok = 0; why = "hwm"; }
+
+    if (ok) { it_pass("T109"); }
+    else    { fz_note("T109", T109_SEED, it_n); it_fail("T109", why); }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -5692,6 +5882,7 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t106();
     test_t107();
     test_t108();
+    test_t109();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
