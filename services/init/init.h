@@ -98,6 +98,15 @@ handle_id_t init_ep_lookup_name_slot(handle_id_t svcmgr_ep_h, const char *name,
 int  init_wait_vfs_list_ep(handle_id_t vfs_ep_h);
 int  init_wait_vfs_rw_ep(handle_id_t vfs_ep_h);
 
+/* Service launch (init_launch.c): initrd loads via svc_load_minted with the
+ * pre-start CSpace mint tables; init_spawn_svcmgr returns the svcmgr.ep send
+ * side (init's discovery handle) or HANDLE_INVALID; init_spawn_iris_test
+ * consumes spawn_cap_h. */
+void init_spawn_fb(handle_id_t spawn_cap_h);
+int  init_spawn_console(handle_id_t spawn_cap_h);
+handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h);
+void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h);
+
 /* Runtime probes + S8 exception selftest (init_test.c). */
 void init_runtime_probe_invalid_userptr(void);
 void init_runtime_probe_timeout_overflow(void);

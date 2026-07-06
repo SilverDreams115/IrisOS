@@ -528,7 +528,10 @@ $(BUILD_DIR)/init_test.o: services/init/init_test.c | dirs
 $(BUILD_DIR)/init_bootstrap.o: services/init/init_bootstrap.c | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_INIT_ELF): $(BUILD_DIR)/init_entry.o $(BUILD_DIR)/init_main.o $(BUILD_DIR)/init_bootstrap.o $(BUILD_DIR)/init_test.o $(BUILD_DIR)/svc_loader.o $(STACK_GUARD_OBJ)
+$(BUILD_DIR)/init_launch.o: services/init/init_launch.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_INIT_ELF): $(BUILD_DIR)/init_entry.o $(BUILD_DIR)/init_main.o $(BUILD_DIR)/init_bootstrap.o $(BUILD_DIR)/init_launch.o $(BUILD_DIR)/init_test.o $(BUILD_DIR)/svc_loader.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 
 $(KERNEL_INIT_BIN_OBJ): $(SERVICE_INIT_ELF) | dirs
