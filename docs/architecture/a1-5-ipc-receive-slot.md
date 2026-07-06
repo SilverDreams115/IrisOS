@@ -82,7 +82,7 @@ Output discriminator (both `attached_handle` and `attached_cap`):
 Unchanged from the existing transfer machinery, which already runs before
 any receive-slot logic:
 
-- sender must hold `RIGHT_TRANSFER` (`syscall_ipc_stage_cap_badged`);
+- sender must hold `RIGHT_TRANSFER` (`syscall_ipc_stage_cap_peek_badged`);
 - `rights_reduce(sender_rights, requested)` is what the slot receives —
   `receiver_rights ⊆ sender_rights`, never escalated;
 - the installed slot's rights gate every later CPtr invocation through the
@@ -101,13 +101,70 @@ any receive-slot logic:
 | slot filled between declaration and delivery | delivery | fallback to handle materialization; discriminator tells the receiver |
 | receiver's handle table full on fallback | delivery | unchanged soft failure: cap destroyed, field = `IRIS_MSG_NO_CAP` |
 | receiver killed while blocked with declared slot | death | `task_cancel_blocked_waits` dequeues it; no delivery ever starts; slot stays empty (no ghost); declaration dies with the task |
-| sender killed while staged | death | unchanged: cancel path releases the staged cap (T073/T077 semantics) |
+| sender killed while staged | death | A1.10: cancel path releases the staging ref only; the source handle is never consumed (it dies with the process table, or stays valid if only the thread dies) |
 | endpoint closed while receiver waits | close | unchanged: receiver wakes with `IRIS_ERR_CLOSED`; slot stays empty |
+| endpoint closed while a SENDER waits with a staged cap | close | A1.10: sender wakes with `IRIS_ERR_CLOSED` and KEEPS its source cap (staging ref released, handle untouched) |
 | reply-slot declared but reply carries no cap | reply | declaration is simply unused; every recv-family entry rewrites the field, so it cannot leak into a later operation |
+| reply loses the one-shot race (`NOT_FOUND`) | reply | A1.10: nothing delivered → the server keeps its source cap (pre-A1.10 this destroyed it) |
 
 Install is all-or-nothing under the CNode spinlock; the staging ref is
 released only after a successful install (slot holds its own refs) or
 passed to the legacy handle path.
+
+## A1.10 — staged-cap atomicity contract (two-phase staging)
+
+A1.9 fixed EP_NB_SEND consuming the source cap on a failed delivery and
+left the blocking paths as documented remaining work.  A1.10 closes that:
+**every** transfer path now stages in two phases:
+
+```
+peek    — validate RIGHT_TRANSFER, rights_reduce, capture badge, retain
+          the object; the sender's handle is NOT touched.
+commit  — close the source handle, ONLY once delivery is committed
+          (a receiver is determined).
+```
+
+Rule: `peek/retain != consume` — the source cap is consumed exactly when
+the delivery is committed, never before.  Commit points per path:
+
+| Path | Commit point | Non-delivery exits (source kept) |
+|---|---|---|
+| `EP_NB_SEND` | receiver dequeued (A1.9) | `CLOSED`, `WOULD_BLOCK` |
+| `EP_SEND` immediate rendezvous | receiver dequeued, before routed delivery | `CLOSED` at entry |
+| `EP_SEND` queued sender | the RECEIVER commits when it takes the staged cap (`EP_RECV`/`EP_NB_RECV`), outside `ep->lock` | endpoint close, waiter cancel (kill) |
+| `EP_CALL` immediate rendezvous | receiver dequeued, before routed delivery | `CLOSED` at entry (pre-A1.10 this also leaked the staging ref) |
+| `EP_CALL` queued caller | receiver take, as above | endpoint close, waiter cancel |
+| `SYS_REPLY` | blocked caller determined under `rp->lock` | staging errors, lost one-shot race (`NOT_FOUND`) |
+
+Mechanics: a queued sender carries the un-consumed source handle in
+`task->ep_cap_src_h` next to the staged object (`ep_cap_obj`).  The
+receiver's take clears both and commits via
+`handle_table_close(&sender->process->handle_table, src_h)` — done
+**outside** `ep->lock`, because a handle close can fire object-close
+callbacks that themselves take endpoint locks (the `ht->lock → ep->lock`
+order must never invert).  `kendpoint_obj_close` and
+`kendpoint_cancel_waiter` release the staging ref and clear
+`ep_cap_src_h` without consuming; cleanup is idempotent (double cancel
+is a no-op).
+
+The commit is generation-guarded (`handle_table_close` on a stale id is
+a benign no-op), so a same-process thread racing a close of the source
+handle degrades the move into a copy of authority the process already
+held — same acceptance as A1.9.  Note the peek window for a *blocking*
+send lasts until rendezvous, so the source handle stays visible in the
+sender's table while it is queued; two concurrent transfers of the same
+handle by the same process can then both deliver (documented limitation,
+`RIGHT_TRANSFER` is checked on both).
+
+Consequences locked by tests:
+- a canceled/closed blocking send or call is *fully* undone: source cap
+  intact and usable, no ghost cap anywhere, no staged-ref leak;
+- `SYS_REPLY` to an already-invoked KReply returns `NOT_FOUND` and no
+  longer destroys the server's attached cap (the only intentional
+  consume-without-install left is the receiver-table-full soft failure
+  above, where the *message* was delivered);
+- the consume-at-stage helpers (`syscall_ipc_stage_cap`,
+  `syscall_ipc_stage_cap_badged`) are retired — do not reintroduce.
 
 ## Compatibility
 
@@ -139,6 +196,17 @@ passed to the legacy handle path.
   declared slot → slot has no ghost (resolve fails), endpoint clean, and a
   later real transfer into the same slot works; endpoint-close variant
   wakes the receiver with `CLOSED` and leaves the slot empty.
+- **T103** — (A1.10) sender blocked in `EP_SEND` with a staged cap,
+  endpoint closed → `CLOSED`, source cap intact and still functional,
+  exact handle balance.
+- **T104** — (A1.10) caller blocked in `EP_CALL` with `attached_cap`,
+  endpoint closed → `CLOSED`, source cap intact, reply-caps counter flat
+  (no ghost KReply).
+- **T105** — (A1.10) reply-cap one-shot race: second `SYS_REPLY` with an
+  attached cap → `NOT_FOUND`, server keeps its cap; first reply intact.
+- **T106** — (A1.10) endpoint close with two queued staged senders → both
+  `CLOSED`, both source caps survive, each staging ref released exactly
+  once.
 
 Host tests: `kcnode_mint_excl_badged` primitive (empty install, ALREADY_EXISTS on
 occupied with slot content untouched, out-of-range, refcount/badge/rights).

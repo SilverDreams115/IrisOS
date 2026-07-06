@@ -116,6 +116,23 @@ It is not deprecated by this freeze.
 - No internal `CPtr → CSPACE_RESOLVE → handle → placement` detours
   existed to convert (the A1.6 adoption already eliminated them).
 
+## A1.10 — staged-cap atomicity (applied)
+
+Two-phase staging (peek/commit) extended from `EP_NB_SEND` (A1.9) to the
+blocking paths — see the contract section in `a1-5-ipc-receive-slot.md`.
+Table-accounting impact:
+
+- A queued blocking sender's source handle now stays **live in its table**
+  until the receiver commits the delivery (pre-A1.10 it was consumed at
+  stage time).  In-flight transfers therefore count toward `live`; the
+  commit closes the entry, so steady-state numbers and the T095 high-water
+  rule are unchanged (T103–T106 assert exact balance around cancel paths).
+- No new producers; the consume-at-stage wrappers (`stage_cap`,
+  `stage_cap_badged`) were retired with zero callers.
+- Cancel paths (endpoint close, waiter kill, lost one-shot reply) release
+  only the staging ref — no table mutation, no leaked entries, and the
+  owner keeps its cap.
+
 ## Remaining candidates (beyond this freeze)
 
 1. Drop the deprecated `SYS_HANDLE_INSERT`/`SYS_VMO_SHARE` compat
@@ -124,5 +141,5 @@ It is not deprecated by this freeze.
 2. A sanctioned own-root-CNode accessor, replacing the svcmgr
    handle-type probe.
 3. Notification secondary args (three handle-only sites) → dual.
-4. Multi-child receive-slot stress (cross-process, not same-process
-   threads).
+4. ~~Multi-child receive-slot stress (cross-process, not same-process
+   threads)~~ — done in A1.9 (T099–T102).
