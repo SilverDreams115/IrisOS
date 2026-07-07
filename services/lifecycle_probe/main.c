@@ -50,6 +50,21 @@
  * (e.g. occupied slot → 0x0B07 = base | -IRIS_ERR_ALREADY_EXISTS). */
 #define LP_EXIT_RECV_ERR_BASE  0x0B00
 
+/* Fase 16 lifecycle-hardening modes (opt-in per run; every other label keeps
+ * the legacy behaviour).  After the first recv the child immediately does a
+ * BLOCKING send / call back on the SAME command endpoint, becoming a queued
+ * sender / caller so the parent can either rendezvous with it or kill it
+ * mid-block.  Must match iris_test.
+ *   LP_CMD_SEND_BLOCK: EP_SEND(cmd_ep) — blocks as a sender until a receiver
+ *     arrives or the child is killed/endpoint closed.
+ *   LP_CMD_CALL_BLOCK: EP_CALL(cmd_ep) — blocks as a caller (owns a reply
+ *     cap once a server receives) until reply, kill, or close. */
+#define LP_CMD_SEND_BLOCK      0x109Au
+#define LP_CMD_CALL_BLOCK      0x109Bu
+/* Exit-code base for a send/call that returned (was NOT killed while blocked);
+ * low byte = -err (0 = success).  Lets a rendezvous-then-complete run report. */
+#define LP_EXIT_IPC_BASE       0x0C00
+
 static inline long lp_sys1(long nr, long a0) {
     long ret;
     __asm__ volatile ("syscall" : "=a"(ret) : "a"(nr), "D"(a0)
@@ -89,6 +104,22 @@ void lp_main(handle_id_t bootstrap_ch_h) {
             (void)lp_sys2(SYS_NOTIFY_SIGNAL, (long)got,
                           (got < 1024u) ? 1L : 2L);
         lp_sys1(SYS_EXIT, (long)got);
+        for (;;) {}
+    }
+
+    /* Fase 16: block as a sender/caller on the command endpoint.  The child
+     * is normally killed while blocked (the parent observes the cleanup); if
+     * the parent instead rendezvouses and replies, the syscall returns and we
+     * exit LP_EXIT_IPC_BASE | -err so a completing run is still observable. */
+    if (msg.label == (uint64_t)LP_CMD_SEND_BLOCK ||
+        msg.label == (uint64_t)LP_CMD_CALL_BLOCK) {
+        int is_call = (msg.label == (uint64_t)LP_CMD_CALL_BLOCK);
+        struct IrisMsg w;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(w); i++) ((uint8_t *)&w)[i] = 0;
+        w.label = is_call ? 0x5CULL : 0x5BULL;
+        long r = lp_sys2(is_call ? SYS_EP_CALL : SYS_EP_SEND,
+                         (long)LP_CPTR_CMD_EP, (long)&w);
+        lp_sys1(SYS_EXIT, (long)(LP_EXIT_IPC_BASE | ((uint32_t)-r & 0xFFu)));
         for (;;) {}
     }
 

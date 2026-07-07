@@ -3885,15 +3885,18 @@ static void test_t092(void) {
  * The KDEBUG authority comes from the spawn bootcap (slot 6), resolved for
  * the duration of the call — identical churn on every invocation, so
  * before/after comparisons of self_live are exact. */
-static int it_sched_ext(uint32_t w[12]) {
+static int it_sched_ext(uint32_t w[14]) {
     long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
     if (bh < 0) return 0;
-    uint8_t buf[88];
-    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 88);
+    uint8_t buf[96];
+    /* Fase 16: request 96 bytes so the two lifecycle words (offsets 84/88)
+     * land too; a pre-Fase-16 kernel clamps to 88 and leaves w[11..13] zero —
+     * the extra words are additive, never required by legacy asserts. */
+    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96);
     handle_id_t h = (handle_id_t)bh;
     it_close(&h);
     if (r != 0) return 0;
-    for (uint32_t i = 0; i < 12u; i++) {
+    for (uint32_t i = 0; i < 14u; i++) {
         uint32_t o = 40u + 4u * i;
         w[i] = (uint32_t)buf[o] | ((uint32_t)buf[o + 1u] << 8) |
                ((uint32_t)buf[o + 2u] << 16) | ((uint32_t)buf[o + 3u] << 24);
@@ -3901,18 +3904,35 @@ static int it_sched_ext(uint32_t w[12]) {
     return 1;
 }
 
+/* Read the base-frame live TASK count (offset 32) — the scheduler's
+ * sched_live_count, distinct from the handle-table live at IT_SI_LIVE. */
+static int it_task_live(uint32_t *out) {
+    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
+    if (bh < 0) return 0;
+    uint8_t buf[96];
+    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96);
+    handle_id_t h = (handle_id_t)bh;
+    it_close(&h);
+    if (r != 0) return 0;
+    *out = (uint32_t)buf[32] | ((uint32_t)buf[33] << 8) |
+           ((uint32_t)buf[34] << 16) | ((uint32_t)buf[35] << 24);
+    return 1;
+}
+
 /* Extended-word indices (see syscall_diag.c layout). */
-#define IT_SI_LIVE     0u
-#define IT_SI_HWM      1u
-#define IT_SI_INSERTS  2u
-#define IT_SI_REMOVES  3u
-#define IT_SI_GHWM     4u
-#define IT_SI_MAX      5u
-#define IT_SI_SLOTDEL  6u
-#define IT_SI_HANDDEL  7u
-#define IT_SI_TOCTOU   8u
-#define IT_SI_REPLY    9u
-#define IT_SI_RESOLVE 10u
+#define IT_SI_LIVE      0u
+#define IT_SI_HWM       1u
+#define IT_SI_INSERTS   2u
+#define IT_SI_REMOVES   3u
+#define IT_SI_GHWM      4u
+#define IT_SI_MAX       5u
+#define IT_SI_SLOTDEL   6u
+#define IT_SI_HANDDEL   7u
+#define IT_SI_TOCTOU    8u
+#define IT_SI_REPLY     9u
+#define IT_SI_RESOLVE  10u
+#define IT_SI_PROCLIVE 11u   /* Fase 16: KProcess objects live */
+#define IT_SI_REAPHWM  12u   /* Fase 16: deferred-reap queue depth hwm */
 
 /* ── T093: svcmgr receive-slot pool stress (A1.7) ───────────────────────────
  * Three full cycles of 8 concurrent registrations: every REGISTER lands in
@@ -4075,7 +4095,7 @@ static void test_t094(void) {
  * evidence for the HANDLE_TABLE_MAX decision), and assert the working set is
  * bounded: the busiest table ever seen must fit in a quarter of the ceiling. */
 static void test_t095(void) {
-    uint32_t w[12];
+    uint32_t w[14];
     if (!it_sched_ext(w)) { it_fail("T095", "sched_info ext"); return; }
 
     it_serial_write("[IRIS][TEST] T095 hwm self=");
@@ -4120,7 +4140,7 @@ static void test_t095(void) {
  * releases it.  self_live must return exactly to its starting value (zero
  * leak), and the legacy path keeps serving a working cap on the last lap. */
 static void test_t096(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T096", "sched_info ext"); return; }
 
     int ok = 1;
@@ -4334,6 +4354,16 @@ static long it_lp_send_cap(handle_id_t cmd_ep_h, long notif) {
     return it_sys2(SYS_EP_SEND, (long)cmd_ep_h, (long)&m);
 }
 
+/* Fase 16: send a bare command label to a child (no payload). */
+#define LP_CMD_SEND_BLOCK  0x109Au   /* must match lifecycle_probe */
+#define LP_CMD_CALL_BLOCK  0x109Bu   /* must match lifecycle_probe */
+static long it_lp_cmd(handle_id_t cmd_ep_h, uint32_t label) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label = label;
+    return it_sys2(SYS_EP_SEND, (long)cmd_ep_h, (long)&m);
+}
+
 /* Wait (≤ 2s) for a child to exit; returns its exit code or -1. */
 static long it_lp_wait_exit(handle_id_t proc_h) {
     long n = it_sys0(SYS_NOTIFY_CREATE);
@@ -4358,7 +4388,7 @@ static long it_lp_wait_exit(handle_id_t proc_h) {
  * fast (ALREADY_EXISTS, endpoint left clean); an out-of-range declaration
  * fails INVALID_ARG.  Parent handle books balance exactly. */
 static void test_t099(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T099", "sched ext"); return; }
     int ok = 1;
     const char *why = "multi-child rslot";
@@ -4452,7 +4482,7 @@ static void test_t099(void) {
  * re-registered service — proof it stayed genuinely empty); legacy lookup
  * confirms the final NOT_FOUND. */
 static void test_t100(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T100", "sched ext"); return; }
     long e = it_sys0(SYS_ENDPOINT_CREATE);
     if (e < 0) { it_fail("T100", "ep create"); return; }
@@ -4528,7 +4558,7 @@ static void test_t100(void) {
  * delivery (WOULD_BLOCK, handle intact), and the handle books show no
  * staged-cap leak and no runaway high-water. */
 static void test_t101(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T101", "sched ext"); return; }
     long ep = it_sys0(SYS_ENDPOINT_CREATE);
     long n  = it_sys0(SYS_NOTIFY_CREATE);
@@ -4591,7 +4621,7 @@ static void test_t101(void) {
  * handle across the process boundary (signal bits 2), and child teardown
  * releases everything — parent live handles return exactly to baseline. */
 static void test_t102(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T102", "sched ext"); return; }
     int ok = 1;
     const char *why = "legacy children";
@@ -4663,7 +4693,7 @@ static void t103_sender(void) {
  * commit), no cap can have appeared anywhere, and the handle books must
  * return exactly to baseline (no staged-ref leak). */
 static void test_t103(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T103", "sched ext"); return; }
     g_t103_done = 0; g_t103_result = 0;
     int ok = 1;
@@ -4745,7 +4775,7 @@ static void t104_caller(void) {
  * created (the reply-caps counter stays flat — reply cleanup is trivially
  * correct because rendezvous never happened). */
 static void test_t104(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T104", "sched ext"); return; }
     g_t104_done = 0; g_t104_result = 0;
     int ok = 1;
@@ -4822,7 +4852,7 @@ static void t105_caller(void) {
  * this path destroyed it), and the first reply's one-shot semantics and
  * bookkeeping stay intact. */
 static void test_t105(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T105", "sched ext"); return; }
     g_t105_done = 0; g_t105_result = 0;
     int ok = 1;
@@ -4928,7 +4958,7 @@ static void t106_sender_b(void) { t106_send_idx(1); }
  * staging ref released exactly once — a double-release would show up as a
  * refcount crash or a negative live delta). */
 static void test_t106(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T106", "sched ext"); return; }
     g_t106_done[0] = g_t106_done[1] = 0;
     g_t106_result[0] = g_t106_result[1] = 0;
@@ -5170,7 +5200,7 @@ static long fz_dup_xfer(long src) {
 #define T107_ITERS 48u
 
 static void test_t107(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T107", "sched ext"); return; }
     g_fz_seed = T107_SEED;
     int ok = 1;
@@ -5425,7 +5455,7 @@ static void test_t107(void) {
 #define T108_ROUNDS 16u
 
 static void test_t108(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T108", "sched ext"); return; }
     g_fz_seed = T108_SEED;
     int ok = 1;
@@ -5578,7 +5608,7 @@ static void test_t108(void) {
 #define T109_ITERS 20u
 
 static void test_t109(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T109", "sched ext"); return; }
     g_fz_seed = T109_SEED;
     int ok = 1;
@@ -5773,7 +5803,7 @@ static void test_t109(void) {
 #define T110_ITERS 18u
 
 static void test_t110(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T110", "sched ext"); return; }
     g_fz_seed = T110_SEED;
     int ok = 1;
@@ -6090,7 +6120,7 @@ static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
 }
 
 static void test_t111(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T111", "sched ext"); return; }
     g_fz_seed = T111_SEED;
     int ok = 1;
@@ -6137,7 +6167,7 @@ static void test_t111(void) {
 #define T112_CYCLES 24u
 
 static void test_t112(void) {
-    uint32_t before[12], after[12];
+    uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T112", "sched ext"); return; }
     int ok = 1;
     const char *why = "spawn/exit churn";
@@ -6177,6 +6207,559 @@ static void test_t112(void) {
         it_log_num(i);
         it_serial_write("\n");
         it_fail("T112", why);
+    }
+}
+
+/* Drain the deferred-reap queue before a lifecycle baseline snapshot: a
+ * prior test's self-exited children release their KProcess creation ref only
+ * when the reaper runs on a later scheduler tick, so without this the live-
+ * process baseline is racy (a not-yet-reaped zombie inflates `before`).  The
+ * reaper drains one entry per task_yield; 200 yields clears any realistic
+ * backlog on single-CPU. */
+static void it_quiesce_reaper(void) {
+    for (int i = 0; i < 200; i++) it_sys0(SYS_YIELD);
+}
+
+/* ── Fase 16: lifecycle/process hardening (T113–T118) ───────────────────────
+ * The A1.11 deferred-reap fix (task.awaiting_reap) closed the one real bug in
+ * this area; T113–T118 LOCK the surviving lifecycle contracts so a future
+ * regression fails loudly.  Instrumentation: the Fase 16 SCHED_INFO words —
+ * live TASK count (it_task_live), live PROCESS count (IT_SI_PROCLIVE) and the
+ * deferred-reap queue high-water (IT_SI_REAPHWM).  Because a killed/exited
+ * child's KProcess stays live until the PARENT closes its proc handle, every
+ * test closes all child handles BEFORE the final snapshot, so proc-live must
+ * return exactly to baseline. */
+
+/* ── T113: caller death mid-EP_CALL with a live reply cap ───────────────────
+ * A child EP_CALLs the parent; the parent receives (minting the one-shot
+ * KReply) and then KILLS the child while it is BLOCKED_REPLY.  The server's
+ * reply must fail NOT_FOUND (the caller is gone), a second reply carrying an
+ * attached cap must ALSO fail NOT_FOUND without consuming the server's cap,
+ * no KReply is left dangling, no waiter survives, and both handle- and
+ * process-live counts return to baseline (exactly one KReply was created).
+ * Invariants: I5-I10, I15, I16. */
+static void test_t113(void) {
+    uint32_t before[14], after[14];
+    it_quiesce_reaper();
+    if (!it_sched_ext(before)) { it_fail("T113", "sched ext"); return; }
+    int ok = 1;
+    const char *why = "caller death mid-call";
+
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long n  = it_sys0(SYS_NOTIFY_CREATE);      /* source cap for the 2nd reply */
+    handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
+    handle_id_t proc_h = HANDLE_INVALID;
+    handle_id_t reply_h = HANDLE_INVALID;
+
+    if (ep < 0 || n < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
+        ok = 0; why = "spawn";
+    }
+    /* Drive the child into EP_CALL(cmd_ep); it queues as a caller. */
+    if (ok && it_lp_cmd(ep_h, LP_CMD_CALL_BLOCK) != 0) { ok = 0; why = "cmd"; }
+
+    /* Serve the call: receive it and capture the reply cap.  The blocking
+     * EP_RECV is the rendezvous — no timing needed. */
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        if (it_sys2(SYS_EP_RECV, (long)ep_h, (long)&m) != 0 ||
+            m.label != 0x5CULL ||
+            m.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
+            ok = 0; why = "recv call";
+        } else {
+            reply_h = (handle_id_t)m.attached_handle;
+        }
+    }
+
+    /* Kill the caller while it is BLOCKED_REPLY: cancel clears r->caller. */
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
+    if (ok && it_sys1(SYS_PROCESS_STATUS, (long)proc_h) != 0) {
+        ok = 0; why = "still alive";
+    }
+
+    /* First reply (no cap) → the one-shot has no caller: NOT_FOUND. */
+    if (ok) {
+        struct IrisMsg rm;
+        it_iris_msg_zero(&rm);
+        rm.label = 0x5A5A;
+        if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) !=
+            (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "reply not NOT_FOUND"; }
+    }
+
+    /* Second reply WITH an attached cap → still NOT_FOUND, and the server's
+     * source cap must survive un-consumed (A1.10 rule under caller death). */
+    if (ok) {
+        long d = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        if (d < 0) { ok = 0; why = "dup"; }
+        else {
+            struct IrisMsg rm;
+            it_iris_msg_zero(&rm);
+            rm.label           = 0xDEAD;
+            rm.attached_handle = (uint32_t)d;
+            rm.attached_rights = RIGHT_WRITE;
+            if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) !=
+                (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "2nd reply"; }
+            if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
+                (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+                ok = 0; why = "server cap consumed";
+            }
+            handle_id_t dh = (handle_id_t)d; it_close(&dh);
+        }
+    }
+
+    it_close(&reply_h);   /* KReply active_refs → 0 → close(no caller) → destroy */
+    it_close(&proc_h);    /* drop the parent's ref → child KProcess freed */
+    it_close(&n_h);
+    it_close(&ep_h);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "handle leak"; }
+    if (ok && after[IT_SI_PROCLIVE] != before[IT_SI_PROCLIVE]) {
+        ok = 0; why = "proc leak";
+    }
+    /* Exactly one KReply was created (at the rendezvous) and none leaked. */
+    if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY] + 1u) {
+        ok = 0; why = "reply count";
+    }
+    if (ok) it_pass("T113"); else it_fail("T113", why);
+}
+
+/* ── T114: reap-queue pressure and slot reuse ───────────────────────────────
+ * Keeps four children live at once and churns 40 replacements, alternating
+ * self-exit and external kill, each replacement respawning IMMEDIATELY into
+ * the just-freed task slot (the A1.11 race, now sustained and concurrent).
+ * Locks: spawn never returns NO_MEMORY, natural-exit codes stay intact, and
+ * at the end task-live / process-live return to baseline with the deferred
+ * reap queue never approaching its size bound.  Invariants: I15-I17. */
+#define T114_LIVE   4u
+#define T114_CHURN 40u
+static void test_t114(void) {
+    uint32_t before[14], after[14];
+    uint32_t tl_before = 0, tl_after = 0;
+    it_quiesce_reaper();
+    if (!it_sched_ext(before) || !it_task_live(&tl_before)) {
+        it_fail("T114", "sched ext"); return;
+    }
+    int ok = 1;
+    const char *why = "reap pressure";
+    uint32_t i = 0;
+
+    handle_id_t ep[T114_LIVE];
+    handle_id_t pr[T114_LIVE];
+    for (uint32_t s = 0; s < T114_LIVE; s++) { ep[s] = HANDLE_INVALID; pr[s] = HANDLE_INVALID; }
+
+    /* Prime: four concurrent children, each parked in its first EP_RECV. */
+    for (uint32_t s = 0; ok && s < T114_LIVE; s++) {
+        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        if (e < 0) { ok = 0; why = "prime ep"; break; }
+        ep[s] = (handle_id_t)e;
+        if (lp_spawn_child(ep[s], &pr[s]) < 0) { ok = 0; why = "prime spawn"; }
+    }
+
+    /* Churn: tear one child down (alt exit/kill) and respawn it at once. */
+    for (i = 0; ok && i < T114_CHURN; i++) {
+        uint32_t s = i % T114_LIVE;
+        if ((i & 1u) == 0u) {
+            /* Natural exit: unblock the child's recv, confirm the marker. */
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label = 0x114;
+            if (it_sys2(SYS_EP_SEND, (long)ep[s], (long)&m) != 0) {
+                ok = 0; why = "exit send"; break;
+            }
+            if (it_lp_wait_exit(pr[s]) != (long)LP_EXIT_MARKER) {
+                ok = 0; why = "exit code"; break;
+            }
+        } else {
+            /* External kill while the child is blocked in its first recv. */
+            if (it_sys1(SYS_PROCESS_KILL, (long)pr[s]) != 0) {
+                ok = 0; why = "kill"; break;
+            }
+            if (it_sys1(SYS_PROCESS_STATUS, (long)pr[s]) != 0) {
+                ok = 0; why = "kill status"; break;
+            }
+        }
+        it_close(&pr[s]);
+        it_close(&ep[s]);
+
+        /* Immediate respawn into the freed slot — the reuse-before-reap race. */
+        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        if (e < 0) { ok = 0; why = "churn ep NO_MEMORY"; break; }
+        ep[s] = (handle_id_t)e;
+        if (lp_spawn_child(ep[s], &pr[s]) < 0) {
+            ok = 0; why = "churn spawn NO_MEMORY"; break;
+        }
+    }
+
+    /* Drain the survivors (natural exit). */
+    for (uint32_t s = 0; s < T114_LIVE; s++) {
+        if (pr[s] != HANDLE_INVALID) {
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label = 0x114;
+            (void)it_sys2(SYS_EP_SEND, (long)ep[s], (long)&m);
+            (void)it_lp_wait_exit(pr[s]);
+        }
+        it_close(&pr[s]);
+        it_close(&ep[s]);
+    }
+
+    it_quiesce_reaper();   /* let deferred reaps of self-exited children drain */
+    if (ok && (!it_sched_ext(after) || !it_task_live(&tl_after))) {
+        ok = 0; why = "sched ext 2";
+    }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "handle leak"; }
+    if (ok && after[IT_SI_PROCLIVE] != before[IT_SI_PROCLIVE]) {
+        ok = 0; why = "proc leak";
+    }
+    if (ok && tl_after != tl_before) { ok = 0; why = "task-live drift"; }
+    /* The deferred reaper kept up: queue depth never neared its bound. */
+    if (ok && after[IT_SI_REAPHWM] >= 8u) { ok = 0; why = "reap backlog"; }
+    if (ok && after[IT_SI_GHWM] * 4u > after[IT_SI_MAX]) { ok = 0; why = "hwm"; }
+
+    if (ok) it_pass("T114");
+    else {
+        it_serial_write("[IRIS][TEST] T114 iter=");
+        it_log_num(i);
+        it_serial_write("\n");
+        it_fail("T114", why);
+    }
+}
+
+/* ── T115: process death with active endpoint waiters ───────────────────────
+ * A child is killed while blocked as an endpoint WAITER in each of the three
+ * blocking states — EP_RECV (declared receive-slot), EP_SEND, EP_CALL.  In
+ * every case the endpoint must retain no dead waiter (an NB probe from the
+ * opposite direction returns WOULD_BLOCK), no KReply is minted for the
+ * send/call cases (no rendezvous ever happened), and handle/process books
+ * return to baseline.  Invariants: I6, I14, I15, I16. */
+static void test_t115(void) {
+    uint32_t before[14], after[14];
+    it_quiesce_reaper();
+    if (!it_sched_ext(before)) { it_fail("T115", "sched ext"); return; }
+    int ok = 1;
+    const char *why = "death with waiters";
+
+    /* kind 0 = EP_RECV waiter, 1 = EP_SEND waiter, 2 = EP_CALL waiter. */
+    for (uint32_t kind = 0; ok && kind < 3u; kind++) {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        handle_id_t ep_h = (handle_id_t)ep;
+        handle_id_t proc_h = HANDLE_INVALID;
+        if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; break; }
+
+        uint32_t cmd = (kind == 0u) ? LP_CMD_RSLOT_RECV
+                     : (kind == 1u) ? LP_CMD_SEND_BLOCK
+                                    : LP_CMD_CALL_BLOCK;
+        if (kind == 0u) {
+            if (it_lp_cmd_rslot(ep_h, T099_CHILD_SLOT) != 0) { ok = 0; why = "cmd recv"; }
+        } else {
+            if (it_lp_cmd(ep_h, cmd) != 0) { ok = 0; why = "cmd"; }
+        }
+        it_sys1(SYS_SLEEP, 3);      /* child reaches its blocking syscall */
+
+        if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
+        if (ok && it_sys1(SYS_PROCESS_STATUS, (long)proc_h) != 0) {
+            ok = 0; why = "still alive";
+        }
+
+        /* No dead waiter remains.  For the recv waiter, probe with NB_SEND;
+         * for the send/call waiters, probe with NB_RECV. */
+        if (ok) {
+            struct IrisMsg p;
+            it_iris_msg_zero(&p);
+            p.label = 0x115;
+            long probe = (kind == 0u)
+                ? it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&p)
+                : it_sys2(SYS_EP_NB_RECV, (long)ep_h, (long)&p);
+            if (probe != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "dead waiter"; }
+        }
+
+        it_close(&proc_h);
+        it_close(&ep_h);
+    }
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "handle leak"; }
+    if (ok && after[IT_SI_PROCLIVE] != before[IT_SI_PROCLIVE]) {
+        ok = 0; why = "proc leak";
+    }
+    /* No caller ever rendezvoused → not one KReply was minted. */
+    if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY]) { ok = 0; why = "ghost kreply"; }
+    if (ok) it_pass("T115"); else it_fail("T115", why);
+}
+
+/* ── T116: process death with live CSpace caps and a shared VMO ─────────────
+ * A child is handed live authority — an endpoint and a notification minted
+ * into its CSpace, plus a VMO cap shared into its handle table — and then
+ * killed.  The child's teardown must release its refs WITHOUT destroying the
+ * shared objects: the parent's endpoint/notification/VMO stay fully usable,
+ * and handle/process books return to baseline (the child's CSpace root CNode,
+ * KTcb and address space are all reaped).  mapped_count is not observable
+ * from ring 3 (documented gap); the observable is object survival + exact
+ * book balance.  Invariants: I1, I15, I16. */
+#define T116_EP_SLOT 40u
+#define T116_N_SLOT  41u
+static void test_t116(void) {
+    uint32_t before[14], after[14];
+    it_quiesce_reaper();
+    if (!it_sched_ext(before)) { it_fail("T116", "sched ext"); return; }
+    int ok = 1;
+    const char *why = "death with cspace/vmo";
+
+    long ep  = it_sys0(SYS_ENDPOINT_CREATE);   /* shared endpoint */
+    long n   = it_sys0(SYS_NOTIFY_CREATE);      /* shared notification */
+    long vmo = it_sys1(SYS_VMO_CREATE, 4096);   /* shared VMO */
+    handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n, vmo_h = (handle_id_t)vmo;
+    handle_id_t cmd_ep_h = HANDLE_INVALID, proc_h = HANDLE_INVALID;
+
+    /* Command endpoint keeps the child parked; the shared caps go into its
+     * CSpace / handle table below. */
+    long cep = it_sys0(SYS_ENDPOINT_CREATE);
+    cmd_ep_h = (handle_id_t)cep;
+    if (ep < 0 || n < 0 || vmo < 0 || cep < 0 ||
+        lp_spawn_child(cmd_ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
+
+    /* Mint the endpoint and the notification into the child's CSpace, and
+     * share the VMO cap into the child's handle table. */
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, (long)T116_EP_SLOT,
+                      ep, (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint ep"; }
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, (long)T116_N_SLOT,
+                      n, (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint n"; }
+    if (ok && it_sys3(SYS_VMO_SHARE, vmo, (long)proc_h,
+                      (long)(RIGHT_READ | RIGHT_DUPLICATE)) < 0) {
+        ok = 0; why = "share vmo";
+    }
+
+    /* Kill the child while it holds all three live caps. */
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
+    if (ok && it_sys1(SYS_PROCESS_STATUS, (long)proc_h) != 0) {
+        ok = 0; why = "still alive";
+    }
+
+    /* The parent's objects survived the child's teardown. */
+    if (ok) {
+        struct IrisMsg p;
+        it_iris_msg_zero(&p);
+        p.label = 0x116;
+        if (it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&p) !=
+            (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "endpoint dead"; }
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_SIGNAL, n, 4) != 0 ||
+            it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+            bits != 4u) { ok = 0; why = "notif dead"; }
+    }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, vmo) != (long)IRIS_HANDLE_TYPE_VMO) {
+        ok = 0; why = "vmo dead";
+    }
+
+    it_close(&proc_h);
+    it_close(&cmd_ep_h);
+    it_close(&vmo_h);
+    it_close(&n_h);
+    it_close(&ep_h);
+
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "handle leak"; }
+    if (ok && after[IT_SI_PROCLIVE] != before[IT_SI_PROCLIVE]) {
+        ok = 0; why = "proc leak";
+    }
+    if (ok) it_pass("T116"); else it_fail("T116", why);
+}
+
+/* ── T117: death-notification and watch consistency ─────────────────────────
+ * Three children die by different routes — natural exit, external kill, and
+ * blocked-then-killed (fault-in-IPC analogue) — each watched on its own
+ * notification bit of a shared KNotification.  Every death must set its bit
+ * exactly once (final mask == 0b111), STATUS must read dead and EXIT_CODE be
+ * retrievable for all, a repeated KILL must be idempotent (0), and a watch
+ * registered AFTER death must fire immediately (the already-dead emit path).
+ * Invariants: I15 + the death-notification exactly-once contract. */
+static void test_t117(void) {
+    uint32_t before[14], after[14];
+    it_quiesce_reaper();
+    if (!it_sched_ext(before)) { it_fail("T117", "sched ext"); return; }
+    int ok = 1;
+    const char *why = "death notify";
+
+    long n = it_sys0(SYS_NOTIFY_CREATE);
+    handle_id_t n_h = (handle_id_t)n;
+    handle_id_t ep[3]  = { HANDLE_INVALID, HANDLE_INVALID, HANDLE_INVALID };
+    handle_id_t pr[3]  = { HANDLE_INVALID, HANDLE_INVALID, HANDLE_INVALID };
+    if (n < 0) { it_fail("T117", "notif"); return; }
+
+    for (uint32_t k = 0; ok && k < 3u; k++) {
+        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        if (e < 0) { ok = 0; why = "ep"; break; }
+        ep[k] = (handle_id_t)e;
+        if (lp_spawn_child(ep[k], &pr[k]) < 0) { ok = 0; why = "spawn"; break; }
+        /* Watch each child on its own bit of the shared notification. */
+        if (it_sys3(SYS_PROCESS_WATCH, (long)pr[k], n, (long)(1u << k)) != 0) {
+            ok = 0; why = "watch";
+        }
+    }
+
+    /* child 0: natural exit; child 1: kill; child 2: block then kill. */
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label = 0x117;
+        if (it_sys2(SYS_EP_SEND, (long)ep[0], (long)&m) != 0) { ok = 0; why = "exit send"; }
+    }
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)pr[1]) != 0) { ok = 0; why = "kill1"; }
+    if (ok && it_lp_cmd(ep[2], LP_CMD_SEND_BLOCK) != 0) { ok = 0; why = "cmd2"; }
+    if (ok) {
+        it_sys1(SYS_SLEEP, 3);
+        if (it_sys1(SYS_PROCESS_KILL, (long)pr[2]) != 0) { ok = 0; why = "kill2"; }
+    }
+
+    /* Collect the three death bits (bounded waits; each death signals once). */
+    if (ok) {
+        uint64_t seen = 0;
+        for (int iter = 0; iter < 8 && seen != 0x7u; iter++) {
+            uint64_t bits = 0;
+            if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, (long)(uintptr_t)&bits,
+                        1000000000LL) == 0)
+                seen |= bits;
+        }
+        if (seen != 0x7u) { ok = 0; why = "missing death bit"; }
+    }
+
+    /* STATUS dead for all; EXIT_CODE retrievable; child 0 kept its marker. */
+    for (uint32_t k = 0; ok && k < 3u; k++) {
+        if (it_sys1(SYS_PROCESS_STATUS, (long)pr[k]) != 0) { ok = 0; why = "status alive"; }
+        if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)pr[k]) < 0) {
+            ok = 0; why = "exit code";
+        }
+    }
+    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)pr[0]) != (long)LP_EXIT_MARKER) {
+        ok = 0; why = "exit0 marker";
+    }
+
+    /* Idempotent kill on an already-dead child → 0. */
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)pr[1]) != 0) { ok = 0; why = "kill not idempotent"; }
+
+    /* A watch armed AFTER death fires immediately (already-dead emit path). */
+    if (ok) {
+        long n2 = it_sys0(SYS_NOTIFY_CREATE);
+        handle_id_t n2_h = (handle_id_t)n2;
+        if (n2 < 0) { ok = 0; why = "notif2"; }
+        else {
+            if (it_sys3(SYS_PROCESS_WATCH, (long)pr[0], n2, 0x20) != 0) {
+                ok = 0; why = "late watch";
+            }
+            if (ok) {
+                uint64_t bits = 0;
+                if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n2, (long)(uintptr_t)&bits,
+                            1000000000LL) != 0 || bits != 0x20u) {
+                    ok = 0; why = "late watch silent";
+                }
+            }
+            it_close(&n2_h);
+        }
+    }
+
+    for (uint32_t k = 0; k < 3u; k++) { it_close(&pr[k]); it_close(&ep[k]); }
+    it_close(&n_h);
+
+    it_quiesce_reaper();
+    if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "handle leak"; }
+    if (ok && after[IT_SI_PROCLIVE] != before[IT_SI_PROCLIVE]) {
+        ok = 0; why = "proc leak";
+    }
+    if (ok) it_pass("T117"); else it_fail("T117", why);
+}
+
+/* ── T118: scheduler live count under lifecycle churn ───────────────────────
+ * Interleaves process self-exit, process external-kill and in-process thread
+ * self-exit, then verifies the scheduler's live TASK count and the live
+ * PROCESS count both return exactly to baseline — no zombie counted alive, no
+ * double-decrement, no task pending reap left occupying a slot — with the
+ * deferred reap queue staying well within its bound.  (Each thread leaves a
+ * documented +1 KTcb HANDLE by design — Ph96 — so handle-live is not asserted
+ * flat here; task-live and process-live are the invariants.)
+ * Invariants: I15, I16, I17. */
+#define T118_ROUNDS 10u
+static uint8_t g_t118_stk[4096];
+static void t118_thread(void) {
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+static void test_t118(void) {
+    uint32_t tl_before = 0, tl_after = 0;
+    uint32_t pl_before = 0, pl_after = 0;
+    uint32_t w[14];
+    it_quiesce_reaper();
+    if (!it_task_live(&tl_before) || !it_sched_ext(w)) { it_fail("T118", "sched ext"); return; }
+    pl_before = w[IT_SI_PROCLIVE];
+    int ok = 1;
+    const char *why = "live count churn";
+    uint32_t i = 0;
+
+    for (i = 0; ok && i < T118_ROUNDS; i++) {
+        /* (a) process self-exit */
+        {
+            long e = it_sys0(SYS_ENDPOINT_CREATE);
+            handle_id_t e_h = (handle_id_t)e;
+            handle_id_t p_h = HANDLE_INVALID;
+            if (e < 0 || lp_spawn_child(e_h, &p_h) < 0) { ok = 0; why = "spawn exit"; }
+            else {
+                struct IrisMsg m;
+                it_iris_msg_zero(&m);
+                m.label = 0x118;
+                (void)it_sys2(SYS_EP_SEND, (long)e_h, (long)&m);
+                (void)it_lp_wait_exit(p_h);
+            }
+            it_close(&p_h);
+            it_close(&e_h);
+        }
+        /* (b) process external-kill */
+        if (ok) {
+            long e = it_sys0(SYS_ENDPOINT_CREATE);
+            handle_id_t e_h = (handle_id_t)e;
+            handle_id_t p_h = HANDLE_INVALID;
+            if (e < 0 || lp_spawn_child(e_h, &p_h) < 0) { ok = 0; why = "spawn kill"; }
+            else {
+                it_sys1(SYS_SLEEP, 1);
+                (void)it_sys1(SYS_PROCESS_KILL, (long)p_h);
+            }
+            it_close(&p_h);
+            it_close(&e_h);
+        }
+        /* (c) in-process thread self-exit (task slot reaped; KTcb persists). */
+        if (ok) {
+            uint64_t entry = (uint64_t)(uintptr_t)t118_thread;
+            uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t118_stk + sizeof(g_t118_stk))) & ~0xFULL;
+            if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+                ok = 0; why = "thread create";
+            }
+            /* let the thread run to exit and be reaped before the next round */
+            for (int y = 0; y < 50; y++) it_sys0(SYS_YIELD);
+        }
+    }
+
+    /* Give the deferred reaper time to drain the final departures. */
+    it_quiesce_reaper();
+
+    if (ok && (!it_task_live(&tl_after) || !it_sched_ext(w))) { ok = 0; why = "sched ext 2"; }
+    pl_after = w[IT_SI_PROCLIVE];
+
+    if (ok && tl_after != tl_before) { ok = 0; why = "task-live drift"; }
+    if (ok && pl_after != pl_before) { ok = 0; why = "proc-live drift"; }
+    if (ok && w[IT_SI_REAPHWM] >= 8u) { ok = 0; why = "reap backlog"; }
+
+    if (ok) it_pass("T118");
+    else {
+        it_serial_write("[IRIS][TEST] T118 round=");
+        it_log_num(i);
+        it_serial_write(" tl b/a=");
+        it_log_num(tl_before);
+        it_serial_write("/");
+        it_log_num(tl_after);
+        it_serial_write("\n");
+        it_fail("T118", why);
     }
 }
 
@@ -6311,6 +6894,12 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t110();
     test_t111();
     test_t112();
+    test_t113();
+    test_t114();
+    test_t115();
+    test_t116();
+    test_t117();
+    test_t118();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
