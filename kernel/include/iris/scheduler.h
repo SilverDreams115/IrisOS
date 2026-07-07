@@ -20,6 +20,10 @@ void     scheduler_sleep_current(uint64_t ticks);
  *   Use the low 32 bits for short-lived deltas; use both halves for absolute timestamps.
  */
 uint32_t sched_live_task_count(void);
+/* Fase 16: high-water depth of the deferred-reap queue.  Monotonic; a value
+ * approaching REAP_QUEUE_SIZE would mean the single-CPU "one death per yield"
+ * assumption is being violated and dead task slots may leak. */
+uint32_t sched_reap_queue_hwm(void);
 uint64_t sched_current_ticks(void);
 uint64_t sched_wall_ticks(void);
 uint64_t sched_context_switches(void);

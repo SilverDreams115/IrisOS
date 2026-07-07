@@ -78,11 +78,16 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 72: uint32_t ipc_cap_toctou_fallbacks   — declared-slot races
  *   offset 76: uint32_t reply_caps_created
  *   offset 80: uint32_t cspace_resolves
- *   offset 84: uint32_t _pad0
- * Extended total: 88 bytes.
+ *   offset 84: uint32_t live_process_count    — Fase 16 (KProcess objects live)
+ *   offset 88: uint32_t reap_queue_hwm        — Fase 16 (deferred-reap depth hwm)
+ *   offset 92: uint32_t _pad0
+ * Extended total: 96 bytes.
+ *
+ * A caller passing 88..95 still gets the historical 88-byte snapshot; only a
+ * buffer >= 96 receives the Fase 16 lifecycle words (same additive rule).
  */
 #define SCHED_INFO_BASE_BYTES 40u
-#define SCHED_INFO_EXT_BYTES  88u
+#define SCHED_INFO_EXT_BYTES  96u
 
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
@@ -93,7 +98,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                    : SCHED_INFO_BASE_BYTES;
     if (!user_range_writable(arg0, want)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    uint64_t buf[11];
+    uint64_t buf[12];
     buf[0] = sched_current_ticks();
     buf[1] = sched_wall_ticks();
     buf[2] = sched_context_switches();
@@ -104,7 +109,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (want >= SCHED_INFO_EXT_BYTES) {
         HandleTable *ht = &t->process->handle_table;
-        uint32_t w[12];
+        uint32_t w[14];
         spinlock_lock(&ht->lock);
         w[0] = ht->live;
         w[1] = ht->hwm;
@@ -118,8 +123,10 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         w[8]  = __atomic_load_n(&iris_ipc_stat_toctou_fallbacks, __ATOMIC_RELAXED);
         w[9]  = __atomic_load_n(&iris_ipc_stat_reply_caps, __ATOMIC_RELAXED);
         w[10] = __atomic_load_n(&iris_cspace_stat_resolves, __ATOMIC_RELAXED);
-        w[11] = 0u;
-        for (uint32_t i = 0; i < 6u; i++)
+        w[11] = kprocess_live_count();          /* Fase 16 */
+        w[12] = sched_reap_queue_hwm();          /* Fase 16 */
+        w[13] = 0u;
+        for (uint32_t i = 0; i < 7u; i++)
             buf[5u + i] = (uint64_t)w[2u * i] | ((uint64_t)w[2u * i + 1u] << 32);
     }
 

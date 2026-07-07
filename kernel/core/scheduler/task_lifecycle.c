@@ -274,12 +274,26 @@ static void reap_dead_task_off_cpu(struct task *t) {
         kprocess_free(proc);
 }
 
+/* Fase 16: reap-queue depth high-water, for lifecycle-churn diagnostics
+ * (exposed additively via SYS_SCHED_INFO).  Monotonic; proves the deferred
+ * reaper drains under pressure (T114/T118) — if it ever approached
+ * REAP_QUEUE_SIZE the "cannot occur on single-CPU" assumption would be
+ * broken and dead tasks would leak their slots. */
+static uint32_t reap_queue_hwm = 0u;
+
+uint32_t sched_reap_queue_hwm(void) {
+    return __atomic_load_n(&reap_queue_hwm, __ATOMIC_RELAXED);
+}
+
 void reap_enqueue_dead(struct task *t) {
     uint64_t flags = irq_spinlock_lock(&reap_queue_lock);
     unsigned int next = (reap_queue_head + 1u) & (REAP_QUEUE_SIZE - 1u);
     if (next != reap_queue_tail) {
         reap_queue[reap_queue_head] = t;
         reap_queue_head = next;
+        unsigned int depth = (reap_queue_head - reap_queue_tail) &
+                             (REAP_QUEUE_SIZE - 1u);
+        if (depth > reap_queue_hwm) reap_queue_hwm = depth;
     }
     /* Queue full: slot leaks until a subsequent reap drains it.
      * Cannot occur on single-CPU (one death per yield interval). */
