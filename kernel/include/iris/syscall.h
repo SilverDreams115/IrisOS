@@ -867,6 +867,23 @@
 #define SYS_FRAME_UNMAP 103
 
 /*
+ * SYS_VSPACE_SELF() → handle_id or negative iris_error_t   (Fase 19)
+ *
+ * Returns a new handle to the CALLER'S OWN VSpace (KOBJ_VSPACE) with
+ * RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE.  Self-authority only: a process
+ * already controls its own address space (via the VMO map/unmap syscalls), so
+ * a cap to its own VSpace grants no new authority — it exists so the caller can
+ * mint that cap into a CSpace slot and drive SYS_FRAME_MAP / SYS_FRAME_UNMAP on
+ * itself by CPtr.  There is no argument and no way to name another process's
+ * VSpace; cross-process address-space authority still requires an explicit
+ * process capability (SYS_VMO_MAP_INTO with RIGHT_MANAGE).
+ *
+ *   Returns IRIS_ERR_INVALID_ARG if the caller has no address space.
+ *   Returns IRIS_ERR_NO_MEMORY if the handle table is full.
+ */
+#define SYS_VSPACE_SELF 106
+
+/*
  * Block 8 — TCB capabilities (Ph96-101).
  *
  * Each user thread receives a KTcb at creation time; handles are installed

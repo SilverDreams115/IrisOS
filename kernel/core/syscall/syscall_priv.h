@@ -302,6 +302,7 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* ── Forward declarations — Block 9 frame capabilities (Fase 5 / 5.1) ── */
 uint64_t sys_frame_map  (uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_frame_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — TCB caps (Ph96-101) ──────────────────── */
 uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);

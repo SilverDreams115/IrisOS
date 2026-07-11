@@ -6,6 +6,32 @@
 
 
 
+/*
+ * SYS_VSPACE_SELF — hand the caller a capability to its own address space.
+ *
+ * Fase 19: self-authority only.  A process already fully controls its own
+ * address space through the VMO map/unmap syscalls, so a cap to its own VSpace
+ * is not new authority — it exists so ring-3 code can mint the cap into a
+ * CSpace slot and exercise SYS_FRAME_MAP / SYS_FRAME_UNMAP on itself by CPtr
+ * (the resolvers for those syscalls require a VSpace CPtr).  No argument names
+ * another VSpace; there is no cross-process reach here.
+ */
+uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg0; (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process || !t->process->vspace)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KVSpace *vs = t->process->vspace;
+    /* handle_entry_init takes the retain + active-retain; the caller's close
+     * drops both.  Same object-cap-accessor shape as SYS_TCB_SELF. */
+    handle_id_t h = handle_table_insert(&t->process->handle_table, &vs->base,
+                                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
+    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
+    return (uint64_t)h;
+}
+
+
 /* ── VMO syscalls ─────────────────────────────────────────────────── */
 
 uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
