@@ -226,12 +226,24 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
     if (lk_svcmgr == HANDLE_INVALID)
         init_log("[USER][INIT] svcmgr.ep lookup FAILED\n");
 
+    /* Fase 18: forward the boot KUntyped (received from userboot at
+     * IRIS_CPTR_INIT_UNTYPED) on to iris_test for the ring-3 authority suite.
+     * Resolve init's CSpace slot into a mint-source handle; full rights so the
+     * suite can retype (WRITE) and revoke.  Absent grant → slot stays empty and
+     * T125–T131 FAIL loudly. */
+    handle_id_t lk_untyped = HANDLE_INVALID;
+    {
+        long ur = init_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_INIT_UNTYPED);
+        if (ur >= 0) lk_untyped = (handle_id_t)ur;
+        else init_log("[USER][INIT] boot untyped resolve FAILED\n");
+    }
+
     {
         /* Fase 9: slots 1-4 carry IRIS_BADGE_IRIS_TEST so every server can
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[10];
+        struct svc_mint it_mints[11];
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -279,12 +291,19 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
         it_mints[9].src_h = spawn_cap_h;
         it_mints[9].rights = RIGHT_READ;
         it_mints[9].badge = 0;
+        /* Fase 18: the boot KUntyped for the authority suite (T125–T131). */
+        it_mints[10].slot = IRIS_CPTR_TEST_UNTYPED;
+        it_mints[10].src_h = lk_untyped;   /* HANDLE_INVALID → skipped by svc_load */
+        it_mints[10].rights = RIGHT_READ | RIGHT_WRITE |
+                              RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        it_mints[10].badge = 0;
         r = svc_load_minted(spawn_cap_h, "iris_test", &proc_h, &boot_h,
-                            it_mints, 10u);
+                            it_mints, 11u);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);
     init_close(&lk_kbd);
+    init_close(&lk_untyped);
     if (fix_wrongtype != HANDLE_INVALID) init_close(&fix_wrongtype);
     if (r < 0) {
         init_log("[USER][INIT] iris_test load FAILED\n");

@@ -111,14 +111,31 @@ void iris_userboot_main(handle_id_t bootstrap_cap_h) {
                              (long)(RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER));
         if (dup_h < 0)
             goto fail;
-        struct svc_mint init_mints[1];
+        /* Fase 18: forward ONE boot KUntyped into init so it can be handed on
+         * to iris_test for the ring-3 authority suite (T125–T131).  Resolve the
+         * root-CNode slot into a handle (mint source); full rights so retype
+         * (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal: if the
+         * grant is absent the slot stays empty and the authority tests FAIL
+         * loudly rather than silently skipping. */
+        long ut_h = ub_sys1(SYS_CSPACE_RESOLVE, (long)BOOT_CPTR_UNTYPED_START);
+        uint32_t nmints = 1u;
+        struct svc_mint init_mints[2];
         init_mints[0].slot   = IRIS_CPTR_SPAWN_CAP;
         init_mints[0].src_h  = (handle_id_t)dup_h;
         init_mints[0].rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[0].badge  = 0;
+        if (ut_h >= 0) {
+            init_mints[1].slot   = IRIS_CPTR_INIT_UNTYPED;
+            init_mints[1].src_h  = (handle_id_t)ut_h;
+            init_mints[1].rights = RIGHT_READ | RIGHT_WRITE |
+                                   RIGHT_DUPLICATE | RIGHT_TRANSFER;
+            init_mints[1].badge  = 0;
+            nmints = 2u;
+        }
         long lr = svc_load_minted(bootstrap_cap_h, "init",
-                                  &init_proc_h, &init_boot_h, init_mints, 1u);
+                                  &init_proc_h, &init_boot_h, init_mints, nmints);
         ub_close((handle_id_t)dup_h);
+        if (ut_h >= 0) ub_close((handle_id_t)ut_h);
         if (lr < 0)
             goto fail;
     }

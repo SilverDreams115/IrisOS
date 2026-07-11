@@ -284,6 +284,14 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * minted by init post-load, so the suite can SYS_PROC_CSPACE_MINT runtime-made
  * caps into its own CSpace slots (T079 mints a VMO and maps it by CPtr). */
 #define IRIS_CPTR_TEST_PROC   ((uint64_t)25)
+/* Fase 18: one boot KUntyped forwarded down the boot chain (userboot → init →
+ * iris_test) so the ring-3 authority suite (T125–T131) can exercise
+ * SYS_UNTYPED_RETYPE / SYS_CAP_REVOKE end to end.  IRIS_CPTR_INIT_UNTYPED is
+ * init's receiving slot; IRIS_CPTR_TEST_UNTYPED is iris_test's.  Full rights
+ * (READ|WRITE|DUPLICATE|TRANSFER) at each hop so the mint (needs DUPLICATE) and
+ * retype (needs WRITE) both succeed. */
+#define IRIS_CPTR_INIT_UNTYPED ((uint64_t)12)
+#define IRIS_CPTR_TEST_UNTYPED ((uint64_t)55)
 
 /*
  * Reserved name suffix ".ep": IRIS_SVCMGR_EP_LOOKUP_NAME and the legacy
