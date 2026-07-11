@@ -23,6 +23,8 @@ struct KSchedContext *kschedctx_alloc_at(void *mem); /* Ph79: untyped-backed */
 void                  kschedctx_close(struct KSchedContext *sc);
 iris_error_t          kschedctx_configure(struct KSchedContext *sc,
                                            uint64_t budget, uint64_t period);
+/* Fase 17: live KSchedContext count (additive diagnostics; see kschedctx.c). */
+uint32_t              kschedctx_live_count(void);
 
 #endif /* __KERNEL__ */
 #endif /* IRIS_NC_KSCHEDCTX_H */

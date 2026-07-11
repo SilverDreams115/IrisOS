@@ -7,6 +7,14 @@
 
 static _Atomic uint32_t kschedctx_live;
 
+/* Fase 17 — live KSchedContext object count (additive instrumentation).
+ * Exposed via the SYS_SCHED_INFO ext2 tier so the T123 selftest can prove a
+ * scheduling context is destroyed (not leaked, not double-freed) after its
+ * bound thread/process dies and is reaped — invariants S8/S9. */
+uint32_t kschedctx_live_count(void) {
+    return atomic_load_explicit(&kschedctx_live, memory_order_relaxed);
+}
+
 static void kschedctx_obj_close(struct KObject *obj) {
     (void)obj;
     /* No tasks to wake: the bound task holds the ref; when the task releases

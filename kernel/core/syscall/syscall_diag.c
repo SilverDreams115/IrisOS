@@ -85,20 +85,32 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *
  * A caller passing 88..95 still gets the historical 88-byte snapshot; only a
  * buffer >= 96 receives the Fase 16 lifecycle words (same additive rule).
+ *
+ * Fase 17 additive scheduler-hardening tier — written ONLY when the caller
+ * passes buf_size >= 112 (a caller passing 96..111 gets the exact historical
+ * 96-byte snapshot; same additive rule as every tier above):
+ *   offset  96: uint32_t run_queue_hwm            — Fase 17 (run-queue depth hwm)
+ *   offset 100: uint32_t duplicate_enqueue_count  — Fase 17 (S4 guard trips)
+ *   offset 104: uint32_t sched_ctx_live           — Fase 17 (KSchedContext live)
+ *   offset 108: uint32_t yield_count              — Fase 17 (task_yield entries)
+ * Extended-2 total: 112 bytes.
  */
 #define SCHED_INFO_BASE_BYTES 40u
 #define SCHED_INFO_EXT_BYTES  96u
+#define SCHED_INFO_EXT2_BYTES 112u
 
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
     if (!t || !task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
     if (arg1 < SCHED_INFO_BASE_BYTES) return syscall_err(IRIS_ERR_INVALID_ARG);
-    uint32_t want = (arg1 >= SCHED_INFO_EXT_BYTES) ? SCHED_INFO_EXT_BYTES
-                                                   : SCHED_INFO_BASE_BYTES;
+    uint32_t want;
+    if      (arg1 >= SCHED_INFO_EXT2_BYTES) want = SCHED_INFO_EXT2_BYTES;
+    else if (arg1 >= SCHED_INFO_EXT_BYTES)  want = SCHED_INFO_EXT_BYTES;
+    else                                    want = SCHED_INFO_BASE_BYTES;
     if (!user_range_writable(arg0, want)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    uint64_t buf[12];
+    uint64_t buf[14];
     buf[0] = sched_current_ticks();
     buf[1] = sched_wall_ticks();
     buf[2] = sched_context_switches();
@@ -128,6 +140,16 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         w[13] = 0u;
         for (uint32_t i = 0; i < 7u; i++)
             buf[5u + i] = (uint64_t)w[2u * i] | ((uint64_t)w[2u * i + 1u] << 32);
+    }
+
+    if (want >= SCHED_INFO_EXT2_BYTES) {
+        /* Fase 17 scheduler-hardening words (offsets 96..108). */
+        uint32_t s0 = sched_run_queue_hwm();
+        uint32_t s1 = sched_duplicate_enqueue_count();
+        uint32_t s2 = kschedctx_live_count();
+        uint32_t s3 = sched_yield_count();
+        buf[12] = (uint64_t)s0 | ((uint64_t)s1 << 32);
+        buf[13] = (uint64_t)s2 | ((uint64_t)s3 << 32);
     }
 
     if (!copy_to_user_checked(arg0, buf, want))

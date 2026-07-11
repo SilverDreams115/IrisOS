@@ -24,6 +24,24 @@ uint32_t sched_live_task_count(void);
  * approaching REAP_QUEUE_SIZE would mean the single-CPU "one death per yield"
  * assumption is being violated and dead task slots may leak. */
 uint32_t sched_reap_queue_hwm(void);
+
+/*
+ * Fase 17 — scheduler hardening instrumentation (all additive, read-only).
+ *
+ * sched_run_queue_hwm:  high-water of tasks concurrently enqueued in the O(1)
+ *   run queue.  Bounds proof for run-queue churn (T120).
+ * sched_run_queue_live: tasks currently enqueued (instantaneous).
+ * sched_duplicate_enqueue_count: times rq_enqueue's queued[] guard rejected a
+ *   re-enqueue of an already-queued task — the counter behind invariant S4
+ *   (no task twice in the run queue).  Benign/expected under wakeup races, so
+ *   it is bounded, not necessarily zero.
+ * sched_yield_count: monotonic count of task_yield() entries — a progress
+ *   signal proving cooperative tasks reach the scheduler (T119/T122).
+ */
+uint32_t sched_run_queue_hwm(void);
+uint32_t sched_run_queue_live(void);
+uint32_t sched_duplicate_enqueue_count(void);
+uint32_t sched_yield_count(void);
 uint64_t sched_current_ticks(void);
 uint64_t sched_wall_ticks(void);
 uint64_t sched_context_switches(void);

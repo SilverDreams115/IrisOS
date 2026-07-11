@@ -4,6 +4,7 @@
 #include <iris/syscall.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kschedctx.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
 /*
@@ -14,6 +15,19 @@
  */
 
 volatile uint64_t scheduler_ticks = 0;
+
+/*
+ * Fase 17 — yield counter (additive instrumentation, exposed via the
+ * SYS_SCHED_INFO ext2 tier).  Incremented once per task_yield() entry.  A
+ * strictly-monotonic progress signal used by the T119/T122 selftests to prove
+ * cooperative tasks actually reach the scheduler (no lost/stuck worker).  It
+ * never influences scheduling.
+ */
+static _Atomic uint32_t sched_yield_ctr;
+
+uint32_t sched_yield_count(void) {
+    return atomic_load_explicit(&sched_yield_ctr, memory_order_relaxed);
+}
 /* wall_ticks is incremented only by the real PIT ISR path (scheduler_tick).
  * Unlike scheduler_ticks it is never fast-forwarded by the idle-loop clock
  * workaround, so it reflects real elapsed time and is used by SYS_CLOCK_GET. */
@@ -68,6 +82,8 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
 void task_yield(void) {
     uint64_t saved_flags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(saved_flags) : : "memory");
+
+    atomic_fetch_add_explicit(&sched_yield_ctr, 1u, memory_order_relaxed);
 
     reap_pending_dead_task();
 

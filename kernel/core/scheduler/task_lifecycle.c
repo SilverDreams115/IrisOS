@@ -62,13 +62,64 @@ static irq_spinlock_t  reap_queue_lock;
 static struct CpuRunQueue cpu_rqs[MAX_CPUS];
 _Atomic uint32_t          sched_live_count;
 
+/*
+ * Fase 17 — additive scheduler instrumentation (silent, ABI-safe, exposed
+ * only through SYS_SCHED_INFO's ext2 tier).  None of this changes scheduling
+ * decisions; it only makes run-queue invariants observable to the T119–T124
+ * selftests.
+ *
+ *   rq_live_count  — tasks currently enqueued across all run queues.  Bumped on
+ *                    a successful enqueue, dropped on dequeue/remove.  Its
+ *                    high-water (rq_live_hwm) proves the queue depth stays
+ *                    bounded under churn (T120).
+ *   sched_dup_enq  — number of times rq_enqueue's queued[] guard rejected a
+ *                    re-enqueue of an already-queued task.  This is the counter
+ *                    behind invariant S4 (no task twice in the run queue): the
+ *                    guard is the mechanism, this is the evidence it engaged.
+ *                    It is a benign, expected event (e.g. a rendezvous racing a
+ *                    timeout wakeup), so tests assert it stays bounded, never
+ *                    that it is zero.
+ */
+static _Atomic uint32_t   rq_live_count;
+static _Atomic uint32_t   rq_live_hwm;
+static _Atomic uint32_t   sched_dup_enq;
+
+static inline void rq_live_inc(void) {
+    uint32_t n = atomic_fetch_add_explicit(&rq_live_count, 1u,
+                                           memory_order_relaxed) + 1u;
+    uint32_t hwm = atomic_load_explicit(&rq_live_hwm, memory_order_relaxed);
+    if (n > hwm)
+        atomic_store_explicit(&rq_live_hwm, n, memory_order_relaxed);
+}
+
+static inline void rq_live_dec(void) {
+    atomic_fetch_sub_explicit(&rq_live_count, 1u, memory_order_relaxed);
+}
+
+uint32_t sched_run_queue_hwm(void) {
+    return atomic_load_explicit(&rq_live_hwm, memory_order_relaxed);
+}
+
+uint32_t sched_run_queue_live(void) {
+    return atomic_load_explicit(&rq_live_count, memory_order_relaxed);
+}
+
+uint32_t sched_duplicate_enqueue_count(void) {
+    return atomic_load_explicit(&sched_dup_enq, memory_order_relaxed);
+}
+
 void rq_enqueue(struct task *t) {
     struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
     if (!rq) return;
     int idx  = (int)(t - tasks);
     int prio = (int)(uint8_t)t->priority;
     uint64_t flags = irq_spinlock_lock(&rq->lock);
-    if (rq->queued[idx]) { irq_spinlock_unlock(&rq->lock, flags); return; }
+    if (rq->queued[idx]) {
+        /* S4 guard engaged: task already queued — reject the duplicate. */
+        atomic_fetch_add_explicit(&sched_dup_enq, 1u, memory_order_relaxed);
+        irq_spinlock_unlock(&rq->lock, flags);
+        return;
+    }
     rq->queued[idx] = 1;
     rq->next[idx]   = -1;
     if (rq->head[prio] == -1) {
@@ -79,6 +130,7 @@ void rq_enqueue(struct task *t) {
         rq->next[rq->tail[prio]] = idx;
         rq->tail[prio]           = idx;
     }
+    rq_live_inc();
     irq_spinlock_unlock(&rq->lock, flags);
 }
 
@@ -91,7 +143,7 @@ void rq_remove(struct task *t) {
     int prio = (int)(uint8_t)t->priority;
     int prev = -1, cur = rq->head[prio];
     while (cur != -1 && cur != idx) { prev = cur; cur = rq->next[cur]; }
-    if (cur == -1) { rq->queued[idx] = 0; irq_spinlock_unlock(&rq->lock, flags); return; }
+    if (cur == -1) { rq->queued[idx] = 0; rq_live_dec(); irq_spinlock_unlock(&rq->lock, flags); return; }
     int nxt = rq->next[idx];
     if (prev == -1)              rq->head[prio] = nxt;
     else                         rq->next[prev]  = nxt;
@@ -100,6 +152,7 @@ void rq_remove(struct task *t) {
         rq->mask[prio >> 6] &= ~(1ULL << (prio & 63));
     rq->queued[idx] = 0;
     rq->next[idx]   = -1;
+    rq_live_dec();
     irq_spinlock_unlock(&rq->lock, flags);
 }
 
@@ -120,6 +173,7 @@ struct task *rq_dequeue_best(void) {
         }
         rq->queued[idx] = 0;
         rq->next[idx]   = -1;
+        rq_live_dec();
         irq_spinlock_unlock(&rq->lock, flags);
         return &tasks[idx];
     }
