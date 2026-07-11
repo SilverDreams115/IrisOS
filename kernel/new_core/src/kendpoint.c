@@ -8,6 +8,11 @@
 
 static _Atomic uint32_t kendpoint_live;
 
+/* Fase 18 — live KEndpoint object count (additive diagnostics). */
+uint32_t kendpoint_live_count(void) {
+    return atomic_load_explicit(&kendpoint_live, memory_order_relaxed);
+}
+
 static void kendpoint_obj_close(struct KObject *obj) {
     struct KEndpoint *ep = (struct KEndpoint *)obj;
     uint64_t flags = irq_spinlock_lock(&ep->lock);

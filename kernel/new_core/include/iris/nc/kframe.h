@@ -147,5 +147,8 @@ static inline int kframe_va_valid(uint64_t va) {
     return 1;
 }
 
+/* Fase 18: live KFrame object count (additive diagnostics). */
+uint32_t kframe_live_count(void);
+
 #endif /* __KERNEL__ */
 #endif /* IRIS_NC_KFRAME_H */

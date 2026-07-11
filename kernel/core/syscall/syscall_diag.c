@@ -94,10 +94,23 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 104: uint32_t sched_ctx_live           — Fase 17 (KSchedContext live)
  *   offset 108: uint32_t yield_count              — Fase 17 (task_yield entries)
  * Extended-2 total: 112 bytes.
+ *
+ * Fase 18 additive authority tier — written ONLY when the caller passes
+ * buf_size >= 136 (a caller passing 112..135 gets the exact historical 112-byte
+ * snapshot; same additive rule as every tier above).  Live per-type object
+ * counts let authority tests prove objects are born and destroyed exactly once:
+ *   offset 112: uint32_t untyped_live      — Fase 18 (KUntyped objects live)
+ *   offset 116: uint32_t frame_live        — Fase 18 (KFrame objects live)
+ *   offset 120: uint32_t endpoint_live     — Fase 18 (KEndpoint objects live)
+ *   offset 124: uint32_t notification_live — Fase 18 (KNotification objects live)
+ *   offset 128: uint32_t cnode_live        — Fase 18 (KCNode objects live)
+ *   offset 132: uint32_t _pad1
+ * Extended-3 total: 136 bytes.
  */
 #define SCHED_INFO_BASE_BYTES 40u
 #define SCHED_INFO_EXT_BYTES  96u
 #define SCHED_INFO_EXT2_BYTES 112u
+#define SCHED_INFO_EXT3_BYTES 136u
 
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
@@ -105,12 +118,13 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!t || !task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
     if (arg1 < SCHED_INFO_BASE_BYTES) return syscall_err(IRIS_ERR_INVALID_ARG);
     uint32_t want;
-    if      (arg1 >= SCHED_INFO_EXT2_BYTES) want = SCHED_INFO_EXT2_BYTES;
+    if      (arg1 >= SCHED_INFO_EXT3_BYTES) want = SCHED_INFO_EXT3_BYTES;
+    else if (arg1 >= SCHED_INFO_EXT2_BYTES) want = SCHED_INFO_EXT2_BYTES;
     else if (arg1 >= SCHED_INFO_EXT_BYTES)  want = SCHED_INFO_EXT_BYTES;
     else                                    want = SCHED_INFO_BASE_BYTES;
     if (!user_range_writable(arg0, want)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    uint64_t buf[14];
+    uint64_t buf[17];
     buf[0] = sched_current_ticks();
     buf[1] = sched_wall_ticks();
     buf[2] = sched_context_switches();
@@ -150,6 +164,18 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         uint32_t s3 = sched_yield_count();
         buf[12] = (uint64_t)s0 | ((uint64_t)s1 << 32);
         buf[13] = (uint64_t)s2 | ((uint64_t)s3 << 32);
+    }
+
+    if (want >= SCHED_INFO_EXT3_BYTES) {
+        /* Fase 18 authority words (offsets 112..132): live per-type counts. */
+        uint32_t a0 = kuntyped_live_count();
+        uint32_t a1 = kframe_live_count();
+        uint32_t a2 = kendpoint_live_count();
+        uint32_t a3 = knotification_live_count();
+        uint32_t a4 = kcnode_live_count();
+        buf[14] = (uint64_t)a0 | ((uint64_t)a1 << 32);
+        buf[15] = (uint64_t)a2 | ((uint64_t)a3 << 32);
+        buf[16] = (uint64_t)a4;   /* high half = _pad1 (0) */
     }
 
     if (!copy_to_user_checked(arg0, buf, want))

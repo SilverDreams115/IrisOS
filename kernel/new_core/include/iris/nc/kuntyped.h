@@ -63,5 +63,8 @@ uint64_t kuntyped_available(struct KUntyped *u);
  * Returns physical base address, or 0 on insufficient space or bad alignment. */
 uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size);
 
+/* Fase 18: live KUntyped object count (additive diagnostics). */
+uint32_t kuntyped_live_count(void);
+
 #endif /* __KERNEL__ */
 #endif /* IRIS_NC_KUNTYPED_H */

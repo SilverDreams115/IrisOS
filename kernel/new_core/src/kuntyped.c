@@ -7,6 +7,13 @@
 
 static _Atomic uint32_t kuntyped_live;
 
+/* Fase 18 — live KUntyped object count (additive diagnostics).  Exposed via
+ * the SYS_SCHED_INFO ext3 tier so authority tests can prove untyped objects
+ * (including RETYPE sub-untypeds) are destroyed, not leaked, after churn. */
+uint32_t kuntyped_live_count(void) {
+    return atomic_load_explicit(&kuntyped_live, memory_order_relaxed);
+}
+
 static void kuntyped_obj_close(struct KObject *obj) {
     (void)obj;
     /* No tasks to wake.  Physical region is NOT freed on close — seL4 semantics:

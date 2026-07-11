@@ -7,6 +7,11 @@
 
 static _Atomic uint32_t kcnode_live;
 
+/* Fase 18 — live KCNode object count (additive diagnostics). */
+uint32_t kcnode_live_count(void) {
+    return atomic_load_explicit(&kcnode_live, memory_order_relaxed);
+}
+
 static void kcnode_obj_close(struct KObject *obj) {
     struct KCNode *cn = (struct KCNode *)obj;
     uint64_t flags = irq_spinlock_lock(&cn->lock);

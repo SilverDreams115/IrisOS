@@ -6,7 +6,17 @@
 #include <iris/kslab.h>
 #include <iris/paging.h>
 #include <iris/panic.h>
+#include <stdatomic.h>
 #include <stddef.h>
+
+/* Fase 18 — live KFrame object count (additive diagnostics).  Incremented on
+ * every kframe_alloc, decremented in kframe_obj_destroy, so authority tests can
+ * prove a retyped/mapped frame is destroyed exactly once after unmap+release. */
+static _Atomic uint32_t kframe_live;
+
+uint32_t kframe_live_count(void) {
+    return atomic_load_explicit(&kframe_live, memory_order_relaxed);
+}
 
 static void kframe_obj_close(struct KObject *obj) {
     (void)obj;
@@ -22,6 +32,7 @@ static void kframe_obj_destroy(struct KObject *obj) {
         atomic_load_explicit(&f->mapped_count, memory_order_relaxed) == 0,
         "kframe: destroy with active mappings — caller must unmap before release");
 
+    atomic_fetch_sub_explicit(&kframe_live, 1u, memory_order_relaxed);
     kslab_free(f, (uint32_t)sizeof(struct KFrame));
 
     if (parent) {
@@ -55,6 +66,7 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
     f->alloc_parent = alloc_parent;
     f->vmo_owner    = NULL;
     atomic_store_explicit(&f->mapped_count, 0u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&kframe_live, 1u, memory_order_relaxed);
 
     if (alloc_parent) {
         kobject_retain(&alloc_parent->base);

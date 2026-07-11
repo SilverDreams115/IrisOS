@@ -25,6 +25,9 @@ struct KEndpoint {
 struct KEndpoint *kendpoint_alloc(void);
 struct KEndpoint *kendpoint_alloc_at(void *mem); /* Ph78: create in untyped-backed memory */
 void              kendpoint_close(struct KEndpoint *ep);
+
+/* Fase 18: live KEndpoint object count (additive diagnostics). */
+uint32_t          kendpoint_live_count(void);
 void              kendpoint_cancel_waiter(struct task *t);
 
 #endif /* __KERNEL__ */
