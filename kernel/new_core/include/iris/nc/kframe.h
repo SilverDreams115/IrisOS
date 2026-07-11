@@ -150,5 +150,14 @@ static inline int kframe_va_valid(uint64_t va) {
 /* Fase 18: live KFrame object count (additive diagnostics). */
 uint32_t kframe_live_count(void);
 
+/* Fase 19: mapping instrumentation (additive diagnostics; see kframe.c).
+ * kframe_stat_map/unmap/cleanup are called by the map/unmap/teardown paths. */
+uint32_t kframe_live_mapping_count(void);
+uint32_t kframe_map_success_count(void);
+uint32_t kframe_unmap_success_count(void);
+void     kframe_stat_map(void);
+void     kframe_stat_unmap(void);
+void     kframe_stat_cleanup(void);
+
 #endif /* __KERNEL__ */
 #endif /* IRIS_NC_KFRAME_H */

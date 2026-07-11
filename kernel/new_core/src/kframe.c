@@ -18,6 +18,43 @@ uint32_t kframe_live_count(void) {
     return atomic_load_explicit(&kframe_live, memory_order_relaxed);
 }
 
+/* Fase 19 — mapping instrumentation (additive, exposed via SYS_SCHED_INFO ext4).
+ *   kframe_live_mappings — KFrameMapping nodes currently installed across every
+ *     VSpace.  Bumped on a successful map, dropped on every removal path
+ *     (explicit unmap, VSpace invalidate, VSpace destroy) so it returns to
+ *     baseline after teardown — the observable behind V13/V15/V16.
+ *   kframe_map_ok / kframe_unmap_ok — monotonic success counters (explicit
+ *     map / explicit unmap), for progress and V10/V12 sanity.
+ * None of this changes mapping behaviour. */
+static _Atomic uint32_t kframe_live_mappings;
+static _Atomic uint32_t kframe_map_ok;
+static _Atomic uint32_t kframe_unmap_ok;
+
+uint32_t kframe_live_mapping_count(void) {
+    return atomic_load_explicit(&kframe_live_mappings, memory_order_relaxed);
+}
+uint32_t kframe_map_success_count(void) {
+    return atomic_load_explicit(&kframe_map_ok, memory_order_relaxed);
+}
+uint32_t kframe_unmap_success_count(void) {
+    return atomic_load_explicit(&kframe_unmap_ok, memory_order_relaxed);
+}
+
+/* A mapping was installed (kframe_map_page success). */
+void kframe_stat_map(void) {
+    atomic_fetch_add_explicit(&kframe_map_ok, 1u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&kframe_live_mappings, 1u, memory_order_relaxed);
+}
+/* An explicit unmap removed a mapping (kframe_unmap_page / kvspace_unmap_page). */
+void kframe_stat_unmap(void) {
+    atomic_fetch_add_explicit(&kframe_unmap_ok, 1u, memory_order_relaxed);
+    atomic_fetch_sub_explicit(&kframe_live_mappings, 1u, memory_order_relaxed);
+}
+/* A bulk cleanup removed a mapping (VSpace invalidate / destroy). */
+void kframe_stat_cleanup(void) {
+    atomic_fetch_sub_explicit(&kframe_live_mappings, 1u, memory_order_relaxed);
+}
+
 static void kframe_obj_close(struct KObject *obj) {
     (void)obj;
     /* No tasks to wake — KFrame has no blocked waiters. */
@@ -142,6 +179,7 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
     spinlock_unlock(&vs->lock);
 
     atomic_fetch_add_explicit(&f->mapped_count, 1u, memory_order_relaxed);
+    kframe_stat_map();
     return IRIS_OK;
 }
 
@@ -205,6 +243,7 @@ iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
     /* Decrement mapped_count BEFORE kobject_release so that kframe_obj_destroy
      * always observes mapped_count == 0 when the mapping retain is the last one. */
     atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
+    kframe_stat_unmap();
     kobject_release(&f->base);
     return IRIS_OK;
 }

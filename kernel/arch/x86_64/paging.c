@@ -342,11 +342,22 @@ int paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags) {
     return paging_query_access_root(cr3, virt, out_flags);
 }
 
+/* Fase 19 — local TLB invalidation counter (additive diagnostics).  Every
+ * paging_unmap_in issues one invlpg on the current CPU; the count lets VM tests
+ * confirm local invalidation happened (V21).  SMP shootdown is NOT implemented;
+ * this counts local invalidations only (see vspace-frame-hardening.md). */
+static _Atomic uint32_t paging_tlb_invlpg;
+
+uint32_t paging_tlb_invalidate_count(void) {
+    return __atomic_load_n(&paging_tlb_invlpg, __ATOMIC_RELAXED);
+}
+
 void paging_unmap_in(uint64_t cr3, uint64_t virt) {
     uint64_t *pt = walk_pt(cr3, virt);
     if (!pt) return;
     pt[PT_IDX(virt)] = 0;
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
+    __atomic_fetch_add(&paging_tlb_invlpg, 1u, __ATOMIC_RELAXED);
 }
 
 void paging_destroy_user_space(uint64_t cr3) {

@@ -4,6 +4,15 @@
 #include <iris/kslab.h>
 #include <stdatomic.h>
 
+/* Fase 19 — live KVSpace object count (additive diagnostics, SYS_SCHED_INFO
+ * ext4 tier).  Lets VM tests prove a child's VSpace is destroyed on process
+ * death (V16) and that the count returns to baseline after churn. */
+static _Atomic uint32_t kvspace_live;
+
+uint32_t kvspace_live_count(void) {
+    return atomic_load_explicit(&kvspace_live, memory_order_relaxed);
+}
+
 static void kvspace_obj_close(struct KObject *obj) {
     (void)obj;
 }
@@ -23,9 +32,11 @@ static void kvspace_obj_destroy(struct KObject *obj) {
         if (cr3) paging_unmap_in(cr3, m->user_va);
         kslab_free(m, (uint32_t)sizeof(*m));
         atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
+        kframe_stat_cleanup();
         kobject_release(&f->base);
         m = next;
     }
+    atomic_fetch_sub_explicit(&kvspace_live, 1u, memory_order_relaxed);
     kslab_free(vs, (uint32_t)sizeof(struct KVSpace));
 }
 
@@ -43,6 +54,7 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
     vs->valid         = 1;
     vs->mapping_count = 0;
     vs->mappings      = 0;
+    atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);
     return vs;
 }
 
@@ -70,6 +82,7 @@ void kvspace_invalidate(struct KVSpace *vs) {
         if (saved_cr3) paging_unmap_in(saved_cr3, m->user_va);
         kslab_free(m, (uint32_t)sizeof(*m));
         atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
+        kframe_stat_cleanup();
         kobject_release(&f->base);
     }
 }
@@ -111,6 +124,7 @@ iris_error_t kvspace_unmap_page(struct KVSpace *vs, uint64_t user_va) {
 
     kslab_free(m, (uint32_t)sizeof(*m));
     atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
+    kframe_stat_unmap();
     kobject_release(&f->base);
     return IRIS_OK;
 }

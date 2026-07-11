@@ -115,6 +115,8 @@ uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt);
 int      paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags);
 void     paging_unmap_in(uint64_t cr3, uint64_t virt);
 void     paging_destroy_user_space(uint64_t cr3);
+/* Fase 19: local TLB invlpg counter (additive diagnostics; see paging.c). */
+uint32_t paging_tlb_invalidate_count(void);
 uint64_t pml4_get_current(void);
 
 /* Build the no-flush user CR3: kernel→user iretq uses this so TLB entries

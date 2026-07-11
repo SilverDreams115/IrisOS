@@ -72,5 +72,8 @@ iris_error_t kvspace_unmap_page(struct KVSpace *vs, uint64_t user_va);
 /* Drop the caller's lifecycle reference (kobject_release). */
 void kvspace_free(struct KVSpace *vs);
 
+/* Fase 19: live KVSpace object count (additive diagnostics; see kvspace.c). */
+uint32_t kvspace_live_count(void);
+
 #endif /* __KERNEL__ */
 #endif /* IRIS_NC_KVSPACE_H */

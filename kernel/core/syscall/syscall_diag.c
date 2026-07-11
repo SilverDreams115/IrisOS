@@ -106,11 +106,23 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 128: uint32_t cnode_live        — Fase 18 (KCNode objects live)
  *   offset 132: uint32_t _pad1
  * Extended-3 total: 136 bytes.
+ *
+ * Fase 19 additive VM/VSpace tier — written ONLY when the caller passes
+ * buf_size >= 160 (a caller passing 136..159 gets the exact 136-byte snapshot;
+ * same additive rule as every tier above):
+ *   offset 136: uint32_t vspace_live        — Fase 19 (KVSpace objects live)
+ *   offset 140: uint32_t live_mapping_count  — Fase 19 (KFrameMapping nodes live)
+ *   offset 144: uint32_t map_success_count   — Fase 19 (successful maps, cumulative)
+ *   offset 148: uint32_t unmap_success_count — Fase 19 (explicit unmaps, cumulative)
+ *   offset 152: uint32_t tlb_invalidate_count— Fase 19 (local invlpg, cumulative)
+ *   offset 156: uint32_t _pad2
+ * Extended-4 total: 160 bytes.
  */
 #define SCHED_INFO_BASE_BYTES 40u
 #define SCHED_INFO_EXT_BYTES  96u
 #define SCHED_INFO_EXT2_BYTES 112u
 #define SCHED_INFO_EXT3_BYTES 136u
+#define SCHED_INFO_EXT4_BYTES 160u
 
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
@@ -118,13 +130,14 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!t || !task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
     if (arg1 < SCHED_INFO_BASE_BYTES) return syscall_err(IRIS_ERR_INVALID_ARG);
     uint32_t want;
-    if      (arg1 >= SCHED_INFO_EXT3_BYTES) want = SCHED_INFO_EXT3_BYTES;
+    if      (arg1 >= SCHED_INFO_EXT4_BYTES) want = SCHED_INFO_EXT4_BYTES;
+    else if (arg1 >= SCHED_INFO_EXT3_BYTES) want = SCHED_INFO_EXT3_BYTES;
     else if (arg1 >= SCHED_INFO_EXT2_BYTES) want = SCHED_INFO_EXT2_BYTES;
     else if (arg1 >= SCHED_INFO_EXT_BYTES)  want = SCHED_INFO_EXT_BYTES;
     else                                    want = SCHED_INFO_BASE_BYTES;
     if (!user_range_writable(arg0, want)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    uint64_t buf[17];
+    uint64_t buf[20];
     buf[0] = sched_current_ticks();
     buf[1] = sched_wall_ticks();
     buf[2] = sched_context_switches();
@@ -176,6 +189,18 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         buf[14] = (uint64_t)a0 | ((uint64_t)a1 << 32);
         buf[15] = (uint64_t)a2 | ((uint64_t)a3 << 32);
         buf[16] = (uint64_t)a4;   /* high half = _pad1 (0) */
+    }
+
+    if (want >= SCHED_INFO_EXT4_BYTES) {
+        /* Fase 19 VM/VSpace words (offsets 136..156). */
+        uint32_t v0 = kvspace_live_count();
+        uint32_t v1 = kframe_live_mapping_count();
+        uint32_t v2 = kframe_map_success_count();
+        uint32_t v3 = kframe_unmap_success_count();
+        uint32_t v4 = paging_tlb_invalidate_count();
+        buf[17] = (uint64_t)v0 | ((uint64_t)v1 << 32);
+        buf[18] = (uint64_t)v2 | ((uint64_t)v3 << 32);
+        buf[19] = (uint64_t)v4;   /* high half = _pad2 (0) */
     }
 
     if (!copy_to_user_checked(arg0, buf, want))
