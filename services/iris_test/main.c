@@ -3975,6 +3975,61 @@ static int it_sched_ext3(uint32_t w3[5]) {
 #define IT_KOBJ_SCHED_CONTEXT 10u
 #define IT_KOBJ_UNTYPED       11u
 #define IT_KOBJ_FRAME         15u
+#define IT_KOBJ_VSPACE        14u
+
+/* Fase 19 ext4 VM/VSpace words (offsets 136..152, 5 uint32). */
+#define IT_S4_VSLIVE  0u   /* KVSpace objects live */
+#define IT_S4_MAPLIVE 1u   /* KFrameMapping nodes live */
+#define IT_S4_MAPOK   2u   /* successful maps (cumulative) */
+#define IT_S4_UNMAPOK 3u   /* explicit unmaps (cumulative) */
+#define IT_S4_TLB     4u   /* local invlpg count (cumulative) */
+
+static int it_sched_ext4(uint32_t w4[5]) {
+    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
+    if (bh < 0) return 0;
+    uint8_t buf[160];
+    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 160);
+    handle_id_t h = (handle_id_t)bh;
+    it_close(&h);
+    if (r != 0) return 0;
+    for (uint32_t i = 0; i < 5u; i++) {
+        uint32_t o = 136u + 4u * i;
+        w4[i] = (uint32_t)buf[o] | ((uint32_t)buf[o + 1u] << 8) |
+                ((uint32_t)buf[o + 2u] << 16) | ((uint32_t)buf[o + 3u] << 24);
+    }
+    return 1;
+}
+
+/* Fase 19: lazily mint a cap to iris_test's OWN VSpace into IRIS_CPTR_TEST_VSPACE
+ * (via SYS_VSPACE_SELF + a self-mint through the self-proc cap, slot 25) so the
+ * VM tests can pass it as the VSpace CPtr to SYS_FRAME_MAP/UNMAP.  Returns 1 on
+ * success. */
+static int g_it_vspace_ready = 0;
+static int it_setup_self_vspace(void) {
+    if (g_it_vspace_ready) return 1;
+    long h = it_sys0(SYS_VSPACE_SELF);
+    if (h < 0) return 0;
+    handle_id_t vh = (handle_id_t)h;
+    long r = it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
+                     (long)IRIS_CPTR_TEST_VSPACE, (long)vh,
+                     (long)(RIGHT_READ | RIGHT_WRITE));
+    it_close(&vh);
+    if (r != 0) return 0;
+    g_it_vspace_ready = 1;
+    return 1;
+}
+
+/* Test VSpace CPtr and a reserved self-map VA window (page-aligned, inside the
+ * user private window, clear of the VMO test VAs at 0x8050/0x8060/0x8061). */
+#define IT_VS       ((long)IRIS_CPTR_TEST_VSPACE)
+#define T133_VA     0x8070000000ULL
+#define T134_VA     0x8071000000ULL
+#define T135_VA_X   0x8072000000ULL
+#define T135_VA_Y   0x8073000000ULL
+#define T137_VA     0x8074000000ULL
+#define T138_VA     0x8075000000ULL
+#define T139_VA_BASE 0x8078000000ULL
+#define IT_MAP_W    1ULL   /* SYS_FRAME_MAP flags: bit0 = WRITABLE */
 
 static int it_sched_ext2(uint32_t w2[4]) {
     long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
@@ -7932,6 +7987,482 @@ static void test_t131(void) {
     }
 }
 
+/* ── Fase 19: VM / VSpace / frame mapping hardening (T132–T139) ──────────────
+ *
+ * These tests close the gap Fase 18 left open: ring 3 now drives SYS_FRAME_MAP /
+ * SYS_FRAME_UNMAP directly against its OWN address space, using a self-VSpace
+ * cap obtained from SYS_VSPACE_SELF (self-authority only) and minted into
+ * IRIS_CPTR_TEST_VSPACE.  Frames come from the Fase 18 boot untyped
+ * (IRIS_CPTR_TEST_UNTYPED).  The Fase 19 additive instrumentation
+ * (it_sched_ext4) exposes live KVSpace count, live KFrameMapping count, and the
+ * cumulative map/unmap/TLB-invalidate counters — the observables behind V10–V18.
+ *
+ * live_mapping_count is the anchor invariant: it returns to baseline after every
+ * unmap and after every VSpace teardown, so a leaked mapping (stale PTE / stale
+ * node) or a double free is immediately visible.  A frame whose cap is closed
+ * while still mapped would trip the kframe_obj_destroy `mapped_count == 0`
+ * assert (a kernel panic), so a clean close is itself proof the frame was
+ * unmapped first (V17). */
+
+/* Helper: retype a fresh writable KFrame from the test untyped. */
+static handle_id_t it_retype_frame(void) {
+    long r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    return (r >= 0) ? (handle_id_t)r : HANDLE_INVALID;
+}
+
+/* ── T132: self-VSpace authority from ring 3 ────────────────────────────────
+ * The self-VSpace cap (SYS_VSPACE_SELF, minted into IRIS_CPTR_TEST_VSPACE)
+ * grants exactly the authority to map into the caller's own address space:
+ *   - a valid map through it succeeds;
+ *   - a wrong-type cap (the untyped) in the VSpace slot is rejected WRONG_TYPE;
+ *   - a VSpace cap lacking RIGHT_WRITE is rejected ACCESS_DENIED (no fallback);
+ *   - there is no way to name another process's VSpace.
+ * Invariants: V1, V3, V4, V20. */
+#define IT_VS_RO 57L   /* read-only self-VSpace cap (missing-rights fixture) */
+static void test_t132(void) {
+    int ok = 1;
+    const char *why = "self-vspace authority";
+    it_quiesce_reaper();
+
+    if (!it_setup_self_vspace()) { it_fail("T132", "vspace self mint"); return; }
+
+    handle_id_t fr = it_retype_frame();
+    if (fr == HANDLE_INVALID) { it_fail("T132", "retype frame"); return; }
+
+    /* Valid: map + unmap through the self-VSpace cap. */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) {
+        ok = 0; why = "valid map";
+    }
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T133_VA) != 0) {
+        ok = 0; why = "valid unmap";
+    }
+
+    /* Wrong-type VSpace slot: the untyped cap is not a VSpace. */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_UT, (long)T133_VA, (long)IT_MAP_W)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong-type not rejected"; }
+
+    /* Missing rights: a read-only self-VSpace cap cannot install a PTE. */
+    if (ok) {
+        long h = it_sys0(SYS_VSPACE_SELF);
+        handle_id_t vh = (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
+        if (h < 0) { ok = 0; why = "vspace self 2"; }
+        if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
+                          IT_VS_RO, (long)vh, (long)RIGHT_READ) != 0) { ok = 0; why = "ro mint"; }
+        it_close(&vh);
+        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS_RO, (long)T133_VA, (long)IT_MAP_W)
+                  != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro not denied"; }
+        /* No fallback: the denied map installed nothing (a following valid map
+         * at the same VA still succeeds, proving the VA was left free). */
+        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) {
+            ok = 0; why = "post-deny map";
+        }
+        if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T133_VA) != 0) { ok = 0; why = "post-deny unmap"; }
+    }
+
+    it_close(&fr);
+    it_quiesce_reaper();
+    (void)it_ut_reset();
+    if (ok) it_pass("T132"); else it_fail("T132", why);
+}
+
+/* ── T133: direct frame map/unmap from ring 3 ───────────────────────────────
+ * Map a retyped frame writable into the caller's own VSpace, write and read
+ * back a pattern (proving the PTE is live in the active address space), unmap,
+ * and confirm the mapping/TLB counters and frame lifetime all return to
+ * baseline.  Reading after unmap would fault, so the "unmap removed access"
+ * property is asserted at the accounting level (live_mapping_count baseline +
+ * a fresh remap of the same VA succeeding) rather than by dereference.
+ * Invariants: V2, V10, V12, V13, V21. */
+static void test_t133(void) {
+    uint32_t s3b[5], s3a[5];
+    uint32_t v0[5], v1[5];
+    it_quiesce_reaper();
+    if (!it_setup_self_vspace()) { it_fail("T133", "vspace self mint"); return; }
+    if (!it_sched_ext3(s3b) || !it_sched_ext4(v0)) { it_fail("T133", "sched ext"); return; }
+    int ok = 1;
+    const char *why = "frame map/unmap";
+
+    handle_id_t fr = it_retype_frame();
+    if (fr == HANDLE_INVALID) { it_fail("T133", "retype frame"); return; }
+
+    if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) {
+        ok = 0; why = "map";
+    }
+    /* mapping is live: exactly one more mapping and one map-success. */
+    if (ok && !it_sched_ext4(v1)) { ok = 0; why = "ext4 mid"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE] + 1u) { ok = 0; why = "maplive"; }
+    if (ok && v1[IT_S4_MAPOK]   != v0[IT_S4_MAPOK]   + 1u) { ok = 0; why = "mapok"; }
+
+    /* Write/read a pattern through the live mapping. */
+    if (ok) {
+        volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)T133_VA;
+        *p = 0x19C0FFEEu;
+        __asm__ volatile ("" ::: "memory");
+        if (*p != 0x19C0FFEEu) { ok = 0; why = "readback"; }
+    }
+
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T133_VA) != 0) { ok = 0; why = "unmap"; }
+    if (ok && !it_sched_ext4(v1)) { ok = 0; why = "ext4 mid2"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "maplive not restored"; }
+    if (ok && v1[IT_S4_UNMAPOK] != v0[IT_S4_UNMAPOK] + 1u) { ok = 0; why = "unmapok"; }
+    if (ok && v1[IT_S4_TLB]     <= v0[IT_S4_TLB])          { ok = 0; why = "no tlb invalidate"; }
+
+    /* VA is free again: a fresh map at the same VA succeeds, then clean up. */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T133_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "remap"; }
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T133_VA) != 0) { ok = 0; why = "reunmap"; }
+
+    /* Close the frame — a clean close proves mapped_count == 0 (no assert). */
+    it_close(&fr);
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "reset busy (frame mapped?)"; }
+    if (ok && (!it_sched_ext3(s3a) || !it_sched_ext4(v1))) { ok = 0; why = "ext final"; }
+    if (ok && s3a[IT_S3_FRAME]  != s3b[IT_S3_FRAME])  { ok = 0; why = "frame leak"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "mapping leak"; }
+
+    if (ok) it_pass("T133"); else it_fail("T133", why);
+}
+
+/* ── T134: map failure atomicity ────────────────────────────────────────────
+ * Drive SYS_FRAME_MAP into each failure mode and prove no PTE, mapping node,
+ * frame ref, or counter moves, and that a valid map right after each failure
+ * still works.
+ * Invariants: V5, V6, V7, V9, V11. */
+static void test_t134(void) {
+    uint32_t v0[5], v1[5];
+    it_quiesce_reaper();
+    if (!it_setup_self_vspace()) { it_fail("T134", "vspace self mint"); return; }
+    if (!it_sched_ext4(v0)) { it_fail("T134", "sched ext4"); return; }
+    int ok = 1;
+    const char *why = "map atomicity";
+
+    handle_id_t fr = it_retype_frame();
+    if (fr == HANDLE_INVALID) { it_fail("T134", "retype frame"); return; }
+
+    /* Wrong-type frame fixture: an endpoint is not a frame. */
+    long er = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    handle_id_t ep = (er >= 0) ? (handle_id_t)er : HANDLE_INVALID;
+    /* Read-only frame fixture (drops WRITE): cannot back a writable map. */
+    long rr = it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_READ);
+    handle_id_t fr_ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
+    if (ep == HANDLE_INVALID || fr_ro == HANDLE_INVALID) { ok = 0; why = "fixtures"; }
+
+    struct { long frame; long vs; uint64_t va; uint64_t flags; long expect; const char *tag; } cases[] = {
+        { (long)fr,    IT_VS, T134_VA | 0x100ULL, IT_MAP_W, (long)IRIS_ERR_INVALID_ARG,   "unaligned va" },
+        { (long)fr,    IT_VS, 0xFFFF800000000000ULL, IT_MAP_W, (long)IRIS_ERR_INVALID_ARG, "kernel va" },
+        { (long)fr,    IT_VS, T134_VA, 3ULL,     (long)IRIS_ERR_INVALID_ARG,   "w^x" },
+        { (long)ep,    IT_VS, T134_VA, IT_MAP_W, (long)IRIS_ERR_WRONG_TYPE,    "wrong frame type" },
+        { (long)fr_ro, IT_VS, T134_VA, IT_MAP_W, (long)IRIS_ERR_ACCESS_DENIED, "insufficient rights" },
+        { (long)fr,    IT_UT, T134_VA, IT_MAP_W, (long)IRIS_ERR_WRONG_TYPE,    "wrong vspace type" },
+        { (long)fr,    99L,   T134_VA, IT_MAP_W, (long)IRIS_ERR_NOT_FOUND,     "empty vspace slot" },
+    };
+    for (uint32_t c = 0; ok && c < 7u; c++) {
+        long got = it_sys4(SYS_FRAME_MAP, cases[c].frame, cases[c].vs,
+                           (long)cases[c].va, (long)cases[c].flags);
+        if (got != cases[c].expect) { ok = 0; why = cases[c].tag; break; }
+        /* nothing installed by the failure */
+        if (!it_sched_ext4(v1)) { ok = 0; why = "ext4 mid"; break; }
+        if (v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "leaked mapping"; break; }
+    }
+
+    /* Occupied VA: a real map, then a duplicate at the same VA → BUSY. */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T134_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "base map"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T134_VA, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) {
+        ok = 0; why = "occupied not busy";
+    }
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T134_VA) != 0) { ok = 0; why = "cleanup unmap"; }
+
+    /* A valid map right after all failures still works. */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T134_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "valid-after-fail"; }
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T134_VA) != 0) { ok = 0; why = "final unmap"; }
+
+    it_close(&fr_ro);
+    it_close(&ep);
+    it_close(&fr);
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "reset busy"; }
+    if (ok && !it_sched_ext4(v1)) { ok = 0; why = "ext4 final"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "final mapping leak"; }
+
+    if (ok) it_pass("T134"); else it_fail("T134", why);
+}
+
+/* ── T135: duplicate / overlap / remap semantics ────────────────────────────
+ * Documents and verifies the current mapping contract:
+ *   - map A @ X ................. ok
+ *   - map A @ X again .......... BUSY (VA occupied)
+ *   - map B @ X ................ BUSY (VA occupied, different frame)
+ *   - map A @ Y ................ ok (same frame, second VA; mapped_count == 2)
+ *   - unmap in either order .... exact; unmap-absent → NOT_FOUND
+ * A clean close of A after both unmaps proves mapped_count returned to 0.
+ * Invariants: V8, V10, V12, V13, V14. */
+static void test_t135(void) {
+    uint32_t v0[5], v1[5];
+    it_quiesce_reaper();
+    if (!it_setup_self_vspace()) { it_fail("T135", "vspace self mint"); return; }
+    if (!it_sched_ext4(v0)) { it_fail("T135", "sched ext4"); return; }
+    int ok = 1;
+    const char *why = "map semantics";
+
+    handle_id_t a = it_retype_frame();
+    handle_id_t b = it_retype_frame();
+    if (a == HANDLE_INVALID || b == HANDLE_INVALID) { it_close(&a); it_close(&b); it_fail("T135", "retype"); return; }
+
+    if (it_sys4(SYS_FRAME_MAP, (long)a, IT_VS, (long)T135_VA_X, (long)IT_MAP_W) != 0) { ok = 0; why = "map A@X"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)a, IT_VS, (long)T135_VA_X, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "dup A@X"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)b, IT_VS, (long)T135_VA_X, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "B over X"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)a, IT_VS, (long)T135_VA_Y, (long)IT_MAP_W) != 0) { ok = 0; why = "map A@Y"; }
+
+    /* Two live mappings of frame A. */
+    if (ok && !it_sched_ext4(v1)) { ok = 0; why = "ext4 mid"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE] + 2u) { ok = 0; why = "maplive != +2"; }
+
+    /* Unmap Y first, then X (reverse order); absent unmap → NOT_FOUND. */
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)a, IT_VS, (long)T135_VA_Y) != 0) { ok = 0; why = "unmap A@Y"; }
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)a, IT_VS, (long)T135_VA_Y) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "absent unmap"; }
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)a, IT_VS, (long)T135_VA_X) != 0) { ok = 0; why = "unmap A@X"; }
+
+    if (ok && !it_sched_ext4(v1)) { ok = 0; why = "ext4 mid2"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "maplive not restored"; }
+
+    /* Clean close of both frames (mapped_count == 0 or destroy asserts). */
+    it_close(&a);
+    it_close(&b);
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "reset busy"; }
+
+    if (ok) it_pass("T135"); else it_fail("T135", why);
+}
+
+/* ── T136: VSpace cleanup on process death ──────────────────────────────────
+ * A spawned child owns a VSpace with live bootstrap KFrame mappings (its text
+ * and stack).  Killing it (external) and letting one self-exit must run VSpace
+ * cleanup exactly once: the child's KVSpace is destroyed and every one of its
+ * mappings is swept, so live-VSpace and live-mapping counts return to baseline
+ * — with no interaction bug against the deferred reaper, and process/task
+ * counters back to baseline.  Connects Fase 16 (death) + Fase 19 (VSpace).
+ * Invariants: V15, V16, V17, V18. */
+#define T136_ROUNDS 4u
+static void test_t136(void) {
+    uint32_t v0[5], v1[5];
+    uint32_t e0[14], e1[14];
+    uint32_t tl0 = 0, tl1 = 0;
+    it_quiesce_reaper();
+    if (!it_sched_ext4(v0) || !it_sched_ext(e0) || !it_task_live(&tl0)) { it_fail("T136", "sched ext"); return; }
+    int ok = 1;
+    const char *why = "vspace death cleanup";
+    uint32_t i = 0;
+
+    for (i = 0; ok && i < T136_ROUNDS; i++) {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        handle_id_t ep_h = (handle_id_t)ep;
+        handle_id_t p_h  = HANDLE_INVALID;
+        if (ep < 0 || lp_spawn_child(ep_h, &p_h) < 0) { ok = 0; why = "spawn"; }
+        else {
+            /* Child is alive with its own VSpace + bootstrap mappings. */
+            uint32_t vm[5];
+            if (!it_sched_ext4(vm)) { ok = 0; why = "ext4 alive"; }
+            if (ok && vm[IT_S4_VSLIVE] <= v0[IT_S4_VSLIVE]) { ok = 0; why = "child vspace not counted"; }
+            if (ok && vm[IT_S4_MAPLIVE] <= v0[IT_S4_MAPLIVE]) { ok = 0; why = "child mappings not counted"; }
+            if (ok) {
+                if (i & 1u) {
+                    it_sys1(SYS_SLEEP, 1);
+                    if (it_sys1(SYS_PROCESS_KILL, (long)p_h) != 0) { ok = 0; why = "kill"; }
+                } else {
+                    struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x136;
+                    (void)it_sys2(SYS_EP_SEND, (long)ep_h, (long)&m);
+                    (void)it_lp_wait_exit(p_h);
+                }
+            }
+        }
+        it_close(&p_h);
+        it_close(&ep_h);
+        it_quiesce_reaper();
+    }
+
+    it_quiesce_reaper();
+    if (ok && (!it_sched_ext4(v1) || !it_sched_ext(e1) || !it_task_live(&tl1))) { ok = 0; why = "ext final"; }
+    if (ok && v1[IT_S4_VSLIVE]  != v0[IT_S4_VSLIVE])  { ok = 0; why = "vspace leak"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "mapping leak"; }
+    if (ok && e1[IT_SI_PROCLIVE] != e0[IT_SI_PROCLIVE]) { ok = 0; why = "proc-live drift"; }
+    if (ok && tl1 != tl0) { ok = 0; why = "task-live drift"; }
+
+    if (ok) it_pass("T136");
+    else {
+        it_serial_write("[IRIS][TEST] T136 round=");
+        it_log_num(i);
+        it_serial_write("\n");
+        it_fail("T136", why);
+    }
+}
+
+/* ── T137: mapped frame revoke interaction (closes the Fase 18 T128 gap) ─────
+ * A retyped frame is MAPPED, then a derived handle is revoked while the frame
+ * is live in the address space.  This demonstrates the real contract:
+ *   - SYS_CAP_REVOKE is cap-scoped: it kills the derived handle but does NOT
+ *     unmap the frame (the mapping holds an independent ref);
+ *   - the frame object survives and stays usable through its live mapping;
+ *   - frame destroy is impossible while mapped — only after unmap does closing
+ *     the last cap destroy it (a clean close proves mapped_count == 0);
+ *   - no stale PTE and no stale cap remain.
+ * Invariants: V17, V18 (+ U10/U13 from Fase 18). */
+static void test_t137(void) {
+    uint32_t s3b[5];
+    uint32_t v0[5], v1[5];
+    it_quiesce_reaper();
+    if (!it_setup_self_vspace()) { it_fail("T137", "vspace self mint"); return; }
+    if (!it_sched_ext3(s3b) || !it_sched_ext4(v0)) { it_fail("T137", "sched ext"); return; }
+    int ok = 1;
+    const char *why = "mapped revoke";
+
+    handle_id_t fr = it_retype_frame();
+    if (fr == HANDLE_INVALID) { it_fail("T137", "retype frame"); return; }
+
+    if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T137_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
+
+    /* Derived handle, revoked while the frame is mapped. */
+    long child = ok ? it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_SAME_RIGHTS) : -1;
+    if (ok && child < 0) { ok = 0; why = "derive"; }
+    if (ok && it_sys1(SYS_CAP_REVOKE, (long)fr) != 0) { ok = 0; why = "revoke"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, child) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "child alive"; }
+
+    /* Revoke did NOT unmap: the mapping is still live and usable. */
+    if (ok && !it_sched_ext4(v1)) { ok = 0; why = "ext4 mid"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE] + 1u) { ok = 0; why = "revoke changed mapping"; }
+    if (ok) {
+        volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)T137_VA;
+        *p = 0x137ABCDEu;
+        __asm__ volatile ("" ::: "memory");
+        if (*p != 0x137ABCDEu) { ok = 0; why = "frame unusable after revoke"; }
+    }
+    /* Frame object still alive (root cap held it). */
+    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)fr) != (long)IT_KOBJ_FRAME) { ok = 0; why = "frame died"; }
+
+    /* Now unmap, then close — clean close proves mapped_count == 0 (no assert). */
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T137_VA) != 0) { ok = 0; why = "unmap"; }
+    it_close(&fr);
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "reset busy (frame still mapped?)"; }
+    uint32_t s3a[5];
+    if (ok && (!it_sched_ext3(s3a) || !it_sched_ext4(v1))) { ok = 0; why = "ext final"; }
+    if (ok && s3a[IT_S3_FRAME]  != s3b[IT_S3_FRAME])  { ok = 0; why = "frame leak/double-free"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "mapping leak"; }
+
+    if (ok) it_pass("T137"); else it_fail("T137", why);
+}
+
+/* ── T138: VSpace rights and user/kernel isolation ──────────────────────────
+ * PTE authority reflects cap rights, and userland cannot map kernel space:
+ *   - a read-only frame cap maps non-writable (flags=0) but is DENIED a
+ *     writable map (flags=1) — rights are not amplified by the map;
+ *   - a W^X request (writable+exec) is INVALID_ARG;
+ *   - a kernel-range VA is INVALID_ARG (isolation).
+ * Documented gap: ring 3 has no safe way to observe raw PTE flags or to trigger
+ * a write-protection #PF without a fault-handling endpoint (Fase-future), so
+ * NX/write-enforcement at the hardware level is asserted at the authority layer
+ * (rights checks), not by faulting.
+ * Invariants: V4, V6, V19, V20. */
+static void test_t138(void) {
+    int ok = 1;
+    const char *why = "rights/isolation";
+    it_quiesce_reaper();
+    if (!it_setup_self_vspace()) { it_fail("T138", "vspace self mint"); return; }
+
+    handle_id_t fr = it_retype_frame();
+    if (fr == HANDLE_INVALID) { it_fail("T138", "retype frame"); return; }
+    long rr = it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_READ);
+    handle_id_t fr_ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
+    if (fr_ro == HANDLE_INVALID) { ok = 0; why = "ro derive"; }
+
+    /* Read-only cap: non-writable map ok, writable map denied. */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)T138_VA, 0L) != 0) { ok = 0; why = "ro map"; }
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr_ro, IT_VS, (long)T138_VA) != 0) { ok = 0; why = "ro unmap"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)T138_VA, (long)IT_MAP_W)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable not denied"; }
+
+    /* W^X rejected. */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T138_VA, 3L) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "w^x not rejected";
+    }
+    /* Kernel-range VA rejected (user cannot map kernel space). */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, 0xFFFF800000001000L, (long)IT_MAP_W)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel va not rejected"; }
+
+    it_close(&fr_ro);
+    it_close(&fr);
+    it_quiesce_reaper();
+    (void)it_ut_reset();
+    if (ok) it_pass("T138"); else it_fail("T138", why);
+}
+
+/* ── T139: deterministic VSpace mapping stress ──────────────────────────────
+ * A fixed-seed PRNG drives many rounds of retype/map/(derive+revoke)/unmap/
+ * close over a reserved VA window, interleaving forced failures (unaligned VA,
+ * occupied VA).  After the churn every VM counter and the object/handle books
+ * return to baseline.  Prints seed/iteration only on failure.
+ * Invariants: V9, V10, V13, V15, V17, V18. */
+#define T139_SEED   0x19C0DE19u
+#define T139_ROUNDS 40u
+static void test_t139(void) {
+    uint32_t v0[5], v1[5];
+    uint32_t s3b[5], s3a[5];
+    uint32_t e0[14], e1[14];
+    it_quiesce_reaper();
+    if (!it_setup_self_vspace()) { it_fail("T139", "vspace self mint"); return; }
+    if (!it_sched_ext4(v0) || !it_sched_ext3(s3b) || !it_sched_ext(e0)) { it_fail("T139", "sched ext"); return; }
+    g_fz_seed = T139_SEED;
+    int ok = 1;
+    const char *why = "vspace stress";
+    uint32_t i = 0;
+
+    for (i = 0; ok && i < T139_ROUNDS; i++) {
+        handle_id_t fr = it_retype_frame();
+        if (fr == HANDLE_INVALID) { ok = 0; why = "retype"; break; }
+        uint64_t va = T139_VA_BASE + (uint64_t)(fz_rand() % 8u) * 0x1000ULL;
+
+        /* Forced failures, deterministically interleaved. */
+        if ((fz_rand() & 1u) &&
+            it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)(va | 0x40ULL), (long)IT_MAP_W) != (long)IRIS_ERR_INVALID_ARG) {
+            ok = 0; why = "unaligned"; it_close(&fr); break;
+        }
+
+        if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)va, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; it_close(&fr); break; }
+        /* Occupied VA is BUSY. */
+        if ((fz_rand() & 1u) &&
+            it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)va, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) {
+            ok = 0; why = "occupied"; it_close(&fr); break;
+        }
+
+        /* Sometimes derive + revoke while mapped (revoke must not unmap). */
+        if (fz_rand() & 1u) {
+            long c = it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_SAME_RIGHTS);
+            if (c >= 0 && it_sys1(SYS_CAP_REVOKE, (long)fr) != 0) { ok = 0; why = "revoke"; it_close(&fr); break; }
+            if (ok && c >= 0 && it_sys1(SYS_HANDLE_TYPE, c) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "child alive"; it_close(&fr); break; }
+        }
+
+        if (it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)va) != 0) { ok = 0; why = "unmap"; it_close(&fr); break; }
+        it_close(&fr);
+
+        if ((i & 7u) == 7u) {
+            it_quiesce_reaper();
+            if (!it_ut_reset()) { ok = 0; why = "mid reset busy"; break; }
+        }
+    }
+
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "final reset busy"; }
+    if (ok && (!it_sched_ext4(v1) || !it_sched_ext3(s3a) || !it_sched_ext(e1))) { ok = 0; why = "ext final"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "mapping leak"; }
+    if (ok && v1[IT_S4_VSLIVE]  != v0[IT_S4_VSLIVE])  { ok = 0; why = "vspace leak"; }
+    if (ok && s3a[IT_S3_FRAME]  != s3b[IT_S3_FRAME])  { ok = 0; why = "frame leak"; }
+    if (ok && e1[IT_SI_LIVE]    != e0[IT_SI_LIVE])    { ok = 0; why = "handle leak"; }
+
+    if (ok) it_pass("T139");
+    else {
+        fz_note("T139", T139_SEED, i);
+        it_fail("T139", why);
+    }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -8082,6 +8613,14 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t129();
     test_t130();
     test_t131();
+    test_t132();
+    test_t133();
+    test_t134();
+    test_t135();
+    test_t136();
+    test_t137();
+    test_t138();
+    test_t139();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

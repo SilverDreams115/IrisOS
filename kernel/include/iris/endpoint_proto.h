@@ -292,6 +292,10 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * retype (needs WRITE) both succeed. */
 #define IRIS_CPTR_INIT_UNTYPED ((uint64_t)12)
 #define IRIS_CPTR_TEST_UNTYPED ((uint64_t)55)
+/* Fase 19: iris_test mints a cap to its OWN VSpace (SYS_VSPACE_SELF) into this
+ * slot so the VM suite (T132–T139) can drive SYS_FRAME_MAP / SYS_FRAME_UNMAP on
+ * itself by CPtr.  Self-authority only — not a general authority door. */
+#define IRIS_CPTR_TEST_VSPACE  ((uint64_t)56)
 
 /*
  * Reserved name suffix ".ep": IRIS_SVCMGR_EP_LOOKUP_NAME and the legacy
