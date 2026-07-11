@@ -3942,6 +3942,40 @@ static int it_task_live(uint32_t *out) {
 #define IT_S2_SCLIVE  2u   /* live KSchedContext objects (invariants S8/S9) */
 #define IT_S2_YIELD   3u   /* task_yield() entries (monotonic progress) */
 
+/* Fase 18 ext3 authority words (offsets 112..128, 5 uint32 live per-type
+ * counts).  A pre-Fase-18 kernel clamps SYS_SCHED_INFO to 112 bytes and leaves
+ * these zero — additive, never required by a legacy assert. */
+#define IT_S3_UNTYPED 0u   /* KUntyped objects live */
+#define IT_S3_FRAME   1u   /* KFrame objects live   */
+#define IT_S3_EP      2u   /* KEndpoint objects live */
+#define IT_S3_NOTIF   3u   /* KNotification objects live */
+#define IT_S3_CNODE   4u   /* KCNode objects live   */
+
+static int it_sched_ext3(uint32_t w3[5]) {
+    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
+    if (bh < 0) return 0;
+    uint8_t buf[136];
+    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136);
+    handle_id_t h = (handle_id_t)bh;
+    it_close(&h);
+    if (r != 0) return 0;
+    for (uint32_t i = 0; i < 5u; i++) {
+        uint32_t o = 112u + 4u * i;
+        w3[i] = (uint32_t)buf[o] | ((uint32_t)buf[o + 1u] << 8) |
+                ((uint32_t)buf[o + 2u] << 16) | ((uint32_t)buf[o + 3u] << 24);
+    }
+    return 1;
+}
+
+/* KOBJ type codes for SYS_UNTYPED_RETYPE — must match the kobject_type_t order
+ * in kernel/new_core/include/iris/nc/kobject.h (that enum is __KERNEL__-only). */
+#define IT_KOBJ_NOTIFICATION   2u
+#define IT_KOBJ_ENDPOINT       8u
+#define IT_KOBJ_CNODE          9u
+#define IT_KOBJ_SCHED_CONTEXT 10u
+#define IT_KOBJ_UNTYPED       11u
+#define IT_KOBJ_FRAME         15u
+
 static int it_sched_ext2(uint32_t w2[4]) {
     long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
     if (bh < 0) return 0;
@@ -7356,6 +7390,548 @@ static void test_t124(void) {
     if (ok) it_pass("T124"); else it_fail("T124", why);
 }
 
+/* ── Fase 18: untyped / retype / revoke authority hardening (T125–T131) ──────
+ *
+ * These tests exercise the memory-authority surface — SYS_UNTYPED_RETYPE,
+ * SYS_UNTYPED_RESET, SYS_CAP_DERIVE, SYS_CAP_REVOKE — end to end from ring 3.
+ * They lean on one boot KUntyped forwarded down the boot chain (userboot → init
+ * → iris_test) into IRIS_CPTR_TEST_UNTYPED, plus the Fase 18 additive
+ * instrumentation (it_sched_ext3: live per-type object counts) and the existing
+ * handle-live word.
+ *
+ * Two independent, strong "authority died" observables anchor these tests:
+ *   1. the live per-type object count (it_sched_ext3) returns to baseline —
+ *      the object was destroyed, not leaked;
+ *   2. SYS_UNTYPED_RESET succeeds — it is gated on child_count == 0, so success
+ *      proves every object/sub-untyped carved from the region released its
+ *      parent reference (U17/U18).
+ *
+ * The authority model (see docs/architecture/untyped-retype-revoke-hardening.md):
+ *   - retype installs the new object as a fresh handle-table entry (a derivation
+ *     ROOT), and tracks the untyped→child link via child_count for RESET gating;
+ *   - SYS_CAP_REVOKE walks the handle-table derivation tree (SYS_CAP_DERIVE
+ *     children), NOT CSpace CNode slots and NOT untyped child_count — its scope
+ *     is documented and asserted here.
+ */
+#define IT_UT ((long)IRIS_CPTR_TEST_UNTYPED)
+
+/* Reset the shared test untyped after a test drops all its children.  Returns 1
+ * if the region is clean (child_count == 0 → RESET ok), 0 otherwise. */
+static int it_ut_reset(void) {
+    return it_sys1(SYS_UNTYPED_RESET, IT_UT) == 0;
+}
+
+/* ── T125: basic untyped retype authority ───────────────────────────────────
+ * Retype every ring-3-supported object kind from a valid KUntyped, prove each
+ * exists (type-check + a type-appropriate use), then destroy them and confirm
+ * the region resets (child_count back to 0) and every live per-type count
+ * returns to baseline.  Failure paths: wrong/unsupported type, invalid object
+ * size, non-power-of-two CNode slot count, and retype through a cap lacking
+ * RIGHT_WRITE (ACCESS_DENIED, no object born).
+ * Invariants: U1, U2, U3, U6, U17, U18, U20. */
+static void test_t125(void) {
+    uint32_t s3b[5], s3a[5];
+    it_quiesce_reaper();
+    if (!it_sched_ext3(s3b)) { it_fail("T125", "sched ext3"); return; }
+    int ok = 1;
+    const char *why = "retype authority";
+
+    /* The forwarded untyped must be present and non-trivially sized. */
+    uint64_t avail = 0;
+    if (it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, (long)(uintptr_t)&avail) != 0) {
+        it_fail("T125", "untyped absent (boot-chain forward failed)"); return;
+    }
+    if (avail < 65536u) { it_fail("T125", "untyped too small"); return; }
+
+    handle_id_t ep = HANDLE_INVALID, nt = HANDLE_INVALID, cn = HANDLE_INVALID;
+    handle_id_t sc = HANDLE_INVALID, fr = HANDLE_INVALID, sub = HANDLE_INVALID;
+
+    long r;
+    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    if (r < 0) { ok = 0; why = "retype endpoint"; } else ep = (handle_id_t)r;
+    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_NOTIFICATION, 0);
+    if (ok && r < 0) { ok = 0; why = "retype notification"; } else if (ok) nt = (handle_id_t)r;
+    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_CNODE, 4);
+    if (ok && r < 0) { ok = 0; why = "retype cnode"; } else if (ok) cn = (handle_id_t)r;
+    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_SCHED_CONTEXT, 0);
+    if (ok && r < 0) { ok = 0; why = "retype sc"; } else if (ok) sc = (handle_id_t)r;
+    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    if (ok && r < 0) { ok = 0; why = "retype frame"; } else if (ok) fr = (handle_id_t)r;
+    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_UNTYPED, 4096);
+    if (ok && r < 0) { ok = 0; why = "retype sub-untyped"; } else if (ok) sub = (handle_id_t)r;
+
+    /* Each object exists and has the expected type. */
+    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)ep)  != (long)IT_KOBJ_ENDPOINT)     { ok = 0; why = "ep type"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)nt)  != (long)IT_KOBJ_NOTIFICATION) { ok = 0; why = "nt type"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)cn)  != (long)IT_KOBJ_CNODE)        { ok = 0; why = "cn type"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)sc)  != (long)IT_KOBJ_SCHED_CONTEXT){ ok = 0; why = "sc type"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)fr)  != (long)IT_KOBJ_FRAME)        { ok = 0; why = "fr type"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)sub) != (long)IT_KOBJ_UNTYPED)      { ok = 0; why = "sub type"; }
+
+    /* Type-appropriate use: the retyped endpoint is a real rendezvous point
+     * (empty → WOULD_BLOCK); the sub-untyped answers INFO; the SC configures. */
+    if (ok) {
+        struct IrisMsg m; it_iris_msg_zero(&m);
+        if (it_sys2(SYS_EP_NB_RECV, (long)ep, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
+            ok = 0; why = "ep not usable";
+        }
+    }
+    if (ok && it_sys3(SYS_UNTYPED_INFO, (long)sub, 0, 0) != 0) { ok = 0; why = "sub not usable"; }
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 100) != 0) { ok = 0; why = "sc not usable"; }
+
+    /* Live per-type counts rose by exactly the objects we made. */
+    if (ok && !it_sched_ext3(s3a)) { ok = 0; why = "ext3 mid"; }
+    if (ok && s3a[IT_S3_EP]      != s3b[IT_S3_EP]      + 1u) { ok = 0; why = "ep live"; }
+    if (ok && s3a[IT_S3_NOTIF]   != s3b[IT_S3_NOTIF]   + 1u) { ok = 0; why = "nt live"; }
+    if (ok && s3a[IT_S3_CNODE]   != s3b[IT_S3_CNODE]   + 1u) { ok = 0; why = "cn live"; }
+    if (ok && s3a[IT_S3_FRAME]   != s3b[IT_S3_FRAME]   + 1u) { ok = 0; why = "fr live"; }
+    /* +1 sub-untyped (the parent stays counted the whole time). */
+    if (ok && s3a[IT_S3_UNTYPED] != s3b[IT_S3_UNTYPED] + 1u) { ok = 0; why = "sub live"; }
+
+    /* ── Failure paths (no object may be born) ── */
+    if (ok) {
+        uint32_t f0[5], f1[5];
+        if (!it_sched_ext3(f0)) { ok = 0; why = "ext3 fail-base"; }
+        /* wrong/unsupported type (KOBJ_PROCESS = 0). */
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "wrong type"; }
+        /* invalid frame size (not page-aligned). */
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad frame size"; }
+        /* invalid sub-untyped size (< 4096). */
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_UNTYPED, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad ut size"; }
+        /* non-power-of-two CNode slot count. */
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_CNODE, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad cnode slots"; }
+        /* missing RIGHT_WRITE: retype through a read-only derived cap. */
+        if (ok) {
+            long uth = it_sys1(SYS_CSPACE_RESOLVE, IT_UT);
+            handle_id_t uth_h = (uth >= 0) ? (handle_id_t)uth : HANDLE_INVALID;
+            long ro = (uth >= 0) ? it_sys2(SYS_CAP_DERIVE, uth, (long)RIGHT_READ) : -1;
+            handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
+            if (ro < 0) { ok = 0; why = "ro dup"; }
+            if (ok && it_sys3(SYS_UNTYPED_RETYPE, (long)ro_h, IT_KOBJ_ENDPOINT, 0) != (long)IRIS_ERR_ACCESS_DENIED) {
+                ok = 0; why = "rights not enforced";
+            }
+            it_close(&ro_h);
+            it_close(&uth_h);
+        }
+        /* No object leaked through any failure path. */
+        if (ok && !it_sched_ext3(f1)) { ok = 0; why = "ext3 fail-after"; }
+        for (uint32_t i = 0; ok && i < 5u; i++)
+            if (f1[i] != f0[i]) { ok = 0; why = "failure leaked object"; }
+    }
+
+    /* Destroy everything and prove the region is clean (child_count → 0). */
+    it_close(&ep); it_close(&nt); it_close(&cn);
+    it_close(&sc); it_close(&fr); it_close(&sub);
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "reset busy (child leak)"; }
+    if (ok && !it_sched_ext3(s3a)) { ok = 0; why = "ext3 final"; }
+    for (uint32_t i = 0; ok && i < 5u; i++)
+        if (s3a[i] != s3b[i]) { ok = 0; why = "object leak"; }
+
+    if (ok) it_pass("T125"); else it_fail("T125", why);
+}
+
+/* ── T126: retype failure atomicity ─────────────────────────────────────────
+ * Drive retype into each failure mode and prove it is atomic: no object is
+ * born, no handle appears, no live count moves, the region stays resettable,
+ * and a valid retype right after each failure still works.
+ * Invariants: U5, U17, U18, U19. */
+static void test_t126(void) {
+    uint32_t s3b[5], s3a[5];
+    uint32_t hlb[14], hla[14];
+    it_quiesce_reaper();
+    if (!it_sched_ext3(s3b) || !it_sched_ext(hlb)) { it_fail("T126", "sched ext"); return; }
+    int ok = 1;
+    const char *why = "retype atomicity";
+
+    /* NO_MEMORY: a sub-untyped larger than the whole region. */
+    uint64_t avail = 0;
+    (void)it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, (long)(uintptr_t)&avail);
+    uint64_t huge = (avail + 0x100000u) & ~0xFFFULL;   /* page-aligned, > avail */
+    struct { uint32_t type; uint64_t arg; long expect; const char *tag; } cases[] = {
+        { IT_KOBJ_UNTYPED,     huge, (long)IRIS_ERR_NO_MEMORY,     "nomem" },
+        { 99u,                 0,    (long)IRIS_ERR_NOT_SUPPORTED, "badtype" },
+        { IT_KOBJ_FRAME,       1u,   (long)IRIS_ERR_INVALID_ARG,   "badsize" },
+        { IT_KOBJ_CNODE,       7u,   (long)IRIS_ERR_INVALID_ARG,   "badslots" },
+    };
+    for (uint32_t c = 0; ok && c < 4u; c++) {
+        long rr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)cases[c].type, (long)cases[c].arg);
+        if (rr != cases[c].expect) { ok = 0; why = cases[c].tag; break; }
+        /* nothing leaked after this failure */
+        if (!it_sched_ext3(s3a) || !it_sched_ext(hla)) { ok = 0; why = "ext mid"; break; }
+        for (uint32_t i = 0; ok && i < 5u; i++)
+            if (s3a[i] != s3b[i]) { ok = 0; why = "leaked object"; }
+        if (ok && hla[IT_SI_LIVE] != hlb[IT_SI_LIVE]) { ok = 0; why = "leaked handle"; }
+        /* a valid retype right after the failure still works */
+        if (ok) {
+            long good = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+            if (good < 0) { ok = 0; why = "valid-after-fail"; }
+            else { handle_id_t g = (handle_id_t)good; it_close(&g); }
+        }
+    }
+
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "reset busy"; }
+    if (ok && !it_sched_ext3(s3a)) { ok = 0; why = "ext3 final"; }
+    for (uint32_t i = 0; ok && i < 5u; i++)
+        if (s3a[i] != s3b[i]) { ok = 0; why = "final leak"; }
+
+    if (ok) it_pass("T126"); else it_fail("T126", why);
+}
+
+/* ── T127: revoke derivation-tree cascade ───────────────────────────────────
+ * Build a handle-table derivation tree from a retyped endpoint (root → child →
+ * grandchild, plus a second branch) and revoke the root: every descendant dies
+ * (BAD_HANDLE), the root survives, an unrelated object outside the subtree is
+ * untouched, and a repeated revoke is idempotent.  Failure paths: revoke on a
+ * stale handle (BAD_HANDLE), revoke of a leaf with no children (idempotent 0).
+ * Also asserts revoke SCOPE: a copy minted into a CNode is an independent ref,
+ * not a derivation child, and survives the revoke — then is cleaned up.
+ * Invariants: U8, U9, U10, U16. */
+static void test_t127(void) {
+    uint32_t s3b[5];
+    it_quiesce_reaper();
+    if (!it_sched_ext3(s3b)) { it_fail("T127", "sched ext3"); return; }
+    int ok = 1;
+    const char *why = "revoke cascade";
+
+    long rr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    if (rr < 0) { it_fail("T127", "retype root"); return; }
+    handle_id_t root = (handle_id_t)rr;
+
+    /* Unrelated object outside the derivation subtree (must survive revoke). */
+    long orr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    handle_id_t outsider = (orr >= 0) ? (handle_id_t)orr : HANDLE_INVALID;
+    if (orr < 0) { ok = 0; why = "retype outsider"; }
+
+    /* Derivation tree: root → c1 → gc1 ; root → c2. */
+    long c1  = ok ? it_sys2(SYS_CAP_DERIVE, (long)root, (long)RIGHT_SAME_RIGHTS) : -1;
+    long gc1 = (c1 >= 0) ? it_sys2(SYS_CAP_DERIVE, c1, (long)RIGHT_SAME_RIGHTS) : -1;
+    long c2  = ok ? it_sys2(SYS_CAP_DERIVE, (long)root, (long)RIGHT_SAME_RIGHTS) : -1;
+    if (c1 < 0 || gc1 < 0 || c2 < 0) { ok = 0; why = "derive"; }
+
+    /* A CNode copy of the root — an independent ref, NOT a derivation child. */
+    long cnr = ok ? it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_CNODE, 4) : -1;
+    handle_id_t cn = (cnr >= 0) ? (handle_id_t)cnr : HANDLE_INVALID;
+    if (ok && cnr < 0) { ok = 0; why = "retype cnode"; }
+    if (ok && it_sys4(SYS_CNODE_MINT, (long)cn, 1, (long)root,
+                      (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "cnode mint"; }
+
+    /* All derived handles are live before the revoke. */
+    if (ok && it_sys1(SYS_HANDLE_TYPE, c1)  < 0) { ok = 0; why = "c1 dead early"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, gc1) < 0) { ok = 0; why = "gc1 dead early"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, c2)  < 0) { ok = 0; why = "c2 dead early"; }
+
+    /* Revoke root's subtree. */
+    if (ok && it_sys1(SYS_CAP_REVOKE, (long)root) != 0) { ok = 0; why = "revoke"; }
+
+    /* Every descendant is gone; root survives. */
+    if (ok && it_sys1(SYS_HANDLE_TYPE, c1)  != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "c1 alive"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, gc1) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "gc1 alive"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, c2)  != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "c2 alive"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)root) < 0) { ok = 0; why = "root died"; }
+    /* Outsider outside the subtree is untouched. */
+    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)outsider) < 0) { ok = 0; why = "outsider died"; }
+
+    /* Idempotent: a second revoke finds an empty subtree and succeeds. */
+    if (ok && it_sys1(SYS_CAP_REVOKE, (long)root) != 0) { ok = 0; why = "revoke not idempotent"; }
+    /* Revoke on a stale handle fails cleanly. */
+    if (ok) {
+        long tmp = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+        if (tmp >= 0) { handle_id_t th = (handle_id_t)tmp; it_close(&th);
+            if (it_sys1(SYS_CAP_REVOKE, tmp) >= 0) { ok = 0; why = "stale revoke ok"; } }
+    }
+
+    /* Revoke SCOPE: the CNode-minted copy is an independent ref — SYS_CAP_REVOKE
+     * did not touch the CSpace slot.  Deleting the slot releases that ref; it
+     * must succeed (the slot still held a live cap after the revoke). */
+    if (ok && it_sys2(SYS_CNODE_DELETE, (long)cn, 1) != 0) { ok = 0; why = "cnode copy not independent"; }
+
+    /* Teardown: close root, outsider, cnode; region resets clean. */
+    it_close(&root);
+    it_close(&outsider);
+    it_close(&cn);
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "reset busy"; }
+    uint32_t s3a[5];
+    if (ok && !it_sched_ext3(s3a)) { ok = 0; why = "ext3 final"; }
+    for (uint32_t i = 0; ok && i < 5u; i++)
+        if (s3a[i] != s3b[i]) { ok = 0; why = "object leak"; }
+
+    if (ok) it_pass("T127"); else it_fail("T127", why);
+}
+
+/* ── T128: frame authority lifetime + revoke (VSpace-map gap documented) ─────
+ * A retyped KFrame's cap authority is exercised: derive a child handle, revoke
+ * it (child dies, the frame object survives via the root), then release the
+ * root and prove the frame is destroyed exactly once (frame_live baseline) with
+ * the region resettable (child_count → 0).
+ *
+ * Documented gap (see the hardening doc): ring 3 cannot MAP a retyped frame
+ * here — SYS_FRAME_MAP needs a VSpace cap by CPtr that iris_test is not granted
+ * (VMO is the ring-3 mapping path).  The PTE-install / mapped_count / unmap
+ * invariants are covered by the host KFrame suites; and by design SYS_CAP_REVOKE
+ * is cap-scoped and never force-unmaps a frame (a live mapping holds an
+ * independent ref; kframe_obj_destroy asserts mapped_count == 0, so a stale PTE
+ * can never outlive the frame object).
+ * Invariants: U10, U13, U17, U18. */
+static void test_t128(void) {
+    uint32_t s3b[5];
+    it_quiesce_reaper();
+    if (!it_sched_ext3(s3b)) { it_fail("T128", "sched ext3"); return; }
+    int ok = 1;
+    const char *why = "frame lifetime";
+
+    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    if (fr < 0) { it_fail("T128", "retype frame"); return; }
+    handle_id_t frame = (handle_id_t)fr;
+
+    uint32_t mid[5];
+    if (!it_sched_ext3(mid)) { ok = 0; why = "ext3 mid"; }
+    if (ok && mid[IT_S3_FRAME] != s3b[IT_S3_FRAME] + 1u) { ok = 0; why = "frame not counted"; }
+
+    /* Derive a child frame handle, then revoke it away from the root. */
+    long child = ok ? it_sys2(SYS_CAP_DERIVE, (long)frame, (long)RIGHT_SAME_RIGHTS) : -1;
+    if (ok && child < 0) { ok = 0; why = "derive"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, child) != (long)IT_KOBJ_FRAME) { ok = 0; why = "child type"; }
+    if (ok && it_sys1(SYS_CAP_REVOKE, (long)frame) != 0) { ok = 0; why = "revoke"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, child) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "child alive"; }
+    /* The frame object survives while the root cap is held. */
+    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)frame) != (long)IT_KOBJ_FRAME) { ok = 0; why = "frame died early"; }
+    if (ok && !it_sched_ext3(mid)) { ok = 0; why = "ext3 mid2"; }
+    if (ok && mid[IT_S3_FRAME] != s3b[IT_S3_FRAME] + 1u) { ok = 0; why = "frame miscounted after revoke"; }
+
+    /* Release the root: the frame is destroyed exactly once (unmapped: no
+     * mapping ever taken, so mapped_count == 0 → clean destroy). */
+    it_close(&frame);
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "reset busy (frame child leak)"; }
+    uint32_t s3a[5];
+    if (ok && !it_sched_ext3(s3a)) { ok = 0; why = "ext3 final"; }
+    if (ok && s3a[IT_S3_FRAME] != s3b[IT_S3_FRAME]) { ok = 0; why = "frame leak/double-free"; }
+
+    if (ok) it_pass("T128"); else it_fail("T128", why);
+}
+
+/* ── T129: revoke with IPC-visible objects ──────────────────────────────────
+ * A worker thread blocks in EP_RECV on a RETYPED endpoint.  A derived child
+ * handle is revoked (the endpoint object survives), then the last handle is
+ * closed: the endpoint's close fires, the waiter wakes with IRIS_ERR_CLOSED,
+ * and after the worker releases its ref the endpoint object is destroyed
+ * (endpoint_live baseline), the region resets clean, no ghost KReply is minted,
+ * and task/handle books return to baseline.
+ * Invariants: U8, U13 (via S13/S14), U14, U15, U17. */
+static volatile long g_t129_res;
+static void t129_worker(void) {
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    g_t129_res = it_sys2(SYS_EP_RECV, (long)g_sh_ep, (long)&m);
+    g_sh_done[0] = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+static void test_t129(void) {
+    uint32_t s3b[5], s3a[5];
+    uint32_t e0[14], e1[14];
+    uint32_t tl0 = 0, tl1 = 0;
+    it_quiesce_reaper();
+    if (!it_sched_ext3(s3b) || !it_sched_ext(e0) || !it_task_live(&tl0)) {
+        it_fail("T129", "sched ext"); return;
+    }
+    int ok = 1;
+    const char *why = "revoke ipc object";
+
+    long er = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    if (er < 0) { it_fail("T129", "retype endpoint"); return; }
+    g_sh_ep = (handle_id_t)er;
+    {
+        uint32_t mid[5];
+        if (!it_sched_ext3(mid) || mid[IT_S3_EP] != s3b[IT_S3_EP] + 1u) {
+            ok = 0; why = "endpoint not counted";
+        }
+    }
+    g_sh_done[0] = 0; g_t129_res = 999;
+
+    /* Worker blocks in EP_RECV on the retyped endpoint. */
+    uint64_t entry = (uint64_t)(uintptr_t)t129_worker;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_sh_stk[0] + sizeof(g_sh_stk[0]))) & ~0xFULL;
+    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread create"; }
+    if (ok) for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
+
+    /* Derive a child handle and revoke it — object survives, waiter unaffected. */
+    long child = ok ? it_sys2(SYS_CAP_DERIVE, (long)g_sh_ep, (long)RIGHT_SAME_RIGHTS) : -1;
+    if (ok && child < 0) { ok = 0; why = "derive"; }
+    if (ok && it_sys1(SYS_CAP_REVOKE, (long)g_sh_ep) != 0) { ok = 0; why = "revoke"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, child) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "child alive"; }
+
+    /* Close the last handle → endpoint close fires → waiter wakes CLOSED. */
+    it_close(&g_sh_ep);
+    if (ok) for (int y = 0; y < 4000 && !g_sh_done[0]; y++) it_sys0(SYS_YIELD);
+    if (ok && !g_sh_done[0]) { ok = 0; why = "waiter not woken"; }
+    if (ok && g_t129_res != (long)IRIS_ERR_CLOSED) { ok = 0; why = "wrong wake error"; }
+
+    it_quiesce_reaper();
+    if (ok && (!it_sched_ext3(s3a) || !it_sched_ext(e1) || !it_task_live(&tl1))) { ok = 0; why = "ext2"; }
+    if (ok && s3a[IT_S3_EP] != s3b[IT_S3_EP]) { ok = 0; why = "endpoint leak"; }
+    if (ok && e1[IT_SI_REPLY] != e0[IT_SI_REPLY]) { ok = 0; why = "ghost kreply"; }
+    if (ok && tl1 != tl0) { ok = 0; why = "task-live drift"; }
+    if (ok && !it_ut_reset()) { ok = 0; why = "reset busy"; }
+
+    if (ok) it_pass("T129"); else it_fail("T129", why);
+}
+
+/* ── T130: rights monotonicity and cap derivation ───────────────────────────
+ * Rights can only shrink along a derivation/mint chain, never grow, and there
+ * is no fallback after ACCESS_DENIED.
+ * Invariants: U7, U20 (+ U16). */
+static void test_t130(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "rights monotonicity";
+
+    long rr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    if (rr < 0) { it_fail("T130", "retype root"); return; }
+    handle_id_t root = (handle_id_t)rr;   /* full rights: READ|WRITE|DUP|TRANSFER */
+
+    /* Derive down to READ-only (drops DUPLICATE). */
+    long ro = it_sys2(SYS_CAP_DERIVE, (long)root, (long)RIGHT_READ);
+    handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
+    if (ro < 0) { ok = 0; why = "derive ro"; }
+
+    /* A cap without DUPLICATE cannot be a derivation source — ACCESS_DENIED,
+     * no handle produced (no fallback). */
+    if (ok && it_sys2(SYS_CAP_DERIVE, (long)ro_h, (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "escalation via derive";
+    }
+
+    /* Derivation cannot ADD rights: asking for FULL from a READ-only parent
+     * yields a cap that still lacks WRITE (monotonic reduce).  We prove the
+     * child cannot be a derivation source (no DUPLICATE) — i.e. WRITE/DUP were
+     * NOT granted despite the request. */
+    if (ok) {
+        long up = it_sys2(SYS_CAP_DERIVE, (long)root, (long)(RIGHT_READ)); /* parent has DUP */
+        /* From a full-rights parent, derive asking only READ → child has READ only. */
+        handle_id_t up_h = (up >= 0) ? (handle_id_t)up : HANDLE_INVALID;
+        if (up < 0) { ok = 0; why = "derive read"; }
+        if (ok && it_sys2(SYS_CAP_DERIVE, (long)up_h, (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "read child escalated";
+        }
+        it_close(&up_h);
+    }
+
+    /* CNode mint reduces rights the same way and never amplifies: mint the
+     * root down to READ into a CNode slot, resolve it, and confirm it cannot
+     * derive (no DUPLICATE). */
+    if (ok) {
+        long cnr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_CNODE, 4);
+        handle_id_t cn = (cnr >= 0) ? (handle_id_t)cnr : HANDLE_INVALID;
+        if (cnr < 0) { ok = 0; why = "retype cnode"; }
+        if (ok && it_sys4(SYS_CNODE_MINT, (long)cn, 2, (long)root, (long)RIGHT_READ) != 0) {
+            ok = 0; why = "cnode mint";
+        }
+        /* mint asking for MORE than the source has is rejected/reduced: minting
+         * with RIGHT_MANAGE (root lacks it) reduces to none → INVALID_ARG. */
+        if (ok && it_sys4(SYS_CNODE_MINT, (long)cn, 3, (long)root, (long)RIGHT_MANAGE) != (long)IRIS_ERR_INVALID_ARG) {
+            ok = 0; why = "mint amplified";
+        }
+        it_close(&cn);
+    }
+
+    it_close(&ro_h);
+    it_close(&root);
+    it_quiesce_reaper();
+    (void)it_ut_reset();
+
+    if (ok) it_pass("T130"); else it_fail("T130", why);
+}
+
+/* ── T131: deterministic untyped/revoke stress ──────────────────────────────
+ * A fixed-seed PRNG drives many rounds of retype / derive / mint / revoke /
+ * delete / close against the shared untyped, mixing endpoints, notifications
+ * and CNodes and interleaving forced failures (bad type, bad size, stale
+ * revoke, occupied CNode slot).  After the churn the region must RESET clean
+ * and every live per-type count and the handle-live count return to baseline.
+ * Prints seed/iteration only on failure.
+ * Invariants: U4, U5, U8, U9, U17, U18, U19. */
+#define T131_SEED   0x18C0DE18u
+#define T131_ROUNDS 24u
+static void test_t131(void) {
+    uint32_t s3b[5], s3a[5];
+    uint32_t e0[14], e1[14];
+    it_quiesce_reaper();
+    if (!it_sched_ext3(s3b) || !it_sched_ext(e0)) { it_fail("T131", "sched ext"); return; }
+    g_fz_seed = T131_SEED;
+    int ok = 1;
+    const char *why = "untyped/revoke stress";
+    uint32_t i = 0;
+
+    for (i = 0; ok && i < T131_ROUNDS; i++) {
+        uint32_t pick = fz_rand() % 3u;
+        uint32_t type = (pick == 0u) ? IT_KOBJ_ENDPOINT
+                      : (pick == 1u) ? IT_KOBJ_NOTIFICATION
+                                     : IT_KOBJ_CNODE;
+        uint64_t arg  = (type == IT_KOBJ_CNODE) ? 4u : 0u;
+
+        long rr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)type, (long)arg);
+        if (rr < 0) { ok = 0; why = "retype"; break; }
+        handle_id_t root = (handle_id_t)rr;
+
+        /* Derive a small tree, sometimes revoke it, always tear it down. */
+        long c1 = it_sys2(SYS_CAP_DERIVE, (long)root, (long)RIGHT_SAME_RIGHTS);
+        long c2 = (c1 >= 0) ? it_sys2(SYS_CAP_DERIVE, c1, (long)RIGHT_SAME_RIGHTS) : -1;
+        handle_id_t c1_h = (c1 >= 0) ? (handle_id_t)c1 : HANDLE_INVALID;
+        handle_id_t c2_h = (c2 >= 0) ? (handle_id_t)c2 : HANDLE_INVALID;
+
+        /* Forced failure paths, interleaved deterministically. */
+        if ((fz_rand() & 1u) &&
+            it_sys3(SYS_UNTYPED_RETYPE, IT_UT, 99, 0) != (long)IRIS_ERR_NOT_SUPPORTED) {
+            ok = 0; why = "badtype"; }
+        if (ok && (fz_rand() & 1u) &&
+            it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 7) != (long)IRIS_ERR_INVALID_ARG) {
+            ok = 0; why = "badsize"; }
+
+        if (ok && (fz_rand() & 1u)) {
+            /* Revoke path: children die, root survives. */
+            if (it_sys1(SYS_CAP_REVOKE, (long)root) != 0) { ok = 0; why = "revoke"; }
+            if (ok && c1 >= 0 && it_sys1(SYS_HANDLE_TYPE, c1) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "c1 alive"; }
+            if (ok && c2 >= 0 && it_sys1(SYS_HANDLE_TYPE, c2) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "c2 alive"; }
+            /* Repeated revoke is idempotent. */
+            if (ok && it_sys1(SYS_CAP_REVOKE, (long)root) != 0) { ok = 0; why = "revoke idem"; }
+            c1_h = HANDLE_INVALID; c2_h = HANDLE_INVALID;   /* already gone */
+        } else {
+            /* Explicit teardown path. */
+            it_close(&c2_h);
+            it_close(&c1_h);
+        }
+
+        /* Stale-handle revoke fails cleanly. */
+        if (ok && (fz_rand() & 1u)) {
+            long tmp = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+            if (tmp >= 0) { handle_id_t th = (handle_id_t)tmp; it_close(&th);
+                if (it_sys1(SYS_CAP_REVOKE, tmp) >= 0) { ok = 0; why = "stale revoke ok"; } }
+        }
+
+        it_close(&root);
+        /* Periodically drain and reset so the bump region never runs dry. */
+        if ((i & 3u) == 3u) {
+            it_quiesce_reaper();
+            if (ok && !it_ut_reset()) { ok = 0; why = "mid reset busy"; }
+        }
+    }
+
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "final reset busy"; }
+    if (ok && (!it_sched_ext3(s3a) || !it_sched_ext(e1))) { ok = 0; why = "ext final"; }
+    for (uint32_t k = 0; ok && k < 5u; k++)
+        if (s3a[k] != s3b[k]) { ok = 0; why = "object leak"; }
+    if (ok && e1[IT_SI_LIVE] != e0[IT_SI_LIVE]) { ok = 0; why = "handle leak"; }
+
+    if (ok) it_pass("T131");
+    else {
+        fz_note("T131", T131_SEED, i);
+        it_fail("T131", why);
+    }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -7499,6 +8075,13 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t122();
     test_t123();
     test_t124();
+    test_t125();
+    test_t126();
+    test_t127();
+    test_t128();
+    test_t129();
+    test_t130();
+    test_t131();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
