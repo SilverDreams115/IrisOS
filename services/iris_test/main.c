@@ -12,6 +12,7 @@
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
+#include <iris/fault_proto.h>
 #include <iris/ipc_msg.h>
 #include <iris/ipc_recv_slot.h>
 #include <iris/endpoint_proto.h>
@@ -3995,6 +3996,31 @@ static int it_sched_ext4(uint32_t w4[5]) {
     for (uint32_t i = 0; i < 5u; i++) {
         uint32_t o = 136u + 4u * i;
         w4[i] = (uint32_t)buf[o] | ((uint32_t)buf[o + 1u] << 8) |
+                ((uint32_t)buf[o + 2u] << 16) | ((uint32_t)buf[o + 3u] << 24);
+    }
+    return 1;
+}
+
+/* Fase 20 ext5 fault-model words (offsets 160..176, 5 uint32).  A pre-Fase-20
+ * kernel clamps SYS_SCHED_INFO to 160 bytes and leaves these zero — additive,
+ * never required by a legacy assert. */
+#define IT_S5_DELIVER 0u   /* faults handed to a registered handler (cumulative) */
+#define IT_S5_NOHAND  1u   /* faults with no handler → task killed (cumulative)  */
+#define IT_S5_RESUME  2u   /* SYS_EXCEPTION_RESUME action 0 (cumulative)         */
+#define IT_S5_KILL    3u   /* SYS_EXCEPTION_RESUME action 1 (cumulative)         */
+#define IT_S5_CLEAN   4u   /* pending-fault records cleared (cumulative)         */
+
+static int it_sched_ext5(uint32_t w5[5]) {
+    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
+    if (bh < 0) return 0;
+    uint8_t buf[184];
+    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184);
+    handle_id_t h = (handle_id_t)bh;
+    it_close(&h);
+    if (r != 0) return 0;
+    for (uint32_t i = 0; i < 5u; i++) {
+        uint32_t o = 160u + 4u * i;
+        w5[i] = (uint32_t)buf[o] | ((uint32_t)buf[o + 1u] << 8) |
                 ((uint32_t)buf[o + 2u] << 16) | ((uint32_t)buf[o + 3u] << 24);
     }
     return 1;
@@ -8463,6 +8489,733 @@ static void test_t139(void) {
     }
 }
 
+/* ── Fase 20: fault endpoint / exception delivery model (T140–T147) ──────────
+ *
+ * User faults are authority events: registering a fault endpoint requires
+ * RIGHT_MANAGE on the target process; delivery records the fault in the
+ * KProcess and signals the registered KNotification while the faulting task is
+ * suspended in TASK_BLOCKED_FAULT; SYS_PROCESS_FAULT_INFO (RIGHT_READ) reads
+ * the record; SYS_EXCEPTION_RESUME (RIGHT_MANAGE) resolves it — action 0
+ * re-executes the faulting instruction, action 1 kills the task.  Kernel
+ * faults are never deliverable (idt.c panics).  lifecycle_probe children are
+ * the fault fixtures: FAULT_READ/WRITE take a target VA in words[0] (0 = the
+ * child's own ASLR-biased code address), FAULT_EXEC calls into its NX stack.
+ *
+ * Observables: the ext5 SYS_SCHED_INFO tier (delivery/nohandler/resume/kill/
+ * cleanup counters) plus the usual task/handle/object/mapping books. */
+
+#define LP_CMD_FAULT_READ   0x109Cu  /* must match lifecycle_probe */
+#define LP_CMD_FAULT_WRITE  0x109Du
+#define LP_CMD_FAULT_EXEC   0x109Eu
+
+#define T14X_BAD_VA   0x8090000000ULL          /* canonical user VA, never mapped */
+#define T14X_KERN_VA  0xFFFF800000001000ULL    /* kernel half — user access faults */
+
+/* #PF error-code bits (Intel SDM). */
+#define PF_ERR_P 0x01u
+#define PF_ERR_W 0x02u
+#define PF_ERR_U 0x04u
+#define PF_ERR_I 0x10u
+
+struct it_fault {
+    uint32_t vector, task_id, error;
+    uint64_t rip, cr2;
+};
+
+/* Read the pending-fault record for proc_h; 0 on success, else the error
+ * (IRIS_ERR_WOULD_BLOCK when nothing is pending). */
+static long it_fault_info(handle_id_t proc_h, struct it_fault *f) {
+    uint8_t b[FAULT_MSG_LEN];
+    long r = it_sys2(SYS_PROCESS_FAULT_INFO, (long)proc_h, (long)(uintptr_t)b);
+    if (r != 0) return r;
+    f->vector  = (uint32_t)b[FAULT_OFF_VECTOR]  | ((uint32_t)b[FAULT_OFF_VECTOR + 1] << 8) |
+                 ((uint32_t)b[FAULT_OFF_VECTOR + 2] << 16) | ((uint32_t)b[FAULT_OFF_VECTOR + 3] << 24);
+    f->task_id = (uint32_t)b[FAULT_OFF_TASK_ID] | ((uint32_t)b[FAULT_OFF_TASK_ID + 1] << 8) |
+                 ((uint32_t)b[FAULT_OFF_TASK_ID + 2] << 16) | ((uint32_t)b[FAULT_OFF_TASK_ID + 3] << 24);
+    f->error   = (uint32_t)b[FAULT_OFF_ERROR]   | ((uint32_t)b[FAULT_OFF_ERROR + 1] << 8) |
+                 ((uint32_t)b[FAULT_OFF_ERROR + 2] << 16) | ((uint32_t)b[FAULT_OFF_ERROR + 3] << 24);
+    f->rip = 0; f->cr2 = 0;
+    for (uint32_t i = 0; i < 8u; i++) f->rip |= (uint64_t)b[FAULT_OFF_RIP + i] << (i * 8);
+    for (uint32_t i = 0; i < 8u; i++) f->cr2 |= (uint64_t)b[FAULT_OFF_CR2 + i] << (i * 8);
+    return 0;
+}
+
+/* Send a fault-trigger command with a target VA (blocking send — returns once
+ * the child has picked the message up, i.e. is about to fault). */
+static long it_lp_cmd_va(handle_id_t ep_h, uint32_t label, uint64_t va) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label      = label;
+    m.words[0]   = va;
+    m.word_count = 1u;
+    return it_sys2(SYS_EP_SEND, (long)ep_h, (long)&m);
+}
+
+/* Spawn a lifecycle_probe child wired for fault supervision: command endpoint,
+ * fault-handler notification (signal bit 0) registered via proc cap, and an
+ * exit watch (bit 0 of w_h).  All-or-nothing; on failure everything is closed
+ * and *why is set.  Returns 1 on success. */
+static int it_fault_spawn(handle_id_t *ep_h, handle_id_t *proc_h,
+                          handle_id_t *n_h, handle_id_t *w_h, const char **why) {
+    *ep_h = *proc_h = *n_h = *w_h = HANDLE_INVALID;
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { *why = "ep create"; return 0; }
+    *ep_h = (handle_id_t)ep;
+    if (lp_spawn_child(*ep_h, proc_h) < 0 || *proc_h == HANDLE_INVALID) {
+        it_close(ep_h); *why = "spawn"; return 0;
+    }
+    long n = it_sys0(SYS_NOTIFY_CREATE);
+    long w = it_sys0(SYS_NOTIFY_CREATE);
+    *n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+    *w_h = (w >= 0) ? (handle_id_t)w : HANDLE_INVALID;
+    if (n < 0 || w < 0 ||
+        it_sys3(SYS_EXCEPTION_HANDLER, (long)*proc_h, n, 1) != 0 ||
+        it_sys3(SYS_PROCESS_WATCH, (long)*proc_h, w, 1) != 0) {
+        (void)it_sys1(SYS_PROCESS_KILL, (long)*proc_h);
+        it_close(n_h); it_close(w_h); it_close(proc_h); it_close(ep_h);
+        *why = "wire handler/watch"; return 0;
+    }
+    return 1;
+}
+
+/* Bounded wait (≤2s) for signal bit 0 on a notification; 1 on success. */
+static int it_fault_wait(handle_id_t n_h) {
+    uint64_t bits = 0;
+    if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)n_h, (long)(uintptr_t)&bits,
+                2000000000LL) != 0) return 0;
+    return (bits & 1ull) != 0;
+}
+
+static void it_fault_close4(handle_id_t *a, handle_id_t *b,
+                            handle_id_t *c, handle_id_t *d) {
+    it_close(a); it_close(b); it_close(c); it_close(d);
+}
+
+/* ── T140: register fault endpoint authority ────────────────────────────────
+ * Registration is capability-mediated with no fallback:
+ *   - RIGHT_MANAGE on the target process cap and RIGHT_WRITE on the
+ *     notification are required — reduced-rights duplicates get ACCESS_DENIED;
+ *   - wrong-type caps in either slot get WRONG_TYPE;
+ *   - signal_bits == 0 is INVALID_ARG; an empty slot fails;
+ *   - a failed registration leaves NO partial handler installed: a subsequent
+ *     fault takes the no-handler path (task killed, nohandler counter up);
+ *   - re-registration replaces the handler (last registration wins — only the
+ *     new notification fires);
+ *   - signalling the handler notification by hand does NOT fabricate a fault
+ *     (FAULT_INFO stays WOULD_BLOCK — no spoofing);
+ *   - registering on a dead process fails NOT_FOUND (would leak the pin).
+ * Invariants: F3, F4, F5, F9, F17, F18. */
+static void test_t140(void) {
+    uint32_t e0[14], e1[14], s3b[5], s3a[5], f0[5], f1[5];
+    int ok = 1;
+    const char *why = "register authority";
+    it_quiesce_reaper();
+    if (!it_sched_ext(e0) || !it_sched_ext3(s3b) || !it_sched_ext5(f0)) {
+        it_fail("T140", "sched ext"); return;
+    }
+
+    /* Child 1: probe every failure path, then fault with NO handler. */
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+    handle_id_t proc_h = HANDLE_INVALID;
+    if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
+        it_close(&ep_h); it_fail("T140", "spawn"); return;
+    }
+    long n1 = it_sys0(SYS_NOTIFY_CREATE);
+    long w  = it_sys0(SYS_NOTIFY_CREATE);
+    handle_id_t n1_h = (n1 >= 0) ? (handle_id_t)n1 : HANDLE_INVALID;
+    handle_id_t w_h  = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
+    if (n1 < 0 || w < 0) { ok = 0; why = "notify create"; }
+
+    if (ok && it_sys3(SYS_PROCESS_WATCH, (long)proc_h, w, 1) != 0) { ok = 0; why = "watch"; }
+
+    /* Wrong types, both slots. */
+    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, (long)ep_h, 1)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "notif wrong-type"; }
+    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)n1_h, n1, 1)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "proc wrong-type"; }
+    /* Reduced rights, both slots — ACCESS_DENIED, no fallback. */
+    long pr_ro = it_sys2(SYS_HANDLE_DUP, (long)proc_h, (long)RIGHT_READ);
+    long n_ro  = it_sys2(SYS_HANDLE_DUP, n1, (long)RIGHT_READ);
+    handle_id_t pr_ro_h = (pr_ro >= 0) ? (handle_id_t)pr_ro : HANDLE_INVALID;
+    handle_id_t n_ro_h  = (n_ro  >= 0) ? (handle_id_t)n_ro  : HANDLE_INVALID;
+    if (ok && (pr_ro < 0 || n_ro < 0)) { ok = 0; why = "ro dups"; }
+    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, pr_ro, n1, 1)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "proc no-manage not denied"; }
+    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n_ro, 1)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "notif no-write not denied"; }
+    /* Zero signal bits / empty slot. */
+    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n1, 0)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bits==0 not rejected"; }
+    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, 9999L, 1) >= 0) {
+        ok = 0; why = "empty slot accepted";
+    }
+
+    /* Every attempt above failed → no handler may be installed: the fault must
+     * take the kill path (F5 — no partial registration, no fallback). */
+    if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd"; }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, w, (long)(uintptr_t)&bits,
+                    2000000000LL) != 0 || !(bits & 1ull)) { ok = 0; why = "nohandler kill"; }
+    }
+    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h) != 0) { ok = 0; why = "kill exit code"; }
+    if (ok && it_fault_info(proc_h, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "dead proc fault info";
+    }
+    /* Dead process: registration must fail NOT_FOUND, not silently pin. */
+    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n1, 1)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "dead reg not NOT_FOUND"; }
+
+    it_close(&pr_ro_h); it_close(&n_ro_h);
+    it_fault_close4(&ep_h, &proc_h, &n1_h, &w_h);
+
+    /* Child 2: valid registration, replacement contract, spoof check. */
+    handle_id_t ep2, pr2, na, wb;
+    if (ok && !it_fault_spawn(&ep2, &pr2, &na, &wb, &why)) { ok = 0; }
+    if (ok) {
+        long n2 = it_sys0(SYS_NOTIFY_CREATE);
+        handle_id_t n2_h = (n2 >= 0) ? (handle_id_t)n2 : HANDLE_INVALID;
+        if (n2 < 0) { ok = 0; why = "n2 create"; }
+        /* Replace na with n2 — last registration wins. */
+        if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)pr2, n2, 1) != 0) {
+            ok = 0; why = "re-register";
+        }
+        /* Spoof: hand-signal n2 — no fault state may appear (F9). */
+        if (ok && it_sys2(SYS_NOTIFY_SIGNAL, n2, 1) != 0) { ok = 0; why = "spoof signal"; }
+        if (ok && it_fault_info(pr2, &(struct it_fault){0})
+                  != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "spoofed fault info"; }
+        if (ok) {
+            uint64_t bits = 0;   /* drain the hand-signal before the real fault */
+            (void)it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n2, (long)(uintptr_t)&bits, 100000000LL);
+        }
+        if (ok && it_lp_cmd_va(ep2, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd2"; }
+        if (ok && !it_fault_wait(n2_h)) { ok = 0; why = "replaced handler no signal"; }
+        /* The replaced-away notification must NOT have fired. */
+        if (ok) {
+            uint64_t bits = 0;
+            if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)na, (long)(uintptr_t)&bits,
+                        100000000LL) == 0 && (bits & 1ull)) { ok = 0; why = "old handler fired"; }
+        }
+        struct it_fault f;
+        if (ok && it_fault_info(pr2, &f) != 0) { ok = 0; why = "fault info 2"; }
+        if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)pr2, (long)f.task_id, 1) != 0) {
+            ok = 0; why = "resume kill";
+        }
+        if (ok && it_lp_wait_exit(pr2) != 0) { ok = 0; why = "child2 exit"; }
+        it_close(&n2_h);
+    }
+    it_fault_close4(&ep2, &pr2, &na, &wb);
+
+    it_quiesce_reaper();
+    if (ok && (!it_sched_ext(e1) || !it_sched_ext3(s3a) || !it_sched_ext5(f1))) {
+        ok = 0; why = "ext final";
+    }
+    if (ok && f1[IT_S5_NOHAND]  != f0[IT_S5_NOHAND] + 1u)  { ok = 0; why = "nohandler count"; }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 1u) { ok = 0; why = "delivery count"; }
+    if (ok && e1[IT_SI_LIVE]    != e0[IT_SI_LIVE])         { ok = 0; why = "handle leak"; }
+    if (ok && s3a[IT_S3_NOTIF]  != s3b[IT_S3_NOTIF])       { ok = 0; why = "notif leak"; }
+    if (ok && s3a[IT_S3_EP]     != s3b[IT_S3_EP])          { ok = 0; why = "ep leak"; }
+    if (ok) it_pass("T140"); else it_fail("T140", why);
+}
+
+/* ── T141: page fault delivery — invalid user VA ────────────────────────────
+ * The foundational delivery contract: the child touches an unmapped user VA;
+ * the fault arrives exactly once on the registered notification with honest
+ * info (vector 14, cr2 == the VA, user-range rip, error P=0/U=1); the child is
+ * suspended (still alive, not running past the faulting load) while pending;
+ * the record persists until resolved; kill-resolution reaps the child and
+ * clears the record.  Invariants: F1, F6, F7, F8, F11, F15, F19. */
+static void test_t141(void) {
+    uint32_t t0 = 0, t1 = 0, e0[14], e1[14], f0[5], f1[5];
+    int ok = 1;
+    const char *why = "invalid VA delivery";
+    it_quiesce_reaper();
+    if (!it_task_live(&t0) || !it_sched_ext(e0) || !it_sched_ext5(f0)) {
+        it_fail("T141", "sched ext"); return;
+    }
+
+    handle_id_t ep_h, proc_h, n_h, w_h;
+    if (!it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T141", why); return; }
+
+    if (it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd"; }
+    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+
+    struct it_fault f;
+    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+    if (ok && f.vector != 14u)               { ok = 0; why = "vector"; }
+    if (ok && f.cr2 != T14X_BAD_VA)          { ok = 0; why = "cr2"; }
+    if (ok && (f.rip == 0 || f.rip >= 0x0000800000000000ULL)) { ok = 0; why = "rip range"; }
+    if (ok && f.task_id == 0)                { ok = 0; why = "task id"; }
+    if (ok && f.error != PF_ERR_U)           { ok = 0; why = "error bits"; }  /* not-present user read */
+
+    /* Suspended while pending: alive (EXIT_CODE blocks), no second signal, and
+     * the record is stable across reads. */
+    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h)
+              != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "child not suspended-alive"; }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)n_h, (long)(uintptr_t)&bits,
+                    100000000LL) == 0 && (bits & 1ull)) { ok = 0; why = "double delivery"; }
+    }
+    struct it_fault f2;
+    if (ok && (it_fault_info(proc_h, &f2) != 0 || f2.task_id != f.task_id ||
+               f2.cr2 != f.cr2 || f2.rip != f.rip)) { ok = 0; why = "record unstable"; }
+
+    /* Kill-resolution: reaps the child, clears the record. */
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+        ok = 0; why = "resume kill";
+    }
+    if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit code"; }
+    if (ok && it_fault_info(proc_h, &f2) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "record survived kill";
+    }
+
+    it_fault_close4(&ep_h, &proc_h, &n_h, &w_h);
+    it_quiesce_reaper();
+    if (ok && (!it_task_live(&t1) || !it_sched_ext(e1) || !it_sched_ext5(f1))) {
+        ok = 0; why = "ext final";
+    }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 1u) { ok = 0; why = "delivered != 1"; }
+    if (ok && f1[IT_S5_KILL]    != f0[IT_S5_KILL] + 1u)    { ok = 0; why = "kill count"; }
+    if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 1u)   { ok = 0; why = "cleanup count"; }
+    if (ok && t1 != t0)                    { ok = 0; why = "task live drift"; }
+    if (ok && e1[IT_SI_LIVE]  != e0[IT_SI_LIVE])  { ok = 0; why = "handle leak"; }
+    if (ok && e1[IT_SI_REPLY] != e0[IT_SI_REPLY]) { ok = 0; why = "kreply drift"; }
+    if (ok) it_pass("T141"); else it_fail("T141", why);
+}
+
+/* ── T142: write-protection fault on a read-only mapping ────────────────────
+ * Closes the Fase 19 T138 gap: write-enforcement is now asserted at the
+ * HARDWARE level, not only at the rights layer.  The child's own code pages
+ * are mapped r-x by the loader (PF flags → map flags → PTE), so:
+ *   - a READ of its own text completes (child exits normally, no fault);
+ *   - a WRITE to its own text raises #PF with error P=1/W=1/U=1, cr2 = the
+ *     write target, and the store must NOT retire: resuming without fixing
+ *     the condition re-faults at the same rip/cr2 (no silent write, no
+ *     corruption), after which the supervisor kills the child.
+ * VSpace books return to baseline after reap.  Invariants: F6, F7, F16, F20,
+ * F21 (write bit distinguishable).  Fase 19 V6 gap closed. */
+static void test_t142(void) {
+    uint32_t v0[5], v1[5], f0[5], f1[5];
+    uint32_t t0 = 0, t1 = 0;
+    int ok = 1;
+    const char *why = "ro write fault";
+    it_quiesce_reaper();
+    if (!it_sched_ext4(v0) || !it_sched_ext5(f0) || !it_task_live(&t0)) {
+        it_fail("T142", "sched ext"); return;
+    }
+
+    /* Child A: reading own text is allowed — exits, no fault delivered. */
+    handle_id_t ep_a, pr_a, n_a, w_a;
+    if (!it_fault_spawn(&ep_a, &pr_a, &n_a, &w_a, &why)) { it_fail("T142", why); return; }
+    if (it_lp_cmd_va(ep_a, LP_CMD_FAULT_READ, 0) != 0) { ok = 0; why = "cmd read"; }
+    if (ok) {
+        long ec = it_lp_wait_exit(pr_a);
+        if ((ec >> 8) != (LP_EXIT_MARKER >> 8)) { ok = 0; why = "text read blocked"; }
+    }
+    it_fault_close4(&ep_a, &pr_a, &n_a, &w_a);
+
+    /* Child B: writing own text must fault — and must not retire. */
+    handle_id_t ep_h, proc_h, n_h, w_h;
+    if (ok && !it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T142", why); return; }
+    if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_WRITE, 0) != 0) { ok = 0; why = "cmd write"; }
+    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+
+    struct it_fault f;
+    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+    if (ok && f.vector != 14u) { ok = 0; why = "vector"; }
+    if (ok && f.error != (PF_ERR_P | PF_ERR_W | PF_ERR_U)) { ok = 0; why = "not a write-protect err"; }
+    if (ok && (f.cr2 == 0 || f.cr2 >= 0x0000800000000000ULL)) { ok = 0; why = "cr2 range"; }
+
+    /* Resume without fixing: the same store re-faults (no silent write). */
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 0) != 0) {
+        ok = 0; why = "resume";
+    }
+    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no refault"; }
+    struct it_fault g;
+    if (ok && it_fault_info(proc_h, &g) != 0) { ok = 0; why = "refault info"; }
+    if (ok && (g.rip != f.rip || g.cr2 != f.cr2 ||
+               g.error != f.error)) { ok = 0; why = "refault mismatch"; }
+    /* The child must NOT have exited (the store never retires). */
+    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h)
+              != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "write retired"; }
+
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)g.task_id, 1) != 0) {
+        ok = 0; why = "resume kill";
+    }
+    if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
+    it_fault_close4(&ep_h, &proc_h, &n_h, &w_h);
+
+    it_quiesce_reaper();
+    if (ok && (!it_sched_ext4(v1) || !it_sched_ext5(f1) || !it_task_live(&t1))) {
+        ok = 0; why = "ext final";
+    }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 2u) { ok = 0; why = "delivery count"; }
+    if (ok && f1[IT_S5_RESUME]  != f0[IT_S5_RESUME] + 1u)  { ok = 0; why = "resume count"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "mapping drift"; }
+    if (ok && v1[IT_S4_VSLIVE]  != v0[IT_S4_VSLIVE])  { ok = 0; why = "vspace drift"; }
+    if (ok && t1 != t0) { ok = 0; why = "task live drift"; }
+    if (ok) it_pass("T142"); else it_fail("T142", why);
+}
+
+/* ── T143: NX instruction-fetch fault ───────────────────────────────────────
+ * NX is real end to end: EFER.NXE is enabled at paging init and every
+ * non-EXEC user mapping carries PTE.NX (kframe_map_page), including the
+ * child's stack (rw- by the loader/creator).  The child copies `ret` opcodes
+ * onto its stack and calls them: the fetch must fault with error
+ * P=1/U=1/I=1 and cr2 == rip (the fetch address IS the faulting address) in
+ * the user range.  No escalation: the supervisor observes and kills.
+ * Invariants: F1, F7, F21 (execute bit distinguishable), F22. */
+static void test_t143(void) {
+    uint32_t f0[5], f1[5];
+    uint32_t t0 = 0, t1 = 0;
+    int ok = 1;
+    const char *why = "nx exec fault";
+    it_quiesce_reaper();
+    if (!it_sched_ext5(f0) || !it_task_live(&t0)) { it_fail("T143", "sched ext"); return; }
+
+    handle_id_t ep_h, proc_h, n_h, w_h;
+    if (!it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T143", why); return; }
+
+    if (it_lp_cmd_va(ep_h, LP_CMD_FAULT_EXEC, 0) != 0) { ok = 0; why = "cmd"; }
+    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+
+    struct it_fault f;
+    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+    if (ok && f.vector != 14u) { ok = 0; why = "vector"; }
+    if (ok && f.error != (PF_ERR_P | PF_ERR_U | PF_ERR_I)) { ok = 0; why = "not an ifetch err"; }
+    if (ok && f.cr2 != f.rip) { ok = 0; why = "cr2 != rip"; }
+    if (ok && (f.cr2 == 0 || f.cr2 >= 0x0000800000000000ULL)) { ok = 0; why = "cr2 range"; }
+
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+        ok = 0; why = "resume kill";
+    }
+    if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
+    it_fault_close4(&ep_h, &proc_h, &n_h, &w_h);
+
+    it_quiesce_reaper();
+    if (ok && (!it_sched_ext5(f1) || !it_task_live(&t1))) { ok = 0; why = "ext final"; }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 1u) { ok = 0; why = "delivery count"; }
+    if (ok && t1 != t0) { ok = 0; why = "task live drift"; }
+    if (ok) it_pass("T143"); else it_fail("T143", why);
+}
+
+/* ── T144: fault resume semantics ───────────────────────────────────────────
+ * Resolution is exact, authorized, and one-shot:
+ *   - RESUME through a proc cap without RIGHT_MANAGE is ACCESS_DENIED (F10);
+ *   - RESUME naming a task that is not fault-blocked in that process is
+ *     NOT_FOUND (F11); action > 1 is INVALID_ARG;
+ *   - a valid action-0 RESUME re-executes the faulting instruction — the same
+ *     unmapped load faults again as a NEW pending fault (F16);
+ *   - after kill-resolution the record is gone: FAULT_INFO is WOULD_BLOCK and
+ *     a second RESUME is a clean NOT_FOUND (F11, F12 — no stale state). */
+static void test_t144(void) {
+    uint32_t f0[5], f1[5];
+    uint32_t t0 = 0, t1 = 0;
+    int ok = 1;
+    const char *why = "resume semantics";
+    it_quiesce_reaper();
+    if (!it_sched_ext5(f0) || !it_task_live(&t0)) { it_fail("T144", "sched ext"); return; }
+
+    handle_id_t ep_h, proc_h, n_h, w_h;
+    if (!it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T144", why); return; }
+
+    if (it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd"; }
+    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+    struct it_fault f;
+    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+
+    /* Wrong authority: RIGHT_READ-only proc dup must be denied. */
+    long pr_ro = it_sys2(SYS_HANDLE_DUP, (long)proc_h, (long)RIGHT_READ);
+    handle_id_t pr_ro_h = (pr_ro >= 0) ? (handle_id_t)pr_ro : HANDLE_INVALID;
+    if (ok && pr_ro < 0) { ok = 0; why = "ro dup"; }
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, pr_ro, (long)f.task_id, 0)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-manage not denied"; }
+    /* Exactness: wrong task id / bad action. */
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)(f.task_id + 4096u), 0)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "bogus id not NOT_FOUND"; }
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 2)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "action 2 not rejected"; }
+
+    /* Valid resume: the load re-executes and faults again — a NEW fault. */
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 0) != 0) {
+        ok = 0; why = "resume";
+    }
+    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no refault"; }
+    struct it_fault g;
+    if (ok && it_fault_info(proc_h, &g) != 0) { ok = 0; why = "refault info"; }
+    if (ok && (g.cr2 != f.cr2 || g.task_id != f.task_id)) { ok = 0; why = "refault mismatch"; }
+
+    /* Kill-resolution, then verify nothing stale remains. */
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)g.task_id, 1) != 0) {
+        ok = 0; why = "resume kill";
+    }
+    if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)g.task_id, 0)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume not NOT_FOUND"; }
+    if (ok && it_fault_info(proc_h, &g) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "stale record";
+    }
+
+    it_close(&pr_ro_h);
+    it_fault_close4(&ep_h, &proc_h, &n_h, &w_h);
+    it_quiesce_reaper();
+    if (ok && (!it_sched_ext5(f1) || !it_task_live(&t1))) { ok = 0; why = "ext final"; }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 2u) { ok = 0; why = "delivery count"; }
+    if (ok && f1[IT_S5_RESUME]  != f0[IT_S5_RESUME] + 1u)  { ok = 0; why = "resume count"; }
+    if (ok && f1[IT_S5_KILL]    != f0[IT_S5_KILL] + 1u)    { ok = 0; why = "kill count"; }
+    if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 2u)   { ok = 0; why = "cleanup count"; }
+    if (ok && t1 != t0) { ok = 0; why = "task live drift"; }
+    if (ok) it_pass("T144"); else it_fail("T144", why);
+}
+
+/* ── T145: handler drop during a pending fault ──────────────────────────────
+ * The handler's notification HANDLE is not the resolution authority — the
+ * process cap is.  Registration pins the notification object inside the
+ * KProcess, so the supervisor closing its own handle mid-fault leaves the
+ * pending fault fully resolvable:
+ *   (a) close the handler notif while a fault is pending → EXCEPTION_RESUME
+ *       (kill) through the proc cap still resolves and reaps;
+ *   (b) same, but resolve via SYS_PROCESS_KILL → teardown clears the fault
+ *       record, releases the pinned notification, reaps everything.
+ * Documented contract: handler death never auto-kills the faulted process;
+ * the faulted task stays suspended until a RIGHT_MANAGE holder resolves it.
+ * No zombies, no waiter/KReply drift, notification objects at baseline.
+ * Invariants: F13, F14, F15, F17, F18, F19. */
+static void test_t145(void) {
+    uint32_t e0[14], e1[14], s3b[5], s3a[5], f0[5], f1[5];
+    uint32_t t0 = 0, t1 = 0;
+    int ok = 1;
+    const char *why = "handler drop";
+    it_quiesce_reaper();
+    if (!it_sched_ext(e0) || !it_sched_ext3(s3b) || !it_sched_ext5(f0) ||
+        !it_task_live(&t0)) { it_fail("T145", "sched ext"); return; }
+
+    /* (a) notif handle closed mid-fault → resume-kill still resolves. */
+    handle_id_t ep_h, proc_h, n_h, w_h;
+    if (!it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T145", why); return; }
+    if (it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd a"; }
+    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery a"; }
+    struct it_fault f;
+    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info a"; }
+    it_close(&n_h);                       /* handler endpoint gone */
+    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h)
+              != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "child died on handler close"; }
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+        ok = 0; why = "post-close resume kill";
+    }
+    if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit a"; }
+    it_fault_close4(&ep_h, &proc_h, &n_h, &w_h);
+
+    /* (b) notif handle closed mid-fault → PROCESS_KILL resolves via teardown. */
+    if (ok && !it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T145", why); return; }
+    if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd b"; }
+    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery b"; }
+    it_close(&n_h);
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "process kill"; }
+    if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit b"; }
+    if (ok && it_fault_info(proc_h, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "record survived teardown";
+    }
+    it_fault_close4(&ep_h, &proc_h, &n_h, &w_h);
+
+    it_quiesce_reaper();
+    if (ok && (!it_sched_ext(e1) || !it_sched_ext3(s3a) || !it_sched_ext5(f1) ||
+               !it_task_live(&t1))) { ok = 0; why = "ext final"; }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 2u) { ok = 0; why = "delivery count"; }
+    if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 2u)   { ok = 0; why = "cleanup count"; }
+    if (ok && t1 != t0)                   { ok = 0; why = "task live drift"; }
+    if (ok && e1[IT_SI_LIVE]   != e0[IT_SI_LIVE])   { ok = 0; why = "handle leak"; }
+    if (ok && e1[IT_SI_REPLY]  != e0[IT_SI_REPLY])  { ok = 0; why = "kreply drift"; }
+    if (ok && s3a[IT_S3_NOTIF] != s3b[IT_S3_NOTIF]) { ok = 0; why = "notif obj leak"; }
+    if (ok && s3a[IT_S3_EP]    != s3b[IT_S3_EP])    { ok = 0; why = "ep obj leak"; }
+    if (ok) it_pass("T145"); else it_fail("T145", why);
+}
+
+/* ── T146: process kill while a fault is pending ────────────────────────────
+ * The supervisor kills the whole process while its task sits in
+ * TASK_BLOCKED_FAULT.  Teardown must clear the fault record, cancel nothing
+ * that isn't there, and leave zero residue; the handler's LATE response after
+ * the kill fails clean:
+ *   - EXCEPTION_RESUME after the kill → NOT_FOUND (no matching blocked task);
+ *   - FAULT_INFO after the kill → WOULD_BLOCK (record cleared by teardown);
+ *   - task/handle/KReply/mapping books at baseline.
+ * Invariants: F12, F15, F17, F18, F19, F20. */
+static void test_t146(void) {
+    uint32_t e0[14], e1[14], v0[5], v1[5], f0[5], f1[5];
+    uint32_t t0 = 0, t1 = 0;
+    int ok = 1;
+    const char *why = "kill while pending";
+    it_quiesce_reaper();
+    if (!it_sched_ext(e0) || !it_sched_ext4(v0) || !it_sched_ext5(f0) ||
+        !it_task_live(&t0)) { it_fail("T146", "sched ext"); return; }
+
+    handle_id_t ep_h, proc_h, n_h, w_h;
+    if (!it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T146", why); return; }
+
+    if (it_lp_cmd_va(ep_h, LP_CMD_FAULT_WRITE, T14X_BAD_VA) != 0) { ok = 0; why = "cmd"; }
+    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+    struct it_fault f;
+    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+    if (ok && f.error != (PF_ERR_W | PF_ERR_U)) { ok = 0; why = "write err bits"; } /* not-present user write */
+
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
+    if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
+
+    /* Late handler response: clean failures, no stale record. */
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 0)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume not NOT_FOUND"; }
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late kill not NOT_FOUND"; }
+    if (ok && it_fault_info(proc_h, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "record survived kill";
+    }
+
+    it_fault_close4(&ep_h, &proc_h, &n_h, &w_h);
+    it_quiesce_reaper();
+    if (ok && (!it_sched_ext(e1) || !it_sched_ext4(v1) || !it_sched_ext5(f1) ||
+               !it_task_live(&t1))) { ok = 0; why = "ext final"; }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 1u) { ok = 0; why = "delivery count"; }
+    if (ok && f1[IT_S5_KILL]    != f0[IT_S5_KILL])         { ok = 0; why = "resume-kill count moved"; }
+    if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 1u)   { ok = 0; why = "cleanup count"; }
+    if (ok && t1 != t0)                  { ok = 0; why = "task live drift"; }
+    if (ok && e1[IT_SI_LIVE]  != e0[IT_SI_LIVE])  { ok = 0; why = "handle leak"; }
+    if (ok && e1[IT_SI_REPLY] != e0[IT_SI_REPLY]) { ok = 0; why = "kreply drift"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "mapping drift"; }
+    if (ok && v1[IT_S4_VSLIVE]  != v0[IT_S4_VSLIVE])  { ok = 0; why = "vspace drift"; }
+    if (ok) it_pass("T146"); else it_fail("T146", why);
+}
+
+/* ── T147: deterministic fault endpoint stress ──────────────────────────────
+ * A fixed-seed PRNG drives rounds of spawn → mixed fault kind (invalid-VA
+ * read, own-text write, kernel-range read, NX exec) → mixed resolution
+ * (resume-refault-kill / resume-kill / PROCESS_KILL / close-notif-then-kill),
+ * with occasional non-faulting children (own-text read) interleaved.  Every
+ * wait is bounded; two suspended-in-fault children coexist at one point every
+ * round (the shared-IST regression fixture: both keep live frames while
+ * blocked).  After the churn the fault counters and every book return to
+ * baseline: no hung faulted tasks, no KReply/waiter drift, no live_task/proc
+ * drift, no mapping drift, no stale fault state.  Prints seed/iteration only
+ * on failure.  Invariants: F6, F11, F13, F15, F16, F17, F18, F19, F20. */
+#define T147_SEED   0x20C0DE20u
+#define T147_ROUNDS 10u
+static void test_t147(void) {
+    uint32_t e0[14], e1[14], s3b[5], s3a[5], v0[5], v1[5], f0[5], f1[5];
+    uint32_t t0 = 0, t1 = 0;
+    it_quiesce_reaper();
+    if (!it_sched_ext(e0) || !it_sched_ext3(s3b) || !it_sched_ext4(v0) ||
+        !it_sched_ext5(f0) || !it_task_live(&t0)) { it_fail("T147", "sched ext"); return; }
+    g_fz_seed = T147_SEED;
+    int ok = 1;
+    const char *why = "fault stress";
+    uint32_t i = 0;
+
+    for (i = 0; ok && i < T147_ROUNDS; i++) {
+        /* Primary faulting child. */
+        handle_id_t ep_h, proc_h, n_h, w_h;
+        if (!it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { ok = 0; break; }
+
+        uint32_t kind = fz_rand() % 4u;
+        uint32_t cmd  = (kind == 1u) ? LP_CMD_FAULT_WRITE
+                      : (kind == 3u) ? LP_CMD_FAULT_EXEC
+                                     : LP_CMD_FAULT_READ;
+        uint64_t va   = (kind == 0u) ? T14X_BAD_VA
+                      : (kind == 2u) ? T14X_KERN_VA
+                                     : 0;
+        if (it_lp_cmd_va(ep_h, cmd, va) != 0) { ok = 0; why = "cmd"; }
+        if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+        struct it_fault f;
+        if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+        if (ok && f.vector != 14u) { ok = 0; why = "vector"; }
+
+        /* Second child suspended in fault at the same time: two live blocked
+         * fault frames must coexist without corrupting each other. */
+        handle_id_t ep2, pr2, n2, w2;
+        int have2 = 0;
+        if (ok && (fz_rand() & 1u)) {
+            if (!it_fault_spawn(&ep2, &pr2, &n2, &w2, &why)) { ok = 0; break; }
+            have2 = 1;
+            if (it_lp_cmd_va(ep2, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd2"; }
+            if (ok && !it_fault_wait(n2)) { ok = 0; why = "no delivery 2"; }
+        }
+
+        /* Resolve the primary child. */
+        uint32_t res = fz_rand() % 4u;
+        if (ok && res == 0u) {
+            /* resume → refault → kill (also re-proves F16 under churn). */
+            if (it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 0) != 0) {
+                ok = 0; why = "resume";
+            }
+            if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no refault"; }
+            if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+                ok = 0; why = "refault kill";
+            }
+        } else if (ok && res == 1u) {
+            if (it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+                ok = 0; why = "resume kill";
+            }
+        } else if (ok && res == 2u) {
+            if (it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "proc kill"; }
+        } else if (ok) {
+            it_close(&n_h);   /* handler drop first, then resolve via proc cap */
+            if (it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+                ok = 0; why = "post-close kill";
+            }
+        }
+        if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
+        if (ok && it_fault_info(proc_h, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
+            ok = 0; why = "stale record";
+        }
+        it_fault_close4(&ep_h, &proc_h, &n_h, &w_h);
+
+        /* Resolve the second child (kill via whichever authority remains). */
+        if (have2) {
+            struct it_fault f2;
+            if (ok && it_fault_info(pr2, &f2) != 0) { ok = 0; why = "fault info 2"; }
+            if (ok && ((fz_rand() & 1u)
+                       ? it_sys3(SYS_EXCEPTION_RESUME, (long)pr2, (long)f2.task_id, 1)
+                       : it_sys1(SYS_PROCESS_KILL, (long)pr2)) != 0) {
+                ok = 0; why = "resolve 2";
+            }
+            if (ok && it_lp_wait_exit(pr2) != 0) { ok = 0; why = "exit 2"; }
+            it_fault_close4(&ep2, &pr2, &n2, &w2);
+        }
+
+        /* Occasionally interleave a non-faulting child (own-text read). */
+        if (ok && (fz_rand() & 1u)) {
+            handle_id_t ep3, pr3, n3, w3;
+            if (!it_fault_spawn(&ep3, &pr3, &n3, &w3, &why)) { ok = 0; break; }
+            if (it_lp_cmd_va(ep3, LP_CMD_FAULT_READ, 0) != 0) { ok = 0; why = "cmd3"; }
+            if (ok) {
+                long ec = it_lp_wait_exit(pr3);
+                if ((ec >> 8) != (LP_EXIT_MARKER >> 8)) { ok = 0; why = "clean child"; }
+            }
+            it_fault_close4(&ep3, &pr3, &n3, &w3);
+        }
+
+        if ((i & 3u) == 3u) it_quiesce_reaper();
+    }
+
+    it_quiesce_reaper();
+    if (ok && (!it_sched_ext(e1) || !it_sched_ext3(s3a) || !it_sched_ext4(v1) ||
+               !it_sched_ext5(f1) || !it_task_live(&t1))) { ok = 0; why = "ext final"; }
+    if (ok && t1 != t0)                    { ok = 0; why = "task live drift"; }
+    if (ok && e1[IT_SI_LIVE]   != e0[IT_SI_LIVE])   { ok = 0; why = "handle leak"; }
+    if (ok && e1[IT_SI_REPLY]  != e0[IT_SI_REPLY])  { ok = 0; why = "kreply drift"; }
+    if (ok && s3a[IT_S3_NOTIF] != s3b[IT_S3_NOTIF]) { ok = 0; why = "notif obj leak"; }
+    if (ok && s3a[IT_S3_EP]    != s3b[IT_S3_EP])    { ok = 0; why = "ep obj leak"; }
+    if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "mapping drift"; }
+    if (ok && v1[IT_S4_VSLIVE]  != v0[IT_S4_VSLIVE])  { ok = 0; why = "vspace drift"; }
+    if (ok && f1[IT_S5_DELIVER] < f0[IT_S5_DELIVER] + T147_ROUNDS) { ok = 0; why = "delivery floor"; }
+
+    if (ok) it_pass("T147");
+    else {
+        fz_note("T147", T147_SEED, i);
+        it_fail("T147", why);
+    }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -8621,6 +9374,14 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t137();
     test_t138();
     test_t139();
+    test_t140();
+    test_t141();
+    test_t142();
+    test_t143();
+    test_t144();
+    test_t145();
+    test_t146();
+    test_t147();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

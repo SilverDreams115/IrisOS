@@ -61,6 +61,24 @@
  *     cap once a server receives) until reply, kill, or close. */
 #define LP_CMD_SEND_BLOCK      0x109Au
 #define LP_CMD_CALL_BLOCK      0x109Bu
+
+/* Fase 20 fault-trigger modes (opt-in per run).  After the first recv the child
+ * performs a faulting access so the parent (a supervisor that registered a fault
+ * endpoint via SYS_EXCEPTION_HANDLER) observes fault delivery.  words[0] carries
+ * the target VA for READ/WRITE.  The child never returns from the faulting
+ * instruction unless the parent resumes it after fixing the condition.
+ *   LP_CMD_FAULT_READ:  read  *(volatile*)words[0]  → #PF on an unmapped VA.
+ *   LP_CMD_FAULT_WRITE: write *(volatile*)words[0]  → #PF (not-present, or
+ *     write-protection if the VA is a present read-only page, e.g. own text).
+ *   LP_CMD_FAULT_EXEC:  call an address on the NX stack → #PF instruction-fetch.
+ * words[0] == 0 means "use my own code address" (&lp_main): services load
+ * ASLR-biased ET_DYN, so the parent cannot name a child text VA — the child
+ * resolves it itself.  READ of own text completes (RO is readable) and exits
+ * with the marker; WRITE of own text is the write-protection fault fixture.
+ * Must match iris_test. */
+#define LP_CMD_FAULT_READ      0x109Cu
+#define LP_CMD_FAULT_WRITE     0x109Du
+#define LP_CMD_FAULT_EXEC      0x109Eu
 /* Exit-code base for a send/call that returned (was NOT killed while blocked);
  * low byte = -err (0 = success).  Lets a rendezvous-then-complete run report. */
 #define LP_EXIT_IPC_BASE       0x0C00
@@ -120,6 +138,34 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         long r = lp_sys2(is_call ? SYS_EP_CALL : SYS_EP_SEND,
                          (long)LP_CPTR_CMD_EP, (long)&w);
         lp_sys1(SYS_EXIT, (long)(LP_EXIT_IPC_BASE | ((uint32_t)-r & 0xFFu)));
+        for (;;) {}
+    }
+
+    /* Fase 20: perform a faulting access so a supervisor's fault endpoint fires.
+     * The instruction faults; the kernel suspends this task in BLOCKED_FAULT and
+     * signals the parent's handler.  If the parent resumes without fixing the
+     * condition the same fault recurs; if it fixes it (e.g. remaps writable) the
+     * access completes and we exit with the marker; normally the parent kills us. */
+    if (msg.label == (uint64_t)LP_CMD_FAULT_READ) {
+        uint64_t va = msg.words[0] ? msg.words[0] : (uint64_t)(uintptr_t)&lp_main;
+        volatile uint32_t *p2 = (volatile uint32_t *)(uintptr_t)va;
+        uint32_t v = *p2;                      /* faults on an unmapped VA */
+        lp_sys1(SYS_EXIT, (long)(LP_EXIT_MARKER ^ (v & 0xFFu)));
+        for (;;) {}
+    }
+    if (msg.label == (uint64_t)LP_CMD_FAULT_WRITE) {
+        uint64_t va = msg.words[0] ? msg.words[0] : (uint64_t)(uintptr_t)&lp_main;
+        volatile uint32_t *p2 = (volatile uint32_t *)(uintptr_t)va;
+        *p2 = 0xFA017E57u;                     /* faults on unmapped / read-only VA */
+        lp_sys1(SYS_EXIT, (long)LP_EXIT_MARKER);
+        for (;;) {}
+    }
+    if (msg.label == (uint64_t)LP_CMD_FAULT_EXEC) {
+        volatile uint8_t code_on_stack[16];
+        for (uint32_t i = 0; i < 16u; i++) code_on_stack[i] = 0xC3u;  /* ret */
+        void (*fn)(void) = (void (*)(void))(uintptr_t)code_on_stack;   /* NX page */
+        fn();                                  /* faults on instruction fetch (NX) */
+        lp_sys1(SYS_EXIT, (long)LP_EXIT_MARKER);
         for (;;) {}
     }
 
