@@ -292,6 +292,11 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         task_kill_external(ft);
     }
 
+    /* Fase 20: the fault is resolved — drop the pending-fault record so a later
+     * SYS_PROCESS_FAULT_INFO honestly returns WOULD_BLOCK, and bump the
+     * resume/kill counter. */
+    kprocess_fault_clear(target_proc, target_id, action == 1);
+
     kobject_release(&target_proc->base);
     return syscall_ok_u64(0);
 }

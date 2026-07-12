@@ -17,6 +17,48 @@
 
 static _Atomic uint32_t kprocess_live;
 
+/* Fase 20 — fault-model instrumentation (additive, exposed via SYS_SCHED_INFO
+ * ext5 tier).  Silent; makes fault delivery/resolution observable to the
+ * T140–T147 selftests without changing any behaviour.
+ *   delivery  — user faults handed to a registered handler (notif signalled).
+ *   nohandler — user faults with NO handler (the task is killed by idt.c).
+ *   resume    — SYS_EXCEPTION_RESUME action 0 (wake at faulting rip).
+ *   kill      — SYS_EXCEPTION_RESUME action 1 (kill the faulted task).
+ *   cleanup   — pending-fault records cleared (on resume/kill resolution). */
+static _Atomic uint32_t kfault_delivery;
+static _Atomic uint32_t kfault_nohandler;
+static _Atomic uint32_t kfault_resume;
+static _Atomic uint32_t kfault_kill;
+static _Atomic uint32_t kfault_cleanup;
+
+uint32_t kprocess_fault_delivery_count(void)  { return atomic_load_explicit(&kfault_delivery,  memory_order_relaxed); }
+uint32_t kprocess_fault_nohandler_count(void) { return atomic_load_explicit(&kfault_nohandler, memory_order_relaxed); }
+uint32_t kprocess_fault_resume_count(void)    { return atomic_load_explicit(&kfault_resume,    memory_order_relaxed); }
+uint32_t kprocess_fault_kill_count(void)      { return atomic_load_explicit(&kfault_kill,      memory_order_relaxed); }
+uint32_t kprocess_fault_cleanup_count(void)   { return atomic_load_explicit(&kfault_cleanup,   memory_order_relaxed); }
+
+void kprocess_fault_stat_nohandler(void) { atomic_fetch_add_explicit(&kfault_nohandler, 1u, memory_order_relaxed); }
+
+/*
+ * kprocess_fault_clear — drop the pending-fault record for process p if it
+ * belongs to task_id.  Fase 20: SYS_EXCEPTION_RESUME calls this so a resolved
+ * fault stops being reported by SYS_PROCESS_FAULT_INFO (which must return
+ * WOULD_BLOCK when nothing is pending).  `killed` selects the resume/kill
+ * counter.  Idempotent — a second call with no matching pending fault is a
+ * no-op.
+ */
+void kprocess_fault_clear(struct KProcess *p, uint32_t task_id, int killed) {
+    if (!p) return;
+    spinlock_lock(&p->base.lock);
+    if (p->fault_valid && p->fault_task_id == task_id) {
+        p->fault_valid = 0;
+        atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
+    }
+    spinlock_unlock(&p->base.lock);
+    atomic_fetch_add_explicit(killed ? &kfault_kill : &kfault_resume, 1u,
+                              memory_order_relaxed);
+}
+
 /* PCID allocation bitmap: 64 words × 64 bits = PCIDs 0–4095.
  * Bit 0 (PCID 0 = kernel) and bit 4095 (reserved) are pre-set.
  * PCIDs 1–4094 are available for user processes.
@@ -244,6 +286,20 @@ iris_error_t kprocess_set_exception_handler(struct KProcess *p,
     kobject_active_retain(&notif->base);
 
     spinlock_lock(&p->base.lock);
+    /* Fase 20: registering on a torn-down process would re-pin exception_notif
+     * AFTER kprocess_teardown already ran kprocess_clear_exception_chan —
+     * nothing would ever release those refs (kprocess_destroy skips teardown
+     * once teardown_complete is set), leaking the notification.  A racing
+     * registration that reads the flag before teardown stores it is swept by
+     * teardown's second clear.  NOTE: a never-started process (thread_count 0,
+     * no teardown) is a legitimate target — registering BEFORE the first task
+     * starts is the race-free supervisor order (phase3 selftest covers it). */
+    if (p->teardown_complete) {
+        spinlock_unlock(&p->base.lock);
+        kobject_active_release(&notif->base);
+        kobject_release(&notif->base);
+        return IRIS_ERR_NOT_FOUND;
+    }
     old = (p->exception_notif == notif) ? 0 : p->exception_notif;
     if (p->exception_notif == notif) {
         /* already set: drop the extra ref we took */
@@ -293,6 +349,7 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
 
     knotification_signal(notif, bits);
     kobject_release(&notif->base);
+    atomic_fetch_add_explicit(&kfault_delivery, 1u, memory_order_relaxed);
     return 1;
 }
 
@@ -306,6 +363,15 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     kprocess_emit_exit_watch(p);
     kprocess_clear_exit_watch(p);
     kprocess_clear_exception_chan(p);
+    /* Fase 20 (F15): a fault record must not outlive the process — a late
+     * SYS_PROCESS_FAULT_INFO through a surviving handle reports WOULD_BLOCK,
+     * not a stale fault of a dead task. */
+    spinlock_lock(&p->base.lock);
+    if (p->fault_valid) {
+        p->fault_valid = 0;
+        atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
+    }
+    spinlock_unlock(&p->base.lock);
     /* Fase 6.3: VMO mappings are now tracked via KVSpace.mappings and cleaned
      * by kvspace_invalidate inside kprocess_reap_address_space.  No per-process
      * VMO mapping list exists; nothing to do here. */
@@ -314,6 +380,10 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
 
     (void)exiting_thread; /* thread_count tracks liveness; no per-thread ref needed */
     p->teardown_complete = 1;
+    /* Fase 20: a registration that raced in between the clear above and the
+     * flag store would re-pin the notification with nobody left to release
+     * it; sweep again now that the flag rejects new registrations. */
+    kprocess_clear_exception_chan(p);
 }
 
 iris_error_t kprocess_register_bootstrap_frame(struct KProcess *p, struct KFrame *f) {

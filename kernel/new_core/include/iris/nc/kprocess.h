@@ -127,6 +127,14 @@ iris_error_t     kprocess_set_exception_handler(struct KProcess *p,
                                                  uint64_t signal_bits);
 int              kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
+/* Fase 20: fault-model instrumentation + resume-time pending-fault clear. */
+void             kprocess_fault_clear(struct KProcess *p, uint32_t task_id, int killed);
+void             kprocess_fault_stat_nohandler(void);
+uint32_t         kprocess_fault_delivery_count(void);
+uint32_t         kprocess_fault_nohandler_count(void);
+uint32_t         kprocess_fault_resume_count(void);
+uint32_t         kprocess_fault_kill_count(void);
+uint32_t         kprocess_fault_cleanup_count(void);
 /* Fase 6.2: Bootstrap frame tracking.
  * kprocess_register_bootstrap_frame stores one alloc retain in bootstrap_frames[].
  * kprocess_release_bootstrap_frames drops all alloc retains; must be called after

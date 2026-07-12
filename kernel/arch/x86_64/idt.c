@@ -193,6 +193,7 @@ void isr_handler(struct full_frame *frame) {
                 }
             }
             /* No exception handler registered — log and terminate the task. */
+            kprocess_fault_stat_nohandler();
             panic_write("[IRIS][FAULT] userland exception: ");
             panic_write(exception_names[frame->vector]);
             panic_write(" task=");

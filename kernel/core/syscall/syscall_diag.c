@@ -117,12 +117,24 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 152: uint32_t tlb_invalidate_count— Fase 19 (local invlpg, cumulative)
  *   offset 156: uint32_t _pad2
  * Extended-4 total: 160 bytes.
+ *
+ * Fase 20 additive fault-model tier — written ONLY when the caller passes
+ * buf_size >= 184 (a caller passing 160..183 gets the exact 160-byte snapshot;
+ * same additive rule as every tier above):
+ *   offset 160: uint32_t fault_delivery_count  — Fase 20 (faults handed to a handler)
+ *   offset 164: uint32_t fault_nohandler_count — Fase 20 (faults with no handler → kill)
+ *   offset 168: uint32_t fault_resume_count    — Fase 20 (EXCEPTION_RESUME action 0)
+ *   offset 172: uint32_t fault_kill_count      — Fase 20 (EXCEPTION_RESUME action 1)
+ *   offset 176: uint32_t fault_cleanup_count   — Fase 20 (pending faults cleared)
+ *   offset 180: uint32_t _pad3
+ * Extended-5 total: 184 bytes.
  */
 #define SCHED_INFO_BASE_BYTES 40u
 #define SCHED_INFO_EXT_BYTES  96u
 #define SCHED_INFO_EXT2_BYTES 112u
 #define SCHED_INFO_EXT3_BYTES 136u
 #define SCHED_INFO_EXT4_BYTES 160u
+#define SCHED_INFO_EXT5_BYTES 184u
 
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
@@ -130,14 +142,15 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!t || !task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
     if (arg1 < SCHED_INFO_BASE_BYTES) return syscall_err(IRIS_ERR_INVALID_ARG);
     uint32_t want;
-    if      (arg1 >= SCHED_INFO_EXT4_BYTES) want = SCHED_INFO_EXT4_BYTES;
+    if      (arg1 >= SCHED_INFO_EXT5_BYTES) want = SCHED_INFO_EXT5_BYTES;
+    else if (arg1 >= SCHED_INFO_EXT4_BYTES) want = SCHED_INFO_EXT4_BYTES;
     else if (arg1 >= SCHED_INFO_EXT3_BYTES) want = SCHED_INFO_EXT3_BYTES;
     else if (arg1 >= SCHED_INFO_EXT2_BYTES) want = SCHED_INFO_EXT2_BYTES;
     else if (arg1 >= SCHED_INFO_EXT_BYTES)  want = SCHED_INFO_EXT_BYTES;
     else                                    want = SCHED_INFO_BASE_BYTES;
     if (!user_range_writable(arg0, want)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    uint64_t buf[20];
+    uint64_t buf[23];
     buf[0] = sched_current_ticks();
     buf[1] = sched_wall_ticks();
     buf[2] = sched_context_switches();
@@ -201,6 +214,18 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         buf[17] = (uint64_t)v0 | ((uint64_t)v1 << 32);
         buf[18] = (uint64_t)v2 | ((uint64_t)v3 << 32);
         buf[19] = (uint64_t)v4;   /* high half = _pad2 (0) */
+    }
+
+    if (want >= SCHED_INFO_EXT5_BYTES) {
+        /* Fase 20 fault-model words (offsets 160..176). */
+        uint32_t g0 = kprocess_fault_delivery_count();
+        uint32_t g1 = kprocess_fault_nohandler_count();
+        uint32_t g2 = kprocess_fault_resume_count();
+        uint32_t g3 = kprocess_fault_kill_count();
+        uint32_t g4 = kprocess_fault_cleanup_count();
+        buf[20] = (uint64_t)g0 | ((uint64_t)g1 << 32);
+        buf[21] = (uint64_t)g2 | ((uint64_t)g3 << 32);
+        buf[22] = (uint64_t)g4;   /* high half = _pad3 (0) */
     }
 
     if (!copy_to_user_checked(arg0, buf, want))

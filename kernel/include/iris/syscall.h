@@ -435,7 +435,11 @@
  *   details in the process and signals signal_bits on notify_h (no KChannel),
  *   then suspends the faulting task in TASK_BLOCKED_FAULT.  The handler reads the
  *   details with SYS_PROCESS_FAULT_INFO and resumes/kills via SYS_EXCEPTION_RESUME.
- *   If no handler is registered, faults kill the task silently.
+ *   If no handler is registered, the fault is logged and the task is killed.
+ *   Re-registration replaces the previous handler (last registration wins).
+ *   Fase 20: registering on an already-dead process fails IRIS_ERR_NOT_FOUND
+ *   (nothing can fault, and the registration would leak the notification pin).
+ *   Only ring-3 faults are deliverable; kernel faults are always fatal.
  */
 #define SYS_EXCEPTION_HANDLER  47
 
@@ -446,6 +450,9 @@
  *             (FAULT_OFF_VECTOR/TASK_ID/RIP/ERROR/CR2).
  *   Returns IRIS_ERR_WOULD_BLOCK if no fault is pending.  Pairs with the
  *   exception-handler KNotification (SYS_EXCEPTION_HANDLER).
+ *   Fase 20: a fault record lives exactly as long as the fault is pending —
+ *   SYS_EXCEPTION_RESUME (either action) and process teardown clear it, so a
+ *   resolved or dead-process query honestly reports WOULD_BLOCK.
  */
 #define SYS_PROCESS_FAULT_INFO 105
 
