@@ -152,6 +152,38 @@ isr_common:
     pushq %r14
     pushq %r15
 
+    /* Fase 20: los #GP/#PF (vectores 13/14) entran por IST1, un stack fijo
+     * por CPU que se reutiliza desde el tope en cada entrada.  Una task que
+     * el handler C suspenda en TASK_BLOCKED_FAULT dejaría su contexto vivo
+     * (frame + frames de C + context_switch) dentro de IST1, y el siguiente
+     * #GP/#PF de cualquier otra task lo pisaría.  Para faults originados en
+     * ring 3 el kernel stack propio de la task está garantizado vacío, así
+     * que migramos el frame completo (22 qwords) allí antes de llamar al
+     * handler C; el resto del manejo (bloqueo, resume, restore, iretq) corre
+     * ya sobre memoria por-task.  %gs:48 = cpu_local.syscall_kstack (tope del
+     * kstack de la task actual, mantenido por task_yield; offset fijado por
+     * contrato en cpu_local.h).  Los vectores sin IST ya entran por RSP0 y no
+     * lo necesitan; los faults de ring 0 se quedan en IST1 (path fatal, no
+     * retorna).  rax/rcx/rdx/rsi/rdi se clobberean aquí pero sus valores ya
+     * están salvados en el frame y se restauran desde la copia al salir. */
+    movq 120(%rsp), %rax        /* frame->vector */
+    cmpq $13, %rax
+    je   .Lisr_migrate_off_ist
+    cmpq $14, %rax
+    jne  .Lisr_no_migrate
+.Lisr_migrate_off_ist:
+    testb $3, 144(%rsp)         /* frame->cs: solo origen ring 3 */
+    jz   .Lisr_no_migrate
+    movq %gs:48, %rdi           /* cpu_local.syscall_kstack */
+    subq $176, %rdi             /* sizeof(struct full_frame) = 22 qwords */
+    movq %rdi, %rdx
+    movq %rsp, %rsi
+    movl $22, %ecx
+    cld
+    rep movsq
+    movq %rdx, %rsp             /* continuar sobre el kstack de la task */
+.Lisr_no_migrate:
+
     /* rdi = puntero al frame completo en el stack */
     movq %rsp, %rdi
     call isr_handler
