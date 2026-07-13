@@ -9244,7 +9244,7 @@ static void test_t147(void) {
 struct it_snap {
     uint32_t task;                 /* live scheduler tasks */
     uint32_t hlive, ghwm, hmax;    /* handle-table live / global hwm / max */
-    uint32_t proclive, reply;      /* live processes / KReply balance */
+    uint32_t proclive, reply;      /* live processes / reply-caps-created (cumulative) */
     uint32_t ut, fr, ep, no, cn;   /* live untyped/frame/endpoint/notif/cnode */
     uint32_t vs, map;              /* live VSpace / mapping nodes */
     uint32_t fdeliver, fclean;     /* cumulative fault delivery / cleanup */
@@ -9275,7 +9275,6 @@ static int it_snap_baseline(const struct it_snap *a, const struct it_snap *b,
     if (b->task != a->task)        { *why = "task live drift"; return 0; }
     if (b->proclive != a->proclive){ *why = "proc live drift"; return 0; }
     if (b->hlive != a->hlive)      { *why = "handle leak"; return 0; }
-    if (b->reply != a->reply)      { *why = "kreply drift"; return 0; }
     if (b->ut != a->ut)            { *why = "untyped drift"; return 0; }
     if (b->fr != a->fr)            { *why = "frame drift"; return 0; }
     if (b->ep != a->ep)            { *why = "endpoint drift"; return 0; }
@@ -9305,7 +9304,6 @@ static int it_snap_baseline_live(const struct it_snap *a, const struct it_snap *
     if (b->task != a->task)        { *why = "task live drift"; return 0; }
     if (b->proclive != a->proclive){ *why = "proc live drift"; return 0; }
     if (b->hlive != a->hlive)      { *why = "handle leak"; return 0; }
-    if (b->reply != a->reply)      { *why = "kreply drift"; return 0; }
     if (b->vs != a->vs)            { *why = "vspace drift"; return 0; }
     if (b->map != a->map)          { *why = "mapping drift"; return 0; }
     return 1;
@@ -9912,6 +9910,442 @@ static void test_t155(void) {
     else { it_fz_note("T155", T155_SEED, i, op); it_fail("T155", why); }
 }
 
+/* ── Fase 22: service authority minimization (T156–T163) ────────────────────
+ *
+ * The kernel mechanism fails clean under hostility (Fase 21); the next risk is
+ * a service holding authority it does not need.  These tests lock the
+ * least-authority contract: delivery carries exactly the declared caps and no
+ * more (T156/T162), svcmgr is a registry that never amplifies rights for
+ * ordinary clients (T157), the productive services expose no ambient authority
+ * (T158/T159), init's handoff is auditable (T160), and service teardown leaves
+ * no ghost registration (T161/T163).  Invariants A1–A16 live in
+ * docs/architecture/service-authority-minimization.md.
+ *
+ * The anchor for delivery is a self-report from a lifecycle_probe child: it
+ * resolves its well-known CPtr slots and exits with a bitmask, so the parent
+ * asserts the child sees EXACTLY the caps it was minted — no phantom
+ * authority, and removing a cap removes it from the child. */
+
+#define LP_CMD_REPORT_SLOTS  0x10A0u   /* must match lifecycle_probe */
+
+/* Spawn a lifecycle_probe with the command endpoint at LP_CPTR_CMD_EP plus an
+ * arbitrary extra mint set, command REPORT_SLOTS, and return the reported slot
+ * bitmask (bits 0..15 = slots 0..15; bit 16 = slot 25 proc, 17 = slot 55
+ * untyped, 18 = slot 56 vspace).  Returns -1 on spawn/command failure. */
+static long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) return -1;
+    handle_id_t cmd = (handle_id_t)ep;
+
+    struct svc_mint mints[8];
+    mints[0].slot = LP_CPTR_CMD_EP;
+    mints[0].src_h = cmd;
+    mints[0].rights = RIGHT_READ | RIGHT_WRITE;
+    mints[0].badge = 0;
+    uint32_t n = 1u;
+    for (uint32_t i = 0; i < nextra && n < 8u; i++) mints[n++] = extra[i];
+
+    handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+                             &proc, &boot, mints, n);
+    it_close(&boot);
+    if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
+
+    long mask = -1;
+    if (it_lp_cmd(cmd, LP_CMD_REPORT_SLOTS) == 0) mask = it_lp_wait_exit(proc);
+    it_close(&cmd); it_close(&proc);
+    return mask;
+}
+
+/* LOOKUP_NAME through the given svcmgr CPtr; returns the granted attached_rights
+ * (>=0), or a negative error.  Closes the returned cap (rights are the subject). */
+static long it_lookup_rights(long svcmgr_cptr, const char *name) {
+    uint32_t len = it_stage_path(name);
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    m.buf_len  = len;
+    if (it_sys2(SYS_EP_CALL, svcmgr_cptr, (long)&m) != 0) return -1;
+    if (m.label != IRIS_EP_REPLY_OK) return -(long)(uint32_t)m.words[0];
+    if (m.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+        handle_id_t h = (handle_id_t)m.attached_handle;
+        it_close(&h);
+    }
+    return (long)m.attached_rights;
+}
+
+/* svcmgr DIAG ready-service count (words[1]) — the registry gauge that INCLUDES
+ * dynamic registrations (words[2] active_slot_count is catalog-only).  A dynamic
+ * register bumps this by one; unregister drops it back. */
+static long it_svcmgr_active_slots(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label    = IRIS_SVCMGR_EP_DIAG;
+    m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m) != 0) return -1;
+    if (m.label != IRIS_EP_REPLY_OK || m.word_count < 2u) return -1;
+    return (long)(uint32_t)m.words[1];
+}
+
+/* ── T156: service authority manifest consistency (delivery) ────────────────
+ * The mint delivery mechanism every service depends on carries EXACTLY the
+ * declared caps.  A probe minted {cmd@3, notif@5, ep@7} reports exactly those
+ * three slots; a probe minted {cmd@3} alone reports only slot 3.  No phantom
+ * cap appears, and removing a cap removes it from the child.
+ * Invariants: A1, A11, A13, A15. */
+static void test_t156(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "manifest delivery";
+
+    long no = it_sys0(SYS_NOTIFY_CREATE);
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
+    handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+    if (no < 0 || ep < 0) { it_close(&no_h); it_close(&ep_h); it_fail("T156", "fixture"); return; }
+
+    /* Declared set {cmd@3, notif@5, ep@7}. */
+    struct svc_mint extra[2];
+    extra[0].slot = 5; extra[0].src_h = no_h; extra[0].rights = RIGHT_READ; extra[0].badge = 0;
+    extra[1].slot = 7; extra[1].src_h = ep_h; extra[1].rights = RIGHT_READ; extra[1].badge = 0;
+    long mask = it_lp_report_slots(extra, 2u);
+    uint32_t want = (1u << 3) | (1u << 5) | (1u << 7);
+    if (ok && mask < 0) { ok = 0; why = "report failed"; }
+    if (ok && (uint32_t)mask != want) { ok = 0; why = "delivered != declared"; }
+
+    /* Reduced set {cmd@3} only → report drops slots 5 and 7 (A15). */
+    if (ok) {
+        long m0 = it_lp_report_slots(0, 0u);
+        if (m0 < 0 || (uint32_t)m0 != (1u << 3)) { ok = 0; why = "reduction not observed"; }
+    }
+
+    it_close(&no_h); it_close(&ep_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T156"); else it_fail("T156", why);
+}
+
+/* ── T157: svcmgr grant tightening (registry, not god) ──────────────────────
+ * svcmgr never amplifies authority for an ordinary client.  A LOOKUP_NAME of a
+ * reserved ".ep" name grants WRITE|DUPLICATE only to a SUPERVISOR badge; an
+ * ordinary badge gets a call-only WRITE cap with DUPLICATE/TRANSFER stripped —
+ * so an ordinary client cannot re-mint or hand on the service cap.  A lookup of
+ * a nonexistent name is NOT_FOUND with no cap.  Invariants: A7, A11, A14. */
+static void test_t157(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "grant tightening";
+
+    /* Ordinary badge (slot 1 = IRIS_CPTR_SVCMGR_EP, IRIS_BADGE_IRIS_TEST). */
+    long ord = it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, VFS_EP_SVC_NAME);
+    if (ok && ord < 0) { ok = 0; why = "ordinary lookup failed"; }
+    if (ok && ((uint32_t)ord & RIGHT_WRITE) == 0) { ok = 0; why = "ordinary lost WRITE"; }
+    if (ok && ((uint32_t)ord & (RIGHT_DUPLICATE | RIGHT_TRANSFER)) != 0) {
+        ok = 0; why = "ordinary amplified (dup/transfer)";
+    }
+
+    /* Supervisor badge (slot 27 = IRIS_CPTR_TEST_SUPER, IRIS_BADGE_INIT). */
+    long sup = it_lookup_rights((long)IRIS_CPTR_TEST_SUPER, VFS_EP_SVC_NAME);
+    if (ok && sup < 0) { ok = 0; why = "supervisor lookup failed"; }
+    if (ok && ((uint32_t)sup & RIGHT_DUPLICATE) == 0) { ok = 0; why = "supervisor lost DUPLICATE"; }
+
+    /* Nonexistent name → NOT_FOUND, no cap. */
+    if (ok && it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, "no.such.svc")
+              != -(long)(uint32_t)IRIS_ERR_NOT_FOUND) { ok = 0; why = "missing name not NOT_FOUND"; }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T157"); else it_fail("T157", why);
+}
+
+/* ── T158: vfs authority boundary ───────────────────────────────────────────
+ * vfs serves a filesystem and nothing else.  Its endpoint answers PING and its
+ * own ops but rejects a foreign (registry) opcode; an ordinary client's vfs.ep
+ * cap is call-only WRITE (cannot be re-minted to seize the service).  vfs holds
+ * no authority to act on iris_test — there is no cap by which it could.
+ * Invariants: A8, A11, A16. */
+static void test_t158(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "vfs boundary";
+
+    /* vfs.ep answers PING. */
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label    = IRIS_EP_OP_PING;
+    m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    if (ok && (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_VFS_EP, (long)&m) != 0 ||
+               m.label != IRIS_EP_REPLY_OK)) { ok = 0; why = "vfs ping"; }
+
+    /* A foreign registry opcode to vfs.ep must NOT be honoured as a registry
+     * op (vfs is not svcmgr); it replies with an error, never OK. */
+    it_iris_msg_zero(&m);
+    m.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    m.buf_len  = it_stage_path("vfs.ep");
+    if (ok && it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_VFS_EP, (long)&m) == 0 &&
+        m.label == IRIS_EP_REPLY_OK && m.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+        ok = 0; why = "vfs served a registry op";
+        handle_id_t h = (handle_id_t)m.attached_handle; it_close(&h);
+    }
+
+    /* Ordinary vfs.ep cap is call-only (no DUPLICATE) — cannot be re-minted. */
+    long rights = it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, VFS_EP_SVC_NAME);
+    if (ok && (rights < 0 || ((uint32_t)rights & RIGHT_DUPLICATE) != 0)) {
+        ok = 0; why = "vfs cap re-mintable by client";
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T158"); else it_fail("T158", why);
+}
+
+/* ── T159: console/kbd authority boundary ───────────────────────────────────
+ * The I/O drivers have narrow authority: console.ep and kbd.ep answer PING and
+ * their own ops but reject a foreign registry opcode (no cap handed back), and
+ * their client caps are call-only WRITE.  A compromised driver cannot register
+ * services or seize a peer.  Invariants: A9, A11, A16. */
+static void test_t159(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "io driver boundary";
+    const long eps[2] = { (long)IRIS_CPTR_CONSOLE_EP, (long)IRIS_CPTR_KBD_EP };
+
+    for (int i = 0; ok && i < 2; i++) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label    = IRIS_EP_OP_PING;
+        m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+        if (it_sys2(SYS_EP_CALL, eps[i], (long)&m) != 0 || m.label != IRIS_EP_REPLY_OK) {
+            ok = 0; why = "driver ping"; break;
+        }
+        /* Foreign registry op → must not hand back a cap. */
+        it_iris_msg_zero(&m);
+        m.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
+        m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+        m.buf_len  = it_stage_path("vfs.ep");
+        if (it_sys2(SYS_EP_CALL, eps[i], (long)&m) == 0 &&
+            m.label == IRIS_EP_REPLY_OK && m.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
+            ok = 0; why = "driver served registry op";
+            handle_id_t h = (handle_id_t)m.attached_handle; it_close(&h); break;
+        }
+    }
+
+    /* Both driver client caps are call-only (no DUPLICATE). */
+    long rc = it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, CONSOLE_EP_SVC_NAME);
+    if (ok && (rc < 0 || ((uint32_t)rc & RIGHT_DUPLICATE) != 0)) { ok = 0; why = "console cap re-mintable"; }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T159"); else it_fail("T159", why);
+}
+
+/* ── T160: init authority handoff audit ─────────────────────────────────────
+ * init necessarily starts privileged; the audit is that its handoff is
+ * deliberate.  iris_test is init's test child and holds the DECLARED test-only
+ * authority (spawn cap slot 6, self-proc slot 25, untyped slot 55) — this test
+ * confirms that authority is really present here, which is exactly what T162
+ * proves must be ABSENT from an ordinary service.  Invariants: A4, A6, A10. */
+static void test_t160(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "init handoff";
+
+    /* iris_test's declared test authority resolves (it is a privileged test
+     * child, not a productive service).  Each resolve mints a fresh handle;
+     * close it immediately so the snapshot balances. */
+    const long test_caps[3] = {
+        (long)IRIS_CPTR_SPAWN_CAP, (long)IRIS_CPTR_TEST_UNTYPED, (long)IRIS_CPTR_TEST_PROC,
+    };
+    const char *const caps_why[3] = { "no spawn cap", "no test untyped", "no self proc" };
+    for (int s = 0; ok && s < 3; s++) {
+        long h = it_sys1(SYS_CSPACE_RESOLVE, test_caps[s]);
+        if (h < 0) { ok = 0; why = caps_why[s]; break; }
+        handle_id_t hh = (handle_id_t)h;
+        it_close(&hh);
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T160"); else it_fail("T160", why);
+}
+
+/* ── T161: service death containment (dynamic registry) ─────────────────────
+ * A registered service that goes away leaves no ghost in svcmgr.  iris_test
+ * registers a dynamic service backed by an endpoint it owns, confirms it
+ * resolves, then unregisters (owner authority) — the name no longer resolves,
+ * the active-slot gauge returns to its pre-register value, and the registry
+ * books balance.  Invariants: A12, A16. */
+static void test_t161(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "death containment";
+
+    long slots0 = it_svcmgr_active_slots();
+    if (ok && slots0 < 0) { ok = 0; why = "diag baseline"; }
+
+    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    handle_id_t svc_ep = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
+    if (ok && e < 0) { ok = 0; why = "svc ep"; }
+
+    long id = ok ? it_register_ep("t161.svc", svc_ep) : -1;
+    if (ok && id < 0) { ok = 0; why = "register"; }
+    /* Registered → resolves, and the active-slot gauge moved up. */
+    if (ok && it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, "t161.svc") < 0) { ok = 0; why = "lookup after register"; }
+    if (ok && it_svcmgr_active_slots() != slots0 + 1) { ok = 0; why = "slot not tracked"; }
+
+    /* Unregister (owner) → gone, gauge back to baseline, no ghost. */
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label      = IRIS_SVCMGR_EP_UNREGISTER;
+        m.words[0]   = (uint32_t)id;
+        m.word_count = 1u;
+        if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m) != 0 ||
+            m.label != IRIS_EP_REPLY_OK) { ok = 0; why = "unregister"; }
+    }
+    if (ok && it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, "t161.svc")
+              != -(long)(uint32_t)IRIS_ERR_NOT_FOUND) { ok = 0; why = "ghost after unregister"; }
+    if (ok && it_svcmgr_active_slots() != slots0) { ok = 0; why = "slot not released"; }
+
+    it_close(&svc_ep);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T161"); else it_fail("T161", why);
+}
+
+/* ── T162: least-authority regression lock (teeth) ──────────────────────────
+ * The permanent guard: a minimal service (a probe minted only its command
+ * endpoint) must hold NO high authority — no spawn cap (slot 6), no proc cap
+ * (slot 25), no untyped (slot 55), no vspace (slot 56), and none of the peer
+ * client endpoints (slots 1,2,4).  The test then proves it has TEETH: minting
+ * one extra cap makes exactly that slot appear in the report, so a future
+ * over-grant would be caught.  Invariants: A1, A3, A4, A5, A6, A10. */
+static void test_t162(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "least-authority lock";
+
+    /* Minimal probe: only the command endpoint (slot 3). */
+    long m0 = it_lp_report_slots(0, 0u);
+    if (ok && m0 < 0) { ok = 0; why = "report failed"; }
+    if (ok && (uint32_t)m0 != (1u << 3)) { ok = 0; why = "minimal service over-authorized"; }
+    /* Explicitly: none of the high-authority bits. */
+    if (ok && ((uint32_t)m0 & ((1u << 6) | (1u << 16) | (1u << 17) | (1u << 18))) != 0) {
+        ok = 0; why = "high authority leaked to minimal service";
+    }
+
+    /* Teeth: mint one extra cap at slot 6 → the report must show it. */
+    if (ok) {
+        long n = it_sys0(SYS_NOTIFY_CREATE);
+        handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+        if (n < 0) { ok = 0; why = "teeth fixture"; }
+        else {
+            struct svc_mint extra[1];
+            extra[0].slot = 6; extra[0].src_h = n_h; extra[0].rights = RIGHT_READ; extra[0].badge = 0;
+            long m1 = it_lp_report_slots(extra, 1u);
+            if (m1 < 0 || ((uint32_t)m1 & (1u << 6)) == 0) { ok = 0; why = "extra cap not detected (no teeth)"; }
+            it_close(&n_h);
+        }
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T162"); else it_fail("T162", why);
+}
+
+/* ── T163: deterministic service authority stress ───────────────────────────
+ * A seeded PRNG drives register / lookup / unregister / endpoint-close churn
+ * on the dynamic registry, interleaving malformed ops (unregister of a stale
+ * id, lookup of a missing name, register of a reserved name).  No op amplifies
+ * authority or leaves a ghost; the active-slot gauge and the full snapshot
+ * return to baseline.  Invariants: A11, A12, A14, plus X-style no-drift.
+ * Prints seed/iteration only on failure. */
+#define T163_SEED   0x22C0DE63u
+#define T163_ROUNDS 12u
+static void test_t163(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "authority stress";
+    long slots0 = it_svcmgr_active_slots();
+    if (ok && slots0 < 0) { ok = 0; why = "diag baseline"; }
+    g_fz_seed = T163_SEED;
+    uint32_t i = 0, op = 0;
+
+    for (i = 0; ok && i < T163_ROUNDS; i++) {
+        /* Malformed ops — must all fail clean, no registry mutation. */
+        op = 1;
+        if (it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, "ghost.svc")
+            != -(long)(uint32_t)IRIS_ERR_NOT_FOUND) { ok = 0; why = "missing lookup"; break; }
+        op = 2;
+        {   /* unregister a stale/never-registered id → not OK */
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label = IRIS_SVCMGR_EP_UNREGISTER;
+            m.words[0] = 0x4000u + (fz_rand() & 0xFFu);
+            m.word_count = 1u;
+            long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m);
+            if (r == 0 && m.label == IRIS_EP_REPLY_OK) { ok = 0; why = "stale unregister accepted"; break; }
+        }
+        op = 3;   /* register a reserved name → ACCESS_DENIED */
+        {
+            uint32_t len = it_stage_path("vfs.ep");
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label = IRIS_SVCMGR_EP_REGISTER;
+            m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+            m.buf_len = len;
+            long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m);
+            if (r == 0 && m.label == IRIS_EP_REPLY_OK) { ok = 0; why = "reserved register accepted"; break; }
+        }
+
+        /* Well-formed: register → lookup → unregister, each round balanced. */
+        op = 10;
+        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        handle_id_t svc_ep = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
+        if (e < 0) { ok = 0; why = "svc ep"; break; }
+        long id = it_register_ep("t163.svc", svc_ep);
+        if (id < 0) { ok = 0; why = "register"; it_close(&svc_ep); break; }
+        op = 11;
+        if (it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, "t163.svc") < 0) { ok = 0; why = "lookup"; it_close(&svc_ep); break; }
+        op = 12;
+        {
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label = IRIS_SVCMGR_EP_UNREGISTER;
+            m.words[0] = (uint32_t)id;
+            m.word_count = 1u;
+            if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&m) != 0 ||
+                m.label != IRIS_EP_REPLY_OK) { ok = 0; why = "unregister"; it_close(&svc_ep); break; }
+        }
+        it_close(&svc_ep);
+        if ((i & 3u) == 3u) it_quiesce_reaper();
+    }
+
+    it_quiesce_reaper();
+    if (ok && it_svcmgr_active_slots() != slots0) { ok = 0; why = "registry slot drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T163");
+    else { it_fz_note("T163", T163_SEED, i, op); it_fail("T163", why); }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -10086,6 +10520,14 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t153();
     test_t154();
     test_t155();
+    test_t156();
+    test_t157();
+    test_t158();
+    test_t159();
+    test_t160();
+    test_t161();
+    test_t162();
+    test_t163();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

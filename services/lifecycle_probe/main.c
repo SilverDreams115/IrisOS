@@ -79,6 +79,14 @@
 #define LP_CMD_FAULT_READ      0x109Cu
 #define LP_CMD_FAULT_WRITE     0x109Du
 #define LP_CMD_FAULT_EXEC      0x109Eu
+
+/* Fase 22 least-authority self-report: resolve well-known CPtr slots 0..15 and
+ * exit with a bitmask (bit i set = slot i resolves to a live cap).  Slot 3 (the
+ * command endpoint, LP_CPTR_CMD_EP) is always present.  The parent mints a
+ * KNOWN set of caps into the child and asserts the reported mask equals exactly
+ * that set — proving delivery carries no phantom authority (A11) and that
+ * removing a cap removes it from the child (A15).  Must match iris_test. */
+#define LP_CMD_REPORT_SLOTS    0x10A0u
 /* Exit-code base for a send/call that returned (was NOT killed while blocked);
  * low byte = -err (0 = success).  Lets a rendezvous-then-complete run report. */
 #define LP_EXIT_IPC_BASE       0x0C00
@@ -138,6 +146,22 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         long r = lp_sys2(is_call ? SYS_EP_CALL : SYS_EP_SEND,
                          (long)LP_CPTR_CMD_EP, (long)&w);
         lp_sys1(SYS_EXIT, (long)(LP_EXIT_IPC_BASE | ((uint32_t)-r & 0xFFu)));
+        for (;;) {}
+    }
+
+    /* Fase 22: report which well-known CPtr slots resolve, as an exit bitmask.
+     * Bits 0..15 = slots 0..15 (covers the core service slots + spawn cap 6);
+     * bit 16 = slot 25 (proc cap), bit 17 = slot 55 (untyped), bit 18 = slot 56
+     * (vspace) — the high-authority slots a minimal service must NEVER hold. */
+    if (msg.label == (uint64_t)LP_CMD_REPORT_SLOTS) {
+        uint32_t mask = 0u;
+        for (uint32_t s = 0; s < 16u; s++) {
+            if (lp_sys1(SYS_CSPACE_RESOLVE, (long)s) >= 0) mask |= (1u << s);
+        }
+        if (lp_sys1(SYS_CSPACE_RESOLVE, 25) >= 0) mask |= (1u << 16);
+        if (lp_sys1(SYS_CSPACE_RESOLVE, 55) >= 0) mask |= (1u << 17);
+        if (lp_sys1(SYS_CSPACE_RESOLVE, 56) >= 0) mask |= (1u << 18);
+        lp_sys1(SYS_EXIT, (long)mask);
         for (;;) {}
     }
 
