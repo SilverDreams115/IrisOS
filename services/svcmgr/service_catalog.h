@@ -11,6 +11,18 @@
 #define IRIS_SERVICE_IMAGE_SH           "sh"
 #define IRIS_SERVICE_RUNTIME_SLOT_COUNT 4u
 
+/* Fase 22: least-authority client-endpoint manifest.  Each catalog child used
+ * to receive ALL four core client-endpoint caps (svcmgr/vfs/console/kbd) at
+ * slots 1..4 unconditionally — authority "just in case".  client_eps is now an
+ * explicit per-service bitmask of the client endpoints a service actually calls
+ * out to; svcmgr_build_core_mints mints ONLY the declared ones.  A service that
+ * never talks to a peer no longer holds a WRITE cap to that peer's endpoint, so
+ * a compromised driver cannot spoof requests to services it never uses. */
+#define IRIS_SVC_CLIENT_EP_SVCMGR   0x1u
+#define IRIS_SVC_CLIENT_EP_VFS      0x2u
+#define IRIS_SVC_CLIENT_EP_CONSOLE  0x4u
+#define IRIS_SVC_CLIENT_EP_KBD      0x8u
+
 struct iris_service_catalog_entry {
     const char    *image_name;
     uint32_t       service_id;
@@ -45,6 +57,11 @@ struct iris_service_catalog_entry {
                                      *     With own_service_ep=0: a pure CPtr-first
                                      *     client (Fase 8: sh — empty bootstrap bag,
                                      *     ready when proc_h is alive). */
+    uint32_t       client_eps;      /* Fase 22: bitmask (IRIS_SVC_CLIENT_EP_*) of the
+                                     *     core client endpoints this service actually
+                                     *     calls out to.  svcmgr_build_core_mints mints
+                                     *     ONLY these into slots 1..4 — least authority.
+                                     *     0 = a pure server/driver that talks to no peer. */
 };
 
 static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
@@ -72,6 +89,10 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .own_service_ep = 1u,
         .irq_notify = 1u,
         .endpoint_only = 1u,
+        /* Fase 22: kbd is a pure endpoint server + IRQ handler (main.S uses
+         * only OWN_EP/IRQ_NOTIFY/IOPORT/IRQ_CAP).  It calls NO peer service, so
+         * it receives none of the slot-1..4 client caps. */
+        .client_eps = 0u,
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_VFS,
@@ -93,6 +114,10 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .own_service_ep = 1u,
         /* Fase 7.5: vfs is endpoint-only — no legacy service/reply channels. */
         .endpoint_only = 1u,
+        /* Fase 22: vfs logs to console (IRIS_CPTR_CONSOLE_EP) and serves its own
+         * endpoint; it never calls svcmgr, itself, or kbd, so it receives ONLY
+         * the console client cap — not svcmgr/vfs/kbd. */
+        .client_eps = IRIS_SVC_CLIENT_EP_CONSOLE,
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_SH,
@@ -118,6 +143,10 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
          * bootstrap bag; everything sh needs arrives as well-known CSpace
          * slots 1..4. Readiness tracks proc_h (svcmgr_ready_service_count). */
         .endpoint_only = 1u,
+        /* Fase 22: sh is the shell — it drives svcmgr discovery, vfs, console
+         * output and kbd input, so it legitimately holds all four client caps. */
+        .client_eps = IRIS_SVC_CLIENT_EP_SVCMGR | IRIS_SVC_CLIENT_EP_VFS |
+                      IRIS_SVC_CLIENT_EP_CONSOLE | IRIS_SVC_CLIENT_EP_KBD,
     },
 };
 

@@ -861,29 +861,44 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
     /* Fase 9: the client-side slots (1..4) carry the CHILD's identity badge
      * — every message the child sends through them is kernel-stamped with
      * IRIS_BADGE_SVC(service_id).  Server-side caps (own EP recv, IRQ
-     * notification) stay unbadged. */
+     * notification) stay unbadged.
+     *
+     * Fase 22 (least authority): a slot is minted ONLY if the service's
+     * client_eps manifest declares it needed.  Previously all four were minted
+     * unconditionally, so kbd (a pure IRQ/endpoint driver) and vfs (which only
+     * logs to console) each held WRITE caps to peers they never call — a
+     * compromised driver could spoof requests to them.  Now kbd receives none,
+     * vfs only console, sh all four; the delivery is verified by T156/T162. */
     uint64_t child_badge = IRIS_BADGE_SVC(manifest->service_id);
 
-    mints[n].slot = IRIS_CPTR_SVCMGR_EP;
-    mints[n].src_h = state->ep_h;
-    mints[n].rights = RIGHT_WRITE;
-    mints[n].badge = child_badge;
-    n++;
-    mints[n].slot = IRIS_CPTR_VFS_EP;
-    mints[n].src_h = vfs_ep;
-    mints[n].rights = RIGHT_WRITE;
-    mints[n].badge = child_badge;
-    n++;
-    mints[n].slot = IRIS_CPTR_CONSOLE_EP;
-    mints[n].src_h = state->console_ep_h;
-    mints[n].rights = RIGHT_WRITE;
-    mints[n].badge = child_badge;
-    n++;
-    mints[n].slot = IRIS_CPTR_KBD_EP;
-    mints[n].src_h = kbd_ep;
-    mints[n].rights = RIGHT_WRITE;
-    mints[n].badge = child_badge;
-    n++;
+    if (manifest->client_eps & IRIS_SVC_CLIENT_EP_SVCMGR) {
+        mints[n].slot = IRIS_CPTR_SVCMGR_EP;
+        mints[n].src_h = state->ep_h;
+        mints[n].rights = RIGHT_WRITE;
+        mints[n].badge = child_badge;
+        n++;
+    }
+    if (manifest->client_eps & IRIS_SVC_CLIENT_EP_VFS) {
+        mints[n].slot = IRIS_CPTR_VFS_EP;
+        mints[n].src_h = vfs_ep;
+        mints[n].rights = RIGHT_WRITE;
+        mints[n].badge = child_badge;
+        n++;
+    }
+    if (manifest->client_eps & IRIS_SVC_CLIENT_EP_CONSOLE) {
+        mints[n].slot = IRIS_CPTR_CONSOLE_EP;
+        mints[n].src_h = state->console_ep_h;
+        mints[n].rights = RIGHT_WRITE;
+        mints[n].badge = child_badge;
+        n++;
+    }
+    if (manifest->client_eps & IRIS_SVC_CLIENT_EP_KBD) {
+        mints[n].slot = IRIS_CPTR_KBD_EP;
+        mints[n].src_h = kbd_ep;
+        mints[n].rights = RIGHT_WRITE;
+        mints[n].badge = child_badge;
+        n++;
+    }
     if (manifest->own_service_ep && svc) {
         mints[n].slot = IRIS_CPTR_OWN_EP;
         mints[n].src_h = svc->ep_h;
