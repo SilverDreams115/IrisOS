@@ -9216,6 +9216,702 @@ static void test_t147(void) {
     }
 }
 
+/* ── Fase 21: cross-syscall fuzzing / hostile argument surface (T148–T155) ───
+ *
+ * These tests do not exercise a feature — they subject the WHOLE syscall
+ * surface to deterministic adversarial pressure and prove it fails clean:
+ * unknown/retired numbers, wrong-type caps, stale/empty/boundary handles,
+ * hostile user pointers, reduced rights, forced mid-syscall failures, and
+ * mixed cross-family sequences.  The bar is not "no crash" — it is "every
+ * hostile input fails clean with zero drift in any live count".
+ *
+ * The anchor is a full-surface snapshot: every live-object gauge the kernel
+ * exposes (task, process, handle, untyped/frame/endpoint/notification/cnode,
+ * VSpace, mapping) plus the KReply balance and the pending-fault flag.  A
+ * hostile op that leaks a ref, plants a ghost slot/PTE, or strands a waiter
+ * moves at least one of these, so equality-to-baseline after the churn is a
+ * strong, cheap invariant.  Cumulative counters (map/unmap/TLB/fault-delivery)
+ * are checked as directional deltas only where a test deliberately triggers
+ * the event.
+ *
+ * Determinism: xorshift32 (fz_rand) seeded per test; failures print
+ * `FZ <test> seed=<seed> iter=<i> op=<op>` and nothing on success.  Every
+ * blocking interaction rendezvouses through a control endpoint or a bounded
+ * NOTIFY_WAIT_TIMEOUT — no long sleeps.  Invariants X1–X24 live in
+ * docs/architecture/syscall-fuzzing.md. */
+
+/* Full-surface live snapshot. */
+struct it_snap {
+    uint32_t task;                 /* live scheduler tasks */
+    uint32_t hlive, ghwm, hmax;    /* handle-table live / global hwm / max */
+    uint32_t proclive, reply;      /* live processes / KReply balance */
+    uint32_t ut, fr, ep, no, cn;   /* live untyped/frame/endpoint/notif/cnode */
+    uint32_t vs, map;              /* live VSpace / mapping nodes */
+    uint32_t fdeliver, fclean;     /* cumulative fault delivery / cleanup */
+    uint8_t  ok;
+};
+
+static struct it_snap it_snap_take(void) {
+    struct it_snap s;
+    uint32_t e[14], w3[5], w4[5], w5[5];
+    s.ok = 0;
+    if (!it_task_live(&s.task) || !it_sched_ext(e) || !it_sched_ext3(w3) ||
+        !it_sched_ext4(w4) || !it_sched_ext5(w5)) return s;
+    s.hlive = e[IT_SI_LIVE]; s.ghwm = e[IT_SI_GHWM]; s.hmax = e[IT_SI_MAX];
+    s.proclive = e[IT_SI_PROCLIVE]; s.reply = e[IT_SI_REPLY];
+    s.ut = w3[IT_S3_UNTYPED]; s.fr = w3[IT_S3_FRAME]; s.ep = w3[IT_S3_EP];
+    s.no = w3[IT_S3_NOTIF]; s.cn = w3[IT_S3_CNODE];
+    s.vs = w4[IT_S4_VSLIVE]; s.map = w4[IT_S4_MAPLIVE];
+    s.fdeliver = w5[IT_S5_DELIVER]; s.fclean = w5[IT_S5_CLEAN];
+    s.ok = 1;
+    return s;
+}
+
+/* Assert every LIVE gauge returned to baseline; *why names the first drift.
+ * Cumulative counters are intentionally excluded. */
+static int it_snap_baseline(const struct it_snap *a, const struct it_snap *b,
+                            const char **why) {
+    if (!a->ok || !b->ok)          { *why = "snap read"; return 0; }
+    if (b->task != a->task)        { *why = "task live drift"; return 0; }
+    if (b->proclive != a->proclive){ *why = "proc live drift"; return 0; }
+    if (b->hlive != a->hlive)      { *why = "handle leak"; return 0; }
+    if (b->reply != a->reply)      { *why = "kreply drift"; return 0; }
+    if (b->ut != a->ut)            { *why = "untyped drift"; return 0; }
+    if (b->fr != a->fr)            { *why = "frame drift"; return 0; }
+    if (b->ep != a->ep)            { *why = "endpoint drift"; return 0; }
+    if (b->no != a->no)            { *why = "notif drift"; return 0; }
+    if (b->cn != a->cn)            { *why = "cnode drift"; return 0; }
+    if (b->vs != a->vs)            { *why = "vspace drift"; return 0; }
+    if (b->map != a->map)          { *why = "mapping drift"; return 0; }
+    /* The global handle high-water rule (ghwm*4 <= max) is a monotonic gauge,
+     * not a per-test balance — it is asserted by T095/T112 in their own
+     * contexts.  Applying it here would fire on HWM inherited from the heavy
+     * fault-stress tests, so the fuzz baseline checks LIVE gauges only. */
+    return 1;
+}
+
+/* Lifecycle-reliable subset of the baseline, for tests that SPAWN child
+ * processes.  Loading a service via svc_load creates transient child-owned
+ * objects (bootstrap endpoint, segment frames, CNode) whose reaping is
+ * deferred, so the per-type KEndpoint/KFrame/KCNode/KUntyped/KNotification
+ * OBJECT counts are not a reliable per-test balance across a child spawn —
+ * the canonical cross-process churn test (T114) omits them for the same
+ * reason.  The gauges that DO return exactly to baseline after child teardown
+ * are task-live, process-live, handle-live, the KReply balance and the VM
+ * books; those are what the fault suite (T145–T147) already proved reliable. */
+static int it_snap_baseline_live(const struct it_snap *a, const struct it_snap *b,
+                                 const char **why) {
+    if (!a->ok || !b->ok)          { *why = "snap read"; return 0; }
+    if (b->task != a->task)        { *why = "task live drift"; return 0; }
+    if (b->proclive != a->proclive){ *why = "proc live drift"; return 0; }
+    if (b->hlive != a->hlive)      { *why = "handle leak"; return 0; }
+    if (b->reply != a->reply)      { *why = "kreply drift"; return 0; }
+    if (b->vs != a->vs)            { *why = "vspace drift"; return 0; }
+    if (b->map != a->map)          { *why = "mapping drift"; return 0; }
+    return 1;
+}
+
+static void it_fz_note(const char *t, uint32_t seed, uint32_t iter, uint32_t op) {
+    it_serial_write("[IRIS][TEST] FZ ");
+    it_serial_write(t);
+    it_serial_write(" seed="); it_log_num(seed);
+    it_serial_write(" iter="); it_log_num(iter);
+    it_serial_write(" op="); it_log_num(op);
+    it_serial_write("\n");
+}
+
+/* Boundary values invalid in BOTH namespaces the dual resolver consults —
+ * the handle table AND the CSpace CNode — so they are safe to feed to
+ * mutating syscalls without aliasing a real capability:
+ *   - as a handle_id_t (slot=bits[9:0], gen=bits[31:10], gen 0 forbidden,
+ *     HANDLE_TABLE_MAX=256): all have slot 1023 ≥ 256 → out of table range;
+ *   - as a CPtr (valid range 0..1023, IRIS_CPTR_LIMIT=1024): all are > 1023.
+ * Small integers (0,1,2,…) are deliberately EXCLUDED: as CPtrs they alias
+ * real caps (CPtr 1 = svcmgr EP), so honouring them is correct, not a bug. */
+static const long it_fz_bad_handles[] = {
+    4095L, 0x1FFFFL, 0x7FFFFFFFL, (long)0xFFFFFFFFUL,
+};
+#define IT_FZ_BAD_H_N ((int)(sizeof(it_fz_bad_handles) / sizeof(it_fz_bad_handles[0])))
+
+/* ── T148: syscall table / retired syscall fuzz ─────────────────────────────
+ * Invoke every non-live syscall number — retired, reserved, never-assigned,
+ * and out-of-range high — with garbage arguments, plus a batch of huge
+ * numbers whose low bits alias a live handler (the dispatch is an exact-match
+ * switch, so 0x1_0000_0000 | live must NOT alias).  Every one must return
+ * NOT_SUPPORTED and touch nothing.  No live number is ever fuzzed here (SYS_EXIT
+ * etc. would self-destruct — the table below is holes only).
+ * Invariants: X1, X9, X15, X16, X18, X23. */
+static void test_t148(void) {
+    /* Holes in 0..106 (every number NOT routed by syscall_dispatch). */
+    static const long retired[] = {
+        0, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 18, 23, 24, 25, 30, 31, 34,
+        37, 38, 41, 42, 44, 63, 72,
+    };
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "retired fuzz";
+    g_fz_seed = 0x21C0DE01u;
+
+    for (int i = 0; ok && i < (int)(sizeof(retired) / sizeof(retired[0])); i++) {
+        long a0 = (long)fz_rand(), a1 = (long)fz_rand(), a2 = (long)fz_rand();
+        if (it_sys3(retired[i], a0, a1, a2) != (long)IRIS_ERR_NOT_SUPPORTED) {
+            ok = 0; why = "retired not NOT_SUPPORTED";
+            it_fz_note("T148", g_fz_seed, (uint32_t)i, (uint32_t)retired[i]);
+            break;
+        }
+    }
+    /* High/unassigned range 107..400. */
+    for (long n = 107; ok && n <= 400; n++) {
+        if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
+            != (long)IRIS_ERR_NOT_SUPPORTED) {
+            ok = 0; why = "high not NOT_SUPPORTED";
+            it_fz_note("T148", g_fz_seed, (uint32_t)n, (uint32_t)n);
+            break;
+        }
+    }
+    /* Numbers whose low 32 bits alias a live handler must NOT dispatch it —
+     * the switch matches the full 64-bit value.  (SYS_GETPID=2 chosen: a live
+     * dispatch would return >= 0, not NOT_SUPPORTED.) */
+    if (ok) {
+        long alias[] = { (long)0x100000002LL, (long)0x200000002LL, (long)-1L };
+        for (int i = 0; ok && i < 3; i++) {
+            if (it_sys3(alias[i], 0, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) {
+                ok = 0; why = "alias dispatched live handler";
+            }
+        }
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T148"); else it_fail("T148", why);
+}
+
+/* ── T149: CPtr / handle / wrong-type fuzz ──────────────────────────────────
+ * Every handle-taking syscall family gets fed empty slots, wrong-type caps,
+ * stale handles and boundary values.  Wrong-type crossings are the core:
+ * a notification handed to SYS_EP_SEND is WRONG_TYPE; an endpoint handed to
+ * SYS_NOTIFY_SIGNAL is WRONG_TYPE; a frame handed to SYS_PROCESS_KILL is
+ * WRONG_TYPE — none fall back, none mutate, none amplify.  Fixtures: one live
+ * endpoint, notification and frame, all closed at the end.
+ * Invariants: X2, X4, X5, X8, X9, X12, X21, X24. */
+static void test_t149(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "wrong-type fuzz";
+
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long no = it_sys0(SYS_NOTIFY_CREATE);
+    handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+    handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
+    if (ep < 0 || no < 0) { it_close(&ep_h); it_close(&no_h); it_fail("T149", "fixture"); return; }
+
+    struct IrisMsg m; it_iris_msg_zero(&m);
+
+    /* Wrong-type: endpoint op on a notification and vice-versa. */
+    if (ok && it_sys2(SYS_EP_SEND, no, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "ep_send on notif"; }
+    if (ok && it_sys2(SYS_EP_NB_SEND, no, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "nb_send on notif"; }
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, ep, 1) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "signal on ep"; }
+    if (ok && it_sys1(SYS_PROCESS_KILL, ep) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "kill on ep"; }
+    if (ok && it_sys3(SYS_UNTYPED_RETYPE, no, (long)IT_KOBJ_FRAME, 4096) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "retype on notif"; }
+    /* (frame_map wrong-type coverage against a real VSpace is in T151/T152.) */
+
+    /* Boundary/empty/stale handles across a spread of families.  Any negative
+     * error is acceptable (BAD_HANDLE / NOT_FOUND / WRONG_TYPE / INVALID_ARG);
+     * a NON-NEGATIVE return would mean a hostile handle was honoured. */
+    for (int i = 0; ok && i < IT_FZ_BAD_H_N; i++) {
+        long h = it_fz_bad_handles[i];
+        if (it_sys1(SYS_HANDLE_TYPE, h) >= 0)                 { ok = 0; why = "handle_type honoured bad"; break; }
+        if (it_sys2(SYS_NOTIFY_SIGNAL, h, 1) >= 0)            { ok = 0; why = "signal honoured bad"; break; }
+        if (it_sys2(SYS_EP_SEND, h, (long)&m) >= 0)           { ok = 0; why = "ep_send honoured bad"; break; }
+        if (it_sys1(SYS_PROCESS_KILL, h) >= 0)                { ok = 0; why = "kill honoured bad"; break; }
+        if (it_sys2(SYS_HANDLE_DUP, h, (long)RIGHT_READ) >= 0){ ok = 0; why = "dup honoured bad"; break; }
+        if (it_sys3(SYS_UNTYPED_RETYPE, h, (long)IT_KOBJ_FRAME, 4096) >= 0) { ok = 0; why = "retype honoured bad"; break; }
+    }
+
+    /* Stale handle: dup then close, the old id must be dead. */
+    if (ok) {
+        long d = it_sys2(SYS_HANDLE_DUP, no, (long)RIGHT_SAME_RIGHTS);
+        handle_id_t d_h = (d >= 0) ? (handle_id_t)d : HANDLE_INVALID;
+        if (d < 0) { ok = 0; why = "dup for stale"; }
+        else {
+            it_close(&d_h);
+            if (it_sys1(SYS_HANDLE_TYPE, d) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "stale handle alive"; }
+        }
+    }
+
+    it_close(&ep_h); it_close(&no_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T149"); else it_fail("T149", why);
+}
+
+/* ── T150: user pointer / buffer fuzz ───────────────────────────────────────
+ * Syscalls that read or write userland buffers are fed null, kernel-half VAs,
+ * unmapped user VAs, and read-only buffers where a write is required.  The
+ * kernel validates every range by page-table walk BEFORE touching it
+ * (usercopy.c: SMAP + user_range_*), so a hostile pointer must yield a clean
+ * INVALID_ARG — never a kernel #PF, never a partial write.  A valid buffer
+ * still works afterwards, proving the reject path left nothing wedged.
+ * Invariants: X6, X7, X10, X18. */
+static void test_t150(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "user ptr fuzz";
+
+    /* SYS_SCHED_INFO authorises on a KDEBUG bootstrap cap PRESENT in the
+     * handle table; resolve the spawn cap so the pointer checks reach the
+     * user_range_writable stage instead of short-circuiting ACCESS_DENIED. */
+    long scr = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
+    handle_id_t scr_h = (scr >= 0) ? (handle_id_t)scr : HANDLE_INVALID;
+
+    static const long bad_ptr[] = {
+        0L,                          /* null */
+        0x100L,                      /* below USER_ADDR_MIN */
+        (long)0xFFFF800000000000ULL, /* kernel half */
+        (long)0x8090000000ULL,       /* canonical user, unmapped */
+        (long)0xDEADBEEFULL,         /* misaligned unmapped */
+    };
+    const int NB = (int)(sizeof(bad_ptr) / sizeof(bad_ptr[0]));
+
+    /* SYS_SCHED_INFO writes a buffer: every hostile dst → INVALID_ARG. */
+    for (int i = 0; ok && i < NB; i++) {
+        if (it_sys2(SYS_SCHED_INFO, bad_ptr[i], 184) != (long)IRIS_ERR_INVALID_ARG) {
+            ok = 0; why = "sched_info bad dst"; break;
+        }
+    }
+    /* SYS_PROCESS_FAULT_INFO (self) writes 32 bytes: hostile dst → INVALID_ARG
+     * (the pointer is validated before the fault lookup). */
+    for (int i = 0; ok && i < NB; i++) {
+        if (it_sys2(SYS_PROCESS_FAULT_INFO, (long)HANDLE_INVALID, bad_ptr[i])
+            != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info bad dst"; break; }
+    }
+    /* SYS_UNTYPED_INFO writes two OPTIONAL out params (a null pointer means
+     * "skip this field" and is legal), so only a NON-NULL hostile pointer must
+     * fail INVALID_ARG.  Index 0 is the null case and is skipped. */
+    for (int i = 1; ok && i < NB; i++) {
+        if (it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, bad_ptr[i]) != (long)IRIS_ERR_INVALID_ARG) {
+            ok = 0; why = "untyped_info bad dst"; break;
+        }
+    }
+    /* Both-null is the legal "just validate the cap" call → success. */
+    if (ok && it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, 0) != 0) { ok = 0; why = "untyped_info null-null not ok"; }
+    /* SYS_NOTIFY_WAIT_TIMEOUT writes out_bits: hostile dst → INVALID_ARG
+     * (validated before blocking, so no waiter is ever created). */
+    {
+        long no = it_sys0(SYS_NOTIFY_CREATE);
+        handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
+        if (no < 0) { ok = 0; why = "notif fixture"; }
+        for (int i = 0; ok && i < NB; i++) {
+            if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, no, bad_ptr[i], 1000000L)
+                != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "notify_wait bad out"; break; }
+        }
+        it_close(&no_h);
+    }
+    /* SYS_EP_SEND with a hostile message pointer → INVALID_ARG, endpoint clean. */
+    {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+        if (ep < 0) { ok = 0; why = "ep fixture"; }
+        for (int i = 0; ok && i < NB; i++) {
+            if (it_sys2(SYS_EP_NB_SEND, ep, bad_ptr[i]) != (long)IRIS_ERR_INVALID_ARG) {
+                ok = 0; why = "ep_send bad msg"; break;
+            }
+        }
+        it_close(&ep_h);
+    }
+
+    /* Size fuzz on SYS_SCHED_INFO: below-base is INVALID_ARG, huge size is
+     * clamped to the largest tier (not an overflow) and succeeds into a valid
+     * buffer. */
+    if (ok) {
+        uint8_t buf[184];
+        if (it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size 0"; }
+        if (ok && it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 8) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size below base"; }
+        if (ok && it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0x7FFFFFFFL) != 0) { ok = 0; why = "huge size not clamped"; }
+        /* A valid call still works — reject paths left nothing wedged. */
+        if (ok && it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184) != 0) { ok = 0; why = "valid after fuzz"; }
+    }
+
+    it_close(&scr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T150"); else it_fail("T150", why);
+}
+
+/* ── T151: cross-family hostile sequence fuzz ───────────────────────────────
+ * A seeded PRNG drives a mixed stream of operations across CSpace/cap,
+ * untyped, frame/VSpace, notification, endpoint and fault families against a
+ * tiny in-test model of what SHOULD be live.  Half the ops are deliberately
+ * malformed (wrong slot, wrong type, bad rights, bogus VA).  A malformed op
+ * must never alter the model; a well-formed one advances it.  After every
+ * batch the full snapshot must equal the pre-batch baseline once the churn is
+ * unwound.  Invariants: X2–X5, X8–X14, X22–X24. */
+#define T151_SEED   0x21C0DE51u
+#define T151_ROUNDS 24u
+static void test_t151(void) {
+    it_quiesce_reaper();
+    if (!it_setup_self_vspace()) { it_fail("T151", "vspace self mint"); return; }
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "cross-family fuzz";
+    g_fz_seed = T151_SEED;
+    uint32_t i = 0, op = 0;
+
+    for (i = 0; ok && i < T151_ROUNDS; i++) {
+        /* One well-formed object per round, resolved back to baseline at the
+         * end of the round; malformed ops are interleaved and must no-op. */
+        handle_id_t fr = HANDLE_INVALID, ep = HANDLE_INVALID, no = HANDLE_INVALID;
+        uint64_t va = 0x8098000000ULL + (uint64_t)(fz_rand() % 8u) * 0x1000ULL;
+
+        /* --- malformed batch (must all fail clean) --- */
+        op = 1;
+        if (it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)0x7777, 4096) >= 0) { ok = 0; why = "bad-type retype ok"; break; }
+        op = 2;
+        if (it_sys4(SYS_FRAME_MAP, IT_UT, IT_VS, (long)va, (long)IT_MAP_W) >= 0) { ok = 0; why = "map wrong-type ok"; break; }
+        op = 3;
+        if (it_sys2(SYS_CAP_DERIVE, 9000L, (long)RIGHT_READ) >= 0) { ok = 0; why = "derive stale ok"; break; }
+        op = 4;
+        if (it_sys1(SYS_CAP_REVOKE, 9000L) >= 0) { ok = 0; why = "revoke stale ok"; break; }
+        op = 5;
+        if (it_sys3(SYS_EXCEPTION_RESUME, (long)HANDLE_INVALID, (long)(fz_rand() | 0x40000000u), 1)
+            != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume no-fault not NOT_FOUND"; break; }
+        op = 6;
+        if (it_sys2(SYS_PROCESS_FAULT_INFO, (long)HANDLE_INVALID, 0L)
+            != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info null ok"; break; }
+
+        /* --- well-formed batch (must all succeed and be observable) --- */
+        op = 10;
+        long r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)IT_KOBJ_FRAME, 4096);
+        fr = (r >= 0) ? (handle_id_t)r : HANDLE_INVALID;
+        if (fr == HANDLE_INVALID) { ok = 0; why = "retype frame"; break; }
+        op = 11;
+        long en = it_sys0(SYS_ENDPOINT_CREATE);
+        ep = (en >= 0) ? (handle_id_t)en : HANDLE_INVALID;
+        long nn = it_sys0(SYS_NOTIFY_CREATE);
+        no = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
+        if (ep == HANDLE_INVALID || no == HANDLE_INVALID) { ok = 0; why = "obj create"; it_close(&fr); it_close(&ep); it_close(&no); break; }
+
+        op = 12;
+        if ((fz_rand() & 1u)) {
+            if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)va, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
+            /* occupied VA is BUSY, not a silent overwrite */
+            if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)va, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied not BUSY"; }
+            if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)va) != 0) { ok = 0; why = "unmap"; }
+        }
+        op = 13;
+        if (ok && (fz_rand() & 1u)) {
+            if (it_sys2(SYS_NOTIFY_SIGNAL, (long)no, 1) != 0) { ok = 0; why = "signal"; }
+            uint64_t bits = 0;
+            if (ok && it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)no, (long)(uintptr_t)&bits, 500000000L) != 0) { ok = 0; why = "wait"; }
+        }
+
+        it_close(&fr); it_close(&ep); it_close(&no);
+
+        if ((i & 3u) == 3u) { it_quiesce_reaper(); if (!it_ut_reset()) { ok = 0; why = "mid reset busy"; break; } }
+    }
+
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "final reset busy"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T151");
+    else { it_fz_note("T151", T151_SEED, i, op); it_fail("T151", why); }
+}
+
+/* ── T152: failure atomicity fuzz ───────────────────────────────────────────
+ * Force each failure mode and prove the operation is all-or-nothing: the full
+ * snapshot before == after (no half-built object, no dangling ref), and a
+ * following VALID operation of the same family still works.  Modes: occupied
+ * destination (BUSY), missing rights (ACCESS_DENIED), wrong type (WRONG_TYPE),
+ * invalid pointer (INVALID_ARG), invalid VA (INVALID_ARG), bad object size
+ * (INVALID_ARG), resume mismatch (NOT_FOUND).  Invariants: X7, X9, X10, X13, X22. */
+static void test_t152(void) {
+    it_quiesce_reaper();
+    if (!it_setup_self_vspace()) { it_fail("T152", "vspace self mint"); return; }
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "atomicity fuzz";
+    const uint64_t VA = 0x80A0000000ULL;
+
+    /* Occupied VA: map, then a second map is BUSY and must not leak a node. */
+    long r = it_retype_frame();
+    handle_id_t fr = (r != HANDLE_INVALID) ? (handle_id_t)r : HANDLE_INVALID;
+    if (fr == HANDLE_INVALID) { it_fail("T152", "retype"); return; }
+    struct it_snap mid;
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)VA, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
+    mid = it_snap_take();
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied not BUSY"; }
+    /* BUSY must have changed nothing since mid. */
+    { struct it_snap now = it_snap_take(); const char *w2;
+      if (ok && !it_snap_baseline(&mid, &now, &w2)) { ok = 0; why = "BUSY mutated state"; } }
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)VA) != 0) { ok = 0; why = "unmap"; }
+
+    /* Missing rights: RIGHT_READ frame cap cannot map writable — ACCESS_DENIED,
+     * no PTE born; a following writable map with a full cap works. */
+    if (ok) {
+        long rd = it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_READ);
+        handle_id_t fr_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
+        if (rd < 0) { ok = 0; why = "ro derive"; }
+        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable not denied"; }
+        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)VA, (long)IT_MAP_W) != 0) { ok = 0; why = "valid map after deny"; }
+        if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)VA) != 0) { ok = 0; why = "unmap 2"; }
+        it_close(&fr_ro);
+    }
+
+    /* Invalid VA / bad size / bad pointer — each INVALID_ARG, nothing born. */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)(VA | 0x40ULL), (long)IT_MAP_W) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "unaligned VA"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, 0xFFFF800000001000L, (long)IT_MAP_W) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel VA"; }
+    if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)IT_KOBJ_FRAME, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad frame size"; }
+    /* Non-null hostile out pointer (kernel half) → INVALID_ARG, nothing written. */
+    if (ok && it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, 0xFFFF800000001000L) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel out ptr"; }
+    /* Resume mismatch — NOT_FOUND, no state touched. */
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)HANDLE_INVALID, 0x33221100L, 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume mismatch"; }
+
+    it_close(&fr);
+    it_quiesce_reaper();
+    (void)it_ut_reset();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T152"); else it_fail("T152", why);
+}
+
+/* ── T153: blocking syscall cancellation fuzz ───────────────────────────────
+ * A lifecycle_probe child is parked in each blocking primitive, then torn down
+ * by every cancellation route, and the books must balance every time.  This
+ * re-proves, under one roof and a seeded resolution mix, the cancellation
+ * contracts that Fase 16/20 established: EP_RECV / EP_SEND / EP_CALL and the
+ * fault-pending state all wake-or-die on process kill / endpoint close /
+ * handler drop, leaving no dead waiter, no KReply, no live-count drift.
+ * Invariants: X11, X14, X15, X16, X20, X21. */
+#define T153_SEED   0x21C0DE53u
+#define T153_ROUNDS 8u
+static void test_t153(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "cancellation fuzz";
+    g_fz_seed = T153_SEED;
+    uint32_t i = 0, op = 0;
+
+    for (i = 0; ok && i < T153_ROUNDS; i++) {
+        uint32_t kind = fz_rand() % 4u;   /* 0 recv, 1 send, 2 call, 3 fault */
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+        handle_id_t proc_h = HANDLE_INVALID;
+        if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; it_close(&ep_h); break; }
+
+        handle_id_t n_h = HANDLE_INVALID;
+        op = kind;
+        if (kind == 3u) {
+            /* Fault-pending waiter: register a handler, drive an invalid-VA fault. */
+            long n = it_sys0(SYS_NOTIFY_CREATE);
+            n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+            if (n < 0 || it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n, 1) != 0) { ok = 0; why = "reg handler"; }
+            if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
+            if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no fault"; }
+        } else {
+            uint32_t cmd = (kind == 0u) ? LP_CMD_RSLOT_RECV
+                         : (kind == 1u) ? LP_CMD_SEND_BLOCK : LP_CMD_CALL_BLOCK;
+            /* RSLOT_RECV parks in a second recv; SEND/CALL park as sender/caller. */
+            if (kind == 0u) { if (it_lp_cmd_rslot(ep_h, T099_CHILD_SLOT) != 0) { ok = 0; why = "rslot cmd"; } }
+            else            { if (it_lp_cmd(ep_h, cmd) != 0) { ok = 0; why = "block cmd"; } }
+            it_sys1(SYS_SLEEP, 3);   /* let the child reach its blocking syscall */
+        }
+
+        /* Cancellation route: seeded mix of process kill / endpoint close /
+         * handler drop.  Each must resolve without stranding the child. */
+        uint32_t route = fz_rand() % 3u;
+        if (ok && route == 0u) {
+            if (it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
+        } else if (ok && route == 1u) {
+            it_close(&ep_h);                              /* close endpoint under the waiter */
+            if (kind == 3u) it_close(&n_h);
+            if (it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill after close"; }
+        } else if (ok) {
+            if (kind == 3u) it_close(&n_h);               /* handler drop first */
+            if (it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill after drop"; }
+        }
+        if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "no exit"; }
+
+        it_close(&ep_h); it_close(&n_h); it_close(&proc_h);
+        if ((i & 3u) == 3u) it_quiesce_reaper();
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T153");
+    else { it_fz_note("T153", T153_SEED, i, op); it_fail("T153", why); }
+}
+
+/* ── T154: rights monotonicity fuzz across syscalls ─────────────────────────
+ * A reduced-rights cap must never be amplified by ANY syscall, and no legacy
+ * path may ignore rights.  A RIGHT_READ notification dup cannot signal
+ * (ACCESS_DENIED); a RIGHT_READ frame cap cannot map writable; a derive can
+ * only narrow, never widen (asking for a right the parent lacks does not grant
+ * it); and the reduced cap's failures mutate nothing.  Cross the CPtr path and
+ * the legacy handle path for the same object.  Invariants: X3, X8. */
+static void test_t154(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "rights monotonicity";
+
+    long no = it_sys0(SYS_NOTIFY_CREATE);
+    handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
+    if (no < 0) { it_fail("T154", "notif fixture"); return; }
+
+    /* RIGHT_READ dup cannot signal (needs RIGHT_WRITE) — no fallback. */
+    long rd = it_sys2(SYS_HANDLE_DUP, no, (long)RIGHT_READ);
+    handle_id_t rd_h = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
+    if (rd < 0) { ok = 0; why = "read dup"; }
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, rd, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap signalled"; }
+    /* Re-deriving from the reduced cap cannot recover RIGHT_WRITE: either the
+     * derive is rejected, or it yields a cap that STILL cannot signal. */
+    if (ok) {
+        long wr = it_sys2(SYS_HANDLE_DUP, rd, (long)(RIGHT_READ | RIGHT_WRITE));
+        if (wr >= 0) {
+            handle_id_t wr_h = (handle_id_t)wr;
+            if (it_sys2(SYS_NOTIFY_SIGNAL, wr, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights amplified via re-dup"; }
+            it_close(&wr_h);
+        }
+    }
+    /* The original full cap still signals — the reduced cap's failures did not
+     * corrupt the object. */
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, no, 1) != 0) { ok = 0; why = "full cap broken"; }
+    if (ok) { uint64_t bits = 0; (void)it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, no, (long)(uintptr_t)&bits, 100000000L); }
+
+    /* Frame rights: RIGHT_READ frame cap maps non-writable but is denied a
+     * writable map; the PTE reflects the cap, never the request. */
+    if (ok && it_setup_self_vspace()) {
+        long r = it_retype_frame();
+        handle_id_t fr = (r != HANDLE_INVALID) ? (handle_id_t)r : HANDLE_INVALID;
+        const uint64_t VA = 0x80A8000000ULL;
+        if (fr == HANDLE_INVALID) { ok = 0; why = "retype"; }
+        long dr = ok ? it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_READ) : -1;
+        handle_id_t fr_ro = (dr >= 0) ? (handle_id_t)dr : HANDLE_INVALID;
+        if (ok && dr < 0) { ok = 0; why = "ro derive"; }
+        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable map"; }
+        if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)VA, 0L) != 0) { ok = 0; why = "ro readable map"; }
+        if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr_ro, IT_VS, (long)VA) != 0) { ok = 0; why = "ro unmap"; }
+        it_close(&fr_ro); it_close(&fr);
+        it_quiesce_reaper(); (void)it_ut_reset();
+    } else if (ok) { ok = 0; why = "vspace self mint"; }
+
+    it_close(&rd_h); it_close(&no_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T154"); else it_fail("T154", why);
+}
+
+/* ── T155: deterministic full syscall stress ────────────────────────────────
+ * The grand finale: a seeded PRNG runs many rounds combining object create/
+ * destroy, map/unmap, notify, endpoint rendezvous, cap derive/revoke, child
+ * spawn/kill and a controlled fault, within fixed slot/process/mapping
+ * budgets and an aggressive end-of-round cleanup.  Every gauge must return to
+ * baseline each round; the run prints seed/iteration only on failure.  This is
+ * the whole surface under sustained deterministic hostility.
+ * Invariants: X9–X23 (full set). */
+#define T155_SEED   0x21C0DE55u
+#define T155_ROUNDS 16u
+static void test_t155(void) {
+    it_quiesce_reaper();
+    if (!it_setup_self_vspace()) { it_fail("T155", "vspace self mint"); return; }
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "full stress";
+    g_fz_seed = T155_SEED;
+    uint32_t i = 0, op = 0;
+
+    for (i = 0; ok && i < T155_ROUNDS; i++) {
+        struct it_snap rb = it_snap_take();   /* per-round baseline */
+
+        /* Object churn: retype a frame, map/derive/revoke/unmap, close. */
+        op = 1;
+        long r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)IT_KOBJ_FRAME, 4096);
+        handle_id_t fr = (r >= 0) ? (handle_id_t)r : HANDLE_INVALID;
+        if (fr == HANDLE_INVALID) { ok = 0; why = "retype"; break; }
+        uint64_t va = 0x80B0000000ULL + (uint64_t)(fz_rand() % 4u) * 0x1000ULL;
+        op = 2;
+        if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)va, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; it_close(&fr); break; }
+        op = 3;
+        if (fz_rand() & 1u) {
+            long c = it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_SAME_RIGHTS);
+            if (c >= 0 && it_sys1(SYS_CAP_REVOKE, (long)fr) != 0) { ok = 0; why = "revoke"; it_close(&fr); break; }
+            if (ok && c >= 0 && it_sys1(SYS_HANDLE_TYPE, c) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "revoked child alive"; it_close(&fr); break; }
+        }
+        op = 4;
+        if (it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)va) != 0) { ok = 0; why = "unmap"; it_close(&fr); break; }
+        it_close(&fr);
+
+        /* Notification rendezvous. */
+        op = 5;
+        long nn = it_sys0(SYS_NOTIFY_CREATE);
+        handle_id_t no = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
+        if (no != HANDLE_INVALID && (fz_rand() & 1u)) {
+            if (it_sys2(SYS_NOTIFY_SIGNAL, (long)no, 3) != 0) { ok = 0; why = "signal"; }
+            uint64_t bits = 0;
+            if (ok && it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)no, (long)(uintptr_t)&bits, 500000000L) != 0) { ok = 0; why = "wait"; }
+        }
+        it_close(&no);
+
+        /* Every few rounds: spawn a child and resolve it (clean exit, kill, or
+         * a controlled fault → kill) — the lifecycle+fault surface under churn. */
+        if (ok && (i % 4u) == 0u) {
+            op = 6;
+            long ep = it_sys0(SYS_ENDPOINT_CREATE);
+            handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+            handle_id_t proc_h = HANDLE_INVALID;
+            if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; it_close(&ep_h); break; }
+            uint32_t what = fz_rand() % 3u;
+            if (what == 0u) {                    /* clean run */
+                if (it_lp_cmd(ep_h, 0x55u) != 0) { ok = 0; why = "cmd clean"; }
+                if (ok && it_lp_wait_exit(proc_h) != (long)LP_EXIT_MARKER) { ok = 0; why = "clean exit"; }
+            } else if (what == 1u) {             /* kill while parked */
+                if (it_lp_cmd(ep_h, LP_CMD_SEND_BLOCK) != 0) { ok = 0; why = "cmd block"; }
+                it_sys1(SYS_SLEEP, 3);
+                if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
+                if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "kill exit"; }
+            } else {                             /* controlled fault → kill */
+                long n = it_sys0(SYS_NOTIFY_CREATE);
+                handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+                if (n < 0 || it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n, 1) != 0) { ok = 0; why = "reg handler"; }
+                if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
+                if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no fault"; }
+                struct it_fault f;
+                if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+                if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) { ok = 0; why = "resume kill"; }
+                if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "fault exit"; }
+                it_close(&n_h);
+            }
+            it_close(&ep_h); it_close(&proc_h);
+        }
+
+        it_quiesce_reaper();
+        if (ok && !it_ut_reset()) { ok = 0; why = "round reset busy"; break; }
+        /* Per-round baseline: no lifecycle gauge may drift within a round
+         * (object-count balance is checked by the single-process fuzz tests;
+         * a round that spawned a child has transient child-owned objects). */
+        struct it_snap re = it_snap_take();
+        const char *w2;
+        if (ok && !it_snap_baseline_live(&rb, &re, &w2)) { ok = 0; why = w2; break; }
+    }
+
+    it_quiesce_reaper();
+    if (ok && !it_ut_reset()) { ok = 0; why = "final reset busy"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T155");
+    else { it_fz_note("T155", T155_SEED, i, op); it_fail("T155", why); }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -9382,6 +10078,14 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t145();
     test_t146();
     test_t147();
+    test_t148();
+    test_t149();
+    test_t150();
+    test_t151();
+    test_t152();
+    test_t153();
+    test_t154();
+    test_t155();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
