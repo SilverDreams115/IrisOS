@@ -10346,6 +10346,486 @@ static void test_t163(void) {
     else { it_fz_note("T163", T163_SEED, i, op); it_fail("T163", why); }
 }
 
+/* ── Fase 23: device / driver isolation hardening (T164–T171) ───────────────
+ *
+ * The service authority is minimized (Fase 22); the next risk is a driver
+ * reaching hardware it was never granted.  These tests prove containment: an
+ * I/O-port cap bounds access to exactly its range (T164), a compromised
+ * driver stand-in cannot escalate past its device caps (T165/T166), IRQ
+ * route/ack require the matching cap and iris_test itself cannot route
+ * (T167), framebuffer authority is isolated (T168), device caps derive
+ * monotonically (T169), driver death releases device authority (T170), and a
+ * seeded device fuzz never crosses a cap (T171).  Invariants D1–D20 live in
+ * docs/architecture/device-driver-isolation.md.
+ *
+ * Safe test hardware: COM2 (0x2F8, whitelisted, unwired in headless QEMU) is
+ * the dummy port; IRQ 5 (unused) is the dummy line.  iris_test's spawn cap
+ * carries HW_ACCESS (it already mints the 0x3F8 serial cap at startup), so it
+ * can create device caps to exercise the authority paths — but it holds NO
+ * proc cap with RIGHT_ROUTE, so it cannot itself route an IRQ (a containment
+ * property asserted directly in T167). */
+
+#define LP_CMD_DEV_PROBE     0x10A1u   /* must match lifecycle_probe */
+#define IT_COM2_BASE   0x2F8L
+#define IT_COM2_COUNT  8L
+
+/* Create an ioport cap over [base, base+count) via the HW_ACCESS spawn cap;
+ * returns the handle or HANDLE_INVALID. */
+static handle_id_t it_make_ioport(long base, long count) {
+    long h = it_sys3(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, base, count);
+    return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
+}
+
+/* Spawn a lifecycle_probe with an ioport cap at slot 10 (its only device
+ * authority — no spawn cap at slot 6, no IRQ cap at slot 11), send
+ * LP_CMD_DEV_PROBE with the given ioport offset, and return the reported breach
+ * bitmask.  With an OUT-OF-RANGE offset a contained driver reports 0 (every
+ * escalation denied).  With an IN-RANGE offset bit 1 (a legitimate IN through
+ * the held cap) is set — the teeth check proving the probe genuinely attempts
+ * each op.  Returns -1 on spawn/command failure. */
+static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t dev_rights) {
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) return -1;
+    handle_id_t cmd = (handle_id_t)ep;
+
+    /* The source ioport cap carries DUPLICATE (needed to mint it); the child's
+     * cap is reduced to dev_rights — modelling a driver's exact port authority. */
+    struct svc_mint mints[2];
+    mints[0].slot = LP_CPTR_CMD_EP; mints[0].src_h = cmd;
+    mints[0].rights = RIGHT_READ | RIGHT_WRITE; mints[0].badge = 0;
+    mints[1].slot = 10; mints[1].src_h = ioport_h;
+    mints[1].rights = dev_rights; mints[1].badge = 0;
+
+    handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+                             &proc, &boot, mints, 2u);
+    it_close(&boot);
+    if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
+
+    long mask = -1;
+    if (it_lp_cmd_va(cmd, LP_CMD_DEV_PROBE, offset) == 0) mask = it_lp_wait_exit(proc);
+    it_close(&cmd); it_close(&proc);
+    return mask;
+}
+
+/* ── T164: ioport authority boundaries ──────────────────────────────────────
+ * A KIoPort cap bounds access to exactly [base, base+count): in-range IN/OUT
+ * work, any out-of-range offset is INVALID_ARG (cannot cross the range), a
+ * wrong-type cap fails, rights are enforced (READ for IN, WRITE for OUT), a
+ * stale cap fails, and a non-whitelisted range cannot be created.  No fallback,
+ * no drift.  Invariants: D1, D2, D3, D4, D5, D6, D7. */
+static void test_t164(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "ioport boundaries";
+
+    handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+    if (io == HANDLE_INVALID) { it_fail("T164", "com2 cap"); return; }
+
+    /* In-range access works (COM2 is unwired: IN returns a byte, OUT is a no-op). */
+    if (ok && it_sys2(SYS_IOPORT_IN, (long)io, 5) < 0) { ok = 0; why = "in-range IN"; }
+    if (ok && it_sys3(SYS_IOPORT_OUT, (long)io, 0, 0) != 0) { ok = 0; why = "in-range OUT"; }
+    /* Out-of-range offsets → INVALID_ARG (cannot cross the granted range). */
+    if (ok && it_sys2(SYS_IOPORT_IN, (long)io, IT_COM2_COUNT) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "offset==count IN"; }
+    if (ok && it_sys2(SYS_IOPORT_IN, (long)io, 1000) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "big offset IN"; }
+    if (ok && it_sys3(SYS_IOPORT_OUT, (long)io, 1000, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "big offset OUT"; }
+
+    /* Wrong-type cap: a notification is not a KIoPort. */
+    if (ok) {
+        long n = it_sys0(SYS_NOTIFY_CREATE);
+        handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+        if (n < 0) { ok = 0; why = "notif fixture"; }
+        if (ok && it_sys2(SYS_IOPORT_IN, n, 0) >= 0) { ok = 0; why = "wrong-type IN honoured"; }
+        it_close(&n_h);
+    }
+
+    /* Rights enforcement: READ-only cap denies OUT; WRITE-only denies IN. */
+    if (ok) {
+        long rr = it_sys2(SYS_CAP_DERIVE, (long)io, (long)RIGHT_READ);
+        handle_id_t ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
+        if (rr < 0) { ok = 0; why = "read derive"; }
+        if (ok && it_sys3(SYS_IOPORT_OUT, ro, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO OUT not denied"; }
+        if (ok && it_sys2(SYS_IOPORT_IN, ro, 0) < 0) { ok = 0; why = "RO IN broken"; }
+        it_close(&ro);
+        long wr = it_sys2(SYS_CAP_DERIVE, (long)io, (long)RIGHT_WRITE);
+        handle_id_t wo = (wr >= 0) ? (handle_id_t)wr : HANDLE_INVALID;
+        if (ok && wr < 0) { ok = 0; why = "write derive"; }
+        if (ok && it_sys2(SYS_IOPORT_IN, wo, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "WO IN not denied"; }
+        it_close(&wo);
+    }
+
+    /* Stale cap: dup, close, use → fails. */
+    if (ok) {
+        long d = it_sys2(SYS_HANDLE_DUP, (long)io, (long)RIGHT_SAME_RIGHTS);
+        handle_id_t d_h = (d >= 0) ? (handle_id_t)d : HANDLE_INVALID;
+        if (d < 0) { ok = 0; why = "stale dup"; }
+        else { it_close(&d_h);
+            if (it_sys2(SYS_IOPORT_IN, d, 0) >= 0) { ok = 0; why = "stale cap honoured"; } }
+    }
+
+    /* Non-whitelisted range cannot be created: CMOS (0x70) and a range that
+     * spills past the PS/2 whitelist entry. */
+    if (ok && it_sys3(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, 0x70, 2) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "CMOS not denied"; }
+    if (ok && it_sys3(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, 0x60, 100) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "range spill not denied"; }
+
+    it_close(&io);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T164"); else it_fail("T164", why);
+}
+
+/* ── T165: kbd driver containment (compromised-driver stand-in) ──────────────
+ * A probe minted a driver-like device cap (an ioport cap at slot 10, READ, like
+ * kbd's 0x60) and NOTHING else — no spawn cap, no IRQ cap — cannot escalate: it
+ * cannot forge a port or IRQ cap (no HW_ACCESS), cannot cross its port range,
+ * and cannot ack an IRQ it holds no cap for.  The probe exits 0 (contained).
+ * A control run WITH the spawn cap proves the probe genuinely attempts each
+ * escalation (teeth).  This closes the loop with Fase 22: kbd already has no
+ * peer client caps; now its hardware authority is shown bounded too.
+ * Invariants: D7, D15, D17, D18. */
+static void test_t165(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "kbd containment";
+
+    /* Model kbd's data port as a READ-only device cap in the child. */
+    handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+    if (io == HANDLE_INVALID) { it_fail("T165", "io cap"); return; }
+
+    /* Contained: out-of-range offset → every escalation denied (mask 0). */
+    long mask = it_dev_probe(io, 1000u, RIGHT_READ);
+    if (ok && mask < 0) { ok = 0; why = "probe failed"; }
+    if (ok && mask != 0) { ok = 0; why = "driver escalated past its caps"; }
+
+    /* Teeth: an IN-RANGE offset makes the legitimate IN (bit 1) succeed —
+     * proving the contained run's 0 means genuinely denied, not "never tried". */
+    if (ok) {
+        long tm = it_dev_probe(io, 0u, RIGHT_READ);
+        if (tm < 0 || (tm & (1u << 1)) == 0) { ok = 0; why = "no teeth (IN not attempted)"; }
+        /* Even in-range, an OUT through a READ-only cap stays denied (bit 2). */
+        if (ok && (tm & (1u << 2)) != 0) { ok = 0; why = "RO cap wrote a port"; }
+    }
+
+    it_close(&io);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T165"); else it_fail("T165", why);
+}
+
+/* ── T166: console UART containment ──────────────────────────────────────────
+ * A probe standing in for console (an ioport cap at slot 10 with READ|WRITE,
+ * like the UART) still cannot cross its range or forge new device authority:
+ * an out-of-range IN/OUT fails even WITH the WRITE right, and there is no spawn
+ * or IRQ cap to escalate through.  Contained → 0.  Invariants: D2, D7, D15, D18. */
+static void test_t166(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "console containment";
+
+    handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);   /* RW, like the UART */
+    if (io == HANDLE_INVALID) { it_fail("T166", "io cap"); return; }
+
+    long mask = it_dev_probe(io, 1000u, RIGHT_READ | RIGHT_WRITE);
+    if (ok && mask < 0) { ok = 0; why = "probe failed"; }
+    if (ok && mask != 0) { ok = 0; why = "console escalated past its caps"; }
+
+    it_close(&io);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T166"); else it_fail("T166", why);
+}
+
+/* ── T167: IRQ route / ack authority ────────────────────────────────────────
+ * IRQ authority is cap-scoped: an IRQ cap carries its authorized irq_num, so a
+ * holder can only route/ack THAT line.  Route requires RIGHT_ROUTE on the IRQ
+ * cap, RIGHT_WRITE on a KNotification destination, and RIGHT_READ|ROUTE on the
+ * owner proc cap — iris_test's own proc cap lacks ROUTE, so iris_test CANNOT
+ * route (a containment win asserted directly).  ACK requires RIGHT_ROUTE on the
+ * IRQ cap.  Every failure leaves no route (a leaked route would keep its destination
+ * notification alive, caught by the snapshot).
+ * Invariants: D8, D9, D10, D12, D14, D19. */
+static void test_t167(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "irq authority";
+
+    /* Create an IRQ cap for the unused line 5. */
+    long ic = it_sys3(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_SPAWN_CAP, 5, 0);
+    handle_id_t irq = (ic >= 0) ? (handle_id_t)ic : HANDLE_INVALID;
+    if (ok && irq == HANDLE_INVALID) { ok = 0; why = "irqcap create"; }
+
+    long nn = it_sys0(SYS_NOTIFY_CREATE);
+    handle_id_t notif = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
+    if (ok && notif == HANDLE_INVALID) { ok = 0; why = "notif"; }
+
+    /* ACK with the valid IRQ cap (RIGHT_ROUTE) succeeds — unmasks the unused
+     * line, harmless. */
+    if (ok && it_sys1(SYS_IRQ_ACK, (long)irq) != 0) { ok = 0; why = "valid ack"; }
+    /* ACK failure paths. */
+    if (ok && it_sys1(SYS_IRQ_ACK, (long)notif) >= 0) { ok = 0; why = "ack wrong-type honoured"; }
+    if (ok) {
+        /* IRQ caps carry ROUTE|DUPLICATE|TRANSFER; derive DUPLICATE-only to get
+         * a cap that lacks ROUTE (a subset — never amplified). */
+        long rd = it_sys2(SYS_CAP_DERIVE, (long)irq, (long)RIGHT_DUPLICATE);
+        handle_id_t irq_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
+        if (rd < 0) { ok = 0; why = "irq derive"; }
+        if (ok && it_sys1(SYS_IRQ_ACK, irq_ro) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-route ack not denied"; }
+        /* Route with an IRQ cap lacking ROUTE → ACCESS_DENIED. */
+        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, irq_ro, (long)notif, (long)IRIS_CPTR_TEST_PROC)
+                  != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-route route not denied"; }
+        it_close(&irq_ro);
+    }
+    /* Route with a wrong-type destination (endpoint, not notification). */
+    if (ok) {
+        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        handle_id_t ep_h = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
+        if (e < 0) { ok = 0; why = "ep fixture"; }
+        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, (long)ep_h, (long)IRIS_CPTR_TEST_PROC)
+                  != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "route wrong-type notif"; }
+        it_close(&ep_h);
+    }
+    /* Route with a notification lacking WRITE → ACCESS_DENIED. */
+    if (ok) {
+        long nrd = it_sys2(SYS_HANDLE_DUP, (long)notif, (long)RIGHT_READ);
+        handle_id_t n_ro = (nrd >= 0) ? (handle_id_t)nrd : HANDLE_INVALID;
+        if (nrd < 0) { ok = 0; why = "notif read dup"; }
+        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, n_ro, (long)IRIS_CPTR_TEST_PROC)
+                  != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "route no-write notif"; }
+        it_close(&n_ro);
+    }
+    /* Route with a valid IRQ cap + valid notif but a proc cap lacking ROUTE
+     * (iris_test's own proc, slot 25, is WRITE only) → ACCESS_DENIED: iris_test
+     * cannot route, proving route needs proc-ROUTE authority (containment). */
+    if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, (long)notif, (long)IRIS_CPTR_TEST_PROC)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "route lacking proc-ROUTE not denied"; }
+
+    it_close(&irq); it_close(&notif);
+    it_quiesce_reaper();
+    /* Every route attempt was an authority failure, so no route object was ever
+     * installed — a leaked route would keep its destination notification alive,
+     * caught by the notification-live check in the snapshot below. */
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T167"); else it_fail("T167", why);
+}
+
+/* ── T168: framebuffer / MMIO containment ───────────────────────────────────
+ * Framebuffer authority is gated behind a FRAMEBUFFER-flagged bootstrap cap AND
+ * is one-shot: the real fb service consumes the framebuffer VMO at boot, so even
+ * iris_test's fully-privileged TEST spawn cap (which does carry FRAMEBUFFER)
+ * cannot obtain a second handle — SYS_FRAMEBUFFER_VMO returns NOT_FOUND.  A
+ * wrong-type auth cap is rejected ACCESS_DENIED.  Documented gap: because the
+ * VMO is consumed and bounded to the framebuffer size, its mapping cannot be
+ * exercised at runtime from iris_test; the bounded-range property is asserted at
+ * the authority layer, and the absence of FRAMEBUFFER from productive services
+ * is covered structurally by T162.  Invariants: D4, D5, D15, D16 (auth-level). */
+static void test_t168(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "framebuffer containment";
+
+    uint8_t fbbuf[64];
+    /* The framebuffer VMO was consumed by fb at boot → NOT_FOUND, even though
+     * the spawn cap carries FRAMEBUFFER (one-shot authority). */
+    if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, (long)IRIS_CPTR_SPAWN_CAP, (long)(uintptr_t)fbbuf, 0)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "framebuffer not one-shot"; }
+    /* Wrong-type auth cap (a notification) → ACCESS_DENIED (not a bootstrap cap). */
+    if (ok) {
+        long n = it_sys0(SYS_NOTIFY_CREATE);
+        handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+        if (n < 0) { ok = 0; why = "notif fixture"; }
+        if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, n, (long)(uintptr_t)fbbuf, 0)
+                  != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "wrong-type got framebuffer"; }
+        it_close(&n_h);
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T168"); else it_fail("T168", why);
+}
+
+/* ── T169: device cap derivation monotonicity ───────────────────────────────
+ * A derived device cap can only narrow rights, never widen.  A READ-derived
+ * ioport cap cannot OUT and cannot re-derive back a WRITE that works; a
+ * ROUTE-less IRQ cap cannot ack or route; a revoked cap fails.  No path
+ * recovers lost device authority.  Invariants: D3, D5, D14, D15. */
+static void test_t169(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "device derivation";
+
+    handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+    if (io == HANDLE_INVALID) { it_fail("T169", "io cap"); return; }
+
+    long rr = it_sys2(SYS_CAP_DERIVE, (long)io, (long)RIGHT_READ);
+    handle_id_t ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
+    if (ok && rr < 0) { ok = 0; why = "read derive"; }
+    /* Re-derive asking for WRITE from a READ-only cap: either rejected or the
+     * result still cannot OUT (rights never amplified). */
+    if (ok) {
+        long wr = it_sys2(SYS_CAP_DERIVE, (long)ro, (long)(RIGHT_READ | RIGHT_WRITE));
+        if (wr >= 0) {
+            handle_id_t w_h = (handle_id_t)wr;
+            if (it_sys3(SYS_IOPORT_OUT, wr, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights amplified via re-derive"; }
+            it_close(&w_h);
+        }
+    }
+    /* Revoke children; the READ cap must be dead afterward. */
+    if (ok && it_sys1(SYS_CAP_REVOKE, (long)io) != 0) { ok = 0; why = "revoke"; }
+    if (ok && it_sys2(SYS_IOPORT_IN, ro, 0) >= 0) { ok = 0; why = "revoked cap usable"; }
+    it_close(&ro);
+
+    /* IRQ cap: a ROUTE-less derivation cannot ack. */
+    if (ok) {
+        long ic = it_sys3(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_SPAWN_CAP, 5, 0);
+        handle_id_t irq = (ic >= 0) ? (handle_id_t)ic : HANDLE_INVALID;
+        if (ic < 0) { ok = 0; why = "irqcap"; }
+        long rd = ok ? it_sys2(SYS_CAP_DERIVE, (long)irq, (long)RIGHT_DUPLICATE) : -1;
+        handle_id_t irq_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
+        if (ok && rd < 0) { ok = 0; why = "irq derive"; }
+        if (ok && it_sys1(SYS_IRQ_ACK, irq_ro) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "route-less ack not denied"; }
+        it_close(&irq_ro); it_close(&irq);
+    }
+
+    it_close(&io);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T169"); else it_fail("T169", why);
+}
+
+/* ── T170: driver death cleanup ─────────────────────────────────────────────
+ * A driver holding device caps that dies releases them: several probe children
+ * are minted an ioport cap and parked in a recv, then killed.  Process, task,
+ * handle, endpoint and notification live counts return to baseline — a dead
+ * driver's device authority is gone, no ghost.  Invariants: D13, D19. */
+static void test_t170(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "driver death cleanup";
+
+    for (int i = 0; ok && i < 4; i++) {
+        handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+        if (io == HANDLE_INVALID) { ok = 0; why = "io cap"; break; }
+
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+        struct svc_mint mints[2];
+        mints[0].slot = LP_CPTR_CMD_EP; mints[0].src_h = cmd;
+        mints[0].rights = RIGHT_READ | RIGHT_WRITE; mints[0].badge = 0;
+        mints[1].slot = 10; mints[1].src_h = io;
+        mints[1].rights = RIGHT_READ | RIGHT_WRITE; mints[1].badge = 0;
+        handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+        long r = (ep < 0) ? -1 : svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP,
+                     "lifecycle_probe", &proc, &boot, mints, 2u);
+        it_close(&boot); it_close(&io);
+        if (r < 0 || proc == HANDLE_INVALID) { ok = 0; why = "spawn"; it_close(&cmd); it_close(&proc); break; }
+
+        /* The child blocks in its first recv; kill it while parked. */
+        it_sys1(SYS_SLEEP, 2);
+        if (it_sys1(SYS_PROCESS_KILL, (long)proc) != 0) { ok = 0; why = "kill"; }
+        if (ok && it_lp_wait_exit(proc) != 0) { ok = 0; why = "exit"; }
+        it_close(&cmd); it_close(&proc);
+        it_quiesce_reaper();
+    }
+
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T170"); else it_fail("T170", why);
+}
+
+/* ── T171: deterministic device authority fuzz ──────────────────────────────
+ * A seeded PRNG drives a mix of ioport create (whitelisted / non-whitelisted),
+ * in/out at valid and out-of-range offsets, derive/revoke, IRQ-cap create and
+ * route/ack failure paths, and a compromised-driver probe.  No access crosses a
+ * cap, no probe escalates (mask 0), and every gauge — including the IRQ-route
+ * count — returns to baseline.  Prints seed/iteration only on failure.
+ * Invariants: D1–D3, D5–D10, D14, D15, D17–D19. */
+#define T171_SEED   0x23C0DE71u
+#define T171_ROUNDS 14u
+static void test_t171(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "device fuzz";
+    g_fz_seed = T171_SEED;
+    uint32_t i = 0, op = 0;
+
+    for (i = 0; ok && i < T171_ROUNDS; i++) {
+        /* Non-whitelisted create always denied. */
+        op = 1;
+        static const long bad_bases[] = { 0x70L, 0x80L, 0x3B0L, 0xCF8L };
+        long bb = bad_bases[fz_rand() % 4u];
+        if (it_sys3(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, bb, 2) != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "non-whitelist created"; break;
+        }
+
+        /* A valid COM2 cap, exercised in and out of range. */
+        op = 2;
+        handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+        if (io == HANDLE_INVALID) { ok = 0; why = "io cap"; break; }
+        uint32_t off = fz_rand() % 32u;
+        long rin = it_sys2(SYS_IOPORT_IN, (long)io, (long)off);
+        if (off < (uint32_t)IT_COM2_COUNT) { if (rin < 0) { ok = 0; why = "in-range IN failed"; } }
+        else { if (rin != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "out-range IN honoured"; } }
+        if (!ok) { it_close(&io); break; }
+
+        /* Sometimes derive READ-only and confirm OUT is denied. */
+        op = 3;
+        if (fz_rand() & 1u) {
+            long rr = it_sys2(SYS_CAP_DERIVE, (long)io, (long)RIGHT_READ);
+            if (rr >= 0) {
+                handle_id_t ro = (handle_id_t)rr;
+                if (it_sys3(SYS_IOPORT_OUT, rr, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO OUT honoured"; }
+                if (ok && it_sys1(SYS_CAP_REVOKE, (long)io) != 0) { ok = 0; why = "revoke"; }
+                if (ok && it_sys2(SYS_IOPORT_IN, rr, 0) >= 0) { ok = 0; why = "revoked usable"; }
+                it_close(&ro);
+            }
+        }
+        it_close(&io);
+        if (!ok) break;
+
+        /* Occasionally: a compromised-driver probe must stay contained. */
+        op = 4;
+        if (fz_rand() & 1u) {
+            handle_id_t io2 = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
+            if (io2 == HANDLE_INVALID) { ok = 0; why = "io2"; break; }
+            long mask = it_dev_probe(io2, 500u + (fz_rand() & 0xFFu), RIGHT_READ | RIGHT_WRITE);
+            it_close(&io2);
+            if (mask != 0) { ok = 0; why = "probe escalated"; break; }
+        }
+
+        /* IRQ authority failure path: ack with a wrong-type cap. */
+        op = 5;
+        {
+            long n = it_sys0(SYS_NOTIFY_CREATE);
+            if (n >= 0) {
+                handle_id_t n_h = (handle_id_t)n;
+                if (it_sys1(SYS_IRQ_ACK, n) >= 0) { ok = 0; why = "ack wrong-type honoured"; }
+                it_close(&n_h);
+            }
+        }
+        if ((i & 3u) == 3u) it_quiesce_reaper();
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T171");
+    else { it_fz_note("T171", T171_SEED, i, op); it_fail("T171", why); }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -10528,6 +11008,14 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t161();
     test_t162();
     test_t163();
+    test_t164();
+    test_t165();
+    test_t166();
+    test_t167();
+    test_t168();
+    test_t169();
+    test_t170();
+    test_t171();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

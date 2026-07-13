@@ -87,6 +87,19 @@
  * that set — proving delivery carries no phantom authority (A11) and that
  * removing a cap removes it from the child (A15).  Must match iris_test. */
 #define LP_CMD_REPORT_SLOTS    0x10A0u
+
+/* Fase 23 compromised-driver stand-in: attempt a battery of device-authority
+ * escalations using only the caps the parent minted, and exit with a bitmask of
+ * which ones (incorrectly) SUCCEEDED.  A contained driver exits 0 — every
+ * escalation is denied by the kernel.  words[0] carries an out-of-range ioport
+ * offset for the range-crossing attempt.  Attempts:
+ *   bit 0: SYS_CAP_CREATE_IOPORT via slot 6 (needs HW_ACCESS bootcap) → forge port
+ *   bit 1: SYS_IOPORT_IN  via slot 10 at words[0] (out-of-range offset) → cross range
+ *   bit 2: SYS_IOPORT_OUT via slot 10 at words[0] (out-of-range offset) → cross range
+ *   bit 3: SYS_CAP_CREATE_IRQCAP via slot 6 → forge IRQ authority
+ *   bit 4: SYS_IRQ_ACK via slot 11 (may be empty) → ack an IRQ it holds no cap for
+ * Must match iris_test. */
+#define LP_CMD_DEV_PROBE       0x10A1u
 /* Exit-code base for a send/call that returned (was NOT killed while blocked);
  * low byte = -err (0 = success).  Lets a rendezvous-then-complete run report. */
 #define LP_EXIT_IPC_BASE       0x0C00
@@ -94,6 +107,13 @@
 static inline long lp_sys1(long nr, long a0) {
     long ret;
     __asm__ volatile ("syscall" : "=a"(ret) : "a"(nr), "D"(a0)
+        : "rcx", "r11", "memory");
+    return ret;
+}
+
+static inline long lp_sys3(long nr, long a0, long a1, long a2) {
+    long ret;
+    __asm__ volatile ("syscall" : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(a2)
         : "rcx", "r11", "memory");
     return ret;
 }
@@ -162,6 +182,19 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         if (lp_sys1(SYS_CSPACE_RESOLVE, 55) >= 0) mask |= (1u << 17);
         if (lp_sys1(SYS_CSPACE_RESOLVE, 56) >= 0) mask |= (1u << 18);
         lp_sys1(SYS_EXIT, (long)mask);
+        for (;;) {}
+    }
+
+    /* Fase 23: compromised-driver escalation battery — every attempt must be
+     * denied by the kernel; the exit bitmask marks any that leaked through. */
+    if (msg.label == (uint64_t)LP_CMD_DEV_PROBE) {
+        uint32_t breach = 0u;
+        if (lp_sys3(SYS_CAP_CREATE_IOPORT, 6, 0x2F8, 8) >= 0) breach |= (1u << 0);
+        if (lp_sys2(SYS_IOPORT_IN, 10, (long)msg.words[0]) >= 0) breach |= (1u << 1);
+        if (lp_sys3(SYS_IOPORT_OUT, 10, (long)msg.words[0], 0) >= 0) breach |= (1u << 2);
+        if (lp_sys3(SYS_CAP_CREATE_IRQCAP, 6, 9, 0) >= 0) breach |= (1u << 3);
+        if (lp_sys1(SYS_IRQ_ACK, 11) >= 0) breach |= (1u << 4);
+        lp_sys1(SYS_EXIT, (long)breach);
         for (;;) {}
     }
 
