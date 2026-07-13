@@ -23,6 +23,22 @@
 #define IRIS_SVC_CLIENT_EP_CONSOLE  0x4u
 #define IRIS_SVC_CLIENT_EP_KBD      0x8u
 
+/* Fase 24: explicit supervision-policy classification.  Restartability is
+ * already encoded by restart_on_exit + restart_limit; criticality records the
+ * SYSTEM IMPACT of the service's loss so the policy is auditable, not implicit.
+ *   CRITICAL_RESTART   — the system depends on it; svcmgr restarts up to the
+ *                        limit, then leaves the service degraded (vfs).
+ *   OPTIONAL_RESTART   — desirable but non-fatal; restarted up to the limit (kbd).
+ *   OPTIONAL_NO_RESTART— a one-shot / user-facing process; never auto-restarted (sh).
+ *   CRITICAL_NO_RESTART— its loss is unrecoverable; documented, not in the
+ *                        catalog (svcmgr itself; init).
+ * A T172 runtime check asserts every catalog service declares a policy that is
+ * consistent with its restart_on_exit flag. */
+#define IRIS_SUPERVISION_CRITICAL_RESTART     1u
+#define IRIS_SUPERVISION_OPTIONAL_RESTART     2u
+#define IRIS_SUPERVISION_OPTIONAL_NO_RESTART  3u
+#define IRIS_SUPERVISION_CRITICAL_NO_RESTART  4u
+
 struct iris_service_catalog_entry {
     const char    *image_name;
     uint32_t       service_id;
@@ -62,6 +78,9 @@ struct iris_service_catalog_entry {
                                      *     calls out to.  svcmgr_build_core_mints mints
                                      *     ONLY these into slots 1..4 — least authority.
                                      *     0 = a pure server/driver that talks to no peer. */
+    uint8_t        supervision;     /* Fase 24: IRIS_SUPERVISION_* — explicit criticality
+                                     *     / restart classification.  Must be consistent
+                                     *     with restart_on_exit (checked by T172). */
 };
 
 static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
@@ -93,6 +112,7 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
          * only OWN_EP/IRQ_NOTIFY/IOPORT/IRQ_CAP).  It calls NO peer service, so
          * it receives none of the slot-1..4 client caps. */
         .client_eps = 0u,
+        .supervision = IRIS_SUPERVISION_OPTIONAL_RESTART,  /* Fase 24: kbd is nice-to-have, restarted */
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_VFS,
@@ -118,6 +138,7 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
          * endpoint; it never calls svcmgr, itself, or kbd, so it receives ONLY
          * the console client cap — not svcmgr/vfs/kbd. */
         .client_eps = IRIS_SVC_CLIENT_EP_CONSOLE,
+        .supervision = IRIS_SUPERVISION_CRITICAL_RESTART,  /* Fase 24: filesystem, restarted */
     },
     {
         .image_name = IRIS_SERVICE_IMAGE_SH,
@@ -147,6 +168,7 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
          * output and kbd input, so it legitimately holds all four client caps. */
         .client_eps = IRIS_SVC_CLIENT_EP_SVCMGR | IRIS_SVC_CLIENT_EP_VFS |
                       IRIS_SVC_CLIENT_EP_CONSOLE | IRIS_SVC_CLIENT_EP_KBD,
+        .supervision = IRIS_SUPERVISION_OPTIONAL_NO_RESTART,  /* Fase 24: user shell, not auto-restarted */
     },
 };
 

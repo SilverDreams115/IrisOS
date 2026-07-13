@@ -42,7 +42,8 @@ struct svcmgr_service_state {
      * WAIT side goes to the child at bootstrap (kind 0x23). */
     handle_id_t irq_notif_h;
     uint8_t restart_count;
-    uint8_t reserved[3];
+    uint8_t degraded;       /* Fase 24: 1 = restart budget exhausted, not revived */
+    uint8_t reserved[2];
     /* Fase 10: service generation — starts at 1 when first booted and bumps
      * on every restart (death→respawn) and on an explicit RESTART request.
      * A client that cached a generation can detect, via IRIS_SVCMGR_EP_STATUS,
@@ -677,6 +678,36 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
             reply.words[0]   = alive;
             reply.words[1]   = gen;
             reply.word_count = 2u;
+            /* Fase 24 (additive): for a catalog service, expose the explicit
+             * supervision policy so a supervisor/test can audit it without
+             * reading svcmgr internals.  The IPC message carries only 4 words
+             * (IRIS_MSG_WORDS), so the policy is packed:
+             *   words[2] = supervision class
+             *   words[3] = restart_count | (restart_limit<<8) | (degraded<<16)
+             * Legacy callers reading only words[0..1] are unaffected. */
+            {
+                char base2[SVCMGR_SERVICE_NAME_CAP];
+                const struct iris_service_catalog_entry *pc = 0;
+                uint32_t l2 = 0;
+                while (l2 < SVCMGR_SERVICE_NAME_CAP && g_ep_recv_buf[l2]) l2++;
+                if (svcmgr_name_has_ep_suffix((const char *)g_ep_recv_buf) && l2 > 3u) {
+                    for (uint32_t k = 0; k < l2 - 3u; k++) base2[k] = g_ep_recv_buf[k];
+                    base2[l2 - 3u] = '\0';
+                    pc = svcmgr_catalog_find_name(base2);
+                } else {
+                    pc = svcmgr_catalog_find_name((const char *)g_ep_recv_buf);
+                }
+                if (pc) {
+                    struct svcmgr_service_state *ps = svcmgr_service_state(state, pc->service_id);
+                    uint32_t rc  = ps ? (uint32_t)ps->restart_count : 0u;
+                    uint32_t deg = ps ? (uint32_t)ps->degraded : 0u;
+                    reply.words[2]   = (uint64_t)pc->supervision;
+                    reply.words[3]   = (uint64_t)((rc & 0xFFu) |
+                                       (((uint32_t)pc->restart_limit & 0xFFu) << 8) |
+                                       ((deg & 0x1u) << 16));
+                    reply.word_count = 4u;
+                }
+            }
         } else {
             reply.label    = IRIS_EP_REPLY_ERR;
             reply.words[0] = (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND;
@@ -1169,6 +1200,10 @@ static void svcmgr_handle_service_death(struct svcmgr_state *state, uint32_t ser
 
     if (!svcmgr_should_restart_service(state, manifest)) {
         if (manifest && manifest->restart_on_exit) {
+            /* Fase 24: restart budget exhausted — the service stays down and is
+             * marked degraded (observable via STATUS words[5]).  A restartable
+             * service never revives past its limit without explicit action. */
+            svc->degraded = 1u;
             svcmgr_log(sm_str_restart_exhausted);
             if (manifest->image_name) svcmgr_log(manifest->image_name);
             svcmgr_log("\n");
