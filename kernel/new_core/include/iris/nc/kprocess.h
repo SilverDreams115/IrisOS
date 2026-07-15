@@ -16,18 +16,17 @@ struct KFrame;
 #define KPROCESS_EXIT_WATCH_MAX 8u
 #define KPROCESS_MAX_LIVE       64u /* bounded by TASK_MAX; enforced in kprocess_alloc */
 #define KPROCESS_NOTIFICATION_QUOTA 16u
-/* Fase 28.1: raised 32 → 128.  A LOADER (svc_load) creates each child's
- * segment + stack VMOs under ITS OWN ownership (kvmo_bind_owner binds the
- * caller); the quota is released only when the VMO object is destroyed, i.e.
- * when the CHILD dies and drops its mappings.  So a supervisor that keeps N
- * children alive holds ~4*N segment/stack VMOs against its own quota — the old
- * 32 capped a supervisor at ~8 concurrent loaded children (NO_MEMORY on the
- * 9th), which the 16-concurrent-target pager suite exceeds.  This is a
- * loader-ownership accounting bound, NOT the per-process notification quota
- * (which Fase 28.1 resolved with one shared fault notification); raising it is
- * the honest fix so the cap is a deliberate policy, not an accident of charging
- * a child's memory to whoever loaded it. */
-#define KPROCESS_VMO_QUOTA      128u
+/* Fase 29: RESTORED 128 → 32.  Fase 28.1 temporarily raised this to 128 to
+ * work around a caller-charged accounting BUG: a loader (svc_load) created each
+ * child's segment+stack VMOs under ITS OWN ownership, so a supervisor holding N
+ * children accumulated ~4*N VMOs against its own quota.  Fase 29 fixes the root
+ * cause — a VMO created for a child is now charged to the CHILD via an explicit,
+ * capability-authorized payer (sys_vmo_create charge-target; svc_loader passes
+ * the child process cap) — so the loader's own_vmos stays flat regardless of how
+ * many children it launches.  32 is now a genuine PER-PROCESS ceiling on the
+ * VMOs a single domain owns, not a proxy for how many children a supervisor can
+ * launch.  Raising the constant is no longer the answer. */
+#define KPROCESS_VMO_QUOTA      32u
 #define KPROCESS_PHYS_PAGES_LIMIT 2048u /* 8MB per process; set in kprocess_alloc */
 
 /* Maximum bootstrap KFrame retains stored in KProcess.bootstrap_frames[].
@@ -101,11 +100,20 @@ struct KProcess {
      * last-writer-wins but each blocked task keeps its own generation). */
     uint32_t fault_seq;
     uint32_t fault_seq_counter;
+    /* Fase 29 — resource accounting.  A KProcess IS a resource domain: every
+     * object is charged to the KProcess that logically OWNS it (its payer),
+     * selected by explicit capability authority at creation — NOT to whoever
+     * ran the syscall (see docs/architecture/resource-ownership-accounting.md).
+     * usage counters are the live charge; *_hwm is the monotonic high-water
+     * mark (never decreases), an observable, defensible ceiling witness. */
     uint32_t owned_notifications;
     uint32_t owned_vmos;
     uint32_t phys_pages_charged; /* sparse-VMO pages charged at eager map-time
                                   * allocation; vs phys_pages_limit */
     uint32_t phys_pages_limit;   /* set to KPROCESS_PHYS_PAGES_LIMIT at alloc */
+    uint32_t owned_notifications_hwm;
+    uint32_t owned_vmos_hwm;
+    uint32_t phys_pages_hwm;
 
     /* Ph95 (Phase 8): root CNode handle for hierarchical CSpace traversal.
      * HANDLE_INVALID if not yet allocated (e.g. kpage_alloc OOM at creation). */
@@ -138,6 +146,10 @@ iris_error_t     kprocess_quota_acquire_vmo(struct KProcess *p);
 void             kprocess_quota_release_vmo(struct KProcess *p);
 iris_error_t     kprocess_quota_acquire_page(struct KProcess *p);
 void             kprocess_quota_release_page(struct KProcess *p);
+/* Fase 29 — global resource-accounting gauges (SYS_RESOURCE_INFO). */
+uint32_t         kprocess_quota_failed_count(void);
+uint32_t         kprocess_quota_rollback_count(void);
+void             kprocess_quota_stat_rollback(void);
 iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KNotification *notif,
                                      uint64_t signal_bits);
 iris_error_t     kprocess_set_exception_handler(struct KProcess *p,

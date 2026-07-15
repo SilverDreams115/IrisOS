@@ -330,9 +330,23 @@ long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
         /* 5. Choose page-aligned ASLR bias. */
         uint64_t bias = sl_choose_bias(max_vend);
 
-        /* 6. Create a sparse VMO for each segment (populated eagerly at map). */
+        /* 5b. Create the empty target process FIRST (Fase 29): the child must
+         * exist before its image VMOs so those VMOs can be charged to the CHILD
+         * (its own resource domain), not to the loader.  The loader passes the
+         * child process cap as the VMO charge-target; it holds RIGHT_MANAGE on
+         * the process it just created.  This is the root-cause fix for the
+         * caller-charged accounting bug — the loader's own_vmos / phys_pages
+         * stay flat regardless of how many children it launches. */
+        r = sl_sys1(SYS_PROCESS_CREATE, (long)spawn_cap_h);
+        if (r < 0) goto out;
+        proc_h = (handle_id_t)r;
+
+        /* 6. Create a sparse VMO for each segment (populated eagerly at map),
+         * charged to the child.  Mapped into the loader's temp window below to
+         * fill; the phys pages are charged to the child (VMO owner), so
+         * unmapping from the loader never strands the charge on the loader. */
         for (uint32_t i = 0; i < seg_count; i++) {
-            r = sl_sys1(SYS_VMO_CREATE, (long)seg_map_size[i]);
+            r = sl_sys2(SYS_VMO_CREATE_FOR, (long)seg_map_size[i], (long)proc_h);
             if (r < 0) goto out;
             seg_vmo[i] = (handle_id_t)r;
         }
@@ -416,17 +430,14 @@ long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
         sl_close(elf_h);
         elf_h = HANDLE_INVALID;
 
-        /* 12. Create empty target process. */
-        r = sl_sys1(SYS_PROCESS_CREATE, (long)spawn_cap_h);
-        if (r < 0) goto out;
-        proc_h = (handle_id_t)r;
-
-        /* Fase 13 (Track I): the per-child bootstrap KChannel is retired — every
+        /* 12. Target process created earlier (step 5b) so its image VMOs are
+         * charged to it (Fase 29).
+         * Fase 13 (Track I): the per-child bootstrap KChannel is retired — every
          * cap is a pre-start CSpace mint, so no channel is created or inserted
          * and the child starts with RBX = 0 (no bootstrap handle). */
 
-        /* 14. Create user stack sparse VMO and map into child. */
-        r = sl_sys1(SYS_VMO_CREATE, (long)USER_STACK_SIZE);
+        /* 14. Create user stack sparse VMO (charged to the child) and map it in. */
+        r = sl_sys2(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE, (long)proc_h);
         if (r < 0) goto out;
         stack_vmo_h = (handle_id_t)r;
 

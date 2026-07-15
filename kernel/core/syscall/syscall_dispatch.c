@@ -135,6 +135,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_VSPACE_SELF:         return sys_vspace_self(arg0, arg1, arg2);
         case SYS_PROCESS_VSPACE:      return sys_process_vspace(arg0, arg1, arg2);
         case SYS_VMO_MAP_PAGE:        return sys_vmo_map_page(arg0, arg1, arg2, arg3);
+        case SYS_VMO_CREATE_FOR:      return sys_vmo_create_for(arg0, arg1, arg2);
+        case SYS_RESOURCE_INFO:       return sys_resource_info(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }

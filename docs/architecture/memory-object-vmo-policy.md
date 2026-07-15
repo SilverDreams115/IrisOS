@@ -257,3 +257,23 @@ for a private-writable page.  W^X is enforced by the kernel on the PTE and by
 the pager at region registration (no `W&X`).  No new syscall, no kernel
 filesystem policy: the file→page relationship is entirely userland policy over
 VMO/VSpace/frame caps.  See `file-backed-memory.md`.
+
+---
+
+## Fase 29 addendum — VMO ownership & payer
+
+A VMO's quota (the object and its sparse pages) is charged to an explicit
+**owner / payer domain**, selected by capability authority at creation, not to
+whoever ran the syscall:
+
+- `SYS_VMO_CREATE(size)` — charges the caller (unchanged 1-arg ABI).
+- `SYS_VMO_CREATE_FOR(size, charge_target)` — charges `charge_target`, a
+  KProcess the caller holds RIGHT_MANAGE on.  A loader uses this to charge a
+  child's image VMOs to the CHILD, so the loader's `owned_vmos` stays flat
+  regardless of how many children it launches.
+
+Sparse physical pages are charged **once to the VMO owner** at page allocation
+(`kvmo_owner(v)` in `sys_vmo_map` / `sys_vmo_map_into` / `sys_vmo_map_page`) and
+released at `kvmo_destroy`.  A shared VMO's pages are paid once by its owner;
+extra targets that map it do not re-charge, and unmapping never strands the
+charge on the mapper.  See `resource-ownership-accounting.md` (T239–T250).

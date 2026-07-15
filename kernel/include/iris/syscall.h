@@ -965,6 +965,36 @@
 #define SYS_VMO_MAP_PAGE 108
 
 /*
+ * SYS_VMO_CREATE_FOR(size, charge_target) → handle_id or iris_error_t (Fase 29)
+ *
+ * Like SYS_VMO_CREATE, but the VMO OBJECT quota and its sparse physical pages
+ * are charged to `charge_target` — a CPtr/handle to a KProcess the caller holds
+ * RIGHT_MANAGE on — instead of to the caller.  The handle is installed in the
+ * CALLER's table (holder), while the target is the OWNER/payer.  This lets a
+ * loader create a child's image VMOs charged to the CHILD's resource domain, so
+ * the loader's own quota stays flat regardless of how many children it launches
+ * (Fase 29 root-cause fix for caller-charged accounting).
+ *
+ *   Returns IRIS_ERR_ACCESS_DENIED — missing RIGHT_MANAGE on charge_target.
+ *   Returns IRIS_ERR_WRONG_TYPE    — charge_target is not a KProcess.
+ *   Returns IRIS_ERR_BAD_HANDLE    — charge_target is torn down.
+ *   Returns IRIS_ERR_NO_MEMORY     — object alloc or the target's quota is full.
+ */
+#define SYS_VMO_CREATE_FOR 109
+
+/*
+ * SYS_RESOURCE_INFO(proc_h, out_ptr) → 0 or iris_error_t (Fase 29)
+ *
+ * Read-only resource-accounting snapshot for a process (its resource domain).
+ * proc_h == HANDLE_INVALID → self; otherwise a KProcess cap (any rights: the
+ * snapshot is a read-only oracle).  Writes a struct iris_resource_info (see
+ * iris/syscall.h) to out_ptr: per-type usage / limit / high-water for the
+ * process, plus global failed-charge / rollback / kslab counters.  Additive,
+ * size-validated, versioned.
+ */
+#define SYS_RESOURCE_INFO 110
+
+/*
  * Block 8 — TCB capabilities (Ph96-101).
  *
  * Each user thread receives a KTcb at creation time; handles are installed
@@ -1028,6 +1058,38 @@ struct iris_tcb_info {
 #define IRIS_HANDLE_TYPE_TCB            13u
 #define IRIS_HANDLE_TYPE_VSPACE         14u  /* Fase 4: KVSpace — virtual address space */
 #define IRIS_HANDLE_TYPE_FRAME          15u  /* Fase 5: KFrame  — physical memory frame */
+
+/*
+ * Fase 29 — resource-accounting snapshot (SYS_RESOURCE_INFO out payload).
+ * Additive, versioned; a caller sets `struct_size = sizeof(*this)` and the
+ * kernel fills up to that many bytes (older callers with a smaller struct still
+ * work).  Per-type fields are for the queried process (its resource domain);
+ * the global_* / kslab_* fields are system-wide gauges.
+ */
+#define IRIS_RESOURCE_INFO_VERSION 1u
+#ifndef __ASSEMBLER__
+struct iris_resource_info {
+    uint32_t version;         /* IRIS_RESOURCE_INFO_VERSION */
+    uint32_t struct_size;     /* caller-provided sizeof; kernel clamps its write */
+    /* per-process (domain) usage / limit / high-water */
+    uint32_t vmos_usage;
+    uint32_t vmos_limit;
+    uint32_t vmos_hwm;
+    uint32_t notifs_usage;
+    uint32_t notifs_limit;
+    uint32_t notifs_hwm;
+    uint32_t pages_usage;
+    uint32_t pages_limit;
+    uint32_t pages_hwm;
+    /* system-wide accounting gauges */
+    uint32_t global_failed_charges;  /* charges rejected at a domain limit */
+    uint32_t global_rollbacks;       /* provisional charges rolled back on failure */
+    uint32_t kslab_used_bytes;
+    uint32_t kslab_total_bytes;
+    uint32_t kslab_hwm_bytes;
+    uint32_t kslab_alloc_failures;
+};
+#endif /* __ASSEMBLER__ */
 
 #ifndef __ASSEMBLER__
 #ifdef __KERNEL__

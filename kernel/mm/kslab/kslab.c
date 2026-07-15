@@ -16,6 +16,15 @@ static uint32_t        kslab_total = 0;
 static uint32_t        kslab_used  = 0;   /* bump pointer (byte offset) */
 static void           *kslab_free_heads[KSLAB_NUM_CLASSES];
 static irq_spinlock_t  kslab_lock;
+/* Fase 29 — capacity-contract instrumentation.  kslab_used is bump-only (frees
+ * go to per-class free-lists for reuse, never lowering the bump pointer), so it
+ * IS the high-water of arena consumption.  kslab_fail counts allocations that
+ * hit the ceiling (returned 0) — the explicit, diagnosable exhaustion path. */
+static uint32_t        kslab_fail  = 0;
+
+uint32_t kslab_used_bytes(void)  { return kslab_used;  }
+uint32_t kslab_total_bytes(void) { return kslab_total; }
+uint32_t kslab_fail_count(void)  { return kslab_fail;  }
 
 /* Round size up to the next power-of-2 ≥ 2^KSLAB_MIN_LOG2. */
 static uint32_t kslab_round(uint32_t size) {
@@ -56,6 +65,7 @@ void *kslab_alloc(uint32_t size) {
         /* Bump-allocate, aligned to block boundary */
         uint32_t aligned = (kslab_used + block - 1u) & ~(block - 1u);
         if (aligned + block > kslab_total) {
+            kslab_fail++;   /* Fase 29: explicit, counted exhaustion (no wedge) */
             irq_spinlock_unlock(&kslab_lock, flags);
             return 0;
         }

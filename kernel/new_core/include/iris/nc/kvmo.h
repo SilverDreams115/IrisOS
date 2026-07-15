@@ -53,6 +53,10 @@ iris_error_t kvmo_size_to_pages(uint64_t size, uint32_t *out_pages);
 struct KVmo *kvmo_create(uint64_t size);             /* allocate from PMM */
 struct KVmo *kvmo_wrap  (uint64_t phys, uint64_t size); /* wrap existing phys (MMIO) */
 iris_error_t kvmo_bind_owner(struct KVmo *v, struct KProcess *owner);
+/* Fase 29: the VMO's payer domain — the process charged for the VMO object and
+ * for its sparse physical pages (charged once, at page allocation; released at
+ * kvmo_destroy).  NULL only if never bound. */
+struct KProcess *kvmo_owner(const struct KVmo *v);
 void         kvmo_free  (struct KVmo *v);
 uint32_t     kvmo_live_count(void);
 

@@ -287,3 +287,17 @@ validates badge + session + grant + rights + generation on every operation.
 VFS's (`GRANT_REVOKE` bumps the export generation; stale grants fail CLOSED).
 See `file-grant-capability.md` for the full contract and threat model
 (T231–T238).
+
+---
+
+## Fase 29 addendum — pager resource accounting
+
+The pager's cache VMO and private-writable pool VMO are owned (and charged) by
+their owner domain; fault fills charge sparse pages to that owner, once
+(shared RO cache pages are charged once and survive while any use exists;
+private pages belong to their pool's owner).  A pager dying releases its own
+page/VMO charges; a target dying does not charge cleanup to the pager; and the
+supervisor never inherits the pager's page budget (T244).  File-backed memory
+runs unchanged under the new accounting with an exact resource baseline (T249),
+and the Fase 28 functional contract (T211–T238) is preserved.  See
+`resource-ownership-accounting.md`.

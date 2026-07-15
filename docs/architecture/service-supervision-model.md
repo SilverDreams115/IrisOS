@@ -211,3 +211,18 @@ stamped generations that invalidate all grants across a *VFS* restart (T236),
 neither a pager restart nor a VFS restart can revive stale file authority.  The
 supervision boundary — a lost pager degrades paging for its targets but never
 amplifies authority across a restart — now extends to file access.
+
+---
+
+## Fase 29 addendum — supervisor resource independence
+
+A supervisor's children are **independent resource domains**.  Because each
+child pays for its own resources (its image VMOs are charged to the child via
+`SYS_VMO_CREATE_FOR`, not to the loader), a supervisor can launch many children
+without accumulating their charges (T240: supervisor VMO usage stays flat across
+1/8/16/32 children), killing one child frees only its charges and leaves the
+others intact (T245), and a loader dying does not destroy its children's
+resources (owner ≠ holder; `resource-ownership-accounting.md` Q13).  Budget
+delegation is process authority: charging to a domain requires RIGHT_MANAGE on
+its process cap, and that authority is monotonic — a child cannot raise its own
+limit (T247).

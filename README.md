@@ -193,9 +193,36 @@ the pager a session-badged, write-only `vfs.ep` cap. From then on:
   the name, or an old message; a VFS restart re-seeds under a fresh instance
   epoch, so grants never survive it.
 
+## Resource ownership & accounting
+
+Every kernel object is charged to the process that logically **owns** it (its
+payer / resource domain), selected by explicit capability authority at creation
+— not to whoever ran the syscall. A `KProcess` *is* a resource domain.
+
+- `SYS_VMO_CREATE(size)` charges the caller; `SYS_VMO_CREATE_FOR(size, target)`
+  charges a process the caller holds `RIGHT_MANAGE` on. A loader charges each
+  child's image VMOs to the **child**, so a supervisor can launch many children
+  without accumulating their memory against its own quota.
+- Sparse VMO pages are charged **once to the VMO owner** and released at
+  destroy; a shared VMO's pages are paid once, and mapping it into more targets
+  does not re-charge.
+- Per-domain quotas (`KPROCESS_VMO_QUOTA` = 32, `KPROCESS_NOTIFICATION_QUOTA` =
+  16, `KPROCESS_PHYS_PAGES_LIMIT` = 2048) carry monotonic high-water marks;
+  exhaustion is atomic (clean `NO_MEMORY`, no partial object, a global
+  failed-charge counter advances).
+- `SYS_RESOURCE_INFO(proc, out)` is a read-only, versioned snapshot of a
+  domain's usage / limit / high-water plus system-wide failed-charge / rollback
+  / kslab gauges.
+
+The kernel object slab (16 MB) is **global implementation capacity**,
+deliberately distinct from per-domain quota; its exhaustion returns `NULL` →
+`IRIS_ERR_NO_MEMORY` with no corruption. See
+`docs/architecture/resource-ownership-accounting.md` and
+`kernel-capacity-limits.md`.
+
 ## Syscall surface
 
-109 syscall slots (0–108). Highlights by area:
+111 syscall slots (0–110). Highlights by area:
 
 - **Core / process / thread**: `EXIT`, `GETPID`, `YIELD`, `SLEEP`, `CLOCK_GET`,
   `CLOCK_NANOSLEEP`, `PROCESS_CREATE`, `PROCESS_WATCH`, `PROCESS_KILL`,
@@ -206,8 +233,8 @@ the pager a session-badged, write-only `vfs.ep` cap. From then on:
   `CSPACE_RESOLVE`, `PROC_CSPACE_MINT`, `CAP_DERIVE`, `CAP_REVOKE`.
 - **Endpoint IPC**: `ENDPOINT_CREATE`, `EP_SEND`, `EP_RECV`, `EP_NB_SEND`,
   `EP_NB_RECV`, `EP_CALL`, `REPLY`.
-- **Memory / untyped / frames**: `VMO_CREATE/MAP/MAP_INTO/MAP_PAGE/UNMAP/SHARE/SIZE`,
-  `VSPACE_SELF`, `UNTYPED_INFO/RETYPE/RESET`, `FRAME_MAP/UNMAP`.
+- **Memory / untyped / frames**: `VMO_CREATE/CREATE_FOR/MAP/MAP_INTO/MAP_PAGE/UNMAP/SHARE/SIZE`,
+  `VSPACE_SELF`, `RESOURCE_INFO`, `UNTYPED_INFO/RETYPE/RESET`, `FRAME_MAP/UNMAP`.
 - **Faults / notifications**: `NOTIFY_CREATE/SIGNAL/WAIT/WAIT_TIMEOUT`,
   `EXCEPTION_HANDLER`, `EXCEPTION_RESUME`.
 - **Scheduling**: `SC_CREATE`, `SC_CONFIGURE`, `THREAD_SET_SC`,
@@ -276,9 +303,10 @@ THREAD_START` flow.
 | `HANDLE_TABLE_MAX` | 256 |
 | `KCNODE_DEFAULT_SLOTS` | 256 (root CNode) |
 | `KVMO_MAX_PAGES` | 16384 (64 MB per VMO) |
-| `KPROCESS_NOTIFICATION_QUOTA` | 16 per process |
-| `KPROCESS_VMO_QUOTA` | 128 per process |
-| kernel object slab | 16 MB |
+| `KPROCESS_NOTIFICATION_QUOTA` | 16 per domain |
+| `KPROCESS_VMO_QUOTA` | 32 per domain |
+| `KPROCESS_PHYS_PAGES_LIMIT` | 2048 (8 MB) per domain |
+| kernel object slab | 16 MB (global capacity) |
 | CPtr namespace split | `<1024` CSpace, `>=1024` handle table |
 | PCID range | 1–4094 per process; 0 = kernel |
 
@@ -290,17 +318,18 @@ Two independently-gating layers, run on every change:
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   handle_table, kendpoint, kreply, knotification, kuntyped, kschedctx, kframe,
   rights, ipc_cspace, vfs_ep including the file-grant layer, …).
-- **Runtime tests** — booted under QEMU headless: **234 tests (T001–T238)**
+- **Runtime tests** — booted under QEMU headless: **246 tests (T001–T250)**
   covering IPC and syscall basics, CPtr-first slots, badges & sender identity,
   service lifecycle / death-restart / relookup, endpoint cap-transfer,
   device/driver isolation, service supervision, the user pager and fault model,
-  file-backed memory, VFS-enforced file grants, and multi-target paging.
+  file-backed memory, VFS-enforced file grants, multi-target paging, and
+  resource ownership / quota accounting.
 
 ```bash
 make                                                       # zero-warning build
 make test-unit                                             # host unit suites (10247)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (234/234)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (246/246)
 make run                                                   # interactive QEMU
 ```
 

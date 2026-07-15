@@ -87,31 +87,71 @@ uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /* ── VMO syscalls ─────────────────────────────────────────────────── */
 
-uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
+/*
+ * vmo_create_charged — shared body for SYS_VMO_CREATE / SYS_VMO_CREATE_FOR.
+ * Creates a sparse VMO of `size`, charges the VMO OBJECT quota (owned_vmos) and,
+ * later, its sparse pages to `payer` (the owner/payer domain), and installs the
+ * handle in the CALLER's table (the holder).  Fase 29: owner (payer) and holder
+ * are deliberately distinct — a loader creating a child's image VMO charges the
+ * CHILD but keeps the handle to map/close it.
+ */
+static uint64_t vmo_create_charged(struct task *t, uint64_t size,
+                                   struct KProcess *payer) {
     uint32_t pages = 0;
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (kvmo_size_to_pages(arg0, &pages) != IRIS_OK)
+    if (kvmo_size_to_pages(size, &pages) != IRIS_OK)
         return syscall_err(IRIS_ERR_INVALID_ARG);
     (void)pages;
-    struct KVmo *v = kvmo_create(arg0);
+    struct KVmo *v = kvmo_create(size);
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
-    iris_error_t r = kvmo_bind_owner(v, t->process);
-    if (r != IRIS_OK) {
-        kvmo_free(v);
-        return syscall_err(r);
-    }
+    iris_error_t r = kvmo_bind_owner(v, payer);
+    if (r != IRIS_OK) { kvmo_free(v); return syscall_err(r); }
     handle_id_t h = handle_table_insert(&t->process->handle_table,
                                         &v->base,
                                         RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER |
                                         RIGHT_DUPLICATE);
     if (h == HANDLE_INVALID) {
-        kvmo_free(v);
+        kvmo_free(v);   /* kvmo_destroy releases the owner charge — no leak */
         return syscall_err(IRIS_ERR_TABLE_FULL);
     }
     kobject_release(&v->base);
     return (uint64_t)h;
+}
+
+uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;   /* 1-arg ABI: callers do not set arg1 */
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    return vmo_create_charged(t, arg0, t->process);   /* charge self */
+}
+
+/*
+ * SYS_VMO_CREATE_FOR(size, charge_target) — explicit, capability-authorized
+ * PAYER selection (Fase 29).  The VMO object + its sparse pages are charged to
+ * `charge_target` (a KProcess the caller holds RIGHT_MANAGE on), not to the
+ * caller.  Same authority SYS_VMO_MAP_INTO requires to map into that process.
+ */
+uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *payer_obj;
+    iris_rights_t   payer_rights;
+    iris_error_t pr = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg1,
+                                 RIGHT_NONE, KOBJ_PROCESS, &payer_obj, &payer_rights);
+    if (pr != IRIS_OK) return syscall_err(pr);
+    if (!rights_check(payer_rights, RIGHT_MANAGE)) {
+        kobject_release(payer_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    struct KProcess *payer = (struct KProcess *)payer_obj;
+    if (kprocess_teardown_complete(payer)) {
+        kobject_release(payer_obj);
+        return syscall_err(IRIS_ERR_BAD_HANDLE);
+    }
+    uint64_t rv = vmo_create_charged(t, arg0, payer);
+    kobject_release(payer_obj);
+    return rv;
 }
 
 
@@ -186,19 +226,26 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             }
         }
 
+        /* Fase 29: sparse pages are charged to the VMO's OWNER (payer domain),
+         * once, at allocation — not to whoever maps it first.  So a loader that
+         * maps a child's segment VMO into its own window to fill it charges the
+         * CHILD, and closing/unmapping never strands the charge on the loader
+         * (released at kvmo_destroy).  Fallback to the caller if unbound. */
+        struct KProcess *vmo_payer = kvmo_owner(v);
+        if (!vmo_payer) vmo_payer = t->process;
         uint64_t mapped_until = arg1;
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
             uint32_t page_idx = (uint32_t)(off >> 12);
 
             if (v->pages[page_idx] == 0) {
-                if (kprocess_quota_acquire_page(t->process) != IRIS_OK) {
+                if (kprocess_quota_acquire_page(vmo_payer) != IRIS_OK) {
                     rollback_vmo_maps(vs, arg1, mapped_until);
                     kobject_release(obj);
                     return syscall_err(IRIS_ERR_NO_MEMORY);
                 }
                 uint64_t phys = pmm_alloc_page();
                 if (!phys) {
-                    kprocess_quota_release_page(t->process);
+                    kprocess_quota_release_page(vmo_payer);
                     rollback_vmo_maps(vs, arg1, mapped_until);
                     kobject_release(obj);
                     return syscall_err(IRIS_ERR_NO_MEMORY);
@@ -509,19 +556,24 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
             }
         }
 
+        /* Fase 29: charge the VMO owner (payer domain), not the map target — a
+         * shared VMO's pages are paid once by its owner; extra targets that map
+         * it do not re-charge (Q6/Q7/Q18). */
+        struct KProcess *vmo_payer = kvmo_owner(v);
+        if (!vmo_payer) vmo_payer = proc;
         uint64_t mapped_until = vaddr;
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
             uint32_t page_idx = (uint32_t)(off >> 12);
 
             if (v->pages[page_idx] == 0) {
-                if (kprocess_quota_acquire_page(proc) != IRIS_OK) {
+                if (kprocess_quota_acquire_page(vmo_payer) != IRIS_OK) {
                     rollback_vmo_maps(target_vs, vaddr, mapped_until);
                     kobject_release(vmo_obj); kobject_release(proc_obj);
                     return syscall_err(IRIS_ERR_NO_MEMORY);
                 }
                 uint64_t phys = pmm_alloc_page();
                 if (!phys) {
-                    kprocess_quota_release_page(proc);
+                    kprocess_quota_release_page(vmo_payer);
                     rollback_vmo_maps(target_vs, vaddr, mapped_until);
                     kobject_release(vmo_obj); kobject_release(proc_obj);
                     return syscall_err(IRIS_ERR_NO_MEMORY);
@@ -653,16 +705,21 @@ uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
             kobject_release(vmo_obj);
             return syscall_err(IRIS_ERR_INVALID_ARG);
         }
+        /* Fase 29: charge the VMO owner (payer domain), not the mapper.  The
+         * pager maps its cache/private VMO pages into targets; those pages are
+         * paid by the VMO's owner (the pager / memory-service domain), once. */
+        struct KProcess *vmo_payer = kvmo_owner(v);
+        if (!vmo_payer) vmo_payer = t->process;
         int charged = 0;
         if (v->pages[page_idx] == 0) {
-            if (kprocess_quota_acquire_page(t->process) != IRIS_OK) {
+            if (kprocess_quota_acquire_page(vmo_payer) != IRIS_OK) {
                 kobject_active_release(&vs->base); kobject_release(&vs->base);
                 kobject_release(vmo_obj);
                 return syscall_err(IRIS_ERR_NO_MEMORY);
             }
             uint64_t phys = pmm_alloc_page();
             if (!phys) {
-                kprocess_quota_release_page(t->process);
+                kprocess_quota_release_page(vmo_payer);
                 kobject_active_release(&vs->base); kobject_release(&vs->base);
                 kobject_release(vmo_obj);
                 return syscall_err(IRIS_ERR_NO_MEMORY);

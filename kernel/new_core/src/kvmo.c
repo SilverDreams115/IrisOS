@@ -10,10 +10,13 @@ static _Atomic uint32_t kvmo_live;
 
 static void kvmo_destroy(struct KObject *obj) {
     struct KVmo *v = (struct KVmo *)obj;
+    uint32_t charged_pages = 0;   /* Fase 29: sparse phys pages charged to owner */
     if (v->sparse) {
         for (uint32_t i = 0; i < v->page_capacity; i++) {
-            if (v->pages[i])
+            if (v->pages[i]) {
                 pmm_free_page(v->pages[i]);
+                charged_pages++;
+            }
         }
         if (v->pages_meta_phys)
             pmm_free_contig(v->pages_meta_phys, v->pages_meta_pages);
@@ -25,6 +28,12 @@ static void kvmo_destroy(struct KObject *obj) {
     if (v->owner) {
         struct KProcess *owner = v->owner;
         v->owner = 0;
+        /* Fase 29: release the per-page phys charge that page allocation put on
+         * the owner (charged once per sparse page in the map syscalls), then the
+         * VMO-object charge.  A VMO's pages are owned and paid for by the VMO's
+         * payer domain, not by whoever happened to map it first. */
+        for (uint32_t i = 0; i < charged_pages; i++)
+            kprocess_quota_release_page(owner);
         kprocess_quota_release_vmo(owner);
         kobject_release(&owner->base);
     }
@@ -130,6 +139,10 @@ iris_error_t kvmo_bind_owner(struct KVmo *v, struct KProcess *owner) {
     v->owner = owner;
     spinlock_unlock(&v->base.lock);
     return IRIS_OK;
+}
+
+struct KProcess *kvmo_owner(const struct KVmo *v) {
+    return v ? v->owner : 0;
 }
 
 void kvmo_free(struct KVmo *v) {

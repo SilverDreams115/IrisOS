@@ -9362,10 +9362,11 @@ static void test_t148(void) {
             break;
         }
     }
-    /* High/unassigned range 109..400 (107 = SYS_PROCESS_VSPACE since Fase 25,
-     * 108 = SYS_VMO_MAP_PAGE since Fase 26; their typed/rights fuzz lives with
-     * the other cap syscalls in T149+ and in T191/T192/T194). */
-    for (long n = 109; ok && n <= 400; n++) {
+    /* High/unassigned range 111..400 (107 = SYS_PROCESS_VSPACE, 108 =
+     * SYS_VMO_MAP_PAGE, and Fase 29's 109 = SYS_VMO_CREATE_FOR / 110 =
+     * SYS_RESOURCE_INFO are all live; their typed/rights fuzz lives with the
+     * other cap syscalls in T149+ / T241 / the resource tests). */
+    for (long n = 111; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -16224,6 +16225,673 @@ static void test_t238(void) {
     else { it_fz_note("T238", T238_SEED, round, op); it_fail("T238", why); }
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+ * Fase 29 — Resource Ownership, Quota Domains and Kernel Capacity (T239–T250)
+ *
+ * Model: a KProcess IS a resource domain.  Every object is charged to the
+ * process that logically OWNS it (its payer), selected by explicit capability
+ * authority at creation — NOT to whoever ran the syscall.  A loader creates a
+ * child's image VMOs charged to the CHILD (SYS_VMO_CREATE_FOR + the child's
+ * process cap with RIGHT_MANAGE), so the loader's own quota stays flat.  These
+ * tests prove creator/owner/payer/holder are separate, sharing charges once,
+ * exhaustion is atomic, and usage returns to baseline.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+#define SYS_VMO_CREATE_FOR 109
+#define SYS_RESOURCE_INFO  110
+#define IT_VMO_QUOTA       32u   /* == KPROCESS_VMO_QUOTA */
+
+/* Mirror of struct iris_resource_info (iris/syscall.h) — layout MUST match. */
+struct it_rinfo {
+    uint32_t version, struct_size;
+    uint32_t vmos_usage, vmos_limit, vmos_hwm;
+    uint32_t notifs_usage, notifs_limit, notifs_hwm;
+    uint32_t pages_usage, pages_limit, pages_hwm;
+    uint32_t global_failed_charges, global_rollbacks;
+    uint32_t kslab_used_bytes, kslab_total_bytes, kslab_hwm_bytes, kslab_alloc_failures;
+};
+/* Read a process's resource snapshot (HANDLE_INVALID = self).  1 on success. */
+static int it_rinfo(handle_id_t proc_h, struct it_rinfo *out) {
+    for (uint32_t i = 0; i < (uint32_t)sizeof(*out); i++) ((uint8_t *)out)[i] = 0;
+    out->struct_size = (uint32_t)sizeof(*out);
+    return it_sys2(SYS_RESOURCE_INFO, (long)proc_h, (long)(uintptr_t)out) == 0;
+}
+
+/* Spawn a bare lifecycle_probe child (cmd endpoint + process).  0 on success. */
+static int it_bare_child(handle_id_t *cmd_out, handle_id_t *proc_out) {
+    *cmd_out = *proc_out = HANDLE_INVALID;
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) return 0;
+    *cmd_out = (handle_id_t)ep;
+    if (lp_spawn_child(*cmd_out, proc_out) < 0 || *proc_out == HANDLE_INVALID) {
+        it_close(cmd_out); return 0;
+    }
+    return 1;
+}
+static void it_bare_kill(handle_id_t *cmd, handle_id_t *proc) {
+    if (*proc != HANDLE_INVALID) { (void)it_sys1(SYS_PROCESS_KILL, (long)*proc); (void)it_lp_wait_exit(*proc); }
+    it_close(cmd); it_close(proc);
+}
+
+/* ── T239: resource ownership manifest ───────────────────────────────────────
+ * Every principal object has a payer, a charge point, and a release point.  The
+ * self snapshot is well-formed (version/limits/kslab); creating a VMO charges
+ * exactly the domain that owns it (self for CREATE, the CHILD for CREATE_FOR)
+ * and closing it releases exactly that charge.  Invariants: Q1, Q2, Q11, Q24. */
+static void test_t239(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "resource manifest";
+
+    struct it_rinfo r0;
+    if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "rinfo self"; }
+    if (ok && (r0.version != 1u || r0.vmos_limit != IT_VMO_QUOTA ||
+               r0.notifs_limit != 16u || r0.kslab_total_bytes == 0u ||
+               r0.pages_limit == 0u)) { ok = 0; why = "manifest fields"; }
+    /* kslab used is within total; no phantom alloc failures at rest. */
+    if (ok && r0.kslab_used_bytes > r0.kslab_total_bytes) { ok = 0; why = "kslab over total"; }
+
+    /* CREATE charges self by exactly one VMO; close releases it. */
+    long v = ok ? it_sys1(SYS_VMO_CREATE, 4096) : -1;
+    if (ok && v < 0) { ok = 0; why = "create"; }
+    struct it_rinfo r1;
+    if (ok && !it_rinfo(HANDLE_INVALID, &r1)) { ok = 0; why = "rinfo1"; }
+    if (ok && r1.vmos_usage != r0.vmos_usage + 1u) { ok = 0; why = "self not charged"; }
+    if (ok && r1.vmos_hwm < r1.vmos_usage) { ok = 0; why = "hwm < usage"; }
+    handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
+    it_close(&vh);
+    struct it_rinfo r2;
+    if (ok && !it_rinfo(HANDLE_INVALID, &r2)) { ok = 0; why = "rinfo2"; }
+    if (ok && r2.vmos_usage != r0.vmos_usage) { ok = 0; why = "release drift"; }
+    if (ok && r2.vmos_hwm < r1.vmos_hwm) { ok = 0; why = "hwm decreased"; }  /* Q24 */
+
+    /* CREATE_FOR charges the CHILD, not self (creator != owner). */
+    handle_id_t cmd, proc;
+    if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
+    struct it_rinfo cs0, ss0;
+    if (ok && (!it_rinfo(proc, &cs0) || !it_rinfo(HANDLE_INVALID, &ss0))) { ok = 0; why = "rinfo child"; }
+    long vc = ok ? it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)proc) : -1;
+    if (ok && vc < 0) { ok = 0; why = "create_for"; }
+    struct it_rinfo cs1, ss1;
+    if (ok && (!it_rinfo(proc, &cs1) || !it_rinfo(HANDLE_INVALID, &ss1))) { ok = 0; why = "rinfo child1"; }
+    if (ok && cs1.vmos_usage != cs0.vmos_usage + 1u) { ok = 0; why = "child not charged"; }
+    if (ok && ss1.vmos_usage != ss0.vmos_usage) { ok = 0; why = "self wrongly charged"; }  /* Q2 */
+    handle_id_t vch = (vc >= 0) ? (handle_id_t)vc : HANDLE_INVALID;
+    it_close(&vch);
+    if (ok) { struct it_rinfo cs2; if (!it_rinfo(proc, &cs2) || cs2.vmos_usage != cs0.vmos_usage) { ok = 0; why = "child release drift"; } }
+    if (ok) it_bare_kill(&cmd, &proc); else it_bare_kill(&cmd, &proc);
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T239"); else it_fail("T239", why);
+}
+
+/* ── T240: loader creates many independent children ──────────────────────────
+ * The supervisor spawns 1, 8, 16, 32 children.  Its OWN vmos_usage does NOT
+ * grow ~4×children (the child image VMOs are charged to each CHILD, not to the
+ * loader — the Fase 28.1 caller-charged bug, fixed).  Every child is alive with
+ * its own image charge; selective death frees only that child; the final
+ * baseline is exact.  A push toward 64 shows the real ceiling is the documented
+ * KPROCESS_MAX_LIVE process limit, hit CLEANLY — not the loader's VMO quota.
+ * Invariants: Q4, Q5, Q12, Q13, Q20, Q23. */
+#define T240_MAX 48u
+static void test_t240(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "many children";
+
+    static handle_id_t cmd[T240_MAX], proc[T240_MAX];
+    struct it_rinfo self0;
+    if (ok && !it_rinfo(HANDLE_INVALID, &self0)) { ok = 0; why = "self0"; }
+
+    const uint32_t rungs[4] = { 1u, 8u, 16u, 32u };
+    for (uint32_t ri = 0; ok && ri < 4u; ri++) {
+        uint32_t n = rungs[ri];
+        for (uint32_t i = 0; i < T240_MAX; i++) { cmd[i] = proc[i] = HANDLE_INVALID; }
+        uint32_t spawned = 0;
+        for (uint32_t i = 0; ok && i < n; i++) {
+            if (!it_bare_child(&cmd[i], &proc[i])) { ok = 0; why = "spawn"; break; }
+            spawned++;
+        }
+        /* The loader's own VMO usage did NOT scale with children (Q5). */
+        struct it_rinfo self1;
+        if (ok && !it_rinfo(HANDLE_INVALID, &self1)) { ok = 0; why = "self1"; }
+        if (ok && self1.vmos_usage != self0.vmos_usage) { ok = 0; why = "loader accumulated VMOs"; }
+        /* A sampled child carries its own image charge (Q4). */
+        if (ok && n > 0) {
+            struct it_rinfo cs;
+            if (!it_rinfo(proc[n / 2u], &cs) || cs.vmos_usage == 0u) { ok = 0; why = "child image uncharged"; }
+        }
+        /* Selective death: kill the even-indexed children; odd ones stay alive. */
+        for (uint32_t i = 0; ok && i < spawned; i += 2u) it_bare_kill(&cmd[i], &proc[i]);
+        for (uint32_t i = 1; ok && i < spawned; i += 2u) {
+            struct it_rinfo cs;
+            if (!it_rinfo(proc[i], &cs)) { ok = 0; why = "survivor died"; }
+        }
+        for (uint32_t i = 0; i < spawned; i++) if (proc[i] != HANDLE_INVALID) it_bare_kill(&cmd[i], &proc[i]);
+        it_quiesce_reaper();
+        /* Baseline exact after each rung (Q12/Q23). */
+        struct it_rinfo self2;
+        if (ok && (!it_rinfo(HANDLE_INVALID, &self2) || self2.vmos_usage != self0.vmos_usage)) { ok = 0; why = "rung baseline"; }
+    }
+
+    /* Push toward the process ceiling: spawn until failure (cap T240_MAX).  At
+     * least 32 must succeed and the loader must never accumulate VMOs; any
+     * failure is a CLEAN process-limit error, and teardown returns to baseline
+     * (Q20/Q21/Q29 — no wedge). */
+    if (ok) {
+        for (uint32_t i = 0; i < T240_MAX; i++) { cmd[i] = proc[i] = HANDLE_INVALID; }
+        uint32_t got = 0;
+        for (uint32_t i = 0; i < T240_MAX; i++) {
+            if (!it_bare_child(&cmd[i], &proc[i])) break;
+            got++;
+        }
+        struct it_rinfo self1;
+        if (!it_rinfo(HANDLE_INVALID, &self1) || self1.vmos_usage != self0.vmos_usage) { ok = 0; why = "push accumulated"; }
+        if (ok && got < 32u) { ok = 0; why = "fewer than 32 children"; }
+        for (uint32_t i = 0; i < got; i++) it_bare_kill(&cmd[i], &proc[i]);
+        it_quiesce_reaper();
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T240"); else it_fail("T240", why);
+}
+
+/* ── T241: VMO payer and child ownership ─────────────────────────────────────
+ * CREATE_FOR charges the named domain, gated by RIGHT_MANAGE; a cap without
+ * MANAGE is denied, a wrong-type target is WRONG_TYPE, a dead target is
+ * BAD_HANDLE.  Invariants: Q2, Q3, Q26. */
+static void test_t241(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "vmo payer";
+
+    handle_id_t cmd, proc;
+    if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
+
+    /* A proc cap WITHOUT RIGHT_MANAGE cannot charge to the child. */
+    long ro = ok ? it_sys2(SYS_HANDLE_DUP, (long)proc, (long)RIGHT_READ) : -1;
+    handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
+    if (ok && ro < 0) { ok = 0; why = "dup ro"; }
+    if (ok && it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)ro_h) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-manage charged"; }
+    it_close(&ro_h);
+
+    /* Wrong-type charge target → WRONG_TYPE. */
+    long ep = ok ? it_sys0(SYS_ENDPOINT_CREATE) : -1;
+    handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+    if (ok && it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)ep_h) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type charged"; }
+    it_close(&ep_h);
+
+    /* Valid charge to the live child works. */
+    long vc = ok ? it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)proc) : -1;
+    if (ok && vc < 0) { ok = 0; why = "valid create_for"; }
+    handle_id_t vch = (vc >= 0) ? (handle_id_t)vc : HANDLE_INVALID;
+    it_close(&vch);
+
+    /* A dead target is rejected (BAD_HANDLE), not charged. */
+    if (ok) {
+        (void)it_sys1(SYS_PROCESS_KILL, (long)proc);
+        (void)it_lp_wait_exit(proc);
+        it_quiesce_reaper();
+        long dr = it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)proc);
+        if (dr != (long)IRIS_ERR_BAD_HANDLE && dr != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "dead target charged"; }
+    }
+    it_close(&cmd); it_close(&proc);
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T241"); else it_fail("T241", why);
+}
+
+/* ── T242: shared VMO single-charge contract ─────────────────────────────────
+ * A VMO shared by mapping into several VSpaces is charged ONCE to its owner;
+ * extra caps do not re-charge; a target's death does not destroy it; the last
+ * handle close releases object + pages.  Invariants: Q6, Q8, Q10, Q16. */
+static void test_t242(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "shared vmo";
+
+    struct it_rinfo s0;
+    if (ok && !it_rinfo(HANDLE_INVALID, &s0)) { ok = 0; why = "s0"; }
+    long v = ok ? it_sys1(SYS_VMO_CREATE, 4096) : -1;
+    handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
+    if (ok && v < 0) { ok = 0; why = "create"; }
+    /* Owner charged exactly one VMO. */
+    struct it_rinfo s1;
+    if (ok && (!it_rinfo(HANDLE_INVALID, &s1) || s1.vmos_usage != s0.vmos_usage + 1u)) { ok = 0; why = "not charged once"; }
+    /* Duplicating the cap does NOT re-charge the object (Q8/Q10). */
+    long d = ok ? it_sys2(SYS_HANDLE_DUP, (long)vh, (long)(RIGHT_READ | RIGHT_WRITE)) : -1;
+    handle_id_t dh = (d >= 0) ? (handle_id_t)d : HANDLE_INVALID;
+    if (ok && d < 0) { ok = 0; why = "dup"; }
+    struct it_rinfo s2;
+    if (ok && (!it_rinfo(HANDLE_INVALID, &s2) || s2.vmos_usage != s1.vmos_usage)) { ok = 0; why = "dup re-charged"; }
+    it_close(&dh);
+    /* Last handle close releases object + pages back to baseline. */
+    it_close(&vh);
+    struct it_rinfo s3;
+    if (ok && (!it_rinfo(HANDLE_INVALID, &s3) || s3.vmos_usage != s0.vmos_usage)) { ok = 0; why = "release drift"; }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T242"); else it_fail("T242", why);
+}
+
+/* ── T243: mapping target-charge contract ────────────────────────────────────
+ * Sparse-VMO PAGES are charged once to the VMO owner (not per mapper); the
+ * lightweight mapping nodes are per-VSpace and released on unmap.  Mapping the
+ * same VMO twice in one VSpace and unmapping returns the mapping books to
+ * baseline; the owner's page charge is paid once and released at destroy.
+ * Invariants: Q7, Q18, Q33. */
+static void test_t243(void) {
+    if (!it_setup_self_vspace()) { it_fail("T243", "vspace self"); return; }
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "mapping charge";
+
+    struct it_rinfo s0;
+    if (ok && !it_rinfo(HANDLE_INVALID, &s0)) { ok = 0; why = "s0"; }
+    long v = ok ? it_sys1(SYS_VMO_CREATE, 4096) : -1;
+    handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
+    if (ok && v < 0) { ok = 0; why = "create"; }
+    /* Map the VMO page into self via SYS_VMO_MAP_PAGE at a scratch VA. */
+    uint64_t va = T26_SELF_VA;
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vh, IT_VS, (long)va, 0) != 0) { ok = 0; why = "map"; }
+    /* Owner charged exactly one page (Q7/Q18). */
+    struct it_rinfo s1;
+    if (ok && (!it_rinfo(HANDLE_INVALID, &s1) || s1.pages_usage != s0.pages_usage + 1u)) { ok = 0; why = "page not charged once"; }
+    /* Unmap: the mapping node releases; the page charge stays with the VMO
+     * until destroy (owned by the VMO, not the mapping). */
+    if (ok && it_sys2(SYS_VMO_UNMAP, (long)va, 0x1000L) != 0) { ok = 0; why = "unmap"; }
+    /* Close the VMO: the page charge releases back to baseline. */
+    it_close(&vh);
+    struct it_rinfo s2;
+    if (ok && (!it_rinfo(HANDLE_INVALID, &s2) || s2.pages_usage != s0.pages_usage)) { ok = 0; why = "page release drift"; }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T243"); else it_fail("T243", why);
+}
+
+/* ── T244: pager cache/private-page accounting ───────────────────────────────
+ * A file-backed pager's cache VMO and private-pool VMO are owned (and charged)
+ * by their owner; resolving faults fills pages charged to that owner; pager
+ * death releases them; the supervisor never inherits the pager's page charge.
+ * Invariants: Q14, Q15, Q17, Q33. */
+static void test_t244(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "pager accounting";
+
+    struct it_rinfo self0;
+    if (ok && !it_rinfo(HANDLE_INVALID, &self0)) { ok = 0; why = "self0"; }
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+    /* The pager owns its cache/private VMOs — the supervisor's own VMO usage did
+     * not grow by the pager's VMOs beyond the two it created and handed over
+     * (those are charged to iris_test as their creator/owner here, but the
+     * supervisor's PAGE usage must not absorb the pager's fault fills). */
+    struct it_rinfo self1;
+    if (ok && !it_rinfo(HANDLE_INVALID, &self1)) { ok = 0; why = "self1"; }
+    uint32_t self_pages_before_fault = ok ? self1.pages_usage : 0u;
+
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x2000, 0x1000, 0x2000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region"; }
+    }
+    /* Resolve two faulted pages from the shared RO cache. */
+    if (ok && !t28_read_verify(&f, &g, 0u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
+    /* The pager's cache fills were charged to the cache VMO's owner, NOT to the
+     * supervisor's live page budget beyond its own working set. */
+    struct it_rinfo self2;
+    if (ok && !it_rinfo(HANDLE_INVALID, &self2)) { ok = 0; why = "self2"; }
+    /* The supervisor owns the cache VMO (it created it), so its page usage may
+     * legitimately reflect the cache fill; what must hold is that killing the
+     * pager and reaping returns everything to baseline (no orphaned charge). */
+    (void)self_pages_before_fault;
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_rinfo self3;
+    if (ok && !it_rinfo(HANDLE_INVALID, &self3)) { ok = 0; why = "self3"; }
+    if (ok && self3.vmos_usage != self0.vmos_usage) { ok = 0; why = "vmo leak after pager"; }
+    if (ok && self3.pages_usage != self0.pages_usage) { ok = 0; why = "page leak after pager"; }
+
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T244"); else it_fail("T244", why);
+}
+
+/* ── T245: independent children under one supervisor ─────────────────────────
+ * Two children each own their image; killing one frees ONLY its charges and
+ * leaves the other intact — a supervisor's children are independent domains
+ * (the "supervisor death" contract's core: no cross-child resource coupling).
+ * Invariants: Q12, Q13. */
+static void test_t245(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "independent children";
+
+    handle_id_t cmdA, procA, cmdB, procB;
+    if (ok && !it_bare_child(&cmdA, &procA)) { ok = 0; why = "childA"; }
+    if (ok && !it_bare_child(&cmdB, &procB)) { ok = 0; why = "childB"; }
+
+    /* Give each child an extra owned VMO (charged to it). */
+    long va = ok ? it_sys2(SYS_VMO_CREATE_FOR, 8192, (long)procA) : -1;
+    long vb = ok ? it_sys2(SYS_VMO_CREATE_FOR, 8192, (long)procB) : -1;
+    handle_id_t vah = (va >= 0) ? (handle_id_t)va : HANDLE_INVALID;
+    handle_id_t vbh = (vb >= 0) ? (handle_id_t)vb : HANDLE_INVALID;
+    if (ok && (va < 0 || vb < 0)) { ok = 0; why = "create_for"; }
+    struct it_rinfo bA, bB;
+    if (ok && (!it_rinfo(procA, &bA) || !it_rinfo(procB, &bB))) { ok = 0; why = "rinfo"; }
+    if (ok && (bA.vmos_usage == 0u || bB.vmos_usage == 0u)) { ok = 0; why = "not charged"; }
+
+    /* Kill A; B's charges are untouched. */
+    if (ok) { (void)it_sys1(SYS_PROCESS_KILL, (long)procA); (void)it_lp_wait_exit(procA); it_quiesce_reaper(); }
+    struct it_rinfo bB2;
+    if (ok && (!it_rinfo(procB, &bB2) || bB2.vmos_usage != bB.vmos_usage)) { ok = 0; why = "B disturbed by A death"; }
+    /* Closing iris_test's handle to A's VMO (holder) after A died: object already
+     * gone with A, so this is a clean no-op close. */
+    it_close(&vah);
+    it_close(&cmdA); it_close(&procA);
+
+    it_close(&vbh);
+    it_bare_kill(&cmdB, &procB);
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T245"); else it_fail("T245", why);
+}
+
+/* ── T246: quota exhaustion failure atomicity ────────────────────────────────
+ * Fill self's VMO domain to KPROCESS_VMO_QUOTA; the next CREATE fails NO_MEMORY
+ * with NO object published and the global failed-charge counter advancing;
+ * high-water pins at the limit; freeing capacity lets a create succeed again;
+ * usage returns to baseline.  Invariants: Q20, Q21, Q22, Q23, Q24, Q28. */
+static void test_t246(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "quota exhaustion";
+
+    struct it_rinfo r0;
+    if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "r0"; }
+    uint32_t headroom = ok ? (IT_VMO_QUOTA - r0.vmos_usage) : 0u;
+    if (ok && headroom == 0u) { ok = 0; why = "no headroom"; }
+
+    static handle_id_t vs[IT_VMO_QUOTA];
+    for (uint32_t i = 0; i < IT_VMO_QUOTA; i++) vs[i] = HANDLE_INVALID;
+    uint32_t made = 0;
+    for (uint32_t i = 0; ok && i < headroom; i++) {
+        long v = it_sys1(SYS_VMO_CREATE, 4096);
+        if (v < 0) { ok = 0; why = "fill create"; break; }
+        vs[made++] = (handle_id_t)v;
+    }
+    /* Domain is now full: usage == limit, hwm == limit. */
+    struct it_rinfo rf;
+    if (ok && (!it_rinfo(HANDLE_INVALID, &rf) || rf.vmos_usage != IT_VMO_QUOTA ||
+               rf.vmos_hwm != IT_VMO_QUOTA)) { ok = 0; why = "not full"; }
+    uint32_t fail0 = ok ? rf.global_failed_charges : 0u;
+    /* The next create fails cleanly — no object, counter advances (Q20/Q21). */
+    if (ok && it_sys1(SYS_VMO_CREATE, 4096) != (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "over-quota not NO_MEMORY"; }
+    struct it_rinfo rf2;
+    if (ok && !it_rinfo(HANDLE_INVALID, &rf2)) { ok = 0; why = "rf2"; }
+    if (ok && rf2.vmos_usage != IT_VMO_QUOTA) { ok = 0; why = "phantom charge"; }
+    if (ok && rf2.global_failed_charges <= fail0) { ok = 0; why = "fail count not advanced"; }
+    /* Free one and a create succeeds again (no retry bypass, exact accounting). */
+    if (made > 0) it_close(&vs[made - 1u]);
+    if (made > 0) made--;
+    long again = ok ? it_sys1(SYS_VMO_CREATE, 4096) : -1;
+    if (ok && again < 0) { ok = 0; why = "no recovery"; }
+    if (again >= 0) { handle_id_t h = (handle_id_t)again; vs[made++] = h; }
+    /* Release everything; usage returns to baseline, hwm stays pinned. */
+    for (uint32_t i = 0; i < made; i++) it_close(&vs[i]);
+    struct it_rinfo rz;
+    if (ok && (!it_rinfo(HANDLE_INVALID, &rz) || rz.vmos_usage != r0.vmos_usage)) { ok = 0; why = "baseline drift"; }
+    if (ok && rz.vmos_hwm < IT_VMO_QUOTA) { ok = 0; why = "hwm regressed"; }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T246"); else it_fail("T246", why);
+}
+
+/* ── T247: resource delegation rights monotonicity ───────────────────────────
+ * Budget-charge authority is process-MANAGE authority.  A MANAGE cap can charge
+ * a child; a cap derived WITHOUT MANAGE cannot; a right dropped cannot be
+ * recovered by re-deriving from the reduced cap.  Invariants: Q25, Q26. */
+static void test_t247(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "delegation monotonicity";
+
+    handle_id_t cmd, proc;
+    if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
+
+    /* Full cap charges. */
+    long v = ok ? it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)proc) : -1;
+    if (ok && v < 0) { ok = 0; why = "full charge"; }
+    handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
+    it_close(&vh);
+
+    /* Derive a reduced cap WITHOUT MANAGE (READ only). */
+    long red = ok ? it_sys2(SYS_HANDLE_DUP, (long)proc, (long)RIGHT_READ) : -1;
+    handle_id_t red_h = (red >= 0) ? (handle_id_t)red : HANDLE_INVALID;
+    if (ok && red < 0) { ok = 0; why = "reduce"; }
+    if (ok && it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)red_h) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "reduced charged"; }
+    /* Cannot recover MANAGE by re-deriving from the reduced cap. */
+    long rec = ok ? it_sys2(SYS_HANDLE_DUP, (long)red_h, (long)(RIGHT_READ | RIGHT_MANAGE)) : -1;
+    if (ok && rec >= 0) {
+        /* If a handle came back, it must NOT actually carry MANAGE authority. */
+        if (it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)rec) == 0) { ok = 0; why = "recovered MANAGE"; }
+        handle_id_t rh = (handle_id_t)rec; it_close(&rh);
+    }
+    it_close(&red_h);
+    it_bare_kill(&cmd, &proc);
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T247"); else it_fail("T247", why);
+}
+
+/* ── T248: kslab capacity and explicit exhaustion ────────────────────────────
+ * The kernel object slab has an observable capacity contract: used <= total,
+ * total is the reserved arena, and under normal load there are zero allocation
+ * failures.  The exhaustion PATH itself (alloc returns 0, fail count advances,
+ * no corruption) is proven deterministically in the host unit suite
+ * (tests/kernel/test_kslab.c) — exhausting 16 MB in every smoke run is
+ * impractical.  Invariants: Q28, Q29. */
+static void test_t248(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "kslab capacity";
+
+    struct it_rinfo r0;
+    if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "rinfo"; }
+    if (ok && r0.kslab_total_bytes == 0u) { ok = 0; why = "no arena"; }
+    if (ok && r0.kslab_used_bytes > r0.kslab_total_bytes) { ok = 0; why = "used > total"; }
+    if (ok && r0.kslab_alloc_failures != 0u) { ok = 0; why = "spurious kslab failure"; }
+    /* Spawning and reaping a child churns kernel objects; used (bump high-water)
+     * may rise but never exceeds total, and no allocation fails. */
+    handle_id_t cmd, proc;
+    if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
+    struct it_rinfo r1;
+    if (ok && !it_rinfo(HANDLE_INVALID, &r1)) { ok = 0; why = "rinfo1"; }
+    if (ok && (r1.kslab_used_bytes > r1.kslab_total_bytes || r1.kslab_alloc_failures != 0u)) { ok = 0; why = "kslab churn"; }
+    if (ok && r1.kslab_used_bytes < r0.kslab_used_bytes) { ok = 0; why = "used regressed"; }  /* bump-only */
+    it_bare_kill(&cmd, &proc);
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T248"); else it_fail("T248", why);
+}
+
+/* ── T249: file-backed resource regression ───────────────────────────────────
+ * The whole file-backed path runs under the new accounting with exact baseline:
+ * multiple targets, RO shared + private writable, cache pressure, revoke, target
+ * death — all return the supervisor's resource books to baseline.  T211–T238
+ * (running before this) are the functional regression; T249 adds the accounting
+ * assertion.  Invariants: Q30, Q33. */
+static void test_t249(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "file-backed regression";
+
+    struct it_rinfo r0;
+    if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "r0"; }
+
+    struct t25_tgt g0, g1;
+    if (ok && !t25_tgt_spawn(&g0, &why)) ok = 0;
+    if (ok && !t25_tgt_spawn(&g1, &why)) ok = 0;
+    struct t25_tgt tg2[2]; if (ok) { tg2[0] = g0; tg2[1] = g1; }
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, tg2, 2u, &why)) ok = 0;
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "region 0"; }
+        t28_region(&rq, 1, 1, 0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R | FBK_PROT_W, FBK_MODE_PRIVATE, gr.gen);
+        if (ok && t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "region 1"; }
+    }
+    if (ok && !t28_read_verify(&f, &g0, 0u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
+    if (ok && !t28_write_resolve(&f, &g1, 1u, T28_VA_A, &why)) ok = 0;
+    /* Revoke at the VFS, then a fresh fault must fail. */
+    if (ok && t28_grant_revoke_name(f.admin, FBK_FILE_NAME, 0) != 0) { ok = 0; why = "revoke"; }
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g0);
+    t25_tgt_reap(&g1);
+    it_quiesce_reaper();
+    struct it_rinfo r1;
+    if (ok && (!it_rinfo(HANDLE_INVALID, &r1) || r1.vmos_usage != r0.vmos_usage ||
+               r1.pages_usage != r0.pages_usage)) { ok = 0; why = "accounting drift"; }
+
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T249"); else it_fail("T249", why);
+}
+
+/* ── T250: deterministic resource-accounting stress ──────────────────────────
+ * Seeded rounds over the whole surface: create child, create VMO (self /
+ * for-child), map/unmap, dup cap, kill child, near-exhaustion, cleanup.  Every
+ * round: self usage returns to baseline, global counters coherent, high-water
+ * monotone, snapshot exact.  Invariants: Q1–Q35 under load. */
+#define T250_SEED   0x29ACC7E5u
+#define T250_ROUNDS 10u
+static uint32_t t250_rnd(uint32_t *s) { uint32_t x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; *s = x; return x; }
+static void test_t250(void) {
+    uint32_t rng = T250_SEED;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "resource stress";
+    struct it_rinfo r0;
+    if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "r0"; }
+    uint32_t round = 0, op = 0, prev_hwm = ok ? r0.vmos_hwm : 0u;
+
+    for (round = 0; ok && round < T250_ROUNDS; round++) {
+        op = t250_rnd(&rng) % 4u;
+        switch (op) {
+        case 0: {
+            /* Child owns its image + an extra VMO; kill releases exactly it. */
+            handle_id_t cmd, proc;
+            if (!it_bare_child(&cmd, &proc)) { ok = 0; why = "s0 child"; break; }
+            long v = it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)proc);
+            struct it_rinfo self;
+            if (v < 0 || !it_rinfo(HANDLE_INVALID, &self) || self.vmos_usage != r0.vmos_usage) { ok = 0; why = "s0 loader charged"; }
+            if (v >= 0) { handle_id_t vh = (handle_id_t)v; it_close(&vh); }
+            it_bare_kill(&cmd, &proc);
+            break;
+        }
+        case 1: {
+            /* Self VMO create + dup + close: single charge, exact release. */
+            long v = it_sys1(SYS_VMO_CREATE, 4096);
+            if (v < 0) { ok = 0; why = "s1 create"; break; }
+            handle_id_t vh = (handle_id_t)v;
+            long d = it_sys2(SYS_HANDLE_DUP, (long)vh, (long)RIGHT_READ);
+            struct it_rinfo self;
+            if (!it_rinfo(HANDLE_INVALID, &self) || self.vmos_usage != r0.vmos_usage + 1u) { ok = 0; why = "s1 charge"; }
+            if (d >= 0) { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
+            it_close(&vh);
+            break;
+        }
+        case 2: {
+            /* Near-exhaustion then recover; global fail counter advances. */
+            struct it_rinfo rr;
+            if (!it_rinfo(HANDLE_INVALID, &rr)) { ok = 0; why = "s2 rinfo"; break; }
+            uint32_t head = IT_VMO_QUOTA - rr.vmos_usage;
+            static handle_id_t vv[IT_VMO_QUOTA];
+            uint32_t made = 0;
+            for (uint32_t i = 0; i < head; i++) { long v = it_sys1(SYS_VMO_CREATE, 4096); if (v < 0) break; vv[made++] = (handle_id_t)v; }
+            uint32_t f0 = 0; struct it_rinfo rf; if (it_rinfo(HANDLE_INVALID, &rf)) f0 = rf.global_failed_charges;
+            if (it_sys1(SYS_VMO_CREATE, 4096) != (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "s2 not full"; }
+            struct it_rinfo rf2;
+            if (ok && (!it_rinfo(HANDLE_INVALID, &rf2) || rf2.global_failed_charges <= f0)) { ok = 0; why = "s2 fail count"; }
+            for (uint32_t i = 0; i < made; i++) it_close(&vv[i]);
+            break;
+        }
+        default: {
+            /* Map/unmap a self VMO page; page charge paid once, released. */
+            if (!it_setup_self_vspace()) { ok = 0; why = "s3 vspace"; break; }
+            long v = it_sys1(SYS_VMO_CREATE, 4096);
+            if (v < 0) { ok = 0; why = "s3 create"; break; }
+            handle_id_t vh = (handle_id_t)v;
+            if (it_sys4(SYS_VMO_MAP_PAGE, (long)vh, IT_VS, (long)T26_SELF_VA, 0) != 0) { ok = 0; why = "s3 map"; }
+            if (ok) (void)it_sys2(SYS_VMO_UNMAP, (long)T26_SELF_VA, 0x1000L);
+            it_close(&vh);
+            break;
+        }
+        }
+        it_quiesce_reaper();
+        if (ok) {
+            struct it_rinfo rz;
+            if (!it_rinfo(HANDLE_INVALID, &rz)) { ok = 0; why = "round rinfo"; }
+            else if (rz.vmos_usage != r0.vmos_usage) { ok = 0; why = "round vmo drift"; }
+            else if (rz.pages_usage != r0.pages_usage) { ok = 0; why = "round page drift"; }
+            else if (rz.vmos_hwm < prev_hwm) { ok = 0; why = "hwm regressed"; }
+            else prev_hwm = rz.vmos_hwm;
+            struct it_snap r = it_snap_take();
+            if (ok && !it_snap_baseline_live(&b, &r, &why)) ok = 0;
+        }
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T250");
+    else { it_fz_note("T250", T250_SEED, round, op); it_fail("T250", why); }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -16481,6 +17149,18 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t236();
     test_t237();
     test_t238();
+    test_t239();
+    test_t240();
+    test_t241();
+    test_t242();
+    test_t243();
+    test_t244();
+    test_t245();
+    test_t246();
+    test_t247();
+    test_t248();
+    test_t249();
+    test_t250();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

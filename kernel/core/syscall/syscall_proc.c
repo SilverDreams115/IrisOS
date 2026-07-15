@@ -422,3 +422,64 @@ uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     return syscall_ok_u64(IRIS_OK);
 }
+
+/*
+ * sys_resource_info(proc_handle, out_uptr) → 0 or iris_error_t   (Fase 29)
+ *
+ * Read-only resource-accounting snapshot: per-domain usage/limit/high-water for
+ * a KProcess (self when proc_handle == HANDLE_INVALID) plus system-wide
+ * failed-charge / rollback / kslab gauges.  A read-only oracle — any rights on a
+ * non-self process cap suffice.  Additive and versioned: the caller sets
+ * struct_size; the kernel writes at most that many bytes.
+ */
+uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct iris_resource_info info;
+    for (uint32_t i = 0; i < (uint32_t)sizeof(info); i++) ((uint8_t *)&info)[i] = 0;
+
+    struct KProcess *proc;
+    struct KObject  *obj = 0;
+    if ((handle_id_t)arg0 == HANDLE_INVALID) {
+        proc = t->process;
+        kobject_retain(&proc->base);
+    } else {
+        iris_rights_t rights;
+        iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                     RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
+        if (r != IRIS_OK) return syscall_err(r);
+        proc = (struct KProcess *)obj;
+    }
+
+    spinlock_lock(&proc->base.lock);
+    info.vmos_usage    = proc->owned_vmos;
+    info.vmos_hwm      = proc->owned_vmos_hwm;
+    info.notifs_usage  = proc->owned_notifications;
+    info.notifs_hwm    = proc->owned_notifications_hwm;
+    info.pages_usage   = proc->phys_pages_charged;
+    info.pages_limit   = proc->phys_pages_limit;
+    info.pages_hwm     = proc->phys_pages_hwm;
+    spinlock_unlock(&proc->base.lock);
+    kobject_release(&proc->base);
+
+    info.version       = IRIS_RESOURCE_INFO_VERSION;
+    info.struct_size   = (uint32_t)sizeof(info);
+    info.vmos_limit    = KPROCESS_VMO_QUOTA;
+    info.notifs_limit  = KPROCESS_NOTIFICATION_QUOTA;
+    info.global_failed_charges = kprocess_quota_failed_count();
+    info.global_rollbacks      = kprocess_quota_rollback_count();
+    info.kslab_used_bytes  = kslab_used_bytes();
+    info.kslab_total_bytes = kslab_total_bytes();
+    info.kslab_hwm_bytes   = kslab_used_bytes();   /* bump-only: used == hwm */
+    info.kslab_alloc_failures = kslab_fail_count();
+
+    /* Additive/versioned: honour the caller's struct_size (arg1+8 low word). */
+    uint32_t want = (uint32_t)sizeof(info);
+    if (!user_range_writable(arg1, want))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!copy_to_user_checked(arg1, (const uint8_t *)&info, want))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    return syscall_ok_u64(IRIS_OK);
+}

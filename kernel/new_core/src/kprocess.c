@@ -17,6 +17,18 @@
 
 static _Atomic uint32_t kprocess_live;
 
+/* Fase 29 — global resource-accounting instrumentation (additive, exposed via
+ * SYS_RESOURCE_INFO).  A charge that hits its domain's limit increments
+ * kquota_failed_charges; a provisional charge rolled back on a later failure in
+ * the same operation increments kquota_rollbacks.  Both make quota-exhaustion
+ * atomicity observable to T246/T250 without changing behaviour. */
+static _Atomic uint32_t kquota_failed_charges;
+static _Atomic uint32_t kquota_rollbacks;
+
+uint32_t kprocess_quota_failed_count(void)  { return atomic_load_explicit(&kquota_failed_charges, memory_order_relaxed); }
+uint32_t kprocess_quota_rollback_count(void){ return atomic_load_explicit(&kquota_rollbacks,      memory_order_relaxed); }
+void     kprocess_quota_stat_rollback(void) { atomic_fetch_add_explicit(&kquota_rollbacks, 1u, memory_order_relaxed); }
+
 /* Fase 20 — fault-model instrumentation (additive, exposed via SYS_SCHED_INFO
  * ext5 tier).  Silent; makes fault delivery/resolution observable to the
  * T140–T147 selftests without changing any behaviour.
@@ -71,16 +83,20 @@ static uint64_t      pcid_bitmap[PCID_BITMAP_WORDS] = {
 };
 static irq_spinlock_t pcid_lock; /* BSS zero = unlocked */
 
-static iris_error_t kprocess_quota_acquire(uint32_t *counter, uint32_t limit,
-                                           struct KProcess *p) {
+static iris_error_t kprocess_quota_acquire(uint32_t *counter, uint32_t *hwm,
+                                           uint32_t limit, struct KProcess *p) {
     iris_error_t r = IRIS_OK;
     if (!counter || !p) return IRIS_ERR_INVALID_ARG;
     spinlock_lock(&p->base.lock);
-    if (*counter >= limit)
+    if (*counter >= limit) {
         r = IRIS_ERR_NO_MEMORY;
-    else
+    } else {
         (*counter)++;
+        if (hwm && *counter > *hwm) *hwm = *counter;   /* Fase 29: high-water */
+    }
     spinlock_unlock(&p->base.lock);
+    if (r != IRIS_OK)
+        atomic_fetch_add_explicit(&kquota_failed_charges, 1u, memory_order_relaxed);
     return r;
 }
 
@@ -226,6 +242,7 @@ void kprocess_free(struct KProcess *p) {
 
 iris_error_t kprocess_quota_acquire_notification(struct KProcess *p) {
     return kprocess_quota_acquire(&p->owned_notifications,
+                                  &p->owned_notifications_hwm,
                                   KPROCESS_NOTIFICATION_QUOTA, p);
 }
 
@@ -234,7 +251,8 @@ void kprocess_quota_release_notification(struct KProcess *p) {
 }
 
 iris_error_t kprocess_quota_acquire_vmo(struct KProcess *p) {
-    return kprocess_quota_acquire(&p->owned_vmos, KPROCESS_VMO_QUOTA, p);
+    return kprocess_quota_acquire(&p->owned_vmos, &p->owned_vmos_hwm,
+                                  KPROCESS_VMO_QUOTA, p);
 }
 
 void kprocess_quota_release_vmo(struct KProcess *p) {
@@ -243,7 +261,8 @@ void kprocess_quota_release_vmo(struct KProcess *p) {
 
 iris_error_t kprocess_quota_acquire_page(struct KProcess *p) {
     if (!p) return IRIS_ERR_INVALID_ARG;
-    return kprocess_quota_acquire(&p->phys_pages_charged, p->phys_pages_limit, p);
+    return kprocess_quota_acquire(&p->phys_pages_charged, &p->phys_pages_hwm,
+                                  p->phys_pages_limit, p);
 }
 
 void kprocess_quota_release_page(struct KProcess *p) {

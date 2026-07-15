@@ -12,6 +12,7 @@
 #include <iris/syscall.h>
 #include <iris/task.h>
 #include <iris/pmm.h>
+#include <iris/kslab.h>
 #include <iris/nc/kbootcap.h>
 #include <iris/nc/kvmo.h>
 #include <iris/nc/knotification.h>
@@ -193,6 +194,8 @@ uint64_t sys_futex_wake(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — VM ───────────────────────────────────── */
 uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2); /* Fase 29 */
+uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);  /* Fase 29 */
 uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2);
