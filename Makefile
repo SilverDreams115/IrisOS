@@ -607,6 +607,15 @@ $(KERNEL_PAGER_BIN_OBJ): $(SERVICE_PAGER_ELF) | dirs
 	    $(SERVICE_PAGER_ELF) $@
 
 # ── boot-growth test fixtures (Fase 28): non-service initrd blobs ────────────
+# badelf.bin is a 256-byte invalid-ELF blob (a known header + zero pad) used by
+# the loader failure-path test (T216).  It is *.bin-gitignored, so it is
+# generated deterministically here rather than committed — a fresh checkout (CI)
+# rebuilds it byte-for-byte instead of failing on a missing fixture.
+services/bootfix/badelf.bin: | dirs
+	mkdir -p services/bootfix
+	printf 'IRIS-BOOTFIX-BADELF-v1' > $@
+	truncate -s 256 $@
+
 $(KERNEL_BOOTFIX_BADELF_OBJ): services/bootfix/badelf.bin | dirs
 	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
 	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
