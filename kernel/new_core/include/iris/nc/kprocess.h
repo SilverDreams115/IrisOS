@@ -15,7 +15,9 @@ struct KFrame;
 
 #define KPROCESS_EXIT_WATCH_MAX 8u
 #define KPROCESS_MAX_LIVE       64u /* bounded by TASK_MAX; enforced in kprocess_alloc */
-#define KPROCESS_NOTIFICATION_QUOTA 16u
+/* Fase S1: KPROCESS_NOTIFICATION_QUOTA retired — the capacity to create
+ * notifications is possessing Untyped memory plus CSpace slots, never a
+ * kernel-side numeric quota.  (SYS_RESOURCE_INFO reports notifs_limit = 0.) */
 /* Fase 29: RESTORED 128 → 32.  Fase 28.1 temporarily raised this to 128 to
  * work around a caller-charged accounting BUG: a loader (svc_load) created each
  * child's segment+stack VMOs under ITS OWN ownership, so a supervisor holding N
@@ -106,12 +108,12 @@ struct KProcess {
      * ran the syscall (see docs/architecture/resource-ownership-accounting.md).
      * usage counters are the live charge; *_hwm is the monotonic high-water
      * mark (never decreases), an observable, defensible ceiling witness. */
-    uint32_t owned_notifications;
+    /* Fase S1: owned_notifications/_hwm retired with the notification quota —
+     * notifications are Untyped-funded (see sel4-convergence-ledger.md). */
     uint32_t owned_vmos;
     uint32_t phys_pages_charged; /* sparse-VMO pages charged at eager map-time
                                   * allocation; vs phys_pages_limit */
     uint32_t phys_pages_limit;   /* set to KPROCESS_PHYS_PAGES_LIMIT at alloc */
-    uint32_t owned_notifications_hwm;
     uint32_t owned_vmos_hwm;
     uint32_t phys_pages_hwm;
 
@@ -140,8 +142,8 @@ struct KProcess *kprocess_alloc(void);
 void             kprocess_free (struct KProcess *p);
 void             kprocess_teardown(struct KProcess *p, struct task *exiting_thread);
 void             kprocess_reap_address_space(struct KProcess *p);
-iris_error_t     kprocess_quota_acquire_notification(struct KProcess *p);
-void             kprocess_quota_release_notification(struct KProcess *p);
+/* Fase S1: kprocess_quota_{acquire,release}_notification retired (Untyped is
+ * the budget for notifications).  VMO/page quotas remain for legacy objects. */
 iris_error_t     kprocess_quota_acquire_vmo(struct KProcess *p);
 void             kprocess_quota_release_vmo(struct KProcess *p);
 iris_error_t     kprocess_quota_acquire_page(struct KProcess *p);

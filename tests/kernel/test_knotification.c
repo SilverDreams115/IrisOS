@@ -10,7 +10,7 @@ void test_knotification(void) {
 
     /* ── alloc / release lifecycle ── */
     uint32_t before = knotification_live_count();
-    struct KNotification *n = knotification_alloc();
+    struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
     ASSERT_NOT_NULL(n);
     ASSERT_EQ(atomic_load(&n->base.refcount),    1u);
     ASSERT_EQ(atomic_load(&n->base.active_refs), 0u);
@@ -42,7 +42,7 @@ void test_knotification(void) {
     ASSERT_EQ(knotification_live_count(), before);
 
     /* ── close → wait returns IRIS_ERR_CLOSED (no bits) ── */
-    struct KNotification *n2 = knotification_alloc();
+    struct KNotification *n2 = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
     ASSERT_NOT_NULL(n2);
     /* cycle active_refs to 0 to fire the close op */
     kobject_active_retain(&n2->base);   /* active_refs = 1 */
@@ -58,7 +58,7 @@ void test_knotification(void) {
     kobject_release(&n2->base);
 
     /* ── wait_timeout with null task and no bits returns IRIS_ERR_INTERNAL ── */
-    struct KNotification *n3 = knotification_alloc();
+    struct KNotification *n3 = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
     ASSERT_NOT_NULL(n3);
     uint64_t got3 = 0;
     ASSERT_EQ(knotification_wait_timeout(n3, &got3, 0), IRIS_ERR_INTERNAL);
@@ -68,7 +68,7 @@ void test_knotification(void) {
      * Closes the S0 gap: a task blocked in knotification_wait must be woken
      * (with a defined error) when the notification is closed, with no leak
      * and no deadlock — not just the close-before-wait case above. */
-    struct KNotification *n4 = knotification_alloc();
+    struct KNotification *n4 = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
     ASSERT_NOT_NULL(n4);
     struct task waiter;
     for (uint32_t i = 0; i < sizeof(waiter); i++) ((uint8_t *)&waiter)[i] = 0;

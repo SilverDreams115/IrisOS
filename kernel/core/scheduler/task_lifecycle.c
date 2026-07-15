@@ -289,6 +289,16 @@ static void task_cancel_blocked_waits(struct task *t) {
         kreply_cancel_caller(r); /* clears r->caller; sets caller READY (no-op here) */
         kobject_release(&r->base);
     }
+    /* Fase S1: release a staged-but-unbound explicit reply object (task died
+     * while blocked in EP_RECV with a reply CPtr staged).  The object returns
+     * to its free state and stays owned by whoever holds its capability. */
+    if (t->ep_reply_obj) {
+        struct KReply *r = t->ep_reply_obj;
+        t->ep_reply_obj = 0;
+        t->ep_reply_val = 0;
+        kreply_unstage(r);
+        kobject_release(&r->base);
+    }
 }
 
 /* Release the sched_ctx retained ref and clear the pointer. */

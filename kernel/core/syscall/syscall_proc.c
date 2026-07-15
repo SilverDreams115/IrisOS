@@ -456,8 +456,10 @@ uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     spinlock_lock(&proc->base.lock);
     info.vmos_usage    = proc->owned_vmos;
     info.vmos_hwm      = proc->owned_vmos_hwm;
-    info.notifs_usage  = proc->owned_notifications;
-    info.notifs_hwm    = proc->owned_notifications_hwm;
+    /* Fase S1: notification quota retired — notifications are Untyped-funded.
+     * The ABI fields remain (additive contract) and report 0. */
+    info.notifs_usage  = 0u;
+    info.notifs_hwm    = 0u;
     info.pages_usage   = proc->phys_pages_charged;
     info.pages_limit   = proc->phys_pages_limit;
     info.pages_hwm     = proc->phys_pages_hwm;
@@ -467,7 +469,7 @@ uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     info.version       = IRIS_RESOURCE_INFO_VERSION;
     info.struct_size   = (uint32_t)sizeof(info);
     info.vmos_limit    = KPROCESS_VMO_QUOTA;
-    info.notifs_limit  = KPROCESS_NOTIFICATION_QUOTA;
+    info.notifs_limit  = 0u; /* Fase S1: no notification quota — Untyped is the budget */
     info.global_failed_charges = kprocess_quota_failed_count();
     info.global_rollbacks      = kprocess_quota_rollback_count();
     info.kslab_used_bytes  = kslab_used_bytes();

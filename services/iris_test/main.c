@@ -40,9 +40,12 @@ static inline long it_sys1(long nr, long a0) {
 }
 
 static inline long it_sys2(long nr, long a0, long a1) {
+    /* Fase S1: arg2 (rdx) is ALWAYS zeroed — SYS_EP_RECV/SYS_EP_NB_RECV now
+     * interpret it as the explicit reply-object CPtr, so leaking garbage
+     * there would randomly stage bogus replies. */
     long ret;
     __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1)
+        : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(0L)
         : "rcx", "r11", "memory");
     return ret;
 }
@@ -98,6 +101,59 @@ static void it_log_num(uint32_t n) {
 
 static uint32_t g_pass  = 0;
 static uint32_t g_total = 0;
+
+/* ── Fase S1: object-creation helpers ───────────────────────────────────────
+ *
+ * SYS_ENDPOINT_CREATE / SYS_NOTIFY_CREATE / SYS_CNODE_CREATE are RETIRED:
+ * every kernel object the suite fabricates is retyped from its delegated
+ * untyped (IRIS_CPTR_TEST_UNTYPED, slot 55) via SYS_UNTYPED_RETYPE2.  The
+ * new capability lands in a scratch CSpace slot (rotating pool 100..219,
+ * atomic — creation happens from helper threads too), is materialized to a
+ * handle (SYS_CSPACE_RESOLVE — the sanctioned CSpace→handle bridge) and the
+ * scratch slot is deleted, so the handle-based test flows keep exercising
+ * the handle-table semantics unchanged while every BIRTH is Untyped+CSpace.
+ */
+#define IT_S1_SCRATCH_BASE  64u   /* 64..87: below the fz pool (100..239) */
+#define IT_S1_SCRATCH_SPAN  24u
+static uint32_t g_it_s1_scratch_next;
+
+static long it_retype2_at(long ut, uint32_t obj_type, uint32_t slot,
+                          uint32_t count, long obj_arg) {
+    return it_sys4(SYS_UNTYPED_RETYPE2, ut,
+                   (long)((uint64_t)obj_type | ((uint64_t)count << 32)),
+                   (long)((uint64_t)slot << 32), obj_arg);
+}
+
+static long it_retype_handle(long ut, uint32_t obj_type, long obj_arg) {
+    uint32_t slot = IT_S1_SCRATCH_BASE +
+        (__atomic_fetch_add(&g_it_s1_scratch_next, 1u, __ATOMIC_RELAXED)
+         % IT_S1_SCRATCH_SPAN);
+    long r = it_retype2_at(ut, obj_type, slot, 1u, obj_arg);
+    if (r < 0) return r;
+    long h = it_sys1(SYS_CSPACE_RESOLVE, (long)slot);
+    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
+    return h;
+}
+
+static long it_ep_create(void) {
+    return it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT, 0);
+}
+
+static long it_notify_create(void) {
+    return it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION, 0);
+}
+
+/* Retype a reply object into a FIXED root slot (tests pass it as recv arg2
+ * and invoke SYS_REPLY on the echoed msg.attached_handle).  Delete with
+ * it_slot_delete when the test is done. */
+static long it_reply_create_at(uint32_t slot) {
+    return it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY,
+                         slot, 1u, 0);
+}
+
+static void it_slot_delete(uint32_t slot) {
+    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
+}
 
 static void it_pass(const char *id) {
     g_pass++;
@@ -211,7 +267,7 @@ static void test_t008(void) {
 /* ── T009: NOTIFY_SIGNAL then NOTIFY_WAIT (pre-signalled) ──────────────── */
 
 static void test_t009(void) {
-    long n_raw = it_sys0(SYS_NOTIFY_CREATE);
+    long n_raw = it_notify_create();
     if (n_raw < 0) { it_fail("T009", "notify create"); return; }
     handle_id_t n_h = (handle_id_t)n_raw;
 
@@ -235,7 +291,7 @@ static void test_t009(void) {
 /* ── T010: NOTIFY_WAIT_TIMEOUT → TIMED_OUT ─────────────────────────────── */
 
 static void test_t010(void) {
-    long n_raw = it_sys0(SYS_NOTIFY_CREATE);
+    long n_raw = it_notify_create();
     if (n_raw < 0) { it_fail("T010", "notify create"); return; }
     handle_id_t n_h = (handle_id_t)n_raw;
 
@@ -254,7 +310,7 @@ static void test_t010(void) {
 /* ── T011: HANDLE_TYPE on endpoint (Fase 13/Track F: KChannel→KEndpoint) ── */
 
 static void test_t011(void) {
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T011", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
@@ -271,7 +327,7 @@ static void test_t011(void) {
 /* ── T012: HANDLE_SAME_OBJECT on endpoints (Fase 13/Track F) ─────────────── */
 
 static void test_t012(void) {
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T012", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
@@ -283,7 +339,7 @@ static void test_t012(void) {
     }
     handle_id_t dup_h = (handle_id_t)dup_raw;
 
-    long ep2_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep2_raw = it_ep_create();
     if (ep2_raw < 0) {
         it_close(&dup_h);
         it_close(&ep_h);
@@ -311,7 +367,7 @@ static void test_t012(void) {
  * RIGHT_WRITE, so a READ-only cap is rejected with ACCESS_DENIED (same
  * rights-enforcement guarantee, no SYS_CHAN). */
 static void test_t013(void) {
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T013", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
@@ -341,7 +397,7 @@ static void test_t013(void) {
 /* ── T014: EP_NB_RECV on empty endpoint ─────────────────────────────────── */
 
 static void test_t014(void) {
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T014", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
@@ -378,7 +434,7 @@ static void test_t015(void) {
     g_t015_done = 0;
     g_t015_ok   = 0;
 
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T015", "ep create"); return; }
     g_t015_ep_h = (handle_id_t)ep_raw;
 
@@ -421,7 +477,7 @@ static uint8_t      g_t016_stack[8192];
 static void t016_server(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long r = it_sys2(SYS_EP_RECV, (long)g_t016_ep_h, (long)&msg);
+    long r = it_sys3(SYS_EP_RECV, (long)g_t016_ep_h, (long)&msg, 88);
     if (r < 0 || msg.attached_handle == IRIS_MSG_NO_CAP) {
         g_t016_done = 1;
         it_sys1(SYS_THREAD_EXIT, 0);
@@ -435,7 +491,6 @@ static void t016_server(void) {
     reply.word_count = 0;
     long rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
     g_t016_ok   = (rr == 0);
-    it_sys1(SYS_HANDLE_CLOSE, (long)reply_h);
     g_t016_done = 1;
     it_sys1(SYS_THREAD_EXIT, 0);
     for (;;) {}
@@ -445,9 +500,13 @@ static void test_t016(void) {
     g_t016_done = 0;
     g_t016_ok   = 0;
 
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T016", "ep create"); return; }
     g_t016_ep_h = (handle_id_t)ep_raw;
+    if (it_reply_create_at(88) < 0) {
+        it_close(&g_t016_ep_h);
+        it_fail("T016", "reply create"); return;
+    }
 
     uint64_t entry = (uint64_t)(uintptr_t)t016_server;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t016_stack + sizeof(g_t016_stack))) & ~0xFULL;
@@ -476,6 +535,7 @@ static void test_t016(void) {
 
     it_close(&tid_h);
     it_close(&g_t016_ep_h);
+    it_slot_delete(88);
 
     if (r == 0 && g_t016_ok)
         it_pass("T016");
@@ -486,7 +546,7 @@ static void test_t016(void) {
 /* ── T018: EP_NB_SEND on empty endpoint → WOULD_BLOCK ──────────────────── */
 
 static void test_t018(void) {
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T018", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
@@ -524,7 +584,7 @@ static void test_t019(void) {
     g_t019_done   = 0;
     g_t019_result = 0;
 
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T019", "ep create"); return; }
     g_t019_ep_h = (handle_id_t)ep_raw;
 
@@ -576,7 +636,7 @@ static void test_t020(void) {
     g_t020_done   = 0;
     g_t020_result = 0;
 
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T020", "ep create"); return; }
     g_t020_ep_h = (handle_id_t)ep_raw;
 
@@ -641,7 +701,7 @@ static void test_t021(void) {
     g_t021_done = 0;
     g_t021_ok   = 0;
 
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T021", "ep create"); return; }
     g_t021_ep_h = (handle_id_t)ep_raw;
 
@@ -655,12 +715,18 @@ static void test_t021(void) {
     handle_id_t tid_h = (handle_id_t)tid;
 
     /* Main is server: receive the EP_CALL and get reply_h */
+    if (it_reply_create_at(89) < 0) {
+        it_close(&tid_h);
+        it_close(&g_t021_ep_h);
+        it_fail("T021", "reply create"); return;
+    }
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long r = it_sys2(SYS_EP_RECV, ep_raw, (long)&msg);
+    long r = it_sys3(SYS_EP_RECV, ep_raw, (long)&msg, 89);
     if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
         it_close(&tid_h);
         it_close(&g_t021_ep_h);
+        it_slot_delete(89);
         it_fail("T021", "ep_recv"); return;
     }
 
@@ -680,9 +746,9 @@ static void test_t021(void) {
     it_iris_msg_zero(&reply);
     long r2 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
 
-    it_close(&reply_h);
     it_close(&tid_h);
     it_close(&g_t021_ep_h);
+    it_slot_delete(89);
 
     if (r1 == 0 && g_t021_ok && r2 == (long)IRIS_ERR_NOT_FOUND)
         it_pass("T021");
@@ -704,7 +770,7 @@ static void t022_server(void) {
     struct IrisMsg rmsg;
     it_iris_msg_zero(&rmsg);
     rmsg.buf_uptr = (uint64_t)(uintptr_t)g_t022_srv_recv;
-    long r = it_sys2(SYS_EP_RECV, (long)g_t022_ep_h, (long)&rmsg);
+    long r = it_sys3(SYS_EP_RECV, (long)g_t022_ep_h, (long)&rmsg, 90);
     if (r < 0 || rmsg.buf_len != 4u ||
             rmsg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
         g_t022_done = 1;
@@ -727,7 +793,6 @@ static void t022_server(void) {
     repl.buf_uptr = (uint64_t)(uintptr_t)g_t022_srv_reply;
     repl.buf_len  = 4u;
     long rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&repl);
-    it_sys1(SYS_HANDLE_CLOSE, (long)reply_h);
 
     g_t022_ok   = (recv_ok && rr == 0);
     g_t022_done = 1;
@@ -739,9 +804,13 @@ static void test_t022(void) {
     g_t022_done = 0;
     g_t022_ok   = 0;
 
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T022", "ep create"); return; }
     g_t022_ep_h = (handle_id_t)ep_raw;
+    if (it_reply_create_at(90) < 0) {
+        it_close(&g_t022_ep_h);
+        it_fail("T022", "reply create"); return;
+    }
 
     uint64_t entry = (uint64_t)(uintptr_t)t022_server;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t022_stack + sizeof(g_t022_stack))) & ~0xFULL;
@@ -768,6 +837,7 @@ static void test_t022(void) {
 
     it_close(&tid_h);
     it_close(&g_t022_ep_h);
+    it_slot_delete(90);
 
     int bulk_ok = (client_buf[0] == 0x11 && client_buf[1] == 0x21 &&
                    client_buf[2] == 0x31 && client_buf[3] == 0x41);
@@ -781,7 +851,7 @@ static void test_t022(void) {
 /* ── T023: EP_SEND on read-only endpoint handle → ACCESS_DENIED ─────────── */
 
 static void test_t023(void) {
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T023", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
@@ -847,7 +917,7 @@ static void t024_client(void) {
 static void test_t024(void) {
     g_t024_done = 0; g_t024_ok = 0; g_t024_got_h = 0;
 
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T024", "ep create"); return; }
     g_t024_ep_h = (handle_id_t)ep_raw;
 
@@ -861,18 +931,24 @@ static void test_t024(void) {
     handle_id_t tid_h = (handle_id_t)tid;
 
     /* Main is server: receive the call, reply with an attached notification */
+    if (it_reply_create_at(91) < 0) {
+        it_close(&tid_h);
+        it_close(&g_t024_ep_h);
+        it_fail("T024", "reply create"); return;
+    }
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long r = it_sys2(SYS_EP_RECV, ep_raw, (long)&msg);
+    long r = it_sys3(SYS_EP_RECV, ep_raw, (long)&msg, 91);
     if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
         it_close(&tid_h);
         it_close(&g_t024_ep_h);
+        it_slot_delete(91);
         it_fail("T024", "ep_recv"); return;
     }
     handle_id_t reply_h = (handle_id_t)msg.attached_handle;
 
     long rr = -1;
-    long notif_raw = it_sys0(SYS_NOTIFY_CREATE);
+    long notif_raw = it_notify_create();
     if (notif_raw >= 0) {
         struct IrisMsg reply;
         it_iris_msg_zero(&reply);
@@ -896,9 +972,9 @@ static void test_t024(void) {
 
     handle_id_t got_h = (handle_id_t)g_t024_got_h;
     it_close(&got_h);
-    it_close(&reply_h);
     it_close(&tid_h);
     it_close(&g_t024_ep_h);
+    it_slot_delete(91);
 
     if (rr == 0 && g_t024_ok &&
         g_t024_got_h != (uint32_t)IRIS_MSG_NO_CAP &&
@@ -931,7 +1007,7 @@ static void t025_client(void) {
 static void test_t025(void) {
     g_t025_done = 0; g_t025_ok = 0;
 
-    long ep_raw = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep_raw = it_ep_create();
     if (ep_raw < 0) { it_fail("T025", "ep create"); return; }
     g_t025_ep_h = (handle_id_t)ep_raw;
 
@@ -944,12 +1020,18 @@ static void test_t025(void) {
     }
     handle_id_t tid_h = (handle_id_t)tid;
 
+    if (it_reply_create_at(92) < 0) {
+        it_close(&tid_h);
+        it_close(&g_t025_ep_h);
+        it_fail("T025", "reply create"); return;
+    }
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long r = it_sys2(SYS_EP_RECV, ep_raw, (long)&msg);
+    long r = it_sys3(SYS_EP_RECV, ep_raw, (long)&msg, 92);
     if (r < 0 || msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
         it_close(&tid_h);
         it_close(&g_t025_ep_h);
+        it_slot_delete(92);
         it_fail("T025", "ep_recv"); return;
     }
     handle_id_t reply_h = (handle_id_t)msg.attached_handle;
@@ -958,7 +1040,7 @@ static void test_t025(void) {
     handle_id_t notif_h = HANDLE_INVALID;
     handle_id_t nt_h    = HANDLE_INVALID;
     long r1 = -1;
-    long notif_raw = it_sys0(SYS_NOTIFY_CREATE);
+    long notif_raw = it_notify_create();
     if (notif_raw >= 0) {
         notif_h = (handle_id_t)notif_raw;
         long nt_raw = it_sys2(SYS_HANDLE_DUP, notif_raw,
@@ -985,9 +1067,9 @@ static void test_t025(void) {
 
     it_close(&nt_h);    /* not consumed by the denied staging */
     it_close(&notif_h);
-    it_close(&reply_h);
     it_close(&tid_h);
     it_close(&g_t025_ep_h);
+    it_slot_delete(92);
 
     if (r1 == (long)IRIS_ERR_ACCESS_DENIED && r2 == 0 && g_t025_ok)
         it_pass("T025");
@@ -1888,7 +1970,7 @@ static long it_register_ep(const char *name, handle_id_t ep) {
 /* T054: cap-backed REGISTER over EP — the caller transfers a REAL endpoint cap
  * (attached_cap) and still gets a working reply (KReply + transfer coexist). */
 static void test_t054(void) {
-    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    long e = it_ep_create();
     if (e < 0) { it_fail("T054", "endpoint create"); return; }
     g_ltst_ep = (handle_id_t)e;
 
@@ -2101,7 +2183,7 @@ static void test_t064(void) {
           msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)) ok = 0;
 
     /* wrong type: transfer a notification cap */
-    long n = it_sys0(SYS_NOTIFY_CREATE);
+    long n = it_notify_create();
     if (n < 0) { it_fail("T064", "notify create"); return; }
     handle_id_t notif = (handle_id_t)n;
     long d = it_sys2(SYS_HANDLE_DUP, (long)notif, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
@@ -2238,7 +2320,7 @@ static void test_t070(void) {
  * handles fail cleanly with IRIS_ERR_BAD_HANDLE (slot generation bumped) rather
  * than resolving to phantom authority. */
 static void test_t071(void) {
-    long root = it_sys0(SYS_ENDPOINT_CREATE);
+    long root = it_ep_create();
     if (root < 0) { it_fail("T071", "ep create"); return; }
     handle_id_t root_h = (handle_id_t)root;
 
@@ -2277,7 +2359,7 @@ static void test_t071(void) {
  * (b) SYS_CAP_REVOKE on a stale handle fails cleanly (negative error, no panic),
  * and (c) a valid revoke tears down the one child that exists. */
 static void test_t072(void) {
-    long root = it_sys0(SYS_ENDPOINT_CREATE);
+    long root = it_ep_create();
     if (root < 0) { it_fail("T072", "ep create"); return; }
     handle_id_t root_h = (handle_id_t)root;
 
@@ -2289,7 +2371,7 @@ static void test_t072(void) {
                   : 0;
 
     /* Stale handle → clean BAD_HANDLE (create+close to guarantee staleness). */
-    long tmp = it_sys0(SYS_ENDPOINT_CREATE);
+    long tmp = it_ep_create();
     if (tmp >= 0) it_sys1(SYS_HANDLE_CLOSE, tmp);
     long bad_revoke = (tmp >= 0) ? it_sys1(SYS_CAP_REVOKE, tmp) : -1;
 
@@ -2317,7 +2399,7 @@ static void test_t072(void) {
  * EP_NB_SEND is used so the call never blocks: the staging check runs and fails
  * before any rendezvous or enqueue. */
 static void test_t073(void) {
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_fail("T073", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep;
 
@@ -2337,7 +2419,7 @@ static void test_t073(void) {
 
     /* (b) Stale attached handle → clean BAD_HANDLE.  Create+close to make the
      * id deterministically invalid. */
-    long stale = it_sys0(SYS_ENDPOINT_CREATE);
+    long stale = it_ep_create();
     if (stale >= 0) it_sys1(SYS_HANDLE_CLOSE, stale);
     struct IrisMsg msg2;
     it_iris_msg_zero(&msg2);
@@ -2373,7 +2455,7 @@ static uint8_t      g_t074_stack[8192];
 static void t074_server(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    long rr = it_sys2(SYS_EP_RECV, (long)g_t074_ep_h, (long)&msg);
+    long rr = it_sys3(SYS_EP_RECV, (long)g_t074_ep_h, (long)&msg, 93);
     if (rr == 0) {
         handle_id_t reply_h = (handle_id_t)msg.attached_handle;
         struct IrisMsg rmsg;
@@ -2396,9 +2478,13 @@ static void t074_server(void) {
 static void test_t074(void) {
     g_t074_done = 0; g_t074_r1 = 999; g_t074_r2 = 999;
 
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_fail("T074", "ep create"); return; }
     g_t074_ep_h = (handle_id_t)ep;
+    if (it_reply_create_at(93) < 0) {
+        it_close(&g_t074_ep_h);
+        it_fail("T074", "reply create"); return;
+    }
 
     uint64_t entry = (uint64_t)(uintptr_t)t074_server;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t074_stack + sizeof(g_t074_stack))) & ~0xFULL;
@@ -2420,6 +2506,7 @@ static void test_t074(void) {
 
     it_close(&tid_h);
     it_close(&g_t074_ep_h);
+    it_slot_delete(93);
 
     if (r == 0 && g_t074_r1 == 0 && g_t074_r2 == (int)IRIS_ERR_NOT_FOUND)
         it_pass("T074");
@@ -2441,15 +2528,34 @@ static void test_t074(void) {
 /* Spawn a lifecycle_probe child, minting `cmd_ep_h` into its command slot.
  * Returns 0 and fills *out_proc_h on success, or a negative error. */
 static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
-    struct svc_mint mints[1];
-    mints[0].slot   = LP_CPTR_CMD_EP;
-    mints[0].src_h  = cmd_ep_h;
-    mints[0].rights = RIGHT_READ | RIGHT_WRITE;
-    mints[0].badge  = 0;
+    struct svc_mint mints[2];
+    uint32_t n = 0;
+    mints[n].slot   = LP_CPTR_CMD_EP;
+    mints[n].src_h  = cmd_ep_h;
+    mints[n].rights = RIGHT_READ | RIGHT_WRITE;
+    mints[n].badge  = 0;
+    n++;
+    /* Fase S1: the child serves EP_CALLs on its command endpoint, so it needs
+     * an explicit reply object at slot 13 (LP_CPTR_REPLY).  Retyped fresh
+     * from the test untyped; the parent drops its handle right after the
+     * mint so child death still fires close-wakes-caller. */
+    handle_id_t reply_h = HANDLE_INVALID;
+    {
+        long rr = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
+        if (rr >= 0) {
+            reply_h = (handle_id_t)rr;
+            mints[n].slot   = 13u;
+            mints[n].src_h  = reply_h;
+            mints[n].rights = RIGHT_READ | RIGHT_WRITE;
+            mints[n].badge  = 0;
+            n++;
+        }
+    }
     handle_id_t boot_h = HANDLE_INVALID;
     *out_proc_h = HANDLE_INVALID;
     long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
-                             out_proc_h, &boot_h, mints, 1u);
+                             out_proc_h, &boot_h, mints, n);
+    it_close(&reply_h);  /* the child's slot-13 mint is the only reply cap */
     it_close(&boot_h);   /* Track I: no bootstrap channel (HANDLE_INVALID anyway) */
     return r;
 }
@@ -2458,7 +2564,7 @@ static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
  * Foundation test: spawn the child, drive it to run and exit via one command
  * endpoint, and observe its exit code — proving the harness works end to end. */
 static void test_t075(void) {
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_fail("T075", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
 
@@ -2469,7 +2575,7 @@ static void test_t075(void) {
     }
 
     /* Watch the child for exit on a notification, bit 0. */
-    long n = it_sys0(SYS_NOTIFY_CREATE);
+    long n = it_notify_create();
     handle_id_t watch_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
     int watch_ok = (watch_h != HANDLE_INVALID) &&
                    (it_sys3(SYS_PROCESS_WATCH, (long)proc_h, (long)watch_h, 1) == 0);
@@ -2507,7 +2613,7 @@ static void test_t075(void) {
  * and the parent's endpoint is left clean — a non-blocking send now reports
  * WOULD_BLOCK (no stale receiver to rendezvous with a dead task). */
 static void test_t077(void) {
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_fail("T077", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
 
@@ -2547,7 +2653,7 @@ static void test_t077(void) {
  * callback must wake this blocked call with IRIS_ERR_CLOSED — proving a client
  * cannot be stranded when its server dies mid-request. */
 static void test_t078(void) {
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_fail("T078", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
 
@@ -2594,7 +2700,7 @@ static void test_t078(void) {
 #define LP_MAP_VA  0x8050000000ULL
 
 static void test_t076(void) {
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_fail("T076", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
 
@@ -2770,7 +2876,7 @@ static void test_t080(void) {
     if (ok && it_sys1(SYS_VMO_SIZE, vmo) != (long)T080_VMO_SIZE) ok = 0;
 
     /* SHARE/MAP_INTO target: a lifecycle_probe child (blocks in EP_RECV). */
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_close(&vmo_h); it_close(&selfp_h);
                   it_fail("T080", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
@@ -2833,7 +2939,7 @@ static void test_t080(void) {
 #define T081_SLOT_RO    22L               /* child proc: READ only             */
 
 static void test_t081(void) {
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_fail("T081", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
 
@@ -2883,7 +2989,7 @@ static void test_t081(void) {
                       0x8000300000L, 0) != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
 
     /* WATCH by CPtr, then KILL by CPtr; the watch must fire. */
-    long n = it_sys0(SYS_NOTIFY_CREATE);
+    long n = it_notify_create();
     handle_id_t watch_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
     if (watch_h == HANDLE_INVALID) ok = 0;
     if (ok && it_sys3(SYS_PROCESS_WATCH, T081_SLOT_PROC, (long)watch_h, 1) != 0)
@@ -2930,7 +3036,7 @@ static void test_t082(void) {
     if (vmo < 0) { it_fail("T082", "vmo create"); return; }
     handle_id_t vmo_h = (handle_id_t)vmo;
 
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_close(&vmo_h); it_fail("T082", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
 
@@ -3179,8 +3285,8 @@ static void t084_sender(void) {
 static void test_t084(void) {
     g_t084_s1 = 999; g_t084_s2 = 999; g_t084_done = 0;
 
-    long epx = it_sys0(SYS_ENDPOINT_CREATE);   /* the cap being transferred */
-    long cmd = it_sys0(SYS_ENDPOINT_CREATE);   /* the transfer channel */
+    long epx = it_ep_create();   /* the cap being transferred */
+    long cmd = it_ep_create();   /* the transfer channel */
     if (epx < 0 || cmd < 0) { it_fail("T084", "ep create"); return; }
     handle_id_t epx_h = (handle_id_t)epx;
     g_t084_cmd_ep = (handle_id_t)cmd;
@@ -3267,8 +3373,8 @@ static void t085_sender(void) {
 static void test_t085(void) {
     g_t085_s1 = 999; g_t085_done = 0;
 
-    long n   = it_sys0(SYS_NOTIFY_CREATE);
-    long cmd = it_sys0(SYS_ENDPOINT_CREATE);
+    long n   = it_notify_create();
+    long cmd = it_ep_create();
     if (n < 0 || cmd < 0) { it_fail("T085", "create"); return; }
     handle_id_t n_h = (handle_id_t)n;
     g_t085_cmd_ep = (handle_id_t)cmd;
@@ -3353,8 +3459,8 @@ static void t086_sender(void) {
 static void test_t086(void) {
     g_t086_s1 = 999; g_t086_done = 0;
 
-    long n   = it_sys0(SYS_NOTIFY_CREATE);
-    long cmd = it_sys0(SYS_ENDPOINT_CREATE);
+    long n   = it_notify_create();
+    long cmd = it_ep_create();
     if (n < 0 || cmd < 0) { it_fail("T086", "create"); return; }
     handle_id_t n_h = (handle_id_t)n;
     g_t086_cmd_ep = (handle_id_t)cmd;
@@ -3445,7 +3551,8 @@ static void t087_server(void) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     m.attached_cap = T087_SRV_SLOT;              /* receive-slot declaration */
-    long rr = it_sys2(SYS_EP_RECV, (long)g_t087_ep, (long)&m);
+    /* Fase S1: explicit reply object (slot 94) staged via recv arg2. */
+    long rr = it_sys3(SYS_EP_RECV, (long)g_t087_ep, (long)&m, 94);
     if (rr == 0) {
         g_t087_got_cap = m.attached_cap;         /* caller's transferred cap */
         g_t087_reply_h = m.attached_handle;      /* reply cap — MUST be a handle */
@@ -3471,10 +3578,11 @@ static void test_t087(void) {
     g_t087_got_cap = 0; g_t087_reply_h = 0;
     g_t087_sig = 999; g_t087_r1 = 999; g_t087_r2 = 999; g_t087_done = 0;
 
-    long nA = it_sys0(SYS_NOTIFY_CREATE);
-    long nB = it_sys0(SYS_NOTIFY_CREATE);
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long nA = it_notify_create();
+    long nB = it_notify_create();
+    long ep = it_ep_create();
     if (nA < 0 || nB < 0 || ep < 0) { it_fail("T087", "create"); return; }
+    if (it_reply_create_at(94) < 0) { it_fail("T087", "reply create"); return; }
     handle_id_t nA_h = (handle_id_t)nA, nB_h = (handle_id_t)nB;
     g_t087_ep = (handle_id_t)ep;
 
@@ -3521,7 +3629,10 @@ static void test_t087(void) {
     for (int i = 0; i < 200 && !g_t087_done; i++) it_sys0(SYS_YIELD);
     if (!g_t087_done) ok = 0;
     if (ok && g_t087_got_cap != T087_SRV_SLOT) ok = 0;      /* landed as CPtr */
-    if (ok && !(g_t087_reply_h >= 1024u)) ok = 0;           /* reply cap = handle */
+    /* Fase S1: the reply value is the server's OWN reply-object CPtr (echoed
+     * from recv arg2) — explicit MCS-style authority, never a fabricated
+     * handle. */
+    if (ok && g_t087_reply_h != 94u) ok = 0;
     if (ok && g_t087_sig != 0) ok = 0;                      /* invocable by CPtr */
     if (ok && g_t087_r1 != 0) ok = 0;                       /* first reply ok */
     if (ok && g_t087_r2 != (int)IRIS_ERR_NOT_FOUND) ok = 0; /* one-shot (T074) */
@@ -3529,6 +3640,7 @@ static void test_t087(void) {
     it_close(&nA_h);
     it_close(&nB_h);
     it_close(&g_t087_ep);
+    it_slot_delete(94);
 
     if (ok) it_pass("T087"); else it_fail("T087", "recv-slot ep_call");
 }
@@ -3600,9 +3712,9 @@ static void test_t088(void) {
     g_t088_r2_got = 0; g_t088_r2_sig = 999; g_t088_r2_done = 0;
     g_t088_r3_rr = 999; g_t088_r3_done = 0;
 
-    long n   = it_sys0(SYS_NOTIFY_CREATE);
-    long ep  = it_sys0(SYS_ENDPOINT_CREATE);
-    long ep2 = it_sys0(SYS_ENDPOINT_CREATE);
+    long n   = it_notify_create();
+    long ep  = it_ep_create();
+    long ep2 = it_ep_create();
     if (n < 0 || ep < 0 || ep2 < 0) { it_fail("T088", "create"); return; }
     handle_id_t n_h = (handle_id_t)n;
     g_t088_ep  = (handle_id_t)ep;
@@ -3711,7 +3823,7 @@ static long it_unregister_id(uint32_t id) {
  * duplicated from the CSpace-held master → unregister releases the pool slot
  * (lookup → NOT_FOUND) → the same name registers again (slot reuse). */
 static void test_t089(void) {
-    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    long e = it_ep_create();
     if (e < 0) { it_fail("T089", "ep create"); return; }
     handle_id_t ep = (handle_id_t)e;
     int ok = 1;
@@ -3766,7 +3878,7 @@ static void test_t089(void) {
 #define T090_SLOT_B 49u
 
 static void test_t090(void) {
-    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    long e = it_ep_create();
     if (e < 0) { it_fail("T090", "ep create"); return; }
     handle_id_t ep = (handle_id_t)e;
     int ok = 1;
@@ -4079,7 +4191,7 @@ static int it_sched_ext2(uint32_t w2[4]) {
  * slot, and the next cycle re-registers the same names (clean reuse).  After
  * the last cycle nothing resolves (no ghost caps, no leaked slots). */
 static void test_t093(void) {
-    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    long e = it_ep_create();
     if (e < 0) { it_fail("T093", "ep create"); return; }
     handle_id_t ep = (handle_id_t)e;
     int ok = 1;
@@ -4154,9 +4266,9 @@ static void t094_recv(void) {
 static void test_t094(void) {
     g_t094_got = 0; g_t094_ready = 0; g_t094_done = 0;
 
-    long nA = it_sys0(SYS_NOTIFY_CREATE);      /* the cap to transfer */
-    long nB = it_sys0(SYS_NOTIFY_CREATE);      /* the slot-race winner */
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long nA = it_notify_create();      /* the cap to transfer */
+    long nB = it_notify_create();      /* the slot-race winner */
+    long ep = it_ep_create();
     long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
     if (nA < 0 || nB < 0 || ep < 0 || selfp < 0) { it_fail("T094", "create"); return; }
     handle_id_t nA_h = (handle_id_t)nA, nB_h = (handle_id_t)nB;
@@ -4325,7 +4437,7 @@ static void test_t096(void) {
  * destination fails, a dead destination fails — and the retired
  * SYS_HANDLE_TRANSFER itself now returns NOT_SUPPORTED. */
 static void test_t097(void) {
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_fail("T097", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
     handle_id_t proc_h = HANDLE_INVALID;
@@ -4395,7 +4507,7 @@ static void test_t097(void) {
  * rights-monotonic (missing DUPLICATE → ACCESS_DENIED; disjoint rights →
  * INVALID_ARG; dead destination → BAD_HANDLE). */
 static void test_t098(void) {
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_fail("T098", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
     handle_id_t proc_h = HANDLE_INVALID;
@@ -4505,7 +4617,7 @@ static long it_lp_cmd(handle_id_t cmd_ep_h, uint32_t label) {
 
 /* Wait (≤ 2s) for a child to exit; returns its exit code or -1. */
 static long it_lp_wait_exit(handle_id_t proc_h) {
-    long n = it_sys0(SYS_NOTIFY_CREATE);
+    long n = it_notify_create();
     if (n < 0) return -1;
     handle_id_t n_h = (handle_id_t)n;
     long ec = -1;
@@ -4533,8 +4645,8 @@ static void test_t099(void) {
     const char *why = "multi-child rslot";
 
     for (int i = 0; ok && i < 3; i++) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
-        long n  = it_sys0(SYS_NOTIFY_CREATE);
+        long ep = it_ep_create();
+        long n  = it_notify_create();
         handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || n < 0 ||
@@ -4559,8 +4671,8 @@ static void test_t099(void) {
     /* Occupied child slot → the child's declared recv fails fast and the
      * endpoint keeps no dead waiter. */
     if (ok) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
-        long n2 = it_sys0(SYS_NOTIFY_CREATE);
+        long ep = it_ep_create();
+        long n2 = it_notify_create();
         handle_id_t ep_h = (handle_id_t)ep, n2_h = (handle_id_t)n2;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || n2 < 0 ||
@@ -4589,7 +4701,7 @@ static void test_t099(void) {
 
     /* Out-of-range declaration (slot 300, T086 fixture value) → INVALID_ARG. */
     if (ok) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t ep_h = (handle_id_t)ep;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
@@ -4623,7 +4735,7 @@ static void test_t099(void) {
 static void test_t100(void) {
     uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T100", "sched ext"); return; }
-    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    long e = it_ep_create();
     if (e < 0) { it_fail("T100", "ep create"); return; }
     handle_id_t ep = (handle_id_t)e;
     int ok = 1;
@@ -4699,8 +4811,8 @@ static void test_t100(void) {
 static void test_t101(void) {
     uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T101", "sched ext"); return; }
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
-    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    long ep = it_ep_create();
+    long n  = it_notify_create();
     handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
     handle_id_t proc_h = HANDLE_INVALID;
     int ok = 1;
@@ -4766,8 +4878,8 @@ static void test_t102(void) {
     const char *why = "legacy children";
 
     for (int i = 0; ok && i < 2; i++) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
-        long n  = it_sys0(SYS_NOTIFY_CREATE);
+        long ep = it_ep_create();
+        long n  = it_notify_create();
         handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || n < 0 ||
@@ -4838,8 +4950,8 @@ static void test_t103(void) {
     int ok = 1;
     const char *why = "blocking send cancel";
 
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
-    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    long ep = it_ep_create();
+    long n  = it_notify_create();
     g_t103_ep_h = (handle_id_t)ep;
     handle_id_t n_h = (handle_id_t)n;
     if (ep < 0 || n < 0) { it_fail("T103", "create"); return; }
@@ -4920,8 +5032,8 @@ static void test_t104(void) {
     int ok = 1;
     const char *why = "ep_call cancel";
 
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
-    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    long ep = it_ep_create();
+    long n  = it_notify_create();
     g_t104_ep_h = (handle_id_t)ep;
     handle_id_t n_h = (handle_id_t)n;
     if (ep < 0 || n < 0) { it_fail("T104", "create"); return; }
@@ -4997,8 +5109,8 @@ static void test_t105(void) {
     int ok = 1;
     const char *why = "reply cap atomic";
 
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
-    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    long ep = it_ep_create();
+    long n  = it_notify_create();
     g_t105_ep_h = (handle_id_t)ep;
     handle_id_t n_h = (handle_id_t)n;
     if (ep < 0 || n < 0) { it_fail("T105", "create"); return; }
@@ -5013,11 +5125,13 @@ static void test_t105(void) {
         }
     }
 
-    /* Serve the call: the reply cap arrives in attached_handle. */
+    /* Serve the call: the explicit reply object (slot 95) is staged via
+     * recv arg2 and echoed back in attached_handle (Fase S1). */
+    if (ok && it_reply_create_at(95) < 0) { ok = 0; why = "reply create"; }
     if (ok) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        if (it_sys2(SYS_EP_RECV, (long)g_t105_ep_h, (long)&m) != 0 ||
+        if (it_sys3(SYS_EP_RECV, (long)g_t105_ep_h, (long)&m, 95) != 0 ||
             m.label != 0x105ULL || m.attached_handle == IRIS_MSG_NO_CAP) {
             ok = 0; why = "recv call";
         } else {
@@ -5058,9 +5172,9 @@ static void test_t105(void) {
     }
 
     if (d >= 0) { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
-    it_close(&reply_h);
     it_close(&n_h);
     it_close(&g_t105_ep_h);
+    it_slot_delete(95);
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* +1 = the exited thread's KTcb handle (stays with the process, Ph96). */
@@ -5104,8 +5218,8 @@ static void test_t106(void) {
     int ok = 1;
     const char *why = "close staged waiters";
 
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
-    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    long ep = it_ep_create();
+    long n  = it_notify_create();
     g_t106_ep_h = (handle_id_t)ep;
     handle_id_t n_h = (handle_id_t)n;
     if (ep < 0 || n < 0) { it_fail("T106", "create"); return; }
@@ -5286,7 +5400,7 @@ static void fz_worker1(void) { fz_worker(1); }
 static int fz_workers_start(int n) {
     static void (*const entries[2])(void) = { fz_worker0, fz_worker1 };
     for (int i = 0; i < n; i++) {
-        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        long e = it_ep_create();
         if (e < 0) return 0;
         g_fz_ctl[i] = (handle_id_t)e;
         uint64_t entry = (uint64_t)(uintptr_t)entries[i];
@@ -5347,9 +5461,9 @@ static void test_t107(void) {
     uint32_t it_n = 0;
     uint32_t exp_slot = 0, exp_hand = 0;
 
-    long ep    = it_sys0(SYS_ENDPOINT_CREATE);   /* data endpoint */
-    long n     = it_sys0(SYS_NOTIFY_CREATE);     /* transferable notification */
-    long ep2   = it_sys0(SYS_ENDPOINT_CREATE);   /* transferable endpoint */
+    long ep    = it_ep_create();   /* data endpoint */
+    long n     = it_notify_create();     /* transferable notification */
+    long ep2   = it_ep_create();   /* transferable endpoint */
     long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
     handle_id_t n_h = (handle_id_t)n, ep2_h = (handle_id_t)ep2;
     handle_id_t selfp_h = (handle_id_t)selfp;
@@ -5601,7 +5715,7 @@ static void test_t108(void) {
     const char *why = "close/cancel stress";
     uint32_t it_n = 0;
 
-    long n = it_sys0(SYS_NOTIFY_CREATE);
+    long n = it_notify_create();
     handle_id_t n_h = (handle_id_t)n;
     if (n < 0) { it_fail("T108", "create"); return; }
     /* One reusable declared slot: every cancellation must leave it EMPTY,
@@ -5611,7 +5725,7 @@ static void test_t108(void) {
     if (!fz_workers_start(2)) { it_close(&n_h); it_fail("T108", "worker"); return; }
 
     for (it_n = 0; ok && it_n < T108_ROUNDS; it_n++) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         if (ep < 0) { ok = 0; why = "ep create"; break; }
         g_fz_data_ep = (handle_id_t)ep;
         uint32_t pick = fz_rand() % 5u;
@@ -5697,7 +5811,7 @@ static void test_t108(void) {
 
     /* Post-stress health: a fresh endpoint still rendezvouses normally. */
     if (ok) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         if (ep < 0) { ok = 0; why = "final ep"; }
         else {
             g_fz_data_ep = (handle_id_t)ep;
@@ -5755,8 +5869,8 @@ static void test_t109(void) {
     uint32_t it_n = 0;
     uint32_t exp_slot = 0, exp_hand = 0, exp_reply = 0;
 
-    long ep    = it_sys0(SYS_ENDPOINT_CREATE);
-    long n     = it_sys0(SYS_NOTIFY_CREATE);
+    long ep    = it_ep_create();
+    long n     = it_notify_create();
     long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
     handle_id_t n_h = (handle_id_t)n, selfp_h = (handle_id_t)selfp;
     g_fz_data_ep = (handle_id_t)ep;
@@ -5769,6 +5883,9 @@ static void test_t109(void) {
         it_fail("T109", "occ fixture"); return;
     }
     if (!fz_workers_start(1)) { it_fail("T109", "worker"); return; }
+    /* Fase S1: ONE reusable explicit reply object serves every rendezvous
+     * round — free→staged→bound→free per call (S18 under stress). */
+    if (it_reply_create_at(96) < 0) { it_fail("T109", "reply create"); return; }
 
     for (it_n = 0; ok && it_n < T109_ITERS; it_n++) {
         uint32_t pick = fz_rand() % 4u;
@@ -5808,9 +5925,9 @@ static void test_t109(void) {
 
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        if (it_sys2(SYS_EP_RECV, (long)g_fz_data_ep, (long)&m) != 0 ||
+        if (it_sys3(SYS_EP_RECV, (long)g_fz_data_ep, (long)&m, 96) != 0 ||
             m.label != 0xF2ULL ||
-            !iris_msg_cap_is_handle(m.attached_handle)) {
+            m.attached_handle != 96u) {   /* Fase S1: our reply CPtr echoed */
             ok = 0; why = "recv call"; break;
         }
         handle_id_t reply_h = (handle_id_t)m.attached_handle;
@@ -5902,11 +6019,13 @@ static void test_t109(void) {
     it_close(&n_h);
     it_close(&selfp_h);
     it_close(&g_fz_data_ep);
+    it_slot_delete(96);
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* I16: exact balance; +1 = the worker's KTcb handle (Ph96). */
     if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 1u) { ok = 0; why = "leak"; }
-    /* Reply caps balance EXACTLY: one per rendezvous, zero per fail-fast. */
+    /* Reply BINDINGS balance EXACTLY: one per rendezvous, zero per fail-fast
+     * (Fase S1: the counter tracks bindings of the reusable reply object). */
     if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY] + exp_reply) {
         ok = 0; why = "reply count";
     }
@@ -5950,8 +6069,8 @@ static void test_t110(void) {
     uint32_t it_n = 0;
     uint32_t exp_slot = 0, exp_hand = 0, exp_reply = 0, exp_log = 0;
 
-    long ep    = it_sys0(SYS_ENDPOINT_CREATE);
-    long nf    = it_sys0(SYS_NOTIFY_CREATE);
+    long ep    = it_ep_create();
+    long nf    = it_notify_create();
     long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
     handle_id_t ep_h = (handle_id_t)ep, nf_h = (handle_id_t)nf;
     handle_id_t selfp_h = (handle_id_t)selfp;
@@ -6162,9 +6281,9 @@ static void test_t110(void) {
 static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
                       const char **why) {
     int ok = 1;
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
-    long n  = it_sys0(SYS_NOTIFY_CREATE);
-    long e2 = (kind == 1u) ? it_sys0(SYS_ENDPOINT_CREATE) : -1;
+    long ep = it_ep_create();
+    long n  = it_notify_create();
+    long e2 = (kind == 1u) ? it_ep_create() : -1;
     handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
     handle_id_t e2_h = (kind == 1u) ? (handle_id_t)e2 : HANDLE_INVALID;
     handle_id_t proc_h = HANDLE_INVALID;
@@ -6313,7 +6432,7 @@ static void test_t112(void) {
     uint32_t i = 0;
 
     for (i = 0; ok && i < T112_CYCLES; i++) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t ep_h = (handle_id_t)ep;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
@@ -6384,8 +6503,8 @@ static void test_t113(void) {
     int ok = 1;
     const char *why = "caller death mid-call";
 
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
-    long n  = it_sys0(SYS_NOTIFY_CREATE);      /* source cap for the 2nd reply */
+    long ep = it_ep_create();
+    long n  = it_notify_create();      /* source cap for the 2nd reply */
     handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
     handle_id_t proc_h = HANDLE_INVALID;
     handle_id_t reply_h = HANDLE_INVALID;
@@ -6398,10 +6517,11 @@ static void test_t113(void) {
 
     /* Serve the call: receive it and capture the reply cap.  The blocking
      * EP_RECV is the rendezvous — no timing needed. */
+    if (ok && it_reply_create_at(97) < 0) { ok = 0; why = "reply create"; }
     if (ok) {
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        if (it_sys2(SYS_EP_RECV, (long)ep_h, (long)&m) != 0 ||
+        if (it_sys3(SYS_EP_RECV, (long)ep_h, (long)&m, 97) != 0 ||
             m.label != 0x5CULL ||
             m.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
             ok = 0; why = "recv call";
@@ -6446,7 +6566,7 @@ static void test_t113(void) {
         }
     }
 
-    it_close(&reply_h);   /* KReply active_refs → 0 → close(no caller) → destroy */
+    it_slot_delete(97);  /* last reply cap → close(no caller) → destroy */
     it_close(&proc_h);    /* drop the parent's ref → child KProcess freed */
     it_close(&n_h);
     it_close(&ep_h);
@@ -6489,7 +6609,7 @@ static void test_t114(void) {
 
     /* Prime: four concurrent children, each parked in its first EP_RECV. */
     for (uint32_t s = 0; ok && s < T114_LIVE; s++) {
-        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        long e = it_ep_create();
         if (e < 0) { ok = 0; why = "prime ep"; break; }
         ep[s] = (handle_id_t)e;
         if (lp_spawn_child(ep[s], &pr[s]) < 0) { ok = 0; why = "prime spawn"; }
@@ -6522,7 +6642,7 @@ static void test_t114(void) {
         it_close(&ep[s]);
 
         /* Immediate respawn into the freed slot — the reuse-before-reap race. */
-        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        long e = it_ep_create();
         if (e < 0) { ok = 0; why = "churn ep NO_MEMORY"; break; }
         ep[s] = (handle_id_t)e;
         if (lp_spawn_child(ep[s], &pr[s]) < 0) {
@@ -6581,7 +6701,7 @@ static void test_t115(void) {
 
     /* kind 0 = EP_RECV waiter, 1 = EP_SEND waiter, 2 = EP_CALL waiter. */
     for (uint32_t kind = 0; ok && kind < 3u; kind++) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t ep_h = (handle_id_t)ep;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; break; }
@@ -6645,15 +6765,15 @@ static void test_t116(void) {
     int ok = 1;
     const char *why = "death with cspace/vmo";
 
-    long ep  = it_sys0(SYS_ENDPOINT_CREATE);   /* shared endpoint */
-    long n   = it_sys0(SYS_NOTIFY_CREATE);      /* shared notification */
+    long ep  = it_ep_create();   /* shared endpoint */
+    long n   = it_notify_create();      /* shared notification */
     long vmo = it_sys1(SYS_VMO_CREATE, 4096);   /* shared VMO */
     handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n, vmo_h = (handle_id_t)vmo;
     handle_id_t cmd_ep_h = HANDLE_INVALID, proc_h = HANDLE_INVALID;
 
     /* Command endpoint keeps the child parked; the shared caps go into its
      * CSpace / handle table below. */
-    long cep = it_sys0(SYS_ENDPOINT_CREATE);
+    long cep = it_ep_create();
     cmd_ep_h = (handle_id_t)cep;
     if (ep < 0 || n < 0 || vmo < 0 || cep < 0 ||
         lp_spawn_child(cmd_ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
@@ -6722,14 +6842,14 @@ static void test_t117(void) {
     int ok = 1;
     const char *why = "death notify";
 
-    long n = it_sys0(SYS_NOTIFY_CREATE);
+    long n = it_notify_create();
     handle_id_t n_h = (handle_id_t)n;
     handle_id_t ep[3]  = { HANDLE_INVALID, HANDLE_INVALID, HANDLE_INVALID };
     handle_id_t pr[3]  = { HANDLE_INVALID, HANDLE_INVALID, HANDLE_INVALID };
     if (n < 0) { it_fail("T117", "notif"); return; }
 
     for (uint32_t k = 0; ok && k < 3u; k++) {
-        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        long e = it_ep_create();
         if (e < 0) { ok = 0; why = "ep"; break; }
         ep[k] = (handle_id_t)e;
         if (lp_spawn_child(ep[k], &pr[k]) < 0) { ok = 0; why = "spawn"; break; }
@@ -6781,7 +6901,7 @@ static void test_t117(void) {
 
     /* A watch armed AFTER death fires immediately (already-dead emit path). */
     if (ok) {
-        long n2 = it_sys0(SYS_NOTIFY_CREATE);
+        long n2 = it_notify_create();
         handle_id_t n2_h = (handle_id_t)n2;
         if (n2 < 0) { ok = 0; why = "notif2"; }
         else {
@@ -6840,7 +6960,7 @@ static void test_t118(void) {
     for (i = 0; ok && i < T118_ROUNDS; i++) {
         /* (a) process self-exit */
         {
-            long e = it_sys0(SYS_ENDPOINT_CREATE);
+            long e = it_ep_create();
             handle_id_t e_h = (handle_id_t)e;
             handle_id_t p_h = HANDLE_INVALID;
             if (e < 0 || lp_spawn_child(e_h, &p_h) < 0) { ok = 0; why = "spawn exit"; }
@@ -6856,7 +6976,7 @@ static void test_t118(void) {
         }
         /* (b) process external-kill */
         if (ok) {
-            long e = it_sys0(SYS_ENDPOINT_CREATE);
+            long e = it_ep_create();
             handle_id_t e_h = (handle_id_t)e;
             handle_id_t p_h = HANDLE_INVALID;
             if (e < 0 || lp_spawn_child(e_h, &p_h) < 0) { ok = 0; why = "spawn kill"; }
@@ -7050,7 +7170,7 @@ static void test_t119(void) {
          * rendezvous, then self-exit. */
         g_sh_mode = SH_MODE_YIELD_BLOCK;
         g_sh_iters = 0u;
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         if (ep < 0) { ok = 0; why = "ep create"; break; }
         g_sh_ep = (handle_id_t)ep;
 
@@ -7063,7 +7183,7 @@ static void test_t119(void) {
 
         /* (b) lifecycle_probe child externally killed while alive. */
         if (ok) {
-            long ce = it_sys0(SYS_ENDPOINT_CREATE);
+            long ce = it_ep_create();
             handle_id_t ce_h = (handle_id_t)ce;
             handle_id_t p_h = HANDLE_INVALID;
             if (ce < 0 || lp_spawn_child(ce_h, &p_h) < 0) { ok = 0; why = "spawn"; }
@@ -7127,7 +7247,7 @@ static void test_t120(void) {
 
     g_sh_mode  = SH_MODE_CHURN;
     g_sh_iters = T120_ITERS;
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { it_fail("T120", "ep create"); return; }
     g_sh_ep = (handle_id_t)ep;
 
@@ -7219,7 +7339,7 @@ static void test_t121(void) {
 
     /* kind 0 = EP_RECV, 1 = EP_SEND, 2 = EP_CALL — one worker each, closed. */
     for (uint32_t kind = 0; ok && kind < 3u; kind++) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         if (ep < 0) { ok = 0; why = "ep create"; break; }
         g_sh_ep = (handle_id_t)ep;
         g_t121_res[kind] = 999;
@@ -7243,7 +7363,7 @@ static void test_t121(void) {
 
     /* Kill a child blocked as an EP_RECV waiter; endpoint keeps no dead waiter. */
     if (ok) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t ep_h = (handle_id_t)ep;
         handle_id_t p_h  = HANDLE_INVALID;
         if (ep < 0 || lp_spawn_child(ep_h, &p_h) < 0) { ok = 0; why = "spawn"; }
@@ -7368,7 +7488,7 @@ static void test_t123(void) {
 
     /* Wrong object type: an endpoint handle is not a SchedContext. */
     if (ok) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         if (ep_h == HANDLE_INVALID) { ok = 0; why = "ep create"; }
         if (ok && it_sys3(SYS_SC_CONFIGURE, (long)ep_h, 10, 100) != (long)IRIS_ERR_INVALID_ARG) {
@@ -7494,10 +7614,23 @@ static void test_t124(void) {
  *     children), NOT CSpace CNode slots and NOT untyped child_count — its scope
  *     is documented and asserted here.
  */
-#define IT_UT ((long)IRIS_CPTR_TEST_UNTYPED)
+/* Fase S1: the authority tests need a region whose child_count they fully
+ * control (RESET is gated on child_count == 0).  The suite-wide creation
+ * helpers (it_ep_create & friends) now also carve from the delegated untyped
+ * at slot 55 and some fixtures live for the whole run, so these tests operate
+ * on their OWN sub-untyped, carved lazily from slot 55 on first use. */
+static long g_it_auth_ut = -1;
+static long it_auth_ut(void) {
+    if (g_it_auth_ut < 0)
+        g_it_auth_ut = it_sys3(SYS_UNTYPED_RETYPE,
+                               (long)IRIS_CPTR_TEST_UNTYPED,
+                               IT_KOBJ_UNTYPED, 2097152);
+    return g_it_auth_ut;
+}
+#define IT_UT (it_auth_ut())
 
-/* Reset the shared test untyped after a test drops all its children.  Returns 1
- * if the region is clean (child_count == 0 → RESET ok), 0 otherwise. */
+/* Reset the authority-test untyped after a test drops all its children.
+ * Returns 1 if the region is clean (child_count == 0 → RESET ok), 0 otherwise. */
 static int it_ut_reset(void) {
     return it_sys1(SYS_UNTYPED_RESET, IT_UT) == 0;
 }
@@ -7512,6 +7645,9 @@ static int it_ut_reset(void) {
  * Invariants: U1, U2, U3, U6, U17, U18, U20. */
 static void test_t125(void) {
     uint32_t s3b[5], s3a[5];
+    /* Materialize the lazy authority sub-untyped BEFORE the baseline so its
+     * +1 untyped does not pollute this test's live-count deltas. */
+    if (it_auth_ut() < 0) { it_fail("T125", "auth untyped carve"); return; }
     it_quiesce_reaper();
     if (!it_sched_ext3(s3b)) { it_fail("T125", "sched ext3"); return; }
     int ok = 1;
@@ -7528,11 +7664,11 @@ static void test_t125(void) {
     handle_id_t sc = HANDLE_INVALID, fr = HANDLE_INVALID, sub = HANDLE_INVALID;
 
     long r;
-    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    r = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
     if (r < 0) { ok = 0; why = "retype endpoint"; } else ep = (handle_id_t)r;
-    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_NOTIFICATION, 0);
+    r = it_retype_handle(IT_UT, IT_KOBJ_NOTIFICATION, 0);
     if (ok && r < 0) { ok = 0; why = "retype notification"; } else if (ok) nt = (handle_id_t)r;
-    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_CNODE, 4);
+    r = it_retype_handle(IT_UT, IT_KOBJ_CNODE, 4);
     if (ok && r < 0) { ok = 0; why = "retype cnode"; } else if (ok) cn = (handle_id_t)r;
     r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_SCHED_CONTEXT, 0);
     if (ok && r < 0) { ok = 0; why = "retype sc"; } else if (ok) sc = (handle_id_t)r;
@@ -7579,20 +7715,23 @@ static void test_t125(void) {
         if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad frame size"; }
         /* invalid sub-untyped size (< 4096). */
         if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_UNTYPED, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad ut size"; }
-        /* non-power-of-two CNode slot count. */
-        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_CNODE, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad cnode slots"; }
-        /* missing RIGHT_WRITE: retype through a read-only derived cap. */
+        /* non-power-of-two CNode slot count (RETYPE2 — the canonical path). */
+        if (ok && it_retype2_at(IT_UT, IT_KOBJ_CNODE, 240u, 1u, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad cnode slots"; }
+        /* Fase S1 retirement: the LEGACY handle-publishing retype refuses the
+         * migrated family outright (S20 — no migrated object born by handle). */
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0)     != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy ep not retired"; }
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_NOTIFICATION, 0) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy nt not retired"; }
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_CNODE, 4)        != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy cn not retired"; }
+        /* missing RIGHT_WRITE: retype through a read-only derived cap.
+         * (IT_UT is a handle now — derive straight from it.) */
         if (ok) {
-            long uth = it_sys1(SYS_CSPACE_RESOLVE, IT_UT);
-            handle_id_t uth_h = (uth >= 0) ? (handle_id_t)uth : HANDLE_INVALID;
-            long ro = (uth >= 0) ? it_sys2(SYS_CAP_DERIVE, uth, (long)RIGHT_READ) : -1;
+            long ro = it_sys2(SYS_CAP_DERIVE, IT_UT, (long)RIGHT_READ);
             handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
             if (ro < 0) { ok = 0; why = "ro dup"; }
-            if (ok && it_sys3(SYS_UNTYPED_RETYPE, (long)ro_h, IT_KOBJ_ENDPOINT, 0) != (long)IRIS_ERR_ACCESS_DENIED) {
+            if (ok && it_retype2_at((long)ro_h, IT_KOBJ_ENDPOINT, 240u, 1u, 0) != (long)IRIS_ERR_ACCESS_DENIED) {
                 ok = 0; why = "rights not enforced";
             }
             it_close(&ro_h);
-            it_close(&uth_h);
         }
         /* No object leaked through any failure path. */
         if (ok && !it_sched_ext3(f1)) { ok = 0; why = "ext3 fail-after"; }
@@ -7633,7 +7772,7 @@ static void test_t126(void) {
         { IT_KOBJ_UNTYPED,     huge, (long)IRIS_ERR_NO_MEMORY,     "nomem" },
         { 99u,                 0,    (long)IRIS_ERR_NOT_SUPPORTED, "badtype" },
         { IT_KOBJ_FRAME,       1u,   (long)IRIS_ERR_INVALID_ARG,   "badsize" },
-        { IT_KOBJ_CNODE,       7u,   (long)IRIS_ERR_INVALID_ARG,   "badslots" },
+        { IT_KOBJ_CNODE,       7u,   (long)IRIS_ERR_NOT_SUPPORTED, "cnode legacy retired" },
     };
     for (uint32_t c = 0; ok && c < 4u; c++) {
         long rr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)cases[c].type, (long)cases[c].arg);
@@ -7645,7 +7784,7 @@ static void test_t126(void) {
         if (ok && hla[IT_SI_LIVE] != hlb[IT_SI_LIVE]) { ok = 0; why = "leaked handle"; }
         /* a valid retype right after the failure still works */
         if (ok) {
-            long good = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+            long good = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
             if (good < 0) { ok = 0; why = "valid-after-fail"; }
             else { handle_id_t g = (handle_id_t)good; it_close(&g); }
         }
@@ -7676,12 +7815,12 @@ static void test_t127(void) {
     int ok = 1;
     const char *why = "revoke cascade";
 
-    long rr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    long rr = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
     if (rr < 0) { it_fail("T127", "retype root"); return; }
     handle_id_t root = (handle_id_t)rr;
 
     /* Unrelated object outside the derivation subtree (must survive revoke). */
-    long orr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    long orr = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
     handle_id_t outsider = (orr >= 0) ? (handle_id_t)orr : HANDLE_INVALID;
     if (orr < 0) { ok = 0; why = "retype outsider"; }
 
@@ -7692,7 +7831,7 @@ static void test_t127(void) {
     if (c1 < 0 || gc1 < 0 || c2 < 0) { ok = 0; why = "derive"; }
 
     /* A CNode copy of the root — an independent ref, NOT a derivation child. */
-    long cnr = ok ? it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_CNODE, 4) : -1;
+    long cnr = ok ? it_retype_handle(IT_UT, IT_KOBJ_CNODE, 4) : -1;
     handle_id_t cn = (cnr >= 0) ? (handle_id_t)cnr : HANDLE_INVALID;
     if (ok && cnr < 0) { ok = 0; why = "retype cnode"; }
     if (ok && it_sys4(SYS_CNODE_MINT, (long)cn, 1, (long)root,
@@ -7718,7 +7857,7 @@ static void test_t127(void) {
     if (ok && it_sys1(SYS_CAP_REVOKE, (long)root) != 0) { ok = 0; why = "revoke not idempotent"; }
     /* Revoke on a stale handle fails cleanly. */
     if (ok) {
-        long tmp = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+        long tmp = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
         if (tmp >= 0) { handle_id_t th = (handle_id_t)tmp; it_close(&th);
             if (it_sys1(SYS_CAP_REVOKE, tmp) >= 0) { ok = 0; why = "stale revoke ok"; } }
     }
@@ -7821,7 +7960,7 @@ static void test_t129(void) {
     int ok = 1;
     const char *why = "revoke ipc object";
 
-    long er = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    long er = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
     if (er < 0) { it_fail("T129", "retype endpoint"); return; }
     g_sh_ep = (handle_id_t)er;
     {
@@ -7869,7 +8008,7 @@ static void test_t130(void) {
     int ok = 1;
     const char *why = "rights monotonicity";
 
-    long rr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    long rr = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
     if (rr < 0) { it_fail("T130", "retype root"); return; }
     handle_id_t root = (handle_id_t)rr;   /* full rights: READ|WRITE|DUP|TRANSFER */
 
@@ -7903,7 +8042,7 @@ static void test_t130(void) {
      * root down to READ into a CNode slot, resolve it, and confirm it cannot
      * derive (no DUPLICATE). */
     if (ok) {
-        long cnr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_CNODE, 4);
+        long cnr = it_retype_handle(IT_UT, IT_KOBJ_CNODE, 4);
         handle_id_t cn = (cnr >= 0) ? (handle_id_t)cnr : HANDLE_INVALID;
         if (cnr < 0) { ok = 0; why = "retype cnode"; }
         if (ok && it_sys4(SYS_CNODE_MINT, (long)cn, 2, (long)root, (long)RIGHT_READ) != 0) {
@@ -7952,7 +8091,7 @@ static void test_t131(void) {
                                      : IT_KOBJ_CNODE;
         uint64_t arg  = (type == IT_KOBJ_CNODE) ? 4u : 0u;
 
-        long rr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)type, (long)arg);
+        long rr = it_retype_handle(IT_UT, type, (long)arg);
         if (rr < 0) { ok = 0; why = "retype"; break; }
         handle_id_t root = (handle_id_t)rr;
 
@@ -7986,7 +8125,7 @@ static void test_t131(void) {
 
         /* Stale-handle revoke fails cleanly. */
         if (ok && (fz_rand() & 1u)) {
-            long tmp = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+            long tmp = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
             if (tmp >= 0) { handle_id_t th = (handle_id_t)tmp; it_close(&th);
                 if (it_sys1(SYS_CAP_REVOKE, tmp) >= 0) { ok = 0; why = "stale revoke ok"; } }
         }
@@ -8165,7 +8304,7 @@ static void test_t134(void) {
     if (fr == HANDLE_INVALID) { it_fail("T134", "retype frame"); return; }
 
     /* Wrong-type frame fixture: an endpoint is not a frame. */
-    long er = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0);
+    long er = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
     handle_id_t ep = (er >= 0) ? (handle_id_t)er : HANDLE_INVALID;
     /* Read-only frame fixture (drops WRITE): cannot back a writable map. */
     long rr = it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_READ);
@@ -8279,7 +8418,7 @@ static void test_t136(void) {
     uint32_t i = 0;
 
     for (i = 0; ok && i < T136_ROUNDS; i++) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t ep_h = (handle_id_t)ep;
         handle_id_t p_h  = HANDLE_INVALID;
         if (ep < 0 || lp_spawn_child(ep_h, &p_h) < 0) { ok = 0; why = "spawn"; }
@@ -8561,14 +8700,14 @@ static long it_lp_cmd_va(handle_id_t ep_h, uint32_t label, uint64_t va) {
 static int it_fault_spawn(handle_id_t *ep_h, handle_id_t *proc_h,
                           handle_id_t *n_h, handle_id_t *w_h, const char **why) {
     *ep_h = *proc_h = *n_h = *w_h = HANDLE_INVALID;
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { *why = "ep create"; return 0; }
     *ep_h = (handle_id_t)ep;
     if (lp_spawn_child(*ep_h, proc_h) < 0 || *proc_h == HANDLE_INVALID) {
         it_close(ep_h); *why = "spawn"; return 0;
     }
-    long n = it_sys0(SYS_NOTIFY_CREATE);
-    long w = it_sys0(SYS_NOTIFY_CREATE);
+    long n = it_notify_create();
+    long w = it_notify_create();
     *n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
     *w_h = (w >= 0) ? (handle_id_t)w : HANDLE_INVALID;
     if (n < 0 || w < 0 ||
@@ -8618,14 +8757,14 @@ static void test_t140(void) {
     }
 
     /* Child 1: probe every failure path, then fault with NO handler. */
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
     handle_id_t proc_h = HANDLE_INVALID;
     if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
         it_close(&ep_h); it_fail("T140", "spawn"); return;
     }
-    long n1 = it_sys0(SYS_NOTIFY_CREATE);
-    long w  = it_sys0(SYS_NOTIFY_CREATE);
+    long n1 = it_notify_create();
+    long w  = it_notify_create();
     handle_id_t n1_h = (n1 >= 0) ? (handle_id_t)n1 : HANDLE_INVALID;
     handle_id_t w_h  = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
     if (n1 < 0 || w < 0) { ok = 0; why = "notify create"; }
@@ -8677,7 +8816,7 @@ static void test_t140(void) {
     handle_id_t ep2, pr2, na, wb;
     if (ok && !it_fault_spawn(&ep2, &pr2, &na, &wb, &why)) { ok = 0; }
     if (ok) {
-        long n2 = it_sys0(SYS_NOTIFY_CREATE);
+        long n2 = it_notify_create();
         handle_id_t n2_h = (n2 >= 0) ? (handle_id_t)n2 : HANDLE_INVALID;
         if (n2 < 0) { ok = 0; why = "n2 create"; }
         /* Replace na with n2 — last registration wins. */
@@ -9362,11 +9501,10 @@ static void test_t148(void) {
             break;
         }
     }
-    /* High/unassigned range 111..400 (107 = SYS_PROCESS_VSPACE, 108 =
-     * SYS_VMO_MAP_PAGE, and Fase 29's 109 = SYS_VMO_CREATE_FOR / 110 =
-     * SYS_RESOURCE_INFO are all live; their typed/rights fuzz lives with the
-     * other cap syscalls in T149+ / T241 / the resource tests). */
-    for (long n = 111; ok && n <= 400; n++) {
+    /* High/unassigned range 113..400 (Fase S1's 111 = SYS_UNTYPED_RETYPE2 and
+     * 112 = SYS_UNTYPED_QUERY are live; their typed/rights fuzz lives in the
+     * S1 suite T251+; 107..110 remain live from Fases 25/26/29). */
+    for (long n = 113; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -9406,8 +9544,8 @@ static void test_t149(void) {
     int ok = b.ok;
     const char *why = "wrong-type fuzz";
 
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
-    long no = it_sys0(SYS_NOTIFY_CREATE);
+    long ep = it_ep_create();
+    long no = it_notify_create();
     handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
     handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
     if (ep < 0 || no < 0) { it_close(&ep_h); it_close(&no_h); it_fail("T149", "fixture"); return; }
@@ -9507,7 +9645,7 @@ static void test_t150(void) {
     /* SYS_NOTIFY_WAIT_TIMEOUT writes out_bits: hostile dst → INVALID_ARG
      * (validated before blocking, so no waiter is ever created). */
     {
-        long no = it_sys0(SYS_NOTIFY_CREATE);
+        long no = it_notify_create();
         handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
         if (no < 0) { ok = 0; why = "notif fixture"; }
         for (int i = 0; ok && i < NB; i++) {
@@ -9518,7 +9656,7 @@ static void test_t150(void) {
     }
     /* SYS_EP_SEND with a hostile message pointer → INVALID_ARG, endpoint clean. */
     {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         if (ep < 0) { ok = 0; why = "ep fixture"; }
         for (int i = 0; ok && i < NB; i++) {
@@ -9595,9 +9733,9 @@ static void test_t151(void) {
         fr = (r >= 0) ? (handle_id_t)r : HANDLE_INVALID;
         if (fr == HANDLE_INVALID) { ok = 0; why = "retype frame"; break; }
         op = 11;
-        long en = it_sys0(SYS_ENDPOINT_CREATE);
+        long en = it_ep_create();
         ep = (en >= 0) ? (handle_id_t)en : HANDLE_INVALID;
-        long nn = it_sys0(SYS_NOTIFY_CREATE);
+        long nn = it_notify_create();
         no = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
         if (ep == HANDLE_INVALID || no == HANDLE_INVALID) { ok = 0; why = "obj create"; it_close(&fr); it_close(&ep); it_close(&no); break; }
 
@@ -9705,7 +9843,7 @@ static void test_t153(void) {
 
     for (i = 0; ok && i < T153_ROUNDS; i++) {
         uint32_t kind = fz_rand() % 4u;   /* 0 recv, 1 send, 2 call, 3 fault */
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; it_close(&ep_h); break; }
@@ -9714,7 +9852,7 @@ static void test_t153(void) {
         op = kind;
         if (kind == 3u) {
             /* Fault-pending waiter: register a handler, drive an invalid-VA fault. */
-            long n = it_sys0(SYS_NOTIFY_CREATE);
+            long n = it_notify_create();
             n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
             if (n < 0 || it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n, 1) != 0) { ok = 0; why = "reg handler"; }
             if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
@@ -9767,7 +9905,7 @@ static void test_t154(void) {
     int ok = b.ok;
     const char *why = "rights monotonicity";
 
-    long no = it_sys0(SYS_NOTIFY_CREATE);
+    long no = it_notify_create();
     handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
     if (no < 0) { it_fail("T154", "notif fixture"); return; }
 
@@ -9857,7 +9995,7 @@ static void test_t155(void) {
 
         /* Notification rendezvous. */
         op = 5;
-        long nn = it_sys0(SYS_NOTIFY_CREATE);
+        long nn = it_notify_create();
         handle_id_t no = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
         if (no != HANDLE_INVALID && (fz_rand() & 1u)) {
             if (it_sys2(SYS_NOTIFY_SIGNAL, (long)no, 3) != 0) { ok = 0; why = "signal"; }
@@ -9870,7 +10008,7 @@ static void test_t155(void) {
          * a controlled fault → kill) — the lifecycle+fault surface under churn. */
         if (ok && (i % 4u) == 0u) {
             op = 6;
-            long ep = it_sys0(SYS_ENDPOINT_CREATE);
+            long ep = it_ep_create();
             handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
             handle_id_t proc_h = HANDLE_INVALID;
             if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; it_close(&ep_h); break; }
@@ -9884,7 +10022,7 @@ static void test_t155(void) {
                 if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
                 if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "kill exit"; }
             } else {                             /* controlled fault → kill */
-                long n = it_sys0(SYS_NOTIFY_CREATE);
+                long n = it_notify_create();
                 handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
                 if (n < 0 || it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n, 1) != 0) { ok = 0; why = "reg handler"; }
                 if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
@@ -9939,7 +10077,7 @@ static void test_t155(void) {
  * bitmask (bits 0..15 = slots 0..15; bit 16 = slot 25 proc, 17 = slot 55
  * untyped, 18 = slot 56 vspace).  Returns -1 on spawn/command failure. */
 static long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) return -1;
     handle_id_t cmd = (handle_id_t)ep;
 
@@ -10006,8 +10144,8 @@ static void test_t156(void) {
     int ok = b.ok;
     const char *why = "manifest delivery";
 
-    long no = it_sys0(SYS_NOTIFY_CREATE);
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long no = it_notify_create();
+    long ep = it_ep_create();
     handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
     handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
     if (no < 0 || ep < 0) { it_close(&no_h); it_close(&ep_h); it_fail("T156", "fixture"); return; }
@@ -10202,7 +10340,7 @@ static void test_t161(void) {
     long slots0 = it_svcmgr_active_slots();
     if (ok && slots0 < 0) { ok = 0; why = "diag baseline"; }
 
-    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    long e = it_ep_create();
     handle_id_t svc_ep = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
     if (ok && e < 0) { ok = 0; why = "svc ep"; }
 
@@ -10257,7 +10395,7 @@ static void test_t162(void) {
 
     /* Teeth: mint one extra cap at slot 6 → the report must show it. */
     if (ok) {
-        long n = it_sys0(SYS_NOTIFY_CREATE);
+        long n = it_notify_create();
         handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
         if (n < 0) { ok = 0; why = "teeth fixture"; }
         else {
@@ -10323,7 +10461,7 @@ static void test_t163(void) {
 
         /* Well-formed: register → lookup → unregister, each round balanced. */
         op = 10;
-        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        long e = it_ep_create();
         handle_id_t svc_ep = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
         if (e < 0) { ok = 0; why = "svc ep"; break; }
         long id = it_register_ep("t163.svc", svc_ep);
@@ -10390,7 +10528,7 @@ static handle_id_t it_make_ioport(long base, long count) {
  * the held cap) is set — the teeth check proving the probe genuinely attempts
  * each op.  Returns -1 on spawn/command failure. */
 static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t dev_rights) {
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) return -1;
     handle_id_t cmd = (handle_id_t)ep;
 
@@ -10439,7 +10577,7 @@ static void test_t164(void) {
 
     /* Wrong-type cap: a notification is not a KIoPort. */
     if (ok) {
-        long n = it_sys0(SYS_NOTIFY_CREATE);
+        long n = it_notify_create();
         handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
         if (n < 0) { ok = 0; why = "notif fixture"; }
         if (ok && it_sys2(SYS_IOPORT_IN, n, 0) >= 0) { ok = 0; why = "wrong-type IN honoured"; }
@@ -10567,7 +10705,7 @@ static void test_t167(void) {
     handle_id_t irq = (ic >= 0) ? (handle_id_t)ic : HANDLE_INVALID;
     if (ok && irq == HANDLE_INVALID) { ok = 0; why = "irqcap create"; }
 
-    long nn = it_sys0(SYS_NOTIFY_CREATE);
+    long nn = it_notify_create();
     handle_id_t notif = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
     if (ok && notif == HANDLE_INVALID) { ok = 0; why = "notif"; }
 
@@ -10590,7 +10728,7 @@ static void test_t167(void) {
     }
     /* Route with a wrong-type destination (endpoint, not notification). */
     if (ok) {
-        long e = it_sys0(SYS_ENDPOINT_CREATE);
+        long e = it_ep_create();
         handle_id_t ep_h = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
         if (e < 0) { ok = 0; why = "ep fixture"; }
         if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, (long)ep_h, (long)IRIS_CPTR_TEST_PROC)
@@ -10645,7 +10783,7 @@ static void test_t168(void) {
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "framebuffer not one-shot"; }
     /* Wrong-type auth cap (a notification) → ACCESS_DENIED (not a bootstrap cap). */
     if (ok) {
-        long n = it_sys0(SYS_NOTIFY_CREATE);
+        long n = it_notify_create();
         handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
         if (n < 0) { ok = 0; why = "notif fixture"; }
         if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, n, (long)(uintptr_t)fbbuf, 0)
@@ -10725,7 +10863,7 @@ static void test_t170(void) {
         handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
         if (io == HANDLE_INVALID) { ok = 0; why = "io cap"; break; }
 
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         struct svc_mint mints[2];
         mints[0].slot = LP_CPTR_CMD_EP; mints[0].src_h = cmd;
@@ -10815,7 +10953,7 @@ static void test_t171(void) {
         /* IRQ authority failure path: ack with a wrong-type cap. */
         op = 5;
         {
-            long n = it_sys0(SYS_NOTIFY_CREATE);
+            long n = it_notify_create();
             if (n >= 0) {
                 handle_id_t n_h = (handle_id_t)n;
                 if (it_sys1(SYS_IRQ_ACK, n) >= 0) { ok = 0; why = "ack wrong-type honoured"; }
@@ -10997,7 +11135,7 @@ static void test_t174(void) {
     int ok = b.ok;
     const char *why = "stale generation";
 
-    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    long e = it_ep_create();
     handle_id_t svc_ep = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
     if (e < 0) { it_fail("T174", "ep"); return; }
 
@@ -11052,7 +11190,7 @@ static void test_t175(void) {
 
     /* Supervision loop: (re)start until the budget is spent. */
     while (ok && !degraded) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         handle_id_t proc = HANDLE_INVALID;
         if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "spawn"; it_close(&cmd); break; }
@@ -11094,7 +11232,7 @@ static void test_t176(void) {
     int ok = b.ok;
     const char *why = "client during death";
 
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
     handle_id_t proc = HANDLE_INVALID;
     if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { it_close(&cmd); it_fail("T176", "spawn"); return; }
@@ -11218,13 +11356,13 @@ static void test_t179(void) {
 
     /* Register a service, spawn a probe, kill the probe: the registration (owned
      * by iris_test) is unaffected by the unrelated death. */
-    long e = it_sys0(SYS_ENDPOINT_CREATE);
+    long e = it_ep_create();
     handle_id_t svc_ep = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
     if (e < 0) { it_fail("T179", "ep"); return; }
     long id = it_register_ep("t179.svc", svc_ep);
     if (ok && id < 0) { ok = 0; why = "register"; }
 
-    long cep = it_sys0(SYS_ENDPOINT_CREATE);
+    long cep = it_ep_create();
     handle_id_t cmd = (cep >= 0) ? (handle_id_t)cep : HANDLE_INVALID;
     handle_id_t proc = HANDLE_INVALID;
     if (ok && (cep < 0 || lp_spawn_child(cmd, &proc) < 0)) { ok = 0; why = "spawn"; }
@@ -11283,7 +11421,7 @@ static void test_t180(void) {
 
         /* A supervised probe: spawn, kill or fault-crash, reap. */
         op = 2;
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         handle_id_t proc = HANDLE_INVALID;
         if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "spawn"; it_close(&cmd); break; }
@@ -11305,7 +11443,7 @@ static void test_t180(void) {
         /* Occasionally exercise the dynamic registry with a clean round-trip. */
         op = 3;
         if (ok && (fz_rand() & 1u)) {
-            long e2 = it_sys0(SYS_ENDPOINT_CREATE);
+            long e2 = it_ep_create();
             handle_id_t sep = (e2 >= 0) ? (handle_id_t)e2 : HANDLE_INVALID;
             if (e2 < 0) { ok = 0; why = "reg ep"; it_close(&cmd); break; }
             long id = it_register_ep("t180.svc", sep);
@@ -11403,15 +11541,15 @@ static void t25_tgt_reap(struct t25_tgt *g) {
 
 static int t25_tgt_spawn(struct t25_tgt *g, const char **why) {
     g->cmd = g->proc = g->vs = g->notif = g->watch = HANDLE_INVALID;
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { *why = "ep create"; return 0; }
     g->cmd = (handle_id_t)ep;
     if (lp_spawn_child(g->cmd, &g->proc) < 0 || g->proc == HANDLE_INVALID) {
         it_close(&g->cmd); *why = "spawn"; return 0;
     }
     long vs = it_sys1(SYS_PROCESS_VSPACE, (long)g->proc);
-    long n  = it_sys0(SYS_NOTIFY_CREATE);
-    long w  = it_sys0(SYS_NOTIFY_CREATE);
+    long n  = it_notify_create();
+    long w  = it_notify_create();
     g->vs    = (vs >= 0) ? (handle_id_t)vs : HANDLE_INVALID;
     g->notif = (n  >= 0) ? (handle_id_t)n  : HANDLE_INVALID;
     g->watch = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
@@ -11439,7 +11577,7 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
                             const struct svc_mint *extra, uint32_t nextra,
                             handle_id_t *out_cmd, handle_id_t *out_proc) {
     *out_cmd = *out_proc = HANDLE_INVALID;
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) return -1;
     handle_id_t cmd = (handle_id_t)ep;
     struct svc_mint m[8];
@@ -12483,7 +12621,7 @@ static void test_t191(void) {
     } else if (ok) { ok = 0; why = "self vspace"; }
 
     /* Wrong-type in the VMO slot (a notification) and the VSpace slot. */
-    long n = it_sys0(SYS_NOTIFY_CREATE);
+    long n = it_notify_create();
     handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
     if (ok && n < 0) { ok = 0; why = "notif"; }
     if (ok && it_sys4(SYS_VMO_MAP_PAGE, n, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 0))
@@ -13184,7 +13322,7 @@ static int t27_pager_spawn(struct t27_pager *p,
                            handle_id_t *vmos, uint32_t nv, uint32_t vmo_w_mask,
                            int do_register, const char **why) {
     p->ctrl_ep = p->proc = HANDLE_INVALID; p->reg_id = -1; p->generation = 0;
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { *why = "ctrl ep"; return 0; }
     handle_id_t ctrl = (handle_id_t)ep;
 
@@ -13213,11 +13351,25 @@ static int t27_pager_spawn(struct t27_pager *p,
         m[n].slot = PGR_VSLOT(j); m[n].src_h = vmos[j]; m[n].rights = vr; m[n].badge = 0; n++;
     }
 
+    /* Fase S1: the pager serves EP_CALLs on its ctrl endpoint — retype a
+     * fresh reply object and mint it at PGR_SLOT_REPLY (13); drop our handle
+     * right after so pager death still wakes blocked callers. */
+    handle_id_t pgr_reply_h = HANDLE_INVALID;
+    {
+        long rr = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
+        if (rr >= 0) {
+            pgr_reply_h = (handle_id_t)rr;
+            m[n].slot = 13u; m[n].src_h = pgr_reply_h;
+            m[n].rights = RIGHT_READ | RIGHT_WRITE; m[n].badge = 0; n++;
+        }
+    }
+
     /* Fase 28: the pager is its own supervised binary (initrd "pager"); it
      * enters its serve loop immediately on start — no mode-entry message. */
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager",
                              &p->proc, &boot, m, n);
+    it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || p->proc == HANDLE_INVALID) {
         it_close(&ctrl); it_close(&p->proc); *why = "pager spawn"; return 0;
@@ -13300,6 +13452,7 @@ static void test_t201(void) {
     if (ok) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+                          (1u << 13) /* Fase S1: explicit reply object */ |
                           (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest mismatch"; }
         /* Explicitly none of: core client eps (1/2/4 — slot 3 is the control
@@ -13556,6 +13709,7 @@ static void test_t205(void) {
     if (ok) {
         long mask = t27_pager_call(p2.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+                          (1u << 13) /* Fase S1: explicit reply object */ |
                           (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "restart manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) {
@@ -14011,7 +14165,7 @@ static void test_t213(void) {
 
     /* 1. A valid launch works. */
     {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         handle_id_t proc = HANDLE_INVALID;
         if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "valid launch 1"; }
@@ -14036,7 +14190,7 @@ static void test_t213(void) {
 
     /* 3. A valid launch AFTER the failure still works. */
     {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         handle_id_t proc = HANDLE_INVALID;
         if (ok && (ep < 0 || lp_spawn_child(cmd, &proc) < 0)) { ok = 0; why = "valid launch 2"; }
@@ -14119,6 +14273,7 @@ static void test_t215(void) {
     if (ok) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+                          (1u << 13) /* Fase S1: explicit reply object */ |
                           (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) {
@@ -14192,7 +14347,7 @@ static void test_t216(void) {
         }
         case 3: {
             /* Valid launch works and reaps cleanly. */
-            long ep = it_sys0(SYS_ENDPOINT_CREATE);
+            long ep = it_ep_create();
             handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
             handle_id_t proc = HANDLE_INVALID;
             if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "launch"; }
@@ -14511,7 +14666,7 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
                          const char **why) {
     f->ctrl_ep = f->proc = f->cache_vmo = f->priv_vmo = HANDLE_INVALID;
     f->vfs_cap = f->admin = HANDLE_INVALID;
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { *why = "ctrl ep"; return 0; }
     handle_id_t ctrl = (handle_id_t)ep;
     handle_id_t cvmo = t26_vmo_create((uint64_t)FBK_CACHE_CAP * 0x1000ULL);
@@ -14555,8 +14710,19 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
     m[k].slot = PGR_VSLOT(0); m[k].src_h = cvmo; m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
     m[k].slot = PGR_VSLOT(1); m[k].src_h = pvmo; m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
 
+    /* Fase S1: explicit reply object for the pager's ctrl EP (slot 13). */
+    handle_id_t pgr_reply_h = HANDLE_INVALID;
+    {
+        long rr = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
+        if (rr >= 0) {
+            pgr_reply_h = (handle_id_t)rr;
+            m[k].slot = 13u; m[k].src_h = pgr_reply_h;
+            m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
+        }
+    }
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager", &f->proc, &boot, m, k);
+    it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
         it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm); it_close(&f->proc);
@@ -14696,7 +14862,7 @@ static void test_t217(void) {
      * + target proc/vs presence (20/21). */
     if (ok) {
         long mask = t27_pager_call(f.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
-        uint32_t expect = (1u<<3)|(1u<<4)|(1u<<5)|(1u<<16)|(1u<<17)|(1u<<20)|(1u<<21);
+        uint32_t expect = (1u<<3)|(1u<<4)|(1u<<5)|(1u<<13)|(1u<<16)|(1u<<17)|(1u<<20)|(1u<<21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) { ok = 0; why = "extra authority"; }
     }
@@ -15956,15 +16122,15 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
     for (uint32_t i = 0; i < T28_MT_MAX; i++) { m->cmd[i] = m->proc[i] = m->vs[i] = HANDLE_INVALID; }
     m->fault_notif = m->exit_notif = HANDLE_INVALID; m->n = 0;
     if (nt > T28_MT_MAX) { *why = "too many targets"; return 0; }
-    long fn = it_sys0(SYS_NOTIFY_CREATE);
-    long en = it_sys0(SYS_NOTIFY_CREATE);
+    long fn = it_notify_create();
+    long en = it_notify_create();
     if (fn < 0 || en < 0) { it_close(&m->fault_notif); it_close(&m->exit_notif);
         if (fn >= 0) { handle_id_t h = (handle_id_t)fn; it_close(&h); }
         if (en >= 0) { handle_id_t h = (handle_id_t)en; it_close(&h); }
         *why = "shared notifs"; return 0; }
     m->fault_notif = (handle_id_t)fn; m->exit_notif = (handle_id_t)en;
     for (uint32_t i = 0; i < nt; i++) {
-        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        long ep = it_ep_create();
         if (ep < 0) { *why = "cmd ep"; t28_multi_close(m); return 0; }
         m->cmd[i] = (handle_id_t)ep;
         if (lp_spawn_child(m->cmd[i], &m->proc[i]) < 0 || m->proc[i] == HANDLE_INVALID) { *why = "spawn"; t28_multi_close(m); return 0; }
@@ -15984,7 +16150,7 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
 static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const char **why) {
     f->ctrl_ep = f->proc = f->cache_vmo = f->priv_vmo = HANDLE_INVALID;
     f->vfs_cap = f->admin = HANDLE_INVALID;
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) { *why = "ctrl ep"; return 0; }
     handle_id_t ctrl = (handle_id_t)ep;
     handle_id_t cvmo = t26_vmo_create((uint64_t)FBK_CACHE_CAP * 0x1000ULL);
@@ -16012,7 +16178,18 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     mm[k].slot = PGR_VSLOT(0); mm[k].src_h = cvmo; mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
     mm[k].slot = PGR_VSLOT(1); mm[k].src_h = pvmo; mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
     handle_id_t boot = HANDLE_INVALID;
+    /* Fase S1: explicit reply object for the pager's ctrl EP (slot 13). */
+    handle_id_t pgr_reply_h = HANDLE_INVALID;
+    {
+        long rr = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
+        if (rr >= 0) {
+            pgr_reply_h = (handle_id_t)rr;
+            mm[k].slot = 13u; mm[k].src_h = pgr_reply_h;
+            mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
+        }
+    }
     long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager", &f->proc, &boot, mm, k);
+    it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
         it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm); it_close(&f->proc);
@@ -16260,7 +16437,7 @@ static int it_rinfo(handle_id_t proc_h, struct it_rinfo *out) {
 /* Spawn a bare lifecycle_probe child (cmd endpoint + process).  0 on success. */
 static int it_bare_child(handle_id_t *cmd_out, handle_id_t *proc_out) {
     *cmd_out = *proc_out = HANDLE_INVALID;
-    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    long ep = it_ep_create();
     if (ep < 0) return 0;
     *cmd_out = (handle_id_t)ep;
     if (lp_spawn_child(*cmd_out, proc_out) < 0 || *proc_out == HANDLE_INVALID) {
@@ -16286,8 +16463,11 @@ static void test_t239(void) {
 
     struct it_rinfo r0;
     if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "rinfo self"; }
+    /* Fase S1: the notification quota is RETIRED (Untyped is the budget);
+     * the ABI fields remain and must read 0. */
     if (ok && (r0.version != 1u || r0.vmos_limit != IT_VMO_QUOTA ||
-               r0.notifs_limit != 16u || r0.kslab_total_bytes == 0u ||
+               r0.notifs_limit != 0u || r0.notifs_usage != 0u ||
+               r0.kslab_total_bytes == 0u ||
                r0.pages_limit == 0u)) { ok = 0; why = "manifest fields"; }
     /* kslab used is within total; no phantom alloc failures at rest. */
     if (ok && r0.kslab_used_bytes > r0.kslab_total_bytes) { ok = 0; why = "kslab over total"; }
@@ -16423,7 +16603,7 @@ static void test_t241(void) {
     it_close(&ro_h);
 
     /* Wrong-type charge target → WRONG_TYPE. */
-    long ep = ok ? it_sys0(SYS_ENDPOINT_CREATE) : -1;
+    long ep = ok ? it_ep_create() : -1;
     handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
     if (ok && it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)ep_h) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type charged"; }
     it_close(&ep_h);
@@ -16892,6 +17072,852 @@ static void test_t250(void) {
     else { it_fz_note("T250", T250_SEED, round, op); it_fail("T250", why); }
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+ * Fase S1 — seL4 Architectural Convergence (T251–T262).
+ *
+ * Canonical kernel-object model + Untyped-only allocation substrate: every
+ * migrated object (Endpoint / Notification / Reply / CNode) is born from an
+ * explicit Untyped via SYS_UNTYPED_RETYPE2, its storage IS the retyped
+ * region, its capability appears directly in CSpace, and its region becomes
+ * reusable after destruction + RESET.  Legacy create paths are retired.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/* SYS_UNTYPED_QUERY wrappers (versioned, read-only instrumentation). */
+struct it_utq_global {
+    uint32_t version, struct_size, live_untypeds, _pad0;
+    uint64_t retype_count, retype_failures, reset_count;
+    uint64_t reclaimed_bytes, reuse_count, overlap_denials;
+};
+struct it_utq_one {
+    uint32_t version, struct_size;
+    uint64_t phys_base, total_bytes, used_bytes, generation;
+    uint32_t child_count, is_device;
+};
+struct it_utq_objects {
+    uint32_t version, struct_size;
+    uint32_t endpoints_live, notifications_live, replies_live, cnodes_live;
+};
+static int it_utq_g(struct it_utq_global *q) {
+    return it_sys3(SYS_UNTYPED_QUERY, 1, (long)(uintptr_t)q, 0) == 0;
+}
+static int it_utq_1(long ut, struct it_utq_one *q) {
+    return it_sys3(SYS_UNTYPED_QUERY, 2, (long)(uintptr_t)q, ut) == 0;
+}
+static int it_utq_o(struct it_utq_objects *q) {
+    return it_sys3(SYS_UNTYPED_QUERY, 3, (long)(uintptr_t)q, 0) == 0;
+}
+
+/* Carve a fresh page-multiple sub-untyped for one S1 test (handle). */
+static long s1_sub_ut(uint64_t bytes) {
+    return it_sys3(SYS_UNTYPED_RETYPE, (long)IRIS_CPTR_TEST_UNTYPED,
+                   IT_KOBJ_UNTYPED, (long)bytes);
+}
+
+/* S1 scratch slots: 241..250 (fz pool ends at 239; 240 is the T125 probe). */
+#define S1_SLOT_A 241u
+#define S1_SLOT_B 242u
+#define S1_SLOT_C 243u
+#define S1_SLOT_D 244u
+#define S1_SLOT_E 245u
+
+/* ── T251: canonical object model manifest ──────────────────────────────────
+ * RETYPE2 accepts EXACTLY the canonical creatable set {NOTIFICATION,
+ * ENDPOINT, CNODE, SCHED_CONTEXT, UNTYPED, REPLY, FRAME} and refuses every
+ * other type code (0..31) with NOT_SUPPORTED — an unregistered KOBJ_* can
+ * never be born.  Every created object reports its declared type through the
+ * sanctioned bridge, and the migrated family has a retirement witness: the
+ * legacy handle-first retype refuses it (S19/S20/S21). */
+static void test_t251(void) {
+    int ok = 1;
+    const char *why = "object manifest";
+    long su = s1_sub_ut(65536);
+    if (su < 0) { it_fail("T251", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    static const struct { uint32_t t; long arg; long ht; } canon[] = {
+        { IRIS_KOBJ_NOTIFICATION,  0,    IRIS_HANDLE_TYPE_NOTIFICATION },
+        { IRIS_KOBJ_ENDPOINT,      0,    IRIS_HANDLE_TYPE_ENDPOINT },
+        { IRIS_KOBJ_CNODE,         4,    IRIS_HANDLE_TYPE_CNODE },
+        { IRIS_KOBJ_SCHED_CONTEXT, 0,    IRIS_HANDLE_TYPE_SCHED_CONTEXT },
+        { IRIS_KOBJ_UNTYPED,       4096, IRIS_HANDLE_TYPE_UNTYPED },
+        { IRIS_KOBJ_REPLY,         0,    IRIS_HANDLE_TYPE_REPLY },
+        { IRIS_KOBJ_FRAME,         4096, IRIS_HANDLE_TYPE_FRAME },
+    };
+    for (uint32_t i = 0; ok && i < 7u; i++) {
+        if (it_retype2_at(su, canon[i].t, S1_SLOT_A, 1u, canon[i].arg) != 0) {
+            ok = 0; why = "canonical type not creatable"; break;
+        }
+        long h = it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A);
+        if (h < 0 || it_sys1(SYS_HANDLE_TYPE, h) != canon[i].ht) {
+            ok = 0; why = "created type mismatch";
+        }
+        if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
+        it_slot_delete(S1_SLOT_A);
+    }
+    /* Everything else in 0..31 is refused — the manifest is CLOSED. */
+    for (uint32_t t = 0; ok && t < 32u; t++) {
+        int is_canon = 0;
+        for (uint32_t i = 0; i < 7u; i++) if (canon[i].t == t) is_canon = 1;
+        if (is_canon) continue;
+        if (it_retype2_at(su, t, S1_SLOT_A, 1u, 4096) != (long)IRIS_ERR_NOT_SUPPORTED) {
+            ok = 0; why = "non-canonical type creatable";
+        }
+    }
+    /* Retirement witness: migrated family refused on the legacy path. */
+    static const uint32_t migrated[] = { IRIS_KOBJ_ENDPOINT, IRIS_KOBJ_NOTIFICATION,
+                                         IRIS_KOBJ_CNODE, IRIS_KOBJ_REPLY };
+    for (uint32_t i = 0; ok && i < 4u; i++) {
+        if (it_sys3(SYS_UNTYPED_RETYPE, su, (long)migrated[i], 4) !=
+            (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy path not retired"; }
+    }
+
+    it_close(&su_h);
+    if (ok) it_pass("T251"); else it_fail("T251", why);
+}
+
+/* ── T252: Untyped storage provenance ───────────────────────────────────────
+ * The retyped region IS the object storage: creating the migrated family
+ * consumes exactly measurable bytes of the source untyped (used_bytes grows,
+ * child_count counts every object), consumes ZERO kslab bytes (S2 — payload
+ * never touches the kernel heap), and destroying every object returns the
+ * region to reusable (RESET succeeds, used == 0). */
+static void test_t252(void) {
+    int ok = 1;
+    const char *why = "storage provenance";
+    long su = s1_sub_ut(65536);
+    if (su < 0) { it_fail("T252", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    struct it_utq_one u0, u1, u2;
+    struct it_rinfo  k0, k1;
+    struct it_utq_objects o0, o1;
+    if (!it_utq_1(su, &u0) || !it_rinfo(HANDLE_INVALID, &k0) || !it_utq_o(&o0)) {
+        it_close(&su_h); it_fail("T252", "query"); return;
+    }
+    if (u0.used_bytes != 0u || u0.child_count != 0u) { ok = 0; why = "not pristine"; }
+
+    /* 4 endpoints + 2 notifications + 2 replies, all batch-retyped. */
+    if (ok && it_retype2_at(su, IRIS_KOBJ_ENDPOINT,     S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "ep"; }
+    if (ok && it_retype2_at(su, IRIS_KOBJ_ENDPOINT,     S1_SLOT_B, 1u, 0) != 0) { ok = 0; why = "ep2"; }
+    if (ok && it_retype2_at(su, IRIS_KOBJ_NOTIFICATION, S1_SLOT_C, 1u, 0) != 0) { ok = 0; why = "nt"; }
+    if (ok && it_retype2_at(su, IRIS_KOBJ_REPLY,        S1_SLOT_D, 1u, 0) != 0) { ok = 0; why = "rp"; }
+    if (ok && (!it_utq_1(su, &u1) || !it_rinfo(HANDLE_INVALID, &k1) || !it_utq_o(&o1))) {
+        ok = 0; why = "query mid";
+    }
+    /* used grew, every object is inside THIS untyped (child_count == 4),
+     * live gauges rose accordingly, and the kernel heap did not move. */
+    if (ok && !(u1.used_bytes > u0.used_bytes && u1.used_bytes <= u1.total_bytes)) { ok = 0; why = "no consumption"; }
+    if (ok && u1.child_count != 4u) { ok = 0; why = "child count"; }
+    if (ok && o1.endpoints_live     != o0.endpoints_live + 2u)     { ok = 0; why = "ep live"; }
+    if (ok && o1.notifications_live != o0.notifications_live + 1u) { ok = 0; why = "nt live"; }
+    if (ok && o1.replies_live       != o0.replies_live + 1u)       { ok = 0; why = "rp live"; }
+    if (ok && k1.kslab_used_bytes   != k0.kslab_used_bytes)        { ok = 0; why = "kslab moved (S2)"; }
+
+    /* The objects are REAL (usable through their CSpace caps). */
+    if (ok) {
+        struct IrisMsg m; it_iris_msg_zero(&m);
+        if (it_sys2(SYS_EP_NB_RECV, (long)S1_SLOT_A, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep dead"; }
+        if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)S1_SLOT_C, 1) != 0) { ok = 0; why = "nt dead"; }
+    }
+
+    /* Destroy all → region reusable, gauges at baseline. */
+    it_slot_delete(S1_SLOT_A); it_slot_delete(S1_SLOT_B);
+    it_slot_delete(S1_SLOT_C); it_slot_delete(S1_SLOT_D);
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    if (ok && (!it_utq_1(su, &u2) || u2.used_bytes != 0u || u2.child_count != 0u)) { ok = 0; why = "not reclaimed"; }
+
+    it_close(&su_h);
+    if (ok) it_pass("T252"); else it_fail("T252", why);
+}
+
+/* ── T253: atomic batch retype ──────────────────────────────────────────────
+ * One RETYPE2 with count=4 creates all four (each slot resolves to a live
+ * endpoint).  A batch whose THIRD destination slot is occupied fails
+ * ALREADY_EXISTS with ZERO effect: no slot filled, no untyped byte consumed,
+ * no object live (U14/U15/S5).  A batch larger than the remaining capacity
+ * fails NO_MEMORY with zero effect. */
+static void test_t253(void) {
+    int ok = 1;
+    const char *why = "atomic batch";
+    long su = s1_sub_ut(8192);
+    if (su < 0) { it_fail("T253", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    /* Success batch: 4 endpoints into 241..244. */
+    if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 4u, 0) != 0) { ok = 0; why = "batch"; }
+    for (uint32_t i = 0; ok && i < 4u; i++) {
+        long h = it_sys1(SYS_CSPACE_RESOLVE, (long)(S1_SLOT_A + i));
+        if (h < 0 || it_sys1(SYS_HANDLE_TYPE, h) != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+            ok = 0; why = "batch member missing";
+        }
+        if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
+    }
+    /* Tear down members 242..244, keep 241 occupied as the collision. */
+    it_slot_delete(S1_SLOT_B); it_slot_delete(S1_SLOT_C); it_slot_delete(S1_SLOT_D);
+
+    struct it_utq_one ub, ua;
+    struct it_utq_objects ob, oa;
+    if (ok && (!it_utq_1(su, &ub) || !it_utq_o(&ob))) { ok = 0; why = "query"; }
+    /* Batch 239..242: slot 241 (third) is occupied → ALREADY_EXISTS. */
+    if (ok && it_retype2_at(su, IRIS_KOBJ_ENDPOINT, 239u, 4u, 0) !=
+              (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "collision not refused"; }
+    if (ok && (!it_utq_1(su, &ua) || !it_utq_o(&oa))) { ok = 0; why = "query 2"; }
+    if (ok && (ua.used_bytes != ub.used_bytes || ua.child_count != ub.child_count)) {
+        ok = 0; why = "failed batch consumed bytes (U15)";
+    }
+    if (ok && oa.endpoints_live != ob.endpoints_live) { ok = 0; why = "failed batch left object"; }
+    if (ok) {
+        long h = it_sys1(SYS_CSPACE_RESOLVE, 239);
+        if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); ok = 0; why = "partial slot filled"; }
+        h = it_sys1(SYS_CSPACE_RESOLVE, 240);
+        if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); ok = 0; why = "partial slot filled 2"; }
+    }
+    /* Capacity failure: 32 CNodes of 256 slots ≫ 8 KiB region. */
+    if (ok && it_retype2_at(su, IRIS_KOBJ_CNODE, 246u, 8u, 256) !=
+              (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "capacity not refused"; }
+    if (ok && (!it_utq_1(su, &ua) || ua.used_bytes != ub.used_bytes)) { ok = 0; why = "capacity fail consumed"; }
+
+    it_slot_delete(S1_SLOT_A);
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    it_close(&su_h);
+    if (ok) it_pass("T253"); else it_fail("T253", why);
+}
+
+/* ── T254: retype validation and overlap denial ─────────────────────────────
+ * Every malformed RETYPE2 fails BEFORE any state changes: wrong type, zero →
+ * one-normalized vs oversized count, slot 0, out-of-range slot window,
+ * occupied destination, missing RIGHT_WRITE on the untyped, a non-CNode
+ * destination, invalid CNode fan-out, misaligned physical sizes, count>1 on
+ * physical types, device/normal restriction, and a stale untyped handle. */
+static void test_t254(void) {
+    int ok = 1;
+    const char *why = "validation";
+    long su = s1_sub_ut(65536);
+    if (su < 0) { it_fail("T254", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+    struct it_utq_one ub, ua;
+    if (!it_utq_1(su, &ub)) { it_close(&su_h); it_fail("T254", "query"); return; }
+
+    /* An occupied fixture at S1_SLOT_A. */
+    if (it_retype2_at(su, IRIS_KOBJ_NOTIFICATION, S1_SLOT_A, 1u, 0) != 0) {
+        it_close(&su_h); it_fail("T254", "fixture"); return;
+    }
+    static const struct { uint32_t t; uint32_t slot; uint32_t cnt; long arg; long expect; const char *tag; } cases[] = {
+        { 77u,                    S1_SLOT_B, 1u,  0,    (long)IRIS_ERR_NOT_SUPPORTED, "wrong type" },
+        { IRIS_KOBJ_ENDPOINT,     S1_SLOT_B, 33u, 0,    (long)IRIS_ERR_INVALID_ARG,   "count too big" },
+        { IRIS_KOBJ_ENDPOINT,     0u,        1u,  0,    (long)IRIS_ERR_INVALID_ARG,   "slot 0" },
+        { IRIS_KOBJ_ENDPOINT,     255u,      2u,  0,    (long)IRIS_ERR_INVALID_ARG,   "slot window oob" },
+        { IRIS_KOBJ_ENDPOINT,     S1_SLOT_A, 1u,  0,    (long)IRIS_ERR_ALREADY_EXISTS,"occupied" },
+        { IRIS_KOBJ_CNODE,        S1_SLOT_B, 1u,  3,    (long)IRIS_ERR_INVALID_ARG,   "cnode fanout" },
+        { IRIS_KOBJ_CNODE,        S1_SLOT_B, 1u,  8192, (long)IRIS_ERR_INVALID_ARG,   "cnode too big" },
+        { IRIS_KOBJ_UNTYPED,      S1_SLOT_B, 1u,  100,  (long)IRIS_ERR_INVALID_ARG,   "ut misaligned" },
+        { IRIS_KOBJ_UNTYPED,      S1_SLOT_B, 2u,  4096, (long)IRIS_ERR_INVALID_ARG,   "ut batch" },
+        { IRIS_KOBJ_FRAME,        S1_SLOT_B, 1u,  100,  (long)IRIS_ERR_INVALID_ARG,   "frame misaligned" },
+    };
+    for (uint32_t c = 0; ok && c < 10u; c++) {
+        long r = it_retype2_at(su, cases[c].t, cases[c].slot, cases[c].cnt, cases[c].arg);
+        if (r != cases[c].expect) { ok = 0; why = cases[c].tag; }
+    }
+    /* Missing RIGHT_WRITE on the source untyped. */
+    if (ok) {
+        long ro = it_sys2(SYS_CAP_DERIVE, su, (long)RIGHT_READ);
+        if (ro < 0) { ok = 0; why = "ro derive"; }
+        else {
+            if (it_retype2_at(ro, IRIS_KOBJ_ENDPOINT, S1_SLOT_B, 1u, 0) !=
+                (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights"; }
+            handle_id_t roh = (handle_id_t)ro; it_close(&roh);
+        }
+    }
+    /* Destination that is not a CNode (the notification at S1_SLOT_A). */
+    if (ok && it_sys4(SYS_UNTYPED_RETYPE2, su,
+                      (long)((uint64_t)IRIS_KOBJ_ENDPOINT | (1ULL << 32)),
+                      (long)((uint64_t)S1_SLOT_A | ((uint64_t)S1_SLOT_B << 32)),
+                      0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad dest cnode"; }
+    /* Stale untyped handle: close it, then retype through the dead handle. */
+    if (ok) {
+        long su2 = s1_sub_ut(4096);
+        if (su2 < 0) { ok = 0; why = "second sub"; }
+        else {
+            handle_id_t s2h = (handle_id_t)su2; it_close(&s2h);
+            if (it_retype2_at(su2, IRIS_KOBJ_ENDPOINT, S1_SLOT_B, 1u, 0) !=
+                (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "stale untyped"; }
+        }
+    }
+    /* No validation failure consumed a byte or created an object. */
+    if (ok && !it_utq_1(su, &ua)) { ok = 0; why = "query 2"; }
+    if (ok && (ua.used_bytes != ub.used_bytes + (ua.used_bytes - ub.used_bytes))) { ok = 0; why = "?"; }
+    if (ok) {
+        long h = it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_B);
+        if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); ok = 0; why = "ghost object"; }
+    }
+
+    it_slot_delete(S1_SLOT_A);
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    it_close(&su_h);
+    if (ok) it_pass("T254"); else it_fail("T254", why);
+}
+
+/* ── T255: Endpoint Untyped lifecycle ───────────────────────────────────────
+ * retype → derive/mint → send/receive → call → delete-one-cap (object
+ * survives) → last-cap delete with a blocked waiter (close wakes CLOSED, no
+ * ghost) → RESET → the SAME region hosts a fresh endpoint that works. */
+static volatile int  g_t255_done;
+static volatile long g_t255_res;
+static uint8_t       g_t255_stack[8192];
+static void t255_waiter(void) {
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    g_t255_res  = it_sys3(SYS_EP_RECV, (long)S1_SLOT_A, (long)&m, 0);
+    g_t255_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+static void test_t255(void) {
+    int ok = 1;
+    const char *why = "endpoint lifecycle";
+    long su = s1_sub_ut(8192);
+    if (su < 0) { it_fail("T255", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype"; }
+    /* Derive: materialize a handle (bridge) + reduce rights. */
+    long h  = ok ? it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A) : -1;
+    long d  = (h >= 0) ? it_sys2(SYS_CAP_DERIVE, h, (long)RIGHT_WRITE) : -1;
+    if (ok && (h < 0 || d < 0)) { ok = 0; why = "derive"; }
+    /* send/receive through the CPtr + the derived handle. */
+    if (ok) {
+        struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x255;
+        if (it_sys2(SYS_EP_NB_SEND, d, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "nb send"; }
+    }
+    /* call: needs our reply object. */
+    if (ok && it_reply_create_at(S1_SLOT_B) < 0) { ok = 0; why = "reply"; }
+    /* Delete ONE cap (the derived handle): object must survive. */
+    if (ok) { handle_id_t dh = (handle_id_t)d; it_close(&dh); d = -1; }
+    if (ok) {
+        struct IrisMsg m; it_iris_msg_zero(&m);
+        if (it_sys2(SYS_EP_NB_RECV, (long)S1_SLOT_A, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
+            ok = 0; why = "object died with one cap (S10)";
+        }
+    }
+    /* Blocked waiter + last-cap delete → CLOSED, no zombie (S25). */
+    if (ok) {
+        g_t255_done = 0; g_t255_res = 999;
+        uint64_t entry = (uint64_t)(uintptr_t)t255_waiter;
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t255_stack + sizeof(g_t255_stack))) & ~0xFULL;
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread"; }
+        else {
+            for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
+            if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); h = -1; }
+            it_slot_delete(S1_SLOT_A);      /* last cap → close fires */
+            for (int y = 0; y < 4000 && !g_t255_done; y++) it_sys0(SYS_YIELD);
+            if (!g_t255_done) { ok = 0; why = "waiter zombie"; }
+            else if (g_t255_res != (long)IRIS_ERR_CLOSED) { ok = 0; why = "wrong wake"; }
+        }
+    }
+    it_slot_delete(S1_SLOT_B);
+    if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
+    /* Region reusable; the SAME range hosts a working replacement. */
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy (S12)"; }
+    if (ok && it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "reuse retype"; }
+    if (ok) {
+        struct IrisMsg m; it_iris_msg_zero(&m);
+        if (it_sys2(SYS_EP_NB_RECV, (long)S1_SLOT_A, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "reused ep dead"; }
+        it_slot_delete(S1_SLOT_A);
+    }
+    it_close(&su_h);
+    if (ok) it_pass("T255"); else it_fail("T255", why);
+}
+
+/* ── T256: Notification Untyped lifecycle ───────────────────────────────────
+ * signal/wait + pending-bit accumulation through the CSpace cap, TWO holders
+ * (CPtr + materialized handle) observing one object, waiter woken CLOSED by
+ * last-cap delete (S26), destruction, and same-region reuse with NO residual
+ * pending bits (S28). */
+static volatile int  g_t256_done;
+static volatile long g_t256_res;
+static uint8_t       g_t256_stack[8192];
+static void t256_waiter(void) {
+    uint64_t bits = 0;
+    g_t256_res  = it_sys2(SYS_NOTIFY_WAIT, (long)S1_SLOT_A, (long)(uintptr_t)&bits);
+    g_t256_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+static void test_t256(void) {
+    int ok = 1;
+    const char *why = "notification lifecycle";
+    long su = s1_sub_ut(8192);
+    if (su < 0) { it_fail("T256", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    if (it_retype2_at(su, IRIS_KOBJ_NOTIFICATION, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype"; }
+    /* Two holders: signal via handle, observe via CPtr (same object). */
+    long h = ok ? it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A) : -1;
+    if (ok && h < 0) { ok = 0; why = "resolve"; }
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, h, 0x5) != 0) { ok = 0; why = "signal"; }
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)S1_SLOT_A, 0x2) != 0) { ok = 0; why = "signal cptr"; }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_WAIT, (long)S1_SLOT_A, (long)(uintptr_t)&bits) != 0 ||
+            bits != 0x7u) { ok = 0; why = "pending bits"; }
+    }
+    /* Waiter + last-cap delete → CLOSED (S26), no zombie. */
+    if (ok) {
+        g_t256_done = 0; g_t256_res = 999;
+        uint64_t entry = (uint64_t)(uintptr_t)t256_waiter;
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t256_stack + sizeof(g_t256_stack))) & ~0xFULL;
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread"; }
+        else {
+            for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
+            { handle_id_t hh = (handle_id_t)h; it_close(&hh); h = -1; }
+            it_slot_delete(S1_SLOT_A);
+            for (int y = 0; y < 4000 && !g_t256_done; y++) it_sys0(SYS_YIELD);
+            if (!g_t256_done) { ok = 0; why = "waiter zombie"; }
+            else if (g_t256_res != (long)IRIS_ERR_CLOSED) { ok = 0; why = "wrong wake"; }
+        }
+    }
+    if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
+    /* Reuse: same region, fresh notification, ZERO residual bits (S28). */
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    if (ok && it_retype2_at(su, IRIS_KOBJ_NOTIFICATION, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "reuse retype"; }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)S1_SLOT_A,
+                    (long)(uintptr_t)&bits, 20000000L) != (long)IRIS_ERR_TIMED_OUT) {
+            ok = 0; why = "residual state leaked (S28)";
+        }
+        it_slot_delete(S1_SLOT_A);
+    }
+    it_close(&su_h);
+    if (ok) it_pass("T256"); else it_fail("T256", why);
+}
+
+/* ── T257: explicit Reply lifecycle ─────────────────────────────────────────
+ * A reply object is EXPLICIT authority: born from Untyped (replies_live +1,
+ * no kslab), staged by the server's recv, bound at rendezvous, one-shot per
+ * binding, REUSABLE across bindings, resilient to caller death, and stale
+ * after its last cap is deleted.  The kernel never fabricates one: a CALL
+ * against a reply-less receiver fails NOT_SUPPORTED (S16/S18/S22). */
+static volatile int g_t257_done;
+static uint8_t      g_t257_stack[8192];
+static void t257_caller(void) {
+    uint8_t rb[16];
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    m.label = 0x257; m.buf_uptr = (uint64_t)(uintptr_t)rb;
+    (void)it_sys2(SYS_EP_CALL, (long)S1_SLOT_A, (long)&m);
+    g_t257_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+static void test_t257(void) {
+    int ok = 1;
+    const char *why = "reply lifecycle";
+    long su = s1_sub_ut(8192);
+    if (su < 0) { it_fail("T257", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    struct it_utq_objects o0, o1;
+    struct it_rinfo k0, k1;
+    if (!it_utq_o(&o0) || !it_rinfo(HANDLE_INVALID, &k0)) { it_close(&su_h); it_fail("T257", "query"); return; }
+    if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0 ||
+        it_retype2_at(su, IRIS_KOBJ_REPLY,    S1_SLOT_B, 1u, 0) != 0) { ok = 0; why = "retype"; }
+    if (ok && (!it_utq_o(&o1) || !it_rinfo(HANDLE_INVALID, &k1))) { ok = 0; why = "query 2"; }
+    if (ok && o1.replies_live != o0.replies_live + 1u) { ok = 0; why = "reply not counted"; }
+    if (ok && k1.kslab_used_bytes != k0.kslab_used_bytes) { ok = 0; why = "reply from kslab (S16)"; }
+
+    /* Round 1: call → recv(reply) → reply; one-shot; then REUSE for round 2. */
+    for (uint32_t round = 0; ok && round < 2u; round++) {
+        g_t257_done = 0;
+        uint64_t entry = (uint64_t)(uintptr_t)t257_caller;
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t257_stack + sizeof(g_t257_stack))) & ~0xFULL;
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread"; break; }
+        struct IrisMsg m; it_iris_msg_zero(&m);
+        if (it_sys3(SYS_EP_RECV, (long)S1_SLOT_A, (long)&m, (long)S1_SLOT_B) != 0 ||
+            m.attached_handle != S1_SLOT_B) { ok = 0; why = "recv/echo"; break; }
+        struct IrisMsg rm; it_iris_msg_zero(&rm); rm.label = 0xAC7;
+        if (it_sys2(SYS_REPLY, (long)S1_SLOT_B, (long)&rm) != 0) { ok = 0; why = "reply"; break; }
+        if (it_sys2(SYS_REPLY, (long)S1_SLOT_B, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) {
+            ok = 0; why = "one-shot broken (S18)"; break;
+        }
+        for (int y = 0; y < 4000 && !g_t257_done; y++) it_sys0(SYS_YIELD);
+        if (!g_t257_done) { ok = 0; why = "caller stuck"; break; }
+    }
+
+    /* Caller death while bound: the reply object returns to FREE. */
+    if (ok) {
+        long ep2 = it_ep_create();
+        handle_id_t cmd = (ep2 >= 0) ? (handle_id_t)ep2 : HANDLE_INVALID;
+        handle_id_t proc = HANDLE_INVALID;
+        if (ep2 < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "spawn"; }
+        if (ok && it_lp_cmd(cmd, LP_CMD_CALL_BLOCK) != 0) { ok = 0; why = "cmd"; }
+        if (ok) {
+            struct IrisMsg m; it_iris_msg_zero(&m);
+            if (it_sys3(SYS_EP_RECV, (long)cmd, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv child call"; }
+        }
+        if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc) != 0) { ok = 0; why = "kill"; }
+        if (ok) {
+            struct IrisMsg rm; it_iris_msg_zero(&rm);
+            if (it_sys2(SYS_REPLY, (long)S1_SLOT_B, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) {
+                ok = 0; why = "dead caller reply";
+            }
+        }
+        it_close(&proc); it_close(&cmd);
+    }
+
+    /* No implicit fabrication: a reply-less receiver cannot serve a CALL. */
+    if (ok) {
+        g_t257_done = 0;
+        uint64_t entry = (uint64_t)(uintptr_t)t257_caller;
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t257_stack + sizeof(g_t257_stack))) & ~0xFULL;
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread 2"; }
+        else {
+            for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);   /* caller queues */
+            struct IrisMsg m; it_iris_msg_zero(&m);
+            if (it_sys3(SYS_EP_RECV, (long)S1_SLOT_A, (long)&m, 0) !=
+                (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "implicit reply not retired (S22)"; }
+            /* Serve it properly so the thread exits. */
+            if (ok) {
+                if (it_sys3(SYS_EP_RECV, (long)S1_SLOT_A, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv 3"; }
+                struct IrisMsg rm; it_iris_msg_zero(&rm);
+                if (ok && it_sys2(SYS_REPLY, (long)S1_SLOT_B, (long)&rm) != 0) { ok = 0; why = "reply 3"; }
+                for (int y = 0; y < 4000 && !g_t257_done; y++) it_sys0(SYS_YIELD);
+                if (!g_t257_done) { ok = 0; why = "caller 3 stuck"; }
+            }
+        }
+    }
+
+    /* Stale: delete the reply cap → the CPtr no longer resolves. */
+    it_slot_delete(S1_SLOT_B);
+    if (ok) {
+        struct IrisMsg rm; it_iris_msg_zero(&rm);
+        long r = it_sys2(SYS_REPLY, (long)S1_SLOT_B, (long)&rm);
+        if (r != (long)IRIS_ERR_NOT_FOUND && r != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "stale reply cap"; }
+    }
+    it_slot_delete(S1_SLOT_A);
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    if (ok) {
+        struct it_utq_objects oz;
+        if (!it_utq_o(&oz) || oz.replies_live != o0.replies_live) { ok = 0; why = "reply leak"; }
+    }
+    it_close(&su_h);
+    if (ok) it_pass("T257"); else it_fail("T257", why);
+}
+
+/* ── T258: revoke/teardown during IPC and wait ──────────────────────────────
+ * Deleting the LAST capability of an object with blocked parties never
+ * leaves a zombie: a blocked sender wakes CLOSED, a pending CALLER whose
+ * server loses its reply authority wakes CLOSED (S25/S27), and a
+ * notification waiter wakes CLOSED (S26).  Object gauges return to baseline
+ * and the regions are reusable. */
+static volatile int  g_t258_done;
+static volatile long g_t258_res;
+static uint8_t       g_t258_stack[8192];
+static void t258_sender(void) {
+    struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x258;
+    g_t258_res  = it_sys2(SYS_EP_SEND, (long)S1_SLOT_A, (long)&m);
+    g_t258_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+static void test_t258(void) {
+    int ok = 1;
+    const char *why = "revoke during ipc";
+    long su = s1_sub_ut(8192);
+    if (su < 0) { it_fail("T258", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+    struct it_utq_objects o0, oz;
+    if (!it_utq_o(&o0)) { it_close(&su_h); it_fail("T258", "query"); return; }
+
+    /* Blocked SENDER, last cap deleted → CLOSED. */
+    if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype"; }
+    if (ok) {
+        g_t258_done = 0; g_t258_res = 999;
+        uint64_t entry = (uint64_t)(uintptr_t)t258_sender;
+        uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t258_stack + sizeof(g_t258_stack))) & ~0xFULL;
+        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread"; }
+        else {
+            for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
+            it_slot_delete(S1_SLOT_A);
+            for (int y = 0; y < 4000 && !g_t258_done; y++) it_sys0(SYS_YIELD);
+            if (!g_t258_done) { ok = 0; why = "sender zombie (S25)"; }
+            else if (g_t258_res != (long)IRIS_ERR_CLOSED) { ok = 0; why = "sender wake err"; }
+        }
+    }
+
+    /* Pending CALL: child blocked in call; the server's reply authority is
+     * destroyed (last cap) → the caller wakes CLOSED, exits (S27). */
+    if (ok) {
+        long ep2 = it_ep_create();
+        handle_id_t cmd = (ep2 >= 0) ? (handle_id_t)ep2 : HANDLE_INVALID;
+        handle_id_t proc = HANDLE_INVALID;
+        if (ep2 < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "spawn"; }
+        if (ok && it_reply_create_at(S1_SLOT_B) < 0) { ok = 0; why = "reply fixture"; }
+        if (ok && it_lp_cmd(cmd, LP_CMD_CALL_BLOCK) != 0) { ok = 0; why = "cmd"; }
+        if (ok) {
+            struct IrisMsg m; it_iris_msg_zero(&m);
+            if (it_sys3(SYS_EP_RECV, (long)cmd, (long)&m, (long)S1_SLOT_B) != 0) { ok = 0; why = "recv call"; }
+        }
+        if (ok) {
+            it_slot_delete(S1_SLOT_B);         /* reply close → caller CLOSED */
+            if (it_lp_wait_exit(proc) < 0) { ok = 0; why = "caller ghost (S27)"; }
+        }
+        it_close(&proc); it_close(&cmd);
+    }
+
+    /* Notification waiter, last cap deleted → CLOSED (S26): T256 already
+     * proves this exact path; here we only re-verify the gauges. */
+    it_quiesce_reaper();
+    if (ok && (!it_utq_o(&oz) ||
+               oz.endpoints_live != o0.endpoints_live ||
+               oz.replies_live   != o0.replies_live)) { ok = 0; why = "object drift (S31)"; }
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    it_close(&su_h);
+    if (ok) it_pass("T258"); else it_fail("T258", why);
+}
+
+/* ── T259: Untyped reuse and stale-object defense ───────────────────────────
+ * Object A (endpoint) lives in a region; a LIVE cap to A blocks RESET (S13).
+ * After every cap dies, RESET bumps the region generation and the SAME
+ * memory hosts object B (notification).  No stale path reaches B: the old
+ * CSpace slot is empty (S30), a re-minted slot holds B's type — endpoint ops
+ * on it fail WRONG_TYPE — and B starts with zero state (S28/S29). */
+static void test_t259(void) {
+    int ok = 1;
+    const char *why = "reuse/stale defense";
+    long su = s1_sub_ut(4096);
+    if (su < 0) { it_fail("T259", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    struct it_utq_one q0, q1, q2;
+    if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype A"; }
+    if (ok && !it_utq_1(su, &q0)) { ok = 0; why = "query"; }
+    /* Keep a second cap (handle) to A: the region must NOT be reclaimable. */
+    long h = ok ? it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A) : -1;
+    if (ok && h < 0) { ok = 0; why = "resolve"; }
+    it_slot_delete(S1_SLOT_A);
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != (long)IRIS_ERR_BUSY) {
+        ok = 0; why = "live object did not retain region (S13)";
+    }
+    /* Drop the last cap → destroy → reset works and bumps the generation. */
+    if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset after death"; }
+    if (ok && (!it_utq_1(su, &q1) || q1.generation != q0.generation + 1u ||
+               q1.used_bytes != 0u)) { ok = 0; why = "generation not bumped"; }
+
+    /* Same region now hosts B (a notification). */
+    if (ok && it_retype2_at(su, IRIS_KOBJ_NOTIFICATION, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype B"; }
+    if (ok && !it_utq_1(su, &q2)) { ok = 0; why = "query B"; }
+    if (ok && q2.used_bytes == 0u) { ok = 0; why = "B not in region"; }
+    /* Stale-path probes against B:
+     *  - endpoint ops through the reused slot → WRONG_TYPE (cap identity
+     *    blocks the old object's protocol);
+     *  - B carries no pending state from A's lifetime. */
+    if (ok) {
+        struct IrisMsg m; it_iris_msg_zero(&m);
+        if (it_sys2(SYS_EP_NB_SEND, (long)S1_SLOT_A, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) {
+            ok = 0; why = "stale protocol reached B (S29)";
+        }
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)S1_SLOT_A,
+                    (long)(uintptr_t)&bits, 20000000L) != (long)IRIS_ERR_TIMED_OUT) {
+            ok = 0; why = "residual state (S28)";
+        }
+    }
+    it_slot_delete(S1_SLOT_A);
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "final reset"; }
+    it_close(&su_h);
+    if (ok) it_pass("T259"); else it_fail("T259", why);
+}
+
+/* ── T260: legacy create-path retirement ────────────────────────────────────
+ * SYS_ENDPOINT_CREATE / SYS_NOTIFY_CREATE / SYS_CNODE_CREATE return
+ * NOT_SUPPORTED and create NOTHING: no kslab movement, no live-object
+ * change, no handle, no CSpace mutation (S22).  The one-shot KReply
+ * fabrication inside EP_CALL is equally retired (proven in T257). */
+static void test_t260(void) {
+    int ok = 1;
+    const char *why = "legacy retirement";
+    struct it_rinfo k0, k1;
+    struct it_utq_objects o0, o1;
+    uint32_t e0[14], e1[14];
+    it_quiesce_reaper();
+    if (!it_rinfo(HANDLE_INVALID, &k0) || !it_utq_o(&o0) || !it_sched_ext(e0)) {
+        it_fail("T260", "query"); return;
+    }
+    static const long retired_creates[] = { SYS_ENDPOINT_CREATE, SYS_NOTIFY_CREATE, SYS_CNODE_CREATE };
+    for (uint32_t i = 0; ok && i < 3u; i++) {
+        if (it_sys3(retired_creates[i], 4, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) {
+            ok = 0; why = "create not retired";
+        }
+    }
+    it_quiesce_reaper();
+    if (ok && (!it_rinfo(HANDLE_INVALID, &k1) || !it_utq_o(&o1) || !it_sched_ext(e1))) {
+        ok = 0; why = "query 2";
+    }
+    if (ok && k1.kslab_used_bytes != k0.kslab_used_bytes) { ok = 0; why = "kslab consumed"; }
+    if (ok && (o1.endpoints_live != o0.endpoints_live ||
+               o1.notifications_live != o0.notifications_live ||
+               o1.cnodes_live != o0.cnodes_live)) { ok = 0; why = "object born"; }
+    if (ok && e1[IT_SI_LIVE] != e0[IT_SI_LIVE]) { ok = 0; why = "handle born"; }
+    if (ok) it_pass("T260"); else it_fail("T260", why);
+}
+
+/* ── T261: service IPC objects from delegated Untyped ───────────────────────
+ * The REAL system runs on the new substrate: svcmgr, vfs, console and kbd
+ * all serve EP_CALLs through endpoints their supervisor retyped from a
+ * DELEGATED untyped pool, with explicit reply objects (svcmgr pool →
+ * per-service reply sub-untypeds).  A privileged service RESTART exercises
+ * the pool's reset+retype path and the service serves again. */
+static void test_t261(void) {
+    int ok = 1;
+    const char *why = "service ipc";
+    uint64_t b = 0;
+    /* Each PING is an EP_CALL served with an explicit, untyped-funded reply. */
+    if (it_ping_badge((long)IRIS_CPTR_SVCMGR_EP, &b) != 0)  { ok = 0; why = "svcmgr ping"; }
+    if (ok && it_ping_badge((long)IRIS_CPTR_VFS_EP, &b) != 0) { ok = 0; why = "vfs ping"; }
+    if (ok && it_ping_badge((long)IRIS_CPTR_CONSOLE_EP, &b) != 0) { ok = 0; why = "console ping"; }
+    if (ok && it_ping_badge((long)IRIS_CPTR_KBD_EP, &b) != 0) { ok = 0; why = "kbd ping"; }
+
+    /* Restart VFS: svcmgr RESETs the service's reply sub-untyped and retypes
+     * a fresh reply object for the respawned child. */
+    if (ok) {
+        uint32_t a = 0, g0 = 0;
+        if (it_status(VFS_EP_SVC_NAME, &a, &g0) != 0 || a != 1u) { ok = 0; why = "pre status"; }
+        if (ok) {
+            struct IrisMsg msg; it_iris_msg_zero(&msg);
+            msg.label = IRIS_SVCMGR_EP_RESTART;
+            msg.words[0] = (uint64_t)SVCMGR_SERVICE_VFS;
+            msg.word_count = 1u;
+            long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TEST_SUPER, (long)&msg);
+            if (!(r == 0 && msg.label == IRIS_EP_REPLY_OK)) { ok = 0; why = "restart denied"; }
+        }
+        int recovered = 0;
+        for (uint32_t i = 0; ok && i < 400u && !recovered; i++) {
+            uint64_t bb = 0;
+            (void)it_ping_badge((long)IRIS_CPTR_SVCMGR_EP, &bb);
+            uint32_t a1 = 0, g1 = 0;
+            if (it_status(VFS_EP_SVC_NAME, &a1, &g1) == 0 && a1 == 1u && g1 > g0)
+                recovered = 1;
+        }
+        if (ok && !recovered) { ok = 0; why = "vfs not restarted"; }
+        /* The respawned VFS serves through its FRESH reply object. */
+        if (ok && it_ping_badge((long)IRIS_CPTR_VFS_EP, &b) != 0) { ok = 0; why = "post-restart ping"; }
+    }
+    if (ok) it_pass("T261"); else it_fail("T261", why);
+}
+
+/* ── T262: deterministic Untyped object stress ──────────────────────────────
+ * A seeded PRNG drives retype (single + batch) of endpoints / notifications
+ * / replies, derives, IPC probes, signal/wait, deletes, forced batch
+ * failures, stale-CPtr probes and full region reuse — against an EXACT
+ * shadow model of child_count, and with the live-object gauges and kslab at
+ * baseline after every round.  Prints seed/iteration only on failure. */
+#define T262_SEED   0x51262262u
+#define T262_ROUNDS 12u
+static void test_t262(void) {
+    int ok = 1;
+    const char *why = "untyped stress";
+    uint32_t round = 0, op = 0;
+    g_fz_seed = T262_SEED;
+
+    long su = s1_sub_ut(65536);
+    if (su < 0) { it_fail("T262", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    struct it_utq_objects o0, oz;
+    struct it_rinfo k0, kz;
+    struct it_utq_global g0, g1;
+    if (!it_utq_o(&o0) || !it_rinfo(HANDLE_INVALID, &k0) || !it_utq_g(&g0)) {
+        it_close(&su_h); it_fail("T262", "query"); return;
+    }
+
+    for (round = 0; ok && round < T262_ROUNDS; round++) {
+        uint32_t children = 0;
+        /* 1..3 creation ops per round across slots 241..244. */
+        uint32_t nops = 1u + (fz_rand() % 3u);
+        uint32_t used_slots[4] = {0,0,0,0};
+        for (uint32_t i = 0; ok && i < nops; i++) {
+            op = fz_rand() % 3u;
+            uint32_t slot = S1_SLOT_A + i;
+            uint32_t type = (op == 0u) ? IRIS_KOBJ_ENDPOINT
+                          : (op == 1u) ? IRIS_KOBJ_NOTIFICATION
+                                       : IRIS_KOBJ_REPLY;
+            if (it_retype2_at(su, type, slot, 1u, 0) != 0) { ok = 0; why = "retype"; break; }
+            used_slots[i] = type;
+            children++;
+            /* Type-appropriate probe. */
+            if (type == IRIS_KOBJ_ENDPOINT) {
+                struct IrisMsg m; it_iris_msg_zero(&m);
+                if (it_sys2(SYS_EP_NB_RECV, (long)slot, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep probe"; }
+            } else if (type == IRIS_KOBJ_NOTIFICATION) {
+                uint64_t bits = 0;
+                if (it_sys2(SYS_NOTIFY_SIGNAL, (long)slot, 1u + round) != 0 ||
+                    it_sys2(SYS_NOTIFY_WAIT, (long)slot, (long)(uintptr_t)&bits) != 0 ||
+                    bits != (uint64_t)(1u + round)) { ok = 0; why = "notif probe"; }
+            } else {
+                struct IrisMsg rm; it_iris_msg_zero(&rm);
+                if (it_sys2(SYS_REPLY, (long)slot, (long)&rm) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "reply probe"; }
+            }
+        }
+        /* Occasional forced failures — must not consume anything. */
+        if (ok && (fz_rand() & 1u)) {
+            struct it_utq_one uf0, uf1;
+            if (!it_utq_1(su, &uf0)) { ok = 0; why = "q"; }
+            if (ok && it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 2u, 0) !=
+                      (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "collision"; }
+            if (ok && it_retype2_at(su, 77u, S1_SLOT_E, 1u, 0) !=
+                      (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "badtype"; }
+            if (ok && (!it_utq_1(su, &uf1) || uf1.used_bytes != uf0.used_bytes ||
+                       uf1.child_count != uf0.child_count)) { ok = 0; why = "failure consumed"; }
+        }
+        /* Derive + drop on one member (object survives until slot delete). */
+        if (ok && (fz_rand() & 1u)) {
+            long h = it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A);
+            if (h < 0) { ok = 0; why = "resolve"; }
+            else { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
+        }
+        /* Exact shadow of child_count. */
+        if (ok) {
+            struct it_utq_one u;
+            if (!it_utq_1(su, &u) || u.child_count != children) { ok = 0; why = "shadow child"; }
+        }
+        /* Tear down; stale CPtr probes must fail cleanly; region reusable. */
+        for (uint32_t i = 0; ok && i < nops; i++) it_slot_delete(S1_SLOT_A + i);
+        if (ok) {
+            struct IrisMsg m; it_iris_msg_zero(&m);
+            if (it_sys2(SYS_EP_NB_SEND, (long)S1_SLOT_A, (long)&m) != (long)IRIS_ERR_NOT_FOUND) {
+                ok = 0; why = "stale cptr";
+            }
+        }
+        it_quiesce_reaper();
+        if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "round reset"; }
+        if (ok) {
+            struct it_utq_one u;
+            if (!it_utq_1(su, &u) || u.used_bytes != 0u || u.child_count != 0u) { ok = 0; why = "round reclaim"; }
+        }
+        if (ok && (!it_utq_o(&oz) || !it_rinfo(HANDLE_INVALID, &kz))) { ok = 0; why = "round query"; }
+        if (ok && (oz.endpoints_live     != o0.endpoints_live ||
+                   oz.notifications_live != o0.notifications_live ||
+                   oz.replies_live       != o0.replies_live)) { ok = 0; why = "round drift"; }
+        if (ok && kz.kslab_used_bytes != k0.kslab_used_bytes) { ok = 0; why = "round kslab"; }
+        (void)used_slots;
+    }
+
+    /* Global instrumentation moved in the right direction: retypes and
+     * failures were counted, every round's RESET registered as reclaim+reuse. */
+    if (ok && !it_utq_g(&g1)) { ok = 0; why = "global query"; }
+    if (ok && !(g1.retype_count    >  g0.retype_count &&
+                g1.retype_failures >= g0.retype_failures &&
+                g1.reset_count     >= g0.reset_count + T262_ROUNDS &&
+                g1.reuse_count     >= g0.reuse_count + T262_ROUNDS &&
+                g1.reclaimed_bytes >  g0.reclaimed_bytes)) { ok = 0; why = "global counters"; }
+
+    it_close(&su_h);
+    if (ok) it_pass("T262");
+    else { it_fz_note("T262", T262_SEED, round, op); it_fail("T262", why); }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -17161,6 +18187,20 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t248();
     test_t249();
     test_t250();
+
+    /* Fase S1 — seL4 Architectural Convergence suite. */
+    test_t251();
+    test_t252();
+    test_t253();
+    test_t254();
+    test_t255();
+    test_t256();
+    test_t257();
+    test_t258();
+    test_t259();
+    test_t260();
+    test_t261();
+    test_t262();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

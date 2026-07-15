@@ -72,6 +72,35 @@ static inline long init_sys0(long nr) {
  * once, holds the cap for init's whole lifetime, and is never deleted. */
 #define INIT_RSLOT_VFS_EP 16u
 
+/* Fase S1: scratch slot for init_retype_handle (below every pool init uses). */
+#define INIT_S1_SCRATCH_SLOT 62u
+
+/*
+ * Fase S1: fabricate one kernel object from an untyped capability and return
+ * it as a handle-table handle (mint source).  SYS_UNTYPED_RETYPE2 publishes
+ * the capability into a scratch slot of init's own root CNode (dest 0 = own
+ * root); the slot is materialized to a handle and deleted, leaving the handle
+ * as init's only reference.  Replaces the retired SYS_ENDPOINT_CREATE /
+ * SYS_NOTIFY_CREATE / SYS_CNODE_CREATE paths.
+ */
+static inline long init_retype_handle(handle_id_t ut_h, uint32_t obj_type,
+                                      uint64_t obj_arg) {
+    if (ut_h == HANDLE_INVALID) return (long)IRIS_ERR_BAD_HANDLE;
+    long r = init_sys4(SYS_UNTYPED_RETYPE2, (long)ut_h,
+                       (long)((uint64_t)obj_type | (1ULL << 32)),
+                       (long)((uint64_t)INIT_S1_SCRATCH_SLOT << 32),
+                       (long)obj_arg);
+    if (r < 0) return r;
+    long h = init_sys1(SYS_CSPACE_RESOLVE, (long)INIT_S1_SCRATCH_SLOT);
+    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_S1_SCRATCH_SLOT);
+    return h;
+}
+
+/* Fase S1: init's untyped-pool handle (the boot untyped at slot 12), resolved
+ * once in init_main before any spawn.  HANDLE_INVALID = no pool (spawns that
+ * need to fabricate objects fail loudly). */
+extern handle_id_t g_init_untyped_h;
+
 /* ── Cross-module contract ──────────────────────────────────────────────── */
 
 /* Boot-supervisor log sink (main.c): console.ep once up, early-serial before. */

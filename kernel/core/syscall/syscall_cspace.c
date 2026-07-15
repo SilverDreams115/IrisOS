@@ -60,27 +60,14 @@ uint64_t sys_cap_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return 0;
 }
 
+/*
+ * Fase S1: SYS_CNODE_CREATE (80) is RETIRED — runtime CNodes are created ONLY
+ * via SYS_UNTYPED_RETYPE2.  The single remaining kslab CNode is the per-process
+ * root CNode fabricated at kprocess_alloc (bootstrap exception, ledger-tracked).
+ */
 uint64_t sys_cnode_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    uint32_t num_slots = (uint32_t)arg0;
-    (void)arg1; (void)arg2;
-
-    if (num_slots == 0u || num_slots > KCNODE_MAX_SLOTS ||
-        (num_slots & (num_slots - 1u)) != 0u)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KCNode *cn = kcnode_alloc(num_slots);
-    if (!cn) return syscall_err(IRIS_ERR_NO_MEMORY);
-
-    handle_id_t h = handle_table_insert(
-        &t->process->handle_table, &cn->base,
-        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-    kobject_release(&cn->base);
-
-    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
-    return (uint64_t)h;
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2) {

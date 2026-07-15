@@ -270,9 +270,10 @@ static void vfs_ep_serve(struct vfs_state *state, struct IrisMsg *req) {
 
     vfs_ep_dispatch(&state->ep_state, req, req_buf, &reply, g_vfs_ep_reply_buf);
 
+    /* Fase S1: reply_h is the vfs's OWN reply-object CPtr (echoed by the
+     * kernel from the recv arg2).  The object is reusable — never closed. */
     if (reply_h == HANDLE_INVALID) return;
     (void)vfs_syscall2(SYS_REPLY, reply_h, (uint64_t)(uintptr_t)&reply);
-    vfs_close_handle_if_valid(&reply_h);
 }
 
 void vfs_server_main_c(handle_id_t bootstrap_h) {
@@ -363,7 +364,9 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
         }
         req.buf_uptr = (uint64_t)(uintptr_t)g_vfs_ep_req_buf;
 
-        r = vfs_syscall2(SYS_EP_RECV, state.ep_h, (uint64_t)(uintptr_t)&req);
+        /* Fase S1: explicit reply object (svcmgr mints it at slot 13). */
+        r = vfs_syscall3(SYS_EP_RECV, state.ep_h, (uint64_t)(uintptr_t)&req,
+                         IRIS_CPTR_OWN_REPLY);
         if (r != IRIS_OK) {
             vfs_log(vfs_str_ep_lost);
             goto fail;

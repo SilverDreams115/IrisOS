@@ -485,7 +485,8 @@ void pager_main(handle_id_t bootstrap_ch_h) {
     for (;;) {
         pg_msg_zero(&msg);
         msg.buf_uptr = (uint64_t)(uintptr_t)g_ctrl_buf;   /* receive bulk (region/backing reqs) */
-        long rr = pg_sys2(SYS_EP_RECV, (long)PGR_SLOT_CTRL_EP, (long)&msg);
+        long rr = pg_sys3(SYS_EP_RECV, (long)PGR_SLOT_CTRL_EP, (long)&msg,
+                          (long)PGR_SLOT_REPLY);
         if (rr != 0) { pg_sys1(SYS_EXIT, 0); for (;;) {} }
 
         handle_id_t reply_h = (handle_id_t)msg.attached_handle;
@@ -534,8 +535,8 @@ void pager_main(handle_id_t bootstrap_ch_h) {
                 reply.buf_uptr = (uint64_t)(uintptr_t)g_vfs_buf;
                 reply.buf_len  = (uint32_t)sizeof(g_diag);
             }
+            /* Fase S1: reply_h is our reusable reply-object CPtr — no close. */
             (void)pg_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
-            pg_sys1(SYS_HANDLE_CLOSE, (long)reply_h);
         }
         if (shutdown) { pg_sys1(SYS_EXIT, 0); for (;;) {} }
     }

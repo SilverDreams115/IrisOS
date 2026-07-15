@@ -22,7 +22,7 @@ void test_kendpoint(void) {
     TEST_SUITE("kendpoint");
 
     /* alloc returns non-null and sets initial state */
-    struct KEndpoint *ep = kendpoint_alloc();
+    struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
     ASSERT_NOT_NULL(ep);
     ASSERT_EQ(ep->ep_state, EP_STATE_IDLE);
     ASSERT_EQ(ep->closed,   0);
@@ -44,23 +44,22 @@ void test_kendpoint(void) {
     kendpoint_close(ep);   /* drops last ref → triggers obj_close + destroy */
 
     /* alloc two more endpoints */
-    struct KEndpoint *ep2 = kendpoint_alloc();
+    struct KEndpoint *ep2 = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
     ASSERT_NOT_NULL(ep2);
-    struct KEndpoint *ep3 = kendpoint_alloc();
+    struct KEndpoint *ep3 = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
     ASSERT_NOT_NULL(ep3);
     ASSERT_NE(ep2, ep3);
     kendpoint_close(ep2);
     kendpoint_close(ep3);
 
-    /* ── alloc failure injection ────────────────────────────────────── */
-    kslab_fail_after(0);
-    struct KEndpoint *ep_f = kendpoint_alloc();
+    /* ── alloc failure path (Fase S1: no kslab — placement on NULL block,
+     * i.e. the untyped carve failed upstream) ─────────────────────────── */
+    struct KEndpoint *ep_f = kendpoint_alloc_at(NULL);
     ASSERT_NULL(ep_f);
-    kslab_clear_fail();
 
     /* ── close wakes queued receiver ────────────────────────────────── */
     {
-        struct KEndpoint *e = kendpoint_alloc();
+        struct KEndpoint *e = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(e);
 
         struct task t = { 0 };
@@ -82,7 +81,7 @@ void test_kendpoint(void) {
 
     /* ── close wakes queued sender ───────────────────────────────────── */
     {
-        struct KEndpoint *e = kendpoint_alloc();
+        struct KEndpoint *e = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(e);
 
         struct task t = { 0 };
@@ -101,8 +100,8 @@ void test_kendpoint(void) {
 
     /* ── close releases staged cap on queued sender ──────────────────── */
     {
-        struct KEndpoint *e   = kendpoint_alloc();
-        struct KEndpoint *cap = kendpoint_alloc();
+        struct KEndpoint *e   = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
+        struct KEndpoint *cap = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(e);
         ASSERT_NOT_NULL(cap);
 
@@ -133,7 +132,7 @@ void test_kendpoint(void) {
 
     /* ── close wakes multiple queued tasks ───────────────────────────── */
     {
-        struct KEndpoint *e = kendpoint_alloc();
+        struct KEndpoint *e = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(e);
 
         struct task t1 = { 0 }, t2 = { 0 }, t3 = { 0 };
@@ -158,7 +157,7 @@ void test_kendpoint(void) {
 
     /* ── cancel_waiter removes single entry → empty queue, IDLE state ── */
     {
-        struct KEndpoint *e = kendpoint_alloc();
+        struct KEndpoint *e = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(e);
 
         struct task t = { 0 };
@@ -177,8 +176,8 @@ void test_kendpoint(void) {
 
     /* ── cancel_waiter: releases staged cap, never consumes the source ── */
     {
-        struct KEndpoint *e   = kendpoint_alloc();
-        struct KEndpoint *cap = kendpoint_alloc();
+        struct KEndpoint *e   = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
+        struct KEndpoint *cap = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(e);
         ASSERT_NOT_NULL(cap);
 
@@ -209,7 +208,7 @@ void test_kendpoint(void) {
 
     /* ── cancel_waiter: remove HEAD from 3-item queue ───────────────── */
     {
-        struct KEndpoint *e = kendpoint_alloc();
+        struct KEndpoint *e = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(e);
 
         struct task t1 = { 0 }, t2 = { 0 }, t3 = { 0 };
@@ -234,7 +233,7 @@ void test_kendpoint(void) {
 
     /* ── cancel_waiter: remove MIDDLE from 3-item queue ─────────────── */
     {
-        struct KEndpoint *e = kendpoint_alloc();
+        struct KEndpoint *e = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(e);
 
         struct task t1 = { 0 }, t2 = { 0 }, t3 = { 0 };
@@ -260,7 +259,7 @@ void test_kendpoint(void) {
 
     /* ── cancel_waiter: remove TAIL from 3-item queue ───────────────── */
     {
-        struct KEndpoint *e = kendpoint_alloc();
+        struct KEndpoint *e = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(e);
 
         struct task t1 = { 0 }, t2 = { 0 }, t3 = { 0 };
@@ -302,7 +301,7 @@ void test_kendpoint(void) {
     {
         struct KEndpoint *eps[8];
         for (int i = 0; i < 8; i++) {
-            eps[i] = kendpoint_alloc();
+            eps[i] = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
             ASSERT_NOT_NULL(eps[i]);
         }
         /* all distinct pointers */

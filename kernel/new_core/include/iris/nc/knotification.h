@@ -33,7 +33,6 @@ struct KProcess;
 struct KNotification {
     struct KObject      base;                        /* must be first */
     _Atomic uint64_t    signal_bits;                 /* pending signals — bit N = signal N */
-    struct KProcess    *owner;
     uint8_t             closed;
     uint32_t            waiter_count;
     struct task        *waiters[KNOTIF_WAITERS_MAX]; /* tasks blocked on wait */
@@ -41,9 +40,9 @@ struct KNotification {
     struct KNotification *live_next;
 };
 
-struct KNotification *knotification_alloc(void);
-struct KNotification *knotification_alloc_at(void *mem); /* Ph78: create in untyped-backed memory */
-iris_error_t          knotification_bind_owner(struct KNotification *n, struct KProcess *owner);
+/* Fase S1: Untyped retype is the ONLY creation path (the kslab variant and
+ * the per-process owner/quota binding are retired — Untyped is the budget). */
+struct KNotification *knotification_alloc_at(void *mem);
 void                  knotification_free (struct KNotification *n);
 void                  knotification_cancel_waiter(struct task *t);
 

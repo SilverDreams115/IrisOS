@@ -45,6 +45,9 @@
 #define PGR_SLOT_CTRL_EP      3u
 #define PGR_SLOT_VFS_EP       4u
 #define PGR_SLOT_FAULT_NOTIF  5u
+/* Fase S1: the pager's explicit reply object (supervisor retypes it from its
+ * untyped pool and mints it here); passed as arg2 of every ctrl-EP recv. */
+#define PGR_SLOT_REPLY        13u
 
 #define PGR_MAX_TARGETS    16u
 #define PGR_MAX_VMOS       2u

@@ -53,6 +53,19 @@ static struct KCNode *setup_cspace(struct KProcess *p, uint32_t num_slots) {
 
 /* ── Endpoint helpers ─────────────────────────────────────────────────── */
 
+
+/* Fase S1: kreply_alloc(caller) is retired — reproduce the old semantics for
+ * these tests: placement-init in an untyped-child block, then stage+bind the
+ * caller (the production rendezvous sequence). */
+static struct KReply *test_kreply_alloc(struct task *caller) {
+    struct KReply *r = TEST_UT_ALLOC(struct KReply, kreply_alloc_at);
+    if (r && caller) {
+        (void)kreply_stage(r);
+        (void)kreply_bind_caller(r, caller);
+    }
+    return r;
+}
+
 void test_ipc_cspace(void) {
     TEST_SUITE("ipc_cspace");
 
@@ -63,7 +76,7 @@ void test_ipc_cspace(void) {
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
 
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         ASSERT_EQ(kcnode_mint(root, 3, &ep->base, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
         kobject_release(&ep->base);
@@ -84,7 +97,7 @@ void test_ipc_cspace(void) {
         ASSERT_NOT_NULL(p);
         /* cspace_root_h stays HANDLE_INVALID */
 
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         handle_id_t h = handle_table_insert(&p->handle_table, &ep->base,
                                              RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
@@ -108,7 +121,7 @@ void test_ipc_cspace(void) {
         ASSERT_NOT_NULL(root);
 
         /* Mint a KNotification where an endpoint is expected. */
-        struct KNotification *n = knotification_alloc();
+        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
         ASSERT_NOT_NULL(n);
         ASSERT_EQ(kcnode_mint(root, 2, &n->base, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
         kobject_release(&n->base);
@@ -125,7 +138,7 @@ void test_ipc_cspace(void) {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
 
-        struct KNotification *n = knotification_alloc();
+        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
         ASSERT_NOT_NULL(n);
         handle_id_t h = handle_table_insert(&p->handle_table, &n->base, RIGHT_READ);
         kobject_release(&n->base);
@@ -145,7 +158,7 @@ void test_ipc_cspace(void) {
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
 
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         ASSERT_EQ(kcnode_mint(root, 4, &ep->base, RIGHT_READ), IRIS_OK);
         kobject_release(&ep->base);
@@ -166,7 +179,7 @@ void test_ipc_cspace(void) {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
 
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         handle_id_t h = handle_table_insert(&p->handle_table, &ep->base, RIGHT_READ);
         kobject_release(&ep->base);
@@ -187,7 +200,7 @@ void test_ipc_cspace(void) {
         ASSERT_NOT_NULL(root);
 
         /* Mint endpoint with READ-only into slot 1. */
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         ASSERT_EQ(kcnode_mint(root, 1, &ep->base, RIGHT_READ), IRIS_OK);
         kobject_release(&ep->base);
@@ -214,7 +227,7 @@ void test_ipc_cspace(void) {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
 
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         handle_id_t h = handle_table_insert(&p->handle_table, &ep->base,
                                              RIGHT_READ | RIGHT_WRITE);
@@ -242,7 +255,7 @@ void test_ipc_cspace(void) {
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
 
-        struct KReply *rp = kreply_alloc(NULL);
+        struct KReply *rp = test_kreply_alloc(NULL);
         ASSERT_NOT_NULL(rp);
         ASSERT_EQ(kcnode_mint(root, 5, &rp->base, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
         kobject_release(&rp->base);
@@ -261,7 +274,7 @@ void test_ipc_cspace(void) {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
 
-        struct KReply *rp = kreply_alloc(NULL);
+        struct KReply *rp = test_kreply_alloc(NULL);
         ASSERT_NOT_NULL(rp);
         handle_id_t h = handle_table_insert(&p->handle_table, &rp->base,
                                              RIGHT_READ | RIGHT_WRITE);
@@ -283,7 +296,7 @@ void test_ipc_cspace(void) {
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
 
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         ASSERT_EQ(kcnode_mint(root, 2, &ep->base, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
         kobject_release(&ep->base);
@@ -300,7 +313,7 @@ void test_ipc_cspace(void) {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
 
-        struct KReply *rp = kreply_alloc(NULL);
+        struct KReply *rp = test_kreply_alloc(NULL);
         ASSERT_NOT_NULL(rp);
         handle_id_t h = handle_table_insert(&p->handle_table, &rp->base, RIGHT_READ);
         kobject_release(&rp->base);
@@ -320,7 +333,7 @@ void test_ipc_cspace(void) {
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
 
-        struct KNotification *n = knotification_alloc();
+        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
         ASSERT_NOT_NULL(n);
         ASSERT_EQ(kcnode_mint(root, 6, &n->base,
                                RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT), IRIS_OK);
@@ -340,7 +353,7 @@ void test_ipc_cspace(void) {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
 
-        struct KNotification *n = knotification_alloc();
+        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
         ASSERT_NOT_NULL(n);
         handle_id_t h = handle_table_insert(&p->handle_table, &n->base,
                                              RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT);
@@ -360,7 +373,7 @@ void test_ipc_cspace(void) {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
 
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         handle_id_t h = handle_table_insert(&p->handle_table, &ep->base, RIGHT_READ);
         kobject_release(&ep->base);
@@ -378,7 +391,7 @@ void test_ipc_cspace(void) {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
 
-        struct KNotification *n = knotification_alloc();
+        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
         ASSERT_NOT_NULL(n);
         handle_id_t h = handle_table_insert(&p->handle_table, &n->base, RIGHT_READ);
         kobject_release(&n->base);
@@ -396,7 +409,7 @@ void test_ipc_cspace(void) {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
 
-        struct KNotification *n = knotification_alloc();
+        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
         ASSERT_NOT_NULL(n);
         handle_id_t h = handle_table_insert(&p->handle_table, &n->base, RIGHT_WRITE);
         kobject_release(&n->base);
@@ -416,7 +429,7 @@ void test_ipc_cspace(void) {
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
 
-        struct KNotification *n = knotification_alloc();
+        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
         ASSERT_NOT_NULL(n);
         /* CSpace slot: READ-only. Handle table: full rights. */
         ASSERT_EQ(kcnode_mint(root, 3, &n->base, RIGHT_READ), IRIS_OK);
@@ -447,7 +460,7 @@ void test_ipc_cspace(void) {
         ASSERT_NOT_NULL(root);
 
         /* Occupy slot 3 with a WRONG-TYPE object (notification). */
-        struct KNotification *n = knotification_alloc();
+        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
         ASSERT_NOT_NULL(n);
         ASSERT_EQ(kcnode_mint(root, 3, &n->base, RIGHT_WAIT), IRIS_OK);
         kobject_release(&n->base);
@@ -457,7 +470,7 @@ void test_ipc_cspace(void) {
         struct KEndpoint *eps[4];
         handle_id_t hs[4];
         for (uint32_t i = 0; i < 4u; i++) {
-            eps[i] = kendpoint_alloc();
+            eps[i] = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
             ASSERT_NOT_NULL(eps[i]);
             hs[i] = handle_table_insert(&p->handle_table, &eps[i]->base,
                                         RIGHT_READ | RIGHT_WRITE);
@@ -493,7 +506,7 @@ void test_ipc_cspace(void) {
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
 
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
 
         /* Two caps to the SAME endpoint with DIFFERENT badges. */
@@ -578,7 +591,7 @@ void test_ipc_cspace(void) {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
 
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         /* After alloc: refcount=1, active_refs=0 */
         handle_id_t h = handle_table_insert(&p->handle_table, &ep->base,

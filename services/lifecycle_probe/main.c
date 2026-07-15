@@ -39,6 +39,7 @@
 #include <iris/ipc_msg.h>
 #include <iris/fault_proto.h>
 #include <iris/endpoint_proto.h>
+#include <iris/nc/error.h>
 
 /* Well-known CPtr slot in the child's root CNode where the parent mints the
  * command endpoint (must match the value used by iris_test). */
@@ -297,6 +298,19 @@ static uint32_t lp_ps_report(void) {
     return mask;
 }
 
+/* Fase S1: recv with the explicit reply object at slot 13 when the parent
+ * minted one; otherwise fall back to a reply-less recv (send-only fixtures).
+ * A bad reply CPtr fails BEFORE the endpoint is touched, so the retry is
+ * side-effect free. */
+#define LP_CPTR_REPLY 13u
+static long lp_recv(struct IrisMsg *m) {
+    long r = lp_sys3(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)(uintptr_t)m,
+                     (long)LP_CPTR_REPLY);
+    if (r < 0 && r != (long)IRIS_ERR_CLOSED)
+        r = lp_sys3(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)(uintptr_t)m, 0);
+    return r;
+}
+
 void lp_main(handle_id_t bootstrap_ch_h);
 void lp_main(handle_id_t bootstrap_ch_h) {
     (void)bootstrap_ch_h;   /* RBX = 0 under the CPtr-mint bootstrap model */
@@ -306,7 +320,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
     for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) p[i] = 0;
 
     /* Block until the parent sends/calls — or until the parent kills us. */
-    (void)lp_sys2(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)&msg);
+    (void)lp_recv(&msg);
 
     /* Fase 27: persistent PAGER SERVICE mode.  Loop on the control endpoint
      * serving fault-resolution requests inside the minted manifest, replying
@@ -315,7 +329,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
     if (msg.label == (uint64_t)LP_CMD_PAGER_SERVICE) {
         for (;;) {
             for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) p[i] = 0;
-            long rr = lp_sys2(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)&msg);
+            long rr = lp_recv(&msg);
             if (rr != 0) { lp_sys1(SYS_EXIT, 0); for (;;) {} }
 
             handle_id_t reply_h = (handle_id_t)msg.attached_handle;
@@ -341,8 +355,8 @@ void lp_main(handle_id_t bootstrap_ch_h) {
                 reply.label      = IRIS_EP_REPLY_OK;
                 reply.words[0]   = (uint64_t)result;
                 reply.word_count = 1u;
+                /* Fase S1: reply_h is our reusable reply-object CPtr — no close. */
                 (void)lp_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
-                lp_sys1(SYS_HANDLE_CLOSE, (long)reply_h);
             }
             if (shutdown) { lp_sys1(SYS_EXIT, 0); for (;;) {} }
         }
@@ -354,7 +368,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         uint32_t slot = (uint32_t)msg.words[0];
         for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) p[i] = 0;
         msg.attached_cap = slot;               /* receive-slot declaration */
-        long rr = lp_sys2(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)&msg);
+        long rr = lp_sys3(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)&msg, 0);
         if (rr != 0)
             lp_sys1(SYS_EXIT, (long)(LP_EXIT_RECV_ERR_BASE | (uint32_t)-rr));
         uint32_t got = msg.attached_handle;    /* 0 / CPtr / handle */

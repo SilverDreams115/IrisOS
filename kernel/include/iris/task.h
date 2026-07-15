@@ -123,6 +123,14 @@ struct task {
     /* Ph85: reply capability fields */
     uint32_t       ep_call_mode;    /* 1 if task entered EP via SYS_EP_CALL (wants reply) */
     struct KReply *pending_kreply;  /* non-NULL while state == TASK_BLOCKED_REPLY (task holds a ref) */
+    /* Fase S1: explicit MCS-style reply object staged by the receiver.
+     * Set at EP_RECV / EP_NB_RECV entry from the reply CPtr in arg2 (the
+     * task holds a lifecycle ref + the object's staged claim); consumed at
+     * an EP_CALL rendezvous (bound to the caller) or released when the recv
+     * concludes without a call / the receiver dies.  NULL = none. */
+    struct KReply *ep_reply_obj;
+    uint32_t       ep_reply_val;    /* raw CPtr/handle value the receiver passed —
+                                     * echoed to the server in msg.attached_handle */
     /* Ph96: TCB capability — retained ref; NULL for kernel tasks and tasks without KTcb */
     struct KTcb   *ktcb;
 

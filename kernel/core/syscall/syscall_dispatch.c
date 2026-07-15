@@ -137,6 +137,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_VMO_MAP_PAGE:        return sys_vmo_map_page(arg0, arg1, arg2, arg3);
         case SYS_VMO_CREATE_FOR:      return sys_vmo_create_for(arg0, arg1, arg2);
         case SYS_RESOURCE_INFO:       return sys_resource_info(arg0, arg1, arg2);
+        case SYS_UNTYPED_RETYPE2:     return sys_untyped_retype2(arg0, arg1, arg2, arg3);
+        case SYS_UNTYPED_QUERY:       return sys_untyped_query(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }

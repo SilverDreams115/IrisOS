@@ -317,6 +317,20 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * retype (needs WRITE) both succeed. */
 #define IRIS_CPTR_INIT_UNTYPED ((uint64_t)12)
 #define IRIS_CPTR_TEST_UNTYPED ((uint64_t)55)
+/* Fase S1: slot 12 is the GENERIC "delegated untyped pool" slot — the parent
+ * (userboot → init → svcmgr) delegates a bounded sub-untyped here so the child
+ * can SYS_UNTYPED_RETYPE2 its own kernel objects.  IRIS_CPTR_INIT_UNTYPED is
+ * the historical name for init's instance of the same slot. */
+#define IRIS_CPTR_OWN_UNTYPED  ((uint64_t)12)
+/* Fase S1: explicit MCS-style reply objects.  The kernel no longer fabricates
+ * a KReply at EP_CALL rendezvous: a server passes its reply-object CPtr as
+ * arg2 of SYS_EP_RECV / SYS_EP_NB_RECV and later invokes SYS_REPLY on the
+ * value echoed in msg.attached_handle.  The supervisor that boots a serving
+ * child retypes the reply object(s) from its untyped pool and mints them
+ * here.  OWN_REPLY2 exists for servers that PARK one reply while continuing
+ * to serve (kbd): they alternate between the two slots. */
+#define IRIS_CPTR_OWN_REPLY    ((uint64_t)13)
+#define IRIS_CPTR_OWN_REPLY2   ((uint64_t)14)
 /* Fase 28: a DUPLICABLE vfs.ep cap (RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER,
  * badge IRIS_BADGE_IRIS_TEST) minted by init — supervisor authority — into this
  * slot.  The ordinary svcmgr lookup path strips DUPLICATE/TRANSFER from

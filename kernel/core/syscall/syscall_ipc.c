@@ -9,27 +9,17 @@
 
 /* ── Notification syscalls ────────────────────────────────────────── */
 
+/*
+ * Fase S1: SYS_NOTIFY_CREATE (19) is RETIRED — it fabricated a KNotification
+ * from kslab, charged a per-process quota and returned a handle: three
+ * non-seL4 mechanisms in one path.  Notifications are now created ONLY via
+ * SYS_UNTYPED_RETYPE2 (storage inside the source Untyped, capability directly
+ * in CSpace).  The syscall number stays reserved and fails without touching
+ * any state: no kslab, no quota, no handle, no object.
+ */
 uint64_t sys_notify_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg0; (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    struct KNotification *n = knotification_alloc();
-    if (!n) return syscall_err(IRIS_ERR_NO_MEMORY);
-    iris_error_t r = knotification_bind_owner(n, t->process);
-    if (r != IRIS_OK) {
-        knotification_free(n);
-        return syscall_err(r);
-    }
-    handle_id_t h = handle_table_insert(&t->process->handle_table,
-                                        &n->base,
-                                        RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT |
-                                        RIGHT_DUPLICATE | RIGHT_TRANSFER);
-    if (h == HANDLE_INVALID) {
-        knotification_free(n);
-        return syscall_err(IRIS_ERR_TABLE_FULL);
-    }
-    kobject_release(&n->base); /* table now holds the reference */
-    return (uint64_t)h;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 

@@ -74,8 +74,9 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
     handle_id_t ioport_h    = HANDLE_INVALID;
     long r;
 
-    /* Console KEndpoint master (init owns it); recv side minted to the child. */
-    r = init_sys0(SYS_ENDPOINT_CREATE);
+    /* Console KEndpoint master (init owns it); recv side minted to the child.
+     * Fase S1: retyped from init's untyped pool (SYS_ENDPOINT_CREATE retired). */
+    r = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_ENDPOINT, 0);
     if (r < 0) {
         init_early_serial_write(init_console_chan_fail);
         goto fail;
@@ -90,19 +91,41 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
     }
     ioport_h = (handle_id_t)r;
 
+    /* Fase S1: console serves EP_CALLs, so it needs an explicit reply object.
+     * Retype it from init's pool, mint it at IRIS_CPTR_OWN_REPLY, then DROP
+     * init's handle — a retained reply cap would suppress the
+     * close-wakes-caller path if console dies. */
+    handle_id_t con_reply_h = HANDLE_INVALID;
     {
-        struct svc_mint con_mints[2];
-        con_mints[0].slot   = IRIS_CPTR_OWN_EP;
-        con_mints[0].src_h  = g_init_console_ep_h;
-        con_mints[0].rights = RIGHT_READ;
-        con_mints[0].badge  = 0;   /* server-side cap: unbadged */
-        con_mints[1].slot   = IRIS_CPTR_IOPORT;
-        con_mints[1].src_h  = ioport_h;
-        con_mints[1].rights = RIGHT_READ | RIGHT_WRITE;
-        con_mints[1].badge  = 0;
-        r = svc_load_minted(spawn_cap_h, "console", &con_proc_h, &con_boot_h,
-                            con_mints, 2u);
+        long rr = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_REPLY, 0);
+        if (rr >= 0) con_reply_h = (handle_id_t)rr;
+        else init_early_serial_write("[INIT] console reply retype FAILED\r\n");
     }
+
+    {
+        struct svc_mint con_mints[3];
+        uint32_t n = 0;
+        con_mints[n].slot   = IRIS_CPTR_OWN_EP;
+        con_mints[n].src_h  = g_init_console_ep_h;
+        con_mints[n].rights = RIGHT_READ;
+        con_mints[n].badge  = 0;   /* server-side cap: unbadged */
+        n++;
+        con_mints[n].slot   = IRIS_CPTR_IOPORT;
+        con_mints[n].src_h  = ioport_h;
+        con_mints[n].rights = RIGHT_READ | RIGHT_WRITE;
+        con_mints[n].badge  = 0;
+        n++;
+        if (con_reply_h != HANDLE_INVALID) {
+            con_mints[n].slot   = IRIS_CPTR_OWN_REPLY;
+            con_mints[n].src_h  = con_reply_h;
+            con_mints[n].rights = RIGHT_READ | RIGHT_WRITE;
+            con_mints[n].badge  = 0;
+            n++;
+        }
+        r = svc_load_minted(spawn_cap_h, "console", &con_proc_h, &con_boot_h,
+                            con_mints, n);
+    }
+    init_close(&con_reply_h);   /* console's slot-13 mint is the only reply cap */
     if (r < 0) {
         init_early_serial_write(init_console_load_fail);
         goto fail;
@@ -138,7 +161,8 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     handle_id_t spawn_dup_h    = HANDLE_INVALID;
     long r;
 
-    r = init_sys0(SYS_ENDPOINT_CREATE);
+    /* Fase S1: retyped from init's untyped pool (SYS_ENDPOINT_CREATE retired). */
+    r = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_ENDPOINT, 0);
     if (r < 0) goto fail;
     svcmgr_ep_h = (handle_id_t)r;
 
@@ -147,25 +171,54 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     if (r < 0) goto fail;
     spawn_dup_h = (handle_id_t)r;
 
+    /* Fase S1: carve svcmgr's untyped pool (a sub-untyped of init's boot
+     * block) — svcmgr retypes every service endpoint / IRQ notification /
+     * reply object from it.  Sized for the whole catalog plus per-service
+     * reply sub-untypeds and restart churn. */
+    handle_id_t sm_untyped_h = HANDLE_INVALID;
     {
-        struct svc_mint sm_mints[3];
-        sm_mints[0].slot   = IRIS_CPTR_CONSOLE_EP;
-        sm_mints[0].src_h  = g_init_console_ep_h;
-        sm_mints[0].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-        sm_mints[0].badge  = 0;   /* unbadged: svcmgr re-mints per child badge */
-        sm_mints[1].slot   = IRIS_CPTR_OWN_EP;
-        sm_mints[1].src_h  = svcmgr_ep_h;
+        static const uint64_t s1_sm_ut_sizes[] = { 256u<<10, 64u<<10 };
+        for (uint32_t szi = 0; szi < 2u && sm_untyped_h == HANDLE_INVALID; szi++) {
+            long ur = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_UNTYPED,
+                                         s1_sm_ut_sizes[szi]);
+            if (ur >= 0) sm_untyped_h = (handle_id_t)ur;
+        }
+        if (sm_untyped_h == HANDLE_INVALID)
+            init_log("[USER][INIT] svcmgr untyped carve FAILED\n");
+    }
+
+    {
+        struct svc_mint sm_mints[4];
+        uint32_t n = 0;
+        sm_mints[n].slot   = IRIS_CPTR_CONSOLE_EP;
+        sm_mints[n].src_h  = g_init_console_ep_h;
+        sm_mints[n].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[n].badge  = 0;   /* unbadged: svcmgr re-mints per child badge */
+        n++;
+        sm_mints[n].slot   = IRIS_CPTR_OWN_EP;
+        sm_mints[n].src_h  = svcmgr_ep_h;
         /* TRANSFER is required so svcmgr can hand out dup'd "svcmgr.ep" caps via
          * SYS_REPLY cap-transfer (EP_LOOKUP_NAME of "svcmgr.ep"). */
-        sm_mints[1].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-        sm_mints[1].badge  = 0;   /* unbadged: svcmgr re-mints per child badge */
-        sm_mints[2].slot   = IRIS_CPTR_SPAWN_CAP;
-        sm_mints[2].src_h  = spawn_dup_h;
-        sm_mints[2].rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-        sm_mints[2].badge  = 0;
+        sm_mints[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[n].badge  = 0;   /* unbadged: svcmgr re-mints per child badge */
+        n++;
+        sm_mints[n].slot   = IRIS_CPTR_SPAWN_CAP;
+        sm_mints[n].src_h  = spawn_dup_h;
+        sm_mints[n].rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[n].badge  = 0;
+        n++;
+        if (sm_untyped_h != HANDLE_INVALID) {
+            sm_mints[n].slot   = IRIS_CPTR_OWN_UNTYPED;
+            sm_mints[n].src_h  = sm_untyped_h;
+            sm_mints[n].rights = RIGHT_READ | RIGHT_WRITE |
+                                 RIGHT_DUPLICATE | RIGHT_TRANSFER;
+            sm_mints[n].badge  = 0;
+            n++;
+        }
         r = svc_load_minted(spawn_cap_h, "svcmgr", &svcmgr_proc_h,
-                            &svcmgr_chan_h, sm_mints, 3u);
+                            &svcmgr_chan_h, sm_mints, n);
     }
+    init_close(&sm_untyped_h);  /* svcmgr's slot-12 mint keeps the pool alive */
     if (r < 0) goto fail;
 
     init_close(&spawn_dup_h);
@@ -220,7 +273,7 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
      * (WRONG_TYPE), not ACCESS_DENIED. */
     handle_id_t fix_wrongtype = HANDLE_INVALID;
     {
-        long nr = init_sys0(SYS_NOTIFY_CREATE);
+        long nr = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_NOTIFICATION, 0);
         if (nr >= 0) fix_wrongtype = (handle_id_t)nr;
     }
     if (lk_svcmgr == HANDLE_INVALID)
@@ -233,9 +286,20 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
      * T125–T131 FAIL loudly. */
     handle_id_t lk_untyped = HANDLE_INVALID;
     {
-        long ur = init_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_INIT_UNTYPED);
-        if (ur >= 0) lk_untyped = (handle_id_t)ur;
-        else init_log("[USER][INIT] boot untyped resolve FAILED\n");
+        /* Fase S1: iris_test receives its OWN sub-untyped (carved from init's
+         * pool) instead of a second cap to the shared boot block — the suite
+         * can retype/reset it freely without touching init/svcmgr objects.
+         * Sized generously for the object-churn suites; smaller fallbacks
+         * keep the authority tests alive on small boot blocks. */
+        static const uint64_t s1_test_ut_sizes[] =
+            { 8u<<20, 2u<<20, 512u<<10 };
+        for (uint32_t szi = 0; szi < 3u && lk_untyped == HANDLE_INVALID; szi++) {
+            long ur = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_UNTYPED,
+                                         s1_test_ut_sizes[szi]);
+            if (ur >= 0) lk_untyped = (handle_id_t)ur;
+        }
+        if (lk_untyped == HANDLE_INVALID)
+            init_log("[USER][INIT] test untyped carve FAILED\n");
     }
 
     {
@@ -351,7 +415,8 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
     /* Fase 13 (Track B): process-exit watch is delivered as a KNotification
      * signal.  One notification (full rights) serves both the watch arm
      * (RIGHT_WRITE) and our own wait (RIGHT_WAIT); bit 0 marks iris_test. */
-    r = init_sys0(SYS_NOTIFY_CREATE);
+    /* Fase S1: retyped from init's untyped pool (SYS_NOTIFY_CREATE retired). */
+    r = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_NOTIFICATION, 0);
     if (r < 0) goto out;
     watch_base_h = (handle_id_t)r;
 

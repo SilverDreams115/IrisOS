@@ -120,7 +120,7 @@ void test_untyped_cspace(void) {
         ASSERT_NOT_NULL(root);
 
         /* Mint an Endpoint where a KUntyped is expected. */
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         ASSERT_EQ(kcnode_mint(root, 3, &ep->base, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
         kobject_release(&ep->base);
@@ -137,7 +137,7 @@ void test_untyped_cspace(void) {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
 
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         handle_id_t h = handle_table_insert(&p->handle_table, &ep->base, RIGHT_READ);
         kobject_release(&ep->base);

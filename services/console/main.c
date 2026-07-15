@@ -115,10 +115,10 @@ static void con_serve_ep_msg(handle_id_t ioport_h, struct IrisMsg *req) {
         break;
     }
 
-    if (reply_h != HANDLE_INVALID) {
+    /* Fase S1: reply_h is the console's OWN reply-object CPtr (echoed by the
+     * kernel from the recv arg2).  The object is reusable — nothing to close. */
+    if (reply_h != HANDLE_INVALID)
         (void)con_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
-        (void)con_sys1(SYS_HANDLE_CLOSE, (long)reply_h);
-    }
 }
 
 void console_main_c(handle_id_t bootstrap_h) {
@@ -132,12 +132,15 @@ void console_main_c(handle_id_t bootstrap_h) {
 
     (void)con_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_h);
 
-    /* Endpoint-only main loop: block on the KEndpoint, serve, reply. */
+    /* Endpoint-only main loop: block on the KEndpoint, serve, reply.
+     * Fase S1: the explicit reply object (init retypes it from its untyped
+     * pool and mints it at IRIS_CPTR_OWN_REPLY) rides in recv arg2. */
     for (;;) {
         struct IrisMsg req;
         con_imsg_zero(&req);
         req.buf_uptr = (uint64_t)(uintptr_t)g_con_ep_buf;
-        if (con_sys2(SYS_EP_RECV, (long)ep_h, (long)&req) != IRIS_OK)
+        if (con_sys3(SYS_EP_RECV, (long)ep_h, (long)&req,
+                     (long)IRIS_CPTR_OWN_REPLY) != IRIS_OK)
             continue;
         con_serve_ep_msg(ioport_h, &req);
     }

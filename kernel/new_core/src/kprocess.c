@@ -240,15 +240,11 @@ void kprocess_free(struct KProcess *p) {
     kobject_release(&p->base);
 }
 
-iris_error_t kprocess_quota_acquire_notification(struct KProcess *p) {
-    return kprocess_quota_acquire(&p->owned_notifications,
-                                  &p->owned_notifications_hwm,
-                                  KPROCESS_NOTIFICATION_QUOTA, p);
-}
-
-void kprocess_quota_release_notification(struct KProcess *p) {
-    kprocess_quota_release(&p->owned_notifications, p);
-}
+/* Fase S1: the notification quota (acquire/release + owner binding) is
+ * RETIRED — notifications are created from Untyped, and Untyped is the
+ * budget.  The VMO and page quotas below stay: they account the legacy
+ * KProcess/KVMO objects that have not yet migrated to the canonical model
+ * (LEGACY_FOR_KPROCESS_KVMO in the convergence ledger). */
 
 iris_error_t kprocess_quota_acquire_vmo(struct KProcess *p) {
     return kprocess_quota_acquire(&p->owned_vmos, &p->owned_vmos_hwm,

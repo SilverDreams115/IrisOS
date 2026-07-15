@@ -104,18 +104,37 @@ uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     uint32_t    slot_idx  = (uint32_t)arg1;
     (void)arg2;
 
-    if (!cptr_or_h) return syscall_err(IRIS_ERR_INVALID_ARG);
-
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
     struct KProcess *proc = t->process;
 
     struct KCNode  *cn;
     iris_rights_t   cn_rights;
-    iris_error_t err = cspace_or_handle_resolve_cnode(proc, cptr_or_h,
-                                                       RIGHT_WRITE, &cn, &cn_rights);
-    if (err != IRIS_OK)
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    iris_error_t    err;
+
+    /* Fase S1: arg0 == 0 names the CALLER'S OWN root CNode (mirrors the
+     * SYS_UNTYPED_RETYPE2 destination convention).  Deleting a slot of your
+     * own CSpace only discards authority you already hold — no amplification. */
+    if (cptr_or_h == 0u) {
+        if (proc->cspace_root_h == HANDLE_INVALID)
+            return syscall_err(IRIS_ERR_NOT_FOUND);
+        struct KObject *root_obj;
+        iris_rights_t   root_r;
+        err = handle_table_get_object(&proc->handle_table, proc->cspace_root_h,
+                                      &root_obj, &root_r);
+        if (err != IRIS_OK) return syscall_err(err);
+        if (root_obj->type != KOBJ_CNODE) {
+            kobject_release(root_obj);
+            return syscall_err(IRIS_ERR_INTERNAL);
+        }
+        kobject_active_retain(root_obj);
+        cn = (struct KCNode *)root_obj;
+    } else {
+        err = cspace_or_handle_resolve_cnode(proc, cptr_or_h,
+                                             RIGHT_WRITE, &cn, &cn_rights);
+        if (err != IRIS_OK)
+            return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    }
 
     err = kcnode_delete(cn, slot_idx);
     kobject_active_release(&cn->base);

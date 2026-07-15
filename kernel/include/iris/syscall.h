@@ -69,8 +69,11 @@
  * composable primitives rooted in SYS_INITRD_VMO / SYS_PROCESS_CREATE /
  * SYS_VMO_MAP_INTO / SYS_THREAD_START / SYS_HANDLE_INSERT. */
 #define SYS_SPAWN        18
-/* live/conforming: notification objects */
-#define SYS_NOTIFY_CREATE 19 /* () → handle_id or negative iris_error_t */
+/* Fase S1: SYS_NOTIFY_CREATE (19) RETIRED — returns IRIS_ERR_NOT_SUPPORTED.
+ * Notifications are created via SYS_UNTYPED_RETYPE2 (Untyped storage, cap
+ * directly in CSpace; no kslab, no per-process quota, no handle).  Number
+ * permanently reserved. */
+#define SYS_NOTIFY_CREATE 19 /* RETIRED (Fase S1) → IRIS_ERR_NOT_SUPPORTED */
 #define SYS_NOTIFY_SIGNAL 20 /* (handle, bits) → 0 or negative iris_error_t */
 #define SYS_NOTIFY_WAIT   21 /* (handle, *out_bits) → 0 or negative iris_error_t */
 /* modern/conforming: handle management */
@@ -628,8 +631,9 @@
  * no message queue: every send blocks until a receiver is ready (or vice versa).
  * Message delivery is atomic — both sides unblock in the same scheduler step.
  *
- * SYS_ENDPOINT_CREATE() → handle_id or negative iris_error_t
- *   Creates a new KEndpoint with RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ * SYS_ENDPOINT_CREATE — RETIRED (Fase S1) → IRIS_ERR_NOT_SUPPORTED.
+ *   Endpoints are created via SYS_UNTYPED_RETYPE2 (Untyped storage, cap
+ *   directly in CSpace).  Number permanently reserved.
  *
  * SYS_EP_SEND(ep_h, msg_uptr) → 0 or negative iris_error_t
  *   Requires RIGHT_WRITE.  Blocks until a receiver is ready (rendezvous).
@@ -670,9 +674,9 @@
  *   h itself is NOT deleted and remains valid after the call.
  *   O(N) scan over the caller's handle table where N = HANDLE_TABLE_MAX.
  *
- * SYS_CNODE_CREATE(num_slots) → handle_id or negative iris_error_t
- *   Creates a KCNode with num_slots (1..KCNODE_MAX_SLOTS=64) empty slots.
- *   Returns a handle with RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ * SYS_CNODE_CREATE — RETIRED (Fase S1) → IRIS_ERR_NOT_SUPPORTED.
+ *   Runtime CNodes are created via SYS_UNTYPED_RETYPE2 (KOBJ_CNODE,
+ *   obj_arg = num_slots).  Number permanently reserved.
  *
  * SYS_CNODE_MINT(cnode_h, slot_idx, src_h, new_rights) → 0 or negative iris_error_t
  *   Requires RIGHT_WRITE on cnode_h; RIGHT_DUPLICATE on src_h.
@@ -723,16 +727,27 @@
  *   (either may be NULL to skip that field).
  *
  * SYS_UNTYPED_RETYPE(ut_h, obj_type, obj_arg) → handle_id or error
- *   Carves memory from the untyped region and creates a typed kernel object
- *   without touching the kernel heap (kpage-free path for typed objects).
- *   obj_arg: for KOBJ_UNTYPED  = size of sub-region in bytes (page-aligned)
- *             for KOBJ_CNODE   = num_slots (NOT YET — use SYS_CNODE_CREATE)
- *             otherwise        = 0
- *   Supported obj_type values: KOBJ_ENDPOINT(8), KOBJ_NOTIFICATION(2), KOBJ_UNTYPED(11)
+ *   LEGACY single-object retype returning a handle (Fase S1: TRANSITIONAL).
+ *   Restricted to the non-migrated types: KOBJ_UNTYPED (obj_arg = sub-region
+ *   bytes, page-aligned), KOBJ_FRAME (obj_arg = bytes, page-aligned) and
+ *   KOBJ_SCHED_CONTEXT.  The migrated family (ENDPOINT / NOTIFICATION /
+ *   REPLY / CNODE) returns IRIS_ERR_NOT_SUPPORTED here — those objects can
+ *   only be born via SYS_UNTYPED_RETYPE2 (never through a handle: S20).
  */
 #define SYS_UNTYPED_INFO   86
 #define SYS_UNTYPED_RETYPE 87
 #define SYS_UNTYPED_RESET  88
+
+/* Fase S1: userland-visible object-type codes for SYS_UNTYPED_RETYPE(2).
+ * ABI-stable mirrors of the kernel kobject_type_t enum (statically asserted
+ * in syscall_untyped.c). */
+#define IRIS_KOBJ_NOTIFICATION   2u
+#define IRIS_KOBJ_ENDPOINT       8u
+#define IRIS_KOBJ_CNODE          9u
+#define IRIS_KOBJ_SCHED_CONTEXT 10u
+#define IRIS_KOBJ_UNTYPED       11u
+#define IRIS_KOBJ_REPLY         12u
+#define IRIS_KOBJ_FRAME         15u
 
 /*
  * Block 6 — CNode slot operations (Ph82-84).
@@ -993,6 +1008,81 @@
  * size-validated, versioned.
  */
 #define SYS_RESOURCE_INFO 110
+
+/*
+ * Fase S1 — seL4 Architectural Convergence.
+ *
+ * SYS_UNTYPED_RETYPE2(ut, type|count<<32, dest_cnode|slot<<32, obj_arg)
+ *     → 0 or negative iris_error_t
+ *
+ *   The canonical object-creation path.  Storage for the new object(s) IS the
+ *   retyped untyped memory (header + payload live inside the source region);
+ *   the created capabilities are published DIRECTLY into CSpace destination
+ *   slots — no handle, no per-process quota, no hidden allocator.
+ *
+ *   arg0 = source KUntyped (CPtr < 1024 or handle >= 1024); RIGHT_WRITE.
+ *   arg1 = obj_type (low 32) | object count (high 32; 0 → 1; max 32).
+ *   arg2 = destination CNode (low 32; 0 → caller's root CNode; RIGHT_WRITE)
+ *          | first destination slot (high 32).  Slots [slot, slot+count) must
+ *          be empty (IRIS_ERR_ALREADY_EXISTS otherwise); slot 0 is refused.
+ *   arg3 = obj_arg: KOBJ_CNODE → num_slots (power of 2, ≤ KCNODE_MAX_SLOTS);
+ *          KOBJ_UNTYPED / KOBJ_FRAME → bytes (page-aligned, count must be 1);
+ *          otherwise 0.
+ *
+ *   Batch is atomic (U14/U15): on any failure no capability is published, no
+ *   object is live and no untyped range is consumed.
+ *   Device untyped only produces KOBJ_UNTYPED / KOBJ_FRAME (U11/U12).
+ *
+ * SYS_UNTYPED_QUERY(kind, buf_uptr, ut) → 0 or negative iris_error_t
+ *   Read-only, versioned instrumentation (never authority):
+ *     kind 1 (GLOBAL)  — struct iris_untyped_query_global.
+ *     kind 2 (ONE)     — struct iris_untyped_query_one for the untyped in arg2
+ *                        (RIGHT_READ).
+ *     kind 3 (OBJECTS) — struct iris_untyped_query_objects (live gauges for
+ *                        the migrated object family).
+ */
+#define SYS_UNTYPED_RETYPE2 111
+#define SYS_UNTYPED_QUERY   112
+
+#define IRIS_UNTYPED_QUERY_VERSION 1u
+#define IRIS_UNTYPED_QUERY_GLOBAL  1u
+#define IRIS_UNTYPED_QUERY_ONE     2u
+#define IRIS_UNTYPED_QUERY_OBJECTS 3u
+
+#ifndef __ASSEMBLER__
+struct iris_untyped_query_global {
+    uint32_t version;          /* IRIS_UNTYPED_QUERY_VERSION */
+    uint32_t struct_size;
+    uint32_t live_untypeds;    /* live KUntyped objects (incl. sub-untypeds) */
+    uint32_t _pad0;
+    uint64_t retype_count;     /* objects successfully created by RETYPE/RETYPE2 */
+    uint64_t retype_failures;  /* denied/failed retype operations */
+    uint64_t reset_count;      /* successful SYS_UNTYPED_RESET calls */
+    uint64_t reclaimed_bytes;  /* bytes returned to reusable state by RESET */
+    uint64_t reuse_count;      /* RESETs that reclaimed a consumed region */
+    uint64_t overlap_denials;  /* occupied-slot / range denials */
+};
+
+struct iris_untyped_query_one {
+    uint32_t version;
+    uint32_t struct_size;
+    uint64_t phys_base;
+    uint64_t total_bytes;
+    uint64_t used_bytes;
+    uint64_t generation;       /* bumped on every successful RESET */
+    uint32_t child_count;
+    uint32_t is_device;
+};
+
+struct iris_untyped_query_objects {
+    uint32_t version;
+    uint32_t struct_size;
+    uint32_t endpoints_live;
+    uint32_t notifications_live;
+    uint32_t replies_live;
+    uint32_t cnodes_live;
+};
+#endif /* !__ASSEMBLER__ */
 
 /*
  * Block 8 — TCB capabilities (Ph96-101).

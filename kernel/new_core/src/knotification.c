@@ -1,7 +1,5 @@
 #include <iris/nc/knotification.h>
-#include <iris/nc/kprocess.h>
 #include <iris/nc/kuntyped.h>
-#include <iris/kslab.h>
 #include <iris/task.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -30,11 +28,6 @@ static void knotif_live_unlink(struct KNotification *n) {
 }
 
 /* ── waiter array helpers ─────────────────────────────────────── */
-
-static void knotif_waiters_clear(struct KNotification *n) {
-    for (uint32_t i = 0; i < KNOTIF_WAITERS_MAX; i++) n->waiters[i] = 0;
-    n->waiter_count = 0;
-}
 
 static iris_error_t knotif_waiters_enqueue(struct KNotification *n, struct task *t) {
     for (uint32_t i = 0; i < KNOTIF_WAITERS_MAX; i++) {
@@ -94,41 +87,18 @@ static void knotification_close(struct KObject *obj) {
     spinlock_unlock(&n->base.lock);
 }
 
-static void knotification_owner_release(struct KNotification *n) {
-    struct KProcess *owner;
-    if (!n) return;
-
-    spinlock_lock(&n->base.lock);
-    owner = n->owner;
-    n->owner = 0;
-    spinlock_unlock(&n->base.lock);
-
-    if (!owner) return;
-    kprocess_quota_release_notification(owner);
-    kobject_release(&owner->base);
-}
-
-static void knotification_destroy(struct KObject *obj) {
-    knotification_close(obj);
-    struct KNotification *n = (struct KNotification *)obj;
-    knotification_owner_release(n);
-    knotif_live_unlink(n);
-    atomic_fetch_sub_explicit(&knotif_live, 1u, memory_order_relaxed);
-    kslab_free(n, (uint32_t)sizeof(struct KNotification));
-}
-
+/*
+ * Fase S1: the kslab-backed variant and the per-process owner/quota binding
+ * are RETIRED.  A KNotification is created only via Untyped retype; the
+ * authority to create one is possession of sufficient KUntyped plus a free
+ * CSpace destination slot — never a kernel-side numeric quota.
+ */
 static void knotification_destroy_ut(struct KObject *obj) {
     struct KNotification *n = (struct KNotification *)obj;
-    knotification_owner_release(n);
     knotif_live_unlink(n);
     atomic_fetch_sub_explicit(&knotif_live, 1u, memory_order_relaxed);
     kuntyped_release_child(obj, sizeof(struct KNotification));
 }
-
-static const struct KObjectOps knotification_ops = {
-    .close = knotification_close,
-    .destroy = knotification_destroy
-};
 
 static const struct KObjectOps knotification_ops_ut = {
     .close   = knotification_close,
@@ -140,50 +110,11 @@ static const struct KObjectOps knotification_ops_ut = {
 struct KNotification *knotification_alloc_at(void *mem) {
     if (!mem) return 0;
     struct KNotification *n = (struct KNotification *)mem;
-    /* mem was already zeroed by kuntyped_bump_alloc */
+    /* mem was already zeroed by the untyped carve */
     kobject_init(&n->base, KOBJ_NOTIFICATION, &knotification_ops_ut);
     knotif_live_link(n);
     atomic_fetch_add_explicit(&knotif_live, 1u, memory_order_relaxed);
     return n;
-}
-
-struct KNotification *knotification_alloc(void) {
-    struct KNotification *n = kslab_alloc((uint32_t)sizeof(struct KNotification));
-    if (!n) return 0;
-    kobject_init(&n->base, KOBJ_NOTIFICATION, &knotification_ops);
-    atomic_store_explicit(&n->signal_bits, 0, memory_order_relaxed);
-    knotif_waiters_clear(n);
-    knotif_live_link(n);
-    atomic_fetch_add_explicit(&knotif_live, 1u, memory_order_relaxed);
-    return n;
-}
-
-iris_error_t knotification_bind_owner(struct KNotification *n, struct KProcess *owner) {
-    iris_error_t r;
-    if (!n || !owner) return IRIS_ERR_INVALID_ARG;
-
-    spinlock_lock(&n->base.lock);
-    if (n->owner) {
-        r = (n->owner == owner) ? IRIS_OK : IRIS_ERR_BUSY;
-        spinlock_unlock(&n->base.lock);
-        return r;
-    }
-    spinlock_unlock(&n->base.lock);
-
-    r = kprocess_quota_acquire_notification(owner);
-    if (r != IRIS_OK) return r;
-    kobject_retain(&owner->base);
-
-    spinlock_lock(&n->base.lock);
-    if (n->owner) {
-        spinlock_unlock(&n->base.lock);
-        kobject_release(&owner->base);
-        kprocess_quota_release_notification(owner);
-        return (n->owner == owner) ? IRIS_OK : IRIS_ERR_BUSY;
-    }
-    n->owner = owner;
-    spinlock_unlock(&n->base.lock);
-    return IRIS_OK;
 }
 
 void knotification_free(struct KNotification *n) {

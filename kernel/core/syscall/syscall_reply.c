@@ -145,6 +145,19 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (ep->ep_state == EP_STATE_RECV) {
         /* Immediate rendezvous: a receiver is already waiting. */
         struct task *receiver = ep->queue_head;
+
+        /* Fase S1: a CALL needs the receiver's explicit reply object.  If the
+         * blocked receiver staged none, fail the call BEFORE consuming
+         * anything — the receiver stays queued, the caller keeps its staged
+         * cap (implicit KReply fabrication is retired). */
+        if (!receiver->ep_reply_obj) {
+            irq_spinlock_unlock(&ep->lock, flags);
+            t->ep_call_mode = 0u;
+            if (xfer_obj) kobject_release(xfer_obj);
+            kobject_release(&ep->base);
+            return syscall_err(IRIS_ERR_NOT_SUPPORTED);
+        }
+
         ep->queue_head = receiver->ep_next;
         if (!ep->queue_head) { ep->queue_tail = 0; ep->ep_state = EP_STATE_IDLE; }
         receiver->ep_next     = 0;
@@ -178,29 +191,26 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             receiver->ipc_msg.attached_cap_rights = xfer_rights;
         }
 
-        /* Create KReply and deliver to receiver's handle table. */
-        struct KReply *r = kreply_alloc(t);
-        if (r) {
-            kobject_retain(&r->base);      /* task's own ref — released on wake-up */
-            t->pending_kreply = r;
-            handle_id_t rh = handle_table_insert(&receiver->process->handle_table, &r->base,
-                                                  RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
-            kobject_release(&r->base);     /* drop alloc ref; HT has its own */
-            if (rh != HANDLE_INVALID) {
+        /* Fase S1: bind the receiver's staged explicit reply object to this
+         * caller (verified non-NULL before the receiver was dequeued; the
+         * kernel is non-preemptive between that check and this bind).  The
+         * receiver's staging lifecycle ref transfers to t->pending_kreply;
+         * the receiver observes its own reply CPtr in msg.attached_handle. */
+        {
+            struct KReply *r = receiver->ep_reply_obj;
+            if (kreply_bind_caller(r, t) == IRIS_OK) {
+                t->pending_kreply = r;   /* staging ref transferred */
+                receiver->ipc_msg.attached_handle = receiver->ep_reply_val;
+                receiver->ep_reply_obj = 0;
+                receiver->ep_reply_val = 0;
                 __atomic_fetch_add(&iris_ipc_stat_reply_caps, 1u, __ATOMIC_RELAXED);
-                receiver->ipc_msg.attached_handle = (uint32_t)rh;
             } else {
-                kobject_release(&t->pending_kreply->base);
-                t->pending_kreply = 0;
-                /* table full: wake receiver but fail the call */
+                /* Defensive: claim lost (last cap dropped while blocked).
+                 * Wake receiver (message already delivered) but fail the call. */
                 task_wakeup(receiver);
                 kobject_release(&ep->base);
-                return syscall_err(IRIS_ERR_NO_MEMORY);
+                return syscall_err(IRIS_ERR_CLOSED);
             }
-        } else {
-            task_wakeup(receiver);
-            kobject_release(&ep->base);
-            return syscall_err(IRIS_ERR_NO_MEMORY);
         }
 
         /* Receiver is ready; caller blocks waiting for reply. */

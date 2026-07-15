@@ -201,7 +201,7 @@ void test_cspace(void) {
         kobject_release(&root->base);
         p->cspace_root_h = rh;
 
-        struct KEndpoint *ep = kendpoint_alloc();
+        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
         ASSERT_EQ(kcnode_mint(root, 3, &ep->base, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
         kobject_release(&ep->base);

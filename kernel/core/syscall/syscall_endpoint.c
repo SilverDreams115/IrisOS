@@ -265,21 +265,14 @@ static int ep_recv_fastpath(struct task *t, struct KEndpoint *ep) {
 
 /* ── SYS_ENDPOINT_CREATE ─────────────────────────────────────────────── */
 
+/*
+ * Fase S1: SYS_ENDPOINT_CREATE (74) is RETIRED — endpoints are created ONLY
+ * via SYS_UNTYPED_RETYPE2 (storage inside the source Untyped, capability
+ * directly in CSpace).  The number stays reserved; the path creates nothing.
+ */
 uint64_t sys_endpoint_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg0; (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KEndpoint *ep = kendpoint_alloc();
-    if (!ep) return syscall_err(IRIS_ERR_NO_MEMORY);
-
-    handle_id_t h = handle_table_insert(&t->process->handle_table, &ep->base,
-                                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-    kobject_release(&ep->base);
-    if (h == HANDLE_INVALID)
-        return syscall_err(IRIS_ERR_TABLE_FULL);
-
-    return (uint64_t)h;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 /* ── SYS_EP_SEND ─────────────────────────────────────────────────────── */
@@ -424,8 +417,64 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /* ── SYS_EP_RECV ─────────────────────────────────────────────────────── */
 
+/*
+ * Fase S1 — explicit reply staging (receiver side).
+ *
+ * ep_recv_reply_stage: resolve the reply CPtr the receiver passed as arg2
+ * (RIGHT_WRITE) and take the object's exclusive staged claim.  The task keeps
+ * the resolve lifecycle ref in t->ep_reply_obj until the recv either binds
+ * the object to an EP_CALL caller (ref transferred to pending_kreply) or
+ * concludes without a call (ep_recv_reply_unstage).
+ */
+static iris_error_t ep_recv_reply_stage(struct task *t, uint64_t reply_arg) {
+    t->ep_reply_obj = 0;
+    t->ep_reply_val = 0;
+    if (reply_arg == 0u) return IRIS_OK;
+
+    struct KReply *rp; iris_rights_t rp_r;
+    iris_error_t err = cspace_or_handle_resolve_reply(t->process,
+                            (iris_cptr_t)reply_arg, RIGHT_WRITE, &rp, &rp_r);
+    if (err != IRIS_OK) return err;
+    err = kreply_stage(rp);
+    if (err != IRIS_OK) {
+        kobject_release(&rp->base);
+        return err;
+    }
+    t->ep_reply_obj = rp;
+    t->ep_reply_val = (uint32_t)reply_arg;
+    return IRIS_OK;
+}
+
+static void ep_recv_reply_unstage(struct task *t) {
+    struct KReply *rp = t->ep_reply_obj;
+    if (!rp) return;
+    t->ep_reply_obj = 0;
+    t->ep_reply_val = 0;
+    kreply_unstage(rp);
+    kobject_release(&rp->base);
+}
+
+/*
+ * ep_bind_call_reply — rendezvous helper: bind the receiver's staged reply
+ * object to the call-mode sender.  Returns 1 on success (sender must stay
+ * blocked as TASK_BLOCKED_REPLY; receiver's msg.attached_handle = the reply
+ * CPtr it passed), 0 when no usable reply object is staged (implicit KReply
+ * fabrication is RETIRED — the kernel never allocates one here).
+ */
+static int ep_bind_call_reply(struct task *receiver, struct task *sender,
+                              uint32_t *attached_out) {
+    struct KReply *rp = receiver->ep_reply_obj;
+    if (!rp) return 0;
+    if (kreply_bind_caller(rp, sender) != IRIS_OK) return 0;
+    /* Staging lifecycle ref transfers to sender->pending_kreply. */
+    sender->pending_kreply = rp;
+    *attached_out          = receiver->ep_reply_val;
+    receiver->ep_reply_obj = 0;
+    receiver->ep_reply_val = 0;
+    return 1;
+}
+
 uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -457,9 +506,18 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
     }
 
+    /* Fase S1: stage the explicit reply object named by arg2 (0 = none).
+     * Fail-fast: a bad reply CPtr fails BEFORE the endpoint is touched. */
+    err = ep_recv_reply_stage(t, arg2);
+    if (err != IRIS_OK) {
+        kobject_release(&ep->base);
+        return syscall_err(err);
+    }
+
     /* Fastpath: no-cap, no-bulk, non-EP_CALL sender already waiting. */
     if (ep_recv_fastpath(t, ep)) {
         t->ep_recv_slot = 0;   /* no cap on the fastpath — drop the declaration */
+        ep_recv_reply_unstage(t);
         kobject_release(&ep->base);
         if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
             return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -470,6 +528,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (ep->closed) {
         irq_spinlock_unlock(&ep->lock, flags);
+        ep_recv_reply_unstage(t);
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_CLOSED);
     }
@@ -477,6 +536,17 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (ep->ep_state == EP_STATE_SEND) {
         /* Rendezvous: a sender is already waiting. */
         struct task *sender = ep->queue_head;
+
+        /* Fase S1: a call-mode sender REQUIRES an explicit reply object.
+         * Refuse the recv before anything is consumed — the sender stays
+         * queued and keeps its staged cap; the receiver is told to supply
+         * reply authority (implicit KReply fabrication is retired). */
+        if (sender->ep_call_mode && !t->ep_reply_obj) {
+            irq_spinlock_unlock(&ep->lock, flags);
+            kobject_release(&ep->base);
+            return syscall_err(IRIS_ERR_NOT_SUPPORTED);
+        }
+
         ep->queue_head = sender->ep_next;
         if (!ep->queue_head) { ep->queue_tail = 0; ep->ep_state = EP_STATE_IDLE; }
         sender->ep_next     = 0;
@@ -535,27 +605,19 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
         t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 
-        /* Ph85: if sender used EP_CALL, create KReply and keep sender blocked. */
+        /* Ph85/Fase S1: if sender used EP_CALL, bind the receiver's staged
+         * explicit reply object and keep the sender blocked.  The kernel no
+         * longer fabricates a KReply here — the availability of the staged
+         * object was verified before the sender was dequeued, so the bind
+         * cannot fail on this non-preemptive path (defensive fallback wakes
+         * the sender with CLOSED). */
         if (sender->ep_call_mode) {
             sender->ep_call_mode = 0u;
-            struct KReply *rp = kreply_alloc(sender);
-            if (rp) {
-                kobject_retain(&rp->base);         /* sender's own lifecycle ref */
-                sender->pending_kreply = rp;
-                handle_id_t rh = handle_table_insert(&t->process->handle_table,
-                                                      &rp->base,
-                                                      RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
-                kobject_release(&rp->base);        /* drop alloc ref; HT holds its own */
-                if (rh != HANDLE_INVALID) {
-                    ipc_stat_bump(&iris_ipc_stat_reply_caps);
-                    t->ipc_msg.attached_handle = (uint32_t)rh;
-                    sender->state = TASK_BLOCKED_REPLY;
-                } else {
-                    kobject_release(&sender->pending_kreply->base);
-                    sender->pending_kreply = 0;
-                    sender->ipc_ep_closed  = 1u;
-                    task_wakeup(sender);
-                }
+            uint32_t reply_attach = IRIS_MSG_NO_CAP;
+            if (ep_bind_call_reply(t, sender, &reply_attach)) {
+                ipc_stat_bump(&iris_ipc_stat_reply_caps);
+                t->ipc_msg.attached_handle = reply_attach;
+                sender->state = TASK_BLOCKED_REPLY;
             } else {
                 sender->ipc_ep_closed = 1u;
                 task_wakeup(sender);
@@ -564,6 +626,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             task_wakeup(sender);
         }
 
+        ep_recv_reply_unstage(t);   /* plain send: staged reply stays unused */
         kobject_release(&ep->base);
 
         if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
@@ -591,6 +654,10 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* A1.5: any routed delivery already consumed the declaration from the
      * sender's context; make sure it never survives this recv either way. */
     t->ep_recv_slot = 0;
+
+    /* Fase S1: if the rendezvous did not consume the staged reply object
+     * (plain send, closed endpoint, cancel) release the claim now. */
+    ep_recv_reply_unstage(t);
 
     if (t->ipc_ep_closed) { t->ipc_ep_closed = 0; return syscall_err(IRIS_ERR_CLOSED); }
 
@@ -719,7 +786,6 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /* ── SYS_EP_NB_RECV ──────────────────────────────────────────────────── */
 
 uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -747,11 +813,19 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
     }
 
+    /* Fase S1: stage the explicit reply object named by arg2 (0 = none). */
+    err = ep_recv_reply_stage(t, arg2);
+    if (err != IRIS_OK) {
+        kobject_release(&ep->base);
+        return syscall_err(err);
+    }
+
     uint64_t flags = irq_spinlock_lock(&ep->lock);
 
     if (ep->closed) {
         irq_spinlock_unlock(&ep->lock, flags);
         t->ep_recv_slot = 0;
+        ep_recv_reply_unstage(t);
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_CLOSED);
     }
@@ -759,11 +833,22 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (ep->ep_state != EP_STATE_SEND) {
         irq_spinlock_unlock(&ep->lock, flags);
         t->ep_recv_slot = 0;
+        ep_recv_reply_unstage(t);
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_WOULD_BLOCK);
     }
 
     struct task *sender = ep->queue_head;
+
+    /* Fase S1: a call-mode sender REQUIRES an explicit reply object (see
+     * sys_ep_recv) — refuse before anything is consumed. */
+    if (sender->ep_call_mode && !t->ep_reply_obj) {
+        irq_spinlock_unlock(&ep->lock, flags);
+        t->ep_recv_slot = 0;
+        kobject_release(&ep->base);
+        return syscall_err(IRIS_ERR_NOT_SUPPORTED);
+    }
+
     ep->queue_head = sender->ep_next;
     if (!ep->queue_head) { ep->queue_tail = 0; ep->ep_state = EP_STATE_IDLE; }
     sender->ep_next     = 0;
@@ -817,27 +902,15 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
     t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 
-    /* Ph85: ep_call_mode senders block until replied to. */
+    /* Ph85/Fase S1: ep_call_mode senders block until replied to — bind the
+     * receiver's staged explicit reply object (no implicit KReply). */
     if (sender->ep_call_mode) {
         sender->ep_call_mode = 0u;
-        struct KReply *rp = kreply_alloc(sender);
-        if (rp) {
-            kobject_retain(&rp->base);
-            sender->pending_kreply = rp;
-            handle_id_t rh = handle_table_insert(&t->process->handle_table,
-                                                  &rp->base,
-                                                  RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
-            kobject_release(&rp->base);
-            if (rh != HANDLE_INVALID) {
-                ipc_stat_bump(&iris_ipc_stat_reply_caps);
-                t->ipc_msg.attached_handle = (uint32_t)rh;
-                sender->state = TASK_BLOCKED_REPLY;
-            } else {
-                kobject_release(&sender->pending_kreply->base);
-                sender->pending_kreply = 0;
-                sender->ipc_ep_closed  = 1u;
-                task_wakeup(sender);
-            }
+        uint32_t reply_attach = IRIS_MSG_NO_CAP;
+        if (ep_bind_call_reply(t, sender, &reply_attach)) {
+            ipc_stat_bump(&iris_ipc_stat_reply_caps);
+            t->ipc_msg.attached_handle = reply_attach;
+            sender->state = TASK_BLOCKED_REPLY;
         } else {
             sender->ipc_ep_closed = 1u;
             task_wakeup(sender);
@@ -846,6 +919,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         task_wakeup(sender);
     }
 
+    ep_recv_reply_unstage(t);   /* plain send: staged reply stays unused */
     kobject_release(&ep->base);
 
     if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))

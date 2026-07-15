@@ -5,11 +5,24 @@
 #include <iris/paging.h>
 #include <stdatomic.h>
 
+
+/* Fase S1: kreply_alloc(caller) is retired — reproduce the old semantics for
+ * these tests: placement-init in an untyped-child block, then stage+bind the
+ * caller (the production rendezvous sequence). */
+static struct KReply *test_kreply_alloc(struct task *caller) {
+    struct KReply *r = TEST_UT_ALLOC(struct KReply, kreply_alloc_at);
+    if (r && caller) {
+        (void)kreply_stage(r);
+        (void)kreply_bind_caller(r, caller);
+    }
+    return r;
+}
+
 void test_kreply(void) {
     TEST_SUITE("kreply");
 
     /* ── alloc with NULL caller ── */
-    struct KReply *r = kreply_alloc(NULL);
+    struct KReply *r = test_kreply_alloc(NULL);
     ASSERT_NOT_NULL(r);
     ASSERT_EQ(atomic_load(&r->base.refcount),    1u);
     ASSERT_EQ(atomic_load(&r->base.active_refs), 0u);
@@ -22,7 +35,7 @@ void test_kreply(void) {
 
     /* ── alloc with non-NULL caller ── */
     struct task caller = { 0 };
-    struct KReply *r2 = kreply_alloc(&caller);
+    struct KReply *r2 = test_kreply_alloc(&caller);
     ASSERT_NOT_NULL(r2);
     ASSERT_EQ(r2->caller, &caller);
 
@@ -40,7 +53,7 @@ void test_kreply(void) {
 
     /* ── close op fires cancel when handle is dropped ── */
     struct task caller3 = { 0 };
-    struct KReply *r3 = kreply_alloc(&caller3);
+    struct KReply *r3 = test_kreply_alloc(&caller3);
     ASSERT_NOT_NULL(r3);
     ASSERT_EQ(r3->caller, &caller3);
     /* fire close by cycling active_refs */
@@ -53,9 +66,8 @@ void test_kreply(void) {
     /* ── kreply_cancel_caller(NULL) is safe ── */
     kreply_cancel_caller(NULL);
 
-    /* ── alloc failure injection ── */
-    kslab_fail_after(0);
-    struct KReply *rf = kreply_alloc(NULL);
+    /* ── alloc failure path (Fase S1: no kslab — placement on NULL block,
+     * i.e. the untyped carve failed upstream) ── */
+    struct KReply *rf = kreply_alloc_at(NULL);
     ASSERT_NULL(rf);
-    kslab_clear_fail();
 }

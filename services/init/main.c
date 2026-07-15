@@ -32,6 +32,12 @@
 handle_id_t g_init_console_ep_h = HANDLE_INVALID;
 static uint8_t g_init_con_ep_buf[IRIS_IPC_BUF_SIZE];
 
+/* Fase S1: init's untyped pool — the boot KUntyped userboot minted at slot 12.
+ * Every kernel object init fabricates (console/svcmgr endpoints, reply
+ * objects, test fixtures) is retyped from it; the sub-untypeds delegated to
+ * svcmgr and iris_test are carved from it too. */
+handle_id_t g_init_untyped_h = HANDLE_INVALID;
+
 void init_log(const char *s) {
     /* Fase 13 (Track I): endpoint-first over console.ep (synchronous flush
      * barrier) once it exists; the only pre-console.ep fallback is the direct
@@ -135,6 +141,14 @@ void init_main(handle_id_t bootstrap_ch_h) {
     if (bootstrap_h == HANDLE_INVALID)
         init_exit(1);
     init_early_serial_start(bootstrap_h);
+
+    /* Fase S1: resolve the delegated boot untyped (slot 12) BEFORE any spawn —
+     * console/svcmgr endpoints and reply objects are retyped from it. */
+    {
+        long ur = init_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_INIT_UNTYPED);
+        if (ur >= 0) g_init_untyped_h = (handle_id_t)ur;
+        else init_early_serial_write("[INIT] boot untyped resolve FAILED\r\n");
+    }
 
     /* Spawn fb first (fire-and-forget): it claims the framebuffer and exits. */
     init_spawn_fb(bootstrap_h);

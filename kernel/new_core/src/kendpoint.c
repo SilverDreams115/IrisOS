@@ -1,7 +1,6 @@
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kuntyped.h>
-#include <iris/kslab.h>
 #include <iris/task.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -45,30 +44,9 @@ static void kendpoint_obj_close(struct KObject *obj) {
     irq_spinlock_unlock(&ep->lock, flags);
 }
 
-static void kendpoint_obj_destroy(struct KObject *obj) {
-    atomic_fetch_sub_explicit(&kendpoint_live, 1u, memory_order_relaxed);
-    kslab_free((struct KEndpoint *)obj, (uint32_t)sizeof(struct KEndpoint));
-}
-
-static const struct KObjectOps kendpoint_ops = {
-    .close   = kendpoint_obj_close,
-    .destroy = kendpoint_obj_destroy,
-};
-
-struct KEndpoint *kendpoint_alloc(void) {
-    struct KEndpoint *ep = kslab_alloc((uint32_t)sizeof(struct KEndpoint));
-    if (!ep) return 0;
-    kobject_init(&ep->base, KOBJ_ENDPOINT, &kendpoint_ops);
-    irq_spinlock_init(&ep->lock);
-    ep->ep_state   = EP_STATE_IDLE;
-    ep->closed     = 0;
-    ep->queue_head = 0;
-    ep->queue_tail = 0;
-    atomic_fetch_add_explicit(&kendpoint_live, 1u, memory_order_relaxed);
-    return ep;
-}
-
-/* ── Untyped-backed variant (Ph78) ──────────────────────────────── */
+/* ── Untyped-backed variant (Ph78; Fase S1: the ONLY variant) ─────
+ * The kslab-backed kendpoint_alloc is retired: every KEndpoint payload
+ * lives inside the KUntyped region it was retyped from (S2/S14). */
 
 static void kendpoint_obj_destroy_ut(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kendpoint_live, 1u, memory_order_relaxed);

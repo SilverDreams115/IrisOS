@@ -10,6 +10,7 @@
 #include <iris/nc/kbootcap.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kvmo.h>
+#include <iris/nc/kuntyped.h>
 #include <iris/paging.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -20,28 +21,45 @@ static HandleTable phase3_full_ht;
 static HandleTable phase41_ht;
 static handle_id_t phase3_fill_ids[HANDLE_TABLE_MAX];
 
-/* Fase 13/Track G: the channel-quota portion is retired with the KChannel
- * object; this selftest now covers the notification and VMO quotas. */
+/*
+ * Fase S1: kernel-internal KNotification fixtures.
+ *
+ * The kslab-backed knotification_alloc is retired, so this boot selftest
+ * places its notification objects in STATIC blocks shaped like an untyped
+ * child (KUNTYPED_ALIGN header with a NULL parent pointer + payload).  The
+ * production code path (knotification_alloc_at + destroy_ut →
+ * kuntyped_release_child) is exercised unchanged; release_child sees the
+ * NULL parent and only zeroes the block.  Bounded and static: this is a
+ * test fixture, never a runtime allocator (bootstrap-exception discipline).
+ */
+#define P3_NOTIF_FIXTURES 6u
+static uint8_t p3_notif_blocks[P3_NOTIF_FIXTURES]
+                              [KUNTYPED_ALIGN + sizeof(struct KNotification)]
+    __attribute__((aligned(KUNTYPED_ALIGN)));
+static uint32_t p3_notif_next;
+
+static struct KNotification *p3_notif_fixture(void) {
+    if (p3_notif_next >= P3_NOTIF_FIXTURES) return 0;
+    uint8_t *blk = p3_notif_blocks[p3_notif_next++];
+    for (uint32_t i = 0;
+         i < (uint32_t)(KUNTYPED_ALIGN + sizeof(struct KNotification)); i++)
+        blk[i] = 0;
+    return knotification_alloc_at(blk + KUNTYPED_ALIGN);
+}
+
+/* Fase 13/Track G: the channel-quota portion was retired with KChannel.
+ * Fase S1: the NOTIFICATION quota is retired too (Untyped is the budget for
+ * notifications), so this selftest now covers the remaining legacy quota:
+ * KVmo ownership accounting (LEGACY_FOR_KPROCESS_KVMO in the ledger). */
 static int phase3_quota_selftest(void) {
     struct KProcess *proc = 0;
-    struct KNotification *notifs[KPROCESS_NOTIFICATION_QUOTA + 1];
     struct KVmo *vmos[KPROCESS_VMO_QUOTA + 1];
     int ok = 0;
 
-    for (uint32_t i = 0; i < KPROCESS_NOTIFICATION_QUOTA + 1; i++) notifs[i] = 0;
     for (uint32_t i = 0; i < KPROCESS_VMO_QUOTA + 1; i++) vmos[i] = 0;
 
     proc = kprocess_alloc();
     if (!proc) goto out;
-
-    for (uint32_t i = 0; i < KPROCESS_NOTIFICATION_QUOTA; i++) {
-        notifs[i] = knotification_alloc();
-        if (!notifs[i]) goto out;
-        if (knotification_bind_owner(notifs[i], proc) != IRIS_OK) goto out;
-    }
-    notifs[KPROCESS_NOTIFICATION_QUOTA] = knotification_alloc();
-    if (!notifs[KPROCESS_NOTIFICATION_QUOTA]) goto out;
-    if (knotification_bind_owner(notifs[KPROCESS_NOTIFICATION_QUOTA], proc) != IRIS_ERR_NO_MEMORY) goto out;
 
     for (uint32_t i = 0; i < KPROCESS_VMO_QUOTA; i++) {
         vmos[i] = kvmo_create(0x1000ULL);
@@ -52,15 +70,11 @@ static int phase3_quota_selftest(void) {
     if (!vmos[KPROCESS_VMO_QUOTA]) goto out;
     if (kvmo_bind_owner(vmos[KPROCESS_VMO_QUOTA], proc) != IRIS_ERR_NO_MEMORY) goto out;
 
-    if (proc->owned_notifications != KPROCESS_NOTIFICATION_QUOTA) goto out;
     if (proc->owned_vmos != KPROCESS_VMO_QUOTA) goto out;
 
     ok = 1;
 
 out:
-    for (uint32_t i = 0; i < KPROCESS_NOTIFICATION_QUOTA + 1; i++) {
-        if (notifs[i]) knotification_free(notifs[i]);
-    }
     for (uint32_t i = 0; i < KPROCESS_VMO_QUOTA + 1; i++) {
         if (vmos[i]) kvmo_free(vmos[i]);
     }
@@ -78,7 +92,7 @@ static int phase3_process_selftest(void) {
     int ok = 0;
 
     proc = kprocess_alloc();
-    xnotif = knotification_alloc();
+    xnotif = p3_notif_fixture();
     vmo = kvmo_create(0x1000ULL);
     large_vmo = kvmo_create(0x200000ULL);
     if (!proc || !xnotif || !vmo || !large_vmo) goto out;
@@ -141,7 +155,7 @@ static int phase3_handle_selftest(void) {
     handle_table_init(&phase3_dest_ht);
     handle_table_init(&phase3_full_ht);
 
-    notif = knotification_alloc();
+    notif = p3_notif_fixture();
     if (!notif) goto out;
 
     h = handle_table_insert(&phase3_ht, &notif->base,
@@ -214,7 +228,7 @@ static int phase3_handle_selftest(void) {
     {
         uint32_t saved_ghwm =
             __atomic_load_n(&handle_table_global_hwm, __ATOMIC_RELAXED);
-        fill_notif = knotification_alloc();
+        fill_notif = p3_notif_fixture();
         if (!fill_notif) goto out;
         for (uint32_t i = 0; i < HANDLE_TABLE_MAX; i++) {
             phase3_fill_ids[i] = handle_table_insert(&phase3_full_ht, &fill_notif->base, RIGHT_READ);
@@ -249,7 +263,7 @@ out:
 /* phase3_channel_selftest retired — Fase 13/Track G (KChannel object removed). */
 
 static int phase3_notification_selftest(void) {
-    struct KNotification *n = knotification_alloc();
+    struct KNotification *n = p3_notif_fixture();
     struct task fake_waiter;
     struct task cancelled_waiter;
     uint64_t bits = 0;
@@ -305,7 +319,7 @@ static int phase41_rights_selftest(void) {
     int ok = 0;
 
     handle_table_init(&phase41_ht);
-    n = knotification_alloc();
+    n = p3_notif_fixture();
     if (!n) goto out;
 
     /* 1. rights_reduce invariants */

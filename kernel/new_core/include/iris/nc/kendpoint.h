@@ -22,8 +22,8 @@ struct KEndpoint {
     struct task     *queue_tail;
 };
 
-struct KEndpoint *kendpoint_alloc(void);
-struct KEndpoint *kendpoint_alloc_at(void *mem); /* Ph78: create in untyped-backed memory */
+/* Fase S1: Untyped retype is the ONLY creation path (kslab variant retired). */
+struct KEndpoint *kendpoint_alloc_at(void *mem);
 void              kendpoint_close(struct KEndpoint *ep);
 
 /* Fase 18: live KEndpoint object count (additive diagnostics). */

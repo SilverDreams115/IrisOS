@@ -61,3 +61,46 @@ allocate → publish → commit; on failure, release the provisional charge and
 publish nothing).  `SYS_RESOURCE_INFO` makes the balance observable; T239–T250
 assert usage returns exactly to baseline after every scenario (Q23) while
 high-water marks stay monotone (Q24).
+
+## Fase S1 — Untyped-backed lifetime (Endpoint / Notification / Reply / CNode)
+
+Los objetos migrados NO adquieren cargas de quota: su "charge" es la memoria
+Untyped consumida (`child_count` + `used_bytes` del Untyped fuente), y su
+release es la destrucción del objeto (el bloque vuelve cero-relleno a la
+región).  La quota de notifications fue RETIRADA en S1.
+
+Ciclo completo:
+
+```
+cap delete            SYS_CNODE_DELETE(0=own root, slot) / SYS_HANDLE_CLOSE
+                      → suelta ese slot/handle; el objeto vive si quedan
+                        caps o refs kernel (S10)
+last capability       active_refs → 0 ⇒ close():
+                        Endpoint: closed=1, colas drenadas, waiters CLOSED
+                        Notification: closed=1, waiters CLOSED
+                        Reply: caller (si bound) despierta CLOSED; staged=0
+object destruction    refcount → 0 ⇒ destroy():
+                        kuntyped_release_child: zero del bloque,
+                        child_count-- y release del padre
+Untyped reusable      child_count==0 ⇒ SYS_UNTYPED_RESET: used=0,
+                        generation++ (testigo de reuse)
+```
+
+Revoke:
+- `SYS_CAP_REVOKE(h)` cascada sobre el árbol de derivación de la handle
+  table (descendants exactos, idempotente, no toca siblings).
+- Copias minteadas en CNodes son refs independientes (documentado + T127);
+  un CDT sobre CSpace es trabajo de la fase CSpace-only (ledger).
+- Endpoint: cubre senders/receivers/callers bloqueados, staged caps y
+  procesos muertos vía close/cancel (A1.9–A1.11, T255/T258).
+- Notification: waiters, pending bits, binding IRQ (la ruta retiene la
+  notification), uso compartido de pager (T256, T237).
+- Reply: no consumido (close→caller CLOSED), caller muerto (unbind →
+  reusable), server muerto (slots del proceso → close), consumido (free),
+  stale (slot vacío → NOT_FOUND) — T257/T258.
+
+Referencias kernel internas que retienen objetos migrados (y por qué no hay
+punteros stale tras reuse): `sender->pending_kreply` (ref hasta wake),
+`t->ep_reply_obj` (staging ref, liberada en todo camino de salida del recv y
+en teardown), rutas IRQ → notification (ref hasta des-registro), colas de
+EP/notification (desencoladas en close/cancel/teardown).

@@ -300,6 +300,9 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* ── Forward declarations — Block 4+5 untyped memory (Ph76-81) ───── */
 uint64_t sys_untyped_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                             uint64_t arg3);                               /* Fase S1 */
+uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2);   /* Fase S1 */
 uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — Block 9 frame capabilities (Fase 5 / 5.1) ── */

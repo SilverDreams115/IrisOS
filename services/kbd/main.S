@@ -174,6 +174,15 @@ _start:
     movq  $0, 64(%rsi)                 /* sender_badge (kernel overwrites) */
     leaq  kbd_ep_buf(%rip), %rax
     movq  %rax, 48(%rsi)               /* buf_uptr = kbd_ep_buf            */
+    /* Fase S1: pass a FREE explicit reply object in arg2 (rdx).  kbd owns
+     * two reply objects (slots 13/14, minted by svcmgr): the one currently
+     * parked (kbd_park) is bound to a waiting READ caller, so recv with the
+     * other.  0 parked → use 13. */
+    movl  $13, %edx
+    cmpl  $13, kbd_park(%rip)
+    jne   .kbd_reply_pick_done
+    movl  $14, %edx
+.kbd_reply_pick_done:
     movq  $SYS_EP_NB_RECV, %rax
     syscall
     testq %rax, %rax
@@ -275,9 +284,7 @@ _start:
     leaq  kbd_ep_msg(%rip), %rsi
     movq  $SYS_REPLY, %rax
     syscall                            /* failure tolerated: caller died   */
-    movl  92(%rsp), %edi
-    movq  $15, %rax                    /* SYS_HANDLE_CLOSE: drop reply cap */
-    syscall
+    /* Fase S1: the reply CPtr (slot 13/14) is a reusable object — no close. */
     jmp   .kbd_ep_drain
 
 /* ── Wait on the IRQ KNotification (Fase 13/Track I) ──────────────────────
@@ -375,9 +382,7 @@ _start:
     movl  kbd_park(%rip), %edi
     movq  $SYS_REPLY, %rax
     syscall                            /* failure tolerated: caller died   */
-    movl  kbd_park(%rip), %edi
-    movq  $15, %rax                    /* SYS_HANDLE_CLOSE: drop reply cap */
-    syscall
+    /* Fase S1: parked reply CPtr is a reusable object — no close. */
     movl  $0, kbd_park(%rip)
     jmp   .kbd_recv
 .kbd_irq_ring:                         /* push; drop OLDEST when full      */
