@@ -24,14 +24,16 @@
 #include "vfs_ep.h"
 #include "../common/console_client.h"
 
-#define VFS_SERVICE_EXPORTS 16u
+#define VFS_SERVICE_EXPORTS 20u
 
 struct vfs_state {
     handle_id_t bootstrap_h;
     handle_id_t console_h;
     handle_id_t spawn_cap_h;
     handle_id_t ep_h;          /* recv side of our KEndpoint (Fase 7.1) */
-    struct vfs_export exports[VFS_SERVICE_EXPORTS];
+    struct vfs_export      exports[VFS_SERVICE_EXPORTS];
+    struct vfs_grant_table grants;   /* Fase 28.1: VFS-enforced file grants */
+    struct vfs_ep_state    ep_state;
 };
 
 static const char vfs_str_started[]   = "VFS start\n";
@@ -202,6 +204,53 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
     }
 }
 
+/* Fase 28 Bloque B: export a single initrd image (a file-backed content
+ * fixture) under an explicit name.  Unlike vfs_seed_initrd_exports, this is
+ * NOT clamped to the first VFS_INITRD_NAME_COUNT images — file-backed fixtures
+ * live at higher indices (>= SL_CATALOG_COUNT) that the clamp skips.  Returns 1
+ * on success.  `name` must be a RIP-relative string literal (no relocation). */
+static int vfs_seed_one_fixture(struct vfs_state *state, uint32_t index,
+                                const char *name) {
+    uint32_t slot;
+    int64_t  vmo_h, sz_rc, map_rc;
+    uint64_t virt;
+
+    if (!state || state->spawn_cap_h == HANDLE_INVALID) return 0;
+    for (slot = 0; slot < (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0])); slot++)
+        if (!state->exports[slot].ready) break;
+    if (slot == (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0]))) return 0;
+
+    vmo_h = vfs_syscall2(SYS_INITRD_VMO, (uint64_t)state->spawn_cap_h, (uint64_t)index);
+    if (vmo_h < 0) return 0;
+    sz_rc = vfs_syscall1(SYS_VMO_SIZE, (uint64_t)vmo_h);
+    if (sz_rc <= 0) { vfs_syscall1(SYS_HANDLE_CLOSE, (uint64_t)vmo_h); return 0; }
+
+    virt = VFS_INITRD_MAP_BASE + (uint64_t)index * VFS_INITRD_MAP_SLOT;
+    map_rc = vfs_syscall3(SYS_VMO_MAP, (uint64_t)vmo_h, virt, 0);
+    vfs_syscall1(SYS_HANDLE_CLOSE, (uint64_t)vmo_h);
+    if (map_rc != 0) return 0;
+
+    {
+        struct vfs_export *exp = &state->exports[slot];
+        uint32_t j;
+        for (j = 0; j + 1u < VFS_EP_PATH_MAX && name[j]; j++) exp->name[j] = name[j];
+        for (; j < VFS_EP_PATH_MAX; j++) exp->name[j] = '\0';
+        exp->size = (uint32_t)sz_rc;
+        exp->is_mapped = 1;
+        exp->virt_base = virt;
+        exp->ready = 1;
+    }
+    return 1;
+}
+
+/* File-backed content fixtures (must match kernel/core/initrd/initrd.c). */
+static void vfs_seed_fixture_exports(struct vfs_state *state) {
+    (void)vfs_seed_one_fixture(state, 12u, "fbk.dat");
+    (void)vfs_seed_one_fixture(state, 13u, "fbk2.dat");
+    (void)vfs_seed_one_fixture(state, 14u, "elfseg.dat");
+    (void)vfs_seed_one_fixture(state, 15u, "small.dat");
+}
+
 /* Single-threaded server: static IPC buffers, no stack pressure. */
 static uint8_t g_vfs_ep_req_buf[VFS_EP_DATA_MAX];
 static uint8_t g_vfs_ep_reply_buf[VFS_EP_DATA_MAX];
@@ -219,9 +268,7 @@ static void vfs_ep_serve(struct vfs_state *state, struct IrisMsg *req) {
     const uint8_t *req_buf =
         (req->buf_len > 0u && req->buf_uptr != 0u) ? g_vfs_ep_req_buf : 0;
 
-    vfs_ep_dispatch(state->exports,
-                    (uint32_t)(sizeof(state->exports) / sizeof(state->exports[0])),
-                    req, req_buf, &reply, g_vfs_ep_reply_buf);
+    vfs_ep_dispatch(&state->ep_state, req, req_buf, &reply, g_vfs_ep_reply_buf);
 
     if (reply_h == HANDLE_INVALID) return;
     (void)vfs_syscall2(SYS_REPLY, reply_h, (uint64_t)(uintptr_t)&reply);
@@ -266,6 +313,36 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
 
     if (!vfs_seed_exports(&state)) goto fail;
     vfs_seed_initrd_exports(&state);
+    vfs_seed_fixture_exports(&state);   /* Fase 28 Bloque B: file-backed fixtures */
+
+    /* Fase 28.1: initialize the file-grant layer.  The instance epoch is the
+     * svcmgr restart generation of "vfs.ep": a restarted VFS gets a strictly
+     * newer epoch, so backing generations from a previous instance can never
+     * validate against this one (old grants are gone with the old table AND
+     * their generation namespace is dead — A12).  If the STATUS probe fails
+     * (bootstrap ordering), epoch 0 still yields a correct single-instance
+     * grant layer. */
+    {
+        uint64_t epoch = 0;
+        struct IrisMsg smsg;
+        uint8_t *p = (uint8_t *)&smsg;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(smsg); i++) p[i] = 0;
+        static const char vfs_self_name[] = "vfs.ep";
+        for (uint32_t i = 0; i < (uint32_t)sizeof(vfs_self_name); i++)
+            g_vfs_ep_reply_buf[i] = (uint8_t)vfs_self_name[i];
+        smsg.label    = IRIS_SVCMGR_EP_STATUS;
+        smsg.buf_uptr = (uint64_t)(uintptr_t)g_vfs_ep_reply_buf;
+        smsg.buf_len  = (uint32_t)sizeof(vfs_self_name);
+        if (vfs_syscall2(SYS_EP_CALL, IRIS_CPTR_SVCMGR_EP,
+                         (uint64_t)(uintptr_t)&smsg) == IRIS_OK &&
+            smsg.label == IRIS_EP_REPLY_OK && smsg.word_count >= 2u)
+            epoch = smsg.words[1];
+        state.ep_state.exports      = state.exports;
+        state.ep_state.export_count =
+            (uint32_t)(sizeof(state.exports) / sizeof(state.exports[0]));
+        state.ep_state.grants       = &state.grants;
+        vfs_ep_grants_init(&state.ep_state, epoch);
+    }
     /* spawn_cap_h is the IRIS_CPTR_SPAWN_CAP CSpace slot, not an owned handle —
      * it is reaped with the address space, nothing to close here (Track C). */
     vfs_log(vfs_str_boot_ok);

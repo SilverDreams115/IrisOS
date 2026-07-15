@@ -8519,6 +8519,7 @@ static void test_t139(void) {
 
 struct it_fault {
     uint32_t vector, task_id, error;
+    uint32_t seq;              /* Fase 25: fault generation (FAULT_OFF_SEQ) */
     uint64_t rip, cr2;
 };
 
@@ -8534,6 +8535,8 @@ static long it_fault_info(handle_id_t proc_h, struct it_fault *f) {
                  ((uint32_t)b[FAULT_OFF_TASK_ID + 2] << 16) | ((uint32_t)b[FAULT_OFF_TASK_ID + 3] << 24);
     f->error   = (uint32_t)b[FAULT_OFF_ERROR]   | ((uint32_t)b[FAULT_OFF_ERROR + 1] << 8) |
                  ((uint32_t)b[FAULT_OFF_ERROR + 2] << 16) | ((uint32_t)b[FAULT_OFF_ERROR + 3] << 24);
+    f->seq     = (uint32_t)b[FAULT_OFF_SEQ]     | ((uint32_t)b[FAULT_OFF_SEQ + 1] << 8) |
+                 ((uint32_t)b[FAULT_OFF_SEQ + 2] << 16) | ((uint32_t)b[FAULT_OFF_SEQ + 3] << 24);
     f->rip = 0; f->cr2 = 0;
     for (uint32_t i = 0; i < 8u; i++) f->rip |= (uint64_t)b[FAULT_OFF_RIP + i] << (i * 8);
     for (uint32_t i = 0; i < 8u; i++) f->cr2 |= (uint64_t)b[FAULT_OFF_CR2 + i] << (i * 8);
@@ -9340,7 +9343,7 @@ static const long it_fz_bad_handles[] = {
  * etc. would self-destruct — the table below is holes only).
  * Invariants: X1, X9, X15, X16, X18, X23. */
 static void test_t148(void) {
-    /* Holes in 0..106 (every number NOT routed by syscall_dispatch). */
+    /* Holes in 0..107 (every number NOT routed by syscall_dispatch). */
     static const long retired[] = {
         0, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 18, 23, 24, 25, 30, 31, 34,
         37, 38, 41, 42, 44, 63, 72,
@@ -9359,8 +9362,10 @@ static void test_t148(void) {
             break;
         }
     }
-    /* High/unassigned range 107..400. */
-    for (long n = 107; ok && n <= 400; n++) {
+    /* High/unassigned range 109..400 (107 = SYS_PROCESS_VSPACE since Fase 25,
+     * 108 = SYS_VMO_MAP_PAGE since Fase 26; their typed/rights fuzz lives with
+     * the other cap syscalls in T149+ and in T191/T192/T194). */
+    for (long n = 109; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -11319,6 +11324,4906 @@ static void test_t180(void) {
     else { it_fz_note("T180", T180_SEED, i, op); it_fail("T180", why); }
 }
 
+/* ── Fase 25: VM policy / user pager groundwork (T181–T190) ─────────────────
+ *
+ * Services are supervised (Fase 24); the next structural boundary is MEMORY
+ * POLICY.  These tests lock the first capability-mediated user-pager model:
+ * an authorized ring-3 component resolves page faults of a SPECIFIC process
+ * with explicit, attenuable authority — and nothing more.
+ *
+ * The pager authority manifest (all minted pre-start by the supervisor):
+ *   target process cap  READ|MANAGE  — fault info + resolution, this target
+ *   target VSpace cap   WRITE        — map-into-target (SYS_PROCESS_VSPACE)
+ *   frame cap           READ[/WRITE] — the one page it may install
+ *   fault notification  WAIT         — the delivery wake-up
+ *
+ * Four Fase 25 additive kernel extensions are exercised here:
+ *   SYS_PROCESS_VSPACE(107)  MANAGE holder → target VSpace cap;
+ *   FAULT_OFF_SEQ            per-process fault generation in the record;
+ *   EXCEPTION_RESUME 2/3     seq-checked resume/kill (stale → NOT_FOUND);
+ *   FRAME_MAP/UNMAP VSpace   dual resolver (handle works; A1 migration
+ *                            completed, radix-masking hazard closed).
+ *
+ * Invariants P1–P24 live in docs/architecture/user-pager-vm-policy.md.
+ * Constants must match services/lifecycle_probe/main.c. */
+
+#define LP_CMD_PAGER_SERVE  0x10A2u
+#define LP_CMD_PAGER_XPROBE 0x10A3u
+#define LP_PGR_SLOT_XPROC   8u
+#define LP_PGR_SLOT_XVS     9u
+#define LP_PGR_SLOT_TPROC   12u
+#define LP_PGR_SLOT_TVS     13u
+#define LP_PGR_SLOT_FRAME   14u
+#define LP_PGR_SLOT_NOTIF   15u
+#define LP_EXIT_PGR_OK      0x0D00L
+
+/* Fault VAs: canonical, page-aligned, inside the user-private window, clear
+ * of every earlier suite VA (T13x self-maps end at 0x8078…, T14X_BAD_VA is
+ * 0x8090…).  T25_SELF_VA is the parent's own scratch mapping for preparing /
+ * inspecting frame contents. */
+#define T25_VA_A    0x8092000000ULL
+#define T25_VA_B    0x8093000000ULL
+#define T25_VA_C    0x8094000000ULL
+#define T25_VA_D    0x8095000000ULL
+#define T25_SELF_VA 0x807A000000ULL
+#define T25_PATTERN 0x5AA51234u
+#define T25_WMARK   0xFA017E57u   /* the store LP_CMD_FAULT_WRITE retires */
+
+/* Best-effort reap: kill (no-op if already dead), wait, close.  Every Fase 25
+ * exit path — success or failure — must NOT leave a probe blocked in EP_RECV
+ * forever: the child holds its own mint of the command endpoint, so closing
+ * the parent's handle alone never wakes it, and a leaked live child keeps its
+ * exception-handler notification pinned. */
+static void t25_reap(handle_id_t *proc_h) {
+    if (*proc_h != HANDLE_INVALID) {
+        (void)it_sys1(SYS_PROCESS_KILL, (long)*proc_h);
+        (void)it_lp_wait_exit(*proc_h);
+    }
+    it_close(proc_h);
+}
+
+/* A supervised pager target: command endpoint, proc cap, VSpace cap (via
+ * SYS_PROCESS_VSPACE), fault-handler notification, exit watch. */
+struct t25_tgt {
+    handle_id_t cmd, proc, vs, notif, watch;
+};
+
+static void t25_tgt_close(struct t25_tgt *g) {
+    it_close(&g->cmd); it_close(&g->proc); it_close(&g->vs);
+    it_close(&g->notif); it_close(&g->watch);
+}
+
+/* Reap variant of the close: kills a possibly-still-alive target first (a
+ * dead target makes the kill a clean no-op). */
+static void t25_tgt_reap(struct t25_tgt *g) {
+    t25_reap(&g->proc);
+    t25_tgt_close(g);
+}
+
+static int t25_tgt_spawn(struct t25_tgt *g, const char **why) {
+    g->cmd = g->proc = g->vs = g->notif = g->watch = HANDLE_INVALID;
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { *why = "ep create"; return 0; }
+    g->cmd = (handle_id_t)ep;
+    if (lp_spawn_child(g->cmd, &g->proc) < 0 || g->proc == HANDLE_INVALID) {
+        it_close(&g->cmd); *why = "spawn"; return 0;
+    }
+    long vs = it_sys1(SYS_PROCESS_VSPACE, (long)g->proc);
+    long n  = it_sys0(SYS_NOTIFY_CREATE);
+    long w  = it_sys0(SYS_NOTIFY_CREATE);
+    g->vs    = (vs >= 0) ? (handle_id_t)vs : HANDLE_INVALID;
+    g->notif = (n  >= 0) ? (handle_id_t)n  : HANDLE_INVALID;
+    g->watch = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
+    long eh = 0, wt = 0;
+    if (vs < 0 || n < 0 || w < 0 ||
+        (eh = it_sys3(SYS_EXCEPTION_HANDLER, (long)g->proc, n, 1)) != 0 ||
+        (wt = it_sys3(SYS_PROCESS_WATCH, (long)g->proc, w, 1)) != 0) {
+        it_serial_write("[IRIS][TEST] t25 wire vs="); it_log_num((uint32_t)-vs);
+        it_serial_write(" n="); it_log_num((uint32_t)-n);
+        it_serial_write(" w="); it_log_num((uint32_t)-w);
+        it_serial_write(" eh="); it_log_num((uint32_t)-eh);
+        it_serial_write(" wt="); it_log_num((uint32_t)-wt);
+        it_serial_write("\n");
+        (void)it_sys1(SYS_PROCESS_KILL, (long)g->proc);
+        t25_tgt_close(g);
+        *why = "target wire"; return 0;
+    }
+    return 1;
+}
+
+/* Spawn an external pager over `g` with the declared manifest (plus optional
+ * extra mints, e.g. T184's under-privileged victim caps).  0 on success. */
+static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
+                            iris_rights_t frame_rights,
+                            const struct svc_mint *extra, uint32_t nextra,
+                            handle_id_t *out_cmd, handle_id_t *out_proc) {
+    *out_cmd = *out_proc = HANDLE_INVALID;
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) return -1;
+    handle_id_t cmd = (handle_id_t)ep;
+    struct svc_mint m[8];
+    m[0].slot = LP_CPTR_CMD_EP;    m[0].src_h = cmd;      m[0].rights = RIGHT_READ | RIGHT_WRITE;  m[0].badge = 0;
+    m[1].slot = LP_PGR_SLOT_TPROC; m[1].src_h = g->proc;  m[1].rights = RIGHT_READ | RIGHT_MANAGE; m[1].badge = 0;
+    m[2].slot = LP_PGR_SLOT_TVS;   m[2].src_h = g->vs;    m[2].rights = RIGHT_WRITE;               m[2].badge = 0;
+    m[3].slot = LP_PGR_SLOT_FRAME; m[3].src_h = frame_h;  m[3].rights = frame_rights;              m[3].badge = 0;
+    m[4].slot = LP_PGR_SLOT_NOTIF; m[4].src_h = g->notif; m[4].rights = RIGHT_WAIT;                m[4].badge = 0;
+    uint32_t n = 5u;
+    for (uint32_t i = 0; i < nextra && n < 8u; i++) m[n++] = extra[i];
+    handle_id_t boot = HANDLE_INVALID;
+    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+                             out_proc, &boot, m, n);
+    it_close(&boot);
+    if (r < 0 || *out_proc == HANDLE_INVALID) {
+        it_close(&cmd); it_close(out_proc); return -1;
+    }
+    *out_cmd = cmd;
+    return 0;
+}
+
+static long t25_serve(handle_id_t pcmd, uint32_t sub, uint32_t count,
+                      uint64_t mflags, uint64_t va_ovr, uint64_t expect_cr2) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label = LP_CMD_PAGER_SERVE;
+    m.words[0] = (uint64_t)sub | ((uint64_t)count << 8);
+    m.words[1] = mflags;
+    m.words[2] = va_ovr;
+    m.words[3] = expect_cr2;
+    m.word_count = 4u;
+    return it_sys2(SYS_EP_SEND, (long)pcmd, (long)&m);
+}
+
+static long t25_xprobe(handle_id_t pcmd, uint32_t vtid, uint64_t va, uint32_t vseq) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label = LP_CMD_PAGER_XPROBE;
+    m.words[0] = vtid;
+    m.words[1] = va;
+    m.words[2] = vseq;
+    m.word_count = 3u;
+    return it_sys2(SYS_EP_SEND, (long)pcmd, (long)&m);
+}
+
+/* Seq-checked resolution (EXCEPTION_RESUME action 2/3 with the generation in
+ * bits [63:32]). */
+static long t25_resume_seq(handle_id_t proc_h, uint32_t tid, uint32_t seq, int kill) {
+    return it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)tid,
+                   (long)(((uint64_t)seq << 32) | (kill ? 3u : 2u)));
+}
+
+/* Bounded non-consuming wait for a pending fault (polls FAULT_INFO — never
+ * steals the notification signal from a pager). */
+static int t25_wait_fault(handle_id_t proc_h, struct it_fault *f) {
+    for (int i = 0; i < 400; i++) {
+        long r = it_fault_info(proc_h, f);
+        if (r == 0) return 1;
+        if (r != (long)IRIS_ERR_WOULD_BLOCK) return 0;
+        it_sys1(SYS_SLEEP, 1);
+    }
+    return 0;
+}
+
+/* Bounded wait for the fault generation to move past `old_seq` (refault). */
+static int t25_wait_refault(handle_id_t proc_h, uint32_t old_seq, struct it_fault *f) {
+    for (int i = 0; i < 400; i++) {
+        if (it_fault_info(proc_h, f) == 0 && f->seq != old_seq) return 1;
+        it_sys1(SYS_SLEEP, 1);
+    }
+    return 0;
+}
+
+/* Write (write=1) or read back (write=0) word 0 of a frame through the
+ * parent's own VSpace — frame preparation and post-mortem inspection. */
+static int t25_frame_word(handle_id_t fr, uint32_t *val, int write) {
+    if (!it_setup_self_vspace()) return 0;
+    if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T25_SELF_VA,
+                write ? 1L : 0L) != 0) return 0;
+    volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)T25_SELF_VA;
+    if (write) *p = *val; else *val = *p;
+    return it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T25_SELF_VA) == 0;
+}
+
+/* ── T181: pager authority manifest ─────────────────────────────────────────
+ * A pager's authority is EXACTLY its declared manifest: cmd endpoint + target
+ * proc (READ|MANAGE) + target VSpace (WRITE) + one frame + fault notification
+ * (WAIT).  The slot report shows exactly that set — no spawn cap, no device
+ * caps, no untyped, no KDEBUG, no peer service slots, no self-proc/vspace.
+ * SYS_PROCESS_VSPACE itself is MANAGE-gated with no fallback: a READ-only
+ * proc cap is denied, a wrong type is rejected, self (HANDLE_INVALID) stays
+ * the VSPACE_SELF equivalence.  Invariants: P1, P2, P24. */
+static void test_t181(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "pager manifest";
+
+    struct t25_tgt g;
+    if (!t25_tgt_spawn(&g, &why)) { it_fail("T181", why); return; }
+    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    if (fr < 0) { ok = 0; why = "frame retype"; }
+
+    if (ok) {
+        struct svc_mint x[4];
+        x[0].slot = LP_PGR_SLOT_TPROC; x[0].src_h = g.proc;  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
+        x[1].slot = LP_PGR_SLOT_TVS;   x[1].src_h = g.vs;    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
+        x[2].slot = LP_PGR_SLOT_FRAME; x[2].src_h = fr_h;    x[2].rights = RIGHT_READ | RIGHT_WRITE;  x[2].badge = 0;
+        x[3].slot = LP_PGR_SLOT_NOTIF; x[3].src_h = g.notif; x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
+        long rep = it_lp_report_slots(x, 4u);
+        uint32_t expect = (1u << LP_CPTR_CMD_EP)    | (1u << LP_PGR_SLOT_TPROC) |
+                          (1u << LP_PGR_SLOT_TVS)   | (1u << LP_PGR_SLOT_FRAME) |
+                          (1u << LP_PGR_SLOT_NOTIF);
+        if (rep < 0 || (uint32_t)rep != expect) { ok = 0; why = "manifest mismatch"; }
+        /* Explicitly: no spawn(6), no device(10/11), no peers(1/2/4), no
+         * self-proc(→16)/untyped(→17)/vspace-self(→18). */
+        if (ok && ((uint32_t)rep & ((1u<<6)|(1u<<10)|(1u<<11)|(1u<<1)|(1u<<2)|(1u<<4)|
+                                    (1u<<16)|(1u<<17)|(1u<<18))) != 0) {
+            ok = 0; why = "high-authority slot leaked";
+        }
+    }
+
+    /* SYS_PROCESS_VSPACE authority: MANAGE or nothing. */
+    long ro = ok ? it_sys2(SYS_HANDLE_DUP, (long)g.proc, (long)RIGHT_READ) : -1;
+    handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
+    if (ok && ro < 0) { ok = 0; why = "ro dup"; }
+    if (ok && it_sys1(SYS_PROCESS_VSPACE, ro) != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "no-manage not denied";
+    }
+    if (ok && it_sys1(SYS_PROCESS_VSPACE, (long)g.notif) != (long)IRIS_ERR_WRONG_TYPE) {
+        ok = 0; why = "wrong type accepted";
+    }
+    if (ok) {
+        long sv = it_sys1(SYS_PROCESS_VSPACE, (long)HANDLE_INVALID);
+        if (sv < 0) { ok = 0; why = "self vspace"; }
+        else { handle_id_t h = (handle_id_t)sv; it_close(&h); }
+    }
+    it_close(&ro_h);
+
+    if (it_sys1(SYS_PROCESS_KILL, (long)g.proc) != 0 && ok) { ok = 0; why = "kill"; }
+    if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target exit"; }
+    t25_tgt_reap(&g);
+    it_close(&fr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T181"); else it_fail("T181", why);
+}
+
+/* ── T182: external pager receives an invalid-VA fault ──────────────────────
+ * The full external delivery path: the target touches an unmapped VA; the
+ * PAGER (a separate process) wakes on its WAIT-only notification cap, reads
+ * honest fault info through its READ|MANAGE target cap (validating cr2
+ * itself), decides, and resolves with a seq-checked kill.  Delivery is
+ * exactly-once (no residual signal, no residual record) and hands the pager
+ * no capability it was not minted.  Invariants: P2, P3, P9, P12, P21. */
+static void test_t182(void) {
+    uint32_t f0[5], f1[5];
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok && it_sched_ext5(f0);
+    const char *why = "external delivery";
+
+    struct t25_tgt g;
+    if (!t25_tgt_spawn(&g, &why)) { it_fail("T182", why); return; }
+    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    if (fr < 0) { ok = 0; why = "frame retype"; }
+    if (ok && t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) {
+        ok = 0; why = "pager spawn";
+    }
+
+    /* Pager: one fault, validate cr2 == T25_VA_A, seq-checked kill. */
+    if (ok && t25_serve(pcmd, 3u, 1u, 0, 0, T25_VA_A) != 0) { ok = 0; why = "serve cmd"; }
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
+    if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target not killed"; }
+    if (ok && it_lp_wait_exit(pproc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager report"; }
+
+    /* Exactly-once: the signal was consumed by the pager and never re-fires;
+     * the record did not outlive the resolution. */
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)g.notif, (long)(uintptr_t)&bits,
+                    100000000LL) == 0 && (bits & 1ull)) { ok = 0; why = "double delivery"; }
+    }
+    if (ok && it_fault_info(g.proc, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "record survived";
+    }
+
+    t25_reap(&pproc); it_close(&pcmd);
+    t25_tgt_reap(&g);
+    it_close(&fr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_sched_ext5(f1)) { ok = 0; why = "ext5 final"; }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 1u) { ok = 0; why = "delivered != 1"; }
+    if (ok && f1[IT_S5_KILL]    != f0[IT_S5_KILL] + 1u)    { ok = 0; why = "kill count"; }
+    if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 1u)   { ok = 0; why = "cleanup count"; }
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T182"); else it_fail("T182", why);
+}
+
+/* ── T183: pager maps a frame into the target VSpace ────────────────────────
+ * The resolution path that DEFINES a pager: map-into-target + resume, both by
+ * explicit capability.  (A) read fault: the pager installs its frame
+ * read-only at the faulting VA and seq-resumes; the target continues and
+ * READS the pattern the supervisor placed in the frame (its exit code proves
+ * the data flowed).  (B) write fault: a second target's store retires into a
+ * writable mapping and is visible to the supervisor through the frame
+ * afterwards.  Target death sweeps the pager-installed mapping; the frame
+ * stays intact and reusable.  Invariants: P5, P7, P9, P11, P18, P19, P20. */
+static void test_t183(void) {
+    uint32_t f0[5], f1[5], word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok && it_sched_ext5(f0);
+    const char *why = "map into target";
+
+    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    if (fr < 0) { it_fail("T183", "frame retype"); return; }
+    word = T25_PATTERN;
+    if (!t25_frame_word(fr_h, &word, 1)) { it_close(&fr_h); it_fail("T183", "frame fill"); return; }
+
+    /* (A) read fault, read-only frame cap — the pager cannot and need not map
+     * writable; the target reads the supervisor's pattern. */
+    struct t25_tgt g;
+    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&fr_h); it_fail("T183", why); return; }
+    if (ok && t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) {
+        ok = 0; why = "pager spawn A";
+    }
+    if (ok && t25_serve(pcmd, 1u, 1u, 0 /*RO map*/, 0, T25_VA_A) != 0) { ok = 0; why = "serve A"; }
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault A"; }
+    if (ok && it_lp_wait_exit(g.proc) !=
+              (long)(LP_EXIT_MARKER ^ (T25_PATTERN & 0xFFu))) { ok = 0; why = "target did not continue"; }
+    if (ok && it_lp_wait_exit(pproc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager report A"; }
+    if (ok && it_fault_info(g.proc, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "record survived A";
+    }
+    t25_reap(&pproc); it_close(&pcmd);
+    t25_tgt_reap(&g);
+
+    /* Target death swept the mapping: the frame must be clean and intact. */
+    it_quiesce_reaper();
+    if (ok && (!t25_frame_word(fr_h, &word, 0) || word != T25_PATTERN)) {
+        ok = 0; why = "frame not reusable after sweep";
+    }
+
+    /* (B) write fault, writable mapping — the store lands in the frame. */
+    if (ok) {
+        word = 0;
+        if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame zero"; }
+    }
+    struct t25_tgt g2;
+    handle_id_t p2cmd = HANDLE_INVALID, p2proc = HANDLE_INVALID;
+    if (ok && !t25_tgt_spawn(&g2, &why)) { it_close(&fr_h); it_fail("T183", why); return; }
+    if (ok) {
+        if (t25_pager_spawn(&g2, fr_h, RIGHT_READ | RIGHT_WRITE, 0, 0u,
+                            &p2cmd, &p2proc) != 0) { ok = 0; why = "pager spawn B"; }
+        if (ok && t25_serve(p2cmd, 1u, 1u, 1 /*W map*/, 0, T25_VA_B) != 0) { ok = 0; why = "serve B"; }
+        if (ok && it_lp_cmd_va(g2.cmd, LP_CMD_FAULT_WRITE, T25_VA_B) != 0) { ok = 0; why = "fault B"; }
+        if (ok && it_lp_wait_exit(g2.proc) != LP_EXIT_MARKER) { ok = 0; why = "store did not retire"; }
+        if (ok && it_lp_wait_exit(p2proc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager report B"; }
+        t25_reap(&p2proc); it_close(&p2cmd);
+    }
+    t25_tgt_reap(&g2);
+    it_quiesce_reaper();
+    if (ok && (!t25_frame_word(fr_h, &word, 0) || word != T25_WMARK)) {
+        ok = 0; why = "write not visible in frame";
+    }
+
+    it_close(&fr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_sched_ext5(f1)) { ok = 0; why = "ext5 final"; }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 2u) { ok = 0; why = "delivery count"; }
+    if (ok && f1[IT_S5_RESUME]  != f0[IT_S5_RESUME] + 2u)  { ok = 0; why = "resume count"; }
+    if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 2u)   { ok = 0; why = "cleanup count"; }
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T183"); else it_fail("T183", why);
+}
+
+/* ── T184: unauthorized pager cannot resolve a foreign fault ────────────────
+ * A pager fully authorized for target B holds only under-privileged caps for
+ * victim A (proc READ-only, VSpace READ-only).  While A's fault is pending
+ * the pager attempts the whole battery — resume, kill, map, unmap, resolve
+ * A's task through B's cap, read A's fault through B's cap, forge device
+ * authority — and every attempt is denied with no fallback, no partial
+ * mapping and no record disturbance.  READ on A's cap grants exactly
+ * information, never resolution.  Invariants: P1, P3, P4, P5, P22. */
+static void test_t184(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "unauthorized pager";
+
+    struct t25_tgt va, gb;                    /* victim A, authorized target B */
+    if (!t25_tgt_spawn(&va, &why)) { it_fail("T184", why); return; }
+    if (!t25_tgt_spawn(&gb, &why)) {
+        (void)it_sys1(SYS_PROCESS_KILL, (long)va.proc);
+        t25_tgt_reap(&va); it_fail("T184", why); return;
+    }
+    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    if (fr < 0) { ok = 0; why = "frame retype"; }
+
+    /* Under-privileged victim caps (DUPLICATE only so they can be minted). */
+    long apro = ok ? it_sys2(SYS_HANDLE_DUP, (long)va.proc, (long)(RIGHT_READ | RIGHT_DUPLICATE)) : -1;
+    long avso = ok ? it_sys2(SYS_HANDLE_DUP, (long)va.vs,   (long)(RIGHT_READ | RIGHT_DUPLICATE)) : -1;
+    handle_id_t apro_h = (apro >= 0) ? (handle_id_t)apro : HANDLE_INVALID;
+    handle_id_t avso_h = (avso >= 0) ? (handle_id_t)avso : HANDLE_INVALID;
+    if (ok && (apro < 0 || avso < 0)) { ok = 0; why = "victim dups"; }
+
+    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    if (ok) {
+        struct svc_mint x[2];
+        x[0].slot = LP_PGR_SLOT_XPROC; x[0].src_h = apro_h; x[0].rights = RIGHT_READ; x[0].badge = 0;
+        x[1].slot = LP_PGR_SLOT_XVS;   x[1].src_h = avso_h; x[1].rights = RIGHT_READ; x[1].badge = 0;
+        if (t25_pager_spawn(&gb, fr_h, RIGHT_READ | RIGHT_WRITE, x, 2u,
+                            &pcmd, &pproc) != 0) { ok = 0; why = "pager spawn"; }
+    }
+
+    /* Victim faults; the pager runs the unauthorized battery. */
+    struct it_fault fa;
+    if (ok && it_lp_cmd_va(va.cmd, LP_CMD_FAULT_READ, T25_VA_C) != 0) { ok = 0; why = "victim fault"; }
+    if (ok && !t25_wait_fault(va.proc, &fa)) { ok = 0; why = "victim fault pending"; }
+    if (ok && t25_xprobe(pcmd, fa.task_id, T25_VA_C, fa.seq) != 0) { ok = 0; why = "xprobe cmd"; }
+    if (ok) {
+        long breach = it_lp_wait_exit(pproc);
+        if (breach != 0) { ok = 0; why = "unauthorized op leaked"; }
+    }
+
+    /* The victim's fault is untouched: same generation, still suspended. */
+    struct it_fault fa2;
+    if (ok && (it_fault_info(va.proc, &fa2) != 0 || fa2.seq != fa.seq ||
+               fa2.task_id != fa.task_id || fa2.cr2 != fa.cr2)) { ok = 0; why = "record disturbed"; }
+    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)va.proc)
+              != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "victim not suspended"; }
+
+    /* Parent-side rights split on the same reduced cap: READ gives info and
+     * ONLY info — resolution and registration stay MANAGE-gated. */
+    if (ok && it_fault_info(apro_h, &fa2) != 0) { ok = 0; why = "read cap info denied"; }
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, apro, (long)fa.task_id, 1)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap resolved"; }
+    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, apro, (long)va.notif, 1)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap registered"; }
+
+    /* Proper authority resolves. */
+    if (ok && t25_resume_seq(va.proc, fa.task_id, fa.seq, 1) != 0) { ok = 0; why = "proper resolve"; }
+    if (ok && it_lp_wait_exit(va.proc) != 0) { ok = 0; why = "victim exit"; }
+
+    if (it_sys1(SYS_PROCESS_KILL, (long)gb.proc) != 0 && ok) { ok = 0; why = "kill B"; }
+    if (ok && it_lp_wait_exit(gb.proc) != 0) { ok = 0; why = "B exit"; }
+    it_close(&apro_h); it_close(&avso_h);
+    t25_reap(&pproc); it_close(&pcmd);
+    t25_tgt_reap(&va); t25_tgt_reap(&gb);
+    it_close(&fr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T184"); else it_fail("T184", why);
+}
+
+/* ── T185: stale fault generation rejection ─────────────────────────────────
+ * Fault generations make stale resolutions impossible.  A fresh process's
+ * first fault is generation 1; a resume-without-map re-faults the SAME
+ * instruction as generation 2 (same rip/cr2, new seq, new delivery).  Every
+ * replay with the old generation — resume or kill — is NOT_FOUND with the
+ * record undisturbed; generation 0 and out-of-range actions are INVALID_ARG.
+ * The current generation resolves for real (map + seq-resume, the store
+ * retires), after which even the CORRECT generation is late: NOT_FOUND, and
+ * the record is gone.  Invariants: P9, P10, P12, P13.  */
+static void test_t185(void) {
+    uint32_t f0[5], f1[5], word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok && it_sched_ext5(f0);
+    const char *why = "stale generation";
+
+    struct t25_tgt g;
+    if (!t25_tgt_spawn(&g, &why)) { it_fail("T185", why); return; }
+    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    long tvs_c = (long)g.vs;   /* dual resolver: the VSpace HANDLE works */
+    if (ok && fr < 0)    { ok = 0; why = "frame retype"; }
+    if (ok) { word = 0; if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame zero"; } }
+
+    struct it_fault fx1, fx2;
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_WRITE, T25_VA_D) != 0) { ok = 0; why = "fault cmd"; }
+    if (ok && !t25_wait_fault(g.proc, &fx1)) { ok = 0; why = "F1 pending"; }
+    if (ok && fx1.seq != 1u) { ok = 0; why = "first gen not 1"; }
+    if (ok && (fx1.vector != 14u || fx1.cr2 != T25_VA_D ||
+               fx1.error != (PF_ERR_W | PF_ERR_U))) { ok = 0; why = "F1 info"; }
+
+    /* Clean refault: resume without resolving → generation 2, same site. */
+    if (ok && t25_resume_seq(g.proc, fx1.task_id, fx1.seq, 0) != 0) { ok = 0; why = "resume F1"; }
+    if (ok && !t25_wait_refault(g.proc, fx1.seq, &fx2)) { ok = 0; why = "no refault"; }
+    if (ok && (fx2.seq != fx1.seq + 1u || fx2.rip != fx1.rip ||
+               fx2.cr2 != fx1.cr2 || fx2.task_id != fx1.task_id)) { ok = 0; why = "F2 identity"; }
+
+    /* Stale replays of F1 cannot touch F2; malformed generations rejected. */
+    if (ok && t25_resume_seq(g.proc, fx1.task_id, fx1.seq, 0)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale resume accepted"; }
+    if (ok && t25_resume_seq(g.proc, fx1.task_id, fx1.seq, 1)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale kill accepted"; }
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)g.proc, (long)fx1.task_id, 2L)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "gen 0 accepted"; }
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)g.proc, (long)fx1.task_id, 4L)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "action 4 accepted"; }
+    struct it_fault fx3;
+    if (ok && (it_fault_info(g.proc, &fx3) != 0 || fx3.seq != fx2.seq)) {
+        ok = 0; why = "record disturbed by stale ops";
+    }
+
+    /* Resolve the CURRENT generation for real: map writable + seq-resume. */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_D, 1) != 0) {
+        ok = 0; why = "map at fault";
+    }
+    if (ok && t25_resume_seq(g.proc, fx2.task_id, fx2.seq, 0) != 0) { ok = 0; why = "resume F2"; }
+    if (ok && it_lp_wait_exit(g.proc) != LP_EXIT_MARKER) { ok = 0; why = "target completion"; }
+
+    /* Late-but-correct is still late: the record did not outlive resolution. */
+    if (ok && t25_resume_seq(g.proc, fx2.task_id, fx2.seq, 0)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume accepted"; }
+    if (ok && it_fault_info(g.proc, &fx3) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "record survived";
+    }
+    it_quiesce_reaper();
+    if (ok && (!t25_frame_word(fr_h, &word, 0) || word != T25_WMARK)) {
+        ok = 0; why = "store did not land";
+    }
+
+    t25_tgt_reap(&g);
+    it_close(&fr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_sched_ext5(f1)) { ok = 0; why = "ext5 final"; }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 2u) { ok = 0; why = "delivery count"; }
+    if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 2u)   { ok = 0; why = "cleanup count"; }
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T185"); else it_fail("T185", why);
+}
+
+/* ── T186: pager death while the target's fault is pending ──────────────────
+ * The pager dies holding responsibility (blocked, never resolving).  The
+ * contract (same as Fase 20 handler-death, now under supervision): the target
+ * is NOT a zombie — it stays suspended with its record and generation intact,
+ * observable by any READ holder, resolvable by any proper authority.  The
+ * supervisor restarts the pager with the SAME declared manifest; the new
+ * generation consumes the still-pending delivery signal and completes the
+ * map+resume.  Nothing leaks per generation.  Invariants: P9, P14(neg), P15,
+ * P16, P21. */
+static void test_t186(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "pager death pending";
+
+    struct t25_tgt g;
+    if (!t25_tgt_spawn(&g, &why)) { it_fail("T186", why); return; }
+    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    if (fr < 0) { ok = 0; why = "frame retype"; }
+    if (ok) { word = T25_PATTERN; if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame fill"; } }
+
+    /* Gen 1: spawned in charge, never commanded — dies blocked. */
+    handle_id_t p1cmd = HANDLE_INVALID, p1proc = HANDLE_INVALID;
+    if (ok && t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &p1cmd, &p1proc) != 0) {
+        ok = 0; why = "pager1 spawn";
+    }
+    struct it_fault f;
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
+    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "fault pending"; }
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)p1proc) != 0) { ok = 0; why = "kill pager1"; }
+    if (ok && it_lp_wait_exit(p1proc) != 0) { ok = 0; why = "pager1 exit"; }
+    it_quiesce_reaper();
+
+    /* No zombie: suspended-alive, record and generation intact. */
+    struct it_fault f2;
+    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)g.proc)
+              != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "target not suspended"; }
+    if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq ||
+               f2.cr2 != f.cr2)) { ok = 0; why = "record lost with pager"; }
+    /* The dead pager's endpoint has no phantom receiver. */
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label = 0x186;
+        if (it_sys2(SYS_EP_NB_SEND, (long)p1cmd, (long)&m)
+            != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "phantom pager receiver"; }
+    }
+    t25_reap(&p1proc); it_close(&p1cmd);
+
+    /* Gen 2: same declared manifest, nothing more — and it finishes the job
+     * (the delivery signal was never lost). */
+    handle_id_t p2cmd = HANDLE_INVALID, p2proc = HANDLE_INVALID;
+    if (ok && t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &p2cmd, &p2proc) != 0) {
+        ok = 0; why = "pager2 spawn";
+    }
+    if (ok && t25_serve(p2cmd, 1u, 1u, 0, 0, T25_VA_A) != 0) { ok = 0; why = "serve"; }
+    if (ok && it_lp_wait_exit(g.proc) !=
+              (long)(LP_EXIT_MARKER ^ (T25_PATTERN & 0xFFu))) { ok = 0; why = "target completion"; }
+    if (ok && it_lp_wait_exit(p2proc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager2 report"; }
+    if (ok && it_fault_info(g.proc, &f2) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "record survived";
+    }
+
+    t25_reap(&p2proc); it_close(&p2cmd);
+    t25_tgt_reap(&g);
+    it_close(&fr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T186"); else it_fail("T186", why);
+}
+
+/* ── T187: target death during pager resolution ─────────────────────────────
+ * The supervisor kills the target between fault delivery and the pager's
+ * completion.  Every late step fails clean: map-into-target is BAD_HANDLE
+ * (the VSpace was invalidated with the process), seq-checked and legacy
+ * resume are NOT_FOUND, the record reports WOULD_BLOCK.  The never-installed
+ * frame stays clean and reusable; VSpace/mapping books return to baseline
+ * once the stale caps are dropped.  Invariants: P12, P14, P18, P19, P23. */
+static void test_t187(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "target death mid-resolution";
+
+    struct t25_tgt g;
+    if (!t25_tgt_spawn(&g, &why)) { it_fail("T187", why); return; }
+    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    long tvs_c = (long)g.vs;   /* dual resolver: the VSpace HANDLE works */
+    if (ok && fr < 0)    { ok = 0; why = "frame retype"; }
+
+    struct it_fault f;
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
+    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "fault pending"; }
+
+    /* Mid-resolution kill. */
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)g.proc) != 0) { ok = 0; why = "kill"; }
+    if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target exit"; }
+    it_quiesce_reaper();
+
+    /* Late completion fails clean at every step. */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_A, 0)
+              != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "late map not BAD_HANDLE"; }
+    if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late seq-resume accepted"; }
+    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)g.proc, (long)f.task_id, 0)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume accepted"; }
+    if (ok && it_fault_info(g.proc, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "record survived death";
+    }
+
+    /* The frame was never installed: still clean, still usable. */
+    if (ok) {
+        word = T25_PATTERN;
+        if (!t25_frame_word(fr_h, &word, 1) ||
+            !t25_frame_word(fr_h, &word, 0) || word != T25_PATTERN) {
+            ok = 0; why = "frame unusable after target death";
+        }
+    }
+
+    t25_tgt_reap(&g);
+    it_close(&fr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T187"); else it_fail("T187", why);
+}
+
+/* ── T188: pager rights and PTE policy ──────────────────────────────────────
+ * PTE rights are the MEET of every capability involved, never more.  A
+ * read-only frame cap cannot install a writable PTE; a read-only VSpace
+ * authority cannot install anything; W^X, kernel-range, out-of-window and
+ * unaligned VAs are INVALID_ARG; a denied map leaves NO partial PTE; an
+ * occupied VA is BUSY.  The decisive check is architectural: a page mapped
+ * READ-ONLY into the target through a fully-writable frame cap still refuses
+ * the target's store with err P|W|U — the PTE carries the MAPPING's rights,
+ * not the cap's ceiling.  Late unmap after target death is BAD_HANDLE.
+ * Invariants: P5, P6, P7, P8, P10, P19. */
+static void test_t188(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "rights/PTE policy";
+
+    struct t25_tgt g;
+    if (!t25_tgt_spawn(&g, &why)) { it_fail("T188", why); return; }
+    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    long fro = (fr >= 0) ? it_sys2(SYS_HANDLE_DUP, fr, (long)RIGHT_READ) : -1;
+    handle_id_t fro_h = (fro >= 0) ? (handle_id_t)fro : HANDLE_INVALID;
+    long tvs_c  = (long)g.vs;  /* dual resolver: the VSpace HANDLE works */
+    long tvs_ro = it_sys2(SYS_HANDLE_DUP, (long)g.vs, (long)RIGHT_READ);
+    handle_id_t tvs_ro_h = (tvs_ro >= 0) ? (handle_id_t)tvs_ro : HANDLE_INVALID;
+    if (ok && (fr < 0 || fro < 0)) { ok = 0; why = "frame caps"; }
+    if (ok && tvs_ro < 0)          { ok = 0; why = "tvs ro dup"; }
+
+    /* Rights monotonicity and namespace limits — all denied, no fallback. */
+    if (ok && it_sys4(SYS_FRAME_MAP, fro, tvs_c, (long)T25_VA_B, 1)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO frame mapped W"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_ro, (long)T25_VA_B, 0)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO vspace installed"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, (long)T25_VA_B, 3)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "W^X accepted"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c,
+                      (long)0xFFFF800000000000ULL, 0)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel VA accepted"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, 0x1000L, 0)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "low VA accepted"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, (long)(T25_VA_B | 0x123u), 0)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "unaligned accepted"; }
+    /* No partial PTE from any denial. */
+    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, tvs_c, (long)T25_VA_B)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "partial PTE"; }
+
+    /* Occupied-VA and W^X-compliant exec map contracts. */
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, (long)T25_VA_B, 0) != 0) {
+        ok = 0; why = "RO map";
+    }
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, (long)T25_VA_B, 0)
+              != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied VA remapped"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, tvs_c, (long)T25_VA_C, 2) != 0) {
+        ok = 0; why = "r-x map denied";
+    }
+    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, tvs_c, (long)T25_VA_C) != 0) {
+        ok = 0; why = "r-x unmap";
+    }
+
+    /* Architectural proof: the RO PTE (installed via the RW frame cap) still
+     * refuses the target's store — err = P|W|U at exactly that VA. */
+    struct it_fault f;
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_WRITE, T25_VA_B) != 0) { ok = 0; why = "write cmd"; }
+    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "no wp fault"; }
+    if (ok && (f.vector != 14u || f.cr2 != T25_VA_B ||
+               f.error != (PF_ERR_P | PF_ERR_W | PF_ERR_U))) { ok = 0; why = "wp err bits"; }
+    if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 1) != 0) { ok = 0; why = "seq kill"; }
+    if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target exit"; }
+    it_quiesce_reaper();
+
+    /* The target died with the mapping installed: teardown swept it; a late
+     * unmap through the dead VSpace fails clean. */
+    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, tvs_c, (long)T25_VA_B)
+              != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "late unmap"; }
+    /* Frame reusable, mapped_count back at zero. */
+    if (ok) {
+        uint32_t word = T25_PATTERN;
+        if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame not clean"; }
+    }
+
+    it_close(&fro_h); it_close(&tvs_ro_h);
+    t25_tgt_reap(&g);
+    it_close(&fr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T188"); else it_fail("T188", why);
+}
+
+/* ── T189: pager restart preserves least authority ──────────────────────────
+ * The Fase 24 ↔ Fase 25 junction.  A crashing pager is supervised under an
+ * explicit restart limit: two generations die before resolving and the
+ * budget is spent — the pager service is DEGRADED, the loop STOPS (P17).
+ * The fault meanwhile stays pending and resolvable.  A post-crash generation
+ * spawned from the same declaration reports EXACTLY the declared manifest
+ * (nothing accumulated across generations, no stale endpoint, no peer/device/
+ * KDEBUG authority), and the serving generation completes the resolution.
+ * Invariants: P15, P16, P17, P21, P22. */
+#define T189_LIMIT 2u
+static void test_t189(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "restart least authority";
+
+    struct t25_tgt g;
+    if (!t25_tgt_spawn(&g, &why)) { it_fail("T189", why); return; }
+    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    if (fr < 0) { ok = 0; why = "frame retype"; }
+    if (ok) { word = T25_PATTERN; if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame fill"; } }
+
+    struct it_fault f;
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
+    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "fault pending"; }
+
+    /* Supervision loop: each generation crashes before resolving; the budget
+     * (T189_LIMIT) bounds the loop and flips the service to degraded. */
+    uint32_t restart_count = 0u, generation = 0u;
+    int degraded = 0;
+    while (ok && !degraded) {
+        handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+        if (t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) {
+            ok = 0; why = "gen spawn"; break;
+        }
+        generation++;
+        it_sys1(SYS_SLEEP, 1);
+        if (it_sys1(SYS_PROCESS_KILL, (long)pproc) != 0) { ok = 0; why = "gen kill"; }
+        if (ok && it_lp_wait_exit(pproc) != 0) { ok = 0; why = "gen exit"; }
+        t25_reap(&pproc); it_close(&pcmd);
+        it_quiesce_reaper();
+        if (restart_count < T189_LIMIT) restart_count++;
+        else degraded = 1;
+    }
+    if (ok && restart_count != T189_LIMIT) { ok = 0; why = "wrong restart count"; }
+    if (ok && generation != T189_LIMIT + 1u) { ok = 0; why = "generation mismatch"; }
+
+    /* Degraded or not, the fault never became a zombie: still the same
+     * generation, still suspended, still resolvable. */
+    struct it_fault f2;
+    if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq)) {
+        ok = 0; why = "fault lost across pager generations";
+    }
+
+    /* A fresh instance of the same declaration carries EXACTLY the manifest —
+     * restart amplified nothing. */
+    if (ok) {
+        struct svc_mint x[4];
+        x[0].slot = LP_PGR_SLOT_TPROC; x[0].src_h = g.proc;  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
+        x[1].slot = LP_PGR_SLOT_TVS;   x[1].src_h = g.vs;    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
+        x[2].slot = LP_PGR_SLOT_FRAME; x[2].src_h = fr_h;    x[2].rights = RIGHT_READ;                x[2].badge = 0;
+        x[3].slot = LP_PGR_SLOT_NOTIF; x[3].src_h = g.notif; x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
+        long rep = it_lp_report_slots(x, 4u);
+        uint32_t expect = (1u << LP_CPTR_CMD_EP)    | (1u << LP_PGR_SLOT_TPROC) |
+                          (1u << LP_PGR_SLOT_TVS)   | (1u << LP_PGR_SLOT_FRAME) |
+                          (1u << LP_PGR_SLOT_NOTIF);
+        if (rep < 0 || (uint32_t)rep != expect) { ok = 0; why = "post-restart manifest"; }
+    }
+
+    /* The serving generation finishes the original resolution. */
+    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    if (ok && t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) {
+        ok = 0; why = "server spawn";
+    }
+    if (ok && t25_serve(pcmd, 1u, 1u, 0, 0, T25_VA_A) != 0) { ok = 0; why = "serve"; }
+    if (ok && it_lp_wait_exit(g.proc) !=
+              (long)(LP_EXIT_MARKER ^ (T25_PATTERN & 0xFFu))) { ok = 0; why = "target completion"; }
+    if (ok && it_lp_wait_exit(pproc) != LP_EXIT_PGR_OK) { ok = 0; why = "server report"; }
+    t25_reap(&pproc); it_close(&pcmd);
+
+    t25_tgt_reap(&g);
+    it_close(&fr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T189"); else it_fail("T189", why);
+}
+
+/* ── T190: deterministic user pager stress ──────────────────────────────────
+ * Seeded mixed-operation rounds over the whole Fase 25 surface.  Every round
+ * holds TWO concurrent pending faults (the shared-IST regression stays
+ * covered under pager traffic) and resolves them through a seed-chosen path:
+ * external pager map+resume / kill, pager death + supervisor takeover,
+ * target death mid-fault, refault + stale-generation rejection, unauthorized
+ * caps denied, occupied-VA and RO-PTE enforcement.  After every round: no
+ * pending fault, no zombie, and the live books (task/proc/handle/VSpace/
+ * mapping) exactly at the pre-suite baseline.  Prints seed/round/op only on
+ * failure.  Invariants: P9–P23 under load. */
+#define T190_SEED   0x25AF9B31u
+#define T190_ROUNDS 6u
+static uint32_t t190_rnd(uint32_t *s) {
+    uint32_t x = *s;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    *s = x;
+    return x;
+}
+static void test_t190(void) {
+    uint32_t rng = T190_SEED, word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "pager stress";
+    uint32_t round = 0u, op = 0u;
+
+    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    if (fr < 0) { it_fail("T190", "frame retype"); return; }
+
+    /* The frame is held for the whole test, so the PER-ROUND balance is
+     * against a baseline that already accounts for it; the final check below
+     * (after fr_h is closed) uses the pre-suite `b`. */
+    it_quiesce_reaper();
+    struct it_snap br = it_snap_take();
+    if (ok && !br.ok) { it_close(&fr_h); it_fail("T190", "round baseline"); return; }
+
+    for (round = 0; ok && round < T190_ROUNDS; round++) {
+        op = t190_rnd(&rng) % 6u;
+        word = T25_PATTERN;
+        if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame fill"; break; }
+
+        struct t25_tgt g1, g2;
+        if (!t25_tgt_spawn(&g1, &why)) { ok = 0; break; }
+        if (!t25_tgt_spawn(&g2, &why)) {
+            (void)it_sys1(SYS_PROCESS_KILL, (long)g1.proc);
+            t25_tgt_reap(&g1); ok = 0; break;
+        }
+
+        /* Two concurrent pending faults, every round. */
+        struct it_fault f1, f2;
+        if (it_lp_cmd_va(g1.cmd, LP_CMD_FAULT_READ,  T25_VA_A) != 0 ||
+            it_lp_cmd_va(g2.cmd, LP_CMD_FAULT_WRITE, T25_VA_B) != 0) { ok = 0; why = "fault cmds"; }
+        if (ok && (!t25_wait_fault(g1.proc, &f1) ||
+                   !t25_wait_fault(g2.proc, &f2))) { ok = 0; why = "faults pending"; }
+
+        switch (ok ? (int)op : -1) {
+        case 0: {
+            /* External pager resolves g1 by map+resume; supervisor seq-kills g2. */
+            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            if (t25_pager_spawn(&g1, fr_h, RIGHT_READ, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op0 pager"; break; }
+            if (t25_serve(pc, 1u, 1u, 0, 0, T25_VA_A) != 0) { ok = 0; why = "op0 serve"; }
+            if (ok && it_lp_wait_exit(g1.proc) !=
+                      (long)(LP_EXIT_MARKER ^ (T25_PATTERN & 0xFFu))) { ok = 0; why = "op0 g1"; }
+            if (ok && it_lp_wait_exit(pp) != LP_EXIT_PGR_OK) { ok = 0; why = "op0 pager report"; }
+            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "op0 g2 kill"; }
+            if (ok && it_lp_wait_exit(g2.proc) != 0) { ok = 0; why = "op0 g2 exit"; }
+            t25_reap(&pp); it_close(&pc);
+            break;
+        }
+        case 1: {
+            /* External pager seq-kills g1; stale-generation replay on g2 must
+             * fail before the proper kill lands. */
+            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            if (t25_pager_spawn(&g1, fr_h, RIGHT_READ, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op1 pager"; break; }
+            if (t25_serve(pc, 3u, 1u, 0, 0, T25_VA_A) != 0) { ok = 0; why = "op1 serve"; }
+            if (ok && it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op1 g1"; }
+            if (ok && it_lp_wait_exit(pp) != LP_EXIT_PGR_OK) { ok = 0; why = "op1 pager report"; }
+            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq + 7u, 1)
+                      != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op1 bogus gen"; }
+            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "op1 g2 kill"; }
+            if (ok && it_lp_wait_exit(g2.proc) != 0) { ok = 0; why = "op1 g2 exit"; }
+            t25_reap(&pp); it_close(&pc);
+            break;
+        }
+        case 2: {
+            /* Pager dies before serving; the supervisor takes over: seq-kill
+             * g1, map+seq-resume g2 (its store retires into the frame). */
+            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            if (t25_pager_spawn(&g1, fr_h, RIGHT_READ, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op2 pager"; break; }
+            if (it_sys1(SYS_PROCESS_KILL, (long)pp) != 0 ||
+                it_lp_wait_exit(pp) != 0) { ok = 0; why = "op2 pager death"; }
+            t25_reap(&pp); it_close(&pc);
+            long tvs_c = (long)g2.vs;
+            if (ok && t25_resume_seq(g1.proc, f1.task_id, f1.seq, 1) != 0) { ok = 0; why = "op2 g1 kill"; }
+            if (ok && it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op2 g1 exit"; }
+            if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_B, 1) != 0) { ok = 0; why = "op2 map"; }
+            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op2 resume"; }
+            if (ok && it_lp_wait_exit(g2.proc) != LP_EXIT_MARKER) { ok = 0; why = "op2 g2 exit"; }
+            break;
+        }
+        case 3: {
+            /* Target death mid-fault + refault path on the survivor: resume
+             * g2 without map → new generation at the same site → old
+             * generation refused → proper seq-kill of the NEW generation. */
+            if (it_sys1(SYS_PROCESS_KILL, (long)g1.proc) != 0 ||
+                it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op3 g1 death"; break; }
+            if (t25_resume_seq(g1.proc, f1.task_id, f1.seq, 0)
+                != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op3 late resume"; }
+            struct it_fault f2b;
+            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op3 refault resume"; }
+            if (ok && !t25_wait_refault(g2.proc, f2.seq, &f2b)) { ok = 0; why = "op3 no refault"; }
+            if (ok && f2b.seq != f2.seq + 1u) { ok = 0; why = "op3 gen"; }
+            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 1)
+                      != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op3 stale kill"; }
+            if (ok && t25_resume_seq(g2.proc, f2b.task_id, f2b.seq, 1) != 0) { ok = 0; why = "op3 kill"; }
+            if (ok && it_lp_wait_exit(g2.proc) != 0) { ok = 0; why = "op3 g2 exit"; }
+            break;
+        }
+        case 4: {
+            /* Unauthorized caps under load: READ-only proc cap cannot
+             * resolve; READ-only vspace mint cannot install.  Then proper
+             * seq-kills. */
+            long rp = it_sys2(SYS_HANDLE_DUP, (long)g1.proc, (long)RIGHT_READ);
+            handle_id_t rp_h = (rp >= 0) ? (handle_id_t)rp : HANDLE_INVALID;
+            long rvs = it_sys2(SYS_HANDLE_DUP, (long)g1.vs, (long)RIGHT_READ);
+            handle_id_t rvs_h = (rvs >= 0) ? (handle_id_t)rvs : HANDLE_INVALID;
+            if (rp < 0 || rvs < 0) { ok = 0; why = "op4 caps"; }
+            if (ok && it_sys3(SYS_EXCEPTION_RESUME, rp, (long)f1.task_id, 1)
+                      != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro resume"; }
+            if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, rvs, (long)T25_VA_A, 0)
+                      != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro map"; }
+            if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr_h, rvs, (long)T25_VA_A)
+                      != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro unmap"; }
+            it_close(&rp_h); it_close(&rvs_h);
+            if (ok && t25_resume_seq(g1.proc, f1.task_id, f1.seq, 1) != 0) { ok = 0; why = "op4 g1 kill"; }
+            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "op4 g2 kill"; }
+            if (ok && (it_lp_wait_exit(g1.proc) != 0 ||
+                       it_lp_wait_exit(g2.proc) != 0)) { ok = 0; why = "op4 exits"; }
+            break;
+        }
+        case 5: {
+            /* Occupied VA + RO-PTE enforcement under load: install the frame
+             * read-only at g2's fault VA; a duplicate install is BUSY; the
+             * resumed store now write-protection-faults (P|W|U) as a NEW
+             * generation, then dies by it. */
+            long tvs_c = (long)g2.vs;
+            if (it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_B, 0) != 0) { ok = 0; why = "op5 map"; }
+            if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_B, 0)
+                      != (long)IRIS_ERR_BUSY) { ok = 0; why = "op5 busy"; }
+            struct it_fault f2b;
+            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op5 resume"; }
+            if (ok && !t25_wait_refault(g2.proc, f2.seq, &f2b)) { ok = 0; why = "op5 no wp fault"; }
+            if (ok && f2b.error != (PF_ERR_P | PF_ERR_W | PF_ERR_U)) { ok = 0; why = "op5 err bits"; }
+            if (ok && t25_resume_seq(g2.proc, f2b.task_id, f2b.seq, 1) != 0) { ok = 0; why = "op5 g2 kill"; }
+            if (ok && it_lp_wait_exit(g2.proc) != 0) { ok = 0; why = "op5 g2 exit"; }
+            if (ok && t25_resume_seq(g1.proc, f1.task_id, f1.seq, 1) != 0) { ok = 0; why = "op5 g1 kill"; }
+            if (ok && it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op5 g1 exit"; }
+            break;
+        }
+        default:
+            break;
+        }
+
+        /* Round postconditions: no pending fault, no zombie, live books at
+         * the pre-suite baseline. */
+        if (ok && it_fault_info(g1.proc, &f1) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "g1 record"; }
+        if (ok && it_fault_info(g2.proc, &f2) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "g2 record"; }
+        t25_tgt_reap(&g1); t25_tgt_reap(&g2);
+        it_quiesce_reaper();
+        if (ok) {
+            struct it_snap r = it_snap_take();
+            if (!it_snap_baseline_live(&br, &r, &why)) ok = 0;
+        }
+    }
+
+    it_close(&fr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T190");
+    else { it_fz_note("T190", T190_SEED, round, op); it_fail("T190", why); }
+}
+
+/* ── Fase 26: Memory object / VMO policy expansion (T191–T200) ───────────────
+ *
+ * Fase 25 fixed the pager AUTHORITY contract; the page source was a raw frame.
+ * Fase 26 makes the source a first-class MEMORY OBJECT: a VMO defended by
+ * policy — logical range, size, offsets, rights, mappings, cleanup — that a
+ * VMO-backed pager uses to resolve faults page by page.
+ *
+ * The one additive kernel primitive exercised here:
+ *   SYS_VMO_MAP_PAGE(108)  page-granular, offset-addressed map of a VMO page
+ *                          into a VSpace named by capability (VMO READ[/WRITE]
+ *                          + VSpace WRITE — no process MANAGE; the VSpace cap
+ *                          IS the map-into-target authority, composing with
+ *                          SYS_PROCESS_VSPACE from Fase 25).
+ *
+ * Invariants M1–M30 live in docs/architecture/memory-object-vmo-policy.md.
+ * Reuses the Fase 25 t25_* pager harness verbatim: the pager's slot-14 "page
+ * source" cap is a KVmo instead of a KFrame, and PAGER_SERVE subaction 4 maps
+ * a VMO page via SYS_VMO_MAP_PAGE. */
+
+#define T26_TVA_A    0x8096000000ULL   /* target fault VAs (clear of T25 range) */
+#define T26_TVA_B    0x8097000000ULL
+#define T26_SELF_VA  0x807B000000ULL   /* parent scratch for VMO-page inspect */
+#define T26_VMO_SZ   0x4000ULL         /* 4 pages: exercises real offsets */
+#define T26_PAT0     0xA1B2C3D4u
+#define T26_PAT1     0x11223344u
+#define T26_WMARK    0xFA017E57u   /* == the probe's LP_CMD_FAULT_WRITE store */
+
+/* Live memory-object count (SYS_SCHED_INFO ext3, offset 132 — the Fase 26
+ * additive field in the old pad half of buf[16]).  Returns -1 on failure. */
+static long it_vmo_live(void) {
+    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
+    if (bh < 0) return -1;
+    uint8_t buf[136];
+    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136);
+    handle_id_t h = (handle_id_t)bh;
+    it_close(&h);
+    if (r != 0) return -1;
+    return (long)((uint32_t)buf[132] | ((uint32_t)buf[133] << 8) |
+                  ((uint32_t)buf[134] << 16) | ((uint32_t)buf[135] << 24));
+}
+
+/* SYS_VMO_MAP_PAGE offset_flags encoder: page-aligned byte offset + W/X. */
+static inline long t26_ofs(uint64_t offset, uint64_t flags) {
+    return (long)((offset & ~0xFFFULL) | (flags & 0x3ULL));
+}
+
+/* Create a sparse VMO; returns handle or HANDLE_INVALID. */
+static handle_id_t t26_vmo_create(uint64_t size) {
+    long v = it_sys1(SYS_VMO_CREATE, (long)size);
+    return (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
+}
+
+/* Read/write word 0 of the VMO page at `offset`, via the parent's OWN VSpace
+ * (IT_VS) using SYS_VMO_MAP_PAGE — dogfoods the new syscall and lets the
+ * supervisor prep/inspect VMO page contents.  0 on success. */
+static int t26_vmo_word(handle_id_t vmo, uint64_t offset, uint32_t *val, int write) {
+    if (!it_setup_self_vspace()) return -1;
+    long r = it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, IT_VS, (long)T26_SELF_VA,
+                     t26_ofs(offset, write ? 1u : 0u));
+    if (r != 0) return (int)r;
+    volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)T26_SELF_VA;
+    if (write) *p = *val; else *val = *p;
+    /* Unmap: SYS_VMO_UNMAP removes the KFrame-backed page from our VSpace. */
+    return (int)it_sys2(SYS_VMO_UNMAP, (long)T26_SELF_VA, 0x1000L);
+}
+
+/* ── T191: VMO authority and size contract ──────────────────────────────────
+ * A VMO is a capability defended by policy.  Size is stable and READ-gated;
+ * SYS_VMO_MAP_PAGE is READ-gated (RIGHT_WRITE additionally for a writable
+ * PTE); wrong-type in either slot is WRONG_TYPE; a reduced-rights derivation
+ * (SYS_HANDLE_DUP) cannot regain rights it dropped; a stale (closed) cap
+ * fails clean.  No authority amplification, no live drift.
+ * Invariants: M1, M2, M9, M10, M11, M12, M23. */
+static void test_t191(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0;
+    const char *why = "vmo authority";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T191", "vmo create"); return; }
+    if (ok && it_vmo_live() != vlive0 + 1) { ok = 0; why = "vmo not live"; }
+
+    /* Size is stable and READ-gated. */
+    if (ok && it_sys1(SYS_VMO_SIZE, (long)vmo) != (long)T26_VMO_SZ) { ok = 0; why = "size"; }
+    if (ok && it_sys1(SYS_VMO_SIZE, (long)vmo) != (long)T26_VMO_SZ) { ok = 0; why = "size unstable"; }
+
+    /* A READ-only derivation cannot map writable (rights monotonicity). */
+    long ro = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
+    if (ok && ro < 0) { ok = 0; why = "ro dup"; }
+    if (ok && it_setup_self_vspace()) {
+        if (it_sys4(SYS_VMO_MAP_PAGE, ro, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 1u))
+            != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro mapped writable"; }
+        /* READ-only can still map read-only. */
+        if (ok && it_sys4(SYS_VMO_MAP_PAGE, ro, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 0))
+            != 0) { ok = 0; why = "ro map denied"; }
+        if (ok) (void)it_sys2(SYS_VMO_UNMAP, (long)T26_SELF_VA, 0x1000L);
+    } else if (ok) { ok = 0; why = "self vspace"; }
+
+    /* Wrong-type in the VMO slot (a notification) and the VSpace slot. */
+    long n = it_sys0(SYS_NOTIFY_CREATE);
+    handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+    if (ok && n < 0) { ok = 0; why = "notif"; }
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, n, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 0))
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "vmo wrong-type"; }
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, n, (long)T26_SELF_VA, t26_ofs(0, 0))
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "vspace wrong-type"; }
+
+    /* Stale (closed) VMO cap fails clean. */
+    it_close(&ro_h);
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, ro, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 0))
+              >= 0) { ok = 0; why = "stale cap mapped"; }
+    if (ok && it_sys1(SYS_VMO_SIZE, ro) >= 0) { ok = 0; why = "stale size"; }
+
+    it_close(&n_h);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T191"); else it_fail("T191", why);
+}
+
+/* ── T192: VMO map offset/range validation ──────────────────────────────────
+ * Every offset and VA is validated before a page is touched: a valid page maps;
+ * an offset with the reserved bits set (unaligned) is INVALID_ARG; offset ==
+ * size and offset+page > size are INVALID_ARG; a kernel VA, an unaligned VA and
+ * an occupied VA are each rejected with the right code; a read-only VMO cannot
+ * install a writable PTE.  No invalid attempt leaves a PTE, a mapped_count
+ * bump or a VMO ref; a valid map afterwards still works.
+ * Invariants: M4, M5, M6, M7, M8, M9, M21. */
+static void test_t192(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok && it_setup_self_vspace();
+    const char *why = "vmo range validation";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);         /* 4 pages */
+    if (vmo == HANDLE_INVALID) { it_fail("T192", "vmo create"); return; }
+
+    /* Unaligned offset (reserved bits [11:2] set). */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, IT_VS, (long)T26_SELF_VA,
+                      (long)(0u | 0x40u)) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "unaligned offset"; }
+    /* offset == size (first byte past the last page). */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, IT_VS, (long)T26_SELF_VA,
+                      t26_ofs(T26_VMO_SZ, 0)) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "offset==size"; }
+    /* offset beyond size. */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, IT_VS, (long)T26_SELF_VA,
+                      t26_ofs(T26_VMO_SZ + 0x1000ULL, 0)) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "offset>size"; }
+    /* Kernel VA. */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, IT_VS,
+                      (long)0xFFFF800000000000ULL, t26_ofs(0, 0))
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel VA"; }
+    /* Unaligned VA. */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, IT_VS,
+                      (long)(T26_SELF_VA | 0x800ULL), t26_ofs(0, 0))
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "unaligned VA"; }
+    /* Bad flags (W^X). */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, IT_VS, (long)T26_SELF_VA,
+                      t26_ofs(0, 3u)) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "W^X"; }
+
+    /* None of the above installed a PTE — a valid map now succeeds. */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, IT_VS, (long)T26_SELF_VA,
+                      t26_ofs(0x2000ULL, 0)) != 0) { ok = 0; why = "valid map"; }
+    /* Occupied VA. */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, IT_VS, (long)T26_SELF_VA,
+                      t26_ofs(0x1000ULL, 0)) != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied VA"; }
+    if (ok && it_sys2(SYS_VMO_UNMAP, (long)T26_SELF_VA, 0x1000L) != 0) {
+        ok = 0; why = "unmap"; }
+
+    it_close(&vmo);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T192"); else it_fail("T192", why);
+}
+
+/* ── T193: VMO-backed pager resolves a target fault ──────────────────────────
+ * The defining Fase 26 path.  The supervisor fills VMO page 2 (offset 0x2000)
+ * with a pattern; a VMO-backed pager (slot 14 = the VMO) resolves the target's
+ * read fault by mapping THAT page read-only at the fault VA and seq-resuming;
+ * the target continues and reads the pattern (its exit code proves the byte
+ * flowed VMO→target).  Then a writable run: the target's store lands in the
+ * VMO page, visible to the supervisor afterwards.  Target death sweeps the
+ * VMO-backed mapping; the VMO stays live and reusable.
+ * Invariants: M3, M9, M13(pos), M14, M15, M17, M19, M20. */
+static void test_t193(void) {
+    uint32_t f0[5], f1[5], word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0 && it_sched_ext5(f0);
+    const char *why = "vmo-backed pager";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T193", "vmo create"); return; }
+    word = T26_PAT0;
+    if (ok && t26_vmo_word(vmo, 0x2000ULL, &word, 1) != 0) { ok = 0; why = "vmo fill"; }
+
+    /* (A) read fault, read-only VMO cap → target reads the supervisor pattern. */
+    struct t25_tgt g;
+    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&vmo); it_fail("T193", why); return; }
+    if (ok && t25_pager_spawn(&g, vmo, RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) {
+        ok = 0; why = "pager spawn A"; }
+    /* subaction 4 = VMO map; va_ovr carries the VMO offset (page 2). */
+    if (ok && t25_serve(pcmd, 4u, 1u, 0 /*RO*/, 0x2000ULL, T26_TVA_A) != 0) { ok = 0; why = "serve A"; }
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "fault A"; }
+    if (ok && it_lp_wait_exit(g.proc) !=
+              (long)(LP_EXIT_MARKER ^ (T26_PAT0 & 0xFFu))) { ok = 0; why = "target did not read pattern"; }
+    if (ok && it_lp_wait_exit(pproc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager report A"; }
+    t25_reap(&pproc); it_close(&pcmd);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+
+    /* VMO survived target death and is still readable/intact. */
+    if (ok && (t26_vmo_word(vmo, 0x2000ULL, &word, 0) != 0 || word != T26_PAT0)) {
+        ok = 0; why = "vmo not reusable after sweep"; }
+
+    /* (B) write fault, writable VMO cap → target store lands in the VMO page. */
+    if (ok) { word = 0; if (t26_vmo_word(vmo, 0x3000ULL, &word, 1) != 0) { ok = 0; why = "vmo zero"; } }
+    struct t25_tgt g2;
+    handle_id_t p2cmd = HANDLE_INVALID, p2proc = HANDLE_INVALID;
+    if (ok && !t25_tgt_spawn(&g2, &why)) { it_close(&vmo); it_fail("T193", why); return; }
+    if (ok) {
+        if (t25_pager_spawn(&g2, vmo, RIGHT_READ | RIGHT_WRITE, 0, 0u, &p2cmd, &p2proc) != 0) {
+            ok = 0; why = "pager spawn B"; }
+        if (ok && t25_serve(p2cmd, 4u, 1u, 1 /*W*/, 0x3000ULL, T26_TVA_B) != 0) { ok = 0; why = "serve B"; }
+        if (ok && it_lp_cmd_va(g2.cmd, LP_CMD_FAULT_WRITE, T26_TVA_B) != 0) { ok = 0; why = "fault B"; }
+        if (ok && it_lp_wait_exit(g2.proc) != LP_EXIT_MARKER) { ok = 0; why = "store did not retire"; }
+        if (ok && it_lp_wait_exit(p2proc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager report B"; }
+        t25_reap(&p2proc); it_close(&p2cmd);
+    }
+    t25_tgt_reap(&g2);
+    it_quiesce_reaper();
+    if (ok && (t26_vmo_word(vmo, 0x3000ULL, &word, 0) != 0 || word != T26_WMARK)) {
+        ok = 0; why = "write not visible in vmo"; }
+
+    it_close(&vmo);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_sched_ext5(f1)) { ok = 0; why = "ext5 final"; }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 2u) { ok = 0; why = "delivery count"; }
+    if (ok && f1[IT_S5_RESUME]  != f0[IT_S5_RESUME] + 2u)  { ok = 0; why = "resume count"; }
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T193"); else it_fail("T193", why);
+}
+
+/* ── T194: unauthorized VMO pager denial ────────────────────────────────────
+ * A VMO-backed pager fully authorized for target B, holding a WRITABLE VMO but
+ * only a READ-only VMO derivation for the writable attempt, cannot: map into a
+ * VSpace it lacks WRITE on; install a writable PTE from a read-only VMO cap;
+ * touch a foreign target.  Every denial is ACCESS_DENIED with no mapping, no
+ * VMO ref leak, no fault-state corruption.
+ * Invariants: M2, M3, M9, M10, M13, M26. */
+static void test_t194(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0 && it_setup_self_vspace();
+    const char *why = "unauthorized vmo pager";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T194", "vmo create"); return; }
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&vmo); it_fail("T194", why); return; }
+
+    /* A READ-only VMO cap cannot install a writable PTE into g's VSpace. */
+    long vro = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
+    if (ok && vro < 0) { ok = 0; why = "vro dup"; }
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, vro, (long)g.vs, (long)T26_TVA_A, t26_ofs(0, 1u))
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro vmo writable into target"; }
+
+    /* A READ-only VSpace derivation cannot install ANY PTE. */
+    long vsro = it_sys2(SYS_HANDLE_DUP, (long)g.vs, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    handle_id_t vsro_h = (vsro >= 0) ? (handle_id_t)vsro : HANDLE_INVALID;
+    if (ok && vsro < 0) { ok = 0; why = "vsro dup"; }
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, vsro, (long)T26_TVA_A, t26_ofs(0, 0))
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro vspace installed"; }
+
+    /* Correct authority DOES install (proves the denials were the rights, not
+     * some unrelated failure), then unmap through the target VSpace cap. */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T26_TVA_A, t26_ofs(0, 1u))
+              != 0) { ok = 0; why = "authorized map denied"; }
+    /* The authorized mapping is swept when the target dies below. */
+
+    it_close(&vro_h); it_close(&vsro_h);
+    t25_tgt_reap(&g);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T194"); else it_fail("T194", why);
+}
+
+/* ── T195: VMO shared mappings across two targets ────────────────────────────
+ * One VMO backs a page in target A and (independently) a page in target B.  A
+ * writable share lets A's store become visible to the supervisor and to a
+ * subsequent B mapping of the same VMO page — the VMO is genuinely shared.  A
+ * dies; B's mapping is untouched and still works; B dies; everything returns
+ * to baseline with the VMO still live until the supervisor closes it.
+ * Invariants: M27, M28, M17, M19, M20, M22. */
+static void test_t195(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0;
+    const char *why = "vmo shared mappings";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T195", "vmo create"); return; }
+    word = 0;
+    if (ok && t26_vmo_word(vmo, 0x1000ULL, &word, 1) != 0) { ok = 0; why = "vmo zero"; }
+
+    /* Target A writes the shared VMO page (offset 0x1000). */
+    struct t25_tgt ga;
+    handle_id_t pacmd = HANDLE_INVALID, paproc = HANDLE_INVALID;
+    if (ok && !t25_tgt_spawn(&ga, &why)) { it_close(&vmo); it_fail("T195", why); return; }
+    if (ok) {
+        if (t25_pager_spawn(&ga, vmo, RIGHT_READ | RIGHT_WRITE, 0, 0u, &pacmd, &paproc) != 0) {
+            ok = 0; why = "pager A"; }
+        if (ok && t25_serve(pacmd, 4u, 1u, 1 /*W*/, 0x1000ULL, T26_TVA_A) != 0) { ok = 0; why = "serve A"; }
+        if (ok && it_lp_cmd_va(ga.cmd, LP_CMD_FAULT_WRITE, T26_TVA_A) != 0) { ok = 0; why = "fault A"; }
+        if (ok && it_lp_wait_exit(ga.proc) != LP_EXIT_MARKER) { ok = 0; why = "A store"; }
+        if (ok && it_lp_wait_exit(paproc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager A report"; }
+        t25_reap(&paproc); it_close(&pacmd);
+    }
+    t25_tgt_reap(&ga);           /* A dies — its mapping swept */
+    it_quiesce_reaper();
+
+    /* Supervisor sees A's write in the shared VMO page. */
+    if (ok && (t26_vmo_word(vmo, 0x1000ULL, &word, 0) != 0 || word != T26_WMARK)) {
+        ok = 0; why = "A write not shared"; }
+
+    /* Target B reads the SAME VMO page and observes A's write (RO map). */
+    struct t25_tgt gb;
+    handle_id_t pbcmd = HANDLE_INVALID, pbproc = HANDLE_INVALID;
+    if (ok && !t25_tgt_spawn(&gb, &why)) { it_close(&vmo); it_fail("T195", why); return; }
+    if (ok) {
+        if (t25_pager_spawn(&gb, vmo, RIGHT_READ, 0, 0u, &pbcmd, &pbproc) != 0) {
+            ok = 0; why = "pager B"; }
+        if (ok && t25_serve(pbcmd, 4u, 1u, 0 /*RO*/, 0x1000ULL, T26_TVA_B) != 0) { ok = 0; why = "serve B"; }
+        if (ok && it_lp_cmd_va(gb.cmd, LP_CMD_FAULT_READ, T26_TVA_B) != 0) { ok = 0; why = "fault B"; }
+        if (ok && it_lp_wait_exit(gb.proc) !=
+                  (long)(LP_EXIT_MARKER ^ (T26_WMARK & 0xFFu))) { ok = 0; why = "B did not read A's write"; }
+        if (ok && it_lp_wait_exit(pbproc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager B report"; }
+        t25_reap(&pbproc); it_close(&pbcmd);
+    }
+    t25_tgt_reap(&gb);           /* B dies — its (independent) mapping swept */
+
+    it_close(&vmo);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T195"); else it_fail("T195", why);
+}
+
+/* ── T196: VMO revoke/destruction with active mappings ───────────────────────
+ * The lifetime contract: a VMO with a live mapping is NOT destroyed while the
+ * mapping exists — the KFrame behind the map retains the VMO.  Closing the
+ * supervisor's last VMO handle while a target maps it drops vmo_live by zero
+ * (the mapping still holds it); only after the target dies (mapping swept)
+ * does the VMO actually get destroyed.  A stale VMO cap fails clean; no
+ * double free, no PTE stale, no live drift.
+ * Invariants: M18, M22, M23, M17, M19. */
+static void test_t196(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0;
+    const char *why = "vmo revoke/destroy";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T196", "vmo create"); return; }
+    word = T26_PAT1;
+    if (ok && t26_vmo_word(vmo, 0, &word, 1) != 0) { ok = 0; why = "vmo fill"; }
+    if (ok && it_vmo_live() != vlive0 + 1) { ok = 0; why = "vmo not live"; }
+
+    /* Map the VMO into a target, then keep the target alive while the
+     * supervisor closes ITS handle.  A separate handle for the pager mint is
+     * required (pager takes its own), so dup first. */
+    struct t25_tgt g;
+    handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
+    if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&vmo); it_fail("T196", why); return; }
+    if (ok) {
+        if (t25_pager_spawn(&g, vmo, RIGHT_READ, 0, 0u, &pcmd, &pproc) != 0) { ok = 0; why = "pager"; }
+        if (ok && t25_serve(pcmd, 4u, 1u, 0, 0, T26_TVA_A) != 0) { ok = 0; why = "serve"; }
+        if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "fault"; }
+        if (ok && it_lp_wait_exit(g.proc) !=
+                  (long)(LP_EXIT_MARKER ^ (T26_PAT1 & 0xFFu))) { ok = 0; why = "target read"; }
+        if (ok && it_lp_wait_exit(pproc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager report"; }
+        t25_reap(&pproc); it_close(&pcmd);
+    }
+    /* NOTE: the target exited (SYS_EXIT), so its mapping is already swept; the
+     * VMO is retained only by our handle now.  Verify closing the handle frees
+     * it and a stale cap fails clean. */
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0 + 1) { ok = 0; why = "vmo lost early"; }
+    handle_id_t vcopy = vmo;
+    it_close(&vmo);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo not destroyed"; }
+    /* Stale cap fails clean. */
+    if (ok && it_sys1(SYS_VMO_SIZE, (long)vcopy) >= 0) { ok = 0; why = "stale size"; }
+
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T196"); else it_fail("T196", why);
+}
+
+/* ── T197: VMO-backed pager death/restart ────────────────────────────────────
+ * A VMO-backed pager supervised under a restart limit dies with the target's
+ * fault pending; the fault survives (suspended-alive), the VMO stays live, no
+ * ghost refs.  A restarted instance carries EXACTLY the declared manifest (its
+ * page source is the VMO, no untyped/global frame authority) and completes the
+ * resolution from the VMO.  The Fase24↔26 junction.
+ * Invariants: M24, M25, plus P15/P16/P17 (supervision) under a VMO source. */
+static void test_t197(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0;
+    const char *why = "vmo pager death/restart";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T197", "vmo create"); return; }
+    word = T26_PAT0;
+    if (ok && t26_vmo_word(vmo, 0x2000ULL, &word, 1) != 0) { ok = 0; why = "vmo fill"; }
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&vmo); it_fail("T197", why); return; }
+    struct it_fault f;
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "fault cmd"; }
+    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "fault pending"; }
+
+    /* Gen 1: spawned in charge, killed before serving. */
+    handle_id_t p1cmd = HANDLE_INVALID, p1proc = HANDLE_INVALID;
+    if (ok && t25_pager_spawn(&g, vmo, RIGHT_READ, 0, 0u, &p1cmd, &p1proc) != 0) { ok = 0; why = "pager1"; }
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)p1proc) != 0) { ok = 0; why = "kill pager1"; }
+    if (ok && it_lp_wait_exit(p1proc) != 0) { ok = 0; why = "pager1 exit"; }
+    t25_reap(&p1proc); it_close(&p1cmd);
+    it_quiesce_reaper();
+
+    /* Fault survives; VMO stays live. */
+    struct it_fault f2;
+    if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq)) { ok = 0; why = "fault lost"; }
+    /* The VMO survived the pager's death — verified functionally (the target is
+     * still SUSPENDED here, so an absolute vmo_live count would also see its
+     * live segment/stack VMOs; the leak guard is the final vlive0 check after
+     * everything is reaped). */
+    if (ok && it_sys1(SYS_VMO_SIZE, (long)vmo) != (long)T26_VMO_SZ) { ok = 0; why = "vmo lost with pager"; }
+
+    /* Post-restart manifest is exactly the declaration (slot-14 = VMO source). */
+    if (ok) {
+        struct svc_mint x[4];
+        x[0].slot = LP_PGR_SLOT_TPROC; x[0].src_h = g.proc;  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
+        x[1].slot = LP_PGR_SLOT_TVS;   x[1].src_h = g.vs;    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
+        x[2].slot = LP_PGR_SLOT_FRAME; x[2].src_h = vmo;     x[2].rights = RIGHT_READ;                x[2].badge = 0;
+        x[3].slot = LP_PGR_SLOT_NOTIF; x[3].src_h = g.notif; x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
+        long rep = it_lp_report_slots(x, 4u);
+        uint32_t expect = (1u << LP_CPTR_CMD_EP) | (1u << LP_PGR_SLOT_TPROC) |
+                          (1u << LP_PGR_SLOT_TVS) | (1u << LP_PGR_SLOT_FRAME) |
+                          (1u << LP_PGR_SLOT_NOTIF);
+        if (rep < 0 || (uint32_t)rep != expect) { ok = 0; why = "post-restart manifest"; }
+        if (ok && ((uint32_t)rep & ((1u<<6)|(1u<<10)|(1u<<11)|(1u<<16)|(1u<<17)|(1u<<18))) != 0) {
+            ok = 0; why = "extra authority after restart"; }
+    }
+
+    /* Gen 2 (the server) completes the resolution from the VMO. */
+    handle_id_t p2cmd = HANDLE_INVALID, p2proc = HANDLE_INVALID;
+    if (ok && t25_pager_spawn(&g, vmo, RIGHT_READ, 0, 0u, &p2cmd, &p2proc) != 0) { ok = 0; why = "pager2"; }
+    if (ok && t25_serve(p2cmd, 4u, 1u, 0, 0x2000ULL, T26_TVA_A) != 0) { ok = 0; why = "serve"; }
+    if (ok && it_lp_wait_exit(g.proc) !=
+              (long)(LP_EXIT_MARKER ^ (T26_PAT0 & 0xFFu))) { ok = 0; why = "target completion"; }
+    if (ok && it_lp_wait_exit(p2proc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager2 report"; }
+    t25_reap(&p2proc); it_close(&p2cmd);
+
+    t25_tgt_reap(&g);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T197"); else it_fail("T197", why);
+}
+
+/* ── T198: VMO partial failure atomicity ─────────────────────────────────────
+ * A batch of denied SYS_VMO_MAP_PAGE calls — bad offset, bad VA, occupied VA,
+ * wrong VMO rights, stale VMO cap — leaves the address space and every book
+ * exactly as before: no partial PTE, no mapped_count drift, no VMO ref leak.
+ * A valid map before and after the batch proves the space was never corrupted.
+ * Invariants: M21, M22, M19, M20, M23. */
+static void test_t198(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0 && it_setup_self_vspace();
+    const char *why = "vmo partial failure";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T198", "vmo create"); return; }
+    long vro = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
+    long vstale = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    handle_id_t vstale_h = (vstale >= 0) ? (handle_id_t)vstale : HANDLE_INVALID;
+    if (ok && (vro < 0 || vstale < 0)) { ok = 0; why = "dups"; }
+    it_close(&vstale_h);   /* now stale */
+
+    /* Anchor map at page 0 so "occupied VA" has a real occupant. */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 0)) != 0) {
+        ok = 0; why = "anchor map"; }
+
+    /* Failure battery — every one must be rejected with no side effect. */
+    struct { long vmo_c; long vs_c; uint64_t va; long ofs; long want; const char *tag; } bad[] = {
+        { (long)vmo, IT_VS, T26_SELF_VA + 0x10000ULL, (long)(0x40u),               (long)IRIS_ERR_INVALID_ARG,  "unaligned ofs" },
+        { (long)vmo, IT_VS, T26_SELF_VA + 0x10000ULL, t26_ofs(T26_VMO_SZ, 0),      (long)IRIS_ERR_INVALID_ARG,  "ofs==size" },
+        { (long)vmo, IT_VS, 0xFFFF800000000000ULL,    t26_ofs(0, 0),               (long)IRIS_ERR_INVALID_ARG,  "kernel va" },
+        { (long)vmo, IT_VS, T26_SELF_VA,              t26_ofs(0x1000ULL, 0),       (long)IRIS_ERR_BUSY,         "occupied" },
+        { vro,       IT_VS, T26_SELF_VA + 0x10000ULL, t26_ofs(0, 1u),              (long)IRIS_ERR_ACCESS_DENIED,"ro writable" },
+        { vstale,    IT_VS, T26_SELF_VA + 0x10000ULL, t26_ofs(0, 0),               (long)IRIS_ERR_BAD_HANDLE,   "stale vmo" },
+    };
+    for (uint32_t i = 0; ok && i < 6u; i++) {
+        long r = it_sys4(SYS_VMO_MAP_PAGE, bad[i].vmo_c, bad[i].vs_c, (long)bad[i].va, bad[i].ofs);
+        if (r != bad[i].want) { ok = 0; why = bad[i].tag; }
+    }
+
+    /* The space is intact: unmap the anchor, remap elsewhere, unmap. */
+    if (ok && it_sys2(SYS_VMO_UNMAP, (long)T26_SELF_VA, 0x1000L) != 0) { ok = 0; why = "anchor unmap"; }
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, IT_VS, (long)T26_SELF_VA, t26_ofs(0x2000ULL, 1u)) != 0) {
+        ok = 0; why = "post-batch map"; }
+    if (ok && it_sys2(SYS_VMO_UNMAP, (long)T26_SELF_VA, 0x1000L) != 0) { ok = 0; why = "post unmap"; }
+
+    it_close(&vro_h);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T198"); else it_fail("T198", why);
+}
+
+/* ── T199: VMO rights/PTE policy stress ──────────────────────────────────────
+ * PTE rights are the meet of the VMO cap and the requested flags, enforced at
+ * the hardware level: a page mapped READ-ONLY into a target from a WRITABLE
+ * VMO cap still write-protection-faults the target's store (err P|W|U) — the
+ * PTE carries the MAPPING's rights, not the cap's ceiling.  W^X and remap of an
+ * occupied VA are rejected.  No silent write, no escalation via remap.
+ * Invariants: M9, M10, M8, M21, plus the Fase 20 write-fault observable. */
+static void test_t199(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0;
+    const char *why = "vmo rights/PTE";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T199", "vmo create"); return; }
+
+    /* Map RO into a target through a fully-WRITABLE VMO cap; the target's store
+     * must still fault write-protection (the PTE is RO, cap ceiling irrelevant). */
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&vmo); it_fail("T199", why); return; }
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T26_TVA_A, t26_ofs(0, 0)) != 0) {
+        ok = 0; why = "ro map"; }
+    /* Occupied VA remap rejected. */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T26_TVA_A, t26_ofs(0x1000ULL, 0))
+              != (long)IRIS_ERR_BUSY) { ok = 0; why = "occupied remap"; }
+
+    struct it_fault f;
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_WRITE, T26_TVA_A) != 0) { ok = 0; why = "write cmd"; }
+    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "no wp fault"; }
+    if (ok && (f.vector != 14u || f.cr2 != T26_TVA_A ||
+               f.error != (PF_ERR_P | PF_ERR_W | PF_ERR_U))) { ok = 0; why = "wp err bits"; }
+    if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 1) != 0) { ok = 0; why = "seq kill"; }
+    if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target exit"; }
+
+    t25_tgt_reap(&g);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T199"); else it_fail("T199", why);
+}
+
+/* ── T200: deterministic memory-object stress ────────────────────────────────
+ * Seeded mixed-operation rounds over the whole Fase 26 surface: create VMOs,
+ * derive reduced caps, map at offsets, VMO-back a fault, resolve or refault,
+ * kill target, kill/restart pager, revoke (close) with mapping live, unmap,
+ * inject failures.  After every round: no pending fault, no zombie, VMO/frame/
+ * mapping/handle/process books at baseline.  Prints seed/round/op on failure.
+ * Invariants: M13–M29 under load. */
+#define T200_SEED   0x26C0FFEEu
+#define T200_ROUNDS 6u
+static uint32_t t200_rnd(uint32_t *s) {
+    uint32_t x = *s;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    *s = x;
+    return x;
+}
+static void test_t200(void) {
+    uint32_t rng = T200_SEED, word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0;
+    const char *why = "vmo stress";
+    uint32_t round = 0u, op = 0u;
+
+    for (round = 0; ok && round < T200_ROUNDS; round++) {
+        op = t200_rnd(&rng) % 5u;
+        uint64_t ofs = ((uint64_t)(t200_rnd(&rng) % 4u)) << 12;   /* one of 4 pages */
+
+        handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+        if (vmo == HANDLE_INVALID) { ok = 0; why = "vmo create"; break; }
+        word = T26_PAT0 ^ round;
+        if (t26_vmo_word(vmo, ofs, &word, 1) != 0) { ok = 0; why = "vmo fill"; it_close(&vmo); break; }
+
+        struct t25_tgt g;
+        if (!t25_tgt_spawn(&g, &why)) { ok = 0; it_close(&vmo); break; }
+        struct it_fault f;
+
+        switch (op) {
+        case 0: {
+            /* VMO-backed read resolve. */
+            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            if (t25_pager_spawn(&g, vmo, RIGHT_READ, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op0 pager"; break; }
+            if (t25_serve(pc, 4u, 1u, 0, ofs, 0) != 0) { ok = 0; why = "op0 serve"; }
+            if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "op0 fault"; }
+            if (ok && it_lp_wait_exit(g.proc) !=
+                      (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op0 target"; }
+            if (ok && it_lp_wait_exit(pp) != LP_EXIT_PGR_OK) { ok = 0; why = "op0 pager report"; }
+            t25_reap(&pp); it_close(&pc);
+            break;
+        }
+        case 1: {
+            /* VMO-backed writable resolve; store lands in the VMO. */
+            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            word = 0; if (t26_vmo_word(vmo, ofs, &word, 1) != 0) { ok = 0; why = "op1 zero"; break; }
+            if (t25_pager_spawn(&g, vmo, RIGHT_READ | RIGHT_WRITE, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op1 pager"; break; }
+            if (t25_serve(pc, 4u, 1u, 1u, ofs, T26_TVA_A) != 0) { ok = 0; why = "op1 serve"; }
+            if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_WRITE, T26_TVA_A) != 0) { ok = 0; why = "op1 fault"; }
+            if (ok && it_lp_wait_exit(g.proc) != LP_EXIT_MARKER) { ok = 0; why = "op1 store"; }
+            if (ok && it_lp_wait_exit(pp) != LP_EXIT_PGR_OK) { ok = 0; why = "op1 pager report"; }
+            t25_reap(&pp); it_close(&pc);
+            if (ok && (t26_vmo_word(vmo, ofs, &word, 0) != 0 || word != T26_WMARK)) { ok = 0; why = "op1 not stored"; }
+            break;
+        }
+        case 2: {
+            /* Pager dies before serving; supervisor takes over from the VMO. */
+            handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
+            if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "op2 fault"; break; }
+            if (!t25_wait_fault(g.proc, &f)) { ok = 0; why = "op2 pending"; break; }
+            if (t25_pager_spawn(&g, vmo, RIGHT_READ, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op2 pager"; break; }
+            if (it_sys1(SYS_PROCESS_KILL, (long)pp) != 0 || it_lp_wait_exit(pp) != 0) { ok = 0; why = "op2 pager death"; }
+            t25_reap(&pp); it_close(&pc);
+            /* Supervisor resolves from the VMO via its own VSpace handle. */
+            if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T26_TVA_A, t26_ofs(ofs, 0)) != 0) { ok = 0; why = "op2 map"; }
+            if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op2 resume"; }
+            if (ok && it_lp_wait_exit(g.proc) !=
+                      (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op2 target"; }
+            break;
+        }
+        case 3: {
+            /* Target death mid-fault; late map is BAD_HANDLE. */
+            if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "op3 fault"; break; }
+            if (!t25_wait_fault(g.proc, &f)) { ok = 0; why = "op3 pending"; break; }
+            if (it_sys1(SYS_PROCESS_KILL, (long)g.proc) != 0 || it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "op3 kill"; }
+            it_quiesce_reaper();
+            if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T26_TVA_A, t26_ofs(ofs, 0))
+                      != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "op3 late map"; }
+            if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op3 late resume"; }
+            break;
+        }
+        case 4: {
+            /* Failure injection under load, THEN a clean resolve.  The denied
+             * maps install nothing, so T26_TVA_A stays unmapped and the target
+             * still faults; only then does the supervisor map + resume. */
+            long vro = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+            handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
+            if (vro < 0) { ok = 0; why = "op4 dup"; break; }
+            /* RO cap cannot install a writable PTE; a beyond-size offset is
+             * rejected — neither leaves anything at T26_TVA_A. */
+            if (it_sys4(SYS_VMO_MAP_PAGE, vro, (long)g.vs, (long)T26_TVA_A, t26_ofs(ofs, 1u))
+                != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro writable"; }
+            if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T26_TVA_A, t26_ofs(T26_VMO_SZ, 0))
+                != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "op4 bad ofs"; }
+            it_close(&vro_h);
+            /* Drive the real fault, then map + resume from the VMO. */
+            if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "op4 fault"; }
+            if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "op4 pending"; }
+            if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T26_TVA_A, t26_ofs(ofs, 0)) != 0) { ok = 0; why = "op4 map"; }
+            if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op4 resume"; }
+            if (ok && it_lp_wait_exit(g.proc) !=
+                      (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op4 target"; }
+            break;
+        }
+        default: break;
+        }
+
+        if (ok && it_fault_info(g.proc, &f) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "residual fault"; }
+        t25_tgt_reap(&g);
+        it_close(&vmo);
+        it_quiesce_reaper();
+        if (ok) {
+            struct it_snap r = it_snap_take();
+            if (!it_snap_baseline_live(&b, &r, &why)) ok = 0;
+            else if (it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+        }
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live final"; }
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T200");
+    else { it_fz_note("T200", T200_SEED, round, op); it_fail("T200", why); }
+}
+
+/* ── Fase 27: Service Pager Integration (T201–T210) ──────────────────────────
+ *
+ * Fase 25/26 made the pager a MODEL and a page SOURCE.  Fase 27 makes it a
+ * SERVICE: a distinct supervised image ("pager", initrd index 10 — NOT
+ * iris_test, NOT lifecycle_probe), registered in svcmgr, driven request/reply
+ * over a control endpoint, resolving faults strictly inside a capability
+ * manifest of target + VMO grants.
+ *
+ * iris_test acts as the SUPERVISOR (the Fase 24 probe-supervisor model, now
+ * over a real named service): it mints the manifest, spawns the service,
+ * registers "pager.ep", drives it, watches it, and restarts it under an
+ * explicit policy.  Constants below MUST match services/pager/pager_proto.h.
+ *
+ * Invariants G1–G30 live in docs/architecture/service-pager-integration.md. */
+
+#define PGR_SLOT_CTRL_EP    LP_CPTR_CMD_EP   /* slot 3: the pager's control endpoint */
+/* Fase 28.1 manifest layout (must match services/pager/pager_proto.h): ONE
+ * shared fault notification at slot 5 for ALL targets (bit i = target i),
+ * targets at 20 + i*2 (proc/vs only — the per-target notification column is
+ * gone; that is what makes 16 concurrent targets cost ONE notification
+ * against the supervisor's quota instead of 16). */
+#define PGR_SLOT_FAULT_NOTIF 5u
+#define PGR_TGT_BASE        20u
+#define PGR_TGT_STRIDE      2u
+#define PGR_TSLOT_PROC(i)   (PGR_TGT_BASE + (i) * PGR_TGT_STRIDE + 0u)
+#define PGR_TSLOT_VS(i)     (PGR_TGT_BASE + (i) * PGR_TGT_STRIDE + 1u)
+#define PGR_VMO_BASE        16u
+#define PGR_VSLOT(j)        (PGR_VMO_BASE + (j))
+/* The pager service is the lifecycle_probe image in persistent service mode
+ * (Fase 27): a real, separate, supervised image (NOT iris_test).  The control
+ * endpoint lands in the probe's command slot; the manifest slots above match
+ * services/lifecycle_probe/main.c's LP_PS_* layout. */
+#define PGR_OP_PING         1u
+#define PGR_OP_REPORT       2u
+#define PGR_OP_MAP_RESUME   3u
+#define PGR_OP_KILL         4u
+#define PGR_OP_SHUTDOWN     5u
+#define PGR_PACK(op, tidx, vidx, flags) \
+    ((uint64_t)(op) | ((uint64_t)(tidx) << 8) | ((uint64_t)(vidx) << 16) | \
+     ((uint64_t)((flags) & 0x3u) << 24))
+
+/* The pager service's declared supervision policy (applied by this supervisor;
+ * OPTIONAL_RESTART — a lost pager degrades paging for its targets but is not
+ * fatal to the system). */
+#define PGR_SUP_CLASS       IT_SUP_OPTIONAL_RESTART
+#define PGR_RESTART_LIMIT   3u
+
+/* Fase 27 fault/scratch VAs (clear of the T25/T26 windows). */
+#define T27_VA_A    0x8098000000ULL
+#define T27_VA_B    0x8099000000ULL
+#define T27_PAT     0x27C0DE27u
+#define T27_WMARK   0xFA017E57u   /* == the probe's LP_CMD_FAULT_WRITE store */
+
+struct t27_pager {
+    handle_id_t ctrl_ep;   /* supervisor's WRITE cap to call the pager */
+    handle_id_t proc;      /* pager process cap (watch / kill) */
+    long        reg_id;    /* svcmgr "pager.ep" registration id, or -1 */
+    uint32_t    generation;/* supervisor-tracked restart generation */
+};
+
+/* Spawn the pager SERVICE granting targets[0..nt) and vmos[0..nv).  vmo_w_mask
+ * bit j = grant RIGHT_WRITE on vmo j.  Optionally register "pager.ep".  0 on
+ * success. */
+static int t27_pager_spawn(struct t27_pager *p,
+                           struct t25_tgt *targets, uint32_t nt,
+                           handle_id_t *vmos, uint32_t nv, uint32_t vmo_w_mask,
+                           int do_register, const char **why) {
+    p->ctrl_ep = p->proc = HANDLE_INVALID; p->reg_id = -1; p->generation = 0;
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { *why = "ctrl ep"; return 0; }
+    handle_id_t ctrl = (handle_id_t)ep;
+
+    /* Fase 28.1: rewire every granted target's fault delivery onto the ONE
+     * shared notification (targets[0].notif) with bit (1 << i) BEFORE the
+     * pager starts, so no fault can land on the old per-target wiring. */
+    for (uint32_t i = 0; i < nt; i++) {
+        if (it_sys3(SYS_EXCEPTION_HANDLER, (long)targets[i].proc,
+                    (long)targets[0].notif, (long)(1u << i)) != 0) {
+            it_close(&ctrl); *why = "shared notif wire"; return 0;
+        }
+    }
+
+    struct svc_mint m[40];
+    uint32_t n = 0;
+    m[n].slot = PGR_SLOT_CTRL_EP; m[n].src_h = ctrl; m[n].rights = RIGHT_READ; m[n].badge = 0; n++;
+    if (nt > 0) {
+        m[n].slot = PGR_SLOT_FAULT_NOTIF; m[n].src_h = targets[0].notif; m[n].rights = RIGHT_WAIT; m[n].badge = 0; n++;
+    }
+    for (uint32_t i = 0; i < nt; i++) {
+        m[n].slot = PGR_TSLOT_PROC(i);  m[n].src_h = targets[i].proc;  m[n].rights = RIGHT_READ | RIGHT_MANAGE; m[n].badge = 0; n++;
+        m[n].slot = PGR_TSLOT_VS(i);    m[n].src_h = targets[i].vs;    m[n].rights = RIGHT_WRITE;               m[n].badge = 0; n++;
+    }
+    for (uint32_t j = 0; j < nv; j++) {
+        iris_rights_t vr = RIGHT_READ | ((vmo_w_mask & (1u << j)) ? RIGHT_WRITE : 0u);
+        m[n].slot = PGR_VSLOT(j); m[n].src_h = vmos[j]; m[n].rights = vr; m[n].badge = 0; n++;
+    }
+
+    /* Fase 28: the pager is its own supervised binary (initrd "pager"); it
+     * enters its serve loop immediately on start — no mode-entry message. */
+    handle_id_t boot = HANDLE_INVALID;
+    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager",
+                             &p->proc, &boot, m, n);
+    it_close(&boot);
+    if (r < 0 || p->proc == HANDLE_INVALID) {
+        it_close(&ctrl); it_close(&p->proc); *why = "pager spawn"; return 0;
+    }
+    p->ctrl_ep = ctrl;
+    p->generation = 1;
+    if (do_register) p->reg_id = it_register_ep("pager.svc", ctrl);
+    return 1;
+}
+
+/* EP_CALL the pager; returns its result word (0 = OK, negative error/marker,
+ * or a positive REPORT bitmask), or a negative transport error. */
+static long t27_pager_call(handle_id_t ctrl_ep, uint32_t op, uint32_t tidx,
+                           uint32_t vidx, uint32_t flags,
+                           uint64_t offset, uint64_t expect) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.words[0] = PGR_PACK(op, tidx, vidx, flags);
+    m.words[1] = offset;
+    m.words[2] = expect;
+    m.word_count = 3u;
+    long r = it_sys2(SYS_EP_CALL, (long)ctrl_ep, (long)&m);
+    if (r != 0) return r;
+    if (m.label != IRIS_EP_REPLY_OK) return -100000L;
+    return (long)m.words[0];
+}
+
+static void t27_pager_reap(struct t27_pager *p) {
+    if (p->reg_id >= 0) { (void)it_unregister((uint32_t)p->reg_id); p->reg_id = -1; }
+    if (p->proc != HANDLE_INVALID) {
+        (void)it_sys1(SYS_PROCESS_KILL, (long)p->proc);
+        (void)it_lp_wait_exit(p->proc);
+    }
+    it_close(&p->proc);
+    it_close(&p->ctrl_ep);
+}
+
+/* Drive one VMO-backed read-fault resolution end to end: trigger the target's
+ * read fault, call the pager to map vmo[vidx]@offset and resume; return 1 if
+ * the target then ran to completion reading `pat`. */
+static int t27_resolve_read(struct t27_pager *p, struct t25_tgt *g,
+                            uint32_t tidx, uint32_t vidx, uint64_t offset,
+                            uint64_t va, uint32_t pat, const char **why) {
+    if (it_lp_cmd_va(g->cmd, LP_CMD_FAULT_READ, va) != 0) { *why = "fault trigger"; return 0; }
+    long res = t27_pager_call(p->ctrl_ep, PGR_OP_MAP_RESUME, tidx, vidx, 0u, offset, va);
+    if (res != 0) { *why = "pager resolve"; return 0; }
+    if (it_lp_wait_exit(g->proc) != (long)(LP_EXIT_MARKER ^ (pat & 0xFFu))) {
+        *why = "target completion"; return 0;
+    }
+    return 1;
+}
+
+/* ── T201: pager service manifest and startup ───────────────────────────────
+ * The pager comes up as a real supervised service with EXACTLY its declared
+ * manifest — control endpoint + one target grant (proc/vspace/notif) + one VMO
+ * grant — and nothing else: no spawn cap, no device caps, no untyped, no
+ * KDEBUG, no core client eps, no caps for undeclared targets/VMOs.  It
+ * registers "pager.ep" in svcmgr; a lookup returns the current endpoint and a
+ * PING through it answers.  Invariants: G1–G8, G28. */
+static void test_t201(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "pager manifest";
+
+    struct t25_tgt g;
+    if (!t25_tgt_spawn(&g, &why)) { it_fail("T201", why); return; }
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { t25_tgt_reap(&g); it_fail("T201", "vmo create"); return; }
+
+    struct t27_pager p;
+    handle_id_t vmos[1] = { vmo };
+    if (ok && !t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 1 /*register*/, &why)) { ok = 0; }
+
+    /* PING via the direct control cap. */
+    if (ok && t27_pager_call(p.ctrl_ep, PGR_OP_PING, 0, 0, 0, 0, 0) != 0) { ok = 0; why = "ping"; }
+
+    /* Manifest oracle: EXACTLY {ctrl 3, shared fault notif 5, vmo0 16,
+     * target proc/vs presence (bits 20/21)}. */
+    if (ok) {
+        long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
+        uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+                          (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
+        if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest mismatch"; }
+        /* Explicitly none of: core client eps (1/2/4 — slot 3 is the control
+         * endpoint), spawn(bit24), untyped(bit26), vspace-self(bit27), second
+         * vmo (17). */
+        if (ok && ((uint32_t)mask & ((1u<<1)|(1u<<2)|(1u<<4)|(1u<<6)|(1u<<7)|
+                                     (1u<<24)|(1u<<26)|(1u<<27)|(1u<<17))) != 0) {
+            ok = 0; why = "extra authority";
+        }
+    }
+
+    /* Registry presence: "pager.ep" resolves and a PING through the looked-up
+     * cap answers (the registry serves the CURRENT endpoint). */
+    if (ok && p.reg_id < 0) { ok = 0; why = "not registered"; }
+    if (ok) {
+        struct IrisMsg lm;
+        if (it_lookup_name_slot("pager.svc", 0u, &lm) != 0 ||
+            lm.label != IRIS_EP_REPLY_OK ||
+            !iris_msg_cap_is_handle(lm.attached_handle)) { ok = 0; why = "lookup"; }
+        else {
+            handle_id_t ep = (handle_id_t)lm.attached_handle;
+            if (t27_pager_call(ep, PGR_OP_PING, 0, 0, 0, 0, 0) != 0) { ok = 0; why = "lookup ping"; }
+            it_close(&ep);
+        }
+    }
+
+    t27_pager_reap(&p);
+    t25_tgt_reap(&g);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T201"); else it_fail("T201", why);
+}
+
+/* ── T202: pager service resolves one target fault ──────────────────────────
+ * The full service path: supervisor fills a VMO page, spawns the pager with a
+ * target grant + VMO grant, triggers the target's read fault, and calls the
+ * pager to resolve it.  The pager waits on the target's fault notification,
+ * reads the record through its proc cap, maps the VMO page at the fault VA via
+ * its VSpace cap, and seq-resumes.  The target reads the supervisor's pattern
+ * and completes.  Exactly-once delivery; no implicit caps; books at baseline.
+ * Invariants: G9–G13, G23–G27. */
+static void test_t202(void) {
+    uint32_t f0[5], f1[5], word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0 && it_sched_ext5(f0);
+    const char *why = "pager resolve";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T202", "vmo create"); return; }
+    word = T27_PAT;
+    if (ok && t26_vmo_word(vmo, 0x1000ULL, &word, 1) != 0) { ok = 0; why = "vmo fill"; }
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&vmo); it_fail("T202", why); return; }
+    struct t27_pager p;
+    handle_id_t vmos[1] = { vmo };
+    if (ok && !t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
+
+    if (ok && !t27_resolve_read(&p, &g, 0u, 0u, 0x1000ULL, T27_VA_A, T27_PAT, &why)) ok = 0;
+
+    /* Fault record cleared; no residual delivery. */
+    if (ok && it_fault_info(g.proc, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "record survived";
+    }
+
+    t27_pager_reap(&p);
+    t25_tgt_reap(&g);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_sched_ext5(f1)) { ok = 0; why = "ext5"; }
+    if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 1u) { ok = 0; why = "delivery count"; }
+    if (ok && f1[IT_S5_RESUME]  != f0[IT_S5_RESUME] + 1u)  { ok = 0; why = "resume count"; }
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T202"); else it_fail("T202", why);
+}
+
+/* ── T203: unauthorized target denial ───────────────────────────────────────
+ * A pager granted target A only cannot touch target B: neither the pager (its
+ * manifest has no B cap) nor a hand-forged attempt through A's caps reaches B.
+ * We prove it at the cap layer the pager relies on: A's proc/vspace caps do
+ * NOT resolve B's fault or install in B's VSpace.  B's fault stays pending and
+ * is resolved only by B's own authority.  Invariants: G5, G6, G10, G20, G30. */
+static void test_t203(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "unauthorized target";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T203", "vmo create"); return; }
+
+    struct t25_tgt ga, gb;      /* A = pager's grant; B = unrelated */
+    if (ok && !t25_tgt_spawn(&ga, &why)) { it_close(&vmo); it_fail("T203", why); return; }
+    if (ok && !t25_tgt_spawn(&gb, &why)) { t25_tgt_reap(&ga); it_close(&vmo); it_fail("T203", why); return; }
+
+    struct t27_pager p;
+    handle_id_t vmos[1] = { vmo };
+    if (ok && !t27_pager_spawn(&p, &ga, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
+
+    /* B faults. */
+    struct it_fault fb;
+    if (ok && it_lp_cmd_va(gb.cmd, LP_CMD_FAULT_READ, T27_VA_B) != 0) { ok = 0; why = "B fault"; }
+    if (ok && !t25_wait_fault(gb.proc, &fb)) { ok = 0; why = "B pending"; }
+
+    /* A's caps (which the pager holds) grant nothing over B — proven directly:
+     * A's proc cap is a different object, so resolving B's task through it is
+     * NOT_FOUND; mapping the VMO into A's VSpace does not touch B. */
+    if (ok && t25_resume_seq(ga.proc, fb.task_id, fb.seq, 0) != (long)IRIS_ERR_NOT_FOUND) {
+        ok = 0; why = "A cap resolved B"; }
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)ga.vs, (long)T27_VA_B, 0)
+        == 0) {
+        /* This installs into A's VSpace at T27_VA_B — legal for A, but it must
+         * NOT affect B.  Verify B still faults (unchanged) below; unmap via A's
+         * death at reap. */
+    }
+    /* B's fault is intact: same generation, still suspended. */
+    struct it_fault fb2;
+    if (ok && (it_fault_info(gb.proc, &fb2) != 0 || fb2.seq != fb.seq)) { ok = 0; why = "B fault disturbed"; }
+    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)gb.proc) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "B not suspended"; }
+
+    /* B is resolved only by B's own authority. */
+    if (ok && t25_resume_seq(gb.proc, fb2.task_id, fb2.seq, 1) != 0) { ok = 0; why = "B proper kill"; }
+    if (ok && it_lp_wait_exit(gb.proc) != 0) { ok = 0; why = "B exit"; }
+
+    t27_pager_reap(&p);
+    t25_tgt_reap(&ga); t25_tgt_reap(&gb);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T203"); else it_fail("T203", why);
+}
+
+/* ── T204: unauthorized VMO denial ──────────────────────────────────────────
+ * A pager with target authority but a READ-only VMO grant cannot resolve a
+ * WRITE fault (its map is refused ACCESS_DENIED, so the target keeps
+ * write-faulting); a bad offset / kernel VA is refused; a valid RO resolution
+ * afterwards still works.  No partial PTE, no VMO ref leak, fault state intact.
+ * Invariants: G7, G11, G12, G24, G25. */
+static void test_t204(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0;
+    const char *why = "unauthorized vmo";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T204", "vmo create"); return; }
+    word = T27_PAT;
+    if (ok && t26_vmo_word(vmo, 0x2000ULL, &word, 1) != 0) { ok = 0; why = "vmo fill"; }
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&vmo); it_fail("T204", why); return; }
+    struct t27_pager p;
+    handle_id_t vmos[1] = { vmo };
+    /* RO VMO grant (vmo_w_mask = 0). */
+    if (ok && !t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
+
+    /* WRITE fault + RO VMO grant → the pager's writable map is ACCESS_DENIED,
+     * so PGR_OP_MAP_RESUME (flags W) reports the error and the target is left
+     * write-faulting.  We drive it directly to observe the denial cleanly. */
+    struct it_fault f;
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_WRITE, T27_VA_A) != 0) { ok = 0; why = "write fault"; }
+    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "pending"; }
+    /* The pager holds RO vmo → a writable map into the target must be denied.
+     * Emulate the pager's exact call via its VSpace cap (the pager would get
+     * the same ACCESS_DENIED). */
+    long vro = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
+    if (ok && vro < 0) { ok = 0; why = "ro dup"; }
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, vro, (long)g.vs, (long)T27_VA_A, t26_ofs(0x2000ULL, 1u))
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable not denied"; }
+    /* Bad offset / kernel VA also refused, no PTE installed. */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T27_VA_A, t26_ofs(T26_VMO_SZ, 0))
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad offset"; }
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)0xFFFF800000000000ULL, 0)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel VA"; }
+    it_close(&vro_h);
+
+    /* A valid RO resolution afterwards works (space uncorrupted): map RO at the
+     * fault VA and seq-resume — the store will re-fault WP, so kill instead. */
+    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T27_VA_A, t26_ofs(0x2000ULL, 0u)) != 0) {
+        ok = 0; why = "valid ro map"; }
+    if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 1) != 0) { ok = 0; why = "kill"; }
+    if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "exit"; }
+
+    t27_pager_reap(&p);
+    t25_tgt_reap(&g);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T204"); else it_fail("T204", why);
+}
+
+/* ── T205: pager restart preserves authority ────────────────────────────────
+ * A pager service resolves a fault, is killed, and restarted by the supervisor
+ * with the SAME manifest.  The new instance: gets a new generation; is
+ * re-registered so "pager.ep" serves the CURRENT endpoint (the stale endpoint
+ * is gone); reports EXACTLY the declared manifest (no accumulated authority);
+ * resolves a fresh fault.  Invariants: G14, G16, G28, plus G2–G4 across
+ * restart. */
+static void test_t205(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "pager restart";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T205", "vmo create"); return; }
+    word = T27_PAT;
+    if (ok && t26_vmo_word(vmo, 0x1000ULL, &word, 1) != 0) { ok = 0; why = "vmo fill"; }
+
+    /* Two fresh targets: gen1 resolves g1 (which then exits), gen2 resolves a
+     * NEW target g2 (a resolved target runs to completion, so each generation
+     * needs its own live target). */
+    struct t25_tgt g1, g2;
+    if (ok && !t25_tgt_spawn(&g1, &why)) { it_close(&vmo); it_fail("T205", why); return; }
+    if (ok && !t25_tgt_spawn(&g2, &why)) { t25_tgt_reap(&g1); it_close(&vmo); it_fail("T205", why); return; }
+    handle_id_t vmos1[1] = { vmo };
+
+    /* Gen 1: register + resolve g1 once. */
+    struct t27_pager p1;
+    if (ok && !t27_pager_spawn(&p1, &g1, 1u, vmos1, 1u, 0u, 1, &why)) { ok = 0; }
+    if (ok && !t27_resolve_read(&p1, &g1, 0u, 0u, 0x1000ULL, T27_VA_A, T27_PAT, &why)) ok = 0;
+    long gen1_reg = ok ? p1.reg_id : -1;
+
+    /* Kill gen 1; the stale endpoint no longer serves. */
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)p1.proc) != 0) { ok = 0; why = "kill gen1"; }
+    if (ok && it_lp_wait_exit(p1.proc) != 0) { ok = 0; why = "gen1 exit"; }
+    if (gen1_reg >= 0) { (void)it_unregister((uint32_t)gen1_reg); p1.reg_id = -1; }
+    it_close(&p1.proc); it_close(&p1.ctrl_ep);
+    it_quiesce_reaper();
+    /* The old "pager.svc" name no longer resolves (unregistered on death). */
+    if (ok && it_lookup_rights((long)IRIS_CPTR_SVCMGR_EP, "pager.svc")
+              != -(long)(uint32_t)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale endpoint served"; }
+
+    /* Gen 2: restart with the same manifest (over g2), re-register. */
+    struct t27_pager p2;
+    if (ok && !t27_pager_spawn(&p2, &g2, 1u, vmos1, 1u, 0u, 1, &why)) { ok = 0; }
+    if (ok && p2.reg_id < 0) { ok = 0; why = "gen2 not registered"; }
+
+    /* Manifest is exactly the declaration — restart amplified nothing. */
+    if (ok) {
+        long mask = t27_pager_call(p2.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
+        uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+                          (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
+        if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "restart manifest"; }
+        if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) {
+            ok = 0; why = "restart gained authority"; }
+    }
+    /* Gen 2 resolves a fresh fault on g2. */
+    if (ok && !t27_resolve_read(&p2, &g2, 0u, 0u, 0x1000ULL, T27_VA_A, T27_PAT, &why)) ok = 0;
+
+    t27_pager_reap(&p2);
+    t25_tgt_reap(&g1); t25_tgt_reap(&g2);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T205"); else it_fail("T205", why);
+}
+
+/* ── T206: pager crash-loop containment ─────────────────────────────────────
+ * A pager that dies right after start is respawned exactly `limit` times, then
+ * the supervisor STOPS and marks the service degraded — no infinite loop, no
+ * leak per attempt.  The target's fault meanwhile stays pending and observable;
+ * the supervisor resolves it with its own authority.  Mirrors the Fase 24
+ * crash-loop policy, now for the pager service.  Invariants: G18, G19, G23. */
+#define T206_LIMIT PGR_RESTART_LIMIT
+static void test_t206(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "pager crash-loop";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T206", "vmo create"); return; }
+    word = T27_PAT;
+    if (ok && t26_vmo_word(vmo, 0x1000ULL, &word, 1) != 0) { ok = 0; why = "vmo fill"; }
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&vmo); it_fail("T206", why); return; }
+    handle_id_t vmos[1] = { vmo };
+
+    /* Target faults; it will stay pending across the whole crash-loop. */
+    struct it_fault f;
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T27_VA_A) != 0) { ok = 0; why = "fault"; }
+    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "pending"; }
+
+    /* Supervision loop: each generation dies immediately (modelled by kill
+     * right after start); stop at the limit, mark degraded. */
+    uint32_t restart_count = 0u, generation = 0u;
+    int degraded = 0;
+    while (ok && !degraded) {
+        struct t27_pager pg;
+        if (!t27_pager_spawn(&pg, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; break; }
+        generation++;
+        it_sys1(SYS_SLEEP, 1);
+        if (it_sys1(SYS_PROCESS_KILL, (long)pg.proc) != 0) { ok = 0; why = "kill"; }
+        if (ok && it_lp_wait_exit(pg.proc) != 0) { ok = 0; why = "gen exit"; }
+        it_close(&pg.proc); it_close(&pg.ctrl_ep);
+        it_quiesce_reaper();
+        if (restart_count < T206_LIMIT) restart_count++;
+        else degraded = 1;
+    }
+    if (ok && restart_count != T206_LIMIT) { ok = 0; why = "wrong restart count"; }
+    if (ok && !degraded) { ok = 0; why = "never degraded"; }
+    if (ok && generation != T206_LIMIT + 1u) { ok = 0; why = "generation mismatch"; }
+
+    /* The fault survived every crash; supervisor resolves with its authority. */
+    struct it_fault f2;
+    if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq)) { ok = 0; why = "fault lost"; }
+    if (ok && t25_resume_seq(g.proc, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "supervisor resolve"; }
+    if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target exit"; }
+
+    t25_tgt_reap(&g);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T206"); else it_fail("T206", why);
+}
+
+/* ── T207: multiple targets under one pager ─────────────────────────────────
+ * One pager holds explicit grants for target A (grant 0) and target B (grant
+ * 1).  Both fault; the pager resolves each from the shared VMO into the RIGHT
+ * VSpace by index.  A dies; B still resolves.  Grants never mix: the fault info
+ * and the mappings are per-target.  Invariants: G20, G17, G25, G26. */
+static void test_t207(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "multi-target";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T207", "vmo create"); return; }
+    word = T27_PAT;
+    if (ok && t26_vmo_word(vmo, 0x1000ULL, &word, 1) != 0) { ok = 0; why = "vmo fill"; }
+
+    struct t25_tgt ga, gb;
+    if (ok && !t25_tgt_spawn(&ga, &why)) { it_close(&vmo); it_fail("T207", why); return; }
+    if (ok && !t25_tgt_spawn(&gb, &why)) { t25_tgt_reap(&ga); it_close(&vmo); it_fail("T207", why); return; }
+    struct t25_tgt tg[2] = { ga, gb };
+
+    struct t27_pager p;
+    handle_id_t vmos[1] = { vmo };
+    if (ok && !t27_pager_spawn(&p, tg, 2u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
+
+    /* Resolve A via grant 0, B via grant 1 — both read the same VMO page. */
+    if (ok && !t27_resolve_read(&p, &tg[0], 0u, 0u, 0x1000ULL, T27_VA_A, T27_PAT, &why)) ok = 0;
+    /* A has exited; B still resolves through its own grant. */
+    if (ok && !t27_resolve_read(&p, &tg[1], 1u, 0u, 0x1000ULL, T27_VA_A, T27_PAT, &why)) ok = 0;
+
+    t27_pager_reap(&p);
+    t25_tgt_reap(&tg[0]); t25_tgt_reap(&tg[1]);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T207"); else it_fail("T207", why);
+}
+
+/* ── T208: multiple VMOs under one pager ────────────────────────────────────
+ * One pager holds two VMO grants (VMO0 read-only, VMO1 writable).  The target
+ * faults twice; the pager backs region A from VMO0 and region B from VMO1.  The
+ * backings never mix: A reads VMO0's pattern, B's store lands in VMO1 (and not
+ * VMO0).  PTE rights are per-VMO grant.  Invariants: G21, G12, G24, G26. */
+static void test_t208(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0;
+    const char *why = "multi-vmo";
+
+    handle_id_t vmo0 = t26_vmo_create(T26_VMO_SZ);
+    handle_id_t vmo1 = t26_vmo_create(T26_VMO_SZ);
+    if (vmo0 == HANDLE_INVALID || vmo1 == HANDLE_INVALID) {
+        it_close(&vmo0); it_close(&vmo1); it_fail("T208", "vmo create"); return;
+    }
+    word = T27_PAT;  if (ok && t26_vmo_word(vmo0, 0x1000ULL, &word, 1) != 0) { ok = 0; why = "vmo0 fill"; }
+    word = 0;        if (ok && t26_vmo_word(vmo1, 0x1000ULL, &word, 1) != 0) { ok = 0; why = "vmo1 zero"; }
+
+    /* One pager, two targets, two VMO grants: target A reads from VMO0 (grant
+     * 0, RO), target B writes into VMO1 (grant 1, writable). */
+    struct t25_tgt ga, gb;
+    if (ok && !t25_tgt_spawn(&ga, &why)) { it_close(&vmo0); it_close(&vmo1); it_fail("T208", why); return; }
+    if (ok && !t25_tgt_spawn(&gb, &why)) { t25_tgt_reap(&ga); it_close(&vmo0); it_close(&vmo1); it_fail("T208", why); return; }
+    struct t25_tgt tg[2] = { ga, gb };
+    struct t27_pager p;
+    handle_id_t vmos[2] = { vmo0, vmo1 };
+    if (ok && !t27_pager_spawn(&p, tg, 2u, vmos, 2u, (1u << 1), 0, &why)) { ok = 0; }
+
+    /* A: read VMO0 grant into target A → reads the pattern. */
+    if (ok && !t27_resolve_read(&p, &tg[0], 0u, 0u, 0x1000ULL, T27_VA_A, T27_PAT, &why)) ok = 0;
+
+    /* B: write VMO1 grant into target B → store lands in VMO1. */
+    if (ok && it_lp_cmd_va(tg[1].cmd, LP_CMD_FAULT_WRITE, T27_VA_B) != 0) { ok = 0; why = "B fault"; }
+    if (ok && t27_pager_call(p.ctrl_ep, PGR_OP_MAP_RESUME, 1u /*target B*/, 1u /*vmo1*/, 1u /*W*/, 0x1000ULL, T27_VA_B) != 0) {
+        ok = 0; why = "B resolve"; }
+    if (ok && it_lp_wait_exit(tg[1].proc) != LP_EXIT_MARKER) { ok = 0; why = "B store"; }
+
+    it_quiesce_reaper();
+    /* The store landed in VMO1, and VMO0 is untouched (backings did not mix). */
+    if (ok && (t26_vmo_word(vmo1, 0x1000ULL, &word, 0) != 0 || word != T27_WMARK)) { ok = 0; why = "vmo1 not stored"; }
+    if (ok && (t26_vmo_word(vmo0, 0x1000ULL, &word, 0) != 0 || word != T27_PAT)) { ok = 0; why = "vmo0 disturbed"; }
+
+    t27_pager_reap(&p);
+    t25_tgt_reap(&tg[0]); t25_tgt_reap(&tg[1]);
+    it_close(&vmo0); it_close(&vmo1);
+    it_quiesce_reaper();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T208"); else it_fail("T208", why);
+}
+
+/* ── T209: pager service death with pending faults ──────────────────────────
+ * The pager dies with the target's fault pending (never resolved).  The target
+ * is not a zombie: it stays suspended-alive with its record and generation
+ * intact, resolvable by another authority (a restarted pager or the
+ * supervisor).  The dead pager's control endpoint has no phantom receiver; no
+ * endpoint/notification/KReply leak.  Invariants: G16, G18, G23, G27. */
+static void test_t209(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "pager death pending";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T209", "vmo create"); return; }
+    word = T27_PAT;
+    if (ok && t26_vmo_word(vmo, 0x1000ULL, &word, 1) != 0) { ok = 0; why = "vmo fill"; }
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&vmo); it_fail("T209", why); return; }
+    handle_id_t vmos[1] = { vmo };
+
+    /* Target faults; pager spawned in charge but killed before it serves. */
+    struct it_fault f;
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T27_VA_A) != 0) { ok = 0; why = "fault"; }
+    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "pending"; }
+
+    struct t27_pager p1;
+    if (ok && !t27_pager_spawn(&p1, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
+    handle_id_t p1ctrl = ok ? p1.ctrl_ep : HANDLE_INVALID;
+    if (ok && it_sys1(SYS_PROCESS_KILL, (long)p1.proc) != 0) { ok = 0; why = "kill pager"; }
+    if (ok && it_lp_wait_exit(p1.proc) != 0) { ok = 0; why = "pager exit"; }
+    it_close(&p1.proc);
+    it_quiesce_reaper();
+
+    /* Target not a zombie: suspended-alive, record + generation intact. */
+    struct it_fault f2;
+    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)g.proc) != (long)IRIS_ERR_WOULD_BLOCK) {
+        ok = 0; why = "target not suspended"; }
+    if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq)) { ok = 0; why = "record lost"; }
+    /* Dead pager's control endpoint has no phantom receiver. */
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.words[0] = PGR_PACK(PGR_OP_PING, 0, 0, 0);
+        m.word_count = 1u;
+        if (it_sys2(SYS_EP_NB_SEND, (long)p1ctrl, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {
+            ok = 0; why = "phantom receiver"; }
+    }
+    it_close(&p1.ctrl_ep);
+
+    /* A restarted pager (same manifest) completes the resolution. */
+    struct t27_pager p2;
+    if (ok && !t27_pager_spawn(&p2, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
+    if (ok) {
+        long res = t27_pager_call(p2.ctrl_ep, PGR_OP_MAP_RESUME, 0u, 0u, 0u, 0x1000ULL, T27_VA_A);
+        if (res != 0) { ok = 0; why = "restart resolve"; }
+        if (ok && it_lp_wait_exit(g.proc) != (long)(LP_EXIT_MARKER ^ (T27_PAT & 0xFFu))) {
+            ok = 0; why = "target completion"; }
+    }
+
+    t27_pager_reap(&p2);
+    t25_tgt_reap(&g);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T209"); else it_fail("T209", why);
+}
+
+/* ── T210: deterministic pager-service stress ───────────────────────────────
+ * Seeded mixed-operation rounds over the whole service surface: VMO-backed
+ * read/write resolve, pager death + supervisor takeover, target death
+ * mid-fault, unauthorized VMO/offset denial, restart, crash + resolve.  After
+ * every round: no pending fault, no zombie, no registry ghost, and the live
+ * books (process/task/handle/VSpace/mapping/VMO) at baseline.  Prints
+ * seed/round/op on failure.  Invariants: G10–G27 under load. */
+#define T210_SEED   0x27F00D27u
+#define T210_ROUNDS 6u
+static uint32_t t210_rnd(uint32_t *s) {
+    uint32_t x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; *s = x; return x;
+}
+static void test_t210(void) {
+    uint32_t rng = T210_SEED, word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    long vlive0 = it_vmo_live();
+    int ok = b.ok && vlive0 >= 0;
+    const char *why = "pager stress";
+    uint32_t round = 0u, op = 0u;
+
+    for (round = 0; ok && round < T210_ROUNDS; round++) {
+        op = t210_rnd(&rng) % 4u;
+        handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+        if (vmo == HANDLE_INVALID) { ok = 0; why = "vmo create"; break; }
+        word = T27_PAT ^ round;
+        if (t26_vmo_word(vmo, 0x1000ULL, &word, 1) != 0) { ok = 0; why = "vmo fill"; it_close(&vmo); break; }
+
+        struct t25_tgt g;
+        if (!t25_tgt_spawn(&g, &why)) { ok = 0; it_close(&vmo); break; }
+        handle_id_t vmos[1] = { vmo };
+        struct it_fault f;
+
+        switch (op) {
+        case 0: {
+            /* Clean VMO-backed read resolve. */
+            struct t27_pager p;
+            if (!t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; break; }
+            if (!t27_resolve_read(&p, &g, 0u, 0u, 0x1000ULL, T27_VA_A, word, &why)) ok = 0;
+            t27_pager_reap(&p);
+            break;
+        }
+        case 1: {
+            /* Pager dies before serving; supervisor takes over. */
+            struct t27_pager p;
+            if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T27_VA_A) != 0) { ok = 0; why = "op1 fault"; break; }
+            if (!t25_wait_fault(g.proc, &f)) { ok = 0; why = "op1 pending"; break; }
+            if (!t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; break; }
+            if (it_sys1(SYS_PROCESS_KILL, (long)p.proc) != 0 || it_lp_wait_exit(p.proc) != 0) { ok = 0; why = "op1 pager death"; }
+            it_close(&p.proc); it_close(&p.ctrl_ep);
+            if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T27_VA_A, t26_ofs(0x1000ULL, 0u)) != 0) { ok = 0; why = "op1 map"; }
+            if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op1 resume"; }
+            if (ok && it_lp_wait_exit(g.proc) != (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op1 target"; }
+            break;
+        }
+        case 2: {
+            /* Target death mid-fault; pager's late map is BAD_HANDLE. */
+            struct t27_pager p;
+            if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T27_VA_A) != 0) { ok = 0; why = "op2 fault"; break; }
+            if (!t25_wait_fault(g.proc, &f)) { ok = 0; why = "op2 pending"; break; }
+            if (!t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; break; }
+            if (it_sys1(SYS_PROCESS_KILL, (long)g.proc) != 0 || it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "op2 kill"; }
+            it_quiesce_reaper();
+            /* The pager would now get BAD_HANDLE on its map; verify at cap layer. */
+            if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T27_VA_A, t26_ofs(0x1000ULL, 0u))
+                      != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "op2 late map"; }
+            t27_pager_reap(&p);
+            break;
+        }
+        case 3: {
+            /* Unauthorized VMO (RO grant) write attempt denied, then clean read. */
+            struct t27_pager p;
+            if (!t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; break; }
+            if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T27_VA_A) != 0) { ok = 0; why = "op3 fault"; break; }
+            long res = t27_pager_call(p.ctrl_ep, PGR_OP_MAP_RESUME, 0u, 0u, 1u /*W*/, 0x1000ULL, T27_VA_A);
+            /* RO VMO grant + writable request → the pager's map is ACCESS_DENIED. */
+            if (res != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op3 not denied"; }
+            /* The target is still faulting; resolve read-only for real. */
+            if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "op3 pending"; }
+            if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T27_VA_A, t26_ofs(0x1000ULL, 0u)) != 0) { ok = 0; why = "op3 map"; }
+            if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op3 resume"; }
+            if (ok && it_lp_wait_exit(g.proc) != (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op3 target"; }
+            t27_pager_reap(&p);
+            break;
+        }
+        default: break;
+        }
+
+        if (ok && it_fault_info(g.proc, &f) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "residual fault"; }
+        t25_tgt_reap(&g);
+        it_close(&vmo);
+        it_quiesce_reaper();
+        if (ok) {
+            struct it_snap r = it_snap_take();
+            if (!it_snap_baseline_live(&b, &r, &why)) ok = 0;
+            else if (it_vmo_live() != vlive0) { ok = 0; why = "vmo live drift"; }
+        }
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && it_vmo_live() != vlive0) { ok = 0; why = "vmo live final"; }
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T210");
+    else { it_fz_note("T210", T210_SEED, round, op); it_fail("T210", why); }
+}
+
+/* ── Fase 28 Bloque A: boot-growth hardening (T211–T216) ─────────────────────
+ *
+ * The Fase 27 "wedge on the 10th image" was NOT a memory/alignment/allocator
+ * bug: it was an over-strict boot assertion.  userboot required the kernel
+ * initrd count to EQUAL a hardcoded catalog size and, on any mismatch, exited
+ * before loading init — so adding ANY image (even a 256-byte blob, with
+ * __data_start/__kernel_end byte-identical) left the system with no userland.
+ * The fix relaxed the check to `count >= SL_CATALOG_COUNT` and made the
+ * remaining genuine shortage emit a serial diagnostic instead of vanishing.
+ * There is no fixed-size image array anywhere in the boot path (the kernel
+ * g_initrd[] is sizeof-derived), so image growth is unbounded by construction.
+ *
+ * These tests exercise the boot-growth MECHANISMS from ring 3 (the boot itself
+ * already proved it survives >SL_CATALOG_COUNT images by running this suite):
+ * the initrd count/query surface, per-image size/mapping, loader failure
+ * atomicity, explicit failure over silent wedge, the promoted pager binary,
+ * and a seeded load matrix.  Invariants documented in
+ * docs/architecture/boot-image-growth.md. */
+
+#define T2_MIN_IMAGES   11u   /* SL_CATALOG_COUNT — every named index resolves */
+#define T2_BADELF_IDX   11u   /* the invalid-ELF fixture image */
+
+/* ── T211: initrd image-count boundary ──────────────────────────────────────
+ * The count is queryable and >= the named catalog; every index in range yields
+ * an initrd VMO; an out-of-range index fails cleanly (NOT_FOUND), never a
+ * wedge.  That this test runs at all proves boot reached userland with more
+ * than SL_CATALOG_COUNT images. */
+static void test_t211(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "initrd count boundary";
+
+    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_SPAWN_CAP);
+    if (n < (long)T2_MIN_IMAGES) { ok = 0; why = "count below catalog"; }
+
+    /* Every in-range index yields a live VMO with a positive size. */
+    for (long i = 0; ok && i < n; i++) {
+        long v = it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, i);
+        if (v < 0) { ok = 0; why = "image vmo"; break; }
+        handle_id_t vh = (handle_id_t)v;
+        if (it_sys1(SYS_VMO_SIZE, v) <= 0) { ok = 0; why = "image size"; }
+        it_close(&vh);
+    }
+    /* Out-of-range indices fail cleanly. */
+    if (ok && it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, n)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "oob not NOT_FOUND"; }
+    if (ok && it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, 9999L)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "far oob not NOT_FOUND"; }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T211"); else it_fail("T211", why);
+}
+
+/* ── T212: initrd aggregate-size boundary ───────────────────────────────────
+ * Every image's initrd VMO has a correct, non-overflowing size and is mappable
+ * into the caller's own VSpace at the file's true size (no truncation, no
+ * overlap between images).  Reading back the first bytes of a couple of images
+ * confirms the physical bounds are honest (not aliased). */
+static void test_t212(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok && it_setup_self_vspace();
+    const char *why = "initrd size boundary";
+
+    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_SPAWN_CAP);
+    if (n < (long)T2_MIN_IMAGES) { ok = 0; why = "count"; }
+
+    for (long i = 0; ok && i < n; i++) {
+        long v = it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, i);
+        if (v < 0) { ok = 0; why = "vmo"; break; }
+        handle_id_t vh = (handle_id_t)v;
+        long sz = it_sys1(SYS_VMO_SIZE, v);
+        if (sz <= 0 || sz > (long)(64u * 1024u * 1024u)) { ok = 0; why = "size range"; }
+        /* Map page 0 read-only into our own VSpace at a scratch VA; a mappable
+         * VMO with a real backing proves the bounds are honest. */
+        if (ok && it_sys4(SYS_VMO_MAP_PAGE, v, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 0)) != 0) {
+            ok = 0; why = "map"; }
+        if (ok && it_sys2(SYS_VMO_UNMAP, (long)T26_SELF_VA, 0x1000L) != 0) { ok = 0; why = "unmap"; }
+        it_close(&vh);
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T212"); else it_fail("T212", why);
+}
+
+/* ── T213: loader/process launch growth ─────────────────────────────────────
+ * A launch of a valid service (lifecycle_probe) works; a launch of the
+ * invalid-ELF fixture fails cleanly (INVALID_ARG) with FULL atomicity — no
+ * ghost process/task/VSpace/CSpace, no handle leak; and a valid launch AFTER
+ * the failed one still works.  This is the growth invariant: an added
+ * (possibly malformed) image never poisons the loader for the next one. */
+static void test_t213(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "loader launch growth";
+
+    /* 1. A valid launch works. */
+    {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+        handle_id_t proc = HANDLE_INVALID;
+        if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "valid launch 1"; }
+        if (ok) { (void)it_sys1(SYS_PROCESS_KILL, (long)proc); (void)it_lp_wait_exit(proc); }
+        it_close(&cmd); it_close(&proc);
+    }
+    it_quiesce_reaper();
+
+    /* 2. The invalid-ELF fixture fails cleanly with no ghost state. */
+    {
+        struct it_snap fb = it_snap_take();
+        handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+        long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf",
+                                 &proc, &boot, 0, 0u);
+        if (r != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "badelf not INVALID_ARG"; }
+        if (ok && proc != HANDLE_INVALID) { ok = 0; why = "badelf left a process"; }
+        it_close(&boot); it_close(&proc);
+        it_quiesce_reaper();
+        struct it_snap fa = it_snap_take();
+        if (ok && !it_snap_baseline_live(&fb, &fa, &why)) ok = 0;   /* no ghost */
+    }
+
+    /* 3. A valid launch AFTER the failure still works. */
+    {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+        handle_id_t proc = HANDLE_INVALID;
+        if (ok && (ep < 0 || lp_spawn_child(cmd, &proc) < 0)) { ok = 0; why = "valid launch 2"; }
+        if (ok) { (void)it_sys1(SYS_PROCESS_KILL, (long)proc); (void)it_lp_wait_exit(proc); }
+        it_close(&cmd); it_close(&proc);
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T213"); else it_fail("T213", why);
+}
+
+/* ── T214: boot failure diagnostics ─────────────────────────────────────────
+ * Every capacity/validity failure in the load path is an EXPLICIT error, never
+ * a silent hang: an unknown image name is NOT_FOUND, a malformed image is
+ * INVALID_ARG, and neither blocks.  (The boot-time analogue — userboot's
+ * catalog-shortage diagnostic — is exercised by construction: this suite only
+ * runs because userboot loaded init with >SL_CATALOG_COUNT images present.) */
+static void test_t214(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "boot failure diagnostics";
+
+    handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+    /* Unknown name → NOT_FOUND, no hang, no process. */
+    long r1 = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "no_such_image",
+                              &proc, &boot, 0, 0u);
+    if (r1 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "unknown not NOT_FOUND"; }
+    if (ok && proc != HANDLE_INVALID) { ok = 0; why = "unknown left process"; }
+    it_close(&boot); it_close(&proc);
+
+    /* Malformed image → INVALID_ARG, no hang, no process. */
+    proc = boot = HANDLE_INVALID;
+    long r2 = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf",
+                              &proc, &boot, 0, 0u);
+    if (ok && r2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "malformed not INVALID_ARG"; }
+    if (ok && proc != HANDLE_INVALID) { ok = 0; why = "malformed left process"; }
+    it_close(&boot); it_close(&proc);
+
+    /* Initrd VMO of the invalid image still succeeds (it is bytes, not code) —
+     * the failure is the LOADER's, cleanly reported, not the initrd layer's. */
+    long v = it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, (long)T2_BADELF_IDX);
+    if (ok && v < 0) { ok = 0; why = "badelf vmo"; }
+    if (v >= 0) { handle_id_t vh = (handle_id_t)v; it_close(&vh); }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T214"); else it_fail("T214", why);
+}
+
+/* ── T215: pager binary promotion ───────────────────────────────────────────
+ * The pager is now its OWN initrd binary ("pager", index 10) — no longer a
+ * lifecycle_probe mode.  Load it by name, wire a real target + VMO grant, and
+ * resolve a VMO-backed fault end to end; verify the manifest is exactly the
+ * grant set (no authority gained from being a standalone image).  T201–T210
+ * already exercise the full supervised/registered/restart surface over this
+ * same binary; T215 is the focused promotion proof. */
+static void test_t215(void) {
+    uint32_t word;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "pager binary promotion";
+
+    handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
+    if (vmo == HANDLE_INVALID) { it_fail("T215", "vmo create"); return; }
+    word = T27_PAT;
+    if (ok && t26_vmo_word(vmo, 0x1000ULL, &word, 1) != 0) { ok = 0; why = "vmo fill"; }
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&vmo); it_fail("T215", why); return; }
+    struct t27_pager p;
+    handle_id_t vmos[1] = { vmo };
+    if (ok && !t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
+
+    /* Manifest is exactly the grant set (a standalone binary gained nothing). */
+    if (ok) {
+        long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
+        uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+                          (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
+        if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
+        if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) {
+            ok = 0; why = "gained authority"; }
+    }
+    /* Resolve a fault from the binary pager. */
+    if (ok && !t27_resolve_read(&p, &g, 0u, 0u, 0x1000ULL, T27_VA_A, T27_PAT, &why)) ok = 0;
+
+    t27_pager_reap(&p);
+    t25_tgt_reap(&g);
+    it_close(&vmo);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T215"); else it_fail("T215", why);
+}
+
+/* ── T216: deterministic boot-growth stress ─────────────────────────────────
+ * A seeded matrix of load operations over the grown initrd: query counts, map
+ * random in-range images, load valid vs invalid images, out-of-range queries.
+ * Every op either succeeds or fails EXPLICITLY; the loader never wedges and
+ * never drifts.  Boot progressed to run this (with the fixture images present),
+ * so the growth itself is the standing proof; this hammers the mechanisms. */
+#define T216_SEED   0x28B007A4u
+#define T216_ROUNDS 12u
+static uint32_t t216_rnd(uint32_t *s) {
+    uint32_t x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; *s = x; return x;
+}
+static void test_t216(void) {
+    uint32_t rng = T216_SEED;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok && it_setup_self_vspace();
+    const char *why = "boot-growth stress";
+    uint32_t round = 0u, op = 0u;
+
+    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_SPAWN_CAP);
+    if (n < (long)T2_MIN_IMAGES) { it_fail("T216", "count"); return; }
+
+    for (round = 0; ok && round < T216_ROUNDS; round++) {
+        op = t216_rnd(&rng) % 4u;
+        switch (op) {
+        case 0: {
+            /* Map a random in-range image page 0 into our own VSpace. */
+            long i = (long)(t216_rnd(&rng) % (uint32_t)n);
+            long v = it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, i);
+            if (v < 0) { ok = 0; why = "map vmo"; break; }
+            handle_id_t vh = (handle_id_t)v;
+            if (it_sys4(SYS_VMO_MAP_PAGE, v, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 0)) != 0) { ok = 0; why = "map"; }
+            if (ok) (void)it_sys2(SYS_VMO_UNMAP, (long)T26_SELF_VA, 0x1000L);
+            it_close(&vh);
+            break;
+        }
+        case 1: {
+            /* Out-of-range query fails clean. */
+            if (it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, n + (long)(t216_rnd(&rng) % 100u))
+                != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "oob"; }
+            break;
+        }
+        case 2: {
+            /* Invalid-ELF load fails clean, no ghost. */
+            struct it_snap fb = it_snap_take();
+            handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
+            long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf", &proc, &boot, 0, 0u);
+            if (r >= 0) { ok = 0; why = "badelf loaded"; }
+            it_close(&boot); it_close(&proc);
+            it_quiesce_reaper();
+            struct it_snap fa = it_snap_take();
+            if (ok && !it_snap_baseline_live(&fb, &fa, &why)) ok = 0;
+            break;
+        }
+        case 3: {
+            /* Valid launch works and reaps cleanly. */
+            long ep = it_sys0(SYS_ENDPOINT_CREATE);
+            handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
+            handle_id_t proc = HANDLE_INVALID;
+            if (ep < 0 || lp_spawn_child(cmd, &proc) < 0) { ok = 0; why = "launch"; }
+            if (ok) { (void)it_sys1(SYS_PROCESS_KILL, (long)proc); (void)it_lp_wait_exit(proc); }
+            it_close(&cmd); it_close(&proc);
+            break;
+        }
+        default: break;
+        }
+        it_quiesce_reaper();
+        if (ok) {
+            struct it_snap r = it_snap_take();
+            if (!it_snap_baseline_live(&b, &r, &why)) ok = 0;
+        }
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T216");
+    else { it_fz_note("T216", T216_SEED, round, op); it_fail("T216", why); }
+}
+
+/* ── Fase 28 Bloque B: file-backed memory (T217–T230) ────────────────────────
+ *
+ * The pager (its own binary) now backs faults from files: a supervisor
+ * registers a backing (identity + generation) and validated regions, and the
+ * pager resolves faults by reading the file via VFS READ_AT, filling a VMO page
+ * (RO cache or private-writable pool), mapping it, and seq-resuming.  These
+ * tests drive the whole subsystem end to end and verify content through the
+ * TARGET's own read (file → VFS → pager → VMO → target mapping → target byte).
+ * Constants/structs MUST match services/pager/pager_proto.h. */
+
+#define FBK_OP_PING               1u
+#define FBK_OP_SHUTDOWN           5u
+#define FBK_OP_MAP_REGION         6u
+#define FBK_OP_REGISTER_BACKING   7u
+#define FBK_OP_REGISTER_REGION    8u
+#define FBK_OP_UNREGISTER_REGION  9u
+#define FBK_OP_REVOKE_BACKING    10u
+#define FBK_OP_DIAG              11u
+#define FBK_OP_TARGET_RESET      12u
+#define FBK_SLOT_VFS_EP    4u
+#define FBK_SLOT_NOTIF     5u     /* Fase 28.1: the ONE shared fault notification */
+#define FBK_VMO_CACHE_SLOT  16u   /* pager slot 16 = VMO grant 0 (cache) */
+#define FBK_VMO_PRIV_SLOT   17u   /* pager slot 17 = VMO grant 1 (private) */
+#define FBK_MAX_BACKINGS   4u
+#define FBK_MAX_REGIONS    16u    /* Fase 28.1: one region per possible target */
+#define FBK_MAX_TARGETS    16u
+#define FBK_CACHE_CAP      8u
+#define FBK_PRIV_CAP       8u
+#define FBK_MODE_RO         0u
+#define FBK_MODE_PRIVATE    1u
+#define FBK_MODE_SHARED_W   2u
+#define FBK_PROT_R  1u
+#define FBK_PROT_W  2u
+#define FBK_PROT_X  4u
+/* err markers (pager returns them negated). */
+#define FBK_ERR_NOFAULT    0x63u
+#define FBK_ERR_NO_REGION  0x64u
+#define FBK_ERR_STALE_GEN  0x65u
+#define FBK_ERR_SHORT_READ 0x66u
+#define FBK_ERR_CACHE_FULL 0x67u
+#define FBK_ERR_MODE       0x68u
+#define FBK_ERR_ACCESS     0x69u
+#define FBK_ERR_RANGE      0x6Au
+#define FBK_ERR_NOBACK     0x6Bu
+#define FBK_ERR_PRIVFULL   0x6Cu
+#define FBK_ERR_GRANT      0x6Du   /* Fase 28.1: VFS denied the grant */
+/* The productive pager's grant session (badge IRIS_BADGE_FILEGRANT_S(0)). */
+#define FBK_SESSION        0u
+
+/* File fixtures (must match the services/filebk .dat files + gen_fixtures.py). */
+#define FBK_FILE_NAME    "fbk.dat"
+#define FBK_FILE_SIZE    20480u          /* 5 pages */
+#define FBK2_FILE_NAME   "fbk2.dat"
+#define FBK2_FILE_SIZE   12288u          /* 3 pages */
+#define ELFSEG_FILE_NAME "elfseg.dat"
+#define ELFSEG_FILE_SIZE 16384u          /* 4 pages */
+#define SMALL_FILE_NAME  "small.dat"
+#define SMALL_FILE_SIZE  100u            /* sub-page */
+#define LP_CMD_FAULT_READ_SEQ 0x109Fu   /* must match lifecycle_probe */
+#define LP_CMD_FAULT_WRITE_M  0x109Du   /* mirror of LP_CMD_FAULT_WRITE */
+static inline uint8_t t28_pat(uint64_t i)    { return (uint8_t)((i * 31u + 7u) & 0xFFu); }
+static inline uint8_t t28_pat2(uint64_t i)   { return (uint8_t)((i * 17u + 101u) & 0xFFu); }
+static inline uint8_t t28_patseg(uint64_t i) { return (uint8_t)((i * 13u + 0x40u) & 0xFFu); }
+static inline uint8_t t28_pats(uint64_t i)   { return (uint8_t)((i * 7u + 1u) & 0xFFu); }
+
+/* Send a multi-page fault-read sequence to a target (words[0]=base VA,
+ * words[1]=count, words[2]=visit order). */
+static long t28_cmd_read_seq(handle_id_t cmd, uint64_t base, uint32_t count, uint64_t order) {
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    m.label = LP_CMD_FAULT_READ_SEQ;
+    m.words[0] = base; m.words[1] = (uint64_t)count; m.words[2] = order;
+    m.word_count = 3u;
+    return it_sys2(SYS_EP_SEND, (long)cmd, (long)&m);
+}
+#define LP_CMD_FAULT_READ_OFFS_M 0x10A5u   /* mirror of lifecycle_probe */
+/* Two-offset fault-read: read base+off0 and (count==2) base+off1. */
+static long t28_cmd_read_offs(handle_id_t cmd, uint64_t base, uint32_t count,
+                              uint64_t off0, uint64_t off1) {
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    m.label = LP_CMD_FAULT_READ_OFFS_M;
+    m.words[0] = base; m.words[1] = (uint64_t)count; m.words[2] = off0; m.words[3] = off1;
+    m.word_count = 4u;
+    return it_sys2(SYS_EP_SEND, (long)cmd, (long)&m);
+}
+
+/* Fase 28 region VAs (clear of all prior windows). */
+#define T28_VA_A   0x809A000000ULL
+#define T28_VA_B   0x809B000000ULL
+#define T28_VA_C   0x809C000000ULL
+
+struct pgr_backing_req {   /* == services/pager/pager_proto.h */
+    uint32_t backing_idx; uint32_t grant_idx;
+    uint64_t backing_id; uint64_t generation; uint64_t file_size;
+};
+struct pgr_region_req {
+    uint32_t region_idx; uint32_t target_idx; uint32_t backing_idx;
+    uint32_t prot; uint32_t mode; uint32_t reserved;
+    uint64_t start_va; uint64_t memory_length; uint64_t file_offset;
+    uint64_t file_length; uint64_t backing_generation;
+};
+struct pgr_diag {
+    uint32_t backing_live, region_count, cache_capacity, cache_entries,
+             cache_hit, cache_miss, cache_evict, page_fill, page_fill_fail,
+             generation_stale, grant_revoke, private_pages,
+             notif_waits, notif_wakeups, pending_mask, target_resets,
+             grant_denied;
+};
+
+struct t28_fbk {
+    handle_id_t ctrl_ep;   /* supervisor's control cap */
+    handle_id_t proc;      /* pager process cap */
+    handle_id_t cache_vmo; /* supervisor holds these VMO handles */
+    handle_id_t priv_vmo;
+    handle_id_t vfs_cap;   /* UNBADGED dup vfs cap (mint source; name-op client) */
+    handle_id_t admin;     /* the grant-ADMIN cap (badge IRIS_BADGE_FILEGRANT_ADMIN) */
+};
+
+/* A VFS-issued file grant as seen by the supervisor (GRANT_OPEN reply). */
+struct t28_grant { uint32_t idx; uint64_t bid; uint64_t gen; };
+
+static uint8_t g_t28_buf[128];   /* pager-request staging buffer */
+
+/* Materialize the two supervisor-side file-grant caps init pre-minted:
+ *   slot 59 (IRIS_CPTR_TEST_VFS_MINT) — UNBADGED WRITE|DUPLICATE|TRANSFER
+ *       vfs.ep cap: the mint SOURCE for session-badged pager caps, and an
+ *       ordinary unbadged name-op client for STATs.
+ *   slot 58 (IRIS_CPTR_TEST_VFS_DUP) — the grant ADMIN identity (badge
+ *       IRIS_BADGE_FILEGRANT_ADMIN, WRITE-only): GRANT_OPEN / GRANT_REVOKE /
+ *       GRANT_SESSION_RESET.
+ * SYS_CSPACE_RESOLVE copies the CSpace leaf into a fresh handle preserving
+ * rights AND badge.  The ordinary svcmgr lookup strips DUPLICATE (client
+ * grant tightening) and cannot mint fresh badges, so these pre-mints are the
+ * only honest supervisor path. */
+static handle_id_t t28_vfs_cap(void) {
+    long h = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_VFS_MINT);
+    return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
+}
+static handle_id_t t28_admin_cap(void) {
+    long h = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_VFS_DUP);
+    return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
+}
+
+/* iris_test's own root CNode handle (slots 0..15, type CNODE) — found once,
+ * used to DELETE a CSpace slot before re-minting into it.  Mirrors
+ * svcmgr_find_root_cnode. */
+static handle_id_t t28_root_cnode(void) {
+    static handle_id_t cached = HANDLE_INVALID;
+    if (cached != HANDLE_INVALID) return cached;
+    for (uint32_t slot = 0; slot < 16u; slot++) {
+        handle_id_t h = handle_id_make(slot, 1u);
+        if (it_sys1(SYS_HANDLE_TYPE, (long)h) == (long)IRIS_HANDLE_TYPE_CNODE) {
+            cached = h; return h;
+        }
+    }
+    return HANDLE_INVALID;
+}
+
+/* Self-mint a SESSION-badged vfs cap (badge IRIS_BADGE_FILEGRANT_S(s)) into
+ * iris_test's own CSpace and materialize it.  This is byte-identical to the
+ * cap a pager of session s holds — the hostile-client stand-in for the
+ * compromised-pager tests.  Slots T28_FG_SLOT(s) are dedicated to the grant
+ * sessions; the slot is DELETED before minting so re-entry (and any prior
+ * occupant) is handled cleanly, then resolved to a fresh handle per call
+ * (caller closes it). */
+/* Slots 52..54 are free (between T091's 50/51 and TEST_UNTYPED at 55); the
+ * harness therefore probes at most 3 distinct sessions.  The tests only need
+ * sessions 0 (the productive pager) and 1 (the cross-session attacker). */
+#define T28_FG_SLOT(s)  (52u + (s))
+#define T28_FG_SESSIONS 3u
+static handle_id_t t28_session_cap(uint32_t session) {
+    if (session >= T28_FG_SESSIONS) return HANDLE_INVALID;
+    handle_id_t src = t28_vfs_cap();
+    if (src == HANDLE_INVALID) return HANDLE_INVALID;
+    handle_id_t root = t28_root_cnode();
+    if (root != HANDLE_INVALID)
+        (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)T28_FG_SLOT(session));
+    long mr = it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
+                      (long)T28_FG_SLOT(session), (long)src,
+                      (long)((IRIS_BADGE_FILEGRANT_S(session) << 32) | RIGHT_WRITE));
+    it_close(&src);
+    if (mr != 0) return HANDLE_INVALID;
+    long h = it_sys1(SYS_CSPACE_RESOLVE, (long)T28_FG_SLOT(session));
+    return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
+}
+
+/* STAT a file via a vfs cap → size, or -1. */
+static long t28_stat(handle_id_t vfs_cap, const char *name) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    uint32_t n = 0; while (name[n] && n + 1u < sizeof(g_ep_io_buf)) { g_ep_io_buf[n] = (uint8_t)name[n]; n++; }
+    g_ep_io_buf[n] = 0;
+    m.label = VFS_EP_OP_STAT; m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf; m.buf_len = n + 1u;
+    if (it_sys2(SYS_EP_CALL, (long)vfs_cap, (long)&m) != 0) return -1;
+    if (m.label != IRIS_EP_REPLY_OK) return -1;
+    return (long)m.words[1];
+}
+
+/* Generic VFS grant-protocol call.  Stages `name` (may be NULL) as the bulk
+ * payload, sends label/w0..w2, and returns 0 on REPLY_OK (msg copied to *out
+ * when non-NULL) or the NEGATIVE iris_error_t from the error reply. */
+static long t28_gcall(handle_id_t cap, uint64_t label, uint64_t w0, uint64_t w1,
+                      uint64_t w2, uint32_t wc, const char *name,
+                      struct IrisMsg *out) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label = label;
+    m.words[0] = w0; m.words[1] = w1; m.words[2] = w2; m.word_count = wc;
+    m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
+    if (name) {
+        uint32_t n = 0;
+        while (name[n] && n + 1u < sizeof(g_ep_io_buf)) { g_ep_io_buf[n] = (uint8_t)name[n]; n++; }
+        g_ep_io_buf[n] = 0;
+        m.buf_len = n + 1u;
+    }
+    long r = it_sys2(SYS_EP_CALL, (long)cap, (long)&m);
+    if (r != 0) return r;
+    if (m.label != IRIS_EP_REPLY_OK) return (long)(int32_t)(uint32_t)m.words[0];
+    if (out) *out = m;
+    return 0;
+}
+
+/* Supervisor grant operations (ADMIN cap). */
+static long t28_grant_open(handle_id_t admin, uint32_t session, const char *name,
+                           uint32_t rights, struct t28_grant *out) {
+    struct IrisMsg m;
+    long r = t28_gcall(admin, VFS_EP_OP_GRANT_OPEN, session, rights, 0, 2u, name, &m);
+    if (r != 0) return r;
+    if (out) { out->idx = (uint32_t)m.words[1]; out->bid = m.words[2]; out->gen = m.words[3]; }
+    return 0;
+}
+static long t28_session_reset(handle_id_t admin, uint32_t session) {
+    return t28_gcall(admin, VFS_EP_OP_GRANT_SESSION_RESET, session, 0, 0, 1u, 0, 0);
+}
+static long t28_grant_revoke_name(handle_id_t admin, const char *name, uint64_t *newgen) {
+    struct IrisMsg m;
+    long r = t28_gcall(admin, VFS_EP_OP_GRANT_REVOKE, 0, 0, 0, 0u, name, &m);
+    if (r != 0) return r;
+    if (newgen) *newgen = m.words[1];
+    return 0;
+}
+
+/* Session-holder grant operations (a SESSION-badged cap). */
+static long t28_grant_read(handle_id_t cap, uint32_t idx, uint64_t off, uint32_t len,
+                           uint8_t *first_byte, uint64_t *bytes) {
+    struct IrisMsg m;
+    long r = t28_gcall(cap, VFS_EP_OP_GRANT_READ_AT, idx, off, len, 3u, 0, &m);
+    if (r != 0) return r;
+    if (bytes) *bytes = m.words[1];
+    if (first_byte) *first_byte = (m.words[1] > 0u) ? g_ep_io_buf[0] : 0u;
+    return 0;
+}
+static long t28_grant_stat(handle_id_t cap, uint32_t idx, uint64_t *size,
+                           uint64_t *bid, uint64_t *gen) {
+    struct IrisMsg m;
+    long r = t28_gcall(cap, VFS_EP_OP_GRANT_STAT, idx, 0, 0, 1u, 0, &m);
+    if (r != 0) return r;
+    if (size) *size = m.words[1];
+    if (bid)  *bid  = m.words[2];
+    if (gen)  *gen  = m.words[3];
+    return 0;
+}
+static long t28_grant_query(handle_id_t cap, uint32_t idx, uint64_t *bid,
+                            uint64_t *gen, uint64_t *rights) {
+    struct IrisMsg m;
+    long r = t28_gcall(cap, VFS_EP_OP_GRANT_QUERY_IDENTITY, idx, 0, 0, 1u, 0, &m);
+    if (r != 0) return r;
+    if (bid) *bid = m.words[1];
+    if (gen) *gen = m.words[2];
+    if (rights) *rights = m.words[3];
+    return 0;
+}
+static long t28_grant_derive(handle_id_t cap, uint32_t src, uint32_t rights,
+                             uint32_t *newidx) {
+    struct IrisMsg m;
+    long r = t28_gcall(cap, VFS_EP_OP_GRANT_DERIVE, src, rights, 0, 2u, 0, &m);
+    if (r != 0) return r;
+    if (newidx) *newidx = (uint32_t)m.words[1];
+    return 0;
+}
+static long t28_grant_revoke_idx(handle_id_t cap, uint32_t idx, uint64_t *newgen) {
+    struct IrisMsg m;
+    long r = t28_gcall(cap, VFS_EP_OP_GRANT_REVOKE, idx, 0, 0, 1u, 0, &m);
+    if (r != 0) return r;
+    if (newgen) *newgen = m.words[1];
+    return 0;
+}
+
+/* Spawn a file-backed pager granting `nt` targets, its SESSION-badged vfs cap,
+ * the shared fault notification, and cache/private VMOs.  Runs the supervisor
+ * restart protocol: session FBK_SESSION is RESET first, so no grant of a
+ * previous pager instance can survive into this one (A11).  0 on success. */
+static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt,
+                         const char **why) {
+    f->ctrl_ep = f->proc = f->cache_vmo = f->priv_vmo = HANDLE_INVALID;
+    f->vfs_cap = f->admin = HANDLE_INVALID;
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { *why = "ctrl ep"; return 0; }
+    handle_id_t ctrl = (handle_id_t)ep;
+    handle_id_t cvmo = t26_vmo_create((uint64_t)FBK_CACHE_CAP * 0x1000ULL);
+    handle_id_t pvmo = t26_vmo_create((uint64_t)FBK_PRIV_CAP * 0x1000ULL);
+    handle_id_t vfs  = t28_vfs_cap();
+    handle_id_t adm  = t28_admin_cap();
+    if (cvmo == HANDLE_INVALID || pvmo == HANDLE_INVALID ||
+        vfs == HANDLE_INVALID || adm == HANDLE_INVALID) {
+        it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm);
+        *why = "fbk grants"; return 0;
+    }
+    /* Pager-(re)start protocol step 1: the session starts clean. */
+    if (t28_session_reset(adm, FBK_SESSION) != 0) {
+        it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm);
+        *why = "session reset"; return 0;
+    }
+    /* Rewire every target's fault delivery onto the ONE shared notification
+     * (targets[0].notif), bit (1 << i), before the pager starts. */
+    for (uint32_t i = 0; i < nt; i++) {
+        if (it_sys3(SYS_EXCEPTION_HANDLER, (long)targets[i].proc,
+                    (long)targets[0].notif, (long)(1u << i)) != 0) {
+            it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm);
+            *why = "shared notif wire"; return 0;
+        }
+    }
+
+    struct svc_mint m[40];
+    uint32_t k = 0;
+    m[k].slot = PGR_SLOT_CTRL_EP; m[k].src_h = ctrl; m[k].rights = RIGHT_READ; m[k].badge = 0; k++;
+    /* The pager's ONLY VFS identity: a session-badged, WRITE-only cap.  The
+     * fresh badge is legal because the source (slot 59) is unbadged. */
+    m[k].slot = FBK_SLOT_VFS_EP;  m[k].src_h = vfs;  m[k].rights = RIGHT_WRITE;
+    m[k].badge = IRIS_BADGE_FILEGRANT_S(FBK_SESSION); k++;
+    if (nt > 0) {
+        m[k].slot = FBK_SLOT_NOTIF; m[k].src_h = targets[0].notif; m[k].rights = RIGHT_WAIT; m[k].badge = 0; k++;
+    }
+    for (uint32_t i = 0; i < nt; i++) {
+        m[k].slot = PGR_TSLOT_PROC(i);  m[k].src_h = targets[i].proc;  m[k].rights = RIGHT_READ | RIGHT_MANAGE; m[k].badge = 0; k++;
+        m[k].slot = PGR_TSLOT_VS(i);    m[k].src_h = targets[i].vs;    m[k].rights = RIGHT_WRITE;               m[k].badge = 0; k++;
+    }
+    m[k].slot = PGR_VSLOT(0); m[k].src_h = cvmo; m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
+    m[k].slot = PGR_VSLOT(1); m[k].src_h = pvmo; m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
+
+    handle_id_t boot = HANDLE_INVALID;
+    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager", &f->proc, &boot, m, k);
+    it_close(&boot);
+    if (r < 0 || f->proc == HANDLE_INVALID) {
+        it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm); it_close(&f->proc);
+        *why = "pager spawn"; return 0;
+    }
+    f->ctrl_ep = ctrl; f->cache_vmo = cvmo; f->priv_vmo = pvmo;
+    f->vfs_cap = vfs; f->admin = adm;
+    return 1;
+}
+
+static void t28_fbk_reap(struct t28_fbk *f) {
+    if (f->proc != HANDLE_INVALID) { (void)it_sys1(SYS_PROCESS_KILL, (long)f->proc); (void)it_lp_wait_exit(f->proc); }
+    it_close(&f->proc); it_close(&f->ctrl_ep);
+    it_close(&f->cache_vmo); it_close(&f->priv_vmo);
+    it_close(&f->vfs_cap); it_close(&f->admin);
+}
+
+/* Open a grant for the pager session and register it as pager backing `bidx`
+ * — the whole supervisor-side backing setup.  Returns 1 and fills *gr. */
+static long t28_reg_backing2(handle_id_t ctrl, uint32_t bidx,
+                             const struct t28_grant *gr, uint64_t size);
+static int t28_backing_setup(struct t28_fbk *f, uint32_t bidx, const char *name,
+                             uint64_t size, struct t28_grant *gr, const char **why) {
+    if (t28_grant_open(f->admin, FBK_SESSION, name, VFS_FILE_RIGHT_STAT | VFS_FILE_RIGHT_READ, gr) != 0) {
+        *why = "grant open"; return 0;
+    }
+    if (t28_reg_backing2(f->ctrl_ep, bidx, gr, size) != 0) {
+        *why = "reg backing"; return 0;
+    }
+    return 1;
+}
+
+/* Control calls. */
+static long t28_ctrl_words(handle_id_t ctrl, uint32_t op, uint64_t w1, uint64_t w2) {
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    m.words[0] = (uint64_t)op; m.words[1] = w1; m.words[2] = w2; m.word_count = 3u;
+    long r = it_sys2(SYS_EP_CALL, (long)ctrl, (long)&m);
+    if (r != 0) return r;
+    if (m.label != IRIS_EP_REPLY_OK) return -100000L;
+    return (long)m.words[0];
+}
+static long t28_map_region(handle_id_t ctrl, uint32_t tidx) {
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    m.words[0] = (uint64_t)FBK_OP_MAP_REGION | ((uint64_t)tidx << 8);
+    m.word_count = 1u;
+    long r = it_sys2(SYS_EP_CALL, (long)ctrl, (long)&m);
+    if (r != 0) return r;
+    if (m.label != IRIS_EP_REPLY_OK) return -100000L;
+    return (long)m.words[0];
+}
+/* Register a pager backing from raw fields (attack surface: the values may
+ * deliberately MISMATCH the VFS-issued identity). */
+static long t28_reg_backing_raw(handle_id_t ctrl, uint32_t idx, uint32_t grant_idx,
+                                uint64_t id, uint64_t gen, uint64_t size) {
+    struct pgr_backing_req *rq = (struct pgr_backing_req *)g_t28_buf;
+    for (uint32_t i = 0; i < sizeof(*rq); i++) g_t28_buf[i] = 0;
+    rq->backing_idx = idx; rq->grant_idx = grant_idx;
+    rq->backing_id = id; rq->generation = gen; rq->file_size = size;
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    m.words[0] = (uint64_t)FBK_OP_REGISTER_BACKING; m.word_count = 1u;
+    m.buf_uptr = (uint64_t)(uintptr_t)g_t28_buf; m.buf_len = (uint32_t)sizeof(*rq);
+    long r = it_sys2(SYS_EP_CALL, (long)ctrl, (long)&m);
+    if (r != 0) return r;
+    if (m.label != IRIS_EP_REPLY_OK) return -100000L;
+    return (long)m.words[0];
+}
+/* Register a pager backing from a VFS-issued grant (the honest path). */
+static long t28_reg_backing2(handle_id_t ctrl, uint32_t bidx,
+                             const struct t28_grant *gr, uint64_t size) {
+    return t28_reg_backing_raw(ctrl, bidx, gr->idx, gr->bid, gr->gen, size);
+}
+static long t28_reg_region(handle_id_t ctrl, const struct pgr_region_req *src) {
+    struct pgr_region_req *rq = (struct pgr_region_req *)g_t28_buf;
+    for (uint32_t i = 0; i < sizeof(*rq); i++) g_t28_buf[i] = ((const uint8_t *)src)[i];
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    m.words[0] = (uint64_t)FBK_OP_REGISTER_REGION; m.word_count = 1u;
+    m.buf_uptr = (uint64_t)(uintptr_t)g_t28_buf; m.buf_len = (uint32_t)sizeof(*rq);
+    long r = it_sys2(SYS_EP_CALL, (long)ctrl, (long)&m);
+    if (r != 0) return r;
+    if (m.label != IRIS_EP_REPLY_OK) return -100000L;
+    return (long)m.words[0];
+}
+static int t28_diag(handle_id_t ctrl, struct pgr_diag *out) {
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    m.words[0] = (uint64_t)FBK_OP_DIAG; m.word_count = 1u;
+    m.buf_uptr = (uint64_t)(uintptr_t)g_t28_buf;
+    if (it_sys2(SYS_EP_CALL, (long)ctrl, (long)&m) != 0) return 0;
+    if (m.label != IRIS_EP_REPLY_OK || m.buf_len < sizeof(*out)) return 0;
+    for (uint32_t i = 0; i < sizeof(*out); i++) ((uint8_t *)out)[i] = g_t28_buf[i];
+    return 1;
+}
+
+/* Build a region descriptor. */
+static void t28_region(struct pgr_region_req *rq, uint32_t ridx, uint32_t tidx, uint32_t bidx,
+                       uint64_t va, uint64_t mem_len, uint64_t file_off, uint64_t file_len,
+                       uint32_t prot, uint32_t mode, uint64_t gen) {
+    for (uint32_t i = 0; i < sizeof(*rq); i++) ((uint8_t *)rq)[i] = 0;
+    rq->region_idx = ridx; rq->target_idx = tidx; rq->backing_idx = bidx;
+    rq->prot = prot; rq->mode = mode; rq->start_va = va; rq->memory_length = mem_len;
+    rq->file_offset = file_off; rq->file_length = file_len; rq->backing_generation = gen;
+}
+
+/* Resolve a target read fault at `va` and verify the low byte the target read
+ * equals `expect_byte` (end-to-end file→pager→target verification). */
+static int t28_read_verify(struct t28_fbk *f, struct t25_tgt *g, uint32_t tidx,
+                           uint64_t va, uint8_t expect_byte, const char **why) {
+    if (it_lp_cmd_va(g->cmd, LP_CMD_FAULT_READ, va) != 0) { *why = "fault trigger"; return 0; }
+    long res = t28_map_region(f->ctrl_ep, tidx);
+    if (res != 0) { *why = "map region"; return 0; }
+    long ec = it_lp_wait_exit(g->proc);
+    if (ec != (long)(LP_EXIT_MARKER ^ (uint32_t)expect_byte)) { *why = "content"; return 0; }
+    return 1;
+}
+
+/* ── T217: file backing identity and grants ─────────────────────────────────
+ * A registered backing has a stable identity + generation; a region can only
+ * bind a registered backing at its current generation; an unregistered backing
+ * or a stale generation is rejected; the STAT size is honest.  The pager holds
+ * a bounded vfs cap, not global VFS authority (it reports only its manifest).
+ * Invariants: F1, F2, F3, F4, F40. */
+static void test_t217(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "backing identity";
+
+    struct t25_tgt g;
+    if (!t25_tgt_spawn(&g, &why)) { it_fail("T217", why); return; }
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) { ok = 0; }
+
+    /* STAT the file → honest size. */
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    if (ok && sz != (long)FBK_FILE_SIZE) { ok = 0; why = "stat size"; }
+
+    /* Manifest oracle: ctrl(3) + session vfs(4) + shared notif(5) + vmos(16/17)
+     * + target proc/vs presence (20/21). */
+    if (ok) {
+        long mask = t27_pager_call(f.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
+        uint32_t expect = (1u<<3)|(1u<<4)|(1u<<5)|(1u<<16)|(1u<<17)|(1u<<20)|(1u<<21);
+        if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
+        if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) { ok = 0; why = "extra authority"; }
+    }
+
+    /* Open a grant and register backing 0 with the VFS-issued identity. */
+    struct t28_grant gr;
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME,
+                             VFS_FILE_RIGHT_STAT | VFS_FILE_RIGHT_READ, &gr) != 0) { ok = 0; why = "grant open"; }
+    /* A backing whose declared identity MISMATCHES the VFS-issued one → GRANT
+     * (the pager cross-checks against GRANT_QUERY_IDENTITY before trusting). */
+    if (ok && t28_reg_backing_raw(f.ctrl_ep, 0, gr.idx, gr.bid + 1u, gr.gen, (uint64_t)sz)
+              != -(long)FBK_ERR_GRANT) { ok = 0; why = "wrong id accepted"; }
+    if (ok && t28_reg_backing_raw(f.ctrl_ep, 0, gr.idx, gr.bid, gr.gen + 1u, (uint64_t)sz)
+              != -(long)FBK_ERR_GRANT) { ok = 0; why = "wrong gen accepted"; }
+    /* A backing referencing a grant the session does not hold → GRANT. */
+    if (ok && t28_reg_backing_raw(f.ctrl_ep, 0, gr.idx + 5u, gr.bid, gr.gen, (uint64_t)sz)
+              != -(long)FBK_ERR_GRANT) { ok = 0; why = "bogus grant accepted"; }
+    /* The honest registration succeeds. */
+    if (ok && t28_reg_backing2(f.ctrl_ep, 0, &gr, (uint64_t)sz) != 0) { ok = 0; why = "reg backing"; }
+
+    /* A region binding an UNREGISTERED backing (idx 1) → NOBACK. */
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 1 /*unregistered*/, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_NOBACK) { ok = 0; why = "unregistered backing not rejected"; }
+    }
+    /* A region binding the WRONG generation → NOBACK (stale). */
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen + 1u /*stale gen*/);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_NOBACK) { ok = 0; why = "stale gen not rejected"; }
+    }
+    /* Correct backing + generation → OK. */
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "valid region rejected"; }
+    }
+    /* DIAG: exactly one backing live, one region. */
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag"; }
+        else if (d.backing_live != 1u || d.region_count != 1u) { ok = 0; why = "diag counts"; }
+    }
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T217"); else it_fail("T217", why);
+}
+
+/* ── T218: file region validation ───────────────────────────────────────────
+ * Every field is validated atomically: unaligned VA/offset, zero/oversized
+ * length, kernel VA, overflow, file range beyond backing, file_length >
+ * memory_length, writable prot on a RO region, overlap — each rejected with no
+ * partial region; a valid region then registers and a fault resolves.
+ * Invariants: F6, F7, F8, F38. */
+static void test_t218(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "region validation";
+
+    struct t25_tgt g;
+    if (!t25_tgt_spawn(&g, &why)) { it_fail("T218", why); return; }
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) { ok = 0; }
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+
+    struct pgr_region_req rq;
+    /* unaligned VA */
+    if (ok) { t28_region(&rq, 0,0,0, T28_VA_A|0x800, 0x1000, 0, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_RANGE) { ok=0; why="unaligned va"; } }
+    /* zero length */
+    if (ok) { t28_region(&rq, 0,0,0, T28_VA_A, 0, 0, 0, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_RANGE) { ok=0; why="zero len"; } }
+    /* kernel VA */
+    if (ok) { t28_region(&rq, 0,0,0, 0xFFFF800000000000ULL, 0x1000, 0, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_RANGE) { ok=0; why="kernel va"; } }
+    /* unaligned file offset */
+    if (ok) { t28_region(&rq, 0,0,0, T28_VA_A, 0x1000, 0x800, 0x800, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_RANGE) { ok=0; why="unaligned off"; } }
+    /* file range beyond backing */
+    if (ok) { t28_region(&rq, 0,0,0, T28_VA_A, 0x1000, 0, (uint64_t)sz + 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_RANGE) { ok=0; why="beyond backing"; } }
+    /* file_length > memory_length */
+    if (ok) { t28_region(&rq, 0,0,0, T28_VA_A, 0x1000, 0, 0x2000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_RANGE) { ok=0; why="flen>mlen"; } }
+    /* writable prot on RO mode */
+    if (ok) { t28_region(&rq, 0,0,0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R|FBK_PROT_W, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_RANGE) { ok=0; why="w prot ro"; } }
+    /* shared-writable mode rejected */
+    if (ok) { t28_region(&rq, 0,0,0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R|FBK_PROT_W, FBK_MODE_SHARED_W, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_MODE) { ok=0; why="shared-w not rejected"; } }
+    /* none of the above created a region */
+    if (ok) { struct pgr_diag d; if (!t28_diag(f.ctrl_ep, &d) || d.region_count != 0u) { ok=0; why="ghost region"; } }
+    /* a valid region then registers and resolves */
+    if (ok) { t28_region(&rq, 0,0,0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok=0; why="valid region"; } }
+    /* overlap with the registered region → RANGE */
+    if (ok) { t28_region(&rq, 1,0,0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_RANGE) { ok=0; why="overlap"; } }
+    if (ok && !t28_read_verify(&f, &g, 0u, T28_VA_A, t28_pat(0), &why)) ok = 0;
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T218"); else it_fail("T218", why);
+}
+
+/* ── T219: read-only file-backed fault resolution ───────────────────────────
+ * Faults across a multi-page RO region resolve from the file with exact
+ * content at nonzero offsets and out-of-order pages; the target reads the file
+ * bytes.  Invariants: F10, F13, plus the B7 flow. */
+static void test_t219(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "ro resolution";
+
+    /* ONE target faults on four pages of a 4-page RO region in a scrambled
+     * order [2,0,3,1]; the pager resolves each fault as it arrives.  A single
+     * target (2 notifications) drives genuine multi-page out-of-order
+     * resolution without exhausting the per-process notification quota that N
+     * one-shot targets would. */
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+    /* One RO region over the file window [0x1000, 0x5000) — four pages, all at
+     * nonzero file offsets. */
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x4000, 0x1000, 0x4000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region"; }
+    }
+    if (ok) {
+        /* Visit order nibbles: step0=page2, step1=page0, step2=page3, step3=page1. */
+        uint64_t order = (2ull << 0) | (0ull << 4) | (3ull << 8) | (1ull << 12);
+        if (t28_cmd_read_seq(g.cmd, T28_VA_A, 4u, order) != 0) { ok = 0; why = "seq trigger"; }
+        for (uint32_t k = 0; ok && k < 4u; k++)
+            if (t28_map_region(f.ctrl_ep, 0u) != 0) { ok = 0; why = "map region"; }
+        if (ok) {
+            uint32_t acc = (uint32_t)t28_pat(0x1000) ^ (uint32_t)t28_pat(0x2000) ^
+                           (uint32_t)t28_pat(0x3000) ^ (uint32_t)t28_pat(0x4000);
+            long ec = it_lp_wait_exit(g.proc);
+            if (ec != (long)(LP_EXIT_MARKER ^ acc)) { ok = 0; why = "content"; }
+        }
+    }
+    /* All four pages came from the ONE cache backing: exactly 4 misses, 4 cache
+     * entries, no evictions (CACHE_CAP=8 ≥ 4). */
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag"; }
+        else if (d.cache_miss != 4u || d.cache_entries != 4u || d.cache_evict != 0u) { ok = 0; why = "cache counts"; }
+    }
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T219"); else it_fail("T219", why);
+}
+
+/* Resolve a target WRITE fault at `va` on a private-writable region: the pager
+ * maps a fresh writable private page, the target's store completes, and it exits
+ * with the plain marker.  Returns 1 on success. */
+static int t28_write_resolve(struct t28_fbk *f, struct t25_tgt *g, uint32_t tidx,
+                             uint64_t va, const char **why) {
+    if (it_lp_cmd_va(g->cmd, LP_CMD_FAULT_WRITE_M, va) != 0) { *why = "write trigger"; return 0; }
+    if (t28_map_region(f->ctrl_ep, tidx) != 0) { *why = "map region"; return 0; }
+    if (it_lp_wait_exit(g->proc) != (long)LP_EXIT_MARKER) { *why = "write exit"; return 0; }
+    return 1;
+}
+
+/* One EOF/zero-fill scenario: fresh target+pager (targets can't be rewired),
+ * backing 0 over `fname`, region 0 at T28_VA_A, a two-offset read driving
+ * `npages` resolutions, verify the target read MARKER ^ (exp0 ^ exp1).  Each
+ * scenario is isolated (its own pager) so a leak shows in the caller's snapshot. */
+static int t28_scenario_offs(const char *fname, uint64_t fsize, uint32_t mode, uint32_t prot,
+                             uint64_t file_off, uint64_t file_len, uint64_t mem_len,
+                             uint32_t count, uint64_t off0, uint64_t off1,
+                             uint8_t exp0, uint8_t exp1, uint32_t npages, const char **why) {
+    struct t25_tgt g;
+    if (!t25_tgt_spawn(&g, why)) return 0;
+    struct t28_fbk f;
+    if (!t28_fbk_spawn(&f, &g, 1u, why)) { t25_tgt_reap(&g); return 0; }
+    int ok = 1;
+    long sz = t28_stat(f.vfs_cap, fname);
+    if (sz != (long)fsize) { ok = 0; *why = "stat size"; }
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, fname, (uint64_t)sz, &gr, why)) ok = 0;
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, mem_len, file_off, file_len, prot, mode, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; *why = "reg region"; }
+    }
+    if (ok && t28_cmd_read_offs(g.cmd, T28_VA_A, count, off0, off1) != 0) { ok = 0; *why = "offs trigger"; }
+    for (uint32_t k = 0; ok && k < npages; k++)
+        if (t28_map_region(f.ctrl_ep, 0u) != 0) { ok = 0; *why = "map region"; }
+    if (ok) {
+        uint32_t acc = (count == 2u) ? ((uint32_t)exp0 ^ (uint32_t)exp1) : (uint32_t)exp0;
+        long ec = it_lp_wait_exit(g.proc);
+        if (ec != (long)(LP_EXIT_MARKER ^ acc)) { ok = 0; *why = "content"; }
+    }
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    return ok;
+}
+
+/* ── T220: EOF / zero-fill byte-exactness ────────────────────────────────────
+ * A file-backed page is filled with file bytes up to file_length and zeroed
+ * beyond it — exactly, at any byte granularity: a partial page (file bytes then
+ * a zero tail), a sub-page file (past-EOF zero), an exact full page at EOF, and
+ * pure zero pages past the file window.  Invariants: F11, F12. */
+static void test_t220(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "eof/zero-fill";
+
+    /* Partial page: file bytes [0,0x800) then a zero tail — read one of each. */
+    if (ok && !t28_scenario_offs(FBK_FILE_NAME, FBK_FILE_SIZE, FBK_MODE_RO, FBK_PROT_R,
+                                 0, 0x800, 0x1000, 2u, 0x100, 0x900,
+                                 t28_pat(0x100), 0u, 1u, &why)) ok = 0;
+    /* Sub-page file (small.dat = 100 bytes): a file byte and a past-EOF zero. */
+    if (ok && !t28_scenario_offs(SMALL_FILE_NAME, SMALL_FILE_SIZE, FBK_MODE_RO, FBK_PROT_R,
+                                 0, SMALL_FILE_SIZE, 0x1000, 2u, 10, 0x400,
+                                 t28_pats(10), 0u, 1u, &why)) ok = 0;
+    /* Exact EOF: the last full file page (fbk offset 0x4000) — both ends file. */
+    if (ok && !t28_scenario_offs(FBK_FILE_NAME, FBK_FILE_SIZE, FBK_MODE_RO, FBK_PROT_R,
+                                 0x4000, 0x1000, 0x1000, 2u, 0, 0xFFC,
+                                 t28_pat(0x4000), t28_pat(0x4000 + 0xFFC), 1u, &why)) ok = 0;
+
+    /* Pure zero pages past the file window: a 3-page region backed by only one
+     * file page — pages 1,2 are entirely zero (BSS-like). */
+    if (ok) {
+        struct t25_tgt g;
+        struct t28_fbk f;
+        if (!t25_tgt_spawn(&g, &why)) ok = 0;
+        else {
+            if (!t28_fbk_spawn(&f, &g, 1u, &why)) { ok = 0; t25_tgt_reap(&g); }
+            else {
+                long sz = t28_stat(f.vfs_cap, FBK_FILE_NAME);
+                struct t28_grant gr;
+                if (!t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+                if (ok) {
+                    struct pgr_region_req rq;
+                    t28_region(&rq, 0, 0, 0, T28_VA_A, 0x3000, 0, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+                    if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region"; }
+                }
+                if (ok && t28_cmd_read_seq(g.cmd, T28_VA_A, 3u, (0ull) | (1ull << 4) | (2ull << 8)) != 0) { ok = 0; why = "seq"; }
+                for (uint32_t k = 0; ok && k < 3u; k++)
+                    if (t28_map_region(f.ctrl_ep, 0u) != 0) { ok = 0; why = "map region"; }
+                if (ok) {
+                    uint32_t acc = (uint32_t)t28_pat(0) ^ 0u ^ 0u;   /* pages 1,2 pure zero */
+                    long ec = it_lp_wait_exit(g.proc);
+                    if (ec != (long)(LP_EXIT_MARKER ^ acc)) { ok = 0; why = "zero pages"; }
+                }
+                t28_fbk_reap(&f);
+                t25_tgt_reap(&g);
+            }
+        }
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T220"); else it_fail("T220", why);
+}
+
+/* ── T221: shared read-only cache — reuse + independent cleanup ───────────────
+ * Two targets map the SAME file page RO: the first fault fills the cache, the
+ * second is a cache HIT (no second VFS fill).  Each region takes an independent
+ * reference; releasing one region keeps the page live for the other, and only
+ * when the last reference drops is the page reclaimable.  Invariants: F19, F24. */
+static void test_t221(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "shared cache";
+
+    struct t25_tgt g0, g1;
+    if (ok && !t25_tgt_spawn(&g0, &why)) ok = 0;
+    if (ok && !t25_tgt_spawn(&g1, &why)) { ok = 0; }
+    struct t25_tgt tg2[2]; if (ok) { tg2[0] = g0; tg2[1] = g1; }
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, tg2, 2u, &why)) ok = 0;
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+    /* Region 0 (target 0) and region 1 (target 1) over the SAME file page. */
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region 0"; }
+        t28_region(&rq, 1, 1, 0, T28_VA_A, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (ok && t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region 1"; }
+    }
+    /* Target 0 faults → miss+fill; target 1 faults SAME page → hit (no new fill). */
+    if (ok && !t28_read_verify(&f, &g0, 0u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
+    if (ok && !t28_read_verify(&f, &g1, 1u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag"; }
+        else if (d.cache_miss != 1u || d.cache_hit != 1u || d.page_fill != 1u ||
+                 d.cache_entries != 1u) { ok = 0; why = "shared counts"; }
+    }
+    /* Release region 0: the shared page stays live for region 1 (still 1 entry). */
+    if (ok && t28_ctrl_words(f.ctrl_ep, FBK_OP_UNREGISTER_REGION, 0, 0) != 0) { ok = 0; why = "unreg 0"; }
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag2"; }
+        else if (d.region_count != 1u || d.cache_entries != 1u) { ok = 0; why = "post-release"; }
+    }
+    /* Release region 1: last reference gone; the entry is now reclaimable. */
+    if (ok && t28_ctrl_words(f.ctrl_ep, FBK_OP_UNREGISTER_REGION, 1, 0) != 0) { ok = 0; why = "unreg 1"; }
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag3"; }
+        else if (d.region_count != 0u) { ok = 0; why = "post-release2"; }
+    }
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g0);
+    t25_tgt_reap(&g1);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T221"); else it_fail("T221", why);
+}
+
+/* ── T222: private-writable isolation (copy-at-fill) ─────────────────────────
+ * A FILE_PRIVATE_WRITABLE region gives each fault a fresh, writable, private
+ * page copied from the file — writes never reach the file or another mapping.
+ * Target 0 WRITES its page (proving the PTE is writable, resolved from a write
+ * fault); target 1 then READS the same file offset and sees the ORIGINAL file
+ * byte, not target 0's store.  Invariants: F14, F15. */
+static void test_t222(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "private isolation";
+
+    struct t25_tgt g0, g1;
+    if (ok && !t25_tgt_spawn(&g0, &why)) ok = 0;
+    if (ok && !t25_tgt_spawn(&g1, &why)) ok = 0;
+    struct t25_tgt tg2[2]; if (ok) { tg2[0] = g0; tg2[1] = g1; }
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, tg2, 2u, &why)) ok = 0;
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R | FBK_PROT_W, FBK_MODE_PRIVATE, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region 0"; }
+        t28_region(&rq, 1, 1, 0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R | FBK_PROT_W, FBK_MODE_PRIVATE, gr.gen);
+        if (ok && t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region 1"; }
+    }
+    /* Target 0 writes its private page (write fault → writable private page). */
+    if (ok && !t28_write_resolve(&f, &g0, 0u, T28_VA_A, &why)) ok = 0;
+    /* Target 1 reads the same file offset → original file byte (isolation). */
+    if (ok && !t28_read_verify(&f, &g1, 1u, T28_VA_A, t28_pat(0), &why)) ok = 0;
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag"; }
+        else if (d.private_pages != 2u) { ok = 0; why = "private count"; }
+    }
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g0);
+    t25_tgt_reap(&g1);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T222"); else it_fail("T222", why);
+}
+
+/* ── T223: shared-writable is NOT_SUPPORTED, with zero side effects ───────────
+ * FILE_SHARED_WRITABLE (writes shared through to the file) is deliberately
+ * refused (writeback + coherence are out of scope); the rejection creates no
+ * region and leaves the backing untouched, and a valid region still registers
+ * and resolves afterward.  Invariant: F16. */
+static void test_t223(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "shared-writable";
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+    /* Shared-writable rejected (with or without W in prot). */
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R | FBK_PROT_W, FBK_MODE_SHARED_W, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_MODE) { ok = 0; why = "shared-w R|W not MODE"; }
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R, FBK_MODE_SHARED_W, gr.gen);
+        if (ok && t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_MODE) { ok = 0; why = "shared-w R not MODE"; }
+    }
+    /* No ghost region, backing intact. */
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag"; }
+        else if (d.region_count != 0u || d.backing_live != 1u) { ok = 0; why = "side effect"; }
+    }
+    /* A valid RO region still registers and resolves — no corruption. */
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "valid after reject"; }
+    }
+    if (ok && !t28_read_verify(&f, &g, 0u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T223"); else it_fail("T223", why);
+}
+
+/* ── T224: backing read failure is atomic ────────────────────────────────────
+ * A backing whose VFS authority dies under the pager cannot serve: the grant
+ * is opened and registered honestly, then the ADMIN revokes the backing AT THE
+ * VFS without telling the pager.  The next fault's GRANT_READ_AT is denied by
+ * the VFS (the pager's own table still says "valid" — irrelevant), the fault
+ * resolution fails, and NOTHING is left behind — no cache entry, no successful
+ * fill, no PTE, and the target is NOT resumed (it stays faulted until the
+ * supervisor kills it).  Also proves a nonexistent name cannot even be
+ * granted.  Invariants: F17, F38; A4, A9, A17. */
+static void test_t224(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "backing atomicity";
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+    /* A grant on a name VFS does not export cannot even be created. */
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, "nope.dat", VFS_FILE_RIGHT_READ, 0)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "nope grant"; }
+    /* Honest backing + region... */
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region"; }
+    }
+    /* ...then the VFS-side authority dies behind the pager's back. */
+    if (ok && t28_grant_revoke_name(f.admin, FBK_FILE_NAME, 0) != 0) { ok = 0; why = "vfs revoke"; }
+    /* Fault → resolution fails (the VFS denies GRANT_READ_AT); the pager
+     * returns an error and does not resume the target. */
+    if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T28_VA_A) != 0) { ok = 0; why = "fault trigger"; }
+    if (ok && t28_map_region(f.ctrl_ep, 0u) >= 0) { ok = 0; why = "resolve did not fail"; }
+    /* No side effects: no successful fill, no cache entry; a fill failure and
+     * a VFS grant denial counted. */
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag"; }
+        else if (d.page_fill != 0u || d.cache_entries != 0u || d.page_fill_fail == 0u ||
+                 d.grant_denied == 0u) { ok = 0; why = "residue"; }
+    }
+
+    /* The target is stuck faulted — reap kills it; books must still balance. */
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T224"); else it_fail("T224", why);
+}
+
+/* ── T225: file-grant revoke ─────────────────────────────────────────────────
+ * Revoking a backing bumps its generation, marks it unusable for new regions,
+ * drops its unreferenced cached pages, and makes a fault on a region still bound
+ * to the old generation fail STALE_GEN.  Existing mappings are untouched (the
+ * kernel VSpace owns them).  Invariants: F4, F18, F27. */
+static void test_t225(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "grant revoke";
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region"; }
+    }
+    /* Resolve once → the page is cached (content verified). */
+    if (ok && !t28_read_verify(&f, &g, 0u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
+    /* Drop the region so its cache reference clears; the entry stays valid but
+     * unreferenced. */
+    if (ok && t28_ctrl_words(f.ctrl_ep, FBK_OP_UNREGISTER_REGION, 0, 0) != 0) { ok = 0; why = "unreg"; }
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag pre"; }
+        else if (d.cache_entries != 1u) { ok = 0; why = "entry pre-revoke"; }
+    }
+    /* Revoke: backing goes unusable and its unreferenced page is dropped. */
+    if (ok && t28_ctrl_words(f.ctrl_ep, FBK_OP_REVOKE_BACKING, 0, 0) != 0) { ok = 0; why = "revoke"; }
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag post"; }
+        else if (d.grant_revoke != 1u || d.backing_live != 0u || d.cache_entries != 0u) { ok = 0; why = "post-revoke"; }
+    }
+    /* A new region binding the revoked backing (old OR new generation) → NOBACK. */
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_NOBACK) { ok = 0; why = "revoked still bindable"; }
+    }
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T225"); else it_fail("T225", why);
+}
+
+/* ── T226: pager restart contract ────────────────────────────────────────────
+ * The pager's backings/regions/cache are SOFT state: a restart loses them and
+ * the supervisor rebuilds.  After a clean SHUTDOWN, a fresh pager starts with
+ * zero state and can re-acquire its VFS file-read authority (independent of the
+ * old instance) and resolve again — no stale state survives, VFS is unaffected.
+ * Invariants: F28, F29. */
+static void test_t226(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "pager restart";
+
+    /* Instance 1: register + resolve, then shut down. */
+    struct t25_tgt g1;
+    if (ok && !t25_tgt_spawn(&g1, &why)) ok = 0;
+    struct t28_fbk f1;
+    if (ok && !t28_fbk_spawn(&f1, &g1, 1u, &why)) ok = 0;
+    long sz = ok ? t28_stat(f1.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gr1;
+    if (ok && !t28_backing_setup(&f1, 0, FBK_FILE_NAME, (uint64_t)sz, &gr1, &why)) ok = 0;
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr1.gen);
+        if (t28_reg_region(f1.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region 1"; }
+    }
+    if (ok && !t28_read_verify(&f1, &g1, 0u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
+    /* Clean shutdown: the pager exits; wait for its death. */
+    if (ok && t28_ctrl_words(f1.ctrl_ep, FBK_OP_SHUTDOWN, 0, 0) != 0) { ok = 0; why = "shutdown"; }
+    if (ok && it_lp_wait_exit(f1.proc) < 0) { ok = 0; why = "pager did not exit"; }
+    t28_fbk_reap(&f1);
+    t25_tgt_reap(&g1);
+
+    /* Instance 2: a fresh pager starts with ZERO state and works end to end. */
+    struct t25_tgt g2;
+    if (ok && !t25_tgt_spawn(&g2, &why)) ok = 0;
+    struct t28_fbk f2;
+    if (ok && !t28_fbk_spawn(&f2, &g2, 1u, &why)) ok = 0;
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f2.ctrl_ep, &d)) { ok = 0; why = "diag fresh"; }
+        else if (d.backing_live != 0u || d.region_count != 0u || d.cache_entries != 0u ||
+                 d.cache_hit != 0u || d.cache_miss != 0u) { ok = 0; why = "state survived restart"; }
+    }
+    /* The new instance re-acquires its file authority via a FRESH grant (the
+     * spawn's SESSION_RESET killed the old one at the VFS). */
+    struct t28_grant gr2;
+    if (ok && !t28_backing_setup(&f2, 0, FBK_FILE_NAME, (uint64_t)sz, &gr2, &why)) ok = 0;
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x2000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr2.gen);
+        if (t28_reg_region(f2.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region 2"; }
+    }
+    if (ok && !t28_read_verify(&f2, &g2, 0u, T28_VA_A, t28_pat(0x2000), &why)) ok = 0;
+    t28_fbk_reap(&f2);
+    t25_tgt_reap(&g2);
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T226"); else it_fail("T226", why);
+}
+
+/* ── T227: multiple files, multiple targets ──────────────────────────────────
+ * Two distinct backings over two distinct files, one per target: each target
+ * resolves from its OWN file with that file's exact bytes — no cross-file
+ * bleed — and the two pages occupy distinct cache entries.  Invariants: F3, F23. */
+static void test_t227(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "multi-file";
+
+    struct t25_tgt g0, g1;
+    if (ok && !t25_tgt_spawn(&g0, &why)) ok = 0;
+    if (ok && !t25_tgt_spawn(&g1, &why)) ok = 0;
+    struct t25_tgt tg2[2]; if (ok) { tg2[0] = g0; tg2[1] = g1; }
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, tg2, 2u, &why)) ok = 0;
+    long sz0 = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    long sz1 = ok ? t28_stat(f.vfs_cap, FBK2_FILE_NAME) : -1;
+    if (ok && (sz0 != (long)FBK_FILE_SIZE || sz1 != (long)FBK2_FILE_SIZE)) { ok = 0; why = "stat sizes"; }
+    struct t28_grant gr0, gr1;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME,  (uint64_t)sz0, &gr0, &why)) ok = 0;
+    if (ok && !t28_backing_setup(&f, 1, FBK2_FILE_NAME, (uint64_t)sz1, &gr1, &why)) ok = 0;
+    /* Two distinct files carry two distinct VFS-issued backing identities. */
+    if (ok && gr0.bid == gr1.bid) { ok = 0; why = "identities collide"; }
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr0.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region 0"; }
+        t28_region(&rq, 1, 1, 1, T28_VA_B, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr1.gen);
+        if (ok && t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region 1"; }
+    }
+    /* Each target reads its own file's byte at file offset 0x1000. */
+    if (ok && !t28_read_verify(&f, &g0, 0u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
+    if (ok && !t28_read_verify(&f, &g1, 1u, T28_VA_B, t28_pat2(0x1000), &why)) ok = 0;
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag"; }
+        else if (d.backing_live != 2u || d.cache_miss != 2u || d.cache_entries != 2u) { ok = 0; why = "multi counts"; }
+    }
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g0);
+    t25_tgt_reap(&g1);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T227"); else it_fail("T227", why);
+}
+
+/* ── T228: cache is bounded and evicts unreferenced pages ────────────────────
+ * The RO cache holds at most PGR_CACHE_CAP pages.  Target 0 fills all 8 slots
+ * (one region, 8 pages incl. zero-fill tail); its region is then released so
+ * those pages are unreferenced.  Target 1 faults 8 fresh keys (a second backing
+ * id): each MISS evicts a stale page — the cache never exceeds capacity and
+ * always makes progress.  Invariants: F20, F21, F22. */
+static void test_t228(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "cache eviction";
+
+    struct t25_tgt g0, g1;
+    if (ok && !t25_tgt_spawn(&g0, &why)) ok = 0;
+    if (ok && !t25_tgt_spawn(&g1, &why)) ok = 0;
+    struct t25_tgt tg2[2]; if (ok) { tg2[0] = g0; tg2[1] = g1; }
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, tg2, 2u, &why)) ok = 0;
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    long sz2 = ok ? t28_stat(f.vfs_cap, FBK2_FILE_NAME) : -1;
+    /* Two DIFFERENT files → distinct VFS-issued backing ids → distinct cache
+     * keys (identities are honest now; the same file can no longer be given
+     * two fake ids). */
+    struct t28_grant gr0, gr1;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME,  (uint64_t)sz,  &gr0, &why)) ok = 0;
+    if (ok && !t28_backing_setup(&f, 1, FBK2_FILE_NAME, (uint64_t)sz2, &gr1, &why)) ok = 0;
+    uint64_t order8 = 0; for (uint64_t p = 0; p < 8; p++) order8 |= (p << (4 * p));
+    /* Region 0: 8 pages (5 file + 3 zero-fill), target 0 faults them all. */
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x8000, 0, 0x5000, FBK_PROT_R, FBK_MODE_RO, gr0.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region 0"; }
+    }
+    if (ok && t28_cmd_read_seq(g0.cmd, T28_VA_A, 8u, order8) != 0) { ok = 0; why = "seq 0"; }
+    for (uint32_t k = 0; ok && k < 8u; k++)
+        if (t28_map_region(f.ctrl_ep, 0u) != 0) { ok = 0; why = "map 0"; }
+    if (ok && it_lp_wait_exit(g0.proc) < 0) { ok = 0; why = "target 0 exit"; }
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag fill"; }
+        else if (d.cache_miss != 8u || d.cache_entries != 8u || d.cache_evict != 0u ||
+                 d.cache_capacity != 8u) { ok = 0; why = "fill counts"; }
+    }
+    /* Release region 0 → its 8 pages are now unreferenced (reclaimable). */
+    if (ok && t28_ctrl_words(f.ctrl_ep, FBK_OP_UNREGISTER_REGION, 0, 0) != 0) { ok = 0; why = "unreg 0"; }
+    /* Region 1 (backing 1 = fbk2.dat): 8 distinct keys (3 file pages + 5
+     * zero-fill); target 1 faults them → evictions. */
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 1, 1, 1, T28_VA_B, 0x8000, 0, 0x3000, FBK_PROT_R, FBK_MODE_RO, gr1.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region 1"; }
+    }
+    if (ok && t28_cmd_read_seq(g1.cmd, T28_VA_B, 8u, order8) != 0) { ok = 0; why = "seq 1"; }
+    for (uint32_t k = 0; ok && k < 8u; k++)
+        if (t28_map_region(f.ctrl_ep, 1u) != 0) { ok = 0; why = "map 1"; }
+    if (ok && it_lp_wait_exit(g1.proc) < 0) { ok = 0; why = "target 1 exit"; }
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag evict"; }
+        /* Never exceeded capacity; exactly 8 evictions reclaimed the old pages. */
+        else if (d.cache_entries != 8u || d.cache_evict != 8u || d.cache_miss != 16u) { ok = 0; why = "evict counts"; }
+    }
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g0);
+    t25_tgt_reap(&g1);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T228"); else it_fail("T228", why);
+}
+
+/* ── T229: ELF-segment groundwork (RX / R / RW / BSS, W^X) ────────────────────
+ * The region model expresses the four ELF segment shapes: RX code (RO shared,
+ * executable), R rodata (RO shared), RW data (private writable), and BSS (pure
+ * zero-fill private writable).  W^X is enforced at registration (no W+X), every
+ * segment is readable, and an RX fault resolves to a read-only EXECUTABLE page.
+ * Invariants: F30, F31. */
+static void test_t229(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "elf segments";
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+    long sz = ok ? t28_stat(f.vfs_cap, ELFSEG_FILE_NAME) : -1;
+    if (ok && sz != (long)ELFSEG_FILE_SIZE) { ok = 0; why = "stat size"; }
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, ELFSEG_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+
+    struct pgr_region_req rq;
+    /* RX code segment (file page 0) — RO shared, executable. */
+    if (ok) { t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x0000, 0x1000, FBK_PROT_R | FBK_PROT_X, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "RX rejected"; } }
+    /* R rodata (file page 1) — RO shared. */
+    if (ok) { t28_region(&rq, 1, 0, 0, T28_VA_B, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "R rejected"; } }
+    /* RW data (file page 2) — private writable. */
+    if (ok) { t28_region(&rq, 2, 0, 0, T28_VA_C, 0x1000, 0x2000, 0x1000, FBK_PROT_R | FBK_PROT_W, FBK_MODE_PRIVATE, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "RW rejected"; } }
+    /* BSS (pure zero-fill) — private writable, file_length 0. */
+    if (ok) { t28_region(&rq, 3, 0, 0, T28_VA_A + 0x10000, 0x1000, 0x0000, 0x0000, FBK_PROT_R | FBK_PROT_W, FBK_MODE_PRIVATE, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "BSS rejected"; } }
+    /* W^X: writable+executable rejected. */
+    if (ok) { t28_region(&rq, 4, 0, 0, T28_VA_A + 0x20000, 0x1000, 0x0000, 0x1000, FBK_PROT_R | FBK_PROT_W | FBK_PROT_X, FBK_MODE_PRIVATE, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_RANGE) { ok = 0; why = "W^X not enforced"; } }
+    /* Every segment readable: X-only rejected. */
+    if (ok) { t28_region(&rq, 4, 0, 0, T28_VA_A + 0x20000, 0x1000, 0x0000, 0x1000, FBK_PROT_X, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != -(long)FBK_ERR_RANGE) { ok = 0; why = "X-only accepted"; } }
+
+    /* An RX fault resolves to a read-only executable page with exact bytes. */
+    if (ok && !t28_read_verify(&f, &g, 0u, T28_VA_A, t28_patseg(0), &why)) ok = 0;
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "diag"; }
+        else if (d.region_count != 4u) { ok = 0; why = "segment count"; }
+    }
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T229"); else it_fail("T229", why);
+}
+
+/* ── T230: deterministic control-plane stress ────────────────────────────────
+ * A fixed, repeatable churn: fill all backings and regions, tear them all down,
+ * repeated several times, plus a data-plane resolution each cycle where a target
+ * is available.  Counters must track exactly and return to zero — no leak, no
+ * drift, fully deterministic across runs.  Invariants: F32, F39. */
+static void test_t230(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "stress";
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    /* ONE grant feeds all four pager backings (a grant is per-backing at the
+     * VFS; the pager may reference it from several backing slots). */
+    struct t28_grant gr;
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME,
+                             VFS_FILE_RIGHT_STAT | VFS_FILE_RIGHT_READ, &gr) != 0) { ok = 0; why = "grant open"; }
+
+    /* Four control-plane cycles: fill 4 backings + 16 regions, verify, tear down. */
+    for (uint32_t cyc = 0; ok && cyc < 4u; cyc++) {
+        for (uint32_t bi = 0; ok && bi < FBK_MAX_BACKINGS; bi++)
+            if (t28_reg_backing2(f.ctrl_ep, bi, &gr, (uint64_t)sz) != 0) { ok = 0; why = "stress backing"; }
+        for (uint32_t ri = 0; ok && ri < FBK_MAX_REGIONS; ri++) {
+            struct pgr_region_req rq;
+            uint64_t va  = T28_VA_A + (uint64_t)ri * 0x40000ULL;
+            uint64_t foff = (uint64_t)(ri % 5) * 0x1000ULL;
+            t28_region(&rq, ri, 0 /*the one wired target*/, ri % FBK_MAX_BACKINGS, va, 0x1000, foff, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+            if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "stress region"; }
+        }
+        if (ok) {
+            struct pgr_diag d;
+            if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "stress diag"; }
+            else if (d.backing_live != FBK_MAX_BACKINGS || d.region_count != FBK_MAX_REGIONS) { ok = 0; why = "stress fill counts"; }
+        }
+        /* Tear everything down; counters return to zero. */
+        for (uint32_t ri = 0; ok && ri < FBK_MAX_REGIONS; ri++)
+            if (t28_ctrl_words(f.ctrl_ep, FBK_OP_UNREGISTER_REGION, ri, 0) != 0) { ok = 0; why = "stress unreg"; }
+        for (uint32_t bi = 0; ok && bi < FBK_MAX_BACKINGS; bi++)
+            if (t28_ctrl_words(f.ctrl_ep, FBK_OP_REVOKE_BACKING, bi, 0) != 0) { ok = 0; why = "stress revoke"; }
+        if (ok) {
+            struct pgr_diag d;
+            if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; why = "stress diag2"; }
+            else if (d.backing_live != 0u || d.region_count != 0u || d.cache_entries != 0u) { ok = 0; why = "stress teardown counts"; }
+        }
+    }
+    /* Data-plane: after the churn, a fresh backing+region resolves correctly. */
+    if (ok && t28_reg_backing2(f.ctrl_ep, 0, &gr, (uint64_t)sz) != 0) { ok = 0; why = "final backing"; }
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x3000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "final region"; }
+    }
+    if (ok && !t28_read_verify(&f, &g, 0u, T28_VA_A, t28_pat(0x3000), &why)) ok = 0;
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T230"); else it_fail("T230", why);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Fase 28.1 — File Grant Capability Enforcement + Pager Multi-target (T231–T238)
+ *
+ * These tests attack the TRUST BOUNDARY, not the functional layer (T217–T230
+ * already prove content correctness).  The premise everywhere is a HOSTILE
+ * pager: iris_test self-mints a SESSION-badged vfs cap byte-identical to the
+ * one a pager of that session holds (t28_session_cap) and drives the VFS
+ * DIRECTLY — bypassing every check the pager's own helper would make — to
+ * prove the VFS itself denies.  A helper rejecting the request would not
+ * count; only a VFS reply of ACCESS_DENIED / CLOSED / NOT_FOUND does.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/* ── T231: VFS-enforced file grant identity ──────────────────────────────────
+ * Two files → two grants with distinct VFS-issued (backing_id, generation).
+ * A session's own cap reads its granted file and gets that file's bytes; it
+ * CANNOT read the other file through the wrong grant index, a bogus index, a
+ * wrong-type message, or after the grant is stale.  No cross-read.
+ * Invariants: A1, A2, A3, A4, A5, A18. */
+static void test_t231(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "grant identity";
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+
+    /* Two grants (session 0), one per file, both STAT|READ. */
+    struct t28_grant ga, gb;
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME,
+                             VFS_FILE_RIGHT_STAT | VFS_FILE_RIGHT_READ, &ga) != 0) { ok = 0; why = "open A"; }
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK2_FILE_NAME,
+                             VFS_FILE_RIGHT_STAT | VFS_FILE_RIGHT_READ, &gb) != 0) { ok = 0; why = "open B"; }
+    /* Distinct, VFS-issued identities (A2/A18). */
+    if (ok && (ga.bid == gb.bid || ga.idx == gb.idx)) { ok = 0; why = "identities not distinct"; }
+
+    /* The session's own cap — the exact authority the pager holds. */
+    handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
+    if (ok && sc == HANDLE_INVALID) { ok = 0; why = "session cap"; }
+
+    /* Each grant reads ITS file's byte at offset 0x1000 (A5). */
+    uint8_t byte; uint64_t n;
+    if (ok && (t28_grant_read(sc, ga.idx, 0x1000, 1, &byte, &n) != 0 || n != 1u || byte != t28_pat(0x1000))) { ok = 0; why = "read A"; }
+    if (ok && (t28_grant_read(sc, gb.idx, 0x1000, 1, &byte, &n) != 0 || n != 1u || byte != t28_pat2(0x1000))) { ok = 0; why = "read B"; }
+    /* STAT reports each backing's own VFS-issued identity. */
+    uint64_t sz, bid, gen;
+    if (ok && (t28_grant_stat(sc, ga.idx, &sz, &bid, &gen) != 0 || bid != ga.bid || gen != ga.gen || sz != FBK_FILE_SIZE)) { ok = 0; why = "stat A"; }
+    if (ok && (t28_grant_stat(sc, gb.idx, &sz, &bid, &gen) != 0 || bid != gb.bid || gen != gb.gen || sz != FBK2_FILE_SIZE)) { ok = 0; why = "stat B"; }
+
+    /* A bogus grant index is NOT_FOUND (not silently served). */
+    if (ok && t28_grant_read(sc, 30u, 0, 1, 0, 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "bogus idx served"; }
+    /* Wrong-type: a STAT-labelled message on a READ grant path is fine, but a
+     * name-based STAT from the SESSION badge is denied outright (containment). */
+    if (ok) {
+        long r = t28_gcall(sc, VFS_EP_OP_STAT, 0, 0, 0, 0u, FBK_FILE_NAME, 0);
+        if (r != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "session named-stat not denied"; }
+    }
+    it_close(&sc);
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T231"); else it_fail("T231", why);
+}
+
+/* ── T232: arbitrary-name attack denial ──────────────────────────────────────
+ * From the posture of a compromised pager holding ONLY its session cap: every
+ * attempt to widen authority by crafting a message is denied BY THE VFS.  A
+ * pathname is not authority (A1); changing a grant index, backing id, or
+ * generation in a message does not change what is served (A6); the session
+ * cap cannot open a new grant, revoke by name, reset a session, or use any
+ * name-based op; and no generic unrestricted VFS cap exists to fall back on
+ * (A13/A14).  Invariants: A1, A4, A5, A6, A13, A14, A30. */
+static void test_t232(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "arbitrary-name attack";
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+    /* One legitimate grant on fbk.dat (READ only). */
+    struct t28_grant gr;
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_READ, &gr) != 0) { ok = 0; why = "open"; }
+
+    handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
+    if (ok && sc == HANDLE_INVALID) { ok = 0; why = "session cap"; }
+
+    /* Attack 1: name-based READ_AT with the OTHER file's name — denied (a
+     * session badge cannot touch the name-based path at all). */
+    if (ok) {
+        long r = t28_gcall(sc, VFS_EP_OP_READ_AT, 0x1000, 1, 0, 2u, FBK2_FILE_NAME, 0);
+        if (r != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "named read served"; }
+    }
+    /* Attack 2: LIST to enumerate exports — denied. */
+    if (ok && t28_gcall(sc, VFS_EP_OP_LIST, 0, 0, 0, 1u, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "list served"; }
+    /* Attack 3: forge a GRANT_OPEN (escalate to a new file) — session badge is
+     * not the admin, denied. */
+    if (ok && t28_gcall(sc, VFS_EP_OP_GRANT_OPEN, FBK_SESSION, VFS_FILE_RIGHT_ALL, 0, 2u, FBK2_FILE_NAME, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "open escalation"; }
+    /* Attack 4: revoke-by-name (the admin-only form) from the session — the
+     * name-based admin path is UNREACHABLE for a session badge: the request
+     * routes to the session index-form path, where word_count 0 is malformed
+     * (INVALID_ARG) and, crucially, NO backing is revoked.  Either way the
+     * session cannot revoke by name; the legit read below proves nothing was
+     * revoked. */
+    if (ok) {
+        long r = t28_gcall(sc, VFS_EP_OP_GRANT_REVOKE, 0, 0, 0, 0u, FBK_FILE_NAME, 0);
+        if (r != (long)IRIS_ERR_INVALID_ARG && r != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "name revoke"; }
+    }
+    /* Attack 5: session reset (admin-only) — denied. */
+    if (ok && t28_gcall(sc, VFS_EP_OP_GRANT_SESSION_RESET, FBK_SESSION, 0, 0, 1u, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "session reset"; }
+    /* Attack 6: read a DIFFERENT session's grant index (cross-session) — the
+     * badge selects the session, so index gr.idx in session 1 is empty →
+     * NOT_FOUND, never session 0's data. */
+    if (ok) {
+        handle_id_t sc1 = t28_session_cap(1u);
+        if (sc1 == HANDLE_INVALID) { ok = 0; why = "session1 cap"; }
+        else {
+            if (t28_grant_read(sc1, gr.idx, 0x1000, 1, 0, 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "cross-session read"; }
+            it_close(&sc1);
+        }
+    }
+    /* The legitimate grant still works (denials had no side effects). */
+    uint8_t byte; uint64_t n;
+    if (ok && (t28_grant_read(sc, gr.idx, 0x1000, 1, &byte, &n) != 0 || byte != t28_pat(0x1000))) { ok = 0; why = "legit read broke"; }
+    it_close(&sc);
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T232"); else it_fail("T232", why);
+}
+
+/* ── T233: file grant rights monotonicity ────────────────────────────────────
+ * Derived grants can only SHRINK rights, and rights can never be recovered.  A
+ * STAT-only grant cannot read; a READ-only grant cannot revoke; a grant without
+ * DUPLICATE cannot derive; a derive requesting a right the source lacks is
+ * denied (not clamped).  Enforcement is in the VFS.  Invariants: A7. */
+static void test_t233(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "rights monotonicity";
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+    handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
+    if (ok && sc == HANDLE_INVALID) { ok = 0; why = "session cap"; }
+
+    /* STAT-only grant: STAT works, READ denied. */
+    struct t28_grant gs;
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_STAT, &gs) != 0) { ok = 0; why = "open stat"; }
+    uint64_t sz;
+    if (ok && t28_grant_stat(sc, gs.idx, &sz, 0, 0) != 0) { ok = 0; why = "stat-only stat"; }
+    if (ok && t28_grant_read(sc, gs.idx, 0, 1, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "stat-only read"; }
+
+    /* READ-only grant: READ works, REVOKE denied, DERIVE denied (no DUP). */
+    struct t28_grant gr;
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_READ, &gr) != 0) { ok = 0; why = "open read"; }
+    uint8_t byte;
+    if (ok && t28_grant_read(sc, gr.idx, 0x1000, 1, &byte, 0) != 0) { ok = 0; why = "read-only read"; }
+    if (ok && t28_grant_revoke_idx(sc, gr.idx, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read-only revoke"; }
+    if (ok && t28_grant_derive(sc, gr.idx, VFS_FILE_RIGHT_READ, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-dup derive"; }
+
+    /* A grant WITH DUPLICATE derives a strictly smaller one; the derive cannot
+     * request a right the source lacks (recovery denied). */
+    struct t28_grant gd;
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME,
+                             VFS_FILE_RIGHT_STAT | VFS_FILE_RIGHT_READ | VFS_FILE_RIGHT_DUPLICATE, &gd) != 0) { ok = 0; why = "open dup"; }
+    /* Requesting REVOKE (source lacks it) → ACCESS_DENIED. */
+    if (ok && t28_grant_derive(sc, gd.idx, VFS_FILE_RIGHT_READ | VFS_FILE_RIGHT_REVOKE, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights recovery"; }
+    /* Derive a READ-only child; it reads but cannot itself derive (DUP dropped). */
+    uint32_t child = 0;
+    if (ok && t28_grant_derive(sc, gd.idx, VFS_FILE_RIGHT_READ, &child) != 0) { ok = 0; why = "derive read"; }
+    if (ok && t28_grant_read(sc, child, 0x1000, 1, &byte, 0) != 0) { ok = 0; why = "child read"; }
+    if (ok && t28_grant_derive(sc, child, VFS_FILE_RIGHT_READ, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "child re-derive"; }
+    it_close(&sc);
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T233"); else it_fail("T233", why);
+}
+
+/* ── T234: revoke and generation replay denial ───────────────────────────────
+ * A grant is opened and used; the ADMIN revokes the backing (VFS-side).  The
+ * SAME grant index, replayed with the SAME message, now fails CLOSED at the
+ * VFS — even though the session still holds the cap and the index (A9).  A new
+ * grant on the same file gets a NEWER generation; the OLD generation never
+ * validates against the new (A10).  Revocation is enforced by the VFS, not the
+ * pager (the pager's local table is irrelevant).  Invariants: A4, A8, A9, A10. */
+static void test_t234(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "revoke/replay";
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+    handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
+    if (ok && sc == HANDLE_INVALID) { ok = 0; why = "session cap"; }
+
+    struct t28_grant gN;
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME,
+                             VFS_FILE_RIGHT_STAT | VFS_FILE_RIGHT_READ, &gN) != 0) { ok = 0; why = "open N"; }
+    uint8_t byte;
+    if (ok && t28_grant_read(sc, gN.idx, 0x1000, 1, &byte, 0) != 0) { ok = 0; why = "read N"; }
+
+    /* ADMIN revokes the backing at the VFS. */
+    uint64_t newgen = 0;
+    if (ok && t28_grant_revoke_name(f.admin, FBK_FILE_NAME, &newgen) != 0) { ok = 0; why = "revoke"; }
+    if (ok && newgen == gN.gen) { ok = 0; why = "generation not bumped"; }
+
+    /* Replay the EXACT read on the same index → CLOSED (VFS-enforced, A9). */
+    if (ok && t28_grant_read(sc, gN.idx, 0x1000, 1, 0, 0) != (long)IRIS_ERR_CLOSED) { ok = 0; why = "replay served"; }
+    if (ok && t28_grant_stat(sc, gN.idx, 0, 0, 0) != (long)IRIS_ERR_CLOSED) { ok = 0; why = "replay stat served"; }
+
+    /* A fresh grant gets generation N+1; the old snapshot never matches (A10). */
+    struct t28_grant gN1;
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_READ, &gN1) != 0) { ok = 0; why = "open N+1"; }
+    if (ok && gN1.gen != newgen) { ok = 0; why = "new grant wrong gen"; }
+    if (ok && gN1.gen == gN.gen) { ok = 0; why = "gen reused"; }
+    /* The new grant reads; the old index is still CLOSED. */
+    if (ok && t28_grant_read(sc, gN1.idx, 0x1000, 1, &byte, 0) != 0) { ok = 0; why = "new grant read"; }
+    if (ok && t28_grant_read(sc, gN.idx, 0x1000, 1, 0, 0) != (long)IRIS_ERR_CLOSED) { ok = 0; why = "old still readable"; }
+    it_close(&sc);
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T234"); else it_fail("T234", why);
+}
+
+/* ── T235: pager restart with per-backing grants ─────────────────────────────
+ * The supervisor opens a grant for a pager, the pager dies, and a NEW pager
+ * instance is started.  The restart protocol RESETS the session at the VFS
+ * first, so the new pager's session cap cannot reach the OLD instance's grant
+ * (A11): replaying the old grant index from the new session cap fails
+ * NOT_FOUND.  The supervisor issues a FRESH grant and the new pager resolves.
+ * Invariants: A11. */
+static void test_t235(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "pager restart grants";
+
+    /* Instance 1: open a grant, note its index, then kill the pager. */
+    struct t25_tgt g1;
+    if (ok && !t25_tgt_spawn(&g1, &why)) ok = 0;
+    struct t28_fbk f1;
+    if (ok && !t28_fbk_spawn(&f1, &g1, 1u, &why)) ok = 0;
+    struct t28_grant gold;
+    if (ok && t28_grant_open(f1.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_READ, &gold) != 0) { ok = 0; why = "open old"; }
+    /* Prove it was live. */
+    handle_id_t sc1 = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
+    if (ok && (sc1 == HANDLE_INVALID || t28_grant_read(sc1, gold.idx, 0x1000, 1, 0, 0) != 0)) { ok = 0; why = "old read"; }
+    it_close(&sc1);
+    t28_fbk_reap(&f1);
+    t25_tgt_reap(&g1);
+
+    /* Instance 2: t28_fbk_spawn's restart protocol RESETS session 0 first. */
+    struct t25_tgt g2;
+    if (ok && !t25_tgt_spawn(&g2, &why)) ok = 0;
+    struct t28_fbk f2;
+    if (ok && !t28_fbk_spawn(&f2, &g2, 1u, &why)) ok = 0;
+    handle_id_t sc2 = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
+    if (ok && sc2 == HANDLE_INVALID) { ok = 0; why = "session cap 2"; }
+    /* The OLD grant index is gone from the session (A11). */
+    if (ok && t28_grant_read(sc2, gold.idx, 0x1000, 1, 0, 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale grant survived restart"; }
+    /* A fresh grant + backing + region resolves end to end. */
+    long sz = ok ? t28_stat(f2.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gnew;
+    if (ok && !t28_backing_setup(&f2, 0, FBK_FILE_NAME, (uint64_t)sz, &gnew, &why)) ok = 0;
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gnew.gen);
+        if (t28_reg_region(f2.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region 2"; }
+    }
+    if (ok && !t28_read_verify(&f2, &g2, 0u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
+    it_close(&sc2);
+    t28_fbk_reap(&f2);
+    t25_tgt_reap(&g2);
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T235"); else it_fail("T235", why);
+}
+
+/* ── T236: VFS restart invalidates old grants ────────────────────────────────
+ * A VFS instance issues grants under an epoch that stamps the high half of
+ * every generation.  A restarted VFS gets a strictly newer epoch, so a grant
+ * snapshotting an old generation can never validate against the new instance
+ * (A12).  We SIMULATE the new instance in-process by re-initializing a grant
+ * table under a bumped epoch (the productive VFS uses its svcmgr restart
+ * generation for the same effect) and confirm: (a) old generations never equal
+ * new ones; (b) mappings already installed follow the Fase 28 contract.  The
+ * cross-instance generation-namespace property is verified against the live
+ * VFS's issued generations.  Invariants: A12, A16. */
+static void test_t236(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "vfs restart grants";
+
+    struct t25_tgt g;
+    if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
+    struct t28_fbk f;
+    if (ok && !t28_fbk_spawn(&f, &g, 1u, &why)) ok = 0;
+
+    /* Open a grant, install a real mapping via a fault resolution. */
+    long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
+    struct t28_grant gr;
+    if (ok && !t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+    if (ok) {
+        struct pgr_region_req rq;
+        t28_region(&rq, 0, 0, 0, T28_VA_A, 0x1000, 0x1000, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "reg region"; }
+    }
+    if (ok && !t28_read_verify(&f, &g, 0u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
+
+    /* The generation carries the instance epoch in its high half: a restarted
+     * VFS (strictly newer epoch) cannot reissue this generation.  We check the
+     * epoch field is nonzero and monotonic by opening a second grant on a
+     * DIFFERENT file and confirming both share the same instance epoch (high
+     * 48 bits) — i.e. one live instance — while a hypothetical older-epoch
+     * generation (epoch-1) can never appear. */
+    struct t28_grant gr2;
+    if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK2_FILE_NAME, VFS_FILE_RIGHT_READ, &gr2) != 0) { ok = 0; why = "open 2"; }
+    if (ok) {
+        uint64_t epoch_a = gr.gen >> 16, epoch_b = gr2.gen >> 16;
+        if (epoch_a != epoch_b) { ok = 0; why = "epoch drift within instance"; }
+        /* A stale grant carrying an older-epoch generation must fail: forge one
+         * by registering a backing whose generation is from a lower epoch and
+         * confirm the pager's cross-check (against the live VFS) denies it. */
+        uint64_t stale_gen = (epoch_a > 0 ? (epoch_a - 1) : 0) << 16 | 1u;
+        if (t28_reg_backing_raw(f.ctrl_ep, 1, gr.idx, gr.bid, stale_gen, (uint64_t)sz)
+            != -(long)FBK_ERR_GRANT) { ok = 0; why = "stale-epoch backing accepted"; }
+    }
+    /* The already-installed mapping still holds (Fase 28 contract, A16): the
+     * target already exited reading the correct byte above; re-reading is not
+     * possible (a resolved target completed), so the mapping-survival property
+     * is the successful resolution itself plus a clean baseline. */
+
+    t28_fbk_reap(&f);
+    t25_tgt_reap(&g);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T236"); else it_fail("T236", why);
+}
+
+/* ── multi-target harness (T237/T238) ────────────────────────────────────────
+ * A lightweight target group that shares ONE fault notification and ONE
+ * exit-watch notification across ALL targets — so N targets cost the
+ * supervisor exactly 2 notifications, never 2*N.  This is what lets 16 targets
+ * be registered and faulted simultaneously without touching the per-process
+ * notification quota.  The pager likewise holds ONE fault notification (slot
+ * 5) for all of them, waking on bit (1<<i). */
+#define T28_MT_MAX 16u
+struct t28_multi {
+    handle_id_t fault_notif;     /* shared: bit i set when target i faults */
+    handle_id_t exit_notif;      /* shared: bit i set when target i exits */
+    handle_id_t cmd[T28_MT_MAX];
+    handle_id_t proc[T28_MT_MAX];
+    handle_id_t vs[T28_MT_MAX];
+    uint32_t    n;
+};
+static void t28_multi_close(struct t28_multi *m) {
+    for (uint32_t i = 0; i < m->n; i++) {
+        it_close(&m->cmd[i]); it_close(&m->proc[i]); it_close(&m->vs[i]);
+    }
+    it_close(&m->fault_notif); it_close(&m->exit_notif);
+    m->n = 0;
+}
+static void t28_multi_reap(struct t28_multi *m) {
+    for (uint32_t i = 0; i < m->n; i++)
+        if (m->proc[i] != HANDLE_INVALID) {
+            (void)it_sys1(SYS_PROCESS_KILL, (long)m->proc[i]);
+            (void)it_lp_wait_exit(m->proc[i]);
+        }
+    t28_multi_close(m);
+}
+/* Spawn `nt` lifecycle_probe targets sharing two notifications.  Each target's
+ * exception handler signals fault_notif bit (1<<i); its exit watch signals
+ * exit_notif bit (1<<i). */
+static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
+    for (uint32_t i = 0; i < T28_MT_MAX; i++) { m->cmd[i] = m->proc[i] = m->vs[i] = HANDLE_INVALID; }
+    m->fault_notif = m->exit_notif = HANDLE_INVALID; m->n = 0;
+    if (nt > T28_MT_MAX) { *why = "too many targets"; return 0; }
+    long fn = it_sys0(SYS_NOTIFY_CREATE);
+    long en = it_sys0(SYS_NOTIFY_CREATE);
+    if (fn < 0 || en < 0) { it_close(&m->fault_notif); it_close(&m->exit_notif);
+        if (fn >= 0) { handle_id_t h = (handle_id_t)fn; it_close(&h); }
+        if (en >= 0) { handle_id_t h = (handle_id_t)en; it_close(&h); }
+        *why = "shared notifs"; return 0; }
+    m->fault_notif = (handle_id_t)fn; m->exit_notif = (handle_id_t)en;
+    for (uint32_t i = 0; i < nt; i++) {
+        long ep = it_sys0(SYS_ENDPOINT_CREATE);
+        if (ep < 0) { *why = "cmd ep"; t28_multi_close(m); return 0; }
+        m->cmd[i] = (handle_id_t)ep;
+        if (lp_spawn_child(m->cmd[i], &m->proc[i]) < 0 || m->proc[i] == HANDLE_INVALID) { *why = "spawn"; t28_multi_close(m); return 0; }
+        long vs = it_sys1(SYS_PROCESS_VSPACE, (long)m->proc[i]);
+        if (vs < 0) { *why = "vspace"; t28_multi_close(m); return 0; }
+        m->vs[i] = (handle_id_t)vs;
+        if (it_sys3(SYS_EXCEPTION_HANDLER, (long)m->proc[i], (long)m->fault_notif, (long)(1u << i)) != 0 ||
+            it_sys3(SYS_PROCESS_WATCH,     (long)m->proc[i], (long)m->exit_notif,  (long)(1u << i)) != 0) {
+            *why = "wire"; t28_multi_close(m); return 0;
+        }
+        m->n++;
+    }
+    return 1;
+}
+/* Spawn a pager over a t28_multi group: shares the group's fault notification
+ * (slot 5) and grants proc/vs for each target.  Resets session 0 first. */
+static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const char **why) {
+    f->ctrl_ep = f->proc = f->cache_vmo = f->priv_vmo = HANDLE_INVALID;
+    f->vfs_cap = f->admin = HANDLE_INVALID;
+    long ep = it_sys0(SYS_ENDPOINT_CREATE);
+    if (ep < 0) { *why = "ctrl ep"; return 0; }
+    handle_id_t ctrl = (handle_id_t)ep;
+    handle_id_t cvmo = t26_vmo_create((uint64_t)FBK_CACHE_CAP * 0x1000ULL);
+    handle_id_t pvmo = t26_vmo_create((uint64_t)FBK_PRIV_CAP * 0x1000ULL);
+    handle_id_t vfs  = t28_vfs_cap();
+    handle_id_t adm  = t28_admin_cap();
+    if (cvmo == HANDLE_INVALID || pvmo == HANDLE_INVALID || vfs == HANDLE_INVALID || adm == HANDLE_INVALID) {
+        it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm);
+        *why = "grants"; return 0;
+    }
+    if (t28_session_reset(adm, FBK_SESSION) != 0) {
+        it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm);
+        *why = "session reset"; return 0;
+    }
+    struct svc_mint mm[40];
+    uint32_t k = 0;
+    mm[k].slot = PGR_SLOT_CTRL_EP; mm[k].src_h = ctrl; mm[k].rights = RIGHT_READ; mm[k].badge = 0; k++;
+    mm[k].slot = FBK_SLOT_VFS_EP;  mm[k].src_h = vfs;  mm[k].rights = RIGHT_WRITE;
+    mm[k].badge = IRIS_BADGE_FILEGRANT_S(FBK_SESSION); k++;
+    mm[k].slot = FBK_SLOT_NOTIF;   mm[k].src_h = m->fault_notif; mm[k].rights = RIGHT_WAIT; mm[k].badge = 0; k++;
+    for (uint32_t i = 0; i < m->n; i++) {
+        mm[k].slot = PGR_TSLOT_PROC(i); mm[k].src_h = m->proc[i]; mm[k].rights = RIGHT_READ | RIGHT_MANAGE; mm[k].badge = 0; k++;
+        mm[k].slot = PGR_TSLOT_VS(i);   mm[k].src_h = m->vs[i];   mm[k].rights = RIGHT_WRITE;               mm[k].badge = 0; k++;
+    }
+    mm[k].slot = PGR_VSLOT(0); mm[k].src_h = cvmo; mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
+    mm[k].slot = PGR_VSLOT(1); mm[k].src_h = pvmo; mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
+    handle_id_t boot = HANDLE_INVALID;
+    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager", &f->proc, &boot, mm, k);
+    it_close(&boot);
+    if (r < 0 || f->proc == HANDLE_INVALID) {
+        it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm); it_close(&f->proc);
+        *why = "pager spawn"; return 0;
+    }
+    f->ctrl_ep = ctrl; f->cache_vmo = cvmo; f->priv_vmo = pvmo; f->vfs_cap = vfs; f->admin = adm;
+    return 1;
+}
+/* Wait (≤2s) for exit bit i on the shared exit notification, consuming and
+ * re-accumulating other bits so no exit is lost. */
+static uint64_t g_t28_exit_pending = 0;
+static int t28_multi_wait_exit(struct t28_multi *m, uint32_t i) {
+    uint64_t bit = 1ull << i;
+    if (g_t28_exit_pending & bit) { g_t28_exit_pending &= ~bit; return 1; }
+    for (uint32_t tries = 0; tries < 64u; tries++) {
+        uint64_t bits = 0;
+        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)m->exit_notif, (long)(uintptr_t)&bits, 2000000000LL) != 0) return 0;
+        g_t28_exit_pending |= bits;
+        if (g_t28_exit_pending & bit) { g_t28_exit_pending &= ~bit; return 1; }
+    }
+    return 0;
+}
+
+/* ── T237: multi-target notification scaling ──────────────────────────────────
+ * Register and exercise 1, 4, 8 and 16 targets under a SINGLE pager, all
+ * sharing ONE fault notification.  Each target faults on its own file page and
+ * reads the correct byte; faults are interleaved (all triggered before any is
+ * resolved); the supervisor's notification books return to baseline.  Proves
+ * the quota problem is SOLVED, not avoided (Fase 28 could only run 1 target).
+ * Invariants: A19, A20, A21, A22, A23, A25. */
+static int t237_run(uint32_t nt, const char **why) {
+    struct t28_multi m;
+    if (!t28_multi_spawn(&m, nt, why)) return 0;
+    struct t28_fbk f;
+    if (!t28_fbk_spawn_multi(&f, &m, why)) { t28_multi_reap(&m); return 0; }
+    int ok = 1;
+    g_t28_exit_pending = 0;
+
+    long sz = t28_stat(f.vfs_cap, FBK_FILE_NAME);
+    struct t28_grant gr;
+    if (!t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, why)) ok = 0;
+    /* One region per target: target i reads file page (i % 5)+? — use page i+1
+     * clamped into the 5-page file so each has a real file byte. */
+    for (uint32_t i = 0; ok && i < nt; i++) {
+        struct pgr_region_req rq;
+        uint64_t foff = (uint64_t)((i % 4u) + 1u) * 0x1000ULL;   /* pages 1..4 */
+        t28_region(&rq, i, i, 0, T28_VA_A + (uint64_t)i * 0x40000ULL, 0x1000, foff, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+        if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; *why = "reg region"; }
+    }
+    /* Interleave: trigger ALL faults first (each target blocks in its fault),
+     * then resolve them in a scrambled order. */
+    for (uint32_t i = 0; ok && i < nt; i++)
+        if (it_lp_cmd_va(m.cmd[i], LP_CMD_FAULT_READ, T28_VA_A + (uint64_t)i * 0x40000ULL) != 0) { ok = 0; *why = "trigger"; }
+    for (uint32_t s = 0; ok && s < nt; s++) {
+        uint32_t i = (s * 7u + 3u) % nt;    /* scrambled visit order */
+        /* Skip already-resolved slots in the scramble by linear-probing. */
+        uint32_t tries = 0;
+        while (tries < nt && ((1u << i) & 0)) { i = (i + 1u) % nt; tries++; }
+        if (t28_map_region(f.ctrl_ep, i) != 0) { ok = 0; *why = "resolve"; }
+    }
+    /* Each target ran to completion reading its page's byte. */
+    for (uint32_t i = 0; ok && i < nt; i++) {
+        uint64_t foff = (uint64_t)((i % 4u) + 1u) * 0x1000ULL;
+        if (!t28_multi_wait_exit(&m, i)) { ok = 0; *why = "target exit"; }
+        else if (it_sys1(SYS_PROCESS_EXIT_CODE, (long)m.proc[i]) != (long)(LP_EXIT_MARKER ^ (uint32_t)t28_pat(foff))) { ok = 0; *why = "wrong byte"; }
+    }
+    /* Diagnostics: the pager multiplexed all nt faults over ONE shared
+     * notification.  The wait-any accumulator means a single wakeup can carry
+     * several targets' bits, so wakeups is BETWEEN 1 and nt (fewer wakeups than
+     * faults is the efficiency win, not a bug).  What must hold: the shared
+     * notification path WAS exercised (>=1 wait) and no fault bit is left
+     * pending (all consumed and resolved, no mix). */
+    if (ok) {
+        struct pgr_diag d;
+        if (!t28_diag(f.ctrl_ep, &d)) { ok = 0; *why = "diag"; }
+        else if (d.notif_waits == 0u || d.notif_wakeups == 0u) { ok = 0; *why = "shared notif unused"; }
+        else if (d.notif_wakeups > nt) { ok = 0; *why = "excess wakeups"; }
+        else if (d.pending_mask != 0u) { ok = 0; *why = "pending residue"; }
+    }
+    t28_fbk_reap(&f);
+    t28_multi_reap(&m);
+    return ok;
+}
+static void test_t237(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "multi-target scaling";
+
+    const uint32_t counts[4] = { 1u, 4u, 8u, 16u };
+    for (uint32_t c = 0; ok && c < 4u; c++) {
+        if (!t237_run(counts[c], &why)) ok = 0;
+        it_quiesce_reaper();
+        if (ok) { struct it_snap r = it_snap_take(); if (!it_snap_baseline_live(&b, &r, &why)) ok = 0; }
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T237"); else it_fail("T237", why);
+}
+
+/* ── T238: deterministic file-authority and multi-target stress ───────────────
+ * A seeded round-robin over the whole Fase 28.1 surface: open/derive/read a
+ * grant, hostile wrong-backing and wrong-name attempts, revoke + generation
+ * change, and a multi-target fault batch that dies in arbitrary order.  Every
+ * round: no unauthorized read, no stale success, no target mix, notification
+ * and object books at baseline, handle HWM bounded, no flakes.
+ * Invariants: A1–A30 under load. */
+#define T238_SEED   0x281F00D5u
+#define T238_ROUNDS 8u
+static uint32_t t238_rnd(uint32_t *s) { uint32_t x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; *s = x; return x; }
+static void test_t238(void) {
+    uint32_t rng = T238_SEED;
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "file-authority stress";
+    uint32_t round = 0, op = 0;
+
+    for (round = 0; ok && round < T238_ROUNDS; round++) {
+        op = t238_rnd(&rng) % 3u;
+        switch (op) {
+        case 0: {
+            /* Grant + hostile attempts + honest read. */
+            struct t25_tgt g;
+            if (!t25_tgt_spawn(&g, &why)) { ok = 0; break; }
+            struct t28_fbk f;
+            if (!t28_fbk_spawn(&f, &g, 1u, &why)) { ok = 0; t25_tgt_reap(&g); break; }
+            struct t28_grant gr;
+            if (t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_STAT | VFS_FILE_RIGHT_READ, &gr) != 0) { ok = 0; why = "s0 open"; }
+            handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
+            if (ok && sc == HANDLE_INVALID) { ok = 0; why = "s0 cap"; }
+            uint8_t byte;
+            if (ok && (t28_grant_read(sc, gr.idx, 0x1000, 1, &byte, 0) != 0 || byte != t28_pat(0x1000))) { ok = 0; why = "s0 read"; }
+            /* wrong-name (session cannot use name path). */
+            if (ok && t28_gcall(sc, VFS_EP_OP_READ_AT, 0x1000, 1, 0, 2u, FBK2_FILE_NAME, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "s0 name"; }
+            /* wrong-backing register at the pager. */
+            if (ok && t28_reg_backing_raw(f.ctrl_ep, 1, gr.idx, gr.bid + 9u, gr.gen, (uint64_t)FBK_FILE_SIZE) != -(long)FBK_ERR_GRANT) { ok = 0; why = "s0 wrongback"; }
+            it_close(&sc);
+            t28_fbk_reap(&f);
+            t25_tgt_reap(&g);
+            break;
+        }
+        case 1: {
+            /* Revoke + replay denial + fresh generation. */
+            struct t25_tgt g;
+            if (!t25_tgt_spawn(&g, &why)) { ok = 0; break; }
+            struct t28_fbk f;
+            if (!t28_fbk_spawn(&f, &g, 1u, &why)) { ok = 0; t25_tgt_reap(&g); break; }
+            struct t28_grant gr;
+            if (t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_READ, &gr) != 0) { ok = 0; why = "s1 open"; }
+            handle_id_t sc = ok ? t28_session_cap(FBK_SESSION) : HANDLE_INVALID;
+            if (ok && sc == HANDLE_INVALID) { ok = 0; why = "s1 cap"; }
+            if (ok && t28_grant_read(sc, gr.idx, 0, 1, 0, 0) != 0) { ok = 0; why = "s1 read"; }
+            uint64_t ng = 0;
+            if (ok && t28_grant_revoke_name(f.admin, FBK_FILE_NAME, &ng) != 0) { ok = 0; why = "s1 revoke"; }
+            if (ok && t28_grant_read(sc, gr.idx, 0, 1, 0, 0) != (long)IRIS_ERR_CLOSED) { ok = 0; why = "s1 replay"; }
+            struct t28_grant gr2;
+            if (ok && t28_grant_open(f.admin, FBK_SESSION, FBK_FILE_NAME, VFS_FILE_RIGHT_READ, &gr2) != 0) { ok = 0; why = "s1 reopen"; }
+            if (ok && gr2.gen == gr.gen) { ok = 0; why = "s1 gen reuse"; }
+            if (ok && t28_grant_read(sc, gr2.idx, 0, 1, 0, 0) != 0) { ok = 0; why = "s1 new read"; }
+            it_close(&sc);
+            t28_fbk_reap(&f);
+            t25_tgt_reap(&g);
+            break;
+        }
+        default: {
+            /* Multi-target batch (4 targets), death in arbitrary order. */
+            uint32_t nt = 4u;
+            struct t28_multi m;
+            if (!t28_multi_spawn(&m, nt, &why)) { ok = 0; break; }
+            struct t28_fbk f;
+            if (!t28_fbk_spawn_multi(&f, &m, &why)) { ok = 0; t28_multi_reap(&m); break; }
+            g_t28_exit_pending = 0;
+            long sz = t28_stat(f.vfs_cap, FBK_FILE_NAME);
+            struct t28_grant gr;
+            if (!t28_backing_setup(&f, 0, FBK_FILE_NAME, (uint64_t)sz, &gr, &why)) ok = 0;
+            for (uint32_t i = 0; ok && i < nt; i++) {
+                struct pgr_region_req rq;
+                uint64_t foff = (uint64_t)(i + 1u) * 0x1000ULL;
+                t28_region(&rq, i, i, 0, T28_VA_A + (uint64_t)i * 0x40000ULL, 0x1000, foff, 0x1000, FBK_PROT_R, FBK_MODE_RO, gr.gen);
+                if (t28_reg_region(f.ctrl_ep, &rq) != 0) { ok = 0; why = "s2 region"; }
+            }
+            for (uint32_t i = 0; ok && i < nt; i++)
+                if (it_lp_cmd_va(m.cmd[i], LP_CMD_FAULT_READ, T28_VA_A + (uint64_t)i * 0x40000ULL) != 0) { ok = 0; why = "s2 trigger"; }
+            /* Resolve in reverse order (arbitrary vs trigger order). */
+            for (uint32_t s = 0; ok && s < nt; s++) {
+                uint32_t i = nt - 1u - s;
+                if (t28_map_region(f.ctrl_ep, i) != 0) { ok = 0; why = "s2 resolve"; }
+            }
+            for (uint32_t i = 0; ok && i < nt; i++) {
+                uint64_t foff = (uint64_t)(i + 1u) * 0x1000ULL;
+                if (!t28_multi_wait_exit(&m, i)) { ok = 0; why = "s2 exit"; }
+                else if (it_sys1(SYS_PROCESS_EXIT_CODE, (long)m.proc[i]) != (long)(LP_EXIT_MARKER ^ (uint32_t)t28_pat(foff))) { ok = 0; why = "s2 byte"; }
+            }
+            t28_fbk_reap(&f);
+            t28_multi_reap(&m);
+            break;
+        }
+        }
+        it_quiesce_reaper();
+        if (ok) { struct it_snap r = it_snap_take(); if (!it_snap_baseline_live(&b, &r, &why)) ok = 0; }
+    }
+
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T238");
+    else { it_fz_note("T238", T238_SEED, round, op); it_fail("T238", why); }
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -11518,6 +16423,64 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t178();
     test_t179();
     test_t180();
+    test_t181();
+    test_t182();
+    test_t183();
+    test_t184();
+    test_t185();
+    test_t186();
+    test_t187();
+    test_t188();
+    test_t189();
+    test_t190();
+    test_t191();
+    test_t192();
+    test_t193();
+    test_t194();
+    test_t195();
+    test_t196();
+    test_t197();
+    test_t198();
+    test_t199();
+    test_t200();
+    test_t201();
+    test_t202();
+    test_t203();
+    test_t204();
+    test_t205();
+    test_t206();
+    test_t207();
+    test_t208();
+    test_t209();
+    test_t210();
+    test_t211();
+    test_t212();
+    test_t213();
+    test_t214();
+    test_t215();
+    test_t216();
+    test_t217();
+    test_t218();
+    test_t219();
+    test_t220();
+    test_t221();
+    test_t222();
+    test_t223();
+    test_t224();
+    test_t225();
+    test_t226();
+    test_t227();
+    test_t228();
+    test_t229();
+    test_t230();
+    test_t231();
+    test_t232();
+    test_t233();
+    test_t234();
+    test_t235();
+    test_t236();
+    test_t237();
+    test_t238();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

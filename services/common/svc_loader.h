@@ -3,15 +3,22 @@
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 
-/* Number of entries in the ring-3 name→index catalog (must match initrd.c).
- * Index 9 = lifecycle_probe, a TEST-only child spawned by iris_test. */
-#define SL_CATALOG_COUNT 10u
+/* Number of entries in the ring-3 name→index catalog (must match the FIRST
+ * SL_CATALOG_COUNT entries of initrd.c).  Index 9 = lifecycle_probe, a
+ * TEST-only child spawned by iris_test.  The kernel initrd may hold ADDITIONAL
+ * images beyond this at indices >= SL_CATALOG_COUNT (new services, backing
+ * blobs, etc.); those are not named by the ring-3 catalog and are loaded by
+ * index/other means.  The boot invariant is therefore that the kernel has AT
+ * LEAST this many images (so every named index resolves), not exactly this
+ * many — see the Fase 28 boot-growth fix in userboot. */
+#define SL_CATALOG_COUNT 11u   /* index 10 = pager (own binary, Fase 28) */
 
 /*
  * svc_initrd_count — query the kernel initrd catalog entry count.
  * Requires a KBootstrapCap with IRIS_BOOTCAP_SPAWN_SERVICE.
  * Returns the count (≥0) or a negative iris_error_t on failure.
- * Callers should assert the result equals SL_CATALOG_COUNT at startup.
+ * Boot code must assert the result is >= SL_CATALOG_COUNT (every named image
+ * present), NOT == : the initrd is allowed to grow beyond the named catalog.
  */
 long svc_initrd_count(handle_id_t spawn_cap_h);
 

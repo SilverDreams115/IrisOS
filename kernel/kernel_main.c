@@ -85,18 +85,29 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     pmm_buddy_setup();
     klog_write("[IRIS][PMM] buddy allocator active\n");
 
-    /* Reserve 4 MB (1024 pages) from the PMM as the kernel object slab.
-     * All typed kernel object headers (KProcess, KChannel, KEndpoint, …) are
-     * allocated from this pool via kslab_alloc instead of directly from the PMM,
-     * allowing all remaining PMM blocks to be handed to userspace as KUntyped caps. */
+    /* Reserve 16 MB (4096 pages) from the PMM as the kernel object slab.
+     * All typed kernel object headers (KProcess, KVSpace, root KCNode, page
+     * tables, KEndpoint, …) are allocated from this pool via kslab_alloc
+     * instead of directly from the PMM, allowing all remaining PMM blocks to be
+     * handed to userspace as KUntyped caps.
+     *
+     * Fase 28.1: grown 4 MB → 16 MB.  Each spawned process consumes several
+     * KB–32 KB of kernel objects (KProcess + a 256-slot root KCNode + KVSpace +
+     * page-table nodes + handle table); the old 4 MB arena capped concurrent
+     * live processes at ~9 (NO_MEMORY on the 10th), which the multi-target
+     * pager suite (16 concurrent targets + the pager + the supervisor + core
+     * services) exceeds.  This is a kernel-object-MEMORY bound, wholly distinct
+     * from the per-process notification quota Fase 28.1 already resolved via the
+     * single shared fault notification — growing the arena is the honest fix for
+     * a memory ceiling (16 MB is 3% of the 512 MB guest). */
     {
-        uint64_t kslab_phys = pmm_alloc_pages(1024u);
+        uint64_t kslab_phys = pmm_alloc_pages(4096u);
         if (kslab_phys == 0) {
             klog_write("[IRIS][KSLAB] FATAL: cannot reserve kernel slab backing\n");
             for (;;) __asm__ volatile ("hlt");
         }
-        kslab_init(kslab_phys, 1024u);
-        klog_write("[IRIS][KSLAB] kernel object slab active (4 MB)\n");
+        kslab_init(kslab_phys, 4096u);
+        klog_write("[IRIS][KSLAB] kernel object slab active (16 MB)\n");
     }
 
     /* ── 4. CPU tables + interrupt infrastructure ───────────────── */

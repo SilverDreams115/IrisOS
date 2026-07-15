@@ -32,6 +32,59 @@ uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
+/*
+ * SYS_PROCESS_VSPACE — hand a RIGHT_MANAGE holder a capability to the target
+ * process's address space (Fase 25, user-pager groundwork).
+ *
+ * Authority: RIGHT_MANAGE over the process cap — the same authority that
+ * already implies address-space control via SYS_VMO_MAP_INTO.  The returned
+ * cap is the delegable/attenuable form of that control: a supervisor mints it
+ * (typically down to RIGHT_WRITE) into a pager's CSpace so the pager can
+ * drive SYS_FRAME_MAP/SYS_FRAME_UNMAP on the target WITHOUT holding process
+ * MANAGE-for-mapping — fault-info (READ) + resume (MANAGE) stay separately
+ * scoped on the process cap.  Rights mirror SYS_VSPACE_SELF (no TRANSFER).
+ */
+uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KProcess *proc;
+    struct KObject  *obj = 0;
+    if ((handle_id_t)arg0 == HANDLE_INVALID) {
+        /* Self: equivalent to SYS_VSPACE_SELF — no new authority. */
+        proc = t->process;
+        kobject_retain(&proc->base);
+    } else {
+        iris_rights_t rights;
+        iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+                                     RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
+        if (r != IRIS_OK) return syscall_err(r);
+        if (!rights_check(rights, RIGHT_MANAGE)) {
+            kobject_release(obj);
+            return syscall_err(IRIS_ERR_ACCESS_DENIED);
+        }
+        proc = (struct KProcess *)obj;
+    }
+
+    if (kprocess_teardown_complete(proc)) {
+        kobject_release(&proc->base);
+        return syscall_err(IRIS_ERR_BAD_HANDLE);
+    }
+    struct KVSpace *vs = proc->vspace;
+    if (!vs) {
+        kobject_release(&proc->base);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    handle_id_t h = handle_table_insert(&t->process->handle_table, &vs->base,
+                                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
+    kobject_release(&proc->base);
+    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
+    return (uint64_t)h;
+}
+
+
 /* ── VMO syscalls ─────────────────────────────────────────────────── */
 
 uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
@@ -528,6 +581,126 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
     kobject_release(vmo_obj);
     kobject_release(proc_obj);
     return syscall_ok_u64(0);
+}
+
+
+/*
+ * sys_vmo_map_page(vmo_cptr, vspace_cptr, target_va, offset_flags) — Fase 26.
+ *
+ * Page-granular, offset-addressed map of ONE VMO page into a VSpace named by
+ * capability.  The authority is (VMO READ[/WRITE]) + (VSpace WRITE) — NO
+ * process MANAGE: the VSpace cap already IS the map-into-target authority
+ * (SYS_PROCESS_VSPACE, Fase 25).  This is the VMO-backed analogue of
+ * SYS_FRAME_MAP; it does not touch the whole-VMO contiguous map path.
+ */
+uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
+                          uint64_t arg2, uint64_t arg3) {
+    iris_cptr_t vmo_cptr    = (iris_cptr_t)arg0;
+    iris_cptr_t vspace_cptr = (iris_cptr_t)arg1;
+    uint64_t    target_va   = arg2;
+    uint64_t    offset_flags = arg3;
+
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /* Fast-fail decode before any cap resolution. */
+    uint64_t map_flags = offset_flags & 0x3ULL;
+    if (offset_flags & 0xFFCULL) return syscall_err(IRIS_ERR_INVALID_ARG);  /* reserved [11:2] */
+    if ((map_flags & 1u) && (map_flags & 2u)) return syscall_err(IRIS_ERR_INVALID_ARG); /* W^X */
+    uint64_t offset = offset_flags & ~0xFFFULL;
+    if (!kframe_va_valid(target_va)) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /* VMO cap: RIGHT_READ always, RIGHT_WRITE if a writable PTE is requested. */
+    iris_rights_t vmo_required = RIGHT_READ;
+    if (map_flags & 1u) vmo_required |= RIGHT_WRITE;
+
+    struct KObject *vmo_obj;
+    iris_rights_t   vmo_rights;
+    iris_error_t err = cspace_or_handle_resolve_obj(t->process, vmo_cptr,
+                                 RIGHT_NONE, KOBJ_VMO, &vmo_obj, &vmo_rights);
+    if (err != IRIS_OK) return syscall_err(err);
+    if (!rights_check(vmo_rights, vmo_required)) {
+        kobject_release(vmo_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    /* VSpace cap: RIGHT_WRITE to install the PTE (dual resolver, Fase 25). */
+    struct KVSpace *vs;
+    iris_rights_t   vs_rights;
+    err = cspace_or_handle_resolve_vspace(t->process, vspace_cptr, RIGHT_WRITE,
+                                          &vs, &vs_rights);
+    if (err != IRIS_OK) { kobject_release(vmo_obj); return syscall_err(err); }
+
+    struct KVmo *v = (struct KVmo *)vmo_obj;
+
+    /* Offset must address a page fully within the VMO. */
+    uint64_t map_size = 0;
+    if (v->size == 0 || !page_round_up_u64(v->size, &map_size)) {
+        kobject_active_release(&vs->base); kobject_release(&vs->base);
+        kobject_release(vmo_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+    if (offset >= map_size) {
+        kobject_active_release(&vs->base); kobject_release(&vs->base);
+        kobject_release(vmo_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    if (v->sparse) {
+        uint32_t page_idx = (uint32_t)(offset >> 12);
+        if (page_idx >= v->page_capacity) {
+            kobject_active_release(&vs->base); kobject_release(&vs->base);
+            kobject_release(vmo_obj);
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+        }
+        int charged = 0;
+        if (v->pages[page_idx] == 0) {
+            if (kprocess_quota_acquire_page(t->process) != IRIS_OK) {
+                kobject_active_release(&vs->base); kobject_release(&vs->base);
+                kobject_release(vmo_obj);
+                return syscall_err(IRIS_ERR_NO_MEMORY);
+            }
+            uint64_t phys = pmm_alloc_page();
+            if (!phys) {
+                kprocess_quota_release_page(t->process);
+                kobject_active_release(&vs->base); kobject_release(&vs->base);
+                kobject_release(vmo_obj);
+                return syscall_err(IRIS_ERR_NO_MEMORY);
+            }
+            uint8_t *kva = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
+            for (int k = 0; k < 4096; k++) kva[k] = 0;
+            v->pages[page_idx] = phys;
+            charged = 1;
+        }
+
+        struct KFrame *f = kframe_alloc_vmo_page(v->pages[page_idx], v);
+        if (!f) {
+            /* The page stays owned by the VMO (freed at kvmo_destroy); the
+             * quota charge stays with it, exactly as the whole-VMO map path. */
+            (void)charged;
+            kobject_active_release(&vs->base); kobject_release(&vs->base);
+            kobject_release(vmo_obj);
+            return syscall_err(IRIS_ERR_NO_MEMORY);
+        }
+        iris_error_t mr = kframe_map_page(f, vs, target_va, map_flags);
+        kobject_release(&f->base);  /* drop alloc retain; vs->mappings holds one */
+        kobject_active_release(&vs->base); kobject_release(&vs->base);
+        kobject_release(vmo_obj);
+        return (mr == IRIS_OK) ? syscall_ok_u64(0) : syscall_err(mr);
+    }
+
+    /* Wrap/MMIO VMO: no PMM ownership, no vmo_owner retain on the frame. */
+    struct KFrame *f = kframe_alloc(v->phys + offset, 4096u, NULL);
+    if (!f) {
+        kobject_active_release(&vs->base); kobject_release(&vs->base);
+        kobject_release(vmo_obj);
+        return syscall_err(IRIS_ERR_NO_MEMORY);
+    }
+    iris_error_t mr = kframe_map_page(f, vs, target_va, map_flags);
+    kobject_release(&f->base);
+    kobject_active_release(&vs->base); kobject_release(&vs->base);
+    kobject_release(vmo_obj);
+    return (mr == IRIS_OK) ? syscall_ok_u64(0) : syscall_err(mr);
 }
 
 

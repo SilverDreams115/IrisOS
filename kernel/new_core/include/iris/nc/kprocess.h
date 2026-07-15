@@ -16,7 +16,18 @@ struct KFrame;
 #define KPROCESS_EXIT_WATCH_MAX 8u
 #define KPROCESS_MAX_LIVE       64u /* bounded by TASK_MAX; enforced in kprocess_alloc */
 #define KPROCESS_NOTIFICATION_QUOTA 16u
-#define KPROCESS_VMO_QUOTA      32u
+/* Fase 28.1: raised 32 → 128.  A LOADER (svc_load) creates each child's
+ * segment + stack VMOs under ITS OWN ownership (kvmo_bind_owner binds the
+ * caller); the quota is released only when the VMO object is destroyed, i.e.
+ * when the CHILD dies and drops its mappings.  So a supervisor that keeps N
+ * children alive holds ~4*N segment/stack VMOs against its own quota — the old
+ * 32 capped a supervisor at ~8 concurrent loaded children (NO_MEMORY on the
+ * 9th), which the 16-concurrent-target pager suite exceeds.  This is a
+ * loader-ownership accounting bound, NOT the per-process notification quota
+ * (which Fase 28.1 resolved with one shared fault notification); raising it is
+ * the honest fix so the cap is a deliberate policy, not an accident of charging
+ * a child's memory to whoever loaded it. */
+#define KPROCESS_VMO_QUOTA      128u
 #define KPROCESS_PHYS_PAGES_LIMIT 2048u /* 8MB per process; set in kprocess_alloc */
 
 /* Maximum bootstrap KFrame retains stored in KProcess.bootstrap_frames[].
@@ -83,6 +94,13 @@ struct KProcess {
     uint32_t fault_error;
     uint64_t fault_cr2;
     uint8_t  fault_valid;
+    /* Fase 25: per-process fault generation.  fault_seq_counter increments on
+     * every delivery (1-based, wraps); fault_seq is the generation of the
+     * currently pending record.  The generation of the fault a TASK is blocked
+     * on lives in task->fault_seq (per-TCB — the per-process record is
+     * last-writer-wins but each blocked task keeps its own generation). */
+    uint32_t fault_seq;
+    uint32_t fault_seq_counter;
     uint32_t owned_notifications;
     uint32_t owned_vmos;
     uint32_t phys_pages_charged; /* sparse-VMO pages charged at eager map-time

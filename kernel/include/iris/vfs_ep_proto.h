@@ -31,6 +31,7 @@
 
 #include <stdint.h>
 #include <iris/ipc_msg.h>
+#include <iris/endpoint_proto.h>   /* Fase 28.1: IRIS_BADGE_FILEGRANT_* */
 
 /* Service opcode range 0x0100–0xEFFF (endpoint_proto.h); VFS owns 0x01xx. */
 
@@ -83,6 +84,137 @@
 #define VFS_EP_OP_STATUS   UINT64_C(0x0104)
 
 /* IRIS_EP_OP_PING (0xFF01, endpoint_proto.h) is also served: reply OK. */
+
+/* ── Fase 28.1: VFS-enforced file grants ─────────────────────────────────────
+ *
+ * A file grant is an UNFORGEABLE, per-backing authority validated by the VFS
+ * itself on every operation — a pathname is never authority.  The construction
+ * composes three existing kernel guarantees:
+ *
+ *   1. sender_badge is KERNEL-STAMPED from the invoked capability (Fase 9);
+ *      a client cannot write it.
+ *   2. A badged endpoint cap can NEVER be re-badged (SYS_PROC_CSPACE_MINT);
+ *      only a holder of an UNBADGED duplicable vfs.ep cap (a supervisor, by
+ *      the Fase 10 grant-tightening rule) can mint session identities.
+ *   3. Rights reduce monotonically on every mint.
+ *
+ * Roles, by badge class:
+ *   IRIS_BADGE_FILEGRANT_ADMIN      grant administrator (a pager SUPERVISOR).
+ *                                   May OPEN grants into any session, REVOKE
+ *                                   backings by name, and RESET sessions.
+ *   IRIS_BADGE_FILEGRANT_S(s)       grant SESSION s (a pager instance).  May
+ *                                   invoke ONLY the session-scoped grant ops
+ *                                   below, ONLY on grants of session s.  All
+ *                                   name-based ops (LIST/STAT/READ_AT/STATUS)
+ *                                   are ACCESS_DENIED for session badges: a
+ *                                   compromised pager holding only its session
+ *                                   cap cannot read, stat, or enumerate ANY
+ *                                   file it was not granted, no matter what
+ *                                   bytes it puts in a message.
+ *   any other badge                 ordinary named-export client (unchanged);
+ *                                   every GRANT_* op is ACCESS_DENIED.
+ *
+ * Grant record: (backing_id, generation, rights) bound to one export at open
+ * time.  backing_id and generation are VFS-ISSUED (namespaced by the service
+ * instance epoch), never caller-chosen.  Revoking a backing bumps the export
+ * generation: every grant snapshotting an older generation fails CLOSED on
+ * its next use — enforcement is in the VFS, regardless of any state the
+ * holder keeps.  A VFS restart re-seeds exports under a fresh epoch and an
+ * empty grant table, so pre-restart grants can never revive (A11/A12).
+ *
+ * Error semantics (grant ops):
+ *   IRIS_ERR_ACCESS_DENIED — wrong badge class, session mismatch, missing
+ *                            right, or a derive requesting rights beyond the
+ *                            source grant (monotonicity).
+ *   IRIS_ERR_NOT_FOUND     — no such grant slot / no such export (open).
+ *   IRIS_ERR_CLOSED        — grant is stale: its backing was revoked or its
+ *                            generation superseded.
+ *   IRIS_ERR_INVALID_ARG   — malformed request.
+ *   IRIS_ERR_TABLE_FULL    — session grant table exhausted (open/derive).
+ */
+
+/* Grant rights (bit flags).  Monotonic: a derive may only shrink the mask. */
+#define VFS_FILE_RIGHT_STAT       1u   /* GRANT_STAT / size queries */
+#define VFS_FILE_RIGHT_READ       2u   /* GRANT_READ_AT */
+#define VFS_FILE_RIGHT_DUPLICATE  4u   /* GRANT_DERIVE (reduced-rights copies) */
+#define VFS_FILE_RIGHT_REVOKE     8u   /* GRANT_REVOKE via the grant itself */
+#define VFS_FILE_RIGHT_ALL        0xFu
+
+/* The file-grant badge identities (IRIS_BADGE_FILEGRANT_*, session count and
+ * the badge→session helper) live with the other well-known badges in
+ * iris/endpoint_proto.h (included above via this header's users; included
+ * here for standalone use). */
+#define VFS_GRANT_SESSIONS          IRIS_FILEGRANT_SESSIONS
+
+/* Grants per session (per pager instance). */
+#define VFS_GRANTS_PER_SESSION      8u
+
+/*
+ * VFS_EP_OP_GRANT_OPEN — create a grant (ADMIN badge only).
+ *   Request:  words[0] = session index, words[1] = rights mask (nonempty,
+ *             subset of VFS_FILE_RIGHT_ALL); kbuf = NUL-terminated export name.
+ *             The pathname appears HERE ONLY — at grant creation, presented by
+ *             the admin; the session holder never sends a name again.
+ *   Reply OK: words[1] = grant index (session-scoped),
+ *             words[2] = backing_id (VFS-issued),
+ *             words[3] = generation (VFS-issued).
+ */
+#define VFS_EP_OP_GRANT_OPEN          UINT64_C(0x0110)
+
+/*
+ * VFS_EP_OP_GRANT_STAT — size/identity via a grant (SESSION badge;
+ * FILE_RIGHT_STAT).
+ *   Request:  words[0] = grant index.
+ *   Reply OK: words[1] = file size, words[2] = backing_id, words[3] = generation.
+ */
+#define VFS_EP_OP_GRANT_STAT          UINT64_C(0x0111)
+
+/*
+ * VFS_EP_OP_GRANT_READ_AT — positional read via a grant (SESSION badge;
+ * FILE_RIGHT_READ).  No pathname anywhere in the request.
+ *   Request:  words[0] = grant index, words[1] = byte offset,
+ *             words[2] = length (clamped to VFS_EP_DATA_MAX).
+ *   Reply OK: words[1] = bytes read (0 = EOF), words[2] = file size,
+ *             kbuf = data.
+ */
+#define VFS_EP_OP_GRANT_READ_AT       UINT64_C(0x0112)
+
+/*
+ * VFS_EP_OP_GRANT_QUERY_IDENTITY — introspect a live grant (SESSION badge;
+ * any rights).  Lets a pager verify a supervisor-registered backing identity
+ * against the VFS-issued one before trusting it.
+ *   Request:  words[0] = grant index.
+ *   Reply OK: words[1] = backing_id, words[2] = generation, words[3] = rights.
+ */
+#define VFS_EP_OP_GRANT_QUERY_IDENTITY UINT64_C(0x0113)
+
+/*
+ * VFS_EP_OP_GRANT_DERIVE — reduced-rights copy (SESSION badge;
+ * FILE_RIGHT_DUPLICATE on the source).  words[1] must be a nonempty SUBSET of
+ * the source rights — requesting any right the source lacks is ACCESS_DENIED
+ * (monotonic derivation; rights can never be recovered).
+ *   Request:  words[0] = source grant index, words[1] = rights mask.
+ *   Reply OK: words[1] = new grant index (same session, same backing+gen).
+ */
+#define VFS_EP_OP_GRANT_DERIVE        UINT64_C(0x0114)
+
+/*
+ * VFS_EP_OP_GRANT_REVOKE — revoke a BACKING (all grants on it, all sessions).
+ * Bumps the export generation; existing grants fail CLOSED from now on.
+ *   ADMIN badge:   kbuf = NUL-terminated export name.
+ *   SESSION badge: words[0] = grant index; requires FILE_RIGHT_REVOKE.
+ *   Reply OK: words[1] = new generation.
+ */
+#define VFS_EP_OP_GRANT_REVOKE        UINT64_C(0x0115)
+
+/*
+ * VFS_EP_OP_GRANT_SESSION_RESET — drop EVERY grant of a session (ADMIN badge).
+ * Part of the supervisor's pager-restart protocol: reset the session BEFORE
+ * re-minting the session cap into a fresh pager instance, so a restarted
+ * pager can never reuse its predecessor's grants (A11).
+ *   Request:  words[0] = session index.
+ */
+#define VFS_EP_OP_GRANT_SESSION_RESET UINT64_C(0x0116)
 
 /* Maximum path length including NUL (matches legacy VFS_MAX_NAME). */
 #define VFS_EP_PATH_MAX    64u

@@ -16,6 +16,13 @@
  *   VSpace: RIGHT_WRITE to modify the page tables.
  *   ACCESS_DENIED from CSpace resolution is a hard stop (no handle fallback).
  *
+ * Fase 25: the VSpace argument resolves through the dual resolver (CPtr or
+ * handle), the same A1 migration every other capability argument already
+ * made.  Before, a handle fed here went through the raw radix walk and was
+ * masked into low root slots (the Fase 8 aliasing hazard class); now the
+ * handle namespace resolves honestly, so a supervisor/pager can pass a
+ * SYS_PROCESS_VSPACE handle directly.
+ *
  * Lifecycle invariant (Fase 5.1):
  *   frame->mapped_count must be 0 before dropping the last frame cap.
  *   kframe_obj_destroy() panics if mapped_count > 0 at destruction time.
@@ -60,8 +67,8 @@ uint64_t sys_frame_map(uint64_t arg0, uint64_t arg1,
     /* VSpace cap: RIGHT_WRITE to install PTE. */
     struct KVSpace  *vs;
     iris_rights_t    vs_rights;
-    err = cspace_resolve_vspace(t->process, vspace_cptr, RIGHT_WRITE,
-                                &vs, &vs_rights);
+    err = cspace_or_handle_resolve_vspace(t->process, vspace_cptr, RIGHT_WRITE,
+                                          &vs, &vs_rights);
     if (err != IRIS_OK) {
         kobject_active_release(&frame->base);
         kobject_release(&frame->base);
@@ -103,8 +110,8 @@ uint64_t sys_frame_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2)
     /* VSpace cap: RIGHT_WRITE to modify page tables. */
     struct KVSpace  *vs;
     iris_rights_t    vs_rights;
-    err = cspace_resolve_vspace(t->process, vspace_cptr, RIGHT_WRITE,
-                                &vs, &vs_rights);
+    err = cspace_or_handle_resolve_vspace(t->process, vspace_cptr, RIGHT_WRITE,
+                                          &vs, &vs_rights);
     if (err != IRIS_OK) {
         kobject_active_release(&frame->base);
         kobject_release(&frame->base);

@@ -21,7 +21,7 @@ ifneq ($(BUILD_CONFIG_ON_DISK),$(BUILD_CONFIG_MODE))
   $(info [build] configuration changed to $(BUILD_CONFIG_MODE); cleaning stale artifacts)
   $(shell rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.so $(BUILD_DIR)/*.elf $(BUILD_DIR)/*.d $(BUILD_DIR)/OVMF_VARS.fd)
   $(shell rm -rf $(BUILD_DIR)/efi_root)
-  $(shell rm -f services/svcmgr/svcmgr.elf services/kbd/kbd.elf services/vfs/vfs.elf services/init/init.elf services/console/console.elf services/fb/fb.elf services/sh/sh.elf services/iris_test/iris_test.elf services/lifecycle_probe/lifecycle_probe.elf services/userboot/userboot.bin)
+  $(shell rm -f services/svcmgr/svcmgr.elf services/kbd/kbd.elf services/vfs/vfs.elf services/init/init.elf services/console/console.elf services/fb/fb.elf services/sh/sh.elf services/iris_test/iris_test.elf services/lifecycle_probe/lifecycle_probe.elf services/pager/pager.elf services/userboot/userboot.bin)
   $(shell mkdir -p $(BUILD_DIR))
   $(shell printf '%s\n' "$(BUILD_CONFIG_MODE)" > $(BUILD_CONFIG_STAMP))
 endif
@@ -103,6 +103,7 @@ SERVICE_FB_ELF        := services/fb/fb.elf
 SERVICE_SH_ELF        := services/sh/sh.elf
 SERVICE_IRIS_TEST_ELF := services/iris_test/iris_test.elf
 SERVICE_LIFECYCLE_PROBE_ELF := services/lifecycle_probe/lifecycle_probe.elf
+SERVICE_PAGER_ELF     := services/pager/pager.elf
 # userboot: linked as raw flat binary (OUTPUT_FORMAT(binary)) for direct kernel mapping
 SERVICE_USERBOOT_BIN  := services/userboot/userboot.bin
 # objcopy-embedded initrd object files (binary blobs → linkable .o)
@@ -115,13 +116,19 @@ KERNEL_FB_SVC_BIN_OBJ     := $(BUILD_DIR)/fb_svc_bin.o
 KERNEL_SH_BIN_OBJ         := $(BUILD_DIR)/sh_bin.o
 KERNEL_IRIS_TEST_BIN_OBJ  := $(BUILD_DIR)/iris_test_bin.o
 KERNEL_LIFECYCLE_PROBE_BIN_OBJ := $(BUILD_DIR)/lifecycle_probe_bin.o
+KERNEL_PAGER_BIN_OBJ      := $(BUILD_DIR)/pager_bin.o
+KERNEL_BOOTFIX_BADELF_OBJ := $(BUILD_DIR)/bootfix_badelf_bin.o
+KERNEL_FILEBK_FBK_OBJ     := $(BUILD_DIR)/filebk_fbk_bin.o
+KERNEL_FILEBK_FBK2_OBJ    := $(BUILD_DIR)/filebk_fbk2_bin.o
+KERNEL_FILEBK_ELFSEG_OBJ  := $(BUILD_DIR)/filebk_elfseg_bin.o
+KERNEL_FILEBK_SMALL_OBJ   := $(BUILD_DIR)/filebk_small_bin.o
 KERNEL_USERBOOT_BIN_OBJ   := $(BUILD_DIR)/userboot_bin.o
 KERNEL_DEMO_OBJS :=
 KERNEL_DEMO_DEFINES :=
 ifeq ($(ENABLE_RUNTIME_SELFTESTS),1)
 KERNEL_DEMO_DEFINES      += -DIRIS_ENABLE_RUNTIME_SELFTESTS
 endif
-KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_KSLAB_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_NC_KREPLY_OBJ) $(KERNEL_NC_KCNODE_OBJ) $(KERNEL_NC_KSCHEDCTX_OBJ) $(KERNEL_NC_KUNTYPED_OBJ) $(KERNEL_SYSCALL_CSPACE_OBJ) $(KERNEL_SYSCALL_SCHED_OBJ) $(KERNEL_SYSCALL_UNTYPED_OBJ) $(KERNEL_SYSCALL_REPLY_OBJ) $(KERNEL_SYSCALL_CNODE_OPS_OBJ) $(KERNEL_NC_KTCB_OBJ) $(KERNEL_SYSCALL_TCB_OBJ) $(KERNEL_NC_CSPACE_OBJ) $(KERNEL_NC_KVSPACE_OBJ) $(KERNEL_NC_KFRAME_OBJ) $(KERNEL_SYSCALL_FRAME_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_IRIS_TEST_BIN_OBJ) $(KERNEL_LIFECYCLE_PROBE_BIN_OBJ) $(KERNEL_DEMO_OBJS)
+KERNEL_OBJS := $(KERNEL_ENTRY_OBJ) $(KERNEL_MAIN_OBJ) $(KERNEL_KSLAB_OBJ) $(KERNEL_PMM_OBJ) $(KERNEL_PAGING_OBJ) $(KERNEL_GDT_OBJ) $(KERNEL_IDT_OBJ) $(KERNEL_PIC_OBJ) $(KERNEL_GDT_FLUSH_OBJ) $(KERNEL_ISR_OBJ) $(KERNEL_CTX_OBJ) $(KERNEL_SCHED_OBJ) $(KERNEL_KSTACK_OBJ) $(KERNEL_LIFECYCLE_OBJ) $(KERNEL_TRAMP_OBJ) $(KERNEL_SYSCALL_DISPATCH_OBJ) $(KERNEL_SYSCALL_IPC_OBJ) $(KERNEL_SYSCALL_VM_OBJ) $(KERNEL_SYSCALL_PROC_OBJ) $(KERNEL_SYSCALL_CAP_OBJ) $(KERNEL_SYSCALL_IRQ_OBJ) $(KERNEL_SYSCALL_DIAG_OBJ) $(KERNEL_SYSCALL_EP_OBJ) $(KERNEL_USERCOPY_OBJ) $(KERNEL_SYSCALLE_OBJ) $(KERNEL_SERIAL_OBJ) $(KERNEL_NC_KOBJECT_OBJ) $(KERNEL_NC_HANDLE_OBJ) $(KERNEL_NC_HANDLETBL_OBJ) $(KERNEL_NC_KVMO_OBJ) $(KERNEL_NC_KNOTIF_OBJ) $(KERNEL_NC_KBOOTCAP_OBJ) $(KERNEL_NC_KPROCESS_OBJ) $(KERNEL_NC_KIRQCAP_OBJ) $(KERNEL_NC_KIOPORT_OBJ) $(KERNEL_NC_KINITRDENTRY_OBJ) $(KERNEL_NC_KENDPOINT_OBJ) $(KERNEL_IRQROUTING_OBJ) $(KERNEL_PHASE3_SELFTEST_OBJ) $(KERNEL_INITRD_OBJ) $(KERNEL_FUTEX_OBJ) $(KERNEL_KPAGE_OBJ) $(KERNEL_KLOG_OBJ) $(KERNEL_PANIC_OBJ) $(KERNEL_LAPIC_OBJ) $(KERNEL_NC_KREPLY_OBJ) $(KERNEL_NC_KCNODE_OBJ) $(KERNEL_NC_KSCHEDCTX_OBJ) $(KERNEL_NC_KUNTYPED_OBJ) $(KERNEL_SYSCALL_CSPACE_OBJ) $(KERNEL_SYSCALL_SCHED_OBJ) $(KERNEL_SYSCALL_UNTYPED_OBJ) $(KERNEL_SYSCALL_REPLY_OBJ) $(KERNEL_SYSCALL_CNODE_OPS_OBJ) $(KERNEL_NC_KTCB_OBJ) $(KERNEL_SYSCALL_TCB_OBJ) $(KERNEL_NC_CSPACE_OBJ) $(KERNEL_NC_KVSPACE_OBJ) $(KERNEL_NC_KFRAME_OBJ) $(KERNEL_SYSCALL_FRAME_OBJ) $(KERNEL_USERBOOT_BIN_OBJ) $(KERNEL_SVCMGR_BIN_OBJ) $(KERNEL_KBD_BIN_OBJ) $(KERNEL_VFS_BIN_OBJ) $(KERNEL_INIT_BIN_OBJ) $(KERNEL_CONSOLE_BIN_OBJ) $(KERNEL_FB_SVC_BIN_OBJ) $(KERNEL_SH_BIN_OBJ) $(KERNEL_IRIS_TEST_BIN_OBJ) $(KERNEL_LIFECYCLE_PROBE_BIN_OBJ) $(KERNEL_PAGER_BIN_OBJ) $(KERNEL_BOOTFIX_BADELF_OBJ) $(KERNEL_FILEBK_FBK_OBJ) $(KERNEL_FILEBK_FBK2_OBJ) $(KERNEL_FILEBK_ELFSEG_OBJ) $(KERNEL_FILEBK_SMALL_OBJ) $(KERNEL_DEMO_OBJS)
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 KERNEL_DST  := $(EFI_IRIS_DIR)/KERNEL.ELF
 
@@ -583,6 +590,49 @@ $(KERNEL_LIFECYCLE_PROBE_BIN_OBJ): $(SERVICE_LIFECYCLE_PROBE_ELF) | dirs
 	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
 	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
 	    $(SERVICE_LIFECYCLE_PROBE_ELF) $@
+
+# ── pager (ring-3 user pager SERVICE, own binary since Fase 28) ──────────────
+$(BUILD_DIR)/pager_entry.o: services/pager/entry.S | dirs
+	gcc $(SERVICE_ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/pager_main.o: services/pager/main.c | dirs
+	gcc $(SERVICE_CFLAGS) -c $< -o $@
+
+$(SERVICE_PAGER_ELF): $(BUILD_DIR)/pager_entry.o $(BUILD_DIR)/pager_main.o $(STACK_GUARD_OBJ)
+	ld $(SERVICE_LDFLAGS) $^ -o $@
+
+$(KERNEL_PAGER_BIN_OBJ): $(SERVICE_PAGER_ELF) | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    $(SERVICE_PAGER_ELF) $@
+
+# ── boot-growth test fixtures (Fase 28): non-service initrd blobs ────────────
+$(KERNEL_BOOTFIX_BADELF_OBJ): services/bootfix/badelf.bin | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    services/bootfix/badelf.bin $@
+
+# ── file-backed content fixtures (Fase 28 Bloque B) ─────────────────────────
+$(KERNEL_FILEBK_FBK_OBJ): services/filebk/fbk.dat | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    services/filebk/fbk.dat $@
+
+$(KERNEL_FILEBK_FBK2_OBJ): services/filebk/fbk2.dat | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    services/filebk/fbk2.dat $@
+
+$(KERNEL_FILEBK_ELFSEG_OBJ): services/filebk/elfseg.dat | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    services/filebk/elfseg.dat $@
+
+$(KERNEL_FILEBK_SMALL_OBJ): services/filebk/small.dat | dirs
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+	    services/filebk/small.dat $@
+
 
 # ── sh service (ring-3 interactive shell) ────────────────────────────────────
 $(BUILD_DIR)/sh_entry.o: services/sh/entry.S | dirs

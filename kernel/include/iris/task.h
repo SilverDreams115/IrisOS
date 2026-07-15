@@ -82,6 +82,9 @@ struct task {
     uint64_t          utext_phys;      /* physical base of userboot text copy (ring-3 only) */
     uint32_t          utext_pages;     /* page count at utext_phys; 0 if not applicable */
     struct KProcess  *process;         /* owning process; NULL for kernel tasks */
+    uint32_t          fault_seq;       /* Fase 25: generation of the fault this
+                                        * task is blocked on (TASK_BLOCKED_FAULT);
+                                        * 0 = no fault ever delivered to it */
 
     /* cooperative scheduler quantum */
     uint32_t          time_slice;   /* ticks per quantum (default TASK_DEFAULT_SLICE) */

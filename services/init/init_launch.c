@@ -243,7 +243,7 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[11];
+        struct svc_mint it_mints[13];
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -297,8 +297,32 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
         it_mints[10].rights = RIGHT_READ | RIGHT_WRITE |
                               RIGHT_DUPLICATE | RIGHT_TRANSFER;
         it_mints[10].badge = 0;
+        /* Fase 28.1: the supervisor-side file-grant caps for iris_test (the
+         * pager supervisor in the runtime suite).  Two slots, because a badged
+         * cap can never be re-badged:
+         *   slot 58 — the grant ADMIN identity: call-only (WRITE) vfs.ep cap
+         *             badged IRIS_BADGE_FILEGRANT_ADMIN.  Drives GRANT_OPEN /
+         *             GRANT_REVOKE / GRANT_SESSION_RESET at the VFS.
+         *   slot 59 — the session-cap MINT SOURCE: an UNBADGED vfs.ep cap with
+         *             WRITE|DUPLICATE|TRANSFER.  Fresh session badges
+         *             (IRIS_BADGE_FILEGRANT_S(s)) are minted from it into each
+         *             pager instance; invoked directly it is an ordinary
+         *             unbadged client (no grant authority).
+         * lk_vfs came from init's own supervisor-badged lookup
+         * (WRITE|DUPLICATE|TRANSFER); the ordinary client lookup strips
+         * DUPLICATE, so this pre-mint is the only honest source.
+         * HANDLE_INVALID (lookup miss) → svc_load skips it, and the
+         * file-backed suite gates loudly. */
+        it_mints[11].slot  = IRIS_CPTR_TEST_VFS_DUP;
+        it_mints[11].src_h = lk_vfs;
+        it_mints[11].rights = RIGHT_WRITE;
+        it_mints[11].badge = IRIS_BADGE_FILEGRANT_ADMIN;
+        it_mints[12].slot  = IRIS_CPTR_TEST_VFS_MINT;
+        it_mints[12].src_h = lk_vfs;
+        it_mints[12].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        it_mints[12].badge = 0;
         r = svc_load_minted(spawn_cap_h, "iris_test", &proc_h, &boot_h,
-                            it_mints, 11u);
+                            it_mints, 13u);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);

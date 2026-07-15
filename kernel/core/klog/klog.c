@@ -15,10 +15,20 @@ static uint32_t klog_len  = 0;
 
 static irq_spinlock_t klog_lock;
 
+#ifdef IRIS_KLOG_SERIAL_MIRROR
+static inline void klog_dbg_putc(char c) {
+    __asm__ volatile("outb %0, %1" : : "a"((uint8_t)c), "Nd"((uint16_t)0x3F8));
+}
+#endif
+
 void klog_write(const char *s) {
     if (!s) return;
     uint64_t saved = irq_spinlock_lock(&klog_lock);
     while (*s) {
+#ifdef IRIS_KLOG_SERIAL_MIRROR
+        if (*s == '\n') klog_dbg_putc('\r');
+        klog_dbg_putc(*s);
+#endif
         uint32_t tail = (klog_head + klog_len) % KLOG_BUF_SIZE;
         klog_buf[tail] = *s++;
         if (klog_len == KLOG_BUF_SIZE)

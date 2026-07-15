@@ -370,6 +370,61 @@ iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
 }
 
 /*
+ * cspace_or_handle_resolve_vspace — dual resolver for the VSpace argument of
+ * SYS_FRAME_MAP/SYS_FRAME_UNMAP (Fase 25).  Same namespace split and
+ * active+lifecycle ref contract as cspace_or_handle_resolve_frame.  Before
+ * Fase 25 those syscalls fed the VSpace value straight into the raw radix
+ * walk, where a handle (>= 1024) was masked into low root slots — the exact
+ * aliasing hazard the Fase 8 split closed for every other capability
+ * argument.  The handle namespace now resolves honestly, which is what lets
+ * a supervisor drive map-into-target with the SYS_PROCESS_VSPACE handle
+ * directly (no permanent CSpace slot pin).
+ */
+iris_error_t cspace_or_handle_resolve_vspace(struct KProcess *proc,
+                                              iris_cptr_t      cptr_or_handle,
+                                              iris_rights_t    required,
+                                              struct KVSpace **out,
+                                              iris_rights_t   *rights_out)
+{
+    struct KObject *obj;
+    iris_rights_t   r;
+    iris_error_t    err;
+
+    if (!proc || !out || !rights_out) return IRIS_ERR_INVALID_ARG;
+
+    /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
+    if (cspace_value_is_cptr(cptr_or_handle)) {
+        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+        err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);
+        if (err != IRIS_OK) return err;
+        if (obj->type != KOBJ_VSPACE) {
+            kobject_active_release(obj);
+            kobject_release(obj);
+            return IRIS_ERR_WRONG_TYPE;
+        }
+        *out = (struct KVSpace *)obj;
+        *rights_out = r;
+        return IRIS_OK;
+    }
+
+    err = handle_table_get_object(&proc->handle_table,
+                                   (handle_id_t)cptr_or_handle, &obj, &r);
+    if (err != IRIS_OK) return err;
+    if (obj->type != KOBJ_VSPACE) {
+        kobject_release(obj);
+        return IRIS_ERR_WRONG_TYPE;
+    }
+    if (required != RIGHT_NONE && !rights_check(r, required)) {
+        kobject_release(obj);
+        return IRIS_ERR_ACCESS_DENIED;
+    }
+    kobject_active_retain(obj);
+    *out = (struct KVSpace *)obj;
+    *rights_out = r;
+    return IRIS_OK;
+}
+
+/*
  * Fase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
  * KBootstrapCap, …).  Same namespace split as the typed resolvers (CPtr < 1024
  * → CSpace only; >= 1024 → handle table only) but **lifecycle-only** ref

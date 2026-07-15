@@ -210,3 +210,19 @@ T163  authority stress: seeded register/lookup/unregister churn interleaved with
 - **Static manifest cross-check**: the `client_eps` manifest is kept in sync
   with service source by review; a build-time assertion (host test) that a
   service's referenced slots ⊆ its granted slots would make it mechanical.
+
+---
+
+## Fase 28.1 addendum — file grants as least-authority file access
+
+The pager is the sharpest example of least-authority file access.  Before Fase
+28.1 it held a generic `vfs.ep` client cap and self-enforced which names it
+would read — authority the service granted itself.  Fase 28.1 replaces that with
+a **VFS-issued, VFS-validated file grant** (`file-grant-capability.md`): the
+pager's only file authority is a session-badged, WRITE-only `vfs.ep` cap that
+the VFS confines to session-scoped grant ops (`GRANT_STAT/READ_AT/...`) and
+denies every name-based op.  Reads carry a grant index, never a pathname; the
+VFS checks badge + session + grant + rights + generation on every op.  The
+authority a service holds is now exactly the set of backings its supervisor
+delegated — nothing nameable, nothing global — and revocation is enforced
+outside the service.

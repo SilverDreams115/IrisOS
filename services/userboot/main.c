@@ -48,6 +48,23 @@ static void ub_close(handle_id_t h) {
         (void)ub_sys1(SYS_HANDLE_CLOSE, (long)h);
 }
 
+/* Fase 28: bootstrap diagnostic.  A bootstrap-fatal condition (a broken initrd
+ * catalog) must never manifest as a SILENT dead system.  userboot holds the
+ * root KBootstrapCap (HW_ACCESS), so it can mint a serial KIoPort and emit a
+ * diagnostic line directly to COM1 before exiting — visible even though no
+ * console/svcmgr service has come up yet.  Crude (no LSR polling), but a boot
+ * that reaches this path is already fatal. */
+static void ub_boot_panic(handle_id_t bootstrap_cap_h, const char *msg) {
+    long io = ub_sys3(SYS_CAP_CREATE_IOPORT, (long)bootstrap_cap_h, 0x3F8, 8);
+    if (io >= 0) {
+        for (const char *p = msg; *p; p++) {
+            if (*p == '\n') (void)ub_sys3(SYS_IOPORT_OUT, io, 0, (long)'\r');
+            (void)ub_sys3(SYS_IOPORT_OUT, io, 0, (long)(uint8_t)*p);
+        }
+        (void)ub_sys1(SYS_HANDLE_CLOSE, io);
+    }
+}
+
 /* ub_msg_zero retired — Fase 13/Track I (no KChannel bootstrap message). */
 
 /* ub_send_spawn_cap retired — Fase 13/Track I (init's spawn cap is a pre-start
@@ -68,9 +85,20 @@ void iris_userboot_main(handle_id_t bootstrap_cap_h) {
     if (bootstrap_cap_h == HANDLE_INVALID)
         goto fail;
 
-    /* Verify kernel catalog size matches the ring-3 table before loading anything. */
-    if (svc_initrd_count(bootstrap_cap_h) != (long)SL_CATALOG_COUNT)
+    /* Fase 28 boot-growth fix: the boot invariant is that the kernel initrd has
+     * AT LEAST every image the ring-3 name→index catalog references (indices
+     * 0..SL_CATALOG_COUNT-1 must resolve).  The initrd is allowed to hold MORE
+     * images at higher indices (new services, backing blobs) — those are not
+     * named here and are loaded by other means.  The old exact-equality check
+     * turned any legitimate initrd growth into a silent dead boot (userboot
+     * exited before loading init); it is now a >= check, and a genuine shortage
+     * emits a bootstrap diagnostic instead of vanishing. */
+    if (svc_initrd_count(bootstrap_cap_h) < (long)SL_CATALOG_COUNT) {
+        ub_boot_panic(bootstrap_cap_h,
+                      "[USERBOOT] FATAL: initrd catalog too small "
+                      "(kernel/ring-3 mismatch); halting boot\n");
         goto fail;
+    }
 
     /* Fase 3.4: CPtr probe — exercise the root CSpace path for boot KUntyped.
      * BOOT_CPTR_UNTYPED_START names the first boot KUntyped slot in the root

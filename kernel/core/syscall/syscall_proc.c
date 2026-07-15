@@ -404,7 +404,7 @@ uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     spinlock_lock(&proc->base.lock);
     int valid = proc->fault_valid;
     uint32_t vector = proc->fault_vector, task_id = proc->fault_task_id,
-             error = proc->fault_error;
+             error = proc->fault_error, seq = proc->fault_seq;
     uint64_t rip = proc->fault_rip, cr2 = proc->fault_cr2;
     spinlock_unlock(&proc->base.lock);
     kobject_release(&proc->base);
@@ -415,6 +415,7 @@ uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_TASK_ID + i] = (uint8_t)(task_id >> (i * 8));
     for (uint32_t i = 0; i < 8u; i++) buf[FAULT_OFF_RIP + i]     = (uint8_t)(rip >> (i * 8));
     for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_ERROR + i]   = (uint8_t)(error >> (i * 8));
+    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_SEQ + i]     = (uint8_t)(seq >> (i * 8));
     for (uint32_t i = 0; i < 8u; i++) buf[FAULT_OFF_CR2 + i]     = (uint8_t)(cr2 >> (i * 8));
 
     if (!copy_to_user_checked(arg1, buf, FAULT_MSG_LEN))

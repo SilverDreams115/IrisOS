@@ -258,7 +258,16 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     uint32_t target_id = (uint32_t)arg1;
     uint32_t action    = (uint32_t)arg2;
-    if (action > 1) return syscall_err(IRIS_ERR_INVALID_ARG);
+    /* Fase 25: actions 2 (resume) / 3 (kill) are the seq-checked variants —
+     * bits [63:32] of arg2 carry the fault generation the caller observed via
+     * SYS_PROCESS_FAULT_INFO.  Actions 0/1 keep the exact Fase 20 semantics
+     * (any value > 1 was INVALID_ARG before, so this is additive surface). */
+    if (action > 3) return syscall_err(IRIS_ERR_INVALID_ARG);
+    int      seq_checked  = (action >= 2);
+    uint32_t expected_seq = (uint32_t)(arg2 >> 32);
+    action &= 1u;
+    if (seq_checked && expected_seq == 0)
+        return syscall_err(IRIS_ERR_INVALID_ARG);   /* 0 is never a valid generation */
 
     struct KProcess *target_proc;
     struct KObject  *proc_obj = 0;
@@ -282,6 +291,16 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct task *ft = task_find_by_id(target_id);
     if (!ft || ft->process != target_proc || ft->state != TASK_BLOCKED_FAULT) {
+        kobject_release(&target_proc->base);
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+    }
+
+    /* Fase 25 (P13): a seq-checked resolution must name the exact fault the
+     * caller observed.  If the task refaulted since (a NEW generation), or the
+     * caller is replaying a generation it never matched, refuse cleanly —
+     * same NOT_FOUND class as every other stale (process, task, state)
+     * mismatch, with no side effect on the pending fault. */
+    if (seq_checked && ft->fault_seq != expected_seq) {
         kobject_release(&target_proc->base);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }

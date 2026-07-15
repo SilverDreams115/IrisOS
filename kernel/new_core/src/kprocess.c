@@ -336,12 +336,20 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
     notif = p->exception_notif;
     bits  = p->exception_signal_bits;
     if (notif) {
+        /* Fase 25: assign the fault a per-process generation.  1-based so 0
+         * always means "no fault"; skip 0 on uint32 wrap.  The blocked task
+         * keeps its own copy — the per-process record is last-writer-wins,
+         * but each suspended task must stay resolvable by ITS generation. */
+        p->fault_seq_counter++;
+        if (p->fault_seq_counter == 0) p->fault_seq_counter = 1;
         p->fault_vector  = (uint32_t)vector;
         p->fault_task_id = t->id;
         p->fault_rip     = rip;
         p->fault_error   = (uint32_t)error_code;
         p->fault_cr2     = cr2;
+        p->fault_seq     = p->fault_seq_counter;
         p->fault_valid   = 1;
+        t->fault_seq     = p->fault_seq_counter;
         kobject_retain(&notif->base);
     }
     spinlock_unlock(&p->base.lock);

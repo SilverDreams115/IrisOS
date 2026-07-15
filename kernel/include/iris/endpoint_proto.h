@@ -232,6 +232,31 @@
 #define IRIS_BADGE_DYNAMIC_BASE ((uint64_t)0x200)
 
 /*
+ * Fase 28.1: file-grant badge identities at the VFS.  These are BADGES, not
+ * rights: the kernel stamps them into IrisMsg.sender_badge from the invoked
+ * cap, so the VFS can classify a caller unforgeably.
+ *   IRIS_BADGE_FILEGRANT_ADMIN — a pager supervisor's grant-admin identity
+ *       (GRANT_OPEN / GRANT_REVOKE-by-name / GRANT_SESSION_RESET).
+ *   IRIS_BADGE_FILEGRANT_S(s)  — grant session s: a pager instance's ONLY
+ *       VFS identity.  Session badges are confined to the session-scoped
+ *       grant ops and are denied every name-based op.
+ * Session caps can only be minted from an UNBADGED duplicable vfs.ep cap
+ * (fresh badges require an unbadged source), i.e. by a supervisor under the
+ * Fase 10 grant-tightening rule.  Neither range overlaps service (0x100+),
+ * dynamic (0x200+) or test badges. */
+#define IRIS_BADGE_FILEGRANT_ADMIN  ((uint64_t)0x0F00)
+#define IRIS_BADGE_FILEGRANT_BASE   ((uint64_t)0x0F10)
+#define IRIS_FILEGRANT_SESSIONS     8u
+#define IRIS_BADGE_FILEGRANT_S(s)   (IRIS_BADGE_FILEGRANT_BASE + (uint64_t)(s))
+/* badge → session index, or -1 if not a session badge. */
+static inline int iris_badge_filegrant_session(uint64_t badge) {
+    if (badge < IRIS_BADGE_FILEGRANT_BASE ||
+        badge >= IRIS_BADGE_FILEGRANT_BASE + (uint64_t)IRIS_FILEGRANT_SESSIONS)
+        return -1;
+    return (int)(badge - IRIS_BADGE_FILEGRANT_BASE);
+}
+
+/*
  * Supervisor authority (Fase 10).  Only these badges may receive a cap with
  * RIGHT_DUPLICATE/RIGHT_TRANSFER from a `.ep` lookup (re-minting authority)
  * or drive privileged lifecycle ops (restart/revoke).  Everyone else is an
@@ -292,6 +317,28 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * retype (needs WRITE) both succeed. */
 #define IRIS_CPTR_INIT_UNTYPED ((uint64_t)12)
 #define IRIS_CPTR_TEST_UNTYPED ((uint64_t)55)
+/* Fase 28: a DUPLICABLE vfs.ep cap (RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER,
+ * badge IRIS_BADGE_IRIS_TEST) minted by init — supervisor authority — into this
+ * slot.  The ordinary svcmgr lookup path strips DUPLICATE/TRANSFER from
+ * non-supervisor clients (grant tightening), so iris_test cannot re-mint a
+ * looked-up vfs cap into a file-backed pager it supervises.  This mirrors
+ * IRIS_CPTR_TEST_SUPER (a supervisor-badged svcmgr cap for the privileged
+ * RESTART path): init explicitly hands the test harness the file-read authority
+ * a real pager supervisor would hold.  iris_test materializes it to a handle via
+ * SYS_CSPACE_RESOLVE (rights preserved) before using it as a mint source.
+ * Slot 58: clear of iris_test's scratch CPtr slots (23/24, 57, 60–63).
+ *
+ * Fase 28.1: slot 58 now carries the file-grant ADMIN identity
+ * (IRIS_BADGE_FILEGRANT_ADMIN, call-only WRITE): it drives GRANT_OPEN /
+ * GRANT_REVOKE / GRANT_SESSION_RESET at the VFS and nothing else.  The mint
+ * SOURCE for session-badged pager caps moved to its own slot 59
+ * (IRIS_CPTR_TEST_VFS_MINT): an UNBADGED WRITE|DUPLICATE|TRANSFER vfs.ep cap.
+ * The split exists because a badged cap can never be re-badged — one slot
+ * cannot be both a positive admin identity and a fresh-badge mint source.
+ * Invoked directly (badge 0), slot 59 is an ordinary named-export client at
+ * the VFS — no grant-admin authority rides on unbadged caps. */
+#define IRIS_CPTR_TEST_VFS_DUP  ((uint64_t)58)
+#define IRIS_CPTR_TEST_VFS_MINT ((uint64_t)59)
 /* Fase 19: iris_test mints a cap to its OWN VSpace (SYS_VSPACE_SELF) into this
  * slot so the VM suite (T132–T139) can drive SYS_FRAME_MAP / SYS_FRAME_UNMAP on
  * itself by CPtr.  Self-authority only — not a general authority door. */

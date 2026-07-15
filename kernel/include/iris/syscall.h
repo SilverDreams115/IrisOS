@@ -465,6 +465,13 @@
  *   action:  0 = resume the task at the faulting RIP; 1 = kill the task.
  *   The target task must belong to the specified process and be in BLOCKED_FAULT.
  *   Returns IRIS_ERR_NOT_FOUND if no matching suspended task exists.
+ *
+ *   Fase 25 (additive): action 2 = resume, action 3 = kill, each with a fault
+ *   generation check — bits [63:32] of the action argument must equal the
+ *   fault_seq the caller read at FAULT_OFF_SEQ.  A generation of 0 is
+ *   INVALID_ARG; a mismatch (the task refaulted since, or the caller replays
+ *   a stale record) is NOT_FOUND with no side effect.  Values 2/3 were
+ *   INVALID_ARG before Fase 25 — no existing caller changes behaviour.
  */
 #define SYS_EXCEPTION_RESUME   66
 
@@ -840,7 +847,9 @@
  *
  * SYS_FRAME_MAP(frame_cptr, vspace_cptr, user_va, flags) → 0 or negative iris_error_t
  *   frame_cptr:  KOBJ_FRAME with RIGHT_READ (+ RIGHT_WRITE if flags bit 0 set).
- *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE to install the PTE.
+ *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE to install the PTE.  Fase 25:
+ *                dual resolver (CPtr < 1024 or handle), same as the frame —
+ *                a SYS_PROCESS_VSPACE handle works directly.
  *   user_va:     page-aligned target virtual address in the VSpace's address space.
  *                Must be in [USER_PRIVATE_BASE, USER_SPACE_TOP).
  *   flags:       bit 0 = MAP_WRITABLE, bit 1 = MAP_EXEC; W^X enforced.
@@ -862,7 +871,7 @@
  *   Issues invlpg for the unmapped VA (TLB invalidation; sufficient for single-core).
  *
  *   frame_cptr:  KOBJ_FRAME with RIGHT_READ.
- *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE.
+ *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE (dual resolver since Fase 25).
  *   user_va:     page-aligned VA that was previously mapped via SYS_FRAME_MAP.
  *
  *   Returns IRIS_ERR_NOT_FOUND   — user_va has no PTE in this VSpace.
@@ -889,6 +898,71 @@
  *   Returns IRIS_ERR_NO_MEMORY if the handle table is full.
  */
 #define SYS_VSPACE_SELF 106
+
+/*
+ * SYS_PROCESS_VSPACE(proc_h) → handle_id or negative iris_error_t   (Fase 25)
+ *
+ * Returns a new handle to the TARGET process's VSpace (KOBJ_VSPACE) with
+ * RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE.  Requires RIGHT_MANAGE on proc_h
+ * (dual resolver, no fallback); HANDLE_INVALID names the caller itself and
+ * is then equivalent to SYS_VSPACE_SELF.
+ *
+ * This is the map-into-target authority for a user pager: a supervisor that
+ * already manages a process may take a cap to that process's address space
+ * and mint it (RIGHT_WRITE suffices for SYS_FRAME_MAP) into a pager's CSpace.
+ * It grants nothing MANAGE did not already imply — SYS_VMO_MAP_INTO has
+ * always let a MANAGE holder install pages — but it makes the authority a
+ * first-class, delegable, attenuable object capability instead of a
+ * process-cap side effect.  No argument names a VSpace ambiently: the only
+ * route to another process's VSpace remains an explicit process capability.
+ *
+ *   Returns IRIS_ERR_ACCESS_DENIED without RIGHT_MANAGE (no fallback).
+ *   Returns IRIS_ERR_WRONG_TYPE if proc_h is not a process capability.
+ *   Returns IRIS_ERR_BAD_HANDLE if the target has been torn down.
+ *   Returns IRIS_ERR_INVALID_ARG if the target has no address space.
+ *   Returns IRIS_ERR_NO_MEMORY if the handle table is full.
+ */
+#define SYS_PROCESS_VSPACE 107
+
+/*
+ * SYS_VMO_MAP_PAGE(vmo_cptr, vspace_cptr, target_va, offset_flags)
+ *                                          → 0 or negative iris_error_t   (Fase 26)
+ *
+ * Maps exactly ONE page of a memory object at a chosen byte offset into a
+ * VSpace at a chosen VA.  This is the page-granular, offset-addressed
+ * primitive a VMO-backed user pager uses to resolve a fault: it is to
+ * SYS_FRAME_MAP what a VMO page is to a raw frame — same authority shape
+ * (the VSpace WRITE cap is the map-into-target authority, no process MANAGE),
+ * composing directly with SYS_PROCESS_VSPACE (Fase 25).
+ *
+ *   vmo_cptr:     KOBJ_VMO with RIGHT_READ (+ RIGHT_WRITE if flags bit 0 set).
+ *                 Dual resolver (CPtr slot or handle).
+ *   vspace_cptr:  KOBJ_VSPACE with RIGHT_WRITE.  Dual resolver.
+ *   target_va:    page-aligned VA in [USER_PRIVATE_BASE, USER_SPACE_TOP).
+ *   offset_flags: bits [1:0]   = map flags (bit0 MAP_WRITABLE, bit1 MAP_EXEC;
+ *                                W^X enforced);
+ *                 bits [11:2]  = reserved, MUST be zero (rejects an unaligned
+ *                                offset — the offset field is page-granular);
+ *                 bits [63:12] = page-aligned byte offset into the VMO.
+ *
+ *   The addressed VMO page must lie within the VMO: offset < round_up(size),
+ *   else INVALID_ARG.  For a sparse VMO the page is allocated and zeroed on
+ *   first touch (eager; NO demand paging), charged to the CALLER's page quota.
+ *   The installed PTE's rights never exceed the VMO cap's rights (RIGHT_READ
+ *   without RIGHT_WRITE forbids a writable PTE).  mapped_count is incremented;
+ *   the mapping (and the VMO retain behind it) is swept on target VSpace
+ *   teardown exactly as for SYS_VMO_MAP_INTO.
+ *
+ *   Returns IRIS_ERR_INVALID_ARG   — bad VA/offset alignment, reserved bits set,
+ *                                    bad flags, or offset beyond the VMO.
+ *   Returns IRIS_ERR_ACCESS_DENIED — missing VMO/VSpace rights (no fallback).
+ *   Returns IRIS_ERR_WRONG_TYPE    — wrong object in either slot.
+ *   Returns IRIS_ERR_BAD_HANDLE    — VSpace invalidated (target dead).
+ *   Returns IRIS_ERR_BUSY          — target_va already mapped.
+ *   Returns IRIS_ERR_NO_MEMORY     — page/frame allocation or quota failure.
+ *   Uses the 4-arg syscall ABI (offset_flags via r10).
+ */
+#define SYS_VMO_MAP_PAGE 108
 
 /*
  * Block 8 — TCB capabilities (Ph96-101).

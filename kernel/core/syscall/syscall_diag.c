@@ -199,9 +199,12 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         uint32_t a2 = kendpoint_live_count();
         uint32_t a3 = knotification_live_count();
         uint32_t a4 = kcnode_live_count();
+        uint32_t a5 = kvmo_live_count();   /* Fase 26: live memory objects
+                                            * (offset 132, was _pad1 = 0 —
+                                            * additive, no new tier) */
         buf[14] = (uint64_t)a0 | ((uint64_t)a1 << 32);
         buf[15] = (uint64_t)a2 | ((uint64_t)a3 << 32);
-        buf[16] = (uint64_t)a4;   /* high half = _pad1 (0) */
+        buf[16] = (uint64_t)a4 | ((uint64_t)a5 << 32);
     }
 
     if (want >= SCHED_INFO_EXT4_BYTES) {

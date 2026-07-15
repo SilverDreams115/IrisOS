@@ -27,6 +27,12 @@ static const char    t_iris_name[] = "iris.txt";
 static const uint8_t t_iris_data[] = "Hello from IrisOS VFS!\n";
 #define T_IRIS_LEN ((uint32_t)(sizeof(t_iris_data) - 1u))
 
+/* Fase 28.1: the dispatcher now takes a vfs_ep_state (exports + grant table)
+ * and classifies callers by req->sender_badge. */
+static struct vfs_grant_table g_grants;
+static struct vfs_ep_state    g_state;
+#define T_EPOCH 3u
+
 static void t_setup_exports(void) {
     memset(g_exp, 0, sizeof(g_exp));
 
@@ -54,6 +60,12 @@ static void t_setup_exports(void) {
     strcpy(g_exp[3].name, "empty.txt");
     g_exp[3].size  = 0u;
     g_exp[3].ready = 1u;
+
+    /* Fase 28.1: wire the dispatcher state and seed VFS-issued identities. */
+    g_state.exports      = g_exp;
+    g_state.export_count = T_EXPORTS;
+    g_state.grants       = &g_grants;
+    vfs_ep_grants_init(&g_state, T_EPOCH);
 }
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
@@ -78,7 +90,7 @@ static uint32_t t_stage_path(const char *path) {
 
 static void t_dispatch(void) {
     const uint8_t *rb = (g_req.buf_len > 0u) ? g_req_buf : NULL;
-    vfs_ep_dispatch(g_exp, T_EXPORTS, &g_req, rb, &g_reply, g_reply_buf);
+    vfs_ep_dispatch(&g_state, &g_req, rb, &g_reply, g_reply_buf);
 }
 
 static void t_assert_err(iris_error_t err) {
@@ -214,7 +226,7 @@ static void t_stat_undelivered_payload(void) {
     /* buf_len announces a payload but req_buf is NULL (delivery failed) */
     t_req_reset(VFS_EP_OP_STAT);
     g_req.buf_len = 8u;
-    vfs_ep_dispatch(g_exp, T_EXPORTS, &g_req, NULL, &g_reply, g_reply_buf);
+    vfs_ep_dispatch(&g_state, &g_req, NULL, &g_reply, g_reply_buf);
     t_assert_err(IRIS_ERR_INVALID_ARG);
 }
 
@@ -387,7 +399,8 @@ static void t_status_rejects_payload(void) {
 
 static void t_status_empty_table(void) {
     t_req_reset(VFS_EP_OP_STATUS);
-    vfs_ep_dispatch(NULL, 0u, &g_req, NULL, &g_reply, g_reply_buf);
+    struct vfs_ep_state empty = { NULL, 0u, &g_grants };
+    vfs_ep_dispatch(&empty, &g_req, NULL, &g_reply, g_reply_buf);
     ASSERT_EQ(g_reply.label, IRIS_EP_REPLY_OK);
     ASSERT_EQ(g_reply.words[1], 0u);
     ASSERT_EQ(g_reply.words[2], 0u);
@@ -396,24 +409,138 @@ static void t_status_empty_table(void) {
 static void t_defensive_args(void) {
     /* NULL request → error reply, never a crash */
     memset(&g_reply, 0xAA, sizeof(g_reply));
-    vfs_ep_dispatch(g_exp, T_EXPORTS, NULL, NULL, &g_reply, g_reply_buf);
+    vfs_ep_dispatch(&g_state, NULL, NULL, &g_reply, g_reply_buf);
     t_assert_err(IRIS_ERR_INVALID_ARG);
 
     /* NULL reply_buf → error reply */
     t_req_reset(IRIS_EP_OP_PING);
-    vfs_ep_dispatch(g_exp, T_EXPORTS, &g_req, NULL, &g_reply, NULL);
+    vfs_ep_dispatch(&g_state, &g_req, NULL, &g_reply, NULL);
     t_assert_err(IRIS_ERR_INVALID_ARG);
 
-    /* NULL exports with nonzero count → error reply */
+    /* NULL exports with a nonzero count is malformed. */
     t_req_reset(IRIS_EP_OP_PING);
-    vfs_ep_dispatch(NULL, T_EXPORTS, &g_req, NULL, &g_reply, g_reply_buf);
-    t_assert_err(IRIS_ERR_INVALID_ARG);
+    {
+        struct vfs_ep_state bad = { NULL, T_EXPORTS, &g_grants };
+        vfs_ep_dispatch(&bad, &g_req, NULL, &g_reply, g_reply_buf);
+        t_assert_err(IRIS_ERR_INVALID_ARG);
+    }
 
     /* zero exports is a valid (empty) table: LIST 0 → NOT_FOUND */
     t_req_reset(VFS_EP_OP_LIST);
     g_req.words[0]   = 0;
     g_req.word_count = 1u;
-    vfs_ep_dispatch(NULL, 0u, &g_req, NULL, &g_reply, g_reply_buf);
+    {
+        struct vfs_ep_state empty = { NULL, 0u, &g_grants };
+        vfs_ep_dispatch(&empty, &g_req, NULL, &g_reply, g_reply_buf);
+        t_assert_err(IRIS_ERR_NOT_FOUND);
+    }
+}
+
+/* ── Fase 28.1: file-grant layer ─────────────────────────────────────────── */
+
+/* Dispatch as a specific caller identity (badge). */
+static void t_dispatch_badge(uint64_t badge) {
+    const uint8_t *rb = (g_req.buf_len > 0u) ? g_req_buf : NULL;
+    g_req.sender_badge = badge;
+    vfs_ep_dispatch(&g_state, &g_req, rb, &g_reply, g_reply_buf);
+}
+
+/* ADMIN opens a grant on `name` for `session` with `rights`; returns grant idx
+ * and fills identity (asserts success). */
+static uint64_t t_grant_open(uint32_t session, const char *name, uint32_t rights,
+                             uint64_t *bid, uint64_t *gen) {
+    t_req_reset(VFS_EP_OP_GRANT_OPEN);
+    g_req.words[0] = session; g_req.words[1] = rights; g_req.word_count = 2u;
+    g_req.buf_len = t_stage_path(name);
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_ADMIN);
+    ASSERT_EQ(g_reply.label, IRIS_EP_REPLY_OK);
+    if (bid) *bid = g_reply.words[2];
+    if (gen) *gen = g_reply.words[3];
+    return g_reply.words[1];
+}
+
+static void t_grants(void) {
+    t_setup_exports();   /* fresh grant table */
+
+    /* OPEN requires the ADMIN badge; a session/other badge is denied. */
+    t_req_reset(VFS_EP_OP_GRANT_OPEN);
+    g_req.words[0] = 0; g_req.words[1] = VFS_FILE_RIGHT_READ; g_req.word_count = 2u;
+    g_req.buf_len = t_stage_path("iris.txt");
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_S(0));
+    t_assert_err(IRIS_ERR_ACCESS_DENIED);
+
+    /* ADMIN opens a STAT|READ grant on iris.txt for session 0. */
+    uint64_t bid = 0, gen = 0;
+    uint64_t idx = t_grant_open(0u, "iris.txt", VFS_FILE_RIGHT_STAT | VFS_FILE_RIGHT_READ, &bid, &gen);
+    /* generation carries the instance epoch in its high half. */
+    ASSERT_EQ(gen >> 16, (uint64_t)T_EPOCH);
+
+    /* Session 0 reads its granted file. */
+    t_req_reset(VFS_EP_OP_GRANT_READ_AT);
+    g_req.words[0] = idx; g_req.words[1] = 0; g_req.words[2] = T_IRIS_LEN; g_req.word_count = 3u;
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_S(0));
+    ASSERT_EQ(g_reply.label, IRIS_EP_REPLY_OK);
+    ASSERT_EQ(g_reply.words[1], (uint64_t)T_IRIS_LEN);
+    ASSERT_EQ(g_reply_buf[0], (uint8_t)t_iris_data[0]);
+
+    /* A session badge is DENIED every name-based op (containment). */
+    t_req_reset(VFS_EP_OP_STAT);
+    g_req.buf_len = t_stage_path("iris.txt");
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_S(0));
+    t_assert_err(IRIS_ERR_ACCESS_DENIED);
+
+    t_req_reset(VFS_EP_OP_READ_AT);
+    g_req.words[0] = 0; g_req.words[1] = 4; g_req.word_count = 2u;
+    g_req.buf_len = t_stage_path("iris.txt");
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_S(0));
+    t_assert_err(IRIS_ERR_ACCESS_DENIED);
+
+    t_req_reset(VFS_EP_OP_LIST);
+    g_req.words[0] = 0; g_req.word_count = 1u;
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_S(0));
+    t_assert_err(IRIS_ERR_ACCESS_DENIED);
+
+    /* Cross-session: session 1 does not see session 0's grant index. */
+    t_req_reset(VFS_EP_OP_GRANT_READ_AT);
+    g_req.words[0] = idx; g_req.words[1] = 0; g_req.words[2] = 4; g_req.word_count = 3u;
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_S(1));
+    t_assert_err(IRIS_ERR_NOT_FOUND);
+
+    /* Rights monotonicity: a STAT-only grant cannot read. */
+    uint64_t sidx = t_grant_open(0u, "iris.txt", VFS_FILE_RIGHT_STAT, 0, 0);
+    t_req_reset(VFS_EP_OP_GRANT_READ_AT);
+    g_req.words[0] = sidx; g_req.words[1] = 0; g_req.words[2] = 4; g_req.word_count = 3u;
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_S(0));
+    t_assert_err(IRIS_ERR_ACCESS_DENIED);
+
+    /* DERIVE cannot recover a right the source lacks. */
+    uint64_t didx = t_grant_open(0u, "iris.txt", VFS_FILE_RIGHT_READ | VFS_FILE_RIGHT_DUPLICATE, 0, 0);
+    t_req_reset(VFS_EP_OP_GRANT_DERIVE);
+    g_req.words[0] = didx; g_req.words[1] = VFS_FILE_RIGHT_READ | VFS_FILE_RIGHT_REVOKE; g_req.word_count = 2u;
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_S(0));
+    t_assert_err(IRIS_ERR_ACCESS_DENIED);
+
+    /* Revoke (ADMIN, by name) bumps the generation; the old grant fails CLOSED. */
+    t_req_reset(VFS_EP_OP_GRANT_REVOKE);
+    g_req.buf_len = t_stage_path("iris.txt");
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_ADMIN);
+    ASSERT_EQ(g_reply.label, IRIS_EP_REPLY_OK);
+    ASSERT_NE(g_reply.words[1], gen);
+
+    t_req_reset(VFS_EP_OP_GRANT_READ_AT);
+    g_req.words[0] = idx; g_req.words[1] = 0; g_req.words[2] = 4; g_req.word_count = 3u;
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_S(0));
+    t_assert_err(IRIS_ERR_CLOSED);
+
+    /* SESSION_RESET (ADMIN) drops every grant of a session. */
+    uint64_t ridx = t_grant_open(0u, "big.bin", VFS_FILE_RIGHT_READ, 0, 0);
+    t_req_reset(VFS_EP_OP_GRANT_SESSION_RESET);
+    g_req.words[0] = 0; g_req.word_count = 1u;
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_ADMIN);
+    ASSERT_EQ(g_reply.label, IRIS_EP_REPLY_OK);
+    t_req_reset(VFS_EP_OP_GRANT_READ_AT);
+    g_req.words[0] = ridx; g_req.words[1] = 0; g_req.words[2] = 4; g_req.word_count = 3u;
+    t_dispatch_badge(IRIS_BADGE_FILEGRANT_S(0));
     t_assert_err(IRIS_ERR_NOT_FOUND);
 }
 
@@ -450,4 +577,5 @@ void test_vfs_ep(void) {
     t_status_empty_table();
 
     t_defensive_args();
+    t_grants();
 }

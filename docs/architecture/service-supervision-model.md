@@ -196,3 +196,18 @@ T180  supervision stress: seeded spawn/kill/fault-crash/register/lookup/
    will not clean it up on death.
 5. A critical service that cannot be restarted must have its unrecoverable state
    documented — never a silent implicit behaviour.
+
+---
+
+## Fase 28.1 addendum — pager restart and the grant session
+
+A supervised pager's file authority is now a **VFS grant session**
+(`file-grant-capability.md`).  The restart protocol gains one step: before
+re-minting the session cap into a fresh pager instance, the supervisor issues
+`GRANT_SESSION_RESET(session)` to the VFS, dropping every grant of that session.
+A restarted pager therefore cannot reuse its predecessor's grants — the old
+grant indices fail `NOT_FOUND` at the VFS (T235).  Combined with the epoch-
+stamped generations that invalidate all grants across a *VFS* restart (T236),
+neither a pager restart nor a VFS restart can revive stale file authority.  The
+supervision boundary — a lost pager degrades paging for its targets but never
+amplifies authority across a restart — now extends to file access.

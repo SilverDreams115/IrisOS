@@ -150,6 +150,19 @@ iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
                                              iris_rights_t   *rights_out);
 
 /*
+ * cspace_or_handle_resolve_vspace — dual resolver for the VSpace argument of
+ * SYS_FRAME_MAP/SYS_FRAME_UNMAP (Fase 25).  Same namespace split and
+ * active+lifecycle ref contract as cspace_or_handle_resolve_frame; closes the
+ * raw-radix handle-masking hazard those two syscalls still carried and lets a
+ * supervisor pass a SYS_PROCESS_VSPACE handle directly.
+ */
+iris_error_t cspace_or_handle_resolve_vspace(struct KProcess *proc,
+                                              iris_cptr_t      cptr_or_handle,
+                                              iris_rights_t    required,
+                                              struct KVSpace **out,
+                                              iris_rights_t   *rights_out);
+
+/*
  * Fase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
  * KBootstrapCap).  Namespace split as usual; LIFECYCLE-ONLY ref contract
  * (same as handle_table_get_object) — release with a single kobject_release.

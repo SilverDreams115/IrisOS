@@ -303,6 +303,8 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_frame_map  (uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_frame_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2);  /* Fase 25 */
+uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);  /* Fase 26 */
 
 /* ── Forward declarations — TCB caps (Ph96-101) ──────────────────── */
 uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
