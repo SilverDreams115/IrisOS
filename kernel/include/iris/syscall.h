@@ -698,9 +698,10 @@
  *   Returns the previous priority on success.
  *   Default priority for all user threads is 128.  The idle task runs at 0.
  *
- * SYS_SC_CREATE() → handle_id or negative iris_error_t
- *   Creates a KSchedContext with default budget (5 ticks) and period (20 ticks).
- *   Returns handle with RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ * SYS_SC_CREATE — RETIRED (Fase S2) → IRIS_ERR_NOT_SUPPORTED.
+ *   SchedulingContexts se crean vía SYS_UNTYPED_RETYPE2 (KOBJ_SCHED_CONTEXT,
+ *   storage Untyped, cap en CSpace) y se configuran con SYS_SC_CONFIGURE.
+ *   Número permanentemente reservado.
  *
  * SYS_SC_CONFIGURE(sc_h, budget_ticks, period_ticks) → 0 or negative iris_error_t
  *   Requires RIGHT_WRITE on sc_h.
@@ -709,15 +710,23 @@
  *   Resets remaining_budget to budget_ticks immediately.
  *
  * SYS_THREAD_SET_SC(sc_h) → 0 or negative iris_error_t
- *   Binds sc_h to the calling thread.  Pass 0 to unbind.
- *   When bound, the thread's remaining_budget is decremented each scheduler
- *   tick; when exhausted the thread is suspended (TASK_BUDGET_EXHAUSTED)
- *   until the next refill at remaining_budget + period_ticks.
+ *   Binds sc_h to the calling thread (self-bind).  Pass 0 to unbind.
+ *   Fase S2: one-to-one — falla IRIS_ERR_BUSY si sc_h ya está ligado a otra
+ *   task.  When bound, remaining_budget is decremented each scheduler tick;
+ *   when exhausted the thread is suspended (TASK_BUDGET_EXHAUSTED).
+ *
+ * SYS_SC_BIND(sc_cptr, tcb_cptr) → 0 or negative iris_error_t   (Fase S2)
+ *   Enlaza explícitamente un SchedulingContext a un TCB, ambos por CPtr,
+ *   ambos vivos, uno-a-uno (BUSY si cualquiera ya está ligado a otro).  El SC
+ *   debe estar configurado (SC_CONFIGURE).  tcb_cptr == 0 desliga el SC.
+ *   Requiere RIGHT_WRITE en ambos.  Es el camino canónico de binding para la
+ *   construcción de tareas desde userland (SYS_THREAD_SET_SC es el self-bind).
  */
 #define SYS_THREAD_PRIORITY 82
 #define SYS_SC_CREATE       83
 #define SYS_SC_CONFIGURE    84
 #define SYS_THREAD_SET_SC   85
+#define SYS_SC_BIND        113
 
 /*
  * Block 4 — Untyped Memory (Ph76-78)
@@ -1048,6 +1057,7 @@
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
 #define IRIS_UNTYPED_QUERY_ONE     2u
 #define IRIS_UNTYPED_QUERY_OBJECTS 3u
+#define IRIS_UNTYPED_QUERY_TASKOBJ 4u  /* Fase S2: TCB/SC gauges + CDT counters */
 
 #ifndef __ASSEMBLER__
 struct iris_untyped_query_global {
@@ -1081,6 +1091,30 @@ struct iris_untyped_query_objects {
     uint32_t notifications_live;
     uint32_t replies_live;
     uint32_t cnodes_live;
+};
+
+/* Fase S2 — task-object gauges + CSpace-native derivation counters. */
+struct iris_untyped_query_taskobj {
+    uint32_t version;
+    uint32_t struct_size;
+    uint32_t tcb_live;
+    uint32_t tcb_hwm;
+    uint32_t tcb_retyped;
+    uint32_t tcb_destroyed;
+    uint32_t sc_live;
+    uint32_t sc_hwm;
+    uint32_t sc_retyped;
+    uint32_t sc_destroyed;
+    /* CSpace-native derivation tree (MDB) — 0 for handle-tree legacy. */
+    uint32_t cdt_derivation_count;      /* mint/copy/derive descendants created */
+    uint32_t cdt_derivation_hwm;
+    uint32_t cdt_revoke_count;
+    uint32_t cdt_delete_count;
+    uint32_t cdt_cross_cnode_descendants;
+    uint32_t cdt_ipc_transfer_count;
+    /* Legacy handle-tree derivations for the migrated canonical types — must
+     * be provably 0 (TCB/SC/CNode/EP/Notif/Reply). */
+    uint32_t legacy_handle_derivation_migrated;
 };
 #endif /* !__ASSEMBLER__ */
 

@@ -26,7 +26,11 @@ reservado, sin funcionalidad) · `REMOVED` (borrado).
 | `SYS_CNODE_CREATE` (80) | ídem | — | RETYPE2 | S1 | — | RETIRED |
 | implicit reply allocation (kreply en EP_CALL) | el kernel fabricaba autoridad por llamada | — | reply objects explícitos (recv arg2) | S1 | — | REMOVED |
 | `SYS_UNTYPED_RETYPE` (87) handle-publishing | publica autoridad como handle | tests/authority suite (UNTYPED/FRAME/SC) | RETYPE2 | CSpace-only ABI | para tipos migrados: ya rechaza | MIGRATING |
-| `SYS_SC_CREATE` (83) | create global de SC | tests sched | RETYPE2 (SC ya es retipable) | S2 | sí | ACTIVE_LEGACY |
+| `SYS_SC_CREATE` (83) | create global de SC | ninguno | RETYPE2 + SC_CONFIGURE + SC_BIND | S2 | — | RETIRED (Fase S2) |
+| `kschedctx_alloc` (kslab SC) | payload SC en heap global | ninguno | RETYPE2 (`kschedctx_alloc_at`) | S2 | sí | REMOVED (Fase S2) |
+| `struct task tasks[TASK_MAX]` (pool estático) | backing de kstack + arch-context + scheduler linkage | scheduler, thread create | TCB desde Untyped (userland aporta) | S2 (resto) / process-server | sí — no nuevos consumidores fuera del scheduler | ACTIVE_LEGACY (pool estático acotado, NO kslab, NO allocator dinámico) |
+| `KTcb` payload (kslab) | objeto TCB cap-visible en heap | thread create | retype KOBJ_TCB desde Untyped | S2 (resto) | sí | ACTIVE_LEGACY (kslab; migración pendiente increment 2) |
+| derivación handle-tree para tipos migrados (EP/Notif/Reply/CNode/TCB/SC) | árbol de derivación oculto en handle table | SYS_CAP_DERIVE | CDT/MDB nativo en slots de CNode | S2 (Bloque D) | sí | ACTIVE_LEGACY (contador `legacy_handle_derivation_migrated` observable, debe → 0) |
 | root CNode at `kprocess_alloc` (kslab) | CNode runtime fuera de Untyped | todo spawn | spawner aporta CNode retipado (process-server) | process-server | sí | ACTIVE_LEGACY |
 | implicit page-table allocation (PMM reserve en map) | memoria kernel oculta por mapping | paging | PageTable objects desde Untyped | frame/page-table | sí | ACTIVE_LEGACY |
 | KFrame header sidecar (kslab) | metadata fuera de la región | frame retype | header dentro de Untyped | frame/page-table | sí | ACTIVE_LEGACY |

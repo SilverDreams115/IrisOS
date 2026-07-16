@@ -3202,8 +3202,9 @@ static void test_t083(void) {
     if (ok && it_sys1(SYS_TCB_SUSPEND, (long)IRIS_CPTR_TEST_FIX_A) !=
               (long)IRIS_ERR_INVALID_ARG) ok = 0;
 
-    /* ── SchedContext ── */
-    long sc = it_sys0(SYS_SC_CREATE);
+    /* ── SchedContext (Fase S2: SYS_SC_CREATE retired → RETYPE2) ── */
+    if (ok && it_sys0(SYS_SC_CREATE) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
+    long sc = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) ok = 0;
     handle_id_t sc_h = (sc >= 0) ? (handle_id_t)sc : HANDLE_INVALID;
 
@@ -7469,8 +7470,9 @@ static void test_t123(void) {
     int ok = 1;
     const char *why = "sc lifetime";
 
-    long a = it_sys0(SYS_SC_CREATE);
-    long b = it_sys0(SYS_SC_CREATE);
+    /* Fase S2: SYS_SC_CREATE retired; SCs come from Untyped RETYPE2. */
+    long a = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
+    long b = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
     handle_id_t sc  = (a >= 0) ? (handle_id_t)a : HANDLE_INVALID;
     handle_id_t sc2 = (b >= 0) ? (handle_id_t)b : HANDLE_INVALID;
     if (sc == HANDLE_INVALID || sc2 == HANDLE_INVALID) { ok = 0; why = "sc create"; }
@@ -9501,10 +9503,10 @@ static void test_t148(void) {
             break;
         }
     }
-    /* High/unassigned range 113..400 (Fase S1's 111 = SYS_UNTYPED_RETYPE2 and
-     * 112 = SYS_UNTYPED_QUERY are live; their typed/rights fuzz lives in the
-     * S1 suite T251+; 107..110 remain live from Fases 25/26/29). */
-    for (long n = 113; ok && n <= 400; n++) {
+    /* High/unassigned range 114..400 (111 = SYS_UNTYPED_RETYPE2, 112 =
+     * SYS_UNTYPED_QUERY, Fase S2's 113 = SYS_SC_BIND are live; 107..110 remain
+     * live from Fases 25/26/29). */
+    for (long n = 114; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -17918,6 +17920,87 @@ static void test_t262(void) {
     else { it_fz_note("T262", T262_SEED, round, op); it_fail("T262", why); }
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+ * Fase S2 — Untyped Task Construction (increment 1: SchedulingContext).
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/* SYS_UNTYPED_QUERY kind 4 — task-object gauges + CDT counters. */
+struct it_utq_taskobj {
+    uint32_t version, struct_size;
+    uint32_t tcb_live, tcb_hwm, tcb_retyped, tcb_destroyed;
+    uint32_t sc_live, sc_hwm, sc_retyped, sc_destroyed;
+    uint32_t cdt_deriv, cdt_deriv_hwm, cdt_revoke, cdt_delete,
+             cdt_cross, cdt_ipc, legacy_handle_deriv_migrated;
+};
+static int it_utq_t(struct it_utq_taskobj *q) {
+    return it_sys3(SYS_UNTYPED_QUERY, 4, (long)(uintptr_t)q, 0) == 0;
+}
+
+/* ── T267: SchedulingContext configure/bind lifecycle ────────────────────────
+ * A SC is a CANONICAL object created ONLY from Untyped (SYS_SC_CREATE retired).
+ * It is born unconfigured and unbound; SC_CONFIGURE validates budget/period;
+ * SC_BIND is one-to-one against a TCB cap, requires a configured SC, rejects a
+ * second binding (BUSY), unbinds cleanly, and rebinds.  Provenance: the SC
+ * lives in the source Untyped (sc_retyped/live move; no kslab).
+ * Invariants: S2.2, S2.8, S2.9, S2.13, S2.14, S2.15. */
+static void test_t267(void) {
+    int ok = 1;
+    const char *why = "sc lifecycle";
+
+    /* SYS_SC_CREATE is retired. */
+    if (it_sys0(SYS_SC_CREATE) != (long)IRIS_ERR_NOT_SUPPORTED) { it_fail("T267", "sc create not retired"); return; }
+
+    long su = s1_sub_ut(8192);
+    if (su < 0) { it_fail("T267", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    struct it_utq_taskobj t0, t1;
+    struct it_rinfo k0, k1;
+    if (!it_utq_t(&t0) || !it_rinfo(HANDLE_INVALID, &k0)) { it_close(&su_h); it_fail("T267", "query"); return; }
+
+    /* Retype two SCs into CSpace slots (provenance + no kslab). */
+    if (it_retype2_at(su, IRIS_KOBJ_SCHED_CONTEXT, S1_SLOT_A, 1u, 0) != 0 ||
+        it_retype2_at(su, IRIS_KOBJ_SCHED_CONTEXT, S1_SLOT_B, 1u, 0) != 0) { ok = 0; why = "retype"; }
+    if (ok && (!it_utq_t(&t1) || !it_rinfo(HANDLE_INVALID, &k1))) { ok = 0; why = "query 2"; }
+    if (ok && t1.sc_live != t0.sc_live + 2u) { ok = 0; why = "sc not counted"; }
+    if (ok && t1.sc_retyped < t0.sc_retyped + 2u) { ok = 0; why = "retype not counted"; }
+    if (ok && k1.kslab_used_bytes != k0.kslab_used_bytes) { ok = 0; why = "sc from kslab (S2.13)"; }
+
+    /* Unconfigured SC cannot bind (B2/B3). */
+    long self_tcb = ok ? it_sys0(SYS_TCB_SELF) : -1;
+    handle_id_t self_h = (self_tcb >= 0) ? (handle_id_t)self_tcb : HANDLE_INVALID;
+    if (ok && self_tcb < 0) { ok = 0; why = "tcb self"; }
+    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_A, (long)self_h) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "unconfigured bind allowed";
+    }
+    /* Configure validation (S2.8). */
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100) != 0) { ok = 0; why = "configure"; }
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 0, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 100, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget==period"; }
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_B, 5, 100) != 0) { ok = 0; why = "configure B"; }
+
+    /* Bind SC_A to our own TCB, then a SECOND SC to the same TCB must fail
+     * BUSY (one-to-one: the target already holds SC_A).  Unbind immediately
+     * (no yield in between — never let the tiny budget suspend iris_test). */
+    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_A, (long)self_h) != 0) { ok = 0; why = "bind"; }
+    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_B, (long)self_h) != (long)IRIS_ERR_BUSY) { ok = 0; why = "double bind (S2.9)"; }
+    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_A, 0) != 0) { ok = 0; why = "unbind"; }
+    /* After unbind, SC_A is free again → SC_B binds, then unbind. */
+    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_B, (long)self_h) != 0) { ok = 0; why = "rebind"; }
+    if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_B, 0) != 0) { ok = 0; why = "unbind 2"; }
+
+    it_close(&self_h);
+    it_slot_delete(S1_SLOT_A); it_slot_delete(S1_SLOT_B);
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
+    if (ok) {
+        struct it_utq_taskobj tz;
+        if (!it_utq_t(&tz) || tz.sc_live != t0.sc_live) { ok = 0; why = "sc leak"; }
+        if (ok && tz.sc_destroyed < t0.sc_destroyed + 2u) { ok = 0; why = "destroy not counted"; }
+    }
+    it_close(&su_h);
+    if (ok) it_pass("T267"); else it_fail("T267", why);
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -18201,6 +18284,9 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t260();
     test_t261();
     test_t262();
+
+    /* Fase S2 — Untyped task construction (increment 1: SchedulingContext). */
+    test_t267();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

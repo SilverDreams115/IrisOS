@@ -31,6 +31,17 @@ uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
+    /* Fase S2: cuenta las derivaciones handle-tree de tipos canónicos
+     * migrados — este contador debe converger a 0 (S2.33) cuando la
+     * derivación de esos tipos pase al CDT nativo (Bloque D). */
+    switch (obj->type) {
+        case KOBJ_ENDPOINT: case KOBJ_NOTIFICATION: case KOBJ_REPLY:
+        case KOBJ_CNODE:    case KOBJ_TCB:          case KOBJ_SCHED_CONTEXT:
+            kcnode_cdt_note_legacy_migrated_derivation();
+            break;
+        default: break;
+    }
+
     /* handle_table_insert_derived bumps refcount via handle_entry_init. */
     handle_id_t new_h = handle_table_insert_derived(ht, obj, effective, src_h);
     kobject_release(obj);   /* drop the get_object-retained ref */

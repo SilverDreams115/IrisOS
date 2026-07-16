@@ -53,6 +53,12 @@ void           kcnode_close(struct KCNode *cn);
 
 /* Fase 18: live KCNode object count (additive diagnostics). */
 uint32_t       kcnode_live_count(void);
+/* Fase S2: CSpace-native derivation (CDT/MDB) instrumentation. */
+void           kcnode_cdt_note_legacy_migrated_derivation(void);
+void           kcnode_cdt_stats(uint32_t *deriv, uint32_t *deriv_hwm,
+                                uint32_t *revoke, uint32_t *del,
+                                uint32_t *cross, uint32_t *ipc,
+                                uint32_t *legacy_migrated);
 iris_error_t   kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
                             struct KObject *obj, iris_rights_t rights);
 /* Exclusive mint (Fase 8): fails with IRIS_ERR_ALREADY_EXISTS if the slot

@@ -6,14 +6,16 @@
 void test_kschedctx(void) {
     TEST_SUITE("kschedctx");
 
-    /* ── alloc sets defaults ── */
-    struct KSchedContext *sc = kschedctx_alloc();
+    /* ── Fase S2: retype (untyped-child fixture) starts UNCONFIGURED ── */
+    struct KSchedContext *sc = TEST_UT_ALLOC(struct KSchedContext, kschedctx_alloc_at);
     ASSERT_NOT_NULL(sc);
     ASSERT_EQ(atomic_load(&sc->base.refcount),    1u);
     ASSERT_EQ(atomic_load(&sc->base.active_refs), 0u);
-    ASSERT_EQ(sc->budget_ticks,     (uint64_t)KSCHEDCTX_DEFAULT_BUDGET);
-    ASSERT_EQ(sc->period_ticks,     (uint64_t)KSCHEDCTX_DEFAULT_PERIOD);
-    ASSERT_EQ(sc->remaining_budget, (uint64_t)KSCHEDCTX_DEFAULT_BUDGET);
+    ASSERT_EQ(sc->budget_ticks,     (uint64_t)0);
+    ASSERT_EQ(sc->period_ticks,     (uint64_t)0);
+    ASSERT_EQ(sc->remaining_budget, (uint64_t)0);
+    ASSERT_EQ(sc->configured,       (uint8_t)0);
+    ASSERT_NULL(sc->bound_task);
 
     /* ── configure rejects budget=0 ── */
     ASSERT_EQ(kschedctx_configure(sc, 0, 100), IRIS_ERR_INVALID_ARG);

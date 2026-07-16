@@ -12,6 +12,41 @@ uint32_t kcnode_live_count(void) {
     return atomic_load_explicit(&kcnode_live, memory_order_relaxed);
 }
 
+/*
+ * Fase S2 — CSpace-native derivation (CDT/MDB) counters.
+ *
+ * The CDT itself (slot-resident parent/child/sibling metadata) lands in
+ * Bloque D; these counters are the instrumentation surface exposed via
+ * SYS_UNTYPED_QUERY kind 4.  Until the MDB is wired, the cdt_* counters read
+ * 0.  legacy_handle_derivation_migrated is REAL from day one: it counts every
+ * handle-tree derivation of a migrated canonical type — the number that must
+ * reach 0 to close S2 (S2.33).
+ */
+static _Atomic uint32_t cdt_derivation_count;
+static _Atomic uint32_t cdt_derivation_hwm;
+static _Atomic uint32_t cdt_revoke_count;
+static _Atomic uint32_t cdt_delete_count;
+static _Atomic uint32_t cdt_cross_cnode_desc;
+static _Atomic uint32_t cdt_ipc_transfer_count;
+static _Atomic uint32_t legacy_handle_deriv_migrated;
+
+void kcnode_cdt_note_legacy_migrated_derivation(void) {
+    atomic_fetch_add_explicit(&legacy_handle_deriv_migrated, 1u, memory_order_relaxed);
+}
+
+void kcnode_cdt_stats(uint32_t *deriv, uint32_t *deriv_hwm, uint32_t *revoke,
+                      uint32_t *del, uint32_t *cross, uint32_t *ipc,
+                      uint32_t *legacy_migrated) {
+    if (deriv)     *deriv     = atomic_load_explicit(&cdt_derivation_count, memory_order_relaxed);
+    if (deriv_hwm) *deriv_hwm = atomic_load_explicit(&cdt_derivation_hwm,   memory_order_relaxed);
+    if (revoke)    *revoke    = atomic_load_explicit(&cdt_revoke_count,     memory_order_relaxed);
+    if (del)       *del       = atomic_load_explicit(&cdt_delete_count,     memory_order_relaxed);
+    if (cross)     *cross     = atomic_load_explicit(&cdt_cross_cnode_desc, memory_order_relaxed);
+    if (ipc)       *ipc       = atomic_load_explicit(&cdt_ipc_transfer_count, memory_order_relaxed);
+    if (legacy_migrated)
+        *legacy_migrated = atomic_load_explicit(&legacy_handle_deriv_migrated, memory_order_relaxed);
+}
+
 static void kcnode_obj_close(struct KObject *obj) {
     struct KCNode *cn = (struct KCNode *)obj;
     uint64_t flags = irq_spinlock_lock(&cn->lock);

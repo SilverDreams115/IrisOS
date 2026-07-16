@@ -139,6 +139,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_RESOURCE_INFO:       return sys_resource_info(arg0, arg1, arg2);
         case SYS_UNTYPED_RETYPE2:     return sys_untyped_retype2(arg0, arg1, arg2, arg3);
         case SYS_UNTYPED_QUERY:       return sys_untyped_query(arg0, arg1, arg2);
+        case SYS_SC_BIND:             return sys_sc_bind(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }

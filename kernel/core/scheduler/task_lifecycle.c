@@ -304,6 +304,9 @@ static void task_cancel_blocked_waits(struct task *t) {
 /* Release the sched_ctx retained ref and clear the pointer. */
 static void task_release_sched_ctx(struct task *t) {
     if (t->sched_ctx) {
+        /* Fase S2: unbind first so the SC keeps no stale bound_task pointer
+         * (S2.11); then drop this task's ref. */
+        kschedctx_unbind(t->sched_ctx, t);
         kobject_release(&t->sched_ctx->base);
         t->sched_ctx = 0;
     }

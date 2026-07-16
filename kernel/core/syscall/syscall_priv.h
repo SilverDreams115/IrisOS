@@ -296,6 +296,7 @@ uint64_t sys_thread_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2);         /* Fase S2 */
 
 /* ── Forward declarations — Block 4+5 untyped memory (Ph76-81) ───── */
 uint64_t sys_untyped_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);

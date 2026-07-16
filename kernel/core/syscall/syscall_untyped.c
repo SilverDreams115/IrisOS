@@ -608,6 +608,22 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                 return syscall_err(IRIS_ERR_INVALID_ARG);
             return 0;
         }
+        case IRIS_UNTYPED_QUERY_TASKOBJ: {
+            struct iris_untyped_query_taskobj q;
+            for (uint32_t i = 0; i < (uint32_t)sizeof(q); i++) ((uint8_t *)&q)[i] = 0;
+            q.version     = IRIS_UNTYPED_QUERY_VERSION;
+            q.struct_size = (uint32_t)sizeof(q);
+            ktcb_stats(&q.tcb_live, &q.tcb_hwm, &q.tcb_retyped, &q.tcb_destroyed);
+            kschedctx_stats(&q.sc_live, &q.sc_hwm, &q.sc_retyped, &q.sc_destroyed);
+            kcnode_cdt_stats(&q.cdt_derivation_count, &q.cdt_derivation_hwm,
+                             &q.cdt_revoke_count, &q.cdt_delete_count,
+                             &q.cdt_cross_cnode_descendants,
+                             &q.cdt_ipc_transfer_count,
+                             &q.legacy_handle_derivation_migrated);
+            if (!copy_to_user_checked(buf_uptr, &q, (uint32_t)sizeof(q)))
+                return syscall_err(IRIS_ERR_INVALID_ARG);
+            return 0;
+        }
         default:
             return syscall_err(IRIS_ERR_INVALID_ARG);
     }
