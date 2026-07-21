@@ -205,6 +205,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_boot_cspace.c \
     tests/kernel/test_vspace_cspace.c \
     tests/kernel/test_kframe.c \
+    tests/kernel/test_mdb.c \
     tests/kernel/test_klog.c \
     kernel/core/klog/klog.c \
     services/vfs/vfs_ep.c \

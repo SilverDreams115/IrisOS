@@ -19,6 +19,7 @@ void test_untyped_cspace(void);
 void test_boot_cspace(void);
 void test_vspace_cspace(void);
 void test_kframe(void);
+void test_mdb(void);
 void test_klog(void);
 void test_vfs_ep(void);
 
@@ -38,6 +39,7 @@ int main(void) {
     test_boot_cspace();
     test_vspace_cspace();
     test_kframe();
+    test_mdb();
     test_klog();
     test_vfs_ep();
 
