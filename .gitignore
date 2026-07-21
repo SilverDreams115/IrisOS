@@ -26,6 +26,9 @@
 .DS_Store
 Thumbs.db
 
+# WSL / NTFS "mark of the web" metadata sidecars
+*:Zone.Identifier
+
 # QEMU / runtime artifacts
 *.qcow2
 *.vmdk
@@ -41,3 +44,4 @@ AGENTS.md
 
 # Local agent state
 .codex
+.claude/
