@@ -1,23 +1,24 @@
-# kernel/lib — PLACEHOLDER (no implementado)
+# kernel/lib — PLACEHOLDER (not implemented)
 
-**Estado:** Vacío. Solo contiene subdirectorios `.gitkeep`.
+**State:** Empty. Contains only `.gitkeep` subdirectories.
 
-**Propósito previsto:** Utilidades compartidas por el kernel que no encajan en
-ningún subsistema específico.
+**Intended purpose:** Utilities shared by the kernel that do not fit in any
+specific subsystem.
 
-**Subdirectorios y su realidad:**
+**Subdirectories and their reality:**
 
-- `bitmap/` — No implementado. El planificador usa una bitmap manual en CpuRunQueue.mask[4].
-  Si se generaliza, la implementación iría aquí.
-- `elf/` — No implementado. El kernel no parsea ELF actualmente; los servicios se
-  cargan como binarios planos desde el initrd. Si se agrega un loader ELF al kernel,
-  va aquí.
-- `printf/` — No implementado como lib separada. El kernel usa serial.c + klog.c
-  directamente. Si se necesita un printf freestanding, va aquí.
-- `string/` — No implementado. El kernel usa operaciones manuales de copia de memoria.
-  Si se agrega memcpy/memset como función, va aquí.
+- `bitmap/` — Not implemented. The scheduler uses a hand-rolled bitmap in
+  CpuRunQueue.mask[4]. If it is generalized, the implementation would go here.
+- `elf/` — Not implemented. The kernel does not parse ELF today; services are
+  loaded as flat binaries from the initrd. If an ELF loader is added to the
+  kernel, it goes here.
+- `printf/` — Not implemented as a separate lib. The kernel uses serial.c +
+  klog.c directly. If a freestanding printf is needed, it goes here.
+- `string/` — Not implemented. The kernel uses manual memory-copy operations.
+  If memcpy/memset are added as functions, they go here.
 
-**Decisión Phase 0:** No implementar. Los usos actuales no requieren esta abstracción.
+**Phase 0 decision:** Do not implement. The current uses do not need this
+abstraction.
 
-**Decisión futura:** Implementar solo si hay duplicación clara entre dos subsistemas.
-No crear por anticipación.
+**Future decision:** Implement only if there is clear duplication between two
+subsystems. Do not create it preemptively.

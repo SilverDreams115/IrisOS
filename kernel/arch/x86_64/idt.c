@@ -126,11 +126,11 @@ static void panic_dec(uint32_t v) {
 
 void isr_handler(struct full_frame *frame) {
     if (frame->vector == 32) {
-        /* IRQ0 — timer tick. Enviar EOI primero para no bloquear el PIC. */
+        /* IRQ0 — timer tick. Send EOI first so the PIC is not blocked. */
         pic_eoi(0);
         scheduler_tick();
-        /* Preemptive: si el quantum expiró, yield desde el contexto del IRQ.
-         * RFLAGS se salva/restaura en context_switch para cada tarea. */
+        /* Preemptive: if the quantum expired, yield from the IRQ context.
+         * RFLAGS is saved/restored in context_switch for each task. */
         struct task *ct = task_current();
         if (ct && ct->need_resched)
             task_yield();
@@ -256,7 +256,7 @@ void idt_init(void) {
     /* IRQ0 — timer, IRQ1 — keyboard */
     idt_set_entry(32, isr32);
     idt_set_entry(33, isr33);
-    /* IRQ2-15: handlers genéricos para PIC completo */
+    /* IRQ2-15: generic handlers for the full PIC */
     idt_set_entry(34, isr34); idt_set_entry(35, isr35); idt_set_entry(36, isr36);
     idt_set_entry(37, isr37); idt_set_entry(38, isr38); idt_set_entry(39, isr39);
     idt_set_entry(40, isr40); idt_set_entry(41, isr41); idt_set_entry(42, isr42);

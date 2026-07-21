@@ -1,147 +1,149 @@
-# IRIS — Canonical Kernel Object Model (Fase S1, normativo)
+# IRIS — Canonical Kernel Object Model (Fase S1, normative)
 
-## Objetivo definitivo
+## Ultimate objective
 
-> IRIS debe converger hacia un microkernel arquitectónicamente seL4-puro:
-> todos los objetos kernel dinámicos nacen de memoria Untyped explícita,
-> toda autoridad persistente vive en CSpace, y procesos, objetos de memoria,
-> loaders, pagers y políticas de recursos se construyen en userland.
+> IRIS must converge toward an architecturally seL4-pure microkernel: every
+> dynamic kernel object is born from explicit Untyped memory, all persistent
+> authority lives in CSpace, and processes, memory objects, loaders, pagers
+> and resource policy are built in user space.
 
-Este documento es **normativo**: define el conjunto final de objetos kernel,
-sus tamaños, su ciclo de vida y las excepciones bootstrap.  Ningún mecanismo
-nuevo puede introducir un tipo de objeto, un allocator o un camino de
-creación que no esté registrado aquí y en
+This document is **normative**: it defines the final set of kernel objects,
+their sizes, their lifecycle and the bootstrap exceptions. No new mechanism may
+introduce an object type, an allocator, or a creation path that is not recorded
+here and in
 [`sel4-convergence-ledger.md`](sel4-convergence-ledger.md).
 
-**Nota de assurance**: IRIS NO afirma equivalencia de assurance con seL4.
-No existe verificación formal mecanizada; la convergencia es arquitectónica.
+**Assurance note**: IRIS does NOT claim assurance equivalence with seL4. There
+is no mechanized formal verification; the convergence is architectural.
 
-## Conjunto canónico final
+## Final canonical set
 
 ```
-Untyped            (KUntyped     — implementado, canónico)
-CNode              (KCNode       — implementado, canónico)
-TCB                (KTcb+task    — presente; storage aún kslab/estático → migración pendiente)
-SchedulingContext  (KSchedContext— presente; retype legacy → migración de ABI pendiente)
-Endpoint           (KEndpoint    — implementado, canónico, Untyped-only desde S1)
-Notification       (KNotification— implementado, canónico, Untyped-only desde S1)
-Reply              (KReply       — implementado, canónico, Untyped-only + explícito desde S1)
-Frame              (KFrame       — región física canónica; header sidecar aún kslab)
-VSpaceRoot         (KVSpace      — presente; storage aún kslab → migración pendiente)
-PageTable          (implícito en paging — objeto explícito pendiente)
-IRQControl         (implícito en spawn-cap/IRQ setup — objeto explícito pendiente)
-IRQHandler         (KIrqCap      — presente; storage aún kslab)
+Untyped            (KUntyped     — implemented, canonical)
+CNode              (KCNode       — implemented, canonical)
+TCB                (task         — canonical since S2; execution path still uses the static pool → migration pending)
+SchedulingContext  (KSchedContext— canonical; storage from Untyped, legacy retype ABI pending removal)
+Endpoint           (KEndpoint    — implemented, canonical, Untyped-only since S1)
+Notification       (KNotification— implemented, canonical, Untyped-only since S1)
+Reply              (KReply       — implemented, canonical, Untyped-only + explicit since S1)
+Frame              (KFrame       — canonical physical region; header sidecar still kslab)
+VSpaceRoot         (KVSpace      — present; storage still kslab → migration pending)
+PageTable          (implicit in paging — explicit object pending)
+IRQControl         (implicit in spawn-cap/IRQ setup — explicit object pending)
+IRQHandler         (KIrqCap      — present; storage still kslab)
 ```
 
-No se identificó ningún objeto adicional estrictamente mecánico que deba
-vivir en kernel: puertos de E/S (KIoPort) son autoridad de dispositivo
-(equivalente al modelo IO-port-control de seL4/x86) y permanecen; todo lo
-demás es política y se compone en userland.
+No additional strictly-mechanical object was identified that must live in the
+kernel: I/O ports (KIoPort) are device authority (equivalent to the
+seL4/x86 IO-port-control model) and stay; everything else is policy and is
+composed in user space.
 
-## Clasificación de los objetos actuales
+## Classification of the current objects
 
 | Current object | Final status | Canonical replacement | Migration phase | Reason |
 |---|---|---|---|---|
-| KUntyped | CANONICAL | — | S1 (hecho) | sustrato de asignación |
-| KCNode | CANONICAL | — | S1 (creación runtime hecha; root-CNode-at-spawn pendiente) | CSpace |
-| KEndpoint | CANONICAL | — | S1 (hecho) | IPC síncrono |
-| KNotification | CANONICAL | — | S1 (hecho) | señales asíncronas |
-| KReply | CANONICAL | — | S1 (hecho, estilo MCS explícito) | reply authority |
-| KSchedContext | CANONICAL | — | S2+ (storage ya Untyped vía retype; SYS_SC_CREATE legacy por retirar) | tiempo |
-| KTcb / struct task | CANONICAL (TCB) | TCB desde Untyped | S2+ | hilo |
-| KFrame | CANONICAL (Frame) | header dentro de Untyped | frame/page-table phase | memoria física |
-| KVSpace | CANONICAL (VSpaceRoot) | storage desde Untyped | frame/page-table phase | espacio de direcciones |
-| KIrqCap | CANONICAL (IRQHandler) | storage desde Untyped | device phase | enrutado IRQ |
-| KIoPort | CANONICAL (arch) | storage desde Untyped | device phase | autoridad de puertos |
-| KProcess | LEGACY_TO_REMOVE | process server userland (TCB+CNode+VSpace) | process-server phase | proceso = política |
-| KVMO | LEGACY_TO_REMOVE | memory server userland (Frames+pager) | memory-server phase | objeto de memoria = política |
-| handle table / handles | LEGACY_TO_REMOVE | CSpace-only invocation | CSpace-only phase | segundo namespace |
-| per-process quota domains (VMO/page) | LEGACY_TO_REMOVE | Untyped como presupuesto | con KProcess/KVMO | quota ≠ memoria explícita |
-| notification quota | REMOVED (S1) | Untyped | S1 | retirada |
-| KBootstrapCap | BOOTSTRAP_EXCEPTION | BootInfo estructurado | root-task phase | autoridad de arranque |
-| KInitrdEntry | USERLAND_POLICY | VFS/loader userland | con KProcess | filesystem-aware state |
-| process metadata / parent-child / supervision | USERLAND_POLICY | svcmgr/init | ya en userland | política |
-| file-backed regions / page cache / private-shared | USERLAND_POLICY | pager+VFS | ya en userland (Fase 28) | política |
-| loader metadata | USERLAND_POLICY | svc_loader | ya en userland | política |
-| kslab (para objetos dinámicos) | LEGACY_TO_REMOVE | retype de Untyped | por familia (ledger) | allocator oculto |
+| KUntyped | CANONICAL | — | S1 (done) | allocation substrate |
+| KCNode | CANONICAL | — | S1 (runtime creation done; root-CNode-at-spawn pending) | CSpace |
+| KEndpoint | CANONICAL | — | S1 (done) | synchronous IPC |
+| KNotification | CANONICAL | — | S1 (done) | asynchronous signals |
+| KReply | CANONICAL | — | S1 (done, explicit MCS style) | reply authority |
+| KSchedContext | CANONICAL | — | S2+ (storage already Untyped via retype; legacy SYS_SC_CREATE to retire) | time |
+| task (TCB) | CANONICAL (TCB) | TCB from Untyped | S2 (RETYPE2(KOBJ_TCB) done; execution path pending) | thread |
+| KFrame | CANONICAL (Frame) | header inside Untyped | frame/page-table phase | physical memory |
+| KVSpace | CANONICAL (VSpaceRoot) | storage from Untyped | frame/page-table phase | address space |
+| KIrqCap | CANONICAL (IRQHandler) | storage from Untyped | device phase | IRQ routing |
+| KIoPort | CANONICAL (arch) | storage from Untyped | device phase | port authority |
+| KProcess | LEGACY_TO_REMOVE | user-space process server (TCB+CNode+VSpace) | process-server phase | process = policy |
+| KVMO | LEGACY_TO_REMOVE | user-space memory server (Frames+pager) | memory-server phase | memory object = policy |
+| handle table / handles | LEGACY_TO_REMOVE | CSpace-only invocation | CSpace-only phase | second namespace |
+| per-process quota domains (VMO/page) | LEGACY_TO_REMOVE | Untyped as the budget | with KProcess/KVMO | quota ≠ explicit memory |
+| notification quota | REMOVED (S1) | Untyped | S1 | retired |
+| KBootstrapCap | BOOTSTRAP_EXCEPTION | structured BootInfo | root-task phase | bootstrap authority |
+| KInitrdEntry | USERLAND_POLICY | user-space VFS/loader | with KProcess | filesystem-aware state |
+| process metadata / parent-child / supervision | USERLAND_POLICY | svcmgr/init | already in user space | policy |
+| file-backed regions / page cache / private-shared | USERLAND_POLICY | pager+VFS | already in user space (Fase 28) | policy |
+| loader metadata | USERLAND_POLICY | svc_loader | already in user space | policy |
+| kslab (for dynamic objects) | LEGACY_TO_REMOVE | Untyped retype | per family (ledger) | hidden allocator |
 
-`NOT_AN_OBJECT`: colas de scheduler, rutas IRQ, buffers klog — estado interno
-del kernel, no autoridad. `UNJUSTIFIED`: ninguno detectado en la auditoría S1.
+`NOT_AN_OBJECT`: scheduler queues, IRQ paths, klog buffers — internal kernel
+state, not authority. `UNJUSTIFIED`: none found in the S1 audit.
 
-## Regla central (S1)
+## Central rule (S1)
 
-Para cualquier objeto migrado:
+For any migrated object:
 
 ```
-la memoria retipada ES el almacenamiento del objeto kernel
+the retyped memory IS the kernel object's storage
 ```
 
-- El header (`struct KObject`: tipo, refcounts, lock, ops) es el primer campo
-  del payload y vive DENTRO de la región retipada (asserts en
+- The header (`struct KObject`: type, refcounts, lock, ops) is the first field
+  of the payload and lives INSIDE the retyped region (asserts in
   `syscall_untyped.c`).
-- No hay metadata sidecar dinámica en kslab para objetos migrados.
-- El bloque retipado es `KUNTYPED_ALIGN` (64 B, back-pointer al padre) +
-  `align64(sizeof(objeto))`; al destruir, el bloque se cero-rellena y
-  decrementa `child_count` del Untyped fuente.
+- There is no dynamic sidecar metadata in kslab for migrated objects.
+- The retyped block is `KUNTYPED_ALIGN` (64 B, back-pointer to the parent) +
+  `align64(sizeof(object))`; on destruction the block is zero-filled and
+  decrements the source Untyped's `child_count`.
 
-## Tamaños y estados (S1)
+## Sizes and states (S1)
 
-Contrato de tamaño: granularidad `KUNTYPED_ALIGN = 64 B` (contrato explícito
-equivalente al size_bits de seL4; los tamaños exactos son
-`sizeof(struct K*)`, fijados por asserts de compilación y visibles en la
-tabla de abajo como bloque consumido = 64 + align64(sizeof)).
+Size contract: `KUNTYPED_ALIGN = 64 B` granularity (an explicit contract
+equivalent to seL4's size_bits; the exact sizes are `sizeof(struct K*)`, fixed
+by compile-time asserts and visible in the table below as the consumed block =
+64 + align64(sizeof)).
 
 | Object | Payload | Alignment | Retype source | Initial state | Destruction precondition |
 |---|---|---|---|---|---|
-| Endpoint | sizeof(KEndpoint) | ≤64 | Untyped normal | IDLE, colas vacías | refcount 0 (todas las caps + refs kernel liberadas) |
-| Notification | sizeof(KNotification) | ≤64 | Untyped normal | bits=0, sin waiters | refcount 0 |
-| Reply | sizeof(KReply) | ≤64 | Untyped normal | free (caller=NULL, staged=0) | refcount 0 |
-| CNode(n) | KCNODE_ALLOC_SIZE(n), n pot. de 2 ≤4096 | ≤64 | Untyped normal | slots vacíos | refcount 0 (close libera slots) |
-| SchedContext | sizeof(KSchedContext) | ≤64 | Untyped normal | budget por defecto | refcount 0 |
-| Sub-Untyped | arg bytes (≥4096, múltiplo de página) | página | Untyped normal/device | used=0, gen=0 | refcount 0 y sin hijos |
-| Frame | arg bytes (≥4096, múltiplo de página) | página | Untyped normal/device | sin mapear | refcount 0, mapped_count 0 |
+| Endpoint | sizeof(KEndpoint) | ≤64 | normal Untyped | IDLE, empty queues | refcount 0 (all caps + kernel refs released) |
+| Notification | sizeof(KNotification) | ≤64 | normal Untyped | bits=0, no waiters | refcount 0 |
+| Reply | sizeof(KReply) | ≤64 | normal Untyped | free (caller=NULL, staged=0) | refcount 0 |
+| CNode(n) | KCNODE_ALLOC_SIZE(n), n power of 2 ≤4096 | ≤64 | normal Untyped | empty slots | refcount 0 (close releases the slots) |
+| SchedContext | sizeof(KSchedContext) | ≤64 | normal Untyped | default budget | refcount 0 |
+| Sub-Untyped | arg bytes (≥4096, page multiple) | page | normal/device Untyped | used=0, gen=0 | refcount 0 and no children |
+| Frame | arg bytes (≥4096, page multiple) | page | normal/device Untyped | unmapped | refcount 0, mapped_count 0 |
 
-`maximum count per retype`: 32 objetos y 128 KiB por batch
-(`KUNTYPED_RETYPE_MAX_COUNT/MAX_BYTES`); UNTYPED/FRAME siempre count=1 en S1.
-`zeroing`: todo bloque de Untyped normal se cero-rellena al carve y al
-destruir. `device`: un Untyped device solo produce UNTYPED/FRAME (U11/U12).
+`maximum count per retype`: 32 objects and 128 KiB per batch
+(`KUNTYPED_RETYPE_MAX_COUNT/MAX_BYTES`); UNTYPED/FRAME always count=1 in S1.
+`zeroing`: every normal-Untyped block is zero-filled on carve and on destroy.
+`device`: a device Untyped produces only UNTYPED/FRAME (U11/U12).
 
-## Autoridad
+## Authority
 
-- Creación: poseer un cap Untyped con RIGHT_WRITE + slots CSpace destino
-  vacíos.  **Nunca** una quota numérica, un handle ni `RIGHT_MANAGE` sobre
-  un proceso (S19/S20).
-- Toda capability creada por retype aparece directamente en CSpace (S21);
-  `SYS_CSPACE_RESOLVE` es el único puente sancionado CSpace→handle
-  (materialización efímera, contrato A1).
-- Rights por defecto al nacer: EP `R|W|DUP|XFER`; Notification
-  `R|W|WAIT|DUP|XFER`; Reply `R|W|XFER|DUP` (DUP solo para que el supervisor
-  lo minte al hijo y luego SUELTE su copia); CNode/SC/Untyped/Frame
+- Creation: holding an Untyped cap with RIGHT_WRITE + empty destination CSpace
+  slots. **Never** a numeric quota, a handle, or `RIGHT_MANAGE` on a process
+  (S19/S20).
+- Every capability created by retype appears directly in CSpace (S21);
+  `SYS_CSPACE_RESOLVE` is the only sanctioned CSpace→handle bridge (ephemeral
+  materialization, A1 contract).
+- Default rights at birth: EP `R|W|DUP|XFER`; Notification
+  `R|W|WAIT|DUP|XFER`; Reply `R|W|XFER|DUP` (DUP only so the supervisor can
+  mint it into the child and then DROP its copy); CNode/SC/Untyped/Frame
   `R|W|DUP|XFER`.
 
-## Ciclo de vida (delete / revoke / reuse)
+## Lifecycle (delete / revoke / reuse)
 
-Ver [`kernel-object-lifetime.md`](kernel-object-lifetime.md).  Resumen:
-- delete de una cap = liberar ese slot/handle; el objeto vive mientras
-  queden caps o refs kernel (S10).
-- la última cap dispara `close` (despierta waiters con CLOSED — S25/S26/S27)
-  y, sin refs kernel, `destroy` (el bloque vuelve, cero-relleno, a la región).
-- `SYS_UNTYPED_RESET` reclama la región solo con `child_count == 0` (S13) y
-  bumpa `generation` (testigo de reuse, S12/S28).
-- revoke transitivo: el árbol de derivación vive HOY en la handle table
-  (`SYS_CAP_REVOKE`); un CDT completo sobre CSpace es trabajo S2+ (ledger).
+See [`kernel-object-lifetime.md`](kernel-object-lifetime.md). Summary:
+- deleting a cap = freeing that slot/handle; the object lives while caps or
+  kernel refs remain (S10).
+- the last cap triggers `close` (wakes waiters with CLOSED — S25/S26/S27) and,
+  with no kernel refs, `destroy` (the block returns, zero-filled, to the
+  region).
+- `SYS_UNTYPED_RESET` reclaims the region only with `child_count == 0` (S13)
+  and bumps `generation` (reuse witness, S12/S28).
+- transitive revoke: the derivation tree lives TODAY in the handle table
+  (`SYS_CAP_REVOKE`) in parallel with the native CSpace CDT (Fase S3,
+  `SYS_CSPACE_REVOKE`; ledger).
 
-## Excepciones bootstrap (enumeradas, estáticas, no-allocator)
+## Bootstrap exceptions (enumerated, static, non-allocator)
 
-1. Imagen del kernel, stacks iniciales, metadata de boot (estático).
-2. Root CNode por proceso: fabricado por `kprocess_alloc` desde kslab.
-   Acotado (1 por proceso), pero crece con procesos → clasificado
-   ACTIVE_LEGACY ligado a KProcess; primer objetivo de la fase process-server.
-3. Reserva PMM del kernel (`IRIS_PMM_KERNEL_RUNTIME_RESERVE`): page tables,
-   kernel stacks, PML4, metadata KVMO — allocators internos legacy,
-   registrados en el ledger; no disponibles para crear objetos canónicos.
-4. Fixtures de selftests (phase3, host tests): bloques estáticos con header
-   de untyped-child y parent NULL; solo builds de test.
+1. Kernel image, initial stacks, boot metadata (static).
+2. Per-process root CNode: fabricated by `kprocess_alloc` from kslab. Bounded
+   (1 per process), but grows with processes → classified ACTIVE_LEGACY tied to
+   KProcess; the first target of the process-server phase.
+3. Kernel PMM reserve (`IRIS_PMM_KERNEL_RUNTIME_RESERVE`): page tables, kernel
+   stacks, PML4, KVMO metadata — legacy internal allocators, recorded in the
+   ledger; not available for creating canonical objects.
+4. Selftest fixtures (phase3, host tests): static blocks with an untyped-child
+   header and a NULL parent; test builds only.
 
-Ninguna excepción puede usarse para crear objetos después del bootstrap ni
-actuar como allocator alternativo del modelo nuevo.
+No exception may be used to create objects after bootstrap or act as an
+alternative allocator for the new model.

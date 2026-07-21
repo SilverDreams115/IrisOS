@@ -1,4 +1,4 @@
 # Phase 0
 
-## Meta
-Crear la estructura base del repositorio, documentación inicial y conexión con GitHub.
+## Goal
+Create the repository's base structure, initial documentation and GitHub connection.

@@ -1,25 +1,25 @@
-# kernel/security — PLACEHOLDER (no implementado)
+# kernel/security — PLACEHOLDER (not implemented)
 
-**Estado:** Vacío. Solo contiene subdirectorios `.gitkeep`.
+**State:** Empty. Contains only `.gitkeep` subdirectories.
 
-**Riesgo arquitectónico:** Este directorio contradice el modelo microkernel de IRIS.
+**Architectural risk:** This directory contradicts the IRIS microkernel model.
 
-En un microkernel serio (seL4, Genode), la "seguridad" no es un subsistema del
-kernel: es una consecuencia del modelo de capabilities. El kernel no tiene un
-subsistema de audit, auth, identity ni session; esos conceptos viven en
-servidores de usuario con acceso limitado por capabilities.
+In a serious microkernel (seL4, Genode), "security" is not a kernel subsystem:
+it is a consequence of the capability model. The kernel has no audit, auth,
+identity or session subsystem; those concepts live in user-space servers with
+capability-limited access.
 
-**Estado actual de seguridad en IRIS:**
-- Capabilities: implementadas en `kernel/new_core/` (kobject, kcnode, rights.h)
-- Control de acceso: por rights bits en cada handle (ver `nc/rights.h`)
-- Audit: no implementado (ni en kernel ni en userland)
-- Autenticación: no implementado
-- Sesiones de usuario: no implementado
+**Current security state in IRIS:**
+- Capabilities: implemented in `kernel/new_core/` (kobject, kcnode, rights.h)
+- Access control: via rights bits on each handle (see `nc/rights.h`)
+- Audit: not implemented (neither in kernel nor user space)
+- Authentication: not implemented
+- User sessions: not implemented
 
-**Decisión Phase 0:** No implementar nada aquí.
+**Phase 0 decision:** Implement nothing here.
 
-**Decisión Phase 1+:** Si se necesita audit, implementarlo como servidor de
-userland, no como módulo de kernel. Evaluar eliminar este directorio si
-sigue vacío después de Phase 2.
+**Phase 1+ decision:** If audit is needed, implement it as a user-space server,
+not a kernel module. Consider removing this directory if it remains empty
+after Phase 2.
 
-Subdirectorios vacíos: `audit/`, `auth/`, `capabilities/`, `identity/`, `session/`
+Empty subdirectories: `audit/`, `auth/`, `capabilities/`, `identity/`, `session/`

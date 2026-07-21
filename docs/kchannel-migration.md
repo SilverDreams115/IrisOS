@@ -161,7 +161,7 @@ retirement remains a later phase.
 
 The svcmgr KChannel dispatch is now strictly classified (comment at the loop):
 
-| KChannel path | Estado final | Por qué queda |
+| KChannel path | Final state | Why it stays |
 |---|---|---|
 | ~~PROC_EVENT_MSG_EXIT~~ | **retired (Fase 13 / Track B)** | death is now a KNotification signal — see below |
 | LOOKUP / LOOKUP_NAME | **compat** | init bootstrap re-mint + T046 |

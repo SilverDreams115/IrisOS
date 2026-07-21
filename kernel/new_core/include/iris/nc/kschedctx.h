@@ -24,13 +24,13 @@ struct KSchedContext {
     uint8_t         configured;        /* Fase S2: 0 hasta SC_CONFIGURE (B2) */
 };
 
-/* Fase S2: Untyped retype es la ÚNICA vía de creación (kslab kschedctx_alloc
- * retirado; SYS_SC_CREATE devuelve NOT_SUPPORTED). */
+/* Fase S2: Untyped retype is the ONLY creation path (kslab kschedctx_alloc
+ * retired; SYS_SC_CREATE returns NOT_SUPPORTED). */
 struct KSchedContext *kschedctx_alloc_at(void *mem); /* untyped-backed */
 void                  kschedctx_close(struct KSchedContext *sc);
 iris_error_t          kschedctx_configure(struct KSchedContext *sc,
                                            uint64_t budget, uint64_t period);
-/* Fase S2: enlazar/desenlazar una task (uno-a-uno, atómico). */
+/* Fase S2: bind/unbind a task (one-to-one, atomic). */
 iris_error_t          kschedctx_bind(struct KSchedContext *sc, struct task *t);
 void                  kschedctx_unbind(struct KSchedContext *sc, struct task *t);
 /* Fase 17/S2: live count + high-water/retype/destroy diagnostics. */

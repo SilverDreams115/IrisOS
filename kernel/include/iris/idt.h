@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-/* estructura de un frame de interrupción — pushed por el CPU */
+/* layout of an interrupt frame — pushed by the CPU */
 struct interrupt_frame {
     uint64_t rip;
     uint64_t cs;

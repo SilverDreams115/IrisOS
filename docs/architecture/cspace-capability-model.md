@@ -1,47 +1,46 @@
 # IRIS — CSpace Capability Model (Fase S1)
 
-Consolida el contrato A1 (`a1-authority-namespace-endgame.md`) con el modelo
-S1.  Normativo para toda autoridad nueva.
+Consolidates the A1 contract (`a1-authority-namespace-endgame.md`) with the S1
+model. Normative for all new authority.
 
 ## Namespaces
 
-- **CPtr (< 1024)**: el CSpace es el namespace CANÓNICO de autoridad
-  persistente y delegable.  Traversal radix sobre CNodes (potencias de 2,
-  `ctzll(slot_count)` bits por nivel); slot 0 = CPTR_NULL.
-- **handle (≥ 1024)**: materialización EFÍMERA por proceso (working set).
-  Nunca un segundo namespace canónico.  `ACCESS_DENIED` en el CSpace es un
-  hard stop — no hay fallback en ninguna dirección.
-- Puente sancionado: `SYS_CSPACE_RESOLVE` / `SYS_CNODE_FETCH` (CSpace →
-  handle).  La lista de productores de handles es cerrada (A1); Fase S1 no
-  añadió ninguno y retiró tres (los create syscalls).
+- **CPtr (< 1024)**: the CSpace is the CANONICAL namespace for persistent,
+  delegable authority. Radix traversal over CNodes (powers of 2,
+  `ctzll(slot_count)` bits per level); slot 0 = CPTR_NULL.
+- **handle (≥ 1024)**: an EPHEMERAL per-process materialization (working set).
+  Never a second canonical namespace. `ACCESS_DENIED` in the CSpace is a hard
+  stop — there is no fallback in either direction.
+- Sanctioned bridge: `SYS_CSPACE_RESOLVE` / `SYS_CNODE_FETCH` (CSpace →
+  handle). The list of handle producers is closed (A1); Fase S1 added none and
+  retired three (the create syscalls).
 
-## Nacimiento de autoridad (S1)
+## Authority birth (S1)
 
-Toda autoridad NUEVA de la familia migrada aparece en CSpace:
-`SYS_UNTYPED_RETYPE2` publica las caps directamente en slots de un CNode
-destino (0 = root del caller).  Invariantes S19/S20/S21: ningún objeto
-migrado nace por quota, por handle, ni fuera de CSpace.
+All NEW authority in the migrated family appears in CSpace:
+`SYS_UNTYPED_RETYPE2` publishes the caps directly into slots of a destination
+CNode (0 = the caller's root). Invariants S19/S20/S21: no migrated object is
+born from a quota, from a handle, or outside CSpace.
 
-Convención S1 adicional: `SYS_CNODE_DELETE(0, slot)` opera sobre el root
-CNode del propio caller (descartar autoridad propia no amplifica nada);
-espeja el destino 0 de RETYPE2.
+Additional S1 convention: `SYS_CNODE_DELETE(0, slot)` operates on the caller's
+own root CNode (discarding one's own authority amplifies nothing); it mirrors
+RETYPE2's destination 0.
 
-## Derivación, badges, revoke
+## Derivation, badges, revoke
 
-Sin cambios de contrato en S1: mint/derive reducen rights monotónicamente;
-badges estampados solo por la autoridad que mintea (una cap badged nunca se
-re-badgea); revoke transitivo sobre el árbol de derivación de handles;
-copias en CNodes son refs independientes (T127).  El CDT completo sobre
-CSpace queda como fase CSpace-only (ledger).
+No contract change in S1: mint/derive reduce rights monotonically; badges are
+stamped only by the minting authority (a badged cap is never re-badged);
+revoke is transitive over the handle derivation tree; copies in CNodes are
+independent refs (T127). The full CDT over CSpace is delivered in the native
+CDT phase (see the ledger and `cspace-cdt-mdb.md`).
 
-## Reglas para código nuevo
+## Rules for new code
 
-1. Un tipo de objeto nuevo debe ser CSpace-invocable desde el día uno
-   (dual resolver, jamás `handle_table_get_object` directo).
-2. Prohibido añadir caminos productivos handle-first para objetos canónicos
-   (ledger: handle table FROZEN para nuevos productores).
-3. Prohibido añadir dual resolution a operaciones nuevas: las operaciones
-   S1+ (p. ej. RETYPE2 destino) aceptan cptr-or-handle solo por el puente
-   sancionado ya existente; el destino final es CSpace-only.
-4. Los helpers legacy que necesiten handles se migran; no se agregan
-   conversiones nuevas.
+1. A new object type must be CSpace-invocable from day one (a dual resolver,
+   never `handle_table_get_object` directly).
+2. Adding handle-first productive paths for canonical objects is forbidden
+   (ledger: handle table FROZEN for new producers).
+3. Adding dual resolution to new operations is forbidden: S1+ operations
+   (e.g. the RETYPE2 destination) accept a cptr-or-handle only through the
+   already-existing sanctioned bridge; the final destination is CSpace-only.
+4. Legacy helpers that need handles are migrated; no new conversions are added.

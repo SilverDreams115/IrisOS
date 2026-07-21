@@ -1,157 +1,158 @@
-# IRIS — Untyped Object Creation (Fase S1, normativo)
+# IRIS — Untyped Object Creation (Fase S1, normative)
 
-Complementa [`sel4-canonical-object-model.md`](sel4-canonical-object-model.md)
-y sucede a `untyped-retype-revoke-hardening.md` (Fase 18) como contrato del
-sustrato de asignación.
+Complements [`sel4-canonical-object-model.md`](sel4-canonical-object-model.md)
+and supersedes `untyped-retype-revoke-hardening.md` (Fase 18) as the contract
+of the allocation substrate.
 
-## KUntyped — identidad y layout
+## KUntyped — identity and layout
 
 ```
 struct KUntyped {
-    KObject   base;         /* header primero */
+    KObject   base;         /* header first */
     lock;                   /* IRQ-off spinlock: bump/reset */
-    phys_base, total_size;  /* rango físico EXACTO, sin overlap (U1/U2) */
-    used;                   /* bump offset — solo crece (U6) salvo RESET */
-    child_count;            /* objetos/sub-untypeds vivos dentro (U10) */
-    is_device;              /* device: sin zero-fill, tipos restringidos */
-    alloc_parent;           /* sub-untyped → padre (bookkeeping) */
-    generation;             /* +1 por RESET exitoso — testigo de reuse */
+    phys_base, total_size;  /* EXACT physical range, no overlap (U1/U2) */
+    used;                   /* bump offset — grows only (U6) except on RESET */
+    child_count;            /* live objects/sub-untypeds inside (U10) */
+    is_device;              /* device: no zero-fill, restricted types */
+    alloc_parent;           /* sub-untyped → parent (bookkeeping) */
+    generation;             /* +1 per successful RESET — reuse witness */
 }
 ```
 
-- Tamaño: los boot-Untypeds son bloques buddy (potencia de dos); los
-  sub-untypeds usan el contrato explícito "bytes múltiplos de página".
-- Estado de asignación: **watermark monotónico** (`used`).  Se eligió sobre
-  bitmap/árbol por determinismo, atomicidad trivial, auditabilidad
-  (`used_bytes` observable) y porque preserva no-overlap estructuralmente:
-  un rango carved nunca se re-entrega antes de RESET, y RESET exige
-  `child_count == 0`.  No es un allocator general: es una operación de
-  retype sobre una región de autoridad explícita.
-- Derivación: `KOBJ_UNTYPED` retype crea sub-untypeds con back-pointer al
-  padre; el padre no puede RESET mientras el hijo viva (descendants).
+- Size: boot Untypeds are buddy blocks (powers of two); sub-untypeds use the
+  explicit "page-multiple bytes" contract.
+- Allocation state: a **monotonic watermark** (`used`). Chosen over a
+  bitmap/tree for determinism, trivial atomicity, auditability (`used_bytes`
+  observable) and because it preserves no-overlap structurally: a carved range
+  is never re-issued before RESET, and RESET requires `child_count == 0`. It is
+  not a general allocator: it is a retype operation over an explicit authority
+  region.
+- Derivation: a `KOBJ_UNTYPED` retype creates sub-untypeds with a back-pointer
+  to the parent; the parent cannot RESET while a child is alive (descendants).
 
-## Invariantes U1–U15
+## Invariants U1–U15
 
 ```
-U1  una región física pertenece a un solo Untyped raíz (boot drain: bloques
-    buddy disjuntos; sub-untypeds carved exclusivamente del padre)
-U2  dos Untyped vivos no se solapan (carve exclusivo + no unbump)
-U3  un objeto retipado reside completamente dentro del Untyped fuente
-    (bloque = header+payload carved del rango; T252)
-U4  el objeto respeta tamaño/alineación de su tipo (validación por tipo;
-    asserts de alineación ≤ KUNTYPED_ALIGN; físicos: página)
-U5  una región no respalda dos objetos vivos (watermark; T253/T259)
-U6  retype solo reduce capacidad (bump monotónico)
-U7  derivar caps (resolve/derive/mint) no consume memoria física (T262)
-U8  delete de una cap no destruye el objeto si quedan caps (T255)
-U9  revoke elimina descendants de autoridad (árbol handle-table HOY;
-    CDT CSpace = S2, ledger)
-U10 la región solo es reutilizable sin objetos ni caps que la retengan
-    (child_count gate en RESET; T259)
-U11 device Untyped solo produce UNTYPED/FRAME
-U12 normal Untyped no produce autoridad de dispositivo
-U13 overflow/rangos inválidos fallan antes de mutar estado (validación
-    íntegra previa; T254)
-U14 retype por lotes es atómico (carve único bajo lock + publicación
-    verificada; T253)
-U15 fallo parcial no consume memoria (rollback exacto kuntyped_unbump_exact
-    + destroy de objetos no publicados; T253)
+U1  a physical region belongs to a single root Untyped (boot drain: disjoint
+    buddy blocks; sub-untypeds carved exclusively from the parent)
+U2  two live Untypeds do not overlap (exclusive carve + no unbump)
+U3  a retyped object resides entirely inside the source Untyped
+    (block = header+payload carved from the range; T252)
+U4  the object respects its type's size/alignment (per-type validation;
+    alignment asserts ≤ KUNTYPED_ALIGN; physical types: page)
+U5  a region does not back two live objects (watermark; T253/T259)
+U6  retype only reduces capacity (monotonic bump)
+U7  deriving caps (resolve/derive/mint) consumes no physical memory (T262)
+U8  deleting a cap does not destroy the object if caps remain (T255)
+U9  revoke removes authority descendants (handle-table tree TODAY;
+    CSpace CDT = S2/S3, ledger)
+U10 the region is reusable only with no objects or caps retaining it
+    (child_count gate on RESET; T259)
+U11 device Untyped produces only UNTYPED/FRAME
+U12 normal Untyped produces no device authority
+U13 overflow/invalid ranges fail before mutating state (full validation
+    first; T254)
+U14 batch retype is atomic (single carve under lock + verified publication;
+    T253)
+U15 a partial failure consumes no memory (exact rollback kuntyped_unbump_exact
+    + destroy of unpublished objects; T253)
 ```
 
-Nota de atomicidad: IRIS es hoy uniprocesador con spinlocks IRQ-off y kernel
-no-preemptivo (sin yield dentro de retype), por lo que la secuencia
-validar→reservar→inicializar→publicar→commit es atómica frente a cualquier
-otro syscall; los locks conservan la disciplina para un futuro SMP.
+Atomicity note: IRIS is today uniprocessor with IRQ-off spinlocks and a
+non-preemptive kernel (no yield inside retype), so the
+validate→reserve→initialize→publish→commit sequence is atomic against any
+other syscall; the locks keep the discipline for a future SMP.
 
-## SYS_UNTYPED_RETYPE2 (111) — camino canónico
+## SYS_UNTYPED_RETYPE2 (111) — canonical path
 
 ```
 RETYPE2(ut, type | count<<32, dest_cnode | slot<<32, obj_arg) → 0 | error
 ```
 
-- `ut`: cap Untyped (CPtr <1024 o handle ≥1024), RIGHT_WRITE.
-- `count`: 0→1, máx 32 (batch ≤128 KiB); UNTYPED/FRAME exigen count=1 en S1.
-- `dest_cnode`: 0 = root CNode del caller; si no, cap CNode con RIGHT_WRITE.
-- `slot`: primera ranura; `[slot, slot+count)` deben existir y estar vacías;
-  slot 0 (CPTR_NULL) se rechaza.
-- `obj_arg`: CNODE → num_slots (pot. de 2, ≤4096); UNTYPED/FRAME → bytes.
+- `ut`: Untyped cap (CPtr <1024 or handle ≥1024), RIGHT_WRITE.
+- `count`: 0→1, max 32 (batch ≤128 KiB); UNTYPED/FRAME require count=1 in S1.
+- `dest_cnode`: 0 = the caller's root CNode; otherwise a CNode cap with
+  RIGHT_WRITE.
+- `slot`: first slot; `[slot, slot+count)` must exist and be empty; slot 0
+  (CPTR_NULL) is rejected.
+- `obj_arg`: CNODE → num_slots (power of 2, ≤4096); UNTYPED/FRAME → bytes.
 
-Validaciones previas (sin mutación): CPtr fuente válido y de tipo Untyped;
-rights; tipo permitido (manifiesto cerrado, T251); size/count válidos;
-multiplicaciones sin overflow; capacidad; alineación; CNode destino válido
-y escribible; slots vacíos; restricción device/normal; límites (`KCNODE_MAX_SLOTS`,
+Up-front validation (no mutation): valid source CPtr of type Untyped; rights;
+allowed type (closed manifest, T251); valid size/count; overflow-free
+multiplications; capacity; alignment; valid, writable destination CNode; empty
+slots; device/normal restriction; limits (`KCNODE_MAX_SLOTS`,
 `KUNTYPED_RETYPE_MAX_*`).
 
 Commit:
 
 ```
 validate everything
-reserve complete range          (kuntyped_alloc_children_atomic: un lock)
-initialize every object         (placement en la región, zero-filled)
+reserve the complete range      (kuntyped_alloc_children_atomic: one lock)
+initialize every object         (placement in the region, zero-filled)
 prepare every capability
-publish all destination slots   (una sección crítica del CNode)
+publish all destination slots   (one CNode critical section)
 commit Untyped state
 ```
 
-Fallo en cualquier punto ⇒ ninguna cap publicada, ningún objeto vivo,
-ningún byte consumido, ningún slot mutado, sin drift de contadores.
+A failure at any point ⇒ no cap published, no object live, no byte consumed,
+no slot mutated, no counter drift.
 
-Las capabilities aparecen **directamente en CSpace**; no se crean handles ni
-se devuelve autoridad por índices o punteros.
+The capabilities appear **directly in CSpace**; no handles are created and no
+authority is returned via indices or pointers.
 
 ## SYS_UNTYPED_RETYPE (87) — legacy TRANSITIONAL
 
-Restringido a los tipos NO migrados: `UNTYPED`, `FRAME`, `SCHED_CONTEXT`.
-La familia migrada (ENDPOINT/NOTIFICATION/CNODE/REPLY) devuelve
-`NOT_SUPPORTED` (S20 — ningún objeto migrado nace por handle).  Registrado
-en el ledger como MIGRATING; se retira con la fase CSpace-only.
+Restricted to the NON-migrated types: `UNTYPED`, `FRAME`, `SCHED_CONTEXT`.
+The migrated family (ENDPOINT/NOTIFICATION/CNODE/REPLY/TCB) returns
+`NOT_SUPPORTED` (S20 — no migrated object is born from a handle). Recorded in
+the ledger as MIGRATING; retired with the CSpace-only phase.
 
 ## SYS_UNTYPED_RESET (88)
 
-`child_count == 0` → `used = 0`, `generation++`, contadores de reclaim/reuse.
-`BUSY` en caso contrario (S13).  La reutilización nunca expone estado previo:
-los bloques se cero-rellenan al destruir Y al carve (S28), y la identidad de
-capability impide que un protocolo viejo alcance el objeto nuevo (S29/T259);
-`generation` es el testigo observable.  No quedan pointers kernel directos
-que sobrevivan a la reutilización física: colas de EP/notification se
-desencolan en close/cancel, `pending_kreply`/`ep_reply_obj` se limpian en
-teardown, y las rutas IRQ retienen la notification (child_count > 0 hasta
-des-registrar) — por eso no se añadió una generación por-objeto (regla:
-no agregar generation donde la identidad de la cap ya cierra el stale path).
+`child_count == 0` → `used = 0`, `generation++`, reclaim/reuse counters.
+`BUSY` otherwise (S13). Reuse never exposes prior state: blocks are zero-filled
+both on destroy AND on carve (S28), and capability identity prevents an old
+protocol from reaching the new object (S29/T259); `generation` is the
+observable witness. No direct kernel pointers survive the physical reuse:
+EP/notification queues are dequeued on close/cancel, `pending_kreply`/
+`ep_reply_obj` are cleared on teardown, and the IRQ paths retain the
+notification (child_count > 0 until deregistration) — which is why no
+per-object generation was added (rule: do not add a generation where the cap's
+identity already closes the stale path).
 
-## SYS_UNTYPED_QUERY (112) — instrumentación (nunca autoridad)
+## SYS_UNTYPED_QUERY (112) — instrumentation (never authority)
 
 - kind 1: global — `live_untypeds, retype_count, retype_failures,
   reset_count, reclaimed_bytes, reuse_count, overlap_denials`.
-- kind 2: por-Untyped — `phys_base, total, used, generation, child_count,
-  is_device` (RIGHT_READ sobre el cap).
-- kind 3: gauges por tipo migrado — `endpoints/notifications/replies/cnodes
-  live` (los high-water/retype/destroy por tipo se derivan de los contadores
-  globales + gauges; los contadores por tipo de Fase 18 siguen en
+- kind 2: per-Untyped — `phys_base, total, used, generation, child_count,
+  is_device` (RIGHT_READ on the cap).
+- kind 3: per-migrated-type gauges — `endpoints/notifications/replies/cnodes
+  live` (the per-type high-water/retype/destroy are derived from the global
+  counters + gauges; the Fase 18 per-type counters remain in
   SYS_SCHED_INFO ext3).
 
-Estructuras versionadas (`version`, `struct_size`).  No se creó ningún
-syscall de resource-domain nuevo ni creció `SYS_RESOURCE_INFO`.
+Versioned structs (`version`, `struct_size`). No new resource-domain syscall
+was created and `SYS_RESOURCE_INFO` did not grow.
 
-## Bootstrap y delegación
+## Bootstrap and delegation
 
 ```
 kernel (PMM drain) → userboot [slots 16..]
-userboot → init      [slot 12, un bloque]
-init     → svcmgr    [slot 12, sub-untyped 256 KiB]
-init     → iris_test [slot 55, sub-untyped 8 MiB]
-svcmgr   → por servicio: EP/notification retipados del pool + reply
-           sub-untyped de 4 KiB por servicio (RESET+retype en cada respawn)
+userboot → init      [slot 12, one block]
+init     → svcmgr    [slot 12, 256 KiB sub-untyped]
+init     → iris_test [slot 55, 8 MiB sub-untyped]
+svcmgr   → per service: EP/notification retyped from the pool + a 4 KiB reply
+           sub-untyped per service (RESET+retype on each respawn)
 ```
 
-Least authority: cada servicio recibe sus endpoints, notifications y reply
-objects minteados — nunca el Untyped raíz.  El pager y el VFS no poseen
-Untyped global (verificado por los report-slot masks, T156/T162/T201+).
+Least authority: each service receives its endpoints, notifications and reply
+objects minted — never the root Untyped. The pager and the VFS own no global
+Untyped (verified by the report-slot masks, T156/T162/T201+).
 
-## Fallos y pruebas
+## Failures and tests
 
-Failure paths cubiertos por T253 (batch parcial/capacidad), T254 (validación
-completa, stale cap, dest inválido, device/normal), T259 (retención por cap
-viva, reuse limpio), T262 (stress determinista con modelo shadow exacto).
-Provenance: T252 (consumo exacto de región + child_count + kslab delta 0).
-Retiro legacy: T260 y T125/T126 adaptados.  Servicios reales: T261.
+Failure paths covered by T253 (partial batch/capacity), T254 (full validation,
+stale cap, invalid dest, device/normal), T259 (retention by a live cap, clean
+reuse), T262 (deterministic stress with an exact shadow model). Provenance:
+T252 (exact region consumption + child_count + kslab delta 0). Legacy
+retirement: T260 and T125/T126 adapted. Real services: T261.

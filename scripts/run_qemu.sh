@@ -37,7 +37,7 @@ OVMF_VARS_TEMPLATE="$(pick_first \
 )"
 
 if [ -z "${OVMF_CODE:-}" ] || [ -z "${OVMF_VARS_TEMPLATE:-}" ]; then
-  echo "No se encontraron archivos OVMF válidos."
+  echo "No valid OVMF files found."
   ls -l /usr/share/OVMF 2>/dev/null || true
   ls -l /usr/share/qemu 2>/dev/null || true
   ls -l /usr/share/edk2/ovmf 2>/dev/null || true

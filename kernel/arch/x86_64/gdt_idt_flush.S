@@ -3,8 +3,8 @@
 .global idt_flush
 
 /* ── gdt_flush ──────────────────────────────────────────────────────────
- * Carga la nueva GDT y recarga los registros de segmento.
- * rdi = dirección del gdtr
+ * Loads the new GDT and reloads the segment registers.
+ * rdi = address of the gdtr
  */
 gdt_flush:
     lgdt (%rdi)
@@ -26,8 +26,8 @@ gdt_flush:
     ret
 
 /* ── idt_flush ──────────────────────────────────────────────────────────
- * Carga la IDT.
- * rdi = dirección del idtr
+ * Loads the IDT.
+ * rdi = address of the idtr
  */
 idt_flush:
     lidt (%rdi)

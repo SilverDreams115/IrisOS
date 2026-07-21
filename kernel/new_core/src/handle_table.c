@@ -1,7 +1,7 @@
 #include <iris/nc/handle_table.h>
 #include <iris/nc/kobject.h>
 
-/* genera el siguiente gen para un slot — nunca retorna 0 */
+/* generate the next gen for a slot — never returns 0 */
 static uint32_t next_gen(uint32_t g) {
     g++;
     if (g == 0u) g = 1u;
@@ -69,7 +69,7 @@ handle_id_t handle_table_insert(HandleTable *ht, struct KObject *obj,
 
     spinlock_lock(&ht->lock);
 
-    /* búsqueda lineal desde next_hint */
+    /* linear search from next_hint */
     uint32_t start = ht->next_hint;
     uint32_t slot  = HANDLE_TABLE_MAX;
 
@@ -86,7 +86,7 @@ handle_id_t handle_table_insert(HandleTable *ht, struct KObject *obj,
         return HANDLE_INVALID;
     }
 
-    /* primer uso del slot: gen arranca en 1 */
+    /* first use of the slot: gen starts at 1 */
     uint32_t g = (ht->gen[slot] == 0u) ? 1u : next_gen(ht->gen[slot]);
     ht->gen[slot] = g;
 
@@ -185,7 +185,7 @@ iris_error_t handle_table_get_object(HandleTable *ht, handle_id_t id,
     }
 
     struct KObject *obj = ht->slots[slot].object;
-    kobject_retain(obj);          /* referencia fuerte para el caller */
+    kobject_retain(obj);          /* strong reference for the caller */
     *out_obj    = obj;
     *out_rights = ht->slots[slot].rights;
 

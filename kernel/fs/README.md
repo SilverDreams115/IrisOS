@@ -1,24 +1,25 @@
-# kernel/fs — PLACEHOLDER (no implementado)
+# kernel/fs — PLACEHOLDER (not implemented)
 
-**Estado:** Vacío. Solo contiene subdirectorios `.gitkeep`.
+**State:** Empty. Contains only `.gitkeep` subdirectories.
 
-**Riesgo arquitectónico:** Este directorio contradice el modelo microkernel de IRIS.
+**Architectural risk:** This directory contradicts the IRIS microkernel model.
 
-En IRIS, el filesystem es responsabilidad del servidor VFS (`services/vfs/`),
-no del kernel. El kernel no implementa ni debe implementar ningún filesystem:
-su única interfaz de "storage" es el initrd, manejado por `kernel/core/initrd/`.
+In IRIS the filesystem is the responsibility of the VFS server
+(`services/vfs/`), not the kernel. The kernel does not, and must not,
+implement any filesystem: its only "storage" interface is the initrd, handled
+by `kernel/core/initrd/`.
 
-**Subdirectorios y su realidad:**
+**Subdirectories and their reality:**
 
-- `irisfs/` — Placeholder de un hipotético filesystem nativo IRIS. No existe código.
-  El equipo no debe comenzar irisfs hasta que el servidor VFS tenga una interfaz
-  estable y un caso de uso concreto (persistencia vs. RAM).
-- `ramfs/` — Placeholder de ramfs en kernel. El initrd cumple esta función hoy.
-  Un ramfs de userland (en VFS server) sería la ubicación correcta.
-- `vfs/` — El VFS real está en `services/vfs/`, NO aquí. Este directorio está vacío.
+- `irisfs/` — Placeholder for a hypothetical native IRIS filesystem. No code
+  exists. The team must not start irisfs until the VFS server has a stable
+  interface and a concrete use case (persistence vs. RAM).
+- `ramfs/` — Placeholder for an in-kernel ramfs. The initrd fills this role
+  today. A user-space ramfs (in the VFS server) would be the correct place.
+- `vfs/` — The real VFS is in `services/vfs/`, NOT here. This directory is empty.
 
-**Decisión Phase 0:** No implementar nada aquí.
+**Phase 0 decision:** Implement nothing here.
 
-**Decisión futura:** Evaluar eliminar `kernel/fs/` completamente. El VFS vive en
-`services/vfs/`. Si se necesita un filesystem en kernel (ej. para debug temprano),
-documentarlo como excepción justificada antes de agregar código.
+**Future decision:** Consider removing `kernel/fs/` entirely. The VFS lives in
+`services/vfs/`. If an in-kernel filesystem is ever needed (e.g. for early
+debug), document it as a justified exception before adding code.

@@ -1,56 +1,56 @@
 # IRIS — MCS Scheduling Model (Fase S2)
 
-SchedulingContext (SC) canónico estilo seL4-MCS: presupuesto/período como
-objeto kernel retipado desde Untyped, ligado uno-a-uno a un TCB.
+Canonical seL4-MCS-style SchedulingContext (SC): budget/period as a kernel
+object retyped from Untyped, bound one-to-one to a TCB.
 
 ## SchedulingContext
 
-- Storage: **exclusivamente Untyped** (`SYS_UNTYPED_RETYPE2`,
-  `KOBJ_SCHED_CONTEXT`).  `SYS_SC_CREATE` (83) y el `kschedctx_alloc` kslab
-  están RETIRADOS (ledger).
-- Estado inicial (B2): un SC recién retipado nace **sin configurar y sin
-  ligar** — `budget=period=remaining=0`, `configured=0`, `bound_task=NULL`.
-  No puede dirigir un hilo hasta configurarse y ligarse.
-- Campos: budget/period/remaining, `bound_task` (binding inverso uno-a-uno),
-  `configured`, header KObject, lock.  Sin sidecar kslab.
+- Storage: **exclusively Untyped** (`SYS_UNTYPED_RETYPE2`,
+  `KOBJ_SCHED_CONTEXT`). `SYS_SC_CREATE` (83) and the kslab `kschedctx_alloc`
+  are RETIRED (ledger).
+- Initial state (B2): a freshly retyped SC is born **unconfigured and
+  unbound** — `budget=period=remaining=0`, `configured=0`, `bound_task=NULL`.
+  It cannot drive a thread until it is configured and bound.
+- Fields: budget/period/remaining, `bound_task` (the inverse one-to-one
+  binding), `configured`, the KObject header, a lock. No kslab sidecar.
 
 ## SC_CONFIGURE (84)
 
-`SYS_SC_CONFIGURE(sc_cptr, budget, period)`: valida `budget>0`, `period>0`,
-`budget<period`; resetea `remaining=budget`; marca `configured=1`.  Atómico
-bajo el lock del SC (S2.8).  Requiere RIGHT_WRITE.
+`SYS_SC_CONFIGURE(sc_cptr, budget, period)`: validates `budget>0`, `period>0`,
+`budget<=period`; resets `remaining=budget`; marks `configured=1`. Atomic
+under the SC's lock (S2.8). Requires RIGHT_WRITE.
 
 ## SC_BIND (113)
 
-`SYS_SC_BIND(sc_cptr, tcb_cptr)`: enlaza explícitamente un SC a un TCB, ambos
-por CPtr, ambos vivos, uno-a-uno (S2.9).  Contrato:
+`SYS_SC_BIND(sc_cptr, tcb_cptr)`: explicitly binds an SC to a TCB, both by
+CPtr, both live, one-to-one (S2.9). Contract:
 
-- el SC debe estar configurado;
-- el TCB no puede tener ya otro SC (`IRIS_ERR_BUSY`);
-- el SC no puede estar ligado a otra task (`IRIS_ERR_BUSY`);
-- `tcb_cptr == 0` desliga el SC de su task actual;
-- requiere RIGHT_WRITE en ambos.
+- the SC must be configured;
+- the TCB may not already have another SC (`IRIS_ERR_BUSY`);
+- the SC may not be bound to another task (`IRIS_ERR_BUSY`);
+- `tcb_cptr == 0` unbinds the SC from its current task;
+- requires RIGHT_WRITE on both.
 
-`SYS_THREAD_SET_SC(sc_cptr)` sigue existiendo como **self-bind** (el hilo
-llamante se liga a sí mismo) y ahora también respeta el uno-a-uno.
+`SYS_THREAD_SET_SC(sc_cptr)` still exists as a **self-bind** (the calling
+thread binds itself) and now also honors the one-to-one rule.
 
 ## Binding lifecycle
 
-- unbind explícito: `SC_BIND(sc, 0)` o `THREAD_SET_SC(0)`.
-- muerte del TCB: `task_release_sched_ctx` desliga (`kschedctx_unbind`) antes
-  de soltar la ref → el SC no conserva `bound_task` stale (S2.11).
-- muerte/última cap del SC: destrucción devuelve el payload a la región
-  Untyped; el TCB suelta su ref en su propio teardown.
-- budget exhaustion: sin cambios respecto a Ph75 (el tick decrementa
-  `remaining`; agotado → `TASK_BUDGET_EXHAUSTED` hasta el refill).
-- rebind: permitido tras unbind (T267).
+- explicit unbind: `SC_BIND(sc, 0)` or `THREAD_SET_SC(0)`.
+- TCB death: `task_release_sched_ctx` unbinds (`kschedctx_unbind`) before
+  dropping the ref → the SC keeps no stale `bound_task` (S2.11).
+- SC death / last cap: destruction returns the payload to the Untyped region;
+  the TCB drops its ref in its own teardown.
+- budget exhaustion: unchanged from Ph75 (the tick decrements `remaining`;
+  exhausted → `TASK_BUDGET_EXHAUSTED` until the refill).
+- rebind: allowed after an unbind (T267).
 
-## Instrumentación (SYS_UNTYPED_QUERY kind 4)
+## Instrumentation (SYS_UNTYPED_QUERY kind 4)
 
-`sc_live / sc_hwm / sc_retyped / sc_destroyed` (+ los equivalentes de TCB y
-los contadores CDT).  Diagnóstico, nunca autoridad.
+`sc_live / sc_hwm / sc_retyped / sc_destroyed` (+ the TCB equivalents and the
+CDT counters). Diagnostics, never authority.
 
-## Camino de construcción de tarea (destino S2)
+## Task-construction path (S2 target)
 
 ```
 Untyped ── RETYPE2 → SC cap
@@ -60,6 +60,6 @@ SC_BIND(sc, tcb)
 TCB_RESUME(tcb)
 ```
 
-Increment 1 (esta entrega) cierra el eje SchedulingContext. El eje TCB
-(retype + configure + resume desde userland) y el root-CNode-aportado quedan
-para el increment 2; ver `sel4-convergence-ledger.md`.
+Increment 1 (this delivery) closes the SchedulingContext axis. The TCB axis
+(retype + configure + resume from user space) and the spawner-supplied root
+CNode remain for increment 2; see `sel4-convergence-ledger.md`.

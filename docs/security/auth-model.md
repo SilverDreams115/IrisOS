@@ -1,7 +1,7 @@
-# Modelo de autenticación IRIS
+# IRIS authentication model
 
-## Principios
-- Un usuario, una contraseña maestra
-- Login, terminal y elevación de privilegios usan la misma credencial
-- Contraseñas guardadas como hash seguro con salt
-- Autenticación y autorización separadas
+## Principles
+- One user, one master password
+- Login, terminal and privilege elevation use the same credential
+- Passwords stored as a secure salted hash
+- Authentication and authorization kept separate

@@ -64,43 +64,44 @@ high-water marks stay monotone (Q24).
 
 ## Fase S1 — Untyped-backed lifetime (Endpoint / Notification / Reply / CNode)
 
-Los objetos migrados NO adquieren cargas de quota: su "charge" es la memoria
-Untyped consumida (`child_count` + `used_bytes` del Untyped fuente), y su
-release es la destrucción del objeto (el bloque vuelve cero-relleno a la
-región).  La quota de notifications fue RETIRADA en S1.
+Migrated objects do NOT take quota charges: their "charge" is the Untyped
+memory consumed (`child_count` + `used_bytes` of the source Untyped), and their
+release is the object's destruction (the block returns zero-filled to the
+region). The notification quota was RETIRED in S1.
 
-Ciclo completo:
+Full cycle:
 
 ```
 cap delete            SYS_CNODE_DELETE(0=own root, slot) / SYS_HANDLE_CLOSE
-                      → suelta ese slot/handle; el objeto vive si quedan
-                        caps o refs kernel (S10)
+                      → releases that slot/handle; the object lives if caps
+                        or kernel refs remain (S10)
 last capability       active_refs → 0 ⇒ close():
-                        Endpoint: closed=1, colas drenadas, waiters CLOSED
+                        Endpoint: closed=1, queues drained, waiters CLOSED
                         Notification: closed=1, waiters CLOSED
-                        Reply: caller (si bound) despierta CLOSED; staged=0
+                        Reply: caller (if bound) wakes CLOSED; staged=0
 object destruction    refcount → 0 ⇒ destroy():
-                        kuntyped_release_child: zero del bloque,
-                        child_count-- y release del padre
+                        kuntyped_release_child: zero the block,
+                        child_count-- and release the parent
 Untyped reusable      child_count==0 ⇒ SYS_UNTYPED_RESET: used=0,
-                        generation++ (testigo de reuse)
+                        generation++ (reuse witness)
 ```
 
 Revoke:
-- `SYS_CAP_REVOKE(h)` cascada sobre el árbol de derivación de la handle
-  table (descendants exactos, idempotente, no toca siblings).
-- Copias minteadas en CNodes son refs independientes (documentado + T127);
-  un CDT sobre CSpace es trabajo de la fase CSpace-only (ledger).
-- Endpoint: cubre senders/receivers/callers bloqueados, staged caps y
-  procesos muertos vía close/cancel (A1.9–A1.11, T255/T258).
-- Notification: waiters, pending bits, binding IRQ (la ruta retiene la
-  notification), uso compartido de pager (T256, T237).
-- Reply: no consumido (close→caller CLOSED), caller muerto (unbind →
-  reusable), server muerto (slots del proceso → close), consumido (free),
-  stale (slot vacío → NOT_FOUND) — T257/T258.
+- `SYS_CAP_REVOKE(h)` cascades over the handle-table derivation tree (exact
+  descendants, idempotent, does not touch siblings).
+- Copies minted into CNodes are independent refs (documented + T127); the
+  native CSpace CDT (`SYS_CSPACE_REVOKE`, Fase S3) provides recursive
+  cross-process revoke (ledger).
+- Endpoint: covers blocked senders/receivers/callers, staged caps and dead
+  processes via close/cancel (A1.9–A1.11, T255/T258).
+- Notification: waiters, pending bits, IRQ binding (the path retains the
+  notification), shared pager use (T256, T237).
+- Reply: unconsumed (close→caller CLOSED), dead caller (unbind → reusable),
+  dead server (process slots → close), consumed (free), stale (empty slot →
+  NOT_FOUND) — T257/T258.
 
-Referencias kernel internas que retienen objetos migrados (y por qué no hay
-punteros stale tras reuse): `sender->pending_kreply` (ref hasta wake),
-`t->ep_reply_obj` (staging ref, liberada en todo camino de salida del recv y
-en teardown), rutas IRQ → notification (ref hasta des-registro), colas de
-EP/notification (desencoladas en close/cancel/teardown).
+Internal kernel references that retain migrated objects (and why there are no
+stale pointers after reuse): `sender->pending_kreply` (ref until wake),
+`t->ep_reply_obj` (staging ref, released on every recv exit path and on
+teardown), IRQ paths → notification (ref until deregistration), EP/notification
+queues (dequeued on close/cancel/teardown).

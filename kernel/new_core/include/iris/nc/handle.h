@@ -10,8 +10,8 @@
  *   bits [9:0]  = slot index (0..1023)
  *   bits [31:10] = generation counter
  *
- * HANDLE_INVALID = 0 siempre.
- * Generation 0 PROHIBIDA para handles válidos.
+ * HANDLE_INVALID = 0 always.
+ * Generation 0 is FORBIDDEN for valid handles.
  */
 typedef uint32_t handle_id_t;
 #define HANDLE_INVALID    ((handle_id_t)0)

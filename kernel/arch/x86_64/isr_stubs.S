@@ -2,9 +2,9 @@
 .extern isr_handler
 
 /*
- * Macro para ISR sin error code — el CPU no pushea error code
- * para estas excepciones, lo pusheamos nosotros como 0 para
- * mantener el frame uniforme.
+ * Macro for an ISR with no error code — the CPU does not push an error code
+ * for these exceptions, so we push it ourselves as 0 to keep the frame
+ * uniform.
  */
 .macro ISR_NOERR num
 .global isr\num
@@ -15,7 +15,7 @@ isr\num:
 .endm
 
 /*
- * Macro para ISR con error code — el CPU ya pusheó el error code.
+ * Macro for an ISR with an error code — the CPU already pushed the error code.
  */
 .macro ISR_ERR num
 .global isr\num
@@ -24,7 +24,7 @@ isr\num:
     jmp   isr_common
 .endm
 
-/* excepciones x86_64 */
+/* x86_64 exceptions */
 ISR_NOERR 0   /* divide by zero            */
 ISR_NOERR 1   /* debug                     */
 ISR_NOERR 2   /* NMI                       */
@@ -59,16 +59,16 @@ ISR_ERR   30  /* security exception        */
 ISR_NOERR 31  /* reserved                  */
 
 /*
- * Handler común — salva todos los registros, llama a isr_handler en C,
- * restaura y retorna.
+ * Common handler — saves every register, calls isr_handler in C, restores
+ * and returns.
  */
 
 /* IRQ0 — timer (vector 0x20 = 32) */
 ISR_NOERR 32
 ISR_NOERR 33  /* IRQ1 — PS/2 keyboard */
 
-/* IRQs 2-15 del PIC (vectores 34-47) — necesarios para no triple-faultear
- * ante IRQs espurios o periféricos no manejados (PIC IRQ7/IRQ15 en especial). */
+/* PIC IRQs 2-15 (vectors 34-47) — needed to avoid triple-faulting on spurious
+ * IRQs or unhandled peripherals (PIC IRQ7/IRQ15 especially). */
 ISR_NOERR 34
 ISR_NOERR 35
 ISR_NOERR 36
@@ -135,7 +135,7 @@ isr_common:
     swapgs
 .Lisr_from_ring0:
 
-    /* salvar registros de propósito general */
+    /* save the general-purpose registers */
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -152,27 +152,27 @@ isr_common:
     pushq %r14
     pushq %r15
 
-    /* Fase 20: los #GP/#PF (vectores 13/14) entran por IST1, un stack fijo
-     * por CPU que se reutiliza desde el tope en cada entrada.  Una task que
-     * el handler C suspenda en TASK_BLOCKED_FAULT dejaría su contexto vivo
-     * (frame + frames de C + context_switch) dentro de IST1, y el siguiente
-     * #GP/#PF de cualquier otra task lo pisaría.  Para faults originados en
-     * ring 3 el kernel stack propio de la task está garantizado vacío, así
-     * que migramos el frame completo (22 qwords) allí antes de llamar al
-     * handler C; el resto del manejo (bloqueo, resume, restore, iretq) corre
-     * ya sobre memoria por-task.  %gs:48 = cpu_local.syscall_kstack (tope del
-     * kstack de la task actual, mantenido por task_yield; offset fijado por
-     * contrato en cpu_local.h).  Los vectores sin IST ya entran por RSP0 y no
-     * lo necesitan; los faults de ring 0 se quedan en IST1 (path fatal, no
-     * retorna).  rax/rcx/rdx/rsi/rdi se clobberean aquí pero sus valores ya
-     * están salvados en el frame y se restauran desde la copia al salir. */
+    /* Fase 20: #GP/#PF (vectors 13/14) enter through IST1, a fixed per-CPU
+     * stack reused from the top on every entry.  A task that the C handler
+     * suspends in TASK_BLOCKED_FAULT would leave its context live (frame + C
+     * frames + context_switch) inside IST1, and the next #GP/#PF from any
+     * other task would clobber it.  For faults originating in ring 3 the
+     * task's own kernel stack is guaranteed empty, so we migrate the whole
+     * frame (22 qwords) there before calling the C handler; the rest of the
+     * handling (block, resume, restore, iretq) then runs on per-task memory.
+     * %gs:48 = cpu_local.syscall_kstack (top of the current task's kstack,
+     * maintained by task_yield; offset fixed by contract in cpu_local.h).
+     * Vectors without an IST already enter on RSP0 and do not need this; ring-0
+     * faults stay on IST1 (fatal path, does not return).  rax/rcx/rdx/rsi/rdi
+     * are clobbered here but their values are already saved in the frame and
+     * restored from the copy on exit. */
     movq 120(%rsp), %rax        /* frame->vector */
     cmpq $13, %rax
     je   .Lisr_migrate_off_ist
     cmpq $14, %rax
     jne  .Lisr_no_migrate
 .Lisr_migrate_off_ist:
-    testb $3, 144(%rsp)         /* frame->cs: solo origen ring 3 */
+    testb $3, 144(%rsp)         /* frame->cs: ring-3 origin only */
     jz   .Lisr_no_migrate
     movq %gs:48, %rdi           /* cpu_local.syscall_kstack */
     subq $176, %rdi             /* sizeof(struct full_frame) = 22 qwords */
@@ -181,14 +181,14 @@ isr_common:
     movl $22, %ecx
     cld
     rep movsq
-    movq %rdx, %rsp             /* continuar sobre el kstack de la task */
+    movq %rdx, %rsp             /* continue on the task's kstack */
 .Lisr_no_migrate:
 
-    /* rdi = puntero al frame completo en el stack */
+    /* rdi = pointer to the full frame on the stack */
     movq %rsp, %rdi
     call isr_handler
 
-    /* restaurar registros */
+    /* restore the registers */
     popq %r15
     popq %r14
     popq %r13
@@ -214,7 +214,7 @@ isr_common:
     swapgs
 .Lisr_exit_ring0:
 
-    /* sacar vector e error code del stack */
+    /* pop the vector and error code off the stack */
     addq $16, %rsp
     iretq
 

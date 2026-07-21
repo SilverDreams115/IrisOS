@@ -8,7 +8,7 @@ landed the full dual-resolution matrix (commits `5c92039`, `3442e9b`,
 Decision:
 
 ```text
-CSpace-canónico + capa de handles efímera, acotada y formalizada
+Canonical CSpace + an ephemeral, bounded, formalized handle layer
 ```
 
 - CSpace is the canonical model for persistent, delegable authority.

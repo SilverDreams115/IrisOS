@@ -1,13 +1,13 @@
 # GPU Compatibility Matrix
 
-## Vendors objetivo
+## Target vendors
 - Intel
 - AMD
 - NVIDIA
 
-## Niveles
+## Levels
 - Boot framebuffer
-- Display básico
-- Aceleración parcial
-- Aceleración completa
-- Gaming validado
+- Basic display
+- Partial acceleration
+- Full acceleration
+- Validated gaming
