@@ -39,8 +39,8 @@ static void kschedctx_obj_close(struct KObject *obj) {
      * the refcount and triggers destroy. */
 }
 
-/* Fase S2: la ÚNICA vía de storage es untyped-backed — payload vuelve a la
- * región fuente (kslab nunca interviene). */
+/* Fase S2: the ONLY storage path is untyped-backed — the payload returns to
+ * its source region (kslab is never involved). */
 static void kschedctx_obj_destroy_ut(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kschedctx_live, 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&kschedctx_destroyed, 1u, memory_order_relaxed);
@@ -57,8 +57,8 @@ struct KSchedContext *kschedctx_alloc_at(void *mem) {
     struct KSchedContext *sc = (struct KSchedContext *)mem;
     kobject_init(&sc->base, KOBJ_SCHED_CONTEXT, &kschedctx_ops_ut);
     irq_spinlock_init(&sc->lock);
-    /* Fase S2 (B2): un SC recién retipado nace SIN configurar y sin ligar —
-     * budget inválido explícito hasta SC_CONFIGURE. */
+    /* Fase S2 (B2): a freshly retyped SC is born UNCONFIGURED and unbound —
+     * explicitly invalid budget until SC_CONFIGURE. */
     sc->budget_ticks     = 0;
     sc->period_ticks     = 0;
     sc->remaining_budget = 0;
@@ -75,11 +75,11 @@ void kschedctx_close(struct KSchedContext *sc) {
 
 iris_error_t kschedctx_configure(struct KSchedContext *sc,
                                    uint64_t budget, uint64_t period) {
-    /* Fase S2 (corrección I1): budget <= period, estilo MCS.  budget == period
-     * es una reserva de CPU completa (100%): válida.  El scheduler decrementa
-     * remaining por tick y refila en el límite del período; con budget==period
-     * el hilo nunca agota su budget dentro de un período, que es exactamente el
-     * comportamiento de una reserva total — no rompe ninguna invariancia. */
+    /* Fase S2 (fix I1): budget <= period, MCS style.  budget == period is a
+     * full (100%) CPU reservation: valid.  The scheduler decrements remaining
+     * per tick and refills at the period boundary; with budget==period the
+     * thread never exhausts its budget within a period, which is exactly the
+     * behavior of a full reservation — it breaks no invariant. */
     if (!sc || budget == 0 || period == 0 || budget > period)
         return IRIS_ERR_INVALID_ARG;
     uint64_t flags = irq_spinlock_lock(&sc->lock);

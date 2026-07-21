@@ -1,94 +1,92 @@
-# IRIS — seL4 Convergence Ledger (normativo)
+# IRIS — seL4 Convergence Ledger (normative)
 
-Registro de deuda híbrida: todo mecanismo no-seL4 que sigue vivo, quién lo
-usa, su reemplazo y su fase de retiro.
+Record of hybrid debt: every non-seL4 mechanism still alive, who uses it, its
+replacement and its retirement phase.
 
-**Marco normativo**: este ledger implementa el
-[charter de pureza seL4](iris-sel4-purity-charter.md) (constitucional) y el
-[roadmap de convergencia](sel4-convergence-roadmap.md) (orden por
-dependencias).  Las "removal phases" de la tabla se leen contra las Etapas
-del roadmap.  La guarda ejecutable `make check-purity` congela los
-consumidores legacy de handle table / kslab: la allowlist solo decrece.
+**Normative frame**: this ledger implements the
+[seL4 purity charter](iris-sel4-purity-charter.md) (constitutional) and the
+[convergence roadmap](sel4-convergence-roadmap.md) (dependency ordering). The
+table's "removal phases" are read against the roadmap's Stages. The executable
+guard `make check-purity` freezes the legacy handle-table / kslab consumers:
+the allowlist only shrinks.
 
-**Regla**: `ningún mecanismo marcado FROZEN puede recibir nuevos
-consumidores`.  Añadir un consumidor a una entrada FROZEN/ACTIVE_LEGACY es
-un defecto de revisión.  Los estados son:
-`ACTIVE_LEGACY` (en uso, sin migración en curso) · `MIGRATING` (migración
-parcial) · `FROZEN` (prohibidos nuevos usos) · `RETIRED` (número/símbolo
-reservado, sin funcionalidad) · `REMOVED` (borrado).
+**Rule**: `no mechanism marked FROZEN may take new consumers`. Adding a
+consumer to a FROZEN/ACTIVE_LEGACY entry is a review defect. The states are:
+`ACTIVE_LEGACY` (in use, no migration underway) · `MIGRATING` (partial
+migration) · `FROZEN` (new uses forbidden) · `RETIRED` (number/symbol
+reserved, no functionality) · `REMOVED` (deleted).
 
 | Legacy mechanism | Why non-seL4 | Current users | Replacement | Removal phase | New uses forbidden | State |
 |---|---|---|---|---|---|---|
-| `KProcess` | proceso como objeto kernel = política en kernel | spawn/loader, supervision, fault info, accounting | process server userland (TCB+CNode+VSpace+Untyped) | process-server | sí | FROZEN |
-| `KVMO` (+`SYS_VMO_CREATE`/`SYS_VMO_CREATE_FOR`/`SYS_VMO_MAP*`) | objeto de memoria con política (owner, quota, file-backing) | loader, pager, tests | memory server (Frames + pager) | memory-server | sí | FROZEN |
-| `kslab` para objetos dinámicos | heap global oculto | KProcess, KVMO, KFrame header, KVSpace, KTcb, KIrqCap, KIoPort, KBootstrapCap, KInitrdEntry, KUntyped header, root CNode, handle table | retype de Untyped | por familia (ver filas) | sí — ningún objeto canónico nuevo puede nacer de kslab | MIGRATING |
-| kslab para KEndpoint/KNotification/KReply/CNode runtime | ídem | — | RETYPE2 | S1 | — | REMOVED |
-| notification owner quota (`KPROCESS_NOTIFICATION_QUOTA`) | quota numérica como fuente de creación | — | Untyped es el presupuesto | S1 | — | REMOVED |
-| per-process VMO/page quotas (Fase 29) | resource-domain paralelo a la memoria explícita | KVMO/paging | Untyped | con KProcess/KVMO | sí | LEGACY_FOR_KPROCESS_KVMO (ACTIVE_LEGACY) |
-| payer selection (`SYS_VMO_CREATE_FOR`) | accounting por payer | svc_loader | delegación de Untyped | con KVMO | sí | ACTIVE_LEGACY |
-| `SYS_RESOURCE_INFO` campos notifs_* | espejo de quota retirada | tests (leen 0) | — (aditivo, congelado en 0) | con KProcess | sí | TRANSITIONAL_DIAGNOSTICS |
-| handle table / dual resolution | segundo namespace de autoridad | todos los syscalls dual-resolver; materialización A1 | CSpace-only invocation | CSpace-only ABI | nuevos caminos handle-first para objetos canónicos: PROHIBIDOS (guard: T251/T260; revisión) | FROZEN para nuevos productores (lista A1 cerrada) |
-| `SYS_ENDPOINT_CREATE` (73) | fabricación global sin Untyped | — | RETYPE2 | S1 | — | RETIRED |
-| `SYS_NOTIFY_CREATE` (19) | ídem + quota + handle | — | RETYPE2 | S1 | — | RETIRED |
-| `SYS_CNODE_CREATE` (80) | ídem | — | RETYPE2 | S1 | — | RETIRED |
-| implicit reply allocation (kreply en EP_CALL) | el kernel fabricaba autoridad por llamada | — | reply objects explícitos (recv arg2) | S1 | — | REMOVED |
-| `SYS_UNTYPED_RETYPE` (87) handle-publishing | publica autoridad como handle | tests/authority suite (UNTYPED/FRAME/SC) | RETYPE2 | CSpace-only ABI | para tipos migrados: ya rechaza | MIGRATING |
-| `SYS_SC_CREATE` (83) | create global de SC | ninguno | RETYPE2 + SC_CONFIGURE + SC_BIND | S2 | — | RETIRED (Fase S2) |
-| `kschedctx_alloc` (kslab SC) | payload SC en heap global | ninguno | RETYPE2 (`kschedctx_alloc_at`) | S2 | sí | REMOVED (Fase S2) |
-| `struct task tasks[TASK_MAX]` (pool estático) | backing de kstack + arch-context + scheduler linkage | scheduler, thread create | TCB payload desde Untyped; array → registro de punteros/generation | S2 (run-queue index→pointer + productive-path Untyped source) | sí — no nuevos consumidores fuera del scheduler | ACTIVE_LEGACY (pool estático acotado, NO kslab; storage de TCB runtime — REMOVE pendiente) |
-| `task_rsp[TASK_MAX]` (array RSP index-keyed) | RSP de kernel por slot, paralelo al array | scheduler context switch | `struct task.saved_krsp` | S2 inc.2 | — | REMOVED (Fase S2 inc.2 — primera indirección del scheduler) |
-| run-queue `next[TASK_MAX]`/`queued[TASK_MAX]` + `(t - tasks)`/`&tasks[idx]` | identidad de run-queue por índice de array | rq_enqueue/remove/dequeue | listas intrusivas por puntero (`t->rq_next`/`rq_queued`) | S2 inc.2B | — | REMOVED (Fase S2 inc.2B Bloque A — run queue 100% por puntero) |
-| `tasks[j]` timeout scans (tick/idle) + slot allocation | iteración sobre el array de backing | scheduler_tick / sched_handle_idle / task alloc | iteración sobre `ktcb_registry[]` (punteros+generation) | S2 inc.2 Etapa C | — | REMOVED como identidad (Fase S2 Etapa C — todo va por `ktcb_registry[i].tcb`) |
-| `KTcbRegistrySlot ktcb_registry[TASK_MAX]` | registro de referencias (tcb*/generation/occupied/bootstrap), NO payload | scheduler/alloc/lookup | mismo registro; capacidad transitoria | — | límite TASK_MAX transitorio | TRANSITIONAL_IMPLEMENTATION_CAPACITY (Etapa C) |
-| `struct task tasks[TASK_MAX]` (payload estático) | backing real del TCB (registros/kstack ptr/scheduler state) apuntado por `registry[i].tcb` | registry (scaffolding) | KTCB canónico en Untyped (Etapa D) | S2 inc.2 Etapa D | sí — scaffolding, sin consumidores nuevos | ACTIVE_LEGACY (scaffolding; REMOVE en Etapa D, salvo idle bootstrap) |
-| `SYS_THREAD_SET_SC` (85) | self-bind SC | código sched existente | `SYS_SC_BIND(sc,tcb)` por CPtr | — | sí — congelado | FROZEN (Fase S2 inc.1) |
-| `struct KTcb` wrapper (kslab) | objeto TCB cap-visible en heap, separado del task | — | `struct task` ES el KTCB (KObject en offset 0) | S2 inc.2 | — | REMOVED (Fase S2 inc.2 — una estructura, una identidad) |
-| thread-create ejecutable vía pool + handle (`SYS_THREAD_CREATE`/`task_create_user_impl`) | la ruta de EJECUCIÓN de threads nace del pool estático y publica un handle en la tabla del proceso | spawn/loader, iris_test threads | TCB retipado (`RETYPE2(KOBJ_TCB)`, ya existente) + `TCB_CONFIGURE` con caps CSpace/VSpace (Etapa 5/6, post-CDT) | Etapa 5/6 | sí — ningún camino nuevo de creación de threads | ACTIVE_LEGACY (la única ruta ejecutable; el TCB retipado es cap-completo pero inactivo hasta TCB_CONFIGURE) |
-| idle task (backing estático, registry slot 0) | TCB bootstrap fuera de Untyped, sin objeto cap-visible | scheduler | root-task TCB del BootInfo (Etapa 5) | Etapa 5 | sí — excepción bootstrap aislada, jamás retipada ni reusada | BOOTSTRAP_EXCEPTION |
-| CDT/MDB nativo en slots de CNode | — (es el mecanismo seL4 correcto) | `SYS_CSPACE_MINT`/`MINT_INTO`/`REVOKE`, retype2, teardown, receive-slot | — | — | n/a | IMPLEMENTED (Fase S3 — revoke recursivo cross-process; validador + fuzzing) |
-| derivación handle-tree para tipos migrados (EP/Notif/Reply/CNode/TCB/SC) | árbol de derivación paralelo oculto en handle table | `SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` (handle-only) | derivación por slot vía CDT nativo (Fase S3) | Etapa 3 | sí — ningún productor nuevo; usar `SYS_CSPACE_MINT` | ACTIVE_LEGACY (paralelo al CDT; contador `legacy_handle_derivation_migrated` debe → 0 al retirar los syscalls handle-only) |
-| raíces LEGACY del MDB (`MDB_FLAG_LEGACY_ROOT`) | caps sin ancestro CSpace demostrable (origen handle/bootstrap/entrega IPC) | bootstrap (kernel_main), `kcnode_mint*` legacy, entrega IPC receive-slot | origen CSpace real (retype/derive por CPtr) | Etapas 2/4/5 | sí — allowlist cerrada, contador `mdb_legacy_roots` observable | ACTIVE_LEGACY (deuda contada; debe → 0) |
-| IPC cap-transfer con origen handle | la fuente de una transferencia se resuelve por handle, no por CPtr | EP_SEND/NB_SEND/CALL/REPLY (`syscall_ipc_stage_cap_peek_badged`) | origen CPtr + receive slot exclusivamente CSpace | Etapa 2 | sí | ACTIVE_LEGACY (la entrega ya instala nodo MDB LEGACY_ROOT; contador `cdt_ipc_transfer`) |
-| fallback TOCTOU receive-slot→handle | ya listado abajo | — | — | Etapa 2 | — | (ver fila dedicada) |
-| root CNode at `kprocess_alloc` (kslab) | CNode runtime fuera de Untyped | todo spawn | spawner aporta CNode retipado (process-server) | process-server | sí | ACTIVE_LEGACY |
-| root CNode alcanzable solo vía `cspace_root_h` (handle) | la RAÍZ del CSpace se localiza a través de la handle table | todo resolver + Fase S3: `cspace_resolve_slot`, `cspace_own_root`, `SYS_CSPACE_MINT_INTO` (allowlist ampliada +3 citando charter §3 en el mismo commit) | BootInfo/root-task entrega el root CNode como cap estructural | Etapa 5 | sí — solo lecturas del root para resolución | ACTIVE_LEGACY |
-| implicit page-table allocation (PMM reserve en map) | memoria kernel oculta por mapping | paging | PageTable objects desde Untyped | frame/page-table | sí | ACTIVE_LEGACY |
-| KFrame header sidecar (kslab) | metadata fuera de la región | frame retype | header dentro de Untyped | frame/page-table | sí | ACTIVE_LEGACY |
-| process-level fault record (único por proceso) | pertenece al TCB | fault delivery (Fase 20/25) | fault por-TCB / fault EP | process-server | sí | ACTIVE_LEGACY |
-| `SYS_PROCESS_VSPACE` (107) | autoridad de proceso → VSpace por handle | supervisors/pager tests | CSpace mint del VSpace cap | process-server | sí | ACTIVE_LEGACY |
-| `KBootstrapCap` | autoridad de arranque monolítica | userboot/init/svcmgr/tests | BootInfo estructurado + caps finas | root-task/BootInfo | sí | ACTIVE_LEGACY |
-| `KInitrdEntry` + `SYS_INITRD_*` | filesystem-aware kernel state | loader | VFS/loader userland | process-server | sí | ACTIVE_LEGACY |
-| kernel stacks / PML4 desde reserva PMM | asignación fuera de Untyped | task/process create | TCB/VSpace desde Untyped | process/frame phases | sí | ACTIVE_LEGACY |
+| `KProcess` | process as a kernel object = policy in the kernel | spawn/loader, supervision, fault info, accounting | user-space process server (TCB+CNode+VSpace+Untyped) | process-server | yes | FROZEN |
+| `KVMO` (+`SYS_VMO_CREATE`/`SYS_VMO_CREATE_FOR`/`SYS_VMO_MAP*`) | memory object with policy (owner, quota, file-backing) | loader, pager, tests | memory server (Frames + pager) | memory-server | yes | FROZEN |
+| `kslab` for dynamic objects | hidden global heap | KProcess, KVMO, KFrame header, KVSpace, KTcb, KIrqCap, KIoPort, KBootstrapCap, KInitrdEntry, KUntyped header, root CNode, handle table | Untyped retype | per family (see rows) | yes — no new canonical object may be born from kslab | MIGRATING |
+| kslab for runtime KEndpoint/KNotification/KReply/CNode | same | — | RETYPE2 | S1 | — | REMOVED |
+| notification owner quota (`KPROCESS_NOTIFICATION_QUOTA`) | numeric quota as creation source | — | Untyped is the budget | S1 | — | REMOVED |
+| per-process VMO/page quotas (Fase 29) | resource domain parallel to explicit memory | KVMO/paging | Untyped | with KProcess/KVMO | yes | LEGACY_FOR_KPROCESS_KVMO (ACTIVE_LEGACY) |
+| payer selection (`SYS_VMO_CREATE_FOR`) | per-payer accounting | svc_loader | Untyped delegation | with KVMO | yes | ACTIVE_LEGACY |
+| `SYS_RESOURCE_INFO` notifs_* fields | mirror of a retired quota | tests (read 0) | — (additive, frozen at 0) | with KProcess | yes | TRANSITIONAL_DIAGNOSTICS |
+| handle table / dual resolution | second authority namespace | every dual-resolver syscall; A1 materialization | CSpace-only invocation | CSpace-only ABI | new handle-first paths for canonical objects: FORBIDDEN (guard: T251/T260; review) | FROZEN for new producers (A1 list closed) |
+| `SYS_ENDPOINT_CREATE` (73) | global fabrication without Untyped | — | RETYPE2 | S1 | — | RETIRED |
+| `SYS_NOTIFY_CREATE` (19) | same + quota + handle | — | RETYPE2 | S1 | — | RETIRED |
+| `SYS_CNODE_CREATE` (80) | same | — | RETYPE2 | S1 | — | RETIRED |
+| implicit reply allocation (kreply in EP_CALL) | the kernel fabricated authority per call | — | explicit reply objects (recv arg2) | S1 | — | REMOVED |
+| `SYS_UNTYPED_RETYPE` (87) handle-publishing | publishes authority as a handle | tests/authority suite (UNTYPED/FRAME/SC) | RETYPE2 | CSpace-only ABI | for migrated types: already rejected | MIGRATING |
+| `SYS_SC_CREATE` (83) | global SC create | none | RETYPE2 + SC_CONFIGURE + SC_BIND | S2 | — | RETIRED (Fase S2) |
+| `kschedctx_alloc` (kslab SC) | SC payload in the global heap | none | RETYPE2 (`kschedctx_alloc_at`) | S2 | yes | REMOVED (Fase S2) |
+| `struct task tasks[TASK_MAX]` (static pool) | backing for kstack + arch-context + scheduler linkage | scheduler, thread create | TCB payload from Untyped; array → pointer/generation registry | S2 (run-queue index→pointer + productive-path Untyped source) | yes — no new consumers outside the scheduler | ACTIVE_LEGACY (bounded static pool, NOT kslab; runtime TCB storage — REMOVE pending) |
+| `task_rsp[TASK_MAX]` (index-keyed RSP array) | per-slot kernel RSP, parallel to the array | scheduler context switch | `struct task.saved_krsp` | S2 inc.2 | — | REMOVED (Fase S2 inc.2 — the scheduler's first indirection) |
+| run-queue `next[TASK_MAX]`/`queued[TASK_MAX]` + `(t - tasks)`/`&tasks[idx]` | run-queue identity by array index | rq_enqueue/remove/dequeue | intrusive pointer lists (`t->rq_next`/`rq_queued`) | S2 inc.2B | — | REMOVED (Fase S2 inc.2B Block A — run queue 100% pointer-based) |
+| `tasks[j]` timeout scans (tick/idle) + slot allocation | iteration over the backing array | scheduler_tick / sched_handle_idle / task alloc | iteration over `ktcb_registry[]` (pointers+generation) | S2 inc.2 Stage C | — | REMOVED as identity (Fase S2 Stage C — everything goes through `ktcb_registry[i].tcb`) |
+| `KTcbRegistrySlot ktcb_registry[TASK_MAX]` | reference registry (tcb*/generation/occupied/bootstrap), NOT payload | scheduler/alloc/lookup | same registry; transitional capacity | — | transitional TASK_MAX limit | TRANSITIONAL_IMPLEMENTATION_CAPACITY (Stage C) |
+| `struct task tasks[TASK_MAX]` (static payload) | real TCB backing (registers/kstack ptr/scheduler state) pointed to by `registry[i].tcb` | registry (scaffolding) | canonical KTCB in Untyped (Stage D) | S2 inc.2 Stage D | yes — scaffolding, no new consumers | ACTIVE_LEGACY (scaffolding; REMOVE in Stage D, except the idle bootstrap) |
+| `SYS_THREAD_SET_SC` (85) | SC self-bind | existing scheduler code | `SYS_SC_BIND(sc,tcb)` by CPtr | — | yes — frozen | FROZEN (Fase S2 inc.1) |
+| `struct KTcb` wrapper (kslab) | cap-visible TCB object in the heap, separate from the task | — | `struct task` IS the KTCB (KObject at offset 0) | S2 inc.2 | — | REMOVED (Fase S2 inc.2 — one structure, one identity) |
+| executable thread-create via pool + handle (`SYS_THREAD_CREATE`/`task_create_user_impl`) | the thread EXECUTION path is born from the static pool and publishes a handle in the process table | spawn/loader, iris_test threads | retyped TCB (`RETYPE2(KOBJ_TCB)`, already present) + `TCB_CONFIGURE` with CSpace/VSpace caps (Stage 5/6, post-CDT) | Stage 5/6 | yes — no new thread-creation path | ACTIVE_LEGACY (the only executable path; the retyped TCB is cap-complete but inactive until TCB_CONFIGURE) |
+| idle task (static backing, registry slot 0) | bootstrap TCB outside Untyped, with no cap-visible object | scheduler | root-task TCB from BootInfo (Stage 5) | Stage 5 | yes — isolated bootstrap exception, never retyped or reused | BOOTSTRAP_EXCEPTION |
+| native CDT/MDB in CNode slots | — (it is the correct seL4 mechanism) | `SYS_CSPACE_MINT`/`MINT_INTO`/`REVOKE`, retype2, teardown, receive-slot | — | — | n/a | IMPLEMENTED (Fase S3 — recursive cross-process revoke; validator + fuzzing) |
+| handle-tree derivation for migrated types (EP/Notif/Reply/CNode/TCB/SC) | parallel derivation tree hidden in the handle table | `SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` (handle-only) | per-slot derivation via the native CDT (Fase S3) | Stage 3 | yes — no new producer; use `SYS_CSPACE_MINT` | ACTIVE_LEGACY (parallel to the CDT; the `legacy_handle_derivation_migrated` counter must → 0 when the handle-only syscalls are retired) |
+| MDB LEGACY roots (`MDB_FLAG_LEGACY_ROOT`) | caps with no provable CSpace ancestor (handle/bootstrap/IPC-delivery origin) | bootstrap (kernel_main), legacy `kcnode_mint*`, IPC receive-slot delivery | a real CSpace origin (retype/derive by CPtr) | Stages 2/4/5 | yes — closed allowlist, observable `mdb_legacy_roots` counter | ACTIVE_LEGACY (counted debt; must → 0) |
+| IPC cap-transfer with a handle source | a transfer's source is resolved by handle, not by CPtr | EP_SEND/NB_SEND/CALL/REPLY (`syscall_ipc_stage_cap_peek_badged`) | CPtr source + CSpace-only receive slot | Stage 2 | yes | ACTIVE_LEGACY (delivery already installs a LEGACY_ROOT MDB node; `cdt_ipc_transfer` counter) |
+| root CNode at `kprocess_alloc` (kslab) | runtime CNode outside Untyped | every spawn | the spawner supplies a retyped CNode (process-server) | process-server | yes | ACTIVE_LEGACY |
+| root CNode reachable only via `cspace_root_h` (handle) | the CSpace ROOT is located through the handle table | every resolver + Fase S3: `cspace_resolve_slot`, `cspace_own_root`, `SYS_CSPACE_MINT_INTO` (allowlist grown +3 citing charter §3 in the same commit) | BootInfo/root-task delivers the root CNode as a structural cap | Stage 5 | yes — root reads for resolution only | ACTIVE_LEGACY |
+| implicit page-table allocation (PMM reserve on map) | kernel memory hidden by mapping | paging | PageTable objects from Untyped | frame/page-table | yes | ACTIVE_LEGACY |
+| KFrame header sidecar (kslab) | metadata outside the region | frame retype | header inside the Untyped | frame/page-table | yes | ACTIVE_LEGACY |
+| process-level fault record (one per process) | belongs on the TCB | fault delivery (Fase 20/25) | per-TCB fault / fault EP | process-server | yes | ACTIVE_LEGACY |
+| `SYS_PROCESS_VSPACE` (107) | process authority → VSpace by handle | supervisors/pager tests | CSpace mint of the VSpace cap | process-server | yes | ACTIVE_LEGACY |
+| `KBootstrapCap` | monolithic bootstrap authority | userboot/init/svcmgr/tests | structured BootInfo + fine-grained caps | root-task/BootInfo | yes | ACTIVE_LEGACY |
+| `KInitrdEntry` + `SYS_INITRD_*` | filesystem-aware kernel state | loader | user-space VFS/loader | process-server | yes | ACTIVE_LEGACY |
+| kernel stacks / PML4 from the PMM reserve | allocation outside Untyped | task/process create | TCB/VSpace from Untyped | process/frame phases | yes | ACTIVE_LEGACY |
 | `KChannel` | — | — | endpoints | Fase 13 | — | REMOVED |
-| whitelist ioport hardcodeada (`kioport_whitelist`, syscall_priv.h) | política de dispositivo en kernel | kbd/console/fb/userboot vía svcmgr | caps de ioport finas emitidas por la root task (BootInfo) | Etapa 5 | sí — ninguna entrada nueva sin cita al charter §2.6/P3 | ACTIVE_LEGACY (bootstrap temporal) |
-| fallback TOCTOU receive-slot→handle (`syscall_ipc_deliver_cap_routed`) | degradación de entrega CSpace a handle | entrega IPC con slot declarado que pierde la carrera | instalación CSpace-only con CDT (la carrera se resuelve en el árbol) | Etapa 2 | sí — contado (`iris_ipc_stat_toctou_fallbacks`), nunca un patrón | ACTIVE_LEGACY (única degradación permitida, condenada) |
+| hardcoded ioport whitelist (`kioport_whitelist`, syscall_priv.h) | device policy in the kernel | kbd/console/fb/userboot via svcmgr | fine-grained ioport caps issued by the root task (BootInfo) | Stage 5 | yes — no new entry without a citation to charter §2.6/P3 | ACTIVE_LEGACY (temporary bootstrap) |
+| TOCTOU receive-slot→handle fallback (`syscall_ipc_deliver_cap_routed`) | CSpace-to-handle delivery degradation | IPC delivery with a declared slot that loses the race | CSpace-only install with the CDT (the race resolves in the tree) | Stage 2 | yes — counted (`iris_ipc_stat_toctou_fallbacks`), never a pattern | ACTIVE_LEGACY (the only permitted degradation, doomed) |
 
 ## Checkpoint C.1 — Versioned user-buffer ABI (Fase S2)
 
-`SYS_UNTYPED_QUERY` (arg0 = kind|version<<16|size<<32) y `SYS_RESOURCE_INFO`
-(arg2 = user_size) conocen el tamaño declarado por el caller y escriben como
-máximo `min(user_size, kernel_size)` (prefix-compatible): un caller
-antiguo/menor no puede desbordarse.  Header mínimo (8 B) y versión no soportada
-→ `IRIS_ERR_INVALID_ARG` sin escribir.  Helper `copy_versioned_to_user`.
-Auditoría de queries versionadas:
+`SYS_UNTYPED_QUERY` (arg0 = kind|version<<16|size<<32) and `SYS_RESOURCE_INFO`
+(arg2 = user_size) know the caller-declared size and write at most
+`min(user_size, kernel_size)` (prefix-compatible): an older/smaller caller
+cannot overflow. Minimum header (8 B) and an unsupported version →
+`IRIS_ERR_INVALID_ARG` without writing. Helper `copy_versioned_to_user`.
+Audit of versioned queries:
 
 | Query | Version | Size field | Copy bound | Prefix-compat | Action |
 |---|---|---|---|---|---|
-| SYS_UNTYPED_QUERY (1..4) | arg0 bits16-31 | arg0 high32 | min(user,kernel) | sí | HARDENED |
-| SYS_RESOURCE_INFO | struct.version | arg2 | min(user,kernel) | sí | HARDENED |
-| SYS_TCB_GET_INFO (iris_tcb_info) | — | fija | sizeof fija | n/a | FIXED-SIZE (estable, no crece) |
-| SYS_PROCESS_FAULT_INFO | — | FAULT_MSG_LEN fija | fija | n/a | FIXED-SIZE |
-| SYS_SCHED_INFO ext tiers | tier-gated | `want` acotado | acotado | parcial | REVISADO (acota por tier) |
+| SYS_UNTYPED_QUERY (1..4) | arg0 bits16-31 | arg0 high32 | min(user,kernel) | yes | HARDENED |
+| SYS_RESOURCE_INFO | struct.version | arg2 | min(user,kernel) | yes | HARDENED |
+| SYS_TCB_GET_INFO (iris_tcb_info) | — | fixed | fixed sizeof | n/a | FIXED-SIZE (stable, does not grow) |
+| SYS_PROCESS_FAULT_INFO | — | fixed FAULT_MSG_LEN | fixed | n/a | FIXED-SIZE |
+| SYS_SCHED_INFO ext tiers | tier-gated | bounded `want` | bounded | partial | REVIEWED (bounded per tier) |
 
-Test: T283 (QABI1–10 + guard canaries).  Nuevos campos futuros en un struct de
-query ya no pueden desbordar un caller que declara su tamaño.
+Test: T283 (QABI1–10 + guard canaries). Future new fields in a query struct
+can no longer overflow a caller that declares its size.
 
-## Guard de no-regresión
+## Non-regression guard
 
-- T251 fija el manifiesto cerrado de tipos creables por RETYPE2.
-- T260 fija el retiro de los create syscalls y su no-efecto.
-- T125/T126 fijan el rechazo de la familia migrada en el retype legacy.
-- Los asserts `IRIS_KOBJ_* == KOBJ_*` fijan la ABI de tipos.
-- Revisión: cualquier PR que añada `kslab_alloc` para un tipo canónico,
-  un `SYS_*_CREATE` nuevo, o un resolver handle-first nuevo para objetos
-  canónicos debe rechazarse citando este ledger.
+- T251 pins the closed manifest of RETYPE2-creatable types.
+- T260 pins the retirement of the create syscalls and their no-effect.
+- T125/T126 pin the rejection of the migrated family on the legacy retype.
+- The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.
+- Review: any PR that adds `kslab_alloc` for a canonical type, a new
+  `SYS_*_CREATE`, or a new handle-first resolver for canonical objects must be
+  rejected citing this ledger.

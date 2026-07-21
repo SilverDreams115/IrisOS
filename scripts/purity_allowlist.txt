@@ -1,8 +1,8 @@
-# purity_allowlist.txt — consumidores/productores legacy CONGELADOS (charter §3).
-# Formato: <archivo> <identificador> <máximo permitido>.
-# Esta lista solo puede DECRECER.  Crecerla exige modificar el charter y el
-# ledger en el mismo commit con justificación técnica escrita.
-# Generada en Fase S2/S3 a partir del estado congelado del árbol.
+# purity_allowlist.txt — FROZEN legacy consumers/producers (charter §3).
+# Format: <file> <identifier> <max allowed>.
+# This list may only SHRINK.  Growing it requires amending the charter and the
+# ledger in the same commit, with a written technical justification.
+# Generated in Fase S2/S3 from the frozen state of the tree.
 kernel/core/phase3_selftest.c handle_table_insert 11
 kernel/core/scheduler/task_lifecycle.c handle_table_insert 3
 kernel/core/syscall/syscall_cap.c handle_table_insert 5

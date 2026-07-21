@@ -1,170 +1,170 @@
-# IRIS — CDT/MDB nativo de CSpace (Fase S3, normativo)
+# IRIS — Native CSpace CDT/MDB (Fase S3, normative)
 
-Modelo de derivación de capabilities asociado a los slots de CNode.
-Implementa el charter §2.1/A9-A10 (derivación rastreable + revoke recursivo
-cross-process) y la Etapa 1 del [roadmap](sel4-convergence-roadmap.md).
+Capability derivation model tied to CNode slots. Implements charter
+§2.1/A9-A10 (traceable derivation + recursive cross-process revoke) and
+Stage 1 of the [roadmap](sel4-convergence-roadmap.md).
 
-## 1. Definiciones exactas
+## 1. Exact definitions
 
-1. **Capability** = el contenido de un slot CSpace ocupado: `(object, rights,
-   badge, nodo MDB)`.  La autoridad ES el slot; dos slots al mismo objeto son
-   dos autoridades distintas.
-2. **Slot** = una entrada `struct KCSlot` dentro del array inline de un
-   `struct KCNode`.  Vacío ⇔ `object == NULL` ⇔ nodo MDB vacío.
-3. **Identidad interna de slot** = el par (`KCNode*`, índice), materializado
-   como puntero directo `struct KCSlot *` (el array vive dentro del storage
-   del CNode y es estable durante toda la vida del CNode).  Cada slot lleva
-   un back-pointer `mdb_cnode` a su CNode propietario.  Ninguna identidad
-   se deriva de PID, índice global ni direcciones de user space.
-4. **Metadata MDB por slot** (intrusiva, cero allocation por operación):
-   `mdb_parent`, `mdb_first_child`, `mdb_next_sib`, `mdb_prev_sib`
-   (punteros a slots), `mdb_cnode` (CNode propietario) y `mdb_flags`
-   (`MDB_LEGACY_ROOT`).  Es un árbol explícito parent/first-child/sibling
-   con lista de hermanos doblemente enlazada (O(1) unlink).
-5. **Raíz** = nodo con `mdb_parent == NULL`.  Toda raíz es hoy una
-   `LEGACY_ROOT` (instalada desde un origen no-CSpace: handle, objeto de
-   kernel en bootstrap, entrega IPC staged) o una **promovida** (huérfana
-   tras la delete de una raíz — contada en `mdb_orphan_promotions`).  Las
-   caps canónicas (copy/mint/retype con fuente slot) SIEMPRE tienen padre.
-6. **Descendiente** = alcanzable desde un nodo bajando por
-   `first_child/next_sib`.  La relación cruza CNodes y procesos: los enlaces
-   son punteros a slots, no importan el KProcess propietario.
-7. **Copy** = derivar con `RIGHT_SAME_RIGHTS`: nuevo slot con el mismo
-   objeto, mismos rights efectivos y badge heredado; hijo MDB de la fuente.
-8. **Mint** = derivar con reducción: `effective = src & requested` (colapso
-   a NONE → INVALID_ARG); badge según la regla central §3; hijo MDB de la
-   fuente.  Exige `RIGHT_DUPLICATE` en la fuente.
-9. **Move** = trasplantar la capability y SU NODO: el slot destino hereda
-   objeto/rights/badge/padre/hijos/posición entre hermanos; los
-   `mdb_parent` de todos los hijos se reapuntan; el slot fuente queda
-   completamente vacío.  No crea derivación ni toca refcounts netos
-   (transferencia interna balanceada).
-10. **Delete** = eliminar SOLO la capability seleccionada.  Sus hijos se
-    **reparentan al abuelo** (spliced en la lista de hijos del padre del
-    borrado), preservando la autoridad de revocación de todo ancestro
-    superviviente.  Si el borrado era raíz, cada hijo se promueve a raíz
-    (no hay ancestro superviviente — justificación única) y se cuenta.
-11. **Revoke** = eliminar TODO el subárbol descendiente del slot invocado,
-    conservando el slot invocado.  Orden determinista: hoja más profunda
-    por la izquierda primero (post-orden iterativo, O(1) de estado).
-    Atraviesa CNodes y procesos.  Los siblings del invocado y sus
-    descendientes NO se tocan.
-12. **Delete de nodo intermedio** — regla de reparación: véase (10); el
-    invariante preservado es «si A es ancestro de C antes del delete de B
-    (A≠B), A sigue siendo ancestro de C después».
-13. **Destrucción de subárbol** (revoke): por cada slot víctima, bajo lock:
-    unlink del árbol + vaciado del slot; fuera del lock: release de las
-    referencias del objeto (active + lifecycle).  El cierre/destrucción del
-    objeto (despertar bloqueados, devolver storage al Untyped) ocurre por
-    su lifecycle normal cuando las referencias caen — la desaparición de
-    AUTORIDAD nunca espera al storage.
-14. **Untyped**: `RETYPE2` con fuente CPtr registra cada cap creada como
-    hija del SLOT del untyped fuente.  Con fuente handle (legacy), las caps
-    nacen `LEGACY_ROOT` (métrica `mdb_legacy_roots`; frontera I.1 congelada).
-    Revocar el slot de un untyped elimina toda su descendencia de caps; los
-    objetos mueren cuando sus referencias drenan y sus destructores
-    devuelven el storage (child_count--).  `UNTYPED_RESET` sigue exigiendo
-    `child_count == 0`: child_count es la verdad del LIFECYCLE DE OBJETOS
-    (un objeto puede seguir vivo por handles o por tasks bloqueados sin que
-    exista slot alguno); el CDT es la verdad de la AUTORIDAD.  Reset jamás
-    puede reutilizar storage con objetos vivos porque el destructor es el
-    único que decrementa child_count.
-15. **Lifecycle de objetos**: el MDB solo mueve referencias (retain/release
-    por slot).  La última referencia dispara el destructor del objeto; un
-    TCB en ejecución conserva la referencia de ejecución del scheduler, así
-    que revocar toda su autoridad NO libera su backing (queda sin autoridad
-    → termina → destructor).  Autoridad, cierre funcional, destrucción y
-    liberación de storage son cuatro eventos distintos (charter O3-O5).
-16. **Teardown de procesos**: `handle_table_close_all` suelta el root CNode;
-    el close del CNode borra cada slot con la primitiva de DELETE (reparent),
-    por lo que los descendientes en otros procesos sobreviven y quedan
-    reparentados a ancestros supervivientes; ningún enlace apunta al CNode
-    muerto (todos sus slots salen del grafo antes de liberar su storage).
-17. **Locking**: un lock global del MDB (`mdb_lock`, irq-spinlock) protege
-    TODOS los enlaces de derivación y las mutaciones de ocupación de slots.
-    Orden fijo: `mdb_lock → cn->lock` (nunca al revés).  Los lectores del
-    resolver (kcnode_fetch / cspace walk) siguen usando solo `cn->lock`: no
-    leen enlaces MDB.  PROHIBIDO ejecutar callbacks destructivos
-    (kobject_active_release / kobject_release) con `mdb_lock` tomado — todo
-    release ocurre tras soltar el lock (los destructores de CNode reentran
-    en el MDB).  El lock no duerme.  Es la estrategia S3 (uniprocesador);
-    su refinamiento por-CNode es prerrequisito de SMP (Etapa 9), no de esta
-    fase — pero la corrección ya NO depende de "no hay preemption": depende
-    del lock.
-18. **Complejidad**: copy/mint/install O(1); move O(hijos directos);
-    delete O(hijos directos) (splice); revoke O(nodos del subárbol) con
-    O(subárbol) adquisiciones de lock (una por víctima — ventanas IRQ-off
-    cortas); validador O(slots del conjunto²) solo en tests.
-19. **Límites estructurales**: sin allocation dinámica (los nodos viven en
-    los slots); profundidad acotada solo por el número de slots vivos; el
-    validador impone una cota de sanidad (2^20) contra ciclos.
-20. **Divergencias temporales respecto a seL4** (ledger):
-    - raíces LEGACY (origen handle) — se retiran con Etapas 2-4;
-    - `SYS_CAP_DERIVE/SYS_CAP_REVOKE` handle-only siguen existiendo
-      (árbol paralelo de la handle table, congelado) — Etapa 3;
-    - IPC cap-transfer instala LEGACY_ROOT (origen handle) — Etapa 2;
-    - sin badged-CNode guards ni CDT sobre Untyped→Untyped anidado más
-      allá de alloc_parent;
-    - delete reparenta (seL4-MDB lo hace implícito por orden de lista);
-      semántica equivalente para revocación, documentada aquí.
+1. **Capability** = the content of an occupied CSpace slot: `(object, rights,
+   badge, MDB node)`. Authority IS the slot; two slots to the same object are
+   two distinct authorities.
+2. **Slot** = one `struct KCSlot` entry inside a `struct KCNode`'s inline
+   array. Empty ⇔ `object == NULL` ⇔ empty MDB node.
+3. **Internal slot identity** = the pair (`KCNode*`, index), materialized as a
+   direct `struct KCSlot *` pointer (the array lives inside the CNode's
+   storage and is stable for the CNode's whole life). Each slot carries a
+   back-pointer `mdb_cnode` to its owning CNode. No identity is derived from a
+   PID, a global index, or user-space addresses.
+4. **Per-slot MDB metadata** (intrusive, zero allocation per operation):
+   `mdb_parent`, `mdb_first_child`, `mdb_next_sib`, `mdb_prev_sib` (slot
+   pointers), `mdb_cnode` (owning CNode) and `mdb_flags` (`MDB_LEGACY_ROOT`).
+   It is an explicit parent/first-child/sibling tree with a doubly-linked
+   sibling list (O(1) unlink).
+5. **Root** = a node with `mdb_parent == NULL`. Every root today is either a
+   `LEGACY_ROOT` (installed from a non-CSpace origin: handle, bootstrap kernel
+   object, staged IPC delivery) or a **promoted** one (orphaned by the delete
+   of a root — counted in `mdb_orphan_promotions`). Canonical caps
+   (copy/mint/retype with a slot source) ALWAYS have a parent.
+6. **Descendant** = reachable from a node by walking down `first_child/
+   next_sib`. The relationship crosses CNodes and processes: the links are
+   slot pointers; the owning KProcess is irrelevant.
+7. **Copy** = derive with `RIGHT_SAME_RIGHTS`: a new slot with the same
+   object, the same effective rights and an inherited badge; an MDB child of
+   the source.
+8. **Mint** = derive with reduction: `effective = src & requested` (collapse
+   to NONE → INVALID_ARG); badge per the single central rule §3; an MDB child
+   of the source. Requires `RIGHT_DUPLICATE` on the source.
+9. **Move** = transplant the capability AND its node: the destination slot
+   inherits object/rights/badge/parent/children/sibling-position; every
+   child's `mdb_parent` is re-pointed; the source slot is left completely
+   empty. It creates no derivation and does not change net refcounts (a
+   balanced internal transfer).
+10. **Delete** = remove ONLY the selected capability. Its children are
+    **reparented to the grandparent** (spliced into the deleted node's
+    parent's child list), preserving the revocation authority of every
+    surviving ancestor. If the deleted node was a root, each child is promoted
+    to a root (there is no surviving ancestor — the sole justification) and
+    counted.
+11. **Revoke** = remove the ENTIRE descendant subtree of the invoked slot,
+    keeping the invoked slot. Deterministic order: deepest-leftmost leaf first
+    (iterative post-order, O(1) state). Crosses CNodes and processes. The
+    invoked node's siblings and their descendants are NOT touched.
+12. **Intermediate-node delete** — repair rule: see (10); the preserved
+    invariant is "if A was an ancestor of C before deleting B (A≠B), A is
+    still an ancestor of C afterwards".
+13. **Subtree destruction** (revoke): for each victim slot, under lock: unlink
+    from the tree + clear the slot; outside the lock: release the object's
+    references (active + lifecycle). The object's close/destruction (waking
+    blocked tasks, returning storage to the Untyped) happens via its normal
+    lifecycle when the references drop — AUTHORITY removal never waits on
+    storage.
+14. **Untyped**: `RETYPE2` with a CPtr source registers each created cap as a
+    child of the source untyped's SLOT. With a handle source (legacy) the caps
+    are born as `LEGACY_ROOT` (metric `mdb_legacy_roots`; boundary I.1
+    frozen). Revoking an untyped's slot removes all its retyped-cap
+    descendance; the objects die when their references drain and their
+    destructors return the storage (child_count--). `UNTYPED_RESET` still
+    requires `child_count == 0`: child_count is the truth of the OBJECT
+    LIFECYCLE (an object can stay alive through handles or blocked tasks with
+    no slot at all); the CDT is the truth of AUTHORITY. Reset can never reuse
+    storage with live objects because the destructor is the only thing that
+    decrements child_count.
+15. **Object lifecycle**: the MDB only moves references (per-slot
+    retain/release). The last reference triggers the object's destructor; an
+    executing TCB keeps the scheduler's execution reference, so revoking all
+    its authority does NOT free its backing (it becomes authority-less →
+    terminates → destructor). Authority, functional close, destruction and
+    storage release are four distinct events (charter O3-O5).
+16. **Process teardown**: `handle_table_close_all` drops the root CNode; the
+    CNode close deletes each slot with the DELETE primitive, so descendants
+    living in other CNodes survive, reparented to surviving ancestors; no link
+    points at the dead CNode (all its slots leave the graph before the storage
+    can be released).
+17. **Locking**: a single global MDB lock (`mdb_lock`, irq-spinlock) protects
+    ALL derivation links and all slot-occupancy mutations. Fixed order:
+    `mdb_lock → cn->lock` (never the reverse). Resolver readers (kcnode_fetch /
+    cspace walk) keep using only `cn->lock`: they do not read MDB links.
+    FORBIDDEN to run destructive callbacks (kobject_active_release /
+    kobject_release) while holding `mdb_lock` — every release happens after
+    releasing the lock (CNode destructors re-enter the MDB). The lock does not
+    sleep. This is the S3 strategy (uniprocessor); its per-CNode refinement is
+    a prerequisite of SMP (Stage 9), not of this stage — but correctness no
+    longer depends on "there is no preemption": it depends on the lock.
+18. **Complexity**: copy/mint/install O(1); move O(direct children); delete
+    O(direct children) (splice); revoke O(subtree nodes) with O(subtree) lock
+    acquisitions (one per victim — short IRQ-off windows); validator
+    O(slots in the set²), tests only.
+19. **Structural limits**: no dynamic allocation (nodes live in the slots);
+    depth bounded only by the number of live slots; the validator imposes a
+    sanity cap (2^20) against cycles.
+20. **Temporary divergences from seL4** (ledger):
+    - LEGACY roots (handle origin) — retired with Stages 2-4;
+    - handle-only `SYS_CAP_DERIVE/SYS_CAP_REVOKE` still exist (the handle
+      table's parallel tree, frozen) — Stage 3;
+    - IPC cap-transfer installs a LEGACY_ROOT (handle source) — Stage 2;
+    - no badged-CNode guards and no CDT over nested Untyped→Untyped beyond
+      alloc_parent;
+    - delete reparents (seL4-MDB does it implicitly via list order);
+      equivalent revocation semantics, documented here.
 
-## 2. Primitivas canónicas (kcnode.c — únicas mutadoras de slots)
+## 2. Canonical primitives (kcnode.c — the sole slot mutators)
 
 ```text
-kcnode_slot_install_root(cn, idx, obj, rights, badge, excl, legacy)
-kcnode_slot_install_derived(cn, idx, obj, rights, badge, src_slot)  [excl]
-kcnode_slot_move(src_cn, src_idx, dst_cn, dst_idx)                  [dst excl]
-kcnode_slot_delete(cn, idx)          — reparent hijos, libera refs fuera de lock
-kcnode_slot_revoke(cn, idx)          — subárbol post-orden, conserva el slot
-kcnode_swap → dos moves con slot temporal lógico (mismo CNode)
-kcnode_obj_close → slot_delete de cada slot ocupado
+kcnode_slot_install_linked(cn, idx, obj, rights, badge, parent_cn, parent_idx, exclusive, legacy)
+kcnode_slot_derive(src_cn, src_idx, dst_cn, dst_idx, requested, req_badge)  [dst exclusive]
+kcnode_slot_move(src_cn, src_idx, dst_cn, dst_idx)                          [dst exclusive]
+kcnode_slot_delete(cn, idx)          — reparent children, release refs outside the lock
+kcnode_slot_revoke(cn, idx)          — post-order subtree, keeps the invoked slot
+kcnode_swap → two moves via a logical temporary slot (same CNode)
+kcnode_obj_close → slot_delete of every occupied slot
 ```
 
-Ningún syscall ni TU manipula `cn->slots[]` directamente.  `kcnode_mint*`
-se conservan como wrappers de `install_root(legacy=1)` para los caminos
-legacy existentes (bootstrap, proc_cspace_mint, receive-slot, CNODE_MOVE).
+No syscall or TU touches `cn->slots[]` directly. `kcnode_mint*` remain
+wrappers of `install_linked(legacy=1)` for the existing legacy paths
+(bootstrap, proc_cspace_mint, receive-slot, CNODE_MOVE).
 
-## 3. Regla central de badge (una sola función)
+## 3. Central badge rule (a single function)
 
 `mdb_badge_derive(src_badge, requested, obj_type)`:
-- `requested == 0` → hereda `src_badge` (0 sigue 0);
-- `src_badge != 0 && requested != src_badge` → `ACCESS_DENIED` (jamás
+- `requested == 0` → inherit `src_badge` (0 stays 0);
+- `src_badge != 0 && requested != src_badge` → `ACCESS_DENIED` (never
   re-badge);
-- `src_badge == 0 && requested != 0` → solo `KOBJ_ENDPOINT` /
-  `KOBJ_NOTIFICATION` (`INVALID_ARG` para el resto).
+- `src_badge == 0 && requested != 0` → only `KOBJ_ENDPOINT` /
+  `KOBJ_NOTIFICATION` (`INVALID_ARG` for the rest).
 
-Usada por TODA derivación (SYS_CSPACE_MINT, SYS_CSPACE_MINT_INTO y el
-legacy proc_cspace_mint, que delega en ella).
+Used by ALL derivation (SYS_CSPACE_MINT, SYS_CSPACE_MINT_INTO and the legacy
+proc_cspace_mint, which delegates to it).
 
-## 4. Superficie de syscalls (Fase S3)
+## 4. Syscall surface (Fase S3)
 
-| Syscall | Semántica |
+| Syscall | Semantics |
 |---|---|
-| `SYS_CSPACE_MINT (114)` | copy/mint slot→slot en el propio CSpace.  arg0 = src CPtr (solo CSpace); arg1 = dest CNode CPtr (0 = root) \| dest slot << 32; arg2 = rights (RIGHT_SAME_RIGHTS ⇒ copy) \| badge << 32.  Instalación exclusiva. |
-| `SYS_CSPACE_REVOKE (115)` | revoca los descendientes del slot en arg0 (CPtr propio); el slot sobrevive.  Retorna el número de nodos revocados. |
-| `SYS_CSPACE_MINT_INTO (116)` | mint cross-process: arg0 = proceso destino (dual, RIGHT_WRITE — patrón de target existente); arg1 = slot destino en su root CNode; arg2 = src CPtr (solo CSpace del caller); arg3 = rights \| badge << 32.  Instalación exclusiva; hijo MDB del slot fuente del caller. |
+| `SYS_CSPACE_MINT (114)` | copy/mint slot→slot within the caller's own CSpace. arg0 = src CPtr (CSpace only); arg1 = dest CNode CPtr (0 = root) \| dest slot << 32; arg2 = rights (RIGHT_SAME_RIGHTS ⇒ copy) \| badge << 32. Exclusive install. |
+| `SYS_CSPACE_REVOKE (115)` | revokes the descendants of the slot in arg0 (own CPtr); the slot survives. Returns the number of revoked nodes. |
+| `SYS_CSPACE_MINT_INTO (116)` | cross-process mint: arg0 = target process (dual, RIGHT_WRITE — existing target pattern); arg1 = destination slot in its root CNode; arg2 = src CPtr (caller's CSpace only); arg3 = rights \| badge << 32. Exclusive install; MDB child of the caller's source slot. |
 
-`SYS_CNODE_DELETE` conserva su número y adquiere la semántica delete-con-
-reparent.  `SYS_CNODE_SWAP` repara enlaces.  `SYS_CNODE_MOVE` (handle→slot)
-sigue produciendo `LEGACY_ROOT`.
+`SYS_CNODE_DELETE` keeps its number and gains the delete-with-reparent
+semantics. `SYS_CNODE_SWAP` repairs links. `SYS_CNODE_MOVE` (handle→slot)
+still produces a `LEGACY_ROOT`.
 
-## 5. Invariantes estructurales (validador `kcnode_mdb_validate`)
+## 5. Structural invariants (validator `kcnode_mdb_validate`)
 
-B.3-1..14 del contrato de fase: slot vacío ⇔ metadata vacía; sin ciclos;
-un padre como máximo; listas de hermanos bidireccionales coherentes;
-`parent.first_child` alcanza exactamente a sus hijos; siblings sobreviven a
-revoke ajeno; move conserva descendencia; delete ≠ revoke; reuse de slot no
-hereda metadata; ningún enlace a CNode destruido (garantizado por close);
-fallo ⇒ grafo intacto.  El validador opera sobre un conjunto cerrado de
-CNodes (tests host y fuzzing model-based); no añade coste al camino
-productivo.
+B.3-1..14 of the stage contract: empty slot ⇔ empty metadata; no cycles; at
+most one parent; bidirectionally coherent sibling lists;
+`parent.first_child` reaches exactly its children; siblings survive a
+foreign revoke; move preserves descendance; delete ≠ revoke; slot reuse
+inherits no metadata; no link to a destroyed CNode (guaranteed by close);
+a failure ⇒ the graph is intact. The validator runs over a closed set of
+CNodes (host tests and model-based fuzzing); it adds no cost to the
+productive path.
 
-## 6. Atomicidad
+## 6. Atomicity
 
-Toda operación sigue `validar → preparar → commit bajo mdb_lock → efectos
-de lifecycle fuera del lock`.  Un fallo antes del commit no muta nada
-(instalaciones exclusivas re-verifican ocupación bajo el lock).  Revoke es
-una secuencia de deletes de hoja individualmente atómicos con orden
-determinista — un corte a mitad deja un subárbol válido más pequeño, nunca
-enlaces colgantes.  El rollback de publicación de RETYPE2 borra
-exactamente los nodos hoja recién instalados (sin hijos por construcción).
+Every operation follows `validate → prepare → commit under mdb_lock →
+lifecycle effects outside the lock`. A failure before the commit mutates
+nothing (exclusive installs re-check occupancy under the lock). Revoke is a
+sequence of individually atomic leaf deletes in deterministic order — a cut
+partway leaves a smaller valid subtree, never dangling links. RETYPE2's
+publication rollback deletes exactly the freshly installed leaf nodes (with
+no children by construction).

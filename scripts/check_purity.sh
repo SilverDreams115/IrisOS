@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
 #
-# check_purity.sh — guarda ejecutable del charter de pureza seL4.
+# check_purity.sh — executable guard for the seL4 purity charter.
 #
-# Congela los consumidores/productores legacy de autoridad-por-handle y los
-# usos de kslab en el código PRODUCTIVO (kernel/ + services/, excluyendo el
-# código test-only).  La allowlist (scripts/purity_allowlist.txt) fija el
-# máximo de apariciones permitidas por archivo de cada identificador
-# congelado; este gate FALLA si:
+# Freezes the legacy authority-by-handle consumers/producers and the kslab
+# uses in PRODUCTIVE code (kernel/ + services/, excluding test-only code).
+# The allowlist (scripts/purity_allowlist.txt) sets the maximum number of
+# occurrences allowed per file for each frozen identifier; this gate FAILS if:
 #
-#   1. un archivo fuera de la allowlist contiene un identificador congelado;
-#   2. un archivo supera el conteo congelado para un identificador.
+#   1. a file not in the allowlist contains a frozen identifier;
+#   2. a file exceeds the frozen count for an identifier.
 #
-# Bajar un conteo es progreso (el gate lo informa; actualizar la allowlist a
-# la baja en el mismo cambio).  SUBIRLO exige modificar el charter y el
-# ledger en el mismo commit con justificación técnica (charter §3).
+# Lowering a count is progress (the gate reports it; update the allowlist
+# downward in the same change). RAISING it requires amending the charter and
+# the ledger in the same commit, with a written technical justification
+# (charter §3).
 #
-# Identificadores congelados:
-#   handle_table_insert        — productores de handles (incluye _badged/_derived)
-#   handle_table_get_object    — consumidores de handles
-#   cspace_or_handle_resolve_  — resolución dual CPtr/handle
-#   kslab_alloc                — objetos kernel nacidos del heap global
+# Frozen identifiers:
+#   handle_table_insert        — handle producers (incl. _badged/_derived)
+#   handle_table_get_object    — handle consumers
+#   cspace_or_handle_resolve_  — dual CPtr/handle resolution
+#   kslab_alloc                — kernel objects born from the global heap
 #
-# Test-only (excluido del escaneo): services/iris_test, services/lifecycle_probe,
-# tests/.  El charter prohíbe caminos PRODUCTIVOS nuevos; los tests ejercitan
-# la semántica legacy deliberadamente mientras exista.
+# Test-only (excluded from the scan): services/iris_test, services/lifecycle_probe,
+# tests/. The charter forbids new PRODUCTIVE paths; the tests deliberately
+# exercise the legacy semantics for as long as they exist.
 
 set -euo pipefail
 
@@ -34,11 +34,11 @@ ALLOWLIST="scripts/purity_allowlist.txt"
 PATTERNS=(handle_table_insert handle_table_get_object cspace_or_handle_resolve_ kslab_alloc)
 
 if [ ! -f "$ALLOWLIST" ]; then
-    echo "[purity] FAIL: allowlist $ALLOWLIST no existe"
+    echo "[purity] FAIL: allowlist $ALLOWLIST does not exist"
     exit 1
 fi
 
-# Archivos productivos: kernel/ y services/ menos los test-only.
+# Productive files: kernel/ and services/ minus the test-only ones.
 mapfile -t FILES < <(find kernel services \
     \( -path services/iris_test -o -path services/lifecycle_probe \) -prune -o \
     \( -name '*.c' -o -name '*.h' \) -print | sort)
@@ -47,8 +47,8 @@ fail=0
 progress=0
 
 count_in_file() {
-    # grep -c cuenta líneas; -o cuenta apariciones — usamos -o | wc -l.
-    # (grep sale 1 sin matches: neutralizado para set -e/pipefail.)
+    # grep -c counts lines; -o counts occurrences — we use -o | wc -l.
+    # (grep exits 1 with no matches: neutralized for set -e/pipefail.)
     { grep -oE "$2" "$1" 2>/dev/null || true; } | wc -l
 }
 
@@ -63,31 +63,31 @@ for f in "${FILES[@]}"; do
         [ "$n" -eq 0 ] && continue
         max=$(allow_for "$f" "$p")
         if [ "$n" -gt "$max" ]; then
-            echo "[purity] FAIL: $f usa '$p' $n veces (congelado: $max)."
-            echo "         Charter §3: prohibido añadir productores/consumidores de"
-            echo "         handles o usos de kslab. Si esto es una reducción legítima"
-            echo "         de otro sitio, la allowlist NO se toca; si es un uso nuevo,"
-            echo "         el cambio debe rechazarse (o modificar charter+ledger con"
-            echo "         justificación en el mismo commit)."
+            echo "[purity] FAIL: $f uses '$p' $n times (frozen at: $max)."
+            echo "         Charter §3: adding handle producers/consumers or kslab"
+            echo "         uses is forbidden. If this is a legitimate reduction from"
+            echo "         elsewhere, the allowlist is NOT edited; if it is a new use,"
+            echo "         the change must be rejected (or amend charter+ledger with a"
+            echo "         justification in the same commit)."
             fail=1
         elif [ "$n" -lt "$max" ]; then
-            echo "[purity] progreso: $f '$p' $n < $max — considerar bajar la allowlist"
+            echo "[purity] progress: $f '$p' $n < $max — consider lowering the allowlist"
             progress=1
         fi
     done
 done
 
-# Entradas de la allowlist cuyo archivo ya no usa el patrón (o no existe):
-# recordatorio de limpieza, no fallo.
+# Allowlist entries whose file no longer uses the pattern (or is gone): a
+# cleanup reminder, not a failure.
 while read -r f p max; do
     case "$f" in \#*|"") continue ;; esac
     if [ ! -f "$f" ]; then
-        echo "[purity] nota: entrada huérfana en allowlist ($f) — retirar"
+        echo "[purity] note: orphan allowlist entry ($f) — remove it"
         continue
     fi
     n=$(count_in_file "$f" "$p")
     if [ "$n" -eq 0 ] && [ "$max" -gt 0 ]; then
-        echo "[purity] progreso: $f ya no usa '$p' — retirar de la allowlist"
+        echo "[purity] progress: $f no longer uses '$p' — remove it from the allowlist"
         progress=1
     fi
 done < "$ALLOWLIST"
@@ -96,4 +96,4 @@ if [ "$fail" -ne 0 ]; then
     echo "[purity] RESULT: FAIL"
     exit 1
 fi
-echo "[purity] RESULT: OK (allowlist respetada$( [ $progress -eq 1 ] && echo '; hay progreso pendiente de consolidar' ))"
+echo "[purity] RESULT: OK (allowlist respected$( [ $progress -eq 1 ] && echo '; progress pending consolidation' ))"

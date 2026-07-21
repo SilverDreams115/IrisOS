@@ -691,8 +691,8 @@ check: config-sync $(KERNEL_ELF)
 	@echo '== Sections =='
 	readelf -S $(KERNEL_ELF)
 
-# Guarda del charter de pureza seL4: los consumidores legacy de handle table /
-# kslab están congelados en scripts/purity_allowlist.txt (solo puede decrecer).
+# seL4 purity charter guard: the legacy handle-table / kslab consumers are
+# frozen in scripts/purity_allowlist.txt (it can only shrink).
 check-purity:
 	bash scripts/check_purity.sh
 

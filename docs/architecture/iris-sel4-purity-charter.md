@@ -1,192 +1,189 @@
-# IRIS — Charter de pureza seL4 (constitucional, normativo)
+# IRIS — seL4 Purity Charter (constitutional, normative)
 
-**Estado**: VIGENTE desde Fase S2 inc.2.
-**Rango**: este documento prevalece sobre cualquier otro documento del repo
-(README, docs de fase, comentarios) en caso de conflicto.  Solo puede
-modificarse en un commit que lo cite explícitamente y actualice el
-[ledger](sel4-convergence-ledger.md) en el mismo cambio.
-**Documentos hermanos**: el [roadmap de convergencia](sel4-convergence-roadmap.md)
-ordena las etapas; el [ledger](sel4-convergence-ledger.md) registra cada
-mecanismo transitorio y su condición de retiro; la guarda ejecutable
-`make check-purity` (`scripts/check_purity.sh`) congela los consumidores
-legacy existentes.
+**Status**: IN FORCE since Fase S2 inc.2.
+**Precedence**: this document prevails over every other document in the repo
+(README, phase docs, comments) in case of conflict. It may only be amended in
+a commit that cites it explicitly and updates the
+[ledger](sel4-convergence-ledger.md) in the same change.
+**Sibling documents**: the [convergence roadmap](sel4-convergence-roadmap.md)
+orders the stages; the [ledger](sel4-convergence-ledger.md) records every
+transitional mechanism and its retirement condition; the executable guard
+`make check-purity` (`scripts/check_purity.sh`) freezes the existing legacy
+consumers.
 
-## 1. Identidad oficial
+## 1. Official identity
 
-> IRIS es un **microkernel capability-based puro, de implementación propia,
-> en convergencia semántica hacia seL4/MCS**, con todos los servicios y
-> políticas no esenciales fuera del kernel.
+> IRIS is a **pure capability-based microkernel, of its own implementation,
+> in semantic convergence toward seL4/MCS**, with all non-essential services
+> and policy outside the kernel.
 
-Precisiones vinculantes:
+Binding clarifications:
 
-- "seL4 puro" se refiere al **modelo arquitectónico y de autoridad**
-  (objetos tipados desde Untyped, CSpace/CPtr, CDT, revoke recursivo,
-  ausencia de ambient authority, mecanismo sin política) — no a la ABI ni al
-  código de seL4, que IRIS no reutiliza ni promete reproducir.
-- IRIS **no** afirma estar formalmente verificado.  Sus invariantes se
-  demuestran por construcción + pruebas adversariales, y así debe declararse.
-- Toda extensión propia de IRIS debe **preservar la pureza capability-based**;
-  una feature que la viole no es una feature, es un defecto de diseño.
-- El objetivo final no es un clon de seL4: es una plataforma propia de largo
-  plazo construida sobre principios equivalentes, capaz de crecer (drivers,
-  almacenamiento, red, personalidad POSIX opcional) **exclusivamente en
-  user space**, sin re-contaminar el kernel.
-- El modelo híbrido actual (handle table + resolución dual) es
-  **exclusivamente transitorio** y está condenado a retiro (roadmap
-  Etapas 1–4).  Ninguna decisión futura puede consolidarlo.
+- "seL4-pure" refers to the **architectural and authority model** (typed
+  objects born from Untyped, CSpace/CPtr, CDT, recursive revoke, absence of
+  ambient authority, mechanism without policy) — not to seL4's ABI or code,
+  which IRIS neither reuses nor promises to reproduce.
+- IRIS does **not** claim to be formally verified. Its invariants are proven
+  by construction plus adversarial tests, and must be stated that way.
+- Every IRIS-specific extension must **preserve the capability-based purity**;
+  a feature that violates it is not a feature, it is a design defect.
+- The end goal is not an seL4 clone: it is a long-lived platform of its own,
+  built on equivalent principles, able to grow (drivers, storage, networking,
+  optional POSIX personality) **exclusively in user space**, without
+  re-contaminating the kernel.
+- The current hybrid model (handle table + dual resolution) is
+  **exclusively transitional** and doomed to retirement (roadmap Stages 1–4).
+  No future decision may consolidate it.
 
-## 2. Invariantes no negociables
+## 2. Non-negotiable invariants
 
-Cada invariante es una regla de revisión: un cambio que la viole se rechaza
-citando este charter.  Los estados "hoy" son honestos: `CUMPLIDO`,
-`PARCIAL` (deuda registrada en el ledger) o `PENDIENTE` (etapa del roadmap).
+Each invariant is a review rule: a change that violates it is rejected citing
+this charter. The "today" states are honest: `MET`, `PARTIAL` (debt recorded
+in the ledger), or `PENDING` (a roadmap stage).
 
-### 2.1 Autoridad
+### 2.1 Authority
 
-| # | Invariante | Hoy |
+| # | Invariant | Today |
 |---|---|---|
-| A1 | Toda operación sensible exige una capability válida | CUMPLIDO |
-| A2 | CSpace es el ÚNICO namespace persistente de autoridad | PARCIAL — handle table viva (Etapas 2–4) |
-| A3 | CPtr es el único identificador de capability expuesto productivamente | PARCIAL — ídem |
-| A4 | En el estado final no existen handles productivos | PENDIENTE (Etapa 4) |
-| A5 | No existe ambient authority | PARCIAL — whitelist ioport, quotas kernel (ledger) |
-| A6 | `ACCESS_DENIED` jamás provoca fallback a otro namespace | CUMPLIDO (split <1024/≥1024 sin fallback) |
-| A7 | Los rights solo se mantienen o reducen; mint jamás amplifica | CUMPLIDO (`rights_reduce`, colapso a NONE rechazado) |
-| A8 | Los badges son identidad sellada por el kernel; un cap badgeado nunca se re-badgea | CUMPLIDO |
-| A9 | Toda capability derivada es rastreable hasta su ancestro | CUMPLIDO para la derivación CSpace (MDB/CDT nativo, Fase S3); el árbol handle-tree legacy (`SYS_CAP_DERIVE`) sigue en paralelo, congelado (Etapa 3) |
-| A10 | Revoke elimina recursivamente toda autoridad descendiente, incluso cross-process | CUMPLIDO para caps CSpace (`SYS_CSPACE_REVOKE`, Fase S3 — cruza CNodes y procesos, probado T288-T290 + fuzzing); `SYS_CAP_REVOKE` handle-only sigue siendo intra-tabla (Etapa 3) |
+| A1 | Every sensitive operation requires a valid capability | MET |
+| A2 | CSpace is the ONLY persistent authority namespace | PARTIAL — handle table still live (Stages 2–4) |
+| A3 | CPtr is the only capability identifier exposed productively | PARTIAL — same |
+| A4 | No productive handles exist in the final state | PENDING (Stage 4) |
+| A5 | No ambient authority exists | PARTIAL — ioport whitelist, kernel quotas (ledger) |
+| A6 | `ACCESS_DENIED` never falls back to another namespace | MET (<1024/≥1024 split with no fallback) |
+| A7 | Rights are only kept or reduced; mint never amplifies | MET (`rights_reduce`, collapse to NONE rejected) |
+| A8 | Badges are kernel-sealed identity; a badged cap is never re-badged | MET |
+| A9 | Every derived capability is traceable to its ancestor | MET for CSpace derivation (native MDB/CDT, Fase S3); the legacy handle-tree (`SYS_CAP_DERIVE`) still runs in parallel, frozen (Stage 3) |
+| A10 | Revoke recursively removes all descendant authority, even cross-process | MET for CSpace caps (`SYS_CSPACE_REVOKE`, Fase S3 — crosses CNodes and processes, proven by T288-T290 + fuzzing); `SYS_CAP_REVOKE` handle-only is still intra-table (Stage 3) |
 
-### 2.2 Objetos
+### 2.2 Objects
 
-| # | Invariante | Hoy |
+| # | Invariant | Today |
 |---|---|---|
-| O1 | Todo objeto canónico nace de Untyped vía retype | PARCIAL — EP/Notif/Reply/CNode/SC/TCB por RETYPE2; ejecución de TCB, Frame header, VSpace, page tables pendientes (Etapas 0/6) |
-| O2 | El storage del objeto pertenece al Untyped que lo originó | CUMPLIDO para la familia RETYPE2 |
-| O3 | La última capability no destruye un objeto con ejecución activa | CUMPLIDO — el scheduler posee una referencia de ejecución propia |
-| O4 | Un objeto terminado sigue siendo observable mientras exista una cap válida | CUMPLIDO (TCB TERMINATED responde GET_INFO) |
-| O5 | El storage no se reutiliza hasta que: ejecución terminada ∧ referencias activas liberadas ∧ capabilities desaparecidas ∧ fuera de todo registro interno ∧ reaper completado | CUMPLIDO (destructor = único liberador de backing) |
-| O6 | Reset/revoke de Untyped respeta descendencia y lifecycle | CUMPLIDO (`child_count != 0 → BUSY`; generación como testigo de reuso) |
+| O1 | Every canonical object is born from Untyped via retype | PARTIAL — EP/Notif/Reply/CNode/SC/TCB via RETYPE2; TCB execution, Frame header, VSpace, page tables still pending (Stages 0/6) |
+| O2 | The object's storage belongs to the Untyped that produced it | MET for the RETYPE2 family |
+| O3 | The last capability does not destroy an object with active execution | MET — the scheduler holds its own execution reference |
+| O4 | A terminated object stays observable while a valid cap exists | MET (TERMINATED TCB answers GET_INFO) |
+| O5 | Storage is not reused until: execution ended ∧ active references released ∧ capabilities gone ∧ out of every internal registry ∧ reaper complete | MET (destructor = sole backing releaser) |
+| O6 | Untyped reset/revoke respects descendance and lifecycle | MET (`child_count != 0 → BUSY`; generation as reuse witness) |
 
 ### 2.3 IPC
 
-| # | Invariante | Hoy |
+| # | Invariant | Today |
 |---|---|---|
-| I1 | La transferencia de caps usa CSpace como origen y destino | PARCIAL — destino sí (receive slots); origen aún handle (Etapa 2) |
-| I2 | Una transferencia fallida deja el estado equivalente al anterior | CUMPLIDO (staging peek/commit A1.9/A1.10) |
-| I3 | La cap fuente no se consume antes de una entrega confirmada | CUMPLIDO |
-| I4 | Reply es one-shot | CUMPLIDO (KReply explícito; doble REPLY → NOT_FOUND) |
-| I5 | La identidad del emisor es infalsificable | CUMPLIDO (badge sellado; reply fuerza badge 0) |
-| I6 | Cierre, muerte, cancelación y rollback tienen semántica determinista | CUMPLIDO (probado por lifecycle/estrés/fuzzing) |
-| I7 | IPC no degrada silenciosamente a handles | PARCIAL — el fallback TOCTOU slot→handle existe, es contado (`iris_ipc_stat_toctou_fallbacks`) y se retira en Etapa 2 |
+| I1 | Capability transfer uses CSpace as source and destination | PARTIAL — destination yes (receive slots); source still handle (Stage 2) |
+| I2 | A failed transfer leaves the state equivalent to before | MET (peek/commit staging, A1.9/A1.10) |
+| I3 | The source cap is not consumed before a confirmed delivery | MET |
+| I4 | Reply is one-shot | MET (explicit KReply; double REPLY → NOT_FOUND) |
+| I5 | Sender identity is unforgeable | MET (sealed badge; reply forces badge 0) |
+| I6 | Close, death, cancellation and rollback have deterministic semantics | MET (proven by lifecycle/stress/fuzzing) |
+| I7 | IPC never silently degrades to handles | PARTIAL — the TOCTOU slot→handle fallback exists, is counted (`iris_ipc_stat_toctou_fallbacks`) and retires in Stage 2 |
 
 ### 2.4 Scheduling
 
-| # | Invariante | Hoy |
+| # | Invariant | Today |
 |---|---|---|
-| S1 | TCB y SchedulingContext son objetos separados | CUMPLIDO |
-| S2 | El TCB describe ejecución, no autoridad global de proceso | CUMPLIDO (KProcess separado, condenado — Etapa 7) |
-| S3 | El SC representa presupuesto/política temporal delegable | CUMPLIDO (budget/period; donación pendiente — Etapa 8) |
-| S4 | Bind/unbind de SC son capability-gated | CUMPLIDO (`SYS_SC_BIND` por CPtr; `THREAD_SET_SC` FROZEN) |
-| S5 | El kernel no contiene política de servicios | CUMPLIDO (catálogo/restart/manifiestos en svcmgr) |
+| S1 | TCB and SchedulingContext are separate objects | MET |
+| S2 | The TCB describes execution, not global process authority | MET (KProcess separate, doomed — Stage 7) |
+| S3 | The SC represents a delegable time budget/policy | MET (budget/period; donation pending — Stage 8) |
+| S4 | SC bind/unbind are capability-gated | MET (`SYS_SC_BIND` by CPtr; `THREAD_SET_SC` FROZEN) |
+| S5 | The kernel contains no service policy | MET (catalog/restart/manifests in svcmgr) |
 
-### 2.5 Memoria
+### 2.5 Memory
 
-| # | Invariante | Hoy |
+| # | Invariant | Today |
 |---|---|---|
-| M1 | Frames, page tables, VSpace convergen a creación desde Untyped | PENDIENTE (Etapa 6; headers sidecar en ledger) |
-| M2 | La autoridad de mapear procede de capabilities | CUMPLIDO (Frame/VSpace caps, RIGHT_MANAGE) |
-| M3 | El kernel no asigna memoria de usuario implícitamente | CUMPLIDO (sin demand paging de kernel; pager ring-3) |
-| M4 | Todo fallo parcial tiene rollback exacto | CUMPLIDO en RETYPE2/quotas; regla general para todo camino nuevo |
-| M5 | La memoria compartida exige delegación explícita | CUMPLIDO (VMO share / file grants) |
+| M1 | Frames, page tables, VSpace converge to creation from Untyped | PENDING (Stage 6; sidecar headers in the ledger) |
+| M2 | Mapping authority comes from capabilities | MET (Frame/VSpace caps, RIGHT_MANAGE) |
+| M3 | The kernel does not implicitly allocate user memory | MET (no kernel demand paging; ring-3 pager) |
+| M4 | Every partial failure has an exact rollback | MET in RETYPE2/quotas; the general rule for every new path |
+| M5 | Shared memory requires explicit delegation | MET (VMO share / file grants) |
 
-### 2.6 Política
+### 2.6 Policy
 
-| # | Invariante | Hoy |
+| # | Invariant | Today |
 |---|---|---|
-| P1 | Descubrimiento, restart, FS, pager, drivers, quotas de servicio y manifests viven en user space | CUMPLIDO |
-| P2 | El kernel implementa mecanismo, no política de producto | PARCIAL — quotas por proceso y whitelist ioport en kernel (ledger; Etapas 6/7) |
-| P3 | Una whitelist hardcodeada solo se tolera como bootstrap temporal con entrada en el ledger | CUMPLIDO (entrada añadida) |
+| P1 | Discovery, restart, FS, pager, drivers, service quotas and manifests live in user space | MET |
+| P2 | The kernel implements mechanism, not product policy | PARTIAL — per-process quotas and ioport whitelist in the kernel (ledger; Stages 6/7) |
+| P3 | A hardcoded whitelist is tolerated only as temporary bootstrap with a ledger entry | MET (entry added) |
 
-## 3. Prohibiciones permanentes
+## 3. Permanent prohibitions
 
-Prohibido desde ya, sin excepción ni "temporalmente":
+Prohibited from now on, with no exception and no "temporarily":
 
-1. Añadir **nuevos productores de handles** (ningún syscall productivo nuevo
-   retorna handles; ningún objeto canónico nuevo se inserta en la handle
-   table).
-2. Añadir **nuevos consumidores de handles** (ningún camino productivo nuevo
-   llama a `handle_table_get_object` ni al resolver dual; guardado por
+1. Add **new handle producers** (no new productive syscall returns handles;
+   no new canonical object is inserted into the handle table).
+2. Add **new handle consumers** (no new productive path calls
+   `handle_table_get_object` or the dual resolver; enforced by
    `make check-purity`).
-3. Crear objetos canónicos directamente desde **kslab** (guardado por
-   `check_purity`; la lista cerrada de usos bootstrap está en el ledger).
-4. Añadir **identificadores globales que confieran autoridad**.
-5. Usar **PID, índice, dirección o puntero** como sustituto de una capability.
-6. Introducir syscalls que acepten autoridad por **dos namespaces** (los
-   dual-resolvers existentes son legacy congelado, no un patrón a imitar).
-7. Incorporar **fallbacks de CPtr a handle** (el fallback TOCTOU de receive
-   slots es la única excepción, contada y condenada — Etapa 2).
-8. Confiar en **nombres de servicios** como autoridad (los nombres son
-   descubrimiento; la autoridad es la cap entregada).
-9. Añadir **política de restart, filesystem o drivers al kernel**.
-10. Declarar **una migración terminada** mientras el camino productivo siga
-    dependiendo del mecanismo anterior.
+3. Create canonical objects directly from **kslab** (enforced by
+   `check_purity`; the closed list of bootstrap uses is in the ledger).
+4. Add **global identifiers that confer authority**.
+5. Use a **PID, index, address or pointer** as a substitute for a capability.
+6. Introduce syscalls that accept authority through **two namespaces** (the
+   existing dual resolvers are frozen legacy, not a pattern to imitate).
+7. Add **CPtr-to-handle fallbacks** (the receive-slot TOCTOU fallback is the
+   only exception, counted and doomed — Stage 2).
+8. Trust **service names** as authority (names are discovery; authority is the
+   delivered cap).
+9. Add **restart, filesystem or driver policy to the kernel**.
+10. Declare a **migration finished** while the productive path still depends on
+    the prior mechanism.
 
-La allowlist de consumidores legacy (`scripts/purity_allowlist.txt`) solo
-puede **decrecer**.  Crecerla exige modificar este charter y el ledger en el
-mismo commit, con justificación técnica escrita.
+The legacy-consumer allowlist (`scripts/purity_allowlist.txt`) may only
+**shrink**. Growing it requires amending this charter and the ledger in the
+same commit, with a written technical justification.
 
-## 4. Estado final obligatorio del capability model
+## 4. Mandatory end state of the capability model
 
-El capability model se declara COMPLETO únicamente cuando todo esto sea
-cierto y esté probado:
+The capability model is declared COMPLETE only when all of this is true and
+proven:
 
-- [x] CDT/MDB nativo asociado a slots de CNode (parent/child global) —
-      **Fase S3** (`docs/architecture/cspace-cdt-mdb.md`); revoke recursivo
-      cross-process incluido.  Falta retirar el árbol handle-tree paralelo.
-- [ ] Invocación CSpace-only: cero resolución dual, cero discriminación por
-      rango de valor.
-- [x] Revoke recursivo cross-process con rollback/cleanup determinista —
+- [x] Native CDT/MDB tied to CNode slots (global parent/child) — **Fase S3**
+      (`docs/architecture/cspace-cdt-mdb.md`); recursive cross-process revoke
+      included. The parallel handle-tree still needs retiring.
+- [x] Recursive cross-process revoke with deterministic rollback/cleanup —
       **Fase S3** (`SYS_CSPACE_REVOKE`).
-- [ ] Cap transfer por CPtr (origen y destino en CSpace) — destino CSpace
-      (receive slots) ya; ORIGEN sigue handle (Etapa 2).
-- [x] derive/mint/copy/move/delete/revoke operando sobre slots — **Fase S3**
-      (primitivas `kcnode_slot_*`); `SYS_CSPACE_MINT`/`MINT_INTO`/`REVOKE`.
-- [ ] Cero handles productivos; handle table eliminada o reducida a cero
-      consumidores.
-- [ ] Bootstrap con capabilities finas (BootInfo estructurado; sin
-      `KBootstrapCap` monolítico).
-- [ ] Todos los objetos canónicos nacidos de Untyped (incluido el TCB en
-      ejecución, page tables, VSpace, headers de Frame).
-- [ ] Ningún objeto de autoridad identificado por PID o índice global.
-- [ ] Suite adversarial de lifecycle y revocación (creación, muerte cruzada,
-      revocación en cadena, reuso de storage, stale caps) como gate
-      permanente.
+- [ ] CPtr-based cap transfer (source and destination in CSpace) — destination
+      CSpace (receive slots) already; SOURCE still handle (Stage 2).
+- [x] derive/mint/copy/move/delete/revoke operating on slots — **Fase S3**
+      (`kcnode_slot_*` primitives); `SYS_CSPACE_MINT`/`MINT_INTO`/`REVOKE`.
+- [ ] CSpace-only invocation: zero dual resolution, zero value-range
+      discrimination.
+- [ ] Zero productive handles; handle table removed or reduced to zero
+      consumers.
+- [ ] Bootstrap with fine-grained capabilities (structured BootInfo; no
+      monolithic `KBootstrapCap`).
+- [ ] All canonical objects born from Untyped (including the executing TCB,
+      page tables, VSpace, Frame headers).
+- [ ] No authority object identified by PID or global index.
+- [ ] Adversarial lifecycle and revocation suite (creation, cross death,
+      chained revocation, storage reuse, stale caps) as a permanent gate.
 
-## 5. Prioridad rectora
+## 5. Governing priority
 
 ```text
-corrección de lifecycle
-→ pureza de autoridad
-→ atomicidad
-→ aislamiento
-→ separación mecanismo/política
-→ extensibilidad
-→ rendimiento
-→ funcionalidades de sistema
+lifecycle correctness
+→ authority purity
+→ atomicity
+→ isolation
+→ mechanism/policy separation
+→ extensibility
+→ performance
+→ system features
 ```
 
-Ninguna funcionalidad nueva justifica conservar una desviación estructural.
-Cualquier divergencia semántica respecto a seL4 debe estar: (1) documentada,
-(2) justificada técnicamente, (3) aislada, (4) cubierta por pruebas y
-(5) marcada como temporal o deliberada — en el ledger si es temporal, en
-este charter si es deliberada.
+No new feature justifies keeping a structural deviation. Any semantic
+divergence from seL4 must be: (1) documented, (2) technically justified,
+(3) isolated, (4) covered by tests, and (5) marked as temporary or
+deliberate — in the ledger if temporary, in this charter if deliberate.
 
-## 6. Divergencias deliberadas registradas
+## 6. Registered deliberate divergences
 
-| Divergencia | Justificación | Estado |
+| Divergence | Justification | Status |
 |---|---|---|
-| Sin verificación formal | fuera de alcance del proyecto; se compensa con gates adversariales | Deliberada permanente |
-| ABI propia (no seL4) | IRIS no busca compatibilidad binaria | Deliberada permanente |
-| `SYS_REPLY` separado (sin ReplyRecv combinado) | simplicidad del camino síncrono actual; revisar en Etapa 8 (MCS) | Deliberada, revisable |
-| Reply objects con DUPLICATE (supervisor los minta al hijo) | patrón de supervisión de IRIS; documentado en RETYPE2 | Deliberada, revisable en Etapa 1 (CDT) |
-| Untyped RESET (bump reset con child_count==0) además de revoke | útil como primitiva de reuso; el revoke real llega con CDT | Temporal hasta Etapa 1, luego revisable |
+| No formal verification | out of the project's scope; offset by adversarial gates | Permanent, deliberate |
+| Own ABI (not seL4) | IRIS does not seek binary compatibility | Permanent, deliberate |
+| Separate `SYS_REPLY` (no combined ReplyRecv) | simplicity of the current synchronous path; revisit in Stage 8 (MCS) | Deliberate, revisable |
+| Reply objects with DUPLICATE (supervisor mints them into the child) | IRIS supervision pattern; documented in RETYPE2 | Deliberate, revisable in Stage 1 (CDT) |
+| Untyped RESET (bump reset with child_count==0) in addition to revoke | useful as a reuse primitive; real revoke arrives with the CDT | Temporary until Stage 1, then revisable |

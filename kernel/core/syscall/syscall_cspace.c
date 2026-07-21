@@ -31,9 +31,9 @@ uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    /* Fase S2: cuenta las derivaciones handle-tree de tipos canónicos
-     * migrados — este contador debe converger a 0 (S2.33) cuando la
-     * derivación de esos tipos pase al CDT nativo (Bloque D). */
+    /* Fase S2: count the handle-tree derivations of migrated canonical types —
+     * this counter must converge to 0 (S2.33) once the derivation of those
+     * types moves to the native CDT (Block D). */
     switch (obj->type) {
         case KOBJ_ENDPOINT: case KOBJ_NOTIFICATION: case KOBJ_REPLY:
         case KOBJ_CNODE:    case KOBJ_TCB:          case KOBJ_SCHED_CONTEXT:

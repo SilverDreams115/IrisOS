@@ -23,7 +23,7 @@ void test_kschedctx(void) {
     /* ── configure rejects period=0 ── */
     ASSERT_EQ(kschedctx_configure(sc, 10, 0), IRIS_ERR_INVALID_ARG);
 
-    /* ── Fase S2: budget == period es reserva de CPU completa → VÁLIDA ── */
+    /* ── Fase S2: budget == period is a full CPU reservation → VALID ── */
     ASSERT_EQ(kschedctx_configure(sc, 50, 50), IRIS_OK);
     ASSERT_EQ(sc->budget_ticks,     (uint64_t)50);
     ASSERT_EQ(sc->period_ticks,     (uint64_t)50);

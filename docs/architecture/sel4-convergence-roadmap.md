@@ -1,192 +1,194 @@
-# IRIS — Roadmap normativo de convergencia seL4 (por dependencias, sin fechas)
+# IRIS — seL4 Convergence Roadmap (normative, by dependencies, no dates)
 
-Ordena las etapas hacia el [charter de pureza](iris-sel4-purity-charter.md).
-Cada etapa declara su **precondición técnica** (qué debe estar cerrado antes)
-y su **criterio de cierre** (qué debe ser demostrable al terminar).  El
-[ledger](sel4-convergence-ledger.md) mapea cada mecanismo transitorio a su
-etapa de retiro.  Ninguna etapa puede declararse cerrada mientras su camino
-productivo dependa del mecanismo que retira (charter §3.10).
+Orders the stages toward the [purity charter](iris-sel4-purity-charter.md).
+Each stage declares its **technical precondition** (what must be closed
+first) and its **closing criterion** (what must be demonstrable when it ends).
+The [ledger](sel4-convergence-ledger.md) maps every transitional mechanism to
+its retirement stage. No stage may be declared closed while its productive
+path still depends on the mechanism it retires (charter §3.10).
 
-## Etapa 0 — Consolidación de TCB  ✅ CERRADA (Fase S2 inc.2)
+## Stage 0 — TCB consolidation  ✅ CLOSED (Fase S2 inc.2)
 
-- Incremento abierto cerrado y commiteado; working tree limpio.
-- KTCB canónico: `struct task` ES el objeto (KObject en offset 0); wrapper
-  eliminado; cinco lifetimes separados (cap / objeto / ejecución / registro /
-  storage) sin refcount ambiguo.
-- Lifecycle estable: TERMINATED ≠ destruido; el destructor es el único
-  liberador de storage; run queues por puntero; registry con generación.
-- Storage retipable: `RETYPE2(KOBJ_TCB)` crea TCBs canónicos (inactivos,
-  `configured=0`) con storage dentro del Untyped y cap directa en CSpace;
-  la familia migrada queda {EP, Notif, Reply, CNode, SC, TCB}.
-- Ningún handle nuevo: la creación por RETYPE2 no publica handles; la guarda
-  `make check-purity` congela los consumidores existentes.
-- Deuda registrada: la RUTA DE EJECUCIÓN de threads (SYS_THREAD_CREATE)
-  sigue naciendo del pool estático + handle; su sustituto (TCB_CONFIGURE
-  sobre un TCB retipado) requiere caps de CSpace/VSpace como argumentos y
-  se define en Etapa 5/6 (post-CDT).  Idle task = excepción bootstrap
-  aislada (registry slot 0, jamás retipada ni reusada).
+- The open increment is closed and committed; the working tree is clean.
+- Canonical KTCB: `struct task` IS the object (KObject at offset 0); the
+  wrapper is removed; five separated lifetimes (cap / object / execution /
+  registry / storage) with no ambiguous refcount.
+- Stable lifecycle: TERMINATED ≠ destroyed; the destructor is the sole
+  storage releaser; pointer-based run queues; registry with generation.
+- Retypable storage: `RETYPE2(KOBJ_TCB)` creates canonical TCBs (inactive,
+  `configured=0`) with storage inside the Untyped and the cap directly in
+  CSpace; the migrated family is now {EP, Notif, Reply, CNode, SC, TCB}.
+- No new handle: RETYPE2 creation publishes no handles; the `make
+  check-purity` guard freezes the existing consumers.
+- Recorded debt: the thread EXECUTION path (SYS_THREAD_CREATE) still comes
+  from the static pool + handle; its replacement (TCB_CONFIGURE over a
+  retyped TCB) requires CSpace/VSpace caps as arguments and is defined in
+  Stage 5/6 (post-CDT). The idle task is an isolated bootstrap exception
+  (registry slot 0, never retyped or reused).
 
-## Etapa 1 — CDT/MDB  ✅ CERRADA (Fase S3)
+## Stage 1 — CDT/MDB  ✅ CLOSED (Fase S3)
 
-Precondición: Etapa 0 (cerrada).
-Diseño: `docs/architecture/cspace-cdt-mdb.md`.
+Precondition: Stage 0 (closed).
+Design: `docs/architecture/cspace-cdt-mdb.md`.
 
-- Metadata de derivación intrusiva por slot de CNode (no en handles):
-  parent / first-child / siblings doblemente enlazados.
-- Relaciones parent/child globales (cross-CNode, cross-process) — los
-  enlaces son punteros a slots, agnósticos del KProcess propietario.
-- Primitivas canónicas únicas (`kcnode_slot_install_linked/derive/move/
-  delete/revoke`); ningún TU muta `cn->slots[]` directamente.
-- Revocación recursiva cross-process (`SYS_CSPACE_REVOKE`) con orden
-  determinista (post-orden hoja-más-profunda) y efectos de lifecycle fuera
-  del lock; probada T288-T290 (runtime, procesos reales) + fuzzing
-  model-based (5 seeds × 4000 ops, comparación de vector de padres).
-- Rollback exacto (retype2 publica por primitiva; fallo desinstala hojas y
-  deshace carve).  delete ≠ revoke; delete intermedio reparenta al abuelo.
-- Untyped como ancestro MDB de sus objetos retipados (D.1/D.2/D.3).
-- Locking: `mdb_lock` global → `cn->lock`; releases fuera del lock.
+- Intrusive per-slot derivation metadata (not in handles): parent /
+  first-child / doubly-linked siblings.
+- Global parent/child relationships (cross-CNode, cross-process) — the links
+  are slot pointers, agnostic of the owning KProcess.
+- Single canonical primitives (`kcnode_slot_install_linked/derive/move/
+  delete/revoke`); no TU mutates `cn->slots[]` directly.
+- Recursive cross-process revoke (`SYS_CSPACE_REVOKE`) with deterministic
+  order (deepest-leftmost post-order) and lifecycle effects outside the lock;
+  proven by T288-T290 (runtime, real processes) + model-based fuzzing
+  (5 seeds × 4000 ops, parent-vector comparison).
+- Exact rollback (retype2 publishes via the primitive; a failure uninstalls
+  the leaves and undoes the carve). delete ≠ revoke; intermediate delete
+  reparents to the grandparent.
+- Untyped as the MDB ancestor of its retyped objects (D.1/D.2/D.3).
+- Locking: global `mdb_lock` → `cn->lock`; releases outside the lock.
 
-Deuda que sigue viva (NO bloquea, retiro en etapas siguientes):
-`legacy_handle_derivation_migrated` (árbol handle-tree paralelo,
-`SYS_CAP_DERIVE`) → Etapa 3; `mdb_legacy_roots` (orígenes no-CSpace) →
-Etapas 2/4/5; `cdt_ipc_transfer` (entrega IPC = LEGACY_ROOT) → Etapa 2.
+Debt that stays live (does NOT block, retired in later stages):
+`legacy_handle_derivation_migrated` (parallel handle-tree, `SYS_CAP_DERIVE`)
+→ Stage 3; `mdb_legacy_roots` (non-CSpace origins) → Stages 2/4/5;
+`cdt_ipc_transfer` (IPC delivery = LEGACY_ROOT) → Stage 2.
 
-## Etapa 2 — Cap transfer CSpace-only  ← SIGUIENTE
+## Stage 2 — CSpace-only cap transfer  ← NEXT
 
-Precondición: Etapa 1 (cerrada — el staging ya registra la cap entregada
-como nodo MDB LEGACY_ROOT; falta darle un ancestro CSpace real).
+Precondition: Stage 1 (closed — staging already registers the delivered cap
+as a LEGACY_ROOT MDB node; it still needs a real CSpace ancestor).
 
-- Origen por CPtr (retira el peek handle-only de
-  `syscall_ipc_stage_cap_peek_badged`); la cap entregada pasa a ser hija
-  MDB del slot fuente en lugar de LEGACY_ROOT.
-- Destino: receive slot (ya existente) como único camino.
-- Staged transfer sobre slots con la misma atomicidad peek/commit.
-- Eliminar la degradación TOCTOU slot→handle (`iris_ipc_stat_toctou_fallbacks`
-  y `cdt_ipc_transfer` como LEGACY_ROOT deben quedar estructuralmente en 0).
+- CPtr source (retires the handle-only peek of
+  `syscall_ipc_stage_cap_peek_badged`); the delivered cap becomes an MDB
+  child of the source slot instead of a LEGACY_ROOT.
+- Destination: the receive slot (already present) as the only path.
+- Staged transfer over slots with the same peek/commit atomicity.
+- Remove the TOCTOU slot→handle degradation (`iris_ipc_stat_toctou_fallbacks`
+  and `cdt_ipc_transfer` as LEGACY_ROOT must reach a structural 0).
 
-## Etapa 3 — Derive y revoke CSpace-only
+## Stage 3 — CSpace-only derive and revoke
 
-Precondición: Etapas 1–2.
+Precondition: Stages 1–2.
 
-- Retirar `SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` handle-only (o redefinirlos
-  sobre slots) y el árbol `derivation_parent[]` de la handle table.
-- Migrar los consumidores productivos; guardas de no-regresión (los números
-  de syscall retirados quedan reservados → NOT_SUPPORTED).
+- Retire the handle-only `SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` (or redefine them
+  over slots) and the handle table's `derivation_parent[]` tree.
+- Migrate the productive consumers; non-regression guards (retired syscall
+  numbers stay reserved → NOT_SUPPORTED).
 
-## Etapa 4 — Retiro del namespace dual
+## Stage 4 — Dual namespace retirement
 
-Precondición: Etapas 2–3 (ya no queda autoridad que solo viva en handles).
+Precondition: Stages 2–3 (no authority lives handle-only anymore).
 
-- Eliminar la discriminación por rango (<1024 / ≥1024).
-- Eliminar la resolución handle de todos los dual-resolvers.
-- Eliminar los productores de handles del bootstrap (inserción dual de
-  kernel_main, materialización `SYS_CSPACE_RESOLVE`).
-- Eliminar la handle table cuando tenga cero consumidores; la allowlist de
-  `check_purity` debe quedar vacía.
+- Remove the value-range discrimination (<1024 / ≥1024).
+- Remove handle resolution from every dual resolver.
+- Remove the bootstrap's handle producers (kernel_main dual insert,
+  `SYS_CSPACE_RESOLVE` materialization).
+- Remove the handle table when it has zero consumers; the `check_purity`
+  allowlist must reach empty.
 
-## Etapa 5 — Bootstrap seL4-like
+## Stage 5 — seL4-like bootstrap
 
-Precondición: Etapa 4 (las caps iniciales ya solo pueden ser CSpace).
+Precondition: Stage 4 (the initial caps can only be CSpace now).
 
-- Sustituir `KBootstrapCap` monolítico por BootInfo estructurado.
-- Root task con: root CNode, TCB inicial, VSpace inicial, IRQ control cap,
-  ASID/PCID control, lista de Untypeds, caps finas por dispositivo.
-- Aquí se define TCB_CONFIGURE/TCB_WRITE_REGS (ejecución de TCBs retipados)
-  porque sus argumentos (CSpace root, VSpace, fault EP) ya existen como caps.
+- Replace the monolithic `KBootstrapCap` with structured BootInfo.
+- Root task with: root CNode, initial TCB, initial VSpace, IRQ control cap,
+  ASID/PCID control, Untyped list, fine-grained per-device caps.
+- TCB_CONFIGURE/TCB_WRITE_REGS (execution of retyped TCBs) is defined here
+  because its arguments (CSpace root, VSpace, fault EP) now exist as caps.
 
-## Etapa 6 — Memoria y objetos restantes
+## Stage 6 — Remaining memory and objects
 
-Precondición: Etapa 1 (ownership/derivación); puede solaparse con 5.
+Precondition: Stage 1 (ownership/derivation); may overlap with 5.
 
-- Page-table objects retipados desde Untyped (retira la reserva PMM de
-  paging_map).
-- VSpace canónico desde Untyped; headers de Frame dentro de la región.
-- Retirar las rutas kslab de objetos restantes (lista del ledger).
-- Convertir o retirar KVMO; separar memoria de archivo y anónima en
-  servicios de usuario (pager/VFS ya dan la base).
+- Page-table objects retyped from Untyped (retires the paging_map PMM
+  reserve).
+- Canonical VSpace from Untyped; Frame headers inside the region.
+- Retire the remaining object kslab paths (ledger list).
+- Convert or retire KVMO; separate file-backed and anonymous memory in user
+  services (the pager/VFS already provide the base).
 
-## Etapa 7 — Retiro de KProcess
+## Stage 7 — KProcess retirement
 
-Precondición: Etapas 5–6 (un proceso = composición TCB+CSpace+VSpace).
+Precondition: Stages 5–6 (a process = TCB+CSpace+VSpace composition).
 
-- Process server en user space; creación y política de procesos fuera del
-  kernel; PID deja de conferir autoridad; quotas por dominio → política del
-  process server.
+- Process server in user space; process creation and policy outside the
+  kernel; PID stops conferring authority; per-domain quotas become the
+  process server's policy.
 
-## Etapa 8 — Scheduling MCS completo
+## Stage 8 — Full MCS scheduling
 
-Precondición: Etapas 0–2 (SC/TCB canónicos + IPC CSpace-only).
+Precondition: Stages 0–2 (canonical SC/TCB + CSpace-only IPC).
 
-- SC delegation y donación durante IPC donde corresponda; timeouts;
-  replenishment; semántica de prioridad revisada; pruebas de presupuestos.
-- Revisar aquí la divergencia "sin ReplyRecv combinado" (charter §6).
+- SC delegation and donation during IPC where appropriate; timeouts;
+  replenishment; revised priority semantics; budget tests.
+- Revisit the "no combined ReplyRecv" divergence here (charter §6).
 
-## Etapa 9 — SMP
+## Stage 9 — SMP
 
-Precondición dura: namespace de autoridad único (4), CDT (1), lifecycle (0),
-IPC CSpace-only (2), y un modelo de locking documentado.
+Hard precondition: single authority namespace (4), CDT (1), lifecycle (0),
+CSpace-only IPC (2), and a documented locking model.
 
-- Re-derivar TODA propiedad de atomicidad que hoy dependa del kernel
-  no-preemptivo monoprocesador (catálogo: staging IPC, RETYPE2, bind de
-  reply, teardown).  Ownership de run queues por CPU.  Ninguna corrección
-  puede seguir argumentándose "porque el kernel es no-preemptivo".
+- Re-derive EVERY atomicity property that today depends on the
+  non-preemptive uniprocessor kernel (catalog: IPC staging, RETYPE2, reply
+  bind, teardown). Per-CPU run-queue ownership. No correctness may still be
+  argued "because the kernel is non-preemptive".
 
-## Etapa 10 — Plataforma de propósito general
+## Stage 10 — General-purpose platform
 
-Precondición: microkernel consolidado (0–9 según aplique).
+Precondition: consolidated microkernel (0–9 as applicable).
 
-- Drivers user-space; PCI/ACPI/IOMMU; almacenamiento; FS persistente; red;
-  personalidad POSIX opcional por servidores/librerías; seguridad avanzada;
-  rendimiento; hardware real.  Nada de esto entra antes: charter §5.
+- User-space drivers; PCI/ACPI/IOMMU; storage; persistent FS; networking;
+  optional POSIX personality via servers/libraries; advanced security;
+  performance; real hardware. None of this lands earlier: charter §5.
 
 ---
 
-## Contrato de entrada del incremento CDT/MDB (Etapa 1)
+## Entry contract for the CDT/MDB increment (Stage 1)
 
-Lo que el incremento CDT debe implementar, definido ahora para que Etapa 0
-no le herede ambigüedad:
+What the CDT increment had to implement, defined so that Stage 0 would not
+leave it any ambiguity. Delivered in Fase S3; kept here as the historical
+contract:
 
-**Estructuras.**  Metadata de derivación POR SLOT de CNode (no por handle):
-enlace al slot padre + lista/anillo de hijos (estilo MDB de seL4: lista
-doblemente enlazada ordenada por profundidad, o árbol explícito).  El storage
-de la metadata vive en el propio slot (CNode ya nace de Untyped — sin kslab).
+**Structures.** Per-CNode-SLOT derivation metadata (not per handle): a link
+to the parent slot + a list/ring of children (seL4 MDB style: a
+doubly-linked list ordered by depth, or an explicit tree). The metadata
+storage lives inside the slot itself (a CNode is already born from Untyped —
+no kslab).
 
-**Relaciones.**  Original (retype/mint desde Untyped) vs derivado
-(copy/mint/transfer).  La derivación cruza CNodes y procesos.  El Untyped
-progenitor es el ancestro raíz de todo objeto retipado (child_count se
-integra o reconcilia con el árbol).
+**Relationships.** Original (retype/mint from Untyped) vs derived
+(copy/mint/transfer). Derivation crosses CNodes and processes. The parent
+Untyped is the root ancestor of every retyped object (child_count integrates
+or reconciles with the tree).
 
-**Operaciones.**  `copy` (mismos rights), `mint` (rights↓ + badge una vez),
-`move` (traslada el slot conservando su posición en el árbol), `delete`
-(slot individual; si es la última cap del objeto, destruye), `revoke`
-(elimina recursivamente TODOS los descendientes del slot, en cualquier
-CSpace; el slot revocado sobrevive).
+**Operations.** `copy` (same rights), `mint` (rights↓ + badge once), `move`
+(relocates the slot preserving its position in the tree), `delete` (single
+slot; if it is the object's last cap, destroy), `revoke` (recursively removes
+ALL descendants of the slot, in any CSpace; the revoked slot survives).
 
-**Invariantes.**  (1) rights de un hijo ⊆ rights del padre; (2) badge
-inmutable tras el primer badgeo; (3) delete de un padre NO huérfana el
-árbol (reparent o barrido, elegir y documentar — seL4 usa el MDB para
-esto); (4) revoke es atómico respecto a IPC staged: una cap en staging
-peek revocada no se entrega (el commit falla limpio); (5) rollback exacto
-si una operación de árbol falla a medias.
+**Invariants.** (1) a child's rights ⊆ parent's rights; (2) badge immutable
+after the first badging; (3) deleting a parent does NOT orphan the tree
+(reparent or sweep, choose and document — seL4 uses the MDB for this);
+(4) revoke is atomic w.r.t. staged IPC: a cap in peek staging that is revoked
+is not delivered (commit fails cleanly); (5) exact rollback if a tree
+operation fails partway.
 
-**Integración CNode.**  `kcnode_mint*/fetch/delete/swap` mantienen el árbol;
-el teardown de un CNode (close) hace delete de cada slot vía el árbol, no
-solo release de refcounts.
+**CNode integration.** `kcnode_mint*/fetch/delete/swap` maintain the tree;
+tearing down a CNode (close) deletes each slot through the tree, not just a
+refcount release.
 
-**Integración IPC.**  La entrega a receive-slot registra la cap entregada
-como hija de la cap fuente (prepara Etapa 2).
+**IPC integration.** Receive-slot delivery registers the delivered cap as a
+child of the source cap (prepares Stage 2).
 
-**Integración Untyped.**  retype registra los slots destino como originales
-del Untyped; RESET exige árbol vacío (sustituye/refina child_count);
-revoke del Untyped = revocar todos sus originales.
+**Untyped integration.** retype registers the destination slots as originals
+of the Untyped; RESET requires an empty tree (replaces/refines child_count);
+revoking the Untyped = revoking all its originals.
 
-**Integración teardown.**  La muerte de un proceso hace delete de todos sus
-slots a través del árbol; las caps que OTROS procesos derivaron de las
-suyas quedan donde el modelo elegido lo defina (documentar: seL4 las
-conserva — la derivación no impone lifetime del holder).
+**Teardown integration.** A process's death deletes all its slots through the
+tree; caps that OTHER processes derived from its own remain where the chosen
+model defines (documented: seL4 keeps them — derivation does not impose the
+holder's lifetime).
 
-**Pruebas necesarias.**  Cadena A→B→C cross-process + revoke en A; revoke
-durante transferencia staged; delete del intermedio; mint con rights↓ y
-re-badge denegado; muerte del holder intermedio; estrés de
-retype/revoke/reset con verificación de gauges y de no-UAF; guarda de que
-`legacy_handle_derivation_migrated` → 0.
+**Required tests.** Cross-process chain A→B→C + revoke at A; revoke during a
+staged transfer; deleting the intermediate; mint with rights↓ and re-badge
+denied; death of the intermediate holder; retype/revoke/reset stress with
+gauge verification and no-UAF; a guard that `legacy_handle_derivation_migrated`
+→ 0.

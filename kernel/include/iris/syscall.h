@@ -699,9 +699,9 @@
  *   Default priority for all user threads is 128.  The idle task runs at 0.
  *
  * SYS_SC_CREATE — RETIRED (Fase S2) → IRIS_ERR_NOT_SUPPORTED.
- *   SchedulingContexts se crean vía SYS_UNTYPED_RETYPE2 (KOBJ_SCHED_CONTEXT,
- *   storage Untyped, cap en CSpace) y se configuran con SYS_SC_CONFIGURE.
- *   Número permanentemente reservado.
+ *   SchedulingContexts are created via SYS_UNTYPED_RETYPE2 (KOBJ_SCHED_CONTEXT,
+ *   Untyped storage, cap in CSpace) and configured with SYS_SC_CONFIGURE.
+ *   Number permanently reserved.
  *
  * SYS_SC_CONFIGURE(sc_h, budget_ticks, period_ticks) → 0 or negative iris_error_t
  *   Requires RIGHT_WRITE on sc_h.
@@ -710,17 +710,17 @@
  *   Resets remaining_budget to budget_ticks immediately.
  *
  * SYS_THREAD_SET_SC(sc_h) → 0 or negative iris_error_t
- *   LEGACY FROZEN (Fase S2): self-bind del hilo llamante.  NO puede recibir
- *   consumidores nuevos — la ruta canónica de binding es SYS_SC_BIND(sc, tcb)
- *   por CPtr.  Conservado para código existente; one-to-one enforced (BUSY si
- *   sc_h ya está ligado a otra task).  Pass 0 to unbind.
+ *   LEGACY FROZEN (Fase S2): self-bind of the calling thread.  It may NOT take
+ *   new consumers — the canonical binding path is SYS_SC_BIND(sc, tcb) by
+ *   CPtr.  Kept for existing code; one-to-one enforced (BUSY if sc_h is
+ *   already bound to another task).  Pass 0 to unbind.
  *
  * SYS_SC_BIND(sc_cptr, tcb_cptr) → 0 or negative iris_error_t   (Fase S2)
- *   Enlaza explícitamente un SchedulingContext a un TCB, ambos por CPtr,
- *   ambos vivos, uno-a-uno (BUSY si cualquiera ya está ligado a otro).  El SC
- *   debe estar configurado (SC_CONFIGURE).  tcb_cptr == 0 desliga el SC.
- *   Requiere RIGHT_WRITE en ambos.  Es el camino canónico de binding para la
- *   construcción de tareas desde userland (SYS_THREAD_SET_SC es el self-bind).
+ *   Explicitly binds a SchedulingContext to a TCB, both by CPtr, both live,
+ *   one-to-one (BUSY if either is already bound to another).  The SC must be
+ *   configured (SC_CONFIGURE).  tcb_cptr == 0 unbinds the SC.  Requires
+ *   RIGHT_WRITE on both.  It is the canonical binding path for building tasks
+ *   from user space (SYS_THREAD_SET_SC is the self-bind).
  */
 #define SYS_THREAD_PRIORITY 82
 #define SYS_SC_CREATE       83

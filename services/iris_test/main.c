@@ -7485,8 +7485,8 @@ static void test_t123(void) {
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 100) != 0)   { ok = 0; why = "configure valid"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 0, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 0)  != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "period 0"; }
-    /* Fase S2 (corrección I1): budget == period es una reserva de CPU completa,
-     * VÁLIDA (estilo MCS).  Solo budget > period se rechaza. */
+    /* Fase S2 (fix I1): budget == period is a full CPU reservation, VALID
+     * (MCS style).  Only budget > period is rejected. */
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 100, 100) != 0) { ok = 0; why = "budget==period rejected"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 100) != 0) { ok = 0; why = "reconfigure back"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 200, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
@@ -9509,8 +9509,8 @@ static void test_t148(void) {
     /* High/unassigned range 114..400 (111 = SYS_UNTYPED_RETYPE2, 112 =
      * SYS_UNTYPED_QUERY, Fase S2's 113 = SYS_SC_BIND are live; 107..110 remain
      * live from Fases 25/26/29). */
-    /* Fase S3: 114-116 son SYS_CSPACE_MINT/REVOKE/MINT_INTO — el primer
-     * número NO asignado sube a 117. */
+    /* Fase S3: 114-116 are SYS_CSPACE_MINT/REVOKE/MINT_INTO — the first
+     * UNASSIGNED number moves up to 117. */
     for (long n = 117; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
@@ -17146,7 +17146,7 @@ static void test_t251(void) {
         { IRIS_KOBJ_UNTYPED,       4096, IRIS_HANDLE_TYPE_UNTYPED },
         { IRIS_KOBJ_REPLY,         0,    IRIS_HANDLE_TYPE_REPLY },
         { IRIS_KOBJ_FRAME,         4096, IRIS_HANDLE_TYPE_FRAME },
-        /* Fase S2 Etapa 0: el TCB entra en la familia canónica. */
+        /* Fase S2 Stage 0: the TCB joins the canonical family. */
         { IRIS_KOBJ_TCB,           0,    IRIS_HANDLE_TYPE_TCB },
     };
     for (uint32_t i = 0; ok && i < 8u; i++) {
@@ -17987,7 +17987,7 @@ static void test_t267(void) {
     /* Configure validation (S2.8). */
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100) != 0) { ok = 0; why = "configure"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 0, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
-    /* Fase S2: budget==period aceptado (reserva completa); budget>period no. */
+    /* Fase S2: budget==period accepted (full reservation); budget>period not. */
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 100, 100) != 0) { ok = 0; why = "budget==period rejected"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 200, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100) != 0) { ok = 0; why = "reconfigure A"; }
@@ -18120,15 +18120,15 @@ static void test_t283(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * Fase S2 Etapa 0 — TCB canónico desde Untyped (T284–T287).
+ * Fase S2 Stage 0 — canonical TCB from Untyped (T284–T287).
  *
- * Charter §2.2 (O1–O6) y §C.2: el TCB nace de RETYPE2 como objeto INACTIVO
- * (configured = 0) — cap-completo (GET_INFO / SET_PRIORITY / delete /
- * transfer) pero no ejecutable hasta TCB_CONFIGURE (roadmap Etapa 5/6); las
- * syscalls de ejecución lo rechazan con NOT_SUPPORTED sin efectos.  Un TCB
- * TERMINATED sigue observable por cualquier cap superviviente; el registry
- * (identidad de scheduler) se libera en la TERMINACIÓN, no en la última cap;
- * el storage solo se reutiliza tras el destructor (última referencia).
+ * Charter §2.2 (O1–O6) and §C.2: the TCB is born from RETYPE2 as an INACTIVE
+ * object (configured = 0) — cap-complete (GET_INFO / SET_PRIORITY / delete /
+ * transfer) but not runnable until TCB_CONFIGURE (roadmap Stage 5/6); the
+ * execution syscalls reject it with NOT_SUPPORTED and no side effects.  A
+ * TERMINATED TCB stays observable through any surviving cap; the registry
+ * (scheduler identity) is released at TERMINATION, not at the last cap; the
+ * storage is only reused after the destructor (last reference).
  * ════════════════════════════════════════════════════════════════════════ */
 
 /* task_state_t ABI values observed through iris_tcb_info.state (mirrors
@@ -18136,14 +18136,14 @@ static void test_t283(void) {
 #define IT_TASK_SUSPENDED   10u
 #define IT_TASK_TERMINATED  11u
 
-/* ── T284: nacimiento, observabilidad y muerte del TCB retipado ─────────────
- * RETYPE2(KOBJ_TCB) crea un TCB canónico: storage dentro del untyped
- * (child_count/tcb_live suben; el registry NO se toca), cap en CSpace con
- * HANDLE_TYPE_TCB, GET_INFO responde {SUSPENDED, id 0}, SET_PRIORITY opera,
- * y RESUME/SUSPEND/EXIT/SC_BIND rechazan NOT_SUPPORTED (jamás ejecutable sin
- * configure).  RESET con hijos vivos → BUSY; borrar la última cap destruye y
- * devuelve el bloque; RESET reabre la región y se puede retipar de nuevo; un
- * CPtr borrado no resuelve. */
+/* ── T284: birth, observability and death of the retyped TCB ────────────────
+ * RETYPE2(KOBJ_TCB) creates a canonical TCB: storage inside the untyped
+ * (child_count/tcb_live rise; the registry is NOT touched), a cap in CSpace
+ * with HANDLE_TYPE_TCB, GET_INFO answers {SUSPENDED, id 0}, SET_PRIORITY
+ * works, and RESUME/SUSPEND/EXIT/SC_BIND reject NOT_SUPPORTED (never runnable
+ * without configure).  RESET with live children → BUSY; deleting the last cap
+ * destroys and returns the block; RESET reopens the region and it can be
+ * retyped again; a deleted CPtr no longer resolves. */
 static void test_t284(void) {
     int ok = 1;
     const char *why = "tcb retype";
@@ -18185,7 +18185,7 @@ static void test_t284(void) {
     if (ok && (it_sys2(SYS_TCB_GET_INFO, (long)S1_SLOT_A, (long)(uintptr_t)&info) != 0 ||
                info.priority != 7u)) { ok = 0; why = "prio roundtrip"; }
 
-    /* Legacy handle-publishing birth is retired for TCB (S20 + Etapa 0). */
+    /* Legacy handle-publishing birth is retired for TCB (S20 + Stage 0). */
     if (ok && it_sys3(SYS_UNTYPED_RETYPE, su, (long)IRIS_KOBJ_TCB, 0) !=
               (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy tcb retype alive"; }
 
@@ -18212,12 +18212,12 @@ static void test_t284(void) {
     if (ok) it_pass("T284"); else it_fail("T284", why);
 }
 
-/* ── T285: TCB terminado observable a través de una cap superviviente ───────
- * Un thread real publica su TCB (TCB_SELF) y hace THREAD_EXIT.  La cap
- * sobrevive a la ejecución: GET_INFO sigue respondiendo (state TERMINATED,
- * task_id estable), el registry del scheduler ya se liberó (activo == base
- * mientras la cap sigue viva — registro ≠ objeto), y RESUME sobre el TCB
- * terminal falla NOT_FOUND (no hay resurrección). */
+/* ── T285: a TERMINATED TCB observable through a surviving cap ───────────────
+ * A real thread publishes its TCB (TCB_SELF) and calls THREAD_EXIT.  The cap
+ * outlives execution: GET_INFO keeps answering (state TERMINATED, stable
+ * task_id), the scheduler registry was already released (registry active
+ * unchanged while the cap is still live — registry ≠ object), and RESUME on
+ * the terminal TCB fails NOT_FOUND (no resurrection). */
 static volatile int g_t285_ready = 0;
 static long         g_t285_tcb   = -1;
 static uint8_t      g_t285_stack[8192];
@@ -18270,11 +18270,11 @@ static void test_t285(void) {
     if (ok) it_pass("T285"); else it_fail("T285", why);
 }
 
-/* ── T286: churn adversarial de retype/destroy/reset (anti-UAF, rollback) ───
- * 20 ciclos crear→resolver→destruir→retipar sobre la MISMA región: gauges
- * vuelven exactos (ni fuga ni doble-destroy), el registry jamás se mueve, y
- * generation_mismatch se mantiene.  Batch count=2 atómico.  Publicación
- * fallida (slot ocupado) y capacidad insuficiente: CERO efecto (U14/U15). */
+/* ── T286: adversarial retype/destroy/reset churn (anti-UAF, rollback) ──────
+ * 20 cycles of create→resolve→destroy→retype over the SAME region: the gauges
+ * return exact (no leak, no double-destroy), the registry never moves, and
+ * generation_mismatch holds.  Atomic batch count=2.  A failed publication
+ * (occupied slot) and insufficient capacity: ZERO effect (U14/U15). */
 static void test_t286(void) {
     int ok = 1;
     const char *why = "tcb churn";
@@ -18353,12 +18353,12 @@ static void test_t286(void) {
     if (ok) it_pass("T286"); else it_fail("T286", why);
 }
 
-/* ── T287: independencia registro/backing tras la muerte ────────────────────
- * Un TCB terminado cuya cap sobrevive PINEA su backing pero NO su slot de
- * registry: un thread nuevo se crea y ejecuta con normalidad (posiblemente
- * reutilizando el slot de registry liberado) mientras la cap del muerto sigue
- * respondiendo TERMINATED con su id original.  El kill externo (TCB_EXIT
- * non-self) sobre el nuevo thread lo termina limpiamente. */
+/* ── T287: registry/backing independence after death ────────────────────────
+ * A terminated TCB whose cap survives PINS its backing but NOT its registry
+ * slot: a new thread is created and runs normally (possibly reusing the freed
+ * registry slot) while the dead one's cap still answers TERMINATED with its
+ * original id.  The external kill (non-self TCB_EXIT) on the new thread
+ * terminates it cleanly. */
 static volatile int      g_t287_ready = 0;
 static volatile uint64_t g_t287_count = 0;
 static long              g_t287_tcb   = -1;

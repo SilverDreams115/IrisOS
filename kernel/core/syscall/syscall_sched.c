@@ -16,10 +16,10 @@ uint64_t sys_thread_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * Fase S2: SYS_SC_CREATE (83) RETIRADO — fabricaba un KSchedContext desde
- * kslab y devolvía un handle: dos mecanismos no-seL4.  Los SchedulingContexts
- * se crean SOLO vía SYS_UNTYPED_RETYPE2 (storage Untyped, cap en CSpace) y se
- * configuran con SYS_SC_CONFIGURE.  Número reservado; sin efecto.
+ * Fase S2: SYS_SC_CREATE (83) RETIRED — it fabricated a KSchedContext from
+ * kslab and returned a handle: two non-seL4 mechanisms.  SchedulingContexts
+ * are created ONLY via SYS_UNTYPED_RETYPE2 (Untyped storage, cap in CSpace)
+ * and configured with SYS_SC_CONFIGURE.  Number reserved; no effect.
  */
 uint64_t sys_sc_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg0; (void)arg1; (void)arg2;
@@ -58,9 +58,10 @@ uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /*
  * SYS_SC_BIND (arg0 = sc_cptr, arg1 = tcb_cptr) → 0 | error   (Fase S2, B4)
  *
- * Enlaza uno-a-uno un SchedulingContext a un TCB, ambos por CPtr, ambos vivos.
- * Falla BUSY si el SC ya está ligado a otra task o el TCB ya tiene otro SC.
- * arg1 == 0 desliga el SC de su task actual (unbind explícito).
+ * Binds a SchedulingContext one-to-one to a TCB, both by CPtr, both live.
+ * Fails BUSY if the SC is already bound to another task or the TCB already
+ * has another SC.  arg1 == 0 unbinds the SC from its current task (explicit
+ * unbind).
  */
 uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_cptr_t sc_cptr  = (iris_cptr_t)arg0;
