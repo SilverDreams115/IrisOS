@@ -9509,7 +9509,9 @@ static void test_t148(void) {
     /* High/unassigned range 114..400 (111 = SYS_UNTYPED_RETYPE2, 112 =
      * SYS_UNTYPED_QUERY, Fase S2's 113 = SYS_SC_BIND are live; 107..110 remain
      * live from Fases 25/26/29). */
-    for (long n = 114; ok && n <= 400; n++) {
+    /* Fase S3: 114-116 son SYS_CSPACE_MINT/REVOKE/MINT_INTO — el primer
+     * número NO asignado sube a 117. */
+    for (long n = 117; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -17277,8 +17279,11 @@ static void test_t253(void) {
         h = it_sys1(SYS_CSPACE_RESOLVE, 240);
         if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); ok = 0; why = "partial slot filled 2"; }
     }
-    /* Capacity failure: 32 CNodes of 256 slots ≫ 8 KiB region. */
-    if (ok && it_retype2_at(su, IRIS_KOBJ_CNODE, 246u, 8u, 256) !=
+    /* Capacity failure: 8 CNodes of 64 slots (~5 KiB each with the Fase S3
+     * MDB slot metadata) ≫ the 8 KiB region, while the batch stays under
+     * KUNTYPED_RETYPE_MAX_BYTES so the failure exercised is genuinely the
+     * REGION capacity (NO_MEMORY), not the batch-size validation. */
+    if (ok && it_retype2_at(su, IRIS_KOBJ_CNODE, 246u, 8u, 64) !=
               (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "capacity not refused"; }
     if (ok && (!it_utq_1(su, &ua) || ua.used_bytes != ub.used_bytes)) { ok = 0; why = "capacity fail consumed"; }
 
