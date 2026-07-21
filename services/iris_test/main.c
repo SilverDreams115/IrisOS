@@ -18435,6 +18435,181 @@ static void test_t287(void) {
     if (ok) it_pass("T287"); else it_fail("T287", why);
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+ * Fase S3 — native MDB/CDT, revoke cross-process (T288–T290).
+ *
+ * Real kernel objects, real CSpace slots, a real second process
+ * (IRIS_CPTR_TEST_PROC).  Authority loss is checked FUNCTIONALLY: a revoked
+ * endpoint CPtr stops resolving (EP_NB_RECV fails), a surviving sibling keeps
+ * working, and a cross-process slot freed by revoke becomes re-mintable.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/* SYS_CSPACE_MINT: copy (RIGHT_SAME_RIGHTS) / mint (reduced) src→dest within
+ * the caller's CSpace.  dest_cnode 0 = own root. */
+static long it_cs_mint(uint64_t src, uint32_t dslot, iris_rights_t rights,
+                       uint64_t badge) {
+    return it_sys3(SYS_CSPACE_MINT, (long)src,
+                   (long)((uint64_t)0u | ((uint64_t)dslot << 32)),
+                   (long)((uint64_t)(uint32_t)rights | (badge << 32)));
+}
+static long it_cs_revoke(uint64_t cptr) {
+    return it_sys1(SYS_CSPACE_REVOKE, (long)cptr);
+}
+static long it_cs_mint_into(uint64_t proc, uint32_t dslot, uint64_t src,
+                            iris_rights_t rights) {
+    return it_sys4(SYS_CSPACE_MINT_INTO, (long)proc, (long)dslot, (long)src,
+                   (long)(uint32_t)rights);
+}
+/* An endpoint is "alive" iff EP_NB_RECV resolves it (WOULD_BLOCK = no sender);
+ * once its cap is revoked/deleted the CPtr no longer resolves (< 0, != WB). */
+static int it_ep_alive(uint32_t slot) {
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    return it_sys2(SYS_EP_NB_RECV, (long)slot, (long)&m) == (long)IRIS_ERR_WOULD_BLOCK;
+}
+static int it_ep_dead(uint32_t slot) {
+    struct IrisMsg m; it_iris_msg_zero(&m);
+    long r = it_sys2(SYS_EP_NB_RECV, (long)slot, (long)&m);
+    return r < 0 && r != (long)IRIS_ERR_WOULD_BLOCK;
+}
+
+/* ── T288: same-CSpace derivation, revoke subtree, siblings survive,
+ * delete ≠ revoke ─────────────────────────────────────────────────────────── */
+static void test_t288(void) {
+    int ok = 1;
+    const char *why = "cspace mdb";
+    long su = s1_sub_ut(65536);
+    if (su < 0) { it_fail("T288", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    /* A = endpoint retyped from the sub-untyped (child of the untyped slot).
+     * D = a second endpoint: an INDEPENDENT sibling under the same untyped. */
+    if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype A"; }
+    if (ok && it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_D, 1u, 0) != 0) { ok = 0; why = "retype D"; }
+
+    /* Chain A → B → C by CSpace copy (RIGHT_SAME_RIGHTS keeps DUPLICATE). */
+    if (ok && it_cs_mint(S1_SLOT_A, S1_SLOT_B, RIGHT_SAME_RIGHTS, 0) != 0) { ok = 0; why = "mint B"; }
+    if (ok && it_cs_mint(S1_SLOT_B, S1_SLOT_C, RIGHT_SAME_RIGHTS, 0) != 0) { ok = 0; why = "mint C"; }
+    /* D → E (independent subtree). */
+    if (ok && it_cs_mint(S1_SLOT_D, S1_SLOT_E, RIGHT_SAME_RIGHTS, 0) != 0) { ok = 0; why = "mint E"; }
+
+    /* All five caps resolve to the same-or-derived live endpoints. */
+    if (ok && !(it_ep_alive(S1_SLOT_A) && it_ep_alive(S1_SLOT_B) &&
+                it_ep_alive(S1_SLOT_C) && it_ep_alive(S1_SLOT_D) &&
+                it_ep_alive(S1_SLOT_E))) { ok = 0; why = "not all alive"; }
+
+    /* Occupied-dest mint is rejected with zero effect. */
+    if (ok && it_cs_mint(S1_SLOT_A, S1_SLOT_B, RIGHT_SAME_RIGHTS, 0) !=
+              (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occupied not refused"; }
+    /* A handle source is refused (CSpace-only authority). */
+    if (ok && it_cs_mint(2000u, S1_SLOT_B + 5u, RIGHT_SAME_RIGHTS, 0) !=
+              (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "handle source accepted"; }
+
+    /* Revoke A's subtree: B and C die; A survives; D and E untouched. */
+    if (ok && it_cs_revoke(S1_SLOT_A) != 2) { ok = 0; why = "revoke count"; }
+    if (ok && !(it_ep_alive(S1_SLOT_A) && it_ep_dead(S1_SLOT_B) &&
+                it_ep_dead(S1_SLOT_C) && it_ep_alive(S1_SLOT_D) &&
+                it_ep_alive(S1_SLOT_E))) { ok = 0; why = "revoke effect wrong"; }
+
+    /* delete ≠ revoke: rebuild A→B→C, then DELETE B (only B goes; C survives,
+     * reparented to A so A can still revoke it). */
+    if (ok && it_cs_mint(S1_SLOT_A, S1_SLOT_B, RIGHT_SAME_RIGHTS, 0) != 0) { ok = 0; why = "rebuild B"; }
+    if (ok && it_cs_mint(S1_SLOT_B, S1_SLOT_C, RIGHT_SAME_RIGHTS, 0) != 0) { ok = 0; why = "rebuild C"; }
+    if (ok) it_slot_delete(S1_SLOT_B);              /* SYS_CNODE_DELETE own root */
+    if (ok && !(it_ep_dead(S1_SLOT_B) && it_ep_alive(S1_SLOT_C) &&
+                it_ep_alive(S1_SLOT_A))) { ok = 0; why = "delete != revoke"; }
+    /* A still reaches C (reparented): revoke A removes exactly C. */
+    if (ok && it_cs_revoke(S1_SLOT_A) != 1) { ok = 0; why = "reparent revoke count"; }
+    if (ok && !(it_ep_alive(S1_SLOT_A) && it_ep_dead(S1_SLOT_C))) { ok = 0; why = "reparent revoke effect"; }
+
+    it_slot_delete(S1_SLOT_A); it_slot_delete(S1_SLOT_D); it_slot_delete(S1_SLOT_E);
+    (void)it_sys1(SYS_UNTYPED_RESET, su);
+    it_close(&su_h);
+    if (ok) it_pass("T288"); else it_fail("T288", why);
+}
+
+/* ── T289: cross-PROCESS derivation + revoke (real second process) ────────── */
+#define T289_TSLOT 200u    /* free slot in IRIS_CPTR_TEST_PROC's root CNode */
+static void test_t289(void) {
+    int ok = 1;
+    const char *why = "cross-process revoke";
+    long su = s1_sub_ut(65536);
+    if (su < 0) { it_fail("T289", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    /* A = endpoint in OUR CSpace (child of the untyped slot). */
+    if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype A"; }
+
+    /* Derive A into the TEST_PROC child's CSpace — an MDB child of A that
+     * lives in ANOTHER process.  Occupied-slot re-mint proves it landed. */
+    if (ok && it_cs_mint_into(IRIS_CPTR_TEST_PROC, T289_TSLOT, S1_SLOT_A,
+                              RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "mint_into"; }
+    if (ok && it_cs_mint_into(IRIS_CPTR_TEST_PROC, T289_TSLOT, S1_SLOT_A,
+                              RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_ALREADY_EXISTS) {
+        ok = 0; why = "cross slot not filled";
+    }
+    /* A handle source is refused even for the cross-process path. */
+    if (ok && it_cs_mint_into(IRIS_CPTR_TEST_PROC, T289_TSLOT + 1u, 3000u,
+                              RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "cross handle source accepted";
+    }
+
+    /* Revoke A: the cross-process descendant is destroyed (count includes it).
+     * Functional proof: the freed slot in the OTHER process re-mints cleanly. */
+    if (ok && it_cs_revoke(S1_SLOT_A) != 1) { ok = 0; why = "cross revoke count"; }
+    if (ok && it_cs_mint_into(IRIS_CPTR_TEST_PROC, T289_TSLOT, S1_SLOT_A,
+                              RIGHT_SAME_RIGHTS) != 0) {
+        ok = 0; why = "cross slot not freed by revoke";
+    }
+    /* A survives the revoke (it is the invoked node, not a descendant). */
+    if (ok && !it_ep_alive(S1_SLOT_A)) { ok = 0; why = "invoked node lost"; }
+
+    /* Cleanup: revoke the fresh cross child, then drop A. */
+    if (ok) (void)it_cs_revoke(S1_SLOT_A);
+    it_slot_delete(S1_SLOT_A);
+    (void)it_sys1(SYS_UNTYPED_RESET, su);
+    it_close(&su_h);
+    if (ok) it_pass("T289"); else it_fail("T289", why);
+}
+
+/* ── T290: Untyped is the MDB ancestor of its retyped objects ─────────────── */
+static void test_t290(void) {
+    int ok = 1;
+    const char *why = "untyped ancestor";
+    long su = s1_sub_ut(65536);
+    if (su < 0) { it_fail("T290", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    /* Carve a SECOND untyped as a CSpace slot (child of su's slot), then
+     * retype an endpoint FROM that slot: the endpoint is an MDB child of the
+     * sub-untyped slot.  Copy it once more (grandchild of the untyped). */
+    if (it_retype2_at(su, IRIS_KOBJ_UNTYPED, S1_SLOT_A, 1u, 8192) != 0) { ok = 0; why = "sub-untyped"; }
+    if (ok && it_retype2_at((long)S1_SLOT_A, IRIS_KOBJ_ENDPOINT, S1_SLOT_B, 1u, 0) != 0) { ok = 0; why = "retype ep"; }
+    if (ok && it_cs_mint(S1_SLOT_B, S1_SLOT_C, RIGHT_SAME_RIGHTS, 0) != 0) { ok = 0; why = "copy ep"; }
+    if (ok && !(it_ep_alive(S1_SLOT_B) && it_ep_alive(S1_SLOT_C))) { ok = 0; why = "ep not alive"; }
+
+    /* RESET of the sub-untyped must fail while its retyped objects live. */
+    if (ok && it_sys1(SYS_UNTYPED_RESET, (long)S1_SLOT_A) != (long)IRIS_ERR_BUSY) {
+        ok = 0; why = "reset not busy with children";
+    }
+
+    /* Revoke the sub-untyped CAPABILITY: its entire retyped descendance
+     * (endpoint + copy) is destroyed; the untyped survives.  Authority loss
+     * is functional (both endpoint CPtrs stop resolving). */
+    if (ok && it_cs_revoke(S1_SLOT_A) != 2) { ok = 0; why = "untyped revoke count"; }
+    if (ok && !(it_ep_dead(S1_SLOT_B) && it_ep_dead(S1_SLOT_C))) { ok = 0; why = "objects survived revoke"; }
+
+    /* With the descendance gone, the objects' destructors returned their
+     * storage: RESET now succeeds and the region is reusable. */
+    if (ok && it_sys1(SYS_UNTYPED_RESET, (long)S1_SLOT_A) != 0) { ok = 0; why = "reset after revoke"; }
+    if (ok && it_retype2_at((long)S1_SLOT_A, IRIS_KOBJ_ENDPOINT, S1_SLOT_B, 1u, 0) != 0) { ok = 0; why = "reuse"; }
+
+    it_slot_delete(S1_SLOT_B);
+    it_slot_delete(S1_SLOT_A);
+    (void)it_sys1(SYS_UNTYPED_RESET, su);
+    it_close(&su_h);
+    if (ok) it_pass("T290"); else it_fail("T290", why);
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -18728,6 +18903,10 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t285();
     test_t286();
     test_t287();
+    /* Fase S3 — native MDB/CDT, cross-process revoke. */
+    test_t288();
+    test_t289();
+    test_t290();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
