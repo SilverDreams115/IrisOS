@@ -212,7 +212,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_main.c
 TEST_UNIT_BIN   := $(BUILD_DIR)/test_unit
 
-.PHONY: all dirs run run-headless clean help check smoke smoke-runtime smoke-runtime-selftests config-sync test-unit
+.PHONY: all dirs run run-headless clean help check check-purity smoke smoke-runtime smoke-runtime-selftests config-sync test-unit
 
 all: config-sync $(BOOT_APP) $(KERNEL_DST)
 
@@ -689,6 +689,11 @@ check: config-sync $(KERNEL_ELF)
 	@echo
 	@echo '== Sections =='
 	readelf -S $(KERNEL_ELF)
+
+# Guarda del charter de pureza seL4: los consumidores legacy de handle table /
+# kslab están congelados en scripts/purity_allowlist.txt (solo puede decrecer).
+check-purity:
+	bash scripts/check_purity.sh
 
 smoke:
 	bash scripts/smoke_local.sh

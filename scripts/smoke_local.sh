@@ -5,6 +5,9 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+echo "[smoke] purity gate (charter seL4 — allowlist congelada)"
+make check-purity
+
 echo "[smoke] clean build (default configuration)"
 make clean
 make

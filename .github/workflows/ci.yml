@@ -26,6 +26,9 @@ jobs:
             gnu-efi \
             make
 
+      - name: Purity gate (frozen legacy-consumer allowlist)
+        run: make check-purity
+
       - name: Clean build tree
         run: make clean
 
