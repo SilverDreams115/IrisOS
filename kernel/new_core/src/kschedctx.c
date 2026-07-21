@@ -75,7 +75,12 @@ void kschedctx_close(struct KSchedContext *sc) {
 
 iris_error_t kschedctx_configure(struct KSchedContext *sc,
                                    uint64_t budget, uint64_t period) {
-    if (!sc || budget == 0 || period == 0 || budget >= period)
+    /* Fase S2 (corrección I1): budget <= period, estilo MCS.  budget == period
+     * es una reserva de CPU completa (100%): válida.  El scheduler decrementa
+     * remaining por tick y refila en el límite del período; con budget==period
+     * el hilo nunca agota su budget dentro de un período, que es exactamente el
+     * comportamiento de una reserva total — no rompe ninguna invariancia. */
+    if (!sc || budget == 0 || period == 0 || budget > period)
         return IRIS_ERR_INVALID_ARG;
     uint64_t flags = irq_spinlock_lock(&sc->lock);
     sc->budget_ticks     = budget;

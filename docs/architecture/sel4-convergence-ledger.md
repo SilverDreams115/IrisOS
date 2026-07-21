@@ -28,7 +28,13 @@ reservado, sin funcionalidad) · `REMOVED` (borrado).
 | `SYS_UNTYPED_RETYPE` (87) handle-publishing | publica autoridad como handle | tests/authority suite (UNTYPED/FRAME/SC) | RETYPE2 | CSpace-only ABI | para tipos migrados: ya rechaza | MIGRATING |
 | `SYS_SC_CREATE` (83) | create global de SC | ninguno | RETYPE2 + SC_CONFIGURE + SC_BIND | S2 | — | RETIRED (Fase S2) |
 | `kschedctx_alloc` (kslab SC) | payload SC en heap global | ninguno | RETYPE2 (`kschedctx_alloc_at`) | S2 | sí | REMOVED (Fase S2) |
-| `struct task tasks[TASK_MAX]` (pool estático) | backing de kstack + arch-context + scheduler linkage | scheduler, thread create | TCB desde Untyped (userland aporta) | S2 (resto) / process-server | sí — no nuevos consumidores fuera del scheduler | ACTIVE_LEGACY (pool estático acotado, NO kslab, NO allocator dinámico) |
+| `struct task tasks[TASK_MAX]` (pool estático) | backing de kstack + arch-context + scheduler linkage | scheduler, thread create | TCB payload desde Untyped; array → registro de punteros/generation | S2 (run-queue index→pointer + productive-path Untyped source) | sí — no nuevos consumidores fuera del scheduler | ACTIVE_LEGACY (pool estático acotado, NO kslab; storage de TCB runtime — REMOVE pendiente) |
+| `task_rsp[TASK_MAX]` (array RSP index-keyed) | RSP de kernel por slot, paralelo al array | scheduler context switch | `struct task.saved_krsp` | S2 inc.2 | — | REMOVED (Fase S2 inc.2 — primera indirección del scheduler) |
+| run-queue `next[TASK_MAX]`/`queued[TASK_MAX]` + `(t - tasks)`/`&tasks[idx]` | identidad de run-queue por índice de array | rq_enqueue/remove/dequeue | listas intrusivas por puntero (`t->rq_next`/`rq_queued`) | S2 inc.2B | — | REMOVED (Fase S2 inc.2B Bloque A — run queue 100% por puntero) |
+| `tasks[j]` timeout scans (tick/idle) + slot allocation | iteración sobre el array de backing | scheduler_tick / sched_handle_idle / task alloc | iteración sobre `ktcb_registry[]` (punteros+generation) | S2 inc.2 Etapa C | — | REMOVED como identidad (Fase S2 Etapa C — todo va por `ktcb_registry[i].tcb`) |
+| `KTcbRegistrySlot ktcb_registry[TASK_MAX]` | registro de referencias (tcb*/generation/occupied/bootstrap), NO payload | scheduler/alloc/lookup | mismo registro; capacidad transitoria | — | límite TASK_MAX transitorio | TRANSITIONAL_IMPLEMENTATION_CAPACITY (Etapa C) |
+| `struct task tasks[TASK_MAX]` (payload estático) | backing real del TCB (registros/kstack ptr/scheduler state) apuntado por `registry[i].tcb` | registry (scaffolding) | KTCB canónico en Untyped (Etapa D) | S2 inc.2 Etapa D | sí — scaffolding, sin consumidores nuevos | ACTIVE_LEGACY (scaffolding; REMOVE en Etapa D, salvo idle bootstrap) |
+| `SYS_THREAD_SET_SC` (85) | self-bind SC | código sched existente | `SYS_SC_BIND(sc,tcb)` por CPtr | — | sí — congelado | FROZEN (Fase S2 inc.1) |
 | `KTcb` payload (kslab) | objeto TCB cap-visible en heap | thread create | retype KOBJ_TCB desde Untyped | S2 (resto) | sí | ACTIVE_LEGACY (kslab; migración pendiente increment 2) |
 | derivación handle-tree para tipos migrados (EP/Notif/Reply/CNode/TCB/SC) | árbol de derivación oculto en handle table | SYS_CAP_DERIVE | CDT/MDB nativo en slots de CNode | S2 (Bloque D) | sí | ACTIVE_LEGACY (contador `legacy_handle_derivation_migrated` observable, debe → 0) |
 | root CNode at `kprocess_alloc` (kslab) | CNode runtime fuera de Untyped | todo spawn | spawner aporta CNode retipado (process-server) | process-server | sí | ACTIVE_LEGACY |
@@ -40,6 +46,26 @@ reservado, sin funcionalidad) · `REMOVED` (borrado).
 | `KInitrdEntry` + `SYS_INITRD_*` | filesystem-aware kernel state | loader | VFS/loader userland | process-server | sí | ACTIVE_LEGACY |
 | kernel stacks / PML4 desde reserva PMM | asignación fuera de Untyped | task/process create | TCB/VSpace desde Untyped | process/frame phases | sí | ACTIVE_LEGACY |
 | `KChannel` | — | — | endpoints | Fase 13 | — | REMOVED |
+
+## Checkpoint C.1 — Versioned user-buffer ABI (Fase S2)
+
+`SYS_UNTYPED_QUERY` (arg0 = kind|version<<16|size<<32) y `SYS_RESOURCE_INFO`
+(arg2 = user_size) conocen el tamaño declarado por el caller y escriben como
+máximo `min(user_size, kernel_size)` (prefix-compatible): un caller
+antiguo/menor no puede desbordarse.  Header mínimo (8 B) y versión no soportada
+→ `IRIS_ERR_INVALID_ARG` sin escribir.  Helper `copy_versioned_to_user`.
+Auditoría de queries versionadas:
+
+| Query | Version | Size field | Copy bound | Prefix-compat | Action |
+|---|---|---|---|---|---|
+| SYS_UNTYPED_QUERY (1..4) | arg0 bits16-31 | arg0 high32 | min(user,kernel) | sí | HARDENED |
+| SYS_RESOURCE_INFO | struct.version | arg2 | min(user,kernel) | sí | HARDENED |
+| SYS_TCB_GET_INFO (iris_tcb_info) | — | fija | sizeof fija | n/a | FIXED-SIZE (estable, no crece) |
+| SYS_PROCESS_FAULT_INFO | — | FAULT_MSG_LEN fija | fija | n/a | FIXED-SIZE |
+| SYS_SCHED_INFO ext tiers | tier-gated | `want` acotado | acotado | parcial | REVISADO (acota por tier) |
+
+Test: T283 (QABI1–10 + guard canaries).  Nuevos campos futuros en un struct de
+query ya no pueden desbordar un caller que declara su tamaño.
 
 ## Guard de no-regresión
 

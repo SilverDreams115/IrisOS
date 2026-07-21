@@ -3,13 +3,13 @@
 
 #include <stdint.h>
 #include <iris/ipc_msg.h>
+#include <iris/nc/kobject.h>
+#include <iris/nc/spinlock.h>
 
 struct KProcess;
 struct KEndpoint;
-struct KObject;
 struct KSchedContext;
 struct KReply;
-struct KTcb;
 
 #define TASK_MAX              256
 #define TASK_STACK_SIZE       8192  /* kernel stack per task */
@@ -30,6 +30,17 @@ typedef enum {
     TASK_BUDGET_EXHAUSTED,  /* Ph75: SC budget spent; sleeping until refill tick */
     TASK_BLOCKED_REPLY,     /* Ph85: EP_CALL caller blocked waiting for KReply invocation */
     TASK_SUSPENDED,         /* Ph96: explicitly suspended via SYS_TCB_SUSPEND */
+    /*
+     * Fase S2 D2 — execution ended but the KTCB OBJECT may still be alive
+     * (referenced by surviving capabilities).  TERMINATED != destroyed:
+     *   - not in any run/wait/reap queue;
+     *   - not holding a registry slot (scheduler capacity released);
+     *   - execution resources (kstack/addrspace) freed;
+     *   - a surviving cap can still SYS_TCB_GET_INFO it (reports TERMINATED);
+     *   - the backing storage is freed only by the final destructor.
+     * TASK_DEAD remains the "free backing slot" marker (pre-creation state).
+     */
+    TASK_TERMINATED,
     TASK_DEAD,
 } task_state_t;
 
@@ -51,7 +62,28 @@ struct cpu_context {
     uint64_t rflags;   /* IF state per-task — prevents IRQ preemption contamination */
 } __attribute__((packed));
 
+/*
+ * Fase S2 D2 — the canonical TCB.
+ *
+ * `struct task` IS the KTCB: it carries the KObject header at offset 0 and all
+ * execution state directly.  The old `struct KTcb { KObject; struct task* }`
+ * wrapper is REMOVED — there is one structure, one object identity.
+ *
+ * Four separate lifetimes (see docs/architecture/sel4-task-model.md):
+ *   1. Object    — kobject refcount (creation ref + capability refs); ends at
+ *                  the final destructor.
+ *   2. Execution — configure/resume..suspend/terminate; the scheduler holds
+ *                  ONE "execution ref" dropped at termination.
+ *   3. Registry  — a scheduler-identity slot held only while runnable/alive;
+ *                  released at termination (NOT at last cap).
+ *   4. Storage   — the backing slot; freed by the destructor, reusable only
+ *                  after the last reference (D2 transitional static backing;
+ *                  D/E moves it to Untyped).
+ */
 struct task {
+    struct KObject    base;        /* MUST be offset 0 — KOBJ_TCB object header */
+    irq_spinlock_t    obj_lock;    /* guards object-identity fields */
+    uint32_t          object_generation; /* +1 on final destroy (stale-cap defense) */
     uint32_t          id;
     task_state_t      state;
     task_ring_t       ring;
@@ -71,6 +103,20 @@ struct task {
      * Both fields are 0 for an uninitialized/dead task slot. */
     uint8_t          *kstack;
     uint64_t          kstack_phys;
+    /* Fase S2 (scheduler indirection): saved kernel RSP across a context
+     * switch.  Replaces the parallel index-keyed task_rsp[TASK_MAX] array — the
+     * scheduler no longer derives a slot index by pointer arithmetic
+     * (old - tasks) to find where to save/restore the kernel stack pointer;
+     * it lives inside the TCB backing itself.  This is the first structural
+     * decoupling of scheduler identity from the static-array index. */
+    uint64_t          saved_krsp;
+    /* Fase S2 Inc.2B (Bloque A): intrusive run-queue links.  The per-CPU run
+     * queue no longer uses index-keyed parallel arrays (next[TASK_MAX] /
+     * queued[TASK_MAX]) nor (t - tasks) pointer arithmetic; each TCB carries
+     * its own FIFO link + queued flag, so scheduling identity is by pointer,
+     * not by position in a static array. */
+    struct task      *rq_next;      /* next in same-priority FIFO, NULL = tail */
+    uint8_t           rq_queued;    /* 1 while enqueued in a run queue */
 
     /* user entry point and virtual stack info (ring 3 only) */
     uint64_t          user_entry;
@@ -131,8 +177,12 @@ struct task {
     struct KReply *ep_reply_obj;
     uint32_t       ep_reply_val;    /* raw CPtr/handle value the receiver passed —
                                      * echoed to the server in msg.attached_handle */
-    /* Ph96: TCB capability — retained ref; NULL for kernel tasks and tasks without KTcb */
-    struct KTcb   *ktcb;
+    /* Fase S2 D2: `struct task` IS the KTCB — no separate wrapper.  A cap to
+     * this thread is a KOBJ_TCB cap on &base.  `configured`/`terminal` flag
+     * the object/execution state; `reg_slot` is the registry witness. */
+    uint8_t        configured;   /* Fase S2: TCB_CONFIGURE committed */
+    uint8_t        terminal;     /* execution ended (TERMINATED) */
+    int32_t        reg_slot;     /* registry index while registered, else -1 */
 
     /* SMP: CPU this task is homed to (its run queue owner).
      * Set at creation time; stays constant for the task's lifetime. */
@@ -145,6 +195,16 @@ struct task {
 
     struct task      *next;
 };
+
+/* Fase S2 D2: canonical KTCB name for the unified structure. */
+typedef struct task KTCB;
+
+/* KObject header must be at offset 0 so a KOBJ_TCB cap (KObject*) aliases the
+ * KTCB, and cpu_context keeps its assembly-visible packed layout. */
+_Static_assert(__builtin_offsetof(struct task, base) == 0u,
+               "KTCB object header must be at offset 0");
+_Static_assert(sizeof(struct cpu_context) == 64u,
+               "cpu_context layout is ABI (context_switch.S offsets 0..56)");
 
 void         task_init(void);
 struct task *task_find_by_id(uint32_t id);

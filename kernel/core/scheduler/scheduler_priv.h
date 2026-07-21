@@ -28,21 +28,50 @@
  */
 struct CpuRunQueue {
     irq_spinlock_t lock;
-    int            head[256];      /* head task index per priority, -1=empty */
-    int            tail[256];      /* tail task index per priority, -1=empty */
-    int            next[TASK_MAX]; /* next index in same-prio FIFO, -1=end   */
-    int            queued[TASK_MAX]; /* 1 if task is enqueued                 */
+    /* Fase S2 Inc.2B: pointer-based FIFO per priority.  The parallel
+     * index-keyed arrays (next[TASK_MAX]/queued[TASK_MAX]) are retired — the
+     * per-task FIFO link and queued flag live inside struct task (rq_next /
+     * rq_queued), so the run queue no longer derives identity from a static
+     * array position. */
+    struct task   *head[256];      /* head task per priority, NULL=empty */
+    struct task   *tail[256];      /* tail task per priority, NULL=empty */
     uint64_t       mask[4];        /* 256-bit: bit p set ↔ prio-p non-empty  */
 };
 
 /* ── Shared state (defined in task_lifecycle.c) ──────────────────────────── */
 
-extern struct task         tasks[TASK_MAX];
+/*
+ * Fase S2 Inc.2 (Etapa C) — KTCB registry.
+ *
+ * The registry is a table of REFERENCES (pointer + generation + flags), NOT of
+ * TCB payload.  It is the sole iteration/allocation/lookup surface for the
+ * scheduler; nothing derives a TCB's identity from an array position anymore.
+ *
+ * TRANSITIONAL: during Etapa C the `tcb` pointers still target the static
+ * `tasks[]` backing (scaffolding kept only to keep boot green while consumers
+ * migrate).  Etapa D re-points them at Untyped-carved KTCB objects and deletes
+ * the static payload — a localized change, because every consumer already goes
+ * through `ktcb_registry[i].tcb`.
+ *
+ * generation bumps on every slot reset so a stale index/token is detectable;
+ * it never substitutes for capability authority.
+ */
+typedef struct KTcbRegistrySlot {
+    struct task *tcb;         /* NULL only before init; else the TCB backing */
+    uint32_t     generation;  /* +1 on every reset — stale-token witness */
+    uint8_t      occupied;    /* 1 while a live/reaping task holds the slot */
+    uint8_t      bootstrap;   /* 1 for the idle task (slot 0) — never retyped */
+} KTcbRegistrySlot;
+
+extern KTcbRegistrySlot    ktcb_registry[TASK_MAX];
+extern struct task         ktcb_backing[TASK_MAX]; /* Etapa C scaffolding (REMOVE in D) */
 extern struct task        *current_task;
 extern struct task        *task_list_head;
 extern struct task        *task_list_tail;
 extern uint32_t            next_id;
-extern uint64_t            task_rsp[TASK_MAX];
+/* Fase S2: task_rsp[TASK_MAX] retired — saved kernel RSP lives in
+ * struct task.saved_krsp (scheduler indirection: no index-keyed parallel
+ * array, no (t - tasks) pointer arithmetic to reach it). */
 extern uint64_t            kernel_cr3;
 extern uint8_t             initial_fpu_state[512];
 

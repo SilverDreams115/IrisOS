@@ -1,14 +1,22 @@
 #include <iris/nc/ktcb.h>
 #include <iris/nc/kobject.h>
-#include <iris/kslab.h>
 #include <iris/task.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
-static _Atomic uint32_t ktcb_live;
+/*
+ * Fase S2 D2 — KTCB object identity ops.
+ *
+ * The KTCB IS `struct task` (KObject at offset 0).  These ops manage the
+ * OBJECT lifetime only; execution teardown (queues, resources, registry) is
+ * done by task_lifecycle.c before the scheduler drops its execution reference.
+ * The destructor runs when the last reference (execution + all caps) drops.
+ */
+
+static _Atomic uint32_t ktcb_live;       /* objects that exist (any lifetime) */
 static _Atomic uint32_t ktcb_hwm;
-static _Atomic uint32_t ktcb_retyped;
-static _Atomic uint32_t ktcb_destroyed;
+static _Atomic uint32_t ktcb_retyped;    /* objects created */
+static _Atomic uint32_t ktcb_destroyed;  /* final destructors run */
 
 uint32_t ktcb_live_count(void) {
     return atomic_load_explicit(&ktcb_live, memory_order_relaxed);
@@ -32,34 +40,22 @@ static void ktcb_live_inc(void) {
                                                   memory_order_relaxed)) { }
 }
 
-static void ktcb_destroy(struct KObject *obj) {
+/* Final destructor — implemented in task_lifecycle.c (it owns the backing
+ * pool + registry + resource-freeing).  Frees the backing slot for reuse. */
+void task_backing_free_on_destroy(struct task *t);
+
+static void ktcb_obj_destroy(struct KObject *obj) {
+    struct task *t = (struct task *)obj;   /* KObject at offset 0 */
     atomic_fetch_sub_explicit(&ktcb_live, 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&ktcb_destroyed, 1u, memory_order_relaxed);
-    kslab_free((struct KTcb *)obj, (uint32_t)sizeof(struct KTcb));
+    task_backing_free_on_destroy(t);
 }
 
-static const struct KObjectOps ktcb_ops = { .destroy = ktcb_destroy };
+static const struct KObjectOps ktcb_ops = { .destroy = ktcb_obj_destroy };
 
-struct KTcb *ktcb_alloc(struct task *t) {
-    if (!t) return 0;
-    struct KTcb *tcb = kslab_alloc((uint32_t)sizeof(struct KTcb));
-    if (!tcb) return 0;
-    kobject_init(&tcb->base, KOBJ_TCB, &ktcb_ops);
-    irq_spinlock_init(&tcb->lock);
-    tcb->task    = t;
-    tcb->task_id = t->id;
+void ktcb_object_init(struct task *t) {
+    if (!t) return;
+    kobject_init(&t->base, KOBJ_TCB, &ktcb_ops);  /* refcount = 1 (execution ref) */
+    irq_spinlock_init(&t->obj_lock);
     ktcb_live_inc();
-    return tcb;
-}
-
-void ktcb_nullify(struct KTcb *tcb) {
-    if (!tcb) return;
-    uint64_t flags = irq_spinlock_lock(&tcb->lock);
-    tcb->task = 0;
-    irq_spinlock_unlock(&tcb->lock, flags);
-}
-
-void ktcb_free(struct KTcb *tcb) {
-    if (!tcb) return;
-    kobject_release(&tcb->base);
 }

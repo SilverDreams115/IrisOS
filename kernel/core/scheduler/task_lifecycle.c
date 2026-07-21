@@ -27,12 +27,122 @@
 
 /* ── Shared state definitions ────────────────────────────────────────────── */
 
-struct task         tasks[TASK_MAX];
+/*
+ * Fase S2 D2 — two independent pools with separated lifetimes:
+ *   ktcb_backing[]  — the KTCB objects (backing storage).  A slot is free when
+ *                     state == TASK_DEAD; it is freed by the OBJECT destructor
+ *                     (last reference), NOT at thread termination.  A
+ *                     TERMINATED-but-cap-held TCB pins its backing slot.
+ *   ktcb_registry[] — scheduler identity (pointer+generation+occupied).  A slot
+ *                     is held only while the thread is registered (runnable/
+ *                     alive) and RELEASED AT TERMINATION, so a surviving cap to
+ *                     a terminated TCB never consumes scheduler capacity.
+ * Every other translation unit now goes through ktcb_registry[i].tcb (see
+ * scheduler.c) — there is no remaining external reference to the raw backing
+ * array by position, so ktcb_backing[] is the sole name; it is scaffolding
+ * removed in D/E when backing moves to Untyped.
+ */
+struct task         ktcb_backing[TASK_MAX];  /* backing pool (D/E → Untyped) */
+KTcbRegistrySlot    ktcb_registry[TASK_MAX];
 struct task        *current_task    = 0;
+
+/* ── Fase S2 D2 — registry + backing instrumentation (QUERY kind 4) ── */
+static _Atomic uint32_t reg_active;
+static _Atomic uint32_t reg_hwm;
+static _Atomic uint32_t reg_exhaustions;
+static _Atomic uint32_t reg_generation_mismatch;
+
+void task_registry_stats(uint32_t *active, uint32_t *hwm,
+                         uint32_t *exhaustions, uint32_t *gen_mismatch) {
+    if (active)       *active       = atomic_load_explicit(&reg_active, memory_order_relaxed);
+    if (hwm)          *hwm          = atomic_load_explicit(&reg_hwm, memory_order_relaxed);
+    if (exhaustions)  *exhaustions  = atomic_load_explicit(&reg_exhaustions, memory_order_relaxed);
+    if (gen_mismatch) *gen_mismatch = atomic_load_explicit(&reg_generation_mismatch, memory_order_relaxed);
+}
+
+/*
+ * Registry lifetime — allocate a scheduler-identity slot for t.  Independent
+ * of the backing slot: a new task's registry index need not equal its backing
+ * index, so a reused registry slot can point at a fresh backing while an old
+ * terminated TCB still pins a different backing slot (T287).  Records the slot
+ * in t->reg_slot.  Returns 0 on success, -1 (exhaustion) otherwise.
+ */
+static int task_registry_alloc(struct task *t) {
+    for (int i = 1; i < TASK_MAX; i++) {   /* slot 0 = idle bootstrap */
+        if (!ktcb_registry[i].occupied) {
+            ktcb_registry[i].tcb      = t;
+            ktcb_registry[i].occupied = 1;
+            t->reg_slot = i;
+            uint32_t n = atomic_fetch_add_explicit(&reg_active, 1u, memory_order_relaxed) + 1u;
+            uint32_t hw = atomic_load_explicit(&reg_hwm, memory_order_relaxed);
+            while (n > hw &&
+                   !atomic_compare_exchange_weak_explicit(&reg_hwm, &hw, n,
+                                                          memory_order_relaxed,
+                                                          memory_order_relaxed)) { }
+            return 0;
+        }
+    }
+    atomic_fetch_add_explicit(&reg_exhaustions, 1u, memory_order_relaxed);
+    return -1;
+}
+
+/* Registry lifetime end — release t's scheduler-identity slot (at termination).
+ * Bumps generation so a stale registry token is detectable.  The object stays
+ * alive if caps reference it; only its scheduler identity is gone. */
+static void task_registry_release(struct task *t) {
+    int i = t ? t->reg_slot : -1;
+    if (i < 0 || i >= TASK_MAX) return;
+    if (ktcb_registry[i].tcb == t && ktcb_registry[i].occupied) {
+        ktcb_registry[i].occupied = 0;
+        ktcb_registry[i].tcb      = 0;
+        ktcb_registry[i].generation++;
+        atomic_fetch_sub_explicit(&reg_active, 1u, memory_order_relaxed);
+    }
+    t->reg_slot = -1;
+}
+
+/* Bootstrap: bind registry slot 0 to the idle task (never reused). */
+static void task_registry_bind_idle(struct task *idle) {
+    ktcb_registry[0].tcb       = idle;
+    ktcb_registry[0].occupied  = 1;
+    ktcb_registry[0].bootstrap = 1;
+    idle->reg_slot = 0;
+    atomic_fetch_add_explicit(&reg_active, 1u, memory_order_relaxed);
+}
+
+/* Storage lifetime — find a free backing slot (state == TASK_DEAD).  Slot 0 is
+ * the idle bootstrap exception.  awaiting_reap excludes a slot that a
+ * self-exited task has already marked TASK_DEAD but the deferred reaper has
+ * not yet torn down (A1.11: reusing it early would wipe a still-referenced
+ * t->process out from under the pending reap).  Returns NULL when the
+ * backing pool is full. */
+static struct task *task_backing_find_free(void) {
+    for (int i = 1; i < TASK_MAX; i++) {
+        if (ktcb_backing[i].state == TASK_DEAD && !ktcb_backing[i].awaiting_reap)
+            return &ktcb_backing[i];
+    }
+    return 0;
+}
+
+/*
+ * Allocate a fresh TCB: a free backing slot (storage) plus a free registry
+ * slot (scheduler identity).  *idx_out receives the BACKING array index (used
+ * to address the per-slot kstack pool) — independent of the registry slot
+ * chosen for t (t->reg_slot); see the Etapa C/D split above.  Returns NULL on
+ * either exhaustion (backing pool full, or registry full).
+ */
+static struct task *task_registry_find_free(int *idx_out) {
+    struct task *t = task_backing_find_free();
+    if (!t) return 0;
+    if (task_registry_alloc(t) != 0) return 0;
+    *idx_out = (int)(t - ktcb_backing);
+    return t;
+}
+
 struct task        *task_list_head  = 0;
 struct task        *task_list_tail  = 0;
 uint32_t            next_id         = 0;
-uint64_t            task_rsp[TASK_MAX];
+/* Fase S2: task_rsp[TASK_MAX] retired — kernel RSP moved into struct task.saved_krsp */
 uint64_t            kernel_cr3      = 0;
 
 /*
@@ -111,24 +221,23 @@ uint32_t sched_duplicate_enqueue_count(void) {
 void rq_enqueue(struct task *t) {
     struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
     if (!rq) return;
-    int idx  = (int)(t - tasks);
     int prio = (int)(uint8_t)t->priority;
     uint64_t flags = irq_spinlock_lock(&rq->lock);
-    if (rq->queued[idx]) {
+    if (t->rq_queued) {
         /* S4 guard engaged: task already queued — reject the duplicate. */
         atomic_fetch_add_explicit(&sched_dup_enq, 1u, memory_order_relaxed);
         irq_spinlock_unlock(&rq->lock, flags);
         return;
     }
-    rq->queued[idx] = 1;
-    rq->next[idx]   = -1;
-    if (rq->head[prio] == -1) {
-        rq->head[prio] = idx;
-        rq->tail[prio] = idx;
+    t->rq_queued = 1;
+    t->rq_next   = 0;
+    if (rq->head[prio] == 0) {
+        rq->head[prio] = t;
+        rq->tail[prio] = t;
         rq->mask[prio >> 6] |= (1ULL << (prio & 63));
     } else {
-        rq->next[rq->tail[prio]] = idx;
-        rq->tail[prio]           = idx;
+        rq->tail[prio]->rq_next = t;
+        rq->tail[prio]          = t;
     }
     rq_live_inc();
     irq_spinlock_unlock(&rq->lock, flags);
@@ -137,21 +246,20 @@ void rq_enqueue(struct task *t) {
 void rq_remove(struct task *t) {
     struct CpuRunQueue *rq = cpu_local[t->home_cpu].rq;
     if (!rq) return;
-    int idx = (int)(t - tasks);
     uint64_t flags = irq_spinlock_lock(&rq->lock);
-    if (!rq->queued[idx]) { irq_spinlock_unlock(&rq->lock, flags); return; }
+    if (!t->rq_queued) { irq_spinlock_unlock(&rq->lock, flags); return; }
     int prio = (int)(uint8_t)t->priority;
-    int prev = -1, cur = rq->head[prio];
-    while (cur != -1 && cur != idx) { prev = cur; cur = rq->next[cur]; }
-    if (cur == -1) { rq->queued[idx] = 0; rq_live_dec(); irq_spinlock_unlock(&rq->lock, flags); return; }
-    int nxt = rq->next[idx];
-    if (prev == -1)              rq->head[prio] = nxt;
-    else                         rq->next[prev]  = nxt;
-    if (rq->tail[prio] == idx)   rq->tail[prio]  = prev;
-    if (rq->head[prio] == -1)
+    struct task *prev = 0, *cur = rq->head[prio];
+    while (cur && cur != t) { prev = cur; cur = cur->rq_next; }
+    if (!cur) { t->rq_queued = 0; rq_live_dec(); irq_spinlock_unlock(&rq->lock, flags); return; }
+    struct task *nxt = t->rq_next;
+    if (!prev)                   rq->head[prio] = nxt;
+    else                         prev->rq_next  = nxt;
+    if (rq->tail[prio] == t)     rq->tail[prio]  = prev;
+    if (rq->head[prio] == 0)
         rq->mask[prio >> 6] &= ~(1ULL << (prio & 63));
-    rq->queued[idx] = 0;
-    rq->next[idx]   = -1;
+    t->rq_queued = 0;
+    t->rq_next   = 0;
     rq_live_dec();
     irq_spinlock_unlock(&rq->lock, flags);
 }
@@ -164,18 +272,18 @@ struct task *rq_dequeue_best(void) {
         if (!rq->mask[w]) continue;
         int bit  = 63 - __builtin_clzll(rq->mask[w]);
         int prio = w * 64 + bit;
-        int idx  = rq->head[prio];
-        int nxt  = rq->next[idx];
+        struct task *t   = rq->head[prio];
+        struct task *nxt = t->rq_next;
         rq->head[prio] = nxt;
-        if (nxt == -1) {
-            rq->tail[prio] = -1;
+        if (nxt == 0) {
+            rq->tail[prio] = 0;
             rq->mask[w] &= ~(1ULL << bit);
         }
-        rq->queued[idx] = 0;
-        rq->next[idx]   = -1;
+        t->rq_queued = 0;
+        t->rq_next   = 0;
         rq_live_dec();
         irq_spinlock_unlock(&rq->lock, flags);
-        return &tasks[idx];
+        return t;
     }
     irq_spinlock_unlock(&rq->lock, flags);
     return 0;
@@ -197,7 +305,12 @@ int rq_top_priority(void) {
 }
 
 void task_wakeup(struct task *t) {
-    if (!t || t->state == TASK_DEAD) return;
+    /* Fase S2 D2: t->terminal guards against a wakeup arriving mid-teardown
+     * (e.g. kreply_cancel_caller waking its own caller when that caller is
+     * the very task task_execution_teardown_off_cpu is unwinding) — state
+     * alone is not enough once TASK_TERMINATED exists between READY/BLOCKED*
+     * and TASK_DEAD; a terminal task must never re-enter the run queue. */
+    if (!t || t->state == TASK_DEAD || t->terminal) return;
     t->state = TASK_READY;
     if (t != task_list_head) {
         rq_enqueue(t);
@@ -207,7 +320,7 @@ void task_wakeup(struct task *t) {
 }
 
 void task_suspend(struct task *t) {
-    if (!t || t->state == TASK_DEAD) return;
+    if (!t || t->state == TASK_DEAD || t->terminal) return;
     t->state = TASK_SUSPENDED;
     rq_remove(t);
 }
@@ -226,8 +339,10 @@ static void idle_task(void) {
 
 struct task *task_find_by_id(uint32_t id) {
     for (int i = 0; i < TASK_MAX; i++) {
-        if (tasks[i].state != TASK_DEAD && tasks[i].id == id)
-            return &tasks[i];
+        if (!ktcb_registry[i].occupied) continue;
+        struct task *t = ktcb_registry[i].tcb;
+        if (t->state != TASK_DEAD && t->id == id)
+            return t;
     }
     return 0;
 }
@@ -238,16 +353,40 @@ void task_init_fpu_state(struct task *t) {
     for (uint32_t i = 0; i < 512; i++) dst[i] = src[i];
 }
 
+/*
+ * Fase S2 D2 — initialize a backing slot to the free (TASK_DEAD) state.  Used
+ * ONLY at boot (task_init).  Does NOT touch the registry (separate pool) and
+ * does NOT free the kstack (fresh slots have none).  The DEATH path no longer
+ * calls this: a terminated object's backing is freed by the destructor.
+ */
 void task_reset_slot(struct task *t) {
     if (!t) return;
-    int idx = (int)(t - tasks);
-    rq_remove(t);  /* ensure task is dequeued before slot is zeroed */
-    kstack_free(t, idx);
     uint8_t *raw = (uint8_t *)t;
     for (uint32_t i = 0; i < sizeof(*t); i++) raw[i] = 0;
     t->state    = TASK_DEAD;
     t->ring     = TASK_RING0;
-    task_rsp[idx] = 0;
+    t->reg_slot = -1;
+    t->saved_krsp = 0;
+}
+
+/*
+ * Fase S2 D2 — the KTCB object destructor (called from ktcb.c when the last
+ * reference drops).  This is the STORAGE lifetime end: the backing slot is
+ * zeroed and returned to TASK_DEAD (reusable), the object generation bumped so
+ * a stale cap/token can never alias the next object placed here.  By this
+ * point execution teardown already freed the kstack/addrspace and released the
+ * registry slot, so nothing here can be running or queued.  (D/E: this will
+ * instead free the Untyped child.)
+ */
+void task_backing_free_on_destroy(struct task *t) {
+    if (!t) return;
+    uint32_t gen = t->object_generation + 1u;
+    uint8_t *raw = (uint8_t *)t;
+    for (uint32_t i = 0; i < sizeof(*t); i++) raw[i] = 0;
+    t->object_generation = gen;
+    t->state    = TASK_DEAD;
+    t->ring     = TASK_RING0;
+    t->reg_slot = -1;
 }
 
 void unlink_task(struct task *t) {
@@ -312,33 +451,86 @@ static void task_release_sched_ctx(struct task *t) {
     }
 }
 
-/* Nullify the KTcb task pointer and release the task's lifetime ref. */
-static void task_release_ktcb(struct task *t) {
-    if (!t->ktcb) return;
-    ktcb_nullify(t->ktcb);
-    kobject_release(&t->ktcb->base);
-    t->ktcb = 0;
+static void free_user_stack_pages(struct task *t) {
+    if (!t || t->ustack_phys == 0 || t->user_stack_pages == 0) return;
+    pmm_free_contig(t->ustack_phys, t->user_stack_pages);
 }
 
-/* Called from reap_pending_dead_task, which runs on the next scheduler tick
- * after task_exit_current sets TASK_DEAD.  The reaped task is always off-CPU
- * at that point, so task_reset_slot needs no additional lock. */
-static void reap_dead_task_off_cpu(struct task *t) {
-    if (!t || t->state != TASK_DEAD) return;
+static void free_user_text_pages(struct task *t) {
+    if (!t || t->utext_phys == 0 || t->utext_pages == 0) return;
+    pmm_free_contig(t->utext_phys, t->utext_pages);
+}
+
+/*
+ * Fase S2 D2 — execution teardown (shared by self-exit and external kill).
+ * Ends the EXECUTION, REGISTRY and (frees) execution resources, but NOT the
+ * object: it drops the scheduler's execution reference last, so the object is
+ * destroyed here only if no capability references it.  A surviving cap keeps
+ * the (TERMINATED) object — and its backing slot — alive until the cap closes.
+ *
+ * Preconditions: t is OFF-CPU (never the running task on its own kstack).
+ */
+static void task_execution_teardown_off_cpu(struct task *t) {
+    if (!t || t->terminal) return;
 
     struct KProcess *proc = t->process;
-    int is_last = proc && (proc->thread_count == 0);
 
-    if (is_last)
+    /*
+     * Make t unreachable and unwakeable FIRST, atomically with respect to a
+     * timer IRQ, before any of the slower calls below (kprocess_teardown,
+     * kprocess_reap_address_space especially) that can run long enough to be
+     * interrupted.  scheduler_tick and sched_handle_idle iterate ktcb_registry
+     * for occupied slots and call task_wakeup() on whatever they find
+     * sleeping, blocked, or budget-exhausted with an elapsed wake_tick; if
+     * that scan still finds t occupied, with its pre-kill blocked state and
+     * wake_tick intact, mid-teardown, task_wakeup() re-enqueues t into the
+     * run queue out from under the impending destroy.  Releasing the
+     * registry slot (so the scan skips t) and forcing TASK_TERMINATED (so
+     * task_wakeup's own state check no longer matches) closes that window.
+     * The old design routed every death path through task_reset_slot, which
+     * called rq_remove as a side effect; that no longer happens here, so
+     * rq_remove is explicit too (a no-op if t was never queued).
+     */
+    uint64_t irq_flags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(irq_flags) : : "memory");
+    rq_remove(t);
+    task_registry_release(t);
+    t->awaiting_reap = 0;
+    t->state    = TASK_TERMINATED;
+    t->terminal = 1;
+    __asm__ volatile ("pushq %0; popfq" : : "r"(irq_flags) : "memory");
+
+    task_cancel_blocked_waits(t);
+    free_user_stack_pages(t);
+    free_user_text_pages(t);
+
+    int do_teardown = 0;
+    if (proc && proc->thread_count > 0) {
+        proc->thread_count--;
+        if (proc->thread_count == 0) do_teardown = 1;
+    }
+    if (do_teardown) {
+        kprocess_teardown(proc, t);
         kprocess_reap_address_space(proc);
+    }
 
     atomic_fetch_sub_explicit(&sched_live_count, 1u, memory_order_relaxed);
     unlink_task(t);
     task_release_sched_ctx(t);
-    task_reset_slot(t);
 
-    if (is_last)
+    /* Free the kernel stack (execution resource).  Slot index = backing index
+     * (t is within ktcb_backing[]); kstack_free tolerates an unallocated one. */
+    int idx = (int)(t - ktcb_backing);
+    kstack_free(t, idx);
+    t->kstack = 0; t->kstack_phys = 0;
+
+    if (do_teardown)
         kprocess_free(proc);
+
+    /* Drop the scheduler's execution reference LAST.  If no cap references the
+     * object, this triggers task_backing_free_on_destroy (slot → TASK_DEAD).
+     * A surviving cap keeps the TERMINATED object (and its backing) alive. */
+    kobject_release(&t->base);
 }
 
 /* Fase 16: reap-queue depth high-water, for lifecycle-churn diagnostics
@@ -384,17 +576,7 @@ void reap_pending_dead_task(void) {
         reap_enqueue_dead(t);
         return;
     }
-    reap_dead_task_off_cpu(t);
-}
-
-static void free_user_stack_pages(struct task *t) {
-    if (!t || t->ustack_phys == 0 || t->user_stack_pages == 0) return;
-    pmm_free_contig(t->ustack_phys, t->user_stack_pages);
-}
-
-static void free_user_text_pages(struct task *t) {
-    if (!t || t->utext_phys == 0 || t->utext_pages == 0) return;
-    pmm_free_contig(t->utext_phys, t->utext_pages);
+    task_execution_teardown_off_cpu(t);
 }
 
 static void free_phys_pages_range(uint64_t base_phys, uint32_t page_count) {
@@ -403,8 +585,6 @@ static void free_phys_pages_range(uint64_t base_phys, uint32_t page_count) {
 }
 
 void setup_initial_context(struct task *t, void (*entry)(void)) {
-    int idx = (int)(t - tasks);
-
     uint64_t stack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     stack_top &= ~0xFULL;
 
@@ -413,7 +593,7 @@ void setup_initial_context(struct task *t, void (*entry)(void)) {
     ((uint64_t *)stack_top)[0] = (uint64_t)(uintptr_t)entry;
     ((uint64_t *)stack_top)[1] = 0;
 
-    task_rsp[idx] = stack_top;
+    t->saved_krsp = stack_top;
 
     t->ctx.r15    = 0;
     t->ctx.r14    = 0;
@@ -436,17 +616,27 @@ void task_init(void) {
     /* Initialize CPU 0's run queue and wire it before any rq_* call. */
     struct CpuRunQueue *rq0 = &cpu_rqs[0];
     irq_spinlock_init(&rq0->lock);
-    for (int i = 0; i < 256; i++) { rq0->head[i] = -1; rq0->tail[i] = -1; }
-    for (int i = 0; i < TASK_MAX; i++) { rq0->next[i] = -1; rq0->queued[i] = 0; }
+    for (int i = 0; i < 256; i++) { rq0->head[i] = 0; rq0->tail[i] = 0; }
     rq0->mask[0] = rq0->mask[1] = rq0->mask[2] = rq0->mask[3] = 0;
     cpu_local[0].rq = rq0;
 
     atomic_store_explicit(&sched_live_count, 1u, memory_order_relaxed); /* idle */
 
-    for (int i = 0; i < TASK_MAX; i++)
-        task_reset_slot(&tasks[i]);
+    /* Etapa C: wire every registry slot to its backing before use.  In this
+     * checkpoint tcb == &ktcb_backing[i]; Etapa D re-points these at Untyped
+     * objects. */
+    for (int i = 0; i < TASK_MAX; i++) {
+        ktcb_registry[i].tcb        = &ktcb_backing[i];
+        ktcb_registry[i].generation = 0;
+        ktcb_registry[i].occupied   = 0;
+        ktcb_registry[i].bootstrap  = 0;
+        task_reset_slot(&ktcb_backing[i]);
+    }
 
-    struct task *idle = &tasks[0];
+    struct task *idle = ktcb_registry[0].tcb;
+    /* Idle is the single bootstrap exception: static backing, never retyped,
+     * never reused, not built by the productive task builder. */
+    task_registry_bind_idle(idle);
     idle->id    = next_id++;
     idle->state = TASK_RUNNING;
     idle->next  = idle;
@@ -466,16 +656,14 @@ void task_init(void) {
 }
 
 struct task *task_create(void (*entry)(void)) {
-    struct task *t = 0;
     int idx = -1;
-    for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD && !tasks[i].awaiting_reap) {
-            t = &tasks[i]; idx = i; break;
-        }
-    }
+    struct task *t = task_registry_find_free(&idx);
     if (!t) return 0;
 
-    task_reset_slot(t);
+    /* No task_reset_slot(t) here: task_backing_find_free only ever returns a
+     * slot with state == TASK_DEAD, which is only reached already fully
+     * zeroed (task_init at boot, or task_backing_free_on_destroy at death) —
+     * re-zeroing now would wipe the t->reg_slot task_registry_alloc just set. */
     if (kstack_alloc(t, idx) != 0) return 0;
 
     task_init_fpu_state(t);
@@ -487,6 +675,11 @@ struct task *task_create(void (*entry)(void)) {
     t->home_cpu   = 0;
 
     setup_initial_context(t, entry);
+
+    /* Fase S2 D2: object init — the scheduler's own execution reference,
+     * dropped by task_execution_teardown_off_cpu at termination.  No process
+     * handle table for a plain kernel task, so no separate handle is minted. */
+    ktcb_object_init(t);
 
     rq_enqueue(t);
     atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
@@ -525,14 +718,10 @@ static struct task *task_create_user_impl(uint64_t arg0) {
 
     if (!initrd_bootstrap_image(&ub_data, &ub_size) || ub_size == 0) return 0;
 
-    for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD && !tasks[i].awaiting_reap) {
-            t = &tasks[i]; idx = i; break;
-        }
-    }
+    t = task_registry_find_free(&idx);
     if (!t) return 0;
 
-    task_reset_slot(t);
+    /* No task_reset_slot(t) here — see task_create. */
     if (kstack_alloc(t, idx) != 0) return 0;
 
     task_init_fpu_state(t);
@@ -645,7 +834,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     kstack_top -= 8; *(uint64_t *)kstack_top = USER_TEXT_BASE;
     kstack_top -= 8; *(uint64_t *)kstack_top = (uint64_t)(uintptr_t)user_entry_trampoline;
 
-    task_rsp[idx] = kstack_top;
+    t->saved_krsp = kstack_top;
 
     t->ctx.r15    = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
     t->ctx.rbx    = 0; t->ctx.rbp = 0;
@@ -656,20 +845,15 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     t->utext_phys  = ub_copy_phys;
     t->utext_pages = ub_pages;
 
-    /* Ph96: create KTcb and hand a handle to the process; keep task's own ref. */
-    {
-        struct KTcb *tcb = ktcb_alloc(t);
-        if (tcb) {
-            handle_id_t tcb_h = handle_table_insert(
-                &proc->handle_table, &tcb->base,
-                RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-            kobject_release(&tcb->base); /* drop alloc ref; HT holds its own */
-            if (tcb_h != HANDLE_INVALID) {
-                kobject_retain(&tcb->base); /* task's own lifetime ref */
-                t->ktcb = tcb;
-            }
-        }
-    }
+    /* Fase S2 D2: the KTCB IS t itself.  ktcb_object_init sets refcount = 1,
+     * the scheduler's own execution reference (dropped at termination by
+     * task_execution_teardown_off_cpu).  handle_table_insert takes its own
+     * reference internally (handle_entry_init: lifecycle + active retain,
+     * released by handle_table_close_all/handle_entry_reset on teardown) —
+     * no separate retain needed here; on failure it takes none. */
+    ktcb_object_init(t);
+    handle_table_insert(&proc->handle_table, &t->base,
+                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
 
     rq_enqueue(t);
     atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
@@ -688,7 +872,18 @@ fail:
         kprocess_reap_address_space(proc);
         kprocess_free(proc);
     }
-    if (t) task_reset_slot(t);
+    if (t) {
+        /* Every goto-fail above happens after kstack_alloc succeeded but
+         * before ktcb_object_init/rq_enqueue — undo exactly the registry
+         * claim + kstack alloc task_registry_find_free/kstack_alloc made
+         * (task_reset_slot no longer frees the kstack or touches the
+         * registry; see task_execution_teardown_off_cpu for the normal
+         * teardown this mirrors). */
+        kstack_free(t, (int)(t - ktcb_backing));
+        t->kstack = 0; t->kstack_phys = 0;
+        task_registry_release(t);
+        task_reset_slot(t);
+    }
     return 0;
 }
 
@@ -696,29 +891,11 @@ struct task *task_spawn_user(uint64_t arg0) {
     return task_create_user_impl(arg0);
 }
 
+/* Abort a task that task_create_user_impl fully built (registered, ktcb
+ * object, queued) but a later bootstrap step failed before it ever ran —
+ * called from kernel_main, pre-scheduler-start, so t is guaranteed off-CPU. */
 void task_abort_spawned_user(struct task *t) {
-    if (!t) return;
-
-    struct KProcess *proc = t->process;
-    if (proc) {
-        if (proc->thread_count > 0) proc->thread_count--;
-        kprocess_teardown(proc, t);
-    }
-
-    task_cancel_blocked_waits(t);
-    free_user_stack_pages(t);
-    free_user_text_pages(t);
-    if (proc)
-        kprocess_reap_address_space(proc);
-
-    atomic_fetch_sub_explicit(&sched_live_count, 1u, memory_order_relaxed);
-    unlink_task(t);
-    task_release_sched_ctx(t);
-    task_release_ktcb(t);
-    task_reset_slot(t);
-
-    if (proc)
-        kprocess_free(proc);
+    task_execution_teardown_off_cpu(t);
 }
 
 struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
@@ -727,14 +904,10 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
 
     struct task *t = 0;
     int idx = -1;
-    for (int i = 1; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_DEAD && !tasks[i].awaiting_reap) {
-            t = &tasks[i]; idx = i; break;
-        }
-    }
+    t = task_registry_find_free(&idx);
     if (!t) return 0;
 
-    task_reset_slot(t);
+    /* No task_reset_slot(t) here — see task_create. */
     if (kstack_alloc(t, idx) != 0) return 0;
     task_init_fpu_state(t);
     t->id         = next_id++;
@@ -759,7 +932,7 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
     kstack_top -= 8; *(uint64_t *)kstack_top =
         (uint64_t)(uintptr_t)user_entry_trampoline;
 
-    task_rsp[idx] = kstack_top;
+    t->saved_krsp = kstack_top;
 
     t->ctx.r15    = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
     t->ctx.rbp    = 0;
@@ -769,20 +942,11 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
 
     proc->thread_count++;
 
-    /* Ph96: create KTcb and hand a handle to the process; keep task's own ref. */
-    {
-        struct KTcb *tcb = ktcb_alloc(t);
-        if (tcb) {
-            handle_id_t tcb_h = handle_table_insert(
-                &proc->handle_table, &tcb->base,
-                RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-            kobject_release(&tcb->base);
-            if (tcb_h != HANDLE_INVALID) {
-                kobject_retain(&tcb->base);
-                t->ktcb = tcb;
-            }
-        }
-    }
+    /* Fase S2 D2: the KTCB IS t itself — see task_create_user_impl (insert
+     * takes its own reference; no separate retain needed). */
+    ktcb_object_init(t);
+    handle_table_insert(&proc->handle_table, &t->base,
+                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
 
     rq_enqueue(t);
     atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
@@ -804,55 +968,23 @@ struct task *task_current(void) {
  * calling stack may still reference.  task_kill_process skips current_task
  * automatically when iterating tasks[]. */
 void task_kill_external(struct task *t) {
-    if (!t || t == current_task) return;
-    if (t->state == TASK_DEAD) return;
-
-    struct KProcess *proc = t->process;
-
-    task_cancel_blocked_waits(t);
-    free_user_stack_pages(t);
-    free_user_text_pages(t);
-
-    int do_teardown = 0;
-    if (proc && proc->thread_count > 0) {
-        proc->thread_count--;
-        if (proc->thread_count == 0) do_teardown = 1;
-    }
-
-    if (do_teardown) {
-        kprocess_teardown(proc, t);
-        kprocess_reap_address_space(proc);
-    }
-
-    atomic_fetch_sub_explicit(&sched_live_count, 1u, memory_order_relaxed);
-    unlink_task(t);
-    task_release_sched_ctx(t);
-    task_release_ktcb(t);
-    task_reset_slot(t);
-
-    if (do_teardown)
-        kprocess_free(proc);
+    if (!t || t == current_task || t->state == TASK_DEAD || t->terminal) return;
+    task_execution_teardown_off_cpu(t);
 }
 
+/*
+ * Fase S2 D2: task_exit_current runs ON the dying task's own kernel stack, so
+ * it must do nothing that task_execution_teardown_off_cpu's OFF-CPU
+ * precondition forbids (freeing that kstack) and nothing the off-CPU pass
+ * duplicates (cancelling waits, freeing user pages, thread_count/process
+ * teardown, the object's execution reference) — all of that is deferred to
+ * the reaper, which calls task_execution_teardown_off_cpu(t) once this task
+ * has actually context-switched away (scheduler.c: old->state == TASK_DEAD ->
+ * reap_enqueue_dead -> reap_pending_dead_task).
+ */
 void task_exit_current(void) {
     struct task *t = task_current();
     if (!t) return;
-
-    struct KProcess *proc = t->process;
-
-    task_cancel_blocked_waits(t);
-    free_user_stack_pages(t);
-    free_user_text_pages(t);
-    task_release_ktcb(t);
-
-    /* thread_count is mutated only from single-CPU scheduler context on this
-     * arch.  The TASK_DEAD spin below ensures the slot is not reused before
-     * the scheduler calls reap_dead_task_off_cpu on the next tick. */
-    if (proc && proc->thread_count > 0) {
-        proc->thread_count--;
-        if (proc->thread_count == 0)
-            kprocess_teardown(proc, t);
-    }
 
     /* A1.11: the slot stays reserved until the deferred reaper runs.
      * Without this, an immediate task_create could recycle the slot, wipe
@@ -867,7 +999,9 @@ void task_exit_current(void) {
 void task_kill_process(struct KProcess *proc) {
     if (!proc) return;
     for (int i = 0; i < TASK_MAX; i++) {
-        if (tasks[i].state != TASK_DEAD && tasks[i].process == proc)
-            task_kill_external(&tasks[i]);
+        if (!ktcb_registry[i].occupied) continue;
+        struct task *t = ktcb_registry[i].tcb;
+        if (t->state != TASK_DEAD && t->process == proc)
+            task_kill_external(t);
     }
 }

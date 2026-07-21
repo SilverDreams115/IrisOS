@@ -7485,7 +7485,10 @@ static void test_t123(void) {
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 100) != 0)   { ok = 0; why = "configure valid"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 0, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 0)  != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "period 0"; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 100, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget==period"; }
+    /* Fase S2 (corrección I1): budget == period es una reserva de CPU completa,
+     * VÁLIDA (estilo MCS).  Solo budget > period se rechaza. */
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 100, 100) != 0) { ok = 0; why = "budget==period rejected"; }
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 100) != 0) { ok = 0; why = "reconfigure back"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 200, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
 
     /* Wrong object type: an endpoint handle is not a SchedContext. */
@@ -16433,7 +16436,9 @@ struct it_rinfo {
 static int it_rinfo(handle_id_t proc_h, struct it_rinfo *out) {
     for (uint32_t i = 0; i < (uint32_t)sizeof(*out); i++) ((uint8_t *)out)[i] = 0;
     out->struct_size = (uint32_t)sizeof(*out);
-    return it_sys2(SYS_RESOURCE_INFO, (long)proc_h, (long)(uintptr_t)out) == 0;
+    /* Fase S2 C.1: arg2 declares the buffer size (prefix-safe copy). */
+    return it_sys3(SYS_RESOURCE_INFO, (long)proc_h, (long)(uintptr_t)out,
+                   (long)(uint32_t)sizeof(*out)) == 0;
 }
 
 /* Spawn a bare lifecycle_probe child (cmd endpoint + process).  0 on success. */
@@ -17099,14 +17104,17 @@ struct it_utq_objects {
     uint32_t version, struct_size;
     uint32_t endpoints_live, notifications_live, replies_live, cnodes_live;
 };
+/* Fase S2 C.1: arg0 = kind | version<<16 | size<<32 (declared buffer size). */
+#define IT_QARG(kind, sz) ((long)((uint64_t)(kind) | ((uint64_t)1u << 16) | \
+                                  ((uint64_t)(uint32_t)(sz) << 32)))
 static int it_utq_g(struct it_utq_global *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, 1, (long)(uintptr_t)q, 0) == 0;
+    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
 }
 static int it_utq_1(long ut, struct it_utq_one *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, 2, (long)(uintptr_t)q, ut) == 0;
+    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(2, sizeof(*q)), (long)(uintptr_t)q, ut) == 0;
 }
 static int it_utq_o(struct it_utq_objects *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, 3, (long)(uintptr_t)q, 0) == 0;
+    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(3, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
 }
 
 /* Carve a fresh page-multiple sub-untyped for one S1 test (handle). */
@@ -17931,9 +17939,12 @@ struct it_utq_taskobj {
     uint32_t sc_live, sc_hwm, sc_retyped, sc_destroyed;
     uint32_t cdt_deriv, cdt_deriv_hwm, cdt_revoke, cdt_delete,
              cdt_cross, cdt_ipc, legacy_handle_deriv_migrated;
+    /* Fase S2 Etapa C — must mirror kernel struct iris_untyped_query_taskobj. */
+    uint32_t tcb_registry_active, tcb_registry_hwm,
+             tcb_registry_exhaustions, tcb_registry_generation_mismatch;
 };
 static int it_utq_t(struct it_utq_taskobj *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, 4, (long)(uintptr_t)q, 0) == 0;
+    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
 }
 
 /* ── T267: SchedulingContext configure/bind lifecycle ────────────────────────
@@ -17976,7 +17987,10 @@ static void test_t267(void) {
     /* Configure validation (S2.8). */
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100) != 0) { ok = 0; why = "configure"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 0, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 100, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget==period"; }
+    /* Fase S2: budget==period aceptado (reserva completa); budget>period no. */
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 100, 100) != 0) { ok = 0; why = "budget==period rejected"; }
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 200, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
+    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100) != 0) { ok = 0; why = "reconfigure A"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_B, 5, 100) != 0) { ok = 0; why = "configure B"; }
 
     /* Bind SC_A to our own TCB, then a SECOND SC to the same TCB must fail
@@ -17999,6 +18013,110 @@ static void test_t267(void) {
     }
     it_close(&su_h);
     if (ok) it_pass("T267"); else it_fail("T267", why);
+}
+
+/* ── T283: Versioned user-buffer ABI hardening (Checkpoint C.1) ──────────────
+ * SYS_UNTYPED_QUERY / SYS_RESOURCE_INFO must never write past the caller's
+ * declared buffer.  A guarded fixture (canary bytes bracketing an
+ * intentionally-short buffer) proves the kernel clamps to min(declared,kernel)
+ * and rejects undersized/unknown-version/bad-pointer requests without writing.
+ * QABI1–QABI10. */
+static void test_t283(void) {
+    int ok = 1;
+    const char *why = "abi hardening";
+
+    /* Guarded buffer: [canary0][payload 256][canary1].  All queries target
+     * &payload with a DECLARED size; the canaries must never change. */
+    struct { uint64_t c0; uint8_t payload[256]; uint64_t c1; } g;
+    const uint64_t CAN0 = 0xA5A5A5A5DEADBEEFULL, CAN1 = 0x5A5A5A5AFEEDFACEULL;
+    #define QABI_RESET() do { g.c0 = CAN0; g.c1 = CAN1; \
+        for (uint32_t _i = 0; _i < sizeof(g.payload); _i++) g.payload[_i] = 0; } while (0)
+    #define QABI_CANARY_OK() (g.c0 == CAN0 && g.c1 == CAN1)
+    long buf = (long)(uintptr_t)&g.payload[0];
+
+    /* QABI1 — exact current size (the real global struct). */
+    QABI_RESET();
+    struct it_utq_global gl;
+    if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, sizeof(struct it_utq_global)),
+                (long)(uintptr_t)&gl, 0) != 0) { ok = 0; why = "QABI1 exact"; }
+    /* QABI2 — valid older/shorter prefix: declare just the 8-byte header. */
+    if (ok) { QABI_RESET();
+        long r = it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, 8u), buf, 0);
+        if (r != 0) { ok = 0; why = "QABI2 prefix"; }
+        else if (!QABI_CANARY_OK()) { ok = 0; why = "QABI2 canary"; }
+        else { /* only 8 bytes written; bytes >=8 stay zero */
+            for (uint32_t i = 8; i < 64 && ok; i++)
+                if (g.payload[i] != 0) { ok = 0; why = "QABI2 overwrote past decl"; }
+        }
+    }
+    /* QABI3 — size below the required header (4 < 8) → INVALID_ARG, no write. */
+    if (ok) { QABI_RESET();
+        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, 4u), buf, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI3 subheader"; }
+        else if (!QABI_CANARY_OK()) { ok = 0; why = "QABI3 canary"; }
+    }
+    /* QABI4 — one byte below minimum (7) → INVALID_ARG. */
+    if (ok) { QABI_RESET();
+        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, 7u), buf, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI4 min-1"; }
+        else if (!QABI_CANARY_OK()) { ok = 0; why = "QABI4 canary"; }
+    }
+    /* QABI5 — oversized declared buffer (256) → only kernel_size written,
+     * canaries intact (kernel never writes past its own struct). */
+    if (ok) { QABI_RESET();
+        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, 256u), buf, 0) != 0) { ok = 0; why = "QABI5 oversize"; }
+        else if (!QABI_CANARY_OK()) { ok = 0; why = "QABI5 canary"; }
+    }
+    /* QABI6 — unknown version (0xFFFF) → INVALID_ARG, no write. */
+    if (ok) { QABI_RESET();
+        long a0 = (long)((uint64_t)1u | ((uint64_t)0xFFFFu << 16) |
+                         ((uint64_t)(uint32_t)sizeof(struct it_utq_global) << 32));
+        if (it_sys3(SYS_UNTYPED_QUERY, a0, buf, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI6 version"; }
+        else if (!QABI_CANARY_OK()) { ok = 0; why = "QABI6 canary"; }
+    }
+    /* QABI7 — invalid user pointer → INVALID_ARG, no write. */
+    if (ok) {
+        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, sizeof(struct it_utq_global)),
+                    0x1L /* bogus */, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "QABI7 badptr"; }
+    }
+    /* QABI8 — guard bytes intact after a full legitimate write (kind 4, the
+     * struct that grew and caused the original bug). */
+    if (ok) { QABI_RESET();
+        struct it_utq_taskobj tq;
+        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, sizeof(tq)), (long)(uintptr_t)&tq, 0) != 0) { ok = 0; why = "QABI8 taskobj"; }
+        /* Now target the SHORT guarded buffer with a taskobj-sized declaration
+         * that exceeds the guarded payload's safe region: declare exactly the
+         * header so only 8 bytes land, canaries must hold. */
+        if (ok) { long r = it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, 8u), buf, 0);
+            if (r != 0 || !QABI_CANARY_OK()) { ok = 0; why = "QABI8 canary"; } }
+    }
+    /* QABI9 — reserved/trailing fields are zero: a prefix read leaves the
+     * caller's untouched tail at its pre-call value (we pre-zeroed). */
+    if (ok) { QABI_RESET();
+        if (it_sys3(SYS_UNTYPED_QUERY, IT_QARG(3, 8u), buf, 0) != 0) { ok = 0; why = "QABI9 write"; }
+        else for (uint32_t i = 8; i < 24 && ok; i++)
+            if (g.payload[i] != 0) { ok = 0; why = "QABI9 tail dirty"; }
+    }
+    /* QABI10 — repeated old/new callers do not corrupt kernel state: the
+     * global counters are identical before/after a burst of clamped reads. */
+    if (ok) {
+        struct it_utq_global b0, b1;
+        if (!it_utq_g(&b0)) { ok = 0; why = "QABI10 g0"; }
+        for (int i = 0; ok && i < 8; i++) {
+            QABI_RESET();
+            (void)it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, (i & 1) ? 8u : 256u), buf, 0);
+            (void)it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, 4u), buf, 0); /* rejected */
+        }
+        if (ok && !it_utq_g(&b1)) { ok = 0; why = "QABI10 g1"; }
+        if (ok && (b1.live_untypeds != b0.live_untypeds)) { ok = 0; why = "QABI10 state drift"; }
+    }
+    /* SYS_RESOURCE_INFO prefix safety: declare a short size, canaries hold. */
+    if (ok) { QABI_RESET();
+        long r = it_sys3(SYS_RESOURCE_INFO, (long)HANDLE_INVALID, buf, 8L);
+        if (r != 0 || !QABI_CANARY_OK()) { ok = 0; why = "rinfo prefix"; }
+    }
+
+    #undef QABI_RESET
+    #undef QABI_CANARY_OK
+    if (ok) it_pass("T283"); else it_fail("T283", why);
 }
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
@@ -18287,6 +18405,8 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
 
     /* Fase S2 — Untyped task construction (increment 1: SchedulingContext). */
     test_t267();
+    /* Fase S2 Checkpoint C.1 — versioned user-buffer ABI hardening. */
+    test_t283();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

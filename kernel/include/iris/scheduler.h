@@ -41,6 +41,9 @@ uint32_t sched_reap_queue_hwm(void);
 uint32_t sched_run_queue_hwm(void);
 uint32_t sched_run_queue_live(void);
 uint32_t sched_duplicate_enqueue_count(void);
+/* Fase S2 Etapa C — KTCB registry gauges (references, not payload). */
+void     task_registry_stats(uint32_t *active, uint32_t *hwm,
+                             uint32_t *exhaustions, uint32_t *gen_mismatch);
 uint32_t sched_yield_count(void);
 uint64_t sched_current_ticks(void);
 uint64_t sched_wall_ticks(void);

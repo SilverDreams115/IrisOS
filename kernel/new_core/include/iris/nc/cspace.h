@@ -34,7 +34,7 @@ struct KEndpoint;
 struct KReply;
 struct KCNode;
 struct KNotification;
-struct KTcb;
+struct task;
 struct KUntyped;
 struct KSchedContext;
 struct KVSpace;
@@ -115,7 +115,7 @@ iris_error_t cspace_resolve_notification(struct KProcess      *proc, iris_cptr_t
                                           iris_rights_t        *rights_out);
 iris_error_t cspace_resolve_tcb(struct KProcess *proc, iris_cptr_t cptr,
                                  iris_rights_t    required,
-                                 struct KTcb    **out, iris_rights_t *rights_out);
+                                 struct task    **out, iris_rights_t *rights_out);
 iris_error_t cspace_resolve_untyped(struct KProcess  *proc, iris_cptr_t cptr,
                                      iris_rights_t     required,
                                      struct KUntyped **out, iris_rights_t *rights_out);

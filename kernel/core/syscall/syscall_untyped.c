@@ -535,18 +535,52 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
+ * Fase S2 C.1 — versioned user-buffer copy hardening.
+ *
+ * The kernel must never write beyond the buffer the caller declared, and must
+ * never depend on the caller's struct matching the kernel's exact size.  The
+ * caller declares (version, size); the kernel:
+ *   - rejects a size below the mandatory 8-byte header (version+struct_size);
+ *   - rejects a version it does not support (0 = don't-care/prefix);
+ *   - fills a zeroed kernel struct (reserved fields stay 0);
+ *   - writes at most min(declared_size, kernel_size) — prefix-compatible;
+ *   - validates the user range for exactly those bytes;
+ *   - copies nothing on any failure (no partial write, no state change).
+ * The kernel struct's own struct_size field always advertises the supported
+ * size so a prefix caller learns there is more.
+ */
+#define IRIS_QUERY_HEADER_MIN 8u   /* version(u32) + struct_size(u32) */
+
+static iris_error_t copy_versioned_to_user(uint64_t uptr, uint32_t user_size,
+                                           uint32_t user_version,
+                                           const void *ksrc, uint32_t ksize,
+                                           uint32_t kversion) {
+    if (!uptr) return IRIS_ERR_INVALID_ARG;
+    if (user_size < IRIS_QUERY_HEADER_MIN) return IRIS_ERR_INVALID_ARG;
+    if (user_version != 0u && user_version != kversion) return IRIS_ERR_INVALID_ARG;
+    uint32_t n = user_size < ksize ? user_size : ksize;   /* prefix clamp */
+    if (!user_range_writable(uptr, n)) return IRIS_ERR_INVALID_ARG;
+    if (!copy_to_user_checked(uptr, ksrc, n)) return IRIS_ERR_INVALID_ARG;
+    return IRIS_OK;
+}
+
+/*
  * SYS_UNTYPED_QUERY (112) — versioned, read-only instrumentation.
  *
- *   arg0 = kind (1 = global stats; 2 = per-untyped info; 3 = per-type gauges)
+ *   arg0 = kind (low 16) | version (bits 16..31) | user_size (high 32)
+ *          version 0 = don't-care (prefix compatible)
  *   arg1 = user buffer
  *   arg2 = untyped CPtr/handle (kind 2 only)
  *
  * Diagnostics only: no authority flows through this syscall and it never
- * mutates state.  The structs are versioned (first two u32: version, size).
+ * mutates state.  C.1: the kernel knows the caller's buffer size and never
+ * writes past it (see copy_versioned_to_user).
  */
 uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    uint32_t kind     = (uint32_t)arg0;
-    uint64_t buf_uptr = arg1;
+    uint32_t kind         = (uint32_t)(arg0 & 0xFFFFu);
+    uint32_t user_version = (uint32_t)((arg0 >> 16) & 0xFFFFu);
+    uint32_t user_size    = (uint32_t)(arg0 >> 32);
+    uint64_t buf_uptr     = arg1;
 
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -567,9 +601,8 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             q.reclaimed_bytes = st.reclaimed_bytes;
             q.reuse_count     = st.reuse_count;
             q.overlap_denials = st.overlap_denials;
-            if (!copy_to_user_checked(buf_uptr, &q, (uint32_t)sizeof(q)))
-                return syscall_err(IRIS_ERR_INVALID_ARG);
-            return 0;
+            return syscall_err(copy_versioned_to_user(buf_uptr, user_size, user_version,
+                               &q, (uint32_t)sizeof(q), IRIS_UNTYPED_QUERY_VERSION));
         }
         case IRIS_UNTYPED_QUERY_ONE: {
             struct KUntyped *ut;
@@ -591,9 +624,8 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             kobject_release(&ut->base);
             q.version     = IRIS_UNTYPED_QUERY_VERSION;
             q.struct_size = (uint32_t)sizeof(q);
-            if (!copy_to_user_checked(buf_uptr, &q, (uint32_t)sizeof(q)))
-                return syscall_err(IRIS_ERR_INVALID_ARG);
-            return 0;
+            return syscall_err(copy_versioned_to_user(buf_uptr, user_size, user_version,
+                               &q, (uint32_t)sizeof(q), IRIS_UNTYPED_QUERY_VERSION));
         }
         case IRIS_UNTYPED_QUERY_OBJECTS: {
             struct iris_untyped_query_objects q;
@@ -604,9 +636,8 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             q.notifications_live = knotification_live_count();
             q.replies_live       = kreply_live_count();
             q.cnodes_live        = kcnode_live_count();
-            if (!copy_to_user_checked(buf_uptr, &q, (uint32_t)sizeof(q)))
-                return syscall_err(IRIS_ERR_INVALID_ARG);
-            return 0;
+            return syscall_err(copy_versioned_to_user(buf_uptr, user_size, user_version,
+                               &q, (uint32_t)sizeof(q), IRIS_UNTYPED_QUERY_VERSION));
         }
         case IRIS_UNTYPED_QUERY_TASKOBJ: {
             struct iris_untyped_query_taskobj q;
@@ -620,9 +651,11 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                              &q.cdt_cross_cnode_descendants,
                              &q.cdt_ipc_transfer_count,
                              &q.legacy_handle_derivation_migrated);
-            if (!copy_to_user_checked(buf_uptr, &q, (uint32_t)sizeof(q)))
-                return syscall_err(IRIS_ERR_INVALID_ARG);
-            return 0;
+            task_registry_stats(&q.tcb_registry_active, &q.tcb_registry_hwm,
+                                &q.tcb_registry_exhaustions,
+                                &q.tcb_registry_generation_mismatch);
+            return syscall_err(copy_versioned_to_user(buf_uptr, user_size, user_version,
+                               &q, (uint32_t)sizeof(q), IRIS_UNTYPED_QUERY_VERSION));
         }
         default:
             return syscall_err(IRIS_ERR_INVALID_ARG);

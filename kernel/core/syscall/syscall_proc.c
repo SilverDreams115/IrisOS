@@ -433,7 +433,10 @@ uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * struct_size; the kernel writes at most that many bytes.
  */
 uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
+    /* Fase S2 C.1: arg2 = caller's declared buffer size (0 = legacy full).
+     * The kernel writes at most min(user_size, sizeof(info)) — prefix
+     * compatible — so a smaller/older struct can never be overflowed. */
+    uint32_t user_size = (uint32_t)arg2;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -477,8 +480,12 @@ uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     info.kslab_hwm_bytes   = kslab_used_bytes();   /* bump-only: used == hwm */
     info.kslab_alloc_failures = kslab_fail_count();
 
-    /* Additive/versioned: honour the caller's struct_size (arg1+8 low word). */
-    uint32_t want = (uint32_t)sizeof(info);
+    /* Fase S2 C.1: prefix-compatible, bounded by the caller's declared size.
+     * user_size == 0 keeps the legacy full-struct contract for callers that
+     * pre-date C.1 (they must size their buffer to sizeof(info)); a non-zero
+     * user_size clamps the write so an older/smaller struct cannot overflow. */
+    uint32_t ksize = (uint32_t)sizeof(info);
+    uint32_t want  = (user_size != 0u && user_size < ksize) ? user_size : ksize;
     if (!user_range_writable(arg1, want))
         return syscall_err(IRIS_ERR_INVALID_ARG);
     if (!copy_to_user_checked(arg1, (const uint8_t *)&info, want))

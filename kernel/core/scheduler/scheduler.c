@@ -43,37 +43,43 @@ static volatile uint64_t wall_ticks = 0;
  * the fast-forward, or remains NULL if none.
  */
 static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
+    /* Fase S2 Etapa C: iterate the registry, not the raw array — a TCB's
+     * identity is its registry reference, never a position in tasks[]. */
     /* Fast-forward clock to nearest deadline so timed tasks wake even with no IRQs. */
     uint64_t min_wake = UINT64_MAX;
     for (int j = 0; j < TASK_MAX; j++) {
-        if (tasks[j].wake_tick != 0 && tasks[j].wake_tick < min_wake)
-            min_wake = tasks[j].wake_tick;
+        if (!ktcb_registry[j].occupied) continue;
+        struct task *t = ktcb_registry[j].tcb;
+        if (t->wake_tick != 0 && t->wake_tick < min_wake)
+            min_wake = t->wake_tick;
     }
     if (min_wake != UINT64_MAX && min_wake > scheduler_ticks)
         scheduler_ticks = min_wake;
 
     /* Wake any tasks whose deadlines passed and enqueue them. */
     for (int j = 0; j < TASK_MAX; j++) {
-        if (&tasks[j] == idle) continue;
-        if (tasks[j].state == TASK_SLEEPING &&
-            tasks[j].wake_tick != 0 &&
-            tasks[j].wake_tick <= scheduler_ticks) {
-            tasks[j].wake_tick = 0;
-            task_wakeup(&tasks[j]);
-        } else if (tasks[j].state == TASK_BUDGET_EXHAUSTED &&
-                   tasks[j].wake_tick != 0 &&
-                   tasks[j].wake_tick <= scheduler_ticks) {
-            if (tasks[j].sched_ctx)
-                tasks[j].sched_ctx->remaining_budget = tasks[j].sched_ctx->budget_ticks;
-            tasks[j].wake_tick = 0;
-            task_wakeup(&tasks[j]);
-        } else if ((tasks[j].state == TASK_BLOCKED_IPC ||
-                    tasks[j].state == TASK_BLOCKED_IRQ) &&
-                   tasks[j].wake_tick != 0 &&
-                   tasks[j].wake_tick <= scheduler_ticks) {
-            tasks[j].timed_out = 1;
-            tasks[j].wake_tick = 0;
-            task_wakeup(&tasks[j]);
+        if (!ktcb_registry[j].occupied) continue;
+        struct task *t = ktcb_registry[j].tcb;
+        if (t == idle) continue;
+        if (t->state == TASK_SLEEPING &&
+            t->wake_tick != 0 &&
+            t->wake_tick <= scheduler_ticks) {
+            t->wake_tick = 0;
+            task_wakeup(t);
+        } else if (t->state == TASK_BUDGET_EXHAUSTED &&
+                   t->wake_tick != 0 &&
+                   t->wake_tick <= scheduler_ticks) {
+            if (t->sched_ctx)
+                t->sched_ctx->remaining_budget = t->sched_ctx->budget_ticks;
+            t->wake_tick = 0;
+            task_wakeup(t);
+        } else if ((t->state == TASK_BLOCKED_IPC ||
+                    t->state == TASK_BLOCKED_IRQ) &&
+                   t->wake_tick != 0 &&
+                   t->wake_tick <= scheduler_ticks) {
+            t->timed_out = 1;
+            t->wake_tick = 0;
+            task_wakeup(t);
         }
     }
     *out_chosen = rq_dequeue_best();
@@ -132,9 +138,6 @@ void task_yield(void) {
     set_current_task(chosen);
     cpu_self()->context_switches++;
 
-    int old_idx = (int)(old - tasks);
-    int new_idx = (int)(chosen - tasks);
-
     uint64_t new_kstack_top = (uint64_t)(uintptr_t)(chosen->kstack + TASK_STACK_SIZE);
     tss_set_rsp0(new_kstack_top);
     syscall_set_kstack(new_kstack_top);
@@ -149,8 +152,10 @@ void task_yield(void) {
         __asm__ volatile ("mov %0, %%cr3" : : "r"(kernel_cr3) : "memory");
     }
 
+    /* Fase S2: kernel RSP save/restore lives inside the TCB backing — no
+     * index-keyed task_rsp[] array, no (old - tasks) pointer arithmetic. */
     context_switch(&old->ctx, &chosen->ctx,
-                   &task_rsp[old_idx], task_rsp[new_idx],
+                   &old->saved_krsp, chosen->saved_krsp,
                    old->fpu_state, chosen->fpu_state);
 
     __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
@@ -183,31 +188,33 @@ void scheduler_tick(void) {
      *   is the common case for non-sleeping tasks and the branch predictor handles it well.
      */
     for (int i = 0; i < TASK_MAX; i++) {
-        if (tasks[i].state == TASK_SLEEPING && tasks[i].wake_tick <= scheduler_ticks) {
-            tasks[i].wake_tick = 0;
-            task_wakeup(&tasks[i]);
+        if (!ktcb_registry[i].occupied) continue;
+        struct task *t = ktcb_registry[i].tcb;
+        if (t->state == TASK_SLEEPING && t->wake_tick <= scheduler_ticks) {
+            t->wake_tick = 0;
+            task_wakeup(t);
         }
         /* Ph75: refill budget for exhausted tasks whose period has elapsed */
-        if (tasks[i].state == TASK_BUDGET_EXHAUSTED &&
-            tasks[i].wake_tick != 0 &&
-            tasks[i].wake_tick <= scheduler_ticks) {
-            if (tasks[i].sched_ctx)
-                tasks[i].sched_ctx->remaining_budget = tasks[i].sched_ctx->budget_ticks;
-            tasks[i].wake_tick = 0;
-            task_wakeup(&tasks[i]);
+        if (t->state == TASK_BUDGET_EXHAUSTED &&
+            t->wake_tick != 0 &&
+            t->wake_tick <= scheduler_ticks) {
+            if (t->sched_ctx)
+                t->sched_ctx->remaining_budget = t->sched_ctx->budget_ticks;
+            t->wake_tick = 0;
+            task_wakeup(t);
         }
         /* Timed block expired (channel or notification).
          * spinlock_lock uses CAS without CLI — calling kchannel_cancel_waiter /
          * knotification_cancel_waiter here would deadlock if any task holds
          * live_lock at this IRQ boundary.  We only set the signal; the woken
          * task removes itself from the waiter list in task context. */
-        if ((tasks[i].state == TASK_BLOCKED_IPC ||
-             tasks[i].state == TASK_BLOCKED_IRQ) &&
-            tasks[i].wake_tick != 0 &&
-            tasks[i].wake_tick <= scheduler_ticks) {
-            tasks[i].timed_out = 1;
-            tasks[i].wake_tick = 0;
-            task_wakeup(&tasks[i]);
+        if ((t->state == TASK_BLOCKED_IPC ||
+             t->state == TASK_BLOCKED_IRQ) &&
+            t->wake_tick != 0 &&
+            t->wake_tick <= scheduler_ticks) {
+            t->timed_out = 1;
+            t->wake_tick = 0;
+            task_wakeup(t);
         }
     }
 

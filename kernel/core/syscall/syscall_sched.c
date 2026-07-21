@@ -111,11 +111,10 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    struct KTcb *tcb = (struct KTcb *)tcb_obj;
-    uint64_t tf = irq_spinlock_lock(&tcb->lock);
-    struct task *target = tcb->task;
-    irq_spinlock_unlock(&tcb->lock, tf);
-    if (!target) {
+    /* Fase S2 D2: the KTCB IS struct task (KObject at offset 0) — resolve
+     * directly, no wrapper indirection.  A terminated thread cannot be bound. */
+    struct task *target = (struct task *)tcb_obj;
+    if (target->terminal) {
         kobject_release(tcb_obj); kobject_release(sc_obj);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }

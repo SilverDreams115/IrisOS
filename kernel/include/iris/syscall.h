@@ -710,10 +710,10 @@
  *   Resets remaining_budget to budget_ticks immediately.
  *
  * SYS_THREAD_SET_SC(sc_h) → 0 or negative iris_error_t
- *   Binds sc_h to the calling thread (self-bind).  Pass 0 to unbind.
- *   Fase S2: one-to-one — falla IRIS_ERR_BUSY si sc_h ya está ligado a otra
- *   task.  When bound, remaining_budget is decremented each scheduler tick;
- *   when exhausted the thread is suspended (TASK_BUDGET_EXHAUSTED).
+ *   LEGACY FROZEN (Fase S2): self-bind del hilo llamante.  NO puede recibir
+ *   consumidores nuevos — la ruta canónica de binding es SYS_SC_BIND(sc, tcb)
+ *   por CPtr.  Conservado para código existente; one-to-one enforced (BUSY si
+ *   sc_h ya está ligado a otra task).  Pass 0 to unbind.
  *
  * SYS_SC_BIND(sc_cptr, tcb_cptr) → 0 or negative iris_error_t   (Fase S2)
  *   Enlaza explícitamente un SchedulingContext a un TCB, ambos por CPtr,
@@ -1042,13 +1042,19 @@
  *   object is live and no untyped range is consumed.
  *   Device untyped only produces KOBJ_UNTYPED / KOBJ_FRAME (U11/U12).
  *
- * SYS_UNTYPED_QUERY(kind, buf_uptr, ut) → 0 or negative iris_error_t
- *   Read-only, versioned instrumentation (never authority):
+ * SYS_UNTYPED_QUERY(kind|version<<16|size<<32, buf_uptr, ut) → 0 or error
+ *   Read-only, versioned instrumentation (never authority).  Fase S2 C.1:
+ *   arg0 packs the caller-declared version (bits 16..31, 0 = don't-care) and
+ *   buffer size (high 32).  The kernel writes at most min(size, kernel_size)
+ *   bytes (prefix-compatible) and never past the declared buffer; size below
+ *   the 8-byte header, or an unsupported version, returns IRIS_ERR_INVALID_ARG
+ *   without writing.  kinds:
  *     kind 1 (GLOBAL)  — struct iris_untyped_query_global.
  *     kind 2 (ONE)     — struct iris_untyped_query_one for the untyped in arg2
  *                        (RIGHT_READ).
  *     kind 3 (OBJECTS) — struct iris_untyped_query_objects (live gauges for
  *                        the migrated object family).
+ *     kind 4 (TASKOBJ) — struct iris_untyped_query_taskobj (TCB/SC/CDT/registry).
  */
 #define SYS_UNTYPED_RETYPE2 111
 #define SYS_UNTYPED_QUERY   112
@@ -1115,6 +1121,11 @@ struct iris_untyped_query_taskobj {
     /* Legacy handle-tree derivations for the migrated canonical types — must
      * be provably 0 (TCB/SC/CNode/EP/Notif/Reply). */
     uint32_t legacy_handle_derivation_migrated;
+    /* Fase S2 Etapa C — KTCB registry (references, not payload). */
+    uint32_t tcb_registry_active;
+    uint32_t tcb_registry_hwm;
+    uint32_t tcb_registry_exhaustions;
+    uint32_t tcb_registry_generation_mismatch;
 };
 #endif /* !__ASSEMBLER__ */
 
