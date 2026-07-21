@@ -14637,16 +14637,8 @@ static long t28_grant_stat(handle_id_t cap, uint32_t idx, uint64_t *size,
     if (gen)  *gen  = m.words[3];
     return 0;
 }
-static long t28_grant_query(handle_id_t cap, uint32_t idx, uint64_t *bid,
-                            uint64_t *gen, uint64_t *rights) {
-    struct IrisMsg m;
-    long r = t28_gcall(cap, VFS_EP_OP_GRANT_QUERY_IDENTITY, idx, 0, 0, 1u, 0, &m);
-    if (r != 0) return r;
-    if (bid) *bid = m.words[1];
-    if (gen) *gen = m.words[2];
-    if (rights) *rights = m.words[3];
-    return 0;
-}
+/* t28_grant_query removed — its last caller was retired with the T28x grant
+ * refactor; GRANT_QUERY_IDENTITY coverage lives in the vfs_ep host suite. */
 static long t28_grant_derive(handle_id_t cap, uint32_t src, uint32_t rights,
                              uint32_t *newidx) {
     struct IrisMsg m;
