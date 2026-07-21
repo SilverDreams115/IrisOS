@@ -17144,8 +17144,10 @@ static void test_t251(void) {
         { IRIS_KOBJ_UNTYPED,       4096, IRIS_HANDLE_TYPE_UNTYPED },
         { IRIS_KOBJ_REPLY,         0,    IRIS_HANDLE_TYPE_REPLY },
         { IRIS_KOBJ_FRAME,         4096, IRIS_HANDLE_TYPE_FRAME },
+        /* Fase S2 Etapa 0: el TCB entra en la familia canónica. */
+        { IRIS_KOBJ_TCB,           0,    IRIS_HANDLE_TYPE_TCB },
     };
-    for (uint32_t i = 0; ok && i < 7u; i++) {
+    for (uint32_t i = 0; ok && i < 8u; i++) {
         if (it_retype2_at(su, canon[i].t, S1_SLOT_A, 1u, canon[i].arg) != 0) {
             ok = 0; why = "canonical type not creatable"; break;
         }
@@ -17159,7 +17161,7 @@ static void test_t251(void) {
     /* Everything else in 0..31 is refused — the manifest is CLOSED. */
     for (uint32_t t = 0; ok && t < 32u; t++) {
         int is_canon = 0;
-        for (uint32_t i = 0; i < 7u; i++) if (canon[i].t == t) is_canon = 1;
+        for (uint32_t i = 0; i < 8u; i++) if (canon[i].t == t) is_canon = 1;
         if (is_canon) continue;
         if (it_retype2_at(su, t, S1_SLOT_A, 1u, 4096) != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "non-canonical type creatable";
@@ -17167,8 +17169,9 @@ static void test_t251(void) {
     }
     /* Retirement witness: migrated family refused on the legacy path. */
     static const uint32_t migrated[] = { IRIS_KOBJ_ENDPOINT, IRIS_KOBJ_NOTIFICATION,
-                                         IRIS_KOBJ_CNODE, IRIS_KOBJ_REPLY };
-    for (uint32_t i = 0; ok && i < 4u; i++) {
+                                         IRIS_KOBJ_CNODE, IRIS_KOBJ_REPLY,
+                                         IRIS_KOBJ_TCB /* Etapa 0 */ };
+    for (uint32_t i = 0; ok && i < 5u; i++) {
         if (it_sys3(SYS_UNTYPED_RETYPE, su, (long)migrated[i], 4) !=
             (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy path not retired"; }
     }
@@ -18111,6 +18114,322 @@ static void test_t283(void) {
     if (ok) it_pass("T283"); else it_fail("T283", why);
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+ * Fase S2 Etapa 0 — TCB canónico desde Untyped (T284–T287).
+ *
+ * Charter §2.2 (O1–O6) y §C.2: el TCB nace de RETYPE2 como objeto INACTIVO
+ * (configured = 0) — cap-completo (GET_INFO / SET_PRIORITY / delete /
+ * transfer) pero no ejecutable hasta TCB_CONFIGURE (roadmap Etapa 5/6); las
+ * syscalls de ejecución lo rechazan con NOT_SUPPORTED sin efectos.  Un TCB
+ * TERMINATED sigue observable por cualquier cap superviviente; el registry
+ * (identidad de scheduler) se libera en la TERMINACIÓN, no en la última cap;
+ * el storage solo se reutiliza tras el destructor (última referencia).
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/* task_state_t ABI values observed through iris_tcb_info.state (mirrors
+ * kernel/include/iris/task.h — asserted stable by these tests). */
+#define IT_TASK_SUSPENDED   10u
+#define IT_TASK_TERMINATED  11u
+
+/* ── T284: nacimiento, observabilidad y muerte del TCB retipado ─────────────
+ * RETYPE2(KOBJ_TCB) crea un TCB canónico: storage dentro del untyped
+ * (child_count/tcb_live suben; el registry NO se toca), cap en CSpace con
+ * HANDLE_TYPE_TCB, GET_INFO responde {SUSPENDED, id 0}, SET_PRIORITY opera,
+ * y RESUME/SUSPEND/EXIT/SC_BIND rechazan NOT_SUPPORTED (jamás ejecutable sin
+ * configure).  RESET con hijos vivos → BUSY; borrar la última cap destruye y
+ * devuelve el bloque; RESET reabre la región y se puede retipar de nuevo; un
+ * CPtr borrado no resuelve. */
+static void test_t284(void) {
+    int ok = 1;
+    const char *why = "tcb retype";
+    long su = s1_sub_ut(65536);
+    if (su < 0) { it_fail("T284", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    struct it_utq_taskobj t0, t1, t2;
+    struct it_utq_one u1;
+    if (!it_utq_t(&t0)) { it_close(&su_h); it_fail("T284", "query"); return; }
+
+    /* Birth: object gauges move; scheduler registry must NOT. */
+    if (it_retype2_at(su, IRIS_KOBJ_TCB, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype"; }
+    if (ok && (!it_utq_t(&t1) || !it_utq_1(su, &u1))) { ok = 0; why = "query 2"; }
+    if (ok && t1.tcb_live != t0.tcb_live + 1u) { ok = 0; why = "tcb not counted"; }
+    if (ok && t1.tcb_registry_active != t0.tcb_registry_active) { ok = 0; why = "registry touched (obj != registry)"; }
+    if (ok && u1.child_count != 1u) { ok = 0; why = "child count"; }
+
+    /* Cap identity + observability. */
+    long h = ok ? it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A) : -1;
+    handle_id_t hh = (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
+    if (ok && (h < 0 || it_sys1(SYS_HANDLE_TYPE, h) != (long)IRIS_HANDLE_TYPE_TCB)) { ok = 0; why = "handle type"; }
+    struct iris_tcb_info info;
+    if (ok && it_sys2(SYS_TCB_GET_INFO, (long)S1_SLOT_A, (long)(uintptr_t)&info) != 0) { ok = 0; why = "get info"; }
+    if (ok && (info.state != (uint8_t)IT_TASK_SUSPENDED || info.task_id != 0u)) { ok = 0; why = "inactive state"; }
+
+    /* Execution gate: an unconfigured TCB can NEVER run or bind. */
+    if (ok && it_sys1(SYS_TCB_RESUME,  (long)S1_SLOT_A) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "resume allowed"; }
+    if (ok && it_sys1(SYS_TCB_SUSPEND, (long)S1_SLOT_A) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "suspend allowed"; }
+    if (ok && it_sys1(SYS_TCB_EXIT,    (long)S1_SLOT_A) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "exit allowed"; }
+    if (ok) {
+        if (it_retype2_at(su, IRIS_KOBJ_SCHED_CONTEXT, S1_SLOT_B, 1u, 0) != 0 ||
+            it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_B, 5, 100) != 0) { ok = 0; why = "sc setup"; }
+        else if (it_sys2(SYS_SC_BIND, (long)S1_SLOT_B, (long)S1_SLOT_A) !=
+                 (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "bind to unconfigured allowed"; }
+    }
+    /* SET_PRIORITY works on an inactive TCB (seL4-style: stored for later). */
+    if (ok && it_sys2(SYS_TCB_SET_PRIORITY, (long)S1_SLOT_A, 7) != 0) { ok = 0; why = "set prio"; }
+    if (ok && (it_sys2(SYS_TCB_GET_INFO, (long)S1_SLOT_A, (long)(uintptr_t)&info) != 0 ||
+               info.priority != 7u)) { ok = 0; why = "prio roundtrip"; }
+
+    /* Legacy handle-publishing birth is retired for TCB (S20 + Etapa 0). */
+    if (ok && it_sys3(SYS_UNTYPED_RETYPE, su, (long)IRIS_KOBJ_TCB, 0) !=
+              (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy tcb retype alive"; }
+
+    /* Lifecycle: RESET with live children refuses; last cap destroys. */
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != (long)IRIS_ERR_BUSY) { ok = 0; why = "reset with children"; }
+    it_slot_delete(S1_SLOT_B);
+    it_slot_delete(S1_SLOT_A);
+    it_close(&hh);
+    if (ok && !it_utq_t(&t2)) { ok = 0; why = "query 3"; }
+    if (ok && t2.tcb_live != t0.tcb_live) { ok = 0; why = "tcb leak"; }
+    if (ok && t2.tcb_destroyed < t0.tcb_destroyed + 1u) { ok = 0; why = "destroy not counted"; }
+    if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset after destroy"; }
+
+    /* Region reusable; a deleted CPtr never resolves again. */
+    if (ok && it_retype2_at(su, IRIS_KOBJ_TCB, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "re-retype"; }
+    it_slot_delete(S1_SLOT_A);
+    if (ok) {
+        long stale = it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A);
+        if (stale >= 0) { handle_id_t sh = (handle_id_t)stale; it_close(&sh); ok = 0; why = "stale cptr resolves"; }
+    }
+    (void)it_sys1(SYS_UNTYPED_RESET, su);
+
+    it_close(&su_h);
+    if (ok) it_pass("T284"); else it_fail("T284", why);
+}
+
+/* ── T285: TCB terminado observable a través de una cap superviviente ───────
+ * Un thread real publica su TCB (TCB_SELF) y hace THREAD_EXIT.  La cap
+ * sobrevive a la ejecución: GET_INFO sigue respondiendo (state TERMINATED,
+ * task_id estable), el registry del scheduler ya se liberó (activo == base
+ * mientras la cap sigue viva — registro ≠ objeto), y RESUME sobre el TCB
+ * terminal falla NOT_FOUND (no hay resurrección). */
+static volatile int g_t285_ready = 0;
+static long         g_t285_tcb   = -1;
+static uint8_t      g_t285_stack[8192];
+
+static void t285_helper(void) {
+    g_t285_tcb   = it_sys0(SYS_TCB_SELF);
+    g_t285_ready = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+
+static void test_t285(void) {
+    int ok = 1;
+    const char *why = "terminated observability";
+
+    struct it_utq_taskobj t0;
+    if (!it_utq_t(&t0)) { it_fail("T285", "query"); return; }
+
+    g_t285_ready = 0; g_t285_tcb = -1;
+    uint64_t entry = (uint64_t)(uintptr_t)t285_helper;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t285_stack + sizeof(g_t285_stack))) & ~0xFULL;
+    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    if (tid < 0) { it_fail("T285", "thread create"); return; }
+
+    for (int i = 0; i < 200 && !g_t285_ready; i++) it_sys0(SYS_YIELD);
+    if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T285", "tcb self"); return; }
+    handle_id_t tcb_h = (handle_id_t)g_t285_tcb;
+
+    /* Wait for the reaper: execution ends, object survives (our cap pins it). */
+    struct iris_tcb_info info; info.state = 0u;
+    for (int i = 0; i < 200; i++) {
+        if (it_sys2(SYS_TCB_GET_INFO, (long)tcb_h, (long)(uintptr_t)&info) != 0) { ok = 0; why = "info during teardown"; break; }
+        if (info.state == (uint8_t)IT_TASK_TERMINATED) break;
+        it_sys1(SYS_SLEEP, 1);
+    }
+    if (ok && info.state != (uint8_t)IT_TASK_TERMINATED) { ok = 0; why = "never terminated"; }
+    if (ok && info.task_id != (uint32_t)tid) { ok = 0; why = "id unstable after death"; }
+
+    /* Registry lifetime ended at termination — while the cap still lives. */
+    if (ok) {
+        struct it_utq_taskobj t1;
+        if (!it_utq_t(&t1) || t1.tcb_registry_active != t0.tcb_registry_active) {
+            ok = 0; why = "registry pinned by cap";
+        }
+    }
+    /* No resurrection of a terminal TCB. */
+    if (ok && it_sys1(SYS_TCB_RESUME, (long)tcb_h) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "terminal resumed"; }
+
+    it_close(&tcb_h);
+    if (ok) it_pass("T285"); else it_fail("T285", why);
+}
+
+/* ── T286: churn adversarial de retype/destroy/reset (anti-UAF, rollback) ───
+ * 20 ciclos crear→resolver→destruir→retipar sobre la MISMA región: gauges
+ * vuelven exactos (ni fuga ni doble-destroy), el registry jamás se mueve, y
+ * generation_mismatch se mantiene.  Batch count=2 atómico.  Publicación
+ * fallida (slot ocupado) y capacidad insuficiente: CERO efecto (U14/U15). */
+static void test_t286(void) {
+    int ok = 1;
+    const char *why = "tcb churn";
+    long su = s1_sub_ut(65536);
+    if (su < 0) { it_fail("T286", "sub untyped"); return; }
+    handle_id_t su_h = (handle_id_t)su;
+
+    struct it_utq_taskobj t0, t1;
+    if (!it_utq_t(&t0)) { it_close(&su_h); it_fail("T286", "query"); return; }
+
+    for (int i = 0; ok && i < 20; i++) {
+        if (it_retype2_at(su, IRIS_KOBJ_TCB, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "cycle retype"; break; }
+        long h = it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A);
+        if (h < 0) { ok = 0; why = "cycle resolve"; break; }
+        handle_id_t hh = (handle_id_t)h;
+        it_slot_delete(S1_SLOT_A);
+        it_close(&hh);                      /* last ref → destructor → region */
+        if ((i % 5) == 4 && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "cycle reset"; break; }
+    }
+    (void)it_sys1(SYS_UNTYPED_RESET, su);
+
+    /* Atomic batch: two TCBs in one call, both real, both destroyed. */
+    if (ok && it_retype2_at(su, IRIS_KOBJ_TCB, S1_SLOT_B, 2u, 0) != 0) { ok = 0; why = "batch"; }
+    if (ok) {
+        struct iris_tcb_info bi;
+        if (it_sys2(SYS_TCB_GET_INFO, (long)S1_SLOT_B, (long)(uintptr_t)&bi) != 0 ||
+            it_sys2(SYS_TCB_GET_INFO, (long)(S1_SLOT_B + 1u), (long)(uintptr_t)&bi) != 0) {
+            ok = 0; why = "batch member dead";
+        }
+    }
+    it_slot_delete(S1_SLOT_B); it_slot_delete(S1_SLOT_B + 1u);
+    (void)it_sys1(SYS_UNTYPED_RESET, su);
+
+    /* Failed publication (occupied slot): zero effect on the untyped. */
+    if (ok && it_retype2_at(su, IRIS_KOBJ_TCB, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "occupy"; }
+    if (ok) {
+        struct it_utq_one ub, ua;
+        if (!it_utq_1(su, &ub)) { ok = 0; why = "q before"; }
+        if (ok && it_retype2_at(su, IRIS_KOBJ_TCB, S1_SLOT_A, 1u, 0) !=
+                  (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occupied not refused"; }
+        if (ok && (!it_utq_1(su, &ua) || ua.used_bytes != ub.used_bytes ||
+                   ua.child_count != ub.child_count)) { ok = 0; why = "failed pub consumed"; }
+    }
+    it_slot_delete(S1_SLOT_A);
+    (void)it_sys1(SYS_UNTYPED_RESET, su);
+
+    /* Capacity refusal: 8 TCBs (≥ 8×sizeof(struct task) ≫ 4 KiB) cannot fit
+     * a 4 KiB region — zero effect.  count=8 keeps the destination window
+     * (S1_SLOT_C..+7) inside the 256-slot root CNode, so the failure exercised
+     * is genuinely the CAPACITY check, not the slot-window validation. */
+    if (ok) {
+        long su2 = s1_sub_ut(4096);
+        if (su2 < 0) { ok = 0; why = "sub2"; }
+        else {
+            handle_id_t su2_h = (handle_id_t)su2;
+            if (it_retype2_at(su2, IRIS_KOBJ_TCB, S1_SLOT_C, 8u, 0) !=
+                (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "capacity not refused"; }
+            struct it_utq_one u2;
+            if (ok && (!it_utq_1(su2, &u2) || u2.used_bytes != 0u || u2.child_count != 0u)) {
+                ok = 0; why = "capacity fail consumed";
+            }
+            it_close(&su2_h);
+        }
+    }
+
+    /* Exact accounting after all the churn; scheduler registry untouched. */
+    if (ok && !it_utq_t(&t1)) { ok = 0; why = "query end"; }
+    if (ok && t1.tcb_live != t0.tcb_live) { ok = 0; why = "tcb leak"; }
+    if (ok && t1.tcb_destroyed < t0.tcb_destroyed + 22u) { ok = 0; why = "destroy count"; }
+    if (ok && t1.tcb_registry_active != t0.tcb_registry_active) { ok = 0; why = "registry drift"; }
+    if (ok && t1.tcb_registry_generation_mismatch != t0.tcb_registry_generation_mismatch) {
+        ok = 0; why = "generation mismatch";
+    }
+
+    it_close(&su_h);
+    if (ok) it_pass("T286"); else it_fail("T286", why);
+}
+
+/* ── T287: independencia registro/backing tras la muerte ────────────────────
+ * Un TCB terminado cuya cap sobrevive PINEA su backing pero NO su slot de
+ * registry: un thread nuevo se crea y ejecuta con normalidad (posiblemente
+ * reutilizando el slot de registry liberado) mientras la cap del muerto sigue
+ * respondiendo TERMINATED con su id original.  El kill externo (TCB_EXIT
+ * non-self) sobre el nuevo thread lo termina limpiamente. */
+static volatile int      g_t287_ready = 0;
+static volatile uint64_t g_t287_count = 0;
+static long              g_t287_tcb   = -1;
+static uint8_t           g_t287_stack[8192];
+
+static void t287_helper(void) {
+    g_t287_tcb   = it_sys0(SYS_TCB_SELF);
+    g_t287_ready = 1;
+    for (;;) { g_t287_count++; it_sys0(SYS_YIELD); }
+}
+
+static void test_t287(void) {
+    int ok = 1;
+    const char *why = "registry/backing split";
+
+    /* Thread A: exit while we keep its cap (reuses the T285 helper). */
+    g_t285_ready = 0; g_t285_tcb = -1;
+    uint64_t entry_a = (uint64_t)(uintptr_t)t285_helper;
+    uint64_t rsp_a   = ((uint64_t)(uintptr_t)(g_t285_stack + sizeof(g_t285_stack))) & ~0xFULL;
+    long tid_a = it_sys3(SYS_THREAD_CREATE, (long)entry_a, (long)rsp_a, 0);
+    if (tid_a < 0) { it_fail("T287", "thread A create"); return; }
+    for (int i = 0; i < 200 && !g_t285_ready; i++) it_sys0(SYS_YIELD);
+    if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T287", "A tcb self"); return; }
+    handle_id_t a_h = (handle_id_t)g_t285_tcb;
+
+    struct iris_tcb_info ia; ia.state = 0u;
+    for (int i = 0; i < 200; i++) {
+        if (it_sys2(SYS_TCB_GET_INFO, (long)a_h, (long)(uintptr_t)&ia) != 0) { ok = 0; why = "A info"; break; }
+        if (ia.state == (uint8_t)IT_TASK_TERMINATED) break;
+        it_sys1(SYS_SLEEP, 1);
+    }
+    if (ok && ia.state != (uint8_t)IT_TASK_TERMINATED) { ok = 0; why = "A never terminated"; }
+
+    /* Thread B: must build and RUN while A's terminated object pins backing. */
+    handle_id_t b_h = HANDLE_INVALID;
+    if (ok) {
+        g_t287_ready = 0; g_t287_count = 0; g_t287_tcb = -1;
+        uint64_t entry_b = (uint64_t)(uintptr_t)t287_helper;
+        uint64_t rsp_b   = ((uint64_t)(uintptr_t)(g_t287_stack + sizeof(g_t287_stack))) & ~0xFULL;
+        long tid_b = it_sys3(SYS_THREAD_CREATE, (long)entry_b, (long)rsp_b, 0);
+        if (tid_b < 0) { ok = 0; why = "thread B create"; }
+        for (int i = 0; ok && i < 200 && !g_t287_ready; i++) it_sys0(SYS_YIELD);
+        if (ok && (!g_t287_ready || g_t287_tcb < 0)) { ok = 0; why = "B never ran"; }
+        if (ok) {
+            b_h = (handle_id_t)g_t287_tcb;
+            uint64_t before = g_t287_count;
+            it_sys1(SYS_SLEEP, 3);
+            if (g_t287_count == before) { ok = 0; why = "B frozen"; }
+        }
+        /* A's cap still answers with A's identity — B did not alias it. */
+        if (ok) {
+            struct iris_tcb_info ia2;
+            if (it_sys2(SYS_TCB_GET_INFO, (long)a_h, (long)(uintptr_t)&ia2) != 0 ||
+                ia2.state != (uint8_t)IT_TASK_TERMINATED ||
+                ia2.task_id != (uint32_t)tid_a ||
+                ia2.task_id == (uint32_t)tid_b /* ids must differ */)
+                { ok = 0; why = "A identity aliased"; }
+        }
+        /* External kill of B through its cap; B must reach TERMINATED. */
+        if (ok && it_sys1(SYS_TCB_EXIT, (long)b_h) != 0) { ok = 0; why = "B kill"; }
+        if (ok) {
+            struct iris_tcb_info ib; ib.state = 0u;
+            for (int i = 0; i < 200; i++) {
+                if (it_sys2(SYS_TCB_GET_INFO, (long)b_h, (long)(uintptr_t)&ib) != 0) { ok = 0; why = "B info"; break; }
+                if (ib.state == (uint8_t)IT_TASK_TERMINATED) break;
+                it_sys1(SYS_SLEEP, 1);
+            }
+            if (ok && ib.state != (uint8_t)IT_TASK_TERMINATED) { ok = 0; why = "B never terminated"; }
+        }
+    }
+
+    it_close(&b_h);
+    it_close(&a_h);
+    if (ok) it_pass("T287"); else it_fail("T287", why);
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -18399,6 +18718,11 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t267();
     /* Fase S2 Checkpoint C.1 — versioned user-buffer ABI hardening. */
     test_t283();
+    /* Fase S2 Etapa 0 — canonical TCB from Untyped (adversarial lifecycle). */
+    test_t284();
+    test_t285();
+    test_t286();
+    test_t287();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

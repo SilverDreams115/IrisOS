@@ -118,6 +118,14 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(tcb_obj); kobject_release(sc_obj);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
+    /* Etapa 0: an unconfigured (retyped, inactive) TCB cannot bind an SC —
+     * its destructor unwinds no sched_ctx reference, so allowing the bind
+     * would leak the SC when the last cap drops.  TCB_CONFIGURE (Etapa 5/6)
+     * is the point where a retyped TCB becomes bindable. */
+    if (!target->configured) {
+        kobject_release(tcb_obj); kobject_release(sc_obj);
+        return syscall_err(IRIS_ERR_NOT_SUPPORTED);
+    }
     /* Target must not already hold a different SC (S2.9). */
     if (target->sched_ctx && target->sched_ctx != sc) {
         kobject_release(tcb_obj); kobject_release(sc_obj);

@@ -756,6 +756,7 @@
 #define IRIS_KOBJ_SCHED_CONTEXT 10u
 #define IRIS_KOBJ_UNTYPED       11u
 #define IRIS_KOBJ_REPLY         12u
+#define IRIS_KOBJ_TCB           13u
 #define IRIS_KOBJ_FRAME         15u
 
 /*
@@ -1041,6 +1042,15 @@
  *   Batch is atomic (U14/U15): on any failure no capability is published, no
  *   object is live and no untyped range is consumed.
  *   Device untyped only produces KOBJ_UNTYPED / KOBJ_FRAME (U11/U12).
+ *
+ *   KOBJ_TCB (Fase S2 Etapa 0): the created TCB is a canonical, INACTIVE
+ *   object — storage inside the untyped, capability in CSpace, observable
+ *   (TCB_GET_INFO: state = SUSPENDED, task_id = 0) and delegable, but NOT
+ *   runnable: it has no kstack, no registry slot and no process.  Execution
+ *   syscalls (TCB_SUSPEND/RESUME/EXIT, SC_BIND) refuse it with
+ *   IRIS_ERR_NOT_SUPPORTED until TCB_CONFIGURE lands (roadmap Etapa 5/6);
+ *   TCB_SET_PRIORITY works (stored for later, seL4-style inactive TCB).
+ *   Deleting the last capability returns the zeroed block to the untyped.
  *
  * SYS_UNTYPED_QUERY(kind|version<<16|size<<32, buf_uptr, ut) → 0 or error
  *   Read-only, versioned instrumentation (never authority).  Fase S2 C.1:

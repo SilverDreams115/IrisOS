@@ -101,12 +101,16 @@ static void task_registry_release(struct task *t) {
     t->reg_slot = -1;
 }
 
-/* Bootstrap: bind registry slot 0 to the idle task (never reused). */
+/* Bootstrap: bind registry slot 0 to the idle task (never reused).  Idle is
+ * the single BOOTSTRAP_EXCEPTION of the ledger: static backing, no cap-visible
+ * object, never retyped; marked configured so no execution gate can ever
+ * misread it as an inactive retyped TCB. */
 static void task_registry_bind_idle(struct task *idle) {
     ktcb_registry[0].tcb       = idle;
     ktcb_registry[0].occupied  = 1;
     ktcb_registry[0].bootstrap = 1;
-    idle->reg_slot = 0;
+    idle->reg_slot   = 0;
+    idle->configured = 1;
     atomic_fetch_add_explicit(&reg_active, 1u, memory_order_relaxed);
 }
 

@@ -1,5 +1,6 @@
 #include <iris/nc/ktcb.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kuntyped.h>
 #include <iris/task.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -57,5 +58,39 @@ void ktcb_object_init(struct task *t) {
     if (!t) return;
     kobject_init(&t->base, KOBJ_TCB, &ktcb_ops);  /* refcount = 1 (execution ref) */
     irq_spinlock_init(&t->obj_lock);
+    t->configured = 1;   /* pool birth: execution state built by the creator */
     ktcb_live_inc();
+}
+
+/* ── Fase S2 Etapa 0 — Untyped-born (canonical) KTCB ───────────────────── */
+
+/* Destructor for the untyped-born TCB: the storage IS the retyped region —
+ * return the zeroed block to its parent untyped (child_count--, parent ref
+ * released).  Nothing else to unwind: an unconfigured TCB never held a
+ * kstack, a registry slot, a process link or a sched_ctx (SC_BIND refuses
+ * unconfigured targets precisely so no reference can leak here). */
+static void ktcb_obj_destroy_ut(struct KObject *obj) {
+    struct task *t = (struct task *)obj;   /* KObject at offset 0 */
+    atomic_fetch_sub_explicit(&ktcb_live, 1u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&ktcb_destroyed, 1u, memory_order_relaxed);
+    kuntyped_release_child(t, sizeof(struct task));
+}
+
+static const struct KObjectOps ktcb_ops_ut = { .destroy = ktcb_obj_destroy_ut };
+
+struct task *ktcb_alloc_at(void *mem) {
+    struct task *t = (struct task *)mem;
+    if (!t) return 0;
+    /* Block arrives zero-filled from kuntyped_alloc_children_atomic; set only
+     * the non-zero identity fields.  NOTE: TASK_READY == 0, so the state MUST
+     * be set explicitly — an inactive TCB is never runnable. */
+    kobject_init(&t->base, KOBJ_TCB, &ktcb_ops_ut);  /* refcount = 1 (creator) */
+    irq_spinlock_init(&t->obj_lock);
+    t->state      = TASK_SUSPENDED;         /* inactive until TCB_CONFIGURE */
+    t->ring       = TASK_RING3;
+    t->priority   = TASK_PRIORITY_DEFAULT;
+    t->reg_slot   = -1;                     /* no scheduler identity */
+    t->configured = 0;                      /* execution gate: stays closed */
+    ktcb_live_inc();
+    return t;
 }

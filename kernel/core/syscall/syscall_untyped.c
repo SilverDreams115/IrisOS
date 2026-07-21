@@ -68,6 +68,7 @@ _Static_assert(_Alignof(struct KNotification) <= KUNTYPED_ALIGN, "KNotification 
 _Static_assert(_Alignof(struct KReply)        <= KUNTYPED_ALIGN, "KReply alignment");
 _Static_assert(_Alignof(struct KCNode)        <= KUNTYPED_ALIGN, "KCNode alignment");
 _Static_assert(_Alignof(struct KSchedContext) <= KUNTYPED_ALIGN, "KSchedContext alignment");
+_Static_assert(_Alignof(struct task)          <= KUNTYPED_ALIGN, "KTCB alignment");
 /* The KObject header (type/refcounts/lock/ops) lives INSIDE the retyped
  * storage — first field of every canonical object. */
 _Static_assert(__builtin_offsetof(struct KEndpoint,     base) == 0u, "header in payload");
@@ -82,6 +83,7 @@ _Static_assert(IRIS_KOBJ_SCHED_CONTEXT == (uint32_t)KOBJ_SCHED_CONTEXT, "KOBJ AB
 _Static_assert(IRIS_KOBJ_UNTYPED       == (uint32_t)KOBJ_UNTYPED,       "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_REPLY         == (uint32_t)KOBJ_REPLY,         "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_FRAME         == (uint32_t)KOBJ_FRAME,         "KOBJ ABI");
+_Static_assert(IRIS_KOBJ_TCB           == (uint32_t)KOBJ_TCB,           "KOBJ ABI");
 
 /*
  * SYS_UNTYPED_RETYPE (87) — LEGACY, handle-publishing, single object.
@@ -98,9 +100,12 @@ uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    /* S20: the migrated family can no longer be born through a handle. */
+    /* S20: the migrated family can no longer be born through a handle.
+     * Fase S2 Etapa 0: KOBJ_TCB joins the family — a TCB is born ONLY via
+     * RETYPE2 into CSpace (charter §3.1: no new handle producers). */
     if (obj_type == KOBJ_ENDPOINT || obj_type == KOBJ_NOTIFICATION ||
-        obj_type == KOBJ_REPLY    || obj_type == KOBJ_CNODE) {
+        obj_type == KOBJ_REPLY    || obj_type == KOBJ_CNODE ||
+        obj_type == KOBJ_TCB) {
         kuntyped_stat_retype_failure();
         return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }
@@ -282,6 +287,14 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
             payload    = sizeof(struct KSchedContext);
             new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
             break;
+        case KOBJ_TCB:
+            /* Fase S2 Etapa 0: canonical TCB birth.  The object is INACTIVE
+             * (configured = 0): observable, delegable, destroyable — but not
+             * runnable until TCB_CONFIGURE (roadmap Etapa 5/6).  Execution
+             * syscalls refuse it with NOT_SUPPORTED. */
+            payload    = sizeof(struct task);
+            new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+            break;
         case KOBJ_UNTYPED:
         case KOBJ_FRAME:
             /* Physical-region types keep count == 1 in S1 (their sidecar
@@ -429,6 +442,8 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                         objs[i] = &kcnode_alloc_at(ptrs[i],
                                     (uint32_t)(obj_arg ? obj_arg
                                                        : KCNODE_DEFAULT_SLOTS))->base; break;
+                    case KOBJ_TCB:
+                        objs[i] = &ktcb_alloc_at(ptrs[i])->base;                  break;
                     default: /* KOBJ_SCHED_CONTEXT */
                         objs[i] = &kschedctx_alloc_at(ptrs[i])->base;             break;
                 }

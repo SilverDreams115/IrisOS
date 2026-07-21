@@ -58,6 +58,9 @@ uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) return syscall_err(err);
 
     if (target->terminal) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_FOUND); }
+    /* Etapa 0: an unconfigured (retyped, inactive) TCB has no execution to
+     * suspend — refuse without side effects (TCB_CONFIGURE: Etapa 5/6). */
+    if (!target->configured) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_SUPPORTED); }
 
     int is_self = (target == caller);
     task_suspend(target);
@@ -78,6 +81,9 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) return syscall_err(err);
 
     if (target->terminal) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_FOUND); }
+    /* Etapa 0: an unconfigured TCB must NEVER be made runnable — it has no
+     * kstack, no registry slot, no process.  Hard refuse (charter O5/S-gate). */
+    if (!target->configured) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_SUPPORTED); }
     if (target->state == TASK_SUSPENDED)
         task_wakeup(target);
 
@@ -113,6 +119,8 @@ uint64_t sys_tcb_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) return syscall_err(err);
 
     if (target->terminal) { kobject_release(&target->base); return 0; /* already gone */ }
+    /* Etapa 0: nothing is executing in an unconfigured TCB — refuse. */
+    if (!target->configured) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_SUPPORTED); }
 
     int is_self = (target == caller);
     kobject_release(&target->base);
