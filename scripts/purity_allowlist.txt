@@ -20,7 +20,7 @@ kernel/new_core/src/kprocess.c handle_table_insert 1
 kernel/core/phase3_selftest.c handle_table_get_object 13
 kernel/core/syscall/syscall_cap.c handle_table_get_object 5
 kernel/core/syscall/syscall_cnode_ops.c handle_table_get_object 2
-kernel/core/syscall/syscall_cspace.c handle_table_get_object 5
+kernel/core/syscall/syscall_cspace.c handle_table_get_object 7
 kernel/core/syscall/syscall_endpoint.c handle_table_get_object 2
 kernel/core/syscall/syscall_irq.c handle_table_get_object 2
 kernel/core/syscall/syscall_proc.c handle_table_get_object 1
@@ -29,11 +29,11 @@ kernel/core/syscall/syscall_untyped.c handle_table_get_object 1
 kernel/kernel_main.c handle_table_get_object 3
 kernel/new_core/include/iris/nc/cspace.h handle_table_get_object 2
 kernel/new_core/include/iris/nc/handle_table.h handle_table_get_object 2
-kernel/new_core/src/cspace.c handle_table_get_object 12
+kernel/new_core/src/cspace.c handle_table_get_object 13
 kernel/new_core/src/handle_table.c handle_table_get_object 1
 kernel/core/syscall/syscall_cap.c cspace_or_handle_resolve_ 5
 kernel/core/syscall/syscall_cnode_ops.c cspace_or_handle_resolve_ 5
-kernel/core/syscall/syscall_cspace.c cspace_or_handle_resolve_ 2
+kernel/core/syscall/syscall_cspace.c cspace_or_handle_resolve_ 3
 kernel/core/syscall/syscall_endpoint.c cspace_or_handle_resolve_ 6
 kernel/core/syscall/syscall_frame.c cspace_or_handle_resolve_ 4
 kernel/core/syscall/syscall_ipc.c cspace_or_handle_resolve_ 3

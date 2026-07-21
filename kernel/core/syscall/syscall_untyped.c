@@ -321,6 +321,9 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                                         RIGHT_WRITE, &ut, &ut_rights);
     if (err != IRIS_OK) { kuntyped_stat_retype_failure(); return syscall_err(err); }
 
+    /* Fase S3 (D.1): the MDB ancestry of the created caps is the SLOT of the
+     * source untyped — resolved just before publication (see below). */
+
     /* U11/U12: device untyped only produces physical-region types. */
     if (ut->is_device && obj_type != KOBJ_UNTYPED && obj_type != KOBJ_FRAME) {
         kobject_active_release(&ut->base);
@@ -459,28 +462,44 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(err);
     }
 
-    /* ── publish: all destination slots in one critical section ── */
+    /* ── publish through the canonical slot primitive (Fase S3) ──
+     * Each created cap is installed as an MDB CHILD of the source untyped's
+     * slot when the source was named by CPtr; a handle-named source has no
+     * CSpace ancestor, so the caps are explicit LEGACY roots (I.1, counted).
+     * Exclusive installs re-verify occupancy; a conflict unwinds the slots
+     * installed so far (fresh leaves — their delete has no reparent effect)
+     * and then rolls back objects + carve exactly (U14/U15). */
+    struct KCNode *ut_slot_cn  = 0;
+    uint32_t       ut_slot_idx = 0;
+    if (ut_cptr != 0u && ut_cptr < 1024u) {
+        if (cspace_resolve_slot(proc, ut_cptr, &ut_slot_cn, &ut_slot_idx)
+                != IRIS_OK)
+            ut_slot_cn = 0;   /* defensive: fall back to legacy root */
+    }
+
     err = IRIS_OK;
-    {
-        uint64_t cfl = irq_spinlock_lock(&cn->lock);
-        for (uint32_t i = 0; i < count; i++) {
-            if (cn->slots[dest_slot + i].object) { err = IRIS_ERR_ALREADY_EXISTS; break; }
-        }
-        if (err == IRIS_OK) {
-            for (uint32_t i = 0; i < count; i++) {
-                kobject_retain(objs[i]);
-                kobject_active_retain(objs[i]);
-                cn->slots[dest_slot + i].object = objs[i];
-                cn->slots[dest_slot + i].rights = new_rights;
-                cn->slots[dest_slot + i].badge  = 0;
-            }
-        }
-        irq_spinlock_unlock(&cn->lock, cfl);
+    uint32_t installed = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        err = kcnode_slot_install_linked(cn, dest_slot + i, objs[i],
+                                         new_rights, 0,
+                                         ut_slot_cn, ut_slot_idx,
+                                         /*exclusive=*/1,
+                                         /*legacy=*/ut_slot_cn ? 0 : 1);
+        if (err != IRIS_OK) break;
+        installed++;
+    }
+
+    if (ut_slot_cn) {
+        kobject_active_release(&ut_slot_cn->base);
+        kobject_release(&ut_slot_cn->base);
     }
 
     if (err != IRIS_OK) {
-        /* Roll back: destroy every created object (returns its block to the
-         * region and drops child_count), then un-bump the carve exactly. */
+        /* Unwind the freshly installed slots (leaves, no children yet), then
+         * destroy every created object (returns its block to the region and
+         * drops child_count) and un-bump the carve exactly. */
+        for (uint32_t j = 0; j < installed; j++)
+            (void)kcnode_slot_delete(cn, dest_slot + j);
         for (uint32_t i = 0; i < count; i++)
             kobject_release(objs[i]);
         if (carve_end > carve_start)
@@ -669,6 +688,10 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             task_registry_stats(&q.tcb_registry_active, &q.tcb_registry_hwm,
                                 &q.tcb_registry_exhaustions,
                                 &q.tcb_registry_generation_mismatch);
+            kcnode_mdb_stats(&q.mdb_nodes_live, &q.mdb_nodes_hwm,
+                             &q.mdb_legacy_roots, &q.mdb_orphan_promotions,
+                             &q.mdb_reparents, &q.mdb_revoked_nodes,
+                             &q.mdb_moves, &q.mdb_max_depth);
             return syscall_err(copy_versioned_to_user(buf_uptr, user_size, user_version,
                                &q, (uint32_t)sizeof(q), IRIS_UNTYPED_QUERY_VERSION));
         }

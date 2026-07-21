@@ -95,6 +95,74 @@ iris_error_t cspace_resolve_cap(struct KProcess   *proc,
                                      rights_out, 0);
 }
 
+/*
+ * Fase S3 — resolve a CPtr to its terminal SLOT LOCATION (CNode + index)
+ * instead of the object it contains.  This is what gives the MDB a source
+ * identity: derivation (SYS_CSPACE_MINT / MINT_INTO), revocation
+ * (SYS_CSPACE_REVOKE) and retype ancestry operate on slots, not objects.
+ *
+ * Same radix walk and namespace rules as cspace_resolve_cap (CPtr < 1024
+ * territory only; the caller guards the namespace split).  On success the
+ * containing CNode is returned with active+lifecycle refs (caller releases
+ * both) and *idx_out is the slot index.  The terminal slot is guaranteed
+ * occupied at resolution time (an empty slot fails NOT_FOUND).
+ */
+iris_error_t cspace_resolve_slot(struct KProcess *proc, iris_cptr_t cptr,
+                                 struct KCNode **cn_out, uint32_t *idx_out)
+{
+    if (!proc || !cn_out || !idx_out) return IRIS_ERR_INVALID_ARG;
+    if (cptr == CPTR_NULL) return IRIS_ERR_INVALID_ARG;
+
+    handle_id_t root_h = proc->cspace_root_h;
+    if (root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+
+    struct KObject *root_obj;
+    iris_rights_t   root_rights;
+    iris_error_t err = handle_table_get_object(&proc->handle_table, root_h,
+                                               &root_obj, &root_rights);
+    if (err != IRIS_OK) return err;
+    if (root_obj->type != KOBJ_CNODE) {
+        kobject_release(root_obj);
+        return IRIS_ERR_INVALID_ARG;
+    }
+    kobject_active_retain(root_obj);
+    struct KCNode *cur = (struct KCNode *)root_obj;
+
+    for (uint32_t depth = 0; depth < CSPACE_MAX_DEPTH; depth++) {
+        uint32_t radix = (uint32_t)__builtin_ctzll((uint64_t)cur->slot_count);
+        uint32_t idx   = (uint32_t)(cptr & ((uint64_t)cur->slot_count - 1u));
+        cptr >>= radix;
+
+        struct KObject *slot_obj;
+        iris_rights_t   slot_rights;
+        err = kcnode_fetch(cur, idx, &slot_obj, &slot_rights);
+        if (err != IRIS_OK) {
+            kobject_active_release(&cur->base);
+            kobject_release(&cur->base);
+            return err;
+        }
+
+        if (cptr == 0 || slot_obj->type != KOBJ_CNODE) {
+            /* Terminal slot: (cur, idx).  Keep cur's refs for the caller;
+             * drop the probe refs on the slot object. */
+            kobject_active_release(slot_obj);
+            kobject_release(slot_obj);
+            *cn_out  = cur;
+            *idx_out = idx;
+            return IRIS_OK;
+        }
+
+        /* Intermediate CNode — descend (transfer refs to the child). */
+        kobject_active_release(&cur->base);
+        kobject_release(&cur->base);
+        cur = (struct KCNode *)slot_obj;
+    }
+
+    kobject_active_release(&cur->base);
+    kobject_release(&cur->base);
+    return IRIS_ERR_INVALID_ARG;
+}
+
 
 /* Typed resolve helper — validates object type after generic traversal. */
 #define TYPED_RESOLVE(fn, member_type, kobj_tag)                         \

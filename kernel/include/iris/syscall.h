@@ -1069,6 +1069,36 @@
 #define SYS_UNTYPED_RETYPE2 111
 #define SYS_UNTYPED_QUERY   112
 
+/*
+ * Fase S3 — CSpace-only derivation surface (native MDB/CDT).
+ * Source authority comes EXCLUSIVELY from the caller's CSpace (CPtr < 1024
+ * resolved to a slot); a handle value in a source argument is INVALID_ARG.
+ * See docs/architecture/cspace-cdt-mdb.md.
+ *
+ * SYS_CSPACE_MINT(src_cptr, dest_cnode|slot<<32, rights|badge<<32)
+ *     → 0 or negative iris_error_t
+ *   Copy (rights == RIGHT_SAME_RIGHTS) or mint (reduced rights, central
+ *   badge rule) of the capability in src_cptr into dest slot (dest_cnode 0
+ *   = caller's root CNode).  The new cap is an MDB CHILD of the source slot.
+ *   Requires RIGHT_DUPLICATE on the source.  Exclusive: occupied dest →
+ *   IRIS_ERR_ALREADY_EXISTS.  On any error nothing changes.
+ *
+ * SYS_CSPACE_REVOKE(cptr) → number of caps destroyed, or negative error
+ *   Deletes the ENTIRE MDB descendant subtree of the named slot — across
+ *   CNodes and processes — in deterministic order.  The invoked capability
+ *   and its siblings survive.  delete(cap) ≠ revoke(cap).
+ *
+ * SYS_CSPACE_MINT_INTO(proc, dest_slot, src_cptr, rights|badge<<32)
+ *     → 0 or negative iris_error_t
+ *   Cross-process CSpace-sourced mint: installs a derived cap into the
+ *   target process's root CNode (RIGHT_WRITE on the process cap; exclusive
+ *   slot).  The installed cap is an MDB child of the CALLER's source slot,
+ *   so the delegation is revocable from the caller or any of its ancestors.
+ */
+#define SYS_CSPACE_MINT      114
+#define SYS_CSPACE_REVOKE    115
+#define SYS_CSPACE_MINT_INTO 116
+
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
 #define IRIS_UNTYPED_QUERY_ONE     2u
@@ -1136,6 +1166,15 @@ struct iris_untyped_query_taskobj {
     uint32_t tcb_registry_hwm;
     uint32_t tcb_registry_exhaustions;
     uint32_t tcb_registry_generation_mismatch;
+    /* Fase S3 — native MDB/CDT gauges (prefix-compatible append, C.1). */
+    uint32_t mdb_nodes_live;         /* occupied slots participating in the MDB */
+    uint32_t mdb_nodes_hwm;
+    uint32_t mdb_legacy_roots;       /* live LEGACY_ROOT caps (must → 0, Etapas 2-4) */
+    uint32_t mdb_orphan_promotions;  /* children promoted to root by root-delete */
+    uint32_t mdb_reparents;          /* children adopted by grandparent on delete */
+    uint32_t mdb_revoked_nodes;      /* caps destroyed by revoke */
+    uint32_t mdb_moves;
+    uint32_t mdb_max_depth;
 };
 #endif /* !__ASSEMBLER__ */
 

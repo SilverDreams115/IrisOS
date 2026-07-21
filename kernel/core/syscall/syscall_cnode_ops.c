@@ -161,22 +161,11 @@ uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK)
         return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
 
-    uint64_t flags = irq_spinlock_lock(&cn->lock);
-
-    if (slot_a >= cn->slot_count || slot_b >= cn->slot_count) {
-        irq_spinlock_unlock(&cn->lock, flags);
-        kobject_active_release(&cn->base);
-        kobject_release(&cn->base);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-
-    /* Swap is a pure in-place exchange of slot contents; no refcount change. */
-    struct KCSlot tmp  = cn->slots[slot_a];
-    cn->slots[slot_a]  = cn->slots[slot_b];
-    cn->slots[slot_b]  = tmp;
-
-    irq_spinlock_unlock(&cn->lock, flags);
+    /* Fase S3: swap goes through the canonical primitive — the MDB links of
+     * both capabilities (parent, siblings, children) travel with them. */
+    err = kcnode_swap(cn, slot_a, slot_b);
     kobject_active_release(&cn->base);
     kobject_release(&cn->base);
+    if (err != IRIS_OK) return syscall_err(err);
     return 0;
 }

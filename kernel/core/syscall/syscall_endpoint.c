@@ -194,6 +194,11 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
             if (e == IRIS_OK) {
                 kobject_release(xo);  /* staging ref; the slot holds its own */
                 ipc_stat_bump(&iris_ipc_stat_slot_deliveries);
+                /* Fase S3 (I.2): a staged-handle origin has no provable
+                 * CSpace ancestor — the delivered cap is an explicit LEGACY
+                 * root in the MDB (kcnode_mint_excl_badged marks it), and
+                 * this counter is its retirement witness (→ 0 in Etapa 2). */
+                kcnode_cdt_note_ipc_transfer();
                 return slot;
             }
         }

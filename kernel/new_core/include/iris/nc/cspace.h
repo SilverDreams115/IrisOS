@@ -82,6 +82,13 @@ iris_error_t cspace_resolve_cap_badged(struct KProcess   *proc,
                                         iris_rights_t     *rights_out,
                                         uint64_t          *badge_out);
 
+/* Fase S3: resolve a CPtr to its terminal SLOT LOCATION (CNode + index) —
+ * the identity the MDB operates on.  CSpace namespace only (caller guards
+ * the <1024 split).  On success the CNode carries active+lifecycle refs
+ * (caller releases both); the slot was occupied at resolution time. */
+iris_error_t cspace_resolve_slot(struct KProcess *proc, iris_cptr_t cptr,
+                                 struct KCNode **cn_out, uint32_t *idx_out);
+
 /* Fase 9: badge-aware dual endpoint resolver for the EP send/call paths.
  * Same namespace + refcount contract as cspace_or_handle_resolve_endpoint
  * (lifecycle-only ref); additionally returns the badge of the capability

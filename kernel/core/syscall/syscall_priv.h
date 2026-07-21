@@ -290,6 +290,11 @@ uint64_t sys_cnode_fetch(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+/* Fase S3 — CSpace-only MDB/CDT derivation surface. */
+uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                              uint64_t arg3);
 
 /* ── Forward declarations — Block 3 scheduler (Ph73-75) ─────────── */
 uint64_t sys_thread_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2);
