@@ -3,6 +3,13 @@
 Registro de deuda híbrida: todo mecanismo no-seL4 que sigue vivo, quién lo
 usa, su reemplazo y su fase de retiro.
 
+**Marco normativo**: este ledger implementa el
+[charter de pureza seL4](iris-sel4-purity-charter.md) (constitucional) y el
+[roadmap de convergencia](sel4-convergence-roadmap.md) (orden por
+dependencias).  Las "removal phases" de la tabla se leen contra las Etapas
+del roadmap.  La guarda ejecutable `make check-purity` congela los
+consumidores legacy de handle table / kslab: la allowlist solo decrece.
+
 **Regla**: `ningún mecanismo marcado FROZEN puede recibir nuevos
 consumidores`.  Añadir un consumidor a una entrada FROZEN/ACTIVE_LEGACY es
 un defecto de revisión.  Los estados son:
@@ -35,7 +42,9 @@ reservado, sin funcionalidad) · `REMOVED` (borrado).
 | `KTcbRegistrySlot ktcb_registry[TASK_MAX]` | registro de referencias (tcb*/generation/occupied/bootstrap), NO payload | scheduler/alloc/lookup | mismo registro; capacidad transitoria | — | límite TASK_MAX transitorio | TRANSITIONAL_IMPLEMENTATION_CAPACITY (Etapa C) |
 | `struct task tasks[TASK_MAX]` (payload estático) | backing real del TCB (registros/kstack ptr/scheduler state) apuntado por `registry[i].tcb` | registry (scaffolding) | KTCB canónico en Untyped (Etapa D) | S2 inc.2 Etapa D | sí — scaffolding, sin consumidores nuevos | ACTIVE_LEGACY (scaffolding; REMOVE en Etapa D, salvo idle bootstrap) |
 | `SYS_THREAD_SET_SC` (85) | self-bind SC | código sched existente | `SYS_SC_BIND(sc,tcb)` por CPtr | — | sí — congelado | FROZEN (Fase S2 inc.1) |
-| `KTcb` payload (kslab) | objeto TCB cap-visible en heap | thread create | retype KOBJ_TCB desde Untyped | S2 (resto) | sí | ACTIVE_LEGACY (kslab; migración pendiente increment 2) |
+| `struct KTcb` wrapper (kslab) | objeto TCB cap-visible en heap, separado del task | — | `struct task` ES el KTCB (KObject en offset 0) | S2 inc.2 | — | REMOVED (Fase S2 inc.2 — una estructura, una identidad) |
+| thread-create ejecutable vía pool + handle (`SYS_THREAD_CREATE`/`task_create_user_impl`) | la ruta de EJECUCIÓN de threads nace del pool estático y publica un handle en la tabla del proceso | spawn/loader, iris_test threads | TCB retipado (`RETYPE2(KOBJ_TCB)`, ya existente) + `TCB_CONFIGURE` con caps CSpace/VSpace (Etapa 5/6, post-CDT) | Etapa 5/6 | sí — ningún camino nuevo de creación de threads | ACTIVE_LEGACY (la única ruta ejecutable; el TCB retipado es cap-completo pero inactivo hasta TCB_CONFIGURE) |
+| idle task (backing estático, registry slot 0) | TCB bootstrap fuera de Untyped, sin objeto cap-visible | scheduler | root-task TCB del BootInfo (Etapa 5) | Etapa 5 | sí — excepción bootstrap aislada, jamás retipada ni reusada | BOOTSTRAP_EXCEPTION |
 | derivación handle-tree para tipos migrados (EP/Notif/Reply/CNode/TCB/SC) | árbol de derivación oculto en handle table | SYS_CAP_DERIVE | CDT/MDB nativo en slots de CNode | S2 (Bloque D) | sí | ACTIVE_LEGACY (contador `legacy_handle_derivation_migrated` observable, debe → 0) |
 | root CNode at `kprocess_alloc` (kslab) | CNode runtime fuera de Untyped | todo spawn | spawner aporta CNode retipado (process-server) | process-server | sí | ACTIVE_LEGACY |
 | implicit page-table allocation (PMM reserve en map) | memoria kernel oculta por mapping | paging | PageTable objects desde Untyped | frame/page-table | sí | ACTIVE_LEGACY |
@@ -46,6 +55,8 @@ reservado, sin funcionalidad) · `REMOVED` (borrado).
 | `KInitrdEntry` + `SYS_INITRD_*` | filesystem-aware kernel state | loader | VFS/loader userland | process-server | sí | ACTIVE_LEGACY |
 | kernel stacks / PML4 desde reserva PMM | asignación fuera de Untyped | task/process create | TCB/VSpace desde Untyped | process/frame phases | sí | ACTIVE_LEGACY |
 | `KChannel` | — | — | endpoints | Fase 13 | — | REMOVED |
+| whitelist ioport hardcodeada (`kioport_whitelist`, syscall_priv.h) | política de dispositivo en kernel | kbd/console/fb/userboot vía svcmgr | caps de ioport finas emitidas por la root task (BootInfo) | Etapa 5 | sí — ninguna entrada nueva sin cita al charter §2.6/P3 | ACTIVE_LEGACY (bootstrap temporal) |
+| fallback TOCTOU receive-slot→handle (`syscall_ipc_deliver_cap_routed`) | degradación de entrega CSpace a handle | entrega IPC con slot declarado que pierde la carrera | instalación CSpace-only con CDT (la carrera se resuelve en el árbol) | Etapa 2 | sí — contado (`iris_ipc_stat_toctou_fallbacks`), nunca un patrón | ACTIVE_LEGACY (única degradación permitida, condenada) |
 
 ## Checkpoint C.1 — Versioned user-buffer ABI (Fase S2)
 
