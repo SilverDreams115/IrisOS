@@ -26,33 +26,43 @@ productivo dependa del mecanismo que retira (charter §3.10).
   se define en Etapa 5/6 (post-CDT).  Idle task = excepción bootstrap
   aislada (registry slot 0, jamás retipada ni reusada).
 
-## Etapa 1 — CDT/MDB  ← SIGUIENTE
+## Etapa 1 — CDT/MDB  ✅ CERRADA (Fase S3)
 
 Precondición: Etapa 0 (cerrada).
-Contrato de entrada detallado: ver §"Contrato CDT" al final.
+Diseño: `docs/architecture/cspace-cdt-mdb.md`.
 
-- Metadata de derivación asociada a slots de CNode (no a handles).
-- Relaciones parent/child globales (cross-CNode, cross-process).
-- copy/mint/move/delete sobre slots manteniendo el árbol.
-- Revocación recursiva cross-process con cleanup determinista.
-- Rollback exacto ante fallos parciales de cualquier operación de árbol.
-- `legacy_handle_derivation_migrated` debe converger a 0.
+- Metadata de derivación intrusiva por slot de CNode (no en handles):
+  parent / first-child / siblings doblemente enlazados.
+- Relaciones parent/child globales (cross-CNode, cross-process) — los
+  enlaces son punteros a slots, agnósticos del KProcess propietario.
+- Primitivas canónicas únicas (`kcnode_slot_install_linked/derive/move/
+  delete/revoke`); ningún TU muta `cn->slots[]` directamente.
+- Revocación recursiva cross-process (`SYS_CSPACE_REVOKE`) con orden
+  determinista (post-orden hoja-más-profunda) y efectos de lifecycle fuera
+  del lock; probada T288-T290 (runtime, procesos reales) + fuzzing
+  model-based (5 seeds × 4000 ops, comparación de vector de padres).
+- Rollback exacto (retype2 publica por primitiva; fallo desinstala hojas y
+  deshace carve).  delete ≠ revoke; delete intermedio reparenta al abuelo.
+- Untyped como ancestro MDB de sus objetos retipados (D.1/D.2/D.3).
+- Locking: `mdb_lock` global → `cn->lock`; releases fuera del lock.
 
-Cierre: revoke de un ancestro elimina toda la descendencia en cualquier
-CSpace del sistema, bajo suite adversarial (cadenas, ciclos de mint,
-muerte concurrente del holder, revoke durante IPC staged).
+Deuda que sigue viva (NO bloquea, retiro en etapas siguientes):
+`legacy_handle_derivation_migrated` (árbol handle-tree paralelo,
+`SYS_CAP_DERIVE`) → Etapa 3; `mdb_legacy_roots` (orígenes no-CSpace) →
+Etapas 2/4/5; `cdt_ipc_transfer` (entrega IPC = LEGACY_ROOT) → Etapa 2.
 
-## Etapa 2 — Cap transfer CSpace-only
+## Etapa 2 — Cap transfer CSpace-only  ← SIGUIENTE
 
-Precondición: Etapa 1 (el staging necesita el CDT para registrar la
-derivación de la cap entregada).
+Precondición: Etapa 1 (cerrada — el staging ya registra la cap entregada
+como nodo MDB LEGACY_ROOT; falta darle un ancestro CSpace real).
 
 - Origen por CPtr (retira el peek handle-only de
-  `syscall_ipc_stage_cap_peek_badged`).
+  `syscall_ipc_stage_cap_peek_badged`); la cap entregada pasa a ser hija
+  MDB del slot fuente en lugar de LEGACY_ROOT.
 - Destino: receive slot (ya existente) como único camino.
 - Staged transfer sobre slots con la misma atomicidad peek/commit.
-- Eliminar la degradación TOCTOU slot→handle (el contador
-  `iris_ipc_stat_toctou_fallbacks` debe quedar estructuralmente en 0).
+- Eliminar la degradación TOCTOU slot→handle (`iris_ipc_stat_toctou_fallbacks`
+  y `cdt_ipc_transfer` como LEGACY_ROOT deben quedar estructuralmente en 0).
 
 ## Etapa 3 — Derive y revoke CSpace-only
 

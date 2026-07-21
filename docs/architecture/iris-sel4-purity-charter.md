@@ -53,8 +53,8 @@ citando este charter.  Los estados "hoy" son honestos: `CUMPLIDO`,
 | A6 | `ACCESS_DENIED` jamás provoca fallback a otro namespace | CUMPLIDO (split <1024/≥1024 sin fallback) |
 | A7 | Los rights solo se mantienen o reducen; mint jamás amplifica | CUMPLIDO (`rights_reduce`, colapso a NONE rechazado) |
 | A8 | Los badges son identidad sellada por el kernel; un cap badgeado nunca se re-badgea | CUMPLIDO |
-| A9 | Toda capability derivada es rastreable hasta su ancestro | PARCIAL — árbol solo en handle table local (Etapa 1: CDT) |
-| A10 | Revoke elimina recursivamente toda autoridad descendiente, incluso cross-process | PENDIENTE (Etapa 1) |
+| A9 | Toda capability derivada es rastreable hasta su ancestro | CUMPLIDO para la derivación CSpace (MDB/CDT nativo, Fase S3); el árbol handle-tree legacy (`SYS_CAP_DERIVE`) sigue en paralelo, congelado (Etapa 3) |
+| A10 | Revoke elimina recursivamente toda autoridad descendiente, incluso cross-process | CUMPLIDO para caps CSpace (`SYS_CSPACE_REVOKE`, Fase S3 — cruza CNodes y procesos, probado T288-T290 + fuzzing); `SYS_CAP_REVOKE` handle-only sigue siendo intra-tabla (Etapa 3) |
 
 ### 2.2 Objetos
 
@@ -140,12 +140,17 @@ mismo commit, con justificación técnica escrita.
 El capability model se declara COMPLETO únicamente cuando todo esto sea
 cierto y esté probado:
 
-- [ ] CDT/MDB nativo asociado a slots de CNode (parent/child global).
+- [x] CDT/MDB nativo asociado a slots de CNode (parent/child global) —
+      **Fase S3** (`docs/architecture/cspace-cdt-mdb.md`); revoke recursivo
+      cross-process incluido.  Falta retirar el árbol handle-tree paralelo.
 - [ ] Invocación CSpace-only: cero resolución dual, cero discriminación por
       rango de valor.
-- [ ] Revoke recursivo cross-process con rollback/cleanup determinista.
-- [ ] Cap transfer por CPtr (origen y destino en CSpace).
-- [ ] derive/mint/copy/move/delete/revoke operando sobre slots.
+- [x] Revoke recursivo cross-process con rollback/cleanup determinista —
+      **Fase S3** (`SYS_CSPACE_REVOKE`).
+- [ ] Cap transfer por CPtr (origen y destino en CSpace) — destino CSpace
+      (receive slots) ya; ORIGEN sigue handle (Etapa 2).
+- [x] derive/mint/copy/move/delete/revoke operando sobre slots — **Fase S3**
+      (primitivas `kcnode_slot_*`); `SYS_CSPACE_MINT`/`MINT_INTO`/`REVOKE`.
 - [ ] Cero handles productivos; handle table eliminada o reducida a cero
       consumidores.
 - [ ] Bootstrap con capabilities finas (BootInfo estructurado; sin

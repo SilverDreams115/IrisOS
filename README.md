@@ -38,7 +38,14 @@ past the named catalog and extra images are loaded by index.
 
 Capabilities are unforgeable references to typed kernel objects. Rights are
 stored **per capability**, not per object, and can only be *reduced* on
-copy/mint/transfer, never elevated.
+copy/mint/transfer, never elevated. Since Fase S3 every CSpace capability
+also carries a native **CDT/MDB** derivation node (parent / children /
+siblings): copy and mint record a derivation edge, and `CSPACE_REVOKE`
+recursively destroys a capability's entire descendance across CNodes and
+processes while the invoked capability and its siblings survive — delegation
+is no longer "give away forever". See
+`docs/architecture/cspace-cdt-mdb.md` and the
+[seL4 purity charter](docs/architecture/iris-sel4-purity-charter.md).
 
 | Object | Role |
 |--------|------|
@@ -56,7 +63,7 @@ copy/mint/transfer, never elevated.
 | `KOBJ_IRQ_CAP` / `KOBJ_IOPORT` | Capability-gated hardware access. |
 | `KOBJ_BOOTSTRAP_CAP` | First-task authority with per-bit permission flags. |
 | `KOBJ_INITRD_ENTRY` | Read-only handle to an initrd image slot. |
-| `KOBJ_CHANNEL` | Legacy ring-buffer IPC; retained only as a test/compat & bootstrap boundary. |
+| `KOBJ_CHANNEL` | Removed (Fase 13). The enum value is reserved; all `CHAN_*` syscalls return `NOT_SUPPORTED`. |
 
 ### Rights
 
@@ -222,15 +229,21 @@ deliberately distinct from per-domain quota; its exhaustion returns `NULL` →
 
 ## Syscall surface
 
-111 syscall slots (0–110). Highlights by area:
+~117 syscall slots (0–116; several early numbers permanently retired).
+Highlights by area:
 
 - **Core / process / thread**: `EXIT`, `GETPID`, `YIELD`, `SLEEP`, `CLOCK_GET`,
   `CLOCK_NANOSLEEP`, `PROCESS_CREATE`, `PROCESS_WATCH`, `PROCESS_KILL`,
   `PROCESS_STATUS`, `PROCESS_EXIT_CODE`, `PROCESS_VSPACE`, `PROCESS_FAULT_INFO`,
   `THREAD_CREATE/START/EXIT`, `FUTEX_WAIT/WAKE`.
-- **Capabilities / CSpace**: `HANDLE_DUP`, `HANDLE_TRANSFER`, `HANDLE_TYPE`,
-  `HANDLE_SAME_OBJECT`, `CNODE_CREATE/MINT/MOVE/FETCH/DELETE/SWAP`,
-  `CSPACE_RESOLVE`, `PROC_CSPACE_MINT`, `CAP_DERIVE`, `CAP_REVOKE`.
+- **Capabilities / CSpace**: `HANDLE_DUP`, `HANDLE_TYPE`,
+  `HANDLE_SAME_OBJECT`, `CNODE_MINT/MOVE/FETCH/DELETE/SWAP`,
+  `CSPACE_RESOLVE`, `PROC_CSPACE_MINT`. Native **CDT/MDB** derivation
+  (Fase S3): `CSPACE_MINT` (copy/mint slot→slot), `CSPACE_MINT_INTO`
+  (cross-process mint), `CSPACE_REVOKE` (recursive, cross-process). The
+  handle-tree `CAP_DERIVE`/`CAP_REVOKE` are legacy, frozen, and slated for
+  retirement. `HANDLE_TRANSFER`, `CNODE_CREATE`, `ENDPOINT/NOTIFY/CNODE/SC_CREATE`
+  are retired (`NOT_SUPPORTED`).
 - **Endpoint IPC**: `ENDPOINT_CREATE`, `EP_SEND`, `EP_RECV`, `EP_NB_SEND`,
   `EP_NB_RECV`, `EP_CALL`, `REPLY`.
 - **Memory / untyped / frames**: `VMO_CREATE/CREATE_FOR/MAP/MAP_INTO/MAP_PAGE/UNMAP/SHARE/SIZE`,
@@ -242,7 +255,9 @@ deliberately distinct from per-domain quota; its exhaustion returns `NULL` →
 - **Hardware / bootstrap (cap-gated)**: `CAP_CREATE_IRQCAP`, `CAP_CREATE_IOPORT`,
   `IOPORT_IN/OUT/RESTRICT`, `IRQ_ROUTE_REGISTER`, `IRQ_ACK`, `BOOTCAP_RESTRICT`,
   `FRAMEBUFFER_VMO`, `INITRD_COUNT/VMO`, `POWEROFF`, `KLOG_DRAIN`.
-- **Legacy IPC (compat/bootstrap only)**: `CHAN_CREATE/SEND/RECV/…`, `WAIT_ANY`.
+- **CSpace derivation (Fase S3)**: `CSPACE_MINT`, `CSPACE_REVOKE`,
+  `CSPACE_MINT_INTO` — native MDB/CDT, CSpace-only source, cross-process
+  recursive revoke.
 
 Several early syscalls (`SYS_WRITE`, `SYS_BRK`, `SYS_SPAWN`, `SYS_NS_REGISTER`,
 `SYS_NS_LOOKUP`, `SYS_SPAWN_ELF`, …) are permanently retired and return
@@ -314,22 +329,27 @@ THREAD_START` flow.
 
 Two independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **10247 assertions** across ~21 suites
+- **Host unit tests** — `make test-unit`: **10410 assertions** across ~22 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   handle_table, kendpoint, kreply, knotification, kuntyped, kschedctx, kframe,
-  rights, ipc_cspace, vfs_ep including the file-grant layer, …).
-- **Runtime tests** — booted under QEMU headless: **246 tests (T001–T250)**
-  covering IPC and syscall basics, CPtr-first slots, badges & sender identity,
-  service lifecycle / death-restart / relookup, endpoint cap-transfer,
-  device/driver isolation, service supervision, the user pager and fault model,
-  file-backed memory, VFS-enforced file grants, multi-target paging, and
-  resource ownership / quota accounting.
+  the MDB/CDT (structural + model-based fuzzing), rights, ipc_cspace, vfs_ep
+  including the file-grant layer, …).
+- **Runtime tests** — booted under QEMU headless: **267 tests** covering IPC and
+  syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
+  death-restart / relookup, endpoint cap-transfer, device/driver isolation,
+  service supervision, the user pager and fault model, file-backed memory,
+  VFS-enforced file grants, multi-target paging, resource ownership / quota
+  accounting, the canonical Untyped-born TCB lifecycle (T284–T287), and the
+  native MDB/CDT with cross-process revocation (T288–T290).
+- **Purity gate** — `make check-purity`: the frozen legacy-consumer allowlist
+  (handle table / kslab). It can only shrink.
 
 ```bash
 make                                                       # zero-warning build
-make test-unit                                             # host unit suites (10247)
+make check-purity                                          # seL4 purity allowlist
+make test-unit                                             # host unit suites (10410)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (246/246)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (267/267)
 make run                                                   # interactive QEMU
 ```
 
