@@ -443,9 +443,10 @@ void init_spawn_iris_test(handle_id_t sm_h) {
      * signal.  One notification (full rights) serves both the watch arm
      * (RIGHT_WRITE) and our own wait (RIGHT_WAIT); bit 0 marks iris_test. */
     /* Fase S1: retyped from init's untyped pool (SYS_NOTIFY_CREATE retired). */
-    r = init_retype_notif_handle(INIT_SLOT_WATCH_NOTIF);
+    r = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
+                         INIT_SLOT_WATCH_NOTIF, 0);
     if (r < 0) goto out;
-    watch_base_h = (handle_id_t)r;
+    watch_base_h = (handle_id_t)INIT_SLOT_WATCH_NOTIF;
 
     r = init_sys3(SYS_PROCESS_WATCH, (long)proc_h, (long)watch_base_h, 1);
     if (r < 0) {
@@ -472,7 +473,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
 out:
     init_close(&proc_h);
     init_close(&boot_h);
-    init_close(&watch_base_h);
+    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_WATCH_NOTIF);
     /* Etapa 4: nothing to close — the loader authority was our own CSpace slot,
      * not a duplicate this function owned and had to release. */
 }

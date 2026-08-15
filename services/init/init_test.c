@@ -16,8 +16,10 @@ static const char init_stage_exception[] = "[USER][INIT][S8] exception delivery 
  * user-pointer validation over a KNotification (SYS_NOTIFY_WAIT_TIMEOUT with a
  * bogus out_bits pointer → IRIS_ERR_INVALID_ARG) instead of a KChannel. */
 void init_runtime_probe_invalid_userptr(void) {
-    long n = init_retype_notif_handle(INIT_SLOT_PROBE_NOTIF);
+    long n = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
+                              INIT_SLOT_PROBE_NOTIF, 0);
     if (n < 0) return;
+    n = (long)INIT_SLOT_PROBE_NOTIF;
     long r = init_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, 1 /* bogus user ptr */, 50000000L);
     if (r == (long)IRIS_ERR_INVALID_ARG)
         init_log("[USER][INIT][SELFTEST] invalid-userptr OK\n");
@@ -49,9 +51,10 @@ void init_selftest_exception(void) {
     uint32_t vec, task_id;
     uint64_t bits = 0;
 
-    n_raw = init_retype_notif_handle(INIT_SLOT_S8_NOTIF);
+    n_raw = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
+                             INIT_SLOT_S8_NOTIF, 0);
     if (n_raw < 0) { init_log("[USER][INIT][S8] SKIP: notify create\n"); return; }
-    notif_h = (handle_id_t)n_raw;
+    notif_h = (handle_id_t)INIT_SLOT_S8_NOTIF;
 
     /* Register exception handler for own process (HANDLE_INVALID = self),
      * signalling bit 0 on fault. */

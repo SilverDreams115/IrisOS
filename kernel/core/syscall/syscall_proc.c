@@ -109,24 +109,20 @@ uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    /* Etapa 4 note: arg0 resolves either way but this stays handle-only.  The
-     * obvious migration — resolve through the dual helper and drop the extra
-     * active ref to keep this function's single-release contract — is WRONG:
-     * driving active_refs to zero runs the object's close path, which for a
-     * KNotification wakes its waiters.  Doing that here silently broke service
-     * restart (the death notification was closed out from under svcmgr).
-     * Migrating this argument means converting every release site below to the
-     * active+lifecycle pair, not papering over the difference. */
-    r = handle_table_get_object(&t->process->handle_table,
-                                (handle_id_t)arg1, &notif_obj, &notif_rights);
+    /* Etapa 4: the watched process already resolved either way while the
+     * notification stayed handle-only — half a migration, so a caller holding
+     * its notification in CSpace could not arm a watch at all.
+     *
+     * No extra release is needed and adding one is a refcount underflow:
+     * unlike its sibling resolvers, the dual object resolver drops the
+     * traversal's active ref itself and hands back a LIFECYCLE-ONLY reference,
+     * exactly what the handle read yielded.  The type check moves into the
+     * resolver, which returns WRONG_TYPE for the same case. */
+    r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg1, RIGHT_NONE,
+                                     KOBJ_NOTIFICATION, &notif_obj, &notif_rights);
     if (r != IRIS_OK) {
         kobject_release(proc_obj);
         return syscall_err(r);
-    }
-    if (notif_obj->type != KOBJ_NOTIFICATION) {
-        kobject_release(proc_obj);
-        kobject_release(notif_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
     }
     if (!rights_check(notif_rights, RIGHT_WRITE)) {
         kobject_release(proc_obj);

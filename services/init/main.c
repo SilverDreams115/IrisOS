@@ -10,7 +10,7 @@
  * Receives a legacy bootstrap handle in %rdi (set by entry.S from %rbx).  That
  * handle is now vestigial — init closes it immediately.  The real spawn/bootstrap
  * capability arrives as a pre-start CPtr mint (IRIS_CPTR_SPAWN_CAP) in init's
- * CSpace, resolved via SYS_CSPACE_RESOLVE — no KChannel is involved.
+ * CSpace and is invoked as that slot — no KChannel, and no handle.
  *
  * Boot sequence validated:
  *   1. Resolve "vfs.ep" via the svcmgr discovery endpoint (Fase 7.2)

@@ -228,20 +228,15 @@ uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * details via SYS_PROCESS_FAULT_INFO. */
     struct KObject *notif_obj;
     iris_rights_t notif_rights;
-    /* Etapa 4 note: arg0 resolves either way but this stays handle-only, and
-     * deliberately so for now.  Accepting a CPtr here makes the registration
-     * succeed and then exposes a SECOND defect further down: the fault is
-     * never signalled to a notification held in a CSpace slot, so the handler
-     * waits out its timeout and the faulted thread is left parked.  Migrating
-     * this argument is blocked on that delivery path, not on the resolver. */
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)arg1, &notif_obj, &notif_rights);
+    /* Etapa 4: same half-migration as SYS_PROCESS_WATCH — the target process
+     * resolved either way, the notification did not.  The dual object resolver
+     * returns a lifecycle-only reference (it drops the traversal's active ref
+     * itself), so the single-release contract below is unchanged, and it
+     * reports WRONG_TYPE for the check that used to follow. */
+    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg1,
+                                                  RIGHT_NONE, KOBJ_NOTIFICATION,
+                                                  &notif_obj, &notif_rights);
     if (r != IRIS_OK) { kobject_release(&target_proc->base); return syscall_err(r); }
-    if (notif_obj->type != KOBJ_NOTIFICATION) {
-        kobject_release(&target_proc->base);
-        kobject_release(notif_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(notif_rights, RIGHT_WRITE)) {
         kobject_release(&target_proc->base);
         kobject_release(notif_obj);

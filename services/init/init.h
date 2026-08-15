@@ -100,13 +100,6 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
                      (long)obj_arg);
 }
 
-/* Etapa 4 debt: retype into a slot, then materialise it into a handle and drop
- * the slot.  Used ONLY where the consuming syscall still takes its notification
- * in the handle namespace (SYS_PROCESS_WATCH, SYS_EXCEPTION_HANDLER).  Those
- * two are half-migrated: their process argument resolves either way, their
- * notification argument does not.  This is the last handle bridge in init. */
-static inline long init_retype_notif_handle(uint32_t slot);
-
 /* Etapa 4: init's own root-CNode slots for the objects it fabricates.  Kept
  * distinct and named so a collision is a compile-time-visible mistake, not a
  * bring-up failure. */
@@ -166,11 +159,3 @@ void init_runtime_probe_timeout_overflow(void);
 void init_selftest_exception(void);
 
 #endif /* IRIS_INIT_H */
-
-static inline long init_retype_notif_handle(uint32_t slot) {
-    long r = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION, slot, 0);
-    if (r < 0) return r;
-    long h = init_sys1(SYS_CSPACE_RESOLVE, (long)slot);
-    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)slot);
-    return h;
-}

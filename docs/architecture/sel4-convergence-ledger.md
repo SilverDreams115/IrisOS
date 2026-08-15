@@ -106,6 +106,26 @@ handle*).  The charter was the only document out of sync.
 no prohibition is added or lifted.  O1 remains PARTIAL and the count of met
 invariants remains 29 of 36.
 
+### A-2 — allowlist growth: two half-migrated notification arguments
+
+**Change**: `scripts/purity_allowlist.txt` — `cspace_or_handle_resolve_` grows
+by 1 in `syscall_proc.c` (8 -> 9) and 1 in `syscall_irq.c` (7 -> 8).
+`handle_table_get_object` shrinks by 1 in each (`syscall_proc.c` 1 -> 0, the
+file leaves that list entirely; `syscall_irq.c` 2 -> 1).
+
+**Justification**: `SYS_PROCESS_WATCH` and `SYS_EXCEPTION_HANDLER` resolved
+their *process* argument through the dual resolver while their *notification*
+argument stayed handle-only.  A caller holding its notification in CSpace could
+neither arm a watch nor register a fault handler — the half-migration was
+itself the barrier to migrating anything else.  The growth is a strict trade of
+a handle-namespace-only consumer for a dual one, on the same argument; no new
+authority path appears, and the dual resolver's handle leg is deleted wholesale
+when the namespace retires.
+
+**Scope**: the allowlist's net movement is -2 handle-table consumers, +2 dual
+resolvers.  No invariant changes state, no prohibition is added or lifted.
+Precedent: Fase S3 grew the same list by 3 under this clause.
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types.
