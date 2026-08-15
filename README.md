@@ -368,7 +368,9 @@ Zero-warning policy: the build is treated as broken if
 
 ## What does not exist yet
 
-IRIS is not a general-purpose OS. The current tree does not provide a persistent
+IRIS is not a general-purpose OS yet — by sequencing, not by ambition: the
+platform work is Stage 10 of the roadmap and lands only on a consolidated
+microkernel (charter §5).  The current tree does not provide a persistent
 disk filesystem, a mutable filesystem or writeback, networking, full SMP / AP
 bringup (foundation present, scheduling is single-CPU), a global page cache,
 copy-on-write, full ELF demand paging (the pager has the groundwork), a dynamic
@@ -376,13 +378,31 @@ linker, a POSIX layer, or hardware support beyond QEMU x86-64.
 
 ## Positioning
 
-IRIS is a serious experimental capability microkernel with a real ring-3 service
-boundary, headless-validated on every change. The kernel owns boot, memory,
-paging/PCID, the scheduler, syscall dispatch, capability enforcement, IRQ
-routing, fault delivery, the typed object set, and first-task creation. It does
-**not** own VFS logic, keyboard handling, console output, service discovery,
-supervision, page-fault resolution, file-backed memory, or shell behavior — all
-of that is ring-3 code talking over capability-secured endpoints.
+IRIS is a **pure capability-based microkernel of its own implementation, in
+semantic convergence toward seL4/MCS**, with a real ring-3 service boundary and
+headless validation on every change. The kernel owns boot, memory, paging/PCID,
+the scheduler, syscall dispatch, capability enforcement, IRQ routing, fault
+delivery, the typed object set, and first-task creation. It does **not** own VFS
+logic, keyboard handling, console output, service discovery, supervision,
+page-fault resolution, file-backed memory, or shell behavior — all of that is
+ring-3 code talking over capability-secured endpoints.
+
+The authority model is not aspirational. Derivation, delegation and revocation
+are the native CSpace CDT/MDB and nothing else: one derivation tree, revoke that
+is recursive across CNodes and processes, and every delegation — IPC transfer,
+device capability, pre-start grant to a child — parented to the slot that
+granted it, so it stays revocable by its grantor. There are no CPtr-to-handle
+fallbacks. What remains transitional is recorded, dated to a stage and gated by
+`make check-purity`, whose allowlist can only shrink: **29 of the 36 charter
+invariants are met**, with the remainder scoped to Stages 4–7 of the
+[convergence roadmap](docs/architecture/sel4-convergence-roadmap.md).
+
+Scope is deliberate, not provisional: IRIS targets QEMU x86-64 and grows
+new capability — drivers, storage, networking, an optional POSIX personality —
+**exclusively in user space**, without re-contaminating the kernel. It does not
+claim formal verification; its invariants are proven by construction plus
+adversarial tests, and that divergence is registered as permanent in the
+[purity charter](docs/architecture/iris-sel4-purity-charter.md).
 
 ## Documentation
 
