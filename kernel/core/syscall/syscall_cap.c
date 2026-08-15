@@ -317,19 +317,80 @@ uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /* ── B3: bootstrap cap permission restriction ─────────────────────── */
 
 uint64_t sys_bootcap_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    struct KProcess *proc = t->process;
 
     struct KObject *obj;
     iris_rights_t rights;
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_or_handle_resolve_obj(proc, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (!rights_check(rights, RIGHT_READ)) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
+
+    /* A CPtr source publishes the restricted clone into a destination SLOT as
+     * an MDB child of the source slot — the same shape retype2 and mint use.
+     *
+     * The source is deliberately left intact.  Narrowing is derive-then-delete
+     * here, not mutation in place: a capability is not edited, a weaker one is
+     * derived from it and the strong one dropped.  A caller that wants the
+     * in-place effect deletes the source slot afterwards, and because the
+     * clone is a real MDB child, revoking the source still reaches it.
+     *
+     * The clone is a NEW object, so it cannot be produced with slot_derive
+     * (which copies the source object); install_linked with an explicit parent
+     * is the primitive that expresses "new object, real ancestor".  The
+     * derived cap inherits the source slot's rights; callers reduce at the
+     * point of delegation. */
+    if (cspace_value_is_cptr((iris_cptr_t)arg0)) {
+        uint32_t dest_slot = (uint32_t)arg2;
+        if (dest_slot == 0u) {          /* CPTR_NULL is never a destination */
+            kobject_release(obj);
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+        }
+
+        struct KCNode *src_cn = 0;
+        uint32_t       src_idx = 0;
+        r = cspace_resolve_slot(proc, (iris_cptr_t)arg0, &src_cn, &src_idx);
+        if (r != IRIS_OK) {
+            kobject_release(obj);
+            return syscall_err(r);
+        }
+
+        struct KCNode *root = 0;
+        r = cspace_own_root(proc, &root);
+        if (r != IRIS_OK) {
+            kobject_active_release(&src_cn->base);
+            kobject_release(&src_cn->base);
+            kobject_release(obj);
+            return syscall_err(r);
+        }
+
+        struct KBootstrapCap *restricted =
+            kbootcap_clone_restricted((struct KBootstrapCap *)obj, (uint32_t)arg1);
+        if (!restricted) {
+            r = IRIS_ERR_NO_MEMORY;
+        } else {
+            r = kcnode_slot_install_linked(root, dest_slot, &restricted->base,
+                                           rights, 0,
+                                           src_cn, src_idx,
+                                           /*exclusive=*/1, /*legacy=*/0);
+            kobject_release(&restricted->base);
+        }
+
+        kobject_active_release(&root->base);
+        kobject_release(&root->base);
+        kobject_active_release(&src_cn->base);
+        kobject_release(&src_cn->base);
+        kobject_release(obj);
+        if (r != IRIS_OK) return syscall_err(r);
+        return syscall_ok_u64(0);
+    }
+
+    /* Handle source: rebind the caller's handle in place (legacy contract). */
     struct KBootstrapCap *restricted =
         kbootcap_clone_restricted((struct KBootstrapCap *)obj, (uint32_t)arg1);
     if (!restricted) {
@@ -337,7 +398,7 @@ uint64_t sys_bootcap_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
 
-    r = handle_table_replace(&t->process->handle_table, (handle_id_t)arg0, &restricted->base);
+    r = handle_table_replace(&proc->handle_table, (handle_id_t)arg0, &restricted->base);
     kobject_release(&restricted->base);
     kobject_release(obj);
     if (r != IRIS_OK) return syscall_err(r);

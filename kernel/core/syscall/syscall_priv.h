@@ -249,7 +249,7 @@ uint32_t syscall_ipc_deliver_cap(struct task *receiver,
  * the CSpace syscalls and the IPC transfer path — a handle value is never a
  * valid SOURCE for either (charter §3.6/§3.7). */
 static inline int cspace_only_cptr(uint64_t v) {
-    return v != 0u && v < 1024u;
+    return cspace_value_is_cptr((iris_cptr_t)v);
 }
 
 /* A1.9/A1.10: two-phase staging — EVERY transfer path stages with peek

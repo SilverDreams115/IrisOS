@@ -18239,6 +18239,79 @@ static int it_utq_t(struct it_utq_taskobj *q) {
     return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
 }
 
+/* ── T291: SYS_BOOTCAP_RESTRICT derives into CSpace, source untouched ────────
+ * Narrowing a bootstrap capability is derive-then-delete, not mutation: the
+ * restricted copy is installed into a destination slot as an MDB child of the
+ * source slot, and the source keeps every permission it had.
+ *
+ * The oracle is behavioural, not a field read.  SYS_CAP_CREATE_IOPORT requires
+ * IRIS_BOOTCAP_HW_ACCESS on its authorising cap (a whitelisted range is used so
+ * the whitelist gate, which runs first, cannot mask the permission gate).  So
+ * "can still create a hardware cap" is a direct test of what the capability
+ * actually authorises.
+ *
+ * The source-untouched assertion is the one that matters: the old in-place
+ * restrict could only offer it by making a defensive SYS_HANDLE_DUP first, and
+ * that duplicate was a handle.  Guards against a migration silently turning a
+ * narrowing into a no-op error path and leaving authority wide. */
+#define T291_DERIVED_SLOT S1_SLOT_A
+#define T291_PROBE_SLOT   S1_SLOT_B
+#define T291_WL_PORT      0x02F8   /* COM2 — whitelisted, unused by services */
+
+static void test_t291(void) {
+    int ok = 1;
+    const char *why = "bootcap restrict";
+
+    it_slot_delete(T291_DERIVED_SLOT);
+    it_slot_delete(T291_PROBE_SLOT);
+
+    /* Baseline: our spawn cap carries HW_ACCESS. */
+    if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+                T291_WL_PORT, 8, (long)T291_PROBE_SLOT) != 0) {
+        ok = 0; why = "baseline hw denied";
+    }
+    it_slot_delete(T291_PROBE_SLOT);
+
+    /* CPTR_NULL is never a destination. */
+    if (ok && it_sys3(SYS_BOOTCAP_RESTRICT, (long)IRIS_CPTR_SPAWN_CAP,
+                      (long)IRIS_BOOTCAP_SPAWN_SERVICE, 0)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "null dest accepted";
+    }
+
+    /* Derive a copy with HW_ACCESS stripped. */
+    if (ok && it_sys3(SYS_BOOTCAP_RESTRICT, (long)IRIS_CPTR_SPAWN_CAP,
+                      (long)IRIS_BOOTCAP_SPAWN_SERVICE,
+                      (long)T291_DERIVED_SLOT) != 0) {
+        ok = 0; why = "derive failed";
+    }
+
+    /* The derived cap must no longer authorise hardware caps. */
+    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)T291_DERIVED_SLOT,
+                      T291_WL_PORT, 8, (long)T291_PROBE_SLOT)
+              != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "derived kept hw access";
+    }
+    it_slot_delete(T291_PROBE_SLOT);
+
+    /* The SOURCE must be exactly as strong as before. */
+    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+                      T291_WL_PORT, 8, (long)T291_PROBE_SLOT) != 0) {
+        ok = 0; why = "source was narrowed";
+    }
+    it_slot_delete(T291_PROBE_SLOT);
+
+    /* Destination install is exclusive. */
+    if (ok && it_sys3(SYS_BOOTCAP_RESTRICT, (long)IRIS_CPTR_SPAWN_CAP,
+                      (long)IRIS_BOOTCAP_SPAWN_SERVICE,
+                      (long)T291_DERIVED_SLOT) != (long)IRIS_ERR_ALREADY_EXISTS) {
+        ok = 0; why = "dest not exclusive";
+    }
+
+    it_slot_delete(T291_DERIVED_SLOT);
+    if (ok) it_pass("T291"); else it_fail("T291", why);
+}
+
 /* ── T267: SchedulingContext configure/bind lifecycle ────────────────────────
  * A SC is a CANONICAL object created ONLY from Untyped (SYS_SC_CREATE retired).
  * It is born unconfigured and unbound; SC_CONFIGURE validates budget/period;
@@ -19202,6 +19275,8 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t288();
     test_t289();
     test_t290();
+    /* Bootstrap-cap narrowing as a CSpace derive (source untouched). */
+    test_t291();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

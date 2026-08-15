@@ -4,6 +4,7 @@
 #include <iris/nc/kobject.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
+#include <iris/nc/handle.h>
 #include <stdint.h>
 
 /*
@@ -28,6 +29,22 @@ typedef uint64_t iris_cptr_t;
 
 #define CPTR_NULL        ((iris_cptr_t)0u)
 #define CSPACE_MAX_DEPTH 8u
+
+/*
+ * The value-range split between the two authority namespaces: below the limit
+ * a syscall argument is a CPtr, at or above it a handle id
+ * (slot | gen << HANDLE_GEN_SHIFT, generation >= 1).
+ *
+ * This is the discrimination the dual-namespace retirement deletes, so it has
+ * exactly ONE definition — every caller tests it through cspace_value_is_cptr
+ * and nobody open-codes `< 1024`.  When the handle namespace goes, this block
+ * and its callers are the whole edit.
+ */
+#define CSPACE_DIRECT_CPTR_LIMIT ((iris_cptr_t)1u << HANDLE_GEN_SHIFT)
+
+static inline int cspace_value_is_cptr(iris_cptr_t v) {
+    return v != CPTR_NULL && v < CSPACE_DIRECT_CPTR_LIMIT;
+}
 
 struct KProcess;
 struct KEndpoint;

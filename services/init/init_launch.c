@@ -19,35 +19,41 @@ static const char init_fb_load_fail[] = "[INIT] fb load FAILED\r\n";
 
 /* ── fb spawn (Phase 30: ring-3 framebuffer painter) ────────────────────── */
 
+/* Transient slot holding fb's FRAMEBUFFER-restricted cap between its
+ * construction and the pre-start mint.  Deleted before this returns. */
+#define INIT_FB_CAP_SLOT 42u
+
 void init_spawn_fb(handle_id_t spawn_cap_h) {
     handle_id_t fb_proc_h  = HANDLE_INVALID;
     handle_id_t fb_boot_h  = HANDLE_INVALID;
-    handle_id_t fb_cap_h   = HANDLE_INVALID;
+    int         fb_cap_c   = 0;   /* INIT_FB_CAP_SLOT occupied */
     long r;
 
     /* Fase 13 (Track I): fb gets its FRAMEBUFFER-restricted KBootstrapCap as a
      * pre-start CSpace mint (IRIS_CPTR_SPAWN_CAP) instead of a post-spawn
      * KChannel SPAWN_CAP send.  Build + restrict the cap BEFORE the load so it
-     * can be minted into the child's root CNode. */
-    r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
-                  (long)(RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER));
+     * can be minted into the child's root CNode.
+     *
+     * Etapa 4: this used to be SYS_HANDLE_DUP + an in-place restrict of the
+     * duplicate.  SYS_BOOTCAP_RESTRICT now derives the narrowed copy straight
+     * from our spawn-cap SLOT into a slot of our own root, as an MDB child of
+     * it — so no handle is produced, and fb's authority is revocable by us and
+     * by whoever granted us the spawn cap.  The DUP existed only to protect
+     * the original from an in-place restrict; deriving never touches it. */
+    r = init_sys3(SYS_BOOTCAP_RESTRICT, (long)IRIS_CPTR_SPAWN_CAP,
+                  (long)IRIS_BOOTCAP_FRAMEBUFFER, (long)INIT_FB_CAP_SLOT);
     if (r < 0) {
         init_early_serial_write(init_fb_load_fail);
         goto out;
     }
-    fb_cap_h = (handle_id_t)r;
-
-    /* Restrict to FRAMEBUFFER only; original spawn_cap_h is unaffected. */
-    r = init_sys2(SYS_BOOTCAP_RESTRICT, (long)fb_cap_h,
-                  (long)IRIS_BOOTCAP_FRAMEBUFFER);
-    if (r < 0) goto out;
+    fb_cap_c = 1;
 
     {
         struct svc_mint fb_mints[1] = { 0 };
-        fb_mints[0].slot   = IRIS_CPTR_SPAWN_CAP;
-        fb_mints[0].src_h  = fb_cap_h;
-        fb_mints[0].rights = RIGHT_READ;
-        fb_mints[0].badge  = 0;
+        fb_mints[0].slot     = IRIS_CPTR_SPAWN_CAP;
+        fb_mints[0].src_cptr = INIT_FB_CAP_SLOT;
+        fb_mints[0].rights   = RIGHT_READ;
+        fb_mints[0].badge    = 0;
         r = svc_load_minted(spawn_cap_h, "fb", &fb_proc_h, &fb_boot_h,
                             fb_mints, 1u);
     }
@@ -59,7 +65,11 @@ void init_spawn_fb(handle_id_t spawn_cap_h) {
 out:
     init_close(&fb_proc_h);
     init_close(&fb_boot_h);
-    if (fb_cap_h != HANDLE_INVALID) init_close(&fb_cap_h);
+    /* Drop our copy: fb holds its own, minted as a child of this slot, so
+     * deleting here reparents fb's cap onto our spawn-cap slot rather than
+     * orphaning it — the grant survives, our surplus authority does not. */
+    if (fb_cap_c)
+        (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_FB_CAP_SLOT);
 }
 
 /* ── console spawn (Phase 30: ring-3 serial console service) ────────────── */

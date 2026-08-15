@@ -399,12 +399,22 @@
 /*
  * Bootstrap capability permission restriction — modern/conforming (iris_error_t).
  *
- * SYS_BOOTCAP_RESTRICT(cap_h, new_perms) → 0 or negative iris_error_t
- *   cap_h: KOBJ_BOOTSTRAP_CAP with RIGHT_READ.
+ * SYS_BOOTCAP_RESTRICT(cap, new_perms, dest_slot) → 0 or negative iris_error_t
+ *   cap: KOBJ_BOOTSTRAP_CAP with RIGHT_READ, named by CPtr or by handle.
  *   new_perms: IRIS_BOOTCAP_* bitmask; applied as: new_cap->permissions = old & new_perms.
  *   Cannot add permissions — only AND-reduces the existing set.
- *   The caller's handle is rebound to a restricted copy; aliased handles in
- *   other tables keep their original permissions.
+ *
+ *   CPtr source (dest_slot required, non-zero): the restricted copy is
+ *   installed into dest_slot of the caller's root CNode as an MDB CHILD of the
+ *   source slot.  The source is left intact: narrowing is derive-then-delete,
+ *   not mutation in place, so a caller that wants its own authority reduced
+ *   deletes the source slot afterwards.  Because the copy is a real MDB child,
+ *   revoking the source still reaches it.
+ *
+ *   Handle source (dest_slot ignored): the caller's handle is rebound to the
+ *   restricted copy; aliased handles in other tables keep their original
+ *   permissions.  Legacy contract, retires with the handle namespace.
+ *
  *   Use case: svcmgr strips IRIS_BOOTCAP_HW_ACCESS after claiming all hardware
  *   caps during bootstrap, so a compromised svcmgr cannot create new hw caps.
  */

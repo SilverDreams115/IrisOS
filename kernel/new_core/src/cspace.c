@@ -220,11 +220,8 @@ TYPED_RESOLVE(cspace_resolve_frame,       struct KFrame,       KOBJ_FRAME)
  *   - Handles may only be created by the closed producer list documented
  *     in the A1 design doc; extending that list is a design decision.
  */
-#define CSPACE_DIRECT_CPTR_LIMIT ((iris_cptr_t)1u << HANDLE_GEN_SHIFT)
-
-static inline int cspace_value_is_cptr(iris_cptr_t v) {
-    return v != CPTR_NULL && v < CSPACE_DIRECT_CPTR_LIMIT;
-}
+/* CSPACE_DIRECT_CPTR_LIMIT / cspace_value_is_cptr moved to <iris/nc/cspace.h>:
+ * the namespace split has one definition, so the retirement is one edit. */
 
 iris_error_t cspace_or_handle_resolve_cnode(struct KProcess *proc,
                                              iris_cptr_t      cptr_or_handle,
