@@ -1,6 +1,7 @@
 #include "framework.h"
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kcnode.h>
 #include <iris/task.h>
 #include <iris/paging.h>
 #include <stdatomic.h>
@@ -105,14 +106,15 @@ void test_kendpoint(void) {
         ASSERT_NOT_NULL(e);
         ASSERT_NOT_NULL(cap);
 
-        /* simulate two-phase staging: get_object retained a ref, and the
-         * un-consumed source handle rides in ep_cap_src_h (A1.10) */
+        /* simulate two-phase staging: fetch retained a ref, and the
+         * un-consumed source SLOT rides in ep_cap_src_cn/idx (S4/Etapa 2) */
         kobject_retain(&cap->base);        /* cap refcount: 1 → 2 */
 
         struct task t = { 0 };
-        t.ep_cap_obj    = &cap->base;
-        t.ep_cap_rights = 7u;
-        t.ep_cap_src_h  = 0x11223344u;
+        t.ep_cap_obj     = &cap->base;
+        t.ep_cap_rights  = 7u;
+        t.ep_cap_src_cn  = (struct KCNode *)(uintptr_t)0x11223344u;
+        t.ep_cap_src_idx = 7u;
         eq_enqueue(e, &t, EP_STATE_SEND);
 
         kobject_active_retain(&e->base);
@@ -120,10 +122,11 @@ void test_kendpoint(void) {
 
         ASSERT_NULL(t.ep_cap_obj);
         ASSERT_EQ(t.ep_cap_rights, 0u);
-        /* A1.10: close drops ONLY the staging ref — exactly one release
-         * (2→1, no double-release) and the source handle is not consumed
-         * (src_h cleared, nothing else touched). */
-        ASSERT_EQ(t.ep_cap_src_h, 0u);
+        /* A1.10 / S4: close drops ONLY the staging ref — exactly one release
+         * (2→1, no double-release).  The source SLOT is not consumed; its
+         * CNode refs are deliberately LEFT SET for the woken sender to drop
+         * outside ep->lock (a CNode destructor may not run under it). */
+        ASSERT_EQ((uintptr_t)t.ep_cap_src_cn, (uintptr_t)0x11223344u);
         ASSERT_EQ((int)atomic_load(&cap->base.refcount), 1);
 
         kobject_release(&e->base);
@@ -186,14 +189,24 @@ void test_kendpoint(void) {
         struct task t = { 0 };
         t.ep_cap_obj    = &cap->base;
         t.ep_cap_rights = 3u;
-        t.ep_cap_src_h  = 0xCAFEu;    /* A1.10: un-consumed source handle */
+        struct KCNode *src_cn = kcnode_alloc(8);   /* S4: real source CNode */
+        ASSERT_NOT_NULL(src_cn);
+        kobject_retain(&src_cn->base);            /* the refs peek would hold */
+        kobject_active_retain(&src_cn->base);
+        t.ep_cap_src_cn  = src_cn;
+        t.ep_cap_src_idx = 3u;
         eq_enqueue(e, &t, EP_STATE_SEND);
 
         kendpoint_cancel_waiter(&t);
 
         ASSERT_NULL(t.ep_cap_obj);
         ASSERT_EQ(t.ep_cap_rights, 0u);
-        ASSERT_EQ(t.ep_cap_src_h, 0u);  /* cleared, not consumed */
+        /* S4: cancel DOES clear it — ep_cancel_wait releases the CNode refs
+         * outside the lock, unlike the close-walk above.  The slot itself is
+         * never deleted: nothing was delivered, so the sender keeps its cap. */
+        ASSERT_NULL(t.ep_cap_src_cn);   /* released, source slot not consumed */
+        ASSERT_EQ((int)atomic_load(&src_cn->base.refcount), 1);
+        kobject_release(&src_cn->base);
         ASSERT_EQ((int)atomic_load(&cap->base.refcount), 1); /* cancel released the ref */
 
         /* A1.10: double cancel is a benign no-op (blocking_ep already NULL):

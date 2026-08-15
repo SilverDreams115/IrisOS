@@ -27,45 +27,94 @@ static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
  * A1.9/A1.10 two-phase cap staging — shared by EP_SEND / EP_NB_SEND /
  * EP_CALL / SYS_REPLY (declared in syscall_priv.h).
  *
- * peek: validate + retain WITHOUT consuming the sender's handle.  The
- * returned object ref is the staging ref; release it on any non-delivery
- * exit (CLOSED / WOULD_BLOCK / endpoint close / waiter cancel / lost
- * one-shot reply race) and the sender keeps its cap.
+ * peek: validate + retain WITHOUT consuming the sender's source SLOT.  The
+ * returned object ref is the staging ref; on any non-delivery exit (CLOSED /
+ * WOULD_BLOCK / endpoint close / waiter cancel / lost one-shot reply race)
+ * release it and call _abort, and the sender keeps its cap.
  *
- * commit: consume the source handle only once delivery is committed — the
+ * commit: consume the source SLOT only once delivery is committed — the
  * receiver is dequeued (immediate rendezvous) or the receiver takes the
- * staged cap from a queued sender.  Blocking paths carry the source handle
- * in task->ep_cap_src_h next to the staged object. */
-iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_h,
+ * staged cap from a queued sender.  Blocking paths carry the source slot in
+ * task->ep_cap_src_cn / ep_cap_src_idx next to the staged object.
+ *
+ * Fase S4 (Etapa 2) ordering rule: DELIVER first, commit second.  The MDB
+ * parents the delivered cap to the source slot, which must still be occupied
+ * at delivery time; the subsequent delete reparents the delivered cap to the
+ * grandparent, preserving move semantics. */
+iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr,
                                                uint32_t requested_rights,
                                                struct KObject **out_obj,
                                                uint32_t *out_rights,
-                                               uint64_t *out_badge) {
+                                               uint64_t *out_badge,
+                                               struct KCNode **out_src_cn,
+                                               uint32_t *out_src_idx) {
+    /* Fase S4 (Etapa 2): CSpace-only source.  A handle value (>=1024) is not
+     * a transfer source any more — it fails cleanly, it does NOT fall back
+     * (charter §3.7, invariant A6). */
+    if (!cspace_only_cptr((uint64_t)src_cptr)) return IRIS_ERR_INVALID_ARG;
+
+    struct KCNode *src_cn;
+    uint32_t       src_idx;
+    iris_error_t r = cspace_resolve_slot(t->process, (iris_cptr_t)src_cptr,
+                                         &src_cn, &src_idx);
+    if (r != IRIS_OK) return r;
+
     struct KObject *xo;
     iris_rights_t   xr;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table,
-                                             (handle_id_t)src_h, &xo, &xr);
-    if (r != IRIS_OK) return r;
-    if (!rights_check(xr, RIGHT_TRANSFER)) { kobject_release(xo); return IRIS_ERR_ACCESS_DENIED; }
+    uint64_t        badge = 0;
+    r = kcnode_fetch_badged(src_cn, src_idx, &xo, &xr, &badge);
+    if (r != IRIS_OK) {
+        kobject_active_release(&src_cn->base);
+        kobject_release(&src_cn->base);
+        return r;
+    }
+    /* fetch takes retain+active_retain; the staging contract carries a single
+     * lifecycle ref (released by one kobject_release on every exit path). */
+    kobject_active_release(xo);
+
+    if (!rights_check(xr, RIGHT_TRANSFER)) {
+        kobject_release(xo);
+        kobject_active_release(&src_cn->base);
+        kobject_release(&src_cn->base);
+        return IRIS_ERR_ACCESS_DENIED;
+    }
 
     iris_rights_t cap_rights = rights_reduce(xr, (iris_rights_t)requested_rights);
-    if (cap_rights == RIGHT_NONE) { kobject_release(xo); return IRIS_ERR_INVALID_ARG; }
+    if (cap_rights == RIGHT_NONE) {
+        kobject_release(xo);
+        kobject_active_release(&src_cn->base);
+        kobject_release(&src_cn->base);
+        return IRIS_ERR_INVALID_ARG;
+    }
 
     /* Fase 9: the transferred cap keeps its badge across the transfer. */
-    if (out_badge)
-        *out_badge = handle_table_get_badge(&t->process->handle_table,
-                                            (handle_id_t)src_h);
+    if (out_badge) *out_badge = badge;
 
-    *out_obj    = xo;
-    *out_rights = (uint32_t)cap_rights;
+    *out_obj     = xo;
+    *out_rights  = (uint32_t)cap_rights;
+    *out_src_cn  = src_cn;   /* active+lifecycle held until commit/abort */
+    *out_src_idx = src_idx;
     return IRIS_OK;
 }
 
-/* Consume the peeked source handle once delivery is committed.  Generation-
- * guarded: if another thread already closed/reused the slot this is a benign
- * no-op (the staged ref still delivers, same as the historical semantics). */
-void syscall_ipc_stage_cap_commit(struct task *t, uint32_t src_h) {
-    (void)handle_table_close(&t->process->handle_table, (handle_id_t)src_h);
+/* Consume the peeked source slot once delivery is committed (move semantics).
+ * kcnode_slot_delete is idempotent on an empty slot, so a source revoked
+ * while staged is a benign no-op here — the delivery itself already failed
+ * closed in _deliver_cap_routed. */
+void syscall_ipc_stage_cap_commit(struct task *t, struct KCNode *src_cn,
+                                  uint32_t src_idx) {
+    (void)t;
+    if (!src_cn) return;
+    (void)kcnode_slot_delete(src_cn, src_idx);
+    kobject_active_release(&src_cn->base);
+    kobject_release(&src_cn->base);
+}
+
+/* Non-delivery exit: the sender keeps its cap — release the CNode refs only. */
+void syscall_ipc_stage_cap_abort(struct KCNode *src_cn) {
+    if (!src_cn) return;
+    kobject_active_release(&src_cn->base);
+    kobject_release(&src_cn->base);
 }
 
 /* A1.10: the consume-at-stage wrappers (stage_cap / stage_cap_badged =
@@ -179,7 +228,8 @@ iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared) {
  */
 uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
                                         struct KObject *xo,
-                                        uint32_t cap_rights, uint64_t badge) {
+                                        uint32_t cap_rights, uint64_t badge,
+                                        struct KCNode *src_cn, uint32_t src_idx) {
     if (!xo) return IRIS_MSG_NO_CAP;
 
     uint32_t slot = receiver->ep_recv_slot;
@@ -187,23 +237,30 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
         receiver->ep_recv_slot = 0;   /* one delivery consumes the declaration */
         struct KCNode *root = ipc_root_cnode_of(receiver->process);
         if (root) {
-            iris_error_t e = kcnode_mint_excl_badged(root, slot, xo,
-                                                     (iris_rights_t)cap_rights,
-                                                     badge);
+            /* Fase S4 (Etapa 2): install as an MDB CHILD of the sender's
+             * source slot — real CSpace ancestry, no LEGACY_ROOT.  The
+             * source must still be occupied: a cap revoked while staged
+             * makes this fail, and the cap is NOT delivered (roadmap
+             * invariant 4).  The TOCTOU slot→handle degradation is gone
+             * (charter §3.7): an occupied/raced destination slot now fails
+             * the delivery instead of silently landing in the handle table. */
+            iris_error_t e = kcnode_slot_install_linked(
+                                 root, slot, xo, (iris_rights_t)cap_rights,
+                                 badge, src_cn, src_idx,
+                                 /*exclusive*/1, /*legacy*/0);
             kobject_release(&root->base);
             if (e == IRIS_OK) {
                 kobject_release(xo);  /* staging ref; the slot holds its own */
                 ipc_stat_bump(&iris_ipc_stat_slot_deliveries);
-                /* Fase S3 (I.2): a staged-handle origin has no provable
-                 * CSpace ancestor — the delivered cap is an explicit LEGACY
-                 * root in the MDB (kcnode_mint_excl_badged marks it), and
-                 * this counter is its retirement witness (→ 0 in Etapa 2). */
                 kcnode_cdt_note_ipc_transfer();
                 return slot;
             }
         }
-        /* raced/occupied/no-root → legacy handle materialization below */
-        ipc_stat_bump(&iris_ipc_stat_toctou_fallbacks);
+        /* No usable destination: fail closed.  The staged ref is dropped and
+         * the message is delivered without a capability; the sender's source
+         * slot is left intact by its abort path. */
+        kobject_release(xo);
+        return IRIS_MSG_NO_CAP;
     }
     return syscall_ipc_deliver_cap_badged(receiver, xo, cap_rights, badge);
 }
@@ -334,11 +391,13 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct KObject *xfer_obj    = 0;
     uint32_t        xfer_rights = 0;
     uint64_t        xfer_badge  = 0;
-    uint32_t        xfer_src_h  = t->ipc_msg.attached_handle;
+    struct KCNode  *xfer_src_cn = 0;
+    uint32_t        xfer_src_idx = 0;
     if (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP) {
         iris_error_t cr = syscall_ipc_stage_cap_peek_badged(t, t->ipc_msg.attached_handle,
                                          t->ipc_msg.attached_rights,
-                                         &xfer_obj, &xfer_rights, &xfer_badge);
+                                         &xfer_obj, &xfer_rights, &xfer_badge,
+                                         &xfer_src_cn, &xfer_src_idx);
         if (cr != IRIS_OK) {
             kobject_release(&ep->base);
             return syscall_err(cr);
@@ -350,7 +409,10 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (ep->closed) {
         irq_spinlock_unlock(&ep->lock, flags);
-        if (xfer_obj) kobject_release(xfer_obj);   /* handle NOT consumed */
+        if (xfer_obj) {                            /* source slot NOT consumed */
+            kobject_release(xfer_obj);
+            syscall_ipc_stage_cap_abort(xfer_src_cn);
+        }
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_CLOSED);
     }
@@ -379,13 +441,19 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Ph68: install cap (outside lock).  A1.5: routed — lands in the
          * receiver's declared receive-slot (CPtr) or its handle table.
-         * A1.10: delivery committed (receiver dequeued) — consume the
-         * sender's source handle now (move semantics preserved). */
+         * Fase S4 (Etapa 2): DELIVER FIRST, then commit — the MDB parenting
+         * requires the source slot to still be occupied, so the source is
+         * consumed only after the child cap exists (move semantics
+         * preserved: delete reparents the delivered cap to the grandparent). */
         if (xfer_obj) {
-            syscall_ipc_stage_cap_commit(t, xfer_src_h);
             uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
-                                                            xfer_rights, xfer_badge);
+                                                            xfer_rights, xfer_badge,
+                                                            xfer_src_cn, xfer_src_idx);
             receiver->ipc_msg.attached_handle = new_h;
+            if (new_h != IRIS_MSG_NO_CAP)
+                syscall_ipc_stage_cap_commit(t, xfer_src_cn, xfer_src_idx);
+            else
+                syscall_ipc_stage_cap_abort(xfer_src_cn);
         }
 
         /* Wake receiver only after all data is consistent. */
@@ -394,8 +462,9 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_ok_u64(0);
     }
 
-    /* No receiver: stage cap in task and block.  A1.10: the source handle
-     * rides along un-consumed; the receiver commits it at take time. */
+    /* No receiver: stage cap in task and block.  A1.10 / Fase S4: the source
+     * SLOT rides along un-consumed (with its CNode refs); the receiver
+     * commits it at take time, cancel paths abort it. */
     ep->ep_state     = EP_STATE_SEND;
     t->ep_next       = 0;
     t->blocking_ep   = ep;
@@ -404,7 +473,8 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     t->ep_cap_obj    = xfer_obj;    /* staging ref; released by receiver or cancel */
     t->ep_cap_rights = xfer_rights;
     t->ep_cap_badge  = xfer_badge;
-    t->ep_cap_src_h  = xfer_obj ? xfer_src_h : 0;
+    t->ep_cap_src_cn  = xfer_obj ? xfer_src_cn : 0;
+    t->ep_cap_src_idx = xfer_obj ? xfer_src_idx : 0;
 
     if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
     else                { ep->queue_head = t; ep->queue_tail = t; }
@@ -415,6 +485,15 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     task_yield();
 
     kobject_release(&ep->base);
+
+    /* Fase S4 (Etapa 2): if the endpoint closed under us, kendpoint_obj_close
+     * left our source-slot refs for us to drop (it could not release them
+     * under ep->lock).  Nothing was delivered — the slot itself survives. */
+    if (t->ep_cap_src_cn) {
+        syscall_ipc_stage_cap_abort(t->ep_cap_src_cn);
+        t->ep_cap_src_cn  = 0;
+        t->ep_cap_src_idx = 0;
+    }
 
     if (t->ipc_ep_closed) { t->ipc_ep_closed = 0; return syscall_err(IRIS_ERR_CLOSED); }
     return syscall_ok_u64(0);
@@ -575,38 +654,42 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         sender->ipc_kbuf_len = 0;
 
         /* Ph68: take sender's staged cap. */
-        struct KObject *xfer_obj    = sender->ep_cap_obj;
-        uint32_t        xfer_rights = sender->ep_cap_rights;
-        uint64_t        xfer_badge  = sender->ep_cap_badge;
-        uint32_t        xfer_src_h  = sender->ep_cap_src_h;
-        sender->ep_cap_obj    = 0;
-        sender->ep_cap_rights = 0;
-        sender->ep_cap_badge  = 0;
-        sender->ep_cap_src_h  = 0;
+        struct KObject *xfer_obj     = sender->ep_cap_obj;
+        uint32_t        xfer_rights  = sender->ep_cap_rights;
+        uint64_t        xfer_badge   = sender->ep_cap_badge;
+        struct KCNode  *xfer_src_cn  = sender->ep_cap_src_cn;
+        uint32_t        xfer_src_idx = sender->ep_cap_src_idx;
+        sender->ep_cap_obj     = 0;
+        sender->ep_cap_rights  = 0;
+        sender->ep_cap_badge   = 0;
+        sender->ep_cap_src_cn  = 0;
+        sender->ep_cap_src_idx = 0;
 
         irq_spinlock_unlock(&ep->lock, flags);
-
-        /* A1.10: delivery committed (staged cap taken; sender is dequeued
-         * and still blocked) — consume the sender's source handle.  Outside
-         * ep->lock: handle close can fire object close callbacks that take
-         * endpoint locks (ht->lock → ep->lock ordering must not invert). */
-        if (xfer_obj && xfer_src_h)
-            syscall_ipc_stage_cap_commit(sender, xfer_src_h);
 
         /* Ph68/Fase11: install sender's transferred cap.  For an EP_CALL the
          * reply cap takes attached_handle, so the transferred cap is delivered
          * into the separate attached_cap field; EP_SEND keeps attached_handle.
-         * A1.5: routed — honours our declared receive-slot (CPtr < 1024). */
+         * A1.5: routed — honours our declared receive-slot (CPtr < 1024).
+         * Fase S4 (Etapa 2): deliver first (MDB child of the sender's source
+         * slot), then consume that slot.  Outside ep->lock: slot delete can
+         * fire object close callbacks that take endpoint locks (cn->lock →
+         * ep->lock ordering must not invert). */
         t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
         if (xfer_obj) {
             uint32_t new_h = syscall_ipc_deliver_cap_routed(t, xfer_obj,
-                                                            xfer_rights, xfer_badge);
+                                                            xfer_rights, xfer_badge,
+                                                            xfer_src_cn, xfer_src_idx);
             if (sender->ep_call_mode) {
                 t->ipc_msg.attached_cap        = new_h;
                 t->ipc_msg.attached_cap_rights = xfer_rights;
             } else {
                 t->ipc_msg.attached_handle = new_h;
             }
+            if (new_h != IRIS_MSG_NO_CAP)
+                syscall_ipc_stage_cap_commit(sender, xfer_src_cn, xfer_src_idx);
+            else
+                syscall_ipc_stage_cap_abort(xfer_src_cn);
         }
         t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 
@@ -726,14 +809,16 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * with CLOSED / WOULD_BLOCK leaves the sender's cap untouched (A1.5
      * atomicity rule: the source cap is never consumed by a failed
      * delivery).  The peeked object ref is released on those exits. */
-    struct KObject *xfer_obj    = 0;
-    uint32_t        xfer_rights = 0;
-    uint64_t        xfer_badge  = 0;
-    uint32_t        xfer_src_h  = t->ipc_msg.attached_handle;
+    struct KObject *xfer_obj     = 0;
+    uint32_t        xfer_rights  = 0;
+    uint64_t        xfer_badge   = 0;
+    struct KCNode  *xfer_src_cn  = 0;
+    uint32_t        xfer_src_idx = 0;
     if (t->ipc_msg.attached_handle != IRIS_MSG_NO_CAP) {
         iris_error_t cr = syscall_ipc_stage_cap_peek_badged(t, t->ipc_msg.attached_handle,
                                          t->ipc_msg.attached_rights,
-                                         &xfer_obj, &xfer_rights, &xfer_badge);
+                                         &xfer_obj, &xfer_rights, &xfer_badge,
+                                         &xfer_src_cn, &xfer_src_idx);
         if (cr != IRIS_OK) { kobject_release(&ep->base); return syscall_err(cr); }
         t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
     }
@@ -742,14 +827,20 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (ep->closed) {
         irq_spinlock_unlock(&ep->lock, flags);
-        if (xfer_obj) kobject_release(xfer_obj);   /* handle NOT consumed */
+        if (xfer_obj) {                            /* source slot NOT consumed */
+            kobject_release(xfer_obj);
+            syscall_ipc_stage_cap_abort(xfer_src_cn);
+        }
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_CLOSED);
     }
 
     if (ep->ep_state != EP_STATE_RECV) {
         irq_spinlock_unlock(&ep->lock, flags);
-        if (xfer_obj) kobject_release(xfer_obj);   /* handle NOT consumed */
+        if (xfer_obj) {                            /* source slot NOT consumed */
+            kobject_release(xfer_obj);
+            syscall_ipc_stage_cap_abort(xfer_src_cn);
+        }
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_WOULD_BLOCK);
     }
@@ -774,13 +865,17 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     irq_spinlock_unlock(&ep->lock, flags);
 
     /* A1.5: routed — receiver's declared receive-slot or handle table.
-     * A1.9: delivery is committed (receiver dequeued) — consume the
-     * sender's source handle now (move semantics preserved). */
+     * Fase S4 (Etapa 2): deliver first (MDB child of the source slot), then
+     * consume the source slot (move semantics preserved). */
     if (xfer_obj) {
-        syscall_ipc_stage_cap_commit(t, xfer_src_h);
         uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
-                                                        xfer_rights, xfer_badge);
+                                                        xfer_rights, xfer_badge,
+                                                        xfer_src_cn, xfer_src_idx);
         receiver->ipc_msg.attached_handle = new_h;
+        if (new_h != IRIS_MSG_NO_CAP)
+            syscall_ipc_stage_cap_commit(t, xfer_src_cn, xfer_src_idx);
+        else
+            syscall_ipc_stage_cap_abort(xfer_src_cn);
     }
 
     task_wakeup(receiver);
@@ -876,34 +971,38 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     sender->ipc_kbuf_len = 0;
 
     /* Ph68: take sender's staged cap. */
-    struct KObject *xfer_obj    = sender->ep_cap_obj;
-    uint32_t        xfer_rights = sender->ep_cap_rights;
-    uint64_t        xfer_badge  = sender->ep_cap_badge;
-    uint32_t        xfer_src_h  = sender->ep_cap_src_h;
-    sender->ep_cap_obj    = 0;
-    sender->ep_cap_rights = 0;
-    sender->ep_cap_badge  = 0;
-    sender->ep_cap_src_h  = 0;
+    struct KObject *xfer_obj     = sender->ep_cap_obj;
+    uint32_t        xfer_rights  = sender->ep_cap_rights;
+    uint64_t        xfer_badge   = sender->ep_cap_badge;
+    struct KCNode  *xfer_src_cn  = sender->ep_cap_src_cn;
+    uint32_t        xfer_src_idx = sender->ep_cap_src_idx;
+    sender->ep_cap_obj     = 0;
+    sender->ep_cap_rights  = 0;
+    sender->ep_cap_badge   = 0;
+    sender->ep_cap_src_cn  = 0;
+    sender->ep_cap_src_idx = 0;
 
     irq_spinlock_unlock(&ep->lock, flags);
 
-    /* A1.10: staged cap taken → delivery committed; consume the sender's
-     * source handle (outside ep->lock — see sys_ep_recv). */
-    if (xfer_obj && xfer_src_h)
-        syscall_ipc_stage_cap_commit(sender, xfer_src_h);
-
     /* Fase 11: EP_CALL transferred cap → attached_cap; EP_SEND → attached_handle.
-     * A1.5: routed — honours our declared receive-slot (CPtr < 1024). */
+     * A1.5: routed — honours our declared receive-slot (CPtr < 1024).
+     * Fase S4 (Etapa 2): deliver first, then consume the source slot
+     * (outside ep->lock — see sys_ep_recv). */
     t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
     if (xfer_obj) {
         uint32_t new_h = syscall_ipc_deliver_cap_routed(t, xfer_obj,
-                                                        xfer_rights, xfer_badge);
+                                                        xfer_rights, xfer_badge,
+                                                        xfer_src_cn, xfer_src_idx);
         if (sender->ep_call_mode) {
             t->ipc_msg.attached_cap        = new_h;
             t->ipc_msg.attached_cap_rights = xfer_rights;
         } else {
             t->ipc_msg.attached_handle = new_h;
         }
+        if (new_h != IRIS_MSG_NO_CAP)
+            syscall_ipc_stage_cap_commit(sender, xfer_src_cn, xfer_src_idx);
+        else
+            syscall_ipc_stage_cap_abort(xfer_src_cn);
     }
     t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 

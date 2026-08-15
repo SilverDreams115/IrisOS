@@ -52,27 +52,63 @@ Debt that stays live (does NOT block, retired in later stages):
 → Stage 3; `mdb_legacy_roots` (non-CSpace origins) → Stages 2/4/5;
 `cdt_ipc_transfer` (IPC delivery = LEGACY_ROOT) → Stage 2.
 
-## Stage 2 — CSpace-only cap transfer  ← NEXT
+## Stage 2 — CSpace-only cap transfer  ✅ CLOSED (Fase S4)
 
-Precondition: Stage 1 (closed — staging already registers the delivered cap
-as a LEGACY_ROOT MDB node; it still needs a real CSpace ancestor).
+Precondition: Stage 1 (closed).
 
-- CPtr source (retires the handle-only peek of
-  `syscall_ipc_stage_cap_peek_badged`); the delivered cap becomes an MDB
-  child of the source slot instead of a LEGACY_ROOT.
-- Destination: the receive slot (already present) as the only path.
-- Staged transfer over slots with the same peek/commit atomicity.
-- Remove the TOCTOU slot→handle degradation (`iris_ipc_stat_toctou_fallbacks`
-  and `cdt_ipc_transfer` as LEGACY_ROOT must reach a structural 0).
+- CPtr source: `syscall_ipc_stage_cap_peek_badged` resolves the source
+  through `cspace_resolve_slot` and carries the slot identity
+  (`task.ep_cap_src_cn`/`ep_cap_src_idx`) across a blocking send.  A handle
+  value is `INVALID_ARG` — no fallback (invariant A6).
+- The delivered cap is installed with `kcnode_slot_install_linked` as an MDB
+  **child of the source slot**, not a LEGACY_ROOT: an IPC delegation is now
+  revocable from the sender or any of its ancestors.
+- Order: DELIVER, then commit.  MDB parenting needs the source slot occupied,
+  so the source is consumed only after the child exists; move semantics are
+  preserved because `kcnode_slot_delete` reparents the delivered cap to the
+  grandparent.  A cap revoked while staged is never delivered (entry
+  invariant 4).
+- The TOCTOU slot→handle degradation is REMOVED — the last CPtr→handle
+  fallback in the kernel.  A raced/occupied destination fails closed: the
+  message arrives with no capability and the source slot is untouched.
+  `iris_ipc_stat_toctou_fallbacks` is a structural 0 (T094 forces the race,
+  T095 pins the counter).
+- Endpoint close leaves the source-slot refs for the woken sender to drop:
+  releasing the last ref on a CNode runs a destructor that tears down every
+  slot, which must not happen under `ep->lock`.
 
-## Stage 3 — CSpace-only derive and revoke
+Debt that stays live (does NOT block): delivery into the receiver's handle
+table when it declares NO receive slot (legacy receivers) → Stage 4 with the
+dual namespace; `SYS_CNODE_MINT` still marks its slot a LEGACY_ROOT → Stages
+3/4.
 
-Precondition: Stages 1–2.
+## Stage 3 — CSpace-only derive and revoke  ← NEXT
+
+Precondition: Stages 1–2 (both closed).
 
 - Retire the handle-only `SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` (or redefine them
   over slots) and the handle table's `derivation_parent[]` tree.
 - Migrate the productive consumers; non-regression guards (retired syscall
   numbers stay reserved → NOT_SUPPORTED).
+
+**Known blocker — do not start Stage 3 by simply retiring the syscalls.**
+Surveyed during Fase S4:
+
+- The legacy tree is well isolated in the KERNEL: `handle_table_insert_derived`
+  has exactly one caller (`sys_cap_derive`) and `handle_table_revoke_children`
+  exactly one (`sys_cap_revoke`).  **No service uses either syscall.**
+- But `KIoPort` and `KIrqCap` **cannot be born from Untyped** — the RETYPE2
+  manifest is CLOSED and pinned by T251 ({EP, Notif, Reply, CNode, SC, TCB,
+  Untyped, Frame}) — and `sys_cspace_mint` requires a CSpace source
+  (`cspace_only_cptr`).  For those two types the handle tree is therefore the
+  ONLY mechanism offering rights-reduced derivation plus cascade revoke.
+  Retiring it today would DELETE capability functionality with no replacement.
+- Device caps get their CSpace-native origin in **Stage 5** (structured
+  BootInfo with fine-grained per-device caps), which is where the ledger
+  already places the `kioport_whitelist`.  Stage 3 must either follow that or
+  land a CSpace origin for `KIoPort`/`KIrqCap` first.
+- Test surface: ~50 `SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` call sites across the
+  authority, frame, ioport, IRQ and untyped suites — not just T071/T072.
 
 ## Stage 4 — Dual namespace retirement
 

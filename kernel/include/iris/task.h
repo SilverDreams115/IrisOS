@@ -10,6 +10,7 @@ struct KProcess;
 struct KEndpoint;
 struct KSchedContext;
 struct KReply;
+struct KCNode;
 
 #define TASK_MAX              256
 #define TASK_STACK_SIZE       8192  /* kernel stack per task */
@@ -149,12 +150,16 @@ struct task {
     struct KObject     *ep_cap_obj;      /* kobject being transferred; NULL = none */
     uint32_t            ep_cap_rights;   /* rights to grant on ep_cap_obj */
     uint64_t            ep_cap_badge;    /* Fase 9: badge carried by the staged cap */
-    /* A1.10: source handle backing ep_cap_obj (two-phase staging).  The
-     * sender's handle stays in its table while queued; the receiver commits
-     * (closes) it only when it takes the staged cap for delivery.  Cancel /
-     * endpoint-close paths clear it without consuming, so the sender keeps
-     * its cap when nothing was delivered.  0 = none. */
-    uint32_t            ep_cap_src_h;
+    /* Fase S4 (Etapa 2): source SLOT backing ep_cap_obj (two-phase staging).
+     * The transfer source is a CSpace slot, not a handle — it is the MDB
+     * identity the delivered cap is parented to.  The sender's slot stays
+     * occupied while queued; the receiver commits (deletes it) only when it
+     * takes the staged cap for delivery.  Cancel / endpoint-close paths
+     * release the CNode ref without deleting the slot, so the sender keeps
+     * its cap when nothing was delivered.  ep_cap_src_cn == NULL = none;
+     * it carries active+lifecycle refs while set. */
+    struct KCNode      *ep_cap_src_cn;
+    uint32_t            ep_cap_src_idx;
     /* Ph69: IPC buffer staging */
     uint32_t            ipc_kbuf_len;    /* valid bytes in ipc_kbuf */
     uint64_t            ep_recv_buf_uptr;/* receiver's output buffer user addr (set at EP_RECV) */

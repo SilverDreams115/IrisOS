@@ -21,7 +21,7 @@ kernel/core/phase3_selftest.c handle_table_get_object 13
 kernel/core/syscall/syscall_cap.c handle_table_get_object 5
 kernel/core/syscall/syscall_cnode_ops.c handle_table_get_object 2
 kernel/core/syscall/syscall_cspace.c handle_table_get_object 7
-kernel/core/syscall/syscall_endpoint.c handle_table_get_object 2
+kernel/core/syscall/syscall_endpoint.c handle_table_get_object 1
 kernel/core/syscall/syscall_irq.c handle_table_get_object 2
 kernel/core/syscall/syscall_proc.c handle_table_get_object 1
 kernel/core/syscall/syscall_sched.c handle_table_get_object 1

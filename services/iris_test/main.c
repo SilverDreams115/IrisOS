@@ -155,6 +155,69 @@ static void it_slot_delete(uint32_t slot) {
     (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
 }
 
+/* ── Fase S4 (Etapa 2): CSpace-sourced cap transfer ───────────────────────
+ * The IPC transfer SOURCE is a CSpace slot, never a handle (charter §3.6/A6).
+ * it_xfer_slot mints the cap behind src_h into `slot` of iris_test's own root
+ * CNode and returns the CPtr to hand to EP_SEND / EP_CALL / SYS_REPLY.
+ * Requires RIGHT_DUPLICATE on src_h (the mint) and grants RIGHT_TRANSFER on
+ * the slot (the transfer itself).  The kernel CONSUMES the slot on a
+ * committed delivery — exactly the move semantics the handle source had.
+ * The slot is deleted up front so re-entry (and any stale occupant) is clean.
+ * 247..254 sits ABOVE every reserved pool — S1 scratch (64..87), the fixed
+ * reply-object slots (88..97) and the fuzzing pool (100..239) — and inside the
+ * 256-slot root CNode.  Overlapping any of those silently deletes a live
+ * object at mint time (it cost a hang in T087 during Etapa 2 bring-up). */
+#define IT_XFER_SLOT_A  247u
+#define IT_XFER_SLOT_B  248u
+#define IT_XFER_SLOT_C  249u
+#define IT_XFER_SLOT_D  250u
+
+static handle_id_t t28_root_cnode(void);   /* defined with the Fase 28 helpers */
+
+static long it_xfer_slot(handle_id_t src_h, uint32_t slot, uint32_t rights) {
+    handle_id_t root = t28_root_cnode();
+    if (root == HANDLE_INVALID) return (long)IRIS_ERR_NOT_FOUND;
+    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)slot);
+    long r = it_sys4(SYS_CNODE_MINT, (long)root, (long)slot, (long)src_h,
+                     (long)(rights | RIGHT_TRANSFER));
+    return (r != 0) ? r : (long)slot;
+}
+
+/* A source SLOT survived a failed/canceled delivery and still names a live
+ * notification.  Replaces the pre-S4 "SYS_HANDLE_TYPE on the source handle"
+ * probe, which no longer applies: the source is a CPtr. */
+static void it_close(handle_id_t *h);   /* forward */
+static int it_slot_is_notif(long slot) {
+    long h = it_sys1(SYS_CSPACE_RESOLVE, slot);
+    if (h < 0) return 0;
+    int ok = (it_sys1(SYS_HANDLE_TYPE, h) == (long)IRIS_HANDLE_TYPE_NOTIFICATION);
+    handle_id_t hh = (handle_id_t)h;
+    it_close(&hh);
+    return ok;
+}
+
+/* Mint a source slot with EXACTLY the requested rights (no implicit
+ * RIGHT_TRANSFER) — used by the negative tests that must be denied. */
+static long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
+    handle_id_t root = t28_root_cnode();
+    if (root == HANDLE_INVALID) return (long)IRIS_ERR_NOT_FOUND;
+    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)slot);
+    long r = it_sys4(SYS_CNODE_MINT, (long)root, (long)slot, src_h, (long)rights);
+    return (r != 0) ? r : (long)slot;
+}
+
+/* Drop-in replacement for the pre-S4 "dup a handle, attach it" idiom: mints
+ * into a rotating transfer slot (88..95) and returns the CPtr to attach.
+ * The rotation keeps sequential/nested transfers from colliding. */
+#define IT_XFER_SLOT_SPAN 8u
+static uint32_t g_it_xfer_next;
+static long it_xfer_dup(long src_h, uint32_t rights) {
+    uint32_t slot = IT_XFER_SLOT_A +
+        (__atomic_fetch_add(&g_it_xfer_next, 1u, __ATOMIC_RELAXED)
+         % IT_XFER_SLOT_SPAN);
+    return it_xfer_slot((handle_id_t)src_h, slot, rights);
+}
+
 static void it_pass(const char *id) {
     g_pass++;
     g_total++;
@@ -950,17 +1013,19 @@ static void test_t024(void) {
     long rr = -1;
     long notif_raw = it_notify_create();
     if (notif_raw >= 0) {
-        struct IrisMsg reply;
-        it_iris_msg_zero(&reply);
-        reply.label           = IRIS_EP_REPLY_OK;
-        reply.attached_handle = (uint32_t)notif_raw;
-        reply.attached_rights = RIGHT_WRITE | RIGHT_WAIT;
-        rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
-        if (rr != 0) {
-            /* not consumed on pre-staging error */
-            handle_id_t nh = (handle_id_t)notif_raw;
-            it_close(&nh);
+        /* Fase S4 (Etapa 2): the reply's transfer source is a CSpace slot. */
+        long src = it_xfer_dup(notif_raw, RIGHT_WRITE | RIGHT_WAIT);
+        if (src >= 0) {
+            struct IrisMsg reply;
+            it_iris_msg_zero(&reply);
+            reply.label           = IRIS_EP_REPLY_OK;
+            reply.attached_handle = (uint32_t)src;
+            reply.attached_rights = RIGHT_WRITE | RIGHT_WAIT;
+            rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
         }
+        /* the master notification handle is ours regardless of the transfer */
+        handle_id_t nh = (handle_id_t)notif_raw;
+        it_close(&nh);
     }
 
     for (int i = 0; i < 200 && !g_t024_done; i++)
@@ -1036,23 +1101,29 @@ static void test_t025(void) {
     }
     handle_id_t reply_h = (handle_id_t)msg.attached_handle;
 
-    /* Notification dup WITHOUT RIGHT_TRANSFER → staging must fail */
+    /* Fase S4 (Etapa 2): a SOURCE SLOT without RIGHT_TRANSFER → staging must
+     * fail with ACCESS_DENIED and leave the slot intact. */
     handle_id_t notif_h = HANDLE_INVALID;
-    handle_id_t nt_h    = HANDLE_INVALID;
     long r1 = -1;
+    int  src_preserved = 0;
+    handle_id_t t025_root = t28_root_cnode();
     long notif_raw = it_notify_create();
-    if (notif_raw >= 0) {
+    if (notif_raw >= 0 && t025_root != HANDLE_INVALID) {
         notif_h = (handle_id_t)notif_raw;
-        long nt_raw = it_sys2(SYS_HANDLE_DUP, notif_raw,
-                              (long)(RIGHT_WRITE | RIGHT_WAIT));
-        if (nt_raw >= 0) {
-            nt_h = (handle_id_t)nt_raw;
+        (void)it_sys2(SYS_CNODE_DELETE, (long)t025_root, (long)IT_XFER_SLOT_C);
+        if (it_sys4(SYS_CNODE_MINT, (long)t025_root, (long)IT_XFER_SLOT_C,
+                    notif_raw, (long)(RIGHT_WRITE | RIGHT_WAIT)) == 0) {
             struct IrisMsg reply;
             it_iris_msg_zero(&reply);
             reply.label           = IRIS_EP_REPLY_OK;
-            reply.attached_handle = (uint32_t)nt_h;
+            reply.attached_handle = IT_XFER_SLOT_C;
             reply.attached_rights = RIGHT_WRITE | RIGHT_WAIT;
             r1 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+            /* denied staging must NOT consume the source slot */
+            src_preserved =
+                (it_sys1(SYS_CSPACE_RESOLVE, (long)IT_XFER_SLOT_C) >= 0);
+            (void)it_sys2(SYS_CNODE_DELETE, (long)t025_root,
+                          (long)IT_XFER_SLOT_C);
         }
     }
 
@@ -1065,13 +1136,13 @@ static void test_t025(void) {
     for (int i = 0; i < 200 && !g_t025_done; i++)
         it_sys1(SYS_SLEEP, 1);
 
-    it_close(&nt_h);    /* not consumed by the denied staging */
     it_close(&notif_h);
     it_close(&tid_h);
     it_close(&g_t025_ep_h);
     it_slot_delete(92);
 
-    if (r1 == (long)IRIS_ERR_ACCESS_DENIED && r2 == 0 && g_t025_ok)
+    if (r1 == (long)IRIS_ERR_ACCESS_DENIED && src_preserved &&
+        r2 == 0 && g_t025_ok)
         it_pass("T025");
     else
         it_fail("T025", "non-transferable reply cap");
@@ -1951,7 +2022,8 @@ static long it_register_ep(const char *name, handle_id_t ep) {
     /* The master svcmgr keeps must carry DUPLICATE so it can hand each client a
      * fresh WRITE cap on lookup (+TRANSFER so the cap is deliverable to it). */
     iris_rights_t mr = (iris_rights_t)(RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-    long d = it_sys2(SYS_HANDLE_DUP, (long)ep, (long)mr);
+    /* Fase S4 (Etapa 2): the EP_CALL transfer source is a CSpace slot. */
+    long d = it_xfer_dup((long)ep, (uint32_t)mr);
     if (d < 0) return d;
     uint32_t len = it_stage_path(name);
     struct IrisMsg msg;
@@ -2186,7 +2258,9 @@ static void test_t064(void) {
     long n = it_notify_create();
     if (n < 0) { it_fail("T064", "notify create"); return; }
     handle_id_t notif = (handle_id_t)n;
-    long d = it_sys2(SYS_HANDLE_DUP, (long)notif, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    /* Fase S4 (Etapa 2): the EP_CALL transfer source is a CSpace slot. */
+    long d = it_xfer_dup((long)notif, (uint32_t)RIGHT_WRITE);
+    if (d < 0) { it_close(&notif); it_fail("T064", "xfer slot"); return; }
     len = it_stage_path("wrongtype.svc");
     it_iris_msg_zero(&msg);
     msg.label               = IRIS_SVCMGR_EP_REGISTER;
@@ -2403,36 +2477,58 @@ static void test_t073(void) {
     if (ep < 0) { it_fail("T073", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep;
 
-    /* (a) A cap WITHOUT RIGHT_TRANSFER: dup the endpoint down to READ only. */
-    long notrans = it_sys2(SYS_HANDLE_DUP, ep, (long)RIGHT_READ);
-    if (notrans < 0) { it_close(&ep_h); it_fail("T073", "dup"); return; }
-    handle_id_t notrans_h = (handle_id_t)notrans;
+    /* Fase S4 (Etapa 2): the SOURCE is a CSpace slot.  Three failure shapes,
+     * each of which must leave the source cap exactly where it was. */
+    handle_id_t root = t28_root_cnode();
+    if (root == HANDLE_INVALID) { it_close(&ep_h); it_fail("T073", "root cnode"); return; }
 
+    /* (a) A source slot WITHOUT RIGHT_TRANSFER → ACCESS_DENIED, slot intact. */
+    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)IT_XFER_SLOT_C);
+    if (it_sys4(SYS_CNODE_MINT, (long)root, (long)IT_XFER_SLOT_C, ep,
+                (long)RIGHT_READ) != 0) {
+        it_close(&ep_h); it_fail("T073", "mint notrans"); return;
+    }
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label           = 0x73;
-    msg.attached_handle = (uint32_t)notrans;
+    msg.attached_handle = IT_XFER_SLOT_C;
     msg.attached_rights = (uint32_t)RIGHT_READ;
     long a = it_sys2(SYS_EP_NB_SEND, ep, (long)&msg);
-    int  denied    = (a == (long)IRIS_ERR_ACCESS_DENIED);
-    int  preserved = (it_sys1(SYS_HANDLE_TYPE, notrans) >= 0);  /* not consumed */
+    int  denied = (a == (long)IRIS_ERR_ACCESS_DENIED);
+    /* not consumed: the slot still resolves */
+    int  preserved = (it_sys1(SYS_CSPACE_RESOLVE, (long)IT_XFER_SLOT_C) >= 0);
 
-    /* (b) Stale attached handle → clean BAD_HANDLE.  Create+close to make the
-     * id deterministically invalid. */
-    long stale = it_ep_create();
-    if (stale >= 0) it_sys1(SYS_HANDLE_CLOSE, stale);
+    /* (b) An EMPTY source slot → clean NOT_FOUND (no cap, nothing staged). */
+    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)IT_XFER_SLOT_D);
     struct IrisMsg msg2;
     it_iris_msg_zero(&msg2);
     msg2.label           = 0x73;
-    msg2.attached_handle = (uint32_t)stale;
+    msg2.attached_handle = IT_XFER_SLOT_D;
     msg2.attached_rights = (uint32_t)RIGHT_TRANSFER;
     long b = it_sys2(SYS_EP_NB_SEND, ep, (long)&msg2);
-    int  bogus_clean = (b == (long)IRIS_ERR_BAD_HANDLE);
+    int  empty_clean = (b == (long)IRIS_ERR_NOT_FOUND);
 
-    it_close(&notrans_h);
+    /* (c) A HANDLE value as source → INVALID_ARG, with NO handle-table
+     * fallback.  This is the Etapa 2 invariant: the transfer source lives in
+     * exactly one namespace (charter §3.6/§3.7, invariant A6). */
+    long h_src = it_sys2(SYS_HANDLE_DUP, ep, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    int  handle_rejected = 0;
+    if (h_src >= 1024) {
+        struct IrisMsg msg3;
+        it_iris_msg_zero(&msg3);
+        msg3.label           = 0x73;
+        msg3.attached_handle = (uint32_t)h_src;
+        msg3.attached_rights = (uint32_t)RIGHT_TRANSFER;
+        handle_rejected = (it_sys2(SYS_EP_NB_SEND, ep, (long)&msg3) ==
+                           (long)IRIS_ERR_INVALID_ARG);
+        handle_id_t hh = (handle_id_t)h_src;
+        it_close(&hh);
+    }
+
+    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)IT_XFER_SLOT_C);
     it_close(&ep_h);
 
-    if (denied && preserved && bogus_clean)
+    if (denied && preserved && empty_clean && handle_rejected)
         it_pass("T073");
     else
         it_fail("T073", "staged cap failure cleanup");
@@ -3292,12 +3388,13 @@ static void test_t084(void) {
     handle_id_t epx_h = (handle_id_t)epx;
     g_t084_cmd_ep = (handle_id_t)cmd;
 
-    /* Dups to attach (EP_SEND consumes the attached handle). */
-    long c1 = it_sys2(SYS_HANDLE_DUP, epx, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
-    long c2 = it_sys2(SYS_HANDLE_DUP, epx, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    /* Fase S4 (Etapa 2): transfer sources are CSpace SLOTS, not handles.
+     * EP_SEND consumes the slot exactly as it used to consume the dup. */
+    long c1 = it_xfer_slot(epx_h, IT_XFER_SLOT_A, RIGHT_WRITE);
+    long c2 = it_xfer_slot(epx_h, IT_XFER_SLOT_B, RIGHT_WRITE);
     if (c1 < 0 || c2 < 0) {
         it_close(&epx_h); it_close(&g_t084_cmd_ep);
-        it_fail("T084", "dup"); return;
+        it_fail("T084", "xfer slot"); return;
     }
     g_t084_cap1 = (handle_id_t)c1;
     g_t084_cap2 = (handle_id_t)c2;
@@ -3380,7 +3477,7 @@ static void test_t085(void) {
     handle_id_t n_h = (handle_id_t)n;
     g_t085_cmd_ep = (handle_id_t)cmd;
 
-    long c = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    long c = it_xfer_dup( n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (c < 0) {
         it_close(&n_h); it_close(&g_t085_cmd_ep);
         it_fail("T085", "dup"); return;
@@ -3466,7 +3563,7 @@ static void test_t086(void) {
     handle_id_t n_h = (handle_id_t)n;
     g_t086_cmd_ep = (handle_id_t)cmd;
 
-    long c = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    long c = it_xfer_dup( n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (c < 0) {
         it_close(&n_h); it_close(&g_t086_cmd_ep);
         it_fail("T086", "dup"); return;
@@ -3587,8 +3684,8 @@ static void test_t087(void) {
     handle_id_t nA_h = (handle_id_t)nA, nB_h = (handle_id_t)nB;
     g_t087_ep = (handle_id_t)ep;
 
-    long cA = it_sys2(SYS_HANDLE_DUP, nA, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
-    long cB = it_sys2(SYS_HANDLE_DUP, nB, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    long cA = it_xfer_dup( nA, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
+    long cB = it_xfer_dup( nB, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (cA < 0 || cB < 0) {
         it_close(&nA_h); it_close(&nB_h); it_close(&g_t087_ep);
         it_fail("T087", "dup"); return;
@@ -3749,7 +3846,7 @@ static void test_t088(void) {
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack2 + sizeof(g_t088_stack2))) & ~0xFULL;
         if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) ok = 0;
         it_sys1(SYS_SLEEP, 2);            /* receiver blocks FIRST */
-        long c = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        long c = it_xfer_dup( n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
         if (c < 0) ok = 0;
         if (ok) {
             struct IrisMsg m;
@@ -4238,13 +4335,18 @@ static void test_t093(void) {
     if (ok) it_pass("T093"); else it_fail("T093", "recv-slot pool stress");
 }
 
-/* ── T094: receive-slot TOCTOU fallback (A1.7) ──────────────────────────────
+/* ── T094: receive-slot TOCTOU degradation is RETIRED (Fase S4, Etapa 2) ────
  * A receiver declares slot 51 and blocks; before the sender delivers, the
- * process fills slot 51 itself (self-mint via the own-process cap).  The
- * delivery must take the DOCUMENTED fallback: the transferred cap arrives as
- * a handle >= 1024 (full authority, nothing lost), the slot keeps exactly
- * the cap that won the race (same object, right type), and no duplicate
- * authority appears in the slot. */
+ * process fills slot 51 itself (self-mint via the own-process cap).
+ *
+ * Until Etapa 2 this took a DOCUMENTED fallback: the cap was materialized as
+ * a handle >= 1024.  That was the last CPtr→handle degradation in the kernel
+ * (charter §3.7, the single tolerated exception) and it is now GONE: the
+ * delivery FAILS CLOSED.  The message still arrives, carrying NO capability;
+ * the slot keeps exactly the cap that won the race; and — because nothing was
+ * delivered — the sender's SOURCE slot is not consumed, so no authority is
+ * created or destroyed by the race.  This test is the retirement guard:
+ * iris_ipc_stat_toctou_fallbacks must stay at a structural 0. */
 #define T094_SLOT 51L
 
 static handle_id_t       g_t094_ep = HANDLE_INVALID;
@@ -4292,14 +4394,15 @@ static void test_t094(void) {
         ok = 0; why = "self mint";
     }
 
+    long xsrc = -1;
     if (ok) {
-        long d = it_sys2(SYS_HANDLE_DUP, nA, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
-        if (d < 0) { ok = 0; why = "dup"; }
+        xsrc = it_xfer_dup( nA, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
+        if (xsrc < 0) { ok = 0; why = "xfer slot"; }
         else {
             struct IrisMsg m;
             it_iris_msg_zero(&m);
             m.label           = 0x94;
-            m.attached_handle = (uint32_t)d;
+            m.attached_handle = (uint32_t)xsrc;
             m.attached_rights = RIGHT_WRITE;
             if (it_sys2(SYS_EP_SEND, (long)g_t094_ep, (long)&m) != 0) {
                 ok = 0; why = "send";
@@ -4309,16 +4412,15 @@ static void test_t094(void) {
     for (int i = 0; i < 200 && !g_t094_done; i++) it_sys0(SYS_YIELD);
     if (ok && !g_t094_done) { ok = 0; why = "recv incomplete"; }
 
-    /* Documented fallback: handle >= 1024, full authority preserved. */
-    if (ok && !(g_t094_got >= 1024u)) { ok = 0; why = "not handle fallback"; }
-    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)g_t094_got, 0x94) != 0) {
-        ok = 0; why = "fallback cap dead";
+    /* Etapa 2: FAIL CLOSED — no cap delivered, and above all NO handle. */
+    if (ok && g_t094_got != (uint32_t)IRIS_MSG_NO_CAP) {
+        ok = 0; why = "toctou degradation still alive";
     }
-    if (ok) {
-        uint64_t bits = 0;
-        if (it_sys2(SYS_NOTIFY_WAIT, nA, (long)(uintptr_t)&bits) != 0 ||
-            bits != 0x94u) { ok = 0; why = "signal lost"; }
+    /* Nothing delivered ⇒ the source slot was never consumed. */
+    if (ok && it_sys1(SYS_CSPACE_RESOLVE, xsrc) < 0) {
+        ok = 0; why = "source consumed on failed delivery";
     }
+    if (ok) it_slot_delete((uint32_t)xsrc);
     /* The slot keeps exactly the race winner: nB, a notification. */
     if (ok) {
         long rh = it_sys1(SYS_CSPACE_RESOLVE, T094_SLOT);
@@ -4332,7 +4434,6 @@ static void test_t094(void) {
         }
     }
 
-    if (g_t094_got >= 1024u) { handle_id_t g = (handle_id_t)g_t094_got; it_close(&g); }
     it_close(&nA_h);
     it_close(&nB_h);
     it_close(&g_t094_ep);
@@ -4378,7 +4479,11 @@ static void test_t095(void) {
     if (w[IT_SI_INSERTS] - w[IT_SI_REMOVES] != w[IT_SI_LIVE]) ok = 0;
     if (w[IT_SI_SLOTDEL] < 8u) ok = 0;      /* T084+ / svcmgr registrations */
     if (w[IT_SI_HANDDEL] < 8u) ok = 0;      /* legacy deliveries all along */
-    if (w[IT_SI_TOCTOU] < 1u) ok = 0;       /* T094 forced exactly this */
+    /* Fase S4 (Etapa 2): the CPtr→handle TOCTOU degradation is RETIRED.  T094
+     * still forces the race; the counter must now stay at a STRUCTURAL zero.
+     * This is the roadmap's retirement criterion for the last permitted
+     * degradation (charter §3.7) — if it ever moves, the fallback is back. */
+    if (w[IT_SI_TOCTOU] != 0u) ok = 0;
     if (w[IT_SI_REPLY] < 50u) ok = 0;       /* hundreds of EP_CALLs by now */
     if (w[IT_SI_RESOLVE] < 4u) ok = 0;      /* sanctioned bridge in use */
     /* The bound: busiest table ever ≤ MAX/4 — real margin, not aesthetics. */
@@ -4595,8 +4700,8 @@ static long it_lp_cmd_rslot(handle_id_t cmd_ep_h, uint32_t slot) {
 /* Transfer a WRITE|TRANSFER dup of `notif` to the child (blocks until the
  * child's declared recv rendezvouses — natural synchronization). */
 static long it_lp_send_cap(handle_id_t cmd_ep_h, long notif) {
-    long d = it_sys2(SYS_HANDLE_DUP, notif,
-                     (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    long d = it_xfer_dup( notif,
+                     (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (d < 0) return d;
     struct IrisMsg m;
     it_iris_msg_zero(&m);
@@ -4832,8 +4937,8 @@ static void test_t101(void) {
 
     /* Sender does not lose its cap on the failed delivery attempt. */
     if (ok) {
-        long d = it_sys2(SYS_HANDLE_DUP, n,
-                         (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        long d = it_xfer_dup( n,
+                         (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
         if (d < 0) { ok = 0; why = "dup"; }
         else {
             struct IrisMsg m;
@@ -4843,8 +4948,8 @@ static void test_t101(void) {
             m.attached_rights = RIGHT_WRITE;
             if (it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&m) !=
                 (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "dead waiter"; }
-            if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
-                (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+            if (ok && !it_slot_is_notif(d)) {
+
                 ok = 0; why = "cap consumed";
             }
             handle_id_t dh = (handle_id_t)d;
@@ -4957,8 +5062,9 @@ static void test_t103(void) {
     handle_id_t n_h = (handle_id_t)n;
     if (ep < 0 || n < 0) { it_fail("T103", "create"); return; }
 
-    g_t103_dup = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
-    if (g_t103_dup < 0) { ok = 0; why = "dup"; }
+    /* Fase S4 (Etapa 2): the staged SOURCE is a CSpace slot. */
+    g_t103_dup = it_xfer_dup(n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (g_t103_dup < 0) { ok = 0; why = "xfer slot"; }
 
     if (ok) {
         uint64_t entry = (uint64_t)(uintptr_t)t103_sender;
@@ -4979,9 +5085,9 @@ static void test_t103(void) {
         }
     }
 
-    /* Source cap preserved: the dup is still a live notification handle. */
-    if (ok && it_sys1(SYS_HANDLE_TYPE, g_t103_dup) !=
-        (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "cap consumed"; }
+    /* Source cap preserved: the source SLOT still resolves (never consumed —
+     * the cancel path aborts staging without deleting it). */
+    if (ok && !it_slot_is_notif(g_t103_dup)) { ok = 0; why = "cap consumed"; }
     /* And it still works: signal through it, observe on the original. */
     if (ok) {
         uint64_t bits = 0;
@@ -4990,7 +5096,7 @@ static void test_t103(void) {
             bits != 1u) { ok = 0; why = "cap dead"; }
     }
 
-    if (g_t103_dup >= 0) { handle_id_t d = (handle_id_t)g_t103_dup; it_close(&d); }
+    if (g_t103_dup >= 0) it_slot_delete((uint32_t)g_t103_dup);
     it_close(&n_h);
     it_close(&g_t103_ep_h);
 
@@ -5039,8 +5145,9 @@ static void test_t104(void) {
     handle_id_t n_h = (handle_id_t)n;
     if (ep < 0 || n < 0) { it_fail("T104", "create"); return; }
 
-    g_t104_dup = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
-    if (g_t104_dup < 0) { ok = 0; why = "dup"; }
+    /* Fase S4 (Etapa 2): the staged EP_CALL source is a CSpace slot. */
+    g_t104_dup = it_xfer_dup(n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
+    if (g_t104_dup < 0) { ok = 0; why = "xfer slot"; }
 
     if (ok) {
         uint64_t entry = (uint64_t)(uintptr_t)t104_caller;
@@ -5061,10 +5168,10 @@ static void test_t104(void) {
         }
     }
 
-    if (ok && it_sys1(SYS_HANDLE_TYPE, g_t104_dup) !=
-        (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "cap consumed"; }
+    if (ok && !it_slot_is_notif(g_t104_dup)) { ok = 0; why = "cap consumed"; }
 
-    if (g_t104_dup >= 0) { handle_id_t d = (handle_id_t)g_t104_dup; it_close(&d); }
+
+    if (g_t104_dup >= 0) it_slot_delete((uint32_t)g_t104_dup);
     it_close(&n_h);
     it_close(&g_t104_ep_h);
 
@@ -5157,7 +5264,7 @@ static void test_t105(void) {
      * server's source cap must survive un-consumed. */
     long d = -1;
     if (ok) {
-        d = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        d = it_xfer_dup( n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
         if (d < 0) { ok = 0; why = "dup"; }
     }
     if (ok) {
@@ -5168,8 +5275,8 @@ static void test_t105(void) {
         rm.attached_rights = RIGHT_WRITE;
         if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) !=
             (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "not one-shot"; }
-        if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
-            (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "cap consumed"; }
+        if (ok && !it_slot_is_notif(d)) { ok = 0; why = "cap consumed"; }
+
     }
 
     if (d >= 0) { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
@@ -5226,9 +5333,9 @@ static void test_t106(void) {
     if (ep < 0 || n < 0) { it_fail("T106", "create"); return; }
 
     for (int i = 0; ok && i < 2; i++) {
-        g_t106_dup[i] = it_sys2(SYS_HANDLE_DUP, n,
-                                (long)(RIGHT_WRITE | RIGHT_TRANSFER));
-        if (g_t106_dup[i] < 0) { ok = 0; why = "dup"; }
+        /* Fase S4 (Etapa 2): each staged source is its own CSpace slot. */
+        g_t106_dup[i] = it_xfer_dup(n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
+        if (g_t106_dup[i] < 0) { ok = 0; why = "xfer slot"; }
     }
 
     if (ok) {
@@ -5255,15 +5362,12 @@ static void test_t106(void) {
     }
 
     for (int i = 0; ok && i < 2; i++) {
-        if (it_sys1(SYS_HANDLE_TYPE, g_t106_dup[i]) !=
-            (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "cap consumed"; }
+        if (!it_slot_is_notif(g_t106_dup[i])) { ok = 0; why = "cap consumed"; }
+
     }
 
     for (int i = 0; i < 2; i++) {
-        if (g_t106_dup[i] >= 0) {
-            handle_id_t dh = (handle_id_t)g_t106_dup[i];
-            it_close(&dh);
-        }
+        if (g_t106_dup[i] >= 0) it_slot_delete((uint32_t)g_t106_dup[i]);
     }
     it_close(&n_h);
     it_close(&g_t106_ep_h);
@@ -5441,8 +5545,9 @@ static void fz_workers_stop(int n) {
 }
 
 /* Dup a WRITE|TRANSFER cap of `src` for staging (returns handle or -err). */
+/* Fase S4 (Etapa 2): a transfer source is a CSpace slot, not a handle. */
 static long fz_dup_xfer(long src) {
-    return it_sys2(SYS_HANDLE_DUP, src, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+    return it_xfer_dup(src, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
 }
 
 /* ── T107: randomized receive-slot IPC stress ───────────────────────────────
@@ -5521,7 +5626,7 @@ static void test_t107(void) {
                     (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "cptr ep"; }
             }
             /* move semantics: source dup consumed at delivery commit */
-            if (ok && it_sys1(SYS_HANDLE_TYPE, d) >= 0) {
+            if (ok && it_sys1(SYS_CSPACE_RESOLVE, d) >= 0) {
                 ok = 0; why = "dup not consumed";
             }
             exp_slot++;
@@ -5549,7 +5654,7 @@ static void test_t107(void) {
                 ok = 0; why = "nb slot landing";
             }
             /* A1.9 commit rule: NB source consumed once delivery commits. */
-            if (ok && it_sys1(SYS_HANDLE_TYPE, d) >= 0) {
+            if (ok && it_sys1(SYS_CSPACE_RESOLVE, d) >= 0) {
                 ok = 0; why = "nb dup not consumed";
             }
             exp_slot++;
@@ -5575,12 +5680,11 @@ static void test_t107(void) {
                 m.attached_rights = RIGHT_WRITE;
                 if (it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m) !=
                     (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "dead waiter"; }
-                if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
-                    (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+                if (ok && !it_slot_is_notif(d)) {
+
                     ok = 0; why = "cap consumed on fail";
                 }
-                handle_id_t dh = (handle_id_t)d;
-                it_close(&dh);
+                it_slot_delete((uint32_t)d);
             }
             /* I3: the occupant is still exactly our pre-minted cap. */
             if (ok) {
@@ -5637,8 +5741,10 @@ static void test_t107(void) {
             /* pick 6: staging without RIGHT_TRANSFER → ACCESS_DENIED; the
              * blocked receiver gains NOTHING and then gets a clean plain
              * message (I1, I2, I6); the degraded dup survives. */
-            long bad = it_sys2(SYS_HANDLE_DUP, n, (long)RIGHT_WRITE);
-            if (bad < 0) { ok = 0; why = "bad dup"; break; }
+            /* Fase S4 (Etapa 2): a SOURCE SLOT without RIGHT_TRANSFER. */
+            long bad = it_xfer_slot_norights(n, IT_XFER_SLOT_D,
+                                             (uint32_t)RIGHT_WRITE);
+            if (bad < 0) { ok = 0; why = "bad slot"; break; }
             if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "cmd"; break; }
             it_sys1(SYS_SLEEP, 2);   /* worker re-blocks on the data ep */
             struct IrisMsg m;
@@ -5648,9 +5754,8 @@ static void test_t107(void) {
             m.attached_rights = RIGHT_WRITE;
             if (it_sys2(SYS_EP_NB_SEND, (long)g_fz_data_ep, (long)&m) !=
                 (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no ACCESS_DENIED"; }
-            if (ok && it_sys1(SYS_HANDLE_TYPE, bad) !=
-                (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
-                ok = 0; why = "bad dup consumed";
+            if (ok && !it_slot_is_notif(bad)) {
+                ok = 0; why = "bad slot consumed";
             }
             /* unblock the still-waiting receiver with a plain message */
             if (ok) {
@@ -5665,10 +5770,7 @@ static void test_t107(void) {
                     ok = 0; why = "ghost cap";
                 }
             }
-            {
-                handle_id_t bh = (handle_id_t)bad;
-                it_close(&bh);
-            }
+            it_slot_delete((uint32_t)bad);
         }
     }
 
@@ -5747,8 +5849,8 @@ static void test_t108(void) {
                 ok = 0; why = "not CLOSED";
             }
             /* I5/I7: no delivery commit → the source cap survives. */
-            if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
-                (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "cap consumed"; }
+            if (ok && !it_slot_is_notif(d)) { ok = 0; why = "cap consumed"; }
+
             { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
 
         } else if (pick == 2u) {
@@ -5767,10 +5869,10 @@ static void test_t108(void) {
                        g_fz_res[1] != (long)IRIS_ERR_CLOSED)) {
                 ok = 0; why = "not CLOSED x2";
             }
-            if (ok && (it_sys1(SYS_HANDLE_TYPE, da) !=
-                       (long)IRIS_HANDLE_TYPE_NOTIFICATION ||
-                       it_sys1(SYS_HANDLE_TYPE, db) !=
-                       (long)IRIS_HANDLE_TYPE_NOTIFICATION)) {
+            if (ok && (!it_slot_is_notif(da) ||
+
+                       !it_slot_is_notif(db))) {
+
                 ok = 0; why = "cap consumed x2";
             }
             { handle_id_t dh = (handle_id_t)da; it_close(&dh); }
@@ -5966,7 +6068,7 @@ static void test_t109(void) {
             if (ok && (it_sys2(SYS_NOTIFY_SIGNAL, (long)s, 1) != 0 ||
                        it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
                        bits != 1u)) { ok = 0; why = "cptr dead"; }
-            if (ok && it_sys1(SYS_HANDLE_TYPE, d) >= 0) {
+            if (ok && it_sys1(SYS_CSPACE_RESOLVE, d) >= 0) {
                 ok = 0; why = "dup not consumed";
             }
             if (ok) { d = -1; exp_slot++; }
@@ -5981,7 +6083,7 @@ static void test_t109(void) {
                 handle_id_t gh = (handle_id_t)g_fz_att[0];
                 it_close(&gh);
             }
-            if (ok && it_sys1(SYS_HANDLE_TYPE, d) >= 0) {
+            if (ok && it_sys1(SYS_CSPACE_RESOLVE, d) >= 0) {
                 ok = 0; why = "dup not consumed";
             }
             if (ok) { d = -1; exp_hand++; }
@@ -6005,14 +6107,13 @@ static void test_t109(void) {
                 }
                 if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) !=
                     (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "not one-shot"; }
-                if (ok && d2 >= 0 && it_sys1(SYS_HANDLE_TYPE, d2) !=
-                    (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+                if (ok && d2 >= 0 && !it_slot_is_notif(d2)) {
                     ok = 0; why = "second reply ate cap";
                 }
             }
-            if (d2 >= 0) { handle_id_t dh = (handle_id_t)d2; it_close(&dh); }
+            if (d2 >= 0) it_slot_delete((uint32_t)d2);
         }
-        if (d >= 0) { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
+        if (d >= 0) it_slot_delete((uint32_t)d);
         it_close(&reply_h);
     }
 
@@ -6359,8 +6460,8 @@ static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
                 m.attached_rights = RIGHT_WRITE;
                 if (it_sys2(SYS_EP_NB_SEND, (long)ep_h, (long)&m) !=
                     (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; *why = "dead waiter"; }
-                if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
-                    (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+                if (ok && !it_slot_is_notif(d)) {
+
                     ok = 0; *why = "cap consumed";
                 }
                 handle_id_t dh = (handle_id_t)d;
@@ -6549,7 +6650,7 @@ static void test_t113(void) {
     /* Second reply WITH an attached cap → still NOT_FOUND, and the server's
      * source cap must survive un-consumed (A1.10 rule under caller death). */
     if (ok) {
-        long d = it_sys2(SYS_HANDLE_DUP, n, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        long d = it_xfer_dup( n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
         if (d < 0) { ok = 0; why = "dup"; }
         else {
             struct IrisMsg rm;
@@ -6559,8 +6660,8 @@ static void test_t113(void) {
             rm.attached_rights = RIGHT_WRITE;
             if (it_sys2(SYS_REPLY, (long)reply_h, (long)&rm) !=
                 (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "2nd reply"; }
-            if (ok && it_sys1(SYS_HANDLE_TYPE, d) !=
-                (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+            if (ok && !it_slot_is_notif(d)) {
+
                 ok = 0; why = "server cap consumed";
             }
             handle_id_t dh = (handle_id_t)d; it_close(&dh);

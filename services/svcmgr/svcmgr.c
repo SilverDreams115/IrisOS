@@ -168,6 +168,11 @@ static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1
  * receive-slot pool (64..255) and outside every well-known mint slot.
  */
 #define SVCMGR_S1_SCRATCH_SLOT 62u
+/* Fase S4 (Etapa 2): outbound cap-transfer source slot.  Every cap svcmgr
+ * hands to a client is minted here first and transferred BY CPtr; the kernel
+ * consumes the slot on a committed delivery.  63 sits below the dynamic
+ * receive-slot pool (64..255) and outside every well-known mint slot. */
+#define SVCMGR_XFER_SLOT       63u
 static int64_t svcmgr_retype_to_handle(handle_id_t ut_h, uint32_t obj_type,
                                        uint64_t obj_arg) {
     if (ut_h == HANDLE_INVALID) return (int64_t)IRIS_ERR_BAD_HANDLE;
@@ -631,6 +636,9 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
 
         handle_id_t master_h  = HANDLE_INVALID;
         iris_rights_t granted = RIGHT_NONE;
+        /* Fase S4 (Etapa 2): when the master already lives in a CSpace slot we
+         * mint straight from it — no handle is materialized at any point. */
+        uint32_t    src_cptr  = 0u;
 
         /* Reserved "<name>.ep" endpoint names resolve first (Fase 7.1). */
         if (!svcmgr_resolve_ep_name(state, (const char *)g_ep_recv_buf,
@@ -641,15 +649,10 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
                 (!dyn) ? svcmgr_catalog_find_name((const char *)g_ep_recv_buf) : 0;
 
             if (dyn && dyn->public_cptr != 0u) {
-                /* A1.6: CSpace-backed registration — materialize an ephemeral
-                 * master through the sanctioned bridge for the DUP below. */
-                int64_t rr = svcmgr_syscall1(SYS_CSPACE_RESOLVE,
-                                             (uint64_t)dyn->public_cptr);
-                if (rr >= 0) {
-                    ephemeral_master_h = (handle_id_t)rr;
-                    master_h = ephemeral_master_h;
-                    granted  = dyn->client_rights;
-                }
+                /* Fase S4: CSpace-backed registration — the source IS a slot;
+                 * the A1.6 CSPACE_RESOLVE bridge is no longer needed here. */
+                src_cptr = dyn->public_cptr;
+                granted  = dyn->client_rights;
             } else if (dyn && dyn->public_h != HANDLE_INVALID) {
                 master_h = dyn->public_h;
                 granted  = dyn->client_rights;
@@ -663,7 +666,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
             }
         }
 
-        if (master_h != HANDLE_INVALID && granted != RIGHT_NONE) {
+        if ((master_h != HANDLE_INVALID || src_cptr != 0u) && granted != RIGHT_NONE) {
             /* Fase 10 grant tightening: an ordinary client receives a
              * call-only cap (RIGHT_WRITE).  RIGHT_DUPLICATE/RIGHT_TRANSFER —
              * the authority to re-mint or hand the cap onward — is granted
@@ -673,12 +676,29 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
             iris_rights_t client_rights = granted;
             if (!iris_badge_is_supervisor(msg->sender_badge))
                 client_rights &= ~(iris_rights_t)(RIGHT_DUPLICATE | RIGHT_TRANSFER);
-            int64_t dup = svcmgr_syscall2(SYS_HANDLE_DUP, master_h,
-                                          (uint64_t)(client_rights | RIGHT_TRANSFER));
-            if (dup >= 0) {
+            /* Fase S4 (Etapa 2): the transfer SOURCE is a CSpace slot, never a
+             * handle.  Mint the master into svcmgr's scratch slot and hand the
+             * CPtr to the kernel; the delivered cap becomes an MDB child of
+             * that slot, so this grant is revocable from svcmgr.  The kernel
+             * consumes (deletes) the scratch slot on a committed delivery. */
+            (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, SVCMGR_XFER_SLOT);
+            int64_t mr;
+            if (src_cptr != 0u) {
+                /* Pure CSpace path — no handle materialization at all. */
+                mr = svcmgr_syscall3(SYS_CSPACE_MINT, (uint64_t)src_cptr,
+                                     ((uint64_t)SVCMGR_XFER_SLOT << 32),
+                                     (uint64_t)(client_rights | RIGHT_TRANSFER));
+            } else {
+                mr = svcmgr_syscall4(SYS_CNODE_MINT,
+                                     (uint64_t)state->root_cnode_h,
+                                     (uint64_t)SVCMGR_XFER_SLOT,
+                                     (uint64_t)master_h,
+                                     (uint64_t)(client_rights | RIGHT_TRANSFER));
+            }
+            if (mr == 0) {
                 reply.label              = IRIS_EP_REPLY_OK;
                 reply.words[0]           = 0u;
-                reply.attached_handle    = (uint32_t)dup;
+                reply.attached_handle    = SVCMGR_XFER_SLOT;
                 reply.attached_rights    = (uint32_t)client_rights;
                 svcmgr_log(sm_str_lookup_name_ok);
             } else {

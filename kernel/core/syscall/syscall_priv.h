@@ -242,19 +242,42 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2);
  */
 uint32_t syscall_ipc_deliver_cap(struct task *receiver,
                                  struct KObject *xo, uint32_t cap_rights);
+/* CSpace-only source guard: nonzero direct CPtr territory (<1024).  Shared by
+ * the CSpace syscalls and the IPC transfer path — a handle value is never a
+ * valid SOURCE for either (charter §3.6/§3.7). */
+static inline int cspace_only_cptr(uint64_t v) {
+    return v != 0u && v < 1024u;
+}
+
 /* A1.9/A1.10: two-phase staging — EVERY transfer path stages with peek
  * (validate + retain WITHOUT consuming the source handle) and consumes it
  * via commit only once delivery is committed (receiver determined).  Any
  * non-delivery exit — CLOSED, WOULD_BLOCK, endpoint close, waiter cancel,
  * lost one-shot reply race — releases the peeked ref only, so the source
  * cap always stays with its owner.  The single-shot consume-at-stage
- * wrappers were retired in A1.10 (zero callers; do not reintroduce). */
-iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_h,
+ * wrappers were retired in A1.10 (zero callers; do not reintroduce).
+ *
+ * Fase S4 (Etapa 2): the SOURCE is a CSpace CPtr (<1024), resolved to its
+ * terminal slot — never a handle.  The slot identity (out_src_cn/out_src_idx)
+ * rides with the staged object so delivery can parent the delivered cap to it
+ * in the MDB.  out_src_cn carries active+lifecycle refs; release them with
+ * syscall_ipc_stage_cap_commit (delivery) or syscall_ipc_stage_cap_abort
+ * (any non-delivery exit). */
+iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr,
                                                uint32_t requested_rights,
                                                struct KObject **out_obj,
                                                uint32_t *out_rights,
-                                               uint64_t *out_badge);
-void syscall_ipc_stage_cap_commit(struct task *t, uint32_t src_h);
+                                               uint64_t *out_badge,
+                                               struct KCNode **out_src_cn,
+                                               uint32_t *out_src_idx);
+/* Delivery committed: consume the source slot (move semantics).  Children of
+ * the deleted source — including the cap just delivered — are reparented to
+ * its grandparent, so every surviving ancestor keeps revocation authority.
+ * Releases the CNode refs taken by peek. */
+void syscall_ipc_stage_cap_commit(struct task *t, struct KCNode *src_cn,
+                                  uint32_t src_idx);
+/* Non-delivery exit: release the CNode refs WITHOUT touching the slot. */
+void syscall_ipc_stage_cap_abort(struct KCNode *src_cn);
 uint32_t syscall_ipc_deliver_cap_badged(struct task *receiver,
                                         struct KObject *xo,
                                         uint32_t cap_rights, uint64_t badge);
@@ -263,11 +286,17 @@ uint32_t syscall_ipc_deliver_cap_badged(struct task *receiver,
  * (fail-fast; endpoint untouched on error).  _deliver_cap_routed delivers a
  * staged cap into the receiver's declared slot when one is set — falling
  * back to handle materialization on a delivery-time race — and returns the
- * msg discriminator: 0 = no cap, <1024 = slot CPtr, >=1024 = handle. */
+ * msg discriminator: 0 = no cap, <1024 = slot CPtr, >=1024 = handle.
+ *
+ * Fase S4 (Etapa 2): src_cn/src_idx are the sender's source slot.  A slot
+ * delivery installs the cap as an MDB CHILD of that slot (real CSpace
+ * ancestry) instead of a LEGACY_ROOT; the source must still be occupied at
+ * delivery time, so a cap revoked while staged is never delivered. */
 iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared);
 uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
                                         struct KObject *xo,
-                                        uint32_t cap_rights, uint64_t badge);
+                                        uint32_t cap_rights, uint64_t badge,
+                                        struct KCNode *src_cn, uint32_t src_idx);
 
 /* A1.7 diagnostic counters (relaxed atomics; diagnostic only — read by the
  * sys_sched_info extended layout).  slot/handle/toctou partition transferred
@@ -275,6 +304,11 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
  * successful SYS_CSPACE_RESOLVE materializations. */
 extern uint32_t iris_ipc_stat_slot_deliveries;    /* syscall_endpoint.c */
 extern uint32_t iris_ipc_stat_handle_deliveries;
+/* Fase S4 (Etapa 2): RETIRED — the TOCTOU slot→handle degradation is gone,
+ * so this counter is a STRUCTURAL ZERO.  It stays in the ABI (sys_sched_info
+ * extended layout, offset w[8]) as the retirement witness: T094 forces the
+ * race and T095 asserts the counter never moves.  If it ever becomes
+ * non-zero, a CPtr→handle fallback has been reintroduced (charter §3.7). */
 extern uint32_t iris_ipc_stat_toctou_fallbacks;
 extern uint32_t iris_ipc_stat_reply_caps;
 extern uint32_t iris_cspace_stat_resolves;        /* syscall_cspace.c */

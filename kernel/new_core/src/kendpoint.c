@@ -1,5 +1,6 @@
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/kcnode.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/task.h>
 #include <stdatomic.h>
@@ -18,9 +19,15 @@ static void kendpoint_obj_close(struct KObject *obj) {
     ep->closed = 1;
 
     /* Wake all blocked tasks; release any staged caps from blocking senders.
-     * A1.10: the staging ref is dropped but the source handle is NOT
-     * consumed (ep_cap_src_h just clears) — nothing was delivered, so the
-     * sender keeps its cap and wakes with IRIS_ERR_CLOSED. */
+     * A1.10: the staging ref is dropped but the source SLOT is NOT consumed —
+     * nothing was delivered, so the sender keeps its cap and wakes with
+     * IRIS_ERR_CLOSED.
+     *
+     * Fase S4 (Etapa 2): ep_cap_src_cn is deliberately LEFT SET here.  Its
+     * refs must be dropped outside this lock — releasing the last ref on a
+     * CNode runs a destructor that tears down every slot recursively, and
+     * this walk holds ep->lock.  Ownership passes to the woken sender, which
+     * aborts its own staging right after task_yield() returns. */
     struct task *t = ep->queue_head;
     while (t) {
         struct task *nxt = t->ep_next;
@@ -30,7 +37,6 @@ static void kendpoint_obj_close(struct KObject *obj) {
             t->ep_cap_rights = 0;
             t->ep_cap_badge  = 0;
         }
-        t->ep_cap_src_h  = 0;
         t->ep_next       = 0;
         t->blocking_ep   = 0;
         t->ipc_ep_closed = 1;
@@ -112,16 +118,23 @@ void kendpoint_cancel_waiter(struct task *t) {
     t->ep_next     = 0;
     t->blocking_ep = 0;
 
-    /* Release staged cap now that the send is being cancelled.  A1.10:
-     * source handle NOT consumed — no delivery happened. */
+    /* Release staged cap now that the send is being cancelled.  A1.10 / S4:
+     * the source SLOT is NOT consumed — no delivery happened; only the CNode
+     * refs taken by peek are dropped, outside the lock. */
     struct KObject *staged_cap = t->ep_cap_obj;
-    t->ep_cap_obj    = 0;
-    t->ep_cap_rights = 0;
-    t->ep_cap_badge  = 0;
-    t->ep_cap_src_h  = 0;
+    struct KCNode  *staged_cn  = t->ep_cap_src_cn;
+    t->ep_cap_obj     = 0;
+    t->ep_cap_rights  = 0;
+    t->ep_cap_badge   = 0;
+    t->ep_cap_src_cn  = 0;
+    t->ep_cap_src_idx = 0;
 
     irq_spinlock_unlock(&ep->lock, flags);
 
     if (staged_cap)
         kobject_release(staged_cap);
+    if (staged_cn) {
+        kobject_active_release(&staged_cn->base);
+        kobject_release(&staged_cn->base);
+    }
 }

@@ -98,11 +98,16 @@ capability slots**.
 - **Reply capability** — `EP_CALL` creates a one-shot `KReply`; the server
   receives it in `attached_handle` and consumes it with `SYS_REPLY`. Replying
   twice fails.
-- **Transferred capability** — the client may move/copy a capability to the
-  server in `attached_cap` (+ `attached_cap_rights`). The kernel *stages* it
-  (the caller must really hold it; rights reduced) and the server receives it as
-  a real handle. The reply cap and the transferred cap never collide, so an
-  `EP_CALL` can carry both.
+- **Transferred capability** — the client may move a capability to the server in
+  `attached_cap` (+ `attached_cap_rights`). Since Fase S4 the **source is a
+  CPtr resolved to its CSpace slot**, never a handle (a handle value is
+  `INVALID_ARG`, with no fallback), and the delivered cap is installed as an
+  **MDB child of the sender's source slot** — so an IPC delegation is
+  revocable from the sender or any of its ancestors. The kernel *stages* it
+  (the caller must really hold it, with `RIGHT_TRANSFER`; rights reduced),
+  delivers, and only then consumes the source slot. A capability revoked while
+  staged is never delivered. The reply cap and the transferred cap never
+  collide, so an `EP_CALL` can carry both.
 
 A capability can never be forged from the payload: the kernel clears
 `attached_cap`/`sender_badge` written by the client and delivers only real,

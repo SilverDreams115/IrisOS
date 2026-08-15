@@ -22,6 +22,7 @@ struct KEndpoint;
 struct KObject;
 struct KSchedContext;
 struct KReply;
+struct KCNode;
 
 struct task {
     uint32_t          id;
@@ -37,7 +38,10 @@ struct task {
     struct KObject   *ep_cap_obj;
     uint32_t          ep_cap_rights;
     uint64_t          ep_cap_badge;   /* Fase 9 */
-    uint32_t          ep_cap_src_h;   /* A1.10: two-phase staging source handle */
+    /* Fase S4 (Etapa 2): two-phase staging source is a CSpace SLOT, not a
+     * handle — it is the MDB identity the delivered cap is parented to. */
+    struct KCNode    *ep_cap_src_cn;
+    uint32_t          ep_cap_src_idx;
     uint32_t          ipc_kbuf_len;
     uint32_t          ep_call_mode;
     struct KReply    *pending_kreply;

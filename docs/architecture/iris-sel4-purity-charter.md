@@ -71,13 +71,13 @@ in the ledger), or `PENDING` (a roadmap stage).
 
 | # | Invariant | Today |
 |---|---|---|
-| I1 | Capability transfer uses CSpace as source and destination | PARTIAL — destination yes (receive slots); source still handle (Stage 2) |
+| I1 | Capability transfer uses CSpace as source and destination | MET — Fase S4/Stage 2: the source is a CPtr resolved to its slot (`syscall_ipc_stage_cap_peek_badged`), the destination is the receive slot; a handle source is `INVALID_ARG` with no fallback |
 | I2 | A failed transfer leaves the state equivalent to before | MET (peek/commit staging, A1.9/A1.10) |
 | I3 | The source cap is not consumed before a confirmed delivery | MET |
 | I4 | Reply is one-shot | MET (explicit KReply; double REPLY → NOT_FOUND) |
 | I5 | Sender identity is unforgeable | MET (sealed badge; reply forces badge 0) |
 | I6 | Close, death, cancellation and rollback have deterministic semantics | MET (proven by lifecycle/stress/fuzzing) |
-| I7 | IPC never silently degrades to handles | PARTIAL — the TOCTOU slot→handle fallback exists, is counted (`iris_ipc_stat_toctou_fallbacks`) and retires in Stage 2 |
+| I7 | IPC never silently degrades to handles | MET — Fase S4/Stage 2: the TOCTOU slot→handle fallback is REMOVED; a raced/occupied destination slot fails closed (no cap delivered, source untouched). `iris_ipc_stat_toctou_fallbacks` is a structural 0, guarded by T094/T095 |
 
 ### 2.4 Scheduling
 
@@ -122,8 +122,9 @@ Prohibited from now on, with no exception and no "temporarily":
 5. Use a **PID, index, address or pointer** as a substitute for a capability.
 6. Introduce syscalls that accept authority through **two namespaces** (the
    existing dual resolvers are frozen legacy, not a pattern to imitate).
-7. Add **CPtr-to-handle fallbacks** (the receive-slot TOCTOU fallback is the
-   only exception, counted and doomed — Stage 2).
+7. Add **CPtr-to-handle fallbacks**. As of Fase S4 (Stage 2) there is NO
+   exception: the receive-slot TOCTOU fallback — the last one — is removed and
+   its counter is pinned at 0 by T094/T095.
 8. Trust **service names** as authority (names are discovery; authority is the
    delivered cap).
 9. Add **restart, filesystem or driver policy to the kernel**.
@@ -144,8 +145,10 @@ proven:
       included. The parallel handle-tree still needs retiring.
 - [x] Recursive cross-process revoke with deterministic rollback/cleanup —
       **Fase S3** (`SYS_CSPACE_REVOKE`).
-- [ ] CPtr-based cap transfer (source and destination in CSpace) — destination
-      CSpace (receive slots) already; SOURCE still handle (Stage 2).
+- [x] CPtr-based cap transfer (source and destination in CSpace) — **Fase S4**
+      (Stage 2): source resolved to a CSpace slot, destination the receive
+      slot, and the delivered cap installed as an MDB **child of the source
+      slot** (real ancestry, no LEGACY_ROOT from IPC).
 - [x] derive/mint/copy/move/delete/revoke operating on slots — **Fase S3**
       (`kcnode_slot_*` primitives); `SYS_CSPACE_MINT`/`MINT_INTO`/`REVOKE`.
 - [ ] CSpace-only invocation: zero dual resolution, zero value-range

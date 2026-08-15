@@ -281,10 +281,8 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
  * authority).  Semantics: docs/architecture/cspace-cdt-mdb.md §4.
  * ════════════════════════════════════════════════════════════════════════ */
 
-/* CSpace-only source guard: nonzero direct CPtr territory. */
-static inline int cspace_only_cptr(uint64_t v) {
-    return v != 0u && v < 1024u;
-}
+/* CSpace-only source guard: cspace_only_cptr lives in syscall_priv.h — the
+ * IPC transfer path (Fase S4/Etapa 2) enforces the same rule. */
 
 /* Resolve the caller's root CNode with active+lifecycle refs (retype2's
  * dest_cnode == 0 convention). */
