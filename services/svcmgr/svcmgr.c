@@ -44,11 +44,11 @@ struct svcmgr_service_state {
      * Created once at first boot and kept across restarts so client caps
      * stay valid; recv side goes to the child at bootstrap (kind 0x21) and
      * the send side is published as "<image_name>.ep". */
-    handle_id_t ep_h;
+    uint32_t    ep_c;   /* CPtr slot, 0 = absent */
     /* IRQ KNotification master (Fase 7.6; manifest irq_notify=1). Created
      * once and kept across restarts; the kernel signals it per IRQ and the
      * WAIT side goes to the child at bootstrap (kind 0x23). */
-    handle_id_t irq_notif_h;
+    uint32_t    irq_notif_c;   /* CPtr slot, 0 = absent */
     /* Fase S1: per-service reply sub-untyped (4 KiB carved once from svcmgr's
      * pool).  Each (re)boot RESETs it (when the previous reply objects died
      * with the child) and retypes fresh reply object(s) that are minted into
@@ -186,11 +186,30 @@ static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1
 #define SVCMGR_S1_SCRATCH_SLOT 62u
 /* Etapa 4: narrowed spawn cap after the bootstrap HW_ACCESS strip (48..61 free). */
 #define SVCMGR_SPAWN_NARROW_SLOT 48u
+/* Etapa 4: the long-lived per-service masters live in svcmgr's own CSpace,
+ * two slots per service in 49..56 (49..61 is free between the ioport-cap
+ * table and the S1 scratch slot).  They are created once and kept across
+ * restarts, so a fixed slot per service is the natural home — and a mint from
+ * a slot makes each child's cap an MDB child of it, hence revocable. */
+#define SVCMGR_MSLOT_EP(id)  (49u + (uint32_t)(id) * 2u)
+#define SVCMGR_MSLOT_IRQ(id) (50u + (uint32_t)(id) * 2u)
 /* Fase S4 (Etapa 2): outbound cap-transfer source slot.  Every cap svcmgr
  * hands to a client is minted here first and transferred BY CPtr; the kernel
  * consumes the slot on a committed delivery.  63 sits below the dynamic
  * receive-slot pool (64..255) and outside every well-known mint slot. */
 #define SVCMGR_XFER_SLOT       63u
+/* Etapa 4: retype straight into a CSpace slot — the capability IS the slot.
+ * Used for the objects svcmgr keeps; the materialising variant below remains
+ * only where a consumer still takes a handle. */
+static int64_t svcmgr_retype_to_slot(uint64_t ut_cptr, uint32_t obj_type,
+                                     uint32_t dest_slot, uint64_t obj_arg) {
+    if (ut_cptr == 0u) return (int64_t)IRIS_ERR_NOT_FOUND;
+    (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, (uint64_t)dest_slot);
+    return svcmgr_syscall4(SYS_UNTYPED_RETYPE2, ut_cptr,
+                           (uint64_t)obj_type | (1ULL << 32),
+                           ((uint64_t)dest_slot << 32), obj_arg);
+}
+
 static int64_t svcmgr_retype_to_handle(uint64_t ut_cptr, uint32_t obj_type,
                                        uint64_t obj_arg) {
     if (ut_cptr == 0u) return (int64_t)IRIS_ERR_NOT_FOUND;
@@ -446,8 +465,8 @@ static int svcmgr_resolve_ep_name(struct svcmgr_state *state, const char *name,
         manifest = svcmgr_catalog_find_name(base);
         if (!manifest || !manifest->own_service_ep) return 0;
         svc = svcmgr_service_state(state, manifest->service_id);
-        if (!svc || svc->ep_h == HANDLE_INVALID) return 0;
-        *master_h = svc->ep_h;
+        if (!svc || svc->ep_c == 0u) return 0;
+        *out_cptr = svc->ep_c;
         /* Send/call side only; DUPLICATE (Fase 8) allows CSpace re-minting
          * (e.g. init mints vfs.ep/kbd.ep into iris_test's fixtures). */
         *allowed  = RIGHT_WRITE | RIGHT_DUPLICATE;
@@ -969,12 +988,12 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
                                         struct svc_mint *mints) {
     struct svcmgr_service_state *svc =
         svcmgr_service_state(state, manifest->service_id);
-    handle_id_t vfs_ep =
+    uint32_t vfs_ep =
         (SVCMGR_SERVICE_VFS < (uint32_t)(sizeof(state->services) / sizeof(state->services[0])))
-        ? state->services[SVCMGR_SERVICE_VFS].ep_h : HANDLE_INVALID;
-    handle_id_t kbd_ep =
+        ? state->services[SVCMGR_SERVICE_VFS].ep_c : 0u;
+    uint32_t kbd_ep =
         (SVCMGR_SERVICE_KBD < (uint32_t)(sizeof(state->services) / sizeof(state->services[0])))
-        ? state->services[SVCMGR_SERVICE_KBD].ep_h : HANDLE_INVALID;
+        ? state->services[SVCMGR_SERVICE_KBD].ep_c : 0u;
     uint32_t n = 0;
 
     /* Fase 9: the client-side slots (1..4) carry the CHILD's identity badge
@@ -999,7 +1018,7 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
     }
     if (manifest->client_eps & IRIS_SVC_CLIENT_EP_VFS) {
         mints[n].slot = IRIS_CPTR_VFS_EP;
-        mints[n].src_h = vfs_ep;
+        mints[n].src_cptr = vfs_ep;
         mints[n].rights = RIGHT_WRITE;
         mints[n].badge = child_badge;
         n++;
@@ -1013,21 +1032,21 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
     }
     if (manifest->client_eps & IRIS_SVC_CLIENT_EP_KBD) {
         mints[n].slot = IRIS_CPTR_KBD_EP;
-        mints[n].src_h = kbd_ep;
+        mints[n].src_cptr = kbd_ep;
         mints[n].rights = RIGHT_WRITE;
         mints[n].badge = child_badge;
         n++;
     }
     if (manifest->own_service_ep && svc) {
         mints[n].slot = IRIS_CPTR_OWN_EP;
-        mints[n].src_h = svc->ep_h;
+        mints[n].src_cptr = svc->ep_c;
         mints[n].rights = RIGHT_READ;
         mints[n].badge = 0;
         n++;
     }
     if (manifest->irq_notify && svc) {
         mints[n].slot = IRIS_CPTR_IRQ_NOTIFY;
-        mints[n].src_h = svc->irq_notif_h;
+        mints[n].src_cptr = svc->irq_notif_c;
         mints[n].rights = RIGHT_WAIT;
         mints[n].badge = 0;
         n++;
@@ -1083,7 +1102,7 @@ static uint32_t svcmgr_ready_service_count(const struct svcmgr_state *state) {
              * services (endpoint_only without an own endpoint, e.g. sh) are
              * ready when their process is alive. */
             if (manifest->own_service_ep) {
-                if (state->services[i].ep_h != HANDLE_INVALID) ready++;
+                if (state->services[i].ep_c != 0u) ready++;
             } else {
                 if (state->services[i].proc_h != HANDLE_INVALID) ready++;
             }
@@ -1138,11 +1157,13 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
         if (manifest->irq_notify) {
             /* Fase 7.6: IRQ → KNotification. Created once, reused across
              * restarts so the kernel route only needs re-registering. */
-            if (svc->irq_notif_h == HANDLE_INVALID) {
-                int64_t nr = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_NOTIFICATION, 0);
-                svc->irq_notif_h = (nr >= 0) ? (handle_id_t)nr : HANDLE_INVALID;
+            if (svc->irq_notif_c == 0u) {
+                uint32_t sl = SVCMGR_MSLOT_IRQ(manifest->service_id);
+                int64_t nr = svcmgr_retype_to_slot(state->untyped_c,
+                                                   IRIS_KOBJ_NOTIFICATION, sl, 0);
+                svc->irq_notif_c = (nr >= 0) ? sl : 0u;
             }
-            route_h = svc->irq_notif_h;
+            route_h = (handle_id_t)svc->irq_notif_c;
         }
         if (irqcap_c == 0u || route_h == HANDLE_INVALID ||
             svcmgr_syscall3(SYS_IRQ_ROUTE_REGISTER, irqcap_c, route_h, proc_h) < 0) {
@@ -1193,17 +1214,21 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
     /* Fase 7.1: create the service's KEndpoint once; it survives restarts
      * (clear_service_masters does not touch ep_h) so client caps obtained
      * via "<name>.ep" lookup stay valid across a respawn. Non-fatal. */
-    if (manifest->own_service_ep && svc->ep_h == HANDLE_INVALID) {
-        int64_t ep_r = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_ENDPOINT, 0);
-        svc->ep_h = (ep_r >= 0) ? (handle_id_t)ep_r : HANDLE_INVALID;
+    if (manifest->own_service_ep && svc->ep_c == 0u) {
+        uint32_t sl = SVCMGR_MSLOT_EP(manifest->service_id);
+        int64_t ep_r = svcmgr_retype_to_slot(state->untyped_c,
+                                             IRIS_KOBJ_ENDPOINT, sl, 0);
+        svc->ep_c = (ep_r >= 0) ? sl : 0u;
     }
 
     /* Fase 7.6: the IRQ KNotification must exist BEFORE bootstrap caps are
      * sent (the WAIT side ships with them); the kernel route is registered
      * later in track_spawn. Created once, survives restarts. */
-    if (manifest->irq_notify && svc->irq_notif_h == HANDLE_INVALID) {
-        int64_t nr = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_NOTIFICATION, 0);
-        svc->irq_notif_h = (nr >= 0) ? (handle_id_t)nr : HANDLE_INVALID;
+    if (manifest->irq_notify && svc->irq_notif_c == 0u) {
+        uint32_t sl = SVCMGR_MSLOT_IRQ(manifest->service_id);
+        int64_t nr = svcmgr_retype_to_slot(state->untyped_c,
+                                           IRIS_KOBJ_NOTIFICATION, sl, 0);
+        svc->irq_notif_c = (nr >= 0) ? sl : 0u;
     }
 
     /* Fase 13 (Track I): every catalog service is endpoint_only now — the
@@ -1391,8 +1416,8 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         state->services[i].public_h = HANDLE_INVALID;
         state->services[i].reply_h = HANDLE_INVALID;
         state->services[i].proc_h = HANDLE_INVALID;
-        state->services[i].ep_h = HANDLE_INVALID;
-        state->services[i].irq_notif_h = HANDLE_INVALID;
+        state->services[i].ep_c = 0u;
+        state->services[i].irq_notif_c = 0u;
         state->services[i].reply_ut_h = HANDLE_INVALID;
     }
     state->untyped_c = 0u;
@@ -1477,13 +1502,17 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         if (!d) continue;
         s = svcmgr_service_state(state, d->service_id);
         if (!s) continue;
-        if (d->own_service_ep && s->ep_h == HANDLE_INVALID) {
-            int64_t r0 = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_ENDPOINT, 0);
-            s->ep_h = (r0 >= 0) ? (handle_id_t)r0 : HANDLE_INVALID;
+        if (d->own_service_ep && s->ep_c == 0u) {
+            uint32_t sl = SVCMGR_MSLOT_EP(d->service_id);
+            int64_t r0 = svcmgr_retype_to_slot(state->untyped_c,
+                                               IRIS_KOBJ_ENDPOINT, sl, 0);
+            s->ep_c = (r0 >= 0) ? sl : 0u;
         }
-        if (d->irq_notify && s->irq_notif_h == HANDLE_INVALID) {
-            int64_t r0 = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_NOTIFICATION, 0);
-            s->irq_notif_h = (r0 >= 0) ? (handle_id_t)r0 : HANDLE_INVALID;
+        if (d->irq_notify && s->irq_notif_c == 0u) {
+            uint32_t sl = SVCMGR_MSLOT_IRQ(d->service_id);
+            int64_t r0 = svcmgr_retype_to_slot(state->untyped_c,
+                                               IRIS_KOBJ_NOTIFICATION, sl, 0);
+            s->irq_notif_c = (r0 >= 0) ? sl : 0u;
         }
     }
 

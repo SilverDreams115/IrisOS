@@ -48,13 +48,14 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * legacy KChannel message route is retired. */
     struct KObject  *ch_obj;
     iris_rights_t    ch_rights;
-    r = handle_table_get_object(&t->process->handle_table,
-                                (handle_id_t)arg1, &ch_obj, &ch_rights);
+    /* Etapa 4: third occurrence of the same half-migration — the irqcap (arg0)
+     * and the owning process (arg2) resolved either way while the destination
+     * notification did not, so a service holding its IRQ notification in
+     * CSpace could not register a route.  The dual object resolver returns a
+     * lifecycle-only reference and reports WRONG_TYPE itself. */
+    r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg1, RIGHT_NONE,
+                                     KOBJ_NOTIFICATION, &ch_obj, &ch_rights);
     if (r != IRIS_OK) return syscall_err(r);
-    if (ch_obj->type != KOBJ_NOTIFICATION) {
-        kobject_release(ch_obj);
-        return syscall_err(IRIS_ERR_WRONG_TYPE);
-    }
     if (!rights_check(ch_rights, RIGHT_WRITE)) {
         kobject_release(ch_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);

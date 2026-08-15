@@ -126,6 +126,18 @@ when the namespace retires.
 resolvers.  No invariant changes state, no prohibition is added or lifted.
 Precedent: Fase S3 grew the same list by 3 under this clause.
 
+**Extended**: `SYS_IRQ_ROUTE_REGISTER` is the third occurrence of the identical
+shape — irqcap (arg0) and owning process (arg2) resolved either way, the
+destination notification (arg1) did not — so a service holding its IRQ
+notification in CSpace could not register a route.  Same trade:
+`syscall_irq.c` `handle_table_get_object` 2 -> 0 (the file leaves that list
+entirely), `cspace_or_handle_resolve_` 7 -> 9.
+
+**Pattern worth naming**: all three were syscalls whose *object* arguments were
+migrated while their *notification* argument was left behind.  Any syscall
+taking a notification alongside an already-dual argument should be assumed to
+have it until checked.
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types.
