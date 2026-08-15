@@ -60,7 +60,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 
 | # | Invariant | Today |
 |---|---|---|
-| O1 | Every canonical object is born from Untyped via retype | PARTIAL — EP/Notif/Reply/CNode/SC/TCB via RETYPE2; TCB execution, Frame header, VSpace, page tables still pending (Stages 0/6) |
+| O1 | Every canonical object is born from Untyped via retype | PARTIAL — EP/Notif/Reply/CNode/SC/TCB via RETYPE2; TCB execution, Frame header, VSpace, page tables still pending (Stages 5/6 — see amendment A-1) |
 | O2 | The object's storage belongs to the Untyped that produced it | MET for the RETYPE2 family |
 | O3 | The last capability does not destroy an object with active execution | MET — the scheduler holds its own execution reference |
 | O4 | A terminated object stays observable while a valid cap exists | MET (TERMINATED TCB answers GET_INFO) |

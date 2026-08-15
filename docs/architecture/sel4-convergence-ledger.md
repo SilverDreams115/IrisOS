@@ -83,6 +83,28 @@ Audit of versioned queries:
 Test: T283 (QABI1–10 + guard canaries). Future new fields in a query struct
 can no longer overflow a caller that declares its size.
 
+## Charter amendments
+
+The [purity charter](iris-sel4-purity-charter.md) may only be amended in a
+change that cites it explicitly and records the amendment here.
+
+### A-1 — invariant O1 pointed at a closed stage
+
+**Change**: charter §2.2, invariant O1 — the pending-work reference
+`(Stages 0/6)` becomes `(Stages 5/6)`.
+
+**Justification**: Stage 0 (TCB consolidation) closed in Fase S2 inc.2, so O1
+named an already-closed stage as the home of work that is still open.  The
+replacement path for the residue — `TCB_CONFIGURE` over a retyped TCB, whose
+arguments (CSpace root, VSpace, fault EP) only exist as caps after the
+seL4-like bootstrap — is assigned to Stage 5/6 by both the roadmap (Stage 0,
+"Recorded debt") and this ledger (row: *executable thread-create via pool +
+handle*).  The charter was the only document out of sync.
+
+**Scope**: editorial.  No invariant changes state, no allowlist entry moves,
+no prohibition is added or lifted.  O1 remains PARTIAL and the count of met
+invariants remains 29 of 36.
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types.
