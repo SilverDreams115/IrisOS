@@ -40,12 +40,16 @@ void init_early_serial_write(const char *s) {
     }
 }
 
+/* Fase S4: the serial KIoPort is published into a CSpace slot as an MDB child
+ * of the spawn-cap slot; the authority argument must be a CPtr.  Slot 40 is
+ * free in init's root CNode (1..15 well-known). */
+#define INIT_EARLY_SERIAL_SLOT 40u
 void init_early_serial_start(handle_id_t spawn_cap_h) {
-    long h;
-    if (spawn_cap_h == HANDLE_INVALID || g_init_early_serial_h != HANDLE_INVALID) return;
-    h = init_sys3(SYS_CAP_CREATE_IOPORT, (long)spawn_cap_h, 0x3F8, 8);
-    if (h < 0) return;
-    g_init_early_serial_h = (handle_id_t)h;
+    (void)spawn_cap_h;
+    if (g_init_early_serial_h != HANDLE_INVALID) return;
+    if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+                  0x3F8, 8, (long)INIT_EARLY_SERIAL_SLOT) != 0) return;
+    g_init_early_serial_h = (handle_id_t)INIT_EARLY_SERIAL_SLOT;
 }
 
 void init_early_serial_stop(void) {

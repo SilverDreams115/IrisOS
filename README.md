@@ -257,7 +257,9 @@ Highlights by area:
   `EXCEPTION_HANDLER`, `EXCEPTION_RESUME`.
 - **Scheduling**: `SC_CREATE`, `SC_CONFIGURE`, `THREAD_SET_SC`,
   `TCB_SELF/SUSPEND/RESUME/SET_PRIORITY/EXIT/GET_INFO`, `SCHED_INFO`.
-- **Hardware / bootstrap (cap-gated)**: `CAP_CREATE_IRQCAP`, `CAP_CREATE_IOPORT`,
+- **Hardware / bootstrap (cap-gated)**: `CAP_CREATE_IRQCAP`, `CAP_CREATE_IOPORT`
+  (both publish the new cap into a caller-named CSpace slot as an MDB child of
+  the authorising bootstrap cap — revoking the bootstrap cap revokes them),
   `IOPORT_IN/OUT/RESTRICT`, `IRQ_ROUTE_REGISTER`, `IRQ_ACK`, `BOOTCAP_RESTRICT`,
   `FRAMEBUFFER_VMO`, `INITRD_COUNT/VMO`, `POWEROFF`, `KLOG_DRAIN`.
 - **CSpace derivation (Fase S3)**: `CSPACE_MINT`, `CSPACE_REVOKE`,

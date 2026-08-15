@@ -24,6 +24,14 @@
                                          * set, which the A1.7 measurements
                                          * bound at ~33 entries. */
 /* Indexed by IRQ number (0–15); mirrors KIRQCAP_POOL_SIZE in kirqcap.h. */
+/* Fase S4 (Etapa 3 prep): device caps live in svcmgr's CSPACE, not its handle
+ * table.  SYS_CAP_CREATE_IRQCAP/_IOPORT publish into these slots as MDB
+ * children of the bootstrap-cap slot, so revoking the bootstrap cap revokes
+ * every device cap issued under it.  Slots 16..47 are free in svcmgr's root
+ * CNode (1..15 well-known, 62/63 scratch, 64..255 receive pool). */
+#define SVCMGR_IRQCAP_SLOT_BASE    16u   /* + IRQ number   (16..31) */
+#define SVCMGR_IOPORT_SLOT_BASE    32u   /* + service_id   (32..47) */
+
 #define SVCMGR_IRQ_CAPS_TABLE_SIZE 16u
 /* Indexed by service_id (0–2); mirrors IRIS_SERVICE_RUNTIME_SLOT_COUNT. */
 #define SVCMGR_IOPORT_CAPS_TABLE_SIZE IRIS_SERVICE_RUNTIME_SLOT_COUNT
@@ -97,8 +105,9 @@ struct svcmgr_state {
      * reply svcmgr fabricates is retyped from here — the retired create
      * syscalls are never used. */
     handle_id_t untyped_h;
-    handle_id_t irq_caps[SVCMGR_IRQ_CAPS_TABLE_SIZE];       /* indexed by IRQ number  */
-    handle_id_t ioport_caps[SVCMGR_IOPORT_CAPS_TABLE_SIZE]; /* indexed by service_id  */
+    /* Fase S4: CPtr slots (0 = absent), not handles. */
+    uint32_t    irq_caps[SVCMGR_IRQ_CAPS_TABLE_SIZE];       /* indexed by IRQ number  */
+    uint32_t    ioport_caps[SVCMGR_IOPORT_CAPS_TABLE_SIZE]; /* indexed by service_id  */
     struct svcmgr_service_state services[IRIS_SERVICE_RUNTIME_SLOT_COUNT];
     struct svcmgr_dynamic_service dynamic[SVCMGR_DYNAMIC_SERVICE_CAP];
 };
@@ -240,20 +249,22 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
         if (!e) continue;
 
         if (e->irq_num != 0xFFu && e->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE &&
-            state->irq_caps[e->irq_num] == HANDLE_INVALID) {
-            int64_t h = svcmgr_syscall2(SYS_CAP_CREATE_IRQCAP,
-                                        state->spawn_cap_h, e->irq_num);
-            if (h >= 0)
-                state->irq_caps[e->irq_num] = (handle_id_t)h;
+            state->irq_caps[e->irq_num] == 0u) {
+            uint32_t slot = SVCMGR_IRQCAP_SLOT_BASE + e->irq_num;
+            /* Fase S4: authority BY CPtr (it becomes the MDB parent). */
+            int64_t r = svcmgr_syscall4(SYS_CAP_CREATE_IRQCAP,
+                                        IRIS_CPTR_SPAWN_CAP, e->irq_num,
+                                        0, slot);
+            if (r == 0) state->irq_caps[e->irq_num] = slot;
         }
 
         if (e->ioport_count > 0u && e->service_id < SVCMGR_IOPORT_CAPS_TABLE_SIZE &&
-            state->ioport_caps[e->service_id] == HANDLE_INVALID) {
-            int64_t h = svcmgr_syscall3(SYS_CAP_CREATE_IOPORT,
-                                        state->spawn_cap_h,
-                                        e->ioport_base, e->ioport_count);
-            if (h >= 0)
-                state->ioport_caps[e->service_id] = (handle_id_t)h;
+            state->ioport_caps[e->service_id] == 0u) {
+            uint32_t slot = SVCMGR_IOPORT_SLOT_BASE + e->service_id;
+            int64_t r = svcmgr_syscall4(SYS_CAP_CREATE_IOPORT,
+                                        IRIS_CPTR_SPAWN_CAP,
+                                        e->ioport_base, e->ioport_count, slot);
+            if (r == 0) state->ioport_caps[e->service_id] = slot;
         }
     }
 
@@ -1014,18 +1025,20 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
      * service-channel mint is emitted.  Device caps (KIoPort/KIrqCap) below. */
     if (manifest->ioport_count > 0u &&
         manifest->service_id < SVCMGR_IOPORT_CAPS_TABLE_SIZE &&
-        state->ioport_caps[manifest->service_id] != HANDLE_INVALID) {
+        state->ioport_caps[manifest->service_id] != 0u) {
         mints[n].slot = IRIS_CPTR_IOPORT;
-        mints[n].src_h = state->ioport_caps[manifest->service_id];
+        /* Fase S4: CSpace source — the child's device cap is an MDB child of
+         * svcmgr's slot, so the delegation is revocable. */
+        mints[n].src_cptr = state->ioport_caps[manifest->service_id];
         mints[n].rights = RIGHT_READ;
         mints[n].badge = 0;
         n++;
     }
     if (manifest->give_irqcap && manifest->irq_num != 0xFFu &&
         manifest->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE &&
-        state->irq_caps[manifest->irq_num] != HANDLE_INVALID) {
+        state->irq_caps[manifest->irq_num] != 0u) {
         mints[n].slot = IRIS_CPTR_IRQ_CAP;
-        mints[n].src_h = state->irq_caps[manifest->irq_num];
+        mints[n].src_cptr = state->irq_caps[manifest->irq_num];
         mints[n].rights = RIGHT_ROUTE;
         mints[n].badge = 0;
         n++;
@@ -1094,9 +1107,11 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
     svc->proc_h = proc_h;
 
     if (manifest->irq_num != 0xFFu) {
-        handle_id_t irqcap_h = (manifest->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE)
+        /* Fase S4: the IRQ cap is a CPtr slot; SYS_IRQ_ROUTE_REGISTER resolves
+         * it through the CSpace leg of its dual resolver. */
+        uint32_t irqcap_c = (manifest->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE)
                                 ? state->irq_caps[manifest->irq_num]
-                                : HANDLE_INVALID;
+                                : 0u;
         handle_id_t route_h = public_h;
         if (manifest->irq_notify) {
             /* Fase 7.6: IRQ → KNotification. Created once, reused across
@@ -1107,8 +1122,8 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
             }
             route_h = svc->irq_notif_h;
         }
-        if (irqcap_h == HANDLE_INVALID || route_h == HANDLE_INVALID ||
-            svcmgr_syscall3(SYS_IRQ_ROUTE_REGISTER, irqcap_h, route_h, proc_h) < 0) {
+        if (irqcap_c == 0u || route_h == HANDLE_INVALID ||
+            svcmgr_syscall3(SYS_IRQ_ROUTE_REGISTER, irqcap_c, route_h, proc_h) < 0) {
             svc->proc_h = HANDLE_INVALID;
             svcmgr_close_handle_if_valid(&proc_h);
             svcmgr_log(sm_str_irqfail);
@@ -1187,7 +1202,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
          * core service eps + own ep + irq notify) are minted into the
          * child's root CNode BEFORE its first thread starts, so even a
          * bag-less child (sh) finds them populated deterministically. */
-        struct svc_mint mints[SVCMGR_CORE_MINT_MAX];
+        struct svc_mint mints[SVCMGR_CORE_MINT_MAX] = { 0 };
         uint32_t mint_count = svcmgr_build_core_mints(state, manifest, mints);
 
         /* Fase S1: fresh explicit reply object(s) for a serving child, funded
@@ -1347,9 +1362,9 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     state->ep_h        = HANDLE_INVALID;
     state->death_notif_h = HANDLE_INVALID;
     for (uint32_t i = 0; i < SVCMGR_IRQ_CAPS_TABLE_SIZE; i++)
-        state->irq_caps[i] = HANDLE_INVALID;
+        state->irq_caps[i] = 0u;
     for (uint32_t i = 0; i < SVCMGR_IOPORT_CAPS_TABLE_SIZE; i++)
-        state->ioport_caps[i] = HANDLE_INVALID;
+        state->ioport_caps[i] = 0u;
     for (uint32_t i = 0; i < (uint32_t)(sizeof(state->services) / sizeof(state->services[0])); i++) {
         state->services[i].public_h = HANDLE_INVALID;
         state->services[i].reply_h = HANDLE_INVALID;

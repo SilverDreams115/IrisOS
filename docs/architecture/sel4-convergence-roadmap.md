@@ -91,13 +91,29 @@ Precondition: Stages 1–2 (both closed).
 - Migrate the productive consumers; non-regression guards (retired syscall
   numbers stay reserved → NOT_SUPPORTED).
 
-**Known blocker — do not start Stage 3 by simply retiring the syscalls.**
-Surveyed during Fase S4:
+**Blocker RESOLVED (Fase S4).** `SYS_CAP_CREATE_IRQCAP` / `_IOPORT` no longer
+return handles: they take a destination slot (arg3) and publish the cap into
+the caller's CSpace as an MDB **child of the bootstrap-cap slot** that
+authorised it — so the authority argument must now be a CPtr, and
+`SYS_CSPACE_REVOKE` on the bootstrap cap recursively destroys every device cap
+issued under it (seL4 IRQControl semantics).  Device caps therefore derive and
+revoke through the NATIVE CDT (`SYS_CSPACE_MINT` / `SYS_CSPACE_REVOKE`), and
+svcmgr/init forward them to children via `SYS_CSPACE_MINT_INTO` (`svc_mint`
+gained a `src_cptr` field), which makes those delegations revocable too.
+
+What REMAINS for Stage 3: migrate the ~50 `SYS_CAP_DERIVE`/`SYS_CAP_REVOKE`
+call sites still in the authority/frame/untyped suites (Frame and Untyped
+already live in CSpace via RETYPE2, so they move to `SYS_CSPACE_MINT` /
+`SYS_CSPACE_REVOKE` directly), then delete `sys_cap_derive`/`sys_cap_revoke`,
+`handle_table_insert_derived`, `handle_table_revoke_children` and
+`derivation_parent[]`.
+
+Original survey (kept for the record):
 
 - The legacy tree is well isolated in the KERNEL: `handle_table_insert_derived`
   has exactly one caller (`sys_cap_derive`) and `handle_table_revoke_children`
   exactly one (`sys_cap_revoke`).  **No service uses either syscall.**
-- But `KIoPort` and `KIrqCap` **cannot be born from Untyped** — the RETYPE2
+- (RESOLVED above) `KIoPort` and `KIrqCap` **cannot be born from Untyped** — the RETYPE2
   manifest is CLOSED and pinned by T251 ({EP, Notif, Reply, CNode, SC, TCB,
   Untyped, Frame}) — and `sys_cspace_mint` requires a CSpace source
   (`cspace_only_cptr`).  For those two types the handle tree is therefore the

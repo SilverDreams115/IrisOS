@@ -481,13 +481,25 @@ long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
          * Mint failures are deliberately non-fatal (consumers gate loudly
          * in smoke); invalid sources are skipped. */
         for (uint32_t mi = 0; mi < mint_count; mi++) {
-            if (!mints || mints[mi].src_h == HANDLE_INVALID) continue;
+            if (!mints) continue;
+            uint64_t rb = (mints[mi].badge << 32) | (uint64_t)mints[mi].rights;
+            if (mints[mi].src_cptr != 0u) {
+                /* Fase S4: CSpace-sourced delegation — the child's cap is an
+                 * MDB child of our slot, so SYS_CSPACE_REVOKE on it reaches
+                 * into the child. */
+                (void)sl_sys4(SYS_CSPACE_MINT_INTO,
+                              (long)proc_h,
+                              (long)mints[mi].slot,
+                              (long)mints[mi].src_cptr,
+                              (long)rb);
+                continue;
+            }
+            if (mints[mi].src_h == HANDLE_INVALID) continue;
             (void)sl_sys4(SYS_PROC_CSPACE_MINT,
                           (long)proc_h,
                           (long)mints[mi].slot,
                           (long)mints[mi].src_h,
-                          (long)((mints[mi].badge << 32) |
-                                 (uint64_t)mints[mi].rights));
+                          (long)rb);
         }
 
         /* 19. Start first thread: entry at bias+e_entry, RSP = stack top - 8,

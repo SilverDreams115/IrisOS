@@ -66,8 +66,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         /* SYS_DIAG_SNAPSHOT(30) — retired, fall to default */
         /* SYS_CHAN_SEAL retired — Fase 13/Track G, fall to default (NOT_SUPPORTED) */
         /* SYS_CHAN_CALL(38) — retired Fase 13/Track G (zero callers), fall to default */
-        case SYS_CAP_CREATE_IRQCAP:   return sys_cap_create_irqcap(arg0, arg1, arg2);
-        case SYS_CAP_CREATE_IOPORT:   return sys_cap_create_ioport(arg0, arg1, arg2);
+        case SYS_CAP_CREATE_IRQCAP:   return sys_cap_create_irqcap(arg0, arg1, arg2, arg3);
+        case SYS_CAP_CREATE_IOPORT:   return sys_cap_create_ioport(arg0, arg1, arg2, arg3);
         /* SYS_INITRD_LOOKUP(41), SYS_SPAWN_ELF(42) — retired, fall to default */
         case SYS_IOPORT_RESTRICT:      return sys_ioport_restrict(arg0, arg1, arg2);
         /* SYS_WAIT_ANY(44) — retired Fase 13/Track G (zero callers), fall to default */

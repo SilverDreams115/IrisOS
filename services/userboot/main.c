@@ -43,6 +43,16 @@ static inline long ub_sys3(long nr, long a0, long a1, long a2) {
     return ret;
 }
 
+static inline long ub_sys4(long nr, long a0, long a1, long a2, long a3) {
+    long ret;
+    register long _a3 __asm__("r10") = a3;
+    __asm__ volatile ("syscall"
+        : "=a"(ret)
+        : "a"(nr), "D"(a0), "S"(a1), "d"(a2), "r"(_a3)
+        : "rcx", "r11", "memory");
+    return ret;
+}
+
 static void ub_close(handle_id_t h) {
     if (h != HANDLE_INVALID)
         (void)ub_sys1(SYS_HANDLE_CLOSE, (long)h);
@@ -54,14 +64,21 @@ static void ub_close(handle_id_t h) {
  * diagnostic line directly to COM1 before exiting — visible even though no
  * console/svcmgr service has come up yet.  Crude (no LSR polling), but a boot
  * that reaches this path is already fatal. */
+/* Fase S4: the KIoPort is published into a CSpace slot as an MDB child of the
+ * bootstrap-cap slot; the authority argument must be a CPtr.  Slot 40 is free
+ * in userboot's root CNode (1..15 reserved, 16.. boot untypeds start well
+ * above what this early path ever touches). */
+#define UB_PANIC_IOPORT_SLOT 40u
 static void ub_boot_panic(handle_id_t bootstrap_cap_h, const char *msg) {
-    long io = ub_sys3(SYS_CAP_CREATE_IOPORT, (long)bootstrap_cap_h, 0x3F8, 8);
-    if (io >= 0) {
+    (void)bootstrap_cap_h;
+    long r = ub_sys4(SYS_CAP_CREATE_IOPORT, (long)BOOT_CPTR_BOOTSTRAP_CAP,
+                     0x3F8, 8, (long)UB_PANIC_IOPORT_SLOT);
+    if (r == 0) {
+        long io = (long)UB_PANIC_IOPORT_SLOT;
         for (const char *p = msg; *p; p++) {
             if (*p == '\n') (void)ub_sys3(SYS_IOPORT_OUT, io, 0, (long)'\r');
             (void)ub_sys3(SYS_IOPORT_OUT, io, 0, (long)(uint8_t)*p);
         }
-        (void)ub_sys1(SYS_HANDLE_CLOSE, io);
     }
 }
 
@@ -147,7 +164,7 @@ void iris_userboot_main(handle_id_t bootstrap_cap_h) {
          * loudly rather than silently skipping. */
         long ut_h = ub_sys1(SYS_CSPACE_RESOLVE, (long)BOOT_CPTR_UNTYPED_START);
         uint32_t nmints = 1u;
-        struct svc_mint init_mints[2];
+        struct svc_mint init_mints[2] = { 0 };
         init_mints[0].slot   = IRIS_CPTR_SPAWN_CAP;
         init_mints[0].src_h  = (handle_id_t)dup_h;
         init_mints[0].rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;

@@ -43,7 +43,7 @@ void init_spawn_fb(handle_id_t spawn_cap_h) {
     if (r < 0) goto out;
 
     {
-        struct svc_mint fb_mints[1];
+        struct svc_mint fb_mints[1] = { 0 };
         fb_mints[0].slot   = IRIS_CPTR_SPAWN_CAP;
         fb_mints[0].src_h  = fb_cap_h;
         fb_mints[0].rights = RIGHT_READ;
@@ -71,7 +71,8 @@ out:
 int init_spawn_console(handle_id_t spawn_cap_h) {
     handle_id_t con_proc_h  = HANDLE_INVALID;
     handle_id_t con_boot_h  = HANDLE_INVALID;
-    handle_id_t ioport_h    = HANDLE_INVALID;
+#define INIT_CONSOLE_IOPORT_SLOT 41u
+    uint32_t    ioport_c    = 0u;   /* Fase S4: CPtr slot, not a handle */
     long r;
 
     /* Console KEndpoint master (init owns it); recv side minted to the child.
@@ -83,13 +84,17 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
     }
     g_init_console_ep_h = (handle_id_t)r;
 
-    /* KIoPort for the 8 UART registers at 0x3F8..0x3FF (IN poll LSR + OUT THR). */
-    r = init_sys3(SYS_CAP_CREATE_IOPORT, (long)spawn_cap_h, 0x3F8, 8);
-    if (r < 0) {
+    /* KIoPort for the 8 UART registers at 0x3F8..0x3FF (IN poll LSR + OUT THR).
+     * Fase S4: published into a CSpace slot as an MDB child of the spawn-cap
+     * slot, and forwarded to console by CSpace source — so the delegation is
+     * revocable from init.  Slot 41 is free in init's root CNode. */
+    (void)spawn_cap_h;
+    if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+                  0x3F8, 8, (long)INIT_CONSOLE_IOPORT_SLOT) != 0) {
         init_early_serial_write(init_console_ioport_fail);
         goto fail;
     }
-    ioport_h = (handle_id_t)r;
+    ioport_c = INIT_CONSOLE_IOPORT_SLOT;
 
     /* Fase S1: console serves EP_CALLs, so it needs an explicit reply object.
      * Retype it from init's pool, mint it at IRIS_CPTR_OWN_REPLY, then DROP
@@ -103,7 +108,7 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
     }
 
     {
-        struct svc_mint con_mints[3];
+        struct svc_mint con_mints[3] = { 0 };
         uint32_t n = 0;
         con_mints[n].slot   = IRIS_CPTR_OWN_EP;
         con_mints[n].src_h  = g_init_console_ep_h;
@@ -111,7 +116,7 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
         con_mints[n].badge  = 0;   /* server-side cap: unbadged */
         n++;
         con_mints[n].slot   = IRIS_CPTR_IOPORT;
-        con_mints[n].src_h  = ioport_h;
+        con_mints[n].src_cptr = ioport_c;
         con_mints[n].rights = RIGHT_READ | RIGHT_WRITE;
         con_mints[n].badge  = 0;
         n++;
@@ -131,7 +136,8 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
         goto fail;
     }
 
-    init_close(&ioport_h);    /* console holds the slot-10 mint now */
+    /* console holds the slot-10 mint now; init keeps its own slot so it can
+     * still revoke the delegation (Fase S4). */
     init_close(&con_proc_h);
     init_close(&con_boot_h);
     return 1;
@@ -139,7 +145,7 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
 fail:
     init_close(&con_proc_h);
     init_close(&con_boot_h);
-    if (ioport_h != HANDLE_INVALID) init_close(&ioport_h);
+    (void)ioport_c;
     return 0;
 }
 
@@ -188,7 +194,7 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     }
 
     {
-        struct svc_mint sm_mints[4];
+        struct svc_mint sm_mints[4] = { 0 };
         uint32_t n = 0;
         sm_mints[n].slot   = IRIS_CPTR_CONSOLE_EP;
         sm_mints[n].src_h  = g_init_console_ep_h;
@@ -307,7 +313,7 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[13];
+        struct svc_mint it_mints[13] = { 0 };
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;

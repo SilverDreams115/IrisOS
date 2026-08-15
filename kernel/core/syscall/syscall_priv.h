@@ -212,8 +212,11 @@ uint64_t sys_handle_dup(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_handle_insert(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_handle_type(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_handle_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+/* Caller's root CNode with active+lifecycle refs (defined in syscall_cspace.c). */
+iris_error_t cspace_own_root(struct KProcess *proc, struct KCNode **out);
+
+uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
+uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_bootcap_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 

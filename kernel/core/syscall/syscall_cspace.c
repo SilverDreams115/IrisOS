@@ -285,8 +285,11 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
  * IPC transfer path (Fase S4/Etapa 2) enforces the same rule. */
 
 /* Resolve the caller's root CNode with active+lifecycle refs (retype2's
- * dest_cnode == 0 convention). */
-static iris_error_t cspace_own_root(struct KProcess *proc, struct KCNode **out) {
+ * dest_cnode == 0 convention).  Shared with syscall_cap.c (device-cap
+ * publication) via syscall_priv.h — the handle read stays in THIS file, so
+ * the purity allowlist does not grow (ledger: "root CNode reachable only via
+ * cspace_root_h", ACTIVE_LEGACY until Stage 5 BootInfo). */
+iris_error_t cspace_own_root(struct KProcess *proc, struct KCNode **out) {
     if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
     struct KObject *root_obj;
     iris_rights_t   root_r;

@@ -163,10 +163,33 @@ static void it_slot_delete(uint32_t slot) {
  * the slot (the transfer itself).  The kernel CONSUMES the slot on a
  * committed delivery — exactly the move semantics the handle source had.
  * The slot is deleted up front so re-entry (and any stale occupant) is clean.
- * 247..254 sits ABOVE every reserved pool — S1 scratch (64..87), the fixed
+ * 247..250 sits ABOVE every reserved pool — S1 scratch (64..87), the fixed
  * reply-object slots (88..97) and the fuzzing pool (100..239) — and inside the
  * 256-slot root CNode.  Overlapping any of those silently deletes a live
  * object at mint time (it cost a hang in T087 during Etapa 2 bring-up). */
+/* ── Fase S4: iris_test root-CNode slot map (256 slots) ───────────────────
+ * Reserved elsewhere, do NOT reuse: 1..15 well-known bootstrap · 25..31 test
+ * fixtures · 36..43 + 48..51 per-test slots · 44..47 T100 lookup (computed
+ * 44+i) · 52..59 file-grant sessions and CPtr constants · 64..87 S1 scratch ·
+ * 88..97 fixed reply objects · 100..239 fz monotonic pool.
+ * Also reserved: 239/240 (T253 partial-fill probes) and 246..253 (T253's
+ * failing 8-CNode capacity batch — a slot left OCCUPIED there turns its
+ * expected NO_MEMORY into ALREADY_EXISTS).  The transfer pool at 247..250
+ * sits inside that range and is safe ONLY because a committed delivery
+ * consumes its slot and every negative test deletes its own.
+ * A mint into an occupied slot DELETES the occupant, so an overlap silently
+ * destroys a live object — that cost two hangs during bring-up. */
+/* The only slots genuinely unassigned in this process (verified by enumerating
+ * every IRIS_CPTR_ and BOOT_CPTR_ constant, every _SLOT define and every
+ * range-reserved pool): 29, 43, 63, 99, 254, 255. */
+/* NOTE: slot 99 is deliberately NOT used here — T134 probes it as a
+ * guaranteed-EMPTY vspace slot and must keep observing NOT_FOUND. */
+#define IT_SERIAL_SLOT 255u    /* this process's serial KIoPort */
+#define IT_DEV_SLOT_A   29u    /* device caps (rotating pair) */
+#define IT_DEV_SLOT_B   43u
+#define IT_DEV_MINT_A   63u    /* derived device caps (native CDT) */
+#define IT_DEV_MINT_B  254u
+
 #define IT_XFER_SLOT_A  247u
 #define IT_XFER_SLOT_B  248u
 #define IT_XFER_SLOT_C  249u
@@ -209,7 +232,7 @@ static long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
 /* Drop-in replacement for the pre-S4 "dup a handle, attach it" idiom: mints
  * into a rotating transfer slot (88..95) and returns the CPtr to attach.
  * The rotation keeps sequential/nested transfers from colliding. */
-#define IT_XFER_SLOT_SPAN 8u
+#define IT_XFER_SLOT_SPAN 4u   /* 247..250 */
 static uint32_t g_it_xfer_next;
 static long it_xfer_dup(long src_h, uint32_t rights) {
     uint32_t slot = IT_XFER_SLOT_A +
@@ -2624,7 +2647,7 @@ static void test_t074(void) {
 /* Spawn a lifecycle_probe child, minting `cmd_ep_h` into its command slot.
  * Returns 0 and fills *out_proc_h on success, or a negative error. */
 static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
-    struct svc_mint mints[2];
+    struct svc_mint mints[2] = { 0 };
     uint32_t n = 0;
     mints[n].slot   = LP_CPTR_CMD_EP;
     mints[n].src_h  = cmd_ep_h;
@@ -10189,7 +10212,7 @@ static long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
     if (ep < 0) return -1;
     handle_id_t cmd = (handle_id_t)ep;
 
-    struct svc_mint mints[8];
+    struct svc_mint mints[8] = { 0 };
     mints[0].slot = LP_CPTR_CMD_EP;
     mints[0].src_h = cmd;
     mints[0].rights = RIGHT_READ | RIGHT_WRITE;
@@ -10259,7 +10282,7 @@ static void test_t156(void) {
     if (no < 0 || ep < 0) { it_close(&no_h); it_close(&ep_h); it_fail("T156", "fixture"); return; }
 
     /* Declared set {cmd@3, notif@5, ep@7}. */
-    struct svc_mint extra[2];
+    struct svc_mint extra[2] = { 0 };
     extra[0].slot = 5; extra[0].src_h = no_h; extra[0].rights = RIGHT_READ; extra[0].badge = 0;
     extra[1].slot = 7; extra[1].src_h = ep_h; extra[1].rights = RIGHT_READ; extra[1].badge = 0;
     long mask = it_lp_report_slots(extra, 2u);
@@ -10507,7 +10530,7 @@ static void test_t162(void) {
         handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
         if (n < 0) { ok = 0; why = "teeth fixture"; }
         else {
-            struct svc_mint extra[1];
+            struct svc_mint extra[1] = { 0 };
             extra[0].slot = 6; extra[0].src_h = n_h; extra[0].rights = RIGHT_READ; extra[0].badge = 0;
             long m1 = it_lp_report_slots(extra, 1u);
             if (m1 < 0 || ((uint32_t)m1 & (1u << 6)) == 0) { ok = 0; why = "extra cap not detected (no teeth)"; }
@@ -10623,9 +10646,41 @@ static void test_t163(void) {
 
 /* Create an ioport cap over [base, base+count) via the HW_ACCESS spawn cap;
  * returns the handle or HANDLE_INVALID. */
+/* Fase S4: the cap is published into a CSpace slot (MDB child of the spawn-cap
+ * slot) and the CPtr is what callers hold.  Slots rotate over the device block
+ * so nested creations (e.g. two live ioport caps in T171) do not collide; the
+ * slot is deleted first so re-entry is clean. */
+static uint32_t g_it_dev_next;
+/* Fase S4 (Etapa 3): device caps now live in CSpace, so their derivation is
+ * the NATIVE CDT operation — SYS_CSPACE_MINT into a slot, producing a real
+ * MDB child of the source — not the legacy handle tree.  Returns the
+ * destination CPtr, or the negative error. */
+static long it_dev_mint(long src_cptr, uint32_t dest_slot, uint32_t rights) {
+    it_slot_delete(dest_slot);
+    long r = it_sys3(SYS_CSPACE_MINT, src_cptr,
+                     (long)((uint64_t)dest_slot << 32), (long)rights);
+    return (r != 0) ? r : (long)dest_slot;
+}
+
 static handle_id_t it_make_ioport(long base, long count) {
-    long h = it_sys3(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, base, count);
-    return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
+    static const uint32_t pool[2] = { IT_DEV_SLOT_A, IT_DEV_SLOT_B };
+    uint32_t slot = pool[__atomic_fetch_add(&g_it_dev_next, 1u,
+                                            __ATOMIC_RELAXED) % 2u];
+    it_slot_delete(slot);
+    if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+                base, count, (long)slot) != 0) return HANDLE_INVALID;
+    return (handle_id_t)slot;
+}
+
+/* Same, for an IRQ capability. */
+static handle_id_t it_make_irqcap(long irq) {
+    static const uint32_t pool[2] = { IT_DEV_SLOT_A, IT_DEV_SLOT_B };
+    uint32_t slot = pool[__atomic_fetch_add(&g_it_dev_next, 1u,
+                                            __ATOMIC_RELAXED) % 2u];
+    it_slot_delete(slot);
+    if (it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_SPAWN_CAP,
+                irq, 0, (long)slot) != 0) return HANDLE_INVALID;
+    return (handle_id_t)slot;
 }
 
 /* Spawn a lifecycle_probe with an ioport cap at slot 10 (its only device
@@ -10642,10 +10697,12 @@ static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t de
 
     /* The source ioport cap carries DUPLICATE (needed to mint it); the child's
      * cap is reduced to dev_rights — modelling a driver's exact port authority. */
-    struct svc_mint mints[2];
+    struct svc_mint mints[2] = { 0 };
     mints[0].slot = LP_CPTR_CMD_EP; mints[0].src_h = cmd;
     mints[0].rights = RIGHT_READ | RIGHT_WRITE; mints[0].badge = 0;
-    mints[1].slot = 10; mints[1].src_h = ioport_h;
+    /* Fase S4: the ioport cap lives in OUR CSpace now, so the child's copy is
+     * minted from the slot — an MDB child of ours, hence revocable. */
+    mints[1].slot = 10; mints[1].src_cptr = (uint64_t)ioport_h;
     mints[1].rights = dev_rights; mints[1].badge = 0;
 
     handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
@@ -10694,34 +10751,36 @@ static void test_t164(void) {
 
     /* Rights enforcement: READ-only cap denies OUT; WRITE-only denies IN. */
     if (ok) {
-        long rr = it_sys2(SYS_CAP_DERIVE, (long)io, (long)RIGHT_READ);
+        long rr = it_dev_mint((long)io, IT_DEV_MINT_A, RIGHT_READ);
         handle_id_t ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
         if (rr < 0) { ok = 0; why = "read derive"; }
         if (ok && it_sys3(SYS_IOPORT_OUT, ro, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO OUT not denied"; }
         if (ok && it_sys2(SYS_IOPORT_IN, ro, 0) < 0) { ok = 0; why = "RO IN broken"; }
         it_close(&ro);
-        long wr = it_sys2(SYS_CAP_DERIVE, (long)io, (long)RIGHT_WRITE);
+        long wr = it_dev_mint((long)io, IT_DEV_MINT_B, RIGHT_WRITE);
         handle_id_t wo = (wr >= 0) ? (handle_id_t)wr : HANDLE_INVALID;
         if (ok && wr < 0) { ok = 0; why = "write derive"; }
         if (ok && it_sys2(SYS_IOPORT_IN, wo, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "WO IN not denied"; }
         it_close(&wo);
     }
 
-    /* Stale cap: dup, close, use → fails. */
+    /* Stale cap (Fase S4 shape): mint into a slot, DELETE the slot, use → fails.
+     * The pre-S4 form dup'd a handle; device caps no longer have one. */
     if (ok) {
-        long d = it_sys2(SYS_HANDLE_DUP, (long)io, (long)RIGHT_SAME_RIGHTS);
-        handle_id_t d_h = (d >= 0) ? (handle_id_t)d : HANDLE_INVALID;
-        if (d < 0) { ok = 0; why = "stale dup"; }
-        else { it_close(&d_h);
-            if (it_sys2(SYS_IOPORT_IN, d, 0) >= 0) { ok = 0; why = "stale cap honoured"; } }
+        long d = it_dev_mint((long)io, IT_DEV_MINT_A, RIGHT_SAME_RIGHTS);
+        if (d < 0) { ok = 0; why = "stale mint"; }
+        else {
+            it_slot_delete((uint32_t)d);
+            if (it_sys2(SYS_IOPORT_IN, d, 0) >= 0) { ok = 0; why = "stale cap honoured"; }
+        }
     }
 
     /* Non-whitelisted range cannot be created: CMOS (0x70) and a range that
      * spills past the PS/2 whitelist entry. */
-    if (ok && it_sys3(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, 0x70, 2) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "CMOS not denied"; }
-    if (ok && it_sys3(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, 0x60, 100) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "range spill not denied"; }
+    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, 0x70, 2, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "CMOS not denied"; }
+    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, 0x60, 100, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "range spill not denied"; }
 
-    it_close(&io);
+    it_slot_delete((uint32_t)io);
     it_quiesce_reaper();
     struct it_snap a = it_snap_take();
     if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
@@ -10761,7 +10820,7 @@ static void test_t165(void) {
         if (ok && (tm & (1u << 2)) != 0) { ok = 0; why = "RO cap wrote a port"; }
     }
 
-    it_close(&io);
+    it_slot_delete((uint32_t)io);
     it_quiesce_reaper();
     struct it_snap a = it_snap_take();
     if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
@@ -10809,8 +10868,7 @@ static void test_t167(void) {
     const char *why = "irq authority";
 
     /* Create an IRQ cap for the unused line 5. */
-    long ic = it_sys3(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_SPAWN_CAP, 5, 0);
-    handle_id_t irq = (ic >= 0) ? (handle_id_t)ic : HANDLE_INVALID;
+    handle_id_t irq = it_make_irqcap(5);
     if (ok && irq == HANDLE_INVALID) { ok = 0; why = "irqcap create"; }
 
     long nn = it_notify_create();
@@ -10825,7 +10883,7 @@ static void test_t167(void) {
     if (ok) {
         /* IRQ caps carry ROUTE|DUPLICATE|TRANSFER; derive DUPLICATE-only to get
          * a cap that lacks ROUTE (a subset — never amplified). */
-        long rd = it_sys2(SYS_CAP_DERIVE, (long)irq, (long)RIGHT_DUPLICATE);
+        long rd = it_dev_mint((long)irq, IT_DEV_MINT_A, RIGHT_DUPLICATE);
         handle_id_t irq_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
         if (rd < 0) { ok = 0; why = "irq derive"; }
         if (ok && it_sys1(SYS_IRQ_ACK, irq_ro) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-route ack not denied"; }
@@ -10919,13 +10977,13 @@ static void test_t169(void) {
     handle_id_t io = it_make_ioport(IT_COM2_BASE, IT_COM2_COUNT);
     if (io == HANDLE_INVALID) { it_fail("T169", "io cap"); return; }
 
-    long rr = it_sys2(SYS_CAP_DERIVE, (long)io, (long)RIGHT_READ);
+    long rr = it_dev_mint((long)io, IT_DEV_MINT_A, RIGHT_READ);
     handle_id_t ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
     if (ok && rr < 0) { ok = 0; why = "read derive"; }
     /* Re-derive asking for WRITE from a READ-only cap: either rejected or the
      * result still cannot OUT (rights never amplified). */
     if (ok) {
-        long wr = it_sys2(SYS_CAP_DERIVE, (long)ro, (long)(RIGHT_READ | RIGHT_WRITE));
+        long wr = it_dev_mint((long)ro, IT_DEV_MINT_B, RIGHT_READ | RIGHT_WRITE);
         if (wr >= 0) {
             handle_id_t w_h = (handle_id_t)wr;
             if (it_sys3(SYS_IOPORT_OUT, wr, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights amplified via re-derive"; }
@@ -10933,16 +10991,16 @@ static void test_t169(void) {
         }
     }
     /* Revoke children; the READ cap must be dead afterward. */
-    if (ok && it_sys1(SYS_CAP_REVOKE, (long)io) != 0) { ok = 0; why = "revoke"; }
+    if (ok && it_sys1(SYS_CSPACE_REVOKE, (long)io) < 0) { ok = 0; why = "revoke"; }
     if (ok && it_sys2(SYS_IOPORT_IN, ro, 0) >= 0) { ok = 0; why = "revoked cap usable"; }
     it_close(&ro);
 
     /* IRQ cap: a ROUTE-less derivation cannot ack. */
     if (ok) {
-        long ic = it_sys3(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_SPAWN_CAP, 5, 0);
+        long ic = (long)it_make_irqcap(5);
         handle_id_t irq = (ic >= 0) ? (handle_id_t)ic : HANDLE_INVALID;
         if (ic < 0) { ok = 0; why = "irqcap"; }
-        long rd = ok ? it_sys2(SYS_CAP_DERIVE, (long)irq, (long)RIGHT_DUPLICATE) : -1;
+        long rd = ok ? it_dev_mint((long)irq, IT_DEV_MINT_A, RIGHT_DUPLICATE) : -1;
         handle_id_t irq_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
         if (ok && rd < 0) { ok = 0; why = "irq derive"; }
         if (ok && it_sys1(SYS_IRQ_ACK, irq_ro) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "route-less ack not denied"; }
@@ -10973,7 +11031,7 @@ static void test_t170(void) {
 
         long ep = it_ep_create();
         handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-        struct svc_mint mints[2];
+        struct svc_mint mints[2] = { 0 };
         mints[0].slot = LP_CPTR_CMD_EP; mints[0].src_h = cmd;
         mints[0].rights = RIGHT_READ | RIGHT_WRITE; mints[0].badge = 0;
         mints[1].slot = 10; mints[1].src_h = io;
@@ -11019,7 +11077,8 @@ static void test_t171(void) {
         op = 1;
         static const long bad_bases[] = { 0x70L, 0x80L, 0x3B0L, 0xCF8L };
         long bb = bad_bases[fz_rand() % 4u];
-        if (it_sys3(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, bb, 2) != (long)IRIS_ERR_ACCESS_DENIED) {
+        if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, bb, 2,
+                    (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "non-whitelist created"; break;
         }
 
@@ -11036,11 +11095,11 @@ static void test_t171(void) {
         /* Sometimes derive READ-only and confirm OUT is denied. */
         op = 3;
         if (fz_rand() & 1u) {
-            long rr = it_sys2(SYS_CAP_DERIVE, (long)io, (long)RIGHT_READ);
+            long rr = it_dev_mint((long)io, IT_DEV_MINT_A, RIGHT_READ);
             if (rr >= 0) {
                 handle_id_t ro = (handle_id_t)rr;
                 if (it_sys3(SYS_IOPORT_OUT, rr, 0, 0) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "RO OUT honoured"; }
-                if (ok && it_sys1(SYS_CAP_REVOKE, (long)io) != 0) { ok = 0; why = "revoke"; }
+                if (ok && it_sys1(SYS_CSPACE_REVOKE, (long)io) < 0) { ok = 0; why = "revoke"; }
                 if (ok && it_sys2(SYS_IOPORT_IN, rr, 0) >= 0) { ok = 0; why = "revoked usable"; }
                 it_close(&ro);
             }
@@ -11398,8 +11457,10 @@ static void test_t177(void) {
         handle_id_t io_h = (io >= 0) ? (handle_id_t)io : HANDLE_INVALID;
         if (io_h == HANDLE_INVALID) { ok = 0; why = "io cap 2"; }
         else {
-            struct svc_mint extra[1];
-            extra[0].slot = 10; extra[0].src_h = io_h; extra[0].rights = RIGHT_READ; extra[0].badge = 0;
+            struct svc_mint extra[1] = { 0 };
+            /* Fase S4: CSpace-sourced device delegation. */
+            extra[0].slot = 10; extra[0].src_cptr = (uint64_t)io_h;
+            extra[0].rights = RIGHT_READ; extra[0].badge = 0;
             long rep = it_lp_report_slots(extra, 1u);
             /* Expect exactly {cmd ep slot 3, device cap slot 10}. */
             if (rep < 0 || (uint32_t)rep != ((1u << 3) | (1u << 10))) { ok = 0; why = "unexpected authority set"; }
@@ -11407,7 +11468,7 @@ static void test_t177(void) {
             if (ok && ((uint32_t)rep & ((1u<<6)|(1u<<16)|(1u<<17)|(1u<<18)|(1u<<1)|(1u<<2)|(1u<<4))) != 0) {
                 ok = 0; why = "driver gained extra authority on restart";
             }
-            it_close(&io_h);
+            it_slot_delete((uint32_t)io_h);
         }
     }
 
@@ -11688,7 +11749,7 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
     long ep = it_ep_create();
     if (ep < 0) return -1;
     handle_id_t cmd = (handle_id_t)ep;
-    struct svc_mint m[8];
+    struct svc_mint m[8] = { 0 };
     m[0].slot = LP_CPTR_CMD_EP;    m[0].src_h = cmd;      m[0].rights = RIGHT_READ | RIGHT_WRITE;  m[0].badge = 0;
     m[1].slot = LP_PGR_SLOT_TPROC; m[1].src_h = g->proc;  m[1].rights = RIGHT_READ | RIGHT_MANAGE; m[1].badge = 0;
     m[2].slot = LP_PGR_SLOT_TVS;   m[2].src_h = g->vs;    m[2].rights = RIGHT_WRITE;               m[2].badge = 0;
@@ -11791,7 +11852,7 @@ static void test_t181(void) {
     if (fr < 0) { ok = 0; why = "frame retype"; }
 
     if (ok) {
-        struct svc_mint x[4];
+        struct svc_mint x[4] = { 0 };
         x[0].slot = LP_PGR_SLOT_TPROC; x[0].src_h = g.proc;  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
         x[1].slot = LP_PGR_SLOT_TVS;   x[1].src_h = g.vs;    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
         x[2].slot = LP_PGR_SLOT_FRAME; x[2].src_h = fr_h;    x[2].rights = RIGHT_READ | RIGHT_WRITE;  x[2].badge = 0;
@@ -12004,7 +12065,7 @@ static void test_t184(void) {
 
     handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
     if (ok) {
-        struct svc_mint x[2];
+        struct svc_mint x[2] = { 0 };
         x[0].slot = LP_PGR_SLOT_XPROC; x[0].src_h = apro_h; x[0].rights = RIGHT_READ; x[0].badge = 0;
         x[1].slot = LP_PGR_SLOT_XVS;   x[1].src_h = avso_h; x[1].rights = RIGHT_READ; x[1].badge = 0;
         if (t25_pager_spawn(&gb, fr_h, RIGHT_READ | RIGHT_WRITE, x, 2u,
@@ -12412,7 +12473,7 @@ static void test_t189(void) {
     /* A fresh instance of the same declaration carries EXACTLY the manifest —
      * restart amplified nothing. */
     if (ok) {
-        struct svc_mint x[4];
+        struct svc_mint x[4] = { 0 };
         x[0].slot = LP_PGR_SLOT_TPROC; x[0].src_h = g.proc;  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
         x[1].slot = LP_PGR_SLOT_TVS;   x[1].src_h = g.vs;    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
         x[2].slot = LP_PGR_SLOT_FRAME; x[2].src_h = fr_h;    x[2].rights = RIGHT_READ;                x[2].badge = 0;
@@ -13097,7 +13158,7 @@ static void test_t197(void) {
 
     /* Post-restart manifest is exactly the declaration (slot-14 = VMO source). */
     if (ok) {
-        struct svc_mint x[4];
+        struct svc_mint x[4] = { 0 };
         x[0].slot = LP_PGR_SLOT_TPROC; x[0].src_h = g.proc;  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
         x[1].slot = LP_PGR_SLOT_TVS;   x[1].src_h = g.vs;    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
         x[2].slot = LP_PGR_SLOT_FRAME; x[2].src_h = vmo;     x[2].rights = RIGHT_READ;                x[2].badge = 0;
@@ -13444,7 +13505,7 @@ static int t27_pager_spawn(struct t27_pager *p,
         }
     }
 
-    struct svc_mint m[40];
+    struct svc_mint m[40] = { 0 };
     uint32_t n = 0;
     m[n].slot = PGR_SLOT_CTRL_EP; m[n].src_h = ctrl; m[n].rights = RIGHT_READ; m[n].badge = 0; n++;
     if (nt > 0) {
@@ -14793,7 +14854,7 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
         }
     }
 
-    struct svc_mint m[40];
+    struct svc_mint m[40] = { 0 };
     uint32_t k = 0;
     m[k].slot = PGR_SLOT_CTRL_EP; m[k].src_h = ctrl; m[k].rights = RIGHT_READ; m[k].badge = 0; k++;
     /* The pager's ONLY VFS identity: a session-badged, WRITE-only cap.  The
@@ -16265,7 +16326,7 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
         it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm);
         *why = "session reset"; return 0;
     }
-    struct svc_mint mm[40];
+    struct svc_mint mm[40] = { 0 };
     uint32_t k = 0;
     mm[k].slot = PGR_SLOT_CTRL_EP; mm[k].src_h = ctrl; mm[k].rights = RIGHT_READ; mm[k].badge = 0; k++;
     mm[k].slot = FBK_SLOT_VFS_EP;  mm[k].src_h = vfs;  mm[k].rights = RIGHT_WRITE;
@@ -18721,9 +18782,12 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     it_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_ch_h);
 
     {
-        long h = it_sys3(SYS_CAP_CREATE_IOPORT,
-                         (long)IRIS_CPTR_SPAWN_CAP, 0x3F8, 8);
-        if (h >= 0) g_serial_h = (handle_id_t)h;
+        /* Fase S4: device caps are published into a CSpace slot as MDB
+         * children of the spawn-cap slot; the result is a CPtr, and
+         * SYS_IOPORT_IN/OUT resolve it through their CSpace leg. */
+        if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+                    0x3F8, 8, (long)IT_SERIAL_SLOT) == 0)
+            g_serial_h = (handle_id_t)IT_SERIAL_SLOT;
     }
 
     it_serial_write("[IRIS][TEST] start\n");

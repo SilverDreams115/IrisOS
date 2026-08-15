@@ -55,7 +55,15 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
  */
 struct svc_mint {
     uint64_t      slot;    /* destination CPtr slot in the child root CNode */
-    handle_id_t   src_h;   /* source cap in the CALLER's handle table */
+    handle_id_t   src_h;   /* source cap in the CALLER's handle table
+                            * (legacy path: SYS_PROC_CSPACE_MINT) */
+    uint64_t      src_cptr;/* Fase S4: source cap in the CALLER's CSpace.  When
+                            * non-zero it WINS over src_h and the mint goes
+                            * through SYS_CSPACE_MINT_INTO, so the child's cap
+                            * becomes an MDB child of OUR slot — the delegation
+                            * stays revocable from the supervisor.  The handle
+                            * path is legacy and retires with the dual
+                            * namespace (Stage 4). */
     iris_rights_t rights;  /* rights mask (reduced against src rights) */
     uint64_t      badge;   /* Fase 9: sender badge for the minted cap
                             * (0 = inherit source badge / unbadged).
