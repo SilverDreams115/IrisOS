@@ -43,7 +43,10 @@ also carries a native **CDT/MDB** derivation node (parent / children /
 siblings): copy and mint record a derivation edge, and `CSPACE_REVOKE`
 recursively destroys a capability's entire descendance across CNodes and
 processes while the invoked capability and its siblings survive — delegation
-is no longer "give away forever". See
+is no longer "give away forever". Since Fase S4 this is the **only**
+derivation tree: an IPC transfer parents the delivered cap to the sender's
+source slot, and a device capability is parented to the bootstrap cap that
+authorised it, so both are revocable by their grantor. See
 `docs/architecture/cspace-cdt-mdb.md` and the
 [seL4 purity charter](docs/architecture/iris-sel4-purity-charter.md).
 
@@ -246,8 +249,8 @@ Highlights by area:
   `CSPACE_RESOLVE`, `PROC_CSPACE_MINT`. Native **CDT/MDB** derivation
   (Fase S3): `CSPACE_MINT` (copy/mint slot→slot), `CSPACE_MINT_INTO`
   (cross-process mint), `CSPACE_REVOKE` (recursive, cross-process). The
-  handle-tree `CAP_DERIVE`/`CAP_REVOKE` are legacy, frozen, and slated for
-  retirement. `HANDLE_TRANSFER`, `CNODE_CREATE`, `ENDPOINT/NOTIFY/CNODE/SC_CREATE`
+  handle-tree `CAP_DERIVE`/`CAP_REVOKE` are **retired** (Fase S4) — there is
+  exactly one derivation tree in the system. `HANDLE_TRANSFER`, `CNODE_CREATE`, `ENDPOINT/NOTIFY/CNODE/SC_CREATE`
   are retired (`NOT_SUPPORTED`).
 - **Endpoint IPC**: `ENDPOINT_CREATE`, `EP_SEND`, `EP_RECV`, `EP_NB_SEND`,
   `EP_NB_RECV`, `EP_CALL`, `REPLY`.

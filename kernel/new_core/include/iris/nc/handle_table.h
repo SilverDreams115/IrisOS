@@ -22,7 +22,6 @@ typedef struct {
     uint32_t           badge[HANDLE_TABLE_MAX];            /* Fase 9: per-cap badge
                                                             * (32-bit, 0 = unbadged) */
     uint8_t            used[HANDLE_TABLE_MAX];
-    handle_id_t        derivation_parent[HANDLE_TABLE_MAX]; /* HANDLE_INVALID = root cap */
     uint32_t           next_hint;
     spinlock_t         lock;
     /* A1.7 instrumentation — updated under lock at every slot claim/clear.
@@ -80,9 +79,6 @@ handle_id_t  handle_table_insert(HandleTable *ht, struct KObject *obj,
 handle_id_t  handle_table_insert_badged(HandleTable *ht, struct KObject *obj,
                                         iris_rights_t rights, uint64_t badge);
 uint64_t     handle_table_get_badge(HandleTable *ht, handle_id_t id);
-handle_id_t  handle_table_insert_derived(HandleTable *ht, struct KObject *obj,
-                                          iris_rights_t rights,
-                                          handle_id_t parent_handle);
 iris_error_t handle_table_get_object(HandleTable *ht, handle_id_t id,
                                      struct KObject **out_obj,
                                      iris_rights_t   *out_rights);
@@ -90,6 +86,5 @@ iris_error_t handle_table_replace(HandleTable *ht, handle_id_t id,
                                   struct KObject *new_obj);
 iris_error_t handle_table_close(HandleTable *ht, handle_id_t id);
 void         handle_table_close_all(HandleTable *ht);
-void         handle_table_revoke_children(HandleTable *ht, handle_id_t parent_h);
 
 #endif

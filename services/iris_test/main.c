@@ -185,10 +185,21 @@ static void it_slot_delete(uint32_t slot) {
 /* NOTE: slot 99 is deliberately NOT used here — T134 probes it as a
  * guaranteed-EMPTY vspace slot and must keep observing NOT_FOUND. */
 #define IT_SERIAL_SLOT 255u    /* this process's serial KIoPort */
-#define IT_DEV_SLOT_A   29u    /* device caps (rotating pair) */
-#define IT_DEV_SLOT_B   43u
-#define IT_DEV_MINT_A   63u    /* derived device caps (native CDT) */
-#define IT_DEV_MINT_B  254u
+/* Shared SCRATCH pool.  Slots are scarce (the CPtr namespace is capped at
+ * <1024 and the root CNode has 256 slots, so only these were unassigned), and
+ * the tests that need them run SEQUENTIALLY and clean up, so one pool serves
+ * both the device-capability tests and the CDT derivation tests.  Contract:
+ * ALWAYS delete before minting (every helper below does), and never hold a
+ * scratch slot across a test boundary. */
+#define IT_SCRATCH_0    29u
+#define IT_SCRATCH_1    43u
+#define IT_SCRATCH_2    63u
+#define IT_SCRATCH_3   254u
+
+#define IT_DEV_SLOT_A  IT_SCRATCH_0   /* device caps (rotating pair) */
+#define IT_DEV_SLOT_B  IT_SCRATCH_1
+#define IT_DEV_MINT_A  IT_SCRATCH_2   /* derived device caps (native CDT) */
+#define IT_DEV_MINT_B  IT_SCRATCH_3
 
 #define IT_XFER_SLOT_A  247u
 #define IT_XFER_SLOT_B  248u
@@ -227,6 +238,56 @@ static long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
     (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)slot);
     long r = it_sys4(SYS_CNODE_MINT, (long)root, (long)slot, src_h, (long)rights);
     return (r != 0) ? r : (long)slot;
+}
+
+/* ── Fase S4 (Etapa 3): native-CDT derivation helpers ─────────────────────
+ * The legacy handle tree (SYS_CAP_DERIVE/SYS_CAP_REVOKE) is being retired.
+ * Its replacement is the CSpace CDT: derivation is SYS_CSPACE_MINT slot→slot
+ * (a real MDB child of the source) and revocation is SYS_CSPACE_REVOKE, which
+ * removes the ENTIRE descendant subtree across CNodes and processes while the
+ * invoked slot and its siblings survive.
+ *
+ * it_cdt_root  — bridge a cap that currently lives in a HANDLE into a scratch
+ *                slot, so it can act as a derivation root.  Returns the CPtr.
+ * it_cdt_derive— derive src_cptr into dest_slot with the requested rights.
+ * it_cdt_alive — does this slot still name a live capability?
+ * it_cdt_revoke— revoke the slot's descendants (>= 0 on success). */
+static long it_cdt_root(handle_id_t src_h, uint32_t slot) {
+    handle_id_t root = t28_root_cnode();
+    if (root == HANDLE_INVALID) return (long)IRIS_ERR_NOT_FOUND;
+    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)slot);
+    long r = it_sys4(SYS_CNODE_MINT, (long)root, (long)slot, (long)src_h,
+                     (long)RIGHT_SAME_RIGHTS);
+    return (r != 0) ? r : (long)slot;
+}
+
+static long it_cdt_derive(long src_cptr, uint32_t dest_slot, uint32_t rights) {
+    it_slot_delete(dest_slot);
+    long r = it_sys3(SYS_CSPACE_MINT, src_cptr,
+                     (long)((uint64_t)dest_slot << 32), (long)rights);
+    return (r != 0) ? r : (long)dest_slot;
+}
+
+/* Common fixture shape: a rights-reduced copy of a cap that currently lives in
+ * a HANDLE.  Bridges the source into root_slot and derives into dest_slot;
+ * returns the derived CPtr.  Both slots are the caller's to release. */
+static long it_cdt_reduced(handle_id_t src_h, uint32_t root_slot,
+                           uint32_t dest_slot, uint32_t rights) {
+    long r = it_cdt_root(src_h, root_slot);
+    if (r < 0) return r;
+    return it_cdt_derive(r, dest_slot, rights);
+}
+
+static int it_cdt_alive(long cptr) {
+    long h = it_sys1(SYS_CSPACE_RESOLVE, cptr);
+    if (h < 0) return 0;
+    handle_id_t hh = (handle_id_t)h;
+    it_close(&hh);
+    return 1;
+}
+
+static long it_cdt_revoke(long cptr) {
+    return it_sys1(SYS_CSPACE_REVOKE, cptr);
 }
 
 /* Drop-in replacement for the pre-S4 "dup a handle, attach it" idiom: mints
@@ -2408,42 +2469,49 @@ static void test_t070(void) {
     if (ok) it_pass("T070"); else it_fail("T070", "retired SYS_CHAN ABI");
 }
 
-/* ── T071: cascade revoke — SYS_CAP_DERIVE tree torn down by SYS_CAP_REVOKE ──
+/* ── T071: cascade revoke over the NATIVE CDT (Fase S4, Etapa 3) ────────────
  *
- * Runtime coverage for the derivation-tree revoke path (SYS_CAP_DERIVE(78) /
- * SYS_CAP_REVOKE(79)), which previously had zero ring-3 coverage.  Proves that
- * revoking a root cap transitively invalidates every handle derived from it
- * (child + grandchild) while the root itself survives, and that the revoked
- * handles fail cleanly with IRIS_ERR_BAD_HANDLE (slot generation bumped) rather
- * than resolving to phantom authority. */
+ * Runtime coverage for recursive revocation.  Until Fase S4 this exercised the
+ * legacy handle tree (SYS_CAP_DERIVE/SYS_CAP_REVOKE); that tree is retired and
+ * the mechanism is now the CSpace CDT: SYS_CSPACE_MINT derives slot→slot
+ * (installing a real MDB child) and SYS_CSPACE_REVOKE removes the whole
+ * descendant subtree.  Proves that revoking a root slot transitively destroys
+ * child + grandchild while the ROOT ITSELF survives, and that the revoked
+ * slots are genuinely empty afterwards — not phantom authority. */
 static void test_t071(void) {
-    long root = it_ep_create();
-    if (root < 0) { it_fail("T071", "ep create"); return; }
-    handle_id_t root_h = (handle_id_t)root;
+    long eh = it_ep_create();
+    if (eh < 0) { it_fail("T071", "ep create"); return; }
+    handle_id_t root_h = (handle_id_t)eh;
 
-    /* child derived from root; grandchild derived from child.  RIGHT_SAME_RIGHTS
+    /* Bridge the endpoint into a scratch slot: it is the derivation ROOT. */
+    long root = it_cdt_root(root_h, IT_SCRATCH_0);
+    if (root < 0) { it_close(&root_h); it_fail("T071", "root slot"); return; }
+
+    /* child derived from root; grandchild derived from child.  SAME_RIGHTS
      * keeps RIGHT_DUPLICATE so the child can itself be a derivation source. */
-    long child  = it_sys2(SYS_CAP_DERIVE, root,  (long)RIGHT_SAME_RIGHTS);
+    long child  = it_cdt_derive(root, IT_SCRATCH_1, RIGHT_SAME_RIGHTS);
     long gchild = (child >= 0)
-                ? it_sys2(SYS_CAP_DERIVE, child, (long)RIGHT_SAME_RIGHTS)
+                ? it_cdt_derive(child, IT_SCRATCH_2, RIGHT_SAME_RIGHTS)
                 : -1;
 
     int before_ok = (child >= 0) && (gchild >= 0)
-                 && (it_sys1(SYS_HANDLE_TYPE, child)  >= 0)
-                 && (it_sys1(SYS_HANDLE_TYPE, gchild) >= 0)
-                 && (it_sys2(SYS_HANDLE_SAME_OBJECT, root, child) == 1);
+                 && it_cdt_alive(child) && it_cdt_alive(gchild)
+                 && it_cdt_alive(root);
 
-    /* Revoke transitively deletes child + grandchild; root is not a child of
-     * itself and must remain valid. */
-    long rv = it_sys1(SYS_CAP_REVOKE, root);
+    /* Revoke transitively deletes child + grandchild; the invoked slot is not
+     * its own descendant and must remain valid. */
+    long rv = it_cdt_revoke(root);
 
-    int child_dead  = (it_sys1(SYS_HANDLE_TYPE, child)  == (long)IRIS_ERR_BAD_HANDLE);
-    int gchild_dead = (it_sys1(SYS_HANDLE_TYPE, gchild) == (long)IRIS_ERR_BAD_HANDLE);
-    int root_alive  = (it_sys1(SYS_HANDLE_TYPE, root)   >= 0);
+    int child_dead  = !it_cdt_alive(child);
+    int gchild_dead = !it_cdt_alive(gchild);
+    int root_alive  = it_cdt_alive(root);
 
+    it_slot_delete(IT_SCRATCH_0);
+    it_slot_delete(IT_SCRATCH_1);
+    it_slot_delete(IT_SCRATCH_2);
     it_close(&root_h);
 
-    if (before_ok && rv == 0 && child_dead && gchild_dead && root_alive)
+    if (before_ok && rv >= 0 && child_dead && gchild_dead && root_alive)
         it_pass("T071");
     else
         it_fail("T071", "cascade revoke");
@@ -2451,35 +2519,44 @@ static void test_t071(void) {
 
 /* ── T072: derivation rights reduction + revoke failure paths ───────────────
  *
- * Proves (a) a cap derived with reduced rights cannot itself be a derivation
- * source once RIGHT_DUPLICATE is dropped (ACCESS_DENIED — no rights escalation),
- * (b) SYS_CAP_REVOKE on a stale handle fails cleanly (negative error, no panic),
- * and (c) a valid revoke tears down the one child that exists. */
+ * Native-CDT form (Fase S4, Etapa 3).  Proves (a) a cap derived with reduced
+ * rights cannot itself be a derivation source once RIGHT_DUPLICATE is dropped
+ * (ACCESS_DENIED — no rights escalation), (b) revoking an EMPTY slot fails
+ * cleanly (negative error, no panic), and (c) a valid revoke tears down the
+ * one child that exists while the invoked slot survives. */
 static void test_t072(void) {
-    long root = it_ep_create();
-    if (root < 0) { it_fail("T072", "ep create"); return; }
-    handle_id_t root_h = (handle_id_t)root;
+    long eh = it_ep_create();
+    if (eh < 0) { it_fail("T072", "ep create"); return; }
+    handle_id_t root_h = (handle_id_t)eh;
+
+    long root = it_cdt_root(root_h, IT_SCRATCH_0);
+    if (root < 0) { it_close(&root_h); it_fail("T072", "root slot"); return; }
 
     /* Read-only child (drops DUPLICATE/TRANSFER). */
-    long ro = it_sys2(SYS_CAP_DERIVE, root, (long)RIGHT_READ);
+    long ro = it_cdt_derive(root, IT_SCRATCH_1, RIGHT_READ);
     /* Deriving from a cap without RIGHT_DUPLICATE must be denied. */
     long escalate = (ro >= 0)
-                  ? it_sys2(SYS_CAP_DERIVE, ro, (long)RIGHT_SAME_RIGHTS)
+                  ? it_sys3(SYS_CSPACE_MINT, ro,
+                            (long)((uint64_t)IT_SCRATCH_2 << 32),
+                            (long)RIGHT_SAME_RIGHTS)
                   : 0;
 
-    /* Stale handle → clean BAD_HANDLE (create+close to guarantee staleness). */
-    long tmp = it_ep_create();
-    if (tmp >= 0) it_sys1(SYS_HANDLE_CLOSE, tmp);
-    long bad_revoke = (tmp >= 0) ? it_sys1(SYS_CAP_REVOKE, tmp) : -1;
+    /* Revoking an EMPTY slot → clean negative error, no panic. */
+    it_slot_delete(IT_SCRATCH_3);
+    long bad_revoke = it_cdt_revoke((long)IT_SCRATCH_3);
 
     /* Valid revoke of root deletes its single child (ro). */
-    long ok_revoke = it_sys1(SYS_CAP_REVOKE, root);
-    int  ro_dead   = (it_sys1(SYS_HANDLE_TYPE, ro) == (long)IRIS_ERR_BAD_HANDLE);
+    long ok_revoke = it_cdt_revoke(root);
+    int  ro_dead   = !it_cdt_alive(ro);
+    int  root_alive = it_cdt_alive(root);
 
+    it_slot_delete(IT_SCRATCH_0);
+    it_slot_delete(IT_SCRATCH_1);
+    it_slot_delete(IT_SCRATCH_2);
     it_close(&root_h);
 
     if (ro >= 0 && escalate == (long)IRIS_ERR_ACCESS_DENIED &&
-        bad_revoke < 0 && ok_revoke == 0 && ro_dead)
+        bad_revoke < 0 && ok_revoke >= 0 && ro_dead && root_alive)
         it_pass("T072");
     else
         it_fail("T072", "derive rights / revoke error paths");
@@ -7852,15 +7929,18 @@ static void test_t125(void) {
         if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_NOTIFICATION, 0) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy nt not retired"; }
         if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_CNODE, 4)        != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy cn not retired"; }
         /* missing RIGHT_WRITE: retype through a read-only derived cap.
-         * (IT_UT is a handle now — derive straight from it.) */
+         * (IT_UT is a handle; bridge it into a slot to derive natively.) */
         if (ok) {
-            long ro = it_sys2(SYS_CAP_DERIVE, IT_UT, (long)RIGHT_READ);
-            handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
-            if (ro < 0) { ok = 0; why = "ro dup"; }
-            if (ok && it_retype2_at((long)ro_h, IT_KOBJ_ENDPOINT, 240u, 1u, 0) != (long)IRIS_ERR_ACCESS_DENIED) {
+            /* Fase S4 (Etapa 3): the read-only copy is a native-CDT child. */
+            long ut_root = it_cdt_root((handle_id_t)IT_UT, IT_SCRATCH_0);
+            long ro = (ut_root >= 0)
+                    ? it_cdt_derive(ut_root, IT_SCRATCH_1, RIGHT_READ) : -1;
+            if (ro < 0) { ok = 0; why = "ro derive"; }
+            if (ok && it_retype2_at(ro, IT_KOBJ_ENDPOINT, 240u, 1u, 0) != (long)IRIS_ERR_ACCESS_DENIED) {
                 ok = 0; why = "rights not enforced";
             }
-            it_close(&ro_h);
+            it_slot_delete(IT_SCRATCH_1);
+            it_slot_delete(IT_SCRATCH_0);
         }
         /* No object leaked through any failure path. */
         if (ok && !it_sched_ext3(f1)) { ok = 0; why = "ext3 fail-after"; }
@@ -7953,10 +8033,13 @@ static void test_t127(void) {
     handle_id_t outsider = (orr >= 0) ? (handle_id_t)orr : HANDLE_INVALID;
     if (orr < 0) { ok = 0; why = "retype outsider"; }
 
-    /* Derivation tree: root → c1 → gc1 ; root → c2. */
-    long c1  = ok ? it_sys2(SYS_CAP_DERIVE, (long)root, (long)RIGHT_SAME_RIGHTS) : -1;
-    long gc1 = (c1 >= 0) ? it_sys2(SYS_CAP_DERIVE, c1, (long)RIGHT_SAME_RIGHTS) : -1;
-    long c2  = ok ? it_sys2(SYS_CAP_DERIVE, (long)root, (long)RIGHT_SAME_RIGHTS) : -1;
+    /* Fase S4 (Etapa 3): the derivation tree is the NATIVE CDT over slots.
+     * root → c1 → gc1 ; root → c2. */
+    long rootc = ok ? it_cdt_root(root, IT_SCRATCH_0) : -1;
+    if (ok && rootc < 0) { ok = 0; why = "root slot"; }
+    long c1  = (rootc >= 0) ? it_cdt_derive(rootc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
+    long gc1 = (c1 >= 0)    ? it_cdt_derive(c1,    IT_SCRATCH_2, RIGHT_SAME_RIGHTS) : -1;
+    long c2  = (rootc >= 0) ? it_cdt_derive(rootc, IT_SCRATCH_3, RIGHT_SAME_RIGHTS) : -1;
     if (c1 < 0 || gc1 < 0 || c2 < 0) { ok = 0; why = "derive"; }
 
     /* A CNode copy of the root — an independent ref, NOT a derivation child. */
@@ -7966,37 +8049,42 @@ static void test_t127(void) {
     if (ok && it_sys4(SYS_CNODE_MINT, (long)cn, 1, (long)root,
                       (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "cnode mint"; }
 
-    /* All derived handles are live before the revoke. */
-    if (ok && it_sys1(SYS_HANDLE_TYPE, c1)  < 0) { ok = 0; why = "c1 dead early"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, gc1) < 0) { ok = 0; why = "gc1 dead early"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, c2)  < 0) { ok = 0; why = "c2 dead early"; }
+    /* All derived caps are live before the revoke. */
+    if (ok && !it_cdt_alive(c1))  { ok = 0; why = "c1 dead early"; }
+    if (ok && !it_cdt_alive(gc1)) { ok = 0; why = "gc1 dead early"; }
+    if (ok && !it_cdt_alive(c2))  { ok = 0; why = "c2 dead early"; }
 
     /* Revoke root's subtree. */
-    if (ok && it_sys1(SYS_CAP_REVOKE, (long)root) != 0) { ok = 0; why = "revoke"; }
+    if (ok && it_cdt_revoke(rootc) < 0) { ok = 0; why = "revoke"; }
 
-    /* Every descendant is gone; root survives. */
-    if (ok && it_sys1(SYS_HANDLE_TYPE, c1)  != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "c1 alive"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, gc1) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "gc1 alive"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, c2)  != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "c2 alive"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)root) < 0) { ok = 0; why = "root died"; }
+    /* Every descendant is gone; the invoked slot survives. */
+    if (ok && it_cdt_alive(c1))  { ok = 0; why = "c1 alive"; }
+    if (ok && it_cdt_alive(gc1)) { ok = 0; why = "gc1 alive"; }
+    if (ok && it_cdt_alive(c2))  { ok = 0; why = "c2 alive"; }
+    if (ok && !it_cdt_alive(rootc)) { ok = 0; why = "root died"; }
+    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)root) < 0) { ok = 0; why = "root handle died"; }
     /* Outsider outside the subtree is untouched. */
     if (ok && it_sys1(SYS_HANDLE_TYPE, (long)outsider) < 0) { ok = 0; why = "outsider died"; }
 
     /* Idempotent: a second revoke finds an empty subtree and succeeds. */
-    if (ok && it_sys1(SYS_CAP_REVOKE, (long)root) != 0) { ok = 0; why = "revoke not idempotent"; }
-    /* Revoke on a stale handle fails cleanly. */
+    if (ok && it_cdt_revoke(rootc) < 0) { ok = 0; why = "revoke not idempotent"; }
+    /* Revoke on an EMPTY slot fails cleanly. */
     if (ok) {
-        long tmp = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
-        if (tmp >= 0) { handle_id_t th = (handle_id_t)tmp; it_close(&th);
-            if (it_sys1(SYS_CAP_REVOKE, tmp) >= 0) { ok = 0; why = "stale revoke ok"; } }
+        it_slot_delete(IT_SCRATCH_1);
+        if (it_cdt_revoke((long)IT_SCRATCH_1) >= 0) { ok = 0; why = "empty revoke ok"; }
     }
 
-    /* Revoke SCOPE: the CNode-minted copy is an independent ref — SYS_CAP_REVOKE
-     * did not touch the CSpace slot.  Deleting the slot releases that ref; it
-     * must succeed (the slot still held a live cap after the revoke). */
+    /* Revoke SCOPE: the copy minted into a SEPARATE CNode from the root HANDLE
+     * is an independent MDB root (legacy kcnode_mint), not a descendant of the
+     * revoked slot — the revoke did not touch it.  Deleting the slot releases
+     * that ref; it must succeed (the slot still held a live cap). */
     if (ok && it_sys2(SYS_CNODE_DELETE, (long)cn, 1) != 0) { ok = 0; why = "cnode copy not independent"; }
 
-    /* Teardown: close root, outsider, cnode; region resets clean. */
+    /* Teardown: release the scratch slots, then close root, outsider, cnode. */
+    it_slot_delete(IT_SCRATCH_0);
+    it_slot_delete(IT_SCRATCH_1);
+    it_slot_delete(IT_SCRATCH_2);
+    it_slot_delete(IT_SCRATCH_3);
     it_close(&root);
     it_close(&outsider);
     it_close(&cn);
@@ -8039,12 +8127,21 @@ static void test_t128(void) {
     if (!it_sched_ext3(mid)) { ok = 0; why = "ext3 mid"; }
     if (ok && mid[IT_S3_FRAME] != s3b[IT_S3_FRAME] + 1u) { ok = 0; why = "frame not counted"; }
 
-    /* Derive a child frame handle, then revoke it away from the root. */
-    long child = ok ? it_sys2(SYS_CAP_DERIVE, (long)frame, (long)RIGHT_SAME_RIGHTS) : -1;
+    /* Fase S4 (Etapa 3): derive a child frame through the native CDT, then
+     * revoke it away from the root slot. */
+    long frc   = ok ? it_cdt_root(frame, IT_SCRATCH_0) : -1;
+    if (ok && frc < 0) { ok = 0; why = "root slot"; }
+    long child = (frc >= 0) ? it_cdt_derive(frc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
     if (ok && child < 0) { ok = 0; why = "derive"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, child) != (long)IT_KOBJ_FRAME) { ok = 0; why = "child type"; }
-    if (ok && it_sys1(SYS_CAP_REVOKE, (long)frame) != 0) { ok = 0; why = "revoke"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, child) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "child alive"; }
+    if (ok) {
+        long ch = it_sys1(SYS_CSPACE_RESOLVE, child);
+        if (ch < 0 || it_sys1(SYS_HANDLE_TYPE, ch) != (long)IT_KOBJ_FRAME) { ok = 0; why = "child type"; }
+        if (ch >= 0) { handle_id_t chh = (handle_id_t)ch; it_close(&chh); }
+    }
+    if (ok && it_cdt_revoke(frc) < 0) { ok = 0; why = "revoke"; }
+    if (ok && it_cdt_alive(child)) { ok = 0; why = "child alive"; }
+    it_slot_delete(IT_SCRATCH_1);
+    it_slot_delete(IT_SCRATCH_0);
     /* The frame object survives while the root cap is held. */
     if (ok && it_sys1(SYS_HANDLE_TYPE, (long)frame) != (long)IT_KOBJ_FRAME) { ok = 0; why = "frame died early"; }
     if (ok && !it_sched_ext3(mid)) { ok = 0; why = "ext3 mid2"; }
@@ -8106,11 +8203,17 @@ static void test_t129(void) {
     if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread create"; }
     if (ok) for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
 
-    /* Derive a child handle and revoke it — object survives, waiter unaffected. */
-    long child = ok ? it_sys2(SYS_CAP_DERIVE, (long)g_sh_ep, (long)RIGHT_SAME_RIGHTS) : -1;
+    /* Fase S4: derive a child through the native CDT and revoke it — the
+     * OBJECT survives (the root slot still names it) and the blocked waiter
+     * is unaffected: revocation removes capabilities, not execution. */
+    long epc   = ok ? it_cdt_root(g_sh_ep, IT_SCRATCH_0) : -1;
+    if (ok && epc < 0) { ok = 0; why = "root slot"; }
+    long child = (epc >= 0) ? it_cdt_derive(epc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
     if (ok && child < 0) { ok = 0; why = "derive"; }
-    if (ok && it_sys1(SYS_CAP_REVOKE, (long)g_sh_ep) != 0) { ok = 0; why = "revoke"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, child) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "child alive"; }
+    if (ok && it_cdt_revoke(epc) < 0) { ok = 0; why = "revoke"; }
+    if (ok && it_cdt_alive(child)) { ok = 0; why = "child alive"; }
+    it_slot_delete(IT_SCRATCH_1);
+    it_slot_delete(IT_SCRATCH_0);
 
     /* Close the last handle → endpoint close fires → waiter wakes CLOSED. */
     it_close(&g_sh_ep);
@@ -8141,30 +8244,37 @@ static void test_t130(void) {
     if (rr < 0) { it_fail("T130", "retype root"); return; }
     handle_id_t root = (handle_id_t)rr;   /* full rights: READ|WRITE|DUP|TRANSFER */
 
-    /* Derive down to READ-only (drops DUPLICATE). */
-    long ro = it_sys2(SYS_CAP_DERIVE, (long)root, (long)RIGHT_READ);
-    handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
+    /* Fase S4 (Etapa 3): derivation is the native CDT.  Derive down to
+     * READ-only (drops DUPLICATE). */
+    long rootc = it_cdt_root(root, IT_SCRATCH_0);
+    if (rootc < 0) { ok = 0; why = "root slot"; }
+    long ro = (rootc >= 0) ? it_cdt_derive(rootc, IT_SCRATCH_1, RIGHT_READ) : -1;
     if (ro < 0) { ok = 0; why = "derive ro"; }
 
     /* A cap without DUPLICATE cannot be a derivation source — ACCESS_DENIED,
-     * no handle produced (no fallback). */
-    if (ok && it_sys2(SYS_CAP_DERIVE, (long)ro_h, (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_ACCESS_DENIED) {
+     * and nothing is installed (no fallback). */
+    if (ok && it_sys3(SYS_CSPACE_MINT, ro,
+                      (long)((uint64_t)IT_SCRATCH_2 << 32),
+                      (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_ACCESS_DENIED) {
         ok = 0; why = "escalation via derive";
     }
+    if (ok && it_cdt_alive((long)IT_SCRATCH_2)) { ok = 0; why = "denied derive installed"; }
 
     /* Derivation cannot ADD rights: asking for FULL from a READ-only parent
      * yields a cap that still lacks WRITE (monotonic reduce).  We prove the
      * child cannot be a derivation source (no DUPLICATE) — i.e. WRITE/DUP were
      * NOT granted despite the request. */
     if (ok) {
-        long up = it_sys2(SYS_CAP_DERIVE, (long)root, (long)(RIGHT_READ)); /* parent has DUP */
-        /* From a full-rights parent, derive asking only READ → child has READ only. */
-        handle_id_t up_h = (up >= 0) ? (handle_id_t)up : HANDLE_INVALID;
+        /* From a full-rights parent, derive asking only READ → child has READ
+         * only, so it cannot itself be a derivation source. */
+        long up = it_cdt_derive(rootc, IT_SCRATCH_3, RIGHT_READ);
         if (up < 0) { ok = 0; why = "derive read"; }
-        if (ok && it_sys2(SYS_CAP_DERIVE, (long)up_h, (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_ACCESS_DENIED) {
+        if (ok && it_sys3(SYS_CSPACE_MINT, up,
+                          (long)((uint64_t)IT_SCRATCH_2 << 32),
+                          (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "read child escalated";
         }
-        it_close(&up_h);
+        it_slot_delete(IT_SCRATCH_3);
     }
 
     /* CNode mint reduces rights the same way and never amplifies: mint the
@@ -8185,7 +8295,8 @@ static void test_t130(void) {
         it_close(&cn);
     }
 
-    it_close(&ro_h);
+    it_slot_delete(IT_SCRATCH_1);
+    it_slot_delete(IT_SCRATCH_0);
     it_close(&root);
     it_quiesce_reaper();
     (void)it_ut_reset();
@@ -8224,11 +8335,12 @@ static void test_t131(void) {
         if (rr < 0) { ok = 0; why = "retype"; break; }
         handle_id_t root = (handle_id_t)rr;
 
-        /* Derive a small tree, sometimes revoke it, always tear it down. */
-        long c1 = it_sys2(SYS_CAP_DERIVE, (long)root, (long)RIGHT_SAME_RIGHTS);
-        long c2 = (c1 >= 0) ? it_sys2(SYS_CAP_DERIVE, c1, (long)RIGHT_SAME_RIGHTS) : -1;
-        handle_id_t c1_h = (c1 >= 0) ? (handle_id_t)c1 : HANDLE_INVALID;
-        handle_id_t c2_h = (c2 >= 0) ? (handle_id_t)c2 : HANDLE_INVALID;
+        /* Fase S4 (Etapa 3): derive a small tree through the native CDT,
+         * sometimes revoke it, always tear it down. */
+        long rootc = it_cdt_root(root, IT_SCRATCH_0);
+        if (rootc < 0) { ok = 0; why = "root slot"; it_close(&root); break; }
+        long c1 = it_cdt_derive(rootc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS);
+        long c2 = (c1 >= 0) ? it_cdt_derive(c1, IT_SCRATCH_2, RIGHT_SAME_RIGHTS) : -1;
 
         /* Forced failure paths, interleaved deterministically. */
         if ((fz_rand() & 1u) &&
@@ -8239,26 +8351,27 @@ static void test_t131(void) {
             ok = 0; why = "badsize"; }
 
         if (ok && (fz_rand() & 1u)) {
-            /* Revoke path: children die, root survives. */
-            if (it_sys1(SYS_CAP_REVOKE, (long)root) != 0) { ok = 0; why = "revoke"; }
-            if (ok && c1 >= 0 && it_sys1(SYS_HANDLE_TYPE, c1) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "c1 alive"; }
-            if (ok && c2 >= 0 && it_sys1(SYS_HANDLE_TYPE, c2) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "c2 alive"; }
+            /* Revoke path: descendants die, the invoked slot survives. */
+            if (it_cdt_revoke(rootc) < 0) { ok = 0; why = "revoke"; }
+            if (ok && c1 >= 0 && it_cdt_alive(c1)) { ok = 0; why = "c1 alive"; }
+            if (ok && c2 >= 0 && it_cdt_alive(c2)) { ok = 0; why = "c2 alive"; }
             /* Repeated revoke is idempotent. */
-            if (ok && it_sys1(SYS_CAP_REVOKE, (long)root) != 0) { ok = 0; why = "revoke idem"; }
-            c1_h = HANDLE_INVALID; c2_h = HANDLE_INVALID;   /* already gone */
+            if (ok && it_cdt_revoke(rootc) < 0) { ok = 0; why = "revoke idem"; }
         } else {
             /* Explicit teardown path. */
-            it_close(&c2_h);
-            it_close(&c1_h);
+            it_slot_delete(IT_SCRATCH_2);
+            it_slot_delete(IT_SCRATCH_1);
         }
 
-        /* Stale-handle revoke fails cleanly. */
+        /* Revoking an EMPTY slot fails cleanly. */
         if (ok && (fz_rand() & 1u)) {
-            long tmp = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
-            if (tmp >= 0) { handle_id_t th = (handle_id_t)tmp; it_close(&th);
-                if (it_sys1(SYS_CAP_REVOKE, tmp) >= 0) { ok = 0; why = "stale revoke ok"; } }
+            it_slot_delete(IT_SCRATCH_3);
+            if (it_cdt_revoke((long)IT_SCRATCH_3) >= 0) { ok = 0; why = "empty revoke ok"; }
         }
 
+        it_slot_delete(IT_SCRATCH_2);
+        it_slot_delete(IT_SCRATCH_1);
+        it_slot_delete(IT_SCRATCH_0);
         it_close(&root);
         /* Periodically drain and reset so the bump region never runs dry. */
         if ((i & 3u) == 3u) {
@@ -8435,10 +8548,11 @@ static void test_t134(void) {
     /* Wrong-type frame fixture: an endpoint is not a frame. */
     long er = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
     handle_id_t ep = (er >= 0) ? (handle_id_t)er : HANDLE_INVALID;
-    /* Read-only frame fixture (drops WRITE): cannot back a writable map. */
-    long rr = it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_READ);
+    /* Read-only frame fixture (drops WRITE): cannot back a writable map.
+     * Fase S4 (Etapa 3): a native-CDT child, addressed by CPtr. */
+    long rr = it_cdt_reduced(fr, IT_SCRATCH_0, IT_SCRATCH_1, RIGHT_READ);
     handle_id_t fr_ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
-    if (ep == HANDLE_INVALID || fr_ro == HANDLE_INVALID) { ok = 0; why = "fixtures"; }
+    if (ep == HANDLE_INVALID || rr < 0) { ok = 0; why = "fixtures"; }
 
     struct { long frame; long vs; uint64_t va; uint64_t flags; long expect; const char *tag; } cases[] = {
         { (long)fr,    IT_VS, T134_VA | 0x100ULL, IT_MAP_W, (long)IRIS_ERR_INVALID_ARG,   "unaligned va" },
@@ -8469,7 +8583,8 @@ static void test_t134(void) {
     if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T134_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "valid-after-fail"; }
     if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T134_VA) != 0) { ok = 0; why = "final unmap"; }
 
-    it_close(&fr_ro);
+    it_slot_delete(IT_SCRATCH_1);
+    it_slot_delete(IT_SCRATCH_0);
     it_close(&ep);
     it_close(&fr);
     it_quiesce_reaper();
@@ -8613,11 +8728,15 @@ static void test_t137(void) {
 
     if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T137_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
 
-    /* Derived handle, revoked while the frame is mapped. */
-    long child = ok ? it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_SAME_RIGHTS) : -1;
+    /* Fase S4 (Etapa 3): derived cap, revoked while the frame is mapped. */
+    long frc   = ok ? it_cdt_root(fr, IT_SCRATCH_0) : -1;
+    if (ok && frc < 0) { ok = 0; why = "root slot"; }
+    long child = (frc >= 0) ? it_cdt_derive(frc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
     if (ok && child < 0) { ok = 0; why = "derive"; }
-    if (ok && it_sys1(SYS_CAP_REVOKE, (long)fr) != 0) { ok = 0; why = "revoke"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, child) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "child alive"; }
+    if (ok && it_cdt_revoke(frc) < 0) { ok = 0; why = "revoke"; }
+    if (ok && it_cdt_alive(child)) { ok = 0; why = "child alive"; }
+    it_slot_delete(IT_SCRATCH_1);
+    it_slot_delete(IT_SCRATCH_0);
 
     /* Revoke did NOT unmap: the mapping is still live and usable. */
     if (ok && !it_sched_ext4(v1)) { ok = 0; why = "ext4 mid"; }
@@ -8663,9 +8782,9 @@ static void test_t138(void) {
 
     handle_id_t fr = it_retype_frame();
     if (fr == HANDLE_INVALID) { it_fail("T138", "retype frame"); return; }
-    long rr = it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_READ);
+    long rr = it_cdt_reduced(fr, IT_SCRATCH_0, IT_SCRATCH_1, RIGHT_READ);
     handle_id_t fr_ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
-    if (fr_ro == HANDLE_INVALID) { ok = 0; why = "ro derive"; }
+    if (rr < 0) { ok = 0; why = "ro derive"; }
 
     /* Read-only cap: non-writable map ok, writable map denied. */
     if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)T138_VA, 0L) != 0) { ok = 0; why = "ro map"; }
@@ -8681,7 +8800,8 @@ static void test_t138(void) {
     if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, 0xFFFF800000001000L, (long)IT_MAP_W)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel va not rejected"; }
 
-    it_close(&fr_ro);
+    it_slot_delete(IT_SCRATCH_1);
+    it_slot_delete(IT_SCRATCH_0);
     it_close(&fr);
     it_quiesce_reaper();
     (void)it_ut_reset();
@@ -8726,11 +8846,15 @@ static void test_t139(void) {
             ok = 0; why = "occupied"; it_close(&fr); break;
         }
 
-        /* Sometimes derive + revoke while mapped (revoke must not unmap). */
+        /* Sometimes derive + revoke while mapped (revoke must not unmap).
+         * Fase S4 (Etapa 3): native CDT over scratch slots. */
         if (fz_rand() & 1u) {
-            long c = it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_SAME_RIGHTS);
-            if (c >= 0 && it_sys1(SYS_CAP_REVOKE, (long)fr) != 0) { ok = 0; why = "revoke"; it_close(&fr); break; }
-            if (ok && c >= 0 && it_sys1(SYS_HANDLE_TYPE, c) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "child alive"; it_close(&fr); break; }
+            long frc = it_cdt_root(fr, IT_SCRATCH_0);
+            long c   = (frc >= 0) ? it_cdt_derive(frc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
+            if (c >= 0 && it_cdt_revoke(frc) < 0) { ok = 0; why = "revoke"; it_close(&fr); break; }
+            if (ok && c >= 0 && it_cdt_alive(c)) { ok = 0; why = "child alive"; it_close(&fr); break; }
+            it_slot_delete(IT_SCRATCH_1);
+            it_slot_delete(IT_SCRATCH_0);
         }
 
         if (it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)va) != 0) { ok = 0; why = "unmap"; it_close(&fr); break; }
@@ -9848,9 +9972,18 @@ static void test_t151(void) {
         op = 2;
         if (it_sys4(SYS_FRAME_MAP, IT_UT, IT_VS, (long)va, (long)IT_MAP_W) >= 0) { ok = 0; why = "map wrong-type ok"; break; }
         op = 3;
-        if (it_sys2(SYS_CAP_DERIVE, 9000L, (long)RIGHT_READ) >= 0) { ok = 0; why = "derive stale ok"; break; }
+        /* Fase S4 (Etapa 3): the CSpace forms must reject a stale/empty slot
+         * just as cleanly, and a HANDLE value outright (namespace split). */
+        it_slot_delete(IT_SCRATCH_3);
+        if (it_sys3(SYS_CSPACE_MINT, (long)IT_SCRATCH_3,
+                    (long)((uint64_t)IT_SCRATCH_2 << 32),
+                    (long)RIGHT_READ) >= 0) { ok = 0; why = "derive stale ok"; break; }
+        if (it_sys3(SYS_CSPACE_MINT, 9000L,
+                    (long)((uint64_t)IT_SCRATCH_2 << 32),
+                    (long)RIGHT_READ) >= 0) { ok = 0; why = "derive by handle ok"; break; }
         op = 4;
-        if (it_sys1(SYS_CAP_REVOKE, 9000L) >= 0) { ok = 0; why = "revoke stale ok"; break; }
+        if (it_sys1(SYS_CSPACE_REVOKE, (long)IT_SCRATCH_3) >= 0) { ok = 0; why = "revoke stale ok"; break; }
+        if (it_sys1(SYS_CSPACE_REVOKE, 9000L) >= 0) { ok = 0; why = "revoke by handle ok"; break; }
         op = 5;
         if (it_sys3(SYS_EXCEPTION_RESUME, (long)HANDLE_INVALID, (long)(fz_rand() | 0x40000000u), 1)
             != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume no-fault not NOT_FOUND"; break; }
@@ -9928,13 +10061,14 @@ static void test_t152(void) {
     /* Missing rights: RIGHT_READ frame cap cannot map writable — ACCESS_DENIED,
      * no PTE born; a following writable map with a full cap works. */
     if (ok) {
-        long rd = it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_READ);
+        long rd = it_cdt_reduced(fr, IT_SCRATCH_0, IT_SCRATCH_1, RIGHT_READ);
         handle_id_t fr_ro = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
         if (rd < 0) { ok = 0; why = "ro derive"; }
         if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable not denied"; }
         if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)VA, (long)IT_MAP_W) != 0) { ok = 0; why = "valid map after deny"; }
         if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)VA) != 0) { ok = 0; why = "unmap 2"; }
-        it_close(&fr_ro);
+        it_slot_delete(IT_SCRATCH_1);
+        it_slot_delete(IT_SCRATCH_0);
     }
 
     /* Invalid VA / bad size / bad pointer — each INVALID_ARG, nothing born. */
@@ -10067,13 +10201,15 @@ static void test_t154(void) {
         handle_id_t fr = (r != HANDLE_INVALID) ? (handle_id_t)r : HANDLE_INVALID;
         const uint64_t VA = 0x80A8000000ULL;
         if (fr == HANDLE_INVALID) { ok = 0; why = "retype"; }
-        long dr = ok ? it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_READ) : -1;
+        long dr = ok ? it_cdt_reduced(fr, IT_SCRATCH_0, IT_SCRATCH_1, RIGHT_READ) : -1;
         handle_id_t fr_ro = (dr >= 0) ? (handle_id_t)dr : HANDLE_INVALID;
         if (ok && dr < 0) { ok = 0; why = "ro derive"; }
         if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)VA, (long)IT_MAP_W) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro writable map"; }
         if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_ro, IT_VS, (long)VA, 0L) != 0) { ok = 0; why = "ro readable map"; }
         if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr_ro, IT_VS, (long)VA) != 0) { ok = 0; why = "ro unmap"; }
-        it_close(&fr_ro); it_close(&fr);
+        it_slot_delete(IT_SCRATCH_1);
+        it_slot_delete(IT_SCRATCH_0);
+        it_close(&fr);
         it_quiesce_reaper(); (void)it_ut_reset();
     } else if (ok) { ok = 0; why = "vspace self mint"; }
 
@@ -10116,9 +10252,12 @@ static void test_t155(void) {
         if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)va, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; it_close(&fr); break; }
         op = 3;
         if (fz_rand() & 1u) {
-            long c = it_sys2(SYS_CAP_DERIVE, (long)fr, (long)RIGHT_SAME_RIGHTS);
-            if (c >= 0 && it_sys1(SYS_CAP_REVOKE, (long)fr) != 0) { ok = 0; why = "revoke"; it_close(&fr); break; }
-            if (ok && c >= 0 && it_sys1(SYS_HANDLE_TYPE, c) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "revoked child alive"; it_close(&fr); break; }
+            long frc = it_cdt_root(fr, IT_SCRATCH_0);
+            long c   = (frc >= 0) ? it_cdt_derive(frc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
+            if (c >= 0 && it_cdt_revoke(frc) < 0) { ok = 0; why = "revoke"; it_close(&fr); break; }
+            if (ok && c >= 0 && it_cdt_alive(c)) { ok = 0; why = "revoked child alive"; it_close(&fr); break; }
+            it_slot_delete(IT_SCRATCH_1);
+            it_slot_delete(IT_SCRATCH_0);
         }
         op = 4;
         if (it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)va) != 0) { ok = 0; why = "unmap"; it_close(&fr); break; }
@@ -17492,12 +17631,14 @@ static void test_t254(void) {
     }
     /* Missing RIGHT_WRITE on the source untyped. */
     if (ok) {
-        long ro = it_sys2(SYS_CAP_DERIVE, su, (long)RIGHT_READ);
+        long ro = it_cdt_reduced((handle_id_t)su, IT_SCRATCH_0, IT_SCRATCH_1,
+                                 RIGHT_READ);
         if (ro < 0) { ok = 0; why = "ro derive"; }
         else {
             if (it_retype2_at(ro, IRIS_KOBJ_ENDPOINT, S1_SLOT_B, 1u, 0) !=
                 (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights"; }
-            handle_id_t roh = (handle_id_t)ro; it_close(&roh);
+            it_slot_delete(IT_SCRATCH_1);
+            it_slot_delete(IT_SCRATCH_0);
         }
     }
     /* Destination that is not a CNode (the notification at S1_SLOT_A). */
@@ -17551,19 +17692,20 @@ static void test_t255(void) {
     handle_id_t su_h = (handle_id_t)su;
 
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype"; }
-    /* Derive: materialize a handle (bridge) + reduce rights. */
+    /* Fase S4 (Etapa 3): the source is ALREADY a CPtr — derive natively, with
+     * no CSPACE_RESOLVE bridge and no handle anywhere in the path. */
     long h  = ok ? it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A) : -1;
-    long d  = (h >= 0) ? it_sys2(SYS_CAP_DERIVE, h, (long)RIGHT_WRITE) : -1;
+    long d  = ok ? it_cdt_derive((long)S1_SLOT_A, IT_SCRATCH_0, RIGHT_WRITE) : -1;
     if (ok && (h < 0 || d < 0)) { ok = 0; why = "derive"; }
-    /* send/receive through the CPtr + the derived handle. */
+    /* send/receive through the CPtr + the derived CPtr. */
     if (ok) {
         struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x255;
         if (it_sys2(SYS_EP_NB_SEND, d, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "nb send"; }
     }
     /* call: needs our reply object. */
     if (ok && it_reply_create_at(S1_SLOT_B) < 0) { ok = 0; why = "reply"; }
-    /* Delete ONE cap (the derived handle): object must survive. */
-    if (ok) { handle_id_t dh = (handle_id_t)d; it_close(&dh); d = -1; }
+    /* Delete ONE cap (the derived SLOT): object must survive. */
+    if (ok) { it_slot_delete(IT_SCRATCH_0); d = -1; }
     if (ok) {
         struct IrisMsg m; it_iris_msg_zero(&m);
         if (it_sys2(SYS_EP_NB_RECV, (long)S1_SLOT_A, (long)&m) != (long)IRIS_ERR_WOULD_BLOCK) {

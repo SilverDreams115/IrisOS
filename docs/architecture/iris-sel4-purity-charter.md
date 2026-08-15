@@ -53,8 +53,8 @@ in the ledger), or `PENDING` (a roadmap stage).
 | A6 | `ACCESS_DENIED` never falls back to another namespace | MET (<1024/≥1024 split with no fallback) |
 | A7 | Rights are only kept or reduced; mint never amplifies | MET (`rights_reduce`, collapse to NONE rejected) |
 | A8 | Badges are kernel-sealed identity; a badged cap is never re-badged | MET |
-| A9 | Every derived capability is traceable to its ancestor | MET for CSpace derivation (native MDB/CDT, Fase S3); the legacy handle-tree (`SYS_CAP_DERIVE`) still runs in parallel, frozen (Stage 3) |
-| A10 | Revoke recursively removes all descendant authority, even cross-process | MET for CSpace caps (`SYS_CSPACE_REVOKE`, Fase S3 — crosses CNodes and processes, proven by T288-T290 + fuzzing); `SYS_CAP_REVOKE` handle-only is still intra-table (Stage 3) |
+| A9 | Every derived capability is traceable to its ancestor | MET — Fase S4/Stage 3: the parallel handle-tree is DELETED (`SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` retired; derived-insert, revoke-children and the parent array removed).  There is exactly ONE derivation tree: the native CSpace MDB/CDT |
+| A10 | Revoke recursively removes all descendant authority, even cross-process | MET — `SYS_CSPACE_REVOKE` is the ONLY revoke: recursive, cross-CNode and cross-process (T288-T290 + model-based fuzzing).  The intra-table `SYS_CAP_REVOKE` is retired (Fase S4/Stage 3) |
 
 ### 2.2 Objects
 

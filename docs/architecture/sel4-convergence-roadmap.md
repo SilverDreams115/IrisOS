@@ -82,53 +82,29 @@ table when it declares NO receive slot (legacy receivers) → Stage 4 with the
 dual namespace; `SYS_CNODE_MINT` still marks its slot a LEGACY_ROOT → Stages
 3/4.
 
-## Stage 3 — CSpace-only derive and revoke  ← NEXT
+## Stage 3 — CSpace-only derive and revoke  ✅ CLOSED (Fase S4)
 
 Precondition: Stages 1–2 (both closed).
 
-- Retire the handle-only `SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` (or redefine them
-  over slots) and the handle table's `derivation_parent[]` tree.
-- Migrate the productive consumers; non-regression guards (retired syscall
-  numbers stay reserved → NOT_SUPPORTED).
+- `SYS_CAP_DERIVE` (78) and `SYS_CAP_REVOKE` (79) are RETIRED: the numbers
+  stay permanently reserved and answer `NOT_SUPPORTED`.
+- The handle table's parallel derivation tree is DELETED — its derived-insert
+  and revoke-children entry points and the per-slot parent array are gone.
+  The handle table is now a flat reference table with no derivation semantics.
+- Every productive and test path derives with `SYS_CSPACE_MINT` (slot→slot,
+  installing a real MDB child) and revokes with `SYS_CSPACE_REVOKE`
+  (recursive, cross-CNode, cross-process).
+- Unblocked earlier in Fase S4 by giving `KIoPort`/`KIrqCap` a CSpace-native
+  origin (see the Stage 3 prep note in the ledger).
+- `legacy_handle_derivation_migrated` has zero callers: a structural 0, kept
+  as the retirement witness in the `UNTYPED_QUERY` layout.
 
-**Blocker RESOLVED (Fase S4).** `SYS_CAP_CREATE_IRQCAP` / `_IOPORT` no longer
-return handles: they take a destination slot (arg3) and publish the cap into
-the caller's CSpace as an MDB **child of the bootstrap-cap slot** that
-authorised it — so the authority argument must now be a CPtr, and
-`SYS_CSPACE_REVOKE` on the bootstrap cap recursively destroys every device cap
-issued under it (seL4 IRQControl semantics).  Device caps therefore derive and
-revoke through the NATIVE CDT (`SYS_CSPACE_MINT` / `SYS_CSPACE_REVOKE`), and
-svcmgr/init forward them to children via `SYS_CSPACE_MINT_INTO` (`svc_mint`
-gained a `src_cptr` field), which makes those delegations revocable too.
+Result: there is exactly ONE derivation tree in the system.  Charter A9 and
+A10 move to MET.
 
-What REMAINS for Stage 3: migrate the ~50 `SYS_CAP_DERIVE`/`SYS_CAP_REVOKE`
-call sites still in the authority/frame/untyped suites (Frame and Untyped
-already live in CSpace via RETYPE2, so they move to `SYS_CSPACE_MINT` /
-`SYS_CSPACE_REVOKE` directly), then delete `sys_cap_derive`/`sys_cap_revoke`,
-`handle_table_insert_derived`, `handle_table_revoke_children` and
-`derivation_parent[]`.
+## Stage 4 — Dual namespace retirement  ← NEXT
 
-Original survey (kept for the record):
-
-- The legacy tree is well isolated in the KERNEL: `handle_table_insert_derived`
-  has exactly one caller (`sys_cap_derive`) and `handle_table_revoke_children`
-  exactly one (`sys_cap_revoke`).  **No service uses either syscall.**
-- (RESOLVED above) `KIoPort` and `KIrqCap` **cannot be born from Untyped** — the RETYPE2
-  manifest is CLOSED and pinned by T251 ({EP, Notif, Reply, CNode, SC, TCB,
-  Untyped, Frame}) — and `sys_cspace_mint` requires a CSpace source
-  (`cspace_only_cptr`).  For those two types the handle tree is therefore the
-  ONLY mechanism offering rights-reduced derivation plus cascade revoke.
-  Retiring it today would DELETE capability functionality with no replacement.
-- Device caps get their CSpace-native origin in **Stage 5** (structured
-  BootInfo with fine-grained per-device caps), which is where the ledger
-  already places the `kioport_whitelist`.  Stage 3 must either follow that or
-  land a CSpace origin for `KIoPort`/`KIrqCap` first.
-- Test surface: ~50 `SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` call sites across the
-  authority, frame, ioport, IRQ and untyped suites — not just T071/T072.
-
-## Stage 4 — Dual namespace retirement
-
-Precondition: Stages 2–3 (no authority lives handle-only anymore).
+Precondition: Stages 2–3 (both closed — no authority lives handle-only anymore).
 
 - Remove the value-range discrimination (<1024 / ≥1024).
 - Remove handle resolution from every dual resolver.

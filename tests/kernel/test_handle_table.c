@@ -51,52 +51,33 @@ void test_handle_table(void) {
     kobject_release(obj);
     ASSERT_EQ(g_ht_destroyed, 1);
 
-    /* ── insert_derived + revoke_children (transitive BFS) ── */
+    /* Fase S4 (Etapa 3): the handle table's parallel derivation tree
+     * (insert_derived / revoke_children / derivation_parent[]) is DELETED.
+     * Derivation and revocation live in the CSpace CDT only — see
+     * test_mdb.c for the structural suite and T071/T072/T127/T131 for the
+     * runtime coverage.  The handle table is now a flat reference table. */
+
+    /* ── close_all releases every remaining entry ── */
     g_ht_destroyed = 0;
-    struct KObject *root_obj  = make_ht_obj(KOBJ_ENDPOINT);
-    struct KObject *child1    = make_ht_obj(KOBJ_CHANNEL);
-    struct KObject *child2    = make_ht_obj(KOBJ_NOTIFICATION);
-    struct KObject *gc        = make_ht_obj(KOBJ_VMO);
-    ASSERT_NOT_NULL(root_obj);
-    ASSERT_NOT_NULL(child1);
-    ASSERT_NOT_NULL(child2);
-    ASSERT_NOT_NULL(gc);
+    struct KObject *a1 = make_ht_obj(KOBJ_ENDPOINT);
+    struct KObject *a2 = make_ht_obj(KOBJ_NOTIFICATION);
+    ASSERT_NOT_NULL(a1);
+    ASSERT_NOT_NULL(a2);
+    handle_id_t h_a1 = handle_table_insert(&ht, a1, RIGHT_READ);
+    handle_id_t h_a2 = handle_table_insert(&ht, a2, RIGHT_READ);
+    ASSERT_NE(h_a1, (handle_id_t)HANDLE_INVALID);
+    ASSERT_NE(h_a2, (handle_id_t)HANDLE_INVALID);
 
-    handle_id_t h_root  = handle_table_insert(&ht, root_obj, RIGHT_READ);
-    handle_id_t h_c1    = handle_table_insert_derived(&ht, child1, RIGHT_READ, h_root);
-    handle_id_t h_c2    = handle_table_insert_derived(&ht, child2, RIGHT_READ, h_root);
-    handle_id_t h_gc    = handle_table_insert_derived(&ht, gc,     RIGHT_READ, h_c1);
-
-    ASSERT_NE(h_root, (handle_id_t)HANDLE_INVALID);
-    ASSERT_NE(h_c1,   (handle_id_t)HANDLE_INVALID);
-    ASSERT_NE(h_c2,   (handle_id_t)HANDLE_INVALID);
-    ASSERT_NE(h_gc,   (handle_id_t)HANDLE_INVALID);
-
-    handle_table_revoke_children(&ht, h_root);
-
-    /* root still valid */
-    ASSERT_EQ(handle_table_get_object(&ht, h_root, &out, &rout), IRIS_OK);
-    kobject_release(out);
-
-    /* children + grandchild all revoked */
-    ASSERT_EQ(handle_table_get_object(&ht, h_c1, &out, &rout), IRIS_ERR_BAD_HANDLE);
-    ASSERT_EQ(handle_table_get_object(&ht, h_c2, &out, &rout), IRIS_ERR_BAD_HANDLE);
-    ASSERT_EQ(handle_table_get_object(&ht, h_gc, &out, &rout), IRIS_ERR_BAD_HANDLE);
-
-    /* ── close_all releases remaining (root) ── */
     handle_table_close_all(&ht);
-    ASSERT_EQ(handle_table_get_object(&ht, h_root, &out, &rout), IRIS_ERR_BAD_HANDLE);
+    ASSERT_EQ(handle_table_get_object(&ht, h_a1, &out, &rout), IRIS_ERR_BAD_HANDLE);
+    ASSERT_EQ(handle_table_get_object(&ht, h_a2, &out, &rout), IRIS_ERR_BAD_HANDLE);
 
-    /* drop our alloc refs — all four objects destroyed */
-    kobject_release(root_obj);
-    kobject_release(child1);
-    kobject_release(child2);
-    kobject_release(gc);
-    ASSERT_EQ(g_ht_destroyed, 4);
+    /* drop our alloc refs — both objects destroyed */
+    kobject_release(a1);
+    kobject_release(a2);
+    ASSERT_EQ(g_ht_destroyed, 2);
 
-    /* ── deep revocation chain: O(N) BFS regression ── */
-    /* Build a linear chain: root → d1 → d2 → … → d15.
-     * The old O(N×depth) loop required 16 passes; the BFS does one. */
+    /* ── table capacity / lifetime over many entries ── */
     {
         HandleTable  ht2;
         handle_table_init(&ht2);
@@ -109,26 +90,17 @@ void test_handle_table(void) {
             ASSERT_NOT_NULL(objs[i]);
         }
 
-        /* Insert root (no parent) */
-        hids[0] = handle_table_insert(&ht2, objs[0], RIGHT_READ);
-        ASSERT_NE(hids[0], (handle_id_t)HANDLE_INVALID);
-
-        /* Build chain: each node derived from the previous */
-        for (int i = 1; i < 16; i++) {
-            hids[i] = handle_table_insert_derived(&ht2, objs[i], RIGHT_READ, hids[i-1]);
+        /* Fase S4: the derivation CHAIN test moved to the CDT suite; what
+         * remains here is plain table capacity/lifetime. */
+        for (int i = 0; i < 16; i++) {
+            hids[i] = handle_table_insert(&ht2, objs[i], RIGHT_READ);
             ASSERT_NE(hids[i], (handle_id_t)HANDLE_INVALID);
         }
-
-        /* Revoke from root: all 15 derived handles must disappear */
-        handle_table_revoke_children(&ht2, hids[0]);
-
         struct KObject *out2;
         iris_rights_t   rout2;
-        ASSERT_EQ(handle_table_get_object(&ht2, hids[0], &out2, &rout2), IRIS_OK);
-        kobject_release(out2);  /* release lookup ref */
-        for (int i = 1; i < 16; i++) {
-            ASSERT_EQ(handle_table_get_object(&ht2, hids[i], &out2, &rout2),
-                      IRIS_ERR_BAD_HANDLE);
+        for (int i = 0; i < 16; i++) {
+            ASSERT_EQ(handle_table_get_object(&ht2, hids[i], &out2, &rout2), IRIS_OK);
+            kobject_release(out2);
         }
 
         handle_table_close_all(&ht2);
@@ -153,7 +125,7 @@ void test_handle_table(void) {
         ASSERT_NOT_NULL(o1);
         ASSERT_NOT_NULL(o2);
         handle_id_t a = handle_table_insert(&ht3, o1, RIGHT_READ);
-        handle_id_t b = handle_table_insert_derived(&ht3, o2, RIGHT_READ, a);
+        handle_id_t b = handle_table_insert(&ht3, o2, RIGHT_READ);
         ASSERT_NE(a, (handle_id_t)HANDLE_INVALID);
         ASSERT_NE(b, (handle_id_t)HANDLE_INVALID);
         ASSERT_EQ(ht3.live, 2u);

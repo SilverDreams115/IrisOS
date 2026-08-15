@@ -52,6 +52,12 @@ static _Atomic uint32_t mdb_revoked_nodes;      /* caps destroyed by revoke */
 static _Atomic uint32_t mdb_moves;
 static _Atomic uint32_t mdb_max_depth;
 
+/* Fase S4 (Etapa 3): RETIRED.  The parallel handle-tree derivation this
+ * counted is deleted (SYS_CAP_DERIVE/SYS_CAP_REVOKE retired,
+ * table's derived-insert / revoke-children / parent-array machinery gone),
+ * so it has ZERO callers and legacy_handle_deriv_migrated is a structural 0.
+ * The symbol stays as the retirement witness in the UNTYPED_QUERY layout:
+ * if it ever moves again, a second derivation tree has been reintroduced. */
 void kcnode_cdt_note_legacy_migrated_derivation(void) {
     atomic_fetch_add_explicit(&legacy_handle_deriv_migrated, 1u, memory_order_relaxed);
 }

@@ -4,71 +4,29 @@
 /* A1.7: successful SYS_CSPACE_RESOLVE materializations (diagnostic). */
 uint32_t iris_cspace_stat_resolves = 0u;
 
+/*
+ * Fase S4 (Etapa 3): SYS_CAP_DERIVE (78) and SYS_CAP_REVOKE (79) are RETIRED.
+ *
+ * They were the last consumers of the handle table's parallel derivation tree
+ * (`derivation_parent[]`), which duplicated — badly — what the native CSpace
+ * CDT does properly: the handle tree was per-process, invisible to CSpace,
+ * and could not express a cross-process ancestry.  Every productive path now
+ * uses SYS_CSPACE_MINT (derive slot→slot, installing a real MDB child) and
+ * SYS_CSPACE_REVOKE (recursive, cross-CNode and cross-process).
+ *
+ * The syscall numbers stay permanently reserved and answer NOT_SUPPORTED;
+ * `handle_table_insert_derived`, `handle_table_revoke_children` and the
+ * `derivation_parent[]` array are deleted.  There is now exactly ONE
+ * derivation tree in the system (charter A9/A10).
+ */
 uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    handle_id_t   src_h     = (handle_id_t)arg0;
-    iris_rights_t new_rights = (iris_rights_t)arg1;
-    (void)arg2;
-
-    if (!src_h) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    HandleTable *ht = &t->process->handle_table;
-
-    struct KObject *obj;
-    iris_rights_t   cur_rights;
-    iris_error_t err = handle_table_get_object(ht, src_h, &obj, &cur_rights);
-    if (err != IRIS_OK) return syscall_err(err);
-
-    if (!rights_check(cur_rights, RIGHT_DUPLICATE)) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    iris_rights_t effective = rights_reduce(cur_rights, new_rights);
-    if (effective == RIGHT_NONE) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-
-    /* Fase S2: count the handle-tree derivations of migrated canonical types —
-     * this counter must converge to 0 (S2.33) once the derivation of those
-     * types moves to the native CDT (Block D). */
-    switch (obj->type) {
-        case KOBJ_ENDPOINT: case KOBJ_NOTIFICATION: case KOBJ_REPLY:
-        case KOBJ_CNODE:    case KOBJ_TCB:          case KOBJ_SCHED_CONTEXT:
-            kcnode_cdt_note_legacy_migrated_derivation();
-            break;
-        default: break;
-    }
-
-    /* handle_table_insert_derived bumps refcount via handle_entry_init. */
-    handle_id_t new_h = handle_table_insert_derived(ht, obj, effective, src_h);
-    kobject_release(obj);   /* drop the get_object-retained ref */
-
-    if (new_h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
-    return (uint64_t)new_h;
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 uint64_t sys_cap_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    handle_id_t h = (handle_id_t)arg0;
-    (void)arg1; (void)arg2;
-
-    if (!h) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    HandleTable *ht = &t->process->handle_table;
-
-    /* Validate h before revoking its children. */
-    struct KObject *obj;
-    iris_rights_t   rights;
-    iris_error_t err = handle_table_get_object(ht, h, &obj, &rights);
-    if (err != IRIS_OK) return syscall_err(err);
-    kobject_release(obj);
-
-    handle_table_revoke_children(ht, h);
-    return 0;
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 /*
