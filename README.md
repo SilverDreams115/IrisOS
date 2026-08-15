@@ -345,7 +345,7 @@ Two independently-gating layers, run on every change:
   handle_table, kendpoint, kreply, knotification, kuntyped, kschedctx, kframe,
   the MDB/CDT (structural + model-based fuzzing), rights, ipc_cspace, vfs_ep
   including the file-grant layer, …).
-- **Runtime tests** — booted under QEMU headless: **267 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **268 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
@@ -360,7 +360,7 @@ make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
 make test-unit                                             # host unit suites (10404)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (267/267)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (268/268)
 make run                                                   # interactive QEMU
 ```
 

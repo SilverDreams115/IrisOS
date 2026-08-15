@@ -139,9 +139,15 @@ inventory — it only shrinks):
 
 | Frozen consumer | Close of Stage 3 | Now | Files |
 |---|---|---|---|
-| `cspace_or_handle_resolve_` | 104 | 104 | 17 |
-| `handle_table_get_object` | 52 | 40 | 14 → 11 |
+| `cspace_or_handle_resolve_` | 104 | 107 | 17 |
+| `handle_table_get_object` | 52 | 37 | 14 → 9 |
 | `handle_table_insert` | 42 | 41 | 14 → 13 |
+
+`cspace_or_handle_resolve_` grew by 3 under charter §3 (ledger A-2): three
+syscalls resolved their object arguments either way while their NOTIFICATION
+argument stayed handle-only, so each trade swapped a handle-namespace consumer
+for a dual one on the same argument.  The dual resolver's handle leg is deleted
+wholesale when the namespace retires.
 
 (`kslab_alloc`, 20 occurrences across 16 files, is Stage 6's inventory, not
 Stage 4's.)
@@ -170,13 +176,62 @@ Two userspace consequences, both retiring guesswork rather than adding API:
   installed as MDB children of userboot's slots, i.e. revocable, instead of
   handed over forever.
 
-Productive userspace consumers still to migrate: `SYS_CSPACE_RESOLVE` (the
-sanctioned CPtr→handle bridge — init, svcmgr, pager, plus the test-only
-lifecycle_probe; userboot no longer calls it) and `SYS_HANDLE_DUP` (init ×3;
-userboot, svcmgr and pager do **not** call it).  The largest single consumer is
-`iris_test`: it is not productive code, but Stage 4 cannot close while the
-suite that proves the stage still addresses authority by handle, so it migrates
-with the rest.
+### Etapa 5 — the productive path leaves the bridge  ✅ DONE
+
+`init` has ZERO uses of the CPtr→handle bridge and zero `SYS_HANDLE_DUP`: its
+bootstrap authority, every object it fabricates, its death watch and its
+selftest notifications are capabilities in slots.  `svcmgr` is down to one use
+(the delivered-cap path, which is the IPC-delivery-without-receive-slot legacy,
+not svcmgr's to fix).  `userboot`, `vfs`, `kbd`, `console` and `sh` were already
+clean.
+
+Four defects surfaced, none of them the migration's own:
+
+- `SYS_BOOTCAP_RESTRICT` resolved its argument either way but published the
+  restricted clone with a handle-table write — a CPtr could never succeed.  It
+  derives into a destination slot now, as an MDB child of the source.
+- KDEBUG was **ambient**: `SYS_KLOG_DRAIN`/`SYS_SCHED_INFO`/`SYS_POWEROFF`
+  scanned the caller's handle table instead of taking a capability.  Retired
+  (ledger A-3); it is Stage 5 groundwork, not Stage 4 cleanup.
+- Three syscalls (`SYS_PROCESS_WATCH`, `SYS_EXCEPTION_HANDLER`,
+  `SYS_IRQ_ROUTE_REGISTER`) had their object arguments migrated and their
+  NOTIFICATION argument left behind.  **Any syscall taking a notification
+  beside an already-dual argument should be assumed to have this gap until
+  checked** (ledger A-2).
+- The pager's manifest oracle leaked one handle-table entry per occupied slot,
+  per request, with no ceiling.
+
+### Etapa 6 — the test suite  ← REMAINING
+
+`iris_test` is what keeps Stage 4 open, and it is not one migration.  All 268
+tests classified against a single rule — a test whose SUBJECT is the handle
+namespace dies with the mechanism; a test asserting an authority property that
+survives in a CSpace-only kernel is rewritten, because the property is real and
+only the vehicle changes:
+
+| | tests | disposition |
+|---|---|---|
+| subject is the handle namespace | 57 | deleted WITH the mechanism, not before |
+| use the bridge incidentally | 84 | rewritten in CSpace |
+| already CSpace-only | 127 | untouched |
+
+T011 (`SYS_HANDLE_TYPE`) and T012 (`SYS_HANDLE_SAME_OBJECT`) are the first
+group: migrating them would leave them asserting nothing.  T019 is the second —
+"dropping the last capability to an endpoint wakes a blocked receiver" is as
+true in seL4, it was merely spelled `SYS_HANDLE_CLOSE`.
+
+Migration is per-test and cannot be batched: a sweep over every
+`it_ep_create()` inside tests that also call `it_register_ep` broke eight at
+once, because those tests use the same endpoint for other things and their
+`it_close()` calls also close process and thread handles that are not moving.
+
+What remains of the bridge outside the suite: svcmgr's delivered-cap path, and
+the manifest oracles in `pager` and `lifecycle_probe`.  Those oracles ask "is
+this slot occupied", which seL4 deliberately does not answer — you cannot
+enumerate your own CSpace — so they retire WITH the bridge rather than before
+it.  Probing by attempting a mint was considered and rejected: it requires
+`RIGHT_DUPLICATE` on the source, which several of those slots lack, so it would
+report absent for capabilities that are present.
 
 **Second-order benefit, not just hygiene.** The `<1024` split caps the whole
 CPtr namespace at 10 bits.  A root CNode of 256 slots therefore consumes most
