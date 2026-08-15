@@ -228,6 +228,12 @@ uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * details via SYS_PROCESS_FAULT_INFO. */
     struct KObject *notif_obj;
     iris_rights_t notif_rights;
+    /* Etapa 4 note: arg0 resolves either way but this stays handle-only, and
+     * deliberately so for now.  Accepting a CPtr here makes the registration
+     * succeed and then exposes a SECOND defect further down: the fault is
+     * never signalled to a notification held in a CSpace slot, so the handler
+     * waits out its timeout and the faulted thread is left parked.  Migrating
+     * this argument is blocked on that delivery path, not on the resolver. */
     iris_error_t r = handle_table_get_object(&t->process->handle_table,
                                              (handle_id_t)arg1, &notif_obj, &notif_rights);
     if (r != IRIS_OK) { kobject_release(&target_proc->base); return syscall_err(r); }

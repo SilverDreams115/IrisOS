@@ -150,7 +150,7 @@ void init_main(handle_id_t bootstrap_ch_h) {
      * Stage 4: SYS_UNTYPED_INFO answers by CPtr and materializes nothing, so
      * the check costs no handle-table entry and the pool stays a CPtr all the
      * way into retype2 — which is what gives the fabricated objects a real MDB
-     * ancestor instead of LEGACY_ROOT status (see init_retype_handle). */
+     * ancestor instead of LEGACY_ROOT status (see init_retype_slot). */
     {
         long ur = init_sys3(SYS_UNTYPED_INFO, (long)IRIS_CPTR_INIT_UNTYPED, 0, 0);
         if (ur >= 0) g_init_untyped_c = IRIS_CPTR_INIT_UNTYPED;

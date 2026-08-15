@@ -72,42 +72,53 @@ static inline long init_sys0(long nr) {
  * once, holds the cap for init's whole lifetime, and is never deleted. */
 #define INIT_RSLOT_VFS_EP 16u
 
-/* Fase S1: scratch slot for init_retype_handle (below every pool init uses). */
-#define INIT_S1_SCRATCH_SLOT 62u
 
 /*
- * Fase S1: fabricate one kernel object from an untyped capability and return
- * it as a handle-table handle (mint source).  SYS_UNTYPED_RETYPE2 publishes
- * the capability into a scratch slot of init's own root CNode (dest 0 = own
- * root); the slot is materialized to a handle and deleted, leaving the handle
- * as init's only reference.  Replaces the retired SYS_ENDPOINT_CREATE /
- * SYS_NOTIFY_CREATE / SYS_CNODE_CREATE paths.
+ * Fase S1: fabricate one kernel object from an untyped capability.
  *
- * Stage 4: the SOURCE is now a CPtr, not a handle, and that is an authority
- * change, not a spelling change.  retype2 parents each created capability to
- * the MDB slot of its source untyped *only when the source was named by CPtr*
- * (`syscall_untyped.c`: "a handle-named source has no CSpace ancestor, so the
- * caps are explicit LEGACY roots").  Every object init fabricates — the
- * console and svcmgr endpoints, the reply objects, the notifications, the
- * delegated sub-untypeds — was therefore born an MDB_FLAG_LEGACY_ROOT.  They
- * are now real children of init's untyped slot: traceable to an ancestor
- * (charter A9) and revocable by init's grantor.
+ * SYS_UNTYPED_RETYPE2 publishes the new capability DIRECTLY into dest_slot of
+ * init's own root CNode (dest 0 = own root).  The source must be a CPtr:
+ * retype2 parents each created capability to the MDB slot of its source
+ * untyped only when the source was named that way, so a handle source would
+ * make every object an ancestorless LEGACY_ROOT.
  *
- * The returned handle is the REMAINING Stage 4 debt in this helper; it retires
- * with the CPtr→handle bridge.
+ * Etapa 4: this used to materialise the result into a handle and delete the
+ * slot.  A retyped object living in a CSpace slot IS the seL4 shape — the
+ * capability is the slot — and every consumer here (mint sources, notify
+ * wait, exception handler, endpoint invocation) resolves a CPtr, so the
+ * materialisation was pure overhead plus a handle-table entry.
+ *
+ * Returns 0 on success; the caller already knows the slot.
  */
-static inline long init_retype_handle(uint64_t ut_cptr, uint32_t obj_type,
-                                      uint64_t obj_arg) {
+static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
+                                    uint32_t dest_slot, uint64_t obj_arg) {
     if (ut_cptr == 0u) return (long)IRIS_ERR_NOT_FOUND;
-    long r = init_sys4(SYS_UNTYPED_RETYPE2, (long)ut_cptr,
-                       (long)((uint64_t)obj_type | (1ULL << 32)),
-                       (long)((uint64_t)INIT_S1_SCRATCH_SLOT << 32),
-                       (long)obj_arg);
-    if (r < 0) return r;
-    long h = init_sys1(SYS_CSPACE_RESOLVE, (long)INIT_S1_SCRATCH_SLOT);
-    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_S1_SCRATCH_SLOT);
-    return h;
+    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)dest_slot);
+    return init_sys4(SYS_UNTYPED_RETYPE2, (long)ut_cptr,
+                     (long)((uint64_t)obj_type | (1ULL << 32)),
+                     (long)((uint64_t)dest_slot << 32),
+                     (long)obj_arg);
 }
+
+/* Etapa 4 debt: retype into a slot, then materialise it into a handle and drop
+ * the slot.  Used ONLY where the consuming syscall still takes its notification
+ * in the handle namespace (SYS_PROCESS_WATCH, SYS_EXCEPTION_HANDLER).  Those
+ * two are half-migrated: their process argument resolves either way, their
+ * notification argument does not.  This is the last handle bridge in init. */
+static inline long init_retype_notif_handle(uint32_t slot);
+
+/* Etapa 4: init's own root-CNode slots for the objects it fabricates.  Kept
+ * distinct and named so a collision is a compile-time-visible mistake, not a
+ * bring-up failure. */
+#define INIT_SLOT_CONSOLE_EP   43u
+#define INIT_SLOT_CONSOLE_RPLY 44u
+#define INIT_SLOT_SVCMGR_EP    45u
+#define INIT_SLOT_SM_UNTYPED   46u
+#define INIT_SLOT_FIX_WRONGTY  47u
+#define INIT_SLOT_TEST_UNTYPED 49u
+#define INIT_SLOT_WATCH_NOTIF  50u
+#define INIT_SLOT_PROBE_NOTIF  51u
+#define INIT_SLOT_S8_NOTIF     52u
 
 /* Fase S1: init's untyped pool — the boot untyped delegated by userboot at
  * IRIS_CPTR_INIT_UNTYPED.  Stage 4: held as the CPtr itself, checked once in
@@ -155,3 +166,11 @@ void init_runtime_probe_timeout_overflow(void);
 void init_selftest_exception(void);
 
 #endif /* IRIS_INIT_H */
+
+static inline long init_retype_notif_handle(uint32_t slot) {
+    long r = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION, slot, 0);
+    if (r < 0) return r;
+    long h = init_sys1(SYS_CSPACE_RESOLVE, (long)slot);
+    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)slot);
+    return h;
+}

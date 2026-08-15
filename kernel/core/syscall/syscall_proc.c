@@ -109,6 +109,14 @@ uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
+    /* Etapa 4 note: arg0 resolves either way but this stays handle-only.  The
+     * obvious migration — resolve through the dual helper and drop the extra
+     * active ref to keep this function's single-release contract — is WRONG:
+     * driving active_refs to zero runs the object's close path, which for a
+     * KNotification wakes its waiters.  Doing that here silently broke service
+     * restart (the death notification was closed out from under svcmgr).
+     * Migrating this argument means converting every release site below to the
+     * active+lifecycle pair, not papering over the difference. */
     r = handle_table_get_object(&t->process->handle_table,
                                 (handle_id_t)arg1, &notif_obj, &notif_rights);
     if (r != IRIS_OK) {
