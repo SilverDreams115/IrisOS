@@ -8,6 +8,9 @@ cd "$PROJECT_ROOT"
 echo "[smoke] purity gate (seL4 charter — frozen allowlist)"
 make check-purity
 
+echo "[smoke] host unit suites"
+make test-unit
+
 echo "[smoke] clean build (default configuration)"
 make clean
 make

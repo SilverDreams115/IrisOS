@@ -29,6 +29,9 @@ jobs:
       - name: Purity gate (frozen legacy-consumer allowlist)
         run: make check-purity
 
+      - name: Host unit suites
+        run: make test-unit
+
       - name: Clean build tree
         run: make clean
 
