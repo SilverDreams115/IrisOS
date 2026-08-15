@@ -7,6 +7,27 @@ The [ledger](sel4-convergence-ledger.md) maps every transitional mechanism to
 its retirement stage. No stage may be declared closed while its productive
 path still depends on the mechanism it retires (charter §3.10).
 
+## Status
+
+| Stage | State |
+|---|---|
+| 0 — TCB consolidation | ✅ CLOSED (Fase S2 inc.2) |
+| 1 — CDT/MDB | ✅ CLOSED (Fase S3) |
+| 2 — CSpace-only cap transfer | ✅ CLOSED (Fase S4) |
+| 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
+| 4 — Dual namespace retirement | ← NEXT |
+| 5 — seL4-like bootstrap | pending |
+| 6 — Remaining memory and objects | pending |
+| 7 — KProcess retirement | pending |
+| 8 — Full MCS scheduling | pending |
+| 9 — SMP | pending |
+| 10 — General-purpose platform | pending |
+
+Charter invariants closed so far by this roadmap: **A6, A7, A8, A9, A10**
+(authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5** (scheduling);
+**M2–M5** (memory); **P1, P3** (policy).  Still open: **A2, A3, A4** (Stage 4),
+**A5** and **P2** (Stages 5–7), **O1** and **M1** (Stages 5–6).
+
 ## Stage 0 — TCB consolidation  ✅ CLOSED (Fase S2 inc.2)
 
 - The open increment is closed and committed; the working tree is clean.
@@ -112,6 +133,32 @@ Precondition: Stages 2–3 (both closed — no authority lives handle-only anymo
   `SYS_CSPACE_RESOLVE` materialization).
 - Remove the handle table when it has zero consumers; the `check_purity`
   allowlist must reach empty.
+
+Measured surface at the close of Stage 3 (from `scripts/purity_allowlist.txt`,
+which is the executable inventory — it only shrinks):
+
+| Frozen consumer | Occurrences | Files |
+|---|---|---|
+| `cspace_or_handle_resolve_` | 104 | 17 |
+| `handle_table_get_object` | 52 | 14 |
+| `handle_table_insert` | 42 | 14 |
+
+(`kslab_alloc`, 20 occurrences across 16 files, is Stage 6's inventory, not
+Stage 4's.)
+
+Productive userspace consumers to migrate first: `SYS_CSPACE_RESOLVE` (the
+sanctioned CPtr→handle bridge, used by userboot/init/svcmgr/pager) and
+`SYS_HANDLE_DUP` (init ×3, svcmgr ×2).
+
+**Second-order benefit, not just hygiene.** The `<1024` split caps the whole
+CPtr namespace at 10 bits.  A root CNode of 256 slots therefore consumes most
+of the addressable space, and multi-level CSpace resolution — which
+`cspace_resolve_slot` already implements as a radix walk — is effectively
+unusable because only 2 bits remain for deeper levels.  The symptom is
+concrete: `iris_test`'s root CNode is ~97% allocated, with six free slots
+left, and three separate bring-up failures during Fase S4 were slot
+collisions.  Removing the split frees the full 64-bit CPtr space and makes
+real CSpace hierarchies possible.
 
 ## Stage 5 — seL4-like bootstrap
 
