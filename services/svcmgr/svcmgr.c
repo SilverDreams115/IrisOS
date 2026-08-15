@@ -89,10 +89,13 @@ struct svcmgr_dynamic_service {
 
 struct svcmgr_state {
     handle_id_t spawn_cap_h;
-    handle_id_t console_ep_h;  /* console KEndpoint send side (Fase 7.3):
+    /* Etapa 4: both are CPtr slots, not handles.  Endpoint invocation resolves
+     * either namespace, and as mint sources a CPtr installs each child's cap as
+     * an MDB child of our slot — so the delegation stays revocable.  0 = absent. */
+    uint64_t console_ep_c;     /* console KEndpoint send side (Fase 7.3):
                                 * delivered by init at bootstrap (kind 0x22),
                                 * published as "console.ep". */
-    handle_id_t ep_h;                                         /* svcmgr KEndpoint for EP-based discovery */
+    uint64_t ep_c;                                            /* svcmgr KEndpoint for EP-based discovery */
     handle_id_t death_notif_h;  /* Track B: one KNotification; bit (1<<service_id)
                                  * signalled by the kernel on each service exit. */
     /* Fase S1: svcmgr's delegated untyped pool (init carves a sub-untyped and
@@ -200,7 +203,7 @@ static int64_t svcmgr_retype_to_handle(uint64_t ut_cptr, uint32_t obj_type,
  * yet wired the line is dropped (same as the old early-boot behaviour). */
 static uint8_t g_svcmgr_log_buf[IRIS_IPC_BUF_SIZE];
 static void svcmgr_log(const char *msg) {
-    (void)console_ep_write(g_svcmgr_state.console_ep_h, g_svcmgr_log_buf, msg);
+    (void)console_ep_write(g_svcmgr_state.console_ep_c, g_svcmgr_log_buf, msg);
 }
 
 static void svcmgr_log_u32(uint32_t value) {
@@ -377,13 +380,18 @@ static int svcmgr_name_has_ep_suffix(const char *name) {
  * spoofed by runtime registration.
  */
 static int svcmgr_resolve_ep_name(struct svcmgr_state *state, const char *name,
-                                  handle_id_t *master_h, iris_rights_t *allowed) {
-    if (!state || !master_h || !allowed) return 0;
+                                  handle_id_t *master_h, iris_rights_t *allowed,
+                                  uint32_t *out_cptr) {
+    if (!state || !master_h || !allowed || !out_cptr) return 0;
     if (!svcmgr_name_has_ep_suffix(name)) return 0;
 
+    /* Etapa 4: our own and console's endpoints are CSpace slots, so they are
+     * returned through out_cptr and minted with SYS_CSPACE_MINT.  They cannot
+     * go through master_h: SYS_CNODE_MINT resolves its SOURCE in the handle
+     * namespace only, so a CPtr source is not expressible there. */
     if (svcmgr_name_equal(name, "svcmgr.ep")) {
-        if (state->ep_h == HANDLE_INVALID) return 0;
-        *master_h = state->ep_h;
+        if (state->ep_c == 0u) return 0;
+        *out_cptr = (uint32_t)state->ep_c;
         /* Discovery cap: TRANSFER allows holders (e.g. init) to distribute
          * it to children — including by CSpace mint (Fase 8), which needs
          * DUPLICATE. It only grants EP_CALL on svcmgr, never recv. */
@@ -396,8 +404,8 @@ static int svcmgr_resolve_ep_name(struct svcmgr_state *state, const char *name,
      * anti-spoof property as catalog ".ep" names: bootstrap-delivered,
      * never runtime-registered. */
     if (svcmgr_name_equal(name, "console.ep")) {
-        if (state->console_ep_h == HANDLE_INVALID) return 0;
-        *master_h = state->console_ep_h;
+        if (state->console_ep_c == 0u) return 0;
+        *out_cptr = (uint32_t)state->console_ep_c;
         /* DUPLICATE (Fase 8) lets holders re-mint the send cap into CSpace
          * slots; it adds no receive authority. */
         *allowed  = RIGHT_WRITE | RIGHT_DUPLICATE;
@@ -645,7 +653,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
 
         /* Reserved "<name>.ep" endpoint names resolve first (Fase 7.1). */
         if (!svcmgr_resolve_ep_name(state, (const char *)g_ep_recv_buf,
-                                    &master_h, &granted)) {
+                                    &master_h, &granted, &src_cptr)) {
             struct svcmgr_dynamic_service *dyn =
                 svcmgr_dynamic_find_name(state, (const char *)g_ep_recv_buf);
             const struct iris_service_catalog_entry *cat =
@@ -962,7 +970,7 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
 
     if (manifest->client_eps & IRIS_SVC_CLIENT_EP_SVCMGR) {
         mints[n].slot = IRIS_CPTR_SVCMGR_EP;
-        mints[n].src_h = state->ep_h;
+        mints[n].src_cptr = state->ep_c;
         mints[n].rights = RIGHT_WRITE;
         mints[n].badge = child_badge;
         n++;
@@ -976,7 +984,7 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
     }
     if (manifest->client_eps & IRIS_SVC_CLIENT_EP_CONSOLE) {
         mints[n].slot = IRIS_CPTR_CONSOLE_EP;
-        mints[n].src_h = state->console_ep_h;
+        mints[n].src_cptr = state->console_ep_c;
         mints[n].rights = RIGHT_WRITE;
         mints[n].badge = child_badge;
         n++;
@@ -1350,8 +1358,8 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     for (uint32_t i = 0; i < (uint32_t)sizeof(*state); i++) ((uint8_t *)state)[i] = 0;
 
     state->spawn_cap_h = HANDLE_INVALID;
-    state->console_ep_h = HANDLE_INVALID;
-    state->ep_h        = HANDLE_INVALID;
+    state->console_ep_c = 0u;
+    state->ep_c        = 0u;
     state->death_notif_h = HANDLE_INVALID;
     for (uint32_t i = 0; i < SVCMGR_IRQ_CAPS_TABLE_SIZE; i++)
         state->irq_caps[i] = 0u;
@@ -1385,10 +1393,8 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
      *                         IRIS_CPTR_SVCMGR_EP into catalog children;
      *   slot 6 (SPAWN_CAP)  — spawn/authority cap (initrd, ioport/irq caps). */
     {
-        int64_t ch = svcmgr_syscall1(SYS_CSPACE_RESOLVE, IRIS_CPTR_CONSOLE_EP);
-        state->console_ep_h = (ch >= 0) ? (handle_id_t)ch : HANDLE_INVALID;
-        int64_t er = svcmgr_syscall1(SYS_CSPACE_RESOLVE, IRIS_CPTR_OWN_EP);
-        state->ep_h = (er >= 0) ? (handle_id_t)er : HANDLE_INVALID;
+        state->console_ep_c = IRIS_CPTR_CONSOLE_EP;
+        state->ep_c = IRIS_CPTR_OWN_EP;
         int64_t sr = svcmgr_syscall1(SYS_CSPACE_RESOLVE, IRIS_CPTR_SPAWN_CAP);
         state->spawn_cap_h = (sr >= 0) ? (handle_id_t)sr : HANDLE_INVALID;
         /* Fase S1: the delegated untyped pool (init carved a sub-untyped and
@@ -1426,16 +1432,16 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         int64_t n = svcmgr_syscall2(SYS_KLOG_DRAIN,
                                     (uint64_t)(uintptr_t)klog_drain_buf,
                                     4096u);
-        if (n > 0 && state->console_ep_h != HANDLE_INVALID) {
+        if (n > 0 && state->console_ep_c != 0u) {
             klog_drain_buf[n] = 0u;
-            (void)console_ep_write(state->console_ep_h, g_svcmgr_log_buf,
+            (void)console_ep_write(state->console_ep_c, g_svcmgr_log_buf,
                                    (const char *)klog_drain_buf);
         }
     }
 
     svcmgr_request_hardware_caps(state);
 
-    /* svcmgr's discovery endpoint (state->ep_h) is the IRIS_CPTR_OWN_EP mint
+    /* svcmgr's discovery endpoint (state->ep_c) is the IRIS_CPTR_OWN_EP mint
      * resolved above — no SYS_ENDPOINT_CREATE. */
 
     /* Fase 8: pre-create ALL service endpoint / IRQ-notification masters
@@ -1466,12 +1472,12 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
 
     svcmgr_autostart_services(state);
     svcmgr_log(sm_str_ready);
-    if (state->ep_h != HANDLE_INVALID)
+    if (state->ep_c != 0u)
         svcmgr_log(sm_str_ep_ready);
 
     for (;;) {
         /* Drain all pending EP_CALL requests before blocking on KChannel. */
-        while (state->ep_h != HANDLE_INVALID) {
+        while (state->ep_c != 0u) {
             struct IrisMsg ep_msg;
             int64_t ep_r;
             uint32_t k;
@@ -1486,7 +1492,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
              * exhausted / no root CNode) keeps legacy handle delivery. */
             iris_msg_declare_recv_slot(&ep_msg, svcmgr_next_recv_slot(state));
             /* Fase S1: our explicit reply object rides in recv arg2. */
-            ep_r = svcmgr_syscall3(SYS_EP_NB_RECV, state->ep_h,
+            ep_r = svcmgr_syscall3(SYS_EP_NB_RECV, state->ep_c,
                                    (uint64_t)(uintptr_t)&ep_msg,
                                    IRIS_CPTR_OWN_REPLY);
             if (ep_r != IRIS_OK) break;
