@@ -288,13 +288,23 @@ static long lp_ps_serve(uint32_t op, uint32_t tidx, uint32_t vidx,
 /* Manifest oracle: bitmask of slots 0..17 that resolve, plus high-authority
  * slots a minimal pager must never hold (bit24 spawn=6, bit26 untyped=55,
  * bit27 vspace-self=56). */
+/* Presence, not authority: SYS_CSPACE_RESOLVE materialises a NEW handle-table
+ * entry, so the probe hands it straight back (same leak as the pager's
+ * oracle).  The bridge itself retires in Stage 4 and takes this with it. */
+static int lp_slot_present(long cptr) {
+    long h = lp_sys1(SYS_CSPACE_RESOLVE, cptr);
+    if (h < 0) return 0;
+    (void)lp_sys1(SYS_HANDLE_CLOSE, h);
+    return 1;
+}
+
 static uint32_t lp_ps_report(void) {
     uint32_t mask = 0u;
     for (uint32_t s = 0; s < 18u; s++)
-        if (lp_sys1(SYS_CSPACE_RESOLVE, (long)s) >= 0) mask |= (1u << s);
-    if (lp_sys1(SYS_CSPACE_RESOLVE, 6)  >= 0) mask |= (1u << 24);
-    if (lp_sys1(SYS_CSPACE_RESOLVE, 55) >= 0) mask |= (1u << 26);
-    if (lp_sys1(SYS_CSPACE_RESOLVE, 56) >= 0) mask |= (1u << 27);
+        if (lp_slot_present((long)s)) mask |= (1u << s);
+    if (lp_slot_present(6))  mask |= (1u << 24);
+    if (lp_slot_present(55)) mask |= (1u << 26);
+    if (lp_slot_present(56)) mask |= (1u << 27);
     return mask;
 }
 
@@ -402,11 +412,11 @@ void lp_main(handle_id_t bootstrap_ch_h) {
     if (msg.label == (uint64_t)LP_CMD_REPORT_SLOTS) {
         uint32_t mask = 0u;
         for (uint32_t s = 0; s < 16u; s++) {
-            if (lp_sys1(SYS_CSPACE_RESOLVE, (long)s) >= 0) mask |= (1u << s);
+            if (lp_slot_present((long)s)) mask |= (1u << s);
         }
-        if (lp_sys1(SYS_CSPACE_RESOLVE, 25) >= 0) mask |= (1u << 16);
-        if (lp_sys1(SYS_CSPACE_RESOLVE, 55) >= 0) mask |= (1u << 17);
-        if (lp_sys1(SYS_CSPACE_RESOLVE, 56) >= 0) mask |= (1u << 18);
+        if (lp_slot_present(25)) mask |= (1u << 16);
+        if (lp_slot_present(55)) mask |= (1u << 17);
+        if (lp_slot_present(56)) mask |= (1u << 18);
         lp_sys1(SYS_EXIT, (long)mask);
         for (;;) {}
     }

@@ -436,18 +436,33 @@ static long pg_target_reset(uint32_t tidx) {
     return 0;
 }
 
+/* Is this CSpace slot occupied?  SYS_CSPACE_RESOLVE materialises the slot into
+ * a NEW handle-table entry, so the probe must hand it straight back: the oracle
+ * wants presence, not authority, and it is answered on every PGR_OP_REPORT.
+ * Leaking one entry per occupied slot per call walks the pager into
+ * HANDLE_TABLE_MAX (256) with no ceiling.
+ *
+ * The materialisation is itself Stage 4 debt — the whole CPtr→handle bridge
+ * retires with SYS_CSPACE_RESOLVE, and this oracle with it. */
+static int pg_slot_present(long cptr) {
+    long h = pg_sys1(SYS_CSPACE_RESOLVE, cptr);
+    if (h < 0) return 0;
+    (void)pg_sys1(SYS_HANDLE_CLOSE, h);
+    return 1;
+}
+
 /* Manifest presence oracle — see pager_proto.h for the bit layout. */
 static uint32_t pg_report_slots(void) {
     uint32_t mask = 0u;
     for (uint32_t s = 0; s < 20u; s++)
-        if (pg_sys1(SYS_CSPACE_RESOLVE, (long)s) >= 0) mask |= (1u << s);
+        if (pg_slot_present((long)s)) mask |= (1u << s);
     for (uint32_t i = 0; i < PGR_MAX_TARGETS; i++) {
-        if (pg_sys1(SYS_CSPACE_RESOLVE, (long)PGR_TSLOT_PROC(i)) >= 0) mask |= (1u << 20);
-        if (pg_sys1(SYS_CSPACE_RESOLVE, (long)PGR_TSLOT_VS(i))   >= 0) mask |= (1u << 21);
+        if (pg_slot_present((long)PGR_TSLOT_PROC(i))) mask |= (1u << 20);
+        if (pg_slot_present((long)PGR_TSLOT_VS(i)))   mask |= (1u << 21);
     }
-    if (pg_sys1(SYS_CSPACE_RESOLVE, 6)  >= 0) mask |= (1u << 24);
-    if (pg_sys1(SYS_CSPACE_RESOLVE, 55) >= 0) mask |= (1u << 26);
-    if (pg_sys1(SYS_CSPACE_RESOLVE, 56) >= 0) mask |= (1u << 27);
+    if (pg_slot_present(6))  mask |= (1u << 24);
+    if (pg_slot_present(55)) mask |= (1u << 26);
+    if (pg_slot_present(56)) mask |= (1u << 27);
     return mask;
 }
 
