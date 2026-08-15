@@ -135,6 +135,28 @@ static long it_retype_handle(long ut, uint32_t obj_type, long obj_arg) {
     return h;
 }
 
+/* Etapa 4: the same fabrication, but the capability STAYS in its slot — which
+ * is the seL4 shape, the capability IS the slot.  Used by every test whose
+ * subject is an authority property rather than the handle namespace itself.
+ * Same rotating pool and the same contract: delete before use, never hold a
+ * slot across a test boundary. */
+static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
+    uint32_t slot = IT_S1_SCRATCH_BASE +
+        (__atomic_fetch_add(&g_it_s1_scratch_next, 1u, __ATOMIC_RELAXED)
+         % IT_S1_SCRATCH_SPAN);
+    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
+    long r = it_retype2_at(ut, obj_type, slot, 1u, obj_arg);
+    return (r < 0) ? r : (long)slot;
+}
+
+static long it_ep_create_slot(void) {
+    return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT, 0);
+}
+
+static long it_notify_create_slot(void) {
+    return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION, 0);
+}
+
 static long it_ep_create(void) {
     return it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT, 0);
 }
@@ -418,20 +440,19 @@ static void test_t008(void) {
 /* ── T009: NOTIFY_SIGNAL then NOTIFY_WAIT (pre-signalled) ──────────────── */
 
 static void test_t009(void) {
-    long n_raw = it_notify_create();
+    long n_raw = it_notify_create_slot();
     if (n_raw < 0) { it_fail("T009", "notify create"); return; }
-    handle_id_t n_h = (handle_id_t)n_raw;
 
     long r = it_sys2(SYS_NOTIFY_SIGNAL, n_raw, 0x3u);
     if (r < 0) {
-        it_close(&n_h);
+        it_slot_delete((uint32_t)n_raw);
         it_fail("T009", "notify signal"); return;
     }
 
     uint64_t out_bits = 0;
     r = it_sys2(SYS_NOTIFY_WAIT, n_raw, (long)(uintptr_t)&out_bits);
 
-    it_close(&n_h);
+    it_slot_delete((uint32_t)n_raw);
 
     if (r == 0 && out_bits == 0x3u)
         it_pass("T009");
@@ -442,15 +463,14 @@ static void test_t009(void) {
 /* ── T010: NOTIFY_WAIT_TIMEOUT → TIMED_OUT ─────────────────────────────── */
 
 static void test_t010(void) {
-    long n_raw = it_notify_create();
+    long n_raw = it_notify_create_slot();
     if (n_raw < 0) { it_fail("T010", "notify create"); return; }
-    handle_id_t n_h = (handle_id_t)n_raw;
 
     uint64_t out_bits = 0;
     long r = it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n_raw,
                      (long)(uintptr_t)&out_bits, 50000000L);
 
-    it_close(&n_h);
+    it_slot_delete((uint32_t)n_raw);
 
     if (r == (long)IRIS_ERR_TIMED_OUT)
         it_pass("T010");
@@ -697,16 +717,15 @@ static void test_t016(void) {
 /* ── T018: EP_NB_SEND on empty endpoint → WOULD_BLOCK ──────────────────── */
 
 static void test_t018(void) {
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T018", "ep create"); return; }
-    handle_id_t ep_h = (handle_id_t)ep_raw;
 
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = 0x1818ULL;
     long r = it_sys2(SYS_EP_NB_SEND, ep_raw, (long)&msg);
 
-    it_close(&ep_h);
+    it_slot_delete((uint32_t)ep_raw);
 
     if (r == (long)IRIS_ERR_WOULD_BLOCK)
         it_pass("T018");
@@ -735,7 +754,11 @@ static void test_t019(void) {
     g_t019_done   = 0;
     g_t019_result = 0;
 
-    long ep_raw = it_ep_create();
+    /* Etapa 4: the property under test — dropping the LAST capability to an
+     * endpoint wakes a blocked receiver — is real in a CSpace-only kernel; only
+     * the vehicle changes.  The endpoint lives in a slot and the drop is a
+     * slot delete instead of a handle close. */
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T019", "ep create"); return; }
     g_t019_ep_h = (handle_id_t)ep_raw;
 
@@ -743,7 +766,8 @@ static void test_t019(void) {
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t019_stack + sizeof(g_t019_stack))) & ~0xFULL;
     long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
     if (tid < 0) {
-        it_close(&g_t019_ep_h);
+        it_slot_delete((uint32_t)g_t019_ep_h);
+        g_t019_ep_h = HANDLE_INVALID;
         it_fail("T019", "thread create"); return;
     }
     handle_id_t tid_h = (handle_id_t)tid;
@@ -751,8 +775,9 @@ static void test_t019(void) {
     /* Let thread enter EP_RECV and block */
     it_sys1(SYS_SLEEP, 5);
 
-    /* Close handle → active_refs → 0 → endpoint close fires → thread wakes */
-    it_close(&g_t019_ep_h);
+    /* Delete the slot → last cap gone → endpoint close fires → thread wakes */
+    it_slot_delete((uint32_t)g_t019_ep_h);
+    g_t019_ep_h = HANDLE_INVALID;
 
     for (int i = 0; i < 200 && !g_t019_done; i++)
         it_sys1(SYS_SLEEP, 1);
