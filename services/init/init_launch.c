@@ -174,7 +174,6 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     handle_id_t svcmgr_proc_h  = HANDLE_INVALID;
     handle_id_t svcmgr_chan_h  = HANDLE_INVALID;
     handle_id_t svcmgr_ep_h    = HANDLE_INVALID;
-    handle_id_t spawn_dup_h    = HANDLE_INVALID;
     long r;
 
     /* Fase S1: retyped from init's untyped pool (SYS_ENDPOINT_CREATE retired). */
@@ -182,10 +181,13 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     if (r < 0) goto fail;
     svcmgr_ep_h = (handle_id_t)r;
 
-    r = init_sys2(SYS_HANDLE_DUP, (long)spawn_cap_h,
-                  (long)(RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER));
-    if (r < 0) goto fail;
-    spawn_dup_h = (handle_id_t)r;
+    /* Etapa 4: the SYS_HANDLE_DUP that used to sit here is gone.  It produced a
+     * rights-reduced duplicate purely to have a HANDLE to pass as a mint
+     * source — and the mint below already reduces to exactly the same rights,
+     * so the duplicate never carried authority the mint did not compute
+     * itself.  Minting straight from our spawn-cap SLOT drops a handle, drops
+     * a syscall, and makes svcmgr's spawn cap an MDB child of that slot, so
+     * the delegation is revocable by init instead of handed over outright. */
 
     /* Fase S1: carve svcmgr's untyped pool (a sub-untyped of init's boot
      * block) — svcmgr retypes every service endpoint / IRQ notification /
@@ -218,9 +220,9 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
         sm_mints[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         sm_mints[n].badge  = 0;   /* unbadged: svcmgr re-mints per child badge */
         n++;
-        sm_mints[n].slot   = IRIS_CPTR_SPAWN_CAP;
-        sm_mints[n].src_h  = spawn_dup_h;
-        sm_mints[n].rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[n].slot     = IRIS_CPTR_SPAWN_CAP;
+        sm_mints[n].src_cptr = IRIS_CPTR_SPAWN_CAP;
+        sm_mints[n].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         sm_mints[n].badge  = 0;
         n++;
         if (sm_untyped_h != HANDLE_INVALID) {
@@ -237,7 +239,6 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     init_close(&sm_untyped_h);  /* svcmgr's slot-12 mint keeps the pool alive */
     if (r < 0) goto fail;
 
-    init_close(&spawn_dup_h);
     init_close(&svcmgr_chan_h);   /* bootstrap channel unused — svcmgr is CPtr-only */
     init_close(&svcmgr_proc_h);
     return svcmgr_ep_h;
@@ -245,7 +246,6 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
 fail:
     init_close(&svcmgr_proc_h);
     init_close(&svcmgr_chan_h);
-    if (spawn_dup_h != HANDLE_INVALID) init_close(&spawn_dup_h);
     if (svcmgr_ep_h != HANDLE_INVALID) init_close(&svcmgr_ep_h);
     return HANDLE_INVALID;
 }
@@ -260,7 +260,7 @@ fail:
  * (Fase 13/Track I).  Then waits up to 12 seconds for iris_test to exit and
  * logs the final pass/fail result.
  */
-void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
+void init_spawn_iris_test(handle_id_t sm_h) {
     handle_id_t proc_h      = HANDLE_INVALID;
     handle_id_t boot_h      = HANDLE_INVALID;
     handle_id_t watch_base_h = HANDLE_INVALID; /* death notification (Track B) */
@@ -362,13 +362,13 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
          * slot — iris_test invokes it by CPtr to prove device caps resolve via
          * CSpace (T069). */
         it_mints[8].slot = IRIS_CPTR_TEST_SPAWN;
-        it_mints[8].src_h = spawn_cap_h;
+        it_mints[8].src_cptr = IRIS_CPTR_SPAWN_CAP;
         it_mints[8].rights = RIGHT_READ;
         it_mints[8].badge = 0;
         /* Fase 13 (Track I): the operational spawn cap (serial KIoPort +
          * INITRD access) is a pre-start mint too — no bootstrap KChannel send. */
         it_mints[9].slot = IRIS_CPTR_SPAWN_CAP;
-        it_mints[9].src_h = spawn_cap_h;
+        it_mints[9].src_cptr = IRIS_CPTR_SPAWN_CAP;
         it_mints[9].rights = RIGHT_READ;
         it_mints[9].badge = 0;
         /* Fase 18: the boot KUntyped for the authority suite (T125–T131). */
@@ -401,8 +401,12 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
         it_mints[12].src_h = lk_vfs;
         it_mints[12].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         it_mints[12].badge = 0;
-        r = svc_load_minted(spawn_cap_h, "iris_test", &proc_h, &boot_h,
-                            it_mints, 13u);
+        /* Etapa 4: the loader authority is our spawn-cap SLOT.  SYS_INITRD_VMO
+         * and SYS_PROCESS_CREATE both resolve it either way, and the slot
+         * outlives bootstrap_h by construction — which is the only reason the
+         * retired duplicate had to exist. */
+        r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "iris_test",
+                            &proc_h, &boot_h, it_mints, 13u);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);
@@ -462,5 +466,6 @@ out:
     init_close(&proc_h);
     init_close(&boot_h);
     init_close(&watch_base_h);
-    init_close(&spawn_cap_h);
+    /* Etapa 4: nothing to close — the loader authority was our own CSpace slot,
+     * not a duplicate this function owned and had to release. */
 }

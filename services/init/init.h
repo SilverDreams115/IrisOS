@@ -148,7 +148,7 @@ int  init_wait_vfs_rw_ep(handle_id_t vfs_ep_h);
 void init_spawn_fb(handle_id_t spawn_cap_h);
 int  init_spawn_console(handle_id_t spawn_cap_h);
 handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h);
-void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h);
+void init_spawn_iris_test(handle_id_t sm_h);
 
 /* Runtime probes + S8 exception selftest (init_test.c). */
 void init_runtime_probe_invalid_userptr(void);

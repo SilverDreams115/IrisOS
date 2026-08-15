@@ -134,7 +134,6 @@ void init_main(handle_id_t bootstrap_ch_h) {
     handle_id_t bootstrap_h        = HANDLE_INVALID;
     handle_id_t sm_h               = HANDLE_INVALID;
     handle_id_t vfs_ep_h           = HANDLE_INVALID;
-    handle_id_t iris_test_spawn_h  = HANDLE_INVALID;
 
     bootstrap_h = init_recv_spawn_cap(bootstrap_ch_h);
     init_close(&bootstrap_ch_h);
@@ -189,13 +188,14 @@ void init_main(handle_id_t bootstrap_ch_h) {
         init_exit(1);
     }
 
-    /* Dup spawn_cap for iris_test before releasing bootstrap_h */
-    {
-        long r = init_sys2(SYS_HANDLE_DUP, (long)bootstrap_h,
-                           (long)(RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER));
-        if (r >= 0) iris_test_spawn_h = (handle_id_t)r;
-    }
-
+    /* Etapa 4: the SYS_HANDLE_DUP that reserved a spawn cap for iris_test here
+     * is gone.  It existed because iris_test spawns long AFTER the close below,
+     * so a copy of bootstrap_h had to be kept alive to serve as both the
+     * loader authority and the source of iris_test's two spawn-cap mints.
+     * Our spawn-cap SLOT already outlives bootstrap_h and answers both roles:
+     * SYS_INITRD_VMO / SYS_PROCESS_CREATE resolve it directly, and the mints
+     * name it as their source, which also makes iris_test's caps MDB children
+     * of that slot instead of copies handed over outright. */
     init_close(&bootstrap_h);
 
     /* ── Service discovery ── */
@@ -257,14 +257,17 @@ void init_main(handle_id_t bootstrap_ch_h) {
     init_selftest_exception();
 
     /* ── Block 8: iris_test ring-3 syscall test suite ── */
-    if (iris_test_spawn_h != HANDLE_INVALID) {
+    {
         /* Drain our queued console output first: iris_test writes raw to
          * COM1, and a half-flushed backlog line would otherwise interleave
          * mid-line with test output under load. */
         if (g_init_console_ep_h != HANDLE_INVALID)
             (void)console_ep_sync(g_init_console_ep_h);
-        init_spawn_iris_test(iris_test_spawn_h, sm_h);
-        iris_test_spawn_h = HANDLE_INVALID;
+        /* Etapa 4: unconditional.  The old guard was "did the DUP succeed?";
+         * with the slot named directly there is nothing to fail early, and an
+         * empty slot 6 now fails loudly at the mint instead of silently
+         * skipping the whole suite. */
+        init_spawn_iris_test(sm_h);
     }
 
     /* ── Idle loop (init never exits) ── */
