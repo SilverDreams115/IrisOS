@@ -142,7 +142,8 @@ proven:
 
 - [x] Native CDT/MDB tied to CNode slots (global parent/child) — **Fase S3**
       (`docs/architecture/cspace-cdt-mdb.md`); recursive cross-process revoke
-      included. The parallel handle-tree still needs retiring.
+      included. The parallel handle-tree is RETIRED (Fase S4/Stage 3): there
+      is exactly one derivation tree in the system.
 - [x] Recursive cross-process revoke with deterministic rollback/cleanup —
       **Fase S3** (`SYS_CSPACE_REVOKE`).
 - [x] CPtr-based cap transfer (source and destination in CSpace) — **Fase S4**
