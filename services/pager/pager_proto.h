@@ -30,8 +30,10 @@
  *                               handler on it with signal bit (1 << tidx).
  *                               Fase 28.1: replaces the per-target
  *                               notification column — 16 concurrent targets
- *                               cost ONE notification against the supervisor's
- *                               KPROCESS_NOTIFICATION_QUOTA, not 16.
+ *                               cost ONE notification, not 16.  (It was
+ *                               introduced to fit the per-process notification
+ *                               quota, retired in Fase S1; the shared
+ *                               notification is kept because it is cheaper.)
  *   slot 16/17 PGR_VSLOT(j)     VMO grants (RO cache / private pool, or raw
  *                               Fase 27 VMOs), RIGHT_READ [+ RIGHT_WRITE]
  *   target i (i < PGR_MAX_TARGETS = 16):

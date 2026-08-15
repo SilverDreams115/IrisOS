@@ -28,9 +28,8 @@ exactly one charge per charge acquired.
 | KProcess | `kprocess_alloc` (atomic live-count reserve) | `kprocess_destroy` | rolled back if over `KPROCESS_MAX_LIVE` |
 | KVMO (object) | `kvmo_bind_owner(v, payer)` → `payer->owned_vmos++` | `kvmo_destroy` → `owned_vmos--` | payer = self or a MANAGE'd process (`SYS_VMO_CREATE_FOR`) |
 | KVMO (sparse pages) | first allocation of each page → `payer->phys_pages_charged++` (payer = `kvmo_owner(v)`) | `kvmo_destroy` → one `phys_pages_charged--` per allocated page | charged once regardless of how many VSpaces map it |
-| KNotification | `knotification_bind_owner` → `owned_notifications++` | `knotification_destroy` → `owned_notifications--` | owner = the creating process |
 | KFrameMapping / PTE | `kvspace_map_page` (kslab object) | `kvspace_unmap_page` / VSpace teardown | per-(VSpace, VA); no per-process quota |
-| KEndpoint / KCNode / KReply / KSchedContext | kslab object at create | last-reference destroy | bounded by kslab capacity, not a per-domain quota |
+| KNotification / KEndpoint / KCNode / KReply / KSchedContext | kslab object at create | last-reference destroy | bounded by kslab capacity, not a per-domain quota.  KNotification had an `owned_notifications` quota until **Fase S1**: it is now paid for in Untyped + a CSpace slot, like every other retyped object |
 
 ## Death propagation
 

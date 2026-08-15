@@ -221,10 +221,12 @@ payer / resource domain), selected by explicit capability authority at creation
 - Sparse VMO pages are charged **once to the VMO owner** and released at
   destroy; a shared VMO's pages are paid once, and mapping it into more targets
   does not re-charge.
-- Per-domain quotas (`KPROCESS_VMO_QUOTA` = 32, `KPROCESS_NOTIFICATION_QUOTA` =
-  16, `KPROCESS_PHYS_PAGES_LIMIT` = 2048) carry monotonic high-water marks;
-  exhaustion is atomic (clean `NO_MEMORY`, no partial object, a global
-  failed-charge counter advances).
+- Per-domain quotas (`KPROCESS_VMO_QUOTA` = 32, `KPROCESS_PHYS_PAGES_LIMIT` =
+  2048) carry monotonic high-water marks; exhaustion is atomic (clean
+  `NO_MEMORY`, no partial object, a global failed-charge counter advances).
+  The notification quota was **retired in Fase S1** — the capacity to create a
+  notification is holding Untyped memory plus a CSpace slot, never a numeric
+  kernel quota; `SYS_RESOURCE_INFO` reports `notifs_limit = 0`.
 - `SYS_RESOURCE_INFO(proc, out)` is a read-only, versioned snapshot of a
   domain's usage / limit / high-water plus system-wide failed-charge / rollback
   / kslab gauges.
@@ -328,7 +330,6 @@ THREAD_START` flow.
 | `HANDLE_TABLE_MAX` | 256 |
 | `KCNODE_DEFAULT_SLOTS` | 256 (root CNode) |
 | `KVMO_MAX_PAGES` | 16384 (64 MB per VMO) |
-| `KPROCESS_NOTIFICATION_QUOTA` | 16 per domain |
 | `KPROCESS_VMO_QUOTA` | 32 per domain |
 | `KPROCESS_PHYS_PAGES_LIMIT` | 2048 (8 MB) per domain |
 | kernel object slab | 16 MB (global capacity) |

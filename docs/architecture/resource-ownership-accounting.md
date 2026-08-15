@@ -119,7 +119,7 @@ is charged to the owner once; the *mapping* is a cheap kslab object.
 | KVSpace | process create | its process | no | freed with the process |
 | KFrameMapping / PTE | map syscall | the target VSpace (kslab object) | one per (VSpace, VA) | released on unmap / VSpace teardown |
 | KEndpoint | creator | creator's handle table | shared by caps | freed on last handle close |
-| KNotification | creator (SYS_NOTIFY_CREATE) | the CALLER (owned_notifications) | shared by caps (e.g. the pager's ONE fault notif) | freed on last handle close; quota released at destroy |
+| KNotification | creator (retype from Untyped) | no numeric owner charge since Fase S1 — the Untyped it was retyped from is the budget | shared by caps (e.g. the pager's ONE fault notif) | freed on last reference |
 | KReply | EP_CALL (kernel) | the replying endpoint's transaction | one-shot | consumed by SYS_REPLY |
 | KCNode | creator | creator's handle table | shared by caps | freed on last handle close |
 | KUntyped | boot / retype | holder | retyped into children | children track back to it |
@@ -139,9 +139,15 @@ is charged to the owner once; the *mapping* is a cheap kslab object.
 | Resource | Limit | Charge point | Release point | Exhaustion result |
 |----------|-------|--------------|---------------|-------------------|
 | `owned_vmos` | `KPROCESS_VMO_QUOTA` = 32 | `kvmo_bind_owner` | `kvmo_destroy` | `IRIS_ERR_NO_MEMORY`, no object, `global_failed_charges++` |
-| `owned_notifications` | `KPROCESS_NOTIFICATION_QUOTA` = 16 | `knotification_bind_owner` | `knotification_destroy` | `IRIS_ERR_NO_MEMORY`, no object |
 | `phys_pages_charged` | `KPROCESS_PHYS_PAGES_LIMIT` = 2048 (8 MB) | first allocation of each sparse page (charged to VMO owner) | `kvmo_destroy` (once per page) | `IRIS_ERR_NO_MEMORY`, no page installed |
 | live processes | `KPROCESS_MAX_LIVE` = 64 | `kprocess_alloc` (atomic reserve) | `kprocess_destroy` | rolled back atomically, allocation fails |
+
+The notification quota (`KPROCESS_NOTIFICATION_QUOTA` = 16, charged at
+`knotification_bind_owner`) was **retired in Fase S1** together with the
+`owned_notifications` counter: the capacity to create a notification is holding
+Untyped memory plus a CSpace slot, not a numeric kernel budget.
+`SYS_RESOURCE_INFO` keeps the `notifs_*` fields additive and frozen at 0 (see
+the ledger's TRANSITIONAL_DIAGNOSTICS row).
 
 Every acquire updates a monotonic **high-water mark** (`*_hwm`, never decreases)
 and, on rejection, `global_failed_charges`.  A provisional charge rolled back on

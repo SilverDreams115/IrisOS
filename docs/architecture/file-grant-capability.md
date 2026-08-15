@@ -191,6 +191,10 @@ and a pager that skips its bookkeeping still cannot read the revoked backing —
 
 ### The old quota behaviour
 
+(Historical.  `KPROCESS_NOTIFICATION_QUOTA` itself was retired in Fase S1 —
+see `resource-ownership-accounting.md`.  The shared-notification design below
+outlived it because it is cheaper, not because a quota forces it.)
+
 `SYS_EXCEPTION_HANDLER` binds a process's fault to a KNotification signalled on
 fault; `SYS_NOTIFY_CREATE` charges the notification to its **creator**.  In
 Fase 28 each target had its own fault notification, all created by the

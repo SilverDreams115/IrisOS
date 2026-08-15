@@ -72,7 +72,7 @@ impractical and unnecessary given the path coverage.
 | PCID pool | 1–4094 | hardware capacity | (cannot exhaust at 64 processes) |
 | kernel object slab | 16 MB | global implementation capacity | `NULL` → `IRIS_ERR_NO_MEMORY` |
 
-Resource-policy quotas (`KPROCESS_VMO_QUOTA`, `KPROCESS_NOTIFICATION_QUOTA`,
-`KPROCESS_PHYS_PAGES_LIMIT`) are documented in
-`resource-ownership-accounting.md`; they are per-domain budgets, not global
-capacity.
+Resource-policy quotas (`KPROCESS_VMO_QUOTA`, `KPROCESS_PHYS_PAGES_LIMIT`) are
+documented in `resource-ownership-accounting.md`; they are per-domain budgets,
+not global capacity.  `KPROCESS_NOTIFICATION_QUOTA` was retired in Fase S1 —
+Untyped is the budget.

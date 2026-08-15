@@ -241,8 +241,10 @@ standing no-drift/no-ghost/no-filesystem-policy guarantees (F31–F40).
 The single-target multi-page and two-offset fault probes
 (`LP_CMD_FAULT_READ_SEQ` / `LP_CMD_FAULT_READ_OFFS` in `lifecycle_probe`) let one
 target drive multi-page and arbitrary-byte-offset resolution without spawning N
-one-shot targets — which would exhaust the per-process notification quota
-(`KPROCESS_NOTIFICATION_QUOTA = 16`).
+one-shot targets — which, under the per-process notification quota in force at
+the time (`KPROCESS_NOTIFICATION_QUOTA = 16`, retired in Fase S1), would have
+exhausted it.  The probes are kept: they are cheaper than N targets regardless
+of the quota.
 
 ## ELF-segment groundwork (T229)
 
