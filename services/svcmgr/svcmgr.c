@@ -98,8 +98,13 @@ struct svcmgr_state {
     /* Fase S1: svcmgr's delegated untyped pool (init carves a sub-untyped and
      * mints it at IRIS_CPTR_OWN_UNTYPED).  Every endpoint / notification /
      * reply svcmgr fabricates is retyped from here — the retired create
-     * syscalls are never used. */
-    handle_id_t untyped_h;
+     * syscalls are never used.
+     *
+     * Etapa 4: held as the CPtr, not a handle.  retype2 only gives a created
+     * capability a real MDB parent when its source untyped was named by CPtr;
+     * a handle source has no CSpace ancestor and the result is a LEGACY_ROOT.
+     * 0 = no pool. */
+    uint64_t    untyped_c;
     /* Fase S4: CPtr slots (0 = absent), not handles. */
     uint32_t    irq_caps[SVCMGR_IRQ_CAPS_TABLE_SIZE];       /* indexed by IRQ number  */
     uint32_t    ioport_caps[SVCMGR_IOPORT_CAPS_TABLE_SIZE]; /* indexed by service_id  */
@@ -177,10 +182,10 @@ static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1
  * consumes the slot on a committed delivery.  63 sits below the dynamic
  * receive-slot pool (64..255) and outside every well-known mint slot. */
 #define SVCMGR_XFER_SLOT       63u
-static int64_t svcmgr_retype_to_handle(handle_id_t ut_h, uint32_t obj_type,
+static int64_t svcmgr_retype_to_handle(uint64_t ut_cptr, uint32_t obj_type,
                                        uint64_t obj_arg) {
-    if (ut_h == HANDLE_INVALID) return (int64_t)IRIS_ERR_BAD_HANDLE;
-    int64_t r = svcmgr_syscall4(SYS_UNTYPED_RETYPE2, (uint64_t)ut_h,
+    if (ut_cptr == 0u) return (int64_t)IRIS_ERR_NOT_FOUND;
+    int64_t r = svcmgr_syscall4(SYS_UNTYPED_RETYPE2, ut_cptr,
                                 (uint64_t)obj_type | (1ULL << 32),
                                 ((uint64_t)SVCMGR_S1_SCRATCH_SLOT << 32),
                                 obj_arg);
@@ -1104,7 +1109,7 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
             /* Fase 7.6: IRQ → KNotification. Created once, reused across
              * restarts so the kernel route only needs re-registering. */
             if (svc->irq_notif_h == HANDLE_INVALID) {
-                int64_t nr = svcmgr_retype_to_handle(state->untyped_h, IRIS_KOBJ_NOTIFICATION, 0);
+                int64_t nr = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_NOTIFICATION, 0);
                 svc->irq_notif_h = (nr >= 0) ? (handle_id_t)nr : HANDLE_INVALID;
             }
             route_h = svc->irq_notif_h;
@@ -1159,7 +1164,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
      * (clear_service_masters does not touch ep_h) so client caps obtained
      * via "<name>.ep" lookup stay valid across a respawn. Non-fatal. */
     if (manifest->own_service_ep && svc->ep_h == HANDLE_INVALID) {
-        int64_t ep_r = svcmgr_retype_to_handle(state->untyped_h, IRIS_KOBJ_ENDPOINT, 0);
+        int64_t ep_r = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_ENDPOINT, 0);
         svc->ep_h = (ep_r >= 0) ? (handle_id_t)ep_r : HANDLE_INVALID;
     }
 
@@ -1167,7 +1172,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
      * sent (the WAIT side ships with them); the kernel route is registered
      * later in track_spawn. Created once, survives restarts. */
     if (manifest->irq_notify && svc->irq_notif_h == HANDLE_INVALID) {
-        int64_t nr = svcmgr_retype_to_handle(state->untyped_h, IRIS_KOBJ_NOTIFICATION, 0);
+        int64_t nr = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_NOTIFICATION, 0);
         svc->irq_notif_h = (nr >= 0) ? (handle_id_t)nr : HANDLE_INVALID;
     }
 
@@ -1202,9 +1207,9 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
          * reply cap would suppress close-wakes-caller on child death. */
         handle_id_t reply1_h = HANDLE_INVALID;
         handle_id_t reply2_h = HANDLE_INVALID;
-        if (manifest->own_service_ep && state->untyped_h != HANDLE_INVALID) {
+        if (manifest->own_service_ep && state->untyped_c != 0u) {
             if (svc->reply_ut_h == HANDLE_INVALID) {
-                int64_t ur = svcmgr_retype_to_handle(state->untyped_h,
+                int64_t ur = svcmgr_retype_to_handle(state->untyped_c,
                                                      IRIS_KOBJ_UNTYPED, 4096u);
                 svc->reply_ut_h = (ur >= 0) ? (handle_id_t)ur : HANDLE_INVALID;
             }
@@ -1360,7 +1365,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         state->services[i].irq_notif_h = HANDLE_INVALID;
         state->services[i].reply_ut_h = HANDLE_INVALID;
     }
-    state->untyped_h = HANDLE_INVALID;
+    state->untyped_c = 0u;
     for (uint32_t i = 0; i < SVCMGR_DYNAMIC_SERVICE_CAP; i++) {
         state->dynamic[i].endpoint = 0;
         state->dynamic[i].public_h = HANDLE_INVALID;
@@ -1388,21 +1393,26 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         state->spawn_cap_h = (sr >= 0) ? (handle_id_t)sr : HANDLE_INVALID;
         /* Fase S1: the delegated untyped pool (init carved a sub-untyped and
          * minted it at slot 12).  Every EP/notification/reply svcmgr creates
-         * is retyped from this pool. */
-        int64_t ur = svcmgr_syscall1(SYS_CSPACE_RESOLVE, IRIS_CPTR_OWN_UNTYPED);
-        state->untyped_h = (ur >= 0) ? (handle_id_t)ur : HANDLE_INVALID;
+         * is retyped from this pool.
+         *
+         * Etapa 4: confirmed with SYS_UNTYPED_INFO, which answers by CPtr and
+         * materializes nothing — the pool stays a CPtr all the way into
+         * retype2, which is what gives the fabricated objects a real MDB
+         * ancestor instead of LEGACY_ROOT status. */
+        int64_t ur = svcmgr_syscall3(SYS_UNTYPED_INFO, IRIS_CPTR_OWN_UNTYPED, 0, 0);
+        state->untyped_c = (ur >= 0) ? (uint64_t)IRIS_CPTR_OWN_UNTYPED : 0u;
     }
     if (state->spawn_cap_h == HANDLE_INVALID) {
         svcmgr_log(sm_str_bootcapfail);
         return;
     }
-    if (state->untyped_h == HANDLE_INVALID)
+    if (state->untyped_c == 0u)
         svcmgr_log(sm_str_untypedfail);
 
     /* Fase S1: svcmgr's OWN reply object for the discovery endpoint, retyped
      * straight into root slot IRIS_CPTR_OWN_REPLY (dest 0 = own root). */
-    if (state->untyped_h != HANDLE_INVALID)
-        (void)svcmgr_syscall4(SYS_UNTYPED_RETYPE2, (uint64_t)state->untyped_h,
+    if (state->untyped_c != 0u)
+        (void)svcmgr_syscall4(SYS_UNTYPED_RETYPE2, state->untyped_c,
                               (uint64_t)IRIS_KOBJ_REPLY | (1ULL << 32),
                               ((uint64_t)IRIS_CPTR_OWN_REPLY << 32), 0);
 
@@ -1438,11 +1448,11 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         s = svcmgr_service_state(state, d->service_id);
         if (!s) continue;
         if (d->own_service_ep && s->ep_h == HANDLE_INVALID) {
-            int64_t r0 = svcmgr_retype_to_handle(state->untyped_h, IRIS_KOBJ_ENDPOINT, 0);
+            int64_t r0 = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_ENDPOINT, 0);
             s->ep_h = (r0 >= 0) ? (handle_id_t)r0 : HANDLE_INVALID;
         }
         if (d->irq_notify && s->irq_notif_h == HANDLE_INVALID) {
-            int64_t r0 = svcmgr_retype_to_handle(state->untyped_h, IRIS_KOBJ_NOTIFICATION, 0);
+            int64_t r0 = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_NOTIFICATION, 0);
             s->irq_notif_h = (r0 >= 0) ? (handle_id_t)r0 : HANDLE_INVALID;
         }
     }
@@ -1450,7 +1460,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     /* Track B: the single death notification must exist before any service
      * boots (svcmgr_boot_service arms the watch against it). */
     {
-        int64_t nr = svcmgr_retype_to_handle(state->untyped_h, IRIS_KOBJ_NOTIFICATION, 0);
+        int64_t nr = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_NOTIFICATION, 0);
         state->death_notif_h = (nr >= 0) ? (handle_id_t)nr : HANDLE_INVALID;
     }
 
