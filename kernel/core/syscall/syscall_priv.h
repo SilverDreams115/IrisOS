@@ -127,6 +127,19 @@ static inline int page_round_up_u64(uint64_t size, uint64_t *out_rounded) {
  * IRIS_BOOTCAP_KDEBUG.  Scans the handle table under its spinlock so that
  * no entry can be closed while the check runs.
  */
+/*
+ * Etapa 4: the explicit form — the caller NAMES the capability that authorises
+ * the call, which is what a capability system requires.  The scan below is the
+ * legacy form and is ambient authority: it answers "does this process hold a
+ * KDEBUG cap anywhere in its handle table", so the caller proves nothing and
+ * names nothing (charter A5, and §3.5 on using anything but a capability as
+ * authority).  It also cannot see a bootstrap cap that lives in CSpace, so a
+ * process that migrates off handles silently loses KDEBUG.
+ *
+ * auth_cptr == 0 keeps the legacy scan for callers not yet migrated.
+ */
+static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr);
+
 static inline int task_has_kdebug_cap(struct task *t) {
     if (!t || !t->process) return 0;
     HandleTable *ht = &t->process->handle_table;
@@ -141,6 +154,21 @@ static inline int task_has_kdebug_cap(struct task *t) {
     }
     spinlock_unlock(&ht->lock);
     return found;
+}
+
+static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr) {
+    if (!t || !t->process) return 0;
+    if (auth_cptr == 0u) return task_has_kdebug_cap(t);   /* legacy: ambient */
+    if (!cspace_value_is_cptr((iris_cptr_t)auth_cptr)) return 0;
+
+    struct KObject *obj; iris_rights_t r;
+    if (cspace_resolve_cap(t->process, (iris_cptr_t)auth_cptr, RIGHT_READ,
+                           &obj, &r) != IRIS_OK) return 0;
+    int ok = (obj->type == KOBJ_BOOTSTRAP_CAP) &&
+             kbootcap_allows((struct KBootstrapCap *)obj, IRIS_BOOTCAP_KDEBUG);
+    kobject_active_release(obj);
+    kobject_release(obj);
+    return ok;
 }
 
 /*

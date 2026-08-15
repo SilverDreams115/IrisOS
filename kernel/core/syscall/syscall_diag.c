@@ -32,9 +32,10 @@ uint64_t sys_clock_nanosleep(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 
 uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
     struct task *t = task_current();
-    if (!t || !task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    /* arg2 = KDEBUG authority CPtr (0 = legacy ambient scan). */
+    if (!t || !task_kdebug_cap_named(t, arg2))
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
     uint64_t max = arg1;
     if (max == 0u || max > (uint64_t)KLOG_BUF_SIZE)
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -137,9 +138,10 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 #define SCHED_INFO_EXT5_BYTES 184u
 
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
     struct task *t = task_current();
-    if (!t || !task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    /* arg2 = KDEBUG authority CPtr (0 = legacy ambient scan). */
+    if (!t || !task_kdebug_cap_named(t, arg2))
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
     if (arg1 < SCHED_INFO_BASE_BYTES) return syscall_err(IRIS_ERR_INVALID_ARG);
     uint32_t want;
     if      (arg1 >= SCHED_INFO_EXT5_BYTES) want = SCHED_INFO_EXT5_BYTES;
@@ -248,9 +250,11 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * arg0 is reserved for future use (ignored).
  */
 uint64_t sys_poweroff(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
+    (void)arg1; (void)arg2;
     struct task *t = task_current();
-    if (!t || !task_has_kdebug_cap(t)) return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    /* arg0 = KDEBUG authority CPtr (0 = legacy ambient scan). */
+    if (!t || !task_kdebug_cap_named(t, arg0))
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
     for (;;) __asm__ volatile ("hlt");
     return syscall_ok_u64(0); /* unreachable */
 }

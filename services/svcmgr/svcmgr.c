@@ -88,7 +88,10 @@ struct svcmgr_dynamic_service {
 };
 
 struct svcmgr_state {
-    handle_id_t spawn_cap_h;
+    /* Etapa 4: the spawn/authority capability as a CPtr slot, not a handle.
+     * Starts at IRIS_CPTR_SPAWN_CAP and MOVES to SVCMGR_SPAWN_NARROW_SLOT once
+     * bootstrap strips HW_ACCESS (see svcmgr_request_hardware_caps).  0 = absent. */
+    uint64_t    spawn_cap_c;
     /* Etapa 4: both are CPtr slots, not handles.  Endpoint invocation resolves
      * either namespace, and as mint sources a CPtr installs each child's cap as
      * an MDB child of our slot — so the delegation stays revocable.  0 = absent. */
@@ -133,6 +136,7 @@ static const char sm_str_svc_unknown[]  = "[SVCMGR] WARN: unknown bootstrap serv
 static const char sm_str_watchok[]      = "[SVCMGR] lifecycle watch armed\n";
 static const char sm_str_bootcapfail[]  = "[SVCMGR] FATAL: missing spawn capability\n";
 static const char sm_str_untypedfail[]  = "[SVCMGR] WARN: missing untyped pool\n";
+static const char sm_str_stripfail[]    = "[SVCMGR] WARN: bootstrap strip FAILED\n";
 static const char sm_str_restart[]           = "[SVCMGR] restarting ";
 static const char sm_str_restart_exhausted[] = "[SVCMGR] WARN: restart budget exhausted: ";
 static const char sm_str_ep_ready[]          = "[SVCMGR] ep ready\n";
@@ -180,6 +184,8 @@ static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1
  * receive-slot pool (64..255) and outside every well-known mint slot.
  */
 #define SVCMGR_S1_SCRATCH_SLOT 62u
+/* Etapa 4: narrowed spawn cap after the bootstrap HW_ACCESS strip (48..61 free). */
+#define SVCMGR_SPAWN_NARROW_SLOT 48u
 /* Fase S4 (Etapa 2): outbound cap-transfer source slot.  Every cap svcmgr
  * hands to a client is minted here first and transferred BY CPtr; the kernel
  * consumes the slot on a committed delivery.  63 sits below the dynamic
@@ -245,7 +251,7 @@ static void svcmgr_close_handle_if_valid(handle_id_t *h) {
 static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
     uint32_t ci;
 
-    if (!state || state->spawn_cap_h == HANDLE_INVALID) return;
+    if (!state || state->spawn_cap_c == 0u) return;
 
     for (ci = 0; ci < iris_service_catalog_count(); ci++) {
         const struct iris_service_catalog_entry *e = iris_service_catalog_at(ci);
@@ -273,10 +279,26 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
 
     /* B3: strip HW_ACCESS (and FRAMEBUFFER) once bootstrap is done.
      * Preserve SPAWN_SERVICE (needed for SYS_INITRD_VMO) and KDEBUG (for SYS_POWEROFF).
-     * BOOTCAP_RESTRICT creates a new cap object; init's original cap is unaffected. */
-    (void)svcmgr_syscall2(SYS_BOOTCAP_RESTRICT,
-                          state->spawn_cap_h,
-                          IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_KDEBUG);
+     * BOOTCAP_RESTRICT creates a new cap object; init's original cap is unaffected.
+     *
+     * Etapa 4: by CPtr this is derive-then-delete, and BOTH halves are load
+     * bearing.  The derive puts the narrowed cap in its own slot and leaves
+     * slot 6 exactly as wide as it was; dropping slot 6 is what actually
+     * removes HW_ACCESS from svcmgr.  Skipping the delete would turn the whole
+     * strip into a no-op while still looking like it succeeded.
+     *
+     * The device caps claimed above are MDB children of slot 6, so deleting it
+     * reparents them onto init's slot rather than destroying them: svcmgr
+     * keeps the hardware it already claimed and loses only the authority to
+     * claim more, which is precisely the intent. */
+    if (svcmgr_syscall3(SYS_BOOTCAP_RESTRICT, state->spawn_cap_c,
+                        IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_KDEBUG,
+                        SVCMGR_SPAWN_NARROW_SLOT) == 0) {
+        (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, IRIS_CPTR_SPAWN_CAP);
+        state->spawn_cap_c = SVCMGR_SPAWN_NARROW_SLOT;
+    } else {
+        svcmgr_log(sm_str_stripfail);
+    }
 }
 
 static struct svcmgr_service_state *svcmgr_service_state(struct svcmgr_state *state,
@@ -1013,9 +1035,9 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
     /* Fase 13 (Track C): the initrd-access spawn cap (vfs) arrives as a
      * pre-start CSpace mint instead of a post-spawn KChannel INITRD_CAP
      * message.  RIGHT_READ matches the legacy delivery; unbadged. */
-    if (manifest->give_spawn_cap && state->spawn_cap_h != HANDLE_INVALID) {
+    if (manifest->give_spawn_cap && state->spawn_cap_c != 0u) {
         mints[n].slot = IRIS_CPTR_SPAWN_CAP;
-        mints[n].src_h = state->spawn_cap_h;
+        mints[n].src_cptr = state->spawn_cap_c;
         mints[n].rights = RIGHT_READ;
         mints[n].badge = 0;
         n++;
@@ -1248,7 +1270,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
             }
         }
 
-        long r = svc_load_minted(state->spawn_cap_h, manifest->image_name,
+        long r = svc_load_minted((handle_id_t)state->spawn_cap_c, manifest->image_name,
                                  &loaded_proc_h, &loaded_chan_h,
                                  mints, mint_count);
         /* Drop svcmgr's reply handles regardless of the load result — the
@@ -1357,7 +1379,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
 
     for (uint32_t i = 0; i < (uint32_t)sizeof(*state); i++) ((uint8_t *)state)[i] = 0;
 
-    state->spawn_cap_h = HANDLE_INVALID;
+    state->spawn_cap_c = 0u;
     state->console_ep_c = 0u;
     state->ep_c        = 0u;
     state->death_notif_h = HANDLE_INVALID;
@@ -1395,8 +1417,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     {
         state->console_ep_c = IRIS_CPTR_CONSOLE_EP;
         state->ep_c = IRIS_CPTR_OWN_EP;
-        int64_t sr = svcmgr_syscall1(SYS_CSPACE_RESOLVE, IRIS_CPTR_SPAWN_CAP);
-        state->spawn_cap_h = (sr >= 0) ? (handle_id_t)sr : HANDLE_INVALID;
+        state->spawn_cap_c = IRIS_CPTR_SPAWN_CAP;
         /* Fase S1: the delegated untyped pool (init carved a sub-untyped and
          * minted it at slot 12).  Every EP/notification/reply svcmgr creates
          * is retyped from this pool.
@@ -1408,7 +1429,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         int64_t ur = svcmgr_syscall3(SYS_UNTYPED_INFO, IRIS_CPTR_OWN_UNTYPED, 0, 0);
         state->untyped_c = (ur >= 0) ? (uint64_t)IRIS_CPTR_OWN_UNTYPED : 0u;
     }
-    if (state->spawn_cap_h == HANDLE_INVALID) {
+    if (state->spawn_cap_c == 0u) {
         svcmgr_log(sm_str_bootcapfail);
         return;
     }
@@ -1429,9 +1450,12 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
      * Replaces the legacy console_h KChannel writer (no SYS_CHAN). */
     {
         static uint8_t klog_drain_buf[4097]; /* KLOG_BUF_SIZE + 1 for NUL */
-        int64_t n = svcmgr_syscall2(SYS_KLOG_DRAIN,
+        /* Etapa 4: name the capability that authorises the drain instead of
+         * relying on the kernel finding a KDEBUG cap somewhere in our handle
+         * table — which it cannot do now that our spawn cap is a CSpace slot. */
+        int64_t n = svcmgr_syscall3(SYS_KLOG_DRAIN,
                                     (uint64_t)(uintptr_t)klog_drain_buf,
-                                    4096u);
+                                    4096u, state->spawn_cap_c);
         if (n > 0 && state->console_ep_c != 0u) {
             klog_drain_buf[n] = 0u;
             (void)console_ep_write(state->console_ep_c, g_svcmgr_log_buf,
