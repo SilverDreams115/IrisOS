@@ -568,15 +568,14 @@ static void test_t013(void) {
 /* ── T014: EP_NB_RECV on empty endpoint ─────────────────────────────────── */
 
 static void test_t014(void) {
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T014", "ep create"); return; }
-    handle_id_t ep_h = (handle_id_t)ep_raw;
 
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     long r = it_sys2(SYS_EP_NB_RECV, ep_raw, (long)&msg);
 
-    it_close(&ep_h);
+    it_slot_delete((uint32_t)ep_raw);
 
     if (r == (long)IRIS_ERR_WOULD_BLOCK)
         it_pass("T014");
