@@ -55,7 +55,7 @@ struct svcmgr_service_state {
      * the child at IRIS_CPTR_OWN_REPLY(2).  svcmgr NEVER retains a reply cap:
      * a retained copy would suppress the close-wakes-caller path on child
      * death. */
-    handle_id_t reply_ut_h;
+    uint32_t    reply_ut_c;   /* CPtr slot, 0 = absent */
     uint8_t restart_count;
     uint8_t degraded;       /* Fase 24: 1 = restart budget exhausted, not revived */
     uint8_t reserved[2];
@@ -99,7 +99,7 @@ struct svcmgr_state {
                                 * delivered by init at bootstrap (kind 0x22),
                                 * published as "console.ep". */
     uint64_t ep_c;                                            /* svcmgr KEndpoint for EP-based discovery */
-    handle_id_t death_notif_h;  /* Track B: one KNotification; bit (1<<service_id)
+    uint32_t    death_notif_c;  /* Track B: one KNotification; bit (1<<service_id)
                                  * signalled by the kernel on each service exit. */
     /* Fase S1: svcmgr's delegated untyped pool (init carves a sub-untyped and
      * mints it at IRIS_CPTR_OWN_UNTYPED).  Every endpoint / notification /
@@ -183,7 +183,6 @@ static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1
  * is the only remaining svcmgr reference.  Slot 62 sits below the dynamic
  * receive-slot pool (64..255) and outside every well-known mint slot.
  */
-#define SVCMGR_S1_SCRATCH_SLOT 62u
 /* Etapa 4: narrowed spawn cap after the bootstrap HW_ACCESS strip (48..61 free). */
 #define SVCMGR_SPAWN_NARROW_SLOT 48u
 /* Etapa 4: the long-lived per-service masters live in svcmgr's own CSpace,
@@ -193,6 +192,13 @@ static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1
  * a slot makes each child's cap an MDB child of it, hence revocable. */
 #define SVCMGR_MSLOT_EP(id)  (49u + (uint32_t)(id) * 2u)
 #define SVCMGR_MSLOT_IRQ(id) (50u + (uint32_t)(id) * 2u)
+/* Per-service reply sub-untyped (57..60), the single death notification (61),
+ * and the two transient reply objects a booting child receives (64/65).  The
+ * receive-slot pool starts above them. */
+#define SVCMGR_MSLOT_REPLYUT(id) (57u + (uint32_t)(id))
+#define SVCMGR_SLOT_DEATH_NOTIF  61u
+#define SVCMGR_SLOT_REPLY1       64u
+#define SVCMGR_SLOT_REPLY2       65u
 /* Fase S4 (Etapa 2): outbound cap-transfer source slot.  Every cap svcmgr
  * hands to a client is minted here first and transferred BY CPtr; the kernel
  * consumes the slot on a committed delivery.  63 sits below the dynamic
@@ -210,18 +216,6 @@ static int64_t svcmgr_retype_to_slot(uint64_t ut_cptr, uint32_t obj_type,
                            ((uint64_t)dest_slot << 32), obj_arg);
 }
 
-static int64_t svcmgr_retype_to_handle(uint64_t ut_cptr, uint32_t obj_type,
-                                       uint64_t obj_arg) {
-    if (ut_cptr == 0u) return (int64_t)IRIS_ERR_NOT_FOUND;
-    int64_t r = svcmgr_syscall4(SYS_UNTYPED_RETYPE2, ut_cptr,
-                                (uint64_t)obj_type | (1ULL << 32),
-                                ((uint64_t)SVCMGR_S1_SCRATCH_SLOT << 32),
-                                obj_arg);
-    if (r < 0) return r;
-    int64_t h = svcmgr_syscall1(SYS_CSPACE_RESOLVE, SVCMGR_S1_SCRATCH_SLOT);
-    (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, SVCMGR_S1_SCRATCH_SLOT);
-    return h;
-}
 
 /* Fase 13: svcmgr logs over console.ep (CONSOLE_EP_OP_WRITE), not the legacy
  * KChannel console writer.  Synchronous per-write flush; if console.ep is not
@@ -505,7 +499,7 @@ static uint32_t svcmgr_dynamic_ready_count(const struct svcmgr_state *state) {
  * declaration degrades to 0 = legacy handle delivery, which keeps working.
  * ──────────────────────────────────────────────────────────────────────── */
 
-#define SVCMGR_RSLOT_BASE  64u   /* below: well-known bootstrap slots (Fase 8) */
+#define SVCMGR_RSLOT_BASE  68u   /* below: well-known bootstrap + master slots */
 #define SVCMGR_RSLOT_LIMIT 256u  /* root CNode has KCNODE_DEFAULT_SLOTS = 256 */
 
 /* Stage 4: the root-CNode handle probe is RETIRED.  It scanned svcmgr's own
@@ -1174,7 +1168,7 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
         }
     }
 
-    if (svcmgr_syscall3(SYS_PROCESS_WATCH, proc_h, state->death_notif_h,
+    if (svcmgr_syscall3(SYS_PROCESS_WATCH, proc_h, state->death_notif_c,
                         (uint64_t)1u << manifest->service_id) != IRIS_OK) {
         svc->proc_h = HANDLE_INVALID;
         svcmgr_close_handle_if_valid(&proc_h);
@@ -1260,35 +1254,36 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
          * reply while continuing to serve, so it receives TWO (slots 13/14).
          * svcmgr closes its own handles right after the mint: a retained
          * reply cap would suppress close-wakes-caller on child death. */
-        handle_id_t reply1_h = HANDLE_INVALID;
-        handle_id_t reply2_h = HANDLE_INVALID;
+        uint32_t reply1_c = 0u;
+        uint32_t reply2_c = 0u;
         if (manifest->own_service_ep && state->untyped_c != 0u) {
-            if (svc->reply_ut_h == HANDLE_INVALID) {
-                int64_t ur = svcmgr_retype_to_handle(state->untyped_c,
-                                                     IRIS_KOBJ_UNTYPED, 4096u);
-                svc->reply_ut_h = (ur >= 0) ? (handle_id_t)ur : HANDLE_INVALID;
+            if (svc->reply_ut_c == 0u) {
+                uint32_t sl = SVCMGR_MSLOT_REPLYUT(manifest->service_id);
+                int64_t ur = svcmgr_retype_to_slot(state->untyped_c,
+                                                   IRIS_KOBJ_UNTYPED, sl, 4096u);
+                svc->reply_ut_c = (ur >= 0) ? sl : 0u;
             }
-            if (svc->reply_ut_h != HANDLE_INVALID) {
-                (void)svcmgr_syscall1(SYS_UNTYPED_RESET, (uint64_t)svc->reply_ut_h);
-                int64_t r1 = svcmgr_retype_to_handle(svc->reply_ut_h,
-                                                     IRIS_KOBJ_REPLY, 0);
-                reply1_h = (r1 >= 0) ? (handle_id_t)r1 : HANDLE_INVALID;
+            if (svc->reply_ut_c != 0u) {
+                (void)svcmgr_syscall1(SYS_UNTYPED_RESET, (uint64_t)svc->reply_ut_c);
+                int64_t r1 = svcmgr_retype_to_slot(svc->reply_ut_c, IRIS_KOBJ_REPLY,
+                                                   SVCMGR_SLOT_REPLY1, 0);
+                reply1_c = (r1 >= 0) ? SVCMGR_SLOT_REPLY1 : 0u;
                 if (manifest->irq_notify) { /* kbd: parked-reply second slot */
-                    int64_t r2 = svcmgr_retype_to_handle(svc->reply_ut_h,
-                                                         IRIS_KOBJ_REPLY, 0);
-                    reply2_h = (r2 >= 0) ? (handle_id_t)r2 : HANDLE_INVALID;
+                    int64_t r2 = svcmgr_retype_to_slot(svc->reply_ut_c, IRIS_KOBJ_REPLY,
+                                                       SVCMGR_SLOT_REPLY2, 0);
+                    reply2_c = (r2 >= 0) ? SVCMGR_SLOT_REPLY2 : 0u;
                 }
             }
-            if (reply1_h != HANDLE_INVALID && mint_count < SVCMGR_CORE_MINT_MAX) {
+            if (reply1_c != 0u && mint_count < SVCMGR_CORE_MINT_MAX) {
                 mints[mint_count].slot   = (uint32_t)IRIS_CPTR_OWN_REPLY;
-                mints[mint_count].src_h  = reply1_h;
+                mints[mint_count].src_cptr = reply1_c;
                 mints[mint_count].rights = RIGHT_READ | RIGHT_WRITE;
                 mints[mint_count].badge  = 0;
                 mint_count++;
             }
-            if (reply2_h != HANDLE_INVALID && mint_count < SVCMGR_CORE_MINT_MAX) {
+            if (reply2_c != 0u && mint_count < SVCMGR_CORE_MINT_MAX) {
                 mints[mint_count].slot   = (uint32_t)IRIS_CPTR_OWN_REPLY2;
-                mints[mint_count].src_h  = reply2_h;
+                mints[mint_count].src_cptr = reply2_c;
                 mints[mint_count].rights = RIGHT_READ | RIGHT_WRITE;
                 mints[mint_count].badge  = 0;
                 mint_count++;
@@ -1300,8 +1295,10 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
                                  mints, mint_count);
         /* Drop svcmgr's reply handles regardless of the load result — the
          * child's CSpace slots (if minted) are now the only reply caps. */
-        svcmgr_close_handle_if_valid(&reply1_h);
-        svcmgr_close_handle_if_valid(&reply2_h);
+        /* svcmgr NEVER retains a reply cap: a retained copy would suppress
+         * close-wakes-caller on child death.  The child's mint is the only one. */
+        (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, SVCMGR_SLOT_REPLY1);
+        (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, SVCMGR_SLOT_REPLY2);
         if (r < 0) {
             svcmgr_clear_service_masters(state, manifest->service_id);
             svcmgr_log(sm_str_spawnfail);
@@ -1407,7 +1404,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     state->spawn_cap_c = 0u;
     state->console_ep_c = 0u;
     state->ep_c        = 0u;
-    state->death_notif_h = HANDLE_INVALID;
+    state->death_notif_c = 0u;
     for (uint32_t i = 0; i < SVCMGR_IRQ_CAPS_TABLE_SIZE; i++)
         state->irq_caps[i] = 0u;
     for (uint32_t i = 0; i < SVCMGR_IOPORT_CAPS_TABLE_SIZE; i++)
@@ -1418,7 +1415,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         state->services[i].proc_h = HANDLE_INVALID;
         state->services[i].ep_c = 0u;
         state->services[i].irq_notif_c = 0u;
-        state->services[i].reply_ut_h = HANDLE_INVALID;
+        state->services[i].reply_ut_c = 0u;
     }
     state->untyped_c = 0u;
     for (uint32_t i = 0; i < SVCMGR_DYNAMIC_SERVICE_CAP; i++) {
@@ -1519,8 +1516,9 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
     /* Track B: the single death notification must exist before any service
      * boots (svcmgr_boot_service arms the watch against it). */
     {
-        int64_t nr = svcmgr_retype_to_handle(state->untyped_c, IRIS_KOBJ_NOTIFICATION, 0);
-        state->death_notif_h = (nr >= 0) ? (handle_id_t)nr : HANDLE_INVALID;
+        int64_t nr = svcmgr_retype_to_slot(state->untyped_c, IRIS_KOBJ_NOTIFICATION,
+                                           SVCMGR_SLOT_DEATH_NOTIF, 0);
+        state->death_notif_c = (nr >= 0) ? SVCMGR_SLOT_DEATH_NOTIF : 0u;
     }
 
     svcmgr_autostart_services(state);
@@ -1563,7 +1561,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         {
             uint64_t bits = 0;
             int64_t nr = svcmgr_syscall3(SYS_NOTIFY_WAIT_TIMEOUT,
-                                         state->death_notif_h,
+                                         state->death_notif_c,
                                          (uint64_t)(uintptr_t)&bits, 10000000ULL);
             if (nr == IRIS_OK) {
                 for (uint32_t sid = 0; sid < 64u && bits; sid++) {
