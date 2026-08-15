@@ -4230,7 +4230,7 @@ static int it_sched_ext(uint32_t w[14]) {
     /* Fase 16: request 96 bytes so the two lifecycle words (offsets 84/88)
      * land too; a pre-Fase-16 kernel clamps to 88 and leaves w[11..13] zero —
      * the extra words are additive, never required by legacy asserts. */
-    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96, (long)IRIS_CPTR_SPAWN_CAP);
     handle_id_t h = (handle_id_t)bh;
     it_close(&h);
     if (r != 0) return 0;
@@ -4248,7 +4248,7 @@ static int it_task_live(uint32_t *out) {
     long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
     if (bh < 0) return 0;
     uint8_t buf[96];
-    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96, (long)IRIS_CPTR_SPAWN_CAP);
     handle_id_t h = (handle_id_t)bh;
     it_close(&h);
     if (r != 0) return 0;
@@ -4293,7 +4293,7 @@ static int it_sched_ext3(uint32_t w3[5]) {
     long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
     if (bh < 0) return 0;
     uint8_t buf[136];
-    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136, (long)IRIS_CPTR_SPAWN_CAP);
     handle_id_t h = (handle_id_t)bh;
     it_close(&h);
     if (r != 0) return 0;
@@ -4326,7 +4326,7 @@ static int it_sched_ext4(uint32_t w4[5]) {
     long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
     if (bh < 0) return 0;
     uint8_t buf[160];
-    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 160);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 160, (long)IRIS_CPTR_SPAWN_CAP);
     handle_id_t h = (handle_id_t)bh;
     it_close(&h);
     if (r != 0) return 0;
@@ -4351,7 +4351,7 @@ static int it_sched_ext5(uint32_t w5[5]) {
     long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
     if (bh < 0) return 0;
     uint8_t buf[184];
-    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184, (long)IRIS_CPTR_SPAWN_CAP);
     handle_id_t h = (handle_id_t)bh;
     it_close(&h);
     if (r != 0) return 0;
@@ -4398,7 +4398,7 @@ static int it_sched_ext2(uint32_t w2[4]) {
     long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
     if (bh < 0) return 0;
     uint8_t buf[112];
-    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 112);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 112, (long)IRIS_CPTR_SPAWN_CAP);
     handle_id_t h = (handle_id_t)bh;
     it_close(&h);
     if (r != 0) return 0;
@@ -9904,7 +9904,7 @@ static void test_t150(void) {
 
     /* SYS_SCHED_INFO writes a buffer: every hostile dst → INVALID_ARG. */
     for (int i = 0; ok && i < NB; i++) {
-        if (it_sys2(SYS_SCHED_INFO, bad_ptr[i], 184) != (long)IRIS_ERR_INVALID_ARG) {
+        if (it_sys3(SYS_SCHED_INFO, bad_ptr[i], 184, (long)IRIS_CPTR_SPAWN_CAP) != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "sched_info bad dst"; break;
         }
     }
@@ -9954,11 +9954,11 @@ static void test_t150(void) {
      * buffer. */
     if (ok) {
         uint8_t buf[184];
-        if (it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size 0"; }
-        if (ok && it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 8) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size below base"; }
-        if (ok && it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0x7FFFFFFFL) != 0) { ok = 0; why = "huge size not clamped"; }
+        if (it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0, (long)IRIS_CPTR_SPAWN_CAP) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size 0"; }
+        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 8, (long)IRIS_CPTR_SPAWN_CAP) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size below base"; }
+        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0x7FFFFFFFL, (long)IRIS_CPTR_SPAWN_CAP) != 0) { ok = 0; why = "huge size not clamped"; }
         /* A valid call still works — reject paths left nothing wedged. */
-        if (ok && it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184) != 0) { ok = 0; why = "valid after fuzz"; }
+        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184, (long)IRIS_CPTR_SPAWN_CAP) != 0) { ok = 0; why = "valid after fuzz"; }
     }
 
     it_close(&scr_h);
@@ -12887,7 +12887,7 @@ static long it_vmo_live(void) {
     long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
     if (bh < 0) return -1;
     uint8_t buf[136];
-    long r = it_sys2(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136, (long)IRIS_CPTR_SPAWN_CAP);
     handle_id_t h = (handle_id_t)bh;
     it_close(&h);
     if (r != 0) return -1;

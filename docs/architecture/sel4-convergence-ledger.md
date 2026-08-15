@@ -84,6 +84,28 @@ Audit of versioned queries:
 Test: T283 (QABI1–10 + guard canaries). Future new fields in a query struct
 can no longer overflow a caller that declares its size.
 
+### A-3 — ambient KDEBUG authority removed
+
+**Change**: charter §2.1, invariant A5 — record that the KDEBUG handle-table
+scan is deleted.
+
+**Justification**: `SYS_KLOG_DRAIN`, `SYS_SCHED_INFO` and `SYS_POWEROFF` gated
+on `task_has_kdebug_cap`, which scanned the caller's entire handle table for
+any `KBootstrapCap` carrying `IRIS_BOOTCAP_KDEBUG`.  The caller passed no
+capability and proved nothing: authority came from *possession somewhere*, not
+from invocation — the definition of ambient authority.  It also could not see a
+bootstrap capability held in CSpace, so migrating a service off handles
+silently revoked its KDEBUG (this is how it was found: svcmgr's boot-log drain
+went dead and the headless gate caught the missing scheduler marker).
+
+All three now take the authorising capability as a CPtr in a previously unused
+argument.  Every in-tree caller names it, so the scan is deleted outright
+rather than left as a zero-argument fallback.
+
+**Scope**: A5 stays PARTIAL — the ioport whitelist and the per-process kernel
+quotas are still ambient and are Stage 6/7 work.  One of its three named
+sources is gone.
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a

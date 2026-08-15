@@ -123,42 +123,21 @@ static inline int page_round_up_u64(uint64_t size, uint64_t *out_rounded) {
 }
 
 /*
- * task_has_kdebug_cap — check whether task t holds a KBootstrapCap with
- * IRIS_BOOTCAP_KDEBUG.  Scans the handle table under its spinlock so that
- * no entry can be closed while the check runs.
- */
-/*
- * Etapa 4: the explicit form — the caller NAMES the capability that authorises
- * the call, which is what a capability system requires.  The scan below is the
- * legacy form and is ambient authority: it answers "does this process hold a
- * KDEBUG cap anywhere in its handle table", so the caller proves nothing and
- * names nothing (charter A5, and §3.5 on using anything but a capability as
- * authority).  It also cannot see a bootstrap cap that lives in CSpace, so a
- * process that migrates off handles silently loses KDEBUG.
+ * KDEBUG authority, named.  The caller must NAME the capability that
+ * authorises the call — what a capability system requires, and what charter A5
+ * (no ambient authority) and §3.5 (nothing but a capability confers authority)
+ * demand.
  *
- * auth_cptr == 0 keeps the legacy scan for callers not yet migrated.
+ * The ambient predecessor scanned the caller's whole handle table for any
+ * KBootstrapCap carrying KDEBUG: the caller proved nothing and named nothing,
+ * and a process whose bootstrap capability lived in CSpace was denied while
+ * holding it.  Every in-tree caller of SYS_KLOG_DRAIN / SYS_SCHED_INFO /
+ * SYS_POWEROFF names its CPtr now, so the scan is DELETED rather than kept as
+ * a fallback — a fallback is how ambient authority survives a cleanup.
  */
-static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr);
-
-static inline int task_has_kdebug_cap(struct task *t) {
-    if (!t || !t->process) return 0;
-    HandleTable *ht = &t->process->handle_table;
-    int found = 0;
-    spinlock_lock(&ht->lock);
-    for (uint32_t i = 0; i < HANDLE_TABLE_MAX && !found; i++) {
-        if (!ht->used[i]) continue;
-        struct KObject *obj = ht->slots[i].object;
-        if (!obj || obj->type != KOBJ_BOOTSTRAP_CAP) continue;
-        if (kbootcap_allows((struct KBootstrapCap *)obj, IRIS_BOOTCAP_KDEBUG))
-            found = 1;
-    }
-    spinlock_unlock(&ht->lock);
-    return found;
-}
-
 static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr) {
     if (!t || !t->process) return 0;
-    if (auth_cptr == 0u) return task_has_kdebug_cap(t);   /* legacy: ambient */
+    if (auth_cptr == 0u) return 0;   /* authority must be named */
     if (!cspace_value_is_cptr((iris_cptr_t)auth_cptr)) return 0;
 
     struct KObject *obj; iris_rights_t r;

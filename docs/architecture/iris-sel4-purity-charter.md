@@ -49,7 +49,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 | A2 | CSpace is the ONLY persistent authority namespace | PARTIAL — handle table still live (Stages 2–4) |
 | A3 | CPtr is the only capability identifier exposed productively | PARTIAL — same |
 | A4 | No productive handles exist in the final state | PENDING (Stage 4) |
-| A5 | No ambient authority exists | PARTIAL — ioport whitelist, kernel quotas (ledger).  Improved in Fase S4: device caps (KIrqCap/KIoPort) are no longer fabricated into a handle table — they are published into CSpace as MDB children of the authorising bootstrap-cap slot, so device authority is traceable and revocable |
+| A5 | No ambient authority exists | PARTIAL — ioport whitelist, kernel quotas (ledger).  Improved in Fase S4: device caps (KIrqCap/KIoPort) are no longer fabricated into a handle table — they are published into CSpace as MDB children of the authorising bootstrap-cap slot, so device authority is traceable and revocable.  The KDEBUG scan is GONE (Etapa 4): `SYS_KLOG_DRAIN`/`SYS_SCHED_INFO`/`SYS_POWEROFF` used to search the caller's handle table for any bootstrap cap bearing KDEBUG — the caller named nothing — and now require the capability as a CPtr argument, with no fallback |
 | A6 | `ACCESS_DENIED` never falls back to another namespace | MET (<1024/≥1024 split with no fallback) |
 | A7 | Rights are only kept or reduced; mint never amplifies | MET (`rights_reduce`, collapse to NONE rejected) |
 | A8 | Badges are kernel-sealed identity; a badged cap is never re-badged | MET |
