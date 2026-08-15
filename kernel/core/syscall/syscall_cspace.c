@@ -70,7 +70,7 @@ uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t ar
     handle_id_t   src_h     = (handle_id_t)arg2;
     iris_rights_t new_rights = (iris_rights_t)arg3;
 
-    if (!cptr_or_h || !src_h) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!src_h) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -79,10 +79,24 @@ uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t ar
 
     struct KCNode  *cn;
     iris_rights_t   cn_rights;
-    iris_error_t err = cspace_or_handle_resolve_cnode(proc, cptr_or_h,
-                                                       RIGHT_WRITE, &cn, &cn_rights);
-    if (err != IRIS_OK)
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    iris_error_t    err;
+
+    /* Stage 4: arg0 == 0 names the CALLER'S OWN root CNode, matching the
+     * convention SYS_CNODE_DELETE and SYS_UNTYPED_RETYPE2 already use.  This
+     * is what lets a service address its own CSpace root WITHOUT holding a
+     * capability to it — the root stopped being a handle-table entry, so the
+     * old "probe your own table for the first CNode-typed handle" trick (the
+     * one svcmgr and iris_test used) has no object to find.  Naming your own
+     * root grants no authority you did not already have. */
+    if (cptr_or_h == 0u) {
+        err = cspace_own_root(proc, &cn);
+        if (err != IRIS_OK) return syscall_err(err);
+    } else {
+        err = cspace_or_handle_resolve_cnode(proc, cptr_or_h,
+                                             RIGHT_WRITE, &cn, &cn_rights);
+        if (err != IRIS_OK)
+            return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    }
 
     struct KObject *src_obj;
     iris_rights_t   src_rights;
@@ -164,24 +178,15 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     }
     struct KProcess *child = (struct KProcess *)proc_obj;
 
-    /* Child's root CNode (created at kprocess_create; soft-fail = absent). */
-    if (child->cspace_root_h == HANDLE_INVALID) {
+    /* Child's root CNode (created at kprocess_create; soft-fail = absent).
+     * Stage 4: read structurally — the kernel no longer reaches into ANOTHER
+     * process's handle table to find that process's CSpace root. */
+    if (!child->cspace_root) {
         kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
-    struct KObject *cn_obj;
-    iris_rights_t   cn_rights;
-    err = handle_table_get_object(&child->handle_table, child->cspace_root_h,
-                                  &cn_obj, &cn_rights);
-    if (err != IRIS_OK) {
-        kobject_release(proc_obj);
-        return syscall_err(err);
-    }
-    if (cn_obj->type != KOBJ_CNODE) {
-        kobject_release(cn_obj);
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_INTERNAL);
-    }
+    struct KObject *cn_obj = &child->cspace_root->base;
+    kobject_retain(cn_obj);
 
     /* Source capability from the CALLER's table. */
     struct KObject *src_obj;
@@ -244,21 +249,16 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
 /* Resolve the caller's root CNode with active+lifecycle refs (retype2's
  * dest_cnode == 0 convention).  Shared with syscall_cap.c (device-cap
- * publication) via syscall_priv.h — the handle read stays in THIS file, so
- * the purity allowlist does not grow (ledger: "root CNode reachable only via
- * cspace_root_h", ACTIVE_LEGACY until Stage 5 BootInfo). */
+ * publication) via syscall_priv.h.
+ *
+ * Stage 4: the root is a structural back-reference on KProcess, so this no
+ * longer reads the handle table at all — the ledger entry "root CNode
+ * reachable only via cspace_root_h" is retired, and with it the last reason
+ * CSpace resolution depended on the namespace it was built to replace. */
 iris_error_t cspace_own_root(struct KProcess *proc, struct KCNode **out) {
-    if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
-    struct KObject *root_obj;
-    iris_rights_t   root_r;
-    iris_error_t err = handle_table_get_object(&proc->handle_table,
-                                               proc->cspace_root_h,
-                                               &root_obj, &root_r);
-    if (err != IRIS_OK) return err;
-    if (root_obj->type != KOBJ_CNODE) {
-        kobject_release(root_obj);
-        return IRIS_ERR_INTERNAL;
-    }
+    if (!proc || !proc->cspace_root) return IRIS_ERR_NOT_FOUND;
+    struct KObject *root_obj = &proc->cspace_root->base;
+    kobject_retain(root_obj);
     kobject_active_retain(root_obj);
     *out = (struct KCNode *)root_obj;
     return IRIS_OK;
@@ -381,23 +381,14 @@ uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     }
     struct KProcess *child = (struct KProcess *)proc_obj;
 
-    if (child->cspace_root_h == HANDLE_INVALID) {
+    /* Stage 4: structural read of the child's CSpace root — no cross-process
+     * handle-table access. */
+    if (!child->cspace_root) {
         kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
-    struct KObject *cn_obj;
-    iris_rights_t   cn_rights;
-    err = handle_table_get_object(&child->handle_table, child->cspace_root_h,
-                                  &cn_obj, &cn_rights);
-    if (err != IRIS_OK) {
-        kobject_release(proc_obj);
-        return syscall_err(err);
-    }
-    if (cn_obj->type != KOBJ_CNODE) {
-        kobject_release(cn_obj);
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_INTERNAL);
-    }
+    struct KObject *cn_obj = &child->cspace_root->base;
+    kobject_retain(cn_obj);
 
     /* Source slot in the CALLER's CSpace. */
     struct KCNode *src_cn; uint32_t src_idx;

@@ -340,7 +340,7 @@ THREAD_START` flow.
 
 Two independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **10410 assertions** across ~22 suites
+- **Host unit tests** — `make test-unit`: **10404 assertions** across 19 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   handle_table, kendpoint, kreply, knotification, kuntyped, kschedctx, kframe,
   the MDB/CDT (structural + model-based fuzzing), rights, ipc_cspace, vfs_ep
@@ -358,7 +358,7 @@ Two independently-gating layers, run on every change:
 ```bash
 make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
-make test-unit                                             # host unit suites (10410)
+make test-unit                                             # host unit suites (10404)
 make smoke-runtime                                         # headless runtime lane
 ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (267/267)
 make run                                                   # interactive QEMU

@@ -219,19 +219,15 @@ struct KProcess *kprocess_alloc(void) {
     }
 
     /* Ph95: root CNode for hierarchical CSpace.  Soft-fail: if alloc OOMs
-     * the process still works, but cspace_root_h stays HANDLE_INVALID. */
-    p->cspace_root_h = HANDLE_INVALID;
-    {
-        struct KCNode *root_cn = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
-        if (root_cn) {
-            handle_id_t rh = handle_table_insert(
-                &p->handle_table, &root_cn->base,
-                RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-            kobject_release(&root_cn->base);
-            if (rh != HANDLE_INVALID)
-                p->cspace_root_h = rh;
-        }
-    }
+     * the process still works, but cspace_root stays NULL.
+     *
+     * Stage 4: the root is held structurally, not through the handle table.
+     * kcnode_alloc returns one lifecycle ref; we add the active ref the handle
+     * used to contribute, so the ownership pair is unchanged — only the way it
+     * is reached is.  Both refs are dropped in kprocess_teardown. */
+    p->cspace_root = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
+    if (p->cspace_root)
+        kobject_active_retain(&p->cspace_root->base);
 
     return p;
 }
@@ -400,6 +396,20 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
      * VMO mapping list exists; nothing to do here. */
     irq_routing_unregister_owner(p);
     handle_table_close_all(&p->handle_table);
+
+    /* Stage 4: the CSpace root used to be owned by the handle table, so
+     * handle_table_close_all above released it.  It is now held structurally,
+     * so its refs are dropped here — at the same point in teardown, to keep
+     * the ordering the rest of the sequence was written against.  Dropping the
+     * last ref runs the CNode destructor, which tears down every slot through
+     * the MDB tree; no lock is held here, which is the precondition that
+     * teardown must satisfy. */
+    if (p->cspace_root) {
+        struct KCNode *root = p->cspace_root;
+        p->cspace_root = 0;
+        kobject_active_release(&root->base);
+        kobject_release(&root->base);
+    }
 
     (void)exiting_thread; /* thread_count tracks liveness; no per-thread ref needed */
     p->teardown_complete = 1;

@@ -33,11 +33,18 @@ static struct KProcess *make_proc(void) {
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
     handle_table_init(&p->handle_table);
-    p->cspace_root_h = HANDLE_INVALID;
+    p->cspace_root = NULL;
     return p;
 }
 
 static void free_proc(struct KProcess *p) {
+    /* Stage 4: structural root — released here instead of by
+     * handle_table_close_all, which no longer owns it. */
+    if (p->cspace_root) {
+        kobject_active_release(&p->cspace_root->base);
+        kobject_release(&p->cspace_root->base);
+        p->cspace_root = NULL;
+    }
     handle_table_close_all(&p->handle_table);
     kpage_free(p, (uint32_t)sizeof(*p));
 }
@@ -45,11 +52,10 @@ static void free_proc(struct KProcess *p) {
 static struct KCNode *setup_cspace(struct KProcess *p, uint32_t num_slots) {
     struct KCNode *root = kcnode_alloc(num_slots);
     if (!root) return NULL;
-    handle_id_t rh = handle_table_insert(&p->handle_table, &root->base,
-                                          RIGHT_READ | RIGHT_WRITE);
-    kobject_release(&root->base);
-    if (rh == HANDLE_INVALID) return NULL;
-    p->cspace_root_h = rh;
+    /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+     * lifecycle ref, plus the active ref the handle used to own. */
+    kobject_active_retain(&root->base);
+    p->cspace_root = root;
     return root;
 }
 
@@ -92,7 +98,7 @@ void test_untyped_cspace(void) {
     {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
-        /* cspace_root_h stays HANDLE_INVALID */
+        /* cspace_root stays NULL */
 
         struct KUntyped *ut = make_untyped(4096u);
         ASSERT_NOT_NULL(ut);

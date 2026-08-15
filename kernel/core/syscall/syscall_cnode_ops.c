@@ -116,17 +116,11 @@ uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * SYS_UNTYPED_RETYPE2 destination convention).  Deleting a slot of your
      * own CSpace only discards authority you already hold — no amplification. */
     if (cptr_or_h == 0u) {
-        if (proc->cspace_root_h == HANDLE_INVALID)
+        /* Stage 4: structural root read. */
+        if (!proc->cspace_root)
             return syscall_err(IRIS_ERR_NOT_FOUND);
-        struct KObject *root_obj;
-        iris_rights_t   root_r;
-        err = handle_table_get_object(&proc->handle_table, proc->cspace_root_h,
-                                      &root_obj, &root_r);
-        if (err != IRIS_OK) return syscall_err(err);
-        if (root_obj->type != KOBJ_CNODE) {
-            kobject_release(root_obj);
-            return syscall_err(IRIS_ERR_INTERNAL);
-        }
+        struct KObject *root_obj = &proc->cspace_root->base;
+        kobject_retain(root_obj);
         kobject_active_retain(root_obj);
         cn = (struct KCNode *)root_obj;
     } else {

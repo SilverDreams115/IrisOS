@@ -125,62 +125,43 @@ void iris_userboot_main(handle_id_t bootstrap_cap_h) {
      * legacy handle path still works and all downstream services are unaffected. */
     (void)ub_sys3(SYS_UNTYPED_INFO, (long)BOOT_CPTR_UNTYPED_START, 0, 0);
 
-    /* Fase 3.5: CPtr probe for KBootstrapCap in well-known slot 1.
-     * SYS_CSPACE_RESOLVE materialises the CNode slot into a new handle-table
-     * entry without altering the CNode.  If it returns >= 0 the slot is live;
-     * the handle is closed immediately so the main flow is unchanged.
-     * Boot is not gated on this probe. */
-    {
-        long bprobe_h = ub_sys1(SYS_CSPACE_RESOLVE,
-                                (long)BOOT_CPTR_BOOTSTRAP_CAP);
-        if (bprobe_h >= 0)
-            ub_close((handle_id_t)bprobe_h);
-    }
-
-    /* Fase 4: CPtr probe for KVSpace in well-known slot 2 (BOOT_CPTR_VSPACE).
-     * Non-destructive: materialises the slot, then closes the handle immediately.
-     * Confirms that userland can traverse the CSpace grant inserted by kernel_main.
-     * Boot is not gated on this probe. */
-    {
-        long vsprobe_h = ub_sys1(SYS_CSPACE_RESOLVE,
-                                 (long)BOOT_CPTR_VSPACE);
-        if (vsprobe_h >= 0)
-            ub_close((handle_id_t)vsprobe_h);
-    }
+    /* Fase 3.5/4: the CPtr probes for BOOT_CPTR_BOOTSTRAP_CAP and
+     * BOOT_CPTR_VSPACE are RETIRED (Stage 4).  They resolved a slot into a
+     * handle purely to prove the slot was live and closed it immediately —
+     * boot was never gated on them, nothing read their result, and their only
+     * lasting effect was to make userboot a SYS_CSPACE_RESOLVE consumer.  The
+     * grants they probed are now exercised productively by the mints below,
+     * which fail loudly if a slot is empty. */
 
     /* Fase 13 (Track I): deliver init's spawn/bootstrap cap as the
      * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint instead of a post-spawn
-     * KChannel SPAWN_CAP send — no SYS_CHAN. */
+     * KChannel SPAWN_CAP send — no SYS_CHAN.
+     *
+     * Stage 4: both mint sources are CPtrs into our own root CSpace, not
+     * handles.  Beyond retiring the SYS_HANDLE_DUP / SYS_CSPACE_RESOLVE pair,
+     * this buys real authority: SYS_CSPACE_MINT_INTO installs each cap as an
+     * MDB CHILD of our slot, so init's founding capabilities are revocable by
+     * userboot (and by the kernel bootstrap slot above it) instead of being
+     * handed over forever. */
     {
-        long dup_h = ub_sys2(SYS_HANDLE_DUP, (long)bootstrap_cap_h,
-                             (long)(RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER));
-        if (dup_h < 0)
-            goto fail;
         /* Fase 18: forward ONE boot KUntyped into init so it can be handed on
-         * to iris_test for the ring-3 authority suite (T125–T131).  Resolve the
-         * root-CNode slot into a handle (mint source); full rights so retype
-         * (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal: if the
-         * grant is absent the slot stays empty and the authority tests FAIL
-         * loudly rather than silently skipping. */
-        long ut_h = ub_sys1(SYS_CSPACE_RESOLVE, (long)BOOT_CPTR_UNTYPED_START);
-        uint32_t nmints = 1u;
+         * to iris_test for the ring-3 authority suite (T125–T131).  Full rights
+         * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
+         * if the grant is absent the mint fails, the slot stays empty and the
+         * authority tests FAIL loudly rather than silently skipping. */
         struct svc_mint init_mints[2] = { 0 };
-        init_mints[0].slot   = IRIS_CPTR_SPAWN_CAP;
-        init_mints[0].src_h  = (handle_id_t)dup_h;
-        init_mints[0].rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-        init_mints[0].badge  = 0;
-        if (ut_h >= 0) {
-            init_mints[1].slot   = IRIS_CPTR_INIT_UNTYPED;
-            init_mints[1].src_h  = (handle_id_t)ut_h;
-            init_mints[1].rights = RIGHT_READ | RIGHT_WRITE |
-                                   RIGHT_DUPLICATE | RIGHT_TRANSFER;
-            init_mints[1].badge  = 0;
-            nmints = 2u;
-        }
+        init_mints[0].slot     = IRIS_CPTR_SPAWN_CAP;
+        init_mints[0].src_cptr = BOOT_CPTR_BOOTSTRAP_CAP;
+        init_mints[0].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        init_mints[0].badge    = 0;
+        init_mints[1].slot     = IRIS_CPTR_INIT_UNTYPED;
+        init_mints[1].src_cptr = BOOT_CPTR_UNTYPED_START;
+        init_mints[1].rights   = RIGHT_READ | RIGHT_WRITE |
+                                 RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        init_mints[1].badge    = 0;
+
         long lr = svc_load_minted(bootstrap_cap_h, "init",
-                                  &init_proc_h, &init_boot_h, init_mints, nmints);
-        ub_close((handle_id_t)dup_h);
-        if (ut_h >= 0) ub_close((handle_id_t)ut_h);
+                                  &init_proc_h, &init_boot_h, init_mints, 2u);
         if (lr < 0)
             goto fail;
     }

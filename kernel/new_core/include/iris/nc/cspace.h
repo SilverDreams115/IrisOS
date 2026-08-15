@@ -43,7 +43,8 @@ struct KFrame;
 /*
  * cspace_resolve_cap — kernel-internal CSpace traversal.
  *
- * Traverses proc's CNode tree using cptr, starting from proc->cspace_root_h.
+ * Traverses proc's CNode tree using cptr, starting from proc->cspace_root —
+ * a structural back-reference, not a handle (Stage 4).
  * On success returns IRIS_OK and writes the terminal capability into *obj_out
  * and its effective rights into *rights_out.
  *
@@ -185,7 +186,7 @@ iris_error_t cspace_or_handle_resolve_obj(struct KProcess  *proc,
 /*
  * cspace_or_handle_resolve_cnode — dual-resolution helper for CNode syscalls.
  *
- * Tries CSpace traversal first (if proc->cspace_root_h is set and
+ * Tries CSpace traversal first (if proc->cspace_root is set and
  * cptr_or_handle != CPTR_NULL).  Falls back to the handle table if CSpace
  * fails with anything other than ACCESS_DENIED (which is a hard stop).
  *
@@ -204,7 +205,7 @@ iris_error_t cspace_or_handle_resolve_cnode(struct KProcess *proc,
 /*
  * cspace_or_handle_resolve_untyped — dual-resolution helper for KUntyped syscalls.
  *
- * Tries CSpace traversal first (if proc->cspace_root_h is set and
+ * Tries CSpace traversal first (if proc->cspace_root is set and
  * cptr_or_handle != CPTR_NULL).  Falls back to the handle table if CSpace
  * fails with anything other than ACCESS_DENIED (which is a hard stop).
  *

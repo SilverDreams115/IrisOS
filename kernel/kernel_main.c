@@ -202,26 +202,15 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                      * Boot failure on CSpace insert is non-fatal: KBootstrapCap
                      * remains accessible via the legacy bootstrap_cap_h handle.
                      */
-                    if (ut->process->cspace_root_h != HANDLE_INVALID) {
-                        struct KObject *broot_obj = 0;
-                        iris_rights_t   broot_r;
-                        if (handle_table_get_object(
-                                &ut->process->handle_table,
-                                ut->process->cspace_root_h,
-                                &broot_obj, &broot_r) == IRIS_OK) {
-                            if (broot_obj->type == KOBJ_CNODE) {
-                                iris_error_t bme = kcnode_mint(
-                                    (struct KCNode *)broot_obj,
-                                    BOOT_CPTR_BOOTSTRAP_CAP,
-                                    &cap->base,
-                                    RIGHT_READ | RIGHT_DUPLICATE |
-                                    RIGHT_TRANSFER);
-                                if (bme == IRIS_OK)
-                                    klog_write("[IRIS][USER] boot bootstrap"
-                                               " cap CSpace grants OK\n");
-                            }
-                            kobject_release(broot_obj);
-                        }
+                    if (ut->process->cspace_root) {
+                        iris_error_t bme = kcnode_mint(
+                            ut->process->cspace_root,
+                            BOOT_CPTR_BOOTSTRAP_CAP,
+                            &cap->base,
+                            RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                        if (bme == IRIS_OK)
+                            klog_write("[IRIS][USER] boot bootstrap"
+                                       " cap CSpace grants OK\n");
                     }
                 }
             }
@@ -244,28 +233,15 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                      * Boot failure on CSpace insert is non-fatal: KVSpace was
                      * already created and bootstrap maps are registered.
                      */
-                    if (ut->process->vspace &&
-                        ut->process->cspace_root_h != HANDLE_INVALID) {
-                        struct KVSpace *vs = ut->process->vspace;
-                        struct KObject *vroot_obj = 0;
-                        iris_rights_t   vroot_r;
-                        if (handle_table_get_object(
-                                &ut->process->handle_table,
-                                ut->process->cspace_root_h,
-                                &vroot_obj, &vroot_r) == IRIS_OK) {
-                            if (vroot_obj->type == KOBJ_CNODE) {
-                                iris_error_t vme = kcnode_mint(
-                                    (struct KCNode *)vroot_obj,
-                                    BOOT_CPTR_VSPACE,
-                                    &vs->base,
-                                    RIGHT_READ | RIGHT_DUPLICATE |
-                                    RIGHT_TRANSFER);
-                                if (vme == IRIS_OK)
-                                    klog_write("[IRIS][USER] boot vspace"
-                                               " CSpace grants OK\n");
-                            }
-                            kobject_release(vroot_obj);
-                        }
+                    if (ut->process->vspace && ut->process->cspace_root) {
+                        iris_error_t vme = kcnode_mint(
+                            ut->process->cspace_root,
+                            BOOT_CPTR_VSPACE,
+                            &ut->process->vspace->base,
+                            RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                        if (vme == IRIS_OK)
+                            klog_write("[IRIS][USER] boot vspace"
+                                       " CSpace grants OK\n");
                     }
 
             /*
@@ -332,24 +308,15 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                      * giving the CNode slot independent ownership from the handle.
                      * Refcount after: 2 (handle) + 2 (CNode) = two balanced owners. */
                     uint32_t cspace_slot = BOOT_CPTR_UNTYPED_START + ut_count;
-                    if (ut->process->cspace_root_h != HANDLE_INVALID &&
+                    if (ut->process->cspace_root &&
                         cspace_slot < KCNODE_DEFAULT_SLOTS) {
-                        struct KObject *root_obj = 0;
-                        iris_rights_t   root_r;
-                        if (handle_table_get_object(&ut->process->handle_table,
-                                                    ut->process->cspace_root_h,
-                                                    &root_obj, &root_r) == IRIS_OK) {
-                            if (root_obj->type == KOBJ_CNODE) {
-                                iris_error_t me = kcnode_mint(
-                                    (struct KCNode *)root_obj, cspace_slot,
-                                    &boot_ut->base,
-                                    RIGHT_READ | RIGHT_WRITE |
-                                    RIGHT_DUPLICATE | RIGHT_TRANSFER);
-                                if (me == IRIS_OK)
-                                    ut_cspace_count++;
-                            }
-                            kobject_release(root_obj);
-                        }
+                        iris_error_t me = kcnode_mint(
+                            ut->process->cspace_root, cspace_slot,
+                            &boot_ut->base,
+                            RIGHT_READ | RIGHT_WRITE |
+                            RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                        if (me == IRIS_OK)
+                            ut_cspace_count++;
                     }
 
                     ut_count++;

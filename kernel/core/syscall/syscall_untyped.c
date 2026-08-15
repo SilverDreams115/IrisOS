@@ -335,26 +335,16 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     /* ── resolve destination CNode (WRITE); 0 = caller's root ── */
     struct KCNode *cn = 0;
     if (dest_cnode == 0u) {
-        if (proc->cspace_root_h == HANDLE_INVALID) {
+        /* Stage 4: structural root read — retype into the caller's root CNode
+         * no longer goes through the handle table. */
+        if (!proc->cspace_root) {
             kobject_active_release(&ut->base);
             kobject_release(&ut->base);
             kuntyped_stat_retype_failure();
             return syscall_err(IRIS_ERR_NOT_FOUND);
         }
-        struct KObject *root_obj;
-        iris_rights_t   root_r;
-        err = handle_table_get_object(&proc->handle_table, proc->cspace_root_h,
-                                      &root_obj, &root_r);
-        if (err == IRIS_OK && root_obj->type != KOBJ_CNODE) {
-            kobject_release(root_obj);
-            err = IRIS_ERR_INTERNAL;
-        }
-        if (err != IRIS_OK) {
-            kobject_active_release(&ut->base);
-            kobject_release(&ut->base);
-            kuntyped_stat_retype_failure();
-            return syscall_err(err);
-        }
+        struct KObject *root_obj = &proc->cspace_root->base;
+        kobject_retain(root_obj);
         kobject_active_retain(root_obj); /* match resolve_cnode contract */
         cn = (struct KCNode *)root_obj;
     } else {

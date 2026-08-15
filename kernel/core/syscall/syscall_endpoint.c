@@ -165,13 +165,12 @@ uint32_t syscall_ipc_deliver_cap(struct task *receiver,
 /* Resolve a process's root CNode (lifecycle ref only; release with a single
  * kobject_release).  NULL if the process has no root CNode (OOM-degraded). */
 static struct KCNode *ipc_root_cnode_of(struct KProcess *proc) {
-    struct KObject *obj;
-    iris_rights_t   r;
-    if (!proc || proc->cspace_root_h == HANDLE_INVALID) return 0;
-    if (handle_table_get_object(&proc->handle_table, proc->cspace_root_h,
-                                &obj, &r) != IRIS_OK) return 0;
-    if (obj->type != KOBJ_CNODE) { kobject_release(obj); return 0; }
-    return (struct KCNode *)obj;
+    /* Stage 4: structural root read — receive-slot delivery no longer needs
+     * the receiver's handle table to locate the receiver's CSpace.  Same
+     * single-lifecycle-ref contract the handle read used to yield. */
+    if (!proc || !proc->cspace_root) return 0;
+    kobject_retain(&proc->cspace_root->base);
+    return proc->cspace_root;
 }
 
 /*

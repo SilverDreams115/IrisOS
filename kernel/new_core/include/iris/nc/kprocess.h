@@ -117,9 +117,22 @@ struct KProcess {
     uint32_t owned_vmos_hwm;
     uint32_t phys_pages_hwm;
 
-    /* Ph95 (Phase 8): root CNode handle for hierarchical CSpace traversal.
-     * HANDLE_INVALID if not yet allocated (e.g. kpage_alloc OOM at creation). */
-    handle_id_t cspace_root_h;
+    /* Ph95 (Phase 8): root CNode for hierarchical CSpace traversal.
+     *
+     * Stage 4: this was a `handle_id_t` into the process's own handle table,
+     * which made the handle table a hard dependency of EVERY CPtr resolution —
+     * `cspace_resolve_slot` had to look the root up by handle before it could
+     * walk a single slot.  The namespace meant to REPLACE handles was rooted in
+     * one.  It is now a structural back-reference, exactly like `vspace` below:
+     * the kernel reaches a process's CSpace root directly, and resolving a CPtr
+     * touches no handle table at all.  This is also what let the cross-process
+     * paths (SYS_CSPACE_MINT_INTO, retype2) stop reaching into ANOTHER
+     * process's handle table to find its root.
+     *
+     * Holds one lifecycle ref + one active ref (the pair the handle used to
+     * own), both released in kprocess_teardown.  NULL if kcnode_alloc OOM'd at
+     * creation — the process still runs, it just has no CSpace. */
+    struct KCNode *cspace_root;
 
     /* Fase 4: VSpace capability wrapping this process's address space.
      * Holds one lifecycle ref (kobject_retain).  NULL if kvspace_alloc OOM'd at

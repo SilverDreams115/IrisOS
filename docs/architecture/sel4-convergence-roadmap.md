@@ -123,7 +123,7 @@ Precondition: Stages 1–2 (both closed).
 Result: there is exactly ONE derivation tree in the system.  Charter A9 and
 A10 move to MET.
 
-## Stage 4 — Dual namespace retirement  ← NEXT
+## Stage 4 — Dual namespace retirement  ← IN PROGRESS
 
 Precondition: Stages 2–3 (both closed — no authority lives handle-only anymore).
 
@@ -134,21 +134,49 @@ Precondition: Stages 2–3 (both closed — no authority lives handle-only anymo
 - Remove the handle table when it has zero consumers; the `check_purity`
   allowlist must reach empty.
 
-Measured surface at the close of Stage 3 (from `scripts/purity_allowlist.txt`,
-which is the executable inventory — it only shrinks):
+Measured surface (from `scripts/purity_allowlist.txt`, which is the executable
+inventory — it only shrinks):
 
-| Frozen consumer | Occurrences | Files |
-|---|---|---|
-| `cspace_or_handle_resolve_` | 104 | 17 |
-| `handle_table_get_object` | 52 | 14 |
-| `handle_table_insert` | 42 | 14 |
+| Frozen consumer | Close of Stage 3 | Now | Files |
+|---|---|---|---|
+| `cspace_or_handle_resolve_` | 104 | 104 | 17 |
+| `handle_table_get_object` | 52 | 40 | 14 → 11 |
+| `handle_table_insert` | 42 | 41 | 14 → 13 |
 
 (`kslab_alloc`, 20 occurrences across 16 files, is Stage 6's inventory, not
 Stage 4's.)
 
-Productive userspace consumers to migrate first: `SYS_CSPACE_RESOLVE` (the
-sanctioned CPtr→handle bridge, used by userboot/init/svcmgr/pager) and
-`SYS_HANDLE_DUP` (init ×3, svcmgr ×2).
+### Etapa 4 — the CSpace root stops being a handle  ✅ DONE
+
+`KProcess.cspace_root_h` (a `handle_id_t` into the process's own handle table)
+became `KProcess.cspace_root` (a `struct KCNode *`, holding the same lifecycle
++ active ref pair, released in `kprocess_teardown`).  This removed the
+namespace inversion at the base of the whole stage: **every** CPtr resolution
+began by looking the root up in the namespace CSpace was built to replace.  It
+also ended cross-process handle-table access — `SYS_CSPACE_MINT_INTO`,
+`SYS_PROC_CSPACE_MINT`, retype2's `dest_cnode == 0`, `SYS_CNODE_DELETE` and IPC
+receive-slot delivery all read the target's root structurally now.
+
+Two userspace consequences, both retiring guesswork rather than adding API:
+
+- `SYS_CNODE_MINT` accepts `arg0 == 0` = "my own root CNode", the convention
+  `SYS_CNODE_DELETE` and `SYS_UNTYPED_RETYPE2` already used.  svcmgr and
+  `iris_test` used to *probe their own handle table* for the first CNode-typed
+  generation-1 id, which only worked because the kernel published the root as
+  every process's first handle.  Both probes are deleted.
+- userboot's two liveness-only CPtr probes are deleted, and its two founding
+  mints for `init` now take CPtr sources (`SYS_CSPACE_MINT_INTO`) instead of a
+  `SYS_HANDLE_DUP` + `SYS_CSPACE_RESOLVE` pair — so init's founding caps are
+  installed as MDB children of userboot's slots, i.e. revocable, instead of
+  handed over forever.
+
+Productive userspace consumers still to migrate: `SYS_CSPACE_RESOLVE` (the
+sanctioned CPtr→handle bridge — init, svcmgr, pager, plus the test-only
+lifecycle_probe; userboot no longer calls it) and `SYS_HANDLE_DUP` (init ×3;
+userboot, svcmgr and pager do **not** call it).  The largest single consumer is
+`iris_test`: it is not productive code, but Stage 4 cannot close while the
+suite that proves the stage still addresses authority by handle, so it migrates
+with the rest.
 
 **Second-order benefit, not just hygiene.** The `<1024` split caps the whole
 CPtr namespace at 10 bits.  A root CNode of 256 slots therefore consumes most

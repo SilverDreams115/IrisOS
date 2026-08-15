@@ -75,9 +75,11 @@ live-process snapshot so the baseline is stable.
   ref; with `r->caller == 0` the server's `SYS_REPLY` returns NOT_FOUND and
   keeps its attached cap (two-phase staging).  `kreply_obj_close` also wakes a
   still-blocked caller with CLOSED if the server drops the reply cap unused.
-- **CSpace** — the process root CNode lives in the process's own handle table
-  (`cspace_root_h`).  `kprocess_teardown` → `handle_table_close_all` releases
-  it → `kcnode_obj_close` releases every slot cap (active + lifecycle).
+- **CSpace** — the process root CNode is held structurally by the process
+  (`cspace_root`, one lifecycle + one active ref; Fase S4 Etapa 4 — it used to
+  be an entry in the process's own handle table).  `kprocess_teardown` drops
+  both refs at the point `handle_table_close_all` used to release them →
+  `kcnode_obj_close` releases every slot cap (active + lifecycle).
 - **VSpace / mappings** — `kprocess_reap_address_space` → `kvspace_invalidate`
   tears down every mapping and drops bootstrap KFrame refs, then destroys the
   page tables.  Idempotent via `aspace_reaped`.

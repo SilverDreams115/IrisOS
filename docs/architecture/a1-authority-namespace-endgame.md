@@ -39,7 +39,7 @@ Two authority namespaces coexist in one argument space, enforced since
 Fase 8 (`CSPACE_DIRECT_CPTR_LIMIT` in `kernel/new_core/src/cspace.c`):
 
 - **CPtr namespace (`value < 1024`)** — resolved by walking the process
-  root CNode (`proc->cspace_root_h`, created in `kprocess_create`,
+  root CNode (`proc->cspace_root`, created in `kprocess_alloc`,
   `kernel/new_core/src/kprocess.c`). CSpace-only: a missing slot fails
   cleanly, `ACCESS_DENIED` is a hard stop, no handle-table fallback.
 - **Handle namespace (`value >= 1024`)** — `slot | generation << 10`
@@ -198,7 +198,7 @@ deliver via CSpace instead.
 | IPC cap delivery (no slot declared) | `syscall_ipc_deliver_cap[_badged]` (`syscall_endpoint.c`) — EP_SEND/REPLY attached caps when the receiver declared no receive-slot, or as TOCTOU fallback when the declared slot was filled between declaration and delivery | transferable types | legacy compatibility; A1.5 receive-slot (`a1-5-ipc-receive-slot.md`) is the CSpace landing zone when declared | **compat — persistent authority delivered as a handle, receiver's choice** | receivers migrate to declaring receive-slots; producer shrinks as services adopt them |
 | Reply-cap delivery | `EP_RECV`/`EP_CALL` path (`syscall_endpoint.c`, `syscall_reply.c`) | KReply | one-shot, bound to an in-flight call — the anchor ephemeral case | ephemeral **by design** | permanent; never migrates |
 | CSpace materialization | `SYS_CSPACE_RESOLVE` (`syscall_cspace.c`), `SYS_CNODE_FETCH` (`syscall_cnode_ops.c`) | all | the sanctioned CSpace→handle bridge for APIs that want a working handle | ephemeral (authority already lives in the slot) | keep |
-| Kernel bootstrap | `kernel_main.c` (init's KBootstrapCap), `kprocess_create` (root CNode handle), `task_thread_create`/`task_create` (KTcb auto-insert) | KBootstrapCap, KCNode, KTcb | pre-userland injection; notably the CSpace itself is *rooted* in a handle (`proc->cspace_root_h`) | infrastructure | keep; root-CNode-as-handle is an implementation detail invisible to userland |
+| Kernel bootstrap | `kernel_main.c` (init's KBootstrapCap), `task_thread_create`/`task_create` (KTcb auto-insert) | KBootstrapCap, KTcb | pre-userland injection | infrastructure | keep until Stage 5 BootInfo.  The root CNode is no longer among these: since Fase S4 Etapa 4 the CSpace is rooted structurally (`proc->cspace_root`), not in a handle |
 | Kernel selftests | `phase3_selftest.c` | various | debug-gated kernel selftest | test-only | keep |
 
 ## Final audit — remaining handle-only call-sites

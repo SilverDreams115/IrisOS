@@ -40,11 +40,17 @@ static struct KProcess *vs_make_proc(void) {
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
     handle_table_init(&p->handle_table);
-    p->cspace_root_h = HANDLE_INVALID;
+    p->cspace_root = NULL;
     return p;
 }
 
 static void vs_free_proc(struct KProcess *p) {
+    /* Stage 4: structural root — the fixture drops its refs explicitly. */
+    if (p->cspace_root) {
+        kobject_active_release(&p->cspace_root->base);
+        kobject_release(&p->cspace_root->base);
+        p->cspace_root = NULL;
+    }
     handle_table_close_all(&p->handle_table);
     kpage_free(p, (uint32_t)sizeof(*p));
 }
@@ -52,13 +58,19 @@ static void vs_free_proc(struct KProcess *p) {
 static struct KCNode *vs_setup_root(struct KProcess *p) {
     struct KCNode *root = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
     if (!root) return NULL;
-    handle_id_t rh = handle_table_insert(
-        &p->handle_table, &root->base,
-        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-    kobject_release(&root->base);
-    if (rh == HANDLE_INVALID) return NULL;
-    p->cspace_root_h = rh;
+    kobject_active_retain(&root->base);
+    p->cspace_root = root;
     return root;
+}
+
+/* Stage 4: structural-root shim preserving the fixtures' fetch/release shape. */
+static iris_error_t vs_root_fetch(struct KProcess *p, struct KObject **out,
+                                  iris_rights_t *rights_out) {
+    if (!p || !p->cspace_root) return IRIS_ERR_NOT_FOUND;
+    *out = &p->cspace_root->base;
+    *rights_out = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+    kobject_retain(*out);
+    return IRIS_OK;
 }
 
 /* Simulate kernel_main's VSpace grant:
@@ -80,10 +92,10 @@ static struct KVSpace *vs_boot_grant(struct KProcess *p, uint64_t cr3) {
     kobject_release(&vs->base);   /* drop alloc ref; process ref is the kobject_retain */
 
     /* Publish in well-known slot BOOT_CPTR_VSPACE. */
-    if (p->cspace_root_h == HANDLE_INVALID) return vs;
+    if (!p->cspace_root) return vs;
 
     struct KObject *root_obj; iris_rights_t root_r;
-    if (handle_table_get_object(&p->handle_table, p->cspace_root_h,
+    if (vs_root_fetch(p,
                                 &root_obj, &root_r) != IRIS_OK) return vs;
     if (root_obj->type == KOBJ_CNODE) {
         (void)kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
@@ -158,7 +170,7 @@ void test_vspace_cspace(void) {
         ASSERT_NOT_NULL(vs);
 
         struct KObject *root_obj; iris_rights_t root_r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, p->cspace_root_h,
+        ASSERT_EQ(vs_root_fetch(p,
                                            &root_obj, &root_r), IRIS_OK);
         ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
                                &vs->base,
@@ -189,7 +201,7 @@ void test_vspace_cspace(void) {
         ASSERT_NOT_NULL(vs);
 
         struct KObject *root_obj; iris_rights_t root_r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, p->cspace_root_h,
+        ASSERT_EQ(vs_root_fetch(p,
                                            &root_obj, &root_r), IRIS_OK);
         ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
                                &vs->base,
@@ -222,7 +234,7 @@ void test_vspace_cspace(void) {
         ASSERT_NOT_NULL(ut);
 
         struct KObject *root_obj; iris_rights_t root_r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, p->cspace_root_h,
+        ASSERT_EQ(vs_root_fetch(p,
                                            &root_obj, &root_r), IRIS_OK);
         ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
                                &ut->base, RIGHT_READ | RIGHT_WRITE),
@@ -248,7 +260,7 @@ void test_vspace_cspace(void) {
         ASSERT_NOT_NULL(vs);
 
         struct KObject *root_obj; iris_rights_t root_r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, p->cspace_root_h,
+        ASSERT_EQ(vs_root_fetch(p,
                                            &root_obj, &root_r), IRIS_OK);
         /* Mint with READ-only rights. */
         ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
@@ -298,7 +310,7 @@ void test_vspace_cspace(void) {
 
         /* CNode slot: READ-only.  Handle: full rights. */
         struct KObject *root_obj; iris_rights_t root_r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, p->cspace_root_h,
+        ASSERT_EQ(vs_root_fetch(p,
                                            &root_obj, &root_r), IRIS_OK);
         ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
                                &vs->base, RIGHT_READ),
@@ -333,7 +345,7 @@ void test_vspace_cspace(void) {
         /* (process->vspace holds the single lifecycle ref) */
 
         struct KObject *root_obj; iris_rights_t root_r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, p->cspace_root_h,
+        ASSERT_EQ(vs_root_fetch(p,
                                            &root_obj, &root_r), IRIS_OK);
         ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
                                &vs->base,
@@ -371,7 +383,7 @@ void test_vspace_cspace(void) {
         ASSERT_NE(hcap, (handle_id_t)HANDLE_INVALID);
 
         struct KObject *root_obj; iris_rights_t root_r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, p->cspace_root_h,
+        ASSERT_EQ(vs_root_fetch(p,
                                            &root_obj, &root_r), IRIS_OK);
         ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_BOOTSTRAP_CAP,
                                &cap->base,
@@ -382,7 +394,7 @@ void test_vspace_cspace(void) {
         /* Insert KVSpace into slot 2 (BOOT_CPTR_VSPACE). */
         struct KVSpace *vs = kvspace_alloc(0x6000ULL);
         ASSERT_NOT_NULL(vs);
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, p->cspace_root_h,
+        ASSERT_EQ(vs_root_fetch(p,
                                            &root_obj, &root_r), IRIS_OK);
         ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
                                &vs->base,
@@ -396,7 +408,7 @@ void test_vspace_cspace(void) {
         ASSERT_NOT_NULL(buf);
         struct KUntyped *ut = kuntyped_create((uint64_t)(uintptr_t)buf, 4096u, 0);
         ASSERT_NOT_NULL(ut);
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, p->cspace_root_h,
+        ASSERT_EQ(vs_root_fetch(p,
                                            &root_obj, &root_r), IRIS_OK);
         ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_UNTYPED_START,
                                &ut->base,
@@ -450,7 +462,7 @@ void test_vspace_cspace(void) {
         ASSERT_NOT_NULL(vs);
 
         struct KObject *root_obj; iris_rights_t root_r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, p->cspace_root_h,
+        ASSERT_EQ(vs_root_fetch(p,
                                            &root_obj, &root_r), IRIS_OK);
         ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
                                &vs->base,
@@ -494,7 +506,7 @@ void test_vspace_cspace(void) {
         kobject_release(&vs->base);  /* drop alloc ref; refcount=1 */
 
         struct KObject *root_obj; iris_rights_t root_r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, p->cspace_root_h,
+        ASSERT_EQ(vs_root_fetch(p,
                                            &root_obj, &root_r), IRIS_OK);
         ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
                                &vs->base,

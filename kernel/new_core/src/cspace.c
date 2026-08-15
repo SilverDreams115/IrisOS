@@ -23,23 +23,17 @@ iris_error_t cspace_resolve_cap_badged(struct KProcess   *proc,
     if (!proc || !obj_out || !rights_out) return IRIS_ERR_INVALID_ARG;
     if (cptr == CPTR_NULL) return IRIS_ERR_INVALID_ARG;
 
-    handle_id_t root_h = proc->cspace_root_h;
-    if (root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+    /* Stage 4: structural root — no handle-table lookup to start the walk. */
+    if (!proc->cspace_root) return IRIS_ERR_NOT_FOUND;
 
-    struct KObject *root_obj;
-    iris_rights_t   root_rights;
-    iris_error_t err = handle_table_get_object(&proc->handle_table, root_h,
-                                               &root_obj, &root_rights);
-    if (err != IRIS_OK) return err;
-    if (root_obj->type != KOBJ_CNODE) {
-        kobject_release(root_obj);
-        return IRIS_ERR_INVALID_ARG;
-    }
+    struct KObject *root_obj = &proc->cspace_root->base;
+    iris_error_t    err;
 
-    /* handle_table_get_object adds only a lifecycle retain, not an active retain.
-     * Add one active retain here so the loop can uniformly call both
-     * kobject_active_release + kobject_release for every level including root,
-     * without triggering premature close of the root CNode's slots. */
+    /* Take the retain the handle read used to yield, plus an active retain, so
+     * the loop can uniformly call both kobject_active_release + kobject_release
+     * for every level including root, without triggering premature close of the
+     * root CNode's slots. */
+    kobject_retain(root_obj);
     kobject_active_retain(root_obj);
     struct KCNode *cur = (struct KCNode *)root_obj;
 
@@ -113,18 +107,15 @@ iris_error_t cspace_resolve_slot(struct KProcess *proc, iris_cptr_t cptr,
     if (!proc || !cn_out || !idx_out) return IRIS_ERR_INVALID_ARG;
     if (cptr == CPTR_NULL) return IRIS_ERR_INVALID_ARG;
 
-    handle_id_t root_h = proc->cspace_root_h;
-    if (root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+    /* Stage 4: the root is a structural back-reference — resolving a CPtr no
+     * longer begins with a handle-table lookup.  We take the same retain +
+     * active_retain pair the handle read used to yield, so every existing
+     * release path downstream is unchanged. */
+    if (!proc->cspace_root) return IRIS_ERR_NOT_FOUND;
 
-    struct KObject *root_obj;
-    iris_rights_t   root_rights;
-    iris_error_t err = handle_table_get_object(&proc->handle_table, root_h,
-                                               &root_obj, &root_rights);
-    if (err != IRIS_OK) return err;
-    if (root_obj->type != KOBJ_CNODE) {
-        kobject_release(root_obj);
-        return IRIS_ERR_INVALID_ARG;
-    }
+    struct KObject *root_obj = &proc->cspace_root->base;
+    iris_error_t    err;
+    kobject_retain(root_obj);
     kobject_active_retain(root_obj);
     struct KCNode *cur = (struct KCNode *)root_obj;
 
@@ -249,7 +240,7 @@ iris_error_t cspace_or_handle_resolve_cnode(struct KProcess *proc,
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+        if (!proc->cspace_root) return IRIS_ERR_NOT_FOUND;
         err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_CNODE) {
@@ -303,7 +294,7 @@ iris_error_t fn(struct KProcess *proc, iris_cptr_t cptr_or_handle,              
     if (!proc || !out || !rights_out) return IRIS_ERR_INVALID_ARG;                \
     /* CPtr namespace (< 1024): CSpace only, no handle-table fallback. */         \
     if (cspace_value_is_cptr(cptr_or_handle)) {                                   \
-        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;     \
+        if (!proc->cspace_root) return IRIS_ERR_NOT_FOUND;                       \
         err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);       \
         if (err != IRIS_OK) return err;                                            \
         if (obj->type != (kobj_tag)) {                                            \
@@ -355,7 +346,7 @@ iris_error_t cspace_or_handle_resolve_untyped(struct KProcess  *proc,
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+        if (!proc->cspace_root) return IRIS_ERR_NOT_FOUND;
         err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_UNTYPED) {
@@ -407,7 +398,7 @@ iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+        if (!proc->cspace_root) return IRIS_ERR_NOT_FOUND;
         err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_FRAME) {
@@ -462,7 +453,7 @@ iris_error_t cspace_or_handle_resolve_vspace(struct KProcess *proc,
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+        if (!proc->cspace_root) return IRIS_ERR_NOT_FOUND;
         err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_VSPACE) {
@@ -517,7 +508,7 @@ iris_error_t cspace_or_handle_resolve_obj(struct KProcess  *proc,
     if (!proc || !out || !rights_out) return IRIS_ERR_INVALID_ARG;
 
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+        if (!proc->cspace_root) return IRIS_ERR_NOT_FOUND;
         err = cspace_resolve_cap(proc, cptr_or_handle, required, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != expected_type) {
@@ -569,7 +560,7 @@ iris_error_t cspace_or_handle_resolve_endpoint_badged(struct KProcess  *proc,
 
     /* CPtr namespace (< 1024): CSpace only, no handle-table fallback. */
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        if (proc->cspace_root_h == HANDLE_INVALID) return IRIS_ERR_NOT_FOUND;
+        if (!proc->cspace_root) return IRIS_ERR_NOT_FOUND;
         err = cspace_resolve_cap_badged(proc, cptr_or_handle, required,
                                         &obj, &r, &badge);
         if (err != IRIS_OK) return err;

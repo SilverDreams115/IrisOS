@@ -206,11 +206,17 @@ static void it_slot_delete(uint32_t slot) {
 #define IT_XFER_SLOT_C  249u
 #define IT_XFER_SLOT_D  250u
 
-static handle_id_t t28_root_cnode(void);   /* defined with the Fase 28 helpers */
+/* Stage 4: naming iris_test's OWN root CNode.  This used to probe the handle
+ * table for the first CNODE-typed generation-1 id, which only worked because
+ * the kernel published every process's root CNode as its first handle.  The
+ * root is structural now and lives in no handle table, so the operations that
+ * needed it (DELETE a CSpace slot before re-minting) pass arg0 == 0 — the
+ * "my own root CNode" convention.  It is a constant, never HANDLE_INVALID, so
+ * the old "no root found" guards are gone with the probe. */
+#define T28_OWN_ROOT_CNODE 0u
 
 static long it_xfer_slot(handle_id_t src_h, uint32_t slot, uint32_t rights) {
-    handle_id_t root = t28_root_cnode();
-    if (root == HANDLE_INVALID) return (long)IRIS_ERR_NOT_FOUND;
+    handle_id_t root = T28_OWN_ROOT_CNODE;
     (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)slot);
     long r = it_sys4(SYS_CNODE_MINT, (long)root, (long)slot, (long)src_h,
                      (long)(rights | RIGHT_TRANSFER));
@@ -233,8 +239,7 @@ static int it_slot_is_notif(long slot) {
 /* Mint a source slot with EXACTLY the requested rights (no implicit
  * RIGHT_TRANSFER) — used by the negative tests that must be denied. */
 static long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
-    handle_id_t root = t28_root_cnode();
-    if (root == HANDLE_INVALID) return (long)IRIS_ERR_NOT_FOUND;
+    handle_id_t root = T28_OWN_ROOT_CNODE;
     (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)slot);
     long r = it_sys4(SYS_CNODE_MINT, (long)root, (long)slot, src_h, (long)rights);
     return (r != 0) ? r : (long)slot;
@@ -253,8 +258,7 @@ static long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
  * it_cdt_alive — does this slot still name a live capability?
  * it_cdt_revoke— revoke the slot's descendants (>= 0 on success). */
 static long it_cdt_root(handle_id_t src_h, uint32_t slot) {
-    handle_id_t root = t28_root_cnode();
-    if (root == HANDLE_INVALID) return (long)IRIS_ERR_NOT_FOUND;
+    handle_id_t root = T28_OWN_ROOT_CNODE;
     (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)slot);
     long r = it_sys4(SYS_CNODE_MINT, (long)root, (long)slot, (long)src_h,
                      (long)RIGHT_SAME_RIGHTS);
@@ -1190,9 +1194,9 @@ static void test_t025(void) {
     handle_id_t notif_h = HANDLE_INVALID;
     long r1 = -1;
     int  src_preserved = 0;
-    handle_id_t t025_root = t28_root_cnode();
+    handle_id_t t025_root = T28_OWN_ROOT_CNODE;
     long notif_raw = it_notify_create();
-    if (notif_raw >= 0 && t025_root != HANDLE_INVALID) {
+    if (notif_raw >= 0) {
         notif_h = (handle_id_t)notif_raw;
         (void)it_sys2(SYS_CNODE_DELETE, (long)t025_root, (long)IT_XFER_SLOT_C);
         if (it_sys4(SYS_CNODE_MINT, (long)t025_root, (long)IT_XFER_SLOT_C,
@@ -2579,8 +2583,7 @@ static void test_t073(void) {
 
     /* Fase S4 (Etapa 2): the SOURCE is a CSpace slot.  Three failure shapes,
      * each of which must leave the source cap exactly where it was. */
-    handle_id_t root = t28_root_cnode();
-    if (root == HANDLE_INVALID) { it_close(&ep_h); it_fail("T073", "root cnode"); return; }
+    handle_id_t root = T28_OWN_ROOT_CNODE;
 
     /* (a) A source slot WITHOUT RIGHT_TRANSFER → ACCESS_DENIED, slot intact. */
     (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)IT_XFER_SLOT_C);
@@ -14821,20 +14824,6 @@ static handle_id_t t28_admin_cap(void) {
     return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
 }
 
-/* iris_test's own root CNode handle (slots 0..15, type CNODE) — found once,
- * used to DELETE a CSpace slot before re-minting into it.  Mirrors
- * svcmgr_find_root_cnode. */
-static handle_id_t t28_root_cnode(void) {
-    static handle_id_t cached = HANDLE_INVALID;
-    if (cached != HANDLE_INVALID) return cached;
-    for (uint32_t slot = 0; slot < 16u; slot++) {
-        handle_id_t h = handle_id_make(slot, 1u);
-        if (it_sys1(SYS_HANDLE_TYPE, (long)h) == (long)IRIS_HANDLE_TYPE_CNODE) {
-            cached = h; return h;
-        }
-    }
-    return HANDLE_INVALID;
-}
 
 /* Self-mint a SESSION-badged vfs cap (badge IRIS_BADGE_FILEGRANT_S(s)) into
  * iris_test's own CSpace and materialize it.  This is byte-identical to the
@@ -14852,9 +14841,8 @@ static handle_id_t t28_session_cap(uint32_t session) {
     if (session >= T28_FG_SESSIONS) return HANDLE_INVALID;
     handle_id_t src = t28_vfs_cap();
     if (src == HANDLE_INVALID) return HANDLE_INVALID;
-    handle_id_t root = t28_root_cnode();
-    if (root != HANDLE_INVALID)
-        (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)T28_FG_SLOT(session));
+    handle_id_t root = T28_OWN_ROOT_CNODE;
+    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)T28_FG_SLOT(session));
     long mr = it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
                       (long)T28_FG_SLOT(session), (long)src,
                       (long)((IRIS_BADGE_FILEGRANT_S(session) << 32) | RIGHT_WRITE));

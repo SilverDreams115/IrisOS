@@ -128,11 +128,18 @@ static struct KProcess *fr_make_proc(void) {
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
     handle_table_init(&p->handle_table);
-    p->cspace_root_h = HANDLE_INVALID;
+    p->cspace_root = NULL;
     return p;
 }
 
 static void fr_free_proc(struct KProcess *p) {
+    /* Stage 4: structural root — released here instead of by
+     * handle_table_close_all, which no longer owns it. */
+    if (p->cspace_root) {
+        kobject_active_release(&p->cspace_root->base);
+        kobject_release(&p->cspace_root->base);
+        p->cspace_root = NULL;
+    }
     handle_table_close_all(&p->handle_table);
     free(p);
 }
@@ -140,12 +147,10 @@ static void fr_free_proc(struct KProcess *p) {
 static struct KCNode *fr_setup_root(struct KProcess *p) {
     struct KCNode *root = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
     if (!root) return NULL;
-    handle_id_t rh = handle_table_insert(
-        &p->handle_table, &root->base,
-        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-    kobject_release(&root->base);
-    if (rh == HANDLE_INVALID) return NULL;
-    p->cspace_root_h = rh;
+    /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+     * lifecycle ref, plus the active ref the handle used to own. */
+    kobject_active_retain(&root->base);
+    p->cspace_root = root;
     return root;
 }
 

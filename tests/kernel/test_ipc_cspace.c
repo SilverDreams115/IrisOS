@@ -30,11 +30,18 @@ static struct KProcess *make_proc(void) {
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
     handle_table_init(&p->handle_table);
-    p->cspace_root_h = HANDLE_INVALID;
+    p->cspace_root = NULL;
     return p;
 }
 
 static void free_proc(struct KProcess *p) {
+    /* Stage 4: structural root — released here instead of by
+     * handle_table_close_all, which no longer owns it. */
+    if (p->cspace_root) {
+        kobject_active_release(&p->cspace_root->base);
+        kobject_release(&p->cspace_root->base);
+        p->cspace_root = NULL;
+    }
     handle_table_close_all(&p->handle_table);
     kpage_free(p, (uint32_t)sizeof(*p));
 }
@@ -43,11 +50,10 @@ static void free_proc(struct KProcess *p) {
 static struct KCNode *setup_cspace(struct KProcess *p, uint32_t num_slots) {
     struct KCNode *root = kcnode_alloc(num_slots);
     if (!root) return NULL;
-    handle_id_t rh = handle_table_insert(&p->handle_table, &root->base,
-                                          RIGHT_READ | RIGHT_WRITE);
-    kobject_release(&root->base);
-    if (rh == HANDLE_INVALID) return NULL;
-    p->cspace_root_h = rh;
+    /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+     * lifecycle ref, plus the active ref the handle used to own. */
+    kobject_active_retain(&root->base);
+    p->cspace_root = root;
     return root;
 }
 
@@ -95,7 +101,7 @@ void test_ipc_cspace(void) {
     {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);
-        /* cspace_root_h stays HANDLE_INVALID */
+        /* cspace_root stays NULL */
 
         struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
@@ -476,8 +482,10 @@ void test_ipc_cspace(void) {
                                         RIGHT_READ | RIGHT_WRITE);
             kobject_release(&eps[i]->base);
         }
-        /* hs[2] sits in table slot 3 (slot 0 = cspace root handle). */
-        handle_id_t h_alias = hs[2];
+        /* hs[3] sits in table slot 3.  Stage 4: the CSpace root is structural
+         * and no longer consumes handle-table slot 0, so the endpoints start
+         * at slot 0 and the alias we want is hs[3], not hs[2]. */
+        handle_id_t h_alias = hs[3];
         ASSERT_EQ((uint32_t)(h_alias & 0x3FFu), 3u);
 
         /* OLD bug: resolve walked CSpace, hit slot 3 (notification) and
@@ -487,7 +495,7 @@ void test_ipc_cspace(void) {
         ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, (iris_cptr_t)h_alias,
                                                     RIGHT_WRITE, &out, &rout),
                   IRIS_OK);
-        ASSERT_TRUE(out == eps[2]);
+        ASSERT_TRUE(out == eps[3]);
         kobject_release(&out->base);
 
         /* And a true CPtr (< 1024) into an EMPTY slot must fail cleanly

@@ -9,17 +9,24 @@
 #include <iris/kpage.h>
 #include <string.h>
 
-/* Minimal KProcess for testing: only handle_table and cspace_root_h matter. */
+/* Minimal KProcess for testing: only handle_table and cspace_root matter. */
 static struct KProcess *make_test_proc(void) {
     struct KProcess *p = (struct KProcess *)kpage_alloc((uint32_t)sizeof(struct KProcess));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
     handle_table_init(&p->handle_table);
-    p->cspace_root_h = HANDLE_INVALID;
+    p->cspace_root = NULL;
     return p;
 }
 
 static void free_test_proc(struct KProcess *p) {
+    /* Stage 4: structural root — released here instead of by
+     * handle_table_close_all, which no longer owns it. */
+    if (p->cspace_root) {
+        kobject_active_release(&p->cspace_root->base);
+        kobject_release(&p->cspace_root->base);
+        p->cspace_root = NULL;
+    }
     handle_table_close_all(&p->handle_table);
     kpage_free(p, (uint32_t)sizeof(*p));
 }
@@ -52,7 +59,7 @@ void test_cspace(void) {
     {
         struct KProcess *p = make_test_proc();
         ASSERT_NOT_NULL(p);
-        /* cspace_root_h stays HANDLE_INVALID */
+        /* cspace_root stays NULL */
         struct KObject *out; iris_rights_t rout;
         ASSERT_EQ(cspace_resolve_cap(p, 1u, RIGHT_NONE, &out, &rout),
                   IRIS_ERR_NOT_FOUND);
@@ -66,11 +73,10 @@ void test_cspace(void) {
 
         struct KCNode *root = kcnode_alloc(8);
         ASSERT_NOT_NULL(root);
-        handle_id_t rh = handle_table_insert(&p->handle_table, &root->base,
-                                              RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&root->base);
-        ASSERT_NE(rh, (handle_id_t)HANDLE_INVALID);
-        p->cspace_root_h = rh;
+        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+         * lifecycle ref, plus the active ref the handle used to own. */
+        kobject_active_retain(&root->base);
+        p->cspace_root = root;
 
         /* slot 3 is empty */
         struct KObject *out; iris_rights_t rout;
@@ -86,10 +92,10 @@ void test_cspace(void) {
 
         struct KCNode *root = kcnode_alloc(8);
         ASSERT_NOT_NULL(root);
-        handle_id_t rh = handle_table_insert(&p->handle_table, &root->base,
-                                              RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&root->base);
-        p->cspace_root_h = rh;
+        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+         * lifecycle ref, plus the active ref the handle used to own. */
+        kobject_active_retain(&root->base);
+        p->cspace_root = root;
 
         g_destroyed = 0;
         struct KObject *target = make_obj(KOBJ_CHANNEL);
@@ -126,10 +132,10 @@ void test_cspace(void) {
 
         struct KCNode *root = kcnode_alloc(8);
         ASSERT_NOT_NULL(root);
-        handle_id_t rh = handle_table_insert(&p->handle_table, &root->base,
-                                              RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&root->base);
-        p->cspace_root_h = rh;
+        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+         * lifecycle ref, plus the active ref the handle used to own. */
+        kobject_active_retain(&root->base);
+        p->cspace_root = root;
 
         struct KObject *target = make_obj(KOBJ_NOTIFICATION);
         ASSERT_NOT_NULL(target);
@@ -161,10 +167,10 @@ void test_cspace(void) {
         ASSERT_NOT_NULL(root);
         ASSERT_NOT_NULL(child);
 
-        handle_id_t rh = handle_table_insert(&p->handle_table, &root->base,
-                                              RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&root->base);
-        p->cspace_root_h = rh;
+        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+         * lifecycle ref, plus the active ref the handle used to own. */
+        kobject_active_retain(&root->base);
+        p->cspace_root = root;
 
         /* Place child CNode into root slot 4. */
         ASSERT_EQ(kcnode_mint(root, 4, &child->base, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
@@ -196,10 +202,10 @@ void test_cspace(void) {
 
         struct KCNode *root = kcnode_alloc(8);
         ASSERT_NOT_NULL(root);
-        handle_id_t rh = handle_table_insert(&p->handle_table, &root->base,
-                                              RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&root->base);
-        p->cspace_root_h = rh;
+        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+         * lifecycle ref, plus the active ref the handle used to own. */
+        kobject_active_retain(&root->base);
+        p->cspace_root = root;
 
         struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
         ASSERT_NOT_NULL(ep);
@@ -223,10 +229,10 @@ void test_cspace(void) {
 
         struct KCNode *root = kcnode_alloc(8);
         ASSERT_NOT_NULL(root);
-        handle_id_t rh = handle_table_insert(&p->handle_table, &root->base,
-                                              RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&root->base);
-        p->cspace_root_h = rh;
+        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+         * lifecycle ref, plus the active ref the handle used to own. */
+        kobject_active_retain(&root->base);
+        p->cspace_root = root;
 
         /* Mint a CHANNEL into slot 1; try to resolve it as an Endpoint. */
         struct KObject *ch = make_obj(KOBJ_CHANNEL);
@@ -250,10 +256,10 @@ void test_cspace(void) {
         struct KCNode *inner = kcnode_alloc(16);
         ASSERT_NOT_NULL(root); ASSERT_NOT_NULL(inner);
 
-        handle_id_t rh = handle_table_insert(&p->handle_table, &root->base,
-                                              RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&root->base);
-        p->cspace_root_h = rh;
+        /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
+         * lifecycle ref, plus the active ref the handle used to own. */
+        kobject_active_retain(&root->base);
+        p->cspace_root = root;
 
         /* Place inner CNode into root slot 2. */
         ASSERT_EQ(kcnode_mint(root, 2, &inner->base, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
@@ -273,7 +279,7 @@ void test_cspace(void) {
     {
         struct KProcess *p = make_test_proc();
         ASSERT_NOT_NULL(p);
-        /* cspace_root_h stays HANDLE_INVALID → handle fallback always taken. */
+        /* cspace_root stays NULL → handle fallback always taken. */
 
         struct KCNode *cn = kcnode_alloc(8);
         ASSERT_NOT_NULL(cn);

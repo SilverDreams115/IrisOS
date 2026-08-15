@@ -95,11 +95,6 @@ struct svcmgr_state {
     handle_id_t ep_h;                                         /* svcmgr KEndpoint for EP-based discovery */
     handle_id_t death_notif_h;  /* Track B: one KNotification; bit (1<<service_id)
                                  * signalled by the kernel on each service exit. */
-    /* A1.6: svcmgr's OWN root CNode handle, discovered at startup by a
-     * handle-type probe (kprocess_create inserts it as the first handle of
-     * every process).  Needed for SYS_CNODE_DELETE on receive-slot cleanup;
-     * HANDLE_INVALID degrades every declaration to the legacy handle path. */
-    handle_id_t root_cnode_h;
     /* Fase S1: svcmgr's delegated untyped pool (init carves a sub-untyped and
      * mints it at IRIS_CPTR_OWN_UNTYPED).  Every endpoint / notification /
      * reply svcmgr fabricates is retyped from here — the retired create
@@ -459,28 +454,19 @@ static uint32_t svcmgr_dynamic_ready_count(const struct svcmgr_state *state) {
 #define SVCMGR_RSLOT_BASE  64u   /* below: well-known bootstrap slots (Fase 8) */
 #define SVCMGR_RSLOT_LIMIT 256u  /* root CNode has KCNODE_DEFAULT_SLOTS = 256 */
 
-/* Discover svcmgr's own root-CNode handle.  kprocess_create inserts the
- * root CNode as the FIRST handle of every process (generation 1); svcmgr
- * never creates another KCNode, so a type probe over the first few
- * generation-1 ids finds it unambiguously.  Uses only svcmgr's own table
- * and the rights granted to it at creation. */
-static void svcmgr_find_root_cnode(struct svcmgr_state *state) {
-    state->root_cnode_h = HANDLE_INVALID;
-    for (uint32_t slot = 0; slot < 16u; slot++) {
-        handle_id_t h = handle_id_make(slot, 1u);
-        if (svcmgr_syscall1(SYS_HANDLE_TYPE, (uint64_t)h) ==
-            (int64_t)IRIS_HANDLE_TYPE_CNODE) {
-            state->root_cnode_h = h;
-            return;
-        }
-    }
-}
+/* Stage 4: the root-CNode handle probe is RETIRED.  It scanned svcmgr's own
+ * handle table for the first CNode-typed generation-1 id, relying on the
+ * kernel inserting every process's root CNode as its FIRST handle.  The root
+ * is now a structural back-reference on KProcess and lives in no handle table
+ * at all, so there is nothing to find — and nothing to guess.  Every operation
+ * that needs svcmgr's own root passes arg0 == 0, the "my own root CNode"
+ * convention shared by SYS_CNODE_MINT / SYS_CNODE_DELETE / SYS_UNTYPED_RETYPE2. */
+#define SVCMGR_OWN_ROOT_CNODE 0u
 
 /* Pick the receive-slot to declare for the next recv: the first pool slot
  * not owned by a live CSpace-backed registration.  0 = declare nothing. */
 static uint32_t svcmgr_next_recv_slot(const struct svcmgr_state *state) {
     uint8_t used[(SVCMGR_RSLOT_LIMIT - SVCMGR_RSLOT_BASE + 7u) / 8u] = {0};
-    if (state->root_cnode_h == HANDLE_INVALID) return 0;
     for (uint32_t i = 0; i < SVCMGR_DYNAMIC_SERVICE_CAP; i++) {
         uint32_t c = state->dynamic[i].public_cptr;
         if (state->dynamic[i].active &&
@@ -516,11 +502,12 @@ static int64_t svcmgr_delivered_cap_type(uint32_t v) {
 /* Discard a delivered cap svcmgr will not keep: CNODE_DELETE for a CPtr
  * (frees the pool slot), close for a legacy handle.  No-op on no-cap. */
 static void svcmgr_discard_delivered_cap(struct svcmgr_state *state, uint32_t v) {
+    (void)state;   /* Stage 4: the root CNode is addressed by convention, not by a
+                    * per-state handle; the parameter stays for call-site symmetry. */
     if (v == (uint32_t)IRIS_MSG_NO_CAP) return;
     if (iris_msg_cap_is_cptr(v)) {
-        if (state->root_cnode_h != HANDLE_INVALID)
-            (void)svcmgr_syscall2(SYS_CNODE_DELETE,
-                                  (uint64_t)state->root_cnode_h, (uint64_t)v);
+        (void)svcmgr_syscall2(SYS_CNODE_DELETE,
+                              SVCMGR_OWN_ROOT_CNODE, (uint64_t)v);
     } else {
         handle_id_t h = (handle_id_t)v;
         svcmgr_close_handle_if_valid(&h);
@@ -535,9 +522,9 @@ static void svcmgr_dynamic_clear(struct svcmgr_dynamic_service *svc, int seal) {
     /* A1.6: release the CSpace-held master — the CNode slot owns its own
      * reference, so deleting the slot is the release; the pool slot becomes
      * declarable again on the next recv. */
-    if (svc->public_cptr != 0u && g_svcmgr_state.root_cnode_h != HANDLE_INVALID)
+    if (svc->public_cptr != 0u)
         (void)svcmgr_syscall2(SYS_CNODE_DELETE,
-                              (uint64_t)g_svcmgr_state.root_cnode_h,
+                              SVCMGR_OWN_ROOT_CNODE,
                               (uint64_t)svc->public_cptr);
     svc->public_cptr = 0u;
     svc->endpoint = 0;
@@ -701,7 +688,7 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
                                      (uint64_t)(client_rights | RIGHT_TRANSFER));
             } else {
                 mr = svcmgr_syscall4(SYS_CNODE_MINT,
-                                     (uint64_t)state->root_cnode_h,
+                                     SVCMGR_OWN_ROOT_CNODE,
                                      (uint64_t)SVCMGR_XFER_SLOT,
                                      (uint64_t)master_h,
                                      (uint64_t)(client_rights | RIGHT_TRANSFER));
@@ -1382,10 +1369,6 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
         state->dynamic[i].active = 0;
         for (uint32_t j = 0; j < SVCMGR_SERVICE_NAME_CAP; j++) state->dynamic[i].name[j] = '\0';
     }
-
-    /* A1.6: locate the creation-time root-CNode handle so receive-slot
-     * registrations can be stored (and later deleted) in svcmgr's CSpace. */
-    svcmgr_find_root_cnode(state);
 
     svcmgr_log(sm_str_started);
 
