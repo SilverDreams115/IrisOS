@@ -52,6 +52,9 @@ void klog_write_dec(uint64_t n) {
 
     uint64_t saved = irq_spinlock_lock(&klog_lock);
     for (uint32_t j = 0; j < len; j++) {
+#ifdef IRIS_KLOG_SERIAL_MIRROR
+        klog_dbg_putc(p[j]);
+#endif
         uint32_t tail = (klog_head + klog_len) % KLOG_BUF_SIZE;
         klog_buf[tail] = p[j];
         if (klog_len == KLOG_BUF_SIZE)
