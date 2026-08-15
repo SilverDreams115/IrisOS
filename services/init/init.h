@@ -82,11 +82,24 @@ static inline long init_sys0(long nr) {
  * root); the slot is materialized to a handle and deleted, leaving the handle
  * as init's only reference.  Replaces the retired SYS_ENDPOINT_CREATE /
  * SYS_NOTIFY_CREATE / SYS_CNODE_CREATE paths.
+ *
+ * Stage 4: the SOURCE is now a CPtr, not a handle, and that is an authority
+ * change, not a spelling change.  retype2 parents each created capability to
+ * the MDB slot of its source untyped *only when the source was named by CPtr*
+ * (`syscall_untyped.c`: "a handle-named source has no CSpace ancestor, so the
+ * caps are explicit LEGACY roots").  Every object init fabricates — the
+ * console and svcmgr endpoints, the reply objects, the notifications, the
+ * delegated sub-untypeds — was therefore born an MDB_FLAG_LEGACY_ROOT.  They
+ * are now real children of init's untyped slot: traceable to an ancestor
+ * (charter A9) and revocable by init's grantor.
+ *
+ * The returned handle is the REMAINING Stage 4 debt in this helper; it retires
+ * with the CPtr→handle bridge.
  */
-static inline long init_retype_handle(handle_id_t ut_h, uint32_t obj_type,
+static inline long init_retype_handle(uint64_t ut_cptr, uint32_t obj_type,
                                       uint64_t obj_arg) {
-    if (ut_h == HANDLE_INVALID) return (long)IRIS_ERR_BAD_HANDLE;
-    long r = init_sys4(SYS_UNTYPED_RETYPE2, (long)ut_h,
+    if (ut_cptr == 0u) return (long)IRIS_ERR_NOT_FOUND;
+    long r = init_sys4(SYS_UNTYPED_RETYPE2, (long)ut_cptr,
                        (long)((uint64_t)obj_type | (1ULL << 32)),
                        (long)((uint64_t)INIT_S1_SCRATCH_SLOT << 32),
                        (long)obj_arg);
@@ -96,10 +109,11 @@ static inline long init_retype_handle(handle_id_t ut_h, uint32_t obj_type,
     return h;
 }
 
-/* Fase S1: init's untyped-pool handle (the boot untyped at slot 12), resolved
- * once in init_main before any spawn.  HANDLE_INVALID = no pool (spawns that
- * need to fabricate objects fail loudly). */
-extern handle_id_t g_init_untyped_h;
+/* Fase S1: init's untyped pool — the boot untyped delegated by userboot at
+ * IRIS_CPTR_INIT_UNTYPED.  Stage 4: held as the CPtr itself, checked once in
+ * init_main with a non-materializing SYS_UNTYPED_INFO probe.  0 = no pool
+ * (spawns that need to fabricate objects fail loudly). */
+extern uint64_t g_init_untyped_c;
 
 /* ── Cross-module contract ──────────────────────────────────────────────── */
 

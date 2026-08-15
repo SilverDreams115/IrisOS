@@ -77,7 +77,7 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
 
     /* Console KEndpoint master (init owns it); recv side minted to the child.
      * Fase S1: retyped from init's untyped pool (SYS_ENDPOINT_CREATE retired). */
-    r = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_ENDPOINT, 0);
+    r = init_retype_handle(g_init_untyped_c, IRIS_KOBJ_ENDPOINT, 0);
     if (r < 0) {
         init_early_serial_write(init_console_chan_fail);
         goto fail;
@@ -102,7 +102,7 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
      * close-wakes-caller path if console dies. */
     handle_id_t con_reply_h = HANDLE_INVALID;
     {
-        long rr = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_REPLY, 0);
+        long rr = init_retype_handle(g_init_untyped_c, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) con_reply_h = (handle_id_t)rr;
         else init_early_serial_write("[INIT] console reply retype FAILED\r\n");
     }
@@ -168,7 +168,7 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     long r;
 
     /* Fase S1: retyped from init's untyped pool (SYS_ENDPOINT_CREATE retired). */
-    r = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_ENDPOINT, 0);
+    r = init_retype_handle(g_init_untyped_c, IRIS_KOBJ_ENDPOINT, 0);
     if (r < 0) goto fail;
     svcmgr_ep_h = (handle_id_t)r;
 
@@ -185,7 +185,7 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     {
         static const uint64_t s1_sm_ut_sizes[] = { 256u<<10, 64u<<10 };
         for (uint32_t szi = 0; szi < 2u && sm_untyped_h == HANDLE_INVALID; szi++) {
-            long ur = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_UNTYPED,
+            long ur = init_retype_handle(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
                                          s1_sm_ut_sizes[szi]);
             if (ur >= 0) sm_untyped_h = (handle_id_t)ur;
         }
@@ -279,7 +279,7 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
      * (WRONG_TYPE), not ACCESS_DENIED. */
     handle_id_t fix_wrongtype = HANDLE_INVALID;
     {
-        long nr = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_NOTIFICATION, 0);
+        long nr = init_retype_handle(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION, 0);
         if (nr >= 0) fix_wrongtype = (handle_id_t)nr;
     }
     if (lk_svcmgr == HANDLE_INVALID)
@@ -300,7 +300,7 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
         static const uint64_t s1_test_ut_sizes[] =
             { 8u<<20, 2u<<20, 512u<<10 };
         for (uint32_t szi = 0; szi < 3u && lk_untyped == HANDLE_INVALID; szi++) {
-            long ur = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_UNTYPED,
+            long ur = init_retype_handle(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
                                          s1_test_ut_sizes[szi]);
             if (ur >= 0) lk_untyped = (handle_id_t)ur;
         }
@@ -422,7 +422,7 @@ void init_spawn_iris_test(handle_id_t spawn_cap_h, handle_id_t sm_h) {
      * signal.  One notification (full rights) serves both the watch arm
      * (RIGHT_WRITE) and our own wait (RIGHT_WAIT); bit 0 marks iris_test. */
     /* Fase S1: retyped from init's untyped pool (SYS_NOTIFY_CREATE retired). */
-    r = init_retype_handle(g_init_untyped_h, IRIS_KOBJ_NOTIFICATION, 0);
+    r = init_retype_handle(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION, 0);
     if (r < 0) goto out;
     watch_base_h = (handle_id_t)r;
 

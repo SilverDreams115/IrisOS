@@ -36,7 +36,7 @@ static uint8_t g_init_con_ep_buf[IRIS_IPC_BUF_SIZE];
  * Every kernel object init fabricates (console/svcmgr endpoints, reply
  * objects, test fixtures) is retyped from it; the sub-untypeds delegated to
  * svcmgr and iris_test are carved from it too. */
-handle_id_t g_init_untyped_h = HANDLE_INVALID;
+uint64_t g_init_untyped_c = 0;
 
 void init_log(const char *s) {
     /* Fase 13 (Track I): endpoint-first over console.ep (synchronous flush
@@ -142,12 +142,17 @@ void init_main(handle_id_t bootstrap_ch_h) {
         init_exit(1);
     init_early_serial_start(bootstrap_h);
 
-    /* Fase S1: resolve the delegated boot untyped (slot 12) BEFORE any spawn —
-     * console/svcmgr endpoints and reply objects are retyped from it. */
+    /* Fase S1: confirm the delegated boot untyped (slot 12) BEFORE any spawn —
+     * console/svcmgr endpoints and reply objects are retyped from it.
+     *
+     * Stage 4: SYS_UNTYPED_INFO answers by CPtr and materializes nothing, so
+     * the check costs no handle-table entry and the pool stays a CPtr all the
+     * way into retype2 — which is what gives the fabricated objects a real MDB
+     * ancestor instead of LEGACY_ROOT status (see init_retype_handle). */
     {
-        long ur = init_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_INIT_UNTYPED);
-        if (ur >= 0) g_init_untyped_h = (handle_id_t)ur;
-        else init_early_serial_write("[INIT] boot untyped resolve FAILED\r\n");
+        long ur = init_sys3(SYS_UNTYPED_INFO, (long)IRIS_CPTR_INIT_UNTYPED, 0, 0);
+        if (ur >= 0) g_init_untyped_c = IRIS_CPTR_INIT_UNTYPED;
+        else init_early_serial_write("[INIT] boot untyped absent\r\n");
     }
 
     /* Spawn fb first (fire-and-forget): it claims the framebuffer and exits. */
