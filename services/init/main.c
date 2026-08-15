@@ -131,15 +131,18 @@ static void init_idle_loop(void) {
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void init_main(handle_id_t bootstrap_ch_h) {
-    handle_id_t bootstrap_h        = HANDLE_INVALID;
+    const handle_id_t bootstrap_cap_c = (handle_id_t)IRIS_CPTR_SPAWN_CAP;
     handle_id_t sm_h               = HANDLE_INVALID;
     handle_id_t vfs_ep_h           = HANDLE_INVALID;
 
-    bootstrap_h = init_recv_spawn_cap(bootstrap_ch_h);
+    /* Etapa 4: the spawn/authority capability is invoked as the CSpace slot
+     * userboot minted it into.  init_recv_spawn_cap used to materialise it
+     * into a handle here; every consumer left (early serial's ioport create,
+     * and the three svc_load_minted spawns) resolves a CPtr directly, so the
+     * bridge had nothing left to bridge.  An absent slot 6 now fails loudly at
+     * the first spawn instead of exiting before a single log line. */
     init_close(&bootstrap_ch_h);
-    if (bootstrap_h == HANDLE_INVALID)
-        init_exit(1);
-    init_early_serial_start(bootstrap_h);
+    init_early_serial_start(bootstrap_cap_c);
 
     /* Fase S1: confirm the delegated boot untyped (slot 12) BEFORE any spawn —
      * console/svcmgr endpoints and reply objects are retyped from it.
@@ -155,10 +158,10 @@ void init_main(handle_id_t bootstrap_ch_h) {
     }
 
     /* Spawn fb first (fire-and-forget): it claims the framebuffer and exits. */
-    init_spawn_fb(bootstrap_h);
+    init_spawn_fb(bootstrap_cap_c);
 
     /* Spawn console: endpoint-only, CPtr-provisioned (Fase 13/Track I). */
-    if (!init_spawn_console(bootstrap_h)) {
+    if (!init_spawn_console(bootstrap_cap_c)) {
         init_early_serial_write("[INIT] console spawn FAILED\r\n");
         init_exit(1);
     }
@@ -182,7 +185,7 @@ void init_main(handle_id_t bootstrap_ch_h) {
 
     init_log("[USER] init bootstrap start\n");
 
-    sm_h = init_spawn_svcmgr(bootstrap_h);
+    sm_h = init_spawn_svcmgr(bootstrap_cap_c);
     if (sm_h == HANDLE_INVALID) {
         init_log("[USER] svcmgr spawn FAILED\n");
         init_exit(1);
@@ -190,13 +193,12 @@ void init_main(handle_id_t bootstrap_ch_h) {
 
     /* Etapa 4: the SYS_HANDLE_DUP that reserved a spawn cap for iris_test here
      * is gone.  It existed because iris_test spawns long AFTER the close below,
-     * so a copy of bootstrap_h had to be kept alive to serve as both the
-     * loader authority and the source of iris_test's two spawn-cap mints.
-     * Our spawn-cap SLOT already outlives bootstrap_h and answers both roles:
+     * so a materialised copy had to be kept alive to serve as both the loader
+     * authority and the source of iris_test's two spawn-cap mints.  The
+     * spawn-cap SLOT answers both roles and never needed keeping alive:
      * SYS_INITRD_VMO / SYS_PROCESS_CREATE resolve it directly, and the mints
      * name it as their source, which also makes iris_test's caps MDB children
      * of that slot instead of copies handed over outright. */
-    init_close(&bootstrap_h);
 
     /* ── Service discovery ── */
     init_log(init_stage_lookup);

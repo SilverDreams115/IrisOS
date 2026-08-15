@@ -130,7 +130,6 @@ void init_exit(long code);
 void init_close(handle_id_t *h);
 
 /* Initial-authority wiring (init_bootstrap.c). */
-handle_id_t init_recv_spawn_cap(handle_id_t bootstrap_ch_h);
 void init_early_serial_start(handle_id_t spawn_cap_h);
 void init_early_serial_write(const char *s);
 void init_early_serial_stop(void);

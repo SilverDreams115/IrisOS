@@ -62,13 +62,13 @@ void init_retry_pause(void) {
 
 /* Fase 13 (Track I): init's spawn/bootstrap KBootstrapCap arrives as the
  * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint from userboot — not over a
- * bootstrap KChannel.  Resolve the slot to a handle (init DUPs/restricts it for
- * its children, which needs a handle-table handle, not a bare CPtr). */
-handle_id_t init_recv_spawn_cap(handle_id_t bootstrap_ch_h) {
-    (void)bootstrap_ch_h;
-    long h = init_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
-    return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
-}
+ * bootstrap KChannel.
+ *
+ * Etapa 4: init_recv_spawn_cap is RETIRED.  It materialised that slot into a
+ * handle because init used to DUP and restrict the cap for its children, and
+ * both of those needed a handle-table entry.  Neither does any more — the
+ * duplicates are gone and restriction derives slot-to-slot — so every consumer
+ * names slot 6 directly and the bridge had nothing left to bridge. */
 
 /* ── VFS endpoint client (Fase 7.2) ─────────────────────────────────────── */
 
