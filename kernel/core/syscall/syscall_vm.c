@@ -96,7 +96,7 @@ uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * CHILD but keeps the handle to map/close it.
  */
 static uint64_t vmo_create_charged(struct task *t, uint64_t size,
-                                    struct KProcess *payer, uint32_t dest_slot) {
+                                    struct KProcess *payer, uint64_t dest) {
     uint32_t pages = 0;
     if (kvmo_size_to_pages(size, &pages) != IRIS_OK)
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -111,11 +111,11 @@ static uint64_t vmo_create_charged(struct task *t, uint64_t size,
      * name — that is KVMO's own debt (ledger: FROZEN, memory-server), not this
      * etapa's.  It is an explicit LEGACY root, counted, exactly as the handle
      * form was untracked. */
-    if (dest_slot != 0u) {
+    if (dest != 0u) {
         iris_error_t pe = syscall_publish_slot(t, &v->base,
                                                RIGHT_READ | RIGHT_WRITE |
                                                RIGHT_TRANSFER | RIGHT_DUPLICATE,
-                                               dest_slot, 0, 0);
+                                               dest, 0, 0);
         if (pe != IRIS_OK) return syscall_err(pe);
         return syscall_ok_u64(0);
     }
@@ -136,7 +136,7 @@ uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
     /* Etapa 4: arg2 = destination slot (0 = legacy handle). */
-    return vmo_create_charged(t, arg0, t->process, (uint32_t)arg2);
+    return vmo_create_charged(t, arg0, t->process, arg2);
 }
 
 /*
@@ -146,7 +146,7 @@ uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * caller.  Same authority SYS_VMO_MAP_INTO requires to map into that process.
  */
 uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    uint32_t dest_slot = (uint32_t)arg2;   /* Etapa 4: 0 = legacy handle */
+    uint64_t dest = arg2;   /* Etapa 4: cnode | slot<<32; 0 = legacy handle */
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -164,7 +164,7 @@ uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(payer_obj);
         return syscall_err(IRIS_ERR_BAD_HANDLE);
     }
-    uint64_t rv = vmo_create_charged(t, arg0, payer, dest_slot);
+    uint64_t rv = vmo_create_charged(t, arg0, payer, dest);
     kobject_release(payer_obj);
     return rv;
 }
@@ -401,7 +401,7 @@ uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
                                uint64_t arg2, uint64_t arg3) {
-    uint32_t dest_slot = (uint32_t)arg2;   /* Etapa 4: 0 = legacy handle */
+    uint64_t dest = arg2;   /* Etapa 4: cnode | slot<<32; 0 = legacy handle */
     (void)arg3;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -453,14 +453,14 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
      * the read, so the loader never holds a handle and the grant is revocable
      * by whoever granted the spawn authority.  arg2 == 0 keeps the legacy
      * handle for callers not yet migrated. */
-    if (dest_slot != 0u) {
+    if (dest != 0u) {
         struct KCNode *auth_cn = 0; uint32_t auth_idx = 0;
         if (cspace_value_is_cptr((iris_cptr_t)arg0) &&
             cspace_resolve_slot(t->process, (iris_cptr_t)arg0,
                                 &auth_cn, &auth_idx) != IRIS_OK)
             auth_cn = 0;
         iris_error_t pe = syscall_publish_slot(t, &v->base, RIGHT_READ,
-                                               dest_slot, auth_cn, auth_idx);
+                                               dest, auth_cn, auth_idx);
         if (auth_cn) {
             kobject_active_release(&auth_cn->base);
             kobject_release(&auth_cn->base);

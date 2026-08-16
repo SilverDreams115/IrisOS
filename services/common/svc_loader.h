@@ -72,6 +72,13 @@ struct svc_mint {
                             * rule. */
 };
 
+/* Etapa 4: declare the loader's CSpace workspace — an untyped to carve a
+ * second-level CNode from, and the root slot to hold it.  A spawn needs up to
+ * eleven capabilities alive at once and no spawning service has that many free
+ * root slots; one slot plus 256 leaves does.  Declare once at startup.  A
+ * service that never declares one keeps the legacy handle path. */
+void svc_loader_workspace(uint64_t untyped_cptr, uint32_t cnode_slot);
+
 long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                      const struct svc_mint *mints, uint32_t mint_count);

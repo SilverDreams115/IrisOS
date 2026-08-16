@@ -235,22 +235,55 @@ iris_error_t cspace_own_root(struct KProcess *proc, struct KCNode **out);
  *
  * Consumes the caller's reference to obj on every path.
  */
+/* Resolve a destination CNode for publication.  CSpace only, deliberately: a
+ * destination is a place to PUT authority, and naming it in the retiring
+ * namespace would make this a new dual-namespace path — exactly what charter
+ * §3.6 forbids as a pattern.  Yields active + lifecycle, like the traversal. */
+static inline iris_error_t cspace_resolve_cnode_for_publish(struct KProcess *p,
+                                                            iris_cptr_t cptr,
+                                                            struct KCNode **out) {
+    struct KObject *obj; iris_rights_t r;
+    iris_error_t err = cspace_resolve_cap(p, cptr, RIGHT_WRITE, &obj, &r);
+    if (err != IRIS_OK) return err;
+    if (obj->type != KOBJ_CNODE) {
+        kobject_active_release(obj);
+        kobject_release(obj);
+        return IRIS_ERR_WRONG_TYPE;
+    }
+    *out = (struct KCNode *)obj;
+    return IRIS_OK;
+}
+
 static inline iris_error_t syscall_publish_slot(struct task *t,
                                                 struct KObject *obj,
                                                 iris_rights_t rights,
-                                                uint32_t dest_slot,
+                                                uint64_t dest,
                                                 struct KCNode *parent_cn,
                                                 uint32_t parent_idx) {
-    struct KCNode *root = 0;
-    iris_error_t err = cspace_own_root(t->process, &root);
+    /* `dest` follows the RETYPE2 convention: destination CNode in the low 32
+     * bits (0 = the caller's own root), destination slot index in the high 32.
+     * A spawning service holds its working capabilities in a second-level
+     * CNode, so "a slot" is not always a root slot. */
+    uint64_t dest_cnode = dest & 0xFFFFFFFFu;
+    uint32_t dest_slot  = (uint32_t)(dest >> 32);
+    if (dest_slot == 0u) { kobject_release(obj); return IRIS_ERR_INVALID_ARG; }
+
+    struct KCNode *cn = 0;
+    iris_error_t err;
+    if (dest_cnode == 0u) {
+        err = cspace_own_root(t->process, &cn);
+    } else {
+        err = cspace_resolve_cnode_for_publish(t->process,
+                                               (iris_cptr_t)dest_cnode, &cn);
+    }
     if (err != IRIS_OK) { kobject_release(obj); return err; }
 
-    err = kcnode_slot_install_linked(root, dest_slot, obj, rights, 0,
+    err = kcnode_slot_install_linked(cn, dest_slot, obj, rights, 0,
                                      parent_cn, parent_idx,
                                      /*exclusive*/1,
                                      /*legacy*/parent_cn ? 0 : 1);
-    kobject_active_release(&root->base);
-    kobject_release(&root->base);
+    kobject_active_release(&cn->base);
+    kobject_release(&cn->base);
     kobject_release(obj);          /* the slot holds its own refs */
     return err;
 }

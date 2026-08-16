@@ -188,10 +188,21 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     struct KObject *cn_obj = &child->cspace_root->base;
     kobject_retain(cn_obj);
 
-    /* Source capability from the CALLER's table. */
+    /* Source capability from the CALLER.  Etapa 4: the destination process
+     * always resolved either way while the SOURCE was handle-only — the same
+     * half-migration as SYS_PROCESS_WATCH and friends, and it means a caller
+     * that keeps its capabilities in CSpace cannot mint from them at all.
+     * The CPtr leg resolves through CSpace and drops the traversal's active
+     * ref, matching the lifecycle-only reference the handle read yields. */
     struct KObject *src_obj;
     iris_rights_t   src_rights;
-    err = handle_table_get_object(ht, src_h, &src_obj, &src_rights);
+    if (cspace_value_is_cptr((iris_cptr_t)src_h)) {
+        err = cspace_resolve_cap(t->process, (iris_cptr_t)src_h, RIGHT_NONE,
+                                 &src_obj, &src_rights);
+        if (err == IRIS_OK) kobject_active_release(src_obj);
+    } else {
+        err = handle_table_get_object(ht, src_h, &src_obj, &src_rights);
+    }
     if (err != IRIS_OK) {
         kobject_release(cn_obj);
         kobject_release(proc_obj);

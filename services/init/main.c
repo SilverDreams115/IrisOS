@@ -21,7 +21,8 @@
 
 #include "init.h"
 #include <iris/vfs_ep_proto.h>          /* VFS_EP_SVC_NAME (S5/S6 lookup) */
-#include "../common/console_client.h"   /* console.ep log sink */
+#include "../common/console_client.h"
+#include "../common/svc_loader.h"   /* console.ep log sink */
 
 /* ── Utilities ──────────────────────────────────────────────────────────── */
 
@@ -68,9 +69,20 @@ void init_exit(long code) {
     for (;;) {}
 }
 
+/* Release a capability, whichever namespace names it (Etapa 4).
+ *
+ * The loader hands back capabilities that live in CSpace now — including in a
+ * second-level CNode — and closing one as a handle is a silent no-op that
+ * leaves the slot occupied.  The next spawn then fails to publish into it. */
 void init_close(handle_id_t *h) {
-    if (*h != HANDLE_INVALID && *h != 0) {
-        init_sys1(SYS_HANDLE_CLOSE, (long)*h);
+    uint32_t v = (uint32_t)*h;
+    if (v != 0u) {
+        if ((v & HANDLE_TAG) != 0u)
+            init_sys1(SYS_HANDLE_CLOSE, (long)v);
+        else if (v >= 256u)
+            init_sys2(SYS_CNODE_DELETE, (long)(v & 0xFFu), (long)(v >> 8));
+        else
+            init_sys2(SYS_CNODE_DELETE, 0, (long)v);
     }
     *h = HANDLE_INVALID;
 }
@@ -155,6 +167,13 @@ void init_main(handle_id_t bootstrap_ch_h) {
         long ur = init_sys3(SYS_UNTYPED_INFO, (long)IRIS_CPTR_INIT_UNTYPED, 0, 0);
         if (ur >= 0) g_init_untyped_c = IRIS_CPTR_INIT_UNTYPED;
         else init_early_serial_write("[INIT] boot untyped absent\r\n");
+    }
+
+    /* Etapa 4: the loader publishes every capability a spawn creates into a
+     * second-level CNode of ours instead of returning handles.  Slot 53 is
+     * free in init's root CNode. */
+    {
+        svc_loader_workspace(g_init_untyped_c, INIT_SLOT_LOADER_WS);
     }
 
     /* Spawn fb first (fire-and-forget): it claims the framebuffer and exits. */
