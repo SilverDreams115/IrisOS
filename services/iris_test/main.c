@@ -120,10 +120,17 @@ static uint32_t g_total = 0;
  * capability there for the test's duration.  One rotation across both means a
  * borrow eventually lands on a live object and deletes it: a fault with no
  * local symptom, because the test that fails is not the one that caused it. */
-#define IT_S1_SCRATCH_BASE  64u   /* materialising factory: 64..79 */
+#define IT_S1_SCRATCH_BASE  64u   /* materialising factory: 64..79, borrowed */
 #define IT_S1_SCRATCH_SPAN  16u
-#define IT_OBJ_SLOT_BASE    80u   /* slot factory: 80..87, held for the test */
-#define IT_OBJ_SLOT_SPAN     8u
+/* The held pool cannot live in the root CNode: it is full, and eight slots is
+ * nowhere near enough for a suite that fabricates from worker threads too.
+ * Root slot 80 holds a 256-slot SECOND-LEVEL CNode instead, its leaves
+ * addressed (leaf << 8) | 80 — the multi-level CSpace the model always
+ * described and the ten-bit CPtr window made unreachable.  Usable only since
+ * handles moved to the top of the word. */
+#define IT_OBJ_CNODE_SLOT   80u
+#define IT_OBJ_SLOT_SPAN   200u
+#define IT_OBJ_CPTR(leaf)  ((uint32_t)(((leaf) << 8) | IT_OBJ_CNODE_SLOT))
 static uint32_t g_it_s1_scratch_next;
 static uint32_t g_it_obj_slot_next;
 
@@ -150,13 +157,18 @@ static long it_retype_handle(long ut, uint32_t obj_type, long obj_arg) {
  * subject is an authority property rather than the handle namespace itself.
  * Same rotating pool and the same contract: delete before use, never hold a
  * slot across a test boundary. */
+/* Fabricate into a leaf of the second-level CNode and LEAVE it there — the
+ * capability IS the slot, which is the seL4 shape.  Returns the full CPtr. */
 static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
-    uint32_t slot = IT_OBJ_SLOT_BASE +
-        (__atomic_fetch_add(&g_it_obj_slot_next, 1u, __ATOMIC_RELAXED)
-         % IT_OBJ_SLOT_SPAN);
-    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
-    long r = it_retype2_at(ut, obj_type, slot, 1u, obj_arg);
-    return (r < 0) ? r : (long)slot;
+    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    long r = it_sys4(SYS_UNTYPED_RETYPE2, ut,
+                     (long)((uint64_t)obj_type | (1ULL << 32)),
+                     (long)((uint64_t)IT_OBJ_CNODE_SLOT |
+                            ((uint64_t)leaf << 32)),
+                     obj_arg);
+    return (r < 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
 static long it_ep_create_slot(void) {
@@ -183,8 +195,19 @@ static long it_reply_create_at(uint32_t slot) {
                          slot, 1u, 0);
 }
 
+/* Delete the capability a CPtr names, at whatever depth it lives.
+ *
+ * SYS_CNODE_DELETE takes (CNode, slot index), not a path, so a multi-level
+ * CPtr has to be split: the low 8 bits select the root slot holding the child
+ * CNode, the rest is the leaf index inside it.  A root-level CPtr (< 256) is
+ * the single-level case and addresses the root directly.  Getting this wrong
+ * is silent and severe — the masked value points AT the child CNode, so the
+ * delete destroys the whole level instead of one capability. */
 static void it_slot_delete(uint32_t slot) {
-    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
+    if (slot >= 256u)
+        (void)it_sys2(SYS_CNODE_DELETE, (long)(slot & 0xFFu), (long)(slot >> 8));
+    else
+        (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
 }
 
 /* ── Fase S4 (Etapa 2): CSpace-sourced cap transfer ───────────────────────
@@ -19019,6 +19042,13 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
      * SYS_CAP_CREATE_IOPORT resolves it by CPtr via the device-cap dual
      * resolver (the serial KIoPort for test output). */
     it_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_ch_h);
+
+    /* Second-level CNode for the objects the suite fabricates and HOLDS.  The
+     * root CNode is full, so this is the only place they can live — and it is
+     * only addressable because handles moved out of the low CPtr range. */
+    (void)it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
+                  (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
+                  (long)((uint64_t)IT_OBJ_CNODE_SLOT << 32), 256);
 
     {
         /* Fase S4: device caps are published into a CSpace slot as MDB
