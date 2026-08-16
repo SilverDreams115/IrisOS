@@ -248,56 +248,62 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
     return svc_load_minted(spawn_cap_h, name, out_proc_h, out_chan_h, 0, 0);
 }
 
-/* ── Etapa 4: loader workspace ─────────────────────────────────────────────
- *
- * A spawn needs up to eleven capabilities alive at once (ELF image, process,
- * stack VMO, one VMO per segment).  Publishing them into CSpace instead of the
- * handle table therefore needs eleven slots, and the services that spawn have
- * nothing like that free in their root CNode — svcmgr has two.
- *
- * So the loader keeps a SECOND-LEVEL CNode of its own: one root slot, 256
- * leaves, addressed (leaf << 8) | slot.  Each caller declares its workspace
- * once at startup; the CNode is retyped on first use and reused thereafter.
- * A caller that declares none keeps the legacy handle path, so nothing has to
- * migrate in lockstep. */
-/* Leaf layout inside the workspace CNode (leaf 0 is the null slot). */
-#define SL_WS_ELF    1u
-#define SL_WS_PROC   2u
-#define SL_WS_STACK  3u
-#define SL_WS_SEG    8u   /* 8..15: one per ELF segment */
-
-static uint64_t g_sl_ws_untyped = 0;   /* untyped to carve the CNode from */
-static uint32_t g_sl_ws_slot    = 0;   /* root slot holding it (0 = none) */
-static int      g_sl_ws_ready   = 0;
-
-void svc_loader_workspace(uint64_t untyped_cptr, uint32_t cnode_slot) {
-    g_sl_ws_untyped = untyped_cptr;
-    g_sl_ws_slot    = cnode_slot;
-    g_sl_ws_ready   = 0;
-}
-
-/* CPtr of leaf `n` inside the workspace CNode. */
-static inline uint32_t sl_ws_cptr(uint32_t n) {
-    return (uint32_t)((n << 8) | g_sl_ws_slot);
-}
-
-/* Ensure the workspace CNode exists.  Returns 0 when unavailable, in which
- * case every caller falls back to the handle path. */
-static int sl_ws_ensure(void) {
-    if (g_sl_ws_slot == 0u || g_sl_ws_untyped == 0u) return 0;
-    if (g_sl_ws_ready) return 1;
-    long r = sl_sys4(SYS_UNTYPED_RETYPE2, (long)g_sl_ws_untyped,
-                     (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
-                     (long)((uint64_t)g_sl_ws_slot << 32), 256);
-    if (r != 0) return 0;
-    g_sl_ws_ready = 1;
-    return 1;
-}
-
-
+/* Legacy arity: no workspace, so the handle path.  Kept so the call sites that
+ * do not spawn into CSpace yet need not change. */
 long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                      const struct svc_mint *mints, uint32_t mint_count) {
+    return svc_load_minted_ws(spawn_cap_h, name, out_proc_h, out_chan_h,
+                              mints, mint_count, 0);
+}
+
+/* ── Etapa 4: loader workspace ─────────────────────────────────────────────
+ *
+ * A spawn needs up to eleven capabilities alive at once (ELF image, process,
+ * stack VMO, one per segment).  Publishing them into CSpace rather than the
+ * handle table therefore needs eleven slots, and no spawning service has that
+ * many free in its root CNode — svcmgr has two.  So the loader uses a
+ * SECOND-LEVEL CNode: one root slot, 256 leaves, addressed (leaf << 8) | slot.
+ *
+ * The workspace is a PARAMETER, not loader state.  userboot is a flat binary
+ * with no writable .data at all — its linker script says so — so anything the
+ * loader remembers between calls is a fault waiting for its first caller.
+ * `ws` packs the untyped to carve from in the low 32 bits and the root slot in
+ * the high 32; zero means "no workspace", which keeps the legacy handle path.
+ */
+#define SL_WS_ELF    1u
+#define SL_WS_PROC_BASE 16u  /* 16..255: one live process each */
+#define SL_WS_STACK  3u
+#define SL_WS_SEG    8u   /* 8..15: one per ELF segment */
+
+#define SL_WS_UNTYPED(ws)  ((uint64_t)((ws) & 0xFFFFFFFFu))
+#define SL_WS_SLOT(ws)     ((uint32_t)((ws) >> 32))
+
+/* CPtr of leaf `n` inside the workspace CNode. */
+static inline uint32_t sl_ws_cptr(uint64_t ws, uint32_t n) {
+    return (uint32_t)((n << 8) | SL_WS_SLOT(ws));
+}
+
+/* Destination encoding for a publishing syscall: CNode | slot << 32. */
+static inline long sl_ws_dest(uint64_t ws, uint32_t leaf) {
+    return (long)((uint64_t)SL_WS_SLOT(ws) | ((uint64_t)leaf << 32));
+}
+
+/* Make sure the workspace CNode exists.  Stateless: retyping into an occupied
+ * slot reports ALREADY_EXISTS, which is simply "it is already there" — the
+ * loader cannot cache that answer because it may have no writable memory. */
+static int sl_ws_ensure(uint64_t ws) {
+    if (SL_WS_SLOT(ws) == 0u || SL_WS_UNTYPED(ws) == 0u) return 0;
+    long r = sl_sys4(SYS_UNTYPED_RETYPE2, (long)SL_WS_UNTYPED(ws),
+                     (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
+                     (long)((uint64_t)SL_WS_SLOT(ws) << 32), 256);
+    return (r == 0 || r == (long)IRIS_ERR_ALREADY_EXISTS);
+}
+
+long svc_load_minted_ws(handle_id_t spawn_cap_h, const char *name,
+                        handle_id_t *out_proc_h, handle_id_t *out_chan_h,
+                        const struct svc_mint *mints, uint32_t mint_count,
+                        uint64_t ws) {
     *out_proc_h = HANDLE_INVALID;
     *out_chan_h = HANDLE_INVALID;
 
@@ -334,13 +340,13 @@ long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
     /* Etapa 4: with a workspace, every capability this spawn creates is
      * published into a leaf of it and named by CPtr; without one the legacy
      * handle path runs unchanged. */
-    int ws = sl_ws_ensure();
+    int have_ws = sl_ws_ensure(ws);
 
     /* 1. Get read-only eager VMO wrapping the ELF bytes in the initrd. */
-    if (ws) {
-        r = sl_sys3(SYS_INITRD_VMO, (long)spawn_cap_h, idx, (long)((uint64_t)g_sl_ws_slot | ((uint64_t)SL_WS_ELF << 32)));
+    if (have_ws) {
+        r = sl_sys3(SYS_INITRD_VMO, (long)spawn_cap_h, idx, sl_ws_dest(ws, SL_WS_ELF));
         if (r < 0) goto out;
-        elf_h = (handle_id_t)sl_ws_cptr(SL_WS_ELF);
+        elf_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_ELF);
     } else {
         r = sl_sys2(SYS_INITRD_VMO, (long)spawn_cap_h, idx);
         if (r < 0) goto out;
@@ -405,21 +411,38 @@ long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
          * the process it just created.  This is the root-cause fix for the
          * caller-charged accounting bug — the loader's own_vmos / phys_pages
          * stay flat regardless of how many children it launches. */
-        r = ws ? sl_sys2(SYS_PROCESS_CREATE, (long)spawn_cap_h, (long)((uint64_t)g_sl_ws_slot | ((uint64_t)SL_WS_PROC << 32)))
-               : sl_sys1(SYS_PROCESS_CREATE, (long)spawn_cap_h);
+        /* The process capability is HANDED BACK to the caller, so unlike every
+         * other workspace leaf it is not released when this returns — it lives
+         * as long as the service does.  A fixed leaf would therefore collide
+         * with the previous spawn's process.  Scan for a free one instead:
+         * publication is exclusive, so ALREADY_EXISTS simply means "taken",
+         * and the loader keeps no state to remember where it got to. */
+        uint32_t proc_leaf = 0u;
+        if (have_ws) {
+            for (uint32_t l = SL_WS_PROC_BASE; l < 256u; l++) {
+                r = sl_sys2(SYS_PROCESS_CREATE, (long)spawn_cap_h,
+                            sl_ws_dest(ws, l));
+                if (r == 0) { proc_leaf = l; break; }
+                if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
+            }
+            if (proc_leaf == 0u && r == (long)IRIS_ERR_ALREADY_EXISTS)
+                r = (long)IRIS_ERR_NO_MEMORY;
+        } else {
+            r = sl_sys1(SYS_PROCESS_CREATE, (long)spawn_cap_h);
+        }
         if (r < 0) goto out;
-        proc_h = ws ? (handle_id_t)sl_ws_cptr(SL_WS_PROC) : (handle_id_t)r;
+        proc_h = have_ws ? (handle_id_t)sl_ws_cptr(ws, proc_leaf) : (handle_id_t)r;
 
         /* 6. Create a sparse VMO for each segment (populated eagerly at map),
          * charged to the child.  Mapped into the loader's temp window below to
          * fill; the phys pages are charged to the child (VMO owner), so
          * unmapping from the loader never strands the charge on the loader. */
         for (uint32_t i = 0; i < seg_count; i++) {
-            r = ws ? sl_sys3(SYS_VMO_CREATE_FOR, (long)seg_map_size[i],
-                             (long)proc_h, (long)((uint64_t)g_sl_ws_slot | ((uint64_t)(SL_WS_SEG + i) << 32)))
+            r = have_ws ? sl_sys3(SYS_VMO_CREATE_FOR, (long)seg_map_size[i],
+                             (long)proc_h, sl_ws_dest(ws, SL_WS_SEG + i))
                    : sl_sys2(SYS_VMO_CREATE_FOR, (long)seg_map_size[i], (long)proc_h);
             if (r < 0) goto out;
-            seg_vmo[i] = ws ? (handle_id_t)sl_ws_cptr(SL_WS_SEG + i)
+            seg_vmo[i] = have_ws ? (handle_id_t)sl_ws_cptr(ws, SL_WS_SEG + i)
                             : (handle_id_t)r;
         }
 
@@ -509,11 +532,11 @@ long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
          * and the child starts with RBX = 0 (no bootstrap handle). */
 
         /* 14. Create user stack sparse VMO (charged to the child) and map it in. */
-        r = ws ? sl_sys3(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE,
-                         (long)proc_h, (long)((uint64_t)g_sl_ws_slot | ((uint64_t)SL_WS_STACK << 32)))
+        r = have_ws ? sl_sys3(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE,
+                         (long)proc_h, sl_ws_dest(ws, SL_WS_STACK))
                : sl_sys2(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE, (long)proc_h);
         if (r < 0) goto out;
-        stack_vmo_h = ws ? (handle_id_t)sl_ws_cptr(SL_WS_STACK)
+        stack_vmo_h = have_ws ? (handle_id_t)sl_ws_cptr(ws, SL_WS_STACK)
                          : (handle_id_t)r;
 
         r = sl_sys4(SYS_VMO_MAP_INTO,

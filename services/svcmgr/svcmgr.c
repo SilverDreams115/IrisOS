@@ -240,9 +240,22 @@ static void svcmgr_log_u32(uint32_t value) {
     svcmgr_log(buf + i);
 }
 
+/* Release a capability, whichever namespace names it (Etapa 4).
+ *
+ * The loader hands back process capabilities that live in a CSpace slot now.
+ * Closing one as a handle is a silent no-op, and the symptom is not local: the
+ * slot keeps the capability alive, so the process never reaches zero
+ * references and the live-process gauge drifts upward across restarts. */
 static void svcmgr_close_handle_if_valid(handle_id_t *h) {
     if (!h || *h == HANDLE_INVALID) return;
-    (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, *h);
+    uint32_t v = (uint32_t)*h;
+    if ((v & HANDLE_TAG) != 0u)
+        (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, v);
+    else if (v >= 256u)
+        (void)svcmgr_syscall2(SYS_CNODE_DELETE, (uint64_t)(v & 0xFFu),
+                              (uint64_t)(v >> 8));
+    else
+        (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, (uint64_t)v);
     *h = HANDLE_INVALID;
 }
 
@@ -1290,9 +1303,10 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
             }
         }
 
-        long r = svc_load_minted((handle_id_t)state->spawn_cap_c, manifest->image_name,
+        long r = svc_load_minted_ws((handle_id_t)state->spawn_cap_c, manifest->image_name,
                                  &loaded_proc_h, &loaded_chan_h,
-                                 mints, mint_count);
+                                 mints, mint_count,
+                               SVC_LOADER_WS(state->untyped_c, 66u));
         /* Drop svcmgr's reply handles regardless of the load result — the
          * child's CSpace slots (if minted) are now the only reply caps. */
         /* svcmgr NEVER retains a reply cap: a retained copy would suppress
@@ -1450,6 +1464,7 @@ void svcmgr_main_c(handle_id_t bootstrap_h) {
          * ancestor instead of LEGACY_ROOT status. */
         int64_t ur = svcmgr_syscall3(SYS_UNTYPED_INFO, IRIS_CPTR_OWN_UNTYPED, 0, 0);
         state->untyped_c = (ur >= 0) ? (uint64_t)IRIS_CPTR_OWN_UNTYPED : 0u;
+
     }
     if (state->spawn_cap_c == 0u) {
         svcmgr_log(sm_str_bootcapfail);

@@ -168,12 +168,7 @@ void init_main(handle_id_t bootstrap_ch_h) {
         if (ur >= 0) g_init_untyped_c = IRIS_CPTR_INIT_UNTYPED;
         else init_early_serial_write("[INIT] boot untyped absent\r\n");
     }
-
-    /* Etapa 4: the loader publishes every capability a spawn creates into a
-     * second-level CNode of ours instead of returning handles.  Slot 53 is
-     * free in init's root CNode. */
     {
-        svc_loader_workspace(g_init_untyped_c, INIT_SLOT_LOADER_WS);
     }
 
     /* Spawn fb first (fire-and-forget): it claims the framebuffer and exits. */

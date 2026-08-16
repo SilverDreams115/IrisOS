@@ -95,11 +95,21 @@ static void ub_park_root_bootstrap(void) {
     for (;;) (void)ub_sys1(SYS_SLEEP, 60000);
 }
 
-void iris_userboot_main(handle_id_t bootstrap_cap_h) {
+void iris_userboot_main(handle_id_t bootstrap_arg_h) {
+    /* Etapa 4: the bootstrap capability is invoked as the CSpace slot the
+     * kernel minted it into (BOOT_CPTR_BOOTSTRAP_CAP), not as the handle
+     * passed in %rdi.  The handle is the kernel's dual-insert legacy: it was
+     * published in BOTH namespaces, with the CSpace half treated as optional
+     * because "the legacy handle still works".  That is a CPtr->handle
+     * fallback in the boot path, which charter §3.7 forbids outright.  The
+     * argument is closed immediately and never used for authority. */
+    const handle_id_t bootstrap_cap_h = (handle_id_t)BOOT_CPTR_BOOTSTRAP_CAP;
+    ub_close(bootstrap_arg_h);
+
     handle_id_t init_proc_h = HANDLE_INVALID;
     handle_id_t init_boot_h = HANDLE_INVALID;
 
-    if (bootstrap_cap_h == HANDLE_INVALID)
+    if (0)
         goto fail;
 
     /* Fase 28 boot-growth fix: the boot invariant is that the kernel initrd has
@@ -160,21 +170,22 @@ void iris_userboot_main(handle_id_t bootstrap_cap_h) {
                                  RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[1].badge    = 0;
 
-        long lr = svc_load_minted(bootstrap_cap_h, "init",
-                                  &init_proc_h, &init_boot_h, init_mints, 2u);
+        /* Slot 3 is free in the reserved boot range; the untyped is the first
+         * boot block. */
+        long lr = svc_load_minted_ws(bootstrap_cap_h, "init",
+                                     &init_proc_h, &init_boot_h, init_mints, 2u,
+                                     SVC_LOADER_WS(BOOT_CPTR_UNTYPED_START, 3u));
         if (lr < 0)
             goto fail;
     }
 
     ub_close(init_boot_h);
     ub_close(init_proc_h);
-    ub_close(bootstrap_cap_h);
     ub_park_root_bootstrap();
 
 fail:
     ub_close(init_boot_h);
     ub_close(init_proc_h);
-    ub_close(bootstrap_cap_h);
     (void)ub_sys1(SYS_EXIT, 1);
     for (;;) {}
 }

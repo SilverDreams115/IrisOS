@@ -54,8 +54,9 @@ void init_spawn_fb(handle_id_t spawn_cap_h) {
         fb_mints[0].src_cptr = INIT_FB_CAP_SLOT;
         fb_mints[0].rights   = RIGHT_READ;
         fb_mints[0].badge    = 0;
-        r = svc_load_minted(spawn_cap_h, "fb", &fb_proc_h, &fb_boot_h,
-                            fb_mints, 1u);
+        r = svc_load_minted_ws(spawn_cap_h, "fb", &fb_proc_h, &fb_boot_h,
+                               fb_mints, 1u,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
     }
     if (r < 0) {
         init_early_serial_write(init_fb_load_fail);
@@ -139,8 +140,9 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
             con_mints[n].badge  = 0;
             n++;
         }
-        r = svc_load_minted(spawn_cap_h, "console", &con_proc_h, &con_boot_h,
-                            con_mints, n);
+        r = svc_load_minted_ws(spawn_cap_h, "console", &con_proc_h, &con_boot_h,
+                               con_mints, n,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
     }
     /* console's slot-13 mint is the only reply cap: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_CONSOLE_RPLY);
@@ -237,8 +239,9 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
             sm_mints[n].badge  = 0;
             n++;
         }
-        r = svc_load_minted(spawn_cap_h, "svcmgr", &svcmgr_proc_h,
-                            &svcmgr_chan_h, sm_mints, n);
+        r = svc_load_minted_ws(spawn_cap_h, "svcmgr", &svcmgr_proc_h,
+                            &svcmgr_chan_h, sm_mints, n,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
     }
     /* svcmgr's slot-12 mint keeps the pool alive: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_SM_UNTYPED);
@@ -411,8 +414,9 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * and SYS_PROCESS_CREATE both resolve it either way, and the slot
          * outlives bootstrap_h by construction — which is the only reason the
          * retired duplicate had to exist. */
-        r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "iris_test",
-                            &proc_h, &boot_h, it_mints, 13u);
+        r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "iris_test",
+                            &proc_h, &boot_h, it_mints, 13u,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);
