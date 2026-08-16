@@ -162,4 +162,49 @@ void test_handle_table(void) {
         kobject_release(o1);
         kobject_release(o2);
     }
+
+    /* Generation counter vs encoded field: they must agree at every point.
+     *
+     * handle_id_make packs the generation into HANDLE_GEN_MAX bits and every
+     * lookup compares the STORED counter against handle_id_gen() of the id.
+     * If the counter is ever allowed past the field width the two disagree and
+     * the slot becomes permanently unusable — occupied, but every handle minted
+     * from it decodes to a value the counter never holds, so every lookup
+     * returns BAD_HANDLE forever.
+     *
+     * Seeded at the boundary rather than counted up to it: the failure is a
+     * wrap, so the only interesting iterations are the ones around it. */
+    {
+        HandleTable ht4;
+        handle_table_init(&ht4);
+        struct KObject *o = make_ht_obj(KOBJ_NOTIFICATION);
+        ASSERT_NOT_NULL(o);
+
+        /* Park slot 0's counter one step below the field limit. */
+        ht4.gen[0] = HANDLE_GEN_MAX - 1u;
+
+        for (uint32_t i = 0; i < 4u; i++) {
+            /* Force slot 0 every time: after a close the allocator's hint has
+             * moved on, so without this the loop walks fresh slots and never
+             * re-uses the one whose counter is parked at the boundary — which
+             * is the entire point. */
+            ht4.next_hint = 0u;
+            handle_id_t h = handle_table_insert(&ht4, o, RIGHT_READ);
+            ASSERT_EQ(handle_id_slot(h), 0u);
+            ASSERT_NE(h, (handle_id_t)HANDLE_INVALID);
+            uint32_t slot = handle_id_slot(h);
+            /* the encoded generation is exactly what the table stored */
+            ASSERT_EQ(handle_id_gen(h), ht4.gen[slot]);
+            /* 0 is reserved as "never issued" and must never be minted */
+            ASSERT_NE(handle_id_gen(h), 0u);
+            /* the handle resolves while open, and is stale once closed */
+            struct KObject *back; iris_rights_t r;
+            ASSERT_EQ(handle_table_get_object(&ht4, h, &back, &r), IRIS_OK);
+            kobject_release(back);
+            ASSERT_EQ(handle_table_close(&ht4, h), IRIS_OK);
+            ASSERT_EQ(handle_table_get_object(&ht4, h, &back, &r),
+                      IRIS_ERR_BAD_HANDLE);
+        }
+        kobject_release(o);
+    }
 }

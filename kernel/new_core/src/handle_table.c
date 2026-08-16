@@ -1,10 +1,18 @@
 #include <iris/nc/handle_table.h>
 #include <iris/nc/kobject.h>
 
-/* generate the next gen for a slot — never returns 0 */
+/* Generate the next gen for a slot — never returns 0, never exceeds the field.
+ *
+ * The counter and the encoded handle field MUST agree.  handle_id_make packs
+ * the generation into HANDLE_GEN_MAX bits, and validation compares the stored
+ * counter against handle_id_gen() of the presented id; if the counter is
+ * allowed to run past the field width, every handle minted from that slot
+ * decodes to a different value than the counter holds and the slot becomes
+ * permanently unusable — every lookup fails BAD_HANDLE with the slot occupied.
+ * Wrapping here keeps the two representations identical by construction. */
 static uint32_t next_gen(uint32_t g) {
     g++;
-    if (g == 0u) g = 1u;
+    if (g > HANDLE_GEN_MAX || g == 0u) g = 1u;
     return g;
 }
 

@@ -101,6 +101,6 @@ mapping retain remaining.
 | Fase 6.4 — stress / invariant audit | 7 | FR-63..FR-69 |
 | **Total** | **69** | — |
 
-Total assertions across all suites: **10404** (including 1000-cycle loop in
+Total assertions across all suites: **10433** (including 1000-cycle loop in
 FR-68).  This is the whole `make test-unit` total, not just the FR suites
 above; keep it in step with the count in `README.md`.
