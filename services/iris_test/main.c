@@ -5329,8 +5329,12 @@ static void test_t103(void) {
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* Exact balance: +1 = the exited thread's KTcb handle, which stays with
-     * the process by design (Ph96).  Anything above that is a staged leak. */
-    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 1u) { ok = 0; why = "leak"; }
+     * Etapa 4: thread creation no longer publishes a KTcb handle into the
+     * process by construction, so the expected delta is ZERO rather than one.
+     * The property is unchanged — anything above the baseline is a staged
+     * leak; only the baseline moved, because the producer it accounted for is
+     * retired. */
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     if (ok) it_pass("T103"); else it_fail("T103", why);
 }
 
@@ -5404,7 +5408,7 @@ static void test_t104(void) {
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* +1 = the exited thread's KTcb handle (stays with the process, Ph96). */
-    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 1u) { ok = 0; why = "leak"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY]) {
         ok = 0; why = "ghost kreply";
     }
@@ -5513,7 +5517,7 @@ static void test_t105(void) {
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* +1 = the exited thread's KTcb handle (stays with the process, Ph96). */
-    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 1u) { ok = 0; why = "leak"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     if (ok) it_pass("T105"); else it_fail("T105", why);
 }
 
@@ -5601,7 +5605,7 @@ static void test_t106(void) {
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* +2 = the two exited threads' KTcb handles (stay with the process, Ph96). */
-    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 2u) { ok = 0; why = "leak"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     if (ok) it_pass("T106"); else it_fail("T106", why);
 }
 
@@ -6016,7 +6020,7 @@ static void test_t107(void) {
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* I16: exact balance; +1 = the worker's KTcb handle (Ph96, A1.10 note). */
-    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 1u) { ok = 0; why = "leak"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     /* I18: directional counter deltas (>=: background services also count). */
     if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
         ok = 0; why = "slot count";
@@ -6173,7 +6177,7 @@ static void test_t108(void) {
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* I16: exact balance; +2 = the two workers' KTcb handles (Ph96). */
-    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 2u) { ok = 0; why = "leak"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     /* No call ever rendezvoused → not one KReply minted (T104 rule). */
     if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY]) {
         ok = 0; why = "ghost kreply";
@@ -6359,7 +6363,7 @@ static void test_t109(void) {
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* I16: exact balance; +1 = the worker's KTcb handle (Ph96). */
-    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE] + 1u) { ok = 0; why = "leak"; }
+    if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     /* Reply BINDINGS balance EXACTLY: one per rendezvous, zero per fail-fast
      * (Fase S1: the counter tracks bindings of the reusable reply object). */
     if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY] + exp_reply) {

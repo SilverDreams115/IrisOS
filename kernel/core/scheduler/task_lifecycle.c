@@ -851,13 +851,13 @@ static struct task *task_create_user_impl(uint64_t arg0) {
 
     /* Fase S2 D2: the KTCB IS t itself.  ktcb_object_init sets refcount = 1,
      * the scheduler's own execution reference (dropped at termination by
-     * task_execution_teardown_off_cpu).  handle_table_insert takes its own
-     * reference internally (handle_entry_init: lifecycle + active retain,
-     * released by handle_table_close_all/handle_entry_reset on teardown) —
-     * no separate retain needed here; on failure it takes none. */
+     * task_execution_teardown_off_cpu).
+     *
+     * Etapa 4: creating a thread no longer publishes a KTcb HANDLE into the
+     * owning process.  Nothing read it — the capability arrives on request
+     * through SYS_TCB_SELF — so it was authority handed out by construction,
+     * to a holder that never asked, in the namespace being retired. */
     ktcb_object_init(t);
-    handle_table_insert(&proc->handle_table, &t->base,
-                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
 
     rq_enqueue(t);
     atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
@@ -946,11 +946,9 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
 
     proc->thread_count++;
 
-    /* Fase S2 D2: the KTCB IS t itself — see task_create_user_impl (insert
-     * takes its own reference; no separate retain needed). */
+    /* Fase S2 D2: the KTCB IS t itself — see task_create_user_impl.  Etapa 4:
+     * no automatic handle publication (same reasoning). */
     ktcb_object_init(t);
-    handle_table_insert(&proc->handle_table, &t->base,
-                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
 
     rq_enqueue(t);
     atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
