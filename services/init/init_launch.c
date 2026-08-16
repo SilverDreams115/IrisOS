@@ -288,9 +288,15 @@ void init_spawn_iris_test(handle_id_t sm_h) {
      * init's svcmgr.ep (init holds a supervisor badge → full granted rights,
      * including DUPLICATE for the mint).  Missing caps leave slots empty: the
      * tests FAIL loudly, never skip. */
-    handle_id_t lk_svcmgr = init_ep_lookup_name(sm_h, "svcmgr.ep");
-    handle_id_t lk_vfs    = init_ep_lookup_name(sm_h, "vfs.ep");
-    handle_id_t lk_kbd    = init_ep_lookup_name(sm_h, "kbd.ep");
+    /* Etapa 4: declare a receive slot for every lookup.  A recv that declares
+     * none takes the delivery-by-handle path, which is the last IPC producer
+     * of handles in the productive tree.  Slots 54..56 are free in init. */
+    handle_id_t lk_svcmgr = init_ep_lookup_name_slot(sm_h, "svcmgr.ep",
+                                                     INIT_RSLOT_LK_SVCMGR);
+    handle_id_t lk_vfs    = init_ep_lookup_name_slot(sm_h, "vfs.ep",
+                                                     INIT_RSLOT_LK_VFS);
+    handle_id_t lk_kbd    = init_ep_lookup_name_slot(sm_h, "kbd.ep",
+                                                     INIT_RSLOT_LK_KBD);
     /* Fase 13/Track I: a KNotification serves as the slot-30 wrong-type fixture
      * for T040 (replaces the retired console KChannel cap).  It carries
      * RIGHT_WRITE so EP_CALL passes the rights check and fails on TYPE

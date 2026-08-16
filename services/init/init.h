@@ -113,6 +113,9 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_PROBE_NOTIF  51u
 #define INIT_SLOT_S8_NOTIF     52u
 #define INIT_SLOT_LOADER_WS    53u   /* loader's second-level CNode */
+#define INIT_RSLOT_LK_SVCMGR   54u   /* receive slots for discovery lookups */
+#define INIT_RSLOT_LK_VFS      55u
+#define INIT_RSLOT_LK_KBD      56u
 
 /* Fase S1: init's untyped pool — the boot untyped delegated by userboot at
  * IRIS_CPTR_INIT_UNTYPED.  Stage 4: held as the CPtr itself, checked once in

@@ -147,6 +147,7 @@ uint32_t syscall_ipc_deliver_cap_badged(struct task *receiver,
                                         struct KObject *xo,
                                         uint32_t cap_rights, uint64_t badge) {
     if (!xo) return IRIS_MSG_NO_CAP;
+
     handle_id_t new_h = handle_table_insert_badged(
         &receiver->process->handle_table, xo, (iris_rights_t)cap_rights, badge);
     kobject_release(xo); /* release staging ref; table holds its own ref */
