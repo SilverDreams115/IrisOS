@@ -40,7 +40,7 @@ typedef uint64_t iris_cptr_t;
  * and nobody open-codes `< 1024`.  When the handle namespace goes, this block
  * and its callers are the whole edit.
  */
-#define CSPACE_DIRECT_CPTR_LIMIT ((iris_cptr_t)1u << HANDLE_GEN_SHIFT)
+#define CSPACE_DIRECT_CPTR_LIMIT ((iris_cptr_t)HANDLE_TAG)
 
 static inline int cspace_value_is_cptr(iris_cptr_t v) {
     return v != CPTR_NULL && v < CSPACE_DIRECT_CPTR_LIMIT;

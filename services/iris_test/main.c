@@ -10020,7 +10020,9 @@ static void test_t151(void) {
                     (long)RIGHT_READ) >= 0) { ok = 0; why = "derive by handle ok"; break; }
         op = 4;
         if (it_sys1(SYS_CSPACE_REVOKE, (long)IT_SCRATCH_3) >= 0) { ok = 0; why = "revoke stale ok"; break; }
-        if (it_sys1(SYS_CSPACE_REVOKE, 9000L) >= 0) { ok = 0; why = "revoke by handle ok"; break; }
+        /* A HANDLE value must be refused: build a well-formed one rather than
+         * a bare large integer, which is a legitimate CPtr now. */
+        if (it_sys1(SYS_CSPACE_REVOKE, (long)handle_id_make(8u, 1u)) >= 0) { ok = 0; why = "revoke by handle ok"; break; }
         op = 5;
         if (it_sys3(SYS_EXCEPTION_RESUME, (long)HANDLE_INVALID, (long)(fz_rand() | 0x40000000u), 1)
             != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume no-fault not NOT_FOUND"; break; }
@@ -18900,7 +18902,7 @@ static void test_t288(void) {
     if (ok && it_cs_mint(S1_SLOT_A, S1_SLOT_B, RIGHT_SAME_RIGHTS, 0) !=
               (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occupied not refused"; }
     /* A handle source is refused (CSpace-only authority). */
-    if (ok && it_cs_mint(2000u, S1_SLOT_B + 5u, RIGHT_SAME_RIGHTS, 0) !=
+    if (ok && it_cs_mint(handle_id_make(2u, 1u), S1_SLOT_B + 5u, RIGHT_SAME_RIGHTS, 0) !=
               (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "handle source accepted"; }
 
     /* Revoke A's subtree: B and C die; A survives; D and E untouched. */
@@ -18947,7 +18949,7 @@ static void test_t289(void) {
         ok = 0; why = "cross slot not filled";
     }
     /* A handle source is refused even for the cross-process path. */
-    if (ok && it_cs_mint_into(IRIS_CPTR_TEST_PROC, T289_TSLOT + 1u, 3000u,
+    if (ok && it_cs_mint_into(IRIS_CPTR_TEST_PROC, T289_TSLOT + 1u, handle_id_make(3u, 1u),
                               RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "cross handle source accepted";
     }
