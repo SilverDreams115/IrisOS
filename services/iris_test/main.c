@@ -131,6 +131,8 @@ static uint32_t g_total = 0;
 #define IT_OBJ_CNODE_SLOT   80u
 #define IT_OBJ_SLOT_SPAN   200u
 #define IT_OBJ_CPTR(leaf)  ((uint32_t)(((leaf) << 8) | IT_OBJ_CNODE_SLOT))
+/* Fixed slots for capabilities that outlive a test (fuzz worker control). */
+#define IT_FZ_CTL_SLOT      81u
 static uint32_t g_it_s1_scratch_next;
 static uint32_t g_it_obj_slot_next;
 
@@ -159,6 +161,17 @@ static long it_retype_handle(long ut, uint32_t obj_type, long obj_arg) {
  * slot across a test boundary. */
 /* Fabricate into a leaf of the second-level CNode and LEAVE it there — the
  * capability IS the slot, which is the seL4 shape.  Returns the full CPtr. */
+/* Fill a svc_mint source from a capability value, choosing the field by
+ * namespace: src_cptr wins over src_h in svc_load_minted and mints
+ * slot-to-slot, so the child's cap becomes an MDB child of ours.  Assigning a
+ * CPtr to src_h instead silently produces a mint the kernel cannot resolve. */
+#define IT_MINT_SRC(m, v)                                                     \
+    do {                                                                      \
+        uint32_t _v = (uint32_t)(v);                                          \
+        if (_v != 0u && (_v & HANDLE_TAG) == 0u) (m).src_cptr = _v;           \
+        else                                     (m).src_h    = (handle_id_t)_v; \
+    } while (0)
+
 static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
     uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
                                              __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
@@ -179,12 +192,24 @@ static long it_notify_create_slot(void) {
     return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION, 0);
 }
 
-static long it_ep_create(void) {
+/* Materialising factories, kept for the tests whose SUBJECT is the handle
+ * namespace — HANDLE_TYPE, HANDLE_SAME_OBJECT, HANDLE_DUP and the rights
+ * reductions expressed through it.  Those assertions are about handles, so
+ * they must hold one; they are deleted WITH the namespace, not migrated. */
+static long it_ep_create_h(void) {
     return it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT, 0);
 }
 
-static long it_notify_create(void) {
+static long it_notify_create_h(void) {
     return it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION, 0);
+}
+
+static long it_ep_create(void) {
+    return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT, 0);
+}
+
+static long it_notify_create(void) {
+    return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION, 0);
 }
 
 /* Retype a reply object into a FIXED root slot (tests pass it as recv arg2
@@ -270,11 +295,20 @@ static void it_slot_delete(uint32_t slot) {
  * the old "no root found" guards are gone with the probe. */
 #define T28_OWN_ROOT_CNODE 0u
 
+/* Namespace-aware for the same reason it_close is.  A CPtr source is a plain
+ * slot-to-slot mint, which also installs the result as an MDB child of the
+ * source; a handle source still needs SYS_CNODE_MINT, whose source is
+ * handle-only.  The second branch dies with the namespace. */
 static long it_xfer_slot(handle_id_t src_h, uint32_t slot, uint32_t rights) {
-    handle_id_t root = T28_OWN_ROOT_CNODE;
-    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)slot);
-    long r = it_sys4(SYS_CNODE_MINT, (long)root, (long)slot, (long)src_h,
-                     (long)(rights | RIGHT_TRANSFER));
+    it_slot_delete(slot);
+    long r;
+    if (((uint32_t)src_h & HANDLE_TAG) == 0u && src_h != 0)
+        r = it_sys3(SYS_CSPACE_MINT, (long)src_h,
+                    (long)((uint64_t)slot << 32),
+                    (long)(rights | RIGHT_TRANSFER));
+    else
+        r = it_sys4(SYS_CNODE_MINT, (long)T28_OWN_ROOT_CNODE, (long)slot,
+                    (long)src_h, (long)(rights | RIGHT_TRANSFER));
     return (r != 0) ? r : (long)slot;
 }
 
@@ -294,9 +328,14 @@ static int it_slot_is_notif(long slot) {
 /* Mint a source slot with EXACTLY the requested rights (no implicit
  * RIGHT_TRANSFER) — used by the negative tests that must be denied. */
 static long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
-    handle_id_t root = T28_OWN_ROOT_CNODE;
-    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)slot);
-    long r = it_sys4(SYS_CNODE_MINT, (long)root, (long)slot, src_h, (long)rights);
+    it_slot_delete(slot);
+    long r;
+    if (((uint32_t)src_h & HANDLE_TAG) == 0u && src_h != 0)
+        r = it_sys3(SYS_CSPACE_MINT, src_h,
+                    (long)((uint64_t)slot << 32), (long)rights);
+    else
+        r = it_sys4(SYS_CNODE_MINT, (long)T28_OWN_ROOT_CNODE, (long)slot,
+                    src_h, (long)rights);
     return (r != 0) ? r : (long)slot;
 }
 
@@ -313,10 +352,14 @@ static long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
  * it_cdt_alive — does this slot still name a live capability?
  * it_cdt_revoke— revoke the slot's descendants (>= 0 on success). */
 static long it_cdt_root(handle_id_t src_h, uint32_t slot) {
-    handle_id_t root = T28_OWN_ROOT_CNODE;
-    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)slot);
-    long r = it_sys4(SYS_CNODE_MINT, (long)root, (long)slot, (long)src_h,
-                     (long)RIGHT_SAME_RIGHTS);
+    it_slot_delete(slot);
+    long r;
+    if (((uint32_t)src_h & HANDLE_TAG) == 0u && src_h != 0)
+        r = it_sys3(SYS_CSPACE_MINT, (long)src_h,
+                    (long)((uint64_t)slot << 32), (long)RIGHT_SAME_RIGHTS);
+    else
+        r = it_sys4(SYS_CNODE_MINT, (long)T28_OWN_ROOT_CNODE, (long)slot,
+                    (long)src_h, (long)RIGHT_SAME_RIGHTS);
     return (r != 0) ? r : (long)slot;
 }
 
@@ -387,11 +430,30 @@ static void it_iris_msg_zero(struct IrisMsg *m) {
     for (uint32_t i = 0; i < (uint32_t)sizeof(*m); i++) p[i] = 0;
 }
 
+/* Release a capability the suite holds, whichever namespace names it.
+ *
+ * This is what lets the suite migrate WITHOUT moving a single release point.
+ * Drift tests assert object gauges return to a baseline, so WHEN a capability
+ * is dropped is part of what they measure; rewriting call sites moves that
+ * moment and those tests fail.  Teaching the universal release helper both
+ * namespaces keeps every call site, and every lifetime, exactly where it was.
+ *
+ * The tag bit is the discriminator, not a magnitude: a CPtr is 31 bits wide
+ * now and multi-level ones are far above any old threshold.  The handle branch
+ * disappears with the handle namespace. */
 static void it_close(handle_id_t *h) {
-    if (*h != HANDLE_INVALID) {
+    if (*h == HANDLE_INVALID) return;
+    if (((uint32_t)*h & HANDLE_TAG) != 0u) {
         it_sys1(SYS_HANDLE_CLOSE, (long)*h);
-        *h = HANDLE_INVALID;
+    } else if (((uint32_t)*h & 0xFFu) == IT_OBJ_CNODE_SLOT) {
+        /* Only capabilities THIS suite fabricated are released by deleting
+         * their slot.  Scoping matters: a plain HANDLE_CLOSE on a CPtr used to
+         * be a harmless failed call, so several places close values that are
+         * really receive-slot CPtrs they do not own.  Deleting those would
+         * destroy a live capability instead of doing nothing. */
+        it_slot_delete((uint32_t)*h);
     }
+    *h = HANDLE_INVALID;
 }
 
 /* ── T001: SYS_GETPID ───────────────────────────────────────────────────── */
@@ -514,7 +576,7 @@ static void test_t010(void) {
 /* ── T011: HANDLE_TYPE on endpoint (Fase 13/Track F: KChannel→KEndpoint) ── */
 
 static void test_t011(void) {
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_h();
     if (ep_raw < 0) { it_fail("T011", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
@@ -531,7 +593,7 @@ static void test_t011(void) {
 /* ── T012: HANDLE_SAME_OBJECT on endpoints (Fase 13/Track F) ─────────────── */
 
 static void test_t012(void) {
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_h();
     if (ep_raw < 0) { it_fail("T012", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
@@ -543,7 +605,7 @@ static void test_t012(void) {
     }
     handle_id_t dup_h = (handle_id_t)dup_raw;
 
-    long ep2_raw = it_ep_create();
+    long ep2_raw = it_ep_create_h();
     if (ep2_raw < 0) {
         it_close(&dup_h);
         it_close(&ep_h);
@@ -571,7 +633,7 @@ static void test_t012(void) {
  * RIGHT_WRITE, so a READ-only cap is rejected with ACCESS_DENIED (same
  * rights-enforcement guarantee, no SYS_CHAN). */
 static void test_t013(void) {
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_h();
     if (ep_raw < 0) { it_fail("T013", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
@@ -844,7 +906,7 @@ static void test_t020(void) {
     g_t020_done   = 0;
     g_t020_result = 0;
 
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_h();
     if (ep_raw < 0) { it_fail("T020", "ep create"); return; }
     g_t020_ep_h = (handle_id_t)ep_raw;
 
@@ -1059,7 +1121,7 @@ static void test_t022(void) {
 /* ── T023: EP_SEND on read-only endpoint handle → ACCESS_DENIED ─────────── */
 
 static void test_t023(void) {
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_h();
     if (ep_raw < 0) { it_fail("T023", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
@@ -1125,7 +1187,7 @@ static void t024_client(void) {
 static void test_t024(void) {
     g_t024_done = 0; g_t024_ok = 0; g_t024_got_h = 0;
 
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_h();
     if (ep_raw < 0) { it_fail("T024", "ep create"); return; }
     g_t024_ep_h = (handle_id_t)ep_raw;
 
@@ -1156,7 +1218,7 @@ static void test_t024(void) {
     handle_id_t reply_h = (handle_id_t)msg.attached_handle;
 
     long rr = -1;
-    long notif_raw = it_notify_create();
+    long notif_raw = it_notify_create_h();
     if (notif_raw >= 0) {
         /* Fase S4 (Etapa 2): the reply's transfer source is a CSpace slot. */
         long src = it_xfer_dup(notif_raw, RIGHT_WRITE | RIGHT_WAIT);
@@ -1217,7 +1279,7 @@ static void t025_client(void) {
 static void test_t025(void) {
     g_t025_done = 0; g_t025_ok = 0;
 
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_h();
     if (ep_raw < 0) { it_fail("T025", "ep create"); return; }
     g_t025_ep_h = (handle_id_t)ep_raw;
 
@@ -1252,7 +1314,7 @@ static void test_t025(void) {
     long r1 = -1;
     int  src_preserved = 0;
     handle_id_t t025_root = T28_OWN_ROOT_CNODE;
-    long notif_raw = it_notify_create();
+    long notif_raw = it_notify_create_h();
     if (notif_raw >= 0) {
         notif_h = (handle_id_t)notif_raw;
         (void)it_sys2(SYS_CNODE_DELETE, (long)t025_root, (long)IT_XFER_SLOT_C);
@@ -2187,7 +2249,7 @@ static long it_register_ep(const char *name, handle_id_t ep) {
 /* T054: cap-backed REGISTER over EP — the caller transfers a REAL endpoint cap
  * (attached_cap) and still gets a working reply (KReply + transfer coexist). */
 static void test_t054(void) {
-    long e = it_ep_create();
+    long e = it_ep_create_h();
     if (e < 0) { it_fail("T054", "endpoint create"); return; }
     g_ltst_ep = (handle_id_t)e;
 
@@ -2634,7 +2696,7 @@ static void test_t072(void) {
  * EP_NB_SEND is used so the call never blocks: the staging check runs and fails
  * before any rendezvous or enqueue. */
 static void test_t073(void) {
-    long ep = it_ep_create();
+    long ep = it_ep_create_h();
     if (ep < 0) { it_fail("T073", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep;
 
@@ -2787,7 +2849,12 @@ static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
     struct svc_mint mints[2] = { 0 };
     uint32_t n = 0;
     mints[n].slot   = LP_CPTR_CMD_EP;
-    mints[n].src_h  = cmd_ep_h;
+    /* A CPtr source wins over src_h in svc_mint and mints slot-to-slot, so the
+     * child's capability is an MDB child of ours. */
+    if (((uint32_t)cmd_ep_h & HANDLE_TAG) == 0u && cmd_ep_h != 0)
+        mints[n].src_cptr = (uint64_t)cmd_ep_h;
+    else
+        IT_MINT_SRC(mints[n], cmd_ep_h);
     mints[n].rights = RIGHT_READ | RIGHT_WRITE;
     mints[n].badge  = 0;
     n++;
@@ -2801,7 +2868,7 @@ static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
         if (rr >= 0) {
             reply_h = (handle_id_t)rr;
             mints[n].slot   = 13u;
-            mints[n].src_h  = reply_h;
+            IT_MINT_SRC(mints[n], reply_h);
             mints[n].rights = RIGHT_READ | RIGHT_WRITE;
             mints[n].badge  = 0;
             n++;
@@ -4529,9 +4596,9 @@ static void t094_recv(void) {
 static void test_t094(void) {
     g_t094_got = 0; g_t094_ready = 0; g_t094_done = 0;
 
-    long nA = it_notify_create();      /* the cap to transfer */
-    long nB = it_notify_create();      /* the slot-race winner */
-    long ep = it_ep_create();
+    long nA = it_notify_create_h();      /* the cap to transfer */
+    long nB = it_notify_create_h();      /* the slot-race winner */
+    long ep = it_ep_create_h();
     long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
     if (nA < 0 || nB < 0 || ep < 0 || selfp < 0) { it_fail("T094", "create"); return; }
     handle_id_t nA_h = (handle_id_t)nA, nB_h = (handle_id_t)nB;
@@ -4911,8 +4978,8 @@ static void test_t099(void) {
     const char *why = "multi-child rslot";
 
     for (int i = 0; ok && i < 3; i++) {
-        long ep = it_ep_create();
-        long n  = it_notify_create();
+        long ep = it_ep_create_h();
+        long n  = it_notify_create_h();
         handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || n < 0 ||
@@ -4937,8 +5004,8 @@ static void test_t099(void) {
     /* Occupied child slot → the child's declared recv fails fast and the
      * endpoint keeps no dead waiter. */
     if (ok) {
-        long ep = it_ep_create();
-        long n2 = it_notify_create();
+        long ep = it_ep_create_h();
+        long n2 = it_notify_create_h();
         handle_id_t ep_h = (handle_id_t)ep, n2_h = (handle_id_t)n2;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || n2 < 0 ||
@@ -4967,7 +5034,7 @@ static void test_t099(void) {
 
     /* Out-of-range declaration (slot 300, T086 fixture value) → INVALID_ARG. */
     if (ok) {
-        long ep = it_ep_create();
+        long ep = it_ep_create_h();
         handle_id_t ep_h = (handle_id_t)ep;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
@@ -5665,9 +5732,16 @@ static void fz_worker1(void) { fz_worker(1); }
 static int fz_workers_start(int n) {
     static void (*const entries[2])(void) = { fz_worker0, fz_worker1 };
     for (int i = 0; i < n; i++) {
-        long e = it_ep_create();
-        if (e < 0) return 0;
-        g_fz_ctl[i] = (handle_id_t)e;
+        /* The control endpoint outlives every test: the workers run until
+         * FZ_OP_EXIT.  It gets a FIXED slot, not a pool — the rotating pool is
+         * for objects that die with their test, and a wrap onto this one would
+         * delete it, kill the worker's EP_RECV and block the main thread on a
+         * worker that no longer exists. */
+        uint32_t ctl = IT_FZ_CTL_SLOT + (uint32_t)i;
+        it_slot_delete(ctl);
+        if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT,
+                          ctl, 1u, 0) != 0) return 0;
+        g_fz_ctl[i] = (handle_id_t)ctl;
         uint64_t entry = (uint64_t)(uintptr_t)entries[i];
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_fz_stk[i] + sizeof(g_fz_stk[i]))) & ~0xFULL;
         if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) return 0;
@@ -5727,9 +5801,9 @@ static void test_t107(void) {
     uint32_t it_n = 0;
     uint32_t exp_slot = 0, exp_hand = 0;
 
-    long ep    = it_ep_create();   /* data endpoint */
-    long n     = it_notify_create();     /* transferable notification */
-    long ep2   = it_ep_create();   /* transferable endpoint */
+    long ep    = it_ep_create_h();   /* data endpoint */
+    long n     = it_notify_create_h();     /* transferable notification */
+    long ep2   = it_ep_create_h();   /* transferable endpoint */
     long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
     handle_id_t n_h = (handle_id_t)n, ep2_h = (handle_id_t)ep2;
     handle_id_t selfp_h = (handle_id_t)selfp;
@@ -6132,8 +6206,8 @@ static void test_t109(void) {
     uint32_t it_n = 0;
     uint32_t exp_slot = 0, exp_hand = 0, exp_reply = 0;
 
-    long ep    = it_ep_create();
-    long n     = it_notify_create();
+    long ep    = it_ep_create_h();
+    long n     = it_notify_create_h();
     long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
     handle_id_t n_h = (handle_id_t)n, selfp_h = (handle_id_t)selfp;
     g_fz_data_ep = (handle_id_t)ep;
@@ -6331,8 +6405,8 @@ static void test_t110(void) {
     uint32_t it_n = 0;
     uint32_t exp_slot = 0, exp_hand = 0, exp_reply = 0, exp_log = 0;
 
-    long ep    = it_ep_create();
-    long nf    = it_notify_create();
+    long ep    = it_ep_create_h();
+    long nf    = it_notify_create_h();
     long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
     handle_id_t ep_h = (handle_id_t)ep, nf_h = (handle_id_t)nf;
     handle_id_t selfp_h = (handle_id_t)selfp;
@@ -6543,9 +6617,9 @@ static void test_t110(void) {
 static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
                       const char **why) {
     int ok = 1;
-    long ep = it_ep_create();
-    long n  = it_notify_create();
-    long e2 = (kind == 1u) ? it_ep_create() : -1;
+    long ep = it_ep_create_h();
+    long n  = it_notify_create_h();
+    long e2 = (kind == 1u) ? it_ep_create_h() : -1;
     handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
     handle_id_t e2_h = (kind == 1u) ? (handle_id_t)e2 : HANDLE_INVALID;
     handle_id_t proc_h = HANDLE_INVALID;
@@ -7027,15 +7101,15 @@ static void test_t116(void) {
     int ok = 1;
     const char *why = "death with cspace/vmo";
 
-    long ep  = it_ep_create();   /* shared endpoint */
-    long n   = it_notify_create();      /* shared notification */
+    long ep  = it_ep_create_h();   /* shared endpoint */
+    long n   = it_notify_create_h();      /* shared notification */
     long vmo = it_sys1(SYS_VMO_CREATE, 4096);   /* shared VMO */
     handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n, vmo_h = (handle_id_t)vmo;
     handle_id_t cmd_ep_h = HANDLE_INVALID, proc_h = HANDLE_INVALID;
 
     /* Command endpoint keeps the child parked; the shared caps go into its
      * CSpace / handle table below. */
-    long cep = it_ep_create();
+    long cep = it_ep_create_h();
     cmd_ep_h = (handle_id_t)cep;
     if (ep < 0 || n < 0 || vmo < 0 || cep < 0 ||
         lp_spawn_child(cmd_ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
@@ -9070,14 +9144,14 @@ static void test_t140(void) {
     }
 
     /* Child 1: probe every failure path, then fault with NO handler. */
-    long ep = it_ep_create();
+    long ep = it_ep_create_h();
     handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
     handle_id_t proc_h = HANDLE_INVALID;
     if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
         it_close(&ep_h); it_fail("T140", "spawn"); return;
     }
-    long n1 = it_notify_create();
-    long w  = it_notify_create();
+    long n1 = it_notify_create_h();
+    long w  = it_notify_create_h();
     handle_id_t n1_h = (n1 >= 0) ? (handle_id_t)n1 : HANDLE_INVALID;
     handle_id_t w_h  = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
     if (n1 < 0 || w < 0) { ok = 0; why = "notify create"; }
@@ -9129,7 +9203,7 @@ static void test_t140(void) {
     handle_id_t ep2, pr2, na, wb;
     if (ok && !it_fault_spawn(&ep2, &pr2, &na, &wb, &why)) { ok = 0; }
     if (ok) {
-        long n2 = it_notify_create();
+        long n2 = it_notify_create_h();
         handle_id_t n2_h = (n2 >= 0) ? (handle_id_t)n2 : HANDLE_INVALID;
         if (n2 < 0) { ok = 0; why = "n2 create"; }
         /* Replace na with n2 — last registration wins. */
@@ -9859,8 +9933,8 @@ static void test_t149(void) {
     int ok = b.ok;
     const char *why = "wrong-type fuzz";
 
-    long ep = it_ep_create();
-    long no = it_notify_create();
+    long ep = it_ep_create_h();
+    long no = it_notify_create_h();
     handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
     handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
     if (ep < 0 || no < 0) { it_close(&ep_h); it_close(&no_h); it_fail("T149", "fixture"); return; }
@@ -10232,7 +10306,7 @@ static void test_t154(void) {
     int ok = b.ok;
     const char *why = "rights monotonicity";
 
-    long no = it_notify_create();
+    long no = it_notify_create_h();
     handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
     if (no < 0) { it_fail("T154", "notif fixture"); return; }
 
@@ -10415,7 +10489,7 @@ static long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
 
     struct svc_mint mints[8] = { 0 };
     mints[0].slot = LP_CPTR_CMD_EP;
-    mints[0].src_h = cmd;
+    IT_MINT_SRC(mints[0], cmd);
     mints[0].rights = RIGHT_READ | RIGHT_WRITE;
     mints[0].badge = 0;
     uint32_t n = 1u;
@@ -10484,8 +10558,8 @@ static void test_t156(void) {
 
     /* Declared set {cmd@3, notif@5, ep@7}. */
     struct svc_mint extra[2] = { 0 };
-    extra[0].slot = 5; extra[0].src_h = no_h; extra[0].rights = RIGHT_READ; extra[0].badge = 0;
-    extra[1].slot = 7; extra[1].src_h = ep_h; extra[1].rights = RIGHT_READ; extra[1].badge = 0;
+    extra[0].slot = 5; IT_MINT_SRC(extra[0], no_h); extra[0].rights = RIGHT_READ; extra[0].badge = 0;
+    extra[1].slot = 7; IT_MINT_SRC(extra[1], ep_h); extra[1].rights = RIGHT_READ; extra[1].badge = 0;
     long mask = it_lp_report_slots(extra, 2u);
     uint32_t want = (1u << 3) | (1u << 5) | (1u << 7);
     if (ok && mask < 0) { ok = 0; why = "report failed"; }
@@ -10732,7 +10806,7 @@ static void test_t162(void) {
         if (n < 0) { ok = 0; why = "teeth fixture"; }
         else {
             struct svc_mint extra[1] = { 0 };
-            extra[0].slot = 6; extra[0].src_h = n_h; extra[0].rights = RIGHT_READ; extra[0].badge = 0;
+            extra[0].slot = 6; IT_MINT_SRC(extra[0], n_h); extra[0].rights = RIGHT_READ; extra[0].badge = 0;
             long m1 = it_lp_report_slots(extra, 1u);
             if (m1 < 0 || ((uint32_t)m1 & (1u << 6)) == 0) { ok = 0; why = "extra cap not detected (no teeth)"; }
             it_close(&n_h);
@@ -10899,7 +10973,7 @@ static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t de
     /* The source ioport cap carries DUPLICATE (needed to mint it); the child's
      * cap is reduced to dev_rights — modelling a driver's exact port authority. */
     struct svc_mint mints[2] = { 0 };
-    mints[0].slot = LP_CPTR_CMD_EP; mints[0].src_h = cmd;
+    mints[0].slot = LP_CPTR_CMD_EP; IT_MINT_SRC(mints[0], cmd);
     mints[0].rights = RIGHT_READ | RIGHT_WRITE; mints[0].badge = 0;
     /* Fase S4: the ioport cap lives in OUR CSpace now, so the child's copy is
      * minted from the slot — an MDB child of ours, hence revocable. */
@@ -11072,7 +11146,7 @@ static void test_t167(void) {
     handle_id_t irq = it_make_irqcap(5);
     if (ok && irq == HANDLE_INVALID) { ok = 0; why = "irqcap create"; }
 
-    long nn = it_notify_create();
+    long nn = it_notify_create_h();
     handle_id_t notif = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
     if (ok && notif == HANDLE_INVALID) { ok = 0; why = "notif"; }
 
@@ -11095,7 +11169,7 @@ static void test_t167(void) {
     }
     /* Route with a wrong-type destination (endpoint, not notification). */
     if (ok) {
-        long e = it_ep_create();
+        long e = it_ep_create_h();
         handle_id_t ep_h = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
         if (e < 0) { ok = 0; why = "ep fixture"; }
         if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, (long)ep_h, (long)IRIS_CPTR_TEST_PROC)
@@ -11233,9 +11307,9 @@ static void test_t170(void) {
         long ep = it_ep_create();
         handle_id_t cmd = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         struct svc_mint mints[2] = { 0 };
-        mints[0].slot = LP_CPTR_CMD_EP; mints[0].src_h = cmd;
+        mints[0].slot = LP_CPTR_CMD_EP; IT_MINT_SRC(mints[0], cmd);
         mints[0].rights = RIGHT_READ | RIGHT_WRITE; mints[0].badge = 0;
-        mints[1].slot = 10; mints[1].src_h = io;
+        mints[1].slot = 10; IT_MINT_SRC(mints[1], io);
         mints[1].rights = RIGHT_READ | RIGHT_WRITE; mints[1].badge = 0;
         handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
         long r = (ep < 0) ? -1 : svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP,
@@ -11951,11 +12025,11 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
     if (ep < 0) return -1;
     handle_id_t cmd = (handle_id_t)ep;
     struct svc_mint m[8] = { 0 };
-    m[0].slot = LP_CPTR_CMD_EP;    m[0].src_h = cmd;      m[0].rights = RIGHT_READ | RIGHT_WRITE;  m[0].badge = 0;
-    m[1].slot = LP_PGR_SLOT_TPROC; m[1].src_h = g->proc;  m[1].rights = RIGHT_READ | RIGHT_MANAGE; m[1].badge = 0;
-    m[2].slot = LP_PGR_SLOT_TVS;   m[2].src_h = g->vs;    m[2].rights = RIGHT_WRITE;               m[2].badge = 0;
-    m[3].slot = LP_PGR_SLOT_FRAME; m[3].src_h = frame_h;  m[3].rights = frame_rights;              m[3].badge = 0;
-    m[4].slot = LP_PGR_SLOT_NOTIF; m[4].src_h = g->notif; m[4].rights = RIGHT_WAIT;                m[4].badge = 0;
+    m[0].slot = LP_CPTR_CMD_EP;    IT_MINT_SRC(m[0], cmd);      m[0].rights = RIGHT_READ | RIGHT_WRITE;  m[0].badge = 0;
+    m[1].slot = LP_PGR_SLOT_TPROC; IT_MINT_SRC(m[1], g->proc);  m[1].rights = RIGHT_READ | RIGHT_MANAGE; m[1].badge = 0;
+    m[2].slot = LP_PGR_SLOT_TVS;   IT_MINT_SRC(m[2], g->vs);    m[2].rights = RIGHT_WRITE;               m[2].badge = 0;
+    m[3].slot = LP_PGR_SLOT_FRAME; IT_MINT_SRC(m[3], frame_h);  m[3].rights = frame_rights;              m[3].badge = 0;
+    m[4].slot = LP_PGR_SLOT_NOTIF; IT_MINT_SRC(m[4], g->notif); m[4].rights = RIGHT_WAIT;                m[4].badge = 0;
     uint32_t n = 5u;
     for (uint32_t i = 0; i < nextra && n < 8u; i++) m[n++] = extra[i];
     handle_id_t boot = HANDLE_INVALID;
@@ -12054,10 +12128,10 @@ static void test_t181(void) {
 
     if (ok) {
         struct svc_mint x[4] = { 0 };
-        x[0].slot = LP_PGR_SLOT_TPROC; x[0].src_h = g.proc;  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
-        x[1].slot = LP_PGR_SLOT_TVS;   x[1].src_h = g.vs;    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
-        x[2].slot = LP_PGR_SLOT_FRAME; x[2].src_h = fr_h;    x[2].rights = RIGHT_READ | RIGHT_WRITE;  x[2].badge = 0;
-        x[3].slot = LP_PGR_SLOT_NOTIF; x[3].src_h = g.notif; x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
+        x[0].slot = LP_PGR_SLOT_TPROC; IT_MINT_SRC(x[0], g.proc);  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
+        x[1].slot = LP_PGR_SLOT_TVS;   IT_MINT_SRC(x[1], g.vs);    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
+        x[2].slot = LP_PGR_SLOT_FRAME; IT_MINT_SRC(x[2], fr_h);    x[2].rights = RIGHT_READ | RIGHT_WRITE;  x[2].badge = 0;
+        x[3].slot = LP_PGR_SLOT_NOTIF; IT_MINT_SRC(x[3], g.notif); x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
         long rep = it_lp_report_slots(x, 4u);
         uint32_t expect = (1u << LP_CPTR_CMD_EP)    | (1u << LP_PGR_SLOT_TPROC) |
                           (1u << LP_PGR_SLOT_TVS)   | (1u << LP_PGR_SLOT_FRAME) |
@@ -12267,8 +12341,8 @@ static void test_t184(void) {
     handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
     if (ok) {
         struct svc_mint x[2] = { 0 };
-        x[0].slot = LP_PGR_SLOT_XPROC; x[0].src_h = apro_h; x[0].rights = RIGHT_READ; x[0].badge = 0;
-        x[1].slot = LP_PGR_SLOT_XVS;   x[1].src_h = avso_h; x[1].rights = RIGHT_READ; x[1].badge = 0;
+        x[0].slot = LP_PGR_SLOT_XPROC; IT_MINT_SRC(x[0], apro_h); x[0].rights = RIGHT_READ; x[0].badge = 0;
+        x[1].slot = LP_PGR_SLOT_XVS;   IT_MINT_SRC(x[1], avso_h); x[1].rights = RIGHT_READ; x[1].badge = 0;
         if (t25_pager_spawn(&gb, fr_h, RIGHT_READ | RIGHT_WRITE, x, 2u,
                             &pcmd, &pproc) != 0) { ok = 0; why = "pager spawn"; }
     }
@@ -12675,10 +12749,10 @@ static void test_t189(void) {
      * restart amplified nothing. */
     if (ok) {
         struct svc_mint x[4] = { 0 };
-        x[0].slot = LP_PGR_SLOT_TPROC; x[0].src_h = g.proc;  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
-        x[1].slot = LP_PGR_SLOT_TVS;   x[1].src_h = g.vs;    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
-        x[2].slot = LP_PGR_SLOT_FRAME; x[2].src_h = fr_h;    x[2].rights = RIGHT_READ;                x[2].badge = 0;
-        x[3].slot = LP_PGR_SLOT_NOTIF; x[3].src_h = g.notif; x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
+        x[0].slot = LP_PGR_SLOT_TPROC; IT_MINT_SRC(x[0], g.proc);  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
+        x[1].slot = LP_PGR_SLOT_TVS;   IT_MINT_SRC(x[1], g.vs);    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
+        x[2].slot = LP_PGR_SLOT_FRAME; IT_MINT_SRC(x[2], fr_h);    x[2].rights = RIGHT_READ;                x[2].badge = 0;
+        x[3].slot = LP_PGR_SLOT_NOTIF; IT_MINT_SRC(x[3], g.notif); x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
         long rep = it_lp_report_slots(x, 4u);
         uint32_t expect = (1u << LP_CPTR_CMD_EP)    | (1u << LP_PGR_SLOT_TPROC) |
                           (1u << LP_PGR_SLOT_TVS)   | (1u << LP_PGR_SLOT_FRAME) |
@@ -13360,10 +13434,10 @@ static void test_t197(void) {
     /* Post-restart manifest is exactly the declaration (slot-14 = VMO source). */
     if (ok) {
         struct svc_mint x[4] = { 0 };
-        x[0].slot = LP_PGR_SLOT_TPROC; x[0].src_h = g.proc;  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
-        x[1].slot = LP_PGR_SLOT_TVS;   x[1].src_h = g.vs;    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
-        x[2].slot = LP_PGR_SLOT_FRAME; x[2].src_h = vmo;     x[2].rights = RIGHT_READ;                x[2].badge = 0;
-        x[3].slot = LP_PGR_SLOT_NOTIF; x[3].src_h = g.notif; x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
+        x[0].slot = LP_PGR_SLOT_TPROC; IT_MINT_SRC(x[0], g.proc);  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
+        x[1].slot = LP_PGR_SLOT_TVS;   IT_MINT_SRC(x[1], g.vs);    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
+        x[2].slot = LP_PGR_SLOT_FRAME; IT_MINT_SRC(x[2], vmo);     x[2].rights = RIGHT_READ;                x[2].badge = 0;
+        x[3].slot = LP_PGR_SLOT_NOTIF; IT_MINT_SRC(x[3], g.notif); x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
         long rep = it_lp_report_slots(x, 4u);
         uint32_t expect = (1u << LP_CPTR_CMD_EP) | (1u << LP_PGR_SLOT_TPROC) |
                           (1u << LP_PGR_SLOT_TVS) | (1u << LP_PGR_SLOT_FRAME) |
@@ -13708,17 +13782,17 @@ static int t27_pager_spawn(struct t27_pager *p,
 
     struct svc_mint m[40] = { 0 };
     uint32_t n = 0;
-    m[n].slot = PGR_SLOT_CTRL_EP; m[n].src_h = ctrl; m[n].rights = RIGHT_READ; m[n].badge = 0; n++;
+    m[n].slot = PGR_SLOT_CTRL_EP; IT_MINT_SRC(m[n], ctrl); m[n].rights = RIGHT_READ; m[n].badge = 0; n++;
     if (nt > 0) {
-        m[n].slot = PGR_SLOT_FAULT_NOTIF; m[n].src_h = targets[0].notif; m[n].rights = RIGHT_WAIT; m[n].badge = 0; n++;
+        m[n].slot = PGR_SLOT_FAULT_NOTIF; IT_MINT_SRC(m[n], targets[0].notif); m[n].rights = RIGHT_WAIT; m[n].badge = 0; n++;
     }
     for (uint32_t i = 0; i < nt; i++) {
-        m[n].slot = PGR_TSLOT_PROC(i);  m[n].src_h = targets[i].proc;  m[n].rights = RIGHT_READ | RIGHT_MANAGE; m[n].badge = 0; n++;
-        m[n].slot = PGR_TSLOT_VS(i);    m[n].src_h = targets[i].vs;    m[n].rights = RIGHT_WRITE;               m[n].badge = 0; n++;
+        m[n].slot = PGR_TSLOT_PROC(i);  IT_MINT_SRC(m[n], targets[i].proc);  m[n].rights = RIGHT_READ | RIGHT_MANAGE; m[n].badge = 0; n++;
+        m[n].slot = PGR_TSLOT_VS(i);    IT_MINT_SRC(m[n], targets[i].vs);    m[n].rights = RIGHT_WRITE;               m[n].badge = 0; n++;
     }
     for (uint32_t j = 0; j < nv; j++) {
         iris_rights_t vr = RIGHT_READ | ((vmo_w_mask & (1u << j)) ? RIGHT_WRITE : 0u);
-        m[n].slot = PGR_VSLOT(j); m[n].src_h = vmos[j]; m[n].rights = vr; m[n].badge = 0; n++;
+        m[n].slot = PGR_VSLOT(j); IT_MINT_SRC(m[n], vmos[j]); m[n].rights = vr; m[n].badge = 0; n++;
     }
 
     /* Fase S1: the pager serves EP_CALLs on its ctrl endpoint — retype a
@@ -13729,7 +13803,7 @@ static int t27_pager_spawn(struct t27_pager *p,
         long rr = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) {
             pgr_reply_h = (handle_id_t)rr;
-            m[n].slot = 13u; m[n].src_h = pgr_reply_h;
+            m[n].slot = 13u; IT_MINT_SRC(m[n], pgr_reply_h);
             m[n].rights = RIGHT_READ | RIGHT_WRITE; m[n].badge = 0; n++;
         }
     }
@@ -15042,20 +15116,20 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
 
     struct svc_mint m[40] = { 0 };
     uint32_t k = 0;
-    m[k].slot = PGR_SLOT_CTRL_EP; m[k].src_h = ctrl; m[k].rights = RIGHT_READ; m[k].badge = 0; k++;
+    m[k].slot = PGR_SLOT_CTRL_EP; IT_MINT_SRC(m[k], ctrl); m[k].rights = RIGHT_READ; m[k].badge = 0; k++;
     /* The pager's ONLY VFS identity: a session-badged, WRITE-only cap.  The
      * fresh badge is legal because the source (slot 59) is unbadged. */
-    m[k].slot = FBK_SLOT_VFS_EP;  m[k].src_h = vfs;  m[k].rights = RIGHT_WRITE;
+    m[k].slot = FBK_SLOT_VFS_EP;  IT_MINT_SRC(m[k], vfs);  m[k].rights = RIGHT_WRITE;
     m[k].badge = IRIS_BADGE_FILEGRANT_S(FBK_SESSION); k++;
     if (nt > 0) {
-        m[k].slot = FBK_SLOT_NOTIF; m[k].src_h = targets[0].notif; m[k].rights = RIGHT_WAIT; m[k].badge = 0; k++;
+        m[k].slot = FBK_SLOT_NOTIF; IT_MINT_SRC(m[k], targets[0].notif); m[k].rights = RIGHT_WAIT; m[k].badge = 0; k++;
     }
     for (uint32_t i = 0; i < nt; i++) {
-        m[k].slot = PGR_TSLOT_PROC(i);  m[k].src_h = targets[i].proc;  m[k].rights = RIGHT_READ | RIGHT_MANAGE; m[k].badge = 0; k++;
-        m[k].slot = PGR_TSLOT_VS(i);    m[k].src_h = targets[i].vs;    m[k].rights = RIGHT_WRITE;               m[k].badge = 0; k++;
+        m[k].slot = PGR_TSLOT_PROC(i);  IT_MINT_SRC(m[k], targets[i].proc);  m[k].rights = RIGHT_READ | RIGHT_MANAGE; m[k].badge = 0; k++;
+        m[k].slot = PGR_TSLOT_VS(i);    IT_MINT_SRC(m[k], targets[i].vs);    m[k].rights = RIGHT_WRITE;               m[k].badge = 0; k++;
     }
-    m[k].slot = PGR_VSLOT(0); m[k].src_h = cvmo; m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
-    m[k].slot = PGR_VSLOT(1); m[k].src_h = pvmo; m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
+    m[k].slot = PGR_VSLOT(0); IT_MINT_SRC(m[k], cvmo); m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
+    m[k].slot = PGR_VSLOT(1); IT_MINT_SRC(m[k], pvmo); m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
 
     /* Fase S1: explicit reply object for the pager's ctrl EP (slot 13). */
     handle_id_t pgr_reply_h = HANDLE_INVALID;
@@ -15063,7 +15137,7 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
         long rr = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) {
             pgr_reply_h = (handle_id_t)rr;
-            m[k].slot = 13u; m[k].src_h = pgr_reply_h;
+            m[k].slot = 13u; IT_MINT_SRC(m[k], pgr_reply_h);
             m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
         }
     }
@@ -16514,16 +16588,16 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     }
     struct svc_mint mm[40] = { 0 };
     uint32_t k = 0;
-    mm[k].slot = PGR_SLOT_CTRL_EP; mm[k].src_h = ctrl; mm[k].rights = RIGHT_READ; mm[k].badge = 0; k++;
-    mm[k].slot = FBK_SLOT_VFS_EP;  mm[k].src_h = vfs;  mm[k].rights = RIGHT_WRITE;
+    mm[k].slot = PGR_SLOT_CTRL_EP; IT_MINT_SRC(mm[k], ctrl); mm[k].rights = RIGHT_READ; mm[k].badge = 0; k++;
+    mm[k].slot = FBK_SLOT_VFS_EP;  IT_MINT_SRC(mm[k], vfs);  mm[k].rights = RIGHT_WRITE;
     mm[k].badge = IRIS_BADGE_FILEGRANT_S(FBK_SESSION); k++;
-    mm[k].slot = FBK_SLOT_NOTIF;   mm[k].src_h = m->fault_notif; mm[k].rights = RIGHT_WAIT; mm[k].badge = 0; k++;
+    mm[k].slot = FBK_SLOT_NOTIF;   IT_MINT_SRC(mm[k], m->fault_notif); mm[k].rights = RIGHT_WAIT; mm[k].badge = 0; k++;
     for (uint32_t i = 0; i < m->n; i++) {
-        mm[k].slot = PGR_TSLOT_PROC(i); mm[k].src_h = m->proc[i]; mm[k].rights = RIGHT_READ | RIGHT_MANAGE; mm[k].badge = 0; k++;
-        mm[k].slot = PGR_TSLOT_VS(i);   mm[k].src_h = m->vs[i];   mm[k].rights = RIGHT_WRITE;               mm[k].badge = 0; k++;
+        mm[k].slot = PGR_TSLOT_PROC(i); IT_MINT_SRC(mm[k], m->proc[i]); mm[k].rights = RIGHT_READ | RIGHT_MANAGE; mm[k].badge = 0; k++;
+        mm[k].slot = PGR_TSLOT_VS(i);   IT_MINT_SRC(mm[k], m->vs[i]);   mm[k].rights = RIGHT_WRITE;               mm[k].badge = 0; k++;
     }
-    mm[k].slot = PGR_VSLOT(0); mm[k].src_h = cvmo; mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
-    mm[k].slot = PGR_VSLOT(1); mm[k].src_h = pvmo; mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
+    mm[k].slot = PGR_VSLOT(0); IT_MINT_SRC(mm[k], cvmo); mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
+    mm[k].slot = PGR_VSLOT(1); IT_MINT_SRC(mm[k], pvmo); mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
     handle_id_t boot = HANDLE_INVALID;
     /* Fase S1: explicit reply object for the pager's ctrl EP (slot 13). */
     handle_id_t pgr_reply_h = HANDLE_INVALID;
@@ -16531,7 +16605,7 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
         long rr = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) {
             pgr_reply_h = (handle_id_t)rr;
-            mm[k].slot = 13u; mm[k].src_h = pgr_reply_h;
+            mm[k].slot = 13u; IT_MINT_SRC(mm[k], pgr_reply_h);
             mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
         }
     }
