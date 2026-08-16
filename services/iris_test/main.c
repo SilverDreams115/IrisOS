@@ -26,7 +26,7 @@
 static inline long it_sys0(long nr) {
     long ret;
     __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr)
+        : "=a"(ret) : "a"(nr), "D"(0L), "S"(0L), "d"(0L)
         : "rcx", "r11", "memory");
     return ret;
 }
@@ -34,7 +34,7 @@ static inline long it_sys0(long nr) {
 static inline long it_sys1(long nr, long a0) {
     long ret;
     __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(a0)
+        : "=a"(ret) : "a"(nr), "D"(a0), "S"(0L), "d"(0L)
         : "rcx", "r11", "memory");
     return ret;
 }

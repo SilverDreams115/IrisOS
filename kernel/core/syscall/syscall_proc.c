@@ -211,7 +211,8 @@ uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
                                    uint64_t arg2, uint64_t arg3) {
-    (void)arg1; (void)arg2; (void)arg3;
+    uint32_t dest_slot = (uint32_t)arg1;   /* Etapa 4: 0 = legacy handle */
+    (void)arg2; (void)arg3;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -247,6 +248,28 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
     proc->vspace = vs;
+
+    /* Etapa 4: arg1 names a destination CSpace slot; the new process cap is
+     * published there as an MDB child of the spawn-cap slot that authorised
+     * the create, so it is revocable by the grantor.  0 = legacy handle. */
+    if (dest_slot != 0u) {
+        struct KCNode *auth_cn = 0; uint32_t auth_idx = 0;
+        if (cspace_value_is_cptr((iris_cptr_t)arg0) &&
+            cspace_resolve_slot(t->process, (iris_cptr_t)arg0,
+                                &auth_cn, &auth_idx) != IRIS_OK)
+            auth_cn = 0;
+        kobject_retain(&proc->base);   /* publish consumes a ref; keep the initial one */
+        iris_error_t pe = syscall_publish_slot(t, &proc->base,
+                                               RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |
+                                               RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_ROUTE,
+                                               dest_slot, auth_cn, auth_idx);
+        if (auth_cn) {
+            kobject_active_release(&auth_cn->base);
+            kobject_release(&auth_cn->base);
+        }
+        if (pe != IRIS_OK) { kprocess_free(proc); return syscall_err(pe); }
+        return syscall_ok_u64(0);
+    }
 
     handle_id_t h = handle_table_insert(&t->process->handle_table, &proc->base,
                                         RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |

@@ -208,7 +208,7 @@
 
 static inline long lp_sys1(long nr, long a0) {
     long ret;
-    __asm__ volatile ("syscall" : "=a"(ret) : "a"(nr), "D"(a0)
+    __asm__ volatile ("syscall" : "=a"(ret) : "a"(nr), "D"(a0), "S"(0L), "d"(0L)
         : "rcx", "r11", "memory");
     return ret;
 }
@@ -222,7 +222,7 @@ static inline long lp_sys3(long nr, long a0, long a1, long a2) {
 
 static inline long lp_sys2(long nr, long a0, long a1) {
     long ret;
-    __asm__ volatile ("syscall" : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1)
+    __asm__ volatile ("syscall" : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(0L)
         : "rcx", "r11", "memory");
     return ret;
 }

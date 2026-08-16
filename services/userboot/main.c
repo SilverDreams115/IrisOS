@@ -11,7 +11,7 @@ static inline long ub_sys0(long nr) {
     long ret;
     __asm__ volatile ("syscall"
         : "=a"(ret)
-        : "a"(nr)
+        : "a"(nr), "D"(0L), "S"(0L), "d"(0L)
         : "rcx", "r11", "memory");
     return ret;
 }
@@ -20,7 +20,7 @@ static inline long ub_sys1(long nr, long a0) {
     long ret;
     __asm__ volatile ("syscall"
         : "=a"(ret)
-        : "a"(nr), "D"(a0)
+        : "a"(nr), "D"(a0), "S"(0L), "d"(0L)
         : "rcx", "r11", "memory");
     return ret;
 }
@@ -29,7 +29,7 @@ static inline long ub_sys2(long nr, long a0, long a1) {
     long ret;
     __asm__ volatile ("syscall"
         : "=a"(ret)
-        : "a"(nr), "D"(a0), "S"(a1)
+        : "a"(nr), "D"(a0), "S"(a1), "d"(0L)
         : "rcx", "r11", "memory");
     return ret;
 }

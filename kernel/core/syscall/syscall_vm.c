@@ -96,7 +96,7 @@ uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * CHILD but keeps the handle to map/close it.
  */
 static uint64_t vmo_create_charged(struct task *t, uint64_t size,
-                                   struct KProcess *payer) {
+                                    struct KProcess *payer, uint32_t dest_slot) {
     uint32_t pages = 0;
     if (kvmo_size_to_pages(size, &pages) != IRIS_OK)
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -105,6 +105,20 @@ static uint64_t vmo_create_charged(struct task *t, uint64_t size,
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
     iris_error_t r = kvmo_bind_owner(v, payer);
     if (r != IRIS_OK) { kvmo_free(v); return syscall_err(r); }
+    /* Etapa 4: a destination slot publishes the VMO into CSpace instead of
+     * producing a handle.  No MDB parent: a KVMO is fabricated from kernel
+     * memory, not retyped from an Untyped, so it has no capability ancestor to
+     * name — that is KVMO's own debt (ledger: FROZEN, memory-server), not this
+     * etapa's.  It is an explicit LEGACY root, counted, exactly as the handle
+     * form was untracked. */
+    if (dest_slot != 0u) {
+        iris_error_t pe = syscall_publish_slot(t, &v->base,
+                                               RIGHT_READ | RIGHT_WRITE |
+                                               RIGHT_TRANSFER | RIGHT_DUPLICATE,
+                                               dest_slot, 0, 0);
+        if (pe != IRIS_OK) return syscall_err(pe);
+        return syscall_ok_u64(0);
+    }
     handle_id_t h = handle_table_insert(&t->process->handle_table,
                                         &v->base,
                                         RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER |
@@ -118,10 +132,11 @@ static uint64_t vmo_create_charged(struct task *t, uint64_t size,
 }
 
 uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;   /* 1-arg ABI: callers do not set arg1 */
+    (void)arg1;   /* 1-arg ABI: callers do not set arg1 */
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    return vmo_create_charged(t, arg0, t->process);   /* charge self */
+    /* Etapa 4: arg2 = destination slot (0 = legacy handle). */
+    return vmo_create_charged(t, arg0, t->process, (uint32_t)arg2);
 }
 
 /*
@@ -131,7 +146,7 @@ uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * caller.  Same authority SYS_VMO_MAP_INTO requires to map into that process.
  */
 uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
+    uint32_t dest_slot = (uint32_t)arg2;   /* Etapa 4: 0 = legacy handle */
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -149,7 +164,7 @@ uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(payer_obj);
         return syscall_err(IRIS_ERR_BAD_HANDLE);
     }
-    uint64_t rv = vmo_create_charged(t, arg0, payer);
+    uint64_t rv = vmo_create_charged(t, arg0, payer, dest_slot);
     kobject_release(payer_obj);
     return rv;
 }
@@ -386,7 +401,8 @@ uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
                                uint64_t arg2, uint64_t arg3) {
-    (void)arg2; (void)arg3;
+    uint32_t dest_slot = (uint32_t)arg2;   /* Etapa 4: 0 = legacy handle */
+    (void)arg3;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -430,6 +446,27 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
             for (uint64_t j = cp; j < PAGE_SIZE; j++) dst[j] = 0;
             v->pages[pg] = phys;
         }
+    }
+
+    /* Etapa 4: arg2 names a destination CSpace slot.  With one, the image VMO
+     * is published there as an MDB child of the spawn-cap slot that authorised
+     * the read, so the loader never holds a handle and the grant is revocable
+     * by whoever granted the spawn authority.  arg2 == 0 keeps the legacy
+     * handle for callers not yet migrated. */
+    if (dest_slot != 0u) {
+        struct KCNode *auth_cn = 0; uint32_t auth_idx = 0;
+        if (cspace_value_is_cptr((iris_cptr_t)arg0) &&
+            cspace_resolve_slot(t->process, (iris_cptr_t)arg0,
+                                &auth_cn, &auth_idx) != IRIS_OK)
+            auth_cn = 0;
+        iris_error_t pe = syscall_publish_slot(t, &v->base, RIGHT_READ,
+                                               dest_slot, auth_cn, auth_idx);
+        if (auth_cn) {
+            kobject_active_release(&auth_cn->base);
+            kobject_release(&auth_cn->base);
+        }
+        if (pe != IRIS_OK) return syscall_err(pe);
+        return syscall_ok_u64(0);
     }
 
     handle_id_t h = handle_table_insert(&t->process->handle_table,

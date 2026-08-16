@@ -222,6 +222,40 @@ uint64_t sys_handle_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* Caller's root CNode with active+lifecycle refs (defined in syscall_cspace.c). */
 iris_error_t cspace_own_root(struct KProcess *proc, struct KCNode **out);
 
+/*
+ * Publish a freshly created object into a CSpace slot of the CALLER's root
+ * CNode, optionally as an MDB child of the slot that authorised it.
+ *
+ * Etapa 4: this is what replaces "return a handle".  A syscall that hands back
+ * a handle is a handle PRODUCER, and the charter forbids new ones outright
+ * (§3.1); retiring the existing ones means every creation lands in CSpace
+ * instead.  Where the creation was authorised by a capability the caller
+ * named, the result is parented to that slot, so the grant is revocable by
+ * whoever granted the authority.
+ *
+ * Consumes the caller's reference to obj on every path.
+ */
+static inline iris_error_t syscall_publish_slot(struct task *t,
+                                                struct KObject *obj,
+                                                iris_rights_t rights,
+                                                uint32_t dest_slot,
+                                                struct KCNode *parent_cn,
+                                                uint32_t parent_idx) {
+    struct KCNode *root = 0;
+    iris_error_t err = cspace_own_root(t->process, &root);
+    if (err != IRIS_OK) { kobject_release(obj); return err; }
+
+    err = kcnode_slot_install_linked(root, dest_slot, obj, rights, 0,
+                                     parent_cn, parent_idx,
+                                     /*exclusive*/1,
+                                     /*legacy*/parent_cn ? 0 : 1);
+    kobject_active_release(&root->base);
+    kobject_release(&root->base);
+    kobject_release(obj);          /* the slot holds its own refs */
+    return err;
+}
+
+
 uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2);

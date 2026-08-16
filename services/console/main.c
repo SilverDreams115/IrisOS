@@ -27,7 +27,7 @@ static inline long con_sys2(long nr, long a0, long a1) {
     long ret;
     __asm__ volatile ("syscall"
         : "=a"(ret)
-        : "a"(nr), "D"(a0), "S"(a1)
+        : "a"(nr), "D"(a0), "S"(a1), "d"(0L)
         : "rcx", "r11", "memory");
     return ret;
 }
