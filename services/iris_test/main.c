@@ -113,9 +113,19 @@ static uint32_t g_total = 0;
  * scratch slot is deleted, so the handle-based test flows keep exercising
  * the handle-table semantics unchanged while every BIRTH is Untyped+CSpace.
  */
-#define IT_S1_SCRATCH_BASE  64u   /* 64..87: below the fz pool (100..239) */
-#define IT_S1_SCRATCH_SPAN  24u
+/* 64..87, below the fz pool (100..239), split between the two factories.
+ *
+ * They CANNOT share a pool.  The materialising factory only BORROWS its slot —
+ * it resolves and deletes immediately — while the slot factory LEAVES the
+ * capability there for the test's duration.  One rotation across both means a
+ * borrow eventually lands on a live object and deletes it: a fault with no
+ * local symptom, because the test that fails is not the one that caused it. */
+#define IT_S1_SCRATCH_BASE  64u   /* materialising factory: 64..79 */
+#define IT_S1_SCRATCH_SPAN  16u
+#define IT_OBJ_SLOT_BASE    80u   /* slot factory: 80..87, held for the test */
+#define IT_OBJ_SLOT_SPAN     8u
 static uint32_t g_it_s1_scratch_next;
+static uint32_t g_it_obj_slot_next;
 
 static long it_retype2_at(long ut, uint32_t obj_type, uint32_t slot,
                           uint32_t count, long obj_arg) {
@@ -141,9 +151,9 @@ static long it_retype_handle(long ut, uint32_t obj_type, long obj_arg) {
  * Same rotating pool and the same contract: delete before use, never hold a
  * slot across a test boundary. */
 static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
-    uint32_t slot = IT_S1_SCRATCH_BASE +
-        (__atomic_fetch_add(&g_it_s1_scratch_next, 1u, __ATOMIC_RELAXED)
-         % IT_S1_SCRATCH_SPAN);
+    uint32_t slot = IT_OBJ_SLOT_BASE +
+        (__atomic_fetch_add(&g_it_obj_slot_next, 1u, __ATOMIC_RELAXED)
+         % IT_OBJ_SLOT_SPAN);
     (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
     long r = it_retype2_at(ut, obj_type, slot, 1u, obj_arg);
     return (r < 0) ? r : (long)slot;
@@ -604,7 +614,7 @@ static void test_t015(void) {
     g_t015_done = 0;
     g_t015_ok   = 0;
 
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T015", "ep create"); return; }
     g_t015_ep_h = (handle_id_t)ep_raw;
 
@@ -670,7 +680,7 @@ static void test_t016(void) {
     g_t016_done = 0;
     g_t016_ok   = 0;
 
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T016", "ep create"); return; }
     g_t016_ep_h = (handle_id_t)ep_raw;
     if (it_reply_create_at(88) < 0) {
@@ -876,7 +886,7 @@ static void test_t021(void) {
     g_t021_done = 0;
     g_t021_ok   = 0;
 
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T021", "ep create"); return; }
     g_t021_ep_h = (handle_id_t)ep_raw;
 
@@ -979,7 +989,7 @@ static void test_t022(void) {
     g_t022_done = 0;
     g_t022_ok   = 0;
 
-    long ep_raw = it_ep_create();
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T022", "ep create"); return; }
     g_t022_ep_h = (handle_id_t)ep_raw;
     if (it_reply_create_at(90) < 0) {
@@ -7476,7 +7486,7 @@ static void test_t120(void) {
 
     g_sh_mode  = SH_MODE_CHURN;
     g_sh_iters = T120_ITERS;
-    long ep = it_ep_create();
+    long ep = it_ep_create_slot();
     if (ep < 0) { it_fail("T120", "ep create"); return; }
     g_sh_ep = (handle_id_t)ep;
 
