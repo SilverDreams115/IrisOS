@@ -181,36 +181,39 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 task_abort_spawned_user(ut);
                 ut = 0;
             } else {
-                handle_id_t cap_h = handle_table_insert(
-                    &ut->process->handle_table, &cap->base,
-                    RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-                kobject_release(&cap->base);
-                if (cap_h == HANDLE_INVALID) {
-                    klog_write("[IRIS][USER] FATAL: cap handle insert failed\n");
-                    task_abort_spawned_user(ut);
-                    ut = 0;
-                } else {
-                    task_set_bootstrap_arg0(ut, (uint64_t)cap_h);
-                    /*
-                     * Fase 3.5: dual insert — also publish KBootstrapCap in
-                     * root CNode slot BOOT_CPTR_BOOTSTRAP_CAP (slot 1).
-                     * kcnode_mint takes its own kobject_retain+active_retain,
-                     * giving the CNode slot independent ownership from the
-                     * legacy handle.  Refcount after:
-                     *   handle owns retain+active = 1+1
-                     *   CNode  owns retain+active = 1+1
-                     * Boot failure on CSpace insert is non-fatal: KBootstrapCap
-                     * remains accessible via the legacy bootstrap_cap_h handle.
-                     */
-                    if (ut->process->cspace_root) {
-                        iris_error_t bme = kcnode_mint(
+                {
+                    /* Stage 4: the bootstrap capability is published into
+                     * CSpace ONLY.  It used to be dual-inserted — a handle in
+                     * userboot's table AND slot BOOT_CPTR_BOOTSTRAP_CAP — with
+                     * the handle passed in RBX.  userboot has ignored that
+                     * handle since the CPtr-first bootstrap landed (it closes
+                     * the argument on entry and invokes the slot), so the
+                     * insert produced authority nobody used, in the namespace
+                     * this stage is deleting.  RBX carries 0. */
+                    task_set_bootstrap_arg0(ut, 0);
+                    /* Publish KBootstrapCap in root CNode slot
+                     * BOOT_CPTR_BOOTSTRAP_CAP (slot 1).  kcnode_mint takes its
+                     * own retain+active_retain, so the slot owns the object
+                     * outright — there is no second owner to balance against
+                     * any more.  This is now the ONLY way userboot reaches its
+                     * bootstrap authority, so a failure here is fatal: it used
+                     * to be survivable only because the legacy handle existed. */
+                    iris_error_t bme = IRIS_ERR_NOT_FOUND;
+                    if (ut->process->cspace_root)
+                        bme = kcnode_mint(
                             ut->process->cspace_root,
                             BOOT_CPTR_BOOTSTRAP_CAP,
                             &cap->base,
                             RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-                        if (bme == IRIS_OK)
-                            klog_write("[IRIS][USER] boot bootstrap"
-                                       " cap CSpace grants OK\n");
+                    kobject_release(&cap->base);
+                    if (bme != IRIS_OK) {
+                        klog_write("[IRIS][USER] FATAL: bootstrap cap"
+                                   " CSpace publish failed\n");
+                        task_abort_spawned_user(ut);
+                        ut = 0;
+                    } else {
+                        klog_write("[IRIS][USER] boot bootstrap"
+                                   " cap CSpace grants OK\n");
                     }
                 }
             }
@@ -295,30 +298,31 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                         pmm_free_contig(blk_phys, blk_pages);
                         break;
                     }
-                    /* Legacy handle-table insert (dual mode: kept for compatibility). */
-                    handle_id_t ut_h = handle_table_insert(
-                        &ut->process->handle_table, &boot_ut->base,
-                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-                    kobject_release(&boot_ut->base);
-                    if (ut_h == HANDLE_INVALID) break;
-
-                    /* Fase 3.4: also publish into root CNode slot for CPtr discovery.
-                     * Slot = BOOT_CPTR_UNTYPED_START + drain_index.
-                     * kcnode_mint takes its own kobject_retain + kobject_active_retain
-                     * giving the CNode slot independent ownership from the handle.
-                     * Refcount after: 2 (handle) + 2 (CNode) = two balanced owners. */
+                    /* Stage 4: the boot untypeds are published into CSpace
+                     * ONLY.  They used to be dual-inserted, and the handle
+                     * half was never invoked — userboot names slot
+                     * BOOT_CPTR_UNTYPED_START and mints from it, and init
+                     * receives IRIS_CPTR_INIT_UNTYPED as a pre-start mint.
+                     * The handle existed so that a failed CSpace publish could
+                     * be "non-fatal"; with one namespace the publish IS the
+                     * grant, and a failure stops the drain.
+                     *
+                     * Order matters: kuntyped_create hands back the only
+                     * reference, and kcnode_mint takes its own — so the mint
+                     * has to happen BEFORE the release, or the release is the
+                     * last one and the object is destroyed under the slot. */
                     uint32_t cspace_slot = BOOT_CPTR_UNTYPED_START + ut_count;
+                    iris_error_t me = IRIS_ERR_NOT_FOUND;
                     if (ut->process->cspace_root &&
-                        cspace_slot < KCNODE_DEFAULT_SLOTS) {
-                        iris_error_t me = kcnode_mint(
+                        cspace_slot < KCNODE_DEFAULT_SLOTS)
+                        me = kcnode_mint(
                             ut->process->cspace_root, cspace_slot,
                             &boot_ut->base,
                             RIGHT_READ | RIGHT_WRITE |
                             RIGHT_DUPLICATE | RIGHT_TRANSFER);
-                        if (me == IRIS_OK)
-                            ut_cspace_count++;
-                    }
-
+                    kobject_release(&boot_ut->base);
+                    if (me != IRIS_OK) break;
+                    ut_cspace_count++;
                     ut_count++;
                 }
                 klog_write("[IRIS][USER] boot untyped blocks handed to init: ");

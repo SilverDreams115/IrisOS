@@ -97,14 +97,14 @@ static void ub_park_root_bootstrap(void) {
 
 void iris_userboot_main(handle_id_t bootstrap_arg_h) {
     /* Etapa 4: the bootstrap capability is invoked as the CSpace slot the
-     * kernel minted it into (BOOT_CPTR_BOOTSTRAP_CAP), not as the handle
-     * passed in %rdi.  The handle is the kernel's dual-insert legacy: it was
-     * published in BOTH namespaces, with the CSpace half treated as optional
-     * because "the legacy handle still works".  That is a CPtr->handle
-     * fallback in the boot path, which charter §3.7 forbids outright.  The
-     * argument is closed immediately and never used for authority. */
+     * kernel minted it into (BOOT_CPTR_BOOTSTRAP_CAP).  The kernel used to
+     * dual-insert it — a handle in RBX AND the CSpace slot — with the CSpace
+     * half treated as optional because "the legacy handle still works", which
+     * is a CPtr->handle fallback in the boot path (charter §3.7).  Stage 4
+     * deleted the handle half: the slot IS the grant, a failed publish is
+     * fatal in the kernel, and RBX carries 0. */
     const handle_id_t bootstrap_cap_h = (handle_id_t)BOOT_CPTR_BOOTSTRAP_CAP;
-    ub_close(bootstrap_arg_h);
+    (void)bootstrap_arg_h;
 
     handle_id_t init_proc_h = HANDLE_INVALID;
     handle_id_t init_boot_h = HANDLE_INVALID;

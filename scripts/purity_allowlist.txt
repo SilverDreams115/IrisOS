@@ -9,7 +9,6 @@ kernel/core/syscall/syscall_cspace.c handle_table_insert 2
 kernel/core/syscall/syscall_proc.c handle_table_insert 2
 kernel/core/syscall/syscall_tcb.c handle_table_insert 1
 kernel/core/syscall/syscall_vm.c handle_table_insert 5
-kernel/kernel_main.c handle_table_insert 2
 kernel/new_core/include/iris/nc/handle_table.h handle_table_insert 2
 kernel/new_core/src/handle_table.c handle_table_insert 4
 kernel/core/phase3_selftest.c handle_table_get_object 13

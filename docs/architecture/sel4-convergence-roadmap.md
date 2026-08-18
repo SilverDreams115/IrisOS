@@ -127,12 +127,24 @@ A10 move to MET.
 
 Precondition: Stages 2–3 (both closed — no authority lives handle-only anymore).
 
-- Remove the value-range discrimination (<1024 / ≥1024).
+- ~~Remove the value-range discrimination (<1024 / ≥1024).~~  ✅ the boundary
+  is the handle TAG BIT, defined once in `nc/handle.h`; CPtrs own the low 31
+  bits and a CPtr addresses exactly one capability (Etapa 6b).
+- ~~Remove the bootstrap's handle producers (kernel_main dual insert).~~  ✅
+  the bootstrap capability and every boot Untyped are published into CSpace
+  ONLY; RBX carries 0 and a failed publish is fatal rather than "non-fatal
+  because the legacy handle still works".
 - Remove handle resolution from every dual resolver.
-- Remove the bootstrap's handle producers (kernel_main dual insert,
-  `SYS_CSPACE_RESOLVE` materialization).
+- Remove `SYS_CSPACE_RESOLVE` and `SYS_HANDLE_DUP` — the last two producers,
+  both with no consumer outside `iris_test`.
 - Remove the handle table when it has zero consumers; the `check_purity`
   allowlist must reach empty.
+
+**Retired in Stage 4 so far** (numbers permanently reserved, `NOT_SUPPORTED`):
+`SYS_IOPORT_RESTRICT` (43), `SYS_VMO_SHARE` (46), `SYS_HANDLE_INSERT` (59),
+`SYS_UNTYPED_RETYPE` (87), `SYS_CNODE_FETCH` (90), plus the handle leg of IPC
+delivery (`syscall_ipc_deliver_cap_badged`).  Every one was a handle PRODUCER
+whose CSpace form already existed.
 
 Measured surface (from `scripts/purity_allowlist.txt`, which is the executable
 inventory — it only shrinks):
