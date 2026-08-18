@@ -240,7 +240,7 @@ uint64_t sys_bootcap_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t rights;
-    iris_error_t r = cspace_or_handle_resolve_obj(proc, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(proc, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (!rights_check(rights, RIGHT_READ)) {
@@ -307,19 +307,12 @@ uint64_t sys_bootcap_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_ok_u64(0);
     }
 
-    /* Handle source: rebind the caller's handle in place (legacy contract). */
-    struct KBootstrapCap *restricted =
-        kbootcap_clone_restricted((struct KBootstrapCap *)obj, (uint32_t)arg1);
-    if (!restricted) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_NO_MEMORY);
-    }
-
-    r = handle_table_replace(&proc->handle_table, (handle_id_t)arg0, &restricted->base);
-    kobject_release(&restricted->base);
+    /* Stage 4: the handle branch is gone.  It rebound the caller's HANDLE in
+     * place, which is why SYS_BOOTCAP_RESTRICT could never succeed by CPtr
+     * (ledger: the dual-namespace split brain).  A restriction is a derive
+     * into a destination slot, and there is no other form. */
     kobject_release(obj);
-    if (r != IRIS_OK) return syscall_err(r);
-    return syscall_ok_u64(0);
+    return syscall_err(IRIS_ERR_INVALID_ARG);
 }
 
 

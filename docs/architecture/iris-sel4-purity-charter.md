@@ -31,9 +31,9 @@ Binding clarifications:
   built on equivalent principles, able to grow (drivers, storage, networking,
   optional POSIX personality) **exclusively in user space**, without
   re-contaminating the kernel.
-- The current hybrid model (handle table + dual resolution) is
-  **exclusively transitional** and doomed to retirement (roadmap Stages 1–4).
-  No future decision may consolidate it.
+- The hybrid model (handle table + dual resolution) was **exclusively
+  transitional** and is RETIRED as of Stage 4.  Reintroducing a second
+  authority namespace is a design defect, not a feature.
 
 ## 2. Non-negotiable invariants
 
@@ -46,11 +46,11 @@ in the ledger), or `PENDING` (a roadmap stage).
 | # | Invariant | Today |
 |---|---|---|
 | A1 | Every sensitive operation requires a valid capability | MET |
-| A2 | CSpace is the ONLY persistent authority namespace | PARTIAL — handle table still live (Stages 2–4) |
-| A3 | CPtr is the only capability identifier exposed productively | PARTIAL — same |
-| A4 | No productive handles exist in the final state | PENDING (Stage 4) |
+| A2 | CSpace is the ONLY persistent authority namespace | **MET** — Stage 4: the handle table is DELETED (`HandleTable`, `KProcess.handle_table`, the implementation and its unit suite are gone).  There is one namespace |
+| A3 | CPtr is the only capability identifier exposed productively | **MET** — Stage 4: the eight handle syscalls are retired to `NOT_SUPPORTED`, every creator requires a destination slot, and a CPtr addresses exactly one capability (leftover bits are `INVALID_ARG`) |
+| A4 | No productive handles exist in the final state | **MET** — Stage 4: no handle is produced anywhere.  `iris_test` T095 pins handle-live, handle-delivery and TOCTOU at structural zero |
 | A5 | No ambient authority exists | PARTIAL — ioport whitelist, kernel quotas (ledger).  Improved in Fase S4: device caps (KIrqCap/KIoPort) are no longer fabricated into a handle table — they are published into CSpace as MDB children of the authorising bootstrap-cap slot, so device authority is traceable and revocable.  The KDEBUG scan is GONE (Etapa 4): `SYS_KLOG_DRAIN`/`SYS_SCHED_INFO`/`SYS_POWEROFF` used to search the caller's handle table for any bootstrap cap bearing KDEBUG — the caller named nothing — and now require the capability as a CPtr argument, with no fallback |
-| A6 | `ACCESS_DENIED` never falls back to another namespace | MET — a value is a CPtr or a handle by its tag bit (`HANDLE_TAG`, one definition in `nc/handle.h`), and each resolves in exactly one namespace with no fallback.  The boundary was the literal 1024 until Stage 4 moved handles to bit 31 and gave CPtrs the low 31 bits |
+| A6 | `ACCESS_DENIED` never falls back to another namespace | MET — vacuously, since Stage 4: there is no other namespace to fall back to.  A value that is not a CPtr is `INVALID_ARG` |
 | A7 | Rights are only kept or reduced; mint never amplifies | MET (`rights_reduce`, collapse to NONE rejected) |
 | A8 | Badges are kernel-sealed identity; a badged cap is never re-badged | MET |
 | A9 | Every derived capability is traceable to its ancestor | MET — Fase S4/Stage 3: the parallel handle-tree is DELETED (`SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` retired; derived-insert, revoke-children and the parent array removed).  There is exactly ONE derivation tree: the native CSpace MDB/CDT |
@@ -152,10 +152,11 @@ proven:
       slot** (real ancestry, no LEGACY_ROOT from IPC).
 - [x] derive/mint/copy/move/delete/revoke operating on slots — **Fase S3**
       (`kcnode_slot_*` primitives); `SYS_CSPACE_MINT`/`MINT_INTO`/`REVOKE`.
-- [ ] CSpace-only invocation: zero dual resolution, zero value-range
-      discrimination.
-- [ ] Zero productive handles; handle table removed or reduced to zero
-      consumers.
+- [x] CSpace-only invocation: zero dual resolution, zero value-range
+      discrimination — **Stage 4**.  The resolvers have one leg; the split
+      that remains is "CPtr or malformed".
+- [x] Zero productive handles; handle table removed — **Stage 4**.  Not
+      reduced to zero consumers: deleted.
 - [ ] Bootstrap with fine-grained capabilities (structured BootInfo; no
       monolithic `KBootstrapCap`).
 - [ ] All canonical objects born from Untyped (including the executing TCB,

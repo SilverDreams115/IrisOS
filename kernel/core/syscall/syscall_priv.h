@@ -28,7 +28,6 @@
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kreply.h>
 #include <iris/nc/ktcb.h>
-#include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
 #include <iris/irq_routing.h>

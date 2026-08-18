@@ -1,5 +1,5 @@
 /*
- * test_untyped_cspace.c — Fase 3.3 unit tests for cspace_or_handle_resolve_untyped.
+ * test_untyped_cspace.c — Fase 3.3 unit tests for cspace_resolve_only_untyped.
  *
  * Covers:
  *   - CSpace path resolves correct KUntyped objects
@@ -18,7 +18,6 @@
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kuntyped.h>
-#include <iris/nc/handle_table.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
@@ -32,7 +31,6 @@ static struct KProcess *make_proc(void) {
     struct KProcess *p = (struct KProcess *)kpage_alloc((uint32_t)sizeof(struct KProcess));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
-    handle_table_init(&p->handle_table);
     p->cspace_root = NULL;
     return p;
 }
@@ -45,7 +43,6 @@ static void free_proc(struct KProcess *p) {
         kobject_release(&p->cspace_root->base);
         p->cspace_root = NULL;
     }
-    handle_table_close_all(&p->handle_table);
     kpage_free(p, (uint32_t)sizeof(*p));
 }
 
@@ -84,7 +81,7 @@ void test_untyped_cspace(void) {
         kobject_release(&ut->base); /* drop alloc ref; CNode slot owns it */
 
         struct KUntyped *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_untyped(p, 2u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(p, 2u, RIGHT_NONE, &out, &rout),
                   IRIS_OK);
         ASSERT_EQ(out->base.type, KOBJ_UNTYPED);
         ASSERT_EQ(rout, RIGHT_READ | RIGHT_WRITE);
@@ -109,7 +106,7 @@ void test_untyped_cspace(void) {
         kobject_release(&ep->base);
 
         struct KUntyped *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_untyped(p, 3u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(p, 3u, RIGHT_NONE, &out, &rout),
                   IRIS_ERR_WRONG_TYPE);
 
         free_proc(p);
@@ -130,10 +127,10 @@ void test_untyped_cspace(void) {
 
         struct KUntyped *out; iris_rights_t rout;
         /* Slot has READ-only; need WRITE → ACCESS_DENIED. */
-        ASSERT_EQ(cspace_or_handle_resolve_untyped(p, 4u, RIGHT_WRITE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(p, 4u, RIGHT_WRITE, &out, &rout),
                   IRIS_ERR_ACCESS_DENIED);
         /* Slot has READ; need READ → OK. */
-        ASSERT_EQ(cspace_or_handle_resolve_untyped(p, 4u, RIGHT_READ, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(p, 4u, RIGHT_READ, &out, &rout),
                   IRIS_OK);
         kobject_active_release(&out->base);
         kobject_release(&out->base);
@@ -142,52 +139,7 @@ void test_untyped_cspace(void) {
     }
 
 
-    /* ── [UT] ACCESS_DENIED from CSpace does NOT fall back to handle table ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-        struct KCNode *root = setup_cspace(p, 8);
-        ASSERT_NOT_NULL(root);
 
-        struct KUntyped *ut = make_untyped(4096u);
-        ASSERT_NOT_NULL(ut);
-        /* CSpace slot: READ-only. Handle table: full rights. */
-        ASSERT_EQ(kcnode_mint(root, 1, &ut->base, RIGHT_READ), IRIS_OK);
-        kobject_retain(&ut->base); /* lend extra ref for second insert */
-        handle_id_t h = handle_table_insert(&p->handle_table, &ut->base,
-                                             RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&ut->base);
-        kobject_release(&ut->base); /* drop extra retain */
-
-        struct KUntyped *out; iris_rights_t rout;
-        /* cptr=1 → CSpace → ACCESS_DENIED (need WRITE, slot has READ-only).
-         * Must NOT fall back to handle table (which has WRITE). */
-        ASSERT_EQ(cspace_or_handle_resolve_untyped(p, 1u, RIGHT_WRITE, &out, &rout),
-                  IRIS_ERR_ACCESS_DENIED);
-
-        (void)h;
-        free_proc(p);
-    }
-
-    /* ── [UT] Repeated resolve: refcount balance ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KUntyped *ut = make_untyped(4096u);
-        ASSERT_NOT_NULL(ut);
-        handle_id_t h = handle_table_insert(&p->handle_table, &ut->base,
-                                             RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&ut->base);
-
-        /* If refcounts are balanced, the object is still alive in the table. */
-        struct KObject *obj; iris_rights_t r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, h, &obj, &r), IRIS_OK);
-        ASSERT_EQ(obj->type, KOBJ_UNTYPED);
-        kobject_release(obj);
-
-        free_proc(p);
-    }
 
     /* ── [UT] CPTR_NULL is rejected by the underlying CSpace traversal ── */
     {
@@ -199,7 +151,7 @@ void test_untyped_cspace(void) {
         struct KUntyped *out; iris_rights_t rout;
         /* CPTR_NULL → CSpace rejects it → falls back to handle table.
          * Handle table lookup with id=0 (CPTR_NULL) → NOT_FOUND or INVALID_ARG. */
-        iris_error_t err = cspace_or_handle_resolve_untyped(p, CPTR_NULL,
+        iris_error_t err = cspace_resolve_only_untyped(p, CPTR_NULL,
                                                              RIGHT_NONE, &out, &rout);
         ASSERT_TRUE(err != IRIS_OK);
 
@@ -209,7 +161,7 @@ void test_untyped_cspace(void) {
     /* ── [UT] null proc returns INVALID_ARG ── */
     {
         struct KUntyped *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_untyped(NULL, 1u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(NULL, 1u, RIGHT_NONE, &out, &rout),
                   IRIS_ERR_INVALID_ARG);
     }
 
@@ -249,7 +201,7 @@ void test_untyped_cspace(void) {
         kobject_release(&ut->base);
 
         struct KUntyped *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_untyped(p, 5u, RIGHT_READ, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(p, 5u, RIGHT_READ, &out, &rout),
                   IRIS_OK);
         ASSERT_TRUE((rout & RIGHT_READ) != 0);
         ASSERT_TRUE((rout & RIGHT_WRITE) != 0);

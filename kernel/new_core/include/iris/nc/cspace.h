@@ -127,11 +127,11 @@ iris_error_t cspace_resolve_dest_slot(struct KProcess *proc, iris_cptr_t cptr,
                                       uint32_t *idx_out);
 
 /* Fase 9: badge-aware dual endpoint resolver for the EP send/call paths.
- * Same namespace + refcount contract as cspace_or_handle_resolve_endpoint
+ * Same namespace + refcount contract as cspace_resolve_only_endpoint
  * (lifecycle-only ref); additionally returns the badge of the capability
  * that was invoked (slot badge on the CSpace path, handle badge on the
  * handle path; 0 = unbadged). */
-iris_error_t cspace_or_handle_resolve_endpoint_badged(struct KProcess  *proc,
+iris_error_t cspace_resolve_only_endpoint_badged(struct KProcess  *proc,
                                                        iris_cptr_t       cptr_or_handle,
                                                        iris_rights_t     required,
                                                        struct KEndpoint **out,
@@ -175,32 +175,32 @@ iris_error_t cspace_resolve_frame(struct KProcess *proc, iris_cptr_t cptr,
                                    struct KFrame  **out, iris_rights_t *rights_out);
 
 /*
- * cspace_or_handle_resolve_frame — dual-resolution helper for KFrame syscalls.
+ * cspace_resolve_only_frame — dual-resolution helper for KFrame syscalls.
  *
  * Tries CSpace traversal first (CSpace-first authority).  Falls back to the
  * handle table if CSpace fails with NOT_FOUND or INVALID_ARG (legacy handle).
  * ACCESS_DENIED from CSpace is a hard stop — no fallback.
  *
- * Ref-count contract: active + lifecycle (same as cspace_or_handle_resolve_untyped).
+ * Ref-count contract: active + lifecycle (same as cspace_resolve_only_untyped).
  * KFrame operations do not block, so holding active_refs is safe.
  * Caller MUST release both:
  *   kobject_active_release(&(*out)->base);
  *   kobject_release(&(*out)->base);
  */
-iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
+iris_error_t cspace_resolve_only_frame(struct KProcess *proc,
                                              iris_cptr_t      cptr_or_handle,
                                              iris_rights_t    required,
                                              struct KFrame  **out,
                                              iris_rights_t   *rights_out);
 
 /*
- * cspace_or_handle_resolve_vspace — dual resolver for the VSpace argument of
+ * cspace_resolve_only_vspace — dual resolver for the VSpace argument of
  * SYS_FRAME_MAP/SYS_FRAME_UNMAP (Fase 25).  Same namespace split and
- * active+lifecycle ref contract as cspace_or_handle_resolve_frame; closes the
+ * active+lifecycle ref contract as cspace_resolve_only_frame; closes the
  * raw-radix handle-masking hazard those two syscalls still carried and lets a
  * supervisor pass a SYS_PROCESS_VSPACE handle directly.
  */
-iris_error_t cspace_or_handle_resolve_vspace(struct KProcess *proc,
+iris_error_t cspace_resolve_only_vspace(struct KProcess *proc,
                                               iris_cptr_t      cptr_or_handle,
                                               iris_rights_t    required,
                                               struct KVSpace **out,
@@ -209,10 +209,10 @@ iris_error_t cspace_or_handle_resolve_vspace(struct KProcess *proc,
 /*
  * Fase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
  * KBootstrapCap).  Namespace split as usual; LIFECYCLE-ONLY ref contract
- * (same as handle_table_get_object) — release with a single kobject_release.
+ * (lifecycle-only) — release with a single kobject_release.
  * required==RIGHT_NONE defers the rights check to the caller.
  */
-iris_error_t cspace_or_handle_resolve_obj(struct KProcess  *proc,
+iris_error_t cspace_resolve_only_obj(struct KProcess  *proc,
                                           iris_cptr_t       cptr_or_handle,
                                           iris_rights_t     required,
                                           uint32_t          expected_type,
@@ -220,7 +220,7 @@ iris_error_t cspace_or_handle_resolve_obj(struct KProcess  *proc,
                                           iris_rights_t    *rights_out);
 
 /*
- * cspace_or_handle_resolve_cnode — dual-resolution helper for CNode syscalls.
+ * cspace_resolve_only_cnode — dual-resolution helper for CNode syscalls.
  *
  * Tries CSpace traversal first (if proc->cspace_root is set and
  * cptr_or_handle != CPTR_NULL).  Falls back to the handle table if CSpace
@@ -232,20 +232,20 @@ iris_error_t cspace_or_handle_resolve_obj(struct KProcess  *proc,
  *   kobject_active_release(&(*out)->base);
  *   kobject_release(&(*out)->base);
  */
-iris_error_t cspace_or_handle_resolve_cnode(struct KProcess *proc,
+iris_error_t cspace_resolve_only_cnode(struct KProcess *proc,
                                              iris_cptr_t      cptr_or_handle,
                                              iris_rights_t    required,
                                              struct KCNode  **out,
                                              iris_rights_t   *rights_out);
 
 /*
- * cspace_or_handle_resolve_untyped — dual-resolution helper for KUntyped syscalls.
+ * cspace_resolve_only_untyped — dual-resolution helper for KUntyped syscalls.
  *
  * Tries CSpace traversal first (if proc->cspace_root is set and
  * cptr_or_handle != CPTR_NULL).  Falls back to the handle table if CSpace
  * fails with anything other than ACCESS_DENIED (which is a hard stop).
  *
- * Ref-count contract: ACTIVE + LIFECYCLE (same as cspace_or_handle_resolve_cnode).
+ * Ref-count contract: ACTIVE + LIFECYCLE (same as cspace_resolve_only_cnode).
  * KUntyped operations (INFO/RETYPE/RESET) never block across task_yield(); holding
  * active_refs during the operation is safe.  KUntyped's close callback is a no-op,
  * so there is no IPC-style "wake blocked tasks" concern.
@@ -256,7 +256,7 @@ iris_error_t cspace_or_handle_resolve_cnode(struct KProcess *proc,
  *
  * ACCESS_DENIED from CSpace is a hard stop — no fallback to handle table.
  */
-iris_error_t cspace_or_handle_resolve_untyped(struct KProcess  *proc,
+iris_error_t cspace_resolve_only_untyped(struct KProcess  *proc,
                                                iris_cptr_t       cptr_or_handle,
                                                iris_rights_t     required,
                                                struct KUntyped **out,
@@ -265,7 +265,7 @@ iris_error_t cspace_or_handle_resolve_untyped(struct KProcess  *proc,
 /*
  * IPC dual-resolve helpers — LIFECYCLE-ONLY ref contract.
  *
- * These helpers differ from cspace_or_handle_resolve_cnode in one critical
+ * These helpers differ from cspace_resolve_only_cnode in one critical
  * way: they return only a lifecycle retain (kobject_release), NOT an
  * active_retain.
  *
@@ -278,7 +278,7 @@ iris_error_t cspace_or_handle_resolve_untyped(struct KProcess  *proc,
  *
  * For the CSpace path, cspace_resolve_cap returns active+lifecycle; the active
  * ref is released inside the helper before returning.  The handle fallback path
- * (handle_table_get_object) gives lifecycle-only by design — no extra retain.
+ * gives lifecycle-only by design — no extra retain.
  *
  * Caller MUST release with:   kobject_release(&(*out)->base);
  * Caller MUST NOT call:       kobject_active_release on the returned pointer.
@@ -286,19 +286,19 @@ iris_error_t cspace_or_handle_resolve_untyped(struct KProcess  *proc,
  * Both CSpace and handle-table paths produce the same lifecycle-only contract.
  * ACCESS_DENIED from CSpace is a hard stop — no fallback to handle table.
  */
-iris_error_t cspace_or_handle_resolve_endpoint(struct KProcess   *proc,
+iris_error_t cspace_resolve_only_endpoint(struct KProcess   *proc,
                                                 iris_cptr_t        cptr_or_handle,
                                                 iris_rights_t      required,
                                                 struct KEndpoint **out,
                                                 iris_rights_t     *rights_out);
 
-iris_error_t cspace_or_handle_resolve_reply(struct KProcess *proc,
+iris_error_t cspace_resolve_only_reply(struct KProcess *proc,
                                              iris_cptr_t      cptr_or_handle,
                                              iris_rights_t    required,
                                              struct KReply  **out,
                                              iris_rights_t   *rights_out);
 
-iris_error_t cspace_or_handle_resolve_notification(struct KProcess      *proc,
+iris_error_t cspace_resolve_only_notification(struct KProcess      *proc,
                                                     iris_cptr_t           cptr_or_handle,
                                                     iris_rights_t         required,
                                                     struct KNotification **out,

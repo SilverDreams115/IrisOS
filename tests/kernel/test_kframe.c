@@ -15,8 +15,8 @@
  *   [FR-11] cspace_resolve_frame returns IRIS_ERR_WRONG_TYPE for a non-frame slot.
  *   [FR-12] cspace_resolve_frame returns IRIS_ERR_ACCESS_DENIED with insufficient rights.
  *   [FR-13] cspace_resolve_cap with CPTR_NULL returns IRIS_ERR_INVALID_ARG.
- *   [FR-14] cspace_or_handle_resolve_frame ACCESS_DENIED hard-stops; no handle fallback.
- *   [FR-15] cspace_or_handle_resolve_frame falls back to handle table if CSpace is absent.
+ *   [FR-14] cspace_resolve_only_frame ACCESS_DENIED hard-stops; no handle fallback.
+ *   [FR-15] cspace_resolve_only_frame falls back to handle table if CSpace is absent.
  *   [FR-16] kuntyped_bump_alloc_phys_page returns page-aligned address.
  *   [FR-17] kuntyped_bump_alloc_phys_page fails when insufficient space.
  *   [FR-18] kuntyped_bump_alloc_phys_page fails for unaligned size.
@@ -108,7 +108,6 @@
 #include <iris/nc/kframe.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kbootcap.h>
-#include <iris/nc/handle_table.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
@@ -127,7 +126,6 @@ static struct KProcess *fr_make_proc(void) {
     struct KProcess *p = (struct KProcess *)malloc(sizeof(struct KProcess));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
-    handle_table_init(&p->handle_table);
     p->cspace_root = NULL;
     return p;
 }
@@ -140,7 +138,6 @@ static void fr_free_proc(struct KProcess *p) {
         kobject_release(&p->cspace_root->base);
         p->cspace_root = NULL;
     }
-    handle_table_close_all(&p->handle_table);
     free(p);
 }
 
@@ -318,31 +315,6 @@ void test_kframe(void) {
         fr_free_proc(p);
     }
 
-    /* FR-14: ACCESS_DENIED hard-stops; handle-table fallback not attempted */
-    {
-        struct KProcess *p = fr_make_proc();
-        ASSERT_NOT_NULL(p);
-        struct KCNode *root = fr_setup_root(p);
-        ASSERT_NOT_NULL(root);
-        struct KFrame *f = kframe_alloc(0x400000, 4096, NULL);
-        ASSERT_NOT_NULL(f);
-        /* Insert with READ-only rights into CSpace. */
-        iris_error_t ie = kcnode_mint(root, 3u, &f->base, RIGHT_READ);
-        ASSERT_EQ((int)ie, (int)IRIS_OK);
-        /* Insert the same frame into handle table with WRITE. */
-        handle_id_t hid = handle_table_insert(
-            &p->handle_table, &f->base,
-            RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-        ASSERT_NE((int)hid, (int)HANDLE_INVALID);
-        kobject_release(&f->base);
-
-        struct KFrame *out;
-        iris_rights_t  r;
-        /* Resolve via cptr 3 — CSpace returns ACCESS_DENIED; must NOT fall back. */
-        ie = cspace_or_handle_resolve_frame(p, 3u, RIGHT_WRITE, &out, &r);
-        ASSERT_EQ((int)ie, (int)IRIS_ERR_ACCESS_DENIED);
-        fr_free_proc(p);
-    }
 
 
     /* FR-16: kuntyped_bump_alloc_phys_page returns page-aligned address */

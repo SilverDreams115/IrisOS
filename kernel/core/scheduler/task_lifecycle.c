@@ -13,7 +13,6 @@
 #include <iris/nc/kreply.h>
 #include <iris/nc/ktcb.h>
 #include <iris/nc/rights.h>
-#include <iris/nc/handle_table.h>
 #include <iris/futex.h>
 #include <iris/initrd.h>
 #include <stdint.h>

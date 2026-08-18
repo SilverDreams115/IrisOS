@@ -21,7 +21,7 @@ static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) dst[i] = src[i];
 }
 
-/* ep_get removed — use cspace_or_handle_resolve_endpoint (Fase 3.2) */
+/* ep_get removed — use cspace_resolve_only_endpoint (Fase 3.2) */
 
 /*
  * A1.9/A1.10 two-phase cap staging — shared by EP_SEND / EP_NB_SEND /
@@ -358,7 +358,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
     uint64_t ep_badge = 0;
-    iris_error_t err = cspace_or_handle_resolve_endpoint_badged(
+    iris_error_t err = cspace_resolve_only_endpoint_badged(
         t->process, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -525,7 +525,7 @@ static iris_error_t ep_recv_reply_stage(struct task *t, uint64_t reply_arg) {
     if (reply_arg == 0u) return IRIS_OK;
 
     struct KReply *rp; iris_rights_t rp_r;
-    iris_error_t err = cspace_or_handle_resolve_reply(t->process,
+    iris_error_t err = cspace_resolve_only_reply(t->process,
                             (iris_cptr_t)reply_arg, RIGHT_WRITE, &rp, &rp_r);
     if (err != IRIS_OK) return err;
     err = kreply_stage(rp);
@@ -575,7 +575,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
-    iris_error_t err = cspace_or_handle_resolve_endpoint(t->process, (iris_cptr_t)arg0,
+    iris_error_t err = cspace_resolve_only_endpoint(t->process, (iris_cptr_t)arg0,
                                                           RIGHT_READ, &ep, &_ep_r);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -787,7 +787,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
     uint64_t ep_badge = 0;
-    iris_error_t err = cspace_or_handle_resolve_endpoint_badged(
+    iris_error_t err = cspace_resolve_only_endpoint_badged(
         t->process, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -902,7 +902,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
-    iris_error_t err = cspace_or_handle_resolve_endpoint(t->process, (iris_cptr_t)arg0,
+    iris_error_t err = cspace_resolve_only_endpoint(t->process, (iris_cptr_t)arg0,
                                                           RIGHT_READ, &ep, &_ep_r);
     if (err != IRIS_OK) return syscall_err(err);
 

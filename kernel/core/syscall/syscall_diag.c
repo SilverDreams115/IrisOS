@@ -162,16 +162,17 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     buf[4] = (uint64_t)live | ((uint64_t)pad << 32);
 
     if (want >= SCHED_INFO_EXT_BYTES) {
-        HandleTable *ht = &t->process->handle_table;
+        /* Stage 4: the handle table is DELETED.  Its five gauges keep their
+         * ABI offsets and report structural zeros — they are the retirement
+         * witnesses iris_test T095 asserts, and removing the fields would
+         * silently turn "the namespace is empty" into "nobody is looking". */
         uint32_t w[14];
-        spinlock_lock(&ht->lock);
-        w[0] = ht->live;
-        w[1] = ht->hwm;
-        w[2] = ht->inserts;
-        w[3] = ht->removes;
-        spinlock_unlock(&ht->lock);
-        w[4]  = __atomic_load_n(&handle_table_global_hwm, __ATOMIC_RELAXED);
-        w[5]  = HANDLE_TABLE_MAX;
+        w[0] = 0u;      /* handle live      */
+        w[1] = 0u;      /* handle hwm       */
+        w[2] = 0u;      /* handle inserts   */
+        w[3] = 0u;      /* handle removes   */
+        w[4] = 0u;      /* global hwm       */
+        w[5] = 0u;      /* table capacity   */
         w[6]  = __atomic_load_n(&iris_ipc_stat_slot_deliveries, __ATOMIC_RELAXED);
         w[7]  = __atomic_load_n(&iris_ipc_stat_handle_deliveries, __ATOMIC_RELAXED);
         w[8]  = __atomic_load_n(&iris_ipc_stat_toctou_fallbacks, __ATOMIC_RELAXED);

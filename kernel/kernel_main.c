@@ -15,7 +15,6 @@
 #include <iris/irq_routing.h>
 #include <iris/nc/kbootcap.h>
 #include <iris/nc/kprocess.h>
-#include <iris/nc/handle_table.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kuntyped.h>

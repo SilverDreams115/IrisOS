@@ -2,19 +2,17 @@
 #include <iris/nc/kobject.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kendpoint.h>
-#include <iris/nc/handle_table.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
 #include <iris/kpage.h>
 #include <string.h>
 
-/* Minimal KProcess for testing: only handle_table and cspace_root matter. */
+/* Minimal KProcess for testing: only cspace_root matters. */
 static struct KProcess *make_test_proc(void) {
     struct KProcess *p = (struct KProcess *)kpage_alloc((uint32_t)sizeof(struct KProcess));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
-    handle_table_init(&p->handle_table);
     p->cspace_root = NULL;
     return p;
 }
@@ -27,7 +25,6 @@ static void free_test_proc(struct KProcess *p) {
         kobject_release(&p->cspace_root->base);
         p->cspace_root = NULL;
     }
-    handle_table_close_all(&p->handle_table);
     kpage_free(p, (uint32_t)sizeof(*p));
 }
 
@@ -300,7 +297,7 @@ void test_cspace(void) {
         free_test_proc(p);
     }
 
-    /* ── cspace_or_handle_resolve_cnode: CSpace path (root set, slot has CNode) ── */
+    /* ── cspace_resolve_only_cnode: CSpace path (root set, slot has CNode) ── */
     {
         struct KProcess *p = make_test_proc();
         ASSERT_NOT_NULL(p);
@@ -319,7 +316,7 @@ void test_cspace(void) {
         kobject_release(&inner->base);
 
         struct KCNode  *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_cnode(p, 2u, RIGHT_WRITE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_cnode(p, 2u, RIGHT_WRITE, &out, &rout),
                   IRIS_OK);
         ASSERT_EQ(out->slot_count, 16u);
         kobject_active_release(&out->base);
@@ -330,23 +327,4 @@ void test_cspace(void) {
 
 
 
-    /* ── Repeated dual-resolve: refcount balance across multiple calls ── */
-    {
-        struct KProcess *p = make_test_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KCNode *cn = kcnode_alloc(8);
-        ASSERT_NOT_NULL(cn);
-        handle_id_t h = handle_table_insert(&p->handle_table, &cn->base,
-                                             RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&cn->base);
-
-        /* If refcounts are balanced, the CNode is still alive in the table. */
-        struct KObject *obj; iris_rights_t r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, h, &obj, &r), IRIS_OK);
-        ASSERT_EQ(obj->type, KOBJ_CNODE);
-        kobject_release(obj);
-
-        free_test_proc(p);
-    }
 }

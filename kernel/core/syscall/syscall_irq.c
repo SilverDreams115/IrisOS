@@ -32,7 +32,7 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct KObject  *irqcap_obj;
     iris_rights_t    irqcap_rights;
     /* Fase 13: dual resolver — irqcap may be a CPtr slot or a handle. */
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_IRQ_CAP, &irqcap_obj, &irqcap_rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (!rights_check(irqcap_rights, RIGHT_ROUTE)) {
@@ -53,7 +53,7 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * notification did not, so a service holding its IRQ notification in
      * CSpace could not register a route.  The dual object resolver returns a
      * lifecycle-only reference and reports WRONG_TYPE itself. */
-    r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg1, RIGHT_NONE,
+    r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg1, RIGHT_NONE,
                                      KOBJ_NOTIFICATION, &ch_obj, &ch_rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (!rights_check(ch_rights, RIGHT_WRITE)) {
@@ -65,7 +65,7 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * A1 Increment 2a: dual resolver — CPtr slot or handle. */
     struct KObject  *proc_obj;
     iris_rights_t    proc_rights;
-    r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg2,
+    r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg2,
                                      RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (r != IRIS_OK) {
         kobject_release(ch_obj);
@@ -106,7 +106,7 @@ uint64_t sys_irq_ack(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject  *obj;
     iris_rights_t    rights;
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_IRQ_CAP, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (!rights_check(rights, RIGHT_ROUTE)) {
@@ -138,7 +138,7 @@ uint64_t sys_ioport_in(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject  *obj;
     iris_rights_t    rights;
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_IOPORT, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (!rights_check(rights, RIGHT_READ)) {
@@ -174,7 +174,7 @@ uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject  *obj;
     iris_rights_t    rights;
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_IOPORT, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (!rights_check(rights, RIGHT_WRITE)) {
@@ -214,7 +214,7 @@ uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         iris_rights_t proc_rights;
         /* A1 Increment 2a: dual resolver on the non-self process.  The self
          * path above owns arg0 == 0 (HANDLE_INVALID == CPTR_NULL). */
-        iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+        iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                      RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
         if (r != IRIS_OK) return syscall_err(r);
         if (!rights_check(proc_rights, RIGHT_MANAGE)) {
@@ -234,7 +234,7 @@ uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * returns a lifecycle-only reference (it drops the traversal's active ref
      * itself), so the single-release contract below is unchanged, and it
      * reports WRONG_TYPE for the check that used to follow. */
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg1,
+    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg1,
                                                   RIGHT_NONE, KOBJ_NOTIFICATION,
                                                   &notif_obj, &notif_rights);
     if (r != IRIS_OK) { kobject_release(&target_proc->base); return syscall_err(r); }
@@ -281,7 +281,7 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         iris_rights_t proc_rights;
         /* A1 Increment 2a: dual resolver on the non-self process.  The self
          * path above owns arg0 == 0 (HANDLE_INVALID == CPTR_NULL). */
-        iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+        iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                      RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
         if (r != IRIS_OK) return syscall_err(r);
         if (!rights_check(proc_rights, RIGHT_MANAGE)) {

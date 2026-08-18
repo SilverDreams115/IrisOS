@@ -15,7 +15,7 @@ uint32_t iris_cspace_stat_resolves = 0u;
  * SYS_CSPACE_REVOKE (recursive, cross-CNode and cross-process).
  *
  * The syscall numbers stay permanently reserved and answer NOT_SUPPORTED;
- * `handle_table_insert_derived`, `handle_table_revoke_children` and the
+ * the table's derived-insert, revoke-children entry points and the
  * `derivation_parent[]` array are deleted.  There is now exactly ONE
  * derivation tree in the system (charter A9/A10).
  */
@@ -105,7 +105,7 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     /* Child process capability — spawner authority required. */
     struct KObject *proc_obj;
     iris_rights_t   proc_rights;
-    iris_error_t err = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)proc_h,
+    iris_error_t err = cspace_resolve_only_obj(t->process, (iris_cptr_t)proc_h,
                                  RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (err != IRIS_OK) return syscall_err(err);
     if (!rights_check(proc_rights, RIGHT_WRITE)) {
@@ -321,7 +321,7 @@ uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     /* Target process — spawner authority (same contract as PROC_CSPACE_MINT). */
     struct KObject *proc_obj;
     iris_rights_t   proc_rights;
-    iris_error_t err = cspace_or_handle_resolve_obj(proc, (iris_cptr_t)arg0,
+    iris_error_t err = cspace_resolve_only_obj(proc, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (err != IRIS_OK) return syscall_err(err);
     if (!rights_check(proc_rights, RIGHT_WRITE)) {

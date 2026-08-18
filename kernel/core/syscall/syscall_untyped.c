@@ -23,7 +23,7 @@
  *   source of authority.
  *
  * Authority: all syscalls resolve the untyped via
- * cspace_or_handle_resolve_untyped (a CPtr resolves through CSpace only, a
+ * cspace_resolve_only_untyped (a CPtr resolves through CSpace only, a
  * handle value through the handle table only; ACCESS_DENIED is a hard stop,
  * no fallback).
  *
@@ -47,7 +47,7 @@ uint64_t sys_untyped_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KUntyped *ut;
     iris_rights_t    rights;
-    iris_error_t     err = cspace_or_handle_resolve_untyped(t->process, ut_cptr,
+    iris_error_t     err = cspace_resolve_only_untyped(t->process, ut_cptr,
                                                              RIGHT_READ, &ut, &rights);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -180,7 +180,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     /* ── resolve source untyped (WRITE) ── */
     struct KUntyped *ut;
     iris_rights_t    ut_rights;
-    iris_error_t err = cspace_or_handle_resolve_untyped(proc, ut_cptr,
+    iris_error_t err = cspace_resolve_only_untyped(proc, ut_cptr,
                                                         RIGHT_WRITE, &ut, &ut_rights);
     if (err != IRIS_OK) { kuntyped_stat_retype_failure(); return syscall_err(err); }
 
@@ -212,7 +212,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         cn = (struct KCNode *)root_obj;
     } else {
         iris_rights_t cn_rights;
-        err = cspace_or_handle_resolve_cnode(proc, dest_cnode, RIGHT_WRITE,
+        err = cspace_resolve_only_cnode(proc, dest_cnode, RIGHT_WRITE,
                                              &cn, &cn_rights);
         if (err != IRIS_OK) {
             kobject_active_release(&ut->base);
@@ -398,7 +398,7 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KUntyped *ut;
     iris_rights_t    rights;
-    iris_error_t     err = cspace_or_handle_resolve_untyped(t->process, ut_cptr,
+    iris_error_t     err = cspace_resolve_only_untyped(t->process, ut_cptr,
                                                              RIGHT_WRITE, &ut, &rights);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -494,7 +494,7 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         case IRIS_UNTYPED_QUERY_ONE: {
             struct KUntyped *ut;
             iris_rights_t    rights;
-            iris_error_t err = cspace_or_handle_resolve_untyped(t->process,
+            iris_error_t err = cspace_resolve_only_untyped(t->process,
                                     (iris_cptr_t)arg2, RIGHT_READ, &ut, &rights);
             if (err != IRIS_OK) return syscall_err(err);
             struct iris_untyped_query_one q;

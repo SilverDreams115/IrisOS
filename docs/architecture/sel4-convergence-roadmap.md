@@ -15,18 +15,18 @@ path still depends on the mechanism it retires (charter §3.10).
 | 1 — CDT/MDB | ✅ CLOSED (Fase S3) |
 | 2 — CSpace-only cap transfer | ✅ CLOSED (Fase S4) |
 | 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
-| 4 — Dual namespace retirement | ← IN PROGRESS (Etapas 1–6b done; 6c remaining) |
-| 5 — seL4-like bootstrap | pending |
+| 4 — Dual namespace retirement | ✅ CLOSED |
+| 5 — seL4-like bootstrap | ← NEXT |
 | 6 — Remaining memory and objects | pending |
 | 7 — KProcess retirement | pending |
 | 8 — Full MCS scheduling | pending |
 | 9 — SMP | pending |
 | 10 — General-purpose platform | pending |
 
-Charter invariants closed so far by this roadmap: **A6, A7, A8, A9, A10**
-(authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5** (scheduling);
-**M2–M5** (memory); **P1, P3** (policy).  Still open: **A2, A3, A4** (Stage 4),
-**A5** and **P2** (Stages 5–7), **O1** and **M1** (Stages 5–6).
+Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
+A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
+(scheduling); **M2–M5** (memory); **P1, P3** (policy).  Still open: **A5** and
+**P2** (Stages 5–7), **O1** and **M1** (Stages 5–6).
 
 ## Stage 0 — TCB consolidation  ✅ CLOSED (Fase S2 inc.2)
 
@@ -123,7 +123,26 @@ Precondition: Stages 1–2 (both closed).
 Result: there is exactly ONE derivation tree in the system.  Charter A9 and
 A10 move to MET.
 
-## Stage 4 — Dual namespace retirement  ← IN PROGRESS
+## Stage 4 — Dual namespace retirement  ✅ CLOSED
+
+**Closing criterion met: there is one authority namespace.**  The handle table
+is not reduced to zero consumers — `HandleTable`, `KProcess.handle_table`, the
+implementation and its unit suite are DELETED, and the purity allowlist has no
+`handle_table_*` or `cspace_or_handle_resolve_` entries left because those
+identifiers no longer exist.  What the allowlist still holds is Stage 6's
+inventory: the object families born from the kslab heap.
+
+Retired to `NOT_SUPPORTED`, numbers permanently reserved: `SYS_HANDLE_CLOSE`
+(15), `SYS_HANDLE_DUP` (22), `SYS_IOPORT_RESTRICT` (43), `SYS_VMO_SHARE` (46),
+`SYS_HANDLE_INSERT` (59), `SYS_HANDLE_TYPE` (52), `SYS_HANDLE_SAME_OBJECT`
+(53), `SYS_CNODE_MINT` (81), `SYS_UNTYPED_RETYPE` (87), `SYS_CNODE_MOVE` (89),
+`SYS_CNODE_FETCH` (90), `SYS_CSPACE_RESOLVE` (95).  Added: `SYS_CAP_IDENTIFY`
+(117) and `SYS_CAP_SAME_OBJECT` (118), CSpace-native and strictly weaker than
+what they replace.
+
+Three structural zeros are the permanent gate (T095): handle-live,
+handle-delivery and TOCTOU.  Any of them moving means a second namespace came
+back.
 
 Precondition: Stages 2–3 (both closed — no authority lives handle-only anymore).
 

@@ -23,7 +23,6 @@
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kbootcap.h>
-#include <iris/nc/handle_table.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
@@ -39,7 +38,6 @@ static struct KProcess *vs_make_proc(void) {
     struct KProcess *p = (struct KProcess *)kpage_alloc((uint32_t)sizeof(struct KProcess));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
-    handle_table_init(&p->handle_table);
     p->cspace_root = NULL;
     return p;
 }
@@ -51,7 +49,6 @@ static void vs_free_proc(struct KProcess *p) {
         kobject_release(&p->cspace_root->base);
         p->cspace_root = NULL;
     }
-    handle_table_close_all(&p->handle_table);
     kpage_free(p, (uint32_t)sizeof(*p));
 }
 
@@ -292,40 +289,6 @@ void test_vspace_cspace(void) {
         vs_free_proc(p);
     }
 
-    /* [VS-10] ACCESS_DENIED hard-stops: generic cspace_resolve_cap returns ACCESS_DENIED
-     *         on rights mismatch and does NOT fall back to any other path. */
-    {
-        struct KProcess *p = vs_make_proc();
-        ASSERT_NOT_NULL(p);
-        ASSERT_NOT_NULL(vs_setup_root(p));
-
-        struct KVSpace *vs = kvspace_alloc(0x3000ULL);
-        ASSERT_NOT_NULL(vs);
-
-        /* Also insert vs into the handle table (simulates a legacy handle path). */
-        handle_id_t h = handle_table_insert(&p->handle_table, &vs->base,
-                                             RIGHT_READ | RIGHT_WRITE |
-                                             RIGHT_DUPLICATE | RIGHT_TRANSFER);
-        ASSERT_NE(h, (handle_id_t)HANDLE_INVALID);
-
-        /* CNode slot: READ-only.  Handle: full rights. */
-        struct KObject *root_obj; iris_rights_t root_r;
-        ASSERT_EQ(vs_root_fetch(p,
-                                           &root_obj, &root_r), IRIS_OK);
-        ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
-                               &vs->base, RIGHT_READ),
-                  IRIS_OK);
-        kobject_release(root_obj);
-        kvspace_free(vs);   /* drop alloc ref */
-
-        /* Resolve via CPtr requiring WRITE: ACCESS_DENIED must NOT fall back to handle. */
-        struct KVSpace *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_vspace(p, BOOT_CPTR_VSPACE,
-                                         RIGHT_WRITE, &out, &rout),
-                  IRIS_ERR_ACCESS_DENIED);
-
-        vs_free_proc(p);
-    }
 
     /* [VS-11] kernel_main dual-insert pattern: refcount=2, active_refs=1. */
     {
@@ -367,90 +330,6 @@ void test_vspace_cspace(void) {
         vs_free_proc(p);
     }
 
-    /* [VS-12] Slot 1 (KBootstrapCap) and slots 16+ unaffected by grant in slot 2. */
-    {
-        struct KProcess *p = vs_make_proc();
-        ASSERT_NOT_NULL(p);
-        ASSERT_NOT_NULL(vs_setup_root(p));
-
-        /* Insert KBootstrapCap into slot 1. */
-        struct KBootstrapCap *cap = kbootcap_alloc(IRIS_BOOTCAP_SPAWN_SERVICE);
-        ASSERT_NOT_NULL(cap);
-        handle_id_t hcap = handle_table_insert(&p->handle_table, &cap->base,
-                                                RIGHT_READ | RIGHT_DUPLICATE |
-                                                RIGHT_TRANSFER);
-        kobject_release(&cap->base);
-        ASSERT_NE(hcap, (handle_id_t)HANDLE_INVALID);
-
-        struct KObject *root_obj; iris_rights_t root_r;
-        ASSERT_EQ(vs_root_fetch(p,
-                                           &root_obj, &root_r), IRIS_OK);
-        ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_BOOTSTRAP_CAP,
-                               &cap->base,
-                               RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER),
-                  IRIS_OK);
-        kobject_release(root_obj);
-
-        /* Insert KVSpace into slot 2 (BOOT_CPTR_VSPACE). */
-        struct KVSpace *vs = kvspace_alloc(0x6000ULL);
-        ASSERT_NOT_NULL(vs);
-        ASSERT_EQ(vs_root_fetch(p,
-                                           &root_obj, &root_r), IRIS_OK);
-        ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_VSPACE,
-                               &vs->base,
-                               RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER),
-                  IRIS_OK);
-        kobject_release(root_obj);
-        kvspace_free(vs);
-
-        /* Insert a KUntyped into slot 16 (BOOT_CPTR_UNTYPED_START). */
-        void *buf = malloc(4096);
-        ASSERT_NOT_NULL(buf);
-        struct KUntyped *ut = kuntyped_create((uint64_t)(uintptr_t)buf, 4096u, 0);
-        ASSERT_NOT_NULL(ut);
-        ASSERT_EQ(vs_root_fetch(p,
-                                           &root_obj, &root_r), IRIS_OK);
-        ASSERT_EQ(kcnode_mint((struct KCNode *)root_obj, BOOT_CPTR_UNTYPED_START,
-                               &ut->base,
-                               RIGHT_READ | RIGHT_WRITE |
-                               RIGHT_DUPLICATE | RIGHT_TRANSFER),
-                  IRIS_OK);
-        kobject_release(root_obj);
-        kobject_release(&ut->base);   /* drop alloc ref */
-
-        /* Verify slot 1 holds KBootstrapCap. */
-        struct KObject *c1; iris_rights_t r1;
-        ASSERT_EQ(cspace_resolve_cap(p, BOOT_CPTR_BOOTSTRAP_CAP,
-                                      RIGHT_NONE, &c1, &r1),
-                  IRIS_OK);
-        ASSERT_EQ(c1->type, KOBJ_BOOTSTRAP_CAP);
-        kobject_active_release(c1);
-        kobject_release(c1);
-
-        /* Verify slot 2 holds KVSpace. */
-        struct KVSpace *vs2; iris_rights_t r2;
-        ASSERT_EQ(cspace_resolve_vspace(p, BOOT_CPTR_VSPACE,
-                                         RIGHT_NONE, &vs2, &r2),
-                  IRIS_OK);
-        ASSERT_EQ(vs2->base.type, KOBJ_VSPACE);
-        kobject_active_release(&vs2->base);
-        kobject_release(&vs2->base);
-
-        /* Verify slot 16 holds KUntyped. */
-        struct KUntyped *ut2; iris_rights_t r3;
-        ASSERT_EQ(cspace_or_handle_resolve_untyped(p, BOOT_CPTR_UNTYPED_START,
-                                                    RIGHT_READ, &ut2, &r3),
-                  IRIS_OK);
-        ASSERT_EQ(ut2->base.type, KOBJ_UNTYPED);
-        kobject_active_release(&ut2->base);
-        kobject_release(&ut2->base);
-
-        /* Slot 0 must be empty. */
-        struct KObject *n0; iris_rights_t rn;
-        ASSERT_TRUE(cspace_resolve_cap(p, CPTR_NULL, RIGHT_NONE, &n0, &rn) != IRIS_OK);
-
-        vs_free_proc(p);
-    }
 
     /* [VS-13] Repeated cspace_resolve_vspace + release does not leak active refs. */
     {

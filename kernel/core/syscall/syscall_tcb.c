@@ -21,7 +21,7 @@ static iris_error_t tcb_resolve(struct KProcess *proc, iris_cptr_t cptr,
                                 iris_rights_t required,
                                 struct task **out, iris_rights_t *rights_out) {
     struct KObject *obj;
-    iris_error_t err = cspace_or_handle_resolve_obj(proc, cptr, RIGHT_NONE,
+    iris_error_t err = cspace_resolve_only_obj(proc, cptr, RIGHT_NONE,
                                                     KOBJ_TCB, &obj, rights_out);
     if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return err;

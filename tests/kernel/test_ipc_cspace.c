@@ -1,7 +1,7 @@
 /*
  * test_ipc_cspace.c — Fase 3.2 unit tests for IPC dual-resolve helpers.
  *
- * Covers cspace_or_handle_resolve_endpoint/reply/notification, verifying:
+ * Covers cspace_resolve_only_endpoint/reply/notification, verifying:
  *   - CSpace path resolves correct typed objects
  *   - Handle-table fallback resolves when no CSpace root is set
  *   - Wrong object type returns IRIS_ERR_WRONG_TYPE
@@ -16,7 +16,6 @@
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kreply.h>
 #include <iris/nc/knotification.h>
-#include <iris/nc/handle_table.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
@@ -29,7 +28,6 @@ static struct KProcess *make_proc(void) {
     struct KProcess *p = (struct KProcess *)kpage_alloc((uint32_t)sizeof(struct KProcess));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
-    handle_table_init(&p->handle_table);
     p->cspace_root = NULL;
     return p;
 }
@@ -42,7 +40,6 @@ static void free_proc(struct KProcess *p) {
         kobject_release(&p->cspace_root->base);
         p->cspace_root = NULL;
     }
-    handle_table_close_all(&p->handle_table);
     kpage_free(p, (uint32_t)sizeof(*p));
 }
 
@@ -88,7 +85,7 @@ void test_ipc_cspace(void) {
         kobject_release(&ep->base);
 
         struct KEndpoint *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, 3u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_endpoint(p, 3u, RIGHT_NONE, &out, &rout),
                   IRIS_OK);
         ASSERT_EQ(out->base.type, KOBJ_ENDPOINT);
         ASSERT_EQ(rout, RIGHT_READ | RIGHT_WRITE);
@@ -112,7 +109,7 @@ void test_ipc_cspace(void) {
         kobject_release(&n->base);
 
         struct KEndpoint *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, 2u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_endpoint(p, 2u, RIGHT_NONE, &out, &rout),
                   IRIS_ERR_WRONG_TYPE);
 
         free_proc(p);
@@ -132,10 +129,10 @@ void test_ipc_cspace(void) {
         kobject_release(&ep->base);
 
         struct KEndpoint *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, 4u, RIGHT_WRITE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_endpoint(p, 4u, RIGHT_WRITE, &out, &rout),
                   IRIS_ERR_ACCESS_DENIED);
         /* Correct right succeeds. */
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, 4u, RIGHT_READ, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_endpoint(p, 4u, RIGHT_READ, &out, &rout),
                   IRIS_OK);
         kobject_release(&out->base);
 
@@ -143,55 +140,7 @@ void test_ipc_cspace(void) {
     }
 
 
-    /* ── [EP] ACCESS_DENIED from CSpace does NOT fall back to handle table ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-        struct KCNode *root = setup_cspace(p, 8);
-        ASSERT_NOT_NULL(root);
 
-        /* Mint endpoint with READ-only into slot 1. */
-        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
-        ASSERT_NOT_NULL(ep);
-        ASSERT_EQ(kcnode_mint(root, 1, &ep->base, RIGHT_READ), IRIS_OK);
-        kobject_release(&ep->base);
-
-        /* Also insert the SAME endpoint into handle table with WRITE rights.
-         * If fallback occurred on ACCESS_DENIED, this handle would succeed. */
-        kobject_retain(&ep->base);   /* lend a ref for the second insert */
-        handle_id_t h = handle_table_insert(&p->handle_table, &ep->base,
-                                             RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&ep->base);
-
-        struct KEndpoint *out; iris_rights_t rout;
-        /* cptr=1 resolves via CSpace → ACCESS_DENIED (READ-only, requesting WRITE).
-         * Must NOT fall back to handle table (which has WRITE). */
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, 1u, RIGHT_WRITE, &out, &rout),
-                  IRIS_ERR_ACCESS_DENIED);
-
-        (void)h;
-        free_proc(p);
-    }
-
-    /* ── [EP] Repeated resolve: refcount balance ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
-        ASSERT_NOT_NULL(ep);
-        handle_id_t h = handle_table_insert(&p->handle_table, &ep->base,
-                                             RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&ep->base);
-
-        /* Object still alive: handle_table_get_object must still find it. */
-        struct KObject *obj; iris_rights_t r;
-        ASSERT_EQ(handle_table_get_object(&p->handle_table, h, &obj, &r), IRIS_OK);
-        ASSERT_EQ(obj->type, KOBJ_ENDPOINT);
-        kobject_release(obj);
-
-        free_proc(p);
-    }
 
     /* ── [Reply] CSpace path: typed resolve OK ── */
     {
@@ -206,7 +155,7 @@ void test_ipc_cspace(void) {
         kobject_release(&rp->base);
 
         struct KReply *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_reply(p, 5u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_reply(p, 5u, RIGHT_NONE, &out, &rout),
                   IRIS_OK);
         ASSERT_EQ(out->base.type, KOBJ_REPLY);
         kobject_release(&out->base);
@@ -228,7 +177,7 @@ void test_ipc_cspace(void) {
         kobject_release(&ep->base);
 
         struct KReply *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_reply(p, 2u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_reply(p, 2u, RIGHT_NONE, &out, &rout),
                   IRIS_ERR_WRONG_TYPE);
 
         free_proc(p);
@@ -249,7 +198,7 @@ void test_ipc_cspace(void) {
         kobject_release(&n->base);
 
         struct KNotification *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_notification(p, 6u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_notification(p, 6u, RIGHT_NONE, &out, &rout),
                   IRIS_OK);
         ASSERT_EQ(out->base.type, KOBJ_NOTIFICATION);
         kobject_release(&out->base);
@@ -261,31 +210,6 @@ void test_ipc_cspace(void) {
 
 
 
-    /* ── [Notification] ACCESS_DENIED from CSpace does NOT fallback ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-        struct KCNode *root = setup_cspace(p, 8);
-        ASSERT_NOT_NULL(root);
-
-        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
-        ASSERT_NOT_NULL(n);
-        /* CSpace slot: READ-only. Handle table: full rights. */
-        ASSERT_EQ(kcnode_mint(root, 3, &n->base, RIGHT_READ), IRIS_OK);
-        kobject_retain(&n->base);
-        handle_id_t h = handle_table_insert(&p->handle_table, &n->base,
-                                             RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT);
-        kobject_release(&n->base);
-        kobject_release(&n->base); /* drop extra retain */
-
-        struct KNotification *out; iris_rights_t rout;
-        /* cptr=3 → CSpace → ACCESS_DENIED (need WAIT, have READ-only). No fallback. */
-        ASSERT_EQ(cspace_or_handle_resolve_notification(p, 3u, RIGHT_WAIT, &out, &rout),
-                  IRIS_ERR_ACCESS_DENIED);
-
-        (void)h;
-        free_proc(p);
-    }
 
 
     /* ── [Fase 9] badges: per-cap identity ───────────────────────────── */
@@ -308,21 +232,21 @@ void test_ipc_cspace(void) {
 
         struct KEndpoint *out; iris_rights_t rout; uint64_t badge;
         badge = 99u;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, 1u, RIGHT_WRITE,
+        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p, 1u, RIGHT_WRITE,
                                                            &out, &rout, &badge),
                   IRIS_OK);
         ASSERT_EQ(badge, 0xAAu);
         kobject_release(&out->base);
 
         badge = 99u;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, 2u, RIGHT_WRITE,
+        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p, 2u, RIGHT_WRITE,
                                                            &out, &rout, &badge),
                   IRIS_OK);
         ASSERT_EQ(badge, 0xBBu);
         kobject_release(&out->base);
 
         badge = 99u;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, 3u, RIGHT_WRITE,
+        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p, 3u, RIGHT_WRITE,
                                                            &out, &rout, &badge),
                   IRIS_OK);
         ASSERT_EQ(badge, 0u);                 /* unbadged cap delivers 0 */
@@ -345,7 +269,7 @@ void test_ipc_cspace(void) {
         /* Stage 4: a non-CPtr value is malformed, and a failed resolve must
          * not write through the badge out-parameter. */
         badge = 99u;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, (iris_cptr_t)0x80000401u,
+        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p, (iris_cptr_t)0x80000401u,
                                                            RIGHT_WRITE,
                                                            &out, &rout, &badge),
                   IRIS_ERR_INVALID_ARG);
@@ -355,7 +279,7 @@ void test_ipc_cspace(void) {
         ASSERT_EQ(kcnode_mint_excl_badged(root, 4, &ep->base, RIGHT_READ,
                                           0xDDu), IRIS_OK);
         badge = 99u;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, 4u, RIGHT_WRITE,
+        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p, 4u, RIGHT_WRITE,
                                                            &out, &rout, &badge),
                   IRIS_ERR_ACCESS_DENIED);
         ASSERT_EQ(badge, 99u);                /* untouched on failure */

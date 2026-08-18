@@ -3,7 +3,6 @@
 
 #include <iris/nc/kobject.h>
 #include <iris/nc/error.h>
-#include <iris/nc/handle_table.h>
 #include <iris/paging.h>
 #include <iris/task.h>
 #include <stdint.h>
@@ -81,7 +80,6 @@ struct KProcess {
     struct KExitWatch exit_watches[KPROCESS_EXIT_WATCH_MAX]; /* up to 4 death subscribers */
     /* Fase 6.3: vmo_mappings removed — VMO pages are now KFrame-backed and
      * tracked in KVSpace.mappings; kvspace_invalidate handles teardown. */
-    HandleTable     handle_table;/* process-scoped handles/capabilities */
 
     /* Exception handler (Fase 13/Track I: KNotification, no longer a KChannel).
      * If exception_notif is non-NULL, the kernel records the fault details in

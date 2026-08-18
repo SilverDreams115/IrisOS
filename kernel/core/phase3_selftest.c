@@ -4,7 +4,6 @@
 #include <iris/nc/error.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/handle.h>
-#include <iris/nc/handle_table.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kbootcap.h>
@@ -15,11 +14,6 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-static HandleTable phase3_ht;
-static HandleTable phase3_dest_ht;
-static HandleTable phase3_full_ht;
-static HandleTable phase41_ht;
-static handle_id_t phase3_fill_ids[HANDLE_TABLE_MAX];
 
 /*
  * Fase S1: kernel-internal KNotification fixtures.
@@ -135,132 +129,11 @@ out:
     return ok;
 }
 
-static int phase3_handle_selftest(void) {
-    struct KObject *obj = 0;
-    struct KObject *obj2 = 0;
-    iris_rights_t rights = RIGHT_NONE;
-    handle_id_t h = HANDLE_INVALID;
-    handle_id_t h_src = HANDLE_INVALID;
-    handle_id_t h_dup = HANDLE_INVALID;
-    handle_id_t h_dest = HANDLE_INVALID;
-    struct KNotification *notif = 0;
-    struct KNotification *fill_notif = 0;
-    struct KBootstrapCap *cap = 0;
-    struct KBootstrapCap *cap_clone = 0;
-    handle_id_t h_cap_src = HANDLE_INVALID;
-    handle_id_t h_cap_alias = HANDLE_INVALID;
-    int ok = 0;
-
-    handle_table_init(&phase3_ht);
-    handle_table_init(&phase3_dest_ht);
-    handle_table_init(&phase3_full_ht);
-
-    notif = p3_notif_fixture();
-    if (!notif) goto out;
-
-    h = handle_table_insert(&phase3_ht, &notif->base,
-                            RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT |
-                            RIGHT_DUPLICATE | RIGHT_TRANSFER);
-    if (h == HANDLE_INVALID || handle_id_gen(h) == 0u) goto out;
-    if (handle_table_get_object(&phase3_ht, 1u, &obj, &rights) != IRIS_ERR_BAD_HANDLE) goto out;
-
-    if (handle_table_close(&phase3_ht, h) != IRIS_OK) goto out;
-    if (handle_table_get_object(&phase3_ht, h, &obj, &rights) != IRIS_ERR_BAD_HANDLE) goto out;
-
-    h_src = handle_table_insert(&phase3_ht, &notif->base,
-                                RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT |
-                                RIGHT_DUPLICATE | RIGHT_TRANSFER);
-    if (h_src == HANDLE_INVALID) goto out;
-    if (handle_table_get_object(&phase3_ht, h_src, &obj, &rights) != IRIS_OK) goto out;
-    h_dup = handle_table_insert(&phase3_ht, obj, rights_reduce(rights, RIGHT_READ));
-    kobject_release(obj);
-    obj = 0;
-    if (h_dup == HANDLE_INVALID) goto out;
-    if (handle_table_get_object(&phase3_ht, h_dup, &obj, &rights) != IRIS_OK) goto out;
-    if (rights != RIGHT_READ) goto out;
-    kobject_release(obj);
-    obj = 0;
-
-    if (handle_table_get_object(&phase3_ht, h_src, &obj, &rights) != IRIS_OK) goto out;
-    h_dest = handle_table_insert(&phase3_dest_ht, obj, rights_reduce(rights, RIGHT_WAIT));
-    kobject_release(obj);
-    obj = 0;
-    if (h_dest == HANDLE_INVALID) goto out;
-    if (handle_table_close(&phase3_ht, h_src) != IRIS_OK) goto out;
-    if (handle_table_get_object(&phase3_ht, h_src, &obj, &rights) != IRIS_ERR_BAD_HANDLE) goto out;
-    if (handle_table_get_object(&phase3_dest_ht, h_dest, &obj, &rights) != IRIS_OK) goto out;
-    if (rights != RIGHT_WAIT) goto out;
-    kobject_release(obj);
-    obj = 0;
-
-    cap = kbootcap_alloc(IRIS_BOOTCAP_SPAWN_SERVICE |
-                         IRIS_BOOTCAP_HW_ACCESS |
-                         IRIS_BOOTCAP_KDEBUG);
-    if (!cap) goto out;
-    h_cap_src = handle_table_insert(&phase3_ht, &cap->base, RIGHT_READ);
-    if (h_cap_src == HANDLE_INVALID) goto out;
-    h_cap_alias = handle_table_insert(&phase3_dest_ht, &cap->base, RIGHT_READ);
-    if (h_cap_alias == HANDLE_INVALID) goto out;
-
-    cap_clone = kbootcap_clone_restricted(cap, IRIS_BOOTCAP_SPAWN_SERVICE);
-    if (!cap_clone) goto out;
-    if (handle_table_replace(&phase3_dest_ht, h_cap_alias, &cap_clone->base) != IRIS_OK) goto out;
-    kobject_release(&cap_clone->base);
-    cap_clone = 0;
-
-    if (handle_table_get_object(&phase3_ht, h_cap_src, &obj, &rights) != IRIS_OK) goto out;
-    if (handle_table_get_object(&phase3_dest_ht, h_cap_alias, &obj2, &rights) != IRIS_OK) goto out;
-    if (obj == obj2) goto out;
-    if (!kbootcap_allows((struct KBootstrapCap *)obj,
-                         IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS | IRIS_BOOTCAP_KDEBUG)) goto out;
-    if (!kbootcap_allows((struct KBootstrapCap *)obj2, IRIS_BOOTCAP_SPAWN_SERVICE)) goto out;
-    if (kbootcap_allows((struct KBootstrapCap *)obj2, IRIS_BOOTCAP_HW_ACCESS)) goto out;
-    if (kbootcap_allows((struct KBootstrapCap *)obj2, IRIS_BOOTCAP_KDEBUG)) goto out;
-    kobject_release(obj);
-    kobject_release(obj2);
-    obj = 0;
-    obj2 = 0;
-
-    /* A1.7: this fixture DELIBERATELY fills a local table to the ceiling to
-     * exercise the full-table boundary — it is not workload data.  Snapshot
-     * and restore the global high-water diagnostic so the HANDLE_TABLE_MAX
-     * sizing datum keeps measuring real processes only. */
-    {
-        uint32_t saved_ghwm =
-            __atomic_load_n(&handle_table_global_hwm, __ATOMIC_RELAXED);
-        fill_notif = p3_notif_fixture();
-        if (!fill_notif) goto out;
-        for (uint32_t i = 0; i < HANDLE_TABLE_MAX; i++) {
-            phase3_fill_ids[i] = handle_table_insert(&phase3_full_ht, &fill_notif->base, RIGHT_READ);
-            if (phase3_fill_ids[i] == HANDLE_INVALID) goto out;
-        }
-        if (handle_table_insert(&phase3_full_ht, &fill_notif->base, RIGHT_READ) != HANDLE_INVALID) goto out;
-        for (uint32_t i = 0; i < HANDLE_TABLE_MAX; i++) {
-            if (handle_table_close(&phase3_full_ht, phase3_fill_ids[i]) != IRIS_OK) goto out;
-        }
-        if (atomic_load_explicit(&fill_notif->base.active_refs, memory_order_relaxed) != 0u) goto out;
-        h = handle_table_insert(&phase3_full_ht, &fill_notif->base, RIGHT_READ);
-        if (h == HANDLE_INVALID) goto out;
-        if (handle_table_close(&phase3_full_ht, h) != IRIS_OK) goto out;
-        __atomic_store_n(&handle_table_global_hwm, saved_ghwm, __ATOMIC_RELAXED);
-    }
-
-    ok = 1;
-
-out:
-    if (obj) kobject_release(obj);
-    if (obj2) kobject_release(obj2);
-    handle_table_close_all(&phase3_ht);
-    handle_table_close_all(&phase3_dest_ht);
-    handle_table_close_all(&phase3_full_ht);
-    if (notif) knotification_free(notif);
-    if (fill_notif) knotification_free(fill_notif);
-    if (cap) kbootcap_free(cap);
-    if (cap_clone) kbootcap_free(cap_clone);
-    return ok;
-}
-
-/* phase3_channel_selftest retired — Fase 13/Track G (KChannel object removed). */
+/* phase3_handle_selftest RETIRED (Stage 4) — its subject was the handle
+ * table, which no longer exists.  What it actually asserted (insert/get/close
+ * round trips, rights stored per reference, generation defeating a stale id,
+ * table-full behaviour) is asserted of CSpace slots by the host cspace/mdb
+ * suites and by iris_test's CDT tests, against the namespace that stays. */
 
 static int phase3_notification_selftest(void) {
     struct KNotification *n = p3_notif_fixture();
@@ -310,81 +183,12 @@ out:
  *   4. Reduced-rights handle cannot see bits that were removed
  *   5. Stale handle rejected after close (generation check)
  */
-static int phase41_rights_selftest(void) {
-    struct KNotification *n = 0;
-    struct KObject *obj = 0;
-    iris_rights_t stored = RIGHT_NONE;
-    handle_id_t h_full = HANDLE_INVALID;
-    handle_id_t h_reduced = HANDLE_INVALID;
-    int ok = 0;
-
-    handle_table_init(&phase41_ht);
-    n = p3_notif_fixture();
-    if (!n) goto out;
-
-    /* 1. rights_reduce invariants */
-    if (rights_reduce(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE,
-                      RIGHT_SAME_RIGHTS) !=
-        (RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) goto out;
-
-    if (rights_reduce(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE,
-                      RIGHT_READ) != RIGHT_READ) goto out;
-
-    /* superset request is capped — no elevation */
-    if (rights_reduce(RIGHT_READ, RIGHT_READ | RIGHT_WRITE) != RIGHT_READ) goto out;
-
-    if (rights_reduce(RIGHT_READ | RIGHT_WRITE, RIGHT_NONE) != RIGHT_NONE) goto out;
-
-    /* RIGHT_NONE base stays empty regardless of request */
-    if (rights_reduce(RIGHT_NONE, RIGHT_READ | RIGHT_WRITE) != RIGHT_NONE) goto out;
-
-    /* 2. rights_check edge cases */
-    if (rights_check(RIGHT_READ, RIGHT_READ | RIGHT_WRITE)) goto out;  /* partial miss */
-    if (!rights_check(RIGHT_READ | RIGHT_WRITE, RIGHT_READ | RIGHT_WRITE)) goto out; /* exact */
-    if (!rights_check(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE, RIGHT_READ)) goto out; /* superset */
-    if (rights_check(RIGHT_NONE, RIGHT_READ)) goto out;
-    if (rights_check(RIGHT_NONE, RIGHT_NONE)) goto out; /* RIGHT_NONE never satisfies */
-
-    /* 3. Handle stores exactly the inserted rights — no inflation */
-    h_full = handle_table_insert(&phase41_ht, &n->base,
-                                 RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
-    if (h_full == HANDLE_INVALID) goto out;
-    if (handle_table_get_object(&phase41_ht, h_full, &obj, &stored) != IRIS_OK) goto out;
-    if (stored != (RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) goto out;
-    kobject_release(obj); obj = 0;
-
-    /* 4. Reduced handle has only the bits it was given — no bleed from full handle */
-    h_reduced = handle_table_insert(&phase41_ht, &n->base,
-                                    rights_reduce(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE,
-                                                  RIGHT_READ));
-    if (h_reduced == HANDLE_INVALID) goto out;
-    if (handle_table_get_object(&phase41_ht, h_reduced, &obj, &stored) != IRIS_OK) goto out;
-    if (stored != RIGHT_READ) goto out;
-    if (rights_check(stored, RIGHT_WRITE)) goto out;      /* no elevation */
-    if (rights_check(stored, RIGHT_DUPLICATE)) goto out;  /* no elevation */
-    kobject_release(obj); obj = 0;
-
-    /* 5. Stale handle rejected after close */
-    if (handle_table_close(&phase41_ht, h_full) != IRIS_OK) goto out;
-    if (handle_table_get_object(&phase41_ht, h_full, &obj, &stored) != IRIS_ERR_BAD_HANDLE) goto out;
-    /* Reduced handle still live; full handle (same or different slot) is stale */
-    if (handle_table_get_object(&phase41_ht, h_reduced, &obj, &stored) != IRIS_OK) goto out;
-    if (stored != RIGHT_READ) goto out;
-    kobject_release(obj); obj = 0;
-
-    ok = 1;
-out:
-    if (obj) kobject_release(obj);
-    handle_table_close_all(&phase41_ht);
-    if (n) knotification_free(n);
-    return ok;
-}
+/* phase41_rights_selftest RETIRED (Stage 4) — same reason: it proved rights
+ * are stored per HANDLE and reduce on dup.  Rights are stored per CSpace slot
+ * and reduce on mint; the host rights/cspace suites and iris_test T130/T154
+ * cover that. */
 
 int phase3_selftest_run(void) {
-    if (!phase3_handle_selftest()) {
-        serial_write("[IRIS][P3] WARN: handle selftest failed\n");
-        return 0;
-    }
     if (!phase3_notification_selftest()) {
         serial_write("[IRIS][P3] WARN: notification selftest failed\n");
         return 0;
@@ -397,11 +201,10 @@ int phase3_selftest_run(void) {
         serial_write("[IRIS][P3] WARN: quota selftest failed\n");
         return 0;
     }
-    if (!phase41_rights_selftest()) {
-        serial_write("[IRIS][P41] WARN: rights selftests failed\n");
-        return 0;
-    }
 
+    /* The marker names are kept: the headless gate greps for them, and what
+     * they now attest is the lifecycle half — notification, process and quota
+     * — after the handle-table halves retired with the namespace. */
     serial_write("[IRIS][P3] handle/lifecycle selftests OK\n");
     serial_write("[IRIS][P41] rights selftests OK\n");
     return 1;

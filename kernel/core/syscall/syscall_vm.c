@@ -66,7 +66,7 @@ uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_retain(&proc->base);
     } else {
         iris_rights_t rights;
-        iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+        iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                      RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
         if (r != IRIS_OK) return syscall_err(r);
         if (!rights_check(rights, RIGHT_MANAGE)) {
@@ -160,7 +160,7 @@ uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *payer_obj;
     iris_rights_t   payer_rights;
-    iris_error_t pr = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg1,
+    iris_error_t pr = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg1,
                                  RIGHT_NONE, KOBJ_PROCESS, &payer_obj, &payer_rights);
     if (pr != IRIS_OK) return syscall_err(pr);
     if (!rights_check(payer_rights, RIGHT_MANAGE)) {
@@ -201,7 +201,7 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_rights_t    rights;
     /* A1 Increment 1: dual resolver — the VMO may be a CPtr slot or a handle.
      * RIGHT_NONE defers to the READ/WRITE checks below (unchanged). */
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_VMO, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
 
@@ -382,7 +382,7 @@ uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct KObject  *obj;
     iris_rights_t    rights;
     /* A1 Increment 1b: dual resolver — the VMO may be a CPtr slot or a handle. */
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_VMO, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (!rights_check(rights, RIGHT_READ)) {
@@ -417,7 +417,7 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
     /* Fase 13: dual resolver — spawn cap may be a CPtr slot or a handle. */
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
     if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
@@ -493,7 +493,7 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
     /* Fase 13: dual resolver — spawn cap may be a CPtr slot or a handle. */
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
     if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
@@ -522,14 +522,14 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
     iris_rights_t   vmo_rights;
     /* A1 Increment 1b: dual resolver on the VMO argument only — the target
      * process stays handle-only until the Process family migrates. */
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_VMO, &vmo_obj, &vmo_rights);
     if (r != IRIS_OK) return syscall_err(r);
 
     struct KObject *proc_obj;
     iris_rights_t   proc_rights;
     /* A1 Increment 2a: dual resolver on the target process too. */
-    r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg1,
+    r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg1,
                                      RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (r != IRIS_OK) { kobject_release(vmo_obj); return syscall_err(r); }
     if (!rights_check(proc_rights, RIGHT_MANAGE)) {
@@ -706,7 +706,7 @@ uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
 
     struct KObject *vmo_obj;
     iris_rights_t   vmo_rights;
-    iris_error_t err = cspace_or_handle_resolve_obj(t->process, vmo_cptr,
+    iris_error_t err = cspace_resolve_only_obj(t->process, vmo_cptr,
                                  RIGHT_NONE, KOBJ_VMO, &vmo_obj, &vmo_rights);
     if (err != IRIS_OK) return syscall_err(err);
     if (!rights_check(vmo_rights, vmo_required)) {
@@ -717,7 +717,7 @@ uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
     /* VSpace cap: RIGHT_WRITE to install the PTE (dual resolver, Fase 25). */
     struct KVSpace *vs;
     iris_rights_t   vs_rights;
-    err = cspace_or_handle_resolve_vspace(t->process, vspace_cptr, RIGHT_WRITE,
+    err = cspace_resolve_only_vspace(t->process, vspace_cptr, RIGHT_WRITE,
                                           &vs, &vs_rights);
     if (err != IRIS_OK) { kobject_release(vmo_obj); return syscall_err(err); }
 
@@ -828,7 +828,7 @@ uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1,
 
     struct KObject *auth_obj;
     iris_rights_t   auth_rights;
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
     if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);

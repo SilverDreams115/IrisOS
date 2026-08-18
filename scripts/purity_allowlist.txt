@@ -2,33 +2,12 @@
 # Format: <file> <identifier> <max allowed>.
 # This list may only SHRINK.  Growing it requires amending the charter and the
 # ledger in the same commit, with a written technical justification.
-# Generated in Fase S2/S3 from the frozen state of the tree.
-kernel/core/phase3_selftest.c handle_table_insert 11
-kernel/core/syscall/syscall_cspace.c handle_table_insert 1
-kernel/new_core/include/iris/nc/handle_table.h handle_table_insert 2
-kernel/new_core/src/handle_table.c handle_table_insert 4
-kernel/core/phase3_selftest.c handle_table_get_object 13
-kernel/new_core/include/iris/nc/cspace.h handle_table_get_object 2
-kernel/new_core/include/iris/nc/handle_table.h handle_table_get_object 2
-kernel/new_core/src/cspace.c handle_table_get_object 2
-kernel/new_core/src/handle_table.c handle_table_get_object 1
-kernel/core/syscall/syscall_cap.c cspace_or_handle_resolve_ 1
-kernel/core/syscall/syscall_cnode_ops.c cspace_or_handle_resolve_ 2
-kernel/core/syscall/syscall_cspace.c cspace_or_handle_resolve_ 2
-kernel/core/syscall/syscall_endpoint.c cspace_or_handle_resolve_ 6
-kernel/core/syscall/syscall_frame.c cspace_or_handle_resolve_ 4
-kernel/core/syscall/syscall_ipc.c cspace_or_handle_resolve_ 3
-kernel/core/syscall/syscall_irq.c cspace_or_handle_resolve_ 9
-kernel/core/syscall/syscall_proc.c cspace_or_handle_resolve_ 9
-kernel/core/syscall/syscall_reply.c cspace_or_handle_resolve_ 3
-kernel/core/syscall/syscall_sched.c cspace_or_handle_resolve_ 4
-kernel/core/syscall/syscall_tcb.c cspace_or_handle_resolve_ 1
-kernel/core/syscall/syscall_untyped.c cspace_or_handle_resolve_ 6
-kernel/core/syscall/syscall_vm.c cspace_or_handle_resolve_ 11
-kernel/include/iris/endpoint_proto.h cspace_or_handle_resolve_ 4
-kernel/new_core/include/iris/nc/cspace.h cspace_or_handle_resolve_ 18
-kernel/new_core/include/iris/nc/handle_table.h cspace_or_handle_resolve_ 1
-kernel/new_core/src/cspace.c cspace_or_handle_resolve_ 14
+#
+# Stage 4 closed: the handle table is DELETED, so `handle_table_insert`,
+# `handle_table_get_object` and `cspace_or_handle_resolve_` have no entries —
+# the identifiers no longer exist.  What remains is Stage 6's inventory: the
+# object families still fabricated from the kslab global heap instead of being
+# retyped from an Untyped.
 kernel/core/syscall/syscall_proc.c kslab_alloc 1
 kernel/include/iris/kslab.h kslab_alloc 3
 kernel/include/iris/syscall.h kslab_alloc 1

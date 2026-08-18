@@ -4,7 +4,6 @@
 #include <iris/nc/knotification.h>
 #include <iris/nc/kvmo.h>
 #include <iris/nc/kvspace.h>
-#include <iris/nc/handle_table.h>
 #include <iris/nc/rights.h>
 #include <iris/irq_routing.h>
 #include <iris/syscall.h>
@@ -193,7 +192,6 @@ struct KProcess *kprocess_alloc(void) {
         return 0;
     }
     kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
-    handle_table_init(&p->handle_table);
     p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;
     if (iris_pcid_enabled) {
         uint64_t flags = irq_spinlock_lock(&pcid_lock);
@@ -395,7 +393,6 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
      * by kvspace_invalidate inside kprocess_reap_address_space.  No per-process
      * VMO mapping list exists; nothing to do here. */
     irq_routing_unregister_owner(p);
-    handle_table_close_all(&p->handle_table);
 
     /* Stage 4: the CSpace root used to be owned by the handle table, so
      * handle_table_close_all above released it.  It is now held structurally,

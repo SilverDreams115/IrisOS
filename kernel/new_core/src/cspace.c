@@ -1,6 +1,5 @@
 #include <iris/nc/cspace.h>
 #include <iris/nc/kprocess.h>
-#include <iris/nc/handle_table.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kreply.h>
@@ -293,7 +292,7 @@ TYPED_RESOLVE(cspace_resolve_frame,       struct KFrame,       KOBJ_FRAME)
  *   - Every object type that carries persistent authority resolves through
  *     a dual resolver in its syscalls; NEW persistent object types MUST be
  *     CSpace-invocable from day one (add a dual resolver call, not a
- *     handle_table_get_object call).
+ *     handle-table lookup).
  *   - Reply caps are the intentional ephemeral exception: one-shot,
  *     delivered by EP_RECV as a handle, never minted into a CNode.
  *   - SYS_CSPACE_RESOLVE / SYS_CNODE_FETCH materialize handles on purpose —
@@ -306,7 +305,7 @@ TYPED_RESOLVE(cspace_resolve_frame,       struct KFrame,       KOBJ_FRAME)
 /* CSPACE_DIRECT_CPTR_LIMIT / cspace_value_is_cptr moved to <iris/nc/cspace.h>:
  * the namespace split has one definition, so the retirement is one edit. */
 
-iris_error_t cspace_or_handle_resolve_cnode(struct KProcess *proc,
+iris_error_t cspace_resolve_only_cnode(struct KProcess *proc,
                                              iris_cptr_t      cptr_or_handle,
                                              iris_rights_t    required,
                                              struct KCNode  **out,
@@ -339,7 +338,7 @@ iris_error_t cspace_or_handle_resolve_cnode(struct KProcess *proc,
 }
 
 /*
- * DUAL_RESOLVE_IPC — generates cspace_or_handle_resolve_{endpoint,reply,notification}.
+ * DUAL_RESOLVE_IPC — generates cspace_resolve_only_{endpoint,reply,notification}.
  *
  * Returns lifecycle-only ref.  The CSpace path calls cspace_resolve_cap (which
  * gives active+lifecycle), then releases the active ref before returning — IPC
@@ -373,12 +372,12 @@ iris_error_t fn(struct KProcess *proc, iris_cptr_t cptr_or_handle,              
     return IRIS_ERR_INVALID_ARG;                                              \
 }
 
-DUAL_RESOLVE_IPC(cspace_or_handle_resolve_endpoint,    struct KEndpoint,    KOBJ_ENDPOINT)
-DUAL_RESOLVE_IPC(cspace_or_handle_resolve_reply,       struct KReply,       KOBJ_REPLY)
-DUAL_RESOLVE_IPC(cspace_or_handle_resolve_notification,struct KNotification,KOBJ_NOTIFICATION)
+DUAL_RESOLVE_IPC(cspace_resolve_only_endpoint,    struct KEndpoint,    KOBJ_ENDPOINT)
+DUAL_RESOLVE_IPC(cspace_resolve_only_reply,       struct KReply,       KOBJ_REPLY)
+DUAL_RESOLVE_IPC(cspace_resolve_only_notification,struct KNotification,KOBJ_NOTIFICATION)
 
 /*
- * cspace_or_handle_resolve_untyped — active+lifecycle ref contract.
+ * cspace_resolve_only_untyped — active+lifecycle ref contract.
  *
  * KUntyped operations never block (no task_yield inside INFO/RETYPE/RESET), so
  * holding active_refs for the duration of the syscall is safe.  The KUntyped
@@ -388,7 +387,7 @@ DUAL_RESOLVE_IPC(cspace_or_handle_resolve_notification,struct KNotification,KOBJ
  *   kobject_active_release(&(*out)->base);
  *   kobject_release(&(*out)->base);
  */
-iris_error_t cspace_or_handle_resolve_untyped(struct KProcess  *proc,
+iris_error_t cspace_resolve_only_untyped(struct KProcess  *proc,
                                                iris_cptr_t       cptr_or_handle,
                                                iris_rights_t     required,
                                                struct KUntyped **out,
@@ -421,13 +420,13 @@ iris_error_t cspace_or_handle_resolve_untyped(struct KProcess  *proc,
 }
 
 /*
- * cspace_or_handle_resolve_frame — active+lifecycle ref contract.
+ * cspace_resolve_only_frame — active+lifecycle ref contract.
  *
  * KFrame is a Fase 5 object; no IPC blocking occurs in frame operations.
  * CSpace-first; ACCESS_DENIED is a hard stop.  Handle-table fallback adds
  * kobject_active_retain to match the cspace_resolve_cap return contract.
  */
-iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
+iris_error_t cspace_resolve_only_frame(struct KProcess *proc,
                                              iris_cptr_t      cptr_or_handle,
                                              iris_rights_t    required,
                                              struct KFrame  **out,
@@ -460,9 +459,9 @@ iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
 }
 
 /*
- * cspace_or_handle_resolve_vspace — dual resolver for the VSpace argument of
+ * cspace_resolve_only_vspace — dual resolver for the VSpace argument of
  * SYS_FRAME_MAP/SYS_FRAME_UNMAP (Fase 25).  Same namespace split and
- * active+lifecycle ref contract as cspace_or_handle_resolve_frame.  Before
+ * active+lifecycle ref contract as cspace_resolve_only_frame.  Before
  * Fase 25 those syscalls fed the VSpace value straight into the raw radix
  * walk, where a handle (>= 1024) was masked into low root slots — the exact
  * aliasing hazard the Fase 8 split closed for every other capability
@@ -470,7 +469,7 @@ iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
  * a supervisor drive map-into-target with the SYS_PROCESS_VSPACE handle
  * directly (no permanent CSpace slot pin).
  */
-iris_error_t cspace_or_handle_resolve_vspace(struct KProcess *proc,
+iris_error_t cspace_resolve_only_vspace(struct KProcess *proc,
                                               iris_cptr_t      cptr_or_handle,
                                               iris_rights_t    required,
                                               struct KVSpace **out,
@@ -506,14 +505,15 @@ iris_error_t cspace_or_handle_resolve_vspace(struct KProcess *proc,
  * Fase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
  * KBootstrapCap, …).  Same namespace split as the typed resolvers (CPtr < 1024
  * → CSpace only; >= 1024 → handle table only) but **lifecycle-only** ref
- * contract — identical to handle_table_get_object — so callers that already
+ * contract — lifecycle-only, matching what the retired handle lookup gave —
+ * so callers that already
  * use that helper can switch with no change to their kobject_release path.
  * This lets device caps be CPtr-minted into a child's CNode and invoked by
  * CPtr, removing the last reason device caps had to travel over KChannel.
  * required==RIGHT_NONE leaves the rights check to the caller (preserving each
  * device syscall's existing rights logic).
  */
-iris_error_t cspace_or_handle_resolve_obj(struct KProcess  *proc,
+iris_error_t cspace_resolve_only_obj(struct KProcess  *proc,
                                           iris_cptr_t       cptr_or_handle,
                                           iris_rights_t     required,
                                           uint32_t          expected_type,
@@ -554,7 +554,7 @@ iris_error_t cspace_or_handle_resolve_obj(struct KProcess  *proc,
  * the capability that was invoked (slot badge on the CSpace path, handle
  * badge on the handle path; 0 = unbadged).
  */
-iris_error_t cspace_or_handle_resolve_endpoint_badged(struct KProcess  *proc,
+iris_error_t cspace_resolve_only_endpoint_badged(struct KProcess  *proc,
                                                        iris_cptr_t       cptr_or_handle,
                                                        iris_rights_t     required,
                                                        struct KEndpoint **out,

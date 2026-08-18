@@ -179,7 +179,7 @@
  *              receive-slot deliveries; the 16..29 pool is exhausted).
  *
  * Fase 13: KIoPort, KIrqCap and KBootstrapCap NOW resolve through CSpace via
- * the generic dual resolver cspace_or_handle_resolve_obj() — the device-access
+ * the generic dual resolver cspace_resolve_only_obj() — the device-access
  * syscalls (SYS_IOPORT_IN/OUT, SYS_IRQ_ROUTE_REGISTER, SYS_IRQ_ACK,
  * SYS_INITRD_*, SYS_PROCESS_CREATE, SYS_CAP_CREATE_*, SYS_BOOTCAP_RESTRICT,
  * SYS_FRAMEBUFFER_VMO) accept a CPtr slot or a handle.  This removes the last
@@ -278,7 +278,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 /* Fase 13 (Track C): the initrd-access KBootstrapCap (SPAWN_SERVICE) is minted
  * into this slot before the child starts — replaces the post-spawn KChannel
  * SVCMGR_BOOTSTRAP_KIND_INITRD_CAP delivery.  Resolves via the device-cap dual
- * resolver (cspace_or_handle_resolve_obj), so SYS_INITRD_* accept it by CPtr. */
+ * resolver (cspace_resolve_only_obj), so SYS_INITRD_* accept it by CPtr. */
 #define IRIS_CPTR_SPAWN_CAP   ((uint64_t)6)
 #define IRIS_CPTR_IRQ_NOTIFY  ((uint64_t)7)
 /* Fase 13 (Track C): the legacy handle-boundary caps for a non-endpoint_only
@@ -286,7 +286,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * now arrive as pre-start CSpace mints instead of post-spawn KChannel
  * SVCMGR_BOOTSTRAP_KIND_{SERVICE,REPLY,IOPORT_CAP,IRQ_CAP} messages.  The
  * KChannel slots are resolved to handles (CHAN_RECV/SEND need handle-table
- * handles); the device caps resolve by CPtr (cspace_or_handle_resolve_obj). */
+ * handles); the device caps resolve by CPtr (cspace_resolve_only_obj). */
 #define IRIS_CPTR_SVC_CHAN    ((uint64_t)8)
 #define IRIS_CPTR_SVC_REPLY   ((uint64_t)9)
 #define IRIS_CPTR_IOPORT      ((uint64_t)10)
@@ -302,7 +302,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * the reserved-but-unminted probe used by T041). */
 #define IRIS_CPTR_TEST_SUPER  ((uint64_t)27)
 /* Fase 13: a device/authority cap (the spawn KBootstrapCap) minted into a
- * CPtr slot, proving device caps resolve via CSpace (cspace_or_handle_resolve_obj)
+ * CPtr slot, proving device caps resolve via CSpace (cspace_resolve_only_obj)
  * and are invocable by CPtr — the prerequisite for KChannel-free bootstrap. */
 #define IRIS_CPTR_TEST_SPAWN  ((uint64_t)26)
 /* A1 Increment 1: iris_test's OWN process cap (RIGHT_WRITE|RIGHT_DUPLICATE),
