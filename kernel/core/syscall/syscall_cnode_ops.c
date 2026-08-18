@@ -59,44 +59,20 @@ uint64_t sys_cnode_move(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return 0;
 }
 
+/*
+ * SYS_CNODE_FETCH (90) — RETIRED (Stage 4).  The number stays permanently
+ * reserved and answers NOT_SUPPORTED.
+ *
+ * It read a capability out of a CNode slot and published a COPY of it as a
+ * handle: a slot-to-handle copy, i.e. the one direction Stage 4 exists to
+ * delete.  Its CSpace form is SYS_CSPACE_MINT (slot to slot), which also
+ * records the derivation edge that the handle copy could not express — a
+ * fetched handle had no MDB relationship to the slot it came from, so
+ * revoking the slot left the copy alive.  Nothing in the tree called it.
+ */
 uint64_t sys_cnode_fetch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    iris_cptr_t cptr_or_h = (iris_cptr_t)arg0;
-    uint32_t    slot_idx  = (uint32_t)arg1;
-    (void)arg2;
-
-    if (!cptr_or_h) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    struct KProcess *proc = t->process;
-    HandleTable     *ht   = &proc->handle_table;
-
-    struct KCNode  *cn;
-    iris_rights_t   cn_rights;
-    iris_error_t err = cspace_or_handle_resolve_cnode(proc, cptr_or_h,
-                                                       RIGHT_READ, &cn, &cn_rights);
-    if (err != IRIS_OK)
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
-
-    struct KObject *slot_obj;
-    iris_rights_t   slot_rights;
-    uint64_t        slot_badge = 0;
-    err = kcnode_fetch_badged(cn, slot_idx, &slot_obj, &slot_rights, &slot_badge);
-    kobject_active_release(&cn->base);
-    kobject_release(&cn->base);
-    if (err != IRIS_OK) return syscall_err(err);
-
-    /* slot_obj: kcnode_fetch gave us active+lifecycle working refs.
-     * handle_table_insert → handle_entry_init adds another active+lifecycle pair.
-     * We drop our working refs after the insert.  Fase 9: the badge follows
-     * the cap from the slot into the handle table. */
-    handle_id_t h = handle_table_insert_badged(ht, slot_obj, slot_rights,
-                                               slot_badge);
-    kobject_active_release(slot_obj);
-    kobject_release(slot_obj);
-
-    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
-    return (uint64_t)h;
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2) {

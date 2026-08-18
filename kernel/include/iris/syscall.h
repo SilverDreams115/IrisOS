@@ -317,14 +317,10 @@
 /*
  * I/O port sub-delegation — modern/conforming (iris_error_t).
  *
- * SYS_IOPORT_RESTRICT(ioport_h, offset, count) → new_handle_id or negative iris_error_t
- *   ioport_h: KOBJ_IOPORT with RIGHT_READ | RIGHT_DUPLICATE.
- *   offset: port offset within the parent range (0 ≤ offset < parent.count).
- *   count: ports in the sub-range (1 ≤ count; offset + count ≤ parent.count).
- *   Returns a new KOBJ_IOPORT handle for [parent.base + offset, +count) with
- *   RIGHT_READ|RIGHT_DUPLICATE|RIGHT_TRANSFER.
- *   Use case: svcmgr delegates a narrow sub-range to a service that only needs
- *   one specific port within a wider authorized range.
+ * SYS_IOPORT_RESTRICT — RETIRED (Stage 4).  Number permanently reserved;
+ * returns IRIS_ERR_NOT_SUPPORTED.  It published a narrowed KIoPort as a handle
+ * with no capability ancestor; SYS_CAP_CREATE_IOPORT publishes into a CSpace
+ * slot as an MDB child of the authorising bootstrap cap instead.
  */
 #define SYS_IOPORT_RESTRICT  43
 
@@ -784,11 +780,10 @@
  *   src_h is consumed (removed from HT) — seL4 Move semantics.
  *   If slot_idx was occupied, the old capability is released.
  *
- * SYS_CNODE_FETCH(cnode_h, slot_idx) → new_handle_id or negative iris_error_t
- *   Requires RIGHT_READ on cnode_h.
- *   Copies the CNode slot capability into a new HT handle entry.
- *   The CNode slot remains populated (non-destructive).
- *   Returns IRIS_ERR_NOT_FOUND if the slot is empty.
+ * SYS_CNODE_FETCH — RETIRED (Stage 4).  Number permanently reserved; returns
+ * IRIS_ERR_NOT_SUPPORTED.  It copied a slot's capability into a HANDLE, with
+ * no MDB edge back to the slot, so revoking the slot left the copy alive.
+ * SYS_CSPACE_MINT is the slot-to-slot form and records the derivation.
  *
  * SYS_CNODE_DELETE(cnode_h, slot_idx) → 0 or negative iris_error_t
  *   Requires RIGHT_WRITE on cnode_h.

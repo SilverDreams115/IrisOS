@@ -268,49 +268,20 @@ uint64_t sys_handle_insert(uint64_t arg0, uint64_t arg1,
 /* ── I/O port sub-delegation (A4) ───────────────────────────────────── */
 
 /*
- * sys_ioport_restrict(ioport_h, offset, count) → new_handle or iris_error_t
+ * SYS_IOPORT_RESTRICT (43) — RETIRED (Stage 4).  The number stays permanently
+ * reserved and answers NOT_SUPPORTED.
  *
- * Creates a narrower KIoPort from an existing one.  Requires RIGHT_READ |
- * RIGHT_DUPLICATE on ioport_h.  offset + count must fit within the parent range.
- * The derived cap is granted READ|WRITE|DUPLICATE|TRANSFER so it can do both IN and OUT.
+ * It narrowed a KIoPort by fabricating a NEW KIoPort from kslab and publishing
+ * it as a handle — device authority with no capability ancestor, so it could
+ * be neither traced to its grantor nor revoked by one.  That is the exact
+ * defect Fase S4 fixed for SYS_CAP_CREATE_IOPORT, which now publishes into a
+ * CSpace slot as an MDB child of the bootstrap cap that authorised it.
+ * Nothing in the tree ever called this — not even a test — so it retires
+ * rather than acquiring a destination slot it would be the only user of.
  */
 uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KObject *obj;
-    iris_rights_t   rights;
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
-                                 RIGHT_NONE, KOBJ_IOPORT, &obj, &rights);
-    if (r != IRIS_OK) return syscall_err(r);
-    if (!rights_check(rights, RIGHT_READ | RIGHT_DUPLICATE)) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    struct KIoPort *parent = (struct KIoPort *)obj;
-    uint16_t offset = (uint16_t)(arg1 & 0xFFFFu);
-    uint16_t count  = (uint16_t)(arg2 & 0xFFFFu);
-
-    if (count == 0 || (uint32_t)offset + count > (uint32_t)parent->count) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-
-    uint16_t new_base = (uint16_t)(parent->base_port + offset);
-    kobject_release(obj);
-
-    struct KIoPort *sub = kioport_alloc(new_base, count);
-    if (!sub) return syscall_err(IRIS_ERR_NO_MEMORY);
-
-    handle_id_t h = handle_table_insert(&t->process->handle_table, &sub->base,
-                                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-    if (h == HANDLE_INVALID) {
-        kioport_free(sub);
-        return syscall_err(IRIS_ERR_TABLE_FULL);
-    }
-    kobject_release(&sub->base);
-    return syscall_ok_u64((uint64_t)h);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 

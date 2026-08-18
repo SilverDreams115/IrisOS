@@ -9883,9 +9883,13 @@ static const long it_fz_bad_handles[] = {
  * Invariants: X1, X9, X15, X16, X18, X23. */
 static void test_t148(void) {
     /* Holes in 0..107 (every number NOT routed by syscall_dispatch). */
+    /* Holes plus the routed-but-RETIRED numbers, which are indistinguishable
+     * from a hole at the ABI: both answer NOT_SUPPORTED and touch nothing.
+     * 43 = SYS_IOPORT_RESTRICT and 90 = SYS_CNODE_FETCH joined them in Stage 4
+     * (both were handle producers with no CSpace form and no callers). */
     static const long retired[] = {
         0, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 18, 23, 24, 25, 30, 31, 34,
-        37, 38, 41, 42, 44, 63, 72,
+        37, 38, 41, 42, 43, 44, 63, 72, 78, 79, 80, 90,
     };
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
