@@ -34,15 +34,27 @@ static iris_error_t tcb_resolve(struct KProcess *proc, iris_cptr_t cptr,
 }
 
 uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
+    (void)arg1; (void)arg2;
 
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_NOT_FOUND);
 
     /* The calling thread IS its own KTCB — hand out a cap to &t->base. */
-    handle_id_t h = handle_table_insert(
-        &t->process->handle_table, &t->base,
-        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+    const iris_rights_t rights =
+        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+
+    /* Stage 4: arg0 is a destination slot (RETYPE2 packing).  The TCB is the
+     * caller itself, borrowed, so publish_slot's consuming release needs a
+     * reference of its own. */
+    if (arg0 != 0u) {
+        kobject_retain(&t->base);
+        iris_error_t pe = syscall_publish_slot(t, &t->base, rights, arg0, 0, 0);
+        if (pe != IRIS_OK) return syscall_err(pe);
+        return syscall_ok_u64(0);
+    }
+
+    handle_id_t h = handle_table_insert(&t->process->handle_table, &t->base,
+                                        rights);
     if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
     return (uint64_t)h;
 }

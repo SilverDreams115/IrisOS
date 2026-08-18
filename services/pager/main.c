@@ -490,7 +490,13 @@ static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t fla
 void pager_main(handle_id_t bootstrap_ch_h);
 void pager_main(handle_id_t bootstrap_ch_h) {
     (void)bootstrap_ch_h;
-    g_self_vs = pg_sys1(SYS_VSPACE_SELF, 0);
+    /* Stage 4: publish our own VSpace into a CSpace slot instead of taking a
+     * handle for it.  The manifest oracle reports slot 15 from here on — the
+     * pager's authority is now fully described by its CSpace, which is the
+     * property the oracle exists to prove. */
+    g_self_vs = (pg_sys1(SYS_VSPACE_SELF,
+                         (long)((uint64_t)PGR_SLOT_SELF_VS << 32)) == 0)
+                ? (long)PGR_SLOT_SELF_VS : -1;
     g_diag.cache_capacity = PGR_CACHE_CAP;
 
     struct IrisMsg msg;

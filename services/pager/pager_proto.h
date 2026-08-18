@@ -34,6 +34,15 @@
  *                               introduced to fit the per-process notification
  *                               quota, retired in Fase S1; the shared
  *                               notification is kept because it is cheaper.)
+ *   slot 15 PGR_SLOT_SELF_VS      the pager's OWN address space, published by
+ *                               SYS_VSPACE_SELF at start-up (Stage 4).  It is
+ *                               not minted by the supervisor: a process's own
+ *                               VSpace is an attribute of being a process, and
+ *                               the pager needs it as a MAP target for the
+ *                               scratch window it reads backings through.  It
+ *                               used to be a handle, which is why the manifest
+ *                               oracle could not see it — the one piece of the
+ *                               pager's authority the report was blind to.
  *   slot 16/17 PGR_VSLOT(j)     VMO grants (RO cache / private pool, or raw
  *                               Fase 27 VMOs), RIGHT_READ [+ RIGHT_WRITE]
  *   target i (i < PGR_MAX_TARGETS = 16):
@@ -50,6 +59,10 @@
 /* Fase S1: the pager's explicit reply object (supervisor retypes it from its
  * untyped pool and mints it here); passed as arg2 of every ctrl-EP recv. */
 #define PGR_SLOT_REPLY        13u
+/* Stage 4: the pager's own VSpace as a capability, not a handle.  Inside the
+ * 0..19 window the manifest oracle reports, deliberately: it is authority the
+ * pager holds and the report must account for it. */
+#define PGR_SLOT_SELF_VS      15u
 
 #define PGR_MAX_TARGETS    16u
 #define PGR_MAX_VMOS       2u

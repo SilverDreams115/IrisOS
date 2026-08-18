@@ -314,15 +314,14 @@ static long it_xfer_slot(handle_id_t src_h, uint32_t slot, uint32_t rights) {
 
 /* A source SLOT survived a failed/canceled delivery and still names a live
  * notification.  Replaces the pre-S4 "SYS_HANDLE_TYPE on the source handle"
- * probe, which no longer applies: the source is a CPtr. */
+ * probe, which no longer applies: the source is a CPtr.
+ *
+ * Etapa 6a: asked directly of the slot.  It used to materialise a handle to
+ * read the type and hand it back, which made a read-only probe depend on the
+ * namespace it is proving unnecessary. */
 static void it_close(handle_id_t *h);   /* forward */
 static int it_slot_is_notif(long slot) {
-    long h = it_sys1(SYS_CSPACE_RESOLVE, slot);
-    if (h < 0) return 0;
-    int ok = (it_sys1(SYS_HANDLE_TYPE, h) == (long)IRIS_HANDLE_TYPE_NOTIFICATION);
-    handle_id_t hh = (handle_id_t)h;
-    it_close(&hh);
-    return ok;
+    return it_sys1(SYS_CAP_IDENTIFY, slot) == (long)IRIS_HANDLE_TYPE_NOTIFICATION;
 }
 
 /* Mint a source slot with EXACTLY the requested rights (no implicit
@@ -381,11 +380,7 @@ static long it_cdt_reduced(handle_id_t src_h, uint32_t root_slot,
 }
 
 static int it_cdt_alive(long cptr) {
-    long h = it_sys1(SYS_CSPACE_RESOLVE, cptr);
-    if (h < 0) return 0;
-    handle_id_t hh = (handle_id_t)h;
-    it_close(&hh);
-    return 1;
+    return it_sys1(SYS_CAP_IDENTIFY, cptr) >= 0;
 }
 
 static long it_cdt_revoke(long cptr) {
@@ -13903,6 +13898,7 @@ static void test_t201(void) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
                           (1u << 13) /* Fase S1: explicit reply object */ |
+                          (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
                           (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest mismatch"; }
         /* Explicitly none of: core client eps (1/2/4 — slot 3 is the control
@@ -14160,6 +14156,7 @@ static void test_t205(void) {
         long mask = t27_pager_call(p2.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
                           (1u << 13) /* Fase S1: explicit reply object */ |
+                          (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
                           (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "restart manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) {
@@ -14724,6 +14721,7 @@ static void test_t215(void) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
                           (1u << 13) /* Fase S1: explicit reply object */ |
+                          (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
                           (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) {
@@ -15289,7 +15287,8 @@ static void test_t217(void) {
      * + target proc/vs presence (20/21). */
     if (ok) {
         long mask = t27_pager_call(f.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
-        uint32_t expect = (1u<<3)|(1u<<4)|(1u<<5)|(1u<<13)|(1u<<16)|(1u<<17)|(1u<<20)|(1u<<21);
+        /* 15 = the pager's own VSpace, a capability since Stage 4. */
+        uint32_t expect = (1u<<3)|(1u<<4)|(1u<<5)|(1u<<13)|(1u<<15)|(1u<<16)|(1u<<17)|(1u<<20)|(1u<<21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) { ok = 0; why = "extra authority"; }
     }

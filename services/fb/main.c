@@ -82,8 +82,17 @@ void fb_main_c(handle_id_t bootstrap_h) {
     /* Fase 13 (Track I): the framebuffer KBootstrapCap arrives as the
      * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint — SYS_FRAMEBUFFER_VMO resolves
      * it by CPtr through the device-cap dual resolver.  No bootstrap KChannel. */
-    handle_id_t cap_h  = (handle_id_t)IRIS_CPTR_SPAWN_CAP;
-    handle_id_t vmo_h  = HANDLE_INVALID;
+    /* The framebuffer KBootstrapCap is a CSpace slot, not a handle: it is
+     * never closed, and it must never be passed to SYS_HANDLE_CLOSE — that
+     * call used to sit on the error path, where cap_h had not yet been
+     * blanked, and asked the handle table to close CPtr 6. */
+    const long  cap_cptr = (long)IRIS_CPTR_SPAWN_CAP;
+    /* Stage 4: the framebuffer VMO lands in a CSpace slot of fb's own choosing
+     * instead of coming back as a handle.  fb's manifest is a single mint
+     * (IRIS_CPTR_SPAWN_CAP), so every slot above it is free; 16 keeps a clear
+     * gap from the well-known service range. */
+    const long  fb_vmo_slot = 16;
+    long        vmo_cptr = -1;
     struct iris_fb_params params;
 
     (void)fb_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_h);
@@ -96,19 +105,16 @@ void fb_main_c(handle_id_t bootstrap_h) {
         for (i = 0; i < (uint32_t)sizeof(params); i++) raw[i] = 0;
     }
     {
-        long r = fb_sys4(SYS_FRAMEBUFFER_VMO, (long)cap_h,
-                         (long)(uintptr_t)&params, 0, 0);
+        long r = fb_sys4(SYS_FRAMEBUFFER_VMO, cap_cptr,
+                         (long)(uintptr_t)&params,
+                         (long)((uint64_t)fb_vmo_slot << 32), 0);
         if (r < 0) goto out;
-        vmo_h = (handle_id_t)r;
+        vmo_cptr = fb_vmo_slot;
     }
-    /* cap_h is the IRIS_CPTR_SPAWN_CAP CSpace slot, not an owned handle —
-     * reaped with the address space, nothing to close (Track I). */
-    cap_h = HANDLE_INVALID;
-
     if (params.width == 0 || params.height == 0 || params.size == 0) goto out;
 
     /* ── Map framebuffer ──────────────────────────────────────────── */
-    if (fb_sys3(SYS_VMO_MAP, (long)vmo_h, (long)USER_VMO_BASE,
+    if (fb_sys3(SYS_VMO_MAP, vmo_cptr, (long)USER_VMO_BASE,
                 (long)MAP_WRITABLE) != IRIS_OK)
         goto out;
 
@@ -143,8 +149,10 @@ void fb_main_c(handle_id_t bootstrap_h) {
 out:
     if (bootstrap_h != HANDLE_INVALID)
         (void)fb_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_h);
-    if (cap_h != HANDLE_INVALID)
-        (void)fb_sys1(SYS_HANDLE_CLOSE, (long)cap_h);
-    if (vmo_h != HANDLE_INVALID)
-        (void)fb_sys1(SYS_HANDLE_CLOSE, (long)vmo_h);
+    /* The framebuffer cap is a CSpace slot now: fb is fire-and-forget and its
+     * whole CSpace is torn down with the address space, so there is nothing to
+     * close.  Deleting the slot explicitly would also work and is what a
+     * long-lived service would do. */
+    if (vmo_cptr >= 0)
+        (void)fb_sys2(SYS_CNODE_DELETE, 0, vmo_cptr);
 }

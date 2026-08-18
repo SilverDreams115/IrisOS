@@ -17,16 +17,29 @@
  * another VSpace; there is no cross-process reach here.
  */
 uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
+    (void)arg1; (void)arg2;
     struct task *t = task_current();
     if (!t || !t->process || !t->process->vspace)
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KVSpace *vs = t->process->vspace;
+    const iris_rights_t rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
+
+    /* Stage 4: arg0 is a destination slot (RETYPE2 packing).  The VSpace is
+     * borrowed from the process, so publish_slot's consuming release needs a
+     * reference of its own.  A LEGACY_ROOT: the caller's own address space is
+     * an attribute of being a process, not something another slot granted. */
+    if (arg0 != 0u) {
+        kobject_retain(&vs->base);
+        iris_error_t pe = syscall_publish_slot(t, &vs->base, rights, arg0, 0, 0);
+        if (pe != IRIS_OK) return syscall_err(pe);
+        return syscall_ok_u64(0);
+    }
+
     /* handle_entry_init takes the retain + active-retain; the caller's close
      * drops both.  Same object-cap-accessor shape as SYS_TCB_SELF. */
     handle_id_t h = handle_table_insert(&t->process->handle_table, &vs->base,
-                                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
+                                        rights);
     if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
     return (uint64_t)h;
 }
@@ -76,9 +89,19 @@ uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(&proc->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
+    const iris_rights_t rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
+
+    /* Stage 4: arg1 is a destination slot (RETYPE2 packing). */
+    if (arg1 != 0u) {
+        kobject_retain(&vs->base);
+        kobject_release(&proc->base);
+        iris_error_t pe = syscall_publish_slot(t, &vs->base, rights, arg1, 0, 0);
+        if (pe != IRIS_OK) return syscall_err(pe);
+        return syscall_ok_u64(0);
+    }
 
     handle_id_t h = handle_table_insert(&t->process->handle_table, &vs->base,
-                                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
+                                        rights);
     kobject_release(&proc->base);
     if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
     return (uint64_t)h;
@@ -854,7 +877,7 @@ uint64_t sys_vmo_share(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1,
                                     uint64_t arg2, uint64_t arg3) {
-    (void)arg2; (void)arg3;
+    (void)arg3;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -877,10 +900,21 @@ uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1,
 
     struct KVmo *v = kvmo_wrap(g_iris_fb_params.phys, g_iris_fb_params.size);
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
+    const iris_rights_t rights = RIGHT_READ | RIGHT_WRITE |
+                                 RIGHT_DUPLICATE | RIGHT_TRANSFER;
+
+    /* Stage 4: arg2 is a destination slot (RETYPE2 packing).  The framebuffer
+     * is authorised by the bootstrap cap in arg0, but that cap was resolved
+     * and released above, so the grant is published as a root rather than a
+     * child of it — the ancestry the device caps get is Stage 5 work. */
+    if (arg2 != 0u) {
+        iris_error_t pe = syscall_publish_slot(t, &v->base, rights, arg2, 0, 0);
+        if (pe != IRIS_OK) return syscall_err(pe);
+        return syscall_ok_u64(0);
+    }
 
     handle_id_t h = handle_table_insert(&t->process->handle_table, &v->base,
-                                        RIGHT_READ | RIGHT_WRITE |
-                                        RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                                        rights);
     if (h == HANDLE_INVALID) {
         kobject_release(&v->base);
         return syscall_err(IRIS_ERR_TABLE_FULL);

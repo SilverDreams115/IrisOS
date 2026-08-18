@@ -26,14 +26,26 @@ uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 
 uint64_t sys_process_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
+    (void)arg1; (void)arg2;
     struct task *t = task_current();
     handle_id_t h;
 
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    const iris_rights_t rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+
+    /* Stage 4: arg0 is a destination slot (RETYPE2 packing).  The process
+     * object is borrowed from the caller's own task, so publish_slot's
+     * consuming release needs a reference of its own. */
+    if (arg0 != 0u) {
+        kobject_retain(&t->process->base);
+        iris_error_t pe = syscall_publish_slot(t, &t->process->base, rights,
+                                               arg0, 0, 0);
+        if (pe != IRIS_OK) return syscall_err(pe);
+        return syscall_ok_u64(0);
+    }
+
     h = handle_table_insert(&t->process->handle_table,
-                            &t->process->base,
-                            RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                            &t->process->base, rights);
     if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_TABLE_FULL);
     return syscall_ok_u64((uint64_t)h);
 }

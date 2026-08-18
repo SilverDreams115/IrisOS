@@ -95,9 +95,13 @@
                                  *   queries SYS_PROCESS_EXIT_CODE / STATUS for detail.
                                  *   Requires RIGHT_READ on proc_handle and RIGHT_WRITE on
                                  *   notify_handle. signal_bits must be non-zero. */
-#define SYS_PROCESS_SELF    28  /* () → self proc_handle or negative iris_error_t
-                                 *   Returns a handle to the caller's own KProcess with
+#define SYS_PROCESS_SELF    28  /* (dest) → self proc_handle, or 0 when dest names a slot,
+                                 *   or negative iris_error_t
+                                 *   Yields a capability to the caller's own KProcess with
                                  *   RIGHT_READ|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+                                 *   Stage 4: dest (arg0) is a destination slot in RETYPE2
+                                 *   packing — see SYS_VSPACE_SELF; dest == 0 keeps the
+                                 *   legacy handle result.
                                  *   Intended for userland-owned lifecycle tracking such as
                                  *   service-side cleanup keyed to client process death. */
 /*
@@ -242,7 +246,9 @@
 /*
  * Framebuffer VMO claim — modern/conforming (iris_error_t).
  *
- * SYS_FRAMEBUFFER_VMO(auth_h, info_uptr) → vmo_handle or negative iris_error_t
+ * SYS_FRAMEBUFFER_VMO(auth, info_uptr, dest) → vmo_handle, or 0 when dest
+ *   names a slot, or negative iris_error_t   (Stage 4 destination slot in
+ *   arg2, RETYPE2 packing — see SYS_VSPACE_SELF)
  *   auth_h:    KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_FRAMEBUFFER.
  *   info_uptr: user pointer to struct iris_fb_params (see iris/fb_info.h);
  *              filled with physical base, size, and pixel geometry on success.
@@ -918,7 +924,12 @@
 #define SYS_FRAME_UNMAP 103
 
 /*
- * SYS_VSPACE_SELF() → handle_id or negative iris_error_t   (Fase 19)
+ * SYS_VSPACE_SELF(dest) → handle_id, or 0 when dest names a slot, or negative
+ *   iris_error_t   (Fase 19; Stage 4 destination slot)
+ *   dest == 0 → legacy: the cap is published as a handle.
+ *   dest != 0 → RETYPE2 packing (CNode in the low 32 bits, 0 = own root;
+ *   slot index in the high 32).  The cap is installed in that slot and the
+ *   call returns 0.  The handle leg dies with the handle namespace.
  *
  * Returns a new handle to the CALLER'S OWN VSpace (KOBJ_VSPACE) with
  * RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE.  Self-authority only: a process
@@ -935,7 +946,9 @@
 #define SYS_VSPACE_SELF 106
 
 /*
- * SYS_PROCESS_VSPACE(proc_h) → handle_id or negative iris_error_t   (Fase 25)
+ * SYS_PROCESS_VSPACE(proc, dest) → handle_id, or 0 when dest names a slot, or
+ *   negative iris_error_t   (Fase 25; Stage 4 destination slot in arg1,
+ *   RETYPE2 packing — see SYS_VSPACE_SELF)
  *
  * Returns a new handle to the TARGET process's VSpace (KOBJ_VSPACE) with
  * RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE.  Requires RIGHT_MANAGE on proc_h
@@ -1212,7 +1225,9 @@ struct iris_untyped_query_taskobj {
  * Each user thread receives a KTcb at creation time; handles are installed
  * in the owning process's handle table automatically.
  *
- * SYS_TCB_SELF() → handle_id or negative iris_error_t
+ * SYS_TCB_SELF(dest) → handle_id, or 0 when dest names a slot, or negative
+ *   iris_error_t   (Stage 4 destination slot in arg0, RETYPE2 packing —
+ *   see SYS_VSPACE_SELF)
  *   Returns a new handle to the calling thread's KTcb with
  *   RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
  *
