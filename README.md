@@ -75,6 +75,17 @@ authorised it, so both are revocable by their grantor. See
 `effective = source_rights & requested`; rights that collapse to `RIGHT_NONE`
 are rejected. `ACCESS_DENIED` is a hard stop with no fallback.
 
+### Introspection
+
+`SYS_CAP_IDENTIFY(cptr)` returns the type of the capability in a slot the
+caller names, and `SYS_CAP_SAME_OBJECT(a, b)` says whether two slots name the
+same kernel object (identity only — rights and badge are not compared). Both
+are CPtr-only, take no right, produce no capability and retain nothing past the
+call; a handle value is `INVALID_ARG` with no fallback. They exist because a
+supervisor must narrow its protocol on the type of a cap it was just handed,
+and because proving that a transferred capability is the *same* object the
+sender held is an authority property, not a debugging convenience.
+
 ### CPtr-first addressing & the namespace split
 
 Services are handed their well-known capabilities **before they start**, minted
@@ -82,10 +93,18 @@ directly into their root CNode (`SYS_PROC_CSPACE_MINT`), and invoke them by CPtr
 — e.g. `SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)` — with no handle transfer. CPtrs
 and handle IDs share one argument namespace, split and enforced by the kernel:
 
-- **value `< 1024`** → resolved through the **CSpace only** (no handle-table
-  fallback; a missing slot fails cleanly).
-- **value `>= 1024`** → resolved through the **handle table only** (handle IDs
-  are `slot | generation<<10`, generation ≥ 1).
+- **handle tag bit (bit 31) clear** → resolved through the **CSpace only** (no
+  handle-table fallback; a missing slot fails cleanly).
+- **handle tag bit set** → resolved through the **handle table only** (handle
+  IDs are `HANDLE_TAG | generation<<10 | slot`, generation ≥ 1).
+
+The boundary was the literal 1024 until Fase S4/Stage 4, which left CPtrs ten
+bits for a process's whole capability address space. CPtrs own the low 31 bits
+now, so multi-level CSpace is usable: a CPtr is walked radix-by-radix through
+the CNode tree, and it addresses **exactly one** capability — leftover bits at
+a non-CNode terminal are `INVALID_ARG`, not a silent alias of a shallower slot.
+Receive slots are full CPtrs too, so a process whose root CNode is full can
+still be handed a capability.
 
 Well-known child slots: `1` svcmgr EP, `2` vfs EP, `3` console EP, `4` kbd EP,
 `5` own EP (recv), `6` spawn/authority cap, `7` IRQ notification.

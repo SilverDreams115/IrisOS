@@ -15,7 +15,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 1 — CDT/MDB | ✅ CLOSED (Fase S3) |
 | 2 — CSpace-only cap transfer | ✅ CLOSED (Fase S4) |
 | 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
-| 4 — Dual namespace retirement | ← NEXT |
+| 4 — Dual namespace retirement | ← IN PROGRESS (Etapas 1–6b done; 6c remaining) |
 | 5 — seL4-like bootstrap | pending |
 | 6 — Remaining memory and objects | pending |
 | 7 — KProcess retirement | pending |
@@ -292,10 +292,38 @@ group: migrating them would leave them asserting nothing.  T019 is the second �
 "dropping the last capability to an endpoint wakes a blocked receiver" is as
 true in seL4, it was merely spelled `SYS_HANDLE_CLOSE`.
 
-Migration is per-test and cannot be batched: a sweep over every
+Migration is per-test and cannot be batched blindly: a sweep over every
 `it_ep_create()` inside tests that also call `it_register_ep` broke eight at
 once, because those tests use the same endpoint for other things and their
 `it_close()` calls also close process and thread handles that are not moving.
+
+It CAN be batched behind the runtime gate, which is how the bulk moved: convert
+a group, run the suite, and read the failures as a map of what the group was
+really doing.  Every failure so far was a place where an operation had a CSpace
+form nobody had switched to — `SYS_CNODE_MINT` (handle-only source) where
+`SYS_CSPACE_MINT` belonged, a handle-to-handle identity comparison where
+`SYS_CAP_SAME_OBJECT` belonged, `SYS_HANDLE_DUP` where a slot-to-slot derive
+belonged — not a place where the handle was load-bearing.  `it_cs_reduce` is
+the last of those: the CSpace form of "a rights-reduced copy", which is also
+strictly better than the dup it replaces, because the reduced cap is an MDB
+child of its source and therefore revocable.
+
+**Progress.**  Bridge uses inside `iris_test`, counted as occurrences of
+`it_ep_create_h` / `it_notify_create_h` / `it_retype_handle` /
+`SYS_HANDLE_DUP` / `SYS_HANDLE_TYPE` / `SYS_HANDLE_SAME_OBJECT` /
+`SYS_HANDLE_CLOSE` / `SYS_CSPACE_RESOLVE` / `SYS_CNODE_MINT`:
+
+| point | uses |
+|---|---|
+| close of Etapa 5 | 197 |
+| after Etapa 6a/6b (lookups, liveness probes, self-proc, vestigial KDEBUG staging) | 178 |
+| after the endpoint/notification fixture migration | 137 |
+
+What is left is dominated by fixtures the suite cannot yet fabricate into a
+slot: `SYS_HANDLE_DUP` on VMO / KProcess / KVSpace / KFrame / KSchedContext
+caps, and `it_retype_handle` for the legacy `SYS_UNTYPED_RETYPE` families.
+Those retire as their CREATORS gain CSpace destinations — the same move the
+object-cap accessors just made — not by rewriting the tests around them.
 
 Nothing remains of the bridge outside the suite: svcmgr's delivered-cap path
 and the `pager` / `lifecycle_probe` manifest oracles all moved to
