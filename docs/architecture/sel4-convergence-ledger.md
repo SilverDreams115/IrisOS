@@ -26,7 +26,7 @@ reserved, no functionality) · `REMOVED` (deleted).
 | per-process VMO/page quotas (Fase 29) | resource domain parallel to explicit memory | KVMO/paging | Untyped | with KProcess/KVMO | yes | LEGACY_FOR_KPROCESS_KVMO (ACTIVE_LEGACY) |
 | payer selection (`SYS_VMO_CREATE_FOR`) | per-payer accounting | svc_loader | Untyped delegation | with KVMO | yes | ACTIVE_LEGACY |
 | `SYS_RESOURCE_INFO` notifs_* fields | mirror of a retired quota | tests (read 0) | — (additive, frozen at 0) | with KProcess | yes | TRANSITIONAL_DIAGNOSTICS |
-| handle table / dual resolution | second authority namespace | every dual-resolver syscall; A1 materialization | CSpace-only invocation | CSpace-only ABI | new handle-first paths for canonical objects: FORBIDDEN (guard: T251/T260; review) | FROZEN for new producers (A1 list closed) |
+| handle table / dual resolution | second authority namespace | every dual-resolver syscall; A1 materialization | CSpace-only invocation | CSpace-only ABI | new handle-first paths for canonical objects: FORBIDDEN (guard: T251/T260; review) | FROZEN for new producers (A1 list closed).  Fase S4/Etapa 6a: the last PRODUCTIVE consumers of the CPtr→handle bridge (svcmgr delivered-cap dispatch, `pager` and `lifecycle_probe` manifest oracles) moved to `SYS_CAP_IDENTIFY`; `iris_test` is the only consumer left |
 | `SYS_ENDPOINT_CREATE` (73) | global fabrication without Untyped | — | RETYPE2 | S1 | — | RETIRED |
 | `SYS_NOTIFY_CREATE` (19) | same + quota + handle | — | RETYPE2 | S1 | — | RETIRED |
 | `SYS_CNODE_CREATE` (80) | same | — | RETYPE2 | S1 | — | RETIRED |
@@ -63,6 +63,35 @@ reserved, no functionality) · `REMOVED` (deleted).
 | `SYS_CAP_CREATE_IRQCAP`/`_IOPORT` as handle producers | device authority existed ONLY as a handle, leaving the legacy handle tree as its sole derive/revoke mechanism | — | slot publication (arg3) parented to the authorising bootstrap-cap slot | Stage 3 prep | n/a | **REMOVED (Fase S4)** — both publish into CSpace as MDB children of the bootstrap cap; device caps now derive/revoke through the native CDT |
 | `svc_mint.src_h` (handle-sourced pre-start delegation) | the loader mints a child's caps from the supervisor's handle table | all non-device mints in svcmgr/init/userboot | `svc_mint.src_cptr` + `SYS_CSPACE_MINT_INTO` | Stage 4 | yes for device caps (already migrated) | MIGRATING (device caps done; endpoints/untyped/reply still handle-sourced) |
 | TOCTOU receive-slot→handle fallback (`syscall_ipc_deliver_cap_routed`) | CSpace-to-handle delivery degradation | — | fail closed: no cap delivered, source slot untouched | Stage 2 | n/a | **REMOVED (Fase S4)** — the last permitted degradation is gone; `iris_ipc_stat_toctou_fallbacks` is a structural 0 pinned by T094 (forces the race) and T095 (asserts the counter never moves) |
+
+### A-4 — CSpace-native introspection replaces the CPtr→handle bridge
+
+**Change**: two new CSpace-only syscalls, `SYS_CAP_IDENTIFY` (117) and
+`SYS_CAP_SAME_OBJECT` (118).  `SYS_HANDLE_TYPE` (52) and
+`SYS_HANDLE_SAME_OBJECT` (53) become legacy-only and retire with the handle
+namespace.
+
+**Justification**: charter §3 forbids new handle producers and consumers, not
+new CPtr-only surface, and these are the mechanism by which three productive
+services LEFT the handle namespace.  `SYS_CSPACE_RESOLVE` was being used to
+answer two questions that are not about handles at all — "what type is the cap
+in this slot" (svcmgr's delivered-cap dispatch) and "is this slot occupied"
+(the `pager` / `lifecycle_probe` manifest oracles).  Answering them cost a
+real handle-table entry per call, i.e. the probe took AUTHORITY to learn a
+FACT, and the pager's version had no ceiling — one leaked entry per occupied
+slot, per request, against a 256-entry table.
+
+The replacements are strictly weaker than what they retire: they return a
+scalar, produce no capability, retain no reference past the call, and resolve
+only against the invoker's own CSpace root.  They take a CPtr and nothing
+else — a handle value is `INVALID_ARG` with no fallback, so they are not dual
+resolvers (§3.6) and add no degradation path (§3.7).
+
+**Scope**: no invariant changes state.  The allowlist SHRINKS: three services
+stop calling the bridge, and `handle_table_insert` loses its
+`task_lifecycle.c` entry.  A6/A3 gain their last productive-path evidence
+before Stage 4 closes.  Tests: T292, T293; T148 moves its unassigned-number
+floor to 119.
 
 ## Checkpoint C.1 — Versioned user-buffer ABI (Fase S2)
 

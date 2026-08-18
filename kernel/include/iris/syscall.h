@@ -1109,6 +1109,24 @@
 #define SYS_CSPACE_REVOKE    115
 #define SYS_CSPACE_MINT_INTO 116
 
+/*
+ * Fase S4 (Stage 4) — CSpace-native capability introspection.  CPtr only; a
+ * handle value is INVALID_ARG with no fallback (charter §3.6/§3.7).  These
+ * replace SYS_HANDLE_TYPE (52) and SYS_HANDLE_SAME_OBJECT (53), which retire
+ * with the handle namespace.
+ *
+ * SYS_CAP_IDENTIFY(cptr) → kobject_type_t or negative iris_error_t
+ *   The type of the capability in the named slot.  An empty slot is
+ *   IRIS_ERR_NOT_FOUND — this does NOT enumerate a CSpace, the caller must
+ *   already name the slot.  No right is required and none is conferred.
+ *
+ * SYS_CAP_SAME_OBJECT(cptr_a, cptr_b) → 1 / 0, or negative iris_error_t
+ *   Whether both slots name the same KObject.  Identity only: rights and
+ *   badge are not compared.
+ */
+#define SYS_CAP_IDENTIFY     117
+#define SYS_CAP_SAME_OBJECT  118
+
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
 #define IRIS_UNTYPED_QUERY_ONE     2u

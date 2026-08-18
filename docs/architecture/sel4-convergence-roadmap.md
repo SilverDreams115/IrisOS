@@ -201,7 +201,38 @@ Four defects surfaced, none of them the migration's own:
 - The pager's manifest oracle leaked one handle-table entry per occupied slot,
   per request, with no ceiling.
 
-### Etapa 6 — the test suite  ← REMAINING
+### Etapa 6a — CSpace-native introspection  ✅ DONE
+
+The bridge had two distinct users, and only one of them was a test.  Every
+remaining PRODUCTIVE use of `SYS_CSPACE_RESOLVE` was asking one of two
+questions about a slot the caller already named — *what type is this
+capability* (svcmgr, dispatching on a delivered cap) and *is this slot
+occupied* (the `pager` and `lifecycle_probe` manifest oracles).  Both were
+answered by materialising the slot into a handle and immediately closing it:
+asking for authority to learn a fact, and consuming a handle-table entry per
+occupied slot on every request.
+
+`SYS_CAP_IDENTIFY` (117) and `SYS_CAP_SAME_OBJECT` (118) answer those two
+questions natively — CPtr only, no handle produced, nothing retained past the
+call, no dual resolution and no fallback.  They are the CSpace-native
+successors of `SYS_HANDLE_TYPE` (52) and `SYS_HANDLE_SAME_OBJECT` (53), which
+now retire *with* the namespace instead of blocking it.
+
+This reverses the previous conclusion that the oracles "retire WITH the bridge
+rather than before it".  That held while the only way to ask was to mint a
+handle.  It does not hold against a primitive that is strictly weaker than the
+bridge: identify returns a scalar where resolve returned authority.  Observing
+which of your OWN slots are occupied is not a leak — a caller learns the same
+thing by invoking any slot and reading `NOT_FOUND`, in IRIS and in seL4 alike,
+and a CSpace's layout is not a secret kept from its owner.
+
+Result: **svcmgr, `pager` and `lifecycle_probe` are off the bridge.**  The
+suite is now the only consumer left, which is what Etapa 6b addresses.
+Covered by T292/T293 (type per family, no right required, empty slot is
+`NOT_FOUND`, identity survives rights reduction and badging, handle value is
+`INVALID_ARG` on every argument).
+
+### Etapa 6b — the test suite  ← REMAINING
 
 `iris_test` is what keeps Stage 4 open, and it is not one migration.  All 268
 tests classified against a single rule — a test whose SUBJECT is the handle
@@ -225,13 +256,12 @@ Migration is per-test and cannot be batched: a sweep over every
 once, because those tests use the same endpoint for other things and their
 `it_close()` calls also close process and thread handles that are not moving.
 
-What remains of the bridge outside the suite: svcmgr's delivered-cap path, and
-the manifest oracles in `pager` and `lifecycle_probe`.  Those oracles ask "is
-this slot occupied", which seL4 deliberately does not answer — you cannot
-enumerate your own CSpace — so they retire WITH the bridge rather than before
-it.  Probing by attempting a mint was considered and rejected: it requires
-`RIGHT_DUPLICATE` on the source, which several of those slots lack, so it would
-report absent for capabilities that are present.
+Nothing remains of the bridge outside the suite: svcmgr's delivered-cap path
+and the `pager` / `lifecycle_probe` manifest oracles all moved to
+`SYS_CAP_IDENTIFY` in Etapa 6a.  Probing by attempting a mint was considered
+and rejected first: it requires `RIGHT_DUPLICATE` on the source, which several
+of those slots lack, so it would report absent for capabilities that are
+present.
 
 **Second-order benefit, not just hygiene.** The `<1024` split caps the whole
 CPtr namespace at 10 bits.  A root CNode of 256 slots therefore consumes most

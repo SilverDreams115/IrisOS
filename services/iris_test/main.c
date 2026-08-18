@@ -9895,9 +9895,11 @@ static void test_t148(void) {
     /* High/unassigned range 114..400 (111 = SYS_UNTYPED_RETYPE2, 112 =
      * SYS_UNTYPED_QUERY, Fase S2's 113 = SYS_SC_BIND are live; 107..110 remain
      * live from Fases 25/26/29). */
-    /* Fase S3: 114-116 are SYS_CSPACE_MINT/REVOKE/MINT_INTO — the first
-     * UNASSIGNED number moves up to 117. */
-    for (long n = 117; ok && n <= 400; n++) {
+    /* Fase S3: 114-116 are SYS_CSPACE_MINT/REVOKE/MINT_INTO.  Fase S4/Stage 4:
+     * 117-118 are SYS_CAP_IDENTIFY/SYS_CAP_SAME_OBJECT — the CSpace-native
+     * introspection that replaces SYS_HANDLE_TYPE/SAME_OBJECT.  The first
+     * UNASSIGNED number moves up to 119. */
+    for (long n = 119; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -19112,6 +19114,142 @@ static void test_t290(void) {
     if (ok) it_pass("T290"); else it_fail("T290", why);
 }
 
+/* ── T292: SYS_CAP_IDENTIFY — CSpace-native type of a slot ────────────────
+ * The CSpace-native successor of SYS_HANDLE_TYPE.  Asserts the four things
+ * that make it a capability operation rather than a directory listing:
+ * (1) it reports the true type of a slot the caller names, for every family
+ *     the suite can fabricate;
+ * (2) it requires NO right — a slot minted down to RIGHT_READ still answers,
+ *     because naming the slot is the authority;
+ * (3) an EMPTY slot is NOT_FOUND, indistinguishable from a never-assigned
+ *     one: the caller cannot enumerate its own CSpace by scanning;
+ * (4) it is CPtr-only — CPTR_NULL and a handle value are INVALID_ARG with no
+ *     fallback to the handle table (charter §3.6/§3.7).
+ * Invariant: A6 (no cross-namespace fallback), A3. */
+static void test_t292(void) {
+    int ok = 1;
+    const char *why = "cap identify";
+
+    long ep = it_ep_create_slot();
+    long no = it_notify_create_slot();
+    if (ep < 0 || no < 0) { it_fail("T292", "fixture"); return; }
+
+    /* (1) true type per family. */
+    if (it_sys1(SYS_CAP_IDENTIFY, ep) != (long)IRIS_KOBJ_ENDPOINT) {
+        ok = 0; why = "endpoint type";
+    }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, no) != (long)IRIS_KOBJ_NOTIFICATION) {
+        ok = 0; why = "notification type";
+    }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_UNTYPED)
+              != (long)IRIS_KOBJ_UNTYPED) {
+        ok = 0; why = "untyped type";
+    }
+
+    /* (2) no right is required: derive a read-only copy and identify it. */
+    if (ok) {
+        it_slot_delete(IT_SCRATCH_0);
+        if (it_sys3(SYS_CSPACE_MINT, ep,
+                    (long)((uint64_t)IT_SCRATCH_0 << 32), (long)RIGHT_READ) != 0) {
+            ok = 0; why = "mint read-only";
+        } else if (it_sys1(SYS_CAP_IDENTIFY, (long)IT_SCRATCH_0)
+                   != (long)IRIS_KOBJ_ENDPOINT) {
+            ok = 0; why = "identify needs rights";
+        }
+        it_slot_delete(IT_SCRATCH_0);
+    }
+
+    /* (3) an empty slot answers NOT_FOUND, not "empty". */
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)IT_SCRATCH_0)
+              != (long)IRIS_ERR_NOT_FOUND) {
+        ok = 0; why = "empty slot not NOT_FOUND";
+    }
+
+    /* (4) CPtr only — no handle leg, no fallback. */
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, 0) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "null cptr accepted";
+    }
+    if (ok) {
+        long h = it_ep_create_h();
+        if (h < 0) { ok = 0; why = "handle fixture"; }
+        else {
+            if (it_sys1(SYS_CAP_IDENTIFY, h) != (long)IRIS_ERR_INVALID_ARG) {
+                ok = 0; why = "handle value accepted";
+            }
+            handle_id_t hh = (handle_id_t)h;
+            it_close(&hh);
+        }
+    }
+
+    {
+        handle_id_t eh = (handle_id_t)ep, nh = (handle_id_t)no;
+        it_close(&eh); it_close(&nh);
+    }
+    if (ok) it_pass("T292"); else it_fail("T292", why);
+}
+
+/* ── T293: SYS_CAP_SAME_OBJECT — identity across derivation ───────────────
+ * The property the transfer and derivation tests actually need: a minted or
+ * rights-reduced capability names the SAME kernel object as its source, and
+ * two independently retyped objects never collide.  Identity is compared, not
+ * rights and not badge — a cap minted down to RIGHT_READ with a badge is
+ * still the same endpoint.  CPtr-only on BOTH arguments.
+ * Invariants: A7 (rights reduce, identity survives), A8, A6. */
+static void test_t293(void) {
+    int ok = 1;
+    const char *why = "same object";
+
+    long a = it_ep_create_slot();
+    long b = it_ep_create_slot();
+    if (a < 0 || b < 0) { it_fail("T293", "fixture"); return; }
+
+    /* Distinct objects are distinct. */
+    if (it_sys2(SYS_CAP_SAME_OBJECT, a, b) != 0) { ok = 0; why = "distinct eps equal"; }
+    /* A slot is the same object as itself. */
+    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, a, a) != 1) { ok = 0; why = "self not equal"; }
+
+    /* A derived, rights-reduced, badged cap is the SAME object. */
+    if (ok) {
+        it_slot_delete(IT_SCRATCH_0);
+        if (it_sys3(SYS_CSPACE_MINT, a,
+                    (long)((uint64_t)IT_SCRATCH_0 << 32),
+                    (long)((uint64_t)RIGHT_READ | (0x5A5AULL << 32))) != 0) {
+            ok = 0; why = "mint badged";
+        } else if (it_sys2(SYS_CAP_SAME_OBJECT, a, (long)IT_SCRATCH_0) != 1) {
+            ok = 0; why = "derived not same object";
+        } else if (it_sys2(SYS_CAP_SAME_OBJECT, (long)IT_SCRATCH_0, b) != 0) {
+            ok = 0; why = "derived matches unrelated";
+        }
+        it_slot_delete(IT_SCRATCH_0);
+    }
+
+    /* Empty and null slots fail closed on either argument. */
+    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, a, (long)IT_SCRATCH_0)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "empty b not NOT_FOUND"; }
+    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, (long)IT_SCRATCH_0, a)
+              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "empty a not NOT_FOUND"; }
+    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, a, 0) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "null b accepted";
+    }
+    if (ok) {
+        long h = it_ep_create_h();
+        if (h < 0) { ok = 0; why = "handle fixture"; }
+        else {
+            if (it_sys2(SYS_CAP_SAME_OBJECT, a, h) != (long)IRIS_ERR_INVALID_ARG) {
+                ok = 0; why = "handle value accepted";
+            }
+            handle_id_t hh = (handle_id_t)h;
+            it_close(&hh);
+        }
+    }
+
+    {
+        handle_id_t ah = (handle_id_t)a, bh = (handle_id_t)b;
+        it_close(&ah); it_close(&bh);
+    }
+    if (ok) it_pass("T293"); else it_fail("T293", why);
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -19421,6 +19559,8 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t290();
     /* Bootstrap-cap narrowing as a CSpace derive (source untouched). */
     test_t291();
+    test_t292();
+    test_t293();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

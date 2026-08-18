@@ -4,7 +4,6 @@
 # ledger in the same commit, with a written technical justification.
 # Generated in Fase S2/S3 from the frozen state of the tree.
 kernel/core/phase3_selftest.c handle_table_insert 11
-kernel/core/scheduler/task_lifecycle.c handle_table_insert 1
 kernel/core/syscall/syscall_cap.c handle_table_insert 3
 kernel/core/syscall/syscall_cnode_ops.c handle_table_insert 2
 kernel/core/syscall/syscall_cspace.c handle_table_insert 2

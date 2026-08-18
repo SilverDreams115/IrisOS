@@ -543,20 +543,19 @@ static uint32_t svcmgr_next_recv_slot(const struct svcmgr_state *state) {
     return 0;
 }
 
-/* Type of a delivered cap (CPtr or handle) without consuming it.  The CPtr
- * leg goes through the sanctioned CSpace→handle bridge (SYS_CSPACE_RESOLVE)
- * for the check only; the ephemeral handle is closed immediately. */
+/* Type of a delivered cap without consuming it.
+ *
+ * Stage 4: this used to materialize the CPtr into a handle (SYS_CSPACE_RESOLVE)
+ * purely to ask SYS_HANDLE_TYPE what it was, then close the handle again — the
+ * last productive use of the CSpace→handle bridge in the tree.  SYS_CAP_IDENTIFY
+ * answers the same question about the slot itself, so the round trip (and the
+ * transient handle-table entry it consumed on every delivered cap) is gone.
+ *
+ * The legacy leg remains only for a delivery that landed in the handle table
+ * because the receiver declared no receive slot; it dies with that path. */
 static int64_t svcmgr_delivered_cap_type(uint32_t v) {
-    if (iris_msg_cap_is_cptr(v)) {
-        int64_t rh = svcmgr_syscall1(SYS_CSPACE_RESOLVE, (uint64_t)v);
-        int64_t t;
-        handle_id_t tmp;
-        if (rh < 0) return rh;
-        t = svcmgr_syscall1(SYS_HANDLE_TYPE, (uint64_t)rh);
-        tmp = (handle_id_t)rh;
-        svcmgr_close_handle_if_valid(&tmp);
-        return t;
-    }
+    if (iris_msg_cap_is_cptr(v))
+        return svcmgr_syscall1(SYS_CAP_IDENTIFY, (uint64_t)v);
     return svcmgr_syscall1(SYS_HANDLE_TYPE, (uint64_t)v);
 }
 
@@ -669,9 +668,6 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
     struct IrisMsg reply;
     uint32_t i;
     handle_id_t reply_h;
-    /* A1.6: master handles materialized from CSpace for this request only
-     * (SYS_CSPACE_RESOLVE bridge); closed before returning. */
-    handle_id_t ephemeral_master_h = HANDLE_INVALID;
 
     if (!msg || msg->attached_handle == (uint32_t)IRIS_MSG_NO_CAP) return;
     reply_h = (handle_id_t)msg->attached_handle;
@@ -962,7 +958,6 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
     /* A1.6: the CSpace slot keeps the authority; the resolved master was a
      * per-request working handle only.  Fase S1: reply_h is svcmgr's OWN
      * reusable reply-object CPtr — never closed. */
-    svcmgr_close_handle_if_valid(&ephemeral_master_h);
 }
 
 static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,

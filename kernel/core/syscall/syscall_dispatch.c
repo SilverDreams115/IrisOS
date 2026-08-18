@@ -141,6 +141,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_UNTYPED_QUERY:       return sys_untyped_query(arg0, arg1, arg2);
         case SYS_SC_BIND:             return sys_sc_bind(arg0, arg1, arg2);
         /* Fase S3 — CSpace-only MDB/CDT derivation surface. */
+        case SYS_CAP_IDENTIFY:        return sys_cap_identify(arg0, arg1, arg2);
+        case SYS_CAP_SAME_OBJECT:     return sys_cap_same_object(arg0, arg1, arg2);
         case SYS_CSPACE_MINT:         return sys_cspace_mint(arg0, arg1, arg2);
         case SYS_CSPACE_REVOKE:       return sys_cspace_revoke(arg0, arg1, arg2);
         case SYS_CSPACE_MINT_INTO:    return sys_cspace_mint_into(arg0, arg1, arg2, arg3);

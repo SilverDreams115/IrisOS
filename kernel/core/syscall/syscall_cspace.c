@@ -420,3 +420,96 @@ uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (err != IRIS_OK) return syscall_err(err);
     return 0;
 }
+
+/*
+ * ── Fase S4 (Etapa 6): CSpace-native capability introspection ─────────────
+ *
+ * SYS_CAP_IDENTIFY (117) and SYS_CAP_SAME_OBJECT (118) are the CSpace-native
+ * replacements for SYS_HANDLE_TYPE (52) and SYS_HANDLE_SAME_OBJECT (53).
+ *
+ * Why they exist at all.  Both questions — "what type is the capability in
+ * this slot" and "do these two slots name the same object" — are authority
+ * properties that survive the handle namespace: a supervisor must narrow its
+ * protocol on the type of a cap that was just delivered to it, and the
+ * adversarial suite must prove that a transferred capability is the SAME
+ * kernel object the sender held, not a copy of its rights.  Until now the
+ * only way to ask either was to materialize the slot into a handle
+ * (SYS_CSPACE_RESOLVE) and interrogate the handle, which is precisely the
+ * bridge Stage 4 retires.  Every remaining productive use of that bridge —
+ * svcmgr's delivered-cap dispatch — is one of these two questions.
+ *
+ * Why they are not new authority.  Both are strictly WEAKER than the bridge
+ * they replace: SYS_CSPACE_RESOLVE produced a handle, which IS authority and
+ * consumed a handle-table entry; these produce a scalar and retain nothing
+ * past the call.  Neither confers a right, and neither reaches outside the
+ * caller's own CSpace — a CPtr is resolved against the invoker's root, so a
+ * process can only ask about capabilities it already holds.
+ *
+ * They do let a process observe which of ITS OWN slots are occupied, and that
+ * is deliberate and not a leak: a caller can already learn the same thing by
+ * invoking any slot and reading NOT_FOUND, in IRIS and in seL4 alike (seL4
+ * answers seL4_InvalidCapability).  A CSpace's layout is chosen by whoever
+ * built that CSpace; it is not a secret kept from its owner.  What must never
+ * be observable — another process's CSpace, or authority the caller does not
+ * hold — is not reachable here.
+ *
+ * They are the invocation-time equivalent of seL4's seL4_DebugCapIdentify,
+ * minus the debug-build restriction, and they consume no handle: charter
+ * §3.1/§3.2/§3.6 are all satisfied — CPtr only, no dual resolution, no
+ * fallback (charter §3.7).
+ */
+uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    if (!cspace_only_cptr(arg0)) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *obj;
+    iris_rights_t   rights;
+    iris_error_t err = cspace_resolve_cap(t->process, (iris_cptr_t)arg0,
+                                          RIGHT_NONE, &obj, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+    (void)rights;
+
+    uint64_t type = (uint64_t)obj->type;
+    kobject_active_release(obj);
+    kobject_release(obj);
+    return syscall_ok_u64(type);
+}
+
+uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    if (!cspace_only_cptr(arg0) || !cspace_only_cptr(arg1))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *obj_a;
+    struct KObject *obj_b;
+    iris_rights_t   rights_a;
+    iris_rights_t   rights_b;
+
+    iris_error_t err = cspace_resolve_cap(t->process, (iris_cptr_t)arg0,
+                                          RIGHT_NONE, &obj_a, &rights_a);
+    if (err != IRIS_OK) return syscall_err(err);
+    err = cspace_resolve_cap(t->process, (iris_cptr_t)arg1,
+                             RIGHT_NONE, &obj_b, &rights_b);
+    if (err != IRIS_OK) {
+        kobject_active_release(obj_a);
+        kobject_release(obj_a);
+        return syscall_err(err);
+    }
+    (void)rights_a; (void)rights_b;
+
+    /* Identity only — rights and badge are deliberately NOT compared: two
+     * slots holding differently-minted caps to one endpoint are the same
+     * object, and that is exactly the property the transfer tests assert. */
+    uint64_t same = (obj_a == obj_b) ? 1u : 0u;
+    kobject_active_release(obj_b);
+    kobject_release(obj_b);
+    kobject_active_release(obj_a);
+    kobject_release(obj_a);
+    return syscall_ok_u64(same);
+}

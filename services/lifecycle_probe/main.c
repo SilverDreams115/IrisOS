@@ -288,14 +288,12 @@ static long lp_ps_serve(uint32_t op, uint32_t tidx, uint32_t vidx,
 /* Manifest oracle: bitmask of slots 0..17 that resolve, plus high-authority
  * slots a minimal pager must never hold (bit24 spawn=6, bit26 untyped=55,
  * bit27 vspace-self=56). */
-/* Presence, not authority: SYS_CSPACE_RESOLVE materialises a NEW handle-table
- * entry, so the probe hands it straight back (same leak as the pager's
- * oracle).  The bridge itself retires in Stage 4 and takes this with it. */
+/* Presence, not authority — and now asked as such.  SYS_CSPACE_RESOLVE gave
+ * the probe a handle it did not want and had to hand straight back (one
+ * handle-table entry per occupied slot, per report).  SYS_CAP_IDENTIFY answers
+ * presence without producing a capability. */
 static int lp_slot_present(long cptr) {
-    long h = lp_sys1(SYS_CSPACE_RESOLVE, cptr);
-    if (h < 0) return 0;
-    (void)lp_sys1(SYS_HANDLE_CLOSE, h);
-    return 1;
+    return lp_sys1(SYS_CAP_IDENTIFY, cptr) >= 0;
 }
 
 static uint32_t lp_ps_report(void) {

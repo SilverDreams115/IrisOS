@@ -436,19 +436,16 @@ static long pg_target_reset(uint32_t tidx) {
     return 0;
 }
 
-/* Is this CSpace slot occupied?  SYS_CSPACE_RESOLVE materialises the slot into
- * a NEW handle-table entry, so the probe must hand it straight back: the oracle
- * wants presence, not authority, and it is answered on every PGR_OP_REPORT.
- * Leaking one entry per occupied slot per call walks the pager into
- * HANDLE_TABLE_MAX (256) with no ceiling.
+/* Is this CSpace slot occupied?
  *
- * The materialisation is itself Stage 4 debt — the whole CPtr→handle bridge
- * retires with SYS_CSPACE_RESOLVE, and this oracle with it. */
+ * This used to answer by materialising the slot into a handle
+ * (SYS_CSPACE_RESOLVE) and immediately closing it — asking for AUTHORITY to
+ * learn PRESENCE, and consuming a handle-table entry per occupied slot on
+ * every PGR_OP_REPORT.  SYS_CAP_IDENTIFY answers the question directly: it
+ * returns a type or NOT_FOUND, produces no capability and retains nothing, so
+ * the oracle no longer touches the handle namespace at all. */
 static int pg_slot_present(long cptr) {
-    long h = pg_sys1(SYS_CSPACE_RESOLVE, cptr);
-    if (h < 0) return 0;
-    (void)pg_sys1(SYS_HANDLE_CLOSE, h);
-    return 1;
+    return pg_sys1(SYS_CAP_IDENTIFY, cptr) >= 0;
 }
 
 /* Manifest presence oracle — see pager_proto.h for the bit layout. */
