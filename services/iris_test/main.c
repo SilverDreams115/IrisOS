@@ -489,15 +489,8 @@ static void it_iris_msg_zero(struct IrisMsg *m) {
  * disappears with the handle namespace. */
 static void it_close(handle_id_t *h) {
     if (*h == HANDLE_INVALID) return;
-    if (((uint32_t)*h & HANDLE_TAG) != 0u) {
-        /* Still reachable: the kernel producers this stage has not retired yet
-         * (SYS_CSPACE_RESOLVE and the dest == 0 creator legs).  Removing this
-         * branch before them costs nothing visible at the call site and shows
-         * up as handle-live drift eight tests later — the consumer has to go
-         * AFTER the producer, not before. */
-        it_sys1(SYS_HANDLE_CLOSE, (long)*h);
-    } else if (((uint32_t)*h & 0xFFu) == IT_OBJ_CNODE_SLOT ||
-               ((uint32_t)*h & 0xFFu) == IT_LOADER_WS_SLOT) {
+    if (((uint32_t)*h & 0xFFu) == IT_OBJ_CNODE_SLOT ||
+        ((uint32_t)*h & 0xFFu) == IT_LOADER_WS_SLOT) {
         /* Only capabilities THIS suite fabricated are released by deleting
          * their slot, and it knows them by the second-level CNode they live
          * in: the object CNode it retypes into, and the loader workspace the
@@ -9963,6 +9956,8 @@ static void test_t148(void) {
     static const long retired[] = {
         0, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 18, 23, 24, 25, 30, 31, 34,
         37, 38, 41, 42, 43, 44, 46, 59, 63, 72, 78, 79, 80, 90,
+        /* Stage 4 closeout: the handle namespace's own surface. */
+        15, 22, 52, 53, 81, 87, 89, 95,
     };
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();

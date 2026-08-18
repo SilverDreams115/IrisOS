@@ -39,97 +39,36 @@ uint64_t sys_cnode_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
+/*
+ * SYS_CSPACE_RESOLVE (95) — RETIRED (Stage 4).  Number permanently reserved;
+ * returns NOT_SUPPORTED.
+ *
+ * It was the sanctioned CSpace→handle bridge: materialise the capability in a
+ * slot as a handle so it could be used by a path that only spoke handles.
+ * There are no such paths.  Every question it was used to answer is answered
+ * natively — SYS_CAP_IDENTIFY for a type, SYS_CAP_SAME_OBJECT for identity,
+ * SYS_CSPACE_MINT for a second reference — and each of those is strictly
+ * weaker than handing out authority.
+ *
+ * `iris_cspace_stat_resolves` stays in the SYS_SCHED_INFO layout as the
+ * retirement witness: a structural zero, like the IPC handle-delivery and
+ * TOCTOU counters beside it.
+ */
 uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    iris_cptr_t cptr = (iris_cptr_t)arg0;
-    (void)arg1; (void)arg2;
-
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    struct KProcess *proc = t->process;
-
-    struct KObject *obj;
-    iris_rights_t   rights;
-    uint64_t        badge = 0;
-    iris_error_t err = cspace_resolve_cap_badged(proc, cptr, RIGHT_NONE,
-                                                 &obj, &rights, &badge);
-    if (err != IRIS_OK) return syscall_err(err);
-
-    /* Fase 9: materialization preserves the slot badge. */
-    handle_id_t h = handle_table_insert_badged(&proc->handle_table, obj,
-                                               rights, badge);
-    kobject_active_release(obj);
-    kobject_release(obj);
-    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
-    __atomic_fetch_add(&iris_cspace_stat_resolves, 1u, __ATOMIC_RELAXED);
-    return (uint64_t)h;
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
+/*
+ * SYS_CNODE_MINT (81) — RETIRED (Stage 4).  Number permanently reserved;
+ * returns NOT_SUPPORTED.  Its SOURCE was a handle, so the capability it
+ * installed had no MDB relationship to anything: an independent LEGACY_ROOT
+ * that a revoke of the "original" could not reach.  SYS_CSPACE_MINT is the
+ * slot-to-slot form and records the derivation edge.
+ */
 uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
-    iris_cptr_t   cptr_or_h = (iris_cptr_t)arg0;
-    uint32_t      slot_idx  = (uint32_t)arg1;
-    handle_id_t   src_h     = (handle_id_t)arg2;
-    iris_rights_t new_rights = (iris_rights_t)arg3;
-
-    if (!src_h) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    struct KProcess *proc = t->process;
-    HandleTable     *ht   = &proc->handle_table;
-
-    struct KCNode  *cn;
-    iris_rights_t   cn_rights;
-    iris_error_t    err;
-
-    /* Stage 4: arg0 == 0 names the CALLER'S OWN root CNode, matching the
-     * convention SYS_CNODE_DELETE and SYS_UNTYPED_RETYPE2 already use.  This
-     * is what lets a service address its own CSpace root WITHOUT holding a
-     * capability to it — the root stopped being a handle-table entry, so the
-     * old "probe your own table for the first CNode-typed handle" trick (the
-     * one svcmgr and iris_test used) has no object to find.  Naming your own
-     * root grants no authority you did not already have. */
-    if (cptr_or_h == 0u) {
-        err = cspace_own_root(proc, &cn);
-        if (err != IRIS_OK) return syscall_err(err);
-    } else {
-        err = cspace_or_handle_resolve_cnode(proc, cptr_or_h,
-                                             RIGHT_WRITE, &cn, &cn_rights);
-        if (err != IRIS_OK)
-            return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
-    }
-
-    struct KObject *src_obj;
-    iris_rights_t   src_rights;
-    err = handle_table_get_object(ht, src_h, &src_obj, &src_rights);
-    if (err != IRIS_OK) {
-        kobject_active_release(&cn->base);
-        kobject_release(&cn->base);
-        return syscall_err(err);
-    }
-
-    if (!rights_check(src_rights, RIGHT_DUPLICATE)) {
-        kobject_release(src_obj);
-        kobject_active_release(&cn->base);
-        kobject_release(&cn->base);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    iris_rights_t effective = rights_reduce(src_rights, new_rights);
-    if (effective == RIGHT_NONE) {
-        kobject_release(src_obj);
-        kobject_active_release(&cn->base);
-        kobject_release(&cn->base);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-
-    /* kcnode_mint takes its own refs (active_retain+retain) on src_obj;
-     * we always drop our get_object lifecycle ref regardless of result. */
-    err = kcnode_mint(cn, slot_idx, src_obj, effective);
-    kobject_release(src_obj);
-    kobject_active_release(&cn->base);
-    kobject_release(&cn->base);
-    if (err != IRIS_OK) return syscall_err(err);
-    return 0;
+    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 /*

@@ -249,9 +249,7 @@ static void svcmgr_log_u32(uint32_t value) {
 static void svcmgr_close_handle_if_valid(handle_id_t *h) {
     if (!h || *h == HANDLE_INVALID) return;
     uint32_t v = (uint32_t)*h;
-    if ((v & HANDLE_TAG) != 0u)
-        (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, v);
-    else if (v >= 256u)
+    if (v >= 256u)
         (void)svcmgr_syscall2(SYS_CNODE_DELETE, (uint64_t)(v & 0xFFu),
                               (uint64_t)(v >> 8));
     else
@@ -554,9 +552,9 @@ static uint32_t svcmgr_next_recv_slot(const struct svcmgr_state *state) {
  * The legacy leg remains only for a delivery that landed in the handle table
  * because the receiver declared no receive slot; it dies with that path. */
 static int64_t svcmgr_delivered_cap_type(uint32_t v) {
-    if (iris_msg_cap_is_cptr(v))
-        return svcmgr_syscall1(SYS_CAP_IDENTIFY, (uint64_t)v);
-    return svcmgr_syscall1(SYS_HANDLE_TYPE, (uint64_t)v);
+    /* Stage 4: a delivered cap is a CPtr or nothing — handle materialisation
+     * on delivery is retired, so the legacy leg has no input left. */
+    return svcmgr_syscall1(SYS_CAP_IDENTIFY, (uint64_t)v);
 }
 
 /* Discard a delivered cap svcmgr will not keep: CNODE_DELETE for a CPtr
@@ -737,19 +735,12 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
              * that slot, so this grant is revocable from svcmgr.  The kernel
              * consumes (deletes) the scratch slot on a committed delivery. */
             (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, SVCMGR_XFER_SLOT);
-            int64_t mr;
-            if (src_cptr != 0u) {
-                /* Pure CSpace path — no handle materialization at all. */
-                mr = svcmgr_syscall3(SYS_CSPACE_MINT, (uint64_t)src_cptr,
-                                     ((uint64_t)SVCMGR_XFER_SLOT << 32),
-                                     (uint64_t)(client_rights | RIGHT_TRANSFER));
-            } else {
-                mr = svcmgr_syscall4(SYS_CNODE_MINT,
-                                     SVCMGR_OWN_ROOT_CNODE,
-                                     (uint64_t)SVCMGR_XFER_SLOT,
-                                     (uint64_t)master_h,
-                                     (uint64_t)(client_rights | RIGHT_TRANSFER));
-            }
+            /* Stage 4: the registry master is a CSpace slot, so serving a
+             * lookup is a slot-to-slot mint.  The SYS_CNODE_MINT branch for a
+             * handle master is gone with the namespace. */
+            int64_t mr = svcmgr_syscall3(SYS_CSPACE_MINT, (uint64_t)src_cptr,
+                                         ((uint64_t)SVCMGR_XFER_SLOT << 32),
+                                         (uint64_t)(client_rights | RIGHT_TRANSFER));
             if (mr == 0) {
                 reply.label              = IRIS_EP_REPLY_OK;
                 reply.words[0]           = 0u;

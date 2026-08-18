@@ -2,11 +2,15 @@
 
 
 
+/*
+ * SYS_HANDLE_CLOSE (15) — RETIRED (Stage 4).  Number permanently reserved.
+ * Releasing a capability is deleting the slot that holds it
+ * (SYS_CNODE_DELETE), which is also what makes the release visible to the
+ * derivation tree.
+ */
 uint64_t sys_handle_close(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    return syscall_err(handle_table_close(&t->process->handle_table, (handle_id_t)arg0));
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 
@@ -17,42 +21,15 @@ uint64_t sys_handle_close(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *
  * Duplicates src_handle into a new handle in the caller's own table.
  * new_rights must be a subset of the caller's existing rights on src_handle.
- * Pass RIGHT_SAME_RIGHTS to keep the same rights (rights_reduce handles this).
- * The reduced rights set must not collapse to RIGHT_NONE.
- * Requires RIGHT_DUPLICATE on the source handle.
+ * RETIRED (Stage 4).  Number permanently reserved; returns NOT_SUPPORTED.
+ * A rights-reduced copy of a capability is SYS_CSPACE_MINT slot->slot, which
+ * additionally records the derivation edge the handle dup could not express:
+ * the copy is an MDB child of its source and is revocable from it.
  */
 uint64_t sys_handle_dup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KObject  *obj;
-    iris_rights_t    rights;
-    iris_error_t r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0,
-                                             &obj, &rights);
-    if (r != IRIS_OK) return syscall_err(r);
-
-    if (!rights_check(rights, RIGHT_DUPLICATE)) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    iris_rights_t new_rights = rights_reduce(rights, (iris_rights_t)arg1);
-    if (new_rights == RIGHT_NONE) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-    /* Fase 9: duplication preserves the badge (a copy keeps its identity). */
-    uint64_t      src_badge  = handle_table_get_badge(&t->process->handle_table,
-                                                      (handle_id_t)arg0);
-    handle_id_t   new_h      = handle_table_insert_badged(&t->process->handle_table,
-                                                          obj, new_rights, src_badge);
-    kobject_release(obj);
-
-    if (new_h == HANDLE_INVALID) return syscall_err(IRIS_ERR_TABLE_FULL);
-    return syscall_ok_u64((uint64_t)new_h);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
-
 
 /* ── Handle transfer ──────────────────────────────────────────────── */
 
@@ -346,47 +323,18 @@ uint64_t sys_bootcap_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
+/*
+ * SYS_HANDLE_TYPE (52) and SYS_HANDLE_SAME_OBJECT (53) — RETIRED (Stage 4).
+ * Numbers permanently reserved.  Both questions survive, asked of the slot
+ * instead of a handle: SYS_CAP_IDENTIFY and SYS_CAP_SAME_OBJECT.
+ */
 uint64_t sys_handle_type(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    struct KObject *obj;
-    iris_rights_t rights;
-    iris_error_t r;
-    uint64_t type;
-
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0, &obj, &rights);
-    if (r != IRIS_OK) return syscall_err(r);
-    (void)rights;
-    type = (uint64_t)obj->type;
-    kobject_release(obj);
-    return syscall_ok_u64(type);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 
 uint64_t sys_handle_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
-    struct task *t = task_current();
-    struct KObject *obj_a;
-    struct KObject *obj_b;
-    iris_rights_t rights_a;
-    iris_rights_t rights_b;
-    iris_error_t r;
-    uint64_t same;
-
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg0, &obj_a, &rights_a);
-    if (r != IRIS_OK) return syscall_err(r);
-    r = handle_table_get_object(&t->process->handle_table, (handle_id_t)arg1, &obj_b, &rights_b);
-    if (r != IRIS_OK) {
-        kobject_release(obj_a);
-        return syscall_err(r);
-    }
-    (void)rights_a;
-    (void)rights_b;
-    same = (obj_a == obj_b) ? 1u : 0u;
-    kobject_release(obj_b);
-    kobject_release(obj_a);
-    return syscall_ok_u64(same);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }

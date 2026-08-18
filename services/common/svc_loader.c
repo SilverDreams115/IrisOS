@@ -60,14 +60,12 @@ static inline long sl_sys4(long nr, long a0, long a1, long a2, long a3) {
     return ret;
 }
 
-/* Release whichever namespace names it (Etapa 4). */
+/* Release a capability: delete its slot.  Stage 4 removed the handle branch —
+ * every capability the loader creates is published into its workspace. */
 static inline void sl_close_cap(handle_id_t h) {
     if (h == HANDLE_INVALID) return;
-    if (((uint32_t)h & HANDLE_TAG) == 0u)
-        (void)sl_sys2(SYS_CNODE_DELETE, (long)((uint32_t)h & 0xFFu),
-                      (long)((uint32_t)h >> 8));
-    else
-        (void)sl_sys1(SYS_HANDLE_CLOSE, (long)h);
+    (void)sl_sys2(SYS_CNODE_DELETE, (long)((uint32_t)h & 0xFFu),
+                  (long)((uint32_t)h >> 8));
 }
 
 /* ── Minimal ELF64 types ─────────────────────────────────────────── */

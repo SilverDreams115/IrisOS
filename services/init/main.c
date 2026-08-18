@@ -77,9 +77,7 @@ void init_exit(long code) {
 void init_close(handle_id_t *h) {
     uint32_t v = (uint32_t)*h;
     if (v != 0u) {
-        if ((v & HANDLE_TAG) != 0u)
-            init_sys1(SYS_HANDLE_CLOSE, (long)v);
-        else if (v >= 256u)
+        if (v >= 256u)
             init_sys2(SYS_CNODE_DELETE, (long)(v & 0xFFu), (long)(v >> 8));
         else
             init_sys2(SYS_CNODE_DELETE, 0, (long)v);

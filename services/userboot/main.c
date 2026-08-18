@@ -53,10 +53,10 @@ static inline long ub_sys4(long nr, long a0, long a1, long a2, long a3) {
     return ret;
 }
 
-static void ub_close(handle_id_t h) {
-    if (h != HANDLE_INVALID)
-        (void)ub_sys1(SYS_HANDLE_CLOSE, (long)h);
-}
+/* Stage 4: nothing userboot holds is a handle.  ub_close was the release
+ * path for the kernel's dual-inserted bootstrap cap, which is CSpace-only
+ * now. */
+static void ub_close(handle_id_t h) { (void)h; }
 
 /* Fase 28: bootstrap diagnostic.  A bootstrap-fatal condition (a broken initrd
  * catalog) must never manifest as a SILENT dead system.  userboot holds the

@@ -1,75 +1,31 @@
 /*
  * syscall_cnode_ops.c — Block 6 (Ph82-84): CNode slot operations.
  *
- * SYS_CNODE_MOVE:   move a handle from the caller's HandleTable into a CNode slot
- *                   (destructive — handle is removed from the HT).
- * SYS_CNODE_FETCH:  copy a CNode slot into a new HandleTable entry (non-destructive).
  * SYS_CNODE_DELETE: clear a CNode slot, releasing its capability reference.
  * SYS_CNODE_SWAP:   swap two slots within the same CNode (no refcount change).
  *
- * Fase 3.1: arg0 (cnode target) is now resolved via cspace_or_handle_resolve_cnode,
- * which tries CSpace traversal first and falls back to the handle table.  Both paths
- * return an active+lifecycle retained KCNode *; callers must release both.
+ * SYS_CNODE_MOVE and SYS_CNODE_FETCH are RETIRED (Stage 4): both crossed
+ * between a CNode slot and the handle table, which is the direction that stage
+ * deletes.  Slot-to-slot is SYS_CSPACE_MINT (+ SYS_CNODE_DELETE for a move),
+ * which also records the derivation edge.
+ *
+ * arg0 (the CNode target) resolves through the CSpace; the resolver returns an
+ * active+lifecycle retained KCNode *, and callers release both.
  */
 #include "syscall_priv.h"
 #include <iris/nc/cspace.h>
 
+/*
+ * SYS_CNODE_MOVE (89) — RETIRED (Stage 4).  Number permanently reserved;
+ * returns NOT_SUPPORTED.  Its SOURCE was a handle, which is the direction this
+ * stage deletes: SYS_CSPACE_MINT followed by SYS_CNODE_DELETE expresses the
+ * same move between slots and keeps the derivation tree consistent.
+ */
 uint64_t sys_cnode_move(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    iris_cptr_t cptr_or_h = (iris_cptr_t)arg0;
-    uint32_t    slot_idx  = (uint32_t)arg1;
-    handle_id_t src_h     = (handle_id_t)arg2;
-
-    if (!cptr_or_h || !src_h) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    struct KProcess *proc = t->process;
-    HandleTable     *ht   = &proc->handle_table;
-
-    struct KCNode  *cn;
-    iris_rights_t   cn_rights;
-    iris_error_t err = cspace_or_handle_resolve_cnode(proc, cptr_or_h,
-                                                       RIGHT_WRITE, &cn, &cn_rights);
-    if (err != IRIS_OK)
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
-
-    struct KObject *src_obj;
-    iris_rights_t   src_rights;
-    err = handle_table_get_object(ht, src_h, &src_obj, &src_rights);
-    if (err != IRIS_OK) {
-        kobject_active_release(&cn->base);
-        kobject_release(&cn->base);
-        return syscall_err(err);
-    }
-
-    /* kcnode_mint takes its own active+lifecycle refs; we drop our temp ref.
-     * Fase 9: MOVE preserves the badge across the handle→slot crossing. */
-    err = kcnode_mint_badged(cn, slot_idx, src_obj, src_rights,
-                             handle_table_get_badge(ht, src_h));
-    kobject_release(src_obj);
-    if (err != IRIS_OK) {
-        kobject_active_release(&cn->base);
-        kobject_release(&cn->base);
-        return syscall_err(err);
-    }
-
-    handle_table_close(ht, src_h); /* MOVE: remove from caller's HT */
-    kobject_active_release(&cn->base);
-    kobject_release(&cn->base);
-    return 0;
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
-/*
- * SYS_CNODE_FETCH (90) — RETIRED (Stage 4).  The number stays permanently
- * reserved and answers NOT_SUPPORTED.
- *
- * It read a capability out of a CNode slot and published a COPY of it as a
- * handle: a slot-to-handle copy, i.e. the one direction Stage 4 exists to
- * delete.  Its CSpace form is SYS_CSPACE_MINT (slot to slot), which also
- * records the derivation edge that the handle copy could not express — a
- * fetched handle had no MDB relationship to the slot it came from, so
- * revoking the slot left the copy alive.  Nothing in the tree called it.
- */
 uint64_t sys_cnode_fetch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg0; (void)arg1; (void)arg2;
     return syscall_err(IRIS_ERR_NOT_SUPPORTED);
