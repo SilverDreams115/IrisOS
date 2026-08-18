@@ -142,7 +142,7 @@ static void init_idle_loop(void) {
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
-void init_main(handle_id_t bootstrap_ch_h) {
+void init_main(handle_id_t rbx_unused) {
     const handle_id_t bootstrap_cap_c = (handle_id_t)IRIS_CPTR_SPAWN_CAP;
     handle_id_t sm_h               = HANDLE_INVALID;
     handle_id_t vfs_ep_h           = HANDLE_INVALID;
@@ -153,7 +153,7 @@ void init_main(handle_id_t bootstrap_ch_h) {
      * and the three svc_load_minted spawns) resolves a CPtr directly, so the
      * bridge had nothing left to bridge.  An absent slot 6 now fails loudly at
      * the first spawn instead of exiting before a single log line. */
-    init_close(&bootstrap_ch_h);
+    (void)rbx_unused;   /* svc_loader passes RBX = 0 — not a handle */
     init_early_serial_start(bootstrap_cap_c);
 
     /* Fase S1: confirm the delegated boot untyped (slot 12) BEFORE any spawn —

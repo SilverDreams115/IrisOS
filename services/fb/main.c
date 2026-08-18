@@ -78,10 +78,13 @@ static void fb_draw_rect(uint32_t *pixels, uint32_t stride,
     }
 }
 
-void fb_main_c(handle_id_t bootstrap_h) {
+void fb_main_c(handle_id_t rbx_unused) {
     /* Fase 13 (Track I): the framebuffer KBootstrapCap arrives as the
      * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint — SYS_FRAMEBUFFER_VMO resolves
-     * it by CPtr through the device-cap dual resolver.  No bootstrap KChannel. */
+     * it by CPtr through the device-cap dual resolver.  No bootstrap KChannel:
+     * svc_loader passes RBX = 0, so this argument is not a handle and closing
+     * it was closing handle 0. */
+    (void)rbx_unused;
     /* The framebuffer KBootstrapCap is a CSpace slot, not a handle: it is
      * never closed, and it must never be passed to SYS_HANDLE_CLOSE — that
      * call used to sit on the error path, where cap_h had not yet been
@@ -94,9 +97,6 @@ void fb_main_c(handle_id_t bootstrap_h) {
     const long  fb_vmo_slot = 16;
     long        vmo_cptr = -1;
     struct iris_fb_params params;
-
-    (void)fb_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_h);
-    bootstrap_h = HANDLE_INVALID;
 
     /* ── Claim framebuffer VMO ────────────────────────────────────── */
     {
@@ -147,8 +147,6 @@ void fb_main_c(handle_id_t bootstrap_h) {
     (void)fb_sys2(SYS_VMO_UNMAP, (long)USER_VMO_BASE, (long)params.size);
 
 out:
-    if (bootstrap_h != HANDLE_INVALID)
-        (void)fb_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_h);
     /* The framebuffer cap is a CSpace slot now: fb is fire-and-forget and its
      * whole CSpace is torn down with the address space, so there is nothing to
      * close.  Deleting the slot explicitly would also work and is what a

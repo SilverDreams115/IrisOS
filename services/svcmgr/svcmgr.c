@@ -1400,13 +1400,13 @@ static void svcmgr_handle_service_death(struct svcmgr_state *state, uint32_t ser
     svcmgr_boot_service(state, manifest);
 }
 
-void svcmgr_main_c(handle_id_t bootstrap_h) {
+void svcmgr_main_c(handle_id_t rbx_unused) {
     struct svcmgr_state *state = &g_svcmgr_state;
 
-    /* Fase 13 (Track I): the entry bootstrap KChannel is unused — every cap is a
-     * pre-start CSpace mint.  Close it; svcmgr is endpoint + notification only. */
-    if (bootstrap_h != HANDLE_INVALID)
-        (void)svcmgr_syscall1(SYS_HANDLE_CLOSE, bootstrap_h);
+    /* Fase 13 (Track I): the entry bootstrap KChannel is gone — every cap is a
+     * pre-start CSpace mint, and svc_loader passes RBX = 0.  This argument has
+     * not been a handle since; closing it was closing handle 0. */
+    (void)rbx_unused;
 
     for (uint32_t i = 0; i < (uint32_t)sizeof(*state); i++) ((uint8_t *)state)[i] = 0;
 

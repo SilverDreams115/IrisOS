@@ -121,7 +121,7 @@ static void con_serve_ep_msg(handle_id_t ioport_h, struct IrisMsg *req) {
         (void)con_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
 }
 
-void console_main_c(handle_id_t bootstrap_h) {
+void console_main_c(handle_id_t rbx_unused) {
     /* Fase 13 (Track I): console is endpoint-only and fully CPtr-provisioned —
      * the endpoint recv side is the IRIS_CPTR_OWN_EP mint (slot 5) and the
      * KIoPort for 0x3F8..0x3FF the IRIS_CPTR_IOPORT mint (slot 10), resolved by
@@ -130,7 +130,7 @@ void console_main_c(handle_id_t bootstrap_h) {
     handle_id_t ioport_h = (handle_id_t)IRIS_CPTR_IOPORT;
     handle_id_t ep_h     = (handle_id_t)IRIS_CPTR_OWN_EP;
 
-    (void)con_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_h);
+    (void)rbx_unused;   /* RBX = 0 since the KChannel bootstrap retired */
 
     /* Endpoint-only main loop: block on the KEndpoint, serve, reply.
      * Fase S1: the explicit reply object (init retypes it from its untyped

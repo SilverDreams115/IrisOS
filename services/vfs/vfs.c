@@ -27,7 +27,6 @@
 #define VFS_SERVICE_EXPORTS 20u
 
 struct vfs_state {
-    handle_id_t bootstrap_h;
     handle_id_t console_h;
     handle_id_t spawn_cap_h;
     handle_id_t ep_h;          /* recv side of our KEndpoint (Fase 7.1) */
@@ -109,10 +108,15 @@ static void vfs_copy_bytes(uint8_t *dst, const uint8_t *src, uint32_t len) {
     for (uint32_t i = 0; i < len; i++) dst[i] = src[i];
 }
 
-static void vfs_close_handle_if_valid(handle_id_t *h) {
-    if (!h || *h == HANDLE_INVALID) return;
-    (void)vfs_syscall1(SYS_HANDLE_CLOSE, *h);
-    *h = HANDLE_INVALID;
+/* Stage 4: vfs's own working slot for an initrd image capability.  It is
+ * borrowed for the length of one seed — publish, read the size, map, delete —
+ * so a single slot serves every image.  16 sits above every well-known
+ * pre-start mint vfs receives. */
+#define VFS_SLOT_INITRD_VMO   16u
+#define VFS_INITRD_VMO_DEST   ((uint64_t)VFS_SLOT_INITRD_VMO << 32)
+
+static void vfs_slot_delete(uint32_t slot) {
+    (void)vfs_syscall2(SYS_CNODE_DELETE, 0, (uint64_t)slot);
 }
 
 static void vfs_copy_cstr(char *dst, const uint8_t *src, uint32_t len) {
@@ -181,18 +185,20 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
         }
         if (slot == (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0]))) break;
 
-        vmo_h = vfs_syscall2(SYS_INITRD_VMO, (uint64_t)state->spawn_cap_h, (uint64_t)i);
-        if (vmo_h < 0) continue;
+        /* Stage 4: the image VMO is published into a CSpace slot, used, and
+         * the slot deleted.  It used to come back as a handle that had to be
+         * closed on three separate paths. */
+        vfs_slot_delete(VFS_SLOT_INITRD_VMO);
+        vmo_h = vfs_syscall3(SYS_INITRD_VMO, (uint64_t)state->spawn_cap_h,
+                             (uint64_t)i, VFS_INITRD_VMO_DEST);
+        if (vmo_h != 0) continue;
 
-        sz_rc = vfs_syscall1(SYS_VMO_SIZE, (uint64_t)vmo_h);
-        if (sz_rc <= 0) {
-            vfs_syscall1(SYS_HANDLE_CLOSE, (uint64_t)vmo_h);
-            continue;
-        }
+        sz_rc = vfs_syscall1(SYS_VMO_SIZE, (uint64_t)VFS_SLOT_INITRD_VMO);
+        if (sz_rc <= 0) { vfs_slot_delete(VFS_SLOT_INITRD_VMO); continue; }
 
         virt = VFS_INITRD_MAP_BASE + (uint64_t)i * VFS_INITRD_MAP_SLOT;
-        map_rc = vfs_syscall3(SYS_VMO_MAP, (uint64_t)vmo_h, virt, 0);
-        vfs_syscall1(SYS_HANDLE_CLOSE, (uint64_t)vmo_h);
+        map_rc = vfs_syscall3(SYS_VMO_MAP, (uint64_t)VFS_SLOT_INITRD_VMO, virt, 0);
+        vfs_slot_delete(VFS_SLOT_INITRD_VMO);
         if (map_rc != 0) continue;
 
         exp = &state->exports[slot];
@@ -220,14 +226,16 @@ static int vfs_seed_one_fixture(struct vfs_state *state, uint32_t index,
         if (!state->exports[slot].ready) break;
     if (slot == (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0]))) return 0;
 
-    vmo_h = vfs_syscall2(SYS_INITRD_VMO, (uint64_t)state->spawn_cap_h, (uint64_t)index);
-    if (vmo_h < 0) return 0;
-    sz_rc = vfs_syscall1(SYS_VMO_SIZE, (uint64_t)vmo_h);
-    if (sz_rc <= 0) { vfs_syscall1(SYS_HANDLE_CLOSE, (uint64_t)vmo_h); return 0; }
+    vfs_slot_delete(VFS_SLOT_INITRD_VMO);
+    vmo_h = vfs_syscall3(SYS_INITRD_VMO, (uint64_t)state->spawn_cap_h,
+                         (uint64_t)index, VFS_INITRD_VMO_DEST);
+    if (vmo_h != 0) return 0;
+    sz_rc = vfs_syscall1(SYS_VMO_SIZE, (uint64_t)VFS_SLOT_INITRD_VMO);
+    if (sz_rc <= 0) { vfs_slot_delete(VFS_SLOT_INITRD_VMO); return 0; }
 
     virt = VFS_INITRD_MAP_BASE + (uint64_t)index * VFS_INITRD_MAP_SLOT;
-    map_rc = vfs_syscall3(SYS_VMO_MAP, (uint64_t)vmo_h, virt, 0);
-    vfs_syscall1(SYS_HANDLE_CLOSE, (uint64_t)vmo_h);
+    map_rc = vfs_syscall3(SYS_VMO_MAP, (uint64_t)VFS_SLOT_INITRD_VMO, virt, 0);
+    vfs_slot_delete(VFS_SLOT_INITRD_VMO);
     if (map_rc != 0) return 0;
 
     {
@@ -276,11 +284,12 @@ static void vfs_ep_serve(struct vfs_state *state, struct IrisMsg *req) {
     (void)vfs_syscall2(SYS_REPLY, reply_h, (uint64_t)(uintptr_t)&reply);
 }
 
-void vfs_server_main_c(handle_id_t bootstrap_h) {
+void vfs_server_main_c(handle_id_t rbx_unused) {
     struct vfs_state state;
 
+    /* svc_loader passes RBX = 0: there is no bootstrap handle to keep. */
+    (void)rbx_unused;
     for (uint32_t i = 0; i < (uint32_t)sizeof(state); i++) ((uint8_t *)&state)[i] = 0;
-    state.bootstrap_h = bootstrap_h;
     state.console_h = HANDLE_INVALID;
     state.spawn_cap_h = HANDLE_INVALID;
     state.ep_h = HANDLE_INVALID;
@@ -347,7 +356,6 @@ void vfs_server_main_c(handle_id_t bootstrap_h) {
     /* spawn_cap_h is the IRIS_CPTR_SPAWN_CAP CSpace slot, not an owned handle —
      * it is reaped with the address space, nothing to close here (Track C). */
     vfs_log(vfs_str_boot_ok);
-    vfs_close_handle_if_valid(&state.bootstrap_h);
     vfs_log(vfs_str_ep_ready);
     vfs_log(vfs_str_ready);
 

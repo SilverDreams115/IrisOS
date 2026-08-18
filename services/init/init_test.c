@@ -25,7 +25,6 @@ void init_runtime_probe_invalid_userptr(void) {
         init_log("[USER][INIT][SELFTEST] invalid-userptr OK\n");
     else
         init_log("[USER][INIT][SELFTEST] invalid-userptr WARN\n");
-    init_sys1(SYS_HANDLE_CLOSE, n);
 }
 
 void init_runtime_probe_timeout_overflow(void) {
@@ -54,13 +53,16 @@ void init_selftest_exception(void) {
     n_raw = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
                              INIT_SLOT_S8_NOTIF, 0);
     if (n_raw < 0) { init_log("[USER][INIT][S8] SKIP: notify create\n"); return; }
+    /* Stage 4: INIT_SLOT_S8_NOTIF is a CSpace slot init retyped into, not a
+     * handle.  The SYS_HANDLE_CLOSE calls that used to guard every early
+     * return here were asking the handle table to close a CPtr — a failed
+     * call that read as cleanup.  The slot is init's for the whole run. */
     notif_h = (handle_id_t)INIT_SLOT_S8_NOTIF;
 
     /* Register exception handler for own process (HANDLE_INVALID = self),
      * signalling bit 0 on fault. */
     r = init_sys3(SYS_EXCEPTION_HANDLER, (long)HANDLE_INVALID, (long)notif_h, 1);
     if (r < 0) {
-        init_sys1(SYS_HANDLE_CLOSE, (long)notif_h);
         init_log("[USER][INIT][S8] SKIP: handler reg\n"); return;
     }
 
@@ -69,21 +71,18 @@ void init_selftest_exception(void) {
     uint64_t rsp   = (uint64_t)(uintptr_t)(s8_thread_stack + sizeof(s8_thread_stack));
     tid_raw = init_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
     if (tid_raw < 0) {
-        init_sys1(SYS_HANDLE_CLOSE, (long)notif_h);
         init_log("[USER][INIT][S8] SKIP: thread create\n"); return;
     }
 
     /* Wait up to 1 s for the fault notification, then read the fault details. */
     r = init_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)notif_h, (long)&bits, 1000000000L);
     if (r < 0) {
-        init_sys1(SYS_HANDLE_CLOSE, (long)notif_h);
         init_log("[USER][INIT][S8] FAIL: no fault signal\n"); return;
     }
 
     for (uint32_t i = 0; i < (uint32_t)sizeof(fbuf); i++) fbuf[i] = 0;
     r = init_sys2(SYS_PROCESS_FAULT_INFO, (long)HANDLE_INVALID, (long)fbuf);
     if (r < 0) {
-        init_sys1(SYS_HANDLE_CLOSE, (long)notif_h);
         init_log("[USER][INIT][S8] FAIL: no fault info\n"); return;
     }
     vec = (uint32_t)fbuf[FAULT_OFF_VECTOR]
@@ -96,14 +95,12 @@ void init_selftest_exception(void) {
             | ((uint32_t)fbuf[FAULT_OFF_TASK_ID + 3] << 24);
 
     if (vec != 6u) {
-        init_sys1(SYS_HANDLE_CLOSE, (long)notif_h);
         init_log("[USER][INIT][S8] FAIL: wrong fault\n"); return;
     }
 
     /* Kill the faulting thread via exception resume */
     (void)init_sys3(SYS_EXCEPTION_RESUME, (long)HANDLE_INVALID, (long)task_id, 1);
 
-    init_sys1(SYS_HANDLE_CLOSE, (long)notif_h);
 
     init_log(init_stage_exception);
 }

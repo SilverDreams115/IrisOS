@@ -70,11 +70,6 @@ static inline void sl_close_cap(handle_id_t h) {
         (void)sl_sys1(SYS_HANDLE_CLOSE, (long)h);
 }
 
-static inline void sl_close(handle_id_t h) {
-    if (h != HANDLE_INVALID)
-        sl_sys1(SYS_HANDLE_CLOSE, (long)h);
-}
-
 /* ── Minimal ELF64 types ─────────────────────────────────────────── */
 
 typedef uint16_t Elf64_Half;

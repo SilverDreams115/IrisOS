@@ -301,7 +301,7 @@ static void sh_dispatch(handle_id_t con, const char *line) {
 
 /* ── Main entry ──────────────────────────────────────────────────── */
 
-void sh_main_c(handle_id_t bootstrap_h) {
+void sh_main_c(handle_id_t rbx_unused) {
     handle_id_t console_h     = HANDLE_INVALID;  /* unused: pure CPtr client */
     handle_id_t kbd_ep_h      = HANDLE_INVALID;
 
@@ -312,7 +312,7 @@ void sh_main_c(handle_id_t bootstrap_h) {
      *   slot 4 kbd.ep.  Close the (empty) bootstrap channel and verify
      * each slot with a PING; every marker below is a smoke gate, so a
      * broken slot cannot hide.  No lookup, no handle fallback. */
-    (void)sh_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_h);
+    (void)rbx_unused;   /* RBX = 0 since the KChannel bootstrap retired */
 
     sh_cout(console_h, "[SH] boot\n");
 
