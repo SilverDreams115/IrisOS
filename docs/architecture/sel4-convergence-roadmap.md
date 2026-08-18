@@ -335,6 +335,8 @@ child of its source and therefore revocable.
 | after retiring the cross-process producers and legacy retype | 104 |
 | after retiring handle delivery in IPC | 99 |
 | after the loader workspace (processes and VSpaces born in CSpace) | 85 |
+| after VMO/initrd/self-VSpace destinations | 81 |
+| after the liveness, identity and second-holder probes | 60 |
 
 What is left is dominated by fixtures the suite cannot yet fabricate into a
 slot: `SYS_HANDLE_DUP` on VMO / KProcess / KVSpace / KFrame caps.  Those retire

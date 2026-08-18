@@ -1992,13 +1992,8 @@ static void test_t041(void) {
     };
     int ok = 1;
     for (uint32_t i = 0; i < 4u; i++) {
-        long h = it_sys1(SYS_CSPACE_RESOLVE, (long)slots[i]);
-        if (h < 0) { ok = 0; break; }
-        if (it_sys1(SYS_HANDLE_TYPE, h) != (long)IRIS_HANDLE_TYPE_ENDPOINT)
-            ok = 0;
-        handle_id_t hh = (handle_id_t)h;
-        it_close(&hh);
-        if (!ok) break;
+        if (it_sys1(SYS_CAP_IDENTIFY, (long)slots[i])
+            != (long)IRIS_HANDLE_TYPE_ENDPOINT) { ok = 0; break; }
     }
     /* unminted reserved slot fails cleanly (no crash, negative error) */
     if (it_sys1(SYS_CAP_IDENTIFY, 29L) >= 0) ok = 0;
@@ -10906,10 +10901,9 @@ static void test_t160(void) {
     };
     const char *const caps_why[3] = { "no spawn cap", "no test untyped", "no self proc" };
     for (int s = 0; ok && s < 3; s++) {
-        long h = it_sys1(SYS_CSPACE_RESOLVE, test_caps[s]);
-        if (h < 0) { ok = 0; why = caps_why[s]; break; }
-        handle_id_t hh = (handle_id_t)h;
-        it_close(&hh);
+        if (it_sys1(SYS_CAP_IDENTIFY, test_caps[s]) < 0) {
+            ok = 0; why = caps_why[s]; break;
+        }
     }
 
     it_quiesce_reaper();
@@ -15157,13 +15151,16 @@ static uint8_t g_t28_buf[128];   /* pager-request staging buffer */
  * rights AND badge.  The ordinary svcmgr lookup strips DUPLICATE (client
  * grant tightening) and cannot mint fresh badges, so these pre-mints are the
  * only honest supervisor path. */
+/* Stage 4: these are the pre-mint SLOTS themselves.  They used to be
+ * materialised into handles for every use and closed again; every syscall they
+ * are passed to resolves a CPtr, so the round trip bought nothing. */
 static handle_id_t t28_vfs_cap(void) {
-    long h = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_VFS_MINT);
-    return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
+    return (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_VFS_MINT) >= 0)
+           ? (handle_id_t)IRIS_CPTR_TEST_VFS_MINT : HANDLE_INVALID;
 }
 static handle_id_t t28_admin_cap(void) {
-    long h = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_VFS_DUP);
-    return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
+    return (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_VFS_DUP) >= 0)
+           ? (handle_id_t)IRIS_CPTR_TEST_VFS_DUP : HANDLE_INVALID;
 }
 
 
@@ -15190,8 +15187,8 @@ static handle_id_t t28_session_cap(uint32_t session) {
                       (long)((IRIS_BADGE_FILEGRANT_S(session) << 32) | RIGHT_WRITE));
     it_close(&src);
     if (mr != 0) return HANDLE_INVALID;
-    long h = it_sys1(SYS_CSPACE_RESOLVE, (long)T28_FG_SLOT(session));
-    return (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
+    return (it_sys1(SYS_CAP_IDENTIFY, (long)T28_FG_SLOT(session)) >= 0)
+           ? (handle_id_t)T28_FG_SLOT(session) : HANDLE_INVALID;
 }
 
 /* STAT a file via a vfs cap → size, or -1. */
@@ -17787,11 +17784,9 @@ static void test_t251(void) {
         if (it_retype2_at(su, canon[i].t, S1_SLOT_A, 1u, canon[i].arg) != 0) {
             ok = 0; why = "canonical type not creatable"; break;
         }
-        long h = it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A);
-        if (h < 0 || it_sys1(SYS_HANDLE_TYPE, h) != canon[i].ht) {
+        if (it_sys1(SYS_CAP_IDENTIFY, (long)S1_SLOT_A) != canon[i].ht) {
             ok = 0; why = "created type mismatch";
         }
-        if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
         it_slot_delete(S1_SLOT_A);
     }
     /* Everything else in 0..31 is refused — the manifest is CLOSED. */
@@ -17888,11 +17883,10 @@ static void test_t253(void) {
     /* Success batch: 4 endpoints into 241..244. */
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 4u, 0) != 0) { ok = 0; why = "batch"; }
     for (uint32_t i = 0; ok && i < 4u; i++) {
-        long h = it_sys1(SYS_CSPACE_RESOLVE, (long)(S1_SLOT_A + i));
-        if (h < 0 || it_sys1(SYS_HANDLE_TYPE, h) != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+        if (it_sys1(SYS_CAP_IDENTIFY, (long)(S1_SLOT_A + i))
+            != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
             ok = 0; why = "batch member missing";
         }
-        if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
     }
     /* Tear down members 242..244, keep 241 occupied as the collision. */
     it_slot_delete(S1_SLOT_B); it_slot_delete(S1_SLOT_C); it_slot_delete(S1_SLOT_D);
@@ -17909,10 +17903,8 @@ static void test_t253(void) {
     }
     if (ok && oa.endpoints_live != ob.endpoints_live) { ok = 0; why = "failed batch left object"; }
     if (ok) {
-        long h = it_sys1(SYS_CSPACE_RESOLVE, 239);
-        if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); ok = 0; why = "partial slot filled"; }
-        h = it_sys1(SYS_CSPACE_RESOLVE, 240);
-        if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); ok = 0; why = "partial slot filled 2"; }
+        if (it_sys1(SYS_CAP_IDENTIFY, 239) >= 0) { ok = 0; why = "partial slot filled"; }
+        if (it_sys1(SYS_CAP_IDENTIFY, 240) >= 0) { ok = 0; why = "partial slot filled 2"; }
     }
     /* Capacity failure: 8 CNodes of 64 slots (~5 KiB each with the Fase S3
      * MDB slot metadata) ≫ the 8 KiB region, while the batch stays under
@@ -17998,8 +17990,7 @@ static void test_t254(void) {
     if (ok && !it_utq_1(su, &ua)) { ok = 0; why = "query 2"; }
     if (ok && (ua.used_bytes != ub.used_bytes + (ua.used_bytes - ub.used_bytes))) { ok = 0; why = "?"; }
     if (ok) {
-        long h = it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_B);
-        if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); ok = 0; why = "ghost object"; }
+        if (it_sys1(SYS_CAP_IDENTIFY, (long)S1_SLOT_B) >= 0) { ok = 0; why = "ghost object"; }
     }
 
     it_slot_delete(S1_SLOT_A);
@@ -18032,7 +18023,7 @@ static void test_t255(void) {
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype"; }
     /* Fase S4 (Etapa 3): the source is ALREADY a CPtr — derive natively, with
      * no CSPACE_RESOLVE bridge and no handle anywhere in the path. */
-    long h  = ok ? it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A) : -1;
+    long h  = ok ? it_cdt_derive((long)S1_SLOT_A, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
     long d  = ok ? it_cdt_derive((long)S1_SLOT_A, IT_SCRATCH_0, RIGHT_WRITE) : -1;
     if (ok && (h < 0 || d < 0)) { ok = 0; why = "derive"; }
     /* send/receive through the CPtr + the derived CPtr. */
@@ -18058,7 +18049,7 @@ static void test_t255(void) {
         if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread"; }
         else {
             for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
-            if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); h = -1; }
+            if (h >= 0) { it_slot_delete((uint32_t)h); h = -1; }
             it_slot_delete(S1_SLOT_A);      /* last cap → close fires */
             for (int y = 0; y < 4000 && !g_t255_done; y++) it_sys0(SYS_YIELD);
             if (!g_t255_done) { ok = 0; why = "waiter zombie"; }
@@ -18066,7 +18057,7 @@ static void test_t255(void) {
         }
     }
     it_slot_delete(S1_SLOT_B);
-    if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
+    if (h >= 0) it_slot_delete((uint32_t)h);
     /* Region reusable; the SAME range hosts a working replacement. */
     if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy (S12)"; }
     if (ok && it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "reuse retype"; }
@@ -18102,9 +18093,21 @@ static void test_t256(void) {
     handle_id_t su_h = (handle_id_t)su;
 
     if (it_retype2_at(su, IRIS_KOBJ_NOTIFICATION, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype"; }
-    /* Two holders: signal via handle, observe via CPtr (same object). */
-    long h = ok ? it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A) : -1;
-    if (ok && h < 0) { ok = 0; why = "resolve"; }
+    /* Two holders of ONE object: signal through a derived copy, observe
+     * through the original.  The second holder used to be a materialised
+     * handle; a CSpace copy is the same two-references-one-object shape and
+     * additionally records the derivation edge the handle could not. */
+    long h = -1;
+    if (ok) {
+        it_slot_delete(IT_SCRATCH_0);
+        if (it_sys3(SYS_CSPACE_MINT, (long)S1_SLOT_A,
+                    (long)((uint64_t)IT_SCRATCH_0 << 32),
+                    (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "copy"; }
+        else h = (long)IT_SCRATCH_0;
+    }
+    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, h, (long)S1_SLOT_A) != 1) {
+        ok = 0; why = "copy is a different object";
+    }
     if (ok && it_sys2(SYS_NOTIFY_SIGNAL, h, 0x5) != 0) { ok = 0; why = "signal"; }
     if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)S1_SLOT_A, 0x2) != 0) { ok = 0; why = "signal cptr"; }
     if (ok) {
@@ -18120,14 +18123,14 @@ static void test_t256(void) {
         if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread"; }
         else {
             for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
-            { handle_id_t hh = (handle_id_t)h; it_close(&hh); h = -1; }
+            if (h >= 0) { it_slot_delete((uint32_t)h); h = -1; }
             it_slot_delete(S1_SLOT_A);
             for (int y = 0; y < 4000 && !g_t256_done; y++) it_sys0(SYS_YIELD);
             if (!g_t256_done) { ok = 0; why = "waiter zombie"; }
             else if (g_t256_res != (long)IRIS_ERR_CLOSED) { ok = 0; why = "wrong wake"; }
         }
     }
-    if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
+    if (h >= 0) it_slot_delete((uint32_t)h);
     /* Reuse: same region, fresh notification, ZERO residual bits (S28). */
     if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset busy"; }
     if (ok && it_retype2_at(su, IRIS_KOBJ_NOTIFICATION, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "reuse retype"; }
@@ -18342,15 +18345,23 @@ static void test_t259(void) {
     struct it_utq_one q0, q1, q2;
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype A"; }
     if (ok && !it_utq_1(su, &q0)) { ok = 0; why = "query"; }
-    /* Keep a second cap (handle) to A: the region must NOT be reclaimable. */
-    long h = ok ? it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A) : -1;
-    if (ok && h < 0) { ok = 0; why = "resolve"; }
+    /* Keep a SECOND capability to A: the region must NOT be reclaimable while
+     * any capability to a live object in it survives.  That second cap used to
+     * be a handle; it is a CSpace copy, which is the only kind left. */
+    long h = -1;
+    if (ok) {
+        it_slot_delete(IT_SCRATCH_0);
+        if (it_sys3(SYS_CSPACE_MINT, (long)S1_SLOT_A,
+                    (long)((uint64_t)IT_SCRATCH_0 << 32),
+                    (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "copy"; }
+        else h = (long)IT_SCRATCH_0;
+    }
     it_slot_delete(S1_SLOT_A);
     if (ok && it_sys1(SYS_UNTYPED_RESET, su) != (long)IRIS_ERR_BUSY) {
         ok = 0; why = "live object did not retain region (S13)";
     }
     /* Drop the last cap → destroy → reset works and bumps the generation. */
-    if (h >= 0) { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
+    if (h >= 0) it_slot_delete((uint32_t)h);
     if (ok && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "reset after death"; }
     if (ok && (!it_utq_1(su, &q1) || q1.generation != q0.generation + 1u ||
                q1.used_bytes != 0u)) { ok = 0; why = "generation not bumped"; }
@@ -18523,11 +18534,15 @@ static void test_t262(void) {
             if (ok && (!it_utq_1(su, &uf1) || uf1.used_bytes != uf0.used_bytes ||
                        uf1.child_count != uf0.child_count)) { ok = 0; why = "failure consumed"; }
         }
-        /* Derive + drop on one member (object survives until slot delete). */
+        /* Take a second reference and drop it: the object survives, because
+         * the slot still holds one.  It used to be a materialised handle,
+         * which measured the same thing through the retiring namespace. */
         if (ok && (fz_rand() & 1u)) {
-            long h = it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A);
-            if (h < 0) { ok = 0; why = "resolve"; }
-            else { handle_id_t hh = (handle_id_t)h; it_close(&hh); }
+            it_slot_delete(IT_SCRATCH_0);
+            if (it_sys3(SYS_CSPACE_MINT, (long)S1_SLOT_A,
+                        (long)((uint64_t)IT_SCRATCH_0 << 32),
+                        (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "copy"; }
+            it_slot_delete(IT_SCRATCH_0);
         }
         /* Exact shadow of child_count. */
         if (ok) {
@@ -18878,9 +18893,8 @@ static void test_t284(void) {
     if (ok && u1.child_count != 1u) { ok = 0; why = "child count"; }
 
     /* Cap identity + observability. */
-    long h = ok ? it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A) : -1;
-    handle_id_t hh = (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
-    if (ok && (h < 0 || it_sys1(SYS_HANDLE_TYPE, h) != (long)IRIS_HANDLE_TYPE_TCB)) { ok = 0; why = "handle type"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)S1_SLOT_A)
+              != (long)IRIS_HANDLE_TYPE_TCB) { ok = 0; why = "cap type"; }
     struct iris_tcb_info info;
     if (ok && it_sys2(SYS_TCB_GET_INFO, (long)S1_SLOT_A, (long)(uintptr_t)&info) != 0) { ok = 0; why = "get info"; }
     if (ok && (info.state != (uint8_t)IT_TASK_SUSPENDED || info.task_id != 0u)) { ok = 0; why = "inactive state"; }
@@ -18908,8 +18922,7 @@ static void test_t284(void) {
     /* Lifecycle: RESET with live children refuses; last cap destroys. */
     if (ok && it_sys1(SYS_UNTYPED_RESET, su) != (long)IRIS_ERR_BUSY) { ok = 0; why = "reset with children"; }
     it_slot_delete(S1_SLOT_B);
-    it_slot_delete(S1_SLOT_A);
-    it_close(&hh);
+    it_slot_delete(S1_SLOT_A);   /* last cap → destructor → region */
     if (ok && !it_utq_t(&t2)) { ok = 0; why = "query 3"; }
     if (ok && t2.tcb_live != t0.tcb_live) { ok = 0; why = "tcb leak"; }
     if (ok && t2.tcb_destroyed < t0.tcb_destroyed + 1u) { ok = 0; why = "destroy not counted"; }
@@ -18919,8 +18932,7 @@ static void test_t284(void) {
     if (ok && it_retype2_at(su, IRIS_KOBJ_TCB, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "re-retype"; }
     it_slot_delete(S1_SLOT_A);
     if (ok) {
-        long stale = it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A);
-        if (stale >= 0) { handle_id_t sh = (handle_id_t)stale; it_close(&sh); ok = 0; why = "stale cptr resolves"; }
+        if (it_sys1(SYS_CAP_IDENTIFY, (long)S1_SLOT_A) >= 0) { ok = 0; why = "stale cptr resolves"; }
     }
     (void)it_sys1(SYS_UNTYPED_RESET, su);
 
@@ -19003,11 +19015,20 @@ static void test_t286(void) {
 
     for (int i = 0; ok && i < 20; i++) {
         if (it_retype2_at(su, IRIS_KOBJ_TCB, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "cycle retype"; break; }
-        long h = it_sys1(SYS_CSPACE_RESOLVE, (long)S1_SLOT_A);
-        if (h < 0) { ok = 0; why = "cycle resolve"; break; }
-        handle_id_t hh = (handle_id_t)h;
+        /* Hold a SECOND capability, drop the first, then drop the second: the
+         * object outlives the first delete and its storage returns to the
+         * untyped only on the last one.  The second reference used to be a
+         * materialised handle; a CSpace copy proves the same lifetime rule in
+         * the namespace that stays. */
+        it_slot_delete(IT_SCRATCH_0);
+        if (it_sys3(SYS_CSPACE_MINT, (long)S1_SLOT_A,
+                    (long)((uint64_t)IT_SCRATCH_0 << 32),
+                    (long)RIGHT_SAME_RIGHTS) != 0) { ok = 0; why = "cycle copy"; break; }
         it_slot_delete(S1_SLOT_A);
-        it_close(&hh);                      /* last ref → destructor → region */
+        if (it_sys1(SYS_CAP_IDENTIFY, (long)IT_SCRATCH_0) < 0) {
+            ok = 0; why = "copy died with the original"; break;
+        }
+        it_slot_delete(IT_SCRATCH_0);       /* last ref → destructor → region */
         if ((i % 5) == 4 && it_sys1(SYS_UNTYPED_RESET, su) != 0) { ok = 0; why = "cycle reset"; break; }
     }
     (void)it_sys1(SYS_UNTYPED_RESET, su);
