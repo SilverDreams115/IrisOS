@@ -86,25 +86,26 @@ supervisor must narrow its protocol on the type of a cap it was just handed,
 and because proving that a transferred capability is the *same* object the
 sender held is an authority property, not a debugging convenience.
 
-### CPtr-first addressing & the namespace split
+### CPtr-first addressing
 
 Services are handed their well-known capabilities **before they start**, minted
 directly into their root CNode (`SYS_PROC_CSPACE_MINT`), and invoke them by CPtr
 — e.g. `SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)` — with no handle transfer. CPtrs
 and handle IDs share one argument namespace, split and enforced by the kernel:
 
-- **handle tag bit (bit 31) clear** → resolved through the **CSpace only** (no
-  handle-table fallback; a missing slot fails cleanly).
-- **handle tag bit set** → resolved through the **handle table only** (handle
-  IDs are `HANDLE_TAG | generation<<10 | slot`, generation ≥ 1).
+There is **one** authority namespace. Stage 4 deleted the handle table
+outright — `HandleTable`, `KProcess.handle_table` and the twelve syscalls that
+spoke that language are gone, their numbers permanently reserved. A syscall
+argument is a CPtr or it is `INVALID_ARG`; there is nowhere else to look.
 
-The boundary was the literal 1024 until Fase S4/Stage 4, which left CPtrs ten
-bits for a process's whole capability address space. CPtrs own the low 31 bits
-now, so multi-level CSpace is usable: a CPtr is walked radix-by-radix through
-the CNode tree, and it addresses **exactly one** capability — leftover bits at
-a non-CNode terminal are `INVALID_ARG`, not a silent alias of a shallower slot.
-Receive slots are full CPtrs too, so a process whose root CNode is full can
-still be handed a capability.
+A CPtr is walked radix-by-radix through the CNode tree and addresses **exactly
+one** capability: leftover bits at a non-CNode terminal are `INVALID_ARG`, not
+a silent alias of a shallower slot. Receive slots are full CPtrs too, so a
+process whose root CNode is full can still be handed a capability.
+
+Every capability is created *into* a slot. `SYS_VMO_CREATE`,
+`SYS_PROCESS_CREATE`, `SYS_TCB_SELF`, `SYS_VSPACE_SELF` and the rest take a
+destination and refuse to run without one.
 
 Well-known child slots: `1` svcmgr EP, `2` vfs EP, `3` console EP, `4` kbd EP,
 `5` own EP (recv), `6` spawn/authority cap, `7` IRQ notification.
