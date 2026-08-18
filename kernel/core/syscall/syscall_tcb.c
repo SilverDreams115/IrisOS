@@ -46,17 +46,13 @@ uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Stage 4: arg0 is a destination slot (RETYPE2 packing).  The TCB is the
      * caller itself, borrowed, so publish_slot's consuming release needs a
      * reference of its own. */
-    if (arg0 != 0u) {
-        kobject_retain(&t->base);
-        iris_error_t pe = syscall_publish_slot(t, &t->base, rights, arg0, 0, 0);
-        if (pe != IRIS_OK) return syscall_err(pe);
-        return syscall_ok_u64(0);
-    }
+    /* Stage 4: a destination slot is REQUIRED — the handle result is retired. */
+    if (arg0 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    handle_id_t h = handle_table_insert(&t->process->handle_table, &t->base,
-                                        rights);
-    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
-    return (uint64_t)h;
+    kobject_retain(&t->base);
+    iris_error_t pe = syscall_publish_slot(t, &t->base, rights, arg0, 0, 0);
+    if (pe != IRIS_OK) return syscall_err(pe);
+    return syscall_ok_u64(0);
 }
 
 uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {

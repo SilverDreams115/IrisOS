@@ -243,13 +243,19 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
     return svc_load_minted(spawn_cap_h, name, out_proc_h, out_chan_h, 0, 0);
 }
 
-/* Legacy arity: no workspace, so the handle path.  Kept so the call sites that
- * do not spawn into CSpace yet need not change. */
+/* Legacy arity: RETIRED (Stage 4).  It existed so a caller with nowhere to put
+ * the child's capabilities could take them as handles; every spawner supplies
+ * a workspace CNode now, so the handle path underneath had no callers left.
+ * Kept as a hard failure rather than deleted: a caller that reaches here has
+ * skipped the workspace, and a silent fall back to handles is exactly what
+ * this stage removes. */
 long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                      const struct svc_mint *mints, uint32_t mint_count) {
-    return svc_load_minted_ws(spawn_cap_h, name, out_proc_h, out_chan_h,
-                              mints, mint_count, 0);
+    (void)spawn_cap_h; (void)name; (void)mints; (void)mint_count;
+    if (out_proc_h) *out_proc_h = HANDLE_INVALID;
+    if (out_chan_h) *out_chan_h = HANDLE_INVALID;
+    return (long)IRIS_ERR_NOT_SUPPORTED;
 }
 
 /* ── Etapa 4: loader workspace ─────────────────────────────────────────────
@@ -332,20 +338,17 @@ long svc_load_minted_ws(handle_id_t spawn_cap_h, const char *name,
         seg_page_off[i] = 0;
     }
 
-    /* Etapa 4: with a workspace, every capability this spawn creates is
-     * published into a leaf of it and named by CPtr; without one the legacy
-     * handle path runs unchanged. */
-    int have_ws = sl_ws_ensure(ws);
+    /* Stage 4: a workspace is mandatory — every capability this spawn creates
+     * is published into a leaf of it and named by CPtr.  The alternative was the handle path,
+     * which is gone; failing here names the missing argument instead of
+     * quietly producing capabilities the caller cannot address. */
+    if (!sl_ws_ensure(ws)) return (long)IRIS_ERR_INVALID_ARG;
 
     /* 1. Get read-only eager VMO wrapping the ELF bytes in the initrd. */
-    if (have_ws) {
+    {
         r = sl_sys3(SYS_INITRD_VMO, (long)spawn_cap_h, idx, sl_ws_dest(ws, SL_WS_ELF));
         if (r < 0) goto out;
         elf_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_ELF);
-    } else {
-        r = sl_sys2(SYS_INITRD_VMO, (long)spawn_cap_h, idx);
-        if (r < 0) goto out;
-        elf_h = (handle_id_t)r;
     }
 
     /* 2. Map ELF read-only at SL_ELF_VADDR for parsing. */
@@ -413,32 +416,26 @@ long svc_load_minted_ws(handle_id_t spawn_cap_h, const char *name,
          * publication is exclusive, so ALREADY_EXISTS simply means "taken",
          * and the loader keeps no state to remember where it got to. */
         uint32_t proc_leaf = 0u;
-        if (have_ws) {
-            for (uint32_t l = SL_WS_PROC_BASE; l < 256u; l++) {
-                r = sl_sys2(SYS_PROCESS_CREATE, (long)spawn_cap_h,
-                            sl_ws_dest(ws, l));
-                if (r == 0) { proc_leaf = l; break; }
-                if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
-            }
-            if (proc_leaf == 0u && r == (long)IRIS_ERR_ALREADY_EXISTS)
-                r = (long)IRIS_ERR_NO_MEMORY;
-        } else {
-            r = sl_sys1(SYS_PROCESS_CREATE, (long)spawn_cap_h);
+        for (uint32_t l = SL_WS_PROC_BASE; l < 256u; l++) {
+            r = sl_sys2(SYS_PROCESS_CREATE, (long)spawn_cap_h,
+                        sl_ws_dest(ws, l));
+            if (r == 0) { proc_leaf = l; break; }
+            if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
         }
+        if (proc_leaf == 0u && r == (long)IRIS_ERR_ALREADY_EXISTS)
+            r = (long)IRIS_ERR_NO_MEMORY;
         if (r < 0) goto out;
-        proc_h = have_ws ? (handle_id_t)sl_ws_cptr(ws, proc_leaf) : (handle_id_t)r;
+        proc_h = (handle_id_t)sl_ws_cptr(ws, proc_leaf);
 
         /* 6. Create a sparse VMO for each segment (populated eagerly at map),
          * charged to the child.  Mapped into the loader's temp window below to
          * fill; the phys pages are charged to the child (VMO owner), so
          * unmapping from the loader never strands the charge on the loader. */
         for (uint32_t i = 0; i < seg_count; i++) {
-            r = have_ws ? sl_sys3(SYS_VMO_CREATE_FOR, (long)seg_map_size[i],
-                             (long)proc_h, sl_ws_dest(ws, SL_WS_SEG + i))
-                   : sl_sys2(SYS_VMO_CREATE_FOR, (long)seg_map_size[i], (long)proc_h);
+            r = sl_sys3(SYS_VMO_CREATE_FOR, (long)seg_map_size[i],
+                        (long)proc_h, sl_ws_dest(ws, SL_WS_SEG + i));
             if (r < 0) goto out;
-            seg_vmo[i] = have_ws ? (handle_id_t)sl_ws_cptr(ws, SL_WS_SEG + i)
-                            : (handle_id_t)r;
+            seg_vmo[i] = (handle_id_t)sl_ws_cptr(ws, SL_WS_SEG + i);
         }
 
         /* 7. Map each segment VMO writable in loader's temp window. */
@@ -527,12 +524,10 @@ long svc_load_minted_ws(handle_id_t spawn_cap_h, const char *name,
          * and the child starts with RBX = 0 (no bootstrap handle). */
 
         /* 14. Create user stack sparse VMO (charged to the child) and map it in. */
-        r = have_ws ? sl_sys3(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE,
-                         (long)proc_h, sl_ws_dest(ws, SL_WS_STACK))
-               : sl_sys2(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE, (long)proc_h);
+        r = sl_sys3(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE,
+                    (long)proc_h, sl_ws_dest(ws, SL_WS_STACK));
         if (r < 0) goto out;
-        stack_vmo_h = have_ws ? (handle_id_t)sl_ws_cptr(ws, SL_WS_STACK)
-                         : (handle_id_t)r;
+        stack_vmo_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_STACK);
 
         r = sl_sys4(SYS_VMO_MAP_INTO,
                     (long)stack_vmo_h, (long)proc_h,

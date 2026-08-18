@@ -29,19 +29,15 @@ uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * borrowed from the process, so publish_slot's consuming release needs a
      * reference of its own.  A LEGACY_ROOT: the caller's own address space is
      * an attribute of being a process, not something another slot granted. */
-    if (arg0 != 0u) {
-        kobject_retain(&vs->base);
-        iris_error_t pe = syscall_publish_slot(t, &vs->base, rights, arg0, 0, 0);
-        if (pe != IRIS_OK) return syscall_err(pe);
-        return syscall_ok_u64(0);
-    }
+    /* Stage 4: a destination slot is REQUIRED.  The handle result is retired,
+     * so arg0 == 0 names no destination and is an error rather than a silent
+     * fall back to the other namespace. */
+    if (arg0 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    /* handle_entry_init takes the retain + active-retain; the caller's close
-     * drops both.  Same object-cap-accessor shape as SYS_TCB_SELF. */
-    handle_id_t h = handle_table_insert(&t->process->handle_table, &vs->base,
-                                        rights);
-    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
-    return (uint64_t)h;
+    kobject_retain(&vs->base);
+    iris_error_t pe = syscall_publish_slot(t, &vs->base, rights, arg0, 0, 0);
+    if (pe != IRIS_OK) return syscall_err(pe);
+    return syscall_ok_u64(0);
 }
 
 
@@ -92,19 +88,15 @@ uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     const iris_rights_t rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
 
     /* Stage 4: arg1 is a destination slot (RETYPE2 packing). */
-    if (arg1 != 0u) {
-        kobject_retain(&vs->base);
+    if (arg1 == 0u) {
         kobject_release(&proc->base);
-        iris_error_t pe = syscall_publish_slot(t, &vs->base, rights, arg1, 0, 0);
-        if (pe != IRIS_OK) return syscall_err(pe);
-        return syscall_ok_u64(0);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
     }
-
-    handle_id_t h = handle_table_insert(&t->process->handle_table, &vs->base,
-                                        rights);
+    kobject_retain(&vs->base);
     kobject_release(&proc->base);
-    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
-    return (uint64_t)h;
+    iris_error_t pe = syscall_publish_slot(t, &vs->base, rights, arg1, 0, 0);
+    if (pe != IRIS_OK) return syscall_err(pe);
+    return syscall_ok_u64(0);
 }
 
 
@@ -134,24 +126,17 @@ static uint64_t vmo_create_charged(struct task *t, uint64_t size,
      * name — that is KVMO's own debt (ledger: FROZEN, memory-server), not this
      * etapa's.  It is an explicit LEGACY root, counted, exactly as the handle
      * form was untracked. */
-    if (dest != 0u) {
-        iris_error_t pe = syscall_publish_slot(t, &v->base,
-                                               RIGHT_READ | RIGHT_WRITE |
-                                               RIGHT_TRANSFER | RIGHT_DUPLICATE,
-                                               dest, 0, 0);
-        if (pe != IRIS_OK) return syscall_err(pe);
-        return syscall_ok_u64(0);
-    }
-    handle_id_t h = handle_table_insert(&t->process->handle_table,
-                                        &v->base,
-                                        RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER |
-                                        RIGHT_DUPLICATE);
-    if (h == HANDLE_INVALID) {
+    /* Stage 4: a destination slot is REQUIRED — the handle result is retired. */
+    if (dest == 0u) {
         kvmo_free(v);   /* kvmo_destroy releases the owner charge — no leak */
-        return syscall_err(IRIS_ERR_TABLE_FULL);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
     }
-    kobject_release(&v->base);
-    return (uint64_t)h;
+    iris_error_t pe = syscall_publish_slot(t, &v->base,
+                                           RIGHT_READ | RIGHT_WRITE |
+                                           RIGHT_TRANSFER | RIGHT_DUPLICATE,
+                                           dest, 0, 0);
+    if (pe != IRIS_OK) return syscall_err(pe);
+    return syscall_ok_u64(0);
 }
 
 uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
@@ -476,7 +461,9 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
      * the read, so the loader never holds a handle and the grant is revocable
      * by whoever granted the spawn authority.  arg2 == 0 keeps the legacy
      * handle for callers not yet migrated. */
-    if (dest != 0u) {
+    /* Stage 4: a destination slot is REQUIRED — the handle result is retired. */
+    if (dest == 0u) { kvmo_free(v); return syscall_err(IRIS_ERR_INVALID_ARG); }
+    {
         struct KCNode *auth_cn = 0; uint32_t auth_idx = 0;
         if (cspace_value_is_cptr((iris_cptr_t)arg0) &&
             cspace_resolve_slot(t->process, (iris_cptr_t)arg0,
@@ -491,15 +478,6 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
         if (pe != IRIS_OK) return syscall_err(pe);
         return syscall_ok_u64(0);
     }
-
-    handle_id_t h = handle_table_insert(&t->process->handle_table,
-                                        &v->base, RIGHT_READ);
-    if (h == HANDLE_INVALID) {
-        kvmo_free(v);
-        return syscall_err(IRIS_ERR_TABLE_FULL);
-    }
-    kobject_release(&v->base);
-    return syscall_ok_u64((uint64_t)h);
 }
 
 
@@ -874,18 +852,11 @@ uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1,
      * is authorised by the bootstrap cap in arg0, but that cap was resolved
      * and released above, so the grant is published as a root rather than a
      * child of it — the ancestry the device caps get is Stage 5 work. */
-    if (arg2 != 0u) {
-        iris_error_t pe = syscall_publish_slot(t, &v->base, rights, arg2, 0, 0);
-        if (pe != IRIS_OK) return syscall_err(pe);
-        return syscall_ok_u64(0);
-    }
-
-    handle_id_t h = handle_table_insert(&t->process->handle_table, &v->base,
-                                        rights);
-    if (h == HANDLE_INVALID) {
+    if (arg2 == 0u) {
         kobject_release(&v->base);
-        return syscall_err(IRIS_ERR_TABLE_FULL);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
     }
-    kobject_release(&v->base);
-    return syscall_ok_u64((uint64_t)h);
+    iris_error_t pe = syscall_publish_slot(t, &v->base, rights, arg2, 0, 0);
+    if (pe != IRIS_OK) return syscall_err(pe);
+    return syscall_ok_u64(0);
 }

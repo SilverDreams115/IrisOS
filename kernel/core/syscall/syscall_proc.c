@@ -36,18 +36,14 @@ uint64_t sys_process_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Stage 4: arg0 is a destination slot (RETYPE2 packing).  The process
      * object is borrowed from the caller's own task, so publish_slot's
      * consuming release needs a reference of its own. */
-    if (arg0 != 0u) {
-        kobject_retain(&t->process->base);
-        iris_error_t pe = syscall_publish_slot(t, &t->process->base, rights,
-                                               arg0, 0, 0);
-        if (pe != IRIS_OK) return syscall_err(pe);
-        return syscall_ok_u64(0);
-    }
-
-    h = handle_table_insert(&t->process->handle_table,
-                            &t->process->base, rights);
-    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_TABLE_FULL);
-    return syscall_ok_u64((uint64_t)h);
+    /* Stage 4: a destination slot is REQUIRED — the handle result is retired. */
+    if (arg0 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
+    (void)h;
+    kobject_retain(&t->process->base);
+    iris_error_t pe = syscall_publish_slot(t, &t->process->base, rights,
+                                           arg0, 0, 0);
+    if (pe != IRIS_OK) return syscall_err(pe);
+    return syscall_ok_u64(0);
 }
 
 
@@ -263,8 +259,13 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
 
     /* Etapa 4: arg1 names a destination CSpace slot; the new process cap is
      * published there as an MDB child of the spawn-cap slot that authorised
-     * the create, so it is revocable by the grantor.  0 = legacy handle. */
-    if (dest != 0u) {
+     * the create, so it is revocable by the grantor.
+     *
+     * Stage 4: it is REQUIRED — the handle result is retired, so 0 names no
+     * destination and is an error rather than a fall back to the other
+     * namespace. */
+    if (dest == 0u) { kprocess_free(proc); return syscall_err(IRIS_ERR_INVALID_ARG); }
+    {
         struct KCNode *auth_cn = 0; uint32_t auth_idx = 0;
         if (cspace_value_is_cptr((iris_cptr_t)arg0) &&
             cspace_resolve_slot(t->process, (iris_cptr_t)arg0,
@@ -280,20 +281,11 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
             kobject_release(&auth_cn->base);
         }
         if (pe != IRIS_OK) { kprocess_free(proc); return syscall_err(pe); }
+        /* The initial ref is the thread-lifecycle reference and is NOT
+         * released here; reap_dead_task_off_cpu drops it via kprocess_free
+         * once the last thread exits. */
         return syscall_ok_u64(0);
     }
-
-    handle_id_t h = handle_table_insert(&t->process->handle_table, &proc->base,
-                                        RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |
-                                        RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_ROUTE);
-    if (h == HANDLE_INVALID) {
-        kprocess_free(proc);
-        return syscall_err(IRIS_ERR_TABLE_FULL);
-    }
-    /* On success: do NOT kobject_release.  The initial ref is the
-     * thread-lifecycle reference; reap_dead_task_off_cpu drops it via
-     * kprocess_free once the last thread exits. */
-    return syscall_ok_u64((uint64_t)h);
 }
 
 

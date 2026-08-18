@@ -215,6 +215,36 @@ static long it_initrd_vmo_slot(long auth_cptr, long index) {
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
+/* SYS_TCB_SELF into a rotating leaf: the caller's own TCB as a capability. */
+static long it_tcb_self_slot(void) {
+    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    long r = it_sys1(SYS_TCB_SELF,
+                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
+    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
+}
+
+/* SYS_VMO_CREATE_FOR: a VMO charged to `payer`, published into a slot. */
+static long it_vmo_create_for_slot(uint64_t size, long payer) {
+    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    long r = it_sys3(SYS_VMO_CREATE_FOR, (long)size, payer,
+                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
+    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
+}
+
+/* SYS_PROCESS_VSPACE: a target's address space, published into a slot. */
+static long it_proc_vspace_slot(long proc) {
+    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    long r = it_sys2(SYS_PROCESS_VSPACE, proc,
+                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
+    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
+}
+
 static long it_vmo_create_slot(uint64_t size) {
     uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
                                              __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
@@ -3431,7 +3461,7 @@ static long              g_t083_tcb   = -1;
 static uint8_t           g_t083_stack[8192];
 
 static void t083_helper(void) {
-    g_t083_tcb   = it_sys0(SYS_TCB_SELF);
+    g_t083_tcb   = it_tcb_self_slot();
     g_t083_ready = 1;
     for (;;) {
         g_t083_count++;
@@ -3985,7 +4015,7 @@ static uint8_t           g_t088_stack3[8192];
 
 static void t088_recv1(void) {   /* killed while blocked with slot declared */
     struct IrisMsg m;
-    g_t088_r1_tcb   = it_sys0(SYS_TCB_SELF);
+    g_t088_r1_tcb   = it_tcb_self_slot();
     g_t088_r1_ready = 1;
     it_iris_msg_zero(&m);
     m.attached_cap = T088_SLOT_A;
@@ -4645,15 +4675,15 @@ static void test_t094(void) {
 }
 
 /* ── T095: handle high-water smoke (A1.7) ───────────────────────────────────
- * By this point the suite has exercised every producer: creation returns,
- * DUP/derive, IPC transfers, reply caps, resolves, spawns, deaths.  Read the
- * extended diagnostics, log the real numbers (the evidence for the
- * HANDLE_TABLE_MAX decision), and assert the working set is bounded: the
- * busiest table ever seen must fit in a quarter of the ceiling.
+ * By this point the suite has exercised every creator, every transfer, every
+ * spawn and every death.  Read the extended diagnostics, log the real numbers,
+ * and assert what Stage 4 set out to make true: the handle namespace is empty.
  *
- * It also carries two retirement witnesses.  Both the handle-delivery and the
- * TOCTOU-degradation counters must be structural zeros: a transferred
- * capability has exactly one destination, the receiver's declared slot. */
+ * Three retirement witnesses live here.  Handle-live must be ZERO — no
+ * capability the suite holds is addressed by a handle.  Handle-delivery must
+ * be zero — a transferred capability has exactly one destination, the
+ * receiver's declared slot.  TOCTOU must be zero — there is no degradation
+ * path left.  Any of the three moving means the namespace came back. */
 static void test_t095(void) {
     uint32_t w[14];
     if (!it_sched_ext(w)) { it_fail("T095", "sched_info ext"); return; }
@@ -4679,7 +4709,12 @@ static void test_t095(void) {
     it_serial_write("\n");
 
     int ok = 1;
-    if (!(w[IT_SI_LIVE] > 0u)) ok = 0;                       /* we hold handles */
+    /* Stage 4: the handle namespace is DRAINED.  This test used to assert
+     * `live > 0` — "we hold handles" — which was the honest reading while the
+     * suite fabricated them.  It is now the opposite assertion, and it is the
+     * one that matters: by this point the suite has exercised every creator,
+     * every transfer and every spawn, and it holds NO handles at all. */
+    if (w[IT_SI_LIVE] != 0u) ok = 0;
     if (w[IT_SI_HWM] < w[IT_SI_LIVE]) ok = 0;                /* hwm ≥ live */
     if (w[IT_SI_GHWM] < w[IT_SI_HWM]) ok = 0;                /* global ≥ self */
     if (w[IT_SI_INSERTS] < w[IT_SI_REMOVES]) ok = 0;         /* books balance */
@@ -12220,14 +12255,14 @@ static void test_t181(void) {
     long ro = ok ? it_cs_reduce((long)g.proc, RIGHT_READ) : -1;
     handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
     if (ok && ro < 0) { ok = 0; why = "ro dup"; }
-    if (ok && it_sys1(SYS_PROCESS_VSPACE, ro) != (long)IRIS_ERR_ACCESS_DENIED) {
+    if (ok && it_proc_vspace_slot(ro) != (long)IRIS_ERR_ACCESS_DENIED) {
         ok = 0; why = "no-manage not denied";
     }
-    if (ok && it_sys1(SYS_PROCESS_VSPACE, (long)g.notif) != (long)IRIS_ERR_WRONG_TYPE) {
+    if (ok && it_proc_vspace_slot((long)g.notif) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "wrong type accepted";
     }
     if (ok) {
-        long sv = it_sys1(SYS_PROCESS_VSPACE, (long)HANDLE_INVALID);
+        long sv = it_proc_vspace_slot((long)HANDLE_INVALID);
         if (sv < 0) { ok = 0; why = "self vspace"; }
         else { handle_id_t h = (handle_id_t)sv; it_close(&h); }
     }
@@ -16642,7 +16677,7 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
         if (ep < 0) { *why = "cmd ep"; t28_multi_close(m); return 0; }
         m->cmd[i] = (handle_id_t)ep;
         if (lp_spawn_child(m->cmd[i], &m->proc[i]) < 0 || m->proc[i] == HANDLE_INVALID) { *why = "spawn"; t28_multi_close(m); return 0; }
-        long vs = it_sys1(SYS_PROCESS_VSPACE, (long)m->proc[i]);
+        long vs = it_proc_vspace_slot((long)m->proc[i]);
         if (vs < 0) { *why = "vspace"; t28_multi_close(m); return 0; }
         m->vs[i] = (handle_id_t)vs;
         if (it_sys3(SYS_EXCEPTION_HANDLER, (long)m->proc[i], (long)m->fault_notif, (long)(1u << i)) != 0 ||
@@ -17002,7 +17037,7 @@ static void test_t239(void) {
     if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
     struct it_rinfo cs0, ss0;
     if (ok && (!it_rinfo(proc, &cs0) || !it_rinfo(HANDLE_INVALID, &ss0))) { ok = 0; why = "rinfo child"; }
-    long vc = ok ? it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)proc) : -1;
+    long vc = ok ? it_vmo_create_for_slot(4096, (long)proc) : -1;
     if (ok && vc < 0) { ok = 0; why = "create_for"; }
     struct it_rinfo cs1, ss1;
     if (ok && (!it_rinfo(proc, &cs1) || !it_rinfo(HANDLE_INVALID, &ss1))) { ok = 0; why = "rinfo child1"; }
@@ -17110,17 +17145,17 @@ static void test_t241(void) {
     long ro = ok ? it_cs_reduce((long)proc, RIGHT_READ) : -1;
     handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
     if (ok && ro < 0) { ok = 0; why = "dup ro"; }
-    if (ok && it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)ro_h) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-manage charged"; }
+    if (ok && it_vmo_create_for_slot(4096, (long)ro_h) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-manage charged"; }
     it_close(&ro_h);
 
     /* Wrong-type charge target → WRONG_TYPE. */
     long ep = ok ? it_ep_create() : -1;
     handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-    if (ok && it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)ep_h) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type charged"; }
+    if (ok && it_vmo_create_for_slot(4096, (long)ep_h) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type charged"; }
     it_close(&ep_h);
 
     /* Valid charge to the live child works. */
-    long vc = ok ? it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)proc) : -1;
+    long vc = ok ? it_vmo_create_for_slot(4096, (long)proc) : -1;
     if (ok && vc < 0) { ok = 0; why = "valid create_for"; }
     handle_id_t vch = (vc >= 0) ? (handle_id_t)vc : HANDLE_INVALID;
     it_close(&vch);
@@ -17130,7 +17165,7 @@ static void test_t241(void) {
         (void)it_sys1(SYS_PROCESS_KILL, (long)proc);
         (void)it_lp_wait_exit(proc);
         it_quiesce_reaper();
-        long dr = it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)proc);
+        long dr = it_vmo_create_for_slot(4096, (long)proc);
         if (dr != (long)IRIS_ERR_BAD_HANDLE && dr != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "dead target charged"; }
     }
     it_close(&cmd); it_close(&proc);
@@ -17289,8 +17324,8 @@ static void test_t245(void) {
     if (ok && !it_bare_child(&cmdB, &procB)) { ok = 0; why = "childB"; }
 
     /* Give each child an extra owned VMO (charged to it). */
-    long va = ok ? it_sys2(SYS_VMO_CREATE_FOR, 8192, (long)procA) : -1;
-    long vb = ok ? it_sys2(SYS_VMO_CREATE_FOR, 8192, (long)procB) : -1;
+    long va = ok ? it_vmo_create_for_slot(8192, (long)procA) : -1;
+    long vb = ok ? it_vmo_create_for_slot(8192, (long)procB) : -1;
     handle_id_t vah = (va >= 0) ? (handle_id_t)va : HANDLE_INVALID;
     handle_id_t vbh = (vb >= 0) ? (handle_id_t)vb : HANDLE_INVALID;
     if (ok && (va < 0 || vb < 0)) { ok = 0; why = "create_for"; }
@@ -17383,7 +17418,7 @@ static void test_t247(void) {
     if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
 
     /* Full cap charges. */
-    long v = ok ? it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)proc) : -1;
+    long v = ok ? it_vmo_create_for_slot(4096, (long)proc) : -1;
     if (ok && v < 0) { ok = 0; why = "full charge"; }
     handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
     it_close(&vh);
@@ -17392,12 +17427,12 @@ static void test_t247(void) {
     long red = ok ? it_cs_reduce((long)proc, RIGHT_READ) : -1;
     handle_id_t red_h = (red >= 0) ? (handle_id_t)red : HANDLE_INVALID;
     if (ok && red < 0) { ok = 0; why = "reduce"; }
-    if (ok && it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)red_h) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "reduced charged"; }
+    if (ok && it_vmo_create_for_slot(4096, (long)red_h) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "reduced charged"; }
     /* Cannot recover MANAGE by re-deriving from the reduced cap. */
     long rec = ok ? it_cs_reduce((long)red_h, RIGHT_READ | RIGHT_MANAGE) : -1;
     if (ok && rec >= 0) {
         /* If a handle came back, it must NOT actually carry MANAGE authority. */
-        if (it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)rec) == 0) { ok = 0; why = "recovered MANAGE"; }
+        if (it_vmo_create_for_slot(4096, (long)rec) == 0) { ok = 0; why = "recovered MANAGE"; }
         handle_id_t rh = (handle_id_t)rec; it_close(&rh);
     }
     it_close(&red_h);
@@ -17517,7 +17552,7 @@ static void test_t250(void) {
             /* Child owns its image + an extra VMO; kill releases exactly it. */
             handle_id_t cmd, proc;
             if (!it_bare_child(&cmd, &proc)) { ok = 0; why = "s0 child"; break; }
-            long v = it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)proc);
+            long v = it_vmo_create_for_slot(4096, (long)proc);
             struct it_rinfo self;
             if (v < 0 || !it_rinfo(HANDLE_INVALID, &self) || self.vmos_usage != r0.vmos_usage) { ok = 0; why = "s0 loader charged"; }
             if (v >= 0) { handle_id_t vh = (handle_id_t)v; it_close(&vh); }
@@ -18587,7 +18622,7 @@ static void test_t267(void) {
     if (ok && k1.kslab_used_bytes != k0.kslab_used_bytes) { ok = 0; why = "sc from kslab (S2.13)"; }
 
     /* Unconfigured SC cannot bind (B2/B3). */
-    long self_tcb = ok ? it_sys0(SYS_TCB_SELF) : -1;
+    long self_tcb = ok ? it_tcb_self_slot() : -1;
     handle_id_t self_h = (self_tcb >= 0) ? (handle_id_t)self_tcb : HANDLE_INVALID;
     if (ok && self_tcb < 0) { ok = 0; why = "tcb self"; }
     if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_A, (long)self_h) != (long)IRIS_ERR_INVALID_ARG) {
@@ -18830,7 +18865,7 @@ static long         g_t285_tcb   = -1;
 static uint8_t      g_t285_stack[8192];
 
 static void t285_helper(void) {
-    g_t285_tcb   = it_sys0(SYS_TCB_SELF);
+    g_t285_tcb   = it_tcb_self_slot();
     g_t285_ready = 1;
     it_sys0(SYS_THREAD_EXIT);
     for (;;) {}
@@ -18981,7 +19016,7 @@ static long              g_t287_tcb   = -1;
 static uint8_t           g_t287_stack[8192];
 
 static void t287_helper(void) {
-    g_t287_tcb   = it_sys0(SYS_TCB_SELF);
+    g_t287_tcb   = it_tcb_self_slot();
     g_t287_ready = 1;
     for (;;) { g_t287_count++; it_sys0(SYS_YIELD); }
 }
