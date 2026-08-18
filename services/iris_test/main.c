@@ -201,6 +201,23 @@ static long it_cs_reduce(long src_cptr, uint32_t rights) {
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
+/* A KVMO published into a CSpace slot instead of a handle (Stage 4: arg2 of
+ * SYS_VMO_CREATE is a destination slot).  Same rotating-pool contract as
+ * it_retype_slot_alloc; released with it_close.
+ *
+ * A KVMO is fabricated from kernel memory rather than retyped from an Untyped,
+ * so the slot is an MDB LEGACY root — that is KVMO's own debt (ledger: FROZEN,
+ * memory-server), not something the slot introduces.  What changes here is
+ * only WHERE the capability lives. */
+static long it_vmo_create_slot(uint64_t size) {
+    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    long r = it_sys3(SYS_VMO_CREATE, (long)size, 0,
+                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
+    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
+}
+
 static long it_ep_create_slot(void) {
     return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT, 0);
 }
@@ -13004,7 +13021,7 @@ static inline long t26_ofs(uint64_t offset, uint64_t flags) {
 
 /* Create a sparse VMO; returns handle or HANDLE_INVALID. */
 static handle_id_t t26_vmo_create(uint64_t size) {
-    long v = it_sys1(SYS_VMO_CREATE, (long)size);
+    long v = it_vmo_create_slot(size);
     return (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
 }
 
@@ -13026,8 +13043,8 @@ static int t26_vmo_word(handle_id_t vmo, uint64_t offset, uint32_t *val, int wri
  * A VMO is a capability defended by policy.  Size is stable and READ-gated;
  * SYS_VMO_MAP_PAGE is READ-gated (RIGHT_WRITE additionally for a writable
  * PTE); wrong-type in either slot is WRONG_TYPE; a reduced-rights derivation
- * (SYS_HANDLE_DUP) cannot regain rights it dropped; a stale (closed) cap
- * fails clean.  No authority amplification, no live drift.
+ * (SYS_CSPACE_MINT slot-to-slot) cannot regain rights it dropped; a released
+ * cap fails clean.  No authority amplification, no live drift.
  * Invariants: M1, M2, M9, M10, M11, M12, M23. */
 static void test_t191(void) {
     it_quiesce_reaper();
@@ -13045,7 +13062,7 @@ static void test_t191(void) {
     if (ok && it_sys1(SYS_VMO_SIZE, (long)vmo) != (long)T26_VMO_SZ) { ok = 0; why = "size unstable"; }
 
     /* A READ-only derivation cannot map writable (rights monotonicity). */
-    long ro = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    long ro = it_cs_reduce((long)vmo, RIGHT_READ | RIGHT_DUPLICATE);
     handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
     if (ok && ro < 0) { ok = 0; why = "ro dup"; }
     if (ok && it_setup_self_vspace()) {
@@ -13231,7 +13248,7 @@ static void test_t194(void) {
     if (ok && !t25_tgt_spawn(&g, &why)) { it_close(&vmo); it_fail("T194", why); return; }
 
     /* A READ-only VMO cap cannot install a writable PTE into g's VSpace. */
-    long vro = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    long vro = it_cs_reduce((long)vmo, RIGHT_READ | RIGHT_DUPLICATE);
     handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
     if (ok && vro < 0) { ok = 0; why = "vro dup"; }
     if (ok && it_sys4(SYS_VMO_MAP_PAGE, vro, (long)g.vs, (long)T26_TVA_A, t26_ofs(0, 1u))
@@ -13473,9 +13490,9 @@ static void test_t198(void) {
 
     handle_id_t vmo = t26_vmo_create(T26_VMO_SZ);
     if (vmo == HANDLE_INVALID) { it_fail("T198", "vmo create"); return; }
-    long vro = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    long vro = it_cs_reduce((long)vmo, RIGHT_READ | RIGHT_DUPLICATE);
     handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
-    long vstale = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    long vstale = it_cs_reduce((long)vmo, RIGHT_READ | RIGHT_DUPLICATE);
     handle_id_t vstale_h = (vstale >= 0) ? (handle_id_t)vstale : HANDLE_INVALID;
     if (ok && (vro < 0 || vstale < 0)) { ok = 0; why = "dups"; }
     it_close(&vstale_h);   /* now stale */
@@ -13491,7 +13508,12 @@ static void test_t198(void) {
         { (long)vmo, IT_VS, 0xFFFF800000000000ULL,    t26_ofs(0, 0),               (long)IRIS_ERR_INVALID_ARG,  "kernel va" },
         { (long)vmo, IT_VS, T26_SELF_VA,              t26_ofs(0x1000ULL, 0),       (long)IRIS_ERR_BUSY,         "occupied" },
         { vro,       IT_VS, T26_SELF_VA + 0x10000ULL, t26_ofs(0, 1u),              (long)IRIS_ERR_ACCESS_DENIED,"ro writable" },
-        { vstale,    IT_VS, T26_SELF_VA + 0x10000ULL, t26_ofs(0, 0),               (long)IRIS_ERR_BAD_HANDLE,   "stale vmo" },
+        /* Stage 4: a "stale cap" is a DELETED SLOT, and an empty slot is
+         * NOT_FOUND — the CSpace form of the BAD_HANDLE this asserted while
+         * the cap was a handle.  The property is the same and is the one that
+         * survives: a capability that was released fails clean and mutates
+         * nothing. */
+        { vstale,    IT_VS, T26_SELF_VA + 0x10000ULL, t26_ofs(0, 0),               (long)IRIS_ERR_NOT_FOUND,    "stale vmo" },
     };
     for (uint32_t i = 0; ok && i < 6u; i++) {
         long r = it_sys4(SYS_VMO_MAP_PAGE, bad[i].vmo_c, bad[i].vs_c, (long)bad[i].va, bad[i].ofs);
@@ -13650,7 +13672,7 @@ static void test_t200(void) {
             /* Failure injection under load, THEN a clean resolve.  The denied
              * maps install nothing, so T26_TVA_A stays unmapped and the target
              * still faults; only then does the supervisor map + resume. */
-            long vro = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+            long vro = it_cs_reduce((long)vmo, RIGHT_READ | RIGHT_DUPLICATE);
             handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
             if (vro < 0) { ok = 0; why = "op4 dup"; break; }
             /* RO cap cannot install a writable PTE; a beyond-size offset is
@@ -14066,7 +14088,7 @@ static void test_t204(void) {
     /* The pager holds RO vmo → a writable map into the target must be denied.
      * Emulate the pager's exact call via its VSpace cap (the pager would get
      * the same ACCESS_DENIED). */
-    long vro = it_sys2(SYS_HANDLE_DUP, (long)vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    long vro = it_cs_reduce((long)vmo, RIGHT_READ | RIGHT_DUPLICATE);
     handle_id_t vro_h = (vro >= 0) ? (handle_id_t)vro : HANDLE_INVALID;
     if (ok && vro < 0) { ok = 0; why = "ro dup"; }
     if (ok && it_sys4(SYS_VMO_MAP_PAGE, vro, (long)g.vs, (long)T27_VA_A, t26_ofs(0x2000ULL, 1u))

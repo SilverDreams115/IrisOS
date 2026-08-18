@@ -319,6 +319,7 @@ child of its source and therefore revocable.
 | after Etapa 6a/6b (lookups, liveness probes, self-proc, vestigial KDEBUG staging) | 178 |
 | after the endpoint/notification fixture migration | 137 |
 | after the retyped-object fixture migration | 118 |
+| after the VMO fixture migration | 111 |
 
 What is left is dominated by fixtures the suite cannot yet fabricate into a
 slot: `SYS_HANDLE_DUP` on VMO / KProcess / KVSpace / KFrame caps.  Those retire
