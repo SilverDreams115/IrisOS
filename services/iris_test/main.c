@@ -638,75 +638,29 @@ static void test_t010(void) {
         it_fail("T010", "expected TIMED_OUT");
 }
 
-/* ── T011: HANDLE_TYPE on endpoint (Fase 13/Track F: KChannel→KEndpoint) ── */
-
-static void test_t011(void) {
-    long ep_raw = it_ep_create_h();
-    if (ep_raw < 0) { it_fail("T011", "ep create"); return; }
-    handle_id_t ep_h = (handle_id_t)ep_raw;
-
-    long ty = it_sys1(SYS_HANDLE_TYPE, ep_raw);
-
-    it_close(&ep_h);
-
-    if (ty == (long)IRIS_HANDLE_TYPE_ENDPOINT)
-        it_pass("T011");
-    else
-        it_fail("T011", "wrong type");
-}
-
-/* ── T012: HANDLE_SAME_OBJECT on endpoints (Fase 13/Track F) ─────────────── */
-
-static void test_t012(void) {
-    long ep_raw = it_ep_create_h();
-    if (ep_raw < 0) { it_fail("T012", "ep create"); return; }
-    handle_id_t ep_h = (handle_id_t)ep_raw;
-
-    long dup_raw = it_sys2(SYS_HANDLE_DUP, ep_raw,
-                           (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
-    if (dup_raw < 0) {
-        it_close(&ep_h);
-        it_fail("T012", "dup"); return;
-    }
-    handle_id_t dup_h = (handle_id_t)dup_raw;
-
-    long ep2_raw = it_ep_create_h();
-    if (ep2_raw < 0) {
-        it_close(&dup_h);
-        it_close(&ep_h);
-        it_fail("T012", "ep2 create"); return;
-    }
-    handle_id_t ep2_h = (handle_id_t)ep2_raw;
-
-    /* ep_h and dup_h → same object */
-    long same = it_sys2(SYS_HANDLE_SAME_OBJECT, ep_raw, dup_raw);
-    /* ep_h and ep2_h → different objects */
-    long diff = it_sys2(SYS_HANDLE_SAME_OBJECT, ep_raw, ep2_raw);
-
-    it_close(&ep2_h);
-    it_close(&dup_h);
-    it_close(&ep_h);
-
-    if (same == 1 && diff == 0)
-        it_pass("T012");
-    else
-        it_fail("T012", "same-obj wrong");
-}
+/* ── T011 / T012 RETIRED (Stage 4) ────────────────────────────────────────
+ * Their SUBJECT was the handle namespace: T011 asserted SYS_HANDLE_TYPE on an
+ * endpoint HANDLE, T012 that two HANDLES name one object.  Both questions are
+ * real and both are asked of CSpace now — T292 covers the type of a slot for
+ * every family, T293 covers identity across a rights-reduced, badged derive.
+ * Migrating these two would have left them asserting the same thing twice
+ * through a namespace that is being deleted, which the roadmap's rule calls a
+ * test whose subject dies with the mechanism. */
 
 /* ── T013: Rights enforcement on an endpoint (no WRITE → EP_SEND fails) ──── */
 /* Fase 13/Track I: rewritten from KChannel to KEndpoint — EP_SEND requires
  * RIGHT_WRITE, so a READ-only cap is rejected with ACCESS_DENIED (same
  * rights-enforcement guarantee, no SYS_CHAN). */
 static void test_t013(void) {
-    long ep_raw = it_ep_create_h();
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T013", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
-    /* Dup with READ-only (no WRITE right) */
-    long ro_raw = it_sys2(SYS_HANDLE_DUP, ep_raw, (long)RIGHT_READ);
+    /* Derive a READ-only copy (no WRITE right) */
+    long ro_raw = it_cs_reduce(ep_raw, RIGHT_READ);
     if (ro_raw < 0) {
         it_close(&ep_h);
-        it_fail("T013", "ro dup"); return;
+        it_fail("T013", "ro derive"); return;
     }
     handle_id_t ro_h = (handle_id_t)ro_raw;
 
@@ -971,16 +925,16 @@ static void test_t020(void) {
     g_t020_done   = 0;
     g_t020_result = 0;
 
-    long ep_raw = it_ep_create_h();
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T020", "ep create"); return; }
     g_t020_ep_h = (handle_id_t)ep_raw;
 
-    /* Dup to get a second handle — active_refs = 2 */
-    long ep2_raw = it_sys2(SYS_HANDLE_DUP, ep_raw,
-                           (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+    /* A second capability to the same endpoint — active_refs = 2.  It was a
+     * handle dup; it is a CSpace copy, which is the only kind left. */
+    long ep2_raw = it_cs_reduce(ep_raw, RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
     if (ep2_raw < 0) {
         it_close(&g_t020_ep_h);
-        it_fail("T020", "dup"); return;
+        it_fail("T020", "second cap"); return;
     }
     handle_id_t ep2_h = (handle_id_t)ep2_raw;
 
@@ -1186,15 +1140,15 @@ static void test_t022(void) {
 /* ── T023: EP_SEND on read-only endpoint handle → ACCESS_DENIED ─────────── */
 
 static void test_t023(void) {
-    long ep_raw = it_ep_create_h();
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T023", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep_raw;
 
-    /* Dup with READ-only (no WRITE right) */
-    long ro_raw = it_sys2(SYS_HANDLE_DUP, ep_raw, (long)RIGHT_READ);
+    /* Derive a READ-only copy (no WRITE right) */
+    long ro_raw = it_cs_reduce(ep_raw, RIGHT_READ);
     if (ro_raw < 0) {
         it_close(&ep_h);
-        it_fail("T023", "ro dup"); return;
+        it_fail("T023", "ro derive"); return;
     }
     handle_id_t ro_h = (handle_id_t)ro_raw;
 
@@ -2087,45 +2041,18 @@ static void test_t045(void) {
         it_fail("T045", "rights reduction on client slot");
 }
 
-/* ── T046: legacy handle path interop — lookup still yields real handles ─ */
-
-/*
- * Discovery by name must keep working alongside CPtr slots: a LOOKUP_NAME
- * through slot 1 returns a REAL handle (>= 1024 — generation >= 1), which
- * must be invocable and closable like any legacy cap.
- */
-static void test_t046(void) {
-    uint32_t len = it_stage_path(CONSOLE_EP_SVC_NAME);
-    struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    msg.buf_len  = len;
-    /* Stage 4: a reply that carries a capability needs somewhere to put it —
-     * handle materialisation is retired, so an undeclared receive gets the
-     * message without the cap. */
-    it_slot_delete((uint32_t)IT_LOOKUP_TMP);
-    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
-    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
-
-    int ok = 0;
-    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
-        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP &&
-        msg.attached_handle >= 1024u) {
-        struct IrisMsg ping;
-        it_iris_msg_zero(&ping);
-        ping.label = IRIS_EP_OP_PING;
-        if (it_sys2(SYS_EP_CALL, (long)msg.attached_handle, (long)&ping) == 0 &&
-            ping.label == IRIS_EP_REPLY_OK)
-            ok = 1;
-        handle_id_t h = (handle_id_t)msg.attached_handle;
-        it_close(&h);
-    }
-    if (ok)
-        it_pass("T046");
-    else
-        it_fail("T046", "legacy lookup handle interop");
-}
+/* ── T046 RETIRED (Stage 4) ───────────────────────────────────────────────
+ * It asserted that a name lookup still yields a real HANDLE alongside the CPtr
+ * slots — the interop guarantee for clients that had not migrated.  There are
+ * none, and handle materialisation on delivery is retired.
+ *
+ * It is worth recording HOW it ended, because it stopped testing anything
+ * before it stopped compiling: its check was `attached_handle >= 1024`, which
+ * meant "this is a handle" only while handles were encoded as slot|gen<<10.
+ * Once the reply landed in a declared receive slot the value was a two-level
+ * CPtr (62288), still >= 1024, and the test passed on a magnitude comparison
+ * that no longer meant anything.  T092 asserts the guarantee that replaced it:
+ * a client that declares no slot gets the reply WITHOUT the capability. */
 
 /* ── Fase 9: badges & sender identity (T047–T053) ───────────────────────── */
 
@@ -10499,10 +10426,10 @@ static void test_t154(void) {
     /* Re-deriving from the reduced cap cannot recover RIGHT_WRITE: either the
      * derive is rejected, or it yields a cap that STILL cannot signal. */
     if (ok) {
-        long wr = it_sys2(SYS_HANDLE_DUP, rd, (long)(RIGHT_READ | RIGHT_WRITE));
+        long wr = it_cs_reduce(rd, RIGHT_READ | RIGHT_WRITE);
         if (wr >= 0) {
             handle_id_t wr_h = (handle_id_t)wr;
-            if (it_sys2(SYS_NOTIFY_SIGNAL, wr, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights amplified via re-dup"; }
+            if (it_sys2(SYS_NOTIFY_SIGNAL, wr, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights amplified via re-derive"; }
             it_close(&wr_h);
         }
     }
@@ -19685,12 +19612,13 @@ static void test_t295(void) {
 
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
-void iris_test_main(handle_id_t bootstrap_ch_h) {
+void iris_test_main(handle_id_t rbx_unused) {
     /* Fase 13 (Track I): the spawn/authority cap arrives as the
      * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint — no bootstrap KChannel.
      * SYS_CAP_CREATE_IOPORT resolves it by CPtr via the device-cap dual
-     * resolver (the serial KIoPort for test output). */
-    it_sys1(SYS_HANDLE_CLOSE, (long)bootstrap_ch_h);
+     * resolver (the serial KIoPort for test output).  svc_loader passes
+     * RBX = 0, so this argument is not a handle. */
+    (void)rbx_unused;
 
     /* Second-level CNode for the objects the suite fabricates and HOLDS.  The
      * root CNode is full, so this is the only place they can live — and it is
@@ -19722,8 +19650,6 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t008();
     test_t009();
     test_t010();
-    test_t011();
-    test_t012();
     test_t013();
     test_t014();
     test_t015();
@@ -19757,7 +19683,6 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t043();
     test_t044();
     test_t045();
-    test_t046();
     test_t047();
     test_t048();
     test_t049();
@@ -20015,7 +19940,10 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
         it_serial_write("\n");
     }
 
-    it_sys1(SYS_HANDLE_CLOSE, (long)g_serial_h);
+    /* g_serial_h is IT_SERIAL_SLOT, a CSpace slot holding the device cap
+     * SYS_CAP_CREATE_IOPORT published there — never a handle.  Closing it as
+     * one was a failed call that read as cleanup; the slot goes with the
+     * address space on exit. */
     it_sys1(SYS_EXIT, (long)(g_pass != g_total ? 1 : 0));
     for (;;) {}
 }
