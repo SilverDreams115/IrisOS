@@ -3171,7 +3171,7 @@ static void test_t079(void) {
 }
 
 /* ── T080: VMO remaining syscalls by CPtr (A1 Increment 1b) ─────────────────
- * SYS_VMO_SIZE / SYS_VMO_SHARE / SYS_VMO_MAP_INTO now resolve their VMO
+ * SYS_VMO_SIZE / SYS_VMO_MAP_INTO / SYS_PROC_CSPACE_MINT resolve their VMO
  * argument through the dual resolver (the target/destination process stays
  * handle-only).  Reuses the T079 fixture: the self-proc cap at
  * IRIS_CPTR_TEST_PROC mints a runtime VMO into own slots — 19 (READ|WRITE|
@@ -3188,6 +3188,11 @@ static void test_t079(void) {
 
 #define T080_SLOT_RWD   19L               /* dynamic slot: VMO, READ|WRITE|DUP */
 #define T080_SLOT_RO    20L               /* dynamic slot: VMO, READ only      */
+/* Destination slots in the spawned child's root CNode.  lifecycle_probe
+ * children only receive the LP_CPTR_CMD_EP=3 mint, so 60..62 are empty —
+ * the same window T097/T098 use. */
+#define T080_DST_SLOT   60L
+#define T080_DST_SLOT2  61L
 #define T080_VMO_SIZE   8192U             /* 2 pages: distinct from other tests */
 
 static void test_t080(void) {
@@ -3225,15 +3230,19 @@ static void test_t080(void) {
         it_close(&cmd_ep_h); it_close(&vmo_h);        it_fail("T080", "spawn"); return;
     }
 
-    /* ── SYS_VMO_SHARE (vmo by CPtr; dest process stays a handle) ── */
-    if (ok && it_sys3(SYS_VMO_SHARE, T080_SLOT_RWD, (long)proc_h,
-                      (long)(RIGHT_READ | RIGHT_WRITE)) < 0) ok = 0;
-    if (ok && it_sys3(SYS_VMO_SHARE, T080_SLOT_RO, (long)proc_h,
-                      (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
-    if (ok && it_sys3(SYS_VMO_SHARE, (long)IRIS_CPTR_TEST_FIX_A, (long)proc_h,
-                      (long)RIGHT_READ) != (long)IRIS_ERR_WRONG_TYPE) ok = 0;
-    if (ok && it_sys3(SYS_VMO_SHARE, vmo, (long)proc_h,
-                      (long)RIGHT_READ) < 0) ok = 0;
+    /* ── Cross-process delegation (vmo by CPtr; dest process a handle) ──
+     * SYS_VMO_SHARE is retired: it put the cap in the CHILD'S HANDLE TABLE,
+     * where the child could not name it and the grantor could not revoke it.
+     * SYS_PROC_CSPACE_MINT asserts the same three properties against the
+     * child's CSpace: a rights-carrying source delegates, a source missing
+     * RIGHT_DUPLICATE is denied, and a wrong-type source is rejected. */
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T080_DST_SLOT,
+                      T080_SLOT_RWD, (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T080_DST_SLOT2,
+                      T080_SLOT_RO, (long)RIGHT_READ)
+              != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T080_DST_SLOT2,
+                      (long)IRIS_CPTR_TEST_FIX_A, (long)RIGHT_READ) >= 0) ok = 0;
 
     /* ── SYS_VMO_MAP_INTO (vmo by CPtr; target process stays a handle) ── */
     if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RWD, (long)proc_h,
@@ -3356,8 +3365,8 @@ static void test_t081(void) {
 }
 
 /* ── T082: Process target by CPtr for VMO/handle operations (A1 Inc 2a) ─────
- * The destination-process argument of SYS_VMO_MAP_INTO / SYS_VMO_SHARE /
- * SYS_HANDLE_INSERT now resolves through the dual resolver, so a fully
+ * The destination-process argument of SYS_VMO_MAP_INTO and
+ * SYS_PROC_CSPACE_MINT resolves through the dual resolver, so a fully
  * CPtr-based delegation works: VMO by CPtr (slot 23) + process by CPtr
  * (slot 24).  Re-mapping the same VA → BUSY proves the PTEs were really
  * installed.  Authority is not relaxed: the self-proc cap (slot 25, WRITE
@@ -3401,25 +3410,22 @@ static void test_t082(void) {
     if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, T082_SLOT_PROC,
                       (long)LP_MAP_VA, 1) != (long)IRIS_ERR_BUSY) ok = 0;
 
-    /* SHARE: VMO by CPtr + process by CPtr → handle in the child's table. */
-    if (ok && it_sys3(SYS_VMO_SHARE, T082_SLOT_VMO, T082_SLOT_PROC,
-                      (long)(RIGHT_READ | RIGHT_WRITE)) < 0) ok = 0;
-
-    /* HANDLE_INSERT: destination process by CPtr (src stays a handle). */
-    if (ok && it_sys4(SYS_HANDLE_INSERT, T082_SLOT_PROC, vmo,
-                      (long)RIGHT_READ, 0) < 0) ok = 0;
+    /* Cross-process placement: process by CPtr, into the child's CSpace.
+     * SYS_VMO_SHARE and SYS_HANDLE_INSERT covered this by writing the child's
+     * HANDLE TABLE and are retired; the property under test — a destination
+     * process named by CPtr really is resolved — is the mint's now. */
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, T082_SLOT_PROC, T080_DST_SLOT,
+                      T082_SLOT_VMO, (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
 
     /* Authority not relaxed: self-proc slot 25 carries WRITE only (no
      * MANAGE) → MAP_INTO/SHARE reject it; wrong type / empty slot fail. */
     if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, (long)IRIS_CPTR_TEST_PROC,
                       (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_ACCESS_DENIED)
         ok = 0;
-    if (ok && it_sys3(SYS_VMO_SHARE, T082_SLOT_VMO, (long)IRIS_CPTR_TEST_PROC,
-                      (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
     if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, (long)IRIS_CPTR_TEST_FIX_A,
                       (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_WRONG_TYPE) ok = 0;
-    if (ok && it_sys3(SYS_VMO_SHARE, T082_SLOT_VMO, T079_SLOT_EMPTY,
-                      (long)RIGHT_READ) >= 0) ok = 0;
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, T079_SLOT_EMPTY, T080_DST_SLOT2,
+                      T082_SLOT_VMO, (long)RIGHT_READ) >= 0) ok = 0;
 
     /* Pure handle path unchanged: both args as raw handles. */
     if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo, (long)proc_h,
@@ -4748,9 +4754,9 @@ static void test_t096(void) {
 }
 
 /* ── A1.8: legacy handle producer cleanup (T097–T098) ───────────────────────
- * SYS_HANDLE_TRANSFER is retired (NOT_SUPPORTED); SYS_HANDLE_INSERT /
- * SYS_VMO_SHARE stay as deprecated compat.  The canonical cross-process
- * placement is SYS_PROC_CSPACE_MINT into a destination CSpace slot.
+ * SYS_HANDLE_TRANSFER, SYS_HANDLE_INSERT and SYS_VMO_SHARE are all retired
+ * (NOT_SUPPORTED).  The ONLY cross-process placement is SYS_PROC_CSPACE_MINT
+ * into a destination CSpace slot.
  * Destination child slots 60..62 (lifecycle_probe children only receive the
  * LP_CPTR_CMD_EP=3 mint, so these are guaranteed empty). */
 
@@ -4829,12 +4835,17 @@ static void test_t097(void) {
     if (ok) it_pass("T097"); else it_fail("T097", why);
 }
 
-/* ── T098: VMO share destination via CSpace, legacy compat intact ───────────
- * The CSpace-canonical way to share a VMO with another process is a mint
- * into a destination slot (no handle produced); the deprecated
- * SYS_VMO_SHARE compat path still works for a slotless consumer and stays
- * rights-monotonic (missing DUPLICATE → ACCESS_DENIED; disjoint rights →
- * INVALID_ARG; dead destination → BAD_HANDLE). */
+/* ── T098: sharing a VMO with another process is a CSpace mint ──────────────
+ * The only way to give a VMO to another process is a mint into a destination
+ * slot of its CSpace.  SYS_VMO_SHARE, which wrote the destination's HANDLE
+ * TABLE, is retired (Stage 4): the receiver could not name what it was given
+ * and the grantor could not revoke it.
+ *
+ * The three properties that test asserted are real and are re-asserted here
+ * against the mint, which is where they now live: a source missing
+ * RIGHT_DUPLICATE cannot delegate (ACCESS_DENIED), a request disjoint from
+ * the source's rights is refused rather than widened, and a dead destination
+ * fails clean. */
 static void test_t098(void) {
     long ep = it_ep_create();
     if (ep < 0) { it_fail("T098", "ep create"); return; }
@@ -4858,38 +4869,37 @@ static void test_t098(void) {
     if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT,
                 vmo, (long)RIGHT_READ) != 0) { ok = 0; why = "mint"; }
 
-    /* Deprecated compat still works: a handle (>= 1024) in the dest table. */
-    if (ok) {
-        long sh = it_sys3(SYS_VMO_SHARE, vmo, (long)proc_h, (long)RIGHT_READ);
-        if (sh < 1024) { ok = 0; why = "legacy share"; }
-    }
-    /* Rights monotonic on the compat path: no DUPLICATE → ACCESS_DENIED. */
+    /* A source without RIGHT_DUPLICATE cannot delegate. */
     if (ok) {
         long ro = it_sys2(SYS_HANDLE_DUP, vmo, (long)RIGHT_READ);
         if (ro < 0) { ok = 0; why = "dup ro"; }
         else {
-            if (it_sys3(SYS_VMO_SHARE, ro, (long)proc_h, (long)RIGHT_READ) !=
-                (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "share no-dup"; }
+            if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT2,
+                        ro, (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) {
+                ok = 0; why = "mint no-dup";
+            }
             handle_id_t roh = (handle_id_t)ro;
             it_close(&roh);
         }
     }
-    /* Disjoint rights request → INVALID_ARG (never a widened grant). */
+    /* A request disjoint from the source's rights is refused, never widened. */
     if (ok) {
         long rd = it_sys2(SYS_HANDLE_DUP, vmo,
                           (long)(RIGHT_READ | RIGHT_DUPLICATE));
         if (rd < 0) { ok = 0; why = "dup rd"; }
         else {
-            if (it_sys3(SYS_VMO_SHARE, rd, (long)proc_h, (long)RIGHT_MANAGE) !=
-                (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "share disjoint"; }
+            if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT2,
+                        rd, (long)RIGHT_MANAGE) >= 0) {
+                ok = 0; why = "mint disjoint";
+            }
             handle_id_t rdh = (handle_id_t)rd;
             it_close(&rdh);
         }
     }
-    /* Dead destination → BAD_HANDLE on the compat path too. */
+    /* A dead destination fails clean. */
     if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
-    if (ok && it_sys3(SYS_VMO_SHARE, vmo, (long)proc_h, (long)RIGHT_READ) !=
-        (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "dead dest"; }
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT3,
+                      vmo, (long)RIGHT_READ) >= 0) { ok = 0; why = "dead dest"; }
 
     if (!ok && proc_h != HANDLE_INVALID)
         (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
@@ -7091,6 +7101,7 @@ static void test_t115(void) {
  * book balance.  Invariants: I1, I15, I16. */
 #define T116_EP_SLOT 40u
 #define T116_N_SLOT  41u
+#define T116_VMO_SLOT 42u
 static void test_t116(void) {
     uint32_t before[14], after[14];
     it_quiesce_reaper();
@@ -7111,14 +7122,17 @@ static void test_t116(void) {
     if (ep < 0 || n < 0 || vmo < 0 || cep < 0 ||
         lp_spawn_child(cmd_ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
 
-    /* Mint the endpoint and the notification into the child's CSpace, and
-     * share the VMO cap into the child's handle table. */
+    /* Mint all three caps into the child's CSpace.  The VMO used to go
+     * through SYS_VMO_SHARE into the child's handle table; what this test
+     * measures — that killing a child holding live caps releases every one of
+     * them — does not depend on which namespace held them, and the CSpace
+     * form is the only one left. */
     if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, (long)T116_EP_SLOT,
                       ep, (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint ep"; }
     if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, (long)T116_N_SLOT,
                       n, (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint n"; }
-    if (ok && it_sys3(SYS_VMO_SHARE, vmo, (long)proc_h,
-                      (long)(RIGHT_READ | RIGHT_DUPLICATE)) < 0) {
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, (long)T116_VMO_SLOT,
+                      vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE)) != 0) {
         ok = 0; why = "share vmo";
     }
 
@@ -9889,7 +9903,7 @@ static void test_t148(void) {
      * (both were handle producers with no CSpace form and no callers). */
     static const long retired[] = {
         0, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 18, 23, 24, 25, 30, 31, 34,
-        37, 38, 41, 42, 43, 44, 63, 72, 78, 79, 80, 90,
+        37, 38, 41, 42, 43, 44, 46, 59, 63, 72, 78, 79, 80, 90,
     };
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();

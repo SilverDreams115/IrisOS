@@ -821,54 +821,21 @@ uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
 }
 
 
-/* ── B4: VMO inter-process share ──────────────────────────────────── */
-
+/* ── B4: VMO inter-process share — RETIRED (Stage 4) ──────────────────
+ *
+ * SYS_VMO_SHARE (46) placed a VMO capability in ANOTHER process's handle
+ * table.  That is a cross-process handle producer: the receiver got authority
+ * it could not name in its CSpace, with no MDB edge to the sender's cap, so
+ * the grant could not be revoked by the grantor.
+ *
+ * SYS_PROC_CSPACE_MINT / SYS_CSPACE_MINT_INTO are the canonical form and have
+ * been since Fase 8 — they install into the target's root CNode as an MDB
+ * child of the caller's source slot, which makes the delegation revocable.
+ * The number stays permanently reserved and answers NOT_SUPPORTED.
+ */
 uint64_t sys_vmo_share(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KObject *vmo_obj;
-    iris_rights_t vmo_rights;
-    /* A1 Increment 1b: dual resolver on the source VMO only — the destination
-     * process stays handle-only until the Process family migrates. */
-    iris_error_t r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg0,
-                                 RIGHT_NONE, KOBJ_VMO, &vmo_obj, &vmo_rights);
-    if (r != IRIS_OK) return syscall_err(r);
-    if (!rights_check(vmo_rights, RIGHT_READ | RIGHT_DUPLICATE)) {
-        kobject_release(vmo_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    struct KObject *proc_obj;
-    iris_rights_t proc_rights;
-    /* A1 Increment 2a: dual resolver on the destination process too. */
-    r = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)arg1,
-                                     RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
-    if (r != IRIS_OK) { kobject_release(vmo_obj); return syscall_err(r); }
-    if (!rights_check(proc_rights, RIGHT_MANAGE)) {
-        kobject_release(vmo_obj);
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-    if (!kprocess_is_alive((struct KProcess *)proc_obj)) {
-        kobject_release(vmo_obj);
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_BAD_HANDLE);
-    }
-
-    iris_rights_t granted = rights_reduce(vmo_rights, (iris_rights_t)arg2);
-    if (granted == RIGHT_NONE) {
-        kobject_release(vmo_obj);
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-
-    struct KProcess *dest = (struct KProcess *)proc_obj;
-    handle_id_t new_h = handle_table_insert(&dest->handle_table, vmo_obj, granted);
-    kobject_release(vmo_obj);
-    kobject_release(proc_obj);
-    if (new_h == HANDLE_INVALID) return syscall_err(IRIS_ERR_TABLE_FULL);
-    return syscall_ok_u64((uint64_t)new_h);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 
