@@ -120,8 +120,6 @@ static uint32_t g_total = 0;
  * capability there for the test's duration.  One rotation across both means a
  * borrow eventually lands on a live object and deletes it: a fault with no
  * local symptom, because the test that fails is not the one that caused it. */
-#define IT_S1_SCRATCH_BASE  64u   /* materialising factory: 64..79, borrowed */
-#define IT_S1_SCRATCH_SPAN  16u
 /* The held pool cannot live in the root CNode: it is full, and eight slots is
  * nowhere near enough for a suite that fabricates from worker threads too.
  * Root slot 80 holds a 256-slot SECOND-LEVEL CNode instead, its leaves
@@ -142,7 +140,6 @@ static uint32_t g_total = 0;
 #define IT_LOADER_WS_SLOT   82u
 #define IT_LOADER_WS \
     SVC_LOADER_WS((uint32_t)IRIS_CPTR_TEST_UNTYPED, IT_LOADER_WS_SLOT)
-static uint32_t g_it_s1_scratch_next;
 static uint32_t g_it_obj_slot_next;
 
 static long it_retype2_at(long ut, uint32_t obj_type, uint32_t slot,
@@ -150,17 +147,6 @@ static long it_retype2_at(long ut, uint32_t obj_type, uint32_t slot,
     return it_sys4(SYS_UNTYPED_RETYPE2, ut,
                    (long)((uint64_t)obj_type | ((uint64_t)count << 32)),
                    (long)((uint64_t)slot << 32), obj_arg);
-}
-
-static long it_retype_handle(long ut, uint32_t obj_type, long obj_arg) {
-    uint32_t slot = IT_S1_SCRATCH_BASE +
-        (__atomic_fetch_add(&g_it_s1_scratch_next, 1u, __ATOMIC_RELAXED)
-         % IT_S1_SCRATCH_SPAN);
-    long r = it_retype2_at(ut, obj_type, slot, 1u, obj_arg);
-    if (r < 0) return r;
-    long h = it_sys1(SYS_CSPACE_RESOLVE, (long)slot);
-    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
-    return h;
 }
 
 /* Etapa 4: the same fabrication, but the capability STAYS in its slot — which
@@ -254,18 +240,6 @@ static long it_notify_create_slot(void) {
     return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION, 0);
 }
 
-/* Materialising factories, kept for the tests whose SUBJECT is the handle
- * namespace — HANDLE_TYPE, HANDLE_SAME_OBJECT, HANDLE_DUP and the rights
- * reductions expressed through it.  Those assertions are about handles, so
- * they must hold one; they are deleted WITH the namespace, not migrated. */
-static long it_ep_create_h(void) {
-    return it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT, 0);
-}
-
-static long it_notify_create_h(void) {
-    return it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION, 0);
-}
-
 static long it_ep_create(void) {
     return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT, 0);
 }
@@ -357,20 +331,14 @@ static void it_slot_delete(uint32_t slot) {
  * the old "no root found" guards are gone with the probe. */
 #define T28_OWN_ROOT_CNODE 0u
 
-/* Namespace-aware for the same reason it_close is.  A CPtr source is a plain
- * slot-to-slot mint, which also installs the result as an MDB child of the
- * source; a handle source still needs SYS_CNODE_MINT, whose source is
- * handle-only.  The second branch dies with the namespace. */
+/* A transfer source is a slot-to-slot mint, which also installs the result as
+ * an MDB child of the source.  The SYS_CNODE_MINT branch this used to carry
+ * for handle sources is gone with the namespace. */
 static long it_xfer_slot(handle_id_t src_h, uint32_t slot, uint32_t rights) {
     it_slot_delete(slot);
-    long r;
-    if (((uint32_t)src_h & HANDLE_TAG) == 0u && src_h != 0)
-        r = it_sys3(SYS_CSPACE_MINT, (long)src_h,
-                    (long)((uint64_t)slot << 32),
-                    (long)(rights | RIGHT_TRANSFER));
-    else
-        r = it_sys4(SYS_CNODE_MINT, (long)T28_OWN_ROOT_CNODE, (long)slot,
-                    (long)src_h, (long)(rights | RIGHT_TRANSFER));
+    long r = it_sys3(SYS_CSPACE_MINT, (long)src_h,
+                     (long)((uint64_t)slot << 32),
+                     (long)(rights | RIGHT_TRANSFER));
     return (r != 0) ? r : (long)slot;
 }
 
@@ -390,13 +358,8 @@ static int it_slot_is_notif(long slot) {
  * RIGHT_TRANSFER) — used by the negative tests that must be denied. */
 static long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
     it_slot_delete(slot);
-    long r;
-    if (((uint32_t)src_h & HANDLE_TAG) == 0u && src_h != 0)
-        r = it_sys3(SYS_CSPACE_MINT, src_h,
-                    (long)((uint64_t)slot << 32), (long)rights);
-    else
-        r = it_sys4(SYS_CNODE_MINT, (long)T28_OWN_ROOT_CNODE, (long)slot,
-                    src_h, (long)rights);
+    long r = it_sys3(SYS_CSPACE_MINT, src_h,
+                     (long)((uint64_t)slot << 32), (long)rights);
     return (r != 0) ? r : (long)slot;
 }
 
@@ -407,20 +370,16 @@ static long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
  * removes the ENTIRE descendant subtree across CNodes and processes while the
  * invoked slot and its siblings survive.
  *
- * it_cdt_root  — bridge a cap that currently lives in a HANDLE into a scratch
- *                slot, so it can act as a derivation root.  Returns the CPtr.
+ * it_cdt_root  — copy a cap into a scratch slot so it can act as a derivation
+ *                root without the test's fixture slot rotating out from under
+ *                it.  Returns the CPtr.
  * it_cdt_derive— derive src_cptr into dest_slot with the requested rights.
  * it_cdt_alive — does this slot still name a live capability?
  * it_cdt_revoke— revoke the slot's descendants (>= 0 on success). */
 static long it_cdt_root(handle_id_t src_h, uint32_t slot) {
     it_slot_delete(slot);
-    long r;
-    if (((uint32_t)src_h & HANDLE_TAG) == 0u && src_h != 0)
-        r = it_sys3(SYS_CSPACE_MINT, (long)src_h,
-                    (long)((uint64_t)slot << 32), (long)RIGHT_SAME_RIGHTS);
-    else
-        r = it_sys4(SYS_CNODE_MINT, (long)T28_OWN_ROOT_CNODE, (long)slot,
-                    (long)src_h, (long)RIGHT_SAME_RIGHTS);
+    long r = it_sys3(SYS_CSPACE_MINT, (long)src_h,
+                     (long)((uint64_t)slot << 32), (long)RIGHT_SAME_RIGHTS);
     return (r != 0) ? r : (long)slot;
 }
 
@@ -501,6 +460,11 @@ static void it_iris_msg_zero(struct IrisMsg *m) {
 static void it_close(handle_id_t *h) {
     if (*h == HANDLE_INVALID) return;
     if (((uint32_t)*h & HANDLE_TAG) != 0u) {
+        /* Still reachable: the kernel producers this stage has not retired yet
+         * (SYS_CSPACE_RESOLVE and the dest == 0 creator legs).  Removing this
+         * branch before them costs nothing visible at the call site and shows
+         * up as handle-live drift eight tests later — the consumer has to go
+         * AFTER the producer, not before. */
         it_sys1(SYS_HANDLE_CLOSE, (long)*h);
     } else if (((uint32_t)*h & 0xFFu) == IT_OBJ_CNODE_SLOT ||
                ((uint32_t)*h & 0xFFu) == IT_LOADER_WS_SLOT) {
@@ -2745,27 +2709,17 @@ static void test_t073(void) {
     long b = it_sys2(SYS_EP_NB_SEND, ep, (long)&msg2);
     int  empty_clean = (b == (long)IRIS_ERR_NOT_FOUND);
 
-    /* (c) A HANDLE value as source → INVALID_ARG, with NO handle-table
-     * fallback.  This is the Etapa 2 invariant: the transfer source lives in
-     * exactly one namespace (charter §3.6/§3.7, invariant A6).
-     *
-     * This half needs a real handle to hold wrong, so it keeps the
-     * materialising factory: it is the one part of this test whose SUBJECT is
-     * the handle namespace, and it dies with the namespace rather than being
-     * migrated into a tautology. */
-    long h_src = it_ep_create_h();
-    int  handle_rejected = 0;
-    if (h_src > 0 && ((uint32_t)h_src & HANDLE_TAG) != 0u) {
-        struct IrisMsg msg3;
-        it_iris_msg_zero(&msg3);
-        msg3.label           = 0x73;
-        msg3.attached_handle = (uint32_t)h_src;
-        msg3.attached_rights = (uint32_t)RIGHT_TRANSFER;
-        handle_rejected = (it_sys2(SYS_EP_NB_SEND, ep, (long)&msg3) ==
+    /* (c) A MALFORMED source CPtr → INVALID_ARG, with nothing staged.  This
+     * used to feed a real HANDLE value and assert the transfer source lives in
+     * exactly one namespace; there is one namespace now, so the equivalent
+     * hostile input is a CPtr that does not address a capability. */
+    struct IrisMsg msg3;
+    it_iris_msg_zero(&msg3);
+    msg3.label           = 0x73;
+    msg3.attached_handle = (uint32_t)(IT_XFER_SLOT_C | (1u << 16));  /* alias */
+    msg3.attached_rights = (uint32_t)RIGHT_TRANSFER;
+    int handle_rejected = (it_sys2(SYS_EP_NB_SEND, ep, (long)&msg3) ==
                            (long)IRIS_ERR_INVALID_ARG);
-        handle_id_t hh = (handle_id_t)h_src;
-        it_close(&hh);
-    }
 
     it_slot_delete(IT_XFER_SLOT_C);
     it_close(&ep_h);
@@ -10036,8 +9990,8 @@ static void test_t149(void) {
     int ok = b.ok;
     const char *why = "wrong-type fuzz";
 
-    long ep = it_ep_create_h();
-    long no = it_notify_create_h();
+    long ep = it_ep_create_slot();
+    long no = it_notify_create_slot();
     handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
     handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
     if (ep < 0 || no < 0) { it_close(&ep_h); it_close(&no_h); it_fail("T149", "fixture"); return; }
@@ -10057,22 +10011,26 @@ static void test_t149(void) {
      * a NON-NEGATIVE return would mean a hostile handle was honoured. */
     for (int i = 0; ok && i < IT_FZ_BAD_H_N; i++) {
         long h = it_fz_bad_handles[i];
-        if (it_sys1(SYS_HANDLE_TYPE, h) >= 0)                 { ok = 0; why = "handle_type honoured bad"; break; }
+        if (it_sys1(SYS_CAP_IDENTIFY, h) >= 0)                { ok = 0; why = "identify honoured bad"; break; }
         if (it_sys2(SYS_NOTIFY_SIGNAL, h, 1) >= 0)            { ok = 0; why = "signal honoured bad"; break; }
         if (it_sys2(SYS_EP_SEND, h, (long)&m) >= 0)           { ok = 0; why = "ep_send honoured bad"; break; }
         if (it_sys1(SYS_PROCESS_KILL, h) >= 0)                { ok = 0; why = "kill honoured bad"; break; }
-        if (it_sys2(SYS_HANDLE_DUP, h, (long)RIGHT_READ) >= 0){ ok = 0; why = "dup honoured bad"; break; }
+        if (it_sys3(SYS_CSPACE_MINT, h, (long)((uint64_t)IT_SCRATCH_0 << 32),
+                    (long)RIGHT_READ) >= 0)                   { ok = 0; why = "mint honoured bad"; break; }
         if (it_retype_slot_alloc(h, IT_KOBJ_FRAME, 4096) >= 0) { ok = 0; why = "retype honoured bad"; break; }
     }
 
-    /* Stale handle: dup then close, the old id must be dead. */
+    /* A RELEASED capability is dead: derive a copy, delete the copy's slot,
+     * and the CPtr must stop resolving.  This used to dup a handle and close
+     * it; an emptied slot is the same statement in the namespace that stays. */
     if (ok) {
-        long d = it_sys2(SYS_HANDLE_DUP, no, (long)RIGHT_SAME_RIGHTS);
-        handle_id_t d_h = (d >= 0) ? (handle_id_t)d : HANDLE_INVALID;
-        if (d < 0) { ok = 0; why = "dup for stale"; }
+        long d = it_cs_reduce(no, RIGHT_SAME_RIGHTS);
+        if (d < 0) { ok = 0; why = "derive for stale"; }
         else {
-            it_close(&d_h);
-            if (it_sys1(SYS_HANDLE_TYPE, d) != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "stale handle alive"; }
+            it_slot_delete((uint32_t)d);
+            if (it_sys1(SYS_CAP_IDENTIFY, d) != (long)IRIS_ERR_NOT_FOUND) {
+                ok = 0; why = "released cap still resolves";
+            }
         }
     }
 
@@ -19323,16 +19281,14 @@ static void test_t292(void) {
     if (ok && it_sys1(SYS_CAP_IDENTIFY, 0) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "null cptr accepted";
     }
-    if (ok) {
-        long h = it_ep_create_h();
-        if (h < 0) { ok = 0; why = "handle fixture"; }
-        else {
-            if (it_sys1(SYS_CAP_IDENTIFY, h) != (long)IRIS_ERR_INVALID_ARG) {
-                ok = 0; why = "handle value accepted";
-            }
-            handle_id_t hh = (handle_id_t)h;
-            it_close(&hh);
-        }
+    /* A value carrying the retired handle namespace's tag bit is not a CPtr
+     * and must be rejected outright — no fallback, no reinterpretation.  It
+     * used to be a REAL handle from the materialising factory; with the
+     * namespace gone the encoding is what is left to reject, and that is the
+     * property worth pinning. */
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)(HANDLE_TAG | 0x401u))
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "tagged value accepted";
     }
 
     {
@@ -19385,16 +19341,10 @@ static void test_t293(void) {
     if (ok && it_sys2(SYS_CAP_SAME_OBJECT, a, 0) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "null b accepted";
     }
-    if (ok) {
-        long h = it_ep_create_h();
-        if (h < 0) { ok = 0; why = "handle fixture"; }
-        else {
-            if (it_sys2(SYS_CAP_SAME_OBJECT, a, h) != (long)IRIS_ERR_INVALID_ARG) {
-                ok = 0; why = "handle value accepted";
-            }
-            handle_id_t hh = (handle_id_t)h;
-            it_close(&hh);
-        }
+    /* Same rule on the second argument: a tagged value is not a CPtr. */
+    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, a, (long)(HANDLE_TAG | 0x401u))
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "tagged value accepted";
     }
 
     {
