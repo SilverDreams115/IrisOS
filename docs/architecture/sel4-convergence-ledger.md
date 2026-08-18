@@ -35,7 +35,7 @@ reserved, no functionality) · `REMOVED` (deleted).
 | `SYS_NOTIFY_CREATE` (19) | same + quota + handle | — | RETYPE2 | S1 | — | RETIRED |
 | `SYS_CNODE_CREATE` (80) | same | — | RETYPE2 | S1 | — | RETIRED |
 | implicit reply allocation (kreply in EP_CALL) | the kernel fabricated authority per call | — | explicit reply objects (recv arg2) | S1 | — | REMOVED |
-| `SYS_UNTYPED_RETYPE` (87) handle-publishing | publishes authority as a handle | tests/authority suite (UNTYPED/FRAME/SC) | RETYPE2 | CSpace-only ABI | for migrated types: already rejected | MIGRATING |
+| `SYS_UNTYPED_RETYPE` (87) handle-publishing | publishes authority as a handle | — | RETYPE2 | Stage 4 | — | **RETIRED (Stage 4)** — Fase S1 already refused the migrated family; Stage 4 refuses KUntyped / KFrame / KSchedContext too, since RETYPE2 accepts all three into a CSpace slot.  There is exactly ONE way to create an object from an Untyped, and it publishes into CSpace |
 | `SYS_SC_CREATE` (83) | global SC create | none | RETYPE2 + SC_CONFIGURE + SC_BIND | S2 | — | RETIRED (Fase S2) |
 | `kschedctx_alloc` (kslab SC) | SC payload in the global heap | none | RETYPE2 (`kschedctx_alloc_at`) | S2 | yes | REMOVED (Fase S2) |
 | `struct task tasks[TASK_MAX]` (static pool) | backing for kstack + arch-context + scheduler linkage | scheduler, thread create | TCB payload from Untyped; array → pointer/generation registry | S2 (run-queue index→pointer + productive-path Untyped source) | yes — no new consumers outside the scheduler | ACTIVE_LEGACY (bounded static pool, NOT kslab; runtime TCB storage — REMOVE pending) |

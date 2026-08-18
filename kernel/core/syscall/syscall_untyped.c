@@ -4,11 +4,14 @@
  * Fase S1 (seL4 Architectural Convergence):
  *
  * SYS_UNTYPED_INFO:    query phys_base and available bytes.
- * SYS_UNTYPED_RETYPE:  LEGACY single-object retype returning a handle.
- *   Restricted to the NON-migrated types (KOBJ_UNTYPED sub-regions,
- *   KOBJ_FRAME, KOBJ_SCHED_CONTEXT).  The migrated object family
- *   (Endpoint / Notification / Reply / CNode) can no longer be born through
- *   a handle-publishing path (S20) — use SYS_UNTYPED_RETYPE2.
+ * SYS_UNTYPED_RETYPE:  RETIRED (Stage 4).  The number stays permanently
+ *   reserved and answers NOT_SUPPORTED.  It was the LEGACY single-object
+ *   retype that published the new capability as a HANDLE.  Fase S1 already
+ *   refused the migrated family (Endpoint / Notification / Reply / CNode) on
+ *   it; Stage 4 refuses the remaining three (KUntyped sub-regions, KFrame,
+ *   KSchedContext) too, because RETYPE2 accepts all of them into a CSpace
+ *   slot.  There is now exactly ONE way to create an object from an Untyped,
+ *   and it puts the result where the object model says capabilities live.
  * SYS_UNTYPED_RETYPE2: canonical batch retype.  Objects are stored INSIDE the
  *   source untyped region and their capabilities are published DIRECTLY into
  *   CSpace destination slots — no handle, no quota, no hidden allocator.
@@ -20,8 +23,9 @@
  *   source of authority.
  *
  * Authority: all syscalls resolve the untyped via
- * cspace_or_handle_resolve_untyped (CPtr < 1024 → CSpace only; >= 1024 →
- * handle table only; ACCESS_DENIED is a hard stop, no fallback).
+ * cspace_or_handle_resolve_untyped (a CPtr resolves through CSpace only, a
+ * handle value through the handle table only; ACCESS_DENIED is a hard stop,
+ * no fallback).
  *
  * Atomicity note (U14/U15): IRIS is uniprocessor with IRQ-off spinlocks and a
  * non-preemptive kernel (no yield inside retype).  RETYPE2 validates
@@ -93,151 +97,10 @@ _Static_assert(IRIS_KOBJ_TCB           == (uint32_t)KOBJ_TCB,           "KOBJ AB
  * as MIGRATING until their own convergence phase.
  */
 uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    iris_cptr_t ut_cptr  = (iris_cptr_t)arg0;
-    uint32_t    obj_type = (uint32_t)arg1;
-    uint64_t    obj_arg  = arg2; /* KOBJ_UNTYPED: sub-size; KOBJ_FRAME: size; else 0 */
-
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* S20: the migrated family can no longer be born through a handle.
-     * Fase S2 Etapa 0: KOBJ_TCB joins the family — a TCB is born ONLY via
-     * RETYPE2 into CSpace (charter §3.1: no new handle producers). */
-    if (obj_type == KOBJ_ENDPOINT || obj_type == KOBJ_NOTIFICATION ||
-        obj_type == KOBJ_REPLY    || obj_type == KOBJ_CNODE ||
-        obj_type == KOBJ_TCB) {
-        kuntyped_stat_retype_failure();
-        return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-    }
-
-    struct KUntyped *ut;
-    iris_rights_t    rights;
-    iris_error_t     err = cspace_or_handle_resolve_untyped(t->process, ut_cptr,
-                                                             RIGHT_WRITE, &ut, &rights);
-    if (err != IRIS_OK) return syscall_err(err);
-
-    struct KObject *new_obj  = 0;
-    iris_rights_t   new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-
-    switch (obj_type) {
-        case KOBJ_SCHED_CONTEXT: {
-            if (ut->is_device) { /* U11: no kernel objects in device memory */
-                kobject_active_release(&ut->base);
-                kobject_release(&ut->base);
-                kuntyped_stat_retype_failure();
-                return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-            }
-            void *mem = kuntyped_alloc_child(ut, sizeof(struct KSchedContext));
-            if (!mem) {
-                kobject_active_release(&ut->base);
-                kobject_release(&ut->base);
-                kuntyped_stat_retype_failure();
-                return syscall_err(IRIS_ERR_NO_MEMORY);
-            }
-            new_obj = &kschedctx_alloc_at(mem)->base;
-            break;
-        }
-        /* KOBJ_CHANNEL retype retired — Fase 13/Track G (KChannel removed). */
-        case KOBJ_UNTYPED: {
-            /* Sub-untyped: carve a physical sub-region from the parent. */
-            uint64_t size = obj_arg;
-            if (size < 4096u || (size & 4095u)) {
-                kobject_active_release(&ut->base);
-                kobject_release(&ut->base);
-                kuntyped_stat_retype_failure();
-                return syscall_err(IRIS_ERR_INVALID_ARG);
-            }
-            uint64_t phys = kuntyped_bump_alloc_phys(ut, size);
-            if (!phys) {
-                kobject_active_release(&ut->base);
-                kobject_release(&ut->base);
-                kuntyped_stat_retype_failure();
-                return syscall_err(IRIS_ERR_NO_MEMORY);
-            }
-            struct KUntyped *sub = kuntyped_create(phys, size, ut->is_device);
-            if (!sub) {
-                kobject_active_release(&ut->base);
-                kobject_release(&ut->base);
-                kuntyped_stat_retype_failure();
-                return syscall_err(IRIS_ERR_NO_MEMORY);
-            }
-            /* Ph80: sub-untyped tracks its parent for child_count bookkeeping. */
-            sub->alloc_parent = ut;
-            kobject_retain(&ut->base);
-            atomic_fetch_add_explicit(&ut->child_count, 1u, memory_order_relaxed);
-            new_obj = &sub->base;
-            break;
-        }
-        case KOBJ_FRAME: {
-            /* Carve a PAGE_SIZE-aligned physical region from the parent KUntyped.
-             * obj_arg is the frame size in bytes: must be >= 4096 and PAGE_SIZE
-             * aligned.  The KFrame header is slab-allocated separately; the
-             * physical region is the frame content (not the header storage).
-             * Ledger: KFrame header sidecar = MIGRATING (frame/page-table
-             * object-model phase). */
-            uint64_t fsize = obj_arg;
-            if (fsize < 4096u || (fsize & 4095u)) {
-                kobject_active_release(&ut->base);
-                kobject_release(&ut->base);
-                kuntyped_stat_retype_failure();
-                return syscall_err(IRIS_ERR_INVALID_ARG);
-            }
-            uint64_t phys = kuntyped_bump_alloc_phys_page(ut, fsize);
-            if (!phys) {
-                kobject_active_release(&ut->base);
-                kobject_release(&ut->base);
-                kuntyped_stat_retype_failure();
-                return syscall_err(IRIS_ERR_NO_MEMORY);
-            }
-            struct KFrame *frm = kframe_alloc(phys, fsize, ut);
-            if (!frm) {
-                /* phys is already consumed from the bump; cannot un-bump.
-                 * The wasted region will be reclaimed on next SYS_UNTYPED_RESET
-                 * (which still requires child_count == 0, which remains valid). */
-                kobject_active_release(&ut->base);
-                kobject_release(&ut->base);
-                kuntyped_stat_retype_failure();
-                return syscall_err(IRIS_ERR_NO_MEMORY);
-            }
-            new_obj = &frm->base;
-            break;
-        }
-        default:
-            kobject_active_release(&ut->base);
-            kobject_release(&ut->base);
-            kuntyped_stat_retype_failure();
-            return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-    }
-
-    /* Release our resolve refs on the parent — the new object's alloc ref is separate. */
-    kobject_active_release(&ut->base);
-    kobject_release(&ut->base);
-
-    handle_id_t h = handle_table_insert(&t->process->handle_table, new_obj, new_rights);
-    kobject_release(new_obj); /* transfer alloc ref to handle table */
-
-    if (h == HANDLE_INVALID) return syscall_err(IRIS_ERR_NO_MEMORY);
-    kuntyped_stat_retype(1u);
-    return (uint64_t)h;
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
-/*
- * SYS_UNTYPED_RETYPE2 (111) — Fase S1 canonical batch retype.
- *
- *   arg0 = source untyped (CPtr < 1024 or handle >= 1024)
- *   arg1 = obj_type (low 32) | count (high 32; 0 → 1)
- *   arg2 = dest CNode (low 32; 0 → caller's root CNode) | first dest slot (high 32)
- *   arg3 = obj_arg (KOBJ_CNODE: num_slots; KOBJ_UNTYPED/KOBJ_FRAME: bytes; else 0)
- *
- * On success every created capability sits in
- * dest_cnode[slot .. slot+count-1] and 0 is returned.  On ANY failure no
- * capability is published, no object is live, no untyped range is consumed,
- * and no CSpace slot changed (U13–U15, S5).
- *
- * The object storage IS the retyped untyped memory: header, refcounts,
- * lifecycle state and payload all live inside the source region (regla
- * central de Fase S1); destruction returns the block zeroed to the region.
- */
 uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                              uint64_t arg3) {
     iris_cptr_t ut_cptr    = (iris_cptr_t)arg0;

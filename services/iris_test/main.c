@@ -218,6 +218,14 @@ static long it_vmo_create_slot(uint64_t size) {
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
+/* A KFrame retyped into a CSpace slot.  RETYPE2 accepts KOBJ_FRAME (count 1,
+ * page-aligned size) exactly as the legacy handle-publishing SYS_UNTYPED_RETYPE
+ * did — the only difference is where the capability lands, and that the slot
+ * is a real MDB child of the untyped it came from. */
+static long it_frame_create_slot(long ut, uint64_t bytes) {
+    return it_retype_slot_alloc(ut, IRIS_KOBJ_FRAME, (long)bytes);
+}
+
 static long it_ep_create_slot(void) {
     return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT, 0);
 }
@@ -7944,7 +7952,7 @@ static void test_t124(void) {
 
 /* ── Fase 18: untyped / retype / revoke authority hardening (T125–T131) ──────
  *
- * These tests exercise the memory-authority surface — SYS_UNTYPED_RETYPE,
+ * These tests exercise the memory-authority surface — SYS_UNTYPED_RETYPE2,
  * SYS_UNTYPED_RESET, SYS_CAP_DERIVE, SYS_CAP_REVOKE — end to end from ring 3.
  * They lean on one boot KUntyped forwarded down the boot chain (userboot → init
  * → iris_test) into IRIS_CPTR_TEST_UNTYPED, plus the Fase 18 additive
@@ -7970,12 +7978,21 @@ static void test_t124(void) {
  * helpers (it_ep_create & friends) now also carve from the delegated untyped
  * at slot 55 and some fixtures live for the whole run, so these tests operate
  * on their OWN sub-untyped, carved lazily from slot 55 on first use. */
+/* Leaf 244 of the second-level CNode, deliberately OUTSIDE the rotating
+ * fabrication pool (leaves 1..200): this untyped lives for the whole run, and
+ * a rotation that wrapped onto it would delete the region every other test
+ * carves from. */
+#define IT_AUTH_UT_CPTR IT_OBJ_CPTR(244u)
 static long g_it_auth_ut = -1;
 static long it_auth_ut(void) {
-    if (g_it_auth_ut < 0)
-        g_it_auth_ut = it_sys3(SYS_UNTYPED_RETYPE,
-                               (long)IRIS_CPTR_TEST_UNTYPED,
-                               IT_KOBJ_UNTYPED, 2097152);
+    if (g_it_auth_ut < 0) {
+        it_slot_delete((uint32_t)IT_AUTH_UT_CPTR);
+        long r = it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
+                         (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)),
+                         (long)((uint64_t)IT_OBJ_CNODE_SLOT | (244ULL << 32)),
+                         2097152);
+        if (r == 0) g_it_auth_ut = (long)IT_AUTH_UT_CPTR;
+    }
     return g_it_auth_ut;
 }
 #define IT_UT (it_auth_ut())
@@ -8023,27 +8040,19 @@ static void test_t125(void) {
     if (ok && r < 0) { ok = 0; why = "retype cnode"; } else if (ok) cn = (handle_id_t)r;
     r = it_retype_slot_alloc(IT_UT, IT_KOBJ_SCHED_CONTEXT, 0);
     if (ok && r < 0) { ok = 0; why = "retype sc"; } else if (ok) sc = (handle_id_t)r;
-    /* KFrame and KUntyped stay on the LEGACY handle-publishing
-     * SYS_UNTYPED_RETYPE, and that is this leg's subject rather than an
-     * oversight: 87 is still live for exactly these families plus
-     * KSchedContext (ledger: MIGRATING), so something has to keep exercising
-     * it until it retires.  RETYPE2 accepts both types into a slot — T290
-     * already carves a sub-untyped that way — so the migration here is a
-     * deletion when 87 goes, not a rewrite. */
-    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    r = it_frame_create_slot(IT_UT, 4096);
     if (ok && r < 0) { ok = 0; why = "retype frame"; } else if (ok) fr = (handle_id_t)r;
-    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_UNTYPED, 4096);
+    r = it_retype_slot_alloc(IT_UT, IT_KOBJ_UNTYPED, 4096);
     if (ok && r < 0) { ok = 0; why = "retype sub-untyped"; } else if (ok) sub = (handle_id_t)r;
 
-    /* Each object exists and has the expected type — asked of the slot for the
-     * capabilities RETYPE2 published there, of the handle for the two the
-     * legacy syscall produced.  The split mirrors which syscall made them. */
+    /* Each object exists and has the expected type, every one of them asked of
+     * the slot it was born into. */
     if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)ep)  != (long)IT_KOBJ_ENDPOINT)     { ok = 0; why = "ep type"; }
     if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)nt)  != (long)IT_KOBJ_NOTIFICATION) { ok = 0; why = "nt type"; }
     if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)cn)  != (long)IT_KOBJ_CNODE)        { ok = 0; why = "cn type"; }
     if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)sc)  != (long)IT_KOBJ_SCHED_CONTEXT){ ok = 0; why = "sc type"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)fr)  != (long)IT_KOBJ_FRAME)        { ok = 0; why = "fr type"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)sub) != (long)IT_KOBJ_UNTYPED)      { ok = 0; why = "sub type"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)fr)  != (long)IT_KOBJ_FRAME)        { ok = 0; why = "fr type"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)sub) != (long)IT_KOBJ_UNTYPED)      { ok = 0; why = "sub type"; }
 
     /* Type-appropriate use: the retyped endpoint is a real rendezvous point
      * (empty → WOULD_BLOCK); the sub-untyped answers INFO; the SC configures. */
@@ -8070,20 +8079,22 @@ static void test_t125(void) {
         uint32_t f0[5], f1[5];
         if (!it_sched_ext3(f0)) { ok = 0; why = "ext3 fail-base"; }
         /* wrong/unsupported type (KOBJ_PROCESS = 0). */
-        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "wrong type"; }
+        if (ok && it_retype_slot_alloc(IT_UT, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "wrong type"; }
         /* invalid frame size (not page-aligned). */
-        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad frame size"; }
+        if (ok && it_retype_slot_alloc(IT_UT, IT_KOBJ_FRAME, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad frame size"; }
         /* invalid sub-untyped size (< 4096). */
-        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_UNTYPED, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad ut size"; }
+        if (ok && it_retype_slot_alloc(IT_UT, IT_KOBJ_UNTYPED, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad ut size"; }
         /* non-power-of-two CNode slot count (RETYPE2 — the canonical path). */
         if (ok && it_retype2_at(IT_UT, IT_KOBJ_CNODE, 240u, 1u, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad cnode slots"; }
-        /* Fase S1 retirement: the LEGACY handle-publishing retype refuses the
-         * migrated family outright (S20 — no migrated object born by handle). */
+        /* Stage 4: the LEGACY handle-publishing retype (87) is retired for
+         * EVERY type, not just the migrated family it refused since Fase S1.
+         * There is one way to create an object from an Untyped, and it puts
+         * the result in a CSpace slot. */
         if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0)     != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy ep not retired"; }
-        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_NOTIFICATION, 0) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy nt not retired"; }
-        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_CNODE, 4)        != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy cn not retired"; }
-        /* missing RIGHT_WRITE: retype through a read-only derived cap.
-         * (IT_UT is a handle; bridge it into a slot to derive natively.) */
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096)     != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy frame not retired"; }
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_UNTYPED, 4096)   != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy ut not retired"; }
+        if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_SCHED_CONTEXT, 0)!= (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy sc not retired"; }
+        /* missing RIGHT_WRITE: retype through a read-only derived cap. */
         if (ok) {
             /* Fase S4 (Etapa 3): the read-only copy is a native-CDT child. */
             long ut_root = it_cdt_root((handle_id_t)IT_UT, IT_SCRATCH_0);
@@ -8135,10 +8146,14 @@ static void test_t126(void) {
         { IT_KOBJ_UNTYPED,     huge, (long)IRIS_ERR_NO_MEMORY,     "nomem" },
         { 99u,                 0,    (long)IRIS_ERR_NOT_SUPPORTED, "badtype" },
         { IT_KOBJ_FRAME,       1u,   (long)IRIS_ERR_INVALID_ARG,   "badsize" },
-        { IT_KOBJ_CNODE,       7u,   (long)IRIS_ERR_NOT_SUPPORTED, "cnode legacy retired" },
+        /* Was "the LEGACY path refuses KOBJ_CNODE".  With 87 retired there is
+         * only RETYPE2, which accepts CNode but not a non-power-of-two slot
+         * count — so the same input is still a clean rejection, under the
+         * rule that actually applies to it. */
+        { IT_KOBJ_CNODE,       7u,   (long)IRIS_ERR_INVALID_ARG,   "cnode bad slot count" },
     };
     for (uint32_t c = 0; ok && c < 4u; c++) {
-        long rr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)cases[c].type, (long)cases[c].arg);
+        long rr = it_retype_slot_alloc(IT_UT, cases[c].type, (long)cases[c].arg);
         if (rr != cases[c].expect) { ok = 0; why = cases[c].tag; break; }
         /* nothing leaked after this failure */
         if (!it_sched_ext3(s3a) || !it_sched_ext(hla)) { ok = 0; why = "ext mid"; break; }
@@ -8273,7 +8288,7 @@ static void test_t128(void) {
     int ok = 1;
     const char *why = "frame lifetime";
 
-    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long fr = it_frame_create_slot(IT_UT, 4096);
     if (fr < 0) { it_fail("T128", "retype frame"); return; }
     handle_id_t frame = (handle_id_t)fr;
 
@@ -8287,17 +8302,15 @@ static void test_t128(void) {
     if (ok && frc < 0) { ok = 0; why = "root slot"; }
     long child = (frc >= 0) ? it_cdt_derive(frc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
     if (ok && child < 0) { ok = 0; why = "derive"; }
-    if (ok) {
-        long ch = it_sys1(SYS_CSPACE_RESOLVE, child);
-        if (ch < 0 || it_sys1(SYS_HANDLE_TYPE, ch) != (long)IT_KOBJ_FRAME) { ok = 0; why = "child type"; }
-        if (ch >= 0) { handle_id_t chh = (handle_id_t)ch; it_close(&chh); }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, child) != (long)IT_KOBJ_FRAME) {
+        ok = 0; why = "child type";
     }
     if (ok && it_cdt_revoke(frc) < 0) { ok = 0; why = "revoke"; }
     if (ok && it_cdt_alive(child)) { ok = 0; why = "child alive"; }
     it_slot_delete(IT_SCRATCH_1);
     it_slot_delete(IT_SCRATCH_0);
     /* The frame object survives while the root cap is held. */
-    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)frame) != (long)IT_KOBJ_FRAME) { ok = 0; why = "frame died early"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)frame) != (long)IT_KOBJ_FRAME) { ok = 0; why = "frame died early"; }
     if (ok && !it_sched_ext3(mid)) { ok = 0; why = "ext3 mid2"; }
     if (ok && mid[IT_S3_FRAME] != s3b[IT_S3_FRAME] + 1u) { ok = 0; why = "frame miscounted after revoke"; }
 
@@ -8498,10 +8511,10 @@ static void test_t131(void) {
 
         /* Forced failure paths, interleaved deterministically. */
         if ((fz_rand() & 1u) &&
-            it_sys3(SYS_UNTYPED_RETYPE, IT_UT, 99, 0) != (long)IRIS_ERR_NOT_SUPPORTED) {
+            it_retype_slot_alloc(IT_UT, 99, 0) != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "badtype"; }
         if (ok && (fz_rand() & 1u) &&
-            it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 7) != (long)IRIS_ERR_INVALID_ARG) {
+            it_retype_slot_alloc(IT_UT, IT_KOBJ_FRAME, 7) != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "badsize"; }
 
         if (ok && (fz_rand() & 1u)) {
@@ -8567,7 +8580,7 @@ static void test_t131(void) {
 
 /* Helper: retype a fresh writable KFrame from the test untyped. */
 static handle_id_t it_retype_frame(void) {
-    long r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long r = it_frame_create_slot(IT_UT, 4096);
     return (r >= 0) ? (handle_id_t)r : HANDLE_INVALID;
 }
 
@@ -8902,7 +8915,7 @@ static void test_t137(void) {
         if (*p != 0x137ABCDEu) { ok = 0; why = "frame unusable after revoke"; }
     }
     /* Frame object still alive (root cap held it). */
-    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)fr) != (long)IT_KOBJ_FRAME) { ok = 0; why = "frame died"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)fr) != (long)IT_KOBJ_FRAME) { ok = 0; why = "frame died"; }
 
     /* Now unmap, then close — clean close proves mapped_count == 0 (no assert). */
     if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr, IT_VS, (long)T137_VA) != 0) { ok = 0; why = "unmap"; }
@@ -9979,7 +9992,7 @@ static void test_t149(void) {
     if (ok && it_sys2(SYS_EP_NB_SEND, no, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "nb_send on notif"; }
     if (ok && it_sys2(SYS_NOTIFY_SIGNAL, ep, 1) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "signal on ep"; }
     if (ok && it_sys1(SYS_PROCESS_KILL, ep) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "kill on ep"; }
-    if (ok && it_sys3(SYS_UNTYPED_RETYPE, no, (long)IT_KOBJ_FRAME, 4096) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "retype on notif"; }
+    if (ok && it_retype_slot_alloc(no, IT_KOBJ_FRAME, 4096) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "retype on notif"; }
     /* (frame_map wrong-type coverage against a real VSpace is in T151/T152.) */
 
     /* Boundary/empty/stale handles across a spread of families.  Any negative
@@ -9992,7 +10005,7 @@ static void test_t149(void) {
         if (it_sys2(SYS_EP_SEND, h, (long)&m) >= 0)           { ok = 0; why = "ep_send honoured bad"; break; }
         if (it_sys1(SYS_PROCESS_KILL, h) >= 0)                { ok = 0; why = "kill honoured bad"; break; }
         if (it_sys2(SYS_HANDLE_DUP, h, (long)RIGHT_READ) >= 0){ ok = 0; why = "dup honoured bad"; break; }
-        if (it_sys3(SYS_UNTYPED_RETYPE, h, (long)IT_KOBJ_FRAME, 4096) >= 0) { ok = 0; why = "retype honoured bad"; break; }
+        if (it_retype_slot_alloc(h, IT_KOBJ_FRAME, 4096) >= 0) { ok = 0; why = "retype honoured bad"; break; }
     }
 
     /* Stale handle: dup then close, the old id must be dead. */
@@ -10134,7 +10147,7 @@ static void test_t151(void) {
 
         /* --- malformed batch (must all fail clean) --- */
         op = 1;
-        if (it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)0x7777, 4096) >= 0) { ok = 0; why = "bad-type retype ok"; break; }
+        if (it_retype_slot_alloc(IT_UT, 0x7777u, 4096) >= 0) { ok = 0; why = "bad-type retype ok"; break; }
         op = 2;
         if (it_sys4(SYS_FRAME_MAP, IT_UT, IT_VS, (long)va, (long)IT_MAP_W) >= 0) { ok = 0; why = "map wrong-type ok"; break; }
         op = 3;
@@ -10161,7 +10174,7 @@ static void test_t151(void) {
 
         /* --- well-formed batch (must all succeed and be observable) --- */
         op = 10;
-        long r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)IT_KOBJ_FRAME, 4096);
+        long r = it_frame_create_slot(IT_UT, 4096);
         fr = (r >= 0) ? (handle_id_t)r : HANDLE_INVALID;
         if (fr == HANDLE_INVALID) { ok = 0; why = "retype frame"; break; }
         op = 11;
@@ -10242,7 +10255,7 @@ static void test_t152(void) {
     /* Invalid VA / bad size / bad pointer — each INVALID_ARG, nothing born. */
     if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)(VA | 0x40ULL), (long)IT_MAP_W) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "unaligned VA"; }
     if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, 0xFFFF800000001000L, (long)IT_MAP_W) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel VA"; }
-    if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)IT_KOBJ_FRAME, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad frame size"; }
+    if (ok && it_retype_slot_alloc(IT_UT, IT_KOBJ_FRAME, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad frame size"; }
     /* Non-null hostile out pointer (kernel half) → INVALID_ARG, nothing written. */
     if (ok && it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, 0xFFFF800000001000L) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel out ptr"; }
     /* Resume mismatch — NOT_FOUND, no state touched. */
@@ -10412,7 +10425,7 @@ static void test_t155(void) {
 
         /* Object churn: retype a frame, map/derive/revoke/unmap, close. */
         op = 1;
-        long r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, (long)IT_KOBJ_FRAME, 4096);
+        long r = it_frame_create_slot(IT_UT, 4096);
         handle_id_t fr = (r >= 0) ? (handle_id_t)r : HANDLE_INVALID;
         if (fr == HANDLE_INVALID) { ok = 0; why = "retype"; break; }
         uint64_t va = 0x80B0000000ULL + (uint64_t)(fz_rand() % 4u) * 0x1000ULL;
@@ -12154,7 +12167,7 @@ static void test_t181(void) {
 
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T181", why); return; }
-    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long fr = it_frame_create_slot(IT_UT, 4096);
     handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
     if (fr < 0) { ok = 0; why = "frame retype"; }
 
@@ -12220,7 +12233,7 @@ static void test_t182(void) {
 
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T182", why); return; }
-    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long fr = it_frame_create_slot(IT_UT, 4096);
     handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
     handle_id_t pcmd = HANDLE_INVALID, pproc = HANDLE_INVALID;
     if (fr < 0) { ok = 0; why = "frame retype"; }
@@ -12274,7 +12287,7 @@ static void test_t183(void) {
     int ok = b.ok && it_sched_ext5(f0);
     const char *why = "map into target";
 
-    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long fr = it_frame_create_slot(IT_UT, 4096);
     handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
     if (fr < 0) { it_fail("T183", "frame retype"); return; }
     word = T25_PATTERN;
@@ -12359,7 +12372,7 @@ static void test_t184(void) {
         (void)it_sys1(SYS_PROCESS_KILL, (long)va.proc);
         t25_tgt_reap(&va); it_fail("T184", why); return;
     }
-    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long fr = it_frame_create_slot(IT_UT, 4096);
     handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
     if (fr < 0) { ok = 0; why = "frame retype"; }
 
@@ -12438,7 +12451,7 @@ static void test_t185(void) {
 
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T185", why); return; }
-    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long fr = it_frame_create_slot(IT_UT, 4096);
     handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
     long tvs_c = (long)g.vs;   /* dual resolver: the VSpace HANDLE works */
     if (ok && fr < 0)    { ok = 0; why = "frame retype"; }
@@ -12518,7 +12531,7 @@ static void test_t186(void) {
 
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T186", why); return; }
-    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long fr = it_frame_create_slot(IT_UT, 4096);
     handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
     if (fr < 0) { ok = 0; why = "frame retype"; }
     if (ok) { word = T25_PATTERN; if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame fill"; } }
@@ -12590,7 +12603,7 @@ static void test_t187(void) {
 
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T187", why); return; }
-    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long fr = it_frame_create_slot(IT_UT, 4096);
     handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
     long tvs_c = (long)g.vs;   /* dual resolver: the VSpace HANDLE works */
     if (ok && fr < 0)    { ok = 0; why = "frame retype"; }
@@ -12650,9 +12663,9 @@ static void test_t188(void) {
 
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T188", why); return; }
-    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long fr = it_frame_create_slot(IT_UT, 4096);
     handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
-    long fro = (fr >= 0) ? it_sys2(SYS_HANDLE_DUP, fr, (long)RIGHT_READ) : -1;
+    long fro = (fr >= 0) ? it_cs_reduce(fr, RIGHT_READ) : -1;
     handle_id_t fro_h = (fro >= 0) ? (handle_id_t)fro : HANDLE_INVALID;
     long tvs_c  = (long)g.vs;  /* dual resolver: the VSpace HANDLE works */
     long tvs_ro = it_sys2(SYS_HANDLE_DUP, (long)g.vs, (long)RIGHT_READ);
@@ -12740,7 +12753,7 @@ static void test_t189(void) {
 
     struct t25_tgt g;
     if (!t25_tgt_spawn(&g, &why)) { it_fail("T189", why); return; }
-    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long fr = it_frame_create_slot(IT_UT, 4096);
     handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
     if (fr < 0) { ok = 0; why = "frame retype"; }
     if (ok) { word = T25_PATTERN; if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame fill"; } }
@@ -12837,7 +12850,7 @@ static void test_t190(void) {
     const char *why = "pager stress";
     uint32_t round = 0u, op = 0u;
 
-    long fr = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
+    long fr = it_frame_create_slot(IT_UT, 4096);
     handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
     if (fr < 0) { it_fail("T190", "frame retype"); return; }
 
@@ -17570,10 +17583,10 @@ static int it_utq_o(struct it_utq_objects *q) {
     return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(3, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
 }
 
-/* Carve a fresh page-multiple sub-untyped for one S1 test (handle). */
+/* Carve a fresh page-multiple sub-untyped for one S1 test, into a slot. */
 static long s1_sub_ut(uint64_t bytes) {
-    return it_sys3(SYS_UNTYPED_RETYPE, (long)IRIS_CPTR_TEST_UNTYPED,
-                   IT_KOBJ_UNTYPED, (long)bytes);
+    return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                IRIS_KOBJ_UNTYPED, (long)bytes);
 }
 
 /* S1 scratch slots: 241..250 (fz pool ends at 239; 240 is the T125 probe). */
@@ -17628,7 +17641,8 @@ static void test_t251(void) {
             ok = 0; why = "non-canonical type creatable";
         }
     }
-    /* Retirement witness: migrated family refused on the legacy path. */
+    /* Retirement witness: the legacy handle-publishing path refuses every
+     * type now (Stage 4 retired 87 outright), not just the migrated family. */
     static const uint32_t migrated[] = { IRIS_KOBJ_ENDPOINT, IRIS_KOBJ_NOTIFICATION,
                                          IRIS_KOBJ_CNODE, IRIS_KOBJ_REPLY,
                                          IRIS_KOBJ_TCB /* Etapa 0 */ };
@@ -17804,14 +17818,18 @@ static void test_t254(void) {
                       (long)((uint64_t)IRIS_KOBJ_ENDPOINT | (1ULL << 32)),
                       (long)((uint64_t)S1_SLOT_A | ((uint64_t)S1_SLOT_B << 32)),
                       0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad dest cnode"; }
-    /* Stale untyped handle: close it, then retype through the dead handle. */
+    /* Released untyped cap: delete the slot, then retype through the dead
+     * CPtr.  Stage 4: an emptied slot answers NOT_FOUND — the CSpace form of
+     * the BAD_HANDLE this asserted while the untyped was a handle.  The
+     * property is unchanged: a capability that was released cannot be used
+     * to create objects. */
     if (ok) {
         long su2 = s1_sub_ut(4096);
         if (su2 < 0) { ok = 0; why = "second sub"; }
         else {
             handle_id_t s2h = (handle_id_t)su2; it_close(&s2h);
             if (it_retype2_at(su2, IRIS_KOBJ_ENDPOINT, S1_SLOT_B, 1u, 0) !=
-                (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "stale untyped"; }
+                (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale untyped"; }
         }
     }
     /* No validation failure consumed a byte or created an object. */
@@ -18720,7 +18738,8 @@ static void test_t284(void) {
     if (ok && (it_sys2(SYS_TCB_GET_INFO, (long)S1_SLOT_A, (long)(uintptr_t)&info) != 0 ||
                info.priority != 7u)) { ok = 0; why = "prio roundtrip"; }
 
-    /* Legacy handle-publishing birth is retired for TCB (S20 + Stage 0). */
+    /* Legacy handle-publishing birth is retired outright (Stage 4); it was
+     * already refused for TCB by S20 + Stage 0. */
     if (ok && it_sys3(SYS_UNTYPED_RETYPE, su, (long)IRIS_KOBJ_TCB, 0) !=
               (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy tcb retype alive"; }
 
