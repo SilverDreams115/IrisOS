@@ -50,7 +50,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 | A3 | CPtr is the only capability identifier exposed productively | PARTIAL — same |
 | A4 | No productive handles exist in the final state | PENDING (Stage 4) |
 | A5 | No ambient authority exists | PARTIAL — ioport whitelist, kernel quotas (ledger).  Improved in Fase S4: device caps (KIrqCap/KIoPort) are no longer fabricated into a handle table — they are published into CSpace as MDB children of the authorising bootstrap-cap slot, so device authority is traceable and revocable.  The KDEBUG scan is GONE (Etapa 4): `SYS_KLOG_DRAIN`/`SYS_SCHED_INFO`/`SYS_POWEROFF` used to search the caller's handle table for any bootstrap cap bearing KDEBUG — the caller named nothing — and now require the capability as a CPtr argument, with no fallback |
-| A6 | `ACCESS_DENIED` never falls back to another namespace | MET (<1024/≥1024 split with no fallback) |
+| A6 | `ACCESS_DENIED` never falls back to another namespace | MET — a value is a CPtr or a handle by its tag bit (`HANDLE_TAG`, one definition in `nc/handle.h`), and each resolves in exactly one namespace with no fallback.  The boundary was the literal 1024 until Stage 4 moved handles to bit 31 and gave CPtrs the low 31 bits |
 | A7 | Rights are only kept or reduced; mint never amplifies | MET (`rights_reduce`, collapse to NONE rejected) |
 | A8 | Badges are kernel-sealed identity; a badged cap is never re-badged | MET |
 | A9 | Every derived capability is traceable to its ancestor | MET — Fase S4/Stage 3: the parallel handle-tree is DELETED (`SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` retired; derived-insert, revoke-children and the parent array removed).  There is exactly ONE derivation tree: the native CSpace MDB/CDT |
@@ -71,7 +71,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 
 | # | Invariant | Today |
 |---|---|---|
-| I1 | Capability transfer uses CSpace as source and destination | MET — Fase S4/Stage 2: the source is a CPtr resolved to its slot (`syscall_ipc_stage_cap_peek_badged`), the destination is the receive slot; a handle source is `INVALID_ARG` with no fallback |
+| I1 | Capability transfer uses CSpace as source and destination | MET — Fase S4/Stage 2 made the SOURCE a CPtr resolved to its slot (`syscall_ipc_stage_cap_peek_badged`; a handle source is `INVALID_ARG` with no fallback).  Stage 4 closed the DESTINATION half: handle materialization for a receiver that declared no slot is retired, so a receive without a declared destination gets the message and not the capability.  `iris_ipc_stat_handle_deliveries` is a structural 0, pinned by T095/T096 |
 | I2 | A failed transfer leaves the state equivalent to before | MET (peek/commit staging, A1.9/A1.10) |
 | I3 | The source cap is not consumed before a confirmed delivery | MET |
 | I4 | Reply is one-shot | MET (explicit KReply; double REPLY → NOT_FOUND) |

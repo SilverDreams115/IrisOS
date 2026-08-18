@@ -355,15 +355,16 @@ void syscall_ipc_stage_cap_commit(struct task *t, struct KCNode *src_cn,
                                   uint32_t src_idx);
 /* Non-delivery exit: release the CNode refs WITHOUT touching the slot. */
 void syscall_ipc_stage_cap_abort(struct KCNode *src_cn);
-uint32_t syscall_ipc_deliver_cap_badged(struct task *receiver,
-                                        struct KObject *xo,
-                                        uint32_t cap_rights, uint64_t badge);
 /* A1.5: receive-slot support (defined in syscall_endpoint.c).
  * _recv_slot_declare validates + records a receiver-declared CSpace slot
- * (fail-fast; endpoint untouched on error).  _deliver_cap_routed delivers a
- * staged cap into the receiver's declared slot when one is set — falling
- * back to handle materialization on a delivery-time race — and returns the
- * msg discriminator: 0 = no cap, <1024 = slot CPtr, >=1024 = handle.
+ * (fail-fast; endpoint untouched on error).  _deliver_cap_routed installs a
+ * staged cap into that slot and returns the msg discriminator: a CPtr on
+ * success, 0 when no capability was delivered.
+ *
+ * Stage 4: there is no handle leg.  A receive that declared no slot, or whose
+ * slot cannot be installed into, gets the MESSAGE without the capability —
+ * charter I1's destination half, matching the fail-closed shape the raced
+ * slot has had since Etapa 2.
  *
  * Fase S4 (Etapa 2): src_cn/src_idx are the sender's source slot.  A slot
  * delivery installs the cap as an MDB CHILD of that slot (real CSpace

@@ -379,10 +379,14 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         long rr = lp_sys3(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)&msg, 0);
         if (rr != 0)
             lp_sys1(SYS_EXIT, (long)(LP_EXIT_RECV_ERR_BASE | (uint32_t)-rr));
-        uint32_t got = msg.attached_handle;    /* 0 / CPtr / handle */
+        /* Stage 4: a delivered cap is a CPtr or nothing — handle
+         * materialisation is retired, so a receive that declared slot 0 gets
+         * the message without the capability and `got` is 0.  Signal bit 1
+         * says "arrived in my CSpace"; the parent reads the exit code to tell
+         * the two cases apart. */
+        uint32_t got = msg.attached_handle;    /* 0 or a CPtr */
         if (got != 0u)
-            (void)lp_sys2(SYS_NOTIFY_SIGNAL, (long)got,
-                          (got < 1024u) ? 1L : 2L);
+            (void)lp_sys2(SYS_NOTIFY_SIGNAL, (long)got, 1L);
         lp_sys1(SYS_EXIT, (long)got);
         for (;;) {}
     }

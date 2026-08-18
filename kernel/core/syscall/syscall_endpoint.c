@@ -121,19 +121,13 @@ void syscall_ipc_stage_cap_abort(struct KCNode *src_cn) {
  * peek + immediate commit) are retired — every transfer path now commits
  * only at its delivery point. */
 
-/*
- * syscall_ipc_deliver_cap — install a staged cap into the receiver's handle
- * table. Releases the staging ref regardless of success.
- * Returns HANDLE_INVALID on failure (table full); caller should treat it as
- * a soft error and deliver the message without the capability.
- * Shared by EP_SEND / EP_NB_SEND / SYS_REPLY (declared in syscall_priv.h).
- */
 /* A1.7 diagnostic counters (relaxed atomics; no behavior depends on them).
- * slot/handle/toctou partition every transferred-cap delivery: installed in
- * a declared receive-slot / materialized as a handle with no declaration /
- * the declared-slot-raced handle fallback (also counted in handle).
- * reply_caps counts successful KReply insertions (the intentional ephemeral
- * producer).  Read by sys_sched_info (extended layout). */
+ * slot/handle/toctou partition every transferred-cap delivery.  Since Stage 4
+ * only the SLOT partition can be non-zero: handle materialization is retired
+ * (see below) and the TOCTOU degradation went in Etapa 2, so both are
+ * structural zeros kept as retirement witnesses.
+ * reply_caps counts successful KReply bindings.  Read by sys_sched_info
+ * (extended layout). */
 uint32_t iris_ipc_stat_slot_deliveries   = 0u;
 uint32_t iris_ipc_stat_handle_deliveries = 0u;
 uint32_t iris_ipc_stat_toctou_fallbacks  = 0u;
@@ -143,23 +137,23 @@ static void ipc_stat_bump(uint32_t *c) {
     __atomic_fetch_add(c, 1u, __ATOMIC_RELAXED);
 }
 
-uint32_t syscall_ipc_deliver_cap_badged(struct task *receiver,
-                                        struct KObject *xo,
-                                        uint32_t cap_rights, uint64_t badge) {
-    if (!xo) return IRIS_MSG_NO_CAP;
-
-    handle_id_t new_h = handle_table_insert_badged(
-        &receiver->process->handle_table, xo, (iris_rights_t)cap_rights, badge);
-    kobject_release(xo); /* release staging ref; table holds its own ref */
-    if (new_h != HANDLE_INVALID)
-        ipc_stat_bump(&iris_ipc_stat_handle_deliveries);
-    return (uint32_t)new_h;
-}
-
-uint32_t syscall_ipc_deliver_cap(struct task *receiver,
-                                 struct KObject *xo, uint32_t cap_rights) {
-    return syscall_ipc_deliver_cap_badged(receiver, xo, cap_rights, 0);
-}
+/*
+ * syscall_ipc_deliver_cap_badged — RETIRED (Stage 4).
+ *
+ * It installed a transferred capability into the RECEIVER'S HANDLE TABLE when
+ * the receiver had declared no receive slot.  That was the last place in the
+ * kernel where a capability entered a process through the handle namespace,
+ * and it was not a fallback the sender or receiver chose: it happened because
+ * the receiver said nothing.
+ *
+ * Charter I1 says a capability transfer uses CSpace as source AND destination.
+ * The source became CSpace-only in Etapa 2; this is the destination half.  A
+ * receive with no declared slot now delivers the MESSAGE without the
+ * capability, which is the same fail-closed shape a raced or occupied slot has
+ * had since Etapa 2 — the sender's source slot is left intact by its abort
+ * path, so nothing is consumed and no authority is lost.  A receiver that
+ * wants the capability declares where to put it.
+ */
 
 /* ── A1.5: receive-slot support ──────────────────────────────────────── */
 
@@ -229,8 +223,9 @@ iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared) {
  * degradation that loses no authority and installs no partial state.
  * Returns the msg discriminator: 0 = no cap (or destroyed on soft failure),
  * a CPtr (handle tag bit clear) = CSpace slot, a handle value = handle.
- * Reply caps never come through here — their handle_table_insert sites are
- * untouched (A1.5).
+ * Reply caps never come through here — an EP_CALL's reply capability is the
+ * CPtr the RECEIVER passed to EP_RECV, echoed back to it (Fase S1), so it was
+ * never a handle in the first place.
  */
 uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
                                         struct KObject *xo,
@@ -273,7 +268,10 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
         kobject_release(xo);
         return IRIS_MSG_NO_CAP;
     }
-    return syscall_ipc_deliver_cap_badged(receiver, xo, cap_rights, badge);
+    /* Stage 4: no declaration means no destination.  The staged reference is
+     * dropped and the message is delivered without a capability. */
+    kobject_release(xo);
+    return IRIS_MSG_NO_CAP;
 }
 
 /*

@@ -1203,6 +1203,7 @@ static void test_t017(void) {
 
 /* ── T024: SYS_REPLY transfers an attached cap to the EP_CALL caller ────── */
 
+#define T024_GOT_SLOT IT_OBJ_CPTR(245u)   /* outside the rotating pool */
 static handle_id_t g_t024_ep_h   = HANDLE_INVALID;
 static volatile int g_t024_done  = 0;
 static          int g_t024_ok    = 0;
@@ -1213,6 +1214,11 @@ static void t024_client(void) {
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label = 0x2424ULL;
+    /* Stage 4: the client declares where a reply-transferred cap should land.
+     * Without a declaration the reply arrives with no capability at all —
+     * handle materialisation is retired. */
+    it_slot_delete((uint32_t)T024_GOT_SLOT);
+    msg.attached_handle = (uint32_t)T024_GOT_SLOT;
     long r = it_sys2(SYS_EP_CALL, (long)g_t024_ep_h, (long)&msg);
     g_t024_ok    = (r == 0 && msg.label == IRIS_EP_REPLY_OK);
     g_t024_got_h = msg.attached_handle;
@@ -1277,7 +1283,7 @@ static void test_t024(void) {
 
     long ty = -1;
     if (g_t024_got_h != (uint32_t)IRIS_MSG_NO_CAP)
-        ty = it_sys1(SYS_HANDLE_TYPE, (long)g_t024_got_h);
+        ty = it_sys1(SYS_CAP_IDENTIFY, (long)g_t024_got_h);
 
     handle_id_t got_h = (handle_id_t)g_t024_got_h;
     it_close(&got_h);
@@ -2072,6 +2078,11 @@ static void test_t046(void) {
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
+    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+     * handle materialisation is retired, so an undeclared receive gets the
+     * message without the cap. */
+    it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
     long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
 
     int ok = 0;
@@ -2172,6 +2183,11 @@ static void test_t052(void) {
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
+    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+     * handle materialisation is retired, so an undeclared receive gets the
+     * message without the cap. */
+    it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
     long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
 
     int ok = 0;
@@ -2223,6 +2239,11 @@ static long it_status(const char *name, uint32_t *alive, uint32_t *gen) {
     msg.label    = IRIS_SVCMGR_EP_STATUS;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
+    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+     * handle materialisation is retired, so an undeclared receive gets the
+     * message without the cap. */
+    it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
     long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
     if (r != 0 || msg.label != IRIS_EP_REPLY_OK || msg.word_count < 2u)
         return -1;
@@ -2265,7 +2286,7 @@ static long it_register_ep(const char *name, handle_id_t ep) {
 /* T054: cap-backed REGISTER over EP — the caller transfers a REAL endpoint cap
  * (attached_cap) and still gets a working reply (KReply + transfer coexist). */
 static void test_t054(void) {
-    long e = it_ep_create_h();
+    long e = it_ep_create_slot();
     if (e < 0) { it_fail("T054", "endpoint create"); return; }
     g_ltst_ep = (handle_id_t)e;
 
@@ -2292,6 +2313,11 @@ static void test_t055(void) {
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
+    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+     * handle materialisation is retired, so an undeclared receive gets the
+     * message without the cap. */
+    it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
     long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
@@ -2301,11 +2327,17 @@ static void test_t055(void) {
         it_iris_msg_zero(&p);
         p.label = IRIS_EP_OP_PING;
         long pr  = it_sys2(SYS_EP_CALL, (long)cap, (long)&p);          /* WRITE works */
-        long dup = it_sys2(SYS_HANDLE_DUP, (long)cap, (long)RIGHT_WRITE); /* no DUP */
+        /* The grant carries no RIGHT_DUPLICATE, so it cannot be derived from.
+         * Asked of the slot: SYS_CSPACE_MINT is the derive, and it needs
+         * RIGHT_DUPLICATE on the source exactly as the handle dup did. */
+        it_slot_delete(IT_SCRATCH_0);
+        long dup = it_sys3(SYS_CSPACE_MINT, (long)cap,
+                           (long)((uint64_t)IT_SCRATCH_0 << 32),
+                           (long)RIGHT_WRITE);
         if (pr == 0 && p.label == IRIS_EP_REPLY_OK &&
             dup == (long)IRIS_ERR_ACCESS_DENIED)
             ok = 1;
-        if (dup >= 0) { handle_id_t d = (handle_id_t)dup; it_close(&d); }
+        it_slot_delete(IT_SCRATCH_0);
         it_close(&cap);
     }
     if (ok) it_pass("T055"); else it_fail("T055", ".ep grant not tightened");
@@ -2386,6 +2418,11 @@ static void test_t060(void) {
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
+    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+     * handle materialisation is retired, so an undeclared receive gets the
+     * message without the cap. */
+    it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
     long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
@@ -2449,13 +2486,18 @@ static void test_t063(void) {
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
+    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+     * handle materialisation is retired, so an undeclared receive gets the
+     * message without the cap. */
+    it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
     long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
     int ok = 0;
     if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
         msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
         handle_id_t got = (handle_id_t)msg.attached_handle;
-        long ty   = it_sys1(SYS_HANDLE_TYPE, (long)got);
-        long same = it_sys2(SYS_HANDLE_SAME_OBJECT, (long)got, (long)g_ltst_ep);
+        long ty   = it_sys1(SYS_CAP_IDENTIFY, (long)got);
+        long same = it_sys2(SYS_CAP_SAME_OBJECT, (long)got, (long)g_ltst_ep);
         if (ty == (long)IRIS_HANDLE_TYPE_ENDPOINT && same == 1) ok = 1;
         it_close(&got);
     }
@@ -2532,6 +2574,11 @@ static void test_t066(void) {
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
     msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = len;
+    /* Stage 4: a reply that carries a capability needs somewhere to put it —
+     * handle materialisation is retired, so an undeclared receive gets the
+     * message without the cap. */
+    it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+    msg.attached_handle = (uint32_t)IT_LOOKUP_TMP;
     long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
     int ok = (r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
               msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND);
@@ -3679,14 +3726,14 @@ static void test_t084(void) {
             (long)IRIS_ERR_WOULD_BLOCK) ok = 0;   /* resolves via CSpace */
     }
 
-    /* recv #2: no declaration → legacy handle materialization. */
+    /* recv #2: NO declaration.  Stage 4 retired handle materialization, so the
+     * message arrives WITHOUT the capability — the same fail-closed shape a
+     * raced or occupied slot has had since Etapa 2.  The sender is not left
+     * hanging and nothing is half-transferred; a receiver that wants the cap
+     * says where to put it. */
     it_iris_msg_zero(&r);
     if (ok && it_sys2(SYS_EP_RECV, (long)g_t084_cmd_ep, (long)&r) != 0) ok = 0;
-    if (ok && !(r.attached_handle >= 1024u)) ok = 0;
-    if (ok) {
-        handle_id_t lh = (handle_id_t)r.attached_handle;
-        it_close(&lh);
-    }
+    if (ok && r.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) ok = 0;
 
     for (int i = 0; i < 200 && !g_t084_done; i++) it_sys0(SYS_YIELD);
     if (!g_t084_done || g_t084_s1 != 0 || g_t084_s2 != 0) ok = 0;
@@ -4191,21 +4238,22 @@ static void test_t089(void) {
 
     struct IrisMsg msg;
     if (ok) {
-        /* Legacy lookup: handle >= 1024, dup'd from the CSpace master. */
-        if (it_lookup_name_slot("t89.svc", 0u, &msg) != 0 ||
+        /* Lookup into a declared slot: the cap is minted from the CSpace
+         * master svcmgr holds and lands in the client's CSpace. */
+        it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+        if (it_lookup_name_slot("t89.svc", (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK ||
-            !iris_msg_cap_is_handle(msg.attached_handle)) ok = 0;
+            msg.attached_handle != (uint32_t)IT_LOOKUP_TMP) ok = 0;
         if (ok) {
             /* Invocable: no receiver on the endpoint → WOULD_BLOCK proves
              * resolution + rights (T084 probe). */
             struct IrisMsg p;
             it_iris_msg_zero(&p);
             p.label = 0x89;
-            if (it_sys2(SYS_EP_NB_SEND, (long)msg.attached_handle, (long)&p) !=
+            if (it_sys2(SYS_EP_NB_SEND, (long)IT_LOOKUP_TMP, (long)&p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
-            handle_id_t cap = (handle_id_t)msg.attached_handle;
-            it_close(&cap);
         }
+        it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     }
 
     /* Unregister releases svcmgr's CSpace pool slot cleanly. */
@@ -4262,15 +4310,16 @@ static void test_t090(void) {
     /* Occupied reply-slot → EP_CALL fails fast, before any send. */
     if (ok && it_lookup_name_slot("t90.svc", T090_SLOT, &msg) !=
         (long)IRIS_ERR_ALREADY_EXISTS) ok = 0;
-    /* Legacy lookup still works after the failed declaration. */
+    /* The endpoint is untouched by the failed declaration: the same lookup
+     * into a DIFFERENT, empty slot still delivers.  (It used to prove this
+     * with a slotless lookup, which now delivers no cap at all — the property
+     * being checked is that nothing was consumed, so it needs a destination.) */
     if (ok) {
-        if (it_lookup_name_slot("t90.svc", 0u, &msg) != 0 ||
+        it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+        if (it_lookup_name_slot("t90.svc", (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK ||
-            !iris_msg_cap_is_handle(msg.attached_handle)) ok = 0;
-        else {
-            handle_id_t cap = (handle_id_t)msg.attached_handle;
-            it_close(&cap);
-        }
+            msg.attached_handle != (uint32_t)IT_LOOKUP_TMP) ok = 0;
+        it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     }
 
     /* NOT_FOUND with a declared slot: no cap, slot stays empty. */
@@ -4323,28 +4372,43 @@ static void test_t091(void) {
     if (ok) it_pass("T091"); else it_fail("T091", "vfs.ep by cptr slot");
 }
 
-/* ── T092: legacy attached-handle service IPC still works (A1.6) ────────────
- * A client that declares NO slot gets the exact pre-A1.6 behavior from the
- * migrated services: the vfs.ep cap materializes as a handle >= 1024 and
- * drives the same VFS operation. */
+/* ── T092: a client that declares no slot gets no capability ────────────────
+ * This used to assert the opposite — that a slotless client still received the
+ * vfs.ep cap, materialised as a handle.  Stage 4 retired that materialisation:
+ * it was the last place a capability entered a process through the handle
+ * namespace, and the receiver never asked for it there.
+ *
+ * The guarantee that replaces it is the one worth having, so it is asserted
+ * here rather than deleted with the mechanism: the REQUEST still succeeds, the
+ * reply still arrives, and it simply carries no capability.  Nothing is
+ * half-delivered, the server is not left holding a staged cap, and a
+ * subsequent lookup WITH a declared slot works — the failure is closed, not
+ * sticky. */
 static void test_t092(void) {
     int ok = 1;
     struct IrisMsg msg;
-    handle_id_t cap = HANDLE_INVALID;
 
+    /* Slotless: reply OK, no cap. */
     if (it_lookup_name_slot(VFS_EP_SVC_NAME, 0u, &msg) != 0 ||
         msg.label != IRIS_EP_REPLY_OK ||
-        !iris_msg_cap_is_handle(msg.attached_handle)) ok = 0;
-    else cap = (handle_id_t)msg.attached_handle;
+        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) ok = 0;
 
+    /* The same lookup WITH a slot still delivers a working cap: the dropped
+     * delivery left nothing wedged on either side. */
+    if (ok) {
+        it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+        if (it_lookup_name_slot(VFS_EP_SVC_NAME, (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||
+            msg.label != IRIS_EP_REPLY_OK ||
+            msg.attached_handle != (uint32_t)IT_LOOKUP_TMP) ok = 0;
+    }
     if (ok) {
         it_iris_msg_zero(&msg);
         msg.label = VFS_EP_OP_STATUS;
-        if (it_sys2(SYS_EP_CALL, (long)cap, (long)&msg) != 0 ||
+        if (it_sys2(SYS_EP_CALL, (long)IT_LOOKUP_TMP, (long)&msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK) ok = 0;
     }
-    it_close(&cap);
-    if (ok) it_pass("T092"); else it_fail("T092", "legacy handle lookup");
+    it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+    if (ok) it_pass("T092"); else it_fail("T092", "slotless lookup not fail-closed");
 }
 
 /* ── A1.7: handle-table shrink/freeze evidence (T093–T096) ──────────────────
@@ -4542,16 +4606,16 @@ static void test_t093(void) {
         for (int i = 0; ok && i < 8; i += 7) {
             struct IrisMsg msg;
             name[4] = (char)('a' + i);
-            if (it_lookup_name_slot(name, 0u, &msg) != 0 ||
+            it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+            if (it_lookup_name_slot(name, (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||
                 msg.label != IRIS_EP_REPLY_OK ||
-                !iris_msg_cap_is_handle(msg.attached_handle)) { ok = 0; break; }
+                msg.attached_handle != (uint32_t)IT_LOOKUP_TMP) { ok = 0; break; }
             struct IrisMsg p;
             it_iris_msg_zero(&p);
             p.label = 0x93;
-            if (it_sys2(SYS_EP_NB_SEND, (long)msg.attached_handle, (long)&p) !=
+            if (it_sys2(SYS_EP_NB_SEND, (long)IT_LOOKUP_TMP, (long)&p) !=
                 (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
-            handle_id_t cap = (handle_id_t)msg.attached_handle;
-            it_close(&cap);
+            it_slot_delete((uint32_t)IT_LOOKUP_TMP);
         }
         for (int i = 0; ok && i < 8; i++) {
             if (it_unregister_id((uint32_t)ids[i]) != 0) ok = 0;
@@ -4680,10 +4744,14 @@ static void test_t094(void) {
 
 /* ── T095: handle high-water smoke (A1.7) ───────────────────────────────────
  * By this point the suite has exercised every producer: creation returns,
- * DUP/derive, IPC transfers (slot + handle + TOCTOU), reply caps, resolves,
- * spawns, deaths.  Read the extended diagnostics, log the real numbers (the
- * evidence for the HANDLE_TABLE_MAX decision), and assert the working set is
- * bounded: the busiest table ever seen must fit in a quarter of the ceiling. */
+ * DUP/derive, IPC transfers, reply caps, resolves, spawns, deaths.  Read the
+ * extended diagnostics, log the real numbers (the evidence for the
+ * HANDLE_TABLE_MAX decision), and assert the working set is bounded: the
+ * busiest table ever seen must fit in a quarter of the ceiling.
+ *
+ * It also carries two retirement witnesses.  Both the handle-delivery and the
+ * TOCTOU-degradation counters must be structural zeros: a transferred
+ * capability has exactly one destination, the receiver's declared slot. */
 static void test_t095(void) {
     uint32_t w[14];
     if (!it_sched_ext(w)) { it_fail("T095", "sched_info ext"); return; }
@@ -4715,50 +4783,63 @@ static void test_t095(void) {
     if (w[IT_SI_INSERTS] < w[IT_SI_REMOVES]) ok = 0;         /* books balance */
     if (w[IT_SI_INSERTS] - w[IT_SI_REMOVES] != w[IT_SI_LIVE]) ok = 0;
     if (w[IT_SI_SLOTDEL] < 8u) ok = 0;      /* T084+ / svcmgr registrations */
-    if (w[IT_SI_HANDDEL] < 8u) ok = 0;      /* legacy deliveries all along */
+    /* Stage 4: handle materialisation on delivery is RETIRED.  Every
+     * transferred capability now lands in a declared receive slot, so this
+     * counter is a STRUCTURAL zero and is the retirement witness — the
+     * partition slot/handle/toctou has exactly one live member.  A non-zero
+     * value means a capability entered a process through the handle namespace
+     * again (charter I1). */
+    if (w[IT_SI_HANDDEL] != 0u) ok = 0;
     /* Fase S4 (Etapa 2): the CPtr→handle TOCTOU degradation is RETIRED.  T094
      * still forces the race; the counter must now stay at a STRUCTURAL zero.
      * This is the roadmap's retirement criterion for the last permitted
      * degradation (charter §3.7) — if it ever moves, the fallback is back. */
     if (w[IT_SI_TOCTOU] != 0u) ok = 0;
     if (w[IT_SI_REPLY] < 50u) ok = 0;       /* hundreds of EP_CALLs by now */
-    if (w[IT_SI_RESOLVE] < 4u) ok = 0;      /* sanctioned bridge in use */
     /* The bound: busiest table ever ≤ MAX/4 — real margin, not aesthetics. */
     if (w[IT_SI_GHWM] * 4u > w[IT_SI_MAX]) ok = 0;
 
     if (ok) it_pass("T095"); else it_fail("T095", "handle high-water");
 }
 
-/* ── T096: legacy client compatibility under pressure (A1.7) ────────────────
- * 32 slotless lookup+close cycles: every one materializes a real handle and
- * releases it.  self_live must return exactly to its starting value (zero
- * leak), and the legacy path keeps serving a working cap on the last lap. */
+/* ── T096: repeated lookup+release does not leak (A1.7) ─────────────────────
+ * 32 lookup+release cycles through the SAME reply slot: every one delivers a
+ * real capability into the slot and every one releases it.  self_live must
+ * return exactly to its starting value.
+ *
+ * It used to run slotless, which made it a test of the handle-materialising
+ * delivery — retired in Stage 4.  What it actually measures is that the
+ * delivery path has no per-cycle residue, and reusing one slot 32 times is a
+ * sharper version of that: a leaked reference would leave the slot occupied
+ * and the second lookup would fail ALREADY_EXISTS. */
 static void test_t096(void) {
     uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T096", "sched_info ext"); return; }
 
     int ok = 1;
+    it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     for (int i = 0; ok && i < 32; i++) {
         struct IrisMsg msg;
-        if (it_lookup_name_slot(VFS_EP_SVC_NAME, 0u, &msg) != 0 ||
+        if (it_lookup_name_slot(VFS_EP_SVC_NAME, (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_OK ||
-            !iris_msg_cap_is_handle(msg.attached_handle)) { ok = 0; break; }
-        handle_id_t cap = (handle_id_t)msg.attached_handle;
+            msg.attached_handle != (uint32_t)IT_LOOKUP_TMP) { ok = 0; break; }
         if (i == 31) {          /* the last cap still actually works */
             struct IrisMsg p;
             it_iris_msg_zero(&p);
             p.label = IRIS_EP_OP_PING;
-            if (it_sys2(SYS_EP_CALL, (long)cap, (long)&p) != 0 ||
+            if (it_sys2(SYS_EP_CALL, (long)IT_LOOKUP_TMP, (long)&p) != 0 ||
                 p.label != IRIS_EP_REPLY_OK) ok = 0;
         }
-        it_close(&cap);
+        it_slot_delete((uint32_t)IT_LOOKUP_TMP);
     }
 
     if (ok && !it_sched_ext(after)) ok = 0;
     if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) ok = 0;   /* zero leak */
-    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + 32u) ok = 0;
+    /* 32 deliveries, all of them into the slot — and not one into a handle. */
+    if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + 32u) ok = 0;
+    if (ok && after[IT_SI_HANDDEL] != before[IT_SI_HANDDEL]) ok = 0;
 
-    if (ok) it_pass("T096"); else it_fail("T096", "legacy pressure");
+    if (ok) it_pass("T096"); else it_fail("T096", "lookup+release residue");
 }
 
 /* ── A1.8: legacy handle producer cleanup (T097–T098) ───────────────────────
@@ -5213,16 +5294,23 @@ static void test_t101(void) {
     if (ok) it_pass("T101"); else it_fail("T101", why);
 }
 
-/* ── T102: legacy slotless children under multi-child pressure ──────────────
- * Two children run the same command protocol with slot 0 (= legacy): each
- * receives the transferred cap as a handle >= 1024, invokes it through that
- * handle across the process boundary (signal bits 2), and child teardown
- * releases everything — parent live handles return exactly to baseline. */
+/* ── T102: a child that declares no slot receives no capability ─────────────
+ * This used to assert the opposite — that a child receiving with slot 0 got
+ * the transferred cap as a handle and could invoke it across the process
+ * boundary.  Stage 4 retired that delivery, and the guarantee that replaces it
+ * is asserted here across a REAL process boundary, which is where it matters:
+ * a receiver that names no destination gets the message and not the
+ * capability, its exit code says so, and nothing is left half-transferred —
+ * the sender is not blocked, the child runs to completion, and the parent's
+ * live-handle count returns exactly to baseline.
+ *
+ * Two children, because the original failure mode this guarded against was a
+ * per-child residue that only showed up on the second pass. */
 static void test_t102(void) {
     uint32_t before[14], after[14];
     if (!it_sched_ext(before)) { it_fail("T102", "sched ext"); return; }
     int ok = 1;
-    const char *why = "legacy children";
+    const char *why = "slotless children";
 
     for (int i = 0; ok && i < 2; i++) {
         long ep = it_ep_create();
@@ -5232,15 +5320,19 @@ static void test_t102(void) {
         if (ep < 0 || n < 0 ||
             lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
         if (ok && it_lp_cmd_rslot(ep_h, 0u) != 0) { ok = 0; why = "cmd"; }
+        /* The SEND itself succeeds: the failure is closed at delivery, not
+         * reported to the sender, exactly as an occupied slot behaves. */
         if (ok && it_lp_send_cap(ep_h, n) != 0) { ok = 0; why = "send cap"; }
         if (ok) {
-            uint64_t bits = 0;
-            if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
-                bits != 2u) { ok = 0; why = "handle signal"; }
-        }
-        if (ok) {
             long ec = it_lp_wait_exit(proc_h);
-            if (ec < 1024) { ok = 0; why = "not legacy handle"; }
+            if (ec != 0) { ok = 0; why = "cap delivered without a slot"; }
+        }
+        /* The notification was never signalled — nobody could have. */
+        /* The child has exited, so one tick proves nothing ever signalled. */
+        if (ok) {
+            uint64_t bits = 0;
+            if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, (long)(uintptr_t)&bits, 1)
+                != (long)IRIS_ERR_TIMED_OUT) { ok = 0; why = "phantom signal"; }
         }
         it_close(&proc_h);
         it_close(&n_h);
@@ -5249,7 +5341,8 @@ static void test_t102(void) {
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
-    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + 2u) {
+    /* Not one of those deliveries went to a handle. */
+    if (ok && after[IT_SI_HANDDEL] != before[IT_SI_HANDDEL]) {
         ok = 0; why = "hand count";
     }
     if (ok) it_pass("T102"); else it_fail("T102", why);
@@ -5961,7 +6054,12 @@ static void test_t107(void) {
                 (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ep touched"; }
 
         } else if (pick == 5u) {
-            /* Legacy slot 0: the cap materializes as a handle >= 1024 (I11). */
+            /* Slot 0 = no destination.  Stage 4 retired handle
+             * materialisation, so the receive SUCCEEDS and carries no
+             * capability (I1).  The send is not an error — the failure is
+             * closed at delivery, exactly like an occupied slot — and the
+             * staged source is consumed either way, so the check that matters
+             * is that no capability appeared anywhere. */
             long d = fz_dup_xfer(n);
             if (d < 0) { ok = 0; why = "dup"; break; }
             if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "cmd"; break; }
@@ -5971,21 +6069,18 @@ static void test_t107(void) {
             m.attached_handle = (uint32_t)d;
             m.attached_rights = RIGHT_WRITE;
             if (it_sys2(SYS_EP_SEND, (long)g_fz_data_ep, (long)&m) != 0) {
-                ok = 0; why = "legacy send";
+                ok = 0; why = "slotless send";
             }
             if (ok && !fz_wait(0)) { ok = 0; why = "worker hang"; }
-            if (ok && (g_fz_res[0] != 0 || g_fz_att[0] < 1024u)) {
-                ok = 0; why = "legacy landing";
+            if (ok && (g_fz_res[0] != 0 ||
+                       g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP)) {
+                ok = 0; why = "cap delivered without a slot";
             }
-            if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)g_fz_att[0], 2) != 0) {
-                ok = 0; why = "legacy cap dead";
-            }
-            if (ok) {
-                uint64_t bits = 0;
-                (void)it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits);
-                handle_id_t gh = (handle_id_t)g_fz_att[0];
-                it_close(&gh);
-            }
+            /* I2/I3: nothing landed, so nothing was consumed — the source
+             * slot still holds the capability the sender staged. */
+            if (ok && !it_cdt_alive(d)) { ok = 0; why = "source consumed"; }
+            it_slot_delete((uint32_t)d);
+            exp_hand++;
             exp_hand++;
 
         } else {
@@ -6037,7 +6132,10 @@ static void test_t107(void) {
     if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
         ok = 0; why = "slot count";
     }
-    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + exp_hand) {
+    /* Stage 4: handle delivery is retired, so this counter is a structural
+     * zero — exp_hand counts the deliveries that found NO destination, and
+     * none of them may have landed in a handle table. */
+    if (ok && after[IT_SI_HANDDEL] != before[IT_SI_HANDDEL]) {
         ok = 0; why = "hand count";
     }
     /* I17: T095 high-water rule. */
@@ -6323,19 +6421,15 @@ static void test_t109(void) {
             }
             if (ok) { d = -1; exp_slot++; }
         } else if (ok) {
-            /* I11 on the reply path: legacy handle >= 1024, invocable. */
-            if (!iris_msg_cap_is_handle(g_fz_att[0])) { ok = 0; why = "legacy landing"; }
-            uint64_t bits = 0;
-            if (ok && (it_sys2(SYS_NOTIFY_SIGNAL, (long)g_fz_att[0], 2) != 0 ||
-                       it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
-                       bits != 2u)) { ok = 0; why = "legacy cap dead"; }
-            if (ok) {
-                handle_id_t gh = (handle_id_t)g_fz_att[0];
-                it_close(&gh);
+            /* I1 on the reply path: no declared slot, no capability. */
+            if (g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP) {
+                ok = 0; why = "reply cap delivered without a slot";
             }
-            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) >= 0) {
-                ok = 0; why = "dup not consumed";
-            }
+            /* I2/I3: the delivery found no destination, so the staged source
+             * is NOT consumed — the sender keeps exactly what it had.  This is
+             * the same shape as an occupied destination slot. */
+            if (ok && !it_cdt_alive(d)) { ok = 0; why = "source consumed"; }
+            it_slot_delete((uint32_t)d);
             if (ok) { d = -1; exp_hand++; }
         }
 
@@ -6384,7 +6478,10 @@ static void test_t109(void) {
     if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
         ok = 0; why = "slot count";
     }
-    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + exp_hand) {
+    /* Stage 4: handle delivery is retired, so this counter is a structural
+     * zero — exp_hand counts the deliveries that found NO destination, and
+     * none of them may have landed in a handle table. */
+    if (ok && after[IT_SI_HANDDEL] != before[IT_SI_HANDDEL]) {
         ok = 0; why = "hand count";
     }
     /* I17: T095 high-water rule. */
@@ -6418,7 +6515,7 @@ static void test_t110(void) {
     int ok = 1;
     const char *why = "svcmgr rslot stress";
     uint32_t it_n = 0;
-    uint32_t exp_slot = 0, exp_hand = 0, exp_reply = 0, exp_log = 0;
+    uint32_t exp_slot = 0, exp_reply = 0, exp_log = 0;
 
     long ep    = it_ep_create_slot();
     long nf    = it_notify_create_slot();
@@ -6443,13 +6540,16 @@ static void test_t110(void) {
     int  reg[3]  = { 0, 0, 0 };
     struct IrisMsg msg;
 
-    /* Registered-name legacy lookup: handle >= 1024, invocable, closed. */
+    /* Registered-name lookup into a declared slot: invocable, then released.
+     * It used to run slotless and assert a handle >= 1024; Stage 4 retired
+     * that delivery, so the destination is now explicit. */
     #define T110_LEGACY_OK()                                                  \
         do {                                                                  \
-            if (it_lookup_name_slot(name, 0u, &msg) != 0 ||                   \
+            it_slot_delete((uint32_t)IT_LOOKUP_TMP);                          \
+            if (it_lookup_name_slot(name, (uint32_t)IT_LOOKUP_TMP, &msg) != 0 ||\
                 msg.label != IRIS_EP_REPLY_OK ||                              \
-                !iris_msg_cap_is_handle(msg.attached_handle)) {               \
-                ok = 0; why = "legacy lookup";                                \
+                msg.attached_handle != (uint32_t)IT_LOOKUP_TMP) {             \
+                ok = 0; why = "slot lookup";                                  \
             } else {                                                          \
                 struct IrisMsg p;                                             \
                 it_iris_msg_zero(&p);                                         \
@@ -6458,9 +6558,8 @@ static void test_t110(void) {
                             (long)&p) != (long)IRIS_ERR_WOULD_BLOCK) {        \
                     ok = 0; why = "legacy cap dead";                          \
                 }                                                             \
-                handle_id_t ch = (handle_id_t)msg.attached_handle;            \
-                it_close(&ch);                                                \
-                exp_hand++;                                                   \
+                it_slot_delete((uint32_t)IT_LOOKUP_TMP);                      \
+                exp_slot++;                                                   \
             }                                                                 \
             exp_reply++; exp_log++;                                           \
         } while (0)
@@ -6599,7 +6698,10 @@ static void test_t110(void) {
     if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
         ok = 0; why = "slot count";
     }
-    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + exp_hand) {
+    /* Stage 4: handle delivery is retired, so this counter is a structural
+     * zero — exp_hand counts the deliveries that found NO destination, and
+     * none of them may have landed in a handle table. */
+    if (ok && after[IT_SI_HANDDEL] != before[IT_SI_HANDDEL]) {
         ok = 0; why = "hand count";
     }
     /* I17: T095 high-water rule. */
@@ -6622,8 +6724,10 @@ static void test_t110(void) {
  *   2 kill before delivery: child killed while blocked with a declared
  *     slot — no dead waiter remains (NB probe), the sender's cap survives
  *     the attempted delivery;
- *   3 legacy slot 0      : cap materializes as a handle >= 1024 in the
- *     child, invoked across the boundary, torn down with the child.
+ *   3 slot 0 (no destination): Stage 4 retired handle materialisation, so
+ *     the child receives the message WITHOUT the capability, exits 0, and no
+ *     cross-boundary signal can occur — the parent proves that by timing out
+ *     on the notification instead of blocking on it.
  * Parent books balance EXACTLY (no thread helpers here — delta 0).
  * Invariants: I1, I5, I6, I11, I12, I15-I18. */
 #define T111_SEED 0xA1110111u
@@ -6647,24 +6751,33 @@ static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
     }
 
     if (ok && (kind == 0u || kind == 3u)) {
-        /* Deliver a notification cap; the child invokes it (bits 1 = CPtr
-         * landing, bits 2 = legacy handle landing) and reports where it
-         * landed via its exit code. */
+        /* Deliver a notification cap.  kind 0 declares a slot: the child
+         * invokes the cap through it (bits 1) and its exit code reports the
+         * CPtr.  kind 3 declares NOTHING: Stage 4 retired handle
+         * materialisation, so the child receives the message without the
+         * capability, exits 0, and nobody signals — the parent must not
+         * block waiting for a signal that cannot come. */
         if (it_lp_send_cap(ep_h, n) != 0) { ok = 0; *why = "send cap"; }
-        if (ok) {
+        if (ok && kind == 0u) {
             uint64_t bits = 0;
-            uint64_t want = (kind == 0u) ? 1u : 2u;
             if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
-                bits != want) { ok = 0; *why = "x-proc signal"; }
+                bits != 1u) { ok = 0; *why = "x-proc signal"; }
         }
         if (ok) {
             long ec = it_lp_wait_exit(proc_h);
             if (kind == 0u && ec != (long)T099_CHILD_SLOT) {
                 ok = 0; *why = "cptr landing";
             }
-            if (kind == 3u && ec < (long)IRIS_CPTR_LIMIT) {
-                ok = 0; *why = "legacy landing";
+            if (kind == 3u && ec != 0) {
+                ok = 0; *why = "cap delivered without a slot";
             }
+        }
+        /* The child is dead by now, so one tick is enough to prove nothing
+         * ever signalled: there is no longer anybody who could. */
+        if (ok && kind == 3u) {
+            uint64_t bits = 0;
+            if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, (long)(uintptr_t)&bits, 1)
+                != (long)IRIS_ERR_TIMED_OUT) { ok = 0; *why = "phantom signal"; }
         }
         if (ok) { if (kind == 0u) (*exp_slot)++; else (*exp_hand)++; }
 
@@ -6751,7 +6864,10 @@ static void test_t111(void) {
     if (ok && after[IT_SI_SLOTDEL] < before[IT_SI_SLOTDEL] + exp_slot) {
         ok = 0; why = "slot count";
     }
-    if (ok && after[IT_SI_HANDDEL] < before[IT_SI_HANDDEL] + exp_hand) {
+    /* Stage 4: handle delivery is retired, so this counter is a structural
+     * zero — exp_hand counts the deliveries that found NO destination, and
+     * none of them may have landed in a handle table. */
+    if (ok && after[IT_SI_HANDDEL] != before[IT_SI_HANDDEL]) {
         ok = 0; why = "hand count";
     }
     /* I17: T095 high-water rule. */
@@ -13960,13 +14076,15 @@ static void test_t201(void) {
     if (ok && p.reg_id < 0) { ok = 0; why = "not registered"; }
     if (ok) {
         struct IrisMsg lm;
-        if (it_lookup_name_slot("pager.svc", 0u, &lm) != 0 ||
+        it_slot_delete((uint32_t)IT_LOOKUP_TMP);
+        if (it_lookup_name_slot("pager.svc", (uint32_t)IT_LOOKUP_TMP, &lm) != 0 ||
             lm.label != IRIS_EP_REPLY_OK ||
-            !iris_msg_cap_is_handle(lm.attached_handle)) { ok = 0; why = "lookup"; }
+            lm.attached_handle != (uint32_t)IT_LOOKUP_TMP) { ok = 0; why = "lookup"; }
         else {
-            handle_id_t ep = (handle_id_t)lm.attached_handle;
-            if (t27_pager_call(ep, PGR_OP_PING, 0, 0, 0, 0, 0) != 0) { ok = 0; why = "lookup ping"; }
-            it_close(&ep);
+            if (t27_pager_call((handle_id_t)IT_LOOKUP_TMP, PGR_OP_PING, 0, 0, 0, 0, 0) != 0) {
+                ok = 0; why = "lookup ping";
+            }
+            it_slot_delete((uint32_t)IT_LOOKUP_TMP);
         }
     }
 
