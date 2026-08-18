@@ -218,6 +218,17 @@ static long it_cs_reduce(long src_cptr, uint32_t rights) {
  * so the slot is an MDB LEGACY root — that is KVMO's own debt (ledger: FROZEN,
  * memory-server), not something the slot introduces.  What changes here is
  * only WHERE the capability lives. */
+/* An initrd image capability published into a CSpace slot (SYS_INITRD_VMO's
+ * arg2 destination).  Same rotating-pool contract as it_retype_slot_alloc. */
+static long it_initrd_vmo_slot(long auth_cptr, long index) {
+    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    long r = it_sys3(SYS_INITRD_VMO, auth_cptr, index,
+                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
+    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
+}
+
 static long it_vmo_create_slot(uint64_t size) {
     uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
                                              __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
@@ -552,7 +563,7 @@ static void test_t003(void) {
 #define T008_VMO_SIZE  4096U
 
 static void test_t008(void) {
-    long vmo_raw = it_sys1(SYS_VMO_CREATE, T008_VMO_SIZE);
+    long vmo_raw = it_vmo_create_slot(T008_VMO_SIZE);
     if (vmo_raw < 0) { it_fail("T008", "vmo create"); return; }
     handle_id_t vmo_h = (handle_id_t)vmo_raw;
 
@@ -3122,7 +3133,7 @@ static void test_t076(void) {
     }
 
     /* One-page VMO mapped writable into the CHILD's address space. */
-    long vmo = it_sys1(SYS_VMO_CREATE, 4096);
+    long vmo = it_vmo_create_slot(4096);
     handle_id_t vmo_h = (vmo >= 0) ? (handle_id_t)vmo : HANDLE_INVALID;
     long mi = (vmo_h != HANDLE_INVALID)
         ? it_sys4(SYS_VMO_MAP_INTO, (long)vmo_h, (long)proc_h, (long)LP_MAP_VA, 1)
@@ -3197,7 +3208,7 @@ static void test_t079(void) {
     }
     if (selfp < 0) { it_fail("T079", "self proc cptr"); return; }
 
-    long vmo = it_sys1(SYS_VMO_CREATE, 4096);
+    long vmo = it_vmo_create_slot(4096);
     if (vmo < 0) { it_fail("T079", "vmo create"); return; }
     handle_id_t vmo_h = (handle_id_t)vmo;
 
@@ -3274,7 +3285,7 @@ static void test_t080(void) {
     const long selfp = (long)IRIS_CPTR_TEST_PROC;
     if (it_sys1(SYS_CAP_IDENTIFY, selfp) < 0) { it_fail("T080", "self proc cptr"); return; }
 
-    long vmo = it_sys1(SYS_VMO_CREATE, T080_VMO_SIZE);
+    long vmo = it_vmo_create_slot(T080_VMO_SIZE);
     if (vmo < 0) { it_fail("T080", "vmo create"); return; }
     handle_id_t vmo_h = (handle_id_t)vmo;
 
@@ -3452,7 +3463,7 @@ static void test_t081(void) {
 #define T082_MAP_VA2    (LP_MAP_VA + 0x10000ULL)
 
 static void test_t082(void) {
-    long vmo = it_sys1(SYS_VMO_CREATE, 4096);
+    long vmo = it_vmo_create_slot(4096);
     if (vmo < 0) { it_fail("T082", "vmo create"); return; }
     handle_id_t vmo_h = (handle_id_t)vmo;
 
@@ -4565,13 +4576,10 @@ static int it_sched_ext5(uint32_t w5[5]) {
 static int g_it_vspace_ready = 0;
 static int it_setup_self_vspace(void) {
     if (g_it_vspace_ready) return 1;
-    long h = it_sys0(SYS_VSPACE_SELF);
-    if (h < 0) return 0;
-    handle_id_t vh = (handle_id_t)h;
-    long r = it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
-                     (long)IRIS_CPTR_TEST_VSPACE, (long)vh,
-                     (long)(RIGHT_READ | RIGHT_WRITE));
-    it_close(&vh);
+    /* Stage 4: SYS_VSPACE_SELF publishes into a destination slot, so the
+     * suite's own address space is a capability from the moment it exists —
+     * it used to arrive as a handle that had to be minted onward and closed. */
+    long r = it_sys1(SYS_VSPACE_SELF, (long)(IRIS_CPTR_TEST_VSPACE << 32));
     if (r != 0) return 0;
     g_it_vspace_ready = 1;
     return 1;
@@ -4887,7 +4895,7 @@ static void test_t097(void) {
         it_close(&cmd_ep_h);
         it_fail("T097", "spawn"); return;
     }
-    long vmo = it_sys1(SYS_VMO_CREATE, 4096);
+    long vmo = it_vmo_create_slot(4096);
     if (vmo < 0) {
         (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
         it_close(&proc_h); it_close(&cmd_ep_h);
@@ -4910,8 +4918,7 @@ static void test_t097(void) {
     /* Authority cannot escalate: READ-only source + WRITE request →
      * empty effective rights → INVALID_ARG (never a widened grant). */
     if (ok) {
-        long ro = it_sys2(SYS_HANDLE_DUP, vmo,
-                          (long)(RIGHT_READ | RIGHT_DUPLICATE));
+        long ro = it_cs_reduce(vmo, RIGHT_READ | RIGHT_DUPLICATE);
         if (ro < 0) { ok = 0; why = "dup"; }
         else {
             if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT2,
@@ -4962,7 +4969,7 @@ static void test_t098(void) {
         it_close(&cmd_ep_h);
         it_fail("T098", "spawn"); return;
     }
-    long vmo = it_sys1(SYS_VMO_CREATE, 4096);
+    long vmo = it_vmo_create_slot(4096);
     if (vmo < 0) {
         (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
         it_close(&proc_h); it_close(&cmd_ep_h);
@@ -4978,7 +4985,7 @@ static void test_t098(void) {
 
     /* A source without RIGHT_DUPLICATE cannot delegate. */
     if (ok) {
-        long ro = it_sys2(SYS_HANDLE_DUP, vmo, (long)RIGHT_READ);
+        long ro = it_cs_reduce(vmo, RIGHT_READ);
         if (ro < 0) { ok = 0; why = "dup ro"; }
         else {
             if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT2,
@@ -4991,8 +4998,7 @@ static void test_t098(void) {
     }
     /* A request disjoint from the source's rights is refused, never widened. */
     if (ok) {
-        long rd = it_sys2(SYS_HANDLE_DUP, vmo,
-                          (long)(RIGHT_READ | RIGHT_DUPLICATE));
+        long rd = it_cs_reduce(vmo, RIGHT_READ | RIGHT_DUPLICATE);
         if (rd < 0) { ok = 0; why = "dup rd"; }
         else {
             if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT2,
@@ -7253,7 +7259,7 @@ static void test_t116(void) {
 
     long ep  = it_ep_create_slot();   /* shared endpoint */
     long n   = it_notify_create_slot();      /* shared notification */
-    long vmo = it_sys1(SYS_VMO_CREATE, 4096);   /* shared VMO */
+    long vmo = it_vmo_create_slot(4096);   /* shared VMO */
     handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n, vmo_h = (handle_id_t)vmo;
     handle_id_t cmd_ep_h = HANDLE_INVALID, proc_h = HANDLE_INVALID;
 
@@ -7298,7 +7304,7 @@ static void test_t116(void) {
             it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
             bits != 4u) { ok = 0; why = "notif dead"; }
     }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, vmo) != (long)IRIS_HANDLE_TYPE_VMO) {
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, vmo) != (long)IRIS_HANDLE_TYPE_VMO) {
         ok = 0; why = "vmo dead";
     }
 
@@ -8751,12 +8757,13 @@ static void test_t132(void) {
 
     /* Missing rights: a read-only self-VSpace cap cannot install a PTE. */
     if (ok) {
-        long h = it_sys0(SYS_VSPACE_SELF);
-        handle_id_t vh = (h >= 0) ? (handle_id_t)h : HANDLE_INVALID;
-        if (h < 0) { ok = 0; why = "vspace self 2"; }
-        if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
-                          IT_VS_RO, (long)vh, (long)RIGHT_READ) != 0) { ok = 0; why = "ro mint"; }
-        it_close(&vh);
+        /* The read-only copy is a slot-to-slot derive of the self-VSpace slot,
+         * so it is an MDB child of the cap it narrows. */
+        it_slot_delete(IT_VS_RO);
+        if (it_sys3(SYS_CSPACE_MINT, IT_VS,
+                    (long)((uint64_t)IT_VS_RO << 32), (long)RIGHT_READ) != 0) {
+            ok = 0; why = "ro mint";
+        }
         if (ok && it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS_RO, (long)T133_VA, (long)IT_MAP_W)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro not denied"; }
         /* No fallback: the denied map installed nothing (a following valid map
@@ -14740,16 +14747,16 @@ static void test_t211(void) {
 
     /* Every in-range index yields a live VMO with a positive size. */
     for (long i = 0; ok && i < n; i++) {
-        long v = it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, i);
+        long v = it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, i);
         if (v < 0) { ok = 0; why = "image vmo"; break; }
         handle_id_t vh = (handle_id_t)v;
         if (it_sys1(SYS_VMO_SIZE, v) <= 0) { ok = 0; why = "image size"; }
         it_close(&vh);
     }
     /* Out-of-range indices fail cleanly. */
-    if (ok && it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, n)
+    if (ok && it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, n)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "oob not NOT_FOUND"; }
-    if (ok && it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, 9999L)
+    if (ok && it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, 9999L)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "far oob not NOT_FOUND"; }
 
     it_quiesce_reaper();
@@ -14773,7 +14780,7 @@ static void test_t212(void) {
     if (n < (long)T2_MIN_IMAGES) { ok = 0; why = "count"; }
 
     for (long i = 0; ok && i < n; i++) {
-        long v = it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, i);
+        long v = it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, i);
         if (v < 0) { ok = 0; why = "vmo"; break; }
         handle_id_t vh = (handle_id_t)v;
         long sz = it_sys1(SYS_VMO_SIZE, v);
@@ -14878,7 +14885,7 @@ static void test_t214(void) {
 
     /* Initrd VMO of the invalid image still succeeds (it is bytes, not code) —
      * the failure is the LOADER's, cleanly reported, not the initrd layer's. */
-    long v = it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, (long)T2_BADELF_IDX);
+    long v = it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, (long)T2_BADELF_IDX);
     if (ok && v < 0) { ok = 0; why = "badelf vmo"; }
     if (v >= 0) { handle_id_t vh = (handle_id_t)v; it_close(&vh); }
 
@@ -14964,7 +14971,7 @@ static void test_t216(void) {
         case 0: {
             /* Map a random in-range image page 0 into our own VSpace. */
             long i = (long)(t216_rnd(&rng) % (uint32_t)n);
-            long v = it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, i);
+            long v = it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, i);
             if (v < 0) { ok = 0; why = "map vmo"; break; }
             handle_id_t vh = (handle_id_t)v;
             if (it_sys4(SYS_VMO_MAP_PAGE, v, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 0)) != 0) { ok = 0; why = "map"; }
@@ -14974,7 +14981,7 @@ static void test_t216(void) {
         }
         case 1: {
             /* Out-of-range query fails clean. */
-            if (it_sys2(SYS_INITRD_VMO, (long)IRIS_CPTR_SPAWN_CAP, n + (long)(t216_rnd(&rng) % 100u))
+            if (it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, n + (long)(t216_rnd(&rng) % 100u))
                 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "oob"; }
             break;
         }
@@ -17101,7 +17108,7 @@ static void test_t239(void) {
     if (ok && r0.kslab_used_bytes > r0.kslab_total_bytes) { ok = 0; why = "kslab over total"; }
 
     /* CREATE charges self by exactly one VMO; close releases it. */
-    long v = ok ? it_sys1(SYS_VMO_CREATE, 4096) : -1;
+    long v = ok ? it_vmo_create_slot(4096) : -1;
     if (ok && v < 0) { ok = 0; why = "create"; }
     struct it_rinfo r1;
     if (ok && !it_rinfo(HANDLE_INVALID, &r1)) { ok = 0; why = "rinfo1"; }
@@ -17309,7 +17316,7 @@ static void test_t243(void) {
 
     struct it_rinfo s0;
     if (ok && !it_rinfo(HANDLE_INVALID, &s0)) { ok = 0; why = "s0"; }
-    long v = ok ? it_sys1(SYS_VMO_CREATE, 4096) : -1;
+    long v = ok ? it_vmo_create_slot(4096) : -1;
     handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
     if (ok && v < 0) { ok = 0; why = "create"; }
     /* Map the VMO page into self via SYS_VMO_MAP_PAGE at a scratch VA. */
@@ -17453,7 +17460,7 @@ static void test_t246(void) {
     for (uint32_t i = 0; i < IT_VMO_QUOTA; i++) vs[i] = HANDLE_INVALID;
     uint32_t made = 0;
     for (uint32_t i = 0; ok && i < headroom; i++) {
-        long v = it_sys1(SYS_VMO_CREATE, 4096);
+        long v = it_vmo_create_slot(4096);
         if (v < 0) { ok = 0; why = "fill create"; break; }
         vs[made++] = (handle_id_t)v;
     }
@@ -17463,7 +17470,7 @@ static void test_t246(void) {
                rf.vmos_hwm != IT_VMO_QUOTA)) { ok = 0; why = "not full"; }
     uint32_t fail0 = ok ? rf.global_failed_charges : 0u;
     /* The next create fails cleanly — no object, counter advances (Q20/Q21). */
-    if (ok && it_sys1(SYS_VMO_CREATE, 4096) != (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "over-quota not NO_MEMORY"; }
+    if (ok && it_vmo_create_slot(4096) != (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "over-quota not NO_MEMORY"; }
     struct it_rinfo rf2;
     if (ok && !it_rinfo(HANDLE_INVALID, &rf2)) { ok = 0; why = "rf2"; }
     if (ok && rf2.vmos_usage != IT_VMO_QUOTA) { ok = 0; why = "phantom charge"; }
@@ -17471,7 +17478,7 @@ static void test_t246(void) {
     /* Free one and a create succeeds again (no retry bypass, exact accounting). */
     if (made > 0) it_close(&vs[made - 1u]);
     if (made > 0) made--;
-    long again = ok ? it_sys1(SYS_VMO_CREATE, 4096) : -1;
+    long again = ok ? it_vmo_create_slot(4096) : -1;
     if (ok && again < 0) { ok = 0; why = "no recovery"; }
     if (again >= 0) { handle_id_t h = (handle_id_t)again; vs[made++] = h; }
     /* Release everything; usage returns to baseline, hwm stays pinned. */
@@ -17643,7 +17650,7 @@ static void test_t250(void) {
         }
         case 1: {
             /* Self VMO create + dup + close: single charge, exact release. */
-            long v = it_sys1(SYS_VMO_CREATE, 4096);
+            long v = it_vmo_create_slot(4096);
             if (v < 0) { ok = 0; why = "s1 create"; break; }
             handle_id_t vh = (handle_id_t)v;
             long d = it_cs_reduce((long)vh, RIGHT_READ);
@@ -17660,9 +17667,9 @@ static void test_t250(void) {
             uint32_t head = IT_VMO_QUOTA - rr.vmos_usage;
             static handle_id_t vv[IT_VMO_QUOTA];
             uint32_t made = 0;
-            for (uint32_t i = 0; i < head; i++) { long v = it_sys1(SYS_VMO_CREATE, 4096); if (v < 0) break; vv[made++] = (handle_id_t)v; }
+            for (uint32_t i = 0; i < head; i++) { long v = it_vmo_create_slot(4096); if (v < 0) break; vv[made++] = (handle_id_t)v; }
             uint32_t f0 = 0; struct it_rinfo rf; if (it_rinfo(HANDLE_INVALID, &rf)) f0 = rf.global_failed_charges;
-            if (it_sys1(SYS_VMO_CREATE, 4096) != (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "s2 not full"; }
+            if (it_vmo_create_slot(4096) != (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "s2 not full"; }
             struct it_rinfo rf2;
             if (ok && (!it_rinfo(HANDLE_INVALID, &rf2) || rf2.global_failed_charges <= f0)) { ok = 0; why = "s2 fail count"; }
             for (uint32_t i = 0; i < made; i++) it_close(&vv[i]);
@@ -17671,7 +17678,7 @@ static void test_t250(void) {
         default: {
             /* Map/unmap a self VMO page; page charge paid once, released. */
             if (!it_setup_self_vspace()) { ok = 0; why = "s3 vspace"; break; }
-            long v = it_sys1(SYS_VMO_CREATE, 4096);
+            long v = it_vmo_create_slot(4096);
             if (v < 0) { ok = 0; why = "s3 create"; break; }
             handle_id_t vh = (handle_id_t)v;
             if (it_sys4(SYS_VMO_MAP_PAGE, (long)vh, IT_VS, (long)T26_SELF_VA, 0) != 0) { ok = 0; why = "s3 map"; }
