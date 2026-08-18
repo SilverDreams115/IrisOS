@@ -169,7 +169,7 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         if (err != IRIS_OK) return syscall_err(err);
 
         /* Ownership of the retained ref (lifecycle-only, same contract as
-         * handle_table_get_object) transfers to t->sched_ctx */
+         * the resolver) transfers to t->sched_ctx */
         new_sc = (struct KSchedContext *)obj;
 
         /* Fase S2: enforce one-to-one binding — a SC bound to another task

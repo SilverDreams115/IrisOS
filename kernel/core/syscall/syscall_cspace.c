@@ -101,11 +101,8 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    HandleTable *ht = &t->process->handle_table;
 
-    /* Child process capability — spawner authority required.
-     * A1 Increment 2a: dual resolver — the target process may be a CPtr slot
-     * or a handle.  The RIGHT_WRITE requirement below is unchanged. */
+    /* Child process capability — spawner authority required. */
     struct KObject *proc_obj;
     iris_rights_t   proc_rights;
     iris_error_t err = cspace_or_handle_resolve_obj(t->process, (iris_cptr_t)proc_h,
@@ -135,13 +132,15 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * ref, matching the lifecycle-only reference the handle read yields. */
     struct KObject *src_obj;
     iris_rights_t   src_rights;
-    if (cspace_value_is_cptr((iris_cptr_t)src_h)) {
-        err = cspace_resolve_cap(t->process, (iris_cptr_t)src_h, RIGHT_NONE,
-                                 &src_obj, &src_rights);
-        if (err == IRIS_OK) kobject_active_release(src_obj);
-    } else {
-        err = handle_table_get_object(ht, src_h, &src_obj, &src_rights);
+    uint64_t        src_badge = 0;
+    if (!cspace_value_is_cptr((iris_cptr_t)src_h)) {
+        kobject_release(cn_obj);
+        kobject_release(proc_obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
     }
+    err = cspace_resolve_cap_badged(t->process, (iris_cptr_t)src_h, RIGHT_NONE,
+                                    &src_obj, &src_rights, &src_badge);
+    if (err == IRIS_OK) kobject_active_release(src_obj);
     if (err != IRIS_OK) {
         kobject_release(cn_obj);
         kobject_release(proc_obj);
@@ -164,8 +163,8 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
     /* Fase 9 rules, Fase S3 centralization: badge derivation lives in ONE
      * place (mdb_badge_derive) — inherit on 0, never re-badge, fresh badges
-     * only for identity-bearing IPC objects. */
-    uint64_t src_badge = handle_table_get_badge(ht, src_h);
+     * only for identity-bearing IPC objects.  The source badge comes from the
+     * slot, read in the same traversal that resolved it. */
     uint64_t effective_badge;
     err = mdb_badge_derive(src_badge, new_badge, (uint32_t)src_obj->type,
                            &effective_badge);
