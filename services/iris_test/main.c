@@ -7992,18 +7992,21 @@ static void test_t125(void) {
     if (ok && r < 0) { ok = 0; why = "retype cnode"; } else if (ok) cn = (handle_id_t)r;
     r = it_retype_slot_alloc(IT_UT, IT_KOBJ_SCHED_CONTEXT, 0);
     if (ok && r < 0) { ok = 0; why = "retype sc"; } else if (ok) sc = (handle_id_t)r;
-    /* KFrame and KUntyped have no RETYPE2 form yet — they are born through the
-     * legacy handle-publishing SYS_UNTYPED_RETYPE (ledger: MIGRATING).  Keeping
-     * them here is the point: this test is where the remaining gap in "every
-     * object is born from Untyped INTO CSpace" is visible. */
+    /* KFrame and KUntyped stay on the LEGACY handle-publishing
+     * SYS_UNTYPED_RETYPE, and that is this leg's subject rather than an
+     * oversight: 87 is still live for exactly these families plus
+     * KSchedContext (ledger: MIGRATING), so something has to keep exercising
+     * it until it retires.  RETYPE2 accepts both types into a slot — T290
+     * already carves a sub-untyped that way — so the migration here is a
+     * deletion when 87 goes, not a rewrite. */
     r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
     if (ok && r < 0) { ok = 0; why = "retype frame"; } else if (ok) fr = (handle_id_t)r;
     r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_UNTYPED, 4096);
     if (ok && r < 0) { ok = 0; why = "retype sub-untyped"; } else if (ok) sub = (handle_id_t)r;
 
     /* Each object exists and has the expected type — asked of the slot for the
-     * families that have a CSpace birth, of the handle for the two that do not
-     * yet.  The split is the migration status, not an inconsistency. */
+     * capabilities RETYPE2 published there, of the handle for the two the
+     * legacy syscall produced.  The split mirrors which syscall made them. */
     if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)ep)  != (long)IT_KOBJ_ENDPOINT)     { ok = 0; why = "ep type"; }
     if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)nt)  != (long)IT_KOBJ_NOTIFICATION) { ok = 0; why = "nt type"; }
     if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)cn)  != (long)IT_KOBJ_CNODE)        { ok = 0; why = "cn type"; }

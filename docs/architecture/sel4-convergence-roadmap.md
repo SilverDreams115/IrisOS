@@ -321,11 +321,9 @@ child of its source and therefore revocable.
 | after the retyped-object fixture migration | 118 |
 
 What is left is dominated by fixtures the suite cannot yet fabricate into a
-slot: `SYS_HANDLE_DUP` on VMO / KProcess / KVSpace / KFrame caps, and the
-`KFrame` / `KUntyped` families, which have no `RETYPE2` form and are still born
-through the handle-publishing `SYS_UNTYPED_RETYPE`.  Those retire as their
-CREATORS gain CSpace destinations — the same move the object-cap accessors just
-made — not by rewriting the tests around them.
+slot: `SYS_HANDLE_DUP` on VMO / KProcess / KVSpace / KFrame caps.  Those retire
+as their CREATORS gain CSpace destinations — the same move the object-cap
+accessors just made — not by rewriting the tests around them.
 
 Two tests keep a handle deliberately, and are the pattern for the rest of the
 "dies with the mechanism" group.  T073's third leg asserts that a HANDLE value
@@ -336,8 +334,11 @@ survives a revoke of its source — that is the LEGACY_ROOT behaviour the ledger
 tracks to zero, and rewriting it with `SYS_CSPACE_MINT` would assert the
 opposite of what it exists to pin.  T125 now splits deliberately: it identifies
 the four families with a CSpace birth through their slots and the two without
-one through their handles, so the remaining gap in "every object is born from
-Untyped into CSpace" is visible in a test rather than only in the ledger.
+two through the handles the LEGACY `SYS_UNTYPED_RETYPE` produced.  That leg is
+not an oversight: 87 is still live for `KFrame` / `KUntyped` / `KSchedContext`,
+so something has to keep exercising it until it retires.  `RETYPE2` accepts
+both types into a slot already, so that leg is a deletion when 87 goes, not a
+rewrite.
 
 Nothing remains of the bridge outside the suite: svcmgr's delivered-cap path
 and the `pager` / `lifecycle_probe` manifest oracles all moved to
