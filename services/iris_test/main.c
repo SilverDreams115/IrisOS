@@ -8255,12 +8255,12 @@ static void test_t127(void) {
     int ok = 1;
     const char *why = "revoke cascade";
 
-    long rr = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
+    long rr = it_retype_slot_alloc(IT_UT, IT_KOBJ_ENDPOINT, 0);
     if (rr < 0) { it_fail("T127", "retype root"); return; }
     handle_id_t root = (handle_id_t)rr;
 
     /* Unrelated object outside the derivation subtree (must survive revoke). */
-    long orr = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
+    long orr = it_retype_slot_alloc(IT_UT, IT_KOBJ_ENDPOINT, 0);
     handle_id_t outsider = (orr >= 0) ? (handle_id_t)orr : HANDLE_INVALID;
     if (orr < 0) { ok = 0; why = "retype outsider"; }
 
@@ -8273,12 +8273,11 @@ static void test_t127(void) {
     long c2  = (rootc >= 0) ? it_cdt_derive(rootc, IT_SCRATCH_3, RIGHT_SAME_RIGHTS) : -1;
     if (c1 < 0 || gc1 < 0 || c2 < 0) { ok = 0; why = "derive"; }
 
-    /* A CNode copy of the root — an independent ref, NOT a derivation child. */
-    long cnr = ok ? it_retype_handle(IT_UT, IT_KOBJ_CNODE, 4) : -1;
-    handle_id_t cn = (cnr >= 0) ? (handle_id_t)cnr : HANDLE_INVALID;
-    if (ok && cnr < 0) { ok = 0; why = "retype cnode"; }
-    if (ok && it_sys4(SYS_CNODE_MINT, (long)cn, 1, (long)root,
-                      (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "cnode mint"; }
+    /* The "a SYS_CNODE_MINT copy is an independent ref, not a derivation
+     * child, and survives the revoke" leg is retired with that syscall: it
+     * asserted the MDB LEGACY_ROOT behaviour the ledger tracks to zero.  Every
+     * copy is a derivation child now, which is what the rest of this test
+     * checks. */
 
     /* All derived caps are live before the revoke. */
     if (ok && !it_cdt_alive(c1))  { ok = 0; why = "c1 dead early"; }
@@ -8293,9 +8292,9 @@ static void test_t127(void) {
     if (ok && it_cdt_alive(gc1)) { ok = 0; why = "gc1 alive"; }
     if (ok && it_cdt_alive(c2))  { ok = 0; why = "c2 alive"; }
     if (ok && !it_cdt_alive(rootc)) { ok = 0; why = "root died"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)root) < 0) { ok = 0; why = "root handle died"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)root) < 0) { ok = 0; why = "root cap died"; }
     /* Outsider outside the subtree is untouched. */
-    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)outsider) < 0) { ok = 0; why = "outsider died"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)outsider) < 0) { ok = 0; why = "outsider died"; }
 
     /* Idempotent: a second revoke finds an empty subtree and succeeds. */
     if (ok && it_cdt_revoke(rootc) < 0) { ok = 0; why = "revoke not idempotent"; }
@@ -8305,20 +8304,13 @@ static void test_t127(void) {
         if (it_cdt_revoke((long)IT_SCRATCH_1) >= 0) { ok = 0; why = "empty revoke ok"; }
     }
 
-    /* Revoke SCOPE: the copy minted into a SEPARATE CNode from the root HANDLE
-     * is an independent MDB root (legacy kcnode_mint), not a descendant of the
-     * revoked slot — the revoke did not touch it.  Deleting the slot releases
-     * that ref; it must succeed (the slot still held a live cap). */
-    if (ok && it_sys2(SYS_CNODE_DELETE, (long)cn, 1) != 0) { ok = 0; why = "cnode copy not independent"; }
-
-    /* Teardown: release the scratch slots, then close root, outsider, cnode. */
+    /* Teardown: release the scratch slots, then close root and outsider. */
     it_slot_delete(IT_SCRATCH_0);
     it_slot_delete(IT_SCRATCH_1);
     it_slot_delete(IT_SCRATCH_2);
     it_slot_delete(IT_SCRATCH_3);
     it_close(&root);
     it_close(&outsider);
-    it_close(&cn);
     it_quiesce_reaper();
     if (ok && !it_ut_reset()) { ok = 0; why = "reset busy"; }
     uint32_t s3a[5];
@@ -8469,7 +8461,7 @@ static void test_t130(void) {
     int ok = 1;
     const char *why = "rights monotonicity";
 
-    long rr = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
+    long rr = it_retype_slot_alloc(IT_UT, IT_KOBJ_ENDPOINT, 0);
     if (rr < 0) { it_fail("T130", "retype root"); return; }
     handle_id_t root = (handle_id_t)rr;   /* full rights: READ|WRITE|DUP|TRANSFER */
 
@@ -8506,19 +8498,21 @@ static void test_t130(void) {
         it_slot_delete(IT_SCRATCH_3);
     }
 
-    /* CNode mint reduces rights the same way and never amplifies: mint the
-     * root down to READ into a CNode slot, resolve it, and confirm it cannot
-     * derive (no DUPLICATE). */
+    /* Minting into a CNode reduces rights and never amplifies.  Asked of the
+     * CSpace form: a request for a right the source lacks collapses to none
+     * and is rejected, rather than quietly granting it. */
     if (ok) {
-        long cnr = it_retype_handle(IT_UT, IT_KOBJ_CNODE, 4);
+        long cnr = it_retype_slot_alloc(IT_UT, IT_KOBJ_CNODE, 4);
         handle_id_t cn = (cnr >= 0) ? (handle_id_t)cnr : HANDLE_INVALID;
         if (cnr < 0) { ok = 0; why = "retype cnode"; }
-        if (ok && it_sys4(SYS_CNODE_MINT, (long)cn, 2, (long)root, (long)RIGHT_READ) != 0) {
+        if (ok && it_sys3(SYS_CSPACE_MINT, rootc,
+                          (long)(((uint64_t)2u << 32) | (uint64_t)cnr),
+                          (long)RIGHT_READ) != 0) {
             ok = 0; why = "cnode mint";
         }
-        /* mint asking for MORE than the source has is rejected/reduced: minting
-         * with RIGHT_MANAGE (root lacks it) reduces to none → INVALID_ARG. */
-        if (ok && it_sys4(SYS_CNODE_MINT, (long)cn, 3, (long)root, (long)RIGHT_MANAGE) != (long)IRIS_ERR_INVALID_ARG) {
+        if (ok && it_sys3(SYS_CSPACE_MINT, rootc,
+                          (long)(((uint64_t)3u << 32) | (uint64_t)cnr),
+                          (long)RIGHT_MANAGE) != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "mint amplified";
         }
         it_close(&cn);
