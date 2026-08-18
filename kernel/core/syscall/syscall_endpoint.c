@@ -165,46 +165,51 @@ uint32_t syscall_ipc_deliver_cap(struct task *receiver,
 
 /* Resolve a process's root CNode (lifecycle ref only; release with a single
  * kobject_release).  NULL if the process has no root CNode (OOM-degraded). */
-static struct KCNode *ipc_root_cnode_of(struct KProcess *proc) {
-    /* Stage 4: structural root read — receive-slot delivery no longer needs
-     * the receiver's handle table to locate the receiver's CSpace.  Same
-     * single-lifecycle-ref contract the handle read used to yield. */
-    if (!proc || !proc->cspace_root) return 0;
-    kobject_retain(&proc->cspace_root->base);
-    return proc->cspace_root;
-}
+/* ipc_root_cnode_of is gone with the direct-index receive slot: both the
+ * declaration and the delivery resolve a full CPtr through
+ * cspace_resolve_dest_slot, which starts from the structural root itself. */
 
 /*
  * syscall_ipc_recv_slot_declare — validate + record a receive-slot declared
  * by a recv-family syscall (EP_RECV / EP_NB_RECV / EP_CALL).
  *
- * declared == 0 or >= 1024: no declaration (legacy).  Values >= 1024 are
+ * declared == 0 or a handle value: no declaration (legacy).  Handle values are
  * IGNORED, not rejected: receivers that reuse a msg buffer without zeroing
- * carry a stale *output* value in the hint field, and outputs are always 0
- * or a handle >= 1024 — never 1..1023 — so no legacy pattern can
- * accidentally declare a slot.  (EP_CALL rejects >= 1024 itself, keeping
- * its historical INVALID_ARG contract for that field.)
+ * carry a stale *output* value in the hint field, and a handle output is
+ * never a valid declaration — so no legacy pattern can accidentally declare a
+ * slot.  (EP_CALL rejects handle values itself, keeping its historical
+ * INVALID_ARG contract for that field.)
+ *
+ * Stage 4: `declared` is a full CPtr, not a direct index into the root CNode.
+ * A process whose root is full — which iris_test and every spawner reach —
+ * could otherwise not receive a capability at all; now it declares a slot in
+ * a second-level CNode and the traversal finds it.
  *
  * Fail-fast contract: on error the endpoint has NOT been touched, so a
  * queued sender keeps its staged cap and nothing is consumed.
- *   - out-of-range direct slot        → IRIS_ERR_INVALID_ARG
- *   - slot already occupied           → IRIS_ERR_ALREADY_EXISTS
- *   - process has no root CNode       → IRIS_ERR_NOT_FOUND
+ *   - unresolvable / out-of-range CPtr → IRIS_ERR_INVALID_ARG
+ *   - slot already occupied            → IRIS_ERR_ALREADY_EXISTS
+ *   - process has no root CNode        → IRIS_ERR_NOT_FOUND
  */
 iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared) {
     t->ep_recv_slot = 0;
-    if (declared == 0u || declared >= 1024u) return IRIS_OK;
+    if (!cspace_value_is_cptr((iris_cptr_t)declared)) return IRIS_OK;
 
-    struct KCNode *root = ipc_root_cnode_of(t->process);
-    if (!root) return IRIS_ERR_NOT_FOUND;
+    struct KCNode *cn; uint32_t idx;
+    iris_error_t e = cspace_resolve_dest_slot(t->process, (iris_cptr_t)declared,
+                                              &cn, &idx);
+    if (e == IRIS_ERR_NOT_FOUND && t->process && !t->process->cspace_root)
+        return IRIS_ERR_NOT_FOUND;
+    if (e != IRIS_OK) return IRIS_ERR_INVALID_ARG;
 
     /* Occupancy probe: fetch returns NOT_FOUND for an empty in-range slot.
      * TOCTOU between here and delivery is handled by the exclusive install
-     * (kcnode_mint_excl_badged) + handle fallback in the routed delivery. */
+     * in the routed delivery, which fails the delivery closed. */
     struct KObject *probe;
     iris_rights_t   pr;
-    iris_error_t e = kcnode_fetch(root, declared, &probe, &pr);
-    kobject_release(&root->base);
+    e = kcnode_fetch(cn, idx, &probe, &pr);
+    kobject_active_release(&cn->base);
+    kobject_release(&cn->base);
     if (e == IRIS_OK) {
         kobject_active_release(probe);
         kobject_release(probe);
@@ -223,8 +228,9 @@ iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared) {
  * cap falls back to handle materialization — a delivery-location
  * degradation that loses no authority and installs no partial state.
  * Returns the msg discriminator: 0 = no cap (or destroyed on soft failure),
- * < 1024 = CSpace slot CPtr, >= 1024 = handle.  Reply caps never come
- * through here — their handle_table_insert sites are untouched (A1.5).
+ * a CPtr (handle tag bit clear) = CSpace slot, a handle value = handle.
+ * Reply caps never come through here — their handle_table_insert sites are
+ * untouched (A1.5).
  */
 uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
                                         struct KObject *xo,
@@ -233,10 +239,14 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
     if (!xo) return IRIS_MSG_NO_CAP;
 
     uint32_t slot = receiver->ep_recv_slot;
-    if (slot != 0u && slot < 1024u) {
+    if (cspace_value_is_cptr((iris_cptr_t)slot)) {
         receiver->ep_recv_slot = 0;   /* one delivery consumes the declaration */
-        struct KCNode *root = ipc_root_cnode_of(receiver->process);
-        if (root) {
+        /* Stage 4: the declaration is a CPtr, so the destination is found by
+         * traversal — it need not be a direct slot of the root CNode. */
+        struct KCNode *cn; uint32_t idx;
+        iris_error_t e = cspace_resolve_dest_slot(receiver->process,
+                                                  (iris_cptr_t)slot, &cn, &idx);
+        if (e == IRIS_OK) {
             /* Fase S4 (Etapa 2): install as an MDB CHILD of the sender's
              * source slot — real CSpace ancestry, no LEGACY_ROOT.  The
              * source must still be occupied: a cap revoked while staged
@@ -244,11 +254,12 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
              * invariant 4).  The TOCTOU slot→handle degradation is gone
              * (charter §3.7): an occupied/raced destination slot now fails
              * the delivery instead of silently landing in the handle table. */
-            iris_error_t e = kcnode_slot_install_linked(
-                                 root, slot, xo, (iris_rights_t)cap_rights,
-                                 badge, src_cn, src_idx,
-                                 /*exclusive*/1, /*legacy*/0);
-            kobject_release(&root->base);
+            e = kcnode_slot_install_linked(
+                    cn, idx, xo, (iris_rights_t)cap_rights,
+                    badge, src_cn, src_idx,
+                    /*exclusive*/1, /*legacy*/0);
+            kobject_active_release(&cn->base);
+            kobject_release(&cn->base);
             if (e == IRIS_OK) {
                 kobject_release(xo);  /* staging ref; the slot holds its own */
                 ipc_stat_bump(&iris_ipc_stat_slot_deliveries);

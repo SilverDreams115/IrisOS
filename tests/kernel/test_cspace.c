@@ -195,6 +195,59 @@ void test_cspace(void) {
         ASSERT_EQ(g_destroyed, 1);
     }
 
+    /* ── Stage 4: a CPtr addresses exactly one capability ──
+     * Resolution consumes radix bits per level and is terminal when the CPtr
+     * is EXHAUSTED.  It used to also be terminal at the first non-CNode slot,
+     * which discarded the remaining bits: with an 8-slot root, CPtr 3, 11, 19,
+     * … all resolved to slot 3.  Leftover bits with nothing to descend into
+     * are a malformed CPtr, not an alias. */
+    {
+        struct KProcess *p = make_test_proc();
+        ASSERT_NOT_NULL(p);
+
+        struct KCNode *root = kcnode_alloc(8);   /* 3 radix bits */
+        ASSERT_NOT_NULL(root);
+        kobject_active_retain(&root->base);
+        p->cspace_root = root;
+
+        struct KObject *leaf = make_obj(KOBJ_ENDPOINT);
+        ASSERT_NOT_NULL(leaf);
+        ASSERT_EQ(kcnode_mint(root, 3, leaf, RIGHT_READ), IRIS_OK);
+        kobject_release(leaf);
+
+        struct KObject *out; iris_rights_t rout;
+        ASSERT_EQ(cspace_resolve_cap(p, 3u, RIGHT_NONE, &out, &rout), IRIS_OK);
+        kobject_active_release(out);
+        kobject_release(out);
+
+        /* Every alias of slot 3 must be rejected, on every resolver. */
+        ASSERT_EQ(cspace_resolve_cap(p, 3u + 8u, RIGHT_NONE, &out, &rout),
+                  IRIS_ERR_INVALID_ARG);
+        ASSERT_EQ(cspace_resolve_cap(p, 3u + 64u, RIGHT_NONE, &out, &rout),
+                  IRIS_ERR_INVALID_ARG);
+
+        struct KCNode *cn_out; uint32_t idx_out;
+        ASSERT_EQ(cspace_resolve_slot(p, 3u, &cn_out, &idx_out), IRIS_OK);
+        ASSERT_EQ(idx_out, 3u);
+        kobject_active_release(&cn_out->base);
+        kobject_release(&cn_out->base);
+        ASSERT_EQ(cspace_resolve_slot(p, 3u + 8u, &cn_out, &idx_out),
+                  IRIS_ERR_INVALID_ARG);
+
+        /* An EMPTY root slot is still a valid destination at its own depth,
+         * and still not a path to descend through. */
+        ASSERT_EQ(cspace_resolve_dest_slot(p, 5u, &cn_out, &idx_out), IRIS_OK);
+        ASSERT_EQ(idx_out, 5u);
+        kobject_active_release(&cn_out->base);
+        kobject_release(&cn_out->base);
+        ASSERT_EQ(cspace_resolve_dest_slot(p, 3u + 8u, &cn_out, &idx_out),
+                  IRIS_ERR_INVALID_ARG);
+        ASSERT_EQ(cspace_resolve_dest_slot(p, 5u + 8u, &cn_out, &idx_out),
+                  IRIS_ERR_NOT_FOUND);
+
+        free_test_proc(p);
+    }
+
     /* ── Typed resolve: cspace_resolve_endpoint OK ── */
     {
         struct KProcess *p = make_test_proc();

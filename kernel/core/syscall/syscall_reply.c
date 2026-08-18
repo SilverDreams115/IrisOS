@@ -71,12 +71,14 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * the server observes it on EP_RECV / EP_NB_RECV. */
     t->ipc_msg.sender_badge = ep_badge;
 
-    /* attached_handle is reserved for the reply cap on EP_CALL.  A1.5: a
-     * value 1..1023 declares the caller's receive-slot for a cap the REPLY
-     * transfers back (the KReply itself always stays a handle); >= 1024
-     * keeps the historical INVALID_ARG contract, so legacy callers (forced
-     * to pass 0) are unaffected. */
-    if (t->ipc_msg.attached_handle >= 1024u) {
+    /* attached_handle is reserved for the reply cap on EP_CALL.  A1.5: a CPtr
+     * declares the caller's receive-slot for a cap the REPLY transfers back
+     * (the KReply itself always stays a handle); a handle VALUE keeps the
+     * historical INVALID_ARG contract, so legacy callers (forced to pass 0)
+     * are unaffected.  Stage 4: the boundary is the handle tag bit, not the
+     * literal 1024 — a multi-level CPtr is a legitimate receive slot. */
+    if (t->ipc_msg.attached_handle != 0u &&
+        !cspace_value_is_cptr((iris_cptr_t)t->ipc_msg.attached_handle)) {
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }

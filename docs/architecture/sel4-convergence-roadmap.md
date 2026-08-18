@@ -232,7 +232,48 @@ Covered by T292/T293 (type per family, no right required, empty slot is
 `NOT_FOUND`, identity survives rights reduction and badging, handle value is
 `INVALID_ARG` on every argument).
 
-### Etapa 6b — the test suite  ← REMAINING
+### Etapa 6b — CSpace stops being ten bits wide  ✅ DONE
+
+Two mechanisms still assumed the pre-`HANDLE_TAG` world, and both of them
+capped what a CSpace could be:
+
+**The IPC receive slot was a direct index into the root CNode.**  Declaration
+and delivery both open-coded `slot < 1024` and installed straight into
+`proc->cspace_root[slot]` — no traversal.  A process whose root CNode is full
+therefore could not receive a capability at all, which is not a hypothetical:
+this suite's root is ~97% allocated, which is why its fabricated objects
+already live in a second-level CNode.  The declaration is a full CPtr now,
+resolved by `cspace_resolve_dest_slot` — the destination analogue of
+`cspace_resolve_slot`, which allows the terminal slot to be EMPTY (that is the
+normal case for an install target) while requiring every intermediate level to
+really be a CNode.
+
+**The delivery discriminator was the literal 1024.**  `iris_msg_cap_is_cptr`
+was written when a handle was `slot | gen << 10` and so always ≥ 1024.  Handles
+carry bit 31 now and CPtrs own the low 31 bits, so a two-level CPtr such as
+`(leaf << 8) | 80` — 64080 for leaf 250 — was classified as a *handle* by every
+consumer of that helper.  `IRIS_CPTR_LIMIT` is `HANDLE_TAG` now and agrees with
+`CSPACE_DIRECT_CPTR_LIMIT`, which `nc/cspace.h` already declared to be the one
+definition of the boundary.
+
+**A CPtr addressed more than one capability.**  Resolution consumed radix bits
+per level and treated a slot as terminal when the CPtr was exhausted *or* the
+slot held a non-CNode — the second clause silently DISCARDED the leftover bits.
+With a 256-slot root, CPtr `k`, `k+256`, `k+512` … all resolved to slot `k`:
+roughly 2^23 aliases per capability.  A capability address space whose
+addresses are not injective cannot be reasoned about — an off-by-one in a
+computed CPtr hits a live capability instead of failing, and a value chosen
+*because* it is invalid may not be.  The suite's own fuzz constant 4095 aliased
+root slot 255, its serial `KIoPort`.  Leftover bits with nothing to descend
+into are now `INVALID_ARG` on all three resolvers, which is how seL4 treats the
+same shape (depth mismatch).
+
+Covered by T294 (deliver into a second-level slot; the returned value is the
+declared CPtr and is classified as a CPtr; occupied deep slot fails fast),
+T295 (aliases rejected on invoke / identify / mint-source / receive-slot
+paths), and host cases in `tests/kernel/test_cspace.c`.
+
+### Etapa 6c — the test suite  ← REMAINING
 
 `iris_test` is what keeps Stage 4 open, and it is not one migration.  All 268
 tests classified against a single rule — a test whose SUBJECT is the handle

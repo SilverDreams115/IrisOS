@@ -3809,7 +3809,11 @@ static void test_t086(void) {
     if (it_sys2(SYS_EP_RECV, (long)g_t086_cmd_ep, (long)&r) !=
         (long)IRIS_ERR_ALREADY_EXISTS) ok = 0;
 
-    /* Out-of-range direct slot → INVALID_ARG (root CNode has 256 slots). */
+    /* A CPtr whose path cannot be walked → INVALID_ARG.  Stage 4 made the
+     * declaration a full CPtr, so 300 is no longer "past the end of the root
+     * CNode": it is root slot 44 (300 & 255) followed by index 1, and slot 44
+     * holds no CNode to descend into.  Rejected either way, and deliberately
+     * still rejected — a receive slot must name a real, empty destination. */
     it_iris_msg_zero(&r);
     r.attached_cap = 300u;
     if (ok && it_sys2(SYS_EP_RECV, (long)g_t086_cmd_ep, (long)&r) !=
@@ -9849,9 +9853,16 @@ static void it_fz_note(const char *t, uint32_t seed, uint32_t iter, uint32_t op)
 /* Boundary values invalid in BOTH namespaces the dual resolver consults —
  * the handle table AND the CSpace CNode — so they are safe to feed to
  * mutating syscalls without aliasing a real capability:
- *   - as a handle_id_t (slot=bits[9:0], gen=bits[31:10], gen 0 forbidden,
- *     HANDLE_TABLE_MAX=256): all have slot 1023 ≥ 256 → out of table range;
- *   - as a CPtr (valid range 0..1023, IRIS_CPTR_LIMIT=1024): all are > 1023.
+ *   - as a handle_id_t: all lack the HANDLE_TAG bit except 0xFFFFFFFF, whose
+ *     slot is 1023 ≥ HANDLE_TABLE_MAX (256) → out of table range;
+ *   - as a CPtr: each addresses a root slot followed by bits that cannot be
+ *     descended into (the root slot holds no CNode), which is a malformed
+ *     CPtr → INVALID_ARG.
+ * That second clause is a property of the resolver, not of the numbers.  It
+ * used to be "all are > 1023, and the CPtr range stops at 1024", which stopped
+ * being true twice over: CPtrs own the low 31 bits now, and the resolver used
+ * to DISCARD the leftover bits, so 4095 quietly aliased root slot 255 — this
+ * suite's serial KIoPort.  T295 pins the injectivity these values rely on.
  * Small integers (0,1,2,…) are deliberately EXCLUDED: as CPtrs they alias
  * real caps (CPtr 1 = svcmgr EP), so honouring them is correct, not a bug. */
 static const long it_fz_bad_handles[] = {
@@ -19249,6 +19260,206 @@ static void test_t293(void) {
     if (ok) it_pass("T293"); else it_fail("T293", why);
 }
 
+/* ── T294: a receive slot below the root CNode ───────────────────────────
+ * Until Stage 4 a receive slot had to be a DIRECT index into the root CNode,
+ * so a process whose root was full could not receive a capability at all —
+ * and this suite's root IS full (six slots free before the second-level CNode
+ * at 80 was added).  The declaration is a full CPtr now, walked by
+ * cspace_resolve_dest_slot, so a cap can be delivered into a second-level
+ * CNode.
+ *
+ * The delivered value must ALSO be classified correctly on the way out: the
+ * discriminator used to be the literal 1024, which would call this CPtr
+ * (250 << 8 | 80 = 64080) a handle.  Asserting that the returned value both
+ * equals the declared CPtr and resolves through CSpace pins that.
+ * Invariants: I1 (transfer is CSpace to CSpace), I3, A3. */
+#define T294_LEAF   250u
+#define T294_CPTR   IT_OBJ_CPTR(T294_LEAF)
+
+static handle_id_t  g_t294_cmd_ep = HANDLE_INVALID;
+static handle_id_t  g_t294_cap    = HANDLE_INVALID;
+static volatile int g_t294_s1 = 999, g_t294_done = 0;
+static uint8_t      g_t294_stack[8192];
+
+static void t294_sender(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label           = 0x94;
+    m.attached_handle = (uint32_t)g_t294_cap;
+    m.attached_rights = RIGHT_WRITE;
+    g_t294_s1 = (int)it_sys2(SYS_EP_SEND, (long)g_t294_cmd_ep, (long)&m);
+    g_t294_done = 1;
+    it_sys0(SYS_THREAD_EXIT);
+    for (;;) {}
+}
+
+static void test_t294(void) {
+    g_t294_s1 = 999; g_t294_done = 0;
+    it_slot_delete((uint32_t)T294_CPTR);
+
+    long n   = it_notify_create_slot();   /* the cap being transferred */
+    long cmd = it_ep_create_slot();       /* the transfer channel */
+    if (n < 0 || cmd < 0) { it_fail("T294", "create"); return; }
+    handle_id_t n_h = (handle_id_t)n;
+    g_t294_cmd_ep = (handle_id_t)cmd;
+
+    long c = it_xfer_slot(n_h, IT_XFER_SLOT_C, RIGHT_WRITE);
+    if (c < 0) {
+        it_close(&n_h); it_close(&g_t294_cmd_ep);
+        it_fail("T294", "xfer slot"); return;
+    }
+    g_t294_cap = (handle_id_t)c;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t294_sender;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t294_stack + sizeof(g_t294_stack))) & ~0xFULL;
+    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+        it_close(&n_h); it_close(&g_t294_cmd_ep);
+        it_fail("T294", "thread create"); return;
+    }
+    it_sys1(SYS_SLEEP, 2);   /* let the sender queue its send */
+
+    int ok = 1;
+    const char *why = "deep recv slot";
+    struct IrisMsg r;
+
+    it_iris_msg_zero(&r);
+    r.attached_cap = (uint32_t)T294_CPTR;
+    if (it_sys2(SYS_EP_RECV, (long)g_t294_cmd_ep, (long)&r) != 0) {
+        ok = 0; why = "recv";
+    }
+    /* Delivered AT the declared CPtr, and reported as a CPtr — not reclassified
+     * as a handle because it happens to exceed 1024. */
+    if (ok && r.attached_handle != (uint32_t)T294_CPTR) { ok = 0; why = "wrong dest"; }
+    if (ok && !iris_msg_cap_is_cptr(r.attached_handle)) { ok = 0; why = "classified as handle"; }
+
+    /* The capability is really there, is the right type, and works. */
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T294_CPTR)
+              != (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "not a notification"; }
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T294_CPTR, 0x94) != 0) {
+        ok = 0; why = "signal through deep slot";
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 || bits != 0x94u) {
+            ok = 0; why = "wait";
+        }
+    }
+    /* It is the SAME notification the sender held, not a look-alike. */
+    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, n, (long)T294_CPTR) != 1) {
+        ok = 0; why = "not the same object";
+    }
+
+    /* Declaring the SAME deep slot again, now occupied, fails fast. */
+    if (ok) {
+        struct IrisMsg r2;
+        it_iris_msg_zero(&r2);
+        r2.attached_cap = (uint32_t)T294_CPTR;
+        if (it_sys2(SYS_EP_NB_RECV, (long)g_t294_cmd_ep, (long)&r2)
+            != (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occupied deep slot"; }
+    }
+
+    for (int i = 0; i < 200 && !g_t294_done; i++) it_sys0(SYS_YIELD);
+    if (ok && (!g_t294_done || g_t294_s1 != 0)) { ok = 0; why = "sender"; }
+
+    it_slot_delete((uint32_t)T294_CPTR);
+    it_close(&n_h);
+    it_close(&g_t294_cmd_ep);
+    if (ok) it_pass("T294"); else it_fail("T294", why);
+}
+
+/* ── T295: a CPtr addresses exactly one capability ───────────────────────
+ * CSpace resolution walks radix bits per level and stops when the CPtr is
+ * exhausted.  It used to ALSO stop as soon as a slot held a non-CNode, which
+ * silently discarded whatever bits were left: in a 256-slot root, CPtr k,
+ * k+256, k+512 … all resolved to slot k, giving every capability roughly
+ * 2^23 aliases.
+ *
+ * That is not a cosmetic issue.  A capability address space whose addresses
+ * are not injective cannot be reasoned about: an off-by-one in a computed
+ * CPtr hits a live capability instead of failing, a value picked BECAUSE it
+ * is invalid (this suite's own fuzz constant 4095, which aliased the serial
+ * KIoPort at root slot 255) is quietly valid, and "the capability at X" stops
+ * being a statement with one meaning.  seL4 rejects the same shape as a depth
+ * mismatch.
+ *
+ * Asserted on every resolver the kernel has: invocation, introspection, the
+ * MDB source path, and the destination path.
+ * Invariants: A1, A3, A6. */
+static void test_t295(void) {
+    int ok = 1;
+    const char *why = "cptr aliasing";
+
+    /* Root-level: the suite's untyped is at slot 55.  55 + 256 walks to the
+     * same slot and then has bits left with no CNode to descend into. */
+    const long root_ok    = (long)IRIS_CPTR_TEST_UNTYPED;
+    const long root_alias = root_ok + 256;
+
+    if (it_sys1(SYS_CAP_IDENTIFY, root_ok) != (long)IRIS_KOBJ_UNTYPED) {
+        ok = 0; why = "fixture untyped";
+    }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, root_alias) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "root alias resolved";
+    }
+
+    /* The serial port at root slot 255 is what the old fuzz constant 4095
+     * (255 + 15*256) aliased — the suite's own output device. */
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, 4095) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "4095 aliased the serial port";
+    }
+
+    /* Second level: a real two-level CPtr resolves; the same CPtr with one
+     * more radix of bits does not. */
+    long ep = it_ep_create_slot();
+    if (ok && ep < 0) { ok = 0; why = "fixture ep"; }
+    if (ok) {
+        const long deep_alias = ep | (1L << 16);
+
+        if (it_sys1(SYS_CAP_IDENTIFY, ep) != (long)IRIS_KOBJ_ENDPOINT) {
+            ok = 0; why = "deep fixture";
+        }
+        if (ok && it_sys1(SYS_CAP_IDENTIFY, deep_alias) != (long)IRIS_ERR_INVALID_ARG) {
+            ok = 0; why = "deep alias resolved";
+        }
+
+        /* Invocation path: an aliased endpoint CPtr must not send. */
+        if (ok) {
+            struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x95;
+            if (it_sys2(SYS_EP_NB_SEND, deep_alias, (long)&m)
+                != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "alias invoked"; }
+        }
+
+        /* MDB source path: an aliased source must not derive. */
+        if (ok) {
+            it_slot_delete(IT_SCRATCH_0);
+            if (it_sys3(SYS_CSPACE_MINT, deep_alias,
+                        (long)((uint64_t)IT_SCRATCH_0 << 32),
+                        (long)RIGHT_SAME_RIGHTS) != (long)IRIS_ERR_INVALID_ARG) {
+                ok = 0; why = "alias minted";
+            }
+            it_slot_delete(IT_SCRATCH_0);
+        }
+
+        /* Destination path: an aliased CPtr is not a receive slot either. */
+        if (ok) {
+            long cmd = it_ep_create_slot();
+            if (cmd < 0) { ok = 0; why = "cmd ep"; }
+            else {
+                struct IrisMsg r; it_iris_msg_zero(&r);
+                r.attached_cap = (uint32_t)(root_ok | (1L << 16));
+                if (it_sys2(SYS_EP_NB_RECV, cmd, (long)&r)
+                    != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "alias declared"; }
+                handle_id_t ch = (handle_id_t)cmd;
+                it_close(&ch);
+            }
+        }
+
+        handle_id_t eh = (handle_id_t)ep;
+        it_close(&eh);
+    }
+
+    if (ok) it_pass("T295"); else it_fail("T295", why);
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t bootstrap_ch_h) {
@@ -19560,6 +19771,8 @@ void iris_test_main(handle_id_t bootstrap_ch_h) {
     test_t291();
     test_t292();
     test_t293();
+    test_t294();
+    test_t295();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

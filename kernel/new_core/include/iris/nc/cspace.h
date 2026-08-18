@@ -107,6 +107,25 @@ iris_error_t cspace_resolve_cap_badged(struct KProcess   *proc,
 iris_error_t cspace_resolve_slot(struct KProcess *proc, iris_cptr_t cptr,
                                  struct KCNode **cn_out, uint32_t *idx_out);
 
+/* Stage 4: the DESTINATION analogue of cspace_resolve_slot — resolves a CPtr
+ * to the terminal (CNode, index) it addresses WITHOUT requiring that slot to
+ * be occupied.  Same traversal, same ref contract (the returned CNode carries
+ * active+lifecycle refs the caller releases), but the terminal slot may be
+ * empty: that is the normal case for an install target.
+ *
+ * The difference matters at the last level only.  cspace_resolve_slot stops
+ * at the first non-CNode it finds and calls it terminal, because a source has
+ * to be occupied to be a source.  A destination path is terminal when the
+ * CPtr is EXHAUSTED, so an empty intermediate slot is a broken path
+ * (NOT_FOUND) rather than an answer, and an occupied non-CNode intermediate
+ * is WRONG_TYPE rather than a silent redirect to the wrong slot.
+ *
+ * This is what lets a receive slot live below the root CNode: a process whose
+ * root is full has nowhere to receive a capability otherwise. */
+iris_error_t cspace_resolve_dest_slot(struct KProcess *proc, iris_cptr_t cptr,
+                                      struct KCNode **cn_out,
+                                      uint32_t *idx_out);
+
 /* Fase 9: badge-aware dual endpoint resolver for the EP send/call paths.
  * Same namespace + refcount contract as cspace_or_handle_resolve_endpoint
  * (lifecycle-only ref); additionally returns the badge of the capability

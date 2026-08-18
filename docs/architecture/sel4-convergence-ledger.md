@@ -93,6 +93,31 @@ stop calling the bridge, and `handle_table_insert` loses its
 before Stage 4 closes.  Tests: T292, T293; T148 moves its unassigned-number
 floor to 119.
 
+### A-5 — CPtr resolution is injective; receive slots are full CPtrs
+
+**Change**: `cspace_resolve_cap_badged`, `cspace_resolve_slot` and the new
+`cspace_resolve_dest_slot` reject a CPtr with leftover bits at a non-CNode
+terminal (`IRIS_ERR_INVALID_ARG`).  The IPC receive slot is a full CPtr rather
+than a direct root index.  `IRIS_CPTR_LIMIT` becomes `HANDLE_TAG`.
+
+**Justification**: charter A3 says the CPtr is the capability identifier.  An
+identifier that is not injective does not identify: resolution discarded the
+bits it had not consumed, so in a 256-slot root every capability answered to
+`k`, `k+256`, `k+512`, … — about 2^23 addresses each.  The suite's own
+"invalid in both namespaces" fuzz constant 4095 aliased root slot 255, the
+serial `KIoPort` it prints through.  seL4 rejects the same shape as a depth
+mismatch.
+
+The receive-slot restriction was the other half: a slot had to be a direct
+index into the root CNode, so a process with a full root could not receive a
+capability at all.  That is Stage 4's stated second-order benefit made
+concrete — multi-level CSpace is unusable if the one operation that *installs*
+a capability into your CSpace cannot address past the first level.
+
+**Scope**: no invariant changes state; A3's "identifier" reading is now
+literally true.  No allowlist movement.  Tests: T294, T295, and host cases in
+`tests/kernel/test_cspace.c`.
+
 ## Checkpoint C.1 — Versioned user-buffer ABI (Fase S2)
 
 `SYS_UNTYPED_QUERY` (arg0 = kind|version<<16|size<<32) and `SYS_RESOURCE_INFO`

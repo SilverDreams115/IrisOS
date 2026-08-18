@@ -53,7 +53,26 @@ iris_error_t cspace_resolve_cap_badged(struct KProcess   *proc,
 
         if (err != IRIS_OK) return err;
 
-        if (cptr == 0 || slot_obj->type != KOBJ_CNODE) {
+        if (cptr != 0 && slot_obj->type != KOBJ_CNODE) {
+            /* Bits remain but there is nothing left to descend into: the CPtr
+             * is malformed, not an address of this capability.
+             *
+             * Accepting it — which is what "terminal := exhausted OR not a
+             * CNode" used to do — silently DISCARDED the leftover bits, so
+             * every capability had ~2^23 aliases in a 256-slot root: CPtr k,
+             * k + 256, k + 512 … all resolved to slot k.  A capability
+             * address space whose addresses are not injective cannot be
+             * reasoned about: "the cap at X" stops being a fact, an
+             * off-by-one in a CPtr computation silently hits a live
+             * capability instead of failing, and a value chosen to be
+             * INVALID (the fuzz suite's 4095) quietly aliases a real one.
+             * seL4 rejects the same shape as a depth mismatch. */
+            kobject_active_release(slot_obj);
+            kobject_release(slot_obj);
+            return IRIS_ERR_INVALID_ARG;
+        }
+
+        if (cptr == 0) {
             /* Terminal capability found — check rights if required. */
             if (required != RIGHT_NONE && !rights_check(slot_rights, required)) {
                 kobject_active_release(slot_obj);
@@ -133,7 +152,18 @@ iris_error_t cspace_resolve_slot(struct KProcess *proc, iris_cptr_t cptr,
             return err;
         }
 
-        if (cptr == 0 || slot_obj->type != KOBJ_CNODE) {
+        if (cptr != 0 && slot_obj->type != KOBJ_CNODE) {
+            /* Leftover bits with nothing to descend into — malformed CPtr.
+             * Same rule as cspace_resolve_cap_badged; see the note there on
+             * why silently dropping the remainder is not acceptable. */
+            kobject_active_release(slot_obj);
+            kobject_release(slot_obj);
+            kobject_active_release(&cur->base);
+            kobject_release(&cur->base);
+            return IRIS_ERR_INVALID_ARG;
+        }
+
+        if (cptr == 0) {
             /* Terminal slot: (cur, idx).  Keep cur's refs for the caller;
              * drop the probe refs on the slot object. */
             kobject_active_release(slot_obj);
@@ -144,6 +174,59 @@ iris_error_t cspace_resolve_slot(struct KProcess *proc, iris_cptr_t cptr,
         }
 
         /* Intermediate CNode — descend (transfer refs to the child). */
+        kobject_active_release(&cur->base);
+        kobject_release(&cur->base);
+        cur = (struct KCNode *)slot_obj;
+    }
+
+    kobject_active_release(&cur->base);
+    kobject_release(&cur->base);
+    return IRIS_ERR_INVALID_ARG;
+}
+
+
+iris_error_t cspace_resolve_dest_slot(struct KProcess *proc, iris_cptr_t cptr,
+                                      struct KCNode **cn_out, uint32_t *idx_out)
+{
+    if (!proc || !cn_out || !idx_out) return IRIS_ERR_INVALID_ARG;
+    if (cptr == CPTR_NULL) return IRIS_ERR_INVALID_ARG;
+    if (!proc->cspace_root) return IRIS_ERR_NOT_FOUND;
+
+    struct KObject *root_obj = &proc->cspace_root->base;
+    kobject_retain(root_obj);
+    kobject_active_retain(root_obj);
+    struct KCNode *cur = (struct KCNode *)root_obj;
+
+    for (uint32_t depth = 0; depth < CSPACE_MAX_DEPTH; depth++) {
+        uint32_t radix = (uint32_t)__builtin_ctzll((uint64_t)cur->slot_count);
+        uint32_t idx   = (uint32_t)(cptr & ((uint64_t)cur->slot_count - 1u));
+        cptr >>= radix;
+
+        if (cptr == 0) {
+            /* Path exhausted: (cur, idx) is the destination, occupied or not. */
+            *cn_out  = cur;
+            *idx_out = idx;
+            return IRIS_OK;
+        }
+
+        /* More path left — this level must hold a CNode to descend into. */
+        struct KObject *slot_obj;
+        iris_rights_t   slot_rights;
+        iris_error_t err = kcnode_fetch(cur, idx, &slot_obj, &slot_rights);
+        if (err != IRIS_OK) {
+            kobject_active_release(&cur->base);
+            kobject_release(&cur->base);
+            return err;                      /* empty intermediate: broken path */
+        }
+        if (slot_obj->type != KOBJ_CNODE) {
+            /* Malformed CPtr — one answer across all three resolvers. */
+            kobject_active_release(slot_obj);
+            kobject_release(slot_obj);
+            kobject_active_release(&cur->base);
+            kobject_release(&cur->base);
+            return IRIS_ERR_INVALID_ARG;
+        }
+
         kobject_active_release(&cur->base);
         kobject_release(&cur->base);
         cur = (struct KCNode *)slot_obj;
