@@ -1323,7 +1323,7 @@ static void test_t025(void) {
             r1 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
             /* denied staging must NOT consume the source slot */
             src_preserved =
-                (it_sys1(SYS_CSPACE_RESOLVE, (long)IT_XFER_SLOT_C) >= 0);
+                (it_sys1(SYS_CAP_IDENTIFY, (long)IT_XFER_SLOT_C) >= 0);
             (void)it_sys2(SYS_CNODE_DELETE, (long)t025_root,
                           (long)IT_XFER_SLOT_C);
         }
@@ -1372,36 +1372,61 @@ static uint32_t it_stage_path(const char *path) {
     return n + 1u;
 }
 
-/* ── T026: svcmgr EP LOOKUP_NAME("vfs.ep") → endpoint cap ───────────────── */
+/* Stage 4: leaves of the second-level CNode reserved for capabilities the
+ * suite LOOKS UP and holds for the rest of the run.  Outside the rotating
+ * fabrication pool (leaves 1..200), so a rotation can never reclaim one. */
+#define IT_LOOKUP_VFS  IT_OBJ_CPTR(240u)
+#define IT_LOOKUP_KBD  IT_OBJ_CPTR(241u)
+#define IT_LOOKUP_CON  IT_OBJ_CPTR(242u)
+#define IT_LOOKUP_TMP  IT_OBJ_CPTR(243u)
 
-static void test_t026(void) {
-    if (g_svcmgr_ep_h == HANDLE_INVALID) {
-        it_fail("T026", "svcmgr ep missing"); return;
-    }
+/* LOOKUP_NAME through svcmgr, taking the answer as a CAPABILITY IN A SLOT.
+ *
+ * The reply carries an endpoint cap.  Declaring a receive slot (EP_CALL reads
+ * the declaration from attached_handle) makes the kernel install it there
+ * instead of materialising a handle — the same authority, addressed the way
+ * every other capability in this process is.  The slot lives in the
+ * second-level CNode because the root has no room, which is exactly what
+ * Stage 4's multi-level receive slots exist for.
+ *
+ * Returns the CPtr on success, or a negative error.  The slot is deleted
+ * first, so a re-run (or a stale occupant) is clean. */
+static long it_lookup_ep(const char *name, uint32_t dest_cptr) {
+    it_slot_delete(dest_cptr);
 
-    uint32_t len = it_stage_path(VFS_EP_SVC_NAME);
+    uint32_t len = it_stage_path(name);
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
-    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    msg.buf_len  = len;
-    long r = it_sys2(SYS_EP_CALL, (long)g_svcmgr_ep_h, (long)&msg);
+    msg.label           = IRIS_SVCMGR_EP_LOOKUP_NAME;
+    msg.buf_uptr        = (uint64_t)(uintptr_t)g_ep_io_buf;
+    msg.buf_len         = len;
+    msg.attached_handle = dest_cptr;      /* receive-slot declaration */
 
-    long ty = -1;
-    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
-        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP)
-        ty = it_sys1(SYS_HANDLE_TYPE, (long)msg.attached_handle);
-
-    if (ty == (long)IRIS_HANDLE_TYPE_ENDPOINT) {
-        g_vfs_ep_h = (handle_id_t)msg.attached_handle;
-        it_pass("T026");
-    } else {
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    if (r != 0 || msg.label != IRIS_EP_REPLY_OK) return -1;
+    if (msg.attached_handle != dest_cptr) {
+        /* Landed somewhere else (or nowhere): drop whatever arrived so the
+         * failure does not leak authority into the next test. */
         if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
             handle_id_t h = (handle_id_t)msg.attached_handle;
             it_close(&h);
         }
-        it_fail("T026", "vfs.ep lookup");
+        return -1;
     }
+    if (it_sys1(SYS_CAP_IDENTIFY, (long)dest_cptr) != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+        it_slot_delete(dest_cptr);
+        return -1;
+    }
+    return (long)dest_cptr;
+}
+
+/* ── T026: svcmgr EP LOOKUP_NAME("vfs.ep") → endpoint cap ───────────────── */
+
+static void test_t026(void) {
+    long c = it_lookup_ep(VFS_EP_SVC_NAME, IT_LOOKUP_VFS);
+    if (c < 0) { it_fail("T026", "vfs.ep lookup"); return; }
+    g_vfs_ep_h = (handle_id_t)c;
+    it_pass("T026");
 }
 
 /* ── T027: VFS EP ping ──────────────────────────────────────────────────── */
@@ -1671,29 +1696,12 @@ static void test_t034(void) {
         it_fail("T034", "svcmgr ep missing"); return;
     }
 
-    uint32_t len = it_stage_path(KBD_EP_SVC_NAME);
+    long c = it_lookup_ep(KBD_EP_SVC_NAME, IT_LOOKUP_KBD);
+    if (c < 0) { it_fail("T034", "kbd.ep lookup"); return; }
+    g_kbd_ep_h = (handle_id_t)c;
+
     struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    msg.buf_len  = len;
-    long r = it_sys2(SYS_EP_CALL, (long)g_svcmgr_ep_h, (long)&msg);
-
-    long ty = -1;
-    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
-        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP)
-        ty = it_sys1(SYS_HANDLE_TYPE, (long)msg.attached_handle);
-
-    if (ty != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
-        if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
-            handle_id_t h = (handle_id_t)msg.attached_handle;
-            it_close(&h);
-        }
-        it_fail("T034", "kbd.ep lookup");
-        return;
-    }
-    g_kbd_ep_h = (handle_id_t)msg.attached_handle;
-
+    long r;
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
     r = it_sys2(SYS_EP_CALL, (long)g_kbd_ep_h, (long)&msg);
@@ -1752,29 +1760,12 @@ static void test_t036(void) {
         it_fail("T036", "svcmgr ep missing"); return;
     }
 
-    uint32_t len = it_stage_path(CONSOLE_EP_SVC_NAME);
+    long c = it_lookup_ep(CONSOLE_EP_SVC_NAME, IT_LOOKUP_CON);
+    if (c < 0) { it_fail("T036", "console.ep lookup"); return; }
+    g_con_ep_h = (handle_id_t)c;
+
     struct IrisMsg msg;
-    it_iris_msg_zero(&msg);
-    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    msg.buf_len  = len;
-    long r = it_sys2(SYS_EP_CALL, (long)g_svcmgr_ep_h, (long)&msg);
-
-    long ty = -1;
-    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
-        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP)
-        ty = it_sys1(SYS_HANDLE_TYPE, (long)msg.attached_handle);
-
-    if (ty != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
-        if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
-            handle_id_t h = (handle_id_t)msg.attached_handle;
-            it_close(&h);
-        }
-        it_fail("T036", "console.ep lookup");
-        return;
-    }
-    g_con_ep_h = (handle_id_t)msg.attached_handle;
-
+    long r;
     it_iris_msg_zero(&msg);
     msg.label = IRIS_EP_OP_PING;
     r = it_sys2(SYS_EP_CALL, (long)g_con_ep_h, (long)&msg);
@@ -1865,23 +1856,9 @@ static void test_t039(void) {
         return;
     }
 
-    uint32_t len = it_stage_path(VFS_EP_SVC_NAME);
-    it_iris_msg_zero(&msg);
-    msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
-    msg.buf_len  = len;
-    r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
-
-    long ty = -1;
-    if (r == 0 && msg.label == IRIS_EP_REPLY_OK &&
-        msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP)
-        ty = it_sys1(SYS_HANDLE_TYPE, (long)msg.attached_handle);
-
-    if (msg.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
-        handle_id_t h = (handle_id_t)msg.attached_handle;
-        it_close(&h);
-    }
-    if (ty == (long)IRIS_HANDLE_TYPE_ENDPOINT)
+    long c = it_lookup_ep(VFS_EP_SVC_NAME, IT_LOOKUP_TMP);
+    it_slot_delete(IT_LOOKUP_TMP);
+    if (c >= 0)
         it_pass("T039");
     else
         it_fail("T039", "cptr lookup");
@@ -1946,7 +1923,7 @@ static void test_t041(void) {
         if (!ok) break;
     }
     /* unminted reserved slot fails cleanly (no crash, negative error) */
-    if (it_sys1(SYS_CSPACE_RESOLVE, 29L) >= 0) ok = 0;
+    if (it_sys1(SYS_CAP_IDENTIFY, 29L) >= 0) ok = 0;
 
     if (ok)
         it_pass("T041");
@@ -2713,7 +2690,7 @@ static void test_t073(void) {
     long a = it_sys2(SYS_EP_NB_SEND, ep, (long)&msg);
     int  denied = (a == (long)IRIS_ERR_ACCESS_DENIED);
     /* not consumed: the slot still resolves */
-    int  preserved = (it_sys1(SYS_CSPACE_RESOLVE, (long)IT_XFER_SLOT_C) >= 0);
+    int  preserved = (it_sys1(SYS_CAP_IDENTIFY, (long)IT_XFER_SLOT_C) >= 0);
 
     /* (b) An EMPTY source slot → clean NOT_FOUND (no cap, nothing staged). */
     (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)IT_XFER_SLOT_D);
@@ -3092,25 +3069,28 @@ static void test_t076(void) {
 #define T079_VA_HANDLE  0x8061000000ULL
 
 static void test_t079(void) {
-    /* init mints the self-proc cap post-load; retry briefly, then FAIL loud. */
+    /* init mints the self-proc cap post-load; retry briefly, then FAIL loud.
+     * Stage 4: the cap is USED as a CPtr — SYS_PROC_CSPACE_MINT resolves its
+     * process argument through CSpace — so waiting for it is a liveness probe
+     * on the slot, not a materialisation into a handle. */
     long selfp = -1;
     for (int i = 0; i < 50 && selfp < 0; i++) {
-        selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
+        selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
+                ? (long)IRIS_CPTR_TEST_PROC : -1;
         if (selfp < 0) it_sys1(SYS_SLEEP, 2);
     }
     if (selfp < 0) { it_fail("T079", "self proc cptr"); return; }
-    handle_id_t selfp_h = (handle_id_t)selfp;
 
     long vmo = it_sys1(SYS_VMO_CREATE, 4096);
-    if (vmo < 0) { it_close(&selfp_h); it_fail("T079", "vmo create"); return; }
+    if (vmo < 0) { it_fail("T079", "vmo create"); return; }
     handle_id_t vmo_h = (handle_id_t)vmo;
 
     int ok = 1;
 
     /* Mint the VMO into our own CSpace: slot 16 rw, slot 17 read-only. */
-    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, T079_SLOT_RW,
+    if (it_sys4(SYS_PROC_CSPACE_MINT, selfp, T079_SLOT_RW,
                 vmo, (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, T079_SLOT_RO,
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, selfp, T079_SLOT_RO,
                       vmo, (long)RIGHT_READ) != 0) ok = 0;
 
     /* Map by CPtr (writable) and write through the mapping. */
@@ -3143,7 +3123,6 @@ static void test_t079(void) {
     (void)it_sys2(SYS_VMO_UNMAP, (long)T079_VA_CPTR, 4096);
     (void)it_sys2(SYS_VMO_UNMAP, (long)T079_VA_HANDLE, 4096);
     it_close(&vmo_h);
-    it_close(&selfp_h);
 
     if (ok) it_pass("T079"); else it_fail("T079", "vmo map by cptr");
 }
@@ -3169,20 +3148,21 @@ static void test_t079(void) {
 #define T080_VMO_SIZE   8192U             /* 2 pages: distinct from other tests */
 
 static void test_t080(void) {
-    long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
-    if (selfp < 0) { it_fail("T080", "self proc cptr"); return; }
-    handle_id_t selfp_h = (handle_id_t)selfp;
+    /* Stage 4: the self-process cap is invoked as a CPtr; it never becomes
+     * a handle.  SYS_PROC_CSPACE_MINT resolves it through CSpace. */
+    const long selfp = (long)IRIS_CPTR_TEST_PROC;
+    if (it_sys1(SYS_CAP_IDENTIFY, selfp) < 0) { it_fail("T080", "self proc cptr"); return; }
 
     long vmo = it_sys1(SYS_VMO_CREATE, T080_VMO_SIZE);
-    if (vmo < 0) { it_close(&selfp_h); it_fail("T080", "vmo create"); return; }
+    if (vmo < 0) { it_fail("T080", "vmo create"); return; }
     handle_id_t vmo_h = (handle_id_t)vmo;
 
     int ok = 1;
 
     /* Mint the VMO into our own CSpace: slot 19 rw+dup, slot 20 read-only. */
-    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, T080_SLOT_RWD, vmo,
+    if (it_sys4(SYS_PROC_CSPACE_MINT, selfp, T080_SLOT_RWD, vmo,
                 (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) ok = 0;
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, T080_SLOT_RO,
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, selfp, T080_SLOT_RO,
                       vmo, (long)RIGHT_READ) != 0) ok = 0;
 
     /* ── SYS_VMO_SIZE ── */
@@ -3195,13 +3175,11 @@ static void test_t080(void) {
 
     /* SHARE/MAP_INTO target: a lifecycle_probe child (blocks in EP_RECV). */
     long ep = it_ep_create();
-    if (ep < 0) { it_close(&vmo_h); it_close(&selfp_h);
-                  it_fail("T080", "ep create"); return; }
+    if (ep < 0) { it_close(&vmo_h);                  it_fail("T080", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
     handle_id_t proc_h   = HANDLE_INVALID;
     if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
-        it_close(&cmd_ep_h); it_close(&vmo_h); it_close(&selfp_h);
-        it_fail("T080", "spawn"); return;
+        it_close(&cmd_ep_h); it_close(&vmo_h);        it_fail("T080", "spawn"); return;
     }
 
     /* ── SYS_VMO_SHARE (vmo by CPtr; dest process stays a handle) ── */
@@ -3234,7 +3212,6 @@ static void test_t080(void) {
     it_close(&proc_h);
     it_close(&cmd_ep_h);
     it_close(&vmo_h);
-    it_close(&selfp_h);
 
     if (ok) it_pass("T080"); else it_fail("T080", "vmo family by cptr");
 }
@@ -4056,7 +4033,7 @@ static void test_t088(void) {
         if (ok && (g_t088_r1_tcb < 0 ||
                    it_sys1(SYS_TCB_EXIT, g_t088_r1_tcb) != 0)) ok = 0;
         /* No ghost cap in the slot; no stale receiver on the endpoint. */
-        if (ok && it_sys1(SYS_CSPACE_RESOLVE, (long)T088_SLOT_A) >= 0) ok = 0;
+        if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T088_SLOT_A) >= 0) ok = 0;
         if (ok) {
             struct IrisMsg p;
             it_iris_msg_zero(&p);
@@ -4101,7 +4078,7 @@ static void test_t088(void) {
         it_close(&g_t088_ep2);            /* close wakes the blocked receiver */
         for (int i = 0; i < 200 && !g_t088_r3_done; i++) it_sys0(SYS_YIELD);
         if (!g_t088_r3_done || g_t088_r3_rr != (long)IRIS_ERR_CLOSED) ok = 0;
-        if (ok && it_sys1(SYS_CSPACE_RESOLVE, (long)T088_SLOT_C) >= 0) ok = 0;
+        if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T088_SLOT_C) >= 0) ok = 0;
     }
 
     it_close(&n_h);
@@ -4244,7 +4221,7 @@ static void test_t090(void) {
         if (it_lookup_name_slot("t90.nope", T090_SLOT_B, &msg) != 0 ||
             msg.label != IRIS_EP_REPLY_ERR ||
             msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) ok = 0;
-        if (ok && it_sys1(SYS_CSPACE_RESOLVE, (long)T090_SLOT_B) >= 0) ok = 0;
+        if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T090_SLOT_B) >= 0) ok = 0;
     }
 
     if (id >= 0) (void)it_unregister_id((uint32_t)id);
@@ -4323,15 +4300,11 @@ static void test_t092(void) {
  * the duration of the call — identical churn on every invocation, so
  * before/after comparisons of self_live are exact. */
 static int it_sched_ext(uint32_t w[14]) {
-    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
-    if (bh < 0) return 0;
     uint8_t buf[96];
     /* Fase 16: request 96 bytes so the two lifecycle words (offsets 84/88)
      * land too; a pre-Fase-16 kernel clamps to 88 and leaves w[11..13] zero —
      * the extra words are additive, never required by legacy asserts. */
     long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96, (long)IRIS_CPTR_SPAWN_CAP);
-    handle_id_t h = (handle_id_t)bh;
-    it_close(&h);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 14u; i++) {
         uint32_t o = 40u + 4u * i;
@@ -4344,12 +4317,8 @@ static int it_sched_ext(uint32_t w[14]) {
 /* Read the base-frame live TASK count (offset 32) — the scheduler's
  * sched_live_count, distinct from the handle-table live at IT_SI_LIVE. */
 static int it_task_live(uint32_t *out) {
-    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
-    if (bh < 0) return 0;
     uint8_t buf[96];
     long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96, (long)IRIS_CPTR_SPAWN_CAP);
-    handle_id_t h = (handle_id_t)bh;
-    it_close(&h);
     if (r != 0) return 0;
     *out = (uint32_t)buf[32] | ((uint32_t)buf[33] << 8) |
            ((uint32_t)buf[34] << 16) | ((uint32_t)buf[35] << 24);
@@ -4389,12 +4358,8 @@ static int it_task_live(uint32_t *out) {
 #define IT_S3_CNODE   4u   /* KCNode objects live   */
 
 static int it_sched_ext3(uint32_t w3[5]) {
-    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
-    if (bh < 0) return 0;
     uint8_t buf[136];
     long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136, (long)IRIS_CPTR_SPAWN_CAP);
-    handle_id_t h = (handle_id_t)bh;
-    it_close(&h);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 5u; i++) {
         uint32_t o = 112u + 4u * i;
@@ -4422,12 +4387,8 @@ static int it_sched_ext3(uint32_t w3[5]) {
 #define IT_S4_TLB     4u   /* local invlpg count (cumulative) */
 
 static int it_sched_ext4(uint32_t w4[5]) {
-    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
-    if (bh < 0) return 0;
     uint8_t buf[160];
     long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 160, (long)IRIS_CPTR_SPAWN_CAP);
-    handle_id_t h = (handle_id_t)bh;
-    it_close(&h);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 5u; i++) {
         uint32_t o = 136u + 4u * i;
@@ -4447,12 +4408,8 @@ static int it_sched_ext4(uint32_t w4[5]) {
 #define IT_S5_CLEAN   4u   /* pending-fault records cleared (cumulative)         */
 
 static int it_sched_ext5(uint32_t w5[5]) {
-    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
-    if (bh < 0) return 0;
     uint8_t buf[184];
     long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184, (long)IRIS_CPTR_SPAWN_CAP);
-    handle_id_t h = (handle_id_t)bh;
-    it_close(&h);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 5u; i++) {
         uint32_t o = 160u + 4u * i;
@@ -4494,12 +4451,8 @@ static int it_setup_self_vspace(void) {
 #define IT_MAP_W    1ULL   /* SYS_FRAME_MAP flags: bit0 = WRITABLE */
 
 static int it_sched_ext2(uint32_t w2[4]) {
-    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
-    if (bh < 0) return 0;
     uint8_t buf[112];
     long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 112, (long)IRIS_CPTR_SPAWN_CAP);
-    handle_id_t h = (handle_id_t)bh;
-    it_close(&h);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 4u; i++) {
         uint32_t o = 96u + 4u * i;
@@ -4598,10 +4551,11 @@ static void test_t094(void) {
     long nA = it_notify_create_h();      /* the cap to transfer */
     long nB = it_notify_create_h();      /* the slot-race winner */
     long ep = it_ep_create_h();
-    long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
+    /* Stage 4: invoked as a CPtr; never materialised into a handle. */
+    const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
+                       ? (long)IRIS_CPTR_TEST_PROC : -1;
     if (nA < 0 || nB < 0 || ep < 0 || selfp < 0) { it_fail("T094", "create"); return; }
     handle_id_t nA_h = (handle_id_t)nA, nB_h = (handle_id_t)nB;
-    handle_id_t selfp_h = (handle_id_t)selfp;
     g_t094_ep = (handle_id_t)ep;
     int ok = 1;
     const char *why = "toctou fallback";
@@ -4615,7 +4569,7 @@ static void test_t094(void) {
     it_sys1(SYS_SLEEP, 2);                     /* blocked with slot 51 declared */
 
     /* Fill the declared slot BEFORE delivery (the TOCTOU race). */
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, T094_SLOT,
+    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, selfp, T094_SLOT,
                       nB, (long)RIGHT_WRITE) != 0) {
         ok = 0; why = "self mint";
     }
@@ -4643,7 +4597,7 @@ static void test_t094(void) {
         ok = 0; why = "toctou degradation still alive";
     }
     /* Nothing delivered ⇒ the source slot was never consumed. */
-    if (ok && it_sys1(SYS_CSPACE_RESOLVE, xsrc) < 0) {
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, xsrc) < 0) {
         ok = 0; why = "source consumed on failed delivery";
     }
     if (ok) it_slot_delete((uint32_t)xsrc);
@@ -4663,7 +4617,6 @@ static void test_t094(void) {
     it_close(&nA_h);
     it_close(&nB_h);
     it_close(&g_t094_ep);
-    it_close(&selfp_h);
     if (ok) it_pass("T094"); else it_fail("T094", why);
 }
 
@@ -5107,7 +5060,7 @@ static void test_t100(void) {
             msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) {
             ok = 0; why = "post-unreg lookup";
         }
-        if (ok && it_sys1(SYS_CSPACE_RESOLVE, 43L) >= 0) {
+        if (ok && it_sys1(SYS_CAP_IDENTIFY, 43L) >= 0) {
             ok = 0; why = "ghost cap";
         }
     }
@@ -5807,9 +5760,10 @@ static void test_t107(void) {
     long ep    = it_ep_create_h();   /* data endpoint */
     long n     = it_notify_create_h();     /* transferable notification */
     long ep2   = it_ep_create_h();   /* transferable endpoint */
-    long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
+    /* Stage 4: invoked as a CPtr; never materialised into a handle. */
+    const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
+                       ? (long)IRIS_CPTR_TEST_PROC : -1;
     handle_id_t n_h = (handle_id_t)n, ep2_h = (handle_id_t)ep2;
-    handle_id_t selfp_h = (handle_id_t)selfp;
     g_fz_data_ep = (handle_id_t)ep;
     if (ep < 0 || n < 0 || ep2 < 0 || selfp < 0) { it_fail("T107", "create"); return; }
     if (!fz_workers_start(1)) { it_fail("T107", "worker"); return; }
@@ -5863,7 +5817,7 @@ static void test_t107(void) {
                     (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "cptr ep"; }
             }
             /* move semantics: source dup consumed at delivery commit */
-            if (ok && it_sys1(SYS_CSPACE_RESOLVE, d) >= 0) {
+            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) >= 0) {
                 ok = 0; why = "dup not consumed";
             }
             exp_slot++;
@@ -5891,7 +5845,7 @@ static void test_t107(void) {
                 ok = 0; why = "nb slot landing";
             }
             /* A1.9 commit rule: NB source consumed once delivery commits. */
-            if (ok && it_sys1(SYS_CSPACE_RESOLVE, d) >= 0) {
+            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) >= 0) {
                 ok = 0; why = "nb dup not consumed";
             }
             exp_slot++;
@@ -5901,7 +5855,7 @@ static void test_t107(void) {
              * waiter; source kept; occupant untouched (I3, I4, I5). */
             uint32_t s = fz_slot_alloc();
             if (s == 0u) { ok = 0; why = "slot budget"; break; }
-            if (it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, (long)s,
+            if (it_sys4(SYS_PROC_CSPACE_MINT, selfp, (long)s,
                         n, (long)RIGHT_WRITE) != 0) { ok = 0; why = "premint"; break; }
             if (!fz_cmd(0, FZ_OP_RECV, s, 0, 0)) { ok = 0; why = "cmd"; break; }
             if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
@@ -6014,7 +5968,6 @@ static void test_t107(void) {
     fz_workers_stop(1);
     it_close(&n_h);
     it_close(&ep2_h);
-    it_close(&selfp_h);
     it_close(&g_fz_data_ep);
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
@@ -6129,7 +6082,7 @@ static void test_t108(void) {
             if (ok && g_fz_att[0] != (uint32_t)IRIS_MSG_NO_CAP) {
                 ok = 0; why = "ghost cap";
             }
-            if (ok && it_sys1(SYS_CSPACE_RESOLVE, (long)rslot) >= 0) {
+            if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)rslot) >= 0) {
                 ok = 0; why = "slot not empty";
             }
 
@@ -6211,14 +6164,16 @@ static void test_t109(void) {
 
     long ep    = it_ep_create_h();
     long n     = it_notify_create_h();
-    long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
-    handle_id_t n_h = (handle_id_t)n, selfp_h = (handle_id_t)selfp;
+    /* Stage 4: invoked as a CPtr; never materialised into a handle. */
+    const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
+                       ? (long)IRIS_CPTR_TEST_PROC : -1;
+    handle_id_t n_h = (handle_id_t)n;
     g_fz_data_ep = (handle_id_t)ep;
     if (ep < 0 || n < 0 || selfp < 0) { it_fail("T109", "create"); return; }
     /* Occupied reply-slot fixture: pre-minted once, occupied forever. */
     uint32_t occ = fz_slot_alloc();
     if (occ == 0u ||
-        it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, (long)occ,
+        it_sys4(SYS_PROC_CSPACE_MINT, selfp, (long)occ,
                 n, (long)RIGHT_WRITE) != 0) {
         it_fail("T109", "occ fixture"); return;
     }
@@ -6305,7 +6260,7 @@ static void test_t109(void) {
             if (ok && (it_sys2(SYS_NOTIFY_SIGNAL, (long)s, 1) != 0 ||
                        it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
                        bits != 1u)) { ok = 0; why = "cptr dead"; }
-            if (ok && it_sys1(SYS_CSPACE_RESOLVE, d) >= 0) {
+            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) >= 0) {
                 ok = 0; why = "dup not consumed";
             }
             if (ok) { d = -1; exp_slot++; }
@@ -6320,7 +6275,7 @@ static void test_t109(void) {
                 handle_id_t gh = (handle_id_t)g_fz_att[0];
                 it_close(&gh);
             }
-            if (ok && it_sys1(SYS_CSPACE_RESOLVE, d) >= 0) {
+            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) >= 0) {
                 ok = 0; why = "dup not consumed";
             }
             if (ok) { d = -1; exp_hand++; }
@@ -6356,7 +6311,6 @@ static void test_t109(void) {
 
     fz_workers_stop(1);
     it_close(&n_h);
-    it_close(&selfp_h);
     it_close(&g_fz_data_ep);
     it_slot_delete(96);
 
@@ -6410,9 +6364,10 @@ static void test_t110(void) {
 
     long ep    = it_ep_create_h();
     long nf    = it_notify_create_h();
-    long selfp = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_TEST_PROC);
+    /* Stage 4: invoked as a CPtr; never materialised into a handle. */
+    const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
+                       ? (long)IRIS_CPTR_TEST_PROC : -1;
     handle_id_t ep_h = (handle_id_t)ep, nf_h = (handle_id_t)nf;
-    handle_id_t selfp_h = (handle_id_t)selfp;
     if (ep < 0 || nf < 0 || selfp < 0) { it_fail("T110", "create"); return; }
 
     /* Fixtures: one slot that must stay EMPTY across every NOT_FOUND round
@@ -6420,7 +6375,7 @@ static void test_t110(void) {
     uint32_t nfslot = fz_slot_alloc();
     uint32_t occ    = fz_slot_alloc();
     if (nfslot == 0u || occ == 0u ||
-        it_sys4(SYS_PROC_CSPACE_MINT, (long)selfp_h, (long)occ,
+        it_sys4(SYS_PROC_CSPACE_MINT, selfp, (long)occ,
                 nf, (long)RIGHT_WRITE) != 0) {
         it_fail("T110", "fixtures"); return;
     }
@@ -6459,7 +6414,7 @@ static void test_t110(void) {
                 msg.label != IRIS_EP_REPLY_ERR ||                             \
                 msg.words[0] != (uint64_t)(uint32_t)IRIS_ERR_NOT_FOUND) {     \
                 ok = 0; why = "not-found lookup";                             \
-            } else if (it_sys1(SYS_CSPACE_RESOLVE, (long)nfslot) >= 0) {      \
+            } else if (it_sys1(SYS_CAP_IDENTIFY, (long)nfslot) >= 0) {      \
                 ok = 0; why = "ghost cap";                                    \
             }                                                                 \
             exp_reply++; exp_log++;                                           \
@@ -6567,7 +6522,6 @@ static void test_t110(void) {
 
     it_close(&ep_h);
     it_close(&nf_h);
-    it_close(&selfp_h);
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* I16: exact balance — svcmgr consumed/closed every staged cap. */
@@ -10006,11 +9960,11 @@ static void test_t150(void) {
     int ok = b.ok;
     const char *why = "user ptr fuzz";
 
-    /* SYS_SCHED_INFO authorises on a KDEBUG bootstrap cap PRESENT in the
-     * handle table; resolve the spawn cap so the pointer checks reach the
-     * user_range_writable stage instead of short-circuiting ACCESS_DENIED. */
-    long scr = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
-    handle_id_t scr_h = (scr >= 0) ? (handle_id_t)scr : HANDLE_INVALID;
+    /* SYS_SCHED_INFO takes its KDEBUG authority as a CPtr argument (ledger
+     * A-3 retired the ambient handle-table scan), so the pointer checks reach
+     * the user_range_writable stage without any capability being staged
+     * first.  This used to resolve the spawn cap into a handle purely to make
+     * the ambient scan find it. */
 
     static const long bad_ptr[] = {
         0L,                          /* null */
@@ -10080,7 +10034,6 @@ static void test_t150(void) {
         if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184, (long)IRIS_CPTR_SPAWN_CAP) != 0) { ok = 0; why = "valid after fuzz"; }
     }
 
-    it_close(&scr_h);
     it_quiesce_reaper();
     struct it_snap a = it_snap_take();
     if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
@@ -13005,12 +12958,8 @@ static void test_t190(void) {
 /* Live memory-object count (SYS_SCHED_INFO ext3, offset 132 — the Fase 26
  * additive field in the old pad half of buf[16]).  Returns -1 on failure. */
 static long it_vmo_live(void) {
-    long bh = it_sys1(SYS_CSPACE_RESOLVE, (long)IRIS_CPTR_SPAWN_CAP);
-    if (bh < 0) return -1;
     uint8_t buf[136];
     long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136, (long)IRIS_CPTR_SPAWN_CAP);
-    handle_id_t h = (handle_id_t)bh;
-    it_close(&h);
     if (r != 0) return -1;
     return (long)((uint32_t)buf[132] | ((uint32_t)buf[133] << 8) |
                   ((uint32_t)buf[134] << 16) | ((uint32_t)buf[135] << 24));
