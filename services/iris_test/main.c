@@ -184,6 +184,23 @@ static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
     return (r < 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
+/* Etapa 6c: the CSpace form of "a rights-reduced copy of this capability".
+ *
+ * SYS_HANDLE_DUP's replacement.  It derives src_cptr into a fresh leaf of the
+ * second-level CNode — a real MDB child of the source, which the handle dup
+ * never was — and returns the CPtr.  Released with it_close like any other
+ * capability the suite fabricates.  Same rotating-pool contract as
+ * it_retype_slot_alloc: delete before minting, never hold across a test. */
+static long it_cs_reduce(long src_cptr, uint32_t rights) {
+    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    long r = it_sys3(SYS_CSPACE_MINT, src_cptr,
+                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
+                     (long)rights);
+    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
+}
+
 static long it_ep_create_slot(void) {
     return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT, 0);
 }
@@ -1182,7 +1199,7 @@ static void t024_client(void) {
 static void test_t024(void) {
     g_t024_done = 0; g_t024_ok = 0; g_t024_got_h = 0;
 
-    long ep_raw = it_ep_create_h();
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T024", "ep create"); return; }
     g_t024_ep_h = (handle_id_t)ep_raw;
 
@@ -1213,7 +1230,7 @@ static void test_t024(void) {
     handle_id_t reply_h = (handle_id_t)msg.attached_handle;
 
     long rr = -1;
-    long notif_raw = it_notify_create_h();
+    long notif_raw = it_notify_create_slot();
     if (notif_raw >= 0) {
         /* Fase S4 (Etapa 2): the reply's transfer source is a CSpace slot. */
         long src = it_xfer_dup(notif_raw, RIGHT_WRITE | RIGHT_WAIT);
@@ -1274,7 +1291,7 @@ static void t025_client(void) {
 static void test_t025(void) {
     g_t025_done = 0; g_t025_ok = 0;
 
-    long ep_raw = it_ep_create_h();
+    long ep_raw = it_ep_create_slot();
     if (ep_raw < 0) { it_fail("T025", "ep create"); return; }
     g_t025_ep_h = (handle_id_t)ep_raw;
 
@@ -1308,13 +1325,16 @@ static void test_t025(void) {
     handle_id_t notif_h = HANDLE_INVALID;
     long r1 = -1;
     int  src_preserved = 0;
-    handle_id_t t025_root = T28_OWN_ROOT_CNODE;
-    long notif_raw = it_notify_create_h();
+    long notif_raw = it_notify_create_slot();
     if (notif_raw >= 0) {
         notif_h = (handle_id_t)notif_raw;
-        (void)it_sys2(SYS_CNODE_DELETE, (long)t025_root, (long)IT_XFER_SLOT_C);
-        if (it_sys4(SYS_CNODE_MINT, (long)t025_root, (long)IT_XFER_SLOT_C,
-                    notif_raw, (long)(RIGHT_WRITE | RIGHT_WAIT)) == 0) {
+        /* Stage 4: the fixture is a CSpace slot, so the reduced-rights copy is
+         * a slot-to-slot derive (SYS_CSPACE_MINT).  SYS_CNODE_MINT's source is
+         * handle-only and would simply not resolve a CPtr. */
+        it_slot_delete(IT_XFER_SLOT_C);
+        if (it_sys3(SYS_CSPACE_MINT, notif_raw,
+                    (long)((uint64_t)IT_XFER_SLOT_C << 32),
+                    (long)(RIGHT_WRITE | RIGHT_WAIT)) == 0) {
             struct IrisMsg reply;
             it_iris_msg_zero(&reply);
             reply.label           = IRIS_EP_REPLY_OK;
@@ -1324,8 +1344,7 @@ static void test_t025(void) {
             /* denied staging must NOT consume the source slot */
             src_preserved =
                 (it_sys1(SYS_CAP_IDENTIFY, (long)IT_XFER_SLOT_C) >= 0);
-            (void)it_sys2(SYS_CNODE_DELETE, (long)t025_root,
-                          (long)IT_XFER_SLOT_C);
+            it_slot_delete(IT_XFER_SLOT_C);
         }
     }
 
@@ -2668,7 +2687,7 @@ static void test_t072(void) {
  * EP_NB_SEND is used so the call never blocks: the staging check runs and fails
  * before any rendezvous or enqueue. */
 static void test_t073(void) {
-    long ep = it_ep_create_h();
+    long ep = it_ep_create_slot();
     if (ep < 0) { it_fail("T073", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep;
 
@@ -2676,10 +2695,12 @@ static void test_t073(void) {
      * each of which must leave the source cap exactly where it was. */
     handle_id_t root = T28_OWN_ROOT_CNODE;
 
-    /* (a) A source slot WITHOUT RIGHT_TRANSFER → ACCESS_DENIED, slot intact. */
-    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)IT_XFER_SLOT_C);
-    if (it_sys4(SYS_CNODE_MINT, (long)root, (long)IT_XFER_SLOT_C, ep,
-                (long)RIGHT_READ) != 0) {
+    /* (a) A source slot WITHOUT RIGHT_TRANSFER → ACCESS_DENIED, slot intact.
+     * Stage 4: the fixture is a slot, so the reduced copy is a slot-to-slot
+     * derive; SYS_CNODE_MINT's source is handle-only. */
+    it_slot_delete(IT_XFER_SLOT_C);
+    if (it_sys3(SYS_CSPACE_MINT, ep,
+                (long)((uint64_t)IT_XFER_SLOT_C << 32), (long)RIGHT_READ) != 0) {
         it_close(&ep_h); it_fail("T073", "mint notrans"); return;
     }
     struct IrisMsg msg;
@@ -2704,10 +2725,15 @@ static void test_t073(void) {
 
     /* (c) A HANDLE value as source → INVALID_ARG, with NO handle-table
      * fallback.  This is the Etapa 2 invariant: the transfer source lives in
-     * exactly one namespace (charter §3.6/§3.7, invariant A6). */
-    long h_src = it_sys2(SYS_HANDLE_DUP, ep, (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+     * exactly one namespace (charter §3.6/§3.7, invariant A6).
+     *
+     * This half needs a real handle to hold wrong, so it keeps the
+     * materialising factory: it is the one part of this test whose SUBJECT is
+     * the handle namespace, and it dies with the namespace rather than being
+     * migrated into a tautology. */
+    long h_src = it_ep_create_h();
     int  handle_rejected = 0;
-    if (h_src >= 1024) {
+    if (h_src > 0 && ((uint32_t)h_src & HANDLE_TAG) != 0u) {
         struct IrisMsg msg3;
         it_iris_msg_zero(&msg3);
         msg3.label           = 0x73;
@@ -2719,7 +2745,7 @@ static void test_t073(void) {
         it_close(&hh);
     }
 
-    (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)IT_XFER_SLOT_C);
+    it_slot_delete(IT_XFER_SLOT_C);
     it_close(&ep_h);
 
     if (denied && preserved && empty_clean && handle_rejected)
@@ -4548,9 +4574,9 @@ static void t094_recv(void) {
 static void test_t094(void) {
     g_t094_got = 0; g_t094_ready = 0; g_t094_done = 0;
 
-    long nA = it_notify_create_h();      /* the cap to transfer */
-    long nB = it_notify_create_h();      /* the slot-race winner */
-    long ep = it_ep_create_h();
+    long nA = it_notify_create_slot();      /* the cap to transfer */
+    long nB = it_notify_create_slot();      /* the slot-race winner */
+    long ep = it_ep_create_slot();
     /* Stage 4: invoked as a CPtr; never materialised into a handle. */
     const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
@@ -4601,12 +4627,13 @@ static void test_t094(void) {
         ok = 0; why = "source consumed on failed delivery";
     }
     if (ok) it_slot_delete((uint32_t)xsrc);
-    /* The slot keeps exactly the race winner: nB, a notification. */
+    /* The slot keeps exactly the race winner: nB, a notification.  Stage 4:
+     * both sides are slots, so identity is compared where it lives. */
     if (ok) {
-        long rh = it_sys1(SYS_CSPACE_RESOLVE, T094_SLOT);
+        long rh = it_sys1(SYS_CAP_IDENTIFY, T094_SLOT);
         if (rh < 0) { ok = 0; why = "slot lost"; }
         else {
-            if (it_sys2(SYS_HANDLE_SAME_OBJECT, rh, nB) != 1) {
+            if (it_sys2(SYS_CAP_SAME_OBJECT, T094_SLOT, nB) != 1) {
                 ok = 0; why = "slot object changed";
             }
             handle_id_t r = (handle_id_t)rh;
@@ -4930,8 +4957,8 @@ static void test_t099(void) {
     const char *why = "multi-child rslot";
 
     for (int i = 0; ok && i < 3; i++) {
-        long ep = it_ep_create_h();
-        long n  = it_notify_create_h();
+        long ep = it_ep_create_slot();
+        long n  = it_notify_create_slot();
         handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || n < 0 ||
@@ -4956,8 +4983,8 @@ static void test_t099(void) {
     /* Occupied child slot → the child's declared recv fails fast and the
      * endpoint keeps no dead waiter. */
     if (ok) {
-        long ep = it_ep_create_h();
-        long n2 = it_notify_create_h();
+        long ep = it_ep_create_slot();
+        long n2 = it_notify_create_slot();
         handle_id_t ep_h = (handle_id_t)ep, n2_h = (handle_id_t)n2;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || n2 < 0 ||
@@ -4986,7 +5013,7 @@ static void test_t099(void) {
 
     /* Out-of-range declaration (slot 300, T086 fixture value) → INVALID_ARG. */
     if (ok) {
-        long ep = it_ep_create_h();
+        long ep = it_ep_create_slot();
         handle_id_t ep_h = (handle_id_t)ep;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
@@ -5757,9 +5784,9 @@ static void test_t107(void) {
     uint32_t it_n = 0;
     uint32_t exp_slot = 0, exp_hand = 0;
 
-    long ep    = it_ep_create_h();   /* data endpoint */
-    long n     = it_notify_create_h();     /* transferable notification */
-    long ep2   = it_ep_create_h();   /* transferable endpoint */
+    long ep    = it_ep_create_slot();   /* data endpoint */
+    long n     = it_notify_create_slot();     /* transferable notification */
+    long ep2   = it_ep_create_slot();   /* transferable endpoint */
     /* Stage 4: invoked as a CPtr; never materialised into a handle. */
     const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
@@ -5879,11 +5906,9 @@ static void test_t107(void) {
             }
             /* I3: the occupant is still exactly our pre-minted cap. */
             if (ok) {
-                long rh = it_sys1(SYS_CSPACE_RESOLVE, (long)s);
-                if (rh < 0 || it_sys2(SYS_HANDLE_SAME_OBJECT, rh, n) != 1) {
+                if (it_sys2(SYS_CAP_SAME_OBJECT, (long)s, n) != 1) {
                     ok = 0; why = "occupant changed";
                 }
-                if (rh >= 0) { handle_id_t r2 = (handle_id_t)rh; it_close(&r2); }
             }
 
         } else if (pick == 4u) {
@@ -6162,8 +6187,8 @@ static void test_t109(void) {
     uint32_t it_n = 0;
     uint32_t exp_slot = 0, exp_hand = 0, exp_reply = 0;
 
-    long ep    = it_ep_create_h();
-    long n     = it_notify_create_h();
+    long ep    = it_ep_create_slot();
+    long n     = it_notify_create_slot();
     /* Stage 4: invoked as a CPtr; never materialised into a handle. */
     const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
@@ -6201,11 +6226,9 @@ static void test_t109(void) {
                     (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "ghost msg"; }
             }
             if (ok) {
-                long rh = it_sys1(SYS_CSPACE_RESOLVE, (long)occ);
-                if (rh < 0 || it_sys2(SYS_HANDLE_SAME_OBJECT, rh, n) != 1) {
+                if (it_sys2(SYS_CAP_SAME_OBJECT, (long)occ, n) != 1) {
                     ok = 0; why = "occupant changed";
                 }
-                if (rh >= 0) { handle_id_t r2 = (handle_id_t)rh; it_close(&r2); }
             }
             continue;
         }
@@ -6362,8 +6385,8 @@ static void test_t110(void) {
     uint32_t it_n = 0;
     uint32_t exp_slot = 0, exp_hand = 0, exp_reply = 0, exp_log = 0;
 
-    long ep    = it_ep_create_h();
-    long nf    = it_notify_create_h();
+    long ep    = it_ep_create_slot();
+    long nf    = it_notify_create_slot();
     /* Stage 4: invoked as a CPtr; never materialised into a handle. */
     const long selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
                        ? (long)IRIS_CPTR_TEST_PROC : -1;
@@ -6574,9 +6597,9 @@ static void test_t110(void) {
 static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
                       const char **why) {
     int ok = 1;
-    long ep = it_ep_create_h();
-    long n  = it_notify_create_h();
-    long e2 = (kind == 1u) ? it_ep_create_h() : -1;
+    long ep = it_ep_create_slot();
+    long n  = it_notify_create_slot();
+    long e2 = (kind == 1u) ? it_ep_create_slot() : -1;
     handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n;
     handle_id_t e2_h = (kind == 1u) ? (handle_id_t)e2 : HANDLE_INVALID;
     handle_id_t proc_h = HANDLE_INVALID;
@@ -7058,15 +7081,15 @@ static void test_t116(void) {
     int ok = 1;
     const char *why = "death with cspace/vmo";
 
-    long ep  = it_ep_create_h();   /* shared endpoint */
-    long n   = it_notify_create_h();      /* shared notification */
+    long ep  = it_ep_create_slot();   /* shared endpoint */
+    long n   = it_notify_create_slot();      /* shared notification */
     long vmo = it_sys1(SYS_VMO_CREATE, 4096);   /* shared VMO */
     handle_id_t ep_h = (handle_id_t)ep, n_h = (handle_id_t)n, vmo_h = (handle_id_t)vmo;
     handle_id_t cmd_ep_h = HANDLE_INVALID, proc_h = HANDLE_INVALID;
 
     /* Command endpoint keeps the child parked; the shared caps go into its
      * CSpace / handle table below. */
-    long cep = it_ep_create_h();
+    long cep = it_ep_create_slot();
     cmd_ep_h = (handle_id_t)cep;
     if (ep < 0 || n < 0 || vmo < 0 || cep < 0 ||
         lp_spawn_child(cmd_ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
@@ -9101,14 +9124,14 @@ static void test_t140(void) {
     }
 
     /* Child 1: probe every failure path, then fault with NO handler. */
-    long ep = it_ep_create_h();
+    long ep = it_ep_create_slot();
     handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
     handle_id_t proc_h = HANDLE_INVALID;
     if (ep < 0 || lp_spawn_child(ep_h, &proc_h) < 0) {
         it_close(&ep_h); it_fail("T140", "spawn"); return;
     }
-    long n1 = it_notify_create_h();
-    long w  = it_notify_create_h();
+    long n1 = it_notify_create_slot();
+    long w  = it_notify_create_slot();
     handle_id_t n1_h = (n1 >= 0) ? (handle_id_t)n1 : HANDLE_INVALID;
     handle_id_t w_h  = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
     if (n1 < 0 || w < 0) { ok = 0; why = "notify create"; }
@@ -9122,7 +9145,7 @@ static void test_t140(void) {
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "proc wrong-type"; }
     /* Reduced rights, both slots — ACCESS_DENIED, no fallback. */
     long pr_ro = it_sys2(SYS_HANDLE_DUP, (long)proc_h, (long)RIGHT_READ);
-    long n_ro  = it_sys2(SYS_HANDLE_DUP, n1, (long)RIGHT_READ);
+    long n_ro  = it_cs_reduce(n1, RIGHT_READ);
     handle_id_t pr_ro_h = (pr_ro >= 0) ? (handle_id_t)pr_ro : HANDLE_INVALID;
     handle_id_t n_ro_h  = (n_ro  >= 0) ? (handle_id_t)n_ro  : HANDLE_INVALID;
     if (ok && (pr_ro < 0 || n_ro < 0)) { ok = 0; why = "ro dups"; }
@@ -9160,7 +9183,7 @@ static void test_t140(void) {
     handle_id_t ep2, pr2, na, wb;
     if (ok && !it_fault_spawn(&ep2, &pr2, &na, &wb, &why)) { ok = 0; }
     if (ok) {
-        long n2 = it_notify_create_h();
+        long n2 = it_notify_create_slot();
         handle_id_t n2_h = (n2 >= 0) ? (handle_id_t)n2 : HANDLE_INVALID;
         if (n2 < 0) { ok = 0; why = "n2 create"; }
         /* Replace na with n2 — last registration wins. */
@@ -10271,12 +10294,12 @@ static void test_t154(void) {
     int ok = b.ok;
     const char *why = "rights monotonicity";
 
-    long no = it_notify_create_h();
+    long no = it_notify_create_slot();
     handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
     if (no < 0) { it_fail("T154", "notif fixture"); return; }
 
     /* RIGHT_READ dup cannot signal (needs RIGHT_WRITE) — no fallback. */
-    long rd = it_sys2(SYS_HANDLE_DUP, no, (long)RIGHT_READ);
+    long rd = it_cs_reduce(no, RIGHT_READ);
     handle_id_t rd_h = (rd >= 0) ? (handle_id_t)rd : HANDLE_INVALID;
     if (rd < 0) { ok = 0; why = "read dup"; }
     if (ok && it_sys2(SYS_NOTIFY_SIGNAL, rd, 1) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap signalled"; }
@@ -11111,7 +11134,7 @@ static void test_t167(void) {
     handle_id_t irq = it_make_irqcap(5);
     if (ok && irq == HANDLE_INVALID) { ok = 0; why = "irqcap create"; }
 
-    long nn = it_notify_create_h();
+    long nn = it_notify_create_slot();
     handle_id_t notif = (nn >= 0) ? (handle_id_t)nn : HANDLE_INVALID;
     if (ok && notif == HANDLE_INVALID) { ok = 0; why = "notif"; }
 
@@ -11134,7 +11157,7 @@ static void test_t167(void) {
     }
     /* Route with a wrong-type destination (endpoint, not notification). */
     if (ok) {
-        long e = it_ep_create_h();
+        long e = it_ep_create_slot();
         handle_id_t ep_h = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
         if (e < 0) { ok = 0; why = "ep fixture"; }
         if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, (long)ep_h, (long)IRIS_CPTR_TEST_PROC)
@@ -11143,7 +11166,7 @@ static void test_t167(void) {
     }
     /* Route with a notification lacking WRITE → ACCESS_DENIED. */
     if (ok) {
-        long nrd = it_sys2(SYS_HANDLE_DUP, (long)notif, (long)RIGHT_READ);
+        long nrd = it_cs_reduce((long)notif, RIGHT_READ);
         handle_id_t n_ro = (nrd >= 0) ? (handle_id_t)nrd : HANDLE_INVALID;
         if (nrd < 0) { ok = 0; why = "notif read dup"; }
         if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, n_ro, (long)IRIS_CPTR_TEST_PROC)
