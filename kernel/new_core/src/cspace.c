@@ -333,25 +333,9 @@ iris_error_t cspace_or_handle_resolve_cnode(struct KProcess *proc,
         return IRIS_OK;
     }
 
-    /* Handle namespace (>= 1024): handle table only — never walks CSpace.
-     * handle_table_get_object gives lifecycle retain only; we add
-     * kobject_active_retain to match the cspace_resolve_cap return contract
-     * (caller must release both). */
-    err = handle_table_get_object(&proc->handle_table,
-                                   (handle_id_t)cptr_or_handle, &obj, &r);
-    if (err != IRIS_OK) return err;
-    if (obj->type != KOBJ_CNODE) {
-        kobject_release(obj);
-        return IRIS_ERR_WRONG_TYPE;
-    }
-    if (required != RIGHT_NONE && !rights_check(r, required)) {
-        kobject_release(obj);
-        return IRIS_ERR_ACCESS_DENIED;
-    }
-    kobject_active_retain(obj);
-    *out = (struct KCNode *)obj;
-    *rights_out = r;
-    return IRIS_OK;
+    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+     * malformed argument, not an address in another table. */
+    return IRIS_ERR_INVALID_ARG;
 }
 
 /*
@@ -385,16 +369,8 @@ iris_error_t fn(struct KProcess *proc, iris_cptr_t cptr_or_handle,              
         *out = (member_type *)obj; *rights_out = r;                               \
         return IRIS_OK;                                                            \
     }                                                                              \
-    /* Handle namespace (>= 1024): handle table only. */                          \
-    err = handle_table_get_object(&proc->handle_table,                            \
-                                   (handle_id_t)cptr_or_handle, &obj, &r);       \
-    if (err != IRIS_OK) return err;                                                \
-    if (obj->type != (kobj_tag)) { kobject_release(obj); return IRIS_ERR_WRONG_TYPE; } \
-    if (required != RIGHT_NONE && !rights_check(r, required)) {                   \
-        kobject_release(obj); return IRIS_ERR_ACCESS_DENIED;                      \
-    }                                                                              \
-    *out = (member_type *)obj; *rights_out = r;                                   \
-    return IRIS_OK;                                                                \
+    /* Stage 4: there is no second namespace — a non-CPtr is malformed. */    \
+    return IRIS_ERR_INVALID_ARG;                                              \
 }
 
 DUAL_RESOLVE_IPC(cspace_or_handle_resolve_endpoint,    struct KEndpoint,    KOBJ_ENDPOINT)
@@ -439,22 +415,9 @@ iris_error_t cspace_or_handle_resolve_untyped(struct KProcess  *proc,
         return IRIS_OK;
     }
 
-    /* Handle namespace (>= 1024): lifecycle retain only; add active_retain to match contract. */
-    err = handle_table_get_object(&proc->handle_table,
-                                   (handle_id_t)cptr_or_handle, &obj, &r);
-    if (err != IRIS_OK) return err;
-    if (obj->type != KOBJ_UNTYPED) {
-        kobject_release(obj);
-        return IRIS_ERR_WRONG_TYPE;
-    }
-    if (required != RIGHT_NONE && !rights_check(r, required)) {
-        kobject_release(obj);
-        return IRIS_ERR_ACCESS_DENIED;
-    }
-    kobject_active_retain(obj);
-    *out = (struct KUntyped *)obj;
-    *rights_out = r;
-    return IRIS_OK;
+    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+     * malformed argument, not an address in another table. */
+    return IRIS_ERR_INVALID_ARG;
 }
 
 /*
@@ -491,21 +454,9 @@ iris_error_t cspace_or_handle_resolve_frame(struct KProcess *proc,
         return IRIS_OK;
     }
 
-    err = handle_table_get_object(&proc->handle_table,
-                                   (handle_id_t)cptr_or_handle, &obj, &r);
-    if (err != IRIS_OK) return err;
-    if (obj->type != KOBJ_FRAME) {
-        kobject_release(obj);
-        return IRIS_ERR_WRONG_TYPE;
-    }
-    if (required != RIGHT_NONE && !rights_check(r, required)) {
-        kobject_release(obj);
-        return IRIS_ERR_ACCESS_DENIED;
-    }
-    kobject_active_retain(obj);
-    *out = (struct KFrame *)obj;
-    *rights_out = r;
-    return IRIS_OK;
+    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+     * malformed argument, not an address in another table. */
+    return IRIS_ERR_INVALID_ARG;
 }
 
 /*
@@ -546,21 +497,9 @@ iris_error_t cspace_or_handle_resolve_vspace(struct KProcess *proc,
         return IRIS_OK;
     }
 
-    err = handle_table_get_object(&proc->handle_table,
-                                   (handle_id_t)cptr_or_handle, &obj, &r);
-    if (err != IRIS_OK) return err;
-    if (obj->type != KOBJ_VSPACE) {
-        kobject_release(obj);
-        return IRIS_ERR_WRONG_TYPE;
-    }
-    if (required != RIGHT_NONE && !rights_check(r, required)) {
-        kobject_release(obj);
-        return IRIS_ERR_ACCESS_DENIED;
-    }
-    kobject_active_retain(obj);
-    *out = (struct KVSpace *)obj;
-    *rights_out = r;
-    return IRIS_OK;
+    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+     * malformed argument, not an address in another table. */
+    return IRIS_ERR_INVALID_ARG;
 }
 
 /*
@@ -603,20 +542,9 @@ iris_error_t cspace_or_handle_resolve_obj(struct KProcess  *proc,
         return IRIS_OK;
     }
 
-    err = handle_table_get_object(&proc->handle_table,
-                                   (handle_id_t)cptr_or_handle, &obj, &r);
-    if (err != IRIS_OK) return err;
-    if (obj->type != expected_type) {
-        kobject_release(obj);
-        return IRIS_ERR_WRONG_TYPE;
-    }
-    if (required != RIGHT_NONE && !rights_check(r, required)) {
-        kobject_release(obj);
-        return IRIS_ERR_ACCESS_DENIED;
-    }
-    *out = obj;
-    *rights_out = r;
-    return IRIS_OK;
+    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+     * malformed argument, not an address in another table. */
+    return IRIS_ERR_INVALID_ARG;
 }
 
 /*
@@ -655,22 +583,7 @@ iris_error_t cspace_or_handle_resolve_endpoint_badged(struct KProcess  *proc,
         return IRIS_OK;
     }
 
-    /* Handle namespace (>= 1024): handle table only. */
-    err = handle_table_get_object(&proc->handle_table,
-                                   (handle_id_t)cptr_or_handle, &obj, &r);
-    if (err != IRIS_OK) return err;
-    if (obj->type != KOBJ_ENDPOINT) {
-        kobject_release(obj);
-        return IRIS_ERR_WRONG_TYPE;
-    }
-    if (required != RIGHT_NONE && !rights_check(r, required)) {
-        kobject_release(obj);
-        return IRIS_ERR_ACCESS_DENIED;
-    }
-    *out = (struct KEndpoint *)obj;
-    *rights_out = r;
-    if (badge_out)
-        *badge_out = handle_table_get_badge(&proc->handle_table,
-                                            (handle_id_t)cptr_or_handle);
-    return IRIS_OK;
+    /* Stage 4: there is no second namespace.  A value that is not a CPtr is a
+     * malformed argument, not an address in another table. */
+    return IRIS_ERR_INVALID_ARG;
 }

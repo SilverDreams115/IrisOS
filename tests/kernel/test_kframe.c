@@ -344,27 +344,6 @@ void test_kframe(void) {
         fr_free_proc(p);
     }
 
-    /* FR-15: fallback to handle table when CSpace absent */
-    {
-        struct KProcess *p = fr_make_proc(); /* no CSpace root */
-        ASSERT_NOT_NULL(p);
-        struct KFrame *f = kframe_alloc(0x500000, 4096, NULL);
-        ASSERT_NOT_NULL(f);
-        iris_rights_t all = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-        handle_id_t hid = handle_table_insert(&p->handle_table, &f->base, all);
-        ASSERT_NE((int)hid, (int)HANDLE_INVALID);
-        kobject_release(&f->base);
-
-        struct KFrame *out;
-        iris_rights_t  r;
-        iris_error_t ie = cspace_or_handle_resolve_frame(
-            p, (iris_cptr_t)hid, RIGHT_READ, &out, &r);
-        ASSERT_EQ((int)ie, (int)IRIS_OK);
-        ASSERT_EQ(out->paddr, (uint64_t)0x500000);
-        kobject_active_release(&out->base);
-        kobject_release(&out->base);
-        fr_free_proc(p);
-    }
 
     /* FR-16: kuntyped_bump_alloc_phys_page returns page-aligned address */
     {

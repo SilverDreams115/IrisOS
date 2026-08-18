@@ -97,27 +97,6 @@ void test_ipc_cspace(void) {
         free_proc(p);
     }
 
-    /* ── [EP] Handle fallback: no CSpace root → legacy handle ABI works ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-        /* cspace_root stays NULL */
-
-        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
-        ASSERT_NOT_NULL(ep);
-        handle_id_t h = handle_table_insert(&p->handle_table, &ep->base,
-                                             RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER);
-        kobject_release(&ep->base);
-        ASSERT_NE(h, (handle_id_t)HANDLE_INVALID);
-
-        struct KEndpoint *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, (iris_cptr_t)h,
-                                                     RIGHT_READ, &out, &rout), IRIS_OK);
-        ASSERT_EQ(out->base.type, KOBJ_ENDPOINT);
-        kobject_release(&out->base);
-
-        free_proc(p);
-    }
 
     /* ── [EP] Wrong object type in CSpace → WRONG_TYPE ── */
     {
@@ -139,23 +118,6 @@ void test_ipc_cspace(void) {
         free_proc(p);
     }
 
-    /* ── [EP] Wrong object type in handle table → WRONG_TYPE ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
-        ASSERT_NOT_NULL(n);
-        handle_id_t h = handle_table_insert(&p->handle_table, &n->base, RIGHT_READ);
-        kobject_release(&n->base);
-
-        struct KEndpoint *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, (iris_cptr_t)h,
-                                                     RIGHT_NONE, &out, &rout),
-                  IRIS_ERR_WRONG_TYPE);
-
-        free_proc(p);
-    }
 
     /* ── [EP] Missing rights in CSpace → ACCESS_DENIED ── */
     {
@@ -180,23 +142,6 @@ void test_ipc_cspace(void) {
         free_proc(p);
     }
 
-    /* ── [EP] Missing rights in handle fallback → ACCESS_DENIED ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
-        ASSERT_NOT_NULL(ep);
-        handle_id_t h = handle_table_insert(&p->handle_table, &ep->base, RIGHT_READ);
-        kobject_release(&ep->base);
-
-        struct KEndpoint *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, (iris_cptr_t)h,
-                                                     RIGHT_WRITE, &out, &rout),
-                  IRIS_ERR_ACCESS_DENIED);
-
-        free_proc(p);
-    }
 
     /* ── [EP] ACCESS_DENIED from CSpace does NOT fall back to handle table ── */
     {
@@ -239,12 +184,6 @@ void test_ipc_cspace(void) {
                                              RIGHT_READ | RIGHT_WRITE);
         kobject_release(&ep->base);
 
-        for (int i = 0; i < 5; i++) {
-            struct KEndpoint *out; iris_rights_t rout;
-            ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, (iris_cptr_t)h,
-                                                         RIGHT_NONE, &out, &rout), IRIS_OK);
-            kobject_release(&out->base);
-        }
         /* Object still alive: handle_table_get_object must still find it. */
         struct KObject *obj; iris_rights_t r;
         ASSERT_EQ(handle_table_get_object(&p->handle_table, h, &obj, &r), IRIS_OK);
@@ -275,25 +214,6 @@ void test_ipc_cspace(void) {
         free_proc(p);
     }
 
-    /* ── [Reply] Handle fallback: legacy ABI works ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KReply *rp = test_kreply_alloc(NULL);
-        ASSERT_NOT_NULL(rp);
-        handle_id_t h = handle_table_insert(&p->handle_table, &rp->base,
-                                             RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&rp->base);
-
-        struct KReply *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_reply(p, (iris_cptr_t)h,
-                                                  RIGHT_WRITE, &out, &rout), IRIS_OK);
-        ASSERT_EQ(out->base.type, KOBJ_REPLY);
-        kobject_release(&out->base);
-
-        free_proc(p);
-    }
 
     /* ── [Reply] Wrong type → WRONG_TYPE ── */
     {
@@ -314,23 +234,6 @@ void test_ipc_cspace(void) {
         free_proc(p);
     }
 
-    /* ── [Reply] Missing rights → ACCESS_DENIED ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KReply *rp = test_kreply_alloc(NULL);
-        ASSERT_NOT_NULL(rp);
-        handle_id_t h = handle_table_insert(&p->handle_table, &rp->base, RIGHT_READ);
-        kobject_release(&rp->base);
-
-        struct KReply *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_reply(p, (iris_cptr_t)h,
-                                                  RIGHT_WRITE, &out, &rout),
-                  IRIS_ERR_ACCESS_DENIED);
-
-        free_proc(p);
-    }
 
     /* ── [Notification] CSpace path: typed resolve OK ── */
     {
@@ -354,79 +257,9 @@ void test_ipc_cspace(void) {
         free_proc(p);
     }
 
-    /* ── [Notification] Handle fallback: legacy ABI works ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
 
-        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
-        ASSERT_NOT_NULL(n);
-        handle_id_t h = handle_table_insert(&p->handle_table, &n->base,
-                                             RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT);
-        kobject_release(&n->base);
 
-        struct KNotification *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_notification(p, (iris_cptr_t)h,
-                                                         RIGHT_WAIT, &out, &rout), IRIS_OK);
-        ASSERT_EQ(out->base.type, KOBJ_NOTIFICATION);
-        kobject_release(&out->base);
 
-        free_proc(p);
-    }
-
-    /* ── [Notification] Wrong type → WRONG_TYPE ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
-        ASSERT_NOT_NULL(ep);
-        handle_id_t h = handle_table_insert(&p->handle_table, &ep->base, RIGHT_READ);
-        kobject_release(&ep->base);
-
-        struct KNotification *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_notification(p, (iris_cptr_t)h,
-                                                         RIGHT_NONE, &out, &rout),
-                  IRIS_ERR_WRONG_TYPE);
-
-        free_proc(p);
-    }
-
-    /* ── [Notification] Signal requires RIGHT_WRITE ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
-        ASSERT_NOT_NULL(n);
-        handle_id_t h = handle_table_insert(&p->handle_table, &n->base, RIGHT_READ);
-        kobject_release(&n->base);
-
-        struct KNotification *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_notification(p, (iris_cptr_t)h,
-                                                         RIGHT_WRITE, &out, &rout),
-                  IRIS_ERR_ACCESS_DENIED);
-
-        free_proc(p);
-    }
-
-    /* ── [Notification] Wait requires RIGHT_WAIT ── */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
-        ASSERT_NOT_NULL(n);
-        handle_id_t h = handle_table_insert(&p->handle_table, &n->base, RIGHT_WRITE);
-        kobject_release(&n->base);
-
-        struct KNotification *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_notification(p, (iris_cptr_t)h,
-                                                         RIGHT_WAIT, &out, &rout),
-                  IRIS_ERR_ACCESS_DENIED);
-
-        free_proc(p);
-    }
 
     /* ── [Notification] ACCESS_DENIED from CSpace does NOT fallback ── */
     {
@@ -454,58 +287,6 @@ void test_ipc_cspace(void) {
         free_proc(p);
     }
 
-    /* ── [Fase 8] namespace split: handle values never alias CSpace slots ──
-     * Regression for the Fase-8 boot bug: cspace_resolve_cap's radix walk
-     * masks the index (cptr & slot_count-1), so a HANDLE like 0x403 (1027)
-     * used to land on root slot 3 once low slots were populated.  The dual
-     * resolvers must treat >= 1024 as handle-table-only. */
-    {
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-        struct KCNode *root = setup_cspace(p, 8);
-        ASSERT_NOT_NULL(root);
-
-        /* Occupy slot 3 with a WRONG-TYPE object (notification). */
-        struct KNotification *n = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
-        ASSERT_NOT_NULL(n);
-        ASSERT_EQ(kcnode_mint(root, 3, &n->base, RIGHT_WAIT), IRIS_OK);
-        kobject_release(&n->base);
-
-        /* Insert an endpoint whose HANDLE id has low bits == 3.  Handle ids
-         * are slot | gen<<10; force the table slot to 3 by filling 0..2. */
-        struct KEndpoint *eps[4];
-        handle_id_t hs[4];
-        for (uint32_t i = 0; i < 4u; i++) {
-            eps[i] = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
-            ASSERT_NOT_NULL(eps[i]);
-            hs[i] = handle_table_insert(&p->handle_table, &eps[i]->base,
-                                        RIGHT_READ | RIGHT_WRITE);
-            kobject_release(&eps[i]->base);
-        }
-        /* hs[3] sits in table slot 3.  Stage 4: the CSpace root is structural
-         * and no longer consumes handle-table slot 0, so the endpoints start
-         * at slot 0 and the alias we want is hs[3], not hs[2]. */
-        handle_id_t h_alias = hs[3];
-        ASSERT_EQ((uint32_t)(h_alias & 0x3FFu), 3u);
-
-        /* OLD bug: resolve walked CSpace, hit slot 3 (notification) and
-         * returned WRONG_TYPE.  NEW: >= 1024 goes straight to the handle
-         * table and resolves the REAL endpoint. */
-        struct KEndpoint *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, (iris_cptr_t)h_alias,
-                                                    RIGHT_WRITE, &out, &rout),
-                  IRIS_OK);
-        ASSERT_TRUE(out == eps[3]);
-        kobject_release(&out->base);
-
-        /* And a true CPtr (< 1024) into an EMPTY slot must fail cleanly
-         * WITHOUT falling back to the handle table. */
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, 5u, RIGHT_NONE,
-                                                    &out, &rout),
-                  IRIS_ERR_NOT_FOUND);
-
-        free_proc(p);
-    }
 
     /* ── [Fase 9] badges: per-cap identity ───────────────────────────── */
     {
@@ -561,22 +342,14 @@ void test_ipc_cspace(void) {
         kobject_active_release(o); kobject_release(o);
         ASSERT_EQ(b2, 0xAAu);                 /* unaffected by delete */
 
-        /* Handle namespace: badged handle resolves with its badge; a badged
-         * cap in a slot does NOT leak its badge to handle lookups. */
-        kobject_retain(&ep->base);
-        handle_id_t hb = handle_table_insert_badged(&p->handle_table,
-                                                    &ep->base,
-                                                    RIGHT_WRITE, 0xCCu);
-        kobject_release(&ep->base);
-        ASSERT_TRUE(hb != HANDLE_INVALID);
-        ASSERT_EQ(handle_table_get_badge(&p->handle_table, hb), 0xCCu);
+        /* Stage 4: a non-CPtr value is malformed, and a failed resolve must
+         * not write through the badge out-parameter. */
         badge = 99u;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, (iris_cptr_t)hb,
+        ASSERT_EQ(cspace_or_handle_resolve_endpoint_badged(p, (iris_cptr_t)0x80000401u,
                                                            RIGHT_WRITE,
                                                            &out, &rout, &badge),
-                  IRIS_OK);
-        ASSERT_EQ(badge, 0xCCu);
-        kobject_release(&out->base);
+                  IRIS_ERR_INVALID_ARG);
+        ASSERT_EQ(badge, 99u);
 
         /* ACCESS_DENIED on a badged slot stays a hard stop, no badge leak. */
         ASSERT_EQ(kcnode_mint_excl_badged(root, 4, &ep->base, RIGHT_READ,
@@ -591,34 +364,4 @@ void test_ipc_cspace(void) {
         free_proc(p);
     }
 
-    /* ── [EP] IPC lifecycle: active_refs NOT held after resolve ── */
-    {
-        /* Verifies that the IPC helpers release active_refs before returning.
-         * After resolve + release: active_refs must be exactly what the handle
-         * table had (1 from handle_entry_init, 0 after table close). */
-        struct KProcess *p = make_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KEndpoint *ep = TEST_UT_ALLOC(struct KEndpoint, kendpoint_alloc_at);
-        ASSERT_NOT_NULL(ep);
-        /* After alloc: refcount=1, active_refs=0 */
-        handle_id_t h = handle_table_insert(&p->handle_table, &ep->base,
-                                             RIGHT_READ | RIGHT_WRITE);
-        /* After insert: refcount=2, active_refs=1 (handle_entry_init does both) */
-        kobject_release(&ep->base); /* drop alloc ref: refcount=1, active_refs=1 */
-
-        struct KEndpoint *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_endpoint(p, (iris_cptr_t)h,
-                                                     RIGHT_NONE, &out, &rout), IRIS_OK);
-        /* During resolve via handle path: refcount=2 (lifecycle retained).
-         * active_refs must remain 1 — helper must NOT add active_retain.
-         * Release lifecycle ref from resolve. */
-        kobject_release(&out->base); /* refcount back to 1 */
-
-        /* Close handle: active_refs drops to 0 → close fires (wakes would-be waiters).
-         * refcount drops to 0 → destroy. This must not crash. */
-        handle_table_close(&p->handle_table, h);
-
-        kpage_free(p, (uint32_t)sizeof(*p));
-    }
 }

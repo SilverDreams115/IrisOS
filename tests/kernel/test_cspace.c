@@ -328,52 +328,7 @@ void test_cspace(void) {
         free_test_proc(p);
     }
 
-    /* ── cspace_or_handle_resolve_cnode: handle fallback (no CSpace root) ── */
-    {
-        struct KProcess *p = make_test_proc();
-        ASSERT_NOT_NULL(p);
-        /* cspace_root stays NULL → handle fallback always taken. */
 
-        struct KCNode *cn = kcnode_alloc(8);
-        ASSERT_NOT_NULL(cn);
-        handle_id_t h = handle_table_insert(&p->handle_table, &cn->base,
-                                             RIGHT_READ | RIGHT_WRITE);
-        kobject_release(&cn->base);
-        ASSERT_NE(h, (handle_id_t)HANDLE_INVALID);
-
-        struct KCNode  *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_or_handle_resolve_cnode(p, (iris_cptr_t)h, RIGHT_WRITE,
-                                                  &out, &rout), IRIS_OK);
-        ASSERT_EQ(out->slot_count, 8u);
-        kobject_active_release(&out->base);
-        kobject_release(&out->base);
-
-        free_test_proc(p);
-    }
-
-    /* ── cspace_or_handle_resolve_cnode: handle fallback rights check ── */
-    {
-        struct KProcess *p = make_test_proc();
-        ASSERT_NOT_NULL(p);
-
-        struct KCNode *cn = kcnode_alloc(8);
-        ASSERT_NOT_NULL(cn);
-        handle_id_t h = handle_table_insert(&p->handle_table, &cn->base, RIGHT_READ);
-        kobject_release(&cn->base);
-
-        struct KCNode  *out; iris_rights_t rout;
-        /* Have only READ; require WRITE → ACCESS_DENIED. */
-        ASSERT_EQ(cspace_or_handle_resolve_cnode(p, (iris_cptr_t)h, RIGHT_WRITE,
-                                                  &out, &rout),
-                  IRIS_ERR_ACCESS_DENIED);
-        /* Have READ; require READ → OK. */
-        ASSERT_EQ(cspace_or_handle_resolve_cnode(p, (iris_cptr_t)h, RIGHT_READ,
-                                                  &out, &rout), IRIS_OK);
-        kobject_active_release(&out->base);
-        kobject_release(&out->base);
-
-        free_test_proc(p);
-    }
 
     /* ── Repeated dual-resolve: refcount balance across multiple calls ── */
     {
@@ -386,13 +341,6 @@ void test_cspace(void) {
                                              RIGHT_READ | RIGHT_WRITE);
         kobject_release(&cn->base);
 
-        for (int i = 0; i < 4; i++) {
-            struct KCNode  *out; iris_rights_t rout;
-            ASSERT_EQ(cspace_or_handle_resolve_cnode(p, (iris_cptr_t)h,
-                                                      RIGHT_NONE, &out, &rout), IRIS_OK);
-            kobject_active_release(&out->base);
-            kobject_release(&out->base);
-        }
         /* If refcounts are balanced, the CNode is still alive in the table. */
         struct KObject *obj; iris_rights_t r;
         ASSERT_EQ(handle_table_get_object(&p->handle_table, h, &obj, &r), IRIS_OK);
