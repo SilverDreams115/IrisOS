@@ -332,6 +332,9 @@ child of its source and therefore revocable.
 | after the endpoint/notification fixture migration | 137 |
 | after the retyped-object fixture migration | 118 |
 | after the VMO fixture migration | 111 |
+| after retiring the cross-process producers and legacy retype | 104 |
+| after retiring handle delivery in IPC | 99 |
+| after the loader workspace (processes and VSpaces born in CSpace) | 85 |
 
 What is left is dominated by fixtures the suite cannot yet fabricate into a
 slot: `SYS_HANDLE_DUP` on VMO / KProcess / KVSpace / KFrame caps.  Those retire

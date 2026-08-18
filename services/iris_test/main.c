@@ -133,6 +133,15 @@ static uint32_t g_total = 0;
 #define IT_OBJ_CPTR(leaf)  ((uint32_t)(((leaf) << 8) | IT_OBJ_CNODE_SLOT))
 /* Fixed slots for capabilities that outlive a test (fuzz worker control). */
 #define IT_FZ_CTL_SLOT      81u
+/* Stage 4: the loader's workspace CNode.  svc_load_minted_ws publishes the
+ * child's process capability, its ELF/segment/stack VMOs and its own working
+ * caps into leaves of this CNode instead of returning handles — the legacy
+ * arity (no workspace) exists only for callers that had nowhere to put them,
+ * and this suite was the last one.  Slot 82 is free: the S1 scratch pool ends
+ * at 79 and the object CNode + fuzz control take 80/81. */
+#define IT_LOADER_WS_SLOT   82u
+#define IT_LOADER_WS \
+    SVC_LOADER_WS((uint32_t)IRIS_CPTR_TEST_UNTYPED, IT_LOADER_WS_SLOT)
 static uint32_t g_it_s1_scratch_next;
 static uint32_t g_it_obj_slot_next;
 
@@ -482,12 +491,20 @@ static void it_close(handle_id_t *h) {
     if (*h == HANDLE_INVALID) return;
     if (((uint32_t)*h & HANDLE_TAG) != 0u) {
         it_sys1(SYS_HANDLE_CLOSE, (long)*h);
-    } else if (((uint32_t)*h & 0xFFu) == IT_OBJ_CNODE_SLOT) {
+    } else if (((uint32_t)*h & 0xFFu) == IT_OBJ_CNODE_SLOT ||
+               ((uint32_t)*h & 0xFFu) == IT_LOADER_WS_SLOT) {
         /* Only capabilities THIS suite fabricated are released by deleting
-         * their slot.  Scoping matters: a plain HANDLE_CLOSE on a CPtr used to
-         * be a harmless failed call, so several places close values that are
-         * really receive-slot CPtrs they do not own.  Deleting those would
-         * destroy a live capability instead of doing nothing. */
+         * their slot, and it knows them by the second-level CNode they live
+         * in: the object CNode it retypes into, and the loader workspace the
+         * spawn helpers publish into.  Scoping matters: a plain HANDLE_CLOSE
+         * on a CPtr used to be a harmless failed call, so several places close
+         * values that are really receive-slot CPtrs they do not own.  Deleting
+         * those would destroy a live capability instead of doing nothing.
+         *
+         * Missing the workspace here is not a leak that shows up locally: the
+         * loader allocates one leaf per LIVE process and scans for a free one,
+         * so undeleted process caps exhaust the workspace and every spawn
+         * fails, dozens of tests later. */
         it_slot_delete((uint32_t)*h);
     }
     *h = HANDLE_INVALID;
@@ -2946,8 +2963,9 @@ static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
     }
     handle_id_t boot_h = HANDLE_INVALID;
     *out_proc_h = HANDLE_INVALID;
-    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
-                             out_proc_h, &boot_h, mints, n);
+    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+                             out_proc_h, &boot_h, mints, n,
+                             IT_LOADER_WS);
     it_close(&reply_h);  /* the child's slot-13 mint is the only reply cap */
     it_close(&boot_h);   /* Track I: no bootstrap channel (HANDLE_INVALID anyway) */
     return r;
@@ -9313,7 +9331,7 @@ static void test_t140(void) {
     if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)n1_h, n1, 1)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "proc wrong-type"; }
     /* Reduced rights, both slots — ACCESS_DENIED, no fallback. */
-    long pr_ro = it_sys2(SYS_HANDLE_DUP, (long)proc_h, (long)RIGHT_READ);
+    long pr_ro = it_cs_reduce((long)proc_h, RIGHT_READ);
     long n_ro  = it_cs_reduce(n1, RIGHT_READ);
     handle_id_t pr_ro_h = (pr_ro >= 0) ? (handle_id_t)pr_ro : HANDLE_INVALID;
     handle_id_t n_ro_h  = (n_ro  >= 0) ? (handle_id_t)n_ro  : HANDLE_INVALID;
@@ -9605,7 +9623,7 @@ static void test_t144(void) {
     if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
 
     /* Wrong authority: RIGHT_READ-only proc dup must be denied. */
-    long pr_ro = it_sys2(SYS_HANDLE_DUP, (long)proc_h, (long)RIGHT_READ);
+    long pr_ro = it_cs_reduce((long)proc_h, RIGHT_READ);
     handle_id_t pr_ro_h = (pr_ro >= 0) ? (handle_id_t)pr_ro : HANDLE_INVALID;
     if (ok && pr_ro < 0) { ok = 0; why = "ro dup"; }
     if (ok && it_sys3(SYS_EXCEPTION_RESUME, pr_ro, (long)f.task_id, 0)
@@ -10657,8 +10675,9 @@ static long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
     for (uint32_t i = 0; i < nextra && n < 8u; i++) mints[n++] = extra[i];
 
     handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
-    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
-                             &proc, &boot, mints, n);
+    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+                             &proc, &boot, mints, n,
+                             IT_LOADER_WS);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
 
@@ -11142,8 +11161,9 @@ static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t de
     mints[1].rights = dev_rights; mints[1].badge = 0;
 
     handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
-    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
-                             &proc, &boot, mints, 2u);
+    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+                             &proc, &boot, mints, 2u,
+                             IT_LOADER_WS);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
 
@@ -11473,8 +11493,9 @@ static void test_t170(void) {
         mints[1].slot = 10; IT_MINT_SRC(mints[1], io);
         mints[1].rights = RIGHT_READ | RIGHT_WRITE; mints[1].badge = 0;
         handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
-        long r = (ep < 0) ? -1 : svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP,
-                     "lifecycle_probe", &proc, &boot, mints, 2u);
+        long r = (ep < 0) ? -1 : svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP,
+                     "lifecycle_probe", &proc, &boot, mints, 2u,
+                             IT_LOADER_WS);
         it_close(&boot); it_close(&io);
         if (r < 0 || proc == HANDLE_INVALID) { ok = 0; why = "spawn"; it_close(&cmd); it_close(&proc); break; }
 
@@ -12152,7 +12173,15 @@ static int t25_tgt_spawn(struct t25_tgt *g, const char **why) {
     if (lp_spawn_child(g->cmd, &g->proc) < 0 || g->proc == HANDLE_INVALID) {
         it_close(&g->cmd); *why = "spawn"; return 0;
     }
-    long vs = it_sys1(SYS_PROCESS_VSPACE, (long)g->proc);
+    /* Stage 4: the target's VSpace is published into a CSpace slot (arg1 is
+     * the destination), so every rights-reduced copy of it is a slot-to-slot
+     * derive and an MDB child.  It used to come back as a handle. */
+    uint32_t vs_leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                                __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)vs_leaf);
+    long vs = it_sys2(SYS_PROCESS_VSPACE, (long)g->proc,
+                      (long)(((uint64_t)vs_leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
+    if (vs == 0) vs = (long)IT_OBJ_CPTR(vs_leaf);
     long n  = it_notify_create();
     long w  = it_notify_create();
     g->vs    = (vs >= 0) ? (handle_id_t)vs : HANDLE_INVALID;
@@ -12194,8 +12223,9 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
     uint32_t n = 5u;
     for (uint32_t i = 0; i < nextra && n < 8u; i++) m[n++] = extra[i];
     handle_id_t boot = HANDLE_INVALID;
-    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
-                             out_proc, &boot, m, n);
+    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+                             out_proc, &boot, m, n,
+                             IT_LOADER_WS);
     it_close(&boot);
     if (r < 0 || *out_proc == HANDLE_INVALID) {
         it_close(&cmd); it_close(out_proc); return -1;
@@ -12307,7 +12337,7 @@ static void test_t181(void) {
     }
 
     /* SYS_PROCESS_VSPACE authority: MANAGE or nothing. */
-    long ro = ok ? it_sys2(SYS_HANDLE_DUP, (long)g.proc, (long)RIGHT_READ) : -1;
+    long ro = ok ? it_cs_reduce((long)g.proc, RIGHT_READ) : -1;
     handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
     if (ok && ro < 0) { ok = 0; why = "ro dup"; }
     if (ok && it_sys1(SYS_PROCESS_VSPACE, ro) != (long)IRIS_ERR_ACCESS_DENIED) {
@@ -12493,8 +12523,8 @@ static void test_t184(void) {
     if (fr < 0) { ok = 0; why = "frame retype"; }
 
     /* Under-privileged victim caps (DUPLICATE only so they can be minted). */
-    long apro = ok ? it_sys2(SYS_HANDLE_DUP, (long)va.proc, (long)(RIGHT_READ | RIGHT_DUPLICATE)) : -1;
-    long avso = ok ? it_sys2(SYS_HANDLE_DUP, (long)va.vs,   (long)(RIGHT_READ | RIGHT_DUPLICATE)) : -1;
+    long apro = ok ? it_cs_reduce((long)va.proc, RIGHT_READ | RIGHT_DUPLICATE) : -1;
+    long avso = ok ? it_cs_reduce((long)va.vs,   RIGHT_READ | RIGHT_DUPLICATE) : -1;
     handle_id_t apro_h = (apro >= 0) ? (handle_id_t)apro : HANDLE_INVALID;
     handle_id_t avso_h = (avso >= 0) ? (handle_id_t)avso : HANDLE_INVALID;
     if (ok && (apro < 0 || avso < 0)) { ok = 0; why = "victim dups"; }
@@ -12784,7 +12814,7 @@ static void test_t188(void) {
     long fro = (fr >= 0) ? it_cs_reduce(fr, RIGHT_READ) : -1;
     handle_id_t fro_h = (fro >= 0) ? (handle_id_t)fro : HANDLE_INVALID;
     long tvs_c  = (long)g.vs;  /* dual resolver: the VSpace HANDLE works */
-    long tvs_ro = it_sys2(SYS_HANDLE_DUP, (long)g.vs, (long)RIGHT_READ);
+    long tvs_ro = it_cs_reduce((long)g.vs, RIGHT_READ);
     handle_id_t tvs_ro_h = (tvs_ro >= 0) ? (handle_id_t)tvs_ro : HANDLE_INVALID;
     if (ok && (fr < 0 || fro < 0)) { ok = 0; why = "frame caps"; }
     if (ok && tvs_ro < 0)          { ok = 0; why = "tvs ro dup"; }
@@ -13063,9 +13093,9 @@ static void test_t190(void) {
             /* Unauthorized caps under load: READ-only proc cap cannot
              * resolve; READ-only vspace mint cannot install.  Then proper
              * seq-kills. */
-            long rp = it_sys2(SYS_HANDLE_DUP, (long)g1.proc, (long)RIGHT_READ);
+            long rp = it_cs_reduce((long)g1.proc, RIGHT_READ);
             handle_id_t rp_h = (rp >= 0) ? (handle_id_t)rp : HANDLE_INVALID;
-            long rvs = it_sys2(SYS_HANDLE_DUP, (long)g1.vs, (long)RIGHT_READ);
+            long rvs = it_cs_reduce((long)g1.vs, RIGHT_READ);
             handle_id_t rvs_h = (rvs >= 0) ? (handle_id_t)rvs : HANDLE_INVALID;
             if (rp < 0 || rvs < 0) { ok = 0; why = "op4 caps"; }
             if (ok && it_sys3(SYS_EXCEPTION_RESUME, rp, (long)f1.task_id, 1)
@@ -13402,7 +13432,7 @@ static void test_t194(void) {
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ro vmo writable into target"; }
 
     /* A READ-only VSpace derivation cannot install ANY PTE. */
-    long vsro = it_sys2(SYS_HANDLE_DUP, (long)g.vs, (long)(RIGHT_READ | RIGHT_DUPLICATE));
+    long vsro = it_cs_reduce((long)g.vs, RIGHT_READ | RIGHT_DUPLICATE);
     handle_id_t vsro_h = (vsro >= 0) ? (handle_id_t)vsro : HANDLE_INVALID;
     if (ok && vsro < 0) { ok = 0; why = "vsro dup"; }
     if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, vsro, (long)T26_TVA_A, t26_ofs(0, 0))
@@ -13973,8 +14003,9 @@ static int t27_pager_spawn(struct t27_pager *p,
     /* Fase 28: the pager is its own supervised binary (initrd "pager"); it
      * enters its serve loop immediately on start — no mode-entry message. */
     handle_id_t boot = HANDLE_INVALID;
-    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager",
-                             &p->proc, &boot, m, n);
+    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager",
+                             &p->proc, &boot, m, n,
+                             IT_LOADER_WS);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || p->proc == HANDLE_INVALID) {
@@ -14788,8 +14819,9 @@ static void test_t213(void) {
     {
         struct it_snap fb = it_snap_take();
         handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
-        long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf",
-                                 &proc, &boot, 0, 0u);
+        long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf",
+                                 &proc, &boot, 0, 0u,
+                             IT_LOADER_WS);
         if (r != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "badelf not INVALID_ARG"; }
         if (ok && proc != HANDLE_INVALID) { ok = 0; why = "badelf left a process"; }
         it_close(&boot); it_close(&proc);
@@ -14828,16 +14860,18 @@ static void test_t214(void) {
 
     handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
     /* Unknown name → NOT_FOUND, no hang, no process. */
-    long r1 = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "no_such_image",
-                              &proc, &boot, 0, 0u);
+    long r1 = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "no_such_image",
+                              &proc, &boot, 0, 0u,
+                             IT_LOADER_WS);
     if (r1 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "unknown not NOT_FOUND"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "unknown left process"; }
     it_close(&boot); it_close(&proc);
 
     /* Malformed image → INVALID_ARG, no hang, no process. */
     proc = boot = HANDLE_INVALID;
-    long r2 = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf",
-                              &proc, &boot, 0, 0u);
+    long r2 = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf",
+                              &proc, &boot, 0, 0u,
+                             IT_LOADER_WS);
     if (ok && r2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "malformed not INVALID_ARG"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "malformed left process"; }
     it_close(&boot); it_close(&proc);
@@ -14948,7 +14982,8 @@ static void test_t216(void) {
             /* Invalid-ELF load fails clean, no ghost. */
             struct it_snap fb = it_snap_take();
             handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
-            long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf", &proc, &boot, 0, 0u);
+            long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf", &proc, &boot, 0, 0u,
+                             IT_LOADER_WS);
             if (r >= 0) { ok = 0; why = "badelf loaded"; }
             it_close(&boot); it_close(&proc);
             it_quiesce_reaper();
@@ -15309,7 +15344,8 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
         }
     }
     handle_id_t boot = HANDLE_INVALID;
-    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager", &f->proc, &boot, m, k);
+    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager", &f->proc, &boot, m, k,
+                             IT_LOADER_WS);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
@@ -16777,7 +16813,8 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
             mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
         }
     }
-    long r = svc_load_minted((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager", &f->proc, &boot, mm, k);
+    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager", &f->proc, &boot, mm, k,
+                             IT_LOADER_WS);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
@@ -17187,7 +17224,7 @@ static void test_t241(void) {
     if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
 
     /* A proc cap WITHOUT RIGHT_MANAGE cannot charge to the child. */
-    long ro = ok ? it_sys2(SYS_HANDLE_DUP, (long)proc, (long)RIGHT_READ) : -1;
+    long ro = ok ? it_cs_reduce((long)proc, RIGHT_READ) : -1;
     handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
     if (ok && ro < 0) { ok = 0; why = "dup ro"; }
     if (ok && it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)ro_h) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-manage charged"; }
@@ -17233,14 +17270,14 @@ static void test_t242(void) {
 
     struct it_rinfo s0;
     if (ok && !it_rinfo(HANDLE_INVALID, &s0)) { ok = 0; why = "s0"; }
-    long v = ok ? it_sys1(SYS_VMO_CREATE, 4096) : -1;
+    long v = ok ? it_vmo_create_slot(4096) : -1;
     handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
     if (ok && v < 0) { ok = 0; why = "create"; }
     /* Owner charged exactly one VMO. */
     struct it_rinfo s1;
     if (ok && (!it_rinfo(HANDLE_INVALID, &s1) || s1.vmos_usage != s0.vmos_usage + 1u)) { ok = 0; why = "not charged once"; }
-    /* Duplicating the cap does NOT re-charge the object (Q8/Q10). */
-    long d = ok ? it_sys2(SYS_HANDLE_DUP, (long)vh, (long)(RIGHT_READ | RIGHT_WRITE)) : -1;
+    /* Deriving a second cap does NOT re-charge the object (Q8/Q10). */
+    long d = ok ? it_cs_reduce((long)vh, RIGHT_READ | RIGHT_WRITE) : -1;
     handle_id_t dh = (d >= 0) ? (handle_id_t)d : HANDLE_INVALID;
     if (ok && d < 0) { ok = 0; why = "dup"; }
     struct it_rinfo s2;
@@ -17469,12 +17506,12 @@ static void test_t247(void) {
     it_close(&vh);
 
     /* Derive a reduced cap WITHOUT MANAGE (READ only). */
-    long red = ok ? it_sys2(SYS_HANDLE_DUP, (long)proc, (long)RIGHT_READ) : -1;
+    long red = ok ? it_cs_reduce((long)proc, RIGHT_READ) : -1;
     handle_id_t red_h = (red >= 0) ? (handle_id_t)red : HANDLE_INVALID;
     if (ok && red < 0) { ok = 0; why = "reduce"; }
     if (ok && it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)red_h) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "reduced charged"; }
     /* Cannot recover MANAGE by re-deriving from the reduced cap. */
-    long rec = ok ? it_sys2(SYS_HANDLE_DUP, (long)red_h, (long)(RIGHT_READ | RIGHT_MANAGE)) : -1;
+    long rec = ok ? it_cs_reduce((long)red_h, RIGHT_READ | RIGHT_MANAGE) : -1;
     if (ok && rec >= 0) {
         /* If a handle came back, it must NOT actually carry MANAGE authority. */
         if (it_sys2(SYS_VMO_CREATE_FOR, 4096, (long)rec) == 0) { ok = 0; why = "recovered MANAGE"; }
@@ -17609,7 +17646,7 @@ static void test_t250(void) {
             long v = it_sys1(SYS_VMO_CREATE, 4096);
             if (v < 0) { ok = 0; why = "s1 create"; break; }
             handle_id_t vh = (handle_id_t)v;
-            long d = it_sys2(SYS_HANDLE_DUP, (long)vh, (long)RIGHT_READ);
+            long d = it_cs_reduce((long)vh, RIGHT_READ);
             struct it_rinfo self;
             if (!it_rinfo(HANDLE_INVALID, &self) || self.vmos_usage != r0.vmos_usage + 1u) { ok = 0; why = "s1 charge"; }
             if (d >= 0) { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
