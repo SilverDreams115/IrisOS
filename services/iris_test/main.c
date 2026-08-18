@@ -2862,7 +2862,7 @@ static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
      * mint so child death still fires close-wakes-caller. */
     handle_id_t reply_h = HANDLE_INVALID;
     {
-        long rr = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
+        long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) {
             reply_h = (handle_id_t)rr;
             mints[n].slot   = 13u;
@@ -3525,7 +3525,7 @@ static void test_t083(void) {
 
     /* ── SchedContext (Fase S2: SYS_SC_CREATE retired → RETYPE2) ── */
     if (ok && it_sys0(SYS_SC_CREATE) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
-    long sc = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
+    long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) ok = 0;
     handle_id_t sc_h = (sc >= 0) ? (handle_id_t)sc : HANDLE_INVALID;
 
@@ -7786,8 +7786,8 @@ static void test_t123(void) {
     const char *why = "sc lifetime";
 
     /* Fase S2: SYS_SC_CREATE retired; SCs come from Untyped RETYPE2. */
-    long a = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
-    long b = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
+    long a = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
+    long b = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
     handle_id_t sc  = (a >= 0) ? (handle_id_t)a : HANDLE_INVALID;
     handle_id_t sc2 = (b >= 0) ? (handle_id_t)b : HANDLE_INVALID;
     if (sc == HANDLE_INVALID || sc2 == HANDLE_INVALID) { ok = 0; why = "sc create"; }
@@ -7822,7 +7822,7 @@ static void test_t123(void) {
 
     /* Missing RIGHT_WRITE: a read-only dup cannot configure (S11 rights). */
     if (ok) {
-        long ro = it_sys2(SYS_HANDLE_DUP, (long)sc, (long)RIGHT_READ);
+        long ro = it_cs_reduce((long)sc, RIGHT_READ);
         handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
         if (ro_h == HANDLE_INVALID) { ok = 0; why = "ro dup"; }
         if (ok && it_sys3(SYS_SC_CONFIGURE, (long)ro_h, 10, 100) != (long)IRIS_ERR_ACCESS_DENIED) {
@@ -7984,24 +7984,30 @@ static void test_t125(void) {
     handle_id_t sc = HANDLE_INVALID, fr = HANDLE_INVALID, sub = HANDLE_INVALID;
 
     long r;
-    r = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
+    r = it_retype_slot_alloc(IT_UT, IT_KOBJ_ENDPOINT, 0);
     if (r < 0) { ok = 0; why = "retype endpoint"; } else ep = (handle_id_t)r;
-    r = it_retype_handle(IT_UT, IT_KOBJ_NOTIFICATION, 0);
+    r = it_retype_slot_alloc(IT_UT, IT_KOBJ_NOTIFICATION, 0);
     if (ok && r < 0) { ok = 0; why = "retype notification"; } else if (ok) nt = (handle_id_t)r;
-    r = it_retype_handle(IT_UT, IT_KOBJ_CNODE, 4);
+    r = it_retype_slot_alloc(IT_UT, IT_KOBJ_CNODE, 4);
     if (ok && r < 0) { ok = 0; why = "retype cnode"; } else if (ok) cn = (handle_id_t)r;
-    r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_SCHED_CONTEXT, 0);
+    r = it_retype_slot_alloc(IT_UT, IT_KOBJ_SCHED_CONTEXT, 0);
     if (ok && r < 0) { ok = 0; why = "retype sc"; } else if (ok) sc = (handle_id_t)r;
+    /* KFrame and KUntyped have no RETYPE2 form yet — they are born through the
+     * legacy handle-publishing SYS_UNTYPED_RETYPE (ledger: MIGRATING).  Keeping
+     * them here is the point: this test is where the remaining gap in "every
+     * object is born from Untyped INTO CSpace" is visible. */
     r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_FRAME, 4096);
     if (ok && r < 0) { ok = 0; why = "retype frame"; } else if (ok) fr = (handle_id_t)r;
     r = it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_UNTYPED, 4096);
     if (ok && r < 0) { ok = 0; why = "retype sub-untyped"; } else if (ok) sub = (handle_id_t)r;
 
-    /* Each object exists and has the expected type. */
-    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)ep)  != (long)IT_KOBJ_ENDPOINT)     { ok = 0; why = "ep type"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)nt)  != (long)IT_KOBJ_NOTIFICATION) { ok = 0; why = "nt type"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)cn)  != (long)IT_KOBJ_CNODE)        { ok = 0; why = "cn type"; }
-    if (ok && it_sys1(SYS_HANDLE_TYPE, (long)sc)  != (long)IT_KOBJ_SCHED_CONTEXT){ ok = 0; why = "sc type"; }
+    /* Each object exists and has the expected type — asked of the slot for the
+     * families that have a CSpace birth, of the handle for the two that do not
+     * yet.  The split is the migration status, not an inconsistency. */
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)ep)  != (long)IT_KOBJ_ENDPOINT)     { ok = 0; why = "ep type"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)nt)  != (long)IT_KOBJ_NOTIFICATION) { ok = 0; why = "nt type"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)cn)  != (long)IT_KOBJ_CNODE)        { ok = 0; why = "cn type"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)sc)  != (long)IT_KOBJ_SCHED_CONTEXT){ ok = 0; why = "sc type"; }
     if (ok && it_sys1(SYS_HANDLE_TYPE, (long)fr)  != (long)IT_KOBJ_FRAME)        { ok = 0; why = "fr type"; }
     if (ok && it_sys1(SYS_HANDLE_TYPE, (long)sub) != (long)IT_KOBJ_UNTYPED)      { ok = 0; why = "sub type"; }
 
@@ -8107,7 +8113,7 @@ static void test_t126(void) {
         if (ok && hla[IT_SI_LIVE] != hlb[IT_SI_LIVE]) { ok = 0; why = "leaked handle"; }
         /* a valid retype right after the failure still works */
         if (ok) {
-            long good = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
+            long good = it_retype_slot_alloc(IT_UT, IT_KOBJ_ENDPOINT, 0);
             if (good < 0) { ok = 0; why = "valid-after-fail"; }
             else { handle_id_t g = (handle_id_t)good; it_close(&g); }
         }
@@ -8300,7 +8306,7 @@ static void test_t129(void) {
     int ok = 1;
     const char *why = "revoke ipc object";
 
-    long er = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
+    long er = it_retype_slot_alloc(IT_UT, IT_KOBJ_ENDPOINT, 0);
     if (er < 0) { it_fail("T129", "retype endpoint"); return; }
     g_sh_ep = (handle_id_t)er;
     {
@@ -8445,7 +8451,7 @@ static void test_t131(void) {
                                      : IT_KOBJ_CNODE;
         uint64_t arg  = (type == IT_KOBJ_CNODE) ? 4u : 0u;
 
-        long rr = it_retype_handle(IT_UT, type, (long)arg);
+        long rr = it_retype_slot_alloc(IT_UT, type, (long)arg);
         if (rr < 0) { ok = 0; why = "retype"; break; }
         handle_id_t root = (handle_id_t)rr;
 
@@ -8660,7 +8666,7 @@ static void test_t134(void) {
     if (fr == HANDLE_INVALID) { it_fail("T134", "retype frame"); return; }
 
     /* Wrong-type frame fixture: an endpoint is not a frame. */
-    long er = it_retype_handle(IT_UT, IT_KOBJ_ENDPOINT, 0);
+    long er = it_retype_slot_alloc(IT_UT, IT_KOBJ_ENDPOINT, 0);
     handle_id_t ep = (er >= 0) ? (handle_id_t)er : HANDLE_INVALID;
     /* Read-only frame fixture (drops WRITE): cannot back a writable map.
      * Fase S4 (Etapa 3): a native-CDT child, addressed by CPtr. */
@@ -13784,7 +13790,7 @@ static int t27_pager_spawn(struct t27_pager *p,
      * right after so pager death still wakes blocked callers. */
     handle_id_t pgr_reply_h = HANDLE_INVALID;
     {
-        long rr = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
+        long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) {
             pgr_reply_h = (handle_id_t)rr;
             m[n].slot = 13u; IT_MINT_SRC(m[n], pgr_reply_h);
@@ -15121,7 +15127,7 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
     /* Fase S1: explicit reply object for the pager's ctrl EP (slot 13). */
     handle_id_t pgr_reply_h = HANDLE_INVALID;
     {
-        long rr = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
+        long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) {
             pgr_reply_h = (handle_id_t)rr;
             m[k].slot = 13u; IT_MINT_SRC(m[k], pgr_reply_h);
@@ -16590,7 +16596,7 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     /* Fase S1: explicit reply object for the pager's ctrl EP (slot 13). */
     handle_id_t pgr_reply_h = HANDLE_INVALID;
     {
-        long rr = it_retype_handle((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
+        long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
         if (rr >= 0) {
             pgr_reply_h = (handle_id_t)rr;
             mm[k].slot = 13u; IT_MINT_SRC(mm[k], pgr_reply_h);
