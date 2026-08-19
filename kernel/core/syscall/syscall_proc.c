@@ -199,20 +199,31 @@ uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     /*
-     * No threads: either already dead, or created and never started.
+     * No live threads.  Two different states share that description, and only
+     * one of them is this syscall's to clean up.
      *
-     * Stage 6 Etapa 2: the second case used to return success and do nothing,
-     * which meant an abandoned process was unreclaimable — kill found no
-     * threads to stop, and the creation reference that outlives capabilities
-     * was only ever dropped by the LAST THREAD exiting.  Its address space,
-     * its PML4 and (since page tables are charged to an Untyped) its budget
-     * stayed pinned for the life of the system.  Tearing it down here is what
-     * kill already means for a running process, applied to one that never ran;
-     * kprocess_free drops the creation reference exactly once, so a racing
-     * thread-exit cannot double-drop it.
+     * Stage 6 Etapa 2: a process created and NEVER STARTED used to be
+     * unreclaimable — kill found no threads to stop, and the creation
+     * reference that outlives capabilities was only ever dropped by the LAST
+     * THREAD exiting.  Its address space, its PML4 and (since page tables are
+     * charged to an Untyped) its budget stayed pinned for the life of the
+     * system.  Tearing it down here is what kill already means for a running
+     * process, applied to one that never ran.
+     *
+     * A process whose last thread is EXITING looks identical through
+     * thread_count, and tearing that one down here is not a second cleanup
+     * but a concurrent one: task_execution_teardown_off_cpu decrements
+     * thread_count with interrupts enabled and only then runs
+     * kprocess_teardown, which sets teardown_complete at its very end.  A kill
+     * landing in that window passes both checks and races the exiting thread
+     * through kprocess_reap_address_space — both read aspace_reaped == 0, both
+     * release every bootstrap KFrame, and both destroy the same cr3.  So the
+     * gate is threads_ever, which distinguishes the two states that
+     * thread_count cannot: a process that has never had a thread has no other
+     * teardown path, and nothing can be racing us through one.
      */
     if (!kprocess_is_alive(target)) {
-        if (!kprocess_teardown_complete(target)) {
+        if (!target->threads_ever && !kprocess_teardown_complete(target)) {
             kprocess_teardown(target, 0);
             kprocess_reap_address_space(target);
             kprocess_free(target);
@@ -280,30 +291,40 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
 
+    /* Fase 6.3: every child process needs a KVSpace so that sys_vmo_map_into
+     * can install KFrame-backed PTEs into it.  Stage 6 Etapa 3: its header is
+     * a child block of the same budget, carved from the top so it does not
+     * displace the page-aligned carves below.
+     *
+     * The header is carved BEFORE the PML4 it will own, and the order is
+     * load bearing rather than cosmetic.  The VSpace is what returns the
+     * PML4's page-child entry to the pool at teardown (vs->pt_count starts at
+     * 1), and kprocess_reap_address_space decides whether cr3 is PMM memory
+     * by asking p->vspace.  A PML4 that exists before its VSpace does is
+     * therefore a page nothing can unwind: the cleanup path would find
+     * p->vspace still NULL, conclude the tables were kernel-funded, and hand
+     * an Untyped-owned page back to the buddy allocator — the same physical
+     * page then belongs to both the PMM and the region it was carved from.
+     * Carving the header first makes that state unreachable: once
+     * kvspace_alloc_at has a block it cannot fail, so there is no window in
+     * which cr3 is pooled and proc->vspace is not set. */
+    void *hdr = kuntyped_alloc_child_top(pool, sizeof(struct KVSpace));
+    if (!hdr) {
+        kobject_active_release(&pool->base); kobject_release(&pool->base);
+        kprocess_free(proc);
+        return syscall_err(IRIS_ERR_NO_MEMORY);
+    }
+
     proc->cr3 = paging_create_user_space_from(pool);
     if (!proc->cr3) {
+        kuntyped_release_child(hdr, sizeof(struct KVSpace));
         kobject_active_release(&pool->base); kobject_release(&pool->base);
         kprocess_free(proc);
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
     proc->user_cr3 = paging_make_user_cr3(proc->cr3, proc->pcid);
 
-    /* Fase 6.3: every child process needs a KVSpace so that sys_vmo_map_into
-     * can install KFrame-backed PTEs into it.  Stage 6 Etapa 3: its header is
-     * a child block of the same budget, carved from the top so it does not
-     * displace the page-aligned carves below. */
-    struct KVSpace *vs = 0;
-    {
-        void *hdr = kuntyped_alloc_child_top(pool, sizeof(struct KVSpace));
-        if (hdr) vs = kvspace_alloc_at(hdr, proc->cr3);
-        if (!vs) {
-            if (hdr) kuntyped_release_child(hdr, sizeof(struct KVSpace));
-            kobject_active_release(&pool->base); kobject_release(&pool->base);
-            kprocess_reap_address_space(proc);
-            kprocess_free(proc);
-            return syscall_err(IRIS_ERR_NO_MEMORY);
-        }
-    }
+    struct KVSpace *vs = kvspace_alloc_at(hdr, proc->cr3);
     proc->vspace = vs;
     /* The PML4 is a page child of the pool; the VSpace returns it with the
      * page tables at teardown. */

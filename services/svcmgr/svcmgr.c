@@ -34,8 +34,21 @@
  * capabilities the kernel now publishes one per authority.  These slots are
  * svcmgr's own bookkeeping — nobody outside names them — so relocating them
  * costs nothing but has to stay clear of the registration pool below. */
-#define SVCMGR_IRQCAP_SLOT_BASE    96u   /* + IRQ number   (96..111) */
-#define SVCMGR_IOPORT_SLOT_BASE   112u   /* + service_id  (112..127) */
+#define SVCMGR_IRQCAP_SLOT_BASE   100u   /* + IRQ number  (100..115) */
+#define SVCMGR_IOPORT_SLOT_BASE   116u   /* + service_id  (116..131) */
+/* These are svcmgr's own bookkeeping — nobody outside names them — but they
+ * live in the SAME root CNode as the well-known slots every service shares,
+ * so "free here" has to mean free in that shared map too.  The first attempt
+ * at 96..127 silently overlapped IRIS_CPTR_FB_CONTROL (99): invisible only
+ * because svcmgr is not currently minted framebuffer authority, and a
+ * one-line manifest change away from a KIrqCap install that fails with
+ * ALREADY_EXISTS and no hint why.  The assertions below are the point: a
+ * private range that shares an address space with public constants must be
+ * checked against them, not just documented. */
+_Static_assert(SVCMGR_IRQCAP_SLOT_BASE > IRIS_CPTR_FB_CONTROL,
+               "svcmgr device-cap slots must clear the well-known slot map");
+_Static_assert(SVCMGR_IOPORT_SLOT_BASE >= SVCMGR_IRQCAP_SLOT_BASE + 16u,
+               "IRQ slots are indexed by IRQ number, 16 of them");
 
 #define SVCMGR_IRQ_CAPS_TABLE_SIZE 16u
 /* Indexed by service_id (0–2); mirrors IRIS_SERVICE_RUNTIME_SLOT_COUNT. */
@@ -151,23 +164,11 @@ static const char sm_str_lookup_name_ok[]    = "[SVCMGR] lookup-name reply OK\n"
 
 static inline int64_t svcmgr_syscall4(uint64_t num, uint64_t arg0, uint64_t arg1,
                                       uint64_t arg2, uint64_t arg3) {
-    int64_t ret;
-    register uint64_t _a3 __asm__("r10") = arg3;
-    __asm__ volatile ("syscall"
-        : "=a"(ret)
-        : "a"(num), "D"(arg0), "S"(arg1), "d"(arg2), "r"(_a3)
-        : "rcx", "r11", "memory");
-    return ret;
+    return (int64_t)iris_syscall4((long)num, (long)arg0, (long)arg1, (long)arg2, (long)arg3);
 }
 
 static inline int64_t svcmgr_syscall3(uint64_t num, uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    int64_t ret;
-    __asm__ volatile (
-        "syscall"
-        : "=a"(ret)
-        : "a"(num), "D"(arg0), "S"(arg1), "d"(arg2)
-        : "rcx", "r11", "memory");
-    return ret;
+    return (int64_t)iris_syscall4((long)num, (long)arg0, (long)arg1, (long)arg2, (long)0);
 }
 
 static inline int64_t svcmgr_syscall0(uint64_t num) {
@@ -515,8 +516,10 @@ static uint32_t svcmgr_dynamic_ready_count(const struct svcmgr_state *state) {
  * declaration degrades to 0 = legacy handle delivery, which keeps working.
  * ──────────────────────────────────────────────────────────────────────── */
 
-#define SVCMGR_RSLOT_BASE  128u  /* below: well-known bootstrap, master and
+#define SVCMGR_RSLOT_BASE  132u  /* below: well-known bootstrap, master and
                                   * device-cap slots (Stage 5 Etapa 2) */
+_Static_assert(SVCMGR_RSLOT_BASE >= SVCMGR_IOPORT_SLOT_BASE + 16u,
+               "the receive pool must start above the device-cap slots");
 #define SVCMGR_RSLOT_LIMIT 256u  /* root CNode has KCNODE_DEFAULT_SLOTS = 256 */
 
 /* Stage 4: the root-CNode handle probe is RETIRED.  It scanned svcmgr's own

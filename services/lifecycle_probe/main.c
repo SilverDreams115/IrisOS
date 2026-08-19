@@ -209,33 +209,19 @@
 #define LP_PS_ERR_NOFAULT  0x63u
 
 static inline long lp_sys1(long nr, long a0) {
-    long ret;
-    __asm__ volatile ("syscall" : "=a"(ret) : "a"(nr), "D"(a0), "S"(0L), "d"(0L)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)0L, (long)0L, (long)0);
 }
 
 static inline long lp_sys3(long nr, long a0, long a1, long a2) {
-    long ret;
-    __asm__ volatile ("syscall" : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(a2)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
 }
 
 static inline long lp_sys2(long nr, long a0, long a1) {
-    long ret;
-    __asm__ volatile ("syscall" : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(0L)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
 }
 
 static inline long lp_sys4(long nr, long a0, long a1, long a2, long a3) {
-    long ret;
-    register long r10 __asm__("r10") = a3;
-    __asm__ volatile ("syscall" : "=a"(ret)
-        : "a"(nr), "D"(a0), "S"(a1), "d"(a2), "r"(r10)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4(nr, a0, a1, a2, a3);
 }
 
 /* Little-endian field reads from the SYS_PROCESS_FAULT_INFO record. */

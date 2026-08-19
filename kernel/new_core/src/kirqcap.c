@@ -13,7 +13,7 @@ static void kirqcap_close(struct KObject *obj) {
 
 static void kirqcap_destroy(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kirqcap_live, 1u, memory_order_relaxed);
-    kslab_free((struct KIrqCap *)obj, (uint32_t)sizeof(struct KIrqCap));
+    kobject_storage_free(obj, (uint32_t)sizeof(struct KIrqCap), 0);
 }
 
 static const struct KObjectOps kirqcap_ops = {
@@ -30,16 +30,6 @@ static const struct KObjectOps kirqcap_ops = {
  * is the deeper divergence the ledger records — charging is what IRIS can do
  * without changing what a capability IS.
  */
-static void kirqcap_destroy_ut(struct KObject *obj) {
-    atomic_fetch_sub_explicit(&kirqcap_live, 1u, memory_order_relaxed);
-    kuntyped_release_child(obj, sizeof(struct KIrqCap));
-}
-
-static const struct KObjectOps kirqcap_ops_ut = {
-    .close   = kirqcap_close,
-    .destroy = kirqcap_destroy_ut,
-};
-
 struct KIrqCap *kirqcap_alloc(uint8_t irq_num) {
     struct KIrqCap *cap = kslab_alloc((uint32_t)sizeof(struct KIrqCap));
     if (!cap) return 0;
@@ -53,7 +43,8 @@ struct KIrqCap *kirqcap_alloc_from(struct KUntyped *pool, uint8_t irq_num) {
     if (!pool) return kirqcap_alloc(irq_num);
     struct KIrqCap *cap = kuntyped_alloc_child_top(pool, sizeof(struct KIrqCap));
     if (!cap) return 0;
-    kobject_init(&cap->base, KOBJ_IRQ_CAP, &kirqcap_ops_ut);
+    kobject_init_in_untyped(&cap->base, KOBJ_IRQ_CAP, &kirqcap_ops,
+                            (uint32_t)sizeof(struct KIrqCap));
     cap->irq_num = irq_num;
     atomic_fetch_add_explicit(&kirqcap_live, 1u, memory_order_relaxed);
     return cap;

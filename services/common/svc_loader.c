@@ -19,45 +19,23 @@
 /* ── Freestanding syscall helpers ─────────────────────────────────── */
 
 static inline long sl_sys0(long nr) {
-    long ret;
-    __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(0L), "S"(0L), "d"(0L)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)0L, (long)0L, (long)0L, (long)0);
 }
 
 static inline long sl_sys1(long nr, long a0) {
-    long ret;
-    __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(a0), "S"(0L), "d"(0L)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)0L, (long)0L, (long)0);
 }
 
 static inline long sl_sys2(long nr, long a0, long a1) {
-    long ret;
-    __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(0L)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
 }
 
 static inline long sl_sys3(long nr, long a0, long a1, long a2) {
-    long ret;
-    __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(a2)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
 }
 
 static inline long sl_sys4(long nr, long a0, long a1, long a2, long a3) {
-    long ret;
-    register long _a3 __asm__("r10") = a3;
-    __asm__ volatile ("syscall"
-        : "=a"(ret)
-        : "a"(nr), "D"(a0), "S"(a1), "d"(a2), "r"(_a3)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)a3);
 }
 
 /* Release a capability: delete its slot.  Stage 4 removed the handle branch —
@@ -373,13 +351,19 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * is long gone, so it has no children), and carve it on the first spawn. */
     {
         long pool = (long)sl_ws_cptr(ws, SL_WS_ELFPOOL);
-        if (sl_sys1(SYS_UNTYPED_RESET, pool) != 0) {
-            (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_ELFPOOL);
-            long pr = sl_sys4(SYS_UNTYPED_RETYPE2, (long)SL_WS_UNTYPED(ws),
-                              (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)),
-                              sl_ws_dest(ws, SL_WS_ELFPOOL),
-                              (long)SL_ELF_POOL_BYTES);
-            if (pr != 0) pool = 0;   /* fall back to the caller's own budget */
+        long pr   = sl_sys1(SYS_UNTYPED_RESET, pool);
+        if (pr == (long)IRIS_ERR_BUSY) {
+            /* The previous image is somehow still alive.  Charging this one to
+             * the caller's own budget costs an image; deleting and re-carving
+             * would cost the whole scratch region, permanently — the same
+             * stranding the child budgets above refuse to do. */
+            pool = 0;
+        } else if (pr != 0) {
+            if (sl_sys4(SYS_UNTYPED_RETYPE2, (long)SL_WS_UNTYPED(ws),
+                        (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)),
+                        sl_ws_dest(ws, SL_WS_ELFPOOL),
+                        (long)SL_ELF_POOL_BYTES) != 0)
+                pool = 0;   /* fall back to the caller's own budget */
         }
         r = sl_sys4(SYS_INITRD_VMO, (long)initrd_c, idx,
                     sl_ws_dest(ws, SL_WS_ELF), pool);
@@ -472,12 +456,28 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             if (sl_sys1(SYS_CAP_IDENTIFY, (long)sl_ws_cptr(ws, l)) >= 0)
                 continue;
 
-            /* Prepare this leaf's child budget: RESET reclaims it when the
-             * previous occupant is fully gone, and a first use carves it. */
+            /* Prepare this leaf's child budget.
+             *
+             * BUSY is not a reason to re-carve — it is the answer to a
+             * question the leaf scan above cannot ask.  A spawner may drop the
+             * process capability while the child is still RUNNING (init does
+             * exactly that for fb, console, svcmgr and the suite), which frees
+             * the leaf while its budget is still feeding a live address space.
+             * Deleting the slot and carving a fresh region then strands the
+             * old one for good: no capability names it any more and a bump
+             * allocator never rewinds, so it can never be RESET.  Every spawn
+             * would burn another budget.
+             *
+             * So BUSY means "this leaf is occupied after all" and the scan
+             * moves on.  A budget becomes reclaimable when its child actually
+             * dies, and the leaf becomes reusable at the same moment — which
+             * is the property the scan wanted in the first place. */
             uint32_t pl   = SL_WS_CHILDPOOL(l);
             long     pool = (long)sl_ws_cptr(ws, pl);
-            if (sl_sys1(SYS_UNTYPED_RESET, pool) != 0) {
-                (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)pl);
+            long     rr   = sl_sys1(SYS_UNTYPED_RESET, pool);
+            if (rr == (long)IRIS_ERR_BUSY) continue;
+            if (rr != 0) {
+                /* Nothing in the slot: first use of this leaf. */
                 if (sl_sys4(SYS_UNTYPED_RETYPE2, (long)SL_WS_UNTYPED(ws),
                             (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)),
                             sl_ws_dest(ws, pl),

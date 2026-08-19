@@ -149,13 +149,11 @@ static void kprocess_destroy(struct KObject *obj) {
     struct KProcess *p = (struct KProcess *)obj;
 
     /* Final refcount drop: finish only idempotent process-owned cleanup.
-     * Task-local resources must already be gone before this point. */
-    if (!p->teardown_complete) {
-        kprocess_teardown(p, 0);
-    }
-    if (!p->aspace_reaped) {
-        kprocess_reap_address_space(p);
-    }
+     * Task-local resources must already be gone before this point.  Both
+     * calls claim their own flag on entry, so they are no-ops when the
+     * ordinary exit path already ran them — no pre-check needed here. */
+    kprocess_teardown(p, 0);
+    kprocess_reap_address_space(p);
     atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
 
     /* Return PCID to the free pool so it can be reused. */
@@ -166,7 +164,13 @@ static void kprocess_destroy(struct KObject *obj) {
         p->pcid = 0;
     }
 
-    kslab_free(p, (uint32_t)sizeof(struct KProcess));
+    /* Storage first (a block holds its own parent retain), pool retain last:
+     * the block lives inside the region the pool owns, and it is what records
+     * who that pool was. */
+    struct KUntyped *pool = p->mem_pool;
+    p->mem_pool = 0;
+    kobject_storage_free(obj, (uint32_t)sizeof(struct KProcess), 0);
+    if (pool) kobject_release(&pool->base);
 }
 
 static const struct KObjectOps kprocess_ops = {
@@ -181,32 +185,6 @@ static const struct KObjectOps kprocess_ops = {
  * to the same budget that already pays for its address space.  What the kernel
  * still funds from its slab is the ROOT TASK, built before any Untyped exists.
  */
-static void kprocess_destroy_ut(struct KObject *obj) {
-    struct KProcess *p    = (struct KProcess *)obj;
-    struct KUntyped *pool = p->mem_pool;
-
-    if (!p->teardown_complete) kprocess_teardown(p, 0);
-    if (!p->aspace_reaped)     kprocess_reap_address_space(p);
-    atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
-
-    if (p->pcid) {
-        uint64_t flags = irq_spinlock_lock(&pcid_lock);
-        pcid_bitmap[p->pcid / 64u] &= ~(1ULL << (p->pcid % 64u));
-        irq_spinlock_unlock(&pcid_lock, flags);
-        p->pcid = 0;
-    }
-
-    /* Header block first (it holds its own parent retain), pool retain last:
-     * the block lives inside the region the pool owns. */
-    p->mem_pool = 0;
-    kuntyped_release_child(p, sizeof(struct KProcess));
-    if (pool) kobject_release(&pool->base);
-}
-
-static const struct KObjectOps kprocess_ops_ut = {
-    .destroy = kprocess_destroy_ut
-};
-
 struct KProcess *kprocess_alloc_from(struct KUntyped *pool) {
     if (!pool) return kprocess_alloc();
 
@@ -221,7 +199,8 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool) {
         atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
         return 0;
     }
-    kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops_ut);
+    kobject_init_in_untyped(&p->base, KOBJ_PROCESS, &kprocess_ops,
+                            (uint32_t)sizeof(struct KProcess));
     p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;
     kobject_retain(&pool->base);
     p->mem_pool = pool;
@@ -471,7 +450,15 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
  * teardown_complete provides idempotency; this function is called from both
  * task_exit_current (normal exit) and kprocess_destroy (fallback path). */
 void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
-    if (!p || p->teardown_complete) return;
+    if (!p) return;
+    /* Claimed, not observed — same reason as kprocess_reap_address_space:
+     * teardown_complete is set at the END of a long non-idempotent sequence,
+     * so a reader that only checks it can start a second run at any point
+     * before that.  Claiming on entry also means every OTHER reader of the
+     * flag (sys_thread_start, ktcb_configure, the destroy fallbacks) refuses
+     * from the moment teardown begins rather than from the moment it ends,
+     * which is the direction they all want. */
+    if (__atomic_exchange_n(&p->teardown_complete, 1u, __ATOMIC_ACQ_REL)) return;
 
     kprocess_emit_exit_watch(p);
     kprocess_clear_exit_watch(p);
@@ -515,10 +502,12 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     }
 
     (void)exiting_thread; /* thread_count tracks liveness; no per-thread ref needed */
-    p->teardown_complete = 1;
-    /* Fase 20: a registration that raced in between the clear above and the
-     * flag store would re-pin the notification with nobody left to release
-     * it; sweep again now that the flag rejects new registrations. */
+    /* teardown_complete was claimed on entry, so the flag has rejected new
+     * registrations for the whole of this function.
+     *
+     * Fase 20: a registration that was already past that check when we
+     * claimed, and landed after the clear above, would re-pin the
+     * notification with nobody left to release it; sweep again to catch it. */
     kprocess_clear_exception_chan(p);
 }
 
@@ -541,7 +530,15 @@ void kprocess_release_bootstrap_frames(struct KProcess *p) {
 }
 
 void kprocess_reap_address_space(struct KProcess *p) {
-    if (!p || p->aspace_reaped) return;
+    if (!p) return;
+    /* CLAIM the reap, do not merely observe that nobody has done it.  Every
+     * step below is destructive and none is idempotent: releasing the
+     * bootstrap KFrames twice drops refs the process never held, and
+     * destroying cr3 twice frees the same page twice (to the PMM for a
+     * kernel-funded space, to the pool's child count for a budgeted one).  A
+     * plain read-then-write leaves the window between them open to anything
+     * that preempts, so the flag is set by exchange and the losers return. */
+    if (__atomic_exchange_n(&p->aspace_reaped, 1u, __ATOMIC_ACQ_REL)) return;
 
     uint64_t cr3 = p->cr3;
     /* Stage 6 Etapa 2: were this address space's tables carved from an
@@ -564,7 +561,7 @@ void kprocess_reap_address_space(struct KProcess *p) {
     paging_destroy_user_space_from(cr3, tables_pooled);
     p->cr3 = 0;
     p->user_cr3 = 0;
-    p->aspace_reaped = 1;
+    /* aspace_reaped was claimed on entry, not set here. */
 }
 
 /*

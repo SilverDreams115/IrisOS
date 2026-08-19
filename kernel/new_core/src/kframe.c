@@ -70,8 +70,12 @@ static void kframe_obj_destroy(struct KObject *obj) {
         "kframe: destroy with active mappings — caller must unmap before release");
 
     atomic_fetch_sub_explicit(&kframe_live, 1u, memory_order_relaxed);
-    kslab_free(f, (uint32_t)sizeof(struct KFrame));
+    /* Read vmo/parent BEFORE this: it returns the storage, which for an
+     * Untyped-born frame means zeroing the block this struct lives in. */
+    kobject_storage_free(obj, (uint32_t)sizeof(struct KFrame), 0);
 
+    /* Only a slab frame carries alloc_parent; a block-backed one's accounting
+     * rides on the block kobject_storage_free just handed back. */
     if (parent) {
         atomic_fetch_sub_explicit(&parent->child_count, 1u, memory_order_relaxed);
         kobject_release(&parent->base);
@@ -79,8 +83,8 @@ static void kframe_obj_destroy(struct KObject *obj) {
     if (vmo) {
         /* Release the VMO retain held since kframe_alloc_vmo_page.
          * If this was the last retain, kvmo_destroy runs and frees the physical page.
-         * Ordering is safe: mapped_count was 0 before kslab_free, so no PTE
-         * can reference this physical address at this point. */
+         * Ordering is safe: mapped_count was 0 before the storage went back, so
+         * no PTE can reference this physical address at this point. */
         kobject_release(&vmo->base);
     }
 }
@@ -104,34 +108,12 @@ static const struct KObjectOps kframe_ops = {
  * process the frame was handed to.  The two carves come from opposite ends of
  * the region precisely so they cannot meet.
  */
-static void kframe_obj_destroy_ut(struct KObject *obj) {
-    struct KFrame *f   = (struct KFrame *)obj;
-    struct KVmo   *vmo = f->vmo_owner;
-
-    IRIS_ASSERT(
-        atomic_load_explicit(&f->mapped_count, memory_order_relaxed) == 0,
-        "kframe: destroy with active mappings — caller must unmap before release");
-
-    atomic_fetch_sub_explicit(&kframe_live, 1u, memory_order_relaxed);
-    /* Returns the block to its parent: zeroes it, drops child_count, releases
-     * the parent retain.  No alloc_parent bookkeeping here — the header block
-     * IS the child, exactly as for KCNode/KTcb/KEndpoint.  Read vmo BEFORE the
-     * block is zeroed. */
-    kuntyped_release_child(f, sizeof(struct KFrame));
-
-    if (vmo) kobject_release(&vmo->base);
-}
-
-static const struct KObjectOps kframe_ops_ut = {
-    .close   = kframe_obj_close,
-    .destroy = kframe_obj_destroy_ut,
-};
-
 struct KFrame *kframe_alloc_at(void *mem, uint64_t paddr, uint64_t size) {
     if (!mem || !size || (size & 0xFFFULL)) return 0;
 
     struct KFrame *f = (struct KFrame *)mem;   /* block arrives zeroed */
-    kobject_init(&f->base, KOBJ_FRAME, &kframe_ops_ut);
+    kobject_init_in_untyped(&f->base, KOBJ_FRAME, &kframe_ops,
+                            (uint32_t)sizeof(struct KFrame));
     f->paddr        = paddr;
     f->size         = size;
     f->alloc_parent = NULL;   /* the header block holds the child accounting */

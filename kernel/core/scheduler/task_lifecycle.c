@@ -832,6 +832,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     }
     t->process          = proc;
     proc->thread_count  = 1;
+    proc->threads_ever  = 1;
 
     uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     kstack_top &= ~0xFULL;
@@ -948,6 +949,7 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
     t->ctx.rflags = 0x202ULL;
 
     proc->thread_count++;
+    proc->threads_ever = 1;
 
     /* Fase S2 D2: the KTCB IS t itself — see task_create_user_impl.  Etapa 4:
      * no automatic handle publication (same reasoning). */
@@ -998,6 +1000,7 @@ iris_error_t ktcb_configure(struct task *t, struct KProcess *proc) {
     t->home_cpu   = 0;
     t->process    = proc;
     proc->thread_count++;
+    proc->threads_ever = 1;
 
     /* Linked into the global task list like every other thread: the list is
      * what the timeout/fault sweeps walk, and a thread that can run must be

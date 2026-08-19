@@ -47,6 +47,16 @@ struct KObject {
     _Atomic uint32_t          active_refs; /* published handle/global refs */
     spinlock_t                lock;        /* guards mutable state — separate from lifecycle */
     const struct KObjectOps  *ops;         /* non-NULL for every initialized object */
+    /* Stage 6: where this object's STORAGE came from, and how much of it.
+     * 0 = the kernel slab.  Non-zero = a child block of an Untyped, of exactly
+     * this many bytes — what kuntyped_release_child needs to hand it back.
+     *
+     * It lives here, on the object, because it is a fact about the object and
+     * not about the code that frees it.  Every migrated type otherwise needed
+     * a SECOND ops table and a SECOND destructor that differed from its slab
+     * twin by one call, and the two drifted: the shape of the release protocol
+     * had to be re-derived seven times. */
+    uint32_t                  ut_block_bytes;
 };
 
 /*
@@ -59,8 +69,28 @@ struct KObject {
  *   - refcount and lock protect different things — never used interchangeably
  */
 
+struct KUntyped;
+
 void kobject_init(struct KObject *obj, kobject_type_t type,
                   const struct KObjectOps *ops);
+/* Same, for an object placement-built in an Untyped child block of
+ * `block_bytes` bytes (what was passed to kuntyped_alloc_child*).  The block
+ * arrives zeroed, so this only records where the storage came from. */
+void kobject_init_in_untyped(struct KObject *obj, kobject_type_t type,
+                             const struct KObjectOps *ops,
+                             uint32_t block_bytes);
+/*
+ * Release the object's STORAGE — the last act of any destroy callback.
+ *
+ * Returns the Untyped child block if the object was born in one, else frees
+ * `slab_bytes` to the kernel slab.  The object must not be touched afterwards.
+ * `out_pool` receives the Untyped the block belonged to (NULL for a slab
+ * object) WITHOUT dropping any reference: a type that keeps its own retain on
+ * that pool releases it after this returns, never before — the block is inside
+ * the pool's region, and it is what records who the parent was.
+ */
+void kobject_storage_free(struct KObject *obj, uint32_t slab_bytes,
+                          struct KUntyped **out_pool);
 void kobject_retain(struct KObject *obj);
 void kobject_release(struct KObject *obj);
 void kobject_active_retain(struct KObject *obj);

@@ -24,52 +24,26 @@
 /* ── Syscall helpers ────────────────────────────────────────────────────── */
 
 static inline long it_sys0(long nr) {
-    long ret;
-    __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(0L), "S"(0L), "d"(0L)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)0L, (long)0L, (long)0L, (long)0);
 }
 
 static inline long it_sys1(long nr, long a0) {
-    long ret;
-    __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(a0), "S"(0L), "d"(0L)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)0L, (long)0L, (long)0);
 }
 
 static inline long it_sys2(long nr, long a0, long a1) {
     /* Fase S1: arg2 (rdx) is ALWAYS zeroed — SYS_EP_RECV/SYS_EP_NB_RECV now
      * interpret it as the explicit reply-object CPtr, so leaking garbage
      * there would randomly stage bogus replies. */
-    long ret;
-    __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(0L)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall3(nr, a0, a1, 0L);
 }
 
 static inline long it_sys3(long nr, long a0, long a1, long a2) {
-    long ret;
-    /* r10 (arg3) is set to 0 explicitly: a syscall that later grows a fourth
-     * argument reads this register, and whatever the compiler left in it is
-     * not zero — Stage 6 Etapa 5 found that the hard way when SYS_INITRD_VMO
-     * gained a budget argument. */
-    register long _a3 __asm__("r10") = 0;
-    __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(a2), "r"(_a3)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall3(nr, a0, a1, a2);
 }
 
 static inline long it_sys4(long nr, long a0, long a1, long a2, long a3) {
-    long ret;
-    register long _a3 __asm__("r10") = a3;
-    __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(a2), "r"(_a3)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)a3);
 }
 
 /* ── Serial output ──────────────────────────────────────────────────────── */
@@ -19993,6 +19967,137 @@ static void test_t300(void) {
     if (ok) it_pass("T300"); else it_fail("T300", why);
 }
 
+/* ── T301: a REFUSED spawn leaves the budget untouched (Stage 6 Etapa 2/3) ─
+ * Building an address space takes two carves out of the named budget: a page
+ * for the PML4, and a block for the KVSpace header that owns it.  The header
+ * is what returns the PML4's page-child entry to the pool at teardown, and
+ * kprocess_reap_address_space asks p->vspace whether cr3 came from an Untyped
+ * at all — so a PML4 that exists before its VSpace does is a page nothing can
+ * unwind.  Carving them in that order meant a budget large enough for the
+ * page but not for the header left the kernel holding a page it believed was
+ * PMM memory: it handed the page back to the buddy allocator while the
+ * Untyped still owned the region, and the region's child count never dropped,
+ * so the holder could never RESET it either.
+ *
+ * Asserted, for a budget of every size across the boundary:
+ *
+ *   1. a refusal leaves the budget's child count exactly where it was — a
+ *      half-built address space is not a child of anything;
+ *   2. so the region is still whole: RESET reclaims it (with the leaked PML4
+ *      entry it answered BUSY forever);
+ *   3. the sweep really crossed the boundary — some size spawned, some was
+ *      refused;
+ *   4. and it crossed it in SUB-PAGE steps.
+ *
+ * Leg 4 is what makes legs 1-3 mean anything, because the only budget sizes
+ * that reach the bug are the ones big enough for the PML4 and short of the
+ * header — a band one KVSpace header block wide, far narrower than the page
+ * granularity a budget can be carved at.  Stepping the budget by whole pages
+ * jumps clean over it.  So each round gives the pool one MORE page and
+ * pre-carves one more frame inside it: the frame's page cancels the extra
+ * page and its header block does not, which walks the room left for the
+ * address space down by one header block per round instead of one page.
+ * Leg 4 pins that the walk stayed sub-page; without it a struct-size change
+ * could turn this into a test that passes while stepping straight over the
+ * only sizes it exists to cover.
+ * Invariants: M1, M3, O2, O6. */
+#define T301_SLOT_PROC   S1_SLOT_D
+#define T301_BASE_PAGES  6u    /* room for one address space, plus change */
+#define T301_ROUNDS      16u
+
+static void test_t301(void) {
+    int ok = 1;
+    const char *why = "refused spawn residue";
+    /* Smallest budget that still spawned, largest that was refused. */
+    uint64_t least_ok = ~0ull, most_refused = 0;
+    int saw_spawn = 0, saw_refusal = 0;
+    long frames[T301_ROUNDS];
+
+    it_slot_delete(T301_SLOT_PROC);
+
+    /* Every budget below must start on a page boundary, or its first page
+     * carve loses the alignment slack and the round lands somewhere other
+     * than where this test computed.  A frame carve leaves the parent's bump
+     * page-aligned, and a sub-untyped starts at that bump. */
+    if (it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                             IRIS_KOBJ_FRAME, 4096) < 0) {
+        it_fail("T301", "align frame"); return;
+    }
+
+    for (uint32_t k = 0; ok && k < T301_ROUNDS; k++) {
+        long pool = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                         IRIS_KOBJ_UNTYPED,
+                                         (long)((T301_BASE_PAGES + k) * 4096u));
+        if (pool < 0) { ok = 0; why = "pool carve"; break; }
+
+        struct it_utq_one q;
+        if (!it_utq_1(pool, &q)) { ok = 0; why = "query"; break; }
+        if ((q.phys_base & 0xFFFu) != 0u) { ok = 0; why = "budget not page-aligned"; break; }
+
+        uint32_t made = 0;
+        while (made < k) {
+            long f = it_retype_slot_alloc(pool, IRIS_KOBJ_FRAME, 4096);
+            if (f < 0) break;
+            frames[made++] = f;
+        }
+        if (made != k) { ok = 0; why = "frame carve"; }
+
+        uint64_t room = 0;
+        if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&room) != 0) {
+            ok = 0; why = "info";
+        }
+        if (ok && !it_utq_1(pool, &q)) { ok = 0; why = "query2"; }
+
+        if (ok) {
+            uint32_t children_before = q.child_count;
+            it_slot_delete(T301_SLOT_PROC);
+            long cr = it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
+                              (long)((uint64_t)T301_SLOT_PROC << 32), pool);
+            if (cr == 0) {
+                saw_spawn = 1;
+                if (room < least_ok) least_ok = room;
+                (void)it_sys1(SYS_PROCESS_KILL, (long)T301_SLOT_PROC);
+                it_slot_delete(T301_SLOT_PROC);
+                it_quiesce_reaper();
+            } else if (cr == (long)IRIS_ERR_NO_MEMORY) {
+                saw_refusal = 1;
+                if (room > most_refused) most_refused = room;
+                /* 1. the refusal kept nothing of the address space. */
+                if (!it_utq_1(pool, &q)) { ok = 0; why = "query3"; }
+                else if (q.child_count != children_before) {
+                    ok = 0; why = "refused spawn left a child";
+                }
+                /* 2. and the budget is still reclaimable, whole. */
+                if (ok) {
+                    for (uint32_t i = 0; i < made; i++)
+                        it_slot_delete((uint32_t)frames[i]);
+                    made = 0;
+                    if (it_sys1(SYS_UNTYPED_RESET, pool) != 0) {
+                        ok = 0; why = "budget not reclaimable after refusal";
+                    }
+                }
+            } else {
+                ok = 0; why = "unexpected spawn error";
+            }
+        }
+
+        for (uint32_t i = 0; i < made; i++) it_slot_delete((uint32_t)frames[i]);
+        it_slot_delete((uint32_t)pool);
+    }
+
+    /* 3. the sweep straddled the boundary. */
+    if (ok && !saw_spawn)   { ok = 0; why = "no budget spawned"; }
+    if (ok && !saw_refusal) { ok = 0; why = "no budget was refused"; }
+    /* 4. and it did so in sub-page steps, so the sizes just short of enough —
+     *    the only ones that reach the bug — were actually visited. */
+    if (ok && least_ok - most_refused >= 4096u) {
+        ok = 0; why = "sweep stepped over the boundary";
+    }
+
+    it_slot_delete(T301_SLOT_PROC);
+    if (ok) it_pass("T301"); else it_fail("T301", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Etapa 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -20525,6 +20630,8 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t299();
     /* Stage 6: user memory comes out of a named budget. */
     test_t300();
+    /* Stage 6: a refused spawn leaves its budget untouched. */
+    test_t301();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

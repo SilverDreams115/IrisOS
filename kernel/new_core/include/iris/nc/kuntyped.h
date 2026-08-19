@@ -88,6 +88,11 @@ void *kuntyped_alloc_child(struct KUntyped *u, uint64_t obj_bytes);
  */
 void *kuntyped_alloc_child_top(struct KUntyped *u, uint64_t obj_bytes);
 
+/* The Untyped a child block belongs to, without releasing anything.  Reading
+ * it before release is the only way to know who to drop a pool retain on,
+ * because release zeroes the block that records it. */
+struct KUntyped *kuntyped_child_parent(const void *obj_ptr);
+
 void  kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes);
 
 /* Stage 6 Etapa 2 — a page-aligned carve with child accounting and no object

@@ -35,12 +35,7 @@
 /* ── Syscall helpers ─────────────────────────────────────────────── */
 
 static inline long sh_sys3(long nr, long a0, long a1, long a2) {
-    long ret;
-    __asm__ volatile ("syscall"
-        : "=a"(ret)
-        : "a"(nr), "D"(a0), "S"(a1), "d"(a2)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
 }
 static inline long sh_sys2(long nr, long a0, long a1) { return sh_sys3(nr, a0, a1, 0); }
 static inline long sh_sys1(long nr, long a0)           { return sh_sys3(nr, a0, 0, 0); }

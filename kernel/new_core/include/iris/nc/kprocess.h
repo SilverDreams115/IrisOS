@@ -63,14 +63,25 @@ struct KExitWatch {
  * Invariants:
  *   - base must be first (KObject cast rules).
  *   - thread_count tracks live threads; 0 means process is fully exited.
- *   - teardown_complete == 1 means logical teardown already ran.
- *   - aspace_reaped == 1 means cr3-owned memory is already gone.
+ *   - teardown_complete == 1 means logical teardown has STARTED — the flag is
+ *     claimed on entry, not stored on completion, so exactly one caller ever
+ *     runs the sequence.  Readers treat it as "this process is finished", and
+ *     refusing from the start of teardown rather than the end is the point.
+ *   - aspace_reaped == 1 means cr3-owned memory is gone or is being reclaimed
+ *     right now; claimed on entry for the same reason.
  *   - Before final destroy of an exited process, task-local resources must
  *     already have been released by task_exit_current()/reaper paths.
  */
 struct KProcess {
     struct KObject  base;       /* must be first */
     uint32_t        thread_count; /* live threads in this process; 0 = dead */
+    /* Has this process EVER had a thread?  thread_count == 0 does not say:
+     * it is equally true of a process created and never started and of one
+     * whose last thread is midway through exiting, and those two need
+     * opposite handling — the first has no teardown path but this flag, the
+     * second already has one running.  Set at every thread_count increment,
+     * never cleared. */
+    uint8_t         threads_ever;
     uint64_t        cr3;          /* page table root for the process */
     uint64_t        user_cr3;     /* cr3|pcid|(1<<63 if PCID) — no-flush variant for iretq */
     uint16_t        pcid;         /* PCID assigned at alloc (0 = unused/PCID disabled) */

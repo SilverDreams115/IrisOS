@@ -11,8 +11,8 @@ what a green tree looks like today (Stage 6 closed):
 |---|---|---|
 | Host unit tests | `make test-unit` | 18685 assertions, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected (it only ever shrinks) |
-| Runtime suite | `make smoke-runtime` | `SUITE PASS 273/273` |
-| Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 273/273` plus the P3/P41 markers |
+| Runtime suite | `make smoke-runtime` | `SUITE PASS 274/274` |
+| Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 274/274` plus the P3/P41 markers |
 
 The runtime suite is the gate that matters for capability behaviour: it runs in
 ring 3 as a real service and observes the kernel only through syscalls.
@@ -120,6 +120,7 @@ names itself rather than showing up as a boot hang:
 | T298 | Stage 6: an Untyped pays for its frames' headers, and frames stay page-dense |
 | T299 | Stage 6: page tables are charged to a named budget, which cannot be RESET while they live |
 | T300 | Stage 6: user memory comes out of a named budget, and the region is reclaimable once the VMO is gone |
+| T301 | Stage 6: a REFUSED spawn leaves its budget untouched — no stranded children, still RESET-able, swept across the boundary in sub-page steps |
 
 Host unit tests cover what a successful boot cannot show: `RBI-1..RBI-10` (the
 BootInfo builder's bounds), `UT-TOP-1..5` (the two-ended Untyped carve),

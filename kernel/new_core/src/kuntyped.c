@@ -61,9 +61,11 @@ static void kuntyped_obj_destroy(struct KObject *obj) {
     struct KUntyped *parent = u->alloc_parent;
 
     atomic_fetch_sub_explicit(&kuntyped_live, 1u, memory_order_relaxed);
-    kslab_free(u, (uint32_t)sizeof(struct KUntyped));
+    kobject_storage_free(obj, (uint32_t)sizeof(struct KUntyped), 0);
 
-    /* Ph80: if this KUntyped was itself a RETYPE child, notify the parent. */
+    /* Ph80: if this KUntyped was itself a RETYPE child, notify the parent.
+     * Only the slab path has one — a block-backed sub-untyped's accounting
+     * rides on the block itself, which kobject_storage_free just returned. */
     if (parent) {
         atomic_fetch_sub_explicit(&parent->child_count, 1u, memory_order_relaxed);
         kobject_release(&parent->base);
@@ -85,24 +87,15 @@ static const struct KObjectOps kuntyped_ops = {
  * stays NULL for these and nothing is accounted twice.
  *
  * Boot Untypeds keep the slab path: they are created by kernel_main from raw
- * PMM blocks and have no parent to charge.
+ * PMM blocks and have no parent to charge.  ONE destructor serves both —
+ * kobject_storage_free returns the storage to wherever it came from.
  */
-static void kuntyped_obj_destroy_ut(struct KObject *obj) {
-    struct KUntyped *u = (struct KUntyped *)obj;
-    atomic_fetch_sub_explicit(&kuntyped_live, 1u, memory_order_relaxed);
-    kuntyped_release_child(u, sizeof(struct KUntyped));
-}
-
-static const struct KObjectOps kuntyped_ops_ut = {
-    .close   = kuntyped_obj_close,
-    .destroy = kuntyped_obj_destroy_ut,
-};
-
 struct KUntyped *kuntyped_create_at(void *mem, uint64_t phys_base,
                                     uint64_t size, int is_device) {
     if (!mem || !size) return 0;
     struct KUntyped *u = (struct KUntyped *)mem;   /* block arrives zeroed */
-    kobject_init(&u->base, KOBJ_UNTYPED, &kuntyped_ops_ut);
+    kobject_init_in_untyped(&u->base, KOBJ_UNTYPED, &kuntyped_ops,
+                            (uint32_t)sizeof(struct KUntyped));
     irq_spinlock_init(&u->lock);
     u->phys_base   = phys_base;
     u->total_size  = size;
@@ -206,6 +199,13 @@ void *kuntyped_alloc_child(struct KUntyped *u, uint64_t obj_bytes) {
 
 void *kuntyped_alloc_child_top(struct KUntyped *u, uint64_t obj_bytes) {
     if (!u || !obj_bytes) return 0;
+    /* U11: no kernel objects in device memory — the same rule
+     * kuntyped_alloc_children_atomic enforces, and for the same two reasons.
+     * A header placed in an MMIO window puts a spinlock and a refcount where
+     * loads and stores reach a device instead of RAM, and the zero-fill below
+     * would drive that write into the device's registers before anything has
+     * decided that is safe.  Device Untypeds produce physical regions only. */
+    if (u->is_device) return 0;
 
     uint64_t aligned = (obj_bytes + KUNTYPED_ALIGN - 1u) & ~(uint64_t)(KUNTYPED_ALIGN - 1u);
     uint64_t need    = KUNTYPED_ALIGN + aligned;
@@ -263,6 +263,12 @@ void kuntyped_release_page_child(struct KUntyped *u) {
     if (!u) return;
     atomic_fetch_sub_explicit(&u->child_count, 1u, memory_order_relaxed);
     kobject_release(&u->base);
+}
+
+struct KUntyped *kuntyped_child_parent(const void *obj_ptr) {
+    if (!obj_ptr) return 0;
+    const uint8_t *block = (const uint8_t *)obj_ptr - KUNTYPED_ALIGN;
+    return *(struct KUntyped *const *)block;
 }
 
 void kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes) {

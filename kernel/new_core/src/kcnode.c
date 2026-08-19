@@ -236,7 +236,7 @@ static void kcnode_obj_destroy(struct KObject *obj) {
     struct KCNode *cn = (struct KCNode *)obj;
     kcnode_obj_close(obj);
     atomic_fetch_sub_explicit(&kcnode_live, 1u, memory_order_relaxed);
-    kslab_free(cn, KCNODE_ALLOC_SIZE(cn->slot_count));
+    kobject_storage_free(obj, KCNODE_ALLOC_SIZE(cn->slot_count), 0);
 }
 
 static const struct KObjectOps kcnode_ops = {
@@ -246,23 +246,12 @@ static const struct KObjectOps kcnode_ops = {
 
 /* ── Untyped-backed variant (Ph79) ──────────────────────────────── */
 
-static void kcnode_obj_destroy_ut(struct KObject *obj) {
-    struct KCNode *cn = (struct KCNode *)obj;
-    kcnode_obj_close(obj);
-    atomic_fetch_sub_explicit(&kcnode_live, 1u, memory_order_relaxed);
-    kuntyped_release_child(obj, KCNODE_ALLOC_SIZE(cn->slot_count));
-}
-
-static const struct KObjectOps kcnode_ops_ut = {
-    .close   = kcnode_obj_close,
-    .destroy = kcnode_obj_destroy_ut,
-};
-
 struct KCNode *kcnode_alloc_at(void *mem, uint32_t num_slots) {
     if (!mem || num_slots == 0u || num_slots > KCNODE_MAX_SLOTS) return 0;
     if (num_slots & (num_slots - 1u)) return 0; /* must be power-of-2 */
     struct KCNode *cn = (struct KCNode *)mem;
-    kobject_init(&cn->base, KOBJ_CNODE, &kcnode_ops_ut);
+    kobject_init_in_untyped(&cn->base, KOBJ_CNODE, &kcnode_ops,
+                            KCNODE_ALLOC_SIZE(num_slots));
     irq_spinlock_init(&cn->lock);
     cn->slot_count = num_slots;
     cn->slots = (struct KCSlot *)(cn + 1); /* inline array after header */

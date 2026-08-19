@@ -24,21 +24,11 @@
 #include <iris/nc/error.h>
 
 static inline long con_sys2(long nr, long a0, long a1) {
-    long ret;
-    __asm__ volatile ("syscall"
-        : "=a"(ret)
-        : "a"(nr), "D"(a0), "S"(a1), "d"(0L)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
 }
 
 static inline long con_sys3(long nr, long a0, long a1, long a2) {
-    long ret;
-    __asm__ volatile ("syscall"
-        : "=a"(ret)
-        : "a"(nr), "D"(a0), "S"(a1), "d"(a2)
-        : "rcx", "r11", "memory");
-    return ret;
+    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
 }
 
 static inline long con_sys1(long nr, long a0) {

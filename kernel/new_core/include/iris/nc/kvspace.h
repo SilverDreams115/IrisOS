@@ -91,7 +91,14 @@ struct KVSpace *kvspace_alloc(uint64_t cr3);
 /* Stage 6 Etapa 3 — placement-init a KVSpace whose header is a child block of
  * the same Untyped that pays for its PML4 and page tables.  `mem` must be a
  * zeroed block of at least sizeof(struct KVSpace), from
- * kuntyped_alloc_child_top. */
+ * kuntyped_alloc_child_top.
+ *
+ * Returns NULL for a NULL `mem` and CANNOT FAIL otherwise — it only writes
+ * fields.  sys_process_create depends on that: it carves this header BEFORE
+ * the PML4 so that a pooled PML4 always has a VSpace to own it, and there is
+ * no window in which kprocess_reap_address_space could mistake an
+ * Untyped-owned cr3 for a PMM page.  A future variant that can fail after
+ * taking the block has to give that caller a way to unwind the PML4. */
 struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3);
 
 /* Mark the VSpace invalid and zero cr3.  Called by kprocess_reap_address_space

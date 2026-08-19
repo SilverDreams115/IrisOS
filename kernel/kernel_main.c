@@ -102,13 +102,13 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
      * single shared fault notification — growing the arena is the honest fix for
      * a memory ceiling (16 MB is 3% of the 512 MB guest). */
     {
-            uint64_t kslab_phys = pmm_alloc_pages(4096u);
-            if (kslab_phys == 0) {
+        uint64_t kslab_phys = pmm_alloc_pages(4096u);
+        if (kslab_phys == 0) {
             klog_write("[IRIS][KSLAB] FATAL: cannot reserve kernel slab backing\n");
             for (;;) __asm__ volatile ("hlt");
         }
         kslab_init(kslab_phys, 4096u);
-            klog_write("[IRIS][KSLAB] kernel object slab active (16 MB)\n");
+        klog_write("[IRIS][KSLAB] kernel object slab active (16 MB)\n");
     }
 
     /* ── 4. CPU tables + interrupt infrastructure ───────────────── */
@@ -186,7 +186,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
          * text and stack pages (ledger: "kernel stacks / PML4 from the PMM
          * reserve") — it is mapped as a KFrame and registered as a bootstrap
          * frame, so process teardown releases it exactly like the others. */
-            bi_phys = pmm_alloc_pages(IRIS_ROOT_BOOTINFO_PAGES);
+        bi_phys = pmm_alloc_pages(IRIS_ROOT_BOOTINFO_PAGES);
         if (bi_phys != 0) {
             bi_kva = (void *)(uintptr_t)PHYS_TO_VIRT(bi_phys);
             for (uint64_t b = 0; b < IRIS_ROOT_BOOTINFO_BYTES; b++)
@@ -205,8 +205,8 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         if (!bi_kva) {
             klog_write("[IRIS][USER] FATAL: BootInfo page allocation failed\n");
         } else {
-                    ut = task_spawn_user(0);
-                }
+            ut = task_spawn_user(0);
+        }
         if (bi_kva && !ut) {
             klog_write("[IRIS][USER] FATAL: task_spawn_user(userboot) failed\n");
         } else if (ut) {
@@ -301,13 +301,8 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     ut = 0;
                 }
             }
-                    if (ut) {
-                /* Stage 5 Etapa 1 gave RBX its job: it carries the address of
-                 * the BootInfo region, set at the end of the boot sequence
-                 * once every grant is known. */
-                task_set_bootstrap_arg0(ut, 0);
+            if (ut)
                 klog_write("[IRIS][USER] boot control caps CSpace grants OK\n");
-            }
         }
         if (ut) {
             uint32_t ut_count = 0;   /* boot untypeds granted, == BootInfo entries */
@@ -494,6 +489,13 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         }
         if (!ut) {
             klog_write("[IRIS][USER] WARN: could not create bootstrap task\n");
+            /* Every abort above leaves the root task un-created, so nothing
+             * owns the BootInfo pages: the frames that would have carried them
+             * into its address space either were never built or went back with
+             * task_abort_spawned_user.  Returning them here keeps the one
+             * allocation in this block that has an owner-on-success and no
+             * owner-on-failure from being the one that leaks. */
+            if (bi_phys) pmm_free_contig(bi_phys, IRIS_ROOT_BOOTINFO_PAGES);
         }
     }
 

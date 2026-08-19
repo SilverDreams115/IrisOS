@@ -47,15 +47,11 @@ static void kvmo_destroy(struct KObject *obj) {
         kobject_release(&owner->base);
     }
     atomic_fetch_sub_explicit(&kvmo_live, 1u, memory_order_relaxed);
-    /* Header block first (it holds its own parent retain), pool retain last:
+    /* Storage first (a block holds its own parent retain), pool retain last:
      * the block lives inside the region the pool owns. */
-    if (pool) {
-        v->pool = 0;
-        kuntyped_release_child(v, sizeof(struct KVmo));
-        kobject_release(&pool->base);
-    } else {
-        kslab_free(v, (uint32_t)sizeof(struct KVmo));
-    }
+    v->pool = 0;
+    kobject_storage_free(obj, (uint32_t)sizeof(struct KVmo), 0);
+    if (pool) kobject_release(&pool->base);
 }
 
 static const struct KObjectOps kvmo_ops = { .destroy = kvmo_destroy };
@@ -64,7 +60,9 @@ static struct KVmo *kvmo_alloc_in(struct KUntyped *pool) {
     struct KVmo *v = pool ? kuntyped_alloc_child_top(pool, sizeof(struct KVmo))
                           : kslab_alloc((uint32_t)sizeof(struct KVmo));
     if (!v) return 0;
-    kobject_init(&v->base, KOBJ_VMO, &kvmo_ops);
+    if (pool) kobject_init_in_untyped(&v->base, KOBJ_VMO, &kvmo_ops,
+                                      (uint32_t)sizeof(struct KVmo));
+    else      kobject_init(&v->base, KOBJ_VMO, &kvmo_ops);
     for (uint32_t i = 0; i < KVMO_PAGE_SHARDS; i++)
         spinlock_init(&v->page_shards[i]);
     if (pool) {

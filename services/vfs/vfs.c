@@ -72,16 +72,7 @@ static const char *const vfs_initrd_name_table[] = {
 
 
 static inline int64_t vfs_syscall3(uint64_t num, uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    int64_t ret;
-    /* r10 (arg3) explicitly zero — see it_sys3 in the suite: a syscall that
-     * grows a fourth argument reads this register. */
-    register uint64_t _a3 __asm__("r10") = 0;
-    __asm__ volatile (
-        "syscall"
-        : "=a"(ret)
-        : "a"(num), "D"(arg0), "S"(arg1), "d"(arg2), "r"(_a3)
-        : "rcx", "r11", "memory");
-    return ret;
+    return (int64_t)iris_syscall3((long)num, (long)arg0, (long)arg1, (long)arg2);
 }
 
 static inline int64_t vfs_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1) {

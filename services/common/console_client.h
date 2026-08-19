@@ -37,11 +37,7 @@ static inline long console_ep_write(handle_id_t ep_h, uint8_t *buf,
         msg.buf_uptr = (uint64_t)(uintptr_t)buf;
         msg.buf_len  = chunk;
 
-        long ret;
-        __asm__ volatile ("syscall"
-            : "=a"(ret)
-            : "a"((long)SYS_EP_CALL), "D"((long)ep_h), "S"((long)&msg)
-            : "rcx", "r11", "memory");
+        long ret = iris_syscall2((long)SYS_EP_CALL, (long)ep_h, (long)&msg);
         if (ret != 0) return ret;
         if (msg.label != IRIS_EP_REPLY_OK) return -1;
         off += chunk;
@@ -60,11 +56,7 @@ static inline long console_ep_sync(handle_id_t ep_h) {
     uint8_t *raw = (uint8_t *)&msg;
     for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) raw[i] = 0;
     msg.label = CONSOLE_EP_OP_SYNC;
-    long ret;
-    __asm__ volatile ("syscall"
-        : "=a"(ret)
-        : "a"((long)SYS_EP_CALL), "D"((long)ep_h), "S"((long)&msg)
-        : "rcx", "r11", "memory");
+    long ret = iris_syscall2((long)SYS_EP_CALL, (long)ep_h, (long)&msg);
     if (ret != 0) return ret;
     return (msg.label == IRIS_EP_REPLY_OK) ? 0 : -1;
 }

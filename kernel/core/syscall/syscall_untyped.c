@@ -101,6 +101,81 @@ uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
+/*
+ * The two physical-region types, carved.
+ *
+ * Stage 6 Etapa 1/4: BOTH halves come from this Untyped — the region from the
+ * bottom and the object's header from the TOP, so paying for the header does
+ * not push the page-aligned carve onto the next boundary, and the header can
+ * never land inside a page that is about to be mapped into ring 3.  The header
+ * carve is what holds the child_count entry, so it is taken first: if the
+ * region carve then fails, releasing the header undoes the accounting exactly.
+ *
+ * DEVICE untypeds are the exception, and U11 is the rule they follow: a
+ * kernel object header carved from an MMIO window would put a spinlock and a
+ * refcount where loads and stores reach a device, and zero-filling the block
+ * would drive that write into the device's registers.  Their sidecar headers
+ * stay on the kernel slab — which is what a device region cost before Stage 6
+ * and still costs, because charging is for memory a holder can spend and a
+ * device window is not that.
+ */
+static iris_error_t retype_sub_untyped(struct KUntyped *ut, uint64_t obj_arg,
+                                       struct KObject **out) {
+    if (ut->is_device) {
+        uint64_t phys = kuntyped_bump_alloc_phys(ut, obj_arg);
+        if (!phys) return IRIS_ERR_NO_MEMORY;
+        struct KUntyped *sub = kuntyped_create(phys, obj_arg, 1);
+        if (!sub) return IRIS_ERR_NO_MEMORY;
+        sub->alloc_parent = ut;
+        kobject_retain(&ut->base);
+        atomic_fetch_add_explicit(&ut->child_count, 1u, memory_order_relaxed);
+        *out = &sub->base;
+        return IRIS_OK;
+    }
+
+    void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KUntyped));
+    if (!hdr) return IRIS_ERR_NO_MEMORY;
+    uint64_t phys = kuntyped_bump_alloc_phys(ut, obj_arg);
+    if (!phys) {
+        kuntyped_release_child(hdr, sizeof(struct KUntyped));
+        return IRIS_ERR_NO_MEMORY;
+    }
+    struct KUntyped *sub = kuntyped_create_at(hdr, phys, obj_arg, ut->is_device);
+    if (!sub) {
+        kuntyped_release_child(hdr, sizeof(struct KUntyped));
+        return IRIS_ERR_NO_MEMORY;
+    }
+    *out = &sub->base;
+    return IRIS_OK;
+}
+
+static iris_error_t retype_frame(struct KUntyped *ut, uint64_t obj_arg,
+                                 struct KObject **out) {
+    if (ut->is_device) {
+        uint64_t phys = kuntyped_bump_alloc_phys_page(ut, obj_arg);
+        if (!phys) return IRIS_ERR_NO_MEMORY;
+        struct KFrame *frm = kframe_alloc(phys, obj_arg, ut);
+        if (!frm) return IRIS_ERR_NO_MEMORY;
+        *out = &frm->base;
+        return IRIS_OK;
+    }
+
+    void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KFrame));
+    if (!hdr) return IRIS_ERR_NO_MEMORY;
+    uint64_t phys = kuntyped_bump_alloc_phys_page(ut, obj_arg);
+    if (!phys) {
+        kuntyped_release_child(hdr, sizeof(struct KFrame));
+        return IRIS_ERR_NO_MEMORY;
+    }
+    struct KFrame *frm = kframe_alloc_at(hdr, phys, obj_arg);
+    if (!frm) {
+        kuntyped_release_child(hdr, sizeof(struct KFrame));
+        return IRIS_ERR_NO_MEMORY;
+    }
+    *out = &frm->base;
+    return IRIS_OK;
+}
+
 uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                              uint64_t arg3) {
     iris_cptr_t ut_cptr    = (iris_cptr_t)arg0;
@@ -251,49 +326,8 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
     if (obj_type == KOBJ_UNTYPED || obj_type == KOBJ_FRAME) {
         /* Single physical-region object (count == 1, validated above). */
-        if (obj_type == KOBJ_UNTYPED) {
-            /* Stage 6 Etapa 4: header from the parent's top, region from its
-             * bottom — a delegated budget no longer costs kernel memory. */
-            void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KUntyped));
-            if (!hdr) err = IRIS_ERR_NO_MEMORY;
-            else {
-                uint64_t phys = kuntyped_bump_alloc_phys(ut, obj_arg);
-                if (!phys) {
-                    kuntyped_release_child(hdr, sizeof(struct KUntyped));
-                    err = IRIS_ERR_NO_MEMORY;
-                } else {
-                    struct KUntyped *sub = kuntyped_create_at(hdr, phys, obj_arg,
-                                                              ut->is_device);
-                    if (!sub) {
-                        kuntyped_release_child(hdr, sizeof(struct KUntyped));
-                        err = IRIS_ERR_NO_MEMORY;
-                    } else objs[0] = &sub->base;
-                }
-            }
-        } else {
-            /* Stage 6 Etapa 1: BOTH halves of a frame come from this Untyped —
-             * the page from the bottom (page-aligned) and the header from the
-             * top (so it cannot push the page carve onto the next boundary,
-             * and cannot land inside the page that is about to be mapped into
-             * ring 3).  The header carve is what holds the child_count entry,
-             * so it is taken first: if the page carve then fails, releasing
-             * the header undoes the accounting exactly. */
-            void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KFrame));
-            if (!hdr) err = IRIS_ERR_NO_MEMORY;
-            else {
-                uint64_t phys = kuntyped_bump_alloc_phys_page(ut, obj_arg);
-                if (!phys) {
-                    kuntyped_release_child(hdr, sizeof(struct KFrame));
-                    err = IRIS_ERR_NO_MEMORY;
-                } else {
-                    struct KFrame *frm = kframe_alloc_at(hdr, phys, obj_arg);
-                    if (!frm) {
-                        kuntyped_release_child(hdr, sizeof(struct KFrame));
-                        err = IRIS_ERR_NO_MEMORY;
-                    } else objs[0] = &frm->base;
-                }
-            }
-        }
+        err = (obj_type == KOBJ_UNTYPED) ? retype_sub_untyped(ut, obj_arg, &objs[0])
+                                         : retype_frame(ut, obj_arg, &objs[0]);
     } else {
         void *ptrs[KUNTYPED_RETYPE_MAX_COUNT];
         {

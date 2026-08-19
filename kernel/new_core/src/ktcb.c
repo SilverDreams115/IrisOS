@@ -45,11 +45,22 @@ static void ktcb_live_inc(void) {
  * pool + registry + resource-freeing).  Frees the backing slot for reuse. */
 void task_backing_free_on_destroy(struct task *t);
 
+/*
+ * A TCB has two possible storages and one destructor.
+ *
+ * Pool birth: the task IS a slot of the static backing array, returned to it.
+ * Untyped birth: the storage IS the retyped region, returned to its parent
+ * (child_count--, parent ref released).  Nothing else to unwind in that case —
+ * an unconfigured TCB never held a kstack, a registry slot, a process link or
+ * a sched_ctx (SC_BIND refuses unconfigured targets precisely so no reference
+ * can leak here).
+ */
 static void ktcb_obj_destroy(struct KObject *obj) {
     struct task *t = (struct task *)obj;   /* KObject at offset 0 */
     atomic_fetch_sub_explicit(&ktcb_live, 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&ktcb_destroyed, 1u, memory_order_relaxed);
-    task_backing_free_on_destroy(t);
+    if (obj->ut_block_bytes) kobject_storage_free(obj, 0u, 0);
+    else                     task_backing_free_on_destroy(t);
 }
 
 static const struct KObjectOps ktcb_ops = { .destroy = ktcb_obj_destroy };
@@ -65,27 +76,14 @@ void ktcb_object_init(struct task *t) {
 
 /* ── Fase S2 Etapa 0 — Untyped-born (canonical) KTCB ───────────────────── */
 
-/* Destructor for the untyped-born TCB: the storage IS the retyped region —
- * return the zeroed block to its parent untyped (child_count--, parent ref
- * released).  Nothing else to unwind: an unconfigured TCB never held a
- * kstack, a registry slot, a process link or a sched_ctx (SC_BIND refuses
- * unconfigured targets precisely so no reference can leak here). */
-static void ktcb_obj_destroy_ut(struct KObject *obj) {
-    struct task *t = (struct task *)obj;   /* KObject at offset 0 */
-    atomic_fetch_sub_explicit(&ktcb_live, 1u, memory_order_relaxed);
-    atomic_fetch_add_explicit(&ktcb_destroyed, 1u, memory_order_relaxed);
-    kuntyped_release_child(t, sizeof(struct task));
-}
-
-static const struct KObjectOps ktcb_ops_ut = { .destroy = ktcb_obj_destroy_ut };
-
 struct task *ktcb_alloc_at(void *mem) {
     struct task *t = (struct task *)mem;
     if (!t) return 0;
     /* Block arrives zero-filled from kuntyped_alloc_children_atomic; set only
      * the non-zero identity fields.  NOTE: TASK_READY == 0, so the state MUST
      * be set explicitly — an inactive TCB is never runnable. */
-    kobject_init(&t->base, KOBJ_TCB, &ktcb_ops_ut);  /* refcount = 1 (creator) */
+    kobject_init_in_untyped(&t->base, KOBJ_TCB, &ktcb_ops,
+                            (uint32_t)sizeof(struct task));  /* refcount = 1 (creator) */
     irq_spinlock_init(&t->obj_lock);
     t->state      = TASK_SUSPENDED;         /* inactive until TCB_CONFIGURE */
     t->ring       = TASK_RING3;
