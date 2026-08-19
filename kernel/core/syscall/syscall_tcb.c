@@ -12,6 +12,9 @@
  * SYS_TCB_SET_PRIORITY:  change a thread's scheduling priority.
  * SYS_TCB_EXIT:          forcibly terminate a thread.
  * SYS_TCB_GET_INFO:      copy struct iris_tcb_info to userland.
+ * SYS_TCB_CONFIGURE:     give a retyped (inactive) TCB its execution state,
+ *                        naming the CSpace and VSpace it runs in as capabilities.
+ * SYS_TCB_WRITE_REGS:    set where a configured, not-yet-started thread starts.
  */
 #include "syscall_priv.h"
 
@@ -55,6 +58,123 @@ uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_ok_u64(0);
 }
 
+/*
+ * SYS_TCB_CONFIGURE(tcb_cptr, cspace_cptr, vspace_cptr)
+ *
+ * The operation Fase S2 named and could not implement: a TCB retyped from an
+ * Untyped is born cap-complete but inactive — no registry slot, no kernel
+ * stack, no address space — and every execution syscall refuses it.  What was
+ * missing was not the code but the ARGUMENTS: a thread runs in a CSpace and a
+ * VSpace, and neither was addressable as a capability until Stages 3-5 made
+ * them so.
+ *
+ * Both must be the caller's own CSpace root and VSpace.  IRIS still composes a
+ * thread's authority through KProcess, so a thread in a foreign address space
+ * is process-server work (Stage 7) — accepting foreign capabilities here and
+ * quietly running the thread somewhere else would be a lie in the signature.
+ * The check is by object identity, not by convention: the caller must HOLD
+ * capabilities to the CSpace and VSpace it names, which is why SYS_CSPACE_SELF
+ * exists.
+ */
+uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                           uint64_t arg3) {
+    (void)arg3;
+    struct task *caller = task_current();
+    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    struct KProcess *proc = caller->process;
+
+    if (!cspace_only_cptr(arg1) || !cspace_only_cptr(arg2))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *target; iris_rights_t rights;
+    iris_error_t err = tcb_resolve(proc, (iris_cptr_t)arg0, RIGHT_WRITE,
+                                   &target, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    /* The CSpace argument: a real KCNode capability, which must BE this
+     * process's root.  Identity, not equivalence — a different CNode with the
+     * same contents is a different CSpace. */
+    struct KObject *cs_obj; iris_rights_t cs_rights;
+    err = cspace_resolve_only_obj(proc, (iris_cptr_t)arg1, RIGHT_NONE,
+                                  KOBJ_CNODE, &cs_obj, &cs_rights);
+    if (err != IRIS_OK) {
+        kobject_release(&target->base);
+        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    }
+    /* cspace_resolve_only_obj hands back a LIFECYCLE-only reference — it has
+     * already dropped the traversal's active ref.  Releasing an active ref
+     * here would decrement a count this call never took, and on the root CNode
+     * that is not a leak but a demolition: reaching zero active refs runs the
+     * close callback, which empties every slot of the CSpace being used. */
+    int cs_ok = ((struct KCNode *)cs_obj == proc->cspace_root);
+    kobject_release(cs_obj);
+    if (!cs_ok) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    /* The VSpace argument: likewise this process's own address space. */
+    struct KObject *vs_obj; iris_rights_t vs_rights;
+    err = cspace_resolve_only_obj(proc, (iris_cptr_t)arg2, RIGHT_NONE,
+                                  KOBJ_VSPACE, &vs_obj, &vs_rights);
+    if (err != IRIS_OK) {
+        kobject_release(&target->base);
+        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    }
+    int vs_ok = ((struct KVSpace *)vs_obj == proc->vspace);
+    kobject_release(vs_obj);
+    if (!vs_ok) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    err = ktcb_configure(target, proc);
+    kobject_release(&target->base);
+    if (err != IRIS_OK) return syscall_err(err);
+    return syscall_ok_u64(0);
+}
+
+/*
+ * SYS_TCB_WRITE_REGS(tcb_cptr, entry, sp, arg)
+ *
+ * Where a configured thread starts.  Separate from CONFIGURE because they
+ * answer different questions — what a thread IS, and what it will DO — and
+ * because a supervisor may want to configure a thread long before it decides
+ * either.  Refused once the thread has been runnable: its kernel stack then
+ * holds live state, and the entry frame lives on that stack.
+ */
+uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                            uint64_t arg3) {
+    struct task *caller = task_current();
+    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *target; iris_rights_t rights;
+    iris_error_t err = tcb_resolve(caller->process, (iris_cptr_t)arg0,
+                                   RIGHT_WRITE, &target, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    /* An unconfigured TCB has no address space to point at, so the answer is
+     * the same NOT_SUPPORTED that RESUME and EXIT give it — checked BEFORE the
+     * ownership test, which would otherwise report ACCESS_DENIED for a thread
+     * that simply has no process yet. */
+    if (!target->configured || target->terminal) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_NOT_SUPPORTED);
+    }
+    /* A thread may only be pointed at code in the address space it was
+     * configured for, and this syscall configures nothing: a target belonging
+     * to another process is refused rather than silently written. */
+    if (target->process != caller->process) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    err = ktcb_write_regs(target, arg1, arg2, arg3);
+    kobject_release(&target->base);
+    if (err != IRIS_OK) return syscall_err(err);
+    return syscall_ok_u64(0);
+}
+
 uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *caller = task_current();
@@ -92,6 +212,10 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Etapa 0: an unconfigured TCB must NEVER be made runnable — it has no
      * kstack, no registry slot, no process.  Hard refuse (charter O5/S-gate). */
     if (!target->configured) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_SUPPORTED); }
+    /* Stage 5 Etapa 4: a thread that has been runnable once holds live state
+     * on its kernel stack, so its entry frame is frozen from here on
+     * (SYS_TCB_WRITE_REGS refuses). */
+    target->started = 1;
     if (target->state == TASK_SUSPENDED)
         task_wakeup(target);
 

@@ -107,8 +107,12 @@ extern void context_switch(struct cpu_context *old,
 #define KSTACK_PAGE_SIZE 0x1000ULL
 
 void kstack_panic(const char *msg);
-int  kstack_alloc(struct task *t, int idx);
-void kstack_free (struct task *t, int idx);
+/* Stage 5 Etapa 4: the kstack slot is RECORDED in the task (t->kstack_slot),
+ * not derived from where its storage lives — a retyped TCB's storage is inside
+ * an Untyped and has no pool index.  Every executing task holds a registry
+ * slot, so the registry index is what keys the region. */
+int  kstack_alloc(struct task *t, int slot);
+void kstack_free (struct task *t);
 
 /* ── task_lifecycle.c (cross-file helpers) ───────────────────────────────── */
 

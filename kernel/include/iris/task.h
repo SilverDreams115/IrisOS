@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <iris/ipc_msg.h>
 #include <iris/nc/kobject.h>
+#include <iris/nc/error.h>
 #include <iris/nc/spinlock.h>
 
 struct KProcess;
@@ -186,8 +187,18 @@ struct task {
      * this thread is a KOBJ_TCB cap on &base.  `configured`/`terminal` flag
      * the object/execution state; `reg_slot` is the registry witness. */
     uint8_t        configured;   /* Fase S2: TCB_CONFIGURE committed */
+    uint8_t        started;      /* Stage 5: has been made runnable at least
+                                  * once — after that its kernel stack holds
+                                  * live state and the entry frame must not be
+                                  * rewritten (TCB_WRITE_REGS refuses) */
     uint8_t        terminal;     /* execution ended (TERMINATED) */
     int32_t        reg_slot;     /* registry index while registered, else -1 */
+    /* Stage 5 Etapa 4: which kernel-stack slot of the KSTACK_VIRT_BASE region
+     * this thread owns, or -1.  It used to be implied — the backing-array
+     * index of the pool slot the task was carved from — which only exists for
+     * a task that lives IN the pool.  A TCB retyped from an Untyped has no
+     * such index, so ownership is recorded instead of derived. */
+    int32_t        kstack_slot;
 
     /* SMP: CPU this task is homed to (its run queue owner).
      * Set at creation time; stays constant for the task's lifetime. */
@@ -215,6 +226,21 @@ void         task_init(void);
 struct task *task_find_by_id(uint32_t id);
 struct task *task_create(void (*entry)(void));
 struct task *task_spawn_user(uint64_t arg0);
+/* Stage 5 Etapa 4 — execution for a TCB retyped from an Untyped.
+ *
+ * ktcb_configure gives an inactive (RETYPE2-born) TCB the execution state a
+ * pool-born thread gets at creation: a registry slot, a kernel stack, FPU
+ * state and an address space.  It leaves the thread SUSPENDED — configuring
+ * is not starting — and refuses a TCB that is already configured or dead.
+ *
+ * ktcb_write_regs sets where it starts, and refuses once it has been runnable:
+ * rewriting the entry frame of a thread that has run would corrupt the kernel
+ * stack it is standing on.
+ */
+iris_error_t ktcb_configure(struct task *t, struct KProcess *proc);
+iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
+                             uint64_t arg);
+
 struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
                                 uint64_t user_rsp, uint64_t arg);
 void         task_set_bootstrap_arg0(struct task *t, uint64_t arg0);

@@ -409,6 +409,11 @@ uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_cspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                           uint64_t arg3);
+uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                            uint64_t arg3);
 uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                               uint64_t arg3);

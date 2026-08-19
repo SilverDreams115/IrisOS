@@ -129,16 +129,18 @@ static struct task *task_backing_find_free(void) {
 
 /*
  * Allocate a fresh TCB: a free backing slot (storage) plus a free registry
- * slot (scheduler identity).  *idx_out receives the BACKING array index (used
- * to address the per-slot kstack pool) — independent of the registry slot
- * chosen for t (t->reg_slot); see the Etapa C/D split above.  Returns NULL on
- * either exhaustion (backing pool full, or registry full).
+ * slot (scheduler identity).  Returns NULL on either exhaustion.
+ *
+ * Stage 5 Etapa 4: it no longer reports the BACKING index.  That index was
+ * used to address the per-slot kernel-stack region, which tied a thread's
+ * kernel stack to the fact that its storage came from the static pool — a
+ * TCB retyped from an Untyped has no such index.  The kstack is keyed by the
+ * registry slot now, which every executing thread has by definition.
  */
-static struct task *task_registry_find_free(int *idx_out) {
+static struct task *task_registry_find_free(void) {
     struct task *t = task_backing_find_free();
     if (!t) return 0;
     if (task_registry_alloc(t) != 0) return 0;
-    *idx_out = (int)(t - ktcb_backing);
     return t;
 }
 
@@ -369,6 +371,7 @@ void task_reset_slot(struct task *t) {
     t->state    = TASK_DEAD;
     t->ring     = TASK_RING0;
     t->reg_slot = -1;
+    t->kstack_slot = -1;
     t->saved_krsp = 0;
 }
 
@@ -497,6 +500,14 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     uint64_t irq_flags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(irq_flags) : : "memory");
     rq_remove(t);
+    /* Stage 5 Etapa 4: the kernel stack goes back WITH the registry slot, not
+     * later.  The stack's virtual slot is keyed by the registry index, so
+     * releasing the index first opens a window in which the next thread claims
+     * that index and maps its stack over a range this task has not unmapped
+     * yet — and then this teardown unmaps the stack the new thread is running
+     * on.  t is off-CPU here (the function's precondition), so nothing is
+     * standing on the stack being freed. */
+    kstack_free(t);
     task_registry_release(t);
     t->awaiting_reap = 0;
     t->state    = TASK_TERMINATED;
@@ -521,11 +532,8 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     unlink_task(t);
     task_release_sched_ctx(t);
 
-    /* Free the kernel stack (execution resource).  Slot index = backing index
-     * (t is within ktcb_backing[]); kstack_free tolerates an unallocated one. */
-    int idx = (int)(t - ktcb_backing);
-    kstack_free(t, idx);
-    t->kstack = 0; t->kstack_phys = 0;
+    /* The kernel stack was freed above, with the registry slot it is keyed
+     * by; these fields are already clear. */
 
     if (do_teardown)
         kprocess_free(proc);
@@ -644,7 +652,7 @@ void task_init(void) {
     idle->state = TASK_RUNNING;
     idle->next  = idle;
 
-    if (kstack_alloc(idle, 0) != 0)
+    if (kstack_alloc(idle, 0) != 0)  /* registry slot 0 */
         kstack_panic("cannot allocate idle task kstack");
 
     setup_initial_context(idle, idle_task);
@@ -659,15 +667,14 @@ void task_init(void) {
 }
 
 struct task *task_create(void (*entry)(void)) {
-    int idx = -1;
-    struct task *t = task_registry_find_free(&idx);
+    struct task *t = task_registry_find_free();
     if (!t) return 0;
 
     /* No task_reset_slot(t) here: task_backing_find_free only ever returns a
      * slot with state == TASK_DEAD, which is only reached already fully
      * zeroed (task_init at boot, or task_backing_free_on_destroy at death) —
      * re-zeroing now would wipe the t->reg_slot task_registry_alloc just set. */
-    if (kstack_alloc(t, idx) != 0) return 0;
+    if (kstack_alloc(t, t->reg_slot) != 0) return 0;
 
     task_init_fpu_state(t);
     t->id         = next_id++;
@@ -710,7 +717,6 @@ void task_set_bootstrap_arg0(struct task *t, uint64_t arg0) {
 
 static struct task *task_create_user_impl(uint64_t arg0) {
     struct task *t = 0;
-    int idx = -1;
     struct KProcess *proc = 0;
     uint64_t ustack_phys = 0;
     uint32_t ustack_pages = (uint32_t)((USER_STACK_SIZE / 4096ULL) - USER_STACK_GUARD_PAGES);
@@ -721,11 +727,11 @@ static struct task *task_create_user_impl(uint64_t arg0) {
 
     if (!initrd_bootstrap_image(&ub_data, &ub_size) || ub_size == 0) return 0;
 
-    t = task_registry_find_free(&idx);
+    t = task_registry_find_free();
     if (!t) return 0;
 
     /* No task_reset_slot(t) here — see task_create. */
-    if (kstack_alloc(t, idx) != 0) return 0;
+    if (kstack_alloc(t, t->reg_slot) != 0) return 0;
 
     task_init_fpu_state(t);
     t->id         = next_id++;
@@ -882,7 +888,7 @@ fail:
          * (task_reset_slot no longer frees the kstack or touches the
          * registry; see task_execution_teardown_off_cpu for the normal
          * teardown this mirrors). */
-        kstack_free(t, (int)(t - ktcb_backing));
+        kstack_free(t);
         t->kstack = 0; t->kstack_phys = 0;
         task_registry_release(t);
         task_reset_slot(t);
@@ -905,13 +911,11 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
                                 uint64_t user_rsp, uint64_t arg) {
     if (!proc || !proc->cr3 || proc->teardown_complete) return 0;
 
-    struct task *t = 0;
-    int idx = -1;
-    t = task_registry_find_free(&idx);
+    struct task *t = task_registry_find_free();
     if (!t) return 0;
 
     /* No task_reset_slot(t) here — see task_create. */
-    if (kstack_alloc(t, idx) != 0) return 0;
+    if (kstack_alloc(t, t->reg_slot) != 0) return 0;
     task_init_fpu_state(t);
     t->id         = next_id++;
     t->state      = TASK_READY;
@@ -957,6 +961,99 @@ struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
     task_list_tail       = t;
 
     return t;
+}
+
+/* ── Stage 5 Etapa 4: execution for a TCB born from an Untyped ──────────────
+ *
+ * RETYPE2(KOBJ_TCB) has produced cap-complete but INACTIVE threads since
+ * Fase S2: a full capability citizen with no registry slot, no kernel stack
+ * and no address space, refused by every execution syscall.  What was missing
+ * was the operation that gives it those — and it was missing because its
+ * arguments are capabilities (a CSpace root and a VSpace) that only became
+ * addressable as capabilities in Stages 3-5.
+ *
+ * ktcb_configure builds exactly the execution state task_thread_create builds
+ * for a pool-born thread, in the same order, minus the storage: the caller
+ * already owns storage inside its Untyped.  The thread is left SUSPENDED —
+ * configuring a thread does not start it, and TCB_WRITE_REGS still has to say
+ * where it starts.
+ */
+iris_error_t ktcb_configure(struct task *t, struct KProcess *proc) {
+    if (!t || !proc || !proc->cr3 || proc->teardown_complete)
+        return IRIS_ERR_INVALID_ARG;
+    if (t->configured || t->terminal) return IRIS_ERR_ALREADY_EXISTS;
+
+    if (task_registry_alloc(t) != 0) return IRIS_ERR_NO_MEMORY;
+    if (kstack_alloc(t, t->reg_slot) != 0) {
+        task_registry_release(t);
+        return IRIS_ERR_NO_MEMORY;
+    }
+
+    task_init_fpu_state(t);
+    t->id         = next_id++;
+    t->state      = TASK_SUSPENDED;   /* configured is not started */
+    t->ring       = TASK_RING3;
+    t->time_slice = TASK_DEFAULT_SLICE;
+    t->ticks_left = TASK_DEFAULT_SLICE;
+    t->home_cpu   = 0;
+    t->process    = proc;
+    proc->thread_count++;
+
+    /* Linked into the global task list like every other thread: the list is
+     * what the timeout/fault sweeps walk, and a thread that can run must be
+     * visible to them from the moment it can. */
+    task_list_tail->next = t;
+    t->next              = task_list_head;
+    task_list_tail       = t;
+
+    /* The scheduler's live-count is a creation-time fact, not a run-queue one:
+     * teardown decrements it unconditionally, so a thread that skipped the
+     * increment would underflow the counter the moment it exited. */
+    atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
+
+    t->configured = 1;
+    return IRIS_OK;
+}
+
+/*
+ * Set where a configured thread starts.  Same frame task_thread_create builds:
+ * an iretq frame on the kernel stack under the ring-3 trampoline, so the first
+ * context switch into this thread returns to user mode at `entry` with `sp`
+ * and `arg` in the ABI's places.
+ *
+ * Refused once the thread has run: rewriting the entry frame of a live thread
+ * would corrupt the kernel stack it is standing on.  Registers of a RUNNING
+ * thread are a suspend-and-write operation, which IRIS does not have yet.
+ */
+iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
+                             uint64_t arg) {
+    if (!t) return IRIS_ERR_INVALID_ARG;
+    if (!t->configured || t->terminal) return IRIS_ERR_NOT_SUPPORTED;
+    if (t->state != TASK_SUSPENDED || t->started) return IRIS_ERR_BUSY;
+    if (!t->kstack) return IRIS_ERR_NOT_SUPPORTED;
+
+    t->user_entry = entry;
+    t->user_rsp   = sp;
+
+    uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
+    kstack_top &= ~0xFULL;
+
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;   /* SS: user data */
+    kstack_top -= 8; *(uint64_t *)kstack_top = sp;
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202; /* RFLAGS: IF */
+    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;   /* CS: user code */
+    kstack_top -= 8; *(uint64_t *)kstack_top = entry;
+    kstack_top -= 8; *(uint64_t *)kstack_top =
+        (uint64_t)(uintptr_t)user_entry_trampoline;
+
+    t->saved_krsp = kstack_top;
+
+    t->ctx.r15 = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
+    t->ctx.rbp = 0;
+    t->ctx.rbx = arg;
+    t->ctx.rip = (uint64_t)(uintptr_t)user_entry_trampoline;
+    t->ctx.rflags = 0x202ULL;
+    return IRIS_OK;
 }
 
 /* ── Task termination ────────────────────────────────────────────────────── */

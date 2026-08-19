@@ -59,6 +59,7 @@ void ktcb_object_init(struct task *t) {
     kobject_init(&t->base, KOBJ_TCB, &ktcb_ops);  /* refcount = 1 (execution ref) */
     irq_spinlock_init(&t->obj_lock);
     t->configured = 1;   /* pool birth: execution state built by the creator */
+    t->started    = 1;   /* ...and already runnable: its entry frame is set */
     ktcb_live_inc();
 }
 
@@ -91,6 +92,8 @@ struct task *ktcb_alloc_at(void *mem) {
     t->priority   = TASK_PRIORITY_DEFAULT;
     t->reg_slot   = -1;                     /* no scheduler identity */
     t->configured = 0;                      /* execution gate: stays closed */
+    t->started    = 0;                      /* never runnable yet */
+    t->kstack_slot = -1;                    /* owns no kernel-stack slot */
     ktcb_live_inc();
     return t;
 }

@@ -66,11 +66,32 @@ void init_selftest_exception(void) {
         init_log("[USER][INIT][S8] SKIP: handler reg\n"); return;
     }
 
-    /* Spawn a thread that immediately executes ud2 (#UD, vector 6) */
+    /* Spawn a thread that immediately executes ud2 (#UD, vector 6).
+     *
+     * Stage 5 Etapa 4: the thread is a TCB RETYPED from init's own Untyped and
+     * configured with capabilities to the CSpace and VSpace it runs in — the
+     * kernel's static task pool is not reachable from userland any more.  Each
+     * step can fail on its own, and each failure is a SKIP rather than a
+     * silent non-test. */
     uint64_t entry = (uint64_t)(uintptr_t)s8_ud2_fn;
     uint64_t rsp   = (uint64_t)(uintptr_t)(s8_thread_stack + sizeof(s8_thread_stack));
-    tid_raw = init_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    if (init_sys1(SYS_CSPACE_SELF,
+                  (long)((uint64_t)INIT_SLOT_OWN_CSPACE << 32)) != 0 ||
+        init_sys1(SYS_VSPACE_SELF,
+                  (long)((uint64_t)INIT_SLOT_OWN_VSPACE << 32)) != 0) {
+        init_log("[USER][INIT][S8] SKIP: self caps\n"); return;
+    }
+    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_S8_TCB);
+    tid_raw = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_TCB,
+                               INIT_SLOT_S8_TCB, 0);
     if (tid_raw < 0) {
+        init_log("[USER][INIT][S8] SKIP: tcb retype\n"); return;
+    }
+    if (init_sys3(SYS_TCB_CONFIGURE, (long)INIT_SLOT_S8_TCB,
+                  (long)INIT_SLOT_OWN_CSPACE, (long)INIT_SLOT_OWN_VSPACE) != 0 ||
+        init_sys4(SYS_TCB_WRITE_REGS, (long)INIT_SLOT_S8_TCB,
+                  (long)entry, (long)rsp, 0) != 0 ||
+        init_sys1(SYS_TCB_RESUME, (long)INIT_SLOT_S8_TCB) != 0) {
         init_log("[USER][INIT][S8] SKIP: thread create\n"); return;
     }
 

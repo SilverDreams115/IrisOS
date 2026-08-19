@@ -49,7 +49,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 | A2 | CSpace is the ONLY persistent authority namespace | **MET** — Stage 4: the handle table is DELETED (`HandleTable`, `KProcess.handle_table`, the implementation and its unit suite are gone).  There is one namespace |
 | A3 | CPtr is the only capability identifier exposed productively | **MET** — Stage 4: the eight handle syscalls are retired to `NOT_SUPPORTED`, every creator requires a destination slot, and a CPtr addresses exactly one capability (leftover bits are `INVALID_ARG`) |
 | A4 | No productive handles exist in the final state | **MET** — Stage 4: no handle is produced anywhere.  `iris_test` T095 pins handle-live, handle-delivery and TOCTOU at structural zero |
-| A5 | No ambient authority exists | PARTIAL — ioport whitelist, kernel quotas (ledger).  Improved in Fase S4: device caps (KIrqCap/KIoPort) are no longer fabricated into a handle table — they are published into CSpace as MDB children of the authorising bootstrap-cap slot, so device authority is traceable and revocable.  The KDEBUG scan is GONE (Etapa 4): `SYS_KLOG_DRAIN`/`SYS_SCHED_INFO`/`SYS_POWEROFF` used to search the caller's handle table for any bootstrap cap bearing KDEBUG — the caller named nothing — and now require the capability as a CPtr argument, with no fallback |
+| A5 | No ambient authority exists | PARTIAL — ioport whitelist, kernel quotas (ledger).  **Stage 5**: boot authority is fine-grained and NAMED — six capabilities, one authority each, matched by exact equality, and a monolithic boot capability cannot be constructed (`kbootcap_alloc` refuses a multi-bit kind); `SYS_BOOTCAP_RESTRICT` is retired.  Improved in Fase S4: device caps (KIrqCap/KIoPort) are no longer fabricated into a handle table — they are published into CSpace as MDB children of the authorising bootstrap-cap slot, so device authority is traceable and revocable.  The KDEBUG scan is GONE (Etapa 4): `SYS_KLOG_DRAIN`/`SYS_SCHED_INFO`/`SYS_POWEROFF` used to search the caller's handle table for any bootstrap cap bearing KDEBUG — the caller named nothing — and now require the capability as a CPtr argument, with no fallback |
 | A6 | `ACCESS_DENIED` never falls back to another namespace | MET — vacuously, since Stage 4: there is no other namespace to fall back to.  A value that is not a CPtr is `INVALID_ARG` |
 | A7 | Rights are only kept or reduced; mint never amplifies | MET (`rights_reduce`, collapse to NONE rejected) |
 | A8 | Badges are kernel-sealed identity; a badged cap is never re-badged | MET |
@@ -60,7 +60,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 
 | # | Invariant | Today |
 |---|---|---|
-| O1 | Every canonical object is born from Untyped via retype | PARTIAL — EP/Notif/Reply/CNode/SC/TCB via RETYPE2; TCB execution, Frame header, VSpace, page tables still pending (Stages 5/6 — see amendment A-1) |
+| O1 | Every canonical object is born from Untyped via retype | PARTIAL — EP/Notif/Reply/CNode/SC/TCB via RETYPE2, and since **Stage 5** a retyped TCB EXECUTES (`SYS_TCB_CONFIGURE`/`WRITE_REGS`; `SYS_THREAD_CREATE` retired), so no thread is carved from the static pool except a spawned process's first one (Stage 7).  Frame header, VSpace and page tables still pending (Stage 6 — see amendment A-1) |
 | O2 | The object's storage belongs to the Untyped that produced it | MET for the RETYPE2 family |
 | O3 | The last capability does not destroy an object with active execution | MET — the scheduler holds its own execution reference |
 | O4 | A terminated object stays observable while a valid cap exists | MET (TERMINATED TCB answers GET_INFO) |
@@ -157,8 +157,12 @@ proven:
       that remains is "CPtr or malformed".
 - [x] Zero productive handles; handle table removed — **Stage 4**.  Not
       reduced to zero consumers: deleted.
-- [ ] Bootstrap with fine-grained capabilities (structured BootInfo; no
-      monolithic `KBootstrapCap`).
+- [x] Bootstrap with fine-grained capabilities (structured BootInfo; no
+      monolithic `KBootstrapCap`) — **Stage 5**.  The root task reads a
+      structured BootInfo region describing every capability the kernel
+      installed in its CSpace (including its own root CNode and thread), and
+      boot authority is six capabilities of one authority each.  The monolith
+      is unrepresentable, not merely unused.
 - [ ] All canonical objects born from Untyped (including the executing TCB,
       page tables, VSpace, Frame headers).
 - [ ] No authority object identified by PID or global index.

@@ -21,8 +21,8 @@ void kstack_panic(const char *msg) {
     for (;;) __asm__ volatile ("hlt");
 }
 
-int kstack_alloc(struct task *t, int idx) {
-    uint64_t virt_base = KSTACK_VIRT_BASE + (uint64_t)idx * KSTACK_SLOT_SIZE;
+int kstack_alloc(struct task *t, int slot) {
+    uint64_t virt_base = KSTACK_VIRT_BASE + (uint64_t)slot * KSTACK_SLOT_SIZE;
     uint64_t phys = pmm_alloc_pages(2);
     if (phys == 0) return -1;
 
@@ -37,17 +37,20 @@ int kstack_alloc(struct task *t, int idx) {
         return -1;
     }
 
-    t->kstack      = (uint8_t *)(uintptr_t)virt_pg0;
-    t->kstack_phys = phys;
+    t->kstack       = (uint8_t *)(uintptr_t)virt_pg0;
+    t->kstack_phys  = phys;
+    t->kstack_slot  = (int32_t)slot;
     return 0;
 }
 
-void kstack_free(struct task *t, int idx) {
-    if (!t->kstack || t->kstack_phys == 0) return;
-    uint64_t virt_base = KSTACK_VIRT_BASE + (uint64_t)idx * KSTACK_SLOT_SIZE;
+void kstack_free(struct task *t) {
+    if (!t->kstack || t->kstack_phys == 0 || t->kstack_slot < 0) return;
+    uint64_t virt_base = KSTACK_VIRT_BASE +
+                         (uint64_t)t->kstack_slot * KSTACK_SLOT_SIZE;
     paging_unmap_in(kernel_cr3, virt_base + KSTACK_PAGE_SIZE);
     paging_unmap_in(kernel_cr3, virt_base + KSTACK_PAGE_SIZE * 2);
     pmm_free_contig(t->kstack_phys, 2);
     t->kstack      = 0;
     t->kstack_phys = 0;
+    t->kstack_slot = -1;
 }

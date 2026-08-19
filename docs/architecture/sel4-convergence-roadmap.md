@@ -16,7 +16,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 2 — CSpace-only cap transfer | ✅ CLOSED (Fase S4) |
 | 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
 | 4 — Dual namespace retirement | ✅ CLOSED |
-| 5 — seL4-like bootstrap | 🔄 OPEN (Etapa 1 landed) |
+| 5 — seL4-like bootstrap | ✅ CLOSED |
 | 6 — Remaining memory and objects | pending |
 | 7 — KProcess retirement | pending |
 | 8 — Full MCS scheduling | pending |
@@ -26,7 +26,10 @@ path still depends on the mechanism it retires (charter §3.10).
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
 A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
 (scheduling); **M2–M5** (memory); **P1, P3** (policy).  Still open: **A5** and
-**P2** (Stages 5–7), **O1** and **M1** (Stages 5–6).
+**P2** (Stages 6–7), **O1** and **M1** (Stage 6).  Stage 5 moved A5 most of the
+way — boot authority is fine-grained and named, the monolith cannot be
+constructed — leaving the ioport whitelist and the kernel's per-process quotas
+as the remaining ambient policy.
 
 ## Stage 0 — TCB consolidation  ✅ CLOSED (Fase S2 inc.2)
 
@@ -394,7 +397,7 @@ left, and three separate bring-up failures during Fase S4 were slot
 collisions.  Removing the split frees the full 64-bit CPtr space and makes
 real CSpace hierarchies possible.
 
-## Stage 5 — seL4-like bootstrap  🔄 OPEN
+## Stage 5 — seL4-like bootstrap  ✅ CLOSED
 
 Precondition: Stage 4 (the initial caps can only be CSpace now).
 Design: `docs/architecture/stage5-root-task-bootinfo.md`.
@@ -499,6 +502,36 @@ references — a cycle cannot be collected by a refcount the cycle is holding up
 BC-11..BC-13 pin it, negative control included.  ASID/PCID control is
 deliberately NOT added: no operation exists for it to authorise until VSpaces
 are retyped from Untyped (Stage 6).
+
+### Etapa 4 — a retyped TCB executes  ✅ DONE
+
+`RETYPE2(KOBJ_TCB)` produced inactive threads from Fase S2 onward; what was
+missing was not code but ARGUMENTS — a thread runs in a CSpace and a VSpace,
+and neither was addressable as a capability until Stages 3–5.  Three CPtr-only
+syscalls close it: `SYS_CSPACE_SELF` (119, a capability to the caller's own
+root CNode — the CNode counterpart of `SYS_TCB_SELF`), `SYS_TCB_CONFIGURE`
+(120) and `SYS_TCB_WRITE_REGS` (121).
+
+`SYS_THREAD_CREATE` (48) is RETIRED with its number reserved: it carved a
+thread from the kernel's static pool and returned a global thread id — no
+capability authorised it, no Untyped paid for the storage, and the identity was
+an array index (charter §3.4/§3.5).  Every in-tree thread is now retyped,
+configured with capabilities, and started; creation returns a capability in a
+slot.  `SYS_THREAD_START` (a spawned process's FIRST thread) remains the last
+pool-born execution path and is Stage 7 work — a spawner cannot yet name its
+child's CSpace and VSpace.
+
+Two lifecycle defects surfaced and were fixed: the kernel stack was keyed by
+the task's position in the static pool (a retyped TCB has none — it is recorded
+per task now and keyed by the registry slot), and teardown released the
+registry slot before freeing the stack, so a new thread could map its stack
+over a range the dying one still unmapped afterwards.  Covered by T297 plus
+every threaded test in the suite.
+
+**Stage 5 closing criterion met**: the root task receives a structured BootInfo
+and fine-grained capabilities, no monolithic bootstrap object remains to
+restrict, and the executing TCB is a retyped object configured through
+capabilities.
 
 ## Stage 6 — Remaining memory and objects
 

@@ -578,17 +578,15 @@
 #define SYS_WAIT_ANY_TIMEOUT 72  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 
 /*
- * Thread creation — modern/conforming (iris_error_t).
+ * SYS_THREAD_CREATE (48) — RETIRED (Stage 5 Etapa 4).  Number permanently
+ * reserved; returns IRIS_ERR_NOT_SUPPORTED.
  *
- * SYS_THREAD_CREATE(entry_vaddr, user_rsp, arg) → tid or negative iris_error_t
- *   entry_vaddr: user virtual address where the new thread begins executing.
- *   user_rsp:    user stack pointer for the new thread; must be 8-byte aligned.
- *                Caller is responsible for allocating a stack (e.g. via VMO).
- *   arg:         value delivered to the thread in RBX on first execution.
- *   Returns the new thread's task ID (≥ 0) on success.
- *   The new thread shares the caller's KProcess: same address space and
- *   handle table.  No new process is created.
- *   Use SYS_THREAD_EXIT or SYS_EXIT to terminate the thread.
+ * It carved a thread from the kernel's static task pool and returned a global
+ * thread id: no capability authorised it, no Untyped paid for the storage, and
+ * the identity it returned was an index into a kernel array.  Threads are
+ * retyped from an Untyped and configured with CSpace/VSpace capabilities now
+ * (SYS_TCB_CONFIGURE / SYS_TCB_WRITE_REGS / SYS_TCB_RESUME), and what comes
+ * back is a capability in a slot.
  */
 #define SYS_THREAD_CREATE  48
 
@@ -1147,6 +1145,42 @@
  */
 #define SYS_CAP_IDENTIFY     117
 #define SYS_CAP_SAME_OBJECT  118
+
+/*
+ * Stage 5 Etapa 4 — execution for a TCB retyped from an Untyped.
+ *
+ * RETYPE2(KOBJ_TCB) has produced cap-complete but INACTIVE threads since
+ * Fase S2: no registry slot, no kernel stack, no address space, refused by
+ * every execution syscall.  The operation that gives them those was missing
+ * because ITS ARGUMENTS ARE CAPABILITIES — a CSpace root and a VSpace — and
+ * those only became addressable as capabilities in Stages 3-5.
+ *
+ * SYS_CSPACE_SELF(dest) → 0 or negative iris_error_t
+ *   Publishes a capability to the CALLER'S OWN root CNode into `dest`
+ *   (RETYPE2 packing: CNode in the low 32 bits, slot in the high 32).
+ *   The CNode counterpart of SYS_TCB_SELF: self-introspection, no delegation
+ *   implied, and no way to name anyone else's CSpace.  It exists because
+ *   SYS_TCB_CONFIGURE takes the CSpace as a capability, and a process that
+ *   could not name its own root CNode would have had to be handed a
+ *   convention instead of an argument.
+ *
+ * SYS_TCB_CONFIGURE(tcb_cptr, cspace_cptr, vspace_cptr) → 0 or iris_error_t
+ *   tcb_cptr:    KOBJ_TCB with RIGHT_WRITE; must be unconfigured.
+ *   cspace_cptr: KOBJ_CNODE — the root CNode the thread resolves CPtrs in.
+ *   vspace_cptr: KOBJ_VSPACE — the address space it runs in.
+ *   Both must be the caller's OWN CSpace root and VSpace: a thread in a
+ *   foreign address space is process-server work (Stage 7), and accepting the
+ *   capabilities without being able to honour them would be a lie in the
+ *   signature.  The thread is left SUSPENDED — configuring is not starting.
+ *
+ * SYS_TCB_WRITE_REGS(tcb_cptr, entry, sp, arg) → 0 or iris_error_t
+ *   Sets where a configured thread starts.  Refused once it has been made
+ *   runnable: rewriting the entry frame of a thread that has run would
+ *   corrupt the kernel stack it is standing on.
+ */
+#define SYS_CSPACE_SELF      119
+#define SYS_TCB_CONFIGURE    120
+#define SYS_TCB_WRITE_REGS   121
 
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u

@@ -167,6 +167,10 @@ static long it_retype2_at(long ut, uint32_t obj_type, uint32_t slot,
         else                                     (m).src_h    = (handle_id_t)_v; \
     } while (0)
 
+/* Stage 5 Etapa 4: threads are retyped from an Untyped and configured with
+ * CSpace/VSpace capabilities — defined next to the VSpace helpers it needs. */
+static long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg);
+
 static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
     uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
                                              __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
@@ -713,7 +717,7 @@ static void test_t015(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t015_server;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t015_stack + sizeof(g_t015_stack))) & ~0xFULL;
-    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) {
         it_close(&g_t015_ep_h);
         it_fail("T015", "thread create"); return;
@@ -783,7 +787,7 @@ static void test_t016(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t016_server;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t016_stack + sizeof(g_t016_stack))) & ~0xFULL;
-    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) {
         it_close(&g_t016_ep_h);
         it_fail("T016", "thread create"); return;
@@ -866,7 +870,7 @@ static void test_t019(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t019_thread;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t019_stack + sizeof(g_t019_stack))) & ~0xFULL;
-    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) {
         it_slot_delete((uint32_t)g_t019_ep_h);
         g_t019_ep_h = HANDLE_INVALID;
@@ -929,7 +933,7 @@ static void test_t020(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t020_thread;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t020_stack + sizeof(g_t020_stack))) & ~0xFULL;
-    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) {
         it_close(&ep2_h);
         it_close(&g_t020_ep_h);
@@ -985,7 +989,7 @@ static void test_t021(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t021_client;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t021_stack + sizeof(g_t021_stack))) & ~0xFULL;
-    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) {
         it_close(&g_t021_ep_h);
         it_fail("T021", "thread create"); return;
@@ -1092,7 +1096,7 @@ static void test_t022(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t022_server;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t022_stack + sizeof(g_t022_stack))) & ~0xFULL;
-    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) {
         it_close(&g_t022_ep_h);
         it_fail("T022", "thread create"); return;
@@ -1207,7 +1211,7 @@ static void test_t024(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t024_client;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t024_stack + sizeof(g_t024_stack))) & ~0xFULL;
-    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) {
         it_close(&g_t024_ep_h);
         it_fail("T024", "thread create"); return;
@@ -1299,7 +1303,7 @@ static void test_t025(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t025_client;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t025_stack + sizeof(g_t025_stack))) & ~0xFULL;
-    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) {
         it_close(&g_t025_ep_h);
         it_fail("T025", "thread create"); return;
@@ -2816,7 +2820,7 @@ static void test_t074(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t074_server;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t074_stack + sizeof(g_t074_stack))) & ~0xFULL;
-    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) { it_close(&g_t074_ep_h); it_fail("T074", "thread create"); return; }
     handle_id_t tid_h = (handle_id_t)tid;
 
@@ -3480,7 +3484,7 @@ static void test_t083(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t083_helper;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t083_stack + sizeof(g_t083_stack))) & ~0xFULL;
-    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) { it_fail("T083", "thread create"); return; }
 
     for (int i = 0; i < 200 && !g_t083_ready; i++) it_sys0(SYS_YIELD);
@@ -3497,11 +3501,16 @@ static void test_t083(void) {
                       T083_SLOT_TCB_RO, (long)tcb_h, (long)RIGHT_READ) != 0)
         ok = 0;
 
-    /* GET_INFO by CPtr (both slots — READ suffices); handle path unchanged. */
-    struct iris_tcb_info info;
+    /* GET_INFO by CPtr (both slots — READ suffices).
+     * Stage 5 Etapa 4: thread creation returns a capability, not a global
+     * thread id, so the identity checked here is the one the helper's own TCB
+     * capability reports — the two CPtrs must name the SAME object. */
+    struct iris_tcb_info info, self_info;
+    if (ok && it_sys2(SYS_TCB_GET_INFO, (long)tcb_h,
+                      (long)(uintptr_t)&self_info) != 0) ok = 0;
     if (ok && it_sys2(SYS_TCB_GET_INFO, T083_SLOT_TCB,
                       (long)(uintptr_t)&info) != 0) ok = 0;
-    if (ok && info.task_id != (uint32_t)tid) ok = 0;
+    if (ok && info.task_id != self_info.task_id) ok = 0;
     if (ok && it_sys2(SYS_TCB_GET_INFO, T083_SLOT_TCB_RO,
                       (long)(uintptr_t)&info) != 0) ok = 0;
     if (ok && it_sys2(SYS_TCB_GET_INFO, (long)tcb_h,
@@ -3645,7 +3654,7 @@ static void test_t084(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t084_sender;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t084_stack + sizeof(g_t084_stack))) & ~0xFULL;
-    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+    if (it_thread_create(entry, rsp, 0) < 0) {
         it_close(&epx_h); it_close(&g_t084_cmd_ep);
         it_fail("T084", "thread create"); return;
     }
@@ -3730,7 +3739,7 @@ static void test_t085(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t085_sender;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t085_stack + sizeof(g_t085_stack))) & ~0xFULL;
-    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+    if (it_thread_create(entry, rsp, 0) < 0) {
         it_close(&n_h); it_close(&g_t085_cmd_ep);
         it_fail("T085", "thread create"); return;
     }
@@ -3816,7 +3825,7 @@ static void test_t086(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t086_sender;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t086_stack + sizeof(g_t086_stack))) & ~0xFULL;
-    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+    if (it_thread_create(entry, rsp, 0) < 0) {
         it_close(&n_h); it_close(&g_t086_cmd_ep);
         it_fail("T086", "thread create"); return;
     }
@@ -3942,7 +3951,7 @@ static void test_t087(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t087_server;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t087_stack + sizeof(g_t087_stack))) & ~0xFULL;
-    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+    if (it_thread_create(entry, rsp, 0) < 0) {
         it_close(&nA_h); it_close(&nB_h); it_close(&g_t087_ep);
         it_fail("T087", "thread create"); return;
     }
@@ -4072,7 +4081,7 @@ static void test_t088(void) {
     {
         uint64_t entry = (uint64_t)(uintptr_t)t088_recv1;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack1 + sizeof(g_t088_stack1))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) ok = 0;
+        if (it_thread_create(entry, rsp, 0) < 0) ok = 0;
         for (int i = 0; i < 200 && !g_t088_r1_ready; i++) it_sys0(SYS_YIELD);
         it_sys1(SYS_SLEEP, 2);            /* let it block in EP_RECV */
         if (ok && (g_t088_r1_tcb < 0 ||
@@ -4092,7 +4101,7 @@ static void test_t088(void) {
     if (ok) {
         uint64_t entry = (uint64_t)(uintptr_t)t088_recv2;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack2 + sizeof(g_t088_stack2))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) ok = 0;
+        if (it_thread_create(entry, rsp, 0) < 0) ok = 0;
         it_sys1(SYS_SLEEP, 2);            /* receiver blocks FIRST */
         long c = it_xfer_dup( n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
         if (c < 0) ok = 0;
@@ -4118,7 +4127,7 @@ static void test_t088(void) {
     if (ok) {
         uint64_t entry = (uint64_t)(uintptr_t)t088_recv3;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack3 + sizeof(g_t088_stack3))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) ok = 0;
+        if (it_thread_create(entry, rsp, 0) < 0) ok = 0;
         it_sys1(SYS_SLEEP, 2);            /* let it block with slot 41 declared */
         it_close(&g_t088_ep2);            /* close wakes the blocked receiver */
         for (int i = 0; i < 200 && !g_t088_r3_done; i++) it_sys0(SYS_YIELD);
@@ -4500,6 +4509,64 @@ static int it_setup_self_vspace(void) {
 /* Test VSpace CPtr and a reserved self-map VA window (page-aligned, inside the
  * user private window, clear of the VMO test VAs at 0x8050/0x8060/0x8061). */
 #define IT_VS       ((long)IRIS_CPTR_TEST_VSPACE)
+
+/* ── Stage 5 Etapa 4: a thread born from an Untyped ────────────────────────
+ *
+ * it_thread_create replaces SYS_THREAD_CREATE, which carved a thread out of
+ * the kernel's static task pool: no capability was involved, no Untyped paid
+ * for the storage, and the resulting thread existed because the kernel had a
+ * free slot rather than because the caller held the authority and the memory.
+ *
+ * The sequence is the seL4 one, and every step names a capability:
+ *   RETYPE2(KOBJ_TCB)     — storage carved from the suite's own Untyped;
+ *   SYS_CSPACE_SELF       — a capability to the CSpace the thread will use;
+ *   SYS_TCB_CONFIGURE     — CSpace + VSpace, given as capabilities;
+ *   SYS_TCB_WRITE_REGS    — where it starts;
+ *   SYS_TCB_RESUME        — and only then does it run.
+ *
+ * Returns the TCB CPtr (in a leaf of the suite's second-level CNode), or a
+ * negative error.  The thread's storage returns to the Untyped when the last
+ * capability to it goes and its execution has ended — the rotating leaf pool
+ * does that on reuse.
+ */
+static uint64_t g_it_cspace_c;        /* capability to our own root CNode */
+
+/* Leaf 255 of the object CNode: OUTSIDE the rotating pool (leaves 1..200), so
+ * the capability the suite holds to its own CSpace is not recycled out from
+ * under it a hundred fabrications later — which is precisely what happened
+ * during bring-up, and showed up as thread creation failing with NOT_FOUND in
+ * the second half of the run. */
+#define IT_CSPACE_LEAF 255u
+
+static long it_cspace_self(void) {
+    if (g_it_cspace_c != 0u) return (long)g_it_cspace_c;
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)IT_CSPACE_LEAF);
+    long r = it_sys1(SYS_CSPACE_SELF,
+                     (long)((uint64_t)IT_OBJ_CNODE_SLOT |
+                            ((uint64_t)IT_CSPACE_LEAF << 32)));
+    if (r != 0) return r;
+    g_it_cspace_c = (uint64_t)IT_OBJ_CPTR(IT_CSPACE_LEAF);
+    return (long)g_it_cspace_c;
+}
+
+static long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
+    if (!it_setup_self_vspace()) return (long)IRIS_ERR_NOT_FOUND;
+    long cs = it_cspace_self();
+    if (cs < 0) return cs;
+
+    long tcb = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                    IRIS_KOBJ_TCB, 0);
+    if (tcb < 0) return tcb;
+
+    long r = it_sys3(SYS_TCB_CONFIGURE, tcb, cs, IT_VS);
+    if (r != 0) return r;
+    r = it_sys4(SYS_TCB_WRITE_REGS, tcb, (long)entry, (long)rsp, (long)arg);
+    if (r != 0) return r;
+    r = it_sys1(SYS_TCB_RESUME, tcb);
+    if (r != 0) return r;
+    return tcb;
+}
+
 #define T133_VA     0x8070000000ULL
 #define T134_VA     0x8071000000ULL
 #define T135_VA_X   0x8072000000ULL
@@ -4621,7 +4688,7 @@ static void test_t094(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t094_recv;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t094_stack + sizeof(g_t094_stack))) & ~0xFULL;
-    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+    if (it_thread_create(entry, rsp, 0) < 0) {
         ok = 0; why = "thread create";
     }
     for (int i = 0; i < 200 && !g_t094_ready; i++) it_sys0(SYS_YIELD);
@@ -5345,7 +5412,7 @@ static void test_t103(void) {
         uint64_t entry = (uint64_t)(uintptr_t)t103_sender;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t103_stack + sizeof(g_t103_stack))) & ~0xFULL;
         /* returns a task id, not a handle — nothing to close */
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+        if (it_thread_create(entry, rsp, 0) < 0) {
             ok = 0; why = "thread";
         }
     }
@@ -5432,7 +5499,7 @@ static void test_t104(void) {
         uint64_t entry = (uint64_t)(uintptr_t)t104_caller;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t104_stack + sizeof(g_t104_stack))) & ~0xFULL;
         /* returns a task id, not a handle — nothing to close */
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+        if (it_thread_create(entry, rsp, 0) < 0) {
             ok = 0; why = "thread";
         }
     }
@@ -5507,7 +5574,7 @@ static void test_t105(void) {
         uint64_t entry = (uint64_t)(uintptr_t)t105_caller;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t105_stack + sizeof(g_t105_stack))) & ~0xFULL;
         /* returns a task id, not a handle — nothing to close */
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+        if (it_thread_create(entry, rsp, 0) < 0) {
             ok = 0; why = "thread";
         }
     }
@@ -5623,8 +5690,8 @@ static void test_t106(void) {
         uint64_t ra = ((uint64_t)(uintptr_t)(g_t106_stack_a + sizeof(g_t106_stack_a))) & ~0xFULL;
         uint64_t rb = ((uint64_t)(uintptr_t)(g_t106_stack_b + sizeof(g_t106_stack_b))) & ~0xFULL;
         /* returns task ids, not handles — nothing to close */
-        long ta = it_sys3(SYS_THREAD_CREATE, (long)ea, (long)ra, 0);
-        long tb = it_sys3(SYS_THREAD_CREATE, (long)eb, (long)rb, 0);
+        long ta = it_thread_create(ea, ra, 0);
+        long tb = it_thread_create(eb, rb, 0);
         if (ta < 0 || tb < 0) { ok = 0; why = "thread"; }
     }
 
@@ -5796,7 +5863,7 @@ static int fz_workers_start(int n) {
         g_fz_ctl[i] = (handle_id_t)ctl;
         uint64_t entry = (uint64_t)(uintptr_t)entries[i];
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_fz_stk[i] + sizeof(g_fz_stk[i]))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) return 0;
+        if (it_thread_create(entry, rsp, 0) < 0) return 0;
     }
     return 1;
 }
@@ -7403,7 +7470,7 @@ static void test_t118(void) {
         if (ok) {
             uint64_t entry = (uint64_t)(uintptr_t)t118_thread;
             uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t118_stk + sizeof(g_t118_stk))) & ~0xFULL;
-            if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+            if (it_thread_create(entry, rsp, 0) < 0) {
                 ok = 0; why = "thread create";
             }
             /* let the thread run to exit and be reaped before the next round */
@@ -7446,7 +7513,7 @@ static void test_t118(void) {
  * (IT_SI_REAPHWM) words, they lock the scheduler invariants S1–S16 documented
  * in docs/architecture/scheduler-hardening.md.
  *
- * In-process worker threads are created with SYS_THREAD_CREATE, which returns a
+ * In-process worker threads are retyped TCBs (Stage 5 Etapa 4), created with
  * task id (not a handle) and leaves one KTcb HANDLE in this process's table by
  * design (Ph96, exactly as T118 notes).  So these tests assert TASK-live and
  * PROCESS-live return to baseline, never handle-live — the KTcb handle id is
@@ -7517,7 +7584,7 @@ static int sh_start(uint32_t n) {
     for (uint32_t i = 0; i < n; i++) {
         uint64_t entry = (uint64_t)(uintptr_t)g_sh_entries[i];
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_sh_stk[i] + sizeof(g_sh_stk[i]))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) return 0;
+        if (it_thread_create(entry, rsp, 0) < 0) return 0;
     }
     return 1;
 }
@@ -7760,7 +7827,7 @@ static void test_t121(void) {
         /* Drive one worker directly (index 0) into the chosen blocking state. */
         uint64_t entry = (uint64_t)(uintptr_t)g_t121_entries[kind];
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_sh_stk[0] + sizeof(g_sh_stk[0]))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread create"; }
+        if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread create"; }
 
         /* let the worker reach its blocking syscall */
         if (ok) for (int y = 0; y < 40; y++) it_sys0(SYS_YIELD);
@@ -7940,7 +8007,7 @@ static void test_t123(void) {
         g_sh_done[0] = 0; g_sh_prog[0] = 0;
         uint64_t entry = (uint64_t)(uintptr_t)g_sh_entries[0];
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_sh_stk[0] + sizeof(g_sh_stk[0]))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "sc worker create"; }
+        if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "sc worker create"; }
         if (ok) for (int y = 0; y < 4000 && !g_sh_done[0]; y++) it_sys0(SYS_YIELD);
         if (ok && !g_sh_done[0]) { ok = 0; why = "sc worker stuck"; }
         it_quiesce_reaper();
@@ -8416,7 +8483,7 @@ static void test_t129(void) {
     /* Worker blocks in EP_RECV on the retyped endpoint. */
     uint64_t entry = (uint64_t)(uintptr_t)t129_worker;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_sh_stk[0] + sizeof(g_sh_stk[0]))) & ~0xFULL;
-    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread create"; }
+    if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread create"; }
     if (ok) for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
 
     /* Fase S4: derive a child through the native CDT and revoke it — the
@@ -9980,8 +10047,12 @@ static void test_t148(void) {
         15, 22, 52, 53, 81, 87, 89, 95,
         /* Stage 5 Etapa 2: 45 = SYS_BOOTCAP_RESTRICT.  Narrowing a boot
          * capability by cloning a weaker copy of it has no meaning once each
-         * capability carries exactly one authority. */
-        45,
+         * capability carries exactly one authority.
+         * Stage 5 Etapa 4: 48 = SYS_THREAD_CREATE.  A thread carved from the
+         * kernel's static pool, authorised by nothing and identified by a
+         * global id, is replaced by a TCB retyped from an Untyped and
+         * configured with CSpace/VSpace capabilities. */
+        45, 48,
     };
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
@@ -10002,9 +10073,11 @@ static void test_t148(void) {
      * live from Fases 25/26/29). */
     /* Fase S3: 114-116 are SYS_CSPACE_MINT/REVOKE/MINT_INTO.  Fase S4/Stage 4:
      * 117-118 are SYS_CAP_IDENTIFY/SYS_CAP_SAME_OBJECT — the CSpace-native
-     * introspection that replaces SYS_HANDLE_TYPE/SAME_OBJECT.  The first
-     * UNASSIGNED number moves up to 119. */
-    for (long n = 119; ok && n <= 400; n++) {
+     * introspection that replaces SYS_HANDLE_TYPE/SAME_OBJECT.  Stage 5
+     * Etapa 4: 119-121 are SYS_CSPACE_SELF / SYS_TCB_CONFIGURE /
+     * SYS_TCB_WRITE_REGS — execution for a TCB retyped from an Untyped.  The
+     * first UNASSIGNED number moves up to 122. */
+    for (long n = 122; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -17982,7 +18055,7 @@ static void test_t255(void) {
         g_t255_done = 0; g_t255_res = 999;
         uint64_t entry = (uint64_t)(uintptr_t)t255_waiter;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t255_stack + sizeof(g_t255_stack))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread"; }
+        if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread"; }
         else {
             for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
             if (h >= 0) { it_slot_delete((uint32_t)h); h = -1; }
@@ -18056,7 +18129,7 @@ static void test_t256(void) {
         g_t256_done = 0; g_t256_res = 999;
         uint64_t entry = (uint64_t)(uintptr_t)t256_waiter;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t256_stack + sizeof(g_t256_stack))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread"; }
+        if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread"; }
         else {
             for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
             if (h >= 0) { it_slot_delete((uint32_t)h); h = -1; }
@@ -18120,7 +18193,7 @@ static void test_t257(void) {
         g_t257_done = 0;
         uint64_t entry = (uint64_t)(uintptr_t)t257_caller;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t257_stack + sizeof(g_t257_stack))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread"; break; }
+        if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread"; break; }
         struct IrisMsg m; it_iris_msg_zero(&m);
         if (it_sys3(SYS_EP_RECV, (long)S1_SLOT_A, (long)&m, (long)S1_SLOT_B) != 0 ||
             m.attached_handle != S1_SLOT_B) { ok = 0; why = "recv/echo"; break; }
@@ -18159,7 +18232,7 @@ static void test_t257(void) {
         g_t257_done = 0;
         uint64_t entry = (uint64_t)(uintptr_t)t257_caller;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t257_stack + sizeof(g_t257_stack))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread 2"; }
+        if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread 2"; }
         else {
             for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);   /* caller queues */
             struct IrisMsg m; it_iris_msg_zero(&m);
@@ -18224,7 +18297,7 @@ static void test_t258(void) {
         g_t258_done = 0; g_t258_res = 999;
         uint64_t entry = (uint64_t)(uintptr_t)t258_sender;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t258_stack + sizeof(g_t258_stack))) & ~0xFULL;
-        if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) { ok = 0; why = "thread"; }
+        if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread"; }
         else {
             for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
             it_slot_delete(S1_SLOT_A);
@@ -18843,12 +18916,21 @@ static void test_t285(void) {
     g_t285_ready = 0; g_t285_tcb = -1;
     uint64_t entry = (uint64_t)(uintptr_t)t285_helper;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t285_stack + sizeof(g_t285_stack))) & ~0xFULL;
-    long tid = it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0);
+    long tid = it_thread_create(entry, rsp, 0);
     if (tid < 0) { it_fail("T285", "thread create"); return; }
 
     for (int i = 0; i < 200 && !g_t285_ready; i++) it_sys0(SYS_YIELD);
     if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T285", "tcb self"); return; }
     handle_id_t tcb_h = (handle_id_t)g_t285_tcb;
+
+    /* Stage 5 Etapa 4: thread creation returns a CAPABILITY, not a global
+     * thread id — so the id this test tracks across death is read from the
+     * object while it is alive instead of being whatever the creation call
+     * happened to hand back. */
+    struct iris_tcb_info alive; alive.task_id = 0u;
+    if (it_sys2(SYS_TCB_GET_INFO, (long)tcb_h, (long)(uintptr_t)&alive) != 0) {
+        it_fail("T285", "info while alive"); return;
+    }
 
     /* Wait for the reaper: execution ends, object survives (our cap pins it). */
     struct iris_tcb_info info; info.state = 0u;
@@ -18858,7 +18940,7 @@ static void test_t285(void) {
         it_sys1(SYS_SLEEP, 1);
     }
     if (ok && info.state != (uint8_t)IT_TASK_TERMINATED) { ok = 0; why = "never terminated"; }
-    if (ok && info.task_id != (uint32_t)tid) { ok = 0; why = "id unstable after death"; }
+    if (ok && info.task_id != alive.task_id) { ok = 0; why = "id unstable after death"; }
 
     /* Registry lifetime ended at termination — while the cap still lives. */
     if (ok) {
@@ -18991,14 +19073,20 @@ static void test_t287(void) {
     g_t285_ready = 0; g_t285_tcb = -1;
     uint64_t entry_a = (uint64_t)(uintptr_t)t285_helper;
     uint64_t rsp_a   = ((uint64_t)(uintptr_t)(g_t285_stack + sizeof(g_t285_stack))) & ~0xFULL;
-    long tid_a = it_sys3(SYS_THREAD_CREATE, (long)entry_a, (long)rsp_a, 0);
+    long tid_a = it_thread_create(entry_a, rsp_a, 0);
     if (tid_a < 0) { it_fail("T287", "thread A create"); return; }
     for (int i = 0; i < 200 && !g_t285_ready; i++) it_sys0(SYS_YIELD);
     if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T287", "A tcb self"); return; }
     handle_id_t a_h = (handle_id_t)g_t285_tcb;
 
+    /* Stage 5 Etapa 4: creation returns a capability, so A's identity is read
+     * from A's own object rather than from the value the creation returned. */
     struct iris_tcb_info ia; ia.state = 0u;
-    for (int i = 0; i < 200; i++) {
+    uint32_t id_a = 0u;
+    if (it_sys2(SYS_TCB_GET_INFO, (long)a_h, (long)(uintptr_t)&ia) == 0)
+        id_a = ia.task_id;
+    else { ok = 0; why = "A info"; }
+    for (int i = 0; ok && i < 200; i++) {
         if (it_sys2(SYS_TCB_GET_INFO, (long)a_h, (long)(uintptr_t)&ia) != 0) { ok = 0; why = "A info"; break; }
         if (ia.state == (uint8_t)IT_TASK_TERMINATED) break;
         it_sys1(SYS_SLEEP, 1);
@@ -19011,12 +19099,16 @@ static void test_t287(void) {
         g_t287_ready = 0; g_t287_count = 0; g_t287_tcb = -1;
         uint64_t entry_b = (uint64_t)(uintptr_t)t287_helper;
         uint64_t rsp_b   = ((uint64_t)(uintptr_t)(g_t287_stack + sizeof(g_t287_stack))) & ~0xFULL;
-        long tid_b = it_sys3(SYS_THREAD_CREATE, (long)entry_b, (long)rsp_b, 0);
+        long tid_b = it_thread_create(entry_b, rsp_b, 0);
         if (tid_b < 0) { ok = 0; why = "thread B create"; }
         for (int i = 0; ok && i < 200 && !g_t287_ready; i++) it_sys0(SYS_YIELD);
         if (ok && (!g_t287_ready || g_t287_tcb < 0)) { ok = 0; why = "B never ran"; }
+        uint32_t id_b = 0u;
         if (ok) {
             b_h = (handle_id_t)g_t287_tcb;
+            struct iris_tcb_info ib0;
+            if (it_sys2(SYS_TCB_GET_INFO, (long)b_h, (long)(uintptr_t)&ib0) == 0)
+                id_b = ib0.task_id;
             uint64_t before = g_t287_count;
             it_sys1(SYS_SLEEP, 3);
             if (g_t287_count == before) { ok = 0; why = "B frozen"; }
@@ -19026,8 +19118,8 @@ static void test_t287(void) {
             struct iris_tcb_info ia2;
             if (it_sys2(SYS_TCB_GET_INFO, (long)a_h, (long)(uintptr_t)&ia2) != 0 ||
                 ia2.state != (uint8_t)IT_TASK_TERMINATED ||
-                ia2.task_id != (uint32_t)tid_a ||
-                ia2.task_id == (uint32_t)tid_b /* ids must differ */)
+                ia2.task_id != id_a ||
+                ia2.task_id == id_b /* ids must differ */)
                 { ok = 0; why = "A identity aliased"; }
         }
         /* External kill of B through its cap; B must reach TERMINATED. */
@@ -19403,7 +19495,7 @@ static void test_t294(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t294_sender;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t294_stack + sizeof(g_t294_stack))) & ~0xFULL;
-    if (it_sys3(SYS_THREAD_CREATE, (long)entry, (long)rsp, 0) < 0) {
+    if (it_thread_create(entry, rsp, 0) < 0) {
         it_close(&n_h); it_close(&g_t294_cmd_ep);
         it_fail("T294", "thread create"); return;
     }
@@ -19456,6 +19548,117 @@ static void test_t294(void) {
     it_close(&n_h);
     it_close(&g_t294_cmd_ep);
     if (ok) it_pass("T294"); else it_fail("T294", why);
+}
+
+static volatile uint32_t g_t297_ran;
+static uint8_t g_t297_stack[4096] __attribute__((aligned(16)));
+
+static void t297_helper(void) {
+    g_t297_ran = 1u;
+    /* Stay alive long enough for the parent to prove the entry frame is
+     * frozen, then leave through the ordinary thread exit. */
+    for (int i = 0; i < 50; i++) it_sys0(SYS_YIELD);
+    g_t297_ran = 2u;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) {}
+}
+
+/* ── T297: a thread is retyped, configured and started (Stage 5 Etapa 4) ──
+ * Every thread in this suite is already born this way — the helper that used
+ * to call SYS_THREAD_CREATE now retypes a TCB from the suite's own Untyped and
+ * configures it with capabilities — so the happy path is covered thirty times
+ * over by the tests that use threads.  What is asserted HERE is the gate: the
+ * things that must NOT work, because each of them is a way the old pool-based
+ * creation could come back in disguise.
+ *
+ *   1. the retired SYS_THREAD_CREATE answers NOT_SUPPORTED (T148 pins the
+ *      number; this pins the semantics from a caller that used to succeed);
+ *   2. an UNCONFIGURED retyped TCB cannot be started, cannot be written to,
+ *      and cannot be exited — it is a capability citizen with no execution;
+ *   3. CONFIGURE requires REAL capabilities of the right type: a CNode where a
+ *      VSpace belongs is refused, and so is a capability to someone else's
+ *      CSpace (here: the object CNode, which is a CNode but not the root);
+ *   4. a thread cannot be configured twice, and its entry frame cannot be
+ *      rewritten once it has been runnable — its kernel stack holds live
+ *      state by then.
+ * Invariants: A1, A3, O1, O5, S2. */
+static void test_t297(void) {
+    int ok = 1;
+    const char *why = "retyped thread";
+
+    /* 1. the pool path is gone for good. */
+    if (it_sys3(SYS_THREAD_CREATE, 0x8000200000L, 0x8000300000L, 0)
+        != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "thread_create not retired";
+    }
+
+    long cs = ok ? it_cspace_self() : -1;
+    if (ok && cs < 0) { ok = 0; why = "cspace self"; }
+    if (ok && !it_setup_self_vspace()) { ok = 0; why = "vspace self"; }
+
+    long tcb = -1;
+    if (ok) {
+        tcb = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_TCB, 0);
+        if (tcb < 0) { ok = 0; why = "tcb retype"; }
+    }
+
+    /* 2. inactive means inactive. */
+    if (ok && it_sys1(SYS_TCB_RESUME, tcb) != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "unconfigured resumed";
+    }
+    if (ok && it_sys4(SYS_TCB_WRITE_REGS, tcb, 0x8000200000L, 0x8000300000L, 0)
+              != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "unconfigured written";
+    }
+    if (ok && it_sys1(SYS_TCB_EXIT, tcb) != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "unconfigured exited";
+    }
+
+    /* 3. the arguments are capabilities, and their type and identity matter. */
+    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, IT_VS, IT_VS)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "vspace accepted as cspace";
+    }
+    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, cs, cs)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "cnode accepted as vspace";
+    }
+    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, (long)IT_OBJ_CNODE_SLOT, IT_VS)
+              != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "foreign cnode accepted";
+    }
+    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, 0, IT_VS)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "cptr_null accepted";
+    }
+
+    /* 4. configure once; write regs only before it runs. */
+    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, cs, IT_VS) != 0) {
+        ok = 0; why = "configure";
+    }
+    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, cs, IT_VS)
+              != (long)IRIS_ERR_ALREADY_EXISTS) {
+        ok = 0; why = "configured twice";
+    }
+    if (ok && it_sys4(SYS_TCB_WRITE_REGS, tcb,
+                      (long)(uintptr_t)t297_helper,
+                      (long)(((uint64_t)(uintptr_t)(g_t297_stack +
+                              sizeof(g_t297_stack))) & ~0xFULL), 0) != 0) {
+        ok = 0; why = "write regs";
+    }
+    g_t297_ran = 0;
+    if (ok && it_sys1(SYS_TCB_RESUME, tcb) != 0) { ok = 0; why = "resume"; }
+    for (int i = 0; ok && i < 200 && !g_t297_ran; i++) it_sys0(SYS_YIELD);
+    if (ok && !g_t297_ran) { ok = 0; why = "never ran"; }
+
+    /* Its entry frame is frozen now: it is standing on that kernel stack. */
+    if (ok && it_sys4(SYS_TCB_WRITE_REGS, tcb, 0x8000200000L, 0x8000300000L, 0)
+              != (long)IRIS_ERR_BUSY) {
+        ok = 0; why = "regs rewritten after start";
+    }
+
+    for (int i = 0; i < 200 && g_t297_ran == 1u; i++) it_sys1(SYS_SLEEP, 1);
+    if (ok) it_pass("T297"); else it_fail("T297", why);
 }
 
 /* ── T296: one capability, one authority (Stage 5 Etapa 2) ───────────────
@@ -19982,6 +20185,8 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t295();
     /* Stage 5: one capability, one authority. */
     test_t296();
+    /* Stage 5: a thread is retyped, configured and started. */
+    test_t297();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

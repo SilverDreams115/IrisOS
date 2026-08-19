@@ -46,7 +46,8 @@ reserved, no functionality) · `REMOVED` (deleted).
 | `struct task tasks[TASK_MAX]` (static payload) | real TCB backing (registers/kstack ptr/scheduler state) pointed to by `registry[i].tcb` | registry (scaffolding) | canonical KTCB in Untyped (Stage D) | S2 inc.2 Stage D | yes — scaffolding, no new consumers | ACTIVE_LEGACY (scaffolding; REMOVE in Stage D, except the idle bootstrap) |
 | `SYS_THREAD_SET_SC` (85) | SC self-bind | existing scheduler code | `SYS_SC_BIND(sc,tcb)` by CPtr | — | yes — frozen | FROZEN (Fase S2 inc.1) |
 | `struct KTcb` wrapper (kslab) | cap-visible TCB object in the heap, separate from the task | — | `struct task` IS the KTCB (KObject at offset 0) | S2 inc.2 | — | REMOVED (Fase S2 inc.2 — one structure, one identity) |
-| executable thread-create via pool + handle (`SYS_THREAD_CREATE`/`task_create_user_impl`) | the thread EXECUTION path is born from the static pool and publishes a handle in the process table | spawn/loader, iris_test threads | retyped TCB (`RETYPE2(KOBJ_TCB)`, already present) + `TCB_CONFIGURE` with CSpace/VSpace caps (Stage 5/6, post-CDT) | Stage 5/6 | yes — no new thread-creation path | ACTIVE_LEGACY (the only executable path; the retyped TCB is cap-complete but inactive until TCB_CONFIGURE) |
+| executable thread-create via pool (`SYS_THREAD_CREATE`) | a thread was carved from the kernel's static task pool and identified by a global id: no capability authorised it and no Untyped paid for its storage | — | `RETYPE2(KOBJ_TCB)` + `SYS_TCB_CONFIGURE` (CSpace/VSpace caps) + `SYS_TCB_WRITE_REGS` + `SYS_TCB_RESUME` | Stage 5 | n/a | **RETIRED (Stage 5 Etapa 4)** — number 48 reserved, `NOT_SUPPORTED`, zero in-tree callers.  Every thread in the suite and init's exception test is retyped from an Untyped and configured with capabilities; creation returns a CAPABILITY, not an index into a kernel array (charter §3.4/§3.5).  T297 pins the gate, T148 the number |
+| first-thread start for a spawned process (`SYS_THREAD_START` 58 → `task_thread_create`) | the child's first thread still comes from the static pool, because the spawner cannot name the child's CSpace/VSpace | svc_loader (every service spawn) | the spawner retypes and configures the child's initial TCB, once it holds caps to the child's CSpace and VSpace | Stage 7 (process server) | yes — no new thread-creation path | ACTIVE_LEGACY (the last pool-born execution path) |
 | idle task (static backing, registry slot 0) | bootstrap TCB outside Untyped, with no cap-visible object | scheduler | root-task TCB from BootInfo (Stage 5) | Stage 5 | yes — isolated bootstrap exception, never retyped or reused | BOOTSTRAP_EXCEPTION |
 | native CDT/MDB in CNode slots | — (it is the correct seL4 mechanism) | `SYS_CSPACE_MINT`/`MINT_INTO`/`REVOKE`, retype2, teardown, receive-slot | — | — | n/a | IMPLEMENTED (Fase S3 — recursive cross-process revoke; validator + fuzzing) |
 | handle-tree derivation (all types) | parallel derivation tree hidden in the handle table | — | per-slot derivation via the native CDT | Stage 3 | n/a | **REMOVED (Fase S4)** — `SYS_CAP_DERIVE`(78)/`SYS_CAP_REVOKE`(79) retired to `NOT_SUPPORTED` (numbers reserved); the table's derived-insert, revoke-children and parent-array machinery deleted.  `legacy_handle_derivation_migrated` has ZERO callers and is a structural 0 — the retirement witness |
@@ -151,6 +152,31 @@ so the untyped drain is bounded by the description.
 MIGRATING.  No allowlist movement.  Tests: RBI-1..RBI-10
 (`tests/kernel/test_root_bootinfo.c`); the boot is the runtime witness, since an
 unreadable or untrue BootInfo halts userboot with a serial diagnostic.
+
+### A-9 — execution for a retyped TCB (`SYS_CSPACE_SELF`, `SYS_TCB_CONFIGURE`, `SYS_TCB_WRITE_REGS`)
+
+**Change**: three new CPtr-only syscalls (119, 120, 121) and the retirement of
+`SYS_THREAD_CREATE` (48).  A thread is created by retyping a TCB from an
+Untyped, configuring it with capabilities to the CSpace and VSpace it runs in,
+writing its entry registers and resuming it.
+
+**Justification**: charter §2.2 O1 (every canonical object born from Untyped)
+and §3.4/§3.5 (no global identifiers conferring authority, no index standing in
+for a capability).  `RETYPE2(KOBJ_TCB)` produced inactive TCBs from Fase S2
+onward and the roadmap parked their activation here because its ARGUMENTS are
+capabilities that only existed after Stages 3–5.  `SYS_CSPACE_SELF` is the
+enabling piece: `SYS_TCB_CONFIGURE`'s signature says capability, and every
+process except the root task could only have offered a convention.
+
+**Not new authority**: all three are CPtr-only, produce no handle, and name
+nothing outside the caller's own CSpace.  `SYS_CSPACE_SELF` returns a
+capability to the CNode the caller already resolves every CPtr through;
+`SYS_TCB_CONFIGURE` refuses any CSpace or VSpace that is not the caller's own.
+
+**Scope**: the ledger's "executable thread-create via pool" entry moves
+ACTIVE_LEGACY → RETIRED; a new entry records `SYS_THREAD_START` as the last
+pool-born execution path (Stage 7).  No allowlist movement.  Tests: T297 (new),
+T148 pins 48, T083/T285/T287 re-anchored onto object-reported identity.
 
 ### A-8 — `SYS_BOOTCAP_RESTRICT` retires; a monolithic boot capability cannot exist
 

@@ -342,23 +342,31 @@ uint64_t sys_thread_start(uint64_t arg0, uint64_t arg1,
 
 /* ── Threading (D2) ──────────────────────────────────────────────── */
 
+/*
+ * SYS_THREAD_CREATE (48) — RETIRED (Stage 5 Etapa 4).  Number permanently
+ * reserved; returns IRIS_ERR_NOT_SUPPORTED.
+ *
+ * It carved a thread out of the kernel's static task pool and returned a
+ * global thread id.  Nothing about it was a capability operation: no
+ * capability authorised it, no Untyped paid for the storage, and the identity
+ * it handed back was an index into a kernel array — the shape charter §3.4/§3.5
+ * forbid (a global identifier standing in for a capability).  A thread existed
+ * because the kernel had a free slot, not because the caller held the memory
+ * and the authority.
+ *
+ * Its replacement is the seL4 sequence, and every step names a capability:
+ * RETYPE2(KOBJ_TCB) carves the storage out of an Untyped the caller holds,
+ * SYS_TCB_CONFIGURE gives it the CSpace and VSpace it runs in — as capability
+ * arguments — SYS_TCB_WRITE_REGS says where it starts, and SYS_TCB_RESUME
+ * starts it.  What comes back is a capability in a slot, not an id.
+ *
+ * SYS_THREAD_START (58) remains: it starts the FIRST thread of a freshly
+ * created process, which still comes from the pool because a spawner cannot
+ * yet name its child's CSpace and VSpace (process server, Stage 7).
+ */
 uint64_t sys_thread_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    struct task *t = task_current();
-    uint64_t entry_vaddr = arg0;
-    uint64_t user_rsp    = arg1;
-    uint64_t arg         = arg2;
-
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (entry_vaddr < USER_SPACE_BASE || entry_vaddr >= USER_SPACE_TOP)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (user_rsp < USER_SPACE_BASE || user_rsp > USER_SPACE_TOP)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (user_rsp & 0x7ULL)
-        return syscall_err(IRIS_ERR_INVALID_ARG);  /* must be 8-byte aligned */
-
-    struct task *nt = task_thread_create(t->process, entry_vaddr, user_rsp, arg);
-    if (!nt) return syscall_err(IRIS_ERR_NO_MEMORY);
-    return syscall_ok_u64((uint64_t)nt->id);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 

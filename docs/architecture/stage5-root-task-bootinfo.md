@@ -1,6 +1,6 @@
 # IRIS — Stage 5: seL4-like bootstrap (BootInfo + fine-grained boot authority)
 
-Status: **OPEN — Etapa 1 landed**.
+Status: **CLOSED — all four Etapas landed**.
 Precondition: [Stage 4](sel4-convergence-roadmap.md#stage-4--dual-namespace-retirement--closed)
 (closed — the initial capabilities can only be CSpace now).
 Normative frame: [purity charter](iris-sel4-purity-charter.md) §2.1 (A5),
@@ -52,7 +52,7 @@ and how the root task *learns* about it:
 | 2b | Debug splits off | ✅ DONE |
 | 2c | Spawn, initrd and framebuffer split too; `SYS_BOOTCAP_RESTRICT` and the monolith retire | ✅ DONE |
 | 3 | The root task's own objects are named caps (root CNode, initial TCB) | ✅ DONE |
-| 4 | `TCB_CONFIGURE` / `TCB_WRITE_REGS`: a retyped TCB executes | pending |
+| 4 | `TCB_CONFIGURE` / `TCB_WRITE_REGS`: a retyped TCB executes | ✅ DONE |
 
 ## Etapa 1 — the root task is told what it holds  ✅ DONE
 
@@ -341,9 +341,75 @@ could authorise, and adding one would be speculative surface for a mechanism
 that does not exist yet.  It belongs with retypable VSpaces — Stage 6, ledger
 entry M1.
 
-## Etapa 4 — a retyped TCB executes (planned)
+## Etapa 4 — a retyped TCB executes  ✅ DONE
 
-`TCB_CONFIGURE` / `TCB_WRITE_REGS` over a `RETYPE2(KOBJ_TCB)` object, taking
-CSpace root, VSpace and fault endpoint as capability arguments — the ledger's
-"executable thread-create via pool + handle" entry, whose replacement was
-parked here because those arguments only became caps in Stages 3–4.
+`RETYPE2(KOBJ_TCB)` has produced cap-complete but INACTIVE threads since
+Fase S2: no registry slot, no kernel stack, no address space, refused by every
+execution syscall.  What was missing was not the code but **the arguments** — a
+thread runs in a CSpace and a VSpace, and neither was addressable as a
+capability until Stages 3–5 made them so.
+
+| Syscall | Meaning |
+|---|---|
+| `SYS_CSPACE_SELF` (119) | a capability to the caller's own root CNode — the CNode counterpart of `SYS_TCB_SELF` |
+| `SYS_TCB_CONFIGURE` (120) | give an inactive TCB its execution state, naming the CSpace and VSpace as capabilities |
+| `SYS_TCB_WRITE_REGS` (121) | say where a configured, not-yet-started thread starts |
+
+`SYS_THREAD_CREATE` (48) is **RETIRED**, number reserved.  It carved a thread
+out of the kernel's static task pool and returned a global thread id: no
+capability authorised it, no Untyped paid for the storage, and the identity it
+handed back was an index into a kernel array — the shape charter §3.4/§3.5
+forbid.  Every in-tree thread is now created the seL4 way: retype a TCB from an
+Untyped you hold, configure it with CSpace/VSpace capabilities, write its
+registers, resume it.  What comes back is a capability in a slot.
+
+`SYS_THREAD_START` (58) remains, and is Stage 7 work: it starts the FIRST
+thread of a freshly created process, which still comes from the pool because a
+spawner cannot yet name its child's CSpace and VSpace.
+
+### Why `SYS_CSPACE_SELF` exists
+
+`SYS_TCB_CONFIGURE` takes the CSpace as a capability.  Only the root task held
+one to its own root CNode (Etapa 3); every other process reached its CSpace
+through the `arg0 == 0` convention.  A syscall whose signature says *capability*
+must not be satisfiable only by a convention, so processes can now ask for a
+capability to their own root CNode — self-introspection, no delegation implied,
+no way to name anyone else's CSpace, and no handle produced.  It is what will
+let a supervisor hand a child its CSpace root once processes are composed
+rather than created (Stage 7).
+
+### Both capabilities must be the caller's own
+
+A thread in a foreign address space is process-server work.  Accepting foreign
+capabilities and running the thread somewhere else anyway would be a lie in the
+signature, so the check is by object identity against `proc->cspace_root` and
+`proc->vspace` — and it is a real check on real capabilities: the caller must
+HOLD them, of the right type, or be refused.
+
+### Two lifecycle defects the migration exposed, both fixed
+
+- **The kernel stack was keyed by pool position.**  `kstack_alloc(t, idx)` used
+  the task's index in the static backing array, which a TCB living inside an
+  Untyped does not have.  The slot is recorded in the task now
+  (`t->kstack_slot`) and keyed by the registry index, which every executing
+  thread has by definition.
+- **The stack outlived its key.**  Teardown released the registry slot and
+  freed the kernel stack later, so a thread created in between could claim the
+  slot, map its stack over the same range, and then have it unmapped by the
+  first thread's teardown.  This is not theoretical: it wedged the machine
+  during bring-up.  Both now happen together, IRQ-off, in the order
+  *free stack, then release slot*.
+
+Also fixed while proving it: `SYS_TCB_CONFIGURE` initially released an ACTIVE
+reference on capabilities resolved with `cspace_resolve_only_obj`, which hands
+back a lifecycle-only reference.  On an ordinary object that is a refcount
+underflow; on the ROOT CNode it is a demolition — reaching zero active
+references runs the close callback, which empties every slot of the CSpace the
+caller is using.
+
+Covered by **T297** (the gate: the retired syscall, an unconfigured TCB that
+cannot be started/written/exited, wrong-type and foreign capabilities refused,
+no double configure, no register rewrite after start) and by the whole suite
+plus init's exception test, every thread of which is now born this way.  Three
+tests changed what they compare — `it_thread_create` returns a CAPABILITY, not
+a global id — which is the point: identity now comes from asking the object.

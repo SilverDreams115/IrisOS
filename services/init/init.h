@@ -116,6 +116,13 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_RSLOT_LK_SVCMGR   54u   /* receive slots for discovery lookups */
 #define INIT_RSLOT_LK_VFS      55u
 #define INIT_RSLOT_LK_KBD      56u
+/* Stage 5 Etapa 4: init's own CSpace and VSpace, as capabilities, plus the
+ * slot its one test thread is retyped into.  A thread is created by retyping a
+ * TCB from init's Untyped and configuring it with these two — the static task
+ * pool is no longer reachable from userland. */
+#define INIT_SLOT_OWN_CSPACE   57u
+#define INIT_SLOT_OWN_VSPACE   58u
+#define INIT_SLOT_S8_TCB       59u
 
 /* Fase S1: init's untyped pool — the boot untyped delegated by userboot at
  * IRIS_CPTR_INIT_UNTYPED.  Stage 4: held as the CPtr itself, checked once in

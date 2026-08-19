@@ -143,6 +143,10 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         /* Fase S3 — CSpace-only MDB/CDT derivation surface. */
         case SYS_CAP_IDENTIFY:        return sys_cap_identify(arg0, arg1, arg2);
         case SYS_CAP_SAME_OBJECT:     return sys_cap_same_object(arg0, arg1, arg2);
+        /* Stage 5 Etapa 4: execution for a TCB retyped from an Untyped. */
+        case SYS_CSPACE_SELF:         return sys_cspace_self(arg0, arg1, arg2);
+        case SYS_TCB_CONFIGURE:       return sys_tcb_configure(arg0, arg1, arg2, arg3);
+        case SYS_TCB_WRITE_REGS:      return sys_tcb_write_regs(arg0, arg1, arg2, arg3);
         case SYS_CSPACE_MINT:         return sys_cspace_mint(arg0, arg1, arg2);
         case SYS_CSPACE_REVOKE:       return sys_cspace_revoke(arg0, arg1, arg2);
         case SYS_CSPACE_MINT_INTO:    return sys_cspace_mint_into(arg0, arg1, arg2, arg3);
