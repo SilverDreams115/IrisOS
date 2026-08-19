@@ -55,6 +55,14 @@
 
 /* user text base */
 #define USER_TEXT_BASE      (USER_PRIVATE_BASE + 0x00200000ULL)
+
+/* Stage 5: the root task's BootInfo page (see <iris/root_bootinfo.h>), mapped
+ * read-only / non-executable one megabyte below the text base.  Only the root
+ * task has this mapping; every other process learns what it holds from the
+ * pre-start mints its spawner made, which are already an explicit list.
+ * The address is NOT a contract with userland: the root task receives it in
+ * RBX and validates the magic, so moving this constant moves the page. */
+#define USER_BOOTINFO_BASE  (USER_PRIVATE_BASE + 0x00100000ULL)
 /* USER_HEAP_BASE and USER_HEAP_MAX retired in Phase 20 — SYS_BRK removed.
  * Heap memory is now managed via SYS_VMO_CREATE + SYS_VMO_MAP. */
 

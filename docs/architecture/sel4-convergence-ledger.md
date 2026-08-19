@@ -59,7 +59,7 @@ reserved, no functionality) · `REMOVED` (deleted).
 | process-level fault record (one per process) | belongs on the TCB | fault delivery (Fase 20/25) | per-TCB fault / fault EP | process-server | yes | ACTIVE_LEGACY |
 | `SYS_PROCESS_VSPACE` (107) | process authority → VSpace by handle | supervisors/pager tests | CSpace mint of the VSpace cap | process-server | yes | ACTIVE_LEGACY |
 | `SYS_BOOTCAP_RESTRICT` (dual-namespace split brain) | `arg0` is resolved with `cspace_or_handle_resolve_obj` (CPtr **or** handle), but the restricted clone is published with `handle_table_replace(ht, (handle_id_t)arg0, …)` — the two halves disagree about which namespace `arg0` is in | init (fb spawn cap), svcmgr (post-bootstrap strip) — **both pass handles**, so no live defect | publish the clone into a CSpace destination slot as an MDB child of the source slot, the way retype2/mint already do | Etapa 4 | yes | ACTIVE_LEGACY — **blocks the spawn-cap CPtr migration**.  A CPtr has generation 0 and every live handle slot has generation ≥ 1, so `handle_table_replace` rejects it with `BAD_HANDLE`: no corruption, but the syscall silently cannot succeed by CPtr.  Migrating `spawn_cap_h` to a CPtr before fixing this turns a working restriction into a no-op error path — i.e. a capability that was supposed to be narrowed stays wide |
-| `KBootstrapCap` | monolithic bootstrap authority | userboot/init/svcmgr/tests | structured BootInfo + fine-grained caps | root-task/BootInfo | yes | ACTIVE_LEGACY |
+| `KBootstrapCap` | monolithic bootstrap authority | userboot/init/svcmgr/tests | structured BootInfo + fine-grained caps | Stage 5 | yes | MIGRATING (Stage 5 Etapa 1) — the structured BootInfo EXISTS (`struct iris_root_bootinfo`): the root task is told its initial caps by CPtr, the shape of its root CNode and every boot Untyped with its physical region, instead of agreeing with the kernel on constants and probing slots until one answered `NOT_FOUND`.  The object itself is unchanged and still carries the four-bit permission mask; splitting it into fine-grained caps and retiring `SYS_BOOTCAP_RESTRICT` is Etapa 2 |
 | `KInitrdEntry` + `SYS_INITRD_*` | filesystem-aware kernel state | loader | user-space VFS/loader | process-server | yes | ACTIVE_LEGACY |
 | kernel stacks / PML4 from the PMM reserve | allocation outside Untyped | task/process create | TCB/VSpace from Untyped | process/frame phases | yes | ACTIVE_LEGACY |
 | `KChannel` | — | — | endpoints | Fase 13 | — | REMOVED |
@@ -122,6 +122,34 @@ a capability into your CSpace cannot address past the first level.
 **Scope**: no invariant changes state; A3's "identifier" reading is now
 literally true.  No allowlist movement.  Tests: T294, T295, and host cases in
 `tests/kernel/test_cspace.c`.
+
+### A-6 — the root task's BootInfo region
+
+**Change**: the kernel builds a structured `struct iris_root_bootinfo` and maps
+it read-only / non-executable into the root task before it starts; its address
+travels in RBX.  `userboot` validates it and delegates the CPtrs it names
+instead of the constants it used to assume.
+
+**Justification**: charter §4 requires "bootstrap with fine-grained
+capabilities (structured BootInfo; no monolithic `KBootstrapCap`)", and this is
+its first half.  The mechanism it retires is a compile-time convention plus
+probing: the root task learned its own CSpace from constants the kernel happened
+to share, and counted its untypeds by invoking slots until one failed.  That is
+not a contract — nothing detects the moment the two sides disagree — and
+Stage 4's own experience (three bring-up failures from slot collisions) is what
+it costs.
+
+**Not a new authority path**: the region is read-only, confers nothing, and
+every CPtr in it names a slot the kernel had already populated.  §3.5 forbids an
+address substituting for a capability; a description of capabilities is not a
+substitute for one, and no syscall accepts "BootInfo said so".  The converse
+rule is enforced instead: a capability that cannot be described is not granted,
+so the untyped drain is bounded by the description.
+
+**Scope**: no invariant changes state; `KBootstrapCap` moves ACTIVE_LEGACY →
+MIGRATING.  No allowlist movement.  Tests: RBI-1..RBI-10
+(`tests/kernel/test_root_bootinfo.c`); the boot is the runtime witness, since an
+unreadable or untrue BootInfo halts userboot with a serial diagnostic.
 
 ## Checkpoint C.1 — Versioned user-buffer ABI (Fase S2)
 

@@ -14,11 +14,13 @@
 #include <iris/fb_info.h>
 #include <iris/irq_routing.h>
 #include <iris/nc/kbootcap.h>
+#include <iris/root_bootinfo.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kvspace.h>
+#include <iris/nc/kframe.h>
 #include <iris/nc/rights.h>
 #include <iris/cpu_local.h>
 #include <iris/lapic.h>
@@ -166,12 +168,47 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     /* ── 8. First user task ─────────────────────────────────────── */
     klog_write("[IRIS][USER] preparing bootstrap task...\n");
     {
-        struct task *ut = 0;
+        struct task *ut          = 0;
+        uint64_t     bi_phys     = 0;
+        void        *bi_kva      = 0;
+        uint32_t     bi_capacity = 0;
 
-        ut = task_spawn_user(0);
-        if (!ut) {
-            klog_write("[IRIS][USER] FATAL: task_spawn_user(userboot) failed\n");
+        /* Stage 5: the root task's BootInfo page.
+         *
+         * Allocated and initialised BEFORE the task exists, because a root
+         * task that cannot be TOLD what it holds must not be created: the
+         * alternative is a task that has to rediscover its own CSpace by
+         * probing it, which is the convention this stage retires.  Everything
+         * after this point that grants a capability also records it here, and
+         * the record is what the root task reads out of RBX.
+         *
+         * The page is bootstrap memory in the same category as the root task's
+         * text and stack pages (ledger: "kernel stacks / PML4 from the PMM
+         * reserve") — it is mapped as a KFrame and registered as a bootstrap
+         * frame, so process teardown releases it exactly like the others. */
+        bi_phys = pmm_alloc_pages(IRIS_ROOT_BOOTINFO_PAGES);
+        if (bi_phys != 0) {
+            bi_kva = (void *)(uintptr_t)PHYS_TO_VIRT(bi_phys);
+            for (uint64_t b = 0; b < IRIS_ROOT_BOOTINFO_BYTES; b++)
+                ((uint8_t *)bi_kva)[b] = 0;
+            if (root_bootinfo_init(bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
+                                   BOOT_CPTR_BOOTSTRAP_CAP, BOOT_CPTR_VSPACE,
+                                   KCNODE_DEFAULT_SLOTS) != IRIS_OK) {
+                pmm_free_contig(bi_phys, IRIS_ROOT_BOOTINFO_PAGES);
+                bi_phys = 0;
+                bi_kva  = 0;
+            }
+        }
+        bi_capacity = bi_kva ? root_bootinfo_capacity(IRIS_ROOT_BOOTINFO_BYTES) : 0u;
+
+        if (!bi_kva) {
+            klog_write("[IRIS][USER] FATAL: BootInfo page allocation failed\n");
         } else {
+            ut = task_spawn_user(0);
+        }
+        if (bi_kva && !ut) {
+            klog_write("[IRIS][USER] FATAL: task_spawn_user(userboot) failed\n");
+        } else if (ut) {
             struct KBootstrapCap *cap = kbootcap_alloc(
                 IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS |
                 IRIS_BOOTCAP_KDEBUG | IRIS_BOOTCAP_FRAMEBUFFER);
@@ -218,6 +255,8 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             }
         }
         if (ut) {
+            uint32_t ut_count = 0;   /* boot untypeds granted, == BootInfo entries */
+
             klog_write("[IRIS][USER] bootstrap task created (ring-3 loader), id=");
             klog_write_dec(ut->id);
             klog_write("\n");
@@ -277,10 +316,15 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
              */
 #define IRIS_PMM_KERNEL_RUNTIME_RESERVE  4096u  /* 16 MB for kernel runtime */
             {
-                uint32_t ut_count        = 0;
                 uint32_t ut_cspace_count = 0;
                 for (;;) {
                     if (pmm_free_pages() <= IRIS_PMM_KERNEL_RUNTIME_RESERVE)
+                        break;
+                    /* Stage 5: the BootInfo page bounds the drain.  A block the
+                     * root task cannot be told about is a block it cannot name,
+                     * so the grant stops where the description stops rather
+                     * than handing over a slot nobody documented. */
+                    if (ut_count >= bi_capacity)
                         break;
                     uint32_t order;
                     uint64_t blk_phys = pmm_alloc_block(&order);
@@ -321,6 +365,13 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                             RIGHT_DUPLICATE | RIGHT_TRANSFER);
                     kobject_release(&boot_ut->base);
                     if (me != IRIS_OK) break;
+                    /* Cannot fail: capacity was checked before the mint, and
+                     * the descriptor names the slot that mint just filled. */
+                    (void)root_bootinfo_add_untyped(bi_kva,
+                                                    IRIS_ROOT_BOOTINFO_BYTES,
+                                                    (uint64_t)cspace_slot,
+                                                    blk_phys, size,
+                                                    /*is_device*/0);
                     ut_cspace_count++;
                     ut_count++;
                 }
@@ -334,7 +385,56 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     klog_write("[IRIS][USER] boot untyped CSpace grants OK\n");
                 }
             }
-        } else {
+
+            /*
+             * Stage 5: hand the root task its BootInfo.
+             *
+             * Everything above has finished granting, so the description is
+             * now complete and the free range is known: the slots past the
+             * last untyped are the ones the kernel did not use.  The page is
+             * mapped read-only and non-executable — it is a statement of fact,
+             * not a channel — and its address travels in RBX, the register
+             * that carried a bootstrap HANDLE until Stage 4 deleted the handle
+             * namespace and left it carrying 0.
+             *
+             * Failure here is FATAL for the same reason the bootstrap cap
+             * publish is: the root task's whole job is to distribute authority
+             * it can name, and an unmapped or unwritten BootInfo means it
+             * would have to go back to guessing.
+             */
+            {
+                iris_error_t bie = root_bootinfo_set_empty_range(
+                    bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
+                    BOOT_CPTR_UNTYPED_START + ut_count, KCNODE_DEFAULT_SLOTS);
+                uint32_t mapped = 0;
+
+                for (uint32_t pg = 0; bie == IRIS_OK && ut->process->vspace &&
+                                      pg < IRIS_ROOT_BOOTINFO_PAGES; pg++) {
+                    uint64_t va = USER_BOOTINFO_BASE + (uint64_t)pg * PMM_PAGE_SIZE;
+                    struct KFrame *bif = bootstrap_kframe_map(
+                        ut->process->vspace, bi_phys + (uint64_t)pg * PMM_PAGE_SIZE,
+                        va, 0ULL /* read-only, NX */);
+                    if (!bif) break;
+                    if (kprocess_register_bootstrap_frame(ut->process, bif) != IRIS_OK) {
+                        kframe_unmap_page(bif, ut->process->vspace, va);
+                        kobject_release(&bif->base);
+                        break;
+                    }
+                    mapped++;
+                }
+                if (mapped != IRIS_ROOT_BOOTINFO_PAGES) {
+                    klog_write("[IRIS][USER] FATAL: BootInfo map failed\n");
+                    task_abort_spawned_user(ut);
+                    ut = 0;
+                } else {
+                    task_set_bootstrap_arg0(ut, USER_BOOTINFO_BASE);
+                    klog_write("[IRIS][USER] boot info page mapped, untypeds: ");
+                    klog_write_dec(ut_count);
+                    klog_write("\n");
+                }
+            }
+        }
+        if (!ut) {
             klog_write("[IRIS][USER] WARN: could not create bootstrap task\n");
         }
     }

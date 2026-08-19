@@ -5,6 +5,7 @@
 #include <iris/svcmgr_proto.h>
 #include <iris/endpoint_proto.h>
 #include <iris/boot_info.h>
+#include <iris/root_bootinfo.h>
 #include "../../services/common/svc_loader.h"
 
 static inline long ub_sys0(long nr) {
@@ -69,9 +70,8 @@ static void ub_close(handle_id_t h) { (void)h; }
  * in userboot's root CNode (1..15 reserved, 16.. boot untypeds start well
  * above what this early path ever touches). */
 #define UB_PANIC_IOPORT_SLOT 40u
-static void ub_boot_panic(handle_id_t bootstrap_cap_h, const char *msg) {
-    (void)bootstrap_cap_h;
-    long r = ub_sys4(SYS_CAP_CREATE_IOPORT, (long)BOOT_CPTR_BOOTSTRAP_CAP,
+static void ub_boot_panic(uint64_t bootstrap_cptr, const char *msg) {
+    long r = ub_sys4(SYS_CAP_CREATE_IOPORT, (long)bootstrap_cptr,
                      0x3F8, 8, (long)UB_PANIC_IOPORT_SLOT);
     if (r == 0) {
         long io = (long)UB_PANIC_IOPORT_SLOT;
@@ -95,22 +95,86 @@ static void ub_park_root_bootstrap(void) {
     for (;;) (void)ub_sys1(SYS_SLEEP, 60000);
 }
 
-void iris_userboot_main(handle_id_t bootstrap_arg_h) {
-    /* Etapa 4: the bootstrap capability is invoked as the CSpace slot the
-     * kernel minted it into (BOOT_CPTR_BOOTSTRAP_CAP).  The kernel used to
-     * dual-insert it — a handle in RBX AND the CSpace slot — with the CSpace
-     * half treated as optional because "the legacy handle still works", which
-     * is a CPtr->handle fallback in the boot path (charter §3.7).  Stage 4
-     * deleted the handle half: the slot IS the grant, a failed publish is
-     * fatal in the kernel, and RBX carries 0. */
-    const handle_id_t bootstrap_cap_h = (handle_id_t)BOOT_CPTR_BOOTSTRAP_CAP;
-    (void)bootstrap_arg_h;
+/* Stage 5: validate one BootInfo untyped descriptor against the capability it
+ * claims to describe.  SYS_UNTYPED_INFO answers from the slot itself, so a
+ * mismatch means the page and the CSpace disagree — which is exactly the class
+ * of bug a written-down layout is supposed to make impossible, and the reason
+ * this check exists at all rather than trusting the page. */
+static int ub_untyped_matches(const struct iris_bootinfo_untyped *e) {
+    uint64_t phys = 0, avail = 0;
+
+    if (ub_sys3(SYS_UNTYPED_INFO, (long)e->cptr, (long)(uintptr_t)&phys,
+                (long)(uintptr_t)&avail) != 0)
+        return 0;
+    if (phys != e->paddr)      return 0;
+    /* Fresh boot untypeds are untouched, so everything is still available;
+     * more than the region holds would mean the descriptor understates it. */
+    if (avail > e->size_bytes) return 0;
+    return 1;
+}
+
+void iris_userboot_main(uint64_t bootinfo_va) {
+    /* Stage 5: RBX carries the address of the BootInfo page.
+     *
+     * It carried a bootstrap HANDLE until Stage 4 deleted that namespace, then
+     * 0 until this page existed.  What arrives now is not authority — the page
+     * is mapped read-only and every capability it names is already installed
+     * in this task's CSpace — it is the answer to "what did the kernel give
+     * me", which userboot previously had to guess from constants shared by
+     * compile-time agreement (BOOT_CPTR_BOOTSTRAP_CAP, BOOT_CPTR_UNTYPED_START)
+     * and discover by probing slots until one answered NOT_FOUND.
+     *
+     * A page that does not validate is fatal: a root task that cannot read its
+     * own inventory has nothing to distribute, and guessing is the behaviour
+     * being retired. */
+    const struct iris_root_bootinfo *bi =
+        (const struct iris_root_bootinfo *)(uintptr_t)bootinfo_va;
 
     handle_id_t init_proc_h = HANDLE_INVALID;
     handle_id_t init_boot_h = HANDLE_INVALID;
+    uint64_t    bootstrap_cap_h;
+    uint64_t    boot_untyped_c;
 
-    if (0)
+    if (!bi || bi->magic != IRIS_ROOT_BOOTINFO_MAGIC ||
+        bi->version != IRIS_ROOT_BOOTINFO_VERSION ||
+        bi->header_bytes < sizeof(*bi)) {
+        /* No trustworthy inventory, so the diagnostic uses the well-known slot
+         * the kernel publishes the bootstrap cap into.  That is a guess, and
+         * it is confined to printing why the boot is dead: if the guess is
+         * wrong the KIoPort mint fails and the panic is silent, exactly as it
+         * was before this page existed. */
+        ub_boot_panic(BOOT_CPTR_BOOTSTRAP_CAP,
+                      "[USERBOOT] FATAL: BootInfo missing or unreadable; "
+                      "halting boot\n");
         goto fail;
+    }
+
+    bootstrap_cap_h = bi->cap_bootstrap;
+    if (bootstrap_cap_h == 0u) {
+        ub_boot_panic(BOOT_CPTR_BOOTSTRAP_CAP,
+                      "[USERBOOT] FATAL: BootInfo grants no bootstrap "
+                      "capability; halting boot\n");
+        goto fail;
+    }
+
+    /* The untypeds are the boot memory budget: init gets one, and everything
+     * any service ever retypes descends from them.  Zero of them is a dead
+     * system with a confusing failure mode three services later. */
+    if (bi->untyped_count == 0u) {
+        ub_boot_panic(bootstrap_cap_h,
+                      "[USERBOOT] FATAL: BootInfo describes no untyped "
+                      "memory; halting boot\n");
+        goto fail;
+    }
+    for (uint32_t i = 0; i < bi->untyped_count; i++) {
+        if (!ub_untyped_matches(&bi->untyped[i])) {
+            ub_boot_panic(bootstrap_cap_h,
+                          "[USERBOOT] FATAL: BootInfo disagrees with the "
+                          "CSpace it describes; halting boot\n");
+            goto fail;
+        }
+    }
+    boot_untyped_c = bi->untyped[0].cptr;
 
     /* Fase 28 boot-growth fix: the boot invariant is that the kernel initrd has
      * AT LEAST every image the ring-3 name→index catalog references (indices
@@ -120,28 +184,20 @@ void iris_userboot_main(handle_id_t bootstrap_arg_h) {
      * turned any legitimate initrd growth into a silent dead boot (userboot
      * exited before loading init); it is now a >= check, and a genuine shortage
      * emits a bootstrap diagnostic instead of vanishing. */
-    if (svc_initrd_count(bootstrap_cap_h) < (long)SL_CATALOG_COUNT) {
+    if (svc_initrd_count((handle_id_t)bootstrap_cap_h) < (long)SL_CATALOG_COUNT) {
         ub_boot_panic(bootstrap_cap_h,
                       "[USERBOOT] FATAL: initrd catalog too small "
                       "(kernel/ring-3 mismatch); halting boot\n");
         goto fail;
     }
 
-    /* Fase 3.4: CPtr probe — exercise the root CSpace path for boot KUntyped.
-     * BOOT_CPTR_UNTYPED_START names the first boot KUntyped slot in the root
-     * CNode that kernel_main populated during the Ph76 drain.  A successful
-     * SYS_UNTYPED_INFO call (return >= 0) confirms the CSpace grant is live.
-     * Boot is not gated on this: if the kernel ran without CSpace grants the
-     * legacy handle path still works and all downstream services are unaffected. */
-    (void)ub_sys3(SYS_UNTYPED_INFO, (long)BOOT_CPTR_UNTYPED_START, 0, 0);
-
-    /* Fase 3.5/4: the CPtr probes for BOOT_CPTR_BOOTSTRAP_CAP and
-     * BOOT_CPTR_VSPACE are RETIRED (Stage 4).  They resolved a slot into a
-     * handle purely to prove the slot was live and closed it immediately —
-     * boot was never gated on them, nothing read their result, and their only
-     * lasting effect was to make userboot a SYS_CSPACE_RESOLVE consumer.  The
-     * grants they probed are now exercised productively by the mints below,
-     * which fail loudly if a slot is empty. */
+    /* Stage 5: the Fase 3.4 liveness probe of BOOT_CPTR_UNTYPED_START is
+     * RETIRED.  It invoked a slot named by a compile-time constant, ignored
+     * the answer, and documented itself as something boot was not gated on —
+     * a probe that cannot fail proves nothing.  The BootInfo validation above
+     * replaces it with a check that has a verdict: every untyped the kernel
+     * says it granted must answer from its slot with the physical region the
+     * page claims, or the boot stops here with a diagnostic. */
 
     /* Fase 13 (Track I): deliver init's spawn/bootstrap cap as the
      * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint instead of a post-spawn
@@ -161,20 +217,22 @@ void iris_userboot_main(handle_id_t bootstrap_arg_h) {
          * authority tests FAIL loudly rather than silently skipping. */
         struct svc_mint init_mints[2] = { 0 };
         init_mints[0].slot     = IRIS_CPTR_SPAWN_CAP;
-        init_mints[0].src_cptr = BOOT_CPTR_BOOTSTRAP_CAP;
+        init_mints[0].src_cptr = bootstrap_cap_h;
         init_mints[0].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[0].badge    = 0;
         init_mints[1].slot     = IRIS_CPTR_INIT_UNTYPED;
-        init_mints[1].src_cptr = BOOT_CPTR_UNTYPED_START;
+        init_mints[1].src_cptr = boot_untyped_c;
         init_mints[1].rights   = RIGHT_READ | RIGHT_WRITE |
                                  RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[1].badge    = 0;
 
-        /* Slot 3 is free in the reserved boot range; the untyped is the first
-         * boot block. */
-        long lr = svc_load_minted_ws(bootstrap_cap_h, "init",
+        /* Both sources are the CPtrs the BootInfo named, not the constants
+         * that happened to match them: userboot now delegates what the kernel
+         * says it holds.  Slot 3 is free in the reserved boot range, and the
+         * loader workspace carves out of the same first boot untyped. */
+        long lr = svc_load_minted_ws((handle_id_t)bootstrap_cap_h, "init",
                                      &init_proc_h, &init_boot_h, init_mints, 2u,
-                                     SVC_LOADER_WS(BOOT_CPTR_UNTYPED_START, 3u));
+                                     SVC_LOADER_WS(boot_untyped_c, 3u));
         if (lr < 0)
             goto fail;
     }

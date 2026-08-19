@@ -8,10 +8,12 @@ as the object-creation budget.
 ```
 kernel_main
   ├─ drains the free PMM (minus IRIS_PMM_KERNEL_RUNTIME_RESERVE) into
-  │  boot KUntypeds → userboot's CSpace (slots BOOT_CPTR_UNTYPED_START..)
-  │  + legacy handles (compat, ledger)
+  │  boot KUntypeds → userboot's CSpace ONLY (slots BOOT_CPTR_UNTYPED_START..;
+  │  the legacy handle half is deleted — Stage 4)
+  ├─ describes every grant in the BootInfo region and maps it read-only
+  │  into userboot (address in RBX — Stage 5 Etapa 1)
   └─ userboot: first image (de facto root task)
-userboot
+userboot  (reads BootInfo; validates it against its own CSpace)
   └─ init: spawn cap (slot 6) + ONE boot Untyped (slot 12)
 init  (resolves slot 12 once; g_init_untyped_h)
   ├─ console: own EP (retype) in slot 5 + reply in slot 13 + KIoPort
@@ -37,7 +39,17 @@ svcmgr  (pool = slot 12)
 
 ## BootInfo
 
-The seL4-style structured BootInfo (a typed list of Untypeds + initial caps in
-a single block) is the root-task phase's work (ledger: `KBootstrapCap`
-ACTIVE_LEGACY). Today the contract is the set of well-known slots from
-`endpoint_proto.h` + `boot_info.h`.
+**Stage 5 Etapa 1: the structured BootInfo exists.**  The kernel writes a
+`struct iris_root_bootinfo` (`kernel/include/iris/root_bootinfo.h`) — initial
+caps by CPtr, root-CNode shape, and every boot Untyped with its physical region
+— and maps it read-only / non-executable into the root task, whose address
+arrives in RBX.  `userboot` validates it against the CSpace it describes and
+halts the boot on disagreement, so the chain above is now something the root
+task READS rather than something it and the kernel separately assume.
+
+The well-known slots of `endpoint_proto.h` remain the contract for the SPAWNED
+services: a child's authority is the pre-start mint table its spawner passed,
+which is already an explicit list.  BootInfo is for the root task, which has no
+spawner.  Splitting `KBootstrapCap` into fine-grained caps published in their
+own BootInfo slots is Etapa 2
+(`docs/architecture/stage5-root-task-bootinfo.md`).

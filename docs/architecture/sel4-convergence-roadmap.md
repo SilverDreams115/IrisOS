@@ -16,7 +16,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 2 — CSpace-only cap transfer | ✅ CLOSED (Fase S4) |
 | 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
 | 4 — Dual namespace retirement | ✅ CLOSED |
-| 5 — seL4-like bootstrap | ← NEXT |
+| 5 — seL4-like bootstrap | 🔄 OPEN (Etapa 1 landed) |
 | 6 — Remaining memory and objects | pending |
 | 7 — KProcess retirement | pending |
 | 8 — Full MCS scheduling | pending |
@@ -394,15 +394,48 @@ left, and three separate bring-up failures during Fase S4 were slot
 collisions.  Removing the split frees the full 64-bit CPtr space and makes
 real CSpace hierarchies possible.
 
-## Stage 5 — seL4-like bootstrap
+## Stage 5 — seL4-like bootstrap  🔄 OPEN
 
 Precondition: Stage 4 (the initial caps can only be CSpace now).
+Design: `docs/architecture/stage5-root-task-bootinfo.md`.
 
 - Replace the monolithic `KBootstrapCap` with structured BootInfo.
 - Root task with: root CNode, initial TCB, initial VSpace, IRQ control cap,
   ASID/PCID control, Untyped list, fine-grained per-device caps.
 - TCB_CONFIGURE/TCB_WRITE_REGS (execution of retyped TCBs) is defined here
   because its arguments (CSpace root, VSpace, fault EP) now exist as caps.
+
+**Closing criterion**: the root task receives a structured BootInfo and
+fine-grained capabilities, with no monolithic bootstrap object left to
+restrict, and the executing TCB is a retyped object configured through
+capabilities.
+
+### Etapa 1 — the root task is told what it holds  ✅ DONE
+
+The kernel writes a structured BootInfo region (`struct iris_root_bootinfo`,
+`kernel/include/iris/root_bootinfo.h`) describing the initial capabilities by
+CPtr, the shape of the root CNode, and every boot Untyped with its physical
+region; it maps the region read-only / non-executable into the root task and
+passes its address in RBX — the register that carried a bootstrap HANDLE until
+Stage 4 deleted that namespace and left it carrying 0.
+
+What retires is GUESSING.  The root task used to know its capabilities by
+compile-time constants shared with the kernel (`BOOT_CPTR_BOOTSTRAP_CAP`,
+`BOOT_CPTR_UNTYPED_START`) and count its untypeds by invoking slots until one
+answered `NOT_FOUND`; its one liveness "probe" invoked a slot and ignored the
+answer.  userboot now validates the description against the CSpace it describes
+— every untyped must answer from its slot with the physical region the page
+claims — and halts the boot with a serial diagnostic on disagreement.
+
+The page is not authority (charter §3.5): it is read-only and every CPtr in it
+names a slot the kernel had already populated.  What bounds it is the converse
+rule — a grant that cannot be described is not made, so the untyped drain stops
+where the description stops, and the region is two pages so that "describable"
+covers every one of a 256-slot root CNode's 240 untyped slots (static-asserted).
+
+Covered by RBI-1..RBI-10 (`tests/kernel/test_root_bootinfo.c`) for the builder,
+and by the boot itself for the contract: an unreadable or untrue BootInfo is
+fatal in userboot, so a healthy `make smoke-runtime` is the runtime witness.
 
 ## Stage 6 — Remaining memory and objects
 
