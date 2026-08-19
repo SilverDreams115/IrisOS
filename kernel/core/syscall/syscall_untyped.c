@@ -265,12 +265,27 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                 }
             }
         } else {
-            uint64_t phys = kuntyped_bump_alloc_phys_page(ut, obj_arg);
-            if (!phys) err = IRIS_ERR_NO_MEMORY;
+            /* Stage 6 Etapa 1: BOTH halves of a frame come from this Untyped —
+             * the page from the bottom (page-aligned) and the header from the
+             * top (so it cannot push the page carve onto the next boundary,
+             * and cannot land inside the page that is about to be mapped into
+             * ring 3).  The header carve is what holds the child_count entry,
+             * so it is taken first: if the page carve then fails, releasing
+             * the header undoes the accounting exactly. */
+            void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KFrame));
+            if (!hdr) err = IRIS_ERR_NO_MEMORY;
             else {
-                struct KFrame *frm = kframe_alloc(phys, obj_arg, ut);
-                if (!frm) err = IRIS_ERR_NO_MEMORY;
-                else objs[0] = &frm->base;
+                uint64_t phys = kuntyped_bump_alloc_phys_page(ut, obj_arg);
+                if (!phys) {
+                    kuntyped_release_child(hdr, sizeof(struct KFrame));
+                    err = IRIS_ERR_NO_MEMORY;
+                } else {
+                    struct KFrame *frm = kframe_alloc_at(hdr, phys, obj_arg);
+                    if (!frm) {
+                        kuntyped_release_child(hdr, sizeof(struct KFrame));
+                        err = IRIS_ERR_NO_MEMORY;
+                    } else objs[0] = &frm->base;
+                }
             }
         }
     } else {
@@ -410,8 +425,12 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(&ut->base);
         return syscall_err(IRIS_ERR_BUSY);
     }
-    uint64_t reclaimed = ut->used;
-    ut->used = 0;
+    /* Stage 6 Etapa 1: both ends are reclaimed.  A reset with live children is
+     * BUSY (checked above), so the header region at the top cannot be taken
+     * back from an object that is still alive. */
+    uint64_t reclaimed = ut->used + ut->used_top;
+    ut->used     = 0;
+    ut->used_top = 0;
     ut->generation++;
     irq_spinlock_unlock(&ut->lock, flags);
     kuntyped_stat_reset(reclaimed, reclaimed != 0u);

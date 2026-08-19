@@ -17,7 +17,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
 | 4 — Dual namespace retirement | ✅ CLOSED |
 | 5 — seL4-like bootstrap | ✅ CLOSED |
-| 6 — Remaining memory and objects | pending |
+| 6 — Remaining memory and objects | 🔄 OPEN (Etapa 1 landed) |
 | 7 — KProcess retirement | pending |
 | 8 — Full MCS scheduling | pending |
 | 9 — SMP | pending |
@@ -533,9 +533,10 @@ and fine-grained capabilities, no monolithic bootstrap object remains to
 restrict, and the executing TCB is a retyped object configured through
 capabilities.
 
-## Stage 6 — Remaining memory and objects
+## Stage 6 — Remaining memory and objects  🔄 OPEN
 
 Precondition: Stage 1 (ownership/derivation); may overlap with 5.
+Design: `docs/architecture/stage6-memory-from-untyped.md`.
 
 - Page-table objects retyped from Untyped (retires the paging_map PMM
   reserve).
@@ -543,6 +544,37 @@ Precondition: Stage 1 (ownership/derivation); may overlap with 5.
 - Retire the remaining object kslab paths (ledger list).
 - Convert or retire KVMO; separate file-backed and anonymous memory in user
   services (the pager/VFS already provide the base).
+
+**Closing criterion**: no kernel object and no page of user-visible memory is
+created from kernel-private storage.  Stage 5 finished the authority story;
+this stage answers *who pays for memory*, which is still "the kernel,
+invisibly" in four places — page tables on map, frame headers, the VSpace and
+its PML4, and sixteen `kslab_alloc` consumers.
+
+### Etapa 1 — the Untyped pays for its objects' headers  ✅ DONE
+
+A frame retyped from an Untyped carved its PAGE from that Untyped and its
+header from the kslab heap: the caller paid for the page, the kernel quietly
+paid for the rest.  `KUntyped` now carves from **both ends** — page-aligned
+regions from the bottom (`used`), object headers from the top (`used_top`) —
+and a retyped frame's header is a child block of the same Untyped.
+
+The direction is the point: a 160-byte header taken from the bottom would push
+the next page-aligned carve onto the following page and cost almost 4 KiB per
+frame.  From the top it costs its own size, and consecutive frames stay
+page-dense.  The header is also, structurally, never inside the frame's own
+page — that page is mapped into ring 3, where kernel bookkeeping would be
+readable and writable by the process that received it.
+
+`child_count` accounting is unchanged in shape (one child per frame, held by
+the header block as for every other retyped family), and `SYS_UNTYPED_RESET`
+reclaims both ends.  Frames with no Untyped to charge — VMO pages and a
+spawning process's bootstrap frames — keep their kslab header and are what
+Etapas 3 and 5 retire.
+
+Covered by UT-TOP-1..5 (`tests/kernel/test_kuntyped.c`) and T298 (a frame costs
+page + header out of one Untyped, four frames stay page-dense, and the frame
+still maps, reads clean and writes).
 
 ## Stage 7 — KProcess retirement
 

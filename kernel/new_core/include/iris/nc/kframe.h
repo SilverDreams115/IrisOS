@@ -64,6 +64,21 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
                              struct KUntyped *alloc_parent);
 
 /*
+ * Stage 6 Etapa 1 — placement-init a KFrame whose HEADER storage is a child
+ * block of the Untyped that also produced its page (carved from the top by
+ * kuntyped_alloc_child_top; the page comes from the bottom).  The destructor
+ * returns the block with kuntyped_release_child, which is what carries the
+ * child_count and the parent retain — so `alloc_parent` stays NULL and the
+ * accounting is one child per frame, unchanged in shape.
+ *
+ * The header is deliberately NOT inside the frame's own page: that page is
+ * mapped into ring 3.
+ *
+ * `mem` must be a zeroed block of at least sizeof(struct KFrame).
+ */
+struct KFrame *kframe_alloc_at(void *mem, uint64_t paddr, uint64_t size);
+
+/*
  * kframe_alloc_vmo_page — Fase 6.3: allocate a 4-KiB KFrame backed by a VMO page.
  *
  * Creates a KFrame with alloc_parent=NULL and vmo_owner=vmo.  Retains vmo so

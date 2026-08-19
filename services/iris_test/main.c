@@ -19661,6 +19661,95 @@ static void test_t297(void) {
     if (ok) it_pass("T297"); else it_fail("T297", why);
 }
 
+/* ── T298: an Untyped pays for its frames' headers too (Stage 6 Etapa 1) ──
+ * A frame retyped from an Untyped always carved its PAGE from that Untyped;
+ * its kernel-side header came from the kslab heap, so a caller who paid for a
+ * page was also spending kernel memory that nothing accounted, nothing bounded
+ * and no capability authorised — the implicit page-table problem, one level
+ * down.  The header is now a child block of the same Untyped, carved from the
+ * opposite end.
+ *
+ * Three things follow, and each is observable from ring 3:
+ *
+ *   1. retyping a frame costs the page AND the header: `available` drops by
+ *      more than the page, and by less than two pages (which is what a header
+ *      carved from the BOTTOM would have cost, by pushing the page carve onto
+ *      the next boundary);
+ *   2. consecutive frames stay page-dense — N frames cost N pages plus N small
+ *      headers, not 2N pages;
+ *   3. the frame still works: it maps, carries data, and unmaps.
+ *
+ * The header being outside the frame's own page is the security half of this,
+ * and it is not directly observable from here — a header inside the page would
+ * be readable by this test as non-zero bytes at the start of a freshly retyped
+ * frame, so the map-and-read leg below is what would catch it.
+ * Invariants: O1, O2, M3, M4. */
+#define T298_VA   0x8079000000ULL
+
+static void test_t298(void) {
+    int ok = 1;
+    const char *why = "untyped pays for headers";
+
+    if (!it_setup_self_vspace()) { it_fail("T298", "vspace self"); return; }
+
+    /* A dedicated sub-untyped so the measurement is not perturbed by whatever
+     * else the suite fabricates from its pool. */
+    long sub = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                    IRIS_KOBJ_UNTYPED, 256u * 1024u);
+    if (sub < 0) { it_fail("T298", "sub-untyped"); return; }
+
+    uint64_t before = 0, after = 0;
+    if (it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&before) != 0) {
+        it_fail("T298", "info"); return;
+    }
+
+    long fr = it_frame_create_slot(sub, 4096u);
+    if (fr < 0) { it_fail("T298", "frame retype"); return; }
+    if (it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&after) != 0) {
+        it_fail("T298", "info2"); return;
+    }
+
+    /* 1. the page and the header both came out of this Untyped. */
+    uint64_t cost = before - after;
+    if (cost <= 4096u)      { ok = 0; why = "header not charged"; }
+    if (ok && cost >= 8192u) { ok = 0; why = "header cost a whole page"; }
+
+    /* 2. density: three more frames cost three more pages, plus headers. */
+    if (ok) {
+        uint64_t base = after;
+        for (int i = 0; ok && i < 3; i++) {
+            long f2 = it_frame_create_slot(sub, 4096u);
+            if (f2 < 0) { ok = 0; why = "frame retype n"; }
+        }
+        if (ok && it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&after) != 0) {
+            ok = 0; why = "info3";
+        }
+        uint64_t cost3 = base - after;
+        if (ok && cost3 >= 3u * 8192u) { ok = 0; why = "frames not page-dense"; }
+        if (ok && cost3 <= 3u * 4096u) { ok = 0; why = "headers not charged n"; }
+    }
+
+    /* 3. the frame is a real frame: map it, write, read back, unmap. */
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, IT_VS, (long)T298_VA,
+                      (long)IT_MAP_W) != 0) {
+        ok = 0; why = "map";
+    } else if (ok) {
+        volatile uint64_t *pg = (volatile uint64_t *)(uintptr_t)T298_VA;
+        /* A freshly retyped frame is zero-filled; kernel bookkeeping placed
+         * inside the page would show up right here. */
+        if (pg[0] != 0u || pg[63] != 0u) { ok = 0; why = "frame not clean"; }
+        if (ok) {
+            pg[0] = 0xA5A5A5A5A5A5A5A5ULL;
+            if (pg[0] != 0xA5A5A5A5A5A5A5A5ULL) { ok = 0; why = "frame not writable"; }
+        }
+        if (it_sys3(SYS_FRAME_UNMAP, fr, IT_VS, (long)T298_VA) != 0) {
+            ok = 0; why = "unmap";
+        }
+    }
+
+    if (ok) it_pass("T298"); else it_fail("T298", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Etapa 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -20187,6 +20276,8 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t296();
     /* Stage 5: a thread is retyped, configured and started. */
     test_t297();
+    /* Stage 6: the Untyped pays for its frames' headers. */
+    test_t298();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

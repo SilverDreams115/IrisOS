@@ -90,6 +90,56 @@ static const struct KObjectOps kframe_ops = {
     .destroy = kframe_obj_destroy,
 };
 
+/*
+ * Stage 6 Etapa 1 — the Untyped-born frame.
+ *
+ * The frame's PAGE was always carved from the Untyped; its header was a kslab
+ * allocation, so a caller who paid for a page also spent kernel memory that
+ * nothing accounted and no capability authorised.  The header is now a child
+ * block of the same Untyped, carved from the TOP so that it does not push the
+ * page carve onto the next page boundary.
+ *
+ * It is never inside the frame's own page: that page is mapped into ring 3,
+ * and kernel bookkeeping placed there would be readable and writable by the
+ * process the frame was handed to.  The two carves come from opposite ends of
+ * the region precisely so they cannot meet.
+ */
+static void kframe_obj_destroy_ut(struct KObject *obj) {
+    struct KFrame *f   = (struct KFrame *)obj;
+    struct KVmo   *vmo = f->vmo_owner;
+
+    IRIS_ASSERT(
+        atomic_load_explicit(&f->mapped_count, memory_order_relaxed) == 0,
+        "kframe: destroy with active mappings — caller must unmap before release");
+
+    atomic_fetch_sub_explicit(&kframe_live, 1u, memory_order_relaxed);
+    /* Returns the block to its parent: zeroes it, drops child_count, releases
+     * the parent retain.  No alloc_parent bookkeeping here — the header block
+     * IS the child, exactly as for KCNode/KTcb/KEndpoint. */
+    kuntyped_release_child(f, sizeof(struct KFrame));
+
+    if (vmo) kobject_release(&vmo->base);
+}
+
+static const struct KObjectOps kframe_ops_ut = {
+    .close   = kframe_obj_close,
+    .destroy = kframe_obj_destroy_ut,
+};
+
+struct KFrame *kframe_alloc_at(void *mem, uint64_t paddr, uint64_t size) {
+    if (!mem || !size || (size & 0xFFFULL)) return 0;
+
+    struct KFrame *f = (struct KFrame *)mem;   /* block arrives zeroed */
+    kobject_init(&f->base, KOBJ_FRAME, &kframe_ops_ut);
+    f->paddr        = paddr;
+    f->size         = size;
+    f->alloc_parent = NULL;   /* the header block holds the child accounting */
+    f->vmo_owner    = NULL;
+    atomic_store_explicit(&f->mapped_count, 0u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&kframe_live, 1u, memory_order_relaxed);
+    return f;
+}
+
 struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
                              struct KUntyped *alloc_parent) {
     if (!size || (size & 0xFFFULL)) return 0;

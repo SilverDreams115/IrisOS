@@ -56,7 +56,7 @@ reserved, no functionality) · `REMOVED` (deleted).
 | root CNode at `kprocess_alloc` (kslab) | runtime CNode outside Untyped | every spawn | the spawner supplies a retyped CNode (process-server) | process-server | yes | ACTIVE_LEGACY |
 | root CNode reachable only via `cspace_root_h` (handle) | the CSpace ROOT is located through the handle table | — | `KProcess.cspace_root`: a structural back-reference holding one lifecycle + one active ref, released in `kprocess_teardown` | Stage 4 | n/a | **REMOVED (Fase S4, Etapa 4)** — resolving a CPtr no longer touches a handle table, and the cross-process paths (`SYS_CSPACE_MINT_INTO`, `SYS_PROC_CSPACE_MINT`, retype2, IPC receive-slot delivery) no longer read ANOTHER process's handle table to find its root.  Allowlist: `handle_table_get_object` 52 → 40 (14 files → 11), `handle_table_insert` 42 → 41 |
 | implicit page-table allocation (PMM reserve on map) | kernel memory hidden by mapping | paging | PageTable objects from Untyped | frame/page-table | yes | ACTIVE_LEGACY |
-| KFrame header sidecar (kslab) | metadata outside the region | frame retype | header inside the Untyped | frame/page-table | yes | ACTIVE_LEGACY |
+| KFrame header sidecar (kslab) | metadata outside the region | VMO page frames and a spawning process's bootstrap frames (`kframe_alloc`) | header carved from the Untyped | Stage 6 (Etapas 3/5, with the paths that create those frames) | yes | **MIGRATING (Stage 6 Etapa 1)** — a frame RETYPED from an Untyped now carries its header as a child block of that same Untyped, carved from the top so it cannot displace the page-aligned carve nor land inside the page that is mapped into ring 3.  What still uses kslab are the frames with no Untyped to charge: VMO pages (`kframe_alloc_vmo_page`) and bootstrap frames (`bootstrap_kframe_map`) |
 | process-level fault record (one per process) | belongs on the TCB | fault delivery (Fase 20/25) | per-TCB fault / fault EP | process-server | yes | ACTIVE_LEGACY |
 | `SYS_PROCESS_VSPACE` (107) | process authority → VSpace by handle | supervisors/pager tests | CSpace mint of the VSpace cap | process-server | yes | ACTIVE_LEGACY |
 | `SYS_BOOTCAP_RESTRICT` (dual-namespace split brain) | `arg0` is resolved with `cspace_or_handle_resolve_obj` (CPtr **or** handle), but the restricted clone is published with `handle_table_replace(ht, (handle_id_t)arg0, …)` — the two halves disagree about which namespace `arg0` is in | init (fb spawn cap), svcmgr (post-bootstrap strip) — **both pass handles**, so no live defect | publish the clone into a CSpace destination slot as an MDB child of the source slot, the way retype2/mint already do | Etapa 4 | yes | ACTIVE_LEGACY — **blocks the spawn-cap CPtr migration**.  A CPtr has generation 0 and every live handle slot has generation ≥ 1, so `handle_table_replace` rejects it with `BAD_HANDLE`: no corruption, but the syscall silently cannot succeed by CPtr.  Migrating `spawn_cap_h` to a CPtr before fixing this turns a working restriction into a no-op error path — i.e. a capability that was supposed to be narrowed stays wide |
@@ -70,6 +70,32 @@ reserved, no functionality) · `REMOVED` (deleted).
 | `svc_mint.src_h` (handle-sourced pre-start delegation) | the loader mints a child's caps from the supervisor's handle table | all non-device mints in svcmgr/init/userboot | `svc_mint.src_cptr` + `SYS_CSPACE_MINT_INTO` | Stage 4 | yes for device caps (already migrated) | MIGRATING (device caps done; endpoints/untyped/reply still handle-sourced) |
 | IPC delivery into the receiver's handle table (`syscall_ipc_deliver_cap_badged`) | a capability entered a process through the handle namespace because the receiver declared no destination — not a choice either side made | — | the receiver declares a receive slot; an undeclared receive gets the message WITHOUT the capability, and the sender's source slot is untouched | Stage 4 | n/a | **RETIRED (Stage 4)** — the destination half of charter I1.  `iris_ipc_stat_handle_deliveries` is a structural 0 (T095 pins it, T096 proves 32 consecutive deliveries all land in slots) |
 | TOCTOU receive-slot→handle fallback (`syscall_ipc_deliver_cap_routed`) | CSpace-to-handle delivery degradation | — | fail closed: no cap delivered, source slot untouched | Stage 2 | n/a | **REMOVED (Fase S4)** — the last permitted degradation is gone; `iris_ipc_stat_toctou_fallbacks` is a structural 0 pinned by T094 (forces the race) and T095 (asserts the counter never moves) |
+
+### A-10 — the Untyped carves from both ends
+
+**Change**: `KUntyped` gains a second bump pointer (`used_top`) growing down
+from the end of the region, and `kuntyped_alloc_child_top`.  Object headers for
+objects that also own a page-aligned region are carved there; a retyped
+`KFrame`'s header is the first user.
+
+**Justification**: charter §2.5 M3 ("the kernel does not implicitly allocate
+user memory") and §3.3 (no canonical object from kslab).  A frame's page was
+paid for by its Untyped and its header was not — kernel memory that nothing
+accounted and no capability authorised, which is the same defect as the
+implicit page tables one level down.  The second pointer exists because a
+header carved from the bottom would round the next page carve up and cost a
+whole page per frame; the alternative (accept the waste) would have made
+paying for headers a memory regression, and the alternative to that (leave
+headers in the heap) is the thing being fixed.
+
+**Not a new mechanism**: no syscall signature changes; `child_count` semantics
+are unchanged (one child per frame); `SYS_UNTYPED_RESET` reclaims both ends and
+still refuses while children are live.  A refused carve moves neither pointer.
+
+**Scope**: the `KFrame header sidecar` row moves ACTIVE_LEGACY → MIGRATING; no
+allowlist movement yet, because `kframe.c` still allocates headers for frames
+that have no Untyped to charge (VMO pages, bootstrap frames).  Tests:
+UT-TOP-1..5 and T298.
 
 ## Structural divergences from seL4 — recorded, not staged
 

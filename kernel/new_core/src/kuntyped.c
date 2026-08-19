@@ -86,6 +86,7 @@ struct KUntyped *kuntyped_create(uint64_t phys_base, uint64_t size, int is_devic
     u->phys_base   = phys_base;
     u->total_size  = size;
     u->used        = 0;
+    u->used_top    = 0;
     u->is_device   = is_device;
     u->alloc_parent = 0;
     u->generation  = 0;
@@ -104,7 +105,9 @@ void kuntyped_destroy_ref(struct KUntyped *u) {
 static uint64_t kuntyped_bump(struct KUntyped *u, uint64_t bytes) {
     uint64_t aligned = (bytes + KUNTYPED_ALIGN - 1u) & ~(uint64_t)(KUNTYPED_ALIGN - 1u);
     uint64_t flags   = irq_spinlock_lock(&u->lock);
-    if (u->used + aligned > u->total_size) {
+    /* Stage 6 Etapa 1: the two ends meet exactly once. */
+    if (u->used + aligned + u->used_top > u->total_size ||
+        u->used + aligned < u->used) {
         irq_spinlock_unlock(&u->lock, flags);
         return (uint64_t)-1;
     }
@@ -161,6 +164,35 @@ void *kuntyped_alloc_child(struct KUntyped *u, uint64_t obj_bytes) {
     return block + KUNTYPED_ALIGN;
 }
 
+void *kuntyped_alloc_child_top(struct KUntyped *u, uint64_t obj_bytes) {
+    if (!u || !obj_bytes) return 0;
+
+    uint64_t aligned = (obj_bytes + KUNTYPED_ALIGN - 1u) & ~(uint64_t)(KUNTYPED_ALIGN - 1u);
+    uint64_t need    = KUNTYPED_ALIGN + aligned;
+    if (need < aligned) return 0;                      /* overflow */
+
+    uint64_t flags = irq_spinlock_lock(&u->lock);
+    if (u->used + u->used_top + need > u->total_size) {
+        irq_spinlock_unlock(&u->lock, flags);
+        return 0;
+    }
+    u->used_top += need;
+    uint64_t offset = u->total_size - u->used_top;     /* block start */
+    irq_spinlock_unlock(&u->lock, flags);
+
+    uint8_t *block = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(u->phys_base + offset);
+    /* Zero unconditionally: unlike the bottom carve this is never handed to
+     * userland as device memory — it is a kernel object header, and a header
+     * placed over stale bytes is a half-initialised object. */
+    for (uint64_t i = 0; i < need; i++) block[i] = 0;
+
+    *(struct KUntyped **)block = u;
+    kobject_retain(&u->base);
+    atomic_fetch_add_explicit(&u->child_count, 1u, memory_order_relaxed);
+
+    return block + KUNTYPED_ALIGN;
+}
+
 void kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes) {
     if (!obj_ptr) return;
     uint8_t *block  = (uint8_t *)obj_ptr - KUNTYPED_ALIGN;
@@ -202,7 +234,8 @@ iris_error_t kuntyped_alloc_children_atomic(struct KUntyped *u,
     if (total > KUNTYPED_RETYPE_MAX_BYTES) return IRIS_ERR_INVALID_ARG;
 
     uint64_t flags = irq_spinlock_lock(&u->lock);
-    if (u->used + total > u->total_size || u->used + total < u->used) {
+    if (u->used + total + u->used_top > u->total_size ||
+        u->used + total < u->used) {
         irq_spinlock_unlock(&u->lock, flags);
         return IRIS_ERR_NO_MEMORY;
     }
@@ -236,7 +269,7 @@ void kuntyped_unbump_exact(struct KUntyped *u, uint64_t start_used,
 uint64_t kuntyped_available(struct KUntyped *u) {
     if (!u) return 0;
     uint64_t flags = irq_spinlock_lock(&u->lock);
-    uint64_t avail = u->total_size - u->used;
+    uint64_t avail = u->total_size - u->used - u->used_top;
     irq_spinlock_unlock(&u->lock, flags);
     return avail;
 }
@@ -248,7 +281,8 @@ uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size) {
     uint64_t irqfl = irq_spinlock_lock(&u->lock);
     /* Round current bump pointer up to the next PAGE_SIZE boundary. */
     uint64_t aligned_start = (u->used + 0xFFFULL) & ~0xFFFULL;
-    if (aligned_start + size > u->total_size) {
+    if (aligned_start + size + u->used_top > u->total_size ||
+        aligned_start < u->used) {
         irq_spinlock_unlock(&u->lock, irqfl);
         return 0;
     }

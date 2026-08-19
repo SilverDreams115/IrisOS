@@ -18,10 +18,17 @@
 
 struct KUntyped {
     struct KObject      base;        /* must be first */
-    irq_spinlock_t      lock;        /* guards used (bump pointer) */
+    irq_spinlock_t      lock;        /* guards both bump pointers */
     uint64_t            phys_base;   /* physical start of managed region */
     uint64_t            total_size;  /* total bytes */
-    uint64_t            used;        /* bump-pointer offset — advances monotonically */
+    uint64_t            used;        /* bottom bump — advances monotonically */
+    /* Stage 6 Etapa 1: the TOP bump, growing down from phys_base+total_size.
+     * Object HEADERS are carved here so that they never perturb the page
+     * alignment the bottom carve depends on: a 64-byte header taken from the
+     * bottom would push the next page-aligned carve to the following page and
+     * waste almost 4 KiB per frame.  The two ends meet exactly once — every
+     * bounds check is `used + used_top + need <= total_size`. */
+    uint64_t            used_top;
     _Atomic uint32_t    child_count; /* live typed objects / sub-untypeds allocated from here */
     int                 is_device;   /* 0=normal RAM (zero-fill on bump), 1=device memory */
     struct KUntyped    *alloc_parent; /* non-NULL when this KUntyped was created via RETYPE */
@@ -62,6 +69,19 @@ uint64_t kuntyped_bump_alloc_phys(struct KUntyped *u, uint64_t bytes);
  *   obj_bytes must match what was passed to kuntyped_alloc_child.
  */
 void *kuntyped_alloc_child(struct KUntyped *u, uint64_t obj_bytes);
+
+/*
+ * Stage 6 Etapa 1: same contract as kuntyped_alloc_child — parent back-pointer
+ * in the block header, child_count incremented, parent retained, released by
+ * kuntyped_release_child — but carved from the TOP of the region.
+ *
+ * For objects that describe a page-aligned region carved from the same Untyped
+ * (a Frame today, a page table next), so that paying for the header does not
+ * cost a page of alignment.  The release path is direction-agnostic: it reads
+ * the parent out of the block and never rewinds either pointer.
+ */
+void *kuntyped_alloc_child_top(struct KUntyped *u, uint64_t obj_bytes);
+
 void  kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes);
 
 uint64_t kuntyped_available(struct KUntyped *u);
