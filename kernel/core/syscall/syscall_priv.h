@@ -122,7 +122,7 @@ static inline int page_round_up_u64(uint64_t size, uint64_t *out_rounded) {
 }
 
 /*
- * KDEBUG authority, named.  The caller must NAME the capability that
+ * Debug authority, named.  The caller must NAME the capability that
  * authorises the call — what a capability system requires, and what charter A5
  * (no ambient authority) and §3.5 (nothing but a capability confers authority)
  * demand.
@@ -142,8 +142,12 @@ static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr) {
     struct KObject *obj; iris_rights_t r;
     if (cspace_resolve_cap(t->process, (iris_cptr_t)auth_cptr, RIGHT_READ,
                            &obj, &r) != IRIS_OK) return 0;
+    /* Stage 5 Etapa 2: exact match.  Debug authority is its own capability, so
+     * a capability that merely includes the bit — which, before the split, was
+     * every boot capability in the system — does not authorise draining the
+     * kernel log or powering the machine off. */
     int ok = (obj->type == KOBJ_BOOTSTRAP_CAP) &&
-             kbootcap_allows((struct KBootstrapCap *)obj, IRIS_BOOTCAP_KDEBUG);
+             kbootcap_is((struct KBootstrapCap *)obj, IRIS_BOOTCAP_DEBUG_CONTROL);
     kobject_active_release(obj);
     kobject_release(obj);
     return ok;

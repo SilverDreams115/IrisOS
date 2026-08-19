@@ -213,7 +213,7 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     }
 
     {
-        struct svc_mint sm_mints[6] = { 0 };
+        struct svc_mint sm_mints[7] = { 0 };
         uint32_t n = 0;
         sm_mints[n].slot   = IRIS_CPTR_CONSOLE_EP;
         sm_mints[n].src_cptr = g_init_console_ep_h;
@@ -243,6 +243,14 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
         n++;
         sm_mints[n].slot     = IRIS_CPTR_IOPORT_CONTROL;
         sm_mints[n].src_cptr = IRIS_CPTR_IOPORT_CONTROL;
+        sm_mints[n].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[n].badge  = 0;
+        n++;
+        /* svcmgr drains the kernel log for its diagnostics endpoint and powers
+         * the machine off on request: that is the debug control capability,
+         * and nothing else it holds implies it. */
+        sm_mints[n].slot     = IRIS_CPTR_DEBUG_CONTROL;
+        sm_mints[n].src_cptr = IRIS_CPTR_DEBUG_CONTROL;
         sm_mints[n].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         sm_mints[n].badge  = 0;
         n++;
@@ -353,7 +361,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[14] = { 0 };
+        struct svc_mint it_mints[15] = { 0 };
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -409,6 +417,12 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[13].src_cptr = IRIS_CPTR_IRQ_CONTROL;
         it_mints[13].rights = RIGHT_READ;
         it_mints[13].badge = 0;
+        /* The suite reads scheduler and IPC statistics in ~20 tests; that is
+         * debug authority and now says nothing about spawning. */
+        it_mints[14].slot = IRIS_CPTR_DEBUG_CONTROL;
+        it_mints[14].src_cptr = IRIS_CPTR_DEBUG_CONTROL;
+        it_mints[14].rights = RIGHT_READ;
+        it_mints[14].badge = 0;
         /* Fase 18: the boot KUntyped for the authority suite (T125–T131). */
         it_mints[10].slot = IRIS_CPTR_TEST_UNTYPED;
         it_mints[10].src_cptr = lk_untyped;   /* 0 → skipped by svc_load */
@@ -444,7 +458,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * outlives bootstrap_h by construction — which is the only reason the
          * retired duplicate had to exist. */
         r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "iris_test",
-                            &proc_h, &boot_h, it_mints, 14u,
+                            &proc_h, &boot_h, it_mints, 15u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
     }
     init_close(&lk_svcmgr);

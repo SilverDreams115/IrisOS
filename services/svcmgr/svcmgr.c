@@ -326,11 +326,12 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
     (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, IRIS_CPTR_IRQ_CONTROL);
     (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, IRIS_CPTR_IOPORT_CONTROL);
 
-    /* What is left of the monolith still mixes SPAWN_SERVICE, KDEBUG and
-     * FRAMEBUFFER; svcmgr needs the first two and never uses the third, so the
-     * mask narrowing survives here until those three split as well. */
+    /* What is left of the monolith mixes SPAWN_SERVICE and FRAMEBUFFER;
+     * svcmgr needs the first and never uses the second, so the mask narrowing
+     * survives here until those two split as well.  Debug authority left the
+     * mask in Etapa 2b and arrives as its own capability. */
     if (svcmgr_syscall3(SYS_BOOTCAP_RESTRICT, state->spawn_cap_c,
-                        IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_KDEBUG,
+                        IRIS_BOOTCAP_SPAWN_SERVICE,
                         SVCMGR_SPAWN_NARROW_SLOT) == 0) {
         (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, IRIS_CPTR_SPAWN_CAP);
         state->spawn_cap_c = SVCMGR_SPAWN_NARROW_SLOT;
@@ -1490,10 +1491,12 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
         static uint8_t klog_drain_buf[4097]; /* KLOG_BUF_SIZE + 1 for NUL */
         /* Etapa 4: name the capability that authorises the drain instead of
          * relying on the kernel finding a KDEBUG cap somewhere in our handle
-         * table — which it cannot do now that our spawn cap is a CSpace slot. */
+         * table — which it cannot do now that our spawn cap is a CSpace slot.
+         * Stage 5 Etapa 2: that capability is the debug control capability,
+         * which authorises reading the kernel's log and nothing else. */
         int64_t n = svcmgr_syscall3(SYS_KLOG_DRAIN,
                                     (uint64_t)(uintptr_t)klog_drain_buf,
-                                    4096u, state->spawn_cap_c);
+                                    4096u, IRIS_CPTR_DEBUG_CONTROL);
         if (n > 0 && state->console_ep_c != 0u) {
             klog_drain_buf[n] = 0u;
             (void)console_ep_write(state->console_ep_c, g_svcmgr_log_buf,

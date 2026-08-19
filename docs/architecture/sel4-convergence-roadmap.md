@@ -456,6 +456,15 @@ Covered by T296 (each control capability authorises its own syscall, neither
 authorises the other's, the capability they were split from authorises
 neither, an empty slot authorises nothing); T069 and T291 re-anchored.
 
+### Etapa 2b — debug is its own authority  ✅ DONE
+
+`IRIS_BOOTCAP_KDEBUG` — kernel-log drain, scheduler statistics, poweroff — is
+now a capability of its own (`BOOT_CPTR_DEBUG_CONTROL`, BootInfo v3), matched
+exactly and delegated to the two processes that use it: svcmgr and the suite.
+The child-side slot reuses the retired `IRIS_CPTR_SVC_REPLY` constant, dead
+since KChannel was removed, because root CNodes are 256 slots and the suite's
+is full.  T296 gained a third leg; T291's oracle moved to the framebuffer bit.
+
 ## Stage 6 — Remaining memory and objects
 
 Precondition: Stage 1 (ownership/derivation); may overlap with 5.

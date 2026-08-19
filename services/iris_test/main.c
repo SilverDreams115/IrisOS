@@ -4364,7 +4364,7 @@ static int it_sched_ext(uint32_t w[14]) {
     /* Fase 16: request 96 bytes so the two lifecycle words (offsets 84/88)
      * land too; a pre-Fase-16 kernel clamps to 88 and leaves w[11..13] zero —
      * the extra words are additive, never required by legacy asserts. */
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96, (long)IRIS_CPTR_SPAWN_CAP);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96, (long)IRIS_CPTR_DEBUG_CONTROL);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 14u; i++) {
         uint32_t o = 40u + 4u * i;
@@ -4378,7 +4378,7 @@ static int it_sched_ext(uint32_t w[14]) {
  * sched_live_count, distinct from the handle-table live at IT_SI_LIVE. */
 static int it_task_live(uint32_t *out) {
     uint8_t buf[96];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96, (long)IRIS_CPTR_SPAWN_CAP);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96, (long)IRIS_CPTR_DEBUG_CONTROL);
     if (r != 0) return 0;
     *out = (uint32_t)buf[32] | ((uint32_t)buf[33] << 8) |
            ((uint32_t)buf[34] << 16) | ((uint32_t)buf[35] << 24);
@@ -4419,7 +4419,7 @@ static int it_task_live(uint32_t *out) {
 
 static int it_sched_ext3(uint32_t w3[5]) {
     uint8_t buf[136];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136, (long)IRIS_CPTR_SPAWN_CAP);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136, (long)IRIS_CPTR_DEBUG_CONTROL);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 5u; i++) {
         uint32_t o = 112u + 4u * i;
@@ -4448,7 +4448,7 @@ static int it_sched_ext3(uint32_t w3[5]) {
 
 static int it_sched_ext4(uint32_t w4[5]) {
     uint8_t buf[160];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 160, (long)IRIS_CPTR_SPAWN_CAP);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 160, (long)IRIS_CPTR_DEBUG_CONTROL);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 5u; i++) {
         uint32_t o = 136u + 4u * i;
@@ -4469,7 +4469,7 @@ static int it_sched_ext4(uint32_t w4[5]) {
 
 static int it_sched_ext5(uint32_t w5[5]) {
     uint8_t buf[184];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184, (long)IRIS_CPTR_SPAWN_CAP);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184, (long)IRIS_CPTR_DEBUG_CONTROL);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 5u; i++) {
         uint32_t o = 160u + 4u * i;
@@ -4509,7 +4509,7 @@ static int it_setup_self_vspace(void) {
 
 static int it_sched_ext2(uint32_t w2[4]) {
     uint8_t buf[112];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 112, (long)IRIS_CPTR_SPAWN_CAP);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 112, (long)IRIS_CPTR_DEBUG_CONTROL);
     if (r != 0) return 0;
     for (uint32_t i = 0; i < 4u; i++) {
         uint32_t o = 96u + 4u * i;
@@ -10113,7 +10113,7 @@ static void test_t150(void) {
 
     /* SYS_SCHED_INFO writes a buffer: every hostile dst → INVALID_ARG. */
     for (int i = 0; ok && i < NB; i++) {
-        if (it_sys3(SYS_SCHED_INFO, bad_ptr[i], 184, (long)IRIS_CPTR_SPAWN_CAP) != (long)IRIS_ERR_INVALID_ARG) {
+        if (it_sys3(SYS_SCHED_INFO, bad_ptr[i], 184, (long)IRIS_CPTR_DEBUG_CONTROL) != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "sched_info bad dst"; break;
         }
     }
@@ -10163,11 +10163,11 @@ static void test_t150(void) {
      * buffer. */
     if (ok) {
         uint8_t buf[184];
-        if (it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0, (long)IRIS_CPTR_SPAWN_CAP) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size 0"; }
-        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 8, (long)IRIS_CPTR_SPAWN_CAP) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size below base"; }
-        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0x7FFFFFFFL, (long)IRIS_CPTR_SPAWN_CAP) != 0) { ok = 0; why = "huge size not clamped"; }
+        if (it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0, (long)IRIS_CPTR_DEBUG_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size 0"; }
+        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 8, (long)IRIS_CPTR_DEBUG_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "size below base"; }
+        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 0x7FFFFFFFL, (long)IRIS_CPTR_DEBUG_CONTROL) != 0) { ok = 0; why = "huge size not clamped"; }
         /* A valid call still works — reject paths left nothing wedged. */
-        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184, (long)IRIS_CPTR_SPAWN_CAP) != 0) { ok = 0; why = "valid after fuzz"; }
+        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 184, (long)IRIS_CPTR_DEBUG_CONTROL) != 0) { ok = 0; why = "valid after fuzz"; }
     }
 
     it_quiesce_reaper();
@@ -13106,7 +13106,7 @@ static void test_t190(void) {
  * additive field in the old pad half of buf[16]).  Returns -1 on failure. */
 static long it_vmo_live(void) {
     uint8_t buf[136];
-    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136, (long)IRIS_CPTR_SPAWN_CAP);
+    long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136, (long)IRIS_CPTR_DEBUG_CONTROL);
     if (r != 0) return -1;
     return (long)((uint32_t)buf[132] | ((uint32_t)buf[133] << 8) |
                   ((uint32_t)buf[134] << 16) | ((uint32_t)buf[135] << 24));
@@ -18529,18 +18529,21 @@ static int it_utq_t(struct it_utq_taskobj *q) {
  * restricted copy is installed into a destination slot as an MDB child of the
  * source slot, and the source keeps every permission it had.
  *
- * The oracle is behavioural, not a field read: two DIFFERENT authorities that
- * still share the monolith are probed by invoking them.  SYS_INITRD_COUNT
- * needs IRIS_BOOTCAP_SPAWN_SERVICE and SYS_SCHED_INFO needs
- * IRIS_BOOTCAP_KDEBUG, so a copy narrowed to SPAWN_SERVICE must answer the
- * first and refuse the second while the source answers both.
+ * The oracle is behavioural, not a field read: the two authorities that still
+ * share the monolith are probed by invoking them.  SYS_INITRD_COUNT needs
+ * IRIS_BOOTCAP_SPAWN_SERVICE and SYS_FRAMEBUFFER_VMO needs
+ * IRIS_BOOTCAP_FRAMEBUFFER, so a copy narrowed to SPAWN_SERVICE must answer
+ * the first and be refused the second while the source is not.  The
+ * framebuffer VMO was consumed by fb at boot, so an AUTHORISED caller gets
+ * NOT_FOUND and an unauthorised one gets ACCESS_DENIED — two distinct errors,
+ * which is what makes a one-shot resource usable as an authority oracle.
  *
- * Stage 5 Etapa 2 re-anchored this test: it used to probe with
- * SYS_CAP_CREATE_IOPORT because device authority was a bit on this same
- * capability.  It is its own capability now, so probing with it would test
- * nothing about the mask — the derived copy would be refused for not being the
- * ioport control capability, whatever the mask said.  What survives here is
- * the mask that is left; when SPAWN_SERVICE, KDEBUG and FRAMEBUFFER split too,
+ * Stage 5 Etapa 2 has re-anchored this test twice, each time because the
+ * authority it probed with stopped being a bit on this capability and became
+ * its own: first device creation, then debug.  Probing with either now would
+ * test nothing about the mask — the derived copy would be refused for not
+ * BEING that capability, whatever the mask said.  What survives is the mask
+ * that is left; when SPAWN_SERVICE and FRAMEBUFFER split too,
  * SYS_BOOTCAP_RESTRICT retires and this test dies with the mechanism.
  *
  * The source-untouched assertion is the one that matters: the old in-place
@@ -18552,17 +18555,17 @@ static int it_utq_t(struct it_utq_taskobj *q) {
 static void test_t291(void) {
     int ok = 1;
     const char *why = "bootcap restrict";
-    uint64_t sched_buf[24] = { 0 };
+    uint8_t fbbuf[64];
 
     it_slot_delete(T291_DERIVED_SLOT);
 
-    /* Baseline: the monolith answers for both authorities. */
+    /* Baseline: the monolith answers for both authorities it still carries. */
     if (it_sys2(SYS_INITRD_COUNT, (long)IRIS_CPTR_SPAWN_CAP, 0) < 0) {
         ok = 0; why = "baseline spawn denied";
     }
-    if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
-                      (long)IRIS_CPTR_SPAWN_CAP) < 0) {
-        ok = 0; why = "baseline kdebug denied";
+    if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, (long)IRIS_CPTR_SPAWN_CAP,
+                      (long)(uintptr_t)fbbuf, 0) != (long)IRIS_ERR_NOT_FOUND) {
+        ok = 0; why = "baseline framebuffer denied";
     }
 
     /* CPTR_NULL is never a destination. */
@@ -18584,14 +18587,15 @@ static void test_t291(void) {
         ok = 0; why = "derived lost spawn";
     }
     /* ...and loses what was dropped. */
-    if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
-                      (long)T291_DERIVED_SLOT) >= 0) {
-        ok = 0; why = "derived kept kdebug";
+    if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, (long)T291_DERIVED_SLOT,
+                      (long)(uintptr_t)fbbuf, 0)
+              != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "derived kept framebuffer";
     }
 
     /* The SOURCE must be exactly as strong as before. */
-    if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
-                      (long)IRIS_CPTR_SPAWN_CAP) < 0) {
+    if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, (long)IRIS_CPTR_SPAWN_CAP,
+                      (long)(uintptr_t)fbbuf, 0) != (long)IRIS_ERR_NOT_FOUND) {
         ok = 0; why = "source was narrowed";
     }
 
@@ -19526,7 +19530,11 @@ static void test_t294(void) {
  *   2. neither authorises the other's — the IRQ control capability cannot
  *      create an ioport capability, and vice versa;
  *   3. the boot capability that still carries the remaining mask authorises
- *      NEITHER, even though it is the object both were split from.
+ *      NEITHER, even though it is the object they were split from.
+ *
+ * Extended in Etapa 2b as each further authority splits off: debug authority
+ * (kernel log, scheduler statistics, poweroff) is a capability of its own,
+ * which the device capabilities do not imply and which does not imply them.
  *
  * A non-whitelisted port is used for the negative ioport probes only where
  * the whitelist gate cannot mask the result: the whitelist runs BEFORE the
@@ -19581,6 +19589,32 @@ static void test_t296(void) {
         ok = 0; why = "monolith still creates irqs";
     }
     it_slot_delete(T296_SLOT);
+
+    /* Debug authority is a third, separate capability: it authorises reading
+     * the kernel's log and the scheduler's statistics, and neither device
+     * capability nor what is left of the monolith substitutes for it. */
+    {
+        uint64_t sched_buf[24] = { 0 };
+        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
+                          (long)IRIS_CPTR_DEBUG_CONTROL) < 0) {
+            ok = 0; why = "debug control denied";
+        }
+        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
+                          (long)IRIS_CPTR_IOPORT_CONTROL) >= 0) {
+            ok = 0; why = "ioport cap read sched info";
+        }
+        if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
+                          (long)IRIS_CPTR_SPAWN_CAP) >= 0) {
+            ok = 0; why = "monolith read sched info";
+        }
+        /* ...and debug authority creates no devices. */
+        if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_DEBUG_CONTROL,
+                          T296_WL_PORT, 8, (long)T296_SLOT)
+                  != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "debug cap created an ioport";
+        }
+        it_slot_delete(T296_SLOT);
+    }
 
     /* The control capabilities are real capabilities in real slots: an empty
      * slot authorises nothing, which is what makes deleting them (as svcmgr

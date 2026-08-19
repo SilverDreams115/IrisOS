@@ -41,6 +41,7 @@
  * unreadable. */
 #define BOOT_CPTR_IRQ_CONTROL     3u    /* SYS_CAP_CREATE_IRQCAP authority */
 #define BOOT_CPTR_IOPORT_CONTROL  4u    /* SYS_CAP_CREATE_IOPORT authority */
+#define BOOT_CPTR_DEBUG_CONTROL   5u    /* klog drain / sched info / poweroff */
 #define BOOT_CPTR_RES_END         15u   /* inclusive; slots 1-15 are reserved */
 #define BOOT_CPTR_UNTYPED_START   16u   /* first boot KUntyped CPtr */
 #define BOOT_CPTR_UNTYPED_END    255u   /* last boot KUntyped CPtr (root CNode has 256 slots) */

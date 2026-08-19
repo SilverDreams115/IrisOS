@@ -49,7 +49,8 @@ and how the root task *learns* about it:
 | 1 | The root task is TOLD what it holds: structured BootInfo | ✅ DONE |
 | 1b | ...and stops assuming which slots are free | ✅ DONE |
 | 2a | Device control splits off: IRQ and ioport control are their own capabilities | ✅ DONE |
-| 2b | Spawn, initrd, debug and framebuffer split too; `SYS_BOOTCAP_RESTRICT` and the monolith retire | pending |
+| 2b | Debug splits off | ✅ DONE |
+| 2c | Spawn, initrd and framebuffer split too; `SYS_BOOTCAP_RESTRICT` and the monolith retire | pending |
 | 3 | The root task's own objects are named caps (root CNode, initial TCB, ASID/PCID control) | pending |
 | 4 | `TCB_CONFIGURE` / `TCB_WRITE_REGS`: a retyped TCB executes | pending |
 
@@ -166,9 +167,9 @@ into its own BootInfo slot, each delegated by handing it over:
 |---|---|---|---|
 | `HW_ACCESS` | `SYS_CAP_CREATE_IRQCAP` | IRQ control capability | ✅ 2a |
 | `HW_ACCESS` | `SYS_CAP_CREATE_IOPORT` | ioport control capability | ✅ 2a |
-| `FRAMEBUFFER` | `SYS_FRAMEBUFFER_VMO` | device-memory cap for the framebuffer | 2b |
-| `SPAWN_SERVICE` | `SYS_PROCESS_CREATE`, `SYS_INITRD_COUNT/VMO` | process-control cap, initrd cap | 2b |
-| `KDEBUG` | `SYS_KLOG_DRAIN`, `SYS_SCHED_INFO`, `SYS_POWEROFF` | debug capability | 2b |
+| `FRAMEBUFFER` | `SYS_FRAMEBUFFER_VMO` | device-memory cap for the framebuffer | 2c |
+| `SPAWN_SERVICE` | `SYS_PROCESS_CREATE`, `SYS_INITRD_COUNT/VMO` | process-control cap, initrd cap | 2c |
+| `KDEBUG` | `SYS_KLOG_DRAIN`, `SYS_SCHED_INFO`, `SYS_POWEROFF` | debug control capability | ✅ 2b |
 
 `SYS_BOOTCAP_RESTRICT` retires with the last bit: narrowing a bitmask by
 cloning an object is replaced by delegating the one capability meant and
@@ -220,6 +221,33 @@ delete a real loss of authority).  **T291** was re-anchored: its behavioural
 oracle for `SYS_BOOTCAP_RESTRICT` moved from device creation — no longer a mask
 bit — to `SYS_INITRD_COUNT` vs `SYS_SCHED_INFO`, two authorities that still
 share the remaining monolith.  It dies with the mechanism in Etapa 2b.
+
+### Etapa 2b — debug is its own authority  ✅ DONE
+
+`IRIS_BOOTCAP_KDEBUG` authorised draining the kernel log, reading scheduler
+statistics and powering the machine off — and rode on the same object as spawn
+and framebuffer authority.  It is now `IRIS_BOOTCAP_DEBUG_CONTROL`, a
+capability of its own, matched exactly, published at `BOOT_CPTR_DEBUG_CONTROL`
+and recorded in BootInfo v3 (`cap_debug_control`).
+
+Delegation reaches svcmgr (kernel-log drain for its diagnostics endpoint) and
+the suite (~20 tests read scheduler and IPC statistics).  Neither holds spawn
+authority *because of* it any more, and svcmgr's remaining mask narrowing drops
+to `SPAWN_SERVICE` alone.
+
+The child-side slot is 9, formerly `IRIS_CPTR_SVC_REPLY` — half of the legacy
+service/reply KChannel pair, dead since KChannel was removed and every catalog
+service became endpoint-only.  Reusing a retired constant is deliberate: root
+CNodes hold 256 slots and the suite's is full, so an authority split that grew
+every CSpace would stall on slot arithmetic rather than on design.  Slot 8 (the
+other half) is reserved for the next split.
+
+T296 grew a third leg: debug authority is denied to both device control
+capabilities and to what is left of the monolith, and grants no device
+creation itself.  T291's oracle moved again — from device creation (Etapa 2a)
+to the framebuffer bit — because each re-anchoring is forced by the same
+progress: the authority it probed with stopped being a bit and became a
+capability.
 
 ## Etapa 3 — the root task's own objects (planned)
 

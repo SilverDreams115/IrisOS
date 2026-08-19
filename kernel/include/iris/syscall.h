@@ -317,7 +317,7 @@
  *   Copies up to max_bytes bytes from the kernel boot-log buffer into the
  *   caller-supplied user buffer, then clears the buffer (destructive read).
  *   Returns the number of bytes actually copied (0 if the buffer is empty).
- *   Requires IRIS_BOOTCAP_KDEBUG.
+ *   Requires the debug control capability (IRIS_BOOTCAP_DEBUG_CONTROL).
  *   max_bytes must be > 0 and ≤ KLOG_BUF_SIZE (4096).
  */
 #define SYS_KLOG_DRAIN 65
@@ -411,7 +411,7 @@
 #define IRIS_BOOTCAP_SPAWN_SERVICE (1u << 0)
 /* (1u << 1) was IRIS_BOOTCAP_HW_ACCESS — one bit for both IRQ and ioport
  * creation.  Split into the two control capabilities below; not reused. */
-#define IRIS_BOOTCAP_KDEBUG        (1u << 2)  /* may call SYS_POWEROFF and SYS_KLOG_DRAIN */
+#define IRIS_BOOTCAP_DEBUG_CONTROL  (1u << 2)  /* the debug control capability */
 #define IRIS_BOOTCAP_FRAMEBUFFER   (1u << 3)  /* may call SYS_FRAMEBUFFER_VMO (one-shot) */
 #define IRIS_BOOTCAP_IRQ_CONTROL    (1u << 4)  /* the IRQ control capability */
 #define IRIS_BOOTCAP_IOPORT_CONTROL (1u << 5)  /* the ioport control capability */
@@ -545,7 +545,7 @@
  * SYS_SCHED_INFO(buf_uptr, buf_size) → 0 or negative iris_error_t
  *   buf_uptr:  user pointer to a buffer of at least 40 bytes.
  *   buf_size:  byte size of the buffer; must be ≥ sizeof(struct iris_sched_info).
- *   Requires IRIS_BOOTCAP_KDEBUG.
+ *   Requires the debug control capability (IRIS_BOOTCAP_DEBUG_CONTROL).
  *   Fills the buffer with a snapshot of scheduler counters (see iris/sched_info.h).
  *   Returns 0 on success.
  *   A1.7 additive extension: buf_size >= 88 additionally fills handle-table
@@ -647,7 +647,8 @@
  * Graceful system power-off — modern/conforming (iris_error_t).
  *
  * SYS_POWEROFF(type, arg0, arg1) → does not return on success, or negative iris_error_t.
- *   Requires IRIS_BOOTCAP_KDEBUG in the caller's bootstrap capability.
+ *   Requires the debug control capability (IRIS_BOOTCAP_DEBUG_CONTROL),
+ *   named as a CPtr — never searched for.
  *   type 0: ACPI S5 soft-off (writes 0x2000 to port 0x604; QEMU ACPI).
  *   type 1: legacy QEMU ISA debug exit (writes 0x01 to port 0xB004; any arg0/arg1 ignored).
  *   Any type not listed above returns IRIS_ERR_INVALID_ARG.

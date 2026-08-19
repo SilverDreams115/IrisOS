@@ -210,8 +210,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             klog_write("[IRIS][USER] FATAL: task_spawn_user(userboot) failed\n");
         } else if (ut) {
             struct KBootstrapCap *cap = kbootcap_alloc(
-                IRIS_BOOTCAP_SPAWN_SERVICE |
-                IRIS_BOOTCAP_KDEBUG | IRIS_BOOTCAP_FRAMEBUFFER);
+                IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_FRAMEBUFFER);
             if (!cap) {
                 klog_write("[IRIS][USER] FATAL: kbootcap_alloc failed\n");
                 task_abort_spawned_user(ut);
@@ -279,8 +278,9 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     boot_controls[] = {
                         { IRIS_BOOTCAP_IRQ_CONTROL,    BOOT_CPTR_IRQ_CONTROL },
                         { IRIS_BOOTCAP_IOPORT_CONTROL, BOOT_CPTR_IOPORT_CONTROL },
+                        { IRIS_BOOTCAP_DEBUG_CONTROL,  BOOT_CPTR_DEBUG_CONTROL },
                     };
-                    for (uint32_t i = 0; ut && i < 2u; i++) {
+                    for (uint32_t i = 0; ut && i < 3u; i++) {
                         struct KBootstrapCap *cc =
                             kbootcap_alloc(boot_controls[i].kind);
                         iris_error_t cme = IRIS_ERR_NO_MEMORY;

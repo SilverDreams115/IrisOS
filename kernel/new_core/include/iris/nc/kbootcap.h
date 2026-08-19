@@ -24,7 +24,7 @@
 #define IRIS_BOOTCAP_SPAWN_SERVICE (1u << 0)
 /* (1u << 1) was IRIS_BOOTCAP_HW_ACCESS: one bit that authorised BOTH IRQ and
  * ioport capability creation.  Split below; the bit is not reused. */
-#define IRIS_BOOTCAP_KDEBUG        (1u << 2)  /* may call SYS_POWEROFF */
+#define IRIS_BOOTCAP_DEBUG_CONTROL  (1u << 2)  /* SYS_KLOG_DRAIN / SYS_SCHED_INFO / SYS_POWEROFF */
 #define IRIS_BOOTCAP_FRAMEBUFFER   (1u << 3)  /* may call SYS_FRAMEBUFFER_VMO (one-shot) */
 #define IRIS_BOOTCAP_IRQ_CONTROL    (1u << 4)  /* SYS_CAP_CREATE_IRQCAP only */
 #define IRIS_BOOTCAP_IOPORT_CONTROL (1u << 5)  /* SYS_CAP_CREATE_IOPORT only */

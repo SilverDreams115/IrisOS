@@ -142,6 +142,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     uint64_t    bootstrap_cap_h;
     uint64_t    irq_control_c;
     uint64_t    ioport_control_c;
+    uint64_t    debug_control_c;
     uint64_t    boot_untyped_c;
     uint64_t    ws_slot;      /* loader workspace CNode — first free slot */
     uint64_t    panic_slot;   /* serial KIoPort for a boot diagnostic — last */
@@ -163,7 +164,9 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     bootstrap_cap_h  = bi->cap_bootstrap;
     irq_control_c    = bi->cap_irq_control;
     ioport_control_c = bi->cap_ioport_control;
-    if (bootstrap_cap_h == 0u || irq_control_c == 0u || ioport_control_c == 0u) {
+    debug_control_c  = bi->cap_debug_control;
+    if (bootstrap_cap_h == 0u || irq_control_c == 0u ||
+        ioport_control_c == 0u || debug_control_c == 0u) {
         ub_boot_panic(BOOT_CPTR_IOPORT_CONTROL, UB_PANIC_IOPORT_SLOT,
                       "[USERBOOT] FATAL: BootInfo grants no boot "
                       "capability; halting boot\n");
@@ -245,7 +248,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
          * if the grant is absent the mint fails, the slot stays empty and the
          * authority tests FAIL loudly rather than silently skipping. */
-        struct svc_mint init_mints[4] = { 0 };
+        struct svc_mint init_mints[5] = { 0 };
         init_mints[0].slot     = IRIS_CPTR_SPAWN_CAP;
         init_mints[0].src_cptr = bootstrap_cap_h;
         init_mints[0].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
@@ -267,13 +270,21 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         init_mints[3].src_cptr = ioport_control_c;
         init_mints[3].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[3].badge    = 0;
+        /* Debug authority — draining the kernel log, reading scheduler
+         * statistics, powering the machine off — travels the same way: init
+         * holds it to pass on, and the services that use it hold nothing else
+         * because of it. */
+        init_mints[4].slot     = IRIS_CPTR_DEBUG_CONTROL;
+        init_mints[4].src_cptr = debug_control_c;
+        init_mints[4].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        init_mints[4].badge    = 0;
 
         /* Both sources are the CPtrs the BootInfo named, not the constants
          * that happened to match them: userboot now delegates what the kernel
          * says it holds, and carves the loader workspace out of the same first
          * boot untyped into a slot the kernel declared free. */
         long lr = svc_load_minted_ws((handle_id_t)bootstrap_cap_h, "init",
-                                     &init_proc_h, &init_boot_h, init_mints, 4u,
+                                     &init_proc_h, &init_boot_h, init_mints, 5u,
                                      SVC_LOADER_WS(boot_untyped_c, ws_slot));
         if (lr < 0)
             goto fail;

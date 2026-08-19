@@ -287,8 +287,13 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * SVCMGR_BOOTSTRAP_KIND_{SERVICE,REPLY,IOPORT_CAP,IRQ_CAP} messages.  The
  * KChannel slots are resolved to handles (CHAN_RECV/SEND need handle-table
  * handles); the device caps resolve by CPtr (cspace_resolve_only_obj). */
-#define IRIS_CPTR_SVC_CHAN    ((uint64_t)8)
-#define IRIS_CPTR_SVC_REPLY   ((uint64_t)9)
+/* Slots 8 and 9 were IRIS_CPTR_SVC_CHAN / IRIS_CPTR_SVC_REPLY, the legacy
+ * service/reply KChannel pair.  KChannel is REMOVED and every catalog service
+ * is endpoint-only, so both constants had no live use — Stage 5 Etapa 2 reuses
+ * slot 9 for the debug control capability rather than growing root CNodes that
+ * are already nearly full.  Slot 8 stays free for the next split-out
+ * authority. */
+#define IRIS_CPTR_DEBUG_CONTROL ((uint64_t)9)
 #define IRIS_CPTR_IOPORT      ((uint64_t)10)
 #define IRIS_CPTR_IRQ_CAP     ((uint64_t)11)
 /*

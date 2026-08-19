@@ -49,6 +49,7 @@ iris_error_t root_bootinfo_init(void *buf, uint32_t bytes,
     bi->cap_vspace       = cap_vspace;
     bi->cap_irq_control    = 0u;
     bi->cap_ioport_control = 0u;
+    bi->cap_debug_control  = 0u;
     bi->cnode_slots      = cnode_slots;
     /* No free slots claimed yet — the boot path knows which slots it left
      * empty only after it has stopped filling them. */
@@ -72,6 +73,7 @@ iris_error_t root_bootinfo_set_control_cap(void *buf, uint32_t bytes,
     switch (kind) {
     case IRIS_BOOTCAP_IRQ_CONTROL:    bi->cap_irq_control    = cptr; break;
     case IRIS_BOOTCAP_IOPORT_CONTROL: bi->cap_ioport_control = cptr; break;
+    case IRIS_BOOTCAP_DEBUG_CONTROL:  bi->cap_debug_control  = cptr; break;
     default:                          return IRIS_ERR_INVALID_ARG;
     }
     return IRIS_OK;
