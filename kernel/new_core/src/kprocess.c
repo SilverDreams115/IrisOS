@@ -404,6 +404,16 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     if (p->cspace_root) {
         struct KCNode *root = p->cspace_root;
         p->cspace_root = 0;
+        /* Stage 5 Etapa 3: empty the root's slots BEFORE dropping its refs.
+         *
+         * A CSpace may name its own CNodes — the root task holds a capability
+         * to its own root CNode — and a slot holds references on what it
+         * names, so a CNode reachable from itself never reaches zero
+         * references and the close callback that empties it never runs.  The
+         * whole CSpace would outlive the process.  Emptying first breaks any
+         * such cycle without depending on the refcount the cycle is holding
+         * up, and is idempotent for the ordinary acyclic case. */
+        kcnode_teardown_slots(root);
         kobject_active_release(&root->base);
         kobject_release(&root->base);
     }

@@ -290,6 +290,11 @@ void kcnode_close(struct KCNode *cn) {
     kobject_release(&cn->base);
 }
 
+void kcnode_teardown_slots(struct KCNode *cn) {
+    if (!cn) return;
+    kcnode_obj_close(&cn->base);
+}
+
 /* ── canonical slot primitives ──────────────────────────────────────────── */
 
 iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,

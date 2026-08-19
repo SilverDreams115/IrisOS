@@ -66,6 +66,7 @@ void test_root_bootinfo(void) {
     {
         memset(page, 0xAA, RBI_PAGE);
         ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, BOOT_CPTR_VSPACE,
+                                     BOOT_CPTR_CNODE, BOOT_CPTR_TCB,
                                      KCNODE_DEFAULT_SLOTS),
                   IRIS_OK);
 
@@ -75,6 +76,9 @@ void test_root_bootinfo(void) {
         ASSERT_EQ(bi->header_bytes, (uint32_t)sizeof(*bi));
         ASSERT_EQ(bi->total_bytes, (uint64_t)sizeof(*bi));
         ASSERT_EQ(bi->cap_vspace, (uint64_t)BOOT_CPTR_VSPACE);
+        /* Etapa 3: the root task's own objects are named, not implied. */
+        ASSERT_EQ(bi->cap_cnode, (uint64_t)BOOT_CPTR_CNODE);
+        ASSERT_EQ(bi->cap_tcb, (uint64_t)BOOT_CPTR_TCB);
         /* Control capabilities are recorded one by one as the boot path
          * publishes them; init claims none of them. */
         ASSERT_EQ(bi->cap_irq_control, 0u);
@@ -92,17 +96,18 @@ void test_root_bootinfo(void) {
 
     /* ── [RBI-3] buffer too small for the header ──────────────────── */
     {
-        ASSERT_EQ(root_bootinfo_init(page, (uint32_t)sizeof(struct iris_root_bootinfo) - 1u,
-                                     2u, 256u),
+        ASSERT_EQ(root_bootinfo_init(page,
+                                     (uint32_t)sizeof(struct iris_root_bootinfo) - 1u,
+                                     2u, 9u, 10u, 256u),
                   IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ(root_bootinfo_init(NULL, RBI_PAGE, 2u, 256u),
+        ASSERT_EQ(root_bootinfo_init(NULL, RBI_PAGE, 2u, 9u, 10u, 256u),
                   IRIS_ERR_INVALID_ARG);
     }
 
     /* ── [RBI-4] descriptors append in order ──────────────────────── */
     {
         memset(page, 0, RBI_PAGE);
-        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 256u), IRIS_OK);
+        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 9u, 10u, 256u), IRIS_OK);
 
         struct iris_root_bootinfo *bi = rbi_buf(page);
         for (uint64_t i = 0; i < 4u; i++)
@@ -132,7 +137,7 @@ void test_root_bootinfo(void) {
         unsigned char guard_page[8192];
         memset(guard_page, 0xEE, sizeof(guard_page));
 
-        ASSERT_EQ(root_bootinfo_init(guard_page, bytes, 2u, 256u), IRIS_OK);
+        ASSERT_EQ(root_bootinfo_init(guard_page, bytes, 2u, 9u, 10u, 256u), IRIS_OK);
         ASSERT_EQ(root_bootinfo_add_untyped(guard_page, bytes, 16u, 0x1000u, 0x1000u, 0), IRIS_OK);
         ASSERT_EQ(root_bootinfo_add_untyped(guard_page, bytes, 17u, 0x2000u, 0x1000u, 0), IRIS_OK);
         /* Third does not fit — refused, and nothing past `bytes` is touched. */
@@ -147,7 +152,7 @@ void test_root_bootinfo(void) {
     /* ── [RBI-6] a descriptor must name something invocable ───────── */
     {
         memset(page, 0, RBI_PAGE);
-        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 256u), IRIS_OK);
+        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 9u, 10u, 256u), IRIS_OK);
         ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 0u, 0x1000u, 0x1000u, 0),
                   IRIS_ERR_INVALID_ARG);   /* CPTR_NULL */
         ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 16u, 0x1000u, 0u, 0),
@@ -163,7 +168,7 @@ void test_root_bootinfo(void) {
         ASSERT_EQ(root_bootinfo_set_empty_range(page, RBI_PAGE, 0u, 0u),
                   IRIS_ERR_INVALID_ARG);
 
-        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 256u), IRIS_OK);
+        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 9u, 10u, 256u), IRIS_OK);
         rbi_buf(page)->version = IRIS_ROOT_BOOTINFO_VERSION + 1u;
         ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 16u, 0x1000u, 0x1000u, 0),
                   IRIS_ERR_INVALID_ARG);
@@ -174,7 +179,7 @@ void test_root_bootinfo(void) {
     /* ── [RBI-8] the empty range describes real slots ─────────────── */
     {
         memset(page, 0, RBI_PAGE);
-        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 256u), IRIS_OK);
+        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 9u, 10u, 256u), IRIS_OK);
 
         ASSERT_EQ(root_bootinfo_set_empty_range(page, RBI_PAGE, 29u, 256u), IRIS_OK);
         ASSERT_EQ(rbi_buf(page)->empty_slot_first, 29u);
@@ -207,7 +212,7 @@ void test_root_bootinfo(void) {
     /* ── [RBI-10] total_bytes stays inside the buffer ─────────────── */
     {
         memset(page, 0, RBI_PAGE);
-        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 256u), IRIS_OK);
+        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 9u, 10u, 256u), IRIS_OK);
         uint32_t cap = root_bootinfo_capacity(RBI_PAGE);
         for (uint32_t i = 0; i < cap; i++) {
             ASSERT_EQ(root_bootinfo_add_untyped(page, RBI_PAGE, 16u + i,
@@ -223,7 +228,7 @@ void test_root_bootinfo(void) {
     /* ── [RBI-11] control capabilities, one field per authority ───── */
     {
         memset(page, 0, RBI_PAGE);
-        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 256u), IRIS_OK);
+        ASSERT_EQ(root_bootinfo_init(page, RBI_PAGE, 2u, 9u, 10u, 256u), IRIS_OK);
         struct iris_root_bootinfo *bi = rbi_buf(page);
 
         ASSERT_EQ(root_bootinfo_set_control_cap(page, RBI_PAGE,

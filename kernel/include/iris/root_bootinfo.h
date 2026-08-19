@@ -44,7 +44,7 @@
  */
 
 #define IRIS_ROOT_BOOTINFO_MAGIC   0x49524953524F4F54ULL  /* "IRISROOT" */
-#define IRIS_ROOT_BOOTINFO_VERSION 4u
+#define IRIS_ROOT_BOOTINFO_VERSION 5u
 
 /* Size of the region the kernel maps.  Two pages, and the reason is a rule
  * rather than a round number: the description must be able to cover every
@@ -74,6 +74,8 @@ struct iris_root_bootinfo {
     /* Initial capabilities, named by the CPtr the kernel minted them into.
      * A zero CPtr means "not granted" — never "look somewhere else". */
     uint64_t cap_vspace;         /* the root task's own KVSpace */
+    uint64_t cap_cnode;          /* v5: its own root CNode */
+    uint64_t cap_tcb;            /* v5: its initial thread */
     /* v4: one capability per authority.  There is no "bootstrap capability"
      * field any more — the monolith it named does not exist. */
     uint64_t cap_irq_control;    /* SYS_CAP_CREATE_IRQCAP */
@@ -103,7 +105,8 @@ uint32_t root_bootinfo_capacity(uint32_t bytes);
  * ones it did not use.  IRIS_ERR_INVALID_ARG if the buffer cannot even hold
  * the header. */
 iris_error_t root_bootinfo_init(void *buf, uint32_t bytes,
-                                uint64_t cap_vspace, uint32_t cnode_slots);
+                                uint64_t cap_vspace, uint64_t cap_cnode,
+                                uint64_t cap_tcb, uint32_t cnode_slots);
 
 /* Record a control capability the boot path published.  Called once per
  * authority; `kind` is an IRIS_BOOTCAP_* value and selects the field. */

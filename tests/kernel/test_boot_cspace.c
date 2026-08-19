@@ -325,10 +325,91 @@ void test_boot_cspace(void) {
 
     /* ── Fase 3.5 tests (BB-1..BB-10) ──────────────────────────────────────── */
 
-    /* [BB-1] BOOT_CPTR_BOOTSTRAP_CAP == 1 and != CPTR_NULL. */
+    /* [BB-1] BOOT_CPTR_BOOTSTRAP_CAP == 1 and != CPTR_NULL.
+     * Stage 5 Etapa 2 emptied that slot for good — the monolithic boot
+     * capability it held cannot be constructed any more — but the number
+     * stays reserved, which is what this pins. */
     {
         ASSERT_EQ((uint32_t)BOOT_CPTR_BOOTSTRAP_CAP, 1u);
         ASSERT_NE((uint32_t)BOOT_CPTR_BOOTSTRAP_CAP, (uint32_t)CPTR_NULL);
+    }
+
+    /* ── Stage 5 Etapa 3: a CSpace that names itself (BC-11..BC-13) ────────
+     *
+     * The root task holds a capability to its own root CNode, so the CNode is
+     * reachable from inside itself and its slot holds refs on it.  Nothing
+     * will ever drop those refs from outside: the close callback that empties
+     * the slots only runs when the refs reach zero, and the self-reference is
+     * one of the refs.  Process teardown therefore empties the root's slots
+     * FIRST (kcnode_teardown_slots), which is what makes the capability safe
+     * to hand out.
+     *
+     * These run on the object directly rather than through a process: the
+     * property is about references, and the host harness can observe
+     * kcnode_live_count() exactly. */
+
+    /* [BC-11] a CNode can name itself, and the self-capability resolves. */
+    {
+        struct KCNode *cn = kcnode_alloc(16u);
+        ASSERT_NOT_NULL(cn);
+        if (cn) {
+            kobject_active_retain(&cn->base);   /* the structural pair */
+
+            ASSERT_EQ(kcnode_mint(cn, 5u, &cn->base,
+                                  RIGHT_READ | RIGHT_WRITE), IRIS_OK);
+
+            struct KObject *got = NULL; iris_rights_t gr = RIGHT_NONE;
+            ASSERT_EQ(kcnode_fetch(cn, 5u, &got, &gr), IRIS_OK);
+            ASSERT_TRUE(got == &cn->base);
+            if (got) { kobject_active_release(got); kobject_release(got); }
+
+            kcnode_teardown_slots(cn);
+            kobject_active_release(&cn->base);
+            kobject_release(&cn->base);
+        }
+    }
+
+    /* [BC-12] teardown-then-release frees a self-referencing CNode. */
+    {
+        uint32_t before = kcnode_live_count();
+        struct KCNode *cn = kcnode_alloc(16u);
+        ASSERT_NOT_NULL(cn);
+        if (cn) {
+            kobject_active_retain(&cn->base);
+            ASSERT_EQ(kcnode_mint(cn, 1u, &cn->base, RIGHT_READ), IRIS_OK);
+            ASSERT_EQ(kcnode_live_count(), before + 1u);
+
+            /* Exactly what kprocess_teardown does, in that order. */
+            kcnode_teardown_slots(cn);
+            kobject_active_release(&cn->base);
+            kobject_release(&cn->base);
+
+            ASSERT_EQ(kcnode_live_count(), before);
+        }
+    }
+
+    /* [BC-13] without the explicit teardown the object is NOT freed — the
+     * negative control, so this suite proves the fix rather than the absence
+     * of a symptom.  The CNode is deliberately leaked here (the host process
+     * exits); the assertions below take their own baseline. */
+    {
+        uint32_t before = kcnode_live_count();
+        struct KCNode *cn = kcnode_alloc(16u);
+        ASSERT_NOT_NULL(cn);
+        if (cn) {
+            kobject_active_retain(&cn->base);
+            ASSERT_EQ(kcnode_mint(cn, 2u, &cn->base, RIGHT_READ), IRIS_OK);
+
+            kobject_active_release(&cn->base);
+            kobject_release(&cn->base);
+
+            /* Still live: the slot inside it holds the last references. */
+            ASSERT_EQ(kcnode_live_count(), before + 1u);
+
+            /* Break it by hand so the leak does not outlive the case. */
+            kcnode_teardown_slots(cn);
+            ASSERT_EQ(kcnode_live_count(), before);
+        }
     }
 
 

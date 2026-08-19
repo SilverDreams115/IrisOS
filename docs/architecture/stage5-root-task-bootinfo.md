@@ -51,7 +51,7 @@ and how the root task *learns* about it:
 | 2a | Device control splits off: IRQ and ioport control are their own capabilities | ✅ DONE |
 | 2b | Debug splits off | ✅ DONE |
 | 2c | Spawn, initrd and framebuffer split too; `SYS_BOOTCAP_RESTRICT` and the monolith retire | ✅ DONE |
-| 3 | The root task's own objects are named caps (root CNode, initial TCB, ASID/PCID control) | pending |
+| 3 | The root task's own objects are named caps (root CNode, initial TCB) | ✅ DONE |
 | 4 | `TCB_CONFIGURE` / `TCB_WRITE_REGS`: a retyped TCB executes | pending |
 
 ## Etapa 1 — the root task is told what it holds  ✅ DONE
@@ -297,12 +297,49 @@ grants OK` and requires `boot control caps CSpace grants OK` — a boot that
 publishes only some of the six aborts the root task instead of continuing with
 partial authority.
 
-## Etapa 3 — the root task's own objects (planned)
+## Etapa 3 — the root task's own objects  ✅ DONE
 
-Root CNode self-capability, initial TCB capability, and ASID/PCID control, each
-named in BootInfo.  Today the root CNode is reachable structurally
-(`proc->cspace_root`, Stage 4 Etapa 4) and by the `arg0 == 0` convention, and
-the initial TCB is reachable only through `SYS_TCB_SELF`.
+The root task holds a capability to its own root CNode (`BOOT_CPTR_CNODE`) and
+to its initial thread (`BOOT_CPTR_TCB`), both described in BootInfo v5
+(`cap_cnode`, `cap_tcb`) and validated by userboot before it delegates
+anything.  Previously the root CNode was reachable only structurally
+(`proc->cspace_root`) plus the `arg0 == 0` convention, and the thread only by
+asking `SYS_TCB_SELF` — so the one process those objects belonged to was the
+one process that could not name them.  seL4's root task finds
+`seL4_CapInitThreadCNode` and `seL4_CapInitThreadTCB` in its CSpace.
+
+**The lifecycle consequence, and the fix.**  The root CNode capability lives
+inside the CNode it names, so the CSpace is reachable from itself and the slot
+holds references on it.  Nothing outside can drop them: the close callback that
+empties a CNode's slots runs when its references reach zero, and the
+self-reference is one of those references — the object would keep its entire
+CSpace alive after the process died.  `kprocess_teardown` therefore calls
+`kcnode_teardown_slots(root)` BEFORE dropping the structural references:
+emptying the slots is what breaks the cycle, and doing it explicitly does not
+depend on a refcount the cycle is holding up.  It is idempotent, so the close
+callback afterwards finds nothing to do.
+
+Covered by BC-11..BC-13 (`tests/kernel/test_boot_cspace.c`): a CNode can name
+itself and the self-capability resolves; teardown-then-release frees it; and —
+the negative control, so the suite proves the fix rather than the absence of a
+symptom — releasing WITHOUT the explicit teardown leaves the object live.
+userboot's validation (fatal on a wrong or missing type) is the runtime
+witness that the boot path really publishes them.
+
+**Deeper cycles are pre-existing, documented debt.**  A process can already
+mint a second-level CNode into itself, and that cycle is not broken by the
+root's teardown — its objects are freed only when the root's slots release
+them, which the self-reference prevents.  seL4 solves the general case with
+zombie capabilities during recursive delete; IRIS has no equivalent yet.  The
+ledger records it; Stage 5 fixes exactly the case it introduces.
+
+**ASID/PCID control is deliberately not added.**  The roadmap lists it because
+seL4's root task holds `seL4_CapASIDControl` to make ASID pools for new
+VSpaces.  In IRIS a VSpace is still created by the kernel inside process
+creation and PCIDs are assigned there; there is no operation such a capability
+could authorise, and adding one would be speculative surface for a mechanism
+that does not exist yet.  It belongs with retypable VSpaces — Stage 6, ledger
+entry M1.
 
 ## Etapa 4 — a retyped TCB executes (planned)
 

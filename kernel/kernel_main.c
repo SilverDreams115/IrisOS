@@ -192,7 +192,8 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             for (uint64_t b = 0; b < IRIS_ROOT_BOOTINFO_BYTES; b++)
                 ((uint8_t *)bi_kva)[b] = 0;
             if (root_bootinfo_init(bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
-                                   BOOT_CPTR_VSPACE,
+                                   BOOT_CPTR_VSPACE, BOOT_CPTR_CNODE,
+                                   BOOT_CPTR_TCB,
                                    KCNODE_DEFAULT_SLOTS) != IRIS_OK) {
                 pmm_free_contig(bi_phys, IRIS_ROOT_BOOTINFO_PAGES);
                 bi_phys = 0;
@@ -257,6 +258,45 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 if (cme != IRIS_OK) {
                     klog_write("[IRIS][USER] FATAL: boot control"
                                " cap publish failed\n");
+                    task_abort_spawned_user(ut);
+                    ut = 0;
+                }
+            }
+            /*
+             * Stage 5 Etapa 3: the root task's OWN objects, as capabilities.
+             *
+             * Its root CNode was reachable only through the "arg0 == 0 means
+             * my own root" convention, and its thread only by asking
+             * SYS_TCB_SELF.  Both are real objects that every other holder
+             * names with a CPtr, so the task they belong to should not be the
+             * one process that cannot name them — seL4's root task finds
+             * seL4_CapInitThreadCNode and seL4_CapInitThreadTCB in its CSpace.
+             *
+             * The root CNode capability lives INSIDE the CNode it names.  That
+             * makes the CSpace reachable from itself, which kprocess_teardown
+             * handles by emptying the root's slots before dropping its refs
+             * (kcnode_teardown_slots) — a cycle cannot be collected by a
+             * refcount the cycle is holding up.
+             */
+            if (ut && ut->process->cspace_root) {
+                struct KCNode *root = ut->process->cspace_root;
+                iris_error_t ce = kcnode_mint(
+                    root, BOOT_CPTR_CNODE, &root->base,
+                    RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                if (ce != IRIS_OK) {
+                    klog_write("[IRIS][USER] FATAL: root CNode cap"
+                               " publish failed\n");
+                    task_abort_spawned_user(ut);
+                    ut = 0;
+                }
+            }
+            if (ut) {
+                iris_error_t te = kcnode_mint(
+                    ut->process->cspace_root, BOOT_CPTR_TCB, &ut->base,
+                    RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                if (te != IRIS_OK) {
+                    klog_write("[IRIS][USER] FATAL: root TCB cap"
+                               " publish failed\n");
                     task_abort_spawned_user(ut);
                     ut = 0;
                 }

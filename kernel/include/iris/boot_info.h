@@ -49,6 +49,12 @@
 #define BOOT_CPTR_PROC_CONTROL    6u    /* SYS_PROCESS_CREATE authority */
 #define BOOT_CPTR_INITRD_CONTROL  7u    /* SYS_INITRD_COUNT / SYS_INITRD_VMO */
 #define BOOT_CPTR_FB_CONTROL      8u    /* SYS_FRAMEBUFFER_VMO (one-shot) */
+/* Stage 5 Etapa 3: the root task's OWN objects, as capabilities.  Its root
+ * CNode was reachable only through the "arg0 == 0 means my own root"
+ * convention and its TCB only by asking SYS_TCB_SELF; seL4's root task simply
+ * finds seL4_CapInitThreadCNode and seL4_CapInitThreadTCB in its CSpace. */
+#define BOOT_CPTR_CNODE           9u    /* the root task's own root CNode */
+#define BOOT_CPTR_TCB            10u    /* the root task's initial thread */
 #define BOOT_CPTR_RES_END         15u   /* inclusive; slots 1-15 are reserved */
 #define BOOT_CPTR_UNTYPED_START   16u   /* first boot KUntyped CPtr */
 #define BOOT_CPTR_UNTYPED_END    255u   /* last boot KUntyped CPtr (root CNode has 256 slots) */

@@ -485,6 +485,21 @@ is expressible in the signature.  T291 died with its mechanism (its subject was
 the retired syscall); T148 pins 45; T296 covers what replaced it.  Suite:
 269/269.
 
+### Etapa 3 — the root task's own objects  ✅ DONE
+
+The root task holds capabilities to its own root CNode and its initial thread
+(`BOOT_CPTR_CNODE`, `BOOT_CPTR_TCB`, BootInfo v5), validated by userboot.  The
+one process those objects belong to was the only one that could not name them:
+the CNode was reachable structurally plus the `arg0 == 0` convention, the
+thread only through `SYS_TCB_SELF`.
+
+The self-capability makes the CSpace reachable from itself, so
+`kprocess_teardown` empties the root CNode's slots before dropping its
+references — a cycle cannot be collected by a refcount the cycle is holding up.
+BC-11..BC-13 pin it, negative control included.  ASID/PCID control is
+deliberately NOT added: no operation exists for it to authorise until VSpaces
+are retyped from Untyped (Stage 6).
+
 ## Stage 6 — Remaining memory and objects
 
 Precondition: Stage 1 (ownership/derivation); may overlap with 5.

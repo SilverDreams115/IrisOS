@@ -146,6 +146,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     uint64_t    initrd_control_c;
     uint64_t    fb_control_c;
     uint64_t    boot_untyped_c;
+    uint64_t    own_cnode_c;  /* this task's own root CNode, as a capability */
     uint64_t    ws_slot;      /* loader workspace CNode — first free slot */
     uint64_t    panic_slot;   /* serial KIoPort for a boot diagnostic — last */
 
@@ -194,6 +195,23 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     }
     ws_slot    = bi->empty_slot_first;
     panic_slot = (uint64_t)bi->empty_slot_end - 1u;
+
+    /* Stage 5 Etapa 3: the root task holds a capability to its own root CNode
+     * and to its own thread.  Both are validated by asking what they are — an
+     * inventory that names the wrong object is worse than one that names
+     * nothing — and the CNode capability is then USED: the slot deletes below
+     * name it instead of relying on the "0 means my own root" convention.
+     * The convention is not authority (it only ever meant YOUR root), but a
+     * capability system should be able to say which CNode it means. */
+    own_cnode_c = bi->cap_cnode;
+    if (own_cnode_c == 0u || bi->cap_tcb == 0u ||
+        ub_sys1(SYS_CAP_IDENTIFY, (long)own_cnode_c) != (long)IRIS_KOBJ_CNODE ||
+        ub_sys1(SYS_CAP_IDENTIFY, (long)bi->cap_tcb) != (long)IRIS_KOBJ_TCB) {
+        ub_boot_panic(ioport_control_c, panic_slot,
+                      "[USERBOOT] FATAL: BootInfo does not name this task's "
+                      "own CNode and thread; halting boot\n");
+        goto fail;
+    }
 
     /* The untypeds are the boot memory budget: init gets one, and everything
      * any service ever retypes descends from them.  Zero of them is a dead

@@ -74,6 +74,24 @@ struct KCNode *kcnode_alloc(uint32_t num_slots);
 struct KCNode *kcnode_alloc_at(void *mem, uint32_t num_slots); /* untyped-backed */
 void           kcnode_close(struct KCNode *cn);
 
+/*
+ * Empty every slot of `cn` with DELETE semantics, exactly as the object's
+ * close callback does, but WITHOUT waiting for the last reference to go.
+ *
+ * Stage 5 Etapa 3: a CSpace can contain a capability to one of its own CNodes
+ * — the root task holds a capability to its own root CNode, the way seL4's
+ * root task does — and a slot holds refs on the object it names.  A CNode
+ * reachable from itself therefore never reaches zero references on its own,
+ * so the close callback that would empty it never runs and the whole subtree
+ * outlives the process.  Process teardown calls this first: emptying the slots
+ * is what breaks the cycle, and doing it explicitly does not depend on a
+ * refcount that the cycle is holding up.
+ *
+ * Idempotent: deleting an empty slot is a no-op, so the close callback running
+ * afterwards finds nothing left to do.
+ */
+void           kcnode_teardown_slots(struct KCNode *cn);
+
 /* Fase 18: live KCNode object count (additive diagnostics). */
 uint32_t       kcnode_live_count(void);
 /* Fase S2: CSpace-native derivation (CDT/MDB) instrumentation. */

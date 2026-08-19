@@ -34,7 +34,8 @@ uint32_t root_bootinfo_capacity(uint32_t bytes) {
 }
 
 iris_error_t root_bootinfo_init(void *buf, uint32_t bytes,
-                                uint64_t cap_vspace, uint32_t cnode_slots) {
+                                uint64_t cap_vspace, uint64_t cap_cnode,
+                                uint64_t cap_tcb, uint32_t cnode_slots) {
     struct iris_root_bootinfo *bi = (struct iris_root_bootinfo *)buf;
 
     if (!bi) return IRIS_ERR_INVALID_ARG;
@@ -45,6 +46,8 @@ iris_error_t root_bootinfo_init(void *buf, uint32_t bytes,
     bi->header_bytes     = RBI_HEADER_BYTES;
     bi->total_bytes      = RBI_HEADER_BYTES;
     bi->cap_vspace       = cap_vspace;
+    bi->cap_cnode        = cap_cnode;
+    bi->cap_tcb          = cap_tcb;
     bi->cap_irq_control    = 0u;
     bi->cap_ioport_control = 0u;
     bi->cap_debug_control  = 0u;
