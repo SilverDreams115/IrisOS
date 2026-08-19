@@ -47,6 +47,7 @@ and how the root task *learns* about it:
 | Etapa | Subject | State |
 |---|---|---|
 | 1 | The root task is TOLD what it holds: structured BootInfo | ✅ DONE |
+| 1b | ...and stops assuming which slots are free | ✅ DONE |
 | 2 | The monolith splits: fine-grained boot authority replaces the permission bitmask; `SYS_BOOTCAP_RESTRICT` and `KBootstrapCap` retire | pending |
 | 3 | The root task's own objects are named caps (root CNode, initial TCB, ASID/PCID control) | pending |
 | 4 | `TCB_CONFIGURE` / `TCB_WRITE_REGS`: a retyped TCB executes | pending |
@@ -137,6 +138,23 @@ bootstrap-capability parameter `handle_id_t spawn_cap_h` across init, svcmgr
 and vfs.  The value has been a CPtr since Stage 4; only the type name is
 residue.  Renaming it is a cross-service change with no behavioural content, so
 it is deliberately not mixed into an increment that changes the boot contract.
+
+## Etapa 1b — the root task stops assuming which slots are free  ✅ DONE
+
+userboot needs two slots of its own: one for the loader workspace CNode (a
+spawn needs eleven capabilities alive at once, which no root CNode has room
+for directly) and one for the serial `KIoPort` it mints to print a boot
+diagnostic.  Both were constants chosen by reading the boot code — "slot 3 is
+free in the reserved boot range", "slot 40 is free" — and a constant that is
+true only until someone moves something is the same defect BootInfo exists to
+remove.  Three of Fase S4's bring-up failures were slot collisions.
+
+They now come from `empty_slot_first` / `empty_slot_end`, taken from opposite
+ends of the declared free range so they cannot collide with each other, with a
+refusal if the kernel left fewer than two free slots.  One constant survives:
+the panic path that fires when the BootInfo itself is unreadable has nothing to
+consult, and a diagnostic that guesses wrong prints nothing rather than
+corrupting a slot.
 
 ## Etapa 2 — the monolith splits (planned)
 

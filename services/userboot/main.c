@@ -66,15 +66,20 @@ static void ub_close(handle_id_t h) { (void)h; }
  * console/svcmgr service has come up yet.  Crude (no LSR polling), but a boot
  * that reaches this path is already fatal. */
 /* Fase S4: the KIoPort is published into a CSpace slot as an MDB child of the
- * bootstrap-cap slot; the authority argument must be a CPtr.  Slot 40 is free
- * in userboot's root CNode (1..15 reserved, 16.. boot untypeds start well
- * above what this early path ever touches). */
+ * bootstrap-cap slot; the authority argument must be a CPtr.
+ *
+ * Stage 5: the destination slot is an ARGUMENT, taken from the free range the
+ * BootInfo declares.  UB_PANIC_IOPORT_SLOT survives only as the last-resort
+ * slot for the one panic that fires when the BootInfo itself is unreadable —
+ * there is nothing to consult then, and a diagnostic that guesses wrong is
+ * silent rather than wrong. */
 #define UB_PANIC_IOPORT_SLOT 40u
-static void ub_boot_panic(uint64_t bootstrap_cptr, const char *msg) {
+static void ub_boot_panic(uint64_t bootstrap_cptr, uint64_t ioport_slot,
+                          const char *msg) {
     long r = ub_sys4(SYS_CAP_CREATE_IOPORT, (long)bootstrap_cptr,
-                     0x3F8, 8, (long)UB_PANIC_IOPORT_SLOT);
+                     0x3F8, 8, (long)ioport_slot);
     if (r == 0) {
-        long io = (long)UB_PANIC_IOPORT_SLOT;
+        long io = (long)ioport_slot;
         for (const char *p = msg; *p; p++) {
             if (*p == '\n') (void)ub_sys3(SYS_IOPORT_OUT, io, 0, (long)'\r');
             (void)ub_sys3(SYS_IOPORT_OUT, io, 0, (long)(uint8_t)*p);
@@ -134,6 +139,8 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     handle_id_t init_boot_h = HANDLE_INVALID;
     uint64_t    bootstrap_cap_h;
     uint64_t    boot_untyped_c;
+    uint64_t    ws_slot;      /* loader workspace CNode — first free slot */
+    uint64_t    panic_slot;   /* serial KIoPort for a boot diagnostic — last */
 
     if (!bi || bi->magic != IRIS_ROOT_BOOTINFO_MAGIC ||
         bi->version != IRIS_ROOT_BOOTINFO_VERSION ||
@@ -143,7 +150,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * it is confined to printing why the boot is dead: if the guess is
          * wrong the KIoPort mint fails and the panic is silent, exactly as it
          * was before this page existed. */
-        ub_boot_panic(BOOT_CPTR_BOOTSTRAP_CAP,
+        ub_boot_panic(BOOT_CPTR_BOOTSTRAP_CAP, UB_PANIC_IOPORT_SLOT,
                       "[USERBOOT] FATAL: BootInfo missing or unreadable; "
                       "halting boot\n");
         goto fail;
@@ -151,24 +158,41 @@ void iris_userboot_main(uint64_t bootinfo_va) {
 
     bootstrap_cap_h = bi->cap_bootstrap;
     if (bootstrap_cap_h == 0u) {
-        ub_boot_panic(BOOT_CPTR_BOOTSTRAP_CAP,
+        ub_boot_panic(BOOT_CPTR_BOOTSTRAP_CAP, UB_PANIC_IOPORT_SLOT,
                       "[USERBOOT] FATAL: BootInfo grants no bootstrap "
                       "capability; halting boot\n");
         goto fail;
     }
 
+    /* Stage 5: the slots userboot writes into come from the free range the
+     * kernel declared, not from constants chosen by reading the boot code.
+     * "Slot 40 is free" and "slot 3 is free in the reserved range" were true
+     * only for as long as nobody moved anything, and a collision here does not
+     * announce itself: a mint into an occupied slot fails, or worse, succeeds
+     * over a capability that was in use.  Two slots are needed — the loader
+     * workspace and the diagnostic KIoPort — and they are taken from opposite
+     * ends so they cannot be the same slot. */
+    if (bi->empty_slot_end < bi->empty_slot_first + 2u) {
+        ub_boot_panic(bootstrap_cap_h, UB_PANIC_IOPORT_SLOT,
+                      "[USERBOOT] FATAL: BootInfo leaves no free slots to "
+                      "work in; halting boot\n");
+        goto fail;
+    }
+    ws_slot    = bi->empty_slot_first;
+    panic_slot = (uint64_t)bi->empty_slot_end - 1u;
+
     /* The untypeds are the boot memory budget: init gets one, and everything
      * any service ever retypes descends from them.  Zero of them is a dead
      * system with a confusing failure mode three services later. */
     if (bi->untyped_count == 0u) {
-        ub_boot_panic(bootstrap_cap_h,
+        ub_boot_panic(bootstrap_cap_h, panic_slot,
                       "[USERBOOT] FATAL: BootInfo describes no untyped "
                       "memory; halting boot\n");
         goto fail;
     }
     for (uint32_t i = 0; i < bi->untyped_count; i++) {
         if (!ub_untyped_matches(&bi->untyped[i])) {
-            ub_boot_panic(bootstrap_cap_h,
+            ub_boot_panic(bootstrap_cap_h, panic_slot,
                           "[USERBOOT] FATAL: BootInfo disagrees with the "
                           "CSpace it describes; halting boot\n");
             goto fail;
@@ -185,7 +209,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * exited before loading init); it is now a >= check, and a genuine shortage
      * emits a bootstrap diagnostic instead of vanishing. */
     if (svc_initrd_count((handle_id_t)bootstrap_cap_h) < (long)SL_CATALOG_COUNT) {
-        ub_boot_panic(bootstrap_cap_h,
+        ub_boot_panic(bootstrap_cap_h, panic_slot,
                       "[USERBOOT] FATAL: initrd catalog too small "
                       "(kernel/ring-3 mismatch); halting boot\n");
         goto fail;
@@ -228,11 +252,11 @@ void iris_userboot_main(uint64_t bootinfo_va) {
 
         /* Both sources are the CPtrs the BootInfo named, not the constants
          * that happened to match them: userboot now delegates what the kernel
-         * says it holds.  Slot 3 is free in the reserved boot range, and the
-         * loader workspace carves out of the same first boot untyped. */
+         * says it holds, and carves the loader workspace out of the same first
+         * boot untyped into a slot the kernel declared free. */
         long lr = svc_load_minted_ws((handle_id_t)bootstrap_cap_h, "init",
                                      &init_proc_h, &init_boot_h, init_mints, 2u,
-                                     SVC_LOADER_WS(boot_untyped_c, 3u));
+                                     SVC_LOADER_WS(boot_untyped_c, ws_slot));
         if (lr < 0)
             goto fail;
     }
