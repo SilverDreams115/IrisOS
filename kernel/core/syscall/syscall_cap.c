@@ -76,9 +76,19 @@ static iris_error_t dev_cap_publish(struct task *t, struct KObject *obj,
     return err;
 }
 
-/* Resolve the bootstrap-cap CPtr to BOTH its object (to check the permission
- * bit) and its slot (to become the MDB parent).  CSpace only. */
+/* Resolve the control-capability CPtr to BOTH its object (to check WHICH
+ * authority it is) and its slot (to become the MDB parent).  CSpace only.
+ *
+ * Stage 5 Etapa 2: `kind` is matched EXACTLY.  The predecessor accepted any
+ * boot capability carrying IRIS_BOOTCAP_HW_ACCESS — one bit that authorised
+ * both IRQ and ioport creation, on an object that also carried spawn, debug
+ * and framebuffer authority.  A service that needed a serial port therefore
+ * held the authority to claim any interrupt line, spawn processes and power
+ * the machine off, and the only way to reduce that was to clone a narrowed
+ * copy of the whole thing.  Now there are two capabilities and each authorises
+ * exactly its own syscall. */
 static iris_error_t dev_cap_auth(struct task *t, uint64_t auth_cptr,
+                                 uint32_t kind,
                                  struct KCNode **out_cn, uint32_t *out_idx) {
     if (!cspace_only_cptr(auth_cptr)) return IRIS_ERR_INVALID_ARG;
 
@@ -95,7 +105,7 @@ static iris_error_t dev_cap_auth(struct task *t, uint64_t auth_cptr,
         return err;
     }
     int ok = (auth->type == KOBJ_BOOTSTRAP_CAP) &&
-             kbootcap_allows((struct KBootstrapCap *)auth, IRIS_BOOTCAP_HW_ACCESS);
+             kbootcap_is((struct KBootstrapCap *)auth, kind);
     kobject_active_release(auth);
     kobject_release(auth);
     if (!ok) {
@@ -125,7 +135,8 @@ uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KCNode *auth_cn; uint32_t auth_idx;
-    iris_error_t err = dev_cap_auth(t, arg0, &auth_cn, &auth_idx);
+    iris_error_t err = dev_cap_auth(t, arg0, IRIS_BOOTCAP_IRQ_CONTROL,
+                                    &auth_cn, &auth_idx);
     if (err != IRIS_OK) return syscall_err(err);
 
     struct KIrqCap *irqcap = kirqcap_alloc(irq_num);
@@ -163,7 +174,8 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
 
     struct KCNode *auth_cn; uint32_t auth_idx;
-    iris_error_t err = dev_cap_auth(t, arg0, &auth_cn, &auth_idx);
+    iris_error_t err = dev_cap_auth(t, arg0, IRIS_BOOTCAP_IOPORT_CONTROL,
+                                    &auth_cn, &auth_idx);
     if (err != IRIS_OK) return syscall_err(err);
 
     struct KIoPort *ioport = kioport_alloc(base, count);

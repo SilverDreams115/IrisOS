@@ -13,6 +13,7 @@
 
 #include <iris/root_bootinfo.h>
 #include <iris/boot_info.h>
+#include <iris/nc/kbootcap.h>
 #include <iris/nc/error.h>
 #include <iris/nc/kcnode.h>
 #include <stdint.h>
@@ -46,12 +47,33 @@ iris_error_t root_bootinfo_init(void *buf, uint32_t bytes,
     bi->total_bytes      = RBI_HEADER_BYTES;
     bi->cap_bootstrap    = cap_bootstrap;
     bi->cap_vspace       = cap_vspace;
+    bi->cap_irq_control    = 0u;
+    bi->cap_ioport_control = 0u;
     bi->cnode_slots      = cnode_slots;
     /* No free slots claimed yet — the boot path knows which slots it left
      * empty only after it has stopped filling them. */
     bi->empty_slot_first = cnode_slots;
     bi->empty_slot_end   = cnode_slots;
     bi->untyped_count    = 0u;
+    return IRIS_OK;
+}
+
+iris_error_t root_bootinfo_set_control_cap(void *buf, uint32_t bytes,
+                                           uint32_t kind, uint64_t cptr) {
+    struct iris_root_bootinfo *bi = (struct iris_root_bootinfo *)buf;
+
+    if (!bi) return IRIS_ERR_INVALID_ARG;
+    if (bytes < RBI_HEADER_BYTES)                  return IRIS_ERR_INVALID_ARG;
+    if (bi->magic != IRIS_ROOT_BOOTINFO_MAGIC)     return IRIS_ERR_INVALID_ARG;
+    if (bi->version != IRIS_ROOT_BOOTINFO_VERSION) return IRIS_ERR_INVALID_ARG;
+    /* Slot 0 is CPTR_NULL: a capability nobody can name is not a grant. */
+    if (cptr == 0u)                                return IRIS_ERR_INVALID_ARG;
+
+    switch (kind) {
+    case IRIS_BOOTCAP_IRQ_CONTROL:    bi->cap_irq_control    = cptr; break;
+    case IRIS_BOOTCAP_IOPORT_CONTROL: bi->cap_ioport_control = cptr; break;
+    default:                          return IRIS_ERR_INVALID_ARG;
+    }
     return IRIS_OK;
 }
 

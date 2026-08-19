@@ -291,6 +291,29 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 #define IRIS_CPTR_SVC_REPLY   ((uint64_t)9)
 #define IRIS_CPTR_IOPORT      ((uint64_t)10)
 #define IRIS_CPTR_IRQ_CAP     ((uint64_t)11)
+/*
+ * Stage 5 Etapa 2: boot CONTROL capabilities — the authority to CREATE device
+ * capabilities, as opposed to IRIS_CPTR_IOPORT / IRIS_CPTR_IRQ_CAP above,
+ * which are the device capabilities themselves.
+ *
+ * One capability per authority: holding the ioport control capability says
+ * nothing about interrupt lines, and neither says anything about spawning or
+ * debugging.  Their predecessor was a single IRIS_BOOTCAP_HW_ACCESS bit on the
+ * monolithic boot capability at IRIS_CPTR_SPAWN_CAP, so every service that
+ * needed a serial port also held the authority to claim any IRQ, spawn
+ * processes and power the machine off.
+ *
+ * They are minted only into the processes that create device caps — init,
+ * svcmgr and the suite.  Slot 15 is the last free slot of the well-known
+ * bootstrap range.  Slot 26 was IRIS_CPTR_TEST_SPAWN, a second copy of the
+ * monolith that existed so the suite could prove an authority capability
+ * resolves by CPtr (T069); the ioport control capability proves the same thing
+ * and is what that test was named for, so the slot changes meaning rather than
+ * the suite growing one it does not have — its root CNode is full.  svcmgr's
+ * own device-cap slots moved to 96..127 to keep both slots free there.
+ */
+#define IRIS_CPTR_IRQ_CONTROL    ((uint64_t)15)
+#define IRIS_CPTR_IOPORT_CONTROL ((uint64_t)26)
 #define IRIS_CPTR_TEST_FIX_A  ((uint64_t)30)
 #define IRIS_CPTR_TEST_FIX_B  ((uint64_t)31)
 /* Fase 9: second badged cap to the svcmgr endpoint (badge IRIS_BADGE_TEST_B)
@@ -304,7 +327,10 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 /* Fase 13: a device/authority cap (the spawn KBootstrapCap) minted into a
  * CPtr slot, proving device caps resolve via CSpace (cspace_resolve_only_obj)
  * and are invocable by CPtr — the prerequisite for KChannel-free bootstrap. */
-#define IRIS_CPTR_TEST_SPAWN  ((uint64_t)26)
+/* Slot 26 is IRIS_CPTR_IOPORT_CONTROL since Stage 5 Etapa 2 (see above).
+ * IRIS_CPTR_TEST_SPAWN — a second cap to the monolithic boot capability —
+ * is retired: what it existed to prove is now proven with a capability that
+ * authorises exactly one thing. */
 /* A1 Increment 1: iris_test's OWN process cap (RIGHT_WRITE|RIGHT_DUPLICATE),
  * minted by init post-load, so the suite can SYS_PROC_CSPACE_MINT runtime-made
  * caps into its own CSpace slots (T079 mints a VMO and maps it by CPtr). */

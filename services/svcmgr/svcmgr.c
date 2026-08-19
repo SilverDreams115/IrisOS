@@ -29,8 +29,13 @@
  * children of the bootstrap-cap slot, so revoking the bootstrap cap revokes
  * every device cap issued under it.  Slots 16..47 are free in svcmgr's root
  * CNode (1..15 well-known, 62/63 scratch, 64..255 receive pool). */
-#define SVCMGR_IRQCAP_SLOT_BASE    16u   /* + IRQ number   (16..31) */
-#define SVCMGR_IOPORT_SLOT_BASE    32u   /* + service_id   (32..47) */
+/* Stage 5 Etapa 2: svcmgr's device-cap slots move up to 96..127 so that the
+ * low, well-known part of every service's root CNode can hold the boot control
+ * capabilities the kernel now publishes one per authority.  These slots are
+ * svcmgr's own bookkeeping — nobody outside names them — so relocating them
+ * costs nothing but has to stay clear of the registration pool below. */
+#define SVCMGR_IRQCAP_SLOT_BASE    96u   /* + IRQ number   (96..111) */
+#define SVCMGR_IOPORT_SLOT_BASE   112u   /* + service_id  (112..127) */
 
 #define SVCMGR_IRQ_CAPS_TABLE_SIZE 16u
 /* Indexed by service_id (0–2); mirrors IRIS_SERVICE_RUNTIME_SLOT_COUNT. */
@@ -284,9 +289,10 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
         if (e->irq_num != 0xFFu && e->irq_num < SVCMGR_IRQ_CAPS_TABLE_SIZE &&
             state->irq_caps[e->irq_num] == 0u) {
             uint32_t slot = SVCMGR_IRQCAP_SLOT_BASE + e->irq_num;
-            /* Fase S4: authority BY CPtr (it becomes the MDB parent). */
+            /* Fase S4: authority BY CPtr (it becomes the MDB parent).
+             * Stage 5 Etapa 2: the authority is the IRQ control capability. */
             int64_t r = svcmgr_syscall4(SYS_CAP_CREATE_IRQCAP,
-                                        IRIS_CPTR_SPAWN_CAP, e->irq_num,
+                                        IRIS_CPTR_IRQ_CONTROL, e->irq_num,
                                         0, slot);
             if (r == 0) state->irq_caps[e->irq_num] = slot;
         }
@@ -295,26 +301,34 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
             state->ioport_caps[e->service_id] == 0u) {
             uint32_t slot = SVCMGR_IOPORT_SLOT_BASE + e->service_id;
             int64_t r = svcmgr_syscall4(SYS_CAP_CREATE_IOPORT,
-                                        IRIS_CPTR_SPAWN_CAP,
+                                        IRIS_CPTR_IOPORT_CONTROL,
                                         e->ioport_base, e->ioport_count, slot);
             if (r == 0) state->ioport_caps[e->service_id] = slot;
         }
     }
 
-    /* B3: strip HW_ACCESS (and FRAMEBUFFER) once bootstrap is done.
-     * Preserve SPAWN_SERVICE (needed for SYS_INITRD_VMO) and KDEBUG (for SYS_POWEROFF).
-     * BOOTCAP_RESTRICT creates a new cap object; init's original cap is unaffected.
+    /*
+     * Bootstrap is over: drop the authority to claim MORE hardware.
      *
-     * Etapa 4: by CPtr this is derive-then-delete, and BOTH halves are load
-     * bearing.  The derive puts the narrowed cap in its own slot and leaves
-     * slot 6 exactly as wide as it was; dropping slot 6 is what actually
-     * removes HW_ACCESS from svcmgr.  Skipping the delete would turn the whole
-     * strip into a no-op while still looking like it succeeded.
+     * Stage 5 Etapa 2 turns this from a narrowing into a deletion.  It used to
+     * be derive-then-delete over a permission mask — SYS_BOOTCAP_RESTRICT
+     * cloned the monolith without IRIS_BOOTCAP_HW_ACCESS and svcmgr deleted
+     * the wide original — because device authority was a BIT on the same
+     * capability that carries spawn and debug authority, and the only way to
+     * drop one bit was to rebuild the object.  Device authority is its own
+     * capability now, so giving it up is deleting the slot that holds it.
      *
-     * The device caps claimed above are MDB children of slot 6, so deleting it
-     * reparents them onto init's slot rather than destroying them: svcmgr
-     * keeps the hardware it already claimed and loses only the authority to
-     * claim more, which is precisely the intent. */
+     * The device caps claimed above are MDB children of these slots, so
+     * deleting the parents reparents them onto init's slots rather than
+     * destroying them: svcmgr keeps the hardware it already claimed and loses
+     * only the authority to claim more, which is precisely the intent.
+     */
+    (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, IRIS_CPTR_IRQ_CONTROL);
+    (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, IRIS_CPTR_IOPORT_CONTROL);
+
+    /* What is left of the monolith still mixes SPAWN_SERVICE, KDEBUG and
+     * FRAMEBUFFER; svcmgr needs the first two and never uses the third, so the
+     * mask narrowing survives here until those three split as well. */
     if (svcmgr_syscall3(SYS_BOOTCAP_RESTRICT, state->spawn_cap_c,
                         IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_KDEBUG,
                         SVCMGR_SPAWN_NARROW_SLOT) == 0) {
@@ -510,7 +524,8 @@ static uint32_t svcmgr_dynamic_ready_count(const struct svcmgr_state *state) {
  * declaration degrades to 0 = legacy handle delivery, which keeps working.
  * ──────────────────────────────────────────────────────────────────────── */
 
-#define SVCMGR_RSLOT_BASE  68u   /* below: well-known bootstrap + master slots */
+#define SVCMGR_RSLOT_BASE  128u  /* below: well-known bootstrap, master and
+                                  * device-cap slots (Stage 5 Etapa 2) */
 #define SVCMGR_RSLOT_LIMIT 256u  /* root CNode has KCNODE_DEFAULT_SLOTS = 256 */
 
 /* Stage 4: the root-CNode handle probe is RETIRED.  It scanned svcmgr's own

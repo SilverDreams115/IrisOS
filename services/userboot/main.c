@@ -61,10 +61,12 @@ static void ub_close(handle_id_t h) { (void)h; }
 
 /* Fase 28: bootstrap diagnostic.  A bootstrap-fatal condition (a broken initrd
  * catalog) must never manifest as a SILENT dead system.  userboot holds the
- * root KBootstrapCap (HW_ACCESS), so it can mint a serial KIoPort and emit a
+ * ioport CONTROL capability, so it can mint a serial KIoPort and emit a
  * diagnostic line directly to COM1 before exiting — visible even though no
  * console/svcmgr service has come up yet.  Crude (no LSR polling), but a boot
- * that reaches this path is already fatal. */
+ * that reaches this path is already fatal.  Stage 5 Etapa 2: printing a panic
+ * used to require the same capability that authorises spawning processes and
+ * powering the machine off. */
 /* Fase S4: the KIoPort is published into a CSpace slot as an MDB child of the
  * bootstrap-cap slot; the authority argument must be a CPtr.
  *
@@ -74,9 +76,9 @@ static void ub_close(handle_id_t h) { (void)h; }
  * there is nothing to consult then, and a diagnostic that guesses wrong is
  * silent rather than wrong. */
 #define UB_PANIC_IOPORT_SLOT 40u
-static void ub_boot_panic(uint64_t bootstrap_cptr, uint64_t ioport_slot,
+static void ub_boot_panic(uint64_t ioport_control_cptr, uint64_t ioport_slot,
                           const char *msg) {
-    long r = ub_sys4(SYS_CAP_CREATE_IOPORT, (long)bootstrap_cptr,
+    long r = ub_sys4(SYS_CAP_CREATE_IOPORT, (long)ioport_control_cptr,
                      0x3F8, 8, (long)ioport_slot);
     if (r == 0) {
         long io = (long)ioport_slot;
@@ -138,6 +140,8 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     handle_id_t init_proc_h = HANDLE_INVALID;
     handle_id_t init_boot_h = HANDLE_INVALID;
     uint64_t    bootstrap_cap_h;
+    uint64_t    irq_control_c;
+    uint64_t    ioport_control_c;
     uint64_t    boot_untyped_c;
     uint64_t    ws_slot;      /* loader workspace CNode — first free slot */
     uint64_t    panic_slot;   /* serial KIoPort for a boot diagnostic — last */
@@ -150,16 +154,18 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * it is confined to printing why the boot is dead: if the guess is
          * wrong the KIoPort mint fails and the panic is silent, exactly as it
          * was before this page existed. */
-        ub_boot_panic(BOOT_CPTR_BOOTSTRAP_CAP, UB_PANIC_IOPORT_SLOT,
+        ub_boot_panic(BOOT_CPTR_IOPORT_CONTROL, UB_PANIC_IOPORT_SLOT,
                       "[USERBOOT] FATAL: BootInfo missing or unreadable; "
                       "halting boot\n");
         goto fail;
     }
 
-    bootstrap_cap_h = bi->cap_bootstrap;
-    if (bootstrap_cap_h == 0u) {
-        ub_boot_panic(BOOT_CPTR_BOOTSTRAP_CAP, UB_PANIC_IOPORT_SLOT,
-                      "[USERBOOT] FATAL: BootInfo grants no bootstrap "
+    bootstrap_cap_h  = bi->cap_bootstrap;
+    irq_control_c    = bi->cap_irq_control;
+    ioport_control_c = bi->cap_ioport_control;
+    if (bootstrap_cap_h == 0u || irq_control_c == 0u || ioport_control_c == 0u) {
+        ub_boot_panic(BOOT_CPTR_IOPORT_CONTROL, UB_PANIC_IOPORT_SLOT,
+                      "[USERBOOT] FATAL: BootInfo grants no boot "
                       "capability; halting boot\n");
         goto fail;
     }
@@ -185,14 +191,14 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * any service ever retypes descends from them.  Zero of them is a dead
      * system with a confusing failure mode three services later. */
     if (bi->untyped_count == 0u) {
-        ub_boot_panic(bootstrap_cap_h, panic_slot,
+        ub_boot_panic(ioport_control_c, panic_slot,
                       "[USERBOOT] FATAL: BootInfo describes no untyped "
                       "memory; halting boot\n");
         goto fail;
     }
     for (uint32_t i = 0; i < bi->untyped_count; i++) {
         if (!ub_untyped_matches(&bi->untyped[i])) {
-            ub_boot_panic(bootstrap_cap_h, panic_slot,
+            ub_boot_panic(ioport_control_c, panic_slot,
                           "[USERBOOT] FATAL: BootInfo disagrees with the "
                           "CSpace it describes; halting boot\n");
             goto fail;
@@ -209,7 +215,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * exited before loading init); it is now a >= check, and a genuine shortage
      * emits a bootstrap diagnostic instead of vanishing. */
     if (svc_initrd_count((handle_id_t)bootstrap_cap_h) < (long)SL_CATALOG_COUNT) {
-        ub_boot_panic(bootstrap_cap_h, panic_slot,
+        ub_boot_panic(ioport_control_c, panic_slot,
                       "[USERBOOT] FATAL: initrd catalog too small "
                       "(kernel/ring-3 mismatch); halting boot\n");
         goto fail;
@@ -239,7 +245,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
          * if the grant is absent the mint fails, the slot stays empty and the
          * authority tests FAIL loudly rather than silently skipping. */
-        struct svc_mint init_mints[2] = { 0 };
+        struct svc_mint init_mints[4] = { 0 };
         init_mints[0].slot     = IRIS_CPTR_SPAWN_CAP;
         init_mints[0].src_cptr = bootstrap_cap_h;
         init_mints[0].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
@@ -249,13 +255,25 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         init_mints[1].rights   = RIGHT_READ | RIGHT_WRITE |
                                  RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[1].badge    = 0;
+        /* Stage 5 Etapa 2: device authority is delegated as itself.  init
+         * needs the ioport control capability for its early serial line and
+         * for console's UART, and forwards both control capabilities to the
+         * services whose job is claiming hardware. */
+        init_mints[2].slot     = IRIS_CPTR_IRQ_CONTROL;
+        init_mints[2].src_cptr = irq_control_c;
+        init_mints[2].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        init_mints[2].badge    = 0;
+        init_mints[3].slot     = IRIS_CPTR_IOPORT_CONTROL;
+        init_mints[3].src_cptr = ioport_control_c;
+        init_mints[3].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        init_mints[3].badge    = 0;
 
         /* Both sources are the CPtrs the BootInfo named, not the constants
          * that happened to match them: userboot now delegates what the kernel
          * says it holds, and carves the loader workspace out of the same first
          * boot untyped into a slot the kernel declared free. */
         long lr = svc_load_minted_ws((handle_id_t)bootstrap_cap_h, "init",
-                                     &init_proc_h, &init_boot_h, init_mints, 2u,
+                                     &init_proc_h, &init_boot_h, init_mints, 4u,
                                      SVC_LOADER_WS(boot_untyped_c, ws_slot));
         if (lr < 0)
             goto fail;

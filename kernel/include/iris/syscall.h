@@ -163,20 +163,28 @@
 
 /*
  * Hardware capability creation — modern/conforming (iris_error_t).
- * Both syscalls require a bootstrap capability handle with IRIS_BOOTCAP_HW_ACCESS
- * permission.  Policy (which service gets which resource) lives in svcmgr; the
- * kernel only validates ranges and creates the cap object.
  *
- * SYS_CAP_CREATE_IRQCAP(auth_handle, irq_num) → handle_id_t or negative iris_error_t
- *   auth_handle: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_HW_ACCESS.
+ * Stage 5 Etapa 2: each syscall requires ITS OWN control capability, matched
+ * exactly.  The IRQ control capability does not authorise ioport creation and
+ * the ioport control capability does not authorise IRQ creation; neither is a
+ * bit on a larger capability, so holding one says nothing about the other.
+ * Policy (which service gets which resource) lives in svcmgr; the kernel
+ * validates ranges and creates the cap object.
+ *
+ * SYS_CAP_CREATE_IRQCAP(auth_cptr, irq_num, _, dest_slot) → 0 or negative iris_error_t
+ *   auth_cptr: KOBJ_BOOTSTRAP_CAP whose authority is exactly
+ *     IRIS_BOOTCAP_IRQ_CONTROL; becomes the MDB parent of the new cap.
  *   irq_num: hardware IRQ line (0–15).
- *   Returns a KIrqCap handle with RIGHT_ROUTE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *   dest_slot: root-CNode slot receiving a KIrqCap with
+ *     RIGHT_ROUTE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
  *
- * SYS_CAP_CREATE_IOPORT(auth_handle, base, count) → handle_id_t or negative iris_error_t
- *   auth_handle: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_HW_ACCESS.
+ * SYS_CAP_CREATE_IOPORT(auth_cptr, base, count, dest_slot) → 0 or negative iris_error_t
+ *   auth_cptr: KOBJ_BOOTSTRAP_CAP whose authority is exactly
+ *     IRIS_BOOTCAP_IOPORT_CONTROL.
  *   base: first I/O port in the range (0–0xFFFF).
  *   count: number of consecutive ports (1–0x10000, base+count ≤ 0x10000).
- *   Returns a KIoPort handle with RIGHT_READ|RIGHT_DUPLICATE|RIGHT_TRANSFER.
+ *   dest_slot: root-CNode slot receiving a KIoPort with
+ *     RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
  */
 #define SYS_CAP_CREATE_IRQCAP  39
 #define SYS_CAP_CREATE_IOPORT  40
@@ -390,13 +398,23 @@
 #define SYS_NS_REGISTER     24
 #define SYS_NS_LOOKUP       25
 
-/* Bootstrap capability permission bits — used as arg1 for SYS_BOOTCAP_RESTRICT
- * and visible to userland so callers can reference symbolic constants. */
+/* Bootstrap capability permissions.
+ *
+ * Stage 5 Etapa 2 is splitting the monolith into one capability per authority.
+ * A split-out authority is checked for EXACTLY — a capability that merely
+ * includes the bit does not authorise it — so IRIS_BOOTCAP_IRQ_CONTROL and
+ * IRIS_BOOTCAP_IOPORT_CONTROL name whole capabilities, not bits to combine.
+ * The remaining bits still live together on the boot capability the kernel
+ * publishes for the root task, and are still narrowed with
+ * SYS_BOOTCAP_RESTRICT until they split too. */
 #define IRIS_BOOTCAP_NONE          0u
 #define IRIS_BOOTCAP_SPAWN_SERVICE (1u << 0)
-#define IRIS_BOOTCAP_HW_ACCESS     (1u << 1)
+/* (1u << 1) was IRIS_BOOTCAP_HW_ACCESS — one bit for both IRQ and ioport
+ * creation.  Split into the two control capabilities below; not reused. */
 #define IRIS_BOOTCAP_KDEBUG        (1u << 2)  /* may call SYS_POWEROFF and SYS_KLOG_DRAIN */
 #define IRIS_BOOTCAP_FRAMEBUFFER   (1u << 3)  /* may call SYS_FRAMEBUFFER_VMO (one-shot) */
+#define IRIS_BOOTCAP_IRQ_CONTROL    (1u << 4)  /* the IRQ control capability */
+#define IRIS_BOOTCAP_IOPORT_CONTROL (1u << 5)  /* the ioport control capability */
 
 /*
  * Bootstrap capability permission restriction — modern/conforming (iris_error_t).

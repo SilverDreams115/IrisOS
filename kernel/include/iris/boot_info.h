@@ -33,6 +33,14 @@
  * The legacy bootstrap_cap_h handle (arg0) remains valid in dual mode. */
 #define BOOT_CPTR_BOOTSTRAP_CAP   1u    /* KBootstrapCap well-known CPtr (Fase 3.5) */
 #define BOOT_CPTR_VSPACE          2u    /* KVSpace for userboot/root task (Fase 4) */
+/* Stage 5 Etapa 2: one capability per authority.  Each of these is a boot
+ * capability carrying EXACTLY one authority, published into its own slot; the
+ * root task delegates the one it means instead of narrowing a mask.  The root
+ * task reads them out of BootInfo — these constants exist for the kernel that
+ * writes them and for the diagnostic path that runs when BootInfo is
+ * unreadable. */
+#define BOOT_CPTR_IRQ_CONTROL     3u    /* SYS_CAP_CREATE_IRQCAP authority */
+#define BOOT_CPTR_IOPORT_CONTROL  4u    /* SYS_CAP_CREATE_IOPORT authority */
 #define BOOT_CPTR_RES_END         15u   /* inclusive; slots 1-15 are reserved */
 #define BOOT_CPTR_UNTYPED_START   16u   /* first boot KUntyped CPtr */
 #define BOOT_CPTR_UNTYPED_END    255u   /* last boot KUntyped CPtr (root CNode has 256 slots) */

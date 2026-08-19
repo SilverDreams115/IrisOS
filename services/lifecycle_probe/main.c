@@ -118,10 +118,12 @@
  * which ones (incorrectly) SUCCEEDED.  A contained driver exits 0 — every
  * escalation is denied by the kernel.  words[0] carries an out-of-range ioport
  * offset for the range-crossing attempt.  Attempts:
- *   bit 0: SYS_CAP_CREATE_IOPORT via slot 6 (needs HW_ACCESS bootcap) → forge port
+ *   bit 0: SYS_CAP_CREATE_IOPORT via slot 6 (needs the ioport CONTROL
+ *          capability, which this process is never given) → forge port
  *   bit 1: SYS_IOPORT_IN  via slot 10 at words[0] (out-of-range offset) → cross range
  *   bit 2: SYS_IOPORT_OUT via slot 10 at words[0] (out-of-range offset) → cross range
- *   bit 3: SYS_CAP_CREATE_IRQCAP via slot 6 → forge IRQ authority
+ *   bit 3: SYS_CAP_CREATE_IRQCAP via slot 6 (needs the IRQ control
+ *          capability) → forge IRQ authority
  *   bit 4: SYS_IRQ_ACK via slot 11 (may be empty) → ack an IRQ it holds no cap for
  * Must match iris_test. */
 #define LP_CMD_DEV_PROBE       0x10A1u

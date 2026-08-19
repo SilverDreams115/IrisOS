@@ -437,6 +437,25 @@ Covered by RBI-1..RBI-10 (`tests/kernel/test_root_bootinfo.c`) for the builder,
 and by the boot itself for the contract: an unreadable or untrue BootInfo is
 fatal in userboot, so a healthy `make smoke-runtime` is the runtime witness.
 
+### Etapa 2a — device control is its own authority  ✅ DONE
+
+`IRIS_BOOTCAP_HW_ACCESS` — one bit authorising BOTH interrupt-line and I/O-port
+capability creation, on an object that also carried spawn, debug and
+framebuffer authority — is replaced by two capabilities the kernel matches
+EXACTLY.  init printing a boot line to COM1 no longer holds the authority to
+claim any IRQ, spawn processes and power the machine off.
+
+Each is published into its own root-CNode slot, recorded in BootInfo v2, and
+delegated down the chain as a CPtr source (so every grant is an MDB child of
+the granter's slot and stays revocable).  svcmgr renounces hardware authority
+by DELETING those two slots once it has claimed the catalog's devices —
+previously a `SYS_BOOTCAP_RESTRICT` derive-then-delete whose first half was
+load-bearing only because the authority was a bit on a shared object.
+
+Covered by T296 (each control capability authorises its own syscall, neither
+authorises the other's, the capability they were split from authorises
+neither, an empty slot authorises nothing); T069 and T291 re-anchored.
+
 ## Stage 6 — Remaining memory and objects
 
 Precondition: Stage 1 (ownership/derivation); may overlap with 5.

@@ -97,11 +97,12 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
     g_init_console_ep_h = (handle_id_t)INIT_SLOT_CONSOLE_EP;
 
     /* KIoPort for the 8 UART registers at 0x3F8..0x3FF (IN poll LSR + OUT THR).
-     * Fase S4: published into a CSpace slot as an MDB child of the spawn-cap
+     * Fase S4: published into a CSpace slot as an MDB child of the authorising
      * slot, and forwarded to console by CSpace source — so the delegation is
-     * revocable from init.  Slot 41 is free in init's root CNode. */
+     * revocable from init.  Slot 41 is free in init's root CNode.
+     * Stage 5 Etapa 2: the authority is the ioport control capability. */
     (void)spawn_cap_h;
-    if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+    if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
                   0x3F8, 8, (long)INIT_CONSOLE_IOPORT_SLOT) != 0) {
         init_early_serial_write(init_console_ioport_fail);
         goto fail;
@@ -212,7 +213,7 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     }
 
     {
-        struct svc_mint sm_mints[4] = { 0 };
+        struct svc_mint sm_mints[6] = { 0 };
         uint32_t n = 0;
         sm_mints[n].slot   = IRIS_CPTR_CONSOLE_EP;
         sm_mints[n].src_cptr = g_init_console_ep_h;
@@ -228,6 +229,20 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
         n++;
         sm_mints[n].slot     = IRIS_CPTR_SPAWN_CAP;
         sm_mints[n].src_cptr = IRIS_CPTR_SPAWN_CAP;
+        sm_mints[n].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[n].badge  = 0;
+        n++;
+        /* Stage 5 Etapa 2: svcmgr claims the machine's IRQs and port ranges on
+         * behalf of the catalog, so it gets the two control capabilities that
+         * authorise exactly that — and, once it has claimed everything, drops
+         * them.  They used to be one bit on the capability above. */
+        sm_mints[n].slot     = IRIS_CPTR_IRQ_CONTROL;
+        sm_mints[n].src_cptr = IRIS_CPTR_IRQ_CONTROL;
+        sm_mints[n].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[n].badge  = 0;
+        n++;
+        sm_mints[n].slot     = IRIS_CPTR_IOPORT_CONTROL;
+        sm_mints[n].src_cptr = IRIS_CPTR_IOPORT_CONTROL;
         sm_mints[n].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         sm_mints[n].badge  = 0;
         n++;
@@ -338,7 +353,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[13] = { 0 };
+        struct svc_mint it_mints[14] = { 0 };
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -373,11 +388,12 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[7].src_h = lk_svcmgr;
         it_mints[7].rights = RIGHT_WRITE;
         it_mints[7].badge = IRIS_BADGE_INIT;
-        /* Fase 13: a device/authority cap (the spawn KBootstrapCap) in a CPtr
-         * slot — iris_test invokes it by CPtr to prove device caps resolve via
-         * CSpace (T069). */
-        it_mints[8].slot = IRIS_CPTR_TEST_SPAWN;
-        it_mints[8].src_cptr = IRIS_CPTR_SPAWN_CAP;
+        /* Fase 13: an authority cap in a CPtr slot — iris_test invokes it by
+         * CPtr to prove device authority resolves via CSpace (T069).
+         * Stage 5 Etapa 2: that cap is the ioport CONTROL capability now, so
+         * the test names something that authorises exactly one syscall. */
+        it_mints[8].slot = IRIS_CPTR_IOPORT_CONTROL;
+        it_mints[8].src_cptr = IRIS_CPTR_IOPORT_CONTROL;
         it_mints[8].rights = RIGHT_READ;
         it_mints[8].badge = 0;
         /* Fase 13 (Track I): the operational spawn cap (serial KIoPort +
@@ -386,6 +402,13 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[9].src_cptr = IRIS_CPTR_SPAWN_CAP;
         it_mints[9].rights = RIGHT_READ;
         it_mints[9].badge = 0;
+        /* Stage 5 Etapa 2: the suite creates IRQ capabilities in several
+         * tests and asserts that each control capability authorises ONLY its
+         * own syscall (T296).  The ioport half arrives at index 8 above. */
+        it_mints[13].slot = IRIS_CPTR_IRQ_CONTROL;
+        it_mints[13].src_cptr = IRIS_CPTR_IRQ_CONTROL;
+        it_mints[13].rights = RIGHT_READ;
+        it_mints[13].badge = 0;
         /* Fase 18: the boot KUntyped for the authority suite (T125–T131). */
         it_mints[10].slot = IRIS_CPTR_TEST_UNTYPED;
         it_mints[10].src_cptr = lk_untyped;   /* 0 → skipped by svc_load */
@@ -421,7 +444,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * outlives bootstrap_h by construction — which is the only reason the
          * retired duplicate had to exist. */
         r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "iris_test",
-                            &proc_h, &boot_h, it_mints, 13u,
+                            &proc_h, &boot_h, it_mints, 14u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
     }
     init_close(&lk_svcmgr);

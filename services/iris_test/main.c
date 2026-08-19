@@ -2564,9 +2564,20 @@ static void test_t068(void) {
  * fallback.  This is the prerequisite that lets device caps stop travelling
  * over KChannel at bootstrap. */
 static void test_t069(void) {
-    long ok_cnt = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_TEST_SPAWN);
-    long wrong  = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_SVCMGR_EP);
-    if (ok_cnt >= 0 && wrong == (long)IRIS_ERR_ACCESS_DENIED)
+    /* Stage 5 Etapa 2: the authority named here is the ioport CONTROL
+     * capability — one capability, one authority — instead of a second copy of
+     * the monolith probed through SYS_INITRD_COUNT.  What the test proves is
+     * unchanged and is what its name says: an authority capability is invocable
+     * BY CPTR, and a capability of the wrong type in the same argument is
+     * refused rather than being looked up somewhere else. */
+    it_slot_delete(IT_DEV_SLOT_A);
+    long ok_cap = it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
+                          0x2F8, 8, (long)IT_DEV_SLOT_A);
+    it_slot_delete(IT_DEV_SLOT_A);
+    long wrong  = it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SVCMGR_EP,
+                          0x2F8, 8, (long)IT_DEV_SLOT_A);
+    it_slot_delete(IT_DEV_SLOT_A);
+    if (ok_cap == 0 && wrong == (long)IRIS_ERR_ACCESS_DENIED)
         it_pass("T069");
     else
         it_fail("T069", "device cap via cptr");
@@ -11032,7 +11043,7 @@ static handle_id_t it_make_ioport(long base, long count) {
     uint32_t slot = pool[__atomic_fetch_add(&g_it_dev_next, 1u,
                                             __ATOMIC_RELAXED) % 2u];
     it_slot_delete(slot);
-    if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+    if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
                 base, count, (long)slot) != 0) return HANDLE_INVALID;
     return (handle_id_t)slot;
 }
@@ -11043,7 +11054,7 @@ static handle_id_t it_make_irqcap(long irq) {
     uint32_t slot = pool[__atomic_fetch_add(&g_it_dev_next, 1u,
                                             __ATOMIC_RELAXED) % 2u];
     it_slot_delete(slot);
-    if (it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_SPAWN_CAP,
+    if (it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_IRQ_CONTROL,
                 irq, 0, (long)slot) != 0) return HANDLE_INVALID;
     return (handle_id_t)slot;
 }
@@ -11143,8 +11154,8 @@ static void test_t164(void) {
 
     /* Non-whitelisted range cannot be created: CMOS (0x70) and a range that
      * spills past the PS/2 whitelist entry. */
-    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, 0x70, 2, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "CMOS not denied"; }
-    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, 0x60, 100, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "range spill not denied"; }
+    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL, 0x70, 2, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "CMOS not denied"; }
+    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL, 0x60, 100, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "range spill not denied"; }
 
     it_slot_delete((uint32_t)io);
     it_quiesce_reaper();
@@ -11444,7 +11455,7 @@ static void test_t171(void) {
         op = 1;
         static const long bad_bases[] = { 0x70L, 0x80L, 0x3B0L, 0xCF8L };
         long bb = bad_bases[fz_rand() % 4u];
-        if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP, bb, 2,
+        if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL, bb, 2,
                     (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "non-whitelist created"; break;
         }
@@ -18518,33 +18529,41 @@ static int it_utq_t(struct it_utq_taskobj *q) {
  * restricted copy is installed into a destination slot as an MDB child of the
  * source slot, and the source keeps every permission it had.
  *
- * The oracle is behavioural, not a field read.  SYS_CAP_CREATE_IOPORT requires
- * IRIS_BOOTCAP_HW_ACCESS on its authorising cap (a whitelisted range is used so
- * the whitelist gate, which runs first, cannot mask the permission gate).  So
- * "can still create a hardware cap" is a direct test of what the capability
- * actually authorises.
+ * The oracle is behavioural, not a field read: two DIFFERENT authorities that
+ * still share the monolith are probed by invoking them.  SYS_INITRD_COUNT
+ * needs IRIS_BOOTCAP_SPAWN_SERVICE and SYS_SCHED_INFO needs
+ * IRIS_BOOTCAP_KDEBUG, so a copy narrowed to SPAWN_SERVICE must answer the
+ * first and refuse the second while the source answers both.
+ *
+ * Stage 5 Etapa 2 re-anchored this test: it used to probe with
+ * SYS_CAP_CREATE_IOPORT because device authority was a bit on this same
+ * capability.  It is its own capability now, so probing with it would test
+ * nothing about the mask — the derived copy would be refused for not being the
+ * ioport control capability, whatever the mask said.  What survives here is
+ * the mask that is left; when SPAWN_SERVICE, KDEBUG and FRAMEBUFFER split too,
+ * SYS_BOOTCAP_RESTRICT retires and this test dies with the mechanism.
  *
  * The source-untouched assertion is the one that matters: the old in-place
  * restrict could only offer it by making a defensive SYS_HANDLE_DUP first, and
  * that duplicate was a handle.  Guards against a migration silently turning a
  * narrowing into a no-op error path and leaving authority wide. */
 #define T291_DERIVED_SLOT S1_SLOT_A
-#define T291_PROBE_SLOT   S1_SLOT_B
-#define T291_WL_PORT      0x02F8   /* COM2 — whitelisted, unused by services */
 
 static void test_t291(void) {
     int ok = 1;
     const char *why = "bootcap restrict";
+    uint64_t sched_buf[24] = { 0 };
 
     it_slot_delete(T291_DERIVED_SLOT);
-    it_slot_delete(T291_PROBE_SLOT);
 
-    /* Baseline: our spawn cap carries HW_ACCESS. */
-    if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
-                T291_WL_PORT, 8, (long)T291_PROBE_SLOT) != 0) {
-        ok = 0; why = "baseline hw denied";
+    /* Baseline: the monolith answers for both authorities. */
+    if (it_sys2(SYS_INITRD_COUNT, (long)IRIS_CPTR_SPAWN_CAP, 0) < 0) {
+        ok = 0; why = "baseline spawn denied";
     }
-    it_slot_delete(T291_PROBE_SLOT);
+    if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
+                      (long)IRIS_CPTR_SPAWN_CAP) < 0) {
+        ok = 0; why = "baseline kdebug denied";
+    }
 
     /* CPTR_NULL is never a destination. */
     if (ok && it_sys3(SYS_BOOTCAP_RESTRICT, (long)IRIS_CPTR_SPAWN_CAP,
@@ -18553,27 +18572,28 @@ static void test_t291(void) {
         ok = 0; why = "null dest accepted";
     }
 
-    /* Derive a copy with HW_ACCESS stripped. */
+    /* Derive a copy with KDEBUG stripped. */
     if (ok && it_sys3(SYS_BOOTCAP_RESTRICT, (long)IRIS_CPTR_SPAWN_CAP,
                       (long)IRIS_BOOTCAP_SPAWN_SERVICE,
                       (long)T291_DERIVED_SLOT) != 0) {
         ok = 0; why = "derive failed";
     }
 
-    /* The derived cap must no longer authorise hardware caps. */
-    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)T291_DERIVED_SLOT,
-                      T291_WL_PORT, 8, (long)T291_PROBE_SLOT)
-              != (long)IRIS_ERR_ACCESS_DENIED) {
-        ok = 0; why = "derived kept hw access";
+    /* The derived cap keeps what was kept... */
+    if (ok && it_sys2(SYS_INITRD_COUNT, (long)T291_DERIVED_SLOT, 0) < 0) {
+        ok = 0; why = "derived lost spawn";
     }
-    it_slot_delete(T291_PROBE_SLOT);
+    /* ...and loses what was dropped. */
+    if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
+                      (long)T291_DERIVED_SLOT) >= 0) {
+        ok = 0; why = "derived kept kdebug";
+    }
 
     /* The SOURCE must be exactly as strong as before. */
-    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
-                      T291_WL_PORT, 8, (long)T291_PROBE_SLOT) != 0) {
+    if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
+                      (long)IRIS_CPTR_SPAWN_CAP) < 0) {
         ok = 0; why = "source was narrowed";
     }
-    it_slot_delete(T291_PROBE_SLOT);
 
     /* Destination install is exclusive. */
     if (ok && it_sys3(SYS_BOOTCAP_RESTRICT, (long)IRIS_CPTR_SPAWN_CAP,
@@ -19491,6 +19511,90 @@ static void test_t294(void) {
     if (ok) it_pass("T294"); else it_fail("T294", why);
 }
 
+/* ── T296: one capability, one authority (Stage 5 Etapa 2) ───────────────
+ * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
+ * capability that carries spawn, debug and framebuffer authority.  Holding the
+ * authority to claim a serial port therefore meant holding the authority to
+ * claim any interrupt line, spawn processes and power the machine off, and
+ * dropping one of those meant cloning a narrowed copy of the whole object.
+ *
+ * Now there is one capability per authority and the kernel matches it
+ * EXACTLY.  Three things follow, and all three are asserted here because each
+ * would be silently undone by a resolver that went back to subset matching:
+ *
+ *   1. each control capability authorises its OWN syscall;
+ *   2. neither authorises the other's — the IRQ control capability cannot
+ *      create an ioport capability, and vice versa;
+ *   3. the boot capability that still carries the remaining mask authorises
+ *      NEITHER, even though it is the object both were split from.
+ *
+ * A non-whitelisted port is used for the negative ioport probes only where
+ * the whitelist gate cannot mask the result: the whitelist runs BEFORE the
+ * authority check, so the positive control is a whitelisted range and the
+ * cross-authority probes use one too.
+ * Invariants: A1, A5, A7. */
+#define T296_SLOT      S1_SLOT_C
+#define T296_WL_PORT   0x02F8   /* COM2 — whitelisted, unused by services */
+
+static void test_t296(void) {
+    int ok = 1;
+    const char *why = "boot control caps";
+
+    it_slot_delete(T296_SLOT);
+
+    /* 1. Each control capability authorises its own syscall. */
+    if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
+                T296_WL_PORT, 8, (long)T296_SLOT) != 0) {
+        ok = 0; why = "ioport control denied";
+    }
+    it_slot_delete(T296_SLOT);
+    if (ok && it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_IRQ_CONTROL,
+                      11, 0, (long)T296_SLOT) != 0) {
+        ok = 0; why = "irq control denied";
+    }
+    it_slot_delete(T296_SLOT);
+
+    /* 2. Neither authorises the other's syscall. */
+    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IRQ_CONTROL,
+                      T296_WL_PORT, 8, (long)T296_SLOT)
+              != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "irq cap created an ioport";
+    }
+    it_slot_delete(T296_SLOT);
+    if (ok && it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_IOPORT_CONTROL,
+                      11, 0, (long)T296_SLOT)
+              != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "ioport cap created an irq";
+    }
+    it_slot_delete(T296_SLOT);
+
+    /* 3. The capability they were split from authorises neither. */
+    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+                      T296_WL_PORT, 8, (long)T296_SLOT)
+              != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "monolith still creates ioports";
+    }
+    it_slot_delete(T296_SLOT);
+    if (ok && it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_SPAWN_CAP,
+                      11, 0, (long)T296_SLOT)
+              != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "monolith still creates irqs";
+    }
+    it_slot_delete(T296_SLOT);
+
+    /* The control capabilities are real capabilities in real slots: an empty
+     * slot authorises nothing, which is what makes deleting them (as svcmgr
+     * does once bootstrap is over) a genuine loss of authority. */
+    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)T296_SLOT,
+                      T296_WL_PORT, 8, (long)S1_SLOT_D)
+              != (long)IRIS_ERR_NOT_FOUND) {
+        ok = 0; why = "empty slot authorised";
+    }
+    it_slot_delete(S1_SLOT_D);
+
+    if (ok) it_pass("T296"); else it_fail("T296", why);
+}
+
 /* ── T295: a CPtr addresses exactly one capability ───────────────────────
  * CSpace resolution walks radix bits per level and stops when the CPtr is
  * exhausted.  It used to ALSO stop as soon as a slot held a non-CNode, which
@@ -19603,9 +19707,12 @@ void iris_test_main(handle_id_t rbx_unused) {
 
     {
         /* Fase S4: device caps are published into a CSpace slot as MDB
-         * children of the spawn-cap slot; the result is a CPtr, and
-         * SYS_IOPORT_IN/OUT resolve it through their CSpace leg. */
-        if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+         * children of the authorising slot; the result is a CPtr, and
+         * SYS_IOPORT_IN/OUT resolve it through their CSpace leg.
+         * Stage 5 Etapa 2: the authorising slot holds the ioport CONTROL
+         * capability — printing test output no longer needs the authority to
+         * spawn processes. */
+        if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
                     0x3F8, 8, (long)IT_SERIAL_SLOT) == 0)
             g_serial_h = (handle_id_t)IT_SERIAL_SLOT;
     }
@@ -19895,6 +20002,8 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t293();
     test_t294();
     test_t295();
+    /* Stage 5: one capability, one authority. */
+    test_t296();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

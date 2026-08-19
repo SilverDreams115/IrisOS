@@ -41,13 +41,17 @@ void init_early_serial_write(const char *s) {
 }
 
 /* Fase S4: the serial KIoPort is published into a CSpace slot as an MDB child
- * of the spawn-cap slot; the authority argument must be a CPtr.  Slot 40 is
- * free in init's root CNode (1..15 well-known). */
+ * of the authorising slot; the authority argument must be a CPtr.  Slot 40 is
+ * free in init's root CNode (1..15 well-known).
+ * Stage 5 Etapa 2: the authority is the IOPORT CONTROL capability, which
+ * authorises exactly this — claiming a port range.  It used to be the
+ * monolithic spawn capability, so printing an early boot line required the
+ * authority to spawn processes and power the machine off. */
 #define INIT_EARLY_SERIAL_SLOT 40u
 void init_early_serial_start(handle_id_t spawn_cap_h) {
     (void)spawn_cap_h;
     if (g_init_early_serial_h != HANDLE_INVALID) return;
-    if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+    if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
                   0x3F8, 8, (long)INIT_EARLY_SERIAL_SLOT) != 0) return;
     g_init_early_serial_h = (handle_id_t)INIT_EARLY_SERIAL_SLOT;
 }

@@ -48,7 +48,8 @@ and how the root task *learns* about it:
 |---|---|---|
 | 1 | The root task is TOLD what it holds: structured BootInfo | ✅ DONE |
 | 1b | ...and stops assuming which slots are free | ✅ DONE |
-| 2 | The monolith splits: fine-grained boot authority replaces the permission bitmask; `SYS_BOOTCAP_RESTRICT` and `KBootstrapCap` retire | pending |
+| 2a | Device control splits off: IRQ and ioport control are their own capabilities | ✅ DONE |
+| 2b | Spawn, initrd, debug and framebuffer split too; `SYS_BOOTCAP_RESTRICT` and the monolith retire | pending |
 | 3 | The root task's own objects are named caps (root CNode, initial TCB, ASID/PCID control) | pending |
 | 4 | `TCB_CONFIGURE` / `TCB_WRITE_REGS`: a retyped TCB executes | pending |
 
@@ -156,22 +157,69 @@ the panic path that fires when the BootInfo itself is unreadable has nothing to
 consult, and a diagnostic that guesses wrong prints nothing rather than
 corrupting a slot.
 
-## Etapa 2 — the monolith splits (planned)
+## Etapa 2 — the monolith splits
 
-`KBootstrapCap`'s four permission bits become separate capabilities, each
-published into its own BootInfo slot, each delegated by handing it over:
+`KBootstrapCap`'s permission bits become separate capabilities, each published
+into its own BootInfo slot, each delegated by handing it over:
 
-| Bit today | Authorises | Fine-grained successor |
-|---|---|---|
-| `HW_ACCESS` | `SYS_CAP_CREATE_IRQCAP`, `SYS_CAP_CREATE_IOPORT` | IRQ control cap, IOPort control cap |
-| `FRAMEBUFFER` | `SYS_FRAMEBUFFER_VMO` | device-memory cap for the framebuffer region |
-| `SPAWN_SERVICE` | `SYS_PROCESS_CREATE`, `SYS_INITRD_COUNT/VMO` | process-control cap, initrd cap |
-| `KDEBUG` | `SYS_KLOG_DRAIN`, `SYS_SCHED_INFO`, `SYS_POWEROFF` | debug cap |
+| Bit | Authorises | Successor | State |
+|---|---|---|---|
+| `HW_ACCESS` | `SYS_CAP_CREATE_IRQCAP` | IRQ control capability | ✅ 2a |
+| `HW_ACCESS` | `SYS_CAP_CREATE_IOPORT` | ioport control capability | ✅ 2a |
+| `FRAMEBUFFER` | `SYS_FRAMEBUFFER_VMO` | device-memory cap for the framebuffer | 2b |
+| `SPAWN_SERVICE` | `SYS_PROCESS_CREATE`, `SYS_INITRD_COUNT/VMO` | process-control cap, initrd cap | 2b |
+| `KDEBUG` | `SYS_KLOG_DRAIN`, `SYS_SCHED_INFO`, `SYS_POWEROFF` | debug capability | 2b |
 
-`SYS_BOOTCAP_RESTRICT` retires with the object: narrowing a bitmask by cloning
-an object is replaced by delegating the one capability meant, and revoking it
-through the CDT.  The ioport whitelist (`kioport_whitelist`, ledger P3) is the
-policy that should follow the IOPort control cap out of the kernel.
+`SYS_BOOTCAP_RESTRICT` retires with the last bit: narrowing a bitmask by
+cloning an object is replaced by delegating the one capability meant and
+revoking it through the CDT.  The ioport whitelist (`kioport_whitelist`, ledger
+P3) is the policy that should follow the ioport control capability out of the
+kernel.
+
+### Etapa 2a — device control is its own authority  ✅ DONE
+
+`IRIS_BOOTCAP_HW_ACCESS` was one bit authorising BOTH interrupt-line and
+I/O-port capability creation, on an object that also carried spawn, debug and
+framebuffer authority.  Concretely: **init printing a boot line to COM1 held
+the authority to claim any IRQ, spawn processes and power the machine off**,
+and the only way to give up one of those was `SYS_BOOTCAP_RESTRICT` — cloning
+a narrowed copy of the whole object and deleting the original.
+
+Now there are two capabilities, `IRIS_BOOTCAP_IRQ_CONTROL` and
+`IRIS_BOOTCAP_IOPORT_CONTROL`, and the kernel matches them **exactly**
+(`kbootcap_is`, not the subset test `kbootcap_allows`).  Exactness is what
+makes the split real: a monolith that merely includes the bit does not pass, so
+the only capability that authorises a syscall is the one that exists for it.
+
+- **Publication**: `kernel_main` publishes each into its own root-CNode slot
+  (`BOOT_CPTR_IRQ_CONTROL`, `BOOT_CPTR_IOPORT_CONTROL`) and records both in
+  BootInfo v2 (`cap_irq_control`, `cap_ioport_control`).  Failure is fatal,
+  like every other boot grant.
+- **Delegation**: userboot → init → svcmgr and the suite, as CPtr sources, so
+  each grant is an MDB child of the granter's slot and stays revocable.
+- **Renunciation gets simpler and stronger**: svcmgr used to strip hardware
+  authority with `SYS_BOOTCAP_RESTRICT` + delete — a derive-then-delete dance
+  that existed only because the authority was a bit on a shared object, and
+  whose "derive" half silently left the original wide if the delete was
+  skipped.  It now **deletes the two control slots**.  The device caps it
+  already claimed are MDB children of those slots, so they reparent onto init's
+  slots and survive: svcmgr keeps its hardware and loses the authority to claim
+  more.
+- **Slot arithmetic**: svcmgr's own device-cap bookkeeping slots moved to
+  96..127 (its registration pool now starts at 128) so the low, well-known part
+  of every root CNode can hold boot control capabilities.  The suite's root
+  CNode is full, so the ioport control capability took over slot 26 — formerly
+  a second copy of the monolith that existed to prove an authority capability
+  resolves by CPtr (T069).  That test proves the same thing with a capability
+  that authorises exactly one syscall, which is what its name always claimed.
+
+Covered by **T296**: each control capability authorises its own syscall,
+neither authorises the other's, the capability they were split from authorises
+neither, and an empty slot authorises nothing (which is what makes svcmgr's
+delete a real loss of authority).  **T291** was re-anchored: its behavioural
+oracle for `SYS_BOOTCAP_RESTRICT` moved from device creation — no longer a mask
+bit — to `SYS_INITRD_COUNT` vs `SYS_SCHED_INFO`, two authorities that still
+share the remaining monolith.  It dies with the mechanism in Etapa 2b.
 
 ## Etapa 3 — the root task's own objects (planned)
 
