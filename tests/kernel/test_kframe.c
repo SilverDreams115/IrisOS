@@ -777,6 +777,18 @@ void test_kframe(void) {
         ASSERT_NOT_NULL(vs);
         kobject_retain(&vs->base); /* keep object alive past kvspace_invalidate */
 
+        /* Stage 6 Etapa 6: an address space with a BUDGET carves its mapping
+         * records from it and returns them at teardown.  Mapping at this scale
+         * is exactly what the budgeted path is for — the bootstrap arena that
+         * serves a pool-less VSpace is sized for the root task's handful of
+         * pages, not for sixty-four. */
+        void *fr40_mem = malloc(256u * 1024u);
+        ASSERT_NOT_NULL(fr40_mem);
+        struct KUntyped *fr40_pool =
+            kuntyped_create((uint64_t)(uintptr_t)fr40_mem, 256u * 1024u, 0);
+        ASSERT_NOT_NULL(fr40_pool);
+        kvspace_set_pt_pool(vs, fr40_pool);
+
         struct KFrame *frames[FR40_COUNT];
         int i;
         for (i = 0; i < FR40_COUNT; i++) {
@@ -1312,6 +1324,14 @@ void test_kframe(void) {
         struct KVSpace *vs = kvspace_alloc(0xCC9000ULL);
         ASSERT_NOT_NULL(vs);
         kobject_retain(&vs->base);
+        {   /* 128 concurrent mappings: a budgeted address space (Etapa 6). */
+            void *mem = malloc(512u * 1024u);
+            ASSERT_NOT_NULL(mem);
+            struct KUntyped *pool =
+                kuntyped_create((uint64_t)(uintptr_t)mem, 512u * 1024u, 0);
+            ASSERT_NOT_NULL(pool);
+            kvspace_set_pt_pool(vs, pool);
+        }
 
         struct KFrame *frames[FR62_COUNT];
         int i;
@@ -1388,10 +1408,19 @@ void test_kframe(void) {
         ASSERT_NOT_NULL(f);
         uint64_t va = USER_PRIVATE_BASE + 0x8000ULL;
 
-        /* Inject: next kslab_alloc (the KFrameMapping node) returns NULL. */
-        kslab_fail_after(0);
+        /* Stage 6 Etapa 6: a mapping record is carved from the address
+         * space's BUDGET, so exhaustion is what a full budget looks like —
+         * this fixture gets one too small to hold a single record.  What the
+         * case asserts is unchanged and is the point: a failed record
+         * allocation installs no PTE, counts no mapping, and leaves the frame
+         * exactly as it was. */
+        void *tiny_mem = malloc(64u);
+        ASSERT_NOT_NULL(tiny_mem);
+        struct KUntyped *tiny =
+            kuntyped_create((uint64_t)(uintptr_t)tiny_mem, 64u, 0);
+        ASSERT_NOT_NULL(tiny);
+        kvspace_set_pt_pool(vs, tiny);
         iris_error_t ie = kframe_map_page(f, vs, va, 0u);
-        kslab_clear_fail();
 
         ASSERT_EQ((int)ie, (int)IRIS_ERR_NO_MEMORY);
         ASSERT_EQ((int)vs->mapping_count, 0);

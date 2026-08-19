@@ -17,7 +17,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
 | 4 — Dual namespace retirement | ✅ CLOSED |
 | 5 — seL4-like bootstrap | ✅ CLOSED |
-| 6 — Remaining memory and objects | 🔄 OPEN (Etapas 1-5 landed) |
+| 6 — Remaining memory and objects | ✅ CLOSED |
 | 7 — KProcess retirement | pending |
 | 8 — Full MCS scheduling | pending |
 | 9 — SMP | pending |
@@ -533,7 +533,7 @@ and fine-grained capabilities, no monolithic bootstrap object remains to
 restrict, and the executing TCB is a retyped object configured through
 capabilities.
 
-## Stage 6 — Remaining memory and objects  🔄 OPEN
+## Stage 6 — Remaining memory and objects  ✅ CLOSED
 
 Precondition: Stage 1 (ownership/derivation); may overlap with 5.
 Design: `docs/architecture/stage6-memory-from-untyped.md`.
@@ -550,6 +550,25 @@ created from kernel-private storage.  Stage 5 finished the authority story;
 this stage answers *who pays for memory*, which is still "the kernel,
 invisibly" in four places — page tables on map, frame headers, the VSpace and
 its PML4, and sixteen `kslab_alloc` consumers.
+
+### Etapa 6 — the last runtime allocations  ✅ DONE
+
+Mapping records (one per mapped page, recycled through a per-VSpace free list),
+VMO page frame headers and device capabilities — the three paths that still
+reached the kernel slab on every use — are charged to a budget.
+
+The purity gate refused the first attempt, correctly: routing mapping records
+through the VSpace MOVED a `kslab_alloc` from one file to another, and the
+allowlist may only shrink.  Removing it instead — the root task, the one
+address space with no budget, uses a fixed 64-entry bootstrap arena — made
+`scripts/purity_allowlist.txt` shrink for the first time since Stage 4.
+
+**Stage 6 closing criterion met**: no kernel object and no page of user-visible
+memory is created from kernel-private storage after boot.  What remains on the
+slab is the root task (built before any Untyped exists) and subsystems that
+retire whole in Stage 7 (KVMO, the initrd store, the boot authority); ledger
+D-5 records the divergence that stays — IRIS CHARGES these objects to a budget
+where seL4 has the user RETYPE them.
 
 ### Etapa 5 — user memory comes out of a named budget  ✅ DONE
 

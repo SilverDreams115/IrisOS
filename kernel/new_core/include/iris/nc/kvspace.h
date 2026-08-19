@@ -65,7 +65,20 @@ struct KVSpace {
      * space.  Each one holds a child_count entry on the pool, so the pool
      * cannot be RESET while they are live; teardown returns them all. */
     uint32_t              pt_count;
+    /* Stage 6 Etapa 6: mapping records carved from pt_pool, and the free list
+     * they return to.  Mappings churn — map, unmap, map again — and a bump
+     * allocator never rewinds, so carving one per map would leak the budget at
+     * the rate the process maps.  A fixed-size free list makes reuse exact:
+     * the VSpace carves only when the list is empty, and returns every node to
+     * its Untyped when the address space is destroyed. */
+    struct KFrameMapping *free_nodes;
+    uint32_t              node_count;   /* nodes ever carved from pt_pool */
 };
+
+/* Mapping-record allocator.  Caller holds no VSpace lock: both take it. */
+struct KFrameMapping *kvspace_node_alloc(struct KVSpace *vs);
+void                  kvspace_node_free(struct KVSpace *vs,
+                                        struct KFrameMapping *m);
 
 /* Attach the page-table pool.  Retains `pool`; called once, before the VSpace
  * maps anything that could need a new level. */

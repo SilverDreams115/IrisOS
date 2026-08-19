@@ -16,7 +16,7 @@ kernel/mm/kslab/kslab.c kslab_alloc 1
 kernel/new_core/include/iris/nc/kframe.h kslab_alloc 1
 kernel/new_core/src/kbootcap.c kslab_alloc 1
 kernel/new_core/src/kcnode.c kslab_alloc 2
-kernel/new_core/src/kframe.c kslab_alloc 2
+kernel/new_core/src/kframe.c kslab_alloc 1
 kernel/new_core/src/kinitrdentry.c kslab_alloc 1
 kernel/new_core/src/kioport.c kslab_alloc 1
 kernel/new_core/src/kirqcap.c kslab_alloc 1

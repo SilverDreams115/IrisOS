@@ -29,6 +29,12 @@ struct KIrqCap {
 
 #ifdef __KERNEL__
 struct KIrqCap *kirqcap_alloc(uint8_t irq_num);
+
+/* Stage 6 Etapa 6 — the same object, charged to `pool` (NULL = kernel slab,
+ * which is the boot path).  Claiming hardware fabricates a kernel object, and
+ * the claimer names the budget it comes out of. */
+struct KUntyped;
+struct KIrqCap *kirqcap_alloc_from(struct KUntyped *pool, uint8_t irq_num);
 void            kirqcap_free(struct KIrqCap *cap);
 uint32_t        kirqcap_live_count(void);
 #endif

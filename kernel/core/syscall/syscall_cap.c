@@ -139,7 +139,8 @@ uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                     &auth_cn, &auth_idx);
     if (err != IRIS_OK) return syscall_err(err);
 
-    struct KIrqCap *irqcap = kirqcap_alloc(irq_num);
+    /* Stage 6 Etapa 6: the object comes out of the claimer's budget. */
+    struct KIrqCap *irqcap = kirqcap_alloc_from(t->process->mem_pool, irq_num);
     if (!irqcap) {
         dev_cap_auth_release(auth_cn);
         return syscall_err(IRIS_ERR_NO_MEMORY);
@@ -178,7 +179,8 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                     &auth_cn, &auth_idx);
     if (err != IRIS_OK) return syscall_err(err);
 
-    struct KIoPort *ioport = kioport_alloc(base, count);
+    /* Stage 6 Etapa 6: the object comes out of the claimer's budget. */
+    struct KIoPort *ioport = kioport_alloc_from(t->process->mem_pool, base, count);
     if (!ioport) {
         dev_cap_auth_release(auth_cn);
         return syscall_err(IRIS_ERR_NO_MEMORY);

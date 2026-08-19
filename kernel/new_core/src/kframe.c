@@ -115,7 +115,8 @@ static void kframe_obj_destroy_ut(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kframe_live, 1u, memory_order_relaxed);
     /* Returns the block to its parent: zeroes it, drops child_count, releases
      * the parent retain.  No alloc_parent bookkeeping here — the header block
-     * IS the child, exactly as for KCNode/KTcb/KEndpoint. */
+     * IS the child, exactly as for KCNode/KTcb/KEndpoint.  Read vmo BEFORE the
+     * block is zeroed. */
     kuntyped_release_child(f, sizeof(struct KFrame));
 
     if (vmo) kobject_release(&vmo->base);
@@ -164,8 +165,22 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
 
 struct KFrame *kframe_alloc_vmo_page(uint64_t paddr, struct KVmo *vmo) {
     if (!vmo) return NULL;
-    struct KFrame *f = kframe_alloc(paddr, 4096u, NULL);
-    if (!f) return NULL;
+
+    /* Stage 6 Etapa 6: the header for a VMO page comes out of the VMO's own
+     * budget — the same one its page came from.  This is the frequent runtime
+     * path (one per mapped page), so leaving it on the kernel slab would mean
+     * a process could still grow kernel memory by mapping.  A VMO with no
+     * budget (a wrapped device region, the root task) keeps the slab. */
+    struct KFrame *f;
+    if (vmo->pool) {
+        void *hdr = kuntyped_alloc_child_top(vmo->pool, sizeof(struct KFrame));
+        if (!hdr) return NULL;
+        f = kframe_alloc_at(hdr, paddr, 4096u);
+        if (!f) { kuntyped_release_child(hdr, sizeof(struct KFrame)); return NULL; }
+    } else {
+        f = kframe_alloc(paddr, 4096u, NULL);
+        if (!f) return NULL;
+    }
     kobject_retain(&vmo->base);
     f->vmo_owner = vmo;
     return f;
@@ -190,20 +205,20 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
      * slab allocator path (which may sleep in future SMP builds) does not
      * hold vs->lock.  On failure the caller sees NO_MEMORY before any PTE
      * or list state is touched. */
-    m = kslab_alloc((uint32_t)sizeof(*m));
+    m = kvspace_node_alloc(vs);
     if (!m) return IRIS_ERR_NO_MEMORY;
 
     spinlock_lock(&vs->lock);
 
     if (!vs->valid || !vs->cr3) {
         spinlock_unlock(&vs->lock);
-        kslab_free(m, (uint32_t)sizeof(*m));
+        kvspace_node_free(vs, m);
         return IRIS_ERR_BAD_HANDLE;
     }
 
     if (paging_virt_to_phys_in(vs->cr3, user_va) != 0) {
         spinlock_unlock(&vs->lock);
-        kslab_free(m, (uint32_t)sizeof(*m));
+        kvspace_node_free(vs, m);
         return IRIS_ERR_BUSY;
     }
 
@@ -220,7 +235,7 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
     vs->pt_count += tables_made;   /* under vs->lock, like every field here */
     if (r != 0) {
         spinlock_unlock(&vs->lock);
-        kslab_free(m, (uint32_t)sizeof(*m));
+        kvspace_node_free(vs, m);
         return IRIS_ERR_NO_MEMORY;
     }
 
@@ -295,7 +310,7 @@ iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
     paging_unmap_in(vs->cr3, user_va);
     spinlock_unlock(&vs->lock);
 
-    kslab_free(m, (uint32_t)sizeof(*m));
+    kvspace_node_free(vs, m);
     /* Decrement mapped_count BEFORE kobject_release so that kframe_obj_destroy
      * always observes mapped_count == 0 when the mapping retain is the last one. */
     atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);

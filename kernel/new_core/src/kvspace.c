@@ -10,6 +10,8 @@
  * death (V16) and that the count returns to baseline after churn. */
 static _Atomic uint32_t kvspace_live;
 
+static void kvspace_release_nodes(struct KVSpace *vs);
+
 uint32_t kvspace_live_count(void) {
     return atomic_load_explicit(&kvspace_live, memory_order_relaxed);
 }
@@ -31,7 +33,7 @@ static void kvspace_obj_destroy(struct KObject *obj) {
         struct KFrameMapping *next = m->next;
         struct KFrame        *f   = m->frame;
         if (cr3) paging_unmap_in(cr3, m->user_va);
-        kslab_free(m, (uint32_t)sizeof(*m));
+        kvspace_node_free(vs, m);
         atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
         kframe_stat_cleanup();
         kobject_release(&f->base);
@@ -40,6 +42,7 @@ static void kvspace_obj_destroy(struct KObject *obj) {
     /* Stage 6 Etapa 2: drop the page-table budget.  The tables carved from it
      * are not individually freed — they return to the Untyped when it is
      * RESET or destroyed, which is the lifetime every retyped object has. */
+    kvspace_release_nodes(vs);
     if (vs->pt_pool) {
         /* Return every page table this address space carved: the pages stay
          * where they are (a bump allocator does not rewind), but the pool's
@@ -82,13 +85,14 @@ static void kvspace_obj_destroy_ut(struct KObject *obj) {
         struct KFrameMapping *next = m->next;
         struct KFrame        *f    = m->frame;
         if (cr3) paging_unmap_in(cr3, m->user_va);
-        kslab_free(m, (uint32_t)sizeof(*m));
+        kvspace_node_free(vs, m);
         atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
         kframe_stat_cleanup();
         kobject_release(&f->base);
         m = next;
     }
 
+    kvspace_release_nodes(vs);
     while (vs->pt_count && pool) {
         kuntyped_release_page_child(pool);
         vs->pt_count--;
@@ -130,8 +134,99 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
     vs->mappings      = 0;
     vs->pt_pool       = 0;
     vs->pt_count      = 0;
+    vs->free_nodes    = 0;
+    vs->node_count    = 0;
     atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);
     return vs;
+}
+
+/*
+ * Stage 6 Etapa 6 — a mapping record comes from the address space's own budget.
+ *
+ * These are per-mapping kernel bookkeeping: small, numerous, and churning.
+ * Carved from the VSpace's Untyped and recycled through a free list, so the
+ * budget pays once per CONCURRENT mapping rather than once per map call — the
+ * same bounded-by-what-is-alive rule the loader's child budgets follow.
+ * A VSpace with no budget (the root task) keeps the kernel slab.
+ */
+/*
+ * Bootstrap arena for the ONE address space that exists before any budget
+ * does: the root task's.  It maps its text, its stack and its BootInfo — a
+ * handful of pages — so a fixed, bounded array is the honest shape here, and
+ * it keeps the kernel slab out of the mapping path entirely rather than moving
+ * that use from one file to another.  Exhaustion fails the map; it cannot be
+ * reached by anything but the boot path, because every other address space
+ * carries a budget.
+ */
+#define KVSPACE_BOOT_NODES 64u
+static struct KFrameMapping kvspace_boot_nodes[KVSPACE_BOOT_NODES];
+static uint32_t             kvspace_boot_next;
+static struct KFrameMapping *kvspace_boot_free;
+
+static struct KFrameMapping *kvspace_boot_node_alloc(void) {
+    if (kvspace_boot_free) {
+        struct KFrameMapping *m = kvspace_boot_free;
+        kvspace_boot_free = m->next;
+        m->next = 0; m->frame = 0; m->user_va = 0;
+        return m;
+    }
+    if (kvspace_boot_next >= KVSPACE_BOOT_NODES) return 0;
+    return &kvspace_boot_nodes[kvspace_boot_next++];
+}
+
+static void kvspace_boot_node_free(struct KFrameMapping *m) {
+    m->frame = 0;
+    m->next  = kvspace_boot_free;
+    kvspace_boot_free = m;
+}
+
+struct KFrameMapping *kvspace_node_alloc(struct KVSpace *vs) {
+    if (!vs) return 0;
+    if (!vs->pt_pool) return kvspace_boot_node_alloc();
+
+    spinlock_lock(&vs->lock);
+    struct KFrameMapping *m = vs->free_nodes;
+    if (m) {
+        vs->free_nodes = m->next;
+        spinlock_unlock(&vs->lock);
+        m->next = 0; m->frame = 0; m->user_va = 0;
+        return m;
+    }
+    struct KUntyped *pool = vs->pt_pool;
+    spinlock_unlock(&vs->lock);
+
+    m = kuntyped_alloc_child_top(pool, sizeof(struct KFrameMapping));
+    if (!m) return 0;
+    spinlock_lock(&vs->lock);
+    vs->node_count++;
+    spinlock_unlock(&vs->lock);
+    return m;
+}
+
+void kvspace_node_free(struct KVSpace *vs, struct KFrameMapping *m) {
+    if (!m) return;
+    if (!vs || !vs->pt_pool) {
+        kvspace_boot_node_free(m);
+        return;
+    }
+    spinlock_lock(&vs->lock);
+    m->frame = 0;
+    m->next  = vs->free_nodes;
+    vs->free_nodes = m;
+    spinlock_unlock(&vs->lock);
+}
+
+/* Return every carved node to the Untyped.  Called from the destructors, after
+ * the mapping list has been swept, so the free list holds them all. */
+static void kvspace_release_nodes(struct KVSpace *vs) {
+    struct KFrameMapping *m = vs->free_nodes;
+    vs->free_nodes = 0;
+    while (m) {
+        struct KFrameMapping *next = m->next;
+        kuntyped_release_child(m, sizeof(struct KFrameMapping));
+        vs->node_count--;
+        m = next;
+    }
 }
 
 void kvspace_set_pt_pool(struct KVSpace *vs, struct KUntyped *pool) {
@@ -162,7 +257,7 @@ void kvspace_invalidate(struct KVSpace *vs) {
         struct KFrame        *f = m->frame;
         list = m->next;
         if (saved_cr3) paging_unmap_in(saved_cr3, m->user_va);
-        kslab_free(m, (uint32_t)sizeof(*m));
+        kvspace_node_free(vs, m);
         atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
         kframe_stat_cleanup();
         kobject_release(&f->base);
@@ -204,7 +299,7 @@ iris_error_t kvspace_unmap_page(struct KVSpace *vs, uint64_t user_va) {
     paging_unmap_in(cr3, user_va);
     spinlock_unlock(&vs->lock);
 
-    kslab_free(m, (uint32_t)sizeof(*m));
+    kvspace_node_free(vs, m);
     atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
     kframe_stat_unmap();
     kobject_release(&f->base);

@@ -36,6 +36,13 @@ struct KIoPort {
 
 #ifdef __KERNEL__
 struct KIoPort *kioport_alloc(uint16_t base_port, uint16_t count);
+
+/* Stage 6 Etapa 6 — the same object, charged to `pool` (NULL = kernel slab,
+ * which is the boot path).  Claiming hardware fabricates a kernel object, and
+ * the claimer names the budget it comes out of. */
+struct KUntyped;
+struct KIoPort *kioport_alloc_from(struct KUntyped *pool, uint16_t base_port,
+                                   uint16_t count);
 void            kioport_free(struct KIoPort *port);
 uint32_t        kioport_live_count(void);
 #endif
