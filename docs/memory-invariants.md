@@ -1,8 +1,14 @@
-# IRIS Memory Invariants (Fase 6.4)
+# IRIS Memory Invariants (Fase 6.4, extended in Stage 6)
 
 This document is the authoritative reference for the memory safety invariants of the
-IRIS kernel as of Fase 6.4.  Each invariant names where it is enforced and where it is
+IRIS kernel.  Each invariant names where it is enforced and where it is
 tested.  Future phases must not regress any of these invariants.
+
+Stage 6 added a second axis to every one of them: **where the memory came
+from**.  The safety invariants below say a mapping is tracked, counted and torn
+down exactly once; the budget invariants at the end say who paid for it.  Both
+must hold — a correctly tracked mapping funded by kernel memory nobody
+authorised is exactly what Stage 6 removed.
 
 ---
 
@@ -33,6 +39,24 @@ tested.  Future phases must not regress any of these invariants.
 | I-21 | `usercopy` never allocates user pages | `kernel/core/usercopy.c` — no PMM calls | (grep) | demand paging via usercopy |
 | I-22 | W^X: `kframe_map_page` rejects `MAP_WRITABLE | MAP_EXEC` | `kframe.c:88` | executable writable pages |
 | I-23 | `kframe_map_page` rejects `flags > 3` (bits beyond W|X) | `kframe.c:84` | FR-61 | undefined flag leak |
+
+## Budget invariants (Stage 6)
+
+| # | Invariant | Implementation | Tests | Risk if broken |
+|---|-----------|----------------|-------|----------------|
+| B-01 | A user address space names the Untyped that pays for its page tables, at creation | `sys_process_create` resolves the budget before allocating anything; `paging_map_checked_in_from` | T299 | the kernel funds user mappings again (charter M3) |
+| B-02 | A page table, PML4, VSpace/KProcess/CNode header, VMO page, mapping record or device capability is a CHILD of the Untyped it came from | `kuntyped_alloc_page_child` / `kuntyped_alloc_child_top` | T298, T299, T300 | `SYS_UNTYPED_RESET` reclaims a region whose pages are live, handing the same memory out twice |
+| B-03 | A pooled page is never returned to the PMM | `paging_destroy_user_space_from`, `kvmo_destroy` | T299, T300 | the buddy allocator hands out memory an Untyped still owns |
+| B-04 | Teardown returns page children, then the header block, then the pool retain | `kvspace_obj_destroy_ut`, `kvmo_destroy`, `kprocess_destroy_ut` | T299, T300 | the header block's parent is released while the block is still being read |
+| B-05 | Mapping records are recycled per address space, not carved per map | `kvspace_node_alloc` free list | FR-40, FR-62 | the budget leaks at the rate the process maps |
+| B-06 | Page-aligned carves align the ABSOLUTE physical address | `kuntyped_bump_alloc_phys_page` | T298 | a frame or page table from a sub-untyped overlaps earlier carves |
+| B-07 | Only the root task and boot objects come from the kernel slab | `check-purity` allowlist | `make check-purity` | unbudgeted kernel allocation returns |
+
+The reclamation rule that makes B-02 usable: a bump allocator does not rewind,
+so a budget is reclaimed by RESETTING it, which is refused while any child
+lives.  Bounded consumption therefore comes from RECYCLING budgets — the loader
+keeps one per live child and one scratch for image copies — not from sizing
+them for the whole run.
 
 ---
 

@@ -1,4 +1,16 @@
-# VMO Memory Model (Fase 6.3)
+# VMO Memory Model (Fase 6.3, budgeted in Stage 6)
+
+> **Stage 6 Etapa 5.**  A VMO's pages, its page-address array and its object
+> header are carved from an **Untyped the caller names** — `SYS_VMO_CREATE`'s
+> second argument, `SYS_INITRD_VMO`'s fourth — not from the PMM.  Zero means
+> "the budget my address space was built from".  Everything below still
+> describes the lifecycle correctly; where it says `pmm_alloc_page`, read "one
+> page from the VMO's budget (`kvmo_alloc_page`), or from the PMM when the VMO
+> has no budget — a wrapped device region, or the root task".
+>
+> The pages come back as child entries when the VMO is destroyed, so the
+> Untyped can be RESET and reused; they are never handed to the buddy allocator,
+> which does not own them.
 
 ## Overview
 
@@ -122,8 +134,11 @@ Invariant I-11 in `docs/memory-invariants.md` documents this formally.
 
 Failure injection tests added in Fase 6.4 verify:
 
-- kslab OOM inside `kframe_map_page` → no PTE, no mapping node (FR-64)
-- paging OOM after kslab success → mapping node freed (FR-65)
+- budget exhaustion inside `kframe_map_page` (no mapping record can be carved)
+  → no PTE, no mapping node (FR-64); the record comes from the address space's
+  own budget since Stage 6 Etapa 6
+- paging OOM after the record was obtained → mapping node returned to the
+  address space's free list (FR-65)
 - Partial multi-page rollback → no stale PTEs, correct counts (FR-66)
 - Direct VSpace destroy with active mappings → safety net cleans up (FR-67)
 - 1000-cycle map/unmap loop → no accumulation (FR-68)

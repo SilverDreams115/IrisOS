@@ -6,6 +6,36 @@ Defines the current syscall compatibility surface implemented by the live IRIS t
 
 This document is descriptive, not aspirational. If code and docs disagree, code wins until the docs are corrected.
 
+## Register convention
+
+Arguments travel in RDI, RSI, RDX and R10 (arg0..arg3); the syscall number is
+in RAX.
+
+A caller that passes fewer than four arguments **must still present a defined
+R10 — zero.**  A syscall that later grows a fourth argument reads that
+register, and what the compiler left in it is not zero.  This is not a
+theoretical rule: it is how `SYS_INITRD_VMO`'s budget argument (Stage 6) broke
+every three-argument caller until their stubs were fixed.  Zero has a defined
+meaning wherever an argument has been added so far ("no destination", "my own
+budget"), so a stub that zeroes R10 degrades to the previous behaviour instead
+of resolving garbage.
+
+## Memory budgets (Stage 6)
+
+Three syscalls take a **budget**: a `KUntyped` CPtr, with `RIGHT_WRITE`, that
+the memory they allocate is carved from.
+
+| Syscall | Argument | Required? | What it pays for |
+|---|---|---|---|
+| `SYS_PROCESS_CREATE` | arg2 | **yes** | the child's PML4, KVSpace header, page tables, KProcess and root CNode |
+| `SYS_VMO_CREATE` | arg1 | no (0 = own budget) | the VMO's pages, page-address array and header |
+| `SYS_INITRD_VMO` | arg3 | no (0 = own budget) | the private copy of the boot image |
+
+Everything carved this way is a **child** of that Untyped, so
+`SYS_UNTYPED_RESET` refuses while it lives and reclaims the whole region once
+it does not.  A bump allocator does not rewind: reclamation is by RESET, which
+is why spawners recycle budgets rather than sizing them for a whole run.
+
 ## Error Model
 
 The current syscall ABI target is:
@@ -101,12 +131,25 @@ The following syscall numbers remain reserved for ABI continuity and are intenti
 - `29` `SYS_PROCESS_WATCH`
 - `35` `SYS_PROCESS_KILL`
 - `47` `SYS_EXCEPTION_HANDLER`
-- `48` `SYS_THREAD_CREATE`
+- `48` `SYS_THREAD_CREATE` — RETIRED (Stage 5), number reserved
 - `49` `SYS_THREAD_EXIT`
 - `56` `SYS_PROCESS_CREATE`
 - `58` `SYS_THREAD_START`
 - `59` `SYS_HANDLE_INSERT`
 - `66` `SYS_EXCEPTION_RESUME`
+
+### Capability-space and execution (Stages 4-5)
+
+- `114` `SYS_CSPACE_MINT`
+- `115` `SYS_CSPACE_REVOKE`
+- `116` `SYS_CSPACE_MINT_INTO`
+- `117` `SYS_CAP_IDENTIFY`
+- `118` `SYS_CAP_SAME_OBJECT`
+- `119` `SYS_CSPACE_SELF` — a capability to the caller's own root CNode
+- `120` `SYS_TCB_CONFIGURE` — CSpace + VSpace, as capabilities
+- `121` `SYS_TCB_WRITE_REGS` — where a configured thread starts
+
+The first unassigned number is `122`.
 
 ### Bootstrap and hardware capabilities
 
@@ -115,7 +158,7 @@ The following syscall numbers remain reserved for ABI continuity and are intenti
 - `39` `SYS_CAP_CREATE_IRQCAP`
 - `40` `SYS_CAP_CREATE_IOPORT`
 - `43` `SYS_IOPORT_RESTRICT`
-- `45` `SYS_BOOTCAP_RESTRICT`
+- `45` `SYS_BOOTCAP_RESTRICT` — RETIRED (Stage 5), number reserved
 - `54` `SYS_POWEROFF`
 
 ### Diagnostics

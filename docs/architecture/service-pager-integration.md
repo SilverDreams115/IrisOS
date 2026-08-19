@@ -21,7 +21,8 @@ The one-line model: **the pager is a supervised service with least authority,
 explicit target and VMO grants, and demonstrable recovery.**
 
 Crucially, the pager is NOT a global memory manager.  It holds no untyped, no
-device caps, no KDEBUG, no spawn cap, and no authority over any process outside
+device caps, no debug capability, no process-control capability, and no
+authority over any process outside
 its declared grants.  Its compromise is bounded by its manifest; its death is
 survivable; its restart regains exactly the declaration.
 
@@ -76,7 +77,8 @@ target i (0,1):   proc  slot 8 + i*3   RIGHT_READ | RIGHT_MANAGE
 VMO j (0,1):      slot 16 + j          RIGHT_READ [+ RIGHT_WRITE]
 ```
 
-No spawn cap (slot 6), no core client endpoints (slots 1/2/4), no untyped
+No process-control capability (slot 6), no core client endpoints (slots
+1/2/4), no untyped
 (slot 55), no self-vspace (slot 56), no device caps, no KDEBUG.  A `REPORT`
 op returns the exact resolving-slot bitmask so the supervisor asserts the
 manifest (T201).

@@ -19,7 +19,9 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
   kernel: PMM (buddy), 16 MB kernel-object slab, 4-level paging + PCID,
           GDT/IDT/PIC/PIT, LAPIC, scheduler, syscall/sysret dispatch,
           capability enforcement, initrd catalog
-    → userboot (ring-3 flat binary, injected KBootstrapCap)
+    → userboot (ring-3 flat binary; reads a structured BootInfo describing
+                every capability the kernel installed in its CSpace, and
+                validates it against that CSpace before delegating anything)
       → init            (orchestration, CPtr-first mint handoff, boot self-tests)
         → fb            (framebuffer painter, fire-and-forget)
         → console       (serial output service, endpoint)
@@ -31,6 +33,10 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
 
 Every service from `init` onward is a ring-3 ELF loaded by `svc_loader` using
 only kernel primitives (`INITRD_VMO → PROCESS_CREATE → VMO map → THREAD_START`).
+Each of those steps names the **budget** it spends (Stage 6): the image copy, the
+child's address space, its process state and its segment and stack VMOs all come
+out of an `Untyped` the spawner chose, and the spawner recycles one budget per
+live child so cost is bounded by what is running rather than by what has run.
 The kernel spawns nothing after the initial `userboot` task; the initrd may grow
 past the named catalog and extra images are loaded by index.
 
@@ -55,16 +61,16 @@ authorised it, so both are revocable by their grantor. See
 | `KOBJ_ENDPOINT` | Synchronous rendezvous IPC (seL4-style). Primary service transport. |
 | `KOBJ_REPLY` | One-shot reply capability created by `EP_CALL`; consumed by `SYS_REPLY`. |
 | `KOBJ_CNODE` | Capability storage node; a process's CSpace is a tree of CNodes. |
-| `KOBJ_UNTYPED` | Untyped memory; retyped into other kernel objects (`SYS_UNTYPED_RETYPE`). |
+| `KOBJ_UNTYPED` | Untyped memory; retyped into other kernel objects (`SYS_UNTYPED_RETYPE2`), and the **budget** every allocation names since Stage 6. Carves from both ends: page-aligned regions from the bottom, object headers from the top. |
 | `KOBJ_TCB` | Thread control block (suspend/resume/priority/info). |
 | `KOBJ_SCHED_CONTEXT` | Scheduling context (budget/period) bound to a TCB. |
 | `KOBJ_FRAME` | Physical frame capability; mapped into a VSpace. |
 | `KOBJ_VSPACE` | Address space object (CR3 + PCID). |
 | `KOBJ_VMO` | Memory object; sparse (populated at map time), page-granular map, or MMIO wrap. |
 | `KOBJ_NOTIFICATION` | Lightweight signal/wait; used for IRQ delivery, process-exit watch, and fault delivery. |
-| `KOBJ_PROCESS` | Process container (address space + handle table + CSpace root). |
+| `KOBJ_PROCESS` | Process container (address space + CSpace root + the budget it was built from). |
 | `KOBJ_IRQ_CAP` / `KOBJ_IOPORT` | Capability-gated hardware access. |
-| `KOBJ_BOOTSTRAP_CAP` | First-task authority with per-bit permission flags. |
+| `KOBJ_BOOTSTRAP_CAP` | Boot authority, **one capability per authority** since Stage 5 — process, initrd, IRQ control, ioport control, debug, framebuffer. Matched by exact equality; a capability carrying two of them cannot be constructed. |
 | `KOBJ_INITRD_ENTRY` | Read-only handle to an initrd image slot. |
 | `KOBJ_CHANNEL` | Removed (Fase 13). The enum value is reserved; all `CHAN_*` syscalls return `NOT_SUPPORTED`. |
 
@@ -214,7 +220,8 @@ and the VFS grant protocol.
 - **Least authority**: the pager's entire authority is a pre-start manifest —
   a control endpoint, per-target process/address-space grants, VMO grants for
   its cache and private pool, one shared fault notification, and a VFS grant
-  session. It holds no spawn cap, no untyped, no device caps, and no global VFS
+  session. It holds no process-control capability, no untyped, no device caps,
+  and no global VFS
   access. Its compromise is bounded by its manifest; its death is survivable;
   its restart regains exactly the declaration.
 
@@ -242,10 +249,17 @@ Every kernel object is charged to the process that logically **owns** it (its
 payer / resource domain), selected by explicit capability authority at creation
 — not to whoever ran the syscall. A `KProcess` *is* a resource domain.
 
-- `SYS_VMO_CREATE(size)` charges the caller; `SYS_VMO_CREATE_FOR(size, target)`
-  charges a process the caller holds `RIGHT_MANAGE` on. A loader charges each
-  child's image VMOs to the **child**, so a supervisor can launch many children
-  without accumulating their memory against its own quota.
+- `SYS_VMO_CREATE(size, budget, dest)` charges the caller;
+  `SYS_VMO_CREATE_FOR(size, target, dest)` charges a process the caller holds
+  `RIGHT_MANAGE` on. A loader charges each child's image VMOs to the **child**,
+  so a supervisor can launch many children without accumulating their memory
+  against its own quota.
+- **Since Stage 6 the charge is not a number, it is memory.** A VMO's pages,
+  its metadata and its header are carved from an `Untyped` the caller names —
+  as are page tables, PML4s, `KVSpace`/`KProcess` headers, root CNodes, mapping
+  records and device capabilities. Each carve is a *child* of that Untyped, so
+  `SYS_UNTYPED_RESET` refuses while it lives and reclaims the whole region once
+  it does not.
 - Sparse VMO pages are charged **once to the VMO owner** and released at
   destroy; a shared VMO's pages are paid once, and mapping it into more targets
   does not re-charge.
@@ -261,9 +275,19 @@ payer / resource domain), selected by explicit capability authority at creation
 
 The kernel object slab (16 MB) is **global implementation capacity**,
 deliberately distinct from per-domain quota; its exhaustion returns `NULL` →
-`IRIS_ERR_NO_MEMORY` with no corruption. See
+`IRIS_ERR_NO_MEMORY` with no corruption. After Stage 6 it serves only the boot
+path — the root task's own objects and the boot Untypeds, all created before
+the first Untyped exists — so a running process cannot grow it. See
+`docs/architecture/stage6-memory-from-untyped.md`,
 `docs/architecture/resource-ownership-accounting.md` and
 `kernel-capacity-limits.md`.
+
+**Reclamation is by RESET, so budgets are recycled, not sized for a run.** A
+bump allocator never rewinds: charging memory without a way to get it back
+would make every spawn a permanent cost. The loader therefore keeps one budget
+per *live* child (reset when the child dies) and one scratch budget for boot
+image copies, which bounds consumption by what is alive rather than by what has
+ever run — seL4's "revoke the Untyped you used", in the form IRIS has.
 
 ## Syscall surface
 
@@ -333,12 +357,20 @@ THREAD_START` flow.
 
 - **Memory model**: sparse VMOs with map-time allocation plus page-granular
   mapping (`SYS_VMO_MAP_PAGE`) for the user pager — **no kernel demand paging**;
-  page faults are resolved in ring 3. Per-process physical page quota; per-VMO
-  page-shard locks. usercopy validates via the VMO mapping list and PTEs; it
-  never allocates.
-- **Kernel object slab**: typed kernel object headers (KProcess, KVSpace, root
-  KCNode, page tables, endpoints, …) are allocated from a dedicated 16 MB slab,
-  leaving the rest of the PMM for userspace as untyped/frame capabilities.
+  page faults are resolved in ring 3. usercopy validates via the VMO mapping
+  list and PTEs; it never allocates.
+- **Every allocation names its budget** (Stage 6). An address space's page
+  tables and PML4, the `KVSpace`/`KProcess` headers, the child's root CNode, a
+  VMO's pages and metadata, per-mapping records and device capabilities are all
+  carved from an `Untyped` the caller named at creation, and counted as its
+  children. A spawn without a budget is refused rather than funded by the
+  kernel; a budget cannot be reset while its objects live; and when they die
+  the whole region is reusable.
+- **Kernel object slab**: 16 MB, now serving only the **boot path** — the root
+  task's KProcess, root CNode, KVSpace, PML4 and mapping records (its address
+  space is built before the first Untyped exists), the boot Untypeds, the boot
+  control capabilities and the initrd catalog. Bounded, does not grow with
+  load, and retires with user-space process creation (Stage 7).
 - **PCID**: CR4.PCIDE enabled when supported; each process gets a unique PCID
   (1–4094), kernel runs PCID 0, so context switches don't evict other processes'
   TLB entries.
@@ -357,40 +389,48 @@ THREAD_START` flow.
 |----------|-------|
 | `TASK_MAX` | 256 |
 | `KPROCESS_MAX_LIVE` | 64 |
-| `HANDLE_TABLE_MAX` | 256 |
 | `KCNODE_DEFAULT_SLOTS` | 256 (root CNode) |
 | `KVMO_MAX_PAGES` | 16384 (64 MB per VMO) |
 | `KPROCESS_VMO_QUOTA` | 32 per domain |
 | `KPROCESS_PHYS_PAGES_LIMIT` | 2048 (8 MB) per domain |
-| kernel object slab | 16 MB (global capacity) |
-| CPtr namespace split | `<1024` CSpace, `>=1024` handle table |
+| kernel object slab | 16 MB (boot path only, since Stage 6) |
+| CPtr range | the low 31 bits; a CPtr addresses exactly one capability |
+| default per-child budget | 1 MiB, chosen by the spawner |
 | PCID range | 1–4094 per process; 0 = kernel |
 
 ## Testing
 
-Two independently-gating layers, run on every change:
+Three independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **10433 assertions** across 19 suites
+- **Host unit tests** — `make test-unit`: **18685 assertions** across 20 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
-  handle_table, kendpoint, kreply, knotification, kuntyped, kschedctx, kframe,
-  the MDB/CDT (structural + model-based fuzzing), rights, ipc_cspace, vfs_ep
-  including the file-grant layer, …).
-- **Runtime tests** — booted under QEMU headless: **268 tests** covering IPC and
+  kendpoint, kreply, knotification, kuntyped including its two-ended carve,
+  kschedctx, kframe, the MDB/CDT (structural + model-based fuzzing), rights,
+  ipc_cspace, the root-task BootInfo builder, vfs_ep including the file-grant
+  layer, …). They cover what a successful boot cannot show: buffer bounds on a
+  page about to be mapped into ring 3, a CSpace that names itself, and an
+  allocator's two ends meeting exactly once.
+- **Runtime tests** — booted under QEMU headless: **273 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
-  VFS-enforced file grants, multi-target paging, resource ownership / quota
-  accounting, the canonical Untyped-born TCB lifecycle (T284–T287), and the
-  native MDB/CDT with cross-process revocation (T288–T290).
-- **Purity gate** — `make check-purity`: the frozen legacy-consumer allowlist
-  (handle table / kslab). It can only shrink.
+  VFS-enforced file grants, multi-target paging, resource ownership accounting,
+  the canonical Untyped-born TCB lifecycle (T284–T287), the native MDB/CDT with
+  cross-process revocation (T288–T290), one-capability-one-authority (T296),
+  a retyped TCB executing (T297), and the Stage 6 budget invariants
+  (T298–T300).
+- **Purity gate** — `make check-purity`: the frozen legacy-consumer allowlist.
+  Nothing handle-table-shaped is left in it (Stage 4 deleted the namespace); what
+  it holds is the kslab inventory, which Stage 6 reduced to the boot path. It
+  can only shrink, and refusing a change that MOVES a use from one file to
+  another is part of how it does that.
 
 ```bash
 make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
-make test-unit                                             # host unit suites (10433)
+make test-unit                                             # host unit suites (18685)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (268/268)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (273/273)
 make run                                                   # interactive QEMU
 ```
 
@@ -453,9 +493,21 @@ adversarial tests, and that divergence is registered as permanent in the
 
 ## Documentation
 
+Three documents are normative and outrank the rest when they disagree:
+
+| Document | Answers |
+|---|---|
+| [purity charter](docs/architecture/iris-sel4-purity-charter.md) | what IRIS may never do — the 36 invariants, the permanent prohibitions, and the registered deliberate divergences |
+| [convergence roadmap](docs/architecture/sel4-convergence-roadmap.md) | what order the remaining work happens in, and what each stage must demonstrate to close |
+| [convergence ledger](docs/architecture/sel4-convergence-ledger.md) | every non-seL4 mechanism still alive, who uses it, and when it retires — including the structural divergences that have **no** retirement stage (D-1..D-5) |
+
+Per-stage design records: `stage5-root-task-bootinfo.md` (fine-grained boot
+authority, BootInfo, executable retyped TCBs) and
+`stage6-memory-from-untyped.md` (who pays for memory).
+
 Design notes live in `docs/`, including `endpoint-protocol.md`,
 `badges-sender-identity.md`, `service-lifecycle.md`, `cptr-first-services.md`,
-`vmo-memory.md`, `memory-invariants.md`, per-service contracts under
-`docs/contracts/`, and deeper design records under `docs/architecture/`
-(the user pager, file-backed memory, file-grant capability, service
-supervision, device isolation, and more).
+`vmo-memory.md`, `memory-invariants.md` (safety **and** budget invariants),
+per-service contracts under `docs/contracts/`, and deeper design records under
+`docs/architecture/` (the user pager, file-backed memory, file-grant
+capability, service supervision, device isolation, and more).

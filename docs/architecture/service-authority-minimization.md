@@ -30,7 +30,8 @@ what can it reach with this cap?*
 
 Least authority is enforced at two moments, kept distinct throughout:
 
-- **bootstrap authority** — what a service needs to come up (spawn cap to load
+- **bootstrap authority** — what a service needs to come up (the process and
+  initrd capabilities to load
   its image, an endpoint to serve on);
 - **runtime authority** — what it needs to operate afterward.
 

@@ -4,7 +4,20 @@ This document defines the minimum testing baseline that IRIS must keep green on 
 
 ## Current test layers
 
-IRIS currently has three practical validation layers:
+IRIS currently has four practical validation layers, and the numbers below are
+what a green tree looks like today (Stage 6 closed):
+
+| Layer | Command | Green means |
+|---|---|---|
+| Host unit tests | `make test-unit` | 18685 assertions, 0 failed |
+| Purity gate | `make check-purity` | allowlist respected (it only ever shrinks) |
+| Runtime suite | `make smoke-runtime` | `SUITE PASS 273/273` |
+| Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 273/273` plus the P3/P41 markers |
+
+The runtime suite is the gate that matters for capability behaviour: it runs in
+ring 3 as a real service and observes the kernel only through syscalls.
+
+The three original layers:
 
 1. Static build validation
    - `make clean`
@@ -91,3 +104,23 @@ should remain small and directly auditable:
 1. Add host-side coverage for protocol packing helpers and authority-reduction helpers that do not require QEMU to validate.
 2. Decide whether service-side `IRIS_ENABLE_RUNTIME_SELFTESTS` code should be compiled into the selftest lane as well, and document that policy explicitly.
 3. If more boot phases become critical, extend the headless assertion set with one marker per phase boundary rather than relying on free-form log inspection.
+
+
+## What the convergence stages added to the suite
+
+Each stage's invariants are pinned by named runtime tests, so a regression
+names itself rather than showing up as a boot hang:
+
+| Test | Pins |
+|---|---|
+| T095, T096 | Stage 4's structural zeros: no handle is live, delivered, or produced by a TOCTOU fallback |
+| T292–T295 | CSpace-native introspection; a CPtr addresses exactly one capability |
+| T296 | Stage 5: one capability, one authority — each boot control capability authorises its own syscall and nothing else |
+| T297 | Stage 5: a retyped TCB executes; an unconfigured one cannot be started, written or exited; foreign CSpace/VSpace refused |
+| T298 | Stage 6: an Untyped pays for its frames' headers, and frames stay page-dense |
+| T299 | Stage 6: page tables are charged to a named budget, which cannot be RESET while they live |
+| T300 | Stage 6: user memory comes out of a named budget, and the region is reclaimable once the VMO is gone |
+
+Host unit tests cover what a successful boot cannot show: `RBI-1..RBI-10` (the
+BootInfo builder's bounds), `UT-TOP-1..5` (the two-ended Untyped carve),
+`BC-11..BC-13` (a CSpace that names itself, with a negative control).

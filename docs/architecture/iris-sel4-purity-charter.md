@@ -60,7 +60,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 
 | # | Invariant | Today |
 |---|---|---|
-| O1 | Every canonical object is born from Untyped via retype | PARTIAL — EP/Notif/Reply/CNode/SC/TCB via RETYPE2; **Stage 6** put every remaining object's storage in an Untyped as well (charged rather than user-retyped, ledger D-5), leaving the kernel slab to the root task and to subsystems retiring in Stage 7.  Since **Stage 5** a retyped TCB EXECUTES (`SYS_TCB_CONFIGURE`/`WRITE_REGS`; `SYS_THREAD_CREATE` retired), so no thread is carved from the static pool except a spawned process's first one (Stage 7).  Frame header, VSpace and page tables still pending (Stage 6 — see amendment A-1) |
+| O1 | Every canonical object is born from Untyped via retype | PARTIAL — EP/Notif/Reply/CNode/SC/TCB via RETYPE2; **Stage 6** put every remaining object's storage in an Untyped as well (charged rather than user-retyped, ledger D-5), leaving the kernel slab to the root task and to subsystems retiring in Stage 7.  Since **Stage 5** a retyped TCB EXECUTES (`SYS_TCB_CONFIGURE`/`WRITE_REGS`; `SYS_THREAD_CREATE` retired), so no thread is carved from the static pool except a spawned process's first one (Stage 7).  What is NOT seL4's form is that the kernel carves these on the caller's behalf rather than the user retyping and mapping each one (ledger D-5, Stage 7) |
 | O2 | The object's storage belongs to the Untyped that produced it | MET for the RETYPE2 family |
 | O3 | The last capability does not destroy an object with active execution | MET — the scheduler holds its own execution reference |
 | O4 | A terminated object stays observable while a valid cap exists | MET (TERMINATED TCB answers GET_INFO) |

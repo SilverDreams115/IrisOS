@@ -11,6 +11,15 @@ These mappings historically bypassed the normal seL4-style capability path
 **Fase 6.2** migrated these bootstrap user mappings to be KFrame-backed,
 closing the main tracking gap documented in Fase 6.1.
 
+**Stage 6** left this path deliberately unchanged, and it is now the only one
+like it: the root task's text, stack and BootInfo pages, its page tables, its
+PML4, its KVSpace, its KProcess and its root CNode all come from the kernel's
+PMM/slab, because they are built *before the first Untyped exists*.  Every
+other address space in the system names the Untyped that pays for it.  The
+exception is bounded (one address space, a handful of pages), does not grow
+with load, and retires when process creation itself moves to user space
+(Stage 7).
+
 ---
 
 ## Bootstrap Memory After Fase 6.2

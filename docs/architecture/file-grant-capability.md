@@ -136,7 +136,8 @@ contains any nameable VFS authority:
 | target proc | 20+i·2 | RIGHT_READ\|MANAGE | fault-info + resume authority for target i |
 | target vspace | 21+i·2 | RIGHT_WRITE | map-into authority for target i |
 
-No spawn cap, untyped, device cap, KDEBUG, or generic VFS client cap.
+No process-control or initrd capability, no untyped, no device cap, no debug
+capability, and no generic VFS client cap.
 
 ### The test/production authority split (slots 58/59)
 

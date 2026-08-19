@@ -25,7 +25,25 @@
  *   - live/transitional: current supported surface with compatibility notes
  *   - retired: permanently reserved; returns IRIS_ERR_NOT_SUPPORTED
  *
- * Current exported syscall number surface: 0..94.
+ * Current exported syscall number surface: 0..121 (119-121 are Stage 5's
+ * SYS_CSPACE_SELF / SYS_TCB_CONFIGURE / SYS_TCB_WRITE_REGS; the first
+ * unassigned number is 122).
+ */
+
+/*
+ * Register convention, and one rule that follows from it.
+ *
+ * Arguments travel in RDI, RSI, RDX and R10 (arg0..arg3); the number is in
+ * RAX.  A caller that passes fewer than four arguments MUST still present a
+ * DEFINED r10 — zero — because a syscall that later grows a fourth argument
+ * reads that register, and whatever the compiler happened to leave there is
+ * not zero.
+ *
+ * This is not hypothetical: it is how SYS_INITRD_VMO's budget argument
+ * (Stage 6 Etapa 5) broke every three-argument caller until their stubs were
+ * fixed.  Zero also has a defined MEANING in every syscall that has grown an
+ * argument so far — "no destination", "my own budget" — so a stub that zeroes
+ * r10 degrades to the old behaviour instead of resolving garbage.
  */
 
 /* Syscall numbers */
@@ -58,8 +76,21 @@
 #define SYS_CHAN_SEND    13  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 #define SYS_CHAN_RECV    14  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 #define SYS_HANDLE_CLOSE 15  /* (handle) → 0 or negative iris_error_t */
-/* modern/conforming: Virtual Memory Objects */
-#define SYS_VMO_CREATE   16  /* (size) → handle_id or negative iris_error_t */
+/*
+ * modern/conforming: Virtual Memory Objects
+ *
+ * SYS_VMO_CREATE(size, budget_cptr, dest) → 0 or negative iris_error_t
+ *   size:        bytes, rounded up to whole pages.
+ *   budget_cptr: Stage 6 Etapa 5 — the KUntyped (RIGHT_WRITE) this VMO's
+ *                pages, page-address array and header are carved from.  0 =
+ *                "the budget my address space was built from".  A process
+ *                holds several budgets and they are not interchangeable, which
+ *                is why it says which one pays rather than the kernel guessing.
+ *   dest:        destination slot (cnode | slot<<32); required since Stage 4.
+ *   The pages return to that Untyped's child count when the VMO is destroyed,
+ *   so the region becomes RESET-able once nothing maps through it.
+ */
+#define SYS_VMO_CREATE   16  /* (size, budget, dest) → 0 or negative iris_error_t */
 #define SYS_VMO_MAP      17  /* (handle, virt_addr, flags) → 0 or negative iris_error_t
                                * flags bit 0: MAP_WRITABLE  — map with PAGE_WRITABLE
                                * flags bit 1: MAP_EXEC      — map without PAGE_NX (executable)
@@ -205,20 +236,32 @@
  * composable ring-3-usable primitives.  ELF parsing and loading happen in user
  * space; the kernel only exposes raw memory and process management operations.
  *
- * SYS_INITRD_VMO(auth_h, index) → vmo_handle or negative iris_error_t
- *   auth_h: the process control capability (IRIS_BOOTCAP_PROC_CONTROL) for
- *     SYS_PROCESS_CREATE; the initrd capability (IRIS_BOOTCAP_INITRD_CONTROL)
- *     for the initrd calls.
- *   index: integer initrd catalog index (name→index mapping is a ring-3 concern).
- *   Returns a KOBJ_VMO (eager wrap, owned=0) covering the embedded ELF bytes.
- *   The VMO is read-only (RIGHT_READ only); map with flags=0 for read access.
- *   Physical pages are the kernel's initrd blob — never freed by this VMO.
+ * SYS_INITRD_VMO(auth_cptr, index, dest, budget_cptr) → 0 or iris_error_t
+ *   auth_cptr:   the initrd capability (IRIS_BOOTCAP_INITRD_CONTROL).
+ *   index:       initrd catalog index (name→index mapping is a ring-3 concern).
+ *   dest:        destination slot (cnode | slot<<32).
+ *   budget_cptr: Stage 6 Etapa 5 — the KUntyped the image COPY is carved from;
+ *                0 = the caller's own budget.  Reading an entry allocates as
+ *                many pages as the image is long, and a loader parses it and
+ *                drops it, so a caller that points this at a scratch Untyped
+ *                can RESET that region between spawns instead of spending its
+ *                whole pool one image at a time.
+ *   The result is a read-only KOBJ_VMO (RIGHT_READ) over a private copy of the
+ *   embedded ELF bytes; map with flags=0.
  *
- * SYS_PROCESS_CREATE() → proc_handle or negative iris_error_t
- *   Creates an empty KProcess with a fresh user address space (new CR3).
- *   No threads are started; caller must call SYS_THREAD_START to begin execution.
- *   Returns proc handle with RIGHT_READ|RIGHT_WRITE|RIGHT_MANAGE|
- *           RIGHT_DUPLICATE|RIGHT_TRANSFER|RIGHT_ROUTE.
+ * SYS_PROCESS_CREATE(auth_cptr, dest, budget_cptr) → 0 or negative iris_error_t
+ *   auth_cptr:   the process control capability (IRIS_BOOTCAP_PROC_CONTROL).
+ *   dest:        destination slot (cnode | slot<<32); required since Stage 4.
+ *   budget_cptr: Stage 6 Etapa 2/3/4 — REQUIRED.  The KUntyped (RIGHT_WRITE)
+ *                that pays for this address space and this process: its PML4,
+ *                its KVSpace header, every page table it ever needs, its
+ *                KProcess object and its 256-slot root CNode.  A spawn without
+ *                one is INVALID_ARG rather than a spawn the kernel funds, and
+ *                the budget cannot be RESET while the process lives — each
+ *                carve is a child of it.
+ *   Creates an empty KProcess with a fresh address space; no threads start.
+ *   Publishes the process capability into `dest` with RIGHT_READ|RIGHT_WRITE|
+ *   RIGHT_MANAGE|RIGHT_DUPLICATE|RIGHT_TRANSFER|RIGHT_ROUTE.
  *
  * SYS_VMO_MAP_INTO(vmo_h, proc_h, vaddr, flags) → 0 or negative iris_error_t
  *   vmo_h:   KOBJ_VMO with RIGHT_READ (plus RIGHT_WRITE for MAP_WRITABLE).
