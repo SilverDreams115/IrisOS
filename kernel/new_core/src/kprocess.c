@@ -231,6 +231,12 @@ struct KProcess *kprocess_alloc(void) {
 }
 
 void kprocess_free(struct KProcess *p) {
+    if (!p) return;
+    /* Idempotent: this drops the CREATION reference, and there is exactly one
+     * of those however many paths reach here (last thread exits, kill of a
+     * never-started process, or a failed create unwinding). */
+    if (__atomic_exchange_n(&p->initial_ref_dropped, 1u, __ATOMIC_ACQ_REL))
+        return;
     kobject_release(&p->base);
 }
 
@@ -448,6 +454,10 @@ void kprocess_reap_address_space(struct KProcess *p) {
     if (!p || p->aspace_reaped) return;
 
     uint64_t cr3 = p->cr3;
+    /* Stage 6 Etapa 2: were this address space's tables carved from an
+     * Untyped?  Read it before the VSpace goes: pooled tables must not be
+     * returned to the PMM, which does not own them. */
+    int tables_pooled = (p->vspace && p->vspace->pt_pool) ? 1 : 0;
 
     /* Fase 4: invalidate the VSpace capability before destroying page tables.
      * Any capability holder that checks vs->valid after this point sees 0. */
@@ -461,7 +471,7 @@ void kprocess_reap_address_space(struct KProcess *p) {
      * has decremented mapped_count to 0 for all bootstrap-mapped pages. */
     kprocess_release_bootstrap_frames(p);
 
-    paging_destroy_user_space(cr3);
+    paging_destroy_user_space_from(cr3, tables_pooled);
     p->cr3 = 0;
     p->user_cr3 = 0;
     p->aspace_reaped = 1;

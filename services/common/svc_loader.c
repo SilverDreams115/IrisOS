@@ -413,10 +413,21 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * with the previous spawn's process.  Scan for a free one instead:
          * publication is exclusive, so ALREADY_EXISTS simply means "taken",
          * and the loader keeps no state to remember where it got to. */
+        /* Stage 6 Etapa 2: the child's page tables are charged to the
+         * spawner's own Untyped — the one this workspace already carves from.
+         *
+         * A per-child sub-untyped was the first design and it was wrong: a
+         * bump allocator never rewinds, so every spawn permanently consumed a
+         * whole budget whether the child used it or not, and a churn workload
+         * exhausted an 8 MiB pool in tens of spawns.  Charging the real cost
+         * (about five pages per address space) to the pool the spawner already
+         * manages is both cheaper and more honest — and the kernel counts each
+         * table as a child of that pool, so the spawner cannot RESET it out
+         * from under a live child. */
         uint32_t proc_leaf = 0u;
         for (uint32_t l = SL_WS_PROC_BASE; l < 256u; l++) {
-            r = sl_sys2(SYS_PROCESS_CREATE, (long)proc_c,
-                        sl_ws_dest(ws, l));
+            r = sl_sys3(SYS_PROCESS_CREATE, (long)proc_c,
+                        sl_ws_dest(ws, l), (long)SL_WS_UNTYPED(ws));
             if (r == 0) { proc_leaf = l; break; }
             if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
         }

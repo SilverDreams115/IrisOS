@@ -193,6 +193,27 @@ void *kuntyped_alloc_child_top(struct KUntyped *u, uint64_t obj_bytes) {
     return block + KUNTYPED_ALIGN;
 }
 
+uint64_t kuntyped_alloc_page_child(struct KUntyped *u) {
+    if (!u) return 0;
+    uint64_t phys = kuntyped_bump_alloc_phys_page(u, 4096u);
+    if (!phys) return 0;
+
+    /* Stage 6 Etapa 2: a page table is a CHILD of the Untyped that paid for
+     * it, even though it has no object header.  Without this, RESET — which
+     * only refuses while child_count is non-zero — could reclaim a region
+     * whose pages are live page tables of a running address space, handing
+     * the same memory out twice.  kvspace_release_pt_children returns them. */
+    kobject_retain(&u->base);
+    atomic_fetch_add_explicit(&u->child_count, 1u, memory_order_relaxed);
+    return phys;
+}
+
+void kuntyped_release_page_child(struct KUntyped *u) {
+    if (!u) return;
+    atomic_fetch_sub_explicit(&u->child_count, 1u, memory_order_relaxed);
+    kobject_release(&u->base);
+}
+
 void kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes) {
     if (!obj_ptr) return;
     uint8_t *block  = (uint8_t *)obj_ptr - KUNTYPED_ALIGN;
@@ -279,15 +300,30 @@ uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size) {
     if (!u || !size || (size & 0xFFFULL)) return 0;
 
     uint64_t irqfl = irq_spinlock_lock(&u->lock);
-    /* Round current bump pointer up to the next PAGE_SIZE boundary. */
-    uint64_t aligned_start = (u->used + 0xFFFULL) & ~0xFFFULL;
-    if (aligned_start + size + u->used_top > u->total_size ||
+    /*
+     * Align the ABSOLUTE physical address, not the offset within the region.
+     *
+     * Rounding the offset only produces a page-aligned address when the
+     * region itself starts on a page boundary.  Boot Untypeds do (they come
+     * from the buddy allocator), but a SUB-untyped is carved at 64-byte
+     * granularity, so its offsets and its physical addresses do not agree.
+     * The offset form therefore handed out unaligned "pages": a frame retyped
+     * from a sub-untyped got a paddr the mapper silently masked DOWN, mapping
+     * the page BEFORE the frame — overlapping whatever the sub-untyped had
+     * carved earlier.  Stage 6 Etapa 2 hit it because page tables are carved
+     * this way too, and a page table at a masked-down address is somebody
+     * else's memory reinterpreted as a table.
+     */
+    uint64_t abs_start     = u->phys_base + u->used;
+    uint64_t aligned_abs   = (abs_start + 0xFFFULL) & ~0xFFFULL;
+    uint64_t aligned_start = aligned_abs - u->phys_base;
+    if (aligned_abs < abs_start ||
+        aligned_start + size + u->used_top > u->total_size ||
         aligned_start < u->used) {
         irq_spinlock_unlock(&u->lock, irqfl);
         return 0;
     }
     u->used = aligned_start + size;
-    uint64_t phys = u->phys_base + aligned_start;
     irq_spinlock_unlock(&u->lock, irqfl);
-    return phys;
+    return aligned_abs;
 }

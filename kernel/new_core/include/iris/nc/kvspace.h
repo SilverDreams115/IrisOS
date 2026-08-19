@@ -46,6 +46,8 @@ struct KFrameMapping {
     struct KFrameMapping *next;    /* next node in singly-linked list; NULL = end */
 };
 
+struct KUntyped;
+
 struct KVSpace {
     struct KObject        base;          /* must be first */
     spinlock_t            lock;          /* guards all fields below */
@@ -53,7 +55,21 @@ struct KVSpace {
     int                   valid;         /* 1 = live, 0 = reaped */
     uint32_t              mapping_count; /* number of live KFrameMapping nodes */
     struct KFrameMapping *mappings;      /* singly-linked list head; NULL = empty */
+    /* Stage 6 Etapa 2: the Untyped that pays for this address space's
+     * intermediate page tables, delegated at process creation and retained
+     * here for as long as the VSpace lives.  NULL only for the root task,
+     * whose address space is built before any Untyped exists — a bounded
+     * bootstrap exception, like the idle task's static backing. */
+    struct KUntyped      *pt_pool;
+    /* How many page tables have been carved from pt_pool for this address
+     * space.  Each one holds a child_count entry on the pool, so the pool
+     * cannot be RESET while they are live; teardown returns them all. */
+    uint32_t              pt_count;
 };
+
+/* Attach the page-table pool.  Retains `pool`; called once, before the VSpace
+ * maps anything that could need a new level. */
+void kvspace_set_pt_pool(struct KVSpace *vs, struct KUntyped *pool);
 
 /* Allocate a new KVSpace wrapping the given cr3. Returns NULL on OOM.
  * Caller holds the alloc lifecycle ref (refcount=1, active_refs=0) on return. */

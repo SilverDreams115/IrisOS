@@ -2,6 +2,7 @@
 #include <iris/nc/kframe.h>
 #include <iris/paging.h>
 #include <iris/kslab.h>
+#include <iris/nc/kuntyped.h>
 #include <stdatomic.h>
 
 /* Fase 19 — live KVSpace object count (additive diagnostics, SYS_SCHED_INFO
@@ -36,6 +37,21 @@ static void kvspace_obj_destroy(struct KObject *obj) {
         kobject_release(&f->base);
         m = next;
     }
+    /* Stage 6 Etapa 2: drop the page-table budget.  The tables carved from it
+     * are not individually freed — they return to the Untyped when it is
+     * RESET or destroyed, which is the lifetime every retyped object has. */
+    if (vs->pt_pool) {
+        /* Return every page table this address space carved: the pages stay
+         * where they are (a bump allocator does not rewind), but the pool's
+         * child_count drops to zero so its holder can RESET and reuse the
+         * whole region — the same reclamation path every retyped object has. */
+        while (vs->pt_count) {
+            kuntyped_release_page_child(vs->pt_pool);
+            vs->pt_count--;
+        }
+        kobject_release(&vs->pt_pool->base);
+        vs->pt_pool = 0;
+    }
     atomic_fetch_sub_explicit(&kvspace_live, 1u, memory_order_relaxed);
     kslab_free(vs, (uint32_t)sizeof(struct KVSpace));
 }
@@ -54,8 +70,16 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
     vs->valid         = 1;
     vs->mapping_count = 0;
     vs->mappings      = 0;
+    vs->pt_pool       = 0;
+    vs->pt_count      = 0;
     atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);
     return vs;
+}
+
+void kvspace_set_pt_pool(struct KVSpace *vs, struct KUntyped *pool) {
+    if (!vs || !pool || vs->pt_pool) return;
+    kobject_retain(&pool->base);
+    vs->pt_pool = pool;
 }
 
 /* Zero cr3/valid, grab the entire mapping list, then process it outside the

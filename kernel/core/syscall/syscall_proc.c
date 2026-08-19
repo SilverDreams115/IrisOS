@@ -198,8 +198,25 @@ uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    /* Idempotent: already dead. */
+    /*
+     * No threads: either already dead, or created and never started.
+     *
+     * Stage 6 Etapa 2: the second case used to return success and do nothing,
+     * which meant an abandoned process was unreclaimable — kill found no
+     * threads to stop, and the creation reference that outlives capabilities
+     * was only ever dropped by the LAST THREAD exiting.  Its address space,
+     * its PML4 and (since page tables are charged to an Untyped) its budget
+     * stayed pinned for the life of the system.  Tearing it down here is what
+     * kill already means for a running process, applied to one that never ran;
+     * kprocess_free drops the creation reference exactly once, so a racing
+     * thread-exit cannot double-drop it.
+     */
     if (!kprocess_is_alive(target)) {
+        if (!kprocess_teardown_complete(target)) {
+            kprocess_teardown(target, 0);
+            kprocess_reap_address_space(target);
+            kprocess_free(target);
+        }
         kobject_release(obj);
         return syscall_ok_u64(0);
     }
@@ -219,8 +236,9 @@ uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
                                    uint64_t arg2, uint64_t arg3) {
-    uint64_t dest = arg1;   /* Etapa 4: cnode | slot<<32; 0 = legacy handle */
-    (void)arg2; (void)arg3;
+    uint64_t dest      = arg1;   /* Etapa 4: cnode | slot<<32 */
+    uint64_t pool_cptr = arg2;   /* Stage 6 Etapa 2: page-table budget */
+    (void)arg3;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -258,6 +276,34 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
     proc->vspace = vs;
+
+    /*
+     * Stage 6 Etapa 2: the caller must name the Untyped that will pay for this
+     * address space's page tables.
+     *
+     * Every level below the PML4 is memory, and mapping user memory used to
+     * take it silently from the kernel's PMM reserve — so a process could make
+     * the kernel spend memory by mapping at scattered addresses, with no
+     * budget, no capability and no accounting.  The budget is a capability
+     * now: it is required (a spawn without one is INVALID_ARG rather than a
+     * spawn the kernel funds), it needs RIGHT_WRITE like any other carve, and
+     * the VSpace retains it for as long as it lives.
+     */
+    {
+        struct KUntyped *pool = 0;
+        iris_rights_t    pr;
+        iris_error_t     pe = cspace_resolve_only_untyped(t->process,
+                                  (iris_cptr_t)pool_cptr, RIGHT_WRITE,
+                                  &pool, &pr);
+        if (pe != IRIS_OK) {
+            kprocess_reap_address_space(proc);
+            kprocess_free(proc);
+            return syscall_err(pe == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : pe);
+        }
+        kvspace_set_pt_pool(vs, pool);
+        kobject_active_release(&pool->base);
+        kobject_release(&pool->base);
+    }
 
     /* Etapa 4: arg1 names a destination CSpace slot; the new process cap is
      * published there as an MDB child of the spawn-cap slot that authorised

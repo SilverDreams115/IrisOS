@@ -17,7 +17,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
 | 4 — Dual namespace retirement | ✅ CLOSED |
 | 5 — seL4-like bootstrap | ✅ CLOSED |
-| 6 — Remaining memory and objects | 🔄 OPEN (Etapa 1 landed) |
+| 6 — Remaining memory and objects | 🔄 OPEN (Etapas 1-2 landed) |
 | 7 — KProcess retirement | pending |
 | 8 — Full MCS scheduling | pending |
 | 9 — SMP | pending |
@@ -550,6 +550,26 @@ created from kernel-private storage.  Stage 5 finished the authority story;
 this stage answers *who pays for memory*, which is still "the kernel,
 invisibly" in four places — page tables on map, frame headers, the VSpace and
 its PML4, and sixteen `kslab_alloc` consumers.
+
+### Etapa 2 — page tables are charged to a budget  ✅ DONE
+
+Mapping user memory needed page tables and took them from the kernel's PMM
+reserve: unbudgeted, unauthorised, and drivable from ring 3 by mapping at
+scattered addresses.  Every user address space now names the Untyped that pays
+for its levels at `SYS_PROCESS_CREATE` — required, `RIGHT_WRITE`, retained by
+the VSpace — and the carve fails rather than falling back to kernel memory.
+Each table counts as a child of that Untyped, so `SYS_UNTYPED_RESET` cannot
+reclaim a region whose pages are somebody's live page tables; the address space
+returns them all at teardown.
+
+Kernel mappings and the root task (built before any Untyped exists) stay
+kernel-funded — bounded and stated, like the idle task.
+
+Two pre-existing defects surfaced and were fixed: page-aligned carves aligned
+the offset rather than the absolute address (a frame retyped from a sub-untyped
+got a paddr the mapper masked DOWN, overlapping earlier carves), and a process
+created but never started could not be reclaimed (kill found no threads and
+dropped nothing, pinning its address space forever).  Covered by T299.
 
 ### Etapa 1 — the Untyped pays for its objects' headers  ✅ DONE
 

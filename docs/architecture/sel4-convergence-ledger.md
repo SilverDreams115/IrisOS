@@ -55,7 +55,7 @@ reserved, no functionality) · `REMOVED` (deleted).
 | IPC cap-transfer with a handle source | a transfer's source was resolved by handle, not by CPtr | — | CPtr source + CSpace receive slot | Stage 2 | n/a | **REMOVED (Fase S4)** — `syscall_ipc_stage_cap_peek_badged` resolves the source through `cspace_resolve_slot`; a handle value is `INVALID_ARG`. Delivery installs the cap as an MDB CHILD of the source slot, so `cdt_ipc_transfer` deliveries are no longer LEGACY_ROOTs |
 | root CNode at `kprocess_alloc` (kslab) | runtime CNode outside Untyped | every spawn | the spawner supplies a retyped CNode (process-server) | process-server | yes | ACTIVE_LEGACY |
 | root CNode reachable only via `cspace_root_h` (handle) | the CSpace ROOT is located through the handle table | — | `KProcess.cspace_root`: a structural back-reference holding one lifecycle + one active ref, released in `kprocess_teardown` | Stage 4 | n/a | **REMOVED (Fase S4, Etapa 4)** — resolving a CPtr no longer touches a handle table, and the cross-process paths (`SYS_CSPACE_MINT_INTO`, `SYS_PROC_CSPACE_MINT`, retype2, IPC receive-slot delivery) no longer read ANOTHER process's handle table to find its root.  Allowlist: `handle_table_get_object` 52 → 40 (14 files → 11), `handle_table_insert` 42 → 41 |
-| implicit page-table allocation (PMM reserve on map) | kernel memory hidden by mapping | paging | PageTable objects from Untyped | frame/page-table | yes | ACTIVE_LEGACY |
+| implicit page-table allocation (PMM reserve on map) | kernel memory hidden by mapping | the KERNEL address space (kstack region, physmap) and the root task's pre-Untyped bootstrap maps | page tables carved from an Untyped the address space names | Stage 6 (the bootstrap exception retires with Stage 7's user-space VSpace composition) | yes | **MIGRATING (Stage 6 Etapa 2)** — every USER address space names the Untyped that pays for its page tables at `SYS_PROCESS_CREATE`; the carve fails rather than falling back to kernel memory, and each table holds a `child_count` entry so `SYS_UNTYPED_RESET` cannot reclaim a region whose pages are live tables.  What remains kernel-funded is kernel mappings and the root task, which is built before any Untyped exists |
 | KFrame header sidecar (kslab) | metadata outside the region | VMO page frames and a spawning process's bootstrap frames (`kframe_alloc`) | header carved from the Untyped | Stage 6 (Etapas 3/5, with the paths that create those frames) | yes | **MIGRATING (Stage 6 Etapa 1)** — a frame RETYPED from an Untyped now carries its header as a child block of that same Untyped, carved from the top so it cannot displace the page-aligned carve nor land inside the page that is mapped into ring 3.  What still uses kslab are the frames with no Untyped to charge: VMO pages (`kframe_alloc_vmo_page`) and bootstrap frames (`bootstrap_kframe_map`) |
 | process-level fault record (one per process) | belongs on the TCB | fault delivery (Fase 20/25) | per-TCB fault / fault EP | process-server | yes | ACTIVE_LEGACY |
 | `SYS_PROCESS_VSPACE` (107) | process authority → VSpace by handle | supervisors/pager tests | CSpace mint of the VSpace cap | process-server | yes | ACTIVE_LEGACY |
@@ -70,6 +70,36 @@ reserved, no functionality) · `REMOVED` (deleted).
 | `svc_mint.src_h` (handle-sourced pre-start delegation) | the loader mints a child's caps from the supervisor's handle table | all non-device mints in svcmgr/init/userboot | `svc_mint.src_cptr` + `SYS_CSPACE_MINT_INTO` | Stage 4 | yes for device caps (already migrated) | MIGRATING (device caps done; endpoints/untyped/reply still handle-sourced) |
 | IPC delivery into the receiver's handle table (`syscall_ipc_deliver_cap_badged`) | a capability entered a process through the handle namespace because the receiver declared no destination — not a choice either side made | — | the receiver declares a receive slot; an undeclared receive gets the message WITHOUT the capability, and the sender's source slot is untouched | Stage 4 | n/a | **RETIRED (Stage 4)** — the destination half of charter I1.  `iris_ipc_stat_handle_deliveries` is a structural 0 (T095 pins it, T096 proves 32 consecutive deliveries all land in slots) |
 | TOCTOU receive-slot→handle fallback (`syscall_ipc_deliver_cap_routed`) | CSpace-to-handle delivery degradation | — | fail closed: no cap delivered, source slot untouched | Stage 2 | n/a | **REMOVED (Fase S4)** — the last permitted degradation is gone; `iris_ipc_stat_toctou_fallbacks` is a structural 0 pinned by T094 (forces the race) and T095 (asserts the counter never moves) |
+
+### A-11 — page tables are charged to a named Untyped
+
+**Change**: `SYS_PROCESS_CREATE` gains a required page-table budget argument (a
+KUntyped CPtr with `RIGHT_WRITE`), retained by the new VSpace.
+`paging_map_checked_in_from` carves intermediate levels from it and fails when
+it cannot.  Each table takes a `child_count` entry on that Untyped
+(`kuntyped_alloc_page_child`), returned when the address space is destroyed.
+
+**Justification**: charter §2.5 M3 — "the kernel does not implicitly allocate
+user memory".  A page table that maps user memory IS user memory, and it was
+being taken from the kernel's PMM reserve on every map that needed a level:
+unbudgeted, unauthorised, and drivable from ring 3 by mapping at scattered
+addresses.  M1 ("frames, page tables, VSpace converge to creation from
+Untyped") moves from PENDING toward MET with this.
+
+**Not a new namespace or fallback**: the budget is named as a capability and
+checked like one; a spawn without it is `INVALID_ARG`, not a spawn the kernel
+funds.  The bootstrap exception (kernel mappings, root task) is bounded and
+stated, in the same category as the idle task's static backing.
+
+**Two pre-existing defects fixed in the same change** because this etapa made
+them reachable: page-aligned carves aligned the offset instead of the absolute
+address (so a frame retyped from a sub-untyped got a paddr the mapper masked
+DOWN, overlapping earlier carves), and a process created but never started
+could not be reclaimed at all (kill found no threads and dropped nothing).
+
+**Scope**: the `implicit page-table allocation` row moves ACTIVE_LEGACY →
+MIGRATING.  No allowlist movement.  Tests: T299, plus the whole suite, whose
+every spawn now runs on a budgeted address space.
 
 ### A-10 — the Untyped carves from both ends
 

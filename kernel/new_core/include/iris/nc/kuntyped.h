@@ -84,6 +84,14 @@ void *kuntyped_alloc_child_top(struct KUntyped *u, uint64_t obj_bytes);
 
 void  kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes);
 
+/* Stage 6 Etapa 2 — a page-aligned carve with child accounting and no object
+ * header: page tables.  They have no KObject, but they ARE derived memory, so
+ * they hold a child_count entry (and a parent retain) for as long as the
+ * address space that installed them lives.  That is what makes RESET refuse
+ * while somebody's page tables are still inside the region. */
+uint64_t kuntyped_alloc_page_child(struct KUntyped *u);
+void     kuntyped_release_page_child(struct KUntyped *u);
+
 uint64_t kuntyped_available(struct KUntyped *u);
 
 /* Carve a PAGE_SIZE-aligned physical region of 'size' bytes from the bump

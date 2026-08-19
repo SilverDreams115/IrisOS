@@ -211,7 +211,13 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
     if (!executable) page_flags |= PAGE_NX;
     if (writable)    page_flags |= PAGE_WRITABLE;
 
-    r = paging_map_checked_in(vs->cr3, user_va, f->paddr, page_flags);
+    /* Stage 6 Etapa 2: any intermediate level this map needs comes from the
+     * address space's own page-table budget.  A VSpace with no budget can only
+     * map where the levels already exist — the kernel does not top it up. */
+    uint32_t tables_made = 0;
+    r = paging_map_checked_in_from(vs->cr3, user_va, f->paddr, page_flags,
+                                   vs->pt_pool, &tables_made);
+    vs->pt_count += tables_made;   /* under vs->lock, like every field here */
     if (r != 0) {
         spinlock_unlock(&vs->lock);
         kslab_free(m, (uint32_t)sizeof(*m));

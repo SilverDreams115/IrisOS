@@ -19750,6 +19750,128 @@ static void test_t298(void) {
     if (ok) it_pass("T298"); else it_fail("T298", why);
 }
 
+/* ── T299: page tables are charged to a budget (Stage 6 Etapa 2) ──────────
+ * Mapping user memory needs page tables, and the kernel used to take them
+ * from its own PMM reserve: a process could make the kernel spend memory by
+ * mapping at scattered addresses, with no budget, no capability and no
+ * accounting.  Charter M3 says the kernel does not implicitly allocate user
+ * memory, and a page table that maps user memory is user memory.
+ *
+ * Every address space now names the Untyped that pays for its levels, at
+ * creation.  Asserted here:
+ *
+ *   1. a spawn with NO budget is refused — the kernel does not fund it;
+ *   2. a spawn with a budget of the wrong type is refused too (the argument
+ *      is a capability, not a number);
+ *   3. mapping into a FRESH 1 GiB-distant window really does consume that
+ *      budget, and by page-sized amounts (the levels), not by nothing;
+ *   4. while those tables are live, the budget cannot be RESET out from under
+ *      them — page tables count as children of the Untyped that paid.
+ *
+ * Leg 3 maps into this suite's own address space, whose budget belongs to
+ * init, so it is measured on a sub-untyped handed to a child instead: the
+ * child spawn below is what makes the tables appear.
+ * Invariants: M1, M3, O2, O6. */
+#define T299_SLOT_POOL  S1_SLOT_C
+#define T299_SLOT_PROC  S1_SLOT_D
+
+static void test_t299(void) {
+    int ok = 1;
+    const char *why = "page-table budget";
+
+    it_slot_delete(T299_SLOT_POOL);
+    it_slot_delete(T299_SLOT_PROC);
+
+    /* 1. no budget, no address space. */
+    if (it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
+                (long)((uint64_t)T299_SLOT_PROC << 32), 0)
+        != (long)IRIS_ERR_INVALID_ARG) {   /* CPTR_NULL names nothing */
+        ok = 0; why = "spawn without budget allowed";
+    }
+    it_slot_delete(T299_SLOT_PROC);
+
+    /* 2. the budget is a capability of a specific type. */
+    if (ok && it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
+                      (long)((uint64_t)T299_SLOT_PROC << 32),
+                      (long)IRIS_CPTR_SVCMGR_EP)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "endpoint accepted as budget";
+    }
+    it_slot_delete(T299_SLOT_PROC);
+
+    /* A budget of our own to measure. */
+    long pool = -1;
+    if (ok) {
+        pool = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                    IRIS_KOBJ_UNTYPED, 256u * 1024u);
+        if (pool < 0) { ok = 0; why = "pool carve"; }
+    }
+
+    uint64_t before = 0, after = 0;
+    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&before) != 0) {
+        ok = 0; why = "info";
+    }
+
+    /* 3. a real address space funded by it.  Creating the process carves
+     *    nothing yet — page tables appear on the FIRST map into it, which is
+     *    what a loader would do and what this leg does explicitly. */
+    if (ok && it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
+                      (long)((uint64_t)T299_SLOT_PROC << 32), pool) != 0) {
+        ok = 0; why = "spawn with budget";
+    }
+    long vmo = -1;
+    if (ok) {
+        vmo = it_vmo_create_slot(4096u);
+        if (vmo < 0) { ok = 0; why = "vmo"; }
+    }
+    /* A window no other mapping of this child touches, so the map must build
+     * the levels rather than reuse them. */
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo, (long)T299_SLOT_PROC,
+                      (long)0x80C0000000ULL, 1) != 0) {
+        ok = 0; why = "map into child";
+    }
+    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&after) != 0) {
+        ok = 0; why = "info2";
+    }
+    /* The levels came out of the budget — page-sized, and more than one. */
+    if (ok && before - after < 2u * 4096u) { ok = 0; why = "levels not charged"; }
+
+    /* ...and while they are live the budget cannot be reclaimed under them:
+     * a page table counts as a child of the Untyped that paid for it. */
+    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) == 0) {
+        ok = 0; why = "budget reset while bound";
+    }
+
+    /* 4. once the address space is gone the budget is reclaimable again: the
+     *    pages stay where they are (a bump allocator does not rewind), but the
+     *    tables stop counting as children, so a RESET can reuse the region.
+     *
+     *    Killing a process that never started is what makes this observable,
+     *    and it is a case that did nothing at all until Stage 6 Etapa 2: kill
+     *    found no threads and returned success, leaving the address space —
+     *    and now its budget — pinned forever. */
+    if (ok) {
+        if (it_sys1(SYS_PROCESS_KILL, (long)T299_SLOT_PROC) != 0) {
+            ok = 0; why = "kill";
+        }
+        it_slot_delete(T299_SLOT_PROC);
+        it_quiesce_reaper();
+        long rr = it_sys1(SYS_UNTYPED_RESET, pool);
+        if (ok && rr == (long)IRIS_ERR_BUSY) { ok = 0; why = "budget still bound after death"; }
+        else if (ok && rr != 0)              { ok = 0; why = "reclaim failed"; }
+        /* And the reclaimed region really is reusable. */
+        if (ok) {
+            uint64_t fresh = 0;
+            (void)it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&fresh);
+            if (fresh < before) { ok = 0; why = "reset did not reclaim"; }
+        }
+    }
+
+    it_slot_delete(T299_SLOT_PROC);
+    it_slot_delete((uint32_t)(pool >= 0 ? (uint32_t)(((uint64_t)pool) >> 8) : 0u));
+    if (ok) it_pass("T299"); else it_fail("T299", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Etapa 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -20278,6 +20400,8 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t297();
     /* Stage 6: the Untyped pays for its frames' headers. */
     test_t298();
+    /* Stage 6: page tables are charged to a budget. */
+    test_t299();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

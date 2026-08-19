@@ -322,8 +322,19 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         long lr = svc_load_minted_ws(proc_control_c, initrd_control_c, "init",
                                      &init_proc_h, &init_boot_h, init_mints, 7u,
                                      SVC_LOADER_WS(boot_untyped_c, ws_slot));
-        if (lr < 0)
+        if (lr < 0) {
+            /* A failed init load used to be a SILENT dead system: userboot
+             * jumped straight to exit, so the machine stopped with no output
+             * at all.  Every other bootstrap-fatal condition here says why. */
+            char m[64] = "[USERBOOT] FATAL: init load failed (err ";
+            uint32_t n = 0; while (m[n]) n++;
+            long e = -lr; if (e < 0) e = 0; if (e > 99) e = 99;
+            if (e >= 10) m[n++] = (char)('0' + e / 10);
+            m[n++] = (char)('0' + e % 10);
+            m[n++] = ')'; m[n++] = '\n'; m[n] = 0;
+            ub_boot_panic(ioport_control_c, panic_slot, m);
             goto fail;
+        }
     }
 
     ub_close(init_boot_h);

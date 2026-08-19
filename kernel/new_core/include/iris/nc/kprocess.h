@@ -92,6 +92,13 @@ struct KProcess {
     uint64_t fault_rip;
     uint32_t fault_error;
     uint64_t fault_cr2;
+    /* Stage 6 Etapa 2: the creation reference — the one that lets a running
+     * process outlive the last capability to it — is dropped exactly once.
+     * Before this flag, a process created and never STARTED could not be
+     * reclaimed at all: kill saw no threads and returned success without
+     * dropping it, so the KProcess, its VSpace, its PML4 and (now) its
+     * page-table budget stayed alive with no way to get them back. */
+    uint8_t  initial_ref_dropped;
     uint8_t  fault_valid;
     /* Fase 25: per-process fault generation.  fault_seq_counter increments on
      * every delivery (1-based, wraps); fault_seq is the generation of the

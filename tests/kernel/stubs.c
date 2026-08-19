@@ -197,6 +197,22 @@ int paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t f
     return 0;
 }
 
+/* Stage 6 Etapa 2: the pooled variant.  The host stub records the pool it was
+ * given and reports one table per NEW (cr3, 1 GiB region) so that mapping
+ * behaviour stays observable without emulating a page-table walk. */
+int paging_map_checked_in_from(uint64_t cr3, uint64_t virt, uint64_t phys,
+                               uint64_t flags, struct KUntyped *pool,
+                               uint32_t *tables_made) {
+    (void)pool;
+    int rc = paging_map_checked_in(cr3, virt, phys, flags);
+    if (rc == 0 && tables_made) *tables_made = 0;
+    return rc;
+}
+
+void paging_destroy_user_space_from(uint64_t cr3, int tables_pooled) {
+    (void)cr3; (void)tables_pooled;   /* no page tables on the host */
+}
+
 uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt) {
     for (int i = 0; i < stub_pmap_n; i++) {
         if (stub_pmap[i].cr3 == cr3 && stub_pmap[i].virt == virt)

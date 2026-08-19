@@ -102,13 +102,13 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
      * single shared fault notification — growing the arena is the honest fix for
      * a memory ceiling (16 MB is 3% of the 512 MB guest). */
     {
-        uint64_t kslab_phys = pmm_alloc_pages(4096u);
-        if (kslab_phys == 0) {
+            uint64_t kslab_phys = pmm_alloc_pages(4096u);
+            if (kslab_phys == 0) {
             klog_write("[IRIS][KSLAB] FATAL: cannot reserve kernel slab backing\n");
             for (;;) __asm__ volatile ("hlt");
         }
         kslab_init(kslab_phys, 4096u);
-        klog_write("[IRIS][KSLAB] kernel object slab active (16 MB)\n");
+            klog_write("[IRIS][KSLAB] kernel object slab active (16 MB)\n");
     }
 
     /* ── 4. CPU tables + interrupt infrastructure ───────────────── */
@@ -186,7 +186,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
          * text and stack pages (ledger: "kernel stacks / PML4 from the PMM
          * reserve") — it is mapped as a KFrame and registered as a bootstrap
          * frame, so process teardown releases it exactly like the others. */
-        bi_phys = pmm_alloc_pages(IRIS_ROOT_BOOTINFO_PAGES);
+            bi_phys = pmm_alloc_pages(IRIS_ROOT_BOOTINFO_PAGES);
         if (bi_phys != 0) {
             bi_kva = (void *)(uintptr_t)PHYS_TO_VIRT(bi_phys);
             for (uint64_t b = 0; b < IRIS_ROOT_BOOTINFO_BYTES; b++)
@@ -205,8 +205,8 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         if (!bi_kva) {
             klog_write("[IRIS][USER] FATAL: BootInfo page allocation failed\n");
         } else {
-            ut = task_spawn_user(0);
-        }
+                    ut = task_spawn_user(0);
+                }
         if (bi_kva && !ut) {
             klog_write("[IRIS][USER] FATAL: task_spawn_user(userboot) failed\n");
         } else if (ut) {
@@ -301,7 +301,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     ut = 0;
                 }
             }
-            if (ut) {
+                    if (ut) {
                 /* Stage 5 Etapa 1 gave RBX its job: it carries the address of
                  * the BootInfo region, set at the end of the boot sequence
                  * once every grant is known. */
@@ -346,7 +346,10 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
              * IRIS_PMM_KERNEL_RUNTIME_RESERVE pages are kept in the PMM for
              * kernel-internal runtime allocators that bypass the KUntyped model:
              *
-             *   • paging_map_checked_in: page-table intermediate pages (PDPT/PD/PT)
+             *   • paging_map_checked_in: page tables for the KERNEL address
+             *     space and for the root task's pre-Untyped bootstrap maps.
+             *     Every other user page table is charged to an Untyped since
+             *     Stage 6 Etapa 2 (`paging_map_checked_in_from`).
              *   • kvmo_create: pages[] metadata array (pmm_alloc_pages)
              *   • sys_initrd_vmo: ELF copy pages (pmm_alloc_page × page_capacity)
              *   • kstack_alloc: 2 pages per task kernel stack

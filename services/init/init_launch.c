@@ -183,8 +183,11 @@ handle_id_t init_spawn_svcmgr(void) {
      * reply sub-untypeds and restart churn. */
     handle_id_t sm_untyped_h = HANDLE_INVALID;
     {
-        static const uint64_t s1_sm_ut_sizes[] = { 256u<<10, 64u<<10 };
-        for (uint32_t szi = 0; szi < 2u && sm_untyped_h == HANDLE_INVALID; szi++) {
+        /* Stage 6 Etapa 2: svcmgr's pool now also funds the page-table budget of
+         * every service it spawns (a sub-untyped per child), so it is sized for
+         * that rather than for svcmgr's own endpoints and replies alone. */
+        static const uint64_t s1_sm_ut_sizes[] = { 1024u<<10, 512u<<10, 256u<<10 };
+        for (uint32_t szi = 0; szi < 3u && sm_untyped_h == HANDLE_INVALID; szi++) {
             long ur = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
                                        INIT_SLOT_SM_UNTYPED, s1_sm_ut_sizes[szi]);
             if (ur >= 0) sm_untyped_h = (handle_id_t)INIT_SLOT_SM_UNTYPED;
@@ -335,9 +338,15 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * can retype/reset it freely without touching init/svcmgr objects.
          * Sized generously for the object-churn suites; smaller fallbacks
          * keep the authority tests alive on small boot blocks. */
+        /* Stage 6 Etapa 2: page tables are charged to the pool of whoever
+         * spawns, so the suite — which spawns a hundred-odd children across
+         * the lifecycle and pager tests — needs a budget sized for their
+         * address spaces (about five tables each), not just for the objects
+         * it fabricates.  The ladder keeps the authority tests alive on a
+         * small boot block. */
         static const uint64_t s1_test_ut_sizes[] =
-            { 8u<<20, 2u<<20, 512u<<10 };
-        for (uint32_t szi = 0; szi < 3u && lk_untyped == HANDLE_INVALID; szi++) {
+            { 32u<<20, 8u<<20, 2u<<20, 512u<<10 };
+        for (uint32_t szi = 0; szi < 4u && lk_untyped == HANDLE_INVALID; szi++) {
             long ur = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
                                        INIT_SLOT_TEST_UNTYPED, s1_test_ut_sizes[szi]);
             if (ur >= 0) lk_untyped = (handle_id_t)INIT_SLOT_TEST_UNTYPED;

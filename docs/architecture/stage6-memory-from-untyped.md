@@ -54,10 +54,68 @@ the slot model later absorbs these authorities.
 | Etapa | Subject | State |
 |---|---|---|
 | 1 | The Untyped pays for its objects' headers — two-ended carve; KFrame's header leaves the kslab heap | ✅ DONE |
-| 2 | Page tables are objects retyped from Untyped; the implicit PMM reserve on map retires | pending |
+| 2 | Page tables are charged to an Untyped the address space names; the implicit PMM reserve on map retires | ✅ DONE |
 | 3 | VSpace and its PML4 come from Untyped | pending |
 | 4 | The remaining kslab families, one decision each: retype, slot-encode, or retire with the subsystem | pending |
 | 5 | KVMO converted or retired; anonymous vs file-backed memory separated in user space | pending |
+
+## Etapa 2 — page tables are charged to a budget  ✅ DONE
+
+Every level below the PML4 is memory, and mapping user memory took it silently
+from the kernel's PMM reserve.  A process could therefore make the kernel spend
+memory by mapping at scattered addresses — no budget, no capability, no
+accounting — which is precisely what charter M3 says does not happen.
+
+**The budget is a capability, named at creation.**  `SYS_PROCESS_CREATE` takes
+the Untyped that will pay for the new address space's page tables; it is
+REQUIRED (a spawn without one is refused rather than funded by the kernel), it
+needs `RIGHT_WRITE` like any other carve, and the VSpace retains it for as long
+as it lives.  `paging_map_checked_in_from` carves levels from it and FAILS when
+it cannot — no fallback to kernel memory.
+
+**A page table counts as a child of the Untyped that paid.**  Page tables have
+no object header, so nothing would otherwise stop `SYS_UNTYPED_RESET` — which
+only refuses while `child_count` is non-zero — from reclaiming a region whose
+pages are the live tables of a running address space, handing the same memory
+out twice.  `kuntyped_alloc_page_child` takes a child entry per table and the
+VSpace returns them all at teardown, so the region becomes reusable exactly
+when nothing maps through it any more.
+
+**Who pays, in practice**: the spawner.  A per-child sub-untyped was the first
+design and it was wrong — a bump allocator never rewinds, so every spawn
+consumed a whole budget whether the child used it or not, and a churn workload
+exhausted an 8 MiB pool in tens of spawns.  Charging the real cost (about five
+tables per address space) to the pool the spawner already manages is cheaper
+and more honest.
+
+**Bootstrap exception**, bounded and stated: the root task's address space is
+built before any Untyped exists, so its tables come from the PMM reserve, as do
+the kernel's own (kstack region, physmap).  That is kernel memory for kernel
+mappings; every other user page table is charged.
+
+### Two defects this etapa exposed, both fixed here
+
+- **Page-aligned carves were aligned in the wrong space.**
+  `kuntyped_bump_alloc_phys_page` rounded the OFFSET within the region, which
+  only yields a page-aligned address when the region itself starts on a page
+  boundary.  Boot Untypeds do; a sub-untyped, carved at 64-byte granularity,
+  does not.  So a frame retyped from a sub-untyped got a paddr the mapper
+  silently masked DOWN — mapping the page *before* the frame, overlapping
+  whatever that sub-untyped had carved earlier.  It had been latent since
+  sub-untypeds existed; page tables made it fatal within a second of boot.
+  The carve now aligns the absolute physical address.
+- **A process created and never started could not be reclaimed.**  Kill found
+  no threads and returned success without dropping the creation reference,
+  which only the LAST THREAD exiting ever dropped.  The KProcess, its VSpace
+  and its PML4 stayed pinned for the life of the system — and now its
+  page-table budget with them.  Kill tears down a thread-less process, and
+  `kprocess_free` drops the creation reference exactly once so a racing
+  thread-exit cannot double-drop it.
+
+Covered by **T299**: a spawn with no budget is refused, a budget of the wrong
+type is refused, mapping into a fresh window really consumes page-sized amounts
+of it, the budget cannot be RESET while those tables are live, and once the
+address space is gone the region is reclaimable and reusable.
 
 ## Etapa 1 — the Untyped pays for its objects' headers  ✅ DONE
 
