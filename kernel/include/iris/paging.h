@@ -133,6 +133,8 @@ int      paging_map_checked_in_from(uint64_t cr3, uint64_t virt, uint64_t phys,
 /* tables_pooled != 0: the intermediate tables came from an Untyped, so they
  * are torn down WITHOUT being returned to the PMM. */
 void     paging_destroy_user_space_from(uint64_t cr3, int tables_pooled);
+/* Stage 6 Etapa 3: the PML4 itself carved from `pool` (NULL = PMM). */
+uint64_t paging_create_user_space_from(struct KUntyped *pool);
 uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt);
 int      paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags);
 void     paging_unmap_in(uint64_t cr3, uint64_t virt);

@@ -257,53 +257,58 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     }
     kobject_release(auth_obj);
 
-    struct KProcess *proc = kprocess_alloc();
-    if (!proc) return syscall_err(IRIS_ERR_NO_MEMORY);
+    /*
+     * Stage 6 Etapa 2/3: the budget comes FIRST, because everything this
+     * syscall builds after it — the PML4, the VSpace header, and every page
+     * table the address space will ever need — is carved from it.
+     */
+    struct KUntyped *pool = 0;
+    {
+        iris_rights_t pr;
+        iris_error_t  pe = cspace_resolve_only_untyped(t->process,
+                               (iris_cptr_t)pool_cptr, RIGHT_WRITE, &pool, &pr);
+        if (pe != IRIS_OK)
+            return syscall_err(pe == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : pe);
+    }
 
-    proc->cr3 = paging_create_user_space();
+    struct KProcess *proc = kprocess_alloc();
+    if (!proc) {
+        kobject_active_release(&pool->base); kobject_release(&pool->base);
+        return syscall_err(IRIS_ERR_NO_MEMORY);
+    }
+
+    proc->cr3 = paging_create_user_space_from(pool);
     if (!proc->cr3) {
+        kobject_active_release(&pool->base); kobject_release(&pool->base);
         kprocess_free(proc);
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
     proc->user_cr3 = paging_make_user_cr3(proc->cr3, proc->pcid);
 
     /* Fase 6.3: every child process needs a KVSpace so that sys_vmo_map_into
-     * can install KFrame-backed PTEs into it.  kvspace_alloc returns refcount=1;
-     * kprocess_reap_address_space calls kvspace_invalidate + kobject_release. */
-    struct KVSpace *vs = kvspace_alloc(proc->cr3);
-    if (!vs) {
-        kprocess_free(proc);
-        return syscall_err(IRIS_ERR_NO_MEMORY);
-    }
-    proc->vspace = vs;
-
-    /*
-     * Stage 6 Etapa 2: the caller must name the Untyped that will pay for this
-     * address space's page tables.
-     *
-     * Every level below the PML4 is memory, and mapping user memory used to
-     * take it silently from the kernel's PMM reserve — so a process could make
-     * the kernel spend memory by mapping at scattered addresses, with no
-     * budget, no capability and no accounting.  The budget is a capability
-     * now: it is required (a spawn without one is INVALID_ARG rather than a
-     * spawn the kernel funds), it needs RIGHT_WRITE like any other carve, and
-     * the VSpace retains it for as long as it lives.
-     */
+     * can install KFrame-backed PTEs into it.  Stage 6 Etapa 3: its header is
+     * a child block of the same budget, carved from the top so it does not
+     * displace the page-aligned carves below. */
+    struct KVSpace *vs = 0;
     {
-        struct KUntyped *pool = 0;
-        iris_rights_t    pr;
-        iris_error_t     pe = cspace_resolve_only_untyped(t->process,
-                                  (iris_cptr_t)pool_cptr, RIGHT_WRITE,
-                                  &pool, &pr);
-        if (pe != IRIS_OK) {
+        void *hdr = kuntyped_alloc_child_top(pool, sizeof(struct KVSpace));
+        if (hdr) vs = kvspace_alloc_at(hdr, proc->cr3);
+        if (!vs) {
+            if (hdr) kuntyped_release_child(hdr, sizeof(struct KVSpace));
+            kobject_active_release(&pool->base); kobject_release(&pool->base);
             kprocess_reap_address_space(proc);
             kprocess_free(proc);
-            return syscall_err(pe == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : pe);
+            return syscall_err(IRIS_ERR_NO_MEMORY);
         }
-        kvspace_set_pt_pool(vs, pool);
-        kobject_active_release(&pool->base);
-        kobject_release(&pool->base);
     }
+    proc->vspace = vs;
+    /* The PML4 is a page child of the pool; the VSpace returns it with the
+     * page tables at teardown. */
+    vs->pt_count = 1;
+    kvspace_set_pt_pool(vs, pool);
+    kobject_active_release(&pool->base);
+    kobject_release(&pool->base);
+
 
     /* Etapa 4: arg1 names a destination CSpace slot; the new process cap is
      * published there as an MDB child of the spawn-cap slot that authorised

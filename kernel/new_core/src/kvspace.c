@@ -61,6 +61,64 @@ static const struct KObjectOps kvspace_ops = {
     .destroy = kvspace_obj_destroy,
 };
 
+/*
+ * Stage 6 Etapa 3 — the Untyped-born VSpace.
+ *
+ * Header, PML4 and every page table below it now come out of one budget the
+ * creator named.  The teardown order matters and is not arbitrary: return the
+ * page children first (PML4 + tables), then the header block — which drops the
+ * retain the block itself holds — and only then the VSpace's own pool retain.
+ * Releasing the pool first could destroy the Untyped whose region the header
+ * block lives in, and the block is what tells us who the parent was.
+ */
+static void kvspace_obj_destroy_ut(struct KObject *obj) {
+    struct KVSpace       *vs   = (struct KVSpace *)obj;
+    struct KUntyped      *pool = vs->pt_pool;
+    uint64_t              cr3  = vs->cr3;
+    struct KFrameMapping *m    = vs->mappings;
+    vs->mappings = 0;
+
+    while (m) {
+        struct KFrameMapping *next = m->next;
+        struct KFrame        *f    = m->frame;
+        if (cr3) paging_unmap_in(cr3, m->user_va);
+        kslab_free(m, (uint32_t)sizeof(*m));
+        atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
+        kframe_stat_cleanup();
+        kobject_release(&f->base);
+        m = next;
+    }
+
+    while (vs->pt_count && pool) {
+        kuntyped_release_page_child(pool);
+        vs->pt_count--;
+    }
+    atomic_fetch_sub_explicit(&kvspace_live, 1u, memory_order_relaxed);
+    vs->pt_pool = 0;
+    kuntyped_release_child(vs, sizeof(struct KVSpace));
+    if (pool) kobject_release(&pool->base);
+}
+
+static const struct KObjectOps kvspace_ops_ut = {
+    .close   = kvspace_obj_close,
+    .destroy = kvspace_obj_destroy_ut,
+};
+
+struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3) {
+    if (!mem) return 0;
+    struct KVSpace *vs = (struct KVSpace *)mem;   /* block arrives zeroed */
+    kobject_init(&vs->base, KOBJ_VSPACE, &kvspace_ops_ut);
+    spinlock_init(&vs->lock);
+    vs->cr3           = cr3;
+    vs->valid         = 1;
+    vs->mapping_count = 0;
+    vs->mappings      = 0;
+    vs->pt_pool       = 0;
+    vs->pt_count      = 0;
+    atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);
+    return vs;
+}
+
 struct KVSpace *kvspace_alloc(uint64_t cr3) {
     struct KVSpace *vs = kslab_alloc((uint32_t)sizeof(struct KVSpace));
     if (!vs) return 0;

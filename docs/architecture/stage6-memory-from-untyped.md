@@ -55,9 +55,35 @@ the slot model later absorbs these authorities.
 |---|---|---|
 | 1 | The Untyped pays for its objects' headers — two-ended carve; KFrame's header leaves the kslab heap | ✅ DONE |
 | 2 | Page tables are charged to an Untyped the address space names; the implicit PMM reserve on map retires | ✅ DONE |
-| 3 | VSpace and its PML4 come from Untyped | pending |
+| 3 | VSpace and its PML4 come from Untyped | ✅ DONE |
 | 4 | The remaining kslab families, one decision each: retype, slot-encode, or retire with the subsystem | pending |
 | 5 | KVMO converted or retired; anonymous vs file-backed memory separated in user space | pending |
+
+## Etapa 3 — the address space itself comes from the budget  ✅ DONE
+
+The two pieces Etapa 2 left kernel-funded are gone for spawned processes: the
+**PML4** is a page child of the same Untyped (`paging_create_user_space_from`),
+and the **KVSpace header** is a top-carved child block of it
+(`kvspace_alloc_at`).  One budget now pays for an entire address space —
+header, root table, and every level beneath it — and a `SYS_PROCESS_CREATE`
+that names no budget builds nothing.
+
+Teardown order is not arbitrary and is worth stating: return the page children
+(PML4 + tables) first, then the header block — which drops the retain the block
+itself holds — and only then the VSpace's own pool retain.  Releasing the pool
+first could destroy the Untyped whose region the header block lives in, and
+that block is what records who the parent was.
+
+A pooled PML4 is also never returned to the PMM, for the same reason a pooled
+table is not: the page is inside somebody's Untyped, and handing it to the
+buddy allocator would give the same memory out twice.
+
+The root task keeps the kslab/PMM path (`kvspace_alloc`,
+`paging_create_user_space`), because its address space is built before any
+Untyped exists — the same bounded bootstrap exception as its page tables.
+
+T299 gained a leg: creating the address space alone already consumes at least a
+page of the budget, before anything is mapped into it.
 
 ## Etapa 2 — page tables are charged to a budget  ✅ DONE
 

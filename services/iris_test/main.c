@@ -19819,6 +19819,19 @@ static void test_t299(void) {
                       (long)((uint64_t)T299_SLOT_PROC << 32), pool) != 0) {
         ok = 0; why = "spawn with budget";
     }
+
+    /* Stage 6 Etapa 3: creating the address space already costs the budget —
+     * its PML4 is a page of it and its VSpace header a block of it, where both
+     * used to be kernel memory. */
+    if (ok) {
+        uint64_t created = 0;
+        if (it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&created) != 0) {
+            ok = 0; why = "info created";
+        } else if (before - created < 4096u) {
+            ok = 0; why = "vspace not charged";
+        }
+    }
+
     long vmo = -1;
     if (ok) {
         vmo = it_vmo_create_slot(4096u);

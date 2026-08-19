@@ -17,7 +17,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
 | 4 — Dual namespace retirement | ✅ CLOSED |
 | 5 — seL4-like bootstrap | ✅ CLOSED |
-| 6 — Remaining memory and objects | 🔄 OPEN (Etapas 1-2 landed) |
+| 6 — Remaining memory and objects | 🔄 OPEN (Etapas 1-3 landed) |
 | 7 — KProcess retirement | pending |
 | 8 — Full MCS scheduling | pending |
 | 9 — SMP | pending |
@@ -550,6 +550,16 @@ created from kernel-private storage.  Stage 5 finished the authority story;
 this stage answers *who pays for memory*, which is still "the kernel,
 invisibly" in four places — page tables on map, frame headers, the VSpace and
 its PML4, and sixteen `kslab_alloc` consumers.
+
+### Etapa 3 — the address space itself comes from the budget  ✅ DONE
+
+The PML4 and the KVSpace header follow the page tables into the Untyped: one
+budget pays for a whole address space, and a spawn that names none builds
+nothing.  A pooled PML4 is never returned to the PMM (the page belongs to the
+Untyped), and teardown returns page children, then the header block, then the
+pool retain — in that order, because the header block lives in the region the
+pool owns.  The root task keeps the kernel-funded path: its address space is
+built before any Untyped exists.
 
 ### Etapa 2 — page tables are charged to a budget  ✅ DONE
 

@@ -75,6 +75,12 @@ void kvspace_set_pt_pool(struct KVSpace *vs, struct KUntyped *pool);
  * Caller holds the alloc lifecycle ref (refcount=1, active_refs=0) on return. */
 struct KVSpace *kvspace_alloc(uint64_t cr3);
 
+/* Stage 6 Etapa 3 — placement-init a KVSpace whose header is a child block of
+ * the same Untyped that pays for its PML4 and page tables.  `mem` must be a
+ * zeroed block of at least sizeof(struct KVSpace), from
+ * kuntyped_alloc_child_top. */
+struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3);
+
 /* Mark the VSpace invalid and zero cr3.  Called by kprocess_reap_address_space
  * before paging_destroy_user_space so no capability holder can read a freed cr3. */
 void kvspace_invalidate(struct KVSpace *vs);

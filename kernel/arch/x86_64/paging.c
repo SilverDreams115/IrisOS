@@ -307,9 +307,15 @@ void paging_init(uint64_t fb_phys, uint64_t fb_size) {
     }
 }
 
-uint64_t paging_create_user_space(void)
+uint64_t paging_create_user_space_from(struct KUntyped *pool)
 {
-    uint64_t new_pml4_phys = pmm_alloc_pages(1);
+    /* Stage 6 Etapa 3: the PML4 is the last page of an address space that the
+     * kernel was paying for.  It comes from the same budget as the levels
+     * below it when one is named — and, like them, it counts as a child of
+     * that Untyped so the region cannot be reset while the address space
+     * lives.  A NULL pool is the root task and the kernel's own space. */
+    uint64_t new_pml4_phys = pool ? kuntyped_alloc_page_child(pool)
+                                  : pmm_alloc_pages(1);
     if (new_pml4_phys == 0) return 0;
 
     uint64_t *kernel_pml4 = phys_to_ptr(pml4_phys);
@@ -329,6 +335,11 @@ uint64_t paging_create_user_space(void)
     }
 
     return new_pml4_phys;
+}
+
+uint64_t paging_create_user_space(void)
+{
+    return paging_create_user_space_from(0);
 }
 
 uint64_t pml4_get_current(void) {
@@ -416,8 +427,10 @@ void paging_destroy_user_space_from(uint64_t cr3, int tables_pooled) {
         pml4[USER_PRIVATE_PML4_INDEX] = 0;
     }
 
-    /* The PML4 itself is still a PMM page (Stage 6 Etapa 3 moves it). */
-    pmm_free_page(cr3);
+    /* Stage 6 Etapa 3: a pooled PML4 is inside somebody's Untyped — returning
+     * it to the buddy allocator would hand out memory that region still owns.
+     * Its child entry is returned by the VSpace along with the tables. */
+    if (!tables_pooled) pmm_free_page(cr3);
 }
 
 void paging_destroy_user_space(uint64_t cr3) {
