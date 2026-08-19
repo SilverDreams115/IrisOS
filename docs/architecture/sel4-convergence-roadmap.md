@@ -17,7 +17,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
 | 4 — Dual namespace retirement | ✅ CLOSED |
 | 5 — seL4-like bootstrap | ✅ CLOSED |
-| 6 — Remaining memory and objects | 🔄 OPEN (Etapas 1-3 landed) |
+| 6 — Remaining memory and objects | 🔄 OPEN (Etapas 1-4 landed) |
 | 7 — KProcess retirement | pending |
 | 8 — Full MCS scheduling | pending |
 | 9 — SMP | pending |
@@ -550,6 +550,17 @@ created from kernel-private storage.  Stage 5 finished the authority story;
 this stage answers *who pays for memory*, which is still "the kernel,
 invisibly" in four places — page tables on map, frame headers, the VSpace and
 its PML4, and sixteen `kslab_alloc` consumers.
+
+### Etapa 4 — a process's kernel state comes out of the budget  ✅ DONE
+
+`KProcess`, the child's 256-slot root CNode (the largest single per-process
+allocation) and a sub-untyped's own header are carved from the budget instead
+of the kernel slab.  The last one closes a circularity: delegating a budget
+used to cost kernel memory, because a sub-untyped took its region from the
+parent and its header from the slab.
+
+What stays kernel-funded is the root task (built before any Untyped exists) and
+the boot Untypeds (created from raw PMM blocks, with no parent to charge).
 
 ### Etapa 3 — the address space itself comes from the budget  ✅ DONE
 

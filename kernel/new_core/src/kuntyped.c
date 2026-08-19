@@ -75,6 +75,46 @@ static const struct KObjectOps kuntyped_ops = {
     .destroy = kuntyped_obj_destroy,
 };
 
+/*
+ * Stage 6 Etapa 4 — a sub-untyped's header lives in its parent.
+ *
+ * Carving a sub-untyped used to take its region from the parent and its header
+ * from the kernel slab, so delegating a budget quietly spent kernel memory.
+ * The header is now a top-carved child block of the parent, which is also what
+ * carries the child_count entry and the parent retain — so `alloc_parent`
+ * stays NULL for these and nothing is accounted twice.
+ *
+ * Boot Untypeds keep the slab path: they are created by kernel_main from raw
+ * PMM blocks and have no parent to charge.
+ */
+static void kuntyped_obj_destroy_ut(struct KObject *obj) {
+    struct KUntyped *u = (struct KUntyped *)obj;
+    atomic_fetch_sub_explicit(&kuntyped_live, 1u, memory_order_relaxed);
+    kuntyped_release_child(u, sizeof(struct KUntyped));
+}
+
+static const struct KObjectOps kuntyped_ops_ut = {
+    .close   = kuntyped_obj_close,
+    .destroy = kuntyped_obj_destroy_ut,
+};
+
+struct KUntyped *kuntyped_create_at(void *mem, uint64_t phys_base,
+                                    uint64_t size, int is_device) {
+    if (!mem || !size) return 0;
+    struct KUntyped *u = (struct KUntyped *)mem;   /* block arrives zeroed */
+    kobject_init(&u->base, KOBJ_UNTYPED, &kuntyped_ops_ut);
+    irq_spinlock_init(&u->lock);
+    u->phys_base   = phys_base;
+    u->total_size  = size;
+    u->used        = 0;
+    u->used_top    = 0;
+    u->is_device   = is_device;
+    u->alloc_parent = 0;   /* the header block holds the child accounting */
+    atomic_store_explicit(&u->child_count, 0u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&kuntyped_live, 1u, memory_order_relaxed);
+    return u;
+}
+
 struct KUntyped *kuntyped_create(uint64_t phys_base, uint64_t size, int is_device) {
     if (!size) return 0;
 

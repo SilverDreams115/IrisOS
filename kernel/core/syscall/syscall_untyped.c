@@ -252,16 +252,22 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (obj_type == KOBJ_UNTYPED || obj_type == KOBJ_FRAME) {
         /* Single physical-region object (count == 1, validated above). */
         if (obj_type == KOBJ_UNTYPED) {
-            uint64_t phys = kuntyped_bump_alloc_phys(ut, obj_arg);
-            if (!phys) err = IRIS_ERR_NO_MEMORY;
+            /* Stage 6 Etapa 4: header from the parent's top, region from its
+             * bottom — a delegated budget no longer costs kernel memory. */
+            void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KUntyped));
+            if (!hdr) err = IRIS_ERR_NO_MEMORY;
             else {
-                struct KUntyped *sub = kuntyped_create(phys, obj_arg, ut->is_device);
-                if (!sub) err = IRIS_ERR_NO_MEMORY;
-                else {
-                    sub->alloc_parent = ut;
-                    kobject_retain(&ut->base);
-                    atomic_fetch_add_explicit(&ut->child_count, 1u, memory_order_relaxed);
-                    objs[0] = &sub->base;
+                uint64_t phys = kuntyped_bump_alloc_phys(ut, obj_arg);
+                if (!phys) {
+                    kuntyped_release_child(hdr, sizeof(struct KUntyped));
+                    err = IRIS_ERR_NO_MEMORY;
+                } else {
+                    struct KUntyped *sub = kuntyped_create_at(hdr, phys, obj_arg,
+                                                              ut->is_device);
+                    if (!sub) {
+                        kuntyped_release_child(hdr, sizeof(struct KUntyped));
+                        err = IRIS_ERR_NO_MEMORY;
+                    } else objs[0] = &sub->base;
                 }
             }
         } else {

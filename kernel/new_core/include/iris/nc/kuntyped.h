@@ -42,6 +42,12 @@ struct KUntyped {
  * Returns NULL if the KUntyped header itself cannot be kpage_alloc'd. */
 struct KUntyped *kuntyped_create(uint64_t phys_base, uint64_t size, int is_device);
 
+/* Stage 6 Etapa 4 — placement-init a sub-untyped whose header is a child block
+ * of its parent (kuntyped_alloc_child_top).  The block carries the child_count
+ * entry and the parent retain, so `alloc_parent` stays NULL. */
+struct KUntyped *kuntyped_create_at(void *mem, uint64_t phys_base,
+                                    uint64_t size, int is_device);
+
 /* Drop the owner reference; frees the KUntyped header (physical region NOT freed). */
 void kuntyped_destroy_ref(struct KUntyped *u);
 

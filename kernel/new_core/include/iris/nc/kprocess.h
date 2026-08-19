@@ -99,6 +99,9 @@ struct KProcess {
      * dropping it, so the KProcess, its VSpace, its PML4 and (now) its
      * page-table budget stayed alive with no way to get them back. */
     uint8_t  initial_ref_dropped;
+    /* Stage 6 Etapa 4: the Untyped this object and its root CNode were carved
+     * from, retained for their lifetime.  NULL = kernel-slab (root task). */
+    struct KUntyped *mem_pool;
     uint8_t  fault_valid;
     /* Fase 25: per-process fault generation.  fault_seq_counter increments on
      * every delivery (1-based, wraps); fault_seq is the generation of the
@@ -157,6 +160,11 @@ struct KProcess {
 #define KPROCESS_POOL_SIZE 0u  /* no static pool — kpage-backed; 0 = unbounded allocator ceiling */
 
 struct KProcess *kprocess_alloc(void);
+
+/* Stage 6 Etapa 4 — allocate the process object AND its root CNode out of
+ * `pool`, the same Untyped that pays for its address space.  NULL falls back
+ * to the kernel slab, which is the root task's path (no Untyped exists yet). */
+struct KProcess *kprocess_alloc_from(struct KUntyped *pool);
 void             kprocess_free (struct KProcess *p);
 void             kprocess_teardown(struct KProcess *p, struct task *exiting_thread);
 void             kprocess_reap_address_space(struct KProcess *p);

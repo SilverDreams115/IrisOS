@@ -345,7 +345,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * it fabricates.  The ladder keeps the authority tests alive on a
          * small boot block. */
         static const uint64_t s1_test_ut_sizes[] =
-            { 32u<<20, 8u<<20, 2u<<20, 512u<<10 };
+            { 96u<<20, 32u<<20, 8u<<20, 2u<<20 };
         for (uint32_t szi = 0; szi < 4u && lk_untyped == HANDLE_INVALID; szi++) {
             long ur = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
                                        INIT_SLOT_TEST_UNTYPED, s1_test_ut_sizes[szi]);

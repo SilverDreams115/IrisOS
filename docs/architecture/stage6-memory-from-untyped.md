@@ -56,8 +56,40 @@ the slot model later absorbs these authorities.
 | 1 | The Untyped pays for its objects' headers — two-ended carve; KFrame's header leaves the kslab heap | ✅ DONE |
 | 2 | Page tables are charged to an Untyped the address space names; the implicit PMM reserve on map retires | ✅ DONE |
 | 3 | VSpace and its PML4 come from Untyped | ✅ DONE |
-| 4 | The remaining kslab families, one decision each: retype, slot-encode, or retire with the subsystem | pending |
+| 4 | The per-process kernel state and sub-untyped headers move to the budget | ✅ DONE |
 | 5 | KVMO converted or retired; anonymous vs file-backed memory separated in user space | pending |
+
+## Etapa 4 — a process's kernel state comes out of the budget  ✅ DONE
+
+Three more families follow the address space into the Untyped:
+
+| Object | Was | Is |
+|---|---|---|
+| `KProcess` | kslab | top-carved child block of the spawn budget |
+| the child's 256-slot root CNode | kslab (~20 KiB, the largest single per-process allocation) | top-carved child block of the same budget |
+| a sub-untyped's `KUntyped` header | kslab | top-carved child block of its PARENT |
+
+The last one closes a small circularity that was easy to miss: **delegating a
+budget used to cost kernel memory**.  Carving a sub-untyped took its region
+from the parent and its header from the slab, so a service that handed its
+children budgets was spending kernel memory to do it.  The header is now a
+child block of the parent, and that block carries the `child_count` entry and
+the parent retain — `alloc_parent` stays NULL for these, so nothing is
+accounted twice.
+
+`kprocess_alloc_from` is where the per-process state is charged, and the ladder
+of budgets in init/svcmgr grew to match: a process now costs its spawner about
+20 KiB of CNode plus its address space, where before the kernel absorbed it
+silently.  That is the point — the cost did not appear, it became visible.
+
+What stays on the kernel slab, and why it is not a leftover to clean up later:
+
+- the **root task's** KProcess, root CNode, KVSpace and PML4 — built before any
+  Untyped exists, the same bounded bootstrap exception as its page tables;
+- **boot Untypeds** — created by `kernel_main` from raw PMM blocks; they have
+  no parent to charge;
+- `KFrameMapping` nodes, and the frames of a VMO or a bootstrap map — Etapa 5
+  and the paths that retire with KVMO.
 
 ## Etapa 3 — the address space itself comes from the budget  ✅ DONE
 

@@ -271,7 +271,10 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
             return syscall_err(pe == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : pe);
     }
 
-    struct KProcess *proc = kprocess_alloc();
+    /* Stage 6 Etapa 4: the process object and its root CNode come out of the
+     * same budget as its address space — together the largest per-process
+     * kernel allocation there was. */
+    struct KProcess *proc = kprocess_alloc_from(pool);
     if (!proc) {
         kobject_active_release(&pool->base); kobject_release(&pool->base);
         return syscall_err(IRIS_ERR_NO_MEMORY);

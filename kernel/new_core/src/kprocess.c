@@ -1,4 +1,5 @@
 #include <iris/nc/kprocess.h>
+#include <iris/nc/kuntyped.h>
 #include <iris/nc/kframe.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/knotification.h>
@@ -171,6 +172,95 @@ static void kprocess_destroy(struct KObject *obj) {
 static const struct KObjectOps kprocess_ops = {
     .destroy = kprocess_destroy
 };
+
+/*
+ * Stage 6 Etapa 4 — the Untyped-born KProcess.
+ *
+ * A spawned process's own kernel state — this object and its 256-slot root
+ * CNode, together the largest per-process kernel allocation left — is charged
+ * to the same budget that already pays for its address space.  What the kernel
+ * still funds from its slab is the ROOT TASK, built before any Untyped exists.
+ */
+static void kprocess_destroy_ut(struct KObject *obj) {
+    struct KProcess *p    = (struct KProcess *)obj;
+    struct KUntyped *pool = p->mem_pool;
+
+    if (!p->teardown_complete) kprocess_teardown(p, 0);
+    if (!p->aspace_reaped)     kprocess_reap_address_space(p);
+    atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+
+    if (p->pcid) {
+        uint64_t flags = irq_spinlock_lock(&pcid_lock);
+        pcid_bitmap[p->pcid / 64u] &= ~(1ULL << (p->pcid % 64u));
+        irq_spinlock_unlock(&pcid_lock, flags);
+        p->pcid = 0;
+    }
+
+    /* Header block first (it holds its own parent retain), pool retain last:
+     * the block lives inside the region the pool owns. */
+    p->mem_pool = 0;
+    kuntyped_release_child(p, sizeof(struct KProcess));
+    if (pool) kobject_release(&pool->base);
+}
+
+static const struct KObjectOps kprocess_ops_ut = {
+    .destroy = kprocess_destroy_ut
+};
+
+struct KProcess *kprocess_alloc_from(struct KUntyped *pool) {
+    if (!pool) return kprocess_alloc();
+
+    uint32_t prev = atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
+    if (prev >= KPROCESS_MAX_LIVE) {
+        atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+        return 0;
+    }
+
+    struct KProcess *p = kuntyped_alloc_child_top(pool, sizeof(struct KProcess));
+    if (!p) {
+        atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+        return 0;
+    }
+    kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops_ut);
+    p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;
+    kobject_retain(&pool->base);
+    p->mem_pool = pool;
+
+    if (iris_pcid_enabled) {
+        uint64_t flags = irq_spinlock_lock(&pcid_lock);
+        uint16_t pcid = 0;
+        for (uint32_t w = 0; w < PCID_BITMAP_WORDS && !pcid; w++) {
+            uint64_t free_bits = ~pcid_bitmap[w];
+            if (!free_bits) continue;
+            uint32_t bit = (uint32_t)__builtin_ctzll(free_bits);
+            uint32_t id  = w * 64u + bit;
+            if (id >= 1u && id <= 4094u) {
+                pcid_bitmap[w] |= (1ULL << bit);
+                pcid = (uint16_t)id;
+            }
+        }
+        irq_spinlock_unlock(&pcid_lock, flags);
+        if (!pcid) {
+            atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+            kobject_release(&pool->base);
+            kuntyped_release_child(p, sizeof(struct KProcess));
+            return 0;
+        }
+        p->pcid = pcid;
+    }
+
+    /* The root CNode is the other half of a process's kernel footprint, and
+     * the bigger one: 256 slots with their MDB links.  Same budget. */
+    {
+        void *cn_mem = kuntyped_alloc_child_top(pool,
+                           KCNODE_ALLOC_SIZE(KCNODE_DEFAULT_SLOTS));
+        if (cn_mem) p->cspace_root = kcnode_alloc_at(cn_mem, KCNODE_DEFAULT_SLOTS);
+        if (p->cspace_root) kobject_active_retain(&p->cspace_root->base);
+        else if (cn_mem)
+            kuntyped_release_child(cn_mem, KCNODE_ALLOC_SIZE(KCNODE_DEFAULT_SLOTS));
+    }
+    return p;
+}
 
 struct KProcess *kprocess_alloc(void) {
     /* Atomically reserve a slot before allocating memory.  The previous
