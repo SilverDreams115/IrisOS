@@ -73,7 +73,7 @@ Two changes, both in the boot path:
 2. **Make the remaining genuine failure visible.**  A real shortage
    (`count < SL_CATALOG_COUNT`, i.e. a kernel↔ring-3 catalog mismatch that
    would make a named index read garbage) is bootstrap-fatal.  `userboot` holds
-   the root `KBootstrapCap` (HW_ACCESS), so it mints a serial `KIoPort` and
+   the ioport CONTROL capability, so it mints a serial `KIoPort` and
    emits a diagnostic line to COM1 before exiting — never a silent dead system
    again.
 

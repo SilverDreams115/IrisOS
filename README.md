@@ -108,7 +108,15 @@ Every capability is created *into* a slot. `SYS_VMO_CREATE`,
 destination and refuse to run without one.
 
 Well-known child slots: `1` svcmgr EP, `2` vfs EP, `3` console EP, `4` kbd EP,
-`5` own EP (recv), `6` spawn/authority cap, `7` IRQ notification.
+`5` own EP (recv), `6` process control, `7` IRQ notification, `8` initrd
+control, `9` debug control.
+
+Boot authority is **one capability per authority** (Stage 5): process, initrd,
+IRQ control, ioport control, debug and framebuffer, each matched by exact
+equality — a capability carrying two of them cannot be constructed.  The root
+task learns what it holds from a structured **BootInfo** region the kernel maps
+read-only into it, instead of agreeing with the kernel on constants; it also
+holds capabilities to its own root CNode and its own thread.
 
 ## Endpoint IPC
 
@@ -283,10 +291,12 @@ Highlights by area:
 - **Scheduling**: `SC_CREATE`, `SC_CONFIGURE`, `THREAD_SET_SC`,
   `TCB_SELF/SUSPEND/RESUME/SET_PRIORITY/EXIT/GET_INFO`, `SCHED_INFO`.
 - **Hardware / bootstrap (cap-gated)**: `CAP_CREATE_IRQCAP`, `CAP_CREATE_IOPORT`
-  (both publish the new cap into a caller-named CSpace slot as an MDB child of
-  the authorising bootstrap cap — revoking the bootstrap cap revokes them),
-  `IOPORT_IN/OUT/RESTRICT`, `IRQ_ROUTE_REGISTER`, `IRQ_ACK`, `BOOTCAP_RESTRICT`,
+  (each requires ITS OWN control capability — Stage 5's one-capability-one-
+  authority split — and publishes the new cap into a caller-named CSpace slot
+  as an MDB child of the authorising slot, so revoking the control capability
+  revokes what it authorised), `IOPORT_IN/OUT`, `IRQ_ROUTE_REGISTER`, `IRQ_ACK`,
   `FRAMEBUFFER_VMO`, `INITRD_COUNT/VMO`, `POWEROFF`, `KLOG_DRAIN`.
+  `BOOTCAP_RESTRICT` is retired with the monolithic boot capability.
 - **CSpace derivation (Fase S3)**: `CSPACE_MINT`, `CSPACE_REVOKE`,
   `CSPACE_MINT_INTO` — native MDB/CDT, CSpace-only source, cross-process
   recursive revoke.
@@ -415,8 +425,10 @@ device capability, pre-start grant to a child — parented to the slot that
 granted it, so it stays revocable by its grantor. There are no CPtr-to-handle
 fallbacks. What remains transitional is recorded, dated to a stage and gated by
 `make check-purity`, whose allowlist can only shrink: **29 of the 36 charter
-invariants are met**, with the remainder scoped to Stages 4–7 of the
-[convergence roadmap](docs/architecture/sel4-convergence-roadmap.md).
+invariants are met**, with the remainder scoped to Stages 6–7 of the
+[convergence roadmap](docs/architecture/sel4-convergence-roadmap.md) — Stages 0
+through 5 are closed, so bootstrap is fine-grained and a thread is a retyped
+object configured through capabilities.
 
 Scope is deliberate, not provisional: IRIS targets QEMU x86-64 and grows
 new capability — drivers, storage, networking, an optional POSIX personality —

@@ -1,5 +1,11 @@
 # IRIS architecture baseline
 
+> **Historical (v0.1).**  The bootstrap described here — one `KBootstrapCap`
+> with a permission mask, narrowed by `SYS_BOOTCAP_RESTRICT` — was retired in
+> Stage 5: boot authority is six capabilities of one authority each, described
+> in a structured BootInfo region.  See
+> `docs/architecture/stage5-root-task-bootinfo.md`.
+
 This document tracks the current architectural baseline implemented in-tree.
 It is intentionally concise and must stay aligned with the live code.
 

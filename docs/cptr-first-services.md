@@ -103,10 +103,14 @@ WRITE-only: recv denied), T046 (legacy lookup still yields real handles
 the dual-resolution model to **device/authority caps** — `KIoPort`, `KIrqCap`,
 `KBootstrapCap`. The device-access syscalls (`SYS_IOPORT_IN/OUT`,
 `SYS_IRQ_ROUTE_REGISTER`, `SYS_IRQ_ACK`, `SYS_INITRD_VMO/COUNT`,
-`SYS_PROCESS_CREATE`, `SYS_CAP_CREATE_IRQCAP/IOPORT`, `SYS_BOOTCAP_RESTRICT`,
+`SYS_PROCESS_CREATE`, `SYS_CAP_CREATE_IRQCAP/IOPORT`,
 `SYS_FRAMEBUFFER_VMO`) now accept a CPtr slot (`<1024`, CSpace-only) or a handle
 (`>=1024`, handle-table-only); the namespace split and `ACCESS_DENIED`-no-fallback
 contract are preserved (wrong-type CPtr → `ACCESS_DENIED`). This is the
 prerequisite that lets device caps be pre-minted into a child's CSpace instead
 of delivered over a KChannel — unblocking full KChannel retirement.
 Runtime proof: **T069**. Still handle-only: `KChannel`, `KProcess`.
+
+(Historical: the handle namespace is gone since Stage 4, and Stage 5 split the
+single `KBootstrapCap` into one capability per authority — `SYS_BOOTCAP_RESTRICT`
+retired with it.  This section records the Fase 13 step as it was.)

@@ -29,8 +29,9 @@ Three device-capability kinds, each resolved through the standard dual resolver
 
 ### KIoPort — I/O port access
 
-- `SYS_CAP_CREATE_IOPORT(bootcap, base, count)` requires a KBootstrapCap with
-  `IRIS_BOOTCAP_HW_ACCESS` AND `[base, base+count)` inside the kernel whitelist
+- `SYS_CAP_CREATE_IOPORT(ioport_control, base, count, dest)` requires the
+  IOPORT CONTROL capability — matched exactly, so no other boot capability
+  substitutes — AND `[base, base+count)` inside the kernel whitelist
   (PS/2 0x60+5, COM2 0x2F8+8, COM1 0x3F8+8, ACPI-PM 0x600+8).  Nothing else can
   be claimed; the kernel owns PIC/PIT and does not list them.
 - `SYS_IOPORT_IN(cap, offset)` / `SYS_IOPORT_OUT(cap, offset, val)` access
@@ -42,8 +43,10 @@ Three device-capability kinds, each resolved through the standard dual resolver
 
 ### KIrqCap — interrupt line authority
 
-- `SYS_CAP_CREATE_IRQCAP(bootcap, irq)` requires HW_ACCESS; the cap embeds the
-  authorized `irq_num`.
+- `SYS_CAP_CREATE_IRQCAP(irq_control, irq, _, dest)` requires the IRQ CONTROL
+  capability — a separate capability from the ioport one since Stage 5, so
+  authority over port ranges implies nothing about interrupt lines; the cap
+  embeds the authorized `irq_num`.
 - `SYS_IRQ_ROUTE_REGISTER(irqcap, notif, proc)` needs RIGHT_ROUTE on the IRQ cap
   (whose embedded irq_num is the ONLY line it can route — no arbitrary IRQ),
   RIGHT_WRITE on a KNotification destination, and RIGHT_READ|ROUTE on the owner
@@ -70,18 +73,22 @@ Three device-capability kinds, each resolved through the standard dual resolver
 |---|---|---|---|---|
 | kbd | own ep / IRQ notif / 0x60 ioport / IRQ cap (line 1) | R / WAIT / R / ROUTE | 0x60–0x64 + IRQ1 only | serve kbd.ep, read scancodes, ack IRQ1 |
 | console | own ep / 0x3F8 ioport | R / R\|W | 0x3F8–0x3FF only | serve console, UART I/O |
-| fb | FRAMEBUFFER bootcap (restricted) | R | framebuffer region only | map + paint framebuffer (one-shot VMO) |
+| fb | framebuffer control capability | R | framebuffer region only | map + paint framebuffer (one-shot VMO) |
 
-None of the three holds `HW_ACCESS`, so none can forge a new port or IRQ cap.
-kbd/console hold no FRAMEBUFFER; fb holds no HW_ACCESS.  kbd's IRQ cap embeds
-line 1, so it cannot touch any other line.  console holds no IRQ cap at all.
+None of the three holds a device CONTROL capability, so none can forge a new
+port or IRQ cap.  kbd/console hold no framebuffer authority; fb holds neither
+ioport nor IRQ control — and since Stage 5 those are three distinct
+capabilities rather than three bits of one, so fb's capability cannot be
+mistaken for a narrowed copy of anyone else's.  kbd's IRQ cap embeds line 1, so
+it cannot touch any other line.  console holds no IRQ cap at all.
 
 ## Threat model — a compromised driver
 
 If `kbd` is fully compromised it can: read/write ports 0x60–0x64, wait on and
 ack IRQ1, and serve/receive on its own endpoint.  It CANNOT: reach any other
 port (cap range-bounded), route or ack any other IRQ (cap embeds line 1, and it
-holds no proc-ROUTE to route at all), forge a new device cap (no HW_ACCESS),
+holds no proc-ROUTE to route at all), forge a new device cap (no ioport or IRQ
+control capability),
 reach the framebuffer (no FRAMEBUFFER), or call any peer service (no client
 caps — Fase 22).  `console` is even narrower: one port range, no IRQ authority.
 `fb` can only map the framebuffer VMO it already holds.
@@ -169,7 +176,8 @@ IRQ 5 (unused) as the dummy line.
 
 1. Give it the SMALLEST device caps it needs: an ioport cap over exactly its
    register range, an IRQ cap for exactly its line, nothing more.
-2. Never grant a driver `HW_ACCESS`, `FRAMEBUFFER`, `KDEBUG`, or a spawn cap —
+2. Never grant a driver a CONTROL capability (ioport, IRQ, framebuffer, debug,
+   process or initrd) —
    those let it forge device authority or escalate.  Drivers receive already-
    minted device caps, not the bootstrap cap that creates them.
 3. Never grant a driver a proc cap with RIGHT_ROUTE unless it must route its own

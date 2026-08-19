@@ -9,36 +9,56 @@ Defines how the kernel, `init`, `svcmgr`, and child services exchange bootstrap 
 The current healthy-path bootstrap is four-stage:
 
 1. The kernel spawns one minimal ring-3 bootstrap task from the dedicated linked `userboot` image slice.
-2. The kernel injects one `KBootstrapCap` into that first user task.
-3. `userboot` resolves `init` from the embedded initrd with `SYS_INITRD_VMO` and starts it via the ring-3 loader path.
+2. The kernel publishes the root task's capabilities into its CSpace — six boot control capabilities, its own root CNode, its own thread, its VSpace and the boot Untypeds — and describes all of them in a **BootInfo** region mapped read-only into the task (address in RBX).
+3. `userboot` validates that description against its own CSpace, resolves `init` from the embedded initrd with `SYS_INITRD_VMO` and starts it via the ring-3 loader path.
 4. `init` spawns `svcmgr`; `svcmgr` then bootstraps the remaining built-in services from the service catalog.
 
 This keeps normal service image loading and topology in userland while leaving only one minimal kernel-seeded root task.
 
 ## Kernel bootstrap authority contract
 
-The kernel injects one `KBootstrapCap` into the first user task (`userboot`) with:
+Stage 5: **one capability, one authority.**  The kernel publishes six boot
+capabilities into the root task's CSpace, each carrying exactly one authority
+and each matched by exact equality — a capability that merely contains an
+authority cannot be constructed:
 
-- handle rights: `RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER`
-- capability permissions: `IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_HW_ACCESS | IRIS_BOOTCAP_KDEBUG | IRIS_BOOTCAP_FRAMEBUFFER`
+| CPtr | Capability | Authorises |
+|---|---|---|
+| `BOOT_CPTR_IRQ_CONTROL` (3) | IRQ control | `SYS_CAP_CREATE_IRQCAP` |
+| `BOOT_CPTR_IOPORT_CONTROL` (4) | ioport control | `SYS_CAP_CREATE_IOPORT` |
+| `BOOT_CPTR_DEBUG_CONTROL` (5) | debug control | `SYS_KLOG_DRAIN`, `SYS_SCHED_INFO`, `SYS_POWEROFF` |
+| `BOOT_CPTR_PROC_CONTROL` (6) | process control | `SYS_PROCESS_CREATE` |
+| `BOOT_CPTR_INITRD_CONTROL` (7) | initrd | `SYS_INITRD_COUNT`, `SYS_INITRD_VMO` |
+| `BOOT_CPTR_FB_CONTROL` (8) | framebuffer | `SYS_FRAMEBUFFER_VMO` (one-shot) |
+
+Each is minted with `RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER`.  Slot 1
+(`BOOT_CPTR_BOOTSTRAP_CAP`) held the monolithic predecessor and is now
+permanently reserved and empty; `SYS_BOOTCAP_RESTRICT` is retired, because a
+holder that wants less deletes the slot holding what it no longer needs.
+
+The root task also holds capabilities to its own root CNode
+(`BOOT_CPTR_CNODE`), its initial thread (`BOOT_CPTR_TCB`) and its VSpace
+(`BOOT_CPTR_VSPACE`), plus one KUntyped per drained memory block.  All of it is
+described in the BootInfo region (`<iris/root_bootinfo.h>`), which the root
+task validates before delegating anything: a description that disagrees with
+the CSpace it describes halts the boot with a serial diagnostic.
 
 This is the only healthy-path bootstrap authority retained by the kernel.
-After that point, child image selection is userland-driven through the composable
-spawn primitives rooted in `SYS_INITRD_VMO`.
+After that point, child image selection is userland-driven through the
+composable spawn primitives rooted in `SYS_INITRD_VMO`.
 
-`userboot` uses that capability only long enough to load `init`, forwards the same
-bootstrap authority to `init`, closes its own handles, and parks. That keeps the
-root bootstrap task inert on the healthy path after handoff.
+`userboot` delegates to `init` exactly the capabilities it names — as CPtr
+sources, so each grant is an MDB child of userboot's slot and stays revocable —
+and parks.  That keeps the root bootstrap task inert on the healthy path after
+handoff.
 
 ## Ring-3 child spawn contract
 
-Service spawn is restricted by an explicit bootstrap capability handle.
-
-The caller must present:
-
-- object type: `KOBJ_BOOTSTRAP_CAP`
-- handle right: `RIGHT_READ`
-- capability permission: `IRIS_BOOTCAP_SPAWN_SERVICE`
+A spawn needs TWO authorities and presents them as two capabilities: the
+process control capability (`SYS_PROCESS_CREATE`) and the initrd capability
+(`SYS_INITRD_COUNT`/`SYS_INITRD_VMO`).  They were one permission bit until
+Stage 5, which is why `vfs` — a file server that only reads boot images — used
+to hold the authority to create processes.
 
 On success:
 
@@ -47,9 +67,11 @@ On success:
 - `SYS_PROCESS_CREATE` creates a fresh child process
 - `SYS_VMO_MAP_INTO` maps prepared segments into that process
 - `SYS_THREAD_START` starts the first thread
-- `SYS_HANDLE_INSERT` transfers bootstrap objects into the child handle table
-- the child receives its bootstrap handle in `RBX`
-- the parent retains the process handle and any bootstrap channels it created
+- every capability the child starts with is a pre-start CSpace mint
+  (`SYS_PROC_CSPACE_MINT` / `SYS_CSPACE_MINT_INTO`), sourced from the parent's
+  own slots so the delegation stays revocable
+- RBX carries 0: the child's authority is in its CSpace, not in a register
+- the parent retains the process capability it created
 
 ## `svcmgr` child bootstrap contract
 

@@ -86,23 +86,26 @@ Operational consequence:
 
 ### `KBootstrapCap`
 
-Current delivery path:
+Current delivery path (Stage 5 — one capability, one authority):
 
-- kernel -> first user task at spawn time
-- handle rights: `RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER`
-- permission bits:
-  - `IRIS_BOOTCAP_SPAWN_SERVICE`
-  - `IRIS_BOOTCAP_HW_ACCESS`
-  - `IRIS_BOOTCAP_KDEBUG`
-  - `IRIS_BOOTCAP_FRAMEBUFFER`
+- kernel -> root task's CSpace at spawn time, one capability per slot
+- rights on each: `RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER`
+- described in the BootInfo region the root task reads and validates
 
 Current use:
 
-- `IRIS_BOOTCAP_SPAWN_SERVICE`: authorizes `SYS_INITRD_COUNT` and `SYS_INITRD_VMO`
-- `IRIS_BOOTCAP_HW_ACCESS`: authorizes hardware cap creation (`SYS_CAP_CREATE_IRQCAP`, `SYS_CAP_CREATE_IOPORT`) until userland narrows it with `SYS_BOOTCAP_RESTRICT`
-- `IRIS_BOOTCAP_KDEBUG`: authorizes `SYS_POWEROFF` and `SYS_KLOG_DRAIN`
-- `IRIS_BOOTCAP_FRAMEBUFFER`: authorizes `SYS_FRAMEBUFFER_VMO` (one-shot; kernel clears the flag after first claim)
-- does not grant general process-management authority
+- `IRIS_BOOTCAP_PROC_CONTROL`: authorizes `SYS_PROCESS_CREATE`
+- `IRIS_BOOTCAP_INITRD_CONTROL`: authorizes `SYS_INITRD_COUNT` and `SYS_INITRD_VMO`
+- `IRIS_BOOTCAP_IRQ_CONTROL`: authorizes `SYS_CAP_CREATE_IRQCAP`
+- `IRIS_BOOTCAP_IOPORT_CONTROL`: authorizes `SYS_CAP_CREATE_IOPORT`
+- `IRIS_BOOTCAP_DEBUG_CONTROL`: authorizes `SYS_POWEROFF`, `SYS_KLOG_DRAIN`, `SYS_SCHED_INFO`
+- `IRIS_BOOTCAP_FB_CONTROL`: authorizes `SYS_FRAMEBUFFER_VMO` (one-shot; the kernel clears the flag after first claim)
+
+Each is matched by EXACT equality, so holding one says nothing about any other,
+and a capability carrying two authorities cannot be constructed.  Giving one up
+is deleting the slot that holds it — `SYS_BOOTCAP_RESTRICT` is retired, and
+svcmgr drops its two device control capabilities that way once the catalog's
+hardware is claimed.  None of them grants general process-management authority.
 
 ### `KIoPort`
 
