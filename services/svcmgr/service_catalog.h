@@ -55,7 +55,8 @@ struct iris_service_catalog_entry {
     uint16_t       ioport_base;
     uint16_t       ioport_count;
     uint8_t        give_console;    /* 1 = forward console channel during bootstrap */
-    uint8_t        give_spawn_cap;  /* 1 = forward spawn cap so service can load initrd VMOs */
+    uint8_t        give_initrd_cap; /* 1 = forward the initrd capability so the
+                                     * service can read boot images (vfs) */
     uint8_t        give_irqcap;     /* 1 = forward KIrqCap so service can call SYS_IRQ_ACK */
     uint8_t        irq_notify;      /* 1 = route the IRQ to a KNotification owned by svcmgr
                                      *     (Fase 7.6) instead of the legacy service KChannel;
@@ -130,7 +131,7 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .ioport_base = 0u,
         .ioport_count = 0u,
         .give_console = 0u,  /* Fase 8: vfs logs via IRIS_CPTR_CONSOLE_EP */
-        .give_spawn_cap = 1u,
+        .give_initrd_cap = 1u,
         .own_service_ep = 1u,
         /* Fase 7.5: vfs is endpoint-only — no legacy service/reply channels. */
         .endpoint_only = 1u,

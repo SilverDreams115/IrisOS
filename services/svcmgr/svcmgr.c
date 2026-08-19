@@ -93,10 +93,13 @@ struct svcmgr_dynamic_service {
 };
 
 struct svcmgr_state {
-    /* Etapa 4: the spawn/authority capability as a CPtr slot, not a handle.
-     * Starts at IRIS_CPTR_SPAWN_CAP and MOVES to SVCMGR_SPAWN_NARROW_SLOT once
-     * bootstrap strips HW_ACCESS (see svcmgr_request_hardware_caps).  0 = absent. */
-    uint64_t    spawn_cap_c;
+    /* Stage 5 Etapa 2: the two authorities a spawn needs, each a CPtr slot
+     * holding a capability that means exactly one thing.  They no longer move
+     * or narrow during bootstrap: hardware authority is given up by deleting
+     * its own slots (svcmgr_request_hardware_caps), which leaves these two
+     * untouched.  0 = absent. */
+    uint64_t    proc_cap_c;
+    uint64_t    initrd_cap_c;
     /* Etapa 4: both are CPtr slots, not handles.  Endpoint invocation resolves
      * either namespace, and as mint sources a CPtr installs each child's cap as
      * an MDB child of our slot — so the delegation stays revocable.  0 = absent. */
@@ -141,7 +144,6 @@ static const char sm_str_svc_unknown[]  = "[SVCMGR] WARN: unknown bootstrap serv
 static const char sm_str_watchok[]      = "[SVCMGR] lifecycle watch armed\n";
 static const char sm_str_bootcapfail[]  = "[SVCMGR] FATAL: missing spawn capability\n";
 static const char sm_str_untypedfail[]  = "[SVCMGR] WARN: missing untyped pool\n";
-static const char sm_str_stripfail[]    = "[SVCMGR] WARN: bootstrap strip FAILED\n";
 static const char sm_str_restart[]           = "[SVCMGR] restarting ";
 static const char sm_str_restart_exhausted[] = "[SVCMGR] WARN: restart budget exhausted: ";
 static const char sm_str_ep_ready[]          = "[SVCMGR] ep ready\n";
@@ -280,7 +282,7 @@ static void svcmgr_close_handle_if_valid(handle_id_t *h) {
 static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
     uint32_t ci;
 
-    if (!state || state->spawn_cap_c == 0u) return;
+    if (!state) return;
 
     for (ci = 0; ci < iris_service_catalog_count(); ci++) {
         const struct iris_service_catalog_entry *e = iris_service_catalog_at(ci);
@@ -310,13 +312,14 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
     /*
      * Bootstrap is over: drop the authority to claim MORE hardware.
      *
-     * Stage 5 Etapa 2 turns this from a narrowing into a deletion.  It used to
-     * be derive-then-delete over a permission mask — SYS_BOOTCAP_RESTRICT
-     * cloned the monolith without IRIS_BOOTCAP_HW_ACCESS and svcmgr deleted
-     * the wide original — because device authority was a BIT on the same
-     * capability that carries spawn and debug authority, and the only way to
-     * drop one bit was to rebuild the object.  Device authority is its own
-     * capability now, so giving it up is deleting the slot that holds it.
+     * Stage 5 Etapa 2 turned this from a narrowing into a deletion.  It used
+     * to be derive-then-delete over a permission mask — SYS_BOOTCAP_RESTRICT
+     * cloned the monolith without the hardware bit and svcmgr deleted the wide
+     * original — because device authority was a BIT on the same capability
+     * that carried spawn and debug authority, and the only way to drop one bit
+     * was to rebuild the object.  Every authority is its own capability now,
+     * so giving one up is deleting the slot that holds it, and what svcmgr
+     * keeps (process, initrd, debug) is untouched by the act.
      *
      * The device caps claimed above are MDB children of these slots, so
      * deleting the parents reparents them onto init's slots rather than
@@ -325,19 +328,6 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
      */
     (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, IRIS_CPTR_IRQ_CONTROL);
     (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, IRIS_CPTR_IOPORT_CONTROL);
-
-    /* What is left of the monolith mixes SPAWN_SERVICE and FRAMEBUFFER;
-     * svcmgr needs the first and never uses the second, so the mask narrowing
-     * survives here until those two split as well.  Debug authority left the
-     * mask in Etapa 2b and arrives as its own capability. */
-    if (svcmgr_syscall3(SYS_BOOTCAP_RESTRICT, state->spawn_cap_c,
-                        IRIS_BOOTCAP_SPAWN_SERVICE,
-                        SVCMGR_SPAWN_NARROW_SLOT) == 0) {
-        (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, IRIS_CPTR_SPAWN_CAP);
-        state->spawn_cap_c = SVCMGR_SPAWN_NARROW_SLOT;
-    } else {
-        svcmgr_log(sm_str_stripfail);
-    }
 }
 
 static struct svcmgr_service_state *svcmgr_service_state(struct svcmgr_state *state,
@@ -1060,12 +1050,18 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         mints[n].badge = 0;
         n++;
     }
-    /* Fase 13 (Track C): the initrd-access spawn cap (vfs) arrives as a
-     * pre-start CSpace mint instead of a post-spawn KChannel INITRD_CAP
-     * message.  RIGHT_READ matches the legacy delivery; unbadged. */
-    if (manifest->give_spawn_cap && state->spawn_cap_c != 0u) {
-        mints[n].slot = IRIS_CPTR_SPAWN_CAP;
-        mints[n].src_cptr = state->spawn_cap_c;
+    /* Fase 13 (Track C): vfs's initrd access arrives as a pre-start CSpace
+     * mint instead of a post-spawn KChannel INITRD_CAP message.  RIGHT_READ
+     * matches the legacy delivery; unbadged.
+     *
+     * Stage 5 Etapa 2: what is delegated here is the INITRD capability, which
+     * authorises reading boot images and nothing else.  vfs used to receive
+     * the monolith's spawn bit for this, i.e. a file server held the authority
+     * to create processes because that was the only cap that could read an
+     * image. */
+    if (manifest->give_initrd_cap && state->initrd_cap_c != 0u) {
+        mints[n].slot = IRIS_CPTR_INITRD_CONTROL;
+        mints[n].src_cptr = state->initrd_cap_c;
         mints[n].rights = RIGHT_READ;
         mints[n].badge = 0;
         n++;
@@ -1305,7 +1301,8 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
             }
         }
 
-        long r = svc_load_minted_ws((handle_id_t)state->spawn_cap_c, manifest->image_name,
+        long r = svc_load_minted_ws(state->proc_cap_c, state->initrd_cap_c,
+                                    manifest->image_name,
                                  &loaded_proc_h, &loaded_chan_h,
                                  mints, mint_count,
                                SVC_LOADER_WS(state->untyped_c, 66u));
@@ -1417,7 +1414,8 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
 
     for (uint32_t i = 0; i < (uint32_t)sizeof(*state); i++) ((uint8_t *)state)[i] = 0;
 
-    state->spawn_cap_c = 0u;
+    state->proc_cap_c   = 0u;
+    state->initrd_cap_c = 0u;
     state->console_ep_c = 0u;
     state->ep_c        = 0u;
     state->death_notif_c = 0u;
@@ -1451,11 +1449,16 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
      *   slot 5 (OWN_EP)     — svcmgr's discovery endpoint recv+mint side,
      *                         published as "svcmgr.ep" and minted as
      *                         IRIS_CPTR_SVCMGR_EP into catalog children;
-     *   slot 6 (SPAWN_CAP)  — spawn/authority cap (initrd, ioport/irq caps). */
+     *   slot 6 (PROC_CONTROL) — the authority to create a process; slot 8
+     *                         (INITRD_CONTROL) the authority to read boot
+     *                         images; slot 9 (DEBUG_CONTROL) the kernel log
+     *                         and scheduler statistics.  Three capabilities,
+     *                         three authorities (Stage 5 Etapa 2). */
     {
         state->console_ep_c = IRIS_CPTR_CONSOLE_EP;
         state->ep_c = IRIS_CPTR_OWN_EP;
-        state->spawn_cap_c = IRIS_CPTR_SPAWN_CAP;
+        state->proc_cap_c   = IRIS_CPTR_PROC_CONTROL;
+        state->initrd_cap_c = IRIS_CPTR_INITRD_CONTROL;
         /* Fase S1: the delegated untyped pool (init carved a sub-untyped and
          * minted it at slot 12).  Every EP/notification/reply svcmgr creates
          * is retyped from this pool.
@@ -1468,7 +1471,7 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
         state->untyped_c = (ur >= 0) ? (uint64_t)IRIS_CPTR_OWN_UNTYPED : 0u;
 
     }
-    if (state->spawn_cap_c == 0u) {
+    if (state->proc_cap_c == 0u) {
         svcmgr_log(sm_str_bootcapfail);
         return;
     }

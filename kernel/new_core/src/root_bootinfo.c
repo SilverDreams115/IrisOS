@@ -34,8 +34,7 @@ uint32_t root_bootinfo_capacity(uint32_t bytes) {
 }
 
 iris_error_t root_bootinfo_init(void *buf, uint32_t bytes,
-                                uint64_t cap_bootstrap, uint64_t cap_vspace,
-                                uint32_t cnode_slots) {
+                                uint64_t cap_vspace, uint32_t cnode_slots) {
     struct iris_root_bootinfo *bi = (struct iris_root_bootinfo *)buf;
 
     if (!bi) return IRIS_ERR_INVALID_ARG;
@@ -45,11 +44,13 @@ iris_error_t root_bootinfo_init(void *buf, uint32_t bytes,
     bi->version          = IRIS_ROOT_BOOTINFO_VERSION;
     bi->header_bytes     = RBI_HEADER_BYTES;
     bi->total_bytes      = RBI_HEADER_BYTES;
-    bi->cap_bootstrap    = cap_bootstrap;
     bi->cap_vspace       = cap_vspace;
     bi->cap_irq_control    = 0u;
     bi->cap_ioport_control = 0u;
     bi->cap_debug_control  = 0u;
+    bi->cap_proc_control   = 0u;
+    bi->cap_initrd_control = 0u;
+    bi->cap_fb_control     = 0u;
     bi->cnode_slots      = cnode_slots;
     /* No free slots claimed yet — the boot path knows which slots it left
      * empty only after it has stopped filling them. */
@@ -74,6 +75,9 @@ iris_error_t root_bootinfo_set_control_cap(void *buf, uint32_t bytes,
     case IRIS_BOOTCAP_IRQ_CONTROL:    bi->cap_irq_control    = cptr; break;
     case IRIS_BOOTCAP_IOPORT_CONTROL: bi->cap_ioport_control = cptr; break;
     case IRIS_BOOTCAP_DEBUG_CONTROL:  bi->cap_debug_control  = cptr; break;
+    case IRIS_BOOTCAP_PROC_CONTROL:   bi->cap_proc_control   = cptr; break;
+    case IRIS_BOOTCAP_INITRD_CONTROL: bi->cap_initrd_control = cptr; break;
+    case IRIS_BOOTCAP_FB_CONTROL:     bi->cap_fb_control     = cptr; break;
     default:                          return IRIS_ERR_INVALID_ARG;
     }
     return IRIS_OK;

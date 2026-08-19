@@ -9,7 +9,7 @@
  * service/reply channels for VFS (catalog endpoint_only flag).
  *
  * KChannel is fully retired (Fase 13/Track G): vfs receives its bootstrap
- * capability as a pre-start CPtr mint (IRIS_CPTR_SPAWN_CAP) and logs over
+ * capability as a pre-start CPtr mint (IRIS_CPTR_INITRD_CONTROL) and logs over
  * console.ep — neither path uses a channel.
  */
 #include <iris/svcmgr_proto.h>
@@ -28,7 +28,7 @@
 
 struct vfs_state {
     handle_id_t console_h;
-    handle_id_t spawn_cap_h;
+    handle_id_t initrd_c;
     handle_id_t ep_h;          /* recv side of our KEndpoint (Fase 7.1) */
     struct vfs_export      exports[VFS_SERVICE_EXPORTS];
     struct vfs_grant_table grants;   /* Fase 28.1: VFS-enforced file grants */
@@ -127,7 +127,7 @@ static void vfs_copy_cstr(char *dst, const uint8_t *src, uint32_t len) {
 }
 
 /* Fase 13 (Track C): vfs_bootstrap_handle retired — the initrd spawn cap now
- * arrives as the IRIS_CPTR_SPAWN_CAP pre-start mint, no KChannel one-shot. */
+ * arrives as the IRIS_CPTR_INITRD_CONTROL pre-start mint, no KChannel one-shot. */
 
 static int vfs_seed_one_export(struct vfs_export *export_file,
                                const char *name,
@@ -166,9 +166,9 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
     uint32_t count;
     uint32_t i;
 
-    if (!state || state->spawn_cap_h == HANDLE_INVALID) return;
+    if (!state || state->initrd_c == HANDLE_INVALID) return;
 
-    count_rc = vfs_syscall1(SYS_INITRD_COUNT, (uint64_t)state->spawn_cap_h);
+    count_rc = vfs_syscall1(SYS_INITRD_COUNT, (uint64_t)state->initrd_c);
     if (count_rc <= 0) return;
     count = (uint32_t)count_rc;
     if (count > VFS_INITRD_NAME_COUNT) count = VFS_INITRD_NAME_COUNT;
@@ -189,7 +189,7 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
          * the slot deleted.  It used to come back as a handle that had to be
          * closed on three separate paths. */
         vfs_slot_delete(VFS_SLOT_INITRD_VMO);
-        vmo_h = vfs_syscall3(SYS_INITRD_VMO, (uint64_t)state->spawn_cap_h,
+        vmo_h = vfs_syscall3(SYS_INITRD_VMO, (uint64_t)state->initrd_c,
                              (uint64_t)i, VFS_INITRD_VMO_DEST);
         if (vmo_h != 0) continue;
 
@@ -221,13 +221,13 @@ static int vfs_seed_one_fixture(struct vfs_state *state, uint32_t index,
     int64_t  vmo_h, sz_rc, map_rc;
     uint64_t virt;
 
-    if (!state || state->spawn_cap_h == HANDLE_INVALID) return 0;
+    if (!state || state->initrd_c == HANDLE_INVALID) return 0;
     for (slot = 0; slot < (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0])); slot++)
         if (!state->exports[slot].ready) break;
     if (slot == (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0]))) return 0;
 
     vfs_slot_delete(VFS_SLOT_INITRD_VMO);
-    vmo_h = vfs_syscall3(SYS_INITRD_VMO, (uint64_t)state->spawn_cap_h,
+    vmo_h = vfs_syscall3(SYS_INITRD_VMO, (uint64_t)state->initrd_c,
                          (uint64_t)index, VFS_INITRD_VMO_DEST);
     if (vmo_h != 0) return 0;
     sz_rc = vfs_syscall1(SYS_VMO_SIZE, (uint64_t)VFS_SLOT_INITRD_VMO);
@@ -291,7 +291,7 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
     (void)rbx_unused;
     for (uint32_t i = 0; i < (uint32_t)sizeof(state); i++) ((uint8_t *)&state)[i] = 0;
     state.console_h = HANDLE_INVALID;
-    state.spawn_cap_h = HANDLE_INVALID;
+    state.initrd_c = HANDLE_INVALID;
     state.ep_h = HANDLE_INVALID;
 
     vfs_log(vfs_str_started);
@@ -302,7 +302,7 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
      * through the device-cap dual resolver, so SYS_INITRD_* accept it by CPtr;
      * no bootstrap KChannel one-shot is needed. */
     state.ep_h = (handle_id_t)IRIS_CPTR_OWN_EP;
-    state.spawn_cap_h = (handle_id_t)IRIS_CPTR_SPAWN_CAP;
+    state.initrd_c = (handle_id_t)IRIS_CPTR_INITRD_CONTROL;
 
     /* Fase 8: console output goes through the minted console-endpoint
      * slot; a PING proves the slot is live before the gated marker. */
@@ -353,7 +353,7 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
         state.ep_state.grants       = &state.grants;
         vfs_ep_grants_init(&state.ep_state, epoch);
     }
-    /* spawn_cap_h is the IRIS_CPTR_SPAWN_CAP CSpace slot, not an owned handle —
+    /* initrd_c is the IRIS_CPTR_INITRD_CONTROL CSpace slot, not an owned handle —
      * it is reaped with the address space, nothing to close here (Track C). */
     vfs_log(vfs_str_boot_ok);
     vfs_log(vfs_str_ep_ready);

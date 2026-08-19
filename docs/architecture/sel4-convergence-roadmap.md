@@ -465,6 +465,26 @@ The child-side slot reuses the retired `IRIS_CPTR_SVC_REPLY` constant, dead
 since KChannel was removed, because root CNodes are 256 slots and the suite's
 is full.  T296 gained a third leg; T291's oracle moved to the framebuffer bit.
 
+### Etapa 2c — the monolith is gone  ✅ DONE
+
+The last three authorities split: `SPAWN_SERVICE` became TWO capabilities
+(process control and initrd control — one bit was authorising both spawning a
+service and reading a boot image, which is why vfs, a file server, held the
+authority to create processes), and `FRAMEBUFFER` became the framebuffer
+control capability.
+
+`SYS_BOOTCAP_RESTRICT` (45) is RETIRED with its number reserved, and the
+monolith is unrepresentable rather than merely unused: `kbootcap_alloc` refuses
+a zero or multi-bit kind, every kernel check is exact equality, and
+`kbootcap_allows` / `kbootcap_clone_restricted` are deleted.  Slot 1
+(`BOOT_CPTR_BOOTSTRAP_CAP`) stays reserved and permanently empty.
+
+The loader API carries the split into userland: `svc_load_minted_ws` takes a
+process capability and an initrd capability, so "can read images, cannot spawn"
+is expressible in the signature.  T291 died with its mechanism (its subject was
+the retired syscall); T148 pins 45; T296 covers what replaced it.  Suite:
+269/269.
+
 ## Stage 6 — Remaining memory and objects
 
 Precondition: Stage 1 (ownership/derivation); may overlap with 5.

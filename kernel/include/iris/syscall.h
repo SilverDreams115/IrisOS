@@ -206,7 +206,9 @@
  * space; the kernel only exposes raw memory and process management operations.
  *
  * SYS_INITRD_VMO(auth_h, index) → vmo_handle or negative iris_error_t
- *   auth_h: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_SPAWN_SERVICE.
+ *   auth_h: the process control capability (IRIS_BOOTCAP_PROC_CONTROL) for
+ *     SYS_PROCESS_CREATE; the initrd capability (IRIS_BOOTCAP_INITRD_CONTROL)
+ *     for the initrd calls.
  *   index: integer initrd catalog index (name→index mapping is a ring-3 concern).
  *   Returns a KOBJ_VMO (eager wrap, owned=0) covering the embedded ELF bytes.
  *   The VMO is read-only (RIGHT_READ only); map with flags=0 for read access.
@@ -257,7 +259,7 @@
  * SYS_FRAMEBUFFER_VMO(auth, info_uptr, dest) → vmo_handle, or 0 when dest
  *   names a slot, or negative iris_error_t   (Stage 4 destination slot in
  *   arg2, RETYPE2 packing — see SYS_VSPACE_SELF)
- *   auth_h:    KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_FRAMEBUFFER.
+ *   auth_h:    the framebuffer control capability (IRIS_BOOTCAP_FB_CONTROL).
  *   info_uptr: user pointer to struct iris_fb_params (see iris/fb_info.h);
  *              filled with physical base, size, and pixel geometry on success.
  *   Returns a KOBJ_VMO (eager wrap, owned=0) covering the framebuffer region
@@ -271,7 +273,9 @@
  * Initrd catalog count — modern/conforming (iris_error_t).
  *
  * SYS_INITRD_COUNT(auth_h) → uint32_t count or negative iris_error_t
- *   auth_h: KOBJ_BOOTSTRAP_CAP with IRIS_BOOTCAP_SPAWN_SERVICE.
+ *   auth_h: the process control capability (IRIS_BOOTCAP_PROC_CONTROL) for
+ *     SYS_PROCESS_CREATE; the initrd capability (IRIS_BOOTCAP_INITRD_CONTROL)
+ *     for the initrd calls.
  *   Returns the number of entries in the kernel's initrd catalog.
  *   Ring-3 uses this at startup to verify its local name→index table is
  *   consistent with the kernel build.
@@ -398,45 +402,35 @@
 #define SYS_NS_REGISTER     24
 #define SYS_NS_LOOKUP       25
 
-/* Bootstrap capability permissions.
+/* Boot capability kinds — ONE CAPABILITY, ONE AUTHORITY (Stage 5 Etapa 2).
  *
- * Stage 5 Etapa 2 is splitting the monolith into one capability per authority.
- * A split-out authority is checked for EXACTLY — a capability that merely
- * includes the bit does not authorise it — so IRIS_BOOTCAP_IRQ_CONTROL and
- * IRIS_BOOTCAP_IOPORT_CONTROL name whole capabilities, not bits to combine.
- * The remaining bits still live together on the boot capability the kernel
- * publishes for the root task, and are still narrowed with
- * SYS_BOOTCAP_RESTRICT until they split too. */
-#define IRIS_BOOTCAP_NONE          0u
-#define IRIS_BOOTCAP_SPAWN_SERVICE (1u << 0)
+ * These are not bits to combine: each value names a whole capability, the
+ * kernel matches it by exact equality, and a capability carrying more than one
+ * cannot be constructed.  The predecessor was a single object with a
+ * permission mask, delegated whole and narrowed by cloning a weaker copy
+ * (SYS_BOOTCAP_RESTRICT, retired with it).
+ *
+ * Each is published by the kernel into its own slot of the root task's CNode
+ * and described in the BootInfo region (<iris/root_bootinfo.h>). */
+#define IRIS_BOOTCAP_NONE           0u
+#define IRIS_BOOTCAP_PROC_CONTROL   (1u << 0)  /* SYS_PROCESS_CREATE */
 /* (1u << 1) was IRIS_BOOTCAP_HW_ACCESS — one bit for both IRQ and ioport
  * creation.  Split into the two control capabilities below; not reused. */
-#define IRIS_BOOTCAP_DEBUG_CONTROL  (1u << 2)  /* the debug control capability */
-#define IRIS_BOOTCAP_FRAMEBUFFER   (1u << 3)  /* may call SYS_FRAMEBUFFER_VMO (one-shot) */
-#define IRIS_BOOTCAP_IRQ_CONTROL    (1u << 4)  /* the IRQ control capability */
-#define IRIS_BOOTCAP_IOPORT_CONTROL (1u << 5)  /* the ioport control capability */
+#define IRIS_BOOTCAP_DEBUG_CONTROL  (1u << 2)  /* klog drain / sched info / poweroff */
+#define IRIS_BOOTCAP_FB_CONTROL     (1u << 3)  /* SYS_FRAMEBUFFER_VMO (one-shot) */
+#define IRIS_BOOTCAP_IRQ_CONTROL    (1u << 4)  /* SYS_CAP_CREATE_IRQCAP */
+#define IRIS_BOOTCAP_IOPORT_CONTROL (1u << 5)  /* SYS_CAP_CREATE_IOPORT */
+#define IRIS_BOOTCAP_INITRD_CONTROL (1u << 6)  /* SYS_INITRD_COUNT / SYS_INITRD_VMO */
 
 /*
- * Bootstrap capability permission restriction — modern/conforming (iris_error_t).
+ * SYS_BOOTCAP_RESTRICT (45) — RETIRED (Stage 5 Etapa 2).  Number permanently
+ * reserved; returns IRIS_ERR_NOT_SUPPORTED.
  *
- * SYS_BOOTCAP_RESTRICT(cap, new_perms, dest_slot) → 0 or negative iris_error_t
- *   cap: KOBJ_BOOTSTRAP_CAP with RIGHT_READ, named by CPtr or by handle.
- *   new_perms: IRIS_BOOTCAP_* bitmask; applied as: new_cap->permissions = old & new_perms.
- *   Cannot add permissions — only AND-reduces the existing set.
- *
- *   CPtr source (dest_slot required, non-zero): the restricted copy is
- *   installed into dest_slot of the caller's root CNode as an MDB CHILD of the
- *   source slot.  The source is left intact: narrowing is derive-then-delete,
- *   not mutation in place, so a caller that wants its own authority reduced
- *   deletes the source slot afterwards.  Because the copy is a real MDB child,
- *   revoking the source still reaches it.
- *
- *   Handle source (dest_slot ignored): the caller's handle is rebound to the
- *   restricted copy; aliased handles in other tables keep their original
- *   permissions.  Legacy contract, retires with the handle namespace.
- *
- *   Use case: svcmgr strips IRIS_BOOTCAP_HW_ACCESS after claiming all hardware
- *   caps during bootstrap, so a compromised svcmgr cannot create new hw caps.
+ * It derived a weaker CLONE of a boot capability, the only way to give up part
+ * of your authority while one object carried several authorities at once.
+ * Each boot capability carries exactly one now, so there is nothing to narrow:
+ * a holder that wants less deletes the slot holding what it no longer needs,
+ * and a granter that wants it back revokes through the CDT.
  */
 #define SYS_BOOTCAP_RESTRICT  45
 

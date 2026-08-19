@@ -232,13 +232,13 @@ static long sl_name_to_index(const char *name) {
 
 /* ── svc_load ────────────────────────────────────────────────────── */
 
-long svc_initrd_count(handle_id_t spawn_cap_h) {
-    return sl_sys2(SYS_INITRD_COUNT, (long)spawn_cap_h, 0);
+long svc_initrd_count(uint64_t initrd_c) {
+    return sl_sys2(SYS_INITRD_COUNT, (long)initrd_c, 0);
 }
 
-long svc_load(handle_id_t spawn_cap_h, const char *name,
+long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
               handle_id_t *out_proc_h, handle_id_t *out_chan_h) {
-    return svc_load_minted(spawn_cap_h, name, out_proc_h, out_chan_h, 0, 0);
+    return svc_load_minted(proc_c, initrd_c, name, out_proc_h, out_chan_h, 0, 0);
 }
 
 /* Legacy arity: RETIRED (Stage 4).  It existed so a caller with nowhere to put
@@ -247,10 +247,10 @@ long svc_load(handle_id_t spawn_cap_h, const char *name,
  * Kept as a hard failure rather than deleted: a caller that reaches here has
  * skipped the workspace, and a silent fall back to handles is exactly what
  * this stage removes. */
-long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
+long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                      const struct svc_mint *mints, uint32_t mint_count) {
-    (void)spawn_cap_h; (void)name; (void)mints; (void)mint_count;
+    (void)proc_c; (void)initrd_c; (void)name; (void)mints; (void)mint_count;
     if (out_proc_h) *out_proc_h = HANDLE_INVALID;
     if (out_chan_h) *out_chan_h = HANDLE_INVALID;
     return (long)IRIS_ERR_NOT_SUPPORTED;
@@ -299,7 +299,7 @@ static int sl_ws_ensure(uint64_t ws) {
     return (r == 0 || r == (long)IRIS_ERR_ALREADY_EXISTS);
 }
 
-long svc_load_minted_ws(handle_id_t spawn_cap_h, const char *name,
+long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                         const struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws) {
@@ -344,7 +344,7 @@ long svc_load_minted_ws(handle_id_t spawn_cap_h, const char *name,
 
     /* 1. Get read-only eager VMO wrapping the ELF bytes in the initrd. */
     {
-        r = sl_sys3(SYS_INITRD_VMO, (long)spawn_cap_h, idx, sl_ws_dest(ws, SL_WS_ELF));
+        r = sl_sys3(SYS_INITRD_VMO, (long)initrd_c, idx, sl_ws_dest(ws, SL_WS_ELF));
         if (r < 0) goto out;
         elf_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_ELF);
     }
@@ -415,7 +415,7 @@ long svc_load_minted_ws(handle_id_t spawn_cap_h, const char *name,
          * and the loader keeps no state to remember where it got to. */
         uint32_t proc_leaf = 0u;
         for (uint32_t l = SL_WS_PROC_BASE; l < 256u; l++) {
-            r = sl_sys2(SYS_PROCESS_CREATE, (long)spawn_cap_h,
+            r = sl_sys2(SYS_PROCESS_CREATE, (long)proc_c,
                         sl_ws_dest(ws, l));
             if (r == 0) { proc_leaf = l; break; }
             if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;

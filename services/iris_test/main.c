@@ -328,8 +328,10 @@ static void it_slot_delete(uint32_t slot) {
 /* The only slots genuinely unassigned in this process (verified by enumerating
  * every IRIS_CPTR_ and BOOT_CPTR_ constant, every _SLOT define and every
  * range-reserved pool): 29, 43, 63, 99, 254, 255. */
-/* NOTE: slot 99 is deliberately NOT used here — T134 probes it as a
- * guaranteed-EMPTY vspace slot and must keep observing NOT_FOUND. */
+/* Stage 5 Etapa 2: slot 99 is IRIS_CPTR_FB_CONTROL, the framebuffer control
+ * capability.  T134's guaranteed-EMPTY probe moved to a scratch slot it
+ * deletes itself, which is a stronger guarantee than a slot everyone was
+ * asked to leave alone. */
 #define IT_SERIAL_SLOT 255u    /* this process's serial KIoPort */
 /* Shared SCRATCH pool.  Slots are scarce (the CPtr namespace is capped at
  * <1024 and the root CNode has 256 slots, so only these were unassigned), and
@@ -2842,7 +2844,7 @@ static void test_t074(void) {
 
 /* ── Ring-3 spawn/kill lifecycle harness (T075+) ────────────────────────────
  *
- * iris_test acts as the PARENT: using only its own IRIS_CPTR_SPAWN_CAP
+ * iris_test acts as the PARENT: using only its own IRIS_CPTR_PROC_CONTROL
  * KBootstrapCap it spawns the minimal `lifecycle_probe` child (svc_load), hands
  * it exactly one command endpoint (minted into the child's CPtr slot
  * LP_CPTR_CMD_EP), and observes the child's lifecycle via SYS_PROCESS_WATCH /
@@ -2884,7 +2886,7 @@ static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
     }
     handle_id_t boot_h = HANDLE_INVALID;
     *out_proc_h = HANDLE_INVALID;
-    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+    long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc_h, &boot_h, mints, n,
                              IT_LOADER_WS);
     it_close(&reply_h);  /* the child's slot-13 mint is the only reply cap */
@@ -3086,7 +3088,7 @@ static void test_t076(void) {
  * here; it is the well-known slot IRIS_CPTR_SVCMGR_EP.)
  */
 /* it_recv_bootstrap retired — Fase 13/Track I: the spawn cap is the
- * IRIS_CPTR_SPAWN_CAP pre-start mint, not a bootstrap KChannel message. */
+ * IRIS_CPTR_PROC_CONTROL pre-start mint, not a bootstrap KChannel message. */
 
 /* ── T079: VMO map by CPtr (A1 Increment 1) ─────────────────────────────────
  * SYS_VMO_MAP now resolves the VMO through the dual resolver: a CSpace slot
@@ -8771,6 +8773,7 @@ static void test_t134(void) {
     handle_id_t fr_ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
     if (ep == HANDLE_INVALID || rr < 0) { ok = 0; why = "fixtures"; }
 
+    it_slot_delete(IT_SCRATCH_2);
     struct { long frame; long vs; uint64_t va; uint64_t flags; long expect; const char *tag; } cases[] = {
         { (long)fr,    IT_VS, T134_VA | 0x100ULL, IT_MAP_W, (long)IRIS_ERR_INVALID_ARG,   "unaligned va" },
         { (long)fr,    IT_VS, 0xFFFF800000000000ULL, IT_MAP_W, (long)IRIS_ERR_INVALID_ARG, "kernel va" },
@@ -8778,7 +8781,12 @@ static void test_t134(void) {
         { (long)ep,    IT_VS, T134_VA, IT_MAP_W, (long)IRIS_ERR_WRONG_TYPE,    "wrong frame type" },
         { (long)fr_ro, IT_VS, T134_VA, IT_MAP_W, (long)IRIS_ERR_ACCESS_DENIED, "insufficient rights" },
         { (long)fr,    IT_UT, T134_VA, IT_MAP_W, (long)IRIS_ERR_WRONG_TYPE,    "wrong vspace type" },
-        { (long)fr,    99L,   T134_VA, IT_MAP_W, (long)IRIS_ERR_NOT_FOUND,     "empty vspace slot" },
+        /* Stage 5 Etapa 2: the empty-slot probe used to name slot 99, kept
+         * permanently empty for it.  Slot 99 holds the framebuffer control
+         * capability now, so the probe names a SCRATCH slot deleted on the
+         * line above — guaranteed empty by construction rather than by a
+         * comment asking everyone to leave it alone. */
+        { (long)fr, (long)IT_SCRATCH_2, T134_VA, IT_MAP_W, (long)IRIS_ERR_NOT_FOUND, "empty vspace slot" },
     };
     for (uint32_t c = 0; ok && c < 7u; c++) {
         long got = it_sys4(SYS_FRAME_MAP, cases[c].frame, cases[c].vs,
@@ -9963,12 +9971,17 @@ static void test_t148(void) {
     /* Holes plus the routed-but-RETIRED numbers, which are indistinguishable
      * from a hole at the ABI: both answer NOT_SUPPORTED and touch nothing.
      * 43 = SYS_IOPORT_RESTRICT and 90 = SYS_CNODE_FETCH joined them in Stage 4
-     * (both were handle producers with no CSpace form and no callers). */
+     * (both were handle producers with no CSpace form and no callers), and
+     * 45 = SYS_BOOTCAP_RESTRICT in Stage 5. */
     static const long retired[] = {
         0, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 18, 23, 24, 25, 30, 31, 34,
         37, 38, 41, 42, 43, 44, 46, 59, 63, 72, 78, 79, 80, 90,
         /* Stage 4 closeout: the handle namespace's own surface. */
         15, 22, 52, 53, 81, 87, 89, 95,
+        /* Stage 5 Etapa 2: 45 = SYS_BOOTCAP_RESTRICT.  Narrowing a boot
+         * capability by cloning a weaker copy of it has no meaning once each
+         * capability carries exactly one authority. */
+        45,
     };
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
@@ -10597,7 +10610,7 @@ static long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
     for (uint32_t i = 0; i < nextra && n < 8u; i++) mints[n++] = extra[i];
 
     handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
-    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+    long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, n,
                              IT_LOADER_WS);
     it_close(&boot);
@@ -10817,9 +10830,11 @@ static void test_t160(void) {
      * child, not a productive service).  Each resolve mints a fresh handle;
      * close it immediately so the snapshot balances. */
     const long test_caps[3] = {
-        (long)IRIS_CPTR_SPAWN_CAP, (long)IRIS_CPTR_TEST_UNTYPED, (long)IRIS_CPTR_TEST_PROC,
+        (long)IRIS_CPTR_PROC_CONTROL, (long)IRIS_CPTR_TEST_UNTYPED,
+        (long)IRIS_CPTR_TEST_PROC,
     };
-    const char *const caps_why[3] = { "no spawn cap", "no test untyped", "no self proc" };
+    const char *const caps_why[3] = { "no proc control cap", "no test untyped",
+                                      "no self proc" };
     for (int s = 0; ok && s < 3; s++) {
         if (it_sys1(SYS_CAP_IDENTIFY, test_caps[s]) < 0) {
             ok = 0; why = caps_why[s]; break;
@@ -11082,7 +11097,7 @@ static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t de
     mints[1].rights = dev_rights; mints[1].badge = 0;
 
     handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
-    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+    long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, 2u,
                              IT_LOADER_WS);
     it_close(&boot);
@@ -11322,7 +11337,7 @@ static void test_t168(void) {
     uint8_t fbbuf[64];
     /* The framebuffer VMO was consumed by fb at boot → NOT_FOUND, even though
      * the spawn cap carries FRAMEBUFFER (one-shot authority). */
-    if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, (long)IRIS_CPTR_SPAWN_CAP, (long)(uintptr_t)fbbuf, 0)
+    if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, (long)IRIS_CPTR_FB_CONTROL, (long)(uintptr_t)fbbuf, 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "framebuffer not one-shot"; }
     /* Wrong-type auth cap (a notification) → ACCESS_DENIED (not a bootstrap cap). */
     if (ok) {
@@ -11414,7 +11429,8 @@ static void test_t170(void) {
         mints[1].slot = 10; IT_MINT_SRC(mints[1], io);
         mints[1].rights = RIGHT_READ | RIGHT_WRITE; mints[1].badge = 0;
         handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
-        long r = (ep < 0) ? -1 : svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP,
+        long r = (ep < 0) ? -1 : svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL,
+                                                    IRIS_CPTR_INITRD_CONTROL,
                      "lifecycle_probe", &proc, &boot, mints, 2u,
                              IT_LOADER_WS);
         it_close(&boot); it_close(&io);
@@ -12144,7 +12160,7 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
     uint32_t n = 5u;
     for (uint32_t i = 0; i < nextra && n < 8u; i++) m[n++] = extra[i];
     handle_id_t boot = HANDLE_INVALID;
-    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "lifecycle_probe",
+    long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc, &boot, m, n,
                              IT_LOADER_WS);
     it_close(&boot);
@@ -13924,7 +13940,7 @@ static int t27_pager_spawn(struct t27_pager *p,
     /* Fase 28: the pager is its own supervised binary (initrd "pager"); it
      * enters its serve loop immediately on start — no mode-entry message. */
     handle_id_t boot = HANDLE_INVALID;
-    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager",
+    long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager",
                              &p->proc, &boot, m, n,
                              IT_LOADER_WS);
     it_close(&pgr_reply_h);
@@ -14656,21 +14672,21 @@ static void test_t211(void) {
     int ok = b.ok;
     const char *why = "initrd count boundary";
 
-    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_SPAWN_CAP);
+    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_INITRD_CONTROL);
     if (n < (long)T2_MIN_IMAGES) { ok = 0; why = "count below catalog"; }
 
     /* Every in-range index yields a live VMO with a positive size. */
     for (long i = 0; ok && i < n; i++) {
-        long v = it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, i);
+        long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, i);
         if (v < 0) { ok = 0; why = "image vmo"; break; }
         handle_id_t vh = (handle_id_t)v;
         if (it_sys1(SYS_VMO_SIZE, v) <= 0) { ok = 0; why = "image size"; }
         it_close(&vh);
     }
     /* Out-of-range indices fail cleanly. */
-    if (ok && it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, n)
+    if (ok && it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, n)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "oob not NOT_FOUND"; }
-    if (ok && it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, 9999L)
+    if (ok && it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, 9999L)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "far oob not NOT_FOUND"; }
 
     it_quiesce_reaper();
@@ -14690,11 +14706,11 @@ static void test_t212(void) {
     int ok = b.ok && it_setup_self_vspace();
     const char *why = "initrd size boundary";
 
-    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_SPAWN_CAP);
+    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_INITRD_CONTROL);
     if (n < (long)T2_MIN_IMAGES) { ok = 0; why = "count"; }
 
     for (long i = 0; ok && i < n; i++) {
-        long v = it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, i);
+        long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, i);
         if (v < 0) { ok = 0; why = "vmo"; break; }
         handle_id_t vh = (handle_id_t)v;
         long sz = it_sys1(SYS_VMO_SIZE, v);
@@ -14740,7 +14756,7 @@ static void test_t213(void) {
     {
         struct it_snap fb = it_snap_take();
         handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
-        long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf",
+        long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                                  &proc, &boot, 0, 0u,
                              IT_LOADER_WS);
         if (r != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "badelf not INVALID_ARG"; }
@@ -14781,7 +14797,7 @@ static void test_t214(void) {
 
     handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
     /* Unknown name → NOT_FOUND, no hang, no process. */
-    long r1 = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "no_such_image",
+    long r1 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "no_such_image",
                               &proc, &boot, 0, 0u,
                              IT_LOADER_WS);
     if (r1 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "unknown not NOT_FOUND"; }
@@ -14790,7 +14806,7 @@ static void test_t214(void) {
 
     /* Malformed image → INVALID_ARG, no hang, no process. */
     proc = boot = HANDLE_INVALID;
-    long r2 = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf",
+    long r2 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                               &proc, &boot, 0, 0u,
                              IT_LOADER_WS);
     if (ok && r2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "malformed not INVALID_ARG"; }
@@ -14799,7 +14815,7 @@ static void test_t214(void) {
 
     /* Initrd VMO of the invalid image still succeeds (it is bytes, not code) —
      * the failure is the LOADER's, cleanly reported, not the initrd layer's. */
-    long v = it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, (long)T2_BADELF_IDX);
+    long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, (long)T2_BADELF_IDX);
     if (ok && v < 0) { ok = 0; why = "badelf vmo"; }
     if (v >= 0) { handle_id_t vh = (handle_id_t)v; it_close(&vh); }
 
@@ -14876,7 +14892,7 @@ static void test_t216(void) {
     const char *why = "boot-growth stress";
     uint32_t round = 0u, op = 0u;
 
-    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_SPAWN_CAP);
+    long n = it_sys1(SYS_INITRD_COUNT, (long)IRIS_CPTR_INITRD_CONTROL);
     if (n < (long)T2_MIN_IMAGES) { it_fail("T216", "count"); return; }
 
     for (round = 0; ok && round < T216_ROUNDS; round++) {
@@ -14885,7 +14901,7 @@ static void test_t216(void) {
         case 0: {
             /* Map a random in-range image page 0 into our own VSpace. */
             long i = (long)(t216_rnd(&rng) % (uint32_t)n);
-            long v = it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, i);
+            long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, i);
             if (v < 0) { ok = 0; why = "map vmo"; break; }
             handle_id_t vh = (handle_id_t)v;
             if (it_sys4(SYS_VMO_MAP_PAGE, v, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 0)) != 0) { ok = 0; why = "map"; }
@@ -14895,7 +14911,7 @@ static void test_t216(void) {
         }
         case 1: {
             /* Out-of-range query fails clean. */
-            if (it_initrd_vmo_slot((long)IRIS_CPTR_SPAWN_CAP, n + (long)(t216_rnd(&rng) % 100u))
+            if (it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, n + (long)(t216_rnd(&rng) % 100u))
                 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "oob"; }
             break;
         }
@@ -14903,7 +14919,7 @@ static void test_t216(void) {
             /* Invalid-ELF load fails clean, no ghost. */
             struct it_snap fb = it_snap_take();
             handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
-            long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "badelf", &proc, &boot, 0, 0u,
+            long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf", &proc, &boot, 0, 0u,
                              IT_LOADER_WS);
             if (r >= 0) { ok = 0; why = "badelf loaded"; }
             it_close(&boot); it_close(&proc);
@@ -15268,7 +15284,7 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
         }
     }
     handle_id_t boot = HANDLE_INVALID;
-    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager", &f->proc, &boot, m, k,
+    long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, m, k,
                              IT_LOADER_WS);
     it_close(&pgr_reply_h);
     it_close(&boot);
@@ -16737,7 +16753,7 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
             mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
         }
     }
-    long r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "pager", &f->proc, &boot, mm, k,
+    long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, mm, k,
                              IT_LOADER_WS);
     it_close(&pgr_reply_h);
     it_close(&boot);
@@ -18524,91 +18540,18 @@ static int it_utq_t(struct it_utq_taskobj *q) {
     return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
 }
 
-/* ── T291: SYS_BOOTCAP_RESTRICT derives into CSpace, source untouched ────────
- * Narrowing a bootstrap capability is derive-then-delete, not mutation: the
- * restricted copy is installed into a destination slot as an MDB child of the
- * source slot, and the source keeps every permission it had.
+/* ── T291 — RETIRED with SYS_BOOTCAP_RESTRICT (Stage 5 Etapa 2) ─────────
+ * Its subject was narrowing a boot capability by deriving a weaker CLONE of
+ * it, which existed only because one object carried several authorities at
+ * once.  Every boot capability carries exactly one now — kbootcap_alloc
+ * refuses a multi-bit kind — so there is nothing to narrow and nothing this
+ * test could assert: a capability that could be restricted cannot be
+ * constructed.  The number is pinned as NOT_SUPPORTED by T148, and the
+ * property that replaced it (one capability, one authority) is T296.
  *
- * The oracle is behavioural, not a field read: the two authorities that still
- * share the monolith are probed by invoking them.  SYS_INITRD_COUNT needs
- * IRIS_BOOTCAP_SPAWN_SERVICE and SYS_FRAMEBUFFER_VMO needs
- * IRIS_BOOTCAP_FRAMEBUFFER, so a copy narrowed to SPAWN_SERVICE must answer
- * the first and be refused the second while the source is not.  The
- * framebuffer VMO was consumed by fb at boot, so an AUTHORISED caller gets
- * NOT_FOUND and an unauthorised one gets ACCESS_DENIED — two distinct errors,
- * which is what makes a one-shot resource usable as an authority oracle.
- *
- * Stage 5 Etapa 2 has re-anchored this test twice, each time because the
- * authority it probed with stopped being a bit on this capability and became
- * its own: first device creation, then debug.  Probing with either now would
- * test nothing about the mask — the derived copy would be refused for not
- * BEING that capability, whatever the mask said.  What survives is the mask
- * that is left; when SPAWN_SERVICE and FRAMEBUFFER split too,
- * SYS_BOOTCAP_RESTRICT retires and this test dies with the mechanism.
- *
- * The source-untouched assertion is the one that matters: the old in-place
- * restrict could only offer it by making a defensive SYS_HANDLE_DUP first, and
- * that duplicate was a handle.  Guards against a migration silently turning a
- * narrowing into a no-op error path and leaving authority wide. */
-#define T291_DERIVED_SLOT S1_SLOT_A
-
-static void test_t291(void) {
-    int ok = 1;
-    const char *why = "bootcap restrict";
-    uint8_t fbbuf[64];
-
-    it_slot_delete(T291_DERIVED_SLOT);
-
-    /* Baseline: the monolith answers for both authorities it still carries. */
-    if (it_sys2(SYS_INITRD_COUNT, (long)IRIS_CPTR_SPAWN_CAP, 0) < 0) {
-        ok = 0; why = "baseline spawn denied";
-    }
-    if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, (long)IRIS_CPTR_SPAWN_CAP,
-                      (long)(uintptr_t)fbbuf, 0) != (long)IRIS_ERR_NOT_FOUND) {
-        ok = 0; why = "baseline framebuffer denied";
-    }
-
-    /* CPTR_NULL is never a destination. */
-    if (ok && it_sys3(SYS_BOOTCAP_RESTRICT, (long)IRIS_CPTR_SPAWN_CAP,
-                      (long)IRIS_BOOTCAP_SPAWN_SERVICE, 0)
-              != (long)IRIS_ERR_INVALID_ARG) {
-        ok = 0; why = "null dest accepted";
-    }
-
-    /* Derive a copy with KDEBUG stripped. */
-    if (ok && it_sys3(SYS_BOOTCAP_RESTRICT, (long)IRIS_CPTR_SPAWN_CAP,
-                      (long)IRIS_BOOTCAP_SPAWN_SERVICE,
-                      (long)T291_DERIVED_SLOT) != 0) {
-        ok = 0; why = "derive failed";
-    }
-
-    /* The derived cap keeps what was kept... */
-    if (ok && it_sys2(SYS_INITRD_COUNT, (long)T291_DERIVED_SLOT, 0) < 0) {
-        ok = 0; why = "derived lost spawn";
-    }
-    /* ...and loses what was dropped. */
-    if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, (long)T291_DERIVED_SLOT,
-                      (long)(uintptr_t)fbbuf, 0)
-              != (long)IRIS_ERR_ACCESS_DENIED) {
-        ok = 0; why = "derived kept framebuffer";
-    }
-
-    /* The SOURCE must be exactly as strong as before. */
-    if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, (long)IRIS_CPTR_SPAWN_CAP,
-                      (long)(uintptr_t)fbbuf, 0) != (long)IRIS_ERR_NOT_FOUND) {
-        ok = 0; why = "source was narrowed";
-    }
-
-    /* Destination install is exclusive. */
-    if (ok && it_sys3(SYS_BOOTCAP_RESTRICT, (long)IRIS_CPTR_SPAWN_CAP,
-                      (long)IRIS_BOOTCAP_SPAWN_SERVICE,
-                      (long)T291_DERIVED_SLOT) != (long)IRIS_ERR_ALREADY_EXISTS) {
-        ok = 0; why = "dest not exclusive";
-    }
-
-    it_slot_delete(T291_DERIVED_SLOT);
-    if (ok) it_pass("T291"); else it_fail("T291", why);
-}
+ * This is the Stage 4 rule applied unchanged: a test whose SUBJECT is the
+ * retired mechanism dies with it, and one asserting a property that survives
+ * is rewritten.  T291 is the first kind. */
 
 /* ── T267: SchedulingContext configure/bind lifecycle ────────────────────────
  * A SC is a CANONICAL object created ONLY from Untyped (SYS_SC_CREATE retired).
@@ -19576,17 +19519,19 @@ static void test_t296(void) {
     }
     it_slot_delete(T296_SLOT);
 
-    /* 3. The capability they were split from authorises neither. */
-    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SPAWN_CAP,
+    /* 3. No OTHER boot capability authorises either — the process control
+     *    capability is the direct descendant of the object all six were split
+     *    from, and it creates no devices. */
+    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_PROC_CONTROL,
                       T296_WL_PORT, 8, (long)T296_SLOT)
               != (long)IRIS_ERR_ACCESS_DENIED) {
-        ok = 0; why = "monolith still creates ioports";
+        ok = 0; why = "proc control created an ioport";
     }
     it_slot_delete(T296_SLOT);
-    if (ok && it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_SPAWN_CAP,
+    if (ok && it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_PROC_CONTROL,
                       11, 0, (long)T296_SLOT)
               != (long)IRIS_ERR_ACCESS_DENIED) {
-        ok = 0; why = "monolith still creates irqs";
+        ok = 0; why = "proc control created an irq";
     }
     it_slot_delete(T296_SLOT);
 
@@ -19604,8 +19549,8 @@ static void test_t296(void) {
             ok = 0; why = "ioport cap read sched info";
         }
         if (ok && it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)sched_buf, 96,
-                          (long)IRIS_CPTR_SPAWN_CAP) >= 0) {
-            ok = 0; why = "monolith read sched info";
+                          (long)IRIS_CPTR_PROC_CONTROL) >= 0) {
+            ok = 0; why = "proc control read sched info";
         }
         /* ...and debug authority creates no devices. */
         if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_DEBUG_CONTROL,
@@ -19726,7 +19671,7 @@ static void test_t295(void) {
 
 void iris_test_main(handle_id_t rbx_unused) {
     /* Fase 13 (Track I): the spawn/authority cap arrives as the
-     * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint — no bootstrap KChannel.
+     * IRIS_CPTR_PROC_CONTROL (slot 6) pre-start mint — no bootstrap KChannel.
      * SYS_CAP_CREATE_IOPORT resolves it by CPtr via the device-cap dual
      * resolver (the serial KIoPort for test output).  svc_loader passes
      * RBX = 0, so this argument is not a handle. */
@@ -20030,8 +19975,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t288();
     test_t289();
     test_t290();
-    /* Bootstrap-cap narrowing as a CSpace derive (source untouched). */
-    test_t291();
+    /* T291 retired with SYS_BOOTCAP_RESTRICT (Stage 5 Etapa 2). */
     test_t292();
     test_t293();
     test_t294();

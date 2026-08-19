@@ -3,7 +3,7 @@
  *
  * Bootstrap protocol (over bootstrap channel from svc_loader):
  *   recv SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP → framebuffer_cap_h (KBootstrapCap
- *       with IRIS_BOOTCAP_FRAMEBUFFER only)
+ *       with the framebuffer control capability only)
  *
  * Claims the framebuffer via SYS_FRAMEBUFFER_VMO, maps it writable, draws
  * rainbow stripes, then unmaps and exits.  The MMIO mapping persists so the
@@ -79,20 +79,25 @@ static void fb_draw_rect(uint32_t *pixels, uint32_t stride,
 }
 
 void fb_main_c(handle_id_t rbx_unused) {
-    /* Fase 13 (Track I): the framebuffer KBootstrapCap arrives as the
-     * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint — SYS_FRAMEBUFFER_VMO resolves
-     * it by CPtr through the device-cap dual resolver.  No bootstrap KChannel:
+    /* Fase 13 (Track I): the framebuffer capability arrives as a pre-start
+     * mint — SYS_FRAMEBUFFER_VMO resolves it by CPtr.  No bootstrap KChannel:
      * svc_loader passes RBX = 0, so this argument is not a handle and closing
-     * it was closing handle 0. */
+     * it was closing handle 0.
+     *
+     * Stage 5 Etapa 2: what fb holds is the FRAMEBUFFER CONTROL capability at
+     * IRIS_CPTR_FB_CONTROL — the whole of its boot authority.  It used to be a
+     * narrowed clone of init's monolith, which is to say: an object of the
+     * same type as the one that authorises spawning and poweroff, trusted to
+     * have had those bits masked off correctly. */
     (void)rbx_unused;
-    /* The framebuffer KBootstrapCap is a CSpace slot, not a handle: it is
-     * never closed, and it must never be passed to SYS_HANDLE_CLOSE — that
-     * call used to sit on the error path, where cap_h had not yet been
-     * blanked, and asked the handle table to close CPtr 6. */
-    const long  cap_cptr = (long)IRIS_CPTR_SPAWN_CAP;
+    /* The framebuffer capability is a CSpace slot, not a handle: it is never
+     * closed, and it must never be passed to SYS_HANDLE_CLOSE — that call used
+     * to sit on the error path, where cap_h had not yet been blanked, and
+     * asked the handle table to close CPtr 6. */
+    const long  cap_cptr = (long)IRIS_CPTR_FB_CONTROL;
     /* Stage 4: the framebuffer VMO lands in a CSpace slot of fb's own choosing
      * instead of coming back as a handle.  fb's manifest is a single mint
-     * (IRIS_CPTR_SPAWN_CAP), so every slot above it is free; 16 keeps a clear
+     * (IRIS_CPTR_FB_CONTROL), so every other slot is free; 16 keeps a clear
      * gap from the well-known service range. */
     const long  fb_vmo_slot = 16;
     long        vmo_cptr = -1;

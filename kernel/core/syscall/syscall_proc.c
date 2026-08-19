@@ -226,12 +226,14 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
-    /* Fase 13: dual resolver — spawn cap may be a CPtr slot or a handle. */
+    /* Stage 5 Etapa 2: the authority is the PROCESS CONTROL capability, and
+     * nothing else — creating a process no longer travels with initrd access,
+     * debug authority or the framebuffer. */
     iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
     if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
-    if (!kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_SPAWN_SERVICE)) {
+    if (!kbootcap_is((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_PROC_CONTROL)) {
         kobject_release(auth_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }

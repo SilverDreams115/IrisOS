@@ -190,8 +190,12 @@ if ! grep -Fq "[IRIS][USER] boot untyped CSpace grants:" "$LOG_FILE"; then
   exit 1
 fi
 
-if ! grep -Fq "[IRIS][USER] boot bootstrap cap CSpace grants OK" "$LOG_FILE"; then
-  echo "[headless] missing boot-bootstrap-cap-CSpace-grants marker (Fase 3.5)"
+# Stage 5 Etapa 2: the monolithic bootstrap capability is gone, so its marker
+# is too.  What the boot must now announce is the six control capabilities —
+# one per authority — because a boot that published only some of them aborts
+# the root task rather than continuing with partial authority.
+if ! grep -Fq "[IRIS][USER] boot control caps CSpace grants OK" "$LOG_FILE"; then
+  echo "[headless] missing boot-control-caps-CSpace-grants marker (Stage 5)"
   cat "$LOG_FILE"
   exit 1
 fi

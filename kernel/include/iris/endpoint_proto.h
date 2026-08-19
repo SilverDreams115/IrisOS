@@ -275,11 +275,16 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 #define IRIS_CPTR_CONSOLE_EP  ((uint64_t)3)
 #define IRIS_CPTR_KBD_EP      ((uint64_t)4)
 #define IRIS_CPTR_OWN_EP      ((uint64_t)5)
-/* Fase 13 (Track C): the initrd-access KBootstrapCap (SPAWN_SERVICE) is minted
+/* Fase 13 (Track C): the initrd capability is minted
  * into this slot before the child starts — replaces the post-spawn KChannel
  * SVCMGR_BOOTSTRAP_KIND_INITRD_CAP delivery.  Resolves via the device-cap dual
  * resolver (cspace_resolve_only_obj), so SYS_INITRD_* accept it by CPtr. */
-#define IRIS_CPTR_SPAWN_CAP   ((uint64_t)6)
+/* Stage 5 Etapa 2: slot 6 held the MONOLITHIC boot capability — spawn,
+ * hardware, debug and framebuffer authority at once.  It holds the PROCESS
+ * CONTROL capability now, which authorises SYS_PROCESS_CREATE and nothing
+ * else; the other authorities travel in their own slots.  The name
+ * IRIS_CPTR_SPAWN_CAP is retired with the object it named. */
+#define IRIS_CPTR_PROC_CONTROL ((uint64_t)6)
 #define IRIS_CPTR_IRQ_NOTIFY  ((uint64_t)7)
 /* Fase 13 (Track C): the legacy handle-boundary caps for a non-endpoint_only
  * service (kbd) — its service/reply KChannels and KIoPort/KIrqCap device caps —
@@ -290,10 +295,15 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 /* Slots 8 and 9 were IRIS_CPTR_SVC_CHAN / IRIS_CPTR_SVC_REPLY, the legacy
  * service/reply KChannel pair.  KChannel is REMOVED and every catalog service
  * is endpoint-only, so both constants had no live use — Stage 5 Etapa 2 reuses
- * slot 9 for the debug control capability rather than growing root CNodes that
- * are already nearly full.  Slot 8 stays free for the next split-out
- * authority. */
-#define IRIS_CPTR_DEBUG_CONTROL ((uint64_t)9)
+ * them for split-out authorities rather than growing root CNodes that are
+ * already nearly full. */
+#define IRIS_CPTR_INITRD_CONTROL ((uint64_t)8)
+#define IRIS_CPTR_DEBUG_CONTROL  ((uint64_t)9)
+/* The framebuffer control capability: SYS_FRAMEBUFFER_VMO, one-shot.  Slot 99
+ * is outside every service's well-known range and free in the three processes
+ * that ever hold it (init, fb, the suite); the suite's root CNode kept it
+ * empty for a NOT_FOUND probe that moved to a scratch slot. */
+#define IRIS_CPTR_FB_CONTROL     ((uint64_t)99)
 #define IRIS_CPTR_IOPORT      ((uint64_t)10)
 #define IRIS_CPTR_IRQ_CAP     ((uint64_t)11)
 /*

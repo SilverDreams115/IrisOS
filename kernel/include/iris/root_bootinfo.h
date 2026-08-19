@@ -44,7 +44,7 @@
  */
 
 #define IRIS_ROOT_BOOTINFO_MAGIC   0x49524953524F4F54ULL  /* "IRISROOT" */
-#define IRIS_ROOT_BOOTINFO_VERSION 3u
+#define IRIS_ROOT_BOOTINFO_VERSION 4u
 
 /* Size of the region the kernel maps.  Two pages, and the reason is a rule
  * rather than a round number: the description must be able to cover every
@@ -73,13 +73,15 @@ struct iris_root_bootinfo {
 
     /* Initial capabilities, named by the CPtr the kernel minted them into.
      * A zero CPtr means "not granted" — never "look somewhere else". */
-    uint64_t cap_bootstrap;      /* what is LEFT of the monolith: spawn and
-                                  * framebuffer authority (Etapa 2 is still
-                                  * splitting these out) */
     uint64_t cap_vspace;         /* the root task's own KVSpace */
-    uint64_t cap_irq_control;    /* v2: SYS_CAP_CREATE_IRQCAP authority, alone */
-    uint64_t cap_ioport_control; /* v2: SYS_CAP_CREATE_IOPORT authority, alone */
-    uint64_t cap_debug_control;  /* v3: klog drain / sched info / poweroff */
+    /* v4: one capability per authority.  There is no "bootstrap capability"
+     * field any more — the monolith it named does not exist. */
+    uint64_t cap_irq_control;    /* SYS_CAP_CREATE_IRQCAP */
+    uint64_t cap_ioport_control; /* SYS_CAP_CREATE_IOPORT */
+    uint64_t cap_debug_control;  /* klog drain / sched info / poweroff */
+    uint64_t cap_proc_control;   /* SYS_PROCESS_CREATE */
+    uint64_t cap_initrd_control; /* SYS_INITRD_COUNT / SYS_INITRD_VMO */
+    uint64_t cap_fb_control;     /* SYS_FRAMEBUFFER_VMO (one-shot) */
 
     /* The CSpace as it was handed over. */
     uint32_t cnode_slots;      /* slot count of the root CNode */
@@ -101,8 +103,7 @@ uint32_t root_bootinfo_capacity(uint32_t bytes);
  * ones it did not use.  IRIS_ERR_INVALID_ARG if the buffer cannot even hold
  * the header. */
 iris_error_t root_bootinfo_init(void *buf, uint32_t bytes,
-                                uint64_t cap_bootstrap, uint64_t cap_vspace,
-                                uint32_t cnode_slots);
+                                uint64_t cap_vspace, uint32_t cnode_slots);
 
 /* Record a control capability the boot path published.  Called once per
  * authority; `kind` is an IRIS_BOOTCAP_* value and selects the field. */

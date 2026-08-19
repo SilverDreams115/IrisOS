@@ -416,12 +416,14 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
-    /* Fase 13: dual resolver — spawn cap may be a CPtr slot or a handle. */
+    /* Stage 5 Etapa 2: the authority is the INITRD capability — reading boot
+     * images, and nothing else.  vfs holds it and no longer carries the
+     * authority to create processes as a side effect. */
     iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
     if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
-    if (!kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_SPAWN_SERVICE)) {
+    if (!kbootcap_is((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_INITRD_CONTROL)) {
         kobject_release(auth_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
@@ -492,12 +494,14 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
-    /* Fase 13: dual resolver — spawn cap may be a CPtr slot or a handle. */
+    /* Stage 5 Etapa 2: the authority is the INITRD capability — reading boot
+     * images, and nothing else.  vfs holds it and no longer carries the
+     * authority to create processes as a side effect. */
     iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
     if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
-    if (!kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_SPAWN_SERVICE)) {
+    if (!kbootcap_is((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_INITRD_CONTROL)) {
         kobject_release(auth_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
@@ -832,7 +836,7 @@ uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1,
                                  RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
     if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
-    if (!kbootcap_allows((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_FRAMEBUFFER)) {
+    if (!kbootcap_is((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_FB_CONTROL)) {
         kobject_release(auth_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }

@@ -16,11 +16,18 @@ static const struct KObjectOps kbootcap_ops = {
     .destroy = kbootcap_destroy,
 };
 
-struct KBootstrapCap *kbootcap_alloc(uint32_t permissions) {
-    struct KBootstrapCap *cap = kslab_alloc((uint32_t)sizeof(struct KBootstrapCap));
+struct KBootstrapCap *kbootcap_alloc(uint32_t kind) {
+    struct KBootstrapCap *cap;
+
+    /* One authority, or no capability.  A zero kind authorises nothing and a
+     * multi-bit kind is the monolith this stage retired, so both are refused
+     * at the only place a boot capability can come into existence. */
+    if (kind == 0u || (kind & (kind - 1u)) != 0u) return 0;
+
+    cap = kslab_alloc((uint32_t)sizeof(struct KBootstrapCap));
     if (!cap) return 0;
     kobject_init(&cap->base, KOBJ_BOOTSTRAP_CAP, &kbootcap_ops);
-    cap->permissions = permissions;
+    cap->kind = kind;
     return cap;
 }
 
@@ -29,17 +36,7 @@ void kbootcap_free(struct KBootstrapCap *cap) {
     kobject_release(&cap->base);
 }
 
-struct KBootstrapCap *kbootcap_clone_restricted(const struct KBootstrapCap *src,
-                                                uint32_t new_permissions) {
-    struct KBootstrapCap *clone;
-    uint32_t permissions;
-
-    if (!src) return 0;
-
-    spinlock_lock((spinlock_t *)&src->base.lock);
-    permissions = src->permissions & new_permissions;
-    spinlock_unlock((spinlock_t *)&src->base.lock);
-
-    clone = kbootcap_alloc(permissions);
-    return clone;
-}
+/* kbootcap_clone_restricted is REMOVED with SYS_BOOTCAP_RESTRICT (Stage 5
+ * Etapa 2): narrowing a mask by rebuilding the object existed only because one
+ * object carried several authorities.  Giving up an authority is deleting the
+ * slot that holds it, and taking one back is revoking it through the CDT. */

@@ -31,7 +31,11 @@
  * BOOT_CPTR_BOOTSTRAP_CAP occupies slot 1 in the root CNode of userboot.
  * BOOT_CPTR_VSPACE occupies slot 2 — the initial VSpace capability (Fase 4).
  * The legacy bootstrap_cap_h handle (arg0) remains valid in dual mode. */
-#define BOOT_CPTR_BOOTSTRAP_CAP   1u    /* KBootstrapCap well-known CPtr (Fase 3.5) */
+/* Slot 1 held the MONOLITHIC KBootstrapCap until Stage 5 Etapa 2 split it into
+ * one capability per authority.  It is permanently reserved and permanently
+ * EMPTY: there is no capability with more than one authority left to put
+ * there, and the root task reads what it holds from BootInfo. */
+#define BOOT_CPTR_BOOTSTRAP_CAP   1u    /* retired — reserved, never populated */
 #define BOOT_CPTR_VSPACE          2u    /* KVSpace for userboot/root task (Fase 4) */
 /* Stage 5 Etapa 2: one capability per authority.  Each of these is a boot
  * capability carrying EXACTLY one authority, published into its own slot; the
@@ -42,6 +46,9 @@
 #define BOOT_CPTR_IRQ_CONTROL     3u    /* SYS_CAP_CREATE_IRQCAP authority */
 #define BOOT_CPTR_IOPORT_CONTROL  4u    /* SYS_CAP_CREATE_IOPORT authority */
 #define BOOT_CPTR_DEBUG_CONTROL   5u    /* klog drain / sched info / poweroff */
+#define BOOT_CPTR_PROC_CONTROL    6u    /* SYS_PROCESS_CREATE authority */
+#define BOOT_CPTR_INITRD_CONTROL  7u    /* SYS_INITRD_COUNT / SYS_INITRD_VMO */
+#define BOOT_CPTR_FB_CONTROL      8u    /* SYS_FRAMEBUFFER_VMO (one-shot) */
 #define BOOT_CPTR_RES_END         15u   /* inclusive; slots 1-15 are reserved */
 #define BOOT_CPTR_UNTYPED_START   16u   /* first boot KUntyped CPtr */
 #define BOOT_CPTR_UNTYPED_END    255u   /* last boot KUntyped CPtr (root CNode has 256 slots) */

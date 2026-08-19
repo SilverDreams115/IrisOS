@@ -92,7 +92,7 @@ static void ub_boot_panic(uint64_t ioport_control_cptr, uint64_t ioport_slot,
 /* ub_msg_zero retired — Fase 13/Track I (no KChannel bootstrap message). */
 
 /* ub_send_spawn_cap retired — Fase 13/Track I (init's spawn cap is a pre-start
- * IRIS_CPTR_SPAWN_CAP mint now, no KChannel SPAWN_CAP send). */
+ * IRIS_CPTR_PROC_CONTROL mint now, no KChannel SPAWN_CAP send). */
 
 static void ub_park_root_bootstrap(void) {
     /* Root bootstrap task policy:
@@ -139,10 +139,12 @@ void iris_userboot_main(uint64_t bootinfo_va) {
 
     handle_id_t init_proc_h = HANDLE_INVALID;
     handle_id_t init_boot_h = HANDLE_INVALID;
-    uint64_t    bootstrap_cap_h;
     uint64_t    irq_control_c;
     uint64_t    ioport_control_c;
     uint64_t    debug_control_c;
+    uint64_t    proc_control_c;
+    uint64_t    initrd_control_c;
+    uint64_t    fb_control_c;
     uint64_t    boot_untyped_c;
     uint64_t    ws_slot;      /* loader workspace CNode — first free slot */
     uint64_t    panic_slot;   /* serial KIoPort for a boot diagnostic — last */
@@ -161,12 +163,15 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         goto fail;
     }
 
-    bootstrap_cap_h  = bi->cap_bootstrap;
     irq_control_c    = bi->cap_irq_control;
     ioport_control_c = bi->cap_ioport_control;
     debug_control_c  = bi->cap_debug_control;
-    if (bootstrap_cap_h == 0u || irq_control_c == 0u ||
-        ioport_control_c == 0u || debug_control_c == 0u) {
+    proc_control_c   = bi->cap_proc_control;
+    initrd_control_c = bi->cap_initrd_control;
+    fb_control_c     = bi->cap_fb_control;
+    if (irq_control_c == 0u || ioport_control_c == 0u ||
+        debug_control_c == 0u || proc_control_c == 0u ||
+        initrd_control_c == 0u || fb_control_c == 0u) {
         ub_boot_panic(BOOT_CPTR_IOPORT_CONTROL, UB_PANIC_IOPORT_SLOT,
                       "[USERBOOT] FATAL: BootInfo grants no boot "
                       "capability; halting boot\n");
@@ -182,7 +187,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * workspace and the diagnostic KIoPort — and they are taken from opposite
      * ends so they cannot be the same slot. */
     if (bi->empty_slot_end < bi->empty_slot_first + 2u) {
-        ub_boot_panic(bootstrap_cap_h, UB_PANIC_IOPORT_SLOT,
+        ub_boot_panic(ioport_control_c, UB_PANIC_IOPORT_SLOT,
                       "[USERBOOT] FATAL: BootInfo leaves no free slots to "
                       "work in; halting boot\n");
         goto fail;
@@ -217,7 +222,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * turned any legitimate initrd growth into a silent dead boot (userboot
      * exited before loading init); it is now a >= check, and a genuine shortage
      * emits a bootstrap diagnostic instead of vanishing. */
-    if (svc_initrd_count((handle_id_t)bootstrap_cap_h) < (long)SL_CATALOG_COUNT) {
+    if (svc_initrd_count(initrd_control_c) < (long)SL_CATALOG_COUNT) {
         ub_boot_panic(ioport_control_c, panic_slot,
                       "[USERBOOT] FATAL: initrd catalog too small "
                       "(kernel/ring-3 mismatch); halting boot\n");
@@ -233,7 +238,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * page claims, or the boot stops here with a diagnostic. */
 
     /* Fase 13 (Track I): deliver init's spawn/bootstrap cap as the
-     * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint instead of a post-spawn
+     * IRIS_CPTR_PROC_CONTROL (slot 6) pre-start mint instead of a post-spawn
      * KChannel SPAWN_CAP send — no SYS_CHAN.
      *
      * Stage 4: both mint sources are CPtrs into our own root CSpace, not
@@ -248,9 +253,9 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
          * if the grant is absent the mint fails, the slot stays empty and the
          * authority tests FAIL loudly rather than silently skipping. */
-        struct svc_mint init_mints[5] = { 0 };
-        init_mints[0].slot     = IRIS_CPTR_SPAWN_CAP;
-        init_mints[0].src_cptr = bootstrap_cap_h;
+        struct svc_mint init_mints[7] = { 0 };
+        init_mints[0].slot     = IRIS_CPTR_PROC_CONTROL;
+        init_mints[0].src_cptr = proc_control_c;
         init_mints[0].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[0].badge    = 0;
         init_mints[1].slot     = IRIS_CPTR_INIT_UNTYPED;
@@ -278,13 +283,26 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         init_mints[4].src_cptr = debug_control_c;
         init_mints[4].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[4].badge    = 0;
+        /* Reading boot images and creating processes are two authorities: init
+         * needs both to load a service, and vfs — which only reads images —
+         * receives just the first, further down the chain. */
+        init_mints[5].slot     = IRIS_CPTR_INITRD_CONTROL;
+        init_mints[5].src_cptr = initrd_control_c;
+        init_mints[5].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        init_mints[5].badge    = 0;
+        /* The framebuffer capability is passed straight through to the fb
+         * service; init never calls SYS_FRAMEBUFFER_VMO itself. */
+        init_mints[6].slot     = IRIS_CPTR_FB_CONTROL;
+        init_mints[6].src_cptr = fb_control_c;
+        init_mints[6].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        init_mints[6].badge    = 0;
 
         /* Both sources are the CPtrs the BootInfo named, not the constants
          * that happened to match them: userboot now delegates what the kernel
          * says it holds, and carves the loader workspace out of the same first
          * boot untyped into a slot the kernel declared free. */
-        long lr = svc_load_minted_ws((handle_id_t)bootstrap_cap_h, "init",
-                                     &init_proc_h, &init_boot_h, init_mints, 5u,
+        long lr = svc_load_minted_ws(proc_control_c, initrd_control_c, "init",
+                                     &init_proc_h, &init_boot_h, init_mints, 7u,
                                      SVC_LOADER_WS(boot_untyped_c, ws_slot));
         if (lr < 0)
             goto fail;

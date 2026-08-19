@@ -9,7 +9,8 @@
  *
  * Receives a legacy bootstrap handle in %rdi (set by entry.S from %rbx).  That
  * handle is now vestigial — init closes it immediately.  The real spawn/bootstrap
- * capability arrives as a pre-start CPtr mint (IRIS_CPTR_SPAWN_CAP) in init's
+ * capabilities arrive as pre-start CPtr mints (IRIS_CPTR_PROC_CONTROL and the
+ * other five control slots) in init's
  * CSpace and is invoked as that slot — no KChannel, and no handle.
  *
  * Boot sequence validated:
@@ -141,7 +142,6 @@ static void init_idle_loop(void) {
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void init_main(handle_id_t rbx_unused) {
-    const handle_id_t bootstrap_cap_c = (handle_id_t)IRIS_CPTR_SPAWN_CAP;
     handle_id_t sm_h               = HANDLE_INVALID;
     handle_id_t vfs_ep_h           = HANDLE_INVALID;
 
@@ -152,7 +152,7 @@ void init_main(handle_id_t rbx_unused) {
      * bridge had nothing left to bridge.  An absent slot 6 now fails loudly at
      * the first spawn instead of exiting before a single log line. */
     (void)rbx_unused;   /* svc_loader passes RBX = 0 — not a handle */
-    init_early_serial_start(bootstrap_cap_c);
+    init_early_serial_start();
 
     /* Fase S1: confirm the delegated boot untyped (slot 12) BEFORE any spawn —
      * console/svcmgr endpoints and reply objects are retyped from it.
@@ -170,10 +170,10 @@ void init_main(handle_id_t rbx_unused) {
     }
 
     /* Spawn fb first (fire-and-forget): it claims the framebuffer and exits. */
-    init_spawn_fb(bootstrap_cap_c);
+    init_spawn_fb();
 
     /* Spawn console: endpoint-only, CPtr-provisioned (Fase 13/Track I). */
-    if (!init_spawn_console(bootstrap_cap_c)) {
+    if (!init_spawn_console()) {
         init_early_serial_write("[INIT] console spawn FAILED\r\n");
         init_exit(1);
     }
@@ -197,7 +197,7 @@ void init_main(handle_id_t rbx_unused) {
 
     init_log("[USER] init bootstrap start\n");
 
-    sm_h = init_spawn_svcmgr(bootstrap_cap_c);
+    sm_h = init_spawn_svcmgr();
     if (sm_h == HANDLE_INVALID) {
         init_log("[USER] svcmgr spawn FAILED\n");
         init_exit(1);

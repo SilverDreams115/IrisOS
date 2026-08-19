@@ -14,10 +14,13 @@ kernel_main
   │  into userboot (address in RBX — Stage 5 Etapa 1)
   └─ userboot: first image (de facto root task)
 userboot  (reads BootInfo; validates it against its own CSpace)
-  └─ init: spawn cap (slot 6) + ONE boot Untyped (slot 12)
+  └─ init: the six boot control capabilities (process / initrd / IRQ / ioport
+     / debug / framebuffer — one authority each) + ONE boot Untyped (slot 12)
 init  (resolves slot 12 once; g_init_untyped_h)
   ├─ console: own EP (retype) in slot 5 + reply in slot 13 + KIoPort
-  ├─ svcmgr: discovery EP (retype) + spawn cap + 256 KiB sub-untyped → slot 12
+  ├─ fb: the framebuffer control capability, and nothing else
+  ├─ svcmgr: discovery EP (retype) + process/initrd/debug/device control caps
+  │  + 256 KiB sub-untyped → slot 12
   ├─ test fixtures (wrong-type notification, watch notif) via retype
   └─ iris_test: 8 MiB sub-untyped → slot 55 (+ badged service caps)
 svcmgr  (pool = slot 12)
@@ -32,6 +35,11 @@ svcmgr  (pool = slot 12)
 
 - No service receives the root Untyped; only init/svcmgr manage bounded pools
   (explicit administrators).
+- No service receives more boot authority than it exercises: the monolithic
+  boot capability is gone (Stage 5 Etapa 2), so vfs holds the initrd capability
+  without process-creation authority, fb holds the framebuffer capability
+  alone, and svcmgr DELETES its device control capabilities once the catalog's
+  hardware is claimed.
 - The pager resolves faults with no global Untyped; the VFS serves files with
   no global Untyped (masks verified in T156/T162/T201+; the pager's reply
   arrives minted by its supervisor).

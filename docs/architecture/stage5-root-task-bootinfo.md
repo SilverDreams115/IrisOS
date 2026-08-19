@@ -50,7 +50,7 @@ and how the root task *learns* about it:
 | 1b | ...and stops assuming which slots are free | ✅ DONE |
 | 2a | Device control splits off: IRQ and ioport control are their own capabilities | ✅ DONE |
 | 2b | Debug splits off | ✅ DONE |
-| 2c | Spawn, initrd and framebuffer split too; `SYS_BOOTCAP_RESTRICT` and the monolith retire | pending |
+| 2c | Spawn, initrd and framebuffer split too; `SYS_BOOTCAP_RESTRICT` and the monolith retire | ✅ DONE |
 | 3 | The root task's own objects are named caps (root CNode, initial TCB, ASID/PCID control) | pending |
 | 4 | `TCB_CONFIGURE` / `TCB_WRITE_REGS`: a retyped TCB executes | pending |
 
@@ -167,11 +167,12 @@ into its own BootInfo slot, each delegated by handing it over:
 |---|---|---|---|
 | `HW_ACCESS` | `SYS_CAP_CREATE_IRQCAP` | IRQ control capability | ✅ 2a |
 | `HW_ACCESS` | `SYS_CAP_CREATE_IOPORT` | ioport control capability | ✅ 2a |
-| `FRAMEBUFFER` | `SYS_FRAMEBUFFER_VMO` | device-memory cap for the framebuffer | 2c |
-| `SPAWN_SERVICE` | `SYS_PROCESS_CREATE`, `SYS_INITRD_COUNT/VMO` | process-control cap, initrd cap | 2c |
+| `FRAMEBUFFER` | `SYS_FRAMEBUFFER_VMO` | framebuffer control capability | ✅ 2c |
+| `SPAWN_SERVICE` | `SYS_PROCESS_CREATE` | process control capability | ✅ 2c |
+| `SPAWN_SERVICE` | `SYS_INITRD_COUNT/VMO` | initrd control capability | ✅ 2c |
 | `KDEBUG` | `SYS_KLOG_DRAIN`, `SYS_SCHED_INFO`, `SYS_POWEROFF` | debug control capability | ✅ 2b |
 
-`SYS_BOOTCAP_RESTRICT` retires with the last bit: narrowing a bitmask by
+`SYS_BOOTCAP_RESTRICT` retired with the last bit: narrowing a bitmask by
 cloning an object is replaced by delegating the one capability meant and
 revoking it through the CDT.  The ioport whitelist (`kioport_whitelist`, ledger
 P3) is the policy that should follow the ioport control capability out of the
@@ -248,6 +249,53 @@ creation itself.  T291's oracle moved again — from device creation (Etapa 2a)
 to the framebuffer bit — because each re-anchoring is forced by the same
 progress: the authority it probed with stopped being a bit and became a
 capability.
+
+### Etapa 2c — the monolith is gone  ✅ DONE
+
+The last three authorities split, and with them the object itself:
+
+| Was | Is |
+|---|---|
+| `IRIS_BOOTCAP_SPAWN_SERVICE` on the monolith | `IRIS_BOOTCAP_PROC_CONTROL` (`SYS_PROCESS_CREATE`) **and** `IRIS_BOOTCAP_INITRD_CONTROL` (`SYS_INITRD_COUNT/VMO`) — two authorities that were one bit |
+| `IRIS_BOOTCAP_FRAMEBUFFER` on the monolith | `IRIS_BOOTCAP_FB_CONTROL` |
+| `SYS_BOOTCAP_RESTRICT` (45) | RETIRED, number reserved, `NOT_SUPPORTED` |
+
+**The monolith is not merely unused — it is unrepresentable.**
+`kbootcap_alloc` refuses a kind that is zero or has more than one bit set, so a
+capability that could be narrowed cannot be constructed, and every kernel check
+is exact equality.  `kbootcap_allows` (the subset test) and
+`kbootcap_clone_restricted` are deleted.  `BOOT_CPTR_BOOTSTRAP_CAP` (slot 1)
+stays reserved and permanently empty.
+
+Splitting `SPAWN_SERVICE` in two is the concrete least-authority result: **vfs
+is a file server that held the authority to create processes**, because reading
+a boot image and spawning a service were the same bit.  It now holds the initrd
+capability alone.  The loader API says the same thing — `svc_load_minted_ws`
+takes a process capability and an initrd capability, not one "spawn cap" — so a
+caller that can read images but not spawn is expressible in the signature.
+
+The other retirement is a simplification: `init_spawn_fb` was a
+restrict-into-scratch, mint, delete dance; fb now receives the framebuffer
+control capability from init's own slot, as an MDB child, in one mint.
+
+Slots, again constrained by 256-slot root CNodes: slot 6 (`IRIS_CPTR_SPAWN_CAP`)
+became `IRIS_CPTR_PROC_CONTROL`, slot 8 (the retired `IRIS_CPTR_SVC_CHAN`)
+became `IRIS_CPTR_INITRD_CONTROL`, and slot 99 — kept empty in the suite for a
+`NOT_FOUND` probe — became `IRIS_CPTR_FB_CONTROL`, with T134's probe moved onto
+a scratch slot it deletes itself (a guarantee by construction rather than by
+comment).
+
+**T291 dies with its mechanism** — its subject was `SYS_BOOTCAP_RESTRICT`, and
+what it asserted cannot be expressed once a restrictable capability cannot
+exist.  T148 pins number 45 as `NOT_SUPPORTED`; T296 carries the property that
+replaced it.  This is the Stage 4 rule applied unchanged: a test whose subject
+is the retired mechanism dies with it; one asserting a surviving property is
+rewritten.
+
+**Boot marker**: the smoke gate stops requiring `boot bootstrap cap CSpace
+grants OK` and requires `boot control caps CSpace grants OK` — a boot that
+publishes only some of the six aborts the root task instead of continuing with
+partial authority.
 
 ## Etapa 3 — the root task's own objects (planned)
 

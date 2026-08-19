@@ -2,7 +2,7 @@
  * init_bootstrap.c — initial-authority wiring for init (Fase 14 extraction).
  *
  * Everything here is MOVED VERBATIM from main.c (no functional change):
- *   - spawn/bootstrap KBootstrapCap acquisition (the IRIS_CPTR_SPAWN_CAP
+ *   - boot capability acquisition (the IRIS_CPTR_PROC_CONTROL
  *     pre-start mint from userboot, Fase 13/Track I);
  *   - the early-serial UART (the only pre-console.ep log fallback);
  *   - EP_LOOKUP_NAME service discovery over svcmgr.ep, including the A1.6
@@ -48,8 +48,7 @@ void init_early_serial_write(const char *s) {
  * monolithic spawn capability, so printing an early boot line required the
  * authority to spawn processes and power the machine off. */
 #define INIT_EARLY_SERIAL_SLOT 40u
-void init_early_serial_start(handle_id_t spawn_cap_h) {
-    (void)spawn_cap_h;
+void init_early_serial_start(void) {
     if (g_init_early_serial_h != HANDLE_INVALID) return;
     if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
                   0x3F8, 8, (long)INIT_EARLY_SERIAL_SLOT) != 0) return;
@@ -65,7 +64,7 @@ void init_retry_pause(void) {
 }
 
 /* Fase 13 (Track I): init's spawn/bootstrap KBootstrapCap arrives as the
- * IRIS_CPTR_SPAWN_CAP (slot 6) pre-start mint from userboot — not over a
+ * IRIS_CPTR_PROC_CONTROL (slot 6) pre-start mint from userboot — not over a
  * bootstrap KChannel.
  *
  * Etapa 4: init_recv_spawn_cap is RETIRED.  It materialised that slot into a

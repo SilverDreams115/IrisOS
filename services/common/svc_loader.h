@@ -14,13 +14,22 @@
 #define SL_CATALOG_COUNT 11u   /* index 10 = pager (own binary, Fase 28) */
 
 /*
+ * Stage 5 Etapa 2: spawning needs TWO authorities, and they are two
+ * capabilities.  `initrd_c` authorises reading boot images
+ * (SYS_INITRD_COUNT / SYS_INITRD_VMO) and `proc_c` authorises creating a
+ * process (SYS_PROCESS_CREATE).  They used to be one bit on one object, so a
+ * service that only needed to read an image — vfs — also held the authority to
+ * create processes.  Both are CPtrs into the CALLER's CSpace.
+ */
+
+/*
  * svc_initrd_count — query the kernel initrd catalog entry count.
- * Requires a KBootstrapCap with IRIS_BOOTCAP_SPAWN_SERVICE.
+ * Requires the initrd control capability.
  * Returns the count (≥0) or a negative iris_error_t on failure.
  * Boot code must assert the result is >= SL_CATALOG_COUNT (every named image
  * present), NOT == : the initrd is allowed to grow beyond the named catalog.
  */
-long svc_initrd_count(handle_id_t spawn_cap_h);
+long svc_initrd_count(uint64_t initrd_c);
 
 /*
  * svc_load — load a named ET_DYN (static PIE) ELF from the initrd into a
@@ -28,7 +37,7 @@ long svc_initrd_count(handle_id_t spawn_cap_h);
  * the process handle.
  *
  * Protocol:
- *   - spawn_cap_h: KBootstrapCap handle with IRIS_BOOTCAP_SPAWN_SERVICE
+ *   - proc_c / initrd_c: the process-control and initrd capabilities
  *   - name: NUL-terminated service name (≤ 31 chars)
  *   - *out_proc_h: receives process handle (RIGHT_READ|WRITE|MANAGE|DUP|XFER|ROUTE)
  *   - *out_chan_h: receives parent end of bootstrap channel (RIGHT_READ|WRITE|DUP|XFER)
@@ -39,7 +48,7 @@ long svc_initrd_count(handle_id_t spawn_cap_h);
  * The child process starts with RBX = handle_id of its own end of the
  * bootstrap channel, consistent with the entry.S bootstrap convention.
  */
-long svc_load(handle_id_t spawn_cap_h, const char *name,
+long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
               handle_id_t *out_proc_h, handle_id_t *out_chan_h);
 
 /*
@@ -85,11 +94,11 @@ struct svc_mint {
 #define SVC_LOADER_WS(untyped, slot) \
     ((uint64_t)(uint32_t)(untyped) | ((uint64_t)(uint32_t)(slot) << 32))
 
-long svc_load_minted_ws(handle_id_t spawn_cap_h, const char *name,
+long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                         const struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws);
 
-long svc_load_minted(handle_id_t spawn_cap_h, const char *name,
+long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                      const struct svc_mint *mints, uint32_t mint_count);

@@ -19,58 +19,39 @@ static const char init_fb_load_fail[] = "[INIT] fb load FAILED\r\n";
 
 /* ── fb spawn (Phase 30: ring-3 framebuffer painter) ────────────────────── */
 
-/* Transient slot holding fb's FRAMEBUFFER-restricted cap between its
- * construction and the pre-start mint.  Deleted before this returns. */
-#define INIT_FB_CAP_SLOT 42u
+/* Slot 42 held fb's FRAMEBUFFER-restricted clone between its construction and
+ * the pre-start mint.  Stage 5 Etapa 2 deleted the construction: fb is minted
+ * the framebuffer control capability from init's own slot. */
 
-void init_spawn_fb(handle_id_t spawn_cap_h) {
+void init_spawn_fb(void) {
     handle_id_t fb_proc_h  = HANDLE_INVALID;
     handle_id_t fb_boot_h  = HANDLE_INVALID;
-    int         fb_cap_c   = 0;   /* INIT_FB_CAP_SLOT occupied */
     long r;
 
-    /* Fase 13 (Track I): fb gets its FRAMEBUFFER-restricted KBootstrapCap as a
-     * pre-start CSpace mint (IRIS_CPTR_SPAWN_CAP) instead of a post-spawn
-     * KChannel SPAWN_CAP send.  Build + restrict the cap BEFORE the load so it
-     * can be minted into the child's root CNode.
+    /* Stage 5 Etapa 2: fb receives the FRAMEBUFFER CONTROL capability — the
+     * whole of what it is allowed to do — as a pre-start mint from init's own
+     * slot, so the grant is an MDB child of init's and stays revocable.
      *
-     * Etapa 4: this used to be SYS_HANDLE_DUP + an in-place restrict of the
-     * duplicate.  SYS_BOOTCAP_RESTRICT now derives the narrowed copy straight
-     * from our spawn-cap SLOT into a slot of our own root, as an MDB child of
-     * it — so no handle is produced, and fb's authority is revocable by us and
-     * by whoever granted us the spawn cap.  The DUP existed only to protect
-     * the original from an in-place restrict; deriving never touches it. */
-    r = init_sys3(SYS_BOOTCAP_RESTRICT, (long)IRIS_CPTR_SPAWN_CAP,
-                  (long)IRIS_BOOTCAP_FRAMEBUFFER, (long)INIT_FB_CAP_SLOT);
-    if (r < 0) {
-        init_early_serial_write(init_fb_load_fail);
-        goto out;
-    }
-    fb_cap_c = 1;
-
+     * It used to be a SYS_BOOTCAP_RESTRICT of init's monolithic boot
+     * capability into a scratch slot, minted on, then deleted: three steps
+     * that existed only because the authority fb needed was one bit of an
+     * object that also carried spawn and debug authority.  Delegating a
+     * capability that means exactly one thing needs none of them. */
     {
         struct svc_mint fb_mints[1] = { 0 };
-        fb_mints[0].slot     = IRIS_CPTR_SPAWN_CAP;
-        fb_mints[0].src_cptr = INIT_FB_CAP_SLOT;
+        fb_mints[0].slot     = IRIS_CPTR_FB_CONTROL;
+        fb_mints[0].src_cptr = IRIS_CPTR_FB_CONTROL;
         fb_mints[0].rights   = RIGHT_READ;
         fb_mints[0].badge    = 0;
-        r = svc_load_minted_ws(spawn_cap_h, "fb", &fb_proc_h, &fb_boot_h,
-                               fb_mints, 1u,
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "fb", &fb_proc_h, &fb_boot_h, fb_mints, 1u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
     }
-    if (r < 0) {
+    if (r < 0)
         init_early_serial_write(init_fb_load_fail);
-        goto out;
-    }
 
-out:
     init_close(&fb_proc_h);
     init_close(&fb_boot_h);
-    /* Drop our copy: fb holds its own, minted as a child of this slot, so
-     * deleting here reparents fb's cap onto our spawn-cap slot rather than
-     * orphaning it — the grant survives, our surplus authority does not. */
-    if (fb_cap_c)
-        (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_FB_CAP_SLOT);
 }
 
 /* ── console spawn (Phase 30: ring-3 serial console service) ────────────── */
@@ -79,7 +60,7 @@ out:
  * endpoint recv side (IRIS_CPTR_OWN_EP) and its 0x3F8 UART KIoPort
  * (IRIS_CPTR_IOPORT) are pre-start mints; no legacy console KChannel pair, no
  * bootstrap sends.  Returns 1 on success, 0 on failure. */
-int init_spawn_console(handle_id_t spawn_cap_h) {
+int init_spawn_console(void) {
     handle_id_t con_proc_h  = HANDLE_INVALID;
     handle_id_t con_boot_h  = HANDLE_INVALID;
 #define INIT_CONSOLE_IOPORT_SLOT 41u
@@ -101,7 +82,6 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
      * slot, and forwarded to console by CSpace source — so the delegation is
      * revocable from init.  Slot 41 is free in init's root CNode.
      * Stage 5 Etapa 2: the authority is the ioport control capability. */
-    (void)spawn_cap_h;
     if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
                   0x3F8, 8, (long)INIT_CONSOLE_IOPORT_SLOT) != 0) {
         init_early_serial_write(init_console_ioport_fail);
@@ -141,7 +121,8 @@ int init_spawn_console(handle_id_t spawn_cap_h) {
             con_mints[n].badge  = 0;
             n++;
         }
-        r = svc_load_minted_ws(spawn_cap_h, "console", &con_proc_h, &con_boot_h,
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "console", &con_proc_h, &con_boot_h,
                                con_mints, n,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
     }
@@ -176,7 +157,7 @@ fail:
  *                          IRIS_CPTR_SVCMGR_EP into catalog children);
  *   slot 6 (SPAWN_CAP)   — spawn/authority cap, READ|DUP|TRANSFER.
  * Returns the svcmgr.ep send side (init's discovery handle), or HANDLE_INVALID. */
-handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
+handle_id_t init_spawn_svcmgr(void) {
     handle_id_t svcmgr_proc_h  = HANDLE_INVALID;
     handle_id_t svcmgr_chan_h  = HANDLE_INVALID;
     handle_id_t svcmgr_ep_h    = HANDLE_INVALID;
@@ -213,7 +194,7 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
     }
 
     {
-        struct svc_mint sm_mints[7] = { 0 };
+        struct svc_mint sm_mints[8] = { 0 };
         uint32_t n = 0;
         sm_mints[n].slot   = IRIS_CPTR_CONSOLE_EP;
         sm_mints[n].src_cptr = g_init_console_ep_h;
@@ -227,8 +208,16 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
         sm_mints[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         sm_mints[n].badge  = 0;   /* unbadged: svcmgr re-mints per child badge */
         n++;
-        sm_mints[n].slot     = IRIS_CPTR_SPAWN_CAP;
-        sm_mints[n].src_cptr = IRIS_CPTR_SPAWN_CAP;
+        sm_mints[n].slot     = IRIS_CPTR_PROC_CONTROL;
+        sm_mints[n].src_cptr = IRIS_CPTR_PROC_CONTROL;
+        sm_mints[n].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[n].badge  = 0;
+        n++;
+        /* svcmgr loads service images and forwards image-reading authority to
+         * vfs — which, unlike before, does NOT come with the authority to
+         * create processes. */
+        sm_mints[n].slot     = IRIS_CPTR_INITRD_CONTROL;
+        sm_mints[n].src_cptr = IRIS_CPTR_INITRD_CONTROL;
         sm_mints[n].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         sm_mints[n].badge  = 0;
         n++;
@@ -262,7 +251,8 @@ handle_id_t init_spawn_svcmgr(handle_id_t spawn_cap_h) {
             sm_mints[n].badge  = 0;
             n++;
         }
-        r = svc_load_minted_ws(spawn_cap_h, "svcmgr", &svcmgr_proc_h,
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "svcmgr", &svcmgr_proc_h,
                             &svcmgr_chan_h, sm_mints, n,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
     }
@@ -361,7 +351,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[15] = { 0 };
+        struct svc_mint it_mints[17] = { 0 };
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -404,10 +394,12 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[8].src_cptr = IRIS_CPTR_IOPORT_CONTROL;
         it_mints[8].rights = RIGHT_READ;
         it_mints[8].badge = 0;
-        /* Fase 13 (Track I): the operational spawn cap (serial KIoPort +
-         * INITRD access) is a pre-start mint too — no bootstrap KChannel send. */
-        it_mints[9].slot = IRIS_CPTR_SPAWN_CAP;
-        it_mints[9].src_cptr = IRIS_CPTR_SPAWN_CAP;
+        /* Fase 13 (Track I): the suite's operational authorities are pre-start
+         * mints — no bootstrap KChannel send.  Stage 5 Etapa 2: they are three
+         * capabilities, because the suite does three different things with
+         * them (spawn children, read boot images, probe the framebuffer). */
+        it_mints[9].slot = IRIS_CPTR_PROC_CONTROL;
+        it_mints[9].src_cptr = IRIS_CPTR_PROC_CONTROL;
         it_mints[9].rights = RIGHT_READ;
         it_mints[9].badge = 0;
         /* Stage 5 Etapa 2: the suite creates IRQ capabilities in several
@@ -423,6 +415,17 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[14].src_cptr = IRIS_CPTR_DEBUG_CONTROL;
         it_mints[14].rights = RIGHT_READ;
         it_mints[14].badge = 0;
+        it_mints[15].slot = IRIS_CPTR_INITRD_CONTROL;
+        it_mints[15].src_cptr = IRIS_CPTR_INITRD_CONTROL;
+        it_mints[15].rights = RIGHT_READ;
+        it_mints[15].badge = 0;
+        /* T168 asserts the framebuffer VMO is one-shot: it needs the
+         * capability that authorises the call, or it would be asserting a
+         * denial instead. */
+        it_mints[16].slot = IRIS_CPTR_FB_CONTROL;
+        it_mints[16].src_cptr = IRIS_CPTR_FB_CONTROL;
+        it_mints[16].rights = RIGHT_READ;
+        it_mints[16].badge = 0;
         /* Fase 18: the boot KUntyped for the authority suite (T125–T131). */
         it_mints[10].slot = IRIS_CPTR_TEST_UNTYPED;
         it_mints[10].src_cptr = lk_untyped;   /* 0 → skipped by svc_load */
@@ -457,8 +460,9 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * and SYS_PROCESS_CREATE both resolve it either way, and the slot
          * outlives bootstrap_h by construction — which is the only reason the
          * retired duplicate had to exist. */
-        r = svc_load_minted_ws((handle_id_t)IRIS_CPTR_SPAWN_CAP, "iris_test",
-                            &proc_h, &boot_h, it_mints, 15u,
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "iris_test",
+                            &proc_h, &boot_h, it_mints, 17u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
     }
     init_close(&lk_svcmgr);

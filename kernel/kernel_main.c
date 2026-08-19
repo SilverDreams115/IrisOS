@@ -192,7 +192,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             for (uint64_t b = 0; b < IRIS_ROOT_BOOTINFO_BYTES; b++)
                 ((uint8_t *)bi_kva)[b] = 0;
             if (root_bootinfo_init(bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
-                                   BOOT_CPTR_BOOTSTRAP_CAP, BOOT_CPTR_VSPACE,
+                                   BOOT_CPTR_VSPACE,
                                    KCNODE_DEFAULT_SLOTS) != IRIS_OK) {
                 pmm_free_contig(bi_phys, IRIS_ROOT_BOOTINFO_PAGES);
                 bi_phys = 0;
@@ -209,107 +209,64 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         if (bi_kva && !ut) {
             klog_write("[IRIS][USER] FATAL: task_spawn_user(userboot) failed\n");
         } else if (ut) {
-            struct KBootstrapCap *cap = kbootcap_alloc(
-                IRIS_BOOTCAP_SPAWN_SERVICE | IRIS_BOOTCAP_FRAMEBUFFER);
-            if (!cap) {
-                klog_write("[IRIS][USER] FATAL: kbootcap_alloc failed\n");
-                task_abort_spawned_user(ut);
-                ut = 0;
-            } else {
-                {
-                    /* Stage 4: the bootstrap capability is published into
-                     * CSpace ONLY.  It used to be dual-inserted — a handle in
-                     * userboot's table AND slot BOOT_CPTR_BOOTSTRAP_CAP — with
-                     * the handle passed in RBX.  userboot has ignored that
-                     * handle since the CPtr-first bootstrap landed (it closes
-                     * the argument on entry and invokes the slot), so the
-                     * insert produced authority nobody used, in the namespace
-                     * this stage is deleting.
-                     *
-                     * Stage 5 Etapa 1 gave RBX its current job: it carries the
-                     * address of the BootInfo region, set at the end of the
-                     * boot sequence once every grant is known. */
-                    task_set_bootstrap_arg0(ut, 0);
-                    /* Publish KBootstrapCap in root CNode slot
-                     * BOOT_CPTR_BOOTSTRAP_CAP (slot 1).  kcnode_mint takes its
-                     * own retain+active_retain, so the slot owns the object
-                     * outright — there is no second owner to balance against
-                     * any more.  This is now the ONLY way userboot reaches its
-                     * bootstrap authority, so a failure here is fatal: it used
-                     * to be survivable only because the legacy handle existed. */
-                    iris_error_t bme = IRIS_ERR_NOT_FOUND;
+            /*
+             * Stage 5 Etapa 2: the boot authorities are published as SIX
+             * capabilities, one per authority, each in its own slot.
+             *
+             * There used to be one object here carrying a permission mask —
+             * spawn, hardware, debug and framebuffer at once — so every holder
+             * of any of them held all of them, and giving one up meant cloning
+             * a narrowed copy of the whole thing (SYS_BOOTCAP_RESTRICT, now
+             * retired).  kbootcap_alloc refuses a multi-bit kind, so the
+             * monolith is not merely absent from this boot path: it cannot be
+             * constructed.  BOOT_CPTR_BOOTSTRAP_CAP (slot 1) stays reserved
+             * and permanently empty.
+             *
+             * Fatal on failure, like every other boot grant: a root task that
+             * cannot claim hardware cannot bring up a console, and a
+             * half-published boot authority is worse than none.
+             */
+            static const struct { uint32_t kind; uint32_t slot; }
+            boot_controls[] = {
+                { IRIS_BOOTCAP_IRQ_CONTROL,    BOOT_CPTR_IRQ_CONTROL },
+                { IRIS_BOOTCAP_IOPORT_CONTROL, BOOT_CPTR_IOPORT_CONTROL },
+                { IRIS_BOOTCAP_DEBUG_CONTROL,  BOOT_CPTR_DEBUG_CONTROL },
+                { IRIS_BOOTCAP_PROC_CONTROL,   BOOT_CPTR_PROC_CONTROL },
+                { IRIS_BOOTCAP_INITRD_CONTROL, BOOT_CPTR_INITRD_CONTROL },
+                { IRIS_BOOTCAP_FB_CONTROL,     BOOT_CPTR_FB_CONTROL },
+            };
+            for (uint32_t i = 0;
+                 ut && i < sizeof(boot_controls) / sizeof(boot_controls[0]);
+                 i++) {
+                struct KBootstrapCap *cc = kbootcap_alloc(boot_controls[i].kind);
+                iris_error_t cme = IRIS_ERR_NO_MEMORY;
+                if (cc) {
+                    cme = IRIS_ERR_NOT_FOUND;
                     if (ut->process->cspace_root)
-                        bme = kcnode_mint(
-                            ut->process->cspace_root,
-                            BOOT_CPTR_BOOTSTRAP_CAP,
-                            &cap->base,
-                            RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-                    kobject_release(&cap->base);
-                    if (bme != IRIS_OK) {
-                        klog_write("[IRIS][USER] FATAL: bootstrap cap"
-                                   " CSpace publish failed\n");
-                        task_abort_spawned_user(ut);
-                        ut = 0;
-                    } else {
-                        klog_write("[IRIS][USER] boot bootstrap"
-                                   " cap CSpace grants OK\n");
-                    }
+                        cme = kcnode_mint(ut->process->cspace_root,
+                                          boot_controls[i].slot, &cc->base,
+                                          RIGHT_READ | RIGHT_DUPLICATE |
+                                          RIGHT_TRANSFER);
+                    kobject_release(&cc->base);
                 }
-                /*
-                 * Stage 5 Etapa 2: device authority is published as its own
-                 * capability per authority, not as bits on the object above.
-                 *
-                 * IRIS_BOOTCAP_HW_ACCESS was one bit authorising BOTH IRQ and
-                 * ioport creation, on an object that also carried spawn, debug
-                 * and framebuffer authority — so a service that needed a
-                 * serial port was handed the authority to claim any interrupt
-                 * line and to power the machine off, and narrowing that meant
-                 * cloning a weaker copy of the whole thing.  These two
-                 * capabilities each authorise exactly one syscall, are matched
-                 * exactly by the kernel, and are delegated by handing over the
-                 * one that is meant.
-                 *
-                 * Fatal on failure, like every other boot grant: a root task
-                 * that cannot claim hardware cannot bring up a console, and a
-                 * half-published boot authority is worse than none.
-                 */
-                if (ut) {
-                    static const struct { uint32_t kind; uint32_t slot; }
-                    boot_controls[] = {
-                        { IRIS_BOOTCAP_IRQ_CONTROL,    BOOT_CPTR_IRQ_CONTROL },
-                        { IRIS_BOOTCAP_IOPORT_CONTROL, BOOT_CPTR_IOPORT_CONTROL },
-                        { IRIS_BOOTCAP_DEBUG_CONTROL,  BOOT_CPTR_DEBUG_CONTROL },
-                    };
-                    for (uint32_t i = 0; ut && i < 3u; i++) {
-                        struct KBootstrapCap *cc =
-                            kbootcap_alloc(boot_controls[i].kind);
-                        iris_error_t cme = IRIS_ERR_NO_MEMORY;
-                        if (cc) {
-                            cme = IRIS_ERR_NOT_FOUND;
-                            if (ut->process->cspace_root)
-                                cme = kcnode_mint(
-                                    ut->process->cspace_root,
-                                    boot_controls[i].slot, &cc->base,
-                                    RIGHT_READ | RIGHT_DUPLICATE |
-                                    RIGHT_TRANSFER);
-                            kobject_release(&cc->base);
-                        }
-                        if (cme == IRIS_OK)
-                            cme = root_bootinfo_set_control_cap(
-                                bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
-                                boot_controls[i].kind,
-                                (uint64_t)boot_controls[i].slot);
-                        if (cme != IRIS_OK) {
-                            klog_write("[IRIS][USER] FATAL: boot control"
-                                       " cap publish failed\n");
-                            task_abort_spawned_user(ut);
-                            ut = 0;
-                        }
-                    }
-                    if (ut)
-                        klog_write("[IRIS][USER] boot control"
-                                   " caps CSpace grants OK\n");
+                if (cme == IRIS_OK)
+                    cme = root_bootinfo_set_control_cap(
+                        bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
+                        boot_controls[i].kind,
+                        (uint64_t)boot_controls[i].slot);
+                if (cme != IRIS_OK) {
+                    klog_write("[IRIS][USER] FATAL: boot control"
+                               " cap publish failed\n");
+                    task_abort_spawned_user(ut);
+                    ut = 0;
                 }
+            }
+            if (ut) {
+                /* Stage 5 Etapa 1 gave RBX its job: it carries the address of
+                 * the BootInfo region, set at the end of the boot sequence
+                 * once every grant is known. */
+                task_set_bootstrap_arg0(ut, 0);
+                klog_write("[IRIS][USER] boot control caps CSpace grants OK\n");
             }
         }
         if (ut) {
