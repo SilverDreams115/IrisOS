@@ -271,8 +271,33 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * the high 32; zero means "no workspace", which keeps the legacy handle path.
  */
 #define SL_WS_ELF    1u
-#define SL_WS_PROC_BASE 16u  /* 16..255: one live process each */
+#define SL_WS_PROC_BASE 16u  /* 16..99: one live process each */
+#define SL_WS_PROC_LIMIT 100u
+/* Stage 6 Etapa 5: one recyclable budget per live child, paired with its
+ * process leaf (leaf L uses budget leaf 100 + L - 16).
+ *
+ * Everything a child costs — its address space, its process state, its segment
+ * and stack VMOs — is carved from this, so when the child dies and its last
+ * capability goes, the budget has no children left and RESET makes the whole
+ * region reusable.  Without it, consumption is monotonic: a bump allocator
+ * never rewinds, so every spawn would permanently spend a few hundred KiB of
+ * the spawner's pool however short-lived the child was.  This is seL4's
+ * reclamation pattern — revoke the Untyped you used for a child — in the form
+ * IRIS has. */
+#define SL_WS_CHILDPOOL(leaf) ((leaf) - SL_WS_PROC_BASE + SL_WS_PROC_LIMIT)
+#define SL_CHILD_POOL_BYTES (1u << 20)
 #define SL_WS_STACK  3u
+/* Stage 6 Etapa 5: a reusable scratch budget for the ELF image copy.
+ *
+ * The kernel copies the whole image when SYS_INITRD_VMO is invoked, and the
+ * loader drops it as soon as the segments are out.  Charged to the spawner's
+ * main pool that transient copy would be permanent — a bump allocator does not
+ * rewind — so every spawn would cost an image forever.  Pointing it at a
+ * dedicated sub-untyped and RESETTING that between spawns bounds the cost at
+ * ONE image, which is the seL4 reclamation pattern (revoke the Untyped you
+ * used) in the form IRIS has. */
+#define SL_WS_ELFPOOL 5u
+#define SL_ELF_POOL_BYTES (4u << 20)
 #define SL_WS_SEG    8u   /* 8..15: one per ELF segment */
 
 #define SL_WS_UNTYPED(ws)  ((uint64_t)((ws) & 0xFFFFFFFFu))
@@ -302,7 +327,7 @@ static int sl_ws_ensure(uint64_t ws) {
 long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                         const struct svc_mint *mints, uint32_t mint_count,
-                        uint64_t ws) {
+                        uint64_t ws, uint64_t child_budget) {
     *out_proc_h = HANDLE_INVALID;
     *out_chan_h = HANDLE_INVALID;
 
@@ -342,9 +367,22 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * quietly producing capabilities the caller cannot address. */
     if (!sl_ws_ensure(ws)) return (long)IRIS_ERR_INVALID_ARG;
 
-    /* 1. Get read-only eager VMO wrapping the ELF bytes in the initrd. */
+    /* 1. Get read-only eager VMO wrapping the ELF bytes in the initrd.
+     *
+     * Charged to the scratch budget: RESET it first (the previous spawn's copy
+     * is long gone, so it has no children), and carve it on the first spawn. */
     {
-        r = sl_sys3(SYS_INITRD_VMO, (long)initrd_c, idx, sl_ws_dest(ws, SL_WS_ELF));
+        long pool = (long)sl_ws_cptr(ws, SL_WS_ELFPOOL);
+        if (sl_sys1(SYS_UNTYPED_RESET, pool) != 0) {
+            (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_ELFPOOL);
+            long pr = sl_sys4(SYS_UNTYPED_RETYPE2, (long)SL_WS_UNTYPED(ws),
+                              (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)),
+                              sl_ws_dest(ws, SL_WS_ELFPOOL),
+                              (long)SL_ELF_POOL_BYTES);
+            if (pr != 0) pool = 0;   /* fall back to the caller's own budget */
+        }
+        r = sl_sys4(SYS_INITRD_VMO, (long)initrd_c, idx,
+                    sl_ws_dest(ws, SL_WS_ELF), pool);
         if (r < 0) goto out;
         elf_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_ELF);
     }
@@ -425,9 +463,32 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * table as a child of that pool, so the spawner cannot RESET it out
          * from under a live child. */
         uint32_t proc_leaf = 0u;
-        for (uint32_t l = SL_WS_PROC_BASE; l < 256u; l++) {
+        for (uint32_t l = SL_WS_PROC_BASE; l < SL_WS_PROC_LIMIT; l++) {
+            /* Ask whether this leaf is taken BEFORE touching its budget: a
+             * leaf whose process is still alive owns a budget that is still in
+             * use, and resetting or re-carving it would strand the live
+             * child's memory.  SYS_CAP_IDENTIFY answers exactly this question
+             * and takes no authority to ask. */
+            if (sl_sys1(SYS_CAP_IDENTIFY, (long)sl_ws_cptr(ws, l)) >= 0)
+                continue;
+
+            /* Prepare this leaf's child budget: RESET reclaims it when the
+             * previous occupant is fully gone, and a first use carves it. */
+            uint32_t pl   = SL_WS_CHILDPOOL(l);
+            long     pool = (long)sl_ws_cptr(ws, pl);
+            if (sl_sys1(SYS_UNTYPED_RESET, pool) != 0) {
+                (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)pl);
+                if (sl_sys4(SYS_UNTYPED_RETYPE2, (long)SL_WS_UNTYPED(ws),
+                            (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)),
+                            sl_ws_dest(ws, pl),
+                            (long)(child_budget ? child_budget
+                                                : (uint64_t)SL_CHILD_POOL_BYTES)) != 0) {
+                    r = (long)IRIS_ERR_NO_MEMORY;
+                    break;
+                }
+            }
             r = sl_sys3(SYS_PROCESS_CREATE, (long)proc_c,
-                        sl_ws_dest(ws, l), (long)SL_WS_UNTYPED(ws));
+                        sl_ws_dest(ws, l), pool);
             if (r == 0) { proc_leaf = l; break; }
             if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
         }

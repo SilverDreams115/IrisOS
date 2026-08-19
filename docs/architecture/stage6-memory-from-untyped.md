@@ -57,7 +57,61 @@ the slot model later absorbs these authorities.
 | 2 | Page tables are charged to an Untyped the address space names; the implicit PMM reserve on map retires | ✅ DONE |
 | 3 | VSpace and its PML4 come from Untyped | ✅ DONE |
 | 4 | The per-process kernel state and sub-untyped headers move to the budget | ✅ DONE |
-| 5 | KVMO converted or retired; anonymous vs file-backed memory separated in user space | pending |
+| 5 | KVMO CONVERTED: its pages, metadata and header come from a named budget | ✅ DONE |
+
+## Etapa 5 — user memory comes out of a named budget  ✅ DONE
+
+Anonymous memory was the last thing the kernel handed out for free.  A process
+asked for a VMO and got PMM pages, bounded only by a per-process quota the
+kernel invented — not by a capability anyone delegated.  A VMO's pages, its
+page-address array and its object header now all come from an Untyped.
+
+**Which Untyped is the caller's to say.**  `SYS_VMO_CREATE`'s dead first
+argument became the budget CPtr, and `SYS_INITRD_VMO` gained one, because a
+process holds several budgets and they are not interchangeable: the small,
+recycled pool its address space was built from is not where a service should
+put the memory it serves out of.  Zero means "the budget my address space came
+from", which is where the memory would have come from anyway.
+`SYS_VMO_CREATE_FOR` keeps charging the payer's own budget — that is what
+"charged to the payer" already meant.
+
+### Reclamation, and why it needed a design and not a bigger number
+
+A bump allocator never rewinds, so charging memory without a way to get it back
+turns every spawn into a permanent cost: the first attempt exhausted an 8 MiB
+pool in tens of spawns, and no budget size fixes a monotonic leak.  Two
+mechanisms make consumption bounded instead of cumulative, and both are seL4's
+answer (revoke the Untyped you used) in the form IRIS has:
+
+- **A recycled budget per live child.**  The loader pairs each process leaf
+  with a budget leaf; everything a child costs — address space, process state,
+  segment and stack VMOs — is carved from it, so when the child dies and its
+  last capability goes, that budget has no children left and `RESET` makes the
+  whole region reusable.  Consumption is bounded by the number of children
+  ALIVE, not by how many have ever run.  The spawner sizes it, because the
+  spawner knows what it is launching.
+- **A recycled scratch for image copies.**  `SYS_INITRD_VMO` copies a whole
+  boot image; the loader parses it and drops it.  Pointed at a dedicated
+  sub-untyped that is RESET between spawns, that transient copy costs one
+  image instead of one image per spawn.
+
+Reading a leaf's occupancy before touching its budget is what makes recycling
+safe, and `SYS_CAP_IDENTIFY` — added in Stage 4 to ask exactly this question
+without taking authority — is what asks it.  Resetting the budget of a child
+that is still alive would strand its memory; the first version of this loop did
+precisely that, and the runtime said so.
+
+### A defect this etapa exposed
+
+Three-argument syscall stubs did not clear `r10`.  That was harmless while no
+syscall read a fourth argument, and became a bug the moment `SYS_INITRD_VMO`
+grew a budget: the kernel read whatever the compiler had left there.  The stubs
+now zero it explicitly, which closes the whole class rather than this instance.
+
+Covered by **T300**: a VMO created against a named budget consumes that budget
+by at least the size asked for, its pages are real and zero-filled, a budget of
+the wrong type is refused, the budget cannot be RESET while the VMO lives, and
+once the VMO is gone the region is reclaimable.
 
 ## Etapa 4 — a process's kernel state comes out of the budget  ✅ DONE
 

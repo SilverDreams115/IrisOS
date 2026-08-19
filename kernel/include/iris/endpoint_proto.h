@@ -357,6 +357,14 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * (READ|WRITE|DUPLICATE|TRANSFER) at each hop so the mint (needs DUPLICATE) and
  * retype (needs WRITE) both succeed. */
 #define IRIS_CPTR_INIT_UNTYPED ((uint64_t)12)
+/* Stage 6: a SECOND boot block for init.
+ *
+ * Once memory is charged rather than assumed — address spaces, process state,
+ * image copies, VMO pages — one boot block is the ceiling on everything init's
+ * subtree can spend, and the drain produces a dozen of them.  init carves the
+ * suite's budget from this one and svcmgr's from the first, so neither starves
+ * the other.  Slot 24 is free in init and is minted to nobody else. */
+#define IRIS_CPTR_INIT_UNTYPED2 ((uint64_t)24)
 #define IRIS_CPTR_TEST_UNTYPED ((uint64_t)55)
 /* Fase S1: slot 12 is the GENERIC "delegated untyped pool" slot — the parent
  * (userboot → init → svcmgr) delegates a bounded sub-untyped here so the child

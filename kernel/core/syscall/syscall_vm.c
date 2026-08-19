@@ -111,12 +111,18 @@ uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * CHILD but keeps the handle to map/close it.
  */
 static uint64_t vmo_create_charged(struct task *t, uint64_t size,
-                                    struct KProcess *payer, uint64_t dest) {
+                                    struct KProcess *payer, uint64_t dest,
+                                    struct KUntyped *named_pool) {
     uint32_t pages = 0;
     if (kvmo_size_to_pages(size, &pages) != IRIS_OK)
         return syscall_err(IRIS_ERR_INVALID_ARG);
     (void)pages;
-    struct KVmo *v = kvmo_create(size);
+    /* Stage 6 Etapa 5: a VMO's memory comes from the budget its PAYER was
+     * given.  Anonymous user memory was the last thing the kernel handed out
+     * for free — bounded only by a per-process quota the kernel invented,
+     * rather than by a capability someone delegated. */
+    struct KVmo *v = kvmo_create_from(size, named_pool ? named_pool
+                                                       : payer->mem_pool);
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
     iris_error_t r = kvmo_bind_owner(v, payer);
     if (r != IRIS_OK) { kvmo_free(v); return syscall_err(r); }
@@ -140,11 +146,31 @@ static uint64_t vmo_create_charged(struct task *t, uint64_t size,
 }
 
 uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1;   /* 1-arg ABI: callers do not set arg1 */
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    /* Etapa 4: arg2 = destination slot (0 = legacy handle). */
-    return vmo_create_charged(t, arg0, t->process, arg2);
+
+    /*
+     * Stage 6 Etapa 5: arg1 names WHICH Untyped pays for this VMO's pages.
+     *
+     * It was a dead argument.  A process asking for anonymous memory got PMM
+     * pages bounded by a per-process quota the kernel invented; now the memory
+     * comes from a budget, and which budget is the caller's to say — a process
+     * holds several (the one it was spawned with, the pools its supervisor
+     * delegated) and they are not interchangeable.  Zero means "the budget my
+     * address space was built from", which is where it would have come from
+     * anyway.
+     */
+    struct KUntyped *named = 0;
+    if (arg1 != 0u) {
+        iris_rights_t nr;
+        iris_error_t ne = cspace_resolve_only_untyped(t->process,
+                              (iris_cptr_t)arg1, RIGHT_WRITE, &named, &nr);
+        if (ne != IRIS_OK)
+            return syscall_err(ne == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ne);
+    }
+    uint64_t rc = vmo_create_charged(t, arg0, t->process, arg2, named);
+    if (named) { kobject_active_release(&named->base); kobject_release(&named->base); }
+    return rc;
 }
 
 /*
@@ -172,7 +198,7 @@ uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(payer_obj);
         return syscall_err(IRIS_ERR_BAD_HANDLE);
     }
-    uint64_t rv = vmo_create_charged(t, arg0, payer, dest);
+    uint64_t rv = vmo_create_charged(t, arg0, payer, dest, 0);
     kobject_release(payer_obj);
     return rv;
 }
@@ -266,7 +292,7 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                     kobject_release(obj);
                     return syscall_err(IRIS_ERR_NO_MEMORY);
                 }
-                uint64_t phys = pmm_alloc_page();
+                uint64_t phys = kvmo_alloc_page(v);
                 if (!phys) {
                     kprocess_quota_release_page(vmo_payer);
                     rollback_vmo_maps(vs, arg1, mapped_until);
@@ -409,8 +435,8 @@ uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
                                uint64_t arg2, uint64_t arg3) {
-    uint64_t dest = arg2;   /* Etapa 4: cnode | slot<<32; 0 = legacy handle */
-    (void)arg3;
+    uint64_t dest      = arg2;   /* Etapa 4: cnode | slot<<32 */
+    uint64_t pool_cptr = arg3;   /* Stage 6 Etapa 5: which budget pays */
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -439,14 +465,37 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
      * NOT guaranteed to be page-aligned.  Rather than wrapping the raw
      * physical address (which paging_map_checked_in would align down, causing
      * a read offset bug), we copy into freshly-allocated page-aligned pages. */
-    struct KVmo *v = kvmo_create((uint64_t)elf_size);
+    /*
+     * Stage 6 Etapa 5: the boot image copy is charged to a budget.  Reading an
+     * initrd entry allocates as many kernel pages as the image is long, and
+     * that used to be free.
+     *
+     * `pool_cptr` lets the caller say WHICH of its budgets pays, because this
+     * allocation is transient for a loader — it parses the image and drops it —
+     * and a caller that points it at a scratch Untyped can RESET that region
+     * between spawns instead of consuming its whole pool one image at a time.
+     * Zero means "charge my own budget", which is where the memory would have
+     * come from anyway.
+     */
+    struct KUntyped *pool = t->process->mem_pool;
+    struct KUntyped *named = 0;
+    if (pool_cptr != 0u) {
+        iris_rights_t nr;
+        iris_error_t ne = cspace_resolve_only_untyped(t->process,
+                              (iris_cptr_t)pool_cptr, RIGHT_WRITE, &named, &nr);
+        if (ne != IRIS_OK)
+            return syscall_err(ne == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ne);
+        pool = named;
+    }
+    struct KVmo *v = kvmo_create_from((uint64_t)elf_size, pool);
+    if (named) { kobject_active_release(&named->base); kobject_release(&named->base); }
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
 
     {
         const uint8_t *src = (const uint8_t *)elf_data;
         uint32_t pg;
         for (pg = 0; pg < v->page_capacity; pg++) {
-            uint64_t phys = pmm_alloc_page();
+            uint64_t phys = kvmo_alloc_page(v);
             if (!phys) { kvmo_free(v); return syscall_err(IRIS_ERR_NO_MEMORY); }
             uint8_t *dst = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
             uint64_t off = (uint64_t)pg * PAGE_SIZE;
@@ -613,7 +662,7 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
                     kobject_release(vmo_obj); kobject_release(proc_obj);
                     return syscall_err(IRIS_ERR_NO_MEMORY);
                 }
-                uint64_t phys = pmm_alloc_page();
+                uint64_t phys = kvmo_alloc_page(v);
                 if (!phys) {
                     kprocess_quota_release_page(vmo_payer);
                     rollback_vmo_maps(target_vs, vaddr, mapped_until);
@@ -759,7 +808,7 @@ uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
                 kobject_release(vmo_obj);
                 return syscall_err(IRIS_ERR_NO_MEMORY);
             }
-            uint64_t phys = pmm_alloc_page();
+            uint64_t phys = kvmo_alloc_page(v);
             if (!phys) {
                 kprocess_quota_release_page(vmo_payer);
                 kobject_active_release(&vs->base); kobject_release(&vs->base);

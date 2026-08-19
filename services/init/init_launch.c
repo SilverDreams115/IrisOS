@@ -45,7 +45,8 @@ void init_spawn_fb(void) {
         fb_mints[0].badge    = 0;
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "fb", &fb_proc_h, &fb_boot_h, fb_mints, 1u,
-                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               2u << 20);
     }
     if (r < 0)
         init_early_serial_write(init_fb_load_fail);
@@ -124,7 +125,8 @@ int init_spawn_console(void) {
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "console", &con_proc_h, &con_boot_h,
                                con_mints, n,
-                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               2u << 20);
     }
     /* console's slot-13 mint is the only reply cap: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_CONSOLE_RPLY);
@@ -183,11 +185,16 @@ handle_id_t init_spawn_svcmgr(void) {
      * reply sub-untypeds and restart churn. */
     handle_id_t sm_untyped_h = HANDLE_INVALID;
     {
-        /* Stage 6 Etapa 2: svcmgr's pool now also funds the page-table budget of
-         * every service it spawns (a sub-untyped per child), so it is sized for
-         * that rather than for svcmgr's own endpoints and replies alone. */
-        static const uint64_t s1_sm_ut_sizes[] = { 1024u<<10, 512u<<10, 256u<<10 };
-        for (uint32_t szi = 0; szi < 3u && sm_untyped_h == HANDLE_INVALID; szi++) {
+        /* Stage 6: svcmgr's pool funds everything its subtree consumes, not
+         * just its own endpoints and replies — each child's address space and
+         * kernel state (Etapas 2-4), the loader's segment and stack VMOs per
+         * spawn AND per restart, and vfs's copies of the initrd images
+         * (Etapa 5).  A bump allocator does not rewind, so a restart costs its
+         * images again until the pool is RESET; the budget is sized for that
+         * rather than pretending the memory is free. */
+        static const uint64_t s1_sm_ut_sizes[] =
+            { 32u<<20, 16u<<20, 4u<<20, 1u<<20 };
+        for (uint32_t szi = 0; szi < 4u && sm_untyped_h == HANDLE_INVALID; szi++) {
             long ur = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
                                        INIT_SLOT_SM_UNTYPED, s1_sm_ut_sizes[szi]);
             if (ur >= 0) sm_untyped_h = (handle_id_t)INIT_SLOT_SM_UNTYPED;
@@ -257,7 +264,8 @@ handle_id_t init_spawn_svcmgr(void) {
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "svcmgr", &svcmgr_proc_h,
                             &svcmgr_chan_h, sm_mints, n,
-                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               8u << 20);
     }
     /* svcmgr's slot-12 mint keeps the pool alive: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_SM_UNTYPED);
@@ -346,8 +354,15 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * small boot block. */
         static const uint64_t s1_test_ut_sizes[] =
             { 96u<<20, 32u<<20, 8u<<20, 2u<<20 };
+        /* Stage 6: carve the suite's budget from the SECOND boot block when
+         * userboot handed one over, so the suite and svcmgr do not compete for
+         * the same block now that every address space, process and VMO page
+         * is charged to somebody's budget. */
+        uint64_t test_ut_src = IRIS_CPTR_INIT_UNTYPED2;
+        if (init_sys3(SYS_UNTYPED_INFO, (long)test_ut_src, 0, 0) != 0)
+            test_ut_src = g_init_untyped_c;
         for (uint32_t szi = 0; szi < 4u && lk_untyped == HANDLE_INVALID; szi++) {
-            long ur = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
+            long ur = init_retype_slot(test_ut_src, IRIS_KOBJ_UNTYPED,
                                        INIT_SLOT_TEST_UNTYPED, s1_test_ut_sizes[szi]);
             if (ur >= 0) lk_untyped = (handle_id_t)INIT_SLOT_TEST_UNTYPED;
         }
@@ -472,7 +487,8 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "iris_test",
                             &proc_h, &boot_h, it_mints, 17u,
-                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS));
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               16u << 20);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);

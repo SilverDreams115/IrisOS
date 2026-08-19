@@ -38,6 +38,11 @@ struct KVmo {
                              * there is NO fault-driven demand paging
                              * (Fase 6.1 removed it; FR-41 regression). */
     struct KProcess *owner; /* creator retained for quota accounting */
+    /* Stage 6 Etapa 5: the Untyped this VMO's pages, metadata and header were
+     * carved from — the payer's own budget, retained for the VMO's lifetime.
+     * NULL means the kernel funded it: the root task, a wrapped device region
+     * (framebuffer), or a kernel selftest. */
+    struct KUntyped *pool;
     uint32_t       page_capacity;     /* slots in pages[] for sparse VMOs */
     uint32_t       pages_meta_pages;  /* PMM pages backing pages[] metadata */
     uint64_t       pages_meta_phys;   /* physical base of pages[] metadata */
@@ -50,7 +55,15 @@ struct KVmo {
 };
 
 iris_error_t kvmo_size_to_pages(uint64_t size, uint32_t *out_pages);
-struct KVmo *kvmo_create(uint64_t size);             /* allocate from PMM */
+struct KVmo *kvmo_create(uint64_t size);
+
+/* Stage 6 Etapa 5 — the same VMO, with its header, its page-address array and
+ * every page it later populates carved from `pool` (the payer's budget).
+ * NULL funds it from kernel memory: the root task and the kernel selftests. */
+struct KVmo *kvmo_create_from(uint64_t size, struct KUntyped *pool);
+
+/* One page for a sparse VMO, from its pool when it has one. */
+uint64_t     kvmo_alloc_page(struct KVmo *v);             /* allocate from PMM */
 struct KVmo *kvmo_wrap  (uint64_t phys, uint64_t size); /* wrap existing phys (MMIO) */
 iris_error_t kvmo_bind_owner(struct KVmo *v, struct KProcess *owner);
 /* Fase 29: the VMO's payer domain — the process charged for the VMO object and

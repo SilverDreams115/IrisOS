@@ -271,7 +271,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
          * if the grant is absent the mint fails, the slot stays empty and the
          * authority tests FAIL loudly rather than silently skipping. */
-        struct svc_mint init_mints[7] = { 0 };
+        struct svc_mint init_mints[8] = { 0 };
         init_mints[0].slot     = IRIS_CPTR_PROC_CONTROL;
         init_mints[0].src_cptr = proc_control_c;
         init_mints[0].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
@@ -319,9 +319,24 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * that happened to match them: userboot now delegates what the kernel
          * says it holds, and carves the loader workspace out of the same first
          * boot untyped into a slot the kernel declared free. */
+        /* Stage 6: a second boot block, when the machine has one.  Memory is
+         * charged now, so one block is the ceiling on everything init's
+         * subtree can spend; the drain hands us a dozen. */
+        uint32_t init_mint_count = 7u;
+        if (bi->untyped_count > 1u) {
+            init_mints[7].slot     = IRIS_CPTR_INIT_UNTYPED2;
+            init_mints[7].src_cptr = bi->untyped[1].cptr;
+            init_mints[7].rights   = RIGHT_READ | RIGHT_WRITE |
+                                     RIGHT_DUPLICATE | RIGHT_TRANSFER;
+            init_mints[7].badge    = 0;
+            init_mint_count = 8u;
+        }
+
         long lr = svc_load_minted_ws(proc_control_c, initrd_control_c, "init",
-                                     &init_proc_h, &init_boot_h, init_mints, 7u,
-                                     SVC_LOADER_WS(boot_untyped_c, ws_slot));
+                                     &init_proc_h, &init_boot_h, init_mints,
+                                     init_mint_count,
+                                     SVC_LOADER_WS(boot_untyped_c, ws_slot),
+                               8u << 20);
         if (lr < 0) {
             /* A failed init load used to be a SILENT dead system: userboot
              * jumped straight to exit, so the machine stopped with no output

@@ -96,6 +96,9 @@ void  kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes);
  * address space that installed them lives.  That is what makes RESET refuse
  * while somebody's page tables are still inside the region. */
 uint64_t kuntyped_alloc_page_child(struct KUntyped *u);
+/* A CONTIGUOUS multi-page carve holding ONE child entry — for arrays the
+ * kernel indexes, such as a VMO's page table of physical addresses. */
+uint64_t kuntyped_alloc_pages_child(struct KUntyped *u, uint64_t bytes);
 void     kuntyped_release_page_child(struct KUntyped *u);
 
 uint64_t kuntyped_available(struct KUntyped *u);

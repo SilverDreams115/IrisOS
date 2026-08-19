@@ -17,7 +17,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
 | 4 — Dual namespace retirement | ✅ CLOSED |
 | 5 — seL4-like bootstrap | ✅ CLOSED |
-| 6 — Remaining memory and objects | 🔄 OPEN (Etapas 1-4 landed) |
+| 6 — Remaining memory and objects | 🔄 OPEN (Etapas 1-5 landed) |
 | 7 — KProcess retirement | pending |
 | 8 — Full MCS scheduling | pending |
 | 9 — SMP | pending |
@@ -550,6 +550,18 @@ created from kernel-private storage.  Stage 5 finished the authority story;
 this stage answers *who pays for memory*, which is still "the kernel,
 invisibly" in four places — page tables on map, frame headers, the VSpace and
 its PML4, and sixteen `kslab_alloc` consumers.
+
+### Etapa 5 — user memory comes out of a named budget  ✅ DONE
+
+A VMO's pages, its page-address array and its header come from an Untyped, and
+`SYS_VMO_CREATE` / `SYS_INITRD_VMO` take that budget as a CPtr — a process
+holds several and they are not interchangeable.  Anonymous memory was the last
+allocation obtainable without a capability behind it.
+
+Charging alone would have made consumption monotonic (a bump allocator does not
+rewind), so reclamation is part of the etapa: the loader recycles a budget per
+LIVE child and a scratch budget for image copies, bounding cost by what is
+alive rather than by what has ever run.  Covered by T300.
 
 ### Etapa 4 — a process's kernel state comes out of the budget  ✅ DONE
 

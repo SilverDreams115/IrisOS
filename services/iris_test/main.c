@@ -52,8 +52,13 @@ static inline long it_sys2(long nr, long a0, long a1) {
 
 static inline long it_sys3(long nr, long a0, long a1, long a2) {
     long ret;
+    /* r10 (arg3) is set to 0 explicitly: a syscall that later grows a fourth
+     * argument reads this register, and whatever the compiler left in it is
+     * not zero — Stage 6 Etapa 5 found that the hard way when SYS_INITRD_VMO
+     * gained a budget argument. */
+    register long _a3 __asm__("r10") = 0;
     __asm__ volatile ("syscall"
-        : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(a2)
+        : "=a"(ret) : "a"(nr), "D"(a0), "S"(a1), "d"(a2), "r"(_a3)
         : "rcx", "r11", "memory");
     return ret;
 }
@@ -214,8 +219,11 @@ static long it_initrd_vmo_slot(long auth_cptr, long index) {
     uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
                                              __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
-    long r = it_sys3(SYS_INITRD_VMO, auth_cptr, index,
-                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
+    /* Stage 6 Etapa 5: the image copy is charged to the suite's own budget,
+     * not to the small per-child pool its address space came from. */
+    long r = it_sys4(SYS_INITRD_VMO, auth_cptr, index,
+                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
+                     (long)IRIS_CPTR_TEST_UNTYPED);
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
@@ -253,7 +261,10 @@ static long it_vmo_create_slot(uint64_t size) {
     uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
                                              __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
-    long r = it_sys3(SYS_VMO_CREATE, (long)size, 0,
+    /* Stage 6 Etapa 5: name the budget.  The suite's own untyped is what pays
+     * for the memory it asks for; its per-child pool pays for what the KERNEL
+     * spends on it (address space, process state). */
+    long r = it_sys3(SYS_VMO_CREATE, (long)size, (long)IRIS_CPTR_TEST_UNTYPED,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
@@ -2892,7 +2903,8 @@ static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
     *out_proc_h = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc_h, &boot_h, mints, n,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
     it_close(&reply_h);  /* the child's slot-13 mint is the only reply cap */
     it_close(&boot_h);   /* Track I: no bootstrap channel (HANDLE_INVALID anyway) */
     return r;
@@ -10685,7 +10697,8 @@ static long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
     handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, n,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
 
@@ -11172,7 +11185,8 @@ static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t de
     handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, 2u,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
 
@@ -11505,7 +11519,8 @@ static void test_t170(void) {
         long r = (ep < 0) ? -1 : svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL,
                                                     IRIS_CPTR_INITRD_CONTROL,
                      "lifecycle_probe", &proc, &boot, mints, 2u,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
         it_close(&boot); it_close(&io);
         if (r < 0 || proc == HANDLE_INVALID) { ok = 0; why = "spawn"; it_close(&cmd); it_close(&proc); break; }
 
@@ -12235,7 +12250,8 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc, &boot, m, n,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
     it_close(&boot);
     if (r < 0 || *out_proc == HANDLE_INVALID) {
         it_close(&cmd); it_close(out_proc); return -1;
@@ -14015,7 +14031,8 @@ static int t27_pager_spawn(struct t27_pager *p,
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager",
                              &p->proc, &boot, m, n,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || p->proc == HANDLE_INVALID) {
@@ -14831,7 +14848,8 @@ static void test_t213(void) {
         handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
         long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                                  &proc, &boot, 0, 0u,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
         if (r != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "badelf not INVALID_ARG"; }
         if (ok && proc != HANDLE_INVALID) { ok = 0; why = "badelf left a process"; }
         it_close(&boot); it_close(&proc);
@@ -14872,7 +14890,8 @@ static void test_t214(void) {
     /* Unknown name → NOT_FOUND, no hang, no process. */
     long r1 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "no_such_image",
                               &proc, &boot, 0, 0u,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
     if (r1 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "unknown not NOT_FOUND"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "unknown left process"; }
     it_close(&boot); it_close(&proc);
@@ -14881,7 +14900,8 @@ static void test_t214(void) {
     proc = boot = HANDLE_INVALID;
     long r2 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                               &proc, &boot, 0, 0u,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
     if (ok && r2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "malformed not INVALID_ARG"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "malformed left process"; }
     it_close(&boot); it_close(&proc);
@@ -14993,7 +15013,8 @@ static void test_t216(void) {
             struct it_snap fb = it_snap_take();
             handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
             long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf", &proc, &boot, 0, 0u,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
             if (r >= 0) { ok = 0; why = "badelf loaded"; }
             it_close(&boot); it_close(&proc);
             it_quiesce_reaper();
@@ -15358,7 +15379,8 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
     }
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, m, k,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
@@ -16827,7 +16849,8 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
         }
     }
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, mm, k,
-                             IT_LOADER_WS);
+                             IT_LOADER_WS,
+                               0);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
@@ -19885,6 +19908,91 @@ static void test_t299(void) {
     if (ok) it_pass("T299"); else it_fail("T299", why);
 }
 
+/* ── T300: user memory comes out of a named budget (Stage 6 Etapa 5) ──────
+ * Anonymous memory was the last thing the kernel handed out for free: a
+ * process asked for a VMO and got PMM pages, bounded only by a per-process
+ * quota the kernel invented rather than by a capability anyone delegated.
+ *
+ * A VMO's pages, its page-address array and its header now come from an
+ * Untyped, and WHICH Untyped is the caller's to say — a process holds several
+ * (the budget its address space was built from, the pools its supervisor
+ * delegated) and they are not interchangeable.  Asserted here:
+ *
+ *   1. creating a VMO against a named budget consumes THAT budget, by at
+ *      least the size asked for;
+ *   2. the pages are real: the VMO maps, reads back zero-filled, and writes;
+ *   3. a budget of the wrong type is refused — the argument is a capability;
+ *   4. destroying the VMO returns its children, so the budget is RESET-able
+ *      again and the region really is reusable.
+ * Invariants: M1, M3, O2, O6. */
+#define T300_VA 0x807A000000ULL
+
+static void test_t300(void) {
+    int ok = 1;
+    const char *why = "vmo budget";
+
+    if (!it_setup_self_vspace()) { it_fail("T300", "vspace self"); return; }
+
+    long pool = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                     IRIS_KOBJ_UNTYPED, 256u * 1024u);
+    if (pool < 0) { it_fail("T300", "pool carve"); return; }
+
+    uint64_t before = 0, after = 0;
+    if (it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&before) != 0) {
+        it_fail("T300", "info"); return;
+    }
+
+    /* 3. the budget is a capability of a specific type. */
+    if (it_sys3(SYS_VMO_CREATE, 4096, (long)IRIS_CPTR_SVCMGR_EP,
+                (long)((uint64_t)S1_SLOT_E << 32)) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "endpoint accepted as budget";
+    }
+    it_slot_delete(S1_SLOT_E);
+
+    /* 1. a VMO against that budget consumes it. */
+    long vmo = -1;
+    if (ok) {
+        if (it_sys3(SYS_VMO_CREATE, 3u * 4096u, pool,
+                    (long)((uint64_t)S1_SLOT_E << 32)) != 0) {
+            ok = 0; why = "create against budget";
+        } else vmo = (long)S1_SLOT_E;
+    }
+    /* Pages are populated at map time, so map first, then measure. */
+    if (ok && it_sys3(SYS_VMO_MAP, vmo, (long)T300_VA, 1) != 0) {
+        ok = 0; why = "map";
+    }
+    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&after) != 0) {
+        ok = 0; why = "info2";
+    }
+    if (ok && before - after < 3u * 4096u) { ok = 0; why = "pages not charged"; }
+
+    /* 2. the memory is real, and clean. */
+    if (ok) {
+        volatile uint64_t *pg = (volatile uint64_t *)(uintptr_t)T300_VA;
+        if (pg[0] != 0u) { ok = 0; why = "vmo not zero-filled"; }
+        if (ok) {
+            pg[0] = 0x5A5A5A5A5A5A5A5AULL;
+            if (pg[0] != 0x5A5A5A5A5A5A5A5AULL) { ok = 0; why = "vmo not writable"; }
+        }
+    }
+
+    /* 4. while it lives the budget is bound; once it is gone, reclaimable. */
+    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) == 0) {
+        ok = 0; why = "budget reset while bound";
+    }
+    if (ok) {
+        (void)it_sys2(SYS_VMO_UNMAP, (long)T300_VA, (long)(3u * 4096u));
+        it_slot_delete(S1_SLOT_E);
+        it_quiesce_reaper();
+        if (it_sys1(SYS_UNTYPED_RESET, pool) != 0) {
+            ok = 0; why = "budget not reclaimable";
+        }
+    }
+
+    it_slot_delete(S1_SLOT_E);
+    if (ok) it_pass("T300"); else it_fail("T300", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Etapa 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -20415,6 +20523,8 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t298();
     /* Stage 6: page tables are charged to a budget. */
     test_t299();
+    /* Stage 6: user memory comes out of a named budget. */
+    test_t300();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

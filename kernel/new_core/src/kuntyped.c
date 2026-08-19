@@ -248,6 +248,17 @@ uint64_t kuntyped_alloc_page_child(struct KUntyped *u) {
     return phys;
 }
 
+uint64_t kuntyped_alloc_pages_child(struct KUntyped *u, uint64_t bytes) {
+    if (!u || !bytes || (bytes & 0xFFFULL)) return 0;
+    uint64_t phys = kuntyped_bump_alloc_phys_page(u, bytes);
+    if (!phys) return 0;
+    /* One child entry for the whole run — released once, by whoever carved
+     * it.  The run is contiguous, which is what a metadata array needs. */
+    kobject_retain(&u->base);
+    atomic_fetch_add_explicit(&u->child_count, 1u, memory_order_relaxed);
+    return phys;
+}
+
 void kuntyped_release_page_child(struct KUntyped *u) {
     if (!u) return;
     atomic_fetch_sub_explicit(&u->child_count, 1u, memory_order_relaxed);

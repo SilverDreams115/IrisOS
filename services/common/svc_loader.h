@@ -94,10 +94,15 @@ struct svc_mint {
 #define SVC_LOADER_WS(untyped, slot) \
     ((uint64_t)(uint32_t)(untyped) | ((uint64_t)(uint32_t)(slot) << 32))
 
+/* `child_budget` (bytes, 0 = the default) is the Untyped the child's KERNEL
+ * memory is carved from: its address space, its process state, and the segment
+ * and stack VMOs the loader charges to it.  It is recycled when the child dies
+ * (Stage 6 Etapa 5), so it bounds concurrent cost rather than accumulating —
+ * which is why the spawner, who knows what it is launching, chooses the size. */
 long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                         const struct svc_mint *mints, uint32_t mint_count,
-                        uint64_t ws);
+                        uint64_t ws, uint64_t child_budget);
 
 long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,

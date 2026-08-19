@@ -19,7 +19,7 @@ reserved, no functionality) · `REMOVED` (deleted).
 | Legacy mechanism | Why non-seL4 | Current users | Replacement | Removal phase | New uses forbidden | State |
 |---|---|---|---|---|---|---|
 | `KProcess` | process as a kernel object = policy in the kernel | spawn/loader, supervision, fault info, accounting | user-space process server (TCB+CNode+VSpace+Untyped) | process-server | yes | FROZEN |
-| `KVMO` (+`SYS_VMO_CREATE`/`SYS_VMO_CREATE_FOR`/`SYS_VMO_MAP*`) | memory object with policy (owner, quota, file-backing) | loader, pager, tests | memory server (Frames + pager) | memory-server | yes | FROZEN |
+| `KVMO` (+`SYS_VMO_CREATE`/`SYS_VMO_CREATE_FOR`/`SYS_VMO_MAP*`) | memory object with policy (owner, quota, file-backing) | loader, pager, tests | memory server (Frames + pager) | Stage 7 (memory server) | yes | **CONVERTED (Stage 6 Etapa 5), still FROZEN as an object** — a VMO's pages, page-address array and header are carved from an Untyped, and `SYS_VMO_CREATE` / `SYS_INITRD_VMO` take the budget as a CPtr so the caller says WHICH of its budgets pays.  What remains non-seL4 is the OBJECT: a VMO is still a kernel-side memory abstraction with an owner and a quota where seL4 has only Frames.  That retires with the memory server |
 | `kslab` for dynamic objects | hidden global heap | KProcess, KVMO, KFrame header, KVSpace, KTcb, KIrqCap, KIoPort, KBootstrapCap, KInitrdEntry, KUntyped header, root CNode, handle table | Untyped retype | per family (see rows) | yes — no new canonical object may be born from kslab | MIGRATING |
 | kslab for runtime KEndpoint/KNotification/KReply/CNode | same | — | RETYPE2 | S1 | — | REMOVED |
 | notification owner quota (`KPROCESS_NOTIFICATION_QUOTA`) | numeric quota as creation source | — | Untyped is the budget | S1 | — | REMOVED |
@@ -70,6 +70,34 @@ reserved, no functionality) · `REMOVED` (deleted).
 | `svc_mint.src_h` (handle-sourced pre-start delegation) | the loader mints a child's caps from the supervisor's handle table | all non-device mints in svcmgr/init/userboot | `svc_mint.src_cptr` + `SYS_CSPACE_MINT_INTO` | Stage 4 | yes for device caps (already migrated) | MIGRATING (device caps done; endpoints/untyped/reply still handle-sourced) |
 | IPC delivery into the receiver's handle table (`syscall_ipc_deliver_cap_badged`) | a capability entered a process through the handle namespace because the receiver declared no destination — not a choice either side made | — | the receiver declares a receive slot; an undeclared receive gets the message WITHOUT the capability, and the sender's source slot is untouched | Stage 4 | n/a | **RETIRED (Stage 4)** — the destination half of charter I1.  `iris_ipc_stat_handle_deliveries` is a structural 0 (T095 pins it, T096 proves 32 consecutive deliveries all land in slots) |
 | TOCTOU receive-slot→handle fallback (`syscall_ipc_deliver_cap_routed`) | CSpace-to-handle delivery degradation | — | fail closed: no cap delivered, source slot untouched | Stage 2 | n/a | **REMOVED (Fase S4)** — the last permitted degradation is gone; `iris_ipc_stat_toctou_fallbacks` is a structural 0 pinned by T094 (forces the race) and T095 (asserts the counter never moves) |
+
+### A-12 — user memory is charged to a named Untyped
+
+**Change**: a VMO's pages, metadata and header come from an Untyped.
+`SYS_VMO_CREATE`'s unused first argument and a new fourth argument of
+`SYS_INITRD_VMO` name WHICH budget pays; zero means the budget the caller's
+address space was built from.  The loader recycles a per-child budget and a
+scratch budget for image copies.
+
+**Justification**: charter §2.5 M3 and M1.  Anonymous memory was the last
+allocation a process could obtain without a capability standing behind it —
+bounded by `KPROCESS_PHYS_PAGES_LIMIT`, a number the kernel chose, rather than
+by an Untyped somebody delegated.  Naming the budget is not new surface for its
+own sake: a process holds several budgets, and charging a service's data to the
+small pool that funds its address space would be the wrong answer, silently.
+
+**Reclamation is part of the change, not a follow-up**: a bump allocator does
+not rewind, so charging alone makes consumption monotonic.  Budgets are
+recycled — per live child, and per image copy — which bounds cost by what is
+ALIVE rather than by what has ever run.  `SYS_CAP_IDENTIFY` is what lets the
+loader ask whether a leaf is free before recycling its budget.
+
+**Scope**: `KVMO` moves FROZEN → CONVERTED (still frozen as an object; the
+object retires with the memory server, Stage 7).  No allowlist movement:
+`kvmo.c` still has the kernel-funded path for wrapped device regions and the
+root task.  A pre-existing defect fixed on the way: three-argument syscall
+stubs left `r10` undefined, which became visible the moment a syscall grew a
+fourth argument.  Tests: T300.
 
 ### A-11 — page tables are charged to a named Untyped
 
