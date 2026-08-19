@@ -424,11 +424,21 @@ is recursive across CNodes and processes, and every delegation — IPC transfer,
 device capability, pre-start grant to a child — parented to the slot that
 granted it, so it stays revocable by its grantor. There are no CPtr-to-handle
 fallbacks. What remains transitional is recorded, dated to a stage and gated by
-`make check-purity`, whose allowlist can only shrink: **29 of the 36 charter
-invariants are met**, with the remainder scoped to Stages 6–7 of the
-[convergence roadmap](docs/architecture/sel4-convergence-roadmap.md) — Stages 0
+`make check-purity`, whose allowlist can only shrink: **32 of the 36 charter
+invariants are met** — A5 (ambient authority), O1 (every object from Untyped)
+and P2 (mechanism, not policy) are PARTIAL, M1 (frames/page tables/VSpace from
+Untyped) is PENDING — with the remainder scoped to Stages 6–7 of the
+[convergence roadmap](docs/architecture/sel4-convergence-roadmap.md). Stages 0
 through 5 are closed, so bootstrap is fine-grained and a thread is a retyped
 object configured through capabilities.
+
+Convergence is measured against seL4's *authority model*, which is where IRIS is
+closest. It is not an architectural replica: the kernel still owns a slab heap,
+allocates page tables implicitly on map, composes threads through a `KProcess`
+object, and gives every thread its own kernel stack to block on. Those four are
+recorded — the first three as staged debt, the last as an unscheduled structural
+divergence — in the
+[ledger](docs/architecture/sel4-convergence-ledger.md).
 
 Scope is deliberate, not provisional: IRIS targets QEMU x86-64 and grows
 new capability — drivers, storage, networking, an optional POSIX personality —

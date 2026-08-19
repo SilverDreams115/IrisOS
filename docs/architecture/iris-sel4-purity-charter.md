@@ -187,12 +187,22 @@ divergence from seL4 must be: (1) documented, (2) technically justified,
 (3) isolated, (4) covered by tests, and (5) marked as temporary or
 deliberate — in the ledger if temporary, in this charter if deliberate.
 
+This rule covers divergences found by COMPARING the two architectures, not only
+those left behind by a migration.  Four such were unrecorded until Stage 5
+closed and are now in the ledger's "Structural divergences from seL4" section:
+per-thread kernel stacks with in-kernel blocking (D-1), CNodes without guards
+(D-2), the rights set (D-3), and the absent per-thread IPC buffer (D-4).  D-1
+and D-2 carry no retirement stage, which is stated rather than implied: an
+entry with no stage is honest, an unrecorded divergence is not.
+
 ## 6. Registered deliberate divergences
 
 | Divergence | Justification | Status |
 |---|---|---|
 | No formal verification | out of the project's scope; offset by adversarial gates | Permanent, deliberate |
-| Own ABI (not seL4) | IRIS does not seek binary compatibility | Permanent, deliberate |
+| Own ABI (not seL4) | IRIS does not seek binary compatibility.  Concretely: ~77 live numbered syscalls (plus 20 retired-but-reserved numbers), each taking CPtrs and checking rights itself — where seL4 has a handful of syscalls and expresses every other operation as an INVOCATION on a capability carrying a method label.  The authority semantics are equivalent (nothing is reachable without naming a capability); the shape is not, and no amount of convergence work changes it | Permanent, deliberate |
+| Rights set is IRIS's own (`READ/WRITE/DUPLICATE/TRANSFER/WAIT/ROUTE/MANAGE`) | seL4 has `Read/Write/Grant/GrantReply` and does NOT treat copyability as a right — whether a capability can be copied follows from its type and the derivation tree.  IRIS gates minting with `RIGHT_DUPLICATE` and IPC transfer with `RIGHT_TRANSFER`, which is what makes a delegation non-re-delegable today.  The two models are not translatable one-to-one, so "IRIS has seL4's rights" is never a correct statement | Deliberate, revisable — ledger D-3 |
+| No per-thread IPC buffer object | A message carries four inline words plus a bulk payload staged in the kernel (`task.ipc_kbuf`, 256 B) and copied to/from a user pointer named per call; seL4 registers an IPC buffer FRAME per TCB.  The bulk size is therefore a kernel constant rather than a frame the user chose and paid for | Deliberate, revisable in Stage 6 (frames from Untyped) — ledger D-4 |
 | Separate `SYS_REPLY` (no combined ReplyRecv) | simplicity of the current synchronous path; revisit in Stage 8 (MCS) | Deliberate, revisable |
 | Reply objects with DUPLICATE (supervisor mints them into the child) | IRIS supervision pattern; documented in RETYPE2 | Deliberate, revisable in Stage 1 (CDT) |
 | Untyped RESET (bump reset with child_count==0) in addition to revoke | useful as a reuse primitive; real revoke arrives with the CDT | Temporary until Stage 1, then revisable |
