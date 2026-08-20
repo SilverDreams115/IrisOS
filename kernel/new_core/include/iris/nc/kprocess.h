@@ -129,11 +129,11 @@ struct KProcess {
      * is killed; the handler reads the details via SYS_PROCESS_FAULT_INFO. */
     struct KNotification *exception_notif;
     uint64_t exception_signal_bits;
-    uint32_t fault_vector;
-    uint32_t fault_task_id;
-    uint64_t fault_rip;
-    uint32_t fault_error;
-    uint64_t fault_cr2;
+    /* Stage 7 Step 6: the fault RECORD moved to the thread that took it (see
+     * struct task).  What stays here is who to tell, and which thread told it
+     * last — a retained reference rather than an id, so the record it points
+     * at cannot be freed while this points at it. */
+    struct task *fault_last;
     /* Stage 6 Step 2: the creation reference — the one that lets a running
      * process outlive the last capability to it — is dropped exactly once.
      * Before this flag, a process created and never STARTED could not be
@@ -144,7 +144,6 @@ struct KProcess {
     /* Stage 6 Step 4: the Untyped this object and its root CNode were carved
      * from, retained for their lifetime.  NULL = kernel-slab (root task). */
     struct KUntyped *mem_pool;
-    uint8_t  fault_valid;
     /* Phase 25: per-process fault generation.  fault_seq_counter increments on
      * every delivery (1-based, wraps); fault_seq is the generation of the
      * currently pending record.  The generation of the fault a TASK is blocked
@@ -243,7 +242,11 @@ iris_error_t     kprocess_set_exception_handler(struct KProcess *p,
 int              kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
 /* Phase 20: fault-model instrumentation + resume-time pending-fault clear. */
-void             kprocess_fault_clear(struct KProcess *p, uint32_t task_id, int killed);
+/* Drop `ft`'s pending fault record, and the process's pointer to it if that is
+ * the one it names.  Takes the THREAD rather than its id: the caller has
+ * already resolved it, and an id comparison here was a second place the
+ * kernel selected a thread by number. */
+void             kprocess_fault_clear(struct KProcess *p, struct task *ft, int killed);
 void             kprocess_fault_stat_nohandler(void);
 uint32_t         kprocess_fault_delivery_count(void);
 uint32_t         kprocess_fault_nohandler_count(void);

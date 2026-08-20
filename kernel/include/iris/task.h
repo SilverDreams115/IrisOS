@@ -159,6 +159,27 @@ struct task {
      * execution.
      */
     struct KVSpace   *vspace;
+    /*
+     * Stage 7 Step 6 — the fault record belongs to the thread that took it.
+     *
+     * It lived on KProcess, one copy per process, and the code said what that
+     * cost: "the per-process record is last-writer-wins".  Two threads of one
+     * process faulting before the handler runs left one of them describing the
+     * other, and a handler reading SYS_PROCESS_FAULT_INFO got a vector, a rip
+     * and a CR2 that might belong to a thread it was not looking at.  The
+     * generation counter was added to make the RESUME safe against that; it
+     * could not make the READ safe, because there was only one record.
+     *
+     * A fault is a property of an execution, so it is stored on the execution.
+     * The process keeps the HANDLER (whom to tell) and the generation counter
+     * (a per-process sequence is what the handler sees), and a reference to
+     * the thread that faulted last, so the process-scoped read still answers.
+     */
+    uint32_t          fault_vector;
+    uint64_t          fault_rip;
+    uint32_t          fault_error;
+    uint64_t          fault_cr2;
+    uint8_t           fault_valid;    /* 1 = this thread has a pending fault */
     uint32_t          fault_seq;       /* Phase 25: generation of the fault this
                                         * task is blocked on (TASK_BLOCKED_FAULT);
                                         * 0 = no fault ever delivered to it */

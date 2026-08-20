@@ -531,13 +531,28 @@ uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     uint8_t buf[FAULT_MSG_LEN];
     for (uint32_t i = 0; i < FAULT_MSG_LEN; i++) buf[i] = 0;
 
+    /*
+     * Stage 7 Step 6: the record is read off the THREAD that took the fault.
+     *
+     * The process points at whoever faulted last and holds a reference to it,
+     * so the pointer cannot go stale under this read.  Taking that reference
+     * under the lock and reading the record outside it keeps the copy loop
+     * out of a lock the fault path also takes.
+     */
+    struct task *ft;
     spinlock_lock(&proc->base.lock);
-    int valid = proc->fault_valid;
-    uint32_t vector = proc->fault_vector, task_id = proc->fault_task_id,
-             error = proc->fault_error, seq = proc->fault_seq;
-    uint64_t rip = proc->fault_rip, cr2 = proc->fault_cr2;
+    ft = proc->fault_last;
+    if (ft) kobject_retain(&ft->base);
     spinlock_unlock(&proc->base.lock);
     kobject_release(&proc->base);
+
+    if (!ft) return syscall_err(IRIS_ERR_WOULD_BLOCK);
+
+    int valid = ft->fault_valid;
+    uint32_t vector = ft->fault_vector, task_id = ft->id,
+             error = ft->fault_error, seq = ft->fault_seq;
+    uint64_t rip = ft->fault_rip, cr2 = ft->fault_cr2;
+    kobject_release(&ft->base);
 
     if (!valid) return syscall_err(IRIS_ERR_WOULD_BLOCK);
 

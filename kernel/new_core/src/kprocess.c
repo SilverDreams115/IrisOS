@@ -59,14 +59,22 @@ void kprocess_fault_stat_nohandler(void) { atomic_fetch_add_explicit(&kfault_noh
  * counter.  Idempotent — a second call with no matching pending fault is a
  * no-op.
  */
-void kprocess_fault_clear(struct KProcess *p, uint32_t task_id, int killed) {
-    if (!p) return;
+void kprocess_fault_clear(struct KProcess *p, struct task *ft, int killed) {
+    struct task *drop = 0;
+    if (!p || !ft) return;
     spinlock_lock(&p->base.lock);
-    if (p->fault_valid && p->fault_task_id == task_id) {
-        p->fault_valid = 0;
+    if (ft->fault_valid) {
+        ft->fault_valid = 0;
         atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
     }
+    /* The process names whoever faulted LAST, which need not be this thread:
+     * clearing somebody else's fault leaves that pointer alone. */
+    if (p->fault_last == ft) { drop = ft; p->fault_last = 0; }
     spinlock_unlock(&p->base.lock);
+    if (drop) kobject_release(&drop->base);
+    /* Unconditional, as it has been since Phase 20: this counts RESOLUTIONS —
+     * how many times a handler answered — not how many records existed to
+     * clear.  A second call for an already-resolved fault is still an answer. */
     atomic_fetch_add_explicit(killed ? &kfault_kill : &kfault_resume, 1u,
                               memory_order_relaxed);
 }
@@ -358,6 +366,7 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
                            uint64_t error_code, uint64_t rip, uint64_t cr2) {
     struct KProcess *p;
     struct KNotification *notif;
+    struct task *prev_last = 0;
     uint64_t bits;
 
     if (!t || !t->process) return 0;
@@ -377,17 +386,28 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
          * but each suspended task must stay resolvable by ITS generation. */
         p->fault_seq_counter++;
         if (p->fault_seq_counter == 0) p->fault_seq_counter = 1;
-        p->fault_vector  = (uint32_t)vector;
-        p->fault_task_id = t->id;
-        p->fault_rip     = rip;
-        p->fault_error   = (uint32_t)error_code;
-        p->fault_cr2     = cr2;
-        p->fault_seq     = p->fault_seq_counter;
-        p->fault_valid   = 1;
-        t->fault_seq     = p->fault_seq_counter;
+        /* Stage 7 Step 6: the record is the THREAD's.  The generation stays
+         * per-process because that is the sequence the handler observes, and
+         * the thread keeps its own copy of the one it is blocked on. */
+        t->fault_vector = (uint32_t)vector;
+        t->fault_rip    = rip;
+        t->fault_error  = (uint32_t)error_code;
+        t->fault_cr2    = cr2;
+        t->fault_seq    = p->fault_seq_counter;
+        t->fault_valid  = 1;
+        /* ...and the process points at whoever faulted last, so the
+         * process-scoped read still has something to answer with.  A retained
+         * reference, not an id: the thread's storage must outlive the pointer
+         * to it, which an id could not promise. */
+        if (p->fault_last != t) {
+            prev_last = p->fault_last;
+            kobject_retain(&t->base);
+            p->fault_last = t;
+        }
         kobject_retain(&notif->base);
     }
     spinlock_unlock(&p->base.lock);
+    if (prev_last) kobject_release(&prev_last->base);
     if (!notif) return 0;
 
     knotification_signal(notif, bits);
@@ -453,12 +473,20 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     /* Phase 20 (F15): a fault record must not outlive the process — a late
      * SYS_PROCESS_FAULT_INFO through a surviving handle reports WOULD_BLOCK,
      * not a stale fault of a dead task. */
-    spinlock_lock(&p->base.lock);
-    if (p->fault_valid) {
-        p->fault_valid = 0;
-        atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
+    {
+        struct task *last;
+        spinlock_lock(&p->base.lock);
+        last = p->fault_last;
+        p->fault_last = 0;
+        spinlock_unlock(&p->base.lock);
+        if (last) {
+            if (last->fault_valid) {
+                last->fault_valid = 0;
+                atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
+            }
+            kobject_release(&last->base);
+        }
     }
-    spinlock_unlock(&p->base.lock);
     /* Phase 6.3: VMO mappings are now tracked via KVSpace.mappings and cleaned
      * by kvspace_invalidate inside kprocess_reap_address_space.  No per-process
      * VMO mapping list exists; nothing to do here. */
