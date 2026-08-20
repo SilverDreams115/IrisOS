@@ -844,13 +844,64 @@ What is still CHARGED rather than retyped, and needs a later stage:
 Ledger D-5 records both, and is no longer a single row about who pays: the half
 about who CREATES is closed.
 
-## Stage 7 — KProcess retirement
+## Stage 7 — KProcess retirement  ← IN PROGRESS
 
-Precondition: Stages 5–6 (a process = TCB+CSpace+VSpace composition).
+Precondition: Stages 5–6 (a process = TCB+CSpace+VSpace composition).  Met by
+Stage 6-pure: a spawner retypes its child's address space and CSpace and hands
+both over.
 
 - Process server in user space; process creation and policy outside the
   kernel; PID stops conferring authority; per-domain quotas become the
   process server's policy.
+
+### Etapa 1 — the last pool-born thread retires  ✅ DONE
+
+`SYS_THREAD_START` carved a spawned process's FIRST thread out of the kernel's
+static task pool.  It outlived `SYS_THREAD_CREATE` by two stages for one
+recorded reason — a spawner could not name the CSpace and VSpace its child
+would run in — and Stage 6-pure removed that reason.  58 answers
+`NOT_SUPPORTED`, `task_thread_create` is deleted, and `svc_loader` composes the
+child's first thread the way any thread is composed: retype the TCB from the
+child's budget, configure it with the child's CSpace and VSpace, write its
+registers, resume it.  **No path remains by which a thread exists because the
+kernel had a free slot**; the root and idle tasks still come from the pool,
+both built before any Untyped exists.
+
+The path exposed a lifecycle bug latent since Fase S2: `ktcb_configure` never
+took the scheduler's EXECUTION reference on a retyped TCB, so the CSpace slot
+was the object's only owner and deleting it freed a running thread's storage.
+Invisible while the only caller kept its slot forever; a spawner does not.
+T303 pins it and reproduces the page fault when the reference is removed.
+
+### Etapa 2 — a ceiling nobody granted  ✅ DONE
+
+The per-process PAGE quota retires.  Stage 6 Etapa 5 moved VMO pages onto a
+named budget precisely because they had been "bounded only by a per-process
+quota the kernel invented"; the quota was then left standing beside the budget
+that replaced it, and since Stage 6-pure it contradicts the model — a holder
+handed a large Untyped still stopped at 8 MB nobody granted.  `pages_limit`
+reports 0, as the notification quota has since Fase S1; the counters remain as
+instrumentation.
+
+### What Stage 7 still needs, and why it is not an increment
+
+`KProcess` itself.  Retiring it means a thread's authority comes from its own
+CSpace and VSpace capabilities rather than from a shared object, which touches
+every `t->process` in the kernel: fault delivery and exception handling, exit
+watches, the IPC identity a badge names, the VMO owner/payer relation, and the
+`SYS_PROCESS_*` surface.  It cannot land as one change without the thing that
+replaces the policy it carries — a user-space process server — which is the
+stage's actual deliverable rather than a step toward it.
+
+Two smaller items are ready when that lands:
+
+- **A global identifier still SELECTS a thread.**  `SYS_EXCEPTION_RESUME` takes
+  a task id, though authority comes from the process capability and the id is
+  checked against it, so nothing is conferred by the number.  Naming the thread
+  by capability instead requires fault DELIVERY to hand one over, which is
+  process-server work.
+- **The VMO-count quota** retires with the `KVMO` object (memory server), per
+  the ledger.
 
 ## Stage 8 — Full MCS scheduling
 
