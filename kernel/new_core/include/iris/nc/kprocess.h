@@ -172,10 +172,19 @@ struct KProcess {
 
 struct KProcess *kprocess_alloc(void);
 
-/* Stage 6 Etapa 4 — allocate the process object AND its root CNode out of
- * `pool`, the same Untyped that pays for its address space.  NULL falls back
- * to the kernel slab, which is the root task's path (no Untyped exists yet). */
-struct KProcess *kprocess_alloc_from(struct KUntyped *pool);
+/*
+ * Stage 6-pure Etapa 5 — a process COMPOSED from objects its creator made.
+ *
+ * `pool` is the Untyped the process object itself comes out of (the one its
+ * address space was retyped from), and `cnode` is the root CSpace the spawner
+ * retyped and is handing over.  Both are required: the root task's path is
+ * kprocess_alloc(), which is the only one the kernel still funds.
+ *
+ * The process takes its own lifecycle + active references on `cnode`; the
+ * caller keeps its capability.
+ */
+struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
+                                     struct KCNode *cnode);
 void             kprocess_free (struct KProcess *p);
 void             kprocess_teardown(struct KProcess *p, struct task *exiting_thread);
 void             kprocess_reap_address_space(struct KProcess *p);

@@ -185,8 +185,9 @@ static const struct KObjectOps kprocess_ops = {
  * to the same budget that already pays for its address space.  What the kernel
  * still funds from its slab is the ROOT TASK, built before any Untyped exists.
  */
-struct KProcess *kprocess_alloc_from(struct KUntyped *pool) {
-    if (!pool) return kprocess_alloc();
+struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
+                                     struct KCNode *cnode) {
+    if (!pool || !cnode) return 0;
 
     uint32_t prev = atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
     if (prev >= KPROCESS_MAX_LIVE) {
@@ -228,16 +229,23 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool) {
         p->pcid = pcid;
     }
 
-    /* The root CNode is the other half of a process's kernel footprint, and
-     * the bigger one: 256 slots with their MDB links.  Same budget. */
-    {
-        void *cn_mem = kuntyped_alloc_child_top(pool,
-                           KCNODE_ALLOC_SIZE(KCNODE_DEFAULT_SLOTS));
-        if (cn_mem) p->cspace_root = kcnode_alloc_at(cn_mem, KCNODE_DEFAULT_SLOTS);
-        if (p->cspace_root) kobject_active_retain(&p->cspace_root->base);
-        else if (cn_mem)
-            kuntyped_release_child(cn_mem, KCNODE_ALLOC_SIZE(KCNODE_DEFAULT_SLOTS));
-    }
+    /*
+     * Stage 6-pure Etapa 5: the root CNode is SUPPLIED, not carved.
+     *
+     * It was the other half of a process's kernel footprint and the bigger
+     * one — 256 slots with their MDB links — carved out of the budget by the
+     * kernel at a size the kernel picked.  A spawner retypes it now
+     * (RETYPE2 KOBJ_CNODE) and hands it over, which also means it chooses how
+     * wide its child's CSpace is.
+     *
+     * The process takes BOTH references the old carve left it holding: the
+     * lifecycle one that keeps the object alive and the active one that keeps
+     * its slots reachable.  The caller keeps its own capability; these are the
+     * process's.
+     */
+    kobject_retain(&cnode->base);
+    kobject_active_retain(&cnode->base);
+    p->cspace_root = cnode;
     return p;
 }
 

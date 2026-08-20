@@ -279,6 +279,16 @@ void kcnode_close(struct KCNode *cn) {
     kobject_release(&cn->base);
 }
 
+iris_error_t kcnode_bind_root(struct KCNode *cn) {
+    if (!cn) return IRIS_ERR_INVALID_ARG;
+    iris_error_t r = IRIS_OK;
+    spinlock_lock(&cn->base.lock);
+    if (cn->is_root) r = IRIS_ERR_BUSY;
+    else             cn->is_root = 1;
+    spinlock_unlock(&cn->base.lock);
+    return r;
+}
+
 void kcnode_teardown_slots(struct KCNode *cn) {
     if (!cn) return;
     kcnode_obj_close(&cn->base);

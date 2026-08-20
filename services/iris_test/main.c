@@ -19895,23 +19895,42 @@ static void test_t299(void) {
     /* 3. an address space of our own making, out of that budget, handed to a
      *    process.  Page tables appear on the FIRST map into it, which is what
      *    a loader would do and what this leg does explicitly below. */
-    long cvs = -1;
+    long cvs = -1, ccn = -1;
     if (ok) {
         cvs = it_retype_slot_alloc(pool, IRIS_KOBJ_VSPACE, 4096);
         if (cvs < 0) { ok = 0; why = "vspace retype"; }
     }
-    if (ok && it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
-                      (long)((uint64_t)T299_SLOT_PROC << 32), cvs) != 0) {
+    /* Stage 6-pure Etapa 5: the CSpace is ours to make too, and its width is
+     * ours to choose — the kernel used to pick 256 for everyone. */
+    if (ok) {
+        ccn = it_retype_slot_alloc(pool, IRIS_KOBJ_CNODE, 16);
+        if (ccn < 0) { ok = 0; why = "cnode retype"; }
+    }
+    if (ok && it_sys4(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
+                      (long)((uint64_t)T299_SLOT_PROC << 32), cvs, ccn) != 0) {
         ok = 0; why = "spawn with address space";
     }
-    /* ...and that address space is spent: one walk, one process. */
+    /* ...and both are spent: one walk and one CSpace per process, because
+     * teardown is per-process and would empty a shared one. */
     if (ok) {
+        long cvs2 = it_retype_slot_alloc(pool, IRIS_KOBJ_VSPACE, 4096);
+        long ccn2 = it_retype_slot_alloc(pool, IRIS_KOBJ_CNODE, 16);
         it_slot_delete(S1_SLOT_E);
-        if (it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
-                    (long)((uint64_t)S1_SLOT_E << 32), cvs) != (long)IRIS_ERR_BUSY) {
+        if (cvs2 < 0 || ccn2 < 0) { ok = 0; why = "second pair"; }
+        else if (it_sys4(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
+                         (long)((uint64_t)S1_SLOT_E << 32), cvs, ccn2)
+                 != (long)IRIS_ERR_BUSY) {
             ok = 0; why = "address space bound twice";
         }
         it_slot_delete(S1_SLOT_E);
+        if (ok && it_sys4(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
+                          (long)((uint64_t)S1_SLOT_E << 32), cvs2, ccn)
+                  != (long)IRIS_ERR_BUSY) {
+            ok = 0; why = "cspace bound twice";
+        }
+        it_slot_delete(S1_SLOT_E);
+        if (cvs2 >= 0) it_slot_delete((uint32_t)cvs2);
+        if (ccn2 >= 0) it_slot_delete((uint32_t)ccn2);
     }
 
     /* Stage 6 Etapa 3: creating the address space already costs the budget —
@@ -19967,6 +19986,7 @@ static void test_t299(void) {
          * keeps the walk alive and its levels charged, which is the point of
          * it being a capability rather than a side effect of the process. */
         if (cvs >= 0) it_slot_delete((uint32_t)cvs);
+        if (ccn >= 0) it_slot_delete((uint32_t)ccn);
         it_quiesce_reaper();
         long rr = it_sys1(SYS_UNTYPED_RESET, pool);
         if (ok && rr == (long)IRIS_ERR_BUSY) { ok = 0; why = "budget still bound after death"; }

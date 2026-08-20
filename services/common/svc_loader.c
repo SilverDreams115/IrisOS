@@ -282,6 +282,10 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * — installing hands the VSpace its own reference, so the capability here is
  * spent the moment it lands (see iris_vspace.h). */
 #define SL_WS_CHILD_VSPACE 6u   /* the address space the loader RETYPES for it */
+/* 184, above the child-pool range (100..183): the workspace is dense below 16
+ * — 8..15 is the per-segment window — so a new slot goes above everything the
+ * spawn loop indexes, not into the first gap that looks free. */
+#define SL_WS_CHILD_CNODE  184u  /* ...and its root CSpace, likewise */
 /* Two scratch slots, because the spare level a completed walk leaves behind
  * belongs to whoever paid for it.  The loader's own spare is retyped from the
  * loader's budget and is worth KEEPING across spawns; a child's spare is
@@ -542,8 +546,23 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                 break;
             }
             child_vs = (long)sl_ws_cptr(ws, SL_WS_CHILD_VSPACE);
-            r = sl_sys3(SYS_PROCESS_CREATE, (long)proc_c,
-                        sl_ws_dest(ws, l), child_vs);
+
+            /* ...and its root CSpace.  256 slots because that is the width the
+             * well-known slot map assumes: services are minted into slots up
+             * to 99 and svcmgr's receive pool runs to 255.  The spawner picks
+             * it now, which is the point — the kernel used to pick for
+             * everyone. */
+            (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws),
+                          (long)SL_WS_CHILD_CNODE);
+            if (sl_sys4(SYS_UNTYPED_RETYPE2, pool,
+                        (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
+                        sl_ws_dest(ws, SL_WS_CHILD_CNODE), 256) != 0) {
+                r = (long)IRIS_ERR_NO_MEMORY;
+                break;
+            }
+            r = sl_sys4(SYS_PROCESS_CREATE, (long)proc_c,
+                        sl_ws_dest(ws, l), child_vs,
+                        (long)sl_ws_cptr(ws, SL_WS_CHILD_CNODE));
             if (r == 0) { proc_leaf = l; pool_c = pool; break; }
             if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
         }
@@ -801,6 +820,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * is entitled to RESET the moment the child is gone. */
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_PTSCRATCH_CH);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_VSPACE);
+    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_CNODE);
     *out_proc_h = proc_h;
     *out_chan_h  = HANDLE_INVALID;
     return 0;
@@ -808,6 +828,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
 out:
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_PTSCRATCH_CH);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_VSPACE);
+    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_CNODE);
     /* Unmap ELF if still mapped. */
     if (elf_mapped)
         sl_sys2(SYS_VMO_UNMAP, (long)SL_ELF_VADDR, (long)SL_SEG_SLOT_SIZE);

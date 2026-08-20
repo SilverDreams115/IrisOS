@@ -249,7 +249,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
                                    uint64_t arg2, uint64_t arg3) {
     uint64_t dest        = arg1;   /* Etapa 4: cnode | slot<<32 */
     uint64_t vspace_cptr = arg2;   /* Stage 6-pure Etapa 4: the address space */
-    (void)arg3;
+    uint64_t cnode_cptr  = arg3;   /* Stage 6-pure Etapa 5: the root CSpace */
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -309,7 +309,37 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    struct KProcess *proc = kprocess_alloc_from(pool);
+    /*
+     * Stage 6-pure Etapa 5: the caller supplies the root CSpace too.
+     *
+     * With this, everything a process IS comes from objects its creator
+     * retyped — an address space and a CSpace — which is the shape seL4 gives
+     * seL4_TCB_Configure.  The spawner also chooses how wide its child's CSpace
+     * is, where the kernel used to pick 256 slots for everyone.
+     */
+    struct KCNode *cn = 0;
+    {
+        iris_rights_t cr;
+        iris_error_t  ce = cspace_resolve_only_cnode(t->process,
+                               (iris_cptr_t)cnode_cptr, RIGHT_WRITE, &cn, &cr);
+        if (ce != IRIS_OK) {
+            kobject_active_release(&vs->base); kobject_release(&vs->base);
+            return syscall_err(ce == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ce);
+        }
+    }
+    /* One CNode, one root: teardown empties a root's slots before dropping its
+     * refs (a CSpace may name itself), so a second process sharing it would
+     * have its CSpace emptied by the first one's death. */
+    iris_error_t cbe = kcnode_bind_root(cn);
+    if (cbe != IRIS_OK) {
+        kobject_active_release(&cn->base); kobject_release(&cn->base);
+        kobject_active_release(&vs->base); kobject_release(&vs->base);
+        return syscall_err(cbe);
+    }
+
+    struct KProcess *proc = kprocess_alloc_from(pool, cn);
+    kobject_active_release(&cn->base);
+    kobject_release(&cn->base);
     if (!proc) {
         kobject_active_release(&vs->base); kobject_release(&vs->base);
         return syscall_err(IRIS_ERR_NO_MEMORY);

@@ -799,15 +799,50 @@ band where one fits and the other does not is a page wide and a one-page budget
 lands in it by construction.  Verified to fail (`refused retype left a child`)
 against the reversed carve order.
 
-### Etapa 5 — what is left  ← NEXT
+### Etapa 5 — the CSpace is retyped too  ✅ DONE
 
-The KProcess object and its 256-slot root CNode are still charged to the
-address space's pool rather than retyped and passed, and frames, IRQ handlers
-and I/O ports still have a kernel object where seL4 has none.  The CNode is
-reachable — `RETYPE2(KOBJ_CNODE)` already exists, so `SYS_PROCESS_CREATE` could
-take one the way it now takes a VSpace.  `KProcess` itself is the FROZEN
-abstraction that retires whole in Stage 7, and the objectless frame/IRQ/IOPort
-model is a change to what a capability IS, not to who pays for it.
+The root CNode was the other half of a process's kernel footprint, and the
+bigger one: 256 slots with their MDB links, carved by the kernel at a width the
+kernel picked for everyone.  `SYS_PROCESS_CREATE` takes it as an argument now,
+retyped by the spawner alongside the address space — which is the shape seL4
+gives `seL4_TCB_Configure(tcb, cspace_root, vspace_root)`, and which also means
+the spawner chooses how wide its child's CSpace is.
+
+Binding is exclusive for the same reason it is on a VSpace, and the reason is
+worth stating because it is not symmetry for its own sake: `kprocess_teardown`
+empties a root's slots before dropping its refs, because a CSpace may name
+itself.  A CNode shared by two processes would have its slots emptied by the
+first one's death, out from under the second.
+
+`svc_loader` retypes both objects from the child's budget before the spawn, so
+a child now costs exactly one region and one syscall's worth of composition.
+
+## Stage 6-pure — CLOSED
+
+**Closing criterion met**: every object that constitutes an address space or a
+CSpace is retyped by its holder and handed over.  The kernel creates none of
+them — not a page table, not a PML4, not a CNode — and a map that needs a level
+says so instead of quietly making one.
+
+What the kernel still funds, and why each is not a gap this stage could close:
+
+| still kernel-funded | why |
+|---|---|
+| the ROOT TASK's KProcess, root CNode and VSpace (`kslab_alloc` ×3, the purity allowlist's floor) | built before any Untyped exists; there is no holder to ask |
+| the KERNEL's own address space (kstack region, physmap) | it has no holder at all |
+| the root task's pre-run maps — six levels, measured | mapped before it exists; ended by `kvspace_end_bootstrap` the moment it can speak |
+
+What is still CHARGED rather than retyped, and needs a later stage:
+
+- the `KProcess` object itself, and VMO pages, metadata and mapping records —
+  charged to a budget the holder named, which is Stage 6's answer, not seL4's.
+  `KProcess` is FROZEN and retires whole with the process server (Stage 7).
+- frames, IRQ handlers and I/O ports having a kernel object at all.  That is a
+  change to what a capability IS, not to who pays for it, and it retires with
+  the memory server.
+
+Ledger D-5 records both, and is no longer a single row about who pays: the half
+about who CREATES is closed.
 
 ## Stage 7 — KProcess retirement
 
