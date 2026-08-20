@@ -305,6 +305,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
         /* A VSpace with no pool is the root task's, which is not something a
          * caller can name — but the check is cheap and the alternative is a
          * NULL deref in kprocess_alloc_from. */
+        kvspace_unbind(vs);
         kobject_active_release(&vs->base); kobject_release(&vs->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
@@ -323,6 +324,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
         iris_error_t  ce = cspace_resolve_only_cnode(t->process,
                                (iris_cptr_t)cnode_cptr, RIGHT_WRITE, &cn, &cr);
         if (ce != IRIS_OK) {
+            kvspace_unbind(vs);
             kobject_active_release(&vs->base); kobject_release(&vs->base);
             return syscall_err(ce == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ce);
         }
@@ -332,18 +334,33 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
      * have its CSpace emptied by the first one's death. */
     iris_error_t cbe = kcnode_bind_root(cn);
     if (cbe != IRIS_OK) {
+        kvspace_unbind(vs);
         kobject_active_release(&cn->base); kobject_release(&cn->base);
         kobject_active_release(&vs->base); kobject_release(&vs->base);
         return syscall_err(cbe);
     }
 
+    /*
+     * Past here the process OWNS both, and both are spent whatever happens
+     * next: a KProcess that reaches teardown invalidates its address space and
+     * empties its root CSpace, so neither can serve another process again.
+     * Before here nothing owns them, and a claim taken for a composition that
+     * did not happen has to go back — otherwise a caller whose create failed
+     * for want of memory is left holding two capabilities that will answer
+     * BUSY for the rest of the system's life, with no syscall able to clear
+     * the flags.
+     */
     struct KProcess *proc = kprocess_alloc_from(pool, cn);
-    kobject_active_release(&cn->base);
-    kobject_release(&cn->base);
     if (!proc) {
+        kcnode_unbind_root(cn);
+        kobject_active_release(&cn->base);
+        kobject_release(&cn->base);
+        kvspace_unbind(vs);
         kobject_active_release(&vs->base); kobject_release(&vs->base);
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
+    kobject_active_release(&cn->base);
+    kobject_release(&cn->base);
 
     /* The VSpace is the process's now: it holds the reference that keeps the
      * address space alive, and drops it in kprocess_reap_address_space. */

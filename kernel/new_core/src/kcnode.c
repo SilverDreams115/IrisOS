@@ -289,6 +289,17 @@ iris_error_t kcnode_bind_root(struct KCNode *cn) {
     return r;
 }
 
+/* Undo a claim for a process that was never composed — same reasoning as
+ * kvspace_unbind, and the same restriction: a CNode that actually served as a
+ * root has had its slots emptied by kprocess_teardown, so it is spent whether
+ * or not the flag is clear.  Only the unwind path calls this. */
+void kcnode_unbind_root(struct KCNode *cn) {
+    if (!cn) return;
+    spinlock_lock(&cn->base.lock);
+    cn->is_root = 0;
+    spinlock_unlock(&cn->base.lock);
+}
+
 void kcnode_teardown_slots(struct KCNode *cn) {
     if (!cn) return;
     kcnode_obj_close(&cn->base);

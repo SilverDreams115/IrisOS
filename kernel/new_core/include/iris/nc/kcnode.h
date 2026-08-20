@@ -101,6 +101,8 @@ void           kcnode_teardown_slots(struct KCNode *cn);
 /* Claim this CNode as a process's root CSpace.  IRIS_ERR_BUSY if it already
  * is one — see `is_root`. */
 iris_error_t   kcnode_bind_root(struct KCNode *cn);
+/* Release a claim taken for a process that was never composed. */
+void           kcnode_unbind_root(struct KCNode *cn);
 
 /* Phase 18: live KCNode object count (additive diagnostics). */
 uint32_t       kcnode_live_count(void);
