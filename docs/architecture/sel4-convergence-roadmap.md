@@ -902,6 +902,13 @@ Two smaller items are ready when that lands:
   process-server work.
 - **The VMO-count quota** retires with the `KVMO` object (memory server), per
   the ledger.
+- **`KPROCESS_MAX_LIVE` (64)** is the same class of invented ceiling the page
+  quota was: a `KProcess` comes out of an Untyped now, so memory bounds how
+  many can exist, and the thread registry (`TASK_MAX`) bounds threads
+  separately.  It is left standing deliberately — T240 documents it as the
+  ceiling a spawn push hits cleanly, and the PCID allocator's "cannot happen"
+  comment reasons about it, so retiring the number means re-deriving both
+  rather than deleting a constant.
 
 ## Stage 8 — Full MCS scheduling
 
