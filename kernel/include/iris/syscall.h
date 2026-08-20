@@ -279,7 +279,7 @@ static inline long iris_syscall0(long nr) {
  *   The result is a read-only KOBJ_VMO (RIGHT_READ) over a private copy of the
  *   embedded ELF bytes; map with flags=0.
  *
- * SYS_PROCESS_CREATE(auth_cptr, dest, vspace_cptr) → 0 or negative iris_error_t
+ * SYS_PROCESS_CREATE(auth_cptr, dest, vspace_cptr, cnode_cptr) → 0 or iris_error_t
  *   auth_cptr:   the process control capability (IRIS_BOOTCAP_PROC_CONTROL).
  *   dest:        destination slot (cnode | slot<<32); required since Stage 4.
  *   vspace_cptr: Stage 6-pure Step 4 — REQUIRED.  A KOBJ_VSPACE (RIGHT_WRITE)
@@ -297,6 +297,17 @@ static inline long iris_syscall0(long nr) {
  *                its root CNode) comes from the Untyped the address space
  *                itself was retyped from, so a child costs exactly one region
  *                and RESETting it returns all of the child.
+ *   cnode_cptr:  Stage 6-pure Step 5 — REQUIRED, and passed in arg3 (r10).  A
+ *                KOBJ_CNODE (RIGHT_WRITE) the CALLER retyped, which becomes
+ *                the child's ROOT CSpace; the spawner therefore also chooses
+ *                how wide that CSpace is, where the kernel used to pick 256
+ *                slots for everyone.  IRIS_ERR_BUSY if it is already some
+ *                process's root — one CNode, one root, because teardown
+ *                empties a root's slots.
+ *
+ *                A create that fails after either capability was accepted
+ *                releases both claims, so the same VSpace and CNode can be
+ *                passed to a retry.
  *   Creates an empty KProcess around that address space; no threads start.
  *   Publishes the process capability into `dest` with RIGHT_READ|RIGHT_WRITE|
  *   RIGHT_MANAGE|RIGHT_DUPLICATE|RIGHT_TRANSFER|RIGHT_ROUTE.
@@ -310,12 +321,12 @@ static inline long iris_syscall0(long nr) {
  *   Also registers the mapping descriptor in proc's vmo_mappings for teardown.
  *   Uses 4-arg syscall ABI (arg3 = flags via r10).
  *
- * SYS_THREAD_START(proc_h, entry_vaddr, stack_top, boot_arg) → 0 or iris_error_t
- *   proc_h:      KOBJ_PROCESS with RIGHT_MANAGE; must have 0 live threads.
- *   entry_vaddr: user virtual address where the thread begins executing.
- *   stack_top:   initial RSP for the thread (caller-allocated stack).
- *   boot_arg:    value delivered to the thread in RBX on first execution.
- *   Uses 4-arg syscall ABI (arg3 = boot_arg via r10).
+ * SYS_THREAD_START — RETIRED (Stage 7 Step 1).  58 answers NOT_SUPPORTED and
+ *   the number stays reserved.  It carved a spawned process's first thread out
+ *   of the kernel's static task pool.  Composing one instead: RETYPE2 a
+ *   KOBJ_TCB from the child's budget, SYS_TCB_CONFIGURE it with the child's
+ *   CSpace, VSpace and process capability, SYS_TCB_WRITE_REGS to say where it
+ *   starts, SYS_TCB_RESUME to start it.
  *
  * SYS_HANDLE_INSERT(proc_h, obj_h, rights) → handle_id in child or iris_error_t
  *   proc_h:  KOBJ_PROCESS with RIGHT_MANAGE.
@@ -1247,19 +1258,27 @@ static inline long iris_syscall0(long nr) {
  *   could not name its own root CNode would have had to be handed a
  *   convention instead of an argument.
  *
- * SYS_TCB_CONFIGURE(tcb_cptr, cspace_cptr, vspace_cptr) → 0 or iris_error_t
+ * SYS_TCB_CONFIGURE(tcb_cptr, cspace_cptr, vspace_cptr, proc_cptr) → 0 or iris_error_t
  *   tcb_cptr:    KOBJ_TCB with RIGHT_WRITE; must be unconfigured.
  *   cspace_cptr: KOBJ_CNODE — the root CNode the thread resolves CPtrs in.
  *   vspace_cptr: KOBJ_VSPACE — the address space it runs in.
- *   Both must be the caller's OWN CSpace root and VSpace: a thread in a
- *   foreign address space is process-server work (Stage 7), and accepting the
- *   capabilities without being able to honour them would be a lie in the
- *   signature.  The thread is left SUSPENDED — configuring is not starting.
+ *   proc_cptr:   Stage 7 Step 1 — the process the thread JOINS, in arg3 (r10).
+ *                KOBJ_PROCESS with RIGHT_MANAGE.  0 means the caller's own,
+ *                which is what a thread creating a sibling wants; a spawner
+ *                names its child, which it can do because it retyped that
+ *                child's CSpace and VSpace and holds both.
+ *   cspace_cptr and vspace_cptr must BE that process's root CNode and address
+ *   space, checked by object identity rather than by convention — naming the
+ *   pair is what makes the signature honest about which CSpace and VSpace the
+ *   thread runs in.  The thread is left SUSPENDED: configuring is not starting.
  *
  * SYS_TCB_WRITE_REGS(tcb_cptr, entry, sp, arg) → 0 or iris_error_t
  *   Sets where a configured thread starts.  Refused once it has been made
  *   runnable: rewriting the entry frame of a thread that has run would
  *   corrupt the kernel stack it is standing on.
+ *   SYS_TCB_RESUME refuses a configured thread that has NOT been through this
+ *   (NOT_SUPPORTED): a thread with no entry frame has no kernel stack pointer
+ *   to switch to, and making it runnable would take the CPU onto a null stack.
  */
 #define SYS_CSPACE_SELF      119
 #define SYS_TCB_CONFIGURE    120
