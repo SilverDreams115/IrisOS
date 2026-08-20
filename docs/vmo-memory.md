@@ -95,10 +95,10 @@ Both `sys_vmo_map` and `sys_vmo_map_into` reject `flags` with both WRITABLE (bit
 
 ## Process Creation
 
-`sys_process_create` allocates a `KProcess`, creates a new page table root via
-`paging_create_user_space`, then calls `kvspace_alloc(proc->cr3)` to create a `KVSpace` backed by
-that root.  Without this KVSpace, `sys_vmo_map_into` would reject the target process.
-`kprocess_reap_address_space` later calls `kvspace_invalidate` + `kobject_release` to tear it down.
+`sys_process_create` composes a `KProcess` from an address space and a root
+CSpace the CALLER retyped (`IRIS_KOBJ_VSPACE` / `IRIS_KOBJ_CNODE`); since Stage
+6-pure it creates neither, and the paging levels under that address space are
+retyped and installed by whoever maps into it.
 
 ## Refcount Summary for a Single Mapped Page
 

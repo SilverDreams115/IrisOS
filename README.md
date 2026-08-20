@@ -61,14 +61,15 @@ authorised it, so both are revocable by their grantor. See
 | `KOBJ_ENDPOINT` | Synchronous rendezvous IPC (seL4-style). Primary service transport. |
 | `KOBJ_REPLY` | One-shot reply capability created by `EP_CALL`; consumed by `SYS_REPLY`. |
 | `KOBJ_CNODE` | Capability storage node; a process's CSpace is a tree of CNodes. |
-| `KOBJ_UNTYPED` | Untyped memory; retyped into other kernel objects (`SYS_UNTYPED_RETYPE2`), and the **budget** every allocation names since Stage 6. Carves from both ends: page-aligned regions from the bottom, object headers from the top. |
+| `KOBJ_UNTYPED` | Untyped memory; retyped into other kernel objects (`SYS_UNTYPED_RETYPE2`), and the **budget** every allocation names since Stage 6. Carves from both ends: page-aligned regions from the bottom, object headers from the top. A task that maps anything needs one, because paging levels are retyped from it. |
 | `KOBJ_TCB` | Thread control block (suspend/resume/priority/info). |
 | `KOBJ_SCHED_CONTEXT` | Scheduling context (budget/period) bound to a TCB. |
 | `KOBJ_FRAME` | Physical frame capability; mapped into a VSpace. |
-| `KOBJ_VSPACE` | Address space object (CR3 + PCID). |
+| `KOBJ_VSPACE` | Address space (CR3 + PCID). **Retyped by its holder** since Stage 6-pure: its 4 KiB region IS the PML4, and `SYS_PROCESS_CREATE` takes one rather than building it. Binds to exactly one process. |
+| `KOBJ_PAGE_TABLE` | A paging level, retyped like any other object and installed with `SYS_VSPACE_MAP_TABLE` (seL4's `PageTable_Map`). The kernel creates none: a map whose walk is incomplete answers `IRIS_ERR_MISSING_TABLE` and the holder supplies the level. |
 | `KOBJ_VMO` | Memory object; sparse (populated at map time), page-granular map, or MMIO wrap. |
 | `KOBJ_NOTIFICATION` | Lightweight signal/wait; used for IRQ delivery, process-exit watch, and fault delivery. |
-| `KOBJ_PROCESS` | Process container (address space + CSpace root + the budget it was built from). |
+| `KOBJ_PROCESS` | Process container, **composed** from a VSpace and a root CNode its creator retyped — seL4's `TCB_Configure` shape. Frozen: it retires whole with the user-space process server (Stage 7). |
 | `KOBJ_IRQ_CAP` / `KOBJ_IOPORT` | Capability-gated hardware access. |
 | `KOBJ_BOOTSTRAP_CAP` | Boot authority, **one capability per authority** since Stage 5 — process, initrd, IRQ control, ioport control, debug, framebuffer. Matched by exact equality; a capability carrying two of them cannot be constructed. |
 | `KOBJ_INITRD_ENTRY` | Read-only handle to an initrd image slot. |
@@ -291,13 +292,15 @@ ever run — seL4's "revoke the Untyped you used", in the form IRIS has.
 
 ## Syscall surface
 
-~117 syscall slots (0–116; several early numbers permanently retired).
+~123 syscall slots (0–122; several numbers permanently retired and reserved).
 Highlights by area:
 
 - **Core / process / thread**: `EXIT`, `GETPID`, `YIELD`, `SLEEP`, `CLOCK_GET`,
   `CLOCK_NANOSLEEP`, `PROCESS_CREATE`, `PROCESS_WATCH`, `PROCESS_KILL`,
   `PROCESS_STATUS`, `PROCESS_EXIT_CODE`, `PROCESS_VSPACE`, `PROCESS_FAULT_INFO`,
-  `THREAD_CREATE/START/EXIT`, `FUTEX_WAIT/WAKE`.
+  `FUTEX_WAIT/WAKE`.  `THREAD_CREATE` (Stage 5) and `THREAD_START` (Stage 7)
+  are retired: a thread is retyped, configured, pointed and resumed — see
+  below.
 - **Capabilities / CSpace**: `HANDLE_DUP`, `HANDLE_TYPE`,
   `HANDLE_SAME_OBJECT`, `CNODE_MINT/MOVE/FETCH/DELETE/SWAP`,
   `CSPACE_RESOLVE`, `PROC_CSPACE_MINT`. Native **CDT/MDB** derivation
@@ -388,11 +391,11 @@ THREAD_START` flow.
 | Constant | Value |
 |----------|-------|
 | `TASK_MAX` | 256 |
-| `KPROCESS_MAX_LIVE` | 64 |
+| `KPROCESS_MAX_LIVE` | 64 (an invented ceiling; see the roadmap's Stage 7 notes) |
 | `KCNODE_DEFAULT_SLOTS` | 256 (root CNode) |
 | `KVMO_MAX_PAGES` | 16384 (64 MB per VMO) |
 | `KPROCESS_VMO_QUOTA` | 32 per domain |
-| `KPROCESS_PHYS_PAGES_LIMIT` | 2048 (8 MB) per domain |
+| `KPROCESS_PHYS_PAGES_LIMIT` | retired (Stage 7) — reports 0; the Untyped a VMO names is the limit |
 | kernel object slab | 16 MB (boot path only, since Stage 6) |
 | CPtr range | the low 31 bits; a CPtr addresses exactly one capability |
 | default per-child budget | 1 MiB, chosen by the spawner |
@@ -402,7 +405,7 @@ THREAD_START` flow.
 
 Three independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **18685 assertions** across 20 suites
+- **Host unit tests** — `make test-unit`: **18720 assertions** across 21 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   kendpoint, kreply, knotification, kuntyped including its two-ended carve,
   kschedctx, kframe, the MDB/CDT (structural + model-based fuzzing), rights,
@@ -410,15 +413,17 @@ Three independently-gating layers, run on every change:
   layer, …). They cover what a successful boot cannot show: buffer bounds on a
   page about to be mapped into ring 3, a CSpace that names itself, and an
   allocator's two ends meeting exactly once.
-- **Runtime tests** — booted under QEMU headless: **273 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **276 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
   VFS-enforced file grants, multi-target paging, resource ownership accounting,
   the canonical Untyped-born TCB lifecycle (T284–T287), the native MDB/CDT with
   cross-process revocation (T288–T290), one-capability-one-authority (T296),
-  a retyped TCB executing (T297), and the Stage 6 budget invariants
-  (T298–T300).
+  a retyped TCB executing (T297), the Stage 6 budget invariants (T298–T300),
+  a refused address-space retype leaving its budget untouched (T301), the page
+  table as a capability (T302), and a running thread outliving every capability
+  to it (T303).
 - **Purity gate** — `make check-purity`: the frozen legacy-consumer allowlist.
   Nothing handle-table-shaped is left in it (Stage 4 deleted the namespace); what
   it holds is the kslab inventory, which Stage 6 reduced to the boot path. It
@@ -428,14 +433,62 @@ Three independently-gating layers, run on every change:
 ```bash
 make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
-make test-unit                                             # host unit suites (18685)
+make test-unit                                             # host unit suites (18720)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (273/273)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (276/276)
 make run                                                   # interactive QEMU
 ```
 
 Zero-warning policy: the build is treated as broken if
 `gcc -Wall -Wextra -Wshadow -Wundef` emits any diagnostic.
+
+## Convergence status
+
+The kernel is measured against seL4 by a [roadmap](docs/architecture/sel4-convergence-roadmap.md)
+of numbered stages and a [ledger](docs/architecture/sel4-convergence-ledger.md)
+of every mechanism that is not yet seL4's. Where it stands:
+
+| Stage | State |
+|---|---|
+| 0–4 — TCB consolidation, CDT/MDB, CSpace-only transfer/derive, dual-namespace retirement | closed; the handle namespace is **deleted**, not deprecated |
+| 5 — seL4-like bootstrap | closed: the root task is *told* what it holds (BootInfo), one capability per authority, and a retyped TCB executes |
+| 6 — remaining memory and objects | closed: no kernel object and no page of user-visible memory is created from kernel-private storage after boot |
+| **6-pure — the user retypes what the kernel charged** | **closed**: every object that constitutes an address space or a CSpace is retyped by its holder and handed over |
+| **7 — KProcess retirement** | **in progress**: the last pool-born thread and one invented ceiling are gone; `KProcess` itself needs the user-space process server |
+| 8–10 — MCS, SMP, platform | not started, by sequencing |
+
+**What Stage 6-pure changed.** Stage 6 answered *who pays* for memory: the
+kernel creates the object and charges it to an Untyped the caller named. That
+is not seL4's answer, and the ledger recorded the gap as D-5. Stage 6-pure
+gives seL4's answer for address spaces — the **holder** retypes the object and
+hands it over:
+
+- a **page table** is retyped (`IRIS_KOBJ_PAGE_TABLE`) and installed
+  explicitly (`SYS_VSPACE_MAP_TABLE`); the kernel creates none, and a map whose
+  walk is incomplete answers `IRIS_ERR_MISSING_TABLE` rather than quietly
+  spending somebody's budget;
+- an **address space** is retyped (`IRIS_KOBJ_VSPACE`, its region *is* the
+  PML4) and passed to `SYS_PROCESS_CREATE`, together with a root **CNode** the
+  spawner also retyped — which is `seL4_TCB_Configure`'s shape;
+- the **bootstrap exception ends**: the root task's pre-run maps are the only
+  kernel-funded ones, and they stop the moment it can speak for itself. Six
+  levels, measured. After that no address space is implicitly funded while
+  anybody is running.
+
+A consequence worth stating because it is a real authority change: **a task
+that maps anything must hold a budget**, since retyping a level needs untyped
+memory. The spawner decides — `vfs` and the pager get one, `console` and `kbd`
+do not, and `lifecycle_probe` gets one only in the spawn where it acts as a
+pager. Same image, two roles, different authority.
+
+**What Stage 7 has done, and what it needs.** `SYS_THREAD_START` — the last
+path by which a thread existed because the kernel had a free slot — is retired
+and `task_thread_create` is deleted; a child's first thread is retyped,
+configured, pointed and resumed like any other. The per-process page quota is
+retired too: it was a ceiling nobody granted, contradicting the budget that
+replaced it. What remains is `KProcess` itself, and that cannot land without
+the thing that replaces the policy it carries — a user-space process server —
+so the stage is open and the roadmap says why.
 
 ## What does not exist yet
 
@@ -503,7 +556,9 @@ Three documents are normative and outrank the rest when they disagree:
 
 Per-stage design records: `stage5-root-task-bootinfo.md` (fine-grained boot
 authority, BootInfo, executable retyped TCBs) and
-`stage6-memory-from-untyped.md` (who pays for memory).
+`stage6-memory-from-untyped.md` (who pays for memory — closed, and superseded
+in part by Stage 6-pure, which changed the answer from *charged* to *retyped*
+for address spaces; the roadmap carries that record).
 
 Design notes live in `docs/`, including `endpoint-protocol.md`,
 `badges-sender-identity.md`, `service-lifecycle.md`, `cptr-first-services.md`,

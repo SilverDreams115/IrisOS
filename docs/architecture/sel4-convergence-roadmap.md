@@ -18,7 +18,8 @@ path still depends on the mechanism it retires (charter §3.10).
 | 4 — Dual namespace retirement | ✅ CLOSED |
 | 5 — seL4-like bootstrap | ✅ CLOSED |
 | 6 — Remaining memory and objects | ✅ CLOSED |
-| 7 — KProcess retirement | pending |
+| 6-pure — the user retypes what the kernel charged | ✅ CLOSED (5 steps) |
+| 7 — KProcess retirement | 🔶 IN PROGRESS (2 steps landed) |
 | 8 — Full MCS scheduling | pending |
 | 9 — SMP | pending |
 | 10 — General-purpose platform | pending |
@@ -26,10 +27,28 @@ path still depends on the mechanism it retires (charter §3.10).
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
 A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
 (scheduling); **M2–M5** (memory); **P1, P3** (policy).  Still open: **A5** and
-**P2** (Stages 6–7), **O1** and **M1** (Stage 6).  Stage 5 moved A5 most of the
-way — boot authority is fine-grained and named, the monolith cannot be
-constructed — leaving the ioport whitelist and the kernel's per-process quotas
-as the remaining ambient policy.
+**P2** (Stage 7), **O1** and **M1**.  Stage 5 moved A5 most of the way — boot
+authority is fine-grained and named, the monolith cannot be constructed — and
+Stage 7 retired the per-process page quota, leaving the ioport whitelist and
+the VMO-count quota as the remaining ambient policy.
+
+### Where the line is now
+
+Stage 6 answered *who pays* for memory.  Stage 6-pure answered *who creates
+it*, which is the question seL4 answers and the one ledger D-5 recorded as
+open.  The two are not the same claim and the difference is the whole point:
+a kernel that charges you for a page table it made on your behalf accounts
+honestly and still decides for you.
+
+After Stage 6-pure the kernel creates no page table, no PML4 and no CNode.  A
+map whose walk is incomplete says so (`IRIS_ERR_MISSING_TABLE`) instead of
+quietly spending a budget, and `SYS_PROCESS_CREATE` composes a process from a
+VSpace and a CNode its creator retyped — `seL4_TCB_Configure`'s shape.  What
+the kernel still funds is bounded to things with no holder to ask: its own
+address space, and the root task's maps made before the root task exists.
+
+After Stage 7's two steps, no thread exists because the kernel had a free slot,
+and no memory ceiling exists that a capability did not set.
 
 ## Stage 0 — TCB consolidation  ✅ CLOSED (Phase S2 inc.2)
 
@@ -649,7 +668,7 @@ Covered by UT-TOP-1..5 (`tests/kernel/test_kuntyped.c`) and T298 (a frame costs
 page + header out of one Untyped, four frames stay page-dense, and the frame
 still maps, reads clean and writes).
 
-## Stage 6-pure — the user retypes what the kernel charged  ← IN PROGRESS
+## Stage 6-pure — the user retypes what the kernel charged  ✅ CLOSED
 
 Stage 6 closed on "no kernel object and no page of user-visible memory is
 created from kernel-private storage".  That answered *who pays*.  It did not
@@ -818,12 +837,12 @@ first one's death, out from under the second.
 `svc_loader` retypes both objects from the child's budget before the spawn, so
 a child now costs exactly one region and one syscall's worth of composition.
 
-## Stage 6-pure — CLOSED
+### Closing criterion — met
 
-**Closing criterion met**: every object that constitutes an address space or a
-CSpace is retyped by its holder and handed over.  The kernel creates none of
-them — not a page table, not a PML4, not a CNode — and a map that needs a level
-says so instead of quietly making one.
+**Every object that constitutes an address space or a CSpace is retyped by its
+holder and handed over.**  The kernel creates none of them — not a page table,
+not a PML4, not a CNode — and a map that needs a level says so instead of
+quietly making one.
 
 What the kernel still funds, and why each is not a gap this stage could close:
 
