@@ -258,6 +258,18 @@ static void kvspace_release_nodes(struct KVSpace *vs) {
 iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
                                uint64_t vaddr) {
     if (!vs || !pt) return IRIS_ERR_INVALID_ARG;
+    /*
+     * The address decides which PML4 slot gets written, so it is authority,
+     * not a hint.  Every user address space shares the higher half with the
+     * kernel: a table installed at a kernel VA would be spliced into the
+     * kernel's own walk, by a holder that needs nothing but its own VSpace and
+     * one page.  Confine installs to the user private window — the same range
+     * a frame may be mapped into (kframe_va_valid), minus its page-alignment
+     * requirement, because only the level's index bits are read here.
+     */
+    if (vaddr <  USER_PRIVATE_BASE) return IRIS_ERR_INVALID_ARG;
+    if (vaddr >= USER_SPACE_TOP)    return IRIS_ERR_INVALID_ARG;
+    if (vaddr >> 47ULL)             return IRIS_ERR_INVALID_ARG;  /* canonical */
 
     spinlock_lock(&vs->lock);
     if (!vs->valid || !vs->cr3) {

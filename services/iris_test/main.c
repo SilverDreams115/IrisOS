@@ -10061,9 +10061,10 @@ static void test_t148(void) {
      * 117-118 are SYS_CAP_IDENTIFY/SYS_CAP_SAME_OBJECT — the CSpace-native
      * introspection that replaces SYS_HANDLE_TYPE/SAME_OBJECT.  Stage 5
      * Etapa 4: 119-121 are SYS_CSPACE_SELF / SYS_TCB_CONFIGURE /
-     * SYS_TCB_WRITE_REGS — execution for a TCB retyped from an Untyped.  The
-     * first UNASSIGNED number moves up to 122. */
-    for (long n = 122; ok && n <= 400; n++) {
+     * SYS_TCB_WRITE_REGS — execution for a TCB retyped from an Untyped.
+     * Stage 6-pure Etapa 1: 122 is SYS_VSPACE_MAP_TABLE, which installs a page
+     * table the holder retyped.  The first UNASSIGNED number moves up to 123. */
+    for (long n = 123; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -17785,8 +17786,12 @@ static void test_t251(void) {
         { IRIS_KOBJ_FRAME,         4096, IRIS_HANDLE_TYPE_FRAME },
         /* Fase S2 Stage 0: the TCB joins the canonical family. */
         { IRIS_KOBJ_TCB,           0,    IRIS_HANDLE_TYPE_TCB },
+        /* Stage 6-pure Etapa 1: a paging level is a retyped object now, so it
+         * belongs in the manifest of what CAN exist.  Its region is always
+         * exactly one page — 512 entries of 8 bytes and nothing else. */
+        { IRIS_KOBJ_PAGE_TABLE,    4096, IRIS_HANDLE_TYPE_PAGE_TABLE },
     };
-    for (uint32_t i = 0; ok && i < 8u; i++) {
+    for (uint32_t i = 0; ok && i < 9u; i++) {
         if (it_retype2_at(su, canon[i].t, S1_SLOT_A, 1u, canon[i].arg) != 0) {
             ok = 0; why = "canonical type not creatable"; break;
         }
@@ -17798,7 +17803,7 @@ static void test_t251(void) {
     /* Everything else in 0..31 is refused — the manifest is CLOSED. */
     for (uint32_t t = 0; ok && t < 32u; t++) {
         int is_canon = 0;
-        for (uint32_t i = 0; i < 8u; i++) if (canon[i].t == t) is_canon = 1;
+        for (uint32_t i = 0; i < 9u; i++) if (canon[i].t == t) is_canon = 1;
         if (is_canon) continue;
         if (it_retype2_at(su, t, S1_SLOT_A, 1u, 4096) != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "non-canonical type creatable";
@@ -20098,6 +20103,140 @@ static void test_t301(void) {
     if (ok) it_pass("T301"); else it_fail("T301", why);
 }
 
+/* ── T302: a page table is a capability (Stage 6-pure Etapa 1) ────────────
+ * Stage 6 charged page tables to a budget, which answered who pays.  It left
+ * the kernel deciding WHEN a table exists and WHERE it goes — carving one
+ * silently on whichever map first needed it — so the holder paid for an object
+ * it could not name, count, delegate or reclaim.  Ledger D-5.
+ *
+ * A paging level is retyped like every other object now, and installed by an
+ * explicit invocation (seL4_X86_PageTable_Map).  Asserted here:
+ *
+ *   1. it is a first-class retypable object, and says what it is;
+ *   2. its region is always exactly one page — a level is 512 entries of 8
+ *      bytes and nothing else, so any other size is refused;
+ *   3. installing it fills the levels of a fresh address-space window from the
+ *      top down, one invocation per level, and reports the walk complete when
+ *      there is nothing left to fill;
+ *   4. a table is installed at most once — the same region cannot be two parts
+ *      of a walk;
+ *   5. the ADDRESS is authority: a kernel-half address is refused, because
+ *      installing there would splice a holder's page into the kernel's own
+ *      walk;
+ *   6. each level costs the budget a page, and the budget knows it.
+ *
+ * Leg 5 is the one that matters most: the argument that looks most like a hint
+ * is the one that decides which PML4 slot gets written.
+ * Invariants: M1, M3, O2, O6. */
+#define T302_VA      0x8090000000ULL   /* a 512 GiB window nothing else uses */
+#define T302_SLOT_PT S1_SLOT_D
+
+static void test_t302(void) {
+    int ok = 1;
+    const char *why = "page table capability";
+
+    if (!it_setup_self_vspace()) { it_fail("T302", "vspace self"); return; }
+
+    long pool = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                     IRIS_KOBJ_UNTYPED, 256u * 1024u);
+    if (pool < 0) { it_fail("T302", "pool carve"); return; }
+
+    /* 2. a level is one page, or it is not a level. */
+    it_slot_delete(T302_SLOT_PT);
+    if (it_retype2_at(pool, IRIS_KOBJ_PAGE_TABLE, T302_SLOT_PT, 1u, 8192)
+        != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "two-page table accepted";
+    }
+    it_slot_delete(T302_SLOT_PT);
+
+    uint64_t before = 0, after = 0;
+    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&before) != 0) {
+        ok = 0; why = "info";
+    }
+
+    /* 1. a real object of its own type. */
+    long pt = -1;
+    if (ok) {
+        pt = it_retype_slot_alloc(pool, IRIS_KOBJ_PAGE_TABLE, 4096);
+        if (pt < 0) { ok = 0; why = "retype"; }
+    }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, pt) != (long)IRIS_HANDLE_TYPE_PAGE_TABLE) {
+        ok = 0; why = "wrong type reported";
+    }
+
+    /* 5. the address is authority, not a hint.  Probed BEFORE the productive
+     *    installs so a refusal cannot be confused with "already complete". */
+    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, pt, IT_VS, (long)0xFFFF800000000000ULL)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "kernel-half install accepted";
+    }
+    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, pt, IT_VS, 0x1000L)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "low address install accepted";
+    }
+
+    /* 3. fill the window, one invocation per missing level, until the walk is
+     *    complete.  HOW MANY levels are missing is not the test's to assume:
+     *    an address space that already maps something in this 512 GiB slot
+     *    shares its PDPT, so the depth depends on what the caller has mapped
+     *    before.  What is asserted is the contract — each install fills
+     *    exactly one level, and the run ends with the walk reporting complete. */
+    uint32_t installed = 0;
+    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, pt, IT_VS, (long)T302_VA) != 0) {
+        ok = 0; why = "first install";
+    } else if (ok) {
+        installed = 1;
+    }
+    /* 4. and that table is spent: it is part of a walk now. */
+    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, pt, IT_VS, (long)(T302_VA + 0x40000000ULL))
+              != (long)IRIS_ERR_ALREADY_EXISTS) {
+        ok = 0; why = "table installed twice";
+    }
+
+    int complete = 0;
+    for (int lvl = 0; ok && lvl < 4 && !complete; lvl++) {
+        long more = it_retype_slot_alloc(pool, IRIS_KOBJ_PAGE_TABLE, 4096);
+        if (more < 0) { ok = 0; why = "retype level"; break; }
+        long mr = it_sys3(SYS_VSPACE_MAP_TABLE, more, IT_VS, (long)T302_VA);
+        if (mr == 0)                                  installed++;
+        else if (mr == (long)IRIS_ERR_ALREADY_EXISTS) complete = 1;
+        else { ok = 0; why = "install level"; }
+    }
+    if (ok && !complete)     { ok = 0; why = "walk never completed"; }
+    if (ok && installed == 0){ ok = 0; why = "nothing was ever installed"; }
+
+    /* 6. every level came out of the budget the holder named. */
+    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&after) != 0) {
+        ok = 0; why = "info2";
+    }
+    if (ok && before - after < (uint64_t)installed * 4096u) {
+        ok = 0; why = "levels not charged";
+    }
+
+    /* 7. and the walk the holder built is REAL: a mapping through it works.
+     *    This is what separates installing a table from writing a number into
+     *    a page — the levels above this address are ones the holder retyped
+     *    and named, and memory mapped under them reads and writes. */
+    if (ok) {
+        long vmo = it_vmo_create_slot(4096);
+        if (vmo < 0) { ok = 0; why = "vmo"; }
+        else if (it_sys3(SYS_VMO_MAP, vmo, (long)T302_VA, 1) != 0) {
+            ok = 0; why = "map through holder-built walk";
+        } else {
+            volatile uint64_t *pg = (volatile uint64_t *)(uintptr_t)T302_VA;
+            if (pg[0] != 0u) { ok = 0; why = "not zero-filled"; }
+            if (ok) {
+                pg[0] = 0xA5A5A5A5A5A5A5A5ULL;
+                if (pg[0] != 0xA5A5A5A5A5A5A5A5ULL) { ok = 0; why = "not writable"; }
+            }
+            (void)it_sys2(SYS_VMO_UNMAP, (long)T302_VA, 4096);
+        }
+    }
+
+    it_slot_delete(T302_SLOT_PT);
+    if (ok) it_pass("T302"); else it_fail("T302", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Etapa 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -20632,6 +20771,8 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t300();
     /* Stage 6: a refused spawn leaves its budget untouched. */
     test_t301();
+    /* Stage 6-pure: a page table is a capability the holder retypes. */
+    test_t302();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

@@ -648,6 +648,50 @@ Covered by UT-TOP-1..5 (`tests/kernel/test_kuntyped.c`) and T298 (a frame costs
 page + header out of one Untyped, four frames stay page-dense, and the frame
 still maps, reads clean and writes).
 
+## Stage 6-pure — the user retypes what the kernel charged  ← IN PROGRESS
+
+Stage 6 closed on "no kernel object and no page of user-visible memory is
+created from kernel-private storage".  That answered *who pays*.  It did not
+answer the question seL4 answers, which ledger D-5 records: the kernel still
+decided *when* each object existed and *where* it went.  A holder paid for
+page tables it could not name, count, delegate or reclaim.
+
+**Closing criterion**: every object the kernel charges to a budget today is
+instead RETYPED by the holder and installed by an explicit invocation, or the
+row is argued down to something that cannot be user-driven.
+
+### Etapa 1 — the page table becomes a capability  ✅ DONE
+
+`IRIS_KOBJ_PAGE_TABLE` is retyped from an Untyped like every other object; its
+4 KiB region IS the hardware table, and its header is a top-carved block of the
+same Untyped (a header inside the region would be walked by the MMU).
+`SYS_VSPACE_MAP_TABLE` installs it — seL4's `seL4_X86_PageTable_Map` — and the
+kernel's only contribution is the walk, because which level is missing for an
+address is a fact about the address space rather than a choice the holder
+makes.
+
+The VSpace retains every table installed in it and returns them at teardown,
+so a region cannot be RESET while a live walk stands on it — the guarantee
+`child_count` gave the charged path, now carried by a real capability.  The
+address is validated as authority: every user address space shares the higher
+half with the kernel, so an install outside the user private window is refused
+rather than spliced into the kernel's own walk.
+
+Three paging primitives that allocate nothing back this: report the missing
+level, install a supplied table at it, and map a leaf without ever creating a
+level.  Tests: T302 (new) — the object, its one-page size rule, one level per
+invocation, double-install refused, kernel-address refused, the budget charged,
+and a frame mapped through the walk the holder built.  T148/T251 (the syscall
+surface and canonical-type manifests) grew by one member each.
+
+### Etapa 2 — userland supplies its own levels  ← NEXT
+
+`paging_map_strict_in` exists and nothing calls it.  The remaining work is to
+teach the loader to pre-install the levels its child needs, then make the
+charged path (`paging_map_checked_in_from`) refuse instead of carving — at
+which point the kernel never creates a page table at all, and the Stage 6
+`pt_pool` / `pt_count` machinery retires with it.
+
 ## Stage 7 — KProcess retirement
 
 Precondition: Stages 5–6 (a process = TCB+CSpace+VSpace composition).

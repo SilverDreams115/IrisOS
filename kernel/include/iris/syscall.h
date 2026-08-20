@@ -1427,6 +1427,7 @@ struct iris_tcb_info {
 #define IRIS_HANDLE_TYPE_TCB            13u
 #define IRIS_HANDLE_TYPE_VSPACE         14u  /* Fase 4: KVSpace — virtual address space */
 #define IRIS_HANDLE_TYPE_FRAME          15u  /* Fase 5: KFrame  — physical memory frame */
+#define IRIS_HANDLE_TYPE_PAGE_TABLE     16u  /* Stage 6-pure: a retyped paging level */
 
 /*
  * Fase 29 — resource-accounting snapshot (SYS_RESOURCE_INFO out payload).
