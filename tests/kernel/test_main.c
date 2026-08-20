@@ -22,6 +22,7 @@ void test_mdb(void);
 void test_klog(void);
 void test_vfs_ep(void);
 void test_root_bootinfo(void);
+void test_pagetable(void);
 
 int main(void) {
     test_rights();
@@ -42,6 +43,7 @@ int main(void) {
     test_klog();
     test_vfs_ep();
     test_root_bootinfo();
+    test_pagetable();
 
     printf("\nresult: %d passed, %d failed\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

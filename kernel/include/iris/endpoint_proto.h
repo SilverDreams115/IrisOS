@@ -371,6 +371,24 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * can SYS_UNTYPED_RETYPE2 its own kernel objects.  IRIS_CPTR_INIT_UNTYPED is
  * the historical name for init's instance of the same slot. */
 #define IRIS_CPTR_OWN_UNTYPED  ((uint64_t)12)
+/*
+ * Stage 6-pure Etapa 2 gave this slot a second, guaranteed occupant.
+ *
+ * The kernel no longer creates paging levels, so a task that maps anything
+ * must be able to retype one — and a level for its own address space belongs
+ * in the region that address space was already charged to.  svc_loader
+ * therefore mints the child's OWN address-space budget here whenever the
+ * spawner's manifest has not already claimed the slot for a pool of its own.
+ * Either way the meaning is unchanged and services need no new constant: slot
+ * 12 is "the untyped this task may allocate from".
+ *
+ * It is deliberately NOT a new well-known slot.  Two attempts at one collided
+ * with things a grep does not show — init's vfs.ep receive slot, the suite's
+ * "always empty between tests" scratch pool, a pager target slot, and two
+ * slots whose whole purpose is to never resolve.  A 256-slot namespace shared
+ * by nine services has no free number that stays free; it has slots with
+ * meanings, and this is the one whose meaning already fits.
+ */
 /* Fase S1: explicit MCS-style reply objects.  The kernel no longer fabricates
  * a KReply at EP_CALL rendezvous: a server passes its reply-object CPtr as
  * arg2 of SYS_EP_RECV / SYS_EP_NB_RECV and later invokes SYS_REPLY on the

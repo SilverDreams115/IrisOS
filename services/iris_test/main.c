@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <iris/syscall.h>
 #include <iris/nc/error.h>
+#include "../common/iris_vspace.h"
 #include <iris/nc/handle.h>
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
@@ -38,12 +39,40 @@ static inline long it_sys2(long nr, long a0, long a1) {
     return iris_syscall3(nr, a0, a1, 0L);
 }
 
+/*
+ * Stage 6-pure Etapa 2: the suite supplies its own paging levels.
+ *
+ * The kernel stopped creating page tables, so a map whose walk is incomplete
+ * answers IRIS_ERR_MISSING_TABLE and expects the holder to retype a level and
+ * retry.  That belongs at the syscall boundary rather than at each of the
+ * hundred-odd map sites in this file: it is one rule about the address space,
+ * not a hundred decisions, and this is where a seL4 client library puts it.
+ *
+ * Only the four mapping syscalls are eligible, and each says where its target
+ * address space and virtual address are — SYS_VMO_MAP maps into the caller's
+ * own, the rest name theirs.  Anything else that ever returned MISSING_TABLE
+ * would be a kernel bug, so it is passed through unchanged.
+ */
+/* Leaves of the suite's own object CNode, not root slots: the four root
+ * SCRATCH slots have a contract ("empty between tests") that a permanent
+ * occupant would break, and the rotating object pool only ever hands out
+ * leaves 1..IT_OBJ_SLOT_SPAN, so anything above that is ours alone. */
+#define LP_SLOT_BUDGET  16u   /* mirrors lifecycle_probe's own map */
+#define IT_PT_SCRATCH    IT_OBJ_CPTR(201)  /* the level's capability */
+#define IT_PT_VS_SCRATCH IT_OBJ_CPTR(202)  /* a child's VSpace, for MAP_INTO */
+static int  it_setup_self_vspace(void);
+static long it_map_fixup(long nr, long a0, long a1, long a2, long a3);
+
 static inline long it_sys3(long nr, long a0, long a1, long a2) {
-    return iris_syscall3(nr, a0, a1, a2);
+    long r = iris_syscall3(nr, a0, a1, a2);
+    if (r == (long)IRIS_ERR_MISSING_TABLE) r = it_map_fixup(nr, a0, a1, a2, 0);
+    return r;
 }
 
 static inline long it_sys4(long nr, long a0, long a1, long a2, long a3) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)a3);
+    long r = iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)a3);
+    if (r == (long)IRIS_ERR_MISSING_TABLE) r = it_map_fixup(nr, a0, a1, a2, a3);
+    return r;
 }
 
 /* ── Serial output ──────────────────────────────────────────────────────── */
@@ -2877,8 +2906,8 @@ static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
     *out_proc_h = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc_h, &boot_h, mints, n,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /*own_budget_slot=*/0);
     it_close(&reply_h);  /* the child's slot-13 mint is the only reply cap */
     it_close(&boot_h);   /* Track I: no bootstrap channel (HANDLE_INVALID anyway) */
     return r;
@@ -4495,6 +4524,18 @@ static int it_setup_self_vspace(void) {
 /* Test VSpace CPtr and a reserved self-map VA window (page-aligned, inside the
  * user private window, clear of the VMO test VAs at 0x8050/0x8060/0x8061). */
 #define IT_VS       ((long)IRIS_CPTR_TEST_VSPACE)
+
+static long it_map_fixup(long nr, long a0, long a1, long a2, long a3) {
+    /* SYS_VMO_MAP needs the suite's own address space as a capability. */
+    if (nr == SYS_VMO_MAP && !it_setup_self_vspace())
+        return (long)IRIS_ERR_MISSING_TABLE;
+    return iris_vspace_fixup(nr, a0, a1, a2, a3,
+                             IT_VS, (long)IRIS_CPTR_TEST_UNTYPED,
+                             (long)(((uint64_t)201 << 32) | IT_OBJ_CNODE_SLOT),
+                             (long)IT_PT_SCRATCH,
+                             (long)(((uint64_t)202 << 32) | IT_OBJ_CNODE_SLOT),
+                             (long)IT_PT_VS_SCRATCH);
+}
 
 /* ── Stage 5 Etapa 4: a thread born from an Untyped ────────────────────────
  *
@@ -10672,8 +10713,8 @@ static long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
     handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, n,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /*own_budget_slot=*/0);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
 
@@ -11160,8 +11201,8 @@ static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t de
     handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, 2u,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /*own_budget_slot=*/0);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
 
@@ -11494,8 +11535,8 @@ static void test_t170(void) {
         long r = (ep < 0) ? -1 : svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL,
                                                     IRIS_CPTR_INITRD_CONTROL,
                      "lifecycle_probe", &proc, &boot, mints, 2u,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /*own_budget_slot=*/0);
         it_close(&boot); it_close(&io);
         if (r < 0 || proc == HANDLE_INVALID) { ok = 0; why = "spawn"; it_close(&cmd); it_close(&proc); break; }
 
@@ -12225,8 +12266,17 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc, &boot, m, n,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /* This lifecycle_probe instance is spawned to act as a PAGER: it
+                                * maps frames into a target's address space, so it owes the
+                                * paging levels under them and needs a budget to retype
+                                * those from.  The CONTAINED instances the authority tests
+                                * audit are spawned without one, from the same image —
+                                * which is the capability model working: what a task may do
+                                * follows from what it was handed, not from what it is.
+                                * Slot 16 and not 12: 12 is LP_PGR_SLOT_TPROC, the
+                                * target's process capability. */
+                               /*own_budget_slot=*/LP_SLOT_BUDGET);
     it_close(&boot);
     if (r < 0 || *out_proc == HANDLE_INVALID) {
         it_close(&cmd); it_close(out_proc); return -1;
@@ -14006,8 +14056,11 @@ static int t27_pager_spawn(struct t27_pager *p,
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager",
                              &p->proc, &boot, m, n,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /* The pager MAPS — into address spaces that are
+                                * not even its own — so it owes paging levels
+                                * and needs a budget to retype them from. */
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || p->proc == HANDLE_INVALID) {
@@ -14093,6 +14146,11 @@ static void test_t201(void) {
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
                           (1u << 13) /* Fase S1: explicit reply object */ |
                           (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
+                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Etapa 2: the
+                              * budget its own address space was built from.  The
+                              * pager MAPS, and the kernel no longer creates paging
+                              * levels, so it must be able to retype one.  A real
+                              * authority, which is why it belongs in this oracle. */ |
                           (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest mismatch"; }
         /* Explicitly none of: core client eps (1/2/4 — slot 3 is the control
@@ -14353,6 +14411,11 @@ static void test_t205(void) {
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
                           (1u << 13) /* Fase S1: explicit reply object */ |
                           (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
+                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Etapa 2: the
+                              * budget its own address space was built from.  The
+                              * pager MAPS, and the kernel no longer creates paging
+                              * levels, so it must be able to retype one.  A real
+                              * authority, which is why it belongs in this oracle. */ |
                           (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "restart manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) {
@@ -14823,8 +14886,8 @@ static void test_t213(void) {
         handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
         long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                                  &proc, &boot, 0, 0u,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /*own_budget_slot=*/0);
         if (r != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "badelf not INVALID_ARG"; }
         if (ok && proc != HANDLE_INVALID) { ok = 0; why = "badelf left a process"; }
         it_close(&boot); it_close(&proc);
@@ -14865,8 +14928,8 @@ static void test_t214(void) {
     /* Unknown name → NOT_FOUND, no hang, no process. */
     long r1 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "no_such_image",
                               &proc, &boot, 0, 0u,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /*own_budget_slot=*/0);
     if (r1 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "unknown not NOT_FOUND"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "unknown left process"; }
     it_close(&boot); it_close(&proc);
@@ -14875,8 +14938,8 @@ static void test_t214(void) {
     proc = boot = HANDLE_INVALID;
     long r2 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                               &proc, &boot, 0, 0u,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /*own_budget_slot=*/0);
     if (ok && r2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "malformed not INVALID_ARG"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "malformed left process"; }
     it_close(&boot); it_close(&proc);
@@ -14924,6 +14987,11 @@ static void test_t215(void) {
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
                           (1u << 13) /* Fase S1: explicit reply object */ |
                           (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
+                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Etapa 2: the
+                              * budget its own address space was built from.  The
+                              * pager MAPS, and the kernel no longer creates paging
+                              * levels, so it must be able to retype one.  A real
+                              * authority, which is why it belongs in this oracle. */ |
                           (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) {
@@ -14988,8 +15056,8 @@ static void test_t216(void) {
             struct it_snap fb = it_snap_take();
             handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
             long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf", &proc, &boot, 0, 0u,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /*own_budget_slot=*/0);
             if (r >= 0) { ok = 0; why = "badelf loaded"; }
             it_close(&boot); it_close(&proc);
             it_quiesce_reaper();
@@ -15354,8 +15422,8 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
     }
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, m, k,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
@@ -15497,7 +15565,11 @@ static void test_t217(void) {
     if (ok) {
         long mask = t27_pager_call(f.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         /* 15 = the pager's own VSpace, a capability since Stage 4. */
-        uint32_t expect = (1u<<3)|(1u<<4)|(1u<<5)|(1u<<13)|(1u<<15)|(1u<<16)|(1u<<17)|(1u<<20)|(1u<<21);
+        /* Stage 6-pure Etapa 2 adds slot 12: the budget the pager's own
+         * address space was built from.  It MAPS, and the kernel no longer
+         * creates paging levels, so it must be able to retype one. */
+        uint32_t expect = (1u<<3)|(1u<<4)|(1u<<5)|(1u<<IRIS_CPTR_OWN_UNTYPED)|
+                          (1u<<13)|(1u<<15)|(1u<<16)|(1u<<17)|(1u<<20)|(1u<<21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) { ok = 0; why = "extra authority"; }
     }
@@ -16824,8 +16896,8 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
         }
     }
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, mm, k,
-                             IT_LOADER_WS,
-                               0);
+                             IT_LOADER_WS, 0,
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
@@ -20187,10 +20259,13 @@ static void test_t302(void) {
     } else if (ok) {
         installed = 1;
     }
-    /* 4. and that table is spent: it is part of a walk now. */
+    /* 4. and that table is spent: it is part of a walk now.  BUSY, not
+     *    ALREADY_EXISTS — a client loop has to tell "this object is spent, get
+     *    another" from "this level is already there, stop", and one code for
+     *    both left it unable to act on either. */
     if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, pt, IT_VS, (long)(T302_VA + 0x40000000ULL))
-              != (long)IRIS_ERR_ALREADY_EXISTS) {
-        ok = 0; why = "table installed twice";
+              != (long)IRIS_ERR_BUSY) {
+        ok = 0; why = "spent table not refused as BUSY";
     }
 
     int complete = 0;
@@ -20200,6 +20275,7 @@ static void test_t302(void) {
         long mr = it_sys3(SYS_VSPACE_MAP_TABLE, more, IT_VS, (long)T302_VA);
         if (mr == 0)                                  installed++;
         else if (mr == (long)IRIS_ERR_ALREADY_EXISTS) complete = 1;
+        else if (mr == (long)IRIS_ERR_BUSY)           { ok = 0; why = "fresh table reported spent"; }
         else { ok = 0; why = "install level"; }
     }
     if (ok && !complete)     { ok = 0; why = "walk never completed"; }

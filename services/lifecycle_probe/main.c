@@ -39,6 +39,7 @@
 #include <iris/ipc_msg.h>
 #include <iris/fault_proto.h>
 #include <iris/endpoint_proto.h>
+#include "../common/iris_vspace.h"
 #include <iris/nc/error.h>
 
 /* Well-known CPtr slot in the child's root CNode where the parent mints the
@@ -220,8 +221,29 @@ static inline long lp_sys2(long nr, long a0, long a1) {
     return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
 }
 
+/*
+ * Stage 6-pure Etapa 2: this image is spawned in two roles, and the difference
+ * is entirely in what it was handed.  As a CONTAINED probe it holds no budget,
+ * and the authority tests audit exactly that.  As a PAGER (T183+) it maps
+ * frames into a target's address space, so it owes the levels under them and
+ * is spawned WITH a budget at IRIS_CPTR_OWN_UNTYPED.
+ *
+ * The fixup below is therefore conditional in practice rather than in code: a
+ * contained instance has nothing to retype from, so the retype fails and the
+ * map still reports the error it would have.  Nothing is granted by asking.
+ */
+/* Slot 16, not IRIS_CPTR_OWN_UNTYPED (12): 12 is LP_PGR_SLOT_TPROC here.  The
+ * budget's slot is part of THIS image's map, and the spawner names it. */
+#define LP_SLOT_BUDGET 16u
+#define LP_SLOT_PT     44u
 static inline long lp_sys4(long nr, long a0, long a1, long a2, long a3) {
-    return iris_syscall4(nr, a0, a1, a2, a3);
+    long r = iris_syscall4(nr, a0, a1, a2, a3);
+    if (r == (long)IRIS_ERR_MISSING_TABLE)
+        r = iris_vspace_fixup(nr, a0, a1, a2, a3,
+                              0, (long)LP_SLOT_BUDGET,
+                              (long)((uint64_t)LP_SLOT_PT << 32), (long)LP_SLOT_PT,
+                              0, 0);
+    return r;
 }
 
 /* Little-endian field reads from the SYS_PROCESS_FAULT_INFO record. */

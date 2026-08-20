@@ -232,8 +232,23 @@ static int stub_pt_has(uint64_t cr3, uint64_t virt, int level) {
     return 0;
 }
 
+/*
+ * Level modelling is OPT-IN.
+ *
+ * Most host suites are about mapping records, frame lifecycle and VSpace
+ * teardown, and predate paging levels being objects at all; to them an address
+ * space is a place mappings go.  Modelling an empty walk for every one of them
+ * would replace what they test with a paging fixture nobody wrote.
+ *
+ * A suite that IS about the walk turns this on and then owes every level,
+ * exactly as a real holder does.
+ */
+static int stub_pt_strict = 0;
+void paging_stub_strict_levels(int on) { stub_pt_strict = on; stub_pt_n = 0; }
+
 int paging_missing_level_in(uint64_t cr3, uint64_t virt) {
     if (!cr3) return -1;
+    if (!stub_pt_strict) return 0;          /* the walk is whatever it needs to be */
     if (!stub_pt_has(cr3, virt, 3)) return 3;
     if (!stub_pt_has(cr3, virt, 2)) return 2;
     if (!stub_pt_has(cr3, virt, 1)) return 1;
@@ -244,6 +259,7 @@ int paging_install_table_in(uint64_t cr3, uint64_t virt, uint64_t table_phys,
                             uint64_t flags) {
     (void)flags;
     if (!cr3 || !table_phys || (table_phys & 0xFFFULL)) return -1;
+    if (!stub_pt_strict) return 0;          /* nothing was ever missing */
     int level = paging_missing_level_in(cr3, virt);
     if (level <= 0) return level;
     if (stub_pt_n >= STUB_PT_MAX) return -1;

@@ -80,21 +80,22 @@ uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    struct KObject *vs_obj;  iris_rights_t vs_rights;
-    err = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg1,
-                                  RIGHT_NONE, KOBJ_VSPACE, &vs_obj, &vs_rights);
+    /* The SAME resolver SYS_VMO_MAP_PAGE and SYS_FRAME_MAP use for their
+     * VSpace argument, with the same required right.  A capability that can
+     * install a PTE must be able to install the level that PTE hangs off, or a
+     * pager holding exactly what it needs to map would be unable to supply
+     * what mapping now requires. */
+    struct KVSpace *vs;  iris_rights_t vs_rights;
+    err = cspace_resolve_only_vspace(t->process, (iris_cptr_t)arg1,
+                                     RIGHT_WRITE, &vs, &vs_rights);
     if (err != IRIS_OK) {
         kobject_release(pt_obj);
         return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
     }
-    if (!rights_check(vs_rights, RIGHT_WRITE)) {
-        kobject_release(vs_obj); kobject_release(pt_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
 
-    err = kvspace_map_table((struct KVSpace *)vs_obj,
-                            (struct KPageTable *)pt_obj, arg2);
-    kobject_release(vs_obj);
+    err = kvspace_map_table(vs, (struct KPageTable *)pt_obj, arg2);
+    kobject_active_release(&vs->base);
+    kobject_release(&vs->base);
     kobject_release(pt_obj);
     if (err != IRIS_OK) return syscall_err(err);
     return syscall_ok_u64(0);

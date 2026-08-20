@@ -13,6 +13,7 @@
  * console.ep — neither path uses a channel.
  */
 #include <iris/svcmgr_proto.h>
+#include "../common/iris_vspace.h"
 #include <iris/console_proto.h>
 #include <iris/syscall.h>
 #include <iris/nc/error.h>
@@ -71,8 +72,31 @@ static const char *const vfs_initrd_name_table[] = {
 #define VFS_INITRD_MAP_SLOT  0x0000800000ULL
 
 
+static long vfs_self_vs(void);
+/* Stage 6-pure Etapa 2: the kernel no longer creates paging levels, so a map
+ * whose walk is incomplete comes back as MISSING_TABLE and vfs supplies the
+ * level itself — from IRIS_CPTR_OWN_UNTYPED, the budget its own address
+ * space was built from.  One rule about the address space, so it lives at the
+ * syscall boundary rather than at each map site. */
+#define VFS_SLOT_SELF_VS  60u
+#define VFS_SLOT_PT       61u
 static inline int64_t vfs_syscall3(uint64_t num, uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    return (int64_t)iris_syscall3((long)num, (long)arg0, (long)arg1, (long)arg2);
+    long r = iris_syscall3((long)num, (long)arg0, (long)arg1, (long)arg2);
+    if (r == (long)IRIS_ERR_MISSING_TABLE)
+        r = iris_vspace_fixup((long)num, (long)arg0, (long)arg1, (long)arg2, 0,
+                              vfs_self_vs(), (long)IRIS_CPTR_OWN_UNTYPED,
+                              (long)((uint64_t)VFS_SLOT_PT << 32), (long)VFS_SLOT_PT,
+                              0, 0);
+    return (int64_t)r;
+}
+static long vfs_self_vs(void) {
+    static int ready = 0;
+    if (!ready) {
+        if (iris_syscall1(SYS_VSPACE_SELF, (long)((uint64_t)VFS_SLOT_SELF_VS << 32)) != 0)
+            return 0;
+        ready = 1;
+    }
+    return (long)VFS_SLOT_SELF_VS;
 }
 
 static inline int64_t vfs_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1) {

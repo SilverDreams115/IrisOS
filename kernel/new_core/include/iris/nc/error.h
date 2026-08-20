@@ -22,6 +22,12 @@ enum {
     IRIS_ERR_WOULD_BLOCK   = -13,
     IRIS_ERR_INTERNAL      = -14,
     IRIS_ERR_TIMED_OUT     = -15,
+    /* Stage 6-pure Etapa 2: the walk for this address is missing a paging
+     * level, and the kernel does not create one.  The holder retypes a
+     * KOBJ_PAGE_TABLE and installs it with SYS_VSPACE_MAP_TABLE, then retries
+     * the map — seL4's seL4_FailedLookup, and the reason a client library has
+     * a retry loop rather than the kernel having an allocator. */
+    IRIS_ERR_MISSING_TABLE = -16,
 };
 
 static inline int iris_is_ok(iris_error_t err)  { return err == IRIS_OK; }

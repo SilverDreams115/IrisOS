@@ -11,6 +11,8 @@
  */
 
 #include "svc_loader.h"
+#include "iris_vspace.h"
+#include <iris/endpoint_proto.h>
 #include <iris/syscall.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
@@ -275,6 +277,24 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * ONE image, which is the seL4 reclamation pattern (revoke the Untyped you
  * used) in the form IRIS has. */
 #define SL_WS_ELFPOOL 5u
+/* Stage 6-pure Etapa 2: the child's VSpace, and one scratch slot the paging
+ * levels pass through on their way into it.  One slot is enough for any depth
+ * — installing hands the VSpace its own reference, so the capability here is
+ * spent the moment it lands (see iris_vspace.h). */
+#define SL_WS_CHILD_VSPACE 6u
+/* Two scratch slots, because the spare level a completed walk leaves behind
+ * belongs to whoever paid for it.  The loader's own spare is retyped from the
+ * loader's budget and is worth KEEPING across spawns; a child's spare is
+ * charged to the CHILD's budget, and holding it past the spawn would keep a
+ * child entry alive on a region svcmgr must be able to RESET when it restarts
+ * that service.  Same reason, opposite lifetime — so, two slots. */
+#define SL_WS_PTSCRATCH    7u   /* the loader's own levels */
+#define SL_WS_PTSCRATCH_CH 2u   /* a child's levels; released at end of load */
+/* The loader's OWN address space.  It maps every image it loads into itself to
+ * parse it, so once the kernel stopped creating levels the loader owes its own
+ * walk exactly as it owes the child's — and a loader running inside a spawned
+ * service (init, svcmgr) has a budget, so it is not exempt. */
+#define SL_WS_SELF_VSPACE  4u
 #define SL_ELF_POOL_BYTES (4u << 20)
 #define SL_WS_SEG    8u   /* 8..15: one per ELF segment */
 
@@ -305,9 +325,13 @@ static int sl_ws_ensure(uint64_t ws) {
 long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                         const struct svc_mint *mints, uint32_t mint_count,
-                        uint64_t ws, uint64_t child_budget) {
+                        uint64_t ws, uint64_t child_budget,
+                        uint32_t own_budget_slot) {
     *out_proc_h = HANDLE_INVALID;
     *out_chan_h = HANDLE_INVALID;
+    long self_vs  = 0;   /* the loader's own address space, for parse windows */
+    long child_vs = 0;   /* the child's address space, once it exists */
+    long pool_c   = 0;   /* the budget its paging levels come from */
 
     long idx = sl_name_to_index(name);
     if (idx < 0) return (long)IRIS_ERR_NOT_FOUND;
@@ -345,6 +369,14 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * quietly producing capabilities the caller cannot address. */
     if (!sl_ws_ensure(ws)) return (long)IRIS_ERR_INVALID_ARG;
 
+    /* The loader's own address space, for the parse windows below.  Not fatal
+     * if it cannot be had: the ONE address space with no budget is the root
+     * task's, whose maps the kernel still funds, and that is also the only
+     * caller for which SYS_VSPACE_SELF is not needed. */
+    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_SELF_VSPACE);
+    if (sl_sys1(SYS_VSPACE_SELF, sl_ws_dest(ws, SL_WS_SELF_VSPACE)) == 0)
+        self_vs = (long)sl_ws_cptr(ws, SL_WS_SELF_VSPACE);
+
     /* 1. Get read-only eager VMO wrapping the ELF bytes in the initrd.
      *
      * Charged to the scratch budget: RESET it first (the previous spawn's copy
@@ -371,8 +403,13 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         elf_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_ELF);
     }
 
-    /* 2. Map ELF read-only at SL_ELF_VADDR for parsing. */
-    r = sl_sys3(SYS_VMO_MAP, (long)elf_h, (long)SL_ELF_VADDR, 0);
+    /* 2. Map ELF read-only at SL_ELF_VADDR for parsing.  The levels for the
+     *    parse window are the loader's own to supply now. */
+    r = iris_vspace_map(SYS_VMO_MAP, (long)elf_h, (long)SL_ELF_VADDR, 0, 0,
+                        self_vs, (long)SL_WS_UNTYPED(ws),
+                        sl_ws_dest(ws, SL_WS_PTSCRATCH),
+                        (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH),
+                        SL_ELF_VADDR);
     if (r < 0) goto out;
     elf_mapped = 1;
 
@@ -447,6 +484,9 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * table as a child of that pool, so the spawner cannot RESET it out
          * from under a live child. */
         uint32_t proc_leaf = 0u;
+        /* The budget the child's address space is built from — its paging
+         * levels come out of the same one (Stage 6-pure Etapa 2). */
+        pool_c = 0;
         for (uint32_t l = SL_WS_PROC_BASE; l < SL_WS_PROC_LIMIT; l++) {
             /* Ask whether this leaf is taken BEFORE touching its budget: a
              * leaf whose process is still alive owns a budget that is still in
@@ -489,7 +529,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             }
             r = sl_sys3(SYS_PROCESS_CREATE, (long)proc_c,
                         sl_ws_dest(ws, l), pool);
-            if (r == 0) { proc_leaf = l; break; }
+            if (r == 0) { proc_leaf = l; pool_c = pool; break; }
             if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
         }
         if (proc_leaf == 0u && r == (long)IRIS_ERR_ALREADY_EXISTS)
@@ -511,6 +551,15 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         /* 7. Map each segment VMO writable in loader's temp window. */
         for (uint32_t i = 0; i < seg_count; i++) {
             uint64_t slot = SL_SEG_VADDR_BASE + (uint64_t)i * SL_SEG_SLOT_SIZE;
+            for (uint64_t off = 0; off < seg_map_size[i] + 0x200000ULL;
+                 off += 0x200000ULL) {
+                r = iris_vspace_ensure(self_vs, (long)SL_WS_UNTYPED(ws),
+                                       sl_ws_dest(ws, SL_WS_PTSCRATCH),
+                                       (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH),
+                                       slot + off);
+                if (r < 0) goto out;
+                if (off >= seg_map_size[i]) break;
+            }
             r = sl_sys3(SYS_VMO_MAP, (long)seg_vmo[i], (long)slot, 1 /*WRITABLE*/);
             if (r < 0) goto out;
             segs_in_loader |= (1u << i);
@@ -593,15 +642,36 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * cap is a pre-start CSpace mint, so no channel is created or inserted
          * and the child starts with RBX = 0 (no bootstrap handle). */
 
+        /*
+         * Stage 6-pure Etapa 2: the child's paging levels are the child's, so
+         * they are retyped from the CHILD's budget and installed into the
+         * CHILD's address space.  The loader needs a capability to that
+         * address space to do it — which is what SYS_PROCESS_VSPACE is for,
+         * and the reason it exists at all now that the kernel no longer
+         * creates levels on the child's behalf.
+         */
+        /* Publication is exclusive, and this workspace is reused across every
+         * spawn: the previous child's VSpace is still in the slot. */
+        (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws),
+                      (long)SL_WS_CHILD_VSPACE);
+        r = sl_sys2(SYS_PROCESS_VSPACE, (long)proc_h,
+                    sl_ws_dest(ws, SL_WS_CHILD_VSPACE));
+        if (r < 0) goto out;
+        child_vs = (long)sl_ws_cptr(ws, SL_WS_CHILD_VSPACE);
+
         /* 14. Create user stack sparse VMO (charged to the child) and map it in. */
         r = sl_sys3(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE,
                     (long)proc_h, sl_ws_dest(ws, SL_WS_STACK));
         if (r < 0) goto out;
         stack_vmo_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_STACK);
 
-        r = sl_sys4(SYS_VMO_MAP_INTO,
-                    (long)stack_vmo_h, (long)proc_h,
-                    (long)USER_STACK_BASE, 1 /*WRITABLE*/);
+        r = iris_vspace_map(SYS_VMO_MAP_INTO,
+                            (long)stack_vmo_h, (long)proc_h,
+                            (long)USER_STACK_BASE, 1 /*WRITABLE*/,
+                            child_vs, pool_c,
+                            sl_ws_dest(ws, SL_WS_PTSCRATCH_CH),
+                            (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH_CH),
+                            USER_STACK_BASE);
         if (r < 0) goto out;
 
         /* 15. Map each segment sparse VMO into child with correct W^X flags. */
@@ -611,6 +681,21 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             if (seg_p_flags[i] & PF_X) flags |= 2; /* EXEC     */
             /* W^X: if both PF_W and PF_X, clear EXEC — code shouldn't be writable */
             if ((seg_p_flags[i] & (PF_W | PF_X)) == (PF_W | PF_X)) flags = 1;
+            /* A segment can straddle levels, so every 2 MiB the walk covers is
+             * ensured — starting from the 2 MiB FLOOR of the segment, not from
+             * its first byte.  The image is loaded at an ASLR bias, so a
+             * segment that begins just below a boundary needs the table on the
+             * far side of it too, and stepping from the unaligned start would
+             * skip exactly that one. */
+            uint64_t sv0 = (bias + seg_map_base[i]) & ~0x1FFFFFULL;
+            uint64_t sv1 = bias + seg_map_base[i] + seg_map_size[i];
+            for (uint64_t va = sv0; va < sv1; va += 0x200000ULL) {
+                r = iris_vspace_ensure(child_vs, pool_c,
+                                       sl_ws_dest(ws, SL_WS_PTSCRATCH_CH),
+                                       (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH_CH),
+                                       va);
+                if (r < 0) goto out;
+            }
             r = sl_sys4(SYS_VMO_MAP_INTO,
                         (long)seg_vmo[i], (long)proc_h,
                         (long)(bias + seg_map_base[i]), flags);
@@ -632,6 +717,33 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         }
 
         /* 18. (Track I) No bootstrap channel to insert — the child gets RBX = 0. */
+
+        /*
+         * Stage 6-pure Etapa 2: every child gets a capability to the budget
+         * its own address space was built from.
+         *
+         * The kernel no longer creates paging levels, so a task that maps
+         * anything has to be able to retype one — and the level for its own
+         * address space belongs in the region that address space is already
+         * charged to.  Without this the child could hold a VSpace capability
+         * and still be unable to map, which is not a restriction anyone chose.
+         *
+         * Not a new authority: the region is the child's already, and its
+         * spawner keeps the parent capability, so revoking still reaches it.
+         */
+        if (own_budget_slot && pool_c) {
+            /* Publication is exclusive, so a manifest that already names this
+             * slot would make the mint fail and leave the child with neither.
+             * The spawner asked for both; the manifest is the more specific
+             * request, so it wins and this is skipped. */
+            int taken = 0;
+            for (uint32_t mi = 0; mints && mi < mint_count; mi++)
+                if (mints[mi].slot == own_budget_slot) taken = 1;
+            if (!taken)
+                (void)sl_sys4(SYS_CSPACE_MINT_INTO, (long)proc_h,
+                              (long)own_budget_slot, pool_c,
+                              (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+        }
 
         /* 18b (Fase 8). Mint the well-known CSpace slots BEFORE the first
          * thread starts: the child sees its slots populated from its first
@@ -670,11 +782,21 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         if (r < 0) goto out;
     }
 
+    /* Hand back everything of the CHILD's that the loader was holding: an
+     * unused level charged to its budget, and the capability to its address
+     * space.  Both would outlive the child otherwise — a VSpace capability
+     * keeps that address space alive after the process dies, and with it every
+     * page table installed in it, which is a child entry on a budget its owner
+     * is entitled to RESET the moment the child is gone. */
+    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_PTSCRATCH_CH);
+    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_VSPACE);
     *out_proc_h = proc_h;
     *out_chan_h  = HANDLE_INVALID;
     return 0;
 
 out:
+    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_PTSCRATCH_CH);
+    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_VSPACE);
     /* Unmap ELF if still mapped. */
     if (elf_mapped)
         sl_sys2(SYS_VMO_UNMAP, (long)SL_ELF_VADDR, (long)SL_SEG_SLOT_SIZE);

@@ -16,6 +16,7 @@
 #include <iris/nc/rights.h>
 #include <iris/svcmgr_proto.h>
 #include <iris/endpoint_proto.h>
+#include "../common/iris_vspace.h"
 #include <iris/fb_info.h>
 #include <iris/nc/error.h>
 #include <iris/paging.h>
@@ -39,8 +40,29 @@ static inline long fb_sys2(long nr, long a0, long a1) {
     return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
 }
 
+/* Stage 6-pure Etapa 2: fb maps the framebuffer into a window nothing else has
+ * touched, so it owes every level under it.  IRIS_CPTR_OWN_UNTYPED is the
+ * budget its own address space was built from, minted by svc_loader. */
+#define FB_SLOT_SELF_VS 40u
+#define FB_SLOT_PT      41u
+static long fb_self_vs(void);
 static inline long fb_sys3(long nr, long a0, long a1, long a2) {
-    return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
+    long r = iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
+    if (r == (long)IRIS_ERR_MISSING_TABLE)
+        r = iris_vspace_fixup(nr, a0, a1, a2, 0,
+                              fb_self_vs(), (long)IRIS_CPTR_OWN_UNTYPED,
+                              (long)((uint64_t)FB_SLOT_PT << 32), (long)FB_SLOT_PT,
+                              0, 0);
+    return r;
+}
+static long fb_self_vs(void) {
+    static int ready = 0;
+    if (!ready) {
+        if (iris_syscall1(SYS_VSPACE_SELF, (long)((uint64_t)FB_SLOT_SELF_VS << 32)) != 0)
+            return 0;
+        ready = 1;
+    }
+    return (long)FB_SLOT_SELF_VS;
 }
 
 static inline long fb_sys4(long nr, long a0, long a1, long a2, long a3) {

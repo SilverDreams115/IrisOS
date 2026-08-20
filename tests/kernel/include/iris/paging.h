@@ -38,6 +38,9 @@ void     paging_unmap_in(uint64_t cr3, uint64_t virt);
 /* Reset all stub mapping state — call at the start/end of each mapping test.
  * Also clears paging_force_fail state. */
 void paging_stub_reset(void);
+/* Stage 6-pure Etapa 1: model the paging walk (levels must be installed).
+ * Off by default — see the comment in stubs.c. */
+void paging_stub_strict_levels(int on);
 
 /* ── Failure injection hooks (Fase 6.4) ────────────────────────────────────
  * These are test-only; never present in the real kernel build.             */

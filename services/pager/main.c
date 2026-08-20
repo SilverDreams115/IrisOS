@@ -31,6 +31,7 @@
  */
 #include <stdint.h>
 #include <iris/syscall.h>
+#include "../common/iris_vspace.h"
 #include <iris/nc/handle.h>
 #include <iris/ipc_msg.h>
 #include <iris/endpoint_proto.h>
@@ -50,8 +51,23 @@ static inline long pg_sys2(long nr, long a0, long a1) {
 static inline long pg_sys3(long nr, long a0, long a1, long a2) {
     return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
 }
+/* Stage 6-pure Etapa 2: the pager maps on behalf of others, so it owes paging
+ * levels for address spaces that are not its own.  They come from
+ * IRIS_CPTR_OWN_UNTYPED — the budget its own address space was built from
+ * — because the pager is the one holding a budget at the moment of the fault.
+ * g_self_vs is set during startup; before that only the explicit-vspace forms
+ * (SYS_VMO_MAP_PAGE / SYS_FRAME_MAP) can be fixed up, which is all the pager
+ * issues. */
+#define PG_SLOT_PT 62u
+static long pg_self_vs_now(void);
 static inline long pg_sys4(long nr, long a0, long a1, long a2, long a3) {
-    return iris_syscall4(nr, a0, a1, a2, a3);
+    long r = iris_syscall4(nr, a0, a1, a2, a3);
+    if (r == (long)IRIS_ERR_MISSING_TABLE)
+        r = iris_vspace_fixup(nr, a0, a1, a2, a3,
+                              pg_self_vs_now(), (long)IRIS_CPTR_OWN_UNTYPED,
+                              (long)((uint64_t)PG_SLOT_PT << 32), (long)PG_SLOT_PT,
+                              0, 0);
+    return r;
 }
 
 static inline uint32_t pg_rd32(const uint8_t *b, uint32_t off) {
@@ -89,6 +105,7 @@ static struct pg_region  g_reg[PGR_MAX_REGIONS];
 static struct pg_cache   g_cache[PGR_CACHE_CAP];
 static uint8_t           g_priv_used[PGR_PRIV_CAP];
 static long              g_self_vs = -1;
+static long pg_self_vs_now(void) { return g_self_vs > 0 ? g_self_vs : 0; }
 static uint64_t          g_pending = 0;   /* accumulated fault bits (bit i = target i) */
 
 /* IPC buffers (single-threaded service). */

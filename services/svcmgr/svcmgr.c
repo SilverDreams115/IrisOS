@@ -1309,7 +1309,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
                                  &loaded_proc_h, &loaded_chan_h,
                                  mints, mint_count,
                                SVC_LOADER_WS(state->untyped_c, 66u),
-                               8u << 20);
+                               8u << 20, manifest->own_budget_slot);
         /* Drop svcmgr's reply handles regardless of the load result — the
          * child's CSpace slots (if minted) are now the only reply caps. */
         /* svcmgr NEVER retains a reply cap: a retained copy would suppress

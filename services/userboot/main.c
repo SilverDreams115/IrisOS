@@ -310,7 +310,8 @@ void iris_userboot_main(uint64_t bootinfo_va) {
                                      &init_proc_h, &init_boot_h, init_mints,
                                      init_mint_count,
                                      SVC_LOADER_WS(boot_untyped_c, ws_slot),
-                               8u << 20);
+                               8u << 20,
+                                     /*own_budget_slot=*/0);
         if (lr < 0) {
             /* A failed init load used to be a SILENT dead system: userboot
              * jumped straight to exit, so the machine stopped with no output

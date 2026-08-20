@@ -1273,7 +1273,12 @@ static inline long iris_syscall0(long nr) {
  *                the level being filled matter.
  *
  * IRIS_ERR_ALREADY_EXISTS  the walk for `vaddr` is already complete — nothing
- *                          is missing, so nothing was installed.
+ *                          is missing, so nothing was installed.  The table is
+ *                          untouched and can be installed somewhere else.
+ * IRIS_ERR_BUSY            this table is already part of a walk.  Distinct
+ *                          from the above on purpose: a client loop must tell
+ *                          "this object is spent, retype another" from "this
+ *                          level is already there, stop".
  * IRIS_ERR_INVALID_ARG     a huge-page leaf covers `vaddr`, or the address is
  *                          not one this VSpace maps.
  *

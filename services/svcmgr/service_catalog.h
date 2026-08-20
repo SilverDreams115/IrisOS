@@ -58,6 +58,13 @@ struct iris_service_catalog_entry {
     uint8_t        give_initrd_cap; /* 1 = forward the initrd capability so the
                                      * service can read boot images (vfs) */
     uint8_t        give_irqcap;     /* 1 = forward KIrqCap so service can call SYS_IRQ_ACK */
+    /* Stage 6-pure Etapa 2: the slot to mint the child a capability to the
+     * budget its own address space was built from; 0 = none.  A service that
+     * MAPS anything needs one, because the kernel no longer creates paging
+     * levels; one that only answers on endpoints it was handed does not, and
+     * is audited on not having it.  A slot rather than a flag because the free
+     * number differs per image. */
+    uint16_t       own_budget_slot;
     uint8_t        irq_notify;      /* 1 = route the IRQ to a KNotification owned by svcmgr
                                      *     (Fase 7.6) instead of the legacy service KChannel;
                                      *     the WAIT side reaches the child at bootstrap as
@@ -132,6 +139,7 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .ioport_count = 0u,
         .give_console = 0u,  /* Fase 8: vfs logs via IRIS_CPTR_CONSOLE_EP */
         .give_initrd_cap = 1u,
+        .own_budget_slot = 12u,  /* maps each initrd image to serve it */
         .own_service_ep = 1u,
         /* Fase 7.5: vfs is endpoint-only — no legacy service/reply channels. */
         .endpoint_only = 1u,

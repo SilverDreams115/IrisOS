@@ -684,13 +684,57 @@ invocation, double-install refused, kernel-address refused, the budget charged,
 and a frame mapped through the walk the holder built.  T148/T251 (the syscall
 surface and canonical-type manifests) grew by one member each.
 
-### Etapa 2 — userland supplies its own levels  ← NEXT
+### Etapa 2 — userland supplies its own levels  ✅ DONE
 
-`paging_map_strict_in` exists and nothing calls it.  The remaining work is to
-teach the loader to pre-install the levels its child needs, then make the
-charged path (`paging_map_checked_in_from`) refuse instead of carving — at
-which point the kernel never creates a page table at all, and the Stage 6
-`pt_pool` / `pt_count` machinery retires with it.
+The kernel no longer creates page tables for any address space whose holder
+has a budget.  A map whose walk is incomplete answers `IRIS_ERR_MISSING_TABLE`
+and names nothing else; the holder retypes a level, installs it, and retries.
+The one address space still mapped the old way is the root task's, built
+before any Untyped exists — the documented bootstrap exception, and now the
+only implicit page-table allocation left in IRIS.
+
+Userland gained one client-side rule, in one place (`services/common/
+iris_vspace.h`): ask, be told exactly which level is missing, supply it, retry.
+It is a retry and not a pre-pass because how deep a walk already is depends on
+what the address space mapped before — two addresses a gigabyte apart can share
+a PDPT.  Services apply it at their syscall wrapper rather than at each map
+site: iris_test alone has 111 of those, and it is one rule about the address
+space, not 111 decisions.
+
+**A task that maps must hold a budget.**  That is the real content of this
+etapa and it fell out of the design rather than being chosen: retyping a level
+needs untyped memory, so a service that maps needs some.  `svc_load_minted_ws`
+takes the SLOT to mint the child's own address-space budget into, and the
+spawner decides — vfs and the pager get one, console and kbd do not, and
+lifecycle_probe gets one only in the spawn where it acts as a pager.  The same
+image, two roles, different authority: what a task may do follows from what it
+was handed.  The authority-audit tests (T162/T177/T201/T215/T217) caught every
+place this was granted too widely, which is what they are for.
+
+A SLOT and not a flag because there is no number free in every image: 12 is
+lifecycle_probe's target-process capability, 16 is init's vfs.ep receive slot,
+29 is the suite's scratch pool, 23 is a pager target slot.  A 256-slot
+namespace shared by nine images has per-image maps, not spare numbers.
+
+Two kernel-side corrections the client loop forced: installing a table that is
+already installed answers `BUSY` while a walk that is already complete answers
+`ALREADY_EXISTS` — one code for both left a client unable to tell "this object
+is spent" from "there is nothing to do" — and `SYS_VSPACE_MAP_TABLE` resolves
+its VSpace argument with the same resolver and right as `SYS_VMO_MAP_PAGE`, so
+a pager holding exactly what it needs to map can also supply what mapping now
+requires.
+
+Tests: `tests/kernel/test_pagetable.c` (new, PT-1..PT-7) drives the walk
+exhaustively on the host, where level modelling is opt-in so the suites that
+predate paging levels keep testing what they were written for.
+
+### Etapa 3 — the bootstrap exception  ← NEXT
+
+What remains kernel-funded is the root task's address space, and the
+`pt_pool` / `pt_count` machinery that funds mapping records and the PML4.  The
+root task holds untypeds by the time it runs, so it could supply its own levels
+for everything it maps after boot; what it cannot supply is the levels for its
+own text, stack and BootInfo, which are mapped before it exists.
 
 ## Stage 7 — KProcess retirement
 

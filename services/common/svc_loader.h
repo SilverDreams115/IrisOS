@@ -99,10 +99,22 @@ struct svc_mint {
  * and stack VMOs the loader charges to it.  It is recycled when the child dies
  * (Stage 6 Etapa 5), so it bounds concurrent cost rather than accumulating —
  * which is why the spawner, who knows what it is launching, chooses the size. */
+/*
+ * `own_budget_slot` (Stage 6-pure Etapa 2): the slot to mint the child a
+ * capability to the budget its OWN address space was built from; 0 = none.
+ *
+ * A task that maps anything must now be able to retype a paging level, because
+ * the kernel does not create them.  That is a real authority — the holder can
+ * allocate out of that region — so it is the spawner's to grant, not something
+ * every child gets by existing.  A service that only speaks over endpoints it
+ * was handed (console, kbd, a contained probe) does not need it and is audited
+ * on not having it.
+ */
 long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                         const struct svc_mint *mints, uint32_t mint_count,
-                        uint64_t ws, uint64_t child_budget);
+                        uint64_t ws, uint64_t child_budget,
+                        uint32_t own_budget_slot);
 
 long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,

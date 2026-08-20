@@ -277,10 +277,16 @@ iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
         return IRIS_ERR_BAD_HANDLE;
     }
     /* A table is installed at most once: the same region appearing twice in a
-     * walk would make one unmap strand the other. */
+     * walk would make one unmap strand the other.
+     *
+     * BUSY, not ALREADY_EXISTS, and the distinction is load bearing: a client
+     * loop has to tell "this OBJECT is spent" from "this LEVEL is already
+     * there".  The first means retype another table, the second means the walk
+     * is complete and there is nothing left to do.  One code for both left the
+     * caller unable to act on either. */
     if (pt->mapped_vs) {
         spinlock_unlock(&vs->lock);
-        return IRIS_ERR_ALREADY_EXISTS;
+        return IRIS_ERR_BUSY;
     }
 
     /* Intermediate levels are always present+writable+user: the leaf PTE is

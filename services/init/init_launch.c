@@ -46,7 +46,10 @@ void init_spawn_fb(void) {
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "fb", &fb_proc_h, &fb_boot_h, fb_mints, 1u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
-                               2u << 20);
+                               2u << 20,
+                               /* fb maps the framebuffer into a window nothing
+                                * has touched, so it owes every level under it. */
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED);
     }
     if (r < 0)
         init_early_serial_write(init_fb_load_fail);
@@ -126,7 +129,7 @@ int init_spawn_console(void) {
                                "console", &con_proc_h, &con_boot_h,
                                con_mints, n,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
-                               2u << 20);
+                               2u << 20, /*own_budget_slot=*/0);
     }
     /* console's slot-13 mint is the only reply cap: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_CONSOLE_RPLY);
@@ -265,7 +268,7 @@ handle_id_t init_spawn_svcmgr(void) {
                                "svcmgr", &svcmgr_proc_h,
                             &svcmgr_chan_h, sm_mints, n,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
-                               8u << 20);
+                               8u << 20, /*own_budget_slot=*/0);  /* has slot 12 already */
     }
     /* svcmgr's slot-12 mint keeps the pool alive: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_SM_UNTYPED);
@@ -488,7 +491,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
                                "iris_test",
                             &proc_h, &boot_h, it_mints, 17u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
-                               16u << 20);
+                               16u << 20, /*own_budget_slot=*/0); /* has TEST_UNTYPED */
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);

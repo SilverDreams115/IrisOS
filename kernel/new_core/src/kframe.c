@@ -208,13 +208,33 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
     if (!executable) page_flags |= PAGE_NX;
     if (writable)    page_flags |= PAGE_WRITABLE;
 
-    /* Stage 6 Etapa 2: any intermediate level this map needs comes from the
-     * address space's own page-table budget.  A VSpace with no budget can only
-     * map where the levels already exist — the kernel does not top it up. */
-    uint32_t tables_made = 0;
-    r = paging_map_checked_in_from(vs->cr3, user_va, f->paddr, page_flags,
-                                   vs->pt_pool, &tables_made);
-    vs->pt_count += tables_made;   /* under vs->lock, like every field here */
+    /*
+     * Stage 6-pure Etapa 2: the kernel does not create paging levels.
+     *
+     * A VSpace whose holder was given a budget (every spawned process) is
+     * mapped STRICTLY: a missing level is reported, not carved.  The holder
+     * retypes a KOBJ_PAGE_TABLE and installs it with SYS_VSPACE_MAP_TABLE,
+     * then retries — which is what makes the level an object it owns rather
+     * than a side effect it paid for (ledger D-5).
+     *
+     * The one address space still mapped the old way is the root task's,
+     * which has no budget because it is built before any Untyped exists.  Its
+     * bootstrap maps run inside the kernel with no userland to ask, so they
+     * come from the PMM reserve — the documented bootstrap exception, and the
+     * only remaining implicit page-table allocation in IRIS.
+     */
+    if (vs->pt_pool) {
+        r = paging_map_strict_in(vs->cr3, user_va, f->paddr, page_flags);
+        if (r > 0) {                      /* a level is missing; name it */
+            spinlock_unlock(&vs->lock);
+            kvspace_node_free(vs, m);
+            return IRIS_ERR_MISSING_TABLE;
+        }
+    } else {
+        uint32_t tables_made = 0;
+        r = paging_map_checked_in_from(vs->cr3, user_va, f->paddr, page_flags,
+                                       0, &tables_made);
+    }
     if (r != 0) {
         spinlock_unlock(&vs->lock);
         kvspace_node_free(vs, m);
