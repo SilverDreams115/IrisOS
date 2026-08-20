@@ -568,7 +568,21 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             if (r == 0) { proc_leaf = l; pool_c = pool; break; }
             if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
         }
-        if (proc_leaf == 0u && r == (long)IRIS_ERR_ALREADY_EXISTS)
+        /*
+         * No leaf, no process — say so.
+         *
+         * `r` is only meaningful here if SYS_PROCESS_CREATE was actually
+         * reached.  Every leaf can be skipped without reaching it (the
+         * CAP_IDENTIFY probe says the leaf is live, or RESET says its budget
+         * is BUSY), and then `r` still holds whatever the last step before
+         * this loop returned — which is 0.  The old form only rewrote
+         * ALREADY_EXISTS, so a fully occupied workspace fell through with
+         * r == 0 and proc_leaf == 0, and the code below built proc_h from leaf
+         * 0: the CPtr of the workspace CNODE itself.  The spawn then failed
+         * several steps later with WRONG_TYPE instead of NO_MEMORY here.
+         */
+        if (proc_leaf == 0u &&
+            (r >= 0 || r == (long)IRIS_ERR_ALREADY_EXISTS))
             r = (long)IRIS_ERR_NO_MEMORY;
         if (r < 0) goto out;
         proc_h = (handle_id_t)sl_ws_cptr(ws, proc_leaf);
@@ -587,15 +601,11 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         /* 7. Map each segment VMO writable in loader's temp window. */
         for (uint32_t i = 0; i < seg_count; i++) {
             uint64_t slot = SL_SEG_VADDR_BASE + (uint64_t)i * SL_SEG_SLOT_SIZE;
-            for (uint64_t off = 0; off < seg_map_size[i] + 0x200000ULL;
-                 off += 0x200000ULL) {
-                r = iris_vspace_ensure(self_vs, (long)SL_WS_UNTYPED(ws),
-                                       sl_ws_dest(ws, SL_WS_PTSCRATCH),
-                                       (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH),
-                                       slot + off);
-                if (r < 0) goto out;
-                if (off >= seg_map_size[i]) break;
-            }
+            r = iris_vspace_ensure_range(self_vs, (long)SL_WS_UNTYPED(ws),
+                                         sl_ws_dest(ws, SL_WS_PTSCRATCH),
+                                         (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH),
+                                         slot, seg_map_size[i]);
+            if (r < 0) goto out;
             r = sl_sys3(SYS_VMO_MAP, (long)seg_vmo[i], (long)slot, 1 /*WRITABLE*/);
             if (r < 0) goto out;
             segs_in_loader |= (1u << i);
@@ -713,21 +723,16 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             if (seg_p_flags[i] & PF_X) flags |= 2; /* EXEC     */
             /* W^X: if both PF_W and PF_X, clear EXEC — code shouldn't be writable */
             if ((seg_p_flags[i] & (PF_W | PF_X)) == (PF_W | PF_X)) flags = 1;
-            /* A segment can straddle levels, so every 2 MiB the walk covers is
-             * ensured — starting from the 2 MiB FLOOR of the segment, not from
-             * its first byte.  The image is loaded at an ASLR bias, so a
-             * segment that begins just below a boundary needs the table on the
-             * far side of it too, and stepping from the unaligned start would
-             * skip exactly that one. */
-            uint64_t sv0 = (bias + seg_map_base[i]) & ~0x1FFFFFULL;
-            uint64_t sv1 = bias + seg_map_base[i] + seg_map_size[i];
-            for (uint64_t va = sv0; va < sv1; va += 0x200000ULL) {
-                r = iris_vspace_ensure(child_vs, pool_c,
-                                       sl_ws_dest(ws, SL_WS_PTSCRATCH_CH),
-                                       (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH_CH),
-                                       va);
-                if (r < 0) goto out;
-            }
+            /* A segment can straddle levels — the image is loaded at an ASLR
+             * bias, so one that begins just below a 2 MiB boundary needs the
+             * table on the far side of it too.  ensure_range starts from the
+             * region the segment STARTS in, which is the case stepping from an
+             * unaligned address used to skip. */
+            r = iris_vspace_ensure_range(child_vs, pool_c,
+                                         sl_ws_dest(ws, SL_WS_PTSCRATCH_CH),
+                                         (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH_CH),
+                                         bias + seg_map_base[i], seg_map_size[i]);
+            if (r < 0) goto out;
             r = sl_sys4(SYS_VMO_MAP_INTO,
                         (long)seg_vmo[i], (long)proc_h,
                         (long)(bias + seg_map_base[i]), flags);
