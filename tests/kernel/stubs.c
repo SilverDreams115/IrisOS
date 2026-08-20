@@ -170,6 +170,7 @@ void paging_clear_force_fail(void) { g_paging_force_fail = 0; }
 #include <iris/paging.h>
 
 #define STUB_PMAP_MAX 256
+void paging_stub_reset_tables(void);   /* defined with the table stubs below */
 typedef struct { uint64_t cr3; uint64_t virt; uint64_t phys; } stub_pmap_t;
 static stub_pmap_t stub_pmap[STUB_PMAP_MAX];
 static int stub_pmap_n = 0;
@@ -178,6 +179,7 @@ void paging_stub_reset(void) {
     stub_pmap_n = 0;
     g_paging_force_fail = 0;
     memset(stub_pmap, 0, sizeof(stub_pmap));
+    paging_stub_reset_tables();
 }
 
 int paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags) {
@@ -209,9 +211,71 @@ int paging_map_checked_in_from(uint64_t cr3, uint64_t virt, uint64_t phys,
     return rc;
 }
 
+#define STUB_PT_MAX 256
+typedef struct { uint64_t cr3; uint64_t key; int level; } stub_pt_t;
+static stub_pt_t stub_pt[STUB_PT_MAX];
+static int       stub_pt_n = 0;
+
+static uint64_t stub_pt_key(uint64_t virt, int level) {
+    /* The bits above the level being filled: a PDPT is shared by every VA with
+     * the same PML4 index, a PD by every VA with the same PML4+PDPT, and so on. */
+    if (level == 3) return virt >> 39;
+    if (level == 2) return virt >> 30;
+    return virt >> 21;
+}
+
+static int stub_pt_has(uint64_t cr3, uint64_t virt, int level) {
+    uint64_t k = stub_pt_key(virt, level);
+    for (int i = 0; i < stub_pt_n; i++)
+        if (stub_pt[i].cr3 == cr3 && stub_pt[i].level == level && stub_pt[i].key == k)
+            return 1;
+    return 0;
+}
+
+int paging_missing_level_in(uint64_t cr3, uint64_t virt) {
+    if (!cr3) return -1;
+    if (!stub_pt_has(cr3, virt, 3)) return 3;
+    if (!stub_pt_has(cr3, virt, 2)) return 2;
+    if (!stub_pt_has(cr3, virt, 1)) return 1;
+    return 0;
+}
+
+int paging_install_table_in(uint64_t cr3, uint64_t virt, uint64_t table_phys,
+                            uint64_t flags) {
+    (void)flags;
+    if (!cr3 || !table_phys || (table_phys & 0xFFFULL)) return -1;
+    int level = paging_missing_level_in(cr3, virt);
+    if (level <= 0) return level;
+    if (stub_pt_n >= STUB_PT_MAX) return -1;
+    stub_pt[stub_pt_n].cr3   = cr3;
+    stub_pt[stub_pt_n].key   = stub_pt_key(virt, level);
+    stub_pt[stub_pt_n].level = level;
+    stub_pt_n++;
+    return level;
+}
+
+void paging_stub_reset_tables(void) { stub_pt_n = 0; }
+
+int paging_map_strict_in(uint64_t cr3, uint64_t virt, uint64_t phys,
+                         uint64_t flags) {
+    int level = paging_missing_level_in(cr3, virt);
+    if (level != 0) return level;
+    return paging_map_checked_in(cr3, virt, phys, flags);
+}
+
 void paging_destroy_user_space_from(uint64_t cr3, int tables_pooled) {
     (void)cr3; (void)tables_pooled;   /* no page tables on the host */
 }
+
+/*
+ * Stage 6-pure Etapa 1: the host models the WALK, not the hardware.
+ *
+ * What the tests need to observe is the level arithmetic — that a fresh
+ * address space is missing a PDPT, that installing one leaves it missing a PD,
+ * and that a completed walk reports nothing missing.  One record per installed
+ * level, keyed by the index bits that level actually consumes, reproduces that
+ * exactly without a page-table walk.
+ */
 
 uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt) {
     for (int i = 0; i < stub_pmap_n; i++) {

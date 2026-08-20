@@ -165,6 +165,82 @@ static uint64_t *get_or_create(uint64_t *table, uint64_t index, uint64_t flags,
     return phys_to_ptr(table[index] & ~0xFFFULL);
 }
 
+/*
+ * Stage 6-pure Etapa 1 — install a table the USER retyped, and never carve.
+ *
+ * paging_missing_level_in reports the deepest level that already exists for
+ * `virt`, so an invocation can say exactly which table the holder still owes
+ * instead of failing with a bare NO_MEMORY.  paging_install_table_in puts a
+ * retyped page at the first missing level and returns which one that was.
+ *
+ * Together they are seL4's contract: the kernel walks and reports, the holder
+ * supplies.  Nothing here allocates.
+ */
+int paging_missing_level_in(uint64_t cr3, uint64_t virt) {
+    if (cr3 == 0) return -1;
+    uint64_t *pml4 = phys_to_ptr(cr3);
+    uint64_t e = pml4[PML4_IDX(virt)];
+    if (!(e & PAGE_PRESENT)) return 3;              /* needs a PDPT */
+    uint64_t *pdpt = phys_to_ptr(e & ~0xFFFULL);
+    e = pdpt[PDPT_IDX(virt)];
+    if (!(e & PAGE_PRESENT)) return 2;              /* needs a PD */
+    if (e & PAGE_HUGE)       return -1;             /* 1 GiB leaf: no table fits */
+    uint64_t *pd = phys_to_ptr(e & ~0xFFFULL);
+    e = pd[PD_IDX(virt)];
+    if (!(e & PAGE_PRESENT)) return 1;              /* needs a PT */
+    if (e & PAGE_HUGE)       return -1;             /* 2 MiB leaf: no table fits */
+    return 0;                                       /* the walk is complete */
+}
+
+int paging_install_table_in(uint64_t cr3, uint64_t virt, uint64_t table_phys,
+                            uint64_t flags) {
+    if (cr3 == 0 || table_phys == 0 || (table_phys & 0xFFFULL)) return -1;
+
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+
+    int level = paging_missing_level_in(cr3, virt);
+    if (level > 0) {
+        uint64_t *tbl;
+        uint64_t  idx;
+        if (level == 3) { tbl = phys_to_ptr(cr3); idx = PML4_IDX(virt); }
+        else {
+            uint64_t *pml4 = phys_to_ptr(cr3);
+            uint64_t *pdpt = phys_to_ptr(pml4[PML4_IDX(virt)] & ~0xFFFULL);
+            if (level == 2) { tbl = pdpt; idx = PDPT_IDX(virt); }
+            else {
+                uint64_t *pd = phys_to_ptr(pdpt[PDPT_IDX(virt)] & ~0xFFFULL);
+                tbl = pd; idx = PD_IDX(virt);
+            }
+        }
+        tbl[idx] = (table_phys & ~0xFFFULL) | flags | PAGE_PRESENT;
+    }
+
+    __asm__ volatile ("pushq %0; popfq" : : "r"(rflags) : "memory");
+    return level;
+}
+
+/*
+ * A map that allocates NOTHING.  Returns -1 for a bad address space and the
+ * missing level (1..3) when a table the holder must supply is absent, so the
+ * caller can name it; 0 on success.
+ */
+int paging_map_strict_in(uint64_t cr3, uint64_t virt, uint64_t phys,
+                         uint64_t flags) {
+    if (cr3 == 0) return -1;
+
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    int level = paging_missing_level_in(cr3, virt);
+    if (level == 0) {
+        uint64_t *pt = walk_pt(cr3, virt);
+        if (pt) pt[PT_IDX(virt)] = (phys & ~0xFFFULL) | flags | PAGE_PRESENT;
+        else    level = -1;
+    }
+    __asm__ volatile ("pushq %0; popfq" : : "r"(rflags) : "memory");
+    return level;
+}
+
 static int paging_map_root(uint64_t root_phys, uint64_t virt, uint64_t phys,
                            uint64_t flags, struct KUntyped *pool,
                            uint32_t *made) {

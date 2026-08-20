@@ -145,6 +145,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_CAP_SAME_OBJECT:     return sys_cap_same_object(arg0, arg1, arg2);
         /* Stage 5 Etapa 4: execution for a TCB retyped from an Untyped. */
         case SYS_CSPACE_SELF:         return sys_cspace_self(arg0, arg1, arg2);
+        /* Stage 6-pure: a page table the holder retyped, installed by name. */
+        case SYS_VSPACE_MAP_TABLE:    return sys_vspace_map_table(arg0, arg1, arg2);
         case SYS_TCB_CONFIGURE:       return sys_tcb_configure(arg0, arg1, arg2, arg3);
         case SYS_TCB_WRITE_REGS:      return sys_tcb_write_regs(arg0, arg1, arg2, arg3);
         case SYS_CSPACE_MINT:         return sys_cspace_mint(arg0, arg1, arg2);

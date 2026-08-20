@@ -27,6 +27,7 @@
 #include <iris/nc/kframe.h>
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kreply.h>
+#include <iris/nc/kpagetable.h>
 #include <iris/nc/ktcb.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
@@ -410,6 +411,7 @@ uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                            uint64_t arg3);
 uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,

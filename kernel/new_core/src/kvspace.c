@@ -1,5 +1,6 @@
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kframe.h>
+#include <iris/nc/kpagetable.h>
 #include <iris/paging.h>
 #include <iris/kslab.h>
 #include <iris/nc/kuntyped.h>
@@ -54,11 +55,29 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     }
     kvspace_release_nodes(vs);
 
-    /* Stage 6 Etapa 2: the page tables are not individually freed — the pages
-     * stay where they are, because a bump allocator does not rewind.  What
-     * goes back is the pool's child_count, which is what lets its holder RESET
-     * and reuse the whole region: the same reclamation path every retyped
-     * object has. */
+    /* Stage 6-pure Etapa 1: tables the HOLDER retyped go back as capabilities.
+     * Releasing our reference is the whole of it — the region returns to its
+     * Untyped when the last capability to the table goes, exactly like any
+     * other retyped object, and the holder can then RESET.  The PTEs that
+     * referenced them are torn down by paging_destroy_user_space_from. */
+    {
+        struct KPageTable *t = vs->tables;
+        vs->tables = 0;
+        while (t) {
+            struct KPageTable *next = t->next;
+            t->next      = 0;
+            t->mapped_vs = 0;
+            t->level     = KPT_LEVEL_UNMAPPED;
+            kobject_release(&t->base);
+            t = next;
+        }
+    }
+
+    /* Stage 6 Etapa 2: tables the KERNEL charged are not individually freed —
+     * the pages stay where they are, because a bump allocator does not rewind.
+     * What goes back is the pool's child_count, which is what lets its holder
+     * RESET and reuse the whole region: the same reclamation path every
+     * retyped object has. */
     while (pool && vs->pt_count) {
         kuntyped_release_page_child(pool);
         vs->pt_count--;
@@ -234,6 +253,46 @@ static void kvspace_release_nodes(struct KVSpace *vs) {
         vs->node_count--;
         m = next;
     }
+}
+
+iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
+                               uint64_t vaddr) {
+    if (!vs || !pt) return IRIS_ERR_INVALID_ARG;
+
+    spinlock_lock(&vs->lock);
+    if (!vs->valid || !vs->cr3) {
+        spinlock_unlock(&vs->lock);
+        return IRIS_ERR_BAD_HANDLE;
+    }
+    /* A table is installed at most once: the same region appearing twice in a
+     * walk would make one unmap strand the other. */
+    if (pt->mapped_vs) {
+        spinlock_unlock(&vs->lock);
+        return IRIS_ERR_ALREADY_EXISTS;
+    }
+
+    /* Intermediate levels are always present+writable+user: the leaf PTE is
+     * what carries the real permissions, and a level that refused USER would
+     * make every mapping under it unreachable from ring 3. */
+    int level = paging_install_table_in(vs->cr3, vaddr, pt->paddr,
+                                        PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    if (level < 0) {
+        spinlock_unlock(&vs->lock);
+        return IRIS_ERR_INVALID_ARG;      /* huge-page leaf, or bad address */
+    }
+    if (level == 0) {
+        spinlock_unlock(&vs->lock);
+        return IRIS_ERR_ALREADY_EXISTS;   /* the walk was already complete */
+    }
+
+    kobject_retain(&pt->base);            /* the VSpace holds it while installed */
+    pt->mapped_vs = vs;
+    pt->mapped_va = vaddr;
+    pt->level     = (uint32_t)level;
+    pt->next      = vs->tables;
+    vs->tables    = pt;
+    spinlock_unlock(&vs->lock);
+    return IRIS_OK;
 }
 
 void kvspace_set_pt_pool(struct KVSpace *vs, struct KUntyped *pool) {

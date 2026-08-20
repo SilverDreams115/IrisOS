@@ -135,6 +135,26 @@ int      paging_map_checked_in_from(uint64_t cr3, uint64_t virt, uint64_t phys,
 void     paging_destroy_user_space_from(uint64_t cr3, int tables_pooled);
 /* Stage 6 Etapa 3: the PML4 itself carved from `pool` (NULL = PMM). */
 uint64_t paging_create_user_space_from(struct KUntyped *pool);
+
+/*
+ * Stage 6-pure Etapa 1 — the kernel walks and reports; the holder supplies.
+ *
+ * paging_missing_level_in: the deepest paging level still absent for `virt`,
+ *   as a KPT_LEVEL_* value (3 = a PDPT is needed, 2 = a PD, 1 = a PT), 0 when
+ *   the walk is complete, and -1 for a bad address space or a huge-page leaf
+ *   that no table can go under.
+ * paging_install_table_in: put a retyped 4 KiB region at the first missing
+ *   level for `virt`.  Returns the level it filled, 0 if nothing was missing
+ *   (nothing is written), or -1 on a bad argument.  Allocates nothing.
+ * paging_map_strict_in: install a leaf PTE and NEVER allocate a level.
+ *   Returns 0 on success, the missing level (1..3) when the holder still owes
+ *   a table, or -1 for a bad address space.
+ */
+int      paging_missing_level_in(uint64_t cr3, uint64_t virt);
+int      paging_install_table_in(uint64_t cr3, uint64_t virt,
+                                 uint64_t table_phys, uint64_t flags);
+int      paging_map_strict_in(uint64_t cr3, uint64_t virt, uint64_t phys,
+                              uint64_t flags);
 uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt);
 int      paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags);
 void     paging_unmap_in(uint64_t cr3, uint64_t virt);

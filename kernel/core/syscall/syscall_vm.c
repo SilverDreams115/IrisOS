@@ -53,6 +53,53 @@ uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * MANAGE-for-mapping — fault-info (READ) + resume (MANAGE) stay separately
  * scoped on the process cap.  Rights mirror SYS_VSPACE_SELF (no TRANSFER).
  */
+/*
+ * SYS_VSPACE_MAP_TABLE(pt_cptr, vspace_cptr, vaddr) — seL4_X86_PageTable_Map.
+ *
+ * Stage 6-pure Etapa 1.  The holder retyped a paging level out of its own
+ * Untyped; this puts it into an address space.  What the kernel contributes is
+ * the walk — which level is missing for this address — because that is a fact
+ * about the address space, not a choice the holder gets to make.  What it no
+ * longer contributes is the memory, or the decision that the table should
+ * exist at all.
+ *
+ * Both capabilities are named and both need RIGHT_WRITE: installing a table
+ * changes what the address space can map, and consumes the table.
+ */
+uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *pt_obj;  iris_rights_t pt_rights;
+    iris_error_t err = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
+                            RIGHT_NONE, KOBJ_PAGE_TABLE, &pt_obj, &pt_rights);
+    if (err != IRIS_OK)
+        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    if (!rights_check(pt_rights, RIGHT_WRITE)) {
+        kobject_release(pt_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KObject *vs_obj;  iris_rights_t vs_rights;
+    err = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg1,
+                                  RIGHT_NONE, KOBJ_VSPACE, &vs_obj, &vs_rights);
+    if (err != IRIS_OK) {
+        kobject_release(pt_obj);
+        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    }
+    if (!rights_check(vs_rights, RIGHT_WRITE)) {
+        kobject_release(vs_obj); kobject_release(pt_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    err = kvspace_map_table((struct KVSpace *)vs_obj,
+                            (struct KPageTable *)pt_obj, arg2);
+    kobject_release(vs_obj);
+    kobject_release(pt_obj);
+    if (err != IRIS_OK) return syscall_err(err);
+    return syscall_ok_u64(0);
+}
+
 uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();

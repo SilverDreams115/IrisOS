@@ -73,7 +73,27 @@ struct KVSpace {
      * its Untyped when the address space is destroyed. */
     struct KFrameMapping *free_nodes;
     uint32_t              node_count;   /* nodes ever carved from pt_pool */
+    /* Stage 6-pure Etapa 1: the page tables the HOLDER retyped and installed
+     * here, newest first.  The VSpace holds one reference to each for as long
+     * as it is part of the walk, which is what stops a holder from RESETting
+     * the region a live address space is standing on — the same guarantee the
+     * charged path got from child_count, now attached to a real capability. */
+    struct KPageTable    *tables;
 };
+
+struct KPageTable;
+
+/*
+ * Install a page table the caller retyped, at the first level missing for
+ * `vaddr`.  Takes vs->lock.  The VSpace retains `pt` and links it into its
+ * table list; the level it filled is recorded on the table.
+ *
+ * IRIS_ERR_ALREADY_EXISTS  the walk for `vaddr` is complete, or this table is
+ *                          already installed somewhere.
+ * IRIS_ERR_INVALID_ARG     a huge-page leaf covers `vaddr`, or vs is dead.
+ */
+iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
+                               uint64_t vaddr);
 
 /* Mapping-record allocator.  Caller holds no VSpace lock: both take it. */
 struct KFrameMapping *kvspace_node_alloc(struct KVSpace *vs);

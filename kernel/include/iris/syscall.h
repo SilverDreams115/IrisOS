@@ -25,9 +25,9 @@
  *   - live/transitional: current supported surface with compatibility notes
  *   - retired: permanently reserved; returns IRIS_ERR_NOT_SUPPORTED
  *
- * Current exported syscall number surface: 0..121 (119-121 are Stage 5's
- * SYS_CSPACE_SELF / SYS_TCB_CONFIGURE / SYS_TCB_WRITE_REGS; the first
- * unassigned number is 122).
+ * Current exported syscall number surface: 0..122 (119-121 are Stage 5's
+ * SYS_CSPACE_SELF / SYS_TCB_CONFIGURE / SYS_TCB_WRITE_REGS, 122 is Stage
+ * 6-pure's SYS_VSPACE_MAP_TABLE; the first unassigned number is 123).
  */
 
 /*
@@ -854,6 +854,7 @@ static inline long iris_syscall0(long nr) {
 #define IRIS_KOBJ_REPLY         12u
 #define IRIS_KOBJ_TCB           13u
 #define IRIS_KOBJ_FRAME         15u
+#define IRIS_KOBJ_PAGE_TABLE    16u
 
 /*
  * Block 6 — CNode slot operations (Ph82-84).
@@ -1254,6 +1255,32 @@ static inline long iris_syscall0(long nr) {
 #define SYS_CSPACE_SELF      119
 #define SYS_TCB_CONFIGURE    120
 #define SYS_TCB_WRITE_REGS   121
+/*
+ * SYS_VSPACE_MAP_TABLE(pt_cptr, vspace_cptr, vaddr) → 0 or negative iris_error_t
+ *
+ * Stage 6-pure Etapa 1 — seL4's seL4_X86_PageTable_Map.
+ *
+ * Installs a page table the caller RETYPED from its own Untyped
+ * (IRIS_KOBJ_PAGE_TABLE, obj_arg 4096) at whichever paging level is the first
+ * one missing for `vaddr` in the named address space.  The kernel picks the
+ * level because the level is a property of the walk, not of the object — the
+ * holder decides only that the table exists and where it goes.
+ *
+ *   pt_cptr:     KOBJ_PAGE_TABLE, RIGHT_WRITE.  Refused if already installed:
+ *                one region cannot be two parts of a walk.
+ *   vspace_cptr: KOBJ_VSPACE, RIGHT_WRITE.
+ *   vaddr:       any address the table should serve; only the index bits for
+ *                the level being filled matter.
+ *
+ * IRIS_ERR_ALREADY_EXISTS  the walk for `vaddr` is already complete — nothing
+ *                          is missing, so nothing was installed.
+ * IRIS_ERR_INVALID_ARG     a huge-page leaf covers `vaddr`, or the address is
+ *                          not one this VSpace maps.
+ *
+ * The VSpace holds a reference to every table installed in it and returns them
+ * at teardown, so a holder cannot RESET the region a live walk is standing on.
+ */
+#define SYS_VSPACE_MAP_TABLE 122
 
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u

@@ -32,6 +32,7 @@ typedef enum {
     KOBJ_TCB,            /* Ph96: thread control block capability — wraps a live struct task */
     KOBJ_VSPACE,         /* Fase 4: virtual address space capability — wraps a process PML4 */
     KOBJ_FRAME,          /* Fase 5: physical memory frame capability — typed region from KUntyped */
+    KOBJ_PAGE_TABLE,     /* Stage 6-pure: a paging level the USER retyped and maps explicitly */
 } kobject_type_t;
 
 struct KObject;

@@ -87,6 +87,7 @@ _Static_assert(IRIS_KOBJ_SCHED_CONTEXT == (uint32_t)KOBJ_SCHED_CONTEXT, "KOBJ AB
 _Static_assert(IRIS_KOBJ_UNTYPED       == (uint32_t)KOBJ_UNTYPED,       "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_REPLY         == (uint32_t)KOBJ_REPLY,         "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_FRAME         == (uint32_t)KOBJ_FRAME,         "KOBJ ABI");
+_Static_assert(IRIS_KOBJ_PAGE_TABLE    == (uint32_t)KOBJ_PAGE_TABLE,    "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_TCB           == (uint32_t)KOBJ_TCB,           "KOBJ ABI");
 
 /*
@@ -146,6 +147,40 @@ static iris_error_t retype_sub_untyped(struct KUntyped *ut, uint64_t obj_arg,
         return IRIS_ERR_NO_MEMORY;
     }
     *out = &sub->base;
+    return IRIS_OK;
+}
+
+/*
+ * Stage 6-pure Etapa 1 — a paging level, retyped.
+ *
+ * Same two-ended shape as a frame: the 4 KiB region from the bottom, the
+ * header block from the top.  Two differences, both consequences of what the
+ * region becomes.  It is ALWAYS exactly one page — a paging level is 512
+ * entries of 8 bytes and nothing else — and it is zeroed here rather than at
+ * install time, because a table is walked by hardware the instant it is
+ * installed and stale bytes are a walk into whatever the region held before.
+ * Device memory is refused outright: a page table must be RAM the MMU can
+ * read as a table.
+ */
+static iris_error_t retype_page_table(struct KUntyped *ut, uint64_t obj_arg,
+                                      struct KObject **out) {
+    if (obj_arg != 4096u) return IRIS_ERR_INVALID_ARG;
+    if (ut->is_device)    return IRIS_ERR_NOT_SUPPORTED;
+
+    void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KPageTable));
+    if (!hdr) return IRIS_ERR_NO_MEMORY;
+    uint64_t phys = kuntyped_bump_alloc_phys_page(ut, 4096u);
+    if (!phys) {
+        kuntyped_release_child(hdr, sizeof(struct KPageTable));
+        return IRIS_ERR_NO_MEMORY;
+    }
+    struct KPageTable *pt = kpagetable_alloc_at(hdr, phys);
+    if (!pt) {
+        kuntyped_release_child(hdr, sizeof(struct KPageTable));
+        return IRIS_ERR_NO_MEMORY;
+    }
+    kpagetable_zero(pt);
+    *out = &pt->base;
     return IRIS_OK;
 }
 
@@ -235,6 +270,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
             break;
         case KOBJ_UNTYPED:
         case KOBJ_FRAME:
+        case KOBJ_PAGE_TABLE:
             /* Physical-region types keep count == 1 in S1 (their sidecar
              * headers are not yet untyped-backed — ledger MIGRATING). */
             if (count != 1u)
@@ -324,10 +360,12 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     struct KObject *objs[KUNTYPED_RETYPE_MAX_COUNT];
     uint64_t carve_start = 0, carve_end = 0;
 
-    if (obj_type == KOBJ_UNTYPED || obj_type == KOBJ_FRAME) {
+    if (obj_type == KOBJ_UNTYPED || obj_type == KOBJ_FRAME ||
+        obj_type == KOBJ_PAGE_TABLE) {
         /* Single physical-region object (count == 1, validated above). */
-        err = (obj_type == KOBJ_UNTYPED) ? retype_sub_untyped(ut, obj_arg, &objs[0])
-                                         : retype_frame(ut, obj_arg, &objs[0]);
+        if      (obj_type == KOBJ_UNTYPED)    err = retype_sub_untyped(ut, obj_arg, &objs[0]);
+        else if (obj_type == KOBJ_FRAME)      err = retype_frame(ut, obj_arg, &objs[0]);
+        else                                  err = retype_page_table(ut, obj_arg, &objs[0]);
     } else {
         void *ptrs[KUNTYPED_RETYPE_MAX_COUNT];
         {
