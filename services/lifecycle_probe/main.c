@@ -286,7 +286,6 @@ static long lp_ps_serve(uint32_t op, uint32_t tidx, uint32_t vidx,
     if (tidx >= LP_PS_MAX_TARGETS) return -(long)LP_PS_ERR_BADOP;
     if (op == LP_PS_OP_MAP_RESUME && vidx >= LP_PS_MAX_VMOS) return -(long)LP_PS_ERR_BADOP;
 
-    long tproc  = (long)LP_PS_TPROC(tidx);
     long tvs    = (long)LP_PS_TVS(tidx);
     long tnotif = (long)LP_PS_TNOTIF(tidx);
     long vmo    = (long)LP_PS_VMO(vidx);
@@ -296,7 +295,8 @@ static long lp_ps_serve(uint32_t op, uint32_t tidx, uint32_t vidx,
     if (r != 0) return -(long)LP_PS_ERR_NOFAULT;
 
     uint8_t fb[FAULT_MSG_LEN];
-    r = lp_sys2(SYS_PROCESS_FAULT_INFO, tproc, (long)(uintptr_t)fb);
+    /* Stage 7 Step 8: read off the thread the fault delivered. */
+    r = lp_sys2(SYS_TCB_FAULT_INFO, LP_PGR_FAULT_CPTR, (long)(uintptr_t)fb);
     if (r != 0) return r;
     uint32_t vector  = lp_rd32(fb, FAULT_OFF_VECTOR);
     uint32_t task_id = lp_rd32(fb, FAULT_OFF_TASK_ID);
@@ -313,8 +313,8 @@ static long lp_ps_serve(uint32_t op, uint32_t tidx, uint32_t vidx,
     }
     uint64_t action = ((uint64_t)seq << 32) | ((op == LP_PS_OP_KILL) ? 3u : 2u);
     /* Stage 7 Step 7: the faulting thread is the capability the fault
-     * delivered into the mailbox.  tproc still READS the record — FAULT_INFO
-     * is process-scoped — but it no longer SELECTS. */
+     * delivered into the mailbox.  Stage 7 Step 8 took the READ off the
+     * process as well, so the fault path names only the thread. */
     (void)task_id;
     return lp_sys2(SYS_EXCEPTION_RESUME, LP_PGR_FAULT_CPTR, (long)action);
 }
@@ -488,7 +488,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
                              (long)(uintptr_t)&bits, 2000000000L);
             if (r != 0) { err = r; break; }
             uint8_t fb[FAULT_MSG_LEN];
-            r = lp_sys2(SYS_PROCESS_FAULT_INFO, (long)LP_PGR_SLOT_TPROC,
+            r = lp_sys2(SYS_TCB_FAULT_INFO, LP_PGR_FAULT_CPTR,
                         (long)(uintptr_t)fb);
             if (r != 0) { err = r; break; }
             uint32_t vector  = lp_rd32(fb, FAULT_OFF_VECTOR);
@@ -553,7 +553,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         /* the victim's fault must not appear through the unrelated target cap */
         {
             uint8_t fb[FAULT_MSG_LEN];
-            if (lp_sys2(SYS_PROCESS_FAULT_INFO, (long)LP_PGR_SLOT_TPROC,
+            if (lp_sys2(SYS_TCB_FAULT_INFO, LP_PGR_XFAULT_CPTR,
                         (long)(uintptr_t)fb) == 0) breach |= (1u << 5);
         }
         /* device/spawn forgery — a pager holds neither */

@@ -1062,7 +1062,28 @@ Three properties fell out of building it, each of which the tests now pin:
   (T204/T209/T210) reproduced.
 
 `kprocess_fault_clear` takes the thread its caller already resolved rather than
-comparing ids, and `task_find_by_id` has no caller left on this path.
+comparing ids, and `task_find_by_id` is deleted with its last caller — nothing
+in the kernel turns a number into a thread any more.
+
+### Step 8 — a fault handler holds nothing but the thread  ✅ DONE
+
+Step 7 left one reason a handler still needed a PROCESS capability: reading the
+record.  `SYS_TCB_FAULT_INFO(tcb_cptr, out)` reads it off the thread, with
+`RIGHT_READ` on that thread as the whole authority — so the pager's manifest
+drops the target process capability entirely.  **A pager now holds no authority
+over the processes it serves**: it maps (their VSpace) and answers faults (the
+threads it is handed), and neither names a process.  The manifest oracle's bit
+20 is gone from every expectation, which is the assertion that it is really
+gone rather than merely unused.
+
+`SYS_PROCESS_FAULT_INFO` is KEPT, and the first attempt at this step retired it
+— wrongly.  "What faulted last in this process" is a different question asked
+by a different principal: a SUPERVISOR watching a child it does not resolve
+for, holding `RIGHT_READ` on the process and no capability to any of its
+threads.  `iris_test` is exactly that supervisor for every pager suite, and
+retiring the process view left it unable to ask.  Two operations on two
+objects, each authorised by a capability to the object it names, is not the
+dual-namespace shape the charter forbids — it is what having two objects means.
 
 ### What Stage 7 still needs, and why it is not an increment
 
@@ -1074,10 +1095,11 @@ watches, the IPC identity a badge names, the VMO owner/payer relation, and the
 replaces the policy it carries — a user-space process server — which is the
 stage's actual deliverable rather than a step toward it.
 
-Steps 4-7 took the two capabilities a thread is CONFIGURED with, plus its fault
-record and the way a fault is answered, off KProcess and onto the thread — so
-what a thread resolves in, runs in, faults with, and is resumed by is now the
-thread's own.  What is left on KProcess is
+Steps 4-8 took the two capabilities a thread is CONFIGURED with, plus its fault
+record, the way a fault is answered and the way it is read, off KProcess and
+onto the thread — so what a thread resolves in, runs in, faults with, is read
+by and is resumed by is now the thread's own, and a fault handler holds no
+process capability at all.  What is left on KProcess is
 exactly the SUPERVISION policy: who is told when it faults, who is told when it
 dies, its exit code, its thread count, the budget its kernel-side objects come
 from, and the `SYS_PROCESS_*` surface that reads and writes all of it.  That is

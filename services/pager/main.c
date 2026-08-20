@@ -238,14 +238,15 @@ static long pg_wait_fault(uint32_t tidx) {
 /* ── region resolution ──────────────────────────────────────────────────── */
 static long pg_resolve_region(uint32_t tidx) {
     if (tidx >= PGR_MAX_TARGETS) return -(long)PGR_ERR_BADOP;
-    long tproc = (long)PGR_TSLOT_PROC(tidx);
     long tvs   = (long)PGR_TSLOT_VS(tidx);
 
     long wr = pg_wait_fault(tidx);
     if (wr != 0) return wr;
 
     uint8_t fb[FAULT_MSG_LEN];
-    long r = pg_sys2(SYS_PROCESS_FAULT_INFO, tproc, (long)(uintptr_t)fb);
+    /* Stage 7 Step 8: the record is read off the THREAD the fault delivered,
+     * so the target's PROCESS capability is not in this path at all. */
+    long r = pg_sys2(SYS_TCB_FAULT_INFO, PGR_FAULT_CPTR(tidx), (long)(uintptr_t)fb);
     if (r != 0) return r;
     uint32_t vector = pg_rd32(fb, FAULT_OFF_VECTOR);
     uint32_t task   = pg_rd32(fb, FAULT_OFF_TASK_ID);
@@ -322,8 +323,10 @@ static long pg_resolve_region(uint32_t tidx) {
 
     /* seq-checked resume — the target continues. */
     /* Stage 7 Step 7: the faulting thread is the capability its fault
-     * delivered into this target's mailbox leaf.  tproc still READS the record
-     * (FAULT_INFO is process-scoped); it no longer SELECTS. */
+     * delivered into this target's mailbox leaf.  Stage 7 Step 8 took the READ
+     * off the process too, so the target's process capability is no longer in
+     * the fault path at all — it is held only for the manifest oracle to
+     * report, and for the operations that genuinely are process-scoped. */
     (void)task;
     return pg_sys2(SYS_EXCEPTION_RESUME, PGR_FAULT_CPTR(tidx),
                    (long)(((uint64_t)seq << 32) | 2u));
@@ -486,11 +489,13 @@ static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t fla
                          uint64_t offset, uint64_t expect_cr2) {
     if (tidx >= PGR_MAX_TARGETS) return -(long)PGR_ERR_BADOP;
     if (op == PGR_OP_MAP_RESUME && vidx >= PGR_MAX_VMOS) return -(long)PGR_ERR_BADOP;
-    long tproc = (long)PGR_TSLOT_PROC(tidx), tvs = (long)PGR_TSLOT_VS(tidx);
+    long tvs = (long)PGR_TSLOT_VS(tidx);
     long wr = pg_wait_fault(tidx);
     if (wr != 0) return wr;
     uint8_t fb[FAULT_MSG_LEN];
-    long r = pg_sys2(SYS_PROCESS_FAULT_INFO, tproc, (long)(uintptr_t)fb);
+    /* Stage 7 Step 8: the record is read off the THREAD the fault delivered,
+     * so the target's PROCESS capability is not in this path at all. */
+    long r = pg_sys2(SYS_TCB_FAULT_INFO, PGR_FAULT_CPTR(tidx), (long)(uintptr_t)fb);
     if (r != 0) return r;
     uint32_t vector = pg_rd32(fb, FAULT_OFF_VECTOR), task = pg_rd32(fb, FAULT_OFF_TASK_ID), seq = pg_rd32(fb, FAULT_OFF_SEQ);
     uint64_t cr2 = pg_rd64(fb, FAULT_OFF_CR2);

@@ -106,7 +106,9 @@ void init_selftest_exception(void) {
     }
 
     for (uint32_t i = 0; i < (uint32_t)sizeof(fbuf); i++) fbuf[i] = 0;
-    r = init_sys2(SYS_PROCESS_FAULT_INFO, (long)HANDLE_INVALID, (long)fbuf);
+    /* Stage 7 Step 8: the record comes off the thread whose capability the
+     * fault delivered into INIT_SLOT_S8_FAULT. */
+    r = init_sys2(SYS_TCB_FAULT_INFO, (long)INIT_SLOT_S8_FAULT, (long)fbuf);
     if (r < 0) {
         init_log("[USER][INIT][S8] FAIL: no fault info\n"); return;
     }

@@ -9282,6 +9282,11 @@ struct it_fault {
 
 /* Read the pending-fault record for proc_h; 0 on success, else the error
  * (IRIS_ERR_WOULD_BLOCK when nothing is pending). */
+
+/* Stage 7 Step 8: the suite asks the SUPERVISOR question — what faulted last
+ * in this process — because it watches targets a pager resolves for and holds
+ * no capability to their threads.  A handler asks the other one
+ * (SYS_TCB_FAULT_INFO) about the thread it was handed. */
 static long it_fault_info(handle_id_t proc_h, struct it_fault *f) {
     uint8_t b[FAULT_MSG_LEN];
     long r = it_sys2(SYS_PROCESS_FAULT_INFO, (long)proc_h, (long)(uintptr_t)b);
@@ -10190,8 +10195,10 @@ static void test_t148(void) {
      * Step 4: 119-121 are SYS_CSPACE_SELF / SYS_TCB_CONFIGURE /
      * SYS_TCB_WRITE_REGS — execution for a TCB retyped from an Untyped.
      * Stage 6-pure Step 1: 122 is SYS_VSPACE_MAP_TABLE, which installs a page
-     * table the holder retyped.  The first UNASSIGNED number moves up to 123. */
-    for (long n = 123; ok && n <= 400; n++) {
+     * table the holder retyped.  Stage 7 Step 8: 123 is SYS_TCB_FAULT_INFO,
+     * the fault record read off the thread that took it.  The first UNASSIGNED
+     * number moves up to 124. */
+    for (long n = 124; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -14210,7 +14217,12 @@ static int t27_pager_spawn(struct t27_pager *p,
         m[n].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(m[n], IT_PGR_MBOX_SLOT); m[n].rights = RIGHT_READ | RIGHT_WRITE; m[n].badge = 0; n++;
     }
     for (uint32_t i = 0; i < nt; i++) {
-        m[n].slot = PGR_TSLOT_PROC(i);  IT_MINT_SRC(m[n], targets[i].proc);  m[n].rights = RIGHT_READ | RIGHT_MANAGE; m[n].badge = 0; n++;
+        /* Stage 7 Step 8: the pager is NOT given the target's process
+         * capability.  It resolved faults with it — read the record, name the
+         * thread — and both of those are the thread's now: the mailbox hands
+         * it the faulting TCB and SYS_TCB_FAULT_INFO reads off that.  What is
+         * left that a pager does is MAP, which is the VSpace below.  Holding
+         * authority nothing uses is what this manifest exists to catch. */
         m[n].slot = PGR_TSLOT_VS(i);    IT_MINT_SRC(m[n], targets[i].vs);    m[n].rights = RIGHT_WRITE;               m[n].badge = 0; n++;
     }
     for (uint32_t j = 0; j < nv; j++) {
@@ -14336,7 +14348,10 @@ static void test_t201(void) {
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
                               * authority, which is why it belongs in this oracle. */ |
-                          (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
+                          (1u << PGR_VSLOT(0)) | (1u << 21);
+        /* Stage 7 Step 8: bit 20 (any target PROCESS capability) is GONE.  A
+         * pager maps and answers faults; both name the address space and the
+         * thread, and neither names the process. */
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest mismatch"; }
         /* Explicitly none of: core client eps (1/2/4 — slot 3 is the control
          * endpoint), spawn(bit24), untyped(bit26), vspace-self(bit27), second
@@ -14606,7 +14621,10 @@ static void test_t205(void) {
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
                               * authority, which is why it belongs in this oracle. */ |
-                          (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
+                          (1u << PGR_VSLOT(0)) | (1u << 21);
+        /* Stage 7 Step 8: bit 20 (any target PROCESS capability) is GONE.  A
+         * pager maps and answers faults; both name the address space and the
+         * thread, and neither names the process. */
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "restart manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) {
             ok = 0; why = "restart gained authority"; }
@@ -15187,7 +15205,10 @@ static void test_t215(void) {
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
                               * authority, which is why it belongs in this oracle. */ |
-                          (1u << PGR_VSLOT(0)) | (1u << 20) | (1u << 21);
+                          (1u << PGR_VSLOT(0)) | (1u << 21);
+        /* Stage 7 Step 8: bit 20 (any target PROCESS capability) is GONE.  A
+         * pager maps and answers faults; both name the address space and the
+         * thread, and neither names the process. */
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) {
             ok = 0; why = "gained authority"; }
@@ -15607,7 +15628,6 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
         m[k].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(m[k], IT_PGR_MBOX_SLOT); m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
     }
     for (uint32_t i = 0; i < nt; i++) {
-        m[k].slot = PGR_TSLOT_PROC(i);  IT_MINT_SRC(m[k], targets[i].proc);  m[k].rights = RIGHT_READ | RIGHT_MANAGE; m[k].badge = 0; k++;
         m[k].slot = PGR_TSLOT_VS(i);    IT_MINT_SRC(m[k], targets[i].vs);    m[k].rights = RIGHT_WRITE;               m[k].badge = 0; k++;
     }
     m[k].slot = PGR_VSLOT(0); IT_MINT_SRC(m[k], cvmo); m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
@@ -15772,7 +15792,7 @@ static void test_t217(void) {
          * address space was built from.  It MAPS, and the kernel no longer
          * creates paging levels, so it must be able to retype one. */
         uint32_t expect = (1u<<3)|(1u<<4)|(1u<<5)|(1u<<IRIS_CPTR_OWN_UNTYPED)|
-                          (1u<<13)|(1u<<14)|(1u<<15)|(1u<<16)|(1u<<17)|(1u<<20)|(1u<<21);
+                          (1u<<13)|(1u<<14)|(1u<<15)|(1u<<16)|(1u<<17)|(1u<<21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) { ok = 0; why = "extra authority"; }
     }
@@ -17086,7 +17106,6 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     /* Stage 7 Step 7: the mailbox each fault delivers a thread into. */
     mm[k].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(mm[k], IT_PGR_MBOX_SLOT); mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
     for (uint32_t i = 0; i < m->n; i++) {
-        mm[k].slot = PGR_TSLOT_PROC(i); IT_MINT_SRC(mm[k], m->proc[i]); mm[k].rights = RIGHT_READ | RIGHT_MANAGE; mm[k].badge = 0; k++;
         mm[k].slot = PGR_TSLOT_VS(i);   IT_MINT_SRC(mm[k], m->vs[i]);   mm[k].rights = RIGHT_WRITE;               mm[k].badge = 0; k++;
     }
     mm[k].slot = PGR_VSLOT(0); IT_MINT_SRC(mm[k], cvmo); mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;

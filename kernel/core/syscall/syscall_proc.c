@@ -502,6 +502,88 @@ uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * handler calls this after its KNotification fires.  Returns IRIS_ERR_WOULD_BLOCK
  * if no fault is pending.  Requires RIGHT_READ on a non-self proc_handle.
  */
+/*
+ * SYS_TCB_FAULT_INFO(tcb_cptr, out_uptr) → 0 or iris_error_t
+ *
+ * Stage 7 Step 8: read a fault off the THREAD that took it.
+ *
+ * This was SYS_PROCESS_FAULT_INFO(proc_cptr, out): the record was per-process
+ * and so was the question.  Step 6 moved the record onto the execution and
+ * Step 7 made the ANSWER name the thread by capability — which left a handler
+ * needing a PROCESS capability for one remaining reason: to read the thing it
+ * already held the thread for.  A pager held RIGHT_MANAGE over every target
+ * purely to ask what had faulted.
+ *
+ * RIGHT_READ on the thread is the authority, and it is the whole of it.  A
+ * thread with no pending fault answers WOULD_BLOCK, which is what a handler
+ * polling for delivery wants and is the same answer the process-scoped form
+ * gave for an empty record.
+ */
+uint64_t sys_tcb_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *obj; iris_rights_t rights;
+    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
+                                             RIGHT_NONE, KOBJ_TCB, &obj, &rights);
+    if (r != IRIS_OK)
+        return syscall_err(r == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : r);
+    if (!rights_check(rights, RIGHT_READ)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct task *ft = (struct task *)obj;
+    uint8_t buf[FAULT_MSG_LEN];
+    for (uint32_t i = 0; i < FAULT_MSG_LEN; i++) buf[i] = 0;
+
+    int      valid  = ft->fault_valid;
+    uint32_t vector = ft->fault_vector, task_id = ft->id,
+             error  = ft->fault_error,  seq     = ft->fault_seq;
+    uint64_t rip    = ft->fault_rip,    cr2     = ft->fault_cr2;
+    kobject_release(obj);
+
+    if (!valid) return syscall_err(IRIS_ERR_WOULD_BLOCK);
+
+    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_VECTOR + i]  = (uint8_t)(vector >> (i * 8));
+    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_TASK_ID + i] = (uint8_t)(task_id >> (i * 8));
+    for (uint32_t i = 0; i < 8u; i++) buf[FAULT_OFF_RIP + i]     = (uint8_t)(rip >> (i * 8));
+    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_ERROR + i]   = (uint8_t)(error >> (i * 8));
+    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_SEQ + i]     = (uint8_t)(seq >> (i * 8));
+    for (uint32_t i = 0; i < 8u; i++) buf[FAULT_OFF_CR2 + i]     = (uint8_t)(cr2 >> (i * 8));
+
+    if (!copy_to_user_checked(arg1, buf, FAULT_MSG_LEN))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    return syscall_ok_u64(IRIS_OK);
+}
+
+/*
+ * Stage 7 Step 8 KEPT this, and the reason is worth writing down because the
+ * first attempt retired it.
+ *
+ * The thread-scoped SYS_TCB_FAULT_INFO exists so a HANDLER needs nothing but
+ * the thread it was handed — it removed the pager's last reason to hold a
+ * process capability.  But "what faulted last in this process" is a different
+ * question asked by a different principal: a SUPERVISOR observing a child it
+ * does not resolve for, holding RIGHT_READ on the process and no capability to
+ * any of its threads.  Retiring this left that supervisor unable to ask, and
+ * iris_test — which watches targets a pager resolves — is exactly that
+ * supervisor.
+ *
+ * Two operations on two objects, each authorised by a capability to the object
+ * it names.  That is not the dual-namespace shape the charter forbids; it is
+ * what having two objects means.
+ */
+/*
+ * sys_process_fault_info(proc_handle, out_uptr) → 0 or iris_error_t
+ *
+ * Phase 13 (Track I): reads the last fault recorded for proc_handle (or self when
+ * proc_handle == HANDLE_INVALID) into a 32-byte user buffer laid out per
+ * iris/fault_proto.h (FAULT_OFF_VECTOR/TASK_ID/RIP/ERROR/CR2).  The exception
+ * handler calls this after its KNotification fires.  Returns IRIS_ERR_WOULD_BLOCK
+ * if no fault is pending.  Requires RIGHT_READ on a non-self proc_handle.
+ */
 uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
@@ -567,6 +649,7 @@ uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     return syscall_ok_u64(IRIS_OK);
 }
+
 
 /*
  * sys_resource_info(proc_handle, out_uptr) → 0 or iris_error_t   (Phase 29)

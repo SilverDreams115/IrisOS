@@ -27,7 +27,8 @@
  *
  * Current exported syscall number surface: 0..122 (119-121 are Stage 5's
  * SYS_CSPACE_SELF / SYS_TCB_CONFIGURE / SYS_TCB_WRITE_REGS, 122 is Stage
- * 6-pure's SYS_VSPACE_MAP_TABLE; the first unassigned number is 123).
+ * 6-pure's SYS_VSPACE_MAP_TABLE, 123 is Stage 7's SYS_TCB_FAULT_INFO; the
+ * first unassigned number is 124).
  */
 
 /*
@@ -1350,6 +1351,20 @@ static inline long iris_syscall0(long nr) {
  * at teardown, so a holder cannot RESET the region a live walk is standing on.
  */
 #define SYS_VSPACE_MAP_TABLE 122
+/*
+ * SYS_TCB_FAULT_INFO(tcb_cptr, out_uptr) → 0 or negative iris_error_t
+ *
+ * Stage 7 Step 8: the fault record read off the THREAD that took it, with
+ * RIGHT_READ on that thread as the whole authority.  Replaces
+ * SYS_PROCESS_FAULT_INFO (71, now NOT_SUPPORTED), which asked a process and
+ * answered with whichever of its threads faulted last — and which was the one
+ * remaining reason a fault handler needed a PROCESS capability at all.
+ *
+ * Layout is unchanged (<iris/fault_proto.h>, FAULT_MSG_LEN bytes).  A thread
+ * with no pending fault answers IRIS_ERR_WOULD_BLOCK, which is what a handler
+ * polling the mailbox capability for delivery wants.
+ */
+#define SYS_TCB_FAULT_INFO   123
 
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
