@@ -17182,11 +17182,17 @@ static void test_t239(void) {
     struct it_rinfo r0;
     if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "rinfo self"; }
     /* Fase S1: the notification quota is RETIRED (Untyped is the budget);
-     * the ABI fields remain and must read 0. */
+     * the ABI fields remain and must read 0.
+     *
+     * Stage 7: the per-process PAGE quota joins it, and for the same reason
+     * one stage later — a VMO's pages come from an Untyped the caller named,
+     * so a second ceiling the kernel invented was contradicting the model
+     * rather than reinforcing it.  pages_limit reads 0; pages_usage stays
+     * live, because how much a domain holds is still worth reporting. */
     if (ok && (r0.version != 1u || r0.vmos_limit != IT_VMO_QUOTA ||
                r0.notifs_limit != 0u || r0.notifs_usage != 0u ||
                r0.kslab_total_bytes == 0u ||
-               r0.pages_limit == 0u)) { ok = 0; why = "manifest fields"; }
+               r0.pages_limit != 0u)) { ok = 0; why = "manifest fields"; }
     /* kslab used is within total; no phantom alloc failures at rest. */
     if (ok && r0.kslab_used_bytes > r0.kslab_total_bytes) { ok = 0; why = "kslab over total"; }
 

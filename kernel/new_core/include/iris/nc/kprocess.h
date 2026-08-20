@@ -28,7 +28,12 @@ struct KFrame;
  * VMOs a single domain owns, not a proxy for how many children a supervisor can
  * launch.  Raising the constant is no longer the answer. */
 #define KPROCESS_VMO_QUOTA      32u
-#define KPROCESS_PHYS_PAGES_LIMIT 2048u /* 8MB per process; set in kprocess_alloc */
+/* Stage 7: RETIRED.  The per-process page ceiling was a number the kernel
+ * invented; since Stage 6-pure a VMO's pages come from an Untyped the caller
+ * named, and exhausting THAT is what running out means.  phys_pages_limit
+ * reports 0 — "no kernel ceiling" — the way the notification quota did when it
+ * retired in Fase S1.  The constant is kept only so the retirement is legible. */
+#define KPROCESS_PHYS_PAGES_LIMIT 0u
 
 /* Maximum bootstrap KFrame retains stored in KProcess.bootstrap_frames[].
  * Enforced by the upfront guard in task_create_user_impl. */

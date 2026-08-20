@@ -202,7 +202,7 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
     }
     kobject_init_in_untyped(&p->base, KOBJ_PROCESS, &kprocess_ops,
                             (uint32_t)sizeof(struct KProcess));
-    p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;
+    p->phys_pages_limit = 0u;   /* Stage 7: no kernel ceiling; the Untyped is the limit */
     kobject_retain(&pool->base);
     p->mem_pool = pool;
 
@@ -269,7 +269,7 @@ struct KProcess *kprocess_alloc(void) {
         return 0;
     }
     kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
-    p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;
+    p->phys_pages_limit = 0u;   /* Stage 7: no kernel ceiling; the Untyped is the limit */
     if (iris_pcid_enabled) {
         uint64_t flags = irq_spinlock_lock(&pcid_lock);
         uint16_t pcid = 0;
@@ -332,10 +332,30 @@ void kprocess_quota_release_vmo(struct KProcess *p) {
     kprocess_quota_release(&p->owned_vmos, p);
 }
 
+/*
+ * Stage 7: the per-process PAGE quota is RETIRED.
+ *
+ * It was a second ceiling on top of the real one, and since Stage 6-pure it
+ * contradicted the model rather than reinforcing it: a VMO's pages come out of
+ * an Untyped the caller NAMED, and exhausting that Untyped is what "out of
+ * memory" means.  phys_pages_limit was a number the kernel invented — the very
+ * thing Stage 6 Etapa 5 removed for VMO pages and then left standing beside
+ * them, so a holder with a large delegated budget still stopped at 8 MB that
+ * nobody granted and nobody could raise.
+ *
+ * The counters stay as pure INSTRUMENTATION: how many pages a domain's VMOs
+ * hold is worth reporting, and SYS_RESOURCE_INFO's readers already know a
+ * limit of 0 means "no kernel ceiling here" — that is what the notification
+ * quota did when it retired in Fase S1.  What is gone is the refusal.
+ */
 iris_error_t kprocess_quota_acquire_page(struct KProcess *p) {
     if (!p) return IRIS_ERR_INVALID_ARG;
-    return kprocess_quota_acquire(&p->phys_pages_charged, &p->phys_pages_hwm,
-                                  p->phys_pages_limit, p);
+    spinlock_lock(&p->base.lock);
+    p->phys_pages_charged++;
+    if (p->phys_pages_charged > p->phys_pages_hwm)
+        p->phys_pages_hwm = p->phys_pages_charged;
+    spinlock_unlock(&p->base.lock);
+    return IRIS_OK;
 }
 
 void kprocess_quota_release_page(struct KProcess *p) {
