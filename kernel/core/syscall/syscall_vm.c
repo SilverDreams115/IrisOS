@@ -627,37 +627,38 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
                                  RIGHT_NONE, KOBJ_VMO, &vmo_obj, &vmo_rights);
     if (r != IRIS_OK) return syscall_err(r);
 
-    struct KObject *proc_obj;
-    iris_rights_t   proc_rights;
-    /* A1 Increment 2a: dual resolver on the target process too. */
-    r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg1,
-                                     RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
-    if (r != IRIS_OK) { kobject_release(vmo_obj); return syscall_err(r); }
-    if (!rights_check(proc_rights, RIGHT_MANAGE)) {
-        kobject_release(vmo_obj); kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    /*
+     * Stage 7 Step 9: the target is the ADDRESS SPACE, named directly.
+     *
+     * It was a PROCESS with RIGHT_MANAGE, and the kernel then read
+     * `proc->vspace` out of it — so a caller that already held the address
+     * space it wanted to map into had to hold authority over the whole process
+     * as well, and the process capability was doing nothing but carrying a
+     * pointer to the thing actually being used.  A spawner HAS the VSpace: it
+     * retyped it (Stage 6-pure Step 4) and handed it to SYS_PROCESS_CREATE.
+     *
+     * This is the shape SYS_VMO_MAP_PAGE and SYS_FRAME_MAP have had since
+     * Phase 25/26; the whole-VMO form was the last one still asking for a
+     * process.  RIGHT_WRITE on the address space is the authority to install a
+     * PTE in it, which is exactly what this does.
+     */
+    struct KVSpace *target_vs;
+    iris_rights_t   vs_rights;
+    r = cspace_resolve_only_vspace(t->cspace_root, (iris_cptr_t)arg1,
+                                   RIGHT_WRITE, &target_vs, &vs_rights);
+    if (r != IRIS_OK) {
+        kobject_release(vmo_obj);
+        return syscall_err(r == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : r);
     }
 
-    struct KVmo     *v    = (struct KVmo *)vmo_obj;
-    struct KProcess *proc = (struct KProcess *)proc_obj;
-    uint64_t         vaddr = arg2;
-    uint64_t         map_size = 0;
-
-    if (kprocess_teardown_complete(proc)) {
-        kobject_release(vmo_obj); kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_BAD_HANDLE);
-    }
-
-    struct KVSpace *target_vs = proc->vspace;
-    if (!target_vs) {
-        kobject_release(vmo_obj); kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
+    struct KVmo *v        = (struct KVmo *)vmo_obj;
+    uint64_t     vaddr    = arg2;
+    uint64_t     map_size = 0;
 
     int writable   = (arg3 & 1) != 0;
     int executable = (arg3 & 2) != 0;
     if (writable && executable) {
-        kobject_release(vmo_obj); kobject_release(proc_obj);
+        kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
     uint64_t map_flags = 0;
@@ -665,24 +666,24 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
     if (executable) map_flags |= 2u;
 
     if (!rights_check(vmo_rights, RIGHT_READ)) {
-        kobject_release(vmo_obj); kobject_release(proc_obj);
+        kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
     if (writable && !rights_check(vmo_rights, RIGHT_WRITE)) {
-        kobject_release(vmo_obj); kobject_release(proc_obj);
+        kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
     if (v->size == 0) {
-        kobject_release(vmo_obj); kobject_release(proc_obj);
+        kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
     if (!page_round_up_u64(v->size, &map_size)) {
-        kobject_release(vmo_obj); kobject_release(proc_obj);
+        kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
         return syscall_err(IRIS_ERR_OVERFLOW);
     }
     if (!user_private_range_valid(vaddr, v->size, USER_STACK_TOP)) {
-        kobject_release(vmo_obj); kobject_release(proc_obj);
+        kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
@@ -690,7 +691,7 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
         /* Pre-check: no VA in the range must already have a PTE. */
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
             if (paging_virt_to_phys_in(target_vs->cr3, vaddr + off) != 0) {
-                kobject_release(vmo_obj); kobject_release(proc_obj);
+                kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
                 return syscall_err(IRIS_ERR_BUSY);
             }
         }
@@ -699,7 +700,11 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
          * shared VMO's pages are paid once by its owner; extra targets that map
          * it do not re-charge (Q6/Q7/Q18). */
         struct KProcess *vmo_payer = kvmo_owner(v);
-        if (!vmo_payer) vmo_payer = proc;
+        /* An unbound VMO charges the CALLER.  It used to fall back to the map
+         * TARGET, which was reachable only because the target was a process;
+         * a VMO with no owner has never been paid for by anyone, and the task
+         * asking for it to be populated is the honest domain to charge. */
+        if (!vmo_payer) vmo_payer = t->process;
         uint64_t mapped_until = vaddr;
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
             uint32_t page_idx = (uint32_t)(off >> 12);
@@ -707,14 +712,14 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
             if (v->pages[page_idx] == 0) {
                 if (kprocess_quota_acquire_page(vmo_payer) != IRIS_OK) {
                     rollback_vmo_maps(target_vs, vaddr, mapped_until);
-                    kobject_release(vmo_obj); kobject_release(proc_obj);
+                    kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
                     return syscall_err(IRIS_ERR_NO_MEMORY);
                 }
                 uint64_t phys = kvmo_alloc_page(v);
                 if (!phys) {
                     kprocess_quota_release_page(vmo_payer);
                     rollback_vmo_maps(target_vs, vaddr, mapped_until);
-                    kobject_release(vmo_obj); kobject_release(proc_obj);
+                    kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
                     return syscall_err(IRIS_ERR_NO_MEMORY);
                 }
                 uint8_t *kva = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
@@ -725,28 +730,28 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
             struct KFrame *f = kframe_alloc_vmo_page(v->pages[page_idx], v);
             if (!f) {
                 rollback_vmo_maps(target_vs, vaddr, mapped_until);
-                kobject_release(vmo_obj); kobject_release(proc_obj);
+                kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
                 return syscall_err(IRIS_ERR_NO_MEMORY);
             }
             iris_error_t mr = kframe_map_page(f, target_vs, vaddr + off, map_flags);
             kobject_release(&f->base);
             if (mr != IRIS_OK) {
                 rollback_vmo_maps(target_vs, vaddr, mapped_until);
-                kobject_release(vmo_obj); kobject_release(proc_obj);
+                kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
                 return syscall_err(mr);
             }
             mapped_until = vaddr + off + PAGE_SIZE;
         }
 
         kobject_release(vmo_obj);
-        kobject_release(proc_obj);
+        kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
         return syscall_ok_u64(0);
     }
 
     /* Wrap/MMIO VMO path */
     for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
         if (paging_virt_to_phys_in(target_vs->cr3, vaddr + off) != 0) {
-            kobject_release(vmo_obj); kobject_release(proc_obj);
+            kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
             return syscall_err(IRIS_ERR_BUSY);
         }
     }
@@ -756,21 +761,21 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
             struct KFrame *f = kframe_alloc(v->phys + off, 4096u, NULL);
             if (!f) {
                 rollback_vmo_maps(target_vs, vaddr, mapped_until);
-                kobject_release(vmo_obj); kobject_release(proc_obj);
+                kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
                 return syscall_err(IRIS_ERR_NO_MEMORY);
             }
             iris_error_t mr = kframe_map_page(f, target_vs, vaddr + off, map_flags);
             kobject_release(&f->base);
             if (mr != IRIS_OK) {
                 rollback_vmo_maps(target_vs, vaddr, mapped_until);
-                kobject_release(vmo_obj); kobject_release(proc_obj);
+                kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
                 return syscall_err(mr);
             }
             mapped_until = vaddr + off + PAGE_SIZE;
         }
     }
     kobject_release(vmo_obj);
-    kobject_release(proc_obj);
+    kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
     return syscall_ok_u64(0);
 }
 

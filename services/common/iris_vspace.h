@@ -178,10 +178,10 @@ static inline long iris_vspace_map(long nr, long a0, long a1, long a2, long a3,
  *
  * Each mapping syscall says where its target address space and virtual address
  * are, so the decode is a fact about the ABI rather than a guess: SYS_VMO_MAP
- * maps into the CALLER's own address space, SYS_FRAME_MAP and
- * SYS_VMO_MAP_PAGE name theirs, and SYS_VMO_MAP_INTO names a PROCESS whose
- * address space is a capability of its own.  Anything else that returned
- * MISSING_TABLE would be a kernel bug, so it is passed through unchanged.
+ * maps into the CALLER's own address space, and SYS_FRAME_MAP,
+ * SYS_VMO_MAP_PAGE and SYS_VMO_MAP_INTO all name theirs in a1.  Anything else
+ * that returned MISSING_TABLE would be a kernel bug, so it is passed through
+ * unchanged.
  *
  *   self_vs:   the caller's own KOBJ_VSPACE (SYS_VSPACE_SELF), or 0 if it has
  *              not got one — SYS_VMO_MAP then cannot be fixed up.
@@ -190,8 +190,10 @@ static inline long iris_vspace_map(long nr, long a0, long a1, long a2, long a3,
  *              space was built from.
  *   pt_dest/pt_slot:  scratch for the level capability (RETYPE2 dest packing,
  *              and the CPtr it names).
- *   vs_dest/vs_slot:  scratch for a child's VSpace; 0 disables SYS_VMO_MAP_INTO
- *              fixup, which most services never issue.
+ *   vs_dest/vs_slot:  unused since Stage 7 Step 9 — SYS_VMO_MAP_INTO names
+ *              the address space itself, so there is no VSpace to borrow out
+ *              of a process any more.  Kept in the signature while callers
+ *              still pass them.
  */
 static inline long iris_vspace_fixup(long nr, long a0, long a1, long a2, long a3,
                                      long self_vs, long untyped_c,
@@ -201,14 +203,15 @@ static inline long iris_vspace_fixup(long nr, long a0, long a1, long a2, long a3
     if (nr == SYS_VMO_MAP) {
         if (!self_vs) return (long)IRIS_ERR_MISSING_TABLE;
         vs = self_vs; va = a1;
-    } else if (nr == SYS_FRAME_MAP || nr == SYS_VMO_MAP_PAGE) {
+    } else if (nr == SYS_FRAME_MAP || nr == SYS_VMO_MAP_PAGE ||
+               nr == SYS_VMO_MAP_INTO) {
+        /* Stage 7 Step 9: all three name the ADDRESS SPACE in a1.
+         * SYS_VMO_MAP_INTO used to name a PROCESS, so this had to fetch the
+         * child's VSpace out of it with SYS_PROCESS_VSPACE, into a scratch
+         * slot it then had to remember to drop — a whole borrow-and-return
+         * dance to reach a capability the caller already held. */
         vs = a1; va = a2;
-    } else if (nr == SYS_VMO_MAP_INTO) {
-        if (!vs_slot) return (long)IRIS_ERR_MISSING_TABLE;
-        iris_vspace_slot_clear(vs_dest);
-        if (iris_syscall2(SYS_PROCESS_VSPACE, a1, vs_dest) != 0)
-            return (long)IRIS_ERR_MISSING_TABLE;
-        vs = vs_slot; va = a2;
+        (void)vs_dest; (void)vs_slot;
     } else {
         return (long)IRIS_ERR_MISSING_TABLE;
     }
@@ -217,13 +220,6 @@ static inline long iris_vspace_fixup(long nr, long a0, long a1, long a2, long a3
                                       (uint64_t)va,
                                       iris_vspace_map_span(nr, a0));
 
-    /* Drop the child's VSpace capability again.  Holding it would keep that
-     * address space alive past the death of the process it belongs to, which
-     * in turn holds every page table installed in it — and therefore holds
-     * child entries on a budget its owner is entitled to RESET once the child
-     * is gone.  A scratch slot is scratch. */
-    if (nr == SYS_VMO_MAP_INTO && vs_slot)
-        iris_vspace_slot_clear(vs_dest);
     if (e != 0) return e;
     return iris_syscall4(nr, a0, a1, a2, a3);
 }

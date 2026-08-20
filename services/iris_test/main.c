@@ -3111,7 +3111,8 @@ static void test_t076(void) {
     long vmo = it_vmo_create_slot(4096);
     handle_id_t vmo_h = (vmo >= 0) ? (handle_id_t)vmo : HANDLE_INVALID;
     long mi = (vmo_h != HANDLE_INVALID)
-        ? it_sys4(SYS_VMO_MAP_INTO, (long)vmo_h, (long)proc_h, (long)LP_MAP_VA, 1)
+        ? it_sys4(SYS_VMO_MAP_INTO, (long)vmo_h, it_proc_vspace_slot((long)proc_h),
+                  (long)LP_MAP_VA, 1)
         : -1;
 
     /* Let the child reach EP_RECV and block (mapping stays live). */
@@ -3303,20 +3304,28 @@ static void test_t080(void) {
     if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T080_DST_SLOT2,
                       (long)IRIS_CPTR_TEST_FIX_A, (long)RIGHT_READ) >= 0) ok = 0;
 
-    /* ── SYS_VMO_MAP_INTO (vmo by CPtr; target process stays a handle) ── */
-    if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RWD, (long)proc_h,
+    /* ── SYS_VMO_MAP_INTO (vmo by CPtr; Stage 7 Step 9: the TARGET is the
+     * child's address space, named directly, not its process) ── */
+    long t080_vs = it_proc_vspace_slot((long)proc_h);
+    if (ok && t080_vs < 0) ok = 0;
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RWD, t080_vs,
                       (long)LP_MAP_VA, 1) != 0) ok = 0;
     /* Same VA again → BUSY: the CPtr mapping really installed PTEs. */
-    if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RWD, (long)proc_h,
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RWD, t080_vs,
                       (long)LP_MAP_VA, 1) != (long)IRIS_ERR_BUSY) ok = 0;
-    if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RO, (long)proc_h,
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RO, t080_vs,
                       (long)(LP_MAP_VA + 0x10000ULL), 1) !=
               (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
-    if (ok && it_sys4(SYS_VMO_MAP_INTO, T079_SLOT_EMPTY, (long)proc_h,
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T079_SLOT_EMPTY, t080_vs,
                       (long)(LP_MAP_VA + 0x10000ULL), 1) >= 0) ok = 0;
-    if (ok && it_sys4(SYS_VMO_MAP_INTO, (long)IRIS_CPTR_TEST_FIX_A, (long)proc_h,
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, (long)IRIS_CPTR_TEST_FIX_A, t080_vs,
                       (long)(LP_MAP_VA + 0x10000ULL), 1) !=
               (long)IRIS_ERR_WRONG_TYPE) ok = 0;
+    /* ...and a PROCESS capability is no longer accepted as the target: the
+     * argument names an address space, and a process is not one. */
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RWD, (long)proc_h,
+                      (long)(LP_MAP_VA + 0x20000ULL), 1) !=
+              (long)IRIS_ERR_INVALID_ARG) ok = 0;
 
     /* Cleanup: kill the child (auto-unmaps, T076-proven), close everything. */
     (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
@@ -3465,10 +3474,13 @@ static void test_t082(void) {
                       (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |
                              RIGHT_DUPLICATE)) != 0) ok = 0;
 
-    /* MAP_INTO: VMO by CPtr + process by CPtr; repeat → BUSY (PTEs real). */
-    if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, T082_SLOT_PROC,
+    /* MAP_INTO: VMO by CPtr + ADDRESS SPACE by CPtr; repeat → BUSY (PTEs
+     * real).  Stage 7 Step 9: the target argument is the VSpace. */
+    long t082_vs = it_proc_vspace_slot((long)proc_h);
+    if (ok && t082_vs < 0) ok = 0;
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, t082_vs,
                       (long)LP_MAP_VA, 1) != 0) ok = 0;
-    if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, T082_SLOT_PROC,
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, t082_vs,
                       (long)LP_MAP_VA, 1) != (long)IRIS_ERR_BUSY) ok = 0;
 
     /* Cross-process placement: process by CPtr, into the child's CSpace.
@@ -3478,18 +3490,28 @@ static void test_t082(void) {
     if (ok && it_sys4(SYS_PROC_CSPACE_MINT, T082_SLOT_PROC, T080_DST_SLOT,
                       T082_SLOT_VMO, (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
 
-    /* Authority not relaxed: self-proc slot 25 carries WRITE only (no
-     * MANAGE) → MAP_INTO/SHARE reject it; wrong type / empty slot fail. */
+    /* Authority not relaxed.  Stage 7 Step 9 moved the target from the process
+     * to the address space, so the denial moved with it: a VSpace capability
+     * without RIGHT_WRITE cannot receive a mapping, and a PROCESS capability
+     * is refused outright because it is not an address space at all. */
+    {
+        long vs_ro = (t082_vs >= 0) ? it_cs_reduce(t082_vs, RIGHT_READ) : -1;
+        if (ok && vs_ro < 0) ok = 0;
+        if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, vs_ro,
+                          (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_ACCESS_DENIED)
+            ok = 0;
+        if (vs_ro >= 0) { handle_id_t h = (handle_id_t)vs_ro; it_close(&h); }
+    }
     if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, (long)IRIS_CPTR_TEST_PROC,
-                      (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_ACCESS_DENIED)
+                      (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_INVALID_ARG)
         ok = 0;
     if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, (long)IRIS_CPTR_TEST_FIX_A,
-                      (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_WRONG_TYPE) ok = 0;
+                      (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_INVALID_ARG) ok = 0;
     if (ok && it_sys4(SYS_PROC_CSPACE_MINT, T079_SLOT_EMPTY, T080_DST_SLOT2,
                       T082_SLOT_VMO, (long)RIGHT_READ) >= 0) ok = 0;
 
-    /* Pure handle path unchanged: both args as raw handles. */
-    if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo, (long)proc_h,
+    /* The same map through the address space named directly. */
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo, t082_vs,
                       (long)T082_MAP_VA2, 1) != 0) ok = 0;
 
     /* Cleanup: kill via the old handle path (still must work). */
@@ -20192,10 +20214,18 @@ static void test_t299(void) {
     }
     /* A window no other mapping of this child touches, so the map must build
      * the levels rather than reuse them. */
-    if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo, (long)T299_SLOT_PROC,
+    long t299_vs = ok ? it_proc_vspace_slot((long)T299_SLOT_PROC) : -1;
+    if (ok && t299_vs < 0) { ok = 0; why = "child vspace"; }
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo, t299_vs,
                       (long)0x80C0000000ULL, 1) != 0) {
         ok = 0; why = "map into child";
     }
+    /* Drop it immediately: this test's whole point is that the budget becomes
+     * RESET-able once the child dies, and a VSpace capability held here keeps
+     * that address space — and every page table in it, each a child entry on
+     * the budget — alive past the death.  Naming the address space to map into
+     * it (Stage 7 Step 9) means the caller must also let go of it. */
+    if (t299_vs >= 0) { handle_id_t h = (handle_id_t)t299_vs; it_close(&h); }
     if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&after) != 0) {
         ok = 0; why = "info2";
     }

@@ -324,10 +324,18 @@ static inline long iris_syscall0(long nr) {
  *   Publishes the process capability into `dest` with RIGHT_READ|RIGHT_WRITE|
  *   RIGHT_MANAGE|RIGHT_DUPLICATE|RIGHT_TRANSFER|RIGHT_ROUTE.
  *
- * SYS_VMO_MAP_INTO(vmo_h, proc_h, vaddr, flags) → 0 or negative iris_error_t
+ * SYS_VMO_MAP_INTO(vmo_h, vspace_cptr, vaddr, flags) → 0 or negative iris_error_t
  *   vmo_h:   KOBJ_VMO with RIGHT_READ (plus RIGHT_WRITE for MAP_WRITABLE).
- *   proc_h:  KOBJ_PROCESS with RIGHT_MANAGE; must not be torn down.
- *   vaddr:   page-aligned target virtual address in proc's address space.
+ *   vspace_cptr: Stage 7 Step 9 — KOBJ_VSPACE with RIGHT_WRITE, the address
+ *            space the mapping is installed in.  It was a KOBJ_PROCESS with
+ *            RIGHT_MANAGE, out of which the kernel read `proc->vspace`: a
+ *            caller that already held the address space had to hold authority
+ *            over the whole process as well, and the process capability
+ *            carried nothing but a pointer to the thing being used.  A spawner
+ *            HAS the VSpace — it retyped it and handed it to
+ *            SYS_PROCESS_CREATE.  This is the shape SYS_VMO_MAP_PAGE and
+ *            SYS_FRAME_MAP have had since Phase 25/26.
+ *   vaddr:   page-aligned target virtual address in that address space.
  *   flags:   bit 0 = MAP_WRITABLE, bit 1 = MAP_EXEC; W^X enforced.
  *   Eagerly allocates and maps all pages into proc's page table at call time.
  *   Also registers the mapping descriptor in proc's vmo_mappings for teardown.

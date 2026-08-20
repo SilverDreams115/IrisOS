@@ -707,8 +707,10 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         if (r < 0) goto out;
         stack_vmo_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_STACK);
 
+        /* Stage 7 Step 9: the map names the child's ADDRESS SPACE, which the
+         * loader retyped and still holds — not its process. */
         r = iris_vspace_map(SYS_VMO_MAP_INTO,
-                            (long)stack_vmo_h, (long)proc_h,
+                            (long)stack_vmo_h, child_vs,
                             (long)USER_STACK_BASE, 1 /*WRITABLE*/,
                             child_vs, pool_c,
                             sl_ws_dest(ws, SL_WS_PTSCRATCH_CH),
@@ -734,7 +736,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                                          bias + seg_map_base[i], seg_map_size[i]);
             if (r < 0) goto out;
             r = sl_sys4(SYS_VMO_MAP_INTO,
-                        (long)seg_vmo[i], (long)proc_h,
+                        (long)seg_vmo[i], child_vs,
                         (long)(bias + seg_map_base[i]), flags);
             if (r < 0) goto out;
         }
