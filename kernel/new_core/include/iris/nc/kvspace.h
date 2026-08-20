@@ -146,11 +146,15 @@ struct KVSpace *kvspace_alloc(uint64_t cr3);
  * kuntyped_alloc_child_top.
  *
  * Returns NULL for a NULL `mem` and CANNOT FAIL otherwise — it only writes
- * fields.  sys_process_create depends on that: it carves this header BEFORE
- * the PML4 so that a pooled PML4 always has a VSpace to own it, and there is
- * no window in which kprocess_reap_address_space could mistake an
- * Untyped-owned cr3 for a PMM page.  A future variant that can fail after
- * taking the block has to give that caller a way to unwind the PML4. */
+ * fields.  retype_vspace (syscall_untyped.c) depends on that: it carves this
+ * header BEFORE the PML4 page so a half-built address space cannot exist, and
+ * once it holds the block nothing between here and a live VSpace can fail.  A
+ * future variant that CAN fail after taking the block has to give that caller
+ * a way to unwind the page — T301 is the test that would catch its absence.
+ *
+ * (sys_process_create used to be the caller this warned about; since Stage
+ * 6-pure Etapa 4 it composes a process from a VSpace the holder retyped and
+ * carves nothing itself.) */
 struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3);
 
 /*

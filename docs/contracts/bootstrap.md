@@ -64,9 +64,17 @@ On success:
 
 - `SYS_INITRD_VMO` resolves a named initrd catalog entry to a read-only ELF VMO
 - userland parses and relocates the ELF image
-- `SYS_PROCESS_CREATE` creates a fresh child process
-- `SYS_VMO_MAP_INTO` maps prepared segments into that process
-- `SYS_THREAD_START` starts the first thread
+- the parent RETYPES the child's address space and root CSpace out of the
+  child's budget (`SYS_UNTYPED_RETYPE2` of `IRIS_KOBJ_VSPACE` and
+  `IRIS_KOBJ_CNODE`) and `SYS_PROCESS_CREATE` composes a process from them —
+  the kernel builds neither (Stage 6-pure)
+- `SYS_VMO_MAP_INTO` maps prepared segments into that process, and the parent
+  supplies any paging level the map reports missing
+  (`IRIS_ERR_MISSING_TABLE` → `SYS_VSPACE_MAP_TABLE`)
+- the first thread is composed the same way any thread is: retype an
+  `IRIS_KOBJ_TCB`, `SYS_TCB_CONFIGURE` it with the child's CSpace and VSpace,
+  `SYS_TCB_WRITE_REGS`, `SYS_TCB_RESUME`.  `SYS_THREAD_START` is RETIRED
+  (Stage 7)
 - every capability the child starts with is a pre-start CSpace mint
   (`SYS_PROC_CSPACE_MINT` / `SYS_CSPACE_MINT_INTO`), sourced from the parent's
   own slots so the delegation stays revocable

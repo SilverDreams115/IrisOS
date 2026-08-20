@@ -232,9 +232,7 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
             return IRIS_ERR_MISSING_TABLE;
         }
     } else {
-        uint32_t tables_made = 0;
-        r = paging_map_checked_in_from(vs->cr3, user_va, f->paddr, page_flags,
-                                       0, &tables_made);
+        r = paging_map_checked_in(vs->cr3, user_va, f->paddr, page_flags);
     }
     if (r != 0) {
         spinlock_unlock(&vs->lock);

@@ -120,21 +120,10 @@ uint64_t paging_create_user_space(void);
 void     paging_map_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
 int      paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
 
-/* Stage 6 Etapa 2: same, but intermediate page tables are carved from `pool`
- * (an Untyped somebody paid for) instead of the kernel's PMM reserve.  A NULL
- * pool means kernel-funded and is reserved for the kernel's own address space
- * and the root task's pre-Untyped bootstrap maps.  Returns -1 if a level is
- * missing and the pool cannot supply it — the map fails instead of quietly
- * spending kernel memory. */
 struct KUntyped;
-int      paging_map_checked_in_from(uint64_t cr3, uint64_t virt, uint64_t phys,
-                                    uint64_t flags, struct KUntyped *pool,
-                                    uint32_t *tables_made);
 /* tables_pooled != 0: the intermediate tables came from an Untyped, so they
  * are torn down WITHOUT being returned to the PMM. */
 void     paging_destroy_user_space_from(uint64_t cr3, int tables_pooled);
-/* Stage 6 Etapa 3: the PML4 itself carved from `pool` (NULL = PMM). */
-uint64_t paging_create_user_space_from(struct KUntyped *pool);
 /* Stage 6-pure Etapa 4: initialise a page the HOLDER supplied as a user PML4 —
  * zeroed, plus the shared low window and the higher half every address space
  * shares with the kernel.  Allocates nothing. */

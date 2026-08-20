@@ -46,8 +46,9 @@ host regression test in `tests/kernel/test_ipc_cspace.c`.
 
 `svc_load_minted()` (services/common/svc_loader.{h,c}) accepts a
 `struct svc_mint` table and performs every `SYS_PROC_CSPACE_MINT` **between
-process creation and `SYS_THREAD_START`** — the child observes its slots
-populated from its first instruction. This is what allows sh to run with an
+process creation and the moment the child's first thread is resumed**
+(`SYS_THREAD_START` until Stage 7 retired it; `SYS_TCB_RESUME` now) — the child
+observes its slots populated from its first instruction. This is what allows sh to run with an
 EMPTY bootstrap bag and zero `SYS_CHAN_*` call sites: there is no message to
 wait for, hence no ordering race and no retry loop.
 

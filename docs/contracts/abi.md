@@ -22,14 +22,32 @@ of resolving garbage.
 
 ## Memory budgets (Stage 6)
 
-Three syscalls take a **budget**: a `KUntyped` CPtr, with `RIGHT_WRITE`, that
-the memory they allocate is carved from.
+Two syscalls take a **budget**: a `KUntyped` CPtr, with `RIGHT_WRITE`, that the
+memory they allocate is carved from.
 
 | Syscall | Argument | Required? | What it pays for |
 |---|---|---|---|
-| `SYS_PROCESS_CREATE` | arg2 | **yes** | the child's PML4, KVSpace header, page tables, KProcess and root CNode |
 | `SYS_VMO_CREATE` | arg1 | no (0 = own budget) | the VMO's pages, page-address array and header |
 | `SYS_INITRD_VMO` | arg3 | no (0 = own budget) | the private copy of the boot image |
+
+`SYS_PROCESS_CREATE` used to be a third, and is not any more: Stage 6-pure made
+the caller RETYPE what it used to buy.  It takes the objects themselves.
+
+## Composed objects (Stage 6-pure)
+
+The kernel does not create an address space, a paging level or a CSpace.  A
+holder retypes each from its own Untyped and passes it in.
+
+| Syscall | Arguments | What the caller supplies |
+|---|---|---|
+| `SYS_PROCESS_CREATE` | arg2, arg3 | an `IRIS_KOBJ_VSPACE` and an `IRIS_KOBJ_CNODE` it retyped; both bind exclusively (`IRIS_ERR_BUSY` if already bound) |
+| `SYS_VSPACE_MAP_TABLE` (122) | pt, vspace, vaddr | an `IRIS_KOBJ_PAGE_TABLE` to fill the first level missing for `vaddr` |
+| `SYS_TCB_CONFIGURE` (120) | tcb, cspace, vspace, proc | the CSpace and VSpace the thread runs in; arg3 names the process (0 = the caller's own) |
+
+A map whose walk is incomplete answers `IRIS_ERR_MISSING_TABLE` and names
+nothing else — the holder supplies the level and retries.  A task that maps
+therefore needs a budget to retype levels from, which is why `svc_load_minted_ws`
+takes the slot to mint the child its own.
 
 Everything carved this way is a **child** of that Untyped, so
 `SYS_UNTYPED_RESET` refuses while it lives and reclaims the whole region once
@@ -134,7 +152,7 @@ The following syscall numbers remain reserved for ABI continuity and are intenti
 - `48` `SYS_THREAD_CREATE` — RETIRED (Stage 5), number reserved
 - `49` `SYS_THREAD_EXIT`
 - `56` `SYS_PROCESS_CREATE`
-- `58` `SYS_THREAD_START`
+- `58` `SYS_THREAD_START` — RETIRED (Stage 7), number reserved
 - `59` `SYS_HANDLE_INSERT`
 - `66` `SYS_EXCEPTION_RESUME`
 

@@ -183,8 +183,9 @@ argument stayed handle-only, so each trade swapped a handle-namespace consumer
 for a dual one on the same argument.  The dual resolver's handle leg is deleted
 wholesale when the namespace retires.
 
-(`kslab_alloc`, 20 occurrences across 16 files, is Stage 6's inventory, not
-Stage 4's.)
+(`kslab_alloc` is Stage 6's inventory, not Stage 4's — the authoritative count
+lives in `scripts/purity_allowlist.txt`, which the gate checks exactly, rather
+than in a number here that drifts.)
 
 ### Etapa 4 — the CSpace root stops being a handle  ✅ DONE
 

@@ -1,6 +1,16 @@
 # IRIS — Stage 6: memory and the remaining objects come from Untyped
 
-Status: **OPEN — Etapa 1 landed**.
+Status: **CLOSED — all six Etapas landed**, and then SUPERSEDED IN PART.
+
+This document describes Stage 6's answer to *who pays* for memory: the kernel
+creates the object and charges it to an Untyped the caller named.  Stage 6-pure
+(see the [roadmap](sel4-convergence-roadmap.md)) replaced that answer for
+address spaces with seL4's — the HOLDER retypes the object and hands it over —
+so where this doc says a page table, a PML4 or a VSpace header is *charged*,
+the kernel no longer creates it at all.  What still reads true here is
+everything about VMO pages, mapping records and the KProcess object, and the
+reasoning about why a budget must be named at all.
+
 Precondition: Stage 1 (ownership/derivation, closed) and Stage 5 (closed — the
 root task holds its Untypeds as described capabilities).
 Normative frame: [purity charter](iris-sel4-purity-charter.md) §2.2 O1, §2.5 M1

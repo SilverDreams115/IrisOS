@@ -199,17 +199,6 @@ int paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t f
     return 0;
 }
 
-/* Stage 6 Etapa 2: the pooled variant.  The host stub records the pool it was
- * given and reports one table per NEW (cr3, 1 GiB region) so that mapping
- * behaviour stays observable without emulating a page-table walk. */
-int paging_map_checked_in_from(uint64_t cr3, uint64_t virt, uint64_t phys,
-                               uint64_t flags, struct KUntyped *pool,
-                               uint32_t *tables_made) {
-    (void)pool;
-    int rc = paging_map_checked_in(cr3, virt, phys, flags);
-    if (rc == 0 && tables_made) *tables_made = 0;
-    return rc;
-}
 
 #define STUB_PT_MAX 256
 typedef struct { uint64_t cr3; uint64_t key; int level; } stub_pt_t;

@@ -1,6 +1,5 @@
 #include <iris/paging.h>
 #include <iris/pmm.h>
-#include <iris/nc/kuntyped.h>
 
 #define PAGE_SIZE   4096ULL
 #define HUGE_SIZE   (2ULL * 1024 * 1024)
@@ -128,19 +127,19 @@ static void destroy_pt_level(uint64_t table_phys, int level) {
 }
 
 /*
- * Stage 6 Etapa 2 — where an intermediate page table comes from.
+ * Where an intermediate page table comes from — and by Stage 6-pure, the
+ * answer is "only here, only for the two address spaces with no holder".
  *
- * `pool` non-NULL: the page is carved from that Untyped, i.e. from memory a
- * holder paid for and delegated to this address space.  NULL: the kernel's PMM
- * reserve, which is now reserved for exactly two callers — the kernel's own
- * address space (kstack region, physmap) and the root task's bootstrap maps,
- * which happen before any Untyped exists.  Every other user mapping must name
- * its budget or fail: charter M3 says the kernel does not implicitly allocate
- * user memory, and a page table that maps user memory is user memory.
+ * Stage 6 Etapa 2 gave this function a `pool` argument so a USER address space
+ * could charge its levels to a budget.  Stage 6-pure Etapa 2 stopped the
+ * kernel creating user levels at all — the holder retypes a KOBJ_PAGE_TABLE
+ * and installs it — so every caller now passes the PMM path and the pooled
+ * branch was dead code that still claimed the kernel could spend somebody's
+ * budget behind their back.  The two callers left are the KERNEL's own address
+ * space and the root task's pre-run maps, neither of which has a holder to ask.
  */
-static uint64_t alloc_table(struct KUntyped *pool) {
-    uint64_t page = pool ? kuntyped_alloc_page_child(pool)
-                         : pmm_alloc_page();
+static uint64_t alloc_table(void) {
+    uint64_t page = pmm_alloc_page();
     if (page == 0) return 0;
     uint64_t *table = phys_to_ptr(page);
     for (uint64_t i = 0; i < ENTRIES; i++)
@@ -148,13 +147,11 @@ static uint64_t alloc_table(struct KUntyped *pool) {
     return page;
 }
 
-static uint64_t *get_or_create(uint64_t *table, uint64_t index, uint64_t flags,
-                               struct KUntyped *pool, uint32_t *made) {
+static uint64_t *get_or_create(uint64_t *table, uint64_t index, uint64_t flags) {
     if (!(table[index] & PAGE_PRESENT)) {
-        uint64_t new_table = alloc_table(pool);
+        uint64_t new_table = alloc_table();
         if (new_table == 0) return 0;
         table[index] = new_table | flags;
-        if (made) (*made)++;
     } else {
         /* table already exists — OR in any new permission bits needed.
          * Critical: if caller needs PAGE_USER, existing kernel-only
@@ -242,17 +239,16 @@ int paging_map_strict_in(uint64_t cr3, uint64_t virt, uint64_t phys,
 }
 
 static int paging_map_root(uint64_t root_phys, uint64_t virt, uint64_t phys,
-                           uint64_t flags, struct KUntyped *pool,
-                           uint32_t *made) {
+                           uint64_t flags) {
     /* intermediate table flags: always P+RW, carry USER bit if leaf needs it */
     uint64_t tbl_flags = PAGE_PRESENT | PAGE_WRITABLE;
     if (flags & PAGE_USER) tbl_flags |= PAGE_USER;
     uint64_t *pml4 = phys_to_ptr(root_phys);
-    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), tbl_flags, pool, made);
+    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), tbl_flags);
     if (!pdpt) return -1;
-    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), tbl_flags, pool, made);
+    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), tbl_flags);
     if (!pd) return -1;
-    uint64_t *pt   = get_or_create(pd,   PD_IDX(virt),   tbl_flags, pool, made);
+    uint64_t *pt   = get_or_create(pd,   PD_IDX(virt),   tbl_flags);
     if (!pt) return -1;
     pt[PT_IDX(virt)] = (phys & ~0xFFFULL) | flags | PAGE_PRESENT;
     return 0;
@@ -260,16 +256,16 @@ static int paging_map_root(uint64_t root_phys, uint64_t virt, uint64_t phys,
 
 void paging_map(uint64_t virt, uint64_t phys, uint64_t flags) {
     /* Kernel address space: its tables are kernel memory by definition. */
-    (void)paging_map_root(pml4_phys, virt, phys, flags, 0, 0);
+    (void)paging_map_root(pml4_phys, virt, phys, flags);
 }
 
 static void paging_map_huge(uint64_t virt, uint64_t phys, uint64_t flags) {
     uint64_t tbl_flags = PAGE_PRESENT | PAGE_WRITABLE;
     if (flags & PAGE_USER) tbl_flags |= PAGE_USER;
     uint64_t *pml4 = phys_to_ptr(pml4_phys);
-    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), tbl_flags, 0, 0);
+    uint64_t *pdpt = get_or_create(pml4, PML4_IDX(virt), tbl_flags);
     if (!pdpt) return;
-    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), tbl_flags, 0, 0);
+    uint64_t *pd   = get_or_create(pdpt, PDPT_IDX(virt), tbl_flags);
     if (!pd) return;
     pd[PD_IDX(virt)] = (phys & ~0x1FFFFFULL) | flags | PAGE_PRESENT | PAGE_HUGE;
 }
@@ -312,7 +308,7 @@ void paging_init(uint64_t fb_phys, uint64_t fb_size) {
     /* NXE must be set in IA32_EFER before any NX-flagged PTE reaches the TLB. */
     paging_enable_nxe();
 
-    pml4_phys = alloc_table(0);
+    pml4_phys = alloc_table();
     if (pml4_phys == 0) return;
 
     /* Pre-kernel identity map: 0 .. KERNEL_PHYS_BASE.
@@ -407,24 +403,17 @@ void paging_init_user_pml4(uint64_t pml4_page_phys)
     for (uint64_t i = 256; i < ENTRIES; i++) user_pml4[i] = kernel_pml4[i];
 }
 
-uint64_t paging_create_user_space_from(struct KUntyped *pool)
-{
-    /* Stage 6 Etapa 3: the PML4 is the last page of an address space that the
-     * kernel was paying for.  It comes from the same budget as the levels
-     * below it when one is named — and, like them, it counts as a child of
-     * that Untyped so the region cannot be reset while the address space
-     * lives.  A NULL pool is the root task and the kernel's own space. */
-    uint64_t new_pml4_phys = pool ? kuntyped_alloc_page_child(pool)
-                                  : pmm_alloc_pages(1);
-    if (new_pml4_phys == 0) return 0;
-
-    paging_init_user_pml4(new_pml4_phys);
-    return new_pml4_phys;
-}
-
 uint64_t paging_create_user_space(void)
 {
-    return paging_create_user_space_from(0);
+    /* The PMM, and only the PMM.  Stage 6-pure Etapa 4 made a spawned
+     * process's PML4 the storage of a KOBJ_VSPACE its holder retyped, so the
+     * budget-funded variant this used to have had no callers left.  What comes
+     * through here is the root task's address space and the kernel selftest's:
+     * both built before any Untyped exists. */
+    uint64_t new_pml4_phys = pmm_alloc_pages(1);
+    if (new_pml4_phys == 0) return 0;
+    paging_init_user_pml4(new_pml4_phys);
+    return new_pml4_phys;
 }
 
 uint64_t pml4_get_current(void) {
@@ -435,24 +424,16 @@ void paging_map_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags) {
     (void)paging_map_checked_in(cr3, virt, phys, flags);
 }
 
-int paging_map_checked_in_from(uint64_t cr3, uint64_t virt, uint64_t phys,
-                               uint64_t flags, struct KUntyped *pool,
-                               uint32_t *tables_made) {
+int paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags) {
     if (cr3 == 0) return -1;
 
     /* Disable interrupts while modifying a foreign page table to keep the
      * map sequence atomic for bootstrap/rollback callers. */
     uint64_t rflags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
-    int rc = paging_map_root(cr3, virt, phys, flags, pool, tables_made);
+    int rc = paging_map_root(cr3, virt, phys, flags);
     __asm__ volatile ("pushq %0; popfq" : : "r"(rflags) : "memory");
     return rc;
-}
-
-int paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags) {
-    /* Kernel-funded variant: the kernel's own address space and the root
-     * task's bootstrap maps, which run before any Untyped exists. */
-    return paging_map_checked_in_from(cr3, virt, phys, flags, 0, 0);
 }
 
 uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt) {
