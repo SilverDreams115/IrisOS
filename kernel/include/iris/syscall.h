@@ -52,7 +52,18 @@
  * the zero so no caller can omit it.
  */
 
-#ifndef __KERNEL__
+/*
+ * Guarded against BOTH non-userland readers, because there are two.
+ *
+ * __KERNEL__ excludes the kernel, which has no business issuing a syscall
+ * instruction.  __ASSEMBLER__ excludes the three service entry stubs that
+ * include this header for its numbers (services/userboot/entry.S,
+ * services/init/entry.S, services/kbd/main.S) — the C preprocessor runs over
+ * a .S file and hands whatever survives to the assembler, so a declaration
+ * that is merely "not kernel" still reaches it.  Missing that guard does not
+ * show up in an incremental build, only in `make clean && make`.
+ */
+#if !defined(__KERNEL__) && !defined(__ASSEMBLER__)
 static inline long iris_syscall4(long nr, long a0, long a1, long a2, long a3) {
     long ret;
     register long _a3 __asm__("r10") = a3;
@@ -74,7 +85,7 @@ static inline long iris_syscall1(long nr, long a0) {
 static inline long iris_syscall0(long nr) {
     return iris_syscall4(nr, 0, 0, 0, 0);
 }
-#endif /* !__KERNEL__ */
+#endif /* !__KERNEL__ && !__ASSEMBLER__ */
 
 /* Syscall numbers */
 /* SYS_WRITE 0 permanently retired in Phase 30 — returns IRIS_ERR_NOT_SUPPORTED.
