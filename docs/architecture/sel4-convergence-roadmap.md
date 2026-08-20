@@ -1120,6 +1120,32 @@ no thread resolves in — and what teardown actually guarantees is asserted
 instead, which is stronger: the child's own slots were EMPTIED, and the
 supervisor holding the root can see it.
 
+### Step 10 — a death is observed on the thread that dies  DONE
+
+`SYS_PROCESS_WATCH` and `SYS_PROCESS_EXIT_CODE` (29, 71) RETIRE.  A supervisor
+needed authority over a PROCESS to learn about an execution it had started
+itself — and it HAS that execution: it retyped the TCB and configured it.
+`SYS_TCB_WATCH(tcb, notif, bits)` and `SYS_TCB_EXIT_CODE(tcb)` name the thread,
+with `RIGHT_READ` as the whole authority, because learning that something died
+confers nothing over it.  Every service in the tree is single-threaded, so this
+is not an approximation of the process event: it is that event, named by the
+thing that produces it.
+
+The watch array went with it.  KProcess kept room for several unrelated holders
+to watch one process; a thread is watched by whoever holds its TCB, and a
+second watcher is a second capability rather than a second slot.
+
+`svc_load_minted_ws` gained `keep_tcb_dest`, so a spawner that means to wait for
+its child keeps the thread — and the suite grew the child table a process server
+keeps, mapping each process capability to the thread it was started with.
+
+**Keeping a TCB keeps the corpse**, and that is the lifecycle fact the step
+surfaced: a thread object's storage is a child of its budget, so svcmgr holding
+a dead service's thread made that service's budget un-RESET-able and the restart
+found no memory.  A supervisor holding a dead child's thread is holding the
+memory it is about to need, so it drops it before respawning.  Nothing had held
+a thread across a death before, so nothing had said so.
+
 ### What Stage 7 still needs, and why it is not an increment
 
 `KProcess` itself, and the user-space process server that replaces the policy
@@ -1136,12 +1162,22 @@ through `t->process`:
 | `mem_pool` | 3 | the DEFAULT budget when a syscall does not name one — the kernel choosing whose memory pays |
 | `exit_code`, `base` | 3 | death reporting and the object header |
 
-Step 9 took the cross-task ones out: what is left of `cspace_root` is the
-bootstrap exception and an identity check, not a supervisor reaching through a
-process.  What remains genuinely on KProcess is DEATH — who is told, what the
-code was, when the address space is reclaimed — plus the default budget.  That
-is the process server's job description, and unpicking it means deciding what
-replaces each, which is a policy question about who supervises whom.
+Step 9 took the cross-task ones out and Step 10 took death notification out.
+What is left is:
+
+- **`SYS_PROCESS_KILL` and `SYS_PROCESS_STATUS`**, and the RECLAMATION that
+  rides on kill.  Stopping a service's threads is `SYS_TCB_EXIT` on capabilities
+  a supervisor already holds; tearing the address space down is currently a
+  consequence of the PROCESS dying rather than of its VSpace's last capability
+  going.  Making it the latter is what removes the last thing only KProcess can
+  do — and it is a change to what "dead" MEANS, not a syscall swap: 80 call
+  sites in the suite assert reclamation happening at kill.
+- **the default budget** (`mem_pool`): the kernel choosing whose memory pays
+  when a syscall does not name one.  Three sites, two of them the ioport/IRQ
+  pair, which cannot take a budget argument in the 4-argument ABI and retire
+  with the memory server anyway (ledger D-5's deeper half).
+
+That is the process server's remaining job description.
 
 What the server has to answer, concretely:
 
