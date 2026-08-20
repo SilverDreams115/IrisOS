@@ -1146,6 +1146,25 @@ found no memory.  A supervisor holding a dead child's thread is holding the
 memory it is about to need, so it drops it before respawning.  Nothing had held
 a thread across a death before, so nothing had said so.
 
+### Step 11 — an address space ends when its last capability does  DONE
+
+The walk came down in `kprocess_reap_address_space` — which is to say when the
+PROCESS died.  A walk's lifetime was therefore a property of an object that is
+not the walk, and an address space that outlived its process (because a holder
+kept a capability) kept a live walk nobody could reach.
+
+It comes down in the VSpace's own destructor now, which runs when the last
+capability to it goes.  For a spawned process that is the moment its last
+thread releases the VSpace it was configured with (Stage 7 Step 5) and no
+holder kept one — so reclamation is driven by capabilities rather than by a
+death event, which is what it means in a capability system.
+
+`kvspace_invalidate` shrank to what its name says: `valid = 0` and the frame
+sweep.  It used to zero `cr3` as well, and that was the reason only the
+declarer of the death could tear the walk down — the destructor would have had
+nothing left to walk.  Every reader checks `valid` before touching `cr3`, so
+keeping it costs nothing and buys the separation.
+
 ### What Stage 7 still needs, and why it is not an increment
 
 `KProcess` itself, and the user-space process server that replaces the policy
@@ -1165,13 +1184,15 @@ through `t->process`:
 Step 9 took the cross-task ones out and Step 10 took death notification out.
 What is left is:
 
-- **`SYS_PROCESS_KILL` and `SYS_PROCESS_STATUS`**, and the RECLAMATION that
-  rides on kill.  Stopping a service's threads is `SYS_TCB_EXIT` on capabilities
-  a supervisor already holds; tearing the address space down is currently a
-  consequence of the PROCESS dying rather than of its VSpace's last capability
-  going.  Making it the latter is what removes the last thing only KProcess can
-  do — and it is a change to what "dead" MEANS, not a syscall swap: 80 call
-  sites in the suite assert reclamation happening at kill.
+- **`SYS_PROCESS_KILL` and `SYS_PROCESS_STATUS`**.  Step 11 moved the
+  reclamation off them, so what is left really is a syscall swap plus its call
+  sites: killing a service is `SYS_TCB_EXIT` on the thread a supervisor holds,
+  and asking whether it is alive is `SYS_TCB_GET_INFO`, which already exists.
+  80 kill sites and 17 status sites in the suite, all of which the child table
+  from Step 10 can already resolve.  What still needs deciding is what
+  "killing" a process that NEVER STARTED means — today `SYS_PROCESS_KILL` tears
+  it down (Stage 6 Step 2), and with no process there is only "delete its
+  capabilities", which T304 asserts 65 times.
 - **the default budget** (`mem_pool`): the kernel choosing whose memory pays
   when a syscall does not name one.  Three sites, two of them the ioport/IRQ
   pair, which cannot take a budget argument in the 4-argument ABI and retire

@@ -149,8 +149,12 @@ void test_vspace_cspace(void) {
         kobject_retain(&vs->base);
 
         kvspace_invalidate(vs);
-        ASSERT_EQ(vs->cr3,   0u);
+        /* Stage 7 Step 11: `valid` is what makes an address space unusable, and
+         * cr3 SURVIVES it — the walk is torn down by the destructor, when the
+         * last capability goes, and the destructor needs the cr3 to do it.
+         * Every reader checks `valid` before touching cr3. */
         ASSERT_EQ(vs->valid, 0u);
+        ASSERT_NE(vs->cr3,   0u);
         ASSERT_EQ(vs->base.type, KOBJ_VSPACE);   /* type unchanged */
 
         kobject_release(&vs->base);   /* drop extra ref */
@@ -394,10 +398,13 @@ void test_vspace_cspace(void) {
         kobject_release(root_obj);
         /* State: refcount=2, active_refs=1 */
 
-        /* Simulate kprocess_reap_address_space: invalidate then release process ref. */
+        /* Simulate kprocess_reap_address_space: invalidate then release process
+         * ref.  Stage 7 Step 11: invalidation makes the address space unusable
+         * and nothing more — cr3 stays for the destructor, which is what tears
+         * the walk down once the LAST capability goes, not the process. */
         kvspace_invalidate(vs);
         ASSERT_EQ(vs->valid, 0u);
-        ASSERT_EQ(vs->cr3,   0u);
+        ASSERT_NE(vs->cr3,   0u);
 
         kobject_release(&vs->base);   /* drop process->vspace ref: refcount=1 */
         ASSERT_EQ(atomic_load(&vs->base.refcount),    1u);

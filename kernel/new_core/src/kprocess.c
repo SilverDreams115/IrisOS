@@ -625,44 +625,21 @@ void kprocess_reap_address_space(struct KProcess *p) {
      * that preempts, so the flag is set by exchange and the losers return. */
     if (__atomic_exchange_n(&p->aspace_reaped, 1u, __ATOMIC_ACQ_REL)) return;
 
-    uint64_t cr3 = p->cr3;
-    /* Was this address space's PML4 carved from an Untyped?  Read it before
-     * the VSpace goes: a pooled page must not be returned to the PMM, which
-     * does not own it.  This answers for the PML4 PAGE and nothing else — the
-     * levels below it are answered for one at a time by the detach below,
-     * because a single address space can hold both kinds at once (the root
-     * task's: a PMM PML4 and PMM bootstrap levels, plus every level it retypes
-     * for itself after kvspace_end_bootstrap). */
-    int pml4_pooled = (p->vspace && p->vspace->pml4_from_pool) ? 1 : 0;
-
-    /* Phase 4: invalidate the VSpace capability before destroying page tables.
-     * Any capability holder that checks vs->valid after this point sees 0. */
+    /* Phase 4: invalidate the VSpace capability so no holder can map through a
+     * dying address space.  Stage 7 Step 11: that is ALL this does to it — the
+     * walk comes down in the VSpace's own destructor, when the last capability
+     * to the address space goes, which may be later than this and is the only
+     * moment at which nothing can be using it. */
     struct KVSpace *vs = p->vspace;
     if (vs) {
         kvspace_invalidate(vs);
         p->vspace = 0;
     }
 
-    /* Stage 6-pure: take the holder's own levels out of the walk while we
-     * still know which ones they are.  After this the only thing still hanging
-     * off the PML4 is what alloc_table() took from the PMM, which is the one
-     * thing paging_destroy_user_space_from is allowed to give back. */
-    if (vs) kvspace_detach_tables(vs, cr3);
-
     /* Phase 6.2: release bootstrap KFrame alloc retains after kvspace_invalidate
      * has decremented mapped_count to 0 for all bootstrap-mapped pages. */
     kprocess_release_bootstrap_frames(p);
 
-    /*
-     * Tear the walk down BEFORE dropping the VSpace reference.
-     *
-     * Stage 6-pure Step 4 made the PML4 the VSpace object's own storage, so
-     * releasing the VSpace can be what returns that page's accounting to its
-     * Untyped — and then walking cr3 would be walking a region whose holder
-     * has already been told it is free to RESET.  The walk first, the object
-     * after: the reverse of how it reads, and the only order that is true.
-     */
-    paging_destroy_user_space_from(cr3, pml4_pooled);
     p->cr3 = 0;
     if (vs) kobject_release(&vs->base);
     /* aspace_reaped was claimed on entry, not set here. */

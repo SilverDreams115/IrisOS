@@ -131,6 +131,21 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
         }
     }
 
+    /*
+     * Stage 7 Step 11: the WALK comes down here, with the object.
+     *
+     * It used to come down in kprocess_reap_address_space, which is to say
+     * when the PROCESS died — so a walk's lifetime was a property of an object
+     * that is not the walk, and an address space outliving its process (a
+     * holder kept a capability) kept a live walk nobody could reach.  Now it
+     * ends when the last capability to it does, which is what "this address
+     * space is over" means in a capability system.
+     *
+     * Only what the KERNEL carved is returned to the PMM; the holder's own
+     * levels were detached above and go back with their capabilities.
+     */
+    if (cr3) paging_destroy_user_space_from(cr3, vs->pml4_from_pool);
+
     /* The PML4 is the last piece of this address space the kernel still carves,
      * and it is the VSpace's own storage rather than part of the walk the
      * holder builds.  Its child entry goes back the same way everything else
@@ -482,9 +497,18 @@ void kvspace_invalidate(struct KVSpace *vs) {
 
     if (!vs) return;
     spinlock_lock(&vs->lock);
+    /*
+     * Stage 7 Step 11: cr3 SURVIVES invalidation.
+     *
+     * `valid` is what makes the address space unusable — every path that maps,
+     * unmaps or installs a level checks it — and zeroing cr3 as well meant the
+     * WALK could only be torn down here, by whoever declared the death.  The
+     * walk is the address space's own storage, so tearing it down belongs to
+     * the address space's destructor, and the destructor needs the cr3 to do
+     * it.  Nothing reads cr3 without checking `valid` first.
+     */
     saved_cr3    = vs->cr3;
     vs->valid    = 0;
-    vs->cr3      = 0;
     list         = vs->mappings;
     vs->mappings = 0;
     vs->mapping_count = 0;
