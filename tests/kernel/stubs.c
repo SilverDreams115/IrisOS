@@ -201,7 +201,7 @@ int paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t f
 
 
 #define STUB_PT_MAX 256
-typedef struct { uint64_t cr3; uint64_t key; int level; } stub_pt_t;
+typedef struct { uint64_t cr3; uint64_t key; int level; uint64_t phys; } stub_pt_t;
 static stub_pt_t stub_pt[STUB_PT_MAX];
 static int       stub_pt_n = 0;
 
@@ -260,8 +260,25 @@ int paging_install_table_in(uint64_t cr3, uint64_t virt, uint64_t table_phys,
     stub_pt[stub_pt_n].cr3   = cr3;
     stub_pt[stub_pt_n].key   = stub_pt_key(virt, level);
     stub_pt[stub_pt_n].level = level;
+    stub_pt[stub_pt_n].phys  = table_phys;
     stub_pt_n++;
     return level;
+}
+
+/* Stage 6-pure: the level leaves the walk again.  Identity-checked like the
+ * real one, so a test can prove a stale (va, level) record detaches nothing. */
+int paging_detach_table_in(uint64_t cr3, uint64_t virt, int level,
+                           uint64_t table_phys) {
+    if (!cr3 || !table_phys || level < 1 || level > 3) return -1;
+    if (!stub_pt_strict) return -1;      /* no walk is modelled: nothing to take out */
+    uint64_t k = stub_pt_key(virt, level);
+    for (int i = 0; i < stub_pt_n; i++) {
+        if (stub_pt[i].cr3 != cr3 || stub_pt[i].level != level) continue;
+        if (stub_pt[i].key != k || stub_pt[i].phys != table_phys) continue;
+        stub_pt[i] = stub_pt[--stub_pt_n];
+        return 0;
+    }
+    return -1;
 }
 
 void paging_stub_reset_tables(void) { stub_pt_n = 0; }
@@ -273,8 +290,8 @@ int paging_map_strict_in(uint64_t cr3, uint64_t virt, uint64_t phys,
     return paging_map_checked_in(cr3, virt, phys, flags);
 }
 
-void paging_destroy_user_space_from(uint64_t cr3, int tables_pooled) {
-    (void)cr3; (void)tables_pooled;   /* no page tables on the host */
+void paging_destroy_user_space_from(uint64_t cr3, int pml4_pooled) {
+    (void)cr3; (void)pml4_pooled;   /* no page tables on the host */
 }
 
 /*

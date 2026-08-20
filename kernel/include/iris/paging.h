@@ -121,9 +121,35 @@ void     paging_map_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flag
 int      paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
 
 struct KUntyped;
-/* tables_pooled != 0: the intermediate tables came from an Untyped, so they
- * are torn down WITHOUT being returned to the PMM. */
-void     paging_destroy_user_space_from(uint64_t cr3, int tables_pooled);
+/*
+ * Tear down what the KERNEL carved for this address space, and nothing else.
+ *
+ * `pml4_pooled != 0` means the PML4 page is a child of an Untyped rather than
+ * a PMM page, so it is left where it is; its child entry goes back with the
+ * VSpace.  The LEVELS below it are the holder's own KPageTable objects since
+ * Stage 6-pure and must already have been detached from the walk
+ * (kvspace_detach_tables) before this runs — what is left under
+ * USER_PRIVATE_PML4_INDEX is then, by construction, only pages this file's
+ * alloc_table() took from the PMM, which is exactly what may be returned to it.
+ *
+ * The predecessor took `tables_pooled` and chose between two recursive
+ * teardowns on it, which was a guess about the WHOLE walk made from one fact
+ * about the TOP of it.  The root task falsified the guess: its PML4 is a PMM
+ * page (pml4_pooled == 0) while every level it installs after
+ * kvspace_end_bootstrap comes from an Untyped, so the "not pooled" teardown
+ * pmm_free_page()d memory that a live Untyped still owned.  Detaching first
+ * removes the question instead of answering it per address space.
+ */
+void     paging_destroy_user_space_from(uint64_t cr3, int pml4_pooled);
+/*
+ * Remove one holder-retyped table from the walk: clear the entry at `level`
+ * that serves `virt`, but only if it still points at `table_phys`.  Returns 0
+ * when it cleared an entry, -1 when it did not (already gone, a huge-page leaf
+ * in the path, or a different table there now) — so it is idempotent and
+ * cannot detach somebody else's level from a stale record.
+ */
+int      paging_detach_table_in(uint64_t cr3, uint64_t virt, int level,
+                                uint64_t table_phys);
 /* Stage 6-pure Step 4: initialise a page the HOLDER supplied as a user PML4 —
  * zeroed, plus the shared low window and the higher half every address space
  * shares with the kernel.  Allocates nothing. */

@@ -202,7 +202,7 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
     }
     kobject_init_in_untyped(&p->base, KOBJ_PROCESS, &kprocess_ops,
                             (uint32_t)sizeof(struct KProcess));
-    p->phys_pages_limit = 0u;   /* Stage 7: no kernel ceiling; the Untyped is the limit */
+    p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;  /* Stage 7: 0 = no kernel ceiling */
     kobject_retain(&pool->base);
     p->mem_pool = pool;
 
@@ -269,7 +269,7 @@ struct KProcess *kprocess_alloc(void) {
         return 0;
     }
     kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
-    p->phys_pages_limit = 0u;   /* Stage 7: no kernel ceiling; the Untyped is the limit */
+    p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;  /* Stage 7: 0 = no kernel ceiling */
     if (iris_pcid_enabled) {
         uint64_t flags = irq_spinlock_lock(&pcid_lock);
         uint16_t pcid = 0;
@@ -477,16 +477,52 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
  * handle_table_close_all so the exit_code is already set when watchers wake.
  * teardown_complete provides idempotency; this function is called from both
  * task_exit_current (normal exit) and kprocess_destroy (fallback path). */
+/*
+ * Join a thread to this process, or refuse because teardown has begun.
+ *
+ * The check and the count increment are ONE operation under the process lock,
+ * and kprocess_teardown claims its flag under the same lock, so the two cannot
+ * both win.  ktcb_configure used to read teardown_complete on its own and then
+ * attach several steps later; a kill landing in that window produced a thread
+ * whose ->process had already had its address space reaped, and the scheduler
+ * would run a ring-3 thread with cr3 == 0 under the KERNEL's page tables.
+ * A flag read separately from the action it guards is not a gate.
+ */
+iris_error_t kprocess_attach_thread(struct KProcess *p) {
+    iris_error_t r = IRIS_OK;
+    if (!p) return IRIS_ERR_INVALID_ARG;
+    spinlock_lock(&p->base.lock);
+    if (p->teardown_complete || !p->cr3) {
+        r = IRIS_ERR_BAD_HANDLE;
+    } else {
+        p->thread_count++;
+        p->threads_ever = 1;
+    }
+    spinlock_unlock(&p->base.lock);
+    return r;
+}
+
 void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     if (!p) return;
     /* Claimed, not observed — same reason as kprocess_reap_address_space:
      * teardown_complete is set at the END of a long non-idempotent sequence,
      * so a reader that only checks it can start a second run at any point
      * before that.  Claiming on entry also means every OTHER reader of the
-     * flag (sys_thread_start, ktcb_configure, the destroy fallbacks) refuses
-     * from the moment teardown begins rather than from the moment it ends,
-     * which is the direction they all want. */
-    if (__atomic_exchange_n(&p->teardown_complete, 1u, __ATOMIC_ACQ_REL)) return;
+     * flag (the destroy fallbacks, kprocess_attach_thread) refuses from the
+     * moment teardown begins rather than from the moment it ends, which is the
+     * direction they all want.
+     *
+     * Under p->base.lock rather than a bare atomic exchange, because
+     * kprocess_attach_thread has to be able to test the flag and act on the
+     * answer without the flag changing in between. */
+    {
+        int already;
+        spinlock_lock(&p->base.lock);
+        already = p->teardown_complete;
+        p->teardown_complete = 1;
+        spinlock_unlock(&p->base.lock);
+        if (already) return;
+    }
 
     kprocess_emit_exit_watch(p);
     kprocess_clear_exit_watch(p);
@@ -571,9 +607,12 @@ void kprocess_reap_address_space(struct KProcess *p) {
     uint64_t cr3 = p->cr3;
     /* Was this address space's PML4 carved from an Untyped?  Read it before
      * the VSpace goes: a pooled page must not be returned to the PMM, which
-     * does not own it.  The levels BELOW it are the holder's own objects since
-     * Stage 6-pure and are released with their capabilities, not here. */
-    int tables_pooled = (p->vspace && p->vspace->pml4_from_pool) ? 1 : 0;
+     * does not own it.  This answers for the PML4 PAGE and nothing else — the
+     * levels below it are answered for one at a time by the detach below,
+     * because a single address space can hold both kinds at once (the root
+     * task's: a PMM PML4 and PMM bootstrap levels, plus every level it retypes
+     * for itself after kvspace_end_bootstrap). */
+    int pml4_pooled = (p->vspace && p->vspace->pml4_from_pool) ? 1 : 0;
 
     /* Phase 4: invalidate the VSpace capability before destroying page tables.
      * Any capability holder that checks vs->valid after this point sees 0. */
@@ -582,6 +621,12 @@ void kprocess_reap_address_space(struct KProcess *p) {
         kvspace_invalidate(vs);
         p->vspace = 0;
     }
+
+    /* Stage 6-pure: take the holder's own levels out of the walk while we
+     * still know which ones they are.  After this the only thing still hanging
+     * off the PML4 is what alloc_table() took from the PMM, which is the one
+     * thing paging_destroy_user_space_from is allowed to give back. */
+    if (vs) kvspace_detach_tables(vs, cr3);
 
     /* Phase 6.2: release bootstrap KFrame alloc retains after kvspace_invalidate
      * has decremented mapped_count to 0 for all bootstrap-mapped pages. */
@@ -596,7 +641,7 @@ void kprocess_reap_address_space(struct KProcess *p) {
      * has already been told it is free to RESET.  The walk first, the object
      * after: the reverse of how it reads, and the only order that is true.
      */
-    paging_destroy_user_space_from(cr3, tables_pooled);
+    paging_destroy_user_space_from(cr3, pml4_pooled);
     p->cr3 = 0;
     p->user_cr3 = 0;
     if (vs) kobject_release(&vs->base);

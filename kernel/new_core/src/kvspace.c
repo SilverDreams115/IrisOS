@@ -58,8 +58,15 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     /* Stage 6-pure Step 1: tables the HOLDER retyped go back as capabilities.
      * Releasing our reference is the whole of it — the region returns to its
      * Untyped when the last capability to the table goes, exactly like any
-     * other retyped object, and the holder can then RESET.  The PTEs that
-     * referenced them are torn down by paging_destroy_user_space_from. */
+     * other retyped object, and the holder can then RESET.
+     *
+     * Detach first when there is still a walk to detach from.  Teardown
+     * through kprocess_reap_address_space has already done it (and zeroed
+     * cr3); a VSpace destroyed by its LAST CAPABILITY going away, with no
+     * process behind it, reaches here with a live cr3 and levels still hanging
+     * off it, and must not hand those pages back with the PML4 still pointing
+     * at them. */
+    kvspace_detach_tables(vs, cr3);
     {
         struct KPageTable *t = vs->tables;
         vs->tables = 0;
@@ -131,6 +138,29 @@ iris_error_t kvspace_bind(struct KVSpace *vs) {
     return r;
 }
 
+/*
+ * Give the claim back, for a composition that did not happen.
+ *
+ * Binding is a claim taken at the START of composing a process, several
+ * fallible steps before anything owns the address space.  Without this, a
+ * create that failed after the bind — no budget on the VSpace, a bad CSpace
+ * argument, no memory for the KProcess — left the caller holding a capability
+ * to an address space that would answer BUSY for the rest of its life, with no
+ * operation able to clear the flag.  The only recovery was to destroy the
+ * object and retype another, which costs a page of a budget a bump allocator
+ * never rewinds.
+ *
+ * NOT for undoing a successful bind later: a process that reached teardown
+ * leaves its address space invalidated (cr3 == 0), so it is spent whether or
+ * not the flag is clear, and rebinding it would be rebinding a dead walk.
+ */
+void kvspace_unbind(struct KVSpace *vs) {
+    if (!vs) return;
+    spinlock_lock(&vs->lock);
+    vs->bound = 0;
+    spinlock_unlock(&vs->lock);
+}
+
 struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3) {
     if (!mem) return 0;
     struct KVSpace *vs = (struct KVSpace *)mem;   /* block arrives zeroed */
@@ -165,7 +195,6 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
     vs->kernel_funded  = 1;
     vs->bound          = 1;   /* the root task's, and only its */
     vs->free_nodes     = 0;
-    vs->node_count     = 0;
     atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);
     return vs;
 }
@@ -254,12 +283,7 @@ struct KFrameMapping *kvspace_node_alloc(struct KVSpace *vs) {
     struct KUntyped *pool = vs->pt_pool;
     spinlock_unlock(&vs->lock);
 
-    m = kuntyped_alloc_child_top(pool, sizeof(struct KFrameMapping));
-    if (!m) return 0;
-    spinlock_lock(&vs->lock);
-    vs->node_count++;
-    spinlock_unlock(&vs->lock);
-    return m;
+    return kuntyped_alloc_child_top(pool, sizeof(struct KFrameMapping));
 }
 
 void kvspace_node_free(struct KVSpace *vs, struct KFrameMapping *m) {
@@ -280,9 +304,27 @@ static void kvspace_release_nodes(struct KVSpace *vs) {
     while (m) {
         struct KFrameMapping *next = m->next;
         kuntyped_release_child(m, sizeof(struct KFrameMapping));
-        vs->node_count--;
         m = next;
     }
+}
+
+/*
+ * See kvspace.h.  Three passes, one per level, deepest first: `tables` is a
+ * newest-first list and a table's parent may be anywhere in it, so ordering by
+ * the list would sometimes clear a PDPT entry before the PD hanging under it
+ * had been reached — and then the PD's own detach would walk through a hole
+ * and find nothing.  Ordering by LEVEL cannot get that wrong.
+ */
+void kvspace_detach_tables(struct KVSpace *vs, uint64_t cr3) {
+    if (!vs || !cr3) return;
+    spinlock_lock(&vs->lock);
+    for (uint32_t lvl = KPT_LEVEL_PT; lvl <= KPT_LEVEL_PDPT; lvl++) {
+        for (struct KPageTable *t = vs->tables; t; t = t->next) {
+            if (t->level != lvl) continue;
+            (void)paging_detach_table_in(cr3, t->mapped_va, (int)lvl, t->paddr);
+        }
+    }
+    spinlock_unlock(&vs->lock);
 }
 
 iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
@@ -318,6 +360,25 @@ iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
         spinlock_unlock(&vs->lock);
         return IRIS_ERR_BUSY;
     }
+
+    /*
+     * Zero it HERE, not only at retype.
+     *
+     * Retype hands out a clean table, but a table does not stay retyped-and-
+     * unused: a VSpace that dies releases its levels with their entries intact
+     * (teardown detaches them from the walk, it does not scrub them), so a
+     * holder that kept the capability holds a page full of the dead address
+     * space's PTEs.  Re-installing it without this would splice those mappings
+     * into another address space — and, because nothing binds a table to the
+     * level it once filled, a former PT installed as a PDPT would have the MMU
+     * read leaf PTEs as table pointers and walk into arbitrary physical memory.
+     *
+     * 512 stores on a path that is already a syscall and a TLB event.  The
+     * invariant it buys — a level enters a walk empty, whatever it was before —
+     * is what makes reuse safe at all, so it belongs at the point of use rather
+     * than at every point that could dirty a table.
+     */
+    kpagetable_zero(pt);
 
     /* Intermediate levels are always present+writable+user: the leaf PTE is
      * what carries the real permissions, and a level that refused USER would

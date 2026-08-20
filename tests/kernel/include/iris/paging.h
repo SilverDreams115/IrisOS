@@ -21,7 +21,9 @@ extern int iris_pcid_enabled;
 
 int      paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
 struct KUntyped;
-void     paging_destroy_user_space_from(uint64_t cr3, int tables_pooled);
+void     paging_destroy_user_space_from(uint64_t cr3, int pml4_pooled);
+int      paging_detach_table_in(uint64_t cr3, uint64_t virt, int level,
+                                uint64_t table_phys);
 /* Stage 6-pure Step 1 — the walk, reported; the table, installed. */
 void     paging_init_user_pml4(uint64_t pml4_page_phys);
 int      paging_missing_level_in(uint64_t cr3, uint64_t virt);

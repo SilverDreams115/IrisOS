@@ -23,6 +23,12 @@
  *   [PT-8]  the bootstrap exception: a kernel-funded address space maps
  *           without being owed anything, and stops being kernel-funded for
  *           good once its holder can speak.
+ *   [PT-9]  a level enters a walk EMPTY, whatever it held before — the
+ *           invariant that makes reusing a released table safe at all.
+ *   [PT-10] teardown takes the holder's levels back out of the walk, exactly
+ *           those, idempotently, and never on a stale record.
+ *   [PT-11] a bind claim taken for a composition that failed goes back, so the
+ *           same address space can be offered to a retry.
  */
 
 #include "framework.h"
@@ -176,6 +182,115 @@ void test_pagetable(void) {
             kvspace_end_bootstrap(boot);
             ASSERT_EQ((int)boot->kernel_funded, 0);
             kobject_release(&boot->base);
+        }
+    }
+
+    /*
+     * [PT-9] a level enters a walk EMPTY.
+     *
+     * Teardown detaches a table from the walk; it does not scrub it, and a PT
+     * in particular keeps all 512 of its leaf entries.  A holder that kept the
+     * capability therefore holds a page full of a dead address space's PTEs,
+     * and nothing binds a table to the level it once filled — so re-installing
+     * it as a PDPT would have the MMU read those leaf entries as pointers to
+     * page tables and walk into arbitrary physical memory.  Zeroing at INSTALL
+     * is what makes the object reusable; this is the assertion that it happens.
+     */
+    {
+        struct KPageTable *dirty = pt_make(ut);
+        ASSERT_NOT_NULL(dirty);
+        if (dirty) {
+            uint64_t *page = (uint64_t *)(uintptr_t)PHYS_TO_VIRT(dirty->paddr);
+            for (uint32_t i = 0; i < 512u; i++) page[i] = 0xDEADBEEF00000001ULL;
+
+            struct KVSpace *fresh = kvspace_alloc(cr3 + 0x9000ULL);
+            ASSERT_NOT_NULL(fresh);
+            if (fresh) {
+                kvspace_set_pt_pool(fresh, ut);
+                ASSERT_EQ((int)kvspace_map_table(fresh, dirty,
+                                                 PT_VA + 0x20000000000ULL),
+                          (int)IRIS_OK);
+                int clean = 1;
+                for (uint32_t i = 0; i < 512u; i++)
+                    if (page[i] != 0ULL) { clean = 0; break; }
+                ASSERT_TRUE(clean);
+                kobject_release(&fresh->base);
+            }
+            kobject_release(&dirty->base);
+        }
+    }
+
+    /*
+     * [PT-10] the levels the HOLDER supplied leave the walk at teardown.
+     *
+     * This is what lets paging_destroy_user_space_from free what is left to
+     * the PMM without asking where anything came from: after the detach the
+     * only thing still reachable is what the kernel itself carved.  The root
+     * task is why it has to be per-TABLE and not per-address-space — its PML4
+     * is a PMM page while every level it installs after kvspace_end_bootstrap
+     * comes from an Untyped, so one answer for the whole walk is wrong for it
+     * whichever way it is given.
+     */
+    {
+        uint64_t        dcr3 = cr3 + 0x11000ULL;
+        struct KVSpace *dvs  = kvspace_alloc(dcr3);
+        ASSERT_NOT_NULL(dvs);
+        if (dvs) {
+            kvspace_set_pt_pool(dvs, ut);
+            struct KPageTable *lv[3];
+            uint64_t dva = PT_VA + 0x30000000000ULL;
+            for (int i = 0; i < 3; i++) {
+                lv[i] = pt_make(ut);
+                ASSERT_NOT_NULL(lv[i]);
+                if (lv[i])
+                    ASSERT_EQ((int)kvspace_map_table(dvs, lv[i], dva), (int)IRIS_OK);
+            }
+            /* The walk is complete: a fourth table has nothing to fill. */
+            ASSERT_EQ(paging_missing_level_in(dcr3, dva), 0);
+
+            kvspace_detach_tables(dvs, dcr3);
+            /* ...and now it is empty again, from the top. */
+            ASSERT_EQ(paging_missing_level_in(dcr3, dva), 3);
+
+            /* Idempotent: a second pass detaches nothing and says so, which is
+             * what makes it safe on a half-torn-down address space. */
+            kvspace_detach_tables(dvs, dcr3);
+            ASSERT_EQ(paging_missing_level_in(dcr3, dva), 3);
+
+            /* A record that no longer describes the walk detaches nothing —
+             * identity is checked, so a stale (va, level) cannot take somebody
+             * else's level out. */
+            if (lv[0])
+                ASSERT_EQ(paging_detach_table_in(dcr3, dva, KPT_LEVEL_PDPT,
+                                                 lv[0]->paddr), -1);
+
+            for (int i = 0; i < 3; i++) if (lv[i]) kobject_release(&lv[i]->base);
+            kobject_release(&dvs->base);
+        }
+    }
+
+    /*
+     * [PT-11] a claim taken for a composition that did not happen goes back.
+     *
+     * SYS_PROCESS_CREATE binds the address space several fallible steps before
+     * anything owns it.  Without the unwind, a create that failed for want of
+     * memory left the caller holding a VSpace that would answer BUSY for the
+     * rest of the system's life — recoverable only by destroying it and
+     * retyping another, which costs a page of a budget that never rewinds.
+     */
+    {
+        void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KVSpace));
+        ASSERT_NOT_NULL(hdr);
+        if (hdr) {
+            struct KVSpace *bv = kvspace_alloc_at(hdr, cr3 + 0x21000ULL);
+            ASSERT_NOT_NULL(bv);
+            if (bv) {
+                ASSERT_EQ((int)kvspace_bind(bv), (int)IRIS_OK);
+                ASSERT_EQ((int)kvspace_bind(bv), (int)IRIS_ERR_BUSY);
+                kvspace_unbind(bv);
+                ASSERT_EQ((int)kvspace_bind(bv), (int)IRIS_OK);
+                kobject_release(&bv->base);
+            }
         }
     }
 

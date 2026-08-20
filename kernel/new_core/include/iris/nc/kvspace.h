@@ -97,7 +97,6 @@ struct KVSpace {
      * the VSpace carves only when the list is empty, and returns every node to
      * its Untyped when the address space is destroyed. */
     struct KFrameMapping *free_nodes;
-    uint32_t              node_count;   /* nodes ever carved from pt_pool */
     /* Stage 6-pure Step 1: the page tables the HOLDER retyped and installed
      * here, newest first.  The VSpace holds one reference to each for as long
      * as it is part of the walk, which is what stops a holder from RESETting
@@ -119,6 +118,24 @@ struct KPageTable;
  */
 iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
                                uint64_t vaddr);
+
+/*
+ * Take every table this VSpace installed back OUT of the walk rooted at `cr3`.
+ *
+ * Called by teardown BEFORE paging_destroy_user_space_from, and the reason
+ * that function no longer has to decide where a level came from: after this,
+ * everything still reachable from the PML4 was carved by the kernel, whatever
+ * kind of address space this is.  The root task is the case that forced it —
+ * its PML4 is a PMM page while the levels it installs after
+ * kvspace_end_bootstrap come from its own Untyped, so a per-address-space
+ * "pooled or not" answer was wrong for it in both directions.
+ *
+ * `cr3` is passed rather than read from `vs` because kvspace_invalidate has
+ * already zeroed the field by the time teardown gets here; detaching from a
+ * cr3 of 0 is a no-op.  Deepest level first, so a table is still reachable
+ * when its own parent is detached.  Idempotent.
+ */
+void kvspace_detach_tables(struct KVSpace *vs, uint64_t cr3);
 
 /* Mapping-record allocator.  Caller holds no VSpace lock: both take it. */
 struct KFrameMapping *kvspace_node_alloc(struct KVSpace *vs);
@@ -172,6 +189,11 @@ struct KVSpace *kvspace_retype_at(void *mem, uint64_t pml4_phys,
 /* Bind a retyped address space to a process.  Fails if it is already bound —
  * one address space, one process, because teardown is per-process. */
 iris_error_t kvspace_bind(struct KVSpace *vs);
+
+/* Release a bind claim taken for a composition that then failed, so the caller
+ * can retry with the same address space.  See kvspace.c: this is an UNWIND,
+ * not an unbind of a process that actually ran. */
+void kvspace_unbind(struct KVSpace *vs);
 
 /* Mark the VSpace invalid and zero cr3.  Called by kprocess_reap_address_space
  * before paging_destroy_user_space so no capability holder can read a freed cr3. */

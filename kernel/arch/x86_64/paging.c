@@ -88,25 +88,6 @@ static uint64_t *walk_pt(uint64_t cr3, uint64_t virt) {
     return phys_to_ptr(entry & ~0xFFFULL);
 }
 
-/* Stage 6 Step 2: a pooled table's page belongs to an Untyped, not to the
- * PMM — returning it to the buddy allocator would hand out memory that is
- * still inside somebody's Untyped region.  Pooled address spaces therefore
- * tear their tables down without freeing: the pages return to their Untyped
- * when it is RESET or destroyed, which is the same lifetime every other
- * retyped object has. */
-static void destroy_pt_level_pooled(uint64_t table_phys, int level) {
-    if (table_phys == 0 || level < 1) return;
-    uint64_t *table = phys_to_ptr(table_phys);
-    if (level == 1) return;
-    for (uint64_t i = 0; i < ENTRIES; i++) {
-        uint64_t entry = table[i];
-        if (!(entry & PAGE_PRESENT)) continue;
-        if (entry & PAGE_HUGE) continue;
-        destroy_pt_level_pooled(entry & ~0xFFFULL, level - 1);
-        table[i] = 0;
-    }
-}
-
 static void destroy_pt_level(uint64_t table_phys, int level) {
     uint64_t *table = phys_to_ptr(table_phys);
 
@@ -215,6 +196,51 @@ int paging_install_table_in(uint64_t cr3, uint64_t virt, uint64_t table_phys,
 
     __asm__ volatile ("pushq %0; popfq" : : "r"(rflags) : "memory");
     return level;
+}
+
+/*
+ * Stage 6-pure — take one holder-retyped level back OUT of the walk.
+ *
+ * The counterpart of paging_install_table_in, and the reason teardown no
+ * longer has to guess where a level came from: a VSpace detaches every table
+ * it holds a capability to, and whatever is still hanging off the PML4 after
+ * that is by construction kernel-carved and safe to hand to the PMM.
+ *
+ * `table_phys` is checked against the entry before it is cleared.  A record
+ * that no longer describes the walk — the level was replaced, a huge page went
+ * in, the parent is already gone — detaches nothing and says so, which is what
+ * makes calling this on every table of a half-torn-down address space safe.
+ */
+int paging_detach_table_in(uint64_t cr3, uint64_t virt, int level,
+                           uint64_t table_phys) {
+    if (cr3 == 0 || table_phys == 0 || level < 1 || level > 3) return -1;
+
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+
+    int       rc  = -1;
+    uint64_t *tbl = phys_to_ptr(cr3);
+    uint64_t  idx = PML4_IDX(virt);
+
+    for (int cur = 3; cur > level; cur--) {
+        uint64_t e = tbl[idx];
+        if (!(e & PAGE_PRESENT) || (e & PAGE_HUGE)) goto out;
+        tbl = phys_to_ptr(e & ~0xFFFULL);
+        idx = (cur == 3) ? PDPT_IDX(virt) : PD_IDX(virt);
+    }
+    if ((tbl[idx] & PAGE_PRESENT) &&
+        !(tbl[idx] & PAGE_HUGE) &&
+        (tbl[idx] & ~0xFFFULL) == (table_phys & ~0xFFFULL)) {
+        tbl[idx] = 0;
+        rc = 0;
+    }
+out:
+    __asm__ volatile ("pushq %0; popfq" : : "r"(rflags) : "memory");
+    /* No TLB shootdown: the only caller is address-space teardown, where this
+     * CR3 is not loaded on any CPU and the next context switch reloads CR3
+     * wholesale.  A future caller that detaches a level from a LIVE address
+     * space owes a flush of the whole subtree, not one invlpg of `virt`. */
+    return rc;
 }
 
 /*
@@ -482,21 +508,31 @@ void paging_unmap_in(uint64_t cr3, uint64_t virt) {
     __atomic_fetch_add(&paging_tlb_invlpg, 1u, __ATOMIC_RELAXED);
 }
 
-void paging_destroy_user_space_from(uint64_t cr3, int tables_pooled) {
+void paging_destroy_user_space_from(uint64_t cr3, int pml4_pooled) {
     if (cr3 == 0) return;
 
+    /*
+     * Only the private window, and only what the kernel carved.
+     *
+     * Holder-retyped levels are gone from the walk by now
+     * (kvspace_detach_tables), wherever in the address space they were
+     * installed — so the single entry swept here is not a claim that user
+     * mappings live only under this index, it is a claim about who allocated
+     * what is still reachable.  alloc_table() is called for exactly two
+     * address spaces (the kernel's, and the root task's pre-run maps) and
+     * every page it produces hangs below USER_PRIVATE_PML4_INDEX.
+     */
     uint64_t *pml4 = phys_to_ptr(cr3);
     uint64_t root = pml4[USER_PRIVATE_PML4_INDEX];
     if (root & PAGE_PRESENT) {
-        if (tables_pooled) destroy_pt_level_pooled(root & ~0xFFFULL, 3);
-        else               destroy_pt_level(root & ~0xFFFULL, 3);
+        destroy_pt_level(root & ~0xFFFULL, 3);
         pml4[USER_PRIVATE_PML4_INDEX] = 0;
     }
 
     /* Stage 6 Step 3: a pooled PML4 is inside somebody's Untyped — returning
      * it to the buddy allocator would hand out memory that region still owns.
      * Its child entry is returned by the VSpace along with the tables. */
-    if (!tables_pooled) pmm_free_page(cr3);
+    if (!pml4_pooled) pmm_free_page(cr3);
 }
 
 void paging_destroy_user_space(uint64_t cr3) {
