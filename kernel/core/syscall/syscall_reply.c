@@ -58,8 +58,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
     uint64_t ep_badge = 0;
-    iris_error_t err = cspace_resolve_only_endpoint_badged(
-        t->process, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
+    iris_error_t err = cspace_resolve_only_endpoint_badged(t->cspace_root, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
     if (!copy_from_user_checked(&t->ipc_msg, arg1, (uint32_t)sizeof(struct IrisMsg))) {
@@ -317,7 +316,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KReply *rp; iris_rights_t rp_rights;
-    iris_error_t err = cspace_resolve_only_reply(t->process, kreply_cptr,
+    iris_error_t err = cspace_resolve_only_reply(t->cspace_root, kreply_cptr,
                                                        RIGHT_WRITE, &rp, &rp_rights);
     if (err != IRIS_OK) return syscall_err(err);
 

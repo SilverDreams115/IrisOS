@@ -81,7 +81,7 @@ void test_untyped_cspace(void) {
         kobject_release(&ut->base); /* drop alloc ref; CNode slot owns it */
 
         struct KUntyped *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_only_untyped(p, 2u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(p->cspace_root, 2u, RIGHT_NONE, &out, &rout),
                   IRIS_OK);
         ASSERT_EQ(out->base.type, KOBJ_UNTYPED);
         ASSERT_EQ(rout, RIGHT_READ | RIGHT_WRITE);
@@ -106,7 +106,7 @@ void test_untyped_cspace(void) {
         kobject_release(&ep->base);
 
         struct KUntyped *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_only_untyped(p, 3u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(p->cspace_root, 3u, RIGHT_NONE, &out, &rout),
                   IRIS_ERR_WRONG_TYPE);
 
         free_proc(p);
@@ -127,10 +127,10 @@ void test_untyped_cspace(void) {
 
         struct KUntyped *out; iris_rights_t rout;
         /* Slot has READ-only; need WRITE → ACCESS_DENIED. */
-        ASSERT_EQ(cspace_resolve_only_untyped(p, 4u, RIGHT_WRITE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(p->cspace_root, 4u, RIGHT_WRITE, &out, &rout),
                   IRIS_ERR_ACCESS_DENIED);
         /* Slot has READ; need READ → OK. */
-        ASSERT_EQ(cspace_resolve_only_untyped(p, 4u, RIGHT_READ, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(p->cspace_root, 4u, RIGHT_READ, &out, &rout),
                   IRIS_OK);
         kobject_active_release(&out->base);
         kobject_release(&out->base);
@@ -151,18 +151,24 @@ void test_untyped_cspace(void) {
         struct KUntyped *out; iris_rights_t rout;
         /* CPTR_NULL → CSpace rejects it → falls back to handle table.
          * Handle table lookup with id=0 (CPTR_NULL) → NOT_FOUND or INVALID_ARG. */
-        iris_error_t err = cspace_resolve_only_untyped(p, CPTR_NULL,
+        iris_error_t err = cspace_resolve_only_untyped(p->cspace_root, CPTR_NULL,
                                                              RIGHT_NONE, &out, &rout);
         ASSERT_TRUE(err != IRIS_OK);
 
         free_proc(p);
     }
 
-    /* ── [UT] null proc returns INVALID_ARG ── */
+    /* ── [UT] no CSpace returns NOT_FOUND ── */
     {
+        /* Stage 7 Step 4: the first argument is the CSpace ROOT, not a
+         * process, so NULL now means "this caller has no CSpace" — the same
+         * situation a process with an unset root was already in, and it gets
+         * the same answer.  It used to be two codes for one state: NOT_FOUND
+         * for a process whose root was unset, INVALID_ARG for no process at
+         * all, which a caller could not act on differently anyway. */
         struct KUntyped *out; iris_rights_t rout;
         ASSERT_EQ(cspace_resolve_only_untyped(NULL, 1u, RIGHT_NONE, &out, &rout),
-                  IRIS_ERR_INVALID_ARG);
+                  IRIS_ERR_NOT_FOUND);
     }
 
     /* ── [UT] child_count: alloc_child increments, release_child decrements ── */
@@ -201,7 +207,7 @@ void test_untyped_cspace(void) {
         kobject_release(&ut->base);
 
         struct KUntyped *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_only_untyped(p, 5u, RIGHT_READ, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(p->cspace_root, 5u, RIGHT_READ, &out, &rout),
                   IRIS_OK);
         ASSERT_TRUE((rout & RIGHT_READ) != 0);
         ASSERT_TRUE((rout & RIGHT_WRITE) != 0);

@@ -29,7 +29,7 @@ uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KNotification *notif; iris_rights_t notif_r;
-    iris_error_t r = cspace_resolve_only_notification(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_notification(t->cspace_root, (iris_cptr_t)arg0,
                                                             RIGHT_WRITE, &notif, &notif_r);
     if (r != IRIS_OK) return syscall_err(r);
     knotification_signal(notif, arg1);
@@ -46,7 +46,7 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KNotification *notif; iris_rights_t notif_r;
-    iris_error_t r = cspace_resolve_only_notification(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_notification(t->cspace_root, (iris_cptr_t)arg0,
                                                             RIGHT_WAIT, &notif, &notif_r);
     if (r != IRIS_OK) return syscall_err(r);
     uint64_t bits = 0;
@@ -75,7 +75,7 @@ uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KNotification *notif; iris_rights_t notif_r;
-    iris_error_t r = cspace_resolve_only_notification(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_notification(t->cspace_root, (iris_cptr_t)arg0,
                                                             RIGHT_WAIT, &notif, &notif_r);
     if (r != IRIS_OK) return syscall_err(r);
 

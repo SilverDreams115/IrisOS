@@ -141,7 +141,7 @@ static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr) {
     if (!cspace_value_is_cptr((iris_cptr_t)auth_cptr)) return 0;
 
     struct KObject *obj; iris_rights_t r;
-    if (cspace_resolve_cap(t->process, (iris_cptr_t)auth_cptr, RIGHT_READ,
+    if (cspace_resolve_cap(t->cspace_root, (iris_cptr_t)auth_cptr, RIGHT_READ,
                            &obj, &r) != IRIS_OK) return 0;
     /* Stage 5 Step 2: exact match.  Debug authority is its own capability, so
      * a capability that merely includes the bit — which, before the split, was
@@ -224,7 +224,7 @@ uint64_t sys_handle_insert(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t
 uint64_t sys_handle_type(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_handle_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* Caller's root CNode with active+lifecycle refs (defined in syscall_cspace.c). */
-iris_error_t cspace_own_root(struct KProcess *proc, struct KCNode **out);
+iris_error_t cspace_own_root(struct KCNode *root, struct KCNode **out);
 
 /*
  * Publish a freshly created object into a CSpace slot of the CALLER's root
@@ -243,11 +243,11 @@ iris_error_t cspace_own_root(struct KProcess *proc, struct KCNode **out);
  * destination is a place to PUT authority, and naming it in the retiring
  * namespace would make this a new dual-namespace path — exactly what charter
  * §3.6 forbids as a pattern.  Yields active + lifecycle, like the traversal. */
-static inline iris_error_t cspace_resolve_cnode_for_publish(struct KProcess *p,
+static inline iris_error_t cspace_resolve_cnode_for_publish(struct KCNode *root,
                                                             iris_cptr_t cptr,
                                                             struct KCNode **out) {
     struct KObject *obj; iris_rights_t r;
-    iris_error_t err = cspace_resolve_cap(p, cptr, RIGHT_WRITE, &obj, &r);
+    iris_error_t err = cspace_resolve_cap(root, cptr, RIGHT_WRITE, &obj, &r);
     if (err != IRIS_OK) return err;
     if (obj->type != KOBJ_CNODE) {
         kobject_active_release(obj);
@@ -275,9 +275,9 @@ static inline iris_error_t syscall_publish_slot(struct task *t,
     struct KCNode *cn = 0;
     iris_error_t err;
     if (dest_cnode == 0u) {
-        err = cspace_own_root(t->process, &cn);
+        err = cspace_own_root(t->cspace_root, &cn);
     } else {
-        err = cspace_resolve_cnode_for_publish(t->process,
+        err = cspace_resolve_cnode_for_publish(t->cspace_root,
                                                (iris_cptr_t)dest_cnode, &cn);
     }
     if (err != IRIS_OK) { kobject_release(obj); return err; }

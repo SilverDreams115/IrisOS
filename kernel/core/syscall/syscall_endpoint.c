@@ -55,7 +55,7 @@ iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr
 
     struct KCNode *src_cn;
     uint32_t       src_idx;
-    iris_error_t r = cspace_resolve_slot(t->process, (iris_cptr_t)src_cptr,
+    iris_error_t r = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)src_cptr,
                                          &src_cn, &src_idx);
     if (r != IRIS_OK) return r;
 
@@ -190,7 +190,7 @@ iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared) {
     if (!cspace_value_is_cptr((iris_cptr_t)declared)) return IRIS_OK;
 
     struct KCNode *cn; uint32_t idx;
-    iris_error_t e = cspace_resolve_dest_slot(t->process, (iris_cptr_t)declared,
+    iris_error_t e = cspace_resolve_dest_slot(t->cspace_root, (iris_cptr_t)declared,
                                               &cn, &idx);
     if (e == IRIS_ERR_NOT_FOUND && t->process && !t->process->cspace_root)
         return IRIS_ERR_NOT_FOUND;
@@ -239,7 +239,7 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
         /* Stage 4: the declaration is a CPtr, so the destination is found by
          * traversal — it need not be a direct slot of the root CNode. */
         struct KCNode *cn; uint32_t idx;
-        iris_error_t e = cspace_resolve_dest_slot(receiver->process,
+        iris_error_t e = cspace_resolve_dest_slot(receiver->cspace_root,
                                                   (iris_cptr_t)slot, &cn, &idx);
         if (e == IRIS_OK) {
             /* Phase S4 (Step 2): install as an MDB CHILD of the sender's
@@ -358,8 +358,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
     uint64_t ep_badge = 0;
-    iris_error_t err = cspace_resolve_only_endpoint_badged(
-        t->process, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
+    iris_error_t err = cspace_resolve_only_endpoint_badged(t->cspace_root, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
     /* Copy sender's message. */
@@ -525,7 +524,7 @@ static iris_error_t ep_recv_reply_stage(struct task *t, uint64_t reply_arg) {
     if (reply_arg == 0u) return IRIS_OK;
 
     struct KReply *rp; iris_rights_t rp_r;
-    iris_error_t err = cspace_resolve_only_reply(t->process,
+    iris_error_t err = cspace_resolve_only_reply(t->cspace_root,
                             (iris_cptr_t)reply_arg, RIGHT_WRITE, &rp, &rp_r);
     if (err != IRIS_OK) return err;
     err = kreply_stage(rp);
@@ -575,7 +574,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
-    iris_error_t err = cspace_resolve_only_endpoint(t->process, (iris_cptr_t)arg0,
+    iris_error_t err = cspace_resolve_only_endpoint(t->cspace_root, (iris_cptr_t)arg0,
                                                           RIGHT_READ, &ep, &_ep_r);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -787,8 +786,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
     uint64_t ep_badge = 0;
-    iris_error_t err = cspace_resolve_only_endpoint_badged(
-        t->process, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
+    iris_error_t err = cspace_resolve_only_endpoint_badged(t->cspace_root, (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &_ep_r, &ep_badge);
     if (err != IRIS_OK) return syscall_err(err);
 
     if (!copy_from_user_checked(&t->ipc_msg, arg1, (uint32_t)sizeof(struct IrisMsg))) {
@@ -902,7 +900,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
-    iris_error_t err = cspace_resolve_only_endpoint(t->process, (iris_cptr_t)arg0,
+    iris_error_t err = cspace_resolve_only_endpoint(t->cspace_root, (iris_cptr_t)arg0,
                                                           RIGHT_READ, &ep, &_ep_r);
     if (err != IRIS_OK) return syscall_err(err);
 

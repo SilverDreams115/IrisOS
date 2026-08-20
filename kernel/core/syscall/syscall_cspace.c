@@ -105,7 +105,7 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     /* Child process capability — spawner authority required. */
     struct KObject *proc_obj;
     iris_rights_t   proc_rights;
-    iris_error_t err = cspace_resolve_only_obj(t->process, (iris_cptr_t)proc_h,
+    iris_error_t err = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)proc_h,
                                  RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (err != IRIS_OK) return syscall_err(err);
     if (!rights_check(proc_rights, RIGHT_WRITE)) {
@@ -138,7 +138,7 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         kobject_release(proc_obj);
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
-    err = cspace_resolve_cap_badged(t->process, (iris_cptr_t)src_h, RIGHT_NONE,
+    err = cspace_resolve_cap_badged(t->cspace_root, (iris_cptr_t)src_h, RIGHT_NONE,
                                     &src_obj, &src_rights, &src_badge);
     if (err == IRIS_OK) kobject_active_release(src_obj);
     if (err != IRIS_OK) {
@@ -200,13 +200,16 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
  * dest_cnode == 0 convention).  Shared with syscall_cap.c (device-cap
  * publication) via syscall_priv.h.
  *
- * Stage 4: the root is a structural back-reference on KProcess, so this no
- * longer reads the handle table at all — the ledger entry "root CNode
- * reachable only via cspace_root_h" is retired, and with it the last reason
- * CSpace resolution depended on the namespace it was built to replace. */
-iris_error_t cspace_own_root(struct KProcess *proc, struct KCNode **out) {
-    if (!proc || !proc->cspace_root) return IRIS_ERR_NOT_FOUND;
-    struct KObject *root_obj = &proc->cspace_root->base;
+ * Stage 4: the root is a structural back-reference, so this no longer reads
+ * the handle table at all — the ledger entry "root CNode reachable only via
+ * cspace_root_h" is retired, and with it the last reason CSpace resolution
+ * depended on the namespace it was built to replace.
+ *
+ * Stage 7 Step 4: the back-reference it reads is the THREAD's.  "My own root"
+ * used to mean my process's, which was the same CNode and a different claim. */
+iris_error_t cspace_own_root(struct KCNode *root, struct KCNode **out) {
+    if (!root) return IRIS_ERR_NOT_FOUND;
+    struct KObject *root_obj = &root->base;
     kobject_retain(root_obj);
     kobject_active_retain(root_obj);
     *out = (struct KCNode *)root_obj;
@@ -238,16 +241,16 @@ uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (dest_slot == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KCNode *src_cn; uint32_t src_idx;
-    iris_error_t err = cspace_resolve_slot(proc, (iris_cptr_t)src_cptr,
+    iris_error_t err = cspace_resolve_slot(proc->cspace_root, (iris_cptr_t)src_cptr,
                                            &src_cn, &src_idx);
     if (err != IRIS_OK) return syscall_err(err);
 
     struct KCNode *dst_cn = 0;
     if (dest_cnode == 0u) {
-        err = cspace_own_root(proc, &dst_cn);
+        err = cspace_own_root(proc->cspace_root, &dst_cn);
     } else {
         iris_rights_t dr;
-        err = cspace_resolve_cnode(proc, (iris_cptr_t)dest_cnode,
+        err = cspace_resolve_cnode(proc->cspace_root, (iris_cptr_t)dest_cnode,
                                    RIGHT_WRITE, &dst_cn, &dr);
         if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     }
@@ -281,7 +284,7 @@ uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!cspace_only_cptr(arg0)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KCNode *cn; uint32_t idx;
-    iris_error_t err = cspace_resolve_slot(t->process, (iris_cptr_t)arg0,
+    iris_error_t err = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
                                            &cn, &idx);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -321,7 +324,7 @@ uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     /* Target process — spawner authority (same contract as PROC_CSPACE_MINT). */
     struct KObject *proc_obj;
     iris_rights_t   proc_rights;
-    iris_error_t err = cspace_resolve_only_obj(proc, (iris_cptr_t)arg0,
+    iris_error_t err = cspace_resolve_only_obj(proc->cspace_root, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (err != IRIS_OK) return syscall_err(err);
     if (!rights_check(proc_rights, RIGHT_WRITE)) {
@@ -341,7 +344,7 @@ uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
     /* Source slot in the CALLER's CSpace. */
     struct KCNode *src_cn; uint32_t src_idx;
-    err = cspace_resolve_slot(proc, (iris_cptr_t)src_cptr, &src_cn, &src_idx);
+    err = cspace_resolve_slot(proc->cspace_root, (iris_cptr_t)src_cptr, &src_cn, &src_idx);
     if (err != IRIS_OK) {
         kobject_release(cn_obj);
         kobject_release(proc_obj);
@@ -405,7 +408,7 @@ uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct KObject *obj;
     iris_rights_t   rights;
-    iris_error_t err = cspace_resolve_cap(t->process, (iris_cptr_t)arg0,
+    iris_error_t err = cspace_resolve_cap(t->cspace_root, (iris_cptr_t)arg0,
                                           RIGHT_NONE, &obj, &rights);
     if (err != IRIS_OK) return syscall_err(err);
     (void)rights;
@@ -439,7 +442,7 @@ uint64_t sys_cspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KCNode *root = 0;
-    iris_error_t err = cspace_own_root(t->process, &root);
+    iris_error_t err = cspace_own_root(t->cspace_root, &root);
     if (err != IRIS_OK) return syscall_err(err);
 
     /* cspace_own_root hands back an active+lifecycle pair; publish_slot takes
@@ -467,10 +470,10 @@ uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_rights_t   rights_a;
     iris_rights_t   rights_b;
 
-    iris_error_t err = cspace_resolve_cap(t->process, (iris_cptr_t)arg0,
+    iris_error_t err = cspace_resolve_cap(t->cspace_root, (iris_cptr_t)arg0,
                                           RIGHT_NONE, &obj_a, &rights_a);
     if (err != IRIS_OK) return syscall_err(err);
-    err = cspace_resolve_cap(t->process, (iris_cptr_t)arg1,
+    err = cspace_resolve_cap(t->cspace_root, (iris_cptr_t)arg1,
                              RIGHT_NONE, &obj_b, &rights_b);
     if (err != IRIS_OK) {
         kobject_active_release(obj_a);

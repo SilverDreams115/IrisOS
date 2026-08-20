@@ -6,6 +6,7 @@
 #include <iris/syscall.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
+#include <iris/nc/kcnode.h>
 #include <iris/nc/kframe.h>
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kendpoint.h>
@@ -532,6 +533,17 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     unlink_task(t);
     task_release_sched_ctx(t);
 
+    /* Stage 7 Step 4: the thread's own CSpace reference goes with its
+     * execution.  Dropped BEFORE kprocess_free below, so a process whose last
+     * thread is exiting still has its root emptied by kprocess_teardown and
+     * not by this release racing it. */
+    if (t->cspace_root) {
+        struct KCNode *cs = t->cspace_root;
+        t->cspace_root = 0;
+        kobject_active_release(&cs->base);
+        kobject_release(&cs->base);
+    }
+
     /* The kernel stack was freed above, with the registry slot it is keyed
      * by; these fields are already clear. */
 
@@ -831,6 +843,15 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         t->user_rsp = USER_STACK_TOP - 8 - (entropy << 4);
     }
     t->process          = proc;
+    /* Stage 7 Step 4: the root task's thread holds its own CSpace too.  It is
+     * read off the process here because there is no capability to pass — this
+     * is the one thread whose CSpace the KERNEL fabricated, before anything
+     * existed that could name it. */
+    t->cspace_root = proc->cspace_root;
+    if (t->cspace_root) {
+        kobject_retain(&t->cspace_root->base);
+        kobject_active_retain(&t->cspace_root->base);
+    }
     /* Same join every other thread takes.  Nothing can be tearing this process
      * down — it was allocated a few lines above and no capability to it exists
      * yet — but the count and the flag have one owner, so this path does not
@@ -939,7 +960,8 @@ void task_abort_spawned_user(struct task *t) {
  * configuring a thread does not start it, and TCB_WRITE_REGS still has to say
  * where it starts.
  */
-iris_error_t ktcb_configure(struct task *t, struct KProcess *proc) {
+iris_error_t ktcb_configure(struct task *t, struct KProcess *proc,
+                            struct KCNode *cspace) {
     if (!t || !proc || !proc->cr3) return IRIS_ERR_INVALID_ARG;
     if (t->configured || t->terminal) return IRIS_ERR_ALREADY_EXISTS;
 
@@ -967,6 +989,24 @@ iris_error_t ktcb_configure(struct task *t, struct KProcess *proc) {
             task_registry_release(t);
             return ae;
         }
+    }
+
+    /*
+     * Stage 7 Step 4: the thread takes the CSpace it was configured with.
+     *
+     * `cspace` is the capability the caller NAMED, passed down rather than
+     * re-read from the process — sys_tcb_configure has already proved the two
+     * are the same object, so reading it back off KProcess would produce an
+     * identical pointer by a route that contradicts the claim this step makes.
+     * The pair is lifecycle + active, the same one KProcess holds and for the
+     * same reason: the lifecycle ref keeps the object, the active ref keeps
+     * its SLOTS reachable, and dropping the active ref to zero is what empties
+     * a CSpace.  Released in task_execution_teardown_off_cpu.
+     */
+    t->cspace_root = cspace;
+    if (t->cspace_root) {
+        kobject_retain(&t->cspace_root->base);
+        kobject_active_retain(&t->cspace_root->base);
     }
 
     task_init_fpu_state(t);

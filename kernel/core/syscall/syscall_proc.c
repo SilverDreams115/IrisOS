@@ -73,7 +73,7 @@ uint64_t sys_process_status(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_rights_t   rights;
     /* A1 Increment 2a: dual resolver — the process may be a CPtr slot or a
      * handle.  RIGHT_NONE defers to the existing rights checks below. */
-    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
 
@@ -109,7 +109,7 @@ uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /* A1 Increment 2a: dual resolver on the watched process. */
-    r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
+    r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                                      RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (!rights_check(proc_rights, RIGHT_READ)) {
@@ -126,7 +126,7 @@ uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * traversal's active ref itself and hands back a LIFECYCLE-ONLY reference,
      * exactly what the handle read yielded.  The type check moves into the
      * resolver, which returns WRONG_TYPE for the same case. */
-    r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg1, RIGHT_NONE,
+    r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg1, RIGHT_NONE,
                                      KOBJ_NOTIFICATION, &notif_obj, &notif_rights);
     if (r != IRIS_OK) {
         kobject_release(proc_obj);
@@ -181,7 +181,7 @@ uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct KObject *obj;
     iris_rights_t   rights;
     /* A1 Increment 2a: dual resolver on the kill target. */
-    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
 
@@ -258,7 +258,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     /* Stage 5 Step 2: the authority is the PROCESS CONTROL capability, and
      * nothing else — creating a process no longer travels with initrd access,
      * debug authority or the framebuffer. */
-    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
     if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
@@ -288,7 +288,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     struct KVSpace *vs = 0;
     {
         iris_rights_t vr;
-        iris_error_t  ve = cspace_resolve_only_vspace(t->process,
+        iris_error_t  ve = cspace_resolve_only_vspace(t->cspace_root,
                                (iris_cptr_t)vspace_cptr, RIGHT_WRITE, &vs, &vr);
         if (ve != IRIS_OK)
             return syscall_err(ve == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ve);
@@ -321,7 +321,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     struct KCNode *cn = 0;
     {
         iris_rights_t cr;
-        iris_error_t  ce = cspace_resolve_only_cnode(t->process,
+        iris_error_t  ce = cspace_resolve_only_cnode(t->cspace_root,
                                (iris_cptr_t)cnode_cptr, RIGHT_WRITE, &cn, &cr);
         if (ce != IRIS_OK) {
             kvspace_unbind(vs);
@@ -382,7 +382,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     {
         struct KCNode *auth_cn = 0; uint32_t auth_idx = 0;
         if (cspace_value_is_cptr((iris_cptr_t)arg0) &&
-            cspace_resolve_slot(t->process, (iris_cptr_t)arg0,
+            cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
                                 &auth_cn, &auth_idx) != IRIS_OK)
             auth_cn = 0;
         kobject_retain(&proc->base);   /* publish consumes a ref; keep the initial one */
@@ -475,7 +475,7 @@ uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct KObject *obj;
     iris_rights_t   rights;
     /* A1 Increment 2a: dual resolver on the queried process. */
-    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
+    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (!rights_check(rights, RIGHT_READ)) {
@@ -519,7 +519,7 @@ uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         iris_rights_t rights;
         /* A1 Increment 2a: dual resolver on the non-self process.  The self
          * path above owns arg0 == 0 (HANDLE_INVALID == CPTR_NULL). */
-        iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
+        iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                                      RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
         if (r != IRIS_OK) return syscall_err(r);
         if (!rights_check(rights, RIGHT_READ)) {
@@ -581,7 +581,7 @@ uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_retain(&proc->base);
     } else {
         iris_rights_t rights;
-        iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
+        iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                                      RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
         if (r != IRIS_OK) return syscall_err(r);
         proc = (struct KProcess *)obj;

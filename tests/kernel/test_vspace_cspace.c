@@ -177,7 +177,7 @@ void test_vspace_cspace(void) {
         kvspace_free(vs);   /* drop alloc ref; CNode now owns one pair */
 
         struct KVSpace *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_vspace(p, BOOT_CPTR_VSPACE,
+        ASSERT_EQ(cspace_resolve_vspace(p->cspace_root, BOOT_CPTR_VSPACE,
                                          RIGHT_READ, &out, &rout),
                   IRIS_OK);
         ASSERT_EQ(out->base.type, KOBJ_VSPACE);
@@ -208,7 +208,7 @@ void test_vspace_cspace(void) {
         kvspace_free(vs);
 
         struct KObject *obj; iris_rights_t r;
-        ASSERT_EQ(cspace_resolve_cap(p, BOOT_CPTR_VSPACE,
+        ASSERT_EQ(cspace_resolve_cap(p->cspace_root, BOOT_CPTR_VSPACE,
                                       RIGHT_NONE, &obj, &r),
                   IRIS_OK);
         ASSERT_EQ(obj->type, KOBJ_VSPACE);
@@ -240,7 +240,7 @@ void test_vspace_cspace(void) {
         kobject_release(&ut->base);   /* drop alloc ref */
 
         struct KVSpace *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_vspace(p, BOOT_CPTR_VSPACE,
+        ASSERT_EQ(cspace_resolve_vspace(p->cspace_root, BOOT_CPTR_VSPACE,
                                          RIGHT_NONE, &out, &rout),
                   IRIS_ERR_WRONG_TYPE);
 
@@ -268,7 +268,7 @@ void test_vspace_cspace(void) {
 
         /* Require WRITE — must fail with ACCESS_DENIED. */
         struct KVSpace *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_vspace(p, BOOT_CPTR_VSPACE,
+        ASSERT_EQ(cspace_resolve_vspace(p->cspace_root, BOOT_CPTR_VSPACE,
                                          RIGHT_WRITE, &out, &rout),
                   IRIS_ERR_ACCESS_DENIED);
 
@@ -282,7 +282,7 @@ void test_vspace_cspace(void) {
         ASSERT_NOT_NULL(vs_setup_root(p));
 
         struct KVSpace *out; iris_rights_t rout;
-        iris_error_t err = cspace_resolve_vspace(p, CPTR_NULL,
+        iris_error_t err = cspace_resolve_vspace(p->cspace_root, CPTR_NULL,
                                                   RIGHT_NONE, &out, &rout);
         ASSERT_TRUE(err != IRIS_OK);
 
@@ -352,7 +352,7 @@ void test_vspace_cspace(void) {
 
         for (int i = 0; i < 10; i++) {
             struct KVSpace *out; iris_rights_t rout;
-            ASSERT_EQ(cspace_resolve_vspace(p, BOOT_CPTR_VSPACE,
+            ASSERT_EQ(cspace_resolve_vspace(p->cspace_root, BOOT_CPTR_VSPACE,
                                              RIGHT_READ, &out, &rout),
                       IRIS_OK);
             ASSERT_EQ(out->base.type, KOBJ_VSPACE);
@@ -362,7 +362,7 @@ void test_vspace_cspace(void) {
 
         /* Object still alive: CNode slot still holds it. */
         struct KVSpace *final_out; iris_rights_t fr;
-        ASSERT_EQ(cspace_resolve_vspace(p, BOOT_CPTR_VSPACE,
+        ASSERT_EQ(cspace_resolve_vspace(p->cspace_root, BOOT_CPTR_VSPACE,
                                          RIGHT_NONE, &final_out, &fr),
                   IRIS_OK);
         kobject_active_release(&final_out->base);

@@ -59,7 +59,7 @@ uint64_t sys_frame_map(uint64_t arg0, uint64_t arg1,
 
     struct KFrame   *frame;
     iris_rights_t    frame_rights;
-    iris_error_t err = cspace_resolve_only_frame(t->process, frame_cptr,
+    iris_error_t err = cspace_resolve_only_frame(t->cspace_root, frame_cptr,
                                                        frame_required,
                                                        &frame, &frame_rights);
     if (err != IRIS_OK) return syscall_err(err);
@@ -67,7 +67,7 @@ uint64_t sys_frame_map(uint64_t arg0, uint64_t arg1,
     /* VSpace cap: RIGHT_WRITE to install PTE. */
     struct KVSpace  *vs;
     iris_rights_t    vs_rights;
-    err = cspace_resolve_only_vspace(t->process, vspace_cptr, RIGHT_WRITE,
+    err = cspace_resolve_only_vspace(t->cspace_root, vspace_cptr, RIGHT_WRITE,
                                           &vs, &vs_rights);
     if (err != IRIS_OK) {
         kobject_active_release(&frame->base);
@@ -102,7 +102,7 @@ uint64_t sys_frame_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2)
     /* Frame cap: RIGHT_READ sufficient for unmap (caller holds the mapping). */
     struct KFrame   *frame;
     iris_rights_t    frame_rights;
-    iris_error_t err = cspace_resolve_only_frame(t->process, frame_cptr,
+    iris_error_t err = cspace_resolve_only_frame(t->cspace_root, frame_cptr,
                                                        RIGHT_READ,
                                                        &frame, &frame_rights);
     if (err != IRIS_OK) return syscall_err(err);
@@ -110,7 +110,7 @@ uint64_t sys_frame_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2)
     /* VSpace cap: RIGHT_WRITE to modify page tables. */
     struct KVSpace  *vs;
     iris_rights_t    vs_rights;
-    err = cspace_resolve_only_vspace(t->process, vspace_cptr, RIGHT_WRITE,
+    err = cspace_resolve_only_vspace(t->cspace_root, vspace_cptr, RIGHT_WRITE,
                                           &vs, &vs_rights);
     if (err != IRIS_OK) {
         kobject_active_release(&frame->base);

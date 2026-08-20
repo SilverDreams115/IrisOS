@@ -65,7 +65,7 @@ static iris_error_t dev_cap_publish(struct task *t, struct KObject *obj,
                                     iris_rights_t rights, uint32_t dest_slot,
                                     struct KCNode *auth_cn, uint32_t auth_idx) {
     struct KCNode *root = 0;
-    iris_error_t err = cspace_own_root(t->process, &root);
+    iris_error_t err = cspace_own_root(t->cspace_root, &root);
     if (err != IRIS_OK) return err;
 
     err = kcnode_slot_install_linked(root, dest_slot, obj, rights, 0,
@@ -93,7 +93,7 @@ static iris_error_t dev_cap_auth(struct task *t, uint64_t auth_cptr,
     if (!cspace_only_cptr(auth_cptr)) return IRIS_ERR_INVALID_ARG;
 
     struct KCNode *cn; uint32_t idx;
-    iris_error_t err = cspace_resolve_slot(t->process, (iris_cptr_t)auth_cptr,
+    iris_error_t err = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)auth_cptr,
                                            &cn, &idx);
     if (err != IRIS_OK) return err;
 

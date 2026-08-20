@@ -24,7 +24,7 @@ static iris_error_t tcb_resolve(struct KProcess *proc, iris_cptr_t cptr,
                                 iris_rights_t required,
                                 struct task **out, iris_rights_t *rights_out) {
     struct KObject *obj;
-    iris_error_t err = cspace_resolve_only_obj(proc, cptr, RIGHT_NONE,
+    iris_error_t err = cspace_resolve_only_obj(proc->cspace_root, cptr, RIGHT_NONE,
                                                     KOBJ_TCB, &obj, rights_out);
     if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return err;
@@ -107,7 +107,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     struct KObject  *proc_obj = 0;
     if (arg3 != 0u) {
         iris_rights_t pr;
-        err = cspace_resolve_only_obj(caller->process, (iris_cptr_t)arg3,
+        err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg3,
                                       RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &pr);
         if (err != IRIS_OK) {
             kobject_release(&target->base);
@@ -126,7 +126,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * trusting the process object is the whole point: it is what makes the
      * signature honest about a thread running in a named CSpace and VSpace. */
     struct KObject *cs_obj; iris_rights_t cs_rights;
-    err = cspace_resolve_only_obj(caller->process, (iris_cptr_t)arg1, RIGHT_NONE,
+    err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg1, RIGHT_NONE,
                                   KOBJ_CNODE, &cs_obj, &cs_rights);
     if (err != IRIS_OK) {
         if (proc_obj) kobject_release(proc_obj);
@@ -138,14 +138,15 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * here would decrement a count this call never took, and on the root CNode
      * that is not a leak but a demolition: reaching zero active refs runs the
      * close callback, which empties every slot of the CSpace being used. */
-    int cs_ok = ((struct KCNode *)cs_obj == proc->cspace_root);
+    struct KCNode *cspace = (struct KCNode *)cs_obj;
+    int cs_ok = (cspace == proc->cspace_root);
     kobject_release(cs_obj);
 
     /* The VSpace argument: likewise that process's own address space. */
     struct KObject *vs_obj; iris_rights_t vs_rights;
     int vs_ok = 0;
     if (cs_ok) {
-        err = cspace_resolve_only_obj(caller->process, (iris_cptr_t)arg2,
+        err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg2,
                                       RIGHT_NONE, KOBJ_VSPACE, &vs_obj, &vs_rights);
         if (err != IRIS_OK) {
             if (proc_obj) kobject_release(proc_obj);
@@ -161,7 +162,12 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    err = ktcb_configure(target, proc);
+    /* Stage 7 Step 4: the CSpace travels to the thread as the capability the
+     * caller named.  Safe to pass after its resolve reference was dropped: the
+     * identity check above proved it is the process's root, and the process
+     * holds that root for as long as it lives — ktcb_configure takes its own
+     * pair before anything can drop the last one. */
+    err = ktcb_configure(target, proc, cspace);
     if (proc_obj) kobject_release(proc_obj);
     kobject_release(&target->base);
     if (err != IRIS_OK) return syscall_err(err);

@@ -129,8 +129,7 @@ void test_boot_cspace(void) {
         ASSERT_EQ(bc_boot_publish(p, ut, 0u), IRIS_OK);
 
         struct KUntyped *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_only_untyped(
-                      p, BOOT_CPTR_UNTYPED_START, RIGHT_READ, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_untyped(p->cspace_root, BOOT_CPTR_UNTYPED_START, RIGHT_READ, &out, &rout),
                   IRIS_OK);
         ASSERT_EQ(out->base.type, KOBJ_UNTYPED);
         ASSERT_TRUE((rout & RIGHT_READ)  != 0);
@@ -155,8 +154,7 @@ void test_boot_cspace(void) {
 
         /* CSpace path rights. */
         struct KUntyped *out; iris_rights_t cptr_r;
-        ASSERT_EQ(cspace_resolve_only_untyped(
-                      p, BOOT_CPTR_UNTYPED_START, RIGHT_NONE, &out, &cptr_r),
+        ASSERT_EQ(cspace_resolve_only_untyped(p->cspace_root, BOOT_CPTR_UNTYPED_START, RIGHT_NONE, &out, &cptr_r),
                   IRIS_OK);
         ASSERT_EQ(cptr_r, expected);
         kobject_active_release(&out->base);
@@ -176,8 +174,7 @@ void test_boot_cspace(void) {
         ASSERT_EQ(bc_boot_publish(p, ut, 0u), IRIS_OK);
 
         struct KUntyped *out; iris_rights_t rout;
-        iris_error_t err = cspace_resolve_only_untyped(
-            p, CPTR_NULL, RIGHT_NONE, &out, &rout);
+        iris_error_t err = cspace_resolve_only_untyped(p->cspace_root, CPTR_NULL, RIGHT_NONE, &out, &rout);
         ASSERT_TRUE(err != IRIS_OK);
 
         bc_free_proc(p);
@@ -198,8 +195,7 @@ void test_boot_cspace(void) {
 
         for (uint32_t i = 0; i < N; i++) {
             struct KUntyped *out; iris_rights_t rout;
-            ASSERT_EQ(cspace_resolve_only_untyped(
-                          p, BOOT_CPTR_UNTYPED_START + i, RIGHT_READ, &out, &rout),
+            ASSERT_EQ(cspace_resolve_only_untyped(p->cspace_root, BOOT_CPTR_UNTYPED_START + i, RIGHT_READ, &out, &rout),
                       IRIS_OK);
             ASSERT_EQ(out->base.type, KOBJ_UNTYPED);
             kobject_active_release(&out->base);
@@ -208,8 +204,7 @@ void test_boot_cspace(void) {
 
         /* Slot just beyond the last inserted block → NOT_FOUND. */
         struct KUntyped *out; iris_rights_t rout;
-        iris_error_t err = cspace_resolve_only_untyped(
-            p, BOOT_CPTR_UNTYPED_START + N, RIGHT_NONE, &out, &rout);
+        iris_error_t err = cspace_resolve_only_untyped(p->cspace_root, BOOT_CPTR_UNTYPED_START + N, RIGHT_NONE, &out, &rout);
         ASSERT_TRUE(err != IRIS_OK);
 
         bc_free_proc(p);
@@ -238,7 +233,7 @@ void test_boot_cspace(void) {
 
         /* The object is still alive: the slot that DID publish holds it. */
         struct KUntyped *live; iris_rights_t lr;
-        ASSERT_EQ(cspace_resolve_only_untyped(p, BOOT_CPTR_UNTYPED_START,
+        ASSERT_EQ(cspace_resolve_only_untyped(p->cspace_root, BOOT_CPTR_UNTYPED_START,
                                                    RIGHT_NONE, &live, &lr),
                   IRIS_OK);
         ASSERT_EQ(live->base.type, KOBJ_UNTYPED);
@@ -281,8 +276,7 @@ void test_boot_cspace(void) {
 
         for (int i = 0; i < 8; i++) {
             struct KUntyped *out; iris_rights_t rout;
-            ASSERT_EQ(cspace_resolve_only_untyped(
-                          p, BOOT_CPTR_UNTYPED_START, RIGHT_NONE, &out, &rout),
+            ASSERT_EQ(cspace_resolve_only_untyped(p->cspace_root, BOOT_CPTR_UNTYPED_START, RIGHT_NONE, &out, &rout),
                       IRIS_OK);
             kobject_active_release(&out->base);
             kobject_release(&out->base);

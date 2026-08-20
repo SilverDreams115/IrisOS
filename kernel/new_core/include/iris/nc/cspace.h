@@ -46,7 +46,6 @@ static inline int cspace_value_is_cptr(iris_cptr_t v) {
     return v != CPTR_NULL && v < CSPACE_DIRECT_CPTR_LIMIT;
 }
 
-struct KProcess;
 struct KEndpoint;
 struct KReply;
 struct KCNode;
@@ -60,7 +59,7 @@ struct KFrame;
 /*
  * cspace_resolve_cap — kernel-internal CSpace traversal.
  *
- * Traverses proc's CNode tree using cptr, starting from proc->cspace_root —
+ * Traverses root's CNode tree using cptr, starting from root —
  * a structural back-reference, not a handle (Stage 4).
  * On success returns IRIS_OK and writes the terminal capability into *obj_out
  * and its effective rights into *rights_out.
@@ -81,11 +80,11 @@ struct KFrame;
  *   4. Each CNode level is released after descent — no lingering borrows.
  *
  * Errors:
- *   IRIS_ERR_INVALID_ARG   — cptr == CPTR_NULL, proc NULL, or depth exhausted
+ *   IRIS_ERR_INVALID_ARG   — cptr == CPTR_NULL, root NULL, or depth exhausted
  *   IRIS_ERR_NOT_FOUND     — no CSpace root set, or a slot is empty
  *   IRIS_ERR_ACCESS_DENIED — terminal slot rights do not satisfy required
  */
-iris_error_t cspace_resolve_cap(struct KProcess   *proc,
+iris_error_t cspace_resolve_cap(struct KCNode     *root,
                                  iris_cptr_t        cptr,
                                  iris_rights_t      required,
                                  struct KObject   **obj_out,
@@ -93,7 +92,7 @@ iris_error_t cspace_resolve_cap(struct KProcess   *proc,
 
 /* Phase 9: like cspace_resolve_cap but also returns the terminal slot's
  * badge (badge_out may be NULL). */
-iris_error_t cspace_resolve_cap_badged(struct KProcess   *proc,
+iris_error_t cspace_resolve_cap_badged(struct KCNode     *root,
                                         iris_cptr_t        cptr,
                                         iris_rights_t      required,
                                         struct KObject   **obj_out,
@@ -104,7 +103,7 @@ iris_error_t cspace_resolve_cap_badged(struct KProcess   *proc,
  * the identity the MDB operates on.  CSpace namespace only (caller guards
  * the <1024 split).  On success the CNode carries active+lifecycle refs
  * (caller releases both); the slot was occupied at resolution time. */
-iris_error_t cspace_resolve_slot(struct KProcess *proc, iris_cptr_t cptr,
+iris_error_t cspace_resolve_slot(struct KCNode   *root, iris_cptr_t cptr,
                                  struct KCNode **cn_out, uint32_t *idx_out);
 
 /* Stage 4: the DESTINATION analogue of cspace_resolve_slot — resolves a CPtr
@@ -122,7 +121,7 @@ iris_error_t cspace_resolve_slot(struct KProcess *proc, iris_cptr_t cptr,
  *
  * This is what lets a receive slot live below the root CNode: a process whose
  * root is full has nowhere to receive a capability otherwise. */
-iris_error_t cspace_resolve_dest_slot(struct KProcess *proc, iris_cptr_t cptr,
+iris_error_t cspace_resolve_dest_slot(struct KCNode   *root, iris_cptr_t cptr,
                                       struct KCNode **cn_out,
                                       uint32_t *idx_out);
 
@@ -131,7 +130,7 @@ iris_error_t cspace_resolve_dest_slot(struct KProcess *proc, iris_cptr_t cptr,
  * (lifecycle-only ref); additionally returns the badge of the capability
  * that was invoked (slot badge on the CSpace path, handle badge on the
  * handle path; 0 = unbadged). */
-iris_error_t cspace_resolve_only_endpoint_badged(struct KProcess  *proc,
+iris_error_t cspace_resolve_only_endpoint_badged(struct KCNode    *root,
                                                        iris_cptr_t       cptr_or_handle,
                                                        iris_rights_t     required,
                                                        struct KEndpoint **out,
@@ -144,33 +143,33 @@ iris_error_t cspace_resolve_only_endpoint_badged(struct KProcess  *proc,
  * caller must kobject_active_release + kobject_release the returned pointer.
  * Return IRIS_ERR_WRONG_TYPE if the resolved capability has a different type.
  */
-iris_error_t cspace_resolve_endpoint(struct KProcess    *proc, iris_cptr_t cptr,
+iris_error_t cspace_resolve_endpoint(struct KCNode    *root, iris_cptr_t cptr,
                                       iris_rights_t       required,
                                       struct KEndpoint  **out, iris_rights_t *rights_out);
-iris_error_t cspace_resolve_reply(struct KProcess  *proc, iris_cptr_t cptr,
+iris_error_t cspace_resolve_reply(struct KCNode    *root, iris_cptr_t cptr,
                                    iris_rights_t     required,
                                    struct KReply   **out, iris_rights_t *rights_out);
-iris_error_t cspace_resolve_cnode(struct KProcess *proc, iris_cptr_t cptr,
+iris_error_t cspace_resolve_cnode(struct KCNode   *root, iris_cptr_t cptr,
                                    iris_rights_t    required,
                                    struct KCNode  **out, iris_rights_t *rights_out);
-iris_error_t cspace_resolve_notification(struct KProcess      *proc, iris_cptr_t cptr,
+iris_error_t cspace_resolve_notification(struct KCNode      *root, iris_cptr_t cptr,
                                           iris_rights_t         required,
                                           struct KNotification **out,
                                           iris_rights_t        *rights_out);
-iris_error_t cspace_resolve_tcb(struct KProcess *proc, iris_cptr_t cptr,
+iris_error_t cspace_resolve_tcb(struct KCNode   *root, iris_cptr_t cptr,
                                  iris_rights_t    required,
                                  struct task    **out, iris_rights_t *rights_out);
-iris_error_t cspace_resolve_untyped(struct KProcess  *proc, iris_cptr_t cptr,
+iris_error_t cspace_resolve_untyped(struct KCNode    *root, iris_cptr_t cptr,
                                      iris_rights_t     required,
                                      struct KUntyped **out, iris_rights_t *rights_out);
-iris_error_t cspace_resolve_schedctx(struct KProcess     *proc, iris_cptr_t cptr,
+iris_error_t cspace_resolve_schedctx(struct KCNode     *root, iris_cptr_t cptr,
                                       iris_rights_t        required,
                                       struct KSchedContext**out,
                                       iris_rights_t       *rights_out);
-iris_error_t cspace_resolve_vspace(struct KProcess  *proc, iris_cptr_t cptr,
+iris_error_t cspace_resolve_vspace(struct KCNode    *root, iris_cptr_t cptr,
                                     iris_rights_t     required,
                                     struct KVSpace  **out, iris_rights_t *rights_out);
-iris_error_t cspace_resolve_frame(struct KProcess *proc, iris_cptr_t cptr,
+iris_error_t cspace_resolve_frame(struct KCNode   *root, iris_cptr_t cptr,
                                    iris_rights_t    required,
                                    struct KFrame  **out, iris_rights_t *rights_out);
 
@@ -187,7 +186,7 @@ iris_error_t cspace_resolve_frame(struct KProcess *proc, iris_cptr_t cptr,
  *   kobject_active_release(&(*out)->base);
  *   kobject_release(&(*out)->base);
  */
-iris_error_t cspace_resolve_only_frame(struct KProcess *proc,
+iris_error_t cspace_resolve_only_frame(struct KCNode   *root,
                                              iris_cptr_t      cptr_or_handle,
                                              iris_rights_t    required,
                                              struct KFrame  **out,
@@ -200,7 +199,7 @@ iris_error_t cspace_resolve_only_frame(struct KProcess *proc,
  * raw-radix handle-masking hazard those two syscalls still carried and lets a
  * supervisor pass a SYS_PROCESS_VSPACE handle directly.
  */
-iris_error_t cspace_resolve_only_vspace(struct KProcess *proc,
+iris_error_t cspace_resolve_only_vspace(struct KCNode   *root,
                                               iris_cptr_t      cptr_or_handle,
                                               iris_rights_t    required,
                                               struct KVSpace **out,
@@ -212,7 +211,7 @@ iris_error_t cspace_resolve_only_vspace(struct KProcess *proc,
  * (lifecycle-only) — release with a single kobject_release.
  * required==RIGHT_NONE defers the rights check to the caller.
  */
-iris_error_t cspace_resolve_only_obj(struct KProcess  *proc,
+iris_error_t cspace_resolve_only_obj(struct KCNode    *root,
                                           iris_cptr_t       cptr_or_handle,
                                           iris_rights_t     required,
                                           uint32_t          expected_type,
@@ -222,7 +221,7 @@ iris_error_t cspace_resolve_only_obj(struct KProcess  *proc,
 /*
  * cspace_resolve_only_cnode — dual-resolution helper for CNode syscalls.
  *
- * Tries CSpace traversal first (if proc->cspace_root is set and
+ * Tries CSpace traversal first (if root is set and
  * cptr_or_handle != CPTR_NULL).  Falls back to the handle table if CSpace
  * fails with anything other than ACCESS_DENIED (which is a hard stop).
  *
@@ -232,7 +231,7 @@ iris_error_t cspace_resolve_only_obj(struct KProcess  *proc,
  *   kobject_active_release(&(*out)->base);
  *   kobject_release(&(*out)->base);
  */
-iris_error_t cspace_resolve_only_cnode(struct KProcess *proc,
+iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
                                              iris_cptr_t      cptr_or_handle,
                                              iris_rights_t    required,
                                              struct KCNode  **out,
@@ -241,7 +240,7 @@ iris_error_t cspace_resolve_only_cnode(struct KProcess *proc,
 /*
  * cspace_resolve_only_untyped — dual-resolution helper for KUntyped syscalls.
  *
- * Tries CSpace traversal first (if proc->cspace_root is set and
+ * Tries CSpace traversal first (if root is set and
  * cptr_or_handle != CPTR_NULL).  Falls back to the handle table if CSpace
  * fails with anything other than ACCESS_DENIED (which is a hard stop).
  *
@@ -256,7 +255,7 @@ iris_error_t cspace_resolve_only_cnode(struct KProcess *proc,
  *
  * ACCESS_DENIED from CSpace is a hard stop — no fallback to handle table.
  */
-iris_error_t cspace_resolve_only_untyped(struct KProcess  *proc,
+iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
                                                iris_cptr_t       cptr_or_handle,
                                                iris_rights_t     required,
                                                struct KUntyped **out,
@@ -286,19 +285,19 @@ iris_error_t cspace_resolve_only_untyped(struct KProcess  *proc,
  * Both CSpace and handle-table paths produce the same lifecycle-only contract.
  * ACCESS_DENIED from CSpace is a hard stop — no fallback to handle table.
  */
-iris_error_t cspace_resolve_only_endpoint(struct KProcess   *proc,
+iris_error_t cspace_resolve_only_endpoint(struct KCNode     *root,
                                                 iris_cptr_t        cptr_or_handle,
                                                 iris_rights_t      required,
                                                 struct KEndpoint **out,
                                                 iris_rights_t     *rights_out);
 
-iris_error_t cspace_resolve_only_reply(struct KProcess *proc,
+iris_error_t cspace_resolve_only_reply(struct KCNode   *root,
                                              iris_cptr_t      cptr_or_handle,
                                              iris_rights_t    required,
                                              struct KReply  **out,
                                              iris_rights_t   *rights_out);
 
-iris_error_t cspace_resolve_only_notification(struct KProcess      *proc,
+iris_error_t cspace_resolve_only_notification(struct KCNode      *root,
                                                     iris_cptr_t           cptr_or_handle,
                                                     iris_rights_t         required,
                                                     struct KNotification **out,

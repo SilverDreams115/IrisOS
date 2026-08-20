@@ -255,7 +255,7 @@ void test_kframe(void) {
 
         struct KFrame   *out;
         iris_rights_t    r;
-        ie = cspace_resolve_frame(p, 3u, RIGHT_READ, &out, &r);
+        ie = cspace_resolve_frame(p->cspace_root, 3u, RIGHT_READ, &out, &r);
         ASSERT_EQ((int)ie, (int)IRIS_OK);
         ASSERT_EQ(out->paddr, (uint64_t)0x400000);
         kobject_active_release(&out->base);
@@ -278,7 +278,7 @@ void test_kframe(void) {
 
         struct KFrame *out;
         iris_rights_t  r;
-        ie = cspace_resolve_frame(p, 3u, RIGHT_READ, &out, &r);
+        ie = cspace_resolve_frame(p->cspace_root, 3u, RIGHT_READ, &out, &r);
         ASSERT_EQ((int)ie, (int)IRIS_ERR_WRONG_TYPE);
         fr_free_proc(p);
     }
@@ -298,7 +298,7 @@ void test_kframe(void) {
 
         struct KFrame *out;
         iris_rights_t  r;
-        ie = cspace_resolve_frame(p, 3u, RIGHT_WRITE, &out, &r);
+        ie = cspace_resolve_frame(p->cspace_root, 3u, RIGHT_WRITE, &out, &r);
         ASSERT_EQ((int)ie, (int)IRIS_ERR_ACCESS_DENIED);
         fr_free_proc(p);
     }
@@ -310,7 +310,7 @@ void test_kframe(void) {
         fr_setup_root(p);
         struct KFrame *out;
         iris_rights_t  r;
-        iris_error_t ie = cspace_resolve_frame(p, CPTR_NULL, RIGHT_READ, &out, &r);
+        iris_error_t ie = cspace_resolve_frame(p->cspace_root, CPTR_NULL, RIGHT_READ, &out, &r);
         ASSERT_EQ((int)ie, (int)IRIS_ERR_INVALID_ARG);
         fr_free_proc(p);
     }

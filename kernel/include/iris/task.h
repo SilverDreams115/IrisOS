@@ -130,6 +130,24 @@ struct task {
     uint64_t          utext_phys;      /* physical base of userboot text copy (ring-3 only) */
     uint32_t          utext_pages;     /* page count at utext_phys; 0 if not applicable */
     struct KProcess  *process;         /* owning process; NULL for kernel tasks */
+    /*
+     * Stage 7 Step 4 — the CSpace this thread resolves CPtrs in, held by the
+     * THREAD.
+     *
+     * SYS_TCB_CONFIGURE has named the CSpace as a capability since Stage 5
+     * Step 4, and then the kernel resolved every CPtr through
+     * `t->process->cspace_root` anyway — so the argument described the truth
+     * without being it, and a thread's most basic authority was a property of
+     * a shared object it did not name.  It is the thread's now: one lifecycle
+     * ref plus one active ref, exactly the pair KProcess holds, released at
+     * execution teardown.
+     *
+     * Threads of one process still share one CNode object, so nothing about
+     * what a CPtr resolves to changes.  What changes is that resolving no
+     * longer reads KProcess, which is most of what KProcess was on the hot
+     * path.
+     */
+    struct KCNode    *cspace_root;
     uint32_t          fault_seq;       /* Phase 25: generation of the fault this
                                         * task is blocked on (TASK_BLOCKED_FAULT);
                                         * 0 = no fault ever delivered to it */
@@ -237,7 +255,8 @@ struct task *task_spawn_user(uint64_t arg0);
  * rewriting the entry frame of a thread that has run would corrupt the kernel
  * stack it is standing on.
  */
-iris_error_t ktcb_configure(struct task *t, struct KProcess *proc);
+iris_error_t ktcb_configure(struct task *t, struct KProcess *proc,
+                            struct KCNode *cspace);
 iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
                              uint64_t arg);
 

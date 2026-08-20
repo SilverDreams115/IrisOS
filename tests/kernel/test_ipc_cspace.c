@@ -85,7 +85,7 @@ void test_ipc_cspace(void) {
         kobject_release(&ep->base);
 
         struct KEndpoint *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_only_endpoint(p, 3u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_endpoint(p->cspace_root, 3u, RIGHT_NONE, &out, &rout),
                   IRIS_OK);
         ASSERT_EQ(out->base.type, KOBJ_ENDPOINT);
         ASSERT_EQ(rout, RIGHT_READ | RIGHT_WRITE);
@@ -109,7 +109,7 @@ void test_ipc_cspace(void) {
         kobject_release(&n->base);
 
         struct KEndpoint *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_only_endpoint(p, 2u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_endpoint(p->cspace_root, 2u, RIGHT_NONE, &out, &rout),
                   IRIS_ERR_WRONG_TYPE);
 
         free_proc(p);
@@ -129,10 +129,10 @@ void test_ipc_cspace(void) {
         kobject_release(&ep->base);
 
         struct KEndpoint *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_only_endpoint(p, 4u, RIGHT_WRITE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_endpoint(p->cspace_root, 4u, RIGHT_WRITE, &out, &rout),
                   IRIS_ERR_ACCESS_DENIED);
         /* Correct right succeeds. */
-        ASSERT_EQ(cspace_resolve_only_endpoint(p, 4u, RIGHT_READ, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_endpoint(p->cspace_root, 4u, RIGHT_READ, &out, &rout),
                   IRIS_OK);
         kobject_release(&out->base);
 
@@ -155,7 +155,7 @@ void test_ipc_cspace(void) {
         kobject_release(&rp->base);
 
         struct KReply *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_only_reply(p, 5u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_reply(p->cspace_root, 5u, RIGHT_NONE, &out, &rout),
                   IRIS_OK);
         ASSERT_EQ(out->base.type, KOBJ_REPLY);
         kobject_release(&out->base);
@@ -177,7 +177,7 @@ void test_ipc_cspace(void) {
         kobject_release(&ep->base);
 
         struct KReply *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_only_reply(p, 2u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_reply(p->cspace_root, 2u, RIGHT_NONE, &out, &rout),
                   IRIS_ERR_WRONG_TYPE);
 
         free_proc(p);
@@ -198,7 +198,7 @@ void test_ipc_cspace(void) {
         kobject_release(&n->base);
 
         struct KNotification *out; iris_rights_t rout;
-        ASSERT_EQ(cspace_resolve_only_notification(p, 6u, RIGHT_NONE, &out, &rout),
+        ASSERT_EQ(cspace_resolve_only_notification(p->cspace_root, 6u, RIGHT_NONE, &out, &rout),
                   IRIS_OK);
         ASSERT_EQ(out->base.type, KOBJ_NOTIFICATION);
         kobject_release(&out->base);
@@ -232,21 +232,21 @@ void test_ipc_cspace(void) {
 
         struct KEndpoint *out; iris_rights_t rout; uint64_t badge;
         badge = 99u;
-        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p, 1u, RIGHT_WRITE,
+        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p->cspace_root, 1u, RIGHT_WRITE,
                                                            &out, &rout, &badge),
                   IRIS_OK);
         ASSERT_EQ(badge, 0xAAu);
         kobject_release(&out->base);
 
         badge = 99u;
-        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p, 2u, RIGHT_WRITE,
+        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p->cspace_root, 2u, RIGHT_WRITE,
                                                            &out, &rout, &badge),
                   IRIS_OK);
         ASSERT_EQ(badge, 0xBBu);
         kobject_release(&out->base);
 
         badge = 99u;
-        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p, 3u, RIGHT_WRITE,
+        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p->cspace_root, 3u, RIGHT_WRITE,
                                                            &out, &rout, &badge),
                   IRIS_OK);
         ASSERT_EQ(badge, 0u);                 /* unbadged cap delivers 0 */
@@ -269,7 +269,7 @@ void test_ipc_cspace(void) {
         /* Stage 4: a non-CPtr value is malformed, and a failed resolve must
          * not write through the badge out-parameter. */
         badge = 99u;
-        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p, (iris_cptr_t)0x80000401u,
+        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p->cspace_root, (iris_cptr_t)0x80000401u,
                                                            RIGHT_WRITE,
                                                            &out, &rout, &badge),
                   IRIS_ERR_INVALID_ARG);
@@ -279,7 +279,7 @@ void test_ipc_cspace(void) {
         ASSERT_EQ(kcnode_mint_excl_badged(root, 4, &ep->base, RIGHT_READ,
                                           0xDDu), IRIS_OK);
         badge = 99u;
-        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p, 4u, RIGHT_WRITE,
+        ASSERT_EQ(cspace_resolve_only_endpoint_badged(p->cspace_root, 4u, RIGHT_WRITE,
                                                            &out, &rout, &badge),
                   IRIS_ERR_ACCESS_DENIED);
         ASSERT_EQ(badge, 99u);                /* untouched on failure */
