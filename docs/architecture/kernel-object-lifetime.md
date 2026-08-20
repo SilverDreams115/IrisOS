@@ -25,7 +25,7 @@ exactly one charge per charge acquired.
 
 | Object | Charge acquired | Charge released | Notes |
 |--------|-----------------|-----------------|-------|
-| KProcess | `kprocess_alloc` (atomic live-count reserve) | `kprocess_destroy` | rolled back if over `KPROCESS_MAX_LIVE` |
+| KProcess | `kprocess_alloc_from` (a child block of the creator's Untyped) | `kprocess_destroy` | no numeric ceiling since **Stage 7 Step 3**: the live count is a gauge, and the budget the creator named is the bound.  The root task's is the one still fabricated by `kprocess_alloc` from the slab |
 | KVMO (object) | `kvmo_bind_owner(v, payer)` → `payer->owned_vmos++` | `kvmo_destroy` → `owned_vmos--` | payer = self or a MANAGE'd process (`SYS_VMO_CREATE_FOR`) |
 | KVMO (sparse pages) | first allocation of each page → `payer->phys_pages_charged++` (payer = `kvmo_owner(v)`) | `kvmo_destroy` → one `phys_pages_charged--` per allocated page | charged once regardless of how many VSpaces map it |
 | KFrameMapping / PTE | `kvspace_map_page` (kslab object) | `kvspace_unmap_page` / VSpace teardown | per-(VSpace, VA); no per-process quota |

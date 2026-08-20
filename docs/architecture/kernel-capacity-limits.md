@@ -35,13 +35,16 @@ so the rest of the PMM can be handed to userspace as untyped/frame caps.
 
 ### Why 16 MB (not a magic number)
 
-Each spawned process consumes several KB–32 KB of kernel objects: a `KProcess`,
-a 256-slot root `KCNode`, a `KVSpace`, a handful of page-table nodes, and its
-handle table.  Supporting the phase's 32–64 concurrent-child target
-(`KPROCESS_MAX_LIVE` = 64 total processes) plus the pager, the supervisor and
-the core services requires roughly 64 × ~32 KB ≈ 2 MB of live objects, with
-headroom for churn and free-list fragmentation.  16 MB gives comfortable margin
-while remaining a trivial fraction of guest RAM.  It is a **capacity** bound,
+The arena sizing predates Stages 6–7 and is now a statement about the ROOT
+TASK and the kernel's own objects, not about spawned processes.  A spawned
+process's `KProcess`, root `KCNode`, `KVSpace`, PML4 and every paging level are
+child blocks of an Untyped its creator named (Stage 6 Steps 3–4, Stage 6-pure
+Steps 1/4/5), so none of it touches this arena: 80 live processes cost the
+kslab nothing, which T304 demonstrates.  What is left here is the root task's
+three slab objects, the boot Untyped headers and the subsystems the purity
+allowlist still freezes.  16 MB is generous for that and is kept as headroom
+rather than re-derived downward, because shrinking it would be a capacity
+change with no correctness argument behind it.  It is a **capacity** bound,
 deliberately distinct from the per-process VMO quota (restored to 32 once
 children pay their own VMOs) — growing the arena is not a substitute for
 correct ownership, and correct ownership is not a substitute for adequate
@@ -64,12 +67,12 @@ impractical and unnecessary given the path coverage.
 
 | Constant | Value | Class | Failure |
 |----------|-------|-------|---------|
-| `KPROCESS_MAX_LIVE` | 64 | implementation capacity (bounded by `TASK_MAX`) | atomic reserve fails → allocation rejected |
+| `KPROCESS_MAX_LIVE` | **retired (Stage 7 Step 3)** | — | the creator's Untyped runs out; `kprocess_live_count()` remains a gauge |
 | `TASK_MAX` | 256 | implementation capacity | task create fails |
 | `HANDLE_TABLE_MAX` | 256 | per-process capacity | `IRIS_ERR_TABLE_FULL` |
 | `KCNODE_DEFAULT_SLOTS` | 256 | per-CNode capacity | slot mint fails |
 | `KVMO_MAX_PAGES` | 16384 (64 MB/VMO) | per-object capacity | VMO create rejected |
-| PCID pool | 1–4094 | hardware capacity | (cannot exhaust at 64 processes) |
+| PCID pool | 1–4094 | hardware capacity | `kprocess_alloc*` returns NULL — reachable since the live-process ceiling retired, and handled |
 | kernel object slab | 16 MB | global implementation capacity | `NULL` → `IRIS_ERR_NO_MEMORY` |
 
 Resource-policy quotas (`KPROCESS_VMO_QUOTA`, `KPROCESS_PHYS_PAGES_LIMIT`) are

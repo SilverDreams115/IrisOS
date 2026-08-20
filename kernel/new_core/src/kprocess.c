@@ -189,17 +189,13 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
                                      struct KCNode *cnode) {
     if (!pool || !cnode) return 0;
 
-    uint32_t prev = atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
-    if (prev >= KPROCESS_MAX_LIVE) {
-        atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
-        return 0;
-    }
-
+    /* Stage 7 Step 3: no reserve-then-roll-back, because there is no ceiling
+     * to reserve against.  The gauge is bumped once, at the end, when the
+     * object certainly exists — which is also what makes it match the
+     * unconditional decrement in kprocess_destroy without a rollback on every
+     * failure path. */
     struct KProcess *p = kuntyped_alloc_child_top(pool, sizeof(struct KProcess));
-    if (!p) {
-        atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
-        return 0;
-    }
+    if (!p) return 0;
     kobject_init_in_untyped(&p->base, KOBJ_PROCESS, &kprocess_ops,
                             (uint32_t)sizeof(struct KProcess));
     p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;  /* Stage 7: 0 = no kernel ceiling */
@@ -221,7 +217,12 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
         }
         irq_spinlock_unlock(&pcid_lock, flags);
         if (!pcid) {
-            atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+            /* Stage 7 Step 3: reachable, and answered.  While KPROCESS_MAX_LIVE
+             * capped live processes at 64 this branch was documented as
+             * "cannot happen"; with the cap gone the 4094 PCIDs are a real
+             * hardware bound and this is the failure a holder with enough
+             * memory eventually gets.  Nothing partial is left behind: the
+             * block goes back to the Untyped and the gauge was never bumped. */
             kobject_release(&pool->base);
             kuntyped_release_child(p, sizeof(struct KProcess));
             return 0;
@@ -246,28 +247,17 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
     kobject_retain(&cnode->base);
     kobject_active_retain(&cnode->base);
     p->cspace_root = cnode;
+    atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
     return p;
 }
 
 struct KProcess *kprocess_alloc(void) {
-    /* Atomically reserve a slot before allocating memory.  The previous
-     * load+check+alloc+increment pattern had a TOCTOU window where concurrent
-     * callers could all pass the check before any incremented the counter,
-     * allowing live process count to exceed KPROCESS_MAX_LIVE.
-     *
-     * Strategy: fetch-add first, then roll back if the old value was already
-     * at the limit.  This is safe because kprocess_destroy always decrements,
-     * so the counter never permanently overshoots if we roll back here. */
-    uint32_t prev = atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
-    if (prev >= KPROCESS_MAX_LIVE) {
-        atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
-        return 0;
-    }
+    /* Stage 7 Step 3: the atomic reserve-then-roll-back is gone with the
+     * ceiling it enforced.  It existed to close a TOCTOU on a check against
+     * KPROCESS_MAX_LIVE; with no check there is nothing to race, and the gauge
+     * is bumped once at the end so it needs no unwinding. */
     struct KProcess *p = kslab_alloc((uint32_t)sizeof(struct KProcess));
-    if (!p) {
-        atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
-        return 0;
-    }
+    if (!p) return 0;
     kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
     p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;  /* Stage 7: 0 = no kernel ceiling */
     if (iris_pcid_enabled) {
@@ -285,8 +275,9 @@ struct KProcess *kprocess_alloc(void) {
         }
         irq_spinlock_unlock(&pcid_lock, flags);
         if (!pcid) {
-            /* All 4094 PCIDs in use — cannot happen with KPROCESS_MAX_LIVE=64 */
-            atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
+            /* All 4094 PCIDs in use.  Reachable since Stage 7 Step 3 removed
+             * the live-process ceiling this used to be excluded by; the gauge
+             * was never bumped, so there is nothing to unwind but the slab. */
             kslab_free(p, (uint32_t)sizeof(struct KProcess));
             return 0;
         }
@@ -304,6 +295,7 @@ struct KProcess *kprocess_alloc(void) {
     if (p->cspace_root)
         kobject_active_retain(&p->cspace_root->base);
 
+    atomic_fetch_add_explicit(&kprocess_live, 1u, memory_order_relaxed);
     return p;
 }
 

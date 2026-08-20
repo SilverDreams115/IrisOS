@@ -391,7 +391,7 @@ THREAD_START` flow.
 | Constant | Value |
 |----------|-------|
 | `TASK_MAX` | 256 |
-| `KPROCESS_MAX_LIVE` | 64 (an invented ceiling; see the roadmap's Stage 7 notes) |
+| `KPROCESS_MAX_LIVE` | retired (Stage 7) — a KProcess comes out of an Untyped, so memory bounds how many exist |
 | `KCNODE_DEFAULT_SLOTS` | 256 (root CNode) |
 | `KVMO_MAX_PAGES` | 16384 (64 MB per VMO) |
 | `KPROCESS_VMO_QUOTA` | 32 per domain |

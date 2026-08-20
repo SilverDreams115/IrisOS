@@ -13,7 +13,30 @@ struct KVSpace;
 struct KFrame;
 
 #define KPROCESS_EXIT_WATCH_MAX 8u
-#define KPROCESS_MAX_LIVE       64u /* bounded by TASK_MAX; enforced in kprocess_alloc */
+/*
+ * Stage 7 Step 3: KPROCESS_MAX_LIVE RETIRES.
+ *
+ * 64 was an invented ceiling of the same class as the page quota Step 2
+ * removed — a number the kernel picked, refused at, and could not be asked to
+ * raise.  Since Stage 6 Step 4 a spawned KProcess is a child block of an
+ * Untyped its creator named, and its root CNode comes from the same region, so
+ * what bounds how many processes exist is how much memory somebody delegated.
+ * Refusing at 64 on top of that told a holder with a large budget that it had
+ * run out when it had not, and told a holder with a tiny one nothing at all.
+ *
+ * What bounds a spawn now, all of it derived rather than declared:
+ *   - the creator's Untyped, which pays for the KProcess header, the root
+ *     CNode, the PML4 and every paging level (a bump allocator that does not
+ *     rewind, so the bound is real and the holder can measure it);
+ *   - TASK_MAX (256), the thread registry, for a process that runs a thread —
+ *     a separate resource with a separate ceiling, which is why conflating the
+ *     two in one constant was wrong even as an approximation;
+ *   - the PCID pool (1..4094) when PCID is enabled, which is hardware.
+ *
+ * kprocess_live_count() survives as INSTRUMENTATION, exposed through
+ * SYS_SCHED_INFO — the same fate the notification quota had in Phase S1 and
+ * the page quota had in Step 2.  What is gone is the refusal.
+ */
 /* Phase S1: KPROCESS_NOTIFICATION_QUOTA retired — the capacity to create
  * notifications is possessing Untyped memory plus CSpace slots, never a
  * kernel-side numeric quota.  (SYS_RESOURCE_INFO reports notifs_limit = 0.) */

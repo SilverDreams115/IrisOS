@@ -29,8 +29,9 @@ A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
 (scheduling); **M2–M5** (memory); **P1, P3** (policy).  Still open: **A5** and
 **P2** (Stage 7), **O1** and **M1**.  Stage 5 moved A5 most of the way — boot
 authority is fine-grained and named, the monolith cannot be constructed — and
-Stage 7 retired the per-process page quota, leaving the ioport whitelist and
-the VMO-count quota as the remaining ambient policy.
+Stage 7 retired the per-process page quota and the live-process ceiling,
+leaving the ioport whitelist and the VMO-count quota as the remaining ambient
+policy.
 
 ### Where the line is now
 
@@ -954,6 +955,40 @@ handed a large Untyped still stopped at 8 MB nobody granted.  `pages_limit`
 reports 0, as the notification quota has since Phase S1; the counters remain as
 instrumentation.
 
+### Step 3 — a ceiling nobody granted, again  ✅ DONE
+
+`KPROCESS_MAX_LIVE` (64) retires.  It was the same class as the page quota of
+Step 2 and the notification quota of Phase S1 — a number the kernel invented,
+refused at, and could not be asked to raise — and since Stage 6 Step 4 a
+spawned `KProcess` and its root CNode are child blocks of an Untyped its
+creator NAMED, so the memory somebody delegated already bounded how many could
+exist.  Refusing at 64 on top of that told a holder with a large budget it had
+run out when it had not, and a holder with a tiny one nothing at all.
+
+What bounds a spawn now is derived rather than declared: the creator's Untyped
+(which pays for the KProcess header, the root CNode, the PML4 and every level,
+out of a bump allocator that does not rewind, so the holder can measure it),
+`TASK_MAX` for a process that runs a thread, and the PCID pool for a process
+that needs an address-space tag.  `kprocess_live_count()` survives as
+instrumentation, exactly as the retired quotas' counters did.
+
+The two things the entry above said retiring the number would require were
+re-derived rather than deleted:
+
+- the PCID allocator's exhaustion branch was commented "cannot happen with
+  KPROCESS_MAX_LIVE=64".  It is now reachable, so it is documented as the real
+  hardware bound and its unwind is exact — the block goes back to the Untyped
+  and the gauge was never bumped, because the gauge moved to the end of a
+  successful construction and the reserve-then-roll-back dance (which existed
+  only to close a TOCTOU on the ceiling check) is gone with the check.
+- T240 claimed to show "the real ceiling is the documented KPROCESS_MAX_LIVE",
+  which it never measured — it caps at 48, below the number that refused.  It
+  now asserts the property that survives whichever bound is reached first, and
+  T304 pins the retirement directly: more than 64 live processes out of one
+  budget, a clean error whenever the budget does run out, and a RESET of that
+  region afterwards, which only succeeds once every KProcess, root CNode,
+  VSpace header and PML4 has gone back.
+
 ### What Stage 7 still needs, and why it is not an increment
 
 `KProcess` itself.  Retiring it means a thread's authority comes from its own
@@ -973,13 +1008,7 @@ Two smaller items are ready when that lands:
   process-server work.
 - **The VMO-count quota** retires with the `KVMO` object (memory server), per
   the ledger.
-- **`KPROCESS_MAX_LIVE` (64)** is the same class of invented ceiling the page
-  quota was: a `KProcess` comes out of an Untyped now, so memory bounds how
-  many can exist, and the thread registry (`TASK_MAX`) bounds threads
-  separately.  It is left standing deliberately — T240 documents it as the
-  ceiling a spawn push hits cleanly, and the PCID allocator's "cannot happen"
-  comment reasons about it, so retiring the number means re-deriving both
-  rather than deleting a constant.
+- **`KPROCESS_MAX_LIVE`** retired in Step 3 above.
 
 ## Stage 8 — Full MCS scheduling
 

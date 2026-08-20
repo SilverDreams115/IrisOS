@@ -139,13 +139,20 @@ is charged to the owner once; the *mapping* is a cheap kslab object.
 | Resource | Limit | Charge point | Release point | Exhaustion result |
 |----------|-------|--------------|---------------|-------------------|
 | `owned_vmos` | `KPROCESS_VMO_QUOTA` = 32 | `kvmo_bind_owner` | `kvmo_destroy` | `IRIS_ERR_NO_MEMORY`, no object, `global_failed_charges++` |
-| `phys_pages_charged` | `KPROCESS_PHYS_PAGES_LIMIT` = 2048 (8 MB) | first allocation of each sparse page (charged to VMO owner) | `kvmo_destroy` (once per page) | `IRIS_ERR_NO_MEMORY`, no page installed |
-| live processes | `KPROCESS_MAX_LIVE` = 64 | `kprocess_alloc` (atomic reserve) | `kprocess_destroy` | rolled back atomically, allocation fails |
+| `phys_pages_charged` | none since **Stage 7 Step 2** (`KPROCESS_PHYS_PAGES_LIMIT` reports 0) | first allocation of each sparse page (charged to VMO owner) | `kvmo_destroy` (once per page) | the Untyped the VMO names runs out; the counter is instrumentation |
+| live processes | none since **Stage 7 Step 3** | `kprocess_alloc_from` (a child block of the creator's Untyped) | `kprocess_destroy` | the creator's budget runs out, or the PCID pool (1–4094) does; the live count is instrumentation |
 
 The notification quota (`KPROCESS_NOTIFICATION_QUOTA` = 16, charged at
 `knotification_bind_owner`) was **retired in Phase S1** together with the
 `owned_notifications` counter: the capacity to create a notification is holding
 Untyped memory plus a CSpace slot, not a numeric kernel budget.
+
+The page quota and the live-process ceiling retired the same way in Stage 7,
+for the same reason and in the same shape: the counters stay as reportable
+gauges, the refusals are gone, and what answers "out of memory" is the region
+somebody delegated.  `KPROCESS_VMO_QUOTA` is the last numeric ceiling here, and
+it retires with the `KVMO` object itself (memory server) — a VMO is still the
+one principal object with no Untyped ancestor.
 `SYS_RESOURCE_INFO` keeps the `notifs_*` fields additive and frozen at 0 (see
 the ledger's TRANSITIONAL_DIAGNOSTICS row).
 

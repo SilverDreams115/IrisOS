@@ -17237,8 +17237,17 @@ static void test_t239(void) {
  * grow ~4×children (the child image VMOs are charged to each CHILD, not to the
  * loader — the Phase 28.1 caller-charged bug, fixed).  Every child is alive with
  * its own image charge; selective death frees only that child; the final
- * baseline is exact.  A push toward 64 shows the real ceiling is the documented
- * KPROCESS_MAX_LIVE process limit, hit CLEANLY — not the loader's VMO quota.
+ * baseline is exact.  The push at the end shows that whatever stops it is hit
+ * CLEANLY and is not the loader's VMO quota.
+ *
+ * Stage 7 Step 3: what stops it is no longer a number.  This used to say the
+ * ceiling was KPROCESS_MAX_LIVE, which was never what this test measured — it
+ * caps at 48, below the 64 that constant refused at — and the constant is now
+ * retired anyway.  A spawn push ends at the spawner's Untyped, the loader's
+ * leaf range, or TASK_MAX, all of them derived from something somebody
+ * allocated.  T304 is where the retirement itself is pinned; what this asserts
+ * is the property that survives whichever bound is reached first: at least 32
+ * children, no VMO accumulated by the loader, and an exact baseline after.
  * Invariants: Q4, Q5, Q12, Q13, Q20, Q23. */
 #define T240_MAX 48u
 static void test_t240(void) {
@@ -17282,10 +17291,9 @@ static void test_t240(void) {
         if (ok && (!it_rinfo(HANDLE_INVALID, &self2) || self2.vmos_usage != self0.vmos_usage)) { ok = 0; why = "rung baseline"; }
     }
 
-    /* Push toward the process ceiling: spawn until failure (cap T240_MAX).  At
-     * least 32 must succeed and the loader must never accumulate VMOs; any
-     * failure is a CLEAN process-limit error, and teardown returns to baseline
-     * (Q20/Q21/Q29 — no wedge). */
+    /* Spawn until failure (cap T240_MAX).  At least 32 must succeed and the
+     * loader must never accumulate VMOs; any failure is CLEAN, and teardown
+     * returns to baseline (Q20/Q21/Q29 — no wedge). */
     if (ok) {
         for (uint32_t i = 0; i < T240_MAX; i++) { cmd[i] = proc[i] = HANDLE_INVALID; }
         uint32_t got = 0;
@@ -20421,6 +20429,113 @@ static void test_t303(void) {
     if (ok) it_pass("T303"); else it_fail("T303", why);
 }
 
+/* ── T304: the live-process ceiling was a number, and it is gone ─────────
+ *
+ * Stage 7 Step 3.  KPROCESS_MAX_LIVE refused the 65th process — a number the
+ * kernel picked, of the same class as the page quota Step 2 removed and the
+ * notification quota Phase S1 removed.  Since Stage 6 Step 4 a KProcess is a
+ * child block of an Untyped its creator named, so what bounds how many exist
+ * is how much memory somebody delegated; refusing at 64 on top of that told a
+ * holder with a large budget it had run out when it had not.
+ *
+ * Proving a removal needs the case that used to fail, so this creates MORE
+ * than 64 processes at once out of one budget.  They are never started, which
+ * is what makes it cheap (about 5 KB of kernel objects each and no ELF) and
+ * also what makes the second half worth asserting: a process that never ran
+ * used to be unreclaimable, and SYS_PROCESS_KILL tearing it down is what the
+ * RESET at the end depends on.
+ *
+ * Three claims:
+ *   1. more than 64 live processes exist simultaneously;
+ *   2. the eventual refusal, whenever it comes, is a clean error — the budget
+ *      answering, not a wedge;
+ *   3. every byte goes back: after killing them all the pool RESETs, which it
+ *      can only do when child_count has returned to zero, so no KProcess,
+ *      root CNode, VSpace header or PML4 leaked.
+ *
+ * Invariants: Q20, Q29, S13. */
+#define T304_CN_SLOT   S1_SLOT_D    /* a CNode of our own for the process caps */
+#define T304_VS_SLOT   S1_SLOT_A
+#define T304_CS_SLOT   S1_SLOT_B
+#define T304_MAX       80u          /* > 64, and 127 leaves are addressable */
+#define T304_TARGET    65u          /* the first count the old ceiling refused */
+
+static void test_t304(void) {
+    int ok = 1;
+    const char *why = "live process ceiling";
+    uint32_t got = 0;
+    long fail_rc = 0;
+
+    it_quiesce_reaper();
+    it_slot_delete(T304_CN_SLOT);
+    it_slot_delete(T304_VS_SLOT);
+    it_slot_delete(T304_CS_SLOT);
+
+    /* One budget for the whole experiment, laddered so a small boot block
+     * still runs the test rather than skipping it silently. */
+    static const uint64_t sizes[3] = { 4u << 20, 2u << 20, 1u << 20 };
+    long pool = -1;
+    for (uint32_t i = 0; i < 3u && pool < 0; i++)
+        pool = s1_sub_ut(sizes[i]);
+    if (pool < 0) { it_fail("T304", "pool carve"); return; }
+
+    /* The process capabilities need somewhere to live that is not the rotating
+     * object pool — 80 of them are held at once, which that pool would wrap. */
+    if (it_sys4(SYS_UNTYPED_RETYPE2, pool,
+                (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
+                (long)((uint64_t)T304_CN_SLOT << 32), 128) != 0) {
+        it_fail("T304", "cnode carve"); return;
+    }
+
+    for (uint32_t i = 0; i < T304_MAX; i++) {
+        long vs, cs, r;
+        /* The scratch slots are reused every iteration: SYS_PROCESS_CREATE
+         * takes its own references to both, so once it returns the caller's
+         * capability is surplus.  That is also what keeps this to two slots
+         * rather than 160. */
+        it_slot_delete(T304_VS_SLOT);
+        it_slot_delete(T304_CS_SLOT);
+        vs = it_sys4(SYS_UNTYPED_RETYPE2, pool,
+                     (long)((uint64_t)IRIS_KOBJ_VSPACE | (1ULL << 32)),
+                     (long)((uint64_t)T304_VS_SLOT << 32), 4096);
+        if (vs != 0) { fail_rc = vs; break; }
+        cs = it_sys4(SYS_UNTYPED_RETYPE2, pool,
+                     (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
+                     (long)((uint64_t)T304_CS_SLOT << 32), 4);
+        if (cs != 0) { fail_rc = cs; break; }
+        r = it_sys4(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
+                    (long)((uint64_t)T304_CN_SLOT | ((uint64_t)(i + 1u) << 32)),
+                    (long)T304_VS_SLOT, (long)T304_CS_SLOT);
+        if (r != 0) { fail_rc = r; break; }
+        got++;
+    }
+
+    /* 1. the number that used to be refused. */
+    if (got < T304_TARGET) { ok = 0; why = "fewer than 65 live processes"; }
+    /* 2. and whatever stopped it said so cleanly. */
+    if (ok && got < T304_MAX && fail_rc >= 0) { ok = 0; why = "stopped without an error"; }
+
+    /* 3. kill them all — none ever ran, so this is the never-started teardown
+     *    path — then the region must RESET, which it refuses while a single
+     *    child of it is still alive. */
+    for (uint32_t i = 0; i < got; i++) {
+        uint32_t cptr = (uint32_t)(((i + 1u) << 8) | T304_CN_SLOT);
+        (void)it_sys1(SYS_PROCESS_KILL, (long)cptr);
+        (void)it_sys2(SYS_CNODE_DELETE, (long)T304_CN_SLOT, (long)(i + 1u));
+    }
+    it_slot_delete(T304_VS_SLOT);
+    it_slot_delete(T304_CS_SLOT);
+    it_slot_delete(T304_CN_SLOT);
+    it_quiesce_reaper();
+
+    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) != 0) {
+        ok = 0; why = "budget not fully returned";
+    }
+    it_slot_delete((uint32_t)pool);
+
+    if (ok) it_pass("T304"); else it_fail("T304", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -20959,6 +21074,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t302();
     /* Stage 7: a running thread outlives every capability to it. */
     test_t303();
+    test_t304();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
