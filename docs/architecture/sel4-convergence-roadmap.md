@@ -989,6 +989,67 @@ re-derived rather than deleted:
   region afterwards, which only succeeds once every KProcess, root CNode,
   VSpace header and PML4 has gone back.
 
+### Step 4 — a thread resolves CPtrs in its own CSpace  ✅ DONE
+
+`SYS_TCB_CONFIGURE` has taken the CSpace as a CAPABILITY since Stage 5 Step 4,
+and the kernel then resolved every CPtr through `t->process->cspace_root`
+anyway: the argument described the truth without being it, and a thread's most
+basic authority — what its capability addresses mean — was a property of a
+shared object it did not hold.  Every CSpace resolver took a `struct KProcess *`
+and used it for one thing, to reach `proc->cspace_root`; they take the root
+itself now, and the capability travels from the syscall into the thread, which
+holds the same lifecycle+active pair KProcess holds.  Threads of one process
+still share one CNode, so what a CPtr resolves to is unchanged; **resolving one
+no longer reads KProcess**, which was most of what KProcess did on the hot path.
+
+### Step 5 — a thread runs in its own address space  ✅ DONE
+
+The same defect on the other capability `SYS_TCB_CONFIGURE` names: the
+scheduler loaded CR3 out of `chosen->process`.  The thread holds the VSpace
+now.  The PCID moved with it — a PCID is x86's ASID, it tags TLB entries with
+the WALK they belong to, and it was allocated per KProcess out of a pool whose
+allocation loop was written twice, once in each KProcess constructor.  It is
+one loop on `KVSpace` now, claimed by whichever constructor established cr3.
+`KProcess.user_cr3` and `KProcess.pcid` are gone; `cr3` remains as an explicit
+cache for the teardown gate and the reap, and says so.
+
+### Step 6 — a fault belongs to the thread that took it  ✅ DONE
+
+The fault record lived on KProcess, one copy per process, and the code named
+the cost in its own comment: "the per-process record is last-writer-wins".
+Two threads faulting before the handler ran left one record describing the
+other's vector, rip and CR2; the Phase 25 generation counter made the RESUME
+safe against that but could not make the READ safe, because there was one
+record.  It is on the execution now.  KProcess keeps what is genuinely
+process-scoped — the handler to signal, the generation sequence, and a RETAINED
+reference to whoever faulted last so the process-scoped read still answers.
+
+### Step 7 — a fault names the thread by capability  ← BLOCKED, and on what
+
+`SYS_EXCEPTION_RESUME` takes a task id.  Authority comes from the process
+capability and the id is checked against it, so the number confers nothing —
+but it SELECTS, which is the shape charter §3.4/§3.5 forbid, and it means a
+supervisor cannot hold, delegate or revoke "that thread" the way it holds
+everything else.  Closing it needs fault DELIVERY to hand a TCB capability
+over.
+
+This was implemented and REVERTED, and what the attempt found is worth more
+than the code was.  The obvious destination for the delivered capability is the
+registrant's own CSpace — and that is wrong, because **the principal that
+REGISTERS a fault handler is not the principal that HANDLES the fault.**  The
+one real supervised-fault architecture in the tree proves it: `iris_test` calls
+`SYS_EXCEPTION_HANDLER` for each target and mints the target's process
+capability into the PAGER, which is what later calls `SYS_EXCEPTION_RESUME`.
+Delivering into the registrant's CSpace puts the capability where nobody uses
+it, and the pager keeps the id it was supposed to stop using.
+
+So the destination has to be a CNode NAMED by capability — a fault mailbox the
+supervisor retypes and shares with the handler — or the handler has to register
+for itself, holding the target capabilities to do so.  Both are process-server
+decisions about who supervises whom, which is the stage's deliverable and not
+something the delivery mechanism can settle on its own.  A kernel that picks
+one for them would be choosing the policy this stage exists to move out.
+
 ### What Stage 7 still needs, and why it is not an increment
 
 `KProcess` itself.  Retiring it means a thread's authority comes from its own
@@ -999,13 +1060,19 @@ watches, the IPC identity a badge names, the VMO owner/payer relation, and the
 replaces the policy it carries — a user-space process server — which is the
 stage's actual deliverable rather than a step toward it.
 
-Two smaller items are ready when that lands:
+Steps 4-6 took the two capabilities a thread is CONFIGURED with, plus its
+fault record, off KProcess and onto the thread — so what a thread resolves in,
+runs in, and faults with is now the thread's own.  What is left on KProcess is
+exactly the SUPERVISION policy: who is told when it faults, who is told when it
+dies, its exit code, its thread count, the budget its kernel-side objects come
+from, and the `SYS_PROCESS_*` surface that reads and writes all of it.  That is
+the process server's job description, which is why the remaining work is the
+server and not another field move.
 
-- **A global identifier still SELECTS a thread.**  `SYS_EXCEPTION_RESUME` takes
-  a task id, though authority comes from the process capability and the id is
-  checked against it, so nothing is conferred by the number.  Naming the thread
-  by capability instead requires fault DELIVERY to hand one over, which is
-  process-server work.
+Two smaller items remain:
+
+- **A global identifier still SELECTS a thread** — Step 7 above, blocked on who
+  the handler is rather than on the mechanism.
 - **The VMO-count quota** retires with the `KVMO` object (memory server), per
   the ledger.
 - **`KPROCESS_MAX_LIVE`** retired in Step 3 above.
