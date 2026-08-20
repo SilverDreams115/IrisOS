@@ -286,6 +286,7 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * — 8..15 is the per-segment window — so a new slot goes above everything the
  * spawn loop indexes, not into the first gap that looks free. */
 #define SL_WS_CHILD_CNODE  184u  /* ...and its root CSpace, likewise */
+#define SL_WS_CHILD_TCB    185u  /* ...and the thread that will run in them */
 /* Two scratch slots, because the spare level a completed walk leaves behind
  * belongs to whoever paid for it.  The loader's own spare is retyped from the
  * loader's budget and is worth KEEPING across spawns; a child's spare is
@@ -335,6 +336,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     *out_chan_h = HANDLE_INVALID;
     long self_vs  = 0;   /* the loader's own address space, for parse windows */
     long child_vs = 0;   /* the child's address space, once it exists */
+    long child_cn = 0;   /* ...its root CSpace, and the thread runs in both */
     long pool_c   = 0;   /* the budget its paging levels come from */
 
     long idx = sl_name_to_index(name);
@@ -560,9 +562,9 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                 r = (long)IRIS_ERR_NO_MEMORY;
                 break;
             }
+            child_cn = (long)sl_ws_cptr(ws, SL_WS_CHILD_CNODE);
             r = sl_sys4(SYS_PROCESS_CREATE, (long)proc_c,
-                        sl_ws_dest(ws, l), child_vs,
-                        (long)sl_ws_cptr(ws, SL_WS_CHILD_CNODE));
+                        sl_ws_dest(ws, l), child_vs, child_cn);
             if (r == 0) { proc_leaf = l; pool_c = pool; break; }
             if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
         }
@@ -802,14 +804,37 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                           (long)rb);
         }
 
-        /* 19. Start first thread: entry at bias+e_entry, RSP = stack top - 8,
-         *     RBX = 0 (Track I: no bootstrap channel; every cap is a CSpace mint). */
-        r = sl_sys4(SYS_THREAD_START,
-                    (long)proc_h,
-                    (long)(bias + elf_entry),
-                    (long)(USER_STACK_TOP - 8ULL),
-                    0);
+        /*
+         * 19. Compose the child's first thread and start it.
+         *
+         * Stage 7: this was SYS_THREAD_START, which carved a thread out of the
+         * kernel's static task pool — the last execution path where a thread
+         * existed because the kernel had a free slot rather than because
+         * somebody held the memory and the authority.  It could not be
+         * anything else until the spawner could NAME the CSpace and VSpace the
+         * thread would run in, which is what Stage 6-pure Etapa 4/5 gave it.
+         *
+         * Four steps, and every one names a capability: retype the TCB out of
+         * the child's budget, configure it with the child's CSpace and VSpace,
+         * say where it starts, start it.  RBX = 0 (Track I: no bootstrap
+         * channel; every cap is a CSpace mint).
+         */
+        (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws),
+                      (long)SL_WS_CHILD_TCB);
+        r = sl_sys4(SYS_UNTYPED_RETYPE2, pool_c,
+                    (long)((uint64_t)IRIS_KOBJ_TCB | (1ULL << 32)),
+                    sl_ws_dest(ws, SL_WS_CHILD_TCB), 0);
         if (r < 0) goto out;
+        {
+            long tcb = (long)sl_ws_cptr(ws, SL_WS_CHILD_TCB);
+            r = sl_sys4(SYS_TCB_CONFIGURE, tcb, child_cn, child_vs, (long)proc_h);
+            if (r < 0) goto out;
+            r = sl_sys4(SYS_TCB_WRITE_REGS, tcb, (long)(bias + elf_entry),
+                        (long)(USER_STACK_TOP - 8ULL), 0);
+            if (r < 0) goto out;
+            r = sl_sys1(SYS_TCB_RESUME, tcb);
+            if (r < 0) goto out;
+        }
     }
 
     /* Hand back everything of the CHILD's that the loader was holding: an
@@ -821,6 +846,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_PTSCRATCH_CH);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_VSPACE);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_CNODE);
+    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_TCB);
     *out_proc_h = proc_h;
     *out_chan_h  = HANDLE_INVALID;
     return 0;
@@ -829,6 +855,7 @@ out:
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_PTSCRATCH_CH);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_VSPACE);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_CNODE);
+    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_TCB);
     /* Unmap ELF if still mapped. */
     if (elf_mapped)
         sl_sys2(SYS_VMO_UNMAP, (long)SL_ELF_VADDR, (long)SL_SEG_SLOT_SIZE);

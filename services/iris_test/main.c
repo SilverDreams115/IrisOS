@@ -3343,12 +3343,14 @@ static void test_t081(void) {
                   (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
     }
 
-    /* KILL / THREAD_START via the READ-only slot → ACCESS_DENIED (both need
-     * RIGHT_MANAGE; entry/rsp are valid so resolution+rights are what fail). */
+    /* KILL via the READ-only slot → ACCESS_DENIED (needs RIGHT_MANAGE).
+     * Stage 7: the THREAD_START half of this check retired with the syscall —
+     * a spawned process's first thread is composed from capabilities now, and
+     * T297 is where that authority is checked. */
     if (ok && it_sys1(SYS_PROCESS_KILL, T081_SLOT_RO) !=
               (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
     if (ok && it_sys4(SYS_THREAD_START, T081_SLOT_RO, 0x8000200000L,
-                      0x8000300000L, 0) != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+                      0x8000300000L, 0) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
 
     /* WATCH by CPtr, then KILL by CPtr; the watch must fire. */
     long n = it_notify_create();
@@ -3365,12 +3367,12 @@ static void test_t081(void) {
     }
 
     /* Dead child by CPtr: STATUS 0, EXIT_CODE readable, KILL idempotent,
-     * THREAD_START on a torn-down process → BAD_HANDLE. */
+     * and the retired THREAD_START answers NOT_SUPPORTED whatever it is given. */
     if (ok && it_sys1(SYS_PROCESS_STATUS, T081_SLOT_PROC) != 0) ok = 0;
     if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, T081_SLOT_PROC) < 0) ok = 0;
     if (ok && it_sys1(SYS_PROCESS_KILL, T081_SLOT_PROC) != 0) ok = 0;
     if (ok && it_sys4(SYS_THREAD_START, T081_SLOT_PROC, 0x8000200000L,
-                      0x8000300000L, 0) != (long)IRIS_ERR_BAD_HANDLE) ok = 0;
+                      0x8000300000L, 0) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
 
     it_close(&watch_h);
     it_close(&proc_h);
@@ -10078,8 +10080,13 @@ static void test_t148(void) {
          * Stage 5 Etapa 4: 48 = SYS_THREAD_CREATE.  A thread carved from the
          * kernel's static pool, authorised by nothing and identified by a
          * global id, is replaced by a TCB retyped from an Untyped and
-         * configured with CSpace/VSpace capabilities. */
-        45, 48,
+         * configured with CSpace/VSpace capabilities.
+         * Stage 7: 58 = SYS_THREAD_START, the LAST pool-born execution path —
+         * a spawned process's first thread.  It survived Etapa 4 only because
+         * a spawner could not name its child's CSpace and VSpace; Stage 6-pure
+         * made it retype both, so the child's first thread is composed the
+         * same way any other is. */
+        45, 48, 58,
     };
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
@@ -20307,6 +20314,107 @@ static void test_t302(void) {
     if (ok) it_pass("T302"); else it_fail("T302", why);
 }
 
+/* ── T303: a running thread outlives every capability to it (Stage 7) ─────
+ * A thread has two owners and they are independent: whoever holds its TCB
+ * capability, and the scheduler that is running it.  A pool-born thread got
+ * the scheduler's reference from ktcb_object_init — its refcount of 1 WAS the
+ * scheduler's.  A RETYPED thread's refcount of 1 belongs to the CSpace slot
+ * the retype published it into, so until Stage 7 the slot was the only owner:
+ * SYS_TCB_CONFIGURE built the execution state without taking a reference for
+ * the scheduler that would run it.
+ *
+ * Deleting that slot after starting the thread therefore destroyed the
+ * thread's storage while it was the thing executing — the block was returned
+ * to its Untyped and zeroed underneath a live kernel stack.  It stayed
+ * invisible for two stages because the only caller (init's S8 selftest) held
+ * its slot forever.  A spawner does not: the child's TCB is the spawner's to
+ * drop once the child runs, and svc_loader drops it on every spawn.
+ *
+ * Asserted here, on the suite's own thread so the observation is direct:
+ *
+ *   1. a thread composed from capabilities runs;
+ *   2. dropping the LAST capability to it does not stop it or corrupt it —
+ *      it keeps running and keeps producing the right answers;
+ *   3. and the budget it was retyped from is still held, because a live
+ *      thread is a child of that region whoever holds the capability.
+ *
+ * Leg 2 is the regression: before the fix it was a page fault in
+ * context_switch with a zeroed kernel stack pointer, three call levels from
+ * anything that named a TCB.
+ * Invariants: O5, S-gate. */
+static volatile uint32_t g_t303_ticks;
+static volatile int      g_t303_go;
+
+static void t303_thread(void) {
+    while (g_t303_go) {
+        g_t303_ticks++;
+        it_sys0(SYS_YIELD);
+    }
+    it_sys1(SYS_TCB_EXIT, 0);
+    for (;;) it_sys0(SYS_YIELD);
+}
+
+static uint8_t g_t303_stack[8192] __attribute__((aligned(16)));
+
+static void test_t303(void) {
+    int ok = 1;
+    const char *why = "thread outlives its capability";
+
+    if (!it_setup_self_vspace()) { it_fail("T303", "vspace self"); return; }
+    long cs = it_cspace_self();
+    if (cs < 0) { it_fail("T303", "cspace self"); return; }
+
+    struct it_utq_one q0, q1;
+    if (!it_utq_1((long)IRIS_CPTR_TEST_UNTYPED, &q0)) {
+        it_fail("T303", "query"); return;
+    }
+
+    long tcb = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                    IRIS_KOBJ_TCB, 0);
+    if (tcb < 0) { it_fail("T303", "tcb retype"); return; }
+
+    g_t303_go    = 1;
+    g_t303_ticks = 0;
+
+    uint64_t entry = (uint64_t)(uintptr_t)t303_thread;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t303_stack + sizeof(g_t303_stack)))
+                     & ~0xFULL;
+    if (it_sys4(SYS_TCB_CONFIGURE, tcb, cs, IT_VS, 0) != 0) {
+        ok = 0; why = "configure";
+    }
+    if (ok && it_sys4(SYS_TCB_WRITE_REGS, tcb, (long)entry, (long)(rsp - 8), 0) != 0) {
+        ok = 0; why = "write regs";
+    }
+    if (ok && it_sys1(SYS_TCB_RESUME, tcb) != 0) { ok = 0; why = "resume"; }
+
+    /* 1. it runs. */
+    if (ok) {
+        for (int i = 0; i < 400 && g_t303_ticks == 0; i++) it_sys0(SYS_YIELD);
+        if (g_t303_ticks == 0) { ok = 0; why = "thread never ran"; }
+    }
+
+    /* 2. drop the LAST capability to it while it is running. */
+    if (ok) {
+        it_slot_delete((uint32_t)tcb);
+        uint32_t seen = g_t303_ticks;
+        for (int i = 0; i < 400 && g_t303_ticks == seen; i++) it_sys0(SYS_YIELD);
+        if (g_t303_ticks == seen) { ok = 0; why = "thread stopped when its cap went"; }
+    }
+
+    /* 3. and the region still counts it: a live thread is a child of the
+     *    budget it was retyped from, capability or no capability. */
+    if (ok && !it_utq_1((long)IRIS_CPTR_TEST_UNTYPED, &q1)) { ok = 0; why = "query2"; }
+    if (ok && q1.child_count <= q0.child_count) {
+        ok = 0; why = "live thread not charged";
+    }
+
+    /* Let it exit on its own; its storage goes back with the last owner. */
+    g_t303_go = 0;
+    it_quiesce_reaper();
+
+    if (ok) it_pass("T303"); else it_fail("T303", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Etapa 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -20843,6 +20951,8 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t301();
     /* Stage 6-pure: a page table is a capability the holder retypes. */
     test_t302();
+    /* Stage 7: a running thread outlives every capability to it. */
+    test_t303();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

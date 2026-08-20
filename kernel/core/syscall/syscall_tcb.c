@@ -78,26 +78,58 @@ uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                            uint64_t arg3) {
-    (void)arg3;
     struct task *caller = task_current();
     if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    struct KProcess *proc = caller->process;
 
     if (!cspace_only_cptr(arg1) || !cspace_only_cptr(arg2))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
-    iris_error_t err = tcb_resolve(proc, (iris_cptr_t)arg0, RIGHT_WRITE,
-                                   &target, &rights);
+    iris_error_t err = tcb_resolve(caller->process, (iris_cptr_t)arg0,
+                                   RIGHT_WRITE, &target, &rights);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* The CSpace argument: a real KCNode capability, which must BE this
+    /*
+     * Stage 7: WHICH process this thread joins is an argument.
+     *
+     * Until now it was always the caller's own, because the spawner could not
+     * name its child's CSpace and VSpace — they were carved by the kernel
+     * inside SYS_PROCESS_CREATE and never handed out.  Stage 6-pure Etapa 4/5
+     * made the spawner RETYPE both and pass them in, so it holds them from
+     * before the child exists, and the restriction had nothing left to
+     * protect.  arg3 == 0 still means "my own", which is what a thread
+     * creating a sibling wants.
+     *
+     * RIGHT_MANAGE on the process, because adding a thread to it is a change
+     * to what that process can do, not something reading it should permit.
+     */
+    struct KProcess *proc = caller->process;
+    struct KObject  *proc_obj = 0;
+    if (arg3 != 0u) {
+        iris_rights_t pr;
+        err = cspace_resolve_only_obj(caller->process, (iris_cptr_t)arg3,
+                                      RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &pr);
+        if (err != IRIS_OK) {
+            kobject_release(&target->base);
+            return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+        }
+        if (!rights_check(pr, RIGHT_MANAGE)) {
+            kobject_release(proc_obj); kobject_release(&target->base);
+            return syscall_err(IRIS_ERR_ACCESS_DENIED);
+        }
+        proc = (struct KProcess *)proc_obj;
+    }
+
+    /* The CSpace argument: a real KCNode capability, which must BE that
      * process's root.  Identity, not equivalence — a different CNode with the
-     * same contents is a different CSpace. */
+     * same contents is a different CSpace.  Naming the pair rather than
+     * trusting the process object is the whole point: it is what makes the
+     * signature honest about a thread running in a named CSpace and VSpace. */
     struct KObject *cs_obj; iris_rights_t cs_rights;
-    err = cspace_resolve_only_obj(proc, (iris_cptr_t)arg1, RIGHT_NONE,
+    err = cspace_resolve_only_obj(caller->process, (iris_cptr_t)arg1, RIGHT_NONE,
                                   KOBJ_CNODE, &cs_obj, &cs_rights);
     if (err != IRIS_OK) {
+        if (proc_obj) kobject_release(proc_obj);
         kobject_release(&target->base);
         return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
     }
@@ -108,27 +140,29 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * close callback, which empties every slot of the CSpace being used. */
     int cs_ok = ((struct KCNode *)cs_obj == proc->cspace_root);
     kobject_release(cs_obj);
-    if (!cs_ok) {
-        kobject_release(&target->base);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
 
-    /* The VSpace argument: likewise this process's own address space. */
+    /* The VSpace argument: likewise that process's own address space. */
     struct KObject *vs_obj; iris_rights_t vs_rights;
-    err = cspace_resolve_only_obj(proc, (iris_cptr_t)arg2, RIGHT_NONE,
-                                  KOBJ_VSPACE, &vs_obj, &vs_rights);
-    if (err != IRIS_OK) {
-        kobject_release(&target->base);
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    int vs_ok = 0;
+    if (cs_ok) {
+        err = cspace_resolve_only_obj(caller->process, (iris_cptr_t)arg2,
+                                      RIGHT_NONE, KOBJ_VSPACE, &vs_obj, &vs_rights);
+        if (err != IRIS_OK) {
+            if (proc_obj) kobject_release(proc_obj);
+            kobject_release(&target->base);
+            return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+        }
+        vs_ok = ((struct KVSpace *)vs_obj == proc->vspace);
+        kobject_release(vs_obj);
     }
-    int vs_ok = ((struct KVSpace *)vs_obj == proc->vspace);
-    kobject_release(vs_obj);
-    if (!vs_ok) {
+    if (!cs_ok || !vs_ok) {
+        if (proc_obj) kobject_release(proc_obj);
         kobject_release(&target->base);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
     err = ktcb_configure(target, proc);
+    if (proc_obj) kobject_release(proc_obj);
     kobject_release(&target->base);
     if (err != IRIS_OK) return syscall_err(err);
     return syscall_ok_u64(0);
@@ -161,13 +195,17 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         kobject_release(&target->base);
         return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }
-    /* A thread may only be pointed at code in the address space it was
-     * configured for, and this syscall configures nothing: a target belonging
-     * to another process is refused rather than silently written. */
-    if (target->process != caller->process) {
-        kobject_release(&target->base);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
+    /*
+     * Stage 7: the TCB capability IS the authority.
+     *
+     * This used to refuse a target in another process, because a spawner had
+     * no legitimate reason to point one — it could not have configured it
+     * either.  Now it configures its child's initial thread, so refusing to
+     * say where that thread starts would leave it configured and unstartable.
+     * The address is still checked against the address space the thread was
+     * CONFIGURED for, which is the guarantee that mattered; who invoked it is
+     * answered by holding the capability with RIGHT_WRITE.
+     */
 
     err = ktcb_write_regs(target, arg1, arg2, arg3);
     kobject_release(&target->base);

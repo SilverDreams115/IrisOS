@@ -241,8 +241,6 @@ iris_error_t ktcb_configure(struct task *t, struct KProcess *proc);
 iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
                              uint64_t arg);
 
-struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
-                                uint64_t user_rsp, uint64_t arg);
 void         task_set_bootstrap_arg0(struct task *t, uint64_t arg0);
 void         task_abort_spawned_user(struct task *t);
 void         task_exit_current(void);

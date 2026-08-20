@@ -908,62 +908,18 @@ void task_abort_spawned_user(struct task *t) {
     task_execution_teardown_off_cpu(t);
 }
 
-struct task *task_thread_create(struct KProcess *proc, uint64_t entry_vaddr,
-                                uint64_t user_rsp, uint64_t arg) {
-    if (!proc || !proc->cr3 || proc->teardown_complete) return 0;
-
-    struct task *t = task_registry_find_free();
-    if (!t) return 0;
-
-    /* No task_reset_slot(t) here — see task_create. */
-    if (kstack_alloc(t, t->reg_slot) != 0) return 0;
-    task_init_fpu_state(t);
-    t->id         = next_id++;
-    t->state      = TASK_READY;
-    t->ring       = TASK_RING3;
-    t->priority   = TASK_PRIORITY_DEFAULT;
-    t->time_slice = TASK_DEFAULT_SLICE;
-    t->ticks_left = TASK_DEFAULT_SLICE;
-    t->home_cpu   = 0;
-    t->user_entry = entry_vaddr;
-    t->user_rsp   = user_rsp;
-    t->process    = proc;
-
-    uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
-    kstack_top &= ~0xFULL;
-
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;  /* SS: user data (sysretq) */
-    kstack_top -= 8; *(uint64_t *)kstack_top = user_rsp;
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202;
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;  /* CS: user code (sysretq) */
-    kstack_top -= 8; *(uint64_t *)kstack_top = entry_vaddr;
-    kstack_top -= 8; *(uint64_t *)kstack_top =
-        (uint64_t)(uintptr_t)user_entry_trampoline;
-
-    t->saved_krsp = kstack_top;
-
-    t->ctx.r15    = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
-    t->ctx.rbp    = 0;
-    t->ctx.rbx    = arg;
-    t->ctx.rip    = (uint64_t)(uintptr_t)user_entry_trampoline;
-    t->ctx.rflags = 0x202ULL;
-
-    proc->thread_count++;
-    proc->threads_ever = 1;
-
-    /* Fase S2 D2: the KTCB IS t itself — see task_create_user_impl.  Etapa 4:
-     * no automatic handle publication (same reasoning). */
-    ktcb_object_init(t);
-
-    rq_enqueue(t);
-    atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
-
-    task_list_tail->next = t;
-    t->next              = task_list_head;
-    task_list_tail       = t;
-
-    return t;
-}
+/*
+ * task_thread_create — REMOVED (Stage 7).
+ *
+ * It carved a thread out of the static task pool for a process the caller
+ * named, and SYS_THREAD_START was its only caller.  A spawned process's first
+ * thread is RETYPED from the child's own budget now and configured with the
+ * child's CSpace and VSpace, so no path remains by which a thread exists
+ * because the kernel had a free slot.
+ *
+ * What still comes from the pool is the ROOT TASK and the idle task, both
+ * built before any Untyped exists.
+ */
 
 /* ── Stage 5 Etapa 4: execution for a TCB born from an Untyped ──────────────
  *
@@ -1014,6 +970,21 @@ iris_error_t ktcb_configure(struct task *t, struct KProcess *proc) {
      * increment would underflow the counter the moment it exited. */
     atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
 
+    /*
+     * The EXECUTION reference — the one task_execution_teardown_off_cpu drops
+     * last, and the reason a running thread outlives every capability to it.
+     *
+     * A pool-born thread gets it from ktcb_object_init, whose refcount=1 IS
+     * the scheduler's.  A RETYPED thread's refcount=1 belongs to the CSpace
+     * slot the retype published it into, so without this the slot is the only
+     * owner: a holder that deletes its TCB capability after starting the
+     * thread destroys the thread's storage underneath it, and the block is
+     * zeroed while it is the thing running.  That was invisible while the only
+     * caller kept its slot forever (init's S8 selftest); a spawner does not,
+     * because the child's TCB is the spawner's to drop once the child runs.
+     */
+    kobject_retain(&t->base);
+
     t->configured = 1;
     return IRIS_OK;
 }
@@ -1034,6 +1005,22 @@ iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
     if (!t->configured || t->terminal) return IRIS_ERR_NOT_SUPPORTED;
     if (t->state != TASK_SUSPENDED || t->started) return IRIS_ERR_BUSY;
     if (!t->kstack) return IRIS_ERR_NOT_SUPPORTED;
+
+    /*
+     * Stage 7: the range checks live here now.
+     *
+     * They were SYS_THREAD_START's, and SYS_THREAD_START was the only way a
+     * spawned process got its first thread.  With that retired this is the
+     * only path, so the checks move with it rather than being lost — an entry
+     * point outside the private user window, or a misaligned stack, is a
+     * thread that faults on its first instruction and tells nobody why.
+     */
+    if (entry < USER_PRIVATE_BASE || entry >= USER_VMO_BASE)
+        return IRIS_ERR_INVALID_ARG;
+    if (sp < USER_PRIVATE_BASE || sp > USER_SPACE_TOP)
+        return IRIS_ERR_INVALID_ARG;
+    if (sp & 0x7ULL)
+        return IRIS_ERR_INVALID_ARG;   /* the ABI's stack alignment */
 
     t->user_entry = entry;
     t->user_rsp   = sp;

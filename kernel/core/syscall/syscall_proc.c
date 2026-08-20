@@ -387,51 +387,29 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
 
 
 /*
- * sys_thread_start(proc_h, entry_vaddr, stack_top, boot_arg) → 0 or iris_error_t
+ * SYS_THREAD_START (58) — RETIRED (Stage 7).  Number permanently reserved;
+ * returns IRIS_ERR_NOT_SUPPORTED.
  *
- * Creates a new ring-3 thread in the process identified by proc_h.
- * entry_vaddr must be within the child private user image window; stack_top
- * must be within private user space and 8-byte aligned.
- * boot_arg is delivered in RBX on first execution.
- * Requires RIGHT_MANAGE on proc_h.
+ * It carved a spawned process's FIRST thread out of the kernel's static task
+ * pool — the last execution path where a thread existed because the kernel had
+ * a free slot rather than because somebody held the memory and the authority.
+ * It survived Stage 5's retirement of SYS_THREAD_CREATE for one reason: a
+ * spawner could not name the CSpace and VSpace its child would run in, because
+ * the kernel carved both inside SYS_PROCESS_CREATE and never handed them out.
+ *
+ * Stage 6-pure Etapa 4/5 made the spawner RETYPE both and pass them in, so it
+ * holds them from before the child exists.  What replaces this is the same
+ * four steps a thread of your own takes, and every one names a capability:
+ * RETYPE2(KOBJ_TCB) out of the child's budget, SYS_TCB_CONFIGURE with the
+ * child's CSpace and VSpace, SYS_TCB_WRITE_REGS to say where it starts,
+ * SYS_TCB_RESUME to start it.
+ *
+ * With it goes the last caller of task_thread_create.
  */
 uint64_t sys_thread_start(uint64_t arg0, uint64_t arg1,
                                  uint64_t arg2, uint64_t arg3) {
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    uint64_t entry_vaddr = arg1;
-    uint64_t user_rsp    = arg2;
-
-    if (entry_vaddr < USER_PRIVATE_BASE || entry_vaddr >= USER_VMO_BASE)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (user_rsp < USER_PRIVATE_BASE || user_rsp > USER_SPACE_TOP)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (user_rsp & 0x7ULL)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KObject *proc_obj;
-    iris_rights_t   proc_rights;
-    /* A1 Increment 2a: dual resolver on the target process. */
-    iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
-                                 RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
-    if (r != IRIS_OK) return syscall_err(r);
-    if (!rights_check(proc_rights, RIGHT_MANAGE)) {
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    struct KProcess *proc = (struct KProcess *)proc_obj;
-    /* Accept fresh (thread_count=0) processes that haven't been torn down. */
-    if (kprocess_teardown_complete(proc)) {
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_BAD_HANDLE);
-    }
-
-    struct task *nt = task_thread_create(proc, entry_vaddr, user_rsp, arg3);
-    kobject_release(proc_obj);
-    if (!nt) return syscall_err(IRIS_ERR_NO_MEMORY);
-    return syscall_ok_u64(0);
+    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 
