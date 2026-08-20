@@ -110,11 +110,24 @@ struct svc_mint {
  * was handed (console, kbd, a contained probe) does not need it and is audited
  * on not having it.
  */
+/*
+ * `keep_cnode_dest`, when non-zero, mints the child's ROOT CNODE there before
+ * returning (READ|WRITE), in the cnode|slot<<32 packing every publishing
+ * syscall uses.
+ *
+ * Stage 7 Step 9: minting into a child after it has started used to go through
+ * its PROCESS capability, out of which the kernel read `child->cspace_root` —
+ * so a spawner reached a CSpace it did not hold, by naming something else.  A
+ * spawner that wants to keep delegating to its child keeps the CSpace root it
+ * retyped for it; one that does not, does not ask, and holds no authority over
+ * the child's namespace at all.  Which of those is right is the spawner's to
+ * say, so it is an argument.
+ */
 long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                         const struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
-                        uint32_t own_budget_slot);
+                        uint32_t own_budget_slot, uint64_t keep_cnode_dest);
 
 long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,

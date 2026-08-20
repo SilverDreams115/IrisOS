@@ -114,6 +114,10 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
  * init arms the handler for ITSELF, so its own root CNode is the mailbox and
  * this is just the slot in it. */
 #define INIT_SLOT_S8_FAULT     60u
+/* Stage 7 Step 9: iris_test's ROOT CSpace, kept from its spawn so init can
+ * still mint into it afterwards — delegating into a child names the CSpace,
+ * and there is no longer a way to reach one by naming the process. */
+#define INIT_SLOT_TEST_CNODE   61u
 
 /* Phase S1: init's untyped pool — the boot untyped delegated by userboot at
  * IRIS_CPTR_INIT_UNTYPED.  Stage 4: held as the CPtr itself, checked once in

@@ -263,7 +263,6 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    struct KProcess *proc = t->process;
 
     /* ── validate type & compute payload size (before touching state) ── */
     uint64_t      payload = 0;
@@ -331,7 +330,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     /* ── resolve source untyped (WRITE) ── */
     struct KUntyped *ut;
     iris_rights_t    ut_rights;
-    iris_error_t err = cspace_resolve_only_untyped(proc->cspace_root, ut_cptr,
+    iris_error_t err = cspace_resolve_only_untyped(t->cspace_root, ut_cptr,
                                                         RIGHT_WRITE, &ut, &ut_rights);
     if (err != IRIS_OK) { kuntyped_stat_retype_failure(); return syscall_err(err); }
 
@@ -351,19 +350,19 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (dest_cnode == 0u) {
         /* Stage 4: structural root read — retype into the caller's root CNode
          * no longer goes through the handle table. */
-        if (!proc->cspace_root) {
+        if (!t->cspace_root) {
             kobject_active_release(&ut->base);
             kobject_release(&ut->base);
             kuntyped_stat_retype_failure();
             return syscall_err(IRIS_ERR_NOT_FOUND);
         }
-        struct KObject *root_obj = &proc->cspace_root->base;
+        struct KObject *root_obj = &t->cspace_root->base;
         kobject_retain(root_obj);
         kobject_active_retain(root_obj); /* match resolve_cnode contract */
         cn = (struct KCNode *)root_obj;
     } else {
         iris_rights_t cn_rights;
-        err = cspace_resolve_only_cnode(proc->cspace_root, dest_cnode, RIGHT_WRITE,
+        err = cspace_resolve_only_cnode(t->cspace_root, dest_cnode, RIGHT_WRITE,
                                              &cn, &cn_rights);
         if (err != IRIS_OK) {
             kobject_active_release(&ut->base);
@@ -459,7 +458,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     struct KCNode *ut_slot_cn  = 0;
     uint32_t       ut_slot_idx = 0;
     if (ut_cptr != 0u && ut_cptr < 1024u) {
-        if (cspace_resolve_slot(proc->cspace_root, ut_cptr, &ut_slot_cn, &ut_slot_idx)
+        if (cspace_resolve_slot(t->cspace_root, ut_cptr, &ut_slot_cn, &ut_slot_idx)
                 != IRIS_OK)
             ut_slot_cn = 0;   /* defensive: fall back to legacy root */
     }

@@ -20,11 +20,11 @@
 
 /* Resolve a KOBJ_TCB cap → struct task (lifecycle ref held on success).
  * WRONG_TYPE maps to INVALID_ARG to preserve this family's error code. */
-static iris_error_t tcb_resolve(struct KProcess *proc, iris_cptr_t cptr,
+static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
                                 iris_rights_t required,
                                 struct task **out, iris_rights_t *rights_out) {
     struct KObject *obj;
-    iris_error_t err = cspace_resolve_only_obj(proc->cspace_root, cptr, RIGHT_NONE,
+    iris_error_t err = cspace_resolve_only_obj(root, cptr, RIGHT_NONE,
                                                     KOBJ_TCB, &obj, rights_out);
     if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return err;
@@ -85,7 +85,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
-    iris_error_t err = tcb_resolve(caller->process, (iris_cptr_t)arg0,
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
                                    RIGHT_WRITE, &target, &rights);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -191,7 +191,7 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
-    iris_error_t err = tcb_resolve(caller->process, (iris_cptr_t)arg0,
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
                                    RIGHT_WRITE, &target, &rights);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -227,7 +227,7 @@ uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
-    iris_error_t err = tcb_resolve(caller->process, (iris_cptr_t)arg0,
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
                                    RIGHT_WRITE, &target, &rights);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -250,7 +250,7 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
-    iris_error_t err = tcb_resolve(caller->process, (iris_cptr_t)arg0,
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
                                    RIGHT_WRITE, &target, &rights);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -295,7 +295,7 @@ uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
-    iris_error_t err = tcb_resolve(caller->process, (iris_cptr_t)arg0,
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
                                    RIGHT_WRITE, &target, &rights);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -311,7 +311,7 @@ uint64_t sys_tcb_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
-    iris_error_t err = tcb_resolve(caller->process, (iris_cptr_t)arg0,
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
                                    RIGHT_WRITE, &target, &rights);
     if (err != IRIS_OK) return syscall_err(err);
 
@@ -339,7 +339,7 @@ uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
-    iris_error_t err = tcb_resolve(caller->process, (iris_cptr_t)arg0,
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
                                    RIGHT_READ, &target, &rights);
     if (err != IRIS_OK) return syscall_err(err);
 

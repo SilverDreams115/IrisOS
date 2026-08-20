@@ -72,116 +72,27 @@ uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t ar
 }
 
 /*
- * SYS_PROC_CSPACE_MINT — Phase 8: mint a caller capability into a CHILD
- * process's root CNode so the child can invoke it CPtr-first (no KChannel
- * handle transfer). Mirrors sys_cnode_mint's reduction semantics; the only
- * new authority is RIGHT_WRITE on the child process capability.
+ * SYS_PROC_CSPACE_MINT (88) — RETIRED (Stage 7 Step 9).  Number permanently
+ * reserved; answers NOT_SUPPORTED.
  *
- * Phase 9 — badge packing: arg3 low 32 bits = rights mask, high 32 bits =
- * badge.  Badge semantics:
- *   badge == 0          → INHERIT the source cap's badge (preservation).
- *   badge != 0, src unbadged
- *                       → assign the new badge.  Only ENDPOINT and
- *                         NOTIFICATION caps may carry a fresh badge
- *                         (INVALID_ARG otherwise).
- *   badge != 0, src already badged with a DIFFERENT value
- *                       → ACCESS_DENIED: a badged cap can NEVER be
- *                         re-badged — holders cannot forge identities.
+ * It minted into a CSpace named by the PROCESS that owned it, and the kernel
+ * read `child->cspace_root` out of that process.  So a spawner reached a
+ * capability namespace it did not hold by naming something else that pointed
+ * at it — the one shape left where a process capability granted access to an
+ * object the holder had never been given.
+ *
+ * SYS_CSPACE_MINT has taken a destination CNode since Phase S3, including
+ * dest_cnode 0 for the caller's own root.  Minting into a child is that, with
+ * the child's root CNode as the destination — which a spawner HAS, because it
+ * retyped it (Stage 6-pure Step 5) and handed it to SYS_PROCESS_CREATE.  A
+ * spawner that means to keep delegating keeps it; one that does not holds no
+ * authority over its child's namespace at all, which is a distinction the
+ * process-shaped form could not express.
  */
 uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                               uint64_t arg3) {
-    handle_id_t   proc_h     = (handle_id_t)arg0;
-    uint32_t      slot_idx   = (uint32_t)arg1;
-    handle_id_t   src_h      = (handle_id_t)arg2;
-    iris_rights_t new_rights = (iris_rights_t)(arg3 & 0xFFFFFFFFu);
-    uint64_t      new_badge  = arg3 >> 32;
-
-    if (!proc_h || !src_h || slot_idx == 0u)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* Child process capability — spawner authority required. */
-    struct KObject *proc_obj;
-    iris_rights_t   proc_rights;
-    iris_error_t err = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)proc_h,
-                                 RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
-    if (err != IRIS_OK) return syscall_err(err);
-    if (!rights_check(proc_rights, RIGHT_WRITE)) {
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-    struct KProcess *child = (struct KProcess *)proc_obj;
-
-    /* Child's root CNode (created at kprocess_create; soft-fail = absent).
-     * Stage 4: read structurally — the kernel no longer reaches into ANOTHER
-     * process's handle table to find that process's CSpace root. */
-    if (!child->cspace_root) {
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_NOT_FOUND);
-    }
-    struct KObject *cn_obj = &child->cspace_root->base;
-    kobject_retain(cn_obj);
-
-    /* Source capability from the CALLER.  Step 4: the destination process
-     * always resolved either way while the SOURCE was handle-only — the same
-     * half-migration as SYS_PROCESS_WATCH and friends, and it means a caller
-     * that keeps its capabilities in CSpace cannot mint from them at all.
-     * The CPtr leg resolves through CSpace and drops the traversal's active
-     * ref, matching the lifecycle-only reference the handle read yields. */
-    struct KObject *src_obj;
-    iris_rights_t   src_rights;
-    uint64_t        src_badge = 0;
-    if (!cspace_value_is_cptr((iris_cptr_t)src_h)) {
-        kobject_release(cn_obj);
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-    err = cspace_resolve_cap_badged(t->cspace_root, (iris_cptr_t)src_h, RIGHT_NONE,
-                                    &src_obj, &src_rights, &src_badge);
-    if (err == IRIS_OK) kobject_active_release(src_obj);
-    if (err != IRIS_OK) {
-        kobject_release(cn_obj);
-        kobject_release(proc_obj);
-        return syscall_err(err);
-    }
-    if (!rights_check(src_rights, RIGHT_DUPLICATE)) {
-        kobject_release(src_obj);
-        kobject_release(cn_obj);
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    iris_rights_t effective = rights_reduce(src_rights, new_rights);
-    if (effective == RIGHT_NONE) {
-        kobject_release(src_obj);
-        kobject_release(cn_obj);
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-
-    /* Phase 9 rules, Phase S3 centralization: badge derivation lives in ONE
-     * place (mdb_badge_derive) — inherit on 0, never re-badge, fresh badges
-     * only for identity-bearing IPC objects.  The source badge comes from the
-     * slot, read in the same traversal that resolved it. */
-    uint64_t effective_badge;
-    err = mdb_badge_derive(src_badge, new_badge, (uint32_t)src_obj->type,
-                           &effective_badge);
-    if (err != IRIS_OK) {
-        kobject_release(src_obj);
-        kobject_release(cn_obj);
-        kobject_release(proc_obj);
-        return syscall_err(err);
-    }
-
-    err = kcnode_mint_excl_badged((struct KCNode *)cn_obj, slot_idx, src_obj,
-                                  effective, effective_badge);
-    kobject_release(src_obj);
-    kobject_release(cn_obj);
-    kobject_release(proc_obj);
-    if (err != IRIS_OK) return syscall_err(err);
-    return 0;
+    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -233,7 +144,6 @@ uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    struct KProcess *proc = t->process;
 
     if (!cspace_only_cptr(src_cptr)) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (dest_cnode != 0u && !cspace_only_cptr(dest_cnode))
@@ -241,16 +151,16 @@ uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (dest_slot == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KCNode *src_cn; uint32_t src_idx;
-    iris_error_t err = cspace_resolve_slot(proc->cspace_root, (iris_cptr_t)src_cptr,
+    iris_error_t err = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)src_cptr,
                                            &src_cn, &src_idx);
     if (err != IRIS_OK) return syscall_err(err);
 
     struct KCNode *dst_cn = 0;
     if (dest_cnode == 0u) {
-        err = cspace_own_root(proc->cspace_root, &dst_cn);
+        err = cspace_own_root(t->cspace_root, &dst_cn);
     } else {
         iris_rights_t dr;
-        err = cspace_resolve_cnode(proc->cspace_root, (iris_cptr_t)dest_cnode,
+        err = cspace_resolve_cnode(t->cspace_root, (iris_cptr_t)dest_cnode,
                                    RIGHT_WRITE, &dst_cn, &dr);
         if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     }
@@ -297,69 +207,27 @@ uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * SYS_CSPACE_MINT_INTO (116) — cross-process CSpace-sourced mint.
- *   arg0 = target process (CPtr/handle dual — target-authority pattern;
- *          RIGHT_WRITE required, mirrors SYS_PROC_CSPACE_MINT)
- *   arg1 = destination slot in the target's root CNode (0 refused)
- *   arg2 = source CPtr in the CALLER's CSpace (CSpace only)
- *   arg3 = rights (low 32; RIGHT_SAME_RIGHTS ⇒ copy) | badge (high 32)
- * The installed capability is an MDB CHILD of the caller's source slot, so
- * the caller (or any ancestor) can later revoke the delegation — this is the
- * derivation edge that crosses processes.
+ * SYS_CSPACE_MINT_INTO (116) — RETIRED (Stage 7 Step 9).  Number permanently
+ * reserved; answers NOT_SUPPORTED.
+ *
+ * It minted into a CSpace named by the PROCESS that owned it, and the kernel
+ * read `child->cspace_root` out of that process.  So a spawner reached a
+ * capability namespace it did not hold by naming something else that pointed
+ * at it — the one shape left where a process capability granted access to an
+ * object the holder had never been given.
+ *
+ * SYS_CSPACE_MINT has taken a destination CNode since Phase S3, including
+ * dest_cnode 0 for the caller's own root.  Minting into a child is that, with
+ * the child's root CNode as the destination — which a spawner HAS, because it
+ * retyped it (Stage 6-pure Step 5) and handed it to SYS_PROCESS_CREATE.  A
+ * spawner that means to keep delegating keeps it; one that does not holds no
+ * authority over its child's namespace at all, which is a distinction the
+ * process-shaped form could not express.
  */
 uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                               uint64_t arg3) {
-    uint32_t      dest_slot  = (uint32_t)arg1;
-    uint64_t      src_cptr   = arg2;
-    iris_rights_t req_rights = (iris_rights_t)(arg3 & 0xFFFFFFFFu);
-    uint64_t      req_badge  = arg3 >> 32;
-
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    struct KProcess *proc = t->process;
-
-    if (!arg0 || dest_slot == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (!cspace_only_cptr(src_cptr)) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* Target process — spawner authority (same contract as PROC_CSPACE_MINT). */
-    struct KObject *proc_obj;
-    iris_rights_t   proc_rights;
-    iris_error_t err = cspace_resolve_only_obj(proc->cspace_root, (iris_cptr_t)arg0,
-                                 RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
-    if (err != IRIS_OK) return syscall_err(err);
-    if (!rights_check(proc_rights, RIGHT_WRITE)) {
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-    struct KProcess *child = (struct KProcess *)proc_obj;
-
-    /* Stage 4: structural read of the child's CSpace root — no cross-process
-     * handle-table access. */
-    if (!child->cspace_root) {
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_NOT_FOUND);
-    }
-    struct KObject *cn_obj = &child->cspace_root->base;
-    kobject_retain(cn_obj);
-
-    /* Source slot in the CALLER's CSpace. */
-    struct KCNode *src_cn; uint32_t src_idx;
-    err = cspace_resolve_slot(proc->cspace_root, (iris_cptr_t)src_cptr, &src_cn, &src_idx);
-    if (err != IRIS_OK) {
-        kobject_release(cn_obj);
-        kobject_release(proc_obj);
-        return syscall_err(err);
-    }
-
-    err = kcnode_slot_derive(src_cn, src_idx, (struct KCNode *)cn_obj,
-                             dest_slot, req_rights, req_badge);
-
-    kobject_active_release(&src_cn->base);
-    kobject_release(&src_cn->base);
-    kobject_release(cn_obj);
-    kobject_release(proc_obj);
-    if (err != IRIS_OK) return syscall_err(err);
-    return 0;
+    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 /*

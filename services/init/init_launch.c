@@ -49,7 +49,7 @@ void init_spawn_fb(void) {
                                2u << 20,
                                /* fb maps the framebuffer into a window nothing
                                 * has touched, so it owes every level under it. */
-                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED);
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u);
     }
     if (r < 0)
         init_early_serial_write(init_fb_load_fail);
@@ -129,7 +129,7 @@ int init_spawn_console(void) {
                                "console", &con_proc_h, &con_boot_h,
                                con_mints, n,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
-                               2u << 20, /*own_budget_slot=*/0);
+                               2u << 20, /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
     }
     /* console's slot-13 mint is the only reply cap: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_CONSOLE_RPLY);
@@ -268,7 +268,7 @@ handle_id_t init_spawn_svcmgr(void) {
                                "svcmgr", &svcmgr_proc_h,
                             &svcmgr_chan_h, sm_mints, n,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
-                               8u << 20, /*own_budget_slot=*/0);  /* has slot 12 already */
+                               8u << 20, /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);  /* has slot 12 already */
     }
     /* svcmgr's slot-12 mint keeps the pool alive: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_SM_UNTYPED);
@@ -491,7 +491,10 @@ void init_spawn_iris_test(handle_id_t sm_h) {
                                "iris_test",
                             &proc_h, &boot_h, it_mints, 17u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
-                               16u << 20, /*own_budget_slot=*/0); /* has TEST_UNTYPED */
+                               16u << 20, /*own_budget_slot=*/0, /* has TEST_UNTYPED */
+                               /* Stage 7 Step 9: keep the suite's CSpace root
+                                * long enough for the self-proc mint below. */
+                               (uint64_t)INIT_SLOT_TEST_CNODE << 32);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);
@@ -505,14 +508,21 @@ void init_spawn_iris_test(handle_id_t sm_h) {
     }
 
     /* A1 Increment 1: mint iris_test's OWN process cap (RIGHT_WRITE) into its
-     * CSpace (slot 25) so the suite can SYS_PROC_CSPACE_MINT runtime-created
-     * caps into its own slots — T079 mints a VMO and maps it by CPtr.  The
-     * source handle only exists after the load, hence post-start; T079 runs
-     * late in the suite and retries the resolve, then FAILS loudly. */
-    if (init_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h,
-                  (long)IRIS_CPTR_TEST_PROC, (long)proc_h,
+     * CSpace (slot 25).  The source only exists after the load, hence
+     * post-start.
+     *
+     * Stage 7 Step 9: through the child's ROOT CSPACE, which the spawn kept at
+     * INIT_SLOT_TEST_CNODE.  It used to name the child's PROCESS and let the
+     * kernel read `child->cspace_root` out of it — reaching a CSpace init did
+     * not hold by naming something it did.  init drops the root right after,
+     * because keeping it is standing authority over the suite's namespace and
+     * this is the only thing it needed it for. */
+    if (init_sys3(SYS_CSPACE_MINT, (long)proc_h,
+                  (long)((uint64_t)INIT_SLOT_TEST_CNODE |
+                         ((uint64_t)IRIS_CPTR_TEST_PROC << 32)),
                   (long)RIGHT_WRITE) != 0)
         init_log("[USER][INIT] iris_test self-proc mint FAILED\n");
+    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_TEST_CNODE);
 
     /* Phase 13 (Track I): the iris_test spawn cap is delivered as the
      * IRIS_CPTR_SPAWN_CAP pre-start mint above — no KChannel SPAWN_CAP send. */

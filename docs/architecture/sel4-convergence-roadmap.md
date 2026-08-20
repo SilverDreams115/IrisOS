@@ -1085,6 +1085,41 @@ retiring the process view left it unable to ask.  Two operations on two
 objects, each authorised by a capability to the object it names, is not the
 dual-namespace shape the charter forbids — it is what having two objects means.
 
+### Step 9 — a supervisor names the thing, not the process holding it  ✅ DONE
+
+Three operations reached into another task by naming its PROCESS and letting
+the kernel read the real target out of it: `SYS_VMO_MAP_INTO` (→ `proc->vspace`),
+`SYS_PROC_CSPACE_MINT` and `SYS_CSPACE_MINT_INTO` (→ `proc->cspace_root`).  So
+a caller that already held the address space or the CSpace it meant had to hold
+authority over the whole process as well, and the process capability was doing
+nothing but carrying a pointer to something the caller was entitled to name
+directly.
+
+All three now name the target:
+
+- `SYS_VMO_MAP_INTO(vmo, vspace_cptr, vaddr, flags)` — the shape
+  `SYS_VMO_MAP_PAGE` and `SYS_FRAME_MAP` have had since Phase 25/26.
+- `SYS_PROC_CSPACE_MINT` (104) and `SYS_CSPACE_MINT_INTO` (116) RETIRE.
+  `SYS_CSPACE_MINT` has taken a destination CNode since Phase S3, dest_cnode 0
+  meaning the caller's own root; minting into a child is the same call with the
+  child's root CNode as the destination.  **Whether a mint is cross-task is a
+  fact about which capability is in `dest_cnode`, not about which syscall is
+  called.**
+
+A spawner HAS both: it retyped the child's VSpace and CSpace (Stage 6-pure
+Steps 4/5) and handed them to `SYS_PROCESS_CREATE`.  `svc_load_minted_ws` gained
+`keep_cnode_dest` so a spawner that means to keep delegating keeps the root,
+and one that does not holds no authority over its child's namespace at all —
+a distinction the process-shaped forms could not express, because holding the
+process WAS holding the CSpace.
+
+The tests re-derived rather than lost their subjects.  "A dead destination
+fails" was a property of naming a process; a CNode outlives the process whose
+root it was for as long as somebody holds it, so the mint now lands in a CSpace
+no thread resolves in — and what teardown actually guarantees is asserted
+instead, which is stronger: the child's own slots were EMPTIED, and the
+supervisor holding the root can see it.
+
 ### What Stage 7 still needs, and why it is not an increment
 
 `KProcess` itself, and the user-space process server that replaces the policy
@@ -1096,17 +1131,17 @@ through `t->process`:
 
 | what | reads | who needs it |
 |---|---|---|
-| `cspace_root` | 11 | CROSS-process operations: `SYS_PROC_CSPACE_MINT` into a child, `RETYPE2` into a child's CNode, the boot path.  A supervisor naming a process to reach its CSpace |
-| `vspace` | 8 | `SYS_PROCESS_VSPACE`, `SYS_VMO_MAP_INTO`, the boot path.  Same shape: a supervisor naming a process to reach its address space |
+| `cspace_root` | 9 | the BOOT PATH building the root task's CSpace before anything can name it, and `SYS_TCB_CONFIGURE`'s identity check |
+| `vspace` | 8 | `SYS_PROCESS_VSPACE`, `SYS_PROCESS_CREATE`, the reap, the boot path |
 | `mem_pool` | 3 | the DEFAULT budget when a syscall does not name one — the kernel choosing whose memory pays |
 | `exit_code`, `base` | 3 | death reporting and the object header |
 
-Nothing in that table is a thread asking about itself; every entry is a
-SUPERVISOR asking about somebody else.  That is the shape of the remaining
-problem, and it is why the answer is a server rather than more field moves: a
-process capability is currently how one task names another's CSpace, address
-space, death and budget in one handle, and unpicking it means deciding what
-replaces each — which is a policy question about who supervises whom.
+Step 9 took the cross-task ones out: what is left of `cspace_root` is the
+bootstrap exception and an identity check, not a supervisor reaching through a
+process.  What remains genuinely on KProcess is DEATH — who is told, what the
+code was, when the address space is reclaimed — plus the default budget.  That
+is the process server's job description, and unpicking it means deciding what
+replaces each, which is a policy question about who supervises whom.
 
 What the server has to answer, concretely:
 

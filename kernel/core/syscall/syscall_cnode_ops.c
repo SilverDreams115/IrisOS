@@ -38,7 +38,6 @@ uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    struct KProcess *proc = t->process;
 
     struct KCNode  *cn;
     iris_rights_t   cn_rights;
@@ -49,14 +48,14 @@ uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * own CSpace only discards authority you already hold — no amplification. */
     if (cptr_or_h == 0u) {
         /* Stage 4: structural root read. */
-        if (!proc->cspace_root)
+        if (!t->cspace_root)
             return syscall_err(IRIS_ERR_NOT_FOUND);
-        struct KObject *root_obj = &proc->cspace_root->base;
+        struct KObject *root_obj = &t->cspace_root->base;
         kobject_retain(root_obj);
         kobject_active_retain(root_obj);
         cn = (struct KCNode *)root_obj;
     } else {
-        err = cspace_resolve_only_cnode(proc->cspace_root, cptr_or_h,
+        err = cspace_resolve_only_cnode(t->cspace_root, cptr_or_h,
                                              RIGHT_WRITE, &cn, &cn_rights);
         if (err != IRIS_OK)
             return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
@@ -78,11 +77,10 @@ uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    struct KProcess *proc = t->process;
 
     struct KCNode  *cn;
     iris_rights_t   cn_rights;
-    iris_error_t err = cspace_resolve_only_cnode(proc->cspace_root, cptr_or_h,
+    iris_error_t err = cspace_resolve_only_cnode(t->cspace_root, cptr_or_h,
                                                        RIGHT_WRITE, &cn, &cn_rights);
     if (err != IRIS_OK)
         return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);

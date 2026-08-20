@@ -1003,28 +1003,20 @@ static inline long iris_syscall0(long nr) {
 #define SYS_CSPACE_RESOLVE 95
 
 /*
- * SYS_PROC_CSPACE_MINT(proc_h, slot_idx, src_h, rights_and_badge) → 0 or
- * negative iris_error_t.  Phase 8: CPtr-first bootstrap handoff.
+ * SYS_PROC_CSPACE_MINT (104) — RETIRED (Stage 7 Step 9).  Number permanently
+ * reserved; answers IRIS_ERR_NOT_SUPPORTED.
  *
- *   Mints the caller's src_h capability into the ROOT CNode of the process
- *   referenced by proc_h, at slot slot_idx, with rights reduced to
- *   (src_rights & new_rights).  The child can then invoke the capability
- *   directly by CPtr (e.g. SYS_EP_CALL with arg0 = slot_idx) without any
- *   handle transfer over a KChannel.
+ * It minted into a CSpace named by the PROCESS that owned it, and the kernel
+ * read that process's root CNode out of it — so a caller reached a capability
+ * namespace it did not hold by naming something else that pointed at it.
  *
- *   Phase 9 packing: arg3 low 32 bits = rights mask; HIGH 32 bits = badge.
- *   Badge rules (sender identity, see iris/endpoint_proto.h):
- *     badge 0      → inherit the source cap's badge (preservation);
- *     badge != 0   → only if the source is UNBADGED and is an
- *                    endpoint/notification; re-badging an already-badged
- *                    cap fails ACCESS_DENIED (identities cannot be forged
- *                    by holders), wrong type fails INVALID_ARG.
- *
- *   Authority: caller needs RIGHT_WRITE on proc_h (spawner authority) and
- *   RIGHT_DUPLICATE on src_h.  Rights can only be reduced, never amplified.
- *   Fails NOT_FOUND if the target process has no root CNode; INVALID_ARG on
- *   slot 0 (null slot) or empty effective rights; ALREADY_EXISTS if the
- *   slot is occupied.
+ * SYS_CSPACE_MINT is the whole replacement.  It has taken a destination CNode
+ * since Phase S3, dest_cnode 0 meaning the caller's own root; minting into a
+ * child is the same call with the child's root CNode as the destination, which
+ * a spawner HAS because it retyped it (Stage 6-pure Step 5).  A spawner that
+ * means to keep delegating keeps that capability; one that does not holds no
+ * authority over its child's namespace at all — a distinction the
+ * process-shaped form could not express.
  */
 #define SYS_PROC_CSPACE_MINT 104
 
@@ -1251,17 +1243,22 @@ static inline long iris_syscall0(long nr) {
  *   Requires RIGHT_DUPLICATE on the source.  Exclusive: occupied dest →
  *   IRIS_ERR_ALREADY_EXISTS.  On any error nothing changes.
  *
+ *   Stage 7 Step 9: `dest_cnode` is how a capability reaches ANOTHER task's
+ *   CSpace — name that task's root CNode.  It is the whole of what the two
+ *   retired process-shaped mints did, minus the part where the kernel read a
+ *   CSpace root out of a process the caller named instead of the CSpace it
+ *   wanted.  Cross-task or not is a fact about which capability is in
+ *   dest_cnode, not about which syscall is called.
+ *
  * SYS_CSPACE_REVOKE(cptr) → number of caps destroyed, or negative error
  *   Deletes the ENTIRE MDB descendant subtree of the named slot — across
  *   CNodes and processes — in deterministic order.  The invoked capability
  *   and its siblings survive.  delete(cap) ≠ revoke(cap).
  *
- * SYS_CSPACE_MINT_INTO(proc, dest_slot, src_cptr, rights|badge<<32)
- *     → 0 or negative iris_error_t
- *   Cross-process CSpace-sourced mint: installs a derived cap into the
- *   target process's root CNode (RIGHT_WRITE on the process cap; exclusive
- *   slot).  The installed cap is an MDB child of the CALLER's source slot,
- *   so the delegation is revocable from the caller or any of its ancestors.
+ * SYS_CSPACE_MINT_INTO (116) — RETIRED (Stage 7 Step 9).  Number permanently
+ * reserved; answers IRIS_ERR_NOT_SUPPORTED.  Same reasoning as
+ * SYS_PROC_CSPACE_MINT: SYS_CSPACE_MINT with the destination CNode named by
+ * the capability the caller holds.
  */
 #define SYS_CSPACE_MINT      114
 #define SYS_CSPACE_REVOKE    115

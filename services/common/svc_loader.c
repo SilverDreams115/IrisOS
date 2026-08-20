@@ -331,7 +331,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                         const struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
-                        uint32_t own_budget_slot) {
+                        uint32_t own_budget_slot, uint64_t keep_cnode_dest) {
     *out_proc_h = HANDLE_INVALID;
     *out_chan_h = HANDLE_INVALID;
     long self_vs  = 0;   /* the loader's own address space, for parse windows */
@@ -779,8 +779,9 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             for (uint32_t mi = 0; mints && mi < mint_count; mi++)
                 if (mints[mi].slot == own_budget_slot) taken = 1;
             if (!taken)
-                (void)sl_sys4(SYS_CSPACE_MINT_INTO, (long)proc_h,
-                              (long)own_budget_slot, pool_c,
+                (void)sl_sys3(SYS_CSPACE_MINT, pool_c,
+                              (long)((uint64_t)child_cn |
+                                     ((uint64_t)own_budget_slot << 32)),
                               (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
         }
 
@@ -792,22 +793,22 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         for (uint32_t mi = 0; mi < mint_count; mi++) {
             if (!mints) continue;
             uint64_t rb = (mints[mi].badge << 32) | (uint64_t)mints[mi].rights;
-            if (mints[mi].src_cptr != 0u) {
-                /* Phase S4: CSpace-sourced delegation — the child's cap is an
-                 * MDB child of our slot, so SYS_CSPACE_REVOKE on it reaches
-                 * into the child. */
-                (void)sl_sys4(SYS_CSPACE_MINT_INTO,
-                              (long)proc_h,
-                              (long)mints[mi].slot,
-                              (long)mints[mi].src_cptr,
-                              (long)rb);
-                continue;
-            }
-            if (mints[mi].src_h == HANDLE_INVALID) continue;
-            (void)sl_sys4(SYS_PROC_CSPACE_MINT,
-                          (long)proc_h,
-                          (long)mints[mi].slot,
-                          (long)mints[mi].src_h,
+            uint32_t src = mints[mi].src_cptr ? mints[mi].src_cptr
+                                              : (uint32_t)mints[mi].src_h;
+            if (src == 0u || src == (uint32_t)HANDLE_INVALID) continue;
+            /*
+             * Stage 7 Step 9: the destination is the child's ROOT CNODE, which
+             * the loader retyped and still holds — not the child's process.
+             *
+             * SYS_CSPACE_MINT already took a destination CNode; the two
+             * process-shaped variants existed only to reach a CSpace root the
+             * caller did not hold, and this caller has held it since it made
+             * it.  The delegation is still an MDB child of our source slot, so
+             * SYS_CSPACE_REVOKE on it still reaches into the child.
+             */
+            (void)sl_sys3(SYS_CSPACE_MINT, (long)src,
+                          (long)((uint64_t)child_cn |
+                                 ((uint64_t)mints[mi].slot << 32)),
                           (long)rb);
         }
 
@@ -843,6 +844,15 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             if (r < 0) goto out;
         }
     }
+
+    /* Stage 7 Step 9: if the spawner asked to keep delegating into its child,
+     * give it the child's ROOT CNODE — the capability that makes a later mint
+     * possible without naming the process to reach a CSpace nobody handed
+     * over.  Minted, not moved: the loader's own slot is scratch and is
+     * dropped below like everything else it was holding. */
+    if (keep_cnode_dest && child_cn)
+        (void)sl_sys3(SYS_CSPACE_MINT, child_cn, (long)keep_cnode_dest,
+                      (long)(RIGHT_READ | RIGHT_WRITE));
 
     /* Hand back everything of the CHILD's that the loader was holding: an
      * unused level charged to its budget, and the capability to its address

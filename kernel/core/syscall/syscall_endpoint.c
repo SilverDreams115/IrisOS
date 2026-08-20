@@ -192,7 +192,7 @@ iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared) {
     struct KCNode *cn; uint32_t idx;
     iris_error_t e = cspace_resolve_dest_slot(t->cspace_root, (iris_cptr_t)declared,
                                               &cn, &idx);
-    if (e == IRIS_ERR_NOT_FOUND && t->process && !t->process->cspace_root)
+    if (e == IRIS_ERR_NOT_FOUND && !t->cspace_root)
         return IRIS_ERR_NOT_FOUND;
     if (e != IRIS_OK) return IRIS_ERR_INVALID_ARG;
 

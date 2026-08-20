@@ -138,6 +138,36 @@ static uint32_t g_total = 0;
 #define IT_OBJ_SLOT_SPAN   200u
 #define IT_OBJ_CPTR(leaf)  ((uint32_t)(((leaf) << 8) | IT_OBJ_CNODE_SLOT))
 /*
+ * Stage 7 Step 9 — a child's ROOT CSPACE, kept so the suite can go on
+ * delegating into it after the spawn.
+ *
+ * Minting into a child used to name its PROCESS, out of which the kernel read
+ * `child->cspace_root`; a spawner reached a CSpace it did not hold by naming
+ * something else.  It holds it now, and these are the leaves it holds it in.
+ *
+ * Leaves 1..3, and the reason is arithmetic: a mint SOURCE must be a root CPtr
+ * (< 1024), and a two-level CPtr is `leaf << 8 | root_slot`, so only leaves
+ * 1..3 of a 256-slot root's child CNode are addressable as one.  The rotating
+ * object pool therefore starts at 4 — three is enough, because the most
+ * children the suite has live and delegable at once is two (T183, T184).
+ */
+/* Mint into a slot of MY OWN root CSpace.  SYS_CSPACE_MINT's dest_cnode of 0
+ * has meant "the caller's root" since Phase S3 — which is why minting into
+ * yourself never needed a capability to your own process, and why the
+ * process-shaped variants had nothing to offer this case. */
+#define IT_MINT_SELF(slot)   ((long)((uint64_t)(slot) << 32))
+/* ...and into a slot of a CHILD's root CSpace, named by the capability the
+ * spawn kept (IT_CHILD_CN_CPTR).  Same syscall, different destination CNode:
+ * that a child's CSpace is somebody else's is a fact about which capability
+ * you hold, not about which syscall you call. */
+#define IT_MINT_INTO(cn, slot) \
+    ((long)((uint64_t)(cn) | ((uint64_t)(slot) << 32)))
+#define IT_CHILD_CN_LEAF(i)  (1u + (uint32_t)(i))
+#define IT_CHILD_CN_CPTR(i)  ((long)IT_OBJ_CPTR(IT_CHILD_CN_LEAF(i)))
+#define IT_CHILD_CN_DEST(i) \
+    ((uint64_t)IT_OBJ_CNODE_SLOT | ((uint64_t)IT_CHILD_CN_LEAF(i) << 32))
+#define IT_OBJ_POOL_FIRST    4u
+/*
  * Stage 7 Step 7 — the fault mailbox.
  *
  * SYS_EXCEPTION_HANDLER takes a destination and each fault publishes the
@@ -224,8 +254,10 @@ static long it_retype2_at(long ut, uint32_t obj_type, uint32_t slot,
 static long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg);
 
 static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
-    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    uint32_t leaf = IT_OBJ_POOL_FIRST +
+                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                        __ATOMIC_RELAXED) %
+                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
     long r = it_sys4(SYS_UNTYPED_RETYPE2, ut,
                      (long)((uint64_t)obj_type | (1ULL << 32)),
@@ -243,8 +275,10 @@ static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
  * capability the suite fabricates.  Same rotating-pool contract as
  * it_retype_slot_alloc: delete before minting, never hold across a test. */
 static long it_cs_reduce(long src_cptr, uint32_t rights) {
-    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    uint32_t leaf = IT_OBJ_POOL_FIRST +
+                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                        __ATOMIC_RELAXED) %
+                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
     long r = it_sys3(SYS_CSPACE_MINT, src_cptr,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
@@ -263,8 +297,10 @@ static long it_cs_reduce(long src_cptr, uint32_t rights) {
 /* An initrd image capability published into a CSpace slot (SYS_INITRD_VMO's
  * arg2 destination).  Same rotating-pool contract as it_retype_slot_alloc. */
 static long it_initrd_vmo_slot(long auth_cptr, long index) {
-    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    uint32_t leaf = IT_OBJ_POOL_FIRST +
+                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                        __ATOMIC_RELAXED) %
+                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
     /* Stage 6 Step 5: the image copy is charged to the suite's own budget,
      * not to the small per-child pool its address space came from. */
@@ -276,8 +312,10 @@ static long it_initrd_vmo_slot(long auth_cptr, long index) {
 
 /* SYS_TCB_SELF into a rotating leaf: the caller's own TCB as a capability. */
 static long it_tcb_self_slot(void) {
-    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    uint32_t leaf = IT_OBJ_POOL_FIRST +
+                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                        __ATOMIC_RELAXED) %
+                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
     long r = it_sys1(SYS_TCB_SELF,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
@@ -286,8 +324,10 @@ static long it_tcb_self_slot(void) {
 
 /* SYS_VMO_CREATE_FOR: a VMO charged to `payer`, published into a slot. */
 static long it_vmo_create_for_slot(uint64_t size, long payer) {
-    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    uint32_t leaf = IT_OBJ_POOL_FIRST +
+                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                        __ATOMIC_RELAXED) %
+                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
     long r = it_sys3(SYS_VMO_CREATE_FOR, (long)size, payer,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
@@ -296,8 +336,10 @@ static long it_vmo_create_for_slot(uint64_t size, long payer) {
 
 /* SYS_PROCESS_VSPACE: a target's address space, published into a slot. */
 static long it_proc_vspace_slot(long proc) {
-    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    uint32_t leaf = IT_OBJ_POOL_FIRST +
+                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                        __ATOMIC_RELAXED) %
+                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
     long r = it_sys2(SYS_PROCESS_VSPACE, proc,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
@@ -305,8 +347,10 @@ static long it_proc_vspace_slot(long proc) {
 }
 
 static long it_vmo_create_slot(uint64_t size) {
-    uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                             __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
+    uint32_t leaf = IT_OBJ_POOL_FIRST +
+                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                        __ATOMIC_RELAXED) %
+                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
     /* Stage 6 Step 5: name the budget.  The suite's own untyped is what pays
      * for the memory it asks for; its per-child pool pays for what the KERNEL
@@ -2917,7 +2961,11 @@ static void test_t074(void) {
 
 /* Spawn a lifecycle_probe child, minting `cmd_ep_h` into its command slot.
  * Returns 0 and fills *out_proc_h on success, or a negative error. */
-static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
+/* Stage 7 Step 9: `cn_leaf` is where the child's ROOT CSpace is kept, so the
+ * caller can go on minting into it — naming the CSpace it holds instead of the
+ * process it does not. */
+static long lp_spawn_child_cn(uint32_t cn_leaf, handle_id_t cmd_ep_h,
+                              handle_id_t *out_proc_h) {
     struct svc_mint mints[2] = { 0 };
     uint32_t n = 0;
     mints[n].slot   = LP_CPTR_CMD_EP;
@@ -2948,13 +2996,20 @@ static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
     }
     handle_id_t boot_h = HANDLE_INVALID;
     *out_proc_h = HANDLE_INVALID;
+    if (cn_leaf) it_slot_delete(IT_OBJ_CPTR(IT_CHILD_CN_LEAF(cn_leaf - 1u)));
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc_h, &boot_h, mints, n,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0);
+                               /*own_budget_slot=*/0,
+                               cn_leaf ? IT_CHILD_CN_DEST(cn_leaf - 1u) : 0u);
     it_close(&reply_h);  /* the child's slot-13 mint is the only reply cap */
     it_close(&boot_h);   /* Track I: no bootstrap channel (HANDLE_INVALID anyway) */
     return r;
+}
+
+/* The common case: a child the caller does not delegate into after spawn. */
+static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
+    return lp_spawn_child_cn(0u, cmd_ep_h, out_proc_h);
 }
 
 /* ── T075: spawn/exit smoke ─────────────────────────────────────────────────
@@ -3191,10 +3246,8 @@ static void test_t079(void) {
     int ok = 1;
 
     /* Mint the VMO into our own CSpace: slot 16 rw, slot 17 read-only. */
-    if (it_sys4(SYS_PROC_CSPACE_MINT, selfp, T079_SLOT_RW,
-                vmo, (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, selfp, T079_SLOT_RO,
-                      vmo, (long)RIGHT_READ) != 0) ok = 0;
+    if (it_sys3(SYS_CSPACE_MINT, vmo, IT_MINT_SELF(T079_SLOT_RW), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
+    if (ok && it_sys3(SYS_CSPACE_MINT, vmo, IT_MINT_SELF(T079_SLOT_RO), (long)RIGHT_READ) != 0) ok = 0;
 
     /* Map by CPtr (writable) and write through the mapping. */
     if (ok && it_sys3(SYS_VMO_MAP, T079_SLOT_RW, (long)T079_VA_CPTR, 1) != 0)
@@ -3268,10 +3321,8 @@ static void test_t080(void) {
     int ok = 1;
 
     /* Mint the VMO into our own CSpace: slot 19 rw+dup, slot 20 read-only. */
-    if (it_sys4(SYS_PROC_CSPACE_MINT, selfp, T080_SLOT_RWD, vmo,
-                (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) ok = 0;
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, selfp, T080_SLOT_RO,
-                      vmo, (long)RIGHT_READ) != 0) ok = 0;
+    if (it_sys3(SYS_CSPACE_MINT, vmo, IT_MINT_SELF(T080_SLOT_RWD), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) ok = 0;
+    if (ok && it_sys3(SYS_CSPACE_MINT, vmo, IT_MINT_SELF(T080_SLOT_RO), (long)RIGHT_READ) != 0) ok = 0;
 
     /* ── SYS_VMO_SIZE ── */
     if (ok && it_sys1(SYS_VMO_SIZE, T080_SLOT_RWD) != (long)T080_VMO_SIZE)
@@ -3286,7 +3337,7 @@ static void test_t080(void) {
     if (ep < 0) { it_close(&vmo_h);                  it_fail("T080", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
     handle_id_t proc_h   = HANDLE_INVALID;
-    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
         it_close(&cmd_ep_h); it_close(&vmo_h);        it_fail("T080", "spawn"); return;
     }
 
@@ -3296,13 +3347,13 @@ static void test_t080(void) {
      * SYS_PROC_CSPACE_MINT asserts the same three properties against the
      * child's CSpace: a rights-carrying source delegates, a source missing
      * RIGHT_DUPLICATE is denied, and a wrong-type source is rejected. */
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T080_DST_SLOT,
-                      T080_SLOT_RWD, (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T080_DST_SLOT2,
-                      T080_SLOT_RO, (long)RIGHT_READ)
+    if (ok && it_sys3(SYS_CSPACE_MINT, T080_SLOT_RWD,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
+    if (ok && it_sys3(SYS_CSPACE_MINT, T080_SLOT_RO,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT2), (long)RIGHT_READ)
               != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T080_DST_SLOT2,
-                      (long)IRIS_CPTR_TEST_FIX_A, (long)RIGHT_READ) >= 0) ok = 0;
+    if (ok && it_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_TEST_FIX_A,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT2), (long)RIGHT_READ) >= 0) ok = 0;
 
     /* ── SYS_VMO_MAP_INTO (vmo by CPtr; Stage 7 Step 9: the TARGET is the
      * child's address space, named directly, not its process) ── */
@@ -3359,7 +3410,7 @@ static void test_t081(void) {
     handle_id_t cmd_ep_h = (handle_id_t)ep;
 
     handle_id_t proc_h = HANDLE_INVALID;
-    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
         it_close(&cmd_ep_h);
         it_fail("T081", "spawn"); return;
     }
@@ -3367,17 +3418,14 @@ static void test_t081(void) {
     int ok = 1;
 
     /* Mint the child's proc cap into our CSpace — target proc by CPtr (25). */
-    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC, T081_SLOT_PROC,
-                (long)proc_h,
-                (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE | RIGHT_DUPLICATE)) != 0)
+    if (it_sys3(SYS_CSPACE_MINT, (long)proc_h, IT_MINT_SELF(T081_SLOT_PROC), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE | RIGHT_DUPLICATE)) != 0)
         ok = 0;
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC, T081_SLOT_RO,
-                      (long)proc_h, (long)RIGHT_READ) != 0) ok = 0;
+    if (ok && it_sys3(SYS_CSPACE_MINT, (long)proc_h, IT_MINT_SELF(T081_SLOT_RO), (long)RIGHT_READ) != 0) ok = 0;
 
     /* Authority not relaxed: minting INTO the child through the READ-only
      * child cap (no RIGHT_WRITE) must be denied. */
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, T081_SLOT_RO, 60L, (long)proc_h,
-                      (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
+    if (ok && it_sys3(SYS_CSPACE_MINT, (long)proc_h,
+                      IT_MINT_INTO(T081_SLOT_RO, 60L), (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
 
     /* STATUS by CPtr: alive via both slots; empty / wrong-type fail. */
     if (ok && it_sys1(SYS_PROCESS_STATUS, T081_SLOT_PROC) != 1) ok = 0;
@@ -3458,7 +3506,10 @@ static void test_t082(void) {
     handle_id_t cmd_ep_h = (handle_id_t)ep;
 
     handle_id_t proc_h = HANDLE_INVALID;
-    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    /* Stage 7 Step 9: keep the child's ROOT CSPACE.  Delegating into a child
+     * names the CSpace, so a spawner that intends to keep delegating keeps it
+     * — there is no longer a way to reach it by naming the process instead. */
+    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
         it_close(&cmd_ep_h); it_close(&vmo_h);
         it_fail("T082", "spawn"); return;
     }
@@ -3466,12 +3517,9 @@ static void test_t082(void) {
     int ok = 1;
 
     /* Mint fixtures (target proc by CPtr 25): VMO → 23, child proc → 24. */
-    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC, T082_SLOT_VMO,
-                vmo, (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
+    if (it_sys3(SYS_CSPACE_MINT, vmo, IT_MINT_SELF(T082_SLOT_VMO), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
         ok = 0;
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
-                      T082_SLOT_PROC, (long)proc_h,
-                      (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |
+    if (ok && it_sys3(SYS_CSPACE_MINT, (long)proc_h, IT_MINT_SELF(T082_SLOT_PROC), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |
                              RIGHT_DUPLICATE)) != 0) ok = 0;
 
     /* MAP_INTO: VMO by CPtr + ADDRESS SPACE by CPtr; repeat → BUSY (PTEs
@@ -3483,12 +3531,15 @@ static void test_t082(void) {
     if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, t082_vs,
                       (long)LP_MAP_VA, 1) != (long)IRIS_ERR_BUSY) ok = 0;
 
-    /* Cross-process placement: process by CPtr, into the child's CSpace.
-     * SYS_VMO_SHARE and SYS_HANDLE_INSERT covered this by writing the child's
-     * HANDLE TABLE and are retired; the property under test — a destination
-     * process named by CPtr really is resolved — is the mint's now. */
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, T082_SLOT_PROC, T080_DST_SLOT,
-                      T082_SLOT_VMO, (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
+    /* Cross-CSpace placement: the destination CNODE by CPtr, into the child's
+     * CSpace.  SYS_VMO_SHARE and SYS_HANDLE_INSERT covered this by writing the
+     * child's HANDLE TABLE and are retired; Stage 7 Step 9 retired naming the
+     * child's PROCESS to reach a CSpace the caller did not hold.  The property
+     * under test — a destination named by CPtr really is resolved — is now
+     * asserted against the thing being written. */
+    if (ok && it_sys3(SYS_CSPACE_MINT, T082_SLOT_VMO,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T080_DST_SLOT),
+                      (long)(RIGHT_READ | RIGHT_WRITE)) != 0) ok = 0;
 
     /* Authority not relaxed.  Stage 7 Step 9 moved the target from the process
      * to the address space, so the denial moved with it: a VSpace capability
@@ -3507,8 +3558,8 @@ static void test_t082(void) {
         ok = 0;
     if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, (long)IRIS_CPTR_TEST_FIX_A,
                       (long)T082_MAP_VA2, 1) != (long)IRIS_ERR_INVALID_ARG) ok = 0;
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, T079_SLOT_EMPTY, T080_DST_SLOT2,
-                      T082_SLOT_VMO, (long)RIGHT_READ) >= 0) ok = 0;
+    if (ok && it_sys3(SYS_CSPACE_MINT, T082_SLOT_VMO,
+                      IT_MINT_INTO(T079_SLOT_EMPTY, T080_DST_SLOT2), (long)RIGHT_READ) >= 0) ok = 0;
 
     /* The same map through the address space named directly. */
     if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo, t082_vs,
@@ -3577,11 +3628,8 @@ static void test_t083(void) {
     int ok = 1;
 
     /* Mint the helper's TCB: slot 32 rw+dup, slot 33 read-only. */
-    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC, T083_SLOT_TCB,
-                (long)tcb_h,
-                (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) ok = 0;
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
-                      T083_SLOT_TCB_RO, (long)tcb_h, (long)RIGHT_READ) != 0)
+    if (it_sys3(SYS_CSPACE_MINT, (long)tcb_h, IT_MINT_SELF(T083_SLOT_TCB), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) ok = 0;
+    if (ok && it_sys3(SYS_CSPACE_MINT, (long)tcb_h, IT_MINT_SELF(T083_SLOT_TCB_RO), (long)RIGHT_READ) != 0)
         ok = 0;
 
     /* GET_INFO by CPtr (both slots — READ suffices).
@@ -3640,12 +3688,9 @@ static void test_t083(void) {
     if (sc < 0) ok = 0;
     handle_id_t sc_h = (sc >= 0) ? (handle_id_t)sc : HANDLE_INVALID;
 
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
-                      T083_SLOT_SC, (long)sc_h,
-                      (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
+    if (ok && it_sys3(SYS_CSPACE_MINT, (long)sc_h, IT_MINT_SELF(T083_SLOT_SC), (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
         ok = 0;
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
-                      T083_SLOT_SC_RO, (long)sc_h, (long)RIGHT_READ) != 0)
+    if (ok && it_sys3(SYS_CSPACE_MINT, (long)sc_h, IT_MINT_SELF(T083_SLOT_SC_RO), (long)RIGHT_READ) != 0)
         ok = 0;
 
     /* SC_CONFIGURE by CPtr (budget < period required); handle path too. */
@@ -4790,8 +4835,7 @@ static void test_t094(void) {
     it_sys1(SYS_SLEEP, 2);                     /* blocked with slot 51 declared */
 
     /* Fill the declared slot BEFORE delivery (the TOCTOU race). */
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, selfp, T094_SLOT,
-                      nB, (long)RIGHT_WRITE) != 0) {
+    if (ok && it_sys3(SYS_CSPACE_MINT, nB, IT_MINT_SELF(T094_SLOT), (long)RIGHT_WRITE) != 0) {
         ok = 0; why = "self mint";
     }
 
@@ -4970,7 +5014,7 @@ static void test_t097(void) {
     if (ep < 0) { it_fail("T097", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
     handle_id_t proc_h = HANDLE_INVALID;
-    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
         it_close(&cmd_ep_h);
         it_fail("T097", "spawn"); return;
     }
@@ -4986,13 +5030,13 @@ static void test_t097(void) {
 
     /* Canonical placement: the cap lands in the child's CSpace — no handle
      * is created in the destination table. */
-    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT,
-                vmo, (long)(RIGHT_READ | RIGHT_WRITE)) != 0) {
+    if (it_sys3(SYS_CSPACE_MINT, vmo,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT), (long)(RIGHT_READ | RIGHT_WRITE)) != 0) {
         ok = 0; why = "mint";
     }
     /* Occupied destination slot → fail-fast, no overwrite. */
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT,
-                      vmo, (long)RIGHT_READ) !=
+    if (ok && it_sys3(SYS_CSPACE_MINT, vmo,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT), (long)RIGHT_READ) !=
         (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "occupied"; }
     /* Authority cannot escalate: READ-only source + WRITE request →
      * empty effective rights → INVALID_ARG (never a widened grant). */
@@ -5000,25 +5044,54 @@ static void test_t097(void) {
         long ro = it_cs_reduce(vmo, RIGHT_READ | RIGHT_DUPLICATE);
         if (ro < 0) { ok = 0; why = "dup"; }
         else {
-            if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT2,
-                        ro, (long)RIGHT_WRITE) !=
+            if (it_sys3(SYS_CSPACE_MINT, ro,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_WRITE) !=
                 (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "escalation"; }
             handle_id_t roh = (handle_id_t)ro;
             it_close(&roh);
         }
     }
-    /* Wrong-type destination (the slot-30 KNotification fixture). */
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_FIX_A,
-                      T097_DST_SLOT2, vmo, (long)RIGHT_READ) !=
-        (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type"; }
+    /* Wrong-type destination (the slot-30 KNotification fixture).  Stage 7
+     * Step 9: the destination is a CNODE, and SYS_CSPACE_MINT reports a
+     * non-CNode there as INVALID_ARG — the argument is wrong, not the type of
+     * a capability that was otherwise right. */
+    if (ok && it_sys3(SYS_CSPACE_MINT, vmo,
+                      IT_MINT_INTO((long)IRIS_CPTR_TEST_FIX_A, T097_DST_SLOT2), (long)RIGHT_READ) !=
+        (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "wrong type"; }
     /* The retired legacy producer is gone: NOT_SUPPORTED, nothing placed. */
     if (ok && it_sys3(SYS_HANDLE_TRANSFER, vmo, (long)proc_h,
                       (long)RIGHT_READ) !=
         (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "transfer not retired"; }
-    /* Dead destination fails cleanly. */
+    /*
+     * A dead destination, re-derived for Stage 7 Step 9.
+     *
+     * "Minting into a dead process fails" was a property of naming the
+     * PROCESS: the kernel looked it up, found it torn down, and refused.  The
+     * destination is a CNODE now, and a CNode outlives the process whose root
+     * it was for exactly as long as somebody holds it — so the mint SUCCEEDS,
+     * into a CSpace no thread resolves in.  That is not a leak of authority:
+     * it is a capability to an object, doing what a capability to that object
+     * does.
+     *
+     * What actually matters is asserted instead, and it is the stronger
+     * claim: teardown EMPTIED the child's CSpace.  The supervisor holding the
+     * root can see that the slots the child was spawned with are gone, which
+     * is the guarantee "the process is dead" was standing in for.
+     */
     if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT3,
-                      vmo, (long)RIGHT_READ) >= 0) { ok = 0; why = "dead dest"; }
+    if (ok) { for (int w = 0; w < 200 &&
+                   it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h) ==
+                   (long)IRIS_ERR_WOULD_BLOCK; w++) it_sys1(SYS_SLEEP, 1); }
+    if (ok) {
+        /* The child's command-endpoint slot, addressed through the root the
+         * suite kept: empty once teardown has run. */
+        long child_ep = (long)((uint64_t)LP_CPTR_CMD_EP << 8) | IT_CHILD_CN_CPTR(0);
+        if (it_sys1(SYS_CAP_IDENTIFY, child_ep) >= 0) { ok = 0; why = "cspace not emptied"; }
+    }
+    if (ok && it_sys3(SYS_CSPACE_MINT, vmo,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT3), (long)RIGHT_READ) != 0) {
+        ok = 0; why = "dead dest";
+    }
 
     if (!ok && proc_h != HANDLE_INVALID)
         (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
@@ -5044,7 +5117,7 @@ static void test_t098(void) {
     if (ep < 0) { it_fail("T098", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
     handle_id_t proc_h = HANDLE_INVALID;
-    if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
+    if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
         it_close(&cmd_ep_h);
         it_fail("T098", "spawn"); return;
     }
@@ -5059,16 +5132,16 @@ static void test_t098(void) {
     const char *why = "vmo share cspace";
 
     /* Canonical: the shared VMO lands in the destination CSpace. */
-    if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT,
-                vmo, (long)RIGHT_READ) != 0) { ok = 0; why = "mint"; }
+    if (it_sys3(SYS_CSPACE_MINT, vmo,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT), (long)RIGHT_READ) != 0) { ok = 0; why = "mint"; }
 
     /* A source without RIGHT_DUPLICATE cannot delegate. */
     if (ok) {
         long ro = it_cs_reduce(vmo, RIGHT_READ);
         if (ro < 0) { ok = 0; why = "dup ro"; }
         else {
-            if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT2,
-                        ro, (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) {
+            if (it_sys3(SYS_CSPACE_MINT, ro,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_READ) != (long)IRIS_ERR_ACCESS_DENIED) {
                 ok = 0; why = "mint no-dup";
             }
             handle_id_t roh = (handle_id_t)ro;
@@ -5080,18 +5153,26 @@ static void test_t098(void) {
         long rd = it_cs_reduce(vmo, RIGHT_READ | RIGHT_DUPLICATE);
         if (rd < 0) { ok = 0; why = "dup rd"; }
         else {
-            if (it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT2,
-                        rd, (long)RIGHT_MANAGE) >= 0) {
+            if (it_sys3(SYS_CSPACE_MINT, rd,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), T097_DST_SLOT2), (long)RIGHT_MANAGE) >= 0) {
                 ok = 0; why = "mint disjoint";
             }
             handle_id_t rdh = (handle_id_t)rd;
             it_close(&rdh);
         }
     }
-    /* A dead destination fails clean. */
+    /* A dead destination, Stage 7 Step 9: the CNode outlives the process whose
+     * root it was, so the mint lands — in a CSpace no thread resolves in.
+     * What teardown guarantees, and what the old "the process is dead" refusal
+     * was standing in for, is that the child's own slots were EMPTIED. */
     if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, T097_DST_SLOT3,
-                      vmo, (long)RIGHT_READ) >= 0) { ok = 0; why = "dead dest"; }
+    if (ok) { for (int w = 0; w < 200 &&
+                   it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h) ==
+                   (long)IRIS_ERR_WOULD_BLOCK; w++) it_sys1(SYS_SLEEP, 1); }
+    if (ok) {
+        long child_ep = (long)((uint64_t)LP_CPTR_CMD_EP << 8) | IT_CHILD_CN_CPTR(0);
+        if (it_sys1(SYS_CAP_IDENTIFY, child_ep) >= 0) { ok = 0; why = "dead dest"; }
+    }
 
     if (!ok && proc_h != HANDLE_INVALID)
         (void)it_sys1(SYS_PROCESS_KILL, (long)proc_h);
@@ -5207,10 +5288,9 @@ static void test_t099(void) {
         handle_id_t ep_h = (handle_id_t)ep, n2_h = (handle_id_t)n2;
         handle_id_t proc_h = HANDLE_INVALID;
         if (ep < 0 || n2 < 0 ||
-            lp_spawn_child(ep_h, &proc_h) < 0) { ok = 0; why = "spawn occ"; }
-        if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h,
-                          (long)T099_CHILD_SLOT, n2,
-                          (long)RIGHT_WRITE) != 0) { ok = 0; why = "prefill"; }
+            lp_spawn_child_cn(1u, ep_h, &proc_h) < 0) { ok = 0; why = "spawn occ"; }
+        if (ok && it_sys3(SYS_CSPACE_MINT, n2,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T099_CHILD_SLOT), (long)RIGHT_WRITE) != 0) { ok = 0; why = "prefill"; }
         if (ok && it_lp_cmd_rslot(ep_h, T099_CHILD_SLOT) != 0) {
             ok = 0; why = "cmd occ";
         }
@@ -6113,8 +6193,7 @@ static void test_t107(void) {
              * waiter; source kept; occupant untouched (I3, I4, I5). */
             uint32_t s = fz_slot_alloc();
             if (s == 0u) { ok = 0; why = "slot budget"; break; }
-            if (it_sys4(SYS_PROC_CSPACE_MINT, selfp, (long)s,
-                        n, (long)RIGHT_WRITE) != 0) { ok = 0; why = "premint"; break; }
+            if (it_sys3(SYS_CSPACE_MINT, n, IT_MINT_SELF((long)s), (long)RIGHT_WRITE) != 0) { ok = 0; why = "premint"; break; }
             if (!fz_cmd(0, FZ_OP_RECV, s, 0, 0)) { ok = 0; why = "cmd"; break; }
             if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
             if (ok && g_fz_res[0] != (long)IRIS_ERR_ALREADY_EXISTS) {
@@ -6434,8 +6513,7 @@ static void test_t109(void) {
     /* Occupied reply-slot fixture: pre-minted once, occupied forever. */
     uint32_t occ = fz_slot_alloc();
     if (occ == 0u ||
-        it_sys4(SYS_PROC_CSPACE_MINT, selfp, (long)occ,
-                n, (long)RIGHT_WRITE) != 0) {
+        it_sys3(SYS_CSPACE_MINT, n, IT_MINT_SELF((long)occ), (long)RIGHT_WRITE) != 0) {
         it_fail("T109", "occ fixture"); return;
     }
     if (!fz_workers_start(1)) { it_fail("T109", "worker"); return; }
@@ -6633,8 +6711,7 @@ static void test_t110(void) {
     uint32_t nfslot = fz_slot_alloc();
     uint32_t occ    = fz_slot_alloc();
     if (nfslot == 0u || occ == 0u ||
-        it_sys4(SYS_PROC_CSPACE_MINT, selfp, (long)occ,
-                nf, (long)RIGHT_WRITE) != 0) {
+        it_sys3(SYS_CSPACE_MINT, nf, IT_MINT_SELF((long)occ), (long)RIGHT_WRITE) != 0) {
         it_fail("T110", "fixtures"); return;
     }
 
@@ -7347,19 +7424,19 @@ static void test_t116(void) {
     long cep = it_ep_create_slot();
     cmd_ep_h = (handle_id_t)cep;
     if (ep < 0 || n < 0 || vmo < 0 || cep < 0 ||
-        lp_spawn_child(cmd_ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
+        lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0) { ok = 0; why = "spawn"; }
 
     /* Mint all three caps into the child's CSpace.  The VMO used to go
      * through SYS_VMO_SHARE into the child's handle table; what this test
      * measures — that killing a child holding live caps releases every one of
      * them — does not depend on which namespace held them, and the CSpace
      * form is the only one left. */
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, (long)T116_EP_SLOT,
-                      ep, (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint ep"; }
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, (long)T116_N_SLOT,
-                      n, (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint n"; }
-    if (ok && it_sys4(SYS_PROC_CSPACE_MINT, (long)proc_h, (long)T116_VMO_SLOT,
-                      vmo, (long)(RIGHT_READ | RIGHT_DUPLICATE)) != 0) {
+    if (ok && it_sys3(SYS_CSPACE_MINT, ep,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T116_EP_SLOT), (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint ep"; }
+    if (ok && it_sys3(SYS_CSPACE_MINT, n,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T116_N_SLOT), (long)RIGHT_WRITE) != 0) { ok = 0; why = "mint n"; }
+    if (ok && it_sys3(SYS_CSPACE_MINT, vmo,
+                      IT_MINT_INTO(IT_CHILD_CN_CPTR(0), (long)T116_VMO_SLOT), (long)(RIGHT_READ | RIGHT_DUPLICATE)) != 0) {
         ok = 0; why = "share vmo";
     }
 
@@ -10835,7 +10912,7 @@ static long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, n,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
 
@@ -11323,7 +11400,7 @@ static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t de
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, 2u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
 
@@ -11657,7 +11734,7 @@ static void test_t170(void) {
                                                     IRIS_CPTR_INITRD_CONTROL,
                      "lifecycle_probe", &proc, &boot, mints, 2u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
         it_close(&boot); it_close(&io);
         if (r < 0 || proc == HANDLE_INVALID) { ok = 0; why = "spawn"; it_close(&cmd); it_close(&proc); break; }
 
@@ -12444,7 +12521,7 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
                                 * follows from what it was handed, not from what it is.
                                 * Slot 16 and not 12: 12 is LP_PGR_SLOT_TPROC, the
                                 * target's process capability. */
-                               /*own_budget_slot=*/LP_SLOT_BUDGET);
+                               /*own_budget_slot=*/LP_SLOT_BUDGET, /*keep_cnode_dest=*/0u);
     it_close(&boot);
     if (r < 0 || *out_proc == HANDLE_INVALID) {
         it_close(&cmd); it_close(out_proc); return -1;
@@ -14274,7 +14351,7 @@ static int t27_pager_spawn(struct t27_pager *p,
                                /* The pager MAPS — into address spaces that are
                                 * not even its own — so it owes paging levels
                                 * and needs a budget to retype them from. */
-                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED);
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || p->proc == HANDLE_INVALID) {
@@ -15117,7 +15194,7 @@ static void test_t213(void) {
         long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                                  &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
         if (r != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "badelf not INVALID_ARG"; }
         if (ok && proc != HANDLE_INVALID) { ok = 0; why = "badelf left a process"; }
         it_close(&boot); it_close(&proc);
@@ -15159,7 +15236,7 @@ static void test_t214(void) {
     long r1 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "no_such_image",
                               &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
     if (r1 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "unknown not NOT_FOUND"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "unknown left process"; }
     it_close(&boot); it_close(&proc);
@@ -15169,7 +15246,7 @@ static void test_t214(void) {
     long r2 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                               &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
     if (ok && r2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "malformed not INVALID_ARG"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "malformed left process"; }
     it_close(&boot); it_close(&proc);
@@ -15295,7 +15372,7 @@ static void test_t216(void) {
             handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
             long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf", &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
             if (r >= 0) { ok = 0; why = "badelf loaded"; }
             it_close(&boot); it_close(&proc);
             it_quiesce_reaper();
@@ -15493,9 +15570,7 @@ static handle_id_t t28_session_cap(uint32_t session) {
     if (src == HANDLE_INVALID) return HANDLE_INVALID;
     handle_id_t root = T28_OWN_ROOT_CNODE;
     (void)it_sys2(SYS_CNODE_DELETE, (long)root, (long)T28_FG_SLOT(session));
-    long mr = it_sys4(SYS_PROC_CSPACE_MINT, (long)IRIS_CPTR_TEST_PROC,
-                      (long)T28_FG_SLOT(session), (long)src,
-                      (long)((IRIS_BADGE_FILEGRANT_S(session) << 32) | RIGHT_WRITE));
+    long mr = it_sys3(SYS_CSPACE_MINT, (long)src, IT_MINT_SELF((long)T28_FG_SLOT(session)), (long)((IRIS_BADGE_FILEGRANT_S(session) << 32) | RIGHT_WRITE));
     it_close(&src);
     if (mr != 0) return HANDLE_INVALID;
     return (it_sys1(SYS_CAP_IDENTIFY, (long)T28_FG_SLOT(session)) >= 0)
@@ -15668,7 +15743,7 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, m, k,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED);
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
@@ -17145,7 +17220,7 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     }
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, mm, k,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED);
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
@@ -19500,9 +19575,14 @@ static long it_cs_mint(uint64_t src, uint32_t dslot, iris_rights_t rights,
 static long it_cs_revoke(uint64_t cptr) {
     return it_sys1(SYS_CSPACE_REVOKE, (long)cptr);
 }
+/* Stage 7 Step 9: every caller of this named the suite's OWN process to reach
+ * its OWN CSpace, which SYS_CSPACE_MINT has expressed as dest_cnode 0 all
+ * along.  Kept as a helper because the tests read better for it, not because
+ * the operation is different. */
 static long it_cs_mint_into(uint64_t proc, uint32_t dslot, uint64_t src,
                             iris_rights_t rights) {
-    return it_sys4(SYS_CSPACE_MINT_INTO, (long)proc, (long)dslot, (long)src,
+    (void)proc;
+    return it_sys3(SYS_CSPACE_MINT, (long)src, IT_MINT_SELF(dslot),
                    (long)(uint32_t)rights);
 }
 /* An endpoint is "alive" iff EP_NB_RECV resolves it (WOULD_BLOCK = no sender);
