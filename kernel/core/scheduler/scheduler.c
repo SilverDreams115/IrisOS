@@ -4,6 +4,7 @@
 #include <iris/syscall.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kschedctx.h>
+#include <iris/nc/kvspace.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -141,12 +142,15 @@ void task_yield(void) {
     uint64_t new_kstack_top = (uint64_t)(uintptr_t)(chosen->kstack + TASK_STACK_SIZE);
     tss_set_rsp0(new_kstack_top);
     syscall_set_kstack(new_kstack_top);
-    syscall_set_user_cr3(chosen->process ? chosen->process->user_cr3 : 0);
+    /* Stage 7 Step 5: what a thread runs in is the thread's, and the tag is
+     * the address space's.  This used to read three fields off KProcess to
+     * answer a question about one walk. */
+    syscall_set_user_cr3(chosen->vspace ? chosen->vspace->user_cr3 : 0);
 
-    if (chosen->process && chosen->process->cr3 != 0) {
-        uint64_t cr3 = chosen->process->cr3;
+    if (chosen->vspace && chosen->vspace->cr3 != 0) {
+        uint64_t cr3 = chosen->vspace->cr3;
         if (iris_pcid_enabled)
-            cr3 |= (uint64_t)chosen->process->pcid;
+            cr3 |= (uint64_t)chosen->vspace->pcid;
         __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
     } else {
         __asm__ volatile ("mov %0, %%cr3" : : "r"(kernel_cr3) : "memory");

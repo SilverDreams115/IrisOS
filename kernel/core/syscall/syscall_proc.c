@@ -367,7 +367,6 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     kobject_retain(&vs->base);
     proc->vspace   = vs;
     proc->cr3      = vs->cr3;
-    proc->user_cr3 = paging_make_user_cr3(proc->cr3, proc->pcid);
     kobject_active_release(&vs->base);
     kobject_release(&vs->base);
 

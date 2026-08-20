@@ -14,6 +14,57 @@ static _Atomic uint32_t kvspace_live;
 
 static void kvspace_release_nodes(struct KVSpace *vs);
 
+/*
+ * Stage 7 Step 5 — the address-space tag belongs to the address space.
+ *
+ * A PCID is x86's name for what seL4 calls an ASID: it tags TLB entries with
+ * the WALK they belong to.  It was allocated per KProcess and stored there, so
+ * the tag for a walk lived on an object that is not the walk, was assigned
+ * before the walk existed, and was duplicated in both KProcess allocators —
+ * a pool with two copies of its own allocation loop.
+ *
+ * PCIDs 1..4094 are available; bit 0 (the kernel's) and bit 4095 (reserved)
+ * are pre-set.  irq_spinlock because a free can run from any context.
+ */
+#define PCID_BITMAP_WORDS 64u
+static uint64_t       pcid_bitmap[PCID_BITMAP_WORDS] = {
+    [0]  = 1ULL,           /* PCID 0 = kernel, always reserved */
+    [63] = (1ULL << 63),   /* PCID 4095, reserved */
+};
+static irq_spinlock_t pcid_lock;   /* BSS zero = unlocked */
+
+static uint16_t kvspace_pcid_alloc(void) {
+    uint16_t pcid = 0;
+    uint64_t flags = irq_spinlock_lock(&pcid_lock);
+    for (uint32_t w = 0; w < PCID_BITMAP_WORDS && !pcid; w++) {
+        uint64_t free_bits = ~pcid_bitmap[w];
+        if (!free_bits) continue;
+        uint32_t bit = (uint32_t)__builtin_ctzll(free_bits);
+        uint32_t id  = w * 64u + bit;
+        if (id >= 1u && id <= 4094u) {
+            pcid_bitmap[w] |= (1ULL << bit);
+            pcid = (uint16_t)id;
+        }
+    }
+    irq_spinlock_unlock(&pcid_lock, flags);
+    return pcid;
+}
+
+static void kvspace_pcid_free(uint16_t pcid) {
+    if (!pcid) return;
+    uint64_t flags = irq_spinlock_lock(&pcid_lock);
+    pcid_bitmap[pcid / 64u] &= ~(1ULL << (pcid % 64u));
+    irq_spinlock_unlock(&pcid_lock, flags);
+}
+
+/* Give this address space its tag and the no-flush CR3 the iretq path loads.
+ * Called once, by whichever constructor established cr3.  A machine without
+ * PCID gets pcid 0 and a plain cr3, which is what user_cr3 then is. */
+static void kvspace_tag(struct KVSpace *vs) {
+    vs->pcid     = iris_pcid_enabled ? kvspace_pcid_alloc() : 0u;
+    vs->user_cr3 = paging_make_user_cr3(vs->cr3, vs->pcid);
+}
+
 uint32_t kvspace_live_count(void) {
     return atomic_load_explicit(&kvspace_live, memory_order_relaxed);
 }
@@ -91,6 +142,9 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
         vs->pml4_from_pool = 0;
     }
     vs->pt_pool = 0;
+    kvspace_pcid_free(vs->pcid);
+    vs->pcid     = 0;
+    vs->user_cr3 = 0;
     atomic_fetch_sub_explicit(&kvspace_live, 1u, memory_order_relaxed);
 }
 
@@ -175,6 +229,7 @@ struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3) {
     vs->pml4_from_pool = 0;
     vs->kernel_funded  = 0;   /* a spawned process owes its own levels */
     vs->bound          = 0;
+    kvspace_tag(vs);
     atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);
     return vs;
 }
@@ -195,6 +250,7 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
     vs->kernel_funded  = 1;
     vs->bound          = 1;   /* the root task's, and only its */
     vs->free_nodes     = 0;
+    kvspace_tag(vs);
     atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);
     return vs;
 }

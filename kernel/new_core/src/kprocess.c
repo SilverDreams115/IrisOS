@@ -71,18 +71,6 @@ void kprocess_fault_clear(struct KProcess *p, uint32_t task_id, int killed) {
                               memory_order_relaxed);
 }
 
-/* PCID allocation bitmap: 64 words × 64 bits = PCIDs 0–4095.
- * Bit 0 (PCID 0 = kernel) and bit 4095 (reserved) are pre-set.
- * PCIDs 1–4094 are available for user processes.
- * Protected by pcid_lock (irq_spinlock) so alloc/free are safe
- * from any context.  BSS zero-init of atomic_flag == unlocked. */
-#define PCID_BITMAP_WORDS 64u
-static uint64_t      pcid_bitmap[PCID_BITMAP_WORDS] = {
-    [0]  = 1ULL,           /* PCID 0 = kernel, always reserved */
-    [63] = (1ULL << 63),   /* PCID 4095, reserved */
-};
-static irq_spinlock_t pcid_lock; /* BSS zero = unlocked */
-
 static iris_error_t kprocess_quota_acquire(uint32_t *counter, uint32_t *hwm,
                                            uint32_t limit, struct KProcess *p) {
     iris_error_t r = IRIS_OK;
@@ -156,13 +144,6 @@ static void kprocess_destroy(struct KObject *obj) {
     kprocess_reap_address_space(p);
     atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
 
-    /* Return PCID to the free pool so it can be reused. */
-    if (p->pcid) {
-        uint64_t flags = irq_spinlock_lock(&pcid_lock);
-        pcid_bitmap[p->pcid / 64u] &= ~(1ULL << (p->pcid % 64u));
-        irq_spinlock_unlock(&pcid_lock, flags);
-        p->pcid = 0;
-    }
 
     /* Storage first (a block holds its own parent retain), pool retain last:
      * the block lives inside the region the pool owns, and it is what records
@@ -202,33 +183,6 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
     kobject_retain(&pool->base);
     p->mem_pool = pool;
 
-    if (iris_pcid_enabled) {
-        uint64_t flags = irq_spinlock_lock(&pcid_lock);
-        uint16_t pcid = 0;
-        for (uint32_t w = 0; w < PCID_BITMAP_WORDS && !pcid; w++) {
-            uint64_t free_bits = ~pcid_bitmap[w];
-            if (!free_bits) continue;
-            uint32_t bit = (uint32_t)__builtin_ctzll(free_bits);
-            uint32_t id  = w * 64u + bit;
-            if (id >= 1u && id <= 4094u) {
-                pcid_bitmap[w] |= (1ULL << bit);
-                pcid = (uint16_t)id;
-            }
-        }
-        irq_spinlock_unlock(&pcid_lock, flags);
-        if (!pcid) {
-            /* Stage 7 Step 3: reachable, and answered.  While KPROCESS_MAX_LIVE
-             * capped live processes at 64 this branch was documented as
-             * "cannot happen"; with the cap gone the 4094 PCIDs are a real
-             * hardware bound and this is the failure a holder with enough
-             * memory eventually gets.  Nothing partial is left behind: the
-             * block goes back to the Untyped and the gauge was never bumped. */
-            kobject_release(&pool->base);
-            kuntyped_release_child(p, sizeof(struct KProcess));
-            return 0;
-        }
-        p->pcid = pcid;
-    }
 
     /*
      * Stage 6-pure Step 5: the root CNode is SUPPLIED, not carved.
@@ -260,29 +214,6 @@ struct KProcess *kprocess_alloc(void) {
     if (!p) return 0;
     kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
     p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;  /* Stage 7: 0 = no kernel ceiling */
-    if (iris_pcid_enabled) {
-        uint64_t flags = irq_spinlock_lock(&pcid_lock);
-        uint16_t pcid = 0;
-        for (uint32_t w = 0; w < PCID_BITMAP_WORDS && !pcid; w++) {
-            uint64_t free_bits = ~pcid_bitmap[w];
-            if (!free_bits) continue;
-            uint32_t bit = (uint32_t)__builtin_ctzll(free_bits);
-            uint32_t id  = w * 64u + bit;
-            if (id >= 1u && id <= 4094u) {
-                pcid_bitmap[w] |= (1ULL << bit);
-                pcid = (uint16_t)id;
-            }
-        }
-        irq_spinlock_unlock(&pcid_lock, flags);
-        if (!pcid) {
-            /* All 4094 PCIDs in use.  Reachable since Stage 7 Step 3 removed
-             * the live-process ceiling this used to be excluded by; the gauge
-             * was never bumped, so there is nothing to unwind but the slab. */
-            kslab_free(p, (uint32_t)sizeof(struct KProcess));
-            return 0;
-        }
-        p->pcid = pcid;
-    }
 
     /* Ph95: root CNode for hierarchical CSpace.  Soft-fail: if alloc OOMs
      * the process still works, but cspace_root stays NULL.
@@ -635,7 +566,6 @@ void kprocess_reap_address_space(struct KProcess *p) {
      */
     paging_destroy_user_space_from(cr3, pml4_pooled);
     p->cr3 = 0;
-    p->user_cr3 = 0;
     if (vs) kobject_release(&vs->base);
     /* aspace_reaped was claimed on entry, not set here. */
 }

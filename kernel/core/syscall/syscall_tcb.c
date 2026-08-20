@@ -144,6 +144,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
     /* The VSpace argument: likewise that process's own address space. */
     struct KObject *vs_obj; iris_rights_t vs_rights;
+    struct KVSpace *vspace = 0;
     int vs_ok = 0;
     if (cs_ok) {
         err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg2,
@@ -153,7 +154,8 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
             kobject_release(&target->base);
             return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
         }
-        vs_ok = ((struct KVSpace *)vs_obj == proc->vspace);
+        vspace = (struct KVSpace *)vs_obj;
+        vs_ok  = (vspace == proc->vspace);
         kobject_release(vs_obj);
     }
     if (!cs_ok || !vs_ok) {
@@ -167,7 +169,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * identity check above proved it is the process's root, and the process
      * holds that root for as long as it lives — ktcb_configure takes its own
      * pair before anything can drop the last one. */
-    err = ktcb_configure(target, proc, cspace);
+    err = ktcb_configure(target, proc, cspace, vspace);
     if (proc_obj) kobject_release(proc_obj);
     kobject_release(&target->base);
     if (err != IRIS_OK) return syscall_err(err);

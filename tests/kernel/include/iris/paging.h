@@ -19,6 +19,13 @@
 extern int iris_smap_enabled;
 extern int iris_pcid_enabled;
 
+/* Same definition as the real header: a pure function of cr3 and the tag, so
+ * the host models it exactly rather than stubbing it out. */
+static inline uint64_t paging_make_user_cr3(uint64_t cr3, uint16_t pcid) {
+    if (!iris_pcid_enabled) return cr3;
+    return (cr3 & ~0xFFFULL) | (uint64_t)pcid | (1ULL << 63);
+}
+
 int      paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
 struct KUntyped;
 void     paging_destroy_user_space_from(uint64_t cr3, int pml4_pooled);

@@ -12,6 +12,7 @@ struct KEndpoint;
 struct KSchedContext;
 struct KReply;
 struct KCNode;
+struct KVSpace;
 
 #define TASK_MAX              256
 #define TASK_STACK_SIZE       8192  /* kernel stack per task */
@@ -148,6 +149,16 @@ struct task {
      * path.
      */
     struct KCNode    *cspace_root;
+    /*
+     * Stage 7 Step 5 — the address space this thread runs in, held by the
+     * THREAD, for the same reason as cspace_root above: SYS_TCB_CONFIGURE
+     * names it as a capability and the scheduler then loaded CR3 out of
+     * `t->process`, so what a thread ran in was a property of a shared object
+     * rather than of the thread.  One lifecycle reference (a VSpace has no
+     * slots, so there is no active half), released with the thread's
+     * execution.
+     */
+    struct KVSpace   *vspace;
     uint32_t          fault_seq;       /* Phase 25: generation of the fault this
                                         * task is blocked on (TASK_BLOCKED_FAULT);
                                         * 0 = no fault ever delivered to it */
@@ -256,7 +267,7 @@ struct task *task_spawn_user(uint64_t arg0);
  * stack it is standing on.
  */
 iris_error_t ktcb_configure(struct task *t, struct KProcess *proc,
-                            struct KCNode *cspace);
+                            struct KCNode *cspace, struct KVSpace *vspace);
 iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
                              uint64_t arg);
 

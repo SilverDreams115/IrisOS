@@ -19,10 +19,10 @@
 uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process || !t->process->vspace)
+    if (!t || !t->vspace)
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    struct KVSpace *vs = t->process->vspace;
+    struct KVSpace *vs = t->vspace;
     const iris_rights_t rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
 
     /* Stage 4: arg0 is a destination slot (RETYPE2 packing).  The VSpace is
@@ -269,7 +269,7 @@ static void rollback_vmo_maps(struct KVSpace *vs, uint64_t start, uint64_t end) 
 
 uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
-    if (!t || !t->process || !t->process->cr3) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->vspace || !t->vspace->cr3) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject  *obj;
     iris_rights_t    rights;
@@ -279,7 +279,7 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                  RIGHT_NONE, KOBJ_VMO, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
 
-    struct KVSpace *vs = t->process->vspace;
+    struct KVSpace *vs = t->vspace;
     if (!vs) { kobject_release(obj); return syscall_err(IRIS_ERR_INVALID_ARG); }
 
     struct KVmo *v = (struct KVmo *)obj;
@@ -317,7 +317,7 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Pre-check: no VA in the range must already have a PTE. */
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
-            if (paging_virt_to_phys_in(t->process->cr3, arg1 + off) != 0) {
+            if (paging_virt_to_phys_in(t->vspace->cr3, arg1 + off) != 0) {
                 kobject_release(obj);
                 return syscall_err(IRIS_ERR_BUSY);
             }
@@ -377,7 +377,7 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     /* Wrap/MMIO VMO: map each physical page via KFrame (no PMM ownership). */
     for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
-        if (paging_virt_to_phys_in(t->process->cr3, arg1 + off) != 0) {
+        if (paging_virt_to_phys_in(t->vspace->cr3, arg1 + off) != 0) {
             kobject_release(obj);
             return syscall_err(IRIS_ERR_BUSY);
         }
@@ -425,14 +425,14 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process || !t->process->cr3) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->vspace || !t->vspace->cr3) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     uint64_t vaddr = arg0;
     uint64_t size  = arg1;
 
     if (!user_vmo_range_valid(vaddr, size)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    struct KVSpace *vs = t->process->vspace;
+    struct KVSpace *vs = t->vspace;
     if (!vs) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     uint64_t map_size = 0;
@@ -689,7 +689,7 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
     if (v->sparse) {
         /* Pre-check: no VA in the range must already have a PTE. */
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
-            if (paging_virt_to_phys_in(proc->cr3, vaddr + off) != 0) {
+            if (paging_virt_to_phys_in(target_vs->cr3, vaddr + off) != 0) {
                 kobject_release(vmo_obj); kobject_release(proc_obj);
                 return syscall_err(IRIS_ERR_BUSY);
             }
@@ -745,7 +745,7 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
 
     /* Wrap/MMIO VMO path */
     for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
-        if (paging_virt_to_phys_in(proc->cr3, vaddr + off) != 0) {
+        if (paging_virt_to_phys_in(target_vs->cr3, vaddr + off) != 0) {
             kobject_release(vmo_obj); kobject_release(proc_obj);
             return syscall_err(IRIS_ERR_BUSY);
         }

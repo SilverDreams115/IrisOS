@@ -110,9 +110,12 @@ struct KProcess {
      * second already has one running.  Set at every thread_count increment,
      * never cleared. */
     uint8_t         threads_ever;
-    uint64_t        cr3;          /* page table root for the process */
-    uint64_t        user_cr3;     /* cr3|pcid|(1<<63 if PCID) — no-flush variant for iretq */
-    uint16_t        pcid;         /* PCID assigned at alloc (0 = unused/PCID disabled) */
+    /* Stage 7 Step 5: `cr3` is a CACHE of vspace->cr3, kept only for the two
+     * places that still ask a PROCESS about its address space — the teardown
+     * gate and kprocess_reap_address_space.  user_cr3 and pcid are gone: they
+     * described a walk, so they live on the walk (struct KVSpace), and the
+     * scheduler reads them from the thread's own VSpace. */
+    uint64_t        cr3;          /* == vspace->cr3 while the process is alive */
     uint8_t         teardown_complete; /* logical teardown already ran */
     uint32_t        exit_code;    /* exit code from SYS_EXIT; 0 if killed externally */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */

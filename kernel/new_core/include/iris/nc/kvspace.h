@@ -52,6 +52,12 @@ struct KVSpace {
     struct KObject        base;          /* must be first */
     spinlock_t            lock;          /* guards all fields below */
     uint64_t              cr3;           /* physical PML4; 0 after invalidation */
+    /* Stage 7 Step 5: the address-space TAG, and the CR3 value the iretq path
+     * loads.  A PCID names a walk, so it belongs to the walk — it used to be
+     * allocated per KProcess, before the address space existed, out of a pool
+     * whose allocation loop was written twice. */
+    uint64_t              user_cr3;      /* cr3 | pcid | NOFLUSH */
+    uint16_t              pcid;          /* 0 when PCID is disabled */
     int                   valid;         /* 1 = live, 0 = reaped */
     uint32_t              mapping_count; /* number of live KFrameMapping nodes */
     struct KFrameMapping *mappings;      /* singly-linked list head; NULL = empty */

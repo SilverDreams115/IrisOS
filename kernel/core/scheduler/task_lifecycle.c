@@ -543,6 +543,14 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         kobject_active_release(&cs->base);
         kobject_release(&cs->base);
     }
+    /* ...and its address space, after kprocess_reap_address_space above has
+     * torn the walk down.  Releasing here is dropping a reference, not
+     * reaping: the object survives while any capability to it does. */
+    if (t->vspace) {
+        struct KVSpace *vs = t->vspace;
+        t->vspace = 0;
+        kobject_release(&vs->base);
+    }
 
     /* The kernel stack was freed above, with the registry slot it is keyed
      * by; these fields are already clear. */
@@ -714,7 +722,7 @@ struct task *task_create(void (*entry)(void)) {
 }
 
 void task_set_bootstrap_arg0(struct task *t, uint64_t arg0) {
-    if (!t || t->ring != TASK_RING3 || !t->process || !t->process->cr3) return;
+    if (!t || t->ring != TASK_RING3 || !t->vspace || !t->vspace->cr3) return;
     t->ctx.rbx = arg0;
     /* Write arg0 at the physical page corresponding to t->user_rsp.
      * RSP entropy may have shifted user_rsp below the original stack top, so
@@ -759,7 +767,6 @@ static struct task *task_create_user_impl(uint64_t arg0) {
 
     proc->cr3 = paging_create_user_space();
     if (proc->cr3 == 0) goto fail;
-    proc->user_cr3 = paging_make_user_cr3(proc->cr3, proc->pcid);
 
     /* Phase 6.2: create KVSpace before bootstrap maps so bootstrap_kframe_map
      * can register mapping back-refs via kframe_map_page. */
@@ -852,6 +859,8 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         kobject_retain(&t->cspace_root->base);
         kobject_active_retain(&t->cspace_root->base);
     }
+    t->vspace = proc->vspace;
+    if (t->vspace) kobject_retain(&t->vspace->base);
     /* Same join every other thread takes.  Nothing can be tearing this process
      * down — it was allocated a few lines above and no capability to it exists
      * yet — but the count and the flag have one owner, so this path does not
@@ -961,8 +970,8 @@ void task_abort_spawned_user(struct task *t) {
  * where it starts.
  */
 iris_error_t ktcb_configure(struct task *t, struct KProcess *proc,
-                            struct KCNode *cspace) {
-    if (!t || !proc || !proc->cr3) return IRIS_ERR_INVALID_ARG;
+                            struct KCNode *cspace, struct KVSpace *vspace) {
+    if (!t || !proc || !vspace || !vspace->cr3) return IRIS_ERR_INVALID_ARG;
     if (t->configured || t->terminal) return IRIS_ERR_ALREADY_EXISTS;
 
     if (task_registry_alloc(t) != 0) return IRIS_ERR_NO_MEMORY;
@@ -1008,6 +1017,8 @@ iris_error_t ktcb_configure(struct task *t, struct KProcess *proc,
         kobject_retain(&t->cspace_root->base);
         kobject_active_retain(&t->cspace_root->base);
     }
+    t->vspace = vspace;
+    if (t->vspace) kobject_retain(&t->vspace->base);
 
     task_init_fpu_state(t);
     t->id         = next_id++;
