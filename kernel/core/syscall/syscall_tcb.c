@@ -250,6 +250,25 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Step 0: an unconfigured TCB must NEVER be made runnable — it has no
      * kstack, no registry slot, no process.  Hard refuse (charter O5/S-gate). */
     if (!target->configured) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_SUPPORTED); }
+    /*
+     * ...and neither must a CONFIGURED thread that was never told where to
+     * start.  CONFIGURE builds the storage a thread needs; WRITE_REGS builds
+     * the frame it returns THROUGH, and until it has run there is nothing on
+     * the kernel stack: saved_krsp is still the zero the retyped block arrived
+     * with.  Making that runnable puts `movq $0, %rsp` in context_switch and
+     * the next push is a ring-0 store through a null stack — a fault with no
+     * stack to take it on.
+     *
+     * saved_krsp is the exact witness, not a proxy: every thread that has run
+     * has one (context_switch saves it), and every thread that has been given
+     * an entry frame has one (ktcb_write_regs sets it).  A pool-born thread is
+     * born with both.  Checked BEFORE `started` is set, so a refusal does not
+     * freeze the entry frame it just refused to run.
+     */
+    if (!target->saved_krsp) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_NOT_SUPPORTED);
+    }
     /* Stage 5 Step 4: a thread that has been runnable once holds live state
      * on its kernel stack, so its entry frame is frozen from here on
      * (SYS_TCB_WRITE_REGS refuses). */

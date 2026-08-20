@@ -831,8 +831,11 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         t->user_rsp = USER_STACK_TOP - 8 - (entropy << 4);
     }
     t->process          = proc;
-    proc->thread_count  = 1;
-    proc->threads_ever  = 1;
+    /* Same join every other thread takes.  Nothing can be tearing this process
+     * down — it was allocated a few lines above and no capability to it exists
+     * yet — but the count and the flag have one owner, so this path does not
+     * get its own copy of them to drift. */
+    if (kprocess_attach_thread(proc) != IRIS_OK) goto fail;
 
     uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     kstack_top &= ~0xFULL;
@@ -937,14 +940,33 @@ void task_abort_spawned_user(struct task *t) {
  * where it starts.
  */
 iris_error_t ktcb_configure(struct task *t, struct KProcess *proc) {
-    if (!t || !proc || !proc->cr3 || proc->teardown_complete)
-        return IRIS_ERR_INVALID_ARG;
+    if (!t || !proc || !proc->cr3) return IRIS_ERR_INVALID_ARG;
     if (t->configured || t->terminal) return IRIS_ERR_ALREADY_EXISTS;
 
     if (task_registry_alloc(t) != 0) return IRIS_ERR_NO_MEMORY;
     if (kstack_alloc(t, t->reg_slot) != 0) {
         task_registry_release(t);
         return IRIS_ERR_NO_MEMORY;
+    }
+
+    /*
+     * The join, and the last thing here that can fail.
+     *
+     * It is also the teardown gate: kprocess_attach_thread tests
+     * teardown_complete and increments thread_count under one lock hold, so a
+     * kill that lands mid-configure either loses the race and sees this thread
+     * in the count, or wins it and this returns BAD_HANDLE.  Reading the flag
+     * up front and attaching later — which is what this used to do — left a
+     * window in which a thread joined a process whose address space had
+     * already been reaped.
+     */
+    {
+        iris_error_t ae = kprocess_attach_thread(proc);
+        if (ae != IRIS_OK) {
+            kstack_free(t);
+            task_registry_release(t);
+            return ae;
+        }
     }
 
     task_init_fpu_state(t);
@@ -955,8 +977,6 @@ iris_error_t ktcb_configure(struct task *t, struct KProcess *proc) {
     t->ticks_left = TASK_DEFAULT_SLICE;
     t->home_cpu   = 0;
     t->process    = proc;
-    proc->thread_count++;
-    proc->threads_ever = 1;
 
     /* Linked into the global task list like every other thread: the list is
      * what the timeout/fault sweeps walk, and a thread that can run must be

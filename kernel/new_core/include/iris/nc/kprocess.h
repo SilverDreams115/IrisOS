@@ -137,7 +137,8 @@ struct KProcess {
     uint32_t owned_vmos;
     uint32_t phys_pages_charged; /* sparse-VMO pages charged at eager map-time
                                   * allocation; vs phys_pages_limit */
-    uint32_t phys_pages_limit;   /* set to KPROCESS_PHYS_PAGES_LIMIT at alloc */
+    uint32_t phys_pages_limit;   /* KPROCESS_PHYS_PAGES_LIMIT (0) since Stage 7:
+                                  * reported, never enforced — see the constant */
     uint32_t owned_vmos_hwm;
     uint32_t phys_pages_hwm;
 
@@ -191,6 +192,11 @@ struct KProcess *kprocess_alloc(void);
 struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
                                      struct KCNode *cnode);
 void             kprocess_free (struct KProcess *p);
+/* Join a thread to `p` — thread_count++ and threads_ever = 1 — or refuse with
+ * IRIS_ERR_BAD_HANDLE because teardown has already been claimed.  Test and act
+ * under one lock hold; see kprocess.c for why a separate flag read is not a
+ * gate.  Every path that gives a thread a process goes through this. */
+iris_error_t     kprocess_attach_thread(struct KProcess *p);
 void             kprocess_teardown(struct KProcess *p, struct task *exiting_thread);
 void             kprocess_reap_address_space(struct KProcess *p);
 /* Phase S1: kprocess_quota_{acquire,release}_notification retired (Untyped is
