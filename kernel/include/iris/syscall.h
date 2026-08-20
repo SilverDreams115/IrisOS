@@ -558,15 +558,34 @@ static inline long iris_syscall0(long nr) {
 /*
  * User-level exception handler registration — modern/conforming (iris_error_t).
  *
- * SYS_EXCEPTION_HANDLER(proc_h, notify_h, signal_bits) → 0 or negative iris_error_t
+ * SYS_EXCEPTION_HANDLER(proc_h, notify_h, signal_bits, dest) → 0 or iris_error_t
  *   proc_h: KOBJ_PROCESS with RIGHT_MANAGE, or HANDLE_INVALID for own process.
  *   notify_h: KOBJ_NOTIFICATION with RIGHT_WRITE.  signal_bits must be non-zero.
+ *   dest:   Stage 7 Step 7 — REQUIRED, in arg3 (r10).  The MAILBOX each fault
+ *           delivers the faulting thread's TCB capability into, in the
+ *           cnode|slot<<32 packing every publishing syscall uses.  The CNode
+ *           half is resolved in the REGISTRANT's CSpace (0 = its own root).
+ *
+ *           Naming it matters because the principal that REGISTERS a handler
+ *           is not always the one that HANDLES the fault: a supervisor arms a
+ *           target's faults and hands the answering to a pager, so it delivers
+ *           into a CNode it shares with that pager.  A handler arming its own
+ *           faults names its own root.  Which arrangement is right is
+ *           supervision policy and belongs to the caller, not the kernel.
+ *
  *   Phase 13/Track I: on a ring-3 hardware exception the kernel records the fault
- *   details in the process and signals signal_bits on notify_h (no KChannel),
- *   then suspends the faulting task in TASK_BLOCKED_FAULT.  The handler reads the
- *   details with SYS_PROCESS_FAULT_INFO and resumes/kills via SYS_EXCEPTION_RESUME.
+ *   details, publishes the faulting thread into `dest` (RIGHT_READ|RIGHT_WRITE,
+ *   and nothing else — a fault mailbox delegates nothing onward), signals
+ *   signal_bits on notify_h, and suspends the faulting task in
+ *   TASK_BLOCKED_FAULT.  The capability is published BEFORE the signal, so a
+ *   handler woken by it finds the mailbox already filled.  The handler reads
+ *   the details with SYS_PROCESS_FAULT_INFO and answers with
+ *   SYS_EXCEPTION_RESUME.
  *   If no handler is registered, the fault is logged and the task is killed.
- *   Re-registration replaces the previous handler (last registration wins).
+ *   Re-registration with the SAME notification keeps the arming and re-aims
+ *   the destination — and carries an OUTSTANDING fault with it, so a
+ *   supervisor taking over from a dead handler can answer the fault in flight
+ *   instead of seeing a pending record it holds nothing to resolve.
  *   Phase 20: registering on an already-dead process fails IRIS_ERR_NOT_FOUND
  *   (nothing can fault, and the registration would leak the notification pin).
  *   Only ring-3 faults are deliverable; kernel faults are always fatal.
@@ -589,19 +608,25 @@ static inline long iris_syscall0(long nr) {
 /*
  * Exception resume — modern/conforming (iris_error_t).
  *
- * SYS_EXCEPTION_RESUME(proc_h, task_id, action) → 0 or negative iris_error_t
- *   proc_h:  KOBJ_PROCESS with RIGHT_MANAGE, or HANDLE_INVALID for own process.
- *   task_id: task ID from the FAULT_MSG_NOTIFY message.
- *   action:  0 = resume the task at the faulting RIP; 1 = kill the task.
- *   The target task must belong to the specified process and be in BLOCKED_FAULT.
- *   Returns IRIS_ERR_NOT_FOUND if no matching suspended task exists.
+ * SYS_EXCEPTION_RESUME(tcb_cptr, action) → 0 or negative iris_error_t
+ *   tcb_cptr: the FAULTING THREAD, as a capability, with RIGHT_WRITE — the
+ *             one SYS_EXCEPTION_HANDLER's mailbox was filled with.
+ *   action:   0 = resume the thread at the faulting RIP; 1 = kill it.
+ *   The thread must be in BLOCKED_FAULT; otherwise IRIS_ERR_NOT_FOUND.
+ *
+ *   Stage 7 Step 7: this took (proc_h, task_id, action).  Authority came from
+ *   the process capability and the id was checked against it, so the number
+ *   conferred nothing — but it SELECTED a kernel object, which charter
+ *   §3.4/§3.5 forbid, and a supervisor could not hold, delegate or revoke
+ *   "that thread" the way it holds everything else.  RIGHT_WRITE on the thread
+ *   is now the whole authority: deciding whether an execution continues is a
+ *   property of that execution.
  *
  *   Phase 25 (additive): action 2 = resume, action 3 = kill, each with a fault
  *   generation check — bits [63:32] of the action argument must equal the
  *   fault_seq the caller read at FAULT_OFF_SEQ.  A generation of 0 is
- *   INVALID_ARG; a mismatch (the task refaulted since, or the caller replays
- *   a stale record) is NOT_FOUND with no side effect.  Values 2/3 were
- *   INVALID_ARG before Phase 25 — no existing caller changes behaviour.
+ *   INVALID_ARG; a mismatch (the thread refaulted since, or the caller replays
+ *   a stale record) is NOT_FOUND with no side effect.
  */
 #define SYS_EXCEPTION_RESUME   66
 

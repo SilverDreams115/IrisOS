@@ -273,7 +273,6 @@ _Static_assert(sizeof(struct cpu_context) == 64u,
                "cpu_context layout is ABI (context_switch.S offsets 0..56)");
 
 void         task_init(void);
-struct task *task_find_by_id(uint32_t id);
 struct task *task_create(void (*entry)(void));
 struct task *task_spawn_user(uint64_t arg0);
 /* Stage 5 Step 4 — execution for a TCB retyped from an Untyped.

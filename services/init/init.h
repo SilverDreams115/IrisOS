@@ -110,6 +110,10 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_OWN_CSPACE   57u
 #define INIT_SLOT_OWN_VSPACE   58u
 #define INIT_SLOT_S8_TCB       59u
+/* Stage 7 Step 7: where a fault delivers the faulting thread's capability.
+ * init arms the handler for ITSELF, so its own root CNode is the mailbox and
+ * this is just the slot in it. */
+#define INIT_SLOT_S8_FAULT     60u
 
 /* Phase S1: init's untyped pool — the boot untyped delegated by userboot at
  * IRIS_CPTR_INIT_UNTYPED.  Stage 4: held as the CPtr itself, checked once in

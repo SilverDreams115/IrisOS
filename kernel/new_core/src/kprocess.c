@@ -108,11 +108,19 @@ static void kprocess_clear_exception_chan(struct KProcess *p) {
     struct KNotification *old = 0;
     if (!p) return;
 
+    struct KCNode *cs;
     spinlock_lock(&p->base.lock);
     old = p->exception_notif;
     p->exception_notif = 0;
+    cs = p->fault_cspace;
+    p->fault_cspace = 0;
+    p->fault_slot   = 0;
     spinlock_unlock(&p->base.lock);
 
+    if (cs) {
+        kobject_active_release(&cs->base);
+        kobject_release(&cs->base);
+    }
     if (!old) return;
     kobject_active_release(&old->base);
     kobject_release(&old->base);
@@ -321,12 +329,24 @@ iris_error_t kprocess_watch_exit(struct KProcess *p, struct KNotification *notif
 
 iris_error_t kprocess_set_exception_handler(struct KProcess *p,
                                             struct KNotification *notif,
-                                            uint64_t signal_bits) {
+                                            uint64_t signal_bits,
+                                            struct KCNode *dest_cnode,
+                                            uint32_t dest_slot) {
     struct KNotification *old;
+    struct KCNode        *old_cs = 0;
     if (!p || !notif || signal_bits == 0) return IRIS_ERR_INVALID_ARG;
+    /* Stage 7 Step 7: a handler must say where the faulting thread's
+     * capability goes.  Required, not optional: without it the only way to
+     * answer a fault is to name the thread by number, and leaving that path
+     * alive beside this one is the dual-namespace shape the charter forbids.
+     * Slot 0 is CPTR_NULL and can never receive a capability. */
+    if (!dest_cnode || dest_slot == 0u || dest_slot >= dest_cnode->slot_count)
+        return IRIS_ERR_INVALID_ARG;
 
     kobject_retain(&notif->base);
     kobject_active_retain(&notif->base);
+    kobject_retain(&dest_cnode->base);
+    kobject_active_retain(&dest_cnode->base);
 
     spinlock_lock(&p->base.lock);
     /* Phase 20: registering on a torn-down process would re-pin exception_notif
@@ -341,23 +361,63 @@ iris_error_t kprocess_set_exception_handler(struct KProcess *p,
         spinlock_unlock(&p->base.lock);
         kobject_active_release(&notif->base);
         kobject_release(&notif->base);
+        kobject_active_release(&dest_cnode->base);
+        kobject_release(&dest_cnode->base);
         return IRIS_ERR_NOT_FOUND;
     }
-    old = (p->exception_notif == notif) ? 0 : p->exception_notif;
+    old    = (p->exception_notif == notif) ? 0 : p->exception_notif;
+    old_cs = (p->fault_cspace == dest_cnode) ? 0 : p->fault_cspace;
+    /* Re-arming with the same notification keeps the registration and re-aims
+     * the DESTINATION, so a supervisor can move the mailbox it receives faults
+     * in without tearing the handler down and racing a fault through the gap. */
     if (p->exception_notif == notif) {
-        /* already set: drop the extra ref we took */
-        spinlock_unlock(&p->base.lock);
         kobject_active_release(&notif->base);
         kobject_release(&notif->base);
-        return IRIS_OK;
+    } else {
+        p->exception_notif = notif;
+        p->exception_signal_bits = signal_bits;
     }
-    p->exception_notif = notif;
-    p->exception_signal_bits = signal_bits;
+    p->fault_cspace = dest_cnode;
+    p->fault_slot   = dest_slot;
     spinlock_unlock(&p->base.lock);
 
     if (old) {
         kobject_active_release(&old->base);
         kobject_release(&old->base);
+    }
+    if (old_cs) {
+        kobject_active_release(&old_cs->base);
+        kobject_release(&old_cs->base);
+    }
+
+    /*
+     * A fault that is already OUTSTANDING moves with the mailbox.
+     *
+     * Re-aiming is how a supervisor hands a target's faults to a REPLACEMENT
+     * handler — the old one died holding the capability the fault delivered,
+     * and that capability is in a CSpace nobody reads any more.  Without this
+     * the new handler is told a fault is pending (the record is still there)
+     * and has nothing to answer it with: it can see the fault and not resolve
+     * it, which is a deadlock dressed as a working restart.
+     *
+     * Only the outstanding one, and only if it is still outstanding: a fault
+     * that was already answered leaves nothing to move.
+     */
+    {
+        struct task *pending;
+        spinlock_lock(&p->base.lock);
+        pending = p->fault_last;
+        if (pending && pending->fault_valid) kobject_retain(&pending->base);
+        else                                 pending = 0;
+        spinlock_unlock(&p->base.lock);
+        if (pending) {
+            (void)kcnode_slot_install_linked(dest_cnode, dest_slot,
+                                             &pending->base,
+                                             RIGHT_READ | RIGHT_WRITE, 0,
+                                             0, 0, /*exclusive=*/0,
+                                             /*legacy=*/1);
+            kobject_release(&pending->base);
+        }
     }
     return IRIS_OK;
 }
@@ -366,7 +426,9 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
                            uint64_t error_code, uint64_t rip, uint64_t cr2) {
     struct KProcess *p;
     struct KNotification *notif;
-    struct task *prev_last = 0;
+    struct task   *prev_last = 0;
+    struct KCNode *dest_cs   = 0;
+    uint32_t       dest_slot = 0;
     uint64_t bits;
 
     if (!t || !t->process) return 0;
@@ -405,10 +467,37 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
             p->fault_last = t;
         }
         kobject_retain(&notif->base);
+        dest_cs   = p->fault_cspace;
+        dest_slot = p->fault_slot;
+        if (dest_cs) {
+            kobject_retain(&dest_cs->base);
+            kobject_active_retain(&dest_cs->base);
+        }
     }
     spinlock_unlock(&p->base.lock);
     if (prev_last) kobject_release(&prev_last->base);
     if (!notif) return 0;
+
+    /*
+     * Hand the handler the faulting THREAD, as a capability.
+     *
+     * Published BEFORE the signal, so a handler woken by it finds the slot
+     * already filled — the reverse order is a race the handler could only
+     * paper over by retrying.  The install is deliberately NOT exclusive: the
+     * slot is a mailbox, and a previous fault's capability sitting in it means
+     * the handler already answered that one.
+     *
+     * RIGHT_WRITE is the authority RESUME requires; READ lets the handler ask
+     * what it was handed.  No TRANSFER and no DUPLICATE: a fault mailbox
+     * delegates nothing onward.
+     */
+    if (dest_cs) {
+        (void)kcnode_slot_install_linked(dest_cs, dest_slot, &t->base,
+                                         RIGHT_READ | RIGHT_WRITE, 0,
+                                         0, 0, /*exclusive=*/0, /*legacy=*/1);
+        kobject_active_release(&dest_cs->base);
+        kobject_release(&dest_cs->base);
+    }
 
     knotification_signal(notif, bits);
     kobject_release(&notif->base);

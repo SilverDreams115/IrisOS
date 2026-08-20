@@ -1024,31 +1024,45 @@ record.  It is on the execution now.  KProcess keeps what is genuinely
 process-scoped — the handler to signal, the generation sequence, and a RETAINED
 reference to whoever faulted last so the process-scoped read still answers.
 
-### Step 7 — a fault names the thread by capability  ← BLOCKED, and on what
+### Step 7 — a fault names the thread by capability  ✅ DONE
 
-`SYS_EXCEPTION_RESUME` takes a task id.  Authority comes from the process
-capability and the id is checked against it, so the number confers nothing —
-but it SELECTS, which is the shape charter §3.4/§3.5 forbid, and it means a
-supervisor cannot hold, delegate or revoke "that thread" the way it holds
-everything else.  Closing it needs fault DELIVERY to hand a TCB capability
-over.
+`SYS_EXCEPTION_RESUME` took a task id.  Authority came from the process
+capability and the id was checked against it, so the number conferred nothing —
+but it SELECTED, which charter §3.4/§3.5 forbid, and a supervisor could not
+hold, delegate or revoke "that thread" the way it holds everything else.
 
-This was implemented and REVERTED, and what the attempt found is worth more
-than the code was.  The obvious destination for the delivered capability is the
-registrant's own CSpace — and that is wrong, because **the principal that
-REGISTERS a fault handler is not the principal that HANDLES the fault.**  The
-one real supervised-fault architecture in the tree proves it: `iris_test` calls
-`SYS_EXCEPTION_HANDLER` for each target and mints the target's process
-capability into the PAGER, which is what later calls `SYS_EXCEPTION_RESUME`.
-Delivering into the registrant's CSpace puts the capability where nobody uses
-it, and the pager keeps the id it was supposed to stop using.
+Closing it needed fault DELIVERY to hand a TCB capability over, and the first
+attempt at that was reverted because it delivered into the registrant's own
+CSpace.  **The principal that REGISTERS a fault handler is not the principal
+that HANDLES the fault**: `iris_test` arms each target's handler and mints the
+target's process capability into the PAGER, which is what answers.  Delivering
+into the registrant's CSpace puts the capability where nobody reads it.
 
-So the destination has to be a CNode NAMED by capability — a fault mailbox the
-supervisor retypes and shares with the handler — or the handler has to register
-for itself, holding the target capabilities to do so.  Both are process-server
-decisions about who supervises whom, which is the stage's deliverable and not
-something the delivery mechanism can settle on its own.  A kernel that picks
-one for them would be choosing the policy this stage exists to move out.
+So the registration NAMES the destination: `SYS_EXCEPTION_HANDLER` gained a
+`dest` in `cnode|slot<<32` form, whose CNode half is resolved in the
+registrant's CSpace.  A supervisor delivers into a mailbox CNode it shares with
+the handler; a handler arming its own faults names its own root.  The kernel
+picks neither — which is the point, because which arrangement is right is
+supervision policy and is what this stage exists to move out.
+
+Three properties fell out of building it, each of which the tests now pin:
+
+- **The mailbox delegates nothing.**  A delivered capability carries
+  `RIGHT_READ | RIGHT_WRITE` and no `DUPLICATE` or `TRANSFER`: it is the
+  authority to answer the fault, not to pass the thread on.  T144 asserts the
+  capability cannot be minted.
+- **Delivery precedes the signal.**  A handler woken by the notification finds
+  the mailbox already filled; the other order is a race a handler could only
+  paper over by retrying.
+- **Re-aiming carries the outstanding fault.**  Re-registering with the same
+  notification moves the destination and re-publishes the fault currently in
+  flight.  Without it a supervisor taking over from a DEAD handler is told a
+  fault is pending and holds nothing to resolve it with — a deadlock dressed as
+  a working restart, which is exactly what the pager-restart tests
+  (T204/T209/T210) reproduced.
+
+`kprocess_fault_clear` takes the thread its caller already resolved rather than
+comparing ids, and `task_find_by_id` has no caller left on this path.
 
 ### What Stage 7 still needs, and why it is not an increment
 
@@ -1060,9 +1074,10 @@ watches, the IPC identity a badge names, the VMO owner/payer relation, and the
 replaces the policy it carries — a user-space process server — which is the
 stage's actual deliverable rather than a step toward it.
 
-Steps 4-6 took the two capabilities a thread is CONFIGURED with, plus its
-fault record, off KProcess and onto the thread — so what a thread resolves in,
-runs in, and faults with is now the thread's own.  What is left on KProcess is
+Steps 4-7 took the two capabilities a thread is CONFIGURED with, plus its fault
+record and the way a fault is answered, off KProcess and onto the thread — so
+what a thread resolves in, runs in, faults with, and is resumed by is now the
+thread's own.  What is left on KProcess is
 exactly the SUPERVISION policy: who is told when it faults, who is told when it
 dies, its exit code, its thread count, the budget its kernel-side objects come
 from, and the `SYS_PROCESS_*` surface that reads and writes all of it.  That is
@@ -1071,11 +1086,10 @@ server and not another field move.
 
 Two smaller items remain:
 
-- **A global identifier still SELECTS a thread** — Step 7 above, blocked on who
-  the handler is rather than on the mechanism.
 - **The VMO-count quota** retires with the `KVMO` object (memory server), per
-  the ledger.
-- **`KPROCESS_MAX_LIVE`** retired in Step 3 above.
+  the ledger — not Stage 7 work.
+- **`KPROCESS_MAX_LIVE`** retired in Step 3, **the global thread identifier** in
+  Step 7.
 
 ## Stage 8 — Full MCS scheduling
 

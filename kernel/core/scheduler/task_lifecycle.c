@@ -343,15 +343,16 @@ static void idle_task(void) {
     }
 }
 
-struct task *task_find_by_id(uint32_t id) {
-    for (int i = 0; i < TASK_MAX; i++) {
-        if (!ktcb_registry[i].occupied) continue;
-        struct task *t = ktcb_registry[i].tcb;
-        if (t->state != TASK_DEAD && t->id == id)
-            return t;
-    }
-    return 0;
-}
+/*
+ * task_find_by_id — REMOVED (Stage 7 Step 7).
+ *
+ * It scanned the registry for a thread with a given id, and its last caller
+ * was SYS_EXCEPTION_RESUME: the one place a global identifier still SELECTED
+ * a kernel object.  A fault now hands the handler the faulting thread as a
+ * CAPABILITY, so there is nothing left to look up — and nothing left that can
+ * turn a number into a thread, which is the property charter §3.4/§3.5 ask for
+ * rather than the absence of one particular caller.
+ */
 
 void task_init_fpu_state(struct task *t) {
     uint8_t *dst       = t->fpu_state;

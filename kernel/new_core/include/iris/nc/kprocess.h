@@ -134,6 +134,33 @@ struct KProcess {
      * last — a retained reference rather than an id, so the record it points
      * at cannot be freed while this points at it. */
     struct task *fault_last;
+    /*
+     * Stage 7 Step 7 — where the faulting thread's CAPABILITY is delivered.
+     *
+     * A handler used to be told a fault happened and then had to name the
+     * faulting thread by its global id to answer.  Charter §3.4/§3.5 forbid
+     * exactly that: an integer that SELECTS a kernel object.  The id was
+     * checked against the process capability so nothing was conferred by the
+     * number — but a supervisor still could not hold, delegate or revoke "that
+     * thread" the way it holds everything else it deals with.
+     *
+     * The destination is a CNode the REGISTRANT NAMED, not its root by
+     * assumption, because the principal that registers a fault handler is not
+     * necessarily the one that handles the fault: the pager supervises targets
+     * whose handlers a different process armed.  Naming the CNode lets the
+     * supervisor deliver into a mailbox it shares with the handler, and lets a
+     * handler that arms its own faults use its own root — without the kernel
+     * choosing which of those arrangements is right, which is policy and
+     * belongs outside it.
+     *
+     * Resolved and retained at registration, so a bad destination fails when
+     * it is declared rather than when something faults.  Each delivery
+     * overwrites the slot: the handler is expected to have answered the
+     * previous fault, and RESUME's generation check is what makes answering
+     * with a stale capability refuse rather than misfire.
+     */
+    struct KCNode *fault_cspace;
+    uint32_t       fault_slot;
     /* Stage 6 Step 2: the creation reference — the one that lets a running
      * process outlive the last capability to it — is dropped exactly once.
      * Before this flag, a process created and never STARTED could not be
@@ -237,8 +264,10 @@ void             kprocess_quota_stat_rollback(void);
 iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KNotification *notif,
                                      uint64_t signal_bits);
 iris_error_t     kprocess_set_exception_handler(struct KProcess *p,
-                                                 struct KNotification *notif,
-                                                 uint64_t signal_bits);
+                                                struct KNotification *notif,
+                                                uint64_t signal_bits,
+                                                struct KCNode *dest_cnode,
+                                                uint32_t dest_slot);
 int              kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
 /* Phase 20: fault-model instrumentation + resume-time pending-fault clear. */

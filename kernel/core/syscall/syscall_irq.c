@@ -199,9 +199,22 @@ uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /* ── B5: exception handler registration ───────────────────────────── */
 
-uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+/*
+ * SYS_EXCEPTION_HANDLER(proc_cptr, notif_cptr, signal_bits, dest)
+ *
+ * Stage 7 Step 7: `dest` says where each fault delivers the faulting thread's
+ * TCB capability, in the cnode|slot<<32 packing every publishing syscall uses.
+ * The CNode half is resolved in the REGISTRANT's CSpace — 0 meaning its own
+ * root — so a supervisor arming faults on somebody else's behalf can deliver
+ * into a mailbox CNode it shares with the actual handler, and a handler arming
+ * its own can use its root.  Which of those is right is a supervision policy
+ * and is the caller's to state, not the kernel's to assume.
+ */
+uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                              uint64_t arg3) {
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (arg3 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KProcess *target_proc;
     struct KObject  *proc_obj = 0;
@@ -244,8 +257,29 @@ uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
+    /* The destination CNode, named by the registrant.  Resolved here so a bad
+     * mailbox fails at registration rather than at the first fault, when there
+     * would be nowhere to report it. */
+    struct KCNode *dest_cn = 0;
+    uint64_t dest_cptr = arg3 & 0xFFFFFFFFu;
+    uint32_t dest_slot = (uint32_t)(arg3 >> 32);
+    if (dest_cptr == 0u) {
+        r = cspace_own_root(t->cspace_root, &dest_cn);
+    } else {
+        r = cspace_resolve_cnode_for_publish(t->cspace_root,
+                                             (iris_cptr_t)dest_cptr, &dest_cn);
+    }
+    if (r != IRIS_OK) {
+        kobject_release(&target_proc->base);
+        kobject_release(notif_obj);
+        return syscall_err(r == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : r);
+    }
+
     r = kprocess_set_exception_handler(target_proc,
-                                       (struct KNotification *)notif_obj, arg2);
+                                       (struct KNotification *)notif_obj, arg2,
+                                       dest_cn, dest_slot);
+    kobject_active_release(&dest_cn->base);
+    kobject_release(&dest_cn->base);
     kobject_release(&target_proc->base);
     kobject_release(notif_obj);
     return syscall_err(r);
@@ -254,48 +288,55 @@ uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /* ── B6: exception resume ──────────────────────────────────────────── */
 
+/*
+ * SYS_EXCEPTION_RESUME(tcb_cptr, action) — answer a fault.
+ *
+ * Stage 7 Step 7: the faulting thread is named by CAPABILITY.  It used to be
+ * (process capability, task id, action): authority came from the process cap
+ * and the id was checked against it, so the number conferred nothing — but it
+ * SELECTED, which charter §3.4/§3.5 forbid, and a supervisor could not hold,
+ * delegate or revoke "that thread".  The capability arrives in the mailbox the
+ * handler was registered with, so answering a fault now uses only things the
+ * handler was handed.
+ */
 uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
+    (void)arg2;
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    uint32_t target_id = (uint32_t)arg1;
-    uint32_t action    = (uint32_t)arg2;
+    uint32_t action = (uint32_t)arg1;
     /* Phase 25: actions 2 (resume) / 3 (kill) are the seq-checked variants —
      * bits [63:32] of arg2 carry the fault generation the caller observed via
      * SYS_PROCESS_FAULT_INFO.  Actions 0/1 keep the exact Phase 20 semantics
      * (any value > 1 was INVALID_ARG before, so this is additive surface). */
     if (action > 3) return syscall_err(IRIS_ERR_INVALID_ARG);
     int      seq_checked  = (action >= 2);
-    uint32_t expected_seq = (uint32_t)(arg2 >> 32);
+    uint32_t expected_seq = (uint32_t)(arg1 >> 32);
     action &= 1u;
     if (seq_checked && expected_seq == 0)
         return syscall_err(IRIS_ERR_INVALID_ARG);   /* 0 is never a valid generation */
 
-    struct KProcess *target_proc;
-    struct KObject  *proc_obj = 0;
-
-    if ((handle_id_t)arg0 == HANDLE_INVALID) {
-        target_proc = t->process;
-        kobject_retain(&target_proc->base);
-    } else {
-        iris_rights_t proc_rights;
-        /* A1 Increment 2a: dual resolver on the non-self process.  The self
-         * path above owns arg0 == 0 (HANDLE_INVALID == CPTR_NULL). */
-        iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                     RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
-        if (r != IRIS_OK) return syscall_err(r);
-        if (!rights_check(proc_rights, RIGHT_MANAGE)) {
-            kobject_release(proc_obj);
-            return syscall_err(IRIS_ERR_ACCESS_DENIED);
-        }
-        target_proc = (struct KProcess *)proc_obj;
+    /* The TCB capability IS the authority: RIGHT_WRITE on a thread is what lets
+     * you decide whether it runs again.  The process capability and its rights
+     * check went with the id they qualified. */
+    struct KObject *tcb_obj; iris_rights_t tcb_rights;
+    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
+                                             RIGHT_NONE, KOBJ_TCB,
+                                             &tcb_obj, &tcb_rights);
+    if (r != IRIS_OK)
+        return syscall_err(r == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : r);
+    if (!rights_check(tcb_rights, RIGHT_WRITE)) {
+        kobject_release(tcb_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    struct task *ft = task_find_by_id(target_id);
-    if (!ft || ft->process != target_proc || ft->state != TASK_BLOCKED_FAULT) {
-        kobject_release(&target_proc->base);
+    struct task     *ft          = (struct task *)tcb_obj;
+    struct KProcess *target_proc = ft->process;
+    if (!target_proc || ft->state != TASK_BLOCKED_FAULT) {
+        kobject_release(tcb_obj);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
+    kobject_retain(&target_proc->base);
 
     /* Phase 25 (P13): a seq-checked resolution must name the exact fault the
      * caller observed.  If the task refaulted since (a NEW generation), or the
@@ -304,6 +345,7 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * mismatch, with no side effect on the pending fault. */
     if (seq_checked && ft->fault_seq != expected_seq) {
         kobject_release(&target_proc->base);
+        kobject_release(tcb_obj);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
 
@@ -319,5 +361,6 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     kprocess_fault_clear(target_proc, ft, action == 1);
 
     kobject_release(&target_proc->base);
+    kobject_release(tcb_obj);
     return syscall_ok_u64(0);
 }

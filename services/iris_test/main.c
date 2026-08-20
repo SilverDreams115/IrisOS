@@ -137,6 +137,50 @@ static uint32_t g_total = 0;
 #define IT_OBJ_CNODE_SLOT   80u
 #define IT_OBJ_SLOT_SPAN   200u
 #define IT_OBJ_CPTR(leaf)  ((uint32_t)(((leaf) << 8) | IT_OBJ_CNODE_SLOT))
+/*
+ * Stage 7 Step 7 — the fault mailbox.
+ *
+ * SYS_EXCEPTION_HANDLER takes a destination and each fault publishes the
+ * faulting TCB there; SYS_EXCEPTION_RESUME then names that capability instead
+ * of a task id.  The suite arms faults for targets it supervises itself, so
+ * the mailbox is its own second-level object CNode — leaves ABOVE the rotating
+ * pool (1..IT_OBJ_SLOT_SPAN), so a fault capability is never recycled out from
+ * under a handler mid-test, and indexed so concurrent targets each get one.
+ */
+#define IT_FAULT_LEAF(i)   (IT_OBJ_SLOT_SPAN + 1u + (uint32_t)(i))
+#define IT_FAULT_DEST(i)   ((long)((uint64_t)IT_OBJ_CNODE_SLOT | \
+                                   ((uint64_t)IT_FAULT_LEAF(i) << 32)))
+#define IT_FAULT_CPTR(i)   ((long)IT_OBJ_CPTR(IT_FAULT_LEAF(i)))
+/*
+ * ...and the mailbox for faults somebody ELSE handles.
+ *
+ * A pager supervises targets whose exception handlers this suite armed, so the
+ * capability a fault delivers has to land somewhere the PAGER can reach.  A
+ * CNode retyped here and minted into the pager is that place: the suite names
+ * it as the destination, the pager reads its leaves.
+ *
+ * A FRESH CNode PER PAGER, retyped through one slot rather than parked in
+ * several.  Two pagers must not share a mailbox — T183 and T190 run two at
+ * once, and one target's fault would overwrite the other's capability, so each
+ * pager would answer for the other's thread — but the root CNode has almost no
+ * unassigned slots left, and a mint source must be a root CPtr (< 1024).
+ * Retyping a new one through the same slot gives each pager a distinct OBJECT:
+ * the mint the previous pager holds keeps its CNode alive after the slot has
+ * moved on, so leaf 1 means a different slot for each of them.
+ */
+#define IT_PGR_MBOX_SLOT   83u
+#define IT_PGR_MBOX_SLOTS  32u
+#define IT_PGR_MBOX_DEST(leaf) \
+    ((long)((uint64_t)IT_PGR_MBOX_SLOT | ((uint64_t)(leaf) << 32)))
+
+/* Retype a fresh mailbox for a pager about to be spawned.  1 on success. */
+static int it_pgr_mbox_fresh(void) {
+    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)IT_PGR_MBOX_SLOT);
+    return it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
+                   (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
+                   (long)((uint64_t)IT_PGR_MBOX_SLOT << 32),
+                   (long)IT_PGR_MBOX_SLOTS) == 0;
+}
 /* Fixed slots for capabilities that outlive a test (fuzz worker control). */
 #define IT_FZ_CTL_SLOT      81u
 /* Stage 4: the loader's workspace CNode.  svc_load_minted_ws publishes the
@@ -9271,7 +9315,13 @@ static long it_lp_cmd_va(handle_id_t ep_h, uint32_t label, uint64_t va) {
  * fault-handler notification (signal bit 0) registered via proc cap, and an
  * exit watch (bit 0 of w_h).  All-or-nothing; on failure everything is closed
  * and *why is set.  Returns 1 on success. */
-static int it_fault_spawn(handle_id_t *ep_h, handle_id_t *proc_h,
+/* `mbox` is the fault-mailbox leaf this child's faults deliver into.  Two
+ * children blocked in a fault at once is a case T147 deliberately produces, so
+ * each needs its own — one slot shared between them would leave the second
+ * fault's capability where the first one's was, and "resume the primary" would
+ * silently resume the other. */
+static int it_fault_spawn_mbox(uint32_t mbox,
+                          handle_id_t *ep_h, handle_id_t *proc_h,
                           handle_id_t *n_h, handle_id_t *w_h, const char **why) {
     *ep_h = *proc_h = *n_h = *w_h = HANDLE_INVALID;
     long ep = it_ep_create();
@@ -9285,13 +9335,19 @@ static int it_fault_spawn(handle_id_t *ep_h, handle_id_t *proc_h,
     *n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
     *w_h = (w >= 0) ? (handle_id_t)w : HANDLE_INVALID;
     if (n < 0 || w < 0 ||
-        it_sys3(SYS_EXCEPTION_HANDLER, (long)*proc_h, n, 1) != 0 ||
+        it_sys4(SYS_EXCEPTION_HANDLER, (long)*proc_h, n, 1,
+                IT_FAULT_DEST(mbox)) != 0 ||
         it_sys3(SYS_PROCESS_WATCH, (long)*proc_h, w, 1) != 0) {
         (void)it_sys1(SYS_PROCESS_KILL, (long)*proc_h);
         it_close(n_h); it_close(w_h); it_close(proc_h); it_close(ep_h);
         *why = "wire handler/watch"; return 0;
     }
     return 1;
+}
+
+static int it_fault_spawn(handle_id_t *ep_h, handle_id_t *proc_h,
+                          handle_id_t *n_h, handle_id_t *w_h, const char **why) {
+    return it_fault_spawn_mbox(0u, ep_h, proc_h, n_h, w_h, why);
 }
 
 /* Bounded wait (≤2s) for signal bit 0 on a notification; 1 on success. */
@@ -9346,9 +9402,9 @@ static void test_t140(void) {
     if (ok && it_sys3(SYS_PROCESS_WATCH, (long)proc_h, w, 1) != 0) { ok = 0; why = "watch"; }
 
     /* Wrong types, both slots. */
-    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, (long)ep_h, 1)
+    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, (long)ep_h, 1, IT_FAULT_DEST(0))
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "notif wrong-type"; }
-    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)n1_h, n1, 1)
+    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)n1_h, n1, 1, IT_FAULT_DEST(0))
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "proc wrong-type"; }
     /* Reduced rights, both slots — ACCESS_DENIED, no fallback. */
     long pr_ro = it_cs_reduce((long)proc_h, RIGHT_READ);
@@ -9356,14 +9412,14 @@ static void test_t140(void) {
     handle_id_t pr_ro_h = (pr_ro >= 0) ? (handle_id_t)pr_ro : HANDLE_INVALID;
     handle_id_t n_ro_h  = (n_ro  >= 0) ? (handle_id_t)n_ro  : HANDLE_INVALID;
     if (ok && (pr_ro < 0 || n_ro < 0)) { ok = 0; why = "ro dups"; }
-    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, pr_ro, n1, 1)
+    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, pr_ro, n1, 1, IT_FAULT_DEST(0))
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "proc no-manage not denied"; }
-    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n_ro, 1)
+    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, n_ro, 1, IT_FAULT_DEST(0))
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "notif no-write not denied"; }
     /* Zero signal bits / empty slot. */
-    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n1, 0)
+    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, n1, 0, IT_FAULT_DEST(0))
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bits==0 not rejected"; }
-    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, 9999L, 1) >= 0) {
+    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, 9999L, 1, IT_FAULT_DEST(0)) >= 0) {
         ok = 0; why = "empty slot accepted";
     }
 
@@ -9380,7 +9436,7 @@ static void test_t140(void) {
         ok = 0; why = "dead proc fault info";
     }
     /* Dead process: registration must fail NOT_FOUND, not silently pin. */
-    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n1, 1)
+    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, n1, 1, IT_FAULT_DEST(0))
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "dead reg not NOT_FOUND"; }
 
     it_close(&pr_ro_h); it_close(&n_ro_h);
@@ -9388,13 +9444,13 @@ static void test_t140(void) {
 
     /* Child 2: valid registration, replacement contract, spoof check. */
     handle_id_t ep2, pr2, na, wb;
-    if (ok && !it_fault_spawn(&ep2, &pr2, &na, &wb, &why)) { ok = 0; }
+    if (ok && !it_fault_spawn_mbox(1u, &ep2, &pr2, &na, &wb, &why)) { ok = 0; }
     if (ok) {
         long n2 = it_notify_create_slot();
         handle_id_t n2_h = (n2 >= 0) ? (handle_id_t)n2 : HANDLE_INVALID;
         if (n2 < 0) { ok = 0; why = "n2 create"; }
         /* Replace na with n2 — last registration wins. */
-        if (ok && it_sys3(SYS_EXCEPTION_HANDLER, (long)pr2, n2, 1) != 0) {
+        if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)pr2, n2, 1, IT_FAULT_DEST(1)) != 0) {
             ok = 0; why = "re-register";
         }
         /* Spoof: hand-signal n2 — no fault state may appear (F9). */
@@ -9415,7 +9471,7 @@ static void test_t140(void) {
         }
         struct it_fault f;
         if (ok && it_fault_info(pr2, &f) != 0) { ok = 0; why = "fault info 2"; }
-        if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)pr2, (long)f.task_id, 1) != 0) {
+        if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(1), 1) != 0) {
             ok = 0; why = "resume kill";
         }
         if (ok && it_lp_wait_exit(pr2) != 0) { ok = 0; why = "child2 exit"; }
@@ -9479,7 +9535,7 @@ static void test_t141(void) {
                f2.cr2 != f.cr2 || f2.rip != f.rip)) { ok = 0; why = "record unstable"; }
 
     /* Kill-resolution: reaps the child, clears the record. */
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
         ok = 0; why = "resume kill";
     }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit code"; }
@@ -9524,7 +9580,7 @@ static void test_t142(void) {
 
     /* Child A: reading own text is allowed — exits, no fault delivered. */
     handle_id_t ep_a, pr_a, n_a, w_a;
-    if (!it_fault_spawn(&ep_a, &pr_a, &n_a, &w_a, &why)) { it_fail("T142", why); return; }
+    if (!it_fault_spawn_mbox(1u, &ep_a, &pr_a, &n_a, &w_a, &why)) { it_fail("T142", why); return; }
     if (it_lp_cmd_va(ep_a, LP_CMD_FAULT_READ, 0) != 0) { ok = 0; why = "cmd read"; }
     if (ok) {
         long ec = it_lp_wait_exit(pr_a);
@@ -9545,7 +9601,7 @@ static void test_t142(void) {
     if (ok && (f.cr2 == 0 || f.cr2 >= 0x0000800000000000ULL)) { ok = 0; why = "cr2 range"; }
 
     /* Resume without fixing: the same store re-faults (no silent write). */
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 0) != 0) {
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 0) != 0) {
         ok = 0; why = "resume";
     }
     if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no refault"; }
@@ -9557,7 +9613,7 @@ static void test_t142(void) {
     if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h)
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "write retired"; }
 
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)g.task_id, 1) != 0) {
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
         ok = 0; why = "resume kill";
     }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
@@ -9604,7 +9660,7 @@ static void test_t143(void) {
     if (ok && f.cr2 != f.rip) { ok = 0; why = "cr2 != rip"; }
     if (ok && (f.cr2 == 0 || f.cr2 >= 0x0000800000000000ULL)) { ok = 0; why = "cr2 range"; }
 
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
         ok = 0; why = "resume kill";
     }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
@@ -9646,16 +9702,39 @@ static void test_t144(void) {
     long pr_ro = it_cs_reduce((long)proc_h, RIGHT_READ);
     handle_id_t pr_ro_h = (pr_ro >= 0) ? (handle_id_t)pr_ro : HANDLE_INVALID;
     if (ok && pr_ro < 0) { ok = 0; why = "ro dup"; }
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, pr_ro, (long)f.task_id, 0)
-              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-manage not denied"; }
-    /* Exactness: wrong task id / bad action. */
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)(f.task_id + 4096u), 0)
-              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "bogus id not NOT_FOUND"; }
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 2)
+    /* Stage 7 Step 7: the authority is the TCB capability, so the denial test
+     * is a rights-reduced TCB rather than a rights-reduced process cap —
+     * RIGHT_WRITE on a thread is what decides whether it runs again. */
+    {
+        /* The delivered capability carries READ|WRITE and nothing else: a fault
+         * mailbox hands you the authority to answer, not the authority to pass
+         * the thread on.  Without DUPLICATE it cannot be minted, which is also
+         * why the denial below is tested with a TCB the suite retyped itself
+         * rather than with a reduced copy of this one. */
+        if (ok && it_cs_reduce(IT_FAULT_CPTR(0), RIGHT_READ) >= 0) {
+            ok = 0; why = "fault cap is duplicable";
+        }
+        long own = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                        IRIS_KOBJ_TCB, 0);
+        long own_ro = (own >= 0) ? it_cs_reduce(own, RIGHT_READ) : -1;
+        if (ok && own_ro < 0) { ok = 0; why = "ro tcb dup"; }
+        /* RIGHT_WRITE on the thread is what decides whether it runs again. */
+        if (ok && it_sys2(SYS_EXCEPTION_RESUME, own_ro, 0)
+                  != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-write not denied"; }
+        if (own_ro >= 0) { handle_id_t h = (handle_id_t)own_ro; it_close(&h); }
+        if (own >= 0)    { handle_id_t h = (handle_id_t)own;    it_close(&h); }
+    }
+    /* Exactness: a capability to something that is not a faulted thread, and a
+     * bad action.  "Wrong task id" has no analogue any more — that is the
+     * point of the step: there is no number to get wrong, only a capability
+     * you either hold or do not. */
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)proc_h, 0)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "non-TCB not rejected"; }
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 2)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "action 2 not rejected"; }
 
     /* Valid resume: the load re-executes and faults again — a NEW fault. */
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 0) != 0) {
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 0) != 0) {
         ok = 0; why = "resume";
     }
     if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no refault"; }
@@ -9664,11 +9743,11 @@ static void test_t144(void) {
     if (ok && (g.cr2 != f.cr2 || g.task_id != f.task_id)) { ok = 0; why = "refault mismatch"; }
 
     /* Kill-resolution, then verify nothing stale remains. */
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)g.task_id, 1) != 0) {
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
         ok = 0; why = "resume kill";
     }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)g.task_id, 0)
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume not NOT_FOUND"; }
     if (ok && it_fault_info(proc_h, &g) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "stale record";
@@ -9718,7 +9797,7 @@ static void test_t145(void) {
     it_close(&n_h);                       /* handler endpoint gone */
     if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h)
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "child died on handler close"; }
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
         ok = 0; why = "post-close resume kill";
     }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit a"; }
@@ -9780,9 +9859,9 @@ static void test_t146(void) {
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
 
     /* Late handler response: clean failures, no stale record. */
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 0)
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume not NOT_FOUND"; }
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1)
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late kill not NOT_FOUND"; }
     if (ok && it_fault_info(proc_h, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "record survived kill";
@@ -9850,7 +9929,7 @@ static void test_t147(void) {
         handle_id_t ep2, pr2, n2, w2;
         int have2 = 0;
         if (ok && (fz_rand() & 1u)) {
-            if (!it_fault_spawn(&ep2, &pr2, &n2, &w2, &why)) { ok = 0; break; }
+            if (!it_fault_spawn_mbox(1u, &ep2, &pr2, &n2, &w2, &why)) { ok = 0; break; }
             have2 = 1;
             if (it_lp_cmd_va(ep2, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd2"; }
             if (ok && !it_fault_wait(n2)) { ok = 0; why = "no delivery 2"; }
@@ -9860,22 +9939,22 @@ static void test_t147(void) {
         uint32_t res = fz_rand() % 4u;
         if (ok && res == 0u) {
             /* resume → refault → kill (also re-proves F16 under churn). */
-            if (it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 0) != 0) {
+            if (it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 0) != 0) {
                 ok = 0; why = "resume";
             }
             if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no refault"; }
-            if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+            if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
                 ok = 0; why = "refault kill";
             }
         } else if (ok && res == 1u) {
-            if (it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+            if (it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
                 ok = 0; why = "resume kill";
             }
         } else if (ok && res == 2u) {
             if (it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "proc kill"; }
         } else if (ok) {
             it_close(&n_h);   /* handler drop first, then resolve via proc cap */
-            if (it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) {
+            if (it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
                 ok = 0; why = "post-close kill";
             }
         }
@@ -9890,7 +9969,7 @@ static void test_t147(void) {
             struct it_fault f2;
             if (ok && it_fault_info(pr2, &f2) != 0) { ok = 0; why = "fault info 2"; }
             if (ok && ((fz_rand() & 1u)
-                       ? it_sys3(SYS_EXCEPTION_RESUME, (long)pr2, (long)f2.task_id, 1)
+                       ? it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(1), 1)
                        : it_sys1(SYS_PROCESS_KILL, (long)pr2)) != 0) {
                 ok = 0; why = "resolve 2";
             }
@@ -9901,7 +9980,7 @@ static void test_t147(void) {
         /* Occasionally interleave a non-faulting child (own-text read). */
         if (ok && (fz_rand() & 1u)) {
             handle_id_t ep3, pr3, n3, w3;
-            if (!it_fault_spawn(&ep3, &pr3, &n3, &w3, &why)) { ok = 0; break; }
+            if (!it_fault_spawn_mbox(2u, &ep3, &pr3, &n3, &w3, &why)) { ok = 0; break; }
             if (it_lp_cmd_va(ep3, LP_CMD_FAULT_READ, 0) != 0) { ok = 0; why = "cmd3"; }
             if (ok) {
                 long ec = it_lp_wait_exit(pr3);
@@ -10343,8 +10422,13 @@ static void test_t151(void) {
          * a bare large integer, which is a legitimate CPtr now. */
         if (it_sys1(SYS_CSPACE_REVOKE, (long)handle_id_make(8u, 1u)) >= 0) { ok = 0; why = "revoke by handle ok"; break; }
         op = 5;
-        if (it_sys3(SYS_EXCEPTION_RESUME, (long)HANDLE_INVALID, (long)(fz_rand() | 0x40000000u), 1)
-            != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume no-fault not NOT_FOUND"; break; }
+        /* Stage 7 Step 7: a random CPTR, not a random id.  An unoccupied slot
+         * resolves to NOT_FOUND and an occupied one to the wrong type, and
+         * neither may resume anything. */
+        {
+            long rr = it_sys2(SYS_EXCEPTION_RESUME, (long)(fz_rand() & 0x3FFu), 1);
+            if (rr >= 0) { ok = 0; why = "random cptr resumed something"; break; }
+        }
         op = 6;
         if (it_sys2(SYS_PROCESS_FAULT_INFO, (long)HANDLE_INVALID, 0L)
             != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info null ok"; break; }
@@ -10436,7 +10520,8 @@ static void test_t152(void) {
     /* Non-null hostile out pointer (kernel half) → INVALID_ARG, nothing written. */
     if (ok && it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, 0xFFFF800000001000L) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel out ptr"; }
     /* Resume mismatch — NOT_FOUND, no state touched. */
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)HANDLE_INVALID, 0x33221100L, 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume mismatch"; }
+    /* An empty slot names no thread: NOT_FOUND, not a resume. */
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)IT_FAULT_CPTR(31), 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume mismatch"; }
 
     it_close(&fr);
     it_quiesce_reaper();
@@ -10477,7 +10562,7 @@ static void test_t153(void) {
             /* Fault-pending waiter: register a handler, drive an invalid-VA fault. */
             long n = it_notify_create();
             n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
-            if (n < 0 || it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n, 1) != 0) { ok = 0; why = "reg handler"; }
+            if (n < 0 || it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, n, 1, IT_FAULT_DEST(0)) != 0) { ok = 0; why = "reg handler"; }
             if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
             if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no fault"; }
         } else {
@@ -10652,12 +10737,12 @@ static void test_t155(void) {
             } else {                             /* controlled fault → kill */
                 long n = it_notify_create();
                 handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
-                if (n < 0 || it_sys3(SYS_EXCEPTION_HANDLER, (long)proc_h, n, 1) != 0) { ok = 0; why = "reg handler"; }
+                if (n < 0 || it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, n, 1, IT_FAULT_DEST(0)) != 0) { ok = 0; why = "reg handler"; }
                 if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
                 if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no fault"; }
                 struct it_fault f;
                 if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
-                if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)f.task_id, 1) != 0) { ok = 0; why = "resume kill"; }
+                if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) { ok = 0; why = "resume kill"; }
                 if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "fault exit"; }
                 it_close(&n_h);
             }
@@ -12168,6 +12253,8 @@ static void test_t180(void) {
 #define LP_PGR_SLOT_TVS     13u
 #define LP_PGR_SLOT_FRAME   14u
 #define LP_PGR_SLOT_NOTIF   15u
+/* Stage 7 Step 7: the fault mailbox CNode (see lifecycle_probe/main.c). */
+#define LP_PGR_SLOT_FAULTCN 17u
 #define LP_EXIT_PGR_OK      0x0D00L
 
 /* Fault VAs: canonical, page-aligned, inside the user-private window, clear
@@ -12199,6 +12286,12 @@ static void t25_reap(handle_id_t *proc_h) {
  * SYS_PROCESS_VSPACE), fault-handler notification, exit watch. */
 struct t25_tgt {
     handle_id_t cmd, proc, vs, notif, watch;
+    /* Stage 7 Step 7: the mailbox leaf this target's faults deliver into.
+     * Allocated per spawn out of the suite's own mailbox, so two targets
+     * blocked in a fault at once (T183, T184) never overwrite each other's
+     * capability — which is the whole reason a fault mailbox is per-target and
+     * not per-supervisor. */
+    uint32_t    fault_leaf;
 };
 
 static void t25_tgt_close(struct t25_tgt *g) {
@@ -12213,8 +12306,14 @@ static void t25_tgt_reap(struct t25_tgt *g) {
     t25_tgt_close(g);
 }
 
-static int t25_tgt_spawn(struct t25_tgt *g, const char **why) {
+/* `fault_dest` is where this target's faults deliver the faulting thread's
+ * capability (SYS_EXCEPTION_HANDLER's destination packing).  A target the
+ * SUITE resolves points at the suite's own mailbox; a target a PAGER resolves
+ * points at the CNode shared with that pager. */
+static int t25_tgt_spawn_dest(long fault_dest, struct t25_tgt *g,
+                              const char **why) {
     g->cmd = g->proc = g->vs = g->notif = g->watch = HANDLE_INVALID;
+    g->fault_leaf = 0u;
     long ep = it_ep_create();
     if (ep < 0) { *why = "ep create"; return 0; }
     g->cmd = (handle_id_t)ep;
@@ -12237,7 +12336,8 @@ static int t25_tgt_spawn(struct t25_tgt *g, const char **why) {
     g->watch = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
     long eh = 0, wt = 0;
     if (vs < 0 || n < 0 || w < 0 ||
-        (eh = it_sys3(SYS_EXCEPTION_HANDLER, (long)g->proc, n, 1)) != 0 ||
+        (eh = it_sys4(SYS_EXCEPTION_HANDLER, (long)g->proc, n, 1,
+                      fault_dest)) != 0 ||
         (wt = it_sys3(SYS_PROCESS_WATCH, (long)g->proc, w, 1)) != 0) {
         it_serial_write("[IRIS][TEST] t25 wire vs="); it_log_num((uint32_t)-vs);
         it_serial_write(" n="); it_log_num((uint32_t)-n);
@@ -12252,6 +12352,20 @@ static int t25_tgt_spawn(struct t25_tgt *g, const char **why) {
     return 1;
 }
 
+/* Rotating mailbox leaves for suite-resolved targets: enough that no two live
+ * at once collide, and reused rather than grown. */
+static uint32_t g_t25_fault_leaf;
+
+static int t25_tgt_spawn(struct t25_tgt *g, const char **why) {
+    uint32_t leaf = 4u + (__atomic_fetch_add(&g_t25_fault_leaf, 1u,
+                                             __ATOMIC_RELAXED) % 8u);
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
+                  (long)IT_FAULT_LEAF(leaf));
+    if (!t25_tgt_spawn_dest(IT_FAULT_DEST(leaf), g, why)) return 0;
+    g->fault_leaf = leaf;
+    return 1;
+}
+
 /* Spawn an external pager over `g` with the declared manifest (plus optional
  * extra mints, e.g. T184's under-privileged victim caps).  0 on success. */
 static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
@@ -12259,17 +12373,35 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
                             const struct svc_mint *extra, uint32_t nextra,
                             handle_id_t *out_cmd, handle_id_t *out_proc) {
     *out_cmd = *out_proc = HANDLE_INVALID;
+    /*
+     * Stage 7 Step 7: re-aim this target's faults at the mailbox the PAGER
+     * can reach, before the pager exists to receive one.
+     *
+     * Re-registering with the same notification keeps the arming and moves
+     * only the destination, which is why the kernel supports re-aiming at all.
+     * The target's own mailbox leaf stays where it was and simply stops being
+     * written — and every OTHER target keeps delivering into the suite's
+     * private mailbox, which is what makes T184's victim unresolvable BY THE
+     * PAGER rather than merely denied to it.
+     */
+    if (!it_pgr_mbox_fresh()) return -1;
+    if (it_sys4(SYS_EXCEPTION_HANDLER, (long)g->proc, (long)g->notif, 1,
+                IT_PGR_MBOX_DEST(1u)) != 0) return -1;
     long ep = it_ep_create();
     if (ep < 0) return -1;
     handle_id_t cmd = (handle_id_t)ep;
-    struct svc_mint m[8] = { 0 };
+    struct svc_mint m[10] = { 0 };
     m[0].slot = LP_CPTR_CMD_EP;    IT_MINT_SRC(m[0], cmd);      m[0].rights = RIGHT_READ | RIGHT_WRITE;  m[0].badge = 0;
     m[1].slot = LP_PGR_SLOT_TPROC; IT_MINT_SRC(m[1], g->proc);  m[1].rights = RIGHT_READ | RIGHT_MANAGE; m[1].badge = 0;
     m[2].slot = LP_PGR_SLOT_TVS;   IT_MINT_SRC(m[2], g->vs);    m[2].rights = RIGHT_WRITE;               m[2].badge = 0;
     m[3].slot = LP_PGR_SLOT_FRAME; IT_MINT_SRC(m[3], frame_h);  m[3].rights = frame_rights;              m[3].badge = 0;
     m[4].slot = LP_PGR_SLOT_NOTIF; IT_MINT_SRC(m[4], g->notif); m[4].rights = RIGHT_WAIT;                m[4].badge = 0;
-    uint32_t n = 5u;
-    for (uint32_t i = 0; i < nextra && n < 8u; i++) m[n++] = extra[i];
+    /* Stage 7 Step 7: the fault mailbox.  WRITE so the kernel's delivery can
+     * fill a leaf, READ so the pager can invoke what it finds there. */
+    m[5].slot = LP_PGR_SLOT_FAULTCN; IT_MINT_SRC(m[5], IT_PGR_MBOX_SLOT);
+    m[5].rights = RIGHT_READ | RIGHT_WRITE; m[5].badge = 0;
+    uint32_t n = 6u;
+    for (uint32_t i = 0; i < nextra && n < 10u; i++) m[n++] = extra[i];
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc, &boot, m, n,
@@ -12318,8 +12450,27 @@ static long t25_xprobe(handle_id_t pcmd, uint32_t vtid, uint64_t va, uint32_t vs
 
 /* Seq-checked resolution (EXCEPTION_RESUME action 2/3 with the generation in
  * bits [63:32]). */
-static long t25_resume_seq(handle_id_t proc_h, uint32_t tid, uint32_t seq, int kill) {
-    return it_sys3(SYS_EXCEPTION_RESUME, (long)proc_h, (long)tid,
+static long t25_resume_seq(const struct t25_tgt *g, uint32_t tid, uint32_t seq,
+                           int kill) {
+    /*
+     * Stage 7 Step 7: the thread is the capability its fault delivered.
+     *
+     * Take delivery back first.  A target the suite spawned may since have
+     * been handed to a PAGER (t25_pager_spawn re-aims it), and then the
+     * capability for the fault in flight is in that pager's mailbox, not
+     * here — so the suite re-aims it home before answering.  Re-arming with
+     * the same notification keeps the arming, moves only the destination, and
+     * carries the OUTSTANDING fault with it, which is exactly the case a
+     * supervisor taking over from a dead handler needs.
+     *
+     * `tid` stays in the signature because callers still READ the record
+     * through the process-scoped FAULT_INFO; what they no longer do is SELECT
+     * with it.
+     */
+    (void)tid;
+    (void)it_sys4(SYS_EXCEPTION_HANDLER, (long)g->proc, (long)g->notif, 1,
+                  IT_FAULT_DEST(g->fault_leaf));
+    return it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(g->fault_leaf),
                    (long)(((uint64_t)seq << 32) | (kill ? 3u : 2u)));
 }
 
@@ -12384,6 +12535,9 @@ static void test_t181(void) {
         long rep = it_lp_report_slots(x, 4u);
         uint32_t expect = (1u << LP_CPTR_CMD_EP)    | (1u << LP_PGR_SLOT_TPROC) |
                           (1u << LP_PGR_SLOT_TVS)   | (1u << LP_PGR_SLOT_FRAME) |
+                          /* No fault mailbox: this probe declares its own
+                           * four-capability manifest and resolves nothing, so
+                           * it is handed no mailbox to resolve WITH. */
                           (1u << LP_PGR_SLOT_NOTIF);
         if (rep < 0 || (uint32_t)rep != expect) { ok = 0; why = "manifest mismatch"; }
         /* Explicitly: no spawn(6), no device(10/11), no peers(1/2/4), no
@@ -12613,16 +12767,21 @@ static void test_t184(void) {
     if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)va.proc)
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "victim not suspended"; }
 
-    /* Parent-side rights split on the same reduced cap: READ gives info and
-     * ONLY info — resolution and registration stay MANAGE-gated. */
+    /* Parent-side rights split, re-derived for Stage 7 Step 7: the two halves
+     * are now two OBJECTS, not two rights on one.  READ on the PROCESS still
+     * gives the fault record and only that; resolving takes WRITE on the
+     * THREAD, and a process capability — reduced or full — is not a thread, so
+     * RESUME refuses it outright rather than on rights. */
     if (ok && it_fault_info(apro_h, &fa2) != 0) { ok = 0; why = "read cap info denied"; }
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, apro, (long)fa.task_id, 1)
-              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap resolved"; }
-    if (ok && it_sys3(SYS_EXCEPTION_HANDLER, apro, (long)va.notif, 1)
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)apro_h, 1)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "read cap resolved"; }
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)va.proc, 1)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "proc cap resolved"; }
+    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, apro, (long)va.notif, 1, IT_FAULT_DEST(1))
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap registered"; }
 
     /* Proper authority resolves. */
-    if (ok && t25_resume_seq(va.proc, fa.task_id, fa.seq, 1) != 0) { ok = 0; why = "proper resolve"; }
+    if (ok && t25_resume_seq(&va, fa.task_id, fa.seq, 1) != 0) { ok = 0; why = "proper resolve"; }
     if (ok && it_lp_wait_exit(va.proc) != 0) { ok = 0; why = "victim exit"; }
 
     if (it_sys1(SYS_PROCESS_KILL, (long)gb.proc) != 0 && ok) { ok = 0; why = "kill B"; }
@@ -12669,19 +12828,19 @@ static void test_t185(void) {
                fx1.error != (PF_ERR_W | PF_ERR_U))) { ok = 0; why = "F1 info"; }
 
     /* Clean refault: resume without resolving → generation 2, same site. */
-    if (ok && t25_resume_seq(g.proc, fx1.task_id, fx1.seq, 0) != 0) { ok = 0; why = "resume F1"; }
+    if (ok && t25_resume_seq(&g, fx1.task_id, fx1.seq, 0) != 0) { ok = 0; why = "resume F1"; }
     if (ok && !t25_wait_refault(g.proc, fx1.seq, &fx2)) { ok = 0; why = "no refault"; }
     if (ok && (fx2.seq != fx1.seq + 1u || fx2.rip != fx1.rip ||
                fx2.cr2 != fx1.cr2 || fx2.task_id != fx1.task_id)) { ok = 0; why = "F2 identity"; }
 
     /* Stale replays of F1 cannot touch F2; malformed generations rejected. */
-    if (ok && t25_resume_seq(g.proc, fx1.task_id, fx1.seq, 0)
+    if (ok && t25_resume_seq(&g, fx1.task_id, fx1.seq, 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale resume accepted"; }
-    if (ok && t25_resume_seq(g.proc, fx1.task_id, fx1.seq, 1)
+    if (ok && t25_resume_seq(&g, fx1.task_id, fx1.seq, 1)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale kill accepted"; }
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)g.proc, (long)fx1.task_id, 2L)
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 2L)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "gen 0 accepted"; }
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)g.proc, (long)fx1.task_id, 4L)
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 4L)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "action 4 accepted"; }
     struct it_fault fx3;
     if (ok && (it_fault_info(g.proc, &fx3) != 0 || fx3.seq != fx2.seq)) {
@@ -12692,11 +12851,11 @@ static void test_t185(void) {
     if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_D, 1) != 0) {
         ok = 0; why = "map at fault";
     }
-    if (ok && t25_resume_seq(g.proc, fx2.task_id, fx2.seq, 0) != 0) { ok = 0; why = "resume F2"; }
+    if (ok && t25_resume_seq(&g, fx2.task_id, fx2.seq, 0) != 0) { ok = 0; why = "resume F2"; }
     if (ok && it_lp_wait_exit(g.proc) != LP_EXIT_MARKER) { ok = 0; why = "target completion"; }
 
     /* Late-but-correct is still late: the record did not outlive resolution. */
-    if (ok && t25_resume_seq(g.proc, fx2.task_id, fx2.seq, 0)
+    if (ok && t25_resume_seq(&g, fx2.task_id, fx2.seq, 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume accepted"; }
     if (ok && it_fault_info(g.proc, &fx3) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "record survived";
@@ -12824,9 +12983,9 @@ static void test_t187(void) {
     /* Late completion fails clean at every step. */
     if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_A, 0)
               != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "late map not BAD_HANDLE"; }
-    if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0)
+    if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late seq-resume accepted"; }
-    if (ok && it_sys3(SYS_EXCEPTION_RESUME, (long)g.proc, (long)f.task_id, 0)
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(g.fault_leaf), 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume accepted"; }
     if (ok && it_fault_info(g.proc, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "record survived death";
@@ -12915,7 +13074,7 @@ static void test_t188(void) {
     if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "no wp fault"; }
     if (ok && (f.vector != 14u || f.cr2 != T25_VA_B ||
                f.error != (PF_ERR_P | PF_ERR_W | PF_ERR_U))) { ok = 0; why = "wp err bits"; }
-    if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 1) != 0) { ok = 0; why = "seq kill"; }
+    if (ok && t25_resume_seq(&g, f.task_id, f.seq, 1) != 0) { ok = 0; why = "seq kill"; }
     if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target exit"; }
     it_quiesce_reaper();
 
@@ -13005,6 +13164,9 @@ static void test_t189(void) {
         long rep = it_lp_report_slots(x, 4u);
         uint32_t expect = (1u << LP_CPTR_CMD_EP)    | (1u << LP_PGR_SLOT_TPROC) |
                           (1u << LP_PGR_SLOT_TVS)   | (1u << LP_PGR_SLOT_FRAME) |
+                          /* No fault mailbox: this probe declares its own
+                           * four-capability manifest and resolves nothing, so
+                           * it is handed no mailbox to resolve WITH. */
                           (1u << LP_PGR_SLOT_NOTIF);
         if (rep < 0 || (uint32_t)rep != expect) { ok = 0; why = "post-restart manifest"; }
     }
@@ -13093,7 +13255,7 @@ static void test_t190(void) {
             if (ok && it_lp_wait_exit(g1.proc) !=
                       (long)(LP_EXIT_MARKER ^ (T25_PATTERN & 0xFFu))) { ok = 0; why = "op0 g1"; }
             if (ok && it_lp_wait_exit(pp) != LP_EXIT_PGR_OK) { ok = 0; why = "op0 pager report"; }
-            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "op0 g2 kill"; }
+            if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "op0 g2 kill"; }
             if (ok && it_lp_wait_exit(g2.proc) != 0) { ok = 0; why = "op0 g2 exit"; }
             t25_reap(&pp); it_close(&pc);
             break;
@@ -13106,9 +13268,9 @@ static void test_t190(void) {
             if (t25_serve(pc, 3u, 1u, 0, 0, T25_VA_A) != 0) { ok = 0; why = "op1 serve"; }
             if (ok && it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op1 g1"; }
             if (ok && it_lp_wait_exit(pp) != LP_EXIT_PGR_OK) { ok = 0; why = "op1 pager report"; }
-            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq + 7u, 1)
+            if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq + 7u, 1)
                       != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op1 bogus gen"; }
-            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "op1 g2 kill"; }
+            if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "op1 g2 kill"; }
             if (ok && it_lp_wait_exit(g2.proc) != 0) { ok = 0; why = "op1 g2 exit"; }
             t25_reap(&pp); it_close(&pc);
             break;
@@ -13122,10 +13284,10 @@ static void test_t190(void) {
                 it_lp_wait_exit(pp) != 0) { ok = 0; why = "op2 pager death"; }
             t25_reap(&pp); it_close(&pc);
             long tvs_c = (long)g2.vs;
-            if (ok && t25_resume_seq(g1.proc, f1.task_id, f1.seq, 1) != 0) { ok = 0; why = "op2 g1 kill"; }
+            if (ok && t25_resume_seq(&g1, f1.task_id, f1.seq, 1) != 0) { ok = 0; why = "op2 g1 kill"; }
             if (ok && it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op2 g1 exit"; }
             if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_B, 1) != 0) { ok = 0; why = "op2 map"; }
-            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op2 resume"; }
+            if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op2 resume"; }
             if (ok && it_lp_wait_exit(g2.proc) != LP_EXIT_MARKER) { ok = 0; why = "op2 g2 exit"; }
             break;
         }
@@ -13135,15 +13297,15 @@ static void test_t190(void) {
              * generation refused → proper seq-kill of the NEW generation. */
             if (it_sys1(SYS_PROCESS_KILL, (long)g1.proc) != 0 ||
                 it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op3 g1 death"; break; }
-            if (t25_resume_seq(g1.proc, f1.task_id, f1.seq, 0)
+            if (t25_resume_seq(&g1, f1.task_id, f1.seq, 0)
                 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op3 late resume"; }
             struct it_fault f2b;
-            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op3 refault resume"; }
+            if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op3 refault resume"; }
             if (ok && !t25_wait_refault(g2.proc, f2.seq, &f2b)) { ok = 0; why = "op3 no refault"; }
             if (ok && f2b.seq != f2.seq + 1u) { ok = 0; why = "op3 gen"; }
-            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 1)
+            if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 1)
                       != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op3 stale kill"; }
-            if (ok && t25_resume_seq(g2.proc, f2b.task_id, f2b.seq, 1) != 0) { ok = 0; why = "op3 kill"; }
+            if (ok && t25_resume_seq(&g2, f2b.task_id, f2b.seq, 1) != 0) { ok = 0; why = "op3 kill"; }
             if (ok && it_lp_wait_exit(g2.proc) != 0) { ok = 0; why = "op3 g2 exit"; }
             break;
         }
@@ -13156,15 +13318,15 @@ static void test_t190(void) {
             long rvs = it_cs_reduce((long)g1.vs, RIGHT_READ);
             handle_id_t rvs_h = (rvs >= 0) ? (handle_id_t)rvs : HANDLE_INVALID;
             if (rp < 0 || rvs < 0) { ok = 0; why = "op4 caps"; }
-            if (ok && it_sys3(SYS_EXCEPTION_RESUME, rp, (long)f1.task_id, 1)
+            if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1)
                       != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro resume"; }
             if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, rvs, (long)T25_VA_A, 0)
                       != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro map"; }
             if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr_h, rvs, (long)T25_VA_A)
                       != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro unmap"; }
             it_close(&rp_h); it_close(&rvs_h);
-            if (ok && t25_resume_seq(g1.proc, f1.task_id, f1.seq, 1) != 0) { ok = 0; why = "op4 g1 kill"; }
-            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "op4 g2 kill"; }
+            if (ok && t25_resume_seq(&g1, f1.task_id, f1.seq, 1) != 0) { ok = 0; why = "op4 g1 kill"; }
+            if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "op4 g2 kill"; }
             if (ok && (it_lp_wait_exit(g1.proc) != 0 ||
                        it_lp_wait_exit(g2.proc) != 0)) { ok = 0; why = "op4 exits"; }
             break;
@@ -13179,12 +13341,12 @@ static void test_t190(void) {
             if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_B, 0)
                       != (long)IRIS_ERR_BUSY) { ok = 0; why = "op5 busy"; }
             struct it_fault f2b;
-            if (ok && t25_resume_seq(g2.proc, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op5 resume"; }
+            if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op5 resume"; }
             if (ok && !t25_wait_refault(g2.proc, f2.seq, &f2b)) { ok = 0; why = "op5 no wp fault"; }
             if (ok && f2b.error != (PF_ERR_P | PF_ERR_W | PF_ERR_U)) { ok = 0; why = "op5 err bits"; }
-            if (ok && t25_resume_seq(g2.proc, f2b.task_id, f2b.seq, 1) != 0) { ok = 0; why = "op5 g2 kill"; }
+            if (ok && t25_resume_seq(&g2, f2b.task_id, f2b.seq, 1) != 0) { ok = 0; why = "op5 g2 kill"; }
             if (ok && it_lp_wait_exit(g2.proc) != 0) { ok = 0; why = "op5 g2 exit"; }
-            if (ok && t25_resume_seq(g1.proc, f1.task_id, f1.seq, 1) != 0) { ok = 0; why = "op5 g1 kill"; }
+            if (ok && t25_resume_seq(&g1, f1.task_id, f1.seq, 1) != 0) { ok = 0; why = "op5 g1 kill"; }
             if (ok && it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op5 g1 exit"; }
             break;
         }
@@ -13686,6 +13848,9 @@ static void test_t197(void) {
         long rep = it_lp_report_slots(x, 4u);
         uint32_t expect = (1u << LP_CPTR_CMD_EP) | (1u << LP_PGR_SLOT_TPROC) |
                           (1u << LP_PGR_SLOT_TVS) | (1u << LP_PGR_SLOT_FRAME) |
+                          /* No fault mailbox: this probe declares its own
+                           * four-capability manifest and resolves nothing, so
+                           * it is handed no mailbox to resolve WITH. */
                           (1u << LP_PGR_SLOT_NOTIF);
         if (rep < 0 || (uint32_t)rep != expect) { ok = 0; why = "post-restart manifest"; }
         if (ok && ((uint32_t)rep & ((1u<<6)|(1u<<10)|(1u<<11)|(1u<<16)|(1u<<17)|(1u<<18))) != 0) {
@@ -13802,7 +13967,7 @@ static void test_t199(void) {
     if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "no wp fault"; }
     if (ok && (f.vector != 14u || f.cr2 != T26_TVA_A ||
                f.error != (PF_ERR_P | PF_ERR_W | PF_ERR_U))) { ok = 0; why = "wp err bits"; }
-    if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 1) != 0) { ok = 0; why = "seq kill"; }
+    if (ok && t25_resume_seq(&g, f.task_id, f.seq, 1) != 0) { ok = 0; why = "seq kill"; }
     if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target exit"; }
 
     t25_tgt_reap(&g);
@@ -13887,7 +14052,7 @@ static void test_t200(void) {
             t25_reap(&pp); it_close(&pc);
             /* Supervisor resolves from the VMO via its own VSpace handle. */
             if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T26_TVA_A, t26_ofs(ofs, 0)) != 0) { ok = 0; why = "op2 map"; }
-            if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op2 resume"; }
+            if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op2 resume"; }
             if (ok && it_lp_wait_exit(g.proc) !=
                       (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op2 target"; }
             break;
@@ -13900,7 +14065,7 @@ static void test_t200(void) {
             it_quiesce_reaper();
             if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T26_TVA_A, t26_ofs(ofs, 0))
                       != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "op3 late map"; }
-            if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op3 late resume"; }
+            if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op3 late resume"; }
             break;
         }
         case 4: {
@@ -13921,7 +14086,7 @@ static void test_t200(void) {
             if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "op4 fault"; }
             if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "op4 pending"; }
             if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T26_TVA_A, t26_ofs(ofs, 0)) != 0) { ok = 0; why = "op4 map"; }
-            if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op4 resume"; }
+            if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op4 resume"; }
             if (ok && it_lp_wait_exit(g.proc) !=
                       (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op4 target"; }
             break;
@@ -13970,6 +14135,8 @@ static void test_t200(void) {
  * gone; that is what makes 16 concurrent targets cost ONE notification
  * against the supervisor's quota instead of 16). */
 #define PGR_SLOT_FAULT_NOTIF 5u
+/* Stage 7 Step 7: the fault mailbox CNode (see services/pager/pager_proto.h). */
+#define PGR_SLOT_FAULT_CN    14u
 #define PGR_TGT_BASE        20u
 #define PGR_TGT_STRIDE      2u
 #define PGR_TSLOT_PROC(i)   (PGR_TGT_BASE + (i) * PGR_TGT_STRIDE + 0u)
@@ -14022,10 +14189,14 @@ static int t27_pager_spawn(struct t27_pager *p,
 
     /* Phase 28.1: rewire every granted target's fault delivery onto the ONE
      * shared notification (targets[0].notif) with bit (1 << i) BEFORE the
-     * pager starts, so no fault can land on the old per-target wiring. */
+     * pager starts, so no fault can land on the old per-target wiring.
+     * Stage 7 Step 7: and onto the mailbox this pager will hold, leaf i+1, so
+     * the capability each fault delivers lands where the pager reads it. */
+    if (!it_pgr_mbox_fresh()) { it_close(&ctrl); *why = "fault mailbox"; return 0; }
     for (uint32_t i = 0; i < nt; i++) {
-        if (it_sys3(SYS_EXCEPTION_HANDLER, (long)targets[i].proc,
-                    (long)targets[0].notif, (long)(1u << i)) != 0) {
+        if (it_sys4(SYS_EXCEPTION_HANDLER, (long)targets[i].proc,
+                    (long)targets[0].notif, (long)(1u << i),
+                    IT_PGR_MBOX_DEST(i + 1u)) != 0) {
             it_close(&ctrl); *why = "shared notif wire"; return 0;
         }
     }
@@ -14035,6 +14206,8 @@ static int t27_pager_spawn(struct t27_pager *p,
     m[n].slot = PGR_SLOT_CTRL_EP; IT_MINT_SRC(m[n], ctrl); m[n].rights = RIGHT_READ; m[n].badge = 0; n++;
     if (nt > 0) {
         m[n].slot = PGR_SLOT_FAULT_NOTIF; IT_MINT_SRC(m[n], targets[0].notif); m[n].rights = RIGHT_WAIT; m[n].badge = 0; n++;
+        /* Stage 7 Step 7: the mailbox each fault delivers a thread into. */
+        m[n].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(m[n], IT_PGR_MBOX_SLOT); m[n].rights = RIGHT_READ | RIGHT_WRITE; m[n].badge = 0; n++;
     }
     for (uint32_t i = 0; i < nt; i++) {
         m[n].slot = PGR_TSLOT_PROC(i);  IT_MINT_SRC(m[n], targets[i].proc);  m[n].rights = RIGHT_READ | RIGHT_MANAGE; m[n].badge = 0; n++;
@@ -14151,6 +14324,11 @@ static void test_t201(void) {
     if (ok) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+                          (1u << PGR_SLOT_FAULT_CN) /* Stage 7 Step 7: the fault
+                              * mailbox.  Real authority — the CNode a fault
+                              * delivers the faulting thread into — so the
+                              * oracle counts it rather than being blind to it,
+                              * which is the same reason slot 15 is here. */ |
                           (1u << 13) /* Phase S1: explicit reply object */ |
                           (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
                           (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Step 2: the
@@ -14273,7 +14451,7 @@ static void test_t203(void) {
     /* A's caps (which the pager holds) grant nothing over B — proven directly:
      * A's proc cap is a different object, so resolving B's task through it is
      * NOT_FOUND; mapping the VMO into A's VSpace does not touch B. */
-    if (ok && t25_resume_seq(ga.proc, fb.task_id, fb.seq, 0) != (long)IRIS_ERR_NOT_FOUND) {
+    if (ok && t25_resume_seq(&ga, fb.task_id, fb.seq, 0) != (long)IRIS_ERR_NOT_FOUND) {
         ok = 0; why = "A cap resolved B"; }
     if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)ga.vs, (long)T27_VA_B, 0)
         == 0) {
@@ -14288,7 +14466,7 @@ static void test_t203(void) {
         ok = 0; why = "B not suspended"; }
 
     /* B is resolved only by B's own authority. */
-    if (ok && t25_resume_seq(gb.proc, fb2.task_id, fb2.seq, 1) != 0) { ok = 0; why = "B proper kill"; }
+    if (ok && t25_resume_seq(&gb, fb2.task_id, fb2.seq, 1) != 0) { ok = 0; why = "B proper kill"; }
     if (ok && it_lp_wait_exit(gb.proc) != 0) { ok = 0; why = "B exit"; }
 
     t27_pager_reap(&p);
@@ -14351,7 +14529,7 @@ static void test_t204(void) {
      * fault VA and seq-resume — the store will re-fault WP, so kill instead. */
     if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T27_VA_A, t26_ofs(0x2000ULL, 0u)) != 0) {
         ok = 0; why = "valid ro map"; }
-    if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 1) != 0) { ok = 0; why = "kill"; }
+    if (ok && t25_resume_seq(&g, f.task_id, f.seq, 1) != 0) { ok = 0; why = "kill"; }
     if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "exit"; }
 
     t27_pager_reap(&p);
@@ -14416,6 +14594,11 @@ static void test_t205(void) {
     if (ok) {
         long mask = t27_pager_call(p2.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+                          (1u << PGR_SLOT_FAULT_CN) /* Stage 7 Step 7: the fault
+                              * mailbox.  Real authority — the CNode a fault
+                              * delivers the faulting thread into — so the
+                              * oracle counts it rather than being blind to it,
+                              * which is the same reason slot 15 is here. */ |
                           (1u << 13) /* Phase S1: explicit reply object */ |
                           (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
                           (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Step 2: the
@@ -14491,7 +14674,7 @@ static void test_t206(void) {
     /* The fault survived every crash; supervisor resolves with its authority. */
     struct it_fault f2;
     if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq)) { ok = 0; why = "fault lost"; }
-    if (ok && t25_resume_seq(g.proc, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "supervisor resolve"; }
+    if (ok && t25_resume_seq(&g, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "supervisor resolve"; }
     if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target exit"; }
 
     t25_tgt_reap(&g);
@@ -14718,7 +14901,7 @@ static void test_t210(void) {
             if (it_sys1(SYS_PROCESS_KILL, (long)p.proc) != 0 || it_lp_wait_exit(p.proc) != 0) { ok = 0; why = "op1 pager death"; }
             it_close(&p.proc); it_close(&p.ctrl_ep);
             if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T27_VA_A, t26_ofs(0x1000ULL, 0u)) != 0) { ok = 0; why = "op1 map"; }
-            if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op1 resume"; }
+            if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op1 resume"; }
             if (ok && it_lp_wait_exit(g.proc) != (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op1 target"; }
             break;
         }
@@ -14747,7 +14930,7 @@ static void test_t210(void) {
             /* The target is still faulting; resolve read-only for real. */
             if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "op3 pending"; }
             if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T27_VA_A, t26_ofs(0x1000ULL, 0u)) != 0) { ok = 0; why = "op3 map"; }
-            if (ok && t25_resume_seq(g.proc, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op3 resume"; }
+            if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op3 resume"; }
             if (ok && it_lp_wait_exit(g.proc) != (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op3 target"; }
             t27_pager_reap(&p);
             break;
@@ -14992,6 +15175,11 @@ static void test_t215(void) {
     if (ok) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+                          (1u << PGR_SLOT_FAULT_CN) /* Stage 7 Step 7: the fault
+                              * mailbox.  Real authority — the CNode a fault
+                              * delivers the faulting thread into — so the
+                              * oracle counts it rather than being blind to it,
+                              * which is the same reason slot 15 is here. */ |
                           (1u << 13) /* Phase S1: explicit reply object */ |
                           (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
                           (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Step 2: the
@@ -15391,10 +15579,16 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
         *why = "session reset"; return 0;
     }
     /* Rewire every target's fault delivery onto the ONE shared notification
-     * (targets[0].notif), bit (1 << i), before the pager starts. */
+     * (targets[0].notif), bit (1 << i), and onto the pager's mailbox leaf i+1,
+     * before the pager starts. */
+    if (!it_pgr_mbox_fresh()) {
+        it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm);
+        *why = "fault mailbox"; return 0;
+    }
     for (uint32_t i = 0; i < nt; i++) {
-        if (it_sys3(SYS_EXCEPTION_HANDLER, (long)targets[i].proc,
-                    (long)targets[0].notif, (long)(1u << i)) != 0) {
+        if (it_sys4(SYS_EXCEPTION_HANDLER, (long)targets[i].proc,
+                    (long)targets[0].notif, (long)(1u << i),
+                    IT_PGR_MBOX_DEST(i + 1u)) != 0) {
             it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm);
             *why = "shared notif wire"; return 0;
         }
@@ -15409,6 +15603,8 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
     m[k].badge = IRIS_BADGE_FILEGRANT_S(FBK_SESSION); k++;
     if (nt > 0) {
         m[k].slot = FBK_SLOT_NOTIF; IT_MINT_SRC(m[k], targets[0].notif); m[k].rights = RIGHT_WAIT; m[k].badge = 0; k++;
+        /* Stage 7 Step 7: the mailbox each fault delivers a thread into. */
+        m[k].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(m[k], IT_PGR_MBOX_SLOT); m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
     }
     for (uint32_t i = 0; i < nt; i++) {
         m[k].slot = PGR_TSLOT_PROC(i);  IT_MINT_SRC(m[k], targets[i].proc);  m[k].rights = RIGHT_READ | RIGHT_MANAGE; m[k].badge = 0; k++;
@@ -15576,7 +15772,7 @@ static void test_t217(void) {
          * address space was built from.  It MAPS, and the kernel no longer
          * creates paging levels, so it must be able to retype one. */
         uint32_t expect = (1u<<3)|(1u<<4)|(1u<<5)|(1u<<IRIS_CPTR_OWN_UNTYPED)|
-                          (1u<<13)|(1u<<15)|(1u<<16)|(1u<<17)|(1u<<20)|(1u<<21);
+                          (1u<<13)|(1u<<14)|(1u<<15)|(1u<<16)|(1u<<17)|(1u<<20)|(1u<<21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) { ok = 0; why = "extra authority"; }
     }
@@ -16843,6 +17039,7 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
         if (en >= 0) { handle_id_t h = (handle_id_t)en; it_close(&h); }
         *why = "shared notifs"; return 0; }
     m->fault_notif = (handle_id_t)fn; m->exit_notif = (handle_id_t)en;
+    if (!it_pgr_mbox_fresh()) { *why = "fault mailbox"; t28_multi_close(m); return 0; }
     for (uint32_t i = 0; i < nt; i++) {
         long ep = it_ep_create();
         if (ep < 0) { *why = "cmd ep"; t28_multi_close(m); return 0; }
@@ -16851,7 +17048,8 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
         long vs = it_proc_vspace_slot((long)m->proc[i]);
         if (vs < 0) { *why = "vspace"; t28_multi_close(m); return 0; }
         m->vs[i] = (handle_id_t)vs;
-        if (it_sys3(SYS_EXCEPTION_HANDLER, (long)m->proc[i], (long)m->fault_notif, (long)(1u << i)) != 0 ||
+        if (it_sys4(SYS_EXCEPTION_HANDLER, (long)m->proc[i], (long)m->fault_notif,
+                    (long)(1u << i), IT_PGR_MBOX_DEST(i + 1u)) != 0 ||
             it_sys3(SYS_PROCESS_WATCH,     (long)m->proc[i], (long)m->exit_notif,  (long)(1u << i)) != 0) {
             *why = "wire"; t28_multi_close(m); return 0;
         }
@@ -16885,6 +17083,8 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     mm[k].slot = FBK_SLOT_VFS_EP;  IT_MINT_SRC(mm[k], vfs);  mm[k].rights = RIGHT_WRITE;
     mm[k].badge = IRIS_BADGE_FILEGRANT_S(FBK_SESSION); k++;
     mm[k].slot = FBK_SLOT_NOTIF;   IT_MINT_SRC(mm[k], m->fault_notif); mm[k].rights = RIGHT_WAIT; mm[k].badge = 0; k++;
+    /* Stage 7 Step 7: the mailbox each fault delivers a thread into. */
+    mm[k].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(mm[k], IT_PGR_MBOX_SLOT); mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
     for (uint32_t i = 0; i < m->n; i++) {
         mm[k].slot = PGR_TSLOT_PROC(i); IT_MINT_SRC(mm[k], m->proc[i]); mm[k].rights = RIGHT_READ | RIGHT_MANAGE; mm[k].badge = 0; k++;
         mm[k].slot = PGR_TSLOT_VS(i);   IT_MINT_SRC(mm[k], m->vs[i]);   mm[k].rights = RIGHT_WRITE;               mm[k].badge = 0; k++;

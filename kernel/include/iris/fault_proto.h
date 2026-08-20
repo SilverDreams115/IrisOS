@@ -7,7 +7,9 @@
  *
  * Wire layout (KChanMsg.data[64]):
  *   offset  0: uint32_t vector     — x86 exception vector (0-31)
- *   offset  4: uint32_t task_id    — task id of the faulting task
+ *   offset  4: uint32_t task_id    — task id of the faulting task (diagnostic;
+ *              since Stage 7 Step 7 the thread is NAMED by the capability
+ *              delivered into the handler's mailbox, not by this number)
  *   offset  8: uint64_t rip        — instruction pointer at fault
  *   offset 16: uint32_t error_code — CPU error code (0 if N/A for this vector)
  *   offset 20: uint32_t fault_seq  — Phase 25: per-process fault generation
@@ -22,6 +24,11 @@
  * bits [63:32] of the action argument — the kernel refuses (NOT_FOUND) when
  * the pending fault of that task is a different generation, so a stale
  * handler response can never resolve a fault it did not observe.
+ *
+ * Stage 7 Step 7: `task_id` at offset 4 is DIAGNOSTIC ONLY.  The thread is
+ * named to SYS_EXCEPTION_RESUME by the capability the kernel published into
+ * the mailbox the handler declared at registration; the number here is for
+ * logs and correlation, and selects nothing.
  */
 #define FAULT_MSG_NOTIFY     0xF0000001u
 #define FAULT_OFF_VECTOR      0   /* uint32_t: exception vector */

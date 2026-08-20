@@ -303,7 +303,8 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_irq_ack(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ioport_in(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                               uint64_t arg3);
 uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — endpoint IPC ─────────────────────────── */

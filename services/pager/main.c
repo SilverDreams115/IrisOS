@@ -321,7 +321,12 @@ static long pg_resolve_region(uint32_t tidx) {
     }
 
     /* seq-checked resume — the target continues. */
-    return pg_sys3(SYS_EXCEPTION_RESUME, tproc, (long)task, (long)(((uint64_t)seq << 32) | 2u));
+    /* Stage 7 Step 7: the faulting thread is the capability its fault
+     * delivered into this target's mailbox leaf.  tproc still READS the record
+     * (FAULT_INFO is process-scoped); it no longer SELECTS. */
+    (void)task;
+    return pg_sys2(SYS_EXCEPTION_RESUME, PGR_FAULT_CPTR(tidx),
+                   (long)(((uint64_t)seq << 32) | 2u));
 }
 
 /* Drop a region's cache/private references (on unregister / target death). */
@@ -496,7 +501,9 @@ static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t fla
         r = pg_sys4(SYS_VMO_MAP_PAGE, (long)PGR_VSLOT(vidx), tvs, (long)vva, (long)ofs);
         if (r != 0) return r;
     }
-    return pg_sys3(SYS_EXCEPTION_RESUME, tproc, (long)task, (long)(((uint64_t)seq << 32) | ((op == PGR_OP_KILL) ? 3u : 2u)));
+    (void)task;
+    return pg_sys2(SYS_EXCEPTION_RESUME, PGR_FAULT_CPTR(tidx),
+                   (long)(((uint64_t)seq << 32) | ((op == PGR_OP_KILL) ? 3u : 2u)));
 }
 
 void pager_main(handle_id_t bootstrap_ch_h);

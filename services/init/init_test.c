@@ -61,7 +61,11 @@ void init_selftest_exception(void) {
 
     /* Register exception handler for own process (HANDLE_INVALID = self),
      * signalling bit 0 on fault. */
-    r = init_sys3(SYS_EXCEPTION_HANDLER, (long)HANDLE_INVALID, (long)notif_h, 1);
+    /* Stage 7 Step 7: the registration says where each fault delivers the
+     * faulting thread's CAPABILITY.  init arms its own faults, so the mailbox
+     * is its own root CNode (cnode half 0) and INIT_SLOT_S8_FAULT is the slot. */
+    r = init_sys4(SYS_EXCEPTION_HANDLER, (long)HANDLE_INVALID, (long)notif_h, 1,
+                  (long)((uint64_t)INIT_SLOT_S8_FAULT << 32));
     if (r < 0) {
         init_log("[USER][INIT][S8] SKIP: handler reg\n"); return;
     }
@@ -119,8 +123,10 @@ void init_selftest_exception(void) {
         init_log("[USER][INIT][S8] FAIL: wrong fault\n"); return;
     }
 
-    /* Kill the faulting thread via exception resume */
-    (void)init_sys3(SYS_EXCEPTION_RESUME, (long)HANDLE_INVALID, (long)task_id, 1);
+    /* Kill the faulting thread — named by the capability the fault delivered,
+     * not by the id the record still reports for diagnostics. */
+    (void)init_sys2(SYS_EXCEPTION_RESUME, (long)INIT_SLOT_S8_FAULT, 1);
+    (void)task_id;
 
 
     init_log(init_stage_exception);

@@ -63,6 +63,18 @@
  * 0..19 window the manifest oracle reports, deliberately: it is authority the
  * pager holds and the report must account for it. */
 #define PGR_SLOT_SELF_VS      15u
+/*
+ * Stage 7 Step 7 — the fault mailbox.
+ *
+ * A CNode the SUPERVISOR retypes and mints here, and registers each target's
+ * exception handler to deliver into.  SYS_EXCEPTION_RESUME names the faulting
+ * thread by CAPABILITY now, and leaf (i+1) of this CNode is where target i's
+ * arrives.  Inside the 0..19 window the manifest oracle reports, deliberately
+ * and for the same reason PGR_SLOT_SELF_VS is: it is authority the pager
+ * holds, and the report must account for it rather than be blind to it.
+ */
+#define PGR_SLOT_FAULT_CN     14u
+#define PGR_FAULT_CPTR(i)     ((long)((((uint64_t)(i) + 1u) << 8) | PGR_SLOT_FAULT_CN))
 
 #define PGR_MAX_TARGETS    16u
 #define PGR_MAX_VMOS       2u

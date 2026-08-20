@@ -124,6 +124,7 @@ names itself rather than showing up as a boot hang:
 | T302 | Stage 6-pure: a page table is a capability — retyped by the holder, installed one level per invocation, refused at a kernel address, and the walk it builds really maps |
 | T303 | Stage 7: a running thread outlives every capability to it — the execution reference a retyped TCB never took |
 | T304 | Stage 7: the live-process ceiling is gone — more than 64 processes out of one budget, a clean error when that budget ends, and a RESET afterwards that proves nothing leaked |
+| T140–T147, T181–T238 (re-derived) | Stage 7: a fault is answered by naming the faulting THREAD's capability, delivered into a mailbox the registrant declared.  The suite's own targets deliver to the suite; a target handed to a pager is re-aimed to a CNode shared with it; a victim is never re-aimed, which is what makes a cross-target attempt fail for want of a capability rather than by a rejected id |
 | PT-1..PT-11 (host) | Stage 6-pure: the paging walk driven exhaustively — level order, spent-vs-complete, kernel-address refusal, dead VSpace, teardown returning every level, the bootstrap exception being one-way, a reused level entering the walk empty, teardown detaching exactly the holder's levels, and a failed composition giving its bind claim back |
 
 Host unit tests cover what a successful boot cannot show: `RBI-1..RBI-10` (the

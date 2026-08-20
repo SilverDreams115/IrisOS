@@ -174,6 +174,26 @@
 #define LP_PGR_SLOT_TVS        13u
 #define LP_PGR_SLOT_FRAME      14u
 #define LP_PGR_SLOT_NOTIF      15u
+/*
+ * Stage 7 Step 7 — the fault mailbox.
+ *
+ * A CNode the SUPERVISOR retypes and mints here, and registers each target's
+ * exception handler to deliver into.  It is how a pager learns WHICH thread
+ * faulted in a form it can act on: SYS_EXCEPTION_RESUME names the thread by
+ * capability now, and the capability arrives in a leaf of this CNode.
+ *
+ * It is inside the window lp_ps_report scans, deliberately and for the same
+ * reason PGR_SLOT_SELF_VS is: it is authority the pager holds, so the manifest
+ * oracle must account for it rather than be blind to it.
+ *
+ * Leaf 1 is the pager's own target.  Leaf 2 is the VICTIM's and is never
+ * filled — the supervisor does not arm the victim's faults here — which is
+ * what makes the XPROBE battery's "resolve somebody else's fault" attempts
+ * fail for the right reason: no capability, rather than a rejected id.
+ */
+#define LP_PGR_SLOT_FAULTCN    17u
+#define LP_PGR_FAULT_CPTR      ((long)((1u << 8) | LP_PGR_SLOT_FAULTCN))
+#define LP_PGR_XFAULT_CPTR     ((long)((2u << 8) | LP_PGR_SLOT_FAULTCN))
 #define LP_EXIT_PGR_BASE       0x0D00
 #define LP_PGR_ERR_INFO        0x7Eu   /* fault info dishonest (vector/seq) */
 #define LP_PGR_ERR_CR2         0x7Du   /* cr2 does not match expectation */
@@ -292,7 +312,11 @@ static long lp_ps_serve(uint32_t op, uint32_t tidx, uint32_t vidx,
         if (r != 0) return r;
     }
     uint64_t action = ((uint64_t)seq << 32) | ((op == LP_PS_OP_KILL) ? 3u : 2u);
-    return lp_sys3(SYS_EXCEPTION_RESUME, tproc, (long)task_id, (long)action);
+    /* Stage 7 Step 7: the faulting thread is the capability the fault
+     * delivered into the mailbox.  tproc still READS the record — FAULT_INFO
+     * is process-scoped — but it no longer SELECTS. */
+    (void)task_id;
+    return lp_sys2(SYS_EXCEPTION_RESUME, LP_PGR_FAULT_CPTR, (long)action);
 }
 
 /* Manifest oracle: bitmask of slots 0..17 that resolve, plus high-authority
@@ -491,8 +515,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
                 if (r != 0) { err = r; break; }
             }
             uint64_t action = ((uint64_t)seq << 32) | ((sub == 3u) ? 3u : 2u);
-            r = lp_sys3(SYS_EXCEPTION_RESUME, (long)LP_PGR_SLOT_TPROC,
-                        (long)task_id, (long)action);
+            r = lp_sys2(SYS_EXCEPTION_RESUME, LP_PGR_FAULT_CPTR, (long)action);
             if (r != 0) { err = r; break; }
         }
         lp_sys1(SYS_EXIT, (long)(LP_EXIT_PGR_BASE | ((uint32_t)-err & 0xFFu)));
@@ -508,20 +531,25 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         uint32_t vtid = (uint32_t)msg.words[0];
         uint64_t va   = msg.words[1];
         uint64_t vseq = msg.words[2];
-        /* resume / kill the victim through a no-MANAGE victim proc cap */
-        if (lp_sys3(SYS_EXCEPTION_RESUME, (long)LP_PGR_SLOT_XPROC, (long)vtid,
+        /* Stage 7 Step 7: resolving somebody else's fault now fails for a
+         * better reason than a rejected id — the pager holds NO capability to
+         * the victim's faulting thread.  The victim's mailbox leaf is never
+         * armed, so these resolve nothing at all. */
+        if (lp_sys2(SYS_EXCEPTION_RESUME, LP_PGR_XFAULT_CPTR,
                     (long)((vseq << 32) | 2u)) >= 0) breach |= (1u << 0);
-        if (lp_sys3(SYS_EXCEPTION_RESUME, (long)LP_PGR_SLOT_XPROC, (long)vtid,
+        if (lp_sys2(SYS_EXCEPTION_RESUME, LP_PGR_XFAULT_CPTR,
                     (long)((vseq << 32) | 3u)) >= 0) breach |= (1u << 1);
         /* map / unmap in the victim VSpace through a no-WRITE vspace cap */
         if (lp_sys4(SYS_FRAME_MAP, (long)LP_PGR_SLOT_FRAME, (long)LP_PGR_SLOT_XVS,
                     (long)va, 0) >= 0) breach |= (1u << 2);
         if (lp_sys3(SYS_FRAME_UNMAP, (long)LP_PGR_SLOT_FRAME, (long)LP_PGR_SLOT_XVS,
                     (long)va) >= 0) breach |= (1u << 3);
-        /* resolve the victim's task through the pager's OWN (full) target cap:
-         * the task does not belong to that process — exact-match must refuse */
-        if (lp_sys3(SYS_EXCEPTION_RESUME, (long)LP_PGR_SLOT_TPROC, (long)vtid,
+        /* ...and the pager's OWN target capability resolves nothing about the
+         * victim either: a process capability is not a thread, and a thread is
+         * the only thing RESUME accepts. */
+        if (lp_sys2(SYS_EXCEPTION_RESUME, (long)LP_PGR_SLOT_TPROC,
                     (long)((vseq << 32) | 2u)) >= 0) breach |= (1u << 4);
+        (void)vtid;
         /* the victim's fault must not appear through the unrelated target cap */
         {
             uint8_t fb[FAULT_MSG_LEN];

@@ -73,7 +73,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         /* SYS_WAIT_ANY(44) — retired Phase 13/Track G (zero callers), fall to default */
         case SYS_BOOTCAP_RESTRICT:     return sys_bootcap_restrict(arg0, arg1, arg2);
         case SYS_VMO_SHARE:            return sys_vmo_share(arg0, arg1, arg2);
-        case SYS_EXCEPTION_HANDLER:    return sys_exception_handler(arg0, arg1, arg2);
+        case SYS_EXCEPTION_HANDLER:    return sys_exception_handler(arg0, arg1, arg2, arg3);
         case SYS_THREAD_CREATE:        return sys_thread_create(arg0, arg1, arg2);
         case SYS_THREAD_EXIT:          return sys_thread_exit(arg0, arg1, arg2);
         case SYS_FUTEX_WAIT:           return sys_futex_wait(arg0, arg1, arg2);

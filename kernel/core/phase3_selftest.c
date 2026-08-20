@@ -95,8 +95,15 @@ static int phase3_process_selftest(void) {
     /* Exception handler notification: set twice — idempotent (Track I). */
     ref_before = atomic_load_explicit(&xnotif->base.refcount, memory_order_relaxed);
     active_before = atomic_load_explicit(&xnotif->base.active_refs, memory_order_relaxed);
-    if (kprocess_set_exception_handler(proc, xnotif, 1u) != IRIS_OK) goto out;
-    if (kprocess_set_exception_handler(proc, xnotif, 1u) != IRIS_OK) goto out;
+    /* Stage 7 Step 7: a registration also says where the faulting thread's
+     * capability is delivered.  Nothing faults in this selftest, so the slot
+     * is never written; what it still covers is that arming twice is
+     * idempotent and that teardown gives every reference back — now including
+     * the mailbox CNode's. */
+    if (kprocess_set_exception_handler(proc, xnotif, 1u,
+                                       proc->cspace_root, 1u) != IRIS_OK) goto out;
+    if (kprocess_set_exception_handler(proc, xnotif, 1u,
+                                       proc->cspace_root, 1u) != IRIS_OK) goto out;
     if (proc->exception_notif != xnotif) goto out;
     if (atomic_load_explicit(&xnotif->base.refcount, memory_order_relaxed) != ref_before + 1u) goto out;
     if (atomic_load_explicit(&xnotif->base.active_refs, memory_order_relaxed) != active_before + 1u) goto out;
