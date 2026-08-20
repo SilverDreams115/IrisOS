@@ -1087,31 +1087,56 @@ dual-namespace shape the charter forbids — it is what having two objects means
 
 ### What Stage 7 still needs, and why it is not an increment
 
-`KProcess` itself.  Retiring it means a thread's authority comes from its own
-CSpace and VSpace capabilities rather than from a shared object, which touches
-every `t->process` in the kernel: fault delivery and exception handling, exit
-watches, the IPC identity a badge names, the VMO owner/payer relation, and the
-`SYS_PROCESS_*` surface.  It cannot land as one change without the thing that
-replaces the policy it carries — a user-space process server — which is the
-stage's actual deliverable rather than a step toward it.
+`KProcess` itself, and the user-space process server that replaces the policy
+it carries.  Steps 4-8 emptied the object of everything that could be moved
+without first deciding a supervision protocol; what is left is that protocol.
 
-Steps 4-8 took the two capabilities a thread is CONFIGURED with, plus its fault
-record, the way a fault is answered and the way it is read, off KProcess and
-onto the thread — so what a thread resolves in, runs in, faults with, is read
-by and is resumed by is now the thread's own, and a fault handler holds no
-process capability at all.  What is left on KProcess is
-exactly the SUPERVISION policy: who is told when it faults, who is told when it
-dies, its exit code, its thread count, the budget its kernel-side objects come
-from, and the `SYS_PROCESS_*` surface that reads and writes all of it.  That is
-the process server's job description, which is why the remaining work is the
-server and not another field move.
+The inventory, measured rather than described — every remaining kernel read
+through `t->process`:
 
-Two smaller items remain:
+| what | reads | who needs it |
+|---|---|---|
+| `cspace_root` | 11 | CROSS-process operations: `SYS_PROC_CSPACE_MINT` into a child, `RETYPE2` into a child's CNode, the boot path.  A supervisor naming a process to reach its CSpace |
+| `vspace` | 8 | `SYS_PROCESS_VSPACE`, `SYS_VMO_MAP_INTO`, the boot path.  Same shape: a supervisor naming a process to reach its address space |
+| `mem_pool` | 3 | the DEFAULT budget when a syscall does not name one — the kernel choosing whose memory pays |
+| `exit_code`, `base` | 3 | death reporting and the object header |
+
+Nothing in that table is a thread asking about itself; every entry is a
+SUPERVISOR asking about somebody else.  That is the shape of the remaining
+problem, and it is why the answer is a server rather than more field moves: a
+process capability is currently how one task names another's CSpace, address
+space, death and budget in one handle, and unpicking it means deciding what
+replaces each — which is a policy question about who supervises whom.
+
+What the server has to answer, concretely:
+
+- **Death.**  `SYS_PROCESS_WATCH` signals a notification when a process dies,
+  and `SYS_PROCESS_EXIT_CODE` reports why.  seL4 has neither: a supervisor
+  knows because it holds the child's TCBs and the child tells it over an
+  endpoint it was given.  Moving this means every supervisor in the tree
+  (`init`, `svcmgr`, `iris_test`) learns of death through a protocol it builds
+  rather than a syscall it calls.
+- **Kill.**  `SYS_PROCESS_KILL` stops every thread and reaps the address space.
+  The capability-model equivalent is suspending the TCBs and revoking what was
+  delegated, which the supervisor can already do — but the RECLAMATION
+  (address space, budget) currently rides on KProcess teardown.
+- **Naming another task's CSpace/VSpace.**  A process capability is what makes
+  `SYS_PROC_CSPACE_MINT` and `SYS_VMO_MAP_INTO` possible.  With the process
+  gone, a supervisor holds the child's root CNode and VSpace capabilities
+  directly — which it already does at spawn time (Stage 6-pure Steps 4/5) and
+  currently throws away.
+- **The default budget.**  `mem_pool` is the kernel picking an Untyped when a
+  syscall does not name one.  Three call sites; the ioport/IRQ pair cannot take
+  a budget argument in the current 4-argument ABI, and those objects retire
+  with the memory server anyway (ledger D-5's deeper half).
+
+One smaller item remains and is NOT Stage 7 work:
 
 - **The VMO-count quota** retires with the `KVMO` object (memory server), per
-  the ledger — not Stage 7 work.
-- **`KPROCESS_MAX_LIVE`** retired in Step 3, **the global thread identifier** in
-  Step 7.
+  the ledger.
+
+`KPROCESS_MAX_LIVE` retired in Step 3, the global thread identifier in Step 7,
+and the fault handler's process capability in Step 8.
 
 ## Stage 8 — Full MCS scheduling
 
