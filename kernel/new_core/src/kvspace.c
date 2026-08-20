@@ -73,14 +73,15 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
         }
     }
 
-    /* Stage 6 Etapa 2: tables the KERNEL charged are not individually freed —
-     * the pages stay where they are, because a bump allocator does not rewind.
-     * What goes back is the pool's child_count, which is what lets its holder
-     * RESET and reuse the whole region: the same reclamation path every
-     * retyped object has. */
-    while (pool && vs->pt_count) {
+    /* The PML4 is the last piece of this address space the kernel still carves,
+     * and it is the VSpace's own storage rather than part of the walk the
+     * holder builds.  Its child entry goes back the same way everything else
+     * does — the page stays where it is, because a bump allocator does not
+     * rewind, and what is returned is the accounting that lets the holder
+     * RESET and reuse the whole region. */
+    if (pool && vs->pml4_from_pool) {
         kuntyped_release_page_child(pool);
-        vs->pt_count--;
+        vs->pml4_from_pool = 0;
     }
     vs->pt_pool = 0;
     atomic_fetch_sub_explicit(&kvspace_live, 1u, memory_order_relaxed);
@@ -113,8 +114,9 @@ struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3) {
     vs->valid         = 1;
     vs->mapping_count = 0;
     vs->mappings      = 0;
-    vs->pt_pool       = 0;
-    vs->pt_count      = 0;
+    vs->pt_pool        = 0;
+    vs->pml4_from_pool = 0;
+    vs->kernel_funded  = 0;   /* a spawned process owes its own levels */
     atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);
     return vs;
 }
@@ -128,10 +130,13 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
     vs->valid         = 1;
     vs->mapping_count = 0;
     vs->mappings      = 0;
-    vs->pt_pool       = 0;
-    vs->pt_count      = 0;
-    vs->free_nodes    = 0;
-    vs->node_count    = 0;
+    vs->pt_pool        = 0;
+    vs->pml4_from_pool = 0;
+    /* The root task's address space, and the only one: built before any
+     * Untyped exists, so the kernel supplies its levels until it can speak. */
+    vs->kernel_funded  = 1;
+    vs->free_nodes     = 0;
+    vs->node_count     = 0;
     atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);
     return vs;
 }
@@ -146,28 +151,24 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
  * A VSpace with no budget (the root task) keeps the kernel slab.
  */
 /*
- * Bootstrap arena for the ONE address space that exists before any budget
- * does: the root task's.  It keeps the kernel slab out of the mapping path
- * entirely rather than moving that use from one file to another, and
- * exhaustion fails the map rather than silently spending kernel memory.
+ * Bootstrap arena: mapping records for the maps the kernel makes on the root
+ * task's behalf, before it exists to make them itself.
  *
- * SIZE.  Not "a handful of pages": the root task maps far more than its own
- * image, because svc_loader maps every image it loads into the loader's OWN
- * address space to parse it — the raw ELF at SL_ELF_VADDR plus each PT_LOAD
- * segment, all live at once — before mapping the segments into the child.  So
- * the peak is its bootstrap frames (bounded by KPROCESS_BOOTSTRAP_FRAME_MAX)
- * plus the pages of the largest image it will ever load, twice over.  The
- * bound below is that sum with room for an image an order of magnitude larger
- * than today's init, because the failure mode is a boot that dies with
- * IRIS_ERR_NO_MEMORY from a map three call levels down.
+ * SIZE.  This used to be a guess, and a wrong one — it was sized for "a
+ * handful of pages" while svc_loader maps whole images into the loader's own
+ * address space.  Stage 6-pure Etapa 3 makes it a bound instead: the arena now
+ * serves ONLY the pre-boot maps, because the root task is handed its own
+ * budget the moment it can speak (kvspace_end_bootstrap) and everything it
+ * maps after that comes from there.  Every pre-boot map is registered in
+ * KProcess.bootstrap_frames[], which is capped, so the arena cannot be asked
+ * for more than that many records however large the root image grows.
  *
- * The array is 24 bytes a node, so being generous here is cheaper than being
- * wrong.  Only the root task draws from it; every other address space carries
- * a budget (Stage 6 Etapa 2) and cannot reach this code.
+ * The margin is for the frames a bootstrap map registers and then releases on
+ * a failure path, which return to the free list rather than the array.
  */
-#define KVSPACE_BOOT_NODES 512u
+#define KVSPACE_BOOT_NODES (KPROCESS_BOOTSTRAP_FRAME_MAX + 16u)
 _Static_assert(KVSPACE_BOOT_NODES > KPROCESS_BOOTSTRAP_FRAME_MAX,
-               "boot arena must outlast the root task's own bootstrap frames");
+               "the arena must cover every registerable bootstrap frame");
 static struct KFrameMapping kvspace_boot_nodes[KVSPACE_BOOT_NODES];
 static uint32_t             kvspace_boot_next;
 static struct KFrameMapping *kvspace_boot_free;
@@ -317,6 +318,13 @@ void kvspace_set_pt_pool(struct KVSpace *vs, struct KUntyped *pool) {
     if (!vs || !pool || vs->pt_pool) return;
     kobject_retain(&pool->base);
     vs->pt_pool = pool;
+}
+
+void kvspace_end_bootstrap(struct KVSpace *vs) {
+    if (!vs) return;
+    spinlock_lock(&vs->lock);
+    vs->kernel_funded = 0;
+    spinlock_unlock(&vs->lock);
 }
 
 /* Zero cr3/valid, grab the entire mapping list, then process it outside the

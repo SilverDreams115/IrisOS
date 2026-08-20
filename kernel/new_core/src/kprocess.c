@@ -541,10 +541,11 @@ void kprocess_reap_address_space(struct KProcess *p) {
     if (__atomic_exchange_n(&p->aspace_reaped, 1u, __ATOMIC_ACQ_REL)) return;
 
     uint64_t cr3 = p->cr3;
-    /* Stage 6 Etapa 2: were this address space's tables carved from an
-     * Untyped?  Read it before the VSpace goes: pooled tables must not be
-     * returned to the PMM, which does not own them. */
-    int tables_pooled = (p->vspace && p->vspace->pt_pool) ? 1 : 0;
+    /* Was this address space's PML4 carved from an Untyped?  Read it before
+     * the VSpace goes: a pooled page must not be returned to the PMM, which
+     * does not own it.  The levels BELOW it are the holder's own objects since
+     * Stage 6-pure and are released with their capabilities, not here. */
+    int tables_pooled = (p->vspace && p->vspace->pml4_from_pool) ? 1 : 0;
 
     /* Fase 4: invalidate the VSpace capability before destroying page tables.
      * Any capability holder that checks vs->valid after this point sees 0. */

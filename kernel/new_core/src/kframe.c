@@ -217,13 +217,14 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
      * then retries — which is what makes the level an object it owns rather
      * than a side effect it paid for (ledger D-5).
      *
-     * The one address space still mapped the old way is the root task's,
-     * which has no budget because it is built before any Untyped exists.  Its
-     * bootstrap maps run inside the kernel with no userland to ask, so they
-     * come from the PMM reserve — the documented bootstrap exception, and the
-     * only remaining implicit page-table allocation in IRIS.
+     * The exception is bounded to the root task's BOOTSTRAP maps — its text,
+     * stack and BootInfo, mapped before it exists, with no userland to ask.
+     * Those come from the PMM reserve.  Stage 6-pure Etapa 3 ends the
+     * exception the moment the root task can speak for itself
+     * (kvspace_end_bootstrap), so it too supplies its own levels from then on
+     * and no address space is implicitly funded while anyone is running.
      */
-    if (vs->pt_pool) {
+    if (!vs->kernel_funded) {
         r = paging_map_strict_in(vs->cr3, user_va, f->paddr, page_flags);
         if (r > 0) {                      /* a level is missing; name it */
             spinlock_unlock(&vs->lock);

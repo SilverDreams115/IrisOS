@@ -306,6 +306,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         }
         if (ut) {
             uint32_t ut_count = 0;   /* boot untypeds granted, == BootInfo entries */
+            struct KUntyped *root_budget = 0;  /* the root task's own, Etapa 3 */
 
             klog_write("[IRIS][USER] bootstrap task created (ring-3 loader), id=");
             klog_write_dec(ut->id);
@@ -408,6 +409,14 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                      * has to happen BEFORE the release, or the release is the
                      * last one and the object is destroyed under the slot. */
                     uint32_t cspace_slot = BOOT_CPTR_UNTYPED_START + ut_count;
+                    /* Stage 6-pure Etapa 3: the FIRST block is the one the
+                     * root task's own address space will draw on once the
+                     * bootstrap exception ends.  Keep a reference now, while
+                     * the object is certainly alive. */
+                    if (ut_count == 0u) {
+                        kobject_retain(&boot_ut->base);
+                        root_budget = boot_ut;
+                    }
                     iris_error_t me = IRIS_ERR_NOT_FOUND;
                     if (ut->process->cspace_root &&
                         cspace_slot < KCNODE_DEFAULT_SLOTS)
@@ -481,11 +490,33 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     ut = 0;
                 } else {
                     task_set_bootstrap_arg0(ut, USER_BOOTINFO_BASE);
+                    /*
+                     * Stage 6-pure Etapa 3 — the bootstrap exception ends here.
+                     *
+                     * Everything the kernel had to map on the root task's
+                     * behalf is mapped: its text, its stack, and the page that
+                     * tells it what it holds.  From this line on it can speak
+                     * for itself — it holds boot untypeds and a capability to
+                     * its own VSpace — so it supplies its own paging levels
+                     * like every other address space, and its mapping records
+                     * come out of its own budget rather than a kernel arena.
+                     *
+                     * After this, no address space in IRIS is implicitly funded
+                     * while anybody is running.
+                     */
+                    if (ut->process->vspace) {
+                        if (root_budget)
+                            kvspace_set_pt_pool(ut->process->vspace, root_budget);
+                        kvspace_end_bootstrap(ut->process->vspace);
+                    }
                     klog_write("[IRIS][USER] boot info page mapped, untypeds: ");
                     klog_write_dec(ut_count);
                     klog_write("\n");
                 }
             }
+            /* Attached or not, this reference was ours; the VSpace took its
+             * own if it wanted one. */
+            if (root_budget) kobject_release(&root_budget->base);
         }
         if (!ut) {
             klog_write("[IRIS][USER] WARN: could not create bootstrap task\n");

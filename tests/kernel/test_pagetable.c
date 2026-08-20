@@ -20,6 +20,9 @@
  *   [PT-6]  a dead VSpace refuses installs.
  *   [PT-7]  teardown returns every installed level to its Untyped, so the
  *           region becomes reclaimable.
+ *   [PT-8]  the bootstrap exception: a kernel-funded address space maps
+ *           without being owed anything, and stops being kernel-funded for
+ *           good once its holder can speak.
  */
 
 #include "framework.h"
@@ -141,6 +144,40 @@ void test_pagetable(void) {
         ASSERT_TRUE(after < before);
     }
     if (e) kobject_release(&e->base);
+
+    /*
+     * [PT-8] the bootstrap exception, and the fact that it ends.
+     *
+     * The root task's text, stack and BootInfo are mapped before it exists, so
+     * there is nobody to ask for the levels and the kernel supplies them.
+     * That is the ONLY address space this is ever true of, and only until it
+     * can speak for itself — which is what kvspace_end_bootstrap says.  A test
+     * for it is worth having because the flag is invisible from userland: a
+     * kernel that silently kept funding the root task forever would look
+     * exactly like one that stopped.
+     */
+    {
+        struct KVSpace *boot = kvspace_alloc(cr3 + 0x1000ULL);
+        ASSERT_NOT_NULL(boot);
+        if (boot) {
+            /* kvspace_alloc is the root task's constructor: kernel-funded. */
+            ASSERT_EQ((int)boot->kernel_funded, 1);
+            /* ...and kvspace_alloc_at, every other address space, is not. */
+            void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KVSpace));
+            ASSERT_NOT_NULL(hdr);
+            if (hdr) {
+                struct KVSpace *spawned = kvspace_alloc_at(hdr, cr3 + 0x2000ULL);
+                ASSERT_NOT_NULL(spawned);
+                if (spawned) {
+                    ASSERT_EQ((int)spawned->kernel_funded, 0);
+                    kobject_release(&spawned->base);
+                }
+            }
+            kvspace_end_bootstrap(boot);
+            ASSERT_EQ((int)boot->kernel_funded, 0);
+            kobject_release(&boot->base);
+        }
+    }
 
     paging_stub_strict_levels(0);
     free(mem);

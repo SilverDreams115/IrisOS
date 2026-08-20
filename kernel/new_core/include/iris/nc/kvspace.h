@@ -55,16 +55,36 @@ struct KVSpace {
     int                   valid;         /* 1 = live, 0 = reaped */
     uint32_t              mapping_count; /* number of live KFrameMapping nodes */
     struct KFrameMapping *mappings;      /* singly-linked list head; NULL = empty */
-    /* Stage 6 Etapa 2: the Untyped that pays for this address space's
-     * intermediate page tables, delegated at process creation and retained
-     * here for as long as the VSpace lives.  NULL only for the root task,
-     * whose address space is built before any Untyped exists — a bounded
-     * bootstrap exception, like the idle task's static backing. */
+    /* The Untyped this address space's KERNEL-SIDE bookkeeping comes out of:
+     * its mapping records, and (when pml4_from_pool) the page its PML4 lives
+     * in.  Retained for as long as the VSpace lives.
+     *
+     * Stage 6-pure Etapa 3: this is no longer "who pays for page tables" —
+     * nobody does, because the kernel does not create them.  It also no longer
+     * decides whether a map is strict; that is `kernel_funded` below.  One
+     * field answering three questions is why the root task could not be strict
+     * without also being charged, and vice versa. */
     struct KUntyped      *pt_pool;
-    /* How many page tables have been carved from pt_pool for this address
-     * space.  Each one holds a child_count entry on the pool, so the pool
-     * cannot be RESET while they are live; teardown returns them all. */
-    uint32_t              pt_count;
+    /* The PML4 is a page child of pt_pool rather than a PMM page, so teardown
+     * must return its child entry.  Replaces the old pt_count, which counted
+     * kernel-carved page tables and, since the kernel stopped carving them,
+     * only ever held 0 or 1 — the PML4. */
+    uint8_t               pml4_from_pool;
+    /*
+     * The bootstrap exception, and the whole of it.
+     *
+     * 1 means the kernel supplies this address space's paging levels from the
+     * PMM reserve, because there is no userland able to supply them: the root
+     * task's text, stack and BootInfo are mapped before it exists.  It is
+     * cleared the moment the root task can speak for itself, after which the
+     * root task is as strict as every other address space and supplies its own
+     * levels through its own budget.
+     *
+     * No other address space ever sets it.  A spawned process has a holder
+     * from the moment it is created, so it owes its own levels from the first
+     * map — there is no window in which the kernel would have to guess.
+     */
+    uint8_t               kernel_funded;
     /* Stage 6 Etapa 6: mapping records carved from pt_pool, and the free list
      * they return to.  Mappings churn — map, unmap, map again — and a bump
      * allocator never rewinds, so carving one per map would leak the budget at
@@ -100,9 +120,16 @@ struct KFrameMapping *kvspace_node_alloc(struct KVSpace *vs);
 void                  kvspace_node_free(struct KVSpace *vs,
                                         struct KFrameMapping *m);
 
-/* Attach the page-table pool.  Retains `pool`; called once, before the VSpace
- * maps anything that could need a new level. */
+/* Attach the pool this address space's kernel-side bookkeeping comes from.
+ * Retains `pool`; called once.  Safe to call after the VSpace has mapped
+ * things — records already handed out from the bootstrap arena are recognised
+ * by their address, not by this field (kvspace_node_free). */
 void kvspace_set_pt_pool(struct KVSpace *vs, struct KUntyped *pool);
+
+/* End the bootstrap exception: from here on this address space supplies its
+ * own paging levels like every other.  Called once, when the root task becomes
+ * able to speak for itself. */
+void kvspace_end_bootstrap(struct KVSpace *vs);
 
 /* Allocate a new KVSpace wrapping the given cr3. Returns NULL on OOM.
  * Caller holds the alloc lifecycle ref (refcount=1, active_refs=0) on return. */

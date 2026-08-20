@@ -728,13 +728,48 @@ Tests: `tests/kernel/test_pagetable.c` (new, PT-1..PT-7) drives the walk
 exhaustively on the host, where level modelling is opt-in so the suites that
 predate paging levels keep testing what they were written for.
 
-### Etapa 3 — the bootstrap exception  ← NEXT
+### Etapa 3 — the bootstrap exception ends  ✅ DONE
 
-What remains kernel-funded is the root task's address space, and the
-`pt_pool` / `pt_count` machinery that funds mapping records and the PML4.  The
-root task holds untypeds by the time it runs, so it could supply its own levels
-for everything it maps after boot; what it cannot supply is the levels for its
-own text, stack and BootInfo, which are mapped before it exists.
+`pt_pool` was answering three different questions at once — is this map strict,
+was the PML4 pooled, and where do mapping records come from — which is why the
+root task could not be strict without also being charged, or charged without
+also being strict.  Three facts, three fields now: `kernel_funded`,
+`pml4_from_pool`, and `pt_pool` for storage only.  `pt_count` retires with the
+kernel-carved tables it counted; since the kernel stopped carving them it only
+ever held 0 or 1, and that 1 was the PML4.
+
+The exception is now bounded to what genuinely has no alternative: the root
+task's text, stack and BootInfo, mapped before it exists.  The moment it can
+speak for itself — it holds boot untypeds and a capability to its own VSpace —
+`kvspace_end_bootstrap` ends it, and the first boot block becomes its own
+budget.  From that line on **no address space in IRIS is implicitly funded
+while anybody is running.**
+
+Verified rather than assumed: instrumenting the kernel-funded path shows
+exactly six carves, all before the root task runs (three levels for its text,
+two for its stack, one more for the BootInfo window) and none afterwards.  The
+same suite passing without that check would have looked identical if the
+exception had never ended, which is why the check was worth making.
+
+The bootstrap arena stops being a guess.  It was sized 64, then 512, both
+times for an estimate of what the root task maps; it now serves only the
+pre-boot maps, every one of which is registered in `KProcess.bootstrap_frames[]`
+— a capped array — so its bound is that cap plus a margin, and a static assert
+holds it there.
+
+Tests: PT-8 (host) pins the exception's shape — kernel-funded is the root
+task's constructor and nothing else's, and ending it is one-way.  It is worth
+a test because the flag is invisible from userland: a kernel that kept funding
+the root task forever would look exactly like one that stopped.
+
+### Etapa 4 — what is left  ← NEXT
+
+The PML4 and the VSpace/KProcess/CNode headers are still CHARGED to a budget
+rather than retyped by their holder, and frames, IRQ handlers and I/O ports
+still have a kernel object where seL4 has none.  Both are the deeper half of
+ledger D-5 and neither is reachable without user-space process composition:
+retyping a child's PML4 means holding a capability to a child's address space
+before the child exists, which is Stage 7.
 
 ## Stage 7 — KProcess retirement
 

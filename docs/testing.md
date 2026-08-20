@@ -122,7 +122,7 @@ names itself rather than showing up as a boot hang:
 | T300 | Stage 6: user memory comes out of a named budget, and the region is reclaimable once the VMO is gone |
 | T301 | Stage 6: a REFUSED spawn leaves its budget untouched — no stranded children, still RESET-able, swept across the boundary in sub-page steps |
 | T302 | Stage 6-pure: a page table is a capability — retyped by the holder, installed one level per invocation, refused at a kernel address, and the walk it builds really maps |
-| PT-1..PT-7 (host) | Stage 6-pure: the paging walk driven exhaustively — level order, spent-vs-complete, kernel-address refusal, dead VSpace, and teardown returning every level |
+| PT-1..PT-8 (host) | Stage 6-pure: the paging walk driven exhaustively — level order, spent-vs-complete, kernel-address refusal, dead VSpace, teardown returning every level, and the bootstrap exception being one-way |
 
 Host unit tests cover what a successful boot cannot show: `RBI-1..RBI-10` (the
 BootInfo builder's bounds), `UT-TOP-1..5` (the two-ended Untyped carve),

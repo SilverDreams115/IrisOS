@@ -298,8 +298,8 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
      *
      * The header is carved BEFORE the PML4 it will own, and the order is
      * load bearing rather than cosmetic.  The VSpace is what returns the
-     * PML4's page-child entry to the pool at teardown (vs->pt_count starts at
-     * 1), and kprocess_reap_address_space decides whether cr3 is PMM memory
+     * PML4's page-child entry to the pool at teardown (vs->pml4_from_pool),
+     * and kprocess_reap_address_space decides whether cr3 is PMM memory
      * by asking p->vspace.  A PML4 that exists before its VSpace does is
      * therefore a page nothing can unwind: the cleanup path would find
      * p->vspace still NULL, conclude the tables were kernel-funded, and hand
@@ -326,9 +326,10 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
 
     struct KVSpace *vs = kvspace_alloc_at(hdr, proc->cr3);
     proc->vspace = vs;
-    /* The PML4 is a page child of the pool; the VSpace returns it with the
-     * page tables at teardown. */
-    vs->pt_count = 1;
+    /* The PML4 is a page child of the pool; the VSpace returns its entry at
+     * teardown.  The levels below it are not the kernel's to carve — the
+     * holder retypes and installs those (Stage 6-pure). */
+    vs->pml4_from_pool = 1;
     kvspace_set_pt_pool(vs, pool);
     kobject_active_release(&pool->base);
     kobject_release(&pool->base);
