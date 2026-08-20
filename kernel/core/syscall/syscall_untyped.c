@@ -88,6 +88,7 @@ _Static_assert(IRIS_KOBJ_UNTYPED       == (uint32_t)KOBJ_UNTYPED,       "KOBJ AB
 _Static_assert(IRIS_KOBJ_REPLY         == (uint32_t)KOBJ_REPLY,         "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_FRAME         == (uint32_t)KOBJ_FRAME,         "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_PAGE_TABLE    == (uint32_t)KOBJ_PAGE_TABLE,    "KOBJ ABI");
+_Static_assert(IRIS_KOBJ_VSPACE        == (uint32_t)KOBJ_VSPACE,        "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_TCB           == (uint32_t)KOBJ_TCB,           "KOBJ ABI");
 
 /*
@@ -184,6 +185,44 @@ static iris_error_t retype_page_table(struct KUntyped *ut, uint64_t obj_arg,
     return IRIS_OK;
 }
 
+/*
+ * Stage 6-pure Etapa 4 — an address space, retyped.
+ *
+ * The top level of a walk is a page like any other level, so a VSpace is
+ * carved exactly like a page table: the PML4 from the bottom, the header from
+ * the top.  What makes it a VSpace rather than a KPageTable is what the kernel
+ * writes into that page — the shared low window and the higher half — and the
+ * bookkeeping the header carries for the levels the holder will hang under it.
+ *
+ * The Untyped it came from becomes its pool, so the address space's mapping
+ * records come from the region the address space itself lives in.  That is not
+ * a convenience: it means a holder that RESETs the region gets ALL of it back,
+ * with no second budget to remember.
+ */
+static iris_error_t retype_vspace(struct KUntyped *ut, uint64_t obj_arg,
+                                  struct KObject **out) {
+    if (obj_arg != 4096u) return IRIS_ERR_INVALID_ARG;
+    if (ut->is_device)    return IRIS_ERR_NOT_SUPPORTED;
+
+    void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KVSpace));
+    if (!hdr) return IRIS_ERR_NO_MEMORY;
+    /* A page CHILD, not a bare carve: the PML4 outlives every level under it,
+     * so the region must refuse RESET for as long as the address space does. */
+    uint64_t phys = kuntyped_alloc_page_child(ut);
+    if (!phys) {
+        kuntyped_release_child(hdr, sizeof(struct KVSpace));
+        return IRIS_ERR_NO_MEMORY;
+    }
+    struct KVSpace *vs = kvspace_retype_at(hdr, phys, ut);
+    if (!vs) {
+        kuntyped_release_page_child(ut);
+        kuntyped_release_child(hdr, sizeof(struct KVSpace));
+        return IRIS_ERR_NO_MEMORY;
+    }
+    *out = &vs->base;
+    return IRIS_OK;
+}
+
 static iris_error_t retype_frame(struct KUntyped *ut, uint64_t obj_arg,
                                  struct KObject **out) {
     if (ut->is_device) {
@@ -271,6 +310,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         case KOBJ_UNTYPED:
         case KOBJ_FRAME:
         case KOBJ_PAGE_TABLE:
+        case KOBJ_VSPACE:
             /* Physical-region types keep count == 1 in S1 (their sidecar
              * headers are not yet untyped-backed — ledger MIGRATING). */
             if (count != 1u)
@@ -361,11 +401,12 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     uint64_t carve_start = 0, carve_end = 0;
 
     if (obj_type == KOBJ_UNTYPED || obj_type == KOBJ_FRAME ||
-        obj_type == KOBJ_PAGE_TABLE) {
+        obj_type == KOBJ_PAGE_TABLE || obj_type == KOBJ_VSPACE) {
         /* Single physical-region object (count == 1, validated above). */
         if      (obj_type == KOBJ_UNTYPED)    err = retype_sub_untyped(ut, obj_arg, &objs[0]);
         else if (obj_type == KOBJ_FRAME)      err = retype_frame(ut, obj_arg, &objs[0]);
-        else                                  err = retype_page_table(ut, obj_arg, &objs[0]);
+        else if (obj_type == KOBJ_PAGE_TABLE) err = retype_page_table(ut, obj_arg, &objs[0]);
+        else                                  err = retype_vspace(ut, obj_arg, &objs[0]);
     } else {
         void *ptrs[KUNTYPED_RETYPE_MAX_COUNT];
         {

@@ -762,14 +762,52 @@ task's constructor and nothing else's, and ending it is one-way.  It is worth
 a test because the flag is invisible from userland: a kernel that kept funding
 the root task forever would look exactly like one that stopped.
 
-### Etapa 4 — what is left  ← NEXT
+### Etapa 4 — the address space is retyped, not carved  ✅ DONE
 
-The PML4 and the VSpace/KProcess/CNode headers are still CHARGED to a budget
-rather than retyped by their holder, and frames, IRQ handlers and I/O ports
-still have a kernel object where seL4 has none.  Both are the deeper half of
-ledger D-5 and neither is reachable without user-space process composition:
-retyping a child's PML4 means holding a capability to a child's address space
-before the child exists, which is Stage 7.
+`SYS_PROCESS_CREATE` used to take a BUDGET and build an address space out of
+it — carving a PML4, a KVSpace header, and every level underneath.  The holder
+paid for a walk it could not name until the process existed, could not inspect,
+and could not have built differently.
+
+It takes an ADDRESS SPACE now.  `IRIS_KOBJ_VSPACE` is retyped from the caller's
+own Untyped like every other object — the PML4 from the bottom, the header from
+the top, exactly as a page table is carved, because the top level of a walk is
+a page like any other.  What makes it a VSpace rather than a `KPageTable` is
+what the kernel writes into that page (`paging_init_user_pml4`: the shared low
+window and the higher half) and the bookkeeping the header carries for the
+levels the holder will hang under it.  A process is COMPOSED from objects its
+creator made.
+
+Two consequences worth naming.  The Untyped a VSpace was retyped from becomes
+its pool, so an address space's mapping records come from the region the
+address space itself lives in — one region per child, and RESETting it returns
+all of the child with no second budget to remember.  And binding is one-way and
+exclusive (`IRIS_ERR_BUSY`): teardown is per-process, so two processes sharing
+a walk would each tear down the other's.
+
+The teardown order had to be corrected with it.  The PML4 is the VSpace
+object's own storage now, so releasing the VSpace can be what returns that
+page's accounting to its Untyped — and walking `cr3` afterwards would be
+walking a region whose holder has already been told it is free to RESET.  The
+walk is destroyed first and the object released after: the reverse of how it
+reads, and the only order that is true.
+
+T301 moved with the carves it pins.  Its target — a budget large enough for one
+carve and not the other — is now in `retype_vspace`, and it no longer needs the
+sub-page sweep it was built around: these two carves differ by a page, so the
+band where one fits and the other does not is a page wide and a one-page budget
+lands in it by construction.  Verified to fail (`refused retype left a child`)
+against the reversed carve order.
+
+### Etapa 5 — what is left  ← NEXT
+
+The KProcess object and its 256-slot root CNode are still charged to the
+address space's pool rather than retyped and passed, and frames, IRQ handlers
+and I/O ports still have a kernel object where seL4 has none.  The CNode is
+reachable — `RETYPE2(KOBJ_CNODE)` already exists, so `SYS_PROCESS_CREATE` could
+take one the way it now takes a VSpace.  `KProcess` itself is the FROZEN
+abstraction that retires whole in Stage 7, and the objectless frame/IRQ/IOPort
+model is a change to what a capability IS, not to who pays for it.
 
 ## Stage 7 — KProcess retirement
 

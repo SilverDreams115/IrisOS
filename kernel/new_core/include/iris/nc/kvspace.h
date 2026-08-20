@@ -85,6 +85,11 @@ struct KVSpace {
      * map — there is no window in which the kernel would have to guess.
      */
     uint8_t               kernel_funded;
+    /* Stage 6-pure Etapa 4: an address space the HOLDER retyped is bound to at
+     * most one process.  Binding is what gives it a cr3 to be — before that it
+     * is a page and a header — and two processes sharing one would be two
+     * CR3-loads of the same walk with different teardowns behind them. */
+    uint8_t               bound;
     /* Stage 6 Etapa 6: mapping records carved from pt_pool, and the free list
      * they return to.  Mappings churn — map, unmap, map again — and a bump
      * allocator never rewinds, so carving one per map would leak the budget at
@@ -147,6 +152,22 @@ struct KVSpace *kvspace_alloc(uint64_t cr3);
  * Untyped-owned cr3 for a PMM page.  A future variant that can fail after
  * taking the block has to give that caller a way to unwind the PML4. */
 struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3);
+
+/*
+ * Stage 6-pure Etapa 4 — the address space as a retyped object.
+ *
+ * `mem` is a top-carved header block and `pml4_phys` the page-aligned region
+ * carved from the same Untyped; the page becomes the PML4 and `pool` becomes
+ * where this address space's kernel-side bookkeeping comes from.  The result
+ * is an UNBOUND address space: real, mappable-into once bound, and owned by
+ * whoever holds the capability.
+ */
+struct KVSpace *kvspace_retype_at(void *mem, uint64_t pml4_phys,
+                                  struct KUntyped *pool);
+
+/* Bind a retyped address space to a process.  Fails if it is already bound —
+ * one address space, one process, because teardown is per-process. */
+iris_error_t kvspace_bind(struct KVSpace *vs);
 
 /* Mark the VSpace invalid and zero cr3.  Called by kprocess_reap_address_space
  * before paging_destroy_user_space so no capability holder can read a freed cr3. */

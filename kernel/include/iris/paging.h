@@ -135,6 +135,10 @@ int      paging_map_checked_in_from(uint64_t cr3, uint64_t virt, uint64_t phys,
 void     paging_destroy_user_space_from(uint64_t cr3, int tables_pooled);
 /* Stage 6 Etapa 3: the PML4 itself carved from `pool` (NULL = PMM). */
 uint64_t paging_create_user_space_from(struct KUntyped *pool);
+/* Stage 6-pure Etapa 4: initialise a page the HOLDER supplied as a user PML4 —
+ * zeroed, plus the shared low window and the higher half every address space
+ * shares with the kernel.  Allocates nothing. */
+void     paging_init_user_pml4(uint64_t pml4_page_phys);
 
 /*
  * Stage 6-pure Etapa 1 — the kernel walks and reports; the holder supplies.

@@ -281,7 +281,7 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * levels pass through on their way into it.  One slot is enough for any depth
  * — installing hands the VSpace its own reference, so the capability here is
  * spent the moment it lands (see iris_vspace.h). */
-#define SL_WS_CHILD_VSPACE 6u
+#define SL_WS_CHILD_VSPACE 6u   /* the address space the loader RETYPES for it */
 /* Two scratch slots, because the spare level a completed walk leaves behind
  * belongs to whoever paid for it.  The loader's own spare is retyped from the
  * loader's budget and is worth KEEPING across spawns; a child's spare is
@@ -527,8 +527,23 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                     break;
                 }
             }
+            /*
+             * Stage 6-pure Etapa 4: the loader RETYPES the child's address
+             * space and hands it over, instead of handing over a budget for
+             * the kernel to build one from.  A process is composed out of
+             * objects its creator made.
+             */
+            (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws),
+                          (long)SL_WS_CHILD_VSPACE);
+            if (sl_sys4(SYS_UNTYPED_RETYPE2, pool,
+                        (long)((uint64_t)IRIS_KOBJ_VSPACE | (1ULL << 32)),
+                        sl_ws_dest(ws, SL_WS_CHILD_VSPACE), 4096) != 0) {
+                r = (long)IRIS_ERR_NO_MEMORY;
+                break;
+            }
+            child_vs = (long)sl_ws_cptr(ws, SL_WS_CHILD_VSPACE);
             r = sl_sys3(SYS_PROCESS_CREATE, (long)proc_c,
-                        sl_ws_dest(ws, l), pool);
+                        sl_ws_dest(ws, l), child_vs);
             if (r == 0) { proc_leaf = l; pool_c = pool; break; }
             if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
         }
@@ -650,14 +665,10 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * and the reason it exists at all now that the kernel no longer
          * creates levels on the child's behalf.
          */
-        /* Publication is exclusive, and this workspace is reused across every
-         * spawn: the previous child's VSpace is still in the slot. */
-        (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws),
-                      (long)SL_WS_CHILD_VSPACE);
-        r = sl_sys2(SYS_PROCESS_VSPACE, (long)proc_h,
-                    sl_ws_dest(ws, SL_WS_CHILD_VSPACE));
-        if (r < 0) goto out;
-        child_vs = (long)sl_ws_cptr(ws, SL_WS_CHILD_VSPACE);
+        /* child_vs is already in hand: the loader retyped it above and the
+         * process was composed from it.  SYS_PROCESS_VSPACE is no longer the
+         * way to reach a child's address space at spawn time — the spawner
+         * made it, so it never stopped holding it. */
 
         /* 14. Create user stack sparse VMO (charged to the child) and map it in. */
         r = sl_sys3(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE,

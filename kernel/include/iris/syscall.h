@@ -279,17 +279,25 @@ static inline long iris_syscall0(long nr) {
  *   The result is a read-only KOBJ_VMO (RIGHT_READ) over a private copy of the
  *   embedded ELF bytes; map with flags=0.
  *
- * SYS_PROCESS_CREATE(auth_cptr, dest, budget_cptr) → 0 or negative iris_error_t
+ * SYS_PROCESS_CREATE(auth_cptr, dest, vspace_cptr) → 0 or negative iris_error_t
  *   auth_cptr:   the process control capability (IRIS_BOOTCAP_PROC_CONTROL).
  *   dest:        destination slot (cnode | slot<<32); required since Stage 4.
- *   budget_cptr: Stage 6 Etapa 2/3/4 — REQUIRED.  The KUntyped (RIGHT_WRITE)
- *                that pays for this address space and this process: its PML4,
- *                its KVSpace header, every page table it ever needs, its
- *                KProcess object and its 256-slot root CNode.  A spawn without
- *                one is INVALID_ARG rather than a spawn the kernel funds, and
- *                the budget cannot be RESET while the process lives — each
- *                carve is a child of it.
- *   Creates an empty KProcess with a fresh address space; no threads start.
+ *   vspace_cptr: Stage 6-pure Etapa 4 — REQUIRED.  A KOBJ_VSPACE (RIGHT_WRITE)
+ *                the CALLER retyped from its own Untyped
+ *                (RETYPE2 IRIS_KOBJ_VSPACE, obj_arg 4096).  A process is
+ *                COMPOSED from objects its creator made, not conjured from a
+ *                quota: this argument used to be a budget the kernel built an
+ *                address space out of, which meant the holder paid for a walk
+ *                it could not name until the process existed and could not
+ *                have built differently.
+ *
+ *                IRIS_ERR_BUSY if that address space is already bound to a
+ *                process — one walk, one process, because teardown is per
+ *                process.  What remains kernel-side (the KProcess object and
+ *                its root CNode) comes from the Untyped the address space
+ *                itself was retyped from, so a child costs exactly one region
+ *                and RESETting it returns all of the child.
+ *   Creates an empty KProcess around that address space; no threads start.
  *   Publishes the process capability into `dest` with RIGHT_READ|RIGHT_WRITE|
  *   RIGHT_MANAGE|RIGHT_DUPLICATE|RIGHT_TRANSFER|RIGHT_ROUTE.
  *
@@ -855,6 +863,7 @@ static inline long iris_syscall0(long nr) {
 #define IRIS_KOBJ_TCB           13u
 #define IRIS_KOBJ_FRAME         15u
 #define IRIS_KOBJ_PAGE_TABLE    16u
+#define IRIS_KOBJ_VSPACE        14u  /* Stage 6-pure: an address space the holder retypes */
 
 /*
  * Block 6 — CNode slot operations (Ph82-84).

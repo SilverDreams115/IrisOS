@@ -549,9 +549,9 @@ void kprocess_reap_address_space(struct KProcess *p) {
 
     /* Fase 4: invalidate the VSpace capability before destroying page tables.
      * Any capability holder that checks vs->valid after this point sees 0. */
-    if (p->vspace) {
-        kvspace_invalidate(p->vspace);
-        kobject_release(&p->vspace->base);
+    struct KVSpace *vs = p->vspace;
+    if (vs) {
+        kvspace_invalidate(vs);
         p->vspace = 0;
     }
 
@@ -559,9 +559,19 @@ void kprocess_reap_address_space(struct KProcess *p) {
      * has decremented mapped_count to 0 for all bootstrap-mapped pages. */
     kprocess_release_bootstrap_frames(p);
 
+    /*
+     * Tear the walk down BEFORE dropping the VSpace reference.
+     *
+     * Stage 6-pure Etapa 4 made the PML4 the VSpace object's own storage, so
+     * releasing the VSpace can be what returns that page's accounting to its
+     * Untyped — and then walking cr3 would be walking a region whose holder
+     * has already been told it is free to RESET.  The walk first, the object
+     * after: the reverse of how it reads, and the only order that is true.
+     */
     paging_destroy_user_space_from(cr3, tables_pooled);
     p->cr3 = 0;
     p->user_cr3 = 0;
+    if (vs) kobject_release(&vs->base);
     /* aspace_reaped was claimed on entry, not set here. */
 }
 

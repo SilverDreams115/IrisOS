@@ -27,6 +27,7 @@ int      paging_map_checked_in_from(uint64_t cr3, uint64_t virt, uint64_t phys,
                                     uint32_t *tables_made);
 void     paging_destroy_user_space_from(uint64_t cr3, int tables_pooled);
 /* Stage 6-pure Etapa 1 — the walk, reported; the table, installed. */
+void     paging_init_user_pml4(uint64_t pml4_page_phys);
 int      paging_missing_level_in(uint64_t cr3, uint64_t virt);
 int      paging_install_table_in(uint64_t cr3, uint64_t virt,
                                  uint64_t table_phys, uint64_t flags);

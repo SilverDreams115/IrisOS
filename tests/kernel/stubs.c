@@ -246,6 +246,11 @@ static int stub_pt_has(uint64_t cr3, uint64_t virt, int level) {
 static int stub_pt_strict = 0;
 void paging_stub_strict_levels(int on) { stub_pt_strict = on; stub_pt_n = 0; }
 
+/* Stage 6-pure Etapa 4: no MMU on the host, so a PML4 needs no contents —
+ * what the tests observe is that the object exists and behaves, not what the
+ * hardware would read out of the page. */
+void paging_init_user_pml4(uint64_t pml4_page_phys) { (void)pml4_page_phys; }
+
 int paging_missing_level_in(uint64_t cr3, uint64_t virt) {
     if (!cr3) return -1;
     if (!stub_pt_strict) return 0;          /* the walk is whatever it needs to be */

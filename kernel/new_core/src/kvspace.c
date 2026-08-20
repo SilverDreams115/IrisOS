@@ -104,6 +104,33 @@ static const struct KObjectOps kvspace_ops = {
     .destroy = kvspace_obj_destroy,
 };
 
+struct KVSpace *kvspace_retype_at(void *mem, uint64_t pml4_phys,
+                                  struct KUntyped *pool) {
+    if (!mem || !pml4_phys || (pml4_phys & 0xFFFULL) || !pool) return 0;
+
+    /* The page has to be a usable PML4 before anything can point CR3 at it,
+     * and it has to happen HERE rather than at bind time: between retype and
+     * bind the holder can hand the capability around, and an address space
+     * that is only half an address space in the meantime is a trap. */
+    paging_init_user_pml4(pml4_phys);
+
+    struct KVSpace *vs = kvspace_alloc_at(mem, pml4_phys);
+    if (!vs) return 0;
+    vs->pml4_from_pool = 1;   /* cr3 is inside the pool: never PMM-freed */
+    kvspace_set_pt_pool(vs, pool);
+    return vs;
+}
+
+iris_error_t kvspace_bind(struct KVSpace *vs) {
+    if (!vs) return IRIS_ERR_INVALID_ARG;
+    iris_error_t r = IRIS_OK;
+    spinlock_lock(&vs->lock);
+    if (vs->bound || !vs->valid || !vs->cr3) r = IRIS_ERR_BUSY;
+    else                                     vs->bound = 1;
+    spinlock_unlock(&vs->lock);
+    return r;
+}
+
 struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3) {
     if (!mem) return 0;
     struct KVSpace *vs = (struct KVSpace *)mem;   /* block arrives zeroed */
@@ -117,6 +144,7 @@ struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3) {
     vs->pt_pool        = 0;
     vs->pml4_from_pool = 0;
     vs->kernel_funded  = 0;   /* a spawned process owes its own levels */
+    vs->bound          = 0;
     atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);
     return vs;
 }
@@ -135,6 +163,7 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
     /* The root task's address space, and the only one: built before any
      * Untyped exists, so the kernel supplies its levels until it can speak. */
     vs->kernel_funded  = 1;
+    vs->bound          = 1;   /* the root task's, and only its */
     vs->free_nodes     = 0;
     vs->node_count     = 0;
     atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);

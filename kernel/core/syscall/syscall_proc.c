@@ -247,8 +247,8 @@ uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
                                    uint64_t arg2, uint64_t arg3) {
-    uint64_t dest      = arg1;   /* Etapa 4: cnode | slot<<32 */
-    uint64_t pool_cptr = arg2;   /* Stage 6 Etapa 2: page-table budget */
+    uint64_t dest        = arg1;   /* Etapa 4: cnode | slot<<32 */
+    uint64_t vspace_cptr = arg2;   /* Stage 6-pure Etapa 4: the address space */
     (void)arg3;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -269,71 +269,60 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     kobject_release(auth_obj);
 
     /*
-     * Stage 6 Etapa 2/3: the budget comes FIRST, because everything this
-     * syscall builds after it — the PML4, the VSpace header, and every page
-     * table the address space will ever need — is carved from it.
+     * Stage 6-pure Etapa 4: the caller supplies the ADDRESS SPACE.
+     *
+     * It used to supply a budget and the kernel built one out of it — carving
+     * a PML4, a VSpace header, and every level underneath.  The holder paid
+     * for an address space it could not name until the process existed, could
+     * not inspect, and could not have built differently.  Now it retypes a
+     * KOBJ_VSPACE from its own Untyped (RETYPE2, 4096) and hands that over,
+     * which is seL4's shape: a process is COMPOSED from objects its creator
+     * made, not conjured from a quota.
+     *
+     * The budget for what remains kernel-side — the KProcess object and its
+     * root CNode — is the one the address space itself came from.  Deriving it
+     * rather than taking a second argument keeps one region per child, so a
+     * holder that RESETs it gets all of the child back with nothing to
+     * remember.
      */
-    struct KUntyped *pool = 0;
+    struct KVSpace *vs = 0;
     {
-        iris_rights_t pr;
-        iris_error_t  pe = cspace_resolve_only_untyped(t->process,
-                               (iris_cptr_t)pool_cptr, RIGHT_WRITE, &pool, &pr);
-        if (pe != IRIS_OK)
-            return syscall_err(pe == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : pe);
+        iris_rights_t vr;
+        iris_error_t  ve = cspace_resolve_only_vspace(t->process,
+                               (iris_cptr_t)vspace_cptr, RIGHT_WRITE, &vs, &vr);
+        if (ve != IRIS_OK)
+            return syscall_err(ve == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ve);
+    }
+    /* One address space, one process: teardown is per-process, so two
+     * processes sharing a walk would each tear down the other's. */
+    iris_error_t be = kvspace_bind(vs);
+    if (be != IRIS_OK) {
+        kobject_active_release(&vs->base); kobject_release(&vs->base);
+        return syscall_err(be);
+    }
+    struct KUntyped *pool = vs->pt_pool;
+    if (!pool) {
+        /* A VSpace with no pool is the root task's, which is not something a
+         * caller can name — but the check is cheap and the alternative is a
+         * NULL deref in kprocess_alloc_from. */
+        kobject_active_release(&vs->base); kobject_release(&vs->base);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    /* Stage 6 Etapa 4: the process object and its root CNode come out of the
-     * same budget as its address space — together the largest per-process
-     * kernel allocation there was. */
     struct KProcess *proc = kprocess_alloc_from(pool);
     if (!proc) {
-        kobject_active_release(&pool->base); kobject_release(&pool->base);
+        kobject_active_release(&vs->base); kobject_release(&vs->base);
         return syscall_err(IRIS_ERR_NO_MEMORY);
     }
 
-    /* Fase 6.3: every child process needs a KVSpace so that sys_vmo_map_into
-     * can install KFrame-backed PTEs into it.  Stage 6 Etapa 3: its header is
-     * a child block of the same budget, carved from the top so it does not
-     * displace the page-aligned carves below.
-     *
-     * The header is carved BEFORE the PML4 it will own, and the order is
-     * load bearing rather than cosmetic.  The VSpace is what returns the
-     * PML4's page-child entry to the pool at teardown (vs->pml4_from_pool),
-     * and kprocess_reap_address_space decides whether cr3 is PMM memory
-     * by asking p->vspace.  A PML4 that exists before its VSpace does is
-     * therefore a page nothing can unwind: the cleanup path would find
-     * p->vspace still NULL, conclude the tables were kernel-funded, and hand
-     * an Untyped-owned page back to the buddy allocator — the same physical
-     * page then belongs to both the PMM and the region it was carved from.
-     * Carving the header first makes that state unreachable: once
-     * kvspace_alloc_at has a block it cannot fail, so there is no window in
-     * which cr3 is pooled and proc->vspace is not set. */
-    void *hdr = kuntyped_alloc_child_top(pool, sizeof(struct KVSpace));
-    if (!hdr) {
-        kobject_active_release(&pool->base); kobject_release(&pool->base);
-        kprocess_free(proc);
-        return syscall_err(IRIS_ERR_NO_MEMORY);
-    }
-
-    proc->cr3 = paging_create_user_space_from(pool);
-    if (!proc->cr3) {
-        kuntyped_release_child(hdr, sizeof(struct KVSpace));
-        kobject_active_release(&pool->base); kobject_release(&pool->base);
-        kprocess_free(proc);
-        return syscall_err(IRIS_ERR_NO_MEMORY);
-    }
+    /* The VSpace is the process's now: it holds the reference that keeps the
+     * address space alive, and drops it in kprocess_reap_address_space. */
+    kobject_retain(&vs->base);
+    proc->vspace   = vs;
+    proc->cr3      = vs->cr3;
     proc->user_cr3 = paging_make_user_cr3(proc->cr3, proc->pcid);
-
-    struct KVSpace *vs = kvspace_alloc_at(hdr, proc->cr3);
-    proc->vspace = vs;
-    /* The PML4 is a page child of the pool; the VSpace returns its entry at
-     * teardown.  The levels below it are not the kernel's to carve — the
-     * holder retypes and installs those (Stage 6-pure). */
-    vs->pml4_from_pool = 1;
-    kvspace_set_pt_pool(vs, pool);
-    kobject_active_release(&pool->base);
-    kobject_release(&pool->base);
-
+    kobject_active_release(&vs->base);
+    kobject_release(&vs->base);
 
     /* Etapa 4: arg1 names a destination CSpace slot; the new process cap is
      * published there as an MDB child of the spawn-cap slot that authorised

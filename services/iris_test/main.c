@@ -17862,8 +17862,12 @@ static void test_t251(void) {
          * belongs in the manifest of what CAN exist.  Its region is always
          * exactly one page — 512 entries of 8 bytes and nothing else. */
         { IRIS_KOBJ_PAGE_TABLE,    4096, IRIS_HANDLE_TYPE_PAGE_TABLE },
+        /* Stage 6-pure Etapa 4: an address space is retyped by its holder and
+         * handed to SYS_PROCESS_CREATE.  Its region is the PML4 — one page,
+         * like every other level of a walk. */
+        { IRIS_KOBJ_VSPACE,        4096, IRIS_HANDLE_TYPE_VSPACE },
     };
-    for (uint32_t i = 0; ok && i < 9u; i++) {
+    for (uint32_t i = 0; ok && i < 10u; i++) {
         if (it_retype2_at(su, canon[i].t, S1_SLOT_A, 1u, canon[i].arg) != 0) {
             ok = 0; why = "canonical type not creatable"; break;
         }
@@ -17875,7 +17879,7 @@ static void test_t251(void) {
     /* Everything else in 0..31 is refused — the manifest is CLOSED. */
     for (uint32_t t = 0; ok && t < 32u; t++) {
         int is_canon = 0;
-        for (uint32_t i = 0; i < 9u; i++) if (canon[i].t == t) is_canon = 1;
+        for (uint32_t i = 0; i < 10u; i++) if (canon[i].t == t) is_canon = 1;
         if (is_canon) continue;
         if (it_retype2_at(su, t, S1_SLOT_A, 1u, 4096) != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "non-canonical type creatable";
@@ -19856,20 +19860,22 @@ static void test_t299(void) {
     it_slot_delete(T299_SLOT_POOL);
     it_slot_delete(T299_SLOT_PROC);
 
-    /* 1. no budget, no address space. */
+    /* 1. no address space, no process. */
     if (it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
                 (long)((uint64_t)T299_SLOT_PROC << 32), 0)
         != (long)IRIS_ERR_INVALID_ARG) {   /* CPTR_NULL names nothing */
-        ok = 0; why = "spawn without budget allowed";
+        ok = 0; why = "spawn without address space allowed";
     }
     it_slot_delete(T299_SLOT_PROC);
 
-    /* 2. the budget is a capability of a specific type. */
+    /* 2. and it is a capability of a specific type — Stage 6-pure Etapa 4
+     *    made this argument the ADDRESS SPACE the caller retyped, not a budget
+     *    for the kernel to build one from. */
     if (ok && it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
                       (long)((uint64_t)T299_SLOT_PROC << 32),
                       (long)IRIS_CPTR_SVCMGR_EP)
               != (long)IRIS_ERR_INVALID_ARG) {
-        ok = 0; why = "endpoint accepted as budget";
+        ok = 0; why = "endpoint accepted as address space";
     }
     it_slot_delete(T299_SLOT_PROC);
 
@@ -19886,12 +19892,26 @@ static void test_t299(void) {
         ok = 0; why = "info";
     }
 
-    /* 3. a real address space funded by it.  Creating the process carves
-     *    nothing yet — page tables appear on the FIRST map into it, which is
-     *    what a loader would do and what this leg does explicitly. */
+    /* 3. an address space of our own making, out of that budget, handed to a
+     *    process.  Page tables appear on the FIRST map into it, which is what
+     *    a loader would do and what this leg does explicitly below. */
+    long cvs = -1;
+    if (ok) {
+        cvs = it_retype_slot_alloc(pool, IRIS_KOBJ_VSPACE, 4096);
+        if (cvs < 0) { ok = 0; why = "vspace retype"; }
+    }
     if (ok && it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
-                      (long)((uint64_t)T299_SLOT_PROC << 32), pool) != 0) {
-        ok = 0; why = "spawn with budget";
+                      (long)((uint64_t)T299_SLOT_PROC << 32), cvs) != 0) {
+        ok = 0; why = "spawn with address space";
+    }
+    /* ...and that address space is spent: one walk, one process. */
+    if (ok) {
+        it_slot_delete(S1_SLOT_E);
+        if (it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
+                    (long)((uint64_t)S1_SLOT_E << 32), cvs) != (long)IRIS_ERR_BUSY) {
+            ok = 0; why = "address space bound twice";
+        }
+        it_slot_delete(S1_SLOT_E);
     }
 
     /* Stage 6 Etapa 3: creating the address space already costs the budget —
@@ -19942,6 +19962,11 @@ static void test_t299(void) {
             ok = 0; why = "kill";
         }
         it_slot_delete(T299_SLOT_PROC);
+        /* Stage 6-pure Etapa 4: the address space is an object WE made, so the
+         * process dying is not the end of it — our capability is.  Holding one
+         * keeps the walk alive and its levels charged, which is the point of
+         * it being a capability rather than a side effect of the process. */
+        if (cvs >= 0) it_slot_delete((uint32_t)cvs);
         it_quiesce_reaper();
         long rr = it_sys1(SYS_UNTYPED_RESET, pool);
         if (ok && rr == (long)IRIS_ERR_BUSY) { ok = 0; why = "budget still bound after death"; }
@@ -20044,134 +20069,83 @@ static void test_t300(void) {
     if (ok) it_pass("T300"); else it_fail("T300", why);
 }
 
-/* ── T301: a REFUSED spawn leaves the budget untouched (Stage 6 Etapa 2/3) ─
- * Building an address space takes two carves out of the named budget: a page
- * for the PML4, and a block for the KVSpace header that owns it.  The header
- * is what returns the PML4's page-child entry to the pool at teardown, and
- * kprocess_reap_address_space asks p->vspace whether cr3 came from an Untyped
- * at all — so a PML4 that exists before its VSpace does is a page nothing can
- * unwind.  Carving them in that order meant a budget large enough for the
- * page but not for the header left the kernel holding a page it believed was
- * PMM memory: it handed the page back to the buddy allocator while the
- * Untyped still owned the region, and the region's child count never dropped,
- * so the holder could never RESET it either.
+/* ── T301: a REFUSED address-space retype leaves the budget untouched ─────
+ * Building an address space takes two carves out of one budget: a page for the
+ * PML4, and a block for the KVSpace header that owns it.  A budget large
+ * enough for one and not the other is where a half-built object comes from,
+ * and a half-built object nothing can unwind is a page belonging to two owners
+ * at once.
  *
- * Asserted, for a budget of every size across the boundary:
+ * SYS_PROCESS_CREATE used to make those carves, and got the order wrong: the
+ * page first, then the header, so a failure in between left a PML4 the cleanup
+ * path believed was PMM memory and returned to the buddy allocator while its
+ * Untyped still owned the region.  Stage 6-pure Etapa 4 moved the carves into
+ * RETYPE2(KOBJ_VSPACE), where the holder makes the address space itself — so
+ * this test moved with them.  What it pins is unchanged, because the shape of
+ * the mistake is unchanged:
  *
- *   1. a refusal leaves the budget's child count exactly where it was — a
- *      half-built address space is not a child of anything;
- *   2. so the region is still whole: RESET reclaims it (with the leaked PML4
- *      entry it answered BUSY forever);
- *   3. the sweep really crossed the boundary — some size spawned, some was
- *      refused;
- *   4. and it crossed it in SUB-PAGE steps.
+ *   1. a budget too small for a whole address space REFUSES the retype;
+ *   2. after the refusal the budget has NO new children — a half-built object
+ *      left nothing of itself behind;
+ *   3. so the region is still whole: RESET succeeds;
+ *   4. and the sweep really crossed the boundary — some size built one and
+ *      some was refused.
  *
- * Leg 4 is what makes legs 1-3 mean anything, because the only budget sizes
- * that reach the bug are the ones big enough for the PML4 and short of the
- * header — a band one KVSpace header block wide, far narrower than the page
- * granularity a budget can be carved at.  Stepping the budget by whole pages
- * jumps clean over it.  So each round gives the pool one MORE page and
- * pre-carves one more frame inside it: the frame's page cancels the extra
- * page and its header block does not, which walks the room left for the
- * address space down by one header block per round instead of one page.
- * Leg 4 pins that the walk stayed sub-page; without it a struct-size change
- * could turn this into a test that passes while stepping straight over the
- * only sizes it exists to cover.
+ * A plain sweep of page-sized budgets is enough here, and that is worth saying
+ * because the earlier version of this test needed sub-page steps to reach its
+ * target at all.  These two carves differ by a page: the header is a couple of
+ * hundred bytes and the PML4 is 4096, so the band where one fits and the other
+ * does not is a PAGE wide rather than a header wide.  A one-page budget lands
+ * in it by construction.
  * Invariants: M1, M3, O2, O6. */
-#define T301_SLOT_PROC   S1_SLOT_D
-#define T301_BASE_PAGES  6u    /* room for one address space, plus change */
-#define T301_ROUNDS      16u
+#define T301_SLOT_VS    S1_SLOT_D
+#define T301_MAX_PAGES  6u
 
 static void test_t301(void) {
     int ok = 1;
-    const char *why = "refused spawn residue";
-    /* Smallest budget that still spawned, largest that was refused. */
-    uint64_t least_ok = ~0ull, most_refused = 0;
-    int saw_spawn = 0, saw_refusal = 0;
-    long frames[T301_ROUNDS];
+    const char *why = "refused retype residue";
+    int saw_built = 0, saw_refusal = 0;
 
-    it_slot_delete(T301_SLOT_PROC);
+    it_slot_delete(T301_SLOT_VS);
 
-    /* Every budget below must start on a page boundary, or its first page
-     * carve loses the alignment slack and the round lands somewhere other
-     * than where this test computed.  A frame carve leaves the parent's bump
-     * page-aligned, and a sub-untyped starts at that bump. */
-    if (it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
-                             IRIS_KOBJ_FRAME, 4096) < 0) {
-        it_fail("T301", "align frame"); return;
-    }
-
-    for (uint32_t k = 0; ok && k < T301_ROUNDS; k++) {
+    for (uint32_t pages = 1u; ok && pages <= T301_MAX_PAGES; pages++) {
         long pool = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
-                                         IRIS_KOBJ_UNTYPED,
-                                         (long)((T301_BASE_PAGES + k) * 4096u));
+                                         IRIS_KOBJ_UNTYPED, (long)(pages * 4096u));
         if (pool < 0) { ok = 0; why = "pool carve"; break; }
 
-        struct it_utq_one q;
-        if (!it_utq_1(pool, &q)) { ok = 0; why = "query"; break; }
-        if ((q.phys_base & 0xFFFu) != 0u) { ok = 0; why = "budget not page-aligned"; break; }
+        struct it_utq_one before, after;
+        if (!it_utq_1(pool, &before)) { ok = 0; why = "query"; break; }
 
-        uint32_t made = 0;
-        while (made < k) {
-            long f = it_retype_slot_alloc(pool, IRIS_KOBJ_FRAME, 4096);
-            if (f < 0) break;
-            frames[made++] = f;
-        }
-        if (made != k) { ok = 0; why = "frame carve"; }
+        it_slot_delete(T301_SLOT_VS);
+        long r = it_retype2_at(pool, IRIS_KOBJ_VSPACE, T301_SLOT_VS, 1u, 4096);
 
-        uint64_t room = 0;
-        if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&room) != 0) {
-            ok = 0; why = "info";
-        }
-        if (ok && !it_utq_1(pool, &q)) { ok = 0; why = "query2"; }
-
-        if (ok) {
-            uint32_t children_before = q.child_count;
-            it_slot_delete(T301_SLOT_PROC);
-            long cr = it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
-                              (long)((uint64_t)T301_SLOT_PROC << 32), pool);
-            if (cr == 0) {
-                saw_spawn = 1;
-                if (room < least_ok) least_ok = room;
-                (void)it_sys1(SYS_PROCESS_KILL, (long)T301_SLOT_PROC);
-                it_slot_delete(T301_SLOT_PROC);
-                it_quiesce_reaper();
-            } else if (cr == (long)IRIS_ERR_NO_MEMORY) {
-                saw_refusal = 1;
-                if (room > most_refused) most_refused = room;
-                /* 1. the refusal kept nothing of the address space. */
-                if (!it_utq_1(pool, &q)) { ok = 0; why = "query3"; }
-                else if (q.child_count != children_before) {
-                    ok = 0; why = "refused spawn left a child";
-                }
-                /* 2. and the budget is still reclaimable, whole. */
-                if (ok) {
-                    for (uint32_t i = 0; i < made; i++)
-                        it_slot_delete((uint32_t)frames[i]);
-                    made = 0;
-                    if (it_sys1(SYS_UNTYPED_RESET, pool) != 0) {
-                        ok = 0; why = "budget not reclaimable after refusal";
-                    }
-                }
-            } else {
-                ok = 0; why = "unexpected spawn error";
+        if (r == 0) {
+            saw_built = 1;
+            it_slot_delete(T301_SLOT_VS);
+            it_quiesce_reaper();
+        } else if (r == (long)IRIS_ERR_NO_MEMORY) {
+            saw_refusal = 1;
+            /* 1+2. the refusal kept nothing. */
+            if (!it_utq_1(pool, &after)) { ok = 0; why = "query2"; }
+            else if (after.child_count != before.child_count) {
+                ok = 0; why = "refused retype left a child";
             }
+            /* 3. and the region is still whole. */
+            if (ok && it_sys1(SYS_UNTYPED_RESET, pool) != 0) {
+                ok = 0; why = "budget not reclaimable after refusal";
+            }
+        } else {
+            ok = 0; why = "unexpected retype error";
         }
 
-        for (uint32_t i = 0; i < made; i++) it_slot_delete((uint32_t)frames[i]);
         it_slot_delete((uint32_t)pool);
     }
 
-    /* 3. the sweep straddled the boundary. */
-    if (ok && !saw_spawn)   { ok = 0; why = "no budget spawned"; }
+    /* 4. the sweep straddled the boundary, so the rounds above were real. */
+    if (ok && !saw_built)   { ok = 0; why = "no budget built one"; }
     if (ok && !saw_refusal) { ok = 0; why = "no budget was refused"; }
-    /* 4. and it did so in sub-page steps, so the sizes just short of enough —
-     *    the only ones that reach the bug — were actually visited. */
-    if (ok && least_ok - most_refused >= 4096u) {
-        ok = 0; why = "sweep stepped over the boundary";
-    }
 
-    it_slot_delete(T301_SLOT_PROC);
+    it_slot_delete(T301_SLOT_VS);
     if (ok) it_pass("T301"); else it_fail("T301", why);
 }
 

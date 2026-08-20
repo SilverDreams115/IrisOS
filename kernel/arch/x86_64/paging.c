@@ -383,6 +383,30 @@ void paging_init(uint64_t fb_phys, uint64_t fb_size) {
     }
 }
 
+/*
+ * Stage 6-pure Etapa 4 — initialise a page the HOLDER supplied as a PML4.
+ *
+ * Split out of paging_create_user_space_from because the two halves answered
+ * to different owners once an address space became something a holder retypes:
+ * where the page comes from is the holder's business, and what has to be in it
+ * before CR3 can point at it is the kernel's.  Nothing here allocates.
+ *
+ * What has to be in it: nothing of the previous occupant (a stale entry is a
+ * walk into somebody else's memory), the shared low window so kernel code
+ * remains addressable under this CR3, and the higher half, which every address
+ * space shares with the kernel.
+ */
+void paging_init_user_pml4(uint64_t pml4_page_phys)
+{
+    if (pml4_page_phys == 0) return;
+    uint64_t *kernel_pml4 = phys_to_ptr(pml4_phys);
+    uint64_t *user_pml4   = phys_to_ptr(pml4_page_phys);
+
+    for (uint64_t i = 0; i < ENTRIES; i++) user_pml4[i] = 0;
+    user_pml4[USER_SHARED_PML4_INDEX] = kernel_pml4[USER_SHARED_PML4_INDEX];
+    for (uint64_t i = 256; i < ENTRIES; i++) user_pml4[i] = kernel_pml4[i];
+}
+
 uint64_t paging_create_user_space_from(struct KUntyped *pool)
 {
     /* Stage 6 Etapa 3: the PML4 is the last page of an address space that the
@@ -394,22 +418,7 @@ uint64_t paging_create_user_space_from(struct KUntyped *pool)
                                   : pmm_alloc_pages(1);
     if (new_pml4_phys == 0) return 0;
 
-    uint64_t *kernel_pml4 = phys_to_ptr(pml4_phys);
-    uint64_t *user_pml4   = phys_to_ptr(new_pml4_phys);
-
-    for (uint64_t i = 0; i < ENTRIES; i++) {
-        user_pml4[i] = 0;
-    }
-
-    /* Shared low kernel window: identity-mapped low memory remains available
-     * to kernel code under any CR3, but user mappings live elsewhere. */
-    user_pml4[USER_SHARED_PML4_INDEX] = kernel_pml4[USER_SHARED_PML4_INDEX];
-
-    /* Higher half is always shared kernel space. */
-    for (uint64_t i = 256; i < ENTRIES; i++) {
-        user_pml4[i] = kernel_pml4[i];
-    }
-
+    paging_init_user_pml4(new_pml4_phys);
     return new_pml4_phys;
 }
 
