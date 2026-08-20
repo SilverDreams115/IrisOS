@@ -457,6 +457,14 @@ of every mechanism that is not yet seL4's. Where it stands:
 | **7 — KProcess retirement** | **in progress**: the last pool-born thread and one invented ceiling are gone; `KProcess` itself needs the user-space process server |
 | 8–10 — MCS, SMP, platform | not started, by sequencing |
 
+**How close is this to seL4?** Two answers, and they are far apart: the
+authority model is close, the kernel architecture is not. The roadmap's
+[How close is this to seL4](docs/architecture/sel4-convergence-roadmap.md#how-close-is-this-to-sel4)
+grades each dimension against seL4 rather than against the roadmap's own
+progress, and names the two things no further stage closes — threads that block
+inside the kernel (ledger D-1), and an ABI that numbers its syscalls where seL4
+invokes capabilities (charter §6, permanent by decision).
+
 **What Stage 6-pure changed.** Stage 6 answered *who pays* for memory: the
 kernel creates the object and charges it to an Untyped the caller named. That
 is not seL4's answer, and the ledger recorded the gap as D-5. Stage 6-pure

@@ -50,6 +50,57 @@ address space, and the root task's maps made before the root task exists.
 After Stage 7's two steps, no thread exists because the kernel had a free slot,
 and no memory ceiling exists that a capability did not set.
 
+## How close is this to seL4
+
+Measured against seL4's model rather than against this roadmap's own progress,
+because a roadmap that grades itself is not evidence.  The honest answer has
+two halves and they are far apart:
+
+**The authority model is close.  The kernel architecture is not.**
+
+| Dimension | State | Evidence |
+|---|---|---|
+| Object model and creation | **very close** | every canonical object is retyped from Untyped; address spaces and CSpaces are retyped by their HOLDER (Stage 6-pure).  Four object types exist that seL4 has no equivalent for — `KProcess`, `KVMO`, `KInitrdEntry`, `KBootstrapCap` — and all four are staged |
+| Capabilities (CSpace, CDT, revoke) | **close** | native CDT/MDB, recursive cross-process revoke, one namespace.  Gaps: no CNode guards (D-2), and a different rights set (D-3) |
+| IPC | **close** | endpoints, badges, reply objects, receive slots, no handle fallback.  Gaps: no combined `ReplyRecv`, no per-thread IPC buffer object (D-4) |
+| No ambient authority | **nearly met** | boot authority is one capability per authority; what remains is the ioport whitelist and the VMO-count quota |
+| No kernel heap | **nearly met** | 19 permitted `kslab_alloc` occurrences, all boot path or subsystems retiring in Stage 7; seL4 has none at all |
+| MCS scheduling | **partial** | budget and period are enforced (a thread that exhausts its budget blocks until the next period).  Missing the parts that make MCS *MCS*: **no SC donation over IPC, no timeout faults, no sporadic refills** |
+| ABI shape | **far, by decision** | 80 live numbered syscalls and 43 reserved, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  Registered permanent divergence (charter §6) |
+| Kernel architecture | **not started** | D-1: a kernel stack per thread, and threads block INSIDE the kernel |
+
+### The two that no further stage closes
+
+**D-1 is the structural one.**  seL4 is an event kernel: one stack per core,
+no thread ever blocks in the kernel, a long operation returns to a preemption
+point and the syscall restarts.  IRIS gives every thread 8 KiB of kernel stack
+and parks it there with live state.  That is the reason seL4 can bound in-kernel
+latency and be verified, and converting to it is a rewrite of every blocking
+path (IPC, futex, notification wait, reply) — not an increment.  The ledger
+assigns it no stage deliberately.
+
+**The ABI shape is permanent by choice.**  In seL4 there is one way to exercise
+authority: invoke a capability.  In IRIS there are 80 entry points, each
+validating its own arguments.  The authority SEMANTICS are equivalent — nothing
+is reachable without naming a capability — but the verification surface is not,
+and no convergence work changes that.
+
+### If it needs a number
+
+**Roughly 75% on capability semantics, 25% on kernel architecture.**  Stages
+5 through 7 moved the first a long way and the second not at all, because the
+second does not move in stages.  Anyone quoting a single figure for "how seL4
+is IRIS" is averaging two things that should not be averaged.
+
+### Remaining work, by real size
+
+1. **MCS proper** — donation, timeout faults, refills (Stage 8).  The largest
+   piece of genuinely stage-able convergence left.
+2. **`KProcess` and `KVMO` retirement** with the process and memory servers
+   (Stage 7) — closes the rest of D-5 and the last kernel-side policy.
+3. **CNode guards** (D-2) — additive, and nothing currently needs them.
+4. **D-1** — a separate project, not a stage.
+
 ## Stage 0 — TCB consolidation  ✅ CLOSED (Phase S2 inc.2)
 
 - The open increment is closed and committed; the working tree is clean.
