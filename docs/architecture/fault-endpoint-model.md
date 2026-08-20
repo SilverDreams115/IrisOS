@@ -1,8 +1,8 @@
-# Fase 20 — Fault endpoint / exception delivery model
+# Phase 20 — Fault endpoint / exception delivery model
 
 Status: ACCEPTED — implemented in this phase.  Companion to
-`vspace-frame-hardening.md` (Fase 19), `lifecycle-hardening.md` (Fase 16) and
-`scheduler-hardening.md` (Fase 17).  Fase 20 closes the gap Fase 19 left
+`vspace-frame-hardening.md` (Phase 19), `lifecycle-hardening.md` (Phase 16) and
+`scheduler-hardening.md` (Phase 17).  Phase 20 closes the gap Phase 19 left
 explicit: ring 3 can now observe and drive write-protection / NX / invalid-VA
 page faults through an explicit, capability-mediated delivery model instead of
 "the kernel kills the task".  Locked with runtime tests T140–T147.
@@ -37,7 +37,7 @@ SYS_PROCESS_FAULT_INFO(proc_h, out_uptr)             105
   (or `HANDLE_INVALID` = self); `notif_h`: `KOBJ_NOTIFICATION` with
   `RIGHT_WRITE`; `signal_bits != 0`.  Re-registration replaces the handler
   (last registration wins).  Registering on a torn-down process fails
-  `NOT_FOUND` (Fase 20 hardening — see bugs).  Registering on a created but
+  `NOT_FOUND` (Phase 20 hardening — see bugs).  Registering on a created but
   not-yet-started process is legitimate and is the race-free supervisor
   order: wire the handler first, start the child second.
 - `SYS_PROCESS_FAULT_INFO` — `RIGHT_READ`; fills the 32-byte record of
@@ -81,13 +81,13 @@ invariant (F2), not a policy default.
 ### The shared-IST bug (found and fixed this phase)
 
 `#GP`/`#PF` enter through IST1 — a fixed 16 KB per-CPU stack that the CPU
-rewinds to the top on every entry.  Since Fase 13, a delivered fault blocks
+rewinds to the top on every entry.  Since Phase 13, a delivered fault blocks
 the task *inside the ISR*, leaving its live context (interrupt frame, C
 frames, `context_switch` state) inside IST1.  The next `#GP`/`#PF` from any
 other task would start pushing at the same IST1 top and destroy the
 suspended task's context — resume would then pop garbage and iretq to a
 corrupted frame.  The bug was unreachable before fault delivery existed
-(the faulting task was killed and never resumed); Fase 20 makes suspension
+(the faulting task was killed and never resumed); Phase 20 makes suspension
 routine, so it had to be fixed at the root:
 
 - For vectors 13/14 originating in ring 3, `isr_common` now copies the full
@@ -167,9 +167,9 @@ RUNNING ─────→ TASK_BLOCKED_FAULT ─────→ READY → RUNNI
   off-CPU.  Teardown clears the fault record and (twice, see below) the
   registered notification pin.
 - **VSpace/VM** — the fault path reads cr2 and touches no mapping state;
-  process death sweeps mappings exactly as in Fase 19 (`mapped_count`
+  process death sweeps mappings exactly as in Phase 19 (`mapped_count`
   baseline asserted per test).  The write-protection and NX faults are the
-  hardware-level proof of the Fase 19 rights model: PTE.W and PTE.NX now
+  hardware-level proof of the Phase 19 rights model: PTE.W and PTE.NX now
   observably enforce what the authority layer promised (T138 gap closed).
 - **CSpace/capabilities** — registration/observation/resolution resolve
   through the standard dual resolver with `RIGHT_MANAGE`/`RIGHT_READ`
@@ -234,7 +234,7 @@ T141  invalid-VA delivery: exactly-once, honest info (vector/cr2/rip/err),
       suspension while pending, record stability, kill-resolution, books.
 T142  write-protection on the child's own r-x text: read completes, write
       faults 0x07, store never retires, resume re-faults at the same rip/cr2,
-      closes the Fase 19 T138 gap.
+      closes the Phase 19 T138 gap.
 T143  NX instruction fetch from the child's stack: err 0x15, cr2 == rip.
 T144  resume semantics: unauthorized denied, bogus id NOT_FOUND, bad action
       INVALID_ARG, resume→new fault, kill→no stale record, late resume clean.
@@ -265,7 +265,7 @@ smoke-level coverage.
   records, or a small per-process fault queue.
 - **No fault redirection to a third-party pager**: resume re-executes; there
   is no "fix the mapping on the child's behalf" primitive yet (a supervisor
-  cannot map into another process's VSpace — Fase 19 V20 isolation).  This
+  cannot map into another process's VSpace — Phase 19 V20 isolation).  This
   is the groundwork boundary for a user pager (VM policy) phase.
 - **No per-vector filtering**: one endpoint receives every deliverable
   vector.  Cheap to add later via signal_bits conventions if a real consumer

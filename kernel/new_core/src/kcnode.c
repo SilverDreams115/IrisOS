@@ -1,5 +1,5 @@
 /*
- * kcnode.c — capability nodes + native MDB/CDT (Fase S3).
+ * kcnode.c — capability nodes + native MDB/CDT (Phase S3).
  *
  * The capability IS the slot: object/rights/badge plus an intrusive
  * derivation node (parent / first-child / doubly-linked siblings).  These
@@ -27,12 +27,12 @@
 
 static _Atomic uint32_t kcnode_live;
 
-/* Fase 18 — live KCNode object count (additive diagnostics). */
+/* Phase 18 — live KCNode object count (additive diagnostics). */
 uint32_t kcnode_live_count(void) {
     return atomic_load_explicit(&kcnode_live, memory_order_relaxed);
 }
 
-/* ── Fase S2/S3 — derivation instrumentation ────────────────────────────── */
+/* ── Phase S2/S3 — derivation instrumentation ────────────────────────────── */
 
 static _Atomic uint32_t cdt_derivation_count;   /* derived installs (copy/mint/retype-child) */
 static _Atomic uint32_t cdt_derivation_hwm;     /* max live derived nodes */
@@ -52,7 +52,7 @@ static _Atomic uint32_t mdb_revoked_nodes;      /* caps destroyed by revoke */
 static _Atomic uint32_t mdb_moves;
 static _Atomic uint32_t mdb_max_depth;
 
-/* Fase S4 (Etapa 3): RETIRED.  The parallel handle-tree derivation this
+/* Phase S4 (Step 3): RETIRED.  The parallel handle-tree derivation this
  * counted is deleted (SYS_CAP_DERIVE/SYS_CAP_REVOKE retired,
  * table's derived-insert / revoke-children / parent-array machinery gone),
  * so it has ZERO callers and legacy_handle_deriv_migrated is a structural 0.

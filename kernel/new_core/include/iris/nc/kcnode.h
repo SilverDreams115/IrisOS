@@ -16,7 +16,7 @@
 
 struct KCNode;
 
-/* Fase S3 — MDB flags (per-slot derivation metadata). */
+/* Phase S3 — MDB flags (per-slot derivation metadata). */
 #define MDB_FLAG_LEGACY_ROOT 0x1u  /* installed from a non-CSpace origin
                                     * (handle / bootstrap / IPC delivery):
                                     * counted debt, see cspace-cdt-mdb.md §1.5 */
@@ -24,12 +24,12 @@ struct KCNode;
 struct KCSlot {
     struct KObject *object;
     iris_rights_t   rights;
-    uint64_t        badge;   /* Fase 9: per-cap sender identity.  0 =
+    uint64_t        badge;   /* Phase 9: per-cap sender identity.  0 =
                               * unbadged.  Set only at mint time by the
                               * minting authority; copy/move/swap preserve
                               * it; it never crosses to other caps. */
     /*
-     * Fase S3 — MDB/CDT: intrusive derivation links.  The capability IS the
+     * Phase S3 — MDB/CDT: intrusive derivation links.  The capability IS the
      * slot; its derivation node lives inside it (zero allocation per op).
      * Valid only while object != NULL; an empty slot has every link NULL and
      * flags 0 (invariant B.3-1).  Links are direct slot pointers — stable for
@@ -64,7 +64,7 @@ struct KCNode {
     irq_spinlock_t   lock;
     uint32_t         slot_count;
     struct KCSlot   *slots;      /* inline array immediately after header */
-    /* Stage 6-pure Etapa 5: this CNode is some process's root CSpace.  At most
+    /* Stage 6-pure Step 5: this CNode is some process's root CSpace.  At most
      * one, and never cleared: kprocess_teardown empties a root's slots before
      * dropping its refs (the CSpace may name itself), so handing the same
      * CNode to a second process would let the first process's teardown empty
@@ -84,7 +84,7 @@ void           kcnode_close(struct KCNode *cn);
  * Empty every slot of `cn` with DELETE semantics, exactly as the object's
  * close callback does, but WITHOUT waiting for the last reference to go.
  *
- * Stage 5 Etapa 3: a CSpace can contain a capability to one of its own CNodes
+ * Stage 5 Step 3: a CSpace can contain a capability to one of its own CNodes
  * — the root task holds a capability to its own root CNode, the way seL4's
  * root task does — and a slot holds refs on the object it names.  A CNode
  * reachable from itself therefore never reaches zero references on its own,
@@ -102,9 +102,9 @@ void           kcnode_teardown_slots(struct KCNode *cn);
  * is one — see `is_root`. */
 iris_error_t   kcnode_bind_root(struct KCNode *cn);
 
-/* Fase 18: live KCNode object count (additive diagnostics). */
+/* Phase 18: live KCNode object count (additive diagnostics). */
 uint32_t       kcnode_live_count(void);
-/* Fase S2: CSpace-native derivation (CDT/MDB) instrumentation. */
+/* Phase S2: CSpace-native derivation (CDT/MDB) instrumentation. */
 void           kcnode_cdt_note_legacy_migrated_derivation(void);
 void           kcnode_cdt_stats(uint32_t *deriv, uint32_t *deriv_hwm,
                                 uint32_t *revoke, uint32_t *del,
@@ -112,23 +112,23 @@ void           kcnode_cdt_stats(uint32_t *deriv, uint32_t *deriv_hwm,
                                 uint32_t *legacy_migrated);
 iris_error_t   kcnode_mint(struct KCNode *cn, uint32_t slot_idx,
                             struct KObject *obj, iris_rights_t rights);
-/* Exclusive mint (Fase 8): fails with IRIS_ERR_ALREADY_EXISTS if the slot
+/* Exclusive mint (Phase 8): fails with IRIS_ERR_ALREADY_EXISTS if the slot
  * is occupied instead of silently replacing the cap.  Used by
  * SYS_PROC_CSPACE_MINT so a spawner cannot clobber a child's slots. */
 iris_error_t   kcnode_mint_excl(struct KCNode *cn, uint32_t slot_idx,
                                  struct KObject *obj, iris_rights_t rights);
-/* Overwrite mint preserving an explicit badge (Fase 9; MOVE path). */
+/* Overwrite mint preserving an explicit badge (Phase 9; MOVE path). */
 iris_error_t   kcnode_mint_badged(struct KCNode *cn, uint32_t slot_idx,
                                    struct KObject *obj, iris_rights_t rights,
                                    uint64_t badge);
-/* Badged exclusive mint (Fase 9): like kcnode_mint_excl but also records
+/* Badged exclusive mint (Phase 9): like kcnode_mint_excl but also records
  * the per-cap badge in the slot. */
 iris_error_t   kcnode_mint_excl_badged(struct KCNode *cn, uint32_t slot_idx,
                                         struct KObject *obj,
                                         iris_rights_t rights, uint64_t badge);
 iris_error_t   kcnode_fetch(struct KCNode *cn, uint32_t slot_idx,
                              struct KObject **out_obj, iris_rights_t *out_rights);
-/* Badge-aware fetch (Fase 9): also returns the slot badge. */
+/* Badge-aware fetch (Phase 9): also returns the slot badge. */
 iris_error_t   kcnode_fetch_badged(struct KCNode *cn, uint32_t slot_idx,
                                     struct KObject **out_obj,
                                     iris_rights_t *out_rights,
@@ -136,7 +136,7 @@ iris_error_t   kcnode_fetch_badged(struct KCNode *cn, uint32_t slot_idx,
 iris_error_t   kcnode_delete(struct KCNode *cn, uint32_t slot_idx);
 iris_error_t   kcnode_swap(struct KCNode *cn, uint32_t slot_a, uint32_t slot_b);
 
-/* ── Fase S3: canonical slot primitives (the ONLY slot mutators) ──────────
+/* ── Phase S3: canonical slot primitives (the ONLY slot mutators) ──────────
  * See docs/architecture/cspace-cdt-mdb.md.  Every install/delete/move/revoke
  * of a CSpace slot goes through these; no TU touches cn->slots[] directly.
  */
@@ -192,7 +192,7 @@ iris_error_t kcnode_slot_revoke(struct KCNode *cn, uint32_t slot_idx,
 iris_error_t mdb_badge_derive(uint64_t src_badge, uint64_t requested,
                               uint32_t obj_type, uint64_t *out_badge);
 
-/* ── Fase S3: MDB validator (test/diagnostic use; closed CNode set) ────── */
+/* ── Phase S3: MDB validator (test/diagnostic use; closed CNode set) ────── */
 struct mdb_validate_report {
     uint32_t errors;        /* invariant violations found */
     uint32_t nodes;         /* occupied slots in the set */
@@ -203,7 +203,7 @@ struct mdb_validate_report {
 uint32_t kcnode_mdb_validate(struct KCNode **set, uint32_t n,
                              struct mdb_validate_report *rep);
 
-/* Fase S3 — MDB gauges/counters (diagnostics; QUERY kind 4). */
+/* Phase S3 — MDB gauges/counters (diagnostics; QUERY kind 4). */
 void kcnode_mdb_stats(uint32_t *nodes_live, uint32_t *nodes_hwm,
                       uint32_t *legacy_roots, uint32_t *orphan_promotions,
                       uint32_t *reparents, uint32_t *revoked_nodes,

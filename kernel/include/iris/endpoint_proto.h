@@ -75,7 +75,7 @@
 #define IRIS_SVCMGR_EP_LOOKUP_ID    UINT64_C(0xF004)
 
 /*
- * Fase 10 lifecycle opcodes.
+ * Phase 10 lifecycle opcodes.
  *
  * IRIS_SVCMGR_EP_STATUS — query the liveness/generation of a service.
  *   Request:  words[0] = service_id  (catalog id, or a dynamic id >= 0x40).
@@ -96,7 +96,7 @@
 #define IRIS_SVCMGR_EP_RESTART      UINT64_C(0xF006)
 
 /*
- * IRIS_SVCMGR_EP_DIAG — endpoint-native svcmgr snapshot (Fase 12).  Replaces
+ * IRIS_SVCMGR_EP_DIAG — endpoint-native svcmgr snapshot (Phase 12).  Replaces
  * the legacy KChannel SVCMGR_MSG_DIAG as the productive diagnostics path; no
  * KChannel round-trip.  Open to any caller (read-only).
  *   Reply OK: words[0] = catalog service count, words[1] = ready services,
@@ -113,7 +113,7 @@
  * can use IRIS_SVCMGR_EP_LOOKUP_NAME for EP-based service discovery.
  * Coexists with the legacy SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP / VFS_CAP etc.
  */
-/* RETIRED in Fase 8: the discovery endpoint now arrives as the pre-start
+/* RETIRED in Phase 8: the discovery endpoint now arrives as the pre-start
  * CSpace mint IRIS_CPTR_SVCMGR_EP.  Kind value reserved; do not reuse. */
 #define SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP  UINT32_C(0x20)
 
@@ -125,32 +125,32 @@
  * respawned.  Clients obtain the send side via service-name lookup of
  * "<image_name>.ep" (see below).
  */
-/* RETIRED in Fase 8: the service's own endpoint recv side now arrives as
+/* RETIRED in Phase 8: the service's own endpoint recv side now arrives as
  * the pre-start CSpace mint IRIS_CPTR_OWN_EP.  Reserved; do not reuse. */
 #define SVCMGR_BOOTSTRAP_KIND_SERVICE_EP UINT32_C(0x21)
 
 /*
  * SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP — bootstrap handle kind carrying the
  * SEND side (RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER) of the console
- * KEndpoint (Fase 7.3).  The console service is spawned by init (not
+ * KEndpoint (Phase 7.3).  The console service is spawned by init (not
  * svcmgr), so init creates the endpoint, hands the recv side to console
  * (kind 0x21) and delivers the send side to svcmgr with this kind; svcmgr
  * publishes it as "console.ep".  Bootstrap-delivered like every ".ep"
  * master, so the anti-spoof rule (no runtime registration of ".ep" names)
  * holds for the console too.
  */
-/* RETIRED in Fase 8: init now mints the console endpoint send side into
+/* RETIRED in Phase 8: init now mints the console endpoint send side into
  * svcmgr's root CNode at IRIS_CPTR_CONSOLE_EP.  Reserved; do not reuse. */
 #define SVCMGR_BOOTSTRAP_KIND_CONSOLE_EP UINT32_C(0x22)
 
 /*
- * Well-known CSpace slots (Fase 8: CPtr-first bootstrap handoff).
+ * Well-known CSpace slots (Phase 8: CPtr-first bootstrap handoff).
  *
  * The spawner mints capabilities into the child's root CNode via
  * SYS_PROC_CSPACE_MINT; the child invokes them directly by CPtr — e.g.
  * SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg) — with no KChannel handle
  * transfer. CPtrs and handle_ids share one argument namespace: handles are
- * always >= 1024 (slot | generation<<10, generation >= 1).  Since Fase 8
+ * always >= 1024 (slot | generation<<10, generation >= 1).  Since Phase 8
  * the dual resolvers ENFORCE the split (kernel/new_core/src/cspace.c):
  * values < 1024 resolve through the CSpace ONLY (no handle-table fallback;
  * missing slot fails cleanly, ACCESS_DENIED is a hard stop) and values
@@ -178,7 +178,7 @@
  *              T083+ self-mints via IRIS_CPTR_TEST_PROC / T084+ IPC
  *              receive-slot deliveries; the 16..29 pool is exhausted).
  *
- * Fase 13: KIoPort, KIrqCap and KBootstrapCap NOW resolve through CSpace via
+ * Phase 13: KIoPort, KIrqCap and KBootstrapCap NOW resolve through CSpace via
  * the generic dual resolver cspace_resolve_only_obj() — the device-access
  * syscalls (SYS_IOPORT_IN/OUT, SYS_IRQ_ROUTE_REGISTER, SYS_IRQ_ACK,
  * SYS_INITRD_*, SYS_PROCESS_CREATE, SYS_CAP_CREATE_*, SYS_BOOTCAP_RESTRICT,
@@ -188,7 +188,7 @@
  * KChannel and KProcess.
  */
 /*
- * Well-known sender badges (Fase 9).
+ * Well-known sender badges (Phase 9).
  *
  * A badge is per-cap metadata stamped by the KERNEL into
  * IrisMsg.sender_badge on every EP_SEND / EP_NB_SEND / EP_CALL — it is
@@ -207,13 +207,13 @@
  *   IRIS_BADGE_TEST_B   → iris_test secondary fixture (two caps to the
  *                         same endpoint must deliver different badges).
  *
- * PING convention (Fase 9): every core EP server replies to
+ * PING convention (Phase 9): every core EP server replies to
  * IRIS_EP_OP_PING with words[1] = the sender_badge it observed, making
  * identity testable end to end (T047+).
  */
 #define IRIS_BADGE_NONE       ((uint64_t)0)
 #define IRIS_BADGE_SVC(id)    ((uint64_t)0x100 + (uint64_t)(id))
-/* Fase 10: named reserved badges. The 0x100+service_id scheme (Fase 9) is
+/* Phase 10: named reserved badges. The 0x100+service_id scheme (Phase 9) is
  * kept; these aliases make the service-identity policy in svcmgr explicit.
  *   kbd  = SVCMGR_SERVICE_KBD(1), vfs = VFS(2), sh = SH(3)  → 0x101..0x103.
  * console is spawned by init (not the catalog) so it gets its own value;
@@ -232,7 +232,7 @@
 #define IRIS_BADGE_DYNAMIC_BASE ((uint64_t)0x200)
 
 /*
- * Fase 28.1: file-grant badge identities at the VFS.  These are BADGES, not
+ * Phase 28.1: file-grant badge identities at the VFS.  These are BADGES, not
  * rights: the kernel stamps them into IrisMsg.sender_badge from the invoked
  * cap, so the VFS can classify a caller unforgeably.
  *   IRIS_BADGE_FILEGRANT_ADMIN — a pager supervisor's grant-admin identity
@@ -242,7 +242,7 @@
  *       grant ops and are denied every name-based op.
  * Session caps can only be minted from an UNBADGED duplicable vfs.ep cap
  * (fresh badges require an unbadged source), i.e. by a supervisor under the
- * Fase 10 grant-tightening rule.  Neither range overlaps service (0x100+),
+ * Phase 10 grant-tightening rule.  Neither range overlaps service (0x100+),
  * dynamic (0x200+) or test badges. */
 #define IRIS_BADGE_FILEGRANT_ADMIN  ((uint64_t)0x0F00)
 #define IRIS_BADGE_FILEGRANT_BASE   ((uint64_t)0x0F10)
@@ -257,7 +257,7 @@ static inline int iris_badge_filegrant_session(uint64_t badge) {
 }
 
 /*
- * Supervisor authority (Fase 10).  Only these badges may receive a cap with
+ * Supervisor authority (Phase 10).  Only these badges may receive a cap with
  * RIGHT_DUPLICATE/RIGHT_TRANSFER from a `.ep` lookup (re-minting authority)
  * or drive privileged lifecycle ops (restart/revoke).  Everyone else is an
  * ordinary client and gets WRITE-only caps.  Badge 0 = the unbadged bootstrap
@@ -275,18 +275,18 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 #define IRIS_CPTR_CONSOLE_EP  ((uint64_t)3)
 #define IRIS_CPTR_KBD_EP      ((uint64_t)4)
 #define IRIS_CPTR_OWN_EP      ((uint64_t)5)
-/* Fase 13 (Track C): the initrd capability is minted
+/* Phase 13 (Track C): the initrd capability is minted
  * into this slot before the child starts — replaces the post-spawn KChannel
  * SVCMGR_BOOTSTRAP_KIND_INITRD_CAP delivery.  Resolves via the device-cap dual
  * resolver (cspace_resolve_only_obj), so SYS_INITRD_* accept it by CPtr. */
-/* Stage 5 Etapa 2: slot 6 held the MONOLITHIC boot capability — spawn,
+/* Stage 5 Step 2: slot 6 held the MONOLITHIC boot capability — spawn,
  * hardware, debug and framebuffer authority at once.  It holds the PROCESS
  * CONTROL capability now, which authorises SYS_PROCESS_CREATE and nothing
  * else; the other authorities travel in their own slots.  The name
  * IRIS_CPTR_SPAWN_CAP is retired with the object it named. */
 #define IRIS_CPTR_PROC_CONTROL ((uint64_t)6)
 #define IRIS_CPTR_IRQ_NOTIFY  ((uint64_t)7)
-/* Fase 13 (Track C): the legacy handle-boundary caps for a non-endpoint_only
+/* Phase 13 (Track C): the legacy handle-boundary caps for a non-endpoint_only
  * service (kbd) — its service/reply KChannels and KIoPort/KIrqCap device caps —
  * now arrive as pre-start CSpace mints instead of post-spawn KChannel
  * SVCMGR_BOOTSTRAP_KIND_{SERVICE,REPLY,IOPORT_CAP,IRQ_CAP} messages.  The
@@ -294,7 +294,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * handles); the device caps resolve by CPtr (cspace_resolve_only_obj). */
 /* Slots 8 and 9 were IRIS_CPTR_SVC_CHAN / IRIS_CPTR_SVC_REPLY, the legacy
  * service/reply KChannel pair.  KChannel is REMOVED and every catalog service
- * is endpoint-only, so both constants had no live use — Stage 5 Etapa 2 reuses
+ * is endpoint-only, so both constants had no live use — Stage 5 Step 2 reuses
  * them for split-out authorities rather than growing root CNodes that are
  * already nearly full. */
 #define IRIS_CPTR_INITRD_CONTROL ((uint64_t)8)
@@ -307,7 +307,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 #define IRIS_CPTR_IOPORT      ((uint64_t)10)
 #define IRIS_CPTR_IRQ_CAP     ((uint64_t)11)
 /*
- * Stage 5 Etapa 2: boot CONTROL capabilities — the authority to CREATE device
+ * Stage 5 Step 2: boot CONTROL capabilities — the authority to CREATE device
  * capabilities, as opposed to IRIS_CPTR_IOPORT / IRIS_CPTR_IRQ_CAP above,
  * which are the device capabilities themselves.
  *
@@ -331,18 +331,18 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 #define IRIS_CPTR_IOPORT_CONTROL ((uint64_t)26)
 #define IRIS_CPTR_TEST_FIX_A  ((uint64_t)30)
 #define IRIS_CPTR_TEST_FIX_B  ((uint64_t)31)
-/* Fase 9: second badged cap to the svcmgr endpoint (badge IRIS_BADGE_TEST_B)
+/* Phase 9: second badged cap to the svcmgr endpoint (badge IRIS_BADGE_TEST_B)
  * — proves two caps to ONE endpoint deliver different badges (T053). */
 #define IRIS_CPTR_TEST_FIX_C  ((uint64_t)28)
-/* Fase 10: a THIRD cap to the svcmgr endpoint carrying a SUPERVISOR badge
+/* Phase 10: a THIRD cap to the svcmgr endpoint carrying a SUPERVISOR badge
  * (IRIS_BADGE_INIT), minted by init into iris_test so the lifecycle tests can
  * drive the privileged IRIS_SVCMGR_EP_RESTART path.  Slot 27 (slot 29 stays
  * the reserved-but-unminted probe used by T041). */
 #define IRIS_CPTR_TEST_SUPER  ((uint64_t)27)
-/* Fase 13: a device/authority cap (the spawn KBootstrapCap) minted into a
+/* Phase 13: a device/authority cap (the spawn KBootstrapCap) minted into a
  * CPtr slot, proving device caps resolve via CSpace (cspace_resolve_only_obj)
  * and are invocable by CPtr — the prerequisite for KChannel-free bootstrap. */
-/* Slot 26 is IRIS_CPTR_IOPORT_CONTROL since Stage 5 Etapa 2 (see above).
+/* Slot 26 is IRIS_CPTR_IOPORT_CONTROL since Stage 5 Step 2 (see above).
  * IRIS_CPTR_TEST_SPAWN — a second cap to the monolithic boot capability —
  * is retired: what it existed to prove is now proven with a capability that
  * authorises exactly one thing. */
@@ -350,7 +350,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * minted by init post-load, so the suite can SYS_PROC_CSPACE_MINT runtime-made
  * caps into its own CSpace slots (T079 mints a VMO and maps it by CPtr). */
 #define IRIS_CPTR_TEST_PROC   ((uint64_t)25)
-/* Fase 18: one boot KUntyped forwarded down the boot chain (userboot → init →
+/* Phase 18: one boot KUntyped forwarded down the boot chain (userboot → init →
  * iris_test) so the ring-3 authority suite (T125–T131) can exercise
  * SYS_UNTYPED_RETYPE / SYS_CAP_REVOKE end to end.  IRIS_CPTR_INIT_UNTYPED is
  * init's receiving slot; IRIS_CPTR_TEST_UNTYPED is iris_test's.  Full rights
@@ -366,13 +366,13 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * the other.  Slot 24 is free in init and is minted to nobody else. */
 #define IRIS_CPTR_INIT_UNTYPED2 ((uint64_t)24)
 #define IRIS_CPTR_TEST_UNTYPED ((uint64_t)55)
-/* Fase S1: slot 12 is the GENERIC "delegated untyped pool" slot — the parent
+/* Phase S1: slot 12 is the GENERIC "delegated untyped pool" slot — the parent
  * (userboot → init → svcmgr) delegates a bounded sub-untyped here so the child
  * can SYS_UNTYPED_RETYPE2 its own kernel objects.  IRIS_CPTR_INIT_UNTYPED is
  * the historical name for init's instance of the same slot. */
 #define IRIS_CPTR_OWN_UNTYPED  ((uint64_t)12)
 /*
- * Stage 6-pure Etapa 2 gave this slot a second, guaranteed occupant.
+ * Stage 6-pure Step 2 gave this slot a second, guaranteed occupant.
  *
  * The kernel no longer creates paging levels, so a task that maps anything
  * must be able to retype one — and a level for its own address space belongs
@@ -389,7 +389,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * by nine services has no free number that stays free; it has slots with
  * meanings, and this is the one whose meaning already fits.
  */
-/* Fase S1: explicit MCS-style reply objects.  The kernel no longer fabricates
+/* Phase S1: explicit MCS-style reply objects.  The kernel no longer fabricates
  * a KReply at EP_CALL rendezvous: a server passes its reply-object CPtr as
  * arg2 of SYS_EP_RECV / SYS_EP_NB_RECV and later invokes SYS_REPLY on the
  * value echoed in msg.attached_handle.  The supervisor that boots a serving
@@ -398,7 +398,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * to serve (kbd): they alternate between the two slots. */
 #define IRIS_CPTR_OWN_REPLY    ((uint64_t)13)
 #define IRIS_CPTR_OWN_REPLY2   ((uint64_t)14)
-/* Fase 28: a DUPLICABLE vfs.ep cap (RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER,
+/* Phase 28: a DUPLICABLE vfs.ep cap (RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER,
  * badge IRIS_BADGE_IRIS_TEST) minted by init — supervisor authority — into this
  * slot.  The ordinary svcmgr lookup path strips DUPLICATE/TRANSFER from
  * non-supervisor clients (grant tightening), so iris_test cannot re-mint a
@@ -409,7 +409,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * SYS_CSPACE_RESOLVE (rights preserved) before using it as a mint source.
  * Slot 58: clear of iris_test's scratch CPtr slots (23/24, 57, 60–63).
  *
- * Fase 28.1: slot 58 now carries the file-grant ADMIN identity
+ * Phase 28.1: slot 58 now carries the file-grant ADMIN identity
  * (IRIS_BADGE_FILEGRANT_ADMIN, call-only WRITE): it drives GRANT_OPEN /
  * GRANT_REVOKE / GRANT_SESSION_RESET at the VFS and nothing else.  The mint
  * SOURCE for session-badged pager caps moved to its own slot 59
@@ -420,7 +420,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * the VFS — no grant-admin authority rides on unbadged caps. */
 #define IRIS_CPTR_TEST_VFS_DUP  ((uint64_t)58)
 #define IRIS_CPTR_TEST_VFS_MINT ((uint64_t)59)
-/* Fase 19: iris_test mints a cap to its OWN VSpace (SYS_VSPACE_SELF) into this
+/* Phase 19: iris_test mints a cap to its OWN VSpace (SYS_VSPACE_SELF) into this
  * slot so the VM suite (T132–T139) can drive SYS_FRAME_MAP / SYS_FRAME_UNMAP on
  * itself by CPtr.  Self-authority only — not a general authority door. */
 #define IRIS_CPTR_TEST_VSPACE  ((uint64_t)56)

@@ -17,7 +17,7 @@
 volatile uint64_t scheduler_ticks = 0;
 
 /*
- * Fase 17 — yield counter (additive instrumentation, exposed via the
+ * Phase 17 — yield counter (additive instrumentation, exposed via the
  * SYS_SCHED_INFO ext2 tier).  Incremented once per task_yield() entry.  A
  * strictly-monotonic progress signal used by the T119/T122 selftests to prove
  * cooperative tasks actually reach the scheduler (no lost/stuck worker).  It
@@ -43,7 +43,7 @@ static volatile uint64_t wall_ticks = 0;
  * the fast-forward, or remains NULL if none.
  */
 static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
-    /* Fase S2 Etapa C: iterate the registry, not the raw array — a TCB's
+    /* Phase S2 Step C: iterate the registry, not the raw array — a TCB's
      * identity is its registry reference, never a position in tasks[]. */
     /* Fast-forward clock to nearest deadline so timed tasks wake even with no IRQs. */
     uint64_t min_wake = UINT64_MAX;
@@ -152,7 +152,7 @@ void task_yield(void) {
         __asm__ volatile ("mov %0, %%cr3" : : "r"(kernel_cr3) : "memory");
     }
 
-    /* Fase S2: kernel RSP save/restore lives inside the TCB backing — no
+    /* Phase S2: kernel RSP save/restore lives inside the TCB backing — no
      * index-keyed task_rsp[] array, no (old - tasks) pointer arithmetic. */
     context_switch(&old->ctx, &chosen->ctx,
                    &old->saved_krsp, chosen->saved_krsp,

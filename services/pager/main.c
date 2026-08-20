@@ -1,15 +1,15 @@
 /*
  * pager/main.c — the IRIS user pager service.
  *
- * Fase 27: a supervised userland service that resolves faults from raw VMO
- * grants (PGR_OP_MAP_RESUME).  Fase 28 Bloque B: a complete file-backed memory
+ * Phase 27: a supervised userland service that resolves faults from raw VMO
+ * grants (PGR_OP_MAP_RESUME).  Phase 28 Bloque B: a complete file-backed memory
  * subsystem layered on top — backing identity + generation, validated file
  * regions, a bounded RO page cache, private-writable pages, EOF/zero-fill, and
  * generation-safe revocation — all in userland, composed from the existing
  * kernel primitives (SYS_VMO_MAP_PAGE, SYS_PROCESS_VSPACE, fault generations,
  * seq-checked resume) plus the VFS.  No new syscall.
  *
- * Fase 28.1 — file grants + multi-target:
+ * Phase 28.1 — file grants + multi-target:
  *   - File bytes come EXCLUSIVELY through VFS file grants
  *     (VFS_EP_OP_GRANT_READ_AT over the badged SESSION cap in slot 4).  The
  *     pager never sends a pathname; the VFS validates every access against
@@ -51,7 +51,7 @@ static inline long pg_sys2(long nr, long a0, long a1) {
 static inline long pg_sys3(long nr, long a0, long a1, long a2) {
     return iris_syscall4((long)nr, (long)a0, (long)a1, (long)a2, (long)0);
 }
-/* Stage 6-pure Etapa 2: the pager maps on behalf of others, so it owes paging
+/* Stage 6-pure Step 2: the pager maps on behalf of others, so it owes paging
  * levels for address spaces that are not its own.  They come from
  * IRIS_CPTR_OWN_UNTYPED — the budget its own address space was built from
  * — because the pager is the one holding a budget at the moment of the fault.
@@ -214,7 +214,7 @@ static uint32_t pg_cache_entries(void) {
 }
 
 /* ── shared fault notification: wait-any with a pending-bits accumulator ────
- * Fase 28.1: every target signals the ONE notification at slot 5 with bit
+ * Phase 28.1: every target signals the ONE notification at slot 5 with bit
  * (1 << tidx).  Waiting for a specific target consumes ONLY that target's
  * bit; bits that arrive for other targets are accumulated, never dropped, so
  * interleaved faults from many targets survive any service order.  0 on
@@ -337,7 +337,7 @@ static void pg_region_release(struct pg_region *rg) {
 static long pg_register_backing(const struct pgr_backing_req *rq) {
     if (rq->backing_idx >= PGR_MAX_BACKINGS) return -(long)PGR_ERR_BADOP;
     if (rq->grant_idx >= VFS_GRANTS_PER_SESSION) return -(long)PGR_ERR_RANGE;
-    /* Fase 28.1: the supervisor-declared identity must MATCH the VFS-issued
+    /* Phase 28.1: the supervisor-declared identity must MATCH the VFS-issued
      * one for this grant — the pager verifies before trusting, so a wrong or
      * dead grant can never be silently bound to a backing (A2/A3). */
     {
@@ -412,7 +412,7 @@ static long pg_unregister_region(uint32_t ridx) {
 /* Local revoke hygiene: bump the local generation copy so cached pages of the
  * old generation are unreachable for new faults; regions still bound to the
  * old generation now fail STALE_GEN; existing mappings survive (kernel VSpace
- * contract).  Fase 28.1: this is BOOKKEEPING, not the authority boundary —
+ * contract).  Phase 28.1: this is BOOKKEEPING, not the authority boundary —
  * the VFS enforces revocation on its own table (GRANT_REVOKE bumps the export
  * generation), so a pager that skips this step still cannot read the revoked
  * backing: every GRANT_READ_AT fails CLOSED at the VFS. */
@@ -432,7 +432,7 @@ static long pg_revoke_backing(uint32_t bidx) {
     return 0;
 }
 
-/* Fase 28.1: target death/replacement cleanup — release every region of the
+/* Phase 28.1: target death/replacement cleanup — release every region of the
  * target and clear its pending fault bit, so a dead target leaves no ghost
  * fault record or accumulator bit behind (A22/A23/A24). */
 static long pg_target_reset(uint32_t tidx) {
@@ -475,7 +475,7 @@ static uint32_t pg_report_slots(void) {
     return mask;
 }
 
-/* Fase 27 raw-VMO resolution (still used by T201–T210/T215).  Fase 28.1: the
+/* Phase 27 raw-VMO resolution (still used by T201–T210/T215).  Phase 28.1: the
  * fault wait goes through the same shared-notification accumulator. */
 static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t flags,
                          uint64_t offset, uint64_t expect_cr2) {
@@ -565,7 +565,7 @@ void pager_main(handle_id_t bootstrap_ch_h) {
                 reply.buf_uptr = (uint64_t)(uintptr_t)g_vfs_buf;
                 reply.buf_len  = (uint32_t)sizeof(g_diag);
             }
-            /* Fase S1: reply_h is our reusable reply-object CPtr — no close. */
+            /* Phase S1: reply_h is our reusable reply-object CPtr — no close. */
             (void)pg_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
         }
         if (shutdown) { pg_sys1(SYS_EXIT, 0); for (;;) {} }

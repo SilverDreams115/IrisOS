@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 /*
- * KVSpace — VSpace capability object (Fase 6).
+ * KVSpace — VSpace capability object (Phase 6).
  *
  * Represents formal authority over a process address space.
  * KProcess holds the page tables; KVSpace records cr3 and an invalidation
@@ -20,9 +20,9 @@
  *   - Each CNode slot holds lifecycle + active ref via kcnode_mint.
  *   - Page tables are owned by KProcess; KVSpace does NOT free them.
  *   - kvspace_invalidate() zeroes cr3, clears valid, and auto-unmaps all
- *     KFrame mappings before page table reap (Fase 6).
+ *     KFrame mappings before page table reap (Phase 6).
  *
- * KFrame back-reference model (Fase 6 / 6.3):
+ * KFrame back-reference model (Phase 6 / 6.3):
  *   - kframe_map_page() allocates a KFrameMapping node (kslab), retains the
  *     frame, and prepends the node to the singly-linked mappings list.
  *   - kframe_unmap_page() finds the node by (frame,va), unlinks it, frees it,
@@ -59,7 +59,7 @@ struct KVSpace {
      * its mapping records, and (when pml4_from_pool) the page its PML4 lives
      * in.  Retained for as long as the VSpace lives.
      *
-     * Stage 6-pure Etapa 3: this is no longer "who pays for page tables" —
+     * Stage 6-pure Step 3: this is no longer "who pays for page tables" —
      * nobody does, because the kernel does not create them.  It also no longer
      * decides whether a map is strict; that is `kernel_funded` below.  One
      * field answering three questions is why the root task could not be strict
@@ -85,12 +85,12 @@ struct KVSpace {
      * map — there is no window in which the kernel would have to guess.
      */
     uint8_t               kernel_funded;
-    /* Stage 6-pure Etapa 4: an address space the HOLDER retyped is bound to at
+    /* Stage 6-pure Step 4: an address space the HOLDER retyped is bound to at
      * most one process.  Binding is what gives it a cr3 to be — before that it
      * is a page and a header — and two processes sharing one would be two
      * CR3-loads of the same walk with different teardowns behind them. */
     uint8_t               bound;
-    /* Stage 6 Etapa 6: mapping records carved from pt_pool, and the free list
+    /* Stage 6 Step 6: mapping records carved from pt_pool, and the free list
      * they return to.  Mappings churn — map, unmap, map again — and a bump
      * allocator never rewinds, so carving one per map would leak the budget at
      * the rate the process maps.  A fixed-size free list makes reuse exact:
@@ -98,7 +98,7 @@ struct KVSpace {
      * its Untyped when the address space is destroyed. */
     struct KFrameMapping *free_nodes;
     uint32_t              node_count;   /* nodes ever carved from pt_pool */
-    /* Stage 6-pure Etapa 1: the page tables the HOLDER retyped and installed
+    /* Stage 6-pure Step 1: the page tables the HOLDER retyped and installed
      * here, newest first.  The VSpace holds one reference to each for as long
      * as it is part of the walk, which is what stops a holder from RESETting
      * the region a live address space is standing on — the same guarantee the
@@ -140,7 +140,7 @@ void kvspace_end_bootstrap(struct KVSpace *vs);
  * Caller holds the alloc lifecycle ref (refcount=1, active_refs=0) on return. */
 struct KVSpace *kvspace_alloc(uint64_t cr3);
 
-/* Stage 6 Etapa 3 — placement-init a KVSpace whose header is a child block of
+/* Stage 6 Step 3 — placement-init a KVSpace whose header is a child block of
  * the same Untyped that pays for its PML4 and page tables.  `mem` must be a
  * zeroed block of at least sizeof(struct KVSpace), from
  * kuntyped_alloc_child_top.
@@ -153,12 +153,12 @@ struct KVSpace *kvspace_alloc(uint64_t cr3);
  * a way to unwind the page — T301 is the test that would catch its absence.
  *
  * (sys_process_create used to be the caller this warned about; since Stage
- * 6-pure Etapa 4 it composes a process from a VSpace the holder retyped and
+ * 6-pure Step 4 it composes a process from a VSpace the holder retyped and
  * carves nothing itself.) */
 struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3);
 
 /*
- * Stage 6-pure Etapa 4 — the address space as a retyped object.
+ * Stage 6-pure Step 4 — the address space as a retyped object.
  *
  * `mem` is a top-carved header block and `pml4_phys` the page-aligned region
  * carved from the same Untyped; the page becomes the PML4 and `pool` becomes
@@ -186,7 +186,7 @@ iris_error_t kvspace_unmap_page(struct KVSpace *vs, uint64_t user_va);
 /* Drop the caller's lifecycle reference (kobject_release). */
 void kvspace_free(struct KVSpace *vs);
 
-/* Fase 19: live KVSpace object count (additive diagnostics; see kvspace.c). */
+/* Phase 19: live KVSpace object count (additive diagnostics; see kvspace.c). */
 uint32_t kvspace_live_count(void);
 
 #endif /* __KERNEL__ */

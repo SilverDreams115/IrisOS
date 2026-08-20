@@ -140,7 +140,7 @@ Current reply fields:
 
 To satisfy it, `svcmgr` must:
 
-1. query `vfs` with `VFS_EP_OP_STATUS` over `"vfs.ep"` (EP_CALL; the legacy `VFS_MSG_STATUS` was retired with `vfs_proto.h` in Fase 7.5)
+1. query `vfs` with `VFS_EP_OP_STATUS` over `"vfs.ep"` (EP_CALL; the legacy `VFS_MSG_STATUS` was retired with `vfs_proto.h` in Phase 7.5)
 2. query `kbd` with `KBD_MSG_STATUS`
 3. combine those results with its own internal counters (task count, process count, IRQ routes, tick snapshot)
 
@@ -156,7 +156,7 @@ For each tracked service slot, `svcmgr` stores:
 - `service_id`
 - short service name
 
-On the death KNotification signal (Fase 13 / Track B — the kernel signals
+On the death KNotification signal (Phase 13 / Track B — the kernel signals
 bit `1<<service_id` on `svcmgr`'s death notification; the bit index names
 the exiting slot directly):
 
@@ -183,7 +183,7 @@ Current built-in services:
 - Stale master endpoints are sealed before replacement so blocked clients fail fast.
 - `svcmgr` can aggregate health only if both kernel diagnostics and service-local status paths are functioning.
 
-## Fase 10 — lifecycle & badge policy
+## Phase 10 — lifecycle & badge policy
 
 - EP opcodes added: `IRIS_SVCMGR_EP_STATUS` (0xF005, open: name → {alive,
   generation}), `IRIS_SVCMGR_EP_RESTART` (0xF006, **supervisor-only**: kill +
@@ -195,7 +195,7 @@ Current built-in services:
   either transport. The legacy KChannel loop is a compatibility boundary
   (`owner_badge = 0`). See [service-lifecycle.md](../service-lifecycle.md).
 
-## Fase 11 — endpoint cap-transfer & REGISTER over EP
+## Phase 11 — endpoint cap-transfer & REGISTER over EP
 
 - `IrisMsg.attached_cap` (offset 72, ABI 80 B) carries a capability transferred
   by an `EP_CALL` (the reply cap keeps `attached_handle`). Kernel-staged,
@@ -208,7 +208,7 @@ Current built-in services:
   cap is closed on unregister. Legacy KChannel REGISTER/UNREGISTER is a
   compatibility boundary (`owner_badge = 0`).
 
-## Fase 12 — endpoint-first svcmgr
+## Phase 12 — endpoint-first svcmgr
 
 - `IRIS_SVCMGR_EP_DIAG` (0xF007) is the productive snapshot path (replaces
   legacy `SVCMGR_MSG_DIAG`): words[0]=catalog count, [1]=ready, [2]=active

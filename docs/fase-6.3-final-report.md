@@ -1,15 +1,15 @@
-# Fase 6.3 Final Report — VMO-to-Frame Capability Migration
+# Phase 6.3 Final Report — VMO-to-Frame Capability Migration
 
 ## 1. Goal
 
 Migrate `sys_vmo_map` / `sys_vmo_map_into` from raw `paging_map_checked_in` + per-process
 `KVmoMapping` tracking to the full KFrame capability path — the same path used by bootstrap
-mappings since Fase 6.2.  After this migration every user-space page, without exception, is
+mappings since Phase 6.2.  After this migration every user-space page, without exception, is
 owned by a `KFrame` capability whose lifetime is tracked by reference counts.
 
 ## 2. Motivation
 
-After Fase 6.2 bootstrap frames were KFrame-backed but runtime VMO maps were not.  The two
+After Phase 6.2 bootstrap frames were KFrame-backed but runtime VMO maps were not.  The two
 tracking systems were inconsistent:
 
 - Bootstrap frames: KVSpace.mappings linked list → auto-unmapped by `kvspace_invalidate`.
@@ -167,7 +167,7 @@ Fix: removed the `T`/`U` serial writes from `user_trampoline.S` (the comment alr
 | `make smoke-runtime` | healthy runtime signature observed |
 | `ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests` | healthy runtime signature observed |
 
-## 9. Architecture After Fase 6.3
+## 9. Architecture After Phase 6.3
 
 Every user-space page in every IRIS process is now owned by a `KFrame` capability:
 
@@ -193,4 +193,4 @@ The page-fault handler never allocates pages.
 ## 10. Related Documents
 
 - `docs/vmo-memory.md` — complete VMO memory model reference
-- `docs/bootstrap-memory.md` — bootstrap mapping history; updated for Fase 6.3
+- `docs/bootstrap-memory.md` — bootstrap mapping history; updated for Phase 6.3

@@ -1,5 +1,5 @@
 /*
- * test_mdb.c — host unit tests for the native MDB/CDT (Fase S3).
+ * test_mdb.c — host unit tests for the native MDB/CDT (Phase S3).
  *
  * Exercises the canonical slot primitives directly (kcnode_slot_*), across
  * multiple CNodes (a CNode stands in for a process's CSpace here — the MDB is
@@ -476,7 +476,7 @@ static void test_mdb_fuzz(struct KCNode **cns, uint32_t seed) {
 }
 
 void test_mdb(void) {
-    TEST_SUITE("mdb/cdt (Fase S3)");
+    TEST_SUITE("mdb/cdt (Phase S3)");
 
     struct KCNode *a = kcnode_alloc(16);
     struct KCNode *b = kcnode_alloc(16);

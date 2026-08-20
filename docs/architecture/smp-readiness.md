@@ -1,4 +1,4 @@
-# IRIS — SMP Readiness & Scheduler Indirection (Fase S2)
+# IRIS — SMP Readiness & Scheduler Indirection (Phase S2)
 
 State of the scheduler's indirection away from the static task pool and its
 implications for SMP and for moving `struct task` to Untyped.
@@ -16,7 +16,7 @@ implications for SMP and for moving `struct task` to Untyped.
 - `current_task`, the reap queue, the wait queues (EP/notif/reply/fault): all
   pointers to `struct task` — already pointer indirection, array-agnostic.
 
-## Fase S2 increment 2 — indirection achieved
+## Phase S2 increment 2 — indirection achieved
 
 1. **`task_rsp[TASK_MAX]` REMOVED** (inc.2 step 1). The kernel RSP lived in an
    index-keyed parallel array; it now lives in `struct task.saved_krsp`. The

@@ -1,8 +1,8 @@
-# Fase 22 — Service authority minimization
+# Phase 22 — Service authority minimization
 
 Status: ACCEPTED — implemented in this phase.  Companion to
-`syscall-fuzzing.md` (Fase 21), `fault-endpoint-model.md` (Fase 20) and the
-earlier subsystem-hardening docs.  Fase 21 proved the kernel MECHANISM fails
+`syscall-fuzzing.md` (Phase 21), `fault-endpoint-model.md` (Phase 20) and the
+earlier subsystem-hardening docs.  Phase 21 proved the kernel MECHANISM fails
 clean under hostility; the next risk is a service holding authority it does not
 need.  This phase audits the initial authority of every in-tree service,
 reduces the authority that is provably unused, and locks the least-authority
@@ -52,7 +52,7 @@ never used at all should not be granted.
 | iris_test | ring-3 test suite | init | privileged TEST child — holds untyped/proc/spawn; contained to itself (T160/T162) |
 | lifecycle_probe | test child | iris_test | holds only what its parent mints; the least-authority probe (T156/T162) |
 
-## Capability matrix (per service, after Fase 22)
+## Capability matrix (per service, after Phase 22)
 
 Classification: **RR** = REQUIRED_RUNTIME, **RB** = REQUIRED_BOOTSTRAP_ONLY,
 **T** = TEST_ONLY, **L** = LEGACY_COMPAT, **X** = SHOULD_REMOVE.
@@ -87,7 +87,7 @@ Classification: **RR** = REQUIRED_RUNTIME, **RB** = REQUIRED_BOOTSTRAP_ONLY,
 | kbd | svcmgr.ep, vfs.ep, console.ep, kbd.ep (all 4 client caps at slots 1–4) | kbd/main.S calls NO peer — it is a pure endpoint server + IRQ handler; verified by source and by the full smoke (kbd still serves sh) | T156/T162 + smoke |
 | vfs | svcmgr.ep, vfs.ep, kbd.ep (slots 1,2,4) | vfs only logs to console.ep and serves its own endpoint; it never calls svcmgr, itself, or kbd; verified by source (only CONSOLE_EP/OWN_EP/SPAWN_CAP referenced) | T156/T162 + smoke |
 
-Before Fase 22, `svcmgr_build_core_mints` minted ALL FOUR core client-endpoint
+Before Phase 22, `svcmgr_build_core_mints` minted ALL FOUR core client-endpoint
 caps into EVERY catalog child unconditionally — authority "just in case."  A
 compromised kbd held WRITE caps to svcmgr, vfs and console; a compromised vfs
 held a WRITE cap to kbd.  The reduction makes the grant manifest-driven: each
@@ -147,7 +147,7 @@ probe uses, locking the mechanism locks all of them.
 svcmgr's authority is observed through its real endpoint API: `LOOKUP_NAME`
 returns a cap whose `attached_rights` is checked exactly, and `DIAG` reports the
 ready-service count (which includes dynamic registrations) as the registry
-gauge.  The full-surface snapshot from Fase 21 (`it_snap`) anchors the
+gauge.  The full-surface snapshot from Phase 21 (`it_snap`) anchors the
 no-drift checks; its cumulative `reply-caps-created` counter is NOT a per-test
 balance and is excluded (a genuine KReply leak surfaces as a handle-live drift,
 which IS checked).
@@ -214,11 +214,11 @@ T163  authority stress: seeded register/lookup/unregister churn interleaved with
 
 ---
 
-## Fase 28.1 addendum — file grants as least-authority file access
+## Phase 28.1 addendum — file grants as least-authority file access
 
-The pager is the sharpest example of least-authority file access.  Before Fase
+The pager is the sharpest example of least-authority file access.  Before Phase
 28.1 it held a generic `vfs.ep` client cap and self-enforced which names it
-would read — authority the service granted itself.  Fase 28.1 replaces that with
+would read — authority the service granted itself.  Phase 28.1 replaces that with
 a **VFS-issued, VFS-validated file grant** (`file-grant-capability.md`): the
 pager's only file authority is a session-badged, WRITE-only `vfs.ep` cap that
 the VFS confines to session-scoped grant ops (`GRANT_STAT/READ_AT/...`) and

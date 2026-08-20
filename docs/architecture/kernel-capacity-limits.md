@@ -1,6 +1,6 @@
 # Kernel Capacity Limits & the kslab Contract
 
-Status: **DOCUMENTED and instrumented** (Fase 29).  Companion to
+Status: **DOCUMENTED and instrumented** (Phase 29).  Companion to
 `resource-ownership-accounting.md`.
 
 This document separates two kinds of ceiling that were previously conflated:
@@ -74,5 +74,5 @@ impractical and unnecessary given the path coverage.
 
 Resource-policy quotas (`KPROCESS_VMO_QUOTA`, `KPROCESS_PHYS_PAGES_LIMIT`) are
 documented in `resource-ownership-accounting.md`; they are per-domain budgets,
-not global capacity.  `KPROCESS_NOTIFICATION_QUOTA` was retired in Fase S1 —
+not global capacity.  `KPROCESS_NOTIFICATION_QUOTA` was retired in Phase S1 —
 Untyped is the budget.

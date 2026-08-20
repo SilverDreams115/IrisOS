@@ -1,5 +1,5 @@
 /*
- * test_root_bootinfo.c — Stage 5, Etapa 1: the root task's BootInfo builder.
+ * test_root_bootinfo.c — Stage 5, Step 1: the root task's BootInfo builder.
  *
  * The builder writes the page the root task reads to learn what the kernel put
  * in its CSpace.  Two failure modes matter and neither is observable from a
@@ -76,7 +76,7 @@ void test_root_bootinfo(void) {
         ASSERT_EQ(bi->header_bytes, (uint32_t)sizeof(*bi));
         ASSERT_EQ(bi->total_bytes, (uint64_t)sizeof(*bi));
         ASSERT_EQ(bi->cap_vspace, (uint64_t)BOOT_CPTR_VSPACE);
-        /* Etapa 3: the root task's own objects are named, not implied. */
+        /* Step 3: the root task's own objects are named, not implied. */
         ASSERT_EQ(bi->cap_cnode, (uint64_t)BOOT_CPTR_CNODE);
         ASSERT_EQ(bi->cap_tcb, (uint64_t)BOOT_CPTR_TCB);
         /* Control capabilities are recorded one by one as the boot path

@@ -1,8 +1,8 @@
-# Fase 25 — VM policy / user pager groundwork
+# Phase 25 — VM policy / user pager groundwork
 
 Status: ACCEPTED — implemented in this phase.  Companion to
-`fault-endpoint-model.md` (Fase 20), `vspace-frame-hardening.md` (Fase 19)
-and `service-supervision-model.md` (Fase 24).  Fase 25 closes the gap Fase 20
+`fault-endpoint-model.md` (Phase 20), `vspace-frame-hardening.md` (Phase 19)
+and `service-supervision-model.md` (Phase 24).  Phase 25 closes the gap Phase 20
 left explicit: *"no fault redirection to a third-party pager — a supervisor
 cannot map into another process's VSpace"*.  Locked with runtime tests
 T181–T190.
@@ -33,7 +33,7 @@ owner of the system.**
 
 ```text
 faulting process   generates the page fault; suspended in TASK_BLOCKED_FAULT
-                   until an authority acts (Fase 20 semantics, unchanged).
+                   until an authority acts (Phase 20 semantics, unchanged).
 
 pager              authorized to receive the fault and resolve it.  Holds,
                    by supervisor mint: target proc cap (READ|MANAGE), target
@@ -60,7 +60,7 @@ kernel             validates every capability on every step, preserves fault
   - authority over the frame/VMO being installed (READ, +WRITE if writable);
   - resume authority (MANAGE, seq-checked form available).
 - Fault info carries no capabilities; fault delivery grants no authority
-  (P2, F17/F18 inherited from Fase 20).
+  (P2, F17/F18 inherited from Phase 20).
 - Every map goes through the standard CSpace/rights checks; there is no
   pager-privileged path (P5–P8).
 
@@ -90,10 +90,10 @@ explicit process capability with MANAGE (P24).
 Every delivered fault gets a per-process, 1-based, monotonic generation:
 
 - `FAULT_OFF_SEQ` (offset 20 of the 32-byte record — previously `_pad`,
-  always written 0, so a 0 means "pre-Fase-25 kernel").  Readable by any
+  always written 0, so a 0 means "pre-Phase-25 kernel").  Readable by any
   READ holder together with the rest of the record.
 - The blocked task keeps its own copy (`task->fault_seq`): the per-process
-  record is last-writer-wins (Fase 20 limit, unchanged), but each suspended
+  record is last-writer-wins (Phase 20 limit, unchanged), but each suspended
   task stays resolvable by ITS generation.
 
 ### Seq-checked resolution (NEW, additive)
@@ -102,7 +102,7 @@ Every delivered fault gets a per-process, 1-based, monotonic generation:
 generation in bits [63:32] of the action argument.  Generation 0 is
 `INVALID_ARG`; a mismatch — the task refaulted since, or the caller replays a
 record it never matched — is `NOT_FOUND` with **no side effect** (P13).
-Actions 0/1 keep the exact Fase 20 semantics; values 2/3 were `INVALID_ARG`
+Actions 0/1 keep the exact Phase 20 semantics; values 2/3 were `INVALID_ARG`
 before this phase, so no existing caller changes behaviour.  Actions > 3
 remain `INVALID_ARG`.
 
@@ -110,8 +110,8 @@ remain `INVALID_ARG`.
 
 `SYS_FRAME_MAP`/`SYS_FRAME_UNMAP` resolved their VSpace argument through the
 raw radix walk only — a handle (≥ 1024) fed there was masked into low root
-slots, the exact aliasing hazard class the Fase 8 namespace split closed for
-every other capability argument (and Fase 21 documented as residual).  Fase
+slots, the exact aliasing hazard class the Phase 8 namespace split closed for
+every other capability argument (and Phase 21 documented as residual).  Phase
 25 completes the A1 migration for these two syscalls: the VSpace argument now
 uses the standard dual resolver (CPtr < 1024 → CSpace only; ≥ 1024 → handle
 table only, `WRONG_TYPE`/`ACCESS_DENIED` with no fallback).  Consequence: a
@@ -121,12 +121,12 @@ byte-for-byte unchanged.
 
 ## Contracts
 
-- **Registration** — unchanged Fase 20: `RIGHT_MANAGE` on the target +
+- **Registration** — unchanged Phase 20: `RIGHT_MANAGE` on the target +
   `RIGHT_WRITE` on the notification; the supervisor registers, then mints the
   notification to the pager with `RIGHT_WAIT` only.  Registration is the
   supervisor's act; the pager cannot re-point delivery (it holds no WRITE on
   the notification and its MANAGE is scoped to resolution).
-- **Delivery** — unchanged Fase 20: exactly one signal per fault, task
+- **Delivery** — unchanged Phase 20: exactly one signal per fault, task
   suspended before the signal is observable, record stable while pending,
   no capability transfer, no handle created in any table.  New: the record
   carries the generation.
@@ -135,7 +135,7 @@ byte-for-byte unchanged.
   re-register (T184).  A process holding no cap for the target cannot even
   name it.
 - **Map-into-target** — `SYS_FRAME_MAP(frame, target_vspace, va, flags)` with
-  the pager's minted VSpace cap.  All Fase 19 hardening applies unchanged:
+  the pager's minted VSpace cap.  All Phase 19 hardening applies unchanged:
   page-aligned user-window VA only (kernel range `INVALID_ARG`), W^X,
   occupied VA `BUSY`, writable map requires frame `WRITE`, any install
   requires VSpace `WRITE`, denial installs nothing (no partial PTE).  The
@@ -150,15 +150,15 @@ byte-for-byte unchanged.
 - **Stale fault** — a resolution carrying an old generation can never touch a
   newer fault of the same task; late resolutions after resolve/death are
   `NOT_FOUND`; the record never outlives the fault (`WOULD_BLOCK` after).
-  Cleanup happens exactly once per record (Fase 20 F15 + P12).
-- **Pager death** — deliberately inherits the Fase 20 handler-death contract:
+  Cleanup happens exactly once per record (Phase 20 F15 + P12).
+- **Pager death** — deliberately inherits the Phase 20 handler-death contract:
   the kernel does NOT auto-kill or auto-reassign.  The faulted target stays
   suspended with record, generation and pending delivery signal intact —
   observable state, not a zombie (P15).  Any proper authority (the
   supervisor, or a restarted pager re-minted the manifest) completes the
   resolution; the pending notification signal survives the pager because
   registration pins the notification object.  Crash-looping pagers are
-  contained by the Fase 24 supervision policy (restart limit → degraded),
+  contained by the Phase 24 supervision policy (restart limit → degraded),
   and the supervisor — who never delegated away its own caps — resolves or
   kills (P17, T189).
 - **Target death** — teardown clears the fault record, invalidates the
@@ -170,21 +170,21 @@ byte-for-byte unchanged.
 
 ## Interaction with the rest of the system
 
-- **Supervision (Fase 24)** — a pager is just a supervised service whose
+- **Supervision (Phase 24)** — a pager is just a supervised service whose
   manifest happens to include another process's caps.  Restart gives a fresh
   process with the declared mints and nothing else (T189: post-crash
   generations report exactly the manifest); generation/limit/degraded
   bookkeeping is the supervisor's, as for any service.
-- **Service authority (Fase 22)** — the manifest mechanism (pre-start
+- **Service authority (Phase 22)** — the manifest mechanism (pre-start
   `SYS_PROC_CSPACE_MINT`) and the slot-report oracle are reused verbatim;
   the pager adds a new manifest *shape*, not a new mechanism.
-- **VSpace/frame hardening (Fase 19)** — `SYS_FRAME_MAP/UNMAP` semantics are
-  untouched; Fase 25 only adds a legitimate way to HOLD a foreign VSpace cap.
+- **VSpace/frame hardening (Phase 19)** — `SYS_FRAME_MAP/UNMAP` semantics are
+  untouched; Phase 25 only adds a legitimate way to HOLD a foreign VSpace cap.
   The V20 isolation statement is refined, not weakened: cross-process
   address-space authority still requires an explicit MANAGE process cap —
   now optionally reified as an attenuable VSpace cap.
-- **Fault endpoint model (Fase 20)** — delivery, registration, spoofing,
-  record lifecycle: all unchanged.  Fase 25 adds the generation field in the
+- **Fault endpoint model (Phase 20)** — delivery, registration, spoofing,
+  record lifecycle: all unchanged.  Phase 25 adds the generation field in the
   record pad, the seq-checked resume actions, and the userland protocol on
   top.
 - **IPC / scheduler / lifecycle** — no semantic change.  Pager traffic is
@@ -193,12 +193,12 @@ byte-for-byte unchanged.
 
 ## Instrumentation
 
-None added.  The Fase 20 ext5 fault counters (delivery/nohandler/resume/
-kill/cleanup), the Fase 18/19 live gauges (frame/mapping/VSpace/endpoint/
+None added.  The Phase 20 ext5 fault counters (delivery/nohandler/resume/
+kill/cleanup), the Phase 18/19 live gauges (frame/mapping/VSpace/endpoint/
 notification/handle/task/process) and the per-process record itself cover
 every observable this phase needs; the tests assert against them.  (A new
 SYS_SCHED_INFO tier was considered and rejected: the gauge set is
-sufficient, and Fase 23 documented the risk of growing that surface without
+sufficient, and Phase 23 documented the risk of growing that surface without
 need.)
 
 ## Tests (runtime, deterministic)
@@ -231,7 +231,7 @@ T188  rights and PTE policy: RO-frame/RO-vspace denials, W^X, kernel/low/
 T189  restart least authority: crashing pager supervised under limit 2 →
       degraded, loop stops; fault survives every generation; post-crash
       instance reports exactly the manifest; serving generation resolves.
-      (The Fase 24 ↔ Fase 25 junction test.)
+      (The Phase 24 ↔ Phase 25 junction test.)
 T190  seeded stress (seed printed only on failure): 6 rounds × 2 concurrent
       pending faults, resolution path chosen by PRNG among pager map+resume,
       pager kill, pager death + supervisor takeover, target death + refault
@@ -257,7 +257,7 @@ manifest oracle.
 
 ## Remaining gaps (honest)
 
-- One fault record per process (Fase 20 limit, unchanged).  Two tasks of one
+- One fault record per process (Phase 20 limit, unchanged).  Two tasks of one
   process faulting concurrently: both suspend, both stay resolvable by
   (task_id, generation) — `task->fault_seq` keeps resolution exact — but the
   info of the earlier one becomes unreadable.  Next honest step remains

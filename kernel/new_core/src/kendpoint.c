@@ -8,7 +8,7 @@
 
 static _Atomic uint32_t kendpoint_live;
 
-/* Fase 18 — live KEndpoint object count (additive diagnostics). */
+/* Phase 18 — live KEndpoint object count (additive diagnostics). */
 uint32_t kendpoint_live_count(void) {
     return atomic_load_explicit(&kendpoint_live, memory_order_relaxed);
 }
@@ -23,7 +23,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
      * nothing was delivered, so the sender keeps its cap and wakes with
      * IRIS_ERR_CLOSED.
      *
-     * Fase S4 (Etapa 2): ep_cap_src_cn is deliberately LEFT SET here.  Its
+     * Phase S4 (Step 2): ep_cap_src_cn is deliberately LEFT SET here.  Its
      * refs must be dropped outside this lock — releasing the last ref on a
      * CNode runs a destructor that tears down every slot recursively, and
      * this walk holds ep->lock.  Ownership passes to the woken sender, which
@@ -50,7 +50,7 @@ static void kendpoint_obj_close(struct KObject *obj) {
     irq_spinlock_unlock(&ep->lock, flags);
 }
 
-/* ── Untyped-backed variant (Ph78; Fase S1: the ONLY variant) ─────
+/* ── Untyped-backed variant (Ph78; Phase S1: the ONLY variant) ─────
  * The kslab-backed kendpoint_alloc is retired: every KEndpoint payload
  * lives inside the KUntyped region it was retyped from (S2/S14). */
 

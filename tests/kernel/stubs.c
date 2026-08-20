@@ -11,7 +11,7 @@
 int iris_smap_enabled = 0;
 int iris_pcid_enabled = 0;
 
-/* ── Failure injection state (Fase 6.4) — declared early, used by kslab/paging stubs ── */
+/* ── Failure injection state (Phase 6.4) — declared early, used by kslab/paging stubs ── */
 static int g_kslab_fail_countdown = -1; /* -1=never; 0=fail next; N=fail after N more successes */
 static int g_paging_force_fail    =  0; /* non-zero = fail next paging_map_checked_in */
 
@@ -76,7 +76,7 @@ void         kprocess_quota_release_vmo(struct KProcess *p)        { (void)p; }
 iris_error_t kprocess_quota_acquire_page(struct KProcess *p)       { (void)p; return IRIS_OK; }
 void         kprocess_quota_release_page(struct KProcess *p)       { (void)p; }
 
-/* ── bootstrap frame stubs (Fase 6.2) ───────────────────────────────────── */
+/* ── bootstrap frame stubs (Phase 6.2) ───────────────────────────────────── */
 iris_error_t kprocess_register_bootstrap_frame(struct KProcess *p, struct KFrame *f) {
     if (!p || !f) return IRIS_ERR_INVALID_ARG;
     if (p->bootstrap_frame_count >= 32u) return IRIS_ERR_NO_MEMORY;
@@ -124,7 +124,7 @@ __attribute__((noreturn)) void iris_panic(const char *msg) {
     abort();
 }
 
-/* ── Failure injection API (Fase 6.4) ─────────────────────────────────────
+/* ── Failure injection API (Phase 6.4) ─────────────────────────────────────
  *
  * Test-only hooks to simulate allocation failures at specific points.
  * State variables are declared at the top of this file (g_kslab_fail_countdown,
@@ -151,7 +151,7 @@ void kslab_clear_fail(void)        { g_kslab_fail_countdown = -1; }
 void paging_force_fail_next(void)  { g_paging_force_fail = 1; }
 void paging_clear_force_fail(void) { g_paging_force_fail = 0; }
 
-/* ── Stateful paging stubs for Fase 5.1 KFrame mapping tests ─────────────
+/* ── Stateful paging stubs for Phase 5.1 KFrame mapping tests ─────────────
  *
  * Previously these stubs were trivial no-ops (always succeed, always return 0).
  * That made any test using paging_virt_to_phys_in a false positive: duplicate
@@ -235,7 +235,7 @@ static int stub_pt_has(uint64_t cr3, uint64_t virt, int level) {
 static int stub_pt_strict = 0;
 void paging_stub_strict_levels(int on) { stub_pt_strict = on; stub_pt_n = 0; }
 
-/* Stage 6-pure Etapa 4: no MMU on the host, so a PML4 needs no contents —
+/* Stage 6-pure Step 4: no MMU on the host, so a PML4 needs no contents —
  * what the tests observe is that the object exists and behaves, not what the
  * hardware would read out of the page. */
 void paging_init_user_pml4(uint64_t pml4_page_phys) { (void)pml4_page_phys; }
@@ -278,7 +278,7 @@ void paging_destroy_user_space_from(uint64_t cr3, int tables_pooled) {
 }
 
 /*
- * Stage 6-pure Etapa 1: the host models the WALK, not the hardware.
+ * Stage 6-pure Step 1: the host models the WALK, not the hardware.
  *
  * What the tests need to observe is the level arithmetic — that a fresh
  * address space is missing a PDPT, that installing one leaves it missing a PD,

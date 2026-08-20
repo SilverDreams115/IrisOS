@@ -44,7 +44,7 @@ and how the root task *learns* about it:
 
 ## Etapas
 
-| Etapa | Subject | State |
+| Step | Subject | State |
 |---|---|---|
 | 1 | The root task is TOLD what it holds: structured BootInfo | ✅ DONE |
 | 1b | ...and stops assuming which slots are free | ✅ DONE |
@@ -54,7 +54,7 @@ and how the root task *learns* about it:
 | 3 | The root task's own objects are named caps (root CNode, initial TCB) | ✅ DONE |
 | 4 | `TCB_CONFIGURE` / `TCB_WRITE_REGS`: a retyped TCB executes | ✅ DONE |
 
-## Etapa 1 — the root task is told what it holds  ✅ DONE
+## Step 1 — the root task is told what it holds  ✅ DONE
 
 The kernel writes a structured, self-describing **BootInfo** region and maps it
 into the root task read-only and non-executable before the task ever runs; the
@@ -83,7 +83,7 @@ of the page gets whatever that slot really contains — nothing, unless the
 kernel put something there.  seL4's BootInfo frame is the same shape and makes
 the same non-claim.
 
-What it replaces is **guessing**: the retired Fase 3.4 probe invoked
+What it replaces is **guessing**: the retired Phase 3.4 probe invoked
 `BOOT_CPTR_UNTYPED_START`, ignored the answer, and documented itself as
 something boot was not gated on.  A probe that cannot fail proves nothing.  In
 its place userboot validates the description against the CSpace it describes —
@@ -141,7 +141,7 @@ and vfs.  The value has been a CPtr since Stage 4; only the type name is
 residue.  Renaming it is a cross-service change with no behavioural content, so
 it is deliberately not mixed into an increment that changes the boot contract.
 
-## Etapa 1b — the root task stops assuming which slots are free  ✅ DONE
+## Step 1b — the root task stops assuming which slots are free  ✅ DONE
 
 userboot needs two slots of its own: one for the loader workspace CNode (a
 spawn needs eleven capabilities alive at once, which no root CNode has room
@@ -149,7 +149,7 @@ for directly) and one for the serial `KIoPort` it mints to print a boot
 diagnostic.  Both were constants chosen by reading the boot code — "slot 3 is
 free in the reserved boot range", "slot 40 is free" — and a constant that is
 true only until someone moves something is the same defect BootInfo exists to
-remove.  Three of Fase S4's bring-up failures were slot collisions.
+remove.  Three of Phase S4's bring-up failures were slot collisions.
 
 They now come from `empty_slot_first` / `empty_slot_end`, taken from opposite
 ends of the declared free range so they cannot collide with each other, with a
@@ -158,7 +158,7 @@ the panic path that fires when the BootInfo itself is unreadable has nothing to
 consult, and a diagnostic that guesses wrong prints nothing rather than
 corrupting a slot.
 
-## Etapa 2 — the monolith splits
+## Step 2 — the monolith splits
 
 `KBootstrapCap`'s permission bits become separate capabilities, each published
 into its own BootInfo slot, each delegated by handing it over:
@@ -178,7 +178,7 @@ revoking it through the CDT.  The ioport whitelist (`kioport_whitelist`, ledger
 P3) is the policy that should follow the ioport control capability out of the
 kernel.
 
-### Etapa 2a — device control is its own authority  ✅ DONE
+### Step 2a — device control is its own authority  ✅ DONE
 
 `IRIS_BOOTCAP_HW_ACCESS` was one bit authorising BOTH interrupt-line and
 I/O-port capability creation, on an object that also carried spawn, debug and
@@ -221,9 +221,9 @@ neither, and an empty slot authorises nothing (which is what makes svcmgr's
 delete a real loss of authority).  **T291** was re-anchored: its behavioural
 oracle for `SYS_BOOTCAP_RESTRICT` moved from device creation — no longer a mask
 bit — to `SYS_INITRD_COUNT` vs `SYS_SCHED_INFO`, two authorities that still
-share the remaining monolith.  It dies with the mechanism in Etapa 2b.
+share the remaining monolith.  It dies with the mechanism in Step 2b.
 
-### Etapa 2b — debug is its own authority  ✅ DONE
+### Step 2b — debug is its own authority  ✅ DONE
 
 `IRIS_BOOTCAP_KDEBUG` authorised draining the kernel log, reading scheduler
 statistics and powering the machine off — and rode on the same object as spawn
@@ -245,12 +245,12 @@ other half) is reserved for the next split.
 
 T296 grew a third leg: debug authority is denied to both device control
 capabilities and to what is left of the monolith, and grants no device
-creation itself.  T291's oracle moved again — from device creation (Etapa 2a)
+creation itself.  T291's oracle moved again — from device creation (Step 2a)
 to the framebuffer bit — because each re-anchoring is forced by the same
 progress: the authority it probed with stopped being a bit and became a
 capability.
 
-### Etapa 2c — the monolith is gone  ✅ DONE
+### Step 2c — the monolith is gone  ✅ DONE
 
 The last three authorities split, and with them the object itself:
 
@@ -297,7 +297,7 @@ grants OK` and requires `boot control caps CSpace grants OK` — a boot that
 publishes only some of the six aborts the root task instead of continuing with
 partial authority.
 
-## Etapa 3 — the root task's own objects  ✅ DONE
+## Step 3 — the root task's own objects  ✅ DONE
 
 The root task holds a capability to its own root CNode (`BOOT_CPTR_CNODE`) and
 to its initial thread (`BOOT_CPTR_TCB`), both described in BootInfo v5
@@ -341,10 +341,10 @@ could authorise, and adding one would be speculative surface for a mechanism
 that does not exist yet.  It belongs with retypable VSpaces — Stage 6, ledger
 entry M1.
 
-## Etapa 4 — a retyped TCB executes  ✅ DONE
+## Step 4 — a retyped TCB executes  ✅ DONE
 
 `RETYPE2(KOBJ_TCB)` has produced cap-complete but INACTIVE threads since
-Fase S2: no registry slot, no kernel stack, no address space, refused by every
+Phase S2: no registry slot, no kernel stack, no address space, refused by every
 execution syscall.  What was missing was not the code but **the arguments** — a
 thread runs in a CSpace and a VSpace, and neither was addressable as a
 capability until Stages 3–5 made them so.
@@ -370,7 +370,7 @@ spawner cannot yet name its child's CSpace and VSpace.
 ### Why `SYS_CSPACE_SELF` exists
 
 `SYS_TCB_CONFIGURE` takes the CSpace as a capability.  Only the root task held
-one to its own root CNode (Etapa 3); every other process reached its CSpace
+one to its own root CNode (Step 3); every other process reached its CSpace
 through the `arg0 == 0` convention.  A syscall whose signature says *capability*
 must not be satisfiable only by a convention, so processes can now ask for a
 capability to their own root CNode — self-introspection, no delegation implied,

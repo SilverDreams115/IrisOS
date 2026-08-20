@@ -1,5 +1,5 @@
 /*
- * vfs.c — VFS service, endpoint-only (Fase 7.5).
+ * vfs.c — VFS service, endpoint-only (Phase 7.5).
  *
  * The service speaks exactly one protocol: the stateless KEndpoint protocol
  * in iris/vfs_ep_proto.h (LIST / STAT / READ_AT / STATUS / PING), dispatched
@@ -8,7 +8,7 @@
  * its last clients in this phase; svcmgr no longer creates the legacy
  * service/reply channels for VFS (catalog endpoint_only flag).
  *
- * KChannel is fully retired (Fase 13/Track G): vfs receives its bootstrap
+ * KChannel is fully retired (Phase 13/Track G): vfs receives its bootstrap
  * capability as a pre-start CPtr mint (IRIS_CPTR_INITRD_CONTROL) and logs over
  * console.ep — neither path uses a channel.
  */
@@ -30,9 +30,9 @@
 struct vfs_state {
     handle_id_t console_h;
     handle_id_t initrd_c;
-    handle_id_t ep_h;          /* recv side of our KEndpoint (Fase 7.1) */
+    handle_id_t ep_h;          /* recv side of our KEndpoint (Phase 7.1) */
     struct vfs_export      exports[VFS_SERVICE_EXPORTS];
-    struct vfs_grant_table grants;   /* Fase 28.1: VFS-enforced file grants */
+    struct vfs_grant_table grants;   /* Phase 28.1: VFS-enforced file grants */
     struct vfs_ep_state    ep_state;
 };
 
@@ -73,7 +73,7 @@ static const char *const vfs_initrd_name_table[] = {
 
 
 static long vfs_self_vs(void);
-/* Stage 6-pure Etapa 2: the kernel no longer creates paging levels, so a map
+/* Stage 6-pure Step 2: the kernel no longer creates paging levels, so a map
  * whose walk is incomplete comes back as MISSING_TABLE and vfs supplies the
  * level itself — from IRIS_CPTR_OWN_UNTYPED, the budget its own address
  * space was built from.  One rule about the address space, so it lives at the
@@ -107,15 +107,15 @@ static inline int64_t vfs_syscall1(uint64_t num, uint64_t arg0) {
     return vfs_syscall3(num, arg0, 0, 0);
 }
 
-/* g_vfs_console_h retired — Fase 13/Track G (console.ep only). */
-/* Console endpoint (Fase 8): the well-known slot IRIS_CPTR_CONSOLE_EP,
+/* g_vfs_console_h retired — Phase 13/Track G (console.ep only). */
+/* Console endpoint (Phase 8): the well-known slot IRIS_CPTR_CONSOLE_EP,
  * verified with a PING after bootstrap; pre-verification boot lines are
  * dropped (vfs no longer receives a legacy console cap). */
 static handle_id_t g_vfs_console_ep_h = HANDLE_INVALID;
 static uint8_t g_vfs_con_ep_buf[IRIS_IPC_BUF_SIZE];
 
 static void vfs_log(const char *msg) {
-    /* Fase 13/Track G: vfs logs over console.ep only — the legacy console
+    /* Phase 13/Track G: vfs logs over console.ep only — the legacy console
      * KChannel writer is retired (vfs is endpoint_only; g_vfs_console_h was
      * always invalid). */
     if (g_vfs_console_ep_h != HANDLE_INVALID)
@@ -144,7 +144,7 @@ static void vfs_copy_cstr(char *dst, const uint8_t *src, uint32_t len) {
     for (i++; i < VFS_EP_PATH_MAX; i++) dst[i] = '\0';
 }
 
-/* Fase 13 (Track C): vfs_bootstrap_handle retired — the initrd spawn cap now
+/* Phase 13 (Track C): vfs_bootstrap_handle retired — the initrd spawn cap now
  * arrives as the IRIS_CPTR_INITRD_CONTROL pre-start mint, no KChannel one-shot. */
 
 static int vfs_seed_one_export(struct vfs_export *export_file,
@@ -228,7 +228,7 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
     }
 }
 
-/* Fase 28 Bloque B: export a single initrd image (a file-backed content
+/* Phase 28 Bloque B: export a single initrd image (a file-backed content
  * fixture) under an explicit name.  Unlike vfs_seed_initrd_exports, this is
  * NOT clamped to the first VFS_INITRD_NAME_COUNT images — file-backed fixtures
  * live at higher indices (>= SL_CATALOG_COUNT) that the clamp skips.  Returns 1
@@ -296,7 +296,7 @@ static void vfs_ep_serve(struct vfs_state *state, struct IrisMsg *req) {
 
     vfs_ep_dispatch(&state->ep_state, req, req_buf, &reply, g_vfs_ep_reply_buf);
 
-    /* Fase S1: reply_h is the vfs's OWN reply-object CPtr (echoed by the
+    /* Phase S1: reply_h is the vfs's OWN reply-object CPtr (echoed by the
      * kernel from the recv arg2).  The object is reusable — never closed. */
     if (reply_h == HANDLE_INVALID) return;
     (void)vfs_syscall2(SYS_REPLY, reply_h, (uint64_t)(uintptr_t)&reply);
@@ -314,7 +314,7 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
 
     vfs_log(vfs_str_started);
 
-    /* Fase 8/13: every cap arrives as a well-known pre-start CSpace slot —
+    /* Phase 8/13: every cap arrives as a well-known pre-start CSpace slot —
      * slot 5 our endpoint recv side, slot 3 the console endpoint, and (Track C)
      * slot 6 the initrd-access spawn KBootstrapCap.  The spawn cap resolves
      * through the device-cap dual resolver, so SYS_INITRD_* accept it by CPtr;
@@ -322,7 +322,7 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
     state.ep_h = (handle_id_t)IRIS_CPTR_OWN_EP;
     state.initrd_c = (handle_id_t)IRIS_CPTR_INITRD_CONTROL;
 
-    /* Fase 8: console output goes through the minted console-endpoint
+    /* Phase 8: console output goes through the minted console-endpoint
      * slot; a PING proves the slot is live before the gated marker. */
     {
         struct IrisMsg pmsg;
@@ -341,9 +341,9 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
 
     if (!vfs_seed_exports(&state)) goto fail;
     vfs_seed_initrd_exports(&state);
-    vfs_seed_fixture_exports(&state);   /* Fase 28 Bloque B: file-backed fixtures */
+    vfs_seed_fixture_exports(&state);   /* Phase 28 Bloque B: file-backed fixtures */
 
-    /* Fase 28.1: initialize the file-grant layer.  The instance epoch is the
+    /* Phase 28.1: initialize the file-grant layer.  The instance epoch is the
      * svcmgr restart generation of "vfs.ep": a restarted VFS gets a strictly
      * newer epoch, so backing generations from a previous instance can never
      * validate against this one (old grants are gone with the old table AND
@@ -390,7 +390,7 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
         }
         req.buf_uptr = (uint64_t)(uintptr_t)g_vfs_ep_req_buf;
 
-        /* Fase S1: explicit reply object (svcmgr mints it at slot 13). */
+        /* Phase S1: explicit reply object (svcmgr mints it at slot 13). */
         r = vfs_syscall3(SYS_EP_RECV, state.ep_h, (uint64_t)(uintptr_t)&req,
                          IRIS_CPTR_OWN_REPLY);
         if (r != IRIS_OK) {

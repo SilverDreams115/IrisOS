@@ -1,13 +1,13 @@
-# Fase 28 Bloque A — Boot image growth hardening
+# Phase 28 Bloque A — Boot image growth hardening
 
 Status: ACCEPTED — root cause found and fixed in this phase.  Companion to
-`service-pager-integration.md` (Fase 27, which discovered the symptom) and
-`file-backed-memory.md` (Fase 28 Bloque B, which the fix unblocks).  Locked
+`service-pager-integration.md` (Phase 27, which discovered the symptom) and
+`file-backed-memory.md` (Phase 28 Bloque B, which the fix unblocks).  Locked
 with runtime tests T211–T216.
 
 ---
 
-## The symptom (Fase 27)
+## The symptom (Phase 27)
 
 Adding a tenth-and-beyond initrd image "silently wedged" the boot: the kernel
 reached the scheduler, but no userland service ever produced output, and there
@@ -162,7 +162,7 @@ T216  seeded boot-growth stress: a matrix of map/query/valid-load/invalid-load
   demonstrated here at 12 images (past the old 10-image cliff) rather than by
   shipping 20 dummy blobs.  Adding more is a mechanical fixture addition.
 
-## Update (Fase 28 Bloque B): initrd at 16 images
+## Update (Phase 28 Bloque B): initrd at 16 images
 
 Bloque B added four content fixtures (`fbk.dat`, `fbk2.dat`, `elfseg.dat`,
 `small.dat`, generated reproducibly by `scripts/gen_fixtures.py`) as initrd

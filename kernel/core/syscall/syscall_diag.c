@@ -79,54 +79,54 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 72: uint32_t ipc_cap_toctou_fallbacks   — declared-slot races
  *   offset 76: uint32_t reply_caps_created
  *   offset 80: uint32_t cspace_resolves
- *   offset 84: uint32_t live_process_count    — Fase 16 (KProcess objects live)
- *   offset 88: uint32_t reap_queue_hwm        — Fase 16 (deferred-reap depth hwm)
+ *   offset 84: uint32_t live_process_count    — Phase 16 (KProcess objects live)
+ *   offset 88: uint32_t reap_queue_hwm        — Phase 16 (deferred-reap depth hwm)
  *   offset 92: uint32_t _pad0
  * Extended total: 96 bytes.
  *
  * A caller passing 88..95 still gets the historical 88-byte snapshot; only a
- * buffer >= 96 receives the Fase 16 lifecycle words (same additive rule).
+ * buffer >= 96 receives the Phase 16 lifecycle words (same additive rule).
  *
- * Fase 17 additive scheduler-hardening tier — written ONLY when the caller
+ * Phase 17 additive scheduler-hardening tier — written ONLY when the caller
  * passes buf_size >= 112 (a caller passing 96..111 gets the exact historical
  * 96-byte snapshot; same additive rule as every tier above):
- *   offset  96: uint32_t run_queue_hwm            — Fase 17 (run-queue depth hwm)
- *   offset 100: uint32_t duplicate_enqueue_count  — Fase 17 (S4 guard trips)
- *   offset 104: uint32_t sched_ctx_live           — Fase 17 (KSchedContext live)
- *   offset 108: uint32_t yield_count              — Fase 17 (task_yield entries)
+ *   offset  96: uint32_t run_queue_hwm            — Phase 17 (run-queue depth hwm)
+ *   offset 100: uint32_t duplicate_enqueue_count  — Phase 17 (S4 guard trips)
+ *   offset 104: uint32_t sched_ctx_live           — Phase 17 (KSchedContext live)
+ *   offset 108: uint32_t yield_count              — Phase 17 (task_yield entries)
  * Extended-2 total: 112 bytes.
  *
- * Fase 18 additive authority tier — written ONLY when the caller passes
+ * Phase 18 additive authority tier — written ONLY when the caller passes
  * buf_size >= 136 (a caller passing 112..135 gets the exact historical 112-byte
  * snapshot; same additive rule as every tier above).  Live per-type object
  * counts let authority tests prove objects are born and destroyed exactly once:
- *   offset 112: uint32_t untyped_live      — Fase 18 (KUntyped objects live)
- *   offset 116: uint32_t frame_live        — Fase 18 (KFrame objects live)
- *   offset 120: uint32_t endpoint_live     — Fase 18 (KEndpoint objects live)
- *   offset 124: uint32_t notification_live — Fase 18 (KNotification objects live)
- *   offset 128: uint32_t cnode_live        — Fase 18 (KCNode objects live)
+ *   offset 112: uint32_t untyped_live      — Phase 18 (KUntyped objects live)
+ *   offset 116: uint32_t frame_live        — Phase 18 (KFrame objects live)
+ *   offset 120: uint32_t endpoint_live     — Phase 18 (KEndpoint objects live)
+ *   offset 124: uint32_t notification_live — Phase 18 (KNotification objects live)
+ *   offset 128: uint32_t cnode_live        — Phase 18 (KCNode objects live)
  *   offset 132: uint32_t _pad1
  * Extended-3 total: 136 bytes.
  *
- * Fase 19 additive VM/VSpace tier — written ONLY when the caller passes
+ * Phase 19 additive VM/VSpace tier — written ONLY when the caller passes
  * buf_size >= 160 (a caller passing 136..159 gets the exact 136-byte snapshot;
  * same additive rule as every tier above):
- *   offset 136: uint32_t vspace_live        — Fase 19 (KVSpace objects live)
- *   offset 140: uint32_t live_mapping_count  — Fase 19 (KFrameMapping nodes live)
- *   offset 144: uint32_t map_success_count   — Fase 19 (successful maps, cumulative)
- *   offset 148: uint32_t unmap_success_count — Fase 19 (explicit unmaps, cumulative)
- *   offset 152: uint32_t tlb_invalidate_count— Fase 19 (local invlpg, cumulative)
+ *   offset 136: uint32_t vspace_live        — Phase 19 (KVSpace objects live)
+ *   offset 140: uint32_t live_mapping_count  — Phase 19 (KFrameMapping nodes live)
+ *   offset 144: uint32_t map_success_count   — Phase 19 (successful maps, cumulative)
+ *   offset 148: uint32_t unmap_success_count — Phase 19 (explicit unmaps, cumulative)
+ *   offset 152: uint32_t tlb_invalidate_count— Phase 19 (local invlpg, cumulative)
  *   offset 156: uint32_t _pad2
  * Extended-4 total: 160 bytes.
  *
- * Fase 20 additive fault-model tier — written ONLY when the caller passes
+ * Phase 20 additive fault-model tier — written ONLY when the caller passes
  * buf_size >= 184 (a caller passing 160..183 gets the exact 160-byte snapshot;
  * same additive rule as every tier above):
- *   offset 160: uint32_t fault_delivery_count  — Fase 20 (faults handed to a handler)
- *   offset 164: uint32_t fault_nohandler_count — Fase 20 (faults with no handler → kill)
- *   offset 168: uint32_t fault_resume_count    — Fase 20 (EXCEPTION_RESUME action 0)
- *   offset 172: uint32_t fault_kill_count      — Fase 20 (EXCEPTION_RESUME action 1)
- *   offset 176: uint32_t fault_cleanup_count   — Fase 20 (pending faults cleared)
+ *   offset 160: uint32_t fault_delivery_count  — Phase 20 (faults handed to a handler)
+ *   offset 164: uint32_t fault_nohandler_count — Phase 20 (faults with no handler → kill)
+ *   offset 168: uint32_t fault_resume_count    — Phase 20 (EXCEPTION_RESUME action 0)
+ *   offset 172: uint32_t fault_kill_count      — Phase 20 (EXCEPTION_RESUME action 1)
+ *   offset 176: uint32_t fault_cleanup_count   — Phase 20 (pending faults cleared)
  *   offset 180: uint32_t _pad3
  * Extended-5 total: 184 bytes.
  */
@@ -178,15 +178,15 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         w[8]  = __atomic_load_n(&iris_ipc_stat_toctou_fallbacks, __ATOMIC_RELAXED);
         w[9]  = __atomic_load_n(&iris_ipc_stat_reply_caps, __ATOMIC_RELAXED);
         w[10] = __atomic_load_n(&iris_cspace_stat_resolves, __ATOMIC_RELAXED);
-        w[11] = kprocess_live_count();          /* Fase 16 */
-        w[12] = sched_reap_queue_hwm();          /* Fase 16 */
+        w[11] = kprocess_live_count();          /* Phase 16 */
+        w[12] = sched_reap_queue_hwm();          /* Phase 16 */
         w[13] = 0u;
         for (uint32_t i = 0; i < 7u; i++)
             buf[5u + i] = (uint64_t)w[2u * i] | ((uint64_t)w[2u * i + 1u] << 32);
     }
 
     if (want >= SCHED_INFO_EXT2_BYTES) {
-        /* Fase 17 scheduler-hardening words (offsets 96..108). */
+        /* Phase 17 scheduler-hardening words (offsets 96..108). */
         uint32_t s0 = sched_run_queue_hwm();
         uint32_t s1 = sched_duplicate_enqueue_count();
         uint32_t s2 = kschedctx_live_count();
@@ -196,13 +196,13 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     if (want >= SCHED_INFO_EXT3_BYTES) {
-        /* Fase 18 authority words (offsets 112..132): live per-type counts. */
+        /* Phase 18 authority words (offsets 112..132): live per-type counts. */
         uint32_t a0 = kuntyped_live_count();
         uint32_t a1 = kframe_live_count();
         uint32_t a2 = kendpoint_live_count();
         uint32_t a3 = knotification_live_count();
         uint32_t a4 = kcnode_live_count();
-        uint32_t a5 = kvmo_live_count();   /* Fase 26: live memory objects
+        uint32_t a5 = kvmo_live_count();   /* Phase 26: live memory objects
                                             * (offset 132, was _pad1 = 0 —
                                             * additive, no new tier) */
         buf[14] = (uint64_t)a0 | ((uint64_t)a1 << 32);
@@ -211,7 +211,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     if (want >= SCHED_INFO_EXT4_BYTES) {
-        /* Fase 19 VM/VSpace words (offsets 136..156). */
+        /* Phase 19 VM/VSpace words (offsets 136..156). */
         uint32_t v0 = kvspace_live_count();
         uint32_t v1 = kframe_live_mapping_count();
         uint32_t v2 = kframe_map_success_count();
@@ -223,7 +223,7 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
 
     if (want >= SCHED_INFO_EXT5_BYTES) {
-        /* Fase 20 fault-model words (offsets 160..176). */
+        /* Phase 20 fault-model words (offsets 160..176). */
         uint32_t g0 = kprocess_fault_delivery_count();
         uint32_t g1 = kprocess_fault_nohandler_count();
         uint32_t g2 = kprocess_fault_resume_count();

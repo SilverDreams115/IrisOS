@@ -1,6 +1,6 @@
-# Service lifecycle, death/relookup & badge policy (Fase 10)
+# Service lifecycle, death/relookup & badge policy (Phase 10)
 
-Fase 10 turns the Fase 9 sender **identity** (kernel-stamped badges) into
+Phase 10 turns the Phase 9 sender **identity** (kernel-stamped badges) into
 real **policy**: badge-authenticated registration, tightened `.ep` lookup
 grants, a liveness/generation oracle, real death→respawn recovery, and a
 notification close-while-wait guarantee. It builds entirely on existing
@@ -33,7 +33,7 @@ privileged lifecycle ops (RESTART).
   (`vfs`, `kbd`, `sh`, …) can never be registered at runtime
   (`IRIS_ERR_ACCESS_DENIED`). This is the anti-spoofing rule that keeps a
   looked-up `vfs.ep` authoritative.
-- **EP REGISTER** (`0xF002`) is **badge-authenticated and cap-backed** (Fase 11):
+- **EP REGISTER** (`0xF002`) is **badge-authenticated and cap-backed** (Phase 11):
   the caller transfers its service endpoint in `IrisMsg.attached_cap`; svcmgr
   validates it is an endpoint and stores the real cap, so `LOOKUP_NAME` returns
   a usable cap. The kernel-stamped `sender_badge` becomes the `owner_badge`. A
@@ -54,7 +54,7 @@ preserving T046.
 ## Death model, generation & STATUS oracle
 
 Each catalog service carries a `generation` (1 at first boot). The existing
-`SYS_PROCESS_WATCH` path already respawns a service on exit; Fase 10 bumps
+`SYS_PROCESS_WATCH` path already respawns a service on exit; Phase 10 bumps
 `generation` on every respawn. `IRIS_SVCMGR_EP_STATUS` (`0xF005`, open to any
 caller) maps a name to `{alive, generation}` and is the **non-blocking
 liveness oracle** that lets a client poll a restart without blocking on a
@@ -71,7 +71,7 @@ recovering VFS.
 
 ## Revocation (initial / logical)
 
-Fase 10 implements **logical revocation by generation**: caps are not
+Phase 10 implements **logical revocation by generation**: caps are not
 force-closed (handle-table entries hold active refs, so an endpoint with live
 client caps cannot be kernel-closed). Instead the supervisor's registry is
 the source of truth — a client validates freshness against `STATUS`; a cached

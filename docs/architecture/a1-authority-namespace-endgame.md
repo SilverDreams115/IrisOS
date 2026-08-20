@@ -36,7 +36,7 @@ handles.
 ## Current model
 
 Two authority namespaces coexist in one argument space, enforced since
-Fase 8 (`CSPACE_DIRECT_CPTR_LIMIT` in `kernel/new_core/src/cspace.c`):
+Phase 8 (`CSPACE_DIRECT_CPTR_LIMIT` in `kernel/new_core/src/cspace.c`):
 
 - **CPtr namespace (`value < 1024`)** — resolved by walking the process
   root CNode (`proc->cspace_root`, created in `kprocess_alloc`,
@@ -56,7 +56,7 @@ a handle, preserving rights and badge; `SYS_CNODE_MOVE` /
 
 Well-known slots (`kernel/include/iris/endpoint_proto.h`,
 `IRIS_CPTR_*`) are pre-start-minted by the spawner via
-`SYS_PROC_CSPACE_MINT`; services are CPtr-first since Fase 8
+`SYS_PROC_CSPACE_MINT`; services are CPtr-first since Phase 8
 (`docs/cptr-first-services.md`).
 
 ## Problem
@@ -82,13 +82,13 @@ order in which subsystems were migrated, not a design rule:
 
 | Object | Syscalls | Resolution | Landed in |
 |---|---|---|---|
-| KEndpoint | `SYS_EP_SEND/RECV/CALL/NB_*` | dual, badged (`cspace_or_handle_resolve_endpoint[_badged]`) | pre-A1 (Fase 8/9) |
-| KNotification | `SYS_NOTIFY_SIGNAL/WAIT[_TIMEOUT]` | dual (`syscall_ipc.c`); three secondary-arg sites still handle-only (see audit) | pre-A1 (Fase 13) |
+| KEndpoint | `SYS_EP_SEND/RECV/CALL/NB_*` | dual, badged (`cspace_or_handle_resolve_endpoint[_badged]`) | pre-A1 (Phase 8/9) |
+| KNotification | `SYS_NOTIFY_SIGNAL/WAIT[_TIMEOUT]` | dual (`syscall_ipc.c`); three secondary-arg sites still handle-only (see audit) | pre-A1 (Phase 13) |
 | KCNode | `SYS_CNODE_MINT/MOVE/FETCH/DELETE/SWAP` | dual (`cspace_or_handle_resolve_cnode`) | pre-A1 |
 | KUntyped | `SYS_UNTYPED_INFO/RETYPE/RESET` | dual (`cspace_or_handle_resolve_untyped`) | pre-A1 |
-| KFrame | `SYS_FRAME_MAP/UNMAP` | dual (`cspace_or_handle_resolve_frame`) | pre-A1 (Fase 5) |
+| KFrame | `SYS_FRAME_MAP/UNMAP` | dual (`cspace_or_handle_resolve_frame`) | pre-A1 (Phase 5) |
 | KVSpace | `SYS_FRAME_MAP` target | CSpace-only (`cspace_resolve_vspace`) | pre-A1 |
-| KIoPort / KIrqCap / KBootstrapCap | `SYS_IOPORT_*`, `SYS_IRQ_*`, `SYS_INITRD_*`, `SYS_FRAMEBUFFER_VMO`, `SYS_PROCESS_CREATE` auth | dual, generic (`cspace_or_handle_resolve_obj`) | pre-A1 (Fase 13) |
+| KIoPort / KIrqCap / KBootstrapCap | `SYS_IOPORT_*`, `SYS_IRQ_*`, `SYS_INITRD_*`, `SYS_FRAMEBUFFER_VMO`, `SYS_PROCESS_CREATE` auth | dual, generic (`cspace_or_handle_resolve_obj`) | pre-A1 (Phase 13) |
 | KReply | `SYS_REPLY` | delivered as a fresh handle by `EP_RECV`; stays ephemeral **by design** (see below) | n/a |
 | KVmo | `SYS_VMO_MAP/SIZE/MAP_INTO/SHARE` (vmo arg) | **dual — done** (T079, T080) | Inc 1 `5c92039`, Inc 1b `3442e9b` |
 | KProcess | `SYS_PROCESS_STATUS/WATCH/KILL/EXIT_CODE/FAULT_INFO`, `SYS_THREAD_START`, proc args of `VMO_MAP_INTO/SHARE`, `SYS_PROC_CSPACE_MINT`, `SYS_HANDLE_TRANSFER/INSERT` dest, `SYS_IRQ_ROUTE_REGISTER` owner, `SYS_EXCEPTION_HANDLER/RESUME` (14 sites) | **dual — done** (T081, T082) | Inc 2a `0d1b185` |
@@ -198,7 +198,7 @@ deliver via CSpace instead.
 | IPC cap delivery (no slot declared) | `syscall_ipc_deliver_cap[_badged]` (`syscall_endpoint.c`) — EP_SEND/REPLY attached caps when the receiver declared no receive-slot, or as TOCTOU fallback when the declared slot was filled between declaration and delivery | transferable types | legacy compatibility; A1.5 receive-slot (`a1-5-ipc-receive-slot.md`) is the CSpace landing zone when declared | **compat — persistent authority delivered as a handle, receiver's choice** | receivers migrate to declaring receive-slots; producer shrinks as services adopt them |
 | Reply-cap delivery | `EP_RECV`/`EP_CALL` path (`syscall_endpoint.c`, `syscall_reply.c`) | KReply | one-shot, bound to an in-flight call — the anchor ephemeral case | ephemeral **by design** | permanent; never migrates |
 | CSpace materialization | `SYS_CSPACE_RESOLVE` (`syscall_cspace.c`), `SYS_CNODE_FETCH` (`syscall_cnode_ops.c`) | all | the sanctioned CSpace→handle bridge for APIs that want a working handle | ephemeral (authority already lives in the slot) | keep |
-| Kernel bootstrap | `kernel_main.c` (init's KBootstrapCap), `task_thread_create`/`task_create` (KTcb auto-insert) | KBootstrapCap, KTcb | pre-userland injection | infrastructure | keep until Stage 5 BootInfo.  The root CNode is no longer among these: since Fase S4 Etapa 4 the CSpace is rooted structurally (`proc->cspace_root`), not in a handle |
+| Kernel bootstrap | `kernel_main.c` (init's KBootstrapCap), `task_thread_create`/`task_create` (KTcb auto-insert) | KBootstrapCap, KTcb | pre-userland injection | infrastructure | keep until Stage 5 BootInfo.  The root CNode is no longer among these: since Phase S4 Step 4 the CSpace is rooted structurally (`proc->cspace_root`), not in a handle |
 | Kernel selftests | `phase3_selftest.c` | various | debug-gated kernel selftest | test-only | keep |
 
 ## Final audit — remaining handle-only call-sites
@@ -235,7 +235,7 @@ notification secondary args above which have a sanctioned CSpace path.
 
 - **I1 — namespace split**: `< 1024` resolves through CSpace only;
   `>= 1024` through the handle table only. No fallback in either
-  direction (Fase 8 rule, `cspace_value_is_cptr`).
+  direction (Phase 8 rule, `cspace_value_is_cptr`).
 - **I2 — ABI stability**: no syscall number, signature, or register
   convention changes. Migration is argument-interpretation only, and
   only for the previously-rejected `< 1024` range — every value a

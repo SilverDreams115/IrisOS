@@ -1,4 +1,4 @@
-# IRIS — CSpace Capability Model (Fase S1)
+# IRIS — CSpace Capability Model (Phase S1)
 
 Consolidates the A1 contract (`a1-authority-namespace-endgame.md`) with the S1
 model. Normative for all new authority.
@@ -12,7 +12,7 @@ model. Normative for all new authority.
   Never a second canonical namespace. `ACCESS_DENIED` in the CSpace is a hard
   stop — there is no fallback in either direction.
 - Sanctioned bridge: `SYS_CSPACE_RESOLVE` / `SYS_CNODE_FETCH` (CSpace →
-  handle). The list of handle producers is closed (A1); Fase S1 added none and
+  handle). The list of handle producers is closed (A1); Phase S1 added none and
   retired three (the create syscalls).
 
 ## Authority birth (S1)

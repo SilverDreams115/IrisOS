@@ -1,5 +1,5 @@
 /*
- * test_ipc_cspace.c — Fase 3.2 unit tests for IPC dual-resolve helpers.
+ * test_ipc_cspace.c — Phase 3.2 unit tests for IPC dual-resolve helpers.
  *
  * Covers cspace_resolve_only_endpoint/reply/notification, verifying:
  *   - CSpace path resolves correct typed objects
@@ -57,7 +57,7 @@ static struct KCNode *setup_cspace(struct KProcess *p, uint32_t num_slots) {
 /* ── Endpoint helpers ─────────────────────────────────────────────────── */
 
 
-/* Fase S1: kreply_alloc(caller) is retired — reproduce the old semantics for
+/* Phase S1: kreply_alloc(caller) is retired — reproduce the old semantics for
  * these tests: placement-init in an untyped-child block, then stage+bind the
  * caller (the production rendezvous sequence). */
 static struct KReply *test_kreply_alloc(struct task *caller) {
@@ -212,7 +212,7 @@ void test_ipc_cspace(void) {
 
 
 
-    /* ── [Fase 9] badges: per-cap identity ───────────────────────────── */
+    /* ── [Phase 9] badges: per-cap identity ───────────────────────────── */
     {
         struct KProcess *p = make_proc();
         ASSERT_NOT_NULL(p);

@@ -64,7 +64,7 @@ void test_knotification(void) {
     ASSERT_EQ(knotification_wait_timeout(n3, &got3, 0), IRIS_ERR_INTERNAL);
     kobject_release(&n3->base);
 
-    /* ── Fase 10: close WHILE a waiter is blocked wakes + clears it ──
+    /* ── Phase 10: close WHILE a waiter is blocked wakes + clears it ──
      * Closes the S0 gap: a task blocked in knotification_wait must be woken
      * (with a defined error) when the notification is closed, with no leak
      * and no deadlock — not just the close-before-wait case above. */

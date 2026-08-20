@@ -2,7 +2,7 @@
 #define IRIS_COMMON_VSPACE_H
 
 /*
- * iris_vspace.h — supplying your own paging levels (Stage 6-pure, Etapa 2).
+ * iris_vspace.h — supplying your own paging levels (Stage 6-pure, Step 2).
  *
  * The kernel stopped creating page tables.  A map into an address space whose
  * holder has a budget answers IRIS_ERR_MISSING_TABLE when the walk for that

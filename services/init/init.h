@@ -1,7 +1,7 @@
 /*
- * init.h — shared primitives for the init service (Fase 14).
+ * init.h — shared primitives for the init service (Phase 14).
  *
- * init began as a single large main.c.  Fase 14 decomposed it into auditable
+ * init began as a single large main.c.  Phase 14 decomposed it into auditable
  * modules that share this contract:
  *
  *   main.c            boot supervisor — orchestrates the healthy path + idle
@@ -61,7 +61,7 @@ static inline long init_sys0(long nr) {
 
 
 /*
- * Fase S1: fabricate one kernel object from an untyped capability.
+ * Phase S1: fabricate one kernel object from an untyped capability.
  *
  * SYS_UNTYPED_RETYPE2 publishes the new capability DIRECTLY into dest_slot of
  * init's own root CNode (dest 0 = own root).  The source must be a CPtr:
@@ -69,7 +69,7 @@ static inline long init_sys0(long nr) {
  * untyped only when the source was named that way, so a handle source would
  * make every object an ancestorless LEGACY_ROOT.
  *
- * Etapa 4: this used to materialise the result into a handle and delete the
+ * Step 4: this used to materialise the result into a handle and delete the
  * slot.  A retyped object living in a CSpace slot IS the seL4 shape — the
  * capability is the slot — and every consumer here (mint sources, notify
  * wait, exception handler, endpoint invocation) resolves a CPtr, so the
@@ -87,7 +87,7 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
                      (long)obj_arg);
 }
 
-/* Etapa 4: init's own root-CNode slots for the objects it fabricates.  Kept
+/* Step 4: init's own root-CNode slots for the objects it fabricates.  Kept
  * distinct and named so a collision is a compile-time-visible mistake, not a
  * bring-up failure. */
 #define INIT_SLOT_CONSOLE_EP   43u
@@ -103,7 +103,7 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_RSLOT_LK_SVCMGR   54u   /* receive slots for discovery lookups */
 #define INIT_RSLOT_LK_VFS      55u
 #define INIT_RSLOT_LK_KBD      56u
-/* Stage 5 Etapa 4: init's own CSpace and VSpace, as capabilities, plus the
+/* Stage 5 Step 4: init's own CSpace and VSpace, as capabilities, plus the
  * slot its one test thread is retyped into.  A thread is created by retyping a
  * TCB from init's Untyped and configuring it with these two — the static task
  * pool is no longer reachable from userland. */
@@ -111,7 +111,7 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_OWN_VSPACE   58u
 #define INIT_SLOT_S8_TCB       59u
 
-/* Fase S1: init's untyped pool — the boot untyped delegated by userboot at
+/* Phase S1: init's untyped pool — the boot untyped delegated by userboot at
  * IRIS_CPTR_INIT_UNTYPED.  Stage 4: held as the CPtr itself, checked once in
  * init_main with a non-materializing SYS_UNTYPED_INFO probe.  0 = no pool
  * (spawns that need to fabricate objects fail loudly). */

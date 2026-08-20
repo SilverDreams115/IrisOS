@@ -1,4 +1,4 @@
-# IRIS — MCS Scheduling Model (Fase S2)
+# IRIS — MCS Scheduling Model (Phase S2)
 
 Canonical seL4-MCS-style SchedulingContext (SC): budget/period as a kernel
 object retyped from Untyped, bound one-to-one to a TCB.

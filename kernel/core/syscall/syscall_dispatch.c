@@ -41,7 +41,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_EXIT:  return sys_exit(arg0, arg1, arg2);
         case SYS_YIELD: return sys_yield(arg0, arg1, arg2);
         case SYS_SLEEP: return sys_sleep(arg0, arg1, arg2);
-        /* SYS_CHAN_CREATE(12)/SEND(13)/RECV(14) — retired Fase 13/Track G
+        /* SYS_CHAN_CREATE(12)/SEND(13)/RECV(14) — retired Phase 13/Track G
          * (KChannel fully retired), fall to default → NOT_SUPPORTED */
         case SYS_HANDLE_CLOSE: return sys_handle_close(arg0, arg1, arg2);
         case SYS_VMO_CREATE:  return sys_vmo_create(arg0, arg1, arg2);
@@ -61,16 +61,16 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_IRQ_ROUTE_REGISTER: return sys_irq_route_register(arg0, arg1, arg2);
         case SYS_IOPORT_IN:          return sys_ioport_in(arg0, arg1, arg2);
         case SYS_IOPORT_OUT:         return sys_ioport_out(arg0, arg1, arg2);
-        /* SYS_CHAN_RECV_NB retired — Fase 13/Track G, fall to default (NOT_SUPPORTED) */
+        /* SYS_CHAN_RECV_NB retired — Phase 13/Track G, fall to default (NOT_SUPPORTED) */
         case SYS_PROCESS_KILL:        return sys_process_kill(arg0, arg1, arg2);
         /* SYS_DIAG_SNAPSHOT(30) — retired, fall to default */
-        /* SYS_CHAN_SEAL retired — Fase 13/Track G, fall to default (NOT_SUPPORTED) */
-        /* SYS_CHAN_CALL(38) — retired Fase 13/Track G (zero callers), fall to default */
+        /* SYS_CHAN_SEAL retired — Phase 13/Track G, fall to default (NOT_SUPPORTED) */
+        /* SYS_CHAN_CALL(38) — retired Phase 13/Track G (zero callers), fall to default */
         case SYS_CAP_CREATE_IRQCAP:   return sys_cap_create_irqcap(arg0, arg1, arg2, arg3);
         case SYS_CAP_CREATE_IOPORT:   return sys_cap_create_ioport(arg0, arg1, arg2, arg3);
         /* SYS_INITRD_LOOKUP(41), SYS_SPAWN_ELF(42) — retired, fall to default */
         case SYS_IOPORT_RESTRICT:      return sys_ioport_restrict(arg0, arg1, arg2);
-        /* SYS_WAIT_ANY(44) — retired Fase 13/Track G (zero callers), fall to default */
+        /* SYS_WAIT_ANY(44) — retired Phase 13/Track G (zero callers), fall to default */
         case SYS_BOOTCAP_RESTRICT:     return sys_bootcap_restrict(arg0, arg1, arg2);
         case SYS_VMO_SHARE:            return sys_vmo_share(arg0, arg1, arg2);
         case SYS_EXCEPTION_HANDLER:    return sys_exception_handler(arg0, arg1, arg2);
@@ -89,7 +89,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_HANDLE_INSERT: return sys_handle_insert(arg0, arg1, arg2, arg3);
         case SYS_FRAMEBUFFER_VMO: return sys_framebuffer_vmo(arg0, arg1, arg2, arg3);
         case SYS_CLOCK_GET:           return sys_clock_get(arg0, arg1, arg2);
-        /* SYS_CHAN_RECV_TIMEOUT retired — Fase 13/Track G, fall to default (NOT_SUPPORTED) */
+        /* SYS_CHAN_RECV_TIMEOUT retired — Phase 13/Track G, fall to default (NOT_SUPPORTED) */
         case SYS_NOTIFY_WAIT_TIMEOUT: return sys_notify_wait_timeout(arg0, arg1, arg2);
         case SYS_KLOG_DRAIN:          return sys_klog_drain(arg0, arg1, arg2);
         case SYS_EXCEPTION_RESUME:    return sys_exception_resume(arg0, arg1, arg2);
@@ -99,7 +99,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_CLOCK_NANOSLEEP:     return sys_clock_nanosleep(arg0, arg1, arg2);
         case SYS_PROCESS_EXIT_CODE:   return sys_process_exit_code(arg0, arg1, arg2);
         case SYS_PROCESS_FAULT_INFO:  return sys_process_fault_info(arg0, arg1, arg2);
-        /* SYS_WAIT_ANY_TIMEOUT(72) — retired Fase 13/Track G (zero callers), fall to default */
+        /* SYS_WAIT_ANY_TIMEOUT(72) — retired Phase 13/Track G (zero callers), fall to default */
         case SYS_ENDPOINT_CREATE:     return sys_endpoint_create(arg0, arg1, arg2);
         case SYS_EP_SEND:             return sys_ep_send(arg0, arg1, arg2);
         case SYS_EP_RECV:             return sys_ep_recv(arg0, arg1, arg2);
@@ -140,10 +140,10 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_UNTYPED_RETYPE2:     return sys_untyped_retype2(arg0, arg1, arg2, arg3);
         case SYS_UNTYPED_QUERY:       return sys_untyped_query(arg0, arg1, arg2);
         case SYS_SC_BIND:             return sys_sc_bind(arg0, arg1, arg2);
-        /* Fase S3 — CSpace-only MDB/CDT derivation surface. */
+        /* Phase S3 — CSpace-only MDB/CDT derivation surface. */
         case SYS_CAP_IDENTIFY:        return sys_cap_identify(arg0, arg1, arg2);
         case SYS_CAP_SAME_OBJECT:     return sys_cap_same_object(arg0, arg1, arg2);
-        /* Stage 5 Etapa 4: execution for a TCB retyped from an Untyped. */
+        /* Stage 5 Step 4: execution for a TCB retyped from an Untyped. */
         case SYS_CSPACE_SELF:         return sys_cspace_self(arg0, arg1, arg2);
         /* Stage 6-pure: a page table the holder retyped, installed by name. */
         case SYS_VSPACE_MAP_TABLE:    return sys_vspace_map_table(arg0, arg1, arg2);

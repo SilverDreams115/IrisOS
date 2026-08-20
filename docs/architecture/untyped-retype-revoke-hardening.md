@@ -1,8 +1,8 @@
-# Fase 18 — untyped / retype / revoke hardening
+# Phase 18 — untyped / retype / revoke hardening
 
 Status: ACCEPTED — implemented in this phase.  Companion to
-`lifecycle-hardening.md` (Fase 16), `scheduler-hardening.md` (Fase 17) and
-`a1-authority-namespace-endgame.md`.  Fase 18 audits the memory-authority
+`lifecycle-hardening.md` (Phase 16), `scheduler-hardening.md` (Phase 17) and
+`a1-authority-namespace-endgame.md`.  Phase 18 audits the memory-authority
 surface — `KUntyped → retype → derived caps → revoke` — end to end and locks its
 contracts with runtime tests T125–T131.
 
@@ -151,8 +151,8 @@ handle closes and the waiter releases its ref.
 
 ## Instrumentation (additive, ABI-safe)
 
-Fase 18 adds a fourth `SYS_SCHED_INFO` tier, written only when the caller passes
-`buf_size >= 136` (a caller passing 112..135 gets the exact 112-byte Fase-17
+Phase 18 adds a fourth `SYS_SCHED_INFO` tier, written only when the caller passes
+`buf_size >= 136` (a caller passing 112..135 gets the exact 112-byte Phase-17
 snapshot — same additive rule as every prior tier):
 
 ```text

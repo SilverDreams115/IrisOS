@@ -4,7 +4,7 @@
  * Implements svc_load() using the Phase 29 composable spawn primitives:
  *   SYS_INITRD_VMO(55) + SYS_PROCESS_CREATE(56) + SYS_VMO_MAP_INTO(57) +
  *   SYS_THREAD_START(58); pre-start caps are SYS_PROC_CSPACE_MINT CSpace
- *   mints (Fase 8) — the legacy SYS_HANDLE_INSERT step is gone (A1.8).
+ *   mints (Phase 8) — the legacy SYS_HANDLE_INSERT step is gone (A1.8).
  *
  * Supports ET_DYN (static PIE, base=0) ELF64 x86-64 with R_X86_64_RELATIVE
  * RELA relocations.  RDTSC-seeded Xorshift64 ASLR bias applied per spawn.
@@ -236,7 +236,7 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
     return (long)IRIS_ERR_NOT_SUPPORTED;
 }
 
-/* ── Etapa 4: loader workspace ─────────────────────────────────────────────
+/* ── Step 4: loader workspace ─────────────────────────────────────────────
  *
  * A spawn needs up to eleven capabilities alive at once (ELF image, process,
  * stack VMO, one per segment).  Publishing them into CSpace rather than the
@@ -253,7 +253,7 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
 #define SL_WS_ELF    1u
 #define SL_WS_PROC_BASE 16u  /* 16..99: one live process each */
 #define SL_WS_PROC_LIMIT 100u
-/* Stage 6 Etapa 5: one recyclable budget per live child, paired with its
+/* Stage 6 Step 5: one recyclable budget per live child, paired with its
  * process leaf (leaf L uses budget leaf 100 + L - 16).
  *
  * Everything a child costs — its address space, its process state, its segment
@@ -267,7 +267,7 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
 #define SL_WS_CHILDPOOL(leaf) ((leaf) - SL_WS_PROC_BASE + SL_WS_PROC_LIMIT)
 #define SL_CHILD_POOL_BYTES (1u << 20)
 #define SL_WS_STACK  3u
-/* Stage 6 Etapa 5: a reusable scratch budget for the ELF image copy.
+/* Stage 6 Step 5: a reusable scratch budget for the ELF image copy.
  *
  * The kernel copies the whole image when SYS_INITRD_VMO is invoked, and the
  * loader drops it as soon as the segments are out.  Charged to the spawner's
@@ -277,7 +277,7 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * ONE image, which is the seL4 reclamation pattern (revoke the Untyped you
  * used) in the form IRIS has. */
 #define SL_WS_ELFPOOL 5u
-/* Stage 6-pure Etapa 2: the child's VSpace, and one scratch slot the paging
+/* Stage 6-pure Step 2: the child's VSpace, and one scratch slot the paging
  * levels pass through on their way into it.  One slot is enough for any depth
  * — installing hands the VSpace its own reference, so the capability here is
  * spent the moment it lands (see iris_vspace.h). */
@@ -465,7 +465,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         /* 5. Choose page-aligned ASLR bias. */
         uint64_t bias = sl_choose_bias(max_vend);
 
-        /* 5b. Create the empty target process FIRST (Fase 29): the child must
+        /* 5b. Create the empty target process FIRST (Phase 29): the child must
          * exist before its image VMOs so those VMOs can be charged to the CHILD
          * (its own resource domain), not to the loader.  The loader passes the
          * child process cap as the VMO charge-target; it holds RIGHT_MANAGE on
@@ -478,7 +478,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * with the previous spawn's process.  Scan for a free one instead:
          * publication is exclusive, so ALREADY_EXISTS simply means "taken",
          * and the loader keeps no state to remember where it got to. */
-        /* Stage 6 Etapa 2: the child's page tables are charged to the
+        /* Stage 6 Step 2: the child's page tables are charged to the
          * spawner's own Untyped — the one this workspace already carves from.
          *
          * A per-child sub-untyped was the first design and it was wrong: a
@@ -491,7 +491,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * from under a live child. */
         uint32_t proc_leaf = 0u;
         /* The budget the child's address space is built from — its paging
-         * levels come out of the same one (Stage 6-pure Etapa 2). */
+         * levels come out of the same one (Stage 6-pure Step 2). */
         pool_c = 0;
         for (uint32_t l = SL_WS_PROC_BASE; l < SL_WS_PROC_LIMIT; l++) {
             /* Ask whether this leaf is taken BEFORE touching its budget: a
@@ -534,7 +534,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                 }
             }
             /*
-             * Stage 6-pure Etapa 4: the loader RETYPES the child's address
+             * Stage 6-pure Step 4: the loader RETYPES the child's address
              * space and hands it over, instead of handing over a budget for
              * the kernel to build one from.  A process is composed out of
              * objects its creator made.
@@ -673,13 +673,13 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         elf_h = HANDLE_INVALID;
 
         /* 12. Target process created earlier (step 5b) so its image VMOs are
-         * charged to it (Fase 29).
-         * Fase 13 (Track I): the per-child bootstrap KChannel is retired — every
+         * charged to it (Phase 29).
+         * Phase 13 (Track I): the per-child bootstrap KChannel is retired — every
          * cap is a pre-start CSpace mint, so no channel is created or inserted
          * and the child starts with RBX = 0 (no bootstrap handle). */
 
         /*
-         * Stage 6-pure Etapa 2: the child's paging levels are the child's, so
+         * Stage 6-pure Step 2: the child's paging levels are the child's, so
          * they are retyped from the CHILD's budget and installed into the
          * CHILD's address space.  The loader needs a capability to that
          * address space to do it — which is what SYS_PROCESS_VSPACE is for,
@@ -751,7 +751,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         /* 18. (Track I) No bootstrap channel to insert — the child gets RBX = 0. */
 
         /*
-         * Stage 6-pure Etapa 2: every child gets a capability to the budget
+         * Stage 6-pure Step 2: every child gets a capability to the budget
          * its own address space was built from.
          *
          * The kernel no longer creates paging levels, so a task that maps
@@ -777,7 +777,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                               (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
         }
 
-        /* 18b (Fase 8). Mint the well-known CSpace slots BEFORE the first
+        /* 18b (Phase 8). Mint the well-known CSpace slots BEFORE the first
          * thread starts: the child sees its slots populated from its first
          * instruction — no bootstrap barrier, no retry loop, no race.
          * Mint failures are deliberately non-fatal (consumers gate loudly
@@ -786,7 +786,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             if (!mints) continue;
             uint64_t rb = (mints[mi].badge << 32) | (uint64_t)mints[mi].rights;
             if (mints[mi].src_cptr != 0u) {
-                /* Fase S4: CSpace-sourced delegation — the child's cap is an
+                /* Phase S4: CSpace-sourced delegation — the child's cap is an
                  * MDB child of our slot, so SYS_CSPACE_REVOKE on it reaches
                  * into the child. */
                 (void)sl_sys4(SYS_CSPACE_MINT_INTO,
@@ -812,7 +812,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * existed because the kernel had a free slot rather than because
          * somebody held the memory and the authority.  It could not be
          * anything else until the spawner could NAME the CSpace and VSpace the
-         * thread would run in, which is what Stage 6-pure Etapa 4/5 gave it.
+         * thread would run in, which is what Stage 6-pure Step 4/5 gave it.
          *
          * Four steps, and every one names a capability: retype the TCB out of
          * the child's budget, configure it with the child's CSpace and VSpace,

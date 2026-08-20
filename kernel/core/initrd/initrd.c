@@ -26,7 +26,7 @@
  *   [8] iris_test — ring-3 syscall test suite (Block 8)
  *   [9] lifecycle_probe — minimal ring-3 TEST child spawned by iris_test to
  *       exercise cross-process lifecycle paths (not a productive service)
- *   [10] pager — the ring-3 user pager SERVICE (Fase 27): supervised, driven
+ *   [10] pager — the ring-3 user pager SERVICE (Phase 27): supervised, driven
  *       request/reply over a control endpoint, resolves faults inside a
  *       capability manifest of target + VMO grants
  */
@@ -112,14 +112,14 @@ static const struct initrd_entry g_initrd[] = {
                 _binary_services_iris_test_iris_test_elf_end  },
     /* [9] */ { _binary_services_lifecycle_probe_lifecycle_probe_elf_start,
                 _binary_services_lifecycle_probe_lifecycle_probe_elf_end  },
-    /* [10] pager — the ring-3 user pager SERVICE (own binary, Fase 28) */
+    /* [10] pager — the ring-3 user pager SERVICE (own binary, Phase 28) */
     { _binary_services_pager_pager_elf_start,
       _binary_services_pager_pager_elf_end  },
     /* [11] bootfix/badelf — invalid-ELF blob: boot-growth + loader failure-path
-     * fixture (Fase 28 T211-T216).  Present but never launched at boot. */
+     * fixture (Phase 28 T211-T216).  Present but never launched at boot. */
     { _binary_services_bootfix_badelf_bin_start,
       _binary_services_bootfix_badelf_bin_end  },
-    /* [12] filebk/fbk.dat — file-backed memory content fixture (Fase 28
+    /* [12] filebk/fbk.dat — file-backed memory content fixture (Phase 28
      * Bloque B): 5 pages, byte[i]=(i*31+7)&0xFF.  Exported by VFS as "fbk.dat". */
     { _binary_services_filebk_fbk_dat_start,
       _binary_services_filebk_fbk_dat_end  },

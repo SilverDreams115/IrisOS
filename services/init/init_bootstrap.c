@@ -1,16 +1,16 @@
 /*
- * init_bootstrap.c — initial-authority wiring for init (Fase 14 extraction).
+ * init_bootstrap.c — initial-authority wiring for init (Phase 14 extraction).
  *
  * Everything here is MOVED VERBATIM from main.c (no functional change):
  *   - boot capability acquisition (the IRIS_CPTR_PROC_CONTROL
- *     pre-start mint from userboot, Fase 13/Track I);
+ *     pre-start mint from userboot, Phase 13/Track I);
  *   - the early-serial UART (the only pre-console.ep log fallback);
  *   - EP_LOOKUP_NAME service discovery over svcmgr.ep, including the A1.6
  *     reply receive-slot variant;
  *   - the S5/S6 VFS endpoint boot-health validation (LIST / STAT / READ_AT)
  *     with their retry waits.
  *
- * S5/S6 live HERE, not in init_test.c (Fase 14 decision): they are
+ * S5/S6 live HERE, not in init_test.c (Phase 14 decision): they are
  * boot-GATING checks — main.c exits (codes 9/10) if they fail, and their
  * retry loops double as the "wait until VFS is up" boot synchronization —
  * while init_test.c holds post-healthy-path probes that never gate boot.
@@ -40,10 +40,10 @@ void init_early_serial_write(const char *s) {
     }
 }
 
-/* Fase S4: the serial KIoPort is published into a CSpace slot as an MDB child
+/* Phase S4: the serial KIoPort is published into a CSpace slot as an MDB child
  * of the authorising slot; the authority argument must be a CPtr.  Slot 40 is
  * free in init's root CNode (1..15 well-known).
- * Stage 5 Etapa 2: the authority is the IOPORT CONTROL capability, which
+ * Stage 5 Step 2: the authority is the IOPORT CONTROL capability, which
  * authorises exactly this — claiming a port range.  It used to be the
  * monolithic spawn capability, so printing an early boot line required the
  * authority to spawn processes and power the machine off. */
@@ -63,17 +63,17 @@ void init_retry_pause(void) {
     (void)init_sys1(SYS_SLEEP, INIT_RETRY_SLEEP_TICKS);
 }
 
-/* Fase 13 (Track I): init's spawn/bootstrap KBootstrapCap arrives as the
+/* Phase 13 (Track I): init's spawn/bootstrap KBootstrapCap arrives as the
  * IRIS_CPTR_PROC_CONTROL (slot 6) pre-start mint from userboot — not over a
  * bootstrap KChannel.
  *
- * Etapa 4: init_recv_spawn_cap is RETIRED.  It materialised that slot into a
+ * Step 4: init_recv_spawn_cap is RETIRED.  It materialised that slot into a
  * handle because init used to DUP and restrict the cap for its children, and
  * both of those needed a handle-table entry.  Neither does any more — the
  * duplicates are gone and restriction derives slot-to-slot — so every consumer
  * names slot 6 directly and the bridge had nothing left to bridge. */
 
-/* ── VFS endpoint client (Fase 7.2) ─────────────────────────────────────── */
+/* ── VFS endpoint client (Phase 7.2) ─────────────────────────────────────── */
 
 /* EP_CALL bulk buffer: the request path and the reply data share this buffer
  * (EP_CALL reuses buf_uptr in both directions). +1 for a guard NUL. */
@@ -88,7 +88,7 @@ static void init_imsg_zero(struct IrisMsg *msg) {
  * Resolve a service name (e.g. "vfs.ep") through the svcmgr discovery endpoint:
  * EP_CALL(svcmgr_ep, IRIS_SVCMGR_EP_LOOKUP_NAME, name).  The reply carries the
  * endpoint cap via SYS_REPLY cap transfer.  Returns HANDLE_INVALID on any
- * failure (caller retries / fails fast).  Fase 13/Track I: this EP_LOOKUP_NAME
+ * failure (caller retries / fails fast).  Phase 13/Track I: this EP_LOOKUP_NAME
  * path replaces the retired legacy KChannel LOOKUP_NAME (init_lookup_name).
  *
  * A1.6: reply_slot != 0 declares a receive-slot for the looked-up cap — it

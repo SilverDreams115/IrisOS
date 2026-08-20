@@ -18,7 +18,7 @@ A loader (`svc_load`) creates each child's segment + stack VMOs.  Previously
 loader — and the charge released only when the VMO object was destroyed, i.e.
 when the CHILD died.  A supervisor holding N children therefore accumulated
 ~4·N VMOs against its own `KPROCESS_VMO_QUOTA`, capping a supervisor at ~8
-concurrent loaded children.  The temporary Fase 28.1 mitigation (raise the quota
+concurrent loaded children.  The temporary Phase 28.1 mitigation (raise the quota
 32→128, grow the kslab 4→16 MB) bought headroom but did **not** fix the
 attribution: the child's memory was still charged to whoever loaded it.
 
@@ -91,7 +91,7 @@ it launches.
 Sparse-VMO physical pages were previously charged to whichever process mapped
 the VMO **first** (in the loader flow, the loader — which mapped the segment
 into its own window to fill it, then never released the charge on the happy
-path).  Fase 29 charges sparse pages to the **VMO's owner**, once, at page
+path).  Phase 29 charges sparse pages to the **VMO's owner**, once, at page
 allocation (`sys_vmo_map` / `sys_vmo_map_into` / `sys_vmo_map_page` all charge
 `kvmo_owner(v)`), and releases them at `kvmo_destroy` (one release per allocated
 page).  So:
@@ -119,7 +119,7 @@ is charged to the owner once; the *mapping* is a cheap kslab object.
 | KVSpace | process create | its process | no | freed with the process |
 | KFrameMapping / PTE | map syscall | the target VSpace (kslab object) | one per (VSpace, VA) | released on unmap / VSpace teardown |
 | KEndpoint | creator | creator's handle table | shared by caps | freed on last handle close |
-| KNotification | creator (retype from Untyped) | no numeric owner charge since Fase S1 — the Untyped it was retyped from is the budget | shared by caps (e.g. the pager's ONE fault notif) | freed on last reference |
+| KNotification | creator (retype from Untyped) | no numeric owner charge since Phase S1 — the Untyped it was retyped from is the budget | shared by caps (e.g. the pager's ONE fault notif) | freed on last reference |
 | KReply | EP_CALL (kernel) | the replying endpoint's transaction | one-shot | consumed by SYS_REPLY |
 | KCNode | creator | creator's handle table | shared by caps | freed on last handle close |
 | KUntyped | boot / retype | holder | retyped into children | children track back to it |
@@ -143,7 +143,7 @@ is charged to the owner once; the *mapping* is a cheap kslab object.
 | live processes | `KPROCESS_MAX_LIVE` = 64 | `kprocess_alloc` (atomic reserve) | `kprocess_destroy` | rolled back atomically, allocation fails |
 
 The notification quota (`KPROCESS_NOTIFICATION_QUOTA` = 16, charged at
-`knotification_bind_owner`) was **retired in Fase S1** together with the
+`knotification_bind_owner`) was **retired in Phase S1** together with the
 `owned_notifications` counter: the capacity to create a notification is holding
 Untyped memory plus a CSpace slot, not a numeric kernel budget.
 `SYS_RESOURCE_INFO` keeps the `notifs_*` fields additive and frozen at 0 (see
@@ -177,7 +177,7 @@ size-validated `struct iris_resource_info`: per-domain usage / limit /
 high-water for VMOs, notifications and pages, plus system-wide
 `global_failed_charges`, `global_rollbacks`, and kslab `used` / `total` /
 high-water / `alloc_failures`.  Additive and read-only (any rights on a non-self
-process cap suffice).  The Fase 29 tests use it as the accounting oracle.
+process cap suffice).  The Phase 29 tests use it as the accounting oracle.
 
 ---
 

@@ -40,7 +40,7 @@ struct KNotification {
     struct KNotification *live_next;
 };
 
-/* Fase S1: Untyped retype is the ONLY creation path (the kslab variant and
+/* Phase S1: Untyped retype is the ONLY creation path (the kslab variant and
  * the per-process owner/quota binding are retired — Untyped is the budget). */
 struct KNotification *knotification_alloc_at(void *mem);
 void                  knotification_free (struct KNotification *n);

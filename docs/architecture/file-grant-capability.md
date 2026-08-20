@@ -1,11 +1,11 @@
-# Fase 28.1 — File Grant Capability Enforcement + Pager Multi-target
+# Phase 28.1 — File Grant Capability Enforcement + Pager Multi-target
 
 Status: **IMPLEMENTED and tested end to end** (runtime T231–T238, all green in
 the 234/234 suite; host units 10247/10247).  Companion to
-`file-backed-memory.md` (Fase 28 Bloque B), `service-pager-integration.md`
-(Fase 27), `service-authority-manifest.md` and `service-supervision-model.md`.
+`file-backed-memory.md` (Phase 28 Bloque B), `service-pager-integration.md`
+(Phase 27), `service-authority-manifest.md` and `service-supervision-model.md`.
 
-This increment closes two residual risks left by Fase 28:
+This increment closes two residual risks left by Phase 28:
 
 1. The file "grant" was enforced only by the pager's own internal table while
    the pager held a *generic* VFS endpoint cap — a restriction applied by the
@@ -14,21 +14,21 @@ This increment closes two residual risks left by Fase 28:
    consumed one of the owner's 16 process notifications.
 
 The governing rule: **a restriction applied only by the compromised service is
-not a frontier of authority.**  Fase 28.1 moves the file-authority frontier
+not a frontier of authority.**  Phase 28.1 moves the file-authority frontier
 into the VFS, where the pager cannot reach it.
 
 ---
 
 ## Why a pathname is not authority
 
-In Fase 28 the pager read files by sending `(name, offset, len)` to a generic
+In Phase 28 the pager read files by sending `(name, offset, len)` to a generic
 `vfs.ep` cap.  A pathname in a message is *data*: a compromised pager could put
 any name in any message and the VFS would serve it.  The pager's "grant table"
 rejected unregistered names, but that check runs **inside the thing we don't
 trust**.  Containing a hostile pager requires that the VFS itself refuse to
 serve a backing the pager was not explicitly and unforgeably given.
 
-Fase 28.1 therefore makes the file grant a **VFS-issued, VFS-validated
+Phase 28.1 therefore makes the file grant a **VFS-issued, VFS-validated
 authority** and removes the pager's ability to name files at all.
 
 ---
@@ -39,10 +39,10 @@ The unforgeable grant is built from three guarantees the kernel already
 provides — no new syscall, no new kernel object:
 
 1. **`IrisMsg.sender_badge` is kernel-stamped** from the invoked capability
-   (Fase 9).  A client cannot write it.
+   (Phase 9).  A client cannot write it.
 2. **A badged endpoint cap can never be re-badged** (`SYS_PROC_CSPACE_MINT`,
-   Fase 9): a fresh badge may be minted only from an *unbadged* source, which
-   under the Fase 10 grant-tightening rule only a supervisor holds.
+   Phase 9): a fresh badge may be minted only from an *unbadged* source, which
+   under the Phase 10 grant-tightening rule only a supervisor holds.
 3. **Rights reduce monotonically** on every mint/derive.
 
 From these, the VFS classifies every caller by badge and confines it:
@@ -154,7 +154,7 @@ admin identity and a fresh-badge mint source.  So init pre-mints the supervisor
   client — no grant authority rides on unbadged caps.
 
 Neither slot gives the pager anything: the pager gets a *derived*, session-
-badged, WRITE-only cap.  The old Fase 28 duplicable-cap leak (a generic VFS cap
+badged, WRITE-only cap.  The old Phase 28 duplicable-cap leak (a generic VFS cap
 in the pager) is closed — the pager's slot 4 is now confined by badge to its
 grants.
 
@@ -182,7 +182,7 @@ and a pager that skips its bookkeeping still cannot read the revoked backing —
   newer *epoch* (its svcmgr restart generation) that stamps the high half of
   every generation, and an empty grant table.  No pre-restart grant can ever
   validate against the new instance.
-- **Existing mappings follow the Fase 28 contract**: already-installed target
+- **Existing mappings follow the Phase 28 contract**: already-installed target
   PTEs are owned by the kernel VSpace and survive a revoke; only *new* faults
   are denied.
 
@@ -192,16 +192,16 @@ and a pager that skips its bookkeeping still cannot read the revoked backing —
 
 ### The old quota behaviour
 
-(Historical.  `KPROCESS_NOTIFICATION_QUOTA` itself was retired in Fase S1 —
+(Historical.  `KPROCESS_NOTIFICATION_QUOTA` itself was retired in Phase S1 —
 see `resource-ownership-accounting.md`.  The shared-notification design below
 outlived it because it is cheaper, not because a quota forces it.)
 
 `SYS_EXCEPTION_HANDLER` binds a process's fault to a KNotification signalled on
 fault; `SYS_NOTIFY_CREATE` charges the notification to its **creator**.  In
-Fase 28 each target had its own fault notification, all created by the
+Phase 28 each target had its own fault notification, all created by the
 supervisor, against the supervisor's `KPROCESS_NOTIFICATION_QUOTA = 16`.  With
 ~8 already held at baseline, four concurrent targets (one notification each)
-exhausted the quota — Fase 28 could only ever run **one** target per pager.
+exhausted the quota — Phase 28 could only ever run **one** target per pager.
 
 ### The new model
 
@@ -237,7 +237,7 @@ quota:
   children.
 
 Both are **memory/accounting** bounds, deliberately distinct from the
-notification quota Fase 28.1 resolved.  Raising them is the honest fix so the
+notification quota Phase 28.1 resolved.  Raising them is the honest fix so the
 cap is a policy, not an accident of charging a child's memory to whoever loaded
 it.
 
@@ -261,7 +261,7 @@ A12 A VFS restart invalidates prior grants (new epoch + empty table).
 A13 A file grant confers no global VFS authority.
 A14 The productive pager receives no generic unrestricted cap.
 A15 The file-backed cache never uses a stale backing.
-A16 Existing mappings follow the Fase 28 contract after revoke.
+A16 Existing mappings follow the Phase 28 contract after revoke.
 A17 A new fault after revoke is not resolved from the revoked backing.
 A18 Several grants do not mix files.
 A19 Several targets do not mix grants.
@@ -310,7 +310,7 @@ grants, and two VMO grants.  With these it **cannot**:
 - read a revoked or superseded backing (VFS re-checks generation);
 - reach another session's grants (badge selects the session);
 - open new grants, revoke by name, or reset a session (admin-only);
-- touch any process outside its per-target grants (Fase 27 boundary);
+- touch any process outside its per-target grants (Phase 27 boundary);
 - amplify authority across a restart (SESSION_RESET; fresh session cap only).
 
 Its compromise is bounded by exactly the backings its supervisor granted, and

@@ -47,7 +47,7 @@ marked MET — which is true of *user pages* and false of the *page tables that
 map them*.  Stage 6 is where that stops being a distinction the reader has to
 make for themselves.
 
-## A question this stage must answer, and Etapa 1 deliberately does not
+## A question this stage must answer, and Step 1 deliberately does not
 
 seL4 has no per-frame kernel object: a Frame capability carries its physical
 address and size *in the capability*, and the same is true of IRQHandler and
@@ -59,13 +59,13 @@ The purest end state is therefore not "retype these objects from an Untyped" —
 it is "these authorities stop being objects".  That is a change to the slot
 model itself (MDB, rights, badge and lifetime all assume an object pointer),
 and it deserves its own analysis rather than being decided by whichever
-increment reaches it first.  Etapa 1 makes the *object* path honest without
+increment reaches it first.  Step 1 makes the *object* path honest without
 foreclosing the *no-object* path: nothing it adds becomes harder to delete if
 the slot model later absorbs these authorities.
 
 ## Etapas
 
-| Etapa | Subject | State |
+| Step | Subject | State |
 |---|---|---|
 | 6 | Mapping records and device capabilities; the allowlist shrinks | ✅ DONE |
 | 1 | The Untyped pays for its objects' headers — two-ended carve; KFrame's header leaves the kslab heap | ✅ DONE |
@@ -74,7 +74,7 @@ the slot model later absorbs these authorities.
 | 4 | The per-process kernel state and sub-untyped headers move to the budget | ✅ DONE |
 | 5 | KVMO CONVERTED: its pages, metadata and header come from a named budget | ✅ DONE |
 
-## Etapa 6 — the last runtime allocations  ✅ DONE
+## Step 6 — the last runtime allocations  ✅ DONE
 
 Three paths still reached the kernel slab on every use, not just at boot:
 
@@ -108,7 +108,7 @@ too small for a single record instead of a failing slab — asserting exactly
 what it asserted before, that a failed record installs no PTE, counts no
 mapping and leaves the frame untouched.
 
-## Etapa 5 — user memory comes out of a named budget  ✅ DONE
+## Step 5 — user memory comes out of a named budget  ✅ DONE
 
 Anonymous memory was the last thing the kernel handed out for free.  A process
 asked for a VMO and got PMM pages, bounded only by a per-process quota the
@@ -150,7 +150,7 @@ without taking authority — is what asks it.  Resetting the budget of a child
 that is still alive would strand its memory; the first version of this loop did
 precisely that, and the runtime said so.
 
-### A defect this etapa exposed
+### A defect this step exposed
 
 Three-argument syscall stubs did not clear `r10`.  That was harmless while no
 syscall read a fourth argument, and became a bug the moment `SYS_INITRD_VMO`
@@ -162,7 +162,7 @@ by at least the size asked for, its pages are real and zero-filled, a budget of
 the wrong type is refused, the budget cannot be RESET while the VMO lives, and
 once the VMO is gone the region is reclaimable.
 
-## Etapa 4 — a process's kernel state comes out of the budget  ✅ DONE
+## Step 4 — a process's kernel state comes out of the budget  ✅ DONE
 
 Three more families follow the address space into the Untyped:
 
@@ -191,12 +191,12 @@ What stays on the kernel slab, and why it is not a leftover to clean up later:
   Untyped exists, the same bounded bootstrap exception as its page tables;
 - **boot Untypeds** — created by `kernel_main` from raw PMM blocks; they have
   no parent to charge;
-- `KFrameMapping` nodes, and the frames of a VMO or a bootstrap map — Etapa 5
+- `KFrameMapping` nodes, and the frames of a VMO or a bootstrap map — Step 5
   and the paths that retire with KVMO.
 
-## Etapa 3 — the address space itself comes from the budget  ✅ DONE
+## Step 3 — the address space itself comes from the budget  ✅ DONE
 
-The two pieces Etapa 2 left kernel-funded are gone for spawned processes: the
+The two pieces Step 2 left kernel-funded are gone for spawned processes: the
 **PML4** is a page child of the same Untyped (`paging_create_user_space_from`),
 and the **KVSpace header** is a top-carved child block of it
 (`kvspace_alloc_at`).  One budget now pays for an entire address space —
@@ -220,7 +220,7 @@ Untyped exists — the same bounded bootstrap exception as its page tables.
 T299 gained a leg: creating the address space alone already consumes at least a
 page of the budget, before anything is mapped into it.
 
-## Etapa 2 — page tables are charged to a budget  ✅ DONE
+## Step 2 — page tables are charged to a budget  ✅ DONE
 
 Every level below the PML4 is memory, and mapping user memory took it silently
 from the kernel's PMM reserve.  A process could therefore make the kernel spend
@@ -254,7 +254,7 @@ built before any Untyped exists, so its tables come from the PMM reserve, as do
 the kernel's own (kstack region, physmap).  That is kernel memory for kernel
 mappings; every other user page table is charged.
 
-### Two defects this etapa exposed, both fixed here
+### Two defects this step exposed, both fixed here
 
 - **Page-aligned carves were aligned in the wrong space.**
   `kuntyped_bump_alloc_phys_page` rounded the OFFSET within the region, which
@@ -278,7 +278,7 @@ type is refused, mapping into a fresh window really consumes page-sized amounts
 of it, the budget cannot be RESET while those tables are live, and once the
 address space is gone the region is reclaimable and reusable.
 
-## Etapa 1 — the Untyped pays for its objects' headers  ✅ DONE
+## Step 1 — the Untyped pays for its objects' headers  ✅ DONE
 
 A frame retyped from an Untyped already carved its **page** from that Untyped;
 its `struct KFrame` header came from the kernel's slab heap.  So a caller who
@@ -332,7 +332,7 @@ Untyped, the header is outside the frame's page, and the frame still maps).
 
 ## What remains, and where it goes
 
-After Etapa 6, `kslab_alloc` survives in exactly two categories, and neither is
+After Step 6, `kslab_alloc` survives in exactly two categories, and neither is
 reachable by a running process asking for something:
 
 **Bootstrap — the root task and the objects that predate any budget.**  Its

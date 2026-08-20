@@ -1,5 +1,5 @@
 /*
- * vfs_ep_proto.h — VFS service protocol over KEndpoint (Fase 7.1).
+ * vfs_ep_proto.h — VFS service protocol over KEndpoint (Phase 7.1).
  *
  * Wire format: struct IrisMsg (iris/ipc_msg.h) following the conventions in
  * iris/endpoint_proto.h. All operations are EP_CALL + SYS_REPLY round trips.
@@ -9,7 +9,7 @@
  *     EP path. Reads carry an explicit (path, offset, len) triple, so a dead
  *     client leaves no server-side state behind and no sender identity is
  *     required (IrisMsg carries no kernel-stamped sender id / badge yet).
- *   - This is the ONLY VFS protocol (Fase 7.5): the legacy stateful KChannel
+ *   - This is the ONLY VFS protocol (Phase 7.5): the legacy stateful KChannel
  *     open/read/close protocol (iris/vfs_proto.h) was removed with its last
  *     clients; VFS no longer owns a legacy service channel.
  *   - Requests never transfer capabilities (EP_CALL forbids request-side cap
@@ -31,7 +31,7 @@
 
 #include <stdint.h>
 #include <iris/ipc_msg.h>
-#include <iris/endpoint_proto.h>   /* Fase 28.1: IRIS_BADGE_FILEGRANT_* */
+#include <iris/endpoint_proto.h>   /* Phase 28.1: IRIS_BADGE_FILEGRANT_* */
 
 /* Service opcode range 0x0100–0xEFFF (endpoint_proto.h); VFS owns 0x01xx. */
 
@@ -73,7 +73,7 @@
 #define VFS_EP_OP_READ_AT  UINT64_C(0x0103)
 
 /*
- * VFS_EP_OP_STATUS — service health/diagnostics summary (Fase 7.5).
+ * VFS_EP_OP_STATUS — service health/diagnostics summary (Phase 7.5).
  *   Request:  no words, no bulk payload required (extra words are ignored;
  *             a bulk payload is rejected as IRIS_ERR_INVALID_ARG).
  *   Reply OK: words[1] = number of ready exports
@@ -85,17 +85,17 @@
 
 /* IRIS_EP_OP_PING (0xFF01, endpoint_proto.h) is also served: reply OK. */
 
-/* ── Fase 28.1: VFS-enforced file grants ─────────────────────────────────────
+/* ── Phase 28.1: VFS-enforced file grants ─────────────────────────────────────
  *
  * A file grant is an UNFORGEABLE, per-backing authority validated by the VFS
  * itself on every operation — a pathname is never authority.  The construction
  * composes three existing kernel guarantees:
  *
- *   1. sender_badge is KERNEL-STAMPED from the invoked capability (Fase 9);
+ *   1. sender_badge is KERNEL-STAMPED from the invoked capability (Phase 9);
  *      a client cannot write it.
  *   2. A badged endpoint cap can NEVER be re-badged (SYS_PROC_CSPACE_MINT);
  *      only a holder of an UNBADGED duplicable vfs.ep cap (a supervisor, by
- *      the Fase 10 grant-tightening rule) can mint session identities.
+ *      the Phase 10 grant-tightening rule) can mint session identities.
  *   3. Rights reduce monotonically on every mint.
  *
  * Roles, by badge class:
@@ -221,7 +221,7 @@
 
 /* Boot contract: number of exports seeded before "[VFS] ep ready" (the
  * static boot exports; initrd exports come on top). Checked by init's diag
- * invariant. Moved here from iris/vfs_proto.h (removed, Fase 7.5). */
+ * invariant. Moved here from iris/vfs_proto.h (removed, Phase 7.5). */
 #define VFS_BOOT_EXPORT_COUNT 4u
 
 /* Maximum data bytes per READ_AT reply (one IPC bulk buffer). */

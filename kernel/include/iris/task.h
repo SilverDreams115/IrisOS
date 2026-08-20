@@ -33,7 +33,7 @@ typedef enum {
     TASK_BLOCKED_REPLY,     /* Ph85: EP_CALL caller blocked waiting for KReply invocation */
     TASK_SUSPENDED,         /* Ph96: explicitly suspended via SYS_TCB_SUSPEND */
     /*
-     * Fase S2 D2 — execution ended but the KTCB OBJECT may still be alive
+     * Phase S2 D2 — execution ended but the KTCB OBJECT may still be alive
      * (referenced by surviving capabilities).  TERMINATED != destroyed:
      *   - not in any run/wait/reap queue;
      *   - not holding a registry slot (scheduler capacity released);
@@ -65,7 +65,7 @@ struct cpu_context {
 } __attribute__((packed));
 
 /*
- * Fase S2 D2 — the canonical TCB.
+ * Phase S2 D2 — the canonical TCB.
  *
  * `struct task` IS the KTCB: it carries the KObject header at offset 0 and all
  * execution state directly.  The old `struct KTcb { KObject; struct task* }`
@@ -105,14 +105,14 @@ struct task {
      * Both fields are 0 for an uninitialized/dead task slot. */
     uint8_t          *kstack;
     uint64_t          kstack_phys;
-    /* Fase S2 (scheduler indirection): saved kernel RSP across a context
+    /* Phase S2 (scheduler indirection): saved kernel RSP across a context
      * switch.  Replaces the parallel index-keyed task_rsp[TASK_MAX] array — the
      * scheduler no longer derives a slot index by pointer arithmetic
      * (old - tasks) to find where to save/restore the kernel stack pointer;
      * it lives inside the TCB backing itself.  This is the first structural
      * decoupling of scheduler identity from the static-array index. */
     uint64_t          saved_krsp;
-    /* Fase S2 Inc.2B (Bloque A): intrusive run-queue links.  The per-CPU run
+    /* Phase S2 Inc.2B (Bloque A): intrusive run-queue links.  The per-CPU run
      * queue no longer uses index-keyed parallel arrays (next[TASK_MAX] /
      * queued[TASK_MAX]) nor (t - tasks) pointer arithmetic; each TCB carries
      * its own FIFO link + queued flag, so scheduling identity is by pointer,
@@ -130,7 +130,7 @@ struct task {
     uint64_t          utext_phys;      /* physical base of userboot text copy (ring-3 only) */
     uint32_t          utext_pages;     /* page count at utext_phys; 0 if not applicable */
     struct KProcess  *process;         /* owning process; NULL for kernel tasks */
-    uint32_t          fault_seq;       /* Fase 25: generation of the fault this
+    uint32_t          fault_seq;       /* Phase 25: generation of the fault this
                                         * task is blocked on (TASK_BLOCKED_FAULT);
                                         * 0 = no fault ever delivered to it */
 
@@ -150,8 +150,8 @@ struct task {
     /* Ph68: capability staged for transfer during a blocking send */
     struct KObject     *ep_cap_obj;      /* kobject being transferred; NULL = none */
     uint32_t            ep_cap_rights;   /* rights to grant on ep_cap_obj */
-    uint64_t            ep_cap_badge;    /* Fase 9: badge carried by the staged cap */
-    /* Fase S4 (Etapa 2): source SLOT backing ep_cap_obj (two-phase staging).
+    uint64_t            ep_cap_badge;    /* Phase 9: badge carried by the staged cap */
+    /* Phase S4 (Step 2): source SLOT backing ep_cap_obj (two-phase staging).
      * The transfer source is a CSpace slot, not a handle — it is the MDB
      * identity the delivered cap is parented to.  The sender's slot stays
      * occupied while queued; the receiver commits (deletes it) only when it
@@ -175,7 +175,7 @@ struct task {
     /* Ph85: reply capability fields */
     uint32_t       ep_call_mode;    /* 1 if task entered EP via SYS_EP_CALL (wants reply) */
     struct KReply *pending_kreply;  /* non-NULL while state == TASK_BLOCKED_REPLY (task holds a ref) */
-    /* Fase S1: explicit MCS-style reply object staged by the receiver.
+    /* Phase S1: explicit MCS-style reply object staged by the receiver.
      * Set at EP_RECV / EP_NB_RECV entry from the reply CPtr in arg2 (the
      * task holds a lifecycle ref + the object's staged claim); consumed at
      * an EP_CALL rendezvous (bound to the caller) or released when the recv
@@ -183,17 +183,17 @@ struct task {
     struct KReply *ep_reply_obj;
     uint32_t       ep_reply_val;    /* raw CPtr/handle value the receiver passed —
                                      * echoed to the server in msg.attached_handle */
-    /* Fase S2 D2: `struct task` IS the KTCB — no separate wrapper.  A cap to
+    /* Phase S2 D2: `struct task` IS the KTCB — no separate wrapper.  A cap to
      * this thread is a KOBJ_TCB cap on &base.  `configured`/`terminal` flag
      * the object/execution state; `reg_slot` is the registry witness. */
-    uint8_t        configured;   /* Fase S2: TCB_CONFIGURE committed */
+    uint8_t        configured;   /* Phase S2: TCB_CONFIGURE committed */
     uint8_t        started;      /* Stage 5: has been made runnable at least
                                   * once — after that its kernel stack holds
                                   * live state and the entry frame must not be
                                   * rewritten (TCB_WRITE_REGS refuses) */
     uint8_t        terminal;     /* execution ended (TERMINATED) */
     int32_t        reg_slot;     /* registry index while registered, else -1 */
-    /* Stage 5 Etapa 4: which kernel-stack slot of the KSTACK_VIRT_BASE region
+    /* Stage 5 Step 4: which kernel-stack slot of the KSTACK_VIRT_BASE region
      * this thread owns, or -1.  It used to be implied — the backing-array
      * index of the pool slot the task was carved from — which only exists for
      * a task that lives IN the pool.  A TCB retyped from an Untyped has no
@@ -212,7 +212,7 @@ struct task {
     struct task      *next;
 };
 
-/* Fase S2 D2: canonical KTCB name for the unified structure. */
+/* Phase S2 D2: canonical KTCB name for the unified structure. */
 typedef struct task KTCB;
 
 /* KObject header must be at offset 0 so a KOBJ_TCB cap (KObject*) aliases the
@@ -226,7 +226,7 @@ void         task_init(void);
 struct task *task_find_by_id(uint32_t id);
 struct task *task_create(void (*entry)(void));
 struct task *task_spawn_user(uint64_t arg0);
-/* Stage 5 Etapa 4 — execution for a TCB retyped from an Untyped.
+/* Stage 5 Step 4 — execution for a TCB retyped from an Untyped.
  *
  * ktcb_configure gives an inactive (RETYPE2-born) TCB the execution state a
  * pool-born thread gets at creation: a registry slot, a kernel stack, FPU

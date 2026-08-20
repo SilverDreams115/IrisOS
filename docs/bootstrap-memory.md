@@ -8,8 +8,8 @@ These mappings historically bypassed the normal seL4-style capability path
 (`KUntyped → retype → KFrame → SYS_FRAME_MAP`) and were called
 **bootstrap direct maps**.
 
-**Fase 6.2** migrated these bootstrap user mappings to be KFrame-backed,
-closing the main tracking gap documented in Fase 6.1.
+**Phase 6.2** migrated these bootstrap user mappings to be KFrame-backed,
+closing the main tracking gap documented in Phase 6.1.
 
 **Stage 6** left this path deliberately unchanged, and it is now the only one
 like it: the root task's text, stack and BootInfo pages, its page tables, its
@@ -22,11 +22,11 @@ with load, and retires when process creation itself moves to user space
 
 ---
 
-## Bootstrap Memory After Fase 6.2
+## Bootstrap Memory After Phase 6.2
 
 ### Demand paging
 
-Demand paging was eliminated in **Fase 6**.  `#PF` ring-3 never allocates
+Demand paging was eliminated in **Phase 6**.  `#PF` ring-3 never allocates
 physical pages.  `kprocess_resolve_demand_fault` does not exist.
 
 ### Runtime user mappings
@@ -105,7 +105,7 @@ slot `BOOT_CPTR_VSPACE` (slot 2).
 
 Physical page lifetime is tracked by `task` struct fields (`ustack_phys`,
 `utext_phys`).  `free_user_stack_pages` and `free_user_text_pages` free the
-PMM blocks on teardown paths (unchanged from Fase 6.1).
+PMM blocks on teardown paths (unchanged from Phase 6.1).
 
 ### Mapping records
 
@@ -146,9 +146,9 @@ If `bootstrap_kframe_map` fails mid-loop:
 
 | Invariant | Status |
 |-----------|--------|
-| No demand paging | ✓ eliminated in Fase 6 |
+| No demand paging | ✓ eliminated in Phase 6 |
 | No `#PF` ring-3 allocation | ✓ confirmed |
-| Bootstrap user pages have KFrame | ✓ Fase 6.2 |
+| Bootstrap user pages have KFrame | ✓ Phase 6.2 |
 | Bootstrap KFrames registered in `proc->bootstrap_frames[]` | ✓ |
 | KFrame mappings in `KVSpace.mappings[]` | ✓ |
 | `mapped_count` reflects bootstrap mappings | ✓ |
@@ -156,21 +156,21 @@ If `bootstrap_kframe_map` fails mid-loop:
 | `mapping_count` reaches 0 on teardown | ✓ |
 | No stale PTEs after teardown | ✓ |
 | No leaked KFrame alloc retains | ✓ |
-| VMO maps via KFrame | ✓ Fase 6.3 — sys_vmo_map / sys_vmo_map_into rewritten |
+| VMO maps via KFrame | ✓ Phase 6.3 — sys_vmo_map / sys_vmo_map_into rewritten |
 | T001–T017 pass | ✓ iris_test 17/17 |
 | FR-1..FR-62 pass | ✓ 2143/2143 unit tests |
 
 ---
 
-## Fase 6.3 Changes
+## Phase 6.3 Changes
 
-**Fase 6.3** completed VMO-to-Frame capability migration.
+**Phase 6.3** completed VMO-to-Frame capability migration.
 
 ### sys_vmo_map / sys_vmo_map_into rewritten
 
 Both syscalls now eagerly install KFrame-backed PTEs:
 
-- Sparse VMOs (named "demand" before Fase V1): each page allocated via `pmm_alloc_page` if not yet present,
+- Sparse VMOs (named "demand" before Phase V1): each page allocated via `pmm_alloc_page` if not yet present,
   then wrapped in a `KFrame` created by `kframe_alloc_vmo_page(phys, v)`.
   The VMO retain in `f->vmo_owner` defers `kvmo_destroy` until after all frames
   for that VMO's pages are released.
@@ -208,7 +208,7 @@ list, removes the PTE, and releases the frame retain — the inverse of
 
 ---
 
-## Verification (Fase 6.3)
+## Verification (Phase 6.3)
 
 - `make` — 0 warnings, 0 errors
 - `make test-unit` — 2143/2143 tests pass (FR-1..FR-62)
@@ -219,7 +219,7 @@ list, removes the PTE, and releases the frame retain — the inverse of
 
 ---
 
-## Fase 6.4 Changes (Memory stress / invariant audit)
+## Phase 6.4 Changes (Memory stress / invariant audit)
 
 ### Bug fixed: `kframe_unmap_page` ordering
 
@@ -250,7 +250,7 @@ already had the correct order.  The fix is a one-line swap in `kframe.c`.
 | FR-68 | 1000-cycle map/unmap stress on a single VA |
 | FR-69 | mapping_count consistency with interleaved non-sequential unmap |
 
-### Verification (Fase 6.4)
+### Verification (Phase 6.4)
 
 - `make` — 0 warnings, 0 errors
 - `make test-unit` — 10274/10274 tests pass (FR-1..FR-69)

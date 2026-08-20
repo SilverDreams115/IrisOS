@@ -1,7 +1,7 @@
 /*
- * test_boot_cspace.c — Fase 3.4 + Fase 3.5 unit tests for bootstrap CSpace grants.
+ * test_boot_cspace.c — Phase 3.4 + Phase 3.5 unit tests for bootstrap CSpace grants.
  *
- * Fase 3.4 tests (BC-1..BC-10): Boot KUntyped in slots 16-255.
+ * Phase 3.4 tests (BC-1..BC-10): Boot KUntyped in slots 16-255.
  *   [BC-1]  Insert at BOOT_CPTR_UNTYPED_START and resolve via CPtr.
  *   [BC-2]  CNode slot rights match handle-table rights (equal, not greater).
  *   [BC-3]  CPTR_NULL slot (0) remains empty after boot grants.
@@ -13,7 +13,7 @@
  *   [BC-9]  ACCESS_DENIED on read-only CNode slot blocks write-required resolve.
  *   [BC-10] Slot just past BOOT_CPTR_UNTYPED_END (slot 256) is out-of-range for mint.
  *
- * Fase 3.5 tests (BB-1..BB-10): KBootstrapCap well-known slot 1.
+ * Phase 3.5 tests (BB-1..BB-10): KBootstrapCap well-known slot 1.
  *   [BB-1]  BOOT_CPTR_BOOTSTRAP_CAP == 1 and != CPTR_NULL.
  *   [BB-2]  Slots 2-15 remain empty after inserting KBootstrapCap in slot 1.
  *   [BB-3]  KBootstrapCap in slot 1 resolves via CPtr; type == KOBJ_BOOTSTRAP_CAP.
@@ -323,10 +323,10 @@ void test_boot_cspace(void) {
         bc_free_proc(p);
     }
 
-    /* ── Fase 3.5 tests (BB-1..BB-10) ──────────────────────────────────────── */
+    /* ── Phase 3.5 tests (BB-1..BB-10) ──────────────────────────────────────── */
 
     /* [BB-1] BOOT_CPTR_BOOTSTRAP_CAP == 1 and != CPTR_NULL.
-     * Stage 5 Etapa 2 emptied that slot for good — the monolithic boot
+     * Stage 5 Step 2 emptied that slot for good — the monolithic boot
      * capability it held cannot be constructed any more — but the number
      * stays reserved, which is what this pins. */
     {
@@ -334,7 +334,7 @@ void test_boot_cspace(void) {
         ASSERT_NE((uint32_t)BOOT_CPTR_BOOTSTRAP_CAP, (uint32_t)CPTR_NULL);
     }
 
-    /* ── Stage 5 Etapa 3: a CSpace that names itself (BC-11..BC-13) ────────
+    /* ── Stage 5 Step 3: a CSpace that names itself (BC-11..BC-13) ────────
      *
      * The root task holds a capability to its own root CNode, so the CNode is
      * reachable from inside itself and its slot holds refs on it.  Nothing

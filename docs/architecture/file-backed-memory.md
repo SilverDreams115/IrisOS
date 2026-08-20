@@ -1,4 +1,4 @@
-# Fase 28 Bloque B — File-backed memory (architecture + implementation)
+# Phase 28 Bloque B — File-backed memory (architecture + implementation)
 
 Status: **IMPLEMENTED and tested end to end** (runtime T217–T230, all green in
 the 226/226 suite).  Bloque A (boot-growth hardening) unblocked this work; Bloque
@@ -6,7 +6,7 @@ B is the complete file-backed memory subsystem — identity + generations, bound
 per-backing grants, validated regions, RO-shared / private-writable modes,
 exact EOF/zero-fill, a bounded evicting page cache, revocation, restart, failure
 atomicity, and ELF-segment groundwork.  The read-only path needed **no new
-kernel syscall** (it composes from Fase 25/26 primitives); the whole subsystem
+kernel syscall** (it composes from Phase 25/26 primitives); the whole subsystem
 lives in the ring-3 pager service.  Companion to `boot-image-growth.md`,
 `service-pager-integration.md` and `memory-object-vmo-policy.md`.
 
@@ -39,9 +39,9 @@ this block may introduce filesystem policy.
 
 The good news from the audit: **no new kernel mechanism is needed for the
 read-only path.**  It composes from existing primitives:
-`SYS_VMO_MAP_PAGE` (Fase 26), `SYS_PROCESS_VSPACE` (Fase 25), fault generations
-and seq-checked resume (Fase 25), and the VFS `STAT`/`READ_AT` endpoint
-protocol (Fase 7).
+`SYS_VMO_MAP_PAGE` (Phase 26), `SYS_PROCESS_VSPACE` (Phase 25), fault generations
+and seq-checked resume (Phase 25), and the VFS `STAT`/`READ_AT` endpoint
+protocol (Phase 7).
 
 ## B1 — VFS / backing audit
 
@@ -52,9 +52,9 @@ protocol (Fase 7).
 | `VFS_EP_OP_READ_AT` | (name, offset, len) → bytes + total size; EOF = 0 bytes | page-fill source; short read = EOF | endpoint tests | 256-byte cap → 16 reads/page |
 | `IRIS_IPC_BUF_SIZE` | 256 bytes per reply | fill a 4 KiB page in ≤16 reads | — | loop, not a blocker |
 | initrd immutability | read-only, stable | generation constant (=1); "different file" = different name | — | mutable files need real generations later |
-| VMO page fill | map a VMO page into the pager's own VSpace, write, unmap | fill a page with file bytes + zero tail | Fase 26 t26_vmo_word pattern | reuse the self-map fill idiom |
-| pager protocol | PGR_OP_MAP_RESUME (raw VMO grant) | add PGR_OP_MAP_REGION (file-backed) | Fase 27 T201–T210 | additive op |
-| VFS restart | supervised, endpoint survives restart | backing identity stable across restart; generation bump on real change | Fase 24 | initrd generation never changes |
+| VMO page fill | map a VMO page into the pager's own VSpace, write, unmap | fill a page with file bytes + zero tail | Phase 26 t26_vmo_word pattern | reuse the self-map fill idiom |
+| pager protocol | PGR_OP_MAP_RESUME (raw VMO grant) | add PGR_OP_MAP_REGION (file-backed) | Phase 27 T201–T210 | additive op |
+| VFS restart | supervised, endpoint survives restart | backing identity stable across restart; generation bump on real change | Phase 24 | initrd generation never changes |
 
 Answers to the mandated questions: a VFS **file grant** = a VFS endpoint cap
 (WRITE, to call READ_AT/STAT) scoped by the *set of backing names the pager is
@@ -180,7 +180,7 @@ VMO grant (slot 16), keyed by `(backing_id, generation, page_off)`:
 
 ```text
 1. target faults at VA.
-2. kernel delivers the fault record to the pager (Fase 20).
+2. kernel delivers the fault record to the pager (Phase 20).
 3. pager finds the region containing VA (target + region table).
 4. pager validates VA and access type against the region (F9, F13).
 5. pager computes page_index = (VA - start_va)/PAGE + file_offset/PAGE.
@@ -188,7 +188,7 @@ VMO grant (slot 16), keyed by `(backing_id, generation, page_off)`:
    VMO page it fills (leading = file bytes, trailing = zero), keyed and cached.
 7. pager SYS_VMO_MAP_PAGE the (RO or private-writable) page at VA in the
    target VSpace.
-8. pager seq-resume (Fase 25 generation check).
+8. pager seq-resume (Phase 25 generation check).
 9. target continues.
 ```
 
@@ -242,7 +242,7 @@ The single-target multi-page and two-offset fault probes
 (`LP_CMD_FAULT_READ_SEQ` / `LP_CMD_FAULT_READ_OFFS` in `lifecycle_probe`) let one
 target drive multi-page and arbitrary-byte-offset resolution without spawning N
 one-shot targets — which, under the per-process notification quota in force at
-the time (`KPROCESS_NOTIFICATION_QUOTA = 16`, retired in Fase S1), would have
+the time (`KPROCESS_NOTIFICATION_QUOTA = 16`, retired in Phase S1), would have
 exhausted it.  The probes are kept: they are cheaper than N targets regardless
 of the quota.
 
@@ -274,10 +274,10 @@ from a file; the loader itself is a later phase.
 
 ---
 
-## Fase 28.1 addendum — the grant is now VFS-enforced
+## Phase 28.1 addendum — the grant is now VFS-enforced
 
-Fase 28 enforced the file grant inside the pager (it rejected unregistered
-names).  That is not an authority boundary for a *compromised* pager.  **Fase
+Phase 28 enforced the file grant inside the pager (it rejected unregistered
+names).  That is not an authority boundary for a *compromised* pager.  **Phase
 28.1** moves the frontier into the VFS: the pager holds a session-badged,
 WRITE-only `vfs.ep` cap (no name path, no enumeration), reads exclusively via
 `GRANT_READ_AT(grant_idx, off, len)` — **no pathname anywhere** — and the VFS
@@ -292,7 +292,7 @@ See `file-grant-capability.md` for the full contract and threat model
 
 ---
 
-## Fase 29 addendum — pager resource accounting
+## Phase 29 addendum — pager resource accounting
 
 The pager's cache VMO and private-writable pool VMO are owned (and charged) by
 their owner domain; fault fills charge sparse pages to that owner, once
@@ -301,5 +301,5 @@ private pages belong to their pool's owner).  A pager dying releases its own
 page/VMO charges; a target dying does not charge cleanup to the pager; and the
 supervisor never inherits the pager's page budget (T244).  File-backed memory
 runs unchanged under the new accounting with an exact resource baseline (T249),
-and the Fase 28 functional contract (T211–T238) is preserved.  See
+and the Phase 28 functional contract (T211–T238) is preserved.  See
 `resource-ownership-accounting.md`.

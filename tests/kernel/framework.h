@@ -39,7 +39,7 @@ extern int g_fail;
 #define ASSERT_NOT_NULL(p) ASSERT_TRUE((p) != NULL)
 
 /*
- * Fase S1 — untyped-child test fixtures.
+ * Phase S1 — untyped-child test fixtures.
  *
  * The kslab-backed kendpoint_alloc / knotification_alloc / kreply_alloc are
  * RETIRED: production objects are placement-initialized inside untyped-backed

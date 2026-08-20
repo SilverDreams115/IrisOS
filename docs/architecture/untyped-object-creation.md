@@ -1,7 +1,7 @@
-# IRIS — Untyped Object Creation (Fase S1, normative)
+# IRIS — Untyped Object Creation (Phase S1, normative)
 
 Complements [`sel4-canonical-object-model.md`](sel4-canonical-object-model.md)
-and supersedes `untyped-retype-revoke-hardening.md` (Fase 18) as the contract
+and supersedes `untyped-retype-revoke-hardening.md` (Phase 18) as the contract
 of the allocation substrate.
 
 ## KUntyped — identity and layout
@@ -128,7 +128,7 @@ identity already closes the stale path).
   is_device` (RIGHT_READ on the cap).
 - kind 3: per-migrated-type gauges — `endpoints/notifications/replies/cnodes
   live` (the per-type high-water/retype/destroy are derived from the global
-  counters + gauges; the Fase 18 per-type counters remain in
+  counters + gauges; the Phase 18 per-type counters remain in
   SYS_SCHED_INFO ext3).
 
 Versioned structs (`version`, `struct_size`). No new resource-domain syscall

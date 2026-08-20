@@ -1,11 +1,11 @@
-# VFS Endpoint Protocol (Fase 7.1; endpoint-only since Fase 7.5)
+# VFS Endpoint Protocol (Phase 7.1; endpoint-only since Phase 7.5)
 
 The VFS service serves file requests **exclusively** over KEndpoint
 (`SYS_EP_CALL` + `SYS_REPLY`). The wire format is defined in
 `kernel/include/iris/vfs_ep_proto.h`; the dispatcher lives in
 `services/vfs/vfs_ep.c` and is unit-tested on the host
 (`tests/kernel/test_vfs_ep.c`). The legacy stateful KChannel protocol
-(`iris/vfs_proto.h`) was removed in Fase 7.5 together with its header.
+(`iris/vfs_proto.h`) was removed in Phase 7.5 together with its header.
 
 ## Design: stateless by construction
 
@@ -22,7 +22,7 @@ The EP protocol therefore carries full addressing in every request:
 - A client crashing mid-sequence leaves nothing behind; its in-flight EP_CALL
   is woken with `IRIS_ERR_CLOSED` by KReply teardown.
 
-The stateful open/read/close protocol was removed in Fase 7.5: `vfs_proto.h`
+The stateful open/read/close protocol was removed in Phase 7.5: `vfs_proto.h`
 is deleted, the catalog marks vfs `endpoint_only = 1` (svcmgr creates no
 legacy service/reply pair, bootstrap kinds 10/11 are retired) and iris_test
 T032 asserts the bare `"vfs"` name no longer resolves. Requests and replies
@@ -37,7 +37,7 @@ across restarts, and:
 
 - pre-start-mints the **receive side** (`RIGHT_READ`) into the service's
   root CNode at `IRIS_CPTR_OWN_EP` (slot 5; bootstrap kind 0x21 retired in
-  Fase 8);
+  Phase 8);
 - publishes the **send side** (`RIGHT_WRITE`) under the reserved name
   `"vfs.ep"`, resolvable through both `IRIS_SVCMGR_EP_LOOKUP_NAME` and the
   legacy `SVCMGR_MSG_LOOKUP_NAME`.
@@ -46,7 +46,7 @@ Because svcmgr owns the master, client caps stay valid when the VFS is
 respawned; callers blocked on a dying VFS wake with `IRIS_ERR_CLOSED`. Dynamic
 registration of any name ending in `".ep"` is rejected with
 `IRIS_ERR_INVALID_ARG` (endpoint spoofing prevention). This is runtime-tested
-since Fase 7.2: init S4 attempts to register `"spoof.ep"` and verifies the
+since Phase 7.2: init S4 attempts to register `"spoof.ep"` and verifies the
 name stays unresolvable; iris_test T031 verifies the EP lookup of a `".ep"`
 name that matches no published endpoint returns `NOT_FOUND` with no cap.
 
@@ -92,7 +92,7 @@ Stateless positional read.
 the reply bulk destination (data). Clients must re-stage the path before every
 call (see `sh_vfs_ep_call` in `services/sh/main.c`).
 
-### VFS_EP_OP_STATUS (0x0104, Fase 7.5)
+### VFS_EP_OP_STATUS (0x0104, Phase 7.5)
 
 Service health summary, used by svcmgr's DIAG aggregation (it EP_CALLs the
 master ep cap it already holds). Request: no words; a bulk payload is
@@ -115,7 +115,7 @@ Health check; replies `IRIS_EP_REPLY_OK`, no payload.
 
 Exactly one reply is produced for every request, including malformed ones.
 
-## Server loop (endpoint-only, Fase 7.5)
+## Server loop (endpoint-only, Phase 7.5)
 
 `vfs.c` blocks on the endpoint — there is no KChannel service loop left:
 
@@ -135,14 +135,14 @@ for (;;) {
 - Marker `[VFS] ep ready` is logged before `VFS ready` and gated by
   `scripts/run_qemu_headless.sh`.
 
-## Clients (endpoint-only since Fase 7.2)
+## Clients (endpoint-only since Phase 7.2)
 
-- **sh** (Fase 8): reaches vfs through the well-known slot
+- **sh** (Phase 8): reaches vfs through the well-known slot
   `IRIS_CPTR_VFS_EP` (2), verified with a PING at boot — no lookup at all;
   prints `[SH] vfs cptr OK` / `FAILED`. `ls` and `cat` use LIST / READ_AT
-  exclusively — the legacy fallback was removed in Fase 7.2. A broken slot
+  exclusively — the legacy fallback was removed in Phase 7.2. A broken slot
   fails the `[SH] vfs cptr OK` smoke gate instead of being masked.
-- **init**: the S5/S6 healthy-path probes (Fase 7.2) resolve `"svcmgr.ep"`
+- **init**: the S5/S6 healthy-path probes (Phase 7.2) resolve `"svcmgr.ep"`
   over the legacy lookup once, then EP_CALL `LOOKUP_NAME("vfs.ep")` with the
   standard retry/pause loop. S5 checks LIST 0–2 + out-of-range `NOT_FOUND`;
   S6 checks STAT + full READ_AT + EOF semantics + missing-file `NOT_FOUND`.

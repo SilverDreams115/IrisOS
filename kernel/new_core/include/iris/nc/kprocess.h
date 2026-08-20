@@ -14,13 +14,13 @@ struct KFrame;
 
 #define KPROCESS_EXIT_WATCH_MAX 8u
 #define KPROCESS_MAX_LIVE       64u /* bounded by TASK_MAX; enforced in kprocess_alloc */
-/* Fase S1: KPROCESS_NOTIFICATION_QUOTA retired — the capacity to create
+/* Phase S1: KPROCESS_NOTIFICATION_QUOTA retired — the capacity to create
  * notifications is possessing Untyped memory plus CSpace slots, never a
  * kernel-side numeric quota.  (SYS_RESOURCE_INFO reports notifs_limit = 0.) */
-/* Fase 29: RESTORED 128 → 32.  Fase 28.1 temporarily raised this to 128 to
+/* Phase 29: RESTORED 128 → 32.  Phase 28.1 temporarily raised this to 128 to
  * work around a caller-charged accounting BUG: a loader (svc_load) created each
  * child's segment+stack VMOs under ITS OWN ownership, so a supervisor holding N
- * children accumulated ~4*N VMOs against its own quota.  Fase 29 fixes the root
+ * children accumulated ~4*N VMOs against its own quota.  Phase 29 fixes the root
  * cause — a VMO created for a child is now charged to the CHILD via an explicit,
  * capability-authorized payer (sys_vmo_create charge-target; svc_loader passes
  * the child process cap) — so the loader's own_vmos stays flat regardless of how
@@ -32,7 +32,7 @@ struct KFrame;
  * invented; since Stage 6-pure a VMO's pages come from an Untyped the caller
  * named, and exhausting THAT is what running out means.  phys_pages_limit
  * reports 0 — "no kernel ceiling" — the way the notification quota did when it
- * retired in Fase S1.  The constant is kept only so the retirement is legible. */
+ * retired in Phase S1.  The constant is kept only so the retirement is legible. */
 #define KPROCESS_PHYS_PAGES_LIMIT 0u
 
 /* Maximum bootstrap KFrame retains stored in KProcess.bootstrap_frames[].
@@ -94,10 +94,10 @@ struct KProcess {
     uint32_t        exit_code;    /* exit code from SYS_EXIT; 0 if killed externally */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */
     struct KExitWatch exit_watches[KPROCESS_EXIT_WATCH_MAX]; /* up to 4 death subscribers */
-    /* Fase 6.3: vmo_mappings removed — VMO pages are now KFrame-backed and
+    /* Phase 6.3: vmo_mappings removed — VMO pages are now KFrame-backed and
      * tracked in KVSpace.mappings; kvspace_invalidate handles teardown. */
 
-    /* Exception handler (Fase 13/Track I: KNotification, no longer a KChannel).
+    /* Exception handler (Phase 13/Track I: KNotification, no longer a KChannel).
      * If exception_notif is non-NULL, the kernel records the fault details in
      * fault_* and signals exception_signal_bits on it before the faulting task
      * is killed; the handler reads the details via SYS_PROCESS_FAULT_INFO. */
@@ -108,31 +108,31 @@ struct KProcess {
     uint64_t fault_rip;
     uint32_t fault_error;
     uint64_t fault_cr2;
-    /* Stage 6 Etapa 2: the creation reference — the one that lets a running
+    /* Stage 6 Step 2: the creation reference — the one that lets a running
      * process outlive the last capability to it — is dropped exactly once.
      * Before this flag, a process created and never STARTED could not be
      * reclaimed at all: kill saw no threads and returned success without
      * dropping it, so the KProcess, its VSpace, its PML4 and (now) its
      * page-table budget stayed alive with no way to get them back. */
     uint8_t  initial_ref_dropped;
-    /* Stage 6 Etapa 4: the Untyped this object and its root CNode were carved
+    /* Stage 6 Step 4: the Untyped this object and its root CNode were carved
      * from, retained for their lifetime.  NULL = kernel-slab (root task). */
     struct KUntyped *mem_pool;
     uint8_t  fault_valid;
-    /* Fase 25: per-process fault generation.  fault_seq_counter increments on
+    /* Phase 25: per-process fault generation.  fault_seq_counter increments on
      * every delivery (1-based, wraps); fault_seq is the generation of the
      * currently pending record.  The generation of the fault a TASK is blocked
      * on lives in task->fault_seq (per-TCB — the per-process record is
      * last-writer-wins but each blocked task keeps its own generation). */
     uint32_t fault_seq;
     uint32_t fault_seq_counter;
-    /* Fase 29 — resource accounting.  A KProcess IS a resource domain: every
+    /* Phase 29 — resource accounting.  A KProcess IS a resource domain: every
      * object is charged to the KProcess that logically OWNS it (its payer),
      * selected by explicit capability authority at creation — NOT to whoever
      * ran the syscall (see docs/architecture/resource-ownership-accounting.md).
      * usage counters are the live charge; *_hwm is the monotonic high-water
      * mark (never decreases), an observable, defensible ceiling witness. */
-    /* Fase S1: owned_notifications/_hwm retired with the notification quota —
+    /* Phase S1: owned_notifications/_hwm retired with the notification quota —
      * notifications are Untyped-funded (see sel4-convergence-ledger.md). */
     uint32_t owned_vmos;
     uint32_t phys_pages_charged; /* sparse-VMO pages charged at eager map-time
@@ -158,12 +158,12 @@ struct KProcess {
      * creation — the process still runs, it just has no CSpace. */
     struct KCNode *cspace_root;
 
-    /* Fase 4: VSpace capability wrapping this process's address space.
+    /* Phase 4: VSpace capability wrapping this process's address space.
      * Holds one lifecycle ref (kobject_retain).  NULL if kvspace_alloc OOM'd at
      * creation or if the process has not yet had its CR3 assigned. */
     struct KVSpace *vspace;
 
-    /* Fase 6.2: Bootstrap KFrame alloc retains.
+    /* Phase 6.2: Bootstrap KFrame alloc retains.
      * Populated by task_create_user_impl for each page mapped via
      * bootstrap_kframe_map.  Released by kprocess_release_bootstrap_frames
      * inside kprocess_reap_address_space, always AFTER kvspace_invalidate
@@ -178,7 +178,7 @@ struct KProcess {
 struct KProcess *kprocess_alloc(void);
 
 /*
- * Stage 6-pure Etapa 5 — a process COMPOSED from objects its creator made.
+ * Stage 6-pure Step 5 — a process COMPOSED from objects its creator made.
  *
  * `pool` is the Untyped the process object itself comes out of (the one its
  * address space was retyped from), and `cnode` is the root CSpace the spawner
@@ -193,13 +193,13 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
 void             kprocess_free (struct KProcess *p);
 void             kprocess_teardown(struct KProcess *p, struct task *exiting_thread);
 void             kprocess_reap_address_space(struct KProcess *p);
-/* Fase S1: kprocess_quota_{acquire,release}_notification retired (Untyped is
+/* Phase S1: kprocess_quota_{acquire,release}_notification retired (Untyped is
  * the budget for notifications).  VMO/page quotas remain for legacy objects. */
 iris_error_t     kprocess_quota_acquire_vmo(struct KProcess *p);
 void             kprocess_quota_release_vmo(struct KProcess *p);
 iris_error_t     kprocess_quota_acquire_page(struct KProcess *p);
 void             kprocess_quota_release_page(struct KProcess *p);
-/* Fase 29 — global resource-accounting gauges (SYS_RESOURCE_INFO). */
+/* Phase 29 — global resource-accounting gauges (SYS_RESOURCE_INFO). */
 uint32_t         kprocess_quota_failed_count(void);
 uint32_t         kprocess_quota_rollback_count(void);
 void             kprocess_quota_stat_rollback(void);
@@ -210,7 +210,7 @@ iris_error_t     kprocess_set_exception_handler(struct KProcess *p,
                                                  uint64_t signal_bits);
 int              kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
-/* Fase 20: fault-model instrumentation + resume-time pending-fault clear. */
+/* Phase 20: fault-model instrumentation + resume-time pending-fault clear. */
 void             kprocess_fault_clear(struct KProcess *p, uint32_t task_id, int killed);
 void             kprocess_fault_stat_nohandler(void);
 uint32_t         kprocess_fault_delivery_count(void);
@@ -218,7 +218,7 @@ uint32_t         kprocess_fault_nohandler_count(void);
 uint32_t         kprocess_fault_resume_count(void);
 uint32_t         kprocess_fault_kill_count(void);
 uint32_t         kprocess_fault_cleanup_count(void);
-/* Fase 6.2: Bootstrap frame tracking.
+/* Phase 6.2: Bootstrap frame tracking.
  * kprocess_register_bootstrap_frame stores one alloc retain in bootstrap_frames[].
  * kprocess_release_bootstrap_frames drops all alloc retains; must be called after
  * kvspace_invalidate so that mapped_count is 0 when each frame is released. */

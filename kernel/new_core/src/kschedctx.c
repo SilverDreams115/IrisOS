@@ -9,8 +9,8 @@ static _Atomic uint32_t kschedctx_hwm;
 static _Atomic uint32_t kschedctx_retyped;
 static _Atomic uint32_t kschedctx_destroyed;
 
-/* Fase 17/S2 — live KSchedContext count + diagnostics.  Exposed via the
- * SYS_SCHED_INFO ext2 tier (T123) and SYS_UNTYPED_QUERY kind 4 (Fase S2). */
+/* Phase 17/S2 — live KSchedContext count + diagnostics.  Exposed via the
+ * SYS_SCHED_INFO ext2 tier (T123) and SYS_UNTYPED_QUERY kind 4 (Phase S2). */
 uint32_t kschedctx_live_count(void) {
     return atomic_load_explicit(&kschedctx_live, memory_order_relaxed);
 }
@@ -39,7 +39,7 @@ static void kschedctx_obj_close(struct KObject *obj) {
      * the refcount and triggers destroy. */
 }
 
-/* Fase S2: the ONLY storage path is untyped-backed — the payload returns to
+/* Phase S2: the ONLY storage path is untyped-backed — the payload returns to
  * its source region (kslab is never involved). */
 static void kschedctx_obj_destroy_ut(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kschedctx_live, 1u, memory_order_relaxed);
@@ -57,7 +57,7 @@ struct KSchedContext *kschedctx_alloc_at(void *mem) {
     struct KSchedContext *sc = (struct KSchedContext *)mem;
     kobject_init(&sc->base, KOBJ_SCHED_CONTEXT, &kschedctx_ops_ut);
     irq_spinlock_init(&sc->lock);
-    /* Fase S2 (B2): a freshly retyped SC is born UNCONFIGURED and unbound —
+    /* Phase S2 (B2): a freshly retyped SC is born UNCONFIGURED and unbound —
      * explicitly invalid budget until SC_CONFIGURE. */
     sc->budget_ticks     = 0;
     sc->period_ticks     = 0;
@@ -75,7 +75,7 @@ void kschedctx_close(struct KSchedContext *sc) {
 
 iris_error_t kschedctx_configure(struct KSchedContext *sc,
                                    uint64_t budget, uint64_t period) {
-    /* Fase S2 (fix I1): budget <= period, MCS style.  budget == period is a
+    /* Phase S2 (fix I1): budget <= period, MCS style.  budget == period is a
      * full (100%) CPU reservation: valid.  The scheduler decrements remaining
      * per tick and refills at the period boundary; with budget==period the
      * thread never exhausts its budget within a period, which is exactly the
@@ -92,7 +92,7 @@ iris_error_t kschedctx_configure(struct KSchedContext *sc,
 }
 
 /*
- * Fase S2 (B4): one-to-one binding.  Fails IRIS_ERR_BUSY if the SC is already
+ * Phase S2 (B4): one-to-one binding.  Fails IRIS_ERR_BUSY if the SC is already
  * bound to a different task; idempotent if bound to the same task.  Atomic
  * under the SC lock (the caller must ensure the task↔SC pointers are set
  * consistently — sys_thread_set_sc does).

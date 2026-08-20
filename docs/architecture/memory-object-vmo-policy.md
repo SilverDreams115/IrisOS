@@ -1,9 +1,9 @@
-# Fase 26 — Memory object / VMO policy expansion
+# Phase 26 — Memory object / VMO policy expansion
 
 Status: ACCEPTED — implemented in this phase.  Companion to
-`user-pager-vm-policy.md` (Fase 25), `vspace-frame-hardening.md` (Fase 19)
-and `fault-endpoint-model.md` (Fase 20).  Fase 25 fixed the pager *authority*
-contract with a raw frame as the page source; Fase 26 makes the source a
+`user-pager-vm-policy.md` (Phase 25), `vspace-frame-hardening.md` (Phase 19)
+and `fault-endpoint-model.md` (Phase 20).  Phase 25 fixed the pager *authority*
+contract with a raw frame as the page source; Phase 26 makes the source a
 first-class memory object defended by policy.  Locked with runtime tests
 T191–T200.
 
@@ -18,9 +18,9 @@ system the difference between those two framings is the difference between a
 kernel that hands out raw physical authority and one where every page a
 process sees is traceable to an explicit capability over an explicit object.
 
-Fase 25 proved a pager can resolve a fault with a raw frame.  That is too low
+Phase 25 proved a pager can resolve a fault with a raw frame.  That is too low
 level to build a system on: a frame is one anonymous page with no identity,
-no range, no offset, no sharing story.  Fase 26 gives the pager a *memory
+no range, no offset, no sharing story.  Phase 26 gives the pager a *memory
 object* to page from — the VMO — so that "resolve this fault" becomes "install
 page N of this named object here, with these rights", and every part of that
 sentence is checked.
@@ -51,22 +51,22 @@ supervisor            creates/derives the VMO and the target VSpace cap, and
 
 ## The map-into primitive (NEW, additive)
 
-Before Fase 26 the only ways to install VMO pages were:
+Before Phase 26 the only ways to install VMO pages were:
 
 - `SYS_VMO_MAP` — map the WHOLE VMO from offset 0 into the CALLER's own VSpace;
 - `SYS_VMO_MAP_INTO` — map the WHOLE VMO from offset 0 into a target's VSpace,
   gated on process `RIGHT_MANAGE`.
 
 Neither is page-granular or offset-addressed, and `MAP_INTO` requires the
-process MANAGE cap — not the delegated VSpace cap a Fase 25 pager holds.  A
+process MANAGE cap — not the delegated VSpace cap a Phase 25 pager holds.  A
 VMO-backed pager needs to install *one* page, at *one* offset of the VMO, at
 the *one* faulting VA, authorized by the *VSpace* cap.  That primitive did not
-exist; Fase 26 adds it:
+exist; Phase 26 adds it:
 
 ```text
 SYS_VMO_MAP_PAGE(vmo_cptr, vspace_cptr, target_va, offset_flags)  → 0 or err   [108]
   vmo_cptr:     KOBJ_VMO, RIGHT_READ (+ RIGHT_WRITE for a writable PTE). dual resolver.
-  vspace_cptr:  KOBJ_VSPACE, RIGHT_WRITE. dual resolver (Fase 25).
+  vspace_cptr:  KOBJ_VSPACE, RIGHT_WRITE. dual resolver (Phase 25).
   target_va:    page-aligned VA in [USER_PRIVATE_BASE, USER_SPACE_TOP).
   offset_flags: [1:0]  = flags (bit0 W, bit1 X; W^X enforced)
                 [11:2] = reserved, MUST be 0  (rejects an unaligned offset)
@@ -141,27 +141,27 @@ write-protection-faults the target's store at the hardware level (T199).
   the process; a late `SYS_VMO_MAP_PAGE` is `BAD_HANDLE`, a late resume is
   `NOT_FOUND`, the fault record is gone.  The VMO survives (its caps are the
   supervisor's), with its pages intact and reusable (T193, T200 op3, M24).
-- **Pager death while a fault is pending** — inherits the Fase 25 contract: the
+- **Pager death while a fault is pending** — inherits the Phase 25 contract: the
   target stays suspended-alive with record and generation intact; the VMO stays
   live with no ghost refs; a restarted pager with the same manifest (its page
   source is the VMO — no untyped or global frame authority) completes the
-  resolution from the VMO (T197, M25).  Crash-loops are contained by Fase 24
+  resolution from the VMO (T197, M25).  Crash-loops are contained by Phase 24
   supervision.
 
 ## Interaction with the rest of the system
 
-- **User pager (Fase 25)** — unchanged and reused verbatim.  The pager manifest
+- **User pager (Phase 25)** — unchanged and reused verbatim.  The pager manifest
   and harness are identical; only the slot-14 "page source" cap changes from a
   KFrame to a KVmo, and a new serve subaction maps a VMO page.  Fault
   generations, seq-checked resume, `SYS_PROCESS_VSPACE` and the dual-resolver
   VSpace argument all carry over untouched.
-- **VSpace / frame (Fase 19)** — `SYS_VMO_MAP_PAGE` installs through the same
+- **VSpace / frame (Phase 19)** — `SYS_VMO_MAP_PAGE` installs through the same
   `kframe_map_page` path as every other map; all V-invariants (W^X, occupied
   VA, no partial PTE, mapped_count discipline) apply unchanged.  A VMO page
   becomes a `KFrame` (`kframe_alloc_vmo_page`) exactly as in `SYS_VMO_MAP`.
-- **Fault endpoint (Fase 20)** — no change.  The write-protection fault that
-  proves RO-PTE enforcement (T199) is the same hardware observable as Fase 20.
-- **Supervision (Fase 24)** — a VMO-backed pager is a supervised service like
+- **Fault endpoint (Phase 20)** — no change.  The write-protection fault that
+  proves RO-PTE enforcement (T199) is the same hardware observable as Phase 20.
+- **Supervision (Phase 24)** — a VMO-backed pager is a supervised service like
   any other; restart least-authority holds with a VMO source (T197).
 - **IPC / scheduler / lifecycle** — no semantic change; pager traffic is
   notification signals plus ordinary syscalls; KReply and live books stay at
@@ -170,11 +170,11 @@ write-protection-faults the target's store at the hardware level (T199).
 ## Instrumentation
 
 One additive gauge, no new tier: `kvmo_live_count()` is exposed at
-`SYS_SCHED_INFO` **offset 132** — the previously-zero pad half of the Fase 18
+`SYS_SCHED_INFO` **offset 132** — the previously-zero pad half of the Phase 18
 authority word (`buf[16]`), already inside the `EXT3` tier.  A reader asking
-for `EXT3_BYTES` (136) already receives it; pre-Fase-26 readers that stopped at
+for `EXT3_BYTES` (136) already receives it; pre-Phase-26 readers that stopped at
 offset 132 are unaffected.  This deliberately avoids growing the tier count
-(Fase 23 documented that adding an `EXT6` tier hung the boot).  No other
+(Phase 23 documented that adding an `EXT6` tier hung the boot).  No other
 instrumentation was needed: frame/mapping/VSpace live gauges, the fault
 counters and per-process records cover the rest.
 
@@ -225,7 +225,7 @@ source" cap and holds a KVmo instead of a KFrame.
   the VMO a defended page source; backing-store and sharing policy build on top
   of exactly these primitives.
 - **No demand paging.**  Sparse VMO pages are allocated eagerly on first map
-  (Fase 6.1 removed fault-driven demand paging; FR-41 regression).  A pager
+  (Phase 6.1 removed fault-driven demand paging; FR-41 regression).  A pager
   resolves faults, but the VMO page itself is materialised at map time, not on
   a second fault.
 
@@ -246,7 +246,7 @@ source" cap and holds a KVmo instead of a KFrame.
   fault, so a single-page primitive suffices; a range variant is additive when
   a bulk consumer appears.
 
-## Fase 28 Bloque B — file-backed page vehicle (implemented)
+## Phase 28 Bloque B — file-backed page vehicle (implemented)
 
 `SYS_VMO_MAP_PAGE` is the sole kernel mechanism the file-backed pager needs.
 The pager fills a page by mapping a VMO grant page into its OWN VSpace
@@ -260,7 +260,7 @@ VMO/VSpace/frame caps.  See `file-backed-memory.md`.
 
 ---
 
-## Fase 29 addendum — VMO ownership & payer
+## Phase 29 addendum — VMO ownership & payer
 
 A VMO's quota (the object and its sparse pages) is charged to an explicit
 **owner / payer domain**, selected by capability authority at creation, not to

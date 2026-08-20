@@ -1,6 +1,6 @@
-# CPtr-first services (Fase 8)
+# CPtr-first services (Phase 8)
 
-Fase 8 moves the service ecosystem from "bootstrap bag of KChannel-delivered
+Phase 8 moves the service ecosystem from "bootstrap bag of KChannel-delivered
 handles" to **well-known CSpace slots minted by the spawner before the child
 runs**. This document is the operational guide: slot layout, bootstrap flow
 per service, namespace rules, and the remaining handle boundary.
@@ -8,7 +8,7 @@ per service, namespace rules, and the remaining handle boundary.
 ## The namespace rule (kernel-enforced)
 
 `handle_id`s are `slot | generation << 10` with generation ≥ 1, so every
-live handle is ≥ 1024. Since Fase 8 the dual resolvers
+live handle is ≥ 1024. Since Phase 8 the dual resolvers
 (`cspace_or_handle_resolve_*`, kernel/new_core/src/cspace.c) **enforce** the
 split:
 
@@ -19,7 +19,7 @@ split:
 | ≥ 1024 | handle table | handle table ONLY; **never walks the CSpace** |
 
 History: before the split, the dual resolvers fed handle values into the
-radix walker, which masks the index (`cptr & (slot_count-1)`); once Fase 8
+radix walker, which masks the index (`cptr & (slot_count-1)`); once Phase 8
 populated the low slots, handles like 1027 silently aliased root slot 3
 (wrong-object IPC, `WRONG_TYPE` hard stops, broken endpoint close
 semantics). Found by smoke T020/T036+ and fixed in this phase; guarded by a
@@ -57,7 +57,7 @@ fails with `ALREADY_EXISTS` (`kcnode_mint_excl`) — a spawner cannot clobber
 a child's slots. Mint failures are non-fatal by design; every consumer
 verifies its slot with a PING and prints a smoke-gated marker.
 
-## Bootstrap flow per service (after Fase 8)
+## Bootstrap flow per service (after Phase 8)
 
 | Service | Spawner | CSpace slots received | Bootstrap channel still carries | SYS_CHAN sites |
 |---|---|---|---|---:|
@@ -98,7 +98,7 @@ T042–T044 (vfs/console/kbd served via slots), T045 (client slots are
 WRITE-only: recv denied), T046 (legacy lookup still yields real handles
 ≥ 1024 that work and close).
 
-## Fase 13 prerequisite — device caps resolve through CSpace
+## Phase 13 prerequisite — device caps resolve through CSpace
 
 `cspace_or_handle_resolve_obj()` (generic, lifecycle-only ref contract) extends
 the dual-resolution model to **device/authority caps** — `KIoPort`, `KIrqCap`,
@@ -114,4 +114,4 @@ Runtime proof: **T069**. Still handle-only: `KChannel`, `KProcess`.
 
 (Historical: the handle namespace is gone since Stage 4, and Stage 5 split the
 single `KBootstrapCap` into one capability per authority — `SYS_BOOTCAP_RESTRICT`
-retired with it.  This section records the Fase 13 step as it was.)
+retired with it.  This section records the Phase 13 step as it was.)

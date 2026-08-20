@@ -7,7 +7,7 @@
 #include <iris/nc/kprocess.h>   /* KPROCESS_BOOTSTRAP_FRAME_MAX — boot arena bound */
 #include <stdatomic.h>
 
-/* Fase 19 — live KVSpace object count (additive diagnostics, SYS_SCHED_INFO
+/* Phase 19 — live KVSpace object count (additive diagnostics, SYS_SCHED_INFO
  * ext4 tier).  Lets VM tests prove a child's VSpace is destroyed on process
  * death (V16) and that the count returns to baseline after churn. */
 static _Atomic uint32_t kvspace_live;
@@ -55,7 +55,7 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     }
     kvspace_release_nodes(vs);
 
-    /* Stage 6-pure Etapa 1: tables the HOLDER retyped go back as capabilities.
+    /* Stage 6-pure Step 1: tables the HOLDER retyped go back as capabilities.
      * Releasing our reference is the whole of it — the region returns to its
      * Untyped when the last capability to the table goes, exactly like any
      * other retyped object, and the holder can then RESET.  The PTEs that
@@ -171,7 +171,7 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
 }
 
 /*
- * Stage 6 Etapa 6 — a mapping record comes from the address space's own budget.
+ * Stage 6 Step 6 — a mapping record comes from the address space's own budget.
  *
  * These are per-mapping kernel bookkeeping: small, numerous, and churning.
  * Carved from the VSpace's Untyped and recycled through a free list, so the
@@ -185,7 +185,7 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
  *
  * SIZE.  This used to be a guess, and a wrong one — it was sized for "a
  * handful of pages" while svc_loader maps whole images into the loader's own
- * address space.  Stage 6-pure Etapa 3 makes it a bound instead: the arena now
+ * address space.  Stage 6-pure Step 3 makes it a bound instead: the arena now
  * serves ONLY the pre-boot maps, because the root task is handed its own
  * budget the moment it can speak (kvspace_end_bootstrap) and everything it
  * maps after that comes from there.  Every pre-boot map is registered in

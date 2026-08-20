@@ -22,11 +22,11 @@ struct KEndpoint {
     struct task     *queue_tail;
 };
 
-/* Fase S1: Untyped retype is the ONLY creation path (kslab variant retired). */
+/* Phase S1: Untyped retype is the ONLY creation path (kslab variant retired). */
 struct KEndpoint *kendpoint_alloc_at(void *mem);
 void              kendpoint_close(struct KEndpoint *ep);
 
-/* Fase 18: live KEndpoint object count (additive diagnostics). */
+/* Phase 18: live KEndpoint object count (additive diagnostics). */
 uint32_t          kendpoint_live_count(void);
 void              kendpoint_cancel_waiter(struct task *t);
 

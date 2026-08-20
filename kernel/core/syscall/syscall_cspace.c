@@ -5,7 +5,7 @@
 uint32_t iris_cspace_stat_resolves = 0u;
 
 /*
- * Fase S4 (Etapa 3): SYS_CAP_DERIVE (78) and SYS_CAP_REVOKE (79) are RETIRED.
+ * Phase S4 (Step 3): SYS_CAP_DERIVE (78) and SYS_CAP_REVOKE (79) are RETIRED.
  *
  * They were the last consumers of the handle table's parallel derivation tree
  * (`derivation_parent[]`), which duplicated — badly — what the native CSpace
@@ -30,7 +30,7 @@ uint64_t sys_cap_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * Fase S1: SYS_CNODE_CREATE (80) is RETIRED — runtime CNodes are created ONLY
+ * Phase S1: SYS_CNODE_CREATE (80) is RETIRED — runtime CNodes are created ONLY
  * via SYS_UNTYPED_RETYPE2.  The single remaining kslab CNode is the per-process
  * root CNode fabricated at kprocess_alloc (bootstrap exception, ledger-tracked).
  */
@@ -72,12 +72,12 @@ uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t ar
 }
 
 /*
- * SYS_PROC_CSPACE_MINT — Fase 8: mint a caller capability into a CHILD
+ * SYS_PROC_CSPACE_MINT — Phase 8: mint a caller capability into a CHILD
  * process's root CNode so the child can invoke it CPtr-first (no KChannel
  * handle transfer). Mirrors sys_cnode_mint's reduction semantics; the only
  * new authority is RIGHT_WRITE on the child process capability.
  *
- * Fase 9 — badge packing: arg3 low 32 bits = rights mask, high 32 bits =
+ * Phase 9 — badge packing: arg3 low 32 bits = rights mask, high 32 bits =
  * badge.  Badge semantics:
  *   badge == 0          → INHERIT the source cap's badge (preservation).
  *   badge != 0, src unbadged
@@ -124,7 +124,7 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     struct KObject *cn_obj = &child->cspace_root->base;
     kobject_retain(cn_obj);
 
-    /* Source capability from the CALLER.  Etapa 4: the destination process
+    /* Source capability from the CALLER.  Step 4: the destination process
      * always resolved either way while the SOURCE was handle-only — the same
      * half-migration as SYS_PROCESS_WATCH and friends, and it means a caller
      * that keeps its capabilities in CSpace cannot mint from them at all.
@@ -161,7 +161,7 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    /* Fase 9 rules, Fase S3 centralization: badge derivation lives in ONE
+    /* Phase 9 rules, Phase S3 centralization: badge derivation lives in ONE
      * place (mdb_badge_derive) — inherit on 0, never re-badge, fresh badges
      * only for identity-bearing IPC objects.  The source badge comes from the
      * slot, read in the same traversal that resolved it. */
@@ -185,7 +185,7 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * Fase S3 — CSpace-only derivation syscalls (native MDB/CDT).
+ * Phase S3 — CSpace-only derivation syscalls (native MDB/CDT).
  *
  * These take their SOURCE exclusively from the caller's CSpace (CPtr < 1024,
  * resolved to a slot).  They never consult the handle table for the source —
@@ -194,7 +194,7 @@ uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
  * ════════════════════════════════════════════════════════════════════════ */
 
 /* CSpace-only source guard: cspace_only_cptr lives in syscall_priv.h — the
- * IPC transfer path (Fase S4/Etapa 2) enforces the same rule. */
+ * IPC transfer path (Phase S4/Step 2) enforces the same rule. */
 
 /* Resolve the caller's root CNode with active+lifecycle refs (retype2's
  * dest_cnode == 0 convention).  Shared with syscall_cap.c (device-cap
@@ -360,7 +360,7 @@ uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 }
 
 /*
- * ── Fase S4 (Etapa 6): CSpace-native capability introspection ─────────────
+ * ── Phase S4 (Step 6): CSpace-native capability introspection ─────────────
  *
  * SYS_CAP_IDENTIFY (117) and SYS_CAP_SAME_OBJECT (118) are the CSpace-native
  * replacements for SYS_HANDLE_TYPE (52) and SYS_HANDLE_SAME_OBJECT (53).
@@ -421,7 +421,7 @@ uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *
  * The CNode counterpart of SYS_TCB_SELF, and added for the same reason: the
  * root task received a capability to its own root CNode from the kernel
- * (Stage 5 Etapa 3), but every other process could only reach its CSpace
+ * (Stage 5 Step 3), but every other process could only reach its CSpace
  * through the "arg0 == 0 means my own root" convention.  SYS_TCB_CONFIGURE
  * takes the CSpace as a CAPABILITY, so a process that cannot name its own
  * root CNode could only have been handed a convention where the signature

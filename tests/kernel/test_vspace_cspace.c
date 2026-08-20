@@ -1,5 +1,5 @@
 /*
- * test_vspace_cspace.c — Fase 4 unit tests for KVSpace capability model.
+ * test_vspace_cspace.c — Phase 4 unit tests for KVSpace capability model.
  *
  * Tests (VS-1..VS-14):
  *   [VS-1]  KOBJ_VSPACE enum exists and is != 0.

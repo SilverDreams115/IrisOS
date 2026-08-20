@@ -16,7 +16,7 @@ uint64_t sys_thread_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * Fase S2: SYS_SC_CREATE (83) RETIRED — it fabricated a KSchedContext from
+ * Phase S2: SYS_SC_CREATE (83) RETIRED — it fabricated a KSchedContext from
  * kslab and returned a handle: two non-seL4 mechanisms.  SchedulingContexts
  * are created ONLY via SYS_UNTYPED_RETYPE2 (Untyped storage, cap in CSpace)
  * and configured with SYS_SC_CONFIGURE.  Number reserved; no effect.
@@ -56,7 +56,7 @@ uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * SYS_SC_BIND (arg0 = sc_cptr, arg1 = tcb_cptr) → 0 | error   (Fase S2, B4)
+ * SYS_SC_BIND (arg0 = sc_cptr, arg1 = tcb_cptr) → 0 | error   (Phase S2, B4)
  *
  * Binds a SchedulingContext one-to-one to a TCB, both by CPtr, both live.
  * Fails BUSY if the SC is already bound to another task or the TCB already
@@ -112,16 +112,16 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    /* Fase S2 D2: the KTCB IS struct task (KObject at offset 0) — resolve
+    /* Phase S2 D2: the KTCB IS struct task (KObject at offset 0) — resolve
      * directly, no wrapper indirection.  A terminated thread cannot be bound. */
     struct task *target = (struct task *)tcb_obj;
     if (target->terminal) {
         kobject_release(tcb_obj); kobject_release(sc_obj);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
-    /* Etapa 0: an unconfigured (retyped, inactive) TCB cannot bind an SC —
+    /* Step 0: an unconfigured (retyped, inactive) TCB cannot bind an SC —
      * its destructor unwinds no sched_ctx reference, so allowing the bind
-     * would leak the SC when the last cap drops.  TCB_CONFIGURE (Etapa 5/6)
+     * would leak the SC when the last cap drops.  TCB_CONFIGURE (Step 5/6)
      * is the point where a retyped TCB becomes bindable. */
     if (!target->configured) {
         kobject_release(tcb_obj); kobject_release(sc_obj);
@@ -172,7 +172,7 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * the resolver) transfers to t->sched_ctx */
         new_sc = (struct KSchedContext *)obj;
 
-        /* Fase S2: enforce one-to-one binding — a SC bound to another task
+        /* Phase S2: enforce one-to-one binding — a SC bound to another task
          * cannot be self-bound here (S2.9). */
         iris_error_t berr = kschedctx_bind(new_sc, t);
         if (berr != IRIS_OK) {

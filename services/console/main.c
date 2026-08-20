@@ -3,14 +3,14 @@
  *
  * Bootstrap deliveries from svc_loader:
  *   recv SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP → ioport_h (KIoPort for 0x3F8..0x3FF)
- *   recv SVCMGR_BOOTSTRAP_KIND_SERVICE_EP → ep_h (KEndpoint recv, Fase 7.3)
+ *   recv SVCMGR_BOOTSTRAP_KIND_SERVICE_EP → ep_h (KEndpoint recv, Phase 7.3)
  *
  * Main loop: endpoint-only. Drain EP requests (CONSOLE_EP_OP_WRITE / SYNC /
  * PING — iris/console_ep_proto.h). EP WRITE replies only after the bytes hit
  * the UART; EP SYNC is an explicit flush barrier. The legacy KChannel write
  * path (CONSOLE_MSG_WRITE/SYNC, iris/console_proto.h) is retired and no longer
  * served — every writer, including svcmgr's klog drain, uses console.ep
- * (Fase 13/Track G).
+ * (Phase 13/Track G).
  */
 
 #include <stdint.h>
@@ -47,7 +47,7 @@ static void con_uart_write_byte(handle_id_t ioport_h, uint8_t byte) {
     (void)con_sys3(SYS_IOPORT_OUT, (long)ioport_h, 0, (long)byte);
 }
 
-/* Fase 13 (Track I): the legacy KChannel write path (con_serve_chan_msg /
+/* Phase 13 (Track I): the legacy KChannel write path (con_serve_chan_msg /
  * con_drain_chan, CONSOLE_MSG_WRITE/SYNC) is retired — console is endpoint-only.
  * Its sole writers (svcmgr klog drain, init logging) now use console.ep. */
 
@@ -87,7 +87,7 @@ static void con_serve_ep_msg(handle_id_t ioport_h, struct IrisMsg *req) {
             con_ep_reply_err(&reply, IRIS_ERR_INVALID_ARG);
             break;
         }
-        /* Fase 13 (Track I): no legacy KChannel writers remain — EP writes are
+        /* Phase 13 (Track I): no legacy KChannel writers remain — EP writes are
          * synchronous by construction, so SYNC is a trivial acknowledge. */
         con_imsg_zero(&reply);
         reply.label      = IRIS_EP_REPLY_OK;
@@ -96,7 +96,7 @@ static void con_serve_ep_msg(handle_id_t ioport_h, struct IrisMsg *req) {
     case IRIS_EP_OP_PING:
         con_imsg_zero(&reply);
         reply.label      = IRIS_EP_REPLY_OK;
-        /* Fase 9 PING convention: echo the kernel-stamped sender badge. */
+        /* Phase 9 PING convention: echo the kernel-stamped sender badge. */
         reply.words[1]   = req->sender_badge;
         reply.word_count = 2u;
         break;
@@ -105,14 +105,14 @@ static void con_serve_ep_msg(handle_id_t ioport_h, struct IrisMsg *req) {
         break;
     }
 
-    /* Fase S1: reply_h is the console's OWN reply-object CPtr (echoed by the
+    /* Phase S1: reply_h is the console's OWN reply-object CPtr (echoed by the
      * kernel from the recv arg2).  The object is reusable — nothing to close. */
     if (reply_h != HANDLE_INVALID)
         (void)con_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
 }
 
 void console_main_c(handle_id_t rbx_unused) {
-    /* Fase 13 (Track I): console is endpoint-only and fully CPtr-provisioned —
+    /* Phase 13 (Track I): console is endpoint-only and fully CPtr-provisioned —
      * the endpoint recv side is the IRIS_CPTR_OWN_EP mint (slot 5) and the
      * KIoPort for 0x3F8..0x3FF the IRIS_CPTR_IOPORT mint (slot 10), resolved by
      * CPtr through the device-cap dual resolver (SYS_IOPORT_IN/OUT).  No
@@ -123,7 +123,7 @@ void console_main_c(handle_id_t rbx_unused) {
     (void)rbx_unused;   /* RBX = 0 since the KChannel bootstrap retired */
 
     /* Endpoint-only main loop: block on the KEndpoint, serve, reply.
-     * Fase S1: the explicit reply object (init retypes it from its untyped
+     * Phase S1: the explicit reply object (init retypes it from its untyped
      * pool and mints it at IRIS_CPTR_OWN_REPLY) rides in recv arg2. */
     for (;;) {
         struct IrisMsg req;

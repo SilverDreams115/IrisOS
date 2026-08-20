@@ -21,7 +21,7 @@ void  kslab_init (uint64_t phys_base, uint32_t num_pages);
 void *kslab_alloc(uint32_t size);
 void  kslab_free (void *ptr, uint32_t size);
 
-/* Fase 29 — capacity-contract observability (see
+/* Phase 29 — capacity-contract observability (see
  * docs/architecture/kernel-capacity-limits.md).  used == bump high-water (the
  * bump pointer never retreats; frees are reused via per-class free-lists);
  * fail counts allocations that hit the arena ceiling. */

@@ -46,7 +46,7 @@ struct gdt_descriptor {
 } __attribute__((packed));
 
 /*
- * Per-CPU TSS and IST stacks (Fase 2.1 groundwork).
+ * Per-CPU TSS and IST stacks (Phase 2.1 groundwork).
  *
  * Arrays are indexed by cpu_id.  gdt_init() initialises [0] for the BSP and
  * wires the GDT TSS descriptor to &kernel_tss[0].  tss_set_rsp0() and
@@ -146,7 +146,7 @@ void gdt_init(void) {
     gdt_flush((uint64_t)(uintptr_t)&gdtr);
     tss_flush(GDT_TSS_SEL);
 
-    /* SWAPGS ABI (Fase 2):
+    /* SWAPGS ABI (Phase 2):
      *
      * Ring-0 resting state: GS_BASE = &cpu_local[0], KGS_BASE = 0.
      * Ring-3 user state:    GS_BASE = 0 (null),      KGS_BASE = &cpu_local[0].

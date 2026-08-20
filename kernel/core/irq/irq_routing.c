@@ -5,10 +5,10 @@
 #include <iris/nc/spinlock.h>
 #include <iris/pic.h>
 
-/* Fase 13/Track G: IRQ routing is KNotification-only — the legacy KChannel
+/* Phase 13/Track G: IRQ routing is KNotification-only — the legacy KChannel
  * message route is fully retired (KChannel is no longer an IPC mechanism). */
 struct irq_route_entry {
-    struct KNotification *notif;  /* signal route (kbd, Fase 7.6) */
+    struct KNotification *notif;  /* signal route (kbd, Phase 7.6) */
     struct KProcess      *owner;
 };
 
@@ -60,7 +60,7 @@ int32_t irq_routing_signal(uint8_t irq, uint8_t data_byte) {
 
     if (!notif) return -1;
 
-    /* Fase 7.6: signal-only delivery (safe from IRQ context). */
+    /* Phase 7.6: signal-only delivery (safe from IRQ context). */
     knotification_signal(notif, (uint64_t)1u << irq);
     kobject_release(&notif->base);
     return 0;

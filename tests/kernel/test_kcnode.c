@@ -88,7 +88,7 @@ void test_kcnode(void) {
     ASSERT_EQ(kcnode_mint(cn, 3, c, RIGHT_NONE), IRIS_ERR_INVALID_ARG);
     kobject_release(c);
 
-    /* ── exclusive mint (Fase 8: SYS_PROC_CSPACE_MINT backend) ── */
+    /* ── exclusive mint (Phase 8: SYS_PROC_CSPACE_MINT backend) ── */
     struct KObject *e1 = make_obj(KOBJ_ENDPOINT);
     struct KObject *e2 = make_obj(KOBJ_ENDPOINT);
     ASSERT_EQ(kcnode_mint_excl(cn, 3, e1, RIGHT_WRITE), IRIS_OK);

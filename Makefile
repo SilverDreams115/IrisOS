@@ -599,7 +599,7 @@ $(KERNEL_LIFECYCLE_PROBE_BIN_OBJ): $(SERVICE_LIFECYCLE_PROBE_ELF) | dirs
 	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
 	    $(SERVICE_LIFECYCLE_PROBE_ELF) $@
 
-# ── pager (ring-3 user pager SERVICE, own binary since Fase 28) ──────────────
+# ── pager (ring-3 user pager SERVICE, own binary since Phase 28) ──────────────
 $(BUILD_DIR)/pager_entry.o: services/pager/entry.S | dirs
 	gcc $(SERVICE_ASFLAGS) -c $< -o $@
 
@@ -614,7 +614,7 @@ $(KERNEL_PAGER_BIN_OBJ): $(SERVICE_PAGER_ELF) | dirs
 	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
 	    $(SERVICE_PAGER_ELF) $@
 
-# ── boot-growth test fixtures (Fase 28): non-service initrd blobs ────────────
+# ── boot-growth test fixtures (Phase 28): non-service initrd blobs ────────────
 # badelf.bin is a 256-byte invalid-ELF blob (a known header + zero pad) used by
 # the loader failure-path test (T216).  It is *.bin-gitignored, so it is
 # generated deterministically here rather than committed — a fresh checkout (CI)
@@ -629,7 +629,7 @@ $(KERNEL_BOOTFIX_BADELF_OBJ): services/bootfix/badelf.bin | dirs
 	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
 	    services/bootfix/badelf.bin $@
 
-# ── file-backed content fixtures (Fase 28 Bloque B) ─────────────────────────
+# ── file-backed content fixtures (Phase 28 Bloque B) ─────────────────────────
 $(KERNEL_FILEBK_FBK_OBJ): services/filebk/fbk.dat | dirs
 	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
 	    --rename-section .data=.rodata,alloc,load,readonly,data,contents \

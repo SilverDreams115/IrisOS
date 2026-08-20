@@ -6,7 +6,7 @@
 #include <stdatomic.h>
 
 
-/* Fase S1: kreply_alloc(caller) is retired — reproduce the old semantics for
+/* Phase S1: kreply_alloc(caller) is retired — reproduce the old semantics for
  * these tests: placement-init in an untyped-child block, then stage+bind the
  * caller (the production rendezvous sequence). */
 static struct KReply *test_kreply_alloc(struct task *caller) {
@@ -66,7 +66,7 @@ void test_kreply(void) {
     /* ── kreply_cancel_caller(NULL) is safe ── */
     kreply_cancel_caller(NULL);
 
-    /* ── alloc failure path (Fase S1: no kslab — placement on NULL block,
+    /* ── alloc failure path (Phase S1: no kslab — placement on NULL block,
      * i.e. the untyped carve failed upstream) ── */
     struct KReply *rf = kreply_alloc_at(NULL);
     ASSERT_NULL(rf);

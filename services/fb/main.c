@@ -40,7 +40,7 @@ static inline long fb_sys2(long nr, long a0, long a1) {
     return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
 }
 
-/* Stage 6-pure Etapa 2: fb maps the framebuffer into a window nothing else has
+/* Stage 6-pure Step 2: fb maps the framebuffer into a window nothing else has
  * touched, so it owes every level under it.  IRIS_CPTR_OWN_UNTYPED is the
  * budget its own address space was built from, minted by svc_loader. */
 #define FB_SLOT_SELF_VS 40u
@@ -80,12 +80,12 @@ static void fb_draw_rect(uint32_t *pixels, uint32_t stride,
 }
 
 void fb_main_c(handle_id_t rbx_unused) {
-    /* Fase 13 (Track I): the framebuffer capability arrives as a pre-start
+    /* Phase 13 (Track I): the framebuffer capability arrives as a pre-start
      * mint — SYS_FRAMEBUFFER_VMO resolves it by CPtr.  No bootstrap KChannel:
      * svc_loader passes RBX = 0, so this argument is not a handle and closing
      * it was closing handle 0.
      *
-     * Stage 5 Etapa 2: what fb holds is the FRAMEBUFFER CONTROL capability at
+     * Stage 5 Step 2: what fb holds is the FRAMEBUFFER CONTROL capability at
      * IRIS_CPTR_FB_CONTROL — the whole of its boot authority.  It used to be a
      * narrowed clone of init's monolith, which is to say: an object of the
      * same type as the one that authorises spawning and poweroff, trusted to

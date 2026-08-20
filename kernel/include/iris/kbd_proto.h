@@ -13,9 +13,9 @@
  * ── Retirement notice ────────────────────────────────────────────────────────
  * This KChannel-based kbd protocol is NON-FUNCTIONAL.  The KChannel object was
  * removed and every SYS_CHAN_* syscall returns IRIS_ERR_NOT_SUPPORTED
- * (Fase 13/Track G).  The live keyboard service is endpoint + notification
+ * (Phase 13/Track G).  The live keyboard service is endpoint + notification
  * only: requests over "kbd.ep" and IRQ1 delivery over a KNotification
- * (iris/kbd_ep_proto.h).  IRQ routing was moved off KChannel in Fase 7.6.
+ * (iris/kbd_ep_proto.h).  IRQ routing was moved off KChannel in Phase 7.6.
  *
  * The opcode / payload-offset constants below are retained only to keep the
  * historical wire layout documented; no live code builds or dispatches them.
@@ -63,7 +63,7 @@
  *     data[4..7] uint32_t flags: KBD_STATUS_* bits.
  *
  *   KBD_MSG_IRQ_SCANCODE (0x00000004) kernel → service  [no reply]
- *     HISTORICAL (retired in Fase 7.6): IRQ1 was delivered as this KChannel
+ *     HISTORICAL (retired in Phase 7.6): IRQ1 was delivered as this KChannel
  *     message. kbd now routes IRQ1 to a KNotification (irq_notify=1) and no
  *     longer dispatches this opcode; the constant stays defined because it
  *     shares its value with the generic IRQ_MSG_TYPE_SIGNAL (irq_routing.h)
@@ -108,13 +108,13 @@
 #define KBD_MSG_HELLO_REPLY   0x80020001u
 #define KBD_MSG_STATUS_REPLY  0x80020002u
 
-/* ── IRQ channel message (HISTORICAL for kbd — retired in Fase 7.6) ──────
+/* ── IRQ channel message (HISTORICAL for kbd — retired in Phase 7.6) ──────
  * This opcode is set by the generic IRQ routing layer (irq_routing_signal)
  * for CHANNEL-routed IRQs.  It is NOT in the 0x0002XXXX namespace because
  * the routing layer is service-agnostic.  The value matches
  * IRQ_MSG_TYPE_SIGNAL (irq_routing.h) and must be kept in sync with it.
  * kbd no longer consumes it: IRQ1 is routed to a KNotification since
- * Fase 7.6 and the kbd server does not dispatch this type anymore.   */
+ * Phase 7.6 and the kbd server does not dispatch this type anymore.   */
 #define KBD_MSG_IRQ_SCANCODE  0x00000004u
 
 /* ── KBD_MSG_HELLO payload ──────────────────────────────────────────────── */
@@ -172,7 +172,7 @@
 #define KBD_MSG_SCANCODE_EVENT_LEN      1u
 
 /* ── C-only helpers ─────────────────────────────────────────────────────── */
-/* Fase 13/Track G: the KChanMsg-based kbd_proto_* inline helpers (HELLO/
+/* Phase 13/Track G: the KChanMsg-based kbd_proto_* inline helpers (HELLO/
  * STATUS/IRQ_SCANCODE builders+decoders) are retired with the KChannel
  * object — kbd is endpoint + notification only (kbd_ep_proto.h). */
 

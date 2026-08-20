@@ -17,7 +17,7 @@ struct tss {
 } __attribute__((packed));
 
 /*
- * Per-CPU TSS model (Fase 2.1 groundwork):
+ * Per-CPU TSS model (Phase 2.1 groundwork):
  *
  *   gdt.c maintains kernel_tss[MAX_CPUS] internally.  The BSP (cpu_id=0) is
  *   wired during gdt_init().  tss_set_rsp0() and tss_set_ist() index by

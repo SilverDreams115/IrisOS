@@ -1,10 +1,10 @@
 /*
- * init_test.c — init runtime probes + S8 exception selftest (Fase 14/Inc 2).
+ * init_test.c — init runtime probes + S8 exception selftest (Phase 14/Inc 2).
  *
  * Extracted verbatim from main.c: the boot supervisor calls these after the
  * healthy path is up.  No boot-order, launch, or grant logic lives here — only
  * test/probe logic and the smoke markers it emits.  Behaviour is byte-identical
- * to the pre-Fase-14 monolith.
+ * to the pre-Phase-14 monolith.
  */
 
 #include "init.h"
@@ -12,7 +12,7 @@
 
 static const char init_stage_exception[] = "[USER][INIT][S8] exception delivery OK\n";
 
-/* Fase 13 (Track I): the invalid-userptr selftest now exercises the kernel's
+/* Phase 13 (Track I): the invalid-userptr selftest now exercises the kernel's
  * user-pointer validation over a KNotification (SYS_NOTIFY_WAIT_TIMEOUT with a
  * bogus out_bits pointer → IRIS_ERR_INVALID_ARG) instead of a KChannel. */
 void init_runtime_probe_invalid_userptr(void) {
@@ -40,7 +40,7 @@ static void __attribute__((noinline)) s8_ud2_fn(void) {
     for (;;) {}
 }
 
-/* Fase 13 (Track I): exception delivery is a KNotification now — the kernel
+/* Phase 13 (Track I): exception delivery is a KNotification now — the kernel
  * records the fault and signals the handler's notification; init reads the
  * details with SYS_PROCESS_FAULT_INFO.  No KChannel. */
 void init_selftest_exception(void) {
@@ -68,7 +68,7 @@ void init_selftest_exception(void) {
 
     /* Spawn a thread that immediately executes ud2 (#UD, vector 6).
      *
-     * Stage 5 Etapa 4: the thread is a TCB RETYPED from init's own Untyped and
+     * Stage 5 Step 4: the thread is a TCB RETYPED from init's own Untyped and
      * configured with capabilities to the CSpace and VSpace it runs in — the
      * kernel's static task pool is not reachable from userland any more.  Each
      * step can fail on its own, and each failure is a SKIP rather than a

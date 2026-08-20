@@ -22,7 +22,7 @@ extern int iris_pcid_enabled;
 int      paging_map_checked_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
 struct KUntyped;
 void     paging_destroy_user_space_from(uint64_t cr3, int tables_pooled);
-/* Stage 6-pure Etapa 1 — the walk, reported; the table, installed. */
+/* Stage 6-pure Step 1 — the walk, reported; the table, installed. */
 void     paging_init_user_pml4(uint64_t pml4_page_phys);
 int      paging_missing_level_in(uint64_t cr3, uint64_t virt);
 int      paging_install_table_in(uint64_t cr3, uint64_t virt,
@@ -35,11 +35,11 @@ void     paging_unmap_in(uint64_t cr3, uint64_t virt);
 /* Reset all stub mapping state — call at the start/end of each mapping test.
  * Also clears paging_force_fail state. */
 void paging_stub_reset(void);
-/* Stage 6-pure Etapa 1: model the paging walk (levels must be installed).
+/* Stage 6-pure Step 1: model the paging walk (levels must be installed).
  * Off by default — see the comment in stubs.c. */
 void paging_stub_strict_levels(int on);
 
-/* ── Failure injection hooks (Fase 6.4) ────────────────────────────────────
+/* ── Failure injection hooks (Phase 6.4) ────────────────────────────────────
  * These are test-only; never present in the real kernel build.             */
 
 /* kslab_fail_after(n): next kslab_alloc call after n successful ones fails.

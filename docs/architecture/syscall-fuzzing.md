@@ -1,10 +1,10 @@
-# Fase 21 — Cross-syscall fuzzing / hostile argument surface
+# Phase 21 — Cross-syscall fuzzing / hostile argument surface
 
 Status: ACCEPTED — implemented in this phase.  Companion to every prior
 hardening doc (`fault-endpoint-model.md`, `vspace-frame-hardening.md`,
 `untyped-retype-revoke-hardening.md`, `lifecycle-hardening.md`,
 `scheduler-hardening.md`, `ipc-stress-invariants.md`).  The earlier phases
-hardened each subsystem by family; Fase 21 subjects the WHOLE syscall surface
+hardened each subsystem by family; Phase 21 subjects the WHOLE syscall surface
 to deterministic adversarial pressure and proves it fails clean.  Locked with
 runtime tests T148–T155.
 
@@ -135,7 +135,7 @@ excludes it (it would fire on HWM inherited from the fault-stress tests).
 ### How expected faults are cleaned
 
 A fuzzer child that faults on purpose (invalid-VA/RO-write/NX/kernel-range) is
-handled through the Fase 20 fault-endpoint model: a handler notification is
+handled through the Phase 20 fault-endpoint model: a handler notification is
 registered on the child, the fault is delivered and read, and the child is
 resolved by `SYS_EXCEPTION_RESUME` (kill) or `SYS_PROCESS_KILL`.  The fault is
 therefore an observable, cleanable authority event, never a silent process
@@ -192,7 +192,7 @@ T155  full syscall stress: seeded rounds combining object churn, map/unmap,
    case to T150.
 4. If it creates/destroys an object, blocks, or mutates CSpace/VSpace, add it
    to the T151/T155 mixed streams so its live gauge is balanced under churn.
-5. If it can fault a caller, ensure the fault is deliverable/cleanable (Fase 20)
+5. If it can fault a caller, ensure the fault is deliverable/cleanable (Phase 20)
    and cover it in T153.
 
 ## Remaining fuzzing gaps
@@ -200,7 +200,7 @@ T155  full syscall stress: seeded rounds combining object churn, map/unmap,
 - **Device/IRQ family** (IOPORT/IRQ caps) is exercised only lightly — those
   caps are held by specific drivers, not the test process; a driver-isolation
   phase is the right place to fuzz them under authority.
-- **TCB/SC family** hostile combinations are covered by the Fase 17 tests
+- **TCB/SC family** hostile combinations are covered by the Phase 17 tests
   (T119–T124) rather than re-fuzzed here; a future pass could fold them into
   the T151 stream.
 - **Multi-threaded intra-process races** are out of scope on single-CPU with

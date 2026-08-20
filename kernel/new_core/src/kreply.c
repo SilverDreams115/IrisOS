@@ -7,7 +7,7 @@
 
 static _Atomic uint32_t kreply_live;
 
-/* Fase 18/S1 — live KReply object count (additive diagnostics). */
+/* Phase 18/S1 — live KReply object count (additive diagnostics). */
 uint32_t kreply_live_count(void) {
     return atomic_load_explicit(&kreply_live, memory_order_relaxed);
 }
@@ -35,7 +35,7 @@ static void kreply_obj_close(struct KObject *obj) {
     }
 }
 
-/* Fase S1: the ONLY KReply storage is untyped-backed — payload returns to the
+/* Phase S1: the ONLY KReply storage is untyped-backed — payload returns to the
  * source KUntyped region (kslab is never involved). */
 static void kreply_obj_destroy_ut(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kreply_live, 1u, memory_order_relaxed);

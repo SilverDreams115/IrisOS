@@ -92,13 +92,13 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
      * instead of directly from the PMM, allowing all remaining PMM blocks to be
      * handed to userspace as KUntyped caps.
      *
-     * Fase 28.1: grown 4 MB → 16 MB.  Each spawned process consumes several
+     * Phase 28.1: grown 4 MB → 16 MB.  Each spawned process consumes several
      * KB–32 KB of kernel objects (KProcess + a 256-slot root KCNode + KVSpace +
      * page-table nodes + handle table); the old 4 MB arena capped concurrent
      * live processes at ~9 (NO_MEMORY on the 10th), which the multi-target
      * pager suite (16 concurrent targets + the pager + the supervisor + core
      * services) exceeds.  This is a kernel-object-MEMORY bound, wholly distinct
-     * from the per-process notification quota Fase 28.1 already resolved via the
+     * from the per-process notification quota Phase 28.1 already resolved via the
      * single shared fault notification — growing the arena is the honest fix for
      * a memory ceiling (16 MB is 3% of the 512 MB guest). */
     {
@@ -211,7 +211,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             klog_write("[IRIS][USER] FATAL: task_spawn_user(userboot) failed\n");
         } else if (ut) {
             /*
-             * Stage 5 Etapa 2: the boot authorities are published as SIX
+             * Stage 5 Step 2: the boot authorities are published as SIX
              * capabilities, one per authority, each in its own slot.
              *
              * There used to be one object here carrying a permission mask —
@@ -263,7 +263,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 }
             }
             /*
-             * Stage 5 Etapa 3: the root task's OWN objects, as capabilities.
+             * Stage 5 Step 3: the root task's OWN objects, as capabilities.
              *
              * Its root CNode was reachable only through the "arg0 == 0 means
              * my own root" convention, and its thread only by asking
@@ -306,19 +306,19 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
         }
         if (ut) {
             uint32_t ut_count = 0;   /* boot untypeds granted, == BootInfo entries */
-            struct KUntyped *root_budget = 0;  /* the root task's own, Etapa 3 */
+            struct KUntyped *root_budget = 0;  /* the root task's own, Step 3 */
 
             klog_write("[IRIS][USER] bootstrap task created (ring-3 loader), id=");
             klog_write_dec(ut->id);
             klog_write("\n");
 
                     /*
-                     * Fase 6.2: KVSpace is now created inside task_create_user_impl
+                     * Phase 6.2: KVSpace is now created inside task_create_user_impl
                      * (before bootstrap maps so kframe_map_page can register back-refs).
                      * Here we only publish the existing vspace in root CNode slot
                      * BOOT_CPTR_VSPACE (slot 2).
                      *
-                     * Ref-count after this block (same as Fase 4):
+                     * Ref-count after this block (same as Phase 4):
                      *   process->vspace lifecycle ref   → refcount=1
                      *   kcnode_mint (retain+active)     → refcount=2, active=1
                      *
@@ -345,13 +345,13 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
              *   • paging_map_checked_in: page tables for the KERNEL address
              *     space and for the root task's pre-Untyped bootstrap maps.
              *     Every other user page table is charged to an Untyped since
-             *     Stage 6 Etapa 2 (`paging_map_checked_in_from`).
+             *     Stage 6 Step 2 (`paging_map_checked_in_from`).
              *   • kvmo_create: pages[] metadata array (pmm_alloc_pages)
              *   • sys_initrd_vmo: ELF copy pages (pmm_alloc_page × page_capacity)
              *   • kstack_alloc: 2 pages per task kernel stack
              *   • paging_create_user: 1 page per process PML4
              *
-             * Fase 6: kernel-side demand paging has been removed.  User pages are
+             * Phase 6: kernel-side demand paging has been removed.  User pages are
              * now allocated eagerly in sys_vmo_map / sys_vmo_map_into and charged
              * against the process quota at syscall time, not at fault time.  The
              * PMM reserve covers only the kernel-internal allocators listed above.
@@ -360,7 +360,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
              * where a large block would push pmm_free_pages below the reserve;
              * that block is returned to the buddy and the drain stops.
              *
-             * Fase 3.4 (dual mode): every boot KUntyped is also inserted into
+             * Phase 3.4 (dual mode): every boot KUntyped is also inserted into
              * slot (BOOT_CPTR_UNTYPED_START + drain_index) of the process's
              * root CNode so userboot can discover it via CPtr.  The legacy
              * handle-table insert is kept for backward compatibility.
@@ -409,7 +409,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                      * has to happen BEFORE the release, or the release is the
                      * last one and the object is destroyed under the slot. */
                     uint32_t cspace_slot = BOOT_CPTR_UNTYPED_START + ut_count;
-                    /* Stage 6-pure Etapa 3: the FIRST block is the one the
+                    /* Stage 6-pure Step 3: the FIRST block is the one the
                      * root task's own address space will draw on once the
                      * bootstrap exception ends.  Keep a reference now, while
                      * the object is certainly alive. */
@@ -491,7 +491,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 } else {
                     task_set_bootstrap_arg0(ut, USER_BOOTINFO_BASE);
                     /*
-                     * Stage 6-pure Etapa 3 — the bootstrap exception ends here.
+                     * Stage 6-pure Step 3 — the bootstrap exception ends here.
                      *
                      * Everything the kernel had to map on the root task's
                      * behalf is mapped: its text, its stack, and the page that

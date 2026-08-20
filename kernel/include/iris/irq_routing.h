@@ -8,14 +8,14 @@ struct KNotification;
 
 #define IRQ_ROUTE_MAX 16  /* maximum routable hardware IRQ lines (0..IRQ_ROUTE_MAX-1) */
 
-/* Fase 13/Track G: IRQ routing is KNotification-only — the legacy KChannel
+/* Phase 13/Track G: IRQ routing is KNotification-only — the legacy KChannel
  * message route (IRQ_MSG_TYPE_SIGNAL / SYS_CHAN_RECV) is fully retired.  An IRQ
  * fires → knotification_signal(notif, 1<<irq); the consumer drains device state
  * via its KIoPort cap and re-arms with SYS_IRQ_ACK. */
 
 void    irq_routing_init    (void);
 
-/* Fase 7.6: route an IRQ to a KNotification instead of a KChannel. When the
+/* Phase 7.6: route an IRQ to a KNotification instead of a KChannel. When the
  * IRQ fires the kernel calls knotification_signal(notif, 1u << irq) — no
  * message, no queue; the consumer drains device state via its KIoPort cap
  * and re-arms with SYS_IRQ_ACK. A route holds either a channel or a
@@ -34,7 +34,7 @@ void    irq_routing_register_notification(uint8_t irq,
  */
 uint32_t irq_routing_active_count(void);
 
-/* irq_routing_register (KChannel) retired — Fase 13/Track G.  Routes are
+/* irq_routing_register (KChannel) retired — Phase 13/Track G.  Routes are
  * registered via irq_routing_register_notification; teardown clears them via
  * irq_routing_unregister_owner. */
 

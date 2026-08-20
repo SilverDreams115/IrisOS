@@ -67,7 +67,7 @@ struct HandleEntry {
     iris_rights_t   rights;
     uint32_t        gen;
 };
-/* Fase 9 note: the per-cap badge for handle-namespace caps lives in a
+/* Phase 9 note: the per-cap badge for handle-namespace caps lives in a
  * parallel uint32_t array inside HandleTable (badge[slot]) — NOT here —
  * to keep sizeof(KProcess) inside the largest kslab class.  Handle-side
  * badges are 32-bit, matching the SYS_PROC_CSPACE_MINT arg3 packing. */

@@ -7,7 +7,7 @@
 #define KBOOTCAP_POOL_SIZE 0u
 
 /*
- * Stage 5 Etapa 2: ONE CAPABILITY, ONE AUTHORITY.
+ * Stage 5 Step 2: ONE CAPABILITY, ONE AUTHORITY.
  *
  * A boot capability used to be a monolith carrying a permission MASK — spawn,
  * hardware, debug and framebuffer authority on a single object, delegated

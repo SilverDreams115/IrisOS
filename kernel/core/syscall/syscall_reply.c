@@ -14,7 +14,7 @@
  *   - Transitions caller to TASK_READY.
  *   - Returns IRIS_ERR_NOT_FOUND if the KReply was already invoked.
  *
- * Reply-cap transfer (Fase 7.1): a reply MAY carry one capability in
+ * Reply-cap transfer (Phase 7.1): a reply MAY carry one capability in
  * msg.attached_handle / msg.attached_rights, with EP_SEND staging semantics:
  *   - The server handle must have RIGHT_TRANSFER; it is consumed on success.
  *   - The cap is installed in the EP_CALL caller's handle table; the caller
@@ -42,7 +42,7 @@ static inline void copy_kbuf_r(uint8_t *dst, const uint8_t *src, uint32_t n) {
     for (uint32_t i = 0u; i < n; i++) dst[i] = src[i];
 }
 
-/* ep_get_r removed — use cspace_resolve_only_endpoint (Fase 3.2) */
+/* ep_get_r removed — use cspace_resolve_only_endpoint (Phase 3.2) */
 
 /* ── SYS_EP_CALL ──────────────────────────────────────────────────────── */
 
@@ -67,7 +67,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    /* Fase 9: stamp the caller badge from the invoked cap (anti-spoofing);
+    /* Phase 9: stamp the caller badge from the invoked cap (anti-spoofing);
      * the server observes it on EP_RECV / EP_NB_RECV. */
     t->ipc_msg.sender_badge = ep_badge;
 
@@ -91,7 +91,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
     t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
 
-    /* Fase 11: stage a transferred cap from attached_cap (separate field so the
+    /* Phase 11: stage a transferred cap from attached_cap (separate field so the
      * reply cap and the transferred cap never collide).  Staging validates the
      * caller really holds it and reduces to the requested rights; the raw
      * attached_cap number is then cleared so it can never be delivered as-is.
@@ -152,7 +152,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         /* Immediate rendezvous: a receiver is already waiting. */
         struct task *receiver = ep->queue_head;
 
-        /* Fase S1: a CALL needs the receiver's explicit reply object.  If the
+        /* Phase S1: a CALL needs the receiver's explicit reply object.  If the
          * blocked receiver staged none, fail the call BEFORE consuming
          * anything — the receiver stays queued, the caller keeps its staged
          * cap (implicit KReply fabrication is retired). */
@@ -187,7 +187,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ep_call_mode = 0u;
         irq_spinlock_unlock(&ep->lock, flags);
 
-        /* Fase 11: deliver the staged transferred cap into the receiver's
+        /* Phase 11: deliver the staged transferred cap into the receiver's
          * attached_cap (the reply cap below takes attached_handle).
          * A1.5: routed — lands in the receiver's declared receive-slot
          * (CPtr) or its handle table.  A1.10: receiver dequeued → delivery
@@ -204,7 +204,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                 syscall_ipc_stage_cap_abort(xfer_src_cn);
         }
 
-        /* Fase S1: bind the receiver's staged explicit reply object to this
+        /* Phase S1: bind the receiver's staged explicit reply object to this
          * caller (verified non-NULL before the receiver was dequeued; the
          * kernel is non-preemptive between that check and this bind).  The
          * receiver's staging lifecycle ref transfers to t->pending_kreply;
@@ -238,7 +238,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ep_next       = 0;
         t->blocking_ep   = ep;
         t->ipc_msg_ready = 0u;
-        /* Fase 11: carry the staged transferred cap to the receiver (delivered
+        /* Phase 11: carry the staged transferred cap to the receiver (delivered
          * into attached_cap by sys_ep_recv / sys_ep_nb_recv).  A1.10 / S4: the
          * source SLOT rides along un-consumed; the receiver commits it at
          * take time, and close/cancel paths abort it without consuming. */
@@ -257,7 +257,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         task_yield(); /* stays blocked through SEND→REPLY; wakes at READY (sys_reply) */
     }
 
-    /* Fase S4 (Etapa 2): endpoint close leaves our source-slot refs for us to
+    /* Phase S4 (Step 2): endpoint close leaves our source-slot refs for us to
      * drop (kendpoint_obj_close cannot release them under ep->lock).  Nothing
      * was delivered on that path — the source slot itself survives. */
     if (t->ep_cap_src_cn) {
@@ -369,7 +369,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Deliver reply message into caller's staging (caller is blocked — safe). */
     copy_irismsg_r(&caller->ipc_msg, &reply_msg);
     caller->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
-    /* Fase 9: replies carry NO sender identity — the kernel forces badge 0
+    /* Phase 9: replies carry NO sender identity — the kernel forces badge 0
      * so a server cannot spoof a badge into its caller (reply identity is
      * implied by the one-shot KReply itself). */
     caller->ipc_msg.sender_badge = 0u;
@@ -381,7 +381,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                         xfer_rights, xfer_badge,
                                                         xfer_src_cn, xfer_src_idx);
         caller->ipc_msg.attached_handle = new_h;
-        /* Fase S4 (Etapa 2): caller determined and still blocked — delivery
+        /* Phase S4 (Step 2): caller determined and still blocked — delivery
          * committed, so consume the server's source slot (outside rp->lock). */
         if (new_h != IRIS_MSG_NO_CAP)
             syscall_ipc_stage_cap_commit(t, xfer_src_cn, xfer_src_idx);

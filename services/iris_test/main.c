@@ -33,14 +33,14 @@ static inline long it_sys1(long nr, long a0) {
 }
 
 static inline long it_sys2(long nr, long a0, long a1) {
-    /* Fase S1: arg2 (rdx) is ALWAYS zeroed — SYS_EP_RECV/SYS_EP_NB_RECV now
+    /* Phase S1: arg2 (rdx) is ALWAYS zeroed — SYS_EP_RECV/SYS_EP_NB_RECV now
      * interpret it as the explicit reply-object CPtr, so leaking garbage
      * there would randomly stage bogus replies. */
     return iris_syscall3(nr, a0, a1, 0L);
 }
 
 /*
- * Stage 6-pure Etapa 2: the suite supplies its own paging levels.
+ * Stage 6-pure Step 2: the suite supplies its own paging levels.
  *
  * The kernel stopped creating page tables, so a map whose walk is incomplete
  * answers IRIS_ERR_MISSING_TABLE and expects the holder to retype a level and
@@ -110,7 +110,7 @@ static void it_log_num(uint32_t n) {
 static uint32_t g_pass  = 0;
 static uint32_t g_total = 0;
 
-/* ── Fase S1: object-creation helpers ───────────────────────────────────────
+/* ── Phase S1: object-creation helpers ───────────────────────────────────────
  *
  * SYS_ENDPOINT_CREATE / SYS_NOTIFY_CREATE / SYS_CNODE_CREATE are RETIRED:
  * every kernel object the suite fabricates is retyped from its delegated
@@ -157,7 +157,7 @@ static long it_retype2_at(long ut, uint32_t obj_type, uint32_t slot,
                    (long)((uint64_t)slot << 32), obj_arg);
 }
 
-/* Etapa 4: the same fabrication, but the capability STAYS in its slot — which
+/* Step 4: the same fabrication, but the capability STAYS in its slot — which
  * is the seL4 shape, the capability IS the slot.  Used by every test whose
  * subject is an authority property rather than the handle namespace itself.
  * Same rotating pool and the same contract: delete before use, never hold a
@@ -175,7 +175,7 @@ static long it_retype2_at(long ut, uint32_t obj_type, uint32_t slot,
         else                                     (m).src_h    = (handle_id_t)_v; \
     } while (0)
 
-/* Stage 5 Etapa 4: threads are retyped from an Untyped and configured with
+/* Stage 5 Step 4: threads are retyped from an Untyped and configured with
  * CSpace/VSpace capabilities — defined next to the VSpace helpers it needs. */
 static long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg);
 
@@ -191,7 +191,7 @@ static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
     return (r < 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
-/* Etapa 6c: the CSpace form of "a rights-reduced copy of this capability".
+/* Step 6c: the CSpace form of "a rights-reduced copy of this capability".
  *
  * SYS_HANDLE_DUP's replacement.  It derives src_cptr into a fresh leaf of the
  * second-level CNode — a real MDB child of the source, which the handle dup
@@ -222,7 +222,7 @@ static long it_initrd_vmo_slot(long auth_cptr, long index) {
     uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
                                              __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
-    /* Stage 6 Etapa 5: the image copy is charged to the suite's own budget,
+    /* Stage 6 Step 5: the image copy is charged to the suite's own budget,
      * not to the small per-child pool its address space came from. */
     long r = it_sys4(SYS_INITRD_VMO, auth_cptr, index,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
@@ -264,7 +264,7 @@ static long it_vmo_create_slot(uint64_t size) {
     uint32_t leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
                                              __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
-    /* Stage 6 Etapa 5: name the budget.  The suite's own untyped is what pays
+    /* Stage 6 Step 5: name the budget.  The suite's own untyped is what pays
      * for the memory it asks for; its per-child pool pays for what the KERNEL
      * spends on it (address space, process state). */
     long r = it_sys3(SYS_VMO_CREATE, (long)size, (long)IRIS_CPTR_TEST_UNTYPED,
@@ -319,7 +319,7 @@ static void it_slot_delete(uint32_t slot) {
         (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
 }
 
-/* ── Fase S4 (Etapa 2): CSpace-sourced cap transfer ───────────────────────
+/* ── Phase S4 (Step 2): CSpace-sourced cap transfer ───────────────────────
  * The IPC transfer SOURCE is a CSpace slot, never a handle (charter §3.6/A6).
  * it_xfer_slot mints the cap behind src_h into `slot` of iris_test's own root
  * CNode and returns the CPtr to hand to EP_SEND / EP_CALL / SYS_REPLY.
@@ -330,8 +330,8 @@ static void it_slot_delete(uint32_t slot) {
  * 247..250 sits ABOVE every reserved pool — S1 scratch (64..87), the fixed
  * reply-object slots (88..97) and the fuzzing pool (100..239) — and inside the
  * 256-slot root CNode.  Overlapping any of those silently deletes a live
- * object at mint time (it cost a hang in T087 during Etapa 2 bring-up). */
-/* ── Fase S4: iris_test root-CNode slot map (256 slots) ───────────────────
+ * object at mint time (it cost a hang in T087 during Step 2 bring-up). */
+/* ── Phase S4: iris_test root-CNode slot map (256 slots) ───────────────────
  * Reserved elsewhere, do NOT reuse: 1..15 well-known bootstrap · 25..31 test
  * fixtures · 36..43 + 48..51 per-test slots · 44..47 T100 lookup (computed
  * 44+i) · 52..59 file-grant sessions and CPtr constants · 64..87 S1 scratch ·
@@ -346,7 +346,7 @@ static void it_slot_delete(uint32_t slot) {
 /* The only slots genuinely unassigned in this process (verified by enumerating
  * every IRIS_CPTR_ and BOOT_CPTR_ constant, every _SLOT define and every
  * range-reserved pool): 29, 43, 63, 99, 254, 255. */
-/* Stage 5 Etapa 2: slot 99 is IRIS_CPTR_FB_CONTROL, the framebuffer control
+/* Stage 5 Step 2: slot 99 is IRIS_CPTR_FB_CONTROL, the framebuffer control
  * capability.  T134's guaranteed-EMPTY probe moved to a scratch slot it
  * deletes itself, which is a stronger guarantee than a slot everyone was
  * asked to leave alone. */
@@ -396,7 +396,7 @@ static long it_xfer_slot(handle_id_t src_h, uint32_t slot, uint32_t rights) {
  * notification.  Replaces the pre-S4 "SYS_HANDLE_TYPE on the source handle"
  * probe, which no longer applies: the source is a CPtr.
  *
- * Etapa 6a: asked directly of the slot.  It used to materialise a handle to
+ * Step 6a: asked directly of the slot.  It used to materialise a handle to
  * read the type and hand it back, which made a read-only probe depend on the
  * namespace it is proving unnecessary. */
 static void it_close(handle_id_t *h);   /* forward */
@@ -413,7 +413,7 @@ static long it_xfer_slot_norights(long src_h, uint32_t slot, uint32_t rights) {
     return (r != 0) ? r : (long)slot;
 }
 
-/* ── Fase S4 (Etapa 3): native-CDT derivation helpers ─────────────────────
+/* ── Phase S4 (Step 3): native-CDT derivation helpers ─────────────────────
  * The legacy handle tree (SYS_CAP_DERIVE/SYS_CAP_REVOKE) is being retired.
  * Its replacement is the CSpace CDT: derivation is SYS_CSPACE_MINT slot→slot
  * (a real MDB child of the source) and revocation is SYS_CSPACE_REVOKE, which
@@ -489,7 +489,7 @@ static void it_fail(const char *id, const char *reason) {
 
 /* ── Message helpers ────────────────────────────────────────────────────── */
 
-/* it_chan_msg_zero retired — Fase 13/Track I (no KChannel tests remain). */
+/* it_chan_msg_zero retired — Phase 13/Track I (no KChannel tests remain). */
 
 static void it_iris_msg_zero(struct IrisMsg *m) {
     uint8_t *p = (uint8_t *)m;
@@ -558,7 +558,7 @@ static void test_t003(void) {
         it_fail("T003", "yield non-zero");
 }
 
-/* ── T004-T007 retired (Fase 13/Track F) ───────────────────────────────
+/* ── T004-T007 retired (Phase 13/Track F) ───────────────────────────────
  * The KChannel-specific tests (loopback, NB-recv-empty, recv-timeout,
  * seal) are superseded by endpoint/notification equivalents:
  *   T004 → T015 (EP_SEND/RECV)      T005 → T014 (EP_NB_RECV empty)
@@ -655,7 +655,7 @@ static void test_t010(void) {
  * test whose subject dies with the mechanism. */
 
 /* ── T013: Rights enforcement on an endpoint (no WRITE → EP_SEND fails) ──── */
-/* Fase 13/Track I: rewritten from KChannel to KEndpoint — EP_SEND requires
+/* Phase 13/Track I: rewritten from KChannel to KEndpoint — EP_SEND requires
  * RIGHT_WRITE, so a READ-only cap is rejected with ACCESS_DENIED (same
  * rights-enforcement guarantee, no SYS_CHAN). */
 static void test_t013(void) {
@@ -874,7 +874,7 @@ static void test_t019(void) {
     g_t019_done   = 0;
     g_t019_result = 0;
 
-    /* Etapa 4: the property under test — dropping the LAST capability to an
+    /* Step 4: the property under test — dropping the LAST capability to an
      * endpoint wakes a blocked receiver — is real in a CSpace-only kernel; only
      * the vehicle changes.  The endpoint lives in a slot and the drop is a
      * slot delete instead of a handle close. */
@@ -1252,7 +1252,7 @@ static void test_t024(void) {
     long rr = -1;
     long notif_raw = it_notify_create_slot();
     if (notif_raw >= 0) {
-        /* Fase S4 (Etapa 2): the reply's transfer source is a CSpace slot. */
+        /* Phase S4 (Step 2): the reply's transfer source is a CSpace slot. */
         long src = it_xfer_dup(notif_raw, RIGHT_WRITE | RIGHT_WAIT);
         if (src >= 0) {
             struct IrisMsg reply;
@@ -1340,7 +1340,7 @@ static void test_t025(void) {
     }
     handle_id_t reply_h = (handle_id_t)msg.attached_handle;
 
-    /* Fase S4 (Etapa 2): a SOURCE SLOT without RIGHT_TRANSFER → staging must
+    /* Phase S4 (Step 2): a SOURCE SLOT without RIGHT_TRANSFER → staging must
      * fail with ACCESS_DENIED and leave the slot intact. */
     handle_id_t notif_h = HANDLE_INVALID;
     long r1 = -1;
@@ -1389,9 +1389,9 @@ static void test_t025(void) {
         it_fail("T025", "non-transferable reply cap");
 }
 
-/* ── Fase 7.1: EP-based service path (svcmgr discovery + VFS) ───────────── */
+/* ── Phase 7.1: EP-based service path (svcmgr discovery + VFS) ───────────── */
 
-/* Fase 8: the discovery endpoint is the well-known CPtr slot (kind 0x20
+/* Phase 8: the discovery endpoint is the well-known CPtr slot (kind 0x20
  * retired); it is a CNode slot index, NOT a handle — never close it. */
 static handle_id_t g_svcmgr_ep_h = (handle_id_t)IRIS_CPTR_SVCMGR_EP;
 static handle_id_t g_vfs_ep_h    = HANDLE_INVALID;  /* from T026 lookup   */
@@ -1661,7 +1661,7 @@ static void test_t031(void) {
     }
 }
 
-/* ── T032: legacy "vfs" KChannel name must no longer resolve (Fase 7.5) ─── */
+/* ── T032: legacy "vfs" KChannel name must no longer resolve (Phase 7.5) ─── */
 
 /*
  * vfs is endpoint_only: svcmgr never creates the legacy service/reply
@@ -1695,7 +1695,7 @@ static void test_t032(void) {
     }
 }
 
-/* ── T033: VFS EP STATUS (Fase 7.5) ─────────────────────────────────────── */
+/* ── T033: VFS EP STATUS (Phase 7.5) ─────────────────────────────────────── */
 
 static void test_t033(void) {
     if (g_vfs_ep_h == HANDLE_INVALID) {
@@ -1877,7 +1877,7 @@ static void test_t038(void) {
         it_fail("T038", "console ep semantics");
 }
 
-/* ── T039: CPtr-first svcmgr discovery (Fase 8) ─────────────────────────── */
+/* ── T039: CPtr-first svcmgr discovery (Phase 8) ─────────────────────────── */
 
 /*
  * init minted the svcmgr discovery endpoint into our root CNode at
@@ -1903,7 +1903,7 @@ static void test_t039(void) {
         it_fail("T039", "cptr lookup");
 }
 
-/* ── T040: CPtr failure semantics (Fase 8) ──────────────────────────────── */
+/* ── T040: CPtr failure semantics (Phase 8) ──────────────────────────────── */
 
 /*
  * slot 30 (IRIS_CPTR_TEST_FIX_A) = console KChannel cap (wrong type),
@@ -1940,7 +1940,7 @@ static void test_t040(void) {
         it_fail("T040", "cptr failure semantics");
 }
 
-/* ── T041: well-known CPtr slots resolve with the right type (Fase 8) ───── */
+/* ── T041: well-known CPtr slots resolve with the right type (Phase 8) ───── */
 
 /*
  * SYS_CSPACE_RESOLVE materializes a slot into a handle; slots 1..4 must all
@@ -1965,7 +1965,7 @@ static void test_t041(void) {
         it_fail("T041", "well-known slot resolve");
 }
 
-/* ── T042: VFS READ_AT directly via IRIS_CPTR_VFS_EP (Fase 8) ───────────── */
+/* ── T042: VFS READ_AT directly via IRIS_CPTR_VFS_EP (Phase 8) ───────────── */
 
 static void test_t042(void) {
     static const char expect[] = "Hello from IrisOS VFS!\n";
@@ -2017,7 +2017,7 @@ static void test_t043(void) {
         it_fail("T043", "console via cptr");
 }
 
-/* ── T044: kbd PING via IRIS_CPTR_KBD_EP (Fase 8) ───────────────────────── */
+/* ── T044: kbd PING via IRIS_CPTR_KBD_EP (Phase 8) ───────────────────────── */
 
 static void test_t044(void) {
     struct IrisMsg msg;
@@ -2061,7 +2061,7 @@ static void test_t045(void) {
  * that no longer meant anything.  T092 asserts the guarantee that replaced it:
  * a client that declares no slot gets the reply WITHOUT the capability. */
 
-/* ── Fase 9: badges & sender identity (T047–T053) ───────────────────────── */
+/* ── Phase 9: badges & sender identity (T047–T053) ───────────────────────── */
 
 /* PING a slot and return the badge the server says it observed (words[1]);
  * stores -1 on transport/protocol failure. */
@@ -2186,7 +2186,7 @@ static void test_t053(void) {
         it_fail("T053", "distinct badges per cap");
 }
 
-/* ── Fase 10: service lifecycle, death/relookup & badge policy (T054–T062) ─ */
+/* ── Phase 10: service lifecycle, death/relookup & badge policy (T054–T062) ─ */
 
 /* svcmgr STATUS oracle: name → {alive, generation}. Returns 0 on OK. */
 static long it_status(const char *name, uint32_t *alive, uint32_t *gen) {
@@ -2212,7 +2212,7 @@ static long it_status(const char *name, uint32_t *alive, uint32_t *gen) {
 /* Generation cached at the pre-restart lookup (T056), checked stale in T059. */
 static uint32_t g_vfs_gen0 = 0;
 
-/* Fase 11: a dynamic test service registered by cap-transfer (T054), reused by
+/* Phase 11: a dynamic test service registered by cap-transfer (T054), reused by
  * the lookup/unregister tests T063–T066. */
 static handle_id_t g_ltst_ep = (handle_id_t)0;   /* HANDLE_INVALID */
 static uint32_t    g_ltst_id = 0;
@@ -2223,7 +2223,7 @@ static long it_register_ep(const char *name, handle_id_t ep) {
     /* The master svcmgr keeps must carry DUPLICATE so it can hand each client a
      * fresh WRITE cap on lookup (+TRANSFER so the cap is deliverable to it). */
     iris_rights_t mr = (iris_rights_t)(RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
-    /* Fase S4 (Etapa 2): the EP_CALL transfer source is a CSpace slot. */
+    /* Phase S4 (Step 2): the EP_CALL transfer source is a CSpace slot. */
     long d = it_xfer_dup((long)ep, (uint32_t)mr);
     if (d < 0) return d;
     uint32_t len = it_stage_path(name);
@@ -2341,7 +2341,7 @@ static void test_t057(void) {
 }
 
 /* T058: notification close-while-wait — covered by the dedicated host unit
- * test (tests/kernel/test_knotification.c, Fase 10).  This runtime slot
+ * test (tests/kernel/test_knotification.c, Phase 10).  This runtime slot
  * confirms the kbd IRQ-notification WAIT slot is still functional after the
  * lifecycle changes (a non-blocking poll must not fault). */
 static void test_t058(void) {
@@ -2430,7 +2430,7 @@ static void test_t062(void) {
         it_fail("T062", "badge policy regressed");
 }
 
-/* ── Fase 11: endpoint cap-transfer & cap-backed REGISTER (T063–T066) ────── */
+/* ── Phase 11: endpoint cap-transfer & cap-backed REGISTER (T063–T066) ────── */
 
 /* T063: LOOKUP of the cap-registered name returns a REAL, usable endpoint cap —
  * SYS_HANDLE_SAME_OBJECT proves it is the very endpoint object iris_test
@@ -2480,7 +2480,7 @@ static void test_t064(void) {
     long n = it_notify_create();
     if (n < 0) { it_fail("T064", "notify create"); return; }
     handle_id_t notif = (handle_id_t)n;
-    /* Fase S4 (Etapa 2): the EP_CALL transfer source is a CSpace slot. */
+    /* Phase S4 (Step 2): the EP_CALL transfer source is a CSpace slot. */
     long d = it_xfer_dup((long)notif, (uint32_t)RIGHT_WRITE);
     if (d < 0) { it_close(&notif); it_fail("T064", "xfer slot"); return; }
     len = it_stage_path("wrongtype.svc");
@@ -2543,7 +2543,7 @@ static void test_t066(void) {
     if (ok) it_pass("T066"); else it_fail("T066", "lookup after unregister");
 }
 
-/* ── Fase 12: endpoint-first svcmgr — DIAG over EP + no legacy fallback ──── */
+/* ── Phase 12: endpoint-first svcmgr — DIAG over EP + no legacy fallback ──── */
 
 /* T067: svcmgr DIAG over the endpoint (replaces legacy KChannel SVCMGR_MSG_DIAG
  * as the productive path) returns the expected catalog snapshot. */
@@ -2575,7 +2575,7 @@ static void test_t068(void) {
         it_fail("T068", "unknown opcode no-fallback");
 }
 
-/* ── Fase 13: device-cap CPtr resolution (T069) ─────────────────────────── */
+/* ── Phase 13: device-cap CPtr resolution (T069) ─────────────────────────── */
 
 /* T069: a device/authority cap (the spawn KBootstrapCap) minted into a CPtr
  * slot is invocable BY CPtr — SYS_INITRD_COUNT resolves it through CSpace
@@ -2584,7 +2584,7 @@ static void test_t068(void) {
  * fallback.  This is the prerequisite that lets device caps stop travelling
  * over KChannel at bootstrap. */
 static void test_t069(void) {
-    /* Stage 5 Etapa 2: the authority named here is the ioport CONTROL
+    /* Stage 5 Step 2: the authority named here is the ioport CONTROL
      * capability — one capability, one authority — instead of a second copy of
      * the monolith probed through SYS_INITRD_COUNT.  What the test proves is
      * unchanged and is what its name says: an authority capability is invocable
@@ -2603,7 +2603,7 @@ static void test_t069(void) {
         it_fail("T069", "device cap via cptr");
 }
 
-/* ── Fase 13 / Track G: retired SYS_CHAN ABI (T070) ─────────────────────── */
+/* ── Phase 13 / Track G: retired SYS_CHAN ABI (T070) ─────────────────────── */
 
 /* T070: the ENTIRE SYS_CHAN_* ABI is retired in Track G — KChannel is no longer
  * a productive IPC mechanism.  Every channel syscall number falls through the
@@ -2623,9 +2623,9 @@ static void test_t070(void) {
     if (ok) it_pass("T070"); else it_fail("T070", "retired SYS_CHAN ABI");
 }
 
-/* ── T071: cascade revoke over the NATIVE CDT (Fase S4, Etapa 3) ────────────
+/* ── T071: cascade revoke over the NATIVE CDT (Phase S4, Step 3) ────────────
  *
- * Runtime coverage for recursive revocation.  Until Fase S4 this exercised the
+ * Runtime coverage for recursive revocation.  Until Phase S4 this exercised the
  * legacy handle tree (SYS_CAP_DERIVE/SYS_CAP_REVOKE); that tree is retired and
  * the mechanism is now the CSpace CDT: SYS_CSPACE_MINT derives slot→slot
  * (installing a real MDB child) and SYS_CSPACE_REVOKE removes the whole
@@ -2673,7 +2673,7 @@ static void test_t071(void) {
 
 /* ── T072: derivation rights reduction + revoke failure paths ───────────────
  *
- * Native-CDT form (Fase S4, Etapa 3).  Proves (a) a cap derived with reduced
+ * Native-CDT form (Phase S4, Step 3).  Proves (a) a cap derived with reduced
  * rights cannot itself be a derivation source once RIGHT_DUPLICATE is dropped
  * (ACCESS_DENIED — no rights escalation), (b) revoking an EMPTY slot fails
  * cleanly (negative error, no panic), and (c) a valid revoke tears down the
@@ -2731,7 +2731,7 @@ static void test_t073(void) {
     if (ep < 0) { it_fail("T073", "ep create"); return; }
     handle_id_t ep_h = (handle_id_t)ep;
 
-    /* Fase S4 (Etapa 2): the SOURCE is a CSpace slot.  Three failure shapes,
+    /* Phase S4 (Step 2): the SOURCE is a CSpace slot.  Three failure shapes,
      * each of which must leave the source cap exactly where it was. */
     handle_id_t root = T28_OWN_ROOT_CNODE;
 
@@ -2886,7 +2886,7 @@ static long lp_spawn_child(handle_id_t cmd_ep_h, handle_id_t *out_proc_h) {
     mints[n].rights = RIGHT_READ | RIGHT_WRITE;
     mints[n].badge  = 0;
     n++;
-    /* Fase S1: the child serves EP_CALLs on its command endpoint, so it needs
+    /* Phase S1: the child serves EP_CALLs on its command endpoint, so it needs
      * an explicit reply object at slot 13 (LP_CPTR_REPLY).  Retyped fresh
      * from the test untyped; the parent drops its handle right after the
      * mint so child death still fires close-wakes-caller. */
@@ -3103,10 +3103,10 @@ static void test_t076(void) {
  * Receives the SPAWN_CAP bootstrap cap from init (serial/test loading).
  * Timeout-bounded so a missing message degrades to HANDLE_INVALID — the
  * dependent tests then FAIL loudly instead of hanging boot or being
- * silently skipped.  (Fase 8: the discovery endpoint no longer arrives
+ * silently skipped.  (Phase 8: the discovery endpoint no longer arrives
  * here; it is the well-known slot IRIS_CPTR_SVCMGR_EP.)
  */
-/* it_recv_bootstrap retired — Fase 13/Track I: the spawn cap is the
+/* it_recv_bootstrap retired — Phase 13/Track I: the spawn cap is the
  * IRIS_CPTR_PROC_CONTROL pre-start mint, not a bootstrap KChannel message. */
 
 /* ── T079: VMO map by CPtr (A1 Increment 1) ─────────────────────────────────
@@ -3519,7 +3519,7 @@ static void test_t083(void) {
         ok = 0;
 
     /* GET_INFO by CPtr (both slots — READ suffices).
-     * Stage 5 Etapa 4: thread creation returns a capability, not a global
+     * Stage 5 Step 4: thread creation returns a capability, not a global
      * thread id, so the identity checked here is the one the helper's own TCB
      * capability reports — the two CPtrs must name the SAME object. */
     struct iris_tcb_info info, self_info;
@@ -3568,7 +3568,7 @@ static void test_t083(void) {
     if (ok && it_sys1(SYS_TCB_SUSPEND, (long)IRIS_CPTR_TEST_FIX_A) !=
               (long)IRIS_ERR_INVALID_ARG) ok = 0;
 
-    /* ── SchedContext (Fase S2: SYS_SC_CREATE retired → RETYPE2) ── */
+    /* ── SchedContext (Phase S2: SYS_SC_CREATE retired → RETYPE2) ── */
     if (ok && it_sys0(SYS_SC_CREATE) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
     long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) ok = 0;
@@ -3658,7 +3658,7 @@ static void test_t084(void) {
     handle_id_t epx_h = (handle_id_t)epx;
     g_t084_cmd_ep = (handle_id_t)cmd;
 
-    /* Fase S4 (Etapa 2): transfer sources are CSpace SLOTS, not handles.
+    /* Phase S4 (Step 2): transfer sources are CSpace SLOTS, not handles.
      * EP_SEND consumes the slot exactly as it used to consume the dup. */
     long c1 = it_xfer_slot(epx_h, IT_XFER_SLOT_A, RIGHT_WRITE);
     long c2 = it_xfer_slot(epx_h, IT_XFER_SLOT_B, RIGHT_WRITE);
@@ -3695,7 +3695,7 @@ static void test_t084(void) {
 
     /* recv #2: NO declaration.  Stage 4 retired handle materialization, so the
      * message arrives WITHOUT the capability — the same fail-closed shape a
-     * raced or occupied slot has had since Etapa 2.  The sender is not left
+     * raced or occupied slot has had since Step 2.  The sender is not left
      * hanging and nothing is half-transferred; a receiver that wants the cap
      * says where to put it. */
     it_iris_msg_zero(&r);
@@ -3923,7 +3923,7 @@ static void t087_server(void) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
     m.attached_cap = T087_SRV_SLOT;              /* receive-slot declaration */
-    /* Fase S1: explicit reply object (slot 94) staged via recv arg2. */
+    /* Phase S1: explicit reply object (slot 94) staged via recv arg2. */
     long rr = it_sys3(SYS_EP_RECV, (long)g_t087_ep, (long)&m, 94);
     if (rr == 0) {
         g_t087_got_cap = m.attached_cap;         /* caller's transferred cap */
@@ -4001,7 +4001,7 @@ static void test_t087(void) {
     for (int i = 0; i < 200 && !g_t087_done; i++) it_sys0(SYS_YIELD);
     if (!g_t087_done) ok = 0;
     if (ok && g_t087_got_cap != T087_SRV_SLOT) ok = 0;      /* landed as CPtr */
-    /* Fase S1: the reply value is the server's OWN reply-object CPtr (echoed
+    /* Phase S1: the reply value is the server's OWN reply-object CPtr (echoed
      * from recv arg2) — explicit MCS-style authority, never a fabricated
      * handle. */
     if (ok && g_t087_reply_h != 94u) ok = 0;
@@ -4389,8 +4389,8 @@ static void test_t092(void) {
  * before/after comparisons of self_live are exact. */
 static int it_sched_ext(uint32_t w[14]) {
     uint8_t buf[96];
-    /* Fase 16: request 96 bytes so the two lifecycle words (offsets 84/88)
-     * land too; a pre-Fase-16 kernel clamps to 88 and leaves w[11..13] zero —
+    /* Phase 16: request 96 bytes so the two lifecycle words (offsets 84/88)
+     * land too; a pre-Phase-16 kernel clamps to 88 and leaves w[11..13] zero —
      * the extra words are additive, never required by legacy asserts. */
     long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 96, (long)IRIS_CPTR_DEBUG_CONTROL);
     if (r != 0) return 0;
@@ -4425,19 +4425,19 @@ static int it_task_live(uint32_t *out) {
 #define IT_SI_TOCTOU    8u
 #define IT_SI_REPLY     9u
 #define IT_SI_RESOLVE  10u
-#define IT_SI_PROCLIVE 11u   /* Fase 16: KProcess objects live */
-#define IT_SI_REAPHWM  12u   /* Fase 16: deferred-reap queue depth hwm */
+#define IT_SI_PROCLIVE 11u   /* Phase 16: KProcess objects live */
+#define IT_SI_REAPHWM  12u   /* Phase 16: deferred-reap queue depth hwm */
 
-/* Fase 17 ext2 scheduler-hardening words (offsets 96..108, 4 uint32).  A
- * pre-Fase-17 kernel clamps SYS_SCHED_INFO to 96 bytes and leaves these zero —
+/* Phase 17 ext2 scheduler-hardening words (offsets 96..108, 4 uint32).  A
+ * pre-Phase-17 kernel clamps SYS_SCHED_INFO to 96 bytes and leaves these zero —
  * they are additive and never required by a legacy assert. */
 #define IT_S2_RQHWM   0u   /* run-queue depth high-water */
 #define IT_S2_DUPENQ  1u   /* duplicate-enqueue guard trips (invariant S4) */
 #define IT_S2_SCLIVE  2u   /* live KSchedContext objects (invariants S8/S9) */
 #define IT_S2_YIELD   3u   /* task_yield() entries (monotonic progress) */
 
-/* Fase 18 ext3 authority words (offsets 112..128, 5 uint32 live per-type
- * counts).  A pre-Fase-18 kernel clamps SYS_SCHED_INFO to 112 bytes and leaves
+/* Phase 18 ext3 authority words (offsets 112..128, 5 uint32 live per-type
+ * counts).  A pre-Phase-18 kernel clamps SYS_SCHED_INFO to 112 bytes and leaves
  * these zero — additive, never required by a legacy assert. */
 #define IT_S3_UNTYPED 0u   /* KUntyped objects live */
 #define IT_S3_FRAME   1u   /* KFrame objects live   */
@@ -4467,7 +4467,7 @@ static int it_sched_ext3(uint32_t w3[5]) {
 #define IT_KOBJ_FRAME         15u
 #define IT_KOBJ_VSPACE        14u
 
-/* Fase 19 ext4 VM/VSpace words (offsets 136..152, 5 uint32). */
+/* Phase 19 ext4 VM/VSpace words (offsets 136..152, 5 uint32). */
 #define IT_S4_VSLIVE  0u   /* KVSpace objects live */
 #define IT_S4_MAPLIVE 1u   /* KFrameMapping nodes live */
 #define IT_S4_MAPOK   2u   /* successful maps (cumulative) */
@@ -4486,7 +4486,7 @@ static int it_sched_ext4(uint32_t w4[5]) {
     return 1;
 }
 
-/* Fase 20 ext5 fault-model words (offsets 160..176, 5 uint32).  A pre-Fase-20
+/* Phase 20 ext5 fault-model words (offsets 160..176, 5 uint32).  A pre-Phase-20
  * kernel clamps SYS_SCHED_INFO to 160 bytes and leaves these zero — additive,
  * never required by a legacy assert. */
 #define IT_S5_DELIVER 0u   /* faults handed to a registered handler (cumulative) */
@@ -4507,7 +4507,7 @@ static int it_sched_ext5(uint32_t w5[5]) {
     return 1;
 }
 
-/* Fase 19: lazily mint a cap to iris_test's OWN VSpace into IRIS_CPTR_TEST_VSPACE
+/* Phase 19: lazily mint a cap to iris_test's OWN VSpace into IRIS_CPTR_TEST_VSPACE
  * (via SYS_VSPACE_SELF + a self-mint through the self-proc cap, slot 25) so the
  * VM tests can pass it as the VSpace CPtr to SYS_FRAME_MAP/UNMAP.  Returns 1 on
  * success. */
@@ -4539,7 +4539,7 @@ static long it_map_fixup(long nr, long a0, long a1, long a2, long a3) {
                              (long)IT_PT_VS_SCRATCH);
 }
 
-/* ── Stage 5 Etapa 4: a thread born from an Untyped ────────────────────────
+/* ── Stage 5 Step 4: a thread born from an Untyped ────────────────────────
  *
  * it_thread_create replaces SYS_THREAD_CREATE, which carved a thread out of
  * the kernel's static task pool: no capability was involved, no Untyped paid
@@ -4669,11 +4669,11 @@ static void test_t093(void) {
     if (ok) it_pass("T093"); else it_fail("T093", "recv-slot pool stress");
 }
 
-/* ── T094: receive-slot TOCTOU degradation is RETIRED (Fase S4, Etapa 2) ────
+/* ── T094: receive-slot TOCTOU degradation is RETIRED (Phase S4, Step 2) ────
  * A receiver declares slot 51 and blocks; before the sender delivers, the
  * process fills slot 51 itself (self-mint via the own-process cap).
  *
- * Until Etapa 2 this took a DOCUMENTED fallback: the cap was materialized as
+ * Until Step 2 this took a DOCUMENTED fallback: the cap was materialized as
  * a handle >= 1024.  That was the last CPtr→handle degradation in the kernel
  * (charter §3.7, the single tolerated exception) and it is now GONE: the
  * delivery FAILS CLOSED.  The message still arrives, carrying NO capability;
@@ -4747,7 +4747,7 @@ static void test_t094(void) {
     for (int i = 0; i < 200 && !g_t094_done; i++) it_sys0(SYS_YIELD);
     if (ok && !g_t094_done) { ok = 0; why = "recv incomplete"; }
 
-    /* Etapa 2: FAIL CLOSED — no cap delivered, and above all NO handle. */
+    /* Step 2: FAIL CLOSED — no cap delivered, and above all NO handle. */
     if (ok && g_t094_got != (uint32_t)IRIS_MSG_NO_CAP) {
         ok = 0; why = "toctou degradation still alive";
     }
@@ -4829,7 +4829,7 @@ static void test_t095(void) {
      * value means a capability entered a process through the handle namespace
      * again (charter I1). */
     if (w[IT_SI_HANDDEL] != 0u) ok = 0;
-    /* Fase S4 (Etapa 2): the CPtr→handle TOCTOU degradation is RETIRED.  T094
+    /* Phase S4 (Step 2): the CPtr→handle TOCTOU degradation is RETIRED.  T094
      * still forces the race; the counter must now stay at a STRUCTURAL zero.
      * This is the roadmap's retirement criterion for the last permitted
      * degradation (charter §3.7) — if it ever moves, the fallback is back. */
@@ -5070,7 +5070,7 @@ static long it_lp_send_cap(handle_id_t cmd_ep_h, long notif) {
     return it_sys2(SYS_EP_SEND, (long)cmd_ep_h, (long)&m);
 }
 
-/* Fase 16: send a bare command label to a child (no payload). */
+/* Phase 16: send a bare command label to a child (no payload). */
 #define LP_CMD_SEND_BLOCK  0x109Au   /* must match lifecycle_probe */
 #define LP_CMD_CALL_BLOCK  0x109Bu   /* must match lifecycle_probe */
 static long it_lp_cmd(handle_id_t cmd_ep_h, uint32_t label) {
@@ -5433,7 +5433,7 @@ static void test_t103(void) {
     handle_id_t n_h = (handle_id_t)n;
     if (ep < 0 || n < 0) { it_fail("T103", "create"); return; }
 
-    /* Fase S4 (Etapa 2): the staged SOURCE is a CSpace slot. */
+    /* Phase S4 (Step 2): the staged SOURCE is a CSpace slot. */
     g_t103_dup = it_xfer_dup(n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (g_t103_dup < 0) { ok = 0; why = "xfer slot"; }
 
@@ -5473,7 +5473,7 @@ static void test_t103(void) {
 
     if (ok && !it_sched_ext(after)) { ok = 0; why = "sched ext 2"; }
     /* Exact balance: +1 = the exited thread's KTcb handle, which stays with
-     * Etapa 4: thread creation no longer publishes a KTcb handle into the
+     * Step 4: thread creation no longer publishes a KTcb handle into the
      * process by construction, so the expected delta is ZERO rather than one.
      * The property is unchanged — anything above the baseline is a staged
      * leak; only the baseline moved, because the producer it accounted for is
@@ -5520,7 +5520,7 @@ static void test_t104(void) {
     handle_id_t n_h = (handle_id_t)n;
     if (ep < 0 || n < 0) { it_fail("T104", "create"); return; }
 
-    /* Fase S4 (Etapa 2): the staged EP_CALL source is a CSpace slot. */
+    /* Phase S4 (Step 2): the staged EP_CALL source is a CSpace slot. */
     g_t104_dup = it_xfer_dup(n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
     if (g_t104_dup < 0) { ok = 0; why = "xfer slot"; }
 
@@ -5579,7 +5579,7 @@ static void t105_caller(void) {
 }
 
 /* ── T105: reply cap transfer failure is atomic ─────────────────────────────
- * EP_REPLY supports one attached cap (Fase 7.1).  The deterministic failed
+ * EP_REPLY supports one attached cap (Phase 7.1).  The deterministic failed
  * delivery is the lost one-shot race: reply once without a cap (consumes
  * the KReply), then reply AGAIN with an attached cap.  The second reply
  * must fail NOT_FOUND, the server must KEEP its source cap (A1.10 — before,
@@ -5609,7 +5609,7 @@ static void test_t105(void) {
     }
 
     /* Serve the call: the explicit reply object (slot 95) is staged via
-     * recv arg2 and echoed back in attached_handle (Fase S1). */
+     * recv arg2 and echoed back in attached_handle (Phase S1). */
     if (ok && it_reply_create_at(95) < 0) { ok = 0; why = "reply create"; }
     if (ok) {
         struct IrisMsg m;
@@ -5708,7 +5708,7 @@ static void test_t106(void) {
     if (ep < 0 || n < 0) { it_fail("T106", "create"); return; }
 
     for (int i = 0; ok && i < 2; i++) {
-        /* Fase S4 (Etapa 2): each staged source is its own CSpace slot. */
+        /* Phase S4 (Step 2): each staged source is its own CSpace slot. */
         g_t106_dup[i] = it_xfer_dup(n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
         if (g_t106_dup[i] < 0) { ok = 0; why = "xfer slot"; }
     }
@@ -5927,7 +5927,7 @@ static void fz_workers_stop(int n) {
 }
 
 /* Dup a WRITE|TRANSFER cap of `src` for staging (returns handle or -err). */
-/* Fase S4 (Etapa 2): a transfer source is a CSpace slot, not a handle. */
+/* Phase S4 (Step 2): a transfer source is a CSpace slot, not a handle. */
 static long fz_dup_xfer(long src) {
     return it_xfer_dup(src, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
 }
@@ -6124,7 +6124,7 @@ static void test_t107(void) {
             /* pick 6: staging without RIGHT_TRANSFER → ACCESS_DENIED; the
              * blocked receiver gains NOTHING and then gets a clean plain
              * message (I1, I2, I6); the degraded dup survives. */
-            /* Fase S4 (Etapa 2): a SOURCE SLOT without RIGHT_TRANSFER. */
+            /* Phase S4 (Step 2): a SOURCE SLOT without RIGHT_TRANSFER. */
             long bad = it_xfer_slot_norights(n, IT_XFER_SLOT_D,
                                              (uint32_t)RIGHT_WRITE);
             if (bad < 0) { ok = 0; why = "bad slot"; break; }
@@ -6373,7 +6373,7 @@ static void test_t109(void) {
         it_fail("T109", "occ fixture"); return;
     }
     if (!fz_workers_start(1)) { it_fail("T109", "worker"); return; }
-    /* Fase S1: ONE reusable explicit reply object serves every rendezvous
+    /* Phase S1: ONE reusable explicit reply object serves every rendezvous
      * round — free→staged→bound→free per call (S18 under stress). */
     if (it_reply_create_at(96) < 0) { it_fail("T109", "reply create"); return; }
 
@@ -6415,7 +6415,7 @@ static void test_t109(void) {
         it_iris_msg_zero(&m);
         if (it_sys3(SYS_EP_RECV, (long)g_fz_data_ep, (long)&m, 96) != 0 ||
             m.label != 0xF2ULL ||
-            m.attached_handle != 96u) {   /* Fase S1: our reply CPtr echoed */
+            m.attached_handle != 96u) {   /* Phase S1: our reply CPtr echoed */
             ok = 0; why = "recv call"; break;
         }
         handle_id_t reply_h = (handle_id_t)m.attached_handle;
@@ -6507,7 +6507,7 @@ static void test_t109(void) {
     /* I16: exact balance; +1 = the worker's KTcb handle (Ph96). */
     if (ok && after[IT_SI_LIVE] != before[IT_SI_LIVE]) { ok = 0; why = "leak"; }
     /* Reply BINDINGS balance EXACTLY: one per rendezvous, zero per fail-fast
-     * (Fase S1: the counter tracks bindings of the reusable reply object). */
+     * (Phase S1: the counter tracks bindings of the reusable reply object). */
     if (ok && after[IT_SI_REPLY] != before[IT_SI_REPLY] + exp_reply) {
         ok = 0; why = "reply count";
     }
@@ -6982,10 +6982,10 @@ static void it_quiesce_reaper(void) {
     for (int i = 0; i < 200; i++) it_sys0(SYS_YIELD);
 }
 
-/* ── Fase 16: lifecycle/process hardening (T113–T118) ───────────────────────
+/* ── Phase 16: lifecycle/process hardening (T113–T118) ───────────────────────
  * The A1.11 deferred-reap fix (task.awaiting_reap) closed the one real bug in
  * this area; T113–T118 LOCK the surviving lifecycle contracts so a future
- * regression fails loudly.  Instrumentation: the Fase 16 SCHED_INFO words —
+ * regression fails loudly.  Instrumentation: the Phase 16 SCHED_INFO words —
  * live TASK count (it_task_live), live PROCESS count (IT_SI_PROCLIVE) and the
  * deferred-reap queue high-water (IT_SI_REAPHWM).  Because a killed/exited
  * child's KProcess stays live until the PARENT closes its proc handle, every
@@ -7530,11 +7530,11 @@ static void test_t118(void) {
     }
 }
 
-/* ── Fase 17: scheduler / Scheduling-Context hardening (T119–T124) ──────────
+/* ── Phase 17: scheduler / Scheduling-Context hardening (T119–T124) ──────────
  *
  * These tests harden the scheduler as the microkernel's source of truth about
  * which task is alive, runnable, blocked, dead or pending-reap.  They lean on
- * the Fase 17 additive instrumentation exposed by SYS_SCHED_INFO's ext2 tier
+ * the Phase 17 additive instrumentation exposed by SYS_SCHED_INFO's ext2 tier
  * (it_sched_ext2): run-queue high-water, the duplicate-enqueue guard counter
  * (invariant S4), the live KSchedContext count (S8/S9) and the monotonic
  * task_yield() counter (progress / no-lost-task).  Combined with the existing
@@ -7542,7 +7542,7 @@ static void test_t118(void) {
  * (IT_SI_REAPHWM) words, they lock the scheduler invariants S1–S16 documented
  * in docs/architecture/scheduler-hardening.md.
  *
- * In-process worker threads are retyped TCBs (Stage 5 Etapa 4), created with
+ * In-process worker threads are retyped TCBs (Stage 5 Step 4), created with
  * task id (not a handle) and leaves one KTcb HANDLE in this process's table by
  * design (Ph96, exactly as T118 notes).  So these tests assert TASK-live and
  * PROCESS-live return to baseline, never handle-live — the KTcb handle id is
@@ -7977,7 +7977,7 @@ static void test_t123(void) {
     int ok = 1;
     const char *why = "sc lifetime";
 
-    /* Fase S2: SYS_SC_CREATE retired; SCs come from Untyped RETYPE2. */
+    /* Phase S2: SYS_SC_CREATE retired; SCs come from Untyped RETYPE2. */
     long a = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
     long b = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_SCHED_CONTEXT, 0);
     handle_id_t sc  = (a >= 0) ? (handle_id_t)a : HANDLE_INVALID;
@@ -7992,7 +7992,7 @@ static void test_t123(void) {
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 100) != 0)   { ok = 0; why = "configure valid"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 0, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 0)  != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "period 0"; }
-    /* Fase S2 (fix I1): budget == period is a full CPU reservation, VALID
+    /* Phase S2 (fix I1): budget == period is a full CPU reservation, VALID
      * (MCS style).  Only budget > period is rejected. */
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 100, 100) != 0) { ok = 0; why = "budget==period rejected"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 100) != 0) { ok = 0; why = "reconfigure back"; }
@@ -8103,12 +8103,12 @@ static void test_t124(void) {
     if (ok) it_pass("T124"); else it_fail("T124", why);
 }
 
-/* ── Fase 18: untyped / retype / revoke authority hardening (T125–T131) ──────
+/* ── Phase 18: untyped / retype / revoke authority hardening (T125–T131) ──────
  *
  * These tests exercise the memory-authority surface — SYS_UNTYPED_RETYPE2,
  * SYS_UNTYPED_RESET, SYS_CAP_DERIVE, SYS_CAP_REVOKE — end to end from ring 3.
  * They lean on one boot KUntyped forwarded down the boot chain (userboot → init
- * → iris_test) into IRIS_CPTR_TEST_UNTYPED, plus the Fase 18 additive
+ * → iris_test) into IRIS_CPTR_TEST_UNTYPED, plus the Phase 18 additive
  * instrumentation (it_sched_ext3: live per-type object counts) and the existing
  * handle-live word.
  *
@@ -8126,7 +8126,7 @@ static void test_t124(void) {
  *     children), NOT CSpace CNode slots and NOT untyped child_count — its scope
  *     is documented and asserted here.
  */
-/* Fase S1: the authority tests need a region whose child_count they fully
+/* Phase S1: the authority tests need a region whose child_count they fully
  * control (RESET is gated on child_count == 0).  The suite-wide creation
  * helpers (it_ep_create & friends) now also carve from the delegated untyped
  * at slot 55 and some fixtures live for the whole run, so these tests operate
@@ -8240,7 +8240,7 @@ static void test_t125(void) {
         /* non-power-of-two CNode slot count (RETYPE2 — the canonical path). */
         if (ok && it_retype2_at(IT_UT, IT_KOBJ_CNODE, 240u, 1u, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad cnode slots"; }
         /* Stage 4: the LEGACY handle-publishing retype (87) is retired for
-         * EVERY type, not just the migrated family it refused since Fase S1.
+         * EVERY type, not just the migrated family it refused since Phase S1.
          * There is one way to create an object from an Untyped, and it puts
          * the result in a CSpace slot. */
         if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_ENDPOINT, 0)     != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy ep not retired"; }
@@ -8249,7 +8249,7 @@ static void test_t125(void) {
         if (ok && it_sys3(SYS_UNTYPED_RETYPE, IT_UT, IT_KOBJ_SCHED_CONTEXT, 0)!= (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy sc not retired"; }
         /* missing RIGHT_WRITE: retype through a read-only derived cap. */
         if (ok) {
-            /* Fase S4 (Etapa 3): the read-only copy is a native-CDT child. */
+            /* Phase S4 (Step 3): the read-only copy is a native-CDT child. */
             long ut_root = it_cdt_root((handle_id_t)IT_UT, IT_SCRATCH_0);
             long ro = (ut_root >= 0)
                     ? it_cdt_derive(ut_root, IT_SCRATCH_1, RIGHT_READ) : -1;
@@ -8355,7 +8355,7 @@ static void test_t127(void) {
     handle_id_t outsider = (orr >= 0) ? (handle_id_t)orr : HANDLE_INVALID;
     if (orr < 0) { ok = 0; why = "retype outsider"; }
 
-    /* Fase S4 (Etapa 3): the derivation tree is the NATIVE CDT over slots.
+    /* Phase S4 (Step 3): the derivation tree is the NATIVE CDT over slots.
      * root → c1 → gc1 ; root → c2. */
     long rootc = ok ? it_cdt_root(root, IT_SCRATCH_0) : -1;
     if (ok && rootc < 0) { ok = 0; why = "root slot"; }
@@ -8441,7 +8441,7 @@ static void test_t128(void) {
     if (!it_sched_ext3(mid)) { ok = 0; why = "ext3 mid"; }
     if (ok && mid[IT_S3_FRAME] != s3b[IT_S3_FRAME] + 1u) { ok = 0; why = "frame not counted"; }
 
-    /* Fase S4 (Etapa 3): derive a child frame through the native CDT, then
+    /* Phase S4 (Step 3): derive a child frame through the native CDT, then
      * revoke it away from the root slot. */
     long frc   = ok ? it_cdt_root(frame, IT_SCRATCH_0) : -1;
     if (ok && frc < 0) { ok = 0; why = "root slot"; }
@@ -8515,7 +8515,7 @@ static void test_t129(void) {
     if (it_thread_create(entry, rsp, 0) < 0) { ok = 0; why = "thread create"; }
     if (ok) for (int y = 0; y < 60; y++) it_sys0(SYS_YIELD);
 
-    /* Fase S4: derive a child through the native CDT and revoke it — the
+    /* Phase S4: derive a child through the native CDT and revoke it — the
      * OBJECT survives (the root slot still names it) and the blocked waiter
      * is unaffected: revocation removes capabilities, not execution. */
     long epc   = ok ? it_cdt_root(g_sh_ep, IT_SCRATCH_0) : -1;
@@ -8556,7 +8556,7 @@ static void test_t130(void) {
     if (rr < 0) { it_fail("T130", "retype root"); return; }
     handle_id_t root = (handle_id_t)rr;   /* full rights: READ|WRITE|DUP|TRANSFER */
 
-    /* Fase S4 (Etapa 3): derivation is the native CDT.  Derive down to
+    /* Phase S4 (Step 3): derivation is the native CDT.  Derive down to
      * READ-only (drops DUPLICATE). */
     long rootc = it_cdt_root(root, IT_SCRATCH_0);
     if (rootc < 0) { ok = 0; why = "root slot"; }
@@ -8649,7 +8649,7 @@ static void test_t131(void) {
         if (rr < 0) { ok = 0; why = "retype"; break; }
         handle_id_t root = (handle_id_t)rr;
 
-        /* Fase S4 (Etapa 3): derive a small tree through the native CDT,
+        /* Phase S4 (Step 3): derive a small tree through the native CDT,
          * sometimes revoke it, always tear it down. */
         long rootc = it_cdt_root(root, IT_SCRATCH_0);
         if (rootc < 0) { ok = 0; why = "root slot"; it_close(&root); break; }
@@ -8708,13 +8708,13 @@ static void test_t131(void) {
     }
 }
 
-/* ── Fase 19: VM / VSpace / frame mapping hardening (T132–T139) ──────────────
+/* ── Phase 19: VM / VSpace / frame mapping hardening (T132–T139) ──────────────
  *
- * These tests close the gap Fase 18 left open: ring 3 now drives SYS_FRAME_MAP /
+ * These tests close the gap Phase 18 left open: ring 3 now drives SYS_FRAME_MAP /
  * SYS_FRAME_UNMAP directly against its OWN address space, using a self-VSpace
  * cap obtained from SYS_VSPACE_SELF (self-authority only) and minted into
- * IRIS_CPTR_TEST_VSPACE.  Frames come from the Fase 18 boot untyped
- * (IRIS_CPTR_TEST_UNTYPED).  The Fase 19 additive instrumentation
+ * IRIS_CPTR_TEST_VSPACE.  Frames come from the Phase 18 boot untyped
+ * (IRIS_CPTR_TEST_UNTYPED).  The Phase 19 additive instrumentation
  * (it_sched_ext4) exposes live KVSpace count, live KFrameMapping count, and the
  * cumulative map/unmap/TLB-invalidate counters — the observables behind V10–V18.
  *
@@ -8864,7 +8864,7 @@ static void test_t134(void) {
     long er = it_retype_slot_alloc(IT_UT, IT_KOBJ_ENDPOINT, 0);
     handle_id_t ep = (er >= 0) ? (handle_id_t)er : HANDLE_INVALID;
     /* Read-only frame fixture (drops WRITE): cannot back a writable map.
-     * Fase S4 (Etapa 3): a native-CDT child, addressed by CPtr. */
+     * Phase S4 (Step 3): a native-CDT child, addressed by CPtr. */
     long rr = it_cdt_reduced(fr, IT_SCRATCH_0, IT_SCRATCH_1, RIGHT_READ);
     handle_id_t fr_ro = (rr >= 0) ? (handle_id_t)rr : HANDLE_INVALID;
     if (ep == HANDLE_INVALID || rr < 0) { ok = 0; why = "fixtures"; }
@@ -8877,7 +8877,7 @@ static void test_t134(void) {
         { (long)ep,    IT_VS, T134_VA, IT_MAP_W, (long)IRIS_ERR_WRONG_TYPE,    "wrong frame type" },
         { (long)fr_ro, IT_VS, T134_VA, IT_MAP_W, (long)IRIS_ERR_ACCESS_DENIED, "insufficient rights" },
         { (long)fr,    IT_UT, T134_VA, IT_MAP_W, (long)IRIS_ERR_WRONG_TYPE,    "wrong vspace type" },
-        /* Stage 5 Etapa 2: the empty-slot probe used to name slot 99, kept
+        /* Stage 5 Step 2: the empty-slot probe used to name slot 99, kept
          * permanently empty for it.  Slot 99 holds the framebuffer control
          * capability now, so the probe names a SCRATCH slot deleted on the
          * line above — guaranteed empty by construction rather than by a
@@ -8969,7 +8969,7 @@ static void test_t135(void) {
  * cleanup exactly once: the child's KVSpace is destroyed and every one of its
  * mappings is swept, so live-VSpace and live-mapping counts return to baseline
  * — with no interaction bug against the deferred reaper, and process/task
- * counters back to baseline.  Connects Fase 16 (death) + Fase 19 (VSpace).
+ * counters back to baseline.  Connects Phase 16 (death) + Phase 19 (VSpace).
  * Invariants: V15, V16, V17, V18. */
 #define T136_ROUNDS 4u
 static void test_t136(void) {
@@ -9025,7 +9025,7 @@ static void test_t136(void) {
     }
 }
 
-/* ── T137: mapped frame revoke interaction (closes the Fase 18 T128 gap) ─────
+/* ── T137: mapped frame revoke interaction (closes the Phase 18 T128 gap) ─────
  * A retyped frame is MAPPED, then a derived handle is revoked while the frame
  * is live in the address space.  This demonstrates the real contract:
  *   - SYS_CAP_REVOKE is cap-scoped: it kills the derived handle but does NOT
@@ -9034,7 +9034,7 @@ static void test_t136(void) {
  *   - frame destroy is impossible while mapped — only after unmap does closing
  *     the last cap destroy it (a clean close proves mapped_count == 0);
  *   - no stale PTE and no stale cap remain.
- * Invariants: V17, V18 (+ U10/U13 from Fase 18). */
+ * Invariants: V17, V18 (+ U10/U13 from Phase 18). */
 static void test_t137(void) {
     uint32_t s3b[5];
     uint32_t v0[5], v1[5];
@@ -9049,7 +9049,7 @@ static void test_t137(void) {
 
     if (it_sys4(SYS_FRAME_MAP, (long)fr, IT_VS, (long)T137_VA, (long)IT_MAP_W) != 0) { ok = 0; why = "map"; }
 
-    /* Fase S4 (Etapa 3): derived cap, revoked while the frame is mapped. */
+    /* Phase S4 (Step 3): derived cap, revoked while the frame is mapped. */
     long frc   = ok ? it_cdt_root(fr, IT_SCRATCH_0) : -1;
     if (ok && frc < 0) { ok = 0; why = "root slot"; }
     long child = (frc >= 0) ? it_cdt_derive(frc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
@@ -9091,7 +9091,7 @@ static void test_t137(void) {
  *   - a W^X request (writable+exec) is INVALID_ARG;
  *   - a kernel-range VA is INVALID_ARG (isolation).
  * Documented gap: ring 3 has no safe way to observe raw PTE flags or to trigger
- * a write-protection #PF without a fault-handling endpoint (Fase-future), so
+ * a write-protection #PF without a fault-handling endpoint (Phase-future), so
  * NX/write-enforcement at the hardware level is asserted at the authority layer
  * (rights checks), not by faulting.
  * Invariants: V4, V6, V19, V20. */
@@ -9168,7 +9168,7 @@ static void test_t139(void) {
         }
 
         /* Sometimes derive + revoke while mapped (revoke must not unmap).
-         * Fase S4 (Etapa 3): native CDT over scratch slots. */
+         * Phase S4 (Step 3): native CDT over scratch slots. */
         if (fz_rand() & 1u) {
             long frc = it_cdt_root(fr, IT_SCRATCH_0);
             long c   = (frc >= 0) ? it_cdt_derive(frc, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
@@ -9202,7 +9202,7 @@ static void test_t139(void) {
     }
 }
 
-/* ── Fase 20: fault endpoint / exception delivery model (T140–T147) ──────────
+/* ── Phase 20: fault endpoint / exception delivery model (T140–T147) ──────────
  *
  * User faults are authority events: registering a fault endpoint requires
  * RIGHT_MANAGE on the target process; delivery records the fault in the
@@ -9232,7 +9232,7 @@ static void test_t139(void) {
 
 struct it_fault {
     uint32_t vector, task_id, error;
-    uint32_t seq;              /* Fase 25: fault generation (FAULT_OFF_SEQ) */
+    uint32_t seq;              /* Phase 25: fault generation (FAULT_OFF_SEQ) */
     uint64_t rip, cr2;
 };
 
@@ -9502,7 +9502,7 @@ static void test_t141(void) {
 }
 
 /* ── T142: write-protection fault on a read-only mapping ────────────────────
- * Closes the Fase 19 T138 gap: write-enforcement is now asserted at the
+ * Closes the Phase 19 T138 gap: write-enforcement is now asserted at the
  * HARDWARE level, not only at the rights layer.  The child's own code pages
  * are mapped r-x by the loader (PF flags → map flags → PTE), so:
  *   - a READ of its own text completes (child exits normally, no fault);
@@ -9511,7 +9511,7 @@ static void test_t141(void) {
  *     the condition re-faults at the same rip/cr2 (no silent write, no
  *     corruption), after which the supervisor kills the child.
  * VSpace books return to baseline after reap.  Invariants: F6, F7, F16, F20,
- * F21 (write bit distinguishable).  Fase 19 V6 gap closed. */
+ * F21 (write bit distinguishable).  Phase 19 V6 gap closed. */
 static void test_t142(void) {
     uint32_t v0[5], v1[5], f0[5], f1[5];
     uint32_t t0 = 0, t1 = 0;
@@ -9932,7 +9932,7 @@ static void test_t147(void) {
     }
 }
 
-/* ── Fase 21: cross-syscall fuzzing / hostile argument surface (T148–T155) ───
+/* ── Phase 21: cross-syscall fuzzing / hostile argument surface (T148–T155) ───
  *
  * These tests do not exercise a feature — they subject the WHOLE syscall
  * surface to deterministic adversarial pressure and prove it fails clean:
@@ -10074,15 +10074,15 @@ static void test_t148(void) {
         37, 38, 41, 42, 43, 44, 46, 59, 63, 72, 78, 79, 80, 90,
         /* Stage 4 closeout: the handle namespace's own surface. */
         15, 22, 52, 53, 81, 87, 89, 95,
-        /* Stage 5 Etapa 2: 45 = SYS_BOOTCAP_RESTRICT.  Narrowing a boot
+        /* Stage 5 Step 2: 45 = SYS_BOOTCAP_RESTRICT.  Narrowing a boot
          * capability by cloning a weaker copy of it has no meaning once each
          * capability carries exactly one authority.
-         * Stage 5 Etapa 4: 48 = SYS_THREAD_CREATE.  A thread carved from the
+         * Stage 5 Step 4: 48 = SYS_THREAD_CREATE.  A thread carved from the
          * kernel's static pool, authorised by nothing and identified by a
          * global id, is replaced by a TCB retyped from an Untyped and
          * configured with CSpace/VSpace capabilities.
          * Stage 7: 58 = SYS_THREAD_START, the LAST pool-born execution path —
-         * a spawned process's first thread.  It survived Etapa 4 only because
+         * a spawned process's first thread.  It survived Step 4 only because
          * a spawner could not name its child's CSpace and VSpace; Stage 6-pure
          * made it retype both, so the child's first thread is composed the
          * same way any other is. */
@@ -10103,14 +10103,14 @@ static void test_t148(void) {
         }
     }
     /* High/unassigned range 114..400 (111 = SYS_UNTYPED_RETYPE2, 112 =
-     * SYS_UNTYPED_QUERY, Fase S2's 113 = SYS_SC_BIND are live; 107..110 remain
+     * SYS_UNTYPED_QUERY, Phase S2's 113 = SYS_SC_BIND are live; 107..110 remain
      * live from Fases 25/26/29). */
-    /* Fase S3: 114-116 are SYS_CSPACE_MINT/REVOKE/MINT_INTO.  Fase S4/Stage 4:
+    /* Phase S3: 114-116 are SYS_CSPACE_MINT/REVOKE/MINT_INTO.  Phase S4/Stage 4:
      * 117-118 are SYS_CAP_IDENTIFY/SYS_CAP_SAME_OBJECT — the CSpace-native
      * introspection that replaces SYS_HANDLE_TYPE/SAME_OBJECT.  Stage 5
-     * Etapa 4: 119-121 are SYS_CSPACE_SELF / SYS_TCB_CONFIGURE /
+     * Step 4: 119-121 are SYS_CSPACE_SELF / SYS_TCB_CONFIGURE /
      * SYS_TCB_WRITE_REGS — execution for a TCB retyped from an Untyped.
-     * Stage 6-pure Etapa 1: 122 is SYS_VSPACE_MAP_TABLE, which installs a page
+     * Stage 6-pure Step 1: 122 is SYS_VSPACE_MAP_TABLE, which installs a page
      * table the holder retyped.  The first UNASSIGNED number moves up to 123. */
     for (long n = 123; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
@@ -10328,7 +10328,7 @@ static void test_t151(void) {
         op = 2;
         if (it_sys4(SYS_FRAME_MAP, IT_UT, IT_VS, (long)va, (long)IT_MAP_W) >= 0) { ok = 0; why = "map wrong-type ok"; break; }
         op = 3;
-        /* Fase S4 (Etapa 3): the CSpace forms must reject a stale/empty slot
+        /* Phase S4 (Step 3): the CSpace forms must reject a stale/empty slot
          * just as cleanly, and a HANDLE value outright (namespace split). */
         it_slot_delete(IT_SCRATCH_3);
         if (it_sys3(SYS_CSPACE_MINT, (long)IT_SCRATCH_3,
@@ -10450,7 +10450,7 @@ static void test_t152(void) {
  * A lifecycle_probe child is parked in each blocking primitive, then torn down
  * by every cancellation route, and the books must balance every time.  This
  * re-proves, under one roof and a seeded resolution mix, the cancellation
- * contracts that Fase 16/20 established: EP_RECV / EP_SEND / EP_CALL and the
+ * contracts that Phase 16/20 established: EP_RECV / EP_SEND / EP_CALL and the
  * fault-pending state all wake-or-die on process kill / endpoint close /
  * handler drop, leaving no dead waiter, no KReply, no live-count drift.
  * Invariants: X11, X14, X15, X16, X20, X21. */
@@ -10682,9 +10682,9 @@ static void test_t155(void) {
     else { it_fz_note("T155", T155_SEED, i, op); it_fail("T155", why); }
 }
 
-/* ── Fase 22: service authority minimization (T156–T163) ────────────────────
+/* ── Phase 22: service authority minimization (T156–T163) ────────────────────
  *
- * The kernel mechanism fails clean under hostility (Fase 21); the next risk is
+ * The kernel mechanism fails clean under hostility (Phase 21); the next risk is
  * a service holding authority it does not need.  These tests lock the
  * least-authority contract: delivery carries exactly the declared caps and no
  * more (T156/T162), svcmgr is a registry that never amplifies rights for
@@ -11121,9 +11121,9 @@ static void test_t163(void) {
     else { it_fz_note("T163", T163_SEED, i, op); it_fail("T163", why); }
 }
 
-/* ── Fase 23: device / driver isolation hardening (T164–T171) ───────────────
+/* ── Phase 23: device / driver isolation hardening (T164–T171) ───────────────
  *
- * The service authority is minimized (Fase 22); the next risk is a driver
+ * The service authority is minimized (Phase 22); the next risk is a driver
  * reaching hardware it was never granted.  These tests prove containment: an
  * I/O-port cap bounds access to exactly its range (T164), a compromised
  * driver stand-in cannot escalate past its device caps (T165/T166), IRQ
@@ -11146,12 +11146,12 @@ static void test_t163(void) {
 
 /* Create an ioport cap over [base, base+count) via the HW_ACCESS spawn cap;
  * returns the handle or HANDLE_INVALID. */
-/* Fase S4: the cap is published into a CSpace slot (MDB child of the spawn-cap
+/* Phase S4: the cap is published into a CSpace slot (MDB child of the spawn-cap
  * slot) and the CPtr is what callers hold.  Slots rotate over the device block
  * so nested creations (e.g. two live ioport caps in T171) do not collide; the
  * slot is deleted first so re-entry is clean. */
 static uint32_t g_it_dev_next;
-/* Fase S4 (Etapa 3): device caps now live in CSpace, so their derivation is
+/* Phase S4 (Step 3): device caps now live in CSpace, so their derivation is
  * the NATIVE CDT operation — SYS_CSPACE_MINT into a slot, producing a real
  * MDB child of the source — not the legacy handle tree.  Returns the
  * destination CPtr, or the negative error. */
@@ -11200,7 +11200,7 @@ static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t de
     struct svc_mint mints[2] = { 0 };
     mints[0].slot = LP_CPTR_CMD_EP; IT_MINT_SRC(mints[0], cmd);
     mints[0].rights = RIGHT_READ | RIGHT_WRITE; mints[0].badge = 0;
-    /* Fase S4: the ioport cap lives in OUR CSpace now, so the child's copy is
+    /* Phase S4: the ioport cap lives in OUR CSpace now, so the child's copy is
      * minted from the slot — an MDB child of ours, hence revocable. */
     mints[1].slot = 10; mints[1].src_cptr = (uint64_t)ioport_h;
     mints[1].rights = dev_rights; mints[1].badge = 0;
@@ -11266,7 +11266,7 @@ static void test_t164(void) {
         it_close(&wo);
     }
 
-    /* Stale cap (Fase S4 shape): mint into a slot, DELETE the slot, use → fails.
+    /* Stale cap (Phase S4 shape): mint into a slot, DELETE the slot, use → fails.
      * The pre-S4 form dup'd a handle; device caps no longer have one. */
     if (ok) {
         long d = it_dev_mint((long)io, IT_DEV_MINT_A, RIGHT_SAME_RIGHTS);
@@ -11295,7 +11295,7 @@ static void test_t164(void) {
  * cannot forge a port or IRQ cap (no HW_ACCESS), cannot cross its port range,
  * and cannot ack an IRQ it holds no cap for.  The probe exits 0 (contained).
  * A control run WITH the spawn cap proves the probe genuinely attempts each
- * escalation (teeth).  This closes the loop with Fase 22: kbd already has no
+ * escalation (teeth).  This closes the loop with Phase 22: kbd already has no
  * peer client caps; now its hardware authority is shown bounded too.
  * Invariants: D7, D15, D17, D18. */
 static void test_t165(void) {
@@ -11642,9 +11642,9 @@ static void test_t171(void) {
     else { it_fz_note("T171", T171_SEED, i, op); it_fail("T171", why); }
 }
 
-/* ── Fase 24: service restart / supervision model (T172–T180) ───────────────
+/* ── Phase 24: service restart / supervision model (T172–T180) ───────────────
  *
- * Drivers are contained (Fase 23); the next structural risk is what happens
+ * Drivers are contained (Phase 23); the next structural risk is what happens
  * when a service or driver DIES.  These tests lock the supervision contract:
  * every service has an explicit policy (T172), a restarted service comes back
  * with a new generation and only its declared authority (T173/T177), a stale
@@ -11712,7 +11712,7 @@ static long it_unregister(uint32_t dyn_id) {
  * Every catalog service declares an explicit supervision policy, and the policy
  * is consistent with its restart flags: a RESTART class carries a non-zero
  * limit, a NO_RESTART class carries a zero limit.  The policy does not
- * contradict the Fase 22 authority manifest (a driver stays a driver).
+ * contradict the Phase 22 authority manifest (a driver stays a driver).
  * Invariants: R14, R15, R16, R20, R21. */
 static void test_t172(void) {
     it_quiesce_reaper();
@@ -11963,7 +11963,7 @@ static void test_t177(void) {
         if (io_h == HANDLE_INVALID) { ok = 0; why = "io cap 2"; }
         else {
             struct svc_mint extra[1] = { 0 };
-            /* Fase S4: CSpace-sourced device delegation. */
+            /* Phase S4: CSpace-sourced device delegation. */
             extra[0].slot = 10; extra[0].src_cptr = (uint64_t)io_h;
             extra[0].rights = RIGHT_READ; extra[0].badge = 0;
             long rep = it_lp_report_slots(extra, 1u);
@@ -12137,9 +12137,9 @@ static void test_t180(void) {
     else { it_fz_note("T180", T180_SEED, i, op); it_fail("T180", why); }
 }
 
-/* ── Fase 25: VM policy / user pager groundwork (T181–T190) ─────────────────
+/* ── Phase 25: VM policy / user pager groundwork (T181–T190) ─────────────────
  *
- * Services are supervised (Fase 24); the next structural boundary is MEMORY
+ * Services are supervised (Phase 24); the next structural boundary is MEMORY
  * POLICY.  These tests lock the first capability-mediated user-pager model:
  * an authorized ring-3 component resolves page faults of a SPECIFIC process
  * with explicit, attenuable authority — and nothing more.
@@ -12150,7 +12150,7 @@ static void test_t180(void) {
  *   frame cap           READ[/WRITE] — the one page it may install
  *   fault notification  WAIT         — the delivery wake-up
  *
- * Four Fase 25 additive kernel extensions are exercised here:
+ * Four Phase 25 additive kernel extensions are exercised here:
  *   SYS_PROCESS_VSPACE(107)  MANAGE holder → target VSpace cap;
  *   FAULT_OFF_SEQ            per-process fault generation in the record;
  *   EXCEPTION_RESUME 2/3     seq-checked resume/kill (stale → NOT_FOUND);
@@ -12182,7 +12182,7 @@ static void test_t180(void) {
 #define T25_PATTERN 0x5AA51234u
 #define T25_WMARK   0xFA017E57u   /* the store LP_CMD_FAULT_WRITE retires */
 
-/* Best-effort reap: kill (no-op if already dead), wait, close.  Every Fase 25
+/* Best-effort reap: kill (no-op if already dead), wait, close.  Every Phase 25
  * exit path — success or failure — must NOT leave a probe blocked in EP_RECV
  * forever: the child holds its own mint of the command endpoint, so closing
  * the parent's handle alone never wakes it, and a leaked live child keeps its
@@ -12719,7 +12719,7 @@ static void test_t185(void) {
 
 /* ── T186: pager death while the target's fault is pending ──────────────────
  * The pager dies holding responsibility (blocked, never resolving).  The
- * contract (same as Fase 20 handler-death, now under supervision): the target
+ * contract (same as Phase 20 handler-death, now under supervision): the target
  * is NOT a zombie — it stays suspended with its record and generation intact,
  * observable by any READ holder, resolvable by any proper authority.  The
  * supervisor restarts the pager with the SAME declared manifest; the new
@@ -12939,7 +12939,7 @@ static void test_t188(void) {
 }
 
 /* ── T189: pager restart preserves least authority ──────────────────────────
- * The Fase 24 ↔ Fase 25 junction.  A crashing pager is supervised under an
+ * The Phase 24 ↔ Phase 25 junction.  A crashing pager is supervised under an
  * explicit restart limit: two generations die before resolving and the
  * budget is spent — the pager service is DEGRADED, the loop STOPS (P17).
  * The fault meanwhile stays pending and resolvable.  A post-crash generation
@@ -13029,7 +13029,7 @@ static void test_t189(void) {
 }
 
 /* ── T190: deterministic user pager stress ──────────────────────────────────
- * Seeded mixed-operation rounds over the whole Fase 25 surface.  Every round
+ * Seeded mixed-operation rounds over the whole Phase 25 surface.  Every round
  * holds TWO concurrent pending faults (the shared-IST regression stays
  * covered under pager traffic) and resolves them through a seed-chosen path:
  * external pager map+resume / kill, pager death + supervisor takeover,
@@ -13212,10 +13212,10 @@ static void test_t190(void) {
     else { it_fz_note("T190", T190_SEED, round, op); it_fail("T190", why); }
 }
 
-/* ── Fase 26: Memory object / VMO policy expansion (T191–T200) ───────────────
+/* ── Phase 26: Memory object / VMO policy expansion (T191–T200) ───────────────
  *
- * Fase 25 fixed the pager AUTHORITY contract; the page source was a raw frame.
- * Fase 26 makes the source a first-class MEMORY OBJECT: a VMO defended by
+ * Phase 25 fixed the pager AUTHORITY contract; the page source was a raw frame.
+ * Phase 26 makes the source a first-class MEMORY OBJECT: a VMO defended by
  * policy — logical range, size, offsets, rights, mappings, cleanup — that a
  * VMO-backed pager uses to resolve faults page by page.
  *
@@ -13224,10 +13224,10 @@ static void test_t190(void) {
  *                          into a VSpace named by capability (VMO READ[/WRITE]
  *                          + VSpace WRITE — no process MANAGE; the VSpace cap
  *                          IS the map-into-target authority, composing with
- *                          SYS_PROCESS_VSPACE from Fase 25).
+ *                          SYS_PROCESS_VSPACE from Phase 25).
  *
  * Invariants M1–M30 live in docs/architecture/memory-object-vmo-policy.md.
- * Reuses the Fase 25 t25_* pager harness verbatim: the pager's slot-14 "page
+ * Reuses the Phase 25 t25_* pager harness verbatim: the pager's slot-14 "page
  * source" cap is a KVmo instead of a KFrame, and PAGER_SERVE subaction 4 maps
  * a VMO page via SYS_VMO_MAP_PAGE. */
 
@@ -13239,7 +13239,7 @@ static void test_t190(void) {
 #define T26_PAT1     0x11223344u
 #define T26_WMARK    0xFA017E57u   /* == the probe's LP_CMD_FAULT_WRITE store */
 
-/* Live memory-object count (SYS_SCHED_INFO ext3, offset 132 — the Fase 26
+/* Live memory-object count (SYS_SCHED_INFO ext3, offset 132 — the Phase 26
  * additive field in the old pad half of buf[16]).  Returns -1 on failure. */
 static long it_vmo_live(void) {
     uint8_t buf[136];
@@ -13391,7 +13391,7 @@ static void test_t192(void) {
 }
 
 /* ── T193: VMO-backed pager resolves a target fault ──────────────────────────
- * The defining Fase 26 path.  The supervisor fills VMO page 2 (offset 0x2000)
+ * The defining Phase 26 path.  The supervisor fills VMO page 2 (offset 0x2000)
  * with a pattern; a VMO-backed pager (slot 14 = the VMO) resolves the target's
  * read fault by mapping THAT page read-only at the fault VA and seq-resuming;
  * the target continues and reads the pattern (its exit code proves the byte
@@ -13776,7 +13776,7 @@ static void test_t198(void) {
  * VMO cap still write-protection-faults the target's store (err P|W|U) — the
  * PTE carries the MAPPING's rights, not the cap's ceiling.  W^X and remap of an
  * occupied VA are rejected.  No silent write, no escalation via remap.
- * Invariants: M9, M10, M8, M21, plus the Fase 20 write-fault observable. */
+ * Invariants: M9, M10, M8, M21, plus the Phase 20 write-fault observable. */
 static void test_t199(void) {
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
@@ -13815,7 +13815,7 @@ static void test_t199(void) {
 }
 
 /* ── T200: deterministic memory-object stress ────────────────────────────────
- * Seeded mixed-operation rounds over the whole Fase 26 surface: create VMOs,
+ * Seeded mixed-operation rounds over the whole Phase 26 surface: create VMOs,
  * derive reduced caps, map at offsets, VMO-back a fault, resolve or refault,
  * kill target, kill/restart pager, revoke (close) with mapping live, unmap,
  * inject failures.  After every round: no pending fault, no zombie, VMO/frame/
@@ -13948,15 +13948,15 @@ static void test_t200(void) {
     else { it_fz_note("T200", T200_SEED, round, op); it_fail("T200", why); }
 }
 
-/* ── Fase 27: Service Pager Integration (T201–T210) ──────────────────────────
+/* ── Phase 27: Service Pager Integration (T201–T210) ──────────────────────────
  *
- * Fase 25/26 made the pager a MODEL and a page SOURCE.  Fase 27 makes it a
+ * Phase 25/26 made the pager a MODEL and a page SOURCE.  Phase 27 makes it a
  * SERVICE: a distinct supervised image ("pager", initrd index 10 — NOT
  * iris_test, NOT lifecycle_probe), registered in svcmgr, driven request/reply
  * over a control endpoint, resolving faults strictly inside a capability
  * manifest of target + VMO grants.
  *
- * iris_test acts as the SUPERVISOR (the Fase 24 probe-supervisor model, now
+ * iris_test acts as the SUPERVISOR (the Phase 24 probe-supervisor model, now
  * over a real named service): it mints the manifest, spawns the service,
  * registers "pager.ep", drives it, watches it, and restarts it under an
  * explicit policy.  Constants below MUST match services/pager/pager_proto.h.
@@ -13964,7 +13964,7 @@ static void test_t200(void) {
  * Invariants G1–G30 live in docs/architecture/service-pager-integration.md. */
 
 #define PGR_SLOT_CTRL_EP    LP_CPTR_CMD_EP   /* slot 3: the pager's control endpoint */
-/* Fase 28.1 manifest layout (must match services/pager/pager_proto.h): ONE
+/* Phase 28.1 manifest layout (must match services/pager/pager_proto.h): ONE
  * shared fault notification at slot 5 for ALL targets (bit i = target i),
  * targets at 20 + i*2 (proc/vs only — the per-target notification column is
  * gone; that is what makes 16 concurrent targets cost ONE notification
@@ -13977,7 +13977,7 @@ static void test_t200(void) {
 #define PGR_VMO_BASE        16u
 #define PGR_VSLOT(j)        (PGR_VMO_BASE + (j))
 /* The pager service is the lifecycle_probe image in persistent service mode
- * (Fase 27): a real, separate, supervised image (NOT iris_test).  The control
+ * (Phase 27): a real, separate, supervised image (NOT iris_test).  The control
  * endpoint lands in the probe's command slot; the manifest slots above match
  * services/lifecycle_probe/main.c's LP_PS_* layout. */
 #define PGR_OP_PING         1u
@@ -13995,7 +13995,7 @@ static void test_t200(void) {
 #define PGR_SUP_CLASS       IT_SUP_OPTIONAL_RESTART
 #define PGR_RESTART_LIMIT   3u
 
-/* Fase 27 fault/scratch VAs (clear of the T25/T26 windows). */
+/* Phase 27 fault/scratch VAs (clear of the T25/T26 windows). */
 #define T27_VA_A    0x8098000000ULL
 #define T27_VA_B    0x8099000000ULL
 #define T27_PAT     0x27C0DE27u
@@ -14020,7 +14020,7 @@ static int t27_pager_spawn(struct t27_pager *p,
     if (ep < 0) { *why = "ctrl ep"; return 0; }
     handle_id_t ctrl = (handle_id_t)ep;
 
-    /* Fase 28.1: rewire every granted target's fault delivery onto the ONE
+    /* Phase 28.1: rewire every granted target's fault delivery onto the ONE
      * shared notification (targets[0].notif) with bit (1 << i) BEFORE the
      * pager starts, so no fault can land on the old per-target wiring. */
     for (uint32_t i = 0; i < nt; i++) {
@@ -14045,7 +14045,7 @@ static int t27_pager_spawn(struct t27_pager *p,
         m[n].slot = PGR_VSLOT(j); IT_MINT_SRC(m[n], vmos[j]); m[n].rights = vr; m[n].badge = 0; n++;
     }
 
-    /* Fase S1: the pager serves EP_CALLs on its ctrl endpoint — retype a
+    /* Phase S1: the pager serves EP_CALLs on its ctrl endpoint — retype a
      * fresh reply object and mint it at PGR_SLOT_REPLY (13); drop our handle
      * right after so pager death still wakes blocked callers. */
     handle_id_t pgr_reply_h = HANDLE_INVALID;
@@ -14058,7 +14058,7 @@ static int t27_pager_spawn(struct t27_pager *p,
         }
     }
 
-    /* Fase 28: the pager is its own supervised binary (initrd "pager"); it
+    /* Phase 28: the pager is its own supervised binary (initrd "pager"); it
      * enters its serve loop immediately on start — no mode-entry message. */
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager",
@@ -14151,9 +14151,9 @@ static void test_t201(void) {
     if (ok) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
-                          (1u << 13) /* Fase S1: explicit reply object */ |
+                          (1u << 13) /* Phase S1: explicit reply object */ |
                           (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
-                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Etapa 2: the
+                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Step 2: the
                               * budget its own address space was built from.  The
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
@@ -14416,9 +14416,9 @@ static void test_t205(void) {
     if (ok) {
         long mask = t27_pager_call(p2.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
-                          (1u << 13) /* Fase S1: explicit reply object */ |
+                          (1u << 13) /* Phase S1: explicit reply object */ |
                           (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
-                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Etapa 2: the
+                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Step 2: the
                               * budget its own address space was built from.  The
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
@@ -14444,7 +14444,7 @@ static void test_t205(void) {
  * A pager that dies right after start is respawned exactly `limit` times, then
  * the supervisor STOPS and marks the service degraded — no infinite loop, no
  * leak per attempt.  The target's fault meanwhile stays pending and observable;
- * the supervisor resolves it with its own authority.  Mirrors the Fase 24
+ * the supervisor resolves it with its own authority.  Mirrors the Phase 24
  * crash-loop policy, now for the pager service.  Invariants: G18, G19, G23. */
 #define T206_LIMIT PGR_RESTART_LIMIT
 static void test_t206(void) {
@@ -14774,9 +14774,9 @@ static void test_t210(void) {
     else { it_fz_note("T210", T210_SEED, round, op); it_fail("T210", why); }
 }
 
-/* ── Fase 28 Bloque A: boot-growth hardening (T211–T216) ─────────────────────
+/* ── Phase 28 Bloque A: boot-growth hardening (T211–T216) ─────────────────────
  *
- * The Fase 27 "wedge on the 10th image" was NOT a memory/alignment/allocator
+ * The Phase 27 "wedge on the 10th image" was NOT a memory/alignment/allocator
  * bug: it was an over-strict boot assertion.  userboot required the kernel
  * initrd count to EQUAL a hardcoded catalog size and, on any mismatch, exited
  * before loading init — so adding ANY image (even a 256-byte blob, with
@@ -14992,9 +14992,9 @@ static void test_t215(void) {
     if (ok) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
-                          (1u << 13) /* Fase S1: explicit reply object */ |
+                          (1u << 13) /* Phase S1: explicit reply object */ |
                           (1u << 15) /* Stage 4: the pager's own VSpace, now a cap */ |
-                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Etapa 2: the
+                          (1u << IRIS_CPTR_OWN_UNTYPED) /* Stage 6-pure Step 2: the
                               * budget its own address space was built from.  The
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
@@ -15098,7 +15098,7 @@ static void test_t216(void) {
     else { it_fz_note("T216", T216_SEED, round, op); it_fail("T216", why); }
 }
 
-/* ── Fase 28 Bloque B: file-backed memory (T217–T230) ────────────────────────
+/* ── Phase 28 Bloque B: file-backed memory (T217–T230) ────────────────────────
  *
  * The pager (its own binary) now backs faults from files: a supervisor
  * registers a backing (identity + generation) and validated regions, and the
@@ -15118,11 +15118,11 @@ static void test_t216(void) {
 #define FBK_OP_DIAG              11u
 #define FBK_OP_TARGET_RESET      12u
 #define FBK_SLOT_VFS_EP    4u
-#define FBK_SLOT_NOTIF     5u     /* Fase 28.1: the ONE shared fault notification */
+#define FBK_SLOT_NOTIF     5u     /* Phase 28.1: the ONE shared fault notification */
 #define FBK_VMO_CACHE_SLOT  16u   /* pager slot 16 = VMO grant 0 (cache) */
 #define FBK_VMO_PRIV_SLOT   17u   /* pager slot 17 = VMO grant 1 (private) */
 #define FBK_MAX_BACKINGS   4u
-#define FBK_MAX_REGIONS    16u    /* Fase 28.1: one region per possible target */
+#define FBK_MAX_REGIONS    16u    /* Phase 28.1: one region per possible target */
 #define FBK_MAX_TARGETS    16u
 #define FBK_CACHE_CAP      8u
 #define FBK_PRIV_CAP       8u
@@ -15143,7 +15143,7 @@ static void test_t216(void) {
 #define FBK_ERR_RANGE      0x6Au
 #define FBK_ERR_NOBACK     0x6Bu
 #define FBK_ERR_PRIVFULL   0x6Cu
-#define FBK_ERR_GRANT      0x6Du   /* Fase 28.1: VFS denied the grant */
+#define FBK_ERR_GRANT      0x6Du   /* Phase 28.1: VFS denied the grant */
 /* The productive pager's grant session (badge IRIS_BADGE_FILEGRANT_S(0)). */
 #define FBK_SESSION        0u
 
@@ -15183,7 +15183,7 @@ static long t28_cmd_read_offs(handle_id_t cmd, uint64_t base, uint32_t count,
     return it_sys2(SYS_EP_SEND, (long)cmd, (long)&m);
 }
 
-/* Fase 28 region VAs (clear of all prior windows). */
+/* Phase 28 region VAs (clear of all prior windows). */
 #define T28_VA_A   0x809A000000ULL
 #define T28_VA_B   0x809B000000ULL
 #define T28_VA_C   0x809C000000ULL
@@ -15417,7 +15417,7 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
     m[k].slot = PGR_VSLOT(0); IT_MINT_SRC(m[k], cvmo); m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
     m[k].slot = PGR_VSLOT(1); IT_MINT_SRC(m[k], pvmo); m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
 
-    /* Fase S1: explicit reply object for the pager's ctrl EP (slot 13). */
+    /* Phase S1: explicit reply object for the pager's ctrl EP (slot 13). */
     handle_id_t pgr_reply_h = HANDLE_INVALID;
     {
         long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
@@ -15572,7 +15572,7 @@ static void test_t217(void) {
     if (ok) {
         long mask = t27_pager_call(f.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
         /* 15 = the pager's own VSpace, a capability since Stage 4. */
-        /* Stage 6-pure Etapa 2 adds slot 12: the budget the pager's own
+        /* Stage 6-pure Step 2 adds slot 12: the budget the pager's own
          * address space was built from.  It MAPS, and the kernel no longer
          * creates paging levels, so it must be able to retype one. */
         uint32_t expect = (1u<<3)|(1u<<4)|(1u<<5)|(1u<<IRIS_CPTR_OWN_UNTYPED)|
@@ -16431,7 +16431,7 @@ static void test_t230(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
- * Fase 28.1 — File Grant Capability Enforcement + Pager Multi-target (T231–T238)
+ * Phase 28.1 — File Grant Capability Enforcement + Pager Multi-target (T231–T238)
  *
  * These tests attack the TRUST BOUNDARY, not the functional layer (T217–T230
  * already prove content correctness).  The premise everywhere is a HOSTILE
@@ -16742,7 +16742,7 @@ static void test_t235(void) {
  * (A12).  We SIMULATE the new instance in-process by re-initializing a grant
  * table under a bumped epoch (the productive VFS uses its svcmgr restart
  * generation for the same effect) and confirm: (a) old generations never equal
- * new ones; (b) mappings already installed follow the Fase 28 contract.  The
+ * new ones; (b) mappings already installed follow the Phase 28 contract.  The
  * cross-instance generation-namespace property is verified against the live
  * VFS's issued generations.  Invariants: A12, A16. */
 static void test_t236(void) {
@@ -16785,7 +16785,7 @@ static void test_t236(void) {
         if (t28_reg_backing_raw(f.ctrl_ep, 1, gr.idx, gr.bid, stale_gen, (uint64_t)sz)
             != -(long)FBK_ERR_GRANT) { ok = 0; why = "stale-epoch backing accepted"; }
     }
-    /* The already-installed mapping still holds (Fase 28 contract, A16): the
+    /* The already-installed mapping still holds (Phase 28 contract, A16): the
      * target already exited reading the correct byte above; re-reading is not
      * possible (a resolved target completed), so the mapping-survival property
      * is the successful resolution itself plus a clean baseline. */
@@ -16892,7 +16892,7 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     mm[k].slot = PGR_VSLOT(0); IT_MINT_SRC(mm[k], cvmo); mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
     mm[k].slot = PGR_VSLOT(1); IT_MINT_SRC(mm[k], pvmo); mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
     handle_id_t boot = HANDLE_INVALID;
-    /* Fase S1: explicit reply object for the pager's ctrl EP (slot 13). */
+    /* Phase S1: explicit reply object for the pager's ctrl EP (slot 13). */
     handle_id_t pgr_reply_h = HANDLE_INVALID;
     {
         long rr = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
@@ -16934,7 +16934,7 @@ static int t28_multi_wait_exit(struct t28_multi *m, uint32_t i) {
  * sharing ONE fault notification.  Each target faults on its own file page and
  * reads the correct byte; faults are interleaved (all triggered before any is
  * resolved); the supervisor's notification books return to baseline.  Proves
- * the quota problem is SOLVED, not avoided (Fase 28 could only run 1 target).
+ * the quota problem is SOLVED, not avoided (Phase 28 could only run 1 target).
  * Invariants: A19, A20, A21, A22, A23, A25. */
 static int t237_run(uint32_t nt, const char **why) {
     struct t28_multi m;
@@ -17009,7 +17009,7 @@ static void test_t237(void) {
 }
 
 /* ── T238: deterministic file-authority and multi-target stress ───────────────
- * A seeded round-robin over the whole Fase 28.1 surface: open/derive/read a
+ * A seeded round-robin over the whole Phase 28.1 surface: open/derive/read a
  * grant, hostile wrong-backing and wrong-name attempts, revoke + generation
  * change, and a multi-target fault batch that dies in arbitrary order.  Every
  * round: no unauthorized read, no stale success, no target mix, notification
@@ -17119,7 +17119,7 @@ static void test_t238(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
- * Fase 29 — Resource Ownership, Quota Domains and Kernel Capacity (T239–T250)
+ * Phase 29 — Resource Ownership, Quota Domains and Kernel Capacity (T239–T250)
  *
  * Model: a KProcess IS a resource domain.  Every object is charged to the
  * process that logically OWNS it (its payer), selected by explicit capability
@@ -17147,7 +17147,7 @@ struct it_rinfo {
 static int it_rinfo(handle_id_t proc_h, struct it_rinfo *out) {
     for (uint32_t i = 0; i < (uint32_t)sizeof(*out); i++) ((uint8_t *)out)[i] = 0;
     out->struct_size = (uint32_t)sizeof(*out);
-    /* Fase S2 C.1: arg2 declares the buffer size (prefix-safe copy). */
+    /* Phase S2 C.1: arg2 declares the buffer size (prefix-safe copy). */
     return it_sys3(SYS_RESOURCE_INFO, (long)proc_h, (long)(uintptr_t)out,
                    (long)(uint32_t)sizeof(*out)) == 0;
 }
@@ -17181,7 +17181,7 @@ static void test_t239(void) {
 
     struct it_rinfo r0;
     if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "rinfo self"; }
-    /* Fase S1: the notification quota is RETIRED (Untyped is the budget);
+    /* Phase S1: the notification quota is RETIRED (Untyped is the budget);
      * the ABI fields remain and must read 0.
      *
      * Stage 7: the per-process PAGE quota joins it, and for the same reason
@@ -17235,7 +17235,7 @@ static void test_t239(void) {
 /* ── T240: loader creates many independent children ──────────────────────────
  * The supervisor spawns 1, 8, 16, 32 children.  Its OWN vmos_usage does NOT
  * grow ~4×children (the child image VMOs are charged to each CHILD, not to the
- * loader — the Fase 28.1 caller-charged bug, fixed).  Every child is alive with
+ * loader — the Phase 28.1 caller-charged bug, fixed).  Every child is alive with
  * its own image charge; selective death frees only that child; the final
  * baseline is exact.  A push toward 64 shows the real ceiling is the documented
  * KPROCESS_MAX_LIVE process limit, hit CLEANLY — not the loader's VMO quota.
@@ -17797,7 +17797,7 @@ static void test_t250(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * Fase S1 — seL4 Architectural Convergence (T251–T262).
+ * Phase S1 — seL4 Architectural Convergence (T251–T262).
  *
  * Canonical kernel-object model + Untyped-only allocation substrate: every
  * migrated object (Endpoint / Notification / Reply / CNode) is born from an
@@ -17821,7 +17821,7 @@ struct it_utq_objects {
     uint32_t version, struct_size;
     uint32_t endpoints_live, notifications_live, replies_live, cnodes_live;
 };
-/* Fase S2 C.1: arg0 = kind | version<<16 | size<<32 (declared buffer size). */
+/* Phase S2 C.1: arg0 = kind | version<<16 | size<<32 (declared buffer size). */
 #define IT_QARG(kind, sz) ((long)((uint64_t)(kind) | ((uint64_t)1u << 16) | \
                                   ((uint64_t)(uint32_t)(sz) << 32)))
 static int it_utq_g(struct it_utq_global *q) {
@@ -17869,13 +17869,13 @@ static void test_t251(void) {
         { IRIS_KOBJ_UNTYPED,       4096, IRIS_HANDLE_TYPE_UNTYPED },
         { IRIS_KOBJ_REPLY,         0,    IRIS_HANDLE_TYPE_REPLY },
         { IRIS_KOBJ_FRAME,         4096, IRIS_HANDLE_TYPE_FRAME },
-        /* Fase S2 Stage 0: the TCB joins the canonical family. */
+        /* Phase S2 Stage 0: the TCB joins the canonical family. */
         { IRIS_KOBJ_TCB,           0,    IRIS_HANDLE_TYPE_TCB },
-        /* Stage 6-pure Etapa 1: a paging level is a retyped object now, so it
+        /* Stage 6-pure Step 1: a paging level is a retyped object now, so it
          * belongs in the manifest of what CAN exist.  Its region is always
          * exactly one page — 512 entries of 8 bytes and nothing else. */
         { IRIS_KOBJ_PAGE_TABLE,    4096, IRIS_HANDLE_TYPE_PAGE_TABLE },
-        /* Stage 6-pure Etapa 4: an address space is retyped by its holder and
+        /* Stage 6-pure Step 4: an address space is retyped by its holder and
          * handed to SYS_PROCESS_CREATE.  Its region is the PML4 — one page,
          * like every other level of a walk. */
         { IRIS_KOBJ_VSPACE,        4096, IRIS_HANDLE_TYPE_VSPACE },
@@ -17902,7 +17902,7 @@ static void test_t251(void) {
      * type now (Stage 4 retired 87 outright), not just the migrated family. */
     static const uint32_t migrated[] = { IRIS_KOBJ_ENDPOINT, IRIS_KOBJ_NOTIFICATION,
                                          IRIS_KOBJ_CNODE, IRIS_KOBJ_REPLY,
-                                         IRIS_KOBJ_TCB /* Etapa 0 */ };
+                                         IRIS_KOBJ_TCB /* Step 0 */ };
     for (uint32_t i = 0; ok && i < 5u; i++) {
         if (it_sys3(SYS_UNTYPED_RETYPE, su, (long)migrated[i], 4) !=
             (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "legacy path not retired"; }
@@ -18006,7 +18006,7 @@ static void test_t253(void) {
         if (it_sys1(SYS_CAP_IDENTIFY, 239) >= 0) { ok = 0; why = "partial slot filled"; }
         if (it_sys1(SYS_CAP_IDENTIFY, 240) >= 0) { ok = 0; why = "partial slot filled 2"; }
     }
-    /* Capacity failure: 8 CNodes of 64 slots (~5 KiB each with the Fase S3
+    /* Capacity failure: 8 CNodes of 64 slots (~5 KiB each with the Phase S3
      * MDB slot metadata) ≫ the 8 KiB region, while the batch stays under
      * KUNTYPED_RETYPE_MAX_BYTES so the failure exercised is genuinely the
      * REGION capacity (NO_MEMORY), not the batch-size validation. */
@@ -18121,7 +18121,7 @@ static void test_t255(void) {
     handle_id_t su_h = (handle_id_t)su;
 
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "retype"; }
-    /* Fase S4 (Etapa 3): the source is ALREADY a CPtr — derive natively, with
+    /* Phase S4 (Step 3): the source is ALREADY a CPtr — derive natively, with
      * no CSPACE_RESOLVE bridge and no handle anywhere in the path. */
     long h  = ok ? it_cdt_derive((long)S1_SLOT_A, IT_SCRATCH_1, RIGHT_SAME_RIGHTS) : -1;
     long d  = ok ? it_cdt_derive((long)S1_SLOT_A, IT_SCRATCH_0, RIGHT_WRITE) : -1;
@@ -18686,7 +18686,7 @@ static void test_t262(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * Fase S2 — Untyped Task Construction (increment 1: SchedulingContext).
+ * Phase S2 — Untyped Task Construction (increment 1: SchedulingContext).
  * ════════════════════════════════════════════════════════════════════════ */
 
 /* SYS_UNTYPED_QUERY kind 4 — task-object gauges + CDT counters. */
@@ -18696,7 +18696,7 @@ struct it_utq_taskobj {
     uint32_t sc_live, sc_hwm, sc_retyped, sc_destroyed;
     uint32_t cdt_deriv, cdt_deriv_hwm, cdt_revoke, cdt_delete,
              cdt_cross, cdt_ipc, legacy_handle_deriv_migrated;
-    /* Fase S2 Etapa C — must mirror kernel struct iris_untyped_query_taskobj. */
+    /* Phase S2 Step C — must mirror kernel struct iris_untyped_query_taskobj. */
     uint32_t tcb_registry_active, tcb_registry_hwm,
              tcb_registry_exhaustions, tcb_registry_generation_mismatch;
 };
@@ -18704,7 +18704,7 @@ static int it_utq_t(struct it_utq_taskobj *q) {
     return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
 }
 
-/* ── T291 — RETIRED with SYS_BOOTCAP_RESTRICT (Stage 5 Etapa 2) ─────────
+/* ── T291 — RETIRED with SYS_BOOTCAP_RESTRICT (Stage 5 Step 2) ─────────
  * Its subject was narrowing a boot capability by deriving a weaker CLONE of
  * it, which existed only because one object carried several authorities at
  * once.  Every boot capability carries exactly one now — kbootcap_alloc
@@ -18757,7 +18757,7 @@ static void test_t267(void) {
     /* Configure validation (S2.8). */
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100) != 0) { ok = 0; why = "configure"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 0, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
-    /* Fase S2: budget==period accepted (full reservation); budget>period not. */
+    /* Phase S2: budget==period accepted (full reservation); budget>period not. */
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 100, 100) != 0) { ok = 0; why = "budget==period rejected"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 200, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
     if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100) != 0) { ok = 0; why = "reconfigure A"; }
@@ -18890,7 +18890,7 @@ static void test_t283(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * Fase S2 Stage 0 — canonical TCB from Untyped (T284–T287).
+ * Phase S2 Stage 0 — canonical TCB from Untyped (T284–T287).
  *
  * Charter §2.2 (O1–O6) and §C.2: the TCB is born from RETYPE2 as an INACTIVE
  * object (configured = 0) — cap-complete (GET_INFO / SET_PRIORITY / delete /
@@ -19014,7 +19014,7 @@ static void test_t285(void) {
     if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T285", "tcb self"); return; }
     handle_id_t tcb_h = (handle_id_t)g_t285_tcb;
 
-    /* Stage 5 Etapa 4: thread creation returns a CAPABILITY, not a global
+    /* Stage 5 Step 4: thread creation returns a CAPABILITY, not a global
      * thread id — so the id this test tracks across death is read from the
      * object while it is alive instead of being whatever the creation call
      * happened to hand back. */
@@ -19170,7 +19170,7 @@ static void test_t287(void) {
     if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T287", "A tcb self"); return; }
     handle_id_t a_h = (handle_id_t)g_t285_tcb;
 
-    /* Stage 5 Etapa 4: creation returns a capability, so A's identity is read
+    /* Stage 5 Step 4: creation returns a capability, so A's identity is read
      * from A's own object rather than from the value the creation returned. */
     struct iris_tcb_info ia; ia.state = 0u;
     uint32_t id_a = 0u;
@@ -19232,7 +19232,7 @@ static void test_t287(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * Fase S3 — native MDB/CDT, revoke cross-process (T288–T290).
+ * Phase S3 — native MDB/CDT, revoke cross-process (T288–T290).
  *
  * Real kernel objects, real CSpace slots, a real second process
  * (IRIS_CPTR_TEST_PROC).  Authority loss is checked FUNCTIONALLY: a revoked
@@ -19654,7 +19654,7 @@ static void t297_helper(void) {
     for (;;) {}
 }
 
-/* ── T297: a thread is retyped, configured and started (Stage 5 Etapa 4) ──
+/* ── T297: a thread is retyped, configured and started (Stage 5 Step 4) ──
  * Every thread in this suite is already born this way — the helper that used
  * to call SYS_THREAD_CREATE now retypes a TCB from the suite's own Untyped and
  * configures it with capabilities — so the happy path is covered thirty times
@@ -19752,7 +19752,7 @@ static void test_t297(void) {
     if (ok) it_pass("T297"); else it_fail("T297", why);
 }
 
-/* ── T298: an Untyped pays for its frames' headers too (Stage 6 Etapa 1) ──
+/* ── T298: an Untyped pays for its frames' headers too (Stage 6 Step 1) ──
  * A frame retyped from an Untyped always carved its PAGE from that Untyped;
  * its kernel-side header came from the kslab heap, so a caller who paid for a
  * page was also spending kernel memory that nothing accounted, nothing bounded
@@ -19841,7 +19841,7 @@ static void test_t298(void) {
     if (ok) it_pass("T298"); else it_fail("T298", why);
 }
 
-/* ── T299: page tables are charged to a budget (Stage 6 Etapa 2) ──────────
+/* ── T299: page tables are charged to a budget (Stage 6 Step 2) ──────────
  * Mapping user memory needs page tables, and the kernel used to take them
  * from its own PMM reserve: a process could make the kernel spend memory by
  * mapping at scattered addresses, with no budget, no capability and no
@@ -19881,7 +19881,7 @@ static void test_t299(void) {
     }
     it_slot_delete(T299_SLOT_PROC);
 
-    /* 2. and it is a capability of a specific type — Stage 6-pure Etapa 4
+    /* 2. and it is a capability of a specific type — Stage 6-pure Step 4
      *    made this argument the ADDRESS SPACE the caller retyped, not a budget
      *    for the kernel to build one from. */
     if (ok && it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
@@ -19913,7 +19913,7 @@ static void test_t299(void) {
         cvs = it_retype_slot_alloc(pool, IRIS_KOBJ_VSPACE, 4096);
         if (cvs < 0) { ok = 0; why = "vspace retype"; }
     }
-    /* Stage 6-pure Etapa 5: the CSpace is ours to make too, and its width is
+    /* Stage 6-pure Step 5: the CSpace is ours to make too, and its width is
      * ours to choose — the kernel used to pick 256 for everyone. */
     if (ok) {
         ccn = it_retype_slot_alloc(pool, IRIS_KOBJ_CNODE, 16);
@@ -19946,7 +19946,7 @@ static void test_t299(void) {
         if (ccn2 >= 0) it_slot_delete((uint32_t)ccn2);
     }
 
-    /* Stage 6 Etapa 3: creating the address space already costs the budget —
+    /* Stage 6 Step 3: creating the address space already costs the budget —
      * its PML4 is a page of it and its VSpace header a block of it, where both
      * used to be kernel memory. */
     if (ok) {
@@ -19986,7 +19986,7 @@ static void test_t299(void) {
      *    tables stop counting as children, so a RESET can reuse the region.
      *
      *    Killing a process that never started is what makes this observable,
-     *    and it is a case that did nothing at all until Stage 6 Etapa 2: kill
+     *    and it is a case that did nothing at all until Stage 6 Step 2: kill
      *    found no threads and returned success, leaving the address space —
      *    and now its budget — pinned forever. */
     if (ok) {
@@ -19994,7 +19994,7 @@ static void test_t299(void) {
             ok = 0; why = "kill";
         }
         it_slot_delete(T299_SLOT_PROC);
-        /* Stage 6-pure Etapa 4: the address space is an object WE made, so the
+        /* Stage 6-pure Step 4: the address space is an object WE made, so the
          * process dying is not the end of it — our capability is.  Holding one
          * keeps the walk alive and its levels charged, which is the point of
          * it being a capability rather than a side effect of the process. */
@@ -20017,7 +20017,7 @@ static void test_t299(void) {
     if (ok) it_pass("T299"); else it_fail("T299", why);
 }
 
-/* ── T300: user memory comes out of a named budget (Stage 6 Etapa 5) ──────
+/* ── T300: user memory comes out of a named budget (Stage 6 Step 5) ──────
  * Anonymous memory was the last thing the kernel handed out for free: a
  * process asked for a VMO and got PMM pages, bounded only by a per-process
  * quota the kernel invented rather than by a capability anyone delegated.
@@ -20112,7 +20112,7 @@ static void test_t300(void) {
  * SYS_PROCESS_CREATE used to make those carves, and got the order wrong: the
  * page first, then the header, so a failure in between left a PML4 the cleanup
  * path believed was PMM memory and returned to the buddy allocator while its
- * Untyped still owned the region.  Stage 6-pure Etapa 4 moved the carves into
+ * Untyped still owned the region.  Stage 6-pure Step 4 moved the carves into
  * RETYPE2(KOBJ_VSPACE), where the holder makes the address space itself — so
  * this test moved with them.  What it pins is unchanged, because the shape of
  * the mistake is unchanged:
@@ -20182,7 +20182,7 @@ static void test_t301(void) {
     if (ok) it_pass("T301"); else it_fail("T301", why);
 }
 
-/* ── T302: a page table is a capability (Stage 6-pure Etapa 1) ────────────
+/* ── T302: a page table is a capability (Stage 6-pure Step 1) ────────────
  * Stage 6 charged page tables to a budget, which answered who pays.  It left
  * the kernel deciding WHEN a table exists and WHERE it goes — carving one
  * silently on whichever map first needed it — so the holder paid for an object
@@ -20421,7 +20421,7 @@ static void test_t303(void) {
     if (ok) it_pass("T303"); else it_fail("T303", why);
 }
 
-/* ── T296: one capability, one authority (Stage 5 Etapa 2) ───────────────
+/* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
  * authority to claim a serial port therefore meant holding the authority to
@@ -20438,7 +20438,7 @@ static void test_t303(void) {
  *   3. the boot capability that still carries the remaining mask authorises
  *      NEITHER, even though it is the object they were split from.
  *
- * Extended in Etapa 2b as each further authority splits off: debug authority
+ * Extended in Step 2b as each further authority splits off: debug authority
  * (kernel log, scheduler statistics, poweroff) is a capability of its own,
  * which the device capabilities do not imply and which does not imply them.
  *
@@ -20633,7 +20633,7 @@ static void test_t295(void) {
 /* ── Entry point ────────────────────────────────────────────────────────── */
 
 void iris_test_main(handle_id_t rbx_unused) {
-    /* Fase 13 (Track I): the spawn/authority cap arrives as the
+    /* Phase 13 (Track I): the spawn/authority cap arrives as the
      * IRIS_CPTR_PROC_CONTROL (slot 6) pre-start mint — no bootstrap KChannel.
      * SYS_CAP_CREATE_IOPORT resolves it by CPtr via the device-cap dual
      * resolver (the serial KIoPort for test output).  svc_loader passes
@@ -20648,10 +20648,10 @@ void iris_test_main(handle_id_t rbx_unused) {
                   (long)((uint64_t)IT_OBJ_CNODE_SLOT << 32), 256);
 
     {
-        /* Fase S4: device caps are published into a CSpace slot as MDB
+        /* Phase S4: device caps are published into a CSpace slot as MDB
          * children of the authorising slot; the result is a CPtr, and
          * SYS_IOPORT_IN/OUT resolve it through their CSpace leg.
-         * Stage 5 Etapa 2: the authorising slot holds the ioport CONTROL
+         * Stage 5 Step 2: the authorising slot holds the ioport CONTROL
          * capability — printing test output no longer needs the authority to
          * spawn processes. */
         if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
@@ -20665,7 +20665,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t001();
     test_t002();
     test_t003();
-    /* T004-T007 retired (Fase 13/Track F): the KChannel send/recv, NB-recv,
+    /* T004-T007 retired (Phase 13/Track F): the KChannel send/recv, NB-recv,
      * recv-timeout and seal/close semantics are covered by the endpoint /
      * notification equivalents — T015 (EP_SEND/RECV), T014 (EP_NB_RECV empty
      * → WOULD_BLOCK), T016 (EP_CALL/REPLY), T019 (endpoint close wakes a
@@ -20911,7 +20911,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t249();
     test_t250();
 
-    /* Fase S1 — seL4 Architectural Convergence suite. */
+    /* Phase S1 — seL4 Architectural Convergence suite. */
     test_t251();
     test_t252();
     test_t253();
@@ -20925,20 +20925,20 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t261();
     test_t262();
 
-    /* Fase S2 — Untyped task construction (increment 1: SchedulingContext). */
+    /* Phase S2 — Untyped task construction (increment 1: SchedulingContext). */
     test_t267();
-    /* Fase S2 Checkpoint C.1 — versioned user-buffer ABI hardening. */
+    /* Phase S2 Checkpoint C.1 — versioned user-buffer ABI hardening. */
     test_t283();
-    /* Fase S2 Etapa 0 — canonical TCB from Untyped (adversarial lifecycle). */
+    /* Phase S2 Step 0 — canonical TCB from Untyped (adversarial lifecycle). */
     test_t284();
     test_t285();
     test_t286();
     test_t287();
-    /* Fase S3 — native MDB/CDT, cross-process revoke. */
+    /* Phase S3 — native MDB/CDT, cross-process revoke. */
     test_t288();
     test_t289();
     test_t290();
-    /* T291 retired with SYS_BOOTCAP_RESTRICT (Stage 5 Etapa 2). */
+    /* T291 retired with SYS_BOOTCAP_RESTRICT (Stage 5 Step 2). */
     test_t292();
     test_t293();
     test_t294();

@@ -1,15 +1,15 @@
-# Console Endpoint Protocol (Fase 7.3)
+# Console Endpoint Protocol (Phase 7.3)
 
 `iris/console_ep_proto.h` defines the KEndpoint protocol for the serial
 console service. It replaces the legacy `CONSOLE_MSG_WRITE` KChannel path for
 endpoint clients (init, sh, vfs, iris_test); svcmgr keeps the legacy KChannel
-write path until its legacy loop is retired (Fase 8).
+write path until its legacy loop is retired (Phase 8).
 
 ## Why migrate the console
 
 The legacy console is **asynchronous**: writers enqueue `CONSOLE_MSG_WRITE`
 into the service KChannel and continue; the console task drains the backlog
-to the UART later. That asynchrony caused a real interleaving bug (Fase 7.1:
+to the UART later. That asynchrony caused a real interleaving bug (Phase 7.1:
 the S10 marker was split mid-line by iris_test's raw COM1 output) which had
 to be patched with the `CONSOLE_MSG_SYNC` barrier. The EP path removes the
 problem at the root: `EP_CALL` is synchronous rendezvous, so **every EP write
@@ -22,10 +22,10 @@ The console is spawned by **init** (not from the svcmgr catalog), so the
 `own_service_ep` machinery does not apply. Init plays the svcmgr role:
 
 1. init creates the endpoint (`SYS_ENDPOINT_CREATE`) and keeps the master.
-2. (Fase 8) The **recv** side is pre-start-minted into the console's root
+2. (Phase 8) The **recv** side is pre-start-minted into the console's root
    CNode at `IRIS_CPTR_OWN_EP` (slot 5, `RIGHT_READ`); the console serves
    the slot directly. Bootstrap kind 0x21 is retired.
-3. (Fase 8) The **send** side is pre-start-minted into svcmgr's root CNode
+3. (Phase 8) The **send** side is pre-start-minted into svcmgr's root CNode
    at `IRIS_CPTR_CONSOLE_EP` (slot 3, `RIGHT_WRITE|DUPLICATE|TRANSFER`);
    svcmgr publishes it as `"console.ep"` through both lookup paths and
    re-mints it (WRITE) into every catalog child. Kind 0x22 is retired.
@@ -72,9 +72,9 @@ replying, so the FIFO guarantee spans both paths.
   read from user memory) and `console_ep_sync()`.
 - **init**: creates the endpoint, logs through the master handle
   (`init_log` prefers the EP path), prints the gated `[USER] console ep OK`.
-- **sh** (Fase 8): writes through slot `IRIS_CPTR_CONSOLE_EP` from its
+- **sh** (Phase 8): writes through slot `IRIS_CPTR_CONSOLE_EP` from its
   first instruction; prints the gated `[SH] console cptr OK`.
-- **vfs** (Fase 8): writes through slot 3, verified by PING; prints the
+- **vfs** (Phase 8): writes through slot 3, verified by PING; prints the
   gated `[VFS] console cptr OK`.
 - **iris_test**: T036 (lookup + PING — name lookup stays alive), T037/T038
   (EP WRITE / SYNC + malformed semantics via the looked-up handle), T043
@@ -89,5 +89,5 @@ console EP path cannot pass CI.
 | Limit | Value |
 |-------|-------|
 | Max bytes per EP WRITE | `IRIS_IPC_BUF_SIZE` (256) — clients chunk |
-| Legacy writers remaining | svcmgr (KChannel `CONSOLE_MSG_WRITE`, retired with its legacy loop in Fase 8) |
+| Legacy writers remaining | svcmgr (KChannel `CONSOLE_MSG_WRITE`, retired with its legacy loop in Phase 8) |
 | Replies per request | exactly 1 (KReply one-shot) |

@@ -10,7 +10,7 @@
  *
  * SMP readiness: irq_spinlock_t is used for PMM, futex, and klog.
  * cpu_local[cpu_id].current_task is kept in sync with current_task on every
- * context switch.  IA32_GS_BASE is wired to &cpu_local[0] by gdt_init() (Fase 2:
+ * context switch.  IA32_GS_BASE is wired to &cpu_local[0] by gdt_init() (Phase 2:
  * ring-0 always has GS_BASE = &cpu_local[cpu_id]; cpu_self() safe everywhere).
  * AP bringup and LAPIC timer are deferred; infrastructure is correct for BSP.
  */
@@ -28,7 +28,7 @@
  */
 struct CpuRunQueue {
     irq_spinlock_t lock;
-    /* Fase S2 Inc.2B: pointer-based FIFO per priority.  The parallel
+    /* Phase S2 Inc.2B: pointer-based FIFO per priority.  The parallel
      * index-keyed arrays (next[TASK_MAX]/queued[TASK_MAX]) are retired — the
      * per-task FIFO link and queued flag live inside struct task (rq_next /
      * rq_queued), so the run queue no longer derives identity from a static
@@ -41,15 +41,15 @@ struct CpuRunQueue {
 /* ── Shared state (defined in task_lifecycle.c) ──────────────────────────── */
 
 /*
- * Fase S2 Inc.2 (Etapa C) — KTCB registry.
+ * Phase S2 Inc.2 (Step C) — KTCB registry.
  *
  * The registry is a table of REFERENCES (pointer + generation + flags), NOT of
  * TCB payload.  It is the sole iteration/allocation/lookup surface for the
  * scheduler; nothing derives a TCB's identity from an array position anymore.
  *
- * TRANSITIONAL: during Etapa C the `tcb` pointers still target the static
+ * TRANSITIONAL: during Step C the `tcb` pointers still target the static
  * `tasks[]` backing (scaffolding kept only to keep boot green while consumers
- * migrate).  Etapa D re-points them at Untyped-carved KTCB objects and deletes
+ * migrate).  Step D re-points them at Untyped-carved KTCB objects and deletes
  * the static payload — a localized change, because every consumer already goes
  * through `ktcb_registry[i].tcb`.
  *
@@ -64,12 +64,12 @@ typedef struct KTcbRegistrySlot {
 } KTcbRegistrySlot;
 
 extern KTcbRegistrySlot    ktcb_registry[TASK_MAX];
-extern struct task         ktcb_backing[TASK_MAX]; /* Etapa C scaffolding (REMOVE in D) */
+extern struct task         ktcb_backing[TASK_MAX]; /* Step C scaffolding (REMOVE in D) */
 extern struct task        *current_task;
 extern struct task        *task_list_head;
 extern struct task        *task_list_tail;
 extern uint32_t            next_id;
-/* Fase S2: task_rsp[TASK_MAX] retired — saved kernel RSP lives in
+/* Phase S2: task_rsp[TASK_MAX] retired — saved kernel RSP lives in
  * struct task.saved_krsp (scheduler indirection: no index-keyed parallel
  * array, no (t - tasks) pointer arithmetic to reach it). */
 extern uint64_t            kernel_cr3;
@@ -107,7 +107,7 @@ extern void context_switch(struct cpu_context *old,
 #define KSTACK_PAGE_SIZE 0x1000ULL
 
 void kstack_panic(const char *msg);
-/* Stage 5 Etapa 4: the kstack slot is RECORDED in the task (t->kstack_slot),
+/* Stage 5 Step 4: the kstack slot is RECORDED in the task (t->kstack_slot),
  * not derived from where its storage lives — a retyped TCB's storage is inside
  * an Untyped and has no pool index.  Every executing task holds a registry
  * slot, so the registry index is what keys the region. */

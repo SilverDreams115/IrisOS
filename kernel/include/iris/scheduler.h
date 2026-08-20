@@ -20,13 +20,13 @@ void     scheduler_sleep_current(uint64_t ticks);
  *   Use the low 32 bits for short-lived deltas; use both halves for absolute timestamps.
  */
 uint32_t sched_live_task_count(void);
-/* Fase 16: high-water depth of the deferred-reap queue.  Monotonic; a value
+/* Phase 16: high-water depth of the deferred-reap queue.  Monotonic; a value
  * approaching REAP_QUEUE_SIZE would mean the single-CPU "one death per yield"
  * assumption is being violated and dead task slots may leak. */
 uint32_t sched_reap_queue_hwm(void);
 
 /*
- * Fase 17 — scheduler hardening instrumentation (all additive, read-only).
+ * Phase 17 — scheduler hardening instrumentation (all additive, read-only).
  *
  * sched_run_queue_hwm:  high-water of tasks concurrently enqueued in the O(1)
  *   run queue.  Bounds proof for run-queue churn (T120).
@@ -41,7 +41,7 @@ uint32_t sched_reap_queue_hwm(void);
 uint32_t sched_run_queue_hwm(void);
 uint32_t sched_run_queue_live(void);
 uint32_t sched_duplicate_enqueue_count(void);
-/* Fase S2 Etapa C — KTCB registry gauges (references, not payload). */
+/* Phase S2 Step C — KTCB registry gauges (references, not payload). */
 void     task_registry_stats(uint32_t *active, uint32_t *hwm,
                              uint32_t *exhaustions, uint32_t *gen_mismatch);
 uint32_t sched_yield_count(void);

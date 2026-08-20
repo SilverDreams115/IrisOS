@@ -1,4 +1,4 @@
-# IRIS — Canonical Kernel Object Model (Fase S1, normative)
+# IRIS — Canonical Kernel Object Model (Phase S1, normative)
 
 ## Ultimate objective
 
@@ -61,7 +61,7 @@ composed in user space.
 | KBootstrapCap | BOOTSTRAP_EXCEPTION | structured BootInfo | root-task phase | bootstrap authority |
 | KInitrdEntry | USERLAND_POLICY | user-space VFS/loader | with KProcess | filesystem-aware state |
 | process metadata / parent-child / supervision | USERLAND_POLICY | svcmgr/init | already in user space | policy |
-| file-backed regions / page cache / private-shared | USERLAND_POLICY | pager+VFS | already in user space (Fase 28) | policy |
+| file-backed regions / page cache / private-shared | USERLAND_POLICY | pager+VFS | already in user space (Phase 28) | policy |
 | loader metadata | USERLAND_POLICY | svc_loader | already in user space | policy |
 | kslab (for dynamic objects) | LEGACY_TO_REMOVE | Untyped retype | per family (ledger) | hidden allocator |
 
@@ -130,7 +130,7 @@ See [`kernel-object-lifetime.md`](kernel-object-lifetime.md). Summary:
 - `SYS_UNTYPED_RESET` reclaims the region only with `child_count == 0` (S13)
   and bumps `generation` (reuse witness, S12/S28).
 - transitive revoke: the derivation tree lives TODAY in the handle table
-  (`SYS_CAP_REVOKE`) in parallel with the native CSpace CDT (Fase S3,
+  (`SYS_CAP_REVOKE`) in parallel with the native CSpace CDT (Phase S3,
   `SYS_CSPACE_REVOKE`; ledger).
 
 ## Bootstrap exceptions (enumerated, static, non-allocator)

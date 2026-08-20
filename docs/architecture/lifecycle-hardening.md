@@ -1,8 +1,8 @@
-# Fase 16 — lifecycle / process hardening
+# Phase 16 — lifecycle / process hardening
 
 Status: ACCEPTED — implemented in this phase.  Companion to
 `ipc-stress-invariants.md` (A1.11, which found and fixed the deferred-reap
-slot-reuse leak) and `handle-table-freeze.md` (A1.7 counters).  Fase 16
+slot-reuse leak) and `handle-table-freeze.md` (A1.7 counters).  Phase 16
 audits the task/process lifecycle end to end and locks its contracts with
 runtime tests T113–T118.  No new lifecycle bug was found — the A1.11 fix
 (`task.awaiting_reap`) had already closed the only one; this phase makes the
@@ -76,7 +76,7 @@ live-process snapshot so the baseline is stable.
   keeps its attached cap (two-phase staging).  `kreply_obj_close` also wakes a
   still-blocked caller with CLOSED if the server drops the reply cap unused.
 - **CSpace** — the process root CNode is held structurally by the process
-  (`cspace_root`, one lifecycle + one active ref; Fase S4 Etapa 4 — it used to
+  (`cspace_root`, one lifecycle + one active ref; Phase S4 Step 4 — it used to
   be an entry in the process's own handle table).  `kprocess_teardown` drops
   both refs at the point `handle_table_close_all` used to release them →
   `kcnode_obj_close` releases every slot cap (active + lifecycle).

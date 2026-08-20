@@ -11,10 +11,10 @@ path still depends on the mechanism it retires (charter §3.10).
 
 | Stage | State |
 |---|---|
-| 0 — TCB consolidation | ✅ CLOSED (Fase S2 inc.2) |
-| 1 — CDT/MDB | ✅ CLOSED (Fase S3) |
-| 2 — CSpace-only cap transfer | ✅ CLOSED (Fase S4) |
-| 3 — CSpace-only derive and revoke | ✅ CLOSED (Fase S4) |
+| 0 — TCB consolidation | ✅ CLOSED (Phase S2 inc.2) |
+| 1 — CDT/MDB | ✅ CLOSED (Phase S3) |
+| 2 — CSpace-only cap transfer | ✅ CLOSED (Phase S4) |
+| 3 — CSpace-only derive and revoke | ✅ CLOSED (Phase S4) |
 | 4 — Dual namespace retirement | ✅ CLOSED |
 | 5 — seL4-like bootstrap | ✅ CLOSED |
 | 6 — Remaining memory and objects | ✅ CLOSED |
@@ -31,7 +31,7 @@ way — boot authority is fine-grained and named, the monolith cannot be
 constructed — leaving the ioport whitelist and the kernel's per-process quotas
 as the remaining ambient policy.
 
-## Stage 0 — TCB consolidation  ✅ CLOSED (Fase S2 inc.2)
+## Stage 0 — TCB consolidation  ✅ CLOSED (Phase S2 inc.2)
 
 - The open increment is closed and committed; the working tree is clean.
 - Canonical KTCB: `struct task` IS the object (KObject at offset 0); the
@@ -50,7 +50,7 @@ as the remaining ambient policy.
   Stage 5/6 (post-CDT). The idle task is an isolated bootstrap exception
   (registry slot 0, never retyped or reused).
 
-## Stage 1 — CDT/MDB  ✅ CLOSED (Fase S3)
+## Stage 1 — CDT/MDB  ✅ CLOSED (Phase S3)
 
 Precondition: Stage 0 (closed).
 Design: `docs/architecture/cspace-cdt-mdb.md`.
@@ -76,7 +76,7 @@ Debt that stays live (does NOT block, retired in later stages):
 → Stage 3; `mdb_legacy_roots` (non-CSpace origins) → Stages 2/4/5;
 `cdt_ipc_transfer` (IPC delivery = LEGACY_ROOT) → Stage 2.
 
-## Stage 2 — CSpace-only cap transfer  ✅ CLOSED (Fase S4)
+## Stage 2 — CSpace-only cap transfer  ✅ CLOSED (Phase S4)
 
 Precondition: Stage 1 (closed).
 
@@ -106,7 +106,7 @@ table when it declares NO receive slot (legacy receivers) → Stage 4 with the
 dual namespace; `SYS_CNODE_MINT` still marks its slot a LEGACY_ROOT → Stages
 3/4.
 
-## Stage 3 — CSpace-only derive and revoke  ✅ CLOSED (Fase S4)
+## Stage 3 — CSpace-only derive and revoke  ✅ CLOSED (Phase S4)
 
 Precondition: Stages 1–2 (both closed).
 
@@ -118,7 +118,7 @@ Precondition: Stages 1–2 (both closed).
 - Every productive and test path derives with `SYS_CSPACE_MINT` (slot→slot,
   installing a real MDB child) and revokes with `SYS_CSPACE_REVOKE`
   (recursive, cross-CNode, cross-process).
-- Unblocked earlier in Fase S4 by giving `KIoPort`/`KIrqCap` a CSpace-native
+- Unblocked earlier in Phase S4 by giving `KIoPort`/`KIrqCap` a CSpace-native
   origin (see the Stage 3 prep note in the ledger).
 - `legacy_handle_derivation_migrated` has zero callers: a structural 0, kept
   as the retirement witness in the `UNTYPED_QUERY` layout.
@@ -151,7 +151,7 @@ Precondition: Stages 2–3 (both closed — no authority lives handle-only anymo
 
 - ~~Remove the value-range discrimination (<1024 / ≥1024).~~  ✅ the boundary
   is the handle TAG BIT, defined once in `nc/handle.h`; CPtrs own the low 31
-  bits and a CPtr addresses exactly one capability (Etapa 6b).
+  bits and a CPtr addresses exactly one capability (Step 6b).
 - ~~Remove the bootstrap's handle producers (kernel_main dual insert).~~  ✅
   the bootstrap capability and every boot Untyped are published into CSpace
   ONLY; RBX carries 0 and a failed publish is fatal rather than "non-fatal
@@ -187,7 +187,7 @@ wholesale when the namespace retires.
 lives in `scripts/purity_allowlist.txt`, which the gate checks exactly, rather
 than in a number here that drifts.)
 
-### Etapa 4 — the CSpace root stops being a handle  ✅ DONE
+### Step 4 — the CSpace root stops being a handle  ✅ DONE
 
 `KProcess.cspace_root_h` (a `handle_id_t` into the process's own handle table)
 became `KProcess.cspace_root` (a `struct KCNode *`, holding the same lifecycle
@@ -211,7 +211,7 @@ Two userspace consequences, both retiring guesswork rather than adding API:
   installed as MDB children of userboot's slots, i.e. revocable, instead of
   handed over forever.
 
-### Etapa 5 — the productive path leaves the bridge  ✅ DONE
+### Step 5 — the productive path leaves the bridge  ✅ DONE
 
 `init` has ZERO uses of the CPtr→handle bridge and zero `SYS_HANDLE_DUP`: its
 bootstrap authority, every object it fabricates, its death watch and its
@@ -236,7 +236,7 @@ Four defects surfaced, none of them the migration's own:
 - The pager's manifest oracle leaked one handle-table entry per occupied slot,
   per request, with no ceiling.
 
-### Etapa 6a — CSpace-native introspection  ✅ DONE
+### Step 6a — CSpace-native introspection  ✅ DONE
 
 The bridge had two distinct users, and only one of them was a test.  Every
 remaining PRODUCTIVE use of `SYS_CSPACE_RESOLVE` was asking one of two
@@ -262,12 +262,12 @@ thing by invoking any slot and reading `NOT_FOUND`, in IRIS and in seL4 alike,
 and a CSpace's layout is not a secret kept from its owner.
 
 Result: **svcmgr, `pager` and `lifecycle_probe` are off the bridge.**  The
-suite is now the only consumer left, which is what Etapa 6b addresses.
+suite is now the only consumer left, which is what Step 6b addresses.
 Covered by T292/T293 (type per family, no right required, empty slot is
 `NOT_FOUND`, identity survives rights reduction and badging, handle value is
 `INVALID_ARG` on every argument).
 
-### Etapa 6b — CSpace stops being ten bits wide  ✅ DONE
+### Step 6b — CSpace stops being ten bits wide  ✅ DONE
 
 Two mechanisms still assumed the pre-`HANDLE_TAG` world, and both of them
 capped what a CSpace could be:
@@ -308,7 +308,7 @@ declared CPtr and is classified as a CPtr; occupied deep slot fails fast),
 T295 (aliases rejected on invoke / identify / mint-source / receive-slot
 paths), and host cases in `tests/kernel/test_cspace.c`.
 
-### Etapa 6c — the test suite  ← REMAINING
+### Step 6c — the test suite  ← REMAINING
 
 `iris_test` is what keeps Stage 4 open, and it is not one migration.  All 268
 tests classified against a single rule — a test whose SUBJECT is the handle
@@ -350,8 +350,8 @@ child of its source and therefore revocable.
 
 | point | uses |
 |---|---|
-| close of Etapa 5 | 197 |
-| after Etapa 6a/6b (lookups, liveness probes, self-proc, vestigial KDEBUG staging) | 178 |
+| close of Step 5 | 197 |
+| after Step 6a/6b (lookups, liveness probes, self-proc, vestigial KDEBUG staging) | 178 |
 | after the endpoint/notification fixture migration | 137 |
 | after the retyped-object fixture migration | 118 |
 | after the VMO fixture migration | 111 |
@@ -383,7 +383,7 @@ rewrite.
 
 Nothing remains of the bridge outside the suite: svcmgr's delivered-cap path
 and the `pager` / `lifecycle_probe` manifest oracles all moved to
-`SYS_CAP_IDENTIFY` in Etapa 6a.  Probing by attempting a mint was considered
+`SYS_CAP_IDENTIFY` in Step 6a.  Probing by attempting a mint was considered
 and rejected first: it requires `RIGHT_DUPLICATE` on the source, which several
 of those slots lack, so it would report absent for capabilities that are
 present.
@@ -394,7 +394,7 @@ of the addressable space, and multi-level CSpace resolution — which
 `cspace_resolve_slot` already implements as a radix walk — is effectively
 unusable because only 2 bits remain for deeper levels.  The symptom is
 concrete: `iris_test`'s root CNode is ~97% allocated, with six free slots
-left, and three separate bring-up failures during Fase S4 were slot
+left, and three separate bring-up failures during Phase S4 were slot
 collisions.  Removing the split frees the full 64-bit CPtr space and makes
 real CSpace hierarchies possible.
 
@@ -414,7 +414,7 @@ fine-grained capabilities, with no monolithic bootstrap object left to
 restrict, and the executing TCB is a retyped object configured through
 capabilities.
 
-### Etapa 1 — the root task is told what it holds  ✅ DONE
+### Step 1 — the root task is told what it holds  ✅ DONE
 
 The kernel writes a structured BootInfo region (`struct iris_root_bootinfo`,
 `kernel/include/iris/root_bootinfo.h`) describing the initial capabilities by
@@ -441,7 +441,7 @@ Covered by RBI-1..RBI-10 (`tests/kernel/test_root_bootinfo.c`) for the builder,
 and by the boot itself for the contract: an unreadable or untrue BootInfo is
 fatal in userboot, so a healthy `make smoke-runtime` is the runtime witness.
 
-### Etapa 2a — device control is its own authority  ✅ DONE
+### Step 2a — device control is its own authority  ✅ DONE
 
 `IRIS_BOOTCAP_HW_ACCESS` — one bit authorising BOTH interrupt-line and I/O-port
 capability creation, on an object that also carried spawn, debug and
@@ -460,7 +460,7 @@ Covered by T296 (each control capability authorises its own syscall, neither
 authorises the other's, the capability they were split from authorises
 neither, an empty slot authorises nothing); T069 and T291 re-anchored.
 
-### Etapa 2b — debug is its own authority  ✅ DONE
+### Step 2b — debug is its own authority  ✅ DONE
 
 `IRIS_BOOTCAP_KDEBUG` — kernel-log drain, scheduler statistics, poweroff — is
 now a capability of its own (`BOOT_CPTR_DEBUG_CONTROL`, BootInfo v3), matched
@@ -469,7 +469,7 @@ The child-side slot reuses the retired `IRIS_CPTR_SVC_REPLY` constant, dead
 since KChannel was removed, because root CNodes are 256 slots and the suite's
 is full.  T296 gained a third leg; T291's oracle moved to the framebuffer bit.
 
-### Etapa 2c — the monolith is gone  ✅ DONE
+### Step 2c — the monolith is gone  ✅ DONE
 
 The last three authorities split: `SPAWN_SERVICE` became TWO capabilities
 (process control and initrd control — one bit was authorising both spawning a
@@ -489,7 +489,7 @@ is expressible in the signature.  T291 died with its mechanism (its subject was
 the retired syscall); T148 pins 45; T296 covers what replaced it.  Suite:
 269/269.
 
-### Etapa 3 — the root task's own objects  ✅ DONE
+### Step 3 — the root task's own objects  ✅ DONE
 
 The root task holds capabilities to its own root CNode and its initial thread
 (`BOOT_CPTR_CNODE`, `BOOT_CPTR_TCB`, BootInfo v5), validated by userboot.  The
@@ -504,9 +504,9 @@ BC-11..BC-13 pin it, negative control included.  ASID/PCID control is
 deliberately NOT added: no operation exists for it to authorise until VSpaces
 are retyped from Untyped (Stage 6).
 
-### Etapa 4 — a retyped TCB executes  ✅ DONE
+### Step 4 — a retyped TCB executes  ✅ DONE
 
-`RETYPE2(KOBJ_TCB)` produced inactive threads from Fase S2 onward; what was
+`RETYPE2(KOBJ_TCB)` produced inactive threads from Phase S2 onward; what was
 missing was not code but ARGUMENTS — a thread runs in a CSpace and a VSpace,
 and neither was addressable as a capability until Stages 3–5.  Three CPtr-only
 syscalls close it: `SYS_CSPACE_SELF` (119, a capability to the caller's own
@@ -552,7 +552,7 @@ this stage answers *who pays for memory*, which is still "the kernel,
 invisibly" in four places — page tables on map, frame headers, the VSpace and
 its PML4, and sixteen `kslab_alloc` consumers.
 
-### Etapa 6 — the last runtime allocations  ✅ DONE
+### Step 6 — the last runtime allocations  ✅ DONE
 
 Mapping records (one per mapped page, recycled through a per-VSpace free list),
 VMO page frame headers and device capabilities — the three paths that still
@@ -571,7 +571,7 @@ retire whole in Stage 7 (KVMO, the initrd store, the boot authority); ledger
 D-5 records the divergence that stays — IRIS CHARGES these objects to a budget
 where seL4 has the user RETYPE them.
 
-### Etapa 5 — user memory comes out of a named budget  ✅ DONE
+### Step 5 — user memory comes out of a named budget  ✅ DONE
 
 A VMO's pages, its page-address array and its header come from an Untyped, and
 `SYS_VMO_CREATE` / `SYS_INITRD_VMO` take that budget as a CPtr — a process
@@ -579,11 +579,11 @@ holds several and they are not interchangeable.  Anonymous memory was the last
 allocation obtainable without a capability behind it.
 
 Charging alone would have made consumption monotonic (a bump allocator does not
-rewind), so reclamation is part of the etapa: the loader recycles a budget per
+rewind), so reclamation is part of the step: the loader recycles a budget per
 LIVE child and a scratch budget for image copies, bounding cost by what is
 alive rather than by what has ever run.  Covered by T300.
 
-### Etapa 4 — a process's kernel state comes out of the budget  ✅ DONE
+### Step 4 — a process's kernel state comes out of the budget  ✅ DONE
 
 `KProcess`, the child's 256-slot root CNode (the largest single per-process
 allocation) and a sub-untyped's own header are carved from the budget instead
@@ -594,7 +594,7 @@ parent and its header from the slab.
 What stays kernel-funded is the root task (built before any Untyped exists) and
 the boot Untypeds (created from raw PMM blocks, with no parent to charge).
 
-### Etapa 3 — the address space itself comes from the budget  ✅ DONE
+### Step 3 — the address space itself comes from the budget  ✅ DONE
 
 The PML4 and the KVSpace header follow the page tables into the Untyped: one
 budget pays for a whole address space, and a spawn that names none builds
@@ -604,7 +604,7 @@ pool retain — in that order, because the header block lives in the region the
 pool owns.  The root task keeps the kernel-funded path: its address space is
 built before any Untyped exists.
 
-### Etapa 2 — page tables are charged to a budget  ✅ DONE
+### Step 2 — page tables are charged to a budget  ✅ DONE
 
 Mapping user memory needed page tables and took them from the kernel's PMM
 reserve: unbudgeted, unauthorised, and drivable from ring 3 by mapping at
@@ -624,7 +624,7 @@ got a paddr the mapper masked DOWN, overlapping earlier carves), and a process
 created but never started could not be reclaimed (kill found no threads and
 dropped nothing, pinning its address space forever).  Covered by T299.
 
-### Etapa 1 — the Untyped pays for its objects' headers  ✅ DONE
+### Step 1 — the Untyped pays for its objects' headers  ✅ DONE
 
 A frame retyped from an Untyped carved its PAGE from that Untyped and its
 header from the kslab heap: the caller paid for the page, the kernel quietly
@@ -661,7 +661,7 @@ page tables it could not name, count, delegate or reclaim.
 instead RETYPED by the holder and installed by an explicit invocation, or the
 row is argued down to something that cannot be user-driven.
 
-### Etapa 1 — the page table becomes a capability  ✅ DONE
+### Step 1 — the page table becomes a capability  ✅ DONE
 
 `IRIS_KOBJ_PAGE_TABLE` is retyped from an Untyped like every other object; its
 4 KiB region IS the hardware table, and its header is a top-carved block of the
@@ -685,7 +685,7 @@ invocation, double-install refused, kernel-address refused, the budget charged,
 and a frame mapped through the walk the holder built.  T148/T251 (the syscall
 surface and canonical-type manifests) grew by one member each.
 
-### Etapa 2 — userland supplies its own levels  ✅ DONE
+### Step 2 — userland supplies its own levels  ✅ DONE
 
 The kernel no longer creates page tables for any address space whose holder
 has a budget.  A map whose walk is incomplete answers `IRIS_ERR_MISSING_TABLE`
@@ -703,7 +703,7 @@ site: iris_test alone has 111 of those, and it is one rule about the address
 space, not 111 decisions.
 
 **A task that maps must hold a budget.**  That is the real content of this
-etapa and it fell out of the design rather than being chosen: retyping a level
+step and it fell out of the design rather than being chosen: retyping a level
 needs untyped memory, so a service that maps needs some.  `svc_load_minted_ws`
 takes the SLOT to mint the child's own address-space budget into, and the
 spawner decides — vfs and the pager get one, console and kbd do not, and
@@ -729,7 +729,7 @@ Tests: `tests/kernel/test_pagetable.c` (new, PT-1..PT-7) drives the walk
 exhaustively on the host, where level modelling is opt-in so the suites that
 predate paging levels keep testing what they were written for.
 
-### Etapa 3 — the bootstrap exception ends  ✅ DONE
+### Step 3 — the bootstrap exception ends  ✅ DONE
 
 `pt_pool` was answering three different questions at once — is this map strict,
 was the PML4 pooled, and where do mapping records come from — which is why the
@@ -763,7 +763,7 @@ task's constructor and nothing else's, and ending it is one-way.  It is worth
 a test because the flag is invisible from userland: a kernel that kept funding
 the root task forever would look exactly like one that stopped.
 
-### Etapa 4 — the address space is retyped, not carved  ✅ DONE
+### Step 4 — the address space is retyped, not carved  ✅ DONE
 
 `SYS_PROCESS_CREATE` used to take a BUDGET and build an address space out of
 it — carving a PML4, a KVSpace header, and every level underneath.  The holder
@@ -800,7 +800,7 @@ band where one fits and the other does not is a page wide and a one-page budget
 lands in it by construction.  Verified to fail (`refused retype left a child`)
 against the reversed carve order.
 
-### Etapa 5 — the CSpace is retyped too  ✅ DONE
+### Step 5 — the CSpace is retyped too  ✅ DONE
 
 The root CNode was the other half of a process's kernel footprint, and the
 bigger one: 256 slots with their MDB links, carved by the kernel at a width the
@@ -855,7 +855,7 @@ both over.
   kernel; PID stops conferring authority; per-domain quotas become the
   process server's policy.
 
-### Etapa 1 — the last pool-born thread retires  ✅ DONE
+### Step 1 — the last pool-born thread retires  ✅ DONE
 
 `SYS_THREAD_START` carved a spawned process's FIRST thread out of the kernel's
 static task pool.  It outlived `SYS_THREAD_CREATE` by two stages for one
@@ -868,20 +868,20 @@ registers, resume it.  **No path remains by which a thread exists because the
 kernel had a free slot**; the root and idle tasks still come from the pool,
 both built before any Untyped exists.
 
-The path exposed a lifecycle bug latent since Fase S2: `ktcb_configure` never
+The path exposed a lifecycle bug latent since Phase S2: `ktcb_configure` never
 took the scheduler's EXECUTION reference on a retyped TCB, so the CSpace slot
 was the object's only owner and deleting it freed a running thread's storage.
 Invisible while the only caller kept its slot forever; a spawner does not.
 T303 pins it and reproduces the page fault when the reference is removed.
 
-### Etapa 2 — a ceiling nobody granted  ✅ DONE
+### Step 2 — a ceiling nobody granted  ✅ DONE
 
-The per-process PAGE quota retires.  Stage 6 Etapa 5 moved VMO pages onto a
+The per-process PAGE quota retires.  Stage 6 Step 5 moved VMO pages onto a
 named budget precisely because they had been "bounded only by a per-process
 quota the kernel invented"; the quota was then left standing beside the budget
 that replaced it, and since Stage 6-pure it contradicts the model — a holder
 handed a large Untyped still stopped at 8 MB nobody granted.  `pages_limit`
-reports 0, as the notification quota has since Fase S1; the counters remain as
+reports 0, as the notification quota has since Phase S1; the counters remain as
 instrumentation.
 
 ### What Stage 7 still needs, and why it is not an increment
@@ -942,7 +942,7 @@ Precondition: consolidated microkernel (0–9 as applicable).
 ## Entry contract for the CDT/MDB increment (Stage 1)
 
 What the CDT increment had to implement, defined so that Stage 0 would not
-leave it any ambiguity. Delivered in Fase S3; kept here as the historical
+leave it any ambiguity. Delivered in Phase S3; kept here as the historical
 contract:
 
 **Structures.** Per-CNode-SLOT derivation metadata (not per handle): a link

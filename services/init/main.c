@@ -1,7 +1,7 @@
 /*
  * main.c — init service boot supervisor (ring-3 ELF, phase 22+).
  *
- * Fase 14: orchestrator ONLY.  Every helper lives in its module (see the
+ * Phase 14: orchestrator ONLY.  Every helper lives in its module (see the
  * split contract in init.h): init_bootstrap.c (spawn-cap / early-serial /
  * discovery / S5-S6 VFS validation), init_launch.c (fb / console / svcmgr /
  * iris_test spawns), init_test.c (runtime probes + S8).  main.c owns the
@@ -14,7 +14,7 @@
  * CSpace and is invoked as that slot — no KChannel, and no handle.
  *
  * Boot sequence validated:
- *   1. Resolve "vfs.ep" via the svcmgr discovery endpoint (Fase 7.2)
+ *   1. Resolve "vfs.ep" via the svcmgr discovery endpoint (Phase 7.2)
  *   2. VFS EP LIST + STAT/READ_AT of the boot file (stateless)
  *   3. Exception-delivery selftest (S8) + iris_test ring-3 suite
  *   4. Idle loop (init never exits)
@@ -27,21 +27,21 @@
 
 /* ── Utilities ──────────────────────────────────────────────────────────── */
 
-/* Console KEndpoint master (Fase 7.3): init creates it, console serves it,
- * svcmgr publishes the send side as "console.ep".  Fase 13/Track I: the legacy
+/* Console KEndpoint master (Phase 7.3): init creates it, console serves it,
+ * svcmgr publishes the send side as "console.ep".  Phase 13/Track I: the legacy
  * console KChannel write handle (g_init_console_h) is retired — init logs over
  * console.ep, with early-serial as the only pre-console.ep fallback. */
 handle_id_t g_init_console_ep_h = HANDLE_INVALID;
 static uint8_t g_init_con_ep_buf[IRIS_IPC_BUF_SIZE];
 
-/* Fase S1: init's untyped pool — the boot KUntyped userboot minted at slot 12.
+/* Phase S1: init's untyped pool — the boot KUntyped userboot minted at slot 12.
  * Every kernel object init fabricates (console/svcmgr endpoints, reply
  * objects, test fixtures) is retyped from it; the sub-untypeds delegated to
  * svcmgr and iris_test are carved from it too. */
 uint64_t g_init_untyped_c = 0;
 
 void init_log(const char *s) {
-    /* Fase 13 (Track I): endpoint-first over console.ep (synchronous flush
+    /* Phase 13 (Track I): endpoint-first over console.ep (synchronous flush
      * barrier) once it exists; the only pre-console.ep fallback is the direct
      * UART (early-serial) — never the legacy console KChannel.  No silent
      * fallback after verification: a broken EP drops the gated markers and
@@ -56,13 +56,13 @@ void init_log(const char *s) {
 static const char init_stage_lookup[]    = "[USER][INIT][S1] service lookup\n";
 static const char init_stage_vfs_list[]  = "[USER][INIT][S5] vfs ep list\n";
 static const char init_stage_vfs_rw[]    = "[USER][INIT][S6] vfs ep rw\n";
-/* init_stage_hello (S2) / init_stage_subscribe (S7) retired — Fase 13/Track I */
-/* init_stage_exception (S8) lives in init_test.c — Fase 14/Inc 2 */
-/* init_stage_seal/init_stage_rights (S9/S10) retired — Fase 13/Track F */
+/* init_stage_hello (S2) / init_stage_subscribe (S7) retired — Phase 13/Track I */
+/* init_stage_exception (S8) lives in init_test.c — Phase 14/Inc 2 */
+/* init_stage_seal/init_stage_rights (S9/S10) retired — Phase 13/Track F */
 static const char init_stage_healthy[]   = "[USER][INIT][BOOT] healthy path OK\n";
-/* Fase 13/Track I: readdup/writedup/boot_ioport/boot_service fail strings
+/* Phase 13/Track I: readdup/writedup/boot_ioport/boot_service fail strings
  * retired with the legacy console KChannel bootstrap.  The console/fb spawn
- * fail strings moved to init_launch.c with their users — Fase 14. */
+ * fail strings moved to init_launch.c with their users — Phase 14. */
 
 void init_exit(long code) {
     init_sys1(SYS_EXIT, code);
@@ -70,7 +70,7 @@ void init_exit(long code) {
     for (;;) {}
 }
 
-/* Release a capability, whichever namespace names it (Etapa 4).
+/* Release a capability, whichever namespace names it (Step 4).
  *
  * The loader hands back capabilities that live in CSpace now — including in a
  * second-level CNode — and closing one as a handle is a silent no-op that
@@ -86,31 +86,31 @@ void init_close(handle_id_t *h) {
     *h = HANDLE_INVALID;
 }
 
-/* init_msg_zero retired — Fase 13/Track I (no KChannel messages in init). */
+/* init_msg_zero retired — Phase 13/Track I (no KChannel messages in init). */
 
-/* Runtime probes + S8 exception selftest extracted to init_test.c — Fase 14/Inc 2. */
+/* Runtime probes + S8 exception selftest extracted to init_test.c — Phase 14/Inc 2. */
 
-/* Fase 13 (Track F): init S9 (channel seal) and S10 (rights reduction)
+/* Phase 13 (Track F): init S9 (channel seal) and S10 (rights reduction)
  * KChannel selftests retired — the seal/close and rights-reduction
  * semantics are covered by the endpoint/cap-transfer runtime tests in
  * iris_test (T019 close-wakes-waiter, T052/T064 rights+transfer). */
 
 /* ── iris_test spawn + wait ──────────────────────────────────────────────── */
 
-/* init_spawn_iris_test moved to init_launch.c — Fase 14. */
+/* init_spawn_iris_test moved to init_launch.c — Phase 14. */
 
-/* init_retry_pause / init_recv_spawn_cap moved to init_bootstrap.c — Fase 14. */
+/* init_retry_pause / init_recv_spawn_cap moved to init_bootstrap.c — Phase 14. */
 
 /* ── Legacy channel send/recv helper (retired) ──────────────────────────── */
 
-/* init_chan_send_recv retired — Fase 13/Track I (kbd HELLO/STATUS was its
+/* init_chan_send_recv retired — Phase 13/Track I (kbd HELLO/STATUS was its
  * only caller; kbd is endpoint-only now). */
 
-/* ── fb / console / svcmgr spawns moved to init_launch.c — Fase 14 ──────── */
+/* ── fb / console / svcmgr spawns moved to init_launch.c — Phase 14 ──────── */
 
 /* ── svcmgr lookup ──────────────────────────────────────────────────────── */
 
-/* Fase 13/Track I: init_lookup / init_lookup_wait / init_lookup_name (the
+/* Phase 13/Track I: init_lookup / init_lookup_wait / init_lookup_name (the
  * legacy KChannel SVCMGR_MSG_LOOKUP[_NAME] discovery) are fully retired —
  * init discovers services via EP_LOOKUP_NAME over svcmgr.ep
  * (init_ep_lookup_name, init_bootstrap.c).  No legacy LOOKUP, no fallback. */
@@ -118,18 +118,18 @@ void init_close(handle_id_t *h) {
 
 /* ── VFS endpoint client + S5/S6 boot-health checks ─────────────────────── */
 
-/* Moved to init_bootstrap.c — Fase 14: init_ep_lookup_name[_slot] (svcmgr.ep
+/* Moved to init_bootstrap.c — Phase 14: init_ep_lookup_name[_slot] (svcmgr.ep
  * discovery, incl. the A1.6 reply receive-slot), init_vfs_ep_call, and the
  * S5/S6 LIST/STAT/READ_AT validation with their retry waits. */
 
-/* Fase 13 (Track I): the KBD HELLO/SUBSCRIBE legacy-KChannel helpers and the
+/* Phase 13 (Track I): the KBD HELLO/SUBSCRIBE legacy-KChannel helpers and the
  * PS/2 scancode→ASCII echo table are retired — kbd is endpoint-only and sh
  * is the keystroke consumer (kbd.ep pull). */
 
 
 /* ── Echo loop ──────────────────────────────────────────────────────────── */
 
-/* Fase 13 (Track I): init's interactive echo loop is retired — sh is the
+/* Phase 13 (Track I): init's interactive echo loop is retired — sh is the
  * keystroke consumer (kbd.ep pull).  init's final state is a quiet idle loop so
  * the process never exits (which would tear it down). */
 static void init_idle_loop(void) {
@@ -145,7 +145,7 @@ void init_main(handle_id_t rbx_unused) {
     handle_id_t sm_h               = HANDLE_INVALID;
     handle_id_t vfs_ep_h           = HANDLE_INVALID;
 
-    /* Etapa 4: the spawn/authority capability is invoked as the CSpace slot
+    /* Step 4: the spawn/authority capability is invoked as the CSpace slot
      * userboot minted it into.  init_recv_spawn_cap used to materialise it
      * into a handle here; every consumer left (early serial's ioport create,
      * and the three svc_load_minted spawns) resolves a CPtr directly, so the
@@ -154,7 +154,7 @@ void init_main(handle_id_t rbx_unused) {
     (void)rbx_unused;   /* svc_loader passes RBX = 0 — not a handle */
     init_early_serial_start();
 
-    /* Fase S1: confirm the delegated boot untyped (slot 12) BEFORE any spawn —
+    /* Phase S1: confirm the delegated boot untyped (slot 12) BEFORE any spawn —
      * console/svcmgr endpoints and reply objects are retyped from it.
      *
      * Stage 4: SYS_UNTYPED_INFO answers by CPtr and materializes nothing, so
@@ -172,13 +172,13 @@ void init_main(handle_id_t rbx_unused) {
     /* Spawn fb first (fire-and-forget): it claims the framebuffer and exits. */
     init_spawn_fb();
 
-    /* Spawn console: endpoint-only, CPtr-provisioned (Fase 13/Track I). */
+    /* Spawn console: endpoint-only, CPtr-provisioned (Phase 13/Track I). */
     if (!init_spawn_console()) {
         init_early_serial_write("[INIT] console spawn FAILED\r\n");
         init_exit(1);
     }
 
-    /* Verify the console endpoint with the first gated write (Fase 7.3): the
+    /* Verify the console endpoint with the first gated write (Phase 7.3): the
      * EP_CALL blocks until console serves it, so this also synchronizes with
      * console boot.  Done BEFORE early-serial is stopped so a broken EP can
      * still report LOUDLY over the direct UART (the missing OK marker fails
@@ -203,7 +203,7 @@ void init_main(handle_id_t rbx_unused) {
         init_exit(1);
     }
 
-    /* Etapa 4: the SYS_HANDLE_DUP that reserved a spawn cap for iris_test here
+    /* Step 4: the SYS_HANDLE_DUP that reserved a spawn cap for iris_test here
      * is gone.  It existed because iris_test spawns long AFTER the close below,
      * so a materialised copy had to be kept alive to serve as both the loader
      * authority and the source of iris_test's two spawn-cap mints.  The
@@ -214,11 +214,11 @@ void init_main(handle_id_t rbx_unused) {
 
     /* ── Service discovery ── */
     init_log(init_stage_lookup);
-    /* Fase 13 (Track I): init no longer probes kbd over the legacy service/reply
+    /* Phase 13 (Track I): init no longer probes kbd over the legacy service/reply
      * KChannel — kbd is endpoint/notification-only.  kbd liveness is covered by
      * sh's "[SH] kbd cptr OK" (a kbd.ep PING) and by T034/T035/T044/T058. */
 
-    /* Fase 7.2/13: the VFS endpoint is the mandatory operational path.  sm_h is
+    /* Phase 7.2/13: the VFS endpoint is the mandatory operational path.  sm_h is
      * svcmgr's discovery endpoint ("svcmgr.ep", owned by init) — look up "vfs.ep"
      * through it via EP_LOOKUP_NAME (retrying until VFS has bootstrapped).
      * Fail-fast: no legacy fallback.
@@ -237,7 +237,7 @@ void init_main(handle_id_t rbx_unused) {
         init_exit(5);
     }
 
-    /* Fase 13 (Track E/F): the legacy KChannel diagnostics + dynamic-registry
+    /* Phase 13 (Track E/F): the legacy KChannel diagnostics + dynamic-registry
      * self-tests were retired; their coverage now lives in the endpoint suite
      * (EP_DIAG → T067, cap-backed REGISTER/LOOKUP/UNREGISTER → T054/T063–T066). */
 
@@ -258,12 +258,12 @@ void init_main(handle_id_t rbx_unused) {
     init_log("[USER] vfs ep stat OK\n");
     init_log("[USER] vfs ep read OK\n");
 
-    /* Fase 13 (Track I): KBD SUBSCRIBE / shared-reply probes retired — kbd is
+    /* Phase 13 (Track I): KBD SUBSCRIBE / shared-reply probes retired — kbd is
      * endpoint/notification-only and sh consumes keystrokes via "kbd.ep" (pull).
      * init no longer subscribes to a push channel. */
     init_log(init_stage_healthy);
 
-    /* Fase 13 (Track F): the ring-3 timed-IPC KChannel selftest (CHAN_RECV_TIMEOUT
+    /* Phase 13 (Track F): the ring-3 timed-IPC KChannel selftest (CHAN_RECV_TIMEOUT
      * → TIMED_OUT) is retired — covered by iris_test T010 (NOTIFY_WAIT_TIMEOUT). */
 
     init_runtime_probe_invalid_userptr();
@@ -277,7 +277,7 @@ void init_main(handle_id_t rbx_unused) {
          * mid-line with test output under load. */
         if (g_init_console_ep_h != HANDLE_INVALID)
             (void)console_ep_sync(g_init_console_ep_h);
-        /* Etapa 4: unconditional.  The old guard was "did the DUP succeed?";
+        /* Step 4: unconditional.  The old guard was "did the DUP succeed?";
          * with the slot named directly there is nothing to fail early, and an
          * empty slot 6 now fails loudly at the mint instead of silently
          * skipping the whole suite. */

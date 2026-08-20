@@ -1,8 +1,8 @@
-# Fase 17 — scheduler / Scheduling-Context hardening + SMP-readiness
+# Phase 17 — scheduler / Scheduling-Context hardening + SMP-readiness
 
 Status: ACCEPTED — implemented in this phase.  Companion to
-`lifecycle-hardening.md` (Fase 16, exit/kill/reap) and
-`ipc-stress-invariants.md` (A1.11, the deferred-reap slot-reuse fix).  Fase 17
+`lifecycle-hardening.md` (Phase 16, exit/kill/reap) and
+`ipc-stress-invariants.md` (A1.11, the deferred-reap slot-reuse fix).  Phase 17
 audits the scheduler as the microkernel's source of truth about which task is
 alive, runnable, blocked, dead or pending-reap, locks its run-queue and
 Scheduling-Context invariants with runtime tests T119–T124, and writes down the
@@ -138,7 +138,7 @@ wakes an endpoint waiter.
 
 ## Relationship to lifecycle / reap
 
-Unchanged from Fase 16 and re-audited here:
+Unchanged from Phase 16 and re-audited here:
 
 - **Self-exit** (`task_exit_current`): sets `awaiting_reap = 1` then
   `TASK_DEAD`, spins on `task_yield`.  The switch enqueues it on `reap_queue`;
@@ -179,9 +179,9 @@ remaining_budget}`.
 
 ## Instrumentation (additive, ABI-safe)
 
-Fase 17 adds a fourth `SYS_SCHED_INFO` tier, written only when the caller passes
+Phase 17 adds a fourth `SYS_SCHED_INFO` tier, written only when the caller passes
 `buf_size >= 112` (a caller passing 96..111 gets the exact historical 96-byte
-snapshot — same additive rule as the Fase 16 / A1.7 tiers, no signature or
+snapshot — same additive rule as the Phase 16 / A1.7 tiers, no signature or
 syscall-number change):
 
 ```text
@@ -219,7 +219,7 @@ that it is zero.
 | S12 | Yield never loses a runnable task | run-queue integrity | T120, T122 |
 | S13 | Endpoint block/unblock never corrupts the run queue | rq under lock | T121 |
 | S14 | Endpoint close/cancel leaves no schedulable dead waiter | `kendpoint_obj_close` / cancel | T121 |
-| S15 | Kill/exit/reap keeps scheduler state balanced | Fase 16 lifecycle | T119, T121 |
+| S15 | Kill/exit/reap keeps scheduler state balanced | Phase 16 lifecycle | T119, T121 |
 | S16 | Single-core assumptions are written down for SMP | this document | T124 |
 
 ---
@@ -229,7 +229,7 @@ that it is zero.
 All run as ring-3 selftests in `services/iris_test/main.c`, observing the
 scheduler only through `SYS_SCHED_INFO`.  In-process worker threads are TCBs
 retyped from the suite's Untyped and configured with CSpace/VSpace capabilities
-(Stage 5 Etapa 4; `SYS_THREAD_CREATE` is retired), so these tests assert
+(Stage 5 Step 4; `SYS_THREAD_CREATE` is retired), so these tests assert
 TASK-live and PROCESS-live baselines.
 
 | Test | Scenario | Invariants | Failure paths |

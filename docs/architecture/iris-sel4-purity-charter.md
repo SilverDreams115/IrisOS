@@ -1,6 +1,6 @@
 # IRIS — seL4 Purity Charter (constitutional, normative)
 
-**Status**: IN FORCE since Fase S2 inc.2.
+**Status**: IN FORCE since Phase S2 inc.2.
 **Precedence**: this document prevails over every other document in the repo
 (README, phase docs, comments) in case of conflict. It may only be amended in
 a commit that cites it explicitly and updates the
@@ -49,12 +49,12 @@ in the ledger), or `PENDING` (a roadmap stage).
 | A2 | CSpace is the ONLY persistent authority namespace | **MET** — Stage 4: the handle table is DELETED (`HandleTable`, `KProcess.handle_table`, the implementation and its unit suite are gone).  There is one namespace |
 | A3 | CPtr is the only capability identifier exposed productively | **MET** — Stage 4: the eight handle syscalls are retired to `NOT_SUPPORTED`, every creator requires a destination slot, and a CPtr addresses exactly one capability (leftover bits are `INVALID_ARG`) |
 | A4 | No productive handles exist in the final state | **MET** — Stage 4: no handle is produced anywhere.  `iris_test` T095 pins handle-live, handle-delivery and TOCTOU at structural zero |
-| A5 | No ambient authority exists | PARTIAL — ioport whitelist, kernel quotas (ledger).  **Stage 5**: boot authority is fine-grained and NAMED — six capabilities, one authority each, matched by exact equality, and a monolithic boot capability cannot be constructed (`kbootcap_alloc` refuses a multi-bit kind); `SYS_BOOTCAP_RESTRICT` is retired.  Improved in Fase S4: device caps (KIrqCap/KIoPort) are no longer fabricated into a handle table — they are published into CSpace as MDB children of the authorising bootstrap-cap slot, so device authority is traceable and revocable.  The KDEBUG scan is GONE (Etapa 4): `SYS_KLOG_DRAIN`/`SYS_SCHED_INFO`/`SYS_POWEROFF` used to search the caller's handle table for any bootstrap cap bearing KDEBUG — the caller named nothing — and now require the capability as a CPtr argument, with no fallback |
+| A5 | No ambient authority exists | PARTIAL — ioport whitelist, kernel quotas (ledger).  **Stage 5**: boot authority is fine-grained and NAMED — six capabilities, one authority each, matched by exact equality, and a monolithic boot capability cannot be constructed (`kbootcap_alloc` refuses a multi-bit kind); `SYS_BOOTCAP_RESTRICT` is retired.  Improved in Phase S4: device caps (KIrqCap/KIoPort) are no longer fabricated into a handle table — they are published into CSpace as MDB children of the authorising bootstrap-cap slot, so device authority is traceable and revocable.  The KDEBUG scan is GONE (Step 4): `SYS_KLOG_DRAIN`/`SYS_SCHED_INFO`/`SYS_POWEROFF` used to search the caller's handle table for any bootstrap cap bearing KDEBUG — the caller named nothing — and now require the capability as a CPtr argument, with no fallback |
 | A6 | `ACCESS_DENIED` never falls back to another namespace | MET — vacuously, since Stage 4: there is no other namespace to fall back to.  A value that is not a CPtr is `INVALID_ARG` |
 | A7 | Rights are only kept or reduced; mint never amplifies | MET (`rights_reduce`, collapse to NONE rejected) |
 | A8 | Badges are kernel-sealed identity; a badged cap is never re-badged | MET |
-| A9 | Every derived capability is traceable to its ancestor | MET — Fase S4/Stage 3: the parallel handle-tree is DELETED (`SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` retired; derived-insert, revoke-children and the parent array removed).  There is exactly ONE derivation tree: the native CSpace MDB/CDT |
-| A10 | Revoke recursively removes all descendant authority, even cross-process | MET — `SYS_CSPACE_REVOKE` is the ONLY revoke: recursive, cross-CNode and cross-process (T288-T290 + model-based fuzzing).  The intra-table `SYS_CAP_REVOKE` is retired (Fase S4/Stage 3) |
+| A9 | Every derived capability is traceable to its ancestor | MET — Phase S4/Stage 3: the parallel handle-tree is DELETED (`SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` retired; derived-insert, revoke-children and the parent array removed).  There is exactly ONE derivation tree: the native CSpace MDB/CDT |
+| A10 | Revoke recursively removes all descendant authority, even cross-process | MET — `SYS_CSPACE_REVOKE` is the ONLY revoke: recursive, cross-CNode and cross-process (T288-T290 + model-based fuzzing).  The intra-table `SYS_CAP_REVOKE` is retired (Phase S4/Stage 3) |
 
 ### 2.2 Objects
 
@@ -71,13 +71,13 @@ in the ledger), or `PENDING` (a roadmap stage).
 
 | # | Invariant | Today |
 |---|---|---|
-| I1 | Capability transfer uses CSpace as source and destination | MET — Fase S4/Stage 2 made the SOURCE a CPtr resolved to its slot (`syscall_ipc_stage_cap_peek_badged`; a handle source is `INVALID_ARG` with no fallback).  Stage 4 closed the DESTINATION half: handle materialization for a receiver that declared no slot is retired, so a receive without a declared destination gets the message and not the capability.  `iris_ipc_stat_handle_deliveries` is a structural 0, pinned by T095/T096 |
+| I1 | Capability transfer uses CSpace as source and destination | MET — Phase S4/Stage 2 made the SOURCE a CPtr resolved to its slot (`syscall_ipc_stage_cap_peek_badged`; a handle source is `INVALID_ARG` with no fallback).  Stage 4 closed the DESTINATION half: handle materialization for a receiver that declared no slot is retired, so a receive without a declared destination gets the message and not the capability.  `iris_ipc_stat_handle_deliveries` is a structural 0, pinned by T095/T096 |
 | I2 | A failed transfer leaves the state equivalent to before | MET (peek/commit staging, A1.9/A1.10) |
 | I3 | The source cap is not consumed before a confirmed delivery | MET |
 | I4 | Reply is one-shot | MET (explicit KReply; double REPLY → NOT_FOUND) |
 | I5 | Sender identity is unforgeable | MET (sealed badge; reply forces badge 0) |
 | I6 | Close, death, cancellation and rollback have deterministic semantics | MET (proven by lifecycle/stress/fuzzing) |
-| I7 | IPC never silently degrades to handles | MET — Fase S4/Stage 2: the TOCTOU slot→handle fallback is REMOVED; a raced/occupied destination slot fails closed (no cap delivered, source untouched). `iris_ipc_stat_toctou_fallbacks` is a structural 0, guarded by T094/T095 |
+| I7 | IPC never silently degrades to handles | MET — Phase S4/Stage 2: the TOCTOU slot→handle fallback is REMOVED; a raced/occupied destination slot fails closed (no cap delivered, source untouched). `iris_ipc_stat_toctou_fallbacks` is a structural 0, guarded by T094/T095 |
 
 ### 2.4 Scheduling
 
@@ -122,7 +122,7 @@ Prohibited from now on, with no exception and no "temporarily":
 5. Use a **PID, index, address or pointer** as a substitute for a capability.
 6. Introduce syscalls that accept authority through **two namespaces** (the
    existing dual resolvers are frozen legacy, not a pattern to imitate).
-7. Add **CPtr-to-handle fallbacks**. As of Fase S4 (Stage 2) there is NO
+7. Add **CPtr-to-handle fallbacks**. As of Phase S4 (Stage 2) there is NO
    exception: the receive-slot TOCTOU fallback — the last one — is removed and
    its counter is pinned at 0 by T094/T095.
 8. Trust **service names** as authority (names are discovery; authority is the
@@ -140,17 +140,17 @@ same commit, with a written technical justification.
 The capability model is declared COMPLETE only when all of this is true and
 proven:
 
-- [x] Native CDT/MDB tied to CNode slots (global parent/child) — **Fase S3**
+- [x] Native CDT/MDB tied to CNode slots (global parent/child) — **Phase S3**
       (`docs/architecture/cspace-cdt-mdb.md`); recursive cross-process revoke
-      included. The parallel handle-tree is RETIRED (Fase S4/Stage 3): there
+      included. The parallel handle-tree is RETIRED (Phase S4/Stage 3): there
       is exactly one derivation tree in the system.
 - [x] Recursive cross-process revoke with deterministic rollback/cleanup —
-      **Fase S3** (`SYS_CSPACE_REVOKE`).
-- [x] CPtr-based cap transfer (source and destination in CSpace) — **Fase S4**
+      **Phase S3** (`SYS_CSPACE_REVOKE`).
+- [x] CPtr-based cap transfer (source and destination in CSpace) — **Phase S4**
       (Stage 2): source resolved to a CSpace slot, destination the receive
       slot, and the delivered cap installed as an MDB **child of the source
       slot** (real ancestry, no LEGACY_ROOT from IPC).
-- [x] derive/mint/copy/move/delete/revoke operating on slots — **Fase S3**
+- [x] derive/mint/copy/move/delete/revoke operating on slots — **Phase S3**
       (`kcnode_slot_*` primitives); `SYS_CSPACE_MINT`/`MINT_INTO`/`REVOKE`.
 - [x] CSpace-only invocation: zero dual resolution, zero value-range
       discrimination — **Stage 4**.  The resolvers have one leg; the split

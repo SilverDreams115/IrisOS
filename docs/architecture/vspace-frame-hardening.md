@@ -1,8 +1,8 @@
-# Fase 19 — VM / VSpace / frame mapping hardening
+# Phase 19 — VM / VSpace / frame mapping hardening
 
 Status: ACCEPTED — implemented in this phase.  Companion to
-`untyped-retype-revoke-hardening.md` (Fase 18), `lifecycle-hardening.md`
-(Fase 16) and `scheduler-hardening.md` (Fase 17).  Fase 19 closes the gap Fase
+`untyped-retype-revoke-hardening.md` (Phase 18), `lifecycle-hardening.md`
+(Phase 16) and `scheduler-hardening.md` (Phase 17).  Phase 19 closes the gap Phase
 18 left explicit: ring 3 can now drive `SYS_FRAME_MAP` / `SYS_FRAME_UNMAP`
 directly against its own address space, so the `Frame ↔ VSpace ↔ PTE ↔
 mapped_count ↔ cleanup` border is proven, not assumed.  Locked with runtime
@@ -61,7 +61,7 @@ always contributes to the global live-mapping count.
 `RIGHT_WRITE` and `RIGHT_READ` on the frame; it removes the PTE only if the VA
 maps **exactly this frame**.
 
-### SYS_VSPACE_SELF (Fase 19, syscall 106)
+### SYS_VSPACE_SELF (Phase 19, syscall 106)
 
 Ring-3 code has no VSpace CPtr by default (only the boot process gets
 `BOOT_CPTR_VSPACE`).  `SYS_VSPACE_SELF()` returns a handle to the **caller's own**
@@ -147,12 +147,12 @@ PTE references it — a stale PTE cannot outlive its frame.  In the tests, a cle
 
 ## Relationship to untyped / retype / revoke
 
-Frames come from `SYS_UNTYPED_RETYPE(KOBJ_FRAME)` (Fase 18).  A mapping holds an
+Frames come from `SYS_UNTYPED_RETYPE(KOBJ_FRAME)` (Phase 18).  A mapping holds an
 **independent** reference on the frame, so:
 
 - `SYS_CAP_REVOKE` is **cap-scoped** and never force-unmaps: revoking a frame's
   derived handle while it is mapped kills the derived cap but leaves the mapping
-  (and the frame) live (T137 — this closes the Fase-18 T128 gap).
+  (and the frame) live (T137 — this closes the Phase-18 T128 gap).
 - The frame is destroyed only after the mapping is removed **and** the last cap
   is closed; `SYS_UNTYPED_RESET` then succeeds (`child_count == 0`), tying the VM
   and authority layers together.
@@ -181,8 +181,8 @@ correctly in `kframe_map_page` and covered structurally by the host paging code.
 
 ## Instrumentation (additive, ABI-safe)
 
-Fase 19 adds a fifth `SYS_SCHED_INFO` tier, written only when the caller passes
-`buf_size >= 160` (a caller passing 136..159 gets the exact 136-byte Fase-18
+Phase 19 adds a fifth `SYS_SCHED_INFO` tier, written only when the caller passes
+`buf_size >= 160` (a caller passing 136..159 gets the exact 136-byte Phase-18
 snapshot — same additive rule as every prior tier):
 
 ```text

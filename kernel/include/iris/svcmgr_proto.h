@@ -14,7 +14,7 @@
  * ── Overview ─────────────────────────────────────────────────────
  * The productive svcmgr path is endpoint-based: discovery over the svcmgr
  * KEndpoint (endpoint_proto.h) and bootstrap grants via pre-start CPtr mints.
- * KChannel is retired (Fase 13/Track G): the SVCMGR_MSG_* opcodes below and
+ * KChannel is retired (Phase 13/Track G): the SVCMGR_MSG_* opcodes below and
  * their KChannel transport are historical and no longer served.
  *
  *   kernel  → svcmgr : death KNotification signal (via SYS_PROCESS_WATCH)  [live]
@@ -139,7 +139,7 @@
  * channel handle with RIGHT_WRITE; svcmgr gathers:
  *   - kernel-owned snapshot counts via SYS_DIAG_SNAPSHOT
  *   - svcmgr-local supervision summary from its live state
- *   - vfs status via VFS_EP_OP_STATUS EP_CALL on the vfs KEndpoint (Fase 7.5)
+ *   - vfs status via VFS_EP_OP_STATUS EP_CALL on the vfs KEndpoint (Phase 7.5)
  *   - kbd status via KBD_MSG_STATUS on a temporary reply channel
  *
  * The reply carries a compact global-health summary. Subsystem-local status
@@ -207,14 +207,14 @@
 #define SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP 3u
 #define SVCMGR_BOOTSTRAP_KIND_IRQ_CAP   4u  /* KIrqCap capability for IRQ routing */
 #define SVCMGR_BOOTSTRAP_KIND_IOPORT_CAP 5u /* KIoPort capability for I/O port access */
-#define SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP 6u /* retired (Fase 13/Track I): writers
+#define SVCMGR_BOOTSTRAP_KIND_CONSOLE_CAP 6u /* retired (Phase 13/Track I): writers
                                               * log over console.ep. Do not reuse. */
-/* 9u (KBD_CAP) retired in Fase 7.4: sh pulls key events via "kbd.ep".
+/* 9u (KBD_CAP) retired in Phase 7.4: sh pulls key events via "kbd.ep".
  * Do not reuse this kind value. */
-/* 10u/11u (VFS_CAP / VFS_REPLY_CAP) retired in Fase 7.5: vfs is endpoint_only.
+/* 10u/11u (VFS_CAP / VFS_REPLY_CAP) retired in Phase 7.5: vfs is endpoint_only.
  * Do not reuse these kind values. */
 #define SVCMGR_BOOTSTRAP_KIND_INITRD_CAP 12u /* KBootstrapCap (SPAWN_SERVICE) for initrd access */
-/* 0x23 (IRQ_NOTIFY, Fase 7.6) RETIRED in Fase 8: the IRQ KNotification
+/* 0x23 (IRQ_NOTIFY, Phase 7.6) RETIRED in Phase 8: the IRQ KNotification
  * WAIT side now arrives as the pre-start CSpace mint IRIS_CPTR_IRQ_NOTIFY
  * (slot 7).  Reserved; do not reuse this kind value. */
 #define SVCMGR_BOOTSTRAP_KIND_IRQ_NOTIFY 0x23u
@@ -299,7 +299,7 @@
 #define SVCMGR_DIAG_VERSION       2u
 #define IRIS_SERVICE_CATALOG_VERSION 1u
 
-/* Fase 13/Track G: the KChanMsg-based svcmgr_proto_* inline helpers
+/* Phase 13/Track G: the KChanMsg-based svcmgr_proto_* inline helpers
  * (lookup/register/unregister/status/diag builders+decoders, read/write_u32)
  * are retired with the KChannel object — discovery is the EP API.  Only the
  * wire constants above remain (still used for byte-offset documentation). */

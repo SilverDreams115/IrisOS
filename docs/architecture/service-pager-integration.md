@@ -1,9 +1,9 @@
-# Fase 27 — Service pager integration
+# Phase 27 — Service pager integration
 
 Status: ACCEPTED — implemented in this phase.  Companion to
-`user-pager-vm-policy.md` (Fase 25), `memory-object-vmo-policy.md` (Fase 26),
-`service-supervision-model.md` (Fase 24) and `service-authority-minimization.md`
-(Fase 22).  Fase 25/26 made the pager a MODEL and a page SOURCE; Fase 27 makes
+`user-pager-vm-policy.md` (Phase 25), `memory-object-vmo-policy.md` (Phase 26),
+`service-supervision-model.md` (Phase 24) and `service-authority-minimization.md`
+(Phase 22).  Phase 25/26 made the pager a MODEL and a page SOURCE; Phase 27 makes
 it a supervised system SERVICE.  Locked with runtime tests T201–T210.
 
 ---
@@ -56,9 +56,9 @@ and from `lifecycle_probe`.  The supervisor spawns it via `svc_load` with its
 whole authority minted before start; it enters its serve loop immediately (a
 dedicated pager binary IS the service — no mode-entry message).
 
-> **History.**  Fase 27 first shipped the pager as a persistent mode of the
+> **History.**  Phase 27 first shipped the pager as a persistent mode of the
 > already-embedded `lifecycle_probe` image, because adding a tenth initrd blob
-> appeared to wedge early boot.  Fase 28 Bloque A root-caused that "wedge": it
+> appeared to wedge early boot.  Phase 28 Bloque A root-caused that "wedge": it
 > was an over-strict `userboot` assertion (`initrd_count == SL_CATALOG_COUNT`)
 > that exited before loading init on any image-count change — not a memory or
 > layout bug (`__data_start`/`__kernel_end` were byte-identical with a 256-byte
@@ -113,7 +113,7 @@ restart_limit  3                  respawn up to the limit, then degraded
 generation     monotonic          each (re)start is a new generation
 ```
 
-The supervisor (`iris_test`, the Fase 24 probe-supervisor model over a real
+The supervisor (`iris_test`, the Phase 24 probe-supervisor model over a real
 named service) applies this policy: it spawns, registers `pager.svc`, watches,
 and — on repeated death — respawns up to the limit and then stops, leaving the
 service degraded (T206).  A degraded pager does not strand its targets: a
@@ -156,36 +156,36 @@ authority.
 
 ## Interaction with the rest of the system
 
-- **Supervision (Fase 24)** — the pager is a supervised service like any other:
+- **Supervision (Phase 24)** — the pager is a supervised service like any other:
   watch, restart-to-limit, generation, degraded.  The policy is declared and
   applied by the supervisor; the mechanism is the kernel's `SYS_PROCESS_WATCH`
   + `SYS_PROCESS_KILL` + reap.
-- **Service authority (Fase 22)** — the manifest is delivered by the same
+- **Service authority (Phase 22)** — the manifest is delivered by the same
   pre-start `SYS_PROC_CSPACE_MINT` mechanism; the pager adds a manifest *shape*,
   not a new mechanism.  Least authority is asserted by the `REPORT` oracle.
 - **svcmgr registry** — the pager registers a dynamic name (`pager.svc`);
   lookups return a fresh WRITE cap to the current control endpoint.  A restarted
   pager re-registers; the stale registration is unregistered on death, so the
   name resolves `NOT_FOUND` between generations (T205).
-- **User pager / VMO policy (Fase 25/26)** — unchanged and reused verbatim.
-  Resolution is `SYS_VMO_MAP_PAGE` (Fase 26) into a `SYS_PROCESS_VSPACE` cap
-  (Fase 25), with fault generations and seq-checked resume.  The service is the
+- **User pager / VMO policy (Phase 25/26)** — unchanged and reused verbatim.
+  Resolution is `SYS_VMO_MAP_PAGE` (Phase 26) into a `SYS_PROCESS_VSPACE` cap
+  (Phase 25), with fault generations and seq-checked resume.  The service is the
   integration layer on top; it adds no kernel surface.
-- **Fault endpoint model (Fase 20)** — the pager waits on the target's fault
+- **Fault endpoint model (Phase 20)** — the pager waits on the target's fault
   notification (WAIT cap) and resolves through the proc cap; delivery and the
   record lifecycle are unchanged.
 
 ## ABI / kernel impact
 
-None.  Fase 27 adds no syscall and no kernel change.  The pager service is
+None.  Phase 27 adds no syscall and no kernel change.  The pager service is
 pure userland (a `lifecycle_probe` mode) plus supervisor test code.  The only
 non-test source change outside `iris_test` is the pager-service loop in
 `lifecycle_probe/main.c`.
 
 ## Instrumentation
 
-None added.  The Fase 20 fault counters, the Fase 18/19 live gauges
-(frame/mapping/VSpace/endpoint/notification/handle/task/process), the Fase 26
+None added.  The Phase 20 fault counters, the Phase 18/19 live gauges
+(frame/mapping/VSpace/endpoint/notification/handle/task/process), the Phase 26
 VMO-live gauge, the svcmgr registry gauges and the per-process fault record
 cover every observable this phase needs.
 
@@ -241,7 +241,7 @@ T210  seeded stress: mixed rounds — VMO-backed resolve, pager death + supervis
 
 ## Remaining gaps
 
-- **Boot-size fragility — FIXED in Fase 28.**  The "wedge on the 10th image"
+- **Boot-size fragility — FIXED in Phase 28.**  The "wedge on the 10th image"
   was an over-strict `userboot` count assertion, not a kernel memory bug; it is
   root-caused, fixed, and locked with tests T211–T216.  New service images can
   now be added freely, and the pager is its own binary.  See
@@ -257,9 +257,9 @@ T210  seeded stress: mixed rounds — VMO-backed resolve, pager death + supervis
 - **No backing store.**  VMO pages are still eager/anonymous (no swap, no
   filesystem-backed paging, no COW) — the next memory-policy phases.
 
-## Fase 28 Bloque B — file-backed extension (implemented)
+## Phase 28 Bloque B — file-backed extension (implemented)
 
-The Fase 27 raw-VMO pager grew a file-backed subsystem (see
+The Phase 27 raw-VMO pager grew a file-backed subsystem (see
 `file-backed-memory.md`).  The same manifest model gains a VFS endpoint cap
 (`PGR_SLOT_VFS_EP`, slot 4) as the file-read source and two VMO grants — an RO
 page cache (slot 16) and a private-writable pool (slot 17).  New control ops
@@ -280,9 +280,9 @@ pager.  This mirrors the existing supervisor-badged svcmgr cap
 
 ---
 
-## Fase 28.1 addendum — manifest tightening + multi-target
+## Phase 28.1 addendum — manifest tightening + multi-target
 
-The Fase 27/28 manifest is tightened in two ways (`file-grant-capability.md`):
+The Phase 27/28 manifest is tightened in two ways (`file-grant-capability.md`):
 
 - **No generic VFS cap.** Slot 4 is now a *session-badged, WRITE-only* `vfs.ep`
   cap (`IRIS_BADGE_FILEGRANT_S(session)`).  The VFS confines a session badge to

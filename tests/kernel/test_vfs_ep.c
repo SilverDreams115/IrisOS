@@ -1,6 +1,6 @@
 /*
  * test_vfs_ep.c — host unit tests for the VFS endpoint-protocol dispatcher
- * (services/vfs/vfs_ep.c, Fase 7.1).
+ * (services/vfs/vfs_ep.c, Phase 7.1).
  *
  * The dispatcher is a pure function, so every opcode and every validation
  * branch is exercised here without a kernel: valid LIST/STAT/READ_AT, PING,
@@ -27,7 +27,7 @@ static const char    t_iris_name[] = "iris.txt";
 static const uint8_t t_iris_data[] = "Hello from IrisOS VFS!\n";
 #define T_IRIS_LEN ((uint32_t)(sizeof(t_iris_data) - 1u))
 
-/* Fase 28.1: the dispatcher now takes a vfs_ep_state (exports + grant table)
+/* Phase 28.1: the dispatcher now takes a vfs_ep_state (exports + grant table)
  * and classifies callers by req->sender_badge. */
 static struct vfs_grant_table g_grants;
 static struct vfs_ep_state    g_state;
@@ -61,7 +61,7 @@ static void t_setup_exports(void) {
     g_exp[3].size  = 0u;
     g_exp[3].ready = 1u;
 
-    /* Fase 28.1: wire the dispatcher state and seed VFS-issued identities. */
+    /* Phase 28.1: wire the dispatcher state and seed VFS-issued identities. */
     g_state.exports      = g_exp;
     g_state.export_count = T_EXPORTS;
     g_state.grants       = &g_grants;
@@ -366,7 +366,7 @@ static void t_read_at_malformed(void) {
 
 /* ── Defensive arguments ────────────────────────────────────────────────── */
 
-/* ── STATUS (Fase 7.5) ──────────────────────────────────────────────────── */
+/* ── STATUS (Phase 7.5) ──────────────────────────────────────────────────── */
 
 static void t_status_valid(void) {
     t_req_reset(VFS_EP_OP_STATUS);
@@ -436,7 +436,7 @@ static void t_defensive_args(void) {
     }
 }
 
-/* ── Fase 28.1: file-grant layer ─────────────────────────────────────────── */
+/* ── Phase 28.1: file-grant layer ─────────────────────────────────────────── */
 
 /* Dispatch as a specific caller identity (badge). */
 static void t_dispatch_badge(uint64_t badge) {
@@ -547,7 +547,7 @@ static void t_grants(void) {
 /* ── Entry ──────────────────────────────────────────────────────────────── */
 
 void test_vfs_ep(void) {
-    TEST_SUITE("vfs_ep dispatcher (Fase 7.1)");
+    TEST_SUITE("vfs_ep dispatcher (Phase 7.1)");
     t_setup_exports();
 
     t_ping();

@@ -1,7 +1,7 @@
 /*
  * syscall_tcb.c — Block 8 (Ph96-101): TCB capability syscalls.
  *
- * Fase S2 D2: the KTCB IS `struct task` (KObject at offset 0).  A KOBJ_TCB
+ * Phase S2 D2: the KTCB IS `struct task` (KObject at offset 0).  A KOBJ_TCB
  * capability resolves directly to the task; there is no wrapper indirection.
  * A cap to a TERMINATED thread still identifies the same object and answers
  * SYS_TCB_GET_INFO (state = TERMINATED); it cannot be resumed.
@@ -61,7 +61,7 @@ uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /*
  * SYS_TCB_CONFIGURE(tcb_cptr, cspace_cptr, vspace_cptr)
  *
- * The operation Fase S2 named and could not implement: a TCB retyped from an
+ * The operation Phase S2 named and could not implement: a TCB retyped from an
  * Untyped is born cap-complete but inactive — no registry slot, no kernel
  * stack, no address space — and every execution syscall refuses it.  What was
  * missing was not the code but the ARGUMENTS: a thread runs in a CSpace and a
@@ -94,7 +94,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      *
      * Until now it was always the caller's own, because the spawner could not
      * name its child's CSpace and VSpace — they were carved by the kernel
-     * inside SYS_PROCESS_CREATE and never handed out.  Stage 6-pure Etapa 4/5
+     * inside SYS_PROCESS_CREATE and never handed out.  Stage 6-pure Step 4/5
      * made the spawner RETYPE both and pass them in, so it holds them from
      * before the child exists, and the restriction had nothing left to
      * protect.  arg3 == 0 still means "my own", which is what a thread
@@ -224,8 +224,8 @@ uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) return syscall_err(err);
 
     if (target->terminal) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_FOUND); }
-    /* Etapa 0: an unconfigured (retyped, inactive) TCB has no execution to
-     * suspend — refuse without side effects (TCB_CONFIGURE: Etapa 5/6). */
+    /* Step 0: an unconfigured (retyped, inactive) TCB has no execution to
+     * suspend — refuse without side effects (TCB_CONFIGURE: Step 5/6). */
     if (!target->configured) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_SUPPORTED); }
 
     int is_self = (target == caller);
@@ -247,10 +247,10 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) return syscall_err(err);
 
     if (target->terminal) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_FOUND); }
-    /* Etapa 0: an unconfigured TCB must NEVER be made runnable — it has no
+    /* Step 0: an unconfigured TCB must NEVER be made runnable — it has no
      * kstack, no registry slot, no process.  Hard refuse (charter O5/S-gate). */
     if (!target->configured) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_SUPPORTED); }
-    /* Stage 5 Etapa 4: a thread that has been runnable once holds live state
+    /* Stage 5 Step 4: a thread that has been runnable once holds live state
      * on its kernel stack, so its entry frame is frozen from here on
      * (SYS_TCB_WRITE_REGS refuses). */
     target->started = 1;
@@ -289,7 +289,7 @@ uint64_t sys_tcb_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) return syscall_err(err);
 
     if (target->terminal) { kobject_release(&target->base); return 0; /* already gone */ }
-    /* Etapa 0: nothing is executing in an unconfigured TCB — refuse. */
+    /* Step 0: nothing is executing in an unconfigured TCB — refuse. */
     if (!target->configured) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_SUPPORTED); }
 
     int is_self = (target == caller);

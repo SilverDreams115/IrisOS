@@ -1,4 +1,4 @@
-# IRIS — Native CSpace CDT/MDB (Fase S3, normative)
+# IRIS — Native CSpace CDT/MDB (Phase S3, normative)
 
 Capability derivation model tied to CNode slots. Implements charter
 §2.1/A9-A10 (traceable derivation + recursive cross-process revoke) and
@@ -136,7 +136,7 @@ wrappers of `install_linked(legacy=1)` for the existing legacy paths
 Used by ALL derivation (SYS_CSPACE_MINT, SYS_CSPACE_MINT_INTO and the legacy
 proc_cspace_mint, which delegates to it).
 
-## 4. Syscall surface (Fase S3)
+## 4. Syscall surface (Phase S3)
 
 | Syscall | Semantics |
 |---|---|

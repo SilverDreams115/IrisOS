@@ -36,9 +36,9 @@ struct KVmo {
     uint8_t        sparse;  /* 1 = sparse VMO: per-page physical frames
                              * (pages[]), allocated EAGERLY at map time —
                              * there is NO fault-driven demand paging
-                             * (Fase 6.1 removed it; FR-41 regression). */
+                             * (Phase 6.1 removed it; FR-41 regression). */
     struct KProcess *owner; /* creator retained for quota accounting */
-    /* Stage 6 Etapa 5: the Untyped this VMO's pages, metadata and header were
+    /* Stage 6 Step 5: the Untyped this VMO's pages, metadata and header were
      * carved from — the payer's own budget, retained for the VMO's lifetime.
      * NULL means the kernel funded it: the root task, a wrapped device region
      * (framebuffer), or a kernel selftest. */
@@ -57,7 +57,7 @@ struct KVmo {
 iris_error_t kvmo_size_to_pages(uint64_t size, uint32_t *out_pages);
 struct KVmo *kvmo_create(uint64_t size);
 
-/* Stage 6 Etapa 5 — the same VMO, with its header, its page-address array and
+/* Stage 6 Step 5 — the same VMO, with its header, its page-address array and
  * every page it later populates carved from `pool` (the payer's budget).
  * NULL funds it from kernel memory: the root task and the kernel selftests. */
 struct KVmo *kvmo_create_from(uint64_t size, struct KUntyped *pool);
@@ -66,7 +66,7 @@ struct KVmo *kvmo_create_from(uint64_t size, struct KUntyped *pool);
 uint64_t     kvmo_alloc_page(struct KVmo *v);             /* allocate from PMM */
 struct KVmo *kvmo_wrap  (uint64_t phys, uint64_t size); /* wrap existing phys (MMIO) */
 iris_error_t kvmo_bind_owner(struct KVmo *v, struct KProcess *owner);
-/* Fase 29: the VMO's payer domain — the process charged for the VMO object and
+/* Phase 29: the VMO's payer domain — the process charged for the VMO object and
  * for its sparse physical pages (charged once, at page allocation; released at
  * kvmo_destroy).  NULL only if never bound. */
 struct KProcess *kvmo_owner(const struct KVmo *v);

@@ -44,7 +44,7 @@ uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_rights_t   cn_rights;
     iris_error_t    err;
 
-    /* Fase S1: arg0 == 0 names the CALLER'S OWN root CNode (mirrors the
+    /* Phase S1: arg0 == 0 names the CALLER'S OWN root CNode (mirrors the
      * SYS_UNTYPED_RETYPE2 destination convention).  Deleting a slot of your
      * own CSpace only discards authority you already hold — no amplification. */
     if (cptr_or_h == 0u) {
@@ -87,7 +87,7 @@ uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK)
         return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
 
-    /* Fase S3: swap goes through the canonical primitive — the MDB links of
+    /* Phase S3: swap goes through the canonical primitive — the MDB links of
      * both capabilities (parent, siblings, children) travel with them. */
     err = kcnode_swap(cn, slot_a, slot_b);
     kobject_active_release(&cn->base);

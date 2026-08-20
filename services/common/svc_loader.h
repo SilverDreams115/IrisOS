@@ -10,11 +10,11 @@
  * blobs, etc.); those are not named by the ring-3 catalog and are loaded by
  * index/other means.  The boot invariant is therefore that the kernel has AT
  * LEAST this many images (so every named index resolves), not exactly this
- * many — see the Fase 28 boot-growth fix in userboot. */
-#define SL_CATALOG_COUNT 11u   /* index 10 = pager (own binary, Fase 28) */
+ * many — see the Phase 28 boot-growth fix in userboot. */
+#define SL_CATALOG_COUNT 11u   /* index 10 = pager (own binary, Phase 28) */
 
 /*
- * Stage 5 Etapa 2: spawning needs TWO authorities, and they are two
+ * Stage 5 Step 2: spawning needs TWO authorities, and they are two
  * capabilities.  `initrd_c` authorises reading boot images
  * (SYS_INITRD_COUNT / SYS_INITRD_VMO) and `proc_c` authorises creating a
  * process (SYS_PROCESS_CREATE).  They used to be one bit on one object, so a
@@ -52,7 +52,7 @@ long svc_load(uint64_t proc_c, uint64_t initrd_c, const char *name,
               handle_id_t *out_proc_h, handle_id_t *out_chan_h);
 
 /*
- * Fase 8: pre-start CSpace mint table.
+ * Phase 8: pre-start CSpace mint table.
  *
  * svc_load_minted behaves like svc_load but additionally mints the given
  * capabilities into the child's root CNode (SYS_PROC_CSPACE_MINT) BEFORE
@@ -66,7 +66,7 @@ struct svc_mint {
     uint64_t      slot;    /* destination CPtr slot in the child root CNode */
     handle_id_t   src_h;   /* source cap in the CALLER's handle table
                             * (legacy path: SYS_PROC_CSPACE_MINT) */
-    uint64_t      src_cptr;/* Fase S4: source cap in the CALLER's CSpace.  When
+    uint64_t      src_cptr;/* Phase S4: source cap in the CALLER's CSpace.  When
                             * non-zero it WINS over src_h and the mint goes
                             * through SYS_CSPACE_MINT_INTO, so the child's cap
                             * becomes an MDB child of OUR slot — the delegation
@@ -74,14 +74,14 @@ struct svc_mint {
                             * path is legacy and retires with the dual
                             * namespace (Stage 4). */
     iris_rights_t rights;  /* rights mask (reduced against src rights) */
-    uint64_t      badge;   /* Fase 9: sender badge for the minted cap
+    uint64_t      badge;   /* Phase 9: sender badge for the minted cap
                             * (0 = inherit source badge / unbadged).
                             * Packed into SYS_PROC_CSPACE_MINT arg3 high
                             * bits; subject to the kernel's no-re-badge
                             * rule. */
 };
 
-/* Etapa 4: spawn publishing every created capability into CSpace.
+/* Step 4: spawn publishing every created capability into CSpace.
  *
  * `ws` packs the untyped to carve a second-level CNode from (low 32 bits) and
  * the root slot that holds it (high 32).  A spawn needs eleven capabilities
@@ -97,10 +97,10 @@ struct svc_mint {
 /* `child_budget` (bytes, 0 = the default) is the Untyped the child's KERNEL
  * memory is carved from: its address space, its process state, and the segment
  * and stack VMOs the loader charges to it.  It is recycled when the child dies
- * (Stage 6 Etapa 5), so it bounds concurrent cost rather than accumulating —
+ * (Stage 6 Step 5), so it bounds concurrent cost rather than accumulating —
  * which is why the spawner, who knows what it is launching, chooses the size. */
 /*
- * `own_budget_slot` (Stage 6-pure Etapa 2): the slot to mint the child a
+ * `own_budget_slot` (Stage 6-pure Step 2): the slot to mint the child a
  * capability to the budget its OWN address space was built from; 0 = none.
  *
  * A task that maps anything must now be able to retype a paging level, because

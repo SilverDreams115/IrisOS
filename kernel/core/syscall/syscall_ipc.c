@@ -2,7 +2,7 @@
 
 
 
-/* Fase 13/Track G: sys_chan_create/send/recv/recv_nb retired — KChannel is
+/* Phase 13/Track G: sys_chan_create/send/recv/recv_nb retired — KChannel is
  * no longer a productive IPC mechanism; the syscall numbers return
  * IRIS_ERR_NOT_SUPPORTED via the dispatch default. */
 
@@ -10,7 +10,7 @@
 /* ── Notification syscalls ────────────────────────────────────────── */
 
 /*
- * Fase S1: SYS_NOTIFY_CREATE (19) is RETIRED — it fabricated a KNotification
+ * Phase S1: SYS_NOTIFY_CREATE (19) is RETIRED — it fabricated a KNotification
  * from kslab, charged a per-process quota and returned a handle: three
  * non-seL4 mechanisms in one path.  Notifications are now created ONLY via
  * SYS_UNTYPED_RETYPE2 (storage inside the source Untyped, capability directly
@@ -58,7 +58,7 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
-/* Fase 13/Track G: sys_chan_seal / sys_chan_recv_timeout retired (KChannel
+/* Phase 13/Track G: sys_chan_seal / sys_chan_recv_timeout retired (KChannel
  * fully retired); the syscall numbers fall to the dispatch default. */
 
 
@@ -96,7 +96,7 @@ uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
-/* Fase 13 (Track G): sys_wait_any / sys_wait_any_timeout retired —
+/* Phase 13 (Track G): sys_wait_any / sys_wait_any_timeout retired —
  * zero callers; the syscall numbers (44 / 72) fall through to the
  * dispatch default (IRIS_ERR_NOT_SUPPORTED) and stay reserved. */
 

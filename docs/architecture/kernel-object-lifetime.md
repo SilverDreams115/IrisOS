@@ -1,6 +1,6 @@
 # Kernel Object Lifetime & Charge/Release Paths
 
-Status: **DOCUMENTED** (Fase 29).  Companion to
+Status: **DOCUMENTED** (Phase 29).  Companion to
 `resource-ownership-accounting.md` (the ownership model and per-object table)
 and `kernel-capacity-limits.md` (global capacity).
 
@@ -29,7 +29,7 @@ exactly one charge per charge acquired.
 | KVMO (object) | `kvmo_bind_owner(v, payer)` → `payer->owned_vmos++` | `kvmo_destroy` → `owned_vmos--` | payer = self or a MANAGE'd process (`SYS_VMO_CREATE_FOR`) |
 | KVMO (sparse pages) | first allocation of each page → `payer->phys_pages_charged++` (payer = `kvmo_owner(v)`) | `kvmo_destroy` → one `phys_pages_charged--` per allocated page | charged once regardless of how many VSpaces map it |
 | KFrameMapping / PTE | `kvspace_map_page` (kslab object) | `kvspace_unmap_page` / VSpace teardown | per-(VSpace, VA); no per-process quota |
-| KNotification / KEndpoint / KCNode / KReply / KSchedContext | kslab object at create | last-reference destroy | bounded by kslab capacity, not a per-domain quota.  KNotification had an `owned_notifications` quota until **Fase S1**: it is now paid for in Untyped + a CSpace slot, like every other retyped object |
+| KNotification / KEndpoint / KCNode / KReply / KSchedContext | kslab object at create | last-reference destroy | bounded by kslab capacity, not a per-domain quota.  KNotification had an `owned_notifications` quota until **Phase S1**: it is now paid for in Untyped + a CSpace slot, like every other retyped object |
 
 ## Death propagation
 
@@ -61,7 +61,7 @@ publish nothing).  `SYS_RESOURCE_INFO` makes the balance observable; T239–T250
 assert usage returns exactly to baseline after every scenario (Q23) while
 high-water marks stay monotone (Q24).
 
-## Fase S1 — Untyped-backed lifetime (Endpoint / Notification / Reply / CNode)
+## Phase S1 — Untyped-backed lifetime (Endpoint / Notification / Reply / CNode)
 
 Migrated objects do NOT take quota charges: their "charge" is the Untyped
 memory consumed (`child_count` + `used_bytes` of the source Untyped), and their
@@ -89,7 +89,7 @@ Revoke:
 - `SYS_CAP_REVOKE(h)` cascades over the handle-table derivation tree (exact
   descendants, idempotent, does not touch siblings).
 - Copies minted into CNodes are independent refs (documented + T127); the
-  native CSpace CDT (`SYS_CSPACE_REVOKE`, Fase S3) provides recursive
+  native CSpace CDT (`SYS_CSPACE_REVOKE`, Phase S3) provides recursive
   cross-process revoke (ledger).
 - Endpoint: covers blocked senders/receivers/callers, staged caps and dead
   processes via close/cancel (A1.9–A1.11, T255/T258).

@@ -88,7 +88,7 @@ static void knotification_close(struct KObject *obj) {
 }
 
 /*
- * Fase S1: the kslab-backed variant and the per-process owner/quota binding
+ * Phase S1: the kslab-backed variant and the per-process owner/quota binding
  * are RETIRED.  A KNotification is created only via Untyped retype; the
  * authority to create one is possession of sufficient KUntyped plus a free
  * CSpace destination slot — never a kernel-side numeric quota.

@@ -1,5 +1,5 @@
 /*
- * init_launch.c — service launch for init (Fase 14 extraction).
+ * init_launch.c — service launch for init (Phase 14 extraction).
  *
  * Everything here is MOVED VERBATIM from main.c (no functional change): the
  * fb / console / svcmgr / iris_test spawns — initrd loads via
@@ -20,7 +20,7 @@ static const char init_fb_load_fail[] = "[INIT] fb load FAILED\r\n";
 /* ── fb spawn (Phase 30: ring-3 framebuffer painter) ────────────────────── */
 
 /* Slot 42 held fb's FRAMEBUFFER-restricted clone between its construction and
- * the pre-start mint.  Stage 5 Etapa 2 deleted the construction: fb is minted
+ * the pre-start mint.  Stage 5 Step 2 deleted the construction: fb is minted
  * the framebuffer control capability from init's own slot. */
 
 void init_spawn_fb(void) {
@@ -28,7 +28,7 @@ void init_spawn_fb(void) {
     handle_id_t fb_boot_h  = HANDLE_INVALID;
     long r;
 
-    /* Stage 5 Etapa 2: fb receives the FRAMEBUFFER CONTROL capability — the
+    /* Stage 5 Step 2: fb receives the FRAMEBUFFER CONTROL capability — the
      * whole of what it is allowed to do — as a pre-start mint from init's own
      * slot, so the grant is an MDB child of init's and stays revocable.
      *
@@ -60,7 +60,7 @@ void init_spawn_fb(void) {
 
 /* ── console spawn (Phase 30: ring-3 serial console service) ────────────── */
 
-/* Fase 13 (Track I): console is endpoint-only and CPtr-provisioned — its
+/* Phase 13 (Track I): console is endpoint-only and CPtr-provisioned — its
  * endpoint recv side (IRIS_CPTR_OWN_EP) and its 0x3F8 UART KIoPort
  * (IRIS_CPTR_IOPORT) are pre-start mints; no legacy console KChannel pair, no
  * bootstrap sends.  Returns 1 on success, 0 on failure. */
@@ -68,11 +68,11 @@ int init_spawn_console(void) {
     handle_id_t con_proc_h  = HANDLE_INVALID;
     handle_id_t con_boot_h  = HANDLE_INVALID;
 #define INIT_CONSOLE_IOPORT_SLOT 41u
-    uint32_t    ioport_c    = 0u;   /* Fase S4: CPtr slot, not a handle */
+    uint32_t    ioport_c    = 0u;   /* Phase S4: CPtr slot, not a handle */
     long r;
 
     /* Console KEndpoint master (init owns it); recv side minted to the child.
-     * Fase S1: retyped from init's untyped pool (SYS_ENDPOINT_CREATE retired). */
+     * Phase S1: retyped from init's untyped pool (SYS_ENDPOINT_CREATE retired). */
     r = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
                          INIT_SLOT_CONSOLE_EP, 0);
     if (r < 0) {
@@ -82,10 +82,10 @@ int init_spawn_console(void) {
     g_init_console_ep_h = (handle_id_t)INIT_SLOT_CONSOLE_EP;
 
     /* KIoPort for the 8 UART registers at 0x3F8..0x3FF (IN poll LSR + OUT THR).
-     * Fase S4: published into a CSpace slot as an MDB child of the authorising
+     * Phase S4: published into a CSpace slot as an MDB child of the authorising
      * slot, and forwarded to console by CSpace source — so the delegation is
      * revocable from init.  Slot 41 is free in init's root CNode.
-     * Stage 5 Etapa 2: the authority is the ioport control capability. */
+     * Stage 5 Step 2: the authority is the ioport control capability. */
     if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
                   0x3F8, 8, (long)INIT_CONSOLE_IOPORT_SLOT) != 0) {
         init_early_serial_write(init_console_ioport_fail);
@@ -93,7 +93,7 @@ int init_spawn_console(void) {
     }
     ioport_c = INIT_CONSOLE_IOPORT_SLOT;
 
-    /* Fase S1: console serves EP_CALLs, so it needs an explicit reply object.
+    /* Phase S1: console serves EP_CALLs, so it needs an explicit reply object.
      * Retype it from init's pool, mint it at IRIS_CPTR_OWN_REPLY, then DROP
      * init's handle — a retained reply cap would suppress the
      * close-wakes-caller path if console dies. */
@@ -139,7 +139,7 @@ int init_spawn_console(void) {
     }
 
     /* console holds the slot-10 mint now; init keeps its own slot so it can
-     * still revoke the delegation (Fase S4). */
+     * still revoke the delegation (Phase S4). */
     init_close(&con_proc_h);
     init_close(&con_boot_h);
     return 1;
@@ -153,7 +153,7 @@ fail:
 
 /* ── svcmgr spawn (Phase 29: ring-3 loader; Phase 30: also sends console) ── */
 
-/* Fase 13 (Track I): init owns svcmgr's discovery endpoint ("svcmgr.ep").  It
+/* Phase 13 (Track I): init owns svcmgr's discovery endpoint ("svcmgr.ep").  It
  * creates the endpoint, mints the recv+mint side into svcmgr (IRIS_CPTR_OWN_EP)
  * and keeps the send side for its own EP_LOOKUP_NAME calls.  All of svcmgr's
  * bootstrap caps arrive as pre-start CSpace mints (no bootstrap KChannel):
@@ -168,13 +168,13 @@ handle_id_t init_spawn_svcmgr(void) {
     handle_id_t svcmgr_ep_h    = HANDLE_INVALID;
     long r;
 
-    /* Fase S1: retyped from init's untyped pool (SYS_ENDPOINT_CREATE retired). */
+    /* Phase S1: retyped from init's untyped pool (SYS_ENDPOINT_CREATE retired). */
     r = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
                          INIT_SLOT_SVCMGR_EP, 0);
     if (r < 0) goto fail;
     svcmgr_ep_h = (handle_id_t)INIT_SLOT_SVCMGR_EP;
 
-    /* Etapa 4: the SYS_HANDLE_DUP that used to sit here is gone.  It produced a
+    /* Step 4: the SYS_HANDLE_DUP that used to sit here is gone.  It produced a
      * rights-reduced duplicate purely to have a HANDLE to pass as a mint
      * source — and the mint below already reduces to exactly the same rights,
      * so the duplicate never carried authority the mint did not compute
@@ -182,7 +182,7 @@ handle_id_t init_spawn_svcmgr(void) {
      * a syscall, and makes svcmgr's spawn cap an MDB child of that slot, so
      * the delegation is revocable by init instead of handed over outright. */
 
-    /* Fase S1: carve svcmgr's untyped pool (a sub-untyped of init's boot
+    /* Phase S1: carve svcmgr's untyped pool (a sub-untyped of init's boot
      * block) — svcmgr retypes every service endpoint / IRQ notification /
      * reply object from it.  Sized for the whole catalog plus per-service
      * reply sub-untypeds and restart churn. */
@@ -192,7 +192,7 @@ handle_id_t init_spawn_svcmgr(void) {
          * just its own endpoints and replies — each child's address space and
          * kernel state (Etapas 2-4), the loader's segment and stack VMOs per
          * spawn AND per restart, and vfs's copies of the initrd images
-         * (Etapa 5).  A bump allocator does not rewind, so a restart costs its
+         * (Step 5).  A bump allocator does not rewind, so a restart costs its
          * images again until the pool is RESET; the budget is sized for that
          * rather than pretending the memory is free. */
         static const uint64_t s1_sm_ut_sizes[] =
@@ -234,7 +234,7 @@ handle_id_t init_spawn_svcmgr(void) {
         sm_mints[n].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         sm_mints[n].badge  = 0;
         n++;
-        /* Stage 5 Etapa 2: svcmgr claims the machine's IRQs and port ranges on
+        /* Stage 5 Step 2: svcmgr claims the machine's IRQs and port ranges on
          * behalf of the catalog, so it gets the two control capabilities that
          * authorise exactly that — and, once it has claimed everything, drops
          * them.  They used to be one bit on the capability above. */
@@ -292,7 +292,7 @@ fail:
  * closed; consumed here).  Every capability the suite needs — spawn cap,
  * svcmgr/vfs/console/kbd endpoints, test fixtures — is delivered as a
  * pre-start CSpace mint (table below); no bootstrap-channel sends remain
- * (Fase 13/Track I).  Then waits up to 12 seconds for iris_test to exit and
+ * (Phase 13/Track I).  Then waits up to 12 seconds for iris_test to exit and
  * logs the final pass/fail result.
  */
 void init_spawn_iris_test(handle_id_t sm_h) {
@@ -301,7 +301,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
     handle_id_t watch_base_h = HANDLE_INVALID; /* death notification (Track B) */
     long r;
 
-    /* Fase 8: the full well-known slot set is pre-start-minted into
+    /* Phase 8: the full well-known slot set is pre-start-minted into
      * iris_test (the kind-0x20 bootstrap forward is retired — slot 1 is
      * the only discovery path):
      *   slot 1  — svcmgr discovery ep, RIGHT_WRITE   → T026+/T039/T041
@@ -311,11 +311,11 @@ void init_spawn_iris_test(handle_id_t sm_h) {
      *   slot 30 — KNotification, RIGHT_WRITE (wrong type) → T040 WRONG_TYPE
      *   slot 31 — svcmgr ep, RIGHT_TRANSFER only     → T040 ACCESS_DENIED
      *             (the dual resolver must NOT fall back to handles).
-     * Fase 13/Track I: svcmgr.ep/vfs.ep/kbd.ep come from EP_LOOKUP_NAME over
+     * Phase 13/Track I: svcmgr.ep/vfs.ep/kbd.ep come from EP_LOOKUP_NAME over
      * init's svcmgr.ep (init holds a supervisor badge → full granted rights,
      * including DUPLICATE for the mint).  Missing caps leave slots empty: the
      * tests FAIL loudly, never skip. */
-    /* Etapa 4: declare a receive slot for every lookup.  A recv that declares
+    /* Step 4: declare a receive slot for every lookup.  A recv that declares
      * none takes the delivery-by-handle path, which is the last IPC producer
      * of handles in the productive tree.  Slots 54..56 are free in init. */
     handle_id_t lk_svcmgr = init_ep_lookup_name_slot(sm_h, "svcmgr.ep",
@@ -324,7 +324,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
                                                      INIT_RSLOT_LK_VFS);
     handle_id_t lk_kbd    = init_ep_lookup_name_slot(sm_h, "kbd.ep",
                                                      INIT_RSLOT_LK_KBD);
-    /* Fase 13/Track I: a KNotification serves as the slot-30 wrong-type fixture
+    /* Phase 13/Track I: a KNotification serves as the slot-30 wrong-type fixture
      * for T040 (replaces the retired console KChannel cap).  It carries
      * RIGHT_WRITE so EP_CALL passes the rights check and fails on TYPE
      * (WRONG_TYPE), not ACCESS_DENIED. */
@@ -337,19 +337,19 @@ void init_spawn_iris_test(handle_id_t sm_h) {
     if (lk_svcmgr == HANDLE_INVALID)
         init_log("[USER][INIT] svcmgr.ep lookup FAILED\n");
 
-    /* Fase 18: forward the boot KUntyped (received from userboot at
+    /* Phase 18: forward the boot KUntyped (received from userboot at
      * IRIS_CPTR_INIT_UNTYPED) on to iris_test for the ring-3 authority suite.
      * Resolve init's CSpace slot into a mint-source handle; full rights so the
      * suite can retype (WRITE) and revoke.  Absent grant → slot stays empty and
      * T125–T131 FAIL loudly. */
     handle_id_t lk_untyped = HANDLE_INVALID;
     {
-        /* Fase S1: iris_test receives its OWN sub-untyped (carved from init's
+        /* Phase S1: iris_test receives its OWN sub-untyped (carved from init's
          * pool) instead of a second cap to the shared boot block — the suite
          * can retype/reset it freely without touching init/svcmgr objects.
          * Sized generously for the object-churn suites; smaller fallbacks
          * keep the authority tests alive on small boot blocks. */
-        /* Stage 6 Etapa 2: page tables are charged to the pool of whoever
+        /* Stage 6 Step 2: page tables are charged to the pool of whoever
          * spawns, so the suite — which spawns a hundred-odd children across
          * the lifecycle and pager tests — needs a budget sized for their
          * address spaces (about five tables each), not just for the objects
@@ -374,7 +374,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
     }
 
     {
-        /* Fase 9: slots 1-4 carry IRIS_BADGE_IRIS_TEST so every server can
+        /* Phase 9: slots 1-4 carry IRIS_BADGE_IRIS_TEST so every server can
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
@@ -407,29 +407,29 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[6].src_h = lk_svcmgr;                 /* badge B fixture */
         it_mints[6].rights = RIGHT_WRITE;
         it_mints[6].badge = IRIS_BADGE_TEST_B;
-        /* Fase 10: supervisor-badged svcmgr cap so iris_test can drive the
+        /* Phase 10: supervisor-badged svcmgr cap so iris_test can drive the
          * privileged RESTART path (real death→respawn E2E, T057/T060). */
         it_mints[7].slot = IRIS_CPTR_TEST_SUPER;
         it_mints[7].src_h = lk_svcmgr;
         it_mints[7].rights = RIGHT_WRITE;
         it_mints[7].badge = IRIS_BADGE_INIT;
-        /* Fase 13: an authority cap in a CPtr slot — iris_test invokes it by
+        /* Phase 13: an authority cap in a CPtr slot — iris_test invokes it by
          * CPtr to prove device authority resolves via CSpace (T069).
-         * Stage 5 Etapa 2: that cap is the ioport CONTROL capability now, so
+         * Stage 5 Step 2: that cap is the ioport CONTROL capability now, so
          * the test names something that authorises exactly one syscall. */
         it_mints[8].slot = IRIS_CPTR_IOPORT_CONTROL;
         it_mints[8].src_cptr = IRIS_CPTR_IOPORT_CONTROL;
         it_mints[8].rights = RIGHT_READ;
         it_mints[8].badge = 0;
-        /* Fase 13 (Track I): the suite's operational authorities are pre-start
-         * mints — no bootstrap KChannel send.  Stage 5 Etapa 2: they are three
+        /* Phase 13 (Track I): the suite's operational authorities are pre-start
+         * mints — no bootstrap KChannel send.  Stage 5 Step 2: they are three
          * capabilities, because the suite does three different things with
          * them (spawn children, read boot images, probe the framebuffer). */
         it_mints[9].slot = IRIS_CPTR_PROC_CONTROL;
         it_mints[9].src_cptr = IRIS_CPTR_PROC_CONTROL;
         it_mints[9].rights = RIGHT_READ;
         it_mints[9].badge = 0;
-        /* Stage 5 Etapa 2: the suite creates IRQ capabilities in several
+        /* Stage 5 Step 2: the suite creates IRQ capabilities in several
          * tests and asserts that each control capability authorises ONLY its
          * own syscall (T296).  The ioport half arrives at index 8 above. */
         it_mints[13].slot = IRIS_CPTR_IRQ_CONTROL;
@@ -453,13 +453,13 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[16].src_cptr = IRIS_CPTR_FB_CONTROL;
         it_mints[16].rights = RIGHT_READ;
         it_mints[16].badge = 0;
-        /* Fase 18: the boot KUntyped for the authority suite (T125–T131). */
+        /* Phase 18: the boot KUntyped for the authority suite (T125–T131). */
         it_mints[10].slot = IRIS_CPTR_TEST_UNTYPED;
         it_mints[10].src_cptr = lk_untyped;   /* 0 → skipped by svc_load */
         it_mints[10].rights = RIGHT_READ | RIGHT_WRITE |
                               RIGHT_DUPLICATE | RIGHT_TRANSFER;
         it_mints[10].badge = 0;
-        /* Fase 28.1: the supervisor-side file-grant caps for iris_test (the
+        /* Phase 28.1: the supervisor-side file-grant caps for iris_test (the
          * pager supervisor in the runtime suite).  Two slots, because a badged
          * cap can never be re-badged:
          *   slot 58 — the grant ADMIN identity: call-only (WRITE) vfs.ep cap
@@ -483,7 +483,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[12].src_h = lk_vfs;
         it_mints[12].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         it_mints[12].badge = 0;
-        /* Etapa 4: the loader authority is our spawn-cap SLOT.  SYS_INITRD_VMO
+        /* Step 4: the loader authority is our spawn-cap SLOT.  SYS_INITRD_VMO
          * and SYS_PROCESS_CREATE both resolve it either way, and the slot
          * outlives bootstrap_h by construction — which is the only reason the
          * retired duplicate had to exist. */
@@ -514,14 +514,14 @@ void init_spawn_iris_test(handle_id_t sm_h) {
                   (long)RIGHT_WRITE) != 0)
         init_log("[USER][INIT] iris_test self-proc mint FAILED\n");
 
-    /* Fase 13 (Track I): the iris_test spawn cap is delivered as the
+    /* Phase 13 (Track I): the iris_test spawn cap is delivered as the
      * IRIS_CPTR_SPAWN_CAP pre-start mint above — no KChannel SPAWN_CAP send. */
     init_close(&boot_h);
 
-    /* Fase 13 (Track B): process-exit watch is delivered as a KNotification
+    /* Phase 13 (Track B): process-exit watch is delivered as a KNotification
      * signal.  One notification (full rights) serves both the watch arm
      * (RIGHT_WRITE) and our own wait (RIGHT_WAIT); bit 0 marks iris_test. */
-    /* Fase S1: retyped from init's untyped pool (SYS_NOTIFY_CREATE retired). */
+    /* Phase S1: retyped from init's untyped pool (SYS_NOTIFY_CREATE retired). */
     r = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
                          INIT_SLOT_WATCH_NOTIF, 0);
     if (r < 0) goto out;
@@ -553,6 +553,6 @@ out:
     init_close(&proc_h);
     init_close(&boot_h);
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_WATCH_NOTIF);
-    /* Etapa 4: nothing to close — the loader authority was our own CSpace slot,
+    /* Step 4: nothing to close — the loader authority was our own CSpace slot,
      * not a duplicate this function owned and had to release. */
 }

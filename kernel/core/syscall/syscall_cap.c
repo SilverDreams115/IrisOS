@@ -43,7 +43,7 @@ uint64_t sys_handle_dup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /* ── Hardware capability creation (C2: policy moved to svcmgr) ──────── */
 
 
-/* ── Fase S4 (Etapa 3 prep): CSpace-native device capabilities ────────────
+/* ── Phase S4 (Step 3 prep): CSpace-native device capabilities ────────────
  *
  * SYS_CAP_CREATE_IRQCAP / _IOPORT used to be handle producers: the only way
  * to hold a KIrqCap/KIoPort was a handle, which left the legacy handle tree
@@ -79,7 +79,7 @@ static iris_error_t dev_cap_publish(struct task *t, struct KObject *obj,
 /* Resolve the control-capability CPtr to BOTH its object (to check WHICH
  * authority it is) and its slot (to become the MDB parent).  CSpace only.
  *
- * Stage 5 Etapa 2: `kind` is matched EXACTLY.  The predecessor accepted any
+ * Stage 5 Step 2: `kind` is matched EXACTLY.  The predecessor accepted any
  * boot capability carrying IRIS_BOOTCAP_HW_ACCESS — one bit that authorised
  * both IRQ and ioport creation, on an object that also carried spawn, debug
  * and framebuffer authority.  A service that needed a serial port therefore
@@ -139,7 +139,7 @@ uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                     &auth_cn, &auth_idx);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* Stage 6 Etapa 6: the object comes out of the claimer's budget. */
+    /* Stage 6 Step 6: the object comes out of the claimer's budget. */
     struct KIrqCap *irqcap = kirqcap_alloc_from(t->process->mem_pool, irq_num);
     if (!irqcap) {
         dev_cap_auth_release(auth_cn);
@@ -179,7 +179,7 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                     &auth_cn, &auth_idx);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* Stage 6 Etapa 6: the object comes out of the claimer's budget. */
+    /* Stage 6 Step 6: the object comes out of the claimer's budget. */
     struct KIoPort *ioport = kioport_alloc_from(t->process->mem_pool, base, count);
     if (!ioport) {
         dev_cap_auth_release(auth_cn);
@@ -234,7 +234,7 @@ uint64_t sys_handle_insert(uint64_t arg0, uint64_t arg1,
  * It narrowed a KIoPort by fabricating a NEW KIoPort from kslab and publishing
  * it as a handle — device authority with no capability ancestor, so it could
  * be neither traced to its grantor nor revoked by one.  That is the exact
- * defect Fase S4 fixed for SYS_CAP_CREATE_IOPORT, which now publishes into a
+ * defect Phase S4 fixed for SYS_CAP_CREATE_IOPORT, which now publishes into a
  * CSpace slot as an MDB child of the bootstrap cap that authorised it.
  * Nothing in the tree ever called this — not even a test — so it retires
  * rather than acquiring a destination slot it would be the only user of.
@@ -245,7 +245,7 @@ uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
-/* ── SYS_BOOTCAP_RESTRICT — RETIRED (Stage 5 Etapa 2) ─────────────────
+/* ── SYS_BOOTCAP_RESTRICT — RETIRED (Stage 5 Step 2) ─────────────────
  *
  * Number 45 stays permanently reserved and answers NOT_SUPPORTED.
  *

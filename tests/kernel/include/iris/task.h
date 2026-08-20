@@ -37,8 +37,8 @@ struct task {
     uint8_t           ipc_ep_closed;
     struct KObject   *ep_cap_obj;
     uint32_t          ep_cap_rights;
-    uint64_t          ep_cap_badge;   /* Fase 9 */
-    /* Fase S4 (Etapa 2): two-phase staging source is a CSpace SLOT, not a
+    uint64_t          ep_cap_badge;   /* Phase 9 */
+    /* Phase S4 (Step 2): two-phase staging source is a CSpace SLOT, not a
      * handle — it is the MDB identity the delivered cap is parented to. */
     struct KCNode    *ep_cap_src_cn;
     uint32_t          ep_cap_src_idx;

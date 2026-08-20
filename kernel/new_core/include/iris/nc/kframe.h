@@ -12,7 +12,7 @@
 struct KVmo;
 
 /*
- * KFrame — Frame capability object (Fase 5).
+ * KFrame — Frame capability object (Phase 5).
  *
  * Represents formal authority over a contiguous physical memory region
  * suitable for mapping into a VSpace.  Created exclusively via
@@ -24,21 +24,21 @@ struct KVmo;
  *   - kframe_destroy decrements parent->child_count and releases the
  *     parent retain, mirroring the sub-untyped teardown pattern.
  *
- * Bootstrap frames (Fase 6.2):
+ * Bootstrap frames (Phase 6.2):
  *   bootstrap_kframe_map creates a KFrame with alloc_parent=NULL for
  *   one physical page and maps it immediately into a KVSpace.  The
  *   alloc retain is held by the caller (stored in KProcess.bootstrap_frames).
  *   Physical memory lifetime is managed externally (task struct fields);
  *   KFrame destroy only calls kslab_free.
  *
- * VMO-backed frames (Fase 6.3):
+ * VMO-backed frames (Phase 6.3):
  *   kframe_alloc_vmo_page creates a KFrame with alloc_parent=NULL and
  *   vmo_owner=v (retaining v).  Physical memory is owned by the VMO.
  *   kframe_obj_destroy releases the vmo_owner retain; this delays kvmo_destroy
  *   (and thus pmm_free_page on VMO pages) until all KFrames for the VMO's
  *   pages are destroyed, ensuring no use-after-free in the page table.
  *
- * Mapping lifecycle (Fase 5.1):
+ * Mapping lifecycle (Phase 5.1):
  *   mapped_count tracks how many PTEs currently point at this frame across
  *   all VSpaces.  kframe_map_page increments it; kframe_unmap_page decrements
  *   it.  kframe_obj_destroy asserts mapped_count == 0: callers must unmap
@@ -64,7 +64,7 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
                              struct KUntyped *alloc_parent);
 
 /*
- * Stage 6 Etapa 1 — placement-init a KFrame whose HEADER storage is a child
+ * Stage 6 Step 1 — placement-init a KFrame whose HEADER storage is a child
  * block of the Untyped that also produced its page (carved from the top by
  * kuntyped_alloc_child_top; the page comes from the bottom).  The destructor
  * returns the block with kuntyped_release_child, which is what carries the
@@ -79,7 +79,7 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
 struct KFrame *kframe_alloc_at(void *mem, uint64_t paddr, uint64_t size);
 
 /*
- * kframe_alloc_vmo_page — Fase 6.3: allocate a 4-KiB KFrame backed by a VMO page.
+ * kframe_alloc_vmo_page — Phase 6.3: allocate a 4-KiB KFrame backed by a VMO page.
  *
  * Creates a KFrame with alloc_parent=NULL and vmo_owner=vmo.  Retains vmo so
  * that the VMO is not destroyed while any KFrame for its pages remains alive.
@@ -109,7 +109,7 @@ struct KFrame *kframe_alloc_vmo_page(uint64_t paddr, struct KVmo *vmo);
  *   IRIS_ERR_NO_MEMORY   — page-table allocation failed.
  *
  * Single-core TLB note: no TLB flush is needed on map (new PTE, no stale
- * entry).  SMP shootdown is deferred to Fase 6.
+ * entry).  SMP shootdown is deferred to Phase 6.
  */
 iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
                               uint64_t user_va, uint64_t map_flags);
@@ -128,7 +128,7 @@ iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
                                 uint64_t user_va);
 
 /*
- * bootstrap_kframe_map — Bootstrap-only internal helper (Fase 6.2).
+ * bootstrap_kframe_map — Bootstrap-only internal helper (Phase 6.2).
  *
  * Allocates a KFrame (alloc_parent=NULL) for the physical page at paddr
  * (4 KiB, page-aligned) and immediately maps it into vs at user_va with
@@ -162,10 +162,10 @@ static inline int kframe_va_valid(uint64_t va) {
     return 1;
 }
 
-/* Fase 18: live KFrame object count (additive diagnostics). */
+/* Phase 18: live KFrame object count (additive diagnostics). */
 uint32_t kframe_live_count(void);
 
-/* Fase 19: mapping instrumentation (additive diagnostics; see kframe.c).
+/* Phase 19: mapping instrumentation (additive diagnostics; see kframe.c).
  * kframe_stat_map/unmap/cleanup are called by the map/unmap/teardown paths. */
 uint32_t kframe_live_mapping_count(void);
 uint32_t kframe_map_success_count(void);

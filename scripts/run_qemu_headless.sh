@@ -83,7 +83,7 @@ if ! grep -Fq "[USER][INIT][BOOT] healthy path OK" "$LOG_FILE"; then
   exit 1
 fi
 
-# Fase 13 (Track I): the init "[USER] kbd shared reply OK" legacy-KChannel probe
+# Phase 13 (Track I): the init "[USER] kbd shared reply OK" legacy-KChannel probe
 # is retired — kbd is endpoint-only. kbd.ep liveness is covered by
 # "[SH] kbd cptr OK" plus iris_test T034/T035/T044/T058.
 
@@ -94,15 +94,15 @@ if ! grep -Fq "VFS ready" "$LOG_FILE"; then
 fi
 
 if ! grep -Fq "[VFS] ep ready" "$LOG_FILE"; then
-  echo "[headless] missing VFS endpoint-ready marker (Fase 7.1)"
+  echo "[headless] missing VFS endpoint-ready marker (Phase 7.1)"
   cat "$LOG_FILE"
   exit 1
 fi
 
-# Fase 8: sh is a pure CPtr-first client — every core service path is gated
+# Phase 8: sh is a pure CPtr-first client — every core service path is gated
 # on a "cptr OK" marker printed only after a live PING through the slot.
 if ! grep -Fq "[SH] vfs cptr OK" "$LOG_FILE"; then
-  echo "[headless] missing SH vfs-CPtr marker (Fase 8)"
+  echo "[headless] missing SH vfs-CPtr marker (Phase 8)"
   cat "$LOG_FILE"
   exit 1
 fi
@@ -112,57 +112,57 @@ fi
 # iris_test T034/T035/T044 instead.
 
 if ! grep -Fq "[USER] console ep OK" "$LOG_FILE"; then
-  echo "[headless] missing init console-endpoint marker (Fase 7.3)"
+  echo "[headless] missing init console-endpoint marker (Phase 7.3)"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[SH] console cptr OK" "$LOG_FILE"; then
-  echo "[headless] missing SH console-CPtr marker (Fase 8)"
+  echo "[headless] missing SH console-CPtr marker (Phase 8)"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[VFS] console cptr OK" "$LOG_FILE"; then
-  echo "[headless] missing VFS console-CPtr marker (Fase 8)"
+  echo "[headless] missing VFS console-CPtr marker (Phase 8)"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[IRIS][TEST] console cptr write OK" "$LOG_FILE"; then
-  echo "[headless] missing iris_test console-CPtr write marker (Fase 8 / T043)"
+  echo "[headless] missing iris_test console-CPtr write marker (Phase 8 / T043)"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[SH] svcmgr cptr OK" "$LOG_FILE"; then
-  echo "[headless] missing SH CPtr-first discovery marker (Fase 8)"
+  echo "[headless] missing SH CPtr-first discovery marker (Phase 8)"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[SH] kbd cptr OK" "$LOG_FILE"; then
-  echo "[headless] missing SH kbd-CPtr marker (Fase 8)"
+  echo "[headless] missing SH kbd-CPtr marker (Phase 8)"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[USER] vfs ep list OK" "$LOG_FILE"; then
-  echo "[headless] missing init VFS-endpoint LIST marker (Fase 7.2)"
+  echo "[headless] missing init VFS-endpoint LIST marker (Phase 7.2)"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[USER] vfs ep read OK" "$LOG_FILE"; then
-  echo "[headless] missing init VFS-endpoint READ_AT marker (Fase 7.2)"
+  echo "[headless] missing init VFS-endpoint READ_AT marker (Phase 7.2)"
   cat "$LOG_FILE"
   exit 1
 fi
 
-# Fase 13 (Track E/F): legacy KChannel DIAG marker retired — diagnostics are
+# Phase 13 (Track E/F): legacy KChannel DIAG marker retired — diagnostics are
 # now served over IRIS_SVCMGR_EP_DIAG and covered by runtime test T067.
 
-# Fase 13 (Track F): the init TIMED / S9 (channel seal) / S10 (rights reduction)
+# Phase 13 (Track F): the init TIMED / S9 (channel seal) / S10 (rights reduction)
 # KChannel selftests are retired — their coverage moved to iris_test endpoint /
 # notification / cap-transfer tests (T010/T019/T052/T064).
 
@@ -179,18 +179,18 @@ if ! grep -Fq "[IRIS][TEST] SUITE PASS" "$LOG_FILE"; then
 fi
 
 if ! grep -Fq "[SVCMGR] ep ready" "$LOG_FILE"; then
-  echo "[headless] missing svcmgr endpoint-ready marker (Fase 7)"
+  echo "[headless] missing svcmgr endpoint-ready marker (Phase 7)"
   cat "$LOG_FILE"
   exit 1
 fi
 
 if ! grep -Fq "[IRIS][USER] boot untyped CSpace grants:" "$LOG_FILE"; then
-  echo "[headless] missing boot-untyped-CSpace-grants marker (Fase 3.4)"
+  echo "[headless] missing boot-untyped-CSpace-grants marker (Phase 3.4)"
   cat "$LOG_FILE"
   exit 1
 fi
 
-# Stage 5 Etapa 2: the monolithic bootstrap capability is gone, so its marker
+# Stage 5 Step 2: the monolithic bootstrap capability is gone, so its marker
 # is too.  What the boot must now announce is the six control capabilities —
 # one per authority — because a boot that published only some of them aborts
 # the root task rather than continuing with partial authority.
@@ -201,7 +201,7 @@ if ! grep -Fq "[IRIS][USER] boot control caps CSpace grants OK" "$LOG_FILE"; the
 fi
 
 if ! grep -Fq "[IRIS][USER] boot vspace CSpace grants OK" "$LOG_FILE"; then
-  echo "[headless] missing boot-vspace-CSpace-grants marker (Fase 4)"
+  echo "[headless] missing boot-vspace-CSpace-grants marker (Phase 4)"
   cat "$LOG_FILE"
   exit 1
 fi
@@ -217,7 +217,7 @@ if [ "$EXPECT_SELFTESTS" = "1" ]; then
     cat "$LOG_FILE"
     exit 1
   fi
-  # Fase 13 (Track E/F): legacy svcmgr KChannel DIAG kbd-status aggregation
+  # Phase 13 (Track E/F): legacy svcmgr KChannel DIAG kbd-status aggregation
   # retired; svcmgr diagnostics are served over IRIS_SVCMGR_EP_DIAG (T067).
 fi
 

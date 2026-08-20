@@ -1,5 +1,5 @@
 /*
- * syscall_frame.c — Fase 5 / 5.1: SYS_FRAME_MAP and SYS_FRAME_UNMAP.
+ * syscall_frame.c — Phase 5 / 5.1: SYS_FRAME_MAP and SYS_FRAME_UNMAP.
  *
  * SYS_FRAME_MAP(frame_cptr, vspace_cptr, user_va, flags):
  *   Resolves Frame and VSpace capabilities, validates flags and VA, then
@@ -16,22 +16,22 @@
  *   VSpace: RIGHT_WRITE to modify the page tables.
  *   ACCESS_DENIED from CSpace resolution is a hard stop (no handle fallback).
  *
- * Fase 25: the VSpace argument resolves through the dual resolver (CPtr or
+ * Phase 25: the VSpace argument resolves through the dual resolver (CPtr or
  * handle), the same A1 migration every other capability argument already
  * made.  Before, a handle fed here went through the raw radix walk and was
- * masked into low root slots (the Fase 8 aliasing hazard class); now the
+ * masked into low root slots (the Phase 8 aliasing hazard class); now the
  * handle namespace resolves honestly, so a supervisor/pager can pass a
  * SYS_PROCESS_VSPACE handle directly.
  *
- * Lifecycle invariant (Fase 5.1):
+ * Lifecycle invariant (Phase 5.1):
  *   frame->mapped_count must be 0 before dropping the last frame cap.
  *   kframe_obj_destroy() panics if mapped_count > 0 at destruction time.
- *   This eliminates silent stale PTEs that Fase 5 allowed.
+ *   This eliminates silent stale PTEs that Phase 5 allowed.
  *
  * TLB (single-core):
  *   Map: no flush needed (new PTE; no stale entry).
  *   Unmap: invlpg issued inside paging_unmap_in().
- *   SMP TLB shootdown deferred to Fase 6.
+ *   SMP TLB shootdown deferred to Phase 6.
  */
 #include "syscall_priv.h"
 #include <iris/nc/kframe.h>

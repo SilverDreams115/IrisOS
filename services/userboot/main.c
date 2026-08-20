@@ -33,15 +33,15 @@ static inline long ub_sys4(long nr, long a0, long a1, long a2, long a3) {
  * now. */
 static void ub_close(handle_id_t h) { (void)h; }
 
-/* Fase 28: bootstrap diagnostic.  A bootstrap-fatal condition (a broken initrd
+/* Phase 28: bootstrap diagnostic.  A bootstrap-fatal condition (a broken initrd
  * catalog) must never manifest as a SILENT dead system.  userboot holds the
  * ioport CONTROL capability, so it can mint a serial KIoPort and emit a
  * diagnostic line directly to COM1 before exiting — visible even though no
  * console/svcmgr service has come up yet.  Crude (no LSR polling), but a boot
- * that reaches this path is already fatal.  Stage 5 Etapa 2: printing a panic
+ * that reaches this path is already fatal.  Stage 5 Step 2: printing a panic
  * used to require the same capability that authorises spawning processes and
  * powering the machine off. */
-/* Fase S4: the KIoPort is published into a CSpace slot as an MDB child of the
+/* Phase S4: the KIoPort is published into a CSpace slot as an MDB child of the
  * bootstrap-cap slot; the authority argument must be a CPtr.
  *
  * Stage 5: the destination slot is an ARGUMENT, taken from the free range the
@@ -63,9 +63,9 @@ static void ub_boot_panic(uint64_t ioport_control_cptr, uint64_t ioport_slot,
     }
 }
 
-/* ub_msg_zero retired — Fase 13/Track I (no KChannel bootstrap message). */
+/* ub_msg_zero retired — Phase 13/Track I (no KChannel bootstrap message). */
 
-/* ub_send_spawn_cap retired — Fase 13/Track I (init's spawn cap is a pre-start
+/* ub_send_spawn_cap retired — Phase 13/Track I (init's spawn cap is a pre-start
  * IRIS_CPTR_PROC_CONTROL mint now, no KChannel SPAWN_CAP send). */
 
 static void ub_park_root_bootstrap(void) {
@@ -170,7 +170,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     ws_slot    = bi->empty_slot_first;
     panic_slot = (uint64_t)bi->empty_slot_end - 1u;
 
-    /* Stage 5 Etapa 3: the root task holds a capability to its own root CNode
+    /* Stage 5 Step 3: the root task holds a capability to its own root CNode
      * and to its own thread.  Both are validated by asking what they are — an
      * inventory that names the wrong object is worse than one that names
      * nothing — and the CNode capability is then USED: the slot deletes below
@@ -206,7 +206,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     }
     boot_untyped_c = bi->untyped[0].cptr;
 
-    /* Fase 28 boot-growth fix: the boot invariant is that the kernel initrd has
+    /* Phase 28 boot-growth fix: the boot invariant is that the kernel initrd has
      * AT LEAST every image the ring-3 name→index catalog references (indices
      * 0..SL_CATALOG_COUNT-1 must resolve).  The initrd is allowed to hold MORE
      * images at higher indices (new services, backing blobs) — those are not
@@ -221,7 +221,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         goto fail;
     }
 
-    /* Stage 5: the Fase 3.4 liveness probe of BOOT_CPTR_UNTYPED_START is
+    /* Stage 5: the Phase 3.4 liveness probe of BOOT_CPTR_UNTYPED_START is
      * RETIRED.  It invoked a slot named by a compile-time constant, ignored
      * the answer, and documented itself as something boot was not gated on —
      * a probe that cannot fail proves nothing.  The BootInfo validation above
@@ -229,7 +229,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * says it granted must answer from its slot with the physical region the
      * page claims, or the boot stops here with a diagnostic. */
 
-    /* Fase 13 (Track I): deliver init's spawn/bootstrap cap as the
+    /* Phase 13 (Track I): deliver init's spawn/bootstrap cap as the
      * IRIS_CPTR_PROC_CONTROL (slot 6) pre-start mint instead of a post-spawn
      * KChannel SPAWN_CAP send — no SYS_CHAN.
      *
@@ -240,7 +240,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * userboot (and by the kernel bootstrap slot above it) instead of being
      * handed over forever. */
     {
-        /* Fase 18: forward ONE boot KUntyped into init so it can be handed on
+        /* Phase 18: forward ONE boot KUntyped into init so it can be handed on
          * to iris_test for the ring-3 authority suite (T125–T131).  Full rights
          * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
          * if the grant is absent the mint fails, the slot stays empty and the
@@ -255,7 +255,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         init_mints[1].rights   = RIGHT_READ | RIGHT_WRITE |
                                  RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[1].badge    = 0;
-        /* Stage 5 Etapa 2: device authority is delegated as itself.  init
+        /* Stage 5 Step 2: device authority is delegated as itself.  init
          * needs the ioport control capability for its early serial line and
          * for console's UART, and forwards both control capabilities to the
          * services whose job is claiming hardware. */

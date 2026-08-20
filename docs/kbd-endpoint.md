@@ -1,4 +1,4 @@
-# KBD Endpoint Protocol (Fase 7.4)
+# KBD Endpoint Protocol (Phase 7.4)
 
 The keyboard service delivers key events to sh **exclusively** over KEndpoint
 (`"kbd.ep"`). The wire format is `kernel/include/iris/kbd_ep_proto.h`; the
@@ -68,7 +68,7 @@ for (;;) {
 }
 ```
 
-Fase 7.6 moved the blocking point from the legacy channel to the IRQ
+Phase 7.6 moved the blocking point from the legacy channel to the IRQ
 KNotification: the channel is drained non-blocking (probes only), and the
 10 ms timeout on `SYS_NOTIFY_WAIT_TIMEOUT` keeps both drains alive.
 
@@ -81,21 +81,21 @@ is included from C (iris_test does).
 
 - Catalog: kbd has `own_service_ep = 1`; svcmgr creates the endpoint,
   pre-start-mints the recv side at `IRIS_CPTR_OWN_EP` (slot 5; bootstrap
-  kind 0x21 retired in Fase 8) and publishes `"kbd.ep"`.
-- sh (Fase 8) reaches kbd through the well-known slot `IRIS_CPTR_KBD_EP`
+  kind 0x21 retired in Phase 8) and publishes `"kbd.ep"`.
+- sh (Phase 8) reaches kbd through the well-known slot `IRIS_CPTR_KBD_EP`
   (4), verified with a PING; prints `[SH] kbd cptr OK` / `FAILED` (gated by
   `scripts/run_qemu_headless.sh`; no silent fallback, no lookup).
 - `SVCMGR_BOOTSTRAP_KIND_KBD_CAP` (9) and the `give_kbd` catalog flag are
   retired; svcmgr no longer forwards the kbd write-end to sh.
 
-## IRQ delivery (Fase 7.6: KNotification)
+## IRQ delivery (Phase 7.6: KNotification)
 
 IRQ1 no longer arrives as a `KBD_MSG_IRQ_SCANCODE` KChannel message. The
 catalog flags kbd `irq_notify = 1`: svcmgr creates a KNotification master
 (kept across restarts), registers it as the kernel IRQ route
 (`SYS_IRQ_ROUTE_REGISTER` accepts a KNotification with `RIGHT_WRITE` since
-Fase 7.6) and pre-start-mints the WAIT side at `IRIS_CPTR_IRQ_NOTIFY`
-(slot 7; bootstrap kind 0x23 retired in Fase 8 — kbd uses the slot as a
+Phase 7.6) and pre-start-mints the WAIT side at `IRIS_CPTR_IRQ_NOTIFY`
+(slot 7; bootstrap kind 0x23 retired in Phase 8 — kbd uses the slot as a
 constant). On each IRQ the kernel masks the line, signals bit `1 << irq`
 (signal-only — safe from IRQ context, no allocation) and EOIs; kbd wakes
 from `SYS_NOTIFY_WAIT_TIMEOUT`, reads port 0x60 via its KIoPort cap and

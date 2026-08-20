@@ -54,7 +54,7 @@
  * (e.g. occupied slot → 0x0B07 = base | -IRIS_ERR_ALREADY_EXISTS). */
 #define LP_EXIT_RECV_ERR_BASE  0x0B00
 
-/* Fase 16 lifecycle-hardening modes (opt-in per run; every other label keeps
+/* Phase 16 lifecycle-hardening modes (opt-in per run; every other label keeps
  * the legacy behaviour).  After the first recv the child immediately does a
  * BLOCKING send / call back on the SAME command endpoint, becoming a queued
  * sender / caller so the parent can either rendezvous with it or kill it
@@ -66,7 +66,7 @@
 #define LP_CMD_SEND_BLOCK      0x109Au
 #define LP_CMD_CALL_BLOCK      0x109Bu
 
-/* Fase 20 fault-trigger modes (opt-in per run).  After the first recv the child
+/* Phase 20 fault-trigger modes (opt-in per run).  After the first recv the child
  * performs a faulting access so the parent (a supervisor that registered a fault
  * endpoint via SYS_EXCEPTION_HANDLER) observes fault delivery.  words[0] carries
  * the target VA for READ/WRITE.  The child never returns from the faulting
@@ -84,7 +84,7 @@
 #define LP_CMD_FAULT_WRITE     0x109Du
 #define LP_CMD_FAULT_EXEC      0x109Eu
 
-/* Fase 28 multi-page fault-read: read the FIRST byte of each of `count` pages in
+/* Phase 28 multi-page fault-read: read the FIRST byte of each of `count` pages in
  * a caller-chosen (possibly out-of-order) sequence, faulting on each unmapped
  * page so a file-backed pager resolves them one at a time.  Proves a SINGLE
  * target drives multi-page, out-of-order, nonzero-offset resolution (no need for
@@ -97,7 +97,7 @@
  * independent of arrival order. */
 #define LP_CMD_FAULT_READ_SEQ  0x109Fu
 
-/* Fase 28 two-offset fault-read: read the byte at base+off0 and (if count==2) at
+/* Phase 28 two-offset fault-read: read the byte at base+off0 and (if count==2) at
  * base+off1 — arbitrary byte granularity, not page-aligned — XOR-accumulating
  * the low bytes and exiting LP_EXIT_MARKER ^ acc.  Lets one target verify BOTH a
  * file byte and a zero-fill byte (e.g. the tail of a partial page, or past EOF)
@@ -106,7 +106,7 @@
  *   words[0]=base VA, words[1]=count (1..2), words[2]=off0, words[3]=off1. */
 #define LP_CMD_FAULT_READ_OFFS 0x10A5u
 
-/* Fase 22 least-authority self-report: resolve well-known CPtr slots 0..15 and
+/* Phase 22 least-authority self-report: resolve well-known CPtr slots 0..15 and
  * exit with a bitmask (bit i set = slot i resolves to a live cap).  Slot 3 (the
  * command endpoint, LP_CPTR_CMD_EP) is always present.  The parent mints a
  * KNOWN set of caps into the child and asserts the reported mask equals exactly
@@ -114,7 +114,7 @@
  * removing a cap removes it from the child (A15).  Must match iris_test. */
 #define LP_CMD_REPORT_SLOTS    0x10A0u
 
-/* Fase 23 compromised-driver stand-in: attempt a battery of device-authority
+/* Phase 23 compromised-driver stand-in: attempt a battery of device-authority
  * escalations using only the caps the parent minted, and exit with a bitmask of
  * which ones (incorrectly) SUCCEEDED.  A contained driver exits 0 — every
  * escalation is denied by the kernel.  words[0] carries an out-of-range ioport
@@ -132,7 +132,7 @@
  * low byte = -err (0 = success).  Lets a rendezvous-then-complete run report. */
 #define LP_EXIT_IPC_BASE       0x0C00
 
-/* Fase 25 user-pager modes (opt-in per run).  The probe acts as an EXTERNAL
+/* Phase 25 user-pager modes (opt-in per run).  The probe acts as an EXTERNAL
  * PAGER for a target process: the parent (supervisor) mints its exact
  * authority manifest into well-known slots BEFORE start — the pager never
  * acquires anything at runtime, so LP_CMD_REPORT_SLOTS doubles as the
@@ -142,7 +142,7 @@
  *   slot  9: (T184 only) victim VSpace cap, deliberately under-privileged
  *   slot 12: target process cap  (READ for fault info, MANAGE for resume)
  *   slot 13: target VSpace cap   (WRITE — the map-into-target authority)
- *   slot 14: page source cap    (Fase 25: a KFrame; Fase 26: a KVmo) — the
+ *   slot 14: page source cap    (Phase 25: a KFrame; Phase 26: a KVmo) — the
  *            page the pager may install
  *   slot 15: fault notification  (WAIT — the delivery wake-up)
  *
@@ -150,7 +150,7 @@
  *   words[0]: low 8 bits = per-fault subaction (1 = map raw frame at cr2 then
  *             seq-checked resume; 2 = seq-checked resume WITHOUT map — the
  *             clean-refault probe; 3 = seq-checked kill; 4 = map a VMO page
- *             (SYS_VMO_MAP_PAGE, Fase 26) at cr2 then seq-checked resume),
+ *             (SYS_VMO_MAP_PAGE, Phase 26) at cr2 then seq-checked resume),
  *             bits 8..15 = number of faults to serve (0 → 1).
  *   words[1]: map flags (bit 0 = W, bit 1 = X) for subactions 1 and 4.
  *   words[2]: subaction 1 = map VA override (0 = cr2 page); subaction 4 =
@@ -178,7 +178,7 @@
 #define LP_PGR_ERR_INFO        0x7Eu   /* fault info dishonest (vector/seq) */
 #define LP_PGR_ERR_CR2         0x7Du   /* cr2 does not match expectation */
 
-/* Fase 27 — persistent PAGER SERVICE mode.  On LP_CMD_PAGER_SERVICE the probe
+/* Phase 27 — persistent PAGER SERVICE mode.  On LP_CMD_PAGER_SERVICE the probe
  * stops being a one-shot child and becomes a supervised user-pager service: it
  * loops on its control endpoint (slot 3) serving fault-resolution requests for
  * a manifest of target grants and VMO grants, driven request/reply by its
@@ -222,7 +222,7 @@ static inline long lp_sys2(long nr, long a0, long a1) {
 }
 
 /*
- * Stage 6-pure Etapa 2: this image is spawned in two roles, and the difference
+ * Stage 6-pure Step 2: this image is spawned in two roles, and the difference
  * is entirely in what it was handed.  As a CONTAINED probe it holds no budget,
  * and the authority tests audit exactly that.  As a PAGER (T183+) it maps
  * frames into a target's address space, so it owes the levels under them and
@@ -257,7 +257,7 @@ static inline uint64_t lp_rd64(const uint8_t *b, uint32_t off) {
     return v;
 }
 
-/* ── Fase 27 pager-service helpers ──────────────────────────────────────── */
+/* ── Phase 27 pager-service helpers ──────────────────────────────────────── */
 
 /* Resolve target[tidx]'s fault and (for MAP_RESUME) install vmo[vidx]'s page,
  * then seq-resolve.  Returns 0 or a negative error / -LP_PS_ERR_* marker. */
@@ -316,7 +316,7 @@ static uint32_t lp_ps_report(void) {
     return mask;
 }
 
-/* Fase S1: recv with the explicit reply object at slot 13 when the parent
+/* Phase S1: recv with the explicit reply object at slot 13 when the parent
  * minted one; otherwise fall back to a reply-less recv (send-only fixtures).
  * A bad reply CPtr fails BEFORE the endpoint is touched, so the retry is
  * side-effect free. */
@@ -340,7 +340,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
     /* Block until the parent sends/calls — or until the parent kills us. */
     (void)lp_recv(&msg);
 
-    /* Fase 27: persistent PAGER SERVICE mode.  Loop on the control endpoint
+    /* Phase 27: persistent PAGER SERVICE mode.  Loop on the control endpoint
      * serving fault-resolution requests inside the minted manifest, replying
      * to each EP_CALL.  Exit on SHUTDOWN or when the control endpoint closes
      * (supervisor dropped the master). */
@@ -373,7 +373,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
                 reply.label      = IRIS_EP_REPLY_OK;
                 reply.words[0]   = (uint64_t)result;
                 reply.word_count = 1u;
-                /* Fase S1: reply_h is our reusable reply-object CPtr — no close. */
+                /* Phase S1: reply_h is our reusable reply-object CPtr — no close. */
                 (void)lp_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
             }
             if (shutdown) { lp_sys1(SYS_EXIT, 0); for (;;) {} }
@@ -401,7 +401,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Fase 16: block as a sender/caller on the command endpoint.  The child
+    /* Phase 16: block as a sender/caller on the command endpoint.  The child
      * is normally killed while blocked (the parent observes the cleanup); if
      * the parent instead rendezvouses and replies, the syscall returns and we
      * exit LP_EXIT_IPC_BASE | -err so a completing run is still observable. */
@@ -417,7 +417,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Fase 22: report which well-known CPtr slots resolve, as an exit bitmask.
+    /* Phase 22: report which well-known CPtr slots resolve, as an exit bitmask.
      * Bits 0..15 = slots 0..15 (covers the core service slots + spawn cap 6);
      * bit 16 = slot 25 (proc cap), bit 17 = slot 55 (untyped), bit 18 = slot 56
      * (vspace) — the high-authority slots a minimal service must NEVER hold. */
@@ -433,7 +433,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Fase 23: compromised-driver escalation battery — every attempt must be
+    /* Phase 23: compromised-driver escalation battery — every attempt must be
      * denied by the kernel; the exit bitmask marks any that leaked through. */
     if (msg.label == (uint64_t)LP_CMD_DEV_PROBE) {
         uint32_t breach = 0u;
@@ -446,7 +446,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Fase 25: external user pager — serve fault(s) of the authorized target
+    /* Phase 25: external user pager — serve fault(s) of the authorized target
      * using ONLY the minted manifest (slots 12-15).  Every step is an explicit
      * capability invocation; nothing here works unless the supervisor granted
      * the exact authority (see header block for the wire contract). */
@@ -476,13 +476,13 @@ void lp_main(handle_id_t bootstrap_ch_h) {
             }
             if (expect != 0 && cr2 != expect) { err = -(long)LP_PGR_ERR_CR2; break; }
             if (sub == 1u) {
-                /* Fase 25: install a raw frame (slot 14) at the fault page. */
+                /* Phase 25: install a raw frame (slot 14) at the fault page. */
                 uint64_t va = va_ovr ? va_ovr : (cr2 & ~0xFFFULL);
                 r = lp_sys4(SYS_FRAME_MAP, (long)LP_PGR_SLOT_FRAME,
                             (long)LP_PGR_SLOT_TVS, (long)va, (long)mflags);
                 if (r != 0) { err = r; break; }
             } else if (sub == 4u) {
-                /* Fase 26: install a VMO page (slot 14 = VMO) at the fault page,
+                /* Phase 26: install a VMO page (slot 14 = VMO) at the fault page,
                  * sourcing byte offset words[2] within the VMO. */
                 uint64_t va  = cr2 & ~0xFFFULL;
                 uint64_t ofs = (va_ovr & ~0xFFFULL) | (mflags & 0x3ULL);
@@ -499,7 +499,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Fase 25: unauthorized-resolution battery — every attempt against the
+    /* Phase 25: unauthorized-resolution battery — every attempt against the
      * victim (whose caps in slots 8/9 are deliberately under-privileged, or
      * whose task simply is not the pager's target) must be denied by the
      * kernel.  Exit bitmask marks any that leaked through; contained = 0. */
@@ -535,7 +535,7 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         for (;;) {}
     }
 
-    /* Fase 20: perform a faulting access so a supervisor's fault endpoint fires.
+    /* Phase 20: perform a faulting access so a supervisor's fault endpoint fires.
      * The instruction faults; the kernel suspends this task in BLOCKED_FAULT and
      * signals the parent's handler.  If the parent resumes without fixing the
      * condition the same fault recurs; if it fixes it (e.g. remaps writable) the

@@ -108,7 +108,7 @@ iris_error_t cspace_resolve_cap(struct KProcess   *proc,
 }
 
 /*
- * Fase S3 — resolve a CPtr to its terminal SLOT LOCATION (CNode + index)
+ * Phase S3 — resolve a CPtr to its terminal SLOT LOCATION (CNode + index)
  * instead of the object it contains.  This is what gives the MDB a source
  * identity: derivation (SYS_CSPACE_MINT / MINT_INTO), revocation
  * (SYS_CSPACE_REVOKE) and retype ancestry operate on slots, not objects.
@@ -265,13 +265,13 @@ TYPED_RESOLVE(cspace_resolve_vspace,      struct KVSpace,      KOBJ_VSPACE)
 TYPED_RESOLVE(cspace_resolve_frame,       struct KFrame,       KOBJ_FRAME)
 
 /*
- * Fase 8: CPtr/handle namespace split for the DUAL resolvers.
+ * Phase 8: CPtr/handle namespace split for the DUAL resolvers.
  *
  * handle_ids are slot | generation<<HANDLE_GEN_SHIFT with generation >= 1,
  * so every live handle is >= 1024 and every direct CPtr argument is < 1024.
  * Before this split the dual resolvers fed handle values straight into
  * cspace_resolve_cap, whose radix walk MASKS the index (cptr & slot_count-1)
- * — a handle like 1027 silently aliased root slot 3 once Fase 8 populated
+ * — a handle like 1027 silently aliased root slot 3 once Phase 8 populated
  * the low slots (wrong-object IPC / WRONG_TYPE hard stops).  The split makes
  * the documented ABI real:
  *   value <  1024 → CSpace namespace ONLY (no handle-table fallback; a
@@ -422,7 +422,7 @@ iris_error_t cspace_resolve_only_untyped(struct KProcess  *proc,
 /*
  * cspace_resolve_only_frame — active+lifecycle ref contract.
  *
- * KFrame is a Fase 5 object; no IPC blocking occurs in frame operations.
+ * KFrame is a Phase 5 object; no IPC blocking occurs in frame operations.
  * CSpace-first; ACCESS_DENIED is a hard stop.  Handle-table fallback adds
  * kobject_active_retain to match the cspace_resolve_cap return contract.
  */
@@ -460,11 +460,11 @@ iris_error_t cspace_resolve_only_frame(struct KProcess *proc,
 
 /*
  * cspace_resolve_only_vspace — dual resolver for the VSpace argument of
- * SYS_FRAME_MAP/SYS_FRAME_UNMAP (Fase 25).  Same namespace split and
+ * SYS_FRAME_MAP/SYS_FRAME_UNMAP (Phase 25).  Same namespace split and
  * active+lifecycle ref contract as cspace_resolve_only_frame.  Before
- * Fase 25 those syscalls fed the VSpace value straight into the raw radix
+ * Phase 25 those syscalls fed the VSpace value straight into the raw radix
  * walk, where a handle (>= 1024) was masked into low root slots — the exact
- * aliasing hazard the Fase 8 split closed for every other capability
+ * aliasing hazard the Phase 8 split closed for every other capability
  * argument.  The handle namespace now resolves honestly, which is what lets
  * a supervisor drive map-into-target with the SYS_PROCESS_VSPACE handle
  * directly (no permanent CSpace slot pin).
@@ -502,7 +502,7 @@ iris_error_t cspace_resolve_only_vspace(struct KProcess *proc,
 }
 
 /*
- * Fase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
+ * Phase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
  * KBootstrapCap, …).  Same namespace split as the typed resolvers (CPtr < 1024
  * → CSpace only; >= 1024 → handle table only) but **lifecycle-only** ref
  * contract — lifecycle-only, matching what the retired handle lookup gave —
@@ -548,7 +548,7 @@ iris_error_t cspace_resolve_only_obj(struct KProcess  *proc,
 }
 
 /*
- * Fase 9: badge-aware dual endpoint resolver for the EP send/call paths.
+ * Phase 9: badge-aware dual endpoint resolver for the EP send/call paths.
  * Same namespace split and lifecycle-only refcount contract as the
  * DUAL_RESOLVE_IPC endpoint resolver; additionally returns the badge of
  * the capability that was invoked (slot badge on the CSpace path, handle

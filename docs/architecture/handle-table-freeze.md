@@ -6,7 +6,7 @@ now a **measured, bounded, frozen ephemeral layer**, not a second
 authority namespace.  Companion docs:
 `a1-authority-namespace-endgame.md`, `a1-5-ipc-receive-slot.md`.
 
-## Measurements (Fase 1/2 instrumentation, 2026-07-05)
+## Measurements (Phase 1/2 instrumentation, 2026-07-05)
 
 Source: per-table live/hwm/insert/remove counters + kernel-global
 atomic-max hwm + IPC delivery counters, exposed through the
@@ -40,7 +40,7 @@ HANDLE_TABLE_MAX: 1024 → 256
 - Measured peak 33 → 256 keeps a ~7.8× margin.
 - The handle-id encoding (`HANDLE_SLOT_BITS = 10`, ids ≥ 1024) and the
   CPtr boundary (`CSPACE_DIRECT_CPTR_LIMIT = 1 << HANDLE_GEN_SHIFT`)
-  derive from the ENCODING, not the ceiling — the Fase 8 namespace
+  derive from the ENCODING, not the ceiling — the Phase 8 namespace
   split is untouched and no legal handle value changes meaning.
 - `SVCMGR_DYNAMIC_SERVICE_CAP` mirrors the new value; the CSpace
   registration pool (slots 64..255) carries the first 192 dynamic
@@ -104,7 +104,7 @@ It is not deprecated by this freeze.
 
 - `SYS_HANDLE_TRANSFER(23)`: **RETIRED** — zero in-tree callers survived
   the A1 arc; dispatcher falls to NOT_SUPPORTED, number permanently
-  reserved (Fase 13/Track G pattern).  T097 asserts the retirement and
+  reserved (Phase 13/Track G pattern).  T097 asserts the retirement and
   that `SYS_PROC_CSPACE_MINT` covers the placement semantics with
   fail-fast occupied slots, monotonic rights, and clean wrong-type /
   dead-destination failures.

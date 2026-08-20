@@ -124,13 +124,13 @@ struct KUntyped;
 /* tables_pooled != 0: the intermediate tables came from an Untyped, so they
  * are torn down WITHOUT being returned to the PMM. */
 void     paging_destroy_user_space_from(uint64_t cr3, int tables_pooled);
-/* Stage 6-pure Etapa 4: initialise a page the HOLDER supplied as a user PML4 —
+/* Stage 6-pure Step 4: initialise a page the HOLDER supplied as a user PML4 —
  * zeroed, plus the shared low window and the higher half every address space
  * shares with the kernel.  Allocates nothing. */
 void     paging_init_user_pml4(uint64_t pml4_page_phys);
 
 /*
- * Stage 6-pure Etapa 1 — the kernel walks and reports; the holder supplies.
+ * Stage 6-pure Step 1 — the kernel walks and reports; the holder supplies.
  *
  * paging_missing_level_in: the deepest paging level still absent for `virt`,
  *   as a KPT_LEVEL_* value (3 = a PDPT is needed, 2 = a PD, 1 = a PT), 0 when
@@ -152,7 +152,7 @@ uint64_t paging_virt_to_phys_in(uint64_t cr3, uint64_t virt);
 int      paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags);
 void     paging_unmap_in(uint64_t cr3, uint64_t virt);
 void     paging_destroy_user_space(uint64_t cr3);
-/* Fase 19: local TLB invlpg counter (additive diagnostics; see paging.c). */
+/* Phase 19: local TLB invlpg counter (additive diagnostics; see paging.c). */
 uint32_t paging_tlb_invalidate_count(void);
 uint64_t pml4_get_current(void);
 

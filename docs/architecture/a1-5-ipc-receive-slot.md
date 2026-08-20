@@ -236,7 +236,7 @@ Userland declares and discriminates through `iris/ipc_recv_slot.h`
   they feed `SYS_PROC_CSPACE_MINT` as source handles (handle-layer
   working set by design).
 - **vfs** needs no change: its endpoints already arrive as pre-start
-  CSpace mints (Fase 8) and the only caps it receives are KReply caps
+  CSpace mints (Phase 8) and the only caps it receives are KReply caps
   (ephemeral by design).  Its *clients* adopt receive-slots (init, T091).
 - **Tests**: T089 (svcmgr CSpace-backed registration lifecycle + slot
   reuse via a legacy client), T090 (reply-slot lookup lands as CPtr;

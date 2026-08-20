@@ -6,7 +6,7 @@
  *
  * This was the KChannel-based console write path.  It is NON-FUNCTIONAL: the
  * KChannel object was removed and every SYS_CHAN_* syscall returns
- * IRIS_ERR_NOT_SUPPORTED (Fase 13/Track G).  The console is endpoint-only —
+ * IRIS_ERR_NOT_SUPPORTED (Phase 13/Track G).  The console is endpoint-only —
  * all clients (init, sh, vfs, iris_test, and svcmgr's klog drain) use
  * CONSOLE_EP_OP_WRITE/SYNC over "console.ep" (iris/console_ep_proto.h).
  *

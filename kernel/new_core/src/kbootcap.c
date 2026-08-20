@@ -37,6 +37,6 @@ void kbootcap_free(struct KBootstrapCap *cap) {
 }
 
 /* kbootcap_clone_restricted is REMOVED with SYS_BOOTCAP_RESTRICT (Stage 5
- * Etapa 2): narrowing a mask by rebuilding the object existed only because one
+ * Step 2): narrowing a mask by rebuilding the object existed only because one
  * object carried several authorities.  Giving up an authority is deleting the
  * slot that holds it, and taking one back is revoking it through the CDT. */

@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 /*
- * iris_cptr_t — capability pointer (formal type for Fase 3).
+ * iris_cptr_t — capability pointer (formal type for Phase 3).
  *
  * Encodes a path through a process's CNode tree.  Each CNode level consumes
  * log2(slot_count) bits from the LSB; traversal stops when remaining bits
@@ -91,7 +91,7 @@ iris_error_t cspace_resolve_cap(struct KProcess   *proc,
                                  struct KObject   **obj_out,
                                  iris_rights_t     *rights_out);
 
-/* Fase 9: like cspace_resolve_cap but also returns the terminal slot's
+/* Phase 9: like cspace_resolve_cap but also returns the terminal slot's
  * badge (badge_out may be NULL). */
 iris_error_t cspace_resolve_cap_badged(struct KProcess   *proc,
                                         iris_cptr_t        cptr,
@@ -100,7 +100,7 @@ iris_error_t cspace_resolve_cap_badged(struct KProcess   *proc,
                                         iris_rights_t     *rights_out,
                                         uint64_t          *badge_out);
 
-/* Fase S3: resolve a CPtr to its terminal SLOT LOCATION (CNode + index) —
+/* Phase S3: resolve a CPtr to its terminal SLOT LOCATION (CNode + index) —
  * the identity the MDB operates on.  CSpace namespace only (caller guards
  * the <1024 split).  On success the CNode carries active+lifecycle refs
  * (caller releases both); the slot was occupied at resolution time. */
@@ -126,7 +126,7 @@ iris_error_t cspace_resolve_dest_slot(struct KProcess *proc, iris_cptr_t cptr,
                                       struct KCNode **cn_out,
                                       uint32_t *idx_out);
 
-/* Fase 9: badge-aware dual endpoint resolver for the EP send/call paths.
+/* Phase 9: badge-aware dual endpoint resolver for the EP send/call paths.
  * Same namespace + refcount contract as cspace_resolve_only_endpoint
  * (lifecycle-only ref); additionally returns the badge of the capability
  * that was invoked (slot badge on the CSpace path, handle badge on the
@@ -195,7 +195,7 @@ iris_error_t cspace_resolve_only_frame(struct KProcess *proc,
 
 /*
  * cspace_resolve_only_vspace — dual resolver for the VSpace argument of
- * SYS_FRAME_MAP/SYS_FRAME_UNMAP (Fase 25).  Same namespace split and
+ * SYS_FRAME_MAP/SYS_FRAME_UNMAP (Phase 25).  Same namespace split and
  * active+lifecycle ref contract as cspace_resolve_only_frame; closes the
  * raw-radix handle-masking hazard those two syscalls still carried and lets a
  * supervisor pass a SYS_PROCESS_VSPACE handle directly.
@@ -207,7 +207,7 @@ iris_error_t cspace_resolve_only_vspace(struct KProcess *proc,
                                               iris_rights_t   *rights_out);
 
 /*
- * Fase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
+ * Phase 13: generic dual resolver for device/authority caps (KIoPort, KIrqCap,
  * KBootstrapCap).  Namespace split as usual; LIFECYCLE-ONLY ref contract
  * (lifecycle-only) — release with a single kobject_release.
  * required==RIGHT_NONE defers the rights check to the caller.

@@ -31,7 +31,7 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Resolve the IRQ capability — it carries the authorized IRQ number */
     struct KObject  *irqcap_obj;
     iris_rights_t    irqcap_rights;
-    /* Fase 13: dual resolver — irqcap may be a CPtr slot or a handle. */
+    /* Phase 13: dual resolver — irqcap may be a CPtr slot or a handle. */
     iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_IRQ_CAP, &irqcap_obj, &irqcap_rights);
     if (r != IRIS_OK) return syscall_err(r);
@@ -44,11 +44,11 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (irq_num >= IRQ_ROUTE_MAX) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    /* Fase 13/Track G: the destination is a KNotification (signal route) — the
+    /* Phase 13/Track G: the destination is a KNotification (signal route) — the
      * legacy KChannel message route is retired. */
     struct KObject  *ch_obj;
     iris_rights_t    ch_rights;
-    /* Etapa 4: third occurrence of the same half-migration — the irqcap (arg0)
+    /* Step 4: third occurrence of the same half-migration — the irqcap (arg0)
      * and the owning process (arg2) resolved either way while the destination
      * notification did not, so a service holding its IRQ notification in
      * CSpace could not register a route.  The dual object resolver returns a
@@ -224,12 +224,12 @@ uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         target_proc = (struct KProcess *)proc_obj;
     }
 
-    /* Fase 13 (Track I): the handler is a KNotification (arg1) signalled with
+    /* Phase 13 (Track I): the handler is a KNotification (arg1) signalled with
      * signal_bits (arg2) on fault — not a KChannel.  The handler reads the fault
      * details via SYS_PROCESS_FAULT_INFO. */
     struct KObject *notif_obj;
     iris_rights_t notif_rights;
-    /* Etapa 4: same half-migration as SYS_PROCESS_WATCH — the target process
+    /* Step 4: same half-migration as SYS_PROCESS_WATCH — the target process
      * resolved either way, the notification did not.  The dual object resolver
      * returns a lifecycle-only reference (it drops the traversal's active ref
      * itself), so the single-release contract below is unchanged, and it
@@ -260,9 +260,9 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     uint32_t target_id = (uint32_t)arg1;
     uint32_t action    = (uint32_t)arg2;
-    /* Fase 25: actions 2 (resume) / 3 (kill) are the seq-checked variants —
+    /* Phase 25: actions 2 (resume) / 3 (kill) are the seq-checked variants —
      * bits [63:32] of arg2 carry the fault generation the caller observed via
-     * SYS_PROCESS_FAULT_INFO.  Actions 0/1 keep the exact Fase 20 semantics
+     * SYS_PROCESS_FAULT_INFO.  Actions 0/1 keep the exact Phase 20 semantics
      * (any value > 1 was INVALID_ARG before, so this is additive surface). */
     if (action > 3) return syscall_err(IRIS_ERR_INVALID_ARG);
     int      seq_checked  = (action >= 2);
@@ -297,7 +297,7 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
 
-    /* Fase 25 (P13): a seq-checked resolution must name the exact fault the
+    /* Phase 25 (P13): a seq-checked resolution must name the exact fault the
      * caller observed.  If the task refaulted since (a NEW generation), or the
      * caller is replaying a generation it never matched, refuse cleanly —
      * same NOT_FOUND class as every other stale (process, task, state)
@@ -313,7 +313,7 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         task_kill_external(ft);
     }
 
-    /* Fase 20: the fault is resolved — drop the pending-fault record so a later
+    /* Phase 20: the fault is resolved — drop the pending-fault record so a later
      * SYS_PROCESS_FAULT_INFO honestly returns WOULD_BLOCK, and bump the
      * resume/kill counter. */
     kprocess_fault_clear(target_proc, target_id, action == 1);

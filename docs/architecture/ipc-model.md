@@ -1,4 +1,4 @@
-# IRIS — IPC Model (Fase S1)
+# IRIS — IPC Model (Phase S1)
 
 Synchronous endpoints (rendezvous), asynchronous notifications and explicit
 seL4-MCS-style reply objects. Complements `a1-5-ipc-receive-slot.md` and
@@ -7,7 +7,7 @@ seL4-MCS-style reply objects. Complements `a1-5-ipc-receive-slot.md` and
 ## Endpoint
 
 No change to the rendezvous semantics, staged caps (A1.10 two-phase), badges
-(Fase 9) or bulk (Ph69). What changes is the object's ORIGIN: only
+(Phase 9) or bulk (Ph69). What changes is the object's ORIGIN: only
 `SYS_UNTYPED_RETYPE2`.
 
 ## Explicit reply objects (S1)

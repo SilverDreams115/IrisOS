@@ -16,7 +16,7 @@
 
 
 /*
- * Fase S1: kernel-internal KNotification fixtures.
+ * Phase S1: kernel-internal KNotification fixtures.
  *
  * The kslab-backed knotification_alloc is retired, so this boot selftest
  * places its notification objects in STATIC blocks shaped like an untyped
@@ -41,8 +41,8 @@ static struct KNotification *p3_notif_fixture(void) {
     return knotification_alloc_at(blk + KUNTYPED_ALIGN);
 }
 
-/* Fase 13/Track G: the channel-quota portion was retired with KChannel.
- * Fase S1: the NOTIFICATION quota is retired too (Untyped is the budget for
+/* Phase 13/Track G: the channel-quota portion was retired with KChannel.
+ * Phase S1: the NOTIFICATION quota is retired too (Untyped is the budget for
  * notifications), so this selftest now covers the remaining legacy quota:
  * KVmo ownership accounting (LEGACY_FOR_KPROCESS_KVMO in the ledger). */
 static int phase3_quota_selftest(void) {

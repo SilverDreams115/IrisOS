@@ -88,7 +88,7 @@ static uint64_t *walk_pt(uint64_t cr3, uint64_t virt) {
     return phys_to_ptr(entry & ~0xFFFULL);
 }
 
-/* Stage 6 Etapa 2: a pooled table's page belongs to an Untyped, not to the
+/* Stage 6 Step 2: a pooled table's page belongs to an Untyped, not to the
  * PMM — returning it to the buddy allocator would hand out memory that is
  * still inside somebody's Untyped region.  Pooled address spaces therefore
  * tear their tables down without freeing: the pages return to their Untyped
@@ -130,8 +130,8 @@ static void destroy_pt_level(uint64_t table_phys, int level) {
  * Where an intermediate page table comes from — and by Stage 6-pure, the
  * answer is "only here, only for the two address spaces with no holder".
  *
- * Stage 6 Etapa 2 gave this function a `pool` argument so a USER address space
- * could charge its levels to a budget.  Stage 6-pure Etapa 2 stopped the
+ * Stage 6 Step 2 gave this function a `pool` argument so a USER address space
+ * could charge its levels to a budget.  Stage 6-pure Step 2 stopped the
  * kernel creating user levels at all — the holder retypes a KOBJ_PAGE_TABLE
  * and installs it — so every caller now passes the PMM path and the pooled
  * branch was dead code that still claimed the kernel could spend somebody's
@@ -163,7 +163,7 @@ static uint64_t *get_or_create(uint64_t *table, uint64_t index, uint64_t flags) 
 }
 
 /*
- * Stage 6-pure Etapa 1 — install a table the USER retyped, and never carve.
+ * Stage 6-pure Step 1 — install a table the USER retyped, and never carve.
  *
  * paging_missing_level_in reports the deepest level that already exists for
  * `virt`, so an invocation can say exactly which table the holder still owes
@@ -380,7 +380,7 @@ void paging_init(uint64_t fb_phys, uint64_t fb_size) {
 }
 
 /*
- * Stage 6-pure Etapa 4 — initialise a page the HOLDER supplied as a PML4.
+ * Stage 6-pure Step 4 — initialise a page the HOLDER supplied as a PML4.
  *
  * Split out of paging_create_user_space_from because the two halves answered
  * to different owners once an address space became something a holder retypes:
@@ -405,7 +405,7 @@ void paging_init_user_pml4(uint64_t pml4_page_phys)
 
 uint64_t paging_create_user_space(void)
 {
-    /* The PMM, and only the PMM.  Stage 6-pure Etapa 4 made a spawned
+    /* The PMM, and only the PMM.  Stage 6-pure Step 4 made a spawned
      * process's PML4 the storage of a KOBJ_VSPACE its holder retyped, so the
      * budget-funded variant this used to have had no callers left.  What comes
      * through here is the root task's address space and the kernel selftest's:
@@ -464,7 +464,7 @@ int paging_query_access_in(uint64_t cr3, uint64_t virt, uint64_t *out_flags) {
     return paging_query_access_root(cr3, virt, out_flags);
 }
 
-/* Fase 19 — local TLB invalidation counter (additive diagnostics).  Every
+/* Phase 19 — local TLB invalidation counter (additive diagnostics).  Every
  * paging_unmap_in issues one invlpg on the current CPU; the count lets VM tests
  * confirm local invalidation happened (V21).  SMP shootdown is NOT implemented;
  * this counts local invalidations only (see vspace-frame-hardening.md). */
@@ -493,7 +493,7 @@ void paging_destroy_user_space_from(uint64_t cr3, int tables_pooled) {
         pml4[USER_PRIVATE_PML4_INDEX] = 0;
     }
 
-    /* Stage 6 Etapa 3: a pooled PML4 is inside somebody's Untyped — returning
+    /* Stage 6 Step 3: a pooled PML4 is inside somebody's Untyped — returning
      * it to the buddy allocator would hand out memory that region still owns.
      * Its child entry is returned by the VSpace along with the tables. */
     if (!tables_pooled) pmm_free_page(cr3);

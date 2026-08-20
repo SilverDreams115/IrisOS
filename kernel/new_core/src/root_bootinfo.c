@@ -1,5 +1,5 @@
 /*
- * root_bootinfo.c — Stage 5, Etapa 1: building the root task's BootInfo page.
+ * root_bootinfo.c — Stage 5, Step 1: building the root task's BootInfo page.
  *
  * Pure buffer arithmetic on purpose: no PMM, no CSpace, no task.  The kernel's
  * boot path decides WHAT the root task holds; this file only writes it down in

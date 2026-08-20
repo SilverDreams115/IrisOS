@@ -5,8 +5,8 @@
 
 /*
  * pager_proto.h — wire contract between the pager service and its supervisor
- * (Fase 27 model, own binary since Fase 28, file grants + multi-target since
- * Fase 28.1).  Shared by services/pager/main.c and the iris_test supervisor
+ * (Phase 27 model, own binary since Phase 28, file grants + multi-target since
+ * Phase 28.1).  Shared by services/pager/main.c and the iris_test supervisor
  * so the two never drift.
  *
  * The pager is a persistent, supervised userland service.  Its ENTIRE
@@ -18,7 +18,7 @@
  *   slot 3  PGR_SLOT_CTRL_EP     control endpoint the pager serves (RIGHT_READ)
  *   slot 4  PGR_SLOT_VFS_EP     the pager's VFS SESSION cap: a badged
  *                               (IRIS_BADGE_FILEGRANT_S(session)), WRITE-only
- *                               vfs.ep cap.  Fase 28.1: this is NOT a generic
+ *                               vfs.ep cap.  Phase 28.1: this is NOT a generic
  *                               VFS client cap — the VFS confines the badge to
  *                               the session-scoped GRANT ops and denies every
  *                               name-based op, so the slot carries exactly
@@ -28,11 +28,11 @@
  *                               One KNotification for ALL targets: the
  *                               supervisor registers each target's exception
  *                               handler on it with signal bit (1 << tidx).
- *                               Fase 28.1: replaces the per-target
+ *                               Phase 28.1: replaces the per-target
  *                               notification column — 16 concurrent targets
  *                               cost ONE notification, not 16.  (It was
  *                               introduced to fit the per-process notification
- *                               quota, retired in Fase S1; the shared
+ *                               quota, retired in Phase S1; the shared
  *                               notification is kept because it is cheaper.)
  *   slot 15 PGR_SLOT_SELF_VS      the pager's OWN address space, published by
  *                               SYS_VSPACE_SELF at start-up (Stage 4).  It is
@@ -44,7 +44,7 @@
  *                               oracle could not see it — the one piece of the
  *                               pager's authority the report was blind to.
  *   slot 16/17 PGR_VSLOT(j)     VMO grants (RO cache / private pool, or raw
- *                               Fase 27 VMOs), RIGHT_READ [+ RIGHT_WRITE]
+ *                               Phase 27 VMOs), RIGHT_READ [+ RIGHT_WRITE]
  *   target i (i < PGR_MAX_TARGETS = 16):
  *     proc PGR_TSLOT_PROC(i) = 20 + i*2   RIGHT_READ | RIGHT_MANAGE
  *     vs   PGR_TSLOT_VS(i)   = 21 + i*2   RIGHT_WRITE  (map-into authority)
@@ -56,7 +56,7 @@
 #define PGR_SLOT_CTRL_EP      3u
 #define PGR_SLOT_VFS_EP       4u
 #define PGR_SLOT_FAULT_NOTIF  5u
-/* Fase S1: the pager's explicit reply object (supervisor retypes it from its
+/* Phase S1: the pager's explicit reply object (supervisor retypes it from its
  * untyped pool and mints it here); passed as arg2 of every ctrl-EP recv. */
 #define PGR_SLOT_REPLY        13u
 /* Stage 4: the pager's own VSpace as a capability, not a handle.  Inside the
@@ -78,10 +78,10 @@
 /* Control op codes (msg.words[0] bits [7:0]). */
 #define PGR_OP_PING        1u
 #define PGR_OP_REPORT      2u
-#define PGR_OP_MAP_RESUME  3u   /* Fase 27: raw-VMO map from a VMO grant */
+#define PGR_OP_MAP_RESUME  3u   /* Phase 27: raw-VMO map from a VMO grant */
 #define PGR_OP_KILL        4u
 #define PGR_OP_SHUTDOWN    5u
-#define PGR_OP_MAP_REGION  6u   /* Fase 28: resolve a file-backed fault (target tidx) */
+#define PGR_OP_MAP_REGION  6u   /* Phase 28: resolve a file-backed fault (target tidx) */
 #define PGR_OP_REGISTER_BACKING   7u   /* buffer = struct pgr_backing_req */
 #define PGR_OP_REGISTER_REGION    8u   /* buffer = struct pgr_region_req */
 #define PGR_OP_UNREGISTER_REGION  9u   /* words[1] = region_idx */
@@ -91,7 +91,7 @@
 #define PGR_OP_TARGET_RESET      12u   /* words[1] = tidx: drop the target's regions
                                         * and its pending fault bit (death cleanup) */
 
-/* ── Fase 28 file-backed subsystem (grant-based since Fase 28.1) ────────────
+/* ── Phase 28 file-backed subsystem (grant-based since Phase 28.1) ────────────
  * The pager reads file bytes EXCLUSIVELY through VFS file grants
  * (VFS_EP_OP_GRANT_READ_AT over its badged session cap).  A backing is
  * registered by the supervisor as (grant_idx, backing_id, generation,
@@ -104,7 +104,7 @@
 #define PGR_VMO_PRIVATE    1u   /* VMO grant 1 (slot 17): private-writable pool */
 
 #define PGR_MAX_BACKINGS   4u
-#define PGR_MAX_REGIONS    16u  /* Fase 28.1: one region per possible target */
+#define PGR_MAX_REGIONS    16u  /* Phase 28.1: one region per possible target */
 #define PGR_CACHE_CAP      8u   /* pages in the RO cache VMO */
 #define PGR_PRIV_CAP       8u   /* pages in the private-writable pool VMO */
 
@@ -121,7 +121,7 @@
 /* Wire structs, passed in the control-message bulk buffer (<= IRIS_IPC_BUF_SIZE). */
 struct pgr_backing_req {
     uint32_t backing_idx;
-    uint32_t grant_idx;        /* Fase 28.1: VFS file-grant index (session-scoped) */
+    uint32_t grant_idx;        /* Phase 28.1: VFS file-grant index (session-scoped) */
     uint64_t backing_id;       /* VFS-issued (GRANT_OPEN reply) */
     uint64_t generation;       /* VFS-issued (GRANT_OPEN reply) */
     uint64_t file_size;
@@ -176,7 +176,7 @@ struct pgr_region_req {
 #define PGR_ERR_RANGE      0x6Au   /* region validation failure */
 #define PGR_ERR_NOBACK     0x6Bu   /* region references an unregistered backing */
 #define PGR_ERR_PRIVFULL   0x6Cu   /* no free private-writable page */
-#define PGR_ERR_GRANT      0x6Du   /* Fase 28.1: VFS denied the grant (bad index,
+#define PGR_ERR_GRANT      0x6Du   /* Phase 28.1: VFS denied the grant (bad index,
                                     * identity mismatch, missing right, revoked) */
 
 /* DIAG reply: words[0]=OK(0); the counters come back in the reply bulk buffer as
@@ -194,7 +194,7 @@ struct pgr_diag {
     uint32_t generation_stale;
     uint32_t grant_revoke;
     uint32_t private_pages;
-    /* Fase 28.1: multi-target fault multiplexing. */
+    /* Phase 28.1: multi-target fault multiplexing. */
     uint32_t notif_waits;      /* SYS_NOTIFY_WAIT_TIMEOUT calls on the shared notif */
     uint32_t notif_wakeups;    /* successful wakeups (bit sets consumed) */
     uint32_t pending_mask;     /* fault bits accumulated but not yet resolved */

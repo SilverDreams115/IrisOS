@@ -53,7 +53,7 @@ void test_kendpoint(void) {
     kendpoint_close(ep2);
     kendpoint_close(ep3);
 
-    /* ── alloc failure path (Fase S1: no kslab — placement on NULL block,
+    /* ── alloc failure path (Phase S1: no kslab — placement on NULL block,
      * i.e. the untyped carve failed upstream) ─────────────────────────── */
     struct KEndpoint *ep_f = kendpoint_alloc_at(NULL);
     ASSERT_NULL(ep_f);
@@ -107,7 +107,7 @@ void test_kendpoint(void) {
         ASSERT_NOT_NULL(cap);
 
         /* simulate two-phase staging: fetch retained a ref, and the
-         * un-consumed source SLOT rides in ep_cap_src_cn/idx (S4/Etapa 2) */
+         * un-consumed source SLOT rides in ep_cap_src_cn/idx (S4/Step 2) */
         kobject_retain(&cap->base);        /* cap refcount: 1 → 2 */
 
         struct task t = { 0 };

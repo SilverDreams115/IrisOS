@@ -1,12 +1,12 @@
 /*
  * syscall_untyped.c — KUntyped authority paths.
  *
- * Fase S1 (seL4 Architectural Convergence):
+ * Phase S1 (seL4 Architectural Convergence):
  *
  * SYS_UNTYPED_INFO:    query phys_base and available bytes.
  * SYS_UNTYPED_RETYPE:  RETIRED (Stage 4).  The number stays permanently
  *   reserved and answers NOT_SUPPORTED.  It was the LEGACY single-object
- *   retype that published the new capability as a HANDLE.  Fase S1 already
+ *   retype that published the new capability as a HANDLE.  Phase S1 already
  *   refused the migrated family (Endpoint / Notification / Reply / CNode) on
  *   it; Stage 4 refuses the remaining three (KUntyped sub-regions, KFrame,
  *   KSchedContext) too, because RETYPE2 accepts all of them into a CSpace
@@ -93,7 +93,7 @@ _Static_assert(IRIS_KOBJ_TCB           == (uint32_t)KOBJ_TCB,           "KOBJ AB
 
 /*
  * SYS_UNTYPED_RETYPE (87) — LEGACY, handle-publishing, single object.
- * Fase S1: migrated types are rejected with NOT_SUPPORTED (they must be born
+ * Phase S1: migrated types are rejected with NOT_SUPPORTED (they must be born
  * via RETYPE2 into CSpace).  Remaining legal types: KOBJ_UNTYPED (sub-region),
  * KOBJ_FRAME, KOBJ_SCHED_CONTEXT — all still untyped-funded, ledger-tracked
  * as MIGRATING until their own convergence phase.
@@ -106,7 +106,7 @@ uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /*
  * The two physical-region types, carved.
  *
- * Stage 6 Etapa 1/4: BOTH halves come from this Untyped — the region from the
+ * Stage 6 Step 1/4: BOTH halves come from this Untyped — the region from the
  * bottom and the object's header from the TOP, so paying for the header does
  * not push the page-aligned carve onto the next boundary, and the header can
  * never land inside a page that is about to be mapped into ring 3.  The header
@@ -152,7 +152,7 @@ static iris_error_t retype_sub_untyped(struct KUntyped *ut, uint64_t obj_arg,
 }
 
 /*
- * Stage 6-pure Etapa 1 — a paging level, retyped.
+ * Stage 6-pure Step 1 — a paging level, retyped.
  *
  * Same two-ended shape as a frame: the 4 KiB region from the bottom, the
  * header block from the top.  Two differences, both consequences of what the
@@ -186,7 +186,7 @@ static iris_error_t retype_page_table(struct KUntyped *ut, uint64_t obj_arg,
 }
 
 /*
- * Stage 6-pure Etapa 4 — an address space, retyped.
+ * Stage 6-pure Step 4 — an address space, retyped.
  *
  * The top level of a walk is a page like any other level, so a VSpace is
  * carved exactly like a page table: the PML4 from the bottom, the header from
@@ -300,9 +300,9 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
             new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
             break;
         case KOBJ_TCB:
-            /* Fase S2 Etapa 0: canonical TCB birth.  The object is INACTIVE
+            /* Phase S2 Step 0: canonical TCB birth.  The object is INACTIVE
              * (configured = 0): observable, delegable, destroyable — but not
-             * runnable until TCB_CONFIGURE (roadmap Etapa 5/6).  Execution
+             * runnable until TCB_CONFIGURE (roadmap Step 5/6).  Execution
              * syscalls refuse it with NOT_SUPPORTED. */
             payload    = sizeof(struct task);
             new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
@@ -335,7 +335,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                                         RIGHT_WRITE, &ut, &ut_rights);
     if (err != IRIS_OK) { kuntyped_stat_retype_failure(); return syscall_err(err); }
 
-    /* Fase S3 (D.1): the MDB ancestry of the created caps is the SLOT of the
+    /* Phase S3 (D.1): the MDB ancestry of the created caps is the SLOT of the
      * source untyped — resolved just before publication (see below). */
 
     /* U11/U12: device untyped only produces physical-region types. */
@@ -449,7 +449,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(err);
     }
 
-    /* ── publish through the canonical slot primitive (Fase S3) ──
+    /* ── publish through the canonical slot primitive (Phase S3) ──
      * Each created cap is installed as an MDB CHILD of the source untyped's
      * slot when the source was named by CPtr; a handle-named source has no
      * CSpace ancestor, so the caps are explicit LEGACY roots (I.1, counted).
@@ -544,7 +544,7 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(&ut->base);
         return syscall_err(IRIS_ERR_BUSY);
     }
-    /* Stage 6 Etapa 1: both ends are reclaimed.  A reset with live children is
+    /* Stage 6 Step 1: both ends are reclaimed.  A reset with live children is
      * BUSY (checked above), so the header region at the top cannot be taken
      * back from an object that is still alive. */
     uint64_t reclaimed = ut->used + ut->used_top;
@@ -560,7 +560,7 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * Fase S2 C.1 — versioned user-buffer copy hardening.
+ * Phase S2 C.1 — versioned user-buffer copy hardening.
  *
  * The kernel must never write beyond the buffer the caller declared, and must
  * never depend on the caller's struct matching the kernel's exact size.  The

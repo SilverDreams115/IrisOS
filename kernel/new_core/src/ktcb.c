@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 /*
- * Fase S2 D2 — KTCB object identity ops.
+ * Phase S2 D2 — KTCB object identity ops.
  *
  * The KTCB IS `struct task` (KObject at offset 0).  These ops manage the
  * OBJECT lifetime only; execution teardown (queues, resources, registry) is
@@ -74,7 +74,7 @@ void ktcb_object_init(struct task *t) {
     ktcb_live_inc();
 }
 
-/* ── Fase S2 Etapa 0 — Untyped-born (canonical) KTCB ───────────────────── */
+/* ── Phase S2 Step 0 — Untyped-born (canonical) KTCB ───────────────────── */
 
 struct task *ktcb_alloc_at(void *mem) {
     struct task *t = (struct task *)mem;

@@ -17,7 +17,7 @@
 
 static _Atomic uint32_t kprocess_live;
 
-/* Fase 29 — global resource-accounting instrumentation (additive, exposed via
+/* Phase 29 — global resource-accounting instrumentation (additive, exposed via
  * SYS_RESOURCE_INFO).  A charge that hits its domain's limit increments
  * kquota_failed_charges; a provisional charge rolled back on a later failure in
  * the same operation increments kquota_rollbacks.  Both make quota-exhaustion
@@ -29,7 +29,7 @@ uint32_t kprocess_quota_failed_count(void)  { return atomic_load_explicit(&kquot
 uint32_t kprocess_quota_rollback_count(void){ return atomic_load_explicit(&kquota_rollbacks,      memory_order_relaxed); }
 void     kprocess_quota_stat_rollback(void) { atomic_fetch_add_explicit(&kquota_rollbacks, 1u, memory_order_relaxed); }
 
-/* Fase 20 — fault-model instrumentation (additive, exposed via SYS_SCHED_INFO
+/* Phase 20 — fault-model instrumentation (additive, exposed via SYS_SCHED_INFO
  * ext5 tier).  Silent; makes fault delivery/resolution observable to the
  * T140–T147 selftests without changing any behaviour.
  *   delivery  — user faults handed to a registered handler (notif signalled).
@@ -53,7 +53,7 @@ void kprocess_fault_stat_nohandler(void) { atomic_fetch_add_explicit(&kfault_noh
 
 /*
  * kprocess_fault_clear — drop the pending-fault record for process p if it
- * belongs to task_id.  Fase 20: SYS_EXCEPTION_RESUME calls this so a resolved
+ * belongs to task_id.  Phase 20: SYS_EXCEPTION_RESUME calls this so a resolved
  * fault stops being reported by SYS_PROCESS_FAULT_INFO (which must return
  * WOULD_BLOCK when nothing is pending).  `killed` selects the resume/kill
  * counter.  Idempotent — a second call with no matching pending fault is a
@@ -92,7 +92,7 @@ static iris_error_t kprocess_quota_acquire(uint32_t *counter, uint32_t *hwm,
         r = IRIS_ERR_NO_MEMORY;
     } else {
         (*counter)++;
-        if (hwm && *counter > *hwm) *hwm = *counter;   /* Fase 29: high-water */
+        if (hwm && *counter > *hwm) *hwm = *counter;   /* Phase 29: high-water */
     }
     spinlock_unlock(&p->base.lock);
     if (r != IRIS_OK)
@@ -138,7 +138,7 @@ static void kprocess_emit_exit_watch(struct KProcess *p) {
     for (uint32_t i = 0; i < KPROCESS_EXIT_WATCH_MAX; i++) {
         struct KExitWatch *w = &p->exit_watches[i];
         if (!w->armed || !w->notif) continue;
-        /* Fase 13 (Track B): death is delivered as a KNotification signal —
+        /* Phase 13 (Track B): death is delivered as a KNotification signal —
          * the watcher identifies the dead service by which bit is set and
          * re-queries SYS_PROCESS_EXIT_CODE / STATUS for detail. */
         knotification_signal(w->notif, w->signal_bits);
@@ -178,7 +178,7 @@ static const struct KObjectOps kprocess_ops = {
 };
 
 /*
- * Stage 6 Etapa 4 — the Untyped-born KProcess.
+ * Stage 6 Step 4 — the Untyped-born KProcess.
  *
  * A spawned process's own kernel state — this object and its 256-slot root
  * CNode, together the largest per-process kernel allocation left — is charged
@@ -230,7 +230,7 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
     }
 
     /*
-     * Stage 6-pure Etapa 5: the root CNode is SUPPLIED, not carved.
+     * Stage 6-pure Step 5: the root CNode is SUPPLIED, not carved.
      *
      * It was the other half of a process's kernel footprint and the bigger
      * one — 256 slots with their MDB links — carved out of the budget by the
@@ -317,7 +317,7 @@ void kprocess_free(struct KProcess *p) {
     kobject_release(&p->base);
 }
 
-/* Fase S1: the notification quota (acquire/release + owner binding) is
+/* Phase S1: the notification quota (acquire/release + owner binding) is
  * RETIRED — notifications are created from Untyped, and Untyped is the
  * budget.  The VMO and page quotas below stay: they account the legacy
  * KProcess/KVMO objects that have not yet migrated to the canonical model
@@ -339,14 +339,14 @@ void kprocess_quota_release_vmo(struct KProcess *p) {
  * contradicted the model rather than reinforcing it: a VMO's pages come out of
  * an Untyped the caller NAMED, and exhausting that Untyped is what "out of
  * memory" means.  phys_pages_limit was a number the kernel invented — the very
- * thing Stage 6 Etapa 5 removed for VMO pages and then left standing beside
+ * thing Stage 6 Step 5 removed for VMO pages and then left standing beside
  * them, so a holder with a large delegated budget still stopped at 8 MB that
  * nobody granted and nobody could raise.
  *
  * The counters stay as pure INSTRUMENTATION: how many pages a domain's VMOs
  * hold is worth reporting, and SYS_RESOURCE_INFO's readers already know a
  * limit of 0 means "no kernel ceiling here" — that is what the notification
- * quota did when it retired in Fase S1.  What is gone is the refusal.
+ * quota did when it retired in Phase S1.  What is gone is the refusal.
  */
 iris_error_t kprocess_quota_acquire_page(struct KProcess *p) {
     if (!p) return IRIS_ERR_INVALID_ARG;
@@ -398,7 +398,7 @@ iris_error_t kprocess_set_exception_handler(struct KProcess *p,
     kobject_active_retain(&notif->base);
 
     spinlock_lock(&p->base.lock);
-    /* Fase 20: registering on a torn-down process would re-pin exception_notif
+    /* Phase 20: registering on a torn-down process would re-pin exception_notif
      * AFTER kprocess_teardown already ran kprocess_clear_exception_chan —
      * nothing would ever release those refs (kprocess_destroy skips teardown
      * once teardown_complete is set), leaking the notification.  A racing
@@ -440,7 +440,7 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
     if (!t || !t->process) return 0;
     p = t->process;
 
-    /* Fase 13 (Track I): record the fault details in the KProcess and signal the
+    /* Phase 13 (Track I): record the fault details in the KProcess and signal the
      * handler's KNotification — the handler reads the details via
      * SYS_PROCESS_FAULT_INFO and resumes/kills via SYS_EXCEPTION_RESUME.  No
      * KChannel. */
@@ -448,7 +448,7 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
     notif = p->exception_notif;
     bits  = p->exception_signal_bits;
     if (notif) {
-        /* Fase 25: assign the fault a per-process generation.  1-based so 0
+        /* Phase 25: assign the fault a per-process generation.  1-based so 0
          * always means "no fault"; skip 0 on uint32 wrap.  The blocked task
          * keeps its own copy — the per-process record is last-writer-wins,
          * but each suspended task must stay resolvable by ITS generation. */
@@ -491,7 +491,7 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     kprocess_emit_exit_watch(p);
     kprocess_clear_exit_watch(p);
     kprocess_clear_exception_chan(p);
-    /* Fase 20 (F15): a fault record must not outlive the process — a late
+    /* Phase 20 (F15): a fault record must not outlive the process — a late
      * SYS_PROCESS_FAULT_INFO through a surviving handle reports WOULD_BLOCK,
      * not a stale fault of a dead task. */
     spinlock_lock(&p->base.lock);
@@ -500,7 +500,7 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
         atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
     }
     spinlock_unlock(&p->base.lock);
-    /* Fase 6.3: VMO mappings are now tracked via KVSpace.mappings and cleaned
+    /* Phase 6.3: VMO mappings are now tracked via KVSpace.mappings and cleaned
      * by kvspace_invalidate inside kprocess_reap_address_space.  No per-process
      * VMO mapping list exists; nothing to do here. */
     irq_routing_unregister_owner(p);
@@ -515,7 +515,7 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     if (p->cspace_root) {
         struct KCNode *root = p->cspace_root;
         p->cspace_root = 0;
-        /* Stage 5 Etapa 3: empty the root's slots BEFORE dropping its refs.
+        /* Stage 5 Step 3: empty the root's slots BEFORE dropping its refs.
          *
          * A CSpace may name its own CNodes — the root task holds a capability
          * to its own root CNode — and a slot holds references on what it
@@ -533,7 +533,7 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     /* teardown_complete was claimed on entry, so the flag has rejected new
      * registrations for the whole of this function.
      *
-     * Fase 20: a registration that was already past that check when we
+     * Phase 20: a registration that was already past that check when we
      * claimed, and landed after the clear above, would re-pin the
      * notification with nobody left to release it; sweep again to catch it. */
     kprocess_clear_exception_chan(p);
@@ -575,7 +575,7 @@ void kprocess_reap_address_space(struct KProcess *p) {
      * Stage 6-pure and are released with their capabilities, not here. */
     int tables_pooled = (p->vspace && p->vspace->pml4_from_pool) ? 1 : 0;
 
-    /* Fase 4: invalidate the VSpace capability before destroying page tables.
+    /* Phase 4: invalidate the VSpace capability before destroying page tables.
      * Any capability holder that checks vs->valid after this point sees 0. */
     struct KVSpace *vs = p->vspace;
     if (vs) {
@@ -583,14 +583,14 @@ void kprocess_reap_address_space(struct KProcess *p) {
         p->vspace = 0;
     }
 
-    /* Fase 6.2: release bootstrap KFrame alloc retains after kvspace_invalidate
+    /* Phase 6.2: release bootstrap KFrame alloc retains after kvspace_invalidate
      * has decremented mapped_count to 0 for all bootstrap-mapped pages. */
     kprocess_release_bootstrap_frames(p);
 
     /*
      * Tear the walk down BEFORE dropping the VSpace reference.
      *
-     * Stage 6-pure Etapa 4 made the PML4 the VSpace object's own storage, so
+     * Stage 6-pure Step 4 made the PML4 the VSpace object's own storage, so
      * releasing the VSpace can be what returns that page's accounting to its
      * Untyped — and then walking cr3 would be walking a region whose holder
      * has already been told it is free to RESET.  The walk first, the object

@@ -7,7 +7,7 @@
 
 static _Atomic uint32_t kuntyped_live;
 
-/* Fase S1 — global untyped/retype counters (SYS_UNTYPED_QUERY kind 1).
+/* Phase S1 — global untyped/retype counters (SYS_UNTYPED_QUERY kind 1).
  * Single writer discipline is not required: updates are relaxed atomics and
  * readers tolerate torn cross-field snapshots (diagnostics, not authority). */
 static _Atomic uint64_t s1_retype_count;
@@ -42,7 +42,7 @@ void kuntyped_stat_reset(uint64_t reclaimed, int was_used) {
         atomic_fetch_add_explicit(&s1_reuse_count, 1u, memory_order_relaxed);
 }
 
-/* Fase 18 — live KUntyped object count (additive diagnostics).  Exposed via
+/* Phase 18 — live KUntyped object count (additive diagnostics).  Exposed via
  * the SYS_SCHED_INFO ext3 tier so authority tests can prove untyped objects
  * (including RETYPE sub-untypeds) are destroyed, not leaked, after churn. */
 uint32_t kuntyped_live_count(void) {
@@ -78,7 +78,7 @@ static const struct KObjectOps kuntyped_ops = {
 };
 
 /*
- * Stage 6 Etapa 4 — a sub-untyped's header lives in its parent.
+ * Stage 6 Step 4 — a sub-untyped's header lives in its parent.
  *
  * Carving a sub-untyped used to take its region from the parent and its header
  * from the kernel slab, so delegating a budget quietly spent kernel memory.
@@ -138,7 +138,7 @@ void kuntyped_destroy_ref(struct KUntyped *u) {
 static uint64_t kuntyped_bump(struct KUntyped *u, uint64_t bytes) {
     uint64_t aligned = (bytes + KUNTYPED_ALIGN - 1u) & ~(uint64_t)(KUNTYPED_ALIGN - 1u);
     uint64_t flags   = irq_spinlock_lock(&u->lock);
-    /* Stage 6 Etapa 1: the two ends meet exactly once. */
+    /* Stage 6 Step 1: the two ends meet exactly once. */
     if (u->used + aligned + u->used_top > u->total_size ||
         u->used + aligned < u->used) {
         irq_spinlock_unlock(&u->lock, flags);
@@ -238,7 +238,7 @@ uint64_t kuntyped_alloc_page_child(struct KUntyped *u) {
     uint64_t phys = kuntyped_bump_alloc_phys_page(u, 4096u);
     if (!phys) return 0;
 
-    /* Stage 6 Etapa 2: a page table is a CHILD of the Untyped that paid for
+    /* Stage 6 Step 2: a page table is a CHILD of the Untyped that paid for
      * it, even though it has no object header.  Without this, RESET — which
      * only refuses while child_count is non-zero — could reclaim a region
      * whose pages are live page tables of a running address space, handing
@@ -288,7 +288,7 @@ void kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes) {
 }
 
 /*
- * Fase S1 — atomic batch carve (SYS_UNTYPED_RETYPE2 substrate).
+ * Phase S1 — atomic batch carve (SYS_UNTYPED_RETYPE2 substrate).
  *
  * The whole batch is validated and carved under ONE u->lock hold: either every
  * child block exists (zeroed, parent pointer written, child_count and parent
@@ -367,7 +367,7 @@ uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size) {
      * The offset form therefore handed out unaligned "pages": a frame retyped
      * from a sub-untyped got a paddr the mapper silently masked DOWN, mapping
      * the page BEFORE the frame — overlapping whatever the sub-untyped had
-     * carved earlier.  Stage 6 Etapa 2 hit it because page tables are carved
+     * carved earlier.  Stage 6 Step 2 hit it because page tables are carved
      * this way too, and a page table at a masked-down address is somebody
      * else's memory reinterpreted as a table.
      */

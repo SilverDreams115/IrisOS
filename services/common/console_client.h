@@ -7,12 +7,12 @@
 #include <iris/ipc_msg.h>
 #include <iris/syscall.h>
 
-/* Fase 13/Track G: console_write / console_sync (legacy KChannel) retired —
+/* Phase 13/Track G: console_write / console_sync (legacy KChannel) retired —
  * the console is endpoint-only; use console_ep_write / console_ep_sync. */
 
 /*
  * console_ep_write — synchronous write over the console KEndpoint
- * (Fase 7.3).  Chunks by IRIS_IPC_BUF_SIZE; each EP_CALL returns only after
+ * (Phase 7.3).  Chunks by IRIS_IPC_BUF_SIZE; each EP_CALL returns only after
  * the chunk has been emitted to the UART.  buf must be a caller-provided
  * staging buffer of at least IRIS_IPC_BUF_SIZE bytes (EP bulk payloads are
  * read from user memory).  Returns 0 on success, negative on first failure.

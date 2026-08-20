@@ -5,14 +5,14 @@
 
 /* ── Internal helpers ────────────────────────────────────────────────── */
 
-/* IrisMsg = 72 bytes = 9 × uint64_t (Fase 9: +sender_badge) — word copy
+/* IrisMsg = 72 bytes = 9 × uint64_t (Phase 9: +sender_badge) — word copy
  * avoids byte-loop overhead. */
 static inline void irismsg_copy64(struct IrisMsg *dst, const struct IrisMsg *src) {
     const uint64_t *s = (const uint64_t *)src;
     uint64_t       *d = (uint64_t *)dst;
     d[0]=s[0]; d[1]=s[1]; d[2]=s[2]; d[3]=s[3];
     d[4]=s[4]; d[5]=s[5]; d[6]=s[6]; d[7]=s[7];
-    d[8]=s[8]; d[9]=s[9];          /* Fase 11: sender_badge + attached_cap pair */
+    d[8]=s[8]; d[9]=s[9];          /* Phase 11: sender_badge + attached_cap pair */
     _Static_assert(sizeof(struct IrisMsg) == 10u * sizeof(uint64_t),
                    "irismsg_copy64 word count");
 }
@@ -21,7 +21,7 @@ static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) dst[i] = src[i];
 }
 
-/* ep_get removed — use cspace_resolve_only_endpoint (Fase 3.2) */
+/* ep_get removed — use cspace_resolve_only_endpoint (Phase 3.2) */
 
 /*
  * A1.9/A1.10 two-phase cap staging — shared by EP_SEND / EP_NB_SEND /
@@ -37,7 +37,7 @@ static inline void copy_kbuf(uint8_t *dst, const uint8_t *src, uint32_t n) {
  * staged cap from a queued sender.  Blocking paths carry the source slot in
  * task->ep_cap_src_cn / ep_cap_src_idx next to the staged object.
  *
- * Fase S4 (Etapa 2) ordering rule: DELIVER first, commit second.  The MDB
+ * Phase S4 (Step 2) ordering rule: DELIVER first, commit second.  The MDB
  * parents the delivered cap to the source slot, which must still be occupied
  * at delivery time; the subsequent delete reparents the delivered cap to the
  * grandparent, preserving move semantics. */
@@ -48,7 +48,7 @@ iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr
                                                uint64_t *out_badge,
                                                struct KCNode **out_src_cn,
                                                uint32_t *out_src_idx) {
-    /* Fase S4 (Etapa 2): CSpace-only source.  A handle value (>=1024) is not
+    /* Phase S4 (Step 2): CSpace-only source.  A handle value (>=1024) is not
      * a transfer source any more — it fails cleanly, it does NOT fall back
      * (charter §3.7, invariant A6). */
     if (!cspace_only_cptr((uint64_t)src_cptr)) return IRIS_ERR_INVALID_ARG;
@@ -87,7 +87,7 @@ iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr
         return IRIS_ERR_INVALID_ARG;
     }
 
-    /* Fase 9: the transferred cap keeps its badge across the transfer. */
+    /* Phase 9: the transferred cap keeps its badge across the transfer. */
     if (out_badge) *out_badge = badge;
 
     *out_obj     = xo;
@@ -124,7 +124,7 @@ void syscall_ipc_stage_cap_abort(struct KCNode *src_cn) {
 /* A1.7 diagnostic counters (relaxed atomics; no behavior depends on them).
  * slot/handle/toctou partition every transferred-cap delivery.  Since Stage 4
  * only the SLOT partition can be non-zero: handle materialization is retired
- * (see below) and the TOCTOU degradation went in Etapa 2, so both are
+ * (see below) and the TOCTOU degradation went in Step 2, so both are
  * structural zeros kept as retirement witnesses.
  * reply_caps counts successful KReply bindings.  Read by sys_sched_info
  * (extended layout). */
@@ -147,10 +147,10 @@ static void ipc_stat_bump(uint32_t *c) {
  * the receiver said nothing.
  *
  * Charter I1 says a capability transfer uses CSpace as source AND destination.
- * The source became CSpace-only in Etapa 2; this is the destination half.  A
+ * The source became CSpace-only in Step 2; this is the destination half.  A
  * receive with no declared slot now delivers the MESSAGE without the
  * capability, which is the same fail-closed shape a raced or occupied slot has
- * had since Etapa 2 — the sender's source slot is left intact by its abort
+ * had since Step 2 — the sender's source slot is left intact by its abort
  * path, so nothing is consumed and no authority is lost.  A receiver that
  * wants the capability declares where to put it.
  */
@@ -224,7 +224,7 @@ iris_error_t syscall_ipc_recv_slot_declare(struct task *t, uint32_t declared) {
  * Returns the msg discriminator: 0 = no cap (or destroyed on soft failure),
  * a CPtr (handle tag bit clear) = CSpace slot, a handle value = handle.
  * Reply caps never come through here — an EP_CALL's reply capability is the
- * CPtr the RECEIVER passed to EP_RECV, echoed back to it (Fase S1), so it was
+ * CPtr the RECEIVER passed to EP_RECV, echoed back to it (Phase S1), so it was
  * never a handle in the first place.
  */
 uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
@@ -242,7 +242,7 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
         iris_error_t e = cspace_resolve_dest_slot(receiver->process,
                                                   (iris_cptr_t)slot, &cn, &idx);
         if (e == IRIS_OK) {
-            /* Fase S4 (Etapa 2): install as an MDB CHILD of the sender's
+            /* Phase S4 (Step 2): install as an MDB CHILD of the sender's
              * source slot — real CSpace ancestry, no LEGACY_ROOT.  The
              * source must still be occupied: a cap revoked while staged
              * makes this fail, and the cap is NOT delivered (roadmap
@@ -337,7 +337,7 @@ static int ep_recv_fastpath(struct task *t, struct KEndpoint *ep) {
 /* ── SYS_ENDPOINT_CREATE ─────────────────────────────────────────────── */
 
 /*
- * Fase S1: SYS_ENDPOINT_CREATE (74) is RETIRED — endpoints are created ONLY
+ * Phase S1: SYS_ENDPOINT_CREATE (74) is RETIRED — endpoints are created ONLY
  * via SYS_UNTYPED_RETYPE2 (storage inside the source Untyped, capability
  * directly in CSpace).  The number stays reserved; the path creates nothing.
  */
@@ -368,7 +368,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    /* Fase 9: STAMP the sender badge from the invoked capability — whatever
+    /* Phase 9: STAMP the sender badge from the invoked capability — whatever
      * the sender wrote in the field is discarded (anti-spoofing). */
     t->ipc_msg.sender_badge = ep_badge;
 
@@ -450,7 +450,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Ph68: install cap (outside lock).  A1.5: routed — lands in the
          * receiver's declared receive-slot (CPtr) or its handle table.
-         * Fase S4 (Etapa 2): DELIVER FIRST, then commit — the MDB parenting
+         * Phase S4 (Step 2): DELIVER FIRST, then commit — the MDB parenting
          * requires the source slot to still be occupied, so the source is
          * consumed only after the child cap exists (move semantics
          * preserved: delete reparents the delivered cap to the grandparent). */
@@ -471,7 +471,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_ok_u64(0);
     }
 
-    /* No receiver: stage cap in task and block.  A1.10 / Fase S4: the source
+    /* No receiver: stage cap in task and block.  A1.10 / Phase S4: the source
      * SLOT rides along un-consumed (with its CNode refs); the receiver
      * commits it at take time, cancel paths abort it. */
     ep->ep_state     = EP_STATE_SEND;
@@ -495,7 +495,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     kobject_release(&ep->base);
 
-    /* Fase S4 (Etapa 2): if the endpoint closed under us, kendpoint_obj_close
+    /* Phase S4 (Step 2): if the endpoint closed under us, kendpoint_obj_close
      * left our source-slot refs for us to drop (it could not release them
      * under ep->lock).  Nothing was delivered — the slot itself survives. */
     if (t->ep_cap_src_cn) {
@@ -511,7 +511,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /* ── SYS_EP_RECV ─────────────────────────────────────────────────────── */
 
 /*
- * Fase S1 — explicit reply staging (receiver side).
+ * Phase S1 — explicit reply staging (receiver side).
  *
  * ep_recv_reply_stage: resolve the reply CPtr the receiver passed as arg2
  * (RIGHT_WRITE) and take the object's exclusive staged claim.  The task keeps
@@ -599,7 +599,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
     }
 
-    /* Fase S1: stage the explicit reply object named by arg2 (0 = none).
+    /* Phase S1: stage the explicit reply object named by arg2 (0 = none).
      * Fail-fast: a bad reply CPtr fails BEFORE the endpoint is touched. */
     err = ep_recv_reply_stage(t, arg2);
     if (err != IRIS_OK) {
@@ -630,7 +630,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         /* Rendezvous: a sender is already waiting. */
         struct task *sender = ep->queue_head;
 
-        /* Fase S1: a call-mode sender REQUIRES an explicit reply object.
+        /* Phase S1: a call-mode sender REQUIRES an explicit reply object.
          * Refuse the recv before anything is consumed — the sender stays
          * queued and keeps its staged cap; the receiver is told to supply
          * reply authority (implicit KReply fabrication is retired). */
@@ -680,7 +680,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * reply cap takes attached_handle, so the transferred cap is delivered
          * into the separate attached_cap field; EP_SEND keeps attached_handle.
          * A1.5: routed — honours our declared receive-slot (CPtr < 1024).
-         * Fase S4 (Etapa 2): deliver first (MDB child of the sender's source
+         * Phase S4 (Step 2): deliver first (MDB child of the sender's source
          * slot), then consume that slot.  Outside ep->lock: slot delete can
          * fire object close callbacks that take endpoint locks (cn->lock →
          * ep->lock ordering must not invert). */
@@ -702,7 +702,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
         t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 
-        /* Ph85/Fase S1: if sender used EP_CALL, bind the receiver's staged
+        /* Ph85/Phase S1: if sender used EP_CALL, bind the receiver's staged
          * explicit reply object and keep the sender blocked.  The kernel no
          * longer fabricates a KReply here — the availability of the staged
          * object was verified before the sender was dequeued, so the bind
@@ -752,7 +752,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * sender's context; make sure it never survives this recv either way. */
     t->ep_recv_slot = 0;
 
-    /* Fase S1: if the rendezvous did not consume the staged reply object
+    /* Phase S1: if the rendezvous did not consume the staged reply object
      * (plain send, closed endpoint, cancel) release the claim now. */
     ep_recv_reply_unstage(t);
 
@@ -796,7 +796,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
-    /* Fase 9: stamp the sender badge from the invoked cap (anti-spoofing). */
+    /* Phase 9: stamp the sender badge from the invoked cap (anti-spoofing). */
     t->ipc_msg.sender_badge = ep_badge;
 
     /* Ph69: stage kbuf. */
@@ -874,7 +874,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     irq_spinlock_unlock(&ep->lock, flags);
 
     /* A1.5: routed — receiver's declared receive-slot or handle table.
-     * Fase S4 (Etapa 2): deliver first (MDB child of the source slot), then
+     * Phase S4 (Step 2): deliver first (MDB child of the source slot), then
      * consume the source slot (move semantics preserved). */
     if (xfer_obj) {
         uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
@@ -922,7 +922,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
     }
 
-    /* Fase S1: stage the explicit reply object named by arg2 (0 = none). */
+    /* Phase S1: stage the explicit reply object named by arg2 (0 = none). */
     err = ep_recv_reply_stage(t, arg2);
     if (err != IRIS_OK) {
         kobject_release(&ep->base);
@@ -949,7 +949,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct task *sender = ep->queue_head;
 
-    /* Fase S1: a call-mode sender REQUIRES an explicit reply object (see
+    /* Phase S1: a call-mode sender REQUIRES an explicit reply object (see
      * sys_ep_recv) — refuse before anything is consumed. */
     if (sender->ep_call_mode && !t->ep_reply_obj) {
         irq_spinlock_unlock(&ep->lock, flags);
@@ -993,9 +993,9 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     irq_spinlock_unlock(&ep->lock, flags);
 
-    /* Fase 11: EP_CALL transferred cap → attached_cap; EP_SEND → attached_handle.
+    /* Phase 11: EP_CALL transferred cap → attached_cap; EP_SEND → attached_handle.
      * A1.5: routed — honours our declared receive-slot (CPtr < 1024).
-     * Fase S4 (Etapa 2): deliver first, then consume the source slot
+     * Phase S4 (Step 2): deliver first, then consume the source slot
      * (outside ep->lock — see sys_ep_recv). */
     t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
     if (xfer_obj) {
@@ -1015,7 +1015,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     }
     t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 
-    /* Ph85/Fase S1: ep_call_mode senders block until replied to — bind the
+    /* Ph85/Phase S1: ep_call_mode senders block until replied to — bind the
      * receiver's staged explicit reply object (no implicit KReply). */
     if (sender->ep_call_mode) {
         sender->ep_call_mode = 0u;

@@ -31,7 +31,7 @@ From `svcmgr`, `kbd` expects these bootstrap deliveries:
 
 If bootstrap delivery is incomplete, `kbd` fails its startup path.
 
-## IRQ-facing contract (Fase 7.6: KNotification)
+## IRQ-facing contract (Phase 7.6: KNotification)
 
 Keyboard IRQ delivery uses the generic IRQ routing layer with a
 **KNotification** destination (catalog flag `irq_notify = 1`):
@@ -39,12 +39,12 @@ Keyboard IRQ delivery uses the generic IRQ routing layer with a
 - svcmgr owns the notification master (kept across restarts) and registers
   it as the IRQ1 route; the WAIT side reaches `kbd` as a pre-start CSpace
   mint at `IRIS_CPTR_IRQ_NOTIFY` (slot 7; bootstrap kind 0x23 retired in
-  Fase 8)
+  Phase 8)
 - on each IRQ the kernel signals bit `1 << irq` (signal-only; no message)
 - `kbd` wakes from `SYS_NOTIFY_WAIT_TIMEOUT`, reads the scancode byte from
   port 0x60 via its `KIoPort` cap and re-arms with `SYS_IRQ_ACK`
 
-> **Historical (retired in Fase 7.6):** IRQ1 used to be routed to the kbd
+> **Historical (retired in Phase 7.6):** IRQ1 used to be routed to the kbd
 > public service channel as `KBD_MSG_IRQ_SCANCODE` messages. That delivery
 > path is no longer dispatched; the opcode remains defined only as a
 > historical constant.

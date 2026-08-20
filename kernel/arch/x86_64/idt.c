@@ -48,7 +48,7 @@ DECLARE_ISR(24) DECLARE_ISR(25) DECLARE_ISR(26) DECLARE_ISR(27)
 DECLARE_ISR(28) DECLARE_ISR(29) DECLARE_ISR(30) DECLARE_ISR(31)
 extern void isr32(void); /* IRQ0 — timer */
 extern void isr33(void); /* IRQ1 — keyboard */
-/* IRQ2-15: cubiertos para no triple-faultear ante IRQs espurios/inesperados */
+/* IRQ2-15: covered so a spurious or unexpected IRQ cannot triple-fault */
 extern void isr34(void); extern void isr35(void); extern void isr36(void);
 extern void isr37(void); extern void isr38(void); extern void isr39(void);
 extern void isr40(void); extern void isr41(void); extern void isr42(void);

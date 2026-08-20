@@ -7,12 +7,12 @@
  *   recv SVCMGR_ENDPOINT_SH_REPLY  (8)        → own reply_h  (closed; unused)
  *   recv SVCMGR_BOOTSTRAP_KIND_SVCMGR_EP (0x20) → svcmgr discovery endpoint
  *
- * VFS access (Fase 7.2): endpoint-only. "vfs.ep" is resolved through the
+ * VFS access (Phase 7.2): endpoint-only. "vfs.ep" is resolved through the
  * svcmgr discovery endpoint; ls/cat use the stateless VFS EP protocol
  * (iris/vfs_ep_proto.h). There is no legacy KChannel fallback — if the
  * endpoint is missing, ls/cat report the error instead of masking it.
  *
- * Keyboard (Fase 7.4): endpoint-only. "kbd.ep" is resolved through the
+ * Keyboard (Phase 7.4): endpoint-only. "kbd.ep" is resolved through the
  * svcmgr discovery endpoint; the REPL pulls one key event per
  * EP_CALL(KBD_EP_OP_READ) — kbd parks the reply until a key arrives, so the
  * call doubles as the blocking wait. No legacy KChannel subscribe fallback.
@@ -46,7 +46,7 @@ static void sh_imsg_zero(struct IrisMsg *msg) {
     for (uint32_t i = 0; i < (uint32_t)sizeof(*msg); i++) raw[i] = 0;
 }
 
-/* VFS endpoint handle (Fase 7.1; mandatory since Fase 7.2). Resolved once
+/* VFS endpoint handle (Phase 7.1; mandatory since Phase 7.2). Resolved once
  * after bootstrap via the svcmgr discovery endpoint; HANDLE_INVALID means
  * VFS is unavailable — ls/cat fail loudly, there is no legacy fallback. */
 static handle_id_t g_sh_vfs_ep_h = HANDLE_INVALID;
@@ -55,7 +55,7 @@ static handle_id_t g_sh_vfs_ep_h = HANDLE_INVALID;
  * share the buffer — EP_CALL reuses buf_uptr in both directions). */
 static uint8_t g_sh_ep_buf[VFS_EP_DATA_MAX + 1u];
 
-/* Console endpoint path (Fase 8): sh is a pure CPtr-first client — ALL
+/* Console endpoint path (Phase 8): sh is a pure CPtr-first client — ALL
  * console output goes through the well-known slot IRIS_CPTR_CONSOLE_EP.
  * There is no legacy console cap anymore: if the slot is broken, sh stays
  * silent and every gated "[SH] ... OK" marker is missing, which fails the
@@ -144,9 +144,9 @@ static void sh_write_u32(handle_id_t con, uint32_t v) {
     while (i) { out[0] = buf[--i]; sh_cout(con, out); }
 }
 
-/* ── VFS endpoint path (Fase 7.1) ────────────────────────────────── */
+/* ── VFS endpoint path (Phase 7.1) ────────────────────────────────── */
 
-/* (Fase 8: sh_svc_ep_lookup removed — sh discovers nothing at runtime;
+/* (Phase 8: sh_svc_ep_lookup removed — sh discovers nothing at runtime;
  * every core service cap is a well-known CSpace slot.) */
 
 /*
@@ -263,7 +263,7 @@ static void sh_dispatch(handle_id_t con, const char *line) {
         return;
     }
     if (sh_word_eq(line, "ls")) {
-        /* Endpoint-only path (Fase 7.2): no legacy KChannel fallback. */
+        /* Endpoint-only path (Phase 7.2): no legacy KChannel fallback. */
         if (g_sh_vfs_ep_h == HANDLE_INVALID) {
             sh_cout(con, "ls: VFS endpoint unavailable\r\n");
             return;
@@ -300,7 +300,7 @@ void sh_main_c(handle_id_t rbx_unused) {
     handle_id_t console_h     = HANDLE_INVALID;  /* unused: pure CPtr client */
     handle_id_t kbd_ep_h      = HANDLE_INVALID;
 
-    /* Fase 8: sh is a pure CPtr-first client. The bootstrap bag is empty
+    /* Phase 8: sh is a pure CPtr-first client. The bootstrap bag is empty
      * (catalog: endpoint_only without an own endpoint) — everything sh
      * needs was minted into its root CNode before it ran:
      *   slot 1 svcmgr discovery, slot 2 vfs.ep, slot 3 console.ep,

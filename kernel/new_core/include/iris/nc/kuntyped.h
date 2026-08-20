@@ -10,7 +10,7 @@
 
 #define KUNTYPED_ALIGN  64u   /* sub-allocation granularity (cache-line) */
 
-/* Fase S1: hard bounds for one SYS_UNTYPED_RETYPE2 batch — the whole batch is
+/* Phase S1: hard bounds for one SYS_UNTYPED_RETYPE2 batch — the whole batch is
  * carved, initialized and published under the untyped lock, so it must stay
  * small enough to keep the IRQ-off window short. */
 #define KUNTYPED_RETYPE_MAX_COUNT  32u
@@ -22,7 +22,7 @@ struct KUntyped {
     uint64_t            phys_base;   /* physical start of managed region */
     uint64_t            total_size;  /* total bytes */
     uint64_t            used;        /* bottom bump — advances monotonically */
-    /* Stage 6 Etapa 1: the TOP bump, growing down from phys_base+total_size.
+    /* Stage 6 Step 1: the TOP bump, growing down from phys_base+total_size.
      * Object HEADERS are carved here so that they never perturb the page
      * alignment the bottom carve depends on: a 64-byte header taken from the
      * bottom would push the next page-aligned carve to the following page and
@@ -32,7 +32,7 @@ struct KUntyped {
     _Atomic uint32_t    child_count; /* live typed objects / sub-untypeds allocated from here */
     int                 is_device;   /* 0=normal RAM (zero-fill on bump), 1=device memory */
     struct KUntyped    *alloc_parent; /* non-NULL when this KUntyped was created via RETYPE */
-    uint64_t            generation;  /* Fase S1: bumped on every successful RESET —
+    uint64_t            generation;  /* Phase S1: bumped on every successful RESET —
                                       * a reused region never shares a generation
                                       * with the objects that lived there before */
 };
@@ -42,7 +42,7 @@ struct KUntyped {
  * Returns NULL if the KUntyped header itself cannot be kpage_alloc'd. */
 struct KUntyped *kuntyped_create(uint64_t phys_base, uint64_t size, int is_device);
 
-/* Stage 6 Etapa 4 — placement-init a sub-untyped whose header is a child block
+/* Stage 6 Step 4 — placement-init a sub-untyped whose header is a child block
  * of its parent (kuntyped_alloc_child_top).  The block carries the child_count
  * entry and the parent retain, so `alloc_parent` stays NULL. */
 struct KUntyped *kuntyped_create_at(void *mem, uint64_t phys_base,
@@ -77,7 +77,7 @@ uint64_t kuntyped_bump_alloc_phys(struct KUntyped *u, uint64_t bytes);
 void *kuntyped_alloc_child(struct KUntyped *u, uint64_t obj_bytes);
 
 /*
- * Stage 6 Etapa 1: same contract as kuntyped_alloc_child — parent back-pointer
+ * Stage 6 Step 1: same contract as kuntyped_alloc_child — parent back-pointer
  * in the block header, child_count incremented, parent retained, released by
  * kuntyped_release_child — but carved from the TOP of the region.
  *
@@ -95,7 +95,7 @@ struct KUntyped *kuntyped_child_parent(const void *obj_ptr);
 
 void  kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes);
 
-/* Stage 6 Etapa 2 — a page-aligned carve with child accounting and no object
+/* Stage 6 Step 2 — a page-aligned carve with child accounting and no object
  * header: page tables.  They have no KObject, but they ARE derived memory, so
  * they hold a child_count entry (and a parent retain) for as long as the
  * address space that installed them lives.  That is what makes RESET refuse
@@ -114,11 +114,11 @@ uint64_t kuntyped_available(struct KUntyped *u);
  * Returns physical base address, or 0 on insufficient space or bad alignment. */
 uint64_t kuntyped_bump_alloc_phys_page(struct KUntyped *u, uint64_t size);
 
-/* Fase 18: live KUntyped object count (additive diagnostics). */
+/* Phase 18: live KUntyped object count (additive diagnostics). */
 uint32_t kuntyped_live_count(void);
 
 /*
- * Fase S1: atomic batch carve for SYS_UNTYPED_RETYPE2.
+ * Phase S1: atomic batch carve for SYS_UNTYPED_RETYPE2.
  *
  * Carves 'count' child blocks of (KUNTYPED_ALIGN + align_up(obj_bytes)) each
  * from the bump pointer in ONE critical section: capacity is checked for the
@@ -134,13 +134,13 @@ iris_error_t kuntyped_alloc_children_atomic(struct KUntyped *u,
                                             uint32_t count,
                                             void **out_ptrs);
 
-/* Fase S1: exact rollback of a batch that could not be published.  Only
+/* Phase S1: exact rollback of a batch that could not be published.  Only
  * succeeds when no later carve happened (used == the batch end); the caller
  * must already have released every child (child_count decremented). */
 void kuntyped_unbump_exact(struct KUntyped *u, uint64_t start_used,
                            uint64_t end_used);
 
-/* Fase S1 instrumentation — global untyped/retype counters (testable via
+/* Phase S1 instrumentation — global untyped/retype counters (testable via
  * SYS_UNTYPED_QUERY).  All monotonic except live gauges. */
 struct kuntyped_stats {
     uint64_t retype_count;        /* successful RETYPE/RETYPE2 object creations */

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /*
- * Fase 3.4: Bootstrap CSpace slot layout.
+ * Phase 3.4: Bootstrap CSpace slot layout.
  *
  * These CPtr values are reserved in the root CNode of the initial task.
  * The root CNode is created by kprocess_alloc with KCNODE_DEFAULT_SLOTS=256
@@ -14,7 +14,7 @@
  *   Slots 1..BOOT_CPTR_RES_END   — reserved for future well-known boot caps
  *                                  (e.g. KBootstrapCap CSpace slot, root CNode
  *                                  self-reference, future VSpace cap, etc.).
- *   Slot 1: BOOT_CPTR_BOOTSTRAP_CAP — the initial KBootstrapCap (Fase 3.5).
+ *   Slot 1: BOOT_CPTR_BOOTSTRAP_CAP — the initial KBootstrapCap (Phase 3.5).
  *   Slots 2..BOOT_CPTR_RES_END     — reserved for future well-known boot caps.
  *   Slots BOOT_CPTR_UNTYPED_START..BOOT_CPTR_UNTYPED_END
  *                                — boot KUntyped blocks, in drain order.
@@ -27,17 +27,17 @@
  * BOOT_CPTR_UNTYPED_START..BOOT_CPTR_UNTYPED_END with SYS_UNTYPED_INFO
  * until it gets a non-zero error (NOT_FOUND).
  */
-/* Fase 3.5 / Fase 4: well-known boot capability slots.
+/* Phase 3.5 / Phase 4: well-known boot capability slots.
  * BOOT_CPTR_BOOTSTRAP_CAP occupies slot 1 in the root CNode of userboot.
- * BOOT_CPTR_VSPACE occupies slot 2 — the initial VSpace capability (Fase 4).
+ * BOOT_CPTR_VSPACE occupies slot 2 — the initial VSpace capability (Phase 4).
  * The legacy bootstrap_cap_h handle (arg0) remains valid in dual mode. */
-/* Slot 1 held the MONOLITHIC KBootstrapCap until Stage 5 Etapa 2 split it into
+/* Slot 1 held the MONOLITHIC KBootstrapCap until Stage 5 Step 2 split it into
  * one capability per authority.  It is permanently reserved and permanently
  * EMPTY: there is no capability with more than one authority left to put
  * there, and the root task reads what it holds from BootInfo. */
 #define BOOT_CPTR_BOOTSTRAP_CAP   1u    /* retired — reserved, never populated */
-#define BOOT_CPTR_VSPACE          2u    /* KVSpace for userboot/root task (Fase 4) */
-/* Stage 5 Etapa 2: one capability per authority.  Each of these is a boot
+#define BOOT_CPTR_VSPACE          2u    /* KVSpace for userboot/root task (Phase 4) */
+/* Stage 5 Step 2: one capability per authority.  Each of these is a boot
  * capability carrying EXACTLY one authority, published into its own slot; the
  * root task delegates the one it means instead of narrowing a mask.  The root
  * task reads them out of BootInfo — these constants exist for the kernel that
@@ -49,7 +49,7 @@
 #define BOOT_CPTR_PROC_CONTROL    6u    /* SYS_PROCESS_CREATE authority */
 #define BOOT_CPTR_INITRD_CONTROL  7u    /* SYS_INITRD_COUNT / SYS_INITRD_VMO */
 #define BOOT_CPTR_FB_CONTROL      8u    /* SYS_FRAMEBUFFER_VMO (one-shot) */
-/* Stage 5 Etapa 3: the root task's OWN objects, as capabilities.  Its root
+/* Stage 5 Step 3: the root task's OWN objects, as capabilities.  Its root
  * CNode was reachable only through the "arg0 == 0 means my own root"
  * convention and its TCB only by asking SYS_TCB_SELF; seL4's root task simply
  * finds seL4_CapInitThreadCNode and seL4_CapInitThreadTCB in its CSpace. */

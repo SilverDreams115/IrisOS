@@ -42,7 +42,7 @@
 #include <iris/paging.h>
 
 #define PAGE_SIZE             0x1000ULL
-/* WAIT_ANY_MAX_CHANNELS retired with SYS_WAIT_ANY — Fase 13/Track G */
+/* WAIT_ANY_MAX_CHANNELS retired with SYS_WAIT_ANY — Phase 13/Track G */
 
 /* ── Shared helper functions ─────────────────────────────────────────
  * All static inline to avoid unused-function warnings when a given
@@ -57,7 +57,7 @@ static inline uint64_t syscall_ok_u64(uint64_t value) {
     return value;
 }
 
-/* Fase 13/Track G: user_kchanmsg_* / copy_kchanmsg_* helpers retired with the
+/* Phase 13/Track G: user_kchanmsg_* / copy_kchanmsg_* helpers retired with the
  * KChannel object. */
 
 static inline int copy_u32_to_user_checked(uint64_t dst_uptr, uint32_t value) {
@@ -143,7 +143,7 @@ static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr) {
     struct KObject *obj; iris_rights_t r;
     if (cspace_resolve_cap(t->process, (iris_cptr_t)auth_cptr, RIGHT_READ,
                            &obj, &r) != IRIS_OK) return 0;
-    /* Stage 5 Etapa 2: exact match.  Debug authority is its own capability, so
+    /* Stage 5 Step 2: exact match.  Debug authority is its own capability, so
      * a capability that merely includes the bit — which, before the split, was
      * every boot capability in the system — does not authorise draining the
      * kernel log or powering the machine off. */
@@ -194,19 +194,19 @@ uint64_t sys_thread_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sleep(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — IPC ──────────────────────────────────── */
-/* sys_chan_call retired — Fase 13/Track G */
+/* sys_chan_call retired — Phase 13/Track G */
 uint64_t sys_notify_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-/* sys_wait_any / sys_wait_any_timeout retired — Fase 13/Track G */
+/* sys_wait_any / sys_wait_any_timeout retired — Phase 13/Track G */
 uint64_t sys_futex_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_futex_wake(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — VM ───────────────────────────────────── */
 uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2); /* Fase 29 */
-uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);  /* Fase 29 */
+uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2); /* Phase 29 */
+uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);  /* Phase 29 */
 uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -230,7 +230,7 @@ iris_error_t cspace_own_root(struct KProcess *proc, struct KCNode **out);
  * Publish a freshly created object into a CSpace slot of the CALLER's root
  * CNode, optionally as an MDB child of the slot that authorised it.
  *
- * Etapa 4: this is what replaces "return a handle".  A syscall that hands back
+ * Step 4: this is what replaces "return a handle".  A syscall that hands back
  * a handle is a handle PRODUCER, and the charter forbids new ones outright
  * (§3.1); retiring the existing ones means every creation lands in CSpace
  * instead.  Where the creation was authorised by a capability the caller
@@ -338,7 +338,7 @@ static inline int cspace_only_cptr(uint64_t v) {
  * cap always stays with its owner.  The single-shot consume-at-stage
  * wrappers were retired in A1.10 (zero callers; do not reintroduce).
  *
- * Fase S4 (Etapa 2): the SOURCE is a CSpace CPtr (<1024), resolved to its
+ * Phase S4 (Step 2): the SOURCE is a CSpace CPtr (<1024), resolved to its
  * terminal slot — never a handle.  The slot identity (out_src_cn/out_src_idx)
  * rides with the staged object so delivery can parent the delivered cap to it
  * in the MDB.  out_src_cn carries active+lifecycle refs; release them with
@@ -368,9 +368,9 @@ void syscall_ipc_stage_cap_abort(struct KCNode *src_cn);
  * Stage 4: there is no handle leg.  A receive that declared no slot, or whose
  * slot cannot be installed into, gets the MESSAGE without the capability —
  * charter I1's destination half, matching the fail-closed shape the raced
- * slot has had since Etapa 2.
+ * slot has had since Step 2.
  *
- * Fase S4 (Etapa 2): src_cn/src_idx are the sender's source slot.  A slot
+ * Phase S4 (Step 2): src_cn/src_idx are the sender's source slot.  A slot
  * delivery installs the cap as an MDB CHILD of that slot (real CSpace
  * ancestry) instead of a LEGACY_ROOT; the source must still be occupied at
  * delivery time, so a cap revoked while staged is never delivered. */
@@ -386,7 +386,7 @@ uint32_t syscall_ipc_deliver_cap_routed(struct task *receiver,
  * successful SYS_CSPACE_RESOLVE materializations. */
 extern uint32_t iris_ipc_stat_slot_deliveries;    /* syscall_endpoint.c */
 extern uint32_t iris_ipc_stat_handle_deliveries;
-/* Fase S4 (Etapa 2): RETIRED — the TOCTOU slot→handle degradation is gone,
+/* Phase S4 (Step 2): RETIRED — the TOCTOU slot→handle degradation is gone,
  * so this counter is a STRUCTURAL ZERO.  It stays in the ABI (sys_sched_info
  * extended layout, offset w[8]) as the retirement witness: T094 forces the
  * race and T095 asserts the counter never moves.  If it ever becomes
@@ -406,7 +406,7 @@ uint64_t sys_cnode_fetch(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-/* Fase S3 — CSpace-only MDB/CDT derivation surface. */
+/* Phase S3 — CSpace-only MDB/CDT derivation surface. */
 uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -425,22 +425,22 @@ uint64_t sys_thread_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2);         /* Fase S2 */
+uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2);         /* Phase S2 */
 
 /* ── Forward declarations — Block 4+5 untyped memory (Ph76-81) ───── */
 uint64_t sys_untyped_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
-                             uint64_t arg3);                               /* Fase S1 */
-uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2);   /* Fase S1 */
+                             uint64_t arg3);                               /* Phase S1 */
+uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2);   /* Phase S1 */
 uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
-/* ── Forward declarations — Block 9 frame capabilities (Fase 5 / 5.1) ── */
+/* ── Forward declarations — Block 9 frame capabilities (Phase 5 / 5.1) ── */
 uint64_t sys_frame_map  (uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_frame_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2);  /* Fase 25 */
-uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);  /* Fase 26 */
+uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2);  /* Phase 25 */
+uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);  /* Phase 26 */
 
 /* ── Forward declarations — TCB caps (Ph96-101) ──────────────────── */
 uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);

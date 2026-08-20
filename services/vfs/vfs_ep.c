@@ -1,5 +1,5 @@
 /*
- * vfs_ep.c — VFS endpoint-protocol dispatcher (Fase 7.1; grants Fase 28.1).
+ * vfs_ep.c — VFS endpoint-protocol dispatcher (Phase 7.1; grants Phase 28.1).
  *
  * Pure request → reply logic for the IrisMsg-based VFS protocol
  * (iris/vfs_ep_proto.h). No syscalls, no globals: unit-testable on the host
@@ -12,7 +12,7 @@
  *     → IRIS_EP_REPLY_ERR / IRIS_ERR_INVALID_ARG;
  *   - reads are clamped to VFS_EP_DATA_MAX; offset >= size is EOF, not error.
  *
- * Fase 28.1 — the file-grant trust boundary lives HERE, in the VFS, not in
+ * Phase 28.1 — the file-grant trust boundary lives HERE, in the VFS, not in
  * any client:
  *   - the caller class comes from req->sender_badge (kernel-stamped from the
  *     invoked capability — a client cannot write it);
@@ -225,7 +225,7 @@ static void vfs_ep_handle_status(const struct vfs_export *exports,
     reply->word_count = 3u;
 }
 
-/* ── Fase 28.1: file-grant layer ────────────────────────────────────────── */
+/* ── Phase 28.1: file-grant layer ────────────────────────────────────────── */
 
 void vfs_ep_grants_init(struct vfs_ep_state *st, uint64_t epoch) {
     struct vfs_grant_table *gt = st->grants;
@@ -528,7 +528,7 @@ void vfs_ep_dispatch(struct vfs_ep_state *st,
         return;
     }
 
-    /* Fase 28.1 containment: a SESSION badge gets the grant ops and PING —
+    /* Phase 28.1 containment: a SESSION badge gets the grant ops and PING —
      * nothing else.  The check runs BEFORE the opcode switch so no name-based
      * path is reachable from a session cap, present or future. */
     if (iris_badge_filegrant_session(req->sender_badge) >= 0) {
@@ -591,7 +591,7 @@ void vfs_ep_dispatch(struct vfs_ep_state *st,
         vfs_ep_msg_clear(reply);
         reply->label      = IRIS_EP_REPLY_OK;
         reply->words[0]   = 0u;
-        /* Fase 9 PING convention: echo the kernel-stamped sender badge. */
+        /* Phase 9 PING convention: echo the kernel-stamped sender badge. */
         reply->words[1]   = req->sender_badge;
         reply->word_count = 2u;
         return;

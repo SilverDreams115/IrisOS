@@ -1,6 +1,6 @@
-# Badges & sender identity (Fase 9)
+# Badges & sender identity (Phase 9)
 
-Fase 9 gives IRIS seL4-style **sender identity**: every endpoint message
+Phase 9 gives IRIS seL4-style **sender identity**: every endpoint message
 carries a kernel-stamped badge identifying the *capability* the sender
 invoked. This closes the S0 P1 debt "no sender identity" and is the
 foundation for service death/relookup, secure REGISTER, per-client state
@@ -107,12 +107,12 @@ assembly) replies to `IRIS_EP_OP_PING` with
 - **svcmgr legacy loop retirement**: REGISTER/UNREGISTER over EP can now
   be authenticated by badge.
 - **Stateful protocols**: per-client server state keyed by badge becomes
-  safe (the Fase 7 "stateless because no identity" constraint is lifted).
+  safe (the Phase 7 "stateless because no identity" constraint is lifted).
 - **Revocation**: per-badge cap accounting.
 
-## Fase 10 follow-up
+## Phase 10 follow-up
 
-Fase 10 consumes these badges as **policy** (see
+Phase 10 consumes these badges as **policy** (see
 [service-lifecycle.md](service-lifecycle.md)): `iris_badge_is_supervisor()`
 gates `.ep` lookup DUPLICATE grants and the privileged RESTART op; EP REGISTER
 binds an `owner_badge`; UNREGISTER checks it; and the STATUS/generation oracle

@@ -9,7 +9,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 
-/* Fase 18 — live KFrame object count (additive diagnostics).  Incremented on
+/* Phase 18 — live KFrame object count (additive diagnostics).  Incremented on
  * every kframe_alloc, decremented in kframe_obj_destroy, so authority tests can
  * prove a retyped/mapped frame is destroyed exactly once after unmap+release. */
 static _Atomic uint32_t kframe_live;
@@ -18,7 +18,7 @@ uint32_t kframe_live_count(void) {
     return atomic_load_explicit(&kframe_live, memory_order_relaxed);
 }
 
-/* Fase 19 — mapping instrumentation (additive, exposed via SYS_SCHED_INFO ext4).
+/* Phase 19 — mapping instrumentation (additive, exposed via SYS_SCHED_INFO ext4).
  *   kframe_live_mappings — KFrameMapping nodes currently installed across every
  *     VSpace.  Bumped on a successful map, dropped on every removal path
  *     (explicit unmap, VSpace invalidate, VSpace destroy) so it returns to
@@ -95,7 +95,7 @@ static const struct KObjectOps kframe_ops = {
 };
 
 /*
- * Stage 6 Etapa 1 — the Untyped-born frame.
+ * Stage 6 Step 1 — the Untyped-born frame.
  *
  * The frame's PAGE was always carved from the Untyped; its header was a kslab
  * allocation, so a caller who paid for a page also spent kernel memory that
@@ -148,7 +148,7 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
 struct KFrame *kframe_alloc_vmo_page(uint64_t paddr, struct KVmo *vmo) {
     if (!vmo) return NULL;
 
-    /* Stage 6 Etapa 6: the header for a VMO page comes out of the VMO's own
+    /* Stage 6 Step 6: the header for a VMO page comes out of the VMO's own
      * budget — the same one its page came from.  This is the frequent runtime
      * path (one per mapped page), so leaving it on the kernel slab would mean
      * a process could still grow kernel memory by mapping.  A VMO with no
@@ -209,7 +209,7 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
     if (writable)    page_flags |= PAGE_WRITABLE;
 
     /*
-     * Stage 6-pure Etapa 2: the kernel does not create paging levels.
+     * Stage 6-pure Step 2: the kernel does not create paging levels.
      *
      * A VSpace whose holder was given a budget (every spawned process) is
      * mapped STRICTLY: a missing level is reported, not carved.  The holder
@@ -219,7 +219,7 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
      *
      * The exception is bounded to the root task's BOOTSTRAP maps — its text,
      * stack and BootInfo, mapped before it exists, with no userland to ask.
-     * Those come from the PMM reserve.  Stage 6-pure Etapa 3 ends the
+     * Those come from the PMM reserve.  Stage 6-pure Step 3 ends the
      * exception the moment the root task can speak for itself
      * (kvspace_end_bootstrap), so it too supplies its own levels from then on
      * and no address space is implicitly funded while anyone is running.

@@ -93,7 +93,7 @@ uint64_t sys_process_status(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *
  * Registers a single process-exit watch for proc_handle. When the target
  * process tears down, the kernel signals signal_bits on notify_handle
- * (Fase 13 / Track B — death is a KNotification signal, no longer a
+ * (Phase 13 / Track B — death is a KNotification signal, no longer a
  * PROC_EVENT_MSG_EXIT KChannel message).  The watcher identifies the dead
  * process by which bit is set and queries SYS_PROCESS_EXIT_CODE / STATUS
  * for detail.  signal_bits must be non-zero.
@@ -117,7 +117,7 @@ uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    /* Etapa 4: the watched process already resolved either way while the
+    /* Step 4: the watched process already resolved either way while the
      * notification stayed handle-only — half a migration, so a caller holding
      * its notification in CSpace could not arm a watch at all.
      *
@@ -202,7 +202,7 @@ uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * No live threads.  Two different states share that description, and only
      * one of them is this syscall's to clean up.
      *
-     * Stage 6 Etapa 2: a process created and NEVER STARTED used to be
+     * Stage 6 Step 2: a process created and NEVER STARTED used to be
      * unreclaimable — kill found no threads to stop, and the creation
      * reference that outlives capabilities was only ever dropped by the LAST
      * THREAD exiting.  Its address space, its PML4 and (since page tables are
@@ -247,15 +247,15 @@ uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
                                    uint64_t arg2, uint64_t arg3) {
-    uint64_t dest        = arg1;   /* Etapa 4: cnode | slot<<32 */
-    uint64_t vspace_cptr = arg2;   /* Stage 6-pure Etapa 4: the address space */
-    uint64_t cnode_cptr  = arg3;   /* Stage 6-pure Etapa 5: the root CSpace */
+    uint64_t dest        = arg1;   /* Step 4: cnode | slot<<32 */
+    uint64_t vspace_cptr = arg2;   /* Stage 6-pure Step 4: the address space */
+    uint64_t cnode_cptr  = arg3;   /* Stage 6-pure Step 5: the root CSpace */
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
-    /* Stage 5 Etapa 2: the authority is the PROCESS CONTROL capability, and
+    /* Stage 5 Step 2: the authority is the PROCESS CONTROL capability, and
      * nothing else — creating a process no longer travels with initrd access,
      * debug authority or the framebuffer. */
     iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
@@ -269,7 +269,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     kobject_release(auth_obj);
 
     /*
-     * Stage 6-pure Etapa 4: the caller supplies the ADDRESS SPACE.
+     * Stage 6-pure Step 4: the caller supplies the ADDRESS SPACE.
      *
      * It used to supply a budget and the kernel built one out of it — carving
      * a PML4, a VSpace header, and every level underneath.  The holder paid
@@ -310,7 +310,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     }
 
     /*
-     * Stage 6-pure Etapa 5: the caller supplies the root CSpace too.
+     * Stage 6-pure Step 5: the caller supplies the root CSpace too.
      *
      * With this, everything a process IS comes from objects its creator
      * retyped — an address space and a CSpace — which is the shape seL4 gives
@@ -354,7 +354,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     kobject_active_release(&vs->base);
     kobject_release(&vs->base);
 
-    /* Etapa 4: arg1 names a destination CSpace slot; the new process cap is
+    /* Step 4: arg1 names a destination CSpace slot; the new process cap is
      * published there as an MDB child of the spawn-cap slot that authorised
      * the create, so it is revocable by the grantor.
      *
@@ -397,7 +397,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
  * spawner could not name the CSpace and VSpace its child would run in, because
  * the kernel carved both inside SYS_PROCESS_CREATE and never handed them out.
  *
- * Stage 6-pure Etapa 4/5 made the spawner RETYPE both and pass them in, so it
+ * Stage 6-pure Step 4/5 made the spawner RETYPE both and pass them in, so it
  * holds them from before the child exists.  What replaces this is the same
  * four steps a thread of your own takes, and every one names a capability:
  * RETYPE2(KOBJ_TCB) out of the child's budget, SYS_TCB_CONFIGURE with the
@@ -416,7 +416,7 @@ uint64_t sys_thread_start(uint64_t arg0, uint64_t arg1,
 /* ── Threading (D2) ──────────────────────────────────────────────── */
 
 /*
- * SYS_THREAD_CREATE (48) — RETIRED (Stage 5 Etapa 4).  Number permanently
+ * SYS_THREAD_CREATE (48) — RETIRED (Stage 5 Step 4).  Number permanently
  * reserved; returns IRIS_ERR_NOT_SUPPORTED.
  *
  * It carved a thread out of the kernel's static task pool and returned a
@@ -480,7 +480,7 @@ uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /*
  * sys_process_fault_info(proc_handle, out_uptr) → 0 or iris_error_t
  *
- * Fase 13 (Track I): reads the last fault recorded for proc_handle (or self when
+ * Phase 13 (Track I): reads the last fault recorded for proc_handle (or self when
  * proc_handle == HANDLE_INVALID) into a 32-byte user buffer laid out per
  * iris/fault_proto.h (FAULT_OFF_VECTOR/TASK_ID/RIP/ERROR/CR2).  The exception
  * handler calls this after its KNotification fires.  Returns IRIS_ERR_WOULD_BLOCK
@@ -538,7 +538,7 @@ uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * sys_resource_info(proc_handle, out_uptr) → 0 or iris_error_t   (Fase 29)
+ * sys_resource_info(proc_handle, out_uptr) → 0 or iris_error_t   (Phase 29)
  *
  * Read-only resource-accounting snapshot: per-domain usage/limit/high-water for
  * a KProcess (self when proc_handle == HANDLE_INVALID) plus system-wide
@@ -547,7 +547,7 @@ uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * struct_size; the kernel writes at most that many bytes.
  */
 uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    /* Fase S2 C.1: arg2 = caller's declared buffer size (0 = legacy full).
+    /* Phase S2 C.1: arg2 = caller's declared buffer size (0 = legacy full).
      * The kernel writes at most min(user_size, sizeof(info)) — prefix
      * compatible — so a smaller/older struct can never be overflowed. */
     uint32_t user_size = (uint32_t)arg2;
@@ -573,7 +573,7 @@ uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     spinlock_lock(&proc->base.lock);
     info.vmos_usage    = proc->owned_vmos;
     info.vmos_hwm      = proc->owned_vmos_hwm;
-    /* Fase S1: notification quota retired — notifications are Untyped-funded.
+    /* Phase S1: notification quota retired — notifications are Untyped-funded.
      * The ABI fields remain (additive contract) and report 0. */
     info.notifs_usage  = 0u;
     info.notifs_hwm    = 0u;
@@ -586,7 +586,7 @@ uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     info.version       = IRIS_RESOURCE_INFO_VERSION;
     info.struct_size   = (uint32_t)sizeof(info);
     info.vmos_limit    = KPROCESS_VMO_QUOTA;
-    info.notifs_limit  = 0u; /* Fase S1: no notification quota — Untyped is the budget */
+    info.notifs_limit  = 0u; /* Phase S1: no notification quota — Untyped is the budget */
     info.global_failed_charges = kprocess_quota_failed_count();
     info.global_rollbacks      = kprocess_quota_rollback_count();
     info.kslab_used_bytes  = kslab_used_bytes();
@@ -594,7 +594,7 @@ uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     info.kslab_hwm_bytes   = kslab_used_bytes();   /* bump-only: used == hwm */
     info.kslab_alloc_failures = kslab_fail_count();
 
-    /* Fase S2 C.1: prefix-compatible, bounded by the caller's declared size.
+    /* Phase S2 C.1: prefix-compatible, bounded by the caller's declared size.
      * user_size == 0 keeps the legacy full-struct contract for callers that
      * pre-date C.1 (they must size their buffer to sizeof(info)); a non-zero
      * user_size clamps the write so an older/smaller struct cannot overflow. */

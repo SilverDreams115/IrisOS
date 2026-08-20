@@ -1,4 +1,4 @@
-# IRIS — Boot Authority (Fase S1)
+# IRIS — Boot Authority (Phase S1)
 
 Authority chain from the kernel down to the services, with explicit Untyped
 as the object-creation budget.
@@ -11,7 +11,7 @@ kernel_main
   │  boot KUntypeds → userboot's CSpace ONLY (slots BOOT_CPTR_UNTYPED_START..;
   │  the legacy handle half is deleted — Stage 4)
   ├─ describes every grant in the BootInfo region and maps it read-only
-  │  into userboot (address in RBX — Stage 5 Etapa 1)
+  │  into userboot (address in RBX — Stage 5 Step 1)
   └─ userboot: first image (de facto root task)
 userboot  (reads BootInfo; validates it against its own CSpace)
   └─ init: the six boot control capabilities (process / initrd / IRQ / ioport
@@ -36,7 +36,7 @@ svcmgr  (pool = slot 12)
 - No service receives the root Untyped; only init/svcmgr manage bounded pools
   (explicit administrators).
 - No service receives more boot authority than it exercises: the monolithic
-  boot capability is gone (Stage 5 Etapa 2), so vfs holds the initrd capability
+  boot capability is gone (Stage 5 Step 2), so vfs holds the initrd capability
   without process-creation authority, fb holds the framebuffer capability
   alone, and svcmgr DELETES its device control capabilities once the catalog's
   hardware is claimed.
@@ -47,7 +47,7 @@ svcmgr  (pool = slot 12)
 
 ## BootInfo
 
-**Stage 5 Etapa 1: the structured BootInfo exists.**  The kernel writes a
+**Stage 5 Step 1: the structured BootInfo exists.**  The kernel writes a
 `struct iris_root_bootinfo` (`kernel/include/iris/root_bootinfo.h`) — initial
 caps by CPtr, root-CNode shape, and every boot Untyped with its physical region
 — and maps it read-only / non-executable into the root task, whose address
@@ -59,5 +59,5 @@ The well-known slots of `endpoint_proto.h` remain the contract for the SPAWNED
 services: a child's authority is the pre-start mint table its spawner passed,
 which is already an explicit list.  BootInfo is for the root task, which has no
 spawner.  Splitting `KBootstrapCap` into fine-grained caps published in their
-own BootInfo slots is Etapa 2
+own BootInfo slots is Step 2
 (`docs/architecture/stage5-root-task-bootinfo.md`).

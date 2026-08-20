@@ -9,7 +9,7 @@
 /*
  * SYS_VSPACE_SELF — hand the caller a capability to its own address space.
  *
- * Fase 19: self-authority only.  A process already fully controls its own
+ * Phase 19: self-authority only.  A process already fully controls its own
  * address space through the VMO map/unmap syscalls, so a cap to its own VSpace
  * is not new authority — it exists so ring-3 code can mint the cap into a
  * CSpace slot and exercise SYS_FRAME_MAP / SYS_FRAME_UNMAP on itself by CPtr
@@ -43,7 +43,7 @@ uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /*
  * SYS_PROCESS_VSPACE — hand a RIGHT_MANAGE holder a capability to the target
- * process's address space (Fase 25, user-pager groundwork).
+ * process's address space (Phase 25, user-pager groundwork).
  *
  * Authority: RIGHT_MANAGE over the process cap — the same authority that
  * already implies address-space control via SYS_VMO_MAP_INTO.  The returned
@@ -56,7 +56,7 @@ uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /*
  * SYS_VSPACE_MAP_TABLE(pt_cptr, vspace_cptr, vaddr) — seL4_X86_PageTable_Map.
  *
- * Stage 6-pure Etapa 1.  The holder retyped a paging level out of its own
+ * Stage 6-pure Step 1.  The holder retyped a paging level out of its own
  * Untyped; this puts it into an address space.  What the kernel contributes is
  * the walk — which level is missing for this address — because that is a fact
  * about the address space, not a choice the holder gets to make.  What it no
@@ -154,7 +154,7 @@ uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * vmo_create_charged — shared body for SYS_VMO_CREATE / SYS_VMO_CREATE_FOR.
  * Creates a sparse VMO of `size`, charges the VMO OBJECT quota (owned_vmos) and,
  * later, its sparse pages to `payer` (the owner/payer domain), and installs the
- * handle in the CALLER's table (the holder).  Fase 29: owner (payer) and holder
+ * handle in the CALLER's table (the holder).  Phase 29: owner (payer) and holder
  * are deliberately distinct — a loader creating a child's image VMO charges the
  * CHILD but keeps the handle to map/close it.
  */
@@ -165,7 +165,7 @@ static uint64_t vmo_create_charged(struct task *t, uint64_t size,
     if (kvmo_size_to_pages(size, &pages) != IRIS_OK)
         return syscall_err(IRIS_ERR_INVALID_ARG);
     (void)pages;
-    /* Stage 6 Etapa 5: a VMO's memory comes from the budget its PAYER was
+    /* Stage 6 Step 5: a VMO's memory comes from the budget its PAYER was
      * given.  Anonymous user memory was the last thing the kernel handed out
      * for free — bounded only by a per-process quota the kernel invented,
      * rather than by a capability someone delegated. */
@@ -174,11 +174,11 @@ static uint64_t vmo_create_charged(struct task *t, uint64_t size,
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
     iris_error_t r = kvmo_bind_owner(v, payer);
     if (r != IRIS_OK) { kvmo_free(v); return syscall_err(r); }
-    /* Etapa 4: a destination slot publishes the VMO into CSpace instead of
+    /* Step 4: a destination slot publishes the VMO into CSpace instead of
      * producing a handle.  No MDB parent: a KVMO is fabricated from kernel
      * memory, not retyped from an Untyped, so it has no capability ancestor to
      * name — that is KVMO's own debt (ledger: FROZEN, memory-server), not this
-     * etapa's.  It is an explicit LEGACY root, counted, exactly as the handle
+     * step's.  It is an explicit LEGACY root, counted, exactly as the handle
      * form was untracked. */
     /* Stage 4: a destination slot is REQUIRED — the handle result is retired. */
     if (dest == 0u) {
@@ -198,7 +198,7 @@ uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /*
-     * Stage 6 Etapa 5: arg1 names WHICH Untyped pays for this VMO's pages.
+     * Stage 6 Step 5: arg1 names WHICH Untyped pays for this VMO's pages.
      *
      * It was a dead argument.  A process asking for anonymous memory got PMM
      * pages bounded by a per-process quota the kernel invented; now the memory
@@ -223,12 +223,12 @@ uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /*
  * SYS_VMO_CREATE_FOR(size, charge_target) — explicit, capability-authorized
- * PAYER selection (Fase 29).  The VMO object + its sparse pages are charged to
+ * PAYER selection (Phase 29).  The VMO object + its sparse pages are charged to
  * `charge_target` (a KProcess the caller holds RIGHT_MANAGE on), not to the
  * caller.  Same authority SYS_VMO_MAP_INTO requires to map into that process.
  */
 uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    uint64_t dest = arg2;   /* Etapa 4: cnode | slot<<32; 0 = legacy handle */
+    uint64_t dest = arg2;   /* Step 4: cnode | slot<<32; 0 = legacy handle */
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -323,7 +323,7 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             }
         }
 
-        /* Fase 29: sparse pages are charged to the VMO's OWNER (payer domain),
+        /* Phase 29: sparse pages are charged to the VMO's OWNER (payer domain),
          * once, at allocation — not to whoever maps it first.  So a loader that
          * maps a child's segment VMO into its own window to fill it charges the
          * CHILD, and closing/unmapping never strands the charge on the loader
@@ -483,14 +483,14 @@ uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
                                uint64_t arg2, uint64_t arg3) {
-    uint64_t dest      = arg2;   /* Etapa 4: cnode | slot<<32 */
-    uint64_t pool_cptr = arg3;   /* Stage 6 Etapa 5: which budget pays */
+    uint64_t dest      = arg2;   /* Step 4: cnode | slot<<32 */
+    uint64_t pool_cptr = arg3;   /* Stage 6 Step 5: which budget pays */
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
-    /* Stage 5 Etapa 2: the authority is the INITRD capability — reading boot
+    /* Stage 5 Step 2: the authority is the INITRD capability — reading boot
      * images, and nothing else.  vfs holds it and no longer carries the
      * authority to create processes as a side effect. */
     iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
@@ -514,7 +514,7 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
      * physical address (which paging_map_checked_in would align down, causing
      * a read offset bug), we copy into freshly-allocated page-aligned pages. */
     /*
-     * Stage 6 Etapa 5: the boot image copy is charged to a budget.  Reading an
+     * Stage 6 Step 5: the boot image copy is charged to a budget.  Reading an
      * initrd entry allocates as many kernel pages as the image is long, and
      * that used to be free.
      *
@@ -555,7 +555,7 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
         }
     }
 
-    /* Etapa 4: arg2 names a destination CSpace slot.  With one, the image VMO
+    /* Step 4: arg2 names a destination CSpace slot.  With one, the image VMO
      * is published there as an MDB child of the spawn-cap slot that authorised
      * the read, so the loader never holds a handle and the grant is revocable
      * by whoever granted the spawn authority.  arg2 == 0 keeps the legacy
@@ -591,7 +591,7 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
-    /* Stage 5 Etapa 2: the authority is the INITRD capability — reading boot
+    /* Stage 5 Step 2: the authority is the INITRD capability — reading boot
      * images, and nothing else.  vfs holds it and no longer carries the
      * authority to create processes as a side effect. */
     iris_error_t r = cspace_resolve_only_obj(t->process, (iris_cptr_t)arg0,
@@ -695,7 +695,7 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
             }
         }
 
-        /* Fase 29: charge the VMO owner (payer domain), not the map target — a
+        /* Phase 29: charge the VMO owner (payer domain), not the map target — a
          * shared VMO's pages are paid once by its owner; extra targets that map
          * it do not re-charge (Q6/Q7/Q18). */
         struct KProcess *vmo_payer = kvmo_owner(v);
@@ -776,12 +776,12 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
 
 
 /*
- * sys_vmo_map_page(vmo_cptr, vspace_cptr, target_va, offset_flags) — Fase 26.
+ * sys_vmo_map_page(vmo_cptr, vspace_cptr, target_va, offset_flags) — Phase 26.
  *
  * Page-granular, offset-addressed map of ONE VMO page into a VSpace named by
  * capability.  The authority is (VMO READ[/WRITE]) + (VSpace WRITE) — NO
  * process MANAGE: the VSpace cap already IS the map-into-target authority
- * (SYS_PROCESS_VSPACE, Fase 25).  This is the VMO-backed analogue of
+ * (SYS_PROCESS_VSPACE, Phase 25).  This is the VMO-backed analogue of
  * SYS_FRAME_MAP; it does not touch the whole-VMO contiguous map path.
  */
 uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
@@ -815,7 +815,7 @@ uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    /* VSpace cap: RIGHT_WRITE to install the PTE (dual resolver, Fase 25). */
+    /* VSpace cap: RIGHT_WRITE to install the PTE (dual resolver, Phase 25). */
     struct KVSpace *vs;
     iris_rights_t   vs_rights;
     err = cspace_resolve_only_vspace(t->process, vspace_cptr, RIGHT_WRITE,
@@ -844,7 +844,7 @@ uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
             kobject_release(vmo_obj);
             return syscall_err(IRIS_ERR_INVALID_ARG);
         }
-        /* Fase 29: charge the VMO owner (payer domain), not the mapper.  The
+        /* Phase 29: charge the VMO owner (payer domain), not the mapper.  The
          * pager maps its cache/private VMO pages into targets; those pages are
          * paid by the VMO's owner (the pager / memory-service domain), once. */
         struct KProcess *vmo_payer = kvmo_owner(v);
@@ -908,7 +908,7 @@ uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
  * the grant could not be revoked by the grantor.
  *
  * SYS_PROC_CSPACE_MINT / SYS_CSPACE_MINT_INTO are the canonical form and have
- * been since Fase 8 — they install into the target's root CNode as an MDB
+ * been since Phase 8 — they install into the target's root CNode as an MDB
  * child of the caller's source slot, which makes the delegation revocable.
  * The number stays permanently reserved and answers NOT_SUPPORTED.
  */

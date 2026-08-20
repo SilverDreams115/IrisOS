@@ -12,11 +12,11 @@ static _Atomic uint32_t kvmo_live;
 static void kvmo_destroy(struct KObject *obj) {
     struct KVmo *v = (struct KVmo *)obj;
     struct KUntyped *pool = v->pool;
-    uint32_t charged_pages = 0;   /* Fase 29: sparse phys pages charged to owner */
+    uint32_t charged_pages = 0;   /* Phase 29: sparse phys pages charged to owner */
     if (v->sparse) {
         for (uint32_t i = 0; i < v->page_capacity; i++) {
             if (v->pages[i]) {
-                /* Stage 6 Etapa 5: a pooled page is inside somebody's Untyped.
+                /* Stage 6 Step 5: a pooled page is inside somebody's Untyped.
                  * Returning it to the buddy allocator would hand out memory
                  * that region still owns; what it gets back is its child
                  * entry, so the holder can RESET and reuse the whole region. */
@@ -37,7 +37,7 @@ static void kvmo_destroy(struct KObject *obj) {
     if (v->owner) {
         struct KProcess *owner = v->owner;
         v->owner = 0;
-        /* Fase 29: release the per-page phys charge that page allocation put on
+        /* Phase 29: release the per-page phys charge that page allocation put on
          * the owner (charged once per sparse page in the map syscalls), then the
          * VMO-object charge.  A VMO's pages are owned and paid for by the VMO's
          * payer domain, not by whoever happened to map it first. */
@@ -76,7 +76,7 @@ static struct KVmo *kvmo_alloc_in(struct KUntyped *pool) {
 static struct KVmo *kvmo_alloc(void) { return kvmo_alloc_in(0); }
 
 /*
- * Stage 6 Etapa 5 — one page of a VMO, from the budget that pays for it.
+ * Stage 6 Step 5 — one page of a VMO, from the budget that pays for it.
  *
  * Anonymous user memory was the last thing the kernel handed out for free: a
  * process asked for a VMO and got PMM pages, bounded only by a per-process

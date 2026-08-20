@@ -1,8 +1,8 @@
-# Fase 23 — Device / driver isolation hardening
+# Phase 23 — Device / driver isolation hardening
 
 Status: ACCEPTED — implemented in this phase.  Companion to
-`service-authority-minimization.md` (Fase 22) and the earlier hardening docs.
-Fase 22 minimized what caps a service holds over its peers; Fase 23 hardens what
+`service-authority-minimization.md` (Phase 22) and the earlier hardening docs.
+Phase 22 minimized what caps a service holds over its peers; Phase 23 hardens what
 a driver can reach in HARDWARE.  The audit and tests T164–T171 prove that a
 compromised driver is contained by its device caps: it cannot cross a port
 range, forge a port or IRQ, route or ack a line it holds no cap for, or reach
@@ -90,7 +90,7 @@ port (cap range-bounded), route or ack any other IRQ (cap embeds line 1, and it
 holds no proc-ROUTE to route at all), forge a new device cap (no ioport or IRQ
 control capability),
 reach the framebuffer (no FRAMEBUFFER), or call any peer service (no client
-caps — Fase 22).  `console` is even narrower: one port range, no IRQ authority.
+caps — Phase 22).  `console` is even narrower: one port range, no IRQ authority.
 `fb` can only map the framebuffer VMO it already holds.
 
 The T165/T166 stand-in makes this concrete: a `lifecycle_probe` minted ONLY a
@@ -182,7 +182,7 @@ IRQ 5 (unused) as the dummy line.
    minted device caps, not the bootstrap cap that creates them.
 3. Never grant a driver a proc cap with RIGHT_ROUTE unless it must route its own
    IRQ; prefer svcmgr owning the route on the driver's behalf.
-4. Keep the driver off the peer client-endpoint slots (Fase 22 `client_eps`)
+4. Keep the driver off the peer client-endpoint slots (Phase 22 `client_eps`)
    unless it genuinely calls that peer.
 5. The range-bounded, rights-checked, cap-embedded-irq_num contract is enforced
    by the kernel — a new driver inherits containment automatically as long as it

@@ -58,7 +58,7 @@ void test_kuntyped(void) {
     ASSERT_EQ(atomic_load(&u2->child_count), 0u);
     ASSERT_EQ(atomic_load(&u2->base.refcount), 1u);
 
-    /* ── Stage 6 Etapa 1: the two-ended carve (UT-TOP-1..5) ───────────────
+    /* ── Stage 6 Step 1: the two-ended carve (UT-TOP-1..5) ───────────────
      *
      * Object headers are carved from the TOP of an Untyped so that paying for
      * a header does not push the next page-aligned carve onto the following

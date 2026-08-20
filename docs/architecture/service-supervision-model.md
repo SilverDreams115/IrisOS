@@ -1,9 +1,9 @@
-# Fase 24 — Service restart / supervision model
+# Phase 24 — Service restart / supervision model
 
 Status: ACCEPTED — implemented in this phase.  Companion to
-`device-driver-isolation.md` (Fase 23), `service-authority-minimization.md`
-(Fase 22) and the earlier hardening docs.  Fases 22–23 minimized and contained
-what a service holds; Fase 24 hardens what happens when a service or driver
+`device-driver-isolation.md` (Phase 23), `service-authority-minimization.md`
+(Phase 22) and the earlier hardening docs.  Fases 22–23 minimized and contained
+what a service holds; Phase 24 hardens what happens when a service or driver
 DIES.  The audit and tests T172–T180 make the supervision policy explicit,
 auditable, and capability-preserving: a restarted service comes back with a new
 generation and only its declared authority, a crash-loop stops at its limit, and
@@ -29,8 +29,8 @@ what authority, and what stale state their death left behind.  Supervision in
 IRIS is an EXPLICIT capability-compatible policy, not an implicit "respawn on
 exit": every service carries a written classification, restart is bounded, and a
 restarted instance inherits nothing stale — it is a new generation with exactly
-the authority its manifest declares (Fase 22) and, for a driver, exactly its
-device caps (Fase 23).
+the authority its manifest declares (Phase 22) and, for a driver, exactly its
+device caps (Phase 23).
 
 Two supervision surfaces exist:
 
@@ -62,7 +62,7 @@ The catalog entries (kbd/vfs/sh) carry an explicit `supervision` field
 (`IRIS_SUPERVISION_*`); T172 asserts every catalog service declares a policy
 consistent with its `restart_on_exit`/`restart_limit` flags (a RESTART class has
 a non-zero limit, a NO_RESTART class has a zero limit) and consistent with the
-Fase 22 authority manifest (a driver stays a driver).  console/fb/svcmgr/init are
+Phase 22 authority manifest (a driver stays a driver).  console/fb/svcmgr/init are
 init-spawned (not catalog); their policy is documented here.
 
 ## Generations
@@ -85,13 +85,13 @@ unregister is NOT_FOUND).
   `.ep`/catalog names are rejected; a duplicate name is BUSY; badge-authenticated
   (owner_badge = sender_badge).
 - **Lookup**: returns the CURRENT instance's cap with the tightened client
-  rights (Fase 22 grant tightening); a gone name is NOT_FOUND — no stale cap.
+  rights (Phase 22 grant tightening); a gone name is NOT_FOUND — no stale cap.
 - **Unregister**: owner-badge or supervisor only; a stale/never-registered id is
   NOT_FOUND; idempotent.
 - **Restart**: kills the service; the watch path respawns it, bumps the
   generation and the restart_count, and re-establishes its endpoint (the
   KEndpoint survives restarts).  The new instance receives ONLY its manifest
-  authority — no Fase 22 client caps beyond `client_eps`, no Fase 23 device caps
+  authority — no Phase 22 client caps beyond `client_eps`, no Phase 23 device caps
   beyond its declared set, no leaked proc/endpoint/notification/IRQ refs.
 - **Crash-loop**: restart is bounded by `restart_count < restart_limit`.  On
   reaching the limit the service is left DOWN and marked `degraded` (observable
@@ -152,17 +152,17 @@ T180  supervision stress: seeded spawn/kill/fault-crash/register/lookup/
 
 ## Relationships
 
-- **Least-authority (Fase 22)**: a restarted service is minted from the same
+- **Least-authority (Phase 22)**: a restarted service is minted from the same
   `client_eps` manifest — restart cannot reintroduce a removed peer cap (T177).
-- **Device isolation (Fase 23)**: a restarted driver receives only its declared
+- **Device isolation (Phase 23)**: a restarted driver receives only its declared
   device caps; old IRQ routes are cleared by teardown before the new instance
   registers its own (T177).
-- **Fault endpoint (Fase 20)**: a fault-crash is handled like a kill — the
+- **Fault endpoint (Phase 20)**: a fault-crash is handled like a kill — the
   faulting task with no handler is terminated, the watch path treats it as a
   death (T180 fault-crash rounds).
-- **Lifecycle/reap (Fase 16)**: restart relies on the deferred-reap slot-reuse
+- **Lifecycle/reap (Phase 16)**: restart relies on the deferred-reap slot-reuse
   fix; the supervisor drains the reaper before every baseline.
-- **IPC/KReply (Fase 16/20)**: a blocked client's KReply is cancelled on the
+- **IPC/KReply (Phase 16/20)**: a blocked client's KReply is cancelled on the
   server's death — no KReply drift (T176).
 
 ## Remaining gaps
@@ -178,7 +178,7 @@ T180  supervision stress: seeded spawn/kill/fault-crash/register/lookup/
   is sufficient to stop a loop.
 - **Critical-service self-recovery**: svcmgr and init are CRITICAL_NO_RESTART —
   their loss is documented as unrecoverable, not handled by a higher supervisor.
-  A minimal-root-task redesign (Fase-future) could add a watchdog.
+  A minimal-root-task redesign (Phase-future) could add a watchdog.
 - **Real driver restart budget**: T173 spends one of kbd's three restarts; a
   full crash-loop-to-degraded test on a REAL driver would exhaust its budget and
   break the running system, so that path is covered by the probe supervisor
@@ -190,8 +190,8 @@ T180  supervision stress: seeded spawn/kill/fault-crash/register/lookup/
    init-spawned policy here); T172 fails a service with no policy.
 2. Keep the class consistent with `restart_on_exit`/`restart_limit`: a
    restartable service has a non-zero limit; a one-shot has zero.
-3. A restarted instance is minted from the SAME `client_eps` (Fase 22) and the
-   same device caps (Fase 23) — never widen authority to "help" a restart.
+3. A restarted instance is minted from the SAME `client_eps` (Phase 22) and the
+   same device caps (Phase 23) — never widen authority to "help" a restart.
 4. If the service registers dynamically, it must unregister on shutdown; svcmgr
    will not clean it up on death.
 5. A critical service that cannot be restarted must have its unrecoverable state
@@ -199,7 +199,7 @@ T180  supervision stress: seeded spawn/kill/fault-crash/register/lookup/
 
 ---
 
-## Fase 28.1 addendum — pager restart and the grant session
+## Phase 28.1 addendum — pager restart and the grant session
 
 A supervised pager's file authority is now a **VFS grant session**
 (`file-grant-capability.md`).  The restart protocol gains one step: before
@@ -214,7 +214,7 @@ amplifies authority across a restart — now extends to file access.
 
 ---
 
-## Fase 29 addendum — supervisor resource independence
+## Phase 29 addendum — supervisor resource independence
 
 A supervisor's children are **independent resource domains**.  Because each
 child pays for its own resources (its image VMOs are charged to the child via

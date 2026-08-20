@@ -92,7 +92,7 @@ at Makefile **parse time** (see the `BUILD_CONFIG_ON_DISK` block at the top
 of the Makefile): a recipe-time cleanup used to delete objects make had
 already stat-cached, making the first link after a flip fail on missing
 `*_bin.o` until a second invocation. That race is fixed; verified in
-Fase V1 with four consecutive first-invocation toggles
+Phase V1 with four consecutive first-invocation toggles
 (0→1, 1→0, 0→1, 1→0 — all RC=0, zero errors). If a first-invocation toggle
 ever fails again, treat it as a regression of this guarantee.
 

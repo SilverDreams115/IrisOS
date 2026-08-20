@@ -10,9 +10,9 @@
 struct task; /* forward — avoids circular include with task.h */
 
 /*
- * KReply — seL4-style reply object (Ph85; Fase S1: explicit MCS-style).
+ * KReply — seL4-style reply object (Ph85; Phase S1: explicit MCS-style).
  *
- * Fase S1: reply objects are canonical kernel objects.  They are created
+ * Phase S1: reply objects are canonical kernel objects.  They are created
  * ONLY via SYS_UNTYPED_RETYPE2 (storage inside the source KUntyped) and the
  * capability lives in the server's CSpace.  A server passes its reply CPtr
  * as arg2 of SYS_EP_RECV / SYS_EP_NB_RECV; the kernel BINDS the blocked
@@ -38,14 +38,14 @@ struct KReply {
     struct KObject  base;   /* must be first */
     irq_spinlock_t  lock;
     struct task    *caller; /* NULL after reply or cancel */
-    uint8_t         staged; /* Fase S1: claimed by a receiver, not yet bound */
+    uint8_t         staged; /* Phase S1: claimed by a receiver, not yet bound */
 };
 
-/* Fase S1: placement-init a KReply inside untyped-backed memory (the ONLY
+/* Phase S1: placement-init a KReply inside untyped-backed memory (the ONLY
  * production creation path).  'mem' must be a kuntyped_alloc_child(ren) area. */
 struct KReply *kreply_alloc_at(void *mem);
 
-/* Fase S1: receiver-side claim/unclaim + rendezvous bind.
+/* Phase S1: receiver-side claim/unclaim + rendezvous bind.
  *   stage:   free → staged (IRIS_ERR_BUSY if staged or bound)
  *   unstage: staged → free (idempotent)
  *   bind:    staged → bound to 'caller' (IRIS_ERR_BUSY unless staged)
@@ -54,7 +54,7 @@ iris_error_t kreply_stage(struct KReply *r);
 void         kreply_unstage(struct KReply *r);
 iris_error_t kreply_bind_caller(struct KReply *r, struct task *caller);
 
-/* Fase 18/S1: live KReply count + retype/destroy counters (diagnostics). */
+/* Phase 18/S1: live KReply count + retype/destroy counters (diagnostics). */
 uint32_t kreply_live_count(void);
 
 /*

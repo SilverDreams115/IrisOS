@@ -1,5 +1,5 @@
 /*
- * test_untyped_cspace.c — Fase 3.3 unit tests for cspace_resolve_only_untyped.
+ * test_untyped_cspace.c — Phase 3.3 unit tests for cspace_resolve_only_untyped.
  *
  * Covers:
  *   - CSpace path resolves correct KUntyped objects
