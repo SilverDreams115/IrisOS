@@ -119,7 +119,11 @@ struct KProcess {
     uint8_t         teardown_complete; /* logical teardown already ran */
     uint32_t        exit_code;    /* exit code from SYS_EXIT; 0 if killed externally */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */
-    struct KExitWatch exit_watches[KPROCESS_EXIT_WATCH_MAX]; /* up to 4 death subscribers */
+    /* Stage 7 Step 10: nothing ARMS these any more — SYS_PROCESS_WATCH is
+     * retired and a death is watched on the thread.  The array and its
+     * emit/clear pair are dead weight kept only until KProcess itself goes,
+     * and are what a process server replaces with its own child table. */
+    struct KExitWatch exit_watches[KPROCESS_EXIT_WATCH_MAX];
     /* Phase 6.3: vmo_mappings removed — VMO pages are now KFrame-backed and
      * tracked in KVSpace.mappings; kvspace_invalidate handles teardown. */
 
@@ -261,8 +265,6 @@ void             kprocess_quota_release_page(struct KProcess *p);
 uint32_t         kprocess_quota_failed_count(void);
 uint32_t         kprocess_quota_rollback_count(void);
 void             kprocess_quota_stat_rollback(void);
-iris_error_t     kprocess_watch_exit(struct KProcess *p, struct KNotification *notif,
-                                     uint64_t signal_bits);
 iris_error_t     kprocess_set_exception_handler(struct KProcess *p,
                                                 struct KNotification *notif,
                                                 uint64_t signal_bits,

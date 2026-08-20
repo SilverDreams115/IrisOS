@@ -148,6 +148,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         /* Stage 6-pure: a page table the holder retyped, installed by name. */
         case SYS_VSPACE_MAP_TABLE:    return sys_vspace_map_table(arg0, arg1, arg2);
         case SYS_TCB_FAULT_INFO:      return sys_tcb_fault_info(arg0, arg1, arg2);
+        case SYS_TCB_WATCH:           return sys_tcb_watch(arg0, arg1, arg2);
+        case SYS_TCB_EXIT_CODE:       return sys_tcb_exit_code(arg0, arg1, arg2);
         case SYS_TCB_CONFIGURE:       return sys_tcb_configure(arg0, arg1, arg2, arg3);
         case SYS_TCB_WRITE_REGS:      return sys_tcb_write_regs(arg0, arg1, arg2, arg3);
         case SYS_CSPACE_MINT:         return sys_cspace_mint(arg0, arg1, arg2);

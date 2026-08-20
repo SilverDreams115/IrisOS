@@ -4,6 +4,11 @@
 uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
+    /* Stage 7 Step 10: the code belongs to the execution that produced it.
+     * It stays on the process too while SYS_PROCESS_EXIT_CODE lives, because
+     * that syscall answers about a process and a single-threaded service's
+     * process code IS its thread's. */
+    if (t) t->exit_code = (uint32_t)arg0;
     if (t && t->process)
         t->process->exit_code = (uint32_t)arg0;
     task_exit_current();
@@ -89,61 +94,24 @@ uint64_t sys_process_status(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 
 /*
- * sys_process_watch(proc_handle, notify_handle, signal_bits) → 0 or iris_error_t
+ * SYS_PROCESS_WATCH (29) — RETIRED (Stage 7 Step 10).  Number
+ * permanently reserved; answers IRIS_ERR_NOT_SUPPORTED.
  *
- * Registers a single process-exit watch for proc_handle. When the target
- * process tears down, the kernel signals signal_bits on notify_handle
- * (Phase 13 / Track B — death is a KNotification signal, no longer a
- * PROC_EVENT_MSG_EXIT KChannel message).  The watcher identifies the dead
- * process by which bit is set and queries SYS_PROCESS_EXIT_CODE / STATUS
- * for detail.  signal_bits must be non-zero.
+ * It reported a process's death notification, which meant a supervisor needed
+ * authority over an object it did not create to learn about an execution it
+ * did.  A supervisor HAS the thread — it retyped the TCB and configured it —
+ * and every service in the tree is single-threaded, so SYS_TCB_WATCH and
+ * SYS_TCB_EXIT_CODE are not approximations of the process event: they are that
+ * event, named by the thing that produces it.
+ *
+ * The array of four watch slots went with it.  A process could be watched by
+ * several unrelated holders, so the kernel kept room for them; a thread is
+ * watched by whoever holds its TCB, and a second watcher is a second
+ * capability rather than a second slot.
  */
 uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    struct task *t = task_current();
-    struct KObject *proc_obj;
-    struct KObject *notif_obj;
-    iris_rights_t proc_rights;
-    iris_rights_t notif_rights;
-    iris_error_t r;
-
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    /* A1 Increment 2a: dual resolver on the watched process. */
-    r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                     RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
-    if (r != IRIS_OK) return syscall_err(r);
-    if (!rights_check(proc_rights, RIGHT_READ)) {
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    /* Step 4: the watched process already resolved either way while the
-     * notification stayed handle-only — half a migration, so a caller holding
-     * its notification in CSpace could not arm a watch at all.
-     *
-     * No extra release is needed and adding one is a refcount underflow:
-     * unlike its sibling resolvers, the dual object resolver drops the
-     * traversal's active ref itself and hands back a LIFECYCLE-ONLY reference,
-     * exactly what the handle read yielded.  The type check moves into the
-     * resolver, which returns WRONG_TYPE for the same case. */
-    r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg1, RIGHT_NONE,
-                                     KOBJ_NOTIFICATION, &notif_obj, &notif_rights);
-    if (r != IRIS_OK) {
-        kobject_release(proc_obj);
-        return syscall_err(r);
-    }
-    if (!rights_check(notif_rights, RIGHT_WRITE)) {
-        kobject_release(proc_obj);
-        kobject_release(notif_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    r = kprocess_watch_exit((struct KProcess *)proc_obj,
-                            (struct KNotification *)notif_obj,
-                            arg2);
-    kobject_release(proc_obj);
-    kobject_release(notif_obj);
-    return syscall_err(r);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 
@@ -465,31 +433,25 @@ uint64_t sys_thread_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return 0;  /* unreachable */
 }
 
-
+/*
+ * SYS_PROCESS_EXIT_CODE (70) — RETIRED (Stage 7 Step 10).  Number
+ * permanently reserved; answers IRIS_ERR_NOT_SUPPORTED.
+ *
+ * It reported a process's exit code, which meant a supervisor needed
+ * authority over an object it did not create to learn about an execution it
+ * did.  A supervisor HAS the thread — it retyped the TCB and configured it —
+ * and every service in the tree is single-threaded, so SYS_TCB_WATCH and
+ * SYS_TCB_EXIT_CODE are not approximations of the process event: they are that
+ * event, named by the thing that produces it.
+ *
+ * The array of four watch slots went with it.  A process could be watched by
+ * several unrelated holders, so the kernel kept room for them; a thread is
+ * watched by whoever holds its TCB, and a second watcher is a second
+ * capability rather than a second slot.
+ */
 uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KObject *obj;
-    iris_rights_t   rights;
-    /* A1 Increment 2a: dual resolver on the queried process. */
-    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                 RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
-    if (r != IRIS_OK) return syscall_err(r);
-    if (!rights_check(rights, RIGHT_READ)) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    struct KProcess *proc = (struct KProcess *)obj;
-    if (kprocess_is_alive(proc)) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_WOULD_BLOCK);
-    }
-    uint32_t code = proc->exit_code;
-    kobject_release(obj);
-    return syscall_ok_u64((uint64_t)code);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 

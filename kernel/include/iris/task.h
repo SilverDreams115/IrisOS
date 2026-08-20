@@ -13,6 +13,7 @@ struct KSchedContext;
 struct KReply;
 struct KCNode;
 struct KVSpace;
+struct KNotification;
 
 #define TASK_MAX              256
 #define TASK_STACK_SIZE       8192  /* kernel stack per task */
@@ -159,6 +160,27 @@ struct task {
      * execution.
      */
     struct KVSpace   *vspace;
+    /*
+     * Stage 7 Step 10 — this thread's death, observed by whoever holds it.
+     *
+     * A supervisor used to watch a PROCESS: the kernel signalled when its last
+     * thread went, and the exit code lived on the process.  That made "my
+     * service died" a question you asked an object you had to be given
+     * authority over, rather than one you asked the execution you started and
+     * still hold.  A supervisor HAS the thread — it retyped the TCB and
+     * configured it — and every service in the tree is single-threaded, so
+     * watching the thread is not an approximation of watching the process, it
+     * is the same event named by the thing that produces it.
+     *
+     * One watcher, not four.  KProcess carried an array because several
+     * unrelated holders could watch the same process; a thread is watched by
+     * whoever holds its TCB, and a second watcher is a second capability
+     * rather than a second slot.
+     */
+    struct KNotification *exit_notif;
+    uint64_t          exit_bits;
+    uint32_t          exit_code;
+    uint8_t           exit_reported;   /* 1 once the watch has fired */
     /*
      * Stage 7 Step 6 — the fault record belongs to the thread that took it.
      *

@@ -156,6 +156,63 @@ static uint32_t g_total = 0;
  * yourself never needed a capability to your own process, and why the
  * process-shaped variants had nothing to offer this case. */
 #define IT_MINT_SELF(slot)   ((long)((uint64_t)(slot) << 32))
+/*
+ * Stage 7 Step 10 — the suite's child table.
+ *
+ * Observing a death names the THREAD that dies (SYS_TCB_WATCH), so a
+ * supervisor keeps the TCB it retyped for each child.  This is the table a
+ * process server keeps, in the smallest form that serves the suite: the
+ * process capability the tests already pass around, mapped to the thread it
+ * was started with.  When SYS_PROCESS_KILL and its siblings retire, this is
+ * what the remaining call sites will already be reading.
+ */
+/* 213..232: above the fault mailboxes (index i is leaf 201+i, and no suite
+ * arms past index 11), and twenty of them because the multi-target pager
+ * suites hold sixteen children at once — a table that wraps under them evicts
+ * a live child's thread and the wait that follows has nothing to wait on. */
+#define IT_CHILD_TCB_LEAF(k) (213u + (uint32_t)(k))
+#define IT_CHILD_MAX         20u
+static struct { uint32_t proc; uint32_t leaf; } g_it_children[IT_CHILD_MAX];
+static uint32_t g_it_child_next;
+
+static void it_child_record(handle_id_t proc_h, uint32_t leaf) {
+    /* A process CPtr is a slot, and a slot is reused: drop any stale entry
+     * naming the same one first, or a dead child's thread would answer for a
+     * live child that happened to land in its slot. */
+    for (uint32_t i = 0; i < IT_CHILD_MAX; i++)
+        if (g_it_children[i].proc == (uint32_t)proc_h) g_it_children[i].leaf = 0;
+    uint32_t k = __atomic_fetch_add(&g_it_child_next, 1u, __ATOMIC_RELAXED)
+                 % IT_CHILD_MAX;
+    g_it_children[k].proc = (uint32_t)proc_h;
+    g_it_children[k].leaf = leaf;
+}
+
+/* Claim the next child-thread leaf, clearing whatever was in it.  The leaf is
+ * remembered so the spawn that follows can bind it to the process capability
+ * it produced — the two halves of one record, written where each is known. */
+static uint32_t g_it_child_pending;
+static void it_child_bind(handle_id_t proc_h) {
+    if (proc_h != HANDLE_INVALID && g_it_child_pending)
+        it_child_record(proc_h, g_it_child_pending);
+    g_it_child_pending = 0;
+}
+static uint32_t it_child_tcb_leaf(void) {
+    uint32_t leaf = IT_CHILD_TCB_LEAF(
+        __atomic_load_n(&g_it_child_next, __ATOMIC_RELAXED) % IT_CHILD_MAX);
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    g_it_child_pending = leaf;
+    return leaf;
+}
+#define IT_CHILD_TCB_DEST(leaf) \
+    ((uint64_t)IT_OBJ_CNODE_SLOT | ((uint64_t)(leaf) << 32))
+
+/* The thread a child was started with, or 0 if this child was not recorded. */
+static long it_child_tcb(handle_id_t proc_h) {
+    for (uint32_t k = 0; k < IT_CHILD_MAX; k++)
+        if (g_it_children[k].proc == (uint32_t)proc_h && g_it_children[k].leaf)
+            return (long)IT_OBJ_CPTR(g_it_children[k].leaf);
+    return 0;
+}
 /* ...and into a slot of a CHILD's root CSpace, named by the capability the
  * spawn kept (IT_CHILD_CN_CPTR).  Same syscall, different destination CNode:
  * that a child's CSpace is somebody else's is a fact about which capability
@@ -2997,11 +3054,15 @@ static long lp_spawn_child_cn(uint32_t cn_leaf, handle_id_t cmd_ep_h,
     handle_id_t boot_h = HANDLE_INVALID;
     *out_proc_h = HANDLE_INVALID;
     if (cn_leaf) it_slot_delete(IT_OBJ_CPTR(IT_CHILD_CN_LEAF(cn_leaf - 1u)));
+    uint32_t tcb_leaf = it_child_tcb_leaf();
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc_h, &boot_h, mints, n,
                              IT_LOADER_WS, 0,
                                /*own_budget_slot=*/0,
-                               cn_leaf ? IT_CHILD_CN_DEST(cn_leaf - 1u) : 0u);
+                               cn_leaf ? IT_CHILD_CN_DEST(cn_leaf - 1u) : 0u,
+                               IT_CHILD_TCB_DEST(tcb_leaf));
+    if (r >= 0 && *out_proc_h != HANDLE_INVALID)
+        it_child_record(*out_proc_h, tcb_leaf);
     it_close(&reply_h);  /* the child's slot-13 mint is the only reply cap */
     it_close(&boot_h);   /* Track I: no bootstrap channel (HANDLE_INVALID anyway) */
     return r;
@@ -3030,7 +3091,7 @@ static void test_t075(void) {
     long n = it_notify_create();
     handle_id_t watch_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
     int watch_ok = (watch_h != HANDLE_INVALID) &&
-                   (it_sys3(SYS_PROCESS_WATCH, (long)proc_h, (long)watch_h, 1) == 0);
+                   (it_sys3(SYS_TCB_WATCH, it_child_tcb((long)proc_h), (long)watch_h, 1) == 0);
 
     /* Drive the child: EP_NB_SEND until it is blocked in EP_RECV (bounded). */
     struct IrisMsg msg;
@@ -3047,7 +3108,7 @@ static void test_t075(void) {
     long ws = watch_ok
         ? it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)watch_h, (long)(uintptr_t)&bits, 2000000000L)
         : -1;
-    long code = it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h);
+    long code = it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h));
 
     it_close(&watch_h);
     it_close(&proc_h);
@@ -3435,7 +3496,7 @@ static void test_t081(void) {
               (long)IRIS_ERR_WRONG_TYPE) ok = 0;
 
     /* EXIT_CODE by CPtr while alive → WOULD_BLOCK; FAULT_INFO → WOULD_BLOCK. */
-    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, T081_SLOT_PROC) !=
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb(proc_h)) !=
               (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
     {
         static uint8_t fault_buf[32];
@@ -3457,7 +3518,7 @@ static void test_t081(void) {
     long n = it_notify_create();
     handle_id_t watch_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
     if (watch_h == HANDLE_INVALID) ok = 0;
-    if (ok && it_sys3(SYS_PROCESS_WATCH, T081_SLOT_PROC, (long)watch_h, 1) != 0)
+    if (ok && it_sys3(SYS_TCB_WATCH, it_child_tcb(proc_h), (long)watch_h, 1) != 0)
         ok = 0;
     if (ok && it_sys1(SYS_PROCESS_KILL, T081_SLOT_PROC) != 0) ok = 0;
     if (ok) {
@@ -3470,7 +3531,7 @@ static void test_t081(void) {
     /* Dead child by CPtr: STATUS 0, EXIT_CODE readable, KILL idempotent,
      * and the retired THREAD_START answers NOT_SUPPORTED whatever it is given. */
     if (ok && it_sys1(SYS_PROCESS_STATUS, T081_SLOT_PROC) != 0) ok = 0;
-    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, T081_SLOT_PROC) < 0) ok = 0;
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb(proc_h)) < 0) ok = 0;
     if (ok && it_sys1(SYS_PROCESS_KILL, T081_SLOT_PROC) != 0) ok = 0;
     if (ok && it_sys4(SYS_THREAD_START, T081_SLOT_PROC, 0x8000200000L,
                       0x8000300000L, 0) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
@@ -5080,7 +5141,7 @@ static void test_t097(void) {
      */
     if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
     if (ok) { for (int w = 0; w < 200 &&
-                   it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h) ==
+                   it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h)) ==
                    (long)IRIS_ERR_WOULD_BLOCK; w++) it_sys1(SYS_SLEEP, 1); }
     if (ok) {
         /* The child's command-endpoint slot, addressed through the root the
@@ -5167,7 +5228,7 @@ static void test_t098(void) {
      * was standing in for, is that the child's own slots were EMPTIED. */
     if (ok && it_sys1(SYS_PROCESS_KILL, (long)proc_h) != 0) { ok = 0; why = "kill"; }
     if (ok) { for (int w = 0; w < 200 &&
-                   it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h) ==
+                   it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h)) ==
                    (long)IRIS_ERR_WOULD_BLOCK; w++) it_sys1(SYS_SLEEP, 1); }
     if (ok) {
         long child_ep = (long)((uint64_t)LP_CPTR_CMD_EP << 8) | IT_CHILD_CN_CPTR(0);
@@ -5228,16 +5289,21 @@ static long it_lp_cmd(handle_id_t cmd_ep_h, uint32_t label) {
 }
 
 /* Wait (≤ 2s) for a child to exit; returns its exit code or -1. */
+/* Stage 7 Step 10: wait on the THREAD the child was started with, which the
+ * child table kept.  A child the suite did not record has no thread to watch
+ * and says so rather than falling back to the process form. */
 static long it_lp_wait_exit(handle_id_t proc_h) {
+    long tcb = it_child_tcb(proc_h);
+    if (!tcb) return -1;
     long n = it_notify_create();
     if (n < 0) return -1;
     handle_id_t n_h = (handle_id_t)n;
     long ec = -1;
-    if (it_sys3(SYS_PROCESS_WATCH, (long)proc_h, n, 1) == 0) {
+    if (it_sys3(SYS_TCB_WATCH, tcb, n, 1) == 0) {
         uint64_t bits = 0;
         if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, (long)(uintptr_t)&bits,
                     2000000000LL) == 0)
-            ec = it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h);
+            ec = it_sys1(SYS_TCB_EXIT_CODE, tcb);
     }
     it_close(&n_h);
     return ec;
@@ -7505,7 +7571,7 @@ static void test_t117(void) {
         ep[k] = (handle_id_t)e;
         if (lp_spawn_child(ep[k], &pr[k]) < 0) { ok = 0; why = "spawn"; break; }
         /* Watch each child on its own bit of the shared notification. */
-        if (it_sys3(SYS_PROCESS_WATCH, (long)pr[k], n, (long)(1u << k)) != 0) {
+        if (it_sys3(SYS_TCB_WATCH, it_child_tcb((long)pr[k]), n, (long)(1u << k)) != 0) {
             ok = 0; why = "watch";
         }
     }
@@ -7539,11 +7605,11 @@ static void test_t117(void) {
     /* STATUS dead for all; EXIT_CODE retrievable; child 0 kept its marker. */
     for (uint32_t k = 0; ok && k < 3u; k++) {
         if (it_sys1(SYS_PROCESS_STATUS, (long)pr[k]) != 0) { ok = 0; why = "status alive"; }
-        if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)pr[k]) < 0) {
+        if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)pr[k])) < 0) {
             ok = 0; why = "exit code";
         }
     }
-    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)pr[0]) != (long)LP_EXIT_MARKER) {
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)pr[0])) != (long)LP_EXIT_MARKER) {
         ok = 0; why = "exit0 marker";
     }
 
@@ -7556,7 +7622,7 @@ static void test_t117(void) {
         handle_id_t n2_h = (handle_id_t)n2;
         if (n2 < 0) { ok = 0; why = "notif2"; }
         else {
-            if (it_sys3(SYS_PROCESS_WATCH, (long)pr[0], n2, 0x20) != 0) {
+            if (it_sys3(SYS_TCB_WATCH, it_child_tcb((long)pr[0]), n2, 0x20) != 0) {
                 ok = 0; why = "late watch";
             }
             if (ok) {
@@ -9441,7 +9507,7 @@ static int it_fault_spawn_mbox(uint32_t mbox,
     if (n < 0 || w < 0 ||
         it_sys4(SYS_EXCEPTION_HANDLER, (long)*proc_h, n, 1,
                 IT_FAULT_DEST(mbox)) != 0 ||
-        it_sys3(SYS_PROCESS_WATCH, (long)*proc_h, w, 1) != 0) {
+        it_sys3(SYS_TCB_WATCH, it_child_tcb((long)*proc_h), w, 1) != 0) {
         (void)it_sys1(SYS_PROCESS_KILL, (long)*proc_h);
         it_close(n_h); it_close(w_h); it_close(proc_h); it_close(ep_h);
         *why = "wire handler/watch"; return 0;
@@ -9503,7 +9569,7 @@ static void test_t140(void) {
     handle_id_t w_h  = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
     if (n1 < 0 || w < 0) { ok = 0; why = "notify create"; }
 
-    if (ok && it_sys3(SYS_PROCESS_WATCH, (long)proc_h, w, 1) != 0) { ok = 0; why = "watch"; }
+    if (ok && it_sys3(SYS_TCB_WATCH, it_child_tcb((long)proc_h), w, 1) != 0) { ok = 0; why = "watch"; }
 
     /* Wrong types, both slots. */
     if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, (long)ep_h, 1, IT_FAULT_DEST(0))
@@ -9535,7 +9601,7 @@ static void test_t140(void) {
         if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, w, (long)(uintptr_t)&bits,
                     2000000000LL) != 0 || !(bits & 1ull)) { ok = 0; why = "nohandler kill"; }
     }
-    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h) != 0) { ok = 0; why = "kill exit code"; }
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h)) != 0) { ok = 0; why = "kill exit code"; }
     if (ok && it_fault_info(proc_h, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "dead proc fault info";
     }
@@ -9627,7 +9693,7 @@ static void test_t141(void) {
 
     /* Suspended while pending: alive (EXIT_CODE blocks), no second signal, and
      * the record is stable across reads. */
-    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h)
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h))
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "child not suspended-alive"; }
     if (ok) {
         uint64_t bits = 0;
@@ -9714,7 +9780,7 @@ static void test_t142(void) {
     if (ok && (g.rip != f.rip || g.cr2 != f.cr2 ||
                g.error != f.error)) { ok = 0; why = "refault mismatch"; }
     /* The child must NOT have exited (the store never retires). */
-    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h)
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h))
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "write retired"; }
 
     if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
@@ -9899,7 +9965,7 @@ static void test_t145(void) {
     struct it_fault f;
     if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info a"; }
     it_close(&n_h);                       /* handler endpoint gone */
-    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h)
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h))
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "child died on handler close"; }
     if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
         ok = 0; why = "post-close resume kill";
@@ -10294,10 +10360,11 @@ static void test_t148(void) {
      * Step 4: 119-121 are SYS_CSPACE_SELF / SYS_TCB_CONFIGURE /
      * SYS_TCB_WRITE_REGS — execution for a TCB retyped from an Untyped.
      * Stage 6-pure Step 1: 122 is SYS_VSPACE_MAP_TABLE, which installs a page
-     * table the holder retyped.  Stage 7 Step 8: 123 is SYS_TCB_FAULT_INFO,
-     * the fault record read off the thread that took it.  The first UNASSIGNED
-     * number moves up to 124. */
-    for (long n = 124; ok && n <= 400; n++) {
+     * table the holder retyped.  Stage 7 Steps 8/10: 123-125 are
+     * SYS_TCB_FAULT_INFO, SYS_TCB_WATCH and SYS_TCB_EXIT_CODE — a fault read
+     * off the thread that took it, and a death observed on the thread that
+     * dies.  The first UNASSIGNED number moves up to 126. */
+    for (long n = 126; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -10626,8 +10693,10 @@ static void test_t152(void) {
     /* Non-null hostile out pointer (kernel half) → INVALID_ARG, nothing written. */
     if (ok && it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, 0xFFFF800000001000L) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel out ptr"; }
     /* Resume mismatch — NOT_FOUND, no state touched. */
-    /* An empty slot names no thread: NOT_FOUND, not a resume. */
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)IT_FAULT_CPTR(31), 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume mismatch"; }
+    /* An empty slot names no thread: NOT_FOUND, not a resume.  Leaf 233 is
+     * above every mailbox and above the child-thread table, and nothing else
+     * writes it. */
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)IT_OBJ_CPTR(233u), 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume mismatch"; }
 
     it_close(&fr);
     it_quiesce_reaper();
@@ -10912,7 +10981,8 @@ static long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, n,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+    it_child_bind(proc);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
 
@@ -11400,7 +11470,8 @@ static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t de
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, 2u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+    it_child_bind(proc);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
 
@@ -11734,7 +11805,8 @@ static void test_t170(void) {
                                                     IRIS_CPTR_INITRD_CONTROL,
                      "lifecycle_probe", &proc, &boot, mints, 2u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+        it_child_bind(proc);
         it_close(&boot); it_close(&io);
         if (r < 0 || proc == HANDLE_INVALID) { ok = 0; why = "spawn"; it_close(&cmd); it_close(&proc); break; }
 
@@ -12444,7 +12516,7 @@ static int t25_tgt_spawn_dest(long fault_dest, struct t25_tgt *g,
     if (vs < 0 || n < 0 || w < 0 ||
         (eh = it_sys4(SYS_EXCEPTION_HANDLER, (long)g->proc, n, 1,
                       fault_dest)) != 0 ||
-        (wt = it_sys3(SYS_PROCESS_WATCH, (long)g->proc, w, 1)) != 0) {
+        (wt = it_sys3(SYS_TCB_WATCH, it_child_tcb((long)g->proc), w, 1)) != 0) {
         it_serial_write("[IRIS][TEST] t25 wire vs="); it_log_num((uint32_t)-vs);
         it_serial_write(" n="); it_log_num((uint32_t)-n);
         it_serial_write(" w="); it_log_num((uint32_t)-w);
@@ -12521,7 +12593,8 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
                                 * follows from what it was handed, not from what it is.
                                 * Slot 16 and not 12: 12 is LP_PGR_SLOT_TPROC, the
                                 * target's process capability. */
-                               /*own_budget_slot=*/LP_SLOT_BUDGET, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/LP_SLOT_BUDGET, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+    it_child_bind(*out_proc);
     it_close(&boot);
     if (r < 0 || *out_proc == HANDLE_INVALID) {
         it_close(&cmd); it_close(out_proc); return -1;
@@ -12870,7 +12943,7 @@ static void test_t184(void) {
     struct it_fault fa2;
     if (ok && (it_fault_info(va.proc, &fa2) != 0 || fa2.seq != fa.seq ||
                fa2.task_id != fa.task_id || fa2.cr2 != fa.cr2)) { ok = 0; why = "record disturbed"; }
-    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)va.proc)
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)va.proc))
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "victim not suspended"; }
 
     /* Parent-side rights split, re-derived for Stage 7 Step 7: the two halves
@@ -13019,7 +13092,7 @@ static void test_t186(void) {
 
     /* No zombie: suspended-alive, record and generation intact. */
     struct it_fault f2;
-    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)g.proc)
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc))
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "target not suspended"; }
     if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq ||
                f2.cr2 != f.cr2)) { ok = 0; why = "record lost with pager"; }
@@ -14351,7 +14424,8 @@ static int t27_pager_spawn(struct t27_pager *p,
                                /* The pager MAPS — into address spaces that are
                                 * not even its own — so it owes paging levels
                                 * and needs a budget to retype them from. */
-                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+    it_child_bind(p->proc);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || p->proc == HANDLE_INVALID) {
@@ -14576,7 +14650,7 @@ static void test_t203(void) {
     /* B's fault is intact: same generation, still suspended. */
     struct it_fault fb2;
     if (ok && (it_fault_info(gb.proc, &fb2) != 0 || fb2.seq != fb.seq)) { ok = 0; why = "B fault disturbed"; }
-    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)gb.proc) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)gb.proc)) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "B not suspended"; }
 
     /* B is resolved only by B's own authority. */
@@ -14934,7 +15008,7 @@ static void test_t209(void) {
 
     /* Target not a zombie: suspended-alive, record + generation intact. */
     struct it_fault f2;
-    if (ok && it_sys1(SYS_PROCESS_EXIT_CODE, (long)g.proc) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc)) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "target not suspended"; }
     if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq)) { ok = 0; why = "record lost"; }
     /* Dead pager's control endpoint has no phantom receiver. */
@@ -15194,7 +15268,8 @@ static void test_t213(void) {
         long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                                  &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+        it_child_bind(proc);
         if (r != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "badelf not INVALID_ARG"; }
         if (ok && proc != HANDLE_INVALID) { ok = 0; why = "badelf left a process"; }
         it_close(&boot); it_close(&proc);
@@ -15236,7 +15311,8 @@ static void test_t214(void) {
     long r1 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "no_such_image",
                               &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+    it_child_bind(proc);
     if (r1 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "unknown not NOT_FOUND"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "unknown left process"; }
     it_close(&boot); it_close(&proc);
@@ -15246,7 +15322,8 @@ static void test_t214(void) {
     long r2 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                               &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+    it_child_bind(proc);
     if (ok && r2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "malformed not INVALID_ARG"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "malformed left process"; }
     it_close(&boot); it_close(&proc);
@@ -15372,7 +15449,8 @@ static void test_t216(void) {
             handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
             long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf", &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+            it_child_bind(proc);
             if (r >= 0) { ok = 0; why = "badelf loaded"; }
             it_close(&boot); it_close(&proc);
             it_quiesce_reaper();
@@ -15743,7 +15821,8 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, m, k,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+    it_child_bind(f->proc);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
@@ -17167,7 +17246,7 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
         m->vs[i] = (handle_id_t)vs;
         if (it_sys4(SYS_EXCEPTION_HANDLER, (long)m->proc[i], (long)m->fault_notif,
                     (long)(1u << i), IT_PGR_MBOX_DEST(i + 1u)) != 0 ||
-            it_sys3(SYS_PROCESS_WATCH,     (long)m->proc[i], (long)m->exit_notif,  (long)(1u << i)) != 0) {
+            it_sys3(SYS_TCB_WATCH, it_child_tcb((long)m->proc[i]), (long)m->exit_notif,  (long)(1u << i)) != 0) {
             *why = "wire"; t28_multi_close(m); return 0;
         }
         m->n++;
@@ -17220,7 +17299,8 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     }
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, mm, k,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+    it_child_bind(f->proc);
     it_close(&pgr_reply_h);
     it_close(&boot);
     if (r < 0 || f->proc == HANDLE_INVALID) {
@@ -17286,7 +17366,7 @@ static int t237_run(uint32_t nt, const char **why) {
     for (uint32_t i = 0; ok && i < nt; i++) {
         uint64_t foff = (uint64_t)((i % 4u) + 1u) * 0x1000ULL;
         if (!t28_multi_wait_exit(&m, i)) { ok = 0; *why = "target exit"; }
-        else if (it_sys1(SYS_PROCESS_EXIT_CODE, (long)m.proc[i]) != (long)(LP_EXIT_MARKER ^ (uint32_t)t28_pat(foff))) { ok = 0; *why = "wrong byte"; }
+        else if (it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)m.proc[i])) != (long)(LP_EXIT_MARKER ^ (uint32_t)t28_pat(foff))) { ok = 0; *why = "wrong byte"; }
     }
     /* Diagnostics: the pager multiplexed all nt faults over ONE shared
      * notification.  The wait-any accumulator means a single wakeup can carry
@@ -17416,7 +17496,7 @@ static void test_t238(void) {
             for (uint32_t i = 0; ok && i < nt; i++) {
                 uint64_t foff = (uint64_t)(i + 1u) * 0x1000ULL;
                 if (!t28_multi_wait_exit(&m, i)) { ok = 0; why = "s2 exit"; }
-                else if (it_sys1(SYS_PROCESS_EXIT_CODE, (long)m.proc[i]) != (long)(LP_EXIT_MARKER ^ (uint32_t)t28_pat(foff))) { ok = 0; why = "s2 byte"; }
+                else if (it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)m.proc[i])) != (long)(LP_EXIT_MARKER ^ (uint32_t)t28_pat(foff))) { ok = 0; why = "s2 byte"; }
             }
             t28_fbk_reap(&f);
             t28_multi_reap(&m);

@@ -221,6 +221,98 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     return syscall_ok_u64(0);
 }
 
+/*
+ * SYS_TCB_WATCH(tcb_cptr, notif_cptr, signal_bits) → 0 or iris_error_t
+ *
+ * Stage 7 Step 10: be told when THIS THREAD dies.
+ *
+ * SYS_PROCESS_WATCH asked the same question of a process, which meant a
+ * supervisor needed authority over an object it did not create to learn about
+ * an execution it did.  A supervisor HAS the thread — it retyped the TCB and
+ * configured it — and every service in the tree is single-threaded, so this is
+ * not an approximation of the process event, it is that event named by the
+ * thing that produces it.
+ *
+ * RIGHT_READ on the thread: learning that something died confers nothing over
+ * it.  RIGHT_WRITE on the notification, which is what signalling one takes.
+ * Arming a thread that is ALREADY dead fires immediately rather than waiting
+ * forever — a supervisor that lost the race still learns the answer.
+ */
+uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *caller = task_current();
+    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (arg2 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *target; iris_rights_t rights;
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
+                                   RIGHT_READ, &target, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    struct KObject *n_obj; iris_rights_t n_rights;
+    err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg1,
+                                  RIGHT_NONE, KOBJ_NOTIFICATION,
+                                  &n_obj, &n_rights);
+    if (err != IRIS_OK) {
+        kobject_release(&target->base);
+        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    }
+    if (!rights_check(n_rights, RIGHT_WRITE)) {
+        kobject_release(n_obj); kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KNotification *notif = (struct KNotification *)n_obj;
+    struct KNotification *old   = 0;
+    int fire_now = 0;
+
+    uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
+    if (target->terminal) {
+        fire_now = 1;                    /* already over: answer, do not arm */
+    } else {
+        old = target->exit_notif;
+        kobject_retain(&notif->base);
+        kobject_active_retain(&notif->base);
+        target->exit_notif = notif;
+        target->exit_bits  = arg2;
+    }
+    irq_spinlock_unlock(&target->obj_lock, irqfl);
+
+    if (old) {
+        kobject_active_release(&old->base);
+        kobject_release(&old->base);
+    }
+    if (fire_now) knotification_signal(notif, arg2);
+
+    kobject_release(n_obj);
+    kobject_release(&target->base);
+    return syscall_ok_u64(0);
+}
+
+/*
+ * SYS_TCB_EXIT_CODE(tcb_cptr) → the code, or IRIS_ERR_WOULD_BLOCK
+ *
+ * Stage 7 Step 10: the code a thread exited with, read off that thread.
+ * WOULD_BLOCK while it is still running, which is the same answer the
+ * process-scoped form gives for a process that has not exited.
+ */
+uint64_t sys_tcb_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    struct task *caller = task_current();
+    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *target; iris_rights_t rights;
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
+                                   RIGHT_READ, &target, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    int      done = target->terminal;
+    uint32_t code = target->exit_code;
+    kobject_release(&target->base);
+
+    if (!done) return syscall_err(IRIS_ERR_WOULD_BLOCK);
+    return syscall_ok_u64((uint64_t)code);
+}
+
 uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *caller = task_current();

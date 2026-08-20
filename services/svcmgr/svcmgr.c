@@ -205,6 +205,11 @@ static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1
  * receive-slot pool starts above them. */
 #define SVCMGR_MSLOT_REPLYUT(id) (57u + (uint32_t)(id))
 #define SVCMGR_SLOT_DEATH_NOTIF  61u
+/* Stage 7 Step 10: the THREAD each service was started with, kept so its death
+ * can be watched on the execution that produces it rather than on a process
+ * capability.  67..70, below the receive-slot pool and clear of every
+ * well-known mint slot. */
+#define SVCMGR_MSLOT_TCB(id)     (67u + (uint32_t)(id))
 #define SVCMGR_SLOT_REPLY1       64u
 #define SVCMGR_SLOT_REPLY2       65u
 /* Phase S4 (Step 2): outbound cap-transfer source slot.  Every cap svcmgr
@@ -1182,7 +1187,12 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
         }
     }
 
-    if (svcmgr_syscall3(SYS_PROCESS_WATCH, proc_h, state->death_notif_c,
+    /* Stage 7 Step 10: watch the THREAD.  A service is one thread, so this is
+     * the same event named by the thing that produces it — and svcmgr holds
+     * that thread, where it needed authority over a process before. */
+    if (svcmgr_syscall3(SYS_TCB_WATCH,
+                        (uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id),
+                        state->death_notif_c,
                         (uint64_t)1u << manifest->service_id) != IRIS_OK) {
         svc->proc_h = HANDLE_INVALID;
         svcmgr_close_handle_if_valid(&proc_h);
@@ -1304,13 +1314,28 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
             }
         }
 
+        /*
+         * Stage 7 Step 10: drop the PREVIOUS instance's thread first.
+         *
+         * Keeping a TCB keeps the thread OBJECT, and its storage is a child of
+         * the service's budget — so a restart could not RESET that budget while
+         * svcmgr still held the corpse, and the loader's leaf scan skipped a
+         * region that would never come free.  A supervisor holding a dead
+         * child's thread is holding the memory it is about to need.
+         */
+        (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0u,
+                              (uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id));
+
         long r = svc_load_minted_ws(state->proc_cap_c, state->initrd_cap_c,
                                     manifest->image_name,
                                  &loaded_proc_h, &loaded_chan_h,
                                  mints, mint_count,
                                SVC_LOADER_WS(state->untyped_c, 66u),
                                8u << 20, manifest->own_budget_slot,
-                               /*keep_cnode_dest=*/0u);
+                               /*keep_cnode_dest=*/0u,
+                               /* Stage 7 Step 10: keep the service's thread so
+                                * its death is watched where it happens. */
+                               (uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id) << 32);
         /* Drop svcmgr's reply handles regardless of the load result — the
          * child's CSpace slots (if minted) are now the only reply caps. */
         /* svcmgr NEVER retains a reply cap: a retained copy would suppress

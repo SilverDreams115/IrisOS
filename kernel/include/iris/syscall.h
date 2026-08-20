@@ -158,16 +158,18 @@ static inline long iris_syscall0(long nr) {
 #define SYS_HANDLE_TRANSFER 23  /* RETIRED A1.8 — permanently reserved, returns
                                  *   IRIS_ERR_NOT_SUPPORTED.  Zero in-tree
                                  *   callers; cross-process placement is
-                                 *   SYS_PROC_CSPACE_MINT (CSpace-canonical)
-                                 *   or an IPC receive-slot (A1.5/A1.6). */
-#define SYS_PROCESS_WATCH   29  /* (proc_handle, notify_handle, signal_bits) → 0 or negative iris_error_t
-                                 *   Registers one process-exit watch for proc_handle.
-                                 *   On death, the kernel signals signal_bits on notify_handle
-                                 *   (Phase 13 / Track B — a KNotification signal, no message).
-                                 *   The watcher names the dead process by which bit is set and
-                                 *   queries SYS_PROCESS_EXIT_CODE / STATUS for detail.
-                                 *   Requires RIGHT_READ on proc_handle and RIGHT_WRITE on
-                                 *   notify_handle. signal_bits must be non-zero. */
+                                 *   SYS_CSPACE_MINT with the destination
+                                 *   CNode named (Stage 7 Step 9), or an IPC
+                                 *   receive-slot (A1.5/A1.6). */
+/*
+ * SYS_PROCESS_WATCH (29) — RETIRED (Stage 7 Step 10).  Number permanently
+ * reserved; answers IRIS_ERR_NOT_SUPPORTED.  A death is watched on the THREAD
+ * that dies (SYS_TCB_WATCH), by whoever holds its TCB — which a supervisor
+ * has, because it retyped and configured that thread.  Watching a PROCESS
+ * meant needing authority over an object you did not create to learn about an
+ * execution you did.
+ */
+#define SYS_PROCESS_WATCH   29
 #define SYS_PROCESS_SELF    28  /* (dest) → self proc_handle, or 0 when dest names a slot,
                                  *   or negative iris_error_t
                                  *   Yields a capability to the caller's own KProcess with
@@ -698,13 +700,10 @@ static inline long iris_syscall0(long nr) {
 #define SYS_CLOCK_NANOSLEEP 70
 
 /*
- * Process exit code query — modern/conforming (iris_error_t).
- *
- * SYS_PROCESS_EXIT_CODE(proc_handle) → uint32_t exit_code or negative iris_error_t
- *   proc_handle: KOBJ_PROCESS with RIGHT_READ.
- *   Returns the exit code supplied to SYS_EXIT by the process.
- *   Returns IRIS_ERR_WOULD_BLOCK if the process is still alive.
- *   The exit code is 0 for processes terminated by SYS_PROCESS_KILL.
+ * SYS_PROCESS_EXIT_CODE (71) — RETIRED (Stage 7 Step 10).  Number permanently
+ * reserved; answers IRIS_ERR_NOT_SUPPORTED.  The code belongs to the execution
+ * that produced it: SYS_TCB_EXIT_CODE reads it off that thread, with
+ * RIGHT_READ on the thread as the whole authority.
  */
 #define SYS_PROCESS_EXIT_CODE 71
 
@@ -1370,6 +1369,25 @@ static inline long iris_syscall0(long nr) {
  * polling the mailbox capability for delivery wants.
  */
 #define SYS_TCB_FAULT_INFO   123
+/*
+ * SYS_TCB_WATCH(tcb_cptr, notif_cptr, signal_bits) → 0 or iris_error_t
+ *   Be told when this THREAD dies: signal_bits are OR'd into notif_cptr when
+ *   it terminates, however it terminates.  RIGHT_READ on the thread (learning
+ *   that something died confers nothing over it) and RIGHT_WRITE on the
+ *   notification.  Arming an already-dead thread fires immediately, so a
+ *   supervisor that lost the race still gets the answer.
+ *
+ *   Stage 7 Step 10, replacing SYS_PROCESS_WATCH: a supervisor HAS the thread
+ *   it started — it retyped the TCB and configured it — and needed authority
+ *   over a PROCESS to learn about that execution.  One watcher per thread, not
+ *   an array: a second watcher is a second capability, not a second slot.
+ *
+ * SYS_TCB_EXIT_CODE(tcb_cptr) → the code, or IRIS_ERR_WOULD_BLOCK
+ *   The code a thread exited with, read off that thread.  WOULD_BLOCK while it
+ *   is still running.
+ */
+#define SYS_TCB_WATCH        124
+#define SYS_TCB_EXIT_CODE    125
 
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u

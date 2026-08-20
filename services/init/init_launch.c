@@ -49,7 +49,7 @@ void init_spawn_fb(void) {
                                2u << 20,
                                /* fb maps the framebuffer into a window nothing
                                 * has touched, so it owes every level under it. */
-                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u);
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u);
     }
     if (r < 0)
         init_early_serial_write(init_fb_load_fail);
@@ -129,7 +129,7 @@ int init_spawn_console(void) {
                                "console", &con_proc_h, &con_boot_h,
                                con_mints, n,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
-                               2u << 20, /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);
+                               2u << 20, /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u);
     }
     /* console's slot-13 mint is the only reply cap: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_CONSOLE_RPLY);
@@ -268,7 +268,7 @@ handle_id_t init_spawn_svcmgr(void) {
                                "svcmgr", &svcmgr_proc_h,
                             &svcmgr_chan_h, sm_mints, n,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
-                               8u << 20, /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u);  /* has slot 12 already */
+                               8u << 20, /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u);  /* has slot 12 already */
     }
     /* svcmgr's slot-12 mint keeps the pool alive: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_SM_UNTYPED);
@@ -494,7 +494,8 @@ void init_spawn_iris_test(handle_id_t sm_h) {
                                16u << 20, /*own_budget_slot=*/0, /* has TEST_UNTYPED */
                                /* Stage 7 Step 9: keep the suite's CSpace root
                                 * long enough for the self-proc mint below. */
-                               (uint64_t)INIT_SLOT_TEST_CNODE << 32);
+                               (uint64_t)INIT_SLOT_TEST_CNODE << 32,
+                               (uint64_t)INIT_SLOT_TEST_TCB << 32);
     }
     init_close(&lk_svcmgr);
     init_close(&lk_vfs);
@@ -537,7 +538,8 @@ void init_spawn_iris_test(handle_id_t sm_h) {
     if (r < 0) goto out;
     watch_base_h = (handle_id_t)INIT_SLOT_WATCH_NOTIF;
 
-    r = init_sys3(SYS_PROCESS_WATCH, (long)proc_h, (long)watch_base_h, 1);
+    /* Stage 7 Step 10: wait on the THREAD iris_test was started with. */
+    r = init_sys3(SYS_TCB_WATCH, (long)INIT_SLOT_TEST_TCB, (long)watch_base_h, 1);
     if (r < 0) {
         init_log("[USER][INIT] iris_test watch FAILED\n");
         goto out;
@@ -552,7 +554,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
     if (r < 0) {
         init_log("[USER][INIT] iris_test wait TIMEOUT\n");
     } else {
-        long ec = init_sys1(SYS_PROCESS_EXIT_CODE, (long)proc_h);
+        long ec = init_sys1(SYS_TCB_EXIT_CODE, (long)INIT_SLOT_TEST_TCB);
         if (ec == 0)
             init_log("[USER][INIT] iris_test PASS\n");
         else

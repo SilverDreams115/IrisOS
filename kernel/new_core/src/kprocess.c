@@ -301,31 +301,12 @@ void kprocess_quota_release_page(struct KProcess *p) {
     kprocess_quota_release(&p->phys_pages_charged, p);
 }
 
-iris_error_t kprocess_watch_exit(struct KProcess *p, struct KNotification *notif,
-                                 uint64_t signal_bits) {
-    if (!p || !notif || signal_bits == 0) return IRIS_ERR_INVALID_ARG;
-
-    spinlock_lock(&p->base.lock);
-    uint32_t slot = KPROCESS_EXIT_WATCH_MAX;
-    for (uint32_t i = 0; i < KPROCESS_EXIT_WATCH_MAX; i++) {
-        if (!p->exit_watches[i].armed) { slot = i; break; }
-    }
-    if (slot == KPROCESS_EXIT_WATCH_MAX) {
-        spinlock_unlock(&p->base.lock);
-        return IRIS_ERR_TABLE_FULL;
-    }
-    kobject_retain(&notif->base);
-    p->exit_watches[slot].notif = notif;
-    p->exit_watches[slot].signal_bits = signal_bits;
-    p->exit_watches[slot].armed = 1;
-    spinlock_unlock(&p->base.lock);
-
-    if (!kprocess_is_alive(p)) {
-        kprocess_emit_exit_watch(p);
-        kprocess_clear_exit_watch(p);
-    }
-    return IRIS_OK;
-}
+/*
+ * kprocess_watch_exit — REMOVED (Stage 7 Step 10) with SYS_PROCESS_WATCH.
+ * A death is watched on the THREAD that dies (SYS_TCB_WATCH), by whoever holds
+ * its TCB.  The emit/clear pair below stays only as long as the watch ARRAY
+ * does, and both go with KProcess.
+ */
 
 iris_error_t kprocess_set_exception_handler(struct KProcess *p,
                                             struct KNotification *notif,

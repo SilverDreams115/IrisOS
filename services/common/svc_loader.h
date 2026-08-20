@@ -115,6 +115,10 @@ struct svc_mint {
  * returning (READ|WRITE), in the cnode|slot<<32 packing every publishing
  * syscall uses.
  *
+ * `keep_tcb_dest` is the same for the child's first THREAD.  Stage 7 Step 10:
+ * observing a child's death names the thread that dies, so a supervisor that
+ * means to wait for its child keeps the TCB it retyped for it.
+ *
  * Stage 7 Step 9: minting into a child after it has started used to go through
  * its PROCESS capability, out of which the kernel read `child->cspace_root` —
  * so a spawner reached a CSpace it did not hold, by naming something else.  A
@@ -127,7 +131,8 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                         const struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
-                        uint32_t own_budget_slot, uint64_t keep_cnode_dest);
+                        uint32_t own_budget_slot, uint64_t keep_cnode_dest,
+                        uint64_t keep_tcb_dest);
 
 long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,

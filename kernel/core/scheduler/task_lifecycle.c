@@ -534,6 +534,24 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     unlink_task(t);
     task_release_sched_ctx(t);
 
+    /*
+     * Stage 7 Step 10: tell whoever is watching this thread that it is over.
+     *
+     * Fired here, at the end of EXECUTION teardown, and before the references
+     * this thread holds are dropped — a watcher woken by it can immediately
+     * read the exit code off the TCB it holds, because the object outlives the
+     * execution for exactly as long as some capability names it.
+     *
+     * Once, and the flag is what makes it once: an external kill and a
+     * self-exit both arrive here, and a watcher that learned of a death twice
+     * would have no way to tell that from two deaths.
+     */
+    if (t->exit_notif && !t->exit_reported) {
+        struct KNotification *n = t->exit_notif;
+        t->exit_reported = 1;
+        knotification_signal(n, t->exit_bits);
+    }
+
     /* Stage 7 Step 4: the thread's own CSpace reference goes with its
      * execution.  Dropped BEFORE kprocess_free below, so a process whose last
      * thread is exiting still has its root emptied by kprocess_teardown and
@@ -551,6 +569,13 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         struct KVSpace *vs = t->vspace;
         t->vspace = 0;
         kobject_release(&vs->base);
+    }
+    /* The watch's own reference, dropped after it has fired. */
+    if (t->exit_notif) {
+        struct KNotification *n = t->exit_notif;
+        t->exit_notif = 0;
+        kobject_active_release(&n->base);
+        kobject_release(&n->base);
     }
 
     /* The kernel stack was freed above, with the registry slot it is keyed

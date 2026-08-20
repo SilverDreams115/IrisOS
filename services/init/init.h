@@ -118,6 +118,9 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
  * still mint into it afterwards — delegating into a child names the CSpace,
  * and there is no longer a way to reach one by naming the process. */
 #define INIT_SLOT_TEST_CNODE   61u
+/* Stage 7 Step 10: iris_test's first THREAD, kept so init waits on the
+ * execution that ends rather than on a process capability. */
+#define INIT_SLOT_TEST_TCB     62u
 
 /* Phase S1: init's untyped pool — the boot untyped delegated by userboot at
  * IRIS_CPTR_INIT_UNTYPED.  Stage 4: held as the CPtr itself, checked once in

@@ -331,7 +331,8 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                         const struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
-                        uint32_t own_budget_slot, uint64_t keep_cnode_dest) {
+                        uint32_t own_budget_slot, uint64_t keep_cnode_dest,
+                        uint64_t keep_tcb_dest) {
     *out_proc_h = HANDLE_INVALID;
     *out_chan_h = HANDLE_INVALID;
     long self_vs  = 0;   /* the loader's own address space, for parse windows */
@@ -853,6 +854,12 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     if (keep_cnode_dest && child_cn)
         (void)sl_sys3(SYS_CSPACE_MINT, child_cn, (long)keep_cnode_dest,
                       (long)(RIGHT_READ | RIGHT_WRITE));
+    /* Stage 7 Step 10: and the child's first THREAD, for a spawner that means
+     * to wait for it.  READ is enough to watch and to read an exit code;
+     * WRITE would be authority to stop it, which waiting does not need. */
+    if (keep_tcb_dest)
+        (void)sl_sys3(SYS_CSPACE_MINT, (long)sl_ws_cptr(ws, SL_WS_CHILD_TCB),
+                      (long)keep_tcb_dest, (long)RIGHT_READ);
 
     /* Hand back everything of the CHILD's that the loader was holding: an
      * unused level charged to its budget, and the capability to its address
