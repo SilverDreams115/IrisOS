@@ -20298,10 +20298,21 @@ static void test_t297(void) {
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "cnode accepted as vspace";
     }
-    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, (long)IT_OBJ_CNODE_SLOT, IT_VS)
-              != (long)IRIS_ERR_ACCESS_DENIED) {
-        ok = 0; why = "foreign cnode accepted";
-    }
+    /*
+     * Stage 7-proc: the "foreign cnode" probe is RETIRED.
+     *
+     * It asserted that a CNode which is not the target process's own root is
+     * ACCESS_DENIED — KProcess acting as an authority over a capability the
+     * caller already held: naming it was not enough, it also had to match a
+     * third object's idea of what your CSpace should be.  A thread runs in the
+     * CSpace and address space its configurer named and holds, and threads
+     * sharing that pair are what a process IS rather than something checked
+     * against one.  This is seL4's seL4_TCB_Configure.
+     *
+     * What survives is that both arguments must be capabilities you can
+     * actually resolve, which the two probes above (wrong type each way) and
+     * the one below (CPTR_NULL) cover.
+     */
     if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, 0, IT_VS)
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "cptr_null accepted";

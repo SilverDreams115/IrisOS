@@ -1463,9 +1463,39 @@ with it the last things `KProcess` is for.
 born from Untyped* — is checkable, and `scripts/purity_allowlist.txt` contains
 only the boot path.
 
-## Stage 7-proc — the user-space process server  ← NOT STARTED
+## Stage 7-proc — the user-space process server  ← IN PROGRESS
 
 Precondition: Stage 7-mem.
+
+**Done so far.**  `SYS_TCB_CONFIGURE`'s IDENTITY CHECK is gone: the CSpace and
+VSpace you name no longer have to match the target process's own.  That check
+was `KProcess` acting as an authority over a capability the caller already
+held — naming it was not enough, it also had to agree with a third object — and
+threads sharing a CSpace and a VSpace are what a process IS rather than
+something to be checked against one.  This is seL4's `seL4_TCB_Configure`.
+
+**What blocks the rest, measured rather than guessed.**  Removing `t->process`
+outright was attempted and reverted, and the failure is the useful part: every
+spawned thread faulted on its own entry point and the root task followed.  Two
+causes, both structural:
+
+1. **Every syscall guard is `if (!t || !t->process)`** — 53 of them.  A thread
+   with no process fails every syscall it makes.  (Converting them to
+   `!t->cspace_root` is mechanical and correct, and was part of the attempt.)
+2. **Address-space reclamation still hangs off `thread_count`.**  Step 11 moved
+   the WALK's teardown into the VSpace destructor, but the process still holds
+   the VSpace reference that destructor waits for, and `thread_count` reaching
+   zero is what drops it.  A thread that joins no process therefore leaves an
+   address space nothing reclaims — and, worse, a thread that inherits its
+   spawner's process decrements the SPAWNER's count and tears the spawner down.
+
+So the order is fixed: **reclamation must move off `thread_count` before
+`t->process` can go.**  The shape it wants is the one Steps 4/5 already
+established — the thread holds its own CSpace and VSpace references, so the
+last thread releasing them IS the last reference, and the destructors run with
+nobody counting.  What has to move with it is `kprocess_reap_address_space`'s
+remaining work: invalidating the walk and releasing the root task's bootstrap
+frames.
 
 With `KProcess` gone, "spawn a process" is a userland composition: retype an
 Untyped, retype a CNode and a VSpace and a TCB out of it, configure, write

@@ -120,11 +120,25 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         proc = (struct KProcess *)proc_obj;
     }
 
-    /* The CSpace argument: a real KCNode capability, which must BE that
-     * process's root.  Identity, not equivalence — a different CNode with the
-     * same contents is a different CSpace.  Naming the pair rather than
-     * trusting the process object is the whole point: it is what makes the
-     * signature honest about a thread running in a named CSpace and VSpace. */
+    /*
+     * The CSpace argument: a real KCNode capability the caller HOLDS.
+     *
+     * Stage 7-proc: it used to have to BE that process's root, checked by
+     * identity, and the VSpace likewise.  That check was KProcess acting as an
+     * authority: the capability you named was not enough, it also had to match
+     * a third object's idea of what your CSpace should be.  A thread runs in
+     * the CSpace and the address space its configurer NAMED and holds, which
+     * is seL4's seL4_TCB_Configure, and threads sharing a pair are what a
+     * process IS rather than something to be checked against one.
+     *
+     * The process argument survives this step for one reason, and it is not
+     * authority: teardown still counts threads (`thread_count`), and that
+     * count is what reclaims an address space when the last one exits.  Moving
+     * reclamation off it is the remaining content of Stage 7-proc — attempting
+     * both at once produced a kernel where every spawned thread faulted on its
+     * own entry point, because a thread with no process is a thread whose
+     * address space nothing reclaims and whose syscall guards all fail.
+     */
     struct KObject *cs_obj; iris_rights_t cs_rights;
     err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg1, RIGHT_NONE,
                                   KOBJ_CNODE, &cs_obj, &cs_rights);
@@ -139,36 +153,25 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * that is not a leak but a demolition: reaching zero active refs runs the
      * close callback, which empties every slot of the CSpace being used. */
     struct KCNode *cspace = (struct KCNode *)cs_obj;
-    int cs_ok = (cspace == proc->cspace_root);
     kobject_release(cs_obj);
 
-    /* The VSpace argument: likewise that process's own address space. */
+    /* The VSpace argument: the address space the thread will run in. */
     struct KObject *vs_obj; iris_rights_t vs_rights;
-    struct KVSpace *vspace = 0;
-    int vs_ok = 0;
-    if (cs_ok) {
-        err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg2,
-                                      RIGHT_NONE, KOBJ_VSPACE, &vs_obj, &vs_rights);
-        if (err != IRIS_OK) {
-            if (proc_obj) kobject_release(proc_obj);
-            kobject_release(&target->base);
-            return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
-        }
-        vspace = (struct KVSpace *)vs_obj;
-        vs_ok  = (vspace == proc->vspace);
-        kobject_release(vs_obj);
-    }
-    if (!cs_ok || !vs_ok) {
+    err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg2,
+                                  RIGHT_NONE, KOBJ_VSPACE, &vs_obj, &vs_rights);
+    if (err != IRIS_OK) {
         if (proc_obj) kobject_release(proc_obj);
         kobject_release(&target->base);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
     }
+    struct KVSpace *vspace = (struct KVSpace *)vs_obj;
+    kobject_release(vs_obj);
 
     /* Stage 7 Step 4: the CSpace travels to the thread as the capability the
      * caller named.  Safe to pass after its resolve reference was dropped: the
-     * identity check above proved it is the process's root, and the process
-     * holds that root for as long as it lives — ktcb_configure takes its own
-     * pair before anything can drop the last one. */
+     * CALLER holds it in a CSpace slot for the whole of this syscall — that is
+     * how it was resolved — so nothing can drop the last reference before
+     * ktcb_configure takes its own pair. */
     err = ktcb_configure(target, proc, cspace, vspace);
     if (proc_obj) kobject_release(proc_obj);
     kobject_release(&target->base);
