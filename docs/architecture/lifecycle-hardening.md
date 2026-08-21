@@ -1,5 +1,24 @@
 # Phase 16 — lifecycle / process hardening
 
+> **Superseded in scope (Stage 7).**  This document audits the *process*
+> lifecycle, and there is no process object any more: `struct KProcess` is
+> deleted, and every question it audits is now asked of the objects that
+> answer them.  A death is observed on the **thread** that dies
+> (`SYS_TCB_WATCH`), a kill is stopping the **execution** a supervisor holds
+> (`SYS_TCB_EXIT`), liveness is the execution's own state
+> (`SYS_TCB_GET_INFO`), and an address space is reclaimed by its **own
+> destructor** when its last capability goes rather than by a per-process reap
+> tied to a thread count.
+>
+> That last one is a real semantic change and is worth knowing before reading
+> the teardown ordering below: an address space now OUTLIVES its threads while
+> a capability to it lives, which is seL4's shape and which four runtime tests
+> (T187, T188, T196, T210) were re-derived onto.
+>
+> What survives unchanged is the class of defect this phase found — reap
+> ordering, slot reuse, references held across teardown — and the invariants
+> that pin them.  Read it for those.
+
 Status: ACCEPTED — implemented in this phase.  Companion to
 `ipc-stress-invariants.md` (A1.11, which found and fixed the deferred-reap
 slot-reuse leak) and `handle-table-freeze.md` (A1.7 counters).  Phase 16

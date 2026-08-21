@@ -27,7 +27,7 @@ authority cannot be constructed:
 | `BOOT_CPTR_IRQ_CONTROL` (3) | IRQ control | `SYS_CAP_CREATE_IRQCAP` |
 | `BOOT_CPTR_IOPORT_CONTROL` (4) | ioport control | `SYS_CAP_CREATE_IOPORT` |
 | `BOOT_CPTR_DEBUG_CONTROL` (5) | debug control | `SYS_KLOG_DRAIN`, `SYS_SCHED_INFO`, `SYS_POWEROFF` |
-| `BOOT_CPTR_PROC_CONTROL` (6) | process control | `SYS_PROCESS_CREATE` |
+| `BOOT_CPTR_PROC_CONTROL` (6) | process control | **nothing, since Stage 7-proc**: it authorised `SYS_PROCESS_CREATE`, which is retired.  A child is a TCB, a CNode and a VSpace retyped from a budget the spawner holds, and holding that budget IS the authority — seL4 has no spawn capability either.  The slot is still minted and still passed around; retiring it goes with retiring the syscall number (Stage 10-abi) |
 | `BOOT_CPTR_INITRD_CONTROL` (7) | initrd | `SYS_INITRD_COUNT`, `SYS_INITRD_VMO` |
 | `BOOT_CPTR_FB_CONTROL` (8) | framebuffer | `SYS_FRAMEBUFFER_VMO` (one-shot) |
 
@@ -54,11 +54,15 @@ handoff.
 
 ## Ring-3 child spawn contract
 
-A spawn needs TWO authorities and presents them as two capabilities: the
-process control capability (`SYS_PROCESS_CREATE`) and the initrd capability
-(`SYS_INITRD_COUNT`/`SYS_INITRD_VMO`).  They were one permission bit until
-Stage 5, which is why `vfs` — a file server that only reads boot images — used
-to hold the authority to create processes.
+A spawn needs the **initrd** capability (`SYS_INITRD_COUNT`/`SYS_INITRD_VMO`)
+to read a boot image, and an **Untyped** to build the child out of.  That is
+all: holding the budget is the authority to retype, exactly as in seL4.
+
+It used to need a second capability, process control, and before Stage 5 both
+were one permission bit — which is why `vfs`, a file server that only reads
+boot images, used to hold the authority to create processes.  Stage 5 split
+them; Stage 7-proc removed the need for the second one.  `svc_load_minted_ws`
+still takes it as an argument and ignores it, recorded rather than hidden.
 
 On success:
 
@@ -66,18 +70,21 @@ On success:
 - userland parses and relocates the ELF image
 - the parent RETYPES the child's address space and root CSpace out of the
   child's budget (`SYS_UNTYPED_RETYPE2` of `IRIS_KOBJ_VSPACE` and
-  `IRIS_KOBJ_CNODE`) and `SYS_PROCESS_CREATE` composes a process from them —
-  the kernel builds neither (Stage 6-pure)
-- `SYS_VMO_MAP_INTO` maps prepared segments into that process, and the parent
-  supplies any paging level the map reports missing
+  `IRIS_KOBJ_CNODE`) — the kernel builds neither (Stage 6-pure)
+- `SYS_VMO_MAP_INTO` maps prepared segments into that address space, and the
+  parent supplies any paging level the map reports missing
   (`IRIS_ERR_MISSING_TABLE` → `SYS_VSPACE_MAP_TABLE`)
 - the first thread is composed the same way any thread is: retype an
   `IRIS_KOBJ_TCB`, `SYS_TCB_CONFIGURE` it with the child's CSpace and VSpace,
-  `SYS_TCB_WRITE_REGS`, `SYS_TCB_RESUME`.  `SYS_THREAD_START` is RETIRED
-  (Stage 7)
-- every capability the child starts with is a pre-start CSpace mint
-  (`SYS_PROC_CSPACE_MINT` / `SYS_CSPACE_MINT_INTO`), sourced from the parent's
-  own slots so the delegation stays revocable
+  `SYS_TCB_WRITE_REGS`, `SYS_TCB_RESUME`.  `SYS_THREAD_START` and
+  `SYS_PROCESS_CREATE` are both RETIRED (Stage 7)
+- every capability the child starts with is a pre-start `SYS_CSPACE_MINT` with
+  the child's root CNode as the destination — the parent has it because it
+  retyped it — sourced from the parent's own slots so the delegation stays
+  revocable
+- what the spawn hands back is the child's **first thread**.  A supervisor
+  watches it (`SYS_TCB_WATCH`), kills it (`SYS_TCB_EXIT`) and reads its exit
+  code (`SYS_TCB_EXIT_CODE`); there is no process capability
 - RBX carries 0: the child's authority is in its CSpace, not in a register
 - the parent retains the process capability it created
 
@@ -110,14 +117,17 @@ Child rights come from the declarative service catalog:
 After spawning a child service, `svcmgr` does two things:
 
 1. Registers IRQ ownership, if the manifest requires one:
-   - `SYS_IRQ_ROUTE_REGISTER(irqcap_h, public_h, proc_h)`
-2. Arms one process exit watch:
-   - `SYS_PROCESS_WATCH(proc_h, state->bootstrap_h, service_id)`
+   - `SYS_IRQ_ROUTE_REGISTER(irqcap, notification)` — the route's owner is the
+     **notification it is bound to** (Stage 7-mem), not a process
+2. Arms one exit watch on the child's **first thread**:
+   - `SYS_TCB_WATCH(tcb, notification, service_id)`
 
 The lifecycle consequence is:
 
-- exit notifications are delivered back to `svcmgr` over its bootstrap channel
-- IRQ route cleanup remains kernel-side and is tied to child process ownership
+- exit notifications are delivered back to `svcmgr` as a signal on the
+  notification it named
+- IRQ route cleanup remains kernel-side and is tied to the lifetime of that
+  notification
 
 ## Pragmatic kernel-side mechanisms
 

@@ -268,7 +268,10 @@ whoever ran the syscall:
 
 - `SYS_VMO_CREATE(size)` — charges the caller (unchanged 1-arg ABI).
 - `SYS_VMO_CREATE_FOR(size, charge_target)` — charges `charge_target`, a
-  KProcess the caller holds RIGHT_MANAGE on.  A loader uses this to charge a
+  process the caller holds RIGHT_MANAGE on.  (Retired in Stage 7-mem with the
+  owner relation: a VMO's memory comes from the `Untyped` named in
+  `SYS_VMO_CREATE`, so a loader spends the child's budget directly.)  A loader
+  used this to charge a
   child's image VMOs to the CHILD, so the loader's `owned_vmos` stays flat
   regardless of how many children it launches.
 

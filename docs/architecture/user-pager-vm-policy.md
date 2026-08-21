@@ -1,5 +1,14 @@
 # Phase 25 — VM policy / user pager groundwork
 
+> **Naming note (Stage 7).**  `KProcess` is deleted and the process-shaped
+> syscalls are retired.  Where this document says a supervisor or a pager holds
+> a **process** capability, read: it holds the child's **first thread**
+> (`SYS_TCB_WATCH` / `SYS_TCB_EXIT` / `SYS_TCB_EXIT_CODE` /
+> `SYS_TCB_GET_INFO` / `SYS_TCB_FAULT_INFO` / `SYS_TCB_SET_FAULT_HANDLER`) and,
+> when it maps into the child, that child's **address space**.  The policy and
+> the invariants below are unchanged; the object they name is.  See the
+> [convergence roadmap](sel4-convergence-roadmap.md)'s Stage 7.
+
 Status: ACCEPTED — implemented in this phase.  Companion to
 `fault-endpoint-model.md` (Phase 20), `vspace-frame-hardening.md` (Phase 19)
 and `service-supervision-model.md` (Phase 24).  Phase 25 closes the gap Phase 20

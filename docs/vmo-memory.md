@@ -80,7 +80,9 @@ skipped.  `kvspace_unmap_page`:
 
 ## Address Space Teardown
 
-`kprocess_reap_address_space` calls `kvspace_invalidate(p->vspace)`, which:
+Since Stage 7-proc an address space is invalidated by its **own `close` hook** —
+the moment its last capability goes, not when its last thread exits — which
+calls `kvspace_invalidate`, which:
 1. Atomically removes the whole `mappings` list and zeros `vs->cr3` / `vs->valid` under `vs->lock`.
 2. Walks the captured list outside the lock, calling `paging_unmap_in`, freeing each node,
    decrementing `mapped_count`, and releasing each frame retain.
@@ -95,10 +97,12 @@ Both `sys_vmo_map` and `sys_vmo_map_into` reject `flags` with both WRITABLE (bit
 
 ## Process Creation
 
-`sys_process_create` composes a `KProcess` from an address space and a root
-CSpace the CALLER retyped (`IRIS_KOBJ_VSPACE` / `IRIS_KOBJ_CNODE`); since Stage
-6-pure it creates neither, and the paging levels under that address space are
-retyped and installed by whoever maps into it.
+There is none.  `SYS_PROCESS_CREATE` is retired (Stage 7-proc) and `KProcess`
+is deleted.  A "process" is a thread configured — `SYS_TCB_CONFIGURE(tcb,
+cnode, vspace)` — with an address space and a root CSpace the CALLER retyped
+(`IRIS_KOBJ_VSPACE` / `IRIS_KOBJ_CNODE`), plus any further threads configured
+with the same two.  The kernel creates neither object, and the paging levels
+under that address space are retyped and installed by whoever maps into it.
 
 ## Refcount Summary for a Single Mapped Page
 

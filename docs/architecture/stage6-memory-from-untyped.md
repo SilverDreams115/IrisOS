@@ -7,9 +7,12 @@ creates the object and charges it to an Untyped the caller named.  Stage 6-pure
 (see the [roadmap](sel4-convergence-roadmap.md)) replaced that answer for
 address spaces with seL4's — the HOLDER retypes the object and hands it over —
 so where this doc says a page table, a PML4 or a VSpace header is *charged*,
-the kernel no longer creates it at all.  What still reads true here is
-everything about VMO pages, mapping records and the KProcess object, and the
-reasoning about why a budget must be named at all.
+the kernel no longer creates it at all.  **Stage 7 then deleted `KProcess`
+outright**, so every row here that gives a spawn budget a `KProcess` header to
+pay for describes a cost that no longer exists — what a spawn buys is a TCB, a
+root CNode and a VSpace.  What still reads true is everything about VMO pages
+and mapping records, and the reasoning about why a budget must be named at
+all.
 
 Precondition: Stage 1 (ownership/derivation, closed) and Stage 5 (closed — the
 root task holds its Untypeds as described capabilities).

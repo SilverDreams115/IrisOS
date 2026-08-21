@@ -4,8 +4,15 @@ Phase 10 turns the Phase 9 sender **identity** (kernel-stamped badges) into
 real **policy**: badge-authenticated registration, tightened `.ep` lookup
 grants, a liveness/generation oracle, real death→respawn recovery, and a
 notification close-while-wait guarantee. It builds entirely on existing
-kernel primitives (`SYS_PROCESS_KILL/WATCH/STATUS`, endpoint/notification
-close) — no memory-model or namespace changes.
+kernel primitives (at the time `SYS_PROCESS_KILL/WATCH/STATUS`, endpoint and
+notification close) — no memory-model or namespace changes.
+
+> **Naming note (Stage 7).**  The policy below is unchanged, but the primitives
+> it names are: a supervisor watches, kills and reads the exit code of the
+> **thread** it holds — `SYS_TCB_WATCH`, `SYS_TCB_EXIT`, `SYS_TCB_EXIT_CODE`,
+> `SYS_TCB_GET_INFO` — because `svc_load_minted_ws` hands back the child's
+> first thread and there is no process object to name.  Read
+> `SYS_PROCESS_KILL/WATCH/STATUS` below as their `TCB` equivalents.
 
 ## Badge-based service identity
 
@@ -53,8 +60,8 @@ preserving T046.
 
 ## Death model, generation & STATUS oracle
 
-Each catalog service carries a `generation` (1 at first boot). The existing
-`SYS_PROCESS_WATCH` path already respawns a service on exit; Phase 10 bumps
+Each catalog service carries a `generation` (1 at first boot). The exit-watch
+path (`SYS_TCB_WATCH` on the child's first thread) respawns a service on exit; Phase 10 bumps
 `generation` on every respawn. `IRIS_SVCMGR_EP_STATUS` (`0xF005`, open to any
 caller) maps a name to `{alive, generation}` and is the **non-blocking
 liveness oracle** that lets a client poll a restart without blocking on a
@@ -62,8 +69,8 @@ possibly-dead endpoint.
 
 ## Real restart (RESTART) + relookup
 
-`IRIS_SVCMGR_EP_RESTART` (`0xF006`, **supervisor only**) calls
-`SYS_PROCESS_KILL` on the service; the watch path respawns it and bumps the
+`IRIS_SVCMGR_EP_RESTART` (`0xF006`, **supervisor only**) calls `SYS_TCB_EXIT`
+on the service's thread; the watch path respawns it and bumps the
 generation. A client recovers by: poll `STATUS` (bounded, no sleep — each
 EP_CALL yields the CPU) until `alive && generation > cached`, then re-LOOKUP
 to obtain a fresh cap. Demonstrated end-to-end by T057/T060 killing and
@@ -72,11 +79,17 @@ recovering VFS.
 ## Revocation (initial / logical)
 
 Phase 10 implements **logical revocation by generation**: caps are not
-force-closed (handle-table entries hold active refs, so an endpoint with live
+force-closed (a CSpace slot holds an active ref, so an endpoint with live
 client caps cannot be kernel-closed). Instead the supervisor's registry is
 the source of truth — a client validates freshness against `STATUS`; a cached
 generation older than the current one is **stale** and must be relooked up
-(T059). Full CSpace recursive revocation is deferred.
+(T059).
+
+Recursive revocation is no longer deferred: the native CSpace CDT/MDB landed in
+Phase S3, and `SYS_CSPACE_REVOKE` destroys a capability's whole descendance
+across CNodes and address spaces.  Generation-based staleness remains the
+supervision policy because it answers a different question — *is this service
+the one I looked up?* — and it is svcmgr's to answer, not the kernel's.
 
 ## Notification close-while-wait
 

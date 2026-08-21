@@ -1,13 +1,38 @@
 # Resource Ownership & Accounting
 
-Status: **IMPLEMENTED and tested end to end** (runtime T239–T250, all green in
-the 246/246 suite; host units 10247/10247).  Companion to
-`kernel-object-lifetime.md`, `kernel-capacity-limits.md`,
-`memory-object-vmo-policy.md`, `file-backed-memory.md`, and
-`service-supervision-model.md`.
+> **Superseded (Stage 7).**  The model this document describes — a per-process
+> resource domain that objects are charged against — **no longer exists**.
+> `struct KProcess` is deleted, so there is nothing to be a domain; the VMO
+> owner relation and `KPROCESS_VMO_QUOTA` went with it in Stage 7-mem, the page
+> ceiling and the live-process ceiling in Stage 7 Steps 2-3, and
+> `SYS_RESOURCE_INFO` — the syscall that reported all of it — answers
+> `NOT_SUPPORTED`.
+>
+> **What replaced it**: the `Untyped` an allocation names *is* the accounting.
+> A VMO's pages, its metadata and its header are carved from the budget passed
+> to `SYS_VMO_CREATE`, as are page tables, PML4s, `KVSpace` headers, root
+> CNodes, TCBs, mapping records and device capabilities; each carve is a child
+> of that Untyped, `SYS_UNTYPED_RESET` refuses while a child lives, and
+> resetting reclaims the whole region.  `SYS_UNTYPED_QUERY` reports it — kind
+> `ONE` per budget, kind `GLOBAL` for the kslab and failed-charge gauges that
+> were never per-process anyway.  See the
+> [roadmap's Stage 7](sel4-convergence-roadmap.md) and the README's *Resource
+> accounting* section.
+>
+> Kept because the **decision** it records is still the reason the current model
+> looks the way it does: charge the resource to whoever owns it, never to
+> whoever ran the syscall.  Stage 7's answer to "who owns it" is "the budget it
+> came from", which is the same principle with the invented domain removed.
 
-This document defines how the microkernel attributes and charges resources, and
-records the architecture decision that fixed a caller-charged accounting bug.
+Status: **HISTORICAL — Phase 29 record.**  Implemented and tested end to end at
+the time (runtime T239–T250, all green in the 246/246 suite; host units
+10247/10247).  Companion to `kernel-object-lifetime.md`,
+`kernel-capacity-limits.md`, `memory-object-vmo-policy.md`,
+`file-backed-memory.md`, and `service-supervision-model.md`.
+
+This document defines how the microkernel attributed and charged resources in
+Phase 29, and records the architecture decision that fixed a caller-charged
+accounting bug.
 
 ---
 
@@ -111,34 +136,38 @@ is charged to the owner once; the *mapping* is a cheap kslab object.
 
 | Object | Creator | Owner / payer | Shared behavior | Death behavior |
 |--------|---------|---------------|-----------------|----------------|
-| KProcess | spawner (SYS_PROCESS_CREATE) | itself (a domain) | no | destroy frees all its owned resources |
-| task / TCB | process | its process | no | freed with the process |
-| SchedulingContext | creator | creator process | bindable to a TCB | freed on last handle close |
+| ~~KProcess~~ | — | — | — | **the object is deleted (Stage 7-proc); a process is threads sharing a CSpace and a VSpace** |
+| task / TCB | retyped from an Untyped by its spawner | that Untyped | no | the block returns to the budget when the last capability goes |
+| SchedulingContext | retyped from an Untyped | that Untyped | bindable to a TCB | freed on last capability |
 | **KVMO** | caller / loader | the charge-target (self or a MANAGE'd process) | one owner, charged once | owner's object + page charge released at kvmo_destroy |
 | KFrame | VMO map path | (backs a VMO page; no separate quota) | reused across mappings | freed when the VMO frees the page |
-| KVSpace | process create | its process | no | freed with the process |
+| KVSpace | retyped by its holder (`IRIS_KOBJ_VSPACE`) | the Untyped it came from | named by `SYS_TCB_CONFIGURE`, and several threads may share it | comes down when its LAST CAPABILITY goes, not when a thread dies (Stage 7-proc) |
 | KFrameMapping / PTE | map syscall | the target VSpace (kslab object) | one per (VSpace, VA) | released on unmap / VSpace teardown |
-| KEndpoint | creator | creator's handle table | shared by caps | freed on last handle close |
+| KEndpoint | retyped from an Untyped | that Untyped | shared by caps | freed on last capability |
 | KNotification | creator (retype from Untyped) | no numeric owner charge since Phase S1 — the Untyped it was retyped from is the budget | shared by caps (e.g. the pager's ONE fault notif) | freed on last reference |
 | KReply | EP_CALL (kernel) | the replying endpoint's transaction | one-shot | consumed by SYS_REPLY |
-| KCNode | creator | creator's handle table | shared by caps | freed on last handle close |
+| KCNode | retyped from an Untyped | that Untyped | shared by caps; a slot naming its OWN CNode takes no active reference | freed on last EXTERNAL capability |
 | KUntyped | boot / retype | holder | retyped into children | children track back to it |
 | KIoPort / KIrqCap | cap-create (spawn authority) | holder | — | freed on close |
-| IRQ route | IRQ_ROUTE_REGISTER | the routing process | one per line | cleared on teardown |
+| IRQ route | IRQ_ROUTE_REGISTER | the NOTIFICATION the route is bound to (Stage 7-mem) | one per line | cleared when that notification goes |
 | file-backed cache VMO | pager's supervisor | its owner (the creator) | shared RO cache | pager restart / owner death releases |
 | private writable page | pager fill | the cache/pool VMO's owner | per-fault, not shared | released with the pool VMO |
 | shared RO page | pager fill | the cache VMO's owner | shared across targets, charged once | survives while any use exists |
-| pager target grant | supervisor | the pager (per-target proc/vs caps) | no | released on pager teardown |
+| pager target grant | supervisor | the pager (per-target THREAD + VSpace caps; no process capability, Stage 7) | no | released on pager teardown |
 | file grant | VFS | VFS grant table (per session) | no | revoked / session-reset at the VFS |
 | service registry entry | svcmgr | svcmgr | no | cleared on unregister / death |
 
 ---
 
-## Quota contracts (per-process domain)
+## Quota contracts (per-process domain) — all retired
+
+Every row below is now history; the column that matters is the last one, which
+already said "the Untyped runs out" for two of the three before the third
+followed.
 
 | Resource | Limit | Charge point | Release point | Exhaustion result |
 |----------|-------|--------------|---------------|-------------------|
-| `owned_vmos` | `KPROCESS_VMO_QUOTA` = 32 | `kvmo_bind_owner` | `kvmo_destroy` | `IRIS_ERR_NO_MEMORY`, no object, `global_failed_charges++` |
+| `owned_vmos` | **deleted (Stage 7-mem)** with the owner relation — was `KPROCESS_VMO_QUOTA` = 32 | `kvmo_bind_owner` | `kvmo_destroy` | the Untyped the VMO was carved from runs out |
 | `phys_pages_charged` | none since **Stage 7 Step 2** (`KPROCESS_PHYS_PAGES_LIMIT` reports 0) | first allocation of each sparse page (charged to VMO owner) | `kvmo_destroy` (once per page) | the Untyped the VMO names runs out; the counter is instrumentation |
 | live processes | none since **Stage 7 Step 3** | `kprocess_alloc_from` (a child block of the creator's Untyped) | `kprocess_destroy` | the creator's budget runs out, or the PCID pool (1–4094) does; the live count is instrumentation |
 

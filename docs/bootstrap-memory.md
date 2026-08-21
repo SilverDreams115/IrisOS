@@ -13,12 +13,18 @@ closing the main tracking gap documented in Phase 6.1.
 
 **Stage 6** left this path deliberately unchanged, and it is now the only one
 like it: the root task's text, stack and BootInfo pages, its page tables, its
-PML4, its KVSpace, its KProcess and its root CNode all come from the kernel's
-PMM/slab, because they are built *before the first Untyped exists*.  Every
-other address space in the system names the Untyped that pays for it.  The
-exception is bounded (one address space, a handful of pages), does not grow
-with load, and retires when process creation itself moves to user space
-(Stage 7).
+PML4, its KVSpace and its root CNode all come from the kernel's PMM/slab,
+because they are built *before the first Untyped exists*.  Every other address
+space in the system names the Untyped that pays for it.
+
+**Stage 7** settled what happens to this exception: it does **not** retire.
+There is no process object left to move to user space — `KProcess` is deleted
+and a child's CSpace, address space and first thread are retyped by its spawner
+— but the ROOT task still has to be given an address space by something, and
+the only something that exists at that moment is the kernel.  seL4 has the same
+permanent exception.  The exception is bounded (one address space, a handful of
+pages) and does not grow with load; `make check-purity` is what keeps it from
+growing.
 
 ---
 
@@ -27,7 +33,9 @@ with load, and retires when process creation itself moves to user space
 ### Demand paging
 
 Demand paging was eliminated in **Phase 6**.  `#PF` ring-3 never allocates
-physical pages.  `kprocess_resolve_demand_fault` does not exist.
+physical pages.  There is no in-kernel demand-fault resolver of any kind: the
+`#PF` handler records the fault on the faulting thread and signals the
+notification its handler was armed with.
 
 ### Runtime user mappings
 
@@ -47,8 +55,8 @@ helper, not a syscall path) which:
 2. Calls `kframe_map_page(f, proc->vspace, user_va, flags)` — installs the PTE
    **and** registers the mapping in `KVSpace.mappings[]`.
 3. Returns the KFrame with the alloc retain held by the caller.
-4. The alloc retain is stored in `KProcess.bootstrap_frames[]` via
-   `kprocess_register_bootstrap_frame`.
+4. The alloc retain is stored in `KVSpace.bootstrap_frames[]` via
+   `kvspace_register_bootstrap_frame`.
 
 Both the userboot **text** pages (r--x) and the initial **stack** pages (rw-nx)
 are now mapped this way.
@@ -116,17 +124,22 @@ PMM blocks on teardown paths (unchanged from Phase 6.1).
 
 ### Bootstrap alloc retains
 
-After `kvspace_invalidate`, `kprocess_release_bootstrap_frames(p)` releases
-each KFrame alloc retain stored in `p->bootstrap_frames[]`.  Since
+After `kvspace_invalidate`, the KVSpace releases each KFrame alloc retain
+stored in `vs->bootstrap_frames[]` (they moved off the process in Stage 7-proc,
+where they belonged all along — they are frames mapped into that address
+space).  Since
 `mapped_count == 0` at that point, `kframe_obj_destroy` fires without the
 assert triggering.  `kframe_obj_destroy` calls `kslab_free` — physical memory
 is **not** freed here (managed externally by task struct fields).
 
-### Order in `kprocess_reap_address_space`
+### Order at address-space teardown
+
+Driven by the KVSpace's own `close`/`destroy` hooks since Stage 7-proc — the
+moment its last capability goes, rather than the moment its last thread exits:
 
 ```
-kvspace_invalidate(p->vspace)          ← mapped_count → 0 for all bootstrap frames
-kprocess_release_bootstrap_frames(p)   ← alloc retains released → kframe_obj_destroy
+kvspace_invalidate(vs)                 ← mapped_count → 0 for all bootstrap frames
+release vs->bootstrap_frames[]         ← alloc retains released → kframe_obj_destroy
 paging_destroy_user_space(cr3)         ← PT structure pages freed
 ```
 
@@ -134,8 +147,8 @@ paging_destroy_user_space(cr3)         ← PT structure pages freed
 
 If `bootstrap_kframe_map` fails mid-loop:
 - Already-created KFrames are in `proc->bootstrap_frames[]`.
-- `goto fail_copy` / `goto fail` triggers `kprocess_reap_address_space(proc)`,
-  which calls `kvspace_invalidate` + `kprocess_release_bootstrap_frames`.
+- `goto fail_copy` / `goto fail` releases the address space, whose own hooks
+  run `kvspace_invalidate` and then release the bootstrap frames.
 - Physical pages (contiguous PMM blocks) are freed by `free_phys_pages_range`.
 - No double-free: KFrame objects do not own physical memory (no pmm_owned flag
   on `kframe_alloc(..., NULL)`).
@@ -182,17 +195,16 @@ Both syscalls now eagerly install KFrame-backed PTEs:
 
 ### KVmoMapping removed
 
-`struct KVmoMapping`, `KProcess.vmo_mappings`, `vmo_mapping_count`,
-`kprocess_register_vmo_map`, `kprocess_unregister_vmo_map`, and
-`kprocess_clear_vmo_mappings` are fully removed.  All VMO-mapped pages are now
+`struct KVmoMapping` and the per-process mapping registry that went with it
+are fully removed.  All VMO-mapped pages are now
 tracked in `KVSpace.mappings` and cleaned by `kvspace_invalidate`.
 
 ### KVSpace.mappings is now a dynamic singly-linked list
 
 `KVSPACE_MAPPING_SLOTS` (fixed 32-slot array) was replaced with a singly-linked
 list of slab-allocated `KFrameMapping` nodes.  There is no slot limit for runtime
-VMO mappings.  Bootstrap frames continue to use `proc->bootstrap_frames[]` (limit
-`KPROCESS_BOOTSTRAP_FRAME_MAX = 32`).
+VMO mappings.  Bootstrap frames continue to use a fixed array, now
+`vs->bootstrap_frames[]` (limit `KVSPACE_BOOTSTRAP_FRAME_MAX`).
 
 ### sys_process_create allocates KVSpace
 
@@ -215,7 +227,7 @@ list, removes the PTE, and releases the frame retain — the inverse of
 - `make smoke-runtime` — all smoke checks green
 - `ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests` — all selftest checks green
 - `iris_test` — 17/17
-- `kprocess_resolve_demand_fault` — does not exist (confirmed by grep)
+- no in-kernel demand-fault resolver of any name exists (confirmed by grep)
 
 ---
 

@@ -19,19 +19,20 @@ path still depends on the mechanism it retires (charter §3.10).
 | 5 — seL4-like bootstrap | ✅ CLOSED |
 | 6 — Remaining memory and objects | ✅ CLOSED |
 | 6-pure — the user retypes what the kernel charged | ✅ CLOSED (5 steps) |
-| 7 — KProcess retirement | 🔶 IN PROGRESS (2 steps landed) |
+| 7 — KProcess retirement | ✅ CLOSED (15 steps + 7-mem + 7-proc) |
 | 8 — Full MCS scheduling | pending |
 | 9 — SMP | pending |
 | 10 — General-purpose platform | pending |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
 A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
-(scheduling); **M2–M5** (memory); **P1, P3** (policy).  Still open: **A5** and
-**P2** (Stage 7), **O1** and **M1**.  Stage 5 moved A5 most of the way — boot
-authority is fine-grained and named, the monolith cannot be constructed — and
-Stage 7 retired the per-process page quota and the live-process ceiling,
-leaving the ioport whitelist and the VMO-count quota as the remaining ambient
-policy.
+(scheduling); **M1–M5** (memory); **P1, P3** (policy); **S2** with the process
+object itself (Stage 7-proc).  **33 of the 36 are MET.**  Still PARTIAL:
+**A5** (ambient authority), **O1** (object *form* — a KVMO is still fabricated
+rather than retyped) and **P2** (mechanism, not policy).  Stage 5 moved A5 most
+of the way — boot authority is fine-grained and named, the monolith cannot be
+constructed — and Stage 7 retired every per-process quota there was, leaving
+the ioport whitelist as the remaining ambient policy.
 
 ### Where the line is now
 
@@ -48,8 +49,10 @@ VSpace and a CNode its creator retyped — `seL4_TCB_Configure`'s shape.  What
 the kernel still funds is bounded to things with no holder to ask: its own
 address space, and the root task's maps made before the root task exists.
 
-After Stage 7's two steps, no thread exists because the kernel had a free slot,
-and no memory ceiling exists that a capability did not set.
+After Stage 7, no thread exists because the kernel had a free slot, no memory
+ceiling exists that a capability did not set, and there is no process object to
+hold either — a "process" is threads configured with the same CSpace and the
+same VSpace.
 
 ## How close is this to seL4
 
@@ -61,13 +64,13 @@ two halves and they are far apart:
 
 | Dimension | State | Evidence |
 |---|---|---|
-| Object model and creation | **very close** | every canonical object is retyped from Untyped; address spaces and CSpaces are retyped by their HOLDER (Stage 6-pure).  Four object types exist that seL4 has no equivalent for — `KProcess`, `KVMO`, `KInitrdEntry`, `KBootstrapCap` — and all four are staged |
+| Object model and creation | **very close** | every canonical object is retyped from Untyped; address spaces and CSpaces are retyped by their HOLDER (Stage 6-pure).  `KProcess` — the largest of the four object types seL4 has no equivalent for — is DELETED (Stage 7-proc).  Three remain, `KVMO`, `KInitrdEntry` and `KBootstrapCap`, all staged |
 | Capabilities (CSpace, CDT, revoke) | **close** | native CDT/MDB, recursive cross-process revoke, one namespace.  Gaps: no CNode guards (D-2), and a different rights set (D-3) |
 | IPC | **close** | endpoints, badges, reply objects, receive slots, no handle fallback.  Gaps: no combined `ReplyRecv`, no per-thread IPC buffer object (D-4) |
-| No ambient authority | **nearly met** | boot authority is one capability per authority; what remains is the ioport whitelist and the VMO-count quota |
-| No kernel heap | **nearly met** | 19 permitted `kslab_alloc` occurrences, all boot path or subsystems retiring in Stage 7; seL4 has none at all |
+| No ambient authority | **nearly met** | boot authority is one capability per authority; what remains is the ioport whitelist.  Every per-process quota is gone (Stage 7) |
+| No kernel heap | **nearly met** | 17 permitted `kslab_alloc` occurrences across 14 files, all boot path or objects still staged; seL4 has none at all |
 | MCS scheduling | **partial** | budget and period are enforced (a thread that exhausts its budget blocks until the next period).  Missing the parts that make MCS *MCS*: **no SC donation over IPC, no timeout faults, no sporadic refills** |
-| ABI shape | **far, by decision** | 80 live numbered syscalls and 43 reserved, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  Registered permanent divergence (charter §6) |
+| ABI shape | **far, by decision** | 68 live numbered syscalls of 127 numbers, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  Registered permanent divergence (charter §6) |
 | Kernel architecture | **not started** | D-1: a kernel stack per thread, and threads block INSIDE the kernel |
 
 ### The two that no further stage closes
@@ -81,7 +84,7 @@ path (IPC, futex, notification wait, reply) — not an increment.  The ledger
 assigns it no stage deliberately.
 
 **The ABI shape is permanent by choice.**  In seL4 there is one way to exercise
-authority: invoke a capability.  In IRIS there are 80 entry points, each
+authority: invoke a capability.  In IRIS there are 68 entry points, each
 validating its own arguments.  The authority SEMANTICS are equivalent — nothing
 is reachable without naming a capability — but the verification surface is not,
 and no convergence work changes that.
@@ -908,7 +911,8 @@ What is still CHARGED rather than retyped, and needs a later stage:
 
 - the `KProcess` object itself, and VMO pages, metadata and mapping records —
   charged to a budget the holder named, which is Stage 6's answer, not seL4's.
-  `KProcess` is FROZEN and retires whole with the process server (Stage 7).
+  (`KProcess` was FROZEN here and expected to retire with a process server;
+  Stage 7-proc **deleted** it instead, and no server was needed.)
 - frames, IRQ handlers and I/O ports having a kernel object at all.  That is a
   change to what a capability IS, not to who pays for it, and it retires with
   the memory server.
@@ -922,9 +926,15 @@ Precondition: Stages 5–6 (a process = TCB+CSpace+VSpace composition).  Met by
 Stage 6-pure: a spawner retypes its child's address space and CSpace and hands
 both over.
 
-- Process server in user space; process creation and policy outside the
-  kernel; PID stops conferring authority; per-domain quotas become the
-  process server's policy.
+Stated at the time as: *process server in user space; process creation and
+policy outside the kernel; PID stops conferring authority; per-domain quotas
+become the process server's policy.*
+
+Three of those four landed, and the fourth turned out to be unnecessary:
+process creation and policy ARE outside the kernel, a PID confers no authority
+(the global thread lookup is deleted), and the per-domain quotas are not the
+server's policy — they are **gone**, because a budget is a capability.  The
+server itself was never built; see Stage 7-proc.
 
 ### Step 1 — the last pool-born thread retires  ✅ DONE
 
@@ -1341,12 +1351,14 @@ made this concrete — an early version kept one for every spawn and 43 tests
 failed on `vspace drift`.  The suite now asks for the child's address space
 only where it maps into one, and gives it back when done.
 
-### What Stage 7 still needs, and why it is not an increment
+### What Stage 7 still needed after Step 15 — and how it was answered
 
-`KProcess` itself, and the user-space process server that replaces the policy
-it carries.  Steps 4-15 emptied the object of everything that could be moved
-without first deciding a supervision protocol; what is left is that protocol,
-plus two pieces that belong to a different retirement.
+**Historical, resolved in Stage 7-proc.**  At this point the answer looked like
+`KProcess` itself plus a user-space process server to carry the policy it held.
+It turned out there was no policy left to carry: Steps 4-15 had moved every
+piece to the object it concerned, so the object could simply be deleted.  See
+*Stage 7-proc* below.  The inventory that follows is the measurement that made
+that visible.
 
 The inventory, measured rather than described — every remaining kernel read
 through `t->process`, and where it comes from:
@@ -1362,34 +1374,45 @@ address space are built before anything exists that could name them.  That
 exception is recorded in the ledger and does NOT retire with the process
 server — it retires when the root task can speak for itself.
 
-What still holds a `struct KProcess *` outside the boot path, and why:
+What still held a `struct KProcess *` outside the boot path at Step 15, and
+why — **every entry below is now closed**, by Stage 7-mem and Stage 7-proc:
 
 - **`SYS_PROCESS_CREATE` and `SYS_TCB_CONFIGURE`.**  The constructor, and the
   check that a thread is configured with the CSpace and VSpace its process was
-  composed from.  A user-space process server replaces these outright rather
-  than converting them, because what they create IS the policy container: in
-  seL4 there is no process object, and `seL4_TCB_Configure` binds a CNode and a
-  VSpace to a thread with nothing to agree with.
+  composed from.  The expectation here was that a user-space process server
+  would replace them outright rather than convert them, because what they
+  create IS the policy container: in seL4 there is no process object, and
+  `seL4_TCB_Configure` binds a CNode and a VSpace to a thread with nothing to
+  agree with.  ✅ That is exactly what happened, minus the server:
+  `SYS_PROCESS_CREATE` is retired and `SYS_TCB_CONFIGURE`'s identity check is
+  gone, so it IS `seL4_TCB_Configure`.
 - **the KVmo owner/payer relation** (`kvmo_bind_owner`, `kvmo_owner`, the
   `owned_vmos` and page counters).  A VMO is charged to a process, and that
   process is its resource domain.  This retires with the KVMO OBJECT, per the
   ledger (FROZEN, memory-server) — seL4 has Frames and no owner.  Step 14 took
   the memory side of it out (a VMO's pages come from a budget the caller
-  names); what is left is the accounting identity.
+  names).  ✅ Stage 7-mem took the accounting identity too: the owner relation
+  and the VMO-count quota are DELETED.
 - **`irq_routing`'s owner.**  Which principal a device route belongs to, so
-  teardown can clear it.  Same class: a route needs an owner, and the owner is
-  a process until there is a device server.
+  teardown can clear it.  ✅ Stage 7-mem gave it the right owner without
+  waiting for a device server: a route belongs to the **notification it is
+  bound to**, which is the object whose lifetime the teardown actually cares
+  about.
 - **`SYS_RESOURCE_INFO`** and the diagnostic gauges, which report per-process
-  accounting and retire with the accounting.
+  accounting and retire with the accounting.  ✅ Retired in Stage 7-mem; the
+  three gauges that were never per-process moved to `SYS_UNTYPED_QUERY`'s
+  GLOBAL kind.
 
-So the honest boundary is this: Stage 7's stated goal — *retire everything a
-process capability was standing in for* — is DONE.  Fifteen syscalls are
-retired, the object carries no authority a capability to something else could
-not express, and no hot path reads it.  What remains is not authority but
-IDENTITY: a process is still the name of a resource domain, and dissolving that
-name requires the memory server (Stage 7's other half, per the ledger) and a
-user-space process server to take over composition.  Those are two more
-increments, not the tail of this one.
+So the honest boundary at Step 15 was this: Stage 7's stated goal — *retire
+everything a process capability was standing in for* — was DONE.  Fifteen
+syscalls retired, the object carried no authority a capability to something
+else could not express, and no hot path read it.  What remained was not
+authority but IDENTITY: a process was still the name of a resource domain.
+
+Dissolving that name took one more increment rather than two.  Stage 7-mem
+removed the resource domain — a VMO's accounting is the Untyped it came from —
+and once that was gone, Stage 7-proc found nothing left for a process server to
+own, and deleted the object.
 
 Retired across Steps 3-15, all permanently reserved and answering
 `NOT_SUPPORTED`:
@@ -1415,10 +1438,11 @@ Added in their place, each naming the object it acts on: `SYS_TCB_FAULT_INFO`
 `SYS_VSPACE_MAP_TABLE` (122) from Stages 5 and 6-pure.  `KPROCESS_MAX_LIVE`
 retired in Step 3 and the global thread identifier in Step 7.
 
-One smaller item remains and is NOT Stage 7 work:
+One smaller item was recorded here as NOT Stage 7 work:
 
 - **The VMO-count quota** retires with the `KVMO` object (memory server), per
-  the ledger.
+  the ledger.  ✅ Done in Stage 7-mem: it went with the owner relation, and a
+  VMO's accounting is the Untyped it was carved from.
 
 ## Stage 7-mem — the memory server  ✅ CLOSED
 
@@ -1532,11 +1556,14 @@ none of them is a rewrite, which is why they are grouped rather than staged
 separately.
 
 - **A9 / D-6 — LEGACY_ROOTs to zero.**  ✅ **The defect class is CLOSED.**
-  T305 measured 43 live roots of 329 MDB nodes; the fault-delivery class is
-  fixed and it is 39.  What remains is two legitimate classes: the boot path
-  (permanent — seL4's BootInfo capabilities are roots too) and KVmo publishes,
-  which disappear with Stage 7-mem.  Nothing is left for this stage to do on
-  D-6 except confirm the count after 7-mem lands.
+  T305 measures 43 live roots of 335 MDB nodes at Stage 7 close, and the
+  fault-delivery class — the one that was a defect — is fixed.  What remains is
+  two legitimate classes: the boot path (permanent — seL4's BootInfo
+  capabilities are roots too) and KVmo publishes, which disappear with the
+  memory server.  The absolute count moves with what is alive; T305 asserts on
+  the delta across a spawn/kill and a mint/revoke cycle, which is the shape a
+  new productive producer would have.  Nothing is left for this stage to do on
+  D-6.
 - **D-4 — a per-thread IPC buffer.**  Its trigger (frames from Untyped) fired
   at Stage 6 and nobody acted on it.  Today every TCB carries 256 B of kernel
   staging (`task.ipc_kbuf`) the user did not choose and did not pay for.  With

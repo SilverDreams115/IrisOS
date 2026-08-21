@@ -1,6 +1,15 @@
 # KChannel Migration Guide
 
-KChannel is the legacy IPC mechanism in IRIS (ring buffer, 128 msgs × 84 bytes). This document tracks the migration to KEndpoint and documents the debt classification for each KChannel user.
+> **Historical.**  The migration finished: **KChannel was removed in Phase
+> 13.**  `KOBJ_CHANNEL` is a reserved enumerator, every `SYS_CHAN_*` number
+> answers `IRIS_ERR_NOT_SUPPORTED`, and no service holds one.  Two further
+> renamings happened after this document was written: the per-process exit
+> watch it describes became `SYS_TCB_WATCH` on the child's first thread
+> (Stage 7 Step 10), and `SYS_PROCESS_EXIT_CODE` became `SYS_TCB_EXIT_CODE`.
+> Kept as the record of how each user was moved off, and of the debt
+> classification that made the removal orderly.
+
+KChannel was the legacy IPC mechanism in IRIS (ring buffer, 128 msgs × 84 bytes). This document tracks the migration to KEndpoint and documents the debt classification for each KChannel user.
 
 ## Current inventory (as of Phase 8)
 

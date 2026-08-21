@@ -10,17 +10,15 @@ and the retirement of the svcmgr legacy loop.
 
 - A **badge** is per-capability metadata, not a property of the endpoint:
   two caps to the same endpoint can carry different badges.
-- **Where it lives**: in the CNode slot (`KCSlot.badge`, 64-bit storage)
-  for CPtr-namespace caps, and in a parallel `uint32_t badge[slot]` array
-  inside `HandleTable` for handle-namespace caps (kept out of
-  `HandleEntry` so `sizeof(KProcess)` stays within the largest kslab
-  class). The effective badge space is **32 bits** — it must fit the
-  `SYS_PROC_CSPACE_MINT` arg3 packing.
+- **Where it lives**: in the CNode slot (`KCSlot.badge`, 64-bit storage).
+  There is nowhere else — the handle table that held a parallel badge array
+  was deleted in Stage 4.  The effective badge space is **32 bits**, because
+  it must fit the `rights | badge << 32` packing of the mint argument.
 - **Badge 0 = unbadged** (masters, legacy caps). Servers treat it as
   "unidentified legacy client".
 - **Rights and badge are orthogonal**: rights gate what an invocation may
   do; the badge says which cap was used. `ACCESS_DENIED` remains a hard
-  stop on both namespaces, badge or no badge.
+  stop, badge or no badge.
 
 ## Delivery (anti-spoofing)
 
@@ -41,8 +39,10 @@ field (offsets of all prior fields unchanged — asm consumers verified by
 
 ## Minting and derivation rules
 
-`SYS_PROC_CSPACE_MINT(proc, slot, src, arg3)` packs arg3 as
-`rights | badge << 32`:
+`SYS_CSPACE_MINT(src, dest_slot, arg2, dest_cnode)` packs arg2 as
+`rights | badge << 32` (until Stage 7 Step 9 this was
+`SYS_PROC_CSPACE_MINT(proc, slot, src, arg3)`, which named the process owning
+the destination CSpace instead of the CNode itself):
 
 | Case | Result |
 |---|---|
@@ -116,4 +116,6 @@ Phase 10 consumes these badges as **policy** (see
 [service-lifecycle.md](service-lifecycle.md)): `iris_badge_is_supervisor()`
 gates `.ep` lookup DUPLICATE grants and the privileged RESTART op; EP REGISTER
 binds an `owner_badge`; UNREGISTER checks it; and the STATUS/generation oracle
-plus real `SYS_PROCESS_KILL`-driven respawn give death detection and relookup.
+plus respawn driven by a real kill — `SYS_TCB_EXIT` on the child's first
+thread since Stage 7, `SYS_PROCESS_KILL` when Phase 10 was written — give
+death detection and relookup.

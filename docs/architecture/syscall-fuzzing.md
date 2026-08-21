@@ -137,7 +137,8 @@ excludes it (it would fire on HWM inherited from the fault-stress tests).
 A fuzzer child that faults on purpose (invalid-VA/RO-write/NX/kernel-range) is
 handled through the Phase 20 fault-endpoint model: a handler notification is
 registered on the child, the fault is delivered and read, and the child is
-resolved by `SYS_EXCEPTION_RESUME` (kill) or `SYS_PROCESS_KILL`.  The fault is
+resolved by `SYS_EXCEPTION_RESUME` (kill) or, since Stage 7, `SYS_TCB_EXIT` on
+the thread itself.  The fault is
 therefore an observable, cleanable authority event, never a silent process
 death that would strand the suite — X17.  A child fuzzing a hostile *pointer*
 (T150) never faults at all: the kernel validates every user range by

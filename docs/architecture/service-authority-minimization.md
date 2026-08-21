@@ -1,5 +1,14 @@
 # Phase 22 — Service authority minimization
 
+> **Naming note (Stage 7).**  `KProcess` is deleted and the process-shaped
+> syscalls are retired.  Where this document says a supervisor or a pager holds
+> a **process** capability, read: it holds the child's **first thread**
+> (`SYS_TCB_WATCH` / `SYS_TCB_EXIT` / `SYS_TCB_EXIT_CODE` /
+> `SYS_TCB_GET_INFO` / `SYS_TCB_FAULT_INFO` / `SYS_TCB_SET_FAULT_HANDLER`) and,
+> when it maps into the child, that child's **address space**.  The policy and
+> the invariants below are unchanged; the object they name is.  See the
+> [convergence roadmap](sel4-convergence-roadmap.md)'s Stage 7.
+
 Status: ACCEPTED — implemented in this phase.  Companion to
 `syscall-fuzzing.md` (Phase 21), `fault-endpoint-model.md` (Phase 20) and the
 earlier subsystem-hardening docs.  Phase 21 proved the kernel MECHANISM fails

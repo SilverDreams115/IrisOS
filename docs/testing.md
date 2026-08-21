@@ -5,14 +5,19 @@ This document defines the minimum testing baseline that IRIS must keep green on 
 ## Current test layers
 
 IRIS currently has four practical validation layers, and the numbers below are
-what a green tree looks like today (Stage 6 closed):
+what a green tree looks like today (Stage 7 closed — `KProcess` deleted):
 
 | Layer | Command | Green means |
 |---|---|---|
-| Host unit tests | `make test-unit` | 18685 assertions, 0 failed |
-| Purity gate | `make check-purity` | allowlist respected (it only ever shrinks) |
-| Runtime suite | `make smoke-runtime` | `SUITE PASS 276/276` |
-| Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 276/276` plus the P3/P41 markers |
+| Host unit tests | `make test-unit` | 18738 assertions across 20 suites, 0 failed |
+| Purity gate | `make check-purity` | allowlist respected (14 files, 17 permitted `kslab_alloc` occurrences; it only ever shrinks) |
+| Runtime suite | `make smoke-runtime` | healthy boot signature |
+| Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 273/273` plus the P3/P41 markers |
+
+The suite count moves when a stage retires the mechanism a test was about.
+Stage 7 took it from 276 to 273: T144 and T184 lost their "a process capability
+is not a thread" checks because a spawn hands back a thread, and the tests that
+asked a process for its liveness now ask the execution.
 
 The runtime suite is the gate that matters for capability behaviour: it runs in
 ring 3 as a real service and observes the kernel only through syscalls.
@@ -41,7 +46,7 @@ The three original layers:
      - `make clean`
      - `make ENABLE_RUNTIME_SELFTESTS=1`
       - `make run`
-   - This is the layer that exercises boot, userland bring-up, IRQ delivery, bootstrap handle flow, and service health end-to-end.
+   - This is the layer that exercises boot, userland bring-up, IRQ delivery, the bootstrap capability flow, and service health end-to-end.
    - Healthy-path serial signature now includes:
      - `[IRIS][BOOT] handoff: kernel -> svcmgr/init`
      - `[SVCMGR] ready`
@@ -71,13 +76,13 @@ The interactive `make run` path remains local and developer-oriented.
 
 ## Minimum expectations for contributors
 
-For changes that touch build files, boot, kernel, services, handle rights, IRQ routing, initrd contents, or protocol headers:
+For changes that touch build files, boot, kernel, services, capability rights, IRQ routing, initrd contents, or protocol headers:
 
 - run `make smoke`
 - run `make run` locally if the change can affect boot/runtime behavior
 - prefer `make smoke-runtime` when you need a reproducible headless runtime check
 
-For changes that specifically touch lifecycle, diagnostics, IPC, handle transfer, or service bootstrap:
+For changes that specifically touch lifecycle, diagnostics, IPC, capability transfer, or service bootstrap:
 
 - prefer the selftest-enabled path:
   - `make clean`
@@ -123,11 +128,17 @@ names itself rather than showing up as a boot hang:
 | T301 | Stage 6: a REFUSED spawn leaves its budget untouched — no stranded children, still RESET-able, swept across the boundary in sub-page steps |
 | T302 | Stage 6-pure: a page table is a capability — retyped by the holder, installed one level per invocation, refused at a kernel address, and the walk it builds really maps |
 | T303 | Stage 7: a running thread outlives every capability to it — the execution reference a retyped TCB never took |
-| T304 | Stage 7: the live-process ceiling is gone — more than 64 processes out of one budget, a clean error when that budget ends, and a RESET afterwards that proves nothing leaked |
-| T305 | Charter A9: every capability is traceable to an ancestor — reads `mdb_legacy_roots`, the gauge the ABI calls "must → 0", and pins it against growth across a spawn/kill and a mint/revoke cycle.  Reports the inventory (43 roots of 329 MDB nodes today) so the number is visible rather than assumed |
+| T304 | Stage 7: the live-process ceiling is gone — more than 64 children out of one budget, a clean error when that budget ends, and a RESET afterwards that proves nothing leaked |
+| T187, T188, T196, T210 (re-derived) | Stage 7-proc: an address space outlives its threads while a capability to it lives, so a late map into a dead target's space SUCCEEDS — seL4's shape, where a page directory outlives its threads.  What the tests were always about (the books return to baseline once the capability is dropped) still holds |
+| T239–T250 (re-derived) | Stage 7-mem: budget accounting and reclamation drift, read off `SYS_UNTYPED_QUERY` after `SYS_RESOURCE_INFO` retired with the per-process resource domain |
+| T305 | Charter A9: every capability is traceable to an ancestor — reads `mdb_legacy_roots`, the gauge the ABI calls "must → 0", and pins it against growth across a spawn/kill and a mint/revoke cycle.  Reports the inventory (43 roots of 335 MDB nodes, max depth 6, at Stage 7 close) so the number is visible rather than assumed; the absolute count moves with what is alive, so the assertion is on the DELTA across the cycle |
 | T140–T147, T181–T238 (re-derived) | Stage 7: a fault is answered by naming the faulting THREAD's capability, delivered into a mailbox the registrant declared.  The suite's own targets deliver to the suite; a target handed to a pager is re-aimed to a CNode shared with it; a victim is never re-aimed, which is what makes a cross-target attempt fail for want of a capability rather than by a rejected id.  The pager manifests lost bit 20: it holds no process capability for any target it serves |
 | PT-1..PT-11 (host) | Stage 6-pure: the paging walk driven exhaustively — level order, spent-vs-complete, kernel-address refusal, dead VSpace, teardown returning every level, the bootstrap exception being one-way, a reused level entering the walk empty, teardown detaching exactly the holder's levels, and a failed composition giving its bind claim back |
 
 Host unit tests cover what a successful boot cannot show: `RBI-1..RBI-10` (the
-BootInfo builder's bounds), `UT-TOP-1..5` (the two-ended Untyped carve),
-`BC-11..BC-13` (a CSpace that names itself, with a negative control).
+BootInfo builder's bounds), `UT-TOP-1..5` (the two-ended Untyped carve), and
+`BC-11..BC-13` (a CSpace that names itself).  `BC-13` changed meaning in
+Stage 7-proc and is worth reading for it: a slot naming its own CNode now takes
+no ACTIVE reference — an object reachable only from itself is reachable by
+nobody — so the case that used to be the negative control ("without the
+explicit teardown the object is NOT freed") is now the positive one.

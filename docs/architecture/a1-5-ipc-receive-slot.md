@@ -1,5 +1,14 @@
 # A1.5 IPC receive-slot design
 
+> **Historical (the A1 arc).**  A1 was about making a dual CPtr/handle
+> namespace behave; **Stage 4 ended the arc by DELETING the handle table.**
+> There is one authority namespace — a syscall argument is a CPtr or it is
+> `INVALID_ARG` — so every "dual resolver", "handle-only" and "still a handle"
+> statement below describes a state that no longer exists.  Several objects it
+> names are gone too: `KChannel` (Phase 13) and `KProcess` (Stage 7-proc).
+> Kept because the resolution matrix and the working-set analysis are what made
+> the deletion safe to attempt.
+
 Status: ACCEPTED — implemented in this phase.  Companion to
 `a1-authority-namespace-endgame.md`: after A1 made every persistent object
 CSpace-invocable, IPC cap *delivery* was the largest remaining producer of

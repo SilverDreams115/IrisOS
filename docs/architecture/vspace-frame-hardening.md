@@ -31,9 +31,14 @@ struct KFrameMapping { KFrame *frame; uint64_t user_va; KFrameMapping *next; }
 
 Ownership:
 
-- `KProcess` holds one lifecycle ref on its `KVSpace`; each CSpace slot that
-  names it holds lifecycle + active refs.
-- Page tables are owned by `KProcess`; `KVSpace` never frees them.
+- each **thread** configured with a `KVSpace` holds lifecycle + active refs on
+  it, and so does each CSpace slot that names it.  (When this was written the
+  refs came from a `KProcess`; that object is deleted — Stage 7-proc — and the
+  thread taking the ACTIVE ref, not just the lifecycle one, was one of the
+  three bugs that had to be fixed to delete it: without it, a spawner dropping
+  its own capability invalidated the space its child was about to run in.)
+- Page tables are retyped and installed by the holder (Stage 6-pure); the
+  `KVSpace` returns its levels at teardown.
 - The mapping list is dynamically allocated (no fixed ceiling), so runtime frame
   maps and bootstrap maps coexist.
 

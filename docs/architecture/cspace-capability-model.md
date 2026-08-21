@@ -39,7 +39,7 @@ CDT phase (see the ledger and `cspace-cdt-mdb.md`).
 1. A new object type must be CSpace-invocable from day one (a dual resolver,
    never `handle_table_get_object` directly).
 2. Adding handle-first productive paths for canonical objects is forbidden
-   (ledger: handle table FROZEN for new producers).
+   (the handle table is DELETED since Stage 4 — there are no producers).
 3. Adding dual resolution to new operations is forbidden: S1+ operations
    (e.g. the RETYPE2 destination) accept a cptr-or-handle only through the
    already-existing sanctioned bridge; the final destination is CSpace-only.

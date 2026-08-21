@@ -1,5 +1,14 @@
 # Phase 28 Bloque B — File-backed memory (architecture + implementation)
 
+> **Naming note (Stage 7).**  `KProcess` is deleted and the process-shaped
+> syscalls are retired.  Where this document says a supervisor or a pager holds
+> a **process** capability, read: it holds the child's **first thread**
+> (`SYS_TCB_WATCH` / `SYS_TCB_EXIT` / `SYS_TCB_EXIT_CODE` /
+> `SYS_TCB_GET_INFO` / `SYS_TCB_FAULT_INFO` / `SYS_TCB_SET_FAULT_HANDLER`) and,
+> when it maps into the child, that child's **address space**.  The policy and
+> the invariants below are unchanged; the object they name is.  See the
+> [convergence roadmap](sel4-convergence-roadmap.md)'s Stage 7.
+
 Status: **IMPLEMENTED and tested end to end** (runtime T217–T230, all green in
 the 226/226 suite).  Bloque A (boot-growth hardening) unblocked this work; Bloque
 B is the complete file-backed memory subsystem — identity + generations, bounded

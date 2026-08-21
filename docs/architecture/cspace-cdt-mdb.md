@@ -28,7 +28,8 @@ Stage 1 of the [roadmap](sel4-convergence-roadmap.md).
    (copy/mint/retype with a slot source) ALWAYS have a parent.
 6. **Descendant** = reachable from a node by walking down `first_child/
    next_sib`. The relationship crosses CNodes and processes: the links are
-   slot pointers; the owning KProcess is irrelevant.
+   slot pointers; who holds the CSpace is irrelevant (and since Stage 7-proc
+   there is no process object to hold one).
 7. **Copy** = derive with `RIGHT_SAME_RIGHTS`: a new slot with the same
    object, the same effective rights and an inherited badge; an MDB child of
    the source.

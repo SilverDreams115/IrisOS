@@ -75,7 +75,8 @@ Two derivation mechanisms exist, in two namespaces:
 1. **Handle-table derivation** — `SYS_CAP_DERIVE(src_h, new_rights)` requires
    `RIGHT_DUPLICATE` on the source, reduces rights via `rights_reduce` (never
    amplifies — U7), and records `derivation_parent = src_h` on the new slot.
-2. **CSpace CNode mint** — `SYS_CNODE_MINT` / `SYS_PROC_CSPACE_MINT` install a
+2. **CSpace CNode mint** — `SYS_CSPACE_MINT` (then `SYS_CNODE_MINT` /
+   `SYS_PROC_CSPACE_MINT`, both since retired) installs a
    cap into a CNode slot with its own independent object references, again
    rights-reduced. CNode slots are **not** part of the handle-derivation tree.
 

@@ -1,5 +1,15 @@
 # CPtr-first services (Phase 8)
 
+> **Historical (Phase 8).**  This document describes the transition, when CPtrs
+> and handle IDs shared one argument namespace.  **That transition is over**:
+> Stage 4 DELETED the handle table, so a syscall argument is a CPtr or it is
+> `INVALID_ARG` — there is no second namespace, no dual resolver, and nothing
+> that is "still handle-only".  A CPtr is walked radix-by-radix through the
+> CNode tree and addresses exactly one capability, and receive slots are full
+> CPtrs too.  Read the README's *CPtr-first addressing* section for what is
+> true today; read this for how the slot layout and the per-service bootstrap
+> flow came to be.
+
 Phase 8 moves the service ecosystem from "bootstrap bag of KChannel-delivered
 handles" to **well-known CSpace slots minted by the spawner before the child
 runs**. This document is the operational guide: slot layout, bootstrap flow
@@ -76,17 +86,19 @@ SERVICE_EP, `0x22` CONSOLE_EP, `0x23` IRQ_NOTIFY.
 
 ## The remaining handle boundary
 
-Cap kinds that cannot live in CSpace slots because the dual resolver only
-covers IPC objects (endpoint/reply/notification), CNode, Untyped and Frame:
+Cap kinds that could not live in CSpace slots **at Phase 8**, because the dual
+resolver then covered only IPC objects (endpoint/reply/notification), CNode,
+Untyped and Frame:
 
 - **KChannel** (legacy IPC, svcmgr legacy loop and console legacy writer);
 - **KIoPort / KIrqCap** (device authority: console, kbd);
 - **KBootstrapCap** (initrd/spawn authority: vfs, init, iris_test);
 - **KProcess** (spawner-side authority).
 
-Services needing those keep a (shrunken) bootstrap one-shot. Extending the
-resolver to more types is future work (slot 6 is reserved for the initrd
-cap when that happens).
+All four entries are closed.  KChannel was removed in Phase 13; device and
+bootstrap capabilities resolve through CSpace and are published there as MDB
+children of the slot that authorised them; and `KProcess` does not exist —
+a spawner holds its child's TCB, CNode and VSpace, which it retyped itself.
 
 ## Runtime verification
 
@@ -110,7 +122,8 @@ the dual-resolution model to **device/authority caps** — `KIoPort`, `KIrqCap`,
 contract are preserved (wrong-type CPtr → `ACCESS_DENIED`). This is the
 prerequisite that lets device caps be pre-minted into a child's CSpace instead
 of delivered over a KChannel — unblocking full KChannel retirement.
-Runtime proof: **T069**. Still handle-only: `KChannel`, `KProcess`.
+Runtime proof: **T069**.  (At the time, `KChannel` and `KProcess` were still
+handle-only; both objects are gone.)
 
 (Historical: the handle namespace is gone since Stage 4, and Stage 5 split the
 single `KBootstrapCap` into one capability per authority — `SYS_BOOTCAP_RESTRICT`

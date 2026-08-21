@@ -145,9 +145,12 @@ and a handle like 1027 could alias slot 3 — found and fixed in Phase 8;
 regression-tested in `test_ipc_cspace.c`.)
 
 A spawner mints caps directly into a child's root CNode with
-`SYS_PROC_CSPACE_MINT` (syscall 104, exclusive: occupied slot →
-`ALREADY_EXISTS`), normally **pre-start** via `svc_load_minted` so the child
-sees its slots from its first instruction. The child invokes them by CPtr —
+`SYS_CSPACE_MINT`, naming that CNode as the destination — it holds it because
+it retyped it (exclusive: occupied slot → `ALREADY_EXISTS`).  Minting happens
+**pre-start** via `svc_load_minted` so the child sees its slots from its first
+instruction.  (`SYS_PROC_CSPACE_MINT`, syscall 104, did this by naming the
+PROCESS that owned the CSpace, and is retired: it let a spawner reach a
+namespace it did not hold by naming something that pointed at it.) The child invokes them by CPtr —
 e.g. `SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)` — with no KChannel handle
 transfer. See `docs/cptr-first-services.md` for the slot map, per-service
 bootstrap flows and runtime coverage (T039–T046).

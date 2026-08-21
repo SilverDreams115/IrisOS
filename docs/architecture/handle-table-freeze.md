@@ -1,6 +1,14 @@
 # Handle-table freeze (A1.7)
 
-Status: ACTIVE POLICY.  Closes the A1 arc (A1 dual resolution → A1.5
+> **Historical (A1.7).**  The freeze worked: **Stage 4 DELETED the handle
+> table.**  `HandleTable`, the per-process table that held it, `handle_table.c`
+> and its tests are gone, and twelve syscalls answer `NOT_SUPPORTED` with their
+> numbers reserved (15, 22, 43, 46, 52, 53, 59, 81, 87, 89, 90, 95).  There is
+> one authority namespace: a syscall argument is a CPtr or it is `INVALID_ARG`.
+> The inventory below is the measurement that made the deletion arguable, not a
+> description of anything that exists.
+
+Status: HISTORICAL — the policy it froze ended in deletion (Stage 4).  Closes the A1 arc (A1 dual resolution → A1.5
 receive-slot → A1.6 service adoption → this freeze): the handle table is
 now a **measured, bounded, frozen ephemeral layer**, not a second
 authority namespace.  Companion docs:

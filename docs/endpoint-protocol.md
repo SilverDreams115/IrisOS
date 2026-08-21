@@ -149,20 +149,28 @@ msg.words[0] = service_id (uint32_t)
 ## Well-known CPtr slots (Phase 8)
 
 CPtr-first bootstrap handoff: the spawner mints capabilities directly into
-the child's root CNode with `SYS_PROC_CSPACE_MINT(proc_h, slot, src_h,
-rights)` (syscall 104; needs `RIGHT_WRITE` on the child process cap and
-`RIGHT_DUPLICATE` on the source cap; rights can only be reduced; an occupied
-destination slot fails `ALREADY_EXISTS`). Minting happens **pre-start**
-(`svc_load_minted`, between process creation and `SYS_THREAD_START`), so the
-child sees its slots populated from its first instruction — no bootstrap
-barrier, no races. The child invokes the cap **by CPtr** — e.g.
-`SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)` — with no KChannel handle transfer.
+the child's root CNode with `SYS_CSPACE_MINT(src, dest_slot, rights|badge<<32,
+dest_cnode)`, where `dest_cnode` is the child's root CNode — the spawner holds
+it because it retyped it (Stage 6-pure).  It needs `RIGHT_DUPLICATE` on the
+source cap, rights can only be reduced, and an occupied destination slot fails
+`ALREADY_EXISTS`.  Minting happens **pre-start** — after the child's objects
+are retyped and before `SYS_TCB_RESUME` — so the child sees its slots populated
+from its first instruction: no bootstrap barrier, no races.  The child invokes
+the cap **by CPtr** — e.g. `SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)`.
 
-CPtrs and handle_ids share one argument namespace; since Phase 8 the dual
-resolvers **enforce** it: values < 1024 resolve through the CSpace only
+(Until Stage 7 Step 9 this was `SYS_PROC_CSPACE_MINT(proc_h, slot, src_h,
+rights)`, syscall 104, which named the PROCESS owning the destination CSpace.
+It is retired: naming a process to reach a namespace you were never handed was
+the last place a process capability granted access to an object its holder did
+not hold.)
+
+There is ONE argument namespace.  Stage 4 deleted the handle table, so a
+syscall argument is a CPtr or it is `INVALID_ARG`.  Historically CPtrs and
+handle_ids shared the namespace and, since Phase 8, the dual
+resolvers **enforced** the split: values < 1024 resolved through the CSpace only
 (missing slot fails cleanly, `ACCESS_DENIED` is a hard stop, no
 handle-table fallback) and values ≥ 1024 (`slot | generation << 10`,
-generation ≥ 1) resolve through the handle table only — they never walk the
+generation ≥ 1) resolved through the handle table only — they never walked the
 CSpace, so populated low slots cannot be aliased by handle bit patterns.
 
 Full slot layout, per-service bootstrap flows and the remaining handle

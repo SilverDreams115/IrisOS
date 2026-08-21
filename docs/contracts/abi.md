@@ -31,7 +31,10 @@ memory they allocate is carved from.
 | `SYS_INITRD_VMO` | arg3 | no (0 = own budget) | the private copy of the boot image |
 
 `SYS_PROCESS_CREATE` used to be a third, and is not any more: Stage 6-pure made
-the caller RETYPE what it used to buy.  It takes the objects themselves.
+the caller RETYPE what it used to buy, and Stage 7-proc retired the syscall
+outright.  Everything else that allocates — a TCB, a CNode, a VSpace, a page
+table — comes through `SYS_UNTYPED_RETYPE2`, which names its budget by
+construction.
 
 ## Composed objects (Stage 6-pure)
 
@@ -40,9 +43,8 @@ holder retypes each from its own Untyped and passes it in.
 
 | Syscall | Arguments | What the caller supplies |
 |---|---|---|
-| `SYS_PROCESS_CREATE` | arg2, arg3 | an `IRIS_KOBJ_VSPACE` and an `IRIS_KOBJ_CNODE` it retyped; both bind exclusively (`IRIS_ERR_BUSY` if already bound) |
+| `SYS_TCB_CONFIGURE` (120) | tcb, cspace, vspace | the CSpace root and the address space the thread runs in, both retyped by the caller.  This is `seL4_TCB_Configure`: since Stage 7-proc there is no identity check against a third object, and threads sharing a CSpace and a VSpace is what a "process" IS |
 | `SYS_VSPACE_MAP_TABLE` (122) | pt, vspace, vaddr | an `IRIS_KOBJ_PAGE_TABLE` to fill the first level missing for `vaddr` |
-| `SYS_TCB_CONFIGURE` (120) | tcb, cspace, vspace, proc | the CSpace and VSpace the thread runs in; arg3 names the process (0 = the caller's own) |
 
 A map whose walk is incomplete answers `IRIS_ERR_MISSING_TABLE` and names
 nothing else — the holder supplies the level and retries.  A task that maps
@@ -69,119 +71,63 @@ Kernel implementation note:
 
 ## Surface Summary
 
-Current exported syscall number surface: `0..67`.
+Exported syscall number surface: **`0..126`** — 127 numbers, of which **68 are
+live**, 56 are named in `syscall.h` and retired, and `9`–`11` were never
+assigned.
 
 Classification used here:
 
-- live/conforming: current supported surface on the v1 error model
-- live/transitional: current supported surface with compatibility notes
-- retired: permanently reserved and returns `IRIS_ERR_NOT_SUPPORTED`
+- **live**: dispatched to a real implementation
+- **retired**: permanently reserved; the dispatcher either has no case or the
+  implementation is a stub, and either way the caller gets
+  `IRIS_ERR_NOT_SUPPORTED`.  **A retired number is never reused.**
 
-## Retired Numbers
-
-The following syscall numbers remain reserved for ABI continuity and are intentionally retired:
-
-- `0` `SYS_WRITE`
-- `4` `SYS_OPEN`
-- `5` `SYS_READ`
-- `6` `SYS_CLOSE`
-- `7` `SYS_BRK`
-- `18` `SYS_SPAWN`
-- `24` `SYS_NS_REGISTER`
-- `25` `SYS_NS_LOOKUP`
-- `30` `SYS_DIAG_SNAPSHOT` (retired Phase 51)
-- `31` `SYS_SPAWN_SERVICE`
-- `41` `SYS_INITRD_LOOKUP`
-- `42` `SYS_SPAWN_ELF`
+The retirements are the convergence history in ABI form: the handle namespace
+(Stage 4), the fabricating creators superseded by `SYS_UNTYPED_RETYPE2`
+(Phases S1–S2), the KChannel family (Phase 13), the process surface (Stage 7),
+and the early Unix-shaped calls that predate the capability model.
 
 ## Live Surface By Area
 
-### Base task control
+### Core, time and futex
 
-- `1` `SYS_EXIT`
-- `2` `SYS_GETPID`
-- `3` `SYS_YIELD`
-- `8` `SYS_SLEEP`
-- `62` `SYS_CLOCK_GET`
+`1` `SYS_EXIT`, `2` `SYS_GETPID`, `3` `SYS_YIELD`, `8` `SYS_SLEEP`, `49` `SYS_THREAD_EXIT`, `50` `SYS_FUTEX_WAIT`, `51` `SYS_FUTEX_WAKE`, `62` `SYS_CLOCK_GET`, `70` `SYS_CLOCK_NANOSLEEP`
 
-### Channels and handle movement
+### Endpoint IPC
 
-- `12` `SYS_CHAN_CREATE`
-- `13` `SYS_CHAN_SEND`
-- `14` `SYS_CHAN_RECV`
-- `15` `SYS_HANDLE_CLOSE`
-- `22` `SYS_HANDLE_DUP`
-- `23` `SYS_HANDLE_TRANSFER`
-- `34` `SYS_CHAN_RECV_NB`
-- `37` `SYS_CHAN_SEAL`
-- `38` `SYS_CHAN_CALL`
-- `44` `SYS_WAIT_ANY`
-- `52` `SYS_HANDLE_TYPE`
-- `53` `SYS_HANDLE_SAME_OBJECT`
-- `63` `SYS_CHAN_RECV_TIMEOUT`
+`74` `SYS_EP_SEND`, `75` `SYS_EP_RECV`, `76` `SYS_EP_NB_SEND`, `77` `SYS_EP_NB_RECV`, `93` `SYS_EP_CALL`, `94` `SYS_REPLY`
 
-### Memory objects and address-space operations
+### Notifications and faults
 
-- `16` `SYS_VMO_CREATE`
-- `17` `SYS_VMO_MAP`
-- `36` `SYS_VMO_UNMAP`
-- `46` `SYS_VMO_SHARE`
-- `55` `SYS_INITRD_VMO`
-- `57` `SYS_VMO_MAP_INTO`
-- `60` `SYS_FRAMEBUFFER_VMO`
-- `61` `SYS_INITRD_COUNT`
-- `67` `SYS_VMO_SIZE`
+`20` `SYS_NOTIFY_SIGNAL`, `21` `SYS_NOTIFY_WAIT`, `64` `SYS_NOTIFY_WAIT_TIMEOUT`, `66` `SYS_EXCEPTION_RESUME`
 
-### Notifications and futexes
+### Capabilities and CSpace
 
-- `19` `SYS_NOTIFY_CREATE`
-- `20` `SYS_NOTIFY_SIGNAL`
-- `21` `SYS_NOTIFY_WAIT`
-- `50` `SYS_FUTEX_WAIT`
-- `51` `SYS_FUTEX_WAKE`
-- `64` `SYS_NOTIFY_WAIT_TIMEOUT`
+`91` `SYS_CNODE_DELETE`, `92` `SYS_CNODE_SWAP`, `114` `SYS_CSPACE_MINT`, `115` `SYS_CSPACE_REVOKE`, `117` `SYS_CAP_IDENTIFY`, `118` `SYS_CAP_SAME_OBJECT`, `119` `SYS_CSPACE_SELF`
 
-### Process, threads, and lifecycle
+### Untyped, memory and address spaces
 
-- `26` `SYS_PROCESS_STATUS`
-- `27` `SYS_IRQ_ROUTE_REGISTER`
-- `28` `SYS_PROCESS_SELF`
-- `29` `SYS_PROCESS_WATCH`
-- `35` `SYS_PROCESS_KILL`
-- `47` `SYS_EXCEPTION_HANDLER`
-- `48` `SYS_THREAD_CREATE` — RETIRED (Stage 5), number reserved
-- `49` `SYS_THREAD_EXIT`
-- `56` `SYS_PROCESS_CREATE`
-- `58` `SYS_THREAD_START` — RETIRED (Stage 7), number reserved
-- `59` `SYS_HANDLE_INSERT`
-- `66` `SYS_EXCEPTION_RESUME`
+`16` `SYS_VMO_CREATE`, `17` `SYS_VMO_MAP`, `36` `SYS_VMO_UNMAP`, `55` `SYS_INITRD_VMO`, `57` `SYS_VMO_MAP_INTO`, `67` `SYS_VMO_SIZE`, `86` `SYS_UNTYPED_INFO`, `88` `SYS_UNTYPED_RESET`, `102` `SYS_FRAME_MAP`, `103` `SYS_FRAME_UNMAP`, `106` `SYS_VSPACE_SELF`, `108` `SYS_VMO_MAP_PAGE`, `111` `SYS_UNTYPED_RETYPE2`, `112` `SYS_UNTYPED_QUERY`, `122` `SYS_VSPACE_MAP_TABLE`
 
-### Capability-space and execution (Stages 4-5)
+### Threads (the whole of what a process used to be)
 
-- `114` `SYS_CSPACE_MINT`
-- `115` `SYS_CSPACE_REVOKE`
-- `116` `SYS_CSPACE_MINT_INTO`
-- `117` `SYS_CAP_IDENTIFY`
-- `118` `SYS_CAP_SAME_OBJECT`
-- `119` `SYS_CSPACE_SELF` — a capability to the caller's own root CNode
-- `120` `SYS_TCB_CONFIGURE` — CSpace + VSpace, as capabilities
-- `121` `SYS_TCB_WRITE_REGS` — where a configured thread starts
+`82` `SYS_THREAD_PRIORITY`, `85` `SYS_THREAD_SET_SC`, `96` `SYS_TCB_SELF`, `97` `SYS_TCB_SUSPEND`, `98` `SYS_TCB_RESUME`, `99` `SYS_TCB_SET_PRIORITY`, `100` `SYS_TCB_EXIT`, `101` `SYS_TCB_GET_INFO`, `120` `SYS_TCB_CONFIGURE`, `121` `SYS_TCB_WRITE_REGS`, `123` `SYS_TCB_FAULT_INFO`, `124` `SYS_TCB_WATCH`, `125` `SYS_TCB_EXIT_CODE`, `126` `SYS_TCB_SET_FAULT_HANDLER`
 
-The first unassigned number is `122`.
+### Scheduling
 
-### Bootstrap and hardware capabilities
+`69` `SYS_SCHED_INFO`, `84` `SYS_SC_CONFIGURE`, `113` `SYS_SC_BIND`
 
-- `32` `SYS_IOPORT_IN`
-- `33` `SYS_IOPORT_OUT`
-- `39` `SYS_CAP_CREATE_IRQCAP`
-- `40` `SYS_CAP_CREATE_IOPORT`
-- `43` `SYS_IOPORT_RESTRICT`
-- `45` `SYS_BOOTCAP_RESTRICT` — RETIRED (Stage 5), number reserved
-- `54` `SYS_POWEROFF`
+### Hardware and bootstrap (capability-gated)
 
-### Diagnostics
+`27` `SYS_IRQ_ROUTE_REGISTER`, `32` `SYS_IOPORT_IN`, `33` `SYS_IOPORT_OUT`, `39` `SYS_CAP_CREATE_IRQCAP`, `40` `SYS_CAP_CREATE_IOPORT`, `54` `SYS_POWEROFF`, `60` `SYS_FRAMEBUFFER_VMO`, `61` `SYS_INITRD_COUNT`, `65` `SYS_KLOG_DRAIN`, `68` `SYS_IRQ_ACK`
 
-- `65` `SYS_KLOG_DRAIN`
+### Retired numbers
+
+Never reused, always `IRIS_ERR_NOT_SUPPORTED`:
+
+`0`, `4`, `5`, `6`, `7`, `12`, `13`, `14`, `15`, `18`, `19`, `22`, `23`, `24`, `25`, `26`, `28`, `29`, `30`, `31`, `34`, `35`, `37`, `38`, `41`, `42`, `43`, `44`, `45`, `46`, `47`, `48`, `52`, `53`, `56`, `58`, `59`, `63`, `71`, `72`, `73`, `78`, `79`, `80`, `81`, `83`, `87`, `89`, `90`, `95`, `104`, `105`, `107`, `109`, `110`, `116`
+
+`9`, `10` and `11` were never assigned.
 
 ## Current Architectural Reading
 
@@ -190,23 +136,27 @@ The live syscall surface reflects the current architecture:
 - file I/O is not a kernel syscall surface anymore
 - service discovery is not a kernel namespace syscall surface anymore
 - ELF loading is not a kernel spawn syscall surface anymore
-- process construction is exposed as composable primitives for ring-3 loaders
+- **process construction is not a syscall at all**: a ring-3 loader retypes a
+  VSpace, a root CNode and a TCB from a budget it holds, configures the thread
+  with the first two, writes its registers and resumes it
+- accounting is not a syscall about a process either — a budget answers for
+  itself (`SYS_UNTYPED_INFO` / `SYS_UNTYPED_QUERY`)
 - hardware access remains capability-gated
 
 ## Top Hardening-Risk Families
 
 These syscall families carry the highest near-term hardening risk and should be audited first:
 
-1. channel receive/send/call/timeout paths
-2. VMO map/unmap/map-into paths
-3. process/thread start and handle insertion paths
+1. endpoint send/recv/call/reply paths, including staged capability transfer
+2. VMO map/unmap/map-into/map-page paths
+3. retype, configure and resume — the thread-construction path
 4. notification wait and timed wait paths
-5. `SYS_KLOG_DRAIN` and other user-buffer write-back paths
+5. `SYS_KLOG_DRAIN`, `SYS_UNTYPED_QUERY` and other user-buffer write-back paths
 
 ## Canonical Sources
 
-- `kernel/include/iris/syscall.h`
-- `kernel/core/syscall/syscall.c`
+- `kernel/include/iris/syscall.h` (numbers, contracts and retirement notes)
+- `kernel/core/syscall/syscall_dispatch.c` (what is actually dispatched)
 - `kernel/include/iris/svcmgr_proto.h`
 - `kernel/include/iris/vfs_ep_proto.h` (replaced `vfs_proto.h`, removed in Phase 7.5)
 - `kernel/include/iris/kbd_proto.h` (legacy probes) + `kbd_ep_proto.h` (event ABI, Phase 7.4)

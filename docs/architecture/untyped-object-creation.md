@@ -132,7 +132,7 @@ identity already closes the stale path).
   SYS_SCHED_INFO ext3).
 
 Versioned structs (`version`, `struct_size`). No new resource-domain syscall
-was created and `SYS_RESOURCE_INFO` did not grow.
+was created and the accounting did not grow.  (The check read `SYS_RESOURCE_INFO`, retired in Stage 7-mem; it reads `SYS_UNTYPED_QUERY` now.)
 
 ## Bootstrap and delegation
 

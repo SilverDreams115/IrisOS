@@ -1,5 +1,17 @@
 # Phase 27 — Service pager integration
 
+> **Naming note (Stage 7).**  `KProcess` is deleted and the process-shaped
+> syscalls are retired.  Where this document says a supervisor or a pager holds
+> a **process** capability, read: it holds the child's **first thread**
+> (`SYS_TCB_WATCH` / `SYS_TCB_EXIT` / `SYS_TCB_EXIT_CODE` /
+> `SYS_TCB_GET_INFO` / `SYS_TCB_FAULT_INFO` / `SYS_TCB_SET_FAULT_HANDLER`) and,
+> when it maps into the child, that child's **address space**.  The policy and
+> the invariants below are unchanged; the object they name is.  See the
+> [convergence roadmap](sel4-convergence-roadmap.md)'s Stage 7.
+> **Stage 7 also narrowed the pager's manifest**: it holds no capability over
+> any target beyond the thread whose faults it resolves and that thread's
+> address space (the manifests lost the process-capability bit outright).
+
 Status: ACCEPTED — implemented in this phase.  Companion to
 `user-pager-vm-policy.md` (Phase 25), `memory-object-vmo-policy.md` (Phase 26),
 `service-supervision-model.md` (Phase 24) and `service-authority-minimization.md`

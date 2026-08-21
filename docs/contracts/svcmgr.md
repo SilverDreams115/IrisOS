@@ -12,7 +12,7 @@ Defines the current service-manager contract for discovery, runtime publication,
 - runtime service discovery for normal clients
 - first-cut dynamic runtime publication of extra service endpoints
 - service endpoint rights reduction for lookup replies
-- service lifecycle supervision through `SYS_PROCESS_WATCH`
+- service lifecycle supervision through `SYS_TCB_WATCH` on the child's first thread (`SYS_PROCESS_WATCH` retired with the process object, Stage 7)
 - bounded restart policy for autostart services
 - global aggregated diagnostics over kernel and service-local status surfaces
 

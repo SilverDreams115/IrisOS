@@ -43,23 +43,23 @@ composed in user space.
 | Current object | Final status | Canonical replacement | Migration phase | Reason |
 |---|---|---|---|---|
 | KUntyped | CANONICAL | — | S1 (done) | allocation substrate |
-| KCNode | CANONICAL | — | S1 (runtime creation done; root-CNode-at-spawn pending) | CSpace |
+| KCNode | CANONICAL | — | S1 + Stage 6-pure (a child's root CNode is retyped by its spawner; only the root task's comes from the slab) | CSpace |
 | KEndpoint | CANONICAL | — | S1 (done) | synchronous IPC |
 | KNotification | CANONICAL | — | S1 (done) | asynchronous signals |
 | KReply | CANONICAL | — | S1 (done, explicit MCS style) | reply authority |
 | KSchedContext | CANONICAL | — | S2+ (storage already Untyped via retype; legacy SYS_SC_CREATE to retire) | time |
-| task (TCB) | CANONICAL (TCB) | TCB from Untyped | S2 (RETYPE2(KOBJ_TCB) done; execution path pending) | thread |
+| task (TCB) | CANONICAL (TCB) | TCB from Untyped | S2 + Stage 7 (`RETYPE2(KOBJ_TCB)` and the EXECUTION path both done; `SYS_THREAD_START` retired, `task_thread_create` deleted).  Since Stage 7 the TCB also carries its own CSpace root, address space, fault record, death and exit code | thread |
 | KFrame | CANONICAL (Frame) | header inside Untyped | frame/page-table phase | physical memory |
 | KVSpace | CANONICAL (VSpaceRoot) | storage from Untyped | frame/page-table phase | address space |
 | KIrqCap | CANONICAL (IRQHandler) | storage from Untyped | device phase | IRQ routing |
 | KIoPort | CANONICAL (arch) | storage from Untyped | device phase | port authority |
-| KProcess | LEGACY_TO_REMOVE | user-space process server (TCB+CNode+VSpace) | process-server phase | process = policy |
+| KProcess | **REMOVED (Stage 7-proc)** | nothing — a process IS threads configured with the same CSpace and the same VSpace | done | process = policy |
 | KVMO | LEGACY_TO_REMOVE | user-space memory server (Frames+pager) | memory-server phase | memory object = policy |
-| handle table / handles | LEGACY_TO_REMOVE | CSpace-only invocation | CSpace-only phase | second namespace |
-| per-process quota domains (VMO/page) | LEGACY_TO_REMOVE | Untyped as the budget | with KProcess/KVMO | quota ≠ explicit memory |
+| handle table / handles | **REMOVED (Stage 4)** | CSpace-only invocation | done | second namespace |
+| per-process quota domains (VMO/page) | **REMOVED (Stage 7 / 7-mem)** | Untyped as the budget | done | quota ≠ explicit memory |
 | notification quota | REMOVED (S1) | Untyped | S1 | retired |
 | KBootstrapCap | BOOTSTRAP_EXCEPTION | structured BootInfo | root-task phase | bootstrap authority |
-| KInitrdEntry | USERLAND_POLICY | user-space VFS/loader | with KProcess | filesystem-aware state |
+| KInitrdEntry | USERLAND_POLICY | user-space VFS/loader | Stage 10 (platform) | filesystem-aware state |
 | process metadata / parent-child / supervision | USERLAND_POLICY | svcmgr/init | already in user space | policy |
 | file-backed regions / page cache / private-shared | USERLAND_POLICY | pager+VFS | already in user space (Phase 28) | policy |
 | loader metadata | USERLAND_POLICY | svc_loader | already in user space | policy |
@@ -129,16 +129,19 @@ See [`kernel-object-lifetime.md`](kernel-object-lifetime.md). Summary:
   region).
 - `SYS_UNTYPED_RESET` reclaims the region only with `child_count == 0` (S13)
   and bumps `generation` (reuse witness, S12/S28).
-- transitive revoke: the derivation tree lives TODAY in the handle table
-  (`SYS_CAP_REVOKE`) in parallel with the native CSpace CDT (Phase S3,
-  `SYS_CSPACE_REVOKE`; ledger).
+- transitive revoke: there is exactly ONE derivation tree, the native CSpace
+  CDT/MDB (`SYS_CSPACE_REVOKE`).  The parallel handle tree and its
+  `SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` were deleted in Phase S4 / Stage 3.
 
 ## Bootstrap exceptions (enumerated, static, non-allocator)
 
 1. Kernel image, initial stacks, boot metadata (static).
-2. Per-process root CNode: fabricated by `kprocess_alloc` from kslab. Bounded
-   (1 per process), but grows with processes → classified ACTIVE_LEGACY tied to
-   KProcess; the first target of the process-server phase.
+2. The ROOT TASK's root CNode and address space: fabricated from kslab,
+   because they are built before any Untyped exists that could pay for them.
+   Bounded at exactly one, and it no longer grows with the number of children —
+   since Stage 6-pure a child's root CNode, VSpace and TCB are retyped by the
+   spawner out of a budget it holds.  This is the permanent boot-path
+   exception; seL4 has the same one.
 3. Kernel PMM reserve (`IRIS_PMM_KERNEL_RUNTIME_RESERVE`): page tables, kernel
    stacks, PML4, KVMO metadata — legacy internal allocators, recorded in the
    ledger; not available for creating canonical objects.

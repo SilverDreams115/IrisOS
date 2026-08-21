@@ -94,7 +94,7 @@ Current delivery path (Stage 5 — one capability, one authority):
 
 Current use:
 
-- `IRIS_BOOTCAP_PROC_CONTROL`: authorizes `SYS_PROCESS_CREATE`
+- `IRIS_BOOTCAP_PROC_CONTROL`: authorized `SYS_PROCESS_CREATE`, which is retired (Stage 7-proc). It now authorizes nothing — a child is a TCB, a CNode and a VSpace retyped from a budget the spawner holds, and holding that budget is the authority
 - `IRIS_BOOTCAP_INITRD_CONTROL`: authorizes `SYS_INITRD_COUNT` and `SYS_INITRD_VMO`
 - `IRIS_BOOTCAP_IRQ_CONTROL`: authorizes `SYS_CAP_CREATE_IRQCAP`
 - `IRIS_BOOTCAP_IOPORT_CONTROL`: authorizes `SYS_CAP_CREATE_IOPORT`
