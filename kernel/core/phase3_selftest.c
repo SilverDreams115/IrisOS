@@ -92,7 +92,7 @@ static int phase3_process_selftest(void) {
 out:
     if (proc) {
         kprocess_teardown(proc, 0);
-        kprocess_reap_address_space(proc);
+
         kprocess_free(proc);
     }
     if (vmo) kvmo_free(vmo);

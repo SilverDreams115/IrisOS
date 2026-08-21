@@ -527,7 +527,9 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     }
     if (do_teardown) {
         kprocess_teardown(proc, t);
-        kprocess_reap_address_space(proc);
+        /* Stage 7-proc: reclamation is the ADDRESS SPACE's own — its close
+         * hook invalidates it and its destructor takes the walk down, both
+         * driven by capabilities rather than by a thread count. */
     }
 
     atomic_fetch_sub_explicit(&sched_live_count, 1u, memory_order_relaxed);
@@ -568,6 +570,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     if (t->vspace) {
         struct KVSpace *vs = t->vspace;
         t->vspace = 0;
+        kobject_active_release(&vs->base);
         kobject_release(&vs->base);
     }
     /*
@@ -853,7 +856,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     ub_pages = (uint32_t)((ub_size + 0xFFFU) >> 12);
 
     /* Guard: verify the total bootstrap page count fits in KProcess.bootstrap_frames[]. */
-    if (ub_pages + ustack_pages > KPROCESS_BOOTSTRAP_FRAME_MAX) goto fail;
+    if (ub_pages + ustack_pages > KVSPACE_BOOTSTRAP_FRAME_MAX) goto fail;
 
     ub_copy_phys = pmm_alloc_pages(ub_pages);
     if (ub_copy_phys == 0) goto fail;
@@ -875,7 +878,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         uint64_t phys = ub_copy_phys   + (uint64_t)pg * 0x1000ULL;
         struct KFrame *f = bootstrap_kframe_map(proc->vspace, phys, va, 2ULL /* MAP_EXEC */);
         if (!f) goto fail_copy;
-        if (kprocess_register_bootstrap_frame(proc, f) != IRIS_OK) {
+        if (kvspace_register_bootstrap_frame(proc->vspace, f) != IRIS_OK) {
             kframe_unmap_page(f, proc->vspace, va);
             kobject_release(&f->base);
             goto fail_copy;
@@ -895,7 +898,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         uint64_t phys = ustack_phys + (uint64_t)pg * 4096ULL;
         struct KFrame *f = bootstrap_kframe_map(proc->vspace, phys, va, 1ULL /* MAP_WRITABLE */);
         if (!f) goto fail;
-        if (kprocess_register_bootstrap_frame(proc, f) != IRIS_OK) {
+        if (kvspace_register_bootstrap_frame(proc->vspace, f) != IRIS_OK) {
             kframe_unmap_page(f, proc->vspace, va);
             kobject_release(&f->base);
             goto fail;
@@ -929,7 +932,10 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         kobject_active_retain(&t->cspace_root->base);
     }
     t->vspace = proc->vspace;
-    if (t->vspace) kobject_retain(&t->vspace->base);
+    if (t->vspace) {
+        kobject_retain(&t->vspace->base);
+        kobject_active_retain(&t->vspace->base);
+    }
     /* Same join every other thread takes.  Nothing can be tearing this process
      * down — it was allocated a few lines above and no capability to it exists
      * yet — but the count and the flag have one owner, so this path does not
@@ -981,7 +987,9 @@ fail:
     if (t) t->process = 0;
     free_phys_pages_range(ustack_phys, ustack_pages);
     if (proc) {
-        kprocess_reap_address_space(proc);
+        /* Stage 7-proc: reclamation is the ADDRESS SPACE's own — its close
+         * hook invalidates it and its destructor takes the walk down, both
+         * driven by capabilities rather than by a thread count. */
         kprocess_free(proc);
     }
     if (t) {
@@ -1086,8 +1094,21 @@ iris_error_t ktcb_configure(struct task *t, struct KProcess *proc,
         kobject_retain(&t->cspace_root->base);
         kobject_active_retain(&t->cspace_root->base);
     }
+    /*
+     * Stage 7-proc: lifecycle AND active, the same pair as the CSpace above.
+     *
+     * The lifecycle ref keeps the object; the ACTIVE ref is what says the
+     * address space is still in use, and dropping the last one is what
+     * invalidates it (kvspace_obj_close).  A thread that held only the
+     * lifecycle ref left the address space's usability in somebody else's
+     * hands: the spawner deletes its own capability at the end of a spawn, and
+     * that would invalidate the space the child is about to run in.
+     */
     t->vspace = vspace;
-    if (t->vspace) kobject_retain(&t->vspace->base);
+    if (t->vspace) {
+        kobject_retain(&t->vspace->base);
+        kobject_active_retain(&t->vspace->base);
+    }
 
     task_init_fpu_state(t);
     t->id         = next_id++;

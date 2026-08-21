@@ -477,7 +477,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                         ut->process->vspace, bi_phys + (uint64_t)pg * PMM_PAGE_SIZE,
                         va, 0ULL /* read-only, NX */);
                     if (!bif) break;
-                    if (kprocess_register_bootstrap_frame(ut->process, bif) != IRIS_OK) {
+                    if (kvspace_register_bootstrap_frame(ut->process->vspace, bif) != IRIS_OK) {
                         kframe_unmap_page(bif, ut->process->vspace, va);
                         kobject_release(&bif->base);
                         break;

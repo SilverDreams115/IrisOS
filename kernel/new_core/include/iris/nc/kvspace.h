@@ -48,6 +48,11 @@ struct KFrameMapping {
 
 struct KUntyped;
 
+/* Stage 7-proc: was KPROCESS_BOOTSTRAP_FRAME_MAX, same value — the cap on how
+ * many frames the kernel may map into an address space before its holder can
+ * ask for them (the root task's text and stack). */
+#define KVSPACE_BOOTSTRAP_FRAME_MAX 32u
+
 struct KVSpace {
     struct KObject        base;          /* must be first */
     spinlock_t            lock;          /* guards all fields below */
@@ -109,6 +114,19 @@ struct KVSpace {
      * the region a live address space is standing on — the same guarantee the
      * charged path got from child_count, now attached to a real capability. */
     struct KPageTable    *tables;
+    /*
+     * Stage 7-proc: the ROOT TASK's bootstrap frames, moved here from
+     * KProcess.
+     *
+     * They are the KFrames the kernel mapped into this address space before
+     * anything existed that could ask for them — the root task's text and
+     * stack.  They were registered on the process and released by
+     * kprocess_reap_address_space, which is to say a THIRD object held
+     * references to frames mapped in THIS one.  They belong to the address
+     * space they are mapped in, and go when it does.
+     */
+    struct KFrame *bootstrap_frames[KVSPACE_BOOTSTRAP_FRAME_MAX];
+    uint32_t       bootstrap_frame_count;
 };
 
 struct KPageTable;
@@ -204,6 +222,10 @@ void kvspace_unbind(struct KVSpace *vs);
 /* Mark the VSpace invalid and zero cr3.  Called by kprocess_reap_address_space
  * before paging_destroy_user_space so no capability holder can read a freed cr3. */
 void kvspace_invalidate(struct KVSpace *vs);
+/* Stage 7-proc: a frame the kernel mapped into this address space before its
+ * holder could ask for it (the root task's text and stack).  Released when the
+ * address space is settled. */
+iris_error_t kvspace_register_bootstrap_frame(struct KVSpace *vs, struct KFrame *f);
 
 /* Unmap the page at user_va from vs.  Finds the KFrameMapping node by VA,
  * removes the PTE, decrements frame->mapped_count, releases the frame retain,

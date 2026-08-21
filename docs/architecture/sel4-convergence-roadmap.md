@@ -1474,28 +1474,40 @@ held — naming it was not enough, it also had to agree with a third object — 
 threads sharing a CSpace and a VSpace are what a process IS rather than
 something to be checked against one.  This is seL4's `seL4_TCB_Configure`.
 
-**What blocks the rest, measured rather than guessed.**  Removing `t->process`
-outright was attempted and reverted, and the failure is the useful part: every
-spawned thread faulted on its own entry point and the root task followed.  Two
-causes, both structural:
+**Reclamation has moved off `thread_count`.**  `kprocess_reap_address_space` is
+DELETED, and its three jobs went where they belong:
 
-1. **Every syscall guard is `if (!t || !t->process)`** — 53 of them.  A thread
-   with no process fails every syscall it makes.  (Converting them to
-   `!t->cspace_root` is mechanical and correct, and was part of the attempt.)
-2. **Address-space reclamation still hangs off `thread_count`.**  Step 11 moved
-   the WALK's teardown into the VSpace destructor, but the process still holds
-   the VSpace reference that destructor waits for, and `thread_count` reaching
-   zero is what drops it.  A thread that joins no process therefore leaves an
-   address space nothing reclaims — and, worse, a thread that inherits its
-   spawner's process decrements the SPAWNER's count and tears the spawner down.
+- **Invalidating the address space** is its own `close` hook — the moment the
+  last CAPABILITY to it goes.  It used to be the last thread's exit through a
+  per-process count, which made an address space's usability a property of a
+  third object's bookkeeping.
+- **The root task's bootstrap frames** moved to `KVSpace`.  They are frames the
+  kernel mapped into that address space before anything existed that could ask
+  for them, and a process held references to frames mapped in a space it was
+  not.  They go when the space settles.
+- **The VSpace reference** is released by `kprocess_teardown`, which is the
+  last thing the process still does for an address space and goes with it.
 
-So the order is fixed: **reclamation must move off `thread_count` before
-`t->process` can go.**  The shape it wants is the one Steps 4/5 already
-established — the thread holds its own CSpace and VSpace references, so the
-last thread releasing them IS the last reference, and the destructors run with
-nobody counting.  What has to move with it is `kprocess_reap_address_space`'s
-remaining work: invalidating the walk and releasing the root task's bootstrap
-frames.
+A thread now holds the ACTIVE reference on its address space as well as the
+lifecycle one — the same pair it has held on its CSpace root since Step 4.  That
+is what makes the close hook fire at the right moment: without it, a spawner
+deleting its own capability at the end of a spawn invalidated the space its
+child was about to run in.
+
+This is a REAL semantic change and the suite records it: an address space
+outlives its threads while a capability to it lives, so a late map into a dead
+target's space now SUCCEEDS.  That is seL4's shape — a page directory outlives
+its threads and can still be mapped into — and four tests (T187, T188, T196,
+T210) were re-derived onto it rather than retired, because what they were
+really about (the books come back to baseline once the capability is dropped)
+still holds.
+
+**What still blocks `t->process` itself.**  53 syscall guards read
+`!t->process`, so a thread with no process fails every syscall it makes.
+Converting them to `!t->cspace_root` is mechanical and correct — a task that
+cannot name capabilities is what the guard means — and it is the next step.
+What follows it is the userland half: 307 sites pass a process handle around,
+and `svc_load_minted_ws` returns one.
 
 With `KProcess` gone, "spawn a process" is a userland composition: retype an
 Untyped, retype a CNode and a VSpace and a TCB out of it, configure, write

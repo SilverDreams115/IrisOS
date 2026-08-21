@@ -13379,11 +13379,21 @@ static void test_t186(void) {
 
 /* ── T187: target death during pager resolution ─────────────────────────────
  * The supervisor kills the target between fault delivery and the pager's
- * completion.  Every late step fails clean: map-into-target is BAD_HANDLE
- * (the VSpace was invalidated with the process), seq-checked and legacy
- * resume are NOT_FOUND, the record reports WOULD_BLOCK.  The never-installed
- * frame stays clean and reusable; VSpace/mapping books return to baseline
- * once the stale caps are dropped.  Invariants: P12, P14, P18, P19, P23. */
+ * completion.  Every late step that names the DEAD THREAD fails clean:
+ * seq-checked and legacy resume are NOT_FOUND, the record reports WOULD_BLOCK.
+ * The never-installed frame stays clean and reusable; VSpace/mapping books
+ * return to baseline once the stale caps are dropped.
+ *
+ * Stage 7-proc changed one of these, deliberately.  Mapping into the target's
+ * address space used to be BAD_HANDLE, "the VSpace was invalidated with the
+ * process".  An address space is not invalidated by a thread dying any more —
+ * it is invalidated when the last CAPABILITY to it goes, which is its close
+ * hook — so a holder that kept a capability across the death keeps a usable
+ * address space with nothing running in it.  That is seL4's shape (a page
+ * directory outlives its threads and can still be mapped into), and it is what
+ * this test now asserts: the late map SUCCEEDS, and the books still come back
+ * to baseline once the capability is dropped, which is the property that
+ * mattered.  Invariants: P12, P14, P18, P19, P23. */
 static void test_t187(void) {
     uint32_t word;
     it_quiesce_reaper();
@@ -13408,8 +13418,15 @@ static void test_t187(void) {
     it_quiesce_reaper();
 
     /* Late completion fails clean at every step. */
-    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_A, 0)
-              != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "late map not BAD_HANDLE"; }
+    /* Stage 7-proc: the address space outlives its threads while a capability
+     * to it lives, so this succeeds — and is undone below so the baseline
+     * still has to hold. */
+    if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, tvs_c, (long)T25_VA_A, 0) != 0) {
+        ok = 0; why = "late map into a live address space refused";
+    }
+    if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr_h, tvs_c, (long)T25_VA_A) != 0) {
+        ok = 0; why = "late unmap refused";
+    }
     if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late seq-resume accepted"; }
     if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(g.fault_leaf), 0)
@@ -13505,10 +13522,18 @@ static void test_t188(void) {
     if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target exit"; }
     it_quiesce_reaper();
 
-    /* The target died with the mapping installed: teardown swept it; a late
-     * unmap through the dead VSpace fails clean. */
-    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, tvs_c, (long)T25_VA_B)
-              != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "late unmap"; }
+    /* The target died with the mapping installed.  Stage 7-proc: the address
+     * space is still valid — we hold a capability to it — so the sweep that
+     * matters is the FRAME's: its mapped_count came back, which the reuse
+     * check below proves.  A late unmap therefore finds no such mapping rather
+     * than a dead address space. */
+    /* The mapping is still installed — the address space is alive and nothing
+     * swept it, because nothing died that owned it.  Unmapping it is the
+     * holder's job and it succeeds; what the frame's reuse check below proves
+     * is that mapped_count came back either way. */
+    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, tvs_c, (long)T25_VA_B) != 0) {
+        ok = 0; why = "late unmap";
+    }
     /* Frame reusable, mapped_count back at zero. */
     if (ok) {
         uint32_t word = T25_PATTERN;
@@ -14202,9 +14227,15 @@ static void test_t196(void) {
         if (ok && it_lp_wait_exit(pproc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager report"; }
         t25_reap(&pproc); it_close(&pcmd);
     }
-    /* NOTE: the target exited (SYS_EXIT), so its mapping is already swept; the
-     * VMO is retained only by our handle now.  Verify closing the handle frees
-     * it and a stale cap fails clean. */
+    /*
+     * The target exited, but Stage 7-proc means its ADDRESS SPACE did not: an
+     * address space ends when its last capability does, and this test holds
+     * one.  The mapping is therefore still installed and still referencing the
+     * VMO, so the supervisor has to let go of the space before the VMO can be
+     * retained "only by our handle" — which is the discipline the loader's
+     * keep_vspace_dest documents, applied here.
+     */
+    it_close(&g.vs);
     it_quiesce_reaper();
     if (ok && it_vmo_live() != vlive0 + 1) { ok = 0; why = "vmo lost early"; }
     handle_id_t vcopy = vmo;
@@ -15352,9 +15383,11 @@ static void test_t210(void) {
             if (!t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; break; }
             if (it_kill((long)g.proc) != 0 || it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "op2 kill"; }
             it_quiesce_reaper();
-            /* The pager would now get BAD_HANDLE on its map; verify at cap layer. */
+            /* Stage 7-proc: the target's address space outlives the target
+             * while this test holds a capability to it, so the late map
+             * SUCCEEDS into a space with nothing running in it. */
             if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vmo, (long)g.vs, (long)T27_VA_A, t26_ofs(0x1000ULL, 0u))
-                      != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "op2 late map"; }
+                      != 0) { ok = 0; why = "op2 late map"; }
             t27_pager_reap(&p);
             break;
         }

@@ -69,8 +69,22 @@ uint32_t kvspace_live_count(void) {
     return atomic_load_explicit(&kvspace_live, memory_order_relaxed);
 }
 
+/*
+ * Stage 7-proc: an address space stops being usable when the last CAPABILITY
+ * to it goes, not when somebody declares a process dead.
+ *
+ * `close` fires at exactly that moment — the last CSpace slot holding this
+ * VSpace was emptied — so this is where `valid` drops and the mappings are
+ * swept.  It used to be kprocess_reap_address_space, called from the last
+ * thread's exit through a per-process thread count, which made an address
+ * space's usability a property of a THIRD object's bookkeeping.
+ *
+ * The walk itself still comes down in the destructor (Step 11): close means
+ * "nobody can reach this any more", destroy means "nobody holds it at all",
+ * and only the second is safe to free storage under.
+ */
 static void kvspace_obj_close(struct KObject *obj) {
-    (void)obj;
+    kvspace_invalidate((struct KVSpace *)obj);
 }
 
 /*
@@ -105,6 +119,16 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
         m = next;
     }
     kvspace_release_nodes(vs);
+
+    /* Stage 7-proc: the root task's bootstrap frames, released after the sweep
+     * above has taken their mapped_count back to zero. */
+    for (uint32_t i = 0; i < vs->bootstrap_frame_count; i++) {
+        if (vs->bootstrap_frames[i]) {
+            kobject_release(&vs->bootstrap_frames[i]->base);
+            vs->bootstrap_frames[i] = 0;
+        }
+    }
+    vs->bootstrap_frame_count = 0;
 
     /* Stage 6-pure Step 1: tables the HOLDER retyped go back as capabilities.
      * Releasing our reference is the whole of it — the region returns to its
@@ -289,14 +313,14 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
  * serves ONLY the pre-boot maps, because the root task is handed its own
  * budget the moment it can speak (kvspace_end_bootstrap) and everything it
  * maps after that comes from there.  Every pre-boot map is registered in
- * KProcess.bootstrap_frames[], which is capped, so the arena cannot be asked
+ * KVSpace.bootstrap_frames[], which is capped, so the arena cannot be asked
  * for more than that many records however large the root image grows.
  *
  * The margin is for the frames a bootstrap map registers and then releases on
  * a failure path, which return to the free list rather than the array.
  */
-#define KVSPACE_BOOT_NODES (KPROCESS_BOOTSTRAP_FRAME_MAX + 16u)
-_Static_assert(KVSPACE_BOOT_NODES > KPROCESS_BOOTSTRAP_FRAME_MAX,
+#define KVSPACE_BOOT_NODES (KVSPACE_BOOTSTRAP_FRAME_MAX + 16u)
+_Static_assert(KVSPACE_BOOT_NODES > KVSPACE_BOOTSTRAP_FRAME_MAX,
                "the arena must cover every registerable bootstrap frame");
 static struct KFrameMapping kvspace_boot_nodes[KVSPACE_BOOT_NODES];
 static uint32_t             kvspace_boot_next;
@@ -491,6 +515,14 @@ void kvspace_end_bootstrap(struct KVSpace *vs) {
 /* Zero cr3/valid, grab the entire mapping list, then process it outside the
  * lock.  Since valid=0 prevents new kframe_map_page calls from succeeding,
  * no new nodes can appear after the lock is released. */
+iris_error_t kvspace_register_bootstrap_frame(struct KVSpace *vs, struct KFrame *f) {
+    if (!vs || !f) return IRIS_ERR_INVALID_ARG;
+    if (vs->bootstrap_frame_count >= KVSPACE_BOOTSTRAP_FRAME_MAX)
+        return IRIS_ERR_NO_MEMORY;
+    vs->bootstrap_frames[vs->bootstrap_frame_count++] = f;
+    return IRIS_OK;
+}
+
 void kvspace_invalidate(struct KVSpace *vs) {
     struct KFrameMapping *list;
     uint64_t              saved_cr3;

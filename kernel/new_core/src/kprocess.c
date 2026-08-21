@@ -124,7 +124,7 @@ static void kprocess_destroy(struct KObject *obj) {
      * calls claim their own flag on entry, so they are no-ops when the
      * ordinary exit path already ran them — no pre-check needed here. */
     kprocess_teardown(p, 0);
-    kprocess_reap_address_space(p);
+
     atomic_fetch_sub_explicit(&kprocess_live, 1u, memory_order_relaxed);
 
 
@@ -426,56 +426,30 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     }
 
     (void)exiting_thread; /* thread_count tracks liveness; no per-thread ref needed */
-}
 
-iris_error_t kprocess_register_bootstrap_frame(struct KProcess *p, struct KFrame *f) {
-    if (!p || !f) return IRIS_ERR_INVALID_ARG;
-    if (p->bootstrap_frame_count >= KPROCESS_BOOTSTRAP_FRAME_MAX) return IRIS_ERR_NO_MEMORY;
-    p->bootstrap_frames[p->bootstrap_frame_count++] = f;
-    return IRIS_OK;
-}
-
-void kprocess_release_bootstrap_frames(struct KProcess *p) {
-    if (!p) return;
-    for (uint32_t i = 0; i < p->bootstrap_frame_count; i++) {
-        if (p->bootstrap_frames[i]) {
-            kobject_release(&p->bootstrap_frames[i]->base);
-            p->bootstrap_frames[i] = 0;
-        }
-    }
-    p->bootstrap_frame_count = 0;
-}
-
-void kprocess_reap_address_space(struct KProcess *p) {
-    if (!p) return;
-    /* CLAIM the reap, do not merely observe that nobody has done it.  Every
-     * step below is destructive and none is idempotent: releasing the
-     * bootstrap KFrames twice drops refs the process never held, and
-     * destroying cr3 twice frees the same page twice (to the PMM for a
-     * kernel-funded space, to the pool's child count for a budgeted one).  A
-     * plain read-then-write leaves the window between them open to anything
-     * that preempts, so the flag is set by exchange and the losers return. */
-    if (__atomic_exchange_n(&p->aspace_reaped, 1u, __ATOMIC_ACQ_REL)) return;
-
-    /* Phase 4: invalidate the VSpace capability so no holder can map through a
-     * dying address space.  Stage 7 Step 11: that is ALL this does to it — the
-     * walk comes down in the VSpace's own destructor, when the last capability
-     * to the address space goes, which may be later than this and is the only
-     * moment at which nothing can be using it. */
-    struct KVSpace *vs = p->vspace;
-    if (vs) {
-        kvspace_invalidate(vs);
+    /*
+     * Stage 7-proc: give back the address-space reference.
+     *
+     * kprocess_reap_address_space used to do this, along with invalidating the
+     * walk and releasing the root task's bootstrap frames — all of which are
+     * the ADDRESS SPACE's own business now and happen in its close and destroy
+     * hooks.  What is left is the reference itself, held since
+     * SYS_PROCESS_CREATE, and it has to go or the space is never destroyed and
+     * the budget its page tables are charged to can never be RESET.
+     */
+    {
+        struct KVSpace *vs;
+        spinlock_lock(&p->base.lock);
+        vs = p->vspace;
         p->vspace = 0;
+        p->cr3 = 0;
+        spinlock_unlock(&p->base.lock);
+        if (vs) kobject_release(&vs->base);
     }
-
-    /* Phase 6.2: release bootstrap KFrame alloc retains after kvspace_invalidate
-     * has decremented mapped_count to 0 for all bootstrap-mapped pages. */
-    kprocess_release_bootstrap_frames(p);
-
-    p->cr3 = 0;
-    if (vs) kobject_release(&vs->base);
-    /* aspace_reaped was claimed on entry, not set here. */
 }
+
+
+
 
 /*
  * kprocess_live_count: count live kpage-backed process objects.

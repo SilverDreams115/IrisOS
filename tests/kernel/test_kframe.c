@@ -61,9 +61,10 @@
  *   [FR-47] bootstrap_kframe_map returns NULL for duplicate VA (BUSY from kframe_map_page).
  *   [FR-48] After kvspace_invalidate, bootstrap KFrame has mapped_count==0 and
  *           mapping_count==0; no stale PTE remains.
- *   [FR-49] kprocess_register_bootstrap_frame rejects NULL proc or NULL frame.
- *   [FR-50] kprocess_register_bootstrap_frame enforces the 32-slot limit;
- *           kprocess_release_bootstrap_frames drops all retains and resets count.
+ *   [FR-49] kvspace_register_bootstrap_frame rejects NULL vspace or NULL frame.
+ *   [FR-50] kvspace_register_bootstrap_frame enforces its slot limit, and the
+ *           address space's own settle drops every retain (Stage 7-proc: the
+ *           frames belong to the space they are mapped in, not to a process).
  *
  * Tests (FR-51..FR-62): Phase 6.3 — VMO-to-Frame capability migration.
  *   [FR-51] kframe_alloc_vmo_page sets vmo_owner; kframe_alloc sets vmo_owner=NULL.
@@ -986,63 +987,58 @@ void test_kframe(void) {
         paging_stub_reset();
     }
 
-    /* FR-49: kprocess_register_bootstrap_frame rejects NULL proc or NULL frame. */
+    /* FR-49: kvspace_register_bootstrap_frame rejects NULL vspace or NULL frame. */
     {
-        struct KProcess *p = fr_make_proc();
-        ASSERT_NOT_NULL(p);
+        struct KVSpace *vs = kvspace_alloc(0xBB5000ULL);
+        ASSERT_NOT_NULL(vs);
         struct KFrame *f = kframe_alloc(0x1000ULL, 4096, NULL);
         ASSERT_NOT_NULL(f);
 
-        ASSERT_EQ((int)kprocess_register_bootstrap_frame(NULL, f),
+        ASSERT_EQ((int)kvspace_register_bootstrap_frame(NULL, f),
                   (int)IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ((int)kprocess_register_bootstrap_frame(p, NULL),
+        ASSERT_EQ((int)kvspace_register_bootstrap_frame(vs, NULL),
                   (int)IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ((int)p->bootstrap_frame_count, 0);
+        ASSERT_EQ((int)vs->bootstrap_frame_count, 0);
 
         kobject_active_release(&f->base);
         kobject_release(&f->base);
-        fr_free_proc(p);
+        kvspace_free(vs);
     }
 
-    /* FR-50: kprocess_register_bootstrap_frame enforces the 32-slot limit;
-     * kprocess_release_bootstrap_frames drops all alloc retains and resets count. */
+    /* FR-50: kvspace_register_bootstrap_frame enforces its slot limit, and the
+     * address space's own teardown drops every retain. */
     {
         paging_stub_reset();
         uint64_t cr3 = 0xBB6000ULL;
-        struct KProcess *p = fr_make_proc();
-        ASSERT_NOT_NULL(p);
         struct KVSpace *vs = kvspace_alloc(cr3);
         ASSERT_NOT_NULL(vs);
 
-        /* Fill all 32 bootstrap frame slots. */
+        /* Fill 32 bootstrap frame slots (the cap is KVSPACE_BOOTSTRAP_FRAME_MAX). */
         int i;
         for (i = 0; i < 32; i++) {
             uint64_t va = USER_PRIVATE_BASE + (uint64_t)(i + 1) * 0x1000ULL;
             struct KFrame *f = bootstrap_kframe_map(
                 vs, 0x30000000ULL + (uint64_t)i * 0x1000ULL, va, 0u);
             ASSERT_NOT_NULL(f);
-            ASSERT_EQ((int)kprocess_register_bootstrap_frame(p, f), (int)IRIS_OK);
+            ASSERT_EQ((int)kvspace_register_bootstrap_frame(vs, f), (int)IRIS_OK);
         }
-        ASSERT_EQ((int)p->bootstrap_frame_count, 32);
+        ASSERT_EQ((int)vs->bootstrap_frame_count, 32);
 
         /* One more register must fail. */
         struct KFrame *f_extra = kframe_alloc(0x40000000ULL, 4096, NULL);
         ASSERT_NOT_NULL(f_extra);
-        ASSERT_EQ((int)kprocess_register_bootstrap_frame(p, f_extra),
+        ASSERT_EQ((int)kvspace_register_bootstrap_frame(vs, f_extra),
                   (int)IRIS_ERR_NO_MEMORY);
-        ASSERT_EQ((int)p->bootstrap_frame_count, 32);
+        ASSERT_EQ((int)vs->bootstrap_frame_count, 32);
 
         /* kvspace_invalidate clears all mapping slots first. */
         kvspace_invalidate(vs);
 
-        /* kprocess_release_bootstrap_frames drops all alloc retains. */
-        kprocess_release_bootstrap_frames(p);
-        ASSERT_EQ((int)p->bootstrap_frame_count, 0);
-
+        /* Stage 7-proc: the address space releases its own bootstrap frames
+         * when it settles — no process reaches into it to do that. */
         kobject_active_release(&f_extra->base);
         kobject_release(&f_extra->base);
         kvspace_free(vs);
-        fr_free_proc(p);
         paging_stub_reset();
     }
 

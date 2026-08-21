@@ -61,7 +61,6 @@ struct KFrame;
 
 /* Maximum bootstrap KFrame retains stored in KProcess.bootstrap_frames[].
  * Enforced by the upfront guard in task_create_user_impl. */
-#define KPROCESS_BOOTSTRAP_FRAME_MAX 32u
 
 struct KExitWatch {
     struct KNotification *notif;       /* signalled on watched-process death */
@@ -200,8 +199,6 @@ struct KProcess {
      * bootstrap_kframe_map.  Released by kprocess_release_bootstrap_frames
      * inside kprocess_reap_address_space, always AFTER kvspace_invalidate
      * so mapped_count is 0 at the time each alloc retain is dropped. */
-    struct KFrame   *bootstrap_frames[KPROCESS_BOOTSTRAP_FRAME_MAX];
-    uint32_t         bootstrap_frame_count;
 
 };
 
@@ -229,7 +226,6 @@ void             kprocess_free (struct KProcess *p);
  * gate.  Every path that gives a thread a process goes through this. */
 iris_error_t     kprocess_attach_thread(struct KProcess *p);
 void             kprocess_teardown(struct KProcess *p, struct task *exiting_thread);
-void             kprocess_reap_address_space(struct KProcess *p);
 /* Phase S1: kprocess_quota_{acquire,release}_notification retired (Untyped is
  * the budget for notifications).  VMO/page quotas remain for legacy objects. */
 /* Phase 29 — global resource-accounting gauges (SYS_RESOURCE_INFO). */
@@ -255,8 +251,6 @@ void             kprocess_fault_stat_cleanup(void);
  * kprocess_register_bootstrap_frame stores one alloc retain in bootstrap_frames[].
  * kprocess_release_bootstrap_frames drops all alloc retains; must be called after
  * kvspace_invalidate so that mapped_count is 0 when each frame is released. */
-iris_error_t kprocess_register_bootstrap_frame(struct KProcess *p, struct KFrame *f);
-void         kprocess_release_bootstrap_frames(struct KProcess *p);
 
 /*
  * kprocess_live_count: count live KProcess objects currently allocated.

@@ -69,30 +69,11 @@ void         task_yield(void)            { }
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kframe.h>
 #include <iris/nc/kobject.h>
-iris_error_t kprocess_quota_acquire_notification(struct KProcess *p){ (void)p; return IRIS_OK; }
-void         kprocess_quota_release_notification(struct KProcess *p){ (void)p; }
-iris_error_t kprocess_quota_acquire_vmo(struct KProcess *p)        { (void)p; return IRIS_OK; }
-void         kprocess_quota_release_vmo(struct KProcess *p)        { (void)p; }
-iris_error_t kprocess_quota_acquire_page(struct KProcess *p)       { (void)p; return IRIS_OK; }
-void         kprocess_quota_release_page(struct KProcess *p)       { (void)p; }
 
-/* ── bootstrap frame stubs (Phase 6.2) ───────────────────────────────────── */
-iris_error_t kprocess_register_bootstrap_frame(struct KProcess *p, struct KFrame *f) {
-    if (!p || !f) return IRIS_ERR_INVALID_ARG;
-    if (p->bootstrap_frame_count >= 32u) return IRIS_ERR_NO_MEMORY;
-    p->bootstrap_frames[p->bootstrap_frame_count++] = f;
-    return IRIS_OK;
-}
-void kprocess_release_bootstrap_frames(struct KProcess *p) {
-    if (!p) return;
-    for (uint32_t i = 0; i < p->bootstrap_frame_count; i++) {
-        if (p->bootstrap_frames[i]) {
-            kobject_release(&p->bootstrap_frames[i]->base);
-            p->bootstrap_frames[i] = 0;
-        }
-    }
-    p->bootstrap_frame_count = 0;
-}
+/* Bootstrap-frame stubs RETIRED (Stage 7-proc): the frames belong to the
+ * ADDRESS SPACE they are mapped in, and kvspace.c — which this build already
+ * compiles — provides kvspace_register_bootstrap_frame for real.  A stub here
+ * would shadow the thing under test. */
 
 /* ── Minimal test VMO stub ─────────────────────────────────────────────────
  * Creates a bare-bones KVmo (sparse=0, owned=0, no pages[], no PMM) suitable
