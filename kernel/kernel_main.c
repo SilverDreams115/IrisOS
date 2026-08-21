@@ -243,8 +243,8 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 iris_error_t cme = IRIS_ERR_NO_MEMORY;
                 if (cc) {
                     cme = IRIS_ERR_NOT_FOUND;
-                    if (ut->process->cspace_root)
-                        cme = kcnode_mint(ut->process->cspace_root,
+                    if (ut->cspace_root)
+                        cme = kcnode_mint(ut->cspace_root,
                                           boot_controls[i].slot, &cc->base,
                                           RIGHT_READ | RIGHT_DUPLICATE |
                                           RIGHT_TRANSFER);
@@ -278,8 +278,8 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
              * (kcnode_teardown_slots) — a cycle cannot be collected by a
              * refcount the cycle is holding up.
              */
-            if (ut && ut->process->cspace_root) {
-                struct KCNode *root = ut->process->cspace_root;
+            if (ut && ut->cspace_root) {
+                struct KCNode *root = ut->cspace_root;
                 iris_error_t ce = kcnode_mint(
                     root, BOOT_CPTR_CNODE, &root->base,
                     RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
@@ -292,7 +292,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
             }
             if (ut) {
                 iris_error_t te = kcnode_mint(
-                    ut->process->cspace_root, BOOT_CPTR_TCB, &ut->base,
+                    ut->cspace_root, BOOT_CPTR_TCB, &ut->base,
                     RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER);
                 if (te != IRIS_OK) {
                     klog_write("[IRIS][USER] FATAL: root TCB cap"
@@ -325,11 +325,11 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                      * Boot failure on CSpace insert is non-fatal: KVSpace was
                      * already created and bootstrap maps are registered.
                      */
-                    if (ut->process->vspace && ut->process->cspace_root) {
+                    if (ut->vspace && ut->cspace_root) {
                         iris_error_t vme = kcnode_mint(
-                            ut->process->cspace_root,
+                            ut->cspace_root,
                             BOOT_CPTR_VSPACE,
-                            &ut->process->vspace->base,
+                            &ut->vspace->base,
                             RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
                         if (vme == IRIS_OK)
                             klog_write("[IRIS][USER] boot vspace"
@@ -418,10 +418,10 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                         root_budget = boot_ut;
                     }
                     iris_error_t me = IRIS_ERR_NOT_FOUND;
-                    if (ut->process->cspace_root &&
+                    if (ut->cspace_root &&
                         cspace_slot < KCNODE_DEFAULT_SLOTS)
                         me = kcnode_mint(
-                            ut->process->cspace_root, cspace_slot,
+                            ut->cspace_root, cspace_slot,
                             &boot_ut->base,
                             RIGHT_READ | RIGHT_WRITE |
                             RIGHT_DUPLICATE | RIGHT_TRANSFER);
@@ -470,15 +470,15 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     BOOT_CPTR_UNTYPED_START + ut_count, KCNODE_DEFAULT_SLOTS);
                 uint32_t mapped = 0;
 
-                for (uint32_t pg = 0; bie == IRIS_OK && ut->process->vspace &&
+                for (uint32_t pg = 0; bie == IRIS_OK && ut->vspace &&
                                       pg < IRIS_ROOT_BOOTINFO_PAGES; pg++) {
                     uint64_t va = USER_BOOTINFO_BASE + (uint64_t)pg * PMM_PAGE_SIZE;
                     struct KFrame *bif = bootstrap_kframe_map(
-                        ut->process->vspace, bi_phys + (uint64_t)pg * PMM_PAGE_SIZE,
+                        ut->vspace, bi_phys + (uint64_t)pg * PMM_PAGE_SIZE,
                         va, 0ULL /* read-only, NX */);
                     if (!bif) break;
-                    if (kvspace_register_bootstrap_frame(ut->process->vspace, bif) != IRIS_OK) {
-                        kframe_unmap_page(bif, ut->process->vspace, va);
+                    if (kvspace_register_bootstrap_frame(ut->vspace, bif) != IRIS_OK) {
+                        kframe_unmap_page(bif, ut->vspace, va);
                         kobject_release(&bif->base);
                         break;
                     }
@@ -504,10 +504,10 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                      * After this, no address space in IRIS is implicitly funded
                      * while anybody is running.
                      */
-                    if (ut->process->vspace) {
+                    if (ut->vspace) {
                         if (root_budget)
-                            kvspace_set_pt_pool(ut->process->vspace, root_budget);
-                        kvspace_end_bootstrap(ut->process->vspace);
+                            kvspace_set_pt_pool(ut->vspace, root_budget);
+                        kvspace_end_bootstrap(ut->vspace);
                     }
                     klog_write("[IRIS][USER] boot info page mapped, untypeds: ");
                     klog_write_dec(ut_count);
