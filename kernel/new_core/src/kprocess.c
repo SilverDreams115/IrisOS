@@ -65,14 +65,25 @@ void kprocess_fault_stat_nohandler(void) { atomic_fetch_add_explicit(&kfault_noh
  * counter.  Idempotent — a second call with no matching pending fault is a
  * no-op.
  */
-void kprocess_fault_clear(struct KProcess *p, struct task *ft, int killed) {
-    if (!p || !ft) return;
-    spinlock_lock(&p->base.lock);
+/*
+ * Stage 7 Step 15: this took a KProcess, and used it for nothing but its LOCK.
+ *
+ * The record it clears has been the thread's since Step 6, and the other
+ * writer of `fault_valid` — SYS_TCB_SET_FAULT_HANDLER, deciding whether an
+ * outstanding fault moves with a re-aimed mailbox — guards it with the
+ * THREAD's `obj_lock`.  Two writers of one field under two different locks is
+ * not a lock; the process was serialising accesses to something that is not
+ * its own.  Same lock as the other writer now, and no process argument left to
+ * make it look like a process-scoped operation.
+ */
+void kfault_resolve(struct task *ft, int killed) {
+    if (!ft) return;
+    uint64_t irqfl = irq_spinlock_lock(&ft->obj_lock);
     if (ft->fault_valid) {
         ft->fault_valid = 0;
         atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
     }
-    spinlock_unlock(&p->base.lock);
+    irq_spinlock_unlock(&ft->obj_lock, irqfl);
     /* Unconditional, as it has been since Phase 20: this counts RESOLUTIONS —
      * how many times a handler answered — not how many records existed to
      * clear.  A second call for an already-resolved fault is still an answer. */

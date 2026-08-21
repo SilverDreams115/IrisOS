@@ -266,13 +266,13 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    struct task     *ft          = (struct task *)tcb_obj;
-    struct KProcess *target_proc = ft->process;
-    if (!target_proc || ft->state != TASK_BLOCKED_FAULT) {
+    struct task *ft = (struct task *)tcb_obj;
+    /* Stage 7 Step 15: the fault, the record and its resolution are all the
+     * thread's — there is no longer a process to hold across this. */
+    if (ft->state != TASK_BLOCKED_FAULT) {
         kobject_release(tcb_obj);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
-    kobject_retain(&target_proc->base);
 
     /* Phase 25 (P13): a seq-checked resolution must name the exact fault the
      * caller observed.  If the task refaulted since (a NEW generation), or the
@@ -280,7 +280,6 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * same NOT_FOUND class as every other stale (process, task, state)
      * mismatch, with no side effect on the pending fault. */
     if (seq_checked && ft->fault_seq != expected_seq) {
-        kobject_release(&target_proc->base);
         kobject_release(tcb_obj);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
@@ -291,12 +290,11 @@ uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         task_kill_external(ft);
     }
 
-    /* Phase 20: the fault is resolved — drop the pending-fault record so a later
-     * SYS_PROCESS_FAULT_INFO honestly returns WOULD_BLOCK, and bump the
+    /* Phase 20: the fault is resolved — drop the pending-fault record so a
+     * later SYS_TCB_FAULT_INFO honestly returns WOULD_BLOCK, and bump the
      * resume/kill counter. */
-    kprocess_fault_clear(target_proc, ft, action == 1);
+    kfault_resolve(ft, action == 1);
 
-    kobject_release(&target_proc->base);
     kobject_release(tcb_obj);
     return syscall_ok_u64(0);
 }

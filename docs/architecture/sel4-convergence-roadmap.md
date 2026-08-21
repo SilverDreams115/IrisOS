@@ -1344,60 +1344,81 @@ only where it maps into one, and gives it back when done.
 ### What Stage 7 still needs, and why it is not an increment
 
 `KProcess` itself, and the user-space process server that replaces the policy
-it carries.  Steps 4-8 emptied the object of everything that could be moved
-without first deciding a supervision protocol; what is left is that protocol.
+it carries.  Steps 4-15 emptied the object of everything that could be moved
+without first deciding a supervision protocol; what is left is that protocol,
+plus two pieces that belong to a different retirement.
 
 The inventory, measured rather than described — every remaining kernel read
-through `t->process`:
+through `t->process`, and where it comes from:
 
-| what | reads | who needs it |
+| what | reads | where |
 |---|---|---|
-| `cspace_root` | 9 | the BOOT PATH building the root task's CSpace before anything can name it, and `SYS_TCB_CONFIGURE`'s identity check |
-| `vspace` | 8 | `SYS_PROCESS_VSPACE`, `SYS_PROCESS_CREATE`, the reap, the boot path |
-| `exit_code`, `base` | 3 | death reporting and the object header |
+| `cspace_root` | 9 | `kernel_main.c` — the boot path |
+| `vspace` | 8 | `kernel_main.c` — the boot path |
+| `storage_pool` | 1 | a comment in `syscall_cap.c` recording what was removed |
 
-(`mem_pool` was a fourth row until Step 14; it is `storage_pool` now, read by
-nothing but the object's own destructor.)
+Every one of the live reads is the BOOT PATH: the root task's CSpace and
+address space are built before anything exists that could name them.  That
+exception is recorded in the ledger and does NOT retire with the process
+server — it retires when the root task can speak for itself.
 
-Step 9 took the cross-task ones out, Step 10 took death notification out,
-Step 12 took fault registration out, Step 13 took kill and status out, and
-Step 14 took the default budget out.  What is left is:
+What still holds a `struct KProcess *` outside the boot path, and why:
 
-- **the boot path** (`cspace_root`, `vspace`): the root task's CSpace and
-  address space are built before anything exists that could name them.  This is
-  the exception the ledger already records and it does not retire with the
-  process server — it retires when the root task can speak for itself.
-- **`SYS_PROCESS_CREATE` / `SYS_PROCESS_SELF` / `SYS_PROCESS_VSPACE`**: the
-  object's remaining constructor and accessors.  These are what a user-space
-  process server replaces outright rather than converts, because what they
-  create is the policy container itself.
+- **`SYS_PROCESS_CREATE` and `SYS_TCB_CONFIGURE`.**  The constructor, and the
+  check that a thread is configured with the CSpace and VSpace its process was
+  composed from.  A user-space process server replaces these outright rather
+  than converting them, because what they create IS the policy container: in
+  seL4 there is no process object, and `seL4_TCB_Configure` binds a CNode and a
+  VSpace to a thread with nothing to agree with.
+- **the KVmo owner/payer relation** (`kvmo_bind_owner`, `kvmo_owner`, the
+  `owned_vmos` and page counters).  A VMO is charged to a process, and that
+  process is its resource domain.  This retires with the KVMO OBJECT, per the
+  ledger (FROZEN, memory-server) — seL4 has Frames and no owner.  Step 14 took
+  the memory side of it out (a VMO's pages come from a budget the caller
+  names); what is left is the accounting identity.
+- **`irq_routing`'s owner.**  Which principal a device route belongs to, so
+  teardown can clear it.  Same class: a route needs an owner, and the owner is
+  a process until there is a device server.
+- **`SYS_RESOURCE_INFO`** and the diagnostic gauges, which report per-process
+  accounting and retire with the accounting.
 
-That is the process server's remaining job description.
+So the honest boundary is this: Stage 7's stated goal — *retire everything a
+process capability was standing in for* — is DONE.  Fifteen syscalls are
+retired, the object carries no authority a capability to something else could
+not express, and no hot path reads it.  What remains is not authority but
+IDENTITY: a process is still the name of a resource domain, and dissolving that
+name requires the memory server (Stage 7's other half, per the ledger) and a
+user-space process server to take over composition.  Those are two more
+increments, not the tail of this one.
 
-What the server has to answer, concretely:
+Retired across Steps 3-15, all permanently reserved and answering
+`NOT_SUPPORTED`:
 
-- **Death.**  Answered in Steps 10 and 13 for the observing half —
-  `SYS_TCB_WATCH` and `SYS_TCB_EXIT_CODE` name the thread — but
-  `SYS_PROCESS_WATCH` and `SYS_PROCESS_EXIT_CODE` still exist as retired
-  numbers, and seL4 has neither in any form: a supervisor knows because it
-  holds the child's TCBs and the child tells it over an endpoint it was given.
-  IRIS keeps the kernel-signalled version of that.
-- **Naming another task's CSpace/VSpace.**  A process capability is what makes
-  `SYS_PROCESS_VSPACE` possible.  With the process gone, a supervisor holds the
-  child's root CNode and VSpace capabilities directly — which it already does
-  at spawn time (Stage 6-pure Steps 4/5) and currently throws away.
+| number | syscall | step |
+|---|---|---|
+| 26 | `SYS_PROCESS_STATUS` | 13 |
+| 28 | `SYS_PROCESS_SELF` | 15 |
+| 29 | `SYS_PROCESS_WATCH` | 10 |
+| 35 | `SYS_PROCESS_KILL` | 13 |
+| 47 | `SYS_EXCEPTION_HANDLER` | 12 |
+| 58 | `SYS_THREAD_START` | (Stage 7 opening) |
+| 71 | `SYS_PROCESS_EXIT_CODE` | 10 |
+| 104 | `SYS_PROC_CSPACE_MINT` | 9 |
+| 105 | `SYS_PROCESS_FAULT_INFO` | 12 |
+| 107 | `SYS_PROCESS_VSPACE` | 15 |
+| 116 | `SYS_CSPACE_MINT_INTO` | 9 |
+
+Added in their place, each naming the object it acts on: `SYS_TCB_FAULT_INFO`
+(123), `SYS_TCB_WATCH` (124), `SYS_TCB_EXIT_CODE` (125),
+`SYS_TCB_SET_FAULT_HANDLER` (126) — alongside `SYS_CSPACE_SELF` (119),
+`SYS_TCB_CONFIGURE` (120), `SYS_TCB_WRITE_REGS` (121) and
+`SYS_VSPACE_MAP_TABLE` (122) from Stages 5 and 6-pure.  `KPROCESS_MAX_LIVE`
+retired in Step 3 and the global thread identifier in Step 7.
 
 One smaller item remains and is NOT Stage 7 work:
 
 - **The VMO-count quota** retires with the `KVMO` object (memory server), per
   the ledger.
-
-Retired so far, all permanently reserved and answering `NOT_SUPPORTED`:
-`KPROCESS_MAX_LIVE` (Step 3, a constant rather than a syscall), the global
-thread identifier (Step 7), `SYS_PROCESS_WATCH` (29), `SYS_PROCESS_EXIT_CODE`
-(71), `SYS_PROC_CSPACE_MINT` (104), `SYS_CSPACE_MINT_INTO` (116) in Steps 9-10,
-`SYS_EXCEPTION_HANDLER` (47) and `SYS_PROCESS_FAULT_INFO` (105) in Step 12, and
-`SYS_PROCESS_STATUS` (26) and `SYS_PROCESS_KILL` (35) in Step 13.
 
 ## Stage 8 — Full MCS scheduling
 

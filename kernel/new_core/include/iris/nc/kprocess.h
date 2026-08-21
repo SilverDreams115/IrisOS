@@ -253,7 +253,7 @@ int              kprocess_notify_fault(struct task *t, uint64_t vector,
  * the one it names.  Takes the THREAD rather than its id: the caller has
  * already resolved it, and an id comparison here was a second place the
  * kernel selected a thread by number. */
-void             kprocess_fault_clear(struct KProcess *p, struct task *ft, int killed);
+void             kfault_resolve(struct task *ft, int killed);
 void             kprocess_fault_stat_nohandler(void);
 uint32_t         kprocess_fault_delivery_count(void);
 uint32_t         kprocess_fault_nohandler_count(void);

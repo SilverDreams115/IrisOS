@@ -579,21 +579,25 @@ static void task_execution_teardown_off_cpu(struct task *t) {
      * clearing is too — and the counter that made that observable
      * (kfault_cleanup) still counts exactly the records actually cleared.
      */
-    if (t->fault_valid) {
+    {
+        /* Under the thread's own obj_lock, which is what the other writer
+         * (SYS_TCB_SET_FAULT_HANDLER) holds.  `terminal` is set above with
+         * interrupts off and re-read there under this lock, so a registration
+         * that passed the terminal check cannot install into a thread this
+         * block has already emptied — the references it took would have had
+         * nobody left to release them. */
+        struct KNotification *fn;
+        struct KCNode        *fc;
+        int                   had_fault;
+        uint64_t irqfl = irq_spinlock_lock(&t->obj_lock);
+        had_fault      = t->fault_valid;
         t->fault_valid = 0;
-        kprocess_fault_stat_cleanup();
-    }
-    if (t->fault_notif) {
-        struct KNotification *fn = t->fault_notif;
-        t->fault_notif = 0;
-        kobject_active_release(&fn->base);
-        kobject_release(&fn->base);
-    }
-    if (t->fault_cspace) {
-        struct KCNode *fc = t->fault_cspace;
-        t->fault_cspace = 0;
-        kobject_active_release(&fc->base);
-        kobject_release(&fc->base);
+        fn = t->fault_notif; t->fault_notif = 0;
+        fc = t->fault_cspace; t->fault_cspace = 0;
+        irq_spinlock_unlock(&t->obj_lock, irqfl);
+        if (had_fault) kprocess_fault_stat_cleanup();
+        if (fn) { kobject_active_release(&fn->base); kobject_release(&fn->base); }
+        if (fc) { kobject_active_release(&fc->base); kobject_release(&fc->base); }
     }
 
     /* The watch's own reference, dropped after it has fired. */

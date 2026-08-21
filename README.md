@@ -205,10 +205,11 @@ is no silent fallback to the legacy path.
 ## User-space pager & file-backed memory
 
 Demand fault resolution runs entirely in ring 3. A supervised **pager** service
-resolves page faults for the processes it is granted, backing them from files
+resolves page faults for the threads it is granted, backing them from files
 served by the VFS — with **no new kernel syscall**; it composes from
-`SYS_VMO_MAP_PAGE`, `SYS_PROCESS_VSPACE`, fault generations, seq-checked resume,
-and the VFS grant protocol.
+`SYS_VMO_MAP_PAGE`, the target's address-space capability (handed over by the
+spawner that retyped it), fault generations, seq-checked resume, and the VFS
+grant protocol.
 
 - **Fault delivery**: a faulting THREAD's exception is delivered as a
   `KNotification` signal, armed on that thread with

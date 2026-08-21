@@ -300,13 +300,16 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     struct KCNode        *old_c = 0;
     struct task          *pending = 0;
 
+    uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
+    /* Under the lock, not before it: thread teardown empties these fields under
+     * the same lock, so a check outside it could pass just as teardown starts
+     * and leave the references installed below with nobody to release them. */
     if (target->terminal) {
+        irq_spinlock_unlock(&target->obj_lock, irqfl);
         kobject_active_release(&dest_cn->base); kobject_release(&dest_cn->base);
         kobject_release(n_obj); kobject_release(&target->base);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
-
-    uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
     old_n = (target->fault_notif == notif) ? 0 : target->fault_notif;
     old_c = (target->fault_cspace == dest_cn) ? 0 : target->fault_cspace;
     if (target->fault_notif != notif) {
