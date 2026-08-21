@@ -34,15 +34,15 @@
 
 /* ── Helpers (mirrored from test_boot_cspace.c) ──────────────────────── */
 
-static struct KProcess *vs_make_proc(void) {
-    struct KProcess *p = (struct KProcess *)kpage_alloc((uint32_t)sizeof(struct KProcess));
+static struct cs_fixture *vs_make_proc(void) {
+    struct cs_fixture *p = (struct cs_fixture *)kpage_alloc((uint32_t)sizeof(struct cs_fixture));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
     p->cspace_root = NULL;
     return p;
 }
 
-static void vs_free_proc(struct KProcess *p) {
+static void vs_free_proc(struct cs_fixture *p) {
     /* Stage 4: structural root — the fixture drops its refs explicitly. */
     if (p->cspace_root) {
         kobject_active_release(&p->cspace_root->base);
@@ -52,7 +52,7 @@ static void vs_free_proc(struct KProcess *p) {
     kpage_free(p, (uint32_t)sizeof(*p));
 }
 
-static struct KCNode *vs_setup_root(struct KProcess *p) {
+static struct KCNode *vs_setup_root(struct cs_fixture *p) {
     struct KCNode *root = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
     if (!root) return NULL;
     kobject_active_retain(&root->base);
@@ -61,7 +61,7 @@ static struct KCNode *vs_setup_root(struct KProcess *p) {
 }
 
 /* Stage 4: structural-root shim preserving the fixtures' fetch/release shape. */
-static iris_error_t vs_root_fetch(struct KProcess *p, struct KObject **out,
+static iris_error_t vs_root_fetch(struct cs_fixture *p, struct KObject **out,
                                   iris_rights_t *rights_out) {
     if (!p || !p->cspace_root) return IRIS_ERR_NOT_FOUND;
     *out = &p->cspace_root->base;
@@ -80,7 +80,7 @@ static iris_error_t vs_root_fetch(struct KProcess *p, struct KObject **out,
  * to simulate the process->vspace release, or call vs_free_proc which
  * will trigger CNode teardown releasing the CNode's refs.
  */
-static struct KVSpace *vs_boot_grant(struct KProcess *p, uint64_t cr3) {
+static struct KVSpace *vs_boot_grant(struct cs_fixture *p, uint64_t cr3) {
     struct KVSpace *vs = kvspace_alloc(cr3);
     if (!vs) return NULL;
 
@@ -163,7 +163,7 @@ void test_vspace_cspace(void) {
 
     /* [VS-5] KVSpace minted into BOOT_CPTR_VSPACE; cspace_resolve_vspace returns IRIS_OK. */
     {
-        struct KProcess *p = vs_make_proc();
+        struct cs_fixture *p = vs_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(vs_setup_root(p));
 
@@ -194,7 +194,7 @@ void test_vspace_cspace(void) {
 
     /* [VS-6] cspace_resolve_cap on BOOT_CPTR_VSPACE slot reports KOBJ_VSPACE. */
     {
-        struct KProcess *p = vs_make_proc();
+        struct cs_fixture *p = vs_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(vs_setup_root(p));
 
@@ -224,7 +224,7 @@ void test_vspace_cspace(void) {
 
     /* [VS-7] cspace_resolve_vspace on a KOBJ_UNTYPED slot → IRIS_ERR_WRONG_TYPE. */
     {
-        struct KProcess *p = vs_make_proc();
+        struct cs_fixture *p = vs_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(vs_setup_root(p));
 
@@ -253,7 +253,7 @@ void test_vspace_cspace(void) {
 
     /* [VS-8] cspace_resolve_vspace with required rights not in slot → ACCESS_DENIED. */
     {
-        struct KProcess *p = vs_make_proc();
+        struct cs_fixture *p = vs_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(vs_setup_root(p));
 
@@ -281,7 +281,7 @@ void test_vspace_cspace(void) {
 
     /* [VS-9] CPTR_NULL always rejects — cspace_resolve_vspace returns IRIS_ERR_INVALID_ARG. */
     {
-        struct KProcess *p = vs_make_proc();
+        struct cs_fixture *p = vs_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(vs_setup_root(p));
 
@@ -296,7 +296,7 @@ void test_vspace_cspace(void) {
 
     /* [VS-11] kernel_main dual-insert pattern: refcount=2, active_refs=1. */
     {
-        struct KProcess *p = vs_make_proc();
+        struct cs_fixture *p = vs_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(vs_setup_root(p));
 
@@ -337,7 +337,7 @@ void test_vspace_cspace(void) {
 
     /* [VS-13] Repeated cspace_resolve_vspace + release does not leak active refs. */
     {
-        struct KProcess *p = vs_make_proc();
+        struct cs_fixture *p = vs_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(vs_setup_root(p));
 
@@ -377,7 +377,7 @@ void test_vspace_cspace(void) {
 
     /* [VS-14] kvspace_invalidate + process-ref-release + CNode teardown: no double-free. */
     {
-        struct KProcess *p = vs_make_proc();
+        struct cs_fixture *p = vs_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(vs_setup_root(p));
 

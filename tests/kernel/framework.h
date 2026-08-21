@@ -64,4 +64,13 @@ static inline void *test_untyped_child_block(unsigned long payload) {
 #define TEST_SUITE(name) \
     do { printf("  suite: %s\n", name); } while (0)
 
+/*
+ * Stage 7-proc: `struct KProcess` is deleted from the kernel, and the host
+ * suites were using one as a HOLDER for a root CNode — the resolvers have
+ * taken that root directly since Stage 7 Step 4, so the fake process was a
+ * box around one field.  The fixture is named for what it always was.
+ */
+struct KCNode;
+struct cs_fixture { struct KCNode *cspace_root; };
+
 #endif

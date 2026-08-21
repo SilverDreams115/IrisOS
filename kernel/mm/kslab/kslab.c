@@ -5,7 +5,9 @@
 
 /*
  * 11 power-of-2 size classes: 2^5 (32) through 2^15 (32768).
- * The largest class (32768) covers struct KProcess (~26KB with embedded HandleTable).
+ * The largest class (32768) covered struct KProcess, the biggest kernel object
+ * there was; it is deleted (Stage 7-proc) and the class now covers a wide root
+ * CNode.
  */
 #define KSLAB_MIN_LOG2   5u    /* 32 bytes  */
 #define KSLAB_MAX_LOG2  15u    /* 32768 bytes */

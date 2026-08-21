@@ -60,144 +60,16 @@ struct KFrame;
 
 
 /*
- * KProcess — process control object.
+ * struct KProcess DELETED (Stage 7-proc).
  *
- * Owns process-scoped resources and points to the initial thread
- * (which lives in the kernel's static tasks[] array).
- *
- * The KProcess and the initial thread have independent lifecycles:
- *   - thread_count hits 0 when the last thread calls task_exit_current.
- *   - The KProcess (and handles pointing to it) lives until its
- *     refcount drops to zero (all handles closed).
- *
- * Lifecycle split:
- *   - kprocess_teardown(): logical teardown when thread_count reaches 0;
- *     closes process-scoped handles and unregisters global ownership.
- *   - kprocess_reap_address_space(): runs only after switching away from the
- *     last thread's CR3; frees the process-owned address space.
- *   - destroy(): final object cleanup when refcount reaches zero. It may finish
- *     any missing idempotent cleanup, but must not touch task-local resources
- *     such as the user stack or scheduler linkage.
- *
- * Invariants:
- *   - base must be first (KObject cast rules).
- *   - thread_count tracks live threads; 0 means process is fully exited.
- *   - teardown_complete == 1 means logical teardown has STARTED — the flag is
- *     claimed on entry, not stored on completion, so exactly one caller ever
- *     runs the sequence.  Readers treat it as "this process is finished", and
- *     refusing from the start of teardown rather than the end is the point.
- *   - aspace_reaped == 1 means cr3-owned memory is gone or is being reclaimed
- *     right now; claimed on entry for the same reason.
- *   - Before final destroy of an exited process, task-local resources must
- *     already have been released by task_exit_current()/reaper paths.
+ * What is left in this file is the FAULT machinery and the global gauges,
+ * which never belonged to a process — a fault is taken by a thread and the
+ * counters are facts about the kernel.  The file keeps its name until the
+ * symbols are renamed; nothing here allocates, owns or names a process.
  */
-struct KProcess {
-    struct KObject  base;       /* must be first */
-    uint32_t        thread_count; /* live threads in this process; 0 = dead */
-    /* Has this process EVER had a thread?  thread_count == 0 does not say:
-     * it is equally true of a process created and never started and of one
-     * whose last thread is midway through exiting, and those two need
-     * opposite handling — the first has no teardown path but this flag, the
-     * second already has one running.  Set at every thread_count increment,
-     * never cleared. */
-    uint8_t         threads_ever;
-    /* Stage 7 Step 5: `cr3` is a CACHE of vspace->cr3, kept only for the two
-     * places that still ask a PROCESS about its address space — the teardown
-     * gate and kprocess_reap_address_space.  user_cr3 and pcid are gone: they
-     * described a walk, so they live on the walk (struct KVSpace), and the
-     * scheduler reads them from the thread's own VSpace. */
-    uint64_t        cr3;          /* == vspace->cr3 while the process is alive */
-    uint8_t         teardown_complete; /* logical teardown already ran */
-    /* exit_code DELETED (Stage 7 Step 15) — the code belongs to the execution
-     * that produced it (struct task), and SYS_PROCESS_EXIT_CODE, the only
-     * thing that ever read the process copy, retired in Step 10. */
-    uint8_t         aspace_reaped;     /* address space cleanup already ran */
-    /* Stage 7 Step 10: nothing ARMS these any more — SYS_PROCESS_WATCH is
-     * retired and a death is watched on the thread.  The array and its
-     * emit/clear pair are dead weight kept only until KProcess itself goes,
-     * and are what a process server replaces with its own child table. */
-    /* exit_watches DELETED (Stage 7-proc): a death is watched on the THREAD
-     * that dies (SYS_TCB_WATCH, Step 10) and SYS_PROCESS_WATCH retired with
-     * it, so nothing has armed one of these since. */
-    /* Phase 6.3: vmo_mappings removed — VMO pages are now KFrame-backed and
-     * tracked in KVSpace.mappings; kvspace_invalidate handles teardown. */
-
-    /* Stage 7 Step 12: exception delivery is entirely the THREAD's — the
-     * handler notification, its signal bits, the mailbox CNode and slot, and
-     * the fault record all live on struct task.  What stood here was the
-     * process-scoped version of every one of them, kept alive by one thing: a
-     * handler could only name the faulting thread by id, so the registration
-     * had to hang off something a supervisor could hold.  Step 7 gave it the
-     * thread's capability and Step 12 moved the registration to match. */
-    /* Stage 6 Step 2: the creation reference — the one that lets a running
-     * process outlive the last capability to it — is dropped exactly once.
-     * Before this flag, a process created and never STARTED could not be
-     * reclaimed at all: kill saw no threads and returned success without
-     * dropping it, so the KProcess, its VSpace, its PML4 and (now) its
-     * page-table budget stayed alive with no way to get them back. */
-    uint8_t  initial_ref_dropped;
-    /*
-     * Stage 6 Step 4: the Untyped this object's own block was carved from,
-     * retained for its lifetime.  NULL = kernel-slab (root task).
-     *
-     * Stage 7 Step 14 renamed it from `mem_pool`, because that is all it does
-     * now.  It used to be the DEFAULT BUDGET: the Untyped the kernel charged
-     * an allocation to when a syscall did not name one — device capabilities,
-     * initrd image copies, anonymous VMOs.  Every one of those takes the
-     * budget as a required argument now, so nothing reads this to decide whose
-     * memory pays.  What is left is the storage anchor: the block lives inside
-     * the region this pool owns, so the pool must outlive the block.
-     */
-    struct KUntyped *storage_pool;
-    /* Phase 25: per-process fault generation.  fault_seq_counter increments on
-     * every delivery (1-based, wraps); fault_seq is the generation of the
-     * currently pending record.  The generation of the fault a TASK is blocked
-     * on lives in task->fault_seq (per-TCB — the per-process record is
-     * last-writer-wins but each blocked task keeps its own generation). */
-    uint32_t fault_seq;
-    uint32_t fault_seq_counter;
-    /* Phase 29 — resource accounting.  A KProcess IS a resource domain: every
-     * object is charged to the KProcess that logically OWNS it (its payer),
-     * selected by explicit capability authority at creation — NOT to whoever
-     * ran the syscall (see docs/architecture/resource-ownership-accounting.md).
-     * usage counters are the live charge; *_hwm is the monotonic high-water
-     * mark (never decreases), an observable, defensible ceiling witness. */
-    /* Phase S1: owned_notifications/_hwm retired with the notification quota —
-     * notifications are Untyped-funded (see sel4-convergence-ledger.md). */
-
-    /* Ph95 (Phase 8): root CNode for hierarchical CSpace traversal.
-     *
-     * Stage 4: this was a `handle_id_t` into the process's own handle table,
-     * which made the handle table a hard dependency of EVERY CPtr resolution —
-     * `cspace_resolve_slot` had to look the root up by handle before it could
-     * walk a single slot.  The namespace meant to REPLACE handles was rooted in
-     * one.  It is now a structural back-reference, exactly like `vspace` below:
-     * the kernel reaches a process's CSpace root directly, and resolving a CPtr
-     * touches no handle table at all.  This is also what let the cross-process
-     * paths (SYS_CSPACE_MINT_INTO, retype2) stop reaching into ANOTHER
-     * process's handle table to find its root.
-     *
-     * Holds one lifecycle ref + one active ref (the pair the handle used to
-     * own), both released in kprocess_teardown.  NULL if kcnode_alloc OOM'd at
-     * creation — the process still runs, it just has no CSpace. */
-    struct KCNode *cspace_root;
-
-    /* Phase 4: VSpace capability wrapping this process's address space.
-     * Holds one lifecycle ref (kobject_retain).  NULL if kvspace_alloc OOM'd at
-     * creation or if the process has not yet had its CR3 assigned. */
-    struct KVSpace *vspace;
-
-    /* Phase 6.2: Bootstrap KFrame alloc retains.
-     * Populated by task_create_user_impl for each page mapped via
-     * bootstrap_kframe_map.  Released by kprocess_release_bootstrap_frames
-     * inside kprocess_reap_address_space, always AFTER kvspace_invalidate
-     * so mapped_count is 0 at the time each alloc retain is dropped. */
-
-};
 
 #define KPROCESS_POOL_SIZE 0u  /* no static pool — kpage-backed; 0 = unbounded allocator ceiling */
 
-struct KProcess *kprocess_alloc(void);
 
 /*
  * Stage 6-pure Step 5 — a process COMPOSED from objects its creator made.
@@ -210,15 +82,10 @@ struct KProcess *kprocess_alloc(void);
  * The process takes its own lifecycle + active references on `cnode`; the
  * caller keeps its capability.
  */
-struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
-                                     struct KCNode *cnode);
-void             kprocess_free (struct KProcess *p);
 /* Join a thread to `p` — thread_count++ and threads_ever = 1 — or refuse with
  * IRIS_ERR_BAD_HANDLE because teardown has already been claimed.  Test and act
  * under one lock hold; see kprocess.c for why a separate flag read is not a
  * gate.  Every path that gives a thread a process goes through this. */
-iris_error_t     kprocess_attach_thread(struct KProcess *p);
-void             kprocess_teardown(struct KProcess *p, struct task *exiting_thread);
 /* Phase S1: kprocess_quota_{acquire,release}_notification retired (Untyped is
  * the budget for notifications).  VMO/page quotas remain for legacy objects. */
 /* Phase 29 — global resource-accounting gauges (SYS_RESOURCE_INFO). */
@@ -251,14 +118,13 @@ void             kprocess_fault_stat_cleanup(void);
  * Backed by an internal atomic counter updated on alloc/destroy. Useful as a
  * compact indicator of how many processes (not merely tasks) are alive.
  */
-uint32_t kprocess_live_count(void);
 
 /* kprocess_is_alive DELETED (Stage 7 Step 13) — it backed SYS_PROCESS_STATUS,
  * and liveness is the EXECUTION's state (SYS_TCB_GET_INFO), not a bit derived
  * from a thread count somebody else owns. */
 
-static inline int kprocess_teardown_complete(const struct KProcess *p) {
-    return p && p->teardown_complete;
-}
+/* kprocess_teardown_complete DELETED (Stage 7-proc) with the object it asked
+ * about.  A thread's terminal flag is the equivalent question, asked of the
+ * execution that answers it. */
 
 #endif

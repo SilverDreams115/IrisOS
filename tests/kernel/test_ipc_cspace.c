@@ -24,15 +24,15 @@
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
-static struct KProcess *make_proc(void) {
-    struct KProcess *p = (struct KProcess *)kpage_alloc((uint32_t)sizeof(struct KProcess));
+static struct cs_fixture *make_proc(void) {
+    struct cs_fixture *p = (struct cs_fixture *)kpage_alloc((uint32_t)sizeof(struct cs_fixture));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
     p->cspace_root = NULL;
     return p;
 }
 
-static void free_proc(struct KProcess *p) {
+static void free_proc(struct cs_fixture *p) {
     /* Stage 4: structural root — released here instead of by
      * handle_table_close_all, which no longer owns it. */
     if (p->cspace_root) {
@@ -44,7 +44,7 @@ static void free_proc(struct KProcess *p) {
 }
 
 /* Install a CSpace root with num_slots slots and return the root CNode. */
-static struct KCNode *setup_cspace(struct KProcess *p, uint32_t num_slots) {
+static struct KCNode *setup_cspace(struct cs_fixture *p, uint32_t num_slots) {
     struct KCNode *root = kcnode_alloc(num_slots);
     if (!root) return NULL;
     /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
@@ -74,7 +74,7 @@ void test_ipc_cspace(void) {
 
     /* ── [EP] CSpace path: typed resolve OK ── */
     {
-        struct KProcess *p = make_proc();
+        struct cs_fixture *p = make_proc();
         ASSERT_NOT_NULL(p);
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
@@ -97,7 +97,7 @@ void test_ipc_cspace(void) {
 
     /* ── [EP] Wrong object type in CSpace → WRONG_TYPE ── */
     {
-        struct KProcess *p = make_proc();
+        struct cs_fixture *p = make_proc();
         ASSERT_NOT_NULL(p);
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
@@ -118,7 +118,7 @@ void test_ipc_cspace(void) {
 
     /* ── [EP] Missing rights in CSpace → ACCESS_DENIED ── */
     {
-        struct KProcess *p = make_proc();
+        struct cs_fixture *p = make_proc();
         ASSERT_NOT_NULL(p);
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
@@ -144,7 +144,7 @@ void test_ipc_cspace(void) {
 
     /* ── [Reply] CSpace path: typed resolve OK ── */
     {
-        struct KProcess *p = make_proc();
+        struct cs_fixture *p = make_proc();
         ASSERT_NOT_NULL(p);
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
@@ -166,7 +166,7 @@ void test_ipc_cspace(void) {
 
     /* ── [Reply] Wrong type → WRONG_TYPE ── */
     {
-        struct KProcess *p = make_proc();
+        struct cs_fixture *p = make_proc();
         ASSERT_NOT_NULL(p);
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
@@ -186,7 +186,7 @@ void test_ipc_cspace(void) {
 
     /* ── [Notification] CSpace path: typed resolve OK ── */
     {
-        struct KProcess *p = make_proc();
+        struct cs_fixture *p = make_proc();
         ASSERT_NOT_NULL(p);
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);
@@ -214,7 +214,7 @@ void test_ipc_cspace(void) {
 
     /* ── [Phase 9] badges: per-cap identity ───────────────────────────── */
     {
-        struct KProcess *p = make_proc();
+        struct cs_fixture *p = make_proc();
         ASSERT_NOT_NULL(p);
         struct KCNode *root = setup_cspace(p, 8);
         ASSERT_NOT_NULL(root);

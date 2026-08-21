@@ -916,7 +916,7 @@ What is still CHARGED rather than retyped, and needs a later stage:
 Ledger D-5 records both, and is no longer a single row about who pays: the half
 about who CREATES is closed.
 
-## Stage 7 — KProcess retirement  ← IN PROGRESS
+## Stage 7 — KProcess retirement  ✅ CLOSED
 
 Precondition: Stages 5–6 (a process = TCB+CSpace+VSpace composition).  Met by
 Stage 6-pure: a spawner retypes its child's address space and CSpace and hands
@@ -1420,7 +1420,7 @@ One smaller item remains and is NOT Stage 7 work:
 - **The VMO-count quota** retires with the `KVMO` object (memory server), per
   the ledger.
 
-## Stage 7-mem — the memory server  ← IN PROGRESS
+## Stage 7-mem — the memory server  ✅ CLOSED
 
 Precondition: Stage 7's authority work (done).
 
@@ -1463,100 +1463,59 @@ with it the last things `KProcess` is for.
 born from Untyped* — is checkable, and `scripts/purity_allowlist.txt` contains
 only the boot path.
 
-## Stage 7-proc — the user-space process server  ← IN PROGRESS
+## Stage 7-proc — KProcess deleted  ✅ CLOSED
 
-Precondition: Stage 7-mem.
+`struct KProcess` no longer exists.  Nothing in the kernel allocates, owns or
+names a process; `SYS_PROCESS_CREATE` (25) answers `NOT_SUPPORTED` and
+`KOBJ_PROCESS` is a reserved enumerator no live capability carries.
 
-**Done so far.**  `SYS_TCB_CONFIGURE`'s IDENTITY CHECK is gone: the CSpace and
-VSpace you name no longer have to match the target process's own.  That check
-was `KProcess` acting as an authority over a capability the caller already
-held — naming it was not enough, it also had to agree with a third object — and
-threads sharing a CSpace and a VSpace are what a process IS rather than
-something to be checked against one.  This is seL4's `seL4_TCB_Configure`.
+What a "process" is, is **threads configured with the same CSpace and the same
+VSpace** — a fact about two capabilities rather than a third object to point
+at.  That is seL4's model exactly, and the steps that got here were each about
+moving one thing off the object:
 
-**Reclamation has moved off `thread_count`.**  `kprocess_reap_address_space` is
-DELETED, and its three jobs went where they belong:
+| what moved | to | step |
+|---|---|---|
+| CSpace root, address space | the thread | 4, 5 |
+| fault record, fault handler | the thread | 6, 12 |
+| death, exit code | the thread | 10 |
+| kill, liveness | the thread | 13 |
+| the creation reference | nobody — a process lived as long as its capabilities | 13 |
+| the default budget | a required argument | 14 |
+| the VMO owner and its quota | the Untyped a VMO is carved from | 7-mem |
+| the IRQ route owner | the notification the route is bound to | 7-mem |
+| address-space reclamation | the address space's own close and destroy | 7-proc |
+| the root CSpace's cycle break | the CNode's own reference count | 7-proc |
+| the spawn's handle | the child's first thread | 7-proc |
 
-- **Invalidating the address space** is its own `close` hook — the moment the
-  last CAPABILITY to it goes.  It used to be the last thread's exit through a
-  per-process count, which made an address space's usability a property of a
-  third object's bookkeeping.
-- **The root task's bootstrap frames** moved to `KVSpace`.  They are frames the
-  kernel mapped into that address space before anything existed that could ask
-  for them, and a process held references to frames mapped in a space it was
-  not.  They go when the space settles.
-- **The VSpace reference** is released by `kprocess_teardown`, which is the
-  last thing the process still does for an address space and goes with it.
+Three things had to be fixed before the object could go, and each was a real
+bug rather than bookkeeping:
 
-A thread now holds the ACTIVE reference on its address space as well as the
-lifecycle one — the same pair it has held on its CSpace root since Step 4.  That
-is what makes the close hook fire at the right moment: without it, a spawner
-deleting its own capability at the end of a spawn invalidated the space its
-child was about to run in.
+1. **A thread held no ACTIVE reference on its address space** — only a
+   lifecycle one.  So a spawner deleting its own capability at the end of a
+   spawn invalidated the space its child was about to run in.  Every spawned
+   thread faulted on its own entry point until that was fixed.
+2. **A slot naming its own CNode took an active reference**, which is a
+   reference-counting lie: an object reachable only from itself is reachable by
+   nobody.  The count never fell to zero, so a self-naming CSpace never emptied
+   and `KProcess` had to break the cycle pre-emptively at a moment it knew
+   because it counted threads.
+3. **53 syscall guards asked `!t->process`** when what they meant was "can this
+   task name anything".
 
-This is a REAL semantic change and the suite records it: an address space
-outlives its threads while a capability to it lives, so a late map into a dead
-target's space now SUCCEEDS.  That is seL4's shape — a page directory outlives
-its threads and can still be mapped into — and four tests (T187, T188, T196,
-T210) were re-derived onto it rather than retired, because what they were
-really about (the books come back to baseline once the capability is dropped)
-still holds.
+The **user-space process server is not needed** and is not scheduled.  It was
+in this roadmap as the thing that would replace KProcess's policy; there turned
+out to be no policy left to replace once every piece was moved to the object it
+concerned.  A supervisor keeps its children's threads (and, when it maps into
+them, their address spaces), which `svc_load_minted_ws` hands over — that IS
+the child table a process server would have kept, in the place seL4 puts it.
 
-✅ **The syscall guards are converted.**  All 53 `!t->process` guards (plus one
-header inline) now read `!t->cspace_root` — a task that can act is one that can
-NAME something, which is what the next line of every one of those syscalls goes
-on to use.  Behaviour-preserving today; it stops being so the moment
-`t->process` goes, which is the point.
-
-✅ **The per-process exit watches are deleted.**  Nothing had armed one since
-Step 10 moved death-watching onto the thread and retired `SYS_PROCESS_WATCH`:
-the emit fired into an array nobody could fill and the clear released
-references nobody took.
-
-✅ **The CSpace self-cycle is closed**, which was the last structural blocker.
-
-`kprocess_teardown`'s final job was releasing the process's CSpace ROOT, and it
-had to empty the root's slots FIRST to break a cycle: a CSpace may name its own
-CNodes — the root task holds a capability to its own root CNode — and the
-self-slot's ACTIVE reference meant the count never reached zero, so the close
-hook that empties it never ran.  The process broke the cycle pre-emptively, at
-a moment it knew because it counted threads.
-
-A slot naming its own CNode now takes no active reference.  An object reachable
-only from ITSELF is reachable by nobody, and the count says so; the lifecycle
-reference stays, so close fires when the last external holder goes, empties the
-slots, and that release is what lets destroy run.  No pre-emptive emptying, no
-counting.  `BC-13` was the negative control for the old behaviour ("without the
-explicit teardown the object is NOT freed") and is now the positive case.
-
-This closes the SELF cycle only.  A cycle through another CNode (A names B, B
-names A) is still uncollectable — the ledger row this came from, whose general
-fix is seL4's recursive delete with zombie capabilities.  Nothing in tree
-builds one, and it is no longer on Stage 7's path.
-
-**What is left of Stage 7-proc is now mechanical rather than structural:**
-
-1. Delete `t->process`, `KProcess`, and `SYS_PROCESS_CREATE`.  Nothing
-   structural depends on them any more — reclamation is capability-driven, the
-   guards are converted, the exit watches are gone, and the CSpace collects
-   itself.
-2. The userland half: 307 sites pass a process handle around, and
-   `svc_load_minted_ws` returns one.  The suite's child table (Step 10) is
-   already keyed the way this wants — it maps a process capability to the
-   thread the child was started with, and inverting it is the change.
-
-With `KProcess` gone, "spawn a process" is a userland composition: retype an
-Untyped, retype a CNode and a VSpace and a TCB out of it, configure, write
-registers, resume.  `svc_loader` already does all of that.  What a process
-SERVER adds is the part the kernel used to hold: a registry of who spawned
-whom, the death protocol, and the reclamation policy.
-
-- A server holding each child's TCB, CNode, VSpace and budget, and answering
-  the questions the retired syscalls answered — over an endpoint, in a
-  protocol it defines.
-- `init`, `svcmgr` and `iris_test` become clients of it rather than each
-  keeping its own child table.  (The suite's Stage 7 child table is a
-  deliberate preview of this shape.)
+One thing this leaves behind, recorded rather than hidden: `svc_load_minted_ws`
+still takes `proc_c`, the spawn AUTHORITY, and ignores it.  There is nothing to
+authorise — a child is a TCB, a CNode and a VSpace retyped from a budget the
+spawner holds, and holding that budget is the authority, as it is in seL4.
+Retiring the argument belongs with retiring `IRIS_CPTR_PROC_CONTROL`, which is
+Stage 10-abi's business.
 
 ## Stage 8 — Full MCS scheduling
 

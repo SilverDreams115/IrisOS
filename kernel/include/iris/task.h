@@ -7,7 +7,6 @@
 #include <iris/nc/error.h>
 #include <iris/nc/spinlock.h>
 
-struct KProcess;
 struct KEndpoint;
 struct KSchedContext;
 struct KReply;
@@ -131,7 +130,17 @@ struct task {
     uint64_t          ustack_phys;     /* physical base of user stack */
     uint64_t          utext_phys;      /* physical base of userboot text copy (ring-3 only) */
     uint32_t          utext_pages;     /* page count at utext_phys; 0 if not applicable */
-    struct KProcess  *process;         /* owning process; NULL for kernel tasks */
+    /*
+     * `process` DELETED (Stage 7-proc).
+     *
+     * A thread's process was the object it belonged to, and everything that
+     * object was for has moved to the thread: its CSpace root and its address
+     * space (Steps 4 and 5), its fault record and handler (Steps 6 and 12),
+     * its death and exit code (Step 10), and its budget, which the caller of
+     * an allocating syscall now names (Step 14).  What a "process" is, is
+     * threads configured with the same CSpace and the same VSpace — which is
+     * a fact about those two capabilities, not a third object to point at.
+     */
     /*
      * Stage 7 Step 4 — the CSpace this thread resolves CPtrs in, held by the
      * THREAD.
@@ -345,7 +354,7 @@ struct task *task_spawn_user(uint64_t arg0);
  * rewriting the entry frame of a thread that has run would corrupt the kernel
  * stack it is standing on.
  */
-iris_error_t ktcb_configure(struct task *t, struct KProcess *proc,
+iris_error_t ktcb_configure(struct task *t,
                             struct KCNode *cspace, struct KVSpace *vspace);
 iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
                              uint64_t arg);

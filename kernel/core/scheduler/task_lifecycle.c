@@ -481,13 +481,10 @@ static void free_user_text_pages(struct task *t) {
 static void task_execution_teardown_off_cpu(struct task *t) {
     if (!t || t->terminal) return;
 
-    struct KProcess *proc = t->process;
-
     /*
      * Make t unreachable and unwakeable FIRST, atomically with respect to a
-     * timer IRQ, before any of the slower calls below (kprocess_teardown,
-     * kprocess_reap_address_space especially) that can run long enough to be
-     * interrupted.  scheduler_tick and sched_handle_idle iterate ktcb_registry
+     * timer IRQ, before any of the slower calls below (the CSpace and address
+     * space releases especially) that can run long enough to be interrupted.  scheduler_tick and sched_handle_idle iterate ktcb_registry
      * for occupied slots and call task_wakeup() on whatever they find
      * sleeping, blocked, or budget-exhausted with an elapsed wake_tick; if
      * that scan still finds t occupied, with its pre-kill blocked state and
@@ -520,17 +517,16 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     free_user_stack_pages(t);
     free_user_text_pages(t);
 
-    int do_teardown = 0;
-    if (proc && proc->thread_count > 0) {
-        proc->thread_count--;
-        if (proc->thread_count == 0) do_teardown = 1;
-    }
-    if (do_teardown) {
-        kprocess_teardown(proc, t);
-        /* Stage 7-proc: reclamation is the ADDRESS SPACE's own — its close
-         * hook invalidates it and its destructor takes the walk down, both
-         * driven by capabilities rather than by a thread count. */
-    }
+    /*
+     * Stage 7-proc: no process to detach from, and nothing to count.
+     *
+     * A thread count reaching zero used to be what tore down an address space
+     * and emptied a CSpace.  Both are driven by capabilities now — an address
+     * space is invalidated by its own close hook and destroyed by its
+     * destructor, a CSpace empties itself when its last holder goes — so the
+     * releases below ARE the teardown, and they happen for every thread rather
+     * than for a distinguished last one.
+     */
 
     atomic_fetch_sub_explicit(&sched_live_count, 1u, memory_order_relaxed);
     unlink_task(t);
@@ -617,18 +613,6 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     /* The kernel stack was freed above, with the registry slot it is keyed
      * by; these fields are already clear. */
 
-    if (do_teardown)
-        kprocess_free(proc);
-
-    /* Stage 7 Step 13: give back the reference the join took.  It is dropped
-     * LAST of the process-scoped work, after teardown and the address-space
-     * reap above, so neither can be running against an object this release
-     * destroys.  `t->process` is cleared first: a TERMINATED thread whose
-     * capability somebody still holds must not be left naming freed memory. */
-    if (proc) {
-        t->process = 0;
-        kobject_release(&proc->base);
-    }
 
     /* Drop the scheduler's execution reference LAST.  If no cap references the
      * object, this triggers task_backing_free_on_destroy (slot → TASK_DEAD).
@@ -809,7 +793,9 @@ void task_set_bootstrap_arg0(struct task *t, uint64_t arg0) {
 
 static struct task *task_create_user_impl(uint64_t arg0) {
     struct task *t = 0;
-    struct KProcess *proc = 0;
+    struct KCNode  *root_cn = 0;
+    struct KVSpace *root_vs = 0;
+    uint64_t        root_cr3 = 0;
     uint64_t ustack_phys = 0;
     uint32_t ustack_pages = (uint32_t)((USER_STACK_SIZE / 4096ULL) - USER_STACK_GUARD_PAGES);
     uint64_t ub_copy_phys = 0;
@@ -834,19 +820,28 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     t->ticks_left = TASK_DEFAULT_SLICE;
     t->home_cpu   = 0;
 
-    proc = kprocess_alloc();
-    if (!proc) goto fail;
+    /*
+     * Stage 7-proc: the root task is built from the two objects a thread runs
+     * in, and nothing else.
+     *
+     * It used to allocate a KProcess to hold them — the one process the kernel
+     * made rather than a spawner — and then read them back off it.  The thread
+     * holds both directly (Steps 4 and 5), so the object in between was a
+     * place to put them on the way.
+     */
+    root_cn = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
+    if (!root_cn) goto fail;
 
-    proc->cr3 = paging_create_user_space();
-    if (proc->cr3 == 0) goto fail;
+    root_cr3 = paging_create_user_space();
+    if (root_cr3 == 0) goto fail;
 
     /* Phase 6.2: create KVSpace before bootstrap maps so bootstrap_kframe_map
      * can register mapping back-refs via kframe_map_page. */
     {
-        struct KVSpace *vs = kvspace_alloc(proc->cr3);
+        struct KVSpace *vs = kvspace_alloc(root_cr3);
         if (!vs) goto fail;
         kobject_retain(&vs->base);
-        proc->vspace = vs;
+        root_vs = vs;
         kobject_release(&vs->base);
     }
 
@@ -876,10 +871,10 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     for (uint32_t pg = 0; pg < ub_pages; pg++) {
         uint64_t va   = USER_TEXT_BASE + (uint64_t)pg * 0x1000ULL;
         uint64_t phys = ub_copy_phys   + (uint64_t)pg * 0x1000ULL;
-        struct KFrame *f = bootstrap_kframe_map(proc->vspace, phys, va, 2ULL /* MAP_EXEC */);
+        struct KFrame *f = bootstrap_kframe_map(root_vs, phys, va, 2ULL /* MAP_EXEC */);
         if (!f) goto fail_copy;
-        if (kvspace_register_bootstrap_frame(proc->vspace, f) != IRIS_OK) {
-            kframe_unmap_page(f, proc->vspace, va);
+        if (kvspace_register_bootstrap_frame(root_vs, f) != IRIS_OK) {
+            kframe_unmap_page(f, root_vs, va);
             kobject_release(&f->base);
             goto fail_copy;
         }
@@ -896,10 +891,10 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         uint64_t va   = USER_STACK_BASE + 4096ULL * USER_STACK_GUARD_PAGES +
                         (uint64_t)pg * 4096ULL;
         uint64_t phys = ustack_phys + (uint64_t)pg * 4096ULL;
-        struct KFrame *f = bootstrap_kframe_map(proc->vspace, phys, va, 1ULL /* MAP_WRITABLE */);
+        struct KFrame *f = bootstrap_kframe_map(root_vs, phys, va, 1ULL /* MAP_WRITABLE */);
         if (!f) goto fail;
-        if (kvspace_register_bootstrap_frame(proc->vspace, f) != IRIS_OK) {
-            kframe_unmap_page(f, proc->vspace, va);
+        if (kvspace_register_bootstrap_frame(root_vs, f) != IRIS_OK) {
+            kframe_unmap_page(f, root_vs, va);
             kobject_release(&f->base);
             goto fail;
         }
@@ -921,26 +916,21 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         uint64_t entropy = (uint64_t)tsc_lo & 0xFULL; /* 0..15 */
         t->user_rsp = USER_STACK_TOP - 8 - (entropy << 4);
     }
-    t->process          = proc;
+
     /* Stage 7 Step 4: the root task's thread holds its own CSpace too.  It is
      * read off the process here because there is no capability to pass — this
      * is the one thread whose CSpace the KERNEL fabricated, before anything
      * existed that could name it. */
-    t->cspace_root = proc->cspace_root;
+    t->cspace_root = root_cn;
     if (t->cspace_root) {
         kobject_retain(&t->cspace_root->base);
         kobject_active_retain(&t->cspace_root->base);
     }
-    t->vspace = proc->vspace;
+    t->vspace = root_vs;
     if (t->vspace) {
         kobject_retain(&t->vspace->base);
         kobject_active_retain(&t->vspace->base);
     }
-    /* Same join every other thread takes.  Nothing can be tearing this process
-     * down — it was allocated a few lines above and no capability to it exists
-     * yet — but the count and the flag have one owner, so this path does not
-     * get its own copy of them to drift. */
-    if (kprocess_attach_thread(proc) != IRIS_OK) goto fail;
 
     uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     kstack_top &= ~0xFULL;
@@ -984,14 +974,12 @@ static struct task *task_create_user_impl(uint64_t arg0) {
 fail_copy:
     free_phys_pages_range(ub_copy_phys, ub_pages);
 fail:
-    if (t) t->process = 0;
     free_phys_pages_range(ustack_phys, ustack_pages);
-    if (proc) {
-        /* Stage 7-proc: reclamation is the ADDRESS SPACE's own — its close
-         * hook invalidates it and its destructor takes the walk down, both
-         * driven by capabilities rather than by a thread count. */
-        kprocess_free(proc);
-    }
+    /* Stage 7-proc: reclamation is the ADDRESS SPACE's and the CSPACE's own —
+     * releasing the references is the whole of it, and their destructors run
+     * when nobody holds them. */
+    if (root_vs) kobject_release(&root_vs->base);
+    if (root_cn) kobject_release(&root_cn->base);
     if (t) {
         /* Every goto-fail above happens after kstack_alloc succeeded but
          * before ktcb_object_init/rq_enqueue — undo exactly the registry
@@ -1046,35 +1034,26 @@ void task_abort_spawned_user(struct task *t) {
  * configuring a thread does not start it, and TCB_WRITE_REGS still has to say
  * where it starts.
  */
-iris_error_t ktcb_configure(struct task *t, struct KProcess *proc,
+/*
+ * Stage 7-proc: a thread is configured with a CSpace and a VSpace, and that is
+ * all there is to it.
+ *
+ * It used to take a KProcess as well and JOIN it — a count to increment and a
+ * teardown flag to lose a race against.  A "process" is what you get when
+ * several threads are configured with the same CSpace and the same VSpace, so
+ * there is nothing to join and nothing to agree with: the pair IS the
+ * membership.  This is seL4's seL4_TCB_Configure, which binds a CNode and a
+ * VSpace to a thread and knows about no third object.
+ */
+iris_error_t ktcb_configure(struct task *t,
                             struct KCNode *cspace, struct KVSpace *vspace) {
-    if (!t || !proc || !vspace || !vspace->cr3) return IRIS_ERR_INVALID_ARG;
+    if (!t || !vspace || !vspace->cr3) return IRIS_ERR_INVALID_ARG;
     if (t->configured || t->terminal) return IRIS_ERR_ALREADY_EXISTS;
 
     if (task_registry_alloc(t) != 0) return IRIS_ERR_NO_MEMORY;
     if (kstack_alloc(t, t->reg_slot) != 0) {
         task_registry_release(t);
         return IRIS_ERR_NO_MEMORY;
-    }
-
-    /*
-     * The join, and the last thing here that can fail.
-     *
-     * It is also the teardown gate: kprocess_attach_thread tests
-     * teardown_complete and increments thread_count under one lock hold, so a
-     * kill that lands mid-configure either loses the race and sees this thread
-     * in the count, or wins it and this returns BAD_HANDLE.  Reading the flag
-     * up front and attaching later — which is what this used to do — left a
-     * window in which a thread joined a process whose address space had
-     * already been reaped.
-     */
-    {
-        iris_error_t ae = kprocess_attach_thread(proc);
-        if (ae != IRIS_OK) {
-            kstack_free(t);
-            task_registry_release(t);
-            return ae;
-        }
     }
 
     /*
@@ -1117,7 +1096,6 @@ iris_error_t ktcb_configure(struct task *t, struct KProcess *proc,
     t->time_slice = TASK_DEFAULT_SLICE;
     t->ticks_left = TASK_DEFAULT_SLICE;
     t->home_cpu   = 0;
-    t->process    = proc;
 
     /* Linked into the global task list like every other thread: the list is
      * what the timeout/fault sweeps walk, and a thread that can run must be

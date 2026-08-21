@@ -41,15 +41,15 @@
 
 /* ── Helpers (mirror test_untyped_cspace.c helpers) ──────────────────── */
 
-static struct KProcess *bc_make_proc(void) {
-    struct KProcess *p = (struct KProcess *)kpage_alloc((uint32_t)sizeof(struct KProcess));
+static struct cs_fixture *bc_make_proc(void) {
+    struct cs_fixture *p = (struct cs_fixture *)kpage_alloc((uint32_t)sizeof(struct cs_fixture));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
     p->cspace_root = NULL;
     return p;
 }
 
-static void bc_free_proc(struct KProcess *p) {
+static void bc_free_proc(struct cs_fixture *p) {
     /* Stage 4: the root is held structurally, so the fixture drops its refs
      * explicitly instead of relying on handle_table_close_all. */
     if (p->cspace_root) {
@@ -60,7 +60,7 @@ static void bc_free_proc(struct KProcess *p) {
     kpage_free(p, (uint32_t)sizeof(*p));
 }
 
-static struct KCNode *bc_setup_root(struct KProcess *p) {
+static struct KCNode *bc_setup_root(struct cs_fixture *p) {
     struct KCNode *root = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
     if (!root) return NULL;
     /* kcnode_alloc's ref becomes the lifecycle ref; add the active ref the
@@ -73,7 +73,7 @@ static struct KCNode *bc_setup_root(struct KProcess *p) {
 /* Stage 4: the CSpace root is no longer addressed by a handle.  This shim
  * keeps the fixtures' fetch-then-release shape while reading it structurally,
  * so the assertions below still exercise the same ref discipline. */
-static iris_error_t bc_root_fetch(struct KProcess *p, struct KObject **out,
+static iris_error_t bc_root_fetch(struct cs_fixture *p, struct KObject **out,
                                   iris_rights_t *rights_out) {
     if (!p || !p->cspace_root) return IRIS_ERR_NOT_FOUND;
     *out = &p->cspace_root->base;
@@ -94,7 +94,7 @@ static struct KUntyped *bc_make_ut(uint64_t size) {
  * the parallel handle insert this helper used to mirror is deleted, and with
  * it the "CSpace failure is non-fatal because the handle still works" shape
  * the tests below were written around. */
-static iris_error_t bc_boot_publish(struct KProcess *p,
+static iris_error_t bc_boot_publish(struct cs_fixture *p,
                                     struct KUntyped *boot_ut,
                                     uint32_t         drain_idx) {
     iris_rights_t r = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
@@ -119,7 +119,7 @@ void test_boot_cspace(void) {
 
     /* [BC-1] Single boot block: resolve via CPtr works after dual insert. */
     {
-        struct KProcess *p = bc_make_proc();
+        struct cs_fixture *p = bc_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(bc_setup_root(p));
 
@@ -142,7 +142,7 @@ void test_boot_cspace(void) {
 
     /* [BC-2] CNode slot rights == handle-table rights (not greater). */
     {
-        struct KProcess *p = bc_make_proc();
+        struct cs_fixture *p = bc_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(bc_setup_root(p));
 
@@ -165,7 +165,7 @@ void test_boot_cspace(void) {
 
     /* [BC-3] CPTR_NULL slot (0) remains empty after boot grants. */
     {
-        struct KProcess *p = bc_make_proc();
+        struct cs_fixture *p = bc_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(bc_setup_root(p));
 
@@ -182,7 +182,7 @@ void test_boot_cspace(void) {
 
     /* [BC-4] Multiple consecutive boot slots all resolvable. */
     {
-        struct KProcess *p = bc_make_proc();
+        struct cs_fixture *p = bc_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(bc_setup_root(p));
 
@@ -213,7 +213,7 @@ void test_boot_cspace(void) {
     /* [BC-5] Failed mint (slot index >= slot_count) releases refs cleanly;
      * object still alive via handle. */
     {
-        struct KProcess *p = bc_make_proc();
+        struct cs_fixture *p = bc_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(bc_setup_root(p));
 
@@ -246,7 +246,7 @@ void test_boot_cspace(void) {
 
     /* [BC-7] Boot slot constants are within the 256-slot root CNode. */
     {
-        struct KProcess *p = bc_make_proc();
+        struct cs_fixture *p = bc_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(bc_setup_root(p));
 
@@ -266,7 +266,7 @@ void test_boot_cspace(void) {
 
     /* [BC-8] Repeated CPtr resolves do not leak active refs. */
     {
-        struct KProcess *p = bc_make_proc();
+        struct cs_fixture *p = bc_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(bc_setup_root(p));
 
@@ -284,7 +284,7 @@ void test_boot_cspace(void) {
 
         /* Object still alive after 8 resolve-release cycles. */
         struct KObject *obj; iris_rights_t r;
-        struct KProcess *p2 = bc_make_proc();
+        struct cs_fixture *p2 = bc_make_proc();
         ASSERT_NOT_NULL(p2);
         (void)obj; (void)r; (void)p2;
         bc_free_proc(p2);
@@ -295,7 +295,7 @@ void test_boot_cspace(void) {
 
     /* [BC-10] slot >= KCNODE_DEFAULT_SLOTS → kcnode_mint returns INVALID_ARG. */
     {
-        struct KProcess *p = bc_make_proc();
+        struct cs_fixture *p = bc_make_proc();
         ASSERT_NOT_NULL(p);
         ASSERT_NOT_NULL(bc_setup_root(p));
 

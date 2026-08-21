@@ -9,15 +9,15 @@
 #include <string.h>
 
 /* Minimal KProcess for testing: only cspace_root matters. */
-static struct KProcess *make_test_proc(void) {
-    struct KProcess *p = (struct KProcess *)kpage_alloc((uint32_t)sizeof(struct KProcess));
+static struct cs_fixture *make_test_proc(void) {
+    struct cs_fixture *p = (struct cs_fixture *)kpage_alloc((uint32_t)sizeof(struct cs_fixture));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
     p->cspace_root = NULL;
     return p;
 }
 
-static void free_test_proc(struct KProcess *p) {
+static void free_test_proc(struct cs_fixture *p) {
     /* Stage 4: structural root — released here instead of by
      * handle_table_close_all, which no longer owns it. */
     if (p->cspace_root) {
@@ -44,7 +44,7 @@ void test_cspace(void) {
 
     /* ── CPTR_NULL always rejected ── */
     {
-        struct KProcess *p = make_test_proc();
+        struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);
         struct KObject *out; iris_rights_t rout;
         ASSERT_EQ(cspace_resolve_cap(p->cspace_root, CPTR_NULL, RIGHT_NONE, &out, &rout),
@@ -54,7 +54,7 @@ void test_cspace(void) {
 
     /* ── No CSpace root (HANDLE_INVALID) → NOT_FOUND ── */
     {
-        struct KProcess *p = make_test_proc();
+        struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);
         /* cspace_root stays NULL */
         struct KObject *out; iris_rights_t rout;
@@ -65,7 +65,7 @@ void test_cspace(void) {
 
     /* ── Single-level: empty slot → NOT_FOUND ── */
     {
-        struct KProcess *p = make_test_proc();
+        struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);
 
         struct KCNode *root = kcnode_alloc(8);
@@ -84,7 +84,7 @@ void test_cspace(void) {
 
     /* ── Single-level: populated slot → correct object and rights ── */
     {
-        struct KProcess *p = make_test_proc();
+        struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);
 
         struct KCNode *root = kcnode_alloc(8);
@@ -124,7 +124,7 @@ void test_cspace(void) {
 
     /* ── Rights check: required rights not met → ACCESS_DENIED ── */
     {
-        struct KProcess *p = make_test_proc();
+        struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);
 
         struct KCNode *root = kcnode_alloc(8);
@@ -154,7 +154,7 @@ void test_cspace(void) {
 
     /* ── Two-level traversal ── */
     {
-        struct KProcess *p = make_test_proc();
+        struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);
 
         /* root: 8 slots (3 bits), child: 8 slots (3 bits).
@@ -199,7 +199,7 @@ void test_cspace(void) {
      * … all resolved to slot 3.  Leftover bits with nothing to descend into
      * are a malformed CPtr, not an alias. */
     {
-        struct KProcess *p = make_test_proc();
+        struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);
 
         struct KCNode *root = kcnode_alloc(8);   /* 3 radix bits */
@@ -247,7 +247,7 @@ void test_cspace(void) {
 
     /* ── Typed resolve: cspace_resolve_endpoint OK ── */
     {
-        struct KProcess *p = make_test_proc();
+        struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);
 
         struct KCNode *root = kcnode_alloc(8);
@@ -274,7 +274,7 @@ void test_cspace(void) {
 
     /* ── Typed resolve: wrong type returns WRONG_TYPE ── */
     {
-        struct KProcess *p = make_test_proc();
+        struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);
 
         struct KCNode *root = kcnode_alloc(8);
@@ -299,7 +299,7 @@ void test_cspace(void) {
 
     /* ── cspace_resolve_only_cnode: CSpace path (root set, slot has CNode) ── */
     {
-        struct KProcess *p = make_test_proc();
+        struct cs_fixture *p = make_test_proc();
         ASSERT_NOT_NULL(p);
 
         struct KCNode *root  = kcnode_alloc(8);

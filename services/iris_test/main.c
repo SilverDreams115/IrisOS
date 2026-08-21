@@ -20518,24 +20518,15 @@ static void test_t299(void) {
     it_slot_delete(T299_SLOT_POOL);
     it_slot_delete(T299_SLOT_PROC);
 
-    /* 1. no address space, no process. */
-    if (it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
-                (long)((uint64_t)T299_SLOT_PROC << 32), 0)
-        != (long)IRIS_ERR_INVALID_ARG) {   /* CPTR_NULL names nothing */
-        ok = 0; why = "spawn without address space allowed";
-    }
-    it_slot_delete(T299_SLOT_PROC);
-
-    /* 2. and it is a capability of a specific type — Stage 6-pure Step 4
-     *    made this argument the ADDRESS SPACE the caller retyped, not a budget
-     *    for the kernel to build one from. */
-    if (ok && it_sys3(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
-                      (long)((uint64_t)T299_SLOT_PROC << 32),
-                      (long)IRIS_CPTR_SVCMGR_EP)
-              != (long)IRIS_ERR_INVALID_ARG) {
-        ok = 0; why = "endpoint accepted as address space";
-    }
-    it_slot_delete(T299_SLOT_PROC);
+    /*
+     * Stage 7-proc: legs 1 and 2 retired with SYS_PROCESS_CREATE.
+     *
+     * They asserted that its address-space argument was REQUIRED and was a
+     * capability of a specific type — real claims about a syscall that no
+     * longer exists.  A thread is given its address space by
+     * SYS_TCB_CONFIGURE, whose equivalents (CPTR_NULL refused, a wrong type
+     * refused either way round) are T297's.
+     */
 
     /* A budget of our own to measure. */
     long pool = -1;
@@ -20564,32 +20555,15 @@ static void test_t299(void) {
         ccn = it_retype_slot_alloc(pool, IRIS_KOBJ_CNODE, 16);
         if (ccn < 0) { ok = 0; why = "cnode retype"; }
     }
-    if (ok && it_sys4(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
-                      (long)((uint64_t)T299_SLOT_PROC << 32), cvs, ccn) != 0) {
-        ok = 0; why = "spawn with address space";
-    }
-    /* ...and both are spent: one walk and one CSpace per process, because
-     * teardown is per-process and would empty a shared one. */
-    if (ok) {
-        long cvs2 = it_retype_slot_alloc(pool, IRIS_KOBJ_VSPACE, 4096);
-        long ccn2 = it_retype_slot_alloc(pool, IRIS_KOBJ_CNODE, 16);
-        it_slot_delete(S1_SLOT_E);
-        if (cvs2 < 0 || ccn2 < 0) { ok = 0; why = "second pair"; }
-        else if (it_sys4(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
-                         (long)((uint64_t)S1_SLOT_E << 32), cvs, ccn2)
-                 != (long)IRIS_ERR_BUSY) {
-            ok = 0; why = "address space bound twice";
-        }
-        it_slot_delete(S1_SLOT_E);
-        if (ok && it_sys4(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
-                          (long)((uint64_t)S1_SLOT_E << 32), cvs2, ccn)
-                  != (long)IRIS_ERR_BUSY) {
-            ok = 0; why = "cspace bound twice";
-        }
-        it_slot_delete(S1_SLOT_E);
-        if (cvs2 >= 0) it_slot_delete((uint32_t)cvs2);
-        if (ccn2 >= 0) it_slot_delete((uint32_t)ccn2);
-    }
+    /*
+     * Stage 7-proc: the "bound twice" probes retired with the binding.
+     *
+     * A walk and a CSpace were EXCLUSIVE to one process, because teardown was
+     * per-process and a shared one would have been emptied by the first
+     * death.  Teardown is per-object now — an address space ends when its last
+     * capability does — so several threads sharing a CSpace and a VSpace is
+     * not a hazard to refuse: it is the definition of a process.
+     */
 
     /* Stage 6 Step 3: creating the address space already costs the budget —
      * its PML4 is a page of it and its VSpace header a block of it, where both
@@ -20615,9 +20589,30 @@ static void test_t299(void) {
      * way round, and SYS_PROCESS_VSPACE is retired. */
     long t299_vs = ok ? cvs : -1;
     if (ok && t299_vs < 0) { ok = 0; why = "child vspace"; }
-    if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo, t299_vs,
-                      (long)0x80C0000000ULL, 1) != 0) {
-        ok = 0; why = "map into child";
+    /*
+     * Stage 7-proc: the levels are charged to THIS pool, said explicitly.
+     *
+     * The suite's ordinary map wrapper fixes a MISSING_TABLE by retyping a
+     * level from IRIS_CPTR_TEST_UNTYPED — its own budget — so the levels this
+     * leg is about were never charged to `pool` at all.  The assertion below
+     * passed anyway, on the KProcess allocation that SYS_PROCESS_CREATE used
+     * to make out of the same region: it was measuring the wrong thing and the
+     * right number.  Retiring the process took the accident away and left the
+     * claim, so the claim is made properly — the fixup names `pool`, which is
+     * what a loader holding its child's budget does.
+     */
+    if (ok) {
+        long mr = iris_syscall4(SYS_VMO_MAP_INTO, vmo, t299_vs,
+                                (long)0x80C0000000ULL, 1);
+        if (mr == (long)IRIS_ERR_MISSING_TABLE)
+            mr = iris_vspace_fixup(SYS_VMO_MAP_INTO, vmo, t299_vs,
+                                   (long)0x80C0000000ULL, 1,
+                                   IT_VS, pool,
+                                   (long)(((uint64_t)201 << 32) | IT_OBJ_CNODE_SLOT),
+                                   (long)IT_PT_SCRATCH,
+                                   (long)(((uint64_t)202 << 32) | IT_OBJ_CNODE_SLOT),
+                                   (long)IT_PT_VS_SCRATCH);
+        if (mr != 0) { ok = 0; why = "map into child"; }
     }
     /* Drop it immediately: this test's whole point is that the budget becomes
      * RESET-able once the child dies, and a VSpace capability held here keeps
@@ -20641,19 +20636,12 @@ static void test_t299(void) {
      *    pages stay where they are (a bump allocator does not rewind), but the
      *    tables stop counting as children, so a RESET can reuse the region.
      *
-     *    A process that NEVER STARTED is what makes this observable, and it is
-     *    a case that did nothing at all until Stage 6 Step 2: kill found no
-     *    threads and returned success, leaving the address space — and now its
-     *    budget — pinned forever.  Stage 7 Step 13 removed the kill instead of
-     *    fixing it twice: SYS_PROCESS_CREATE no longer keeps a reference of
-     *    its own, so DELETING THE CAPABILITY is what ends a process that never
-     *    ran, and that is the only line left here. */
+     *    Stage 7-proc: an address space is an object WE made, and DELETING
+     *    THE CAPABILITY is the whole of ending it.  Nothing was ever started
+     *    here — there is no process to start — so this leg is the pure form of
+     *    the claim: the levels a map built are charged to the budget, and they
+     *    stop counting the moment nobody names the space they are in. */
     if (ok) {
-        it_slot_delete(T299_SLOT_PROC);
-        /* Stage 6-pure Step 4: the address space is an object WE made, so the
-         * process dying is not the end of it — our capability is.  Holding one
-         * keeps the walk alive and its levels charged, which is the point of
-         * it being a capability rather than a side effect of the process. */
         if (cvs >= 0) it_slot_delete((uint32_t)cvs);
         if (ccn >= 0) it_slot_delete((uint32_t)ccn);
         it_quiesce_reaper();
@@ -21141,31 +21129,26 @@ static void test_t304(void) {
         it_fail("T304", "cnode carve"); return;
     }
 
+    /*
+     * Stage 7-proc: the thing being counted is a THREAD.
+     *
+     * This used to create 80 processes, each composed of an address space and
+     * a CSpace, because a process was the object a ceiling had been invented
+     * for.  There is no process object: a "process" is threads sharing a
+     * CSpace and a VSpace.  The claim is unchanged and the subject is simpler
+     * — how many of a kernel object can one budget hold, and what stops you —
+     * so the loop retypes TCBs and the answer must be "the budget, cleanly".
+     */
     for (uint32_t i = 0; i < T304_MAX; i++) {
-        long vs, cs, r;
-        /* The scratch slots are reused every iteration: SYS_PROCESS_CREATE
-         * takes its own references to both, so once it returns the caller's
-         * capability is surplus.  That is also what keeps this to two slots
-         * rather than 160. */
-        it_slot_delete(T304_VS_SLOT);
-        it_slot_delete(T304_CS_SLOT);
-        vs = it_sys4(SYS_UNTYPED_RETYPE2, pool,
-                     (long)((uint64_t)IRIS_KOBJ_VSPACE | (1ULL << 32)),
-                     (long)((uint64_t)T304_VS_SLOT << 32), 4096);
-        if (vs != 0) { fail_rc = vs; break; }
-        cs = it_sys4(SYS_UNTYPED_RETYPE2, pool,
-                     (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
-                     (long)((uint64_t)T304_CS_SLOT << 32), 4);
-        if (cs != 0) { fail_rc = cs; break; }
-        r = it_sys4(SYS_PROCESS_CREATE, (long)IRIS_CPTR_PROC_CONTROL,
-                    (long)((uint64_t)T304_CN_SLOT | ((uint64_t)(i + 1u) << 32)),
-                    (long)T304_VS_SLOT, (long)T304_CS_SLOT);
+        long r = it_sys4(SYS_UNTYPED_RETYPE2, pool,
+                         (long)((uint64_t)IRIS_KOBJ_TCB | (1ULL << 32)),
+                         (long)((uint64_t)T304_CN_SLOT | ((uint64_t)(i + 1u) << 32)), 0);
         if (r != 0) { fail_rc = r; break; }
         got++;
     }
 
     /* 1. the number that used to be refused. */
-    if (got < T304_TARGET) { ok = 0; why = "fewer than 65 live processes"; }
+    if (got < T304_TARGET) { ok = 0; why = "fewer than 65 live objects"; }
     /* 2. and whatever stopped it said so cleanly. */
     if (ok && got < T304_MAX && fail_rc >= 0) { ok = 0; why = "stopped without an error"; }
 

@@ -16,6 +16,10 @@
 #include <iris/nc/spinlock.h>
 
 typedef enum {
+    /* KOBJ_PROCESS is RESERVED, not removed (Stage 7-proc): the enumerator's
+     * VALUE is the wire type SYS_CAP_IDENTIFY reports and renumbering the rest
+     * would change what every other capability calls itself.  Nothing creates
+     * one — struct KProcess is deleted — so no live capability carries it. */
     KOBJ_PROCESS,
     KOBJ_CHANNEL,
     KOBJ_NOTIFICATION,

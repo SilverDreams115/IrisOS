@@ -6,7 +6,6 @@
 #include <iris/nc/error.h>
 #include <stdint.h>
 
-struct KProcess;
 
 #define KVMO_POOL_SIZE 0u
 #define KVMO_MAX_PAGES 16384u

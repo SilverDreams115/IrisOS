@@ -90,35 +90,16 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (err != IRIS_OK) return syscall_err(err);
 
     /*
-     * Stage 7: WHICH process this thread joins is an argument.
+     * Stage 7-proc: arg3 is RESERVED and ignored.
      *
-     * Until now it was always the caller's own, because the spawner could not
-     * name its child's CSpace and VSpace — they were carved by the kernel
-     * inside SYS_PROCESS_CREATE and never handed out.  Stage 6-pure Step 4/5
-     * made the spawner RETYPE both and pass them in, so it holds them from
-     * before the child exists, and the restriction had nothing left to
-     * protect.  arg3 == 0 still means "my own", which is what a thread
-     * creating a sibling wants.
-     *
-     * RIGHT_MANAGE on the process, because adding a thread to it is a change
-     * to what that process can do, not something reading it should permit.
+     * It named the PROCESS the thread would join, gated by RIGHT_MANAGE on it,
+     * and the two capability arguments were then checked for IDENTITY against
+     * that process's own root CNode and address space.  There is no process
+     * object: threads configured with the same CSpace and the same VSpace ARE
+     * a process, so the pair is the membership rather than a claim to be
+     * checked against a third thing.  This is seL4's seL4_TCB_Configure.
      */
-    struct KProcess *proc = caller->process;
-    struct KObject  *proc_obj = 0;
-    if (arg3 != 0u) {
-        iris_rights_t pr;
-        err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg3,
-                                      RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &pr);
-        if (err != IRIS_OK) {
-            kobject_release(&target->base);
-            return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
-        }
-        if (!rights_check(pr, RIGHT_MANAGE)) {
-            kobject_release(proc_obj); kobject_release(&target->base);
-            return syscall_err(IRIS_ERR_ACCESS_DENIED);
-        }
-        proc = (struct KProcess *)proc_obj;
-    }
+    (void)arg3;
 
     /*
      * The CSpace argument: a real KCNode capability the caller HOLDS.
@@ -143,7 +124,6 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg1, RIGHT_NONE,
                                   KOBJ_CNODE, &cs_obj, &cs_rights);
     if (err != IRIS_OK) {
-        if (proc_obj) kobject_release(proc_obj);
         kobject_release(&target->base);
         return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
     }
@@ -160,7 +140,6 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg2,
                                   RIGHT_NONE, KOBJ_VSPACE, &vs_obj, &vs_rights);
     if (err != IRIS_OK) {
-        if (proc_obj) kobject_release(proc_obj);
         kobject_release(&target->base);
         return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
     }
@@ -172,8 +151,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * CALLER holds it in a CSpace slot for the whole of this syscall — that is
      * how it was resolved — so nothing can drop the last reference before
      * ktcb_configure takes its own pair. */
-    err = ktcb_configure(target, proc, cspace, vspace);
-    if (proc_obj) kobject_release(proc_obj);
+    err = ktcb_configure(target, cspace, vspace);
     kobject_release(&target->base);
     if (err != IRIS_OK) return syscall_err(err);
     return syscall_ok_u64(0);

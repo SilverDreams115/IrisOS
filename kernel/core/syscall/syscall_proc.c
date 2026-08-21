@@ -162,177 +162,32 @@ uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 
 /*
- * sys_process_create() → proc_handle or iris_error_t
+ * SYS_PROCESS_CREATE — RETIRED (Stage 7-proc).
  *
- * Allocates a new empty KProcess with a fresh user address space (new CR3).
- * No threads are created.  The caller uses sys_vmo_map_into to populate the
- * address space and sys_thread_start to launch the first thread.
+ * It made a KProcess out of an address space and a root CSpace the caller had
+ * retyped, bound both to it exclusively, and published a capability the
+ * spawner then passed around.  Every reason for that object is gone:
+ *
+ *   - The AUTHORITY it checked (a spawn capability) was authority to make a
+ *     process.  A child is a TCB, a CNode and a VSpace retyped from a budget
+ *     the spawner holds, and holding that budget is what authorises retyping.
+ *     seL4 has no spawn capability either.
+ *   - The BINDING was exclusive because teardown was per-process and a shared
+ *     CSpace would have been emptied by the first death.  Teardown is
+ *     per-object now, so several threads sharing a CSpace and a VSpace is not
+ *     a hazard to refuse — it is the definition of a process.
+ *   - The CAPABILITY it published was what a supervisor named.  A supervisor
+ *     names the THREAD: killing, watching, reading an exit code, arming faults
+ *     and asking whether it is alive have all been thread operations since
+ *     Steps 10 through 13, and svc_loader hands back the child's first thread.
+ *
+ * What is left of "create a process" is what seL4 has: retype the objects,
+ * configure a thread with two of them, write its registers, resume it.
  */
-uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
-                                   uint64_t arg2, uint64_t arg3) {
-    uint64_t dest        = arg1;   /* Step 4: cnode | slot<<32 */
-    uint64_t vspace_cptr = arg2;   /* Stage 6-pure Step 4: the address space */
-    uint64_t cnode_cptr  = arg3;   /* Stage 6-pure Step 5: the root CSpace */
-    struct task *t = task_current();
-    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KObject   *auth_obj;
-    iris_rights_t     auth_rights;
-    /* Stage 5 Step 2: the authority is the PROCESS CONTROL capability, and
-     * nothing else — creating a process no longer travels with initrd access,
-     * debug authority or the framebuffer. */
-    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                 RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
-    if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
-    if (r != IRIS_OK) return syscall_err(r);
-    if (!kbootcap_is((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_PROC_CONTROL)) {
-        kobject_release(auth_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-    kobject_release(auth_obj);
-
-    /*
-     * Stage 6-pure Step 4: the caller supplies the ADDRESS SPACE.
-     *
-     * It used to supply a budget and the kernel built one out of it — carving
-     * a PML4, a VSpace header, and every level underneath.  The holder paid
-     * for an address space it could not name until the process existed, could
-     * not inspect, and could not have built differently.  Now it retypes a
-     * KOBJ_VSPACE from its own Untyped (RETYPE2, 4096) and hands that over,
-     * which is seL4's shape: a process is COMPOSED from objects its creator
-     * made, not conjured from a quota.
-     *
-     * The budget for what remains kernel-side — the KProcess object and its
-     * root CNode — is the one the address space itself came from.  Deriving it
-     * rather than taking a second argument keeps one region per child, so a
-     * holder that RESETs it gets all of the child back with nothing to
-     * remember.
-     */
-    struct KVSpace *vs = 0;
-    {
-        iris_rights_t vr;
-        iris_error_t  ve = cspace_resolve_only_vspace(t->cspace_root,
-                               (iris_cptr_t)vspace_cptr, RIGHT_WRITE, &vs, &vr);
-        if (ve != IRIS_OK)
-            return syscall_err(ve == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ve);
-    }
-    /* One address space, one process: teardown is per-process, so two
-     * processes sharing a walk would each tear down the other's. */
-    iris_error_t be = kvspace_bind(vs);
-    if (be != IRIS_OK) {
-        kobject_active_release(&vs->base); kobject_release(&vs->base);
-        return syscall_err(be);
-    }
-    struct KUntyped *pool = vs->pt_pool;
-    if (!pool) {
-        /* A VSpace with no pool is the root task's, which is not something a
-         * caller can name — but the check is cheap and the alternative is a
-         * NULL deref in kprocess_alloc_from. */
-        kvspace_unbind(vs);
-        kobject_active_release(&vs->base); kobject_release(&vs->base);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-
-    /*
-     * Stage 6-pure Step 5: the caller supplies the root CSpace too.
-     *
-     * With this, everything a process IS comes from objects its creator
-     * retyped — an address space and a CSpace — which is the shape seL4 gives
-     * seL4_TCB_Configure.  The spawner also chooses how wide its child's CSpace
-     * is, where the kernel used to pick 256 slots for everyone.
-     */
-    struct KCNode *cn = 0;
-    {
-        iris_rights_t cr;
-        iris_error_t  ce = cspace_resolve_only_cnode(t->cspace_root,
-                               (iris_cptr_t)cnode_cptr, RIGHT_WRITE, &cn, &cr);
-        if (ce != IRIS_OK) {
-            kvspace_unbind(vs);
-            kobject_active_release(&vs->base); kobject_release(&vs->base);
-            return syscall_err(ce == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ce);
-        }
-    }
-    /* One CNode, one root: teardown empties a root's slots before dropping its
-     * refs (a CSpace may name itself), so a second process sharing it would
-     * have its CSpace emptied by the first one's death. */
-    iris_error_t cbe = kcnode_bind_root(cn);
-    if (cbe != IRIS_OK) {
-        kvspace_unbind(vs);
-        kobject_active_release(&cn->base); kobject_release(&cn->base);
-        kobject_active_release(&vs->base); kobject_release(&vs->base);
-        return syscall_err(cbe);
-    }
-
-    /*
-     * Past here the process OWNS both, and both are spent whatever happens
-     * next: a KProcess that reaches teardown invalidates its address space and
-     * empties its root CSpace, so neither can serve another process again.
-     * Before here nothing owns them, and a claim taken for a composition that
-     * did not happen has to go back — otherwise a caller whose create failed
-     * for want of memory is left holding two capabilities that will answer
-     * BUSY for the rest of the system's life, with no syscall able to clear
-     * the flags.
-     */
-    struct KProcess *proc = kprocess_alloc_from(pool, cn);
-    if (!proc) {
-        kcnode_unbind_root(cn);
-        kobject_active_release(&cn->base);
-        kobject_release(&cn->base);
-        kvspace_unbind(vs);
-        kobject_active_release(&vs->base); kobject_release(&vs->base);
-        return syscall_err(IRIS_ERR_NO_MEMORY);
-    }
-    kobject_active_release(&cn->base);
-    kobject_release(&cn->base);
-
-    /* The VSpace is the process's now: it holds the reference that keeps the
-     * address space alive, and drops it in kprocess_reap_address_space. */
-    kobject_retain(&vs->base);
-    proc->vspace   = vs;
-    proc->cr3      = vs->cr3;
-    kobject_active_release(&vs->base);
-    kobject_release(&vs->base);
-
-    /* Step 4: arg1 names a destination CSpace slot; the new process cap is
-     * published there as an MDB child of the spawn-cap slot that authorised
-     * the create, so it is revocable by the grantor.
-     *
-     * Stage 4: it is REQUIRED — the handle result is retired, so 0 names no
-     * destination and is an error rather than a fall back to the other
-     * namespace. */
-    if (dest == 0u) { kprocess_free(proc); return syscall_err(IRIS_ERR_INVALID_ARG); }
-    {
-        struct KCNode *auth_cn = 0; uint32_t auth_idx = 0;
-        if (cspace_value_is_cptr((iris_cptr_t)arg0) &&
-            cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
-                                &auth_cn, &auth_idx) != IRIS_OK)
-            auth_cn = 0;
-        kobject_retain(&proc->base);   /* publish consumes a ref; keep the initial one */
-        iris_error_t pe = syscall_publish_slot(t, &proc->base,
-                                               RIGHT_READ | RIGHT_WRITE | RIGHT_MANAGE |
-                                               RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_ROUTE,
-                                               dest, auth_cn, auth_idx);
-        if (auth_cn) {
-            kobject_active_release(&auth_cn->base);
-            kobject_release(&auth_cn->base);
-        }
-        if (pe != IRIS_OK) { kprocess_free(proc); return syscall_err(pe); }
-        /*
-         * Stage 7 Step 13: the creation reference is dropped HERE, now that a
-         * capability to the process exists.
-         *
-         * It used to be held until the last thread exited, which is what made
-         * a created-but-never-started process unreclaimable — nothing else
-         * ever dropped it, so SYS_PROCESS_KILL had to special-case tearing one
-         * down.  A thread that joins takes its own reference now
-         * (kprocess_attach_thread), so a running process is kept alive by its
-         * executions and a never-started one by whoever holds a capability to
-         * it.  Deleting the last capability to a process that never ran
-         * destroys it, which is the only thing killing it could have meant.
-         */
-        kprocess_free(proc);
-        return syscall_ok_u64(0);
-    }
+uint64_t sys_process_create(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                            uint64_t arg3) {
+    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 

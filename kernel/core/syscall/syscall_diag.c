@@ -178,7 +178,12 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         w[8]  = __atomic_load_n(&iris_ipc_stat_toctou_fallbacks, __ATOMIC_RELAXED);
         w[9]  = __atomic_load_n(&iris_ipc_stat_reply_caps, __ATOMIC_RELAXED);
         w[10] = __atomic_load_n(&iris_cspace_stat_resolves, __ATOMIC_RELAXED);
-        w[11] = kprocess_live_count();          /* Phase 16 */
+        /* Stage 7-proc: the live-PROCESS gauge is gone with the object.  The
+         * field stays at 0 (a versioned struct does not renumber), and what it
+         * used to approximate — how many principals exist — is now read off
+         * the objects that are actually there: live TCBs, CSpaces and address
+         * spaces, all already reported here. */
+        w[11] = 0u;
         w[12] = sched_reap_queue_hwm();          /* Phase 16 */
         w[13] = 0u;
         for (uint32_t i = 0; i < 7u; i++)

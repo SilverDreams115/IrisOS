@@ -28,7 +28,6 @@
 #define KNOTIF_WAITERS_MAX   4  /* max tasks blocked on one notification at once */
 
 struct task; /* forward */
-struct KProcess;
 
 struct KNotification {
     struct KObject      base;                        /* must be first */

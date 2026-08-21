@@ -123,15 +123,15 @@ struct KVmo *kvmo_make_stub(void);
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
-static struct KProcess *fr_make_proc(void) {
-    struct KProcess *p = (struct KProcess *)malloc(sizeof(struct KProcess));
+static struct cs_fixture *fr_make_proc(void) {
+    struct cs_fixture *p = (struct cs_fixture *)malloc(sizeof(struct cs_fixture));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
     p->cspace_root = NULL;
     return p;
 }
 
-static void fr_free_proc(struct KProcess *p) {
+static void fr_free_proc(struct cs_fixture *p) {
     /* Stage 4: structural root — released here instead of by
      * handle_table_close_all, which no longer owns it. */
     if (p->cspace_root) {
@@ -142,7 +142,7 @@ static void fr_free_proc(struct KProcess *p) {
     free(p);
 }
 
-static struct KCNode *fr_setup_root(struct KProcess *p) {
+static struct KCNode *fr_setup_root(struct cs_fixture *p) {
     struct KCNode *root = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
     if (!root) return NULL;
     /* Stage 4: structural CSpace root — kcnode_alloc's ref is the
@@ -242,7 +242,7 @@ void test_kframe(void) {
 
     /* FR-10: cspace_resolve_frame succeeds with correct type */
     {
-        struct KProcess *p = fr_make_proc();
+        struct cs_fixture *p = fr_make_proc();
         ASSERT_NOT_NULL(p);
         struct KCNode *root = fr_setup_root(p);
         ASSERT_NOT_NULL(root);
@@ -266,7 +266,7 @@ void test_kframe(void) {
 
     /* FR-11: cspace_resolve_frame returns WRONG_TYPE for non-frame slot */
     {
-        struct KProcess *p = fr_make_proc();
+        struct cs_fixture *p = fr_make_proc();
         ASSERT_NOT_NULL(p);
         struct KCNode *root = fr_setup_root(p);
         ASSERT_NOT_NULL(root);
@@ -286,7 +286,7 @@ void test_kframe(void) {
 
     /* FR-12: cspace_resolve_frame returns ACCESS_DENIED with insufficient rights */
     {
-        struct KProcess *p = fr_make_proc();
+        struct cs_fixture *p = fr_make_proc();
         ASSERT_NOT_NULL(p);
         struct KCNode *root = fr_setup_root(p);
         ASSERT_NOT_NULL(root);
@@ -306,7 +306,7 @@ void test_kframe(void) {
 
     /* FR-13: CPTR_NULL returns INVALID_ARG */
     {
-        struct KProcess *p = fr_make_proc();
+        struct cs_fixture *p = fr_make_proc();
         ASSERT_NOT_NULL(p);
         fr_setup_root(p);
         struct KFrame *out;

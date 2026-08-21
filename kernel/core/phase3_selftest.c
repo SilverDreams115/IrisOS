@@ -54,51 +54,12 @@ static struct KNotification *p3_notif_fixture(void) {
  */
 
 /*
- * Stage 7 Step 12: this used to open by arming a process-scoped exception
- * handler twice and asserting the notification's refcount came back to where
- * it started after teardown.  kprocess_set_exception_handler is gone with the
- * registration it served — arming faults is a THREAD operation — and the same
- * arm / re-arm / hand-over / read-after-death balance is asserted on the
- * thread at runtime by T140-T147.  The notification fixture went with it; what
- * is left here is what this function was always also checking: that VMOs are
- * created with no physical pages behind them, and that teardown of a process
- * holding an address space is idempotent.
+ * phase3_process_selftest DELETED (Stage 7-proc) — its subject was the
+ * KProcess object: allocating one, giving it an address space, and tearing it
+ * down idempotently.  There is no process object.  What it also covered, that
+ * VMOs are created with no physical pages behind them, is asserted at runtime
+ * by T300 and the drift checks.
  */
-static int phase3_process_selftest(void) {
-    struct KProcess *proc = 0;
-    struct KVmo *vmo = 0;
-    struct KVmo *large_vmo = 0;
-    int ok = 0;
-
-    proc = kprocess_alloc();
-    vmo = kvmo_create(0x1000ULL);
-    large_vmo = kvmo_create(0x200000ULL);
-    if (!proc || !vmo || !large_vmo) goto out;
-    if (large_vmo->page_capacity < 512u) goto out;
-
-    proc->cr3 = paging_create_user_space();
-    if (!proc->cr3) goto out;
-
-    /* Verify VMOs have no physical pages allocated (no demand paging). */
-    if (vmo->pages[0] != 0) goto out;
-    if (large_vmo->pages[511] != 0) goto out;
-
-    /* KVSpace.mappings (dynamic linked list) is cleaned up by
-     * kvspace_invalidate called from kprocess_teardown; running it twice (here
-     * and at `out`) is what makes the idempotence claim a test. */
-    kprocess_teardown(proc, 0);
-
-    ok = 1;
-out:
-    if (proc) {
-        kprocess_teardown(proc, 0);
-
-        kprocess_free(proc);
-    }
-    if (vmo) kvmo_free(vmo);
-    if (large_vmo) kvmo_free(large_vmo);
-    return ok;
-}
 
 /* phase3_handle_selftest RETIRED (Stage 4) — its subject was the handle
  * table, which no longer exists.  What it actually asserted (insert/get/close
@@ -162,10 +123,6 @@ out:
 int phase3_selftest_run(void) {
     if (!phase3_notification_selftest()) {
         serial_write("[IRIS][P3] WARN: notification selftest failed\n");
-        return 0;
-    }
-    if (!phase3_process_selftest()) {
-        serial_write("[IRIS][P3] WARN: process selftest failed\n");
         return 0;
     }
 

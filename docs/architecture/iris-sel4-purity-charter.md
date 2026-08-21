@@ -84,7 +84,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 | # | Invariant | Today |
 |---|---|---|
 | S1 | TCB and SchedulingContext are separate objects | MET |
-| S2 | The TCB describes execution, not global process authority | MET (KProcess separate, doomed — Stage 7) |
+| S2 | The TCB describes execution, not global process authority | **MET** — Stage 7-proc: there is no KProcess.  A "process" is threads configured with the same CSpace and the same VSpace, which is a fact about two capabilities rather than a third object |
 | S3 | The SC represents a delegable time budget/policy | MET (budget/period; donation pending — Stage 8) |
 | S4 | SC bind/unbind are capability-gated | MET (`SYS_SC_BIND` by CPtr; `THREAD_SET_SC` FROZEN) |
 | S5 | The kernel contains no service policy | MET (catalog/restart/manifests in svcmgr) |
@@ -163,8 +163,15 @@ proven:
       installed in its CSpace (including its own root CNode and thread), and
       boot authority is six capabilities of one authority each.  The monolith
       is unrepresentable, not merely unused.
-- [ ] All canonical objects born from Untyped (including the executing TCB,
-      page tables, VSpace, Frame headers).
+- [x] All canonical objects born from Untyped (including the executing TCB,
+      page tables, VSpace, Frame headers) — **Stage 7-mem/7-proc**.  The two
+      objects that were still CHARGED rather than retyped are gone rather than
+      converted: `KVmo`'s owner relation and quota retired with the per-process
+      resource domain (a VMO's memory comes from an Untyped the caller names),
+      and `struct KProcess` is DELETED.  What remains kernel-funded is the
+      boot path — the root task's CSpace and address space, built before
+      anything exists that could name them — which the ledger records as not
+      retiring with the process server.
 - [x] No authority object identified by PID or global index — **Stage 7
       Step 7**.  `SYS_EXCEPTION_RESUME` stopped taking a task id, the global
       thread lookup (`task_find_by_id`) is deleted, and the kernel contains
