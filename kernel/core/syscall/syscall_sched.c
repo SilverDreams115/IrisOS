@@ -34,7 +34,7 @@ uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!sc_h) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject *obj;
     iris_rights_t   rights;
@@ -69,7 +69,7 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
 
     struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject *sc_obj; iris_rights_t sc_r;
     iris_error_t err = cspace_resolve_only_obj(caller->cspace_root, sc_cptr,
@@ -154,7 +154,7 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KSchedContext *new_sc = 0;
 

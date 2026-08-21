@@ -68,7 +68,7 @@ uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject *pt_obj;  iris_rights_t pt_rights;
     iris_error_t err = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
@@ -173,7 +173,7 @@ static uint64_t vmo_create_charged(struct task *t, uint64_t size,
 
 uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /*
      * Stage 6 Step 5: arg1 names WHICH Untyped pays for this VMO's pages.
@@ -419,7 +419,7 @@ uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject  *obj;
     iris_rights_t    rights;
@@ -454,7 +454,7 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
     uint64_t dest      = arg2;   /* Step 4: cnode | slot<<32 */
     uint64_t pool_cptr = arg3;   /* Stage 6 Step 5: which budget pays */
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
@@ -557,7 +557,7 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
                                  uint64_t arg2, uint64_t arg3) {
     (void)arg1; (void)arg2; (void)arg3;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
@@ -587,7 +587,7 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
 uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
                                  uint64_t arg2, uint64_t arg3) {
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject *vmo_obj;
     iris_rights_t   vmo_rights;
@@ -755,7 +755,7 @@ uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
     uint64_t    offset_flags = arg3;
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /* Fast-fail decode before any cap resolution. */
     uint64_t map_flags = offset_flags & 0x3ULL;
@@ -880,7 +880,7 @@ uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1,
                                     uint64_t arg2, uint64_t arg3) {
     (void)arg3;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject *auth_obj;
     iris_rights_t   auth_rights;

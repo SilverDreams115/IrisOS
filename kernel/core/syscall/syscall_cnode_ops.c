@@ -37,7 +37,7 @@ uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KCNode  *cn;
     iris_rights_t   cn_rights;
@@ -76,7 +76,7 @@ uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!cptr_or_h || slot_a == slot_b) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KCNode  *cn;
     iris_rights_t   cn_rights;

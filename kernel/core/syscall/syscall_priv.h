@@ -136,7 +136,7 @@ static inline int page_round_up_u64(uint64_t size, uint64_t *out_rounded) {
  * a fallback — a fallback is how ambient authority survives a cleanup.
  */
 static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr) {
-    if (!t || !t->process) return 0;
+    if (!t || !t->cspace_root) return 0;
     if (auth_cptr == 0u) return 0;   /* authority must be named */
     if (!cspace_value_is_cptr((iris_cptr_t)auth_cptr)) return 0;
 

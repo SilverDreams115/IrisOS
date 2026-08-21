@@ -351,7 +351,7 @@ uint64_t sys_endpoint_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     if (!user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -568,7 +568,7 @@ static int ep_bind_call_reply(struct task *receiver, struct task *sender,
 
 uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     if (!user_range_writable(arg1, (uint32_t)sizeof(struct IrisMsg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -779,7 +779,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     if (!user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -894,7 +894,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     if (!user_range_writable(arg1, (uint32_t)sizeof(struct IrisMsg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);

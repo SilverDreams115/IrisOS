@@ -43,7 +43,7 @@ uint64_t sys_untyped_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     uint64_t    avail_uptr = arg2;
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KUntyped *ut;
     iris_rights_t    rights;
@@ -262,7 +262,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (count == 0u) count = 1u;
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /* ── validate type & compute payload size (before touching state) ── */
     uint64_t      payload = 0;
@@ -527,7 +527,7 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_cptr_t ut_cptr = (iris_cptr_t)arg0;
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KUntyped *ut;
     iris_rights_t    rights;
@@ -607,7 +607,7 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     uint64_t buf_uptr     = arg1;
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (!buf_uptr) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     switch (kind) {

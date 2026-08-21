@@ -162,7 +162,7 @@ uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     uint32_t     dest_slot = (uint32_t)arg3;
     struct task *t         = task_current();
 
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (irq_num > 15u)     return syscall_err(IRIS_ERR_INVALID_ARG);
     if (dest_slot == 0u || dest_slot >= 1024u)
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -207,7 +207,7 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     uint32_t     dest_slot = (uint32_t)arg3;
     struct task *t         = task_current();
 
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (count == 0u || (uint32_t)base + count > 0x10000u)
         return syscall_err(IRIS_ERR_INVALID_ARG);
     if (dest_slot == 0u || dest_slot >= 1024u)

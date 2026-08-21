@@ -40,7 +40,7 @@ uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_NOT_FOUND);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_NOT_FOUND);
 
     /* The calling thread IS its own KTCB — hand out a cap to &t->base. */
     const iris_rights_t rights =
@@ -79,7 +79,7 @@ uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                            uint64_t arg3) {
     struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     if (!cspace_only_cptr(arg1) || !cspace_only_cptr(arg2))
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -191,7 +191,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                             uint64_t arg3) {
     struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
     iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
@@ -260,7 +260,7 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                    uint64_t arg3) {
     struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (arg2 == 0u || arg3 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
@@ -379,7 +379,7 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
 uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (arg2 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
@@ -437,7 +437,7 @@ uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_tcb_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
     iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
@@ -455,7 +455,7 @@ uint64_t sys_tcb_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
     iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
@@ -478,7 +478,7 @@ uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
     iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
@@ -523,7 +523,7 @@ uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     uint8_t prio = (uint8_t)(arg1 & 0xFFu);
     (void)arg2;
     struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
     iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
@@ -539,7 +539,7 @@ uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_tcb_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
     iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
@@ -567,7 +567,7 @@ uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!info_uptr) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *caller = task_current();
-    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
     iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,

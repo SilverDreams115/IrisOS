@@ -26,7 +26,7 @@ uint64_t sys_notify_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KNotification *notif; iris_rights_t notif_r;
     iris_error_t r = cspace_resolve_only_notification(t->cspace_root, (iris_cptr_t)arg0,
@@ -41,7 +41,7 @@ uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (!user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -70,7 +70,7 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (!user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 

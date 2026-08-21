@@ -49,7 +49,7 @@ static inline void copy_kbuf_r(uint8_t *dst, const uint8_t *src, uint32_t n) {
 uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /* msg is both send (input) and reply (output) — must be readable and writable. */
     if (!user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)) ||
@@ -313,7 +313,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KReply *rp; iris_rights_t rp_rights;
     iris_error_t err = cspace_resolve_only_reply(t->cspace_root, kreply_cptr,

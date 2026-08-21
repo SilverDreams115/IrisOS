@@ -26,7 +26,7 @@
  */
 uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /* Resolve the IRQ capability — it carries the authorized IRQ number */
     struct KObject  *irqcap_obj;
@@ -98,7 +98,7 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_irq_ack(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject  *obj;
     iris_rights_t    rights;
@@ -130,7 +130,7 @@ uint64_t sys_irq_ack(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_ioport_in(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject  *obj;
     iris_rights_t    rights;
@@ -166,7 +166,7 @@ uint64_t sys_ioport_in(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject  *obj;
     iris_rights_t    rights;
@@ -234,7 +234,7 @@ uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 uint64_t sys_exception_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     (void)arg2;
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     uint32_t action = (uint32_t)arg1;
     /* Phase 25: actions 2 (resume) / 3 (kill) are the seq-checked variants —

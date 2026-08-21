@@ -174,7 +174,7 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
     uint64_t vspace_cptr = arg2;   /* Stage 6-pure Step 4: the address space */
     uint64_t cnode_cptr  = arg3;   /* Stage 6-pure Step 5: the root CSpace */
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject   *auth_obj;
     iris_rights_t     auth_rights;
@@ -450,7 +450,7 @@ uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_tcb_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
     /* The destination is checked before the record is looked up, so a hostile
      * pointer is INVALID_ARG whether or not a fault happens to be pending —
      * the same order the process-scoped form has always used. */

@@ -143,7 +143,7 @@ uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     uint64_t      req_badge  = arg2 >> 32;
 
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     if (!cspace_only_cptr(src_cptr)) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (dest_cnode != 0u && !cspace_only_cptr(dest_cnode))
@@ -189,7 +189,7 @@ uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     if (!cspace_only_cptr(arg0)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -270,7 +270,7 @@ uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     if (!cspace_only_cptr(arg0)) return syscall_err(IRIS_ERR_INVALID_ARG);
 
@@ -307,7 +307,7 @@ uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_cspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KCNode *root = 0;
     iris_error_t err = cspace_own_root(t->cspace_root, &root);
@@ -328,7 +328,7 @@ uint64_t sys_cspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     if (!cspace_only_cptr(arg0) || !cspace_only_cptr(arg1))
         return syscall_err(IRIS_ERR_INVALID_ARG);
