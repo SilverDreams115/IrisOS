@@ -303,9 +303,11 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
             uint32_t slot = SVCMGR_IRQCAP_SLOT_BASE + e->irq_num;
             /* Phase S4: authority BY CPtr (it becomes the MDB parent).
              * Stage 5 Step 2: the authority is the IRQ control capability. */
+            /* Stage 7 Step 14: arg2 names the budget the object is charged
+             * to — svcmgr's own delegated pool, not one the kernel picked. */
             int64_t r = svcmgr_syscall4(SYS_CAP_CREATE_IRQCAP,
                                         IRIS_CPTR_IRQ_CONTROL, e->irq_num,
-                                        0, slot);
+                                        IRIS_CPTR_OWN_UNTYPED, slot);
             if (r == 0) state->irq_caps[e->irq_num] = slot;
         }
 
@@ -314,7 +316,9 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
             uint32_t slot = SVCMGR_IOPORT_SLOT_BASE + e->service_id;
             int64_t r = svcmgr_syscall4(SYS_CAP_CREATE_IOPORT,
                                         IRIS_CPTR_IOPORT_CONTROL,
-                                        e->ioport_base, e->ioport_count, slot);
+                                        (uint64_t)e->ioport_base |
+                                            ((uint64_t)e->ioport_count << 16),
+                                        IRIS_CPTR_OWN_UNTYPED, slot);
             if (r == 0) state->ioport_caps[e->service_id] = slot;
         }
     }

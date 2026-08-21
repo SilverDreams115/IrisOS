@@ -141,9 +141,19 @@ struct KProcess {
      * dropping it, so the KProcess, its VSpace, its PML4 and (now) its
      * page-table budget stayed alive with no way to get them back. */
     uint8_t  initial_ref_dropped;
-    /* Stage 6 Step 4: the Untyped this object and its root CNode were carved
-     * from, retained for their lifetime.  NULL = kernel-slab (root task). */
-    struct KUntyped *mem_pool;
+    /*
+     * Stage 6 Step 4: the Untyped this object's own block was carved from,
+     * retained for its lifetime.  NULL = kernel-slab (root task).
+     *
+     * Stage 7 Step 14 renamed it from `mem_pool`, because that is all it does
+     * now.  It used to be the DEFAULT BUDGET: the Untyped the kernel charged
+     * an allocation to when a syscall did not name one — device capabilities,
+     * initrd image copies, anonymous VMOs.  Every one of those takes the
+     * budget as a required argument now, so nothing reads this to decide whose
+     * memory pays.  What is left is the storage anchor: the block lives inside
+     * the region this pool owns, so the pool must outlive the block.
+     */
+    struct KUntyped *storage_pool;
     /* Phase 25: per-process fault generation.  fault_seq_counter increments on
      * every delivery (1-based, wraps); fault_seq is the generation of the
      * currently pending record.  The generation of the fault a TASK is blocked

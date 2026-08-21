@@ -169,8 +169,8 @@ static uint64_t vmo_create_charged(struct task *t, uint64_t size,
      * given.  Anonymous user memory was the last thing the kernel handed out
      * for free — bounded only by a per-process quota the kernel invented,
      * rather than by a capability someone delegated. */
-    struct KVmo *v = kvmo_create_from(size, named_pool ? named_pool
-                                                       : payer->mem_pool);
+    /* Stage 7 Step 14: named_pool is never NULL — both callers require it. */
+    struct KVmo *v = kvmo_create_from(size, named_pool);
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
     iris_error_t r = kvmo_bind_owner(v, payer);
     if (r != IRIS_OK) { kvmo_free(v); return syscall_err(r); }
@@ -204,12 +204,15 @@ uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
      * pages bounded by a per-process quota the kernel invented; now the memory
      * comes from a budget, and which budget is the caller's to say — a process
      * holds several (the one it was spawned with, the pools its supervisor
-     * delegated) and they are not interchangeable.  Zero means "the budget my
-     * address space was built from", which is where it would have come from
-     * anyway.
+     * delegated) and they are not interchangeable.
+     *
+     * Stage 7 Step 14: REQUIRED.  Zero used to mean "the budget my address
+     * space was built from", read off the KProcess — the kernel picking whose
+     * memory pays for a caller that did not say.
      */
+    if (arg1 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
     struct KUntyped *named = 0;
-    if (arg1 != 0u) {
+    {
         iris_rights_t nr;
         iris_error_t ne = cspace_resolve_only_untyped(t->cspace_root,
                               (iris_cptr_t)arg1, RIGHT_WRITE, &named, &nr);
@@ -217,20 +220,35 @@ uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             return syscall_err(ne == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ne);
     }
     uint64_t rc = vmo_create_charged(t, arg0, t->process, arg2, named);
-    if (named) { kobject_active_release(&named->base); kobject_release(&named->base); }
+    kobject_active_release(&named->base); kobject_release(&named->base);
     return rc;
 }
 
 /*
- * SYS_VMO_CREATE_FOR(size, charge_target) — explicit, capability-authorized
- * PAYER selection (Phase 29).  The VMO object + its sparse pages are charged to
- * `charge_target` (a KProcess the caller holds RIGHT_MANAGE on), not to the
- * caller.  Same authority SYS_VMO_MAP_INTO requires to map into that process.
+ * SYS_VMO_CREATE_FOR(size, charge_target, dest, budget) — explicit,
+ * capability-authorized PAYER selection (Phase 29).  The VMO object quota is
+ * charged to `charge_target` (a KProcess the caller holds RIGHT_MANAGE on),
+ * not to the caller.  Same authority SYS_VMO_MAP_INTO requires to map into
+ * that process.
+ *
+ * Stage 7 Step 14: `budget` (arg3) is where the MEMORY comes from, and it is
+ * required.  It used to be the payer's own `mem_pool` — the last place the
+ * kernel reached into a KProcess for an Untyped nobody named — so a caller
+ * spent a budget it did not hold and could not see.  It resolves in the
+ * CALLER's CSpace, which is the honest shape: a loader carving a child's image
+ * out of the child's pool holds that pool, and one carving it out of its own
+ * says so by naming its own.
+ *
+ * The quota and the memory are therefore two separate statements now.  That
+ * they can disagree is a property of KVMO's owner/payer split, which retires
+ * with the object itself (ledger: FROZEN, memory-server).
  */
-uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    uint64_t dest = arg2;   /* Step 4: cnode | slot<<32; 0 = legacy handle */
+uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                            uint64_t arg3) {
+    uint64_t dest = arg2;   /* Step 4: cnode | slot<<32 */
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (arg3 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject *payer_obj;
     iris_rights_t   payer_rights;
@@ -246,7 +264,18 @@ uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         kobject_release(payer_obj);
         return syscall_err(IRIS_ERR_BAD_HANDLE);
     }
-    uint64_t rv = vmo_create_charged(t, arg0, payer, dest, 0);
+    struct KUntyped *named = 0;
+    {
+        iris_rights_t nr;
+        iris_error_t ne = cspace_resolve_only_untyped(t->cspace_root,
+                              (iris_cptr_t)arg3, RIGHT_WRITE, &named, &nr);
+        if (ne != IRIS_OK) {
+            kobject_release(payer_obj);
+            return syscall_err(ne == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ne);
+        }
+    }
+    uint64_t rv = vmo_create_charged(t, arg0, payer, dest, named);
+    kobject_active_release(&named->base); kobject_release(&named->base);
     kobject_release(payer_obj);
     return rv;
 }
@@ -518,25 +547,27 @@ uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
      * initrd entry allocates as many kernel pages as the image is long, and
      * that used to be free.
      *
-     * `pool_cptr` lets the caller say WHICH of its budgets pays, because this
+     * `pool_cptr` says WHICH of the caller's budgets pays, because this
      * allocation is transient for a loader — it parses the image and drops it —
      * and a caller that points it at a scratch Untyped can RESET that region
      * between spawns instead of consuming its whole pool one image at a time.
-     * Zero means "charge my own budget", which is where the memory would have
-     * come from anyway.
+     *
+     * Stage 7 Step 14: REQUIRED.  Zero used to mean "charge my own budget",
+     * read off the KProcess, which is the kernel picking whose memory pays for
+     * a caller that did not say — the last of three such sites.  A caller that
+     * wants its own budget names its own budget.
      */
-    struct KUntyped *pool = t->process->mem_pool;
-    struct KUntyped *named = 0;
-    if (pool_cptr != 0u) {
+    if (pool_cptr == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
+    struct KUntyped *pool = 0;
+    {
         iris_rights_t nr;
         iris_error_t ne = cspace_resolve_only_untyped(t->cspace_root,
-                              (iris_cptr_t)pool_cptr, RIGHT_WRITE, &named, &nr);
+                              (iris_cptr_t)pool_cptr, RIGHT_WRITE, &pool, &nr);
         if (ne != IRIS_OK)
             return syscall_err(ne == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ne);
-        pool = named;
     }
     struct KVmo *v = kvmo_create_from((uint64_t)elf_size, pool);
-    if (named) { kobject_active_release(&named->base); kobject_release(&named->base); }
+    { kobject_active_release(&pool->base); kobject_release(&pool->base); }
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
 
     {

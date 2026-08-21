@@ -52,8 +52,19 @@ static void ub_close(handle_id_t h) { (void)h; }
 #define UB_PANIC_IOPORT_SLOT 40u
 static void ub_boot_panic(uint64_t ioport_control_cptr, uint64_t ioport_slot,
                           const char *msg) {
+    /*
+     * Stage 7 Step 14: base and count share arg1 (base | count << 16) so arg2
+     * can name the budget the KIoPort is charged to.
+     *
+     * BOOT_CPTR_UNTYPED_START is the first boot block, and the root task holds
+     * it by compile-time agreement with the kernel — which is exactly what
+     * this path needs, because it fires when the BootInfo may be unreadable
+     * and there is nothing left to consult.  If that block is not there either
+     * the create fails and the panic is silent, which is what it already did.
+     */
     long r = ub_sys4(SYS_CAP_CREATE_IOPORT, (long)ioport_control_cptr,
-                     0x3F8, 8, (long)ioport_slot);
+                     (long)(0x3F8u | (8u << 16)),
+                     (long)BOOT_CPTR_UNTYPED_START, (long)ioport_slot);
     if (r == 0) {
         long io = (long)ioport_slot;
         for (const char *p = msg; *p; p++) {

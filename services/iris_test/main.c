@@ -408,6 +408,26 @@ static long it_cs_reduce(long src_cptr, uint32_t rights) {
  * so the slot is an MDB LEGACY root — that is KVMO's own debt (ledger: FROZEN,
  * memory-server), not something the slot introduces.  What changes here is
  * only WHERE the capability lives. */
+/*
+ * Stage 7 Step 14 — a device capability is charged to a budget the caller
+ * names.  base and count share arg1 (base | count << 16), which frees arg2 to
+ * say who pays; the suite pays out of its own delegated pool.
+ *
+ * Wrapped rather than spelled out at eighteen call sites, because what those
+ * sites are testing is AUTHORITY — which control capability creates which
+ * device — and the packing is not the subject of a single one of them.
+ */
+static long it_ioport_create(long auth, long base, long count, long dest) {
+    return it_sys4(SYS_CAP_CREATE_IOPORT, auth,
+                   (long)((uint64_t)(uint16_t)base |
+                          ((uint64_t)(uint16_t)count << 16)),
+                   (long)IRIS_CPTR_TEST_UNTYPED, dest);
+}
+static long it_irqcap_create(long auth, long irq, long dest) {
+    return it_sys4(SYS_CAP_CREATE_IRQCAP, auth, irq,
+                   (long)IRIS_CPTR_TEST_UNTYPED, dest);
+}
+
 /* An initrd image capability published into a CSpace slot (SYS_INITRD_VMO's
  * arg2 destination).  Same rotating-pool contract as it_retype_slot_alloc. */
 static long it_initrd_vmo_slot(long auth_cptr, long index) {
@@ -436,15 +456,20 @@ static long it_tcb_self_slot(void) {
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
-/* SYS_VMO_CREATE_FOR: a VMO charged to `payer`, published into a slot. */
+/* SYS_VMO_CREATE_FOR: a VMO whose OBJECT quota is charged to `payer`, whose
+ * MEMORY comes from a budget the suite names and holds (Stage 7 Step 14), and
+ * which is published into a slot.  That the two can name different domains is
+ * KVMO's owner/payer split; what changed is only that the memory half stopped
+ * being inferred from the payer's KProcess. */
 static long it_vmo_create_for_slot(uint64_t size, long payer) {
     uint32_t leaf = IT_OBJ_POOL_FIRST +
                     (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
                                         __ATOMIC_RELAXED) %
                      (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
-    long r = it_sys3(SYS_VMO_CREATE_FOR, (long)size, payer,
-                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
+    long r = it_sys4(SYS_VMO_CREATE_FOR, (long)size, payer,
+                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
+                     (long)IRIS_CPTR_TEST_UNTYPED);
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
@@ -2793,11 +2818,9 @@ static void test_t069(void) {
      * BY CPTR, and a capability of the wrong type in the same argument is
      * refused rather than being looked up somewhere else. */
     it_slot_delete(IT_DEV_SLOT_A);
-    long ok_cap = it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
-                          0x2F8, 8, (long)IT_DEV_SLOT_A);
+    long ok_cap = it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, 0x2F8, 8, (long)IT_DEV_SLOT_A);
     it_slot_delete(IT_DEV_SLOT_A);
-    long wrong  = it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_SVCMGR_EP,
-                          0x2F8, 8, (long)IT_DEV_SLOT_A);
+    long wrong  = it_ioport_create((long)IRIS_CPTR_SVCMGR_EP, 0x2F8, 8, (long)IT_DEV_SLOT_A);
     it_slot_delete(IT_DEV_SLOT_A);
     if (ok_cap == 0 && wrong == (long)IRIS_ERR_ACCESS_DENIED)
         it_pass("T069");
@@ -11526,8 +11549,7 @@ static handle_id_t it_make_ioport(long base, long count) {
     uint32_t slot = pool[__atomic_fetch_add(&g_it_dev_next, 1u,
                                             __ATOMIC_RELAXED) % 2u];
     it_slot_delete(slot);
-    if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
-                base, count, (long)slot) != 0) return HANDLE_INVALID;
+    if (it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, base, count, (long)slot) != 0) return HANDLE_INVALID;
     return (handle_id_t)slot;
 }
 
@@ -11537,8 +11559,7 @@ static handle_id_t it_make_irqcap(long irq) {
     uint32_t slot = pool[__atomic_fetch_add(&g_it_dev_next, 1u,
                                             __ATOMIC_RELAXED) % 2u];
     it_slot_delete(slot);
-    if (it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_IRQ_CONTROL,
-                irq, 0, (long)slot) != 0) return HANDLE_INVALID;
+    if (it_irqcap_create((long)IRIS_CPTR_IRQ_CONTROL, irq, (long)slot) != 0) return HANDLE_INVALID;
     return (handle_id_t)slot;
 }
 
@@ -11639,8 +11660,8 @@ static void test_t164(void) {
 
     /* Non-whitelisted range cannot be created: CMOS (0x70) and a range that
      * spills past the PS/2 whitelist entry. */
-    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL, 0x70, 2, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "CMOS not denied"; }
-    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL, 0x60, 100, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "range spill not denied"; }
+    if (ok && it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, 0x70, 2, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "CMOS not denied"; }
+    if (ok && it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, 0x60, 100, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "range spill not denied"; }
 
     it_slot_delete((uint32_t)io);
     it_quiesce_reaper();
@@ -11943,8 +11964,7 @@ static void test_t171(void) {
         op = 1;
         static const long bad_bases[] = { 0x70L, 0x80L, 0x3B0L, 0xCF8L };
         long bb = bad_bases[fz_rand() % 4u];
-        if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL, bb, 2,
-                    (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) {
+        if (it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, bb, 2, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "non-whitelist created"; break;
         }
 
@@ -21091,26 +21111,22 @@ static void test_t296(void) {
     it_slot_delete(T296_SLOT);
 
     /* 1. Each control capability authorises its own syscall. */
-    if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
-                T296_WL_PORT, 8, (long)T296_SLOT) != 0) {
+    if (it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, T296_WL_PORT, 8, (long)T296_SLOT) != 0) {
         ok = 0; why = "ioport control denied";
     }
     it_slot_delete(T296_SLOT);
-    if (ok && it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_IRQ_CONTROL,
-                      11, 0, (long)T296_SLOT) != 0) {
+    if (ok && it_irqcap_create((long)IRIS_CPTR_IRQ_CONTROL, 11, (long)T296_SLOT) != 0) {
         ok = 0; why = "irq control denied";
     }
     it_slot_delete(T296_SLOT);
 
     /* 2. Neither authorises the other's syscall. */
-    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IRQ_CONTROL,
-                      T296_WL_PORT, 8, (long)T296_SLOT)
+    if (ok && it_ioport_create((long)IRIS_CPTR_IRQ_CONTROL, T296_WL_PORT, 8, (long)T296_SLOT)
               != (long)IRIS_ERR_ACCESS_DENIED) {
         ok = 0; why = "irq cap created an ioport";
     }
     it_slot_delete(T296_SLOT);
-    if (ok && it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_IOPORT_CONTROL,
-                      11, 0, (long)T296_SLOT)
+    if (ok && it_irqcap_create((long)IRIS_CPTR_IOPORT_CONTROL, 11, (long)T296_SLOT)
               != (long)IRIS_ERR_ACCESS_DENIED) {
         ok = 0; why = "ioport cap created an irq";
     }
@@ -21119,14 +21135,12 @@ static void test_t296(void) {
     /* 3. No OTHER boot capability authorises either — the process control
      *    capability is the direct descendant of the object all six were split
      *    from, and it creates no devices. */
-    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_PROC_CONTROL,
-                      T296_WL_PORT, 8, (long)T296_SLOT)
+    if (ok && it_ioport_create((long)IRIS_CPTR_PROC_CONTROL, T296_WL_PORT, 8, (long)T296_SLOT)
               != (long)IRIS_ERR_ACCESS_DENIED) {
         ok = 0; why = "proc control created an ioport";
     }
     it_slot_delete(T296_SLOT);
-    if (ok && it_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_PROC_CONTROL,
-                      11, 0, (long)T296_SLOT)
+    if (ok && it_irqcap_create((long)IRIS_CPTR_PROC_CONTROL, 11, (long)T296_SLOT)
               != (long)IRIS_ERR_ACCESS_DENIED) {
         ok = 0; why = "proc control created an irq";
     }
@@ -21150,8 +21164,7 @@ static void test_t296(void) {
             ok = 0; why = "proc control read sched info";
         }
         /* ...and debug authority creates no devices. */
-        if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_DEBUG_CONTROL,
-                          T296_WL_PORT, 8, (long)T296_SLOT)
+        if (ok && it_ioport_create((long)IRIS_CPTR_DEBUG_CONTROL, T296_WL_PORT, 8, (long)T296_SLOT)
                   != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "debug cap created an ioport";
         }
@@ -21161,8 +21174,7 @@ static void test_t296(void) {
     /* The control capabilities are real capabilities in real slots: an empty
      * slot authorises nothing, which is what makes deleting them (as svcmgr
      * does once bootstrap is over) a genuine loss of authority. */
-    if (ok && it_sys4(SYS_CAP_CREATE_IOPORT, (long)T296_SLOT,
-                      T296_WL_PORT, 8, (long)S1_SLOT_D)
+    if (ok && it_ioport_create((long)T296_SLOT, T296_WL_PORT, 8, (long)S1_SLOT_D)
               != (long)IRIS_ERR_NOT_FOUND) {
         ok = 0; why = "empty slot authorised";
     }
@@ -21297,8 +21309,7 @@ void iris_test_main(handle_id_t rbx_unused) {
          * Stage 5 Step 2: the authorising slot holds the ioport CONTROL
          * capability — printing test output no longer needs the authority to
          * spawn processes. */
-        if (it_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
-                    0x3F8, 8, (long)IT_SERIAL_SLOT) == 0)
+        if (it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, 0x3F8, 8, (long)IT_SERIAL_SLOT) == 0)
             g_serial_h = (handle_id_t)IT_SERIAL_SLOT;
     }
 

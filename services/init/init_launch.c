@@ -87,7 +87,8 @@ int init_spawn_console(void) {
      * revocable from init.  Slot 41 is free in init's root CNode.
      * Stage 5 Step 2: the authority is the ioport control capability. */
     if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
-                  0x3F8, 8, (long)INIT_CONSOLE_IOPORT_SLOT) != 0) {
+                  (long)(0x3F8u | (8u << 16)), (long)IRIS_CPTR_INIT_UNTYPED,
+                  (long)INIT_CONSOLE_IOPORT_SLOT) != 0) {
         init_early_serial_write(init_console_ioport_fail);
         goto fail;
     }

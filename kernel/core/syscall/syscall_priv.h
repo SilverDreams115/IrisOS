@@ -210,7 +210,8 @@ uint64_t sys_futex_wake(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — VM ───────────────────────────────────── */
 uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2); /* Phase 29 */
+uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                            uint64_t arg3); /* Phase 29; Stage 7 Step 14: arg3 = budget */
 uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);  /* Phase 29 */
 uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);

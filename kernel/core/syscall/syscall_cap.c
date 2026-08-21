@@ -122,12 +122,45 @@ static void dev_cap_auth_release(struct KCNode *cn) {
     kobject_release(&cn->base);
 }
 
+/*
+ * Stage 7 Step 14 — the budget is NAMED, never assumed.
+ *
+ * These two allocated their object from `t->process->mem_pool`: the Untyped
+ * the kernel remembered as "this process's", picked because the caller had not
+ * said which of its budgets should pay.  That is the kernel choosing whose
+ * memory funds an allocation, which Stage 6 Step 5 removed everywhere a
+ * syscall had an argument to spare — these were the sites that did not.
+ *
+ * IRQCAP had one: arg2 was unused.  IOPORT did not, so its two 16-bit device
+ * facts share arg1 (base | count << 16), which is what they always were —
+ * one range, described in one word — and arg2 says who pays.
+ *
+ * Required, not defaulted.  A zero budget is INVALID_ARG rather than a fall
+ * back to the process's own, because a default is the kernel making the choice
+ * again with extra steps.
+ */
+static iris_error_t dev_cap_budget(struct task *t, uint64_t budget_cptr,
+                                   struct KUntyped **out) {
+    *out = 0;
+    if (budget_cptr == 0u) return IRIS_ERR_INVALID_ARG;
+    iris_rights_t br;
+    iris_error_t e = cspace_resolve_only_untyped(t->cspace_root,
+                         (iris_cptr_t)budget_cptr, RIGHT_WRITE, out, &br);
+    if (e == IRIS_ERR_WRONG_TYPE) e = IRIS_ERR_INVALID_ARG;
+    return e;
+}
+
+static void dev_cap_budget_release(struct KUntyped *u) {
+    if (!u) return;
+    kobject_active_release(&u->base);
+    kobject_release(&u->base);
+}
+
 uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                uint64_t arg3) {
     uint8_t      irq_num   = (uint8_t)(arg1 & 0xFFu);
     uint32_t     dest_slot = (uint32_t)arg3;
     struct task *t         = task_current();
-    (void)arg2;
 
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (irq_num > 15u)     return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -139,8 +172,14 @@ uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                     &auth_cn, &auth_idx);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* Stage 6 Step 6: the object comes out of the claimer's budget. */
-    struct KIrqCap *irqcap = kirqcap_alloc_from(t->process->mem_pool, irq_num);
+    struct KUntyped *pool;
+    err = dev_cap_budget(t, arg2, &pool);
+    if (err != IRIS_OK) { dev_cap_auth_release(auth_cn); return syscall_err(err); }
+
+    /* Stage 6 Step 6: the object comes out of a budget.  Stage 7 Step 14: out
+     * of the one the caller named. */
+    struct KIrqCap *irqcap = kirqcap_alloc_from(pool, irq_num);
+    dev_cap_budget_release(pool);
     if (!irqcap) {
         dev_cap_auth_release(auth_cn);
         return syscall_err(IRIS_ERR_NO_MEMORY);
@@ -161,8 +200,10 @@ uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
 uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                uint64_t arg3) {
+    /* Stage 7 Step 14: one range, one word — base in the low half, count in
+     * the high half — which frees arg2 to say which budget pays. */
     uint16_t     base      = (uint16_t)(arg1 & 0xFFFFu);
-    uint16_t     count     = (uint16_t)(arg2 & 0xFFFFu);
+    uint16_t     count     = (uint16_t)((arg1 >> 16) & 0xFFFFu);
     uint32_t     dest_slot = (uint32_t)arg3;
     struct task *t         = task_current();
 
@@ -179,8 +220,14 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                     &auth_cn, &auth_idx);
     if (err != IRIS_OK) return syscall_err(err);
 
-    /* Stage 6 Step 6: the object comes out of the claimer's budget. */
-    struct KIoPort *ioport = kioport_alloc_from(t->process->mem_pool, base, count);
+    struct KUntyped *pool;
+    err = dev_cap_budget(t, arg2, &pool);
+    if (err != IRIS_OK) { dev_cap_auth_release(auth_cn); return syscall_err(err); }
+
+    /* Stage 6 Step 6: the object comes out of a budget.  Stage 7 Step 14: out
+     * of the one the caller named. */
+    struct KIoPort *ioport = kioport_alloc_from(pool, base, count);
+    dev_cap_budget_release(pool);
     if (!ioport) {
         dev_cap_auth_release(auth_cn);
         return syscall_err(IRIS_ERR_NO_MEMORY);

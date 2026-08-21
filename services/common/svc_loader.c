@@ -391,18 +391,30 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     {
         long pool = (long)sl_ws_cptr(ws, SL_WS_ELFPOOL);
         long pr   = sl_sys1(SYS_UNTYPED_RESET, pool);
+        /*
+         * Stage 7 Step 14: there is no fallback, because there is no default.
+         *
+         * Both branches below used to set `pool = 0` and let the kernel charge
+         * "the caller's own budget" — the KProcess field that was the last
+         * place the kernel chose whose memory pays.  With the argument
+         * required, a scratch budget that cannot be reset or re-carved is a
+         * spawn that cannot proceed: the loader would otherwise be spending
+         * the caller's whole pool one image at a time, silently, which is the
+         * accounting failure the scratch region exists to prevent.  Failing
+         * here says so.
+         */
         if (pr == (long)IRIS_ERR_BUSY) {
-            /* The previous image is somehow still alive.  Charging this one to
-             * the caller's own budget costs an image; deleting and re-carving
-             * would cost the whole scratch region, permanently — the same
-             * stranding the child budgets above refuse to do. */
-            pool = 0;
+            /* The previous image is somehow still alive.  Deleting and
+             * re-carving would strand the whole scratch region permanently —
+             * the same stranding the child budgets above refuse to do. */
+            r = pr; goto out;
         } else if (pr != 0) {
             if (sl_sys4(SYS_UNTYPED_RETYPE2, (long)SL_WS_UNTYPED(ws),
                         (long)((uint64_t)IRIS_KOBJ_UNTYPED | (1ULL << 32)),
                         sl_ws_dest(ws, SL_WS_ELFPOOL),
-                        (long)SL_ELF_POOL_BYTES) != 0)
-                pool = 0;   /* fall back to the caller's own budget */
+                        (long)SL_ELF_POOL_BYTES) != 0) {
+                r = (long)IRIS_ERR_NO_MEMORY; goto out;
+            }
         }
         r = sl_sys4(SYS_INITRD_VMO, (long)initrd_c, idx,
                     sl_ws_dest(ws, SL_WS_ELF), pool);
@@ -593,8 +605,11 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * fill; the phys pages are charged to the child (VMO owner), so
          * unmapping from the loader never strands the charge on the loader. */
         for (uint32_t i = 0; i < seg_count; i++) {
-            r = sl_sys3(SYS_VMO_CREATE_FOR, (long)seg_map_size[i],
-                        (long)proc_h, sl_ws_dest(ws, SL_WS_SEG + i));
+            /* Stage 7 Step 14: the child's image comes out of the child's
+             * budget, said rather than inferred — pool_c is the very region
+             * its address space and process state were carved from. */
+            r = sl_sys4(SYS_VMO_CREATE_FOR, (long)seg_map_size[i],
+                        (long)proc_h, sl_ws_dest(ws, SL_WS_SEG + i), pool_c);
             if (r < 0) goto out;
             seg_vmo[i] = (handle_id_t)sl_ws_cptr(ws, SL_WS_SEG + i);
         }
@@ -703,8 +718,8 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * made it, so it never stopped holding it. */
 
         /* 14. Create user stack sparse VMO (charged to the child) and map it in. */
-        r = sl_sys3(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE,
-                    (long)proc_h, sl_ws_dest(ws, SL_WS_STACK));
+        r = sl_sys4(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE,
+                    (long)proc_h, sl_ws_dest(ws, SL_WS_STACK), pool_c);
         if (r < 0) goto out;
         stack_vmo_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_STACK);
 

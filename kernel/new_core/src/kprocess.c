@@ -143,8 +143,8 @@ static void kprocess_destroy(struct KObject *obj) {
     /* Storage first (a block holds its own parent retain), pool retain last:
      * the block lives inside the region the pool owns, and it is what records
      * who that pool was. */
-    struct KUntyped *pool = p->mem_pool;
-    p->mem_pool = 0;
+    struct KUntyped *pool = p->storage_pool;
+    p->storage_pool = 0;
     kobject_storage_free(obj, (uint32_t)sizeof(struct KProcess), 0);
     if (pool) kobject_release(&pool->base);
 }
@@ -176,7 +176,7 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
                             (uint32_t)sizeof(struct KProcess));
     p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;  /* Stage 7: 0 = no kernel ceiling */
     kobject_retain(&pool->base);
-    p->mem_pool = pool;
+    p->storage_pool = pool;
 
 
     /*

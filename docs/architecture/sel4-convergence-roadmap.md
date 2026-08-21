@@ -1261,6 +1261,50 @@ root CSpace.  Killing names the thread now, so **a child the table has evicted
 is a child nothing can stop** — and T240 holds 48 at once.  That is the
 supervision cost of the model, paid in the place a process server would pay it.
 
+### Step 14 — the budget is named, never assumed  DONE
+
+Six syscalls allocated kernel memory out of `t->process->mem_pool`: the Untyped
+the kernel remembered as "this process's", used whenever the caller had not
+said which of its budgets should pay.  Stage 6 Step 5 removed that guess
+everywhere a syscall had an argument to spare; these were the sites that did
+not have one, and the field survived on that technicality.
+
+Each one got an argument, and each argument is REQUIRED — a default is the
+kernel making the choice again with extra steps:
+
+| syscall | how |
+|---|---|
+| `SYS_VMO_CREATE` (16) | had the argument since Stage 6 Step 5; `0` stopped meaning "my own" |
+| `SYS_INITRD_VMO` (55) | same — the image copy's budget is stated |
+| `SYS_CAP_CREATE_IRQCAP` (39) | arg2 was unused; it names the budget now |
+| `SYS_CAP_CREATE_IOPORT` (40) | had no free argument, so `base` and `count` share arg1 (`base \| count << 16`) — one range in one word, which is what they always were — and arg2 names the budget |
+| `SYS_VMO_CREATE_FOR` (109) | arg3 names the budget, resolved in the CALLER's CSpace |
+
+`SYS_VMO_CREATE_FOR` is the one worth reading twice.  It charged the PAYER's
+default budget, so a caller spent an Untyped it did not hold and could not see:
+the loader asked for a child's image VMO and the kernel quietly took the pages
+from the child's pool.  The budget is the caller's argument now, and the loader
+passes the child's pool because it holds it — the same memory, said instead of
+inferred.  That the OBJECT QUOTA still goes to the payer while the MEMORY comes
+from a named budget is KVMO's owner/payer split, which retires with the object
+(ledger: FROZEN, memory-server), not with this step.
+
+`mem_pool` is renamed `storage_pool`, because that is all it does now: the
+`KProcess` block lives inside the region that Untyped owns, so the pool must
+outlive the block.  Nothing reads it to decide whose memory pays.
+
+One userland consequence, recorded because it is a real loss of a fallback:
+`svc_loader` used to set `pool = 0` when its scratch ELF budget could not be
+reset or re-carved, letting the kernel charge the caller's own pool.  With no
+default there is no fallback, and a spawn that cannot get a scratch budget
+fails — which is the honest outcome, because the alternative was spending the
+caller's whole pool one image at a time, silently.
+
+The device-authority probes in `lifecycle_probe` improved as a side effect:
+they used to pass a bogus authority AND a zero destination slot, so what
+refused them was the malformed slot, not the missing capability.  They are
+well-formed in every argument but the authority now.
+
 ### What Stage 7 still needs, and why it is not an increment
 
 `KProcess` itself, and the user-space process server that replaces the policy
@@ -1274,17 +1318,15 @@ through `t->process`:
 |---|---|---|
 | `cspace_root` | 9 | the BOOT PATH building the root task's CSpace before anything can name it, and `SYS_TCB_CONFIGURE`'s identity check |
 | `vspace` | 8 | `SYS_PROCESS_VSPACE`, `SYS_PROCESS_CREATE`, the reap, the boot path |
-| `mem_pool` | 3 | the DEFAULT budget when a syscall does not name one — the kernel choosing whose memory pays |
 | `exit_code`, `base` | 3 | death reporting and the object header |
 
-Step 9 took the cross-task ones out, Step 10 took death notification out,
-Step 12 took fault registration out, and Step 13 took kill and status out.
-What is left is:
+(`mem_pool` was a fourth row until Step 14; it is `storage_pool` now, read by
+nothing but the object's own destructor.)
 
-- **the default budget** (`mem_pool`): the kernel choosing whose memory pays
-  when a syscall does not name one.  Three sites, two of them the ioport/IRQ
-  pair, which cannot take a budget argument in the 4-argument ABI and retire
-  with the memory server anyway (ledger D-5's deeper half).
+Step 9 took the cross-task ones out, Step 10 took death notification out,
+Step 12 took fault registration out, Step 13 took kill and status out, and
+Step 14 took the default budget out.  What is left is:
+
 - **the boot path** (`cspace_root`, `vspace`): the root task's CSpace and
   address space are built before anything exists that could name them.  This is
   the exception the ledger already records and it does not retire with the
@@ -1308,10 +1350,6 @@ What the server has to answer, concretely:
   `SYS_PROCESS_VSPACE` possible.  With the process gone, a supervisor holds the
   child's root CNode and VSpace capabilities directly — which it already does
   at spawn time (Stage 6-pure Steps 4/5) and currently throws away.
-- **The default budget.**  `mem_pool` is the kernel picking an Untyped when a
-  syscall does not name one.  Three call sites; the ioport/IRQ pair cannot take
-  a budget argument in the current 4-argument ABI, and those objects retire
-  with the memory server anyway (ledger D-5's deeper half).
 
 One smaller item remains and is NOT Stage 7 work:
 

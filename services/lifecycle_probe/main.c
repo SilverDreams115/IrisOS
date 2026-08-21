@@ -256,6 +256,9 @@ static inline long lp_sys2(long nr, long a0, long a1) {
  * budget's slot is part of THIS image's map, and the spawner names it. */
 #define LP_SLOT_BUDGET 16u
 #define LP_SLOT_PT     44u
+/* A free slot for the device-authority probes to aim at: they must be refused
+ * for want of a capability, so everything else about them has to be valid. */
+#define LP_SLOT_DEVPROBE 45u
 static inline long lp_sys4(long nr, long a0, long a1, long a2, long a3) {
     long r = iris_syscall4(nr, a0, a1, a2, a3);
     if (r == (long)IRIS_ERR_MISSING_TABLE)
@@ -461,10 +464,16 @@ void lp_main(handle_id_t bootstrap_ch_h) {
      * denied by the kernel; the exit bitmask marks any that leaked through. */
     if (msg.label == (uint64_t)LP_CMD_DEV_PROBE) {
         uint32_t breach = 0u;
-        if (lp_sys3(SYS_CAP_CREATE_IOPORT, 6, 0x2F8, 8) >= 0) breach |= (1u << 0);
+        /* Stage 7 Step 14: well-formed in every argument but the AUTHORITY —
+         * base|count packed in arg1, a real budget in arg2, a free slot in
+         * arg3 — so what refuses it is the missing capability and not a
+         * malformed request. */
+        if (lp_sys4(SYS_CAP_CREATE_IOPORT, 6, (long)(0x2F8u | (8u << 16)),
+                    (long)LP_SLOT_BUDGET, (long)LP_SLOT_DEVPROBE) >= 0) breach |= (1u << 0);
         if (lp_sys2(SYS_IOPORT_IN, 10, (long)msg.words[0]) >= 0) breach |= (1u << 1);
         if (lp_sys3(SYS_IOPORT_OUT, 10, (long)msg.words[0], 0) >= 0) breach |= (1u << 2);
-        if (lp_sys3(SYS_CAP_CREATE_IRQCAP, 6, 9, 0) >= 0) breach |= (1u << 3);
+        if (lp_sys4(SYS_CAP_CREATE_IRQCAP, 6, 9, (long)LP_SLOT_BUDGET,
+                    (long)LP_SLOT_DEVPROBE) >= 0) breach |= (1u << 3);
         if (lp_sys1(SYS_IRQ_ACK, 11) >= 0) breach |= (1u << 4);
         lp_sys1(SYS_EXIT, (long)breach);
         for (;;) {}
@@ -557,8 +566,10 @@ void lp_main(handle_id_t bootstrap_ch_h) {
                         (long)(uintptr_t)fb) == 0) breach |= (1u << 5);
         }
         /* device/spawn forgery — a pager holds neither */
-        if (lp_sys3(SYS_CAP_CREATE_IOPORT, 6, 0x2F8, 8) >= 0) breach |= (1u << 6);
-        if (lp_sys3(SYS_CAP_CREATE_IRQCAP, 6, 9, 0) >= 0) breach |= (1u << 7);
+        if (lp_sys4(SYS_CAP_CREATE_IOPORT, 6, (long)(0x2F8u | (8u << 16)),
+                    (long)LP_SLOT_BUDGET, (long)LP_SLOT_DEVPROBE) >= 0) breach |= (1u << 6);
+        if (lp_sys4(SYS_CAP_CREATE_IRQCAP, 6, 9, (long)LP_SLOT_BUDGET,
+                    (long)LP_SLOT_DEVPROBE) >= 0) breach |= (1u << 7);
         lp_sys1(SYS_EXIT, (long)breach);
         for (;;) {}
     }

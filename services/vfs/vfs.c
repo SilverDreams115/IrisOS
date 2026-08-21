@@ -80,6 +80,18 @@ static long vfs_self_vs(void);
  * syscall boundary rather than at each map site. */
 #define VFS_SLOT_SELF_VS  60u
 #define VFS_SLOT_PT       61u
+static inline int64_t vfs_syscall4(uint64_t num, uint64_t arg0, uint64_t arg1,
+                                   uint64_t arg2, uint64_t arg3) {
+    long r = iris_syscall4((long)num, (long)arg0, (long)arg1, (long)arg2,
+                           (long)arg3);
+    if (r == (long)IRIS_ERR_MISSING_TABLE)
+        r = iris_vspace_fixup((long)num, (long)arg0, (long)arg1, (long)arg2,
+                              (long)arg3,
+                              vfs_self_vs(), (long)IRIS_CPTR_OWN_UNTYPED,
+                              (long)((uint64_t)VFS_SLOT_PT << 32), (long)VFS_SLOT_PT,
+                              0, 0);
+    return (int64_t)r;
+}
 static inline int64_t vfs_syscall3(uint64_t num, uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     long r = iris_syscall3((long)num, (long)arg0, (long)arg1, (long)arg2);
     if (r == (long)IRIS_ERR_MISSING_TABLE)
@@ -207,8 +219,11 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
          * the slot deleted.  It used to come back as a handle that had to be
          * closed on three separate paths. */
         vfs_slot_delete(VFS_SLOT_INITRD_VMO);
-        vmo_h = vfs_syscall3(SYS_INITRD_VMO, (uint64_t)state->initrd_c,
-                             (uint64_t)i, VFS_INITRD_VMO_DEST);
+        /* Stage 7 Step 14: the budget the image copy is charged to is named,
+         * not defaulted — VFS pays out of its own delegated pool. */
+        vmo_h = vfs_syscall4(SYS_INITRD_VMO, (uint64_t)state->initrd_c,
+                             (uint64_t)i, VFS_INITRD_VMO_DEST,
+                             IRIS_CPTR_OWN_UNTYPED);
         if (vmo_h != 0) continue;
 
         sz_rc = vfs_syscall1(SYS_VMO_SIZE, (uint64_t)VFS_SLOT_INITRD_VMO);
@@ -245,8 +260,9 @@ static int vfs_seed_one_fixture(struct vfs_state *state, uint32_t index,
     if (slot == (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0]))) return 0;
 
     vfs_slot_delete(VFS_SLOT_INITRD_VMO);
-    vmo_h = vfs_syscall3(SYS_INITRD_VMO, (uint64_t)state->initrd_c,
-                         (uint64_t)index, VFS_INITRD_VMO_DEST);
+    vmo_h = vfs_syscall4(SYS_INITRD_VMO, (uint64_t)state->initrd_c,
+                         (uint64_t)index, VFS_INITRD_VMO_DEST,
+                         IRIS_CPTR_OWN_UNTYPED);
     if (vmo_h != 0) return 0;
     sz_rc = vfs_syscall1(SYS_VMO_SIZE, (uint64_t)VFS_SLOT_INITRD_VMO);
     if (sz_rc <= 0) { vfs_slot_delete(VFS_SLOT_INITRD_VMO); return 0; }

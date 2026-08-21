@@ -124,10 +124,13 @@ static inline long iris_syscall0(long nr) {
  * SYS_VMO_CREATE(size, budget_cptr, dest) → 0 or negative iris_error_t
  *   size:        bytes, rounded up to whole pages.
  *   budget_cptr: Stage 6 Step 5 — the KUntyped (RIGHT_WRITE) this VMO's
- *                pages, page-address array and header are carved from.  0 =
- *                "the budget my address space was built from".  A process
- *                holds several budgets and they are not interchangeable, which
- *                is why it says which one pays rather than the kernel guessing.
+ *                pages, page-address array and header are carved from.  A
+ *                process holds several budgets and they are not
+ *                interchangeable, which is why it says which one pays rather
+ *                than the kernel guessing.  Stage 7 Step 14: REQUIRED — 0 used
+ *                to mean "the budget my address space was built from", read
+ *                off the KProcess, which is the guess this argument exists to
+ *                remove.
  *   dest:        destination slot (cnode | slot<<32); required since Stage 4.
  *   The pages return to that Untyped's child count when the VMO is destroyed,
  *   so the region becomes RESET-able once nothing maps through it.
@@ -239,18 +242,26 @@ static inline long iris_syscall0(long nr) {
  * Policy (which service gets which resource) lives in svcmgr; the kernel
  * validates ranges and creates the cap object.
  *
- * SYS_CAP_CREATE_IRQCAP(auth_cptr, irq_num, _, dest_slot) → 0 or negative iris_error_t
+ * Stage 7 Step 14: both take the BUDGET the kernel object is carved from in
+ * arg2, and it is required.  They used to charge the caller's KProcess default
+ * — the last place the kernel picked whose memory pays.  IRQCAP had a free
+ * argument; IOPORT did not, so its two 16-bit device facts share arg1, which
+ * is what they always were: one range, described in one word.
+ *
+ * SYS_CAP_CREATE_IRQCAP(auth_cptr, irq_num, budget_cptr, dest_slot) → 0 or negative iris_error_t
  *   auth_cptr: KOBJ_BOOTSTRAP_CAP whose authority is exactly
  *     IRIS_BOOTCAP_IRQ_CONTROL; becomes the MDB parent of the new cap.
  *   irq_num: hardware IRQ line (0–15).
+ *   budget_cptr: KUntyped (RIGHT_WRITE) the KIrqCap is carved from.  Required.
  *   dest_slot: root-CNode slot receiving a KIrqCap with
  *     RIGHT_ROUTE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
  *
- * SYS_CAP_CREATE_IOPORT(auth_cptr, base, count, dest_slot) → 0 or negative iris_error_t
+ * SYS_CAP_CREATE_IOPORT(auth_cptr, base|count<<16, budget_cptr, dest_slot) → 0 or negative iris_error_t
  *   auth_cptr: KOBJ_BOOTSTRAP_CAP whose authority is exactly
  *     IRIS_BOOTCAP_IOPORT_CONTROL.
- *   base: first I/O port in the range (0–0xFFFF).
- *   count: number of consecutive ports (1–0x10000, base+count ≤ 0x10000).
+ *   arg1 low 16:  first I/O port in the range (0–0xFFFF).
+ *   arg1 high 16: number of consecutive ports (1–0x10000, base+count ≤ 0x10000).
+ *   budget_cptr: KUntyped (RIGHT_WRITE) the KIoPort is carved from.  Required.
  *   dest_slot: root-CNode slot receiving a KIoPort with
  *     RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
  */
@@ -277,12 +288,13 @@ static inline long iris_syscall0(long nr) {
  *   auth_cptr:   the initrd capability (IRIS_BOOTCAP_INITRD_CONTROL).
  *   index:       initrd catalog index (name→index mapping is a ring-3 concern).
  *   dest:        destination slot (cnode | slot<<32).
- *   budget_cptr: Stage 6 Step 5 — the KUntyped the image COPY is carved from;
- *                0 = the caller's own budget.  Reading an entry allocates as
- *                many pages as the image is long, and a loader parses it and
- *                drops it, so a caller that points this at a scratch Untyped
- *                can RESET that region between spawns instead of spending its
- *                whole pool one image at a time.
+ *   budget_cptr: Stage 6 Step 5 — the KUntyped the image COPY is carved from.
+ *                Reading an entry allocates as many pages as the image is
+ *                long, and a loader parses it and drops it, so a caller that
+ *                points this at a scratch Untyped can RESET that region
+ *                between spawns instead of spending its whole pool one image
+ *                at a time.  Stage 7 Step 14: REQUIRED — 0 used to mean "the
+ *                caller's own budget", read off the KProcess.
  *   The result is a read-only KOBJ_VMO (RIGHT_READ) over a private copy of the
  *   embedded ELF bytes; map with flags=0.
  *
@@ -1123,19 +1135,29 @@ static inline long iris_syscall0(long nr) {
 #define SYS_VMO_MAP_PAGE 108
 
 /*
- * SYS_VMO_CREATE_FOR(size, charge_target) → handle_id or iris_error_t (Phase 29)
+ * SYS_VMO_CREATE_FOR(size, charge_target, dest, budget_cptr) → 0 or iris_error_t
  *
- * Like SYS_VMO_CREATE, but the VMO OBJECT quota and its sparse physical pages
- * are charged to `charge_target` — a CPtr/handle to a KProcess the caller holds
- * RIGHT_MANAGE on — instead of to the caller.  The handle is installed in the
- * CALLER's table (holder), while the target is the OWNER/payer.  This lets a
- * loader create a child's image VMOs charged to the CHILD's resource domain, so
- * the loader's own quota stays flat regardless of how many children it launches
- * (Phase 29 root-cause fix for caller-charged accounting).
+ * Like SYS_VMO_CREATE, but the VMO OBJECT QUOTA is charged to `charge_target` —
+ * a CPtr to a KProcess the caller holds RIGHT_MANAGE on — instead of to the
+ * caller.  The capability lands in the CALLER's CSpace (holder), while the
+ * target is the OWNER.  This lets a loader create a child's image VMOs counted
+ * against the CHILD's resource domain, so the loader's own quota stays flat
+ * regardless of how many children it launches (Phase 29 root-cause fix for
+ * caller-charged accounting).
  *
- *   Returns IRIS_ERR_ACCESS_DENIED — missing RIGHT_MANAGE on charge_target.
+ *   budget_cptr: Stage 7 Step 14 — REQUIRED, and it is where the MEMORY comes
+ *                from, resolved in the CALLER's CSpace.  It used to be the
+ *                payer's own default budget, so a caller spent an Untyped it
+ *                did not hold and could not see.  A loader carving a child's
+ *                image out of the child's pool holds that pool and names it.
+ *                That quota and memory can therefore name different domains is
+ *                KVMO's owner/payer split, which retires with the object.
+ *
+ *   Returns IRIS_ERR_ACCESS_DENIED — missing RIGHT_MANAGE on charge_target,
+ *                                    or RIGHT_WRITE on budget_cptr.
  *   Returns IRIS_ERR_WRONG_TYPE    — charge_target is not a KProcess.
  *   Returns IRIS_ERR_BAD_HANDLE    — charge_target is torn down.
+ *   Returns IRIS_ERR_INVALID_ARG   — no budget named, or it is not an Untyped.
  *   Returns IRIS_ERR_NO_MEMORY     — object alloc or the target's quota is full.
  */
 #define SYS_VMO_CREATE_FOR 109
