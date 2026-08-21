@@ -607,9 +607,12 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         for (uint32_t i = 0; i < seg_count; i++) {
             /* Stage 7 Step 14: the child's image comes out of the child's
              * budget, said rather than inferred — pool_c is the very region
-             * its address space and process state were carved from. */
-            r = sl_sys4(SYS_VMO_CREATE_FOR, (long)seg_map_size[i],
-                        (long)proc_h, sl_ws_dest(ws, SL_WS_SEG + i), pool_c);
+             * its address space and process state were carved from.
+             * Stage 7-mem: and that is the WHOLE of "charged to the child".
+             * SYS_VMO_CREATE_FOR named a payer process on top of it, for a
+             * per-process VMO ceiling that no longer exists. */
+            r = sl_sys3(SYS_VMO_CREATE, (long)seg_map_size[i], pool_c,
+                        sl_ws_dest(ws, SL_WS_SEG + i));
             if (r < 0) goto out;
             seg_vmo[i] = (handle_id_t)sl_ws_cptr(ws, SL_WS_SEG + i);
         }
@@ -718,8 +721,8 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * made it, so it never stopped holding it. */
 
         /* 14. Create user stack sparse VMO (charged to the child) and map it in. */
-        r = sl_sys4(SYS_VMO_CREATE_FOR, (long)USER_STACK_SIZE,
-                    (long)proc_h, sl_ws_dest(ws, SL_WS_STACK), pool_c);
+        r = sl_sys3(SYS_VMO_CREATE, (long)USER_STACK_SIZE, pool_c,
+                    sl_ws_dest(ws, SL_WS_STACK));
         if (r < 0) goto out;
         stack_vmo_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_STACK);
 

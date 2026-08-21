@@ -45,36 +45,13 @@ static struct KNotification *p3_notif_fixture(void) {
  * Phase S1: the NOTIFICATION quota is retired too (Untyped is the budget for
  * notifications), so this selftest now covers the remaining legacy quota:
  * KVmo ownership accounting (LEGACY_FOR_KPROCESS_KVMO in the ledger). */
-static int phase3_quota_selftest(void) {
-    struct KProcess *proc = 0;
-    struct KVmo *vmos[KPROCESS_VMO_QUOTA + 1];
-    int ok = 0;
-
-    for (uint32_t i = 0; i < KPROCESS_VMO_QUOTA + 1; i++) vmos[i] = 0;
-
-    proc = kprocess_alloc();
-    if (!proc) goto out;
-
-    for (uint32_t i = 0; i < KPROCESS_VMO_QUOTA; i++) {
-        vmos[i] = kvmo_create(0x1000ULL);
-        if (!vmos[i]) goto out;
-        if (kvmo_bind_owner(vmos[i], proc) != IRIS_OK) goto out;
-    }
-    vmos[KPROCESS_VMO_QUOTA] = kvmo_create(0x1000ULL);
-    if (!vmos[KPROCESS_VMO_QUOTA]) goto out;
-    if (kvmo_bind_owner(vmos[KPROCESS_VMO_QUOTA], proc) != IRIS_ERR_NO_MEMORY) goto out;
-
-    if (proc->owned_vmos != KPROCESS_VMO_QUOTA) goto out;
-
-    ok = 1;
-
-out:
-    for (uint32_t i = 0; i < KPROCESS_VMO_QUOTA + 1; i++) {
-        if (vmos[i]) kvmo_free(vmos[i]);
-    }
-    if (proc) kprocess_free(proc);
-    return ok;
-}
+/*
+ * phase3_quota_selftest DELETED (Stage 7-mem) — its subject was the per-process VMO
+ * ceiling of 32, which is gone with the owner relation.  A VMO's accounting is
+ * the Untyped it was carved from, and that is asserted where it belongs: on
+ * the budget (T299, T304 and the drift checks), not on a number the kernel
+ * invented.
+ */
 
 /*
  * Stage 7 Step 12: this used to open by arming a process-scoped exception
@@ -191,14 +168,11 @@ int phase3_selftest_run(void) {
         serial_write("[IRIS][P3] WARN: process selftest failed\n");
         return 0;
     }
-    if (!phase3_quota_selftest()) {
-        serial_write("[IRIS][P3] WARN: quota selftest failed\n");
-        return 0;
-    }
 
     /* The marker names are kept: the headless gate greps for them, and what
-     * they now attest is the lifecycle half — notification, process and quota
-     * — after the handle-table halves retired with the namespace. */
+     * they now attest is the lifecycle half — notification and process — after
+     * the handle-table halves retired with the namespace and the quota half
+     * with the per-process VMO ceiling (Stage 7-mem). */
     serial_write("[IRIS][P3] handle/lifecycle selftests OK\n");
     serial_write("[IRIS][P41] rights selftests OK\n");
     return 1;

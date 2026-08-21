@@ -12,7 +12,6 @@ static _Atomic uint32_t kvmo_live;
 static void kvmo_destroy(struct KObject *obj) {
     struct KVmo *v = (struct KVmo *)obj;
     struct KUntyped *pool = v->pool;
-    uint32_t charged_pages = 0;   /* Phase 29: sparse phys pages charged to owner */
     if (v->sparse) {
         for (uint32_t i = 0; i < v->page_capacity; i++) {
             if (v->pages[i]) {
@@ -22,7 +21,6 @@ static void kvmo_destroy(struct KObject *obj) {
                  * entry, so the holder can RESET and reuse the whole region. */
                 if (pool) kuntyped_release_page_child(pool);
                 else      pmm_free_page(v->pages[i]);
-                charged_pages++;
             }
         }
         if (v->pages_meta_phys) {
@@ -33,18 +31,6 @@ static void kvmo_destroy(struct KObject *obj) {
         uint64_t pages = (v->size + 0xFFFULL) >> 12;
         for (uint64_t i = 0; i < pages; i++)
             pmm_free_page(v->phys + i * 0x1000ULL);
-    }
-    if (v->owner) {
-        struct KProcess *owner = v->owner;
-        v->owner = 0;
-        /* Phase 29: release the per-page phys charge that page allocation put on
-         * the owner (charged once per sparse page in the map syscalls), then the
-         * VMO-object charge.  A VMO's pages are owned and paid for by the VMO's
-         * payer domain, not by whoever happened to map it first. */
-        for (uint32_t i = 0; i < charged_pages; i++)
-            kprocess_quota_release_page(owner);
-        kprocess_quota_release_vmo(owner);
-        kobject_release(&owner->base);
     }
     atomic_fetch_sub_explicit(&kvmo_live, 1u, memory_order_relaxed);
     /* Storage first (a block holds its own parent retain), pool retain last:
@@ -156,37 +142,7 @@ struct KVmo *kvmo_wrap(uint64_t phys, uint64_t size) {
     return v;
 }
 
-iris_error_t kvmo_bind_owner(struct KVmo *v, struct KProcess *owner) {
-    iris_error_t r;
-    if (!v || !owner) return IRIS_ERR_INVALID_ARG;
 
-    spinlock_lock(&v->base.lock);
-    if (v->owner) {
-        r = (v->owner == owner) ? IRIS_OK : IRIS_ERR_BUSY;
-        spinlock_unlock(&v->base.lock);
-        return r;
-    }
-    spinlock_unlock(&v->base.lock);
-
-    r = kprocess_quota_acquire_vmo(owner);
-    if (r != IRIS_OK) return r;
-    kobject_retain(&owner->base);
-
-    spinlock_lock(&v->base.lock);
-    if (v->owner) {
-        spinlock_unlock(&v->base.lock);
-        kobject_release(&owner->base);
-        kprocess_quota_release_vmo(owner);
-        return (v->owner == owner) ? IRIS_OK : IRIS_ERR_BUSY;
-    }
-    v->owner = owner;
-    spinlock_unlock(&v->base.lock);
-    return IRIS_OK;
-}
-
-struct KProcess *kvmo_owner(const struct KVmo *v) {
-    return v ? v->owner : 0;
-}
 
 void kvmo_free(struct KVmo *v) {
     kobject_release(&v->base);

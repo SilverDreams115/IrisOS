@@ -1420,7 +1420,7 @@ One smaller item remains and is NOT Stage 7 work:
 - **The VMO-count quota** retires with the `KVMO` object (memory server), per
   the ledger.
 
-## Stage 7-mem — the memory server  ← NOT STARTED
+## Stage 7-mem — the memory server  ← IN PROGRESS
 
 Precondition: Stage 7's authority work (done).
 
@@ -1434,11 +1434,20 @@ with it the last things `KProcess` is for.
   collapse into the Frame family.  Step 14 already made the memory come from a
   budget the caller names, so what dies here is the OBJECT and its identity,
   not the accounting.
-- **Retire the VMO-count quota** (`owned_vmos`) and the page counters.  A
-  budget is the Untyped; a second ceiling the kernel invented is the same
-  mistake Step 2 removed for pages and Step 3 for live processes.
-- **Retire `SYS_RESOURCE_INFO`** and the per-process gauges with the domain
-  they report on.
+- ✅ **The VMO OWNER relation is retired** (`kvmo_bind_owner`, `kvmo_owner`,
+  `KVmo.owner`), and with it `SYS_VMO_CREATE_FOR` (109): it named a PAYER on
+  top of a budget the caller already names and holds, for a per-process count
+  that no longer exists.  A loader that wants a child's image charged to the
+  child carves it from the child's budget.
+- ✅ **The VMO-count quota** (`owned_vmos`, ceiling 32) and the page counters
+  are gone.  A budget is the Untyped; a second ceiling the kernel invented is
+  the same mistake Step 2 removed for pages and Step 3 for live processes.
+- ✅ **`SYS_RESOURCE_INFO` (110) is retired** with the domain it reported on.
+  Its three GLOBAL gauges — kernel-slab occupancy, failed charges, rollbacks —
+  were never per-process and moved to `SYS_UNTYPED_QUERY`'s GLOBAL kind.  The
+  live-VMO count joined the per-type gauges in `SYS_SCHED_INFO`, which makes
+  the suite's leak checks GLOBAL where the per-process form only ever caught
+  the caller's own.
 - **`KIrqCap` and `KIoPort` stop being objects.**  seL4 has no kernel object
   behind an interrupt or an I/O port — an IRQHandler capability names a line,
   and x86 I/O port access is a capability over a port RANGE with no allocation

@@ -8,7 +8,6 @@
 # the identifiers no longer exist.  What remains is Stage 6's inventory: the
 # object families still fabricated from the kslab global heap instead of being
 # retyped from an Untyped.
-kernel/core/syscall/syscall_proc.c kslab_alloc 1
 kernel/include/iris/kslab.h kslab_alloc 3
 kernel/include/iris/syscall.h kslab_alloc 1
 kernel/kernel_main.c kslab_alloc 1

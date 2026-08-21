@@ -37,7 +37,13 @@ struct KVmo {
                              * (pages[]), allocated EAGERLY at map time —
                              * there is NO fault-driven demand paging
                              * (Phase 6.1 removed it; FR-41 regression). */
-    struct KProcess *owner; /* creator retained for quota accounting */
+    /* owner DELETED (Stage 7-mem).  A VMO was charged to a PROCESS: the
+     * object counted against a per-process ceiling of 32 and its pages against
+     * a counter, both invented by the kernel.  Stage 7 Step 14 made the memory
+     * come from a budget the caller NAMES, which is the only accounting a
+     * capability system needs — the Untyped is the ceiling, and it is one
+     * somebody delegated.  A second ceiling on top contradicted it, the same
+     * way the page quota did in Step 2 and the live-process ceiling in Step 3. */
     /* Stage 6 Step 5: the Untyped this VMO's pages, metadata and header were
      * carved from — the payer's own budget, retained for the VMO's lifetime.
      * NULL means the kernel funded it: the root task, a wrapped device region
@@ -50,7 +56,7 @@ struct KVmo {
 
     /* Per-page shard spinlocks for sparse VMOs.
      * Lock: page_shards[page_idx & (KVMO_PAGE_SHARDS - 1)]
-     * base.lock is still used for VMO-level metadata (owner binding, etc.). */
+     * base.lock is still used for VMO-level metadata. */
     spinlock_t     page_shards[KVMO_PAGE_SHARDS];
 };
 
@@ -65,11 +71,6 @@ struct KVmo *kvmo_create_from(uint64_t size, struct KUntyped *pool);
 /* One page for a sparse VMO, from its pool when it has one. */
 uint64_t     kvmo_alloc_page(struct KVmo *v);             /* allocate from PMM */
 struct KVmo *kvmo_wrap  (uint64_t phys, uint64_t size); /* wrap existing phys (MMIO) */
-iris_error_t kvmo_bind_owner(struct KVmo *v, struct KProcess *owner);
-/* Phase 29: the VMO's payer domain — the process charged for the VMO object and
- * for its sparse physical pages (charged once, at page allocation; released at
- * kvmo_destroy).  NULL only if never bound. */
-struct KProcess *kvmo_owner(const struct KVmo *v);
 void         kvmo_free  (struct KVmo *v);
 uint32_t     kvmo_live_count(void);
 

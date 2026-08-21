@@ -532,22 +532,6 @@ static long it_tcb_self_slot(void) {
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
-/* SYS_VMO_CREATE_FOR: a VMO whose OBJECT quota is charged to `payer`, whose
- * MEMORY comes from a budget the suite names and holds (Stage 7 Step 14), and
- * which is published into a slot.  That the two can name different domains is
- * KVMO's owner/payer split; what changed is only that the memory half stopped
- * being inferred from the payer's KProcess. */
-static long it_vmo_create_for_slot(uint64_t size, long payer) {
-    uint32_t leaf = IT_OBJ_POOL_FIRST +
-                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                        __ATOMIC_RELAXED) %
-                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
-    long r = it_sys4(SYS_VMO_CREATE_FOR, (long)size, payer,
-                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
-                     (long)IRIS_CPTR_TEST_UNTYPED);
-    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
-}
 
 /* SYS_VSPACE_SELF into a rotating leaf: the caller's own address space as a
  * capability.  Stage 7 Step 15: this replaces it_proc_vspace_slot, which asked
@@ -560,6 +544,20 @@ static long it_vspace_self_slot(void) {
                      (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
     long r = it_sys1(SYS_VSPACE_SELF,
+                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
+    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
+}
+
+/* A VMO carved from a NAMED budget, published into a rotating slot.  Stage
+ * 7-mem: this is the whole of "charged to X" — there is no payer argument and
+ * no per-process count, so which budget pays is the only statement there is. */
+static long it_vmo_create_in(uint64_t size, long budget) {
+    uint32_t leaf = IT_OBJ_POOL_FIRST +
+                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                        __ATOMIC_RELAXED) %
+                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    long r = it_sys3(SYS_VMO_CREATE, (long)size, budget,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
@@ -4810,12 +4808,17 @@ static int it_task_live(uint32_t *out) {
 #define IT_S3_EP      2u   /* KEndpoint objects live */
 #define IT_S3_NOTIF   3u   /* KNotification objects live */
 #define IT_S3_CNODE   4u   /* KCNode objects live   */
+/* Stage 7-mem: the GLOBAL live-VMO count (diag offset 132).  It replaces the
+ * per-process `vmos_usage` the retired SYS_RESOURCE_INFO reported, and it is
+ * the stronger of the two: a leak by ANY principal shows here, where the
+ * per-process form only ever caught the caller's own. */
+#define IT_S3_VMO     5u   /* KVmo objects live     */
 
-static int it_sched_ext3(uint32_t w3[5]) {
+static int it_sched_ext3(uint32_t w3[6]) {
     uint8_t buf[136];
     long r = it_sys3(SYS_SCHED_INFO, (long)(uintptr_t)buf, 136, (long)IRIS_CPTR_DEBUG_CONTROL);
     if (r != 0) return 0;
-    for (uint32_t i = 0; i < 5u; i++) {
+    for (uint32_t i = 0; i < 6u; i++) {
         uint32_t o = 112u + 4u * i;
         w3[i] = (uint32_t)buf[o] | ((uint32_t)buf[o + 1u] << 8) |
                 ((uint32_t)buf[o + 2u] << 16) | ((uint32_t)buf[o + 3u] << 24);
@@ -8568,7 +8571,7 @@ static int it_ut_reset(void) {
  * RIGHT_WRITE (ACCESS_DENIED, no object born).
  * Invariants: U1, U2, U3, U6, U17, U18, U20. */
 static void test_t125(void) {
-    uint32_t s3b[5], s3a[5];
+    uint32_t s3b[6], s3a[6];
     /* Materialize the lazy authority sub-untyped BEFORE the baseline so its
      * +1 untyped does not pollute this test's live-count deltas. */
     if (it_auth_ut() < 0) { it_fail("T125", "auth untyped carve"); return; }
@@ -8632,7 +8635,7 @@ static void test_t125(void) {
 
     /* ── Failure paths (no object may be born) ── */
     if (ok) {
-        uint32_t f0[5], f1[5];
+        uint32_t f0[6], f1[6];
         if (!it_sched_ext3(f0)) { ok = 0; why = "ext3 fail-base"; }
         /* wrong/unsupported type (KOBJ_PROCESS = 0). */
         if (ok && it_retype_slot_alloc(IT_UT, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "wrong type"; }
@@ -8665,7 +8668,9 @@ static void test_t125(void) {
         }
         /* No object leaked through any failure path. */
         if (ok && !it_sched_ext3(f1)) { ok = 0; why = "ext3 fail-after"; }
-        for (uint32_t i = 0; ok && i < 5u; i++)
+        /* 6 words since Stage 7-mem: the live-VMO count joined the per-type
+         * gauges, so a failure path that leaked one is caught here too. */
+        for (uint32_t i = 0; ok && i < 6u; i++)
             if (f1[i] != f0[i]) { ok = 0; why = "failure leaked object"; }
     }
 
@@ -8687,7 +8692,7 @@ static void test_t125(void) {
  * and a valid retype right after each failure still works.
  * Invariants: U5, U17, U18, U19. */
 static void test_t126(void) {
-    uint32_t s3b[5], s3a[5];
+    uint32_t s3b[6], s3a[6];
     uint32_t hlb[14], hla[14];
     it_quiesce_reaper();
     if (!it_sched_ext3(s3b) || !it_sched_ext(hlb)) { it_fail("T126", "sched ext"); return; }
@@ -8743,7 +8748,7 @@ static void test_t126(void) {
  * not a derivation child, and survives the revoke — then is cleaned up.
  * Invariants: U8, U9, U10, U16. */
 static void test_t127(void) {
-    uint32_t s3b[5];
+    uint32_t s3b[6];
     it_quiesce_reaper();
     if (!it_sched_ext3(s3b)) { it_fail("T127", "sched ext3"); return; }
     int ok = 1;
@@ -8807,7 +8812,7 @@ static void test_t127(void) {
     it_close(&outsider);
     it_quiesce_reaper();
     if (ok && !it_ut_reset()) { ok = 0; why = "reset busy"; }
-    uint32_t s3a[5];
+    uint32_t s3a[6];
     if (ok && !it_sched_ext3(s3a)) { ok = 0; why = "ext3 final"; }
     for (uint32_t i = 0; ok && i < 5u; i++)
         if (s3a[i] != s3b[i]) { ok = 0; why = "object leak"; }
@@ -8830,7 +8835,7 @@ static void test_t127(void) {
  * can never outlive the frame object).
  * Invariants: U10, U13, U17, U18. */
 static void test_t128(void) {
-    uint32_t s3b[5];
+    uint32_t s3b[6];
     it_quiesce_reaper();
     if (!it_sched_ext3(s3b)) { it_fail("T128", "sched ext3"); return; }
     int ok = 1;
@@ -8840,7 +8845,7 @@ static void test_t128(void) {
     if (fr < 0) { it_fail("T128", "retype frame"); return; }
     handle_id_t frame = (handle_id_t)fr;
 
-    uint32_t mid[5];
+    uint32_t mid[6];
     if (!it_sched_ext3(mid)) { ok = 0; why = "ext3 mid"; }
     if (ok && mid[IT_S3_FRAME] != s3b[IT_S3_FRAME] + 1u) { ok = 0; why = "frame not counted"; }
 
@@ -8867,7 +8872,7 @@ static void test_t128(void) {
     it_close(&frame);
     it_quiesce_reaper();
     if (ok && !it_ut_reset()) { ok = 0; why = "reset busy (frame child leak)"; }
-    uint32_t s3a[5];
+    uint32_t s3a[6];
     if (ok && !it_sched_ext3(s3a)) { ok = 0; why = "ext3 final"; }
     if (ok && s3a[IT_S3_FRAME] != s3b[IT_S3_FRAME]) { ok = 0; why = "frame leak/double-free"; }
 
@@ -8891,7 +8896,7 @@ static void t129_worker(void) {
     for (;;) {}
 }
 static void test_t129(void) {
-    uint32_t s3b[5], s3a[5];
+    uint32_t s3b[6], s3a[6];
     uint32_t e0[14], e1[14];
     uint32_t tl0 = 0, tl1 = 0;
     it_quiesce_reaper();
@@ -8905,7 +8910,7 @@ static void test_t129(void) {
     if (er < 0) { it_fail("T129", "retype endpoint"); return; }
     g_sh_ep = (handle_id_t)er;
     {
-        uint32_t mid[5];
+        uint32_t mid[6];
         if (!it_sched_ext3(mid) || mid[IT_S3_EP] != s3b[IT_S3_EP] + 1u) {
             ok = 0; why = "endpoint not counted";
         }
@@ -9032,7 +9037,7 @@ static void test_t130(void) {
 #define T131_SEED   0x18C0DE18u
 #define T131_ROUNDS 24u
 static void test_t131(void) {
-    uint32_t s3b[5], s3a[5];
+    uint32_t s3b[6], s3a[6];
     uint32_t e0[14], e1[14];
     it_quiesce_reaper();
     if (!it_sched_ext3(s3b) || !it_sched_ext(e0)) { it_fail("T131", "sched ext"); return; }
@@ -9199,7 +9204,7 @@ static void test_t132(void) {
  * a fresh remap of the same VA succeeding) rather than by dereference.
  * Invariants: V2, V10, V12, V13, V21. */
 static void test_t133(void) {
-    uint32_t s3b[5], s3a[5];
+    uint32_t s3b[6], s3a[6];
     uint32_t v0[5], v1[5];
     it_quiesce_reaper();
     if (!it_setup_self_vspace()) { it_fail("T133", "vspace self mint"); return; }
@@ -9439,7 +9444,7 @@ static void test_t136(void) {
  *   - no stale PTE and no stale cap remain.
  * Invariants: V17, V18 (+ U10/U13 from Phase 18). */
 static void test_t137(void) {
-    uint32_t s3b[5];
+    uint32_t s3b[6];
     uint32_t v0[5], v1[5];
     it_quiesce_reaper();
     if (!it_setup_self_vspace()) { it_fail("T137", "vspace self mint"); return; }
@@ -9479,7 +9484,7 @@ static void test_t137(void) {
     it_close(&fr);
     it_quiesce_reaper();
     if (ok && !it_ut_reset()) { ok = 0; why = "reset busy (frame still mapped?)"; }
-    uint32_t s3a[5];
+    uint32_t s3a[6];
     if (ok && (!it_sched_ext3(s3a) || !it_sched_ext4(v1))) { ok = 0; why = "ext final"; }
     if (ok && s3a[IT_S3_FRAME]  != s3b[IT_S3_FRAME])  { ok = 0; why = "frame leak/double-free"; }
     if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "mapping leak"; }
@@ -9542,7 +9547,7 @@ static void test_t138(void) {
 #define T139_ROUNDS 40u
 static void test_t139(void) {
     uint32_t v0[5], v1[5];
-    uint32_t s3b[5], s3a[5];
+    uint32_t s3b[6], s3a[6];
     uint32_t e0[14], e1[14];
     it_quiesce_reaper();
     if (!it_setup_self_vspace()) { it_fail("T139", "vspace self mint"); return; }
@@ -9746,7 +9751,7 @@ static void it_fault_close4(handle_id_t *a, handle_id_t *b,
  *   - registering on a dead process fails NOT_FOUND (would leak the pin).
  * Invariants: F3, F4, F5, F9, F17, F18. */
 static void test_t140(void) {
-    uint32_t e0[14], e1[14], s3b[5], s3a[5], f0[5], f1[5];
+    uint32_t e0[14], e1[14], s3b[6], s3a[6], f0[6], f1[6];
     int ok = 1;
     const char *why = "register authority";
     it_quiesce_reaper();
@@ -9874,7 +9879,7 @@ static void test_t140(void) {
  * the record persists until resolved; kill-resolution reaps the child and
  * clears the record.  Invariants: F1, F6, F7, F8, F11, F15, F19. */
 static void test_t141(void) {
-    uint32_t t0 = 0, t1 = 0, e0[14], e1[14], f0[5], f1[5];
+    uint32_t t0 = 0, t1 = 0, e0[14], e1[14], f0[6], f1[6];
     int ok = 1;
     const char *why = "invalid VA delivery";
     it_quiesce_reaper();
@@ -9944,7 +9949,7 @@ static void test_t141(void) {
  * VSpace books return to baseline after reap.  Invariants: F6, F7, F16, F20,
  * F21 (write bit distinguishable).  Phase 19 V6 gap closed. */
 static void test_t142(void) {
-    uint32_t v0[5], v1[5], f0[5], f1[5];
+    uint32_t v0[5], v1[5], f0[6], f1[6];
     uint32_t t0 = 0, t1 = 0;
     int ok = 1;
     const char *why = "ro write fault";
@@ -10015,7 +10020,7 @@ static void test_t142(void) {
  * the user range.  No escalation: the supervisor observes and kills.
  * Invariants: F1, F7, F21 (execute bit distinguishable), F22. */
 static void test_t143(void) {
-    uint32_t f0[5], f1[5];
+    uint32_t f0[6], f1[6];
     uint32_t t0 = 0, t1 = 0;
     int ok = 1;
     const char *why = "nx exec fault";
@@ -10058,7 +10063,7 @@ static void test_t143(void) {
  *   - after kill-resolution the record is gone: FAULT_INFO is WOULD_BLOCK and
  *     a second RESUME is a clean NOT_FOUND (F11, F12 — no stale state). */
 static void test_t144(void) {
-    uint32_t f0[5], f1[5];
+    uint32_t f0[6], f1[6];
     uint32_t t0 = 0, t1 = 0;
     int ok = 1;
     const char *why = "resume semantics";
@@ -10154,7 +10159,7 @@ static void test_t144(void) {
  * No zombies, no waiter/KReply drift, notification objects at baseline.
  * Invariants: F13, F14, F15, F17, F18, F19. */
 static void test_t145(void) {
-    uint32_t e0[14], e1[14], s3b[5], s3a[5], f0[5], f1[5];
+    uint32_t e0[14], e1[14], s3b[6], s3a[6], f0[6], f1[6];
     uint32_t t0 = 0, t1 = 0;
     int ok = 1;
     const char *why = "handler drop";
@@ -10213,7 +10218,7 @@ static void test_t145(void) {
  *   - task/handle/KReply/mapping books at baseline.
  * Invariants: F12, F15, F17, F18, F19, F20. */
 static void test_t146(void) {
-    uint32_t e0[14], e1[14], v0[5], v1[5], f0[5], f1[5];
+    uint32_t e0[14], e1[14], v0[5], v1[5], f0[6], f1[6];
     uint32_t t0 = 0, t1 = 0;
     int ok = 1;
     const char *why = "kill while pending";
@@ -10271,7 +10276,7 @@ static void test_t146(void) {
 #define T147_SEED   0x20C0DE20u
 #define T147_ROUNDS 10u
 static void test_t147(void) {
-    uint32_t e0[14], e1[14], s3b[5], s3a[5], v0[5], v1[5], f0[5], f1[5];
+    uint32_t e0[14], e1[14], s3b[6], s3a[6], v0[5], v1[5], f0[6], f1[6];
     uint32_t t0 = 0, t1 = 0;
     it_quiesce_reaper();
     if (!it_sched_ext(e0) || !it_sched_ext3(s3b) || !it_sched_ext4(v0) ||
@@ -10416,6 +10421,7 @@ struct it_snap {
     uint32_t hlive, ghwm, hmax;    /* handle-table live / global hwm / max */
     uint32_t proclive, reply;      /* live processes / reply-caps-created (cumulative) */
     uint32_t ut, fr, ep, no, cn;   /* live untyped/frame/endpoint/notif/cnode */
+    uint32_t vmo;                  /* live KVmo objects (Stage 7-mem) */
     uint32_t vs, map;              /* live VSpace / mapping nodes */
     uint32_t fdeliver, fclean;     /* cumulative fault delivery / cleanup */
     uint8_t  ok;
@@ -10423,14 +10429,14 @@ struct it_snap {
 
 static struct it_snap it_snap_take(void) {
     struct it_snap s;
-    uint32_t e[14], w3[5], w4[5], w5[5];
+    uint32_t e[14], w3[6], w4[5], w5[5];
     s.ok = 0;
     if (!it_task_live(&s.task) || !it_sched_ext(e) || !it_sched_ext3(w3) ||
         !it_sched_ext4(w4) || !it_sched_ext5(w5)) return s;
     s.hlive = e[IT_SI_LIVE]; s.ghwm = e[IT_SI_GHWM]; s.hmax = e[IT_SI_MAX];
     s.proclive = e[IT_SI_PROCLIVE]; s.reply = e[IT_SI_REPLY];
     s.ut = w3[IT_S3_UNTYPED]; s.fr = w3[IT_S3_FRAME]; s.ep = w3[IT_S3_EP];
-    s.no = w3[IT_S3_NOTIF]; s.cn = w3[IT_S3_CNODE];
+    s.no = w3[IT_S3_NOTIF]; s.cn = w3[IT_S3_CNODE]; s.vmo = w3[IT_S3_VMO];
     s.vs = w4[IT_S4_VSLIVE]; s.map = w4[IT_S4_MAPLIVE];
     s.fdeliver = w5[IT_S5_DELIVER]; s.fclean = w5[IT_S5_CLEAN];
     s.ok = 1;
@@ -10476,6 +10482,7 @@ static int it_snap_baseline_live(const struct it_snap *a, const struct it_snap *
     if (b->hlive != a->hlive)      { *why = "handle leak"; return 0; }
     if (b->vs != a->vs)            { *why = "vspace drift"; return 0; }
     if (b->map != a->map)          { *why = "mapping drift"; return 0; }
+    if (b->vmo != a->vmo)          { *why = "vmo drift"; return 0; }
     return 1;
 }
 
@@ -12982,7 +12989,7 @@ static void test_t181(void) {
  * exactly-once (no residual signal, no residual record) and hands the pager
  * no capability it was not minted.  Invariants: P2, P3, P9, P12, P21. */
 static void test_t182(void) {
-    uint32_t f0[5], f1[5];
+    uint32_t f0[6], f1[6];
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
     int ok = b.ok && it_sched_ext5(f0);
@@ -13038,7 +13045,7 @@ static void test_t182(void) {
  * afterwards.  Target death sweeps the pager-installed mapping; the frame
  * stays intact and reusable.  Invariants: P5, P7, P9, P11, P18, P19, P20. */
 static void test_t183(void) {
-    uint32_t f0[5], f1[5], word;
+    uint32_t f0[6], f1[6], word;
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
     int ok = b.ok && it_sched_ext5(f0);
@@ -13217,7 +13224,7 @@ static void test_t184(void) {
  * retires), after which even the CORRECT generation is late: NOT_FOUND, and
  * the record is gone.  Invariants: P9, P10, P12, P13.  */
 static void test_t185(void) {
-    uint32_t f0[5], f1[5], word;
+    uint32_t f0[6], f1[6], word;
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
     int ok = b.ok && it_sched_ext5(f0);
@@ -13973,7 +13980,7 @@ static void test_t192(void) {
  * VMO-backed mapping; the VMO stays live and reusable.
  * Invariants: M3, M9, M13(pos), M14, M15, M17, M19, M20. */
 static void test_t193(void) {
-    uint32_t f0[5], f1[5], word;
+    uint32_t f0[6], f1[6], word;
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
     long vlive0 = it_vmo_live();
@@ -14802,7 +14809,7 @@ static void test_t201(void) {
  * and completes.  Exactly-once delivery; no implicit caps; books at baseline.
  * Invariants: G9–G13, G23–G27. */
 static void test_t202(void) {
-    uint32_t f0[5], f1[5], word;
+    uint32_t f0[6], f1[6], word;
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
     long vlive0 = it_vmo_live();
@@ -17637,6 +17644,72 @@ static void test_t237(void) {
     if (ok) it_pass("T237"); else it_fail("T237", why);
 }
 
+/* SYS_UNTYPED_QUERY wrappers (versioned, read-only instrumentation). */
+struct it_utq_global {
+    uint32_t version, struct_size, live_untypeds, _pad0;
+    uint64_t retype_count, retype_failures, reset_count;
+    uint64_t reclaimed_bytes, reuse_count, overlap_denials;
+    /* Stage 7-mem: the global gauges, moved here from SYS_RESOURCE_INFO —
+     * facts about the KERNEL, not about a process, and the drift checks that
+     * end most tests read them to prove nothing leaked. */
+    uint32_t kslab_used_bytes, kslab_total_bytes, kslab_failed_allocs;
+    uint32_t global_failed_charges, global_rollbacks, _pad1;
+};
+struct it_utq_one {
+    uint32_t version, struct_size;
+    uint64_t phys_base, total_bytes, used_bytes, generation;
+    uint32_t child_count, is_device;
+};
+struct it_utq_objects {
+    uint32_t version, struct_size;
+    uint32_t endpoints_live, notifications_live, replies_live, cnodes_live;
+};
+/*
+ * The MDB/CDT gauge block, mirrored so the suite can OBSERVE it.
+ *
+ * `mdb_legacy_roots` is documented in the ABI as "must → 0": a LEGACY_ROOT is
+ * a capability sitting in a CSpace with no parent in the derivation tree, so
+ * revoking anything can never reach it.  Charter A9 — every derived capability
+ * is traceable to its ancestor — is a claim about exactly this number, and
+ * until now nothing read it.  T305 does.
+ */
+struct it_utq_mdb {
+    uint32_t version, struct_size;
+    /* Phase S2 Step C — TCB/SC blocks, skipped over to reach the MDB gauges. */
+    uint32_t tcb_live, tcb_hwm, tcb_retyped, tcb_destroyed;
+    uint32_t sc_live, sc_hwm, sc_retyped, sc_destroyed;
+    uint32_t cdt_derivation_count, cdt_derivation_hwm, cdt_revoke_count,
+             cdt_delete_count, cdt_cross_cnode_descendants,
+             cdt_ipc_transfer_count, legacy_handle_derivation_migrated;
+    uint32_t tcb_registry_active, tcb_registry_hwm,
+             tcb_registry_exhaustions, tcb_registry_generation_mismatch;
+    uint32_t mdb_nodes_live, mdb_nodes_hwm, mdb_legacy_roots,
+             mdb_orphan_promotions, mdb_reparents, mdb_revoked_nodes,
+             mdb_moves, mdb_max_depth;
+};
+
+/* Phase S2 C.1: arg0 = kind | version<<16 | size<<32 (declared buffer size). */
+#define IT_QARG(kind, sz) ((long)((uint64_t)(kind) | ((uint64_t)1u << 16) | \
+                                  ((uint64_t)(uint32_t)(sz) << 32)))
+static int it_utq_g(struct it_utq_global *q) {
+    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
+}
+static int it_utq_1(long ut, struct it_utq_one *q) {
+    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(2, sizeof(*q)), (long)(uintptr_t)q, ut) == 0;
+}
+static int it_utq_o(struct it_utq_objects *q) {
+    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(3, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
+}
+static int it_utq_mdb(struct it_utq_mdb *q) {
+    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
+}
+
+/* Carve a fresh page-multiple sub-untyped for one S1 test, into a slot. */
+static long s1_sub_ut(uint64_t bytes) {
+    return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                IRIS_KOBJ_UNTYPED, (long)bytes);
+}
+
 /* ── T238: deterministic file-authority and multi-target stress ───────────────
  * A seeded round-robin over the whole Phase 28.1 surface: open/derive/read a
  * grant, hostile wrong-backing and wrong-name attempts, revoke + generation
@@ -17759,27 +17832,11 @@ static void test_t238(void) {
  * exhaustion is atomic, and usage returns to baseline.
  * ════════════════════════════════════════════════════════════════════════ */
 
-#define SYS_VMO_CREATE_FOR 109
-#define SYS_RESOURCE_INFO  110
-#define IT_VMO_QUOTA       32u   /* == KPROCESS_VMO_QUOTA */
-
-/* Mirror of struct iris_resource_info (iris/syscall.h) — layout MUST match. */
-struct it_rinfo {
-    uint32_t version, struct_size;
-    uint32_t vmos_usage, vmos_limit, vmos_hwm;
-    uint32_t notifs_usage, notifs_limit, notifs_hwm;
-    uint32_t pages_usage, pages_limit, pages_hwm;
-    uint32_t global_failed_charges, global_rollbacks;
-    uint32_t kslab_used_bytes, kslab_total_bytes, kslab_hwm_bytes, kslab_alloc_failures;
-};
-/* Read a process's resource snapshot (HANDLE_INVALID = self).  1 on success. */
-static int it_rinfo(handle_id_t proc_h, struct it_rinfo *out) {
-    for (uint32_t i = 0; i < (uint32_t)sizeof(*out); i++) ((uint8_t *)out)[i] = 0;
-    out->struct_size = (uint32_t)sizeof(*out);
-    /* Phase S2 C.1: arg2 declares the buffer size (prefix-safe copy). */
-    return it_sys3(SYS_RESOURCE_INFO, (long)proc_h, (long)(uintptr_t)out,
-                   (long)(uint32_t)sizeof(*out)) == 0;
-}
+/* Stage 7-mem: struct it_rinfo and it_rinfo() are DELETED with
+ * SYS_RESOURCE_INFO.  Per-process accounting is gone — a VMO's cost is the
+ * Untyped it was carved from — and the three global gauges the syscall carried
+ * (kslab occupancy, failed charges, rollbacks) live in SYS_UNTYPED_QUERY's
+ * GLOBAL kind, mirrored above as struct it_utq_global. */
 
 /* Spawn a bare lifecycle_probe child (cmd endpoint + process).  0 on success. */
 static int it_bare_child(handle_id_t *cmd_out, handle_id_t *proc_out) {
@@ -17797,86 +17854,102 @@ static void it_bare_kill(handle_id_t *cmd, handle_id_t *proc) {
     it_close(cmd); it_close(proc);
 }
 
-/* ── T239: resource ownership manifest ───────────────────────────────────────
- * Every principal object has a payer, a charge point, and a release point.  The
- * self snapshot is well-formed (version/limits/kslab); creating a VMO charges
- * exactly the domain that owns it (self for CREATE, the CHILD for CREATE_FOR)
- * and closing it releases exactly that charge.  Invariants: Q1, Q2, Q11, Q24. */
+/* ── T239: every object has a budget, a charge point and a release point ────
+ *
+ * Stage 7-mem rewrote this test rather than retiring it, because the CLAIM
+ * survives and only its subject moved.  It used to read the per-process
+ * resource manifest: a VMO charged self, or charged a CHILD through
+ * SYS_VMO_CREATE_FOR's payer argument, against a ceiling of 32.  There is no
+ * payer and no ceiling — a VMO's memory comes from an Untyped the caller
+ * NAMES and HOLDS, and that Untyped is the accounting.
+ *
+ * So the same three questions are asked of the budget: creating spends it,
+ * closing gives the bytes back as reclaimable (the region RESETs), and a VMO
+ * created from a CHILD's budget spends the child's and not the creator's —
+ * which is the property Q2 was always about, stated about the object that
+ * actually holds the memory.  Invariants: Q1, Q2, Q11, Q24. */
 static void test_t239(void) {
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
     int ok = b.ok;
     const char *why = "resource manifest";
 
-    struct it_rinfo r0;
-    if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "rinfo self"; }
-    /* Phase S1: the notification quota is RETIRED (Untyped is the budget);
-     * the ABI fields remain and must read 0.
-     *
-     * Stage 7: the per-process PAGE quota joins it, and for the same reason
-     * one stage later — a VMO's pages come from an Untyped the caller named,
-     * so a second ceiling the kernel invented was contradicting the model
-     * rather than reinforcing it.  pages_limit reads 0; pages_usage stays
-     * live, because how much a domain holds is still worth reporting. */
-    if (ok && (r0.version != 1u || r0.vmos_limit != IT_VMO_QUOTA ||
-               r0.notifs_limit != 0u || r0.notifs_usage != 0u ||
-               r0.kslab_total_bytes == 0u ||
-               r0.pages_limit != 0u)) { ok = 0; why = "manifest fields"; }
-    /* kslab used is within total; no phantom alloc failures at rest. */
-    if (ok && r0.kslab_used_bytes > r0.kslab_total_bytes) { ok = 0; why = "kslab over total"; }
+    /* The global manifest is well-formed: a real slab arena, used within it,
+     * and no allocation failures at rest. */
+    struct it_utq_global g0;
+    if (ok && !it_utq_g(&g0)) { ok = 0; why = "global query"; }
+    if (ok && (g0.version != 1u || g0.kslab_total_bytes == 0u)) { ok = 0; why = "manifest fields"; }
+    if (ok && g0.kslab_used_bytes > g0.kslab_total_bytes) { ok = 0; why = "kslab over total"; }
+    if (ok && g0.kslab_failed_allocs != 0u) { ok = 0; why = "spurious kslab failure"; }
 
-    /* CREATE charges self by exactly one VMO; close releases it. */
-    long v = ok ? it_vmo_create_slot(4096) : -1;
-    if (ok && v < 0) { ok = 0; why = "create"; }
-    struct it_rinfo r1;
-    if (ok && !it_rinfo(HANDLE_INVALID, &r1)) { ok = 0; why = "rinfo1"; }
-    if (ok && r1.vmos_usage != r0.vmos_usage + 1u) { ok = 0; why = "self not charged"; }
-    if (ok && r1.vmos_hwm < r1.vmos_usage) { ok = 0; why = "hwm < usage"; }
+    /* A budget of our own, so the spend is measured against a region nothing
+     * else is drawing from. */
+    long pool = ok ? s1_sub_ut(256u * 1024u) : -1;
+    if (ok && pool < 0) { ok = 0; why = "pool carve"; }
+    struct it_utq_one u0, u1, u2;
+    if (ok && !it_utq_1(pool, &u0)) { ok = 0; why = "info0"; }
+
+    /* CREATE spends the budget it names, by at least the pages asked for. */
+    long v = -1;
+    if (ok) {
+        v = it_vmo_create_in(4096u, pool);
+        if (v < 0) { ok = 0; why = "create"; }
+    }
+    if (ok && !it_utq_1(pool, &u1)) { ok = 0; why = "info1"; }
+    if (ok && u1.used_bytes <= u0.used_bytes) { ok = 0; why = "budget not spent"; }
+    if (ok && u1.child_count <= u0.child_count) { ok = 0; why = "not a child of the budget"; }
+
+    /* ...and closing it gives the region back: a bump allocator does not
+     * rewind, so what "released" means is that the budget can RESET, which it
+     * refuses while a single child of it is alive. */
     handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
+    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) == 0) { ok = 0; why = "reset while live"; }
     it_close(&vh);
-    struct it_rinfo r2;
-    if (ok && !it_rinfo(HANDLE_INVALID, &r2)) { ok = 0; why = "rinfo2"; }
-    if (ok && r2.vmos_usage != r0.vmos_usage) { ok = 0; why = "release drift"; }
-    if (ok && r2.vmos_hwm < r1.vmos_hwm) { ok = 0; why = "hwm decreased"; }  /* Q24 */
+    it_quiesce_reaper();
+    if (ok && !it_utq_1(pool, &u2)) { ok = 0; why = "info2"; }
+    if (ok && u2.child_count != u0.child_count) { ok = 0; why = "release drift"; }
+    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) != 0) { ok = 0; why = "reset after release"; }
 
-    /* CREATE_FOR charges the CHILD, not self (creator != owner). */
-    handle_id_t cmd, proc;
-    if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
-    struct it_rinfo cs0, ss0;
-    if (ok && (!it_rinfo(proc, &cs0) || !it_rinfo(HANDLE_INVALID, &ss0))) { ok = 0; why = "rinfo child"; }
-    long vc = ok ? it_vmo_create_for_slot(4096, (long)proc) : -1;
-    if (ok && vc < 0) { ok = 0; why = "create_for"; }
-    struct it_rinfo cs1, ss1;
-    if (ok && (!it_rinfo(proc, &cs1) || !it_rinfo(HANDLE_INVALID, &ss1))) { ok = 0; why = "rinfo child1"; }
-    if (ok && cs1.vmos_usage != cs0.vmos_usage + 1u) { ok = 0; why = "child not charged"; }
-    if (ok && ss1.vmos_usage != ss0.vmos_usage) { ok = 0; why = "self wrongly charged"; }  /* Q2 */
+    /* A VMO created from a CHILD's budget spends the CHILD's region and not
+     * the creator's — Q2, said about the object that holds the memory. */
+    long cpool = ok ? s1_sub_ut(64u * 1024u) : -1;
+    if (ok && cpool < 0) { ok = 0; why = "child pool"; }
+    struct it_utq_one c0, c1, p1, p2;
+    if (ok && (!it_utq_1(cpool, &c0) || !it_utq_1(pool, &p1))) { ok = 0; why = "info child0"; }
+    long vc = ok ? it_vmo_create_in(4096u, cpool) : -1;
+    if (ok && vc < 0) { ok = 0; why = "create in child pool"; }
+    if (ok && (!it_utq_1(cpool, &c1) || !it_utq_1(pool, &p2))) { ok = 0; why = "info child1"; }
+    if (ok && c1.used_bytes <= c0.used_bytes) { ok = 0; why = "child budget not spent"; }
+    if (ok && p2.used_bytes != p1.used_bytes) { ok = 0; why = "creator budget spent"; }
     handle_id_t vch = (vc >= 0) ? (handle_id_t)vc : HANDLE_INVALID;
     it_close(&vch);
-    if (ok) { struct it_rinfo cs2; if (!it_rinfo(proc, &cs2) || cs2.vmos_usage != cs0.vmos_usage) { ok = 0; why = "child release drift"; } }
-    if (ok) it_bare_kill(&cmd, &proc); else it_bare_kill(&cmd, &proc);
 
+    it_quiesce_reaper();
+    if (cpool >= 0) it_slot_delete((uint32_t)(((uint64_t)cpool) >> 8));
+    if (pool  >= 0) it_slot_delete((uint32_t)(((uint64_t)pool) >> 8));
     it_quiesce_reaper();
     struct it_snap a = it_snap_take();
     if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
     if (ok) it_pass("T239"); else it_fail("T239", why);
 }
 
-/* ── T240: loader creates many independent children ──────────────────────────
- * The supervisor spawns 1, 8, 16, 32 children.  Its OWN vmos_usage does NOT
- * grow ~4×children (the child image VMOs are charged to each CHILD, not to the
- * loader — the Phase 28.1 caller-charged bug, fixed).  Every child is alive with
- * its own image charge; selective death frees only that child; the final
- * baseline is exact.  The push at the end shows that whatever stops it is hit
- * CLEANLY and is not the loader's VMO quota.
+/* ── T240: many children, and the spawner's budget does not accumulate ──────
  *
- * Stage 7 Step 3: what stops it is no longer a number.  This used to say the
- * ceiling was KPROCESS_MAX_LIVE, which was never what this test measured — it
- * caps at 48, below the 64 that constant refused at — and the constant is now
- * retired anyway.  A spawn push ends at the spawner's Untyped, the loader's
- * leaf range, or TASK_MAX, all of them derived from something somebody
- * allocated.  T304 is where the retirement itself is pinned; what this asserts
- * is the property that survives whichever bound is reached first: at least 32
- * children, no VMO accumulated by the loader, and an exact baseline after.
+ * The supervisor spawns 1, 8, 16, 32 children, kills them selectively, and
+ * ends at an exact object baseline.  Whatever stops a spawn push is hit
+ * CLEANLY — the spawner's Untyped, the loader's leaf range, or TASK_MAX, all
+ * of them derived from something somebody allocated.
+ *
+ * Stage 7-mem restated the accounting half.  It used to read the loader's own
+ * `vmos_usage` and assert it did not grow ~4x per child, because the child
+ * image VMOs were charged to each CHILD's resource domain (the Phase 28.1
+ * caller-charged bug, fixed).  There is no per-process domain any more: what
+ * an image costs comes out of the per-child BUDGET svc_loader carves, and the
+ * property that replaces "not charged to the loader" is stronger and easier to
+ * be wrong about — **those budgets are RECYCLED**.  A child's pool is RESET and
+ * reused by the next child at the same leaf, so running the same rung twice
+ * must consume nothing the second time.  A loader that leaked a region per
+ * spawn would pass the old test (it charged nobody's quota) and fail this one.
  * Invariants: Q4, Q5, Q12, Q13, Q20, Q23. */
 #define T240_MAX 48u
 static void test_t240(void) {
@@ -17886,8 +17959,6 @@ static void test_t240(void) {
     const char *why = "many children";
 
     static handle_id_t cmd[T240_MAX], proc[T240_MAX];
-    struct it_rinfo self0;
-    if (ok && !it_rinfo(HANDLE_INVALID, &self0)) { ok = 0; why = "self0"; }
 
     const uint32_t rungs[4] = { 1u, 8u, 16u, 32u };
     for (uint32_t ri = 0; ok && ri < 4u; ri++) {
@@ -17898,31 +17969,58 @@ static void test_t240(void) {
             if (!it_bare_child(&cmd[i], &proc[i])) { ok = 0; why = "spawn"; break; }
             spawned++;
         }
-        /* The loader's own VMO usage did NOT scale with children (Q5). */
-        struct it_rinfo self1;
-        if (ok && !it_rinfo(HANDLE_INVALID, &self1)) { ok = 0; why = "self1"; }
-        if (ok && self1.vmos_usage != self0.vmos_usage) { ok = 0; why = "loader accumulated VMOs"; }
-        /* A sampled child carries its own image charge (Q4). */
-        if (ok && n > 0) {
-            struct it_rinfo cs;
-            if (!it_rinfo(proc[n / 2u], &cs) || cs.vmos_usage == 0u) { ok = 0; why = "child image uncharged"; }
-        }
-        /* Selective death: kill the even-indexed children; odd ones stay alive. */
+        /* Selective death: kill the even-indexed children; odd ones stay alive
+         * and must still be alive afterwards. */
         for (uint32_t i = 0; ok && i < spawned; i += 2u) it_bare_kill(&cmd[i], &proc[i]);
         for (uint32_t i = 1; ok && i < spawned; i += 2u) {
-            struct it_rinfo cs;
-            if (!it_rinfo(proc[i], &cs)) { ok = 0; why = "survivor died"; }
+            if (it_alive((long)proc[i]) != 1) { ok = 0; why = "survivor died"; }
         }
         for (uint32_t i = 0; i < spawned; i++) if (proc[i] != HANDLE_INVALID) it_bare_kill(&cmd[i], &proc[i]);
         it_quiesce_reaper();
-        /* Baseline exact after each rung (Q12/Q23). */
-        struct it_rinfo self2;
-        if (ok && (!it_rinfo(HANDLE_INVALID, &self2) || self2.vmos_usage != self0.vmos_usage)) { ok = 0; why = "rung baseline"; }
     }
 
-    /* Spawn until failure (cap T240_MAX).  At least 32 must succeed and the
-     * loader must never accumulate VMOs; any failure is CLEAN, and teardown
-     * returns to baseline (Q20/Q21/Q29 — no wedge). */
+    /*
+     * The recycling claim.  Run a rung, measure the spawner's budget, run the
+     * SAME rung again: the second pass must spend nothing, because every
+     * per-child region the loader carved for the first pass was reset and
+     * handed to the second.
+     */
+    if (ok) {
+        /*
+         * Measured as a DELTA, not as equality, and the reason is the model
+         * rather than tolerance: an Untyped is a bump allocator that does not
+         * rewind, so everything the round itself creates from the spawner's
+         * budget — the command endpoints, above all — consumes bytes that only
+         * a RESET returns.  What must NOT happen is a fresh per-child REGION
+         * per pass: those are a megabyte each, and recycling them is the whole
+         * claim.  One pool's worth is therefore the bound; a loader that
+         * carved even one new region per pass fails it.
+         */
+        #define T240_CHILD_POOL_BYTES (1u << 20)   /* == SL_CHILD_POOL_BYTES */
+        struct it_utq_one w0, w1;
+        const uint32_t n = 8u;
+        if (!it_utq_1((long)IRIS_CPTR_TEST_UNTYPED, &w0)) { ok = 0; why = "budget query"; }
+        for (uint32_t pass = 0; ok && pass < 2u; pass++) {
+            for (uint32_t i = 0; i < T240_MAX; i++) { cmd[i] = proc[i] = HANDLE_INVALID; }
+            uint32_t got = 0;
+            for (uint32_t i = 0; i < n; i++) {
+                if (!it_bare_child(&cmd[i], &proc[i])) break;
+                got++;
+            }
+            if (got < n) { ok = 0; why = "recycle spawn"; }
+            for (uint32_t i = 0; i < got; i++) it_bare_kill(&cmd[i], &proc[i]);
+            it_quiesce_reaper();
+            if (ok && !it_utq_1((long)IRIS_CPTR_TEST_UNTYPED, &w1)) { ok = 0; why = "budget query"; }
+            if (ok && w1.used_bytes - w0.used_bytes >= (uint64_t)T240_CHILD_POOL_BYTES) {
+                ok = 0; why = "spawner budget accumulated";
+            }
+            w0 = w1;
+        }
+        #undef T240_CHILD_POOL_BYTES
+    }
+
+    /* Spawn until failure (cap T240_MAX).  At least 32 must succeed, any
+     * failure is CLEAN, and teardown returns to baseline (Q20/Q21/Q29). */
     if (ok) {
         for (uint32_t i = 0; i < T240_MAX; i++) { cmd[i] = proc[i] = HANDLE_INVALID; }
         uint32_t got = 0;
@@ -17930,9 +18028,7 @@ static void test_t240(void) {
             if (!it_bare_child(&cmd[i], &proc[i])) break;
             got++;
         }
-        struct it_rinfo self1;
-        if (!it_rinfo(HANDLE_INVALID, &self1) || self1.vmos_usage != self0.vmos_usage) { ok = 0; why = "push accumulated"; }
-        if (ok && got < 32u) { ok = 0; why = "fewer than 32 children"; }
+        if (got < 32u) { ok = 0; why = "fewer than 32 children"; }
         for (uint32_t i = 0; i < got; i++) it_bare_kill(&cmd[i], &proc[i]);
         it_quiesce_reaper();
     }
@@ -17943,127 +18039,41 @@ static void test_t240(void) {
     if (ok) it_pass("T240"); else it_fail("T240", why);
 }
 
-/* ── T241: VMO payer and child ownership ─────────────────────────────────────
- * CREATE_FOR charges the named domain, gated by RIGHT_MANAGE; a cap without
- * MANAGE is denied, a wrong-type target is WRONG_TYPE, a dead target is
- * BAD_HANDLE.  Invariants: Q2, Q3, Q26. */
-static void test_t241(void) {
-    it_quiesce_reaper();
-    struct it_snap b = it_snap_take();
-    int ok = b.ok;
-    const char *why = "vmo payer";
+/* ── T241 — RETIRED with SYS_VMO_CREATE_FOR (Stage 7-mem) ─────────
+ * Its subject was the PAYER argument: a process the caller held RIGHT_MANAGE
+ * on, which a VMO's object count and pages were charged to.  There is no payer
+ * and no per-process count — a VMO's memory comes from a budget the caller
+ * NAMES and HOLDS (Stage 7 Step 14), and the budget is the accounting.  The
+ * authority question this asked (may I charge that domain?) is now the plain
+ * one every other allocation asks: do I hold RIGHT_WRITE on that Untyped,
+ * which T299 and T300 assert.
+ *
+ * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * dies with it; one asserting a property that survives is rewritten. */
 
-    handle_id_t cmd, proc;
-    if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
 
-    /* A proc cap WITHOUT RIGHT_MANAGE cannot charge to the child. */
-    long ro = ok ? it_cs_reduce((long)proc, RIGHT_READ) : -1;
-    handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
-    if (ok && ro < 0) { ok = 0; why = "dup ro"; }
-    if (ok && it_vmo_create_for_slot(4096, (long)ro_h) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-manage charged"; }
-    it_close(&ro_h);
+/* ── T242 — RETIRED with the VMO owner relation (Stage 7-mem) ─────────
+ * Its subject was single-charge: a VMO mapped into several VSpaces is charged
+ * ONCE to its owner rather than per mapper.  With no owner there is no charge
+ * to count once — the pages came out of one Untyped when the VMO was created,
+ * and mapping it anywhere costs that Untyped nothing more.  The property that
+ * survives (a shared mapping does not double-spend a budget) is structural
+ * now rather than enforced, and the budget drift checks in T299 measure it.
+ *
+ * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * dies with it; one asserting a property that survives is rewritten. */
 
-    /* Wrong-type charge target → WRONG_TYPE. */
-    long ep = ok ? it_ep_create() : -1;
-    handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
-    if (ok && it_vmo_create_for_slot(4096, (long)ep_h) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type charged"; }
-    it_close(&ep_h);
 
-    /* Valid charge to the live child works. */
-    long vc = ok ? it_vmo_create_for_slot(4096, (long)proc) : -1;
-    if (ok && vc < 0) { ok = 0; why = "valid create_for"; }
-    handle_id_t vch = (vc >= 0) ? (handle_id_t)vc : HANDLE_INVALID;
-    it_close(&vch);
+/* ── T243 — RETIRED with the VMO owner relation (Stage 7-mem) ─────────
+ * Its subject was where a sparse VMO's PAGES are charged: once to the owner,
+ * not per mapper.  Pages come from the VMO's own budget now, allocated at map
+ * time out of the Untyped it was created from, so "who is charged" has one
+ * answer fixed at creation and there is no second party to get it wrong.  The
+ * per-VSpace mapping nodes this also covered are asserted by T135.
+ *
+ * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * dies with it; one asserting a property that survives is rewritten. */
 
-    /* A dead target is rejected (BAD_HANDLE), not charged. */
-    if (ok) {
-        (void)it_kill((long)proc);
-        (void)it_lp_wait_exit(proc);
-        it_quiesce_reaper();
-        long dr = it_vmo_create_for_slot(4096, (long)proc);
-        if (dr != (long)IRIS_ERR_BAD_HANDLE && dr != (long)IRIS_ERR_BAD_HANDLE) { ok = 0; why = "dead target charged"; }
-    }
-    it_close(&cmd); it_close(&proc);
-
-    it_quiesce_reaper();
-    struct it_snap a = it_snap_take();
-    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
-    if (ok) it_pass("T241"); else it_fail("T241", why);
-}
-
-/* ── T242: shared VMO single-charge contract ─────────────────────────────────
- * A VMO shared by mapping into several VSpaces is charged ONCE to its owner;
- * extra caps do not re-charge; a target's death does not destroy it; the last
- * handle close releases object + pages.  Invariants: Q6, Q8, Q10, Q16. */
-static void test_t242(void) {
-    it_quiesce_reaper();
-    struct it_snap b = it_snap_take();
-    int ok = b.ok;
-    const char *why = "shared vmo";
-
-    struct it_rinfo s0;
-    if (ok && !it_rinfo(HANDLE_INVALID, &s0)) { ok = 0; why = "s0"; }
-    long v = ok ? it_vmo_create_slot(4096) : -1;
-    handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
-    if (ok && v < 0) { ok = 0; why = "create"; }
-    /* Owner charged exactly one VMO. */
-    struct it_rinfo s1;
-    if (ok && (!it_rinfo(HANDLE_INVALID, &s1) || s1.vmos_usage != s0.vmos_usage + 1u)) { ok = 0; why = "not charged once"; }
-    /* Deriving a second cap does NOT re-charge the object (Q8/Q10). */
-    long d = ok ? it_cs_reduce((long)vh, RIGHT_READ | RIGHT_WRITE) : -1;
-    handle_id_t dh = (d >= 0) ? (handle_id_t)d : HANDLE_INVALID;
-    if (ok && d < 0) { ok = 0; why = "dup"; }
-    struct it_rinfo s2;
-    if (ok && (!it_rinfo(HANDLE_INVALID, &s2) || s2.vmos_usage != s1.vmos_usage)) { ok = 0; why = "dup re-charged"; }
-    it_close(&dh);
-    /* Last handle close releases object + pages back to baseline. */
-    it_close(&vh);
-    struct it_rinfo s3;
-    if (ok && (!it_rinfo(HANDLE_INVALID, &s3) || s3.vmos_usage != s0.vmos_usage)) { ok = 0; why = "release drift"; }
-
-    it_quiesce_reaper();
-    struct it_snap a = it_snap_take();
-    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
-    if (ok) it_pass("T242"); else it_fail("T242", why);
-}
-
-/* ── T243: mapping target-charge contract ────────────────────────────────────
- * Sparse-VMO PAGES are charged once to the VMO owner (not per mapper); the
- * lightweight mapping nodes are per-VSpace and released on unmap.  Mapping the
- * same VMO twice in one VSpace and unmapping returns the mapping books to
- * baseline; the owner's page charge is paid once and released at destroy.
- * Invariants: Q7, Q18, Q33. */
-static void test_t243(void) {
-    if (!it_setup_self_vspace()) { it_fail("T243", "vspace self"); return; }
-    it_quiesce_reaper();
-    struct it_snap b = it_snap_take();
-    int ok = b.ok;
-    const char *why = "mapping charge";
-
-    struct it_rinfo s0;
-    if (ok && !it_rinfo(HANDLE_INVALID, &s0)) { ok = 0; why = "s0"; }
-    long v = ok ? it_vmo_create_slot(4096) : -1;
-    handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
-    if (ok && v < 0) { ok = 0; why = "create"; }
-    /* Map the VMO page into self via SYS_VMO_MAP_PAGE at a scratch VA. */
-    uint64_t va = T26_SELF_VA;
-    if (ok && it_sys4(SYS_VMO_MAP_PAGE, (long)vh, IT_VS, (long)va, 0) != 0) { ok = 0; why = "map"; }
-    /* Owner charged exactly one page (Q7/Q18). */
-    struct it_rinfo s1;
-    if (ok && (!it_rinfo(HANDLE_INVALID, &s1) || s1.pages_usage != s0.pages_usage + 1u)) { ok = 0; why = "page not charged once"; }
-    /* Unmap: the mapping node releases; the page charge stays with the VMO
-     * until destroy (owned by the VMO, not the mapping). */
-    if (ok && it_sys2(SYS_VMO_UNMAP, (long)va, 0x1000L) != 0) { ok = 0; why = "unmap"; }
-    /* Close the VMO: the page charge releases back to baseline. */
-    it_close(&vh);
-    struct it_rinfo s2;
-    if (ok && (!it_rinfo(HANDLE_INVALID, &s2) || s2.pages_usage != s0.pages_usage)) { ok = 0; why = "page release drift"; }
-
-    it_quiesce_reaper();
-    struct it_snap a = it_snap_take();
-    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
-    if (ok) it_pass("T243"); else it_fail("T243", why);
-}
 
 /* ── T244: pager cache/private-page accounting ───────────────────────────────
  * A file-backed pager's cache VMO and private-pool VMO are owned (and charged)
@@ -18076,9 +18086,6 @@ static void test_t244(void) {
     int ok = b.ok;
     const char *why = "pager accounting";
 
-    struct it_rinfo self0;
-    if (ok && !it_rinfo(HANDLE_INVALID, &self0)) { ok = 0; why = "self0"; }
-
     struct t25_tgt g;
     if (ok && !t25_tgt_spawn(&g, &why)) ok = 0;
     struct t28_fbk f;
@@ -18087,9 +18094,6 @@ static void test_t244(void) {
      * not grow by the pager's VMOs beyond the two it created and handed over
      * (those are charged to iris_test as their creator/owner here, but the
      * supervisor's PAGE usage must not absorb the pager's fault fills). */
-    struct it_rinfo self1;
-    if (ok && !it_rinfo(HANDLE_INVALID, &self1)) { ok = 0; why = "self1"; }
-    uint32_t self_pages_before_fault = ok ? self1.pages_usage : 0u;
 
     long sz = ok ? t28_stat(f.vfs_cap, FBK_FILE_NAME) : -1;
     struct t28_grant gr;
@@ -18101,22 +18105,19 @@ static void test_t244(void) {
     }
     /* Resolve two faulted pages from the shared RO cache. */
     if (ok && !t28_read_verify(&f, &g, 0u, T28_VA_A, t28_pat(0x1000), &why)) ok = 0;
-    /* The pager's cache fills were charged to the cache VMO's owner, NOT to the
-     * supervisor's live page budget beyond its own working set. */
-    struct it_rinfo self2;
-    if (ok && !it_rinfo(HANDLE_INVALID, &self2)) { ok = 0; why = "self2"; }
-    /* The supervisor owns the cache VMO (it created it), so its page usage may
-     * legitimately reflect the cache fill; what must hold is that killing the
-     * pager and reaping returns everything to baseline (no orphaned charge). */
-    (void)self_pages_before_fault;
+    /* Stage 7-mem: the cache fill used to be checked against the supervisor's
+     * per-process page usage, with a comment conceding it could legitimately
+     * move — which is a check that could not fail.  What must hold is the part
+     * that could: killing the pager and reaping returns everything to
+     * baseline, asserted below on the global gauges. */
 
     t28_fbk_reap(&f);
     t25_tgt_reap(&g);
     it_quiesce_reaper();
-    struct it_rinfo self3;
-    if (ok && !it_rinfo(HANDLE_INVALID, &self3)) { ok = 0; why = "self3"; }
-    if (ok && self3.vmos_usage != self0.vmos_usage) { ok = 0; why = "vmo leak after pager"; }
-    if (ok && self3.pages_usage != self0.pages_usage) { ok = 0; why = "page leak after pager"; }
+    /* Stage 7-mem: "no VMO leaked by the pager path" is a GLOBAL claim now,
+     * and it_snap_baseline_live below makes it — a leak by the pager, a target
+     * or the supervisor all show in the live-VMO gauge, where the retired
+     * per-process form only ever caught the caller's own. */
 
     struct it_snap a = it_snap_take();
     if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
@@ -18124,10 +18125,17 @@ static void test_t244(void) {
 }
 
 /* ── T245: independent children under one supervisor ─────────────────────────
- * Two children each own their image; killing one frees ONLY its charges and
- * leaves the other intact — a supervisor's children are independent domains
- * (the "supervisor death" contract's core: no cross-child resource coupling).
- * Invariants: Q12, Q13. */
+ * Killing one child frees ONLY its resources and leaves the other intact — a
+ * supervisor's children are independent (the "supervisor death" contract's
+ * core: no cross-child resource coupling).
+ *
+ * Stage 7-mem restated the measurement.  It used to read each child's
+ * per-process VMO count and assert B's was untouched by A's death; there is no
+ * per-process domain, so independence is measured where it now lives: on the
+ * BUDGET each child was given.  Killing A must let A's region become
+ * RESET-able while B's stays BUSY, which is a stronger statement than a count
+ * that did not move — it says the memory actually came back, and came back to
+ * the right region.  Invariants: Q12, Q13. */
 static void test_t245(void) {
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
@@ -18138,27 +18146,35 @@ static void test_t245(void) {
     if (ok && !it_bare_child(&cmdA, &procA)) { ok = 0; why = "childA"; }
     if (ok && !it_bare_child(&cmdB, &procB)) { ok = 0; why = "childB"; }
 
-    /* Give each child an extra owned VMO (charged to it). */
-    long va = ok ? it_vmo_create_for_slot(8192, (long)procA) : -1;
-    long vb = ok ? it_vmo_create_for_slot(8192, (long)procB) : -1;
+    /* One budget per child, and a VMO carved from each — the memory that makes
+     * the two domains distinguishable. */
+    long poolA = ok ? s1_sub_ut(64u * 1024u) : -1;
+    long poolB = ok ? s1_sub_ut(64u * 1024u) : -1;
+    if (ok && (poolA < 0 || poolB < 0)) { ok = 0; why = "child pools"; }
+    long va = ok ? it_vmo_create_in(8192u, poolA) : -1;
+    long vb = ok ? it_vmo_create_in(8192u, poolB) : -1;
     handle_id_t vah = (va >= 0) ? (handle_id_t)va : HANDLE_INVALID;
     handle_id_t vbh = (vb >= 0) ? (handle_id_t)vb : HANDLE_INVALID;
-    if (ok && (va < 0 || vb < 0)) { ok = 0; why = "create_for"; }
-    struct it_rinfo bA, bB;
-    if (ok && (!it_rinfo(procA, &bA) || !it_rinfo(procB, &bB))) { ok = 0; why = "rinfo"; }
-    if (ok && (bA.vmos_usage == 0u || bB.vmos_usage == 0u)) { ok = 0; why = "not charged"; }
+    if (ok && (va < 0 || vb < 0)) { ok = 0; why = "create in pool"; }
+    /* Both regions are spoken for: neither can be reset under a live object. */
+    if (ok && it_sys1(SYS_UNTYPED_RESET, poolA) == 0) { ok = 0; why = "A resettable while live"; }
+    if (ok && it_sys1(SYS_UNTYPED_RESET, poolB) == 0) { ok = 0; why = "B resettable while live"; }
 
-    /* Kill A; B's charges are untouched. */
+    /* Kill A and release only A's memory.  B's region must still refuse a
+     * RESET — nothing about A's death may reach into it. */
     if (ok) { (void)it_kill((long)procA); (void)it_lp_wait_exit(procA); it_quiesce_reaper(); }
-    struct it_rinfo bB2;
-    if (ok && (!it_rinfo(procB, &bB2) || bB2.vmos_usage != bB.vmos_usage)) { ok = 0; why = "B disturbed by A death"; }
-    /* Closing iris_test's handle to A's VMO (holder) after A died: object already
-     * gone with A, so this is a clean no-op close. */
     it_close(&vah);
+    it_quiesce_reaper();
+    if (ok && it_sys1(SYS_UNTYPED_RESET, poolA) != 0) { ok = 0; why = "A did not come back"; }
+    if (ok && it_sys1(SYS_UNTYPED_RESET, poolB) == 0) { ok = 0; why = "B disturbed by A death"; }
     it_close(&cmdA); it_close(&procA);
 
     it_close(&vbh);
+    it_quiesce_reaper();
+    if (ok && it_sys1(SYS_UNTYPED_RESET, poolB) != 0) { ok = 0; why = "B did not come back"; }
     it_bare_kill(&cmdB, &procB);
+    if (poolA >= 0) it_slot_delete((uint32_t)(((uint64_t)poolA) >> 8));
+    if (poolB >= 0) it_slot_delete((uint32_t)(((uint64_t)poolB) >> 8));
 
     it_quiesce_reaper();
     struct it_snap a = it_snap_take();
@@ -18166,98 +18182,30 @@ static void test_t245(void) {
     if (ok) it_pass("T245"); else it_fail("T245", why);
 }
 
-/* ── T246: quota exhaustion failure atomicity ────────────────────────────────
- * Fill self's VMO domain to KPROCESS_VMO_QUOTA; the next CREATE fails NO_MEMORY
- * with NO object published and the global failed-charge counter advancing;
- * high-water pins at the limit; freeing capacity lets a create succeed again;
- * usage returns to baseline.  Invariants: Q20, Q21, Q22, Q23, Q24, Q28. */
-static void test_t246(void) {
-    it_quiesce_reaper();
-    struct it_snap b = it_snap_take();
-    int ok = b.ok;
-    const char *why = "quota exhaustion";
+/* ── T246 — RETIRED with the per-process VMO quota (Stage 7-mem) ─────────
+ * Its subject was KPROCESS_VMO_QUOTA: filling a process's VMO domain to 32 and
+ * asserting the 33rd failed atomically.  The ceiling is gone — it was a number
+ * the kernel invented, the same class as the page quota (Step 2) and the
+ * live-process ceiling (Step 3), and it contradicted the budget model rather
+ * than reinforcing it: a holder with a large delegated Untyped still stopped
+ * at 32.  What bounds VMOs now is the budget, and T304 is the test that a
+ * ceiling somebody delegated is the only ceiling — including that the refusal,
+ * when the budget ends, is clean.
+ *
+ * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * dies with it; one asserting a property that survives is rewritten. */
 
-    struct it_rinfo r0;
-    if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "r0"; }
-    uint32_t headroom = ok ? (IT_VMO_QUOTA - r0.vmos_usage) : 0u;
-    if (ok && headroom == 0u) { ok = 0; why = "no headroom"; }
 
-    static handle_id_t vs[IT_VMO_QUOTA];
-    for (uint32_t i = 0; i < IT_VMO_QUOTA; i++) vs[i] = HANDLE_INVALID;
-    uint32_t made = 0;
-    for (uint32_t i = 0; ok && i < headroom; i++) {
-        long v = it_vmo_create_slot(4096);
-        if (v < 0) { ok = 0; why = "fill create"; break; }
-        vs[made++] = (handle_id_t)v;
-    }
-    /* Domain is now full: usage == limit, hwm == limit. */
-    struct it_rinfo rf;
-    if (ok && (!it_rinfo(HANDLE_INVALID, &rf) || rf.vmos_usage != IT_VMO_QUOTA ||
-               rf.vmos_hwm != IT_VMO_QUOTA)) { ok = 0; why = "not full"; }
-    uint32_t fail0 = ok ? rf.global_failed_charges : 0u;
-    /* The next create fails cleanly — no object, counter advances (Q20/Q21). */
-    if (ok && it_vmo_create_slot(4096) != (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "over-quota not NO_MEMORY"; }
-    struct it_rinfo rf2;
-    if (ok && !it_rinfo(HANDLE_INVALID, &rf2)) { ok = 0; why = "rf2"; }
-    if (ok && rf2.vmos_usage != IT_VMO_QUOTA) { ok = 0; why = "phantom charge"; }
-    if (ok && rf2.global_failed_charges <= fail0) { ok = 0; why = "fail count not advanced"; }
-    /* Free one and a create succeeds again (no retry bypass, exact accounting). */
-    if (made > 0) it_close(&vs[made - 1u]);
-    if (made > 0) made--;
-    long again = ok ? it_vmo_create_slot(4096) : -1;
-    if (ok && again < 0) { ok = 0; why = "no recovery"; }
-    if (again >= 0) { handle_id_t h = (handle_id_t)again; vs[made++] = h; }
-    /* Release everything; usage returns to baseline, hwm stays pinned. */
-    for (uint32_t i = 0; i < made; i++) it_close(&vs[i]);
-    struct it_rinfo rz;
-    if (ok && (!it_rinfo(HANDLE_INVALID, &rz) || rz.vmos_usage != r0.vmos_usage)) { ok = 0; why = "baseline drift"; }
-    if (ok && rz.vmos_hwm < IT_VMO_QUOTA) { ok = 0; why = "hwm regressed"; }
+/* ── T247 — RETIRED with the payer argument (Stage 7-mem) ─────────
+ * Its subject was that budget-charge authority IS process-MANAGE authority: a
+ * MANAGE capability could charge a child, a derived capability without MANAGE
+ * could not.  Charging is naming an Untyped now, so the authority is
+ * RIGHT_WRITE on that Untyped and the monotonicity question is the general one
+ * about rights the MDB already answers (T288-T290).
+ *
+ * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * dies with it; one asserting a property that survives is rewritten. */
 
-    it_quiesce_reaper();
-    struct it_snap a = it_snap_take();
-    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
-    if (ok) it_pass("T246"); else it_fail("T246", why);
-}
-
-/* ── T247: resource delegation rights monotonicity ───────────────────────────
- * Budget-charge authority is process-MANAGE authority.  A MANAGE cap can charge
- * a child; a cap derived WITHOUT MANAGE cannot; a right dropped cannot be
- * recovered by re-deriving from the reduced cap.  Invariants: Q25, Q26. */
-static void test_t247(void) {
-    it_quiesce_reaper();
-    struct it_snap b = it_snap_take();
-    int ok = b.ok;
-    const char *why = "delegation monotonicity";
-
-    handle_id_t cmd, proc;
-    if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
-
-    /* Full cap charges. */
-    long v = ok ? it_vmo_create_for_slot(4096, (long)proc) : -1;
-    if (ok && v < 0) { ok = 0; why = "full charge"; }
-    handle_id_t vh = (v >= 0) ? (handle_id_t)v : HANDLE_INVALID;
-    it_close(&vh);
-
-    /* Derive a reduced cap WITHOUT MANAGE (READ only). */
-    long red = ok ? it_cs_reduce((long)proc, RIGHT_READ) : -1;
-    handle_id_t red_h = (red >= 0) ? (handle_id_t)red : HANDLE_INVALID;
-    if (ok && red < 0) { ok = 0; why = "reduce"; }
-    if (ok && it_vmo_create_for_slot(4096, (long)red_h) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "reduced charged"; }
-    /* Cannot recover MANAGE by re-deriving from the reduced cap. */
-    long rec = ok ? it_cs_reduce((long)red_h, RIGHT_READ | RIGHT_MANAGE) : -1;
-    if (ok && rec >= 0) {
-        /* If a handle came back, it must NOT actually carry MANAGE authority. */
-        if (it_vmo_create_for_slot(4096, (long)rec) == 0) { ok = 0; why = "recovered MANAGE"; }
-        handle_id_t rh = (handle_id_t)rec; it_close(&rh);
-    }
-    it_close(&red_h);
-    it_bare_kill(&cmd, &proc);
-
-    it_quiesce_reaper();
-    struct it_snap a = it_snap_take();
-    if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
-    if (ok) it_pass("T247"); else it_fail("T247", why);
-}
 
 /* ── T248: kslab capacity and explicit exhaustion ────────────────────────────
  * The kernel object slab has an observable capacity contract: used <= total,
@@ -18272,18 +18220,18 @@ static void test_t248(void) {
     int ok = b.ok;
     const char *why = "kslab capacity";
 
-    struct it_rinfo r0;
-    if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "rinfo"; }
+    struct it_utq_global r0;
+    if (ok && !it_utq_g(&r0)) { ok = 0; why = "rinfo"; }
     if (ok && r0.kslab_total_bytes == 0u) { ok = 0; why = "no arena"; }
     if (ok && r0.kslab_used_bytes > r0.kslab_total_bytes) { ok = 0; why = "used > total"; }
-    if (ok && r0.kslab_alloc_failures != 0u) { ok = 0; why = "spurious kslab failure"; }
+    if (ok && r0.kslab_failed_allocs != 0u) { ok = 0; why = "spurious kslab failure"; }
     /* Spawning and reaping a child churns kernel objects; used (bump high-water)
      * may rise but never exceeds total, and no allocation fails. */
     handle_id_t cmd, proc;
     if (ok && !it_bare_child(&cmd, &proc)) { ok = 0; why = "child"; }
-    struct it_rinfo r1;
-    if (ok && !it_rinfo(HANDLE_INVALID, &r1)) { ok = 0; why = "rinfo1"; }
-    if (ok && (r1.kslab_used_bytes > r1.kslab_total_bytes || r1.kslab_alloc_failures != 0u)) { ok = 0; why = "kslab churn"; }
+    struct it_utq_global r1;
+    if (ok && !it_utq_g(&r1)) { ok = 0; why = "rinfo1"; }
+    if (ok && (r1.kslab_used_bytes > r1.kslab_total_bytes || r1.kslab_failed_allocs != 0u)) { ok = 0; why = "kslab churn"; }
     if (ok && r1.kslab_used_bytes < r0.kslab_used_bytes) { ok = 0; why = "used regressed"; }  /* bump-only */
     it_bare_kill(&cmd, &proc);
 
@@ -18304,9 +18252,6 @@ static void test_t249(void) {
     struct it_snap b = it_snap_take();
     int ok = b.ok;
     const char *why = "file-backed regression";
-
-    struct it_rinfo r0;
-    if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "r0"; }
 
     struct t25_tgt g0, g1;
     if (ok && !t25_tgt_spawn(&g0, &why)) ok = 0;
@@ -18333,10 +18278,9 @@ static void test_t249(void) {
     t25_tgt_reap(&g0);
     t25_tgt_reap(&g1);
     it_quiesce_reaper();
-    struct it_rinfo r1;
-    if (ok && (!it_rinfo(HANDLE_INVALID, &r1) || r1.vmos_usage != r0.vmos_usage ||
-               r1.pages_usage != r0.pages_usage)) { ok = 0; why = "accounting drift"; }
-
+    /* Stage 7-mem: the accounting-drift check was per-process (vmos_usage,
+     * pages_usage).  The baseline below covers it and more: the live-VMO gauge
+     * is global, so a leak by the pager, a target or the supervisor all show. */
     struct it_snap a = it_snap_take();
     if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
     if (ok) it_pass("T249"); else it_fail("T249", why);
@@ -18356,9 +18300,15 @@ static void test_t250(void) {
     struct it_snap b = it_snap_take();
     int ok = b.ok;
     const char *why = "resource stress";
-    struct it_rinfo r0;
-    if (ok && !it_rinfo(HANDLE_INVALID, &r0)) { ok = 0; why = "r0"; }
-    uint32_t round = 0, op = 0, prev_hwm = ok ? r0.vmos_hwm : 0u;
+    /* Stage 7-mem: the round-trip is measured on a BUDGET of our own and on
+     * the global live-VMO gauge, not on a per-process count that no longer
+     * exists.  A budget nothing else draws from makes "exactly what this round
+     * spent came back" an exact claim. */
+    long pool = ok ? s1_sub_ut(512u * 1024u) : -1;
+    if (ok && pool < 0) { ok = 0; why = "pool"; }
+    struct it_snap s0 = it_snap_take();
+    if (ok && !s0.ok) { ok = 0; why = "r0"; }
+    uint32_t round = 0, op = 0;
 
     for (round = 0; ok && round < T250_ROUNDS; round++) {
         op = t250_rnd(&rng) % 4u;
@@ -18367,9 +18317,10 @@ static void test_t250(void) {
             /* Child owns its image + an extra VMO; kill releases exactly it. */
             handle_id_t cmd, proc;
             if (!it_bare_child(&cmd, &proc)) { ok = 0; why = "s0 child"; break; }
-            long v = it_vmo_create_for_slot(4096, (long)proc);
-            struct it_rinfo self;
-            if (v < 0 || !it_rinfo(HANDLE_INVALID, &self) || self.vmos_usage != r0.vmos_usage) { ok = 0; why = "s0 loader charged"; }
+            /* Carved from the round's budget, not from the suite's own: the
+             * spend is visible and must come back at the end of the round. */
+            long v = it_vmo_create_in(4096u, pool);
+            if (v < 0) { ok = 0; why = "s0 create"; }
             if (v >= 0) { handle_id_t vh = (handle_id_t)v; it_close(&vh); }
             it_bare_kill(&cmd, &proc);
             break;
@@ -18380,25 +18331,43 @@ static void test_t250(void) {
             if (v < 0) { ok = 0; why = "s1 create"; break; }
             handle_id_t vh = (handle_id_t)v;
             long d = it_cs_reduce((long)vh, RIGHT_READ);
-            struct it_rinfo self;
-            if (!it_rinfo(HANDLE_INVALID, &self) || self.vmos_usage != r0.vmos_usage + 1u) { ok = 0; why = "s1 charge"; }
+            /* One object, two capabilities: the live-VMO gauge counts objects,
+             * so a derived capability must not move it. */
+            struct it_snap sd = it_snap_take();
+            if (!sd.ok || sd.vmo != s0.vmo + 1u) { ok = 0; why = "s1 charge"; }
             if (d >= 0) { handle_id_t dh = (handle_id_t)d; it_close(&dh); }
             it_close(&vh);
             break;
         }
         case 2: {
-            /* Near-exhaustion then recover; global fail counter advances. */
-            struct it_rinfo rr;
-            if (!it_rinfo(HANDLE_INVALID, &rr)) { ok = 0; why = "s2 rinfo"; break; }
-            uint32_t head = IT_VMO_QUOTA - rr.vmos_usage;
-            static handle_id_t vv[IT_VMO_QUOTA];
+            /*
+             * Exhaust a SMALL budget, then recover.
+             *
+             * Stage 7-mem: this used to fill the per-process VMO quota to 32
+             * and check the global failed-charge counter advanced.  The
+             * ceiling is a budget now, so exhaustion is a small Untyped
+             * running out — a refusal that comes from a region somebody
+             * delegated rather than a number the kernel picked — and recovery
+             * is the region becoming reusable again.
+             */
+            long small = s1_sub_ut(32u * 1024u);
+            if (small < 0) { ok = 0; why = "s2 pool"; break; }
+            static handle_id_t vv[24];
             uint32_t made = 0;
-            for (uint32_t i = 0; i < head; i++) { long v = it_vmo_create_slot(4096); if (v < 0) break; vv[made++] = (handle_id_t)v; }
-            uint32_t f0 = 0; struct it_rinfo rf; if (it_rinfo(HANDLE_INVALID, &rf)) f0 = rf.global_failed_charges;
-            if (it_vmo_create_slot(4096) != (long)IRIS_ERR_NO_MEMORY) { ok = 0; why = "s2 not full"; }
-            struct it_rinfo rf2;
-            if (ok && (!it_rinfo(HANDLE_INVALID, &rf2) || rf2.global_failed_charges <= f0)) { ok = 0; why = "s2 fail count"; }
+            while (made < 24u) {
+                long v = it_vmo_create_in(4096u, small);
+                if (v < 0) break;
+                vv[made++] = (handle_id_t)v;
+            }
+            if (made == 0u) { ok = 0; why = "s2 nothing made"; }
+            /* The refusal is clean and names memory, not a policy. */
+            if (ok && it_vmo_create_in(4096u, small) != (long)IRIS_ERR_NO_MEMORY) {
+                ok = 0; why = "s2 not full";
+            }
             for (uint32_t i = 0; i < made; i++) it_close(&vv[i]);
+            it_quiesce_reaper();
+            if (ok && it_sys1(SYS_UNTYPED_RESET, small) != 0) { ok = 0; why = "s2 no recovery"; }
+            it_slot_delete((uint32_t)(((uint64_t)small) >> 8));
             break;
         }
         default: {
@@ -18415,12 +18384,9 @@ static void test_t250(void) {
         }
         it_quiesce_reaper();
         if (ok) {
-            struct it_rinfo rz;
-            if (!it_rinfo(HANDLE_INVALID, &rz)) { ok = 0; why = "round rinfo"; }
-            else if (rz.vmos_usage != r0.vmos_usage) { ok = 0; why = "round vmo drift"; }
-            else if (rz.pages_usage != r0.pages_usage) { ok = 0; why = "round page drift"; }
-            else if (rz.vmos_hwm < prev_hwm) { ok = 0; why = "hwm regressed"; }
-            else prev_hwm = rz.vmos_hwm;
+            struct it_snap rz = it_snap_take();
+            if (!rz.ok) { ok = 0; why = "round rinfo"; }
+            else if (rz.vmo != s0.vmo) { ok = 0; why = "round vmo drift"; }
             struct it_snap r = it_snap_take();
             if (ok && !it_snap_baseline_live(&b, &r, &why)) ok = 0;
         }
@@ -18443,66 +18409,6 @@ static void test_t250(void) {
  * reusable after destruction + RESET.  Legacy create paths are retired.
  * ════════════════════════════════════════════════════════════════════════ */
 
-/* SYS_UNTYPED_QUERY wrappers (versioned, read-only instrumentation). */
-struct it_utq_global {
-    uint32_t version, struct_size, live_untypeds, _pad0;
-    uint64_t retype_count, retype_failures, reset_count;
-    uint64_t reclaimed_bytes, reuse_count, overlap_denials;
-};
-struct it_utq_one {
-    uint32_t version, struct_size;
-    uint64_t phys_base, total_bytes, used_bytes, generation;
-    uint32_t child_count, is_device;
-};
-struct it_utq_objects {
-    uint32_t version, struct_size;
-    uint32_t endpoints_live, notifications_live, replies_live, cnodes_live;
-};
-/*
- * The MDB/CDT gauge block, mirrored so the suite can OBSERVE it.
- *
- * `mdb_legacy_roots` is documented in the ABI as "must → 0": a LEGACY_ROOT is
- * a capability sitting in a CSpace with no parent in the derivation tree, so
- * revoking anything can never reach it.  Charter A9 — every derived capability
- * is traceable to its ancestor — is a claim about exactly this number, and
- * until now nothing read it.  T305 does.
- */
-struct it_utq_mdb {
-    uint32_t version, struct_size;
-    /* Phase S2 Step C — TCB/SC blocks, skipped over to reach the MDB gauges. */
-    uint32_t tcb_live, tcb_hwm, tcb_retyped, tcb_destroyed;
-    uint32_t sc_live, sc_hwm, sc_retyped, sc_destroyed;
-    uint32_t cdt_derivation_count, cdt_derivation_hwm, cdt_revoke_count,
-             cdt_delete_count, cdt_cross_cnode_descendants,
-             cdt_ipc_transfer_count, legacy_handle_derivation_migrated;
-    uint32_t tcb_registry_active, tcb_registry_hwm,
-             tcb_registry_exhaustions, tcb_registry_generation_mismatch;
-    uint32_t mdb_nodes_live, mdb_nodes_hwm, mdb_legacy_roots,
-             mdb_orphan_promotions, mdb_reparents, mdb_revoked_nodes,
-             mdb_moves, mdb_max_depth;
-};
-
-/* Phase S2 C.1: arg0 = kind | version<<16 | size<<32 (declared buffer size). */
-#define IT_QARG(kind, sz) ((long)((uint64_t)(kind) | ((uint64_t)1u << 16) | \
-                                  ((uint64_t)(uint32_t)(sz) << 32)))
-static int it_utq_g(struct it_utq_global *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(1, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
-}
-static int it_utq_1(long ut, struct it_utq_one *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(2, sizeof(*q)), (long)(uintptr_t)q, ut) == 0;
-}
-static int it_utq_o(struct it_utq_objects *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(3, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
-}
-static int it_utq_mdb(struct it_utq_mdb *q) {
-    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
-}
-
-/* Carve a fresh page-multiple sub-untyped for one S1 test, into a slot. */
-static long s1_sub_ut(uint64_t bytes) {
-    return it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
-                                IRIS_KOBJ_UNTYPED, (long)bytes);
-}
 
 /* S1 scratch slots: 241..250 (fz pool ends at 239; 240 is the T125 probe). */
 #define S1_SLOT_A 241u
@@ -18590,9 +18496,9 @@ static void test_t252(void) {
     handle_id_t su_h = (handle_id_t)su;
 
     struct it_utq_one u0, u1, u2;
-    struct it_rinfo  k0, k1;
+    struct it_utq_global k0, k1;
     struct it_utq_objects o0, o1;
-    if (!it_utq_1(su, &u0) || !it_rinfo(HANDLE_INVALID, &k0) || !it_utq_o(&o0)) {
+    if (!it_utq_1(su, &u0) || !it_utq_g(&k0) || !it_utq_o(&o0)) {
         it_close(&su_h); it_fail("T252", "query"); return;
     }
     if (u0.used_bytes != 0u || u0.child_count != 0u) { ok = 0; why = "not pristine"; }
@@ -18602,7 +18508,7 @@ static void test_t252(void) {
     if (ok && it_retype2_at(su, IRIS_KOBJ_ENDPOINT,     S1_SLOT_B, 1u, 0) != 0) { ok = 0; why = "ep2"; }
     if (ok && it_retype2_at(su, IRIS_KOBJ_NOTIFICATION, S1_SLOT_C, 1u, 0) != 0) { ok = 0; why = "nt"; }
     if (ok && it_retype2_at(su, IRIS_KOBJ_REPLY,        S1_SLOT_D, 1u, 0) != 0) { ok = 0; why = "rp"; }
-    if (ok && (!it_utq_1(su, &u1) || !it_rinfo(HANDLE_INVALID, &k1) || !it_utq_o(&o1))) {
+    if (ok && (!it_utq_1(su, &u1) || !it_utq_g(&k1) || !it_utq_o(&o1))) {
         ok = 0; why = "query mid";
     }
     /* used grew, every object is inside THIS untyped (child_count == 4),
@@ -18935,11 +18841,11 @@ static void test_t257(void) {
     handle_id_t su_h = (handle_id_t)su;
 
     struct it_utq_objects o0, o1;
-    struct it_rinfo k0, k1;
-    if (!it_utq_o(&o0) || !it_rinfo(HANDLE_INVALID, &k0)) { it_close(&su_h); it_fail("T257", "query"); return; }
+    struct it_utq_global k0, k1;
+    if (!it_utq_o(&o0) || !it_utq_g(&k0)) { it_close(&su_h); it_fail("T257", "query"); return; }
     if (it_retype2_at(su, IRIS_KOBJ_ENDPOINT, S1_SLOT_A, 1u, 0) != 0 ||
         it_retype2_at(su, IRIS_KOBJ_REPLY,    S1_SLOT_B, 1u, 0) != 0) { ok = 0; why = "retype"; }
-    if (ok && (!it_utq_o(&o1) || !it_rinfo(HANDLE_INVALID, &k1))) { ok = 0; why = "query 2"; }
+    if (ok && (!it_utq_o(&o1) || !it_utq_g(&k1))) { ok = 0; why = "query 2"; }
     if (ok && o1.replies_live != o0.replies_live + 1u) { ok = 0; why = "reply not counted"; }
     if (ok && k1.kslab_used_bytes != k0.kslab_used_bytes) { ok = 0; why = "reply from kslab (S16)"; }
 
@@ -19165,11 +19071,11 @@ static void test_t259(void) {
 static void test_t260(void) {
     int ok = 1;
     const char *why = "legacy retirement";
-    struct it_rinfo k0, k1;
+    struct it_utq_global k0, k1;
     struct it_utq_objects o0, o1;
     uint32_t e0[14], e1[14];
     it_quiesce_reaper();
-    if (!it_rinfo(HANDLE_INVALID, &k0) || !it_utq_o(&o0) || !it_sched_ext(e0)) {
+    if (!it_utq_g(&k0) || !it_utq_o(&o0) || !it_sched_ext(e0)) {
         it_fail("T260", "query"); return;
     }
     static const long retired_creates[] = { SYS_ENDPOINT_CREATE, SYS_NOTIFY_CREATE, SYS_CNODE_CREATE };
@@ -19179,7 +19085,7 @@ static void test_t260(void) {
         }
     }
     it_quiesce_reaper();
-    if (ok && (!it_rinfo(HANDLE_INVALID, &k1) || !it_utq_o(&o1) || !it_sched_ext(e1))) {
+    if (ok && (!it_utq_g(&k1) || !it_utq_o(&o1) || !it_sched_ext(e1))) {
         ok = 0; why = "query 2";
     }
     if (ok && k1.kslab_used_bytes != k0.kslab_used_bytes) { ok = 0; why = "kslab consumed"; }
@@ -19253,9 +19159,9 @@ static void test_t262(void) {
     handle_id_t su_h = (handle_id_t)su;
 
     struct it_utq_objects o0, oz;
-    struct it_rinfo k0, kz;
+    struct it_utq_global k0, kz;
     struct it_utq_global g0, g1;
-    if (!it_utq_o(&o0) || !it_rinfo(HANDLE_INVALID, &k0) || !it_utq_g(&g0)) {
+    if (!it_utq_o(&o0) || !it_utq_g(&k0) || !it_utq_g(&g0)) {
         it_close(&su_h); it_fail("T262", "query"); return;
     }
 
@@ -19327,7 +19233,7 @@ static void test_t262(void) {
             struct it_utq_one u;
             if (!it_utq_1(su, &u) || u.used_bytes != 0u || u.child_count != 0u) { ok = 0; why = "round reclaim"; }
         }
-        if (ok && (!it_utq_o(&oz) || !it_rinfo(HANDLE_INVALID, &kz))) { ok = 0; why = "round query"; }
+        if (ok && (!it_utq_o(&oz) || !it_utq_g(&kz))) { ok = 0; why = "round query"; }
         if (ok && (oz.endpoints_live     != o0.endpoints_live ||
                    oz.notifications_live != o0.notifications_live ||
                    oz.replies_live       != o0.replies_live)) { ok = 0; why = "round drift"; }
@@ -19400,13 +19306,13 @@ static void test_t267(void) {
     handle_id_t su_h = (handle_id_t)su;
 
     struct it_utq_taskobj t0, t1;
-    struct it_rinfo k0, k1;
-    if (!it_utq_t(&t0) || !it_rinfo(HANDLE_INVALID, &k0)) { it_close(&su_h); it_fail("T267", "query"); return; }
+    struct it_utq_global k0, k1;
+    if (!it_utq_t(&t0) || !it_utq_g(&k0)) { it_close(&su_h); it_fail("T267", "query"); return; }
 
     /* Retype two SCs into CSpace slots (provenance + no kslab). */
     if (it_retype2_at(su, IRIS_KOBJ_SCHED_CONTEXT, S1_SLOT_A, 1u, 0) != 0 ||
         it_retype2_at(su, IRIS_KOBJ_SCHED_CONTEXT, S1_SLOT_B, 1u, 0) != 0) { ok = 0; why = "retype"; }
-    if (ok && (!it_utq_t(&t1) || !it_rinfo(HANDLE_INVALID, &k1))) { ok = 0; why = "query 2"; }
+    if (ok && (!it_utq_t(&t1) || !it_utq_g(&k1))) { ok = 0; why = "query 2"; }
     if (ok && t1.sc_live != t0.sc_live + 2u) { ok = 0; why = "sc not counted"; }
     if (ok && t1.sc_retyped < t0.sc_retyped + 2u) { ok = 0; why = "retype not counted"; }
     if (ok && k1.kslab_used_bytes != k0.kslab_used_bytes) { ok = 0; why = "sc from kslab (S2.13)"; }
@@ -19542,10 +19448,13 @@ static void test_t283(void) {
         if (ok && !it_utq_g(&b1)) { ok = 0; why = "QABI10 g1"; }
         if (ok && (b1.live_untypeds != b0.live_untypeds)) { ok = 0; why = "QABI10 state drift"; }
     }
-    /* SYS_RESOURCE_INFO prefix safety: declare a short size, canaries hold. */
+    /* Stage 7-mem: SYS_RESOURCE_INFO is RETIRED, so the prefix-safety probe
+     * becomes a retirement probe — and the stronger claim of the two, because
+     * a retired syscall must write NOTHING at all, not merely stay inside a
+     * declared prefix. */
     if (ok) { QABI_RESET();
         long r = it_sys3(SYS_RESOURCE_INFO, (long)HANDLE_INVALID, buf, 8L);
-        if (r != 0 || !QABI_CANARY_OK()) { ok = 0; why = "rinfo prefix"; }
+        if (r != (long)IRIS_ERR_NOT_SUPPORTED || !QABI_CANARY_OK()) { ok = 0; why = "rinfo prefix"; }
     }
 
     #undef QABI_RESET
@@ -21800,13 +21709,8 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t238();
     test_t239();
     test_t240();
-    test_t241();
-    test_t242();
-    test_t243();
     test_t244();
     test_t245();
-    test_t246();
-    test_t247();
     test_t248();
     test_t249();
     test_t250();

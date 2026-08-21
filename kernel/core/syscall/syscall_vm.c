@@ -137,8 +137,7 @@ uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * CHILD but keeps the handle to map/close it.
  */
 static uint64_t vmo_create_charged(struct task *t, uint64_t size,
-                                    struct KProcess *payer, uint64_t dest,
-                                    struct KUntyped *named_pool) {
+                                    uint64_t dest, struct KUntyped *named_pool) {
     uint32_t pages = 0;
     if (kvmo_size_to_pages(size, &pages) != IRIS_OK)
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -147,11 +146,12 @@ static uint64_t vmo_create_charged(struct task *t, uint64_t size,
      * given.  Anonymous user memory was the last thing the kernel handed out
      * for free — bounded only by a per-process quota the kernel invented,
      * rather than by a capability someone delegated. */
-    /* Stage 7 Step 14: named_pool is never NULL — both callers require it. */
+    /* Stage 7 Step 14: named_pool is never NULL — the caller requires it.
+     * Stage 7-mem: and there is no owner to bind.  A VMO used to be charged to
+     * a PROCESS, against a ceiling of 32 the kernel invented; the budget it
+     * was carved from is the accounting, and it is one somebody delegated. */
     struct KVmo *v = kvmo_create_from(size, named_pool);
     if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
-    iris_error_t r = kvmo_bind_owner(v, payer);
-    if (r != IRIS_OK) { kvmo_free(v); return syscall_err(r); }
     /* Step 4: a destination slot publishes the VMO into CSpace instead of
      * producing a handle.  No MDB parent: a KVMO is fabricated from kernel
      * memory, not retyped from an Untyped, so it has no capability ancestor to
@@ -197,65 +197,34 @@ uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         if (ne != IRIS_OK)
             return syscall_err(ne == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ne);
     }
-    uint64_t rc = vmo_create_charged(t, arg0, t->process, arg2, named);
+    uint64_t rc = vmo_create_charged(t, arg0, arg2, named);
     kobject_active_release(&named->base); kobject_release(&named->base);
     return rc;
 }
 
 /*
- * SYS_VMO_CREATE_FOR(size, charge_target, dest, budget) — explicit,
- * capability-authorized PAYER selection (Phase 29).  The VMO object quota is
- * charged to `charge_target` (a KProcess the caller holds RIGHT_MANAGE on),
- * not to the caller.  Same authority SYS_VMO_MAP_INTO requires to map into
- * that process.
+ * SYS_VMO_CREATE_FOR — RETIRED (Stage 7-mem).
  *
- * Stage 7 Step 14: `budget` (arg3) is where the MEMORY comes from, and it is
- * required.  It used to be the payer's own `mem_pool` — the last place the
- * kernel reached into a KProcess for an Untyped nobody named — so a caller
- * spent a budget it did not hold and could not see.  It resolves in the
- * CALLER's CSpace, which is the honest shape: a loader carving a child's image
- * out of the child's pool holds that pool, and one carving it out of its own
- * says so by naming its own.
+ * It named a PAYER: a process the caller held RIGHT_MANAGE on, which the VMO
+ * object and its pages were charged to.  Phase 29 introduced it to fix real
+ * caller-charged accounting — a loader's own quota grew with every child it
+ * launched — and that was the right fix for a model where a process is a
+ * resource domain with a ceiling.
  *
- * The quota and the memory are therefore two separate statements now.  That
- * they can disagree is a property of KVMO's owner/payer split, which retires
- * with the object itself (ledger: FROZEN, memory-server).
+ * There is no ceiling any more.  Stage 7 Step 14 made the MEMORY come from a
+ * budget the caller names and holds, and Stage 7-mem removed the per-process
+ * VMO count that was the only thing the payer argument still selected.  What
+ * is left of "who pays" is the Untyped, which SYS_VMO_CREATE already takes —
+ * so the two syscalls had become the same call, one of them carrying an
+ * argument that no longer meant anything.
+ *
+ * A loader that wants a child's image charged to the child carves it from the
+ * child's budget, which it holds, and says so.
  */
 uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                             uint64_t arg3) {
-    uint64_t dest = arg2;   /* Step 4: cnode | slot<<32 */
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (arg3 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KObject *payer_obj;
-    iris_rights_t   payer_rights;
-    iris_error_t pr = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg1,
-                                 RIGHT_NONE, KOBJ_PROCESS, &payer_obj, &payer_rights);
-    if (pr != IRIS_OK) return syscall_err(pr);
-    if (!rights_check(payer_rights, RIGHT_MANAGE)) {
-        kobject_release(payer_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-    struct KProcess *payer = (struct KProcess *)payer_obj;
-    if (kprocess_teardown_complete(payer)) {
-        kobject_release(payer_obj);
-        return syscall_err(IRIS_ERR_BAD_HANDLE);
-    }
-    struct KUntyped *named = 0;
-    {
-        iris_rights_t nr;
-        iris_error_t ne = cspace_resolve_only_untyped(t->cspace_root,
-                              (iris_cptr_t)arg3, RIGHT_WRITE, &named, &nr);
-        if (ne != IRIS_OK) {
-            kobject_release(payer_obj);
-            return syscall_err(ne == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ne);
-        }
-    }
-    uint64_t rv = vmo_create_charged(t, arg0, payer, dest, named);
-    kobject_active_release(&named->base); kobject_release(&named->base);
-    kobject_release(payer_obj);
-    return rv;
+    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 
@@ -335,21 +304,13 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * maps a child's segment VMO into its own window to fill it charges the
          * CHILD, and closing/unmapping never strands the charge on the loader
          * (released at kvmo_destroy).  Fallback to the caller if unbound. */
-        struct KProcess *vmo_payer = kvmo_owner(v);
-        if (!vmo_payer) vmo_payer = t->process;
         uint64_t mapped_until = arg1;
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
             uint32_t page_idx = (uint32_t)(off >> 12);
 
             if (v->pages[page_idx] == 0) {
-                if (kprocess_quota_acquire_page(vmo_payer) != IRIS_OK) {
-                    rollback_vmo_maps(vs, arg1, mapped_until);
-                    kobject_release(obj);
-                    return syscall_err(IRIS_ERR_NO_MEMORY);
-                }
                 uint64_t phys = kvmo_alloc_page(v);
                 if (!phys) {
-                    kprocess_quota_release_page(vmo_payer);
                     rollback_vmo_maps(vs, arg1, mapped_until);
                     kobject_release(obj);
                     return syscall_err(IRIS_ERR_NO_MEMORY);
@@ -708,25 +669,13 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
         /* Phase 29: charge the VMO owner (payer domain), not the map target — a
          * shared VMO's pages are paid once by its owner; extra targets that map
          * it do not re-charge (Q6/Q7/Q18). */
-        struct KProcess *vmo_payer = kvmo_owner(v);
-        /* An unbound VMO charges the CALLER.  It used to fall back to the map
-         * TARGET, which was reachable only because the target was a process;
-         * a VMO with no owner has never been paid for by anyone, and the task
-         * asking for it to be populated is the honest domain to charge. */
-        if (!vmo_payer) vmo_payer = t->process;
         uint64_t mapped_until = vaddr;
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
             uint32_t page_idx = (uint32_t)(off >> 12);
 
             if (v->pages[page_idx] == 0) {
-                if (kprocess_quota_acquire_page(vmo_payer) != IRIS_OK) {
-                    rollback_vmo_maps(target_vs, vaddr, mapped_until);
-                    kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
-                    return syscall_err(IRIS_ERR_NO_MEMORY);
-                }
                 uint64_t phys = kvmo_alloc_page(v);
                 if (!phys) {
-                    kprocess_quota_release_page(vmo_payer);
                     rollback_vmo_maps(target_vs, vaddr, mapped_until);
                     kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
                     return syscall_err(IRIS_ERR_NO_MEMORY);
@@ -861,18 +810,10 @@ uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
         /* Phase 29: charge the VMO owner (payer domain), not the mapper.  The
          * pager maps its cache/private VMO pages into targets; those pages are
          * paid by the VMO's owner (the pager / memory-service domain), once. */
-        struct KProcess *vmo_payer = kvmo_owner(v);
-        if (!vmo_payer) vmo_payer = t->process;
         int charged = 0;
         if (v->pages[page_idx] == 0) {
-            if (kprocess_quota_acquire_page(vmo_payer) != IRIS_OK) {
-                kobject_active_release(&vs->base); kobject_release(&vs->base);
-                kobject_release(vmo_obj);
-                return syscall_err(IRIS_ERR_NO_MEMORY);
-            }
             uint64_t phys = kvmo_alloc_page(v);
             if (!phys) {
-                kprocess_quota_release_page(vmo_payer);
                 kobject_active_release(&vs->base); kobject_release(&vs->base);
                 kobject_release(vmo_obj);
                 return syscall_err(IRIS_ERR_NO_MEMORY);

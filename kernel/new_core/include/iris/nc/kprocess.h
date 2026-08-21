@@ -50,13 +50,14 @@ struct KFrame;
  * many children it launches.  32 is now a genuine PER-PROCESS ceiling on the
  * VMOs a single domain owns, not a proxy for how many children a supervisor can
  * launch.  Raising the constant is no longer the answer. */
-#define KPROCESS_VMO_QUOTA      32u
+/* KPROCESS_VMO_QUOTA / KPROCESS_PHYS_PAGES_LIMIT DELETED (Stage 7-mem) — the
+ * per-process VMO ceiling and the page counter went with the owner relation.
+ * A VMO's accounting is the Untyped it was carved from. */
 /* Stage 7: RETIRED.  The per-process page ceiling was a number the kernel
  * invented; since Stage 6-pure a VMO's pages come from an Untyped the caller
  * named, and exhausting THAT is what running out means.  phys_pages_limit
  * reports 0 — "no kernel ceiling" — the way the notification quota did when it
  * retired in Phase S1.  The constant is kept only so the retirement is legible. */
-#define KPROCESS_PHYS_PAGES_LIMIT 0u
 
 /* Maximum bootstrap KFrame retains stored in KProcess.bootstrap_frames[].
  * Enforced by the upfront guard in task_create_user_impl. */
@@ -171,13 +172,6 @@ struct KProcess {
      * mark (never decreases), an observable, defensible ceiling witness. */
     /* Phase S1: owned_notifications/_hwm retired with the notification quota —
      * notifications are Untyped-funded (see sel4-convergence-ledger.md). */
-    uint32_t owned_vmos;
-    uint32_t phys_pages_charged; /* sparse-VMO pages charged at eager map-time
-                                  * allocation; vs phys_pages_limit */
-    uint32_t phys_pages_limit;   /* KPROCESS_PHYS_PAGES_LIMIT (0) since Stage 7:
-                                  * reported, never enforced — see the constant */
-    uint32_t owned_vmos_hwm;
-    uint32_t phys_pages_hwm;
 
     /* Ph95 (Phase 8): root CNode for hierarchical CSpace traversal.
      *
@@ -238,10 +232,6 @@ void             kprocess_teardown(struct KProcess *p, struct task *exiting_thre
 void             kprocess_reap_address_space(struct KProcess *p);
 /* Phase S1: kprocess_quota_{acquire,release}_notification retired (Untyped is
  * the budget for notifications).  VMO/page quotas remain for legacy objects. */
-iris_error_t     kprocess_quota_acquire_vmo(struct KProcess *p);
-void             kprocess_quota_release_vmo(struct KProcess *p);
-iris_error_t     kprocess_quota_acquire_page(struct KProcess *p);
-void             kprocess_quota_release_page(struct KProcess *p);
 /* Phase 29 — global resource-accounting gauges (SYS_RESOURCE_INFO). */
 uint32_t         kprocess_quota_failed_count(void);
 uint32_t         kprocess_quota_rollback_count(void);

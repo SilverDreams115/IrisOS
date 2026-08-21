@@ -91,30 +91,7 @@ void kfault_resolve(struct task *ft, int killed) {
                               memory_order_relaxed);
 }
 
-static iris_error_t kprocess_quota_acquire(uint32_t *counter, uint32_t *hwm,
-                                           uint32_t limit, struct KProcess *p) {
-    iris_error_t r = IRIS_OK;
-    if (!counter || !p) return IRIS_ERR_INVALID_ARG;
-    spinlock_lock(&p->base.lock);
-    if (*counter >= limit) {
-        r = IRIS_ERR_NO_MEMORY;
-    } else {
-        (*counter)++;
-        if (hwm && *counter > *hwm) *hwm = *counter;   /* Phase 29: high-water */
-    }
-    spinlock_unlock(&p->base.lock);
-    if (r != IRIS_OK)
-        atomic_fetch_add_explicit(&kquota_failed_charges, 1u, memory_order_relaxed);
-    return r;
-}
 
-static void kprocess_quota_release(uint32_t *counter, struct KProcess *p) {
-    if (!counter || !p) return;
-    spinlock_lock(&p->base.lock);
-    if (*counter != 0)
-        (*counter)--;
-    spinlock_unlock(&p->base.lock);
-}
 
 static void kprocess_clear_exit_watch(struct KProcess *p) {
     if (!p) return;
@@ -185,7 +162,6 @@ struct KProcess *kprocess_alloc_from(struct KUntyped *pool,
     if (!p) return 0;
     kobject_init_in_untyped(&p->base, KOBJ_PROCESS, &kprocess_ops,
                             (uint32_t)sizeof(struct KProcess));
-    p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;  /* Stage 7: 0 = no kernel ceiling */
     kobject_retain(&pool->base);
     p->storage_pool = pool;
 
@@ -219,7 +195,6 @@ struct KProcess *kprocess_alloc(void) {
     struct KProcess *p = kslab_alloc((uint32_t)sizeof(struct KProcess));
     if (!p) return 0;
     kobject_init(&p->base, KOBJ_PROCESS, &kprocess_ops);
-    p->phys_pages_limit = KPROCESS_PHYS_PAGES_LIMIT;  /* Stage 7: 0 = no kernel ceiling */
 
     /* Ph95: root CNode for hierarchical CSpace.  Soft-fail: if alloc OOMs
      * the process still works, but cspace_root stays NULL.
@@ -246,50 +221,9 @@ void kprocess_free(struct KProcess *p) {
     kobject_release(&p->base);
 }
 
-/* Phase S1: the notification quota (acquire/release + owner binding) is
- * RETIRED — notifications are created from Untyped, and Untyped is the
- * budget.  The VMO and page quotas below stay: they account the legacy
- * KProcess/KVMO objects that have not yet migrated to the canonical model
- * (LEGACY_FOR_KPROCESS_KVMO in the convergence ledger). */
 
-iris_error_t kprocess_quota_acquire_vmo(struct KProcess *p) {
-    return kprocess_quota_acquire(&p->owned_vmos, &p->owned_vmos_hwm,
-                                  KPROCESS_VMO_QUOTA, p);
-}
 
-void kprocess_quota_release_vmo(struct KProcess *p) {
-    kprocess_quota_release(&p->owned_vmos, p);
-}
 
-/*
- * Stage 7: the per-process PAGE quota is RETIRED.
- *
- * It was a second ceiling on top of the real one, and since Stage 6-pure it
- * contradicted the model rather than reinforcing it: a VMO's pages come out of
- * an Untyped the caller NAMED, and exhausting that Untyped is what "out of
- * memory" means.  phys_pages_limit was a number the kernel invented — the very
- * thing Stage 6 Step 5 removed for VMO pages and then left standing beside
- * them, so a holder with a large delegated budget still stopped at 8 MB that
- * nobody granted and nobody could raise.
- *
- * The counters stay as pure INSTRUMENTATION: how many pages a domain's VMOs
- * hold is worth reporting, and SYS_RESOURCE_INFO's readers already know a
- * limit of 0 means "no kernel ceiling here" — that is what the notification
- * quota did when it retired in Phase S1.  What is gone is the refusal.
- */
-iris_error_t kprocess_quota_acquire_page(struct KProcess *p) {
-    if (!p) return IRIS_ERR_INVALID_ARG;
-    spinlock_lock(&p->base.lock);
-    p->phys_pages_charged++;
-    if (p->phys_pages_charged > p->phys_pages_hwm)
-        p->phys_pages_hwm = p->phys_pages_charged;
-    spinlock_unlock(&p->base.lock);
-    return IRIS_OK;
-}
-
-void kprocess_quota_release_page(struct KProcess *p) {
-    kprocess_quota_release(&p->phys_pages_charged, p);
-}
 
 /*
  * kprocess_watch_exit — REMOVED (Stage 7 Step 10) with SYS_PROCESS_WATCH.

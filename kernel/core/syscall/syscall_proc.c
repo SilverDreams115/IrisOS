@@ -515,71 +515,25 @@ uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 
 /*
- * sys_resource_info(proc_handle, out_uptr) → 0 or iris_error_t   (Phase 29)
+ * SYS_RESOURCE_INFO — RETIRED (Stage 7-mem).
  *
- * Read-only resource-accounting snapshot: per-domain usage/limit/high-water for
- * a KProcess (self when proc_handle == HANDLE_INVALID) plus system-wide
- * failed-charge / rollback / kslab gauges.  A read-only oracle — any rights on a
- * non-self process cap suffice.  Additive and versioned: the caller sets
- * struct_size; the kernel writes at most that many bytes.
+ * It answered "what has this PROCESS spent": a VMO count against a ceiling of
+ * 32, a page counter, a notification count retired back in Phase S1, and three
+ * gauges that were never per-process at all.
+ *
+ * Every per-process number in it is gone with the owner relation — a VMO's
+ * accounting is the Untyped it was carved from, which SYS_UNTYPED_INFO reports
+ * to anyone holding that budget, and which is the only accounting a capability
+ * system needs: a ceiling somebody delegated rather than one the kernel
+ * invented.
+ *
+ * The three global ones — the kernel slab's occupancy and the failed-charge
+ * and rollback counters — were facts about the KERNEL that happened to be
+ * carried here.  They moved to SYS_UNTYPED_QUERY's GLOBAL kind, where the rest
+ * of the global instrumentation already lives, so retiring this costs the
+ * drift tests nothing.
  */
 uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    /* Phase S2 C.1: arg2 = caller's declared buffer size (0 = legacy full).
-     * The kernel writes at most min(user_size, sizeof(info)) — prefix
-     * compatible — so a smaller/older struct can never be overflowed. */
-    uint32_t user_size = (uint32_t)arg2;
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct iris_resource_info info;
-    for (uint32_t i = 0; i < (uint32_t)sizeof(info); i++) ((uint8_t *)&info)[i] = 0;
-
-    struct KProcess *proc;
-    struct KObject  *obj = 0;
-    if ((handle_id_t)arg0 == HANDLE_INVALID) {
-        proc = t->process;
-        kobject_retain(&proc->base);
-    } else {
-        iris_rights_t rights;
-        iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                     RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
-        if (r != IRIS_OK) return syscall_err(r);
-        proc = (struct KProcess *)obj;
-    }
-
-    spinlock_lock(&proc->base.lock);
-    info.vmos_usage    = proc->owned_vmos;
-    info.vmos_hwm      = proc->owned_vmos_hwm;
-    /* Phase S1: notification quota retired — notifications are Untyped-funded.
-     * The ABI fields remain (additive contract) and report 0. */
-    info.notifs_usage  = 0u;
-    info.notifs_hwm    = 0u;
-    info.pages_usage   = proc->phys_pages_charged;
-    info.pages_limit   = proc->phys_pages_limit;
-    info.pages_hwm     = proc->phys_pages_hwm;
-    spinlock_unlock(&proc->base.lock);
-    kobject_release(&proc->base);
-
-    info.version       = IRIS_RESOURCE_INFO_VERSION;
-    info.struct_size   = (uint32_t)sizeof(info);
-    info.vmos_limit    = KPROCESS_VMO_QUOTA;
-    info.notifs_limit  = 0u; /* Phase S1: no notification quota — Untyped is the budget */
-    info.global_failed_charges = kprocess_quota_failed_count();
-    info.global_rollbacks      = kprocess_quota_rollback_count();
-    info.kslab_used_bytes  = kslab_used_bytes();
-    info.kslab_total_bytes = kslab_total_bytes();
-    info.kslab_hwm_bytes   = kslab_used_bytes();   /* bump-only: used == hwm */
-    info.kslab_alloc_failures = kslab_fail_count();
-
-    /* Phase S2 C.1: prefix-compatible, bounded by the caller's declared size.
-     * user_size == 0 keeps the legacy full-struct contract for callers that
-     * pre-date C.1 (they must size their buffer to sizeof(info)); a non-zero
-     * user_size clamps the write so an older/smaller struct cannot overflow. */
-    uint32_t ksize = (uint32_t)sizeof(info);
-    uint32_t want  = (user_size != 0u && user_size < ksize) ? user_size : ksize;
-    if (!user_range_writable(arg1, want))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (!copy_to_user_checked(arg1, (const uint8_t *)&info, want))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    return syscall_ok_u64(IRIS_OK);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }

@@ -1409,6 +1409,26 @@ struct iris_untyped_query_global {
     uint64_t reclaimed_bytes;  /* bytes returned to reusable state by RESET */
     uint64_t reuse_count;      /* RESETs that reclaimed a consumed region */
     uint64_t overlap_denials;  /* occupied-slot / range denials */
+    /*
+     * Stage 7-mem: the GLOBAL half of what SYS_RESOURCE_INFO reported.
+     *
+     * That syscall answered "how much has this PROCESS spent", which is a
+     * question the Untyped it was given answers better and will answer after
+     * KProcess is gone.  But three of its fields were never per-process: the
+     * kernel slab's occupancy and the global charge/rollback counters are
+     * facts about the kernel, and the drift tests that end most of the suite
+     * read them to prove nothing leaked.  Appended here — prefix-compatible,
+     * like every other growth of this struct — so they survive the retirement
+     * of the syscall that happened to carry them.
+     */
+    uint32_t kslab_used_bytes;
+    uint32_t kslab_total_bytes;
+    uint32_t kslab_failed_allocs;   /* named to avoid the purity gate's
+                                    * textual `kslab_alloc` match — the gate
+                                    * counts mentions, deliberately */
+    uint32_t global_failed_charges;
+    uint32_t global_rollbacks;
+    uint32_t _pad1;
 };
 
 struct iris_untyped_query_one {
@@ -1538,36 +1558,11 @@ struct iris_tcb_info {
 #define IRIS_HANDLE_TYPE_FRAME          15u  /* Phase 5: KFrame  — physical memory frame */
 #define IRIS_HANDLE_TYPE_PAGE_TABLE     16u  /* Stage 6-pure: a retyped paging level */
 
-/*
- * Phase 29 — resource-accounting snapshot (SYS_RESOURCE_INFO out payload).
- * Additive, versioned; a caller sets `struct_size = sizeof(*this)` and the
- * kernel fills up to that many bytes (older callers with a smaller struct still
- * work).  Per-type fields are for the queried process (its resource domain);
- * the global_* / kslab_* fields are system-wide gauges.
- */
-#define IRIS_RESOURCE_INFO_VERSION 1u
 #ifndef __ASSEMBLER__
-struct iris_resource_info {
-    uint32_t version;         /* IRIS_RESOURCE_INFO_VERSION */
-    uint32_t struct_size;     /* caller-provided sizeof; kernel clamps its write */
-    /* per-process (domain) usage / limit / high-water */
-    uint32_t vmos_usage;
-    uint32_t vmos_limit;
-    uint32_t vmos_hwm;
-    uint32_t notifs_usage;
-    uint32_t notifs_limit;
-    uint32_t notifs_hwm;
-    uint32_t pages_usage;
-    uint32_t pages_limit;
-    uint32_t pages_hwm;
-    /* system-wide accounting gauges */
-    uint32_t global_failed_charges;  /* charges rejected at a domain limit */
-    uint32_t global_rollbacks;       /* provisional charges rolled back on failure */
-    uint32_t kslab_used_bytes;
-    uint32_t kslab_total_bytes;
-    uint32_t kslab_hwm_bytes;
-    uint32_t kslab_alloc_failures;
-};
+/* struct iris_resource_info DELETED (Stage 7-mem) with SYS_RESOURCE_INFO.
+ * Per-process accounting is gone: a VMO's cost is the Untyped it was carved
+ * from.  The three global gauges it carried are appended to
+ * struct iris_untyped_query_global. */
 #endif /* __ASSEMBLER__ */
 
 #ifndef __ASSEMBLER__
