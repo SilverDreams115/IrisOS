@@ -66,18 +66,13 @@ void kprocess_fault_stat_nohandler(void) { atomic_fetch_add_explicit(&kfault_noh
  * no-op.
  */
 void kprocess_fault_clear(struct KProcess *p, struct task *ft, int killed) {
-    struct task *drop = 0;
     if (!p || !ft) return;
     spinlock_lock(&p->base.lock);
     if (ft->fault_valid) {
         ft->fault_valid = 0;
         atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
     }
-    /* The process names whoever faulted LAST, which need not be this thread:
-     * clearing somebody else's fault leaves that pointer alone. */
-    if (p->fault_last == ft) { drop = ft; p->fault_last = 0; }
     spinlock_unlock(&p->base.lock);
-    if (drop) kobject_release(&drop->base);
     /* Unconditional, as it has been since Phase 20: this counts RESOLUTIONS —
      * how many times a handler answered — not how many records existed to
      * clear.  A second call for an already-resolved fault is still an answer. */
@@ -108,28 +103,6 @@ static void kprocess_quota_release(uint32_t *counter, struct KProcess *p) {
     if (*counter != 0)
         (*counter)--;
     spinlock_unlock(&p->base.lock);
-}
-
-static void kprocess_clear_exception_chan(struct KProcess *p) {
-    struct KNotification *old = 0;
-    if (!p) return;
-
-    struct KCNode *cs;
-    spinlock_lock(&p->base.lock);
-    old = p->exception_notif;
-    p->exception_notif = 0;
-    cs = p->fault_cspace;
-    p->fault_cspace = 0;
-    p->fault_slot   = 0;
-    spinlock_unlock(&p->base.lock);
-
-    if (cs) {
-        kobject_active_release(&cs->base);
-        kobject_release(&cs->base);
-    }
-    if (!old) return;
-    kobject_active_release(&old->base);
-    kobject_release(&old->base);
 }
 
 static void kprocess_clear_exit_watch(struct KProcess *p) {
@@ -314,100 +287,6 @@ void kprocess_quota_release_page(struct KProcess *p) {
  * does, and both go with KProcess.
  */
 
-iris_error_t kprocess_set_exception_handler(struct KProcess *p,
-                                            struct KNotification *notif,
-                                            uint64_t signal_bits,
-                                            struct KCNode *dest_cnode,
-                                            uint32_t dest_slot) {
-    struct KNotification *old;
-    struct KCNode        *old_cs = 0;
-    if (!p || !notif || signal_bits == 0) return IRIS_ERR_INVALID_ARG;
-    /* Stage 7 Step 7: a handler must say where the faulting thread's
-     * capability goes.  Required, not optional: without it the only way to
-     * answer a fault is to name the thread by number, and leaving that path
-     * alive beside this one is the dual-namespace shape the charter forbids.
-     * Slot 0 is CPTR_NULL and can never receive a capability. */
-    if (!dest_cnode || dest_slot == 0u || dest_slot >= dest_cnode->slot_count)
-        return IRIS_ERR_INVALID_ARG;
-
-    kobject_retain(&notif->base);
-    kobject_active_retain(&notif->base);
-    kobject_retain(&dest_cnode->base);
-    kobject_active_retain(&dest_cnode->base);
-
-    spinlock_lock(&p->base.lock);
-    /* Phase 20: registering on a torn-down process would re-pin exception_notif
-     * AFTER kprocess_teardown already ran kprocess_clear_exception_chan —
-     * nothing would ever release those refs (kprocess_destroy skips teardown
-     * once teardown_complete is set), leaking the notification.  A racing
-     * registration that reads the flag before teardown stores it is swept by
-     * teardown's second clear.  NOTE: a never-started process (thread_count 0,
-     * no teardown) is a legitimate target — registering BEFORE the first task
-     * starts is the race-free supervisor order (phase3 selftest covers it). */
-    if (p->teardown_complete) {
-        spinlock_unlock(&p->base.lock);
-        kobject_active_release(&notif->base);
-        kobject_release(&notif->base);
-        kobject_active_release(&dest_cnode->base);
-        kobject_release(&dest_cnode->base);
-        return IRIS_ERR_NOT_FOUND;
-    }
-    old    = (p->exception_notif == notif) ? 0 : p->exception_notif;
-    old_cs = (p->fault_cspace == dest_cnode) ? 0 : p->fault_cspace;
-    /* Re-arming with the same notification keeps the registration and re-aims
-     * the DESTINATION, so a supervisor can move the mailbox it receives faults
-     * in without tearing the handler down and racing a fault through the gap. */
-    if (p->exception_notif == notif) {
-        kobject_active_release(&notif->base);
-        kobject_release(&notif->base);
-    } else {
-        p->exception_notif = notif;
-        p->exception_signal_bits = signal_bits;
-    }
-    p->fault_cspace = dest_cnode;
-    p->fault_slot   = dest_slot;
-    spinlock_unlock(&p->base.lock);
-
-    if (old) {
-        kobject_active_release(&old->base);
-        kobject_release(&old->base);
-    }
-    if (old_cs) {
-        kobject_active_release(&old_cs->base);
-        kobject_release(&old_cs->base);
-    }
-
-    /*
-     * A fault that is already OUTSTANDING moves with the mailbox.
-     *
-     * Re-aiming is how a supervisor hands a target's faults to a REPLACEMENT
-     * handler — the old one died holding the capability the fault delivered,
-     * and that capability is in a CSpace nobody reads any more.  Without this
-     * the new handler is told a fault is pending (the record is still there)
-     * and has nothing to answer it with: it can see the fault and not resolve
-     * it, which is a deadlock dressed as a working restart.
-     *
-     * Only the outstanding one, and only if it is still outstanding: a fault
-     * that was already answered leaves nothing to move.
-     */
-    {
-        struct task *pending;
-        spinlock_lock(&p->base.lock);
-        pending = p->fault_last;
-        if (pending && pending->fault_valid) kobject_retain(&pending->base);
-        else                                 pending = 0;
-        spinlock_unlock(&p->base.lock);
-        if (pending) {
-            (void)kcnode_slot_install_linked(dest_cnode, dest_slot,
-                                             &pending->base,
-                                             RIGHT_READ | RIGHT_WRITE, 0,
-                                             0, 0, /*exclusive=*/0,
-                                             /*legacy=*/1);
-            kobject_release(&pending->base);
-        }
-    }
-    return IRIS_OK;
-}
 
 /*
  * Stage 7 Step 12 — a fault is delivered by the THREAD's own registration.
@@ -482,6 +361,23 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
  * would run a ring-3 thread with cr3 == 0 under the KERNEL's page tables.
  * A flag read separately from the action it guards is not a gate.
  */
+/*
+ * Stage 7 Step 13: joining a process TAKES A REFERENCE to it.
+ *
+ * A thread dereferences `t->process` on every syscall that reads a default
+ * budget or an identity, and until now it did so holding nothing — the object
+ * stayed alive because SYS_PROCESS_CREATE kept a "creation reference" that no
+ * capability accounted for and only the last thread's exit released.  That
+ * reference is what made a created-but-never-started process unreclaimable
+ * except by SYS_PROCESS_KILL: with no thread to exit, nothing dropped it, and
+ * its address space, its root CNode and the budget its header was carved from
+ * stayed pinned for the life of the system.
+ *
+ * With the join holding a reference, the creation one has no job left.  A
+ * process lives exactly as long as capabilities and threads reference it, like
+ * every other kernel object — which is what makes "delete its capabilities"
+ * the whole of killing a process that never ran.
+ */
 iris_error_t kprocess_attach_thread(struct KProcess *p) {
     iris_error_t r = IRIS_OK;
     if (!p) return IRIS_ERR_INVALID_ARG;
@@ -493,6 +389,7 @@ iris_error_t kprocess_attach_thread(struct KProcess *p) {
         p->threads_ever = 1;
     }
     spinlock_unlock(&p->base.lock);
+    if (r == IRIS_OK) kobject_retain(&p->base);
     return r;
 }
 
@@ -520,24 +417,11 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
 
     kprocess_emit_exit_watch(p);
     kprocess_clear_exit_watch(p);
-    kprocess_clear_exception_chan(p);
-    /* Phase 20 (F15): a fault record must not outlive the process — a late
-     * SYS_PROCESS_FAULT_INFO through a surviving handle reports WOULD_BLOCK,
-     * not a stale fault of a dead task. */
-    {
-        struct task *last;
-        spinlock_lock(&p->base.lock);
-        last = p->fault_last;
-        p->fault_last = 0;
-        spinlock_unlock(&p->base.lock);
-        if (last) {
-            if (last->fault_valid) {
-                last->fault_valid = 0;
-                atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
-            }
-            kobject_release(&last->base);
-        }
-    }
+    /* Stage 7 Step 12: the fault record and the handler registration are the
+     * THREAD's, and a terminating thread clears its own — so there is nothing
+     * process-scoped left to clear here.  The property the old block existed
+     * for still holds and is asserted the same way (T145/T146/T147): a read
+     * after death answers WOULD_BLOCK rather than a stale fault. */
     /* Phase 6.3: VMO mappings are now tracked via KVSpace.mappings and cleaned
      * by kvspace_invalidate inside kprocess_reap_address_space.  No per-process
      * VMO mapping list exists; nothing to do here. */
@@ -568,13 +452,6 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     }
 
     (void)exiting_thread; /* thread_count tracks liveness; no per-thread ref needed */
-    /* teardown_complete was claimed on entry, so the flag has rejected new
-     * registrations for the whole of this function.
-     *
-     * Phase 20: a registration that was already past that check when we
-     * claimed, and landed after the clear above, would re-pin the
-     * notification with nobody left to release it; sweep again to catch it. */
-    kprocess_clear_exception_chan(p);
 }
 
 iris_error_t kprocess_register_bootstrap_frame(struct KProcess *p, struct KFrame *f) {

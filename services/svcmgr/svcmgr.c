@@ -210,6 +210,10 @@ static inline int64_t svcmgr_syscall2(uint64_t num, uint64_t arg0, uint64_t arg1
  * capability.  67..70, below the receive-slot pool and clear of every
  * well-known mint slot. */
 #define SVCMGR_MSLOT_TCB(id)     (67u + (uint32_t)(id))
+/* task_state_t ABI values (mirrors kernel/include/iris/task.h): the two that
+ * mean "this execution is over". */
+#define SVCMGR_TASK_TERMINATED   11u
+#define SVCMGR_TASK_DEAD         12u
 #define SVCMGR_SLOT_REPLY1       64u
 #define SVCMGR_SLOT_REPLY2       65u
 /* Phase S4 (Step 2): outbound cap-transfer source slot.  Every cap svcmgr
@@ -637,7 +641,17 @@ static uint32_t svcmgr_active_slot_count(const struct svcmgr_state *state);
 static int svcmgr_service_alive(struct svcmgr_state *state, uint32_t service_id) {
     struct svcmgr_service_state *svc = svcmgr_service_state(state, service_id);
     if (!svc || svc->proc_h == HANDLE_INVALID) return 0;
-    return svcmgr_syscall1(SYS_PROCESS_STATUS, (uint64_t)svc->proc_h) == 1;
+    /* Stage 7 Step 13: liveness is the EXECUTION's.  svcmgr already holds each
+     * service's first thread (SVCMGR_MSLOT_TCB) because that is what it
+     * watches and what it must delete before a respawn; asking the thread its
+     * state removes the last reason it also held the process for. */
+    struct iris_tcb_info info;
+    info.state = 0u;
+    if (svcmgr_syscall2(SYS_TCB_GET_INFO, (uint64_t)SVCMGR_MSLOT_TCB(service_id),
+                        (uint64_t)(uintptr_t)&info) != 0)
+        return 0;
+    return (info.state != SVCMGR_TASK_TERMINATED &&
+            info.state != SVCMGR_TASK_DEAD);
 }
 
 /* Resolve a name to its current {alive, generation} (Phase 10 STATUS).
@@ -857,7 +871,8 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
             reply.label      = IRIS_EP_REPLY_OK;
             reply.words[0]   = svc->generation;   /* caller polls STATUS for +1 */
             reply.word_count = 1u;
-            (void)svcmgr_syscall1(SYS_PROCESS_KILL, (uint64_t)svc->proc_h);
+            (void)svcmgr_syscall1(SYS_TCB_EXIT,
+                                  (uint64_t)SVCMGR_MSLOT_TCB(sid));
         }
         break;
     }

@@ -179,18 +179,11 @@ static inline long iris_syscall0(long nr) {
                                  *   legacy handle result.
                                  *   Intended for userland-owned lifecycle tracking such as
                                  *   service-side cleanup keyed to client process death. */
-/*
- * Process lifecycle query — modern/conforming (iris_error_t).
- *
- * SYS_PROCESS_STATUS is a non-blocking query: it returns immediately.
- * Callers that do not have a process-exit watch path may still poll this.
- * Healthy-path supervision should prefer SYS_PROCESS_WATCH where practical;
- * this syscall remains the fallback compatibility query.
- */
-#define SYS_PROCESS_STATUS  26  /* (proc_handle) → 1=alive, 0=dead, or negative iris_error_t
-                                  *   Requires RIGHT_READ on proc_handle.
-                                  *   Returns 0 when the process has called SYS_EXIT or been
-                                  *   reaped; the handle itself remains valid for closing. */
+/* SYS_PROCESS_STATUS — RETIRED (Stage 7 Step 13).  Number permanently
+ * reserved; returns IRIS_ERR_NOT_SUPPORTED.  Liveness is a property of an
+ * EXECUTION: read it with SYS_TCB_GET_INFO (101) on a thread you hold, whose
+ * `state` says more than the one bit this answered. */
+#define SYS_PROCESS_STATUS  26
 
 /* Phase 13 (Track B): the legacy PROC_EVENT_MSG_EXIT KChannel event is retired.
  * Process death is now delivered as a KNotification signal — see
@@ -495,7 +488,11 @@ static inline long iris_syscall0(long nr) {
  *   Cannot be used for self-termination — use SYS_EXIT for that.
  *   Idempotent: returns 0 if the process is already dead.
  */
-#define SYS_PROCESS_KILL  35  /* (proc_handle) → 0 or negative iris_error_t */
+/* SYS_PROCESS_KILL — RETIRED (Stage 7 Step 13).  Number permanently reserved;
+ * returns IRIS_ERR_NOT_SUPPORTED.  Stopping an execution is SYS_TCB_EXIT (100)
+ * on a thread you hold; reclaiming a process that never started is deleting
+ * the last capability to it. */
+#define SYS_PROCESS_KILL  35
 
 /* SYS_SPAWN_SERVICE 31 retired in Phase 22 — permanently reserved and returns
  * IRIS_ERR_NOT_SUPPORTED. Named image loading is now a ring-3 concern layered

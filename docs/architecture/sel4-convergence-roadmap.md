@@ -1212,6 +1212,55 @@ the rest.  T184 asserts precisely that split on the thread now: `READ` reads
 the fault record and nothing else, resuming takes `WRITE`, and a process
 capability, reduced or full, is not a thread and is refused outright.
 
+### Step 13 — killing is stopping the executions you hold  DONE
+
+`SYS_PROCESS_KILL` did two things, and Stage 7 took them apart one at a time.
+
+The first was **stopping the executions**: `task_kill_process` swept the whole
+task registry for threads whose process pointer matched.  Nothing else called
+it and nothing could — naming "every thread of that process" without holding
+any of them requires scanning the kernel's registry, which is the shape Stage 7
+spent its length removing.  A supervisor stops the threads it holds
+(`SYS_TCB_EXIT`), and `task_kill_process` is deleted.
+
+The second was **reclamation**, and that is the half that took three steps.
+Step 11 moved address-space teardown into the VSpace's destructor, so a walk
+comes down when its last capability does.  What was left was the case the
+roadmap named as still-to-be-decided: a process created and NEVER STARTED.
+Kill found no threads, and its special case tore the object down because
+nothing else could — `SYS_PROCESS_CREATE` kept a reference on the kernel's own
+behalf that only the last thread's exit released, and there was no last thread.
+
+The decision: **there is no creation reference.**  It is dropped as soon as
+`SYS_PROCESS_CREATE` has published a capability, and joining a process takes a
+real reference to it (`kprocess_attach_thread`).  A process therefore lives
+exactly as long as capabilities and threads reference it, like every other
+kernel object — a running one held up by its executions, a never-started one by
+whoever holds a capability.  Deleting the last capability to a process that
+never ran destroys it, which is the only thing killing it could have meant.
+T304 asserts it directly: 80 never-started processes, no kill in the loop, and
+the budget still RESETs.
+
+`SYS_PROCESS_STATUS` went with it.  "Is it alive" about a process is derived
+from its threads (`thread_count != 0`), so asking the derived object meant
+holding a process capability for a question its threads already answer — and
+answering with one bit where `SYS_TCB_GET_INFO` reports the state.
+
+Both numbers (26, 35) are permanently reserved and answer `NOT_SUPPORTED`.
+
+Two loader rights changed, for the same reason in both cases: the kept CNode
+and the kept TCB gained `RIGHT_DUPLICATE`.  A supervisor that delegates part of
+its role hands out a REDUCED copy — read-only to a monitor — and minting one is
+how rights are given away without giving away the rest.
+
+One suite-shaped consequence worth recording, because it is evidence rather
+than bookkeeping: the child table needed its own CNode.  While `PROCESS_KILL`
+existed, a test that spawned more children than the table held still killed
+them all, because it named the process and every process capability is in the
+root CSpace.  Killing names the thread now, so **a child the table has evicted
+is a child nothing can stop** — and T240 holds 48 at once.  That is the
+supervision cost of the model, paid in the place a process server would pay it.
+
 ### What Stage 7 still needs, and why it is not an increment
 
 `KProcess` itself, and the user-space process server that replaces the policy
@@ -1228,42 +1277,37 @@ through `t->process`:
 | `mem_pool` | 3 | the DEFAULT budget when a syscall does not name one — the kernel choosing whose memory pays |
 | `exit_code`, `base` | 3 | death reporting and the object header |
 
-Step 9 took the cross-task ones out and Step 10 took death notification out.
+Step 9 took the cross-task ones out, Step 10 took death notification out,
+Step 12 took fault registration out, and Step 13 took kill and status out.
 What is left is:
 
-- **`SYS_PROCESS_KILL` and `SYS_PROCESS_STATUS`**.  Step 11 moved the
-  reclamation off them, so what is left really is a syscall swap plus its call
-  sites: killing a service is `SYS_TCB_EXIT` on the thread a supervisor holds,
-  and asking whether it is alive is `SYS_TCB_GET_INFO`, which already exists.
-  80 kill sites and 17 status sites in the suite, all of which the child table
-  from Step 10 can already resolve.  What still needs deciding is what
-  "killing" a process that NEVER STARTED means — today `SYS_PROCESS_KILL` tears
-  it down (Stage 6 Step 2), and with no process there is only "delete its
-  capabilities", which T304 asserts 65 times.
 - **the default budget** (`mem_pool`): the kernel choosing whose memory pays
   when a syscall does not name one.  Three sites, two of them the ioport/IRQ
   pair, which cannot take a budget argument in the 4-argument ABI and retire
   with the memory server anyway (ledger D-5's deeper half).
+- **the boot path** (`cspace_root`, `vspace`): the root task's CSpace and
+  address space are built before anything exists that could name them.  This is
+  the exception the ledger already records and it does not retire with the
+  process server — it retires when the root task can speak for itself.
+- **`SYS_PROCESS_CREATE` / `SYS_PROCESS_SELF` / `SYS_PROCESS_VSPACE`**: the
+  object's remaining constructor and accessors.  These are what a user-space
+  process server replaces outright rather than converts, because what they
+  create is the policy container itself.
 
 That is the process server's remaining job description.
 
 What the server has to answer, concretely:
 
-- **Death.**  `SYS_PROCESS_WATCH` signals a notification when a process dies,
-  and `SYS_PROCESS_EXIT_CODE` reports why.  seL4 has neither: a supervisor
-  knows because it holds the child's TCBs and the child tells it over an
-  endpoint it was given.  Moving this means every supervisor in the tree
-  (`init`, `svcmgr`, `iris_test`) learns of death through a protocol it builds
-  rather than a syscall it calls.
-- **Kill.**  `SYS_PROCESS_KILL` stops every thread and reaps the address space.
-  The capability-model equivalent is suspending the TCBs and revoking what was
-  delegated, which the supervisor can already do — but the RECLAMATION
-  (address space, budget) currently rides on KProcess teardown.
+- **Death.**  Answered in Steps 10 and 13 for the observing half —
+  `SYS_TCB_WATCH` and `SYS_TCB_EXIT_CODE` name the thread — but
+  `SYS_PROCESS_WATCH` and `SYS_PROCESS_EXIT_CODE` still exist as retired
+  numbers, and seL4 has neither in any form: a supervisor knows because it
+  holds the child's TCBs and the child tells it over an endpoint it was given.
+  IRIS keeps the kernel-signalled version of that.
 - **Naming another task's CSpace/VSpace.**  A process capability is what makes
-  `SYS_PROC_CSPACE_MINT` and `SYS_VMO_MAP_INTO` possible.  With the process
-  gone, a supervisor holds the child's root CNode and VSpace capabilities
-  directly — which it already does at spawn time (Stage 6-pure Steps 4/5) and
-  currently throws away.
+  `SYS_PROCESS_VSPACE` possible.  With the process gone, a supervisor holds the
+  child's root CNode and VSpace capabilities directly — which it already does
+  at spawn time (Stage 6-pure Steps 4/5) and currently throws away.
 - **The default budget.**  `mem_pool` is the kernel picking an Untyped when a
   syscall does not name one.  Three call sites; the ioport/IRQ pair cannot take
   a budget argument in the current 4-argument ABI, and those objects retire
@@ -1274,10 +1318,12 @@ One smaller item remains and is NOT Stage 7 work:
 - **The VMO-count quota** retires with the `KVMO` object (memory server), per
   the ledger.
 
-`KPROCESS_MAX_LIVE` retired in Step 3, the global thread identifier in Step 7,
-the fault handler's process capability in Step 8, and fault registration itself
-in Step 12 — `SYS_EXCEPTION_HANDLER` and `SYS_PROCESS_FAULT_INFO` both return
-`NOT_SUPPORTED`.
+Retired so far, all permanently reserved and answering `NOT_SUPPORTED`:
+`KPROCESS_MAX_LIVE` (Step 3, a constant rather than a syscall), the global
+thread identifier (Step 7), `SYS_PROCESS_WATCH` (29), `SYS_PROCESS_EXIT_CODE`
+(71), `SYS_PROC_CSPACE_MINT` (104), `SYS_CSPACE_MINT_INTO` (116) in Steps 9-10,
+`SYS_EXCEPTION_HANDLER` (47) and `SYS_PROCESS_FAULT_INFO` (105) in Step 12, and
+`SYS_PROCESS_STATUS` (26) and `SYS_PROCESS_KILL` (35) in Step 13.
 
 ## Stage 8 — Full MCS scheduling
 

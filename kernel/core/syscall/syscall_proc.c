@@ -69,27 +69,23 @@ uint64_t sys_process_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   - Closing the handle (SYS_HANDLE_CLOSE) is the caller's responsibility
  *     after observing death; the KProcess is released when refcount hits zero.
  */
+/*
+ * SYS_PROCESS_STATUS — RETIRED (Stage 7 Step 13).
+ *
+ * "Is it alive" answered about a PROCESS, which is a fact derived from its
+ * threads: kprocess_is_alive is thread_count != 0.  Asking the derived object
+ * meant a supervisor held a process capability for a question its threads
+ * already answer, and answered it with less than it knew — one bit where
+ * SYS_TCB_GET_INFO reports the state.
+ *
+ * A supervisor holds its children's first thread (svc_load_minted_ws's
+ * `keep_tcb_dest`) because that is what it watches, kills and arms faults on.
+ * Reading that thread's state is the same question asked of an object it
+ * already has.
+ */
 uint64_t sys_process_status(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KObject *obj;
-    iris_rights_t   rights;
-    /* A1 Increment 2a: dual resolver — the process may be a CPtr slot or a
-     * handle.  RIGHT_NONE defers to the existing rights checks below. */
-    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                 RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
-    if (r != IRIS_OK) return syscall_err(r);
-
-    if (!rights_check(rights, RIGHT_READ)) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    int alive = kprocess_is_alive((struct KProcess *)obj);
-    kobject_release(obj);
-    return syscall_ok_u64(alive ? 1 : 0);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 
@@ -141,68 +137,33 @@ uint64_t sys_sleep(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * The caller's handle to the proc remains valid until the caller closes it;
  * the KProcess object is freed when all handles to it are closed.
  */
+/*
+ * SYS_PROCESS_KILL — RETIRED (Stage 7 Step 13).
+ *
+ * It did two things, and Stage 7 took them apart one at a time.
+ *
+ * The first was stopping the executions: task_kill_process walked every thread
+ * of the target.  A supervisor holds its children's threads now and stops them
+ * with SYS_TCB_EXIT, which is the same act named by a capability to the thing
+ * it acts on.
+ *
+ * The second was RECLAMATION, and that is the half that took three steps to
+ * remove.  Step 11 moved the address-space teardown into the VSpace's own
+ * destructor, so a walk comes down when its last capability does rather than
+ * when a process is declared dead.  What was left was a process created and
+ * NEVER STARTED: kill found no threads, and its special case tore the object
+ * down because nothing else could — SYS_PROCESS_CREATE kept a reference on its
+ * own behalf that only the last thread's exit released, and there was no last
+ * thread.  Step 13 dropped that reference at create time and gave the join a
+ * real one, so a never-started process is destroyed by deleting the last
+ * capability to it.
+ *
+ * With both halves gone this syscall had nothing left that a capability to the
+ * thing being acted on could not do.
+ */
 uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KObject *obj;
-    iris_rights_t   rights;
-    /* A1 Increment 2a: dual resolver on the kill target. */
-    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                 RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
-    if (r != IRIS_OK) return syscall_err(r);
-
-    if (!rights_check(rights, RIGHT_MANAGE)) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
-
-    struct KProcess *target = (struct KProcess *)obj;
-
-    /* Prevent suicide — caller must use SYS_EXIT for self-termination. */
-    if (target == t->process) {
-        kobject_release(obj);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-
-    /*
-     * No live threads.  Two different states share that description, and only
-     * one of them is this syscall's to clean up.
-     *
-     * Stage 6 Step 2: a process created and NEVER STARTED used to be
-     * unreclaimable — kill found no threads to stop, and the creation
-     * reference that outlives capabilities was only ever dropped by the LAST
-     * THREAD exiting.  Its address space, its PML4 and (since page tables are
-     * charged to an Untyped) its budget stayed pinned for the life of the
-     * system.  Tearing it down here is what kill already means for a running
-     * process, applied to one that never ran.
-     *
-     * A process whose last thread is EXITING looks identical through
-     * thread_count, and tearing that one down here is not a second cleanup
-     * but a concurrent one: task_execution_teardown_off_cpu decrements
-     * thread_count with interrupts enabled and only then runs
-     * kprocess_teardown, which sets teardown_complete at its very end.  A kill
-     * landing in that window passes both checks and races the exiting thread
-     * through kprocess_reap_address_space — both read aspace_reaped == 0, both
-     * release every bootstrap KFrame, and both destroy the same cr3.  So the
-     * gate is threads_ever, which distinguishes the two states that
-     * thread_count cannot: a process that has never had a thread has no other
-     * teardown path, and nothing can be racing us through one.
-     */
-    if (!kprocess_is_alive(target)) {
-        if (!target->threads_ever && !kprocess_teardown_complete(target)) {
-            kprocess_teardown(target, 0);
-            kprocess_reap_address_space(target);
-            kprocess_free(target);
-        }
-        kobject_release(obj);
-        return syscall_ok_u64(0);
-    }
-
-    task_kill_process(target);
-    kobject_release(obj);
-    return syscall_ok_u64(0);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 
@@ -362,9 +323,20 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1,
             kobject_release(&auth_cn->base);
         }
         if (pe != IRIS_OK) { kprocess_free(proc); return syscall_err(pe); }
-        /* The initial ref is the thread-lifecycle reference and is NOT
-         * released here; reap_dead_task_off_cpu drops it via kprocess_free
-         * once the last thread exits. */
+        /*
+         * Stage 7 Step 13: the creation reference is dropped HERE, now that a
+         * capability to the process exists.
+         *
+         * It used to be held until the last thread exited, which is what made
+         * a created-but-never-started process unreclaimable — nothing else
+         * ever dropped it, so SYS_PROCESS_KILL had to special-case tearing one
+         * down.  A thread that joins takes its own reference now
+         * (kprocess_attach_thread), so a running process is kept alive by its
+         * executions and a never-started one by whoever holds a capability to
+         * it.  Deleting the last capability to a process that never ran
+         * destroys it, which is the only thing killing it could have meant.
+         */
+        kprocess_free(proc);
         return syscall_ok_u64(0);
     }
 }

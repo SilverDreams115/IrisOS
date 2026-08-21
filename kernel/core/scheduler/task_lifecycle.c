@@ -610,6 +610,16 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     if (do_teardown)
         kprocess_free(proc);
 
+    /* Stage 7 Step 13: give back the reference the join took.  It is dropped
+     * LAST of the process-scoped work, after teardown and the address-space
+     * reap above, so neither can be running against an object this release
+     * destroys.  `t->process` is cleared first: a TERMINATED thread whose
+     * capability somebody still holds must not be left naming freed memory. */
+    if (proc) {
+        t->process = 0;
+        kobject_release(&proc->base);
+    }
+
     /* Drop the scheduler's execution reference LAST.  If no cap references the
      * object, this triggers task_backing_free_on_destroy (slot → TASK_DEAD).
      * A surviving cap keeps the TERMINATED object (and its backing) alive. */
@@ -1176,8 +1186,8 @@ struct task *task_current(void) {
 }
 
 /* Must not be called on current_task: this function frees resources that the
- * calling stack may still reference.  task_kill_process skips current_task
- * automatically when iterating tasks[]. */
+ * calling stack may still reference.  The one caller that could pass it
+ * (SYS_TCB_EXIT) checks for self and takes the exit path instead. */
 void task_kill_external(struct task *t) {
     if (!t || t == current_task || t->state == TASK_DEAD || t->terminal) return;
     task_execution_teardown_off_cpu(t);
@@ -1207,12 +1217,12 @@ void task_exit_current(void) {
     for (;;) task_yield();
 }
 
-void task_kill_process(struct KProcess *proc) {
-    if (!proc) return;
-    for (int i = 0; i < TASK_MAX; i++) {
-        if (!ktcb_registry[i].occupied) continue;
-        struct task *t = ktcb_registry[i].tcb;
-        if (t->state != TASK_DEAD && t->process == proc)
-            task_kill_external(t);
-    }
-}
+/*
+ * task_kill_process — DELETED (Stage 7 Step 13).
+ *
+ * It was the body of SYS_PROCESS_KILL: a sweep of the whole task registry for
+ * threads whose process pointer matched.  Nothing else called it, and nothing
+ * could — the only way to name "every thread of that process" without holding
+ * any of them is to scan the kernel's registry, which is the shape Stage 7
+ * spent its whole length removing.  A supervisor stops the threads it holds.
+ */

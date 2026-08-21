@@ -336,16 +336,6 @@ void         task_yield(void);
 struct task *task_current(void);
 
 /*
- * task_kill_process — forcibly terminate all threads of a process.
- *
- * Iterates the task pool and calls task_kill_external on every task whose
- * process pointer matches proc.  Safe to call when none of proc's threads
- * is the current_task (i.e. only from an external caller).
- * Idempotent: already-dead tasks are skipped.
- */
-void task_kill_process(struct KProcess *proc);
-
-/*
  * task_kill_external — forcibly terminate a task that is NOT the current task.
  *
  * Safe to call only when the target is blocked or ready (not running).

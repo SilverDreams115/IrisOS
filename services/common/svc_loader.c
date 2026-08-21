@@ -853,7 +853,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * dropped below like everything else it was holding. */
     if (keep_cnode_dest && child_cn)
         (void)sl_sys3(SYS_CSPACE_MINT, child_cn, (long)keep_cnode_dest,
-                      (long)(RIGHT_READ | RIGHT_WRITE));
+                      (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
     /* Stage 7 Step 10/12: and the child's first THREAD, for a spawner that
      * supervises it.  READ|WRITE, because supervising an execution is watching
      * it, reading why it ended, arming where its faults go, and stopping it —

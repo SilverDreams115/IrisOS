@@ -127,44 +127,13 @@ struct KProcess {
     /* Phase 6.3: vmo_mappings removed — VMO pages are now KFrame-backed and
      * tracked in KVSpace.mappings; kvspace_invalidate handles teardown. */
 
-    /* Exception handler (Phase 13/Track I: KNotification, no longer a KChannel).
-     * If exception_notif is non-NULL, the kernel records the fault details in
-     * fault_* and signals exception_signal_bits on it before the faulting task
-     * is killed; the handler reads the details via SYS_PROCESS_FAULT_INFO. */
-    struct KNotification *exception_notif;
-    uint64_t exception_signal_bits;
-    /* Stage 7 Step 6: the fault RECORD moved to the thread that took it (see
-     * struct task).  What stays here is who to tell, and which thread told it
-     * last — a retained reference rather than an id, so the record it points
-     * at cannot be freed while this points at it. */
-    struct task *fault_last;
-    /*
-     * Stage 7 Step 7 — where the faulting thread's CAPABILITY is delivered.
-     *
-     * A handler used to be told a fault happened and then had to name the
-     * faulting thread by its global id to answer.  Charter §3.4/§3.5 forbid
-     * exactly that: an integer that SELECTS a kernel object.  The id was
-     * checked against the process capability so nothing was conferred by the
-     * number — but a supervisor still could not hold, delegate or revoke "that
-     * thread" the way it holds everything else it deals with.
-     *
-     * The destination is a CNode the REGISTRANT NAMED, not its root by
-     * assumption, because the principal that registers a fault handler is not
-     * necessarily the one that handles the fault: the pager supervises targets
-     * whose handlers a different process armed.  Naming the CNode lets the
-     * supervisor deliver into a mailbox it shares with the handler, and lets a
-     * handler that arms its own faults use its own root — without the kernel
-     * choosing which of those arrangements is right, which is policy and
-     * belongs outside it.
-     *
-     * Resolved and retained at registration, so a bad destination fails when
-     * it is declared rather than when something faults.  Each delivery
-     * overwrites the slot: the handler is expected to have answered the
-     * previous fault, and RESUME's generation check is what makes answering
-     * with a stale capability refuse rather than misfire.
-     */
-    struct KCNode *fault_cspace;
-    uint32_t       fault_slot;
+    /* Stage 7 Step 12: exception delivery is entirely the THREAD's — the
+     * handler notification, its signal bits, the mailbox CNode and slot, and
+     * the fault record all live on struct task.  What stood here was the
+     * process-scoped version of every one of them, kept alive by one thing: a
+     * handler could only name the faulting thread by id, so the registration
+     * had to hang off something a supervisor could hold.  Step 7 gave it the
+     * thread's capability and Step 12 moved the registration to match. */
     /* Stage 6 Step 2: the creation reference — the one that lets a running
      * process outlive the last capability to it — is dropped exactly once.
      * Before this flag, a process created and never STARTED could not be
@@ -265,11 +234,6 @@ void             kprocess_quota_release_page(struct KProcess *p);
 uint32_t         kprocess_quota_failed_count(void);
 uint32_t         kprocess_quota_rollback_count(void);
 void             kprocess_quota_stat_rollback(void);
-iris_error_t     kprocess_set_exception_handler(struct KProcess *p,
-                                                struct KNotification *notif,
-                                                uint64_t signal_bits,
-                                                struct KCNode *dest_cnode,
-                                                uint32_t dest_slot);
 int              kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
 /* Phase 20: fault-model instrumentation + resume-time pending-fault clear. */
@@ -300,9 +264,9 @@ void         kprocess_release_bootstrap_frames(struct KProcess *p);
  */
 uint32_t kprocess_live_count(void);
 
-static inline int kprocess_is_alive(const struct KProcess *p) {
-    return p && p->thread_count > 0;
-}
+/* kprocess_is_alive DELETED (Stage 7 Step 13) — it backed SYS_PROCESS_STATUS,
+ * and liveness is the EXECUTION's state (SYS_TCB_GET_INFO), not a bit derived
+ * from a thread count somebody else owns. */
 
 static inline int kprocess_teardown_complete(const struct KProcess *p) {
     return p && p->teardown_complete;
