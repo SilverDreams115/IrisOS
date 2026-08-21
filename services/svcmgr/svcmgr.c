@@ -1354,7 +1354,7 @@ static void svcmgr_boot_service(struct svcmgr_state *state,
                                /*keep_cnode_dest=*/0u,
                                /* Stage 7 Step 10: keep the service's thread so
                                 * its death is watched where it happens. */
-                               (uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id) << 32);
+                               (uint64_t)SVCMGR_MSLOT_TCB(manifest->service_id) << 32, 0);
         /* Drop svcmgr's reply handles regardless of the load result — the
          * child's CSpace slots (if minted) are now the only reply caps. */
         /* svcmgr NEVER retains a reply cap: a retained copy would suppress

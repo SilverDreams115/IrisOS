@@ -5,12 +5,10 @@ uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
     /* Stage 7 Step 10: the code belongs to the execution that produced it.
-     * It stays on the process too while SYS_PROCESS_EXIT_CODE lives, because
-     * that syscall answers about a process and a single-threaded service's
-     * process code IS its thread's. */
+     * Step 15: and only to it — the process copy was kept while
+     * SYS_PROCESS_EXIT_CODE could still be asked, and that syscall is
+     * retired. */
     if (t) t->exit_code = (uint32_t)arg0;
-    if (t && t->process)
-        t->process->exit_code = (uint32_t)arg0;
     task_exit_current();
     return 0; /* unreachable */
 }
@@ -30,25 +28,21 @@ uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
+/*
+ * SYS_PROCESS_SELF — RETIRED (Stage 7 Step 15).
+ *
+ * It handed a task a capability to its own KProcess, for the things that used
+ * to need one: minting into your own CSpace, mapping into your own address
+ * space, being named as a payer, watching yourself.  Every one of those was
+ * re-aimed at the object it actually concerns — Step 9 gave `SYS_CSPACE_MINT`
+ * a destination CNode and `SYS_VMO_MAP_INTO` a VSpace, Steps 10-13 moved
+ * watching, killing and status onto the thread — and `SYS_CSPACE_SELF` /
+ * `SYS_VSPACE_SELF` / `SYS_TCB_SELF` hand out the three self-capabilities that
+ * are left.  Nothing in the tree called this any more.
+ */
 uint64_t sys_process_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    handle_id_t h;
-
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    const iris_rights_t rights = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-
-    /* Stage 4: arg0 is a destination slot (RETYPE2 packing).  The process
-     * object is borrowed from the caller's own task, so publish_slot's
-     * consuming release needs a reference of its own. */
-    /* Stage 4: a destination slot is REQUIRED — the handle result is retired. */
-    if (arg0 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
-    (void)h;
-    kobject_retain(&t->process->base);
-    iris_error_t pe = syscall_publish_slot(t, &t->process->base, rights,
-                                           arg0, 0, 0);
-    if (pe != IRIS_OK) return syscall_err(pe);
-    return syscall_ok_u64(0);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 

@@ -332,7 +332,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         const struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
                         uint32_t own_budget_slot, uint64_t keep_cnode_dest,
-                        uint64_t keep_tcb_dest) {
+                        uint64_t keep_tcb_dest, uint64_t keep_vspace_dest) {
     *out_proc_h = HANDLE_INVALID;
     *out_chan_h = HANDLE_INVALID;
     long self_vs  = 0;   /* the loader's own address space, for parse windows */
@@ -880,6 +880,27 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     if (keep_tcb_dest)
         (void)sl_sys3(SYS_CSPACE_MINT, (long)sl_ws_cptr(ws, SL_WS_CHILD_TCB),
                       (long)keep_tcb_dest,
+                      (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+    /*
+     * Stage 7 Step 15: and the child's ADDRESS SPACE, for a spawner that means
+     * to map into it later.
+     *
+     * The loader retyped this VSpace and has always held it through the spawn;
+     * it just threw it away at the end, which is why reaching a child's
+     * address space afterwards had to go through SYS_PROCESS_VSPACE — the
+     * kernel reading `child->vspace` out of a KProcess, so a spawner reached
+     * an object it did not hold by naming a different one.
+     *
+     * Opt-in, and the reason is a real cost rather than tidiness: a VSpace
+     * capability keeps that address space alive after the child dies, and with
+     * it every page table installed in it, each a child entry on a budget its
+     * owner is entitled to RESET the moment the child is gone.  A spawner that
+     * keeps this must drop it, and one that has no reason to map into its
+     * child should pass 0 and hold nothing.
+     */
+    if (keep_vspace_dest)
+        (void)sl_sys3(SYS_CSPACE_MINT, (long)sl_ws_cptr(ws, SL_WS_CHILD_VSPACE),
+                      (long)keep_vspace_dest,
                       (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
 
     /* Hand back everything of the CHILD's that the loader was holding: an

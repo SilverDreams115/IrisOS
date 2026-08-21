@@ -117,7 +117,9 @@ struct KProcess {
      * scheduler reads them from the thread's own VSpace. */
     uint64_t        cr3;          /* == vspace->cr3 while the process is alive */
     uint8_t         teardown_complete; /* logical teardown already ran */
-    uint32_t        exit_code;    /* exit code from SYS_EXIT; 0 if killed externally */
+    /* exit_code DELETED (Stage 7 Step 15) — the code belongs to the execution
+     * that produced it (struct task), and SYS_PROCESS_EXIT_CODE, the only
+     * thing that ever read the process copy, retired in Step 10. */
     uint8_t         aspace_reaped;     /* address space cleanup already ran */
     /* Stage 7 Step 10: nothing ARMS these any more — SYS_PROCESS_WATCH is
      * retired and a death is watched on the thread.  The array and its

@@ -180,9 +180,16 @@ static uint32_t g_total = 0;
  * second-level capability.
  */
 #define IT_CHILD_CN_SLOT     84u
-#define IT_CHILD_CN_SLOTS    64u
-#define IT_CHILD_TCB_LEAF(k) (1u + (uint32_t)(k))
+#define IT_CHILD_CN_SLOTS   128u
 #define IT_CHILD_MAX         48u
+/*
+ * Stage 7 Step 15: two leaves per child, paired by construction — the thread at
+ * 1..48 and the ADDRESS SPACE at 49..96.  No second table field, because the
+ * pairing IS the arithmetic: a child's VSpace leaf is its thread's plus
+ * IT_CHILD_MAX, so one recorded number names both.
+ */
+#define IT_CHILD_TCB_LEAF(k) (1u + (uint32_t)(k))
+#define IT_CHILD_VS_LEAF(k)  (1u + IT_CHILD_MAX + (uint32_t)(k))
 static struct { uint32_t proc; uint32_t leaf; } g_it_children[IT_CHILD_MAX];
 static uint32_t g_it_child_next;
 
@@ -202,22 +209,66 @@ static void it_child_record(handle_id_t proc_h, uint32_t leaf) {
  * remembered so the spawn that follows can bind it to the process capability
  * it produced — the two halves of one record, written where each is known. */
 static uint32_t g_it_child_pending;
+/*
+ * The address space is kept only when the next spawn is ASKED to keep it.
+ *
+ * Not because it is awkward to hold, but because holding it is a real cost the
+ * suite is the auditor of: a VSpace capability keeps that address space and
+ * every page table in it alive past the child's death, and the drift checks
+ * that end most tests count exactly that.  Making it opt-in is the same
+ * decision svc_loader's `keep_vspace_dest` states — a spawner with no reason
+ * to map into its child holds nothing — enforced here by the tests that would
+ * otherwise fail.
+ */
+static uint8_t g_it_child_keep_vs;
+static void it_child_keep_vspace(void) { g_it_child_keep_vs = 1u; }
 static void it_child_bind(handle_id_t proc_h) {
     if (proc_h != HANDLE_INVALID && g_it_child_pending)
         it_child_record(proc_h, g_it_child_pending);
     g_it_child_pending = 0;
+    g_it_child_keep_vs = 0u;
 }
-static uint32_t it_child_tcb_leaf(void) {
-    uint32_t leaf = IT_CHILD_TCB_LEAF(
-        __atomic_load_n(&g_it_child_next, __ATOMIC_RELAXED) % IT_CHILD_MAX);
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_CHILD_CN_SLOT, (long)leaf);
-    g_it_child_pending = leaf;
-    return leaf;
-}
-#define IT_CHILD_TCB_DEST(leaf) \
+#define IT_CHILD_CN_DEST_(leaf) \
     ((uint64_t)IT_CHILD_CN_SLOT | ((uint64_t)(leaf) << 32))
+#define IT_CHILD_TCB_DEST(leaf) IT_CHILD_CN_DEST_(leaf)
 #define IT_CHILD_TCB_CPTR(leaf) \
     ((uint32_t)(((leaf) << 8) | IT_CHILD_CN_SLOT))
+
+/*
+ * Claim the pair of leaves the next spawn will publish into, emptying both
+ * first.  Idempotent until it_child_bind consumes it, which is what makes the
+ * two accessors below safe to pass as two arguments of one call: C does not
+ * order argument evaluation, so whichever runs first claims and the other sees
+ * the same leaf.
+ *
+ * Emptying the VSpace leaf here is not tidiness.  A capability to a dead
+ * child's address space keeps that address space alive, and with it every page
+ * table in it — each a child entry on a budget the loader wants to RESET for
+ * the next spawn.  Recycling this slot is where the suite lets go.
+ */
+static uint32_t it_child_pending_leaf(void) {
+    if (!g_it_child_pending) {
+        uint32_t leaf = IT_CHILD_TCB_LEAF(
+            __atomic_load_n(&g_it_child_next, __ATOMIC_RELAXED) % IT_CHILD_MAX);
+        (void)it_sys2(SYS_CNODE_DELETE, (long)IT_CHILD_CN_SLOT, (long)leaf);
+        g_it_child_pending = leaf;
+    }
+    return g_it_child_pending;
+}
+static long it_child_tcb_dest(void) {
+    return (long)IT_CHILD_CN_DEST_(it_child_pending_leaf());
+}
+static long it_child_vs_dest(void) {
+    if (!g_it_child_keep_vs) return 0;
+    uint32_t vs_leaf = it_child_pending_leaf() + IT_CHILD_MAX;
+    /* Emptied HERE rather than beside the thread leaf, and only when a VSpace
+     * is actually being claimed.  Deleting it on every spawn would destroy a
+     * previous child's address space at the moment a new one is created, and
+     * the two cancel in the live-VSpace gauge — which T136 reads as "the child
+     * I just spawned was not counted".  A recycle must not be invisible. */
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_CHILD_CN_SLOT, (long)vs_leaf);
+    return (long)IT_CHILD_CN_DEST_(vs_leaf);
+}
 
 /* The thread a child was started with, or 0 if this child was not recorded. */
 static long it_child_tcb(handle_id_t proc_h) {
@@ -225,6 +276,31 @@ static long it_child_tcb(handle_id_t proc_h) {
         if (g_it_children[k].proc == (uint32_t)proc_h && g_it_children[k].leaf)
             return (long)IT_CHILD_TCB_CPTR(g_it_children[k].leaf);
     return 0;
+}
+/*
+ * Stage 7 Step 15 — and the address space it runs in.
+ *
+ * SYS_PROCESS_VSPACE used to answer this: the kernel read `child->vspace` out
+ * of a KProcess, so a supervisor reached an object it did not hold by naming a
+ * different one.  The loader RETYPED this VSpace and held it through the whole
+ * spawn; it only threw it away at the end.  Now it hands it over, and the
+ * table remembers it beside the thread.
+ */
+static long it_child_vspace(handle_id_t proc_h) {
+    for (uint32_t k = 0; k < IT_CHILD_MAX; k++)
+        if (g_it_children[k].proc == (uint32_t)proc_h && g_it_children[k].leaf)
+            return (long)IT_CHILD_TCB_CPTR(g_it_children[k].leaf + IT_CHILD_MAX);
+    return 0;
+}
+/* Let go of a child's address space without waiting for its table slot to be
+ * recycled — the discipline svc_loader's `keep_vspace_dest` documents: a
+ * VSpace capability keeps every page table in that address space alive, and
+ * those are children of a budget somebody wants back. */
+static void it_child_drop_vspace(handle_id_t proc_h) {
+    for (uint32_t k = 0; k < IT_CHILD_MAX; k++)
+        if (g_it_children[k].proc == (uint32_t)proc_h && g_it_children[k].leaf)
+            (void)it_sys2(SYS_CNODE_DELETE, (long)IT_CHILD_CN_SLOT,
+                          (long)(g_it_children[k].leaf + IT_CHILD_MAX));
 }
 /*
  * Stage 7 Step 13 — killing a child is stopping the EXECUTION you hold.
@@ -473,14 +549,17 @@ static long it_vmo_create_for_slot(uint64_t size, long payer) {
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
-/* SYS_PROCESS_VSPACE: a target's address space, published into a slot. */
-static long it_proc_vspace_slot(long proc) {
+/* SYS_VSPACE_SELF into a rotating leaf: the caller's own address space as a
+ * capability.  Stage 7 Step 15: this replaces it_proc_vspace_slot, which asked
+ * a PROCESS for an address space — the self case being the only one that
+ * survives, because the others are held by whoever spawned the child. */
+static long it_vspace_self_slot(void) {
     uint32_t leaf = IT_OBJ_POOL_FIRST +
                     (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
                                         __ATOMIC_RELAXED) %
                      (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
-    long r = it_sys2(SYS_PROCESS_VSPACE, proc,
+    long r = it_sys1(SYS_VSPACE_SELF,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
@@ -737,6 +816,7 @@ static void it_iris_msg_zero(struct IrisMsg *m) {
 static void it_close(handle_id_t *h) {
     if (*h == HANDLE_INVALID) return;
     if (((uint32_t)*h & 0xFFu) == IT_OBJ_CNODE_SLOT ||
+        ((uint32_t)*h & 0xFFu) == IT_CHILD_CN_SLOT ||
         ((uint32_t)*h & 0xFFu) == IT_LOADER_WS_SLOT) {
         /* Only capabilities THIS suite fabricated are released by deleting
          * their slot, and it knows them by the second-level CNode they live
@@ -3134,15 +3214,13 @@ static long lp_spawn_child_cn(uint32_t cn_leaf, handle_id_t cmd_ep_h,
     handle_id_t boot_h = HANDLE_INVALID;
     *out_proc_h = HANDLE_INVALID;
     if (cn_leaf) it_slot_delete(IT_OBJ_CPTR(IT_CHILD_CN_LEAF(cn_leaf - 1u)));
-    uint32_t tcb_leaf = it_child_tcb_leaf();
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              out_proc_h, &boot_h, mints, n,
                              IT_LOADER_WS, 0,
                                /*own_budget_slot=*/0,
                                cn_leaf ? IT_CHILD_CN_DEST(cn_leaf - 1u) : 0u,
-                               IT_CHILD_TCB_DEST(tcb_leaf));
-    if (r >= 0 && *out_proc_h != HANDLE_INVALID)
-        it_child_record(*out_proc_h, tcb_leaf);
+                               it_child_tcb_dest(), it_child_vs_dest());
+    it_child_bind(*out_proc_h);
     it_close(&reply_h);  /* the child's slot-13 mint is the only reply cap */
     it_close(&boot_h);   /* Track I: no bootstrap channel (HANDLE_INVALID anyway) */
     return r;
@@ -3298,6 +3376,8 @@ static void test_t076(void) {
     handle_id_t cmd_ep_h = (handle_id_t)ep;
 
     handle_id_t proc_h = HANDLE_INVALID;
+    /* This test maps into the child, so the spawn keeps its address space. */
+    it_child_keep_vspace();
     if (lp_spawn_child(cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
         it_close(&cmd_ep_h);
         it_fail("T076", "spawn"); return;
@@ -3307,7 +3387,7 @@ static void test_t076(void) {
     long vmo = it_vmo_create_slot(4096);
     handle_id_t vmo_h = (vmo >= 0) ? (handle_id_t)vmo : HANDLE_INVALID;
     long mi = (vmo_h != HANDLE_INVALID)
-        ? it_sys4(SYS_VMO_MAP_INTO, (long)vmo_h, it_proc_vspace_slot((long)proc_h),
+        ? it_sys4(SYS_VMO_MAP_INTO, (long)vmo_h, it_child_vspace(proc_h),
                   (long)LP_MAP_VA, 1)
         : -1;
 
@@ -3328,6 +3408,7 @@ static void test_t076(void) {
         it_sys2(SYS_VMO_UNMAP, (long)LP_MAP_VA, 4096);
     }
 
+    it_child_drop_vspace(proc_h);   /* Step 15: give the child's back */
     it_close(&vmo_h);
     it_close(&proc_h);
     it_close(&cmd_ep_h);
@@ -3478,6 +3559,7 @@ static void test_t080(void) {
     if (ep < 0) { it_close(&vmo_h);                  it_fail("T080", "ep create"); return; }
     handle_id_t cmd_ep_h = (handle_id_t)ep;
     handle_id_t proc_h   = HANDLE_INVALID;
+    it_child_keep_vspace();   /* T080 maps into the child */
     if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
         it_close(&cmd_ep_h); it_close(&vmo_h);        it_fail("T080", "spawn"); return;
     }
@@ -3498,7 +3580,7 @@ static void test_t080(void) {
 
     /* ── SYS_VMO_MAP_INTO (vmo by CPtr; Stage 7 Step 9: the TARGET is the
      * child's address space, named directly, not its process) ── */
-    long t080_vs = it_proc_vspace_slot((long)proc_h);
+    long t080_vs = it_child_vspace(proc_h);
     if (ok && t080_vs < 0) ok = 0;
     if (ok && it_sys4(SYS_VMO_MAP_INTO, T080_SLOT_RWD, t080_vs,
                       (long)LP_MAP_VA, 1) != 0) ok = 0;
@@ -3519,8 +3601,11 @@ static void test_t080(void) {
                       (long)(LP_MAP_VA + 0x20000ULL), 1) !=
               (long)IRIS_ERR_INVALID_ARG) ok = 0;
 
-    /* Cleanup: kill the child (auto-unmaps, T076-proven), close everything. */
+    /* Cleanup: kill the child (auto-unmaps, T076-proven), close everything —
+     * including the child's address space, which this test asked the spawn to
+     * keep and must therefore give back (Stage 7 Step 15). */
     (void)it_kill((long)proc_h);
+    it_child_drop_vspace(proc_h);
     it_close(&proc_h);
     it_close(&cmd_ep_h);
     it_close(&vmo_h);
@@ -3675,7 +3760,9 @@ static void test_t082(void) {
     handle_id_t proc_h = HANDLE_INVALID;
     /* Stage 7 Step 9: keep the child's ROOT CSPACE.  Delegating into a child
      * names the CSpace, so a spawner that intends to keep delegating keeps it
-     * — there is no longer a way to reach it by naming the process instead. */
+     * — there is no longer a way to reach it by naming the process instead.
+     * Step 15: and its ADDRESS SPACE, for the same reason, one object over. */
+    it_child_keep_vspace();
     if (lp_spawn_child_cn(1u, cmd_ep_h, &proc_h) < 0 || proc_h == HANDLE_INVALID) {
         it_close(&cmd_ep_h); it_close(&vmo_h);
         it_fail("T082", "spawn"); return;
@@ -3691,7 +3778,7 @@ static void test_t082(void) {
 
     /* MAP_INTO: VMO by CPtr + ADDRESS SPACE by CPtr; repeat → BUSY (PTEs
      * real).  Stage 7 Step 9: the target argument is the VSpace. */
-    long t082_vs = it_proc_vspace_slot((long)proc_h);
+    long t082_vs = it_child_vspace(proc_h);
     if (ok && t082_vs < 0) ok = 0;
     if (ok && it_sys4(SYS_VMO_MAP_INTO, T082_SLOT_VMO, t082_vs,
                       (long)LP_MAP_VA, 1) != 0) ok = 0;
@@ -3736,6 +3823,7 @@ static void test_t082(void) {
     if (ok && it_kill((long)proc_h) != 0) ok = 0;
     if (ok && it_alive((long)proc_h) != 0) ok = 0;
 
+    it_child_drop_vspace(proc_h);   /* Step 15: give the child's back */
     it_close(&proc_h);
     it_close(&cmd_ep_h);
     it_close(&vmo_h);
@@ -11102,7 +11190,7 @@ static long it_lp_report_slots(const struct svc_mint *extra, uint32_t nextra) {
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, n,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(proc);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
@@ -11589,7 +11677,7 @@ static long it_dev_probe(handle_id_t ioport_h, uint64_t offset, iris_rights_t de
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "lifecycle_probe",
                              &proc, &boot, mints, 2u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(proc);
     it_close(&boot);
     if (r < 0 || proc == HANDLE_INVALID) { it_close(&cmd); it_close(&proc); return -1; }
@@ -11924,7 +12012,7 @@ static void test_t170(void) {
                                                     IRIS_CPTR_INITRD_CONTROL,
                      "lifecycle_probe", &proc, &boot, mints, 2u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
         it_child_bind(proc);
         it_close(&boot); it_close(&io);
         if (r < 0 || proc == HANDLE_INVALID) { ok = 0; why = "spawn"; it_close(&cmd); it_close(&proc); break; }
@@ -12613,18 +12701,17 @@ static int t25_tgt_spawn_dest(long fault_dest, struct t25_tgt *g,
     long ep = it_ep_create();
     if (ep < 0) { *why = "ep create"; return 0; }
     g->cmd = (handle_id_t)ep;
+    it_child_keep_vspace();   /* the pager maps into this child */
     if (lp_spawn_child(g->cmd, &g->proc) < 0 || g->proc == HANDLE_INVALID) {
         it_close(&g->cmd); *why = "spawn"; return 0;
     }
     /* Stage 4: the target's VSpace is published into a CSpace slot (arg1 is
      * the destination), so every rights-reduced copy of it is a slot-to-slot
      * derive and an MDB child.  It used to come back as a handle. */
-    uint32_t vs_leaf = 1u + (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                                __ATOMIC_RELAXED) % IT_OBJ_SLOT_SPAN);
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)vs_leaf);
-    long vs = it_sys2(SYS_PROCESS_VSPACE, (long)g->proc,
-                      (long)(((uint64_t)vs_leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
-    if (vs == 0) vs = (long)IT_OBJ_CPTR(vs_leaf);
+    /* Stage 7 Step 15: the target's address space is the one the spawn kept
+     * for us, not one asked of its process. */
+    long vs = it_child_vspace(g->proc);
+    if (vs == 0) vs = -1;
     long n  = it_notify_create();
     long w  = it_notify_create();
     g->vs    = (vs >= 0) ? (handle_id_t)vs : HANDLE_INVALID;
@@ -12711,7 +12798,7 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
                                 * follows from what it was handed, not from what it is.
                                 * Slot 16 and not 12: 12 is LP_PGR_SLOT_TPROC, the
                                 * target's process capability. */
-                               /*own_budget_slot=*/LP_SLOT_BUDGET, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+                               /*own_budget_slot=*/LP_SLOT_BUDGET, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(*out_proc);
     it_close(&boot);
     if (r < 0 || *out_proc == HANDLE_INVALID) {
@@ -12808,9 +12895,13 @@ static int t25_frame_word(handle_id_t fr, uint32_t *val, int write) {
  * proc (READ|MANAGE) + target VSpace (WRITE) + one frame + fault notification
  * (WAIT).  The slot report shows exactly that set — no spawn cap, no device
  * caps, no untyped, no KDEBUG, no peer service slots, no self-proc/vspace.
- * SYS_PROCESS_VSPACE itself is MANAGE-gated with no fallback: a READ-only
- * proc cap is denied, a wrong type is rejected, self (HANDLE_INVALID) stays
- * the VSPACE_SELF equivalence.  Invariants: P1, P2, P24. */
+ * Stage 7 Step 15: the second half used to check SYS_PROCESS_VSPACE's MANAGE
+ * gate — a READ-only PROCESS capability denied, a wrong type rejected, self
+ * equivalent to VSPACE_SELF.  That syscall is retired, and with it the idea
+ * that reaching an address space is authorised by a capability to something
+ * else.  The same three claims are asserted where they now live: on the VSPACE
+ * capability itself, which is what a spawner keeps and hands on.
+ * Invariants: P1, P2, P24. */
 static void test_t181(void) {
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
@@ -12845,21 +12936,32 @@ static void test_t181(void) {
         }
     }
 
-    /* SYS_PROCESS_VSPACE authority: MANAGE or nothing. */
-    long ro = ok ? it_cs_reduce((long)g.proc, RIGHT_READ) : -1;
+    /* Address-space authority: WRITE on the VSPACE, or nothing. */
+    long vmo_t = ok ? it_vmo_create_slot(4096u) : -1;
+    if (ok && vmo_t < 0) { ok = 0; why = "probe vmo"; }
+    long ro = ok ? it_cs_reduce((long)g.vs, RIGHT_READ) : -1;
     handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
     if (ok && ro < 0) { ok = 0; why = "ro dup"; }
-    if (ok && it_proc_vspace_slot(ro) != (long)IRIS_ERR_ACCESS_DENIED) {
-        ok = 0; why = "no-manage not denied";
+    /* A READ-only address space cannot be mapped into. */
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo_t, ro, (long)0x80D0000000ULL, 1)
+              != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "no-write not denied";
     }
-    if (ok && it_proc_vspace_slot((long)g.notif) != (long)IRIS_ERR_WRONG_TYPE) {
+    /* ...and something that is not an address space is not one.  The VSpace
+     * argument reports INVALID_ARG rather than WRONG_TYPE, as it has since
+     * Stage 7 Step 9 made it the argument a map names. */
+    if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo_t, (long)g.notif,
+                      (long)0x80D0000000ULL, 1) != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "wrong type accepted";
     }
+    /* Self stays reachable — by SYS_VSPACE_SELF, which is the capability, not
+     * a process standing in for it. */
     if (ok) {
-        long sv = it_proc_vspace_slot((long)HANDLE_INVALID);
+        long sv = it_vspace_self_slot();
         if (sv < 0) { ok = 0; why = "self vspace"; }
         else { handle_id_t h = (handle_id_t)sv; it_close(&h); }
     }
+    if (vmo_t >= 0) { handle_id_t h = (handle_id_t)vmo_t; it_close(&h); }
     it_close(&ro_h);
 
     if (it_kill((long)g.proc) != 0 && ok) { ok = 0; why = "kill"; }
@@ -14554,7 +14656,7 @@ static int t27_pager_spawn(struct t27_pager *p,
                                /* The pager MAPS — into address spaces that are
                                 * not even its own — so it owes paging levels
                                 * and needs a budget to retype them from. */
-                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(p->proc);
     it_close(&pgr_reply_h);
     it_close(&boot);
@@ -15398,7 +15500,7 @@ static void test_t213(void) {
         long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                                  &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
         it_child_bind(proc);
         if (r != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "badelf not INVALID_ARG"; }
         if (ok && proc != HANDLE_INVALID) { ok = 0; why = "badelf left a process"; }
@@ -15441,7 +15543,7 @@ static void test_t214(void) {
     long r1 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "no_such_image",
                               &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(proc);
     if (r1 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "unknown not NOT_FOUND"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "unknown left process"; }
@@ -15452,7 +15554,7 @@ static void test_t214(void) {
     long r2 = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf",
                               &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(proc);
     if (ok && r2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "malformed not INVALID_ARG"; }
     if (ok && proc != HANDLE_INVALID) { ok = 0; why = "malformed left process"; }
@@ -15579,7 +15681,7 @@ static void test_t216(void) {
             handle_id_t proc = HANDLE_INVALID, boot = HANDLE_INVALID;
             long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "badelf", &proc, &boot, 0, 0u,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+                               /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
             it_child_bind(proc);
             if (r >= 0) { ok = 0; why = "badelf loaded"; }
             it_close(&boot); it_close(&proc);
@@ -15951,7 +16053,7 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
     handle_id_t boot = HANDLE_INVALID;
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, m, k,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(f->proc);
     it_close(&pgr_reply_h);
     it_close(&boot);
@@ -17370,8 +17472,9 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
         long ep = it_ep_create();
         if (ep < 0) { *why = "cmd ep"; t28_multi_close(m); return 0; }
         m->cmd[i] = (handle_id_t)ep;
+        it_child_keep_vspace();   /* each target is mapped into by the pager */
         if (lp_spawn_child(m->cmd[i], &m->proc[i]) < 0 || m->proc[i] == HANDLE_INVALID) { *why = "spawn"; t28_multi_close(m); return 0; }
-        long vs = it_proc_vspace_slot((long)m->proc[i]);
+        long vs = it_child_vspace(m->proc[i]);
         if (vs < 0) { *why = "vspace"; t28_multi_close(m); return 0; }
         m->vs[i] = (handle_id_t)vs;
         if (it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)m->proc[i]), (long)m->fault_notif,
@@ -17429,7 +17532,7 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     }
     long r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL, "pager", &f->proc, &boot, mm, k,
                              IT_LOADER_WS, 0,
-                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, IT_CHILD_TCB_DEST(it_child_tcb_leaf()));
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED, /*keep_cnode_dest=*/0u, it_child_tcb_dest(), it_child_vs_dest());
     it_child_bind(f->proc);
     it_close(&pgr_reply_h);
     it_close(&boot);
@@ -20501,7 +20604,10 @@ static void test_t299(void) {
     }
     /* A window no other mapping of this child touches, so the map must build
      * the levels rather than reuse them. */
-    long t299_vs = ok ? it_proc_vspace_slot((long)T299_SLOT_PROC) : -1;
+    /* Stage 7 Step 15: this test RETYPED the address space a few lines up and
+     * still holds it at `cvs` — asking the process for it was always the long
+     * way round, and SYS_PROCESS_VSPACE is retired. */
+    long t299_vs = ok ? cvs : -1;
     if (ok && t299_vs < 0) { ok = 0; why = "child vspace"; }
     if (ok && it_sys4(SYS_VMO_MAP_INTO, vmo, t299_vs,
                       (long)0x80C0000000ULL, 1) != 0) {

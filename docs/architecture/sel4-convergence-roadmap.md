@@ -1305,6 +1305,42 @@ they used to pass a bogus authority AND a zero destination slot, so what
 refused them was the malformed slot, not the missing capability.  They are
 well-formed in every argument but the authority now.
 
+### Step 15 — the last things a process was standing in for  DONE
+
+Four removals, each the same shape: an object was reached, scoped or identified
+through `KProcess` when the thing it actually concerns was something else.
+
+- **`SYS_PROCESS_VSPACE` (107)** — "give me that process's address space",
+  answered by the kernel reading `child->vspace`.  Phase 25 introduced it to
+  make map-into-target a first-class delegable capability instead of a
+  process-cap side effect, which was the right direction and stopped one step
+  short.  The spawner already HAS the address space: since Stage 6-pure Step 4
+  the loader retypes it and holds it through the whole spawn, then threw the
+  capability away.  It hands it over now — `svc_load_minted_ws`'s
+  `keep_vspace_dest`, opt-in — and the self case is `SYS_VSPACE_SELF`, which
+  this syscall's `HANDLE_INVALID` was always documented as equivalent to.
+- **`SYS_PROCESS_SELF` (28)** — a capability to your own KProcess, for the
+  things that used to need one: minting into your own CSpace, mapping into your
+  own address space, being named as a payer, watching yourself.  Every one of
+  those was re-aimed at the object it concerns in Steps 9-13.  Nothing called
+  it.
+- **`KProcess.exit_code`** — the code belongs to the execution that produced
+  it, and `SYS_PROCESS_EXIT_CODE`, the only reader of the process copy, retired
+  in Step 10.
+- **the futex's owner field** — the waiter's `KProcess`, used for exactly one
+  thing: refusing to wake a waiter that hashed to the same user address in a
+  different address space.  The process was standing in for the ADDRESS SPACE,
+  which is what actually makes two identical addresses different futexes.  It
+  is `t->vspace` now — same scoping, named after the thing it scopes.
+
+Keeping a child's address space is opt-in for a reason the tests enforce rather
+than a preference: a VSpace capability keeps that address space, and every page
+table in it, alive past the child's death, blocking the RESET of the budget
+those tables are charged to.  The suite's drift checks are the auditor, and
+made this concrete — an early version kept one for every spawn and 43 tests
+failed on `vspace drift`.  The suite now asks for the child's address space
+only where it maps into one, and gives it back when done.
+
 ### What Stage 7 still needs, and why it is not an increment
 
 `KProcess` itself, and the user-space process server that replaces the policy

@@ -2,7 +2,7 @@
 #include <iris/task.h>
 #include <iris/scheduler.h>
 #include <iris/usercopy.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kvspace.h>
 #include <iris/nc/spinlock.h>
 #include <stdint.h>
 
@@ -20,10 +20,20 @@
 #define FUTEX_BUCKETS    32u
 #define FUTEX_BUCKET_CAP  8u
 
+/*
+ * Stage 7 Step 15: the scope of a futex address is the ADDRESS SPACE.
+ *
+ * `owner` was the waiter's KProcess, used for exactly one thing — refusing to
+ * wake a waiter that hashed to the same user address in a different address
+ * space.  The process was standing in for the address space, which is what
+ * actually makes two identical addresses different futexes, and a thread has
+ * held its own VSpace capability since Step 5.  Same scoping, named after the
+ * thing it scopes.
+ */
 struct futex_entry {
     uint64_t         uaddr;
     struct task     *waiter;
-    struct KProcess *owner;
+    struct KVSpace  *owner;
 };
 
 struct futex_bucket {
@@ -70,14 +80,14 @@ iris_error_t futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline_tic
     }
 
     struct task *t = task_current();
-    if (!t || !t->process) {
+    if (!t || !t->vspace) {
         irq_spinlock_unlock(&bucket->lock, saved);
         return IRIS_ERR_INVALID_ARG;
     }
 
     bucket->entries[slot].uaddr  = uaddr;
     bucket->entries[slot].waiter = t;
-    bucket->entries[slot].owner  = t->process;
+    bucket->entries[slot].owner  = t->vspace;
     t->state     = TASK_BLOCKED_IPC;
     t->wake_tick = deadline_ticks;
 
@@ -94,8 +104,8 @@ iris_error_t futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline_tic
 
 uint32_t futex_wake(uint64_t uaddr, uint32_t count) {
     struct task *t = task_current();
-    if (!t || !t->process) return 0;
-    struct KProcess *caller_proc = t->process;
+    if (!t || !t->vspace) return 0;
+    struct KVSpace *caller_vs = t->vspace;
     uint32_t woken = 0;
 
     struct futex_bucket *bucket = &futex_buckets[futex_hash(uaddr)];
@@ -104,7 +114,7 @@ uint32_t futex_wake(uint64_t uaddr, uint32_t count) {
     for (int i = 0; i < (int)FUTEX_BUCKET_CAP && woken < count; i++) {
         if (bucket->entries[i].uaddr != uaddr || !bucket->entries[i].waiter)
             continue;
-        if (bucket->entries[i].owner != caller_proc)
+        if (bucket->entries[i].owner != caller_vs)
             continue;
         struct task *w = bucket->entries[i].waiter;
         bucket->entries[i].uaddr  = 0;

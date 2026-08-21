@@ -119,6 +119,14 @@ struct svc_mint {
  * observing a child's death names the thread that dies, so a supervisor that
  * means to wait for its child keeps the TCB it retyped for it.
  *
+ * `keep_vspace_dest` is the same for the child's ADDRESS SPACE (Stage 7
+ * Step 15).  Mapping into a child used to go through SYS_PROCESS_VSPACE, out
+ * of which the kernel read `child->vspace` — the same shape as the CSpace case
+ * above, one object over.  Keeping it has a COST the other two do not: a
+ * VSpace capability keeps that address space, and every page table in it,
+ * alive past the child's death, blocking the RESET of the budget they were
+ * charged to.  A spawner that keeps it must drop it.
+ *
  * Stage 7 Step 9: minting into a child after it has started used to go through
  * its PROCESS capability, out of which the kernel read `child->cspace_root` —
  * so a spawner reached a CSpace it did not hold, by naming something else.  A
@@ -132,7 +140,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         const struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
                         uint32_t own_budget_slot, uint64_t keep_cnode_dest,
-                        uint64_t keep_tcb_dest);
+                        uint64_t keep_tcb_dest, uint64_t keep_vspace_dest);
 
 long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
                      handle_id_t *out_proc_h, handle_id_t *out_chan_h,

@@ -173,15 +173,16 @@ static inline long iris_syscall0(long nr) {
  * execution you did.
  */
 #define SYS_PROCESS_WATCH   29
-#define SYS_PROCESS_SELF    28  /* (dest) → self proc_handle, or 0 when dest names a slot,
-                                 *   or negative iris_error_t
-                                 *   Yields a capability to the caller's own KProcess with
-                                 *   RIGHT_READ|RIGHT_DUPLICATE|RIGHT_TRANSFER.
-                                 *   Stage 4: dest (arg0) is a destination slot in RETYPE2
-                                 *   packing — see SYS_VSPACE_SELF; dest == 0 keeps the
-                                 *   legacy handle result.
-                                 *   Intended for userland-owned lifecycle tracking such as
-                                 *   service-side cleanup keyed to client process death. */
+/*
+ * SYS_PROCESS_SELF (28) — RETIRED (Stage 7 Step 15).  Number permanently
+ * reserved; answers IRIS_ERR_NOT_SUPPORTED.  It handed a task a capability to
+ * its own KProcess for the things that used to need one — minting into your
+ * own CSpace, mapping into your own address space, being named as a payer,
+ * watching yourself — and every one of those was re-aimed at the object it
+ * actually concerns.  SYS_CSPACE_SELF (119), SYS_VSPACE_SELF and SYS_TCB_SELF
+ * (96) hand out the three self-capabilities that are left.
+ */
+#define SYS_PROCESS_SELF    28
 /* SYS_PROCESS_STATUS — RETIRED (Stage 7 Step 13).  Number permanently
  * reserved; returns IRIS_ERR_NOT_SUPPORTED.  Liveness is a property of an
  * EXECUTION: read it with SYS_TCB_GET_INFO (101) on a thread you hold, whose
@@ -1068,29 +1069,24 @@ static inline long iris_syscall0(long nr) {
 #define SYS_VSPACE_SELF 106
 
 /*
- * SYS_PROCESS_VSPACE(proc, dest) → handle_id, or 0 when dest names a slot, or
- *   negative iris_error_t   (Phase 25; Stage 4 destination slot in arg1,
- *   RETYPE2 packing — see SYS_VSPACE_SELF)
+ * SYS_PROCESS_VSPACE (107) — RETIRED (Stage 7 Step 15).  Number permanently
+ * reserved; answers IRIS_ERR_NOT_SUPPORTED.
  *
- * Returns a new handle to the TARGET process's VSpace (KOBJ_VSPACE) with
- * RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE.  Requires RIGHT_MANAGE on proc_h
- * (dual resolver, no fallback); HANDLE_INVALID names the caller itself and
- * is then equivalent to SYS_VSPACE_SELF.
+ * It was the map-into-target authority for a user pager: a supervisor holding
+ * RIGHT_MANAGE on a process could take a capability to that process's address
+ * space and mint it onward.  Phase 25 introduced it to make that authority a
+ * first-class, delegable object instead of a process-cap side effect — which
+ * was the right direction and stopped one step short, because the kernel still
+ * produced the VSpace by reading `child->vspace` out of a KProcess.  The
+ * supervisor reached an object it did not hold by naming a different one, the
+ * same shape Step 9 removed for CSpaces.
  *
- * This is the map-into-target authority for a user pager: a supervisor that
- * already manages a process may take a cap to that process's address space
- * and mint it (RIGHT_WRITE suffices for SYS_FRAME_MAP) into a pager's CSpace.
- * It grants nothing MANAGE did not already imply — SYS_VMO_MAP_INTO has
- * always let a MANAGE holder install pages — but it makes the authority a
- * first-class, delegable, attenuable object capability instead of a
- * process-cap side effect.  No argument names a VSpace ambiently: the only
- * route to another process's VSpace remains an explicit process capability.
- *
- *   Returns IRIS_ERR_ACCESS_DENIED without RIGHT_MANAGE (no fallback).
- *   Returns IRIS_ERR_WRONG_TYPE if proc_h is not a process capability.
- *   Returns IRIS_ERR_BAD_HANDLE if the target has been torn down.
- *   Returns IRIS_ERR_INVALID_ARG if the target has no address space.
- *   Returns IRIS_ERR_NO_MEMORY if the handle table is full.
+ * The spawner already has it: since Stage 6-pure Step 4 the loader RETYPES the
+ * child's address space and holds it through the whole spawn.  It hands it
+ * over now (svc_load_minted_ws's `keep_vspace_dest`), opt-in, because keeping
+ * one keeps that address space and every page table in it alive past the
+ * child's death.  For the caller's own address space, SYS_VSPACE_SELF — which
+ * this syscall's HANDLE_INVALID case was always documented as equivalent to.
  */
 #define SYS_PROCESS_VSPACE 107
 

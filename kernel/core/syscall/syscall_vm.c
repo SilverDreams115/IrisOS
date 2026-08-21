@@ -101,50 +101,28 @@ uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_ok_u64(0);
 }
 
+/*
+ * SYS_PROCESS_VSPACE — RETIRED (Stage 7 Step 15).
+ *
+ * It answered "give me that process's address space", and the kernel answered
+ * by reading `child->vspace` out of a KProcess — a supervisor reaching an
+ * object it did not hold by naming a different one.  The same shape Step 9
+ * removed for CSpaces, one object over.
+ *
+ * The spawner already has it.  Since Stage 6-pure Step 4 the loader RETYPES
+ * the child's VSpace and holds it through the entire spawn; it just threw the
+ * capability away at the end, which is what made this syscall necessary.  It
+ * hands it over now (`svc_load_minted_ws`'s `keep_vspace_dest`), opt-in
+ * because keeping one has a cost: a VSpace capability keeps that address space
+ * and every page table in it alive past the child's death, blocking the RESET
+ * of the budget they are charged to.
+ *
+ * The self case was documented as "equivalent to SYS_VSPACE_SELF" for as long
+ * as it existed.  That is the syscall to call.
+ */
 uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KProcess *proc;
-    struct KObject  *obj = 0;
-    if ((handle_id_t)arg0 == HANDLE_INVALID) {
-        /* Self: equivalent to SYS_VSPACE_SELF — no new authority. */
-        proc = t->process;
-        kobject_retain(&proc->base);
-    } else {
-        iris_rights_t rights;
-        iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                     RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
-        if (r != IRIS_OK) return syscall_err(r);
-        if (!rights_check(rights, RIGHT_MANAGE)) {
-            kobject_release(obj);
-            return syscall_err(IRIS_ERR_ACCESS_DENIED);
-        }
-        proc = (struct KProcess *)obj;
-    }
-
-    if (kprocess_teardown_complete(proc)) {
-        kobject_release(&proc->base);
-        return syscall_err(IRIS_ERR_BAD_HANDLE);
-    }
-    struct KVSpace *vs = proc->vspace;
-    if (!vs) {
-        kobject_release(&proc->base);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-    const iris_rights_t rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
-
-    /* Stage 4: arg1 is a destination slot (RETYPE2 packing). */
-    if (arg1 == 0u) {
-        kobject_release(&proc->base);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-    kobject_retain(&vs->base);
-    kobject_release(&proc->base);
-    iris_error_t pe = syscall_publish_slot(t, &vs->base, rights, arg1, 0, 0);
-    if (pe != IRIS_OK) return syscall_err(pe);
-    return syscall_ok_u64(0);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 
