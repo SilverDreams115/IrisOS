@@ -320,3 +320,13 @@ void paging_unmap_in(uint64_t cr3, uint64_t virt) {
         }
     }
 }
+
+/*
+ * Stage 7-mem: a notification's close hook unbinds any interrupt routed to it,
+ * so the host build needs the routing symbol.  The IRQ table is kernel-only
+ * (PIC masks, an interrupt-time signal path), and nothing the host suite
+ * exercises registers a route — so the honest stub is a no-op that records
+ * nothing rather than a fake table that could be mistaken for coverage.
+ */
+struct KNotification;
+void irq_routing_unregister_notification(struct KNotification *n) { (void)n; }
