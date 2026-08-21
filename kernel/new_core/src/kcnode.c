@@ -346,14 +346,36 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
         if (de != IRIS_OK) return de;
     }
 
+    /*
+     * Stage 7-proc: a slot naming its OWN CNode takes no ACTIVE reference.
+     *
+     * A CSpace may name its own CNodes — the root task holds a capability to
+     * its own root CNode — and an active reference is what says "somebody can
+     * still reach this".  A CNode reachable only from ITSELF is reachable by
+     * nobody, but the self-slot's active reference said otherwise, so the
+     * count never fell to zero, the close hook that empties the slots never
+     * ran, and the CSpace outlived every thread in it.  KProcess papered over
+     * this by emptying the root pre-emptively at a moment it knew because it
+     * counted threads.
+     *
+     * The LIFECYCLE reference stays: the slot must keep the object alive while
+     * it names it.  Close fires when the last EXTERNAL holder goes, empties
+     * the slots, and that releases the self-reference — so destroy runs in the
+     * ordinary order with no special case.
+     *
+     * This closes the self-cycle only.  A cycle THROUGH another CNode (A names
+     * B, B names A) is still uncollectable and is the ledger row this came
+     * from — the general fix is seL4's recursive delete with zombies.
+     */
+    int self_ref = (obj == &cn->base);
     kobject_retain(obj);
-    kobject_active_retain(obj);
+    if (!self_ref) kobject_active_retain(obj);
 
     uint64_t mf = irq_spinlock_lock(&mdb_lock);
 
     if (slot_idx >= cn->slot_count) {
         irq_spinlock_unlock(&mdb_lock, mf);
-        kobject_active_release(obj);
+        if (!self_ref) kobject_active_release(obj);
         kobject_release(obj);
         return IRIS_ERR_INVALID_ARG;
     }
@@ -363,7 +385,7 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
         parent = &parent_cn->slots[parent_idx];
         if (!parent->object || parent == s) {
             irq_spinlock_unlock(&mdb_lock, mf);
-            kobject_active_release(obj);
+            if (!self_ref) kobject_active_release(obj);
             kobject_release(obj);
             return IRIS_ERR_INVALID_ARG;
         }
@@ -373,7 +395,7 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
     if (s->object) {
         irq_spinlock_unlock(&cn->lock, cf);
         irq_spinlock_unlock(&mdb_lock, mf);
-        kobject_active_release(obj);
+        if (!self_ref) kobject_active_release(obj);
         kobject_release(obj);
         return IRIS_ERR_ALREADY_EXISTS;
     }
@@ -536,7 +558,8 @@ iris_error_t kcnode_slot_delete(struct KCNode *cn, uint32_t slot_idx) {
     irq_spinlock_unlock(&mdb_lock, mf);
 
     if (old) {
-        kobject_active_release(old);
+        /* Mirrors the install: a self-naming slot never took an active ref. */
+        if (old != &cn->base) kobject_active_release(old);
         kobject_release(old);
     }
     return IRIS_OK;

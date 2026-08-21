@@ -382,10 +382,25 @@ void test_boot_cspace(void) {
         }
     }
 
-    /* [BC-13] without the explicit teardown the object is NOT freed — the
-     * negative control, so this suite proves the fix rather than the absence
-     * of a symptom.  The CNode is deliberately leaked here (the host process
-     * exits); the assertions below take their own baseline. */
+    /*
+     * [BC-13] a CNode that names ITSELF is collected by the ordinary path.
+     *
+     * This used to be the NEGATIVE control: without an explicit teardown the
+     * object was not freed, because the self-naming slot held an active
+     * reference and the count never reached zero — so the close hook that
+     * empties the slots never ran, and the CSpace outlived every holder.  The
+     * process papered over it by emptying the root pre-emptively.
+     *
+     * Stage 7-proc: a slot naming its own CNode takes no ACTIVE reference.  An
+     * object reachable only from itself is reachable by nobody, and the count
+     * now says so.  The LIFECYCLE reference stays — the slot must keep alive
+     * what it names — so close fires, empties the slot, and that release is
+     * what lets destroy run.  No hand-breaking, no counting.
+     *
+     * This closes the SELF cycle only.  A cycle through another CNode (A names
+     * B, B names A) is still uncollectable — the ledger row this came from,
+     * whose general fix is seL4's recursive delete with zombie capabilities.
+     */
     {
         uint32_t before = kcnode_live_count();
         struct KCNode *cn = kcnode_alloc(16u);
@@ -393,15 +408,13 @@ void test_boot_cspace(void) {
         if (cn) {
             kobject_active_retain(&cn->base);
             ASSERT_EQ(kcnode_mint(cn, 2u, &cn->base, RIGHT_READ), IRIS_OK);
+            /* The self-slot did not raise the active count. */
+            ASSERT_EQ(kcnode_live_count(), before + 1u);
 
             kobject_active_release(&cn->base);
             kobject_release(&cn->base);
 
-            /* Still live: the slot inside it holds the last references. */
-            ASSERT_EQ(kcnode_live_count(), before + 1u);
-
-            /* Break it by hand so the leak does not outlive the case. */
-            kcnode_teardown_slots(cn);
+            /* Gone: the last EXTERNAL holder was the last holder. */
             ASSERT_EQ(kcnode_live_count(), before);
         }
     }

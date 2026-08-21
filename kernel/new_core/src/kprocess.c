@@ -402,7 +402,11 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
          * whole CSpace would outlive the process.  Emptying first breaks any
          * such cycle without depending on the refcount the cycle is holding
          * up, and is idempotent for the ordinary acyclic case. */
-        kcnode_teardown_slots(root);
+        /* Stage 7-proc: no pre-emptive emptying.  A slot naming its own CNode
+         * no longer takes an active reference, so releasing the pair below is
+         * what takes the count to zero and fires the close hook that empties
+         * it — in the ordinary order, with nobody counting threads to know
+         * when. */
         kobject_active_release(&root->base);
         kobject_release(&root->base);
     }
