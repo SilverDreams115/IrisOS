@@ -284,6 +284,7 @@ uint32_t         kprocess_fault_nohandler_count(void);
 uint32_t         kprocess_fault_resume_count(void);
 uint32_t         kprocess_fault_kill_count(void);
 uint32_t         kprocess_fault_cleanup_count(void);
+void             kprocess_fault_stat_cleanup(void);
 /* Phase 6.2: Bootstrap frame tracking.
  * kprocess_register_bootstrap_frame stores one alloc retain in bootstrap_frames[].
  * kprocess_release_bootstrap_frames drops all alloc retains; must be called after

@@ -485,6 +485,11 @@ uint64_t sys_tcb_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
     if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    /* The destination is checked before the record is looked up, so a hostile
+     * pointer is INVALID_ARG whether or not a fault happens to be pending —
+     * the same order the process-scoped form has always used. */
+    if (!user_range_writable(arg1, FAULT_MSG_LEN))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject *obj; iris_rights_t rights;
     iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
@@ -521,95 +526,25 @@ uint64_t sys_tcb_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * Stage 7 Step 8 KEPT this, and the reason is worth writing down because the
- * first attempt retired it.
+ * SYS_PROCESS_FAULT_INFO — RETIRED (Stage 7 Step 12).
  *
- * The thread-scoped SYS_TCB_FAULT_INFO exists so a HANDLER needs nothing but
- * the thread it was handed — it removed the pager's last reason to hold a
- * process capability.  But "what faulted last in this process" is a different
- * question asked by a different principal: a SUPERVISOR observing a child it
- * does not resolve for, holding RIGHT_READ on the process and no capability to
- * any of its threads.  Retiring this left that supervisor unable to ask, and
- * iris_test — which watches targets a pager resolves — is exactly that
- * supervisor.
+ * Step 8 kept it for a real principal: a SUPERVISOR watching a child it does
+ * not resolve for, holding RIGHT_READ on the process and no capability to any
+ * of its threads.  Retiring it then would have left that supervisor unable to
+ * ask what had faulted, and iris_test was exactly that supervisor.
  *
- * Two operations on two objects, each authorised by a capability to the object
- * it names.  That is not the dual-namespace shape the charter forbids; it is
- * what having two objects means.
- */
-/*
- * sys_process_fault_info(proc_handle, out_uptr) → 0 or iris_error_t
+ * Step 12 removed the principal rather than the question.  Arming faults is a
+ * thread operation now, so a spawner that supervises keeps its child's first
+ * thread (svc_load_minted_ws's `keep_tcb_dest`) — which means the supervisor
+ * that had only a process capability holds a thread capability, and asks the
+ * thread.  Nothing calls this any more.
  *
- * Phase 13 (Track I): reads the last fault recorded for proc_handle (or self when
- * proc_handle == HANDLE_INVALID) into a 32-byte user buffer laid out per
- * iris/fault_proto.h (FAULT_OFF_VECTOR/TASK_ID/RIP/ERROR/CR2).  The exception
- * handler calls this after its KNotification fires.  Returns IRIS_ERR_WOULD_BLOCK
- * if no fault is pending.  Requires RIGHT_READ on a non-self proc_handle.
+ * What is left without it is one question, asked of the object that has the
+ * answer: SYS_TCB_FAULT_INFO on the execution that faulted.
  */
 uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg2;
-    struct task *t = task_current();
-    if (!t || !t->process) return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (!user_range_writable(arg1, FAULT_MSG_LEN))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KProcess *proc;
-    struct KObject  *obj = 0;
-    if ((handle_id_t)arg0 == HANDLE_INVALID) {
-        proc = t->process;
-        kobject_retain(&proc->base);
-    } else {
-        iris_rights_t rights;
-        /* A1 Increment 2a: dual resolver on the non-self process.  The self
-         * path above owns arg0 == 0 (HANDLE_INVALID == CPTR_NULL). */
-        iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                     RIGHT_NONE, KOBJ_PROCESS, &obj, &rights);
-        if (r != IRIS_OK) return syscall_err(r);
-        if (!rights_check(rights, RIGHT_READ)) {
-            kobject_release(obj);
-            return syscall_err(IRIS_ERR_ACCESS_DENIED);
-        }
-        proc = (struct KProcess *)obj;
-    }
-
-    uint8_t buf[FAULT_MSG_LEN];
-    for (uint32_t i = 0; i < FAULT_MSG_LEN; i++) buf[i] = 0;
-
-    /*
-     * Stage 7 Step 6: the record is read off the THREAD that took the fault.
-     *
-     * The process points at whoever faulted last and holds a reference to it,
-     * so the pointer cannot go stale under this read.  Taking that reference
-     * under the lock and reading the record outside it keeps the copy loop
-     * out of a lock the fault path also takes.
-     */
-    struct task *ft;
-    spinlock_lock(&proc->base.lock);
-    ft = proc->fault_last;
-    if (ft) kobject_retain(&ft->base);
-    spinlock_unlock(&proc->base.lock);
-    kobject_release(&proc->base);
-
-    if (!ft) return syscall_err(IRIS_ERR_WOULD_BLOCK);
-
-    int valid = ft->fault_valid;
-    uint32_t vector = ft->fault_vector, task_id = ft->id,
-             error = ft->fault_error, seq = ft->fault_seq;
-    uint64_t rip = ft->fault_rip, cr2 = ft->fault_cr2;
-    kobject_release(&ft->base);
-
-    if (!valid) return syscall_err(IRIS_ERR_WOULD_BLOCK);
-
-    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_VECTOR + i]  = (uint8_t)(vector >> (i * 8));
-    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_TASK_ID + i] = (uint8_t)(task_id >> (i * 8));
-    for (uint32_t i = 0; i < 8u; i++) buf[FAULT_OFF_RIP + i]     = (uint8_t)(rip >> (i * 8));
-    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_ERROR + i]   = (uint8_t)(error >> (i * 8));
-    for (uint32_t i = 0; i < 4u; i++) buf[FAULT_OFF_SEQ + i]     = (uint8_t)(seq >> (i * 8));
-    for (uint32_t i = 0; i < 8u; i++) buf[FAULT_OFF_CR2 + i]     = (uint8_t)(cr2 >> (i * 8));
-
-    if (!copy_to_user_checked(arg1, buf, FAULT_MSG_LEN))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    return syscall_ok_u64(IRIS_OK);
+    (void)arg0; (void)arg1; (void)arg2;
+    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 

@@ -48,6 +48,12 @@ uint32_t kprocess_fault_nohandler_count(void) { return atomic_load_explicit(&kfa
 uint32_t kprocess_fault_resume_count(void)    { return atomic_load_explicit(&kfault_resume,    memory_order_relaxed); }
 uint32_t kprocess_fault_kill_count(void)      { return atomic_load_explicit(&kfault_kill,      memory_order_relaxed); }
 uint32_t kprocess_fault_cleanup_count(void)   { return atomic_load_explicit(&kfault_cleanup,   memory_order_relaxed); }
+/* Stage 7 Step 12: the record is the thread's, so thread teardown is what
+ * clears it — and this counts the same thing it always did, records actually
+ * cleared, from the one place that now does the clearing. */
+void kprocess_fault_stat_cleanup(void) {
+    atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
+}
 
 void kprocess_fault_stat_nohandler(void) { atomic_fetch_add_explicit(&kfault_nohandler, 1u, memory_order_relaxed); }
 
@@ -403,74 +409,49 @@ iris_error_t kprocess_set_exception_handler(struct KProcess *p,
     return IRIS_OK;
 }
 
+/*
+ * Stage 7 Step 12 — a fault is delivered by the THREAD's own registration.
+ *
+ * Everything this needs is on the execution that faulted: whom to tell, where
+ * to put its capability, and which generation the fault is.  The last-faulter
+ * pointer KProcess kept is gone with the question it answered — a read names
+ * the thread now, and the thread IS the record.
+ */
 int kprocess_notify_fault(struct task *t, uint64_t vector,
                            uint64_t error_code, uint64_t rip, uint64_t cr2) {
-    struct KProcess *p;
     struct KNotification *notif;
-    struct task   *prev_last = 0;
-    struct KCNode *dest_cs   = 0;
-    uint32_t       dest_slot = 0;
-    uint64_t bits;
+    struct KCNode        *dest_cs = 0;
+    uint32_t              dest_slot = 0;
+    uint64_t              bits;
 
-    if (!t || !t->process) return 0;
-    p = t->process;
+    if (!t) return 0;
 
-    /* Phase 13 (Track I): record the fault details in the KProcess and signal the
-     * handler's KNotification — the handler reads the details via
-     * SYS_PROCESS_FAULT_INFO and resumes/kills via SYS_EXCEPTION_RESUME.  No
-     * KChannel. */
-    spinlock_lock(&p->base.lock);
-    notif = p->exception_notif;
-    bits  = p->exception_signal_bits;
-    if (notif) {
-        /* Phase 25: assign the fault a per-process generation.  1-based so 0
-         * always means "no fault"; skip 0 on uint32 wrap.  The blocked task
-         * keeps its own copy — the per-process record is last-writer-wins,
-         * but each suspended task must stay resolvable by ITS generation. */
-        p->fault_seq_counter++;
-        if (p->fault_seq_counter == 0) p->fault_seq_counter = 1;
-        /* Stage 7 Step 6: the record is the THREAD's.  The generation stays
-         * per-process because that is the sequence the handler observes, and
-         * the thread keeps its own copy of the one it is blocked on. */
-        t->fault_vector = (uint32_t)vector;
-        t->fault_rip    = rip;
-        t->fault_error  = (uint32_t)error_code;
-        t->fault_cr2    = cr2;
-        t->fault_seq    = p->fault_seq_counter;
-        t->fault_valid  = 1;
-        /* ...and the process points at whoever faulted last, so the
-         * process-scoped read still has something to answer with.  A retained
-         * reference, not an id: the thread's storage must outlive the pointer
-         * to it, which an id could not promise. */
-        if (p->fault_last != t) {
-            prev_last = p->fault_last;
-            kobject_retain(&t->base);
-            p->fault_last = t;
-        }
-        kobject_retain(&notif->base);
-        dest_cs   = p->fault_cspace;
-        dest_slot = p->fault_slot;
-        if (dest_cs) {
-            kobject_retain(&dest_cs->base);
-            kobject_active_retain(&dest_cs->base);
-        }
-    }
-    spinlock_unlock(&p->base.lock);
-    if (prev_last) kobject_release(&prev_last->base);
+    notif = t->fault_notif;
+    bits  = t->fault_bits;
     if (!notif) return 0;
 
+    t->fault_seq_counter++;
+    if (t->fault_seq_counter == 0) t->fault_seq_counter = 1;
+    t->fault_vector = (uint32_t)vector;
+    t->fault_rip    = rip;
+    t->fault_error  = (uint32_t)error_code;
+    t->fault_cr2    = cr2;
+    t->fault_seq    = t->fault_seq_counter;
+    t->fault_valid  = 1;
+
+    dest_cs   = t->fault_cspace;
+    dest_slot = t->fault_slot;
+    kobject_retain(&notif->base);
+    if (dest_cs) {
+        kobject_retain(&dest_cs->base);
+        kobject_active_retain(&dest_cs->base);
+    }
+
     /*
-     * Hand the handler the faulting THREAD, as a capability.
-     *
-     * Published BEFORE the signal, so a handler woken by it finds the slot
-     * already filled — the reverse order is a race the handler could only
-     * paper over by retrying.  The install is deliberately NOT exclusive: the
-     * slot is a mailbox, and a previous fault's capability sitting in it means
-     * the handler already answered that one.
-     *
-     * RIGHT_WRITE is the authority RESUME requires; READ lets the handler ask
-     * what it was handed.  No TRANSFER and no DUPLICATE: a fault mailbox
-     * delegates nothing onward.
+     * Hand the handler the faulting THREAD, as a capability, BEFORE the
+     * signal — a handler woken by it finds the mailbox already filled.  Not
+     * exclusive: the slot is a mailbox, and a previous fault's capability
+     * still in it means the handler already answered that one.
      */
     if (dest_cs) {
         (void)kcnode_slot_install_linked(dest_cs, dest_slot, &t->base,

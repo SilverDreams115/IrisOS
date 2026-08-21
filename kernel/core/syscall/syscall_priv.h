@@ -189,6 +189,8 @@ uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                                   uint64_t arg3);
 uint64_t sys_tcb_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_create(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_thread_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);

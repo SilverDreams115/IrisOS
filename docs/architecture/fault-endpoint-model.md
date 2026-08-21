@@ -15,40 +15,62 @@ runtime selftest suite rises from 135/135 to 143/143.
 
 ## The model in one paragraph
 
-A user fault is an authority event.  A supervisor that holds `RIGHT_MANAGE`
-over a process registers a `KNotification` as that process's fault endpoint.
-When a task of the process faults in ring 3, the kernel records the fault in
-the `KProcess`, suspends the task in `TASK_BLOCKED_FAULT`, and signals the
-notification.  The supervisor reads the record (`RIGHT_READ`), decides, and
-resolves it (`RIGHT_MANAGE`): resume re-executes the faulting instruction;
-kill reaps the task.  Nothing about the fault is ambient: registration,
-observation and resolution each require an explicit capability over the
-target process, and the fault record cannot be fabricated from userland.
+A user fault is an authority event.  A supervisor that holds `RIGHT_WRITE` over
+a THREAD registers a `KNotification` as that thread's fault endpoint, and names
+the mailbox each fault delivers the faulting thread's capability into.  When the
+thread faults in ring 3, the kernel records the fault on the thread, publishes
+its TCB capability into the mailbox, suspends it in `TASK_BLOCKED_FAULT`, and
+signals the notification.  The handler reads the record (`RIGHT_READ` on the
+thread), decides, and resolves it (`RIGHT_WRITE`): resume re-executes the
+faulting instruction; kill reaps the thread.  Nothing about the fault is
+ambient: registration, observation and resolution each require an explicit
+capability to the EXECUTION that faulted, and the fault record cannot be
+fabricated from userland.
 
-## Syscall surface (unchanged numbers, no new syscalls)
+> **Stage 7 Steps 6-12 rewrote this model's scope.**  Everything below described
+> a PROCESS-scoped fault: one endpoint per process, a `task_id` in the answer,
+> and `RIGHT_MANAGE` on a process capability as the authority.  The mechanism —
+> the IST migration, the delivery ordering, the hardening bugs — is unchanged
+> and still worth reading.  The object it hangs off is not: the record moved to
+> `struct task` in Step 6, the answer started naming the thread by capability in
+> Step 7, and registration itself moved to the thread in Step 12.  Read the
+> syscall surface below as the current one and the prose after it as history.
+
+## Syscall surface (Stage 7 Step 12)
 
 ```text
-SYS_EXCEPTION_HANDLER(proc_h, notif_h, signal_bits)   47
-SYS_EXCEPTION_RESUME (proc_h, task_id, action)        66
-SYS_PROCESS_FAULT_INFO(proc_h, out_uptr)             105
+SYS_TCB_SET_FAULT_HANDLER(tcb_c, notif_c, signal_bits, dest)  126
+SYS_EXCEPTION_RESUME     (tcb_c, action)                       66
+SYS_TCB_FAULT_INFO       (tcb_c, out_uptr)                     123
 ```
 
-- `SYS_EXCEPTION_HANDLER` — `proc_h`: `KOBJ_PROCESS` with `RIGHT_MANAGE`
-  (or `HANDLE_INVALID` = self); `notif_h`: `KOBJ_NOTIFICATION` with
-  `RIGHT_WRITE`; `signal_bits != 0`.  Re-registration replaces the handler
-  (last registration wins).  Registering on a torn-down process fails
-  `NOT_FOUND` (Phase 20 hardening — see bugs).  Registering on a created but
-  not-yet-started process is legitimate and is the race-free supervisor
-  order: wire the handler first, start the child second.
-- `SYS_PROCESS_FAULT_INFO` — `RIGHT_READ`; fills the 32-byte record of
-  `iris/fault_proto.h` (vector, task_id, rip, error code, cr2).  Returns
-  `WOULD_BLOCK` when no fault is pending — including after resolution and
-  after process death (the record never outlives the fault).
-- `SYS_EXCEPTION_RESUME` — `RIGHT_MANAGE`; `action 0` wakes the task at the
-  faulting rip (the instruction re-executes; if the condition persists a NEW
-  fault is generated), `action 1` kills the task.  The target must be a task
-  of that process currently in `TASK_BLOCKED_FAULT`, else `NOT_FOUND`; both
-  actions clear the pending record.
+Both of the process-scoped forms are retired and return `NOT_SUPPORTED`:
+`SYS_EXCEPTION_HANDLER` (47) and `SYS_PROCESS_FAULT_INFO` (105).
+
+- `SYS_TCB_SET_FAULT_HANDLER` — `tcb_c`: `KOBJ_TCB` with `RIGHT_WRITE`;
+  `notif_c`: `KOBJ_NOTIFICATION` with `RIGHT_WRITE`; `signal_bits != 0`;
+  `dest`: the MAILBOX, in the `cnode|slot<<32` packing every publishing syscall
+  uses, with the CNode half resolved in the REGISTRANT's CSpace (0 = its own
+  root).  The registrant names it because the principal that ARMS a handler is
+  not always the one that ANSWERS: a supervisor arming a target's faults
+  delivers into a CNode it shares with its pager.  Re-registration replaces the
+  handler (last registration wins) and re-aims the mailbox; with the SAME
+  notification it carries an OUTSTANDING fault across the handover.  Arming a
+  torn-down thread fails `NOT_FOUND`.  Arming a created but not-yet-resumed
+  thread is legitimate and is the race-free supervisor order: wire the handler
+  first, resume the child second.
+- `SYS_TCB_FAULT_INFO` — `RIGHT_READ` on the thread; fills the 32-byte record
+  of `iris/fault_proto.h` (vector, task_id, rip, error code, cr2, seq).
+  Returns `WOULD_BLOCK` when no fault is pending — including after resolution
+  and after the thread dies (the record never outlives the fault; thread
+  teardown clears it).  The destination pointer is validated BEFORE the record
+  is looked up, so a hostile pointer is `INVALID_ARG` either way.
+- `SYS_EXCEPTION_RESUME` — `RIGHT_WRITE` on the thread the fault delivered;
+  `action 0` wakes it at the faulting rip (the instruction re-executes; if the
+  condition persists a NEW fault is generated), `action 1` kills it.  The
+  target must be in `TASK_BLOCKED_FAULT`, else `NOT_FOUND`; both actions clear
+  the pending record.  A capability that is not a TCB is `INVALID_ARG`, and a
+  TCB without `RIGHT_WRITE` is `ACCESS_DENIED`.
 
 ## Delivery path
 

@@ -1165,6 +1165,53 @@ declarer of the death could tear the walk down — the destructor would have had
 nothing left to walk.  Every reader checks `valid` before touching `cr3`, so
 keeping it costs nothing and buys the separation.
 
+### Step 12 — a fault is armed on the execution that takes it  DONE
+
+`SYS_EXCEPTION_HANDLER` armed a PROCESS.  Every thread in it faulted into one
+mailbox, signalled one notification with one set of bits, and a handler holding
+that registration could not tell two executions apart except by reading an id
+out of the record.  That is the shape the charter forbids, one level up: the
+process was standing in for the thread.
+
+`SYS_TCB_SET_FAULT_HANDLER` (126) arms the thread, named by capability.  The
+registration state moved onto `struct task` with the record Step 6 put there —
+`fault_notif`, `fault_bits`, `fault_cspace`, `fault_slot`, `fault_seq_counter`
+— so two threads of one process can have two handlers, or one and none.
+Everything Step 7 established carries over unchanged: the mailbox is named by
+the REGISTRANT (a supervisor arming a target's faults delivers into a CNode it
+shares with the pager that answers), the TCB capability is published
+`RIGHT_READ|RIGHT_WRITE` BEFORE the signal, a dead target fails `NOT_FOUND`,
+and re-registration with the same notification carries an outstanding fault
+across a handover.
+
+Two syscalls retired with it, and the second one is the interesting one:
+
+- **`SYS_EXCEPTION_HANDLER` (47)** — replaced outright.
+- **`SYS_PROCESS_FAULT_INFO` (105)** — Step 8 KEPT this against the first
+  attempt to retire it, because a real principal needed it: a supervisor
+  watching a child it does not resolve for, holding `RIGHT_READ` on the process
+  and no capability to any of its threads.  Step 12 removed the principal
+  rather than the question.  Arming faults is a thread operation, so a spawner
+  that supervises keeps its child's first thread — `svc_load_minted_ws`'s
+  `keep_tcb_dest`, `RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE` — and the
+  supervisor that had only a process capability now holds a thread capability
+  and asks the thread.  Nothing called it any more; retiring it was bookkeeping
+  by then.
+
+The clearing moved with the state.  `kprocess_teardown` used to clear the
+process's fault record so a late read honestly answered `WOULD_BLOCK`; a
+terminating thread clears its own in `task_execution_teardown_off_cpu`, and
+releases its handler notification and mailbox CNode there too.  The counter
+that made this observable (`kfault_cleanup`) still counts exactly the records
+actually cleared, from the one place that now does the clearing.
+
+`DUPLICATE` on the kept thread capability is not incidental: a supervisor that
+delegates part of the supervising role hands out a REDUCED copy — read-only to
+a monitor — and minting one is how rights get given away without giving away
+the rest.  T184 asserts precisely that split on the thread now: `READ` reads
+the fault record and nothing else, resuming takes `WRITE`, and a process
+capability, reduced or full, is not a thread and is refused outright.
+
 ### What Stage 7 still needs, and why it is not an increment
 
 `KProcess` itself, and the user-space process server that replaces the policy
@@ -1228,7 +1275,9 @@ One smaller item remains and is NOT Stage 7 work:
   the ledger.
 
 `KPROCESS_MAX_LIVE` retired in Step 3, the global thread identifier in Step 7,
-and the fault handler's process capability in Step 8.
+the fault handler's process capability in Step 8, and fault registration itself
+in Step 12 — `SYS_EXCEPTION_HANDLER` and `SYS_PROCESS_FAULT_INFO` both return
+`NOT_SUPPORTED`.
 
 ## Stage 8 — Full MCS scheduling
 

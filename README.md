@@ -210,10 +210,13 @@ served by the VFS — with **no new kernel syscall**; it composes from
 `SYS_VMO_MAP_PAGE`, `SYS_PROCESS_VSPACE`, fault generations, seq-checked resume,
 and the VFS grant protocol.
 
-- **Fault delivery**: a faulting process's exception is delivered as a
-  `KNotification` signal (`SYS_EXCEPTION_HANDLER`); the pager reads the fault via
-  `SYS_PROCESS_FAULT_INFO`, maps a page, and resumes the target with a
-  seq-checked `SYS_EXCEPTION_RESUME`.
+- **Fault delivery**: a faulting THREAD's exception is delivered as a
+  `KNotification` signal, armed on that thread with
+  `SYS_TCB_SET_FAULT_HANDLER`, which also names the mailbox the faulting
+  thread's capability lands in.  The pager reads the fault off that capability
+  with `SYS_TCB_FAULT_INFO`, maps a page, and resumes the target with a
+  seq-checked `SYS_EXCEPTION_RESUME` — every step naming the execution, never
+  an id.
 - **File-backed regions**: read-only shared (a bounded, evicting page cache),
   private-writable (copy-at-fill), exact EOF / zero-fill, and W^X-checked
   segment shapes (RX code / R rodata / RW data / BSS) as ELF-loading groundwork.

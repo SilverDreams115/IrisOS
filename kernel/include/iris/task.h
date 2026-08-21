@@ -177,6 +177,22 @@ struct task {
      * whoever holds its TCB, and a second watcher is a second capability
      * rather than a second slot.
      */
+    /*
+     * Stage 7 Step 12 — the fault HANDLER is the thread's too.
+     *
+     * Registration named a PROCESS, so the kernel kept the handler, the
+     * mailbox and the generation counter on KProcess and pointed at "whoever
+     * faulted last" to answer a read.  Every one of those is a property of an
+     * execution: which handler to tell, where to put the thread, and which
+     * generation this fault is.  On the thread they need no last-faulter
+     * pointer, because the thread IS the record — and a supervisor that arms a
+     * thread's faults already holds that thread.
+     */
+    struct KNotification *fault_notif;
+    uint64_t          fault_bits;
+    struct KCNode    *fault_cspace;   /* mailbox CNode, retained */
+    uint32_t          fault_slot;
+    uint32_t          fault_seq_counter;
     struct KNotification *exit_notif;
     uint64_t          exit_bits;
     uint32_t          exit_code;

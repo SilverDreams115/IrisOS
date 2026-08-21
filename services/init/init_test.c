@@ -59,17 +59,6 @@ void init_selftest_exception(void) {
      * call that read as cleanup.  The slot is init's for the whole run. */
     notif_h = (handle_id_t)INIT_SLOT_S8_NOTIF;
 
-    /* Register exception handler for own process (HANDLE_INVALID = self),
-     * signalling bit 0 on fault. */
-    /* Stage 7 Step 7: the registration says where each fault delivers the
-     * faulting thread's CAPABILITY.  init arms its own faults, so the mailbox
-     * is its own root CNode (cnode half 0) and INIT_SLOT_S8_FAULT is the slot. */
-    r = init_sys4(SYS_EXCEPTION_HANDLER, (long)HANDLE_INVALID, (long)notif_h, 1,
-                  (long)((uint64_t)INIT_SLOT_S8_FAULT << 32));
-    if (r < 0) {
-        init_log("[USER][INIT][S8] SKIP: handler reg\n"); return;
-    }
-
     /* Spawn a thread that immediately executes ud2 (#UD, vector 6).
      *
      * Stage 5 Step 4: the thread is a TCB RETYPED from init's own Untyped and
@@ -90,6 +79,19 @@ void init_selftest_exception(void) {
                                INIT_SLOT_S8_TCB, 0);
     if (tid_raw < 0) {
         init_log("[USER][INIT][S8] SKIP: tcb retype\n"); return;
+    }
+    /*
+     * Stage 7 Step 12: arm the faults of the THREAD that is about to take one,
+     * which is why this moved below the retype — there was no thread to name
+     * before it.  Registration used to name init's PROCESS and catch whatever
+     * of it faulted; it names the execution now, and the mailbox
+     * (INIT_SLOT_S8_FAULT, in init's own root CNode) is where that thread's
+     * capability lands so SYS_EXCEPTION_RESUME can answer.
+     */
+    if (init_sys4(SYS_TCB_SET_FAULT_HANDLER, (long)INIT_SLOT_S8_TCB,
+                  (long)notif_h, 1,
+                  (long)((uint64_t)INIT_SLOT_S8_FAULT << 32)) != 0) {
+        init_log("[USER][INIT][S8] SKIP: handler reg\n"); return;
     }
     if (init_sys3(SYS_TCB_CONFIGURE, (long)INIT_SLOT_S8_TCB,
                   (long)INIT_SLOT_OWN_CSPACE, (long)INIT_SLOT_OWN_VSPACE) != 0 ||

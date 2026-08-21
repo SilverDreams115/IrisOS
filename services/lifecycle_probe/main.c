@@ -68,7 +68,7 @@
 
 /* Phase 20 fault-trigger modes (opt-in per run).  After the first recv the child
  * performs a faulting access so the parent (a supervisor that registered a fault
- * endpoint via SYS_EXCEPTION_HANDLER) observes fault delivery.  words[0] carries
+ * endpoint via SYS_TCB_SET_FAULT_HANDLER) observes fault delivery.  words[0] carries
  * the target VA for READ/WRITE.  The child never returns from the faulting
  * instruction unless the parent resumes it after fixing the condition.
  *   LP_CMD_FAULT_READ:  read  *(volatile*)words[0]  → #PF on an unmapped VA.

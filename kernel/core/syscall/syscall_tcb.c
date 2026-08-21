@@ -238,6 +238,110 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
  * Arming a thread that is ALREADY dead fires immediately rather than waiting
  * forever — a supervisor that lost the race still learns the answer.
  */
+/*
+ * SYS_TCB_SET_FAULT_HANDLER(tcb_cptr, notif_cptr, signal_bits, dest)
+ *
+ * Stage 7 Step 12: arm THIS THREAD's faults.
+ *
+ * SYS_EXCEPTION_HANDLER named a PROCESS, so the handler, the mailbox and the
+ * fault generation lived on KProcess and a read had to be answered by pointing
+ * at whoever faulted last.  All three are properties of an execution.  A
+ * supervisor arming a thread's faults already holds that thread — it retyped
+ * the TCB — so nothing is reached for that was not already held.
+ *
+ * `dest` is the mailbox each fault delivers the faulting thread's capability
+ * into, cnode|slot<<32, the CNode half resolved in the REGISTRANT's CSpace
+ * (0 = its own root).  Required: without it the only way to answer a fault is
+ * to name the thread by number, which Step 7 removed.
+ */
+uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                                   uint64_t arg3) {
+    struct task *caller = task_current();
+    if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (arg2 == 0u || arg3 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *target; iris_rights_t rights;
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
+                                   RIGHT_WRITE, &target, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    struct KObject *n_obj; iris_rights_t n_rights;
+    /* WRONG_TYPE travels: "that is not a notification" is what the caller needs
+     * to hear, and the family has reported it since Step 4. */
+    err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg1,
+                                  RIGHT_NONE, KOBJ_NOTIFICATION, &n_obj, &n_rights);
+    if (err != IRIS_OK) {
+        kobject_release(&target->base);
+        return syscall_err(err);
+    }
+    if (!rights_check(n_rights, RIGHT_WRITE)) {
+        kobject_release(n_obj); kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KCNode *dest_cn = 0;
+    uint64_t dest_cptr = arg3 & 0xFFFFFFFFu;
+    uint32_t dest_slot = (uint32_t)(arg3 >> 32);
+    if (dest_cptr == 0u) err = cspace_own_root(caller->cspace_root, &dest_cn);
+    else                 err = cspace_resolve_cnode_for_publish(caller->cspace_root,
+                                    (iris_cptr_t)dest_cptr, &dest_cn);
+    if (err != IRIS_OK) {
+        kobject_release(n_obj); kobject_release(&target->base);
+        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    }
+    if (dest_slot == 0u || dest_slot >= dest_cn->slot_count) {
+        kobject_active_release(&dest_cn->base); kobject_release(&dest_cn->base);
+        kobject_release(n_obj); kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    struct KNotification *notif = (struct KNotification *)n_obj;
+    struct KNotification *old_n = 0;
+    struct KCNode        *old_c = 0;
+    struct task          *pending = 0;
+
+    if (target->terminal) {
+        kobject_active_release(&dest_cn->base); kobject_release(&dest_cn->base);
+        kobject_release(n_obj); kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+    }
+
+    uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
+    old_n = (target->fault_notif == notif) ? 0 : target->fault_notif;
+    old_c = (target->fault_cspace == dest_cn) ? 0 : target->fault_cspace;
+    if (target->fault_notif != notif) {
+        kobject_retain(&notif->base);
+        kobject_active_retain(&notif->base);
+        target->fault_notif = notif;
+        target->fault_bits  = arg2;
+    }
+    if (target->fault_cspace != dest_cn) {
+        kobject_retain(&dest_cn->base);
+        kobject_active_retain(&dest_cn->base);
+        target->fault_cspace = dest_cn;
+    }
+    target->fault_slot = dest_slot;
+    if (target->fault_valid) pending = target;
+    irq_spinlock_unlock(&target->obj_lock, irqfl);
+
+    if (old_n) { kobject_active_release(&old_n->base); kobject_release(&old_n->base); }
+    if (old_c) { kobject_active_release(&old_c->base); kobject_release(&old_c->base); }
+
+    /* An OUTSTANDING fault moves with the mailbox: a supervisor taking over
+     * from a dead handler must be able to answer the fault in flight, not just
+     * see that one is pending. */
+    if (pending)
+        (void)kcnode_slot_install_linked(dest_cn, dest_slot, &target->base,
+                                         RIGHT_READ | RIGHT_WRITE, 0,
+                                         0, 0, /*exclusive=*/0, /*legacy=*/1);
+
+    kobject_active_release(&dest_cn->base);
+    kobject_release(&dest_cn->base);
+    kobject_release(n_obj);
+    kobject_release(&target->base);
+    return syscall_ok_u64(0);
+}
+
 uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *caller = task_current();
     if (!caller || !caller->process) return syscall_err(IRIS_ERR_INVALID_ARG);

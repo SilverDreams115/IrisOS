@@ -570,6 +570,32 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         t->vspace = 0;
         kobject_release(&vs->base);
     }
+    /*
+     * Stage 7 Step 12: a dead thread has no pending fault, and its handler
+     * registration goes with it.
+     *
+     * kprocess_teardown used to clear the process's record so a late read
+     * honestly answered WOULD_BLOCK; the record is the thread's now, so the
+     * clearing is too — and the counter that made that observable
+     * (kfault_cleanup) still counts exactly the records actually cleared.
+     */
+    if (t->fault_valid) {
+        t->fault_valid = 0;
+        kprocess_fault_stat_cleanup();
+    }
+    if (t->fault_notif) {
+        struct KNotification *fn = t->fault_notif;
+        t->fault_notif = 0;
+        kobject_active_release(&fn->base);
+        kobject_release(&fn->base);
+    }
+    if (t->fault_cspace) {
+        struct KCNode *fc = t->fault_cspace;
+        t->fault_cspace = 0;
+        kobject_active_release(&fc->base);
+        kobject_release(&fc->base);
+    }
+
     /* The watch's own reference, dropped after it has fired. */
     if (t->exit_notif) {
         struct KNotification *n = t->exit_notif;

@@ -3500,7 +3500,7 @@ static void test_t081(void) {
               (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
     {
         static uint8_t fault_buf[32];
-        if (ok && it_sys2(SYS_PROCESS_FAULT_INFO, T081_SLOT_PROC,
+        if (ok && it_sys2(SYS_TCB_FAULT_INFO, it_child_tcb(proc_h),
                           (long)(uintptr_t)fault_buf) !=
                   (long)IRIS_ERR_WOULD_BLOCK) ok = 0;
     }
@@ -9454,7 +9454,11 @@ struct it_fault {
  * (SYS_TCB_FAULT_INFO) about the thread it was handed. */
 static long it_fault_info(handle_id_t proc_h, struct it_fault *f) {
     uint8_t b[FAULT_MSG_LEN];
-    long r = it_sys2(SYS_PROCESS_FAULT_INFO, (long)proc_h, (long)(uintptr_t)b);
+    /* Stage 7 Step 12: the record is the THREAD's, and the child table knows
+     * which thread each child was started with — so the suite still asks by
+     * the process capability its tests pass around, and the question reaches
+     * the execution that answers it. */
+    long r = it_sys2(SYS_TCB_FAULT_INFO, it_child_tcb(proc_h), (long)(uintptr_t)b);
     if (r != 0) return r;
     f->vector  = (uint32_t)b[FAULT_OFF_VECTOR]  | ((uint32_t)b[FAULT_OFF_VECTOR + 1] << 8) |
                  ((uint32_t)b[FAULT_OFF_VECTOR + 2] << 16) | ((uint32_t)b[FAULT_OFF_VECTOR + 3] << 24);
@@ -9505,7 +9509,7 @@ static int it_fault_spawn_mbox(uint32_t mbox,
     *n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
     *w_h = (w >= 0) ? (handle_id_t)w : HANDLE_INVALID;
     if (n < 0 || w < 0 ||
-        it_sys4(SYS_EXCEPTION_HANDLER, (long)*proc_h, n, 1,
+        it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)*proc_h), n, 1,
                 IT_FAULT_DEST(mbox)) != 0 ||
         it_sys3(SYS_TCB_WATCH, it_child_tcb((long)*proc_h), w, 1) != 0) {
         (void)it_sys1(SYS_PROCESS_KILL, (long)*proc_h);
@@ -9572,24 +9576,31 @@ static void test_t140(void) {
     if (ok && it_sys3(SYS_TCB_WATCH, it_child_tcb((long)proc_h), w, 1) != 0) { ok = 0; why = "watch"; }
 
     /* Wrong types, both slots. */
-    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, (long)ep_h, 1, IT_FAULT_DEST(0))
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), (long)ep_h, 1, IT_FAULT_DEST(0))
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "notif wrong-type"; }
-    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)n1_h, n1, 1, IT_FAULT_DEST(0))
-              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "proc wrong-type"; }
-    /* Reduced rights, both slots — ACCESS_DENIED, no fallback. */
-    long pr_ro = it_cs_reduce((long)proc_h, RIGHT_READ);
+    /* Stage 7 Step 12: the first argument names the THREAD, so the wrong-type
+     * probe on that half passes a notification where a TCB belongs.  The TCB
+     * family answers INVALID_ARG there — "that argument is not a thread" —
+     * while the mailbox half reports WRONG_TYPE, because one is the object the
+     * syscall is invoked ON and the other is an object it is handed. */
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, n1, n1, 1, IT_FAULT_DEST(0))
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "tcb wrong-type"; }
+    /* Reduced rights, both slots — ACCESS_DENIED, no fallback.  Stage 7
+     * Step 12: the reduced half that matters is the THREAD's, because arming
+     * where an execution's faults go is a write to that execution. */
+    long pr_ro = it_cs_reduce(it_child_tcb((long)proc_h), RIGHT_READ);
     long n_ro  = it_cs_reduce(n1, RIGHT_READ);
     handle_id_t pr_ro_h = (pr_ro >= 0) ? (handle_id_t)pr_ro : HANDLE_INVALID;
     handle_id_t n_ro_h  = (n_ro  >= 0) ? (handle_id_t)n_ro  : HANDLE_INVALID;
     if (ok && (pr_ro < 0 || n_ro < 0)) { ok = 0; why = "ro dups"; }
-    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, pr_ro, n1, 1, IT_FAULT_DEST(0))
-              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "proc no-manage not denied"; }
-    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, n_ro, 1, IT_FAULT_DEST(0))
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, pr_ro, n1, 1, IT_FAULT_DEST(0))
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "tcb no-write not denied"; }
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n_ro, 1, IT_FAULT_DEST(0))
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "notif no-write not denied"; }
     /* Zero signal bits / empty slot. */
-    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, n1, 0, IT_FAULT_DEST(0))
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n1, 0, IT_FAULT_DEST(0))
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bits==0 not rejected"; }
-    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, 9999L, 1, IT_FAULT_DEST(0)) >= 0) {
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), 9999L, 1, IT_FAULT_DEST(0)) >= 0) {
         ok = 0; why = "empty slot accepted";
     }
 
@@ -9606,7 +9617,7 @@ static void test_t140(void) {
         ok = 0; why = "dead proc fault info";
     }
     /* Dead process: registration must fail NOT_FOUND, not silently pin. */
-    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, n1, 1, IT_FAULT_DEST(0))
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n1, 1, IT_FAULT_DEST(0))
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "dead reg not NOT_FOUND"; }
 
     it_close(&pr_ro_h); it_close(&n_ro_h);
@@ -9620,7 +9631,7 @@ static void test_t140(void) {
         handle_id_t n2_h = (n2 >= 0) ? (handle_id_t)n2 : HANDLE_INVALID;
         if (n2 < 0) { ok = 0; why = "n2 create"; }
         /* Replace na with n2 — last registration wins. */
-        if (ok && it_sys4(SYS_EXCEPTION_HANDLER, (long)pr2, n2, 1, IT_FAULT_DEST(1)) != 0) {
+        if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)pr2), n2, 1, IT_FAULT_DEST(1)) != 0) {
             ok = 0; why = "re-register";
         }
         /* Spoof: hand-signal n2 — no fault state may appear (F9). */
@@ -10363,8 +10374,10 @@ static void test_t148(void) {
      * table the holder retyped.  Stage 7 Steps 8/10: 123-125 are
      * SYS_TCB_FAULT_INFO, SYS_TCB_WATCH and SYS_TCB_EXIT_CODE — a fault read
      * off the thread that took it, and a death observed on the thread that
-     * dies.  The first UNASSIGNED number moves up to 126. */
-    for (long n = 126; ok && n <= 400; n++) {
+     * dies.  Stage 7 Step 12: 126 is SYS_TCB_SET_FAULT_HANDLER — faults armed
+     * on the execution that takes them.  The first UNASSIGNED number moves up
+     * to 127. */
+    for (long n = 127; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -10493,7 +10506,7 @@ static void test_t150(void) {
     /* SYS_PROCESS_FAULT_INFO (self) writes 32 bytes: hostile dst → INVALID_ARG
      * (the pointer is validated before the fault lookup). */
     for (int i = 0; ok && i < NB; i++) {
-        if (it_sys2(SYS_PROCESS_FAULT_INFO, (long)HANDLE_INVALID, bad_ptr[i])
+        if (it_sys2(SYS_TCB_FAULT_INFO, it_tcb_self_slot(), bad_ptr[i])
             != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info bad dst"; break; }
     }
     /* SYS_UNTYPED_INFO writes two OPTIONAL out params (a null pointer means
@@ -10603,7 +10616,7 @@ static void test_t151(void) {
             if (rr >= 0) { ok = 0; why = "random cptr resumed something"; break; }
         }
         op = 6;
-        if (it_sys2(SYS_PROCESS_FAULT_INFO, (long)HANDLE_INVALID, 0L)
+        if (it_sys2(SYS_TCB_FAULT_INFO, it_tcb_self_slot(), 0L)
             != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info null ok"; break; }
 
         /* --- well-formed batch (must all succeed and be observable) --- */
@@ -10737,7 +10750,7 @@ static void test_t153(void) {
             /* Fault-pending waiter: register a handler, drive an invalid-VA fault. */
             long n = it_notify_create();
             n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
-            if (n < 0 || it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, n, 1, IT_FAULT_DEST(0)) != 0) { ok = 0; why = "reg handler"; }
+            if (n < 0 || it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n, 1, IT_FAULT_DEST(0)) != 0) { ok = 0; why = "reg handler"; }
             if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
             if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no fault"; }
         } else {
@@ -10912,7 +10925,7 @@ static void test_t155(void) {
             } else {                             /* controlled fault → kill */
                 long n = it_notify_create();
                 handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
-                if (n < 0 || it_sys4(SYS_EXCEPTION_HANDLER, (long)proc_h, n, 1, IT_FAULT_DEST(0)) != 0) { ok = 0; why = "reg handler"; }
+                if (n < 0 || it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n, 1, IT_FAULT_DEST(0)) != 0) { ok = 0; why = "reg handler"; }
                 if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
                 if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no fault"; }
                 struct it_fault f;
@@ -12514,7 +12527,7 @@ static int t25_tgt_spawn_dest(long fault_dest, struct t25_tgt *g,
     g->watch = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
     long eh = 0, wt = 0;
     if (vs < 0 || n < 0 || w < 0 ||
-        (eh = it_sys4(SYS_EXCEPTION_HANDLER, (long)g->proc, n, 1,
+        (eh = it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)g->proc), n, 1,
                       fault_dest)) != 0 ||
         (wt = it_sys3(SYS_TCB_WATCH, it_child_tcb((long)g->proc), w, 1)) != 0) {
         it_serial_write("[IRIS][TEST] t25 wire vs="); it_log_num((uint32_t)-vs);
@@ -12563,7 +12576,7 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
      * PAGER rather than merely denied to it.
      */
     if (!it_pgr_mbox_fresh()) return -1;
-    if (it_sys4(SYS_EXCEPTION_HANDLER, (long)g->proc, (long)g->notif, 1,
+    if (it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)g->proc), (long)g->notif, 1,
                 IT_PGR_MBOX_DEST(1u)) != 0) return -1;
     long ep = it_ep_create();
     if (ep < 0) return -1;
@@ -12647,7 +12660,7 @@ static long t25_resume_seq(const struct t25_tgt *g, uint32_t tid, uint32_t seq,
      * with it.
      */
     (void)tid;
-    (void)it_sys4(SYS_EXCEPTION_HANDLER, (long)g->proc, (long)g->notif, 1,
+    (void)it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)g->proc), (long)g->notif, 1,
                   IT_FAULT_DEST(g->fault_leaf));
     return it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(g->fault_leaf),
                    (long)(((uint64_t)seq << 32) | (kill ? 3u : 2u)));
@@ -12951,12 +12964,24 @@ static void test_t184(void) {
      * gives the fault record and only that; resolving takes WRITE on the
      * THREAD, and a process capability — reduced or full — is not a thread, so
      * RESUME refuses it outright rather than on rights. */
-    if (ok && it_fault_info(apro_h, &fa2) != 0) { ok = 0; why = "read cap info denied"; }
+    /* Stage 7 Step 12: the record is the THREAD's, so the READ half is a
+     * rights-reduced THREAD capability — READ reads the fault and nothing
+     * else, which is the same split the process-scoped form asserted. */
+    long atcb = ok ? it_cs_reduce(it_child_tcb(va.proc), RIGHT_READ) : -1;
+    if (ok && atcb < 0) { ok = 0; why = "victim tcb dup"; }
+    if (ok) {
+        uint8_t fb[FAULT_MSG_LEN];
+        if (it_sys2(SYS_TCB_FAULT_INFO, atcb, (long)(uintptr_t)fb) != 0) {
+            ok = 0; why = "read cap info denied";
+        }
+    }
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, atcb, 1)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read tcb resumed"; }
     if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)apro_h, 1)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "read cap resolved"; }
     if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)va.proc, 1)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "proc cap resolved"; }
-    if (ok && it_sys4(SYS_EXCEPTION_HANDLER, apro, (long)va.notif, 1, IT_FAULT_DEST(1))
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, atcb, (long)va.notif, 1, IT_FAULT_DEST(1))
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap registered"; }
 
     /* Proper authority resolves. */
@@ -14373,7 +14398,7 @@ static int t27_pager_spawn(struct t27_pager *p,
      * the capability each fault delivers lands where the pager reads it. */
     if (!it_pgr_mbox_fresh()) { it_close(&ctrl); *why = "fault mailbox"; return 0; }
     for (uint32_t i = 0; i < nt; i++) {
-        if (it_sys4(SYS_EXCEPTION_HANDLER, (long)targets[i].proc,
+        if (it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)targets[i].proc),
                     (long)targets[0].notif, (long)(1u << i),
                     IT_PGR_MBOX_DEST(i + 1u)) != 0) {
             it_close(&ctrl); *why = "shared notif wire"; return 0;
@@ -15782,7 +15807,7 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
         *why = "fault mailbox"; return 0;
     }
     for (uint32_t i = 0; i < nt; i++) {
-        if (it_sys4(SYS_EXCEPTION_HANDLER, (long)targets[i].proc,
+        if (it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)targets[i].proc),
                     (long)targets[0].notif, (long)(1u << i),
                     IT_PGR_MBOX_DEST(i + 1u)) != 0) {
             it_close(&ctrl); it_close(&cvmo); it_close(&pvmo); it_close(&vfs); it_close(&adm);
@@ -17244,7 +17269,7 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
         long vs = it_proc_vspace_slot((long)m->proc[i]);
         if (vs < 0) { *why = "vspace"; t28_multi_close(m); return 0; }
         m->vs[i] = (handle_id_t)vs;
-        if (it_sys4(SYS_EXCEPTION_HANDLER, (long)m->proc[i], (long)m->fault_notif,
+        if (it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)m->proc[i]), (long)m->fault_notif,
                     (long)(1u << i), IT_PGR_MBOX_DEST(i + 1u)) != 0 ||
             it_sys3(SYS_TCB_WATCH, it_child_tcb((long)m->proc[i]), (long)m->exit_notif,  (long)(1u << i)) != 0) {
             *why = "wire"; t28_multi_close(m); return 0;

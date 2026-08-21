@@ -567,52 +567,29 @@ static inline long iris_syscall0(long nr) {
 #define SYS_VMO_SHARE  46
 
 /*
- * User-level exception handler registration — modern/conforming (iris_error_t).
+ * SYS_EXCEPTION_HANDLER — RETIRED (Stage 7 Step 12).  Use
+ * SYS_TCB_SET_FAULT_HANDLER (126); the number returns NOT_SUPPORTED.
  *
- * SYS_EXCEPTION_HANDLER(proc_h, notify_h, signal_bits, dest) → 0 or iris_error_t
- *   proc_h: KOBJ_PROCESS with RIGHT_MANAGE, or HANDLE_INVALID for own process.
- *   notify_h: KOBJ_NOTIFICATION with RIGHT_WRITE.  signal_bits must be non-zero.
- *   dest:   Stage 7 Step 7 — REQUIRED, in arg3 (r10).  The MAILBOX each fault
- *           delivers the faulting thread's TCB capability into, in the
- *           cnode|slot<<32 packing every publishing syscall uses.  The CNode
- *           half is resolved in the REGISTRANT's CSpace (0 = its own root).
- *
- *           Naming it matters because the principal that REGISTERS a handler
- *           is not always the one that HANDLES the fault: a supervisor arms a
- *           target's faults and hands the answering to a pager, so it delivers
- *           into a CNode it shares with that pager.  A handler arming its own
- *           faults names its own root.  Which arrangement is right is
- *           supervision policy and belongs to the caller, not the kernel.
- *
- *   Phase 13/Track I: on a ring-3 hardware exception the kernel records the fault
- *   details, publishes the faulting thread into `dest` (RIGHT_READ|RIGHT_WRITE,
- *   and nothing else — a fault mailbox delegates nothing onward), signals
- *   signal_bits on notify_h, and suspends the faulting task in
- *   TASK_BLOCKED_FAULT.  The capability is published BEFORE the signal, so a
- *   handler woken by it finds the mailbox already filled.  The handler reads
- *   the details with SYS_PROCESS_FAULT_INFO and answers with
- *   SYS_EXCEPTION_RESUME.
- *   If no handler is registered, the fault is logged and the task is killed.
- *   Re-registration with the SAME notification keeps the arming and re-aims
- *   the destination — and carries an OUTSTANDING fault with it, so a
- *   supervisor taking over from a dead handler can answer the fault in flight
- *   instead of seeing a pending record it holds nothing to resolve.
- *   Phase 20: registering on an already-dead process fails IRIS_ERR_NOT_FOUND
- *   (nothing can fault, and the registration would leak the notification pin).
- *   Only ring-3 faults are deliverable; kernel faults are always fatal.
+ * It armed a PROCESS, so every thread in it shared one mailbox, one
+ * notification and one set of signal bits, and a handler could only tell two
+ * executions apart by reading an id out of the fault record.  The replacement
+ * arms the thread, named by capability.  Everything else — the required `dest`
+ * mailbox in arg3, resolved in the REGISTRANT's CSpace, the TCB capability
+ * published RIGHT_READ|RIGHT_WRITE before the signal, the NOT_FOUND on a dead
+ * target, the re-registration rule that carries an outstanding fault across a
+ * handover, kill-on-no-handler — is unchanged and documented there.
  */
 #define SYS_EXCEPTION_HANDLER  47
 
 /*
- * SYS_PROCESS_FAULT_INFO(proc_h, out_uptr) → 0 or negative iris_error_t
- *   proc_h: KOBJ_PROCESS with RIGHT_READ, or HANDLE_INVALID for own process.
- *   out_uptr: 32-byte user buffer filled per iris/fault_proto.h
- *             (FAULT_OFF_VECTOR/TASK_ID/RIP/ERROR/CR2).
- *   Returns IRIS_ERR_WOULD_BLOCK if no fault is pending.  Pairs with the
- *   exception-handler KNotification (SYS_EXCEPTION_HANDLER).
- *   Phase 20: a fault record lives exactly as long as the fault is pending —
- *   SYS_EXCEPTION_RESUME (either action) and process teardown clear it, so a
- *   resolved or dead-process query honestly reports WOULD_BLOCK.
+ * SYS_PROCESS_FAULT_INFO — RETIRED (Stage 7 Step 12).  Use SYS_TCB_FAULT_INFO
+ * (123); the number returns NOT_SUPPORTED.
+ *
+ * The record has lived on the thread since Step 6, and since Step 12 so has
+ * the handler registration — which means every principal that used to need the
+ * process-scoped read holds a capability to the thread instead, including the
+ * supervisor Step 8 kept this syscall for.  One question, asked of the object
+ * that took the fault.
  */
 #define SYS_PROCESS_FAULT_INFO 105
 
@@ -1388,6 +1365,16 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_TCB_WATCH        124
 #define SYS_TCB_EXIT_CODE    125
+/*
+ * SYS_TCB_SET_FAULT_HANDLER(tcb_cptr, notif_cptr, signal_bits, dest)
+ *   Arm THIS THREAD's faults.  Stage 7 Step 12, replacing SYS_EXCEPTION_HANDLER
+ *   (63): the handler, the mailbox and the fault generation are properties of
+ *   an execution, and a supervisor arming a thread's faults already holds that
+ *   thread.  `dest` is the mailbox, cnode|slot<<32, resolved in the
+ *   REGISTRANT's CSpace — see SYS_EXCEPTION_HANDLER's retirement note for why
+ *   it is named rather than assumed.  RIGHT_WRITE on the thread.
+ */
+#define SYS_TCB_SET_FAULT_HANDLER 126
 
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
