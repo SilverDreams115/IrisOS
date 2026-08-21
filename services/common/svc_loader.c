@@ -286,7 +286,9 @@ long svc_load_minted(uint64_t proc_c, uint64_t initrd_c, const char *name,
  * — 8..15 is the per-segment window — so a new slot goes above everything the
  * spawn loop indexes, not into the first gap that looks free. */
 #define SL_WS_CHILD_CNODE  184u  /* ...and its root CSpace, likewise */
-#define SL_WS_CHILD_TCB    185u  /* ...and the thread that will run in them */
+/* SL_WS_CHILD_TCB RETIRED (Stage 7-proc): the child's first thread is retyped
+ * into the PROCESS LEAF itself — it is what claims the leaf and what the
+ * spawner gets back, because a supervisor names the thread, not a process. */
 /* Two scratch slots, because the spare level a completed walk leaves behind
  * belongs to whoever paid for it.  The loader's own spare is retyped from the
  * loader's budget and is worth KEEPING across spawns; a child's spare is
@@ -327,12 +329,26 @@ static int sl_ws_ensure(uint64_t ws) {
     return (r == 0 || r == (long)IRIS_ERR_ALREADY_EXISTS);
 }
 
+/*
+ * Stage 7-proc: `proc_c` is RESERVED and unused.
+ *
+ * It was the spawn AUTHORITY — the boot capability SYS_PROCESS_CREATE checked
+ * before it would make a process.  There is no process to make: a child is a
+ * TCB, a CNode and a VSpace, all retyped from a budget the spawner holds, and
+ * what authorises retyping is holding that budget.  seL4 has no spawn
+ * capability either, for the same reason.
+ *
+ * Kept in the signature rather than removed because every caller passes it and
+ * the boot capability still exists (T296 pins the six).  Retiring it belongs
+ * with retiring SYS_PROCESS_CREATE's number.
+ */
 long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                         handle_id_t *out_proc_h, handle_id_t *out_chan_h,
                         const struct svc_mint *mints, uint32_t mint_count,
                         uint64_t ws, uint64_t child_budget,
                         uint32_t own_budget_slot, uint64_t keep_cnode_dest,
                         uint64_t keep_tcb_dest, uint64_t keep_vspace_dest) {
+    (void)proc_c;
     *out_proc_h = HANDLE_INVALID;
     *out_chan_h = HANDLE_INVALID;
     long self_vs  = 0;   /* the loader's own address space, for parse windows */
@@ -576,8 +592,24 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                 break;
             }
             child_cn = (long)sl_ws_cptr(ws, SL_WS_CHILD_CNODE);
-            r = sl_sys4(SYS_PROCESS_CREATE, (long)proc_c,
-                        sl_ws_dest(ws, l), child_vs, child_cn);
+            /*
+             * Stage 7-proc: the child's FIRST THREAD claims the leaf, and it
+             * is what the spawner gets back.
+             *
+             * SYS_PROCESS_CREATE used to publish a KProcess here — an object
+             * that owned the address space and the CSpace and existed so a
+             * supervisor had something to name.  A supervisor names the
+             * THREAD now (kill, watch, exit code, faults, liveness are all
+             * thread operations since Stage 7), and threads sharing a CSpace
+             * and a VSpace are what a process IS, so there is nothing left for
+             * a third object to be.
+             *
+             * Retyping into the leaf claims it exactly as the create did: an
+             * occupied destination is ALREADY_EXISTS and the scan moves on.
+             */
+            r = sl_sys4(SYS_UNTYPED_RETYPE2, pool,
+                        (long)((uint64_t)IRIS_KOBJ_TCB | (1ULL << 32)),
+                        sl_ws_dest(ws, l), 0);
             if (r == 0) { proc_leaf = l; pool_c = pool; break; }
             if (r != (long)IRIS_ERR_ALREADY_EXISTS) break;
         }
@@ -846,15 +878,11 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * say where it starts, start it.  RBX = 0 (Track I: no bootstrap
          * channel; every cap is a CSpace mint).
          */
-        (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws),
-                      (long)SL_WS_CHILD_TCB);
-        r = sl_sys4(SYS_UNTYPED_RETYPE2, pool_c,
-                    (long)((uint64_t)IRIS_KOBJ_TCB | (1ULL << 32)),
-                    sl_ws_dest(ws, SL_WS_CHILD_TCB), 0);
-        if (r < 0) goto out;
         {
-            long tcb = (long)sl_ws_cptr(ws, SL_WS_CHILD_TCB);
-            r = sl_sys4(SYS_TCB_CONFIGURE, tcb, child_cn, child_vs, (long)proc_h);
+            /* The thread was retyped in the leaf scan above — it is what
+             * claimed the leaf, and proc_h names it. */
+            long tcb = (long)proc_h;
+            r = sl_sys3(SYS_TCB_CONFIGURE, tcb, child_cn, child_vs);
             if (r < 0) goto out;
             r = sl_sys4(SYS_TCB_WRITE_REGS, tcb, (long)(bias + elf_entry),
                         (long)(USER_STACK_TOP - 8ULL), 0);
@@ -881,7 +909,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * giving away the rest.  A spawner that wants none of it passes 0 and
      * keeps nothing. */
     if (keep_tcb_dest)
-        (void)sl_sys3(SYS_CSPACE_MINT, (long)sl_ws_cptr(ws, SL_WS_CHILD_TCB),
+        (void)sl_sys3(SYS_CSPACE_MINT, (long)proc_h,
                       (long)keep_tcb_dest,
                       (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
     /*
@@ -915,7 +943,6 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_PTSCRATCH_CH);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_VSPACE);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_CNODE);
-    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_TCB);
     *out_proc_h = proc_h;
     *out_chan_h  = HANDLE_INVALID;
     return 0;
@@ -924,7 +951,6 @@ out:
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_PTSCRATCH_CH);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_VSPACE);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_CNODE);
-    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_TCB);
     /* Unmap ELF if still mapped. */
     if (elf_mapped)
         sl_sys2(SYS_VMO_UNMAP, (long)SL_ELF_VADDR, (long)SL_SEG_SLOT_SIZE);

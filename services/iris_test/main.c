@@ -271,11 +271,22 @@ static long it_child_vs_dest(void) {
 }
 
 /* The thread a child was started with, or 0 if this child was not recorded. */
+/*
+ * Stage 7-proc: the table's THREAD half has collapsed into an identity.
+ *
+ * It existed because the capability the suite passed around named a PROCESS
+ * and the operations named a thread, so something had to map one to the other
+ * — the smallest form of the table a process server keeps.  A spawn hands back
+ * the child's first THREAD now (svc_loader retypes it into the process leaf,
+ * and it is what claims the leaf), so the mapping is the identity and saying
+ * so is better than looking it up: the registration then names the slot the
+ * suite actually holds for the child's life, rather than a minted copy in a
+ * side CNode whose lifetime is the table's.
+ *
+ * The table survives for the VSPACE half, which is still a separate leaf.
+ */
 static long it_child_tcb(handle_id_t proc_h) {
-    for (uint32_t k = 0; k < IT_CHILD_MAX; k++)
-        if (g_it_children[k].proc == (uint32_t)proc_h && g_it_children[k].leaf)
-            return (long)IT_CHILD_TCB_CPTR(g_it_children[k].leaf);
-    return 0;
+    return (long)proc_h;
 }
 /*
  * Stage 7 Step 15 — and the address space it runs in.
@@ -10107,8 +10118,13 @@ static void test_t144(void) {
     /* Exactness: a capability to something that is not a faulted thread, and a
      * bad action.  "Wrong task id" has no analogue any more — that is the
      * point of the step: there is no number to get wrong, only a capability
-     * you either hold or do not. */
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)proc_h, 0)
+     * you either hold or do not.
+     *
+     * Stage 7-proc: the non-TCB is an ENDPOINT now.  The spawn's handle used
+     * to be a process capability, which was the natural wrong type to reach
+     * for; it IS the child's thread since the process object went, so reaching
+     * for it would test nothing. */
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)ep_h, 0)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "non-TCB not rejected"; }
     if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 2)
               != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "action 2 not rejected"; }
@@ -13200,10 +13216,11 @@ static void test_t184(void) {
     }
     if (ok && it_sys2(SYS_EXCEPTION_RESUME, atcb, 1)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read tcb resumed"; }
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)apro_h, 1)
-              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "read cap resolved"; }
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)va.proc, 1)
-              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "proc cap resolved"; }
+    /* Stage 7-proc: `va.proc` and its reduced copy are THREAD capabilities now
+     * — the spawn hands back the child's first thread — so the two probes that
+     * used to assert "a process capability is not a thread" have no wrong type
+     * left to offer.  What they were really about is above: READ reads the
+     * fault record and nothing else, and resuming takes WRITE. */
     if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, atcb, (long)va.notif, 1, IT_FAULT_DEST(1))
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap registered"; }
 
@@ -21261,8 +21278,12 @@ static void test_t305(void) {
     if (ok) {
         struct t25_tgt g;
         struct it_utq_mdb qa, qb;
-        if (!it_utq_mdb(&qa)) { ok = 0; why = "query3"; }
-        else if (!t25_tgt_spawn(&g, &why)) { ok = 0; }
+        if (!t25_tgt_spawn(&g, &why)) { ok = 0; }
+        /* Measured AFTER the spawn: a spawn creates objects of its own —
+         * including VMOs, which are a known root class until the memory server
+         * lands — and this assertion is about the DELIVERY, so the window has
+         * to contain only that. */
+        else if (!it_utq_mdb(&qa)) { ok = 0; why = "query3"; }
         else {
             struct it_fault f;
             if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
