@@ -12,7 +12,6 @@ struct KNotification;
 struct KVSpace;
 struct KFrame;
 
-#define KPROCESS_EXIT_WATCH_MAX 8u
 /*
  * Stage 7 Step 3: KPROCESS_MAX_LIVE RETIRES.
  *
@@ -59,14 +58,6 @@ struct KFrame;
  * reports 0 — "no kernel ceiling" — the way the notification quota did when it
  * retired in Phase S1.  The constant is kept only so the retirement is legible. */
 
-/* Maximum bootstrap KFrame retains stored in KProcess.bootstrap_frames[].
- * Enforced by the upfront guard in task_create_user_impl. */
-
-struct KExitWatch {
-    struct KNotification *notif;       /* signalled on watched-process death */
-    uint64_t              signal_bits; /* bits OR'd into notif on exit */
-    uint8_t               armed;
-};
 
 /*
  * KProcess — process control object.
@@ -125,7 +116,9 @@ struct KProcess {
      * retired and a death is watched on the thread.  The array and its
      * emit/clear pair are dead weight kept only until KProcess itself goes,
      * and are what a process server replaces with its own child table. */
-    struct KExitWatch exit_watches[KPROCESS_EXIT_WATCH_MAX];
+    /* exit_watches DELETED (Stage 7-proc): a death is watched on the THREAD
+     * that dies (SYS_TCB_WATCH, Step 10) and SYS_PROCESS_WATCH retired with
+     * it, so nothing has armed one of these since. */
     /* Phase 6.3: vmo_mappings removed — VMO pages are now KFrame-backed and
      * tracked in KVSpace.mappings; kvspace_invalidate handles teardown. */
 

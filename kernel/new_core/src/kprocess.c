@@ -93,28 +93,7 @@ void kfault_resolve(struct task *ft, int killed) {
 
 
 
-static void kprocess_clear_exit_watch(struct KProcess *p) {
-    if (!p) return;
-    for (uint32_t i = 0; i < KPROCESS_EXIT_WATCH_MAX; i++) {
-        struct KExitWatch *w = &p->exit_watches[i];
-        if (!w->armed) continue;
-        kobject_release(&w->notif->base);
-        w->notif = 0;
-        w->armed = 0;
-    }
-}
 
-static void kprocess_emit_exit_watch(struct KProcess *p) {
-    if (!p) return;
-    for (uint32_t i = 0; i < KPROCESS_EXIT_WATCH_MAX; i++) {
-        struct KExitWatch *w = &p->exit_watches[i];
-        if (!w->armed || !w->notif) continue;
-        /* Phase 13 (Track B): death is delivered as a KNotification signal —
-         * the watcher identifies the dead service by which bit is set and
-         * re-queries SYS_PROCESS_EXIT_CODE / STATUS for detail. */
-        knotification_signal(w->notif, w->signal_bits);
-    }
-}
 
 static void kprocess_destroy(struct KObject *obj) {
     struct KProcess *p = (struct KProcess *)obj;
@@ -388,8 +367,11 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
         if (already) return;
     }
 
-    kprocess_emit_exit_watch(p);
-    kprocess_clear_exit_watch(p);
+    /* Stage 7-proc: the per-process exit watches are DELETED.  A death is
+     * watched on the THREAD that dies (SYS_TCB_WATCH) and has been since
+     * Step 10; SYS_PROCESS_WATCH retired with it, so nothing has armed one of
+     * these since — the emit fired into an array nobody could fill and the
+     * clear released references nobody took. */
     /* Stage 7 Step 12: the fault record and the handler registration are the
      * THREAD's, and a terminating thread clears its own — so there is nothing
      * process-scoped left to clear here.  The property the old block existed

@@ -1502,12 +1502,45 @@ T210) were re-derived onto it rather than retired, because what they were
 really about (the books come back to baseline once the capability is dropped)
 still holds.
 
-**What still blocks `t->process` itself.**  53 syscall guards read
-`!t->process`, so a thread with no process fails every syscall it makes.
-Converting them to `!t->cspace_root` is mechanical and correct — a task that
-cannot name capabilities is what the guard means — and it is the next step.
-What follows it is the userland half: 307 sites pass a process handle around,
-and `svc_load_minted_ws` returns one.
+✅ **The syscall guards are converted.**  All 53 `!t->process` guards (plus one
+header inline) now read `!t->cspace_root` — a task that can act is one that can
+NAME something, which is what the next line of every one of those syscalls goes
+on to use.  Behaviour-preserving today; it stops being so the moment
+`t->process` goes, which is the point.
+
+✅ **The per-process exit watches are deleted.**  Nothing had armed one since
+Step 10 moved death-watching onto the thread and retired `SYS_PROCESS_WATCH`:
+the emit fired into an array nobody could fill and the clear released
+references nobody took.
+
+**What still blocks `t->process` itself, and it is the interesting one.**
+`kprocess_teardown`'s remaining job is releasing the process's CSpace ROOT —
+and it does that by calling `kcnode_teardown_slots` FIRST, to break a cycle:
+
+> A CSpace may name its own CNodes — the root task holds a capability to its
+> own root CNode — and a slot holds references on what it names, so a CNode
+> reachable from itself never reaches zero references and the close callback
+> that empties it never runs.
+
+The thread holds its own CSpace pair (Step 4) and releases it at exit, but a
+self-naming CSpace never reaches zero, so nothing fires.  Today the process
+breaks the cycle pre-emptively, at a moment it knows because it counts threads.
+
+That is **ledger row "CSpace cycles below the root CNode"**, which has been
+ACTIVE_LEGACY since Stage 5 and names its own fix: *seL4-style recursive delete
+with zombie capabilities*.  It was recorded as an unexercised known gap; it is
+now the last thing standing between IRIS and a kernel with no process object,
+because deleting `KProcess` without it would leak the root task's CSpace.
+
+So the order for the rest of Stage 7-proc is fixed and short:
+
+1. **Recursive delete with zombie capabilities** — the ledger's own prescription.
+   It removes the reason `kprocess_teardown` has to exist at all, and it also
+   closes the deeper case (a cycle below the root) that nothing closes today.
+2. Delete `t->process`, `KProcess`, and `SYS_PROCESS_CREATE`.
+3. The userland half: 307 sites pass a process handle around, and
+   `svc_load_minted_ws` returns one.  The suite's child table (Step 10) is
+   already keyed the way this wants.
 
 With `KProcess` gone, "spawn a process" is a userland composition: retype an
 Untyped, retype a CNode and a VSpace and a TCB out of it, configure, write
