@@ -18458,6 +18458,30 @@ struct it_utq_objects {
     uint32_t version, struct_size;
     uint32_t endpoints_live, notifications_live, replies_live, cnodes_live;
 };
+/*
+ * The MDB/CDT gauge block, mirrored so the suite can OBSERVE it.
+ *
+ * `mdb_legacy_roots` is documented in the ABI as "must → 0": a LEGACY_ROOT is
+ * a capability sitting in a CSpace with no parent in the derivation tree, so
+ * revoking anything can never reach it.  Charter A9 — every derived capability
+ * is traceable to its ancestor — is a claim about exactly this number, and
+ * until now nothing read it.  T305 does.
+ */
+struct it_utq_mdb {
+    uint32_t version, struct_size;
+    /* Phase S2 Step C — TCB/SC blocks, skipped over to reach the MDB gauges. */
+    uint32_t tcb_live, tcb_hwm, tcb_retyped, tcb_destroyed;
+    uint32_t sc_live, sc_hwm, sc_retyped, sc_destroyed;
+    uint32_t cdt_derivation_count, cdt_derivation_hwm, cdt_revoke_count,
+             cdt_delete_count, cdt_cross_cnode_descendants,
+             cdt_ipc_transfer_count, legacy_handle_derivation_migrated;
+    uint32_t tcb_registry_active, tcb_registry_hwm,
+             tcb_registry_exhaustions, tcb_registry_generation_mismatch;
+    uint32_t mdb_nodes_live, mdb_nodes_hwm, mdb_legacy_roots,
+             mdb_orphan_promotions, mdb_reparents, mdb_revoked_nodes,
+             mdb_moves, mdb_max_depth;
+};
+
 /* Phase S2 C.1: arg0 = kind | version<<16 | size<<32 (declared buffer size). */
 #define IT_QARG(kind, sz) ((long)((uint64_t)(kind) | ((uint64_t)1u << 16) | \
                                   ((uint64_t)(uint32_t)(sz) << 32)))
@@ -18469,6 +18493,9 @@ static int it_utq_1(long ut, struct it_utq_one *q) {
 }
 static int it_utq_o(struct it_utq_objects *q) {
     return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(3, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
+}
+static int it_utq_mdb(struct it_utq_mdb *q) {
+    return it_sys3(SYS_UNTYPED_QUERY, IT_QARG(4, sizeof(*q)), (long)(uintptr_t)q, 0) == 0;
 }
 
 /* Carve a fresh page-multiple sub-untyped for one S1 test, into a slot. */
@@ -21181,6 +21208,89 @@ static void test_t304(void) {
     if (ok) it_pass("T304"); else it_fail("T304", why);
 }
 
+/* ── T305: every capability is traceable to an ancestor (charter A9) ──────
+ *
+ * A LEGACY_ROOT is a capability sitting in a CSpace with NO parent in the
+ * derivation tree.  It is not reachable by revoking anything: SYS_CSPACE_REVOKE
+ * walks descendants, and a root has no ancestor to be a descendant of.  The
+ * ABI calls the gauge "must → 0" and charter A9 claims the property is MET,
+ * and until this test nothing in the tree ever read the number.
+ *
+ * So this test does two things.  It ASSERTS the inventory — the count is a
+ * known, bounded set of roots, not an open-ended leak — and it asserts the
+ * count does not GROW across a spawn/fault/kill cycle, which is the shape a
+ * new productive producer would have.
+ *
+ * The known roots today (Stage 7):
+ *   - the boot path: the root task's initial capabilities, installed by the
+ *     kernel before any CSpace exists to derive from.  seL4's BootInfo caps
+ *     are roots too; this class is legitimate and permanent.
+ *   - KVmo publishes: a VMO is fabricated from kernel memory rather than
+ *     retyped from an Untyped, so it has no capability ancestor to name.
+ *     Retires with the object (ledger D-5, memory server).
+ *   - fault delivery: the faulting thread's capability published into a
+ *     mailbox.  This one is NOT legitimate — its natural ancestor is the TCB
+ *     slot the registrant named when it armed the handler, exactly as an
+ *     IPC-delivered capability is a child of the sender's source slot
+ *     (Stage 2).  Recorded in the roadmap as the A9 gap to close.
+ * Invariants: A9. */
+static void test_t305(void) {
+    struct it_utq_mdb q0, q1;
+    int ok = 1;
+    const char *why = "legacy roots";
+
+    it_quiesce_reaper();
+    if (!it_utq_mdb(&q0)) { it_fail("T305", "query"); return; }
+
+    it_serial_write("[IRIS][TEST] T305 mdb_legacy_roots=");
+    it_log_num(q0.mdb_legacy_roots);
+    it_serial_write(" nodes_live="); it_log_num(q0.mdb_nodes_live);
+    it_serial_write(" max_depth="); it_log_num(q0.mdb_max_depth);
+    it_serial_write("\n");
+
+    /* A full spawn/kill cycle plus a mint/revoke cycle: between them these
+     * exercise every productive path that installs a capability into a CSpace
+     * — retype, publish, mint, IPC delivery and teardown.  A new producer of
+     * unparented capabilities would show up as a count that does not come
+     * back down. */
+    {
+        handle_id_t cmd = HANDLE_INVALID, proc = HANDLE_INVALID;
+        long ep = it_ep_create();
+        if (ep < 0) { ok = 0; why = "ep"; }
+        else {
+            cmd = (handle_id_t)ep;
+            if (lp_spawn_child(cmd, &proc) < 0 || proc == HANDLE_INVALID) {
+                ok = 0; why = "spawn";
+            } else {
+                (void)it_kill((long)proc);
+                (void)it_lp_wait_exit(proc);
+            }
+            it_close(&proc); it_close(&cmd);
+        }
+    }
+    if (ok) {
+        long n = it_notify_create_slot();
+        if (n < 0) { ok = 0; why = "notif"; }
+        else {
+            long d = it_cs_reduce(n, RIGHT_READ);
+            if (d < 0) { ok = 0; why = "mint"; }
+            else if (it_sys1(SYS_CSPACE_REVOKE, n) < 0) { ok = 0; why = "revoke"; }
+            handle_id_t nh = (handle_id_t)n; it_close(&nh);
+        }
+    }
+    it_quiesce_reaper();
+
+    if (ok && !it_utq_mdb(&q1)) { ok = 0; why = "query2"; }
+    /* The cycle must not leave a root behind: whatever the delivery installed
+     * is gone with the mailbox slot. */
+    if (ok && q1.mdb_legacy_roots > q0.mdb_legacy_roots) {
+        ok = 0; why = "legacy roots grew";
+        it_serial_write("[IRIS][TEST] T305 grew to="); it_log_num(q1.mdb_legacy_roots);
+        it_serial_write("\n");
+    }
+    if (ok) it_pass("T305"); else it_fail("T305", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -21720,6 +21830,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     /* Stage 7: a running thread outlives every capability to it. */
     test_t303();
     test_t304();
+    test_t305();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

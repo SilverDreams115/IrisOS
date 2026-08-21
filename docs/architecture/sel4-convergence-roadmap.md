@@ -1420,6 +1420,57 @@ One smaller item remains and is NOT Stage 7 work:
 - **The VMO-count quota** retires with the `KVMO` object (memory server), per
   the ledger.
 
+## Stage 7-mem — the memory server  ← NOT STARTED
+
+Precondition: Stage 7's authority work (done).
+
+`KVmo` is a kernel-side memory abstraction with an owner, a quota and a page
+array.  seL4 has Frames and nothing else.  This stage deletes the object, and
+with it the last things `KProcess` is for.
+
+- **Retire `KVmo`.**  A "VMO" becomes what it already almost is: a set of
+  Frames the holder retyped from an Untyped, mapped through capabilities.
+  `SYS_VMO_CREATE`/`CREATE_FOR`/`MAP`/`MAP_INTO`/`MAP_PAGE`/`SIZE`/`SHARE`
+  collapse into the Frame family.  Step 14 already made the memory come from a
+  budget the caller names, so what dies here is the OBJECT and its identity,
+  not the accounting.
+- **Retire the VMO-count quota** (`owned_vmos`) and the page counters.  A
+  budget is the Untyped; a second ceiling the kernel invented is the same
+  mistake Step 2 removed for pages and Step 3 for live processes.
+- **Retire `SYS_RESOURCE_INFO`** and the per-process gauges with the domain
+  they report on.
+- **`KIrqCap` and `KIoPort` stop being objects.**  seL4 has no kernel object
+  behind an interrupt or an I/O port — an IRQHandler capability names a line,
+  and x86 I/O port access is a capability over a port RANGE with no allocation
+  at all.  This is D-5's deeper half and it removes the last two `kslab`
+  producers outside the boot path.
+- **Delete `KProcess`.**  What is left of it after the above is the
+  constructor (`SYS_PROCESS_CREATE`) and `SYS_TCB_CONFIGURE`'s identity check.
+  In seL4 a process is a TCB plus a CNode plus a VSpace, and
+  `seL4_TCB_Configure` binds them with nothing to agree with.  The IRQ-route
+  owner becomes the capability holder rather than a process.
+
+**Exit criterion:** charter §4's last unchecked box — *all canonical objects
+born from Untyped* — is checkable, and `scripts/purity_allowlist.txt` contains
+only the boot path.
+
+## Stage 7-proc — the user-space process server  ← NOT STARTED
+
+Precondition: Stage 7-mem.
+
+With `KProcess` gone, "spawn a process" is a userland composition: retype an
+Untyped, retype a CNode and a VSpace and a TCB out of it, configure, write
+registers, resume.  `svc_loader` already does all of that.  What a process
+SERVER adds is the part the kernel used to hold: a registry of who spawned
+whom, the death protocol, and the reclamation policy.
+
+- A server holding each child's TCB, CNode, VSpace and budget, and answering
+  the questions the retired syscalls answered — over an endpoint, in a
+  protocol it defines.
+- `init`, `svcmgr` and `iris_test` become clients of it rather than each
+  keeping its own child table.  (The suite's Stage 7 child table is a
+  deliberate preview of this shape.)
+
 ## Stage 8 — Full MCS scheduling
 
 Precondition: Stages 0–2 (canonical SC/TCB + CSpace-only IPC).
@@ -1428,23 +1479,183 @@ Precondition: Stages 0–2 (canonical SC/TCB + CSpace-only IPC).
   replenishment; revised priority semantics; budget tests.
 - Revisit the "no combined ReplyRecv" divergence here (charter §6).
 
+## Stage 8-cap — the capability model's last gaps  ← NOT STARTED
+
+Four items, each a registered divergence or a measured hole.  All are additive:
+none of them is a rewrite, which is why they are grouped rather than staged
+separately.
+
+- **A9 / D-6 — LEGACY_ROOTs to zero.**  T305 measures 43 live roots of 329 MDB nodes.
+  Three classes, and only one is a defect: **fault delivery** publishes the
+  faulting thread's capability into a mailbox with no MDB parent, so revoking
+  the supervisor's thread capability does not reach the copy the kernel
+  delivered.  Its natural ancestor is the TCB slot the registrant named when it
+  armed the handler — the same rule Stage 2 established for IPC, where a
+  delivered capability is a child of the sender's SOURCE slot.  Fix:
+  `SYS_TCB_SET_FAULT_HANDLER` records the source slot alongside the mailbox,
+  and delivery installs as its child.  The boot-path roots are legitimate and
+  permanent (seL4's BootInfo capabilities are roots too); the KVmo roots
+  disappear with Stage 7-mem.
+- **D-4 — a per-thread IPC buffer.**  Its trigger (frames from Untyped) fired
+  at Stage 6 and nobody acted on it.  Today every TCB carries 256 B of kernel
+  staging (`task.ipc_kbuf`) the user did not choose and did not pay for.  With
+  frames retyped, the seL4 shape is available: the user registers an IPC buffer
+  FRAME per TCB, and the message-register count and the extra-capability slots
+  become properties of a page somebody owns.
+- **D-2 — CNode guards.**  Resolution is a pure radix walk, so a CPtr's meaning
+  is fixed by the CNode sizes along the path: no sparse layouts, no
+  depth-limited lookup, and a two-level CSpace costs the full radix of each
+  level.  Additive (a guard field per CNode plus the resolution change), with
+  Stage 4 Step 6b's injectivity rule re-derived.  Stage 7 paid for its absence
+  repeatedly — leaf exhaustion, the "a mint source must be a root CPtr" rule,
+  and a whole extra CNode for a supervisor's child table.
+- **D-3 — the rights set.**  A decision, not necessarily a change.
+  `RIGHT_DUPLICATE` and `RIGHT_TRANSFER` are load-bearing: they are what makes
+  a delegation non-re-delegable, which seL4 expresses through the MDB instead.
+  Either adopt `Read/Write/Grant/GrantReply` and move non-re-delegation into
+  the tree, or keep the current set and move the row from "revisable" to
+  "permanent, deliberate" with the reasoning written down.  What is not
+  acceptable is leaving it revisable forever.
+
+**Exit criterion:** `mdb_legacy_roots` is a bounded, named inventory with no
+defect class in it, and every §6 row is either permanent-deliberate or has a
+live trigger.
+
+## Stage 9-evt — the event kernel  ← NOT STARTED, and the largest single item
+
+This is ledger **D-1**, which has carried "ACTIVE_LEGACY — no stage assigned"
+since Stage 5.  Assigning it a stage is the point of this section; the ledger's
+own words are that it "is the structural reason seL4 can bound in-kernel
+latency (and be verified) while IRIS cannot claim either".
+
+Today every thread gets 8 KiB of kernel stack plus a guard page from the PMM
+reserve, and a blocking syscall parks the thread with its kernel state live on
+that stack (`saved_krsp`, `TASK_BLOCKED_*`).  seL4 has ONE kernel stack per
+core and no thread ever blocks inside the kernel: a long operation returns to a
+preemption point and the syscall is restarted.
+
+What it requires, honestly:
+
+- Rewriting every blocking path — IPC send/recv/call/reply, notification wait,
+  futex, timeouts — as a state machine that stores its progress in the TCB and
+  returns, rather than as a call that yields with a live C stack frame.
+- Defining preemption points and proving every partial operation is either
+  restartable or committed, which is the same discipline the charter already
+  demands of RETYPE2 and IPC staging (invariant M4), applied to the whole
+  kernel.
+- Deleting per-thread kernel stacks: kernel memory stops scaling with thread
+  count, and a retyped TCB stops costing memory its payer did not pay for.
+
+What it buys, and why it is not optional for a serious product:
+
+- **A bounded in-kernel latency claim.**  Without it, the longest a thread can
+  be kept out of the CPU is "however long the longest kernel path takes", which
+  is not a number anyone can state.  Every real-time microkernel competitor
+  states one.
+- **The precondition for any verification work at all**, if that is ever
+  wanted.  It is not scheduled here, but a multi-stack blocking kernel forecloses
+  it entirely.
+- It must land **before Stage 9 (SMP)**: SMP re-derives every atomicity
+  property, and re-deriving them twice — once for a blocking kernel, once for
+  an event kernel — is the kind of work that gets done badly the second time.
+
 ## Stage 9 — SMP
 
 Hard precondition: single authority namespace (4), CDT (1), lifecycle (0),
-CSpace-only IPC (2), and a documented locking model.
+CSpace-only IPC (2), a documented locking model, **and Stage 9-evt**.
 
 - Re-derive EVERY atomicity property that today depends on the
   non-preemptive uniprocessor kernel (catalog: IPC staging, RETYPE2, reply
   bind, teardown). Per-CPU run-queue ownership. No correctness may still be
   argued "because the kernel is non-preemptive".
 
+The 9-evt precondition is new and it is not a preference: every one of those
+properties is re-derived against the kernel's execution model, and doing it
+once against a blocking multi-stack kernel and again against an event kernel
+means doing it twice, with the second pass carrying the assumptions of the
+first.
+
+## Stage 10-dma — device authority must be containable  ← NOT STARTED
+
+This is a SECURITY hole in the capability model, not a platform feature, which
+is why it is pulled out of Stage 10's list and given a stage of its own.
+
+There is no IOMMU support in the tree (measured: zero references to IOMMU,
+VT-d or DMAR anywhere in `kernel/`).  A driver holding an I/O port or IRQ
+capability can program a DMA-capable device to read or write ANY physical
+address — including the kernel's own memory and every other task's.  Every
+guarantee the rest of this roadmap builds is void against such a driver.
+
+The capability model makes this worse rather than better in one specific way:
+the whole point of user-space drivers is that a compromised driver is
+contained by the capabilities it holds.  Without an IOMMU that containment is
+fiction, and IRIS's driver-isolation document says so only implicitly.
+
+- DMAR/VT-d table parsing; per-device domains.
+- A device's DMA reach becomes a CAPABILITY: the frames it may target, named
+  by whoever grants them, revocable.  This is seL4's shape (`seL4_X86_IOSpace`)
+  and it is the only thing that makes an ioport or IRQ capability safe to
+  delegate.
+- **Retire the kernel's I/O port whitelist** (charter A5/P2, both PARTIAL for
+  this reason).  It exists because the kernel cannot otherwise bound what a
+  port grant can reach; with per-device domains the bound is a capability and
+  the hardcoded table — kernel policy, charter P3 — goes.
+
+## Stage 10-abi — freeze the ABI  ← NOT STARTED
+
+A product that other people build on has a versioned, stable ABI.  IRIS today
+has 71 live syscalls and **43 retired-but-reserved numbers**, which is the
+correct state for a system in convergence and the wrong state to ship.
+
+- A declared 1.0 syscall surface, with the reserved numbers either reclaimed
+  or documented as permanently dead.
+- A compatibility policy: what may change in a minor version, what may not,
+  and how a caller detects the difference.  `SYS_UNTYPED_QUERY`'s versioned
+  struct is the pattern that already exists; it should be the rule.
+- The `handle_id_t` typedef and the `HANDLE_INVALID` spelling survive in
+  userland as naming residue from a namespace that no longer exists.  A 1.0
+  ABI should say `iris_cptr_t` everywhere or explain why not.
+
 ## Stage 10 — General-purpose platform
 
-Precondition: consolidated microkernel (0–9 as applicable).
+Precondition: consolidated microkernel (0–9 as applicable), 10-dma, 10-abi.
 
-- User-space drivers; PCI/ACPI/IOMMU; storage; persistent FS; networking;
-  optional POSIX personality via servers/libraries; advanced security;
-  performance; real hardware. None of this lands earlier: charter §5.
+- User-space drivers; PCI/ACPI; storage; persistent FS; networking;
+  optional POSIX personality via servers/libraries; performance; real
+  hardware. None of this lands earlier: charter §5.
+
+---
+
+## The ceiling: what this roadmap does NOT reach, and why
+
+A roadmap that ends without stating its ceiling invites the reading that
+finishing it produces seL4.  It does not, and two of the three reasons are
+deliberate.
+
+**1. The ABI shape.**  seL4 has roughly a dozen syscalls and expresses every
+other operation as an INVOCATION on a capability carrying a method label.  IRIS
+has numbered syscalls, each resolving its own arguments and checking its own
+rights.  The charter registers this as permanent and deliberate, and that is
+defensible — but the consequence should be stated plainly: in an invocation
+model, a new operation is capability-gated BY CONSTRUCTION, while here it is
+gated by a check the author has to write correctly every time.  That is a
+structural guarantee traded for a per-syscall discipline, and the discipline
+has failed before (Stage 7 alone found a rights check on the wrong object, a
+dual-namespace argument, and two writers of one field under two different
+locks).  The mitigation is the review gates, not the type system.
+
+**2. Formal verification.**  Out of scope, per the charter.  Worth stating
+without euphemism: *the proof is seL4's identity*.  A system that converges on
+seL4's model without it has converged on the design, not on the guarantee.
+Stage 9-evt is the only item here that would even make the question askable.
+
+**3. Everything else in this document is reachable.**  Stages 7-mem through
+10-abi close every measured divergence: the object model becomes Frames and
+Untypeds, the derivation tree has no unparented capabilities, the kernel stops
+blocking, device authority becomes containable, and the ABI becomes something
+to build on.  What remains after that is a microkernel with seL4's authority
+model, seL4's object model, seL4's execution model and its own ABI — which is
+an honest and defensible thing to be, and is what this project should claim.
 
 ---
 

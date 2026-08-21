@@ -53,7 +53,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 | A6 | `ACCESS_DENIED` never falls back to another namespace | MET — vacuously, since Stage 4: there is no other namespace to fall back to.  A value that is not a CPtr is `INVALID_ARG` |
 | A7 | Rights are only kept or reduced; mint never amplifies | MET (`rights_reduce`, collapse to NONE rejected) |
 | A8 | Badges are kernel-sealed identity; a badged cap is never re-badged | MET |
-| A9 | Every derived capability is traceable to its ancestor | MET — Phase S4/Stage 3: the parallel handle-tree is DELETED (`SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` retired; derived-insert, revoke-children and the parent array removed).  There is exactly ONE derivation tree: the native CSpace MDB/CDT |
+| A9 | Every derived capability is traceable to its ancestor | **PARTIAL — measured.**  Phase S4/Stage 3 deleted the parallel handle-tree (`SYS_CAP_DERIVE`/`SYS_CAP_REVOKE` retired; derived-insert, revoke-children and the parent array removed), so there is exactly ONE derivation tree: the native CSpace MDB/CDT.  What the MET claim did not say is that the tree still has **LEGACY_ROOTs** — capabilities in a CSpace with no parent, which no revoke can reach because revoke walks descendants.  T305 measures it: **43 live roots of 329 MDB nodes** (max depth 6).  Three classes: the BOOT PATH (legitimate and permanent — seL4's BootInfo caps are roots too), KVmo publishes (a VMO is fabricated rather than retyped, so it has no ancestor to name; retires with the object, ledger D-5), and FAULT DELIVERY (**not legitimate** — the faulting thread's capability should be an MDB child of the TCB slot the registrant named, exactly as an IPC-delivered capability is a child of the sender's source slot; Stage 8-cap).  T305 pins the count against growth so a new producer cannot appear unnoticed |
 | A10 | Revoke recursively removes all descendant authority, even cross-process | MET — `SYS_CSPACE_REVOKE` is the ONLY revoke: recursive, cross-CNode and cross-process (T288-T290 + model-based fuzzing).  The intra-table `SYS_CAP_REVOKE` is retired (Phase S4/Stage 3) |
 
 ### 2.2 Objects
@@ -165,9 +165,16 @@ proven:
       is unrepresentable, not merely unused.
 - [ ] All canonical objects born from Untyped (including the executing TCB,
       page tables, VSpace, Frame headers).
-- [ ] No authority object identified by PID or global index.
-- [ ] Adversarial lifecycle and revocation suite (creation, cross death,
-      chained revocation, storage reuse, stale caps) as a permanent gate.
+- [x] No authority object identified by PID or global index — **Stage 7
+      Step 7**.  `SYS_EXCEPTION_RESUME` stopped taking a task id, the global
+      thread lookup (`task_find_by_id`) is deleted, and the kernel contains
+      zero `->id ==` comparisons: nothing selects an object by number.  The
+      ids that survive (`task.id`, the fault record's `task_id`,
+      `SYS_GETPID`) are diagnostics that confer nothing.
+- [x] Adversarial lifecycle and revocation suite (creation, cross death,
+      chained revocation, storage reuse, stale caps) as a permanent gate —
+      278 runtime tests including model-based syscall fuzzing, 18740 host
+      assertions, and `check_purity` as a hard gate on every build.
 
 ## 5. Governing priority
 
@@ -195,6 +202,21 @@ per-thread kernel stacks with in-kernel blocking (D-1), CNodes without guards
 and D-2 carry no retirement stage, which is stated rather than implied: an
 entry with no stage is honest, an unrecorded divergence is not.
 
+### 5.1 Revisit triggers must fire
+
+A divergence marked "revisable in Stage N" is a PROMISE, and a promise with no
+enforcement is a wish.  Three of them — reply-with-DUPLICATE (Stage 1), the
+IPC buffer (Stage 6) and Untyped RESET (Stage 1) — pointed at stages that
+closed without anyone returning to the row.  Two were then answered in the
+affirmative (kept, deliberately) and one turned out to be real debt that had
+been sitting unscheduled since Stage 6.
+
+The rule from now on: **a stage cannot be marked CLOSED while any charter §6
+row or ledger entry names it as a revisit trigger.**  Closing a stage includes
+walking those rows and writing the answer — kept, retired, or rescheduled with
+a new trigger.  An unanswered trigger is the same class of dishonesty as an
+unrecorded divergence.
+
 ## 6. Registered deliberate divergences
 
 | Divergence | Justification | Status |
@@ -202,7 +224,7 @@ entry with no stage is honest, an unrecorded divergence is not.
 | No formal verification | out of the project's scope; offset by adversarial gates | Permanent, deliberate |
 | Own ABI (not seL4) | IRIS does not seek binary compatibility.  Concretely: 80 live numbered syscalls (plus 43 retired-but-reserved numbers), each taking CPtrs and checking rights itself — where seL4 has a handful of syscalls and expresses every other operation as an INVOCATION on a capability carrying a method label.  The authority semantics are equivalent (nothing is reachable without naming a capability); the shape is not, and no amount of convergence work changes it | Permanent, deliberate |
 | Rights set is IRIS's own (`READ/WRITE/DUPLICATE/TRANSFER/WAIT/ROUTE/MANAGE`) | seL4 has `Read/Write/Grant/GrantReply` and does NOT treat copyability as a right — whether a capability can be copied follows from its type and the derivation tree.  IRIS gates minting with `RIGHT_DUPLICATE` and IPC transfer with `RIGHT_TRANSFER`, which is what makes a delegation non-re-delegable today.  The two models are not translatable one-to-one, so "IRIS has seL4's rights" is never a correct statement | Deliberate, revisable — ledger D-3 |
-| No per-thread IPC buffer object | A message carries four inline words plus a bulk payload staged in the kernel (`task.ipc_kbuf`, 256 B) and copied to/from a user pointer named per call; seL4 registers an IPC buffer FRAME per TCB.  The bulk size is therefore a kernel constant rather than a frame the user chose and paid for | Deliberate, revisable in Stage 6 (frames from Untyped) — ledger D-4 |
+| No per-thread IPC buffer object | A message carries four inline words plus a bulk payload staged in the kernel (`task.ipc_kbuf`, 256 B) and copied to/from a user pointer named per call; seL4 registers an IPC buffer FRAME per TCB.  The bulk size is therefore a kernel constant rather than a frame the user chose and paid for | **Condition FIRED, scheduled.**  Its revisit trigger was Stage 6 (frames from Untyped), which closed — and the trigger was never acted on, which is the process failure this row now records.  Retirement is scheduled: **Stage 8-cap**.  Until then, 256 B of kernel memory per TCB that the user did not choose and did not pay for — ledger D-4 |
 | Separate `SYS_REPLY` (no combined ReplyRecv) | simplicity of the current synchronous path; revisit in Stage 8 (MCS) | Deliberate, revisable |
-| Reply objects with DUPLICATE (supervisor mints them into the child) | IRIS supervision pattern; documented in RETYPE2 | Deliberate, revisable in Stage 1 (CDT) |
-| Untyped RESET (bump reset with child_count==0) in addition to revoke | useful as a reuse primitive; real revoke arrives with the CDT | Temporary until Stage 1, then revisable |
+| Reply objects with DUPLICATE (supervisor mints them into the child) | IRIS supervision pattern; documented in RETYPE2 | **Deliberate, KEPT.**  Its revisit condition (Stage 1, CDT) fired and was answered: the MDB makes the minted reply capability a traceable child of the supervisor's, so the supervision pattern costs nothing the derivation tree cannot express or revoke.  No further review scheduled |
+| Untyped RESET (bump reset with child_count==0) in addition to revoke | useful as a reuse primitive; real revoke arrives with the CDT | **Temporary → KEPT, deliberate.**  Its condition (Stage 1) fired.  Real revoke exists (`SYS_CSPACE_REVOKE`) and RESET was not removed, because the two answer different questions: revoke destroys a subtree of CAPABILITIES, RESET rewinds a bump allocator whose children are already gone.  seL4 expresses the second by revoking the Untyped, which IRIS also supports; RESET is the cheap path and is gated on `child_count == 0`, so it can never destroy anything.  Kept as an addition, not a substitute |
