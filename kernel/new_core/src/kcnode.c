@@ -307,6 +307,25 @@ void kcnode_teardown_slots(struct KCNode *cn) {
 
 /* ── canonical slot primitives ──────────────────────────────────────────── */
 
+/*
+ * Does this slot still hold exactly this object?
+ *
+ * Stage 8-cap / D-6: a capability recorded now and used as an MDB PARENT later
+ * needs more than "the slot is occupied".  A slot is a reusable location: it
+ * can be deleted and refilled with something unrelated between the moment an
+ * authority was exercised and the moment the kernel acts on it, and installing
+ * a child under the new occupant would attach a capability to an ancestor that
+ * never authorised it.  Identity, not occupancy.
+ */
+int kcnode_slot_holds(struct KCNode *cn, uint32_t slot_idx,
+                      const struct KObject *obj) {
+    if (!cn || !obj || slot_idx >= cn->slot_count) return 0;
+    uint64_t cf = irq_spinlock_lock(&cn->lock);
+    int held = (cn->slots[slot_idx].object == obj);
+    irq_spinlock_unlock(&cn->lock, cf);
+    return held;
+}
+
 iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
                                         struct KObject *obj,
                                         iris_rights_t rights, uint64_t badge,

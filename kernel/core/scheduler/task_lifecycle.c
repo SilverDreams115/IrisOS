@@ -588,16 +588,19 @@ static void task_execution_teardown_off_cpu(struct task *t) {
          * nobody left to release them. */
         struct KNotification *fn;
         struct KCNode        *fc;
+        struct KCNode        *fs;
         int                   had_fault;
         uint64_t irqfl = irq_spinlock_lock(&t->obj_lock);
         had_fault      = t->fault_valid;
         t->fault_valid = 0;
         fn = t->fault_notif; t->fault_notif = 0;
         fc = t->fault_cspace; t->fault_cspace = 0;
+        fs = t->fault_src_cn; t->fault_src_cn = 0;
         irq_spinlock_unlock(&t->obj_lock, irqfl);
         if (had_fault) kprocess_fault_stat_cleanup();
         if (fn) { kobject_active_release(&fn->base); kobject_release(&fn->base); }
         if (fc) { kobject_active_release(&fc->base); kobject_release(&fc->base); }
+        if (fs) { kobject_active_release(&fs->base); kobject_release(&fs->base); }
     }
 
     /* The watch's own reference, dropped after it has fired. */

@@ -312,6 +312,8 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
     struct KNotification *notif;
     struct KCNode        *dest_cs = 0;
     uint32_t              dest_slot = 0;
+    struct KCNode        *src_cn = 0;
+    uint32_t              src_idx = 0;
     uint64_t              bits;
 
     if (!t) return 0;
@@ -331,10 +333,16 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
 
     dest_cs   = t->fault_cspace;
     dest_slot = t->fault_slot;
+    src_cn    = t->fault_src_cn;
+    src_idx   = t->fault_src_idx;
     kobject_retain(&notif->base);
     if (dest_cs) {
         kobject_retain(&dest_cs->base);
         kobject_active_retain(&dest_cs->base);
+        if (src_cn) {
+            kobject_retain(&src_cn->base);
+            kobject_active_retain(&src_cn->base);
+        }
     }
 
     /*
@@ -344,11 +352,31 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
      * still in it means the handler already answered that one.
      */
     if (dest_cs) {
+        /*
+         * Stage 8-cap / D-6: as a CHILD of the slot the registration was made
+         * with, so revoking that capability reaches every copy the kernel
+         * handed out.  Verified by IDENTITY, not occupancy — between arming
+         * and faulting the registrant's slot can have been deleted and
+         * refilled, and a child under the new occupant would hang off an
+         * ancestor that never authorised it.
+         *
+         * When it does not hold, the capability is still delivered (a handler
+         * with a signal and no thread to answer with is a deadlock dressed as
+         * a working handler) but as a root, and the gauge T305 watches counts
+         * it.  That is the honest failure: the delegation outlived the
+         * capability it was made with, and the count says so.
+         */
+        int parented = src_cn && kcnode_slot_holds(src_cn, src_idx, &t->base);
         (void)kcnode_slot_install_linked(dest_cs, dest_slot, &t->base,
                                          RIGHT_READ | RIGHT_WRITE, 0,
-                                         0, 0, /*exclusive=*/0, /*legacy=*/1);
+                                         parented ? src_cn : 0, src_idx,
+                                         /*exclusive=*/0, /*legacy=*/!parented);
         kobject_active_release(&dest_cs->base);
         kobject_release(&dest_cs->base);
+        if (src_cn) {
+            kobject_active_release(&src_cn->base);
+            kobject_release(&src_cn->base);
+        }
     }
 
     knotification_signal(notif, bits);

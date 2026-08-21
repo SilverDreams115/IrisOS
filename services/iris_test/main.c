@@ -21288,6 +21288,36 @@ static void test_t305(void) {
         it_serial_write("[IRIS][TEST] T305 grew to="); it_log_num(q1.mdb_legacy_roots);
         it_serial_write("\n");
     }
+
+    /*
+     * And the specific claim D-6 is about: a FAULT DELIVERY installs a
+     * parented capability, not a root.  The kernel publishes the faulting
+     * thread into a mailbox while the fault is pending, so the count is read
+     * with the capability still sitting there — if it were installed as a root
+     * the number would be strictly higher here than before the fault.
+     */
+    if (ok) {
+        struct t25_tgt g;
+        struct it_utq_mdb qa, qb;
+        if (!it_utq_mdb(&qa)) { ok = 0; why = "query3"; }
+        else if (!t25_tgt_spawn(&g, &why)) { ok = 0; }
+        else {
+            struct it_fault f;
+            if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
+            if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "fault pending"; }
+            /* Read WITH the delivered capability live in the mailbox. */
+            if (ok && !it_utq_mdb(&qb)) { ok = 0; why = "query4"; }
+            if (ok && qb.mdb_legacy_roots > qa.mdb_legacy_roots) {
+                ok = 0; why = "fault delivered an unparented cap";
+                it_serial_write("[IRIS][TEST] T305 fault roots "); it_log_num(qa.mdb_legacy_roots);
+                it_serial_write(" -> "); it_log_num(qb.mdb_legacy_roots);
+                it_serial_write("\n");
+            }
+            t25_tgt_reap(&g);
+        }
+        it_quiesce_reaper();
+    }
+
     if (ok) it_pass("T305"); else it_fail("T305", why);
 }
 

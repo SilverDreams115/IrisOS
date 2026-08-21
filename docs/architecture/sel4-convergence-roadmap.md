@@ -1485,17 +1485,12 @@ Four items, each a registered divergence or a measured hole.  All are additive:
 none of them is a rewrite, which is why they are grouped rather than staged
 separately.
 
-- **A9 / D-6 — LEGACY_ROOTs to zero.**  T305 measures 43 live roots of 329 MDB nodes.
-  Three classes, and only one is a defect: **fault delivery** publishes the
-  faulting thread's capability into a mailbox with no MDB parent, so revoking
-  the supervisor's thread capability does not reach the copy the kernel
-  delivered.  Its natural ancestor is the TCB slot the registrant named when it
-  armed the handler — the same rule Stage 2 established for IPC, where a
-  delivered capability is a child of the sender's SOURCE slot.  Fix:
-  `SYS_TCB_SET_FAULT_HANDLER` records the source slot alongside the mailbox,
-  and delivery installs as its child.  The boot-path roots are legitimate and
-  permanent (seL4's BootInfo capabilities are roots too); the KVmo roots
-  disappear with Stage 7-mem.
+- **A9 / D-6 — LEGACY_ROOTs to zero.**  ✅ **The defect class is CLOSED.**
+  T305 measured 43 live roots of 329 MDB nodes; the fault-delivery class is
+  fixed and it is 39.  What remains is two legitimate classes: the boot path
+  (permanent — seL4's BootInfo capabilities are roots too) and KVmo publishes,
+  which disappear with Stage 7-mem.  Nothing is left for this stage to do on
+  D-6 except confirm the count after 7-mem lands.
 - **D-4 — a per-thread IPC buffer.**  Its trigger (frames from Untyped) fired
   at Stage 6 and nobody acted on it.  Today every TCB carries 256 B of kernel
   staging (`task.ipc_kbuf`) the user did not choose and did not pay for.  With

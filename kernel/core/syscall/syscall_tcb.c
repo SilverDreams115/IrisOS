@@ -295,9 +295,23 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
+    /*
+     * Stage 8-cap / D-6: the SOURCE slot, so the capability each fault
+     * publishes has an ancestor.  Resolved here because this is where the
+     * authority is exercised — the same moment IPC records a sender's source
+     * slot as the parent of what it delivers.  Failing to resolve it is not
+     * fatal to the registration: cspace_resolve_slot needs the terminal slot
+     * occupied, and it was, since tcb_resolve just read a TCB out of it.
+     */
+    struct KCNode *src_cn = 0; uint32_t src_idx = 0;
+    if (cspace_resolve_slot(caller->cspace_root, (iris_cptr_t)arg0,
+                            &src_cn, &src_idx) != IRIS_OK)
+        src_cn = 0;
+
     struct KNotification *notif = (struct KNotification *)n_obj;
     struct KNotification *old_n = 0;
     struct KCNode        *old_c = 0;
+    struct KCNode        *old_s = 0;
     struct task          *pending = 0;
 
     uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
@@ -306,6 +320,7 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * and leave the references installed below with nobody to release them. */
     if (target->terminal) {
         irq_spinlock_unlock(&target->obj_lock, irqfl);
+        if (src_cn) { kobject_active_release(&src_cn->base); kobject_release(&src_cn->base); }
         kobject_active_release(&dest_cn->base); kobject_release(&dest_cn->base);
         kobject_release(n_obj); kobject_release(&target->base);
         return syscall_err(IRIS_ERR_NOT_FOUND);
@@ -324,20 +339,34 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         target->fault_cspace = dest_cn;
     }
     target->fault_slot = dest_slot;
+    old_s = (target->fault_src_cn == src_cn) ? 0 : target->fault_src_cn;
+    if (target->fault_src_cn != src_cn) {
+        if (src_cn) { kobject_retain(&src_cn->base); kobject_active_retain(&src_cn->base); }
+        target->fault_src_cn = src_cn;
+    }
+    target->fault_src_idx = src_idx;
     if (target->fault_valid) pending = target;
     irq_spinlock_unlock(&target->obj_lock, irqfl);
 
     if (old_n) { kobject_active_release(&old_n->base); kobject_release(&old_n->base); }
     if (old_c) { kobject_active_release(&old_c->base); kobject_release(&old_c->base); }
+    if (old_s) { kobject_active_release(&old_s->base); kobject_release(&old_s->base); }
 
     /* An OUTSTANDING fault moves with the mailbox: a supervisor taking over
      * from a dead handler must be able to answer the fault in flight, not just
      * see that one is pending. */
-    if (pending)
+    if (pending) {
+        /* Same ancestry rule as a fresh delivery: a child of the slot this
+         * registration was made with, or nothing. */
+        int parented = src_cn && kcnode_slot_holds(src_cn, src_idx, &target->base);
         (void)kcnode_slot_install_linked(dest_cn, dest_slot, &target->base,
                                          RIGHT_READ | RIGHT_WRITE, 0,
-                                         0, 0, /*exclusive=*/0, /*legacy=*/1);
+                                         parented ? src_cn : 0, src_idx,
+                                         /*exclusive=*/0, /*legacy=*/!parented);
+    }
 
+    /* The task took its own pair on src_cn above; this is the resolve's. */
+    if (src_cn) { kobject_active_release(&src_cn->base); kobject_release(&src_cn->base); }
     kobject_active_release(&dest_cn->base);
     kobject_release(&dest_cn->base);
     kobject_release(n_obj);

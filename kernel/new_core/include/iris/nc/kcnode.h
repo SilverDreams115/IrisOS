@@ -149,6 +149,11 @@ iris_error_t   kcnode_swap(struct KCNode *cn, uint32_t slot_a, uint32_t slot_b);
  * exclusive != 0 → IRIS_ERR_ALREADY_EXISTS on an occupied slot; otherwise
  * the old occupant is deleted first (full delete-with-reparent semantics).
  * Takes its own retain + active_retain on obj.  On error nothing changes. */
+/* 1 when `slot_idx` of `cn` holds exactly `obj` — identity, not occupancy.
+ * See the definition for why a deferred MDB parent needs this. */
+int kcnode_slot_holds(struct KCNode *cn, uint32_t slot_idx,
+                      const struct KObject *obj);
+
 iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
                                         struct KObject *obj,
                                         iris_rights_t rights, uint64_t badge,

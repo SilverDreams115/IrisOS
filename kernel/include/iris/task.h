@@ -192,6 +192,27 @@ struct task {
     uint64_t          fault_bits;
     struct KCNode    *fault_cspace;   /* mailbox CNode, retained */
     uint32_t          fault_slot;
+    /*
+     * Stage 8-cap / D-6 — where the delivered capability's AUTHORITY came
+     * from, so the copy the kernel publishes has an ancestor.
+     *
+     * A fault used to publish the faulting thread into a mailbox as an MDB
+     * LEGACY_ROOT: a capability with no parent, which SYS_CSPACE_REVOKE can
+     * never reach because revoke walks descendants.  Revoking the supervisor's
+     * thread capability therefore did not reach the copies the kernel had
+     * handed to handlers.
+     *
+     * The ancestor is the slot the REGISTRANT named when it armed the handler
+     * — the same rule Stage 2 set for IPC, where a delivered capability is a
+     * child of the sender's SOURCE slot.  Recorded here with the CNode
+     * retained, and verified by IDENTITY at delivery (kcnode_slot_holds): a
+     * slot is a reusable location, and between arming and faulting it can be
+     * refilled with something that never authorised anything.  A registration
+     * whose source slot no longer holds this thread is a delegation made with
+     * a capability that no longer exists, and is treated as no handler at all.
+     */
+    struct KCNode    *fault_src_cn;   /* registrant's slot for THIS tcb */
+    uint32_t          fault_src_idx;
     uint32_t          fault_seq_counter;
     struct KNotification *exit_notif;
     uint64_t          exit_bits;
