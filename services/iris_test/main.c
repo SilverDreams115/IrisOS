@@ -11866,7 +11866,7 @@ static void test_t167(void) {
         if (rd < 0) { ok = 0; why = "irq derive"; }
         if (ok && it_sys1(SYS_IRQ_ACK, irq_ro) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-route ack not denied"; }
         /* Route with an IRQ cap lacking ROUTE → ACCESS_DENIED. */
-        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, irq_ro, (long)notif, (long)IRIS_CPTR_TEST_PROC)
+        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, irq_ro, (long)notif, 0)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-route route not denied"; }
         it_close(&irq_ro);
     }
@@ -11875,7 +11875,7 @@ static void test_t167(void) {
         long e = it_ep_create_slot();
         handle_id_t ep_h = (e >= 0) ? (handle_id_t)e : HANDLE_INVALID;
         if (e < 0) { ok = 0; why = "ep fixture"; }
-        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, (long)ep_h, (long)IRIS_CPTR_TEST_PROC)
+        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, (long)ep_h, 0)
                   != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "route wrong-type notif"; }
         it_close(&ep_h);
     }
@@ -11884,15 +11884,24 @@ static void test_t167(void) {
         long nrd = it_cs_reduce((long)notif, RIGHT_READ);
         handle_id_t n_ro = (nrd >= 0) ? (handle_id_t)nrd : HANDLE_INVALID;
         if (nrd < 0) { ok = 0; why = "notif read dup"; }
-        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, n_ro, (long)IRIS_CPTR_TEST_PROC)
+        if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, n_ro, 0)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "route no-write notif"; }
         it_close(&n_ro);
     }
-    /* Route with a valid IRQ cap + valid notif but a proc cap lacking ROUTE
-     * (iris_test's own proc, slot 25, is WRITE only) → ACCESS_DENIED: iris_test
-     * cannot route, proving route needs proc-ROUTE authority (containment). */
-    if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, (long)notif, (long)IRIS_CPTR_TEST_PROC)
-              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "route lacking proc-ROUTE not denied"; }
+    /*
+     * Stage 7-mem: the last probe used to be "a proc cap lacking ROUTE is
+     * denied", which was containment expressed through a third object.  A
+     * route is authorised by what it acts on — RIGHT_ROUTE on the interrupt
+     * line and RIGHT_WRITE on the notification — and the two probes above
+     * cover both.  What replaces it is the POSITIVE case and the property that
+     * makes the owner unnecessary: a valid route installs, and dropping the
+     * notification UNBINDS it.  A route that kept its lifecycle reference
+     * would keep the notification object alive, which the baseline check at
+     * the end of this test sees as a notification leak.
+     */
+    if (ok && it_sys3(SYS_IRQ_ROUTE_REGISTER, (long)irq, (long)notif, 0) != 0) {
+        ok = 0; why = "valid route denied";
+    }
 
     it_close(&irq); it_close(&notif);
     it_quiesce_reaper();

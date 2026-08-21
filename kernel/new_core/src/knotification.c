@@ -1,4 +1,5 @@
 #include <iris/nc/knotification.h>
+#include <iris/irq_routing.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/task.h>
 #include <stdatomic.h>
@@ -85,6 +86,10 @@ static void knotification_close(struct KObject *obj) {
     n->closed = 1;
     knotif_waiters_wake_all(n);
     spinlock_unlock(&n->base.lock);
+    /* Stage 7-mem: and any interrupt bound to it stops being delivered.  The
+     * binding is the notification's, so the last capability to it going is
+     * what unbinds — seL4's rule, and the reason an IRQ route needs no owner. */
+    irq_routing_unregister_notification(n);
 }
 
 /*

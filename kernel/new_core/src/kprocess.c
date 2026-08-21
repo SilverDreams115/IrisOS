@@ -398,7 +398,8 @@ void kprocess_teardown(struct KProcess *p, struct task *exiting_thread) {
     /* Phase 6.3: VMO mappings are now tracked via KVSpace.mappings and cleaned
      * by kvspace_invalidate inside kprocess_reap_address_space.  No per-process
      * VMO mapping list exists; nothing to do here. */
-    irq_routing_unregister_owner(p);
+    /* Stage 7-mem: routes are unbound by the NOTIFICATION they are bound to,
+     * not swept by the process that registered them. */
 
     /* Stage 4: the CSpace root used to be owned by the handle table, so
      * handle_table_close_all above released it.  It is now held structurally,

@@ -3,7 +3,6 @@
 
 #include <stdint.h>
 
-struct KProcess;
 struct KNotification;
 
 #define IRQ_ROUTE_MAX 16  /* maximum routable hardware IRQ lines (0..IRQ_ROUTE_MAX-1) */
@@ -21,8 +20,7 @@ void    irq_routing_init    (void);
  * and re-arms with SYS_IRQ_ACK. A route holds either a channel or a
  * notification, never both (registering one replaces the other). */
 void    irq_routing_register_notification(uint8_t irq,
-                                          struct KNotification *notif,
-                                          struct KProcess *owner);
+                                          struct KNotification *notif);
 
 /*
  * irq_routing_active_count: count IRQ routing table entries with a live channel.
@@ -41,7 +39,10 @@ uint32_t irq_routing_active_count(void);
 /* Called from ISR context: send a one-byte payload into the channel
  * registered for irq.  Returns 0 if sent, -1 if no channel or full. */
 int32_t irq_routing_signal  (uint8_t irq, uint8_t data_byte);
-void    irq_routing_unregister_owner(struct KProcess *owner);
+/* Stage 7-mem: clear every route bound to this notification.  Called from its
+ * CLOSE hook, so dropping the last capability to a notification unbinds the
+ * interrupt — the binding belongs to the object, not to a resource domain. */
+void irq_routing_unregister_notification(struct KNotification *n);
 
 /* Called from sys_irq_ack: unmask the hardware IRQ line so new interrupts
  * can fire.  No-op if irq >= IRQ_ROUTE_MAX.  This is the "re-enable" half of

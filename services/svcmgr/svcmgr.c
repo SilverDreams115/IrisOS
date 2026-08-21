@@ -1198,7 +1198,7 @@ static int svcmgr_track_spawn(struct svcmgr_state *state,
             route_h = (handle_id_t)svc->irq_notif_c;
         }
         if (irqcap_c == 0u || route_h == HANDLE_INVALID ||
-            svcmgr_syscall3(SYS_IRQ_ROUTE_REGISTER, irqcap_c, route_h, proc_h) < 0) {
+            svcmgr_syscall3(SYS_IRQ_ROUTE_REGISTER, irqcap_c, route_h, 0) < 0) {
             svc->proc_h = HANDLE_INVALID;
             svcmgr_close_handle_if_valid(&proc_h);
             svcmgr_log(sm_str_irqfail);

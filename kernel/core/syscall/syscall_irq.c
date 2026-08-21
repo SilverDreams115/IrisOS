@@ -61,29 +61,25 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    /* Resolve and validate the process cap (will own the route).
-     * A1 Increment 2a: dual resolver — CPtr slot or handle. */
-    struct KObject  *proc_obj;
-    iris_rights_t    proc_rights;
-    r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg2,
-                                     RIGHT_NONE, KOBJ_PROCESS, &proc_obj, &proc_rights);
-    if (r != IRIS_OK) {
-        kobject_release(ch_obj);
-        return syscall_err(r);
-    }
-    if (!rights_check(proc_rights, RIGHT_READ | RIGHT_ROUTE)) {
-        kobject_release(ch_obj);
-        kobject_release(proc_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
+    /*
+     * Stage 7-mem: arg2 is RESERVED and ignored.
+     *
+     * It named the PROCESS that would own the route, and required
+     * RIGHT_READ|RIGHT_ROUTE on it — a third party to an operation between an
+     * interrupt line and a notification.  It existed so process teardown could
+     * sweep the routes that process had installed; the binding belongs to the
+     * notification now and is cleared when its last capability goes.
+     *
+     * What authorises a route is what it acts on, and both are already
+     * checked: RIGHT_ROUTE on the IRQ capability (you hold the line) and
+     * RIGHT_WRITE on the notification (you may signal it).  There is nothing a
+     * process capability added except a fourth thing to hold.
+     */
+    (void)arg2;
 
-    /* irq_routing_register retains the destination on its own; proc is an
-     * unretained owner pointer — safe because kprocess_teardown calls
-     * unregister_owner before the process object is freed. */
-    irq_routing_register_notification(irq_num, (struct KNotification *)ch_obj,
-                                      (struct KProcess *)proc_obj);
+    /* The routing table takes its own lifecycle reference on the destination. */
+    irq_routing_register_notification(irq_num, (struct KNotification *)ch_obj);
     kobject_release(ch_obj);
-    kobject_release(proc_obj);
     return syscall_err(IRIS_OK);
 }
 

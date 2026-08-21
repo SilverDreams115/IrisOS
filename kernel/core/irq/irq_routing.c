@@ -1,15 +1,30 @@
 #include <iris/irq_routing.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kobject.h>
-#include <iris/nc/kprocess.h>
 #include <iris/nc/spinlock.h>
 #include <iris/pic.h>
 
 /* Phase 13/Track G: IRQ routing is KNotification-only — the legacy KChannel
  * message route is fully retired (KChannel is no longer an IPC mechanism). */
+/*
+ * Stage 7-mem: a route has no OWNER field any more.
+ *
+ * It used to name the KProcess that registered it, for exactly one purpose:
+ * so process teardown could sweep the routes that process had installed.  That
+ * is the kernel keeping a back-reference to a resource domain in order to
+ * clean up after it — and the domain is going away.
+ *
+ * The seL4 shape is that the binding belongs to the NOTIFICATION, and deleting
+ * the notification unbinds the interrupt (`seL4_IRQHandler_Clear` is the
+ * explicit form; dropping the capability is the implicit one).  So the route
+ * holds a LIFECYCLE reference only — enough to keep the pointer valid for an
+ * interrupt that is already in flight — and no ACTIVE one, which is what lets
+ * the notification's close hook fire when the last CSpace slot holding it goes.
+ * That hook clears the route.  A driver that drops its notification stops
+ * receiving its interrupt, with nobody having to remember who registered it.
+ */
 struct irq_route_entry {
     struct KNotification *notif;  /* signal route (kbd, Phase 7.6) */
-    struct KProcess      *owner;
 };
 
 static struct irq_route_entry irq_table[IRQ_ROUTE_MAX];
@@ -19,28 +34,22 @@ void irq_routing_init(void) {
     spinlock_init(&irq_lock);
     for (int i = 0; i < IRQ_ROUTE_MAX; i++) {
         irq_table[i].notif = 0;
-        irq_table[i].owner = 0;
     }
 }
 
 void irq_routing_register_notification(uint8_t irq,
-                                       struct KNotification *notif,
-                                       struct KProcess *owner) {
+                                       struct KNotification *notif) {
     struct KNotification *old_n = 0;
     if (irq >= IRQ_ROUTE_MAX) return;
-    if (notif) {
-        kobject_retain(&notif->base);
-        kobject_active_retain(&notif->base);
-    }
+    /* Lifecycle reference only — see the note on struct irq_route_entry. */
+    if (notif) kobject_retain(&notif->base);
 
     spinlock_lock(&irq_lock);
     old_n = irq_table[irq].notif;
     irq_table[irq].notif = notif;
-    irq_table[irq].owner = notif ? owner : 0;
     spinlock_unlock(&irq_lock);
 
     if (old_n) {
-        kobject_active_release(&old_n->base);
         kobject_release(&old_n->base);
     }
 
@@ -82,22 +91,23 @@ void irq_routing_ack(uint8_t irq) {
     pic_set_irq_mask(irq, 0);
 }
 
-void irq_routing_unregister_owner(struct KProcess *owner) {
-    if (!owner) return;
+/*
+ * Clear every route bound to this notification.  Called from the
+ * notification's CLOSE hook — the moment its last CSpace slot goes — so an
+ * interrupt stops being delivered to an object nobody can reach.
+ */
+void irq_routing_unregister_notification(struct KNotification *n) {
+    if (!n) return;
 
     for (int i = 0; i < IRQ_ROUTE_MAX; i++) {
         struct KNotification *old_n = 0;
         spinlock_lock(&irq_lock);
-        if (irq_table[i].owner == owner) {
+        if (irq_table[i].notif == n) {
             old_n = irq_table[i].notif;
             irq_table[i].notif = 0;
-            irq_table[i].owner = 0;
         }
         spinlock_unlock(&irq_lock);
-        if (old_n) {
-            kobject_active_release(&old_n->base);
-            kobject_release(&old_n->base);
-        }
+        if (old_n) kobject_release(&old_n->base);
         if (old_n && i < 16)
             pic_set_irq_mask((uint8_t)i, 1);
     }
