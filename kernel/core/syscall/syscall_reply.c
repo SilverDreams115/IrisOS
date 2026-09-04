@@ -211,6 +211,11 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         {
             struct KReply *r = receiver->ep_reply_obj;
             if (kreply_bind_caller(r, t) == IRIS_OK) {
+                /* Stage 8-mcs: lend this caller's time to a passive server.
+                 * This is the sender-side rendezvous — the receiver was
+                 * already waiting — and it needs the donation exactly as much
+                 * as the receiver-side ones do. */
+                kreply_donate_on_call(r, t, receiver);
                 t->pending_kreply = r;   /* staging ref transferred */
                 receiver->ipc_msg.attached_handle = receiver->ep_reply_val;
                 receiver->ep_reply_obj = 0;
@@ -401,6 +406,15 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             caller->ipc_msg.buf_len = 0u;
         }
     }
+
+    /*
+     * Stage 8-mcs — the lent scheduling context goes home BEFORE the caller
+     * runs again.  Ordering matters: waking the caller first would leave a
+     * window where it is runnable with no SC while the server still holds it,
+     * so the client would be scheduled on nothing and the server would keep
+     * spending time that is no longer on loan.
+     */
+    kreply_return_donation(rp, caller);
 
     /* Release task's own KReply lifecycle ref. */
     if (caller->pending_kreply) {

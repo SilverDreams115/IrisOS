@@ -21504,6 +21504,136 @@ static void test_t307(void) {
     if (ok) it_pass("T307"); else it_fail("T307", why);
 }
 
+/* ── T308: a PASSIVE server runs on its client's time (Stage 8-mcs) ───────
+ *
+ * The last MCS pillar: scheduling context DONATION.  A thread with no SC of
+ * its own is passive — it has no time and cannot run on its own account.  When
+ * a client Calls it, the client's SC is lent for the duration, so the server
+ * runs on the requester's budget and gives it back on reply.  That is what
+ * makes time an authority a client delegates rather than something a server is
+ * born holding, and it is why a passive server can neither be starved into
+ * uselessness nor spun up by a client with nothing to give.
+ *
+ * The discriminating observation, and the reason this test is worth its setup:
+ * BEFORE donation, a thread with sched_ctx == NULL was never charged at all —
+ * an SC-less server ran with UNLIMITED time, which is the opposite of the
+ * property MCS is for.  So the test arms a timeout handler on the SERVER and
+ * has it spin:
+ *
+ *   - with donation, the server spends the CLIENT's budget, exhausts it, and
+ *     the timeout fault fires — which can only happen if the server was
+ *     charged to a scheduling context it does not own;
+ *   - without it, the server spins unbudgeted, no fault ever comes, and the
+ *     bounded wait below fails cleanly instead of hanging.
+ *
+ * Three threads because the client has to be able to block in EP_CALL while
+ * somebody else observes: the suite thread is the supervisor.
+ */
+static uint8_t g_t308_srv_stack[8192];
+static uint8_t g_t308_cli_stack[8192];
+static volatile long g_t308_ep;
+static volatile long g_t308_reply;
+static volatile int  g_t308_served;
+
+static void t308_server(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    /* Passive: no SC.  Blocks here until a client donates the time to run. */
+    (void)it_sys3(SYS_EP_RECV, (long)g_t308_ep, (long)&m, (long)g_t308_reply);
+    g_t308_served = 1;
+    /* Spin on the borrowed budget.  With donation this is bounded by the
+     * client's budget and ends in a timeout fault; without it, it is not
+     * bounded by anything, which is the bug. */
+    for (;;) { }
+}
+
+static void t308_client(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label = 0x8CULL;
+    (void)it_sys2(SYS_EP_CALL, (long)g_t308_ep, (long)&m);
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) { }
+}
+
+static void test_t308(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "sc donation";
+
+    long ep = it_ep_create_slot();
+    long rp = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
+    long notif = it_notify_create_slot();
+    if (ep < 0 || rp < 0 || notif < 0) { it_fail("T308", "objects"); return; }
+    g_t308_ep = ep; g_t308_reply = rp; g_t308_served = 0;
+
+    /* The server: started with NO scheduling context. */
+    long srv = it_thread_create((uint64_t)(uintptr_t)t308_server,
+                                ((uint64_t)(uintptr_t)(g_t308_srv_stack +
+                                    sizeof(g_t308_srv_stack))) & ~0xFULL, 0);
+    if (srv < 0) { it_fail("T308", "server thread"); return; }
+
+    /* Arm the server's timeout handler BEFORE it can overrun, so the fault
+     * cannot be missed between exhaustion and registration. */
+    const uint32_t mailbox = 191u;
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)mailbox);
+    if (ok && it_sys4(SYS_TCB_SET_TIMEOUT_HANDLER, srv, notif, 1L,
+                      (long)(((uint64_t)mailbox << 32) |
+                             (uint64_t)IT_OBJ_CNODE_SLOT)) != 0) {
+        ok = 0; why = "arm server timeout";
+    }
+
+    /* Let the server reach EP_RECV before anybody calls it. */
+    for (int i = 0; ok && i < 50 && !g_t308_served; i++) (void)it_sys0(SYS_YIELD);
+
+    /* The client: a small budget in a long period, so what the server spends
+     * is visibly the CLIENT's and runs out quickly. */
+    long cli = it_thread_create((uint64_t)(uintptr_t)t308_client,
+                                ((uint64_t)(uintptr_t)(g_t308_cli_stack +
+                                    sizeof(g_t308_cli_stack))) & ~0xFULL, 0);
+    if (cli < 0) { it_fail("T308", "client thread"); return; }
+
+    long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                   IRIS_KOBJ_SCHED_CONTEXT, 0);
+    if (sc < 0) { it_fail("T308", "sc"); return; }
+    if (ok && it_sys3(SYS_SC_CONFIGURE, sc, 3, 4000) != 0) { ok = 0; why = "sc configure"; }
+    if (ok && it_sys2(SYS_SC_BIND, sc, cli) != 0)          { ok = 0; why = "sc bind"; }
+
+    /*
+     * The assertion.  A timeout fault on the SERVER can only happen if the
+     * server was charged against a scheduling context — and it has none of its
+     * own, so it must be the client's.  Bounded wait: no donation means no
+     * fault and a clean TIMED_OUT rather than a hung suite.
+     */
+    uint64_t bits = 0;
+    if (ok && it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, notif,
+                      (long)(uintptr_t)&bits, 3000000000L) != 0) {
+        ok = 0; why = "server never charged to the donated SC";
+    }
+    if (ok) {
+        uint8_t b[FAULT_MSG_LEN];
+        if (it_sys2(SYS_TCB_FAULT_INFO, srv, (long)(uintptr_t)b) != 0) {
+            ok = 0; why = "no fault record on server";
+        } else {
+            uint32_t vec = (uint32_t)b[FAULT_OFF_VECTOR] |
+                           ((uint32_t)b[FAULT_OFF_VECTOR + 1] << 8) |
+                           ((uint32_t)b[FAULT_OFF_VECTOR + 2] << 16) |
+                           ((uint32_t)b[FAULT_OFF_VECTOR + 3] << 24);
+            if (vec != IRIS_FAULT_VECTOR_TIMEOUT) { ok = 0; why = "wrong vector"; }
+        }
+    }
+
+    /* Tear down: killing the server cancels the reply binding, which is the
+     * path that returns the loan to a client that never got its reply. */
+    (void)it_sys2(SYS_EXCEPTION_RESUME, srv, 1L);
+    (void)it_sys2(SYS_SC_BIND, sc, 0L);
+    (void)it_sys1(SYS_TCB_EXIT, cli);
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)mailbox);
+    it_quiesce_reaper();
+
+    if (ok) it_pass("T308"); else it_fail("T308", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -22041,6 +22171,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t305();
     test_t306();
     test_t307();
+    test_t308();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

@@ -19,6 +19,8 @@
  */
 #include "framework.h"
 #include <iris/nc/kschedctx.h>
+#include <iris/nc/kreply.h>
+#include <iris/task.h>
 #include <iris/kpage.h>
 #include <string.h>
 
@@ -172,6 +174,94 @@ void test_schedctx_refill(void) {
         ASSERT_EQ(sc->refill_count, 0u);
         ASSERT_EQ(sc->remaining_budget, 7u);
         ASSERT_EQ(rf_total(sc), 7u);
+    }
+
+    /* ── D-1: donation moves the SC to a passive server and back ─────────
+     * seL4's model: a server with no scheduling context of its own runs on the
+     * requester's time.  The accounting has to be exactly symmetric — a
+     * donation that leaks leaves the server holding a stranger's budget for
+     * ever and the client unable to run at all; one returned twice puts one SC
+     * on two threads.  Both are silent in a running system. */
+    {
+        struct KSchedContext *sc = rf_sc(5, 20);
+        struct KReply reply;
+        struct task client, server;
+        ASSERT_NOT_NULL(sc);
+        memset(&reply, 0, sizeof(reply));
+        memset(&client, 0, sizeof(client));
+        memset(&server, 0, sizeof(server));
+
+        client.sched_ctx = sc;
+        server.sched_ctx = NULL;              /* passive */
+
+        /* rendezvous: the loan */
+        server.sched_ctx = sc;
+        client.sched_ctx = NULL;
+        kreply_note_donation(&reply, sc, &server);
+        ASSERT_EQ(reply.donated_sc, sc);
+        ASSERT_EQ(reply.donated_to, &server);
+
+        /* reply: it goes home */
+        kreply_return_donation(&reply, &client);
+        ASSERT_EQ(client.sched_ctx, sc);
+        ASSERT_NULL(server.sched_ctx);
+        ASSERT_NULL(reply.donated_sc);
+
+        /* idempotent — a second return must not move anything */
+        kreply_return_donation(&reply, &client);
+        ASSERT_EQ(client.sched_ctx, sc);
+        ASSERT_NULL(server.sched_ctx);
+    }
+
+    /* ── D-2: a dead client takes the loan off the server anyway ──────────
+     * back_to == NULL is "the client is gone".  The SC must still come off the
+     * server: otherwise it keeps running on time that belongs to nobody, which
+     * is exactly the budget leak donation is supposed to make impossible. */
+    {
+        struct KSchedContext *sc = rf_sc(5, 20);
+        struct KReply reply;
+        struct task server;
+        ASSERT_NOT_NULL(sc);
+        memset(&reply, 0, sizeof(reply));
+        memset(&server, 0, sizeof(server));
+
+        server.sched_ctx = sc;
+        kreply_note_donation(&reply, sc, &server);
+        kreply_return_donation(&reply, NULL);
+        ASSERT_NULL(server.sched_ctx);
+        ASSERT_NULL(reply.donated_sc);
+    }
+
+    /* ── D-3: returning the loan closes the server's accounting run ───────
+     * The time the server actually used must earn its replenishment against
+     * the period it was used in, not the next holder's.  If the flush were
+     * missing, consumed_run would be carried into whatever the SC is lent to
+     * next and the conservation law would read wrong for both. */
+    {
+        struct KSchedContext *sc = rf_sc(5, 20);
+        struct KReply reply;
+        struct task client, server;
+        ASSERT_NOT_NULL(sc);
+        memset(&reply, 0, sizeof(reply));
+        memset(&client, 0, sizeof(client));
+        memset(&server, 0, sizeof(server));
+
+        server.sched_ctx = sc;
+        kreply_note_donation(&reply, sc, &server);
+
+        (void)kschedctx_charge_tick(sc, 40);   /* server spends borrowed time */
+        (void)kschedctx_charge_tick(sc, 41);
+        ASSERT_EQ(sc->consumed_run, 2u);
+
+        kreply_return_donation(&reply, &client);
+        ASSERT_EQ(sc->consumed_run, 0u);       /* flushed, not carried */
+        ASSERT_EQ(sc->refill_count, 1u);
+        ASSERT_EQ(rf_total(sc), 5u);
+
+        /* and it comes back one period after the SERVER spent it */
+        ASSERT_EQ(kschedctx_apply_refills(sc, 59), 0);
+        ASSERT_EQ(kschedctx_apply_refills(sc, 60), 1);
+        ASSERT_EQ(sc->remaining_budget, 5u);
     }
 
     /* ── R-8: applying refills never exceeds the configured budget ───────

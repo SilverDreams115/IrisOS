@@ -452,7 +452,7 @@ somebody's delegation.
 
 Three independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **18833 assertions** across 22 suites
+- **Host unit tests** — `make test-unit`: **18852 assertions** across 22 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   kendpoint, kreply, knotification, kuntyped including its two-ended carve,
   kschedctx, kframe, the MDB/CDT (structural + model-based fuzzing), rights,
@@ -460,7 +460,7 @@ Three independently-gating layers, run on every change:
   the file-grant layer, …). They cover what a successful boot cannot show:
   buffer bounds on a page about to be mapped into ring 3, a CSpace that names
   itself, and an allocator's two ends meeting exactly once.
-- **Runtime tests** — booted under QEMU headless: **275 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **276 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
@@ -473,8 +473,9 @@ Three independently-gating layers, run on every change:
   retype leaving its budget untouched (T301), the page table as a capability
   (T302), a running thread outliving every capability to it (T303), the retired
   live-process ceiling (T304), every capability tracing to an ancestor
-  (T305), a CNode capability carrying a guard (T306), and budget exhaustion
-  delivered as a fault a supervisor can answer (T307).
+  (T305), a CNode capability carrying a guard (T306), budget exhaustion
+  delivered as a fault a supervisor can answer (T307), and a passive server
+  running on its client's donated scheduling context (T308).
 - **Purity gate** — `make check-purity`: the frozen legacy-consumer allowlist.
   Nothing handle-table-shaped is left in it (Stage 4 deleted the namespace);
   what it holds is the kslab inventory — 14 files, 17 permitted occurrences —
@@ -485,9 +486,9 @@ Three independently-gating layers, run on every change:
 ```bash
 make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
-make test-unit                                             # host unit suites (18833)
+make test-unit                                             # host unit suites (18852)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (275/275)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (276/276)
 make run                                                   # interactive QEMU
 ```
 

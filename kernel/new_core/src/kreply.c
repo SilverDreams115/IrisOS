@@ -1,6 +1,7 @@
 #include <iris/nc/kreply.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kuntyped.h>
+#include <iris/nc/kschedctx.h>
 #include <iris/task.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -90,12 +91,75 @@ iris_error_t kreply_bind_caller(struct KReply *r, struct task *caller) {
     return IRIS_OK;
 }
 
+/* ── Stage 8-mcs: scheduling context donation ───────────────────────────── */
+
+void kreply_donate_on_call(struct KReply *r, struct task *sender,
+                           struct task *receiver) {
+    if (!r || !sender || !receiver) return;
+    /* Only a PASSIVE receiver borrows.  A receiver already holding a donation
+     * from an unanswered call keeps it, so a second client can never displace
+     * the first client's time. */
+    if (receiver->sched_ctx || !sender->sched_ctx) return;
+
+    struct KSchedContext *sc = sender->sched_ctx;
+    kschedctx_flush_run(sc);        /* close the client's run before lending */
+    sender->sched_ctx   = 0;
+    receiver->sched_ctx = sc;
+    kreply_note_donation(r, sc, receiver);
+}
+
+void kreply_note_donation(struct KReply *r, struct KSchedContext *sc,
+                          struct task *to) {
+    if (!r) return;
+    uint64_t flags = irq_spinlock_lock(&r->lock);
+    r->donated_sc = sc;
+    r->donated_to = to;
+    irq_spinlock_unlock(&r->lock, flags);
+}
+
+/*
+ * Give the lent scheduling context back.
+ *
+ * One function for every way a binding can end — a normal reply, an endpoint
+ * that closed under a blocked caller, a caller that died — because the failure
+ * this guards against is the SC being returned on some paths and not others.
+ * A donation that leaks leaves the server holding a stranger's budget for
+ * ever and the client unable to run at all; a donation returned twice puts one
+ * SC on two threads.  Both are silent, so there is exactly one path.
+ *
+ * `back_to` is passed rather than read from r->caller because the caller has
+ * usually been detached by the time this runs.  NULL means the client is gone
+ * and the SC has nowhere to go: it is taken off the server anyway, so the
+ * server stops running on time that no longer belongs to anybody, and the
+ * object is released with the dying thread that owned it.
+ */
+void kreply_return_donation(struct KReply *r, struct task *back_to) {
+    if (!r) return;
+    uint64_t flags = irq_spinlock_lock(&r->lock);
+    struct KSchedContext *sc = r->donated_sc;
+    struct task          *to = r->donated_to;
+    r->donated_sc = 0;
+    r->donated_to = 0;
+    irq_spinlock_unlock(&r->lock, flags);
+
+    if (!sc) return;
+    /* Close the server's accounting run before the SC leaves it, so the time
+     * it actually used earns its replenishment against the period it was used
+     * in rather than the next holder's. */
+    kschedctx_flush_run(sc);
+    if (to && to->sched_ctx == sc) to->sched_ctx = 0;
+    if (back_to && !back_to->sched_ctx) back_to->sched_ctx = sc;
+}
+
 void kreply_cancel_caller(struct KReply *r) {
     if (!r) return;
     uint64_t     flags  = irq_spinlock_lock(&r->lock);
     struct task *caller = r->caller;
     r->caller           = 0;
     irq_spinlock_unlock(&r->lock, flags);
+
+    /* Whatever ended the binding, the lent time goes home first. */
+    kreply_return_donation(r, caller);
 
     if (caller) {
         caller->ipc_ep_closed = 1;

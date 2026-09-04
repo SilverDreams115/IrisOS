@@ -2,6 +2,7 @@
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kreply.h>
 #include <iris/ipc_msg.h>
+#include <iris/nc/kschedctx.h>
 
 /* ── Internal helpers ────────────────────────────────────────────────── */
 
@@ -558,6 +559,26 @@ static int ep_bind_call_reply(struct task *receiver, struct task *sender,
     struct KReply *rp = receiver->ep_reply_obj;
     if (!rp) return 0;
     if (kreply_bind_caller(rp, sender) != IRIS_OK) return 0;
+
+    /*
+     * Stage 8-mcs — DONATE the caller's scheduling context to a PASSIVE
+     * server.  A server with no SC of its own runs on the requester's time,
+     * which is seL4's model: time is an authority a client delegates, not a
+     * property the server was born with.  A passive server therefore cannot be
+     * starved into uselessness, and cannot be spun by a client with no budget
+     * to give.
+     *
+     * Only when the receiver has none: a server already holding a donation (an
+     * earlier call it has not answered) keeps it, so a second client can never
+     * displace the first client's time.  Nothing is double-spent — budget is
+     * charged only to a RUNNING thread and the caller is about to block in
+     * TASK_BLOCKED_REPLY for the whole window.
+     *
+     * The record lives on the reply object because the reply is what ends the
+     * loan, and every way it can end goes through kreply_return_donation.
+     */
+    kreply_donate_on_call(rp, sender, receiver);
+
     /* Staging lifecycle ref transfers to sender->pending_kreply. */
     sender->pending_kreply = rp;
     *attached_out          = receiver->ep_reply_val;

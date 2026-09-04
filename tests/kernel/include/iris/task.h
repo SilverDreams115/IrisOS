@@ -45,6 +45,11 @@ struct task {
     uint32_t          ipc_kbuf_len;
     uint32_t          ep_call_mode;
     struct KReply    *pending_kreply;
+    /* Stage 8-mcs: the SC a thread runs on.  Present in the stub because
+     * kreply.c's donation path moves it between threads, and a stub that
+     * omitted it would compile the donation out of the host suite — the one
+     * place the accounting can be checked deterministically. */
+    struct KSchedContext *sched_ctx;
     uint8_t           home_cpu;
 };
 
