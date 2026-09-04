@@ -279,27 +279,16 @@ void kcnode_close(struct KCNode *cn) {
     kobject_release(&cn->base);
 }
 
-iris_error_t kcnode_bind_root(struct KCNode *cn) {
-    if (!cn) return IRIS_ERR_INVALID_ARG;
-    iris_error_t r = IRIS_OK;
-    spinlock_lock(&cn->base.lock);
-    if (cn->is_root) r = IRIS_ERR_BUSY;
-    else             cn->is_root = 1;
-    spinlock_unlock(&cn->base.lock);
-    return r;
-}
-
-/* Undo a claim for a process that was never composed — same reasoning as
- * kvspace_unbind, and the same restriction: a CNode that actually served as a
- * root has had its slots emptied by kprocess_teardown, so it is spent whether
- * or not the flag is clear.  Only the unwind path calls this. */
-void kcnode_unbind_root(struct KCNode *cn) {
-    if (!cn) return;
-    spinlock_lock(&cn->base.lock);
-    cn->is_root = 0;
-    spinlock_unlock(&cn->base.lock);
-}
-
+/*
+ * kcnode_teardown_slots — empty every slot with DELETE semantics, without
+ * waiting for the last reference.
+ *
+ * Stage 7-proc left this with no productive caller: a root CSpace that names
+ * itself now empties through its own close hook, because a self-naming slot
+ * takes no ACTIVE reference and the count therefore reaches zero.  It survives
+ * as the explicit form of that teardown, exercised by BC-11..BC-13 as the
+ * positive control for the behaviour the close hook provides implicitly.
+ */
 void kcnode_teardown_slots(struct KCNode *cn) {
     if (!cn) return;
     kcnode_obj_close(&cn->base);

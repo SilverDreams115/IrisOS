@@ -2,31 +2,25 @@
 #define IRIS_NC_HANDLE_H
 
 #include <stdint.h>
-#include <iris/nc/kobject.h>  /* forward-declares struct KObject for both kernel and user */
-#include <iris/nc/rights.h>
 
 /*
- * handle_id_t: process-visible opaque token.
- *   bit  [31]    = HANDLE_TAG — always 1 on a valid handle
- *   bits [30:10] = generation counter
- *   bits [9:0]   = slot index (0..1023)
+ * The reserved top of the capability-argument value space.
  *
- * HANDLE_INVALID = 0 always.
- * Generation 0 is FORBIDDEN for valid handles.
+ * There is exactly ONE authority namespace: a syscall argument is a CPtr or it
+ * is IRIS_ERR_INVALID_ARG.  Stage 4 deleted the handle table, and Stage 7-proc
+ * deleted the last structure that held one; `struct HandleEntry` and its
+ * helpers went with the kernel object they lived in.
  *
- * The tag bit is what unblocks the dual-namespace retirement.  Handles used to
- * be `slot | gen << 10`, i.e. every value from 1024 upward, which forced the
- * CPtr window to be everything BELOW 1024 — ten bits for the whole capability
- * address space of a process.  With a 256-slot root CNode that left two bits
- * for deeper CSpace levels, so multi-level CSpace was unusable and a process
- * that filled its root simply had nowhere left to put a capability.
+ * What survives is the BOUNDARY, and it survives on purpose.  Handles used to
+ * be `slot | gen << 10` — every value from 1024 upward — so the two namespaces
+ * were told apart by magnitude.  Values at or above HANDLE_TAG are therefore
+ * the bit patterns an old caller would send, and the kernel must reject them
+ * rather than resolve them: cspace_value_is_cptr() is that rejection, and it
+ * is the reason this file still exists.  A CPtr owns the whole low 31 bits.
  *
- * Moving handles to the top of the word costs one generation bit (still ~2M
- * generations per slot) and gives CPtrs the entire low 31 bits.  Nothing else
- * about handles changes: same slot count, same generation discipline, same
- * HANDLE_INVALID.  The two namespaces are still told apart by value, and that
- * discrimination still disappears when the handle namespace does — it just no
- * longer strangles the namespace that is replacing it.
+ * handle_id_t and the packing helpers remain because the userland ABI headers
+ * still name the type in a few protocol structs.  Nothing in the kernel
+ * produces a handle id; nothing consumes one.
  */
 typedef uint32_t handle_id_t;
 #define HANDLE_INVALID    ((handle_id_t)0)
@@ -49,32 +43,5 @@ static inline handle_id_t handle_id_make(uint32_t slot, uint32_t gen) {
                          ((gen & HANDLE_GEN_MAX) << HANDLE_GEN_SHIFT) |
                          (slot & HANDLE_SLOT_MASK));
 }
-
-#ifdef __KERNEL__
-/*
- * HandleEntry: kernel-internal handle slot.
- * Lives exclusively inside a HandleTable or in transit through a KChannel.
- * The handle_id_t token is NOT stored here — it is the table's address space.
- *
- * Invariants:
- *   - object != NULL for a slot that is in use
- *   - rights are immutable after initialisation
- *   - gen matches the generation counter of the HandleTable for this slot
- *   - Only HandleTable creates and destroys HandleEntry instances
- */
-struct HandleEntry {
-    struct KObject *object;
-    iris_rights_t   rights;
-    uint32_t        gen;
-};
-/* Phase 9 note: the per-cap badge for handle-namespace caps lives in a
- * parallel uint32_t array inside HandleTable (badge[slot]) — NOT here —
- * to keep sizeof(KProcess) inside the largest kslab class.  Handle-side
- * badges are 32-bit, matching the SYS_PROC_CSPACE_MINT arg3 packing. */
-
-void handle_entry_init(struct HandleEntry *e, struct KObject *obj,
-                       iris_rights_t rights, uint32_t gen);
-void handle_entry_reset(struct HandleEntry *e);
-#endif /* __KERNEL__ */
 
 #endif /* IRIS_NC_HANDLE_H */

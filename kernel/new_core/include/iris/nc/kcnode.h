@@ -59,17 +59,25 @@ struct KCSlot {
  * sys_cnode_create.  This constraint enables O(1) CSpace traversal via
  * ctzll(slot_count) bits per level.
  */
+/*
+ * `is_root` REMOVED (Stage 7-proc cleanup).
+ *
+ * It marked a CNode as some process's root CSpace and made the claim
+ * exclusive, because teardown was per-process: `kprocess_teardown` emptied a
+ * root's slots before dropping its refs, so two processes sharing one root
+ * CNode would have had the first one's death empty the second's CSpace.
+ *
+ * Both halves of that reasoning are gone.  There is no process object and no
+ * per-process teardown; a CNode is emptied by its OWN close hook when its last
+ * external capability goes.  Threads sharing a CSpace is not a hazard to
+ * refuse — it is what a "process" IS.  Nothing had set the flag since
+ * SYS_PROCESS_CREATE retired.
+ */
 struct KCNode {
     struct KObject   base;       /* must be first */
     irq_spinlock_t   lock;
     uint32_t         slot_count;
     struct KCSlot   *slots;      /* inline array immediately after header */
-    /* Stage 6-pure Step 5: this CNode is some process's root CSpace.  At most
-     * one, and never cleared: kprocess_teardown empties a root's slots before
-     * dropping its refs (the CSpace may name itself), so handing the same
-     * CNode to a second process would let the first process's teardown empty
-     * the second's CSpace out from under it. */
-    uint8_t        is_root;
 };
 
 /* Total allocation size for a KCNode with n slots */
@@ -98,11 +106,6 @@ void           kcnode_close(struct KCNode *cn);
  */
 void           kcnode_teardown_slots(struct KCNode *cn);
 
-/* Claim this CNode as a process's root CSpace.  IRIS_ERR_BUSY if it already
- * is one — see `is_root`. */
-iris_error_t   kcnode_bind_root(struct KCNode *cn);
-/* Release a claim taken for a process that was never composed. */
-void           kcnode_unbind_root(struct KCNode *cn);
 
 /* Phase 18: live KCNode object count (additive diagnostics). */
 uint32_t       kcnode_live_count(void);
