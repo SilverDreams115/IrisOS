@@ -493,7 +493,7 @@ Three independently-gating layers, run on every change:
 ```bash
 make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
-make test-unit                                             # host unit suites (18906)
+make test-unit                                             # host unit suites (18938)
 make smoke-runtime                                         # headless runtime lane
 ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (280/280)
 make run                                                   # interactive QEMU

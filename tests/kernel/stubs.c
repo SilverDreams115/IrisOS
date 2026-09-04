@@ -340,3 +340,39 @@ void paging_unmap_in(uint64_t cr3, uint64_t virt) {
  */
 struct KNotification;
 void irq_routing_unregister_notification(struct KNotification *n) { (void)n; }
+
+/* ── stubs for the syscall layers now compiled into this suite ────────────
+ *
+ * These are the boundary between the syscall handlers under test and the
+ * subsystems they report on: instrumentation gauges, the user-copy path, and
+ * the TCB allocator.  Every one of them is on a SUCCESS path — the tests here
+ * assert refusals, which return before reaching any of these — so a stub that
+ * returns nothing is not hiding a behaviour, it is declining to link a
+ * subsystem the refusal cases never touch.
+ */
+#include <iris/usercopy.h>
+int copy_to_user_checked(uint64_t dst, const void *src, uint32_t len) {
+    (void)dst; (void)src; (void)len; return 0;   /* no user address space here */
+}
+int user_range_writable(uint64_t ptr, uint32_t len) {
+    (void)ptr; (void)len; return 0;              /* no user address space here */
+}
+uint32_t syscall_restart_count(void)         { return g_test_restarts; }
+uint32_t kprocess_quota_failed_count(void)   { return 0; }
+uint32_t kprocess_quota_rollback_count(void) { return 0; }
+uint32_t kslab_fail_count(void)   { return 0; }
+uint32_t kslab_total_bytes(void)  { return 0; }
+uint32_t kslab_used_bytes(void)   { return 0; }
+void     task_registry_stats(uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d) {
+    if (a) *a = 0;
+    if (b) *b = 0;
+    if (c) *c = 0;
+    if (d) *d = 0;
+}
+struct task *ktcb_alloc_at(void *mem) { (void)mem; return 0; }
+void ktcb_stats(uint32_t *live, uint32_t *hwm, uint32_t *retyped, uint32_t *destroyed) {
+    if (live)      *live      = 0;
+    if (hwm)       *hwm       = 0;
+    if (retyped)   *retyped   = 0;
+    if (destroyed) *destroyed = 0;
+}

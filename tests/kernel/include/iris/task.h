@@ -4,6 +4,7 @@
 #define IRIS_TASK_H
 
 #include <stdint.h>
+#include <iris/nc/kobject.h>
 
 #define TASK_MAX              256u
 #define TASK_STACK_SIZE       8192u
@@ -25,6 +26,13 @@ struct KReply;
 struct KCNode;
 
 struct task {
+    /*
+     * The KObject header, at offset 0, exactly as in the kernel: a TCB IS a
+     * task there, and code that takes a capability to a thread reaches it
+     * through `&t->base`.  The stub carried none, which is why the syscall
+     * layers that touch TCBs could not be compiled into this suite at all.
+     */
+    struct KObject    base;
     uint32_t          id;
     task_state_t      state;
     uint8_t           priority;

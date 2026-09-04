@@ -9,7 +9,7 @@ what a green tree looks like today (Stage 7 closed — `KProcess` deleted):
 
 | Layer | Command | Green means |
 |---|---|---|
-| Host unit tests | `make test-unit` | 18906 assertions across 23 suites, 0 failed |
+| Host unit tests | `make test-unit` | 18938 assertions across 24 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected (14 files, 17 permitted `kslab_alloc` occurrences; it only ever shrinks) |
 | Runtime suite | `make smoke-runtime` | healthy boot signature |
 | Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 280/280` plus the P3/P41 markers |
@@ -149,10 +149,21 @@ through the syscall boundary, where a rejection and a crash look alike from
 ring 3 and where fault injection is unavailable.  That was the wrong way round:
 every assertion the object suites make assumes something upstream already
 rejected the malformed CPtr, the wrong type, the missing right.
-`test_syscall_cspace` (SC-1..SC-10) asserts the refusals one at a time, each
-returning the specific error it promises rather than the nearest plausible one.
-Host coverage of kernel `.c` moved 24% → 28% with the first file; the same
-pattern applies to the rest of the layer.
+`test_syscall_cspace` (SC-1..SC-10) and `test_syscall_retype` (RT-1..RT-8)
+assert the refusals one at a time, each returning the specific error it
+promises rather than the nearest plausible one.  Host coverage of kernel `.c`
+moved **24% → 35%**; three of the twelve syscall translation units are in, and
+the pattern applies to the rest.
+
+`test_syscall_retype` covers the narrowest place in the system: since Phase S1
+`SYS_UNTYPED_RETYPE2` is the only way a kernel object comes into existence, so
+everything the kernel will ever hold passes through one switch.  A slot count
+accepted there that is not a power of two is a CSpace whose radix walk indexes
+past the end of its own array; an unbounded batch count is a ring-3 caller
+choosing how long interrupts stay off.  Every case is checked before the source
+Untyped is resolved, which is itself the property being pinned — a retype that
+fails must fail without having consumed anything, or a caller learns it was
+refused by noticing its budget shrank.
 
 Host unit tests cover what a successful boot cannot show: `RBI-1..RBI-10` (the
 BootInfo builder's bounds), `UT-TOP-1..5` (the two-ended Untyped carve), and
