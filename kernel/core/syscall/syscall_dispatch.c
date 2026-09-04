@@ -6,6 +6,7 @@
  * All sys_* implementations live in the syscall_*.c subsystem files.
  */
 #include "syscall_priv.h"
+#include <stdatomic.h>
 #include <iris/cpu_local.h>
 
 /* MSR addresses */
@@ -33,8 +34,69 @@ static inline void _sc_putc(char c) {
     do { __asm__ volatile ("inb %1,%0":"=a"(s):"Nd"((uint16_t)0x3FD)); } while (!(s&0x20));
     __asm__ volatile ("outb %0,%1"::"a"((uint8_t)c),"Nd"((uint16_t)0x3F8));
 }
+/*
+ * Stage 9-evt Step 1 — the restart loop (ledger D-1).
+ *
+ * A handler that cannot complete calls syscall_request_restart() and returns.
+ * Its continuation is in THREAD state, never in its own locals, so re-entering
+ * it from the top is equivalent to resuming it — which is what an event kernel
+ * does and what a per-thread kernel stack currently makes unnecessary.
+ *
+ * Today the reschedule happens through task_yield() from inside this frame, so
+ * the frame is still parked on the thread's kernel stack: this step does not
+ * yet remove the stack, it removes the REASON the stack has to be kept.  Once
+ * every blocking path is restart-safe, step 2 abandons the frame here instead
+ * of yielding through it, and step 3 makes the stack per-core.
+ *
+ * The arguments are re-read from the thread rather than reused from the
+ * registers because the register frame is exactly what step 2 discards.
+ * Writing it that way now means step 2 changes this function and nothing else.
+ */
+static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
+                                     uint64_t arg1, uint64_t arg2,
+                                     uint64_t arg3);
+
+/* Global restart gauge — the only way, from outside, to tell a restartable
+ * blocking path from a stack-parked one. */
+static _Atomic uint32_t syscall_restart_total;
+
+uint32_t syscall_restart_count(void) {
+    return atomic_load_explicit(&syscall_restart_total, memory_order_relaxed);
+}
+
+void syscall_request_restart(struct task *t) {
+    if (!t) return;
+    t->sc_restart = 1u;
+    t->sc_restart_count++;
+    atomic_fetch_add_explicit(&syscall_restart_total, 1u, memory_order_relaxed);
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2, uint64_t arg3) {
+    struct task *t = task_current();
+    if (t) {
+        t->sc_num  = num;  t->sc_arg0 = arg0; t->sc_arg1 = arg1;
+        t->sc_arg2 = arg2; t->sc_arg3 = arg3; t->sc_restart = 0u;
+        t->sc_reentry = 0u;
+    }
+
+    for (;;) {
+        uint64_t r = syscall_dispatch_one(num, arg0, arg1, arg2, arg3);
+        if (!t || !t->sc_restart) { if (t) t->sc_reentry = 0u; return r; }
+
+        t->sc_restart = 0u;
+        /* The handler parked the thread; give the CPU up and come back to the
+         * top of the same syscall with the same arguments. */
+        task_yield();
+        t->sc_reentry = 1u;
+        num  = t->sc_num;  arg0 = t->sc_arg0; arg1 = t->sc_arg1;
+        arg2 = t->sc_arg2; arg3 = t->sc_arg3;
+    }
+}
+
+static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
+                                     uint64_t arg1, uint64_t arg2,
+                                     uint64_t arg3) {
     switch (num) {
         /* SYS_WRITE(0), SYS_BRK(7) — retired, fall to default */
         case SYS_GETPID: return sys_getpid(arg0, arg1, arg2);

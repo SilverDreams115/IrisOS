@@ -633,6 +633,7 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             q.kslab_failed_allocs   = kslab_fail_count();
             q.global_failed_charges = kprocess_quota_failed_count();
             q.global_rollbacks      = kprocess_quota_rollback_count();
+            q.syscall_restarts      = syscall_restart_count();
             return syscall_err(copy_versioned_to_user(buf_uptr, user_size, user_version,
                                &q, (uint32_t)sizeof(q), IRIS_UNTYPED_QUERY_VERSION));
         }

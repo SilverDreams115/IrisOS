@@ -22,7 +22,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 7 — KProcess retirement | ✅ CLOSED (15 steps + 7-mem + 7-proc) |
 | 8-mcs — Full MCS scheduling | ✅ CLOSED |
 | 8-cap — the capability model's last gaps | 🔶 IN PROGRESS (CNode guards landed below the root; D-4 open) |
-| 9-evt — the event kernel (D-1) | pending — the last structural divergence, and the precondition for 9 |
+| 9-evt — the event kernel (D-1) | 🔶 IN PROGRESS — step 1 of 3 begun: the dispatcher restarts, and `SYS_SLEEP` is the first restart-safe blocking path (T310) |
 | 9 — SMP | pending |
 | 10 — General-purpose platform | pending |
 

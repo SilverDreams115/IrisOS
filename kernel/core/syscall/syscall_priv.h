@@ -424,6 +424,19 @@ uint64_t sys_tcb_set_timeout_handler(uint64_t arg0, uint64_t arg1,
                                      uint64_t arg2, uint64_t arg3);
 /* Stage 8-mcs — atomic reply-then-receive (seL4_ReplyRecv). */
 uint64_t sys_reply_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+
+/*
+ * Stage 9-evt Step 1 — ask to be re-executed (ledger D-1).
+ *
+ * A blocking handler parks the thread, calls this, and returns.  The
+ * dispatcher reschedules and re-enters the SAME syscall with the SAME
+ * arguments.  The handler must therefore keep NO live state across the block:
+ * everything it needs on the second entry has to be in thread state, which is
+ * the continuation an event kernel would have recorded explicitly.
+ */
+void syscall_request_restart(struct task *t);
+/* Global count of syscall re-executions (diagnostic). */
+uint32_t syscall_restart_count(void);
 uint64_t sys_cspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,

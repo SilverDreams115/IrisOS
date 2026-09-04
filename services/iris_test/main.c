@@ -17722,7 +17722,9 @@ struct it_utq_global {
      * facts about the KERNEL, not about a process, and the drift checks that
      * end most tests read them to prove nothing leaked. */
     uint32_t kslab_used_bytes, kslab_total_bytes, kslab_failed_allocs;
-    uint32_t global_failed_charges, global_rollbacks, _pad1;
+    uint32_t global_failed_charges, global_rollbacks;
+    /* Stage 9-evt Step 1: syscall re-executions (ledger D-1). */
+    uint32_t syscall_restarts;
 };
 struct it_utq_one {
     uint32_t version, struct_size;
@@ -21744,6 +21746,62 @@ static void test_t309(void) {
     if (ok) it_pass("T309"); else it_fail("T309", why);
 }
 
+/* ── T310: a blocking syscall is RE-EXECUTED, not parked (Stage 9-evt) ────
+ *
+ * Ledger D-1, step 1.  seL4 is an event kernel: no thread blocks inside the
+ * kernel.  A syscall that cannot finish records what it needs in the THREAD,
+ * returns, and is re-executed when the thread runs again.  IRIS parks the
+ * thread mid-syscall on an 8 KiB kernel stack instead, which is why it can
+ * bound neither in-kernel latency nor kernel memory per thread.
+ *
+ * Converting that is three steps and the hard one is first: make the blocking
+ * handlers RESTART-SAFE, holding no live state across the block.  SYS_SLEEP is
+ * the first one converted — no queues, no capabilities, nothing partially
+ * delivered to undo — and this is the test that it really was converted rather
+ * than merely rearranged.
+ *
+ * From ring 3 a restartable sleep and a stack-parked sleep are
+ * indistinguishable: both block and both wake.  So the assertion is on the
+ * kernel's restart gauge, which only moves when a handler asked to be
+ * re-entered.  It asserts three things:
+ *
+ *   1. the sleep still SLEEPS — time actually passes;
+ *   2. the restart counter ADVANCED across it, so the handler returned and was
+ *      re-dispatched rather than resuming a parked frame;
+ *   3. a zero-length sleep does NOT restart, because a syscall that can
+ *      complete must never take the slow path.
+ */
+static void test_t310(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "restartable sleep";
+
+    struct it_utq_global g0, g1, g2;
+    if (!it_utq_g(&g0)) { it_fail("T310", "query"); return; }
+
+    /* (3) a sleep that needs no blocking must not restart */
+    if (ok && it_sys1(SYS_SLEEP, 0) != 0) { ok = 0; why = "zero sleep failed"; }
+    if (ok && !it_utq_g(&g1))             { ok = 0; why = "query"; }
+    if (ok && g1.syscall_restarts != g0.syscall_restarts) {
+        ok = 0; why = "zero-length sleep took the restart path";
+    }
+
+    /* (1) and (2): a real sleep blocks, and blocking means re-execution */
+    /* SYS_CLOCK_GET RETURNS the time; it does not write through a pointer. */
+    long t_before = 0, t_after = 0;
+    if (ok) t_before = it_sys0(SYS_CLOCK_GET);
+    if (ok && it_sys1(SYS_SLEEP, 3) != 0) { ok = 0; why = "sleep failed"; }
+    if (ok) t_after = it_sys0(SYS_CLOCK_GET);
+    if (ok && !it_utq_g(&g2))             { ok = 0; why = "query"; }
+
+    if (ok && g2.syscall_restarts <= g1.syscall_restarts) {
+        ok = 0; why = "blocking sleep did not re-execute";
+    }
+    if (ok && t_after <= t_before) { ok = 0; why = "sleep did not sleep"; }
+
+    if (ok) it_pass("T310"); else it_fail("T310", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -22283,6 +22341,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t307();
     test_t308();
     test_t309();
+    test_t310();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

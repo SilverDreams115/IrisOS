@@ -1523,7 +1523,18 @@ struct iris_untyped_query_global {
                                     * counts mentions, deliberately */
     uint32_t global_failed_charges;
     uint32_t global_rollbacks;
-    uint32_t _pad1;
+    /*
+     * Stage 9-evt Step 1 — how many times a syscall has been RE-EXECUTED
+     * because its handler parked the thread and asked to be re-entered
+     * (ledger D-1).
+     *
+     * Instrumentation, never authority, like everything else in this struct.
+     * It is here because the restart path is otherwise invisible: a
+     * restartable sleep and a stack-parked sleep look identical from ring 3,
+     * and the only way to assert that a blocking path was actually converted
+     * is to watch the counter move.
+     */
+    uint32_t syscall_restarts;
 };
 
 struct iris_untyped_query_one {

@@ -261,6 +261,53 @@ struct task {
      */
     uint8_t           timeout_pending;
 
+    /*
+     * Stage 9-evt Step 1 — RESTARTABLE SYSCALLS (ledger D-1).
+     *
+     * seL4 is an event kernel: no thread blocks inside the kernel.  A syscall
+     * that cannot complete records what it needs in the THREAD, returns, and
+     * is RE-EXECUTED when the thread runs again.  IRIS parks the thread
+     * mid-syscall on an 8 KiB kernel stack instead, which is the reason it can
+     * bound neither in-kernel latency nor kernel memory per thread.
+     *
+     * Converting that is three steps, and the hard one is first:
+     *
+     *   1. make blocking handlers RESTART-SAFE — hold no live state across the
+     *      block, express the continuation in thread state, and prove it by
+     *      actually re-executing them.  This flag and these saved arguments
+     *      are that step.
+     *   2. abandon the syscall frame instead of parking it (the stack becomes
+     *      dead while blocked rather than live).
+     *   3. one kernel stack per CORE instead of per thread.
+     *
+     * Step 2 is mechanical ONCE step 1 holds for every blocking path, and
+     * unsafe before it: a handler that keeps a local across a block needs the
+     * frame that step 2 throws away.  So the order is not a preference.
+     *
+     * `sc_restart` is set by a handler that wants to be re-entered.  The
+     * dispatcher clears it, reschedules, and re-dispatches the SAME syscall
+     * with the SAME arguments — which is why they are saved here rather than
+     * re-read from the user's registers, whose frame step 2 will discard.
+     */
+    uint8_t           sc_restart;
+    /*
+     * Set by the dispatcher before a RE-dispatch, clear on first entry.
+     *
+     * A restartable handler must be able to tell "I am starting" from "I am
+     * resuming", because the two do different things with the same arguments —
+     * and it cannot infer it from the state it parked on, since the scheduler
+     * clears that state when it wakes the thread.  SYS_SLEEP learned this the
+     * expensive way: keying off `wake_tick == 0` meant a woken sleeper saw no
+     * deadline, computed a fresh one from the original duration, and slept for
+     * ever.  This is the bit that distinguishes the two entries, and it is on
+     * the thread rather than in a handler-specific field so every path
+     * converted after this one gets it for free.
+     */
+    uint8_t           sc_reentry;
+    uint64_t          sc_num;
+    uint64_t          sc_arg0, sc_arg1, sc_arg2, sc_arg3;
+    uint32_t          sc_restart_count;  /* diagnostic: restarts observed */
+
     uint32_t          fault_seq_counter;
     struct KNotification *exit_notif;
     uint64_t          exit_bits;

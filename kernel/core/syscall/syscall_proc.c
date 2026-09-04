@@ -105,12 +105,61 @@ uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
+/*
+ * SYS_SLEEP — the first RESTARTABLE blocking syscall (Stage 9-evt Step 1).
+ *
+ * It used to call scheduler_sleep_current, which yielded from inside this
+ * frame and returned here when the thread woke: the handler's continuation was
+ * "the rest of this C function", living on the thread's kernel stack for the
+ * whole sleep.  That is precisely the shape ledger D-1 records, and the reason
+ * a thread costs 8 KiB of kernel memory it never asked for.
+ *
+ * Now the continuation is a FACT ABOUT THE THREAD — `wake_tick` — and this
+ * function holds nothing across the block.  Re-entering it from the top is
+ * equivalent to resuming it, which is what makes the frame disposable:
+ *
+ *   - first entry with no deadline set: compute one from arg0;
+ *   - deadline reached: clear it and return;
+ *   - otherwise: park and ask to be re-executed.
+ *
+ * The re-entry reads `wake_tick`, not arg0, which is what stops a restarted
+ * sleep from starting over and sleeping for ever — the bug this shape invites
+ * and the reason the continuation has to be a deadline rather than a duration.
+ *
+ * Sleep is deliberately the first one converted: no queues, no capabilities,
+ * no partial delivery to undo.  It exercises the whole restart path with the
+ * least that can go wrong, which is what a first step is for.
+ */
 uint64_t sys_sleep(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     /* arg0 = ticks to sleep (at 100 Hz, 1 tick = 10ms) */
+    struct task *t = task_current();
+    if (!t) return 0;
     if (arg0 == 0) return 0;
-    scheduler_sleep_current(arg0);
-    return 0;
+
+    if (!t->sc_reentry) {
+        /* First entry: turn the DURATION into a deadline, which is the
+         * continuation.  A duration cannot be one — re-reading it on the
+         * second entry restarts the sleep. */
+        uint64_t deadline = sched_current_ticks() + arg0;
+        if (deadline < arg0) deadline = UINT64_MAX;   /* overflow */
+        t->wake_tick = deadline;
+    } else if (t->wake_tick == 0u) {
+        /* Re-entry with the deadline cleared: the scheduler woke us because it
+         * passed.  It zeroes wake_tick as it wakes, so this — not a comparison
+         * against a deadline that no longer exists — is how the sleep ends. */
+        return 0;
+    }
+
+    if (sched_current_ticks() >= t->wake_tick) {
+        t->wake_tick = 0u;
+        return 0;
+    }
+
+    t->state        = TASK_SLEEPING;
+    t->need_resched = 1;
+    syscall_request_restart(t);
+    return 0;   /* value unused: the dispatcher re-enters instead of returning */
 }
 
 
