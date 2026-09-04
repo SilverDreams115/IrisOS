@@ -9,7 +9,7 @@ what a green tree looks like today (Stage 7 closed — `KProcess` deleted):
 
 | Layer | Command | Green means |
 |---|---|---|
-| Host unit tests | `make test-unit` | 19002 assertions across 26 suites, 0 failed |
+| Host unit tests | `make test-unit` | 19018 assertions across 27 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected (14 files, 17 permitted `kslab_alloc` occurrences; it only ever shrinks) |
 | Runtime suite | `make smoke-runtime` | healthy boot signature |
 | Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 280/280` plus the P3/P41 markers |
@@ -152,8 +152,14 @@ rejected the malformed CPtr, the wrong type, the missing right.
 `test_syscall_cspace` (SC-1..SC-10) and `test_syscall_retype` (RT-1..RT-8)
 assert the refusals one at a time, each returning the specific error it
 promises rather than the nearest plausible one.  Host coverage of kernel `.c`
-moved **24% → 53%**, and the syscall layer itself is **8 of 15 translation
-units, 4426 of 6601 lines**.
+moved **24% → 72%**, and the syscall layer is **15 of 15 translation units** —
+all of it.
+
+What remains outside the host build is hardware and boot: `gdt`, `idt`,
+`lapic`, `pic`, `paging`, `pmm`, `kslab`, `kpage`, `kstack`, `serial`, `panic`,
+`kernel_main`, the two scheduler files, and `initrd` (whose contents are blobs
+objcopy'd into the kernel image).  That is a defensible boundary rather than a
+backlog: each of them is about a machine, and a unit test does not have one.
 
 What the host suite deliberately does NOT cover is the real `usercopy`: SMAP
 STAC/CLAC, the per-page PRESENT|USER|WRITABLE walk, the overflow check and the

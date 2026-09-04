@@ -200,12 +200,25 @@ TEST_UNIT_SRCS  := \
     kernel/core/syscall/syscall_untyped.c \
     kernel/new_core/src/kioport.c \
     kernel/new_core/src/kirqcap.c \
+    kernel/new_core/src/kvmo.c \
+    kernel/new_core/src/kinitrdentry.c \
+    kernel/new_core/src/ktcb.c \
+    kernel/new_core/src/kprocess.c \
+    kernel/core/futex/futex.c \
+    kernel/core/irq/irq_routing.c \
     kernel/core/syscall/syscall_cap.c \
     kernel/core/syscall/syscall_tcb.c \
     kernel/core/syscall/syscall_sched.c \
     kernel/core/syscall/syscall_reply.c \
     kernel/core/syscall/syscall_endpoint.c \
     kernel/core/syscall/syscall_proc.c \
+    kernel/core/syscall/syscall_frame.c \
+    kernel/core/syscall/syscall_cnode_ops.c \
+    kernel/core/syscall/syscall_irq.c \
+    kernel/core/syscall/syscall_vm.c \
+    kernel/core/syscall/syscall_ipc.c \
+    kernel/core/syscall/syscall_diag.c \
+    kernel/core/syscall/syscall_dispatch.c \
     tests/kernel/test_rights.c \
     tests/kernel/test_kobject.c \
     tests/kernel/test_kcnode.c \
@@ -229,6 +242,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_syscall_retype.c \
     tests/kernel/test_syscall_tcb.c \
     tests/kernel/test_syscall_ipc.c \
+    tests/kernel/test_syscall_dispatch.c \
     tests/kernel/test_klog.c \
     kernel/core/klog/klog.c \
     services/vfs/vfs_ep.c \
@@ -758,7 +772,12 @@ clean:
 	rm -rf $(BUILD_DIR)/efi_root
 	rm -f $(SERVICE_SVCMGR_ELF) $(SERVICE_KBD_ELF) $(SERVICE_VFS_ELF) $(SERVICE_INIT_ELF) $(SERVICE_SH_ELF) $(SERVICE_IRIS_TEST_ELF)
 
-$(TEST_UNIT_BIN): $(TEST_UNIT_SRCS) | dirs
+# Makefile is a real prerequisite: the source list and the flags live in it, so
+# editing either must relink.  Without this, adding a translation unit to
+# TEST_UNIT_SRCS leaves the previous binary in place and `make test-unit` runs
+# it — reporting a result for a build that no longer exists.  That cost a
+# debugging session once; it is one line.
+$(TEST_UNIT_BIN): $(TEST_UNIT_SRCS) Makefile | dirs
 	gcc $(TEST_UNIT_CFLAGS) $(TEST_UNIT_SRCS) -o $@
 
 test-unit: $(TEST_UNIT_BIN)

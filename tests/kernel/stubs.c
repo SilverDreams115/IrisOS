@@ -78,21 +78,11 @@ static struct task *g_test_current;
 struct task *task_current(void)          { return g_test_current; }
 void         test_set_current_task(struct task *t) { g_test_current = t; }
 
-/*
- * The restart request, observable so a test can assert a syscall PARKED.
- *
- * In the kernel this sets a flag the dispatcher acts on; here there is no
- * dispatcher, so it records the fact and the test reads it.  That is the
- * distinction the host suite could not otherwise make: a handler that returns
- * 0 having parked and one that returns 0 having finished look identical from
- * the outside, and for a preemptible operation those are opposite answers.
- */
-static uint32_t g_test_restarts;
-void syscall_request_restart(struct task *t) {
-    if (t) t->sc_restart = 1u;
-    g_test_restarts++;
-}
-uint32_t test_restart_count(void) { return g_test_restarts; }
+/* The real dispatcher provides syscall_request_restart and its counter now
+ * that syscall_dispatch.c is in this build; the suite reads the real gauge
+ * rather than a parallel one that could disagree with it. */
+uint32_t syscall_restart_count(void);
+uint32_t test_restart_count(void) { return syscall_restart_count(); }
 
 /* ── kprocess quota stubs (needed when compiling kchannel.c) ─────────────── */
 #include <iris/nc/kprocess.h>
@@ -339,7 +329,6 @@ void paging_unmap_in(uint64_t cr3, uint64_t virt) {
  * nothing rather than a fake table that could be mistaken for coverage.
  */
 struct KNotification;
-void irq_routing_unregister_notification(struct KNotification *n) { (void)n; }
 
 /* ── stubs for the syscall layers now compiled into this suite ────────────
  *
@@ -391,9 +380,6 @@ int copy_u64_to_user_checked(uint64_t dst, uint64_t val) {
 int user_range_writable(uint64_t ptr, uint32_t len) {
     (void)len; return ptr != 0;
 }
-uint32_t syscall_restart_count(void)         { return g_test_restarts; }
-uint32_t kprocess_quota_failed_count(void)   { return 0; }
-uint32_t kprocess_quota_rollback_count(void) { return 0; }
 uint32_t kslab_fail_count(void)   { return 0; }
 uint32_t kslab_total_bytes(void)  { return 0; }
 uint32_t kslab_used_bytes(void)   { return 0; }
@@ -402,13 +388,6 @@ void     task_registry_stats(uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
     if (b) *b = 0;
     if (c) *c = 0;
     if (d) *d = 0;
-}
-struct task *ktcb_alloc_at(void *mem) { (void)mem; return 0; }
-void ktcb_stats(uint32_t *live, uint32_t *hwm, uint32_t *retyped, uint32_t *destroyed) {
-    if (live)      *live      = 0;
-    if (hwm)       *hwm       = 0;
-    if (retyped)   *retyped   = 0;
-    if (destroyed) *destroyed = 0;
 }
 
 /*
@@ -433,3 +412,44 @@ uint64_t sched_current_ticks(void)       { return g_test_ticks; }
 void     test_set_ticks(uint64_t t)      { g_test_ticks = t; }
 void task_exit_current(void)             { }
 void task_kill_external(struct task *t)  { (void)t; }
+
+/*
+ * Hardware and boot-image edges the host has no equivalent for.
+ *
+ * initrd is a set of blobs objcopy'd into the kernel image; the PMM owns real
+ * physical memory; the PIC and the framebuffer are devices.  A unit test has
+ * none of these, and the syscall handlers that touch them are reached only
+ * AFTER their authority checks pass — which is what these suites assert.
+ */
+uint32_t initrd_count(void) { return 0; }
+const struct initrd_entry *initrd_get(uint32_t i) { (void)i; return 0; }
+#include <iris/fb_info.h>
+struct iris_fb_params g_iris_fb_params;
+int g_iris_fb_params_valid;
+uint32_t paging_tlb_invalidate_count(void) { return 0; }
+void     pic_set_irq_mask(uint8_t irq, int masked) { (void)irq; (void)masked; }
+uint64_t pmm_alloc_page(void)               { return 0; }
+uint64_t pmm_alloc_pages(uint32_t n)        { (void)n; return 0; }
+void     pmm_free_contig(uint64_t p, uint32_t n) { (void)p; (void)n; }
+void     pmm_free_page(uint64_t p)          { (void)p; }
+
+/* Scheduler gauges.  SYS_SCHED_INFO reports them; a unit test has no
+ * scheduler, and the tests here assert who is ALLOWED to ask. */
+uint64_t sched_context_switches(void)        { return 0; }
+uint32_t sched_duplicate_enqueue_count(void) { return 0; }
+uint64_t sched_idle_ticks(void)              { return 0; }
+uint32_t sched_live_task_count(void)         { return 0; }
+uint32_t sched_reap_queue_hwm(void)          { return 0; }
+uint32_t sched_run_queue_hwm(void)           { return 0; }
+uint64_t sched_wall_ticks(void)              { return 0; }
+
+void     scheduler_sleep_current(uint64_t ticks) { (void)ticks; }
+uint32_t sched_yield_count(void)             { return 0; }
+void     task_backing_free_on_destroy(struct task *t) { (void)t; }
+uint64_t tsc_boot(void)                      { return 0; }
+uint64_t tsc_hz(void)                        { return 1000000000ULL; }
+/* Assembly entry points the MSR setup names.  syscall_init is never called
+ * here — it writes model-specific registers — but the symbols must resolve. */
+void syscall_entry(void) { }
+uint64_t syscall_kstack_ptr;
+uint64_t syscall_user_cr3;
