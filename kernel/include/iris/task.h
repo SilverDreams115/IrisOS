@@ -328,6 +328,21 @@ struct task {
      * everything else here does: the frame that used to hold it is gone.
      */
     uint64_t          sc_acc;
+    /*
+     * Stage 8-cap / D-2 — the GUARD on this thread's root CSpace capability.
+     *
+     * Guards live in the capability, and every CNode capability in a slot
+     * carries its own (KCSlot.guard).  The root is the one capability a thread
+     * does not reach through a slot: it is a structural pointer, so its guard
+     * has nowhere to live but here.  That asymmetry is not a design choice, it
+     * is what `cspace_root` being a pointer rather than a capability costs.
+     *
+     * Set by SYS_TCB_CONFIGURE's arg3, which is seL4's `cspace_root_data` —
+     * the same argument carrying the same meaning.  Zero bits means no guard,
+     * which is every thread until one asks otherwise.
+     */
+    uint64_t          cspace_root_guard;
+    uint8_t           cspace_root_guard_bits;
     uint64_t          sc_num;
     uint64_t          sc_arg0, sc_arg1, sc_arg2, sc_arg3;
     uint32_t          sc_restart_count;  /* diagnostic: restarts observed */

@@ -462,7 +462,7 @@ Three independently-gating layers, run on every change:
   the file-grant layer, …). They cover what a successful boot cannot show:
   buffer bounds on a page about to be mapped into ring 3, a CSpace that names
   itself, and an allocator's two ends meeting exactly once.
-- **Runtime tests** — booted under QEMU headless: **279 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **280 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
@@ -480,7 +480,9 @@ Three independently-gating layers, run on every change:
   running on its client's donated scheduling context (T308), and that server
   serving a whole loop of requests through `REPLY_RECV` (T309), and a blocking
   syscall being re-executed rather than parked on a kernel stack (T310), and a
-  revoke that preempts part-way and still answers for the whole job (T311).
+  revoke that preempts part-way and still answers for the whole job (T311), and
+  a parent and child sharing one root CNode that address it differently because
+  the guard belongs to the capability (T312).
 - **Purity gate** — `make check-purity`: the frozen legacy-consumer allowlist.
   Nothing handle-table-shaped is left in it (Stage 4 deleted the namespace);
   what it holds is the kslab inventory — 14 files, 17 permitted occurrences —
@@ -493,7 +495,7 @@ make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
 make test-unit                                             # host unit suites (18852)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (279/279)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (280/280)
 make run                                                   # interactive QEMU
 ```
 

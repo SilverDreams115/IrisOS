@@ -1574,7 +1574,7 @@ Not seL4's yet: `refill_max` is a compile-time constant (8 entries) rather than
 a per-SC configuration chosen at retype.  At tick granularity with a coalescing
 flush it has not been reachable; recorded rather than claimed closed.
 
-## Stage 8-cap — the capability model's last gaps  ← IN PROGRESS
+## Stage 8-cap — the capability model's last gaps  ← IN PROGRESS (D-2 and D-8 closed; D-4 remains)
 
 Four items, each a registered divergence or a measured hole.  All are additive:
 none of them is a rewrite, which is why they are grouped rather than staged
@@ -1589,12 +1589,15 @@ Capability-local, not object-local — two capabilities to one CNode can be
 guarded differently, which is the property that makes it seL4's guard rather
 than a lookalike (host G-7).  Pinned by T306 and `test_cnode_guard` G-1..G-8.
 
-**Still open in D-2: the ROOT guard.**  A thread reaches its root CNode through
-a structural pointer rather than a slot, so there is no capability there to
-carry one.  Closing it means making the root a real capability — every
-resolver would take the guard alongside the CNode — so it is mechanical but
-wide, and it has no consumer in tree yet.  Until it lands a CSpace can be
-sparse below the root but not at it.
+**D-2 is CLOSED: the ROOT guard landed too.**  A thread reaches its root CNode
+through a structural pointer rather than a slot, so its guard lives on the
+thread, installed by `SYS_TCB_CONFIGURE`'s arg3 — seL4's `cspace_root_data`,
+the same argument in the same position of the same operation.  It cost no
+churn in the resolvers: the walk picks the guard up only when the CNode it is
+walking IS the running thread's root, which is the only capability the guard
+belongs to.  T312 pins the property that makes it seL4's guard rather than a
+lookalike — a parent and a child sharing ONE root CNode object address it
+differently.
 
 - **D-8 — revoke is preemptible.**  ✅ **CLOSED (Stage 9-evt).**  Bounded
   slices plus the restart machinery step 1 built; no cursor and no zombie

@@ -10,6 +10,7 @@
 #include <iris/nc/kframe.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/rights.h>
+#include <iris/task.h>
 
 iris_error_t cspace_resolve_cap_badged(struct KCNode     *root,
                                         iris_cptr_t        cptr,
@@ -37,15 +38,28 @@ iris_error_t cspace_resolve_cap_badged(struct KCNode     *root,
     struct KCNode *cur = (struct KCNode *)root_obj;
 
     /*
-     * Stage 8-cap / D-2 — the guard of the capability we ENTERED `cur`
-     * through.  The root is entered through the thread's cspace_root, which is
-     * a structural pointer rather than a slot, so it has no guard yet: that is
-     * the one place a guard cannot be expressed until the root becomes a real
-     * capability.  Every descent below the root carries the guard of the CNode
-     * capability it went through.
+     * Stage 8-cap / D-2 — the guard of the capability the walk ENTERED `cur`
+     * through.  Below the root that is the slot it descended from; at the root
+     * it is the thread, because a thread reaches its root CSpace through a
+     * structural pointer and there is no slot to carry a guard.
+     *
+     * The root condition is exact rather than convenient: the guard applies
+     * only when the CNode being walked IS the running thread's root, which is
+     * the only capability it belongs to.  A walk rooted at some OTHER CNode —
+     * a destination the caller named, a child's root a spawner mints into — is
+     * a different capability and must not inherit it.  In the host suite
+     * task_current() is NULL, so this is inert and the resolver behaves
+     * exactly as it did before guards existed.
      */
     uint64_t pending_guard      = 0;
     uint8_t  pending_guard_bits = 0;
+    {
+        struct task *self = task_current();
+        if (self && self->cspace_root == root && self->cspace_root_guard_bits) {
+            pending_guard      = self->cspace_root_guard;
+            pending_guard_bits = self->cspace_root_guard_bits;
+        }
+    }
 
     for (uint32_t depth = 0; depth < CSPACE_MAX_DEPTH; depth++) {
         uint32_t radix = (uint32_t)__builtin_ctzll((uint64_t)cur->slot_count);

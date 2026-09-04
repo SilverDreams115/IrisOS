@@ -90,16 +90,33 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     if (err != IRIS_OK) return syscall_err(err);
 
     /*
-     * Stage 7-proc: arg3 is RESERVED and ignored.
+     * arg3 — the ROOT CSpace GUARD (Stage 8-cap, ledger D-2).
      *
-     * It named the PROCESS the thread would join, gated by RIGHT_MANAGE on it,
-     * and the two capability arguments were then checked for IDENTITY against
-     * that process's own root CNode and address space.  There is no process
-     * object: threads configured with the same CSpace and the same VSpace ARE
-     * a process, so the pair is the membership rather than a claim to be
-     * checked against a third thing.  This is seL4's seL4_TCB_Configure.
+     * It named the PROCESS the thread would join until Stage 7-proc, and was
+     * reserved and ignored after that.  It carries seL4's `cspace_root_data`
+     * now, which is the same argument in the same position of the same
+     * operation: the guard belonging to the CSpace capability being installed.
+     *
+     * Packed `guard | guard_bits << 32`.  Zero bits means no guard, which is
+     * what every thread has until somebody asks otherwise, so this is additive
+     * for every existing caller — including the ones still passing a stale
+     * process capability, whose low bits become a guard of zero width.
+     *
+     * Refused rather than truncated when the guard does not fit its declared
+     * width, or when the width plus the root's radix would not fit a CPtr: a
+     * root guard that silently means something other than what was asked for
+     * would make every CPtr in that thread's CSpace mean something else too.
      */
-    (void)arg3;
+    uint64_t root_guard      = arg3 & 0xFFFFFFFFu;
+    uint32_t root_guard_bits = (uint32_t)(arg3 >> 32);
+    if (root_guard_bits > KCNODE_GUARD_BITS_MAX) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+    if (root_guard_bits < 64u && (root_guard >> root_guard_bits) != 0u) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
 
     /*
      * The CSpace argument: a real KCNode capability the caller HOLDS.
@@ -152,6 +169,14 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * how it was resolved — so nothing can drop the last reference before
      * ktcb_configure takes its own pair. */
     err = ktcb_configure(target, cspace, vspace);
+    if (err == IRIS_OK) {
+        /* Stage 8-cap / D-2: the guard belongs to the CSpace capability just
+         * installed, so it is written with it and only when the install
+         * succeeded — a guard on a root the thread does not have would change
+         * how a CSpace it never got resolves. */
+        target->cspace_root_guard      = root_guard;
+        target->cspace_root_guard_bits = (uint8_t)root_guard_bits;
+    }
     kobject_release(&target->base);
     if (err != IRIS_OK) return syscall_err(err);
     return syscall_ok_u64(0);

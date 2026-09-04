@@ -21880,6 +21880,114 @@ static void test_t311(void) {
     if (ok) it_pass("T311"); else it_fail("T311", why);
 }
 
+/* ── T312: the ROOT CSpace capability carries a guard too (D-2 complete) ──
+ *
+ * Guards below the root landed in Stage 8-cap and live in the SLOT, because a
+ * KCSlot is the capability.  The root is the one capability a thread does not
+ * reach through a slot — it is a structural pointer — so its guard lives on
+ * the thread, installed by SYS_TCB_CONFIGURE's arg3, which is seL4's
+ * `cspace_root_data`: the same argument, in the same position of the same
+ * operation, meaning the same thing.
+ *
+ * The property this test exists for is the one that would be lost by putting
+ * the guard on the KCNode instead: the parent and the child here share the
+ * SAME root CNode object, and address it DIFFERENTLY.  The child is configured
+ * with a guard and must carry it; the parent has none and must not.  If the
+ * guard lived on the object, one of those two would be wrong — and it is the
+ * same property (a guard belongs to a capability, not to what it names) that
+ * host G-7 asserts for the levels below.
+ */
+static uint8_t g_t312_stack[8192];
+static volatile int g_t312_done;
+static volatile int g_t312_plain_ok;    /* did the UNGUARDED address resolve? */
+static volatile int g_t312_guarded_ok;  /* did the GUARDED address resolve?   */
+
+/* Root CNode radix is 8 (256 slots); a 2-bit guard sits just above the index. */
+#define T312_GUARD      0x3u
+#define T312_GUARD_BITS 2u
+#define T312_PROBE      ((long)IRIS_CPTR_TEST_UNTYPED)
+#define T312_PROBE_G    ((long)(((uint64_t)T312_GUARD << 8) | \
+                                (uint64_t)IRIS_CPTR_TEST_UNTYPED))
+
+static void t312_child(void) {
+    /* Configured with a root guard: the plain address must NOT resolve and the
+     * guarded one must. */
+    g_t312_plain_ok   = (it_sys3(SYS_CAP_IDENTIFY, T312_PROBE,   0, 0) >= 0);
+    g_t312_guarded_ok = (it_sys3(SYS_CAP_IDENTIFY, T312_PROBE_G, 0, 0) >= 0);
+    g_t312_done = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) { }
+}
+
+static void test_t312(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "root guard";
+
+    /* The PARENT has no root guard: its plain address resolves and the guarded
+     * one does not.  Establish that first, so the child's opposite answers
+     * cannot be explained by anything but the guard. */
+    if (ok && it_sys3(SYS_CAP_IDENTIFY, T312_PROBE, 0, 0) < 0) {
+        ok = 0; why = "parent lost its own plain address";
+    }
+    if (ok && it_sys3(SYS_CAP_IDENTIFY, T312_PROBE_G, 0, 0) >= 0) {
+        ok = 0; why = "parent resolved a guarded address it has no guard for";
+    }
+
+    /* A child on the SAME root CNode, configured WITH a guard. */
+    long cs = it_cspace_self();
+    if (ok && cs < 0) { ok = 0; why = "cspace self"; }
+    long tcb = -1;
+    if (ok) {
+        tcb = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_TCB, 0);
+        if (tcb < 0) { ok = 0; why = "retype tcb"; }
+    }
+    if (ok && it_sys4(SYS_TCB_CONFIGURE, tcb, cs, IT_VS,
+                      (long)(((uint64_t)T312_GUARD_BITS << 32) |
+                             (uint64_t)T312_GUARD)) != 0) {
+        ok = 0; why = "configure with root guard";
+    }
+    if (ok) {
+        uint64_t rsp = ((uint64_t)(uintptr_t)(g_t312_stack +
+                        sizeof(g_t312_stack))) & ~0xFULL;
+        g_t312_done = 0;
+        if (it_sys4(SYS_TCB_WRITE_REGS, tcb,
+                    (long)(uintptr_t)t312_child, (long)rsp, 0) != 0 ||
+            it_sys1(SYS_TCB_RESUME, tcb) != 0) {
+            ok = 0; why = "start child";
+        }
+    }
+    if (ok) {
+        for (int i = 0; i < 4000 && !g_t312_done; i++) (void)it_sys0(SYS_YIELD);
+        if (!g_t312_done) { ok = 0; why = "child never ran"; }
+    }
+
+    /* Same CNode, opposite addressing — which is only possible because the
+     * guard belongs to the capability rather than to the object. */
+    if (ok && g_t312_plain_ok) {
+        ok = 0; why = "guarded child resolved an unguarded address";
+    }
+    if (ok && !g_t312_guarded_ok) {
+        ok = 0; why = "guarded child could not resolve its guarded address";
+    }
+
+    /* A guard that does not fit its width is refused, not truncated. */
+    if (ok && tcb >= 0) {
+        long t2 = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_TCB, 0);
+        if (t2 >= 0 &&
+            it_sys4(SYS_TCB_CONFIGURE, t2, cs, IT_VS,
+                    (long)(((uint64_t)2 << 32) | (uint64_t)0x7)) !=
+            (long)IRIS_ERR_INVALID_ARG) {
+            ok = 0; why = "oversized root guard accepted";
+        }
+        if (t2 >= 0) it_slot_delete((uint32_t)t2);
+    }
+
+    if (tcb >= 0) it_slot_delete((uint32_t)tcb);
+    it_quiesce_reaper();
+    if (ok) it_pass("T312"); else it_fail("T312", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -22421,6 +22529,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t309();
     test_t310();
     test_t311();
+    test_t312();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

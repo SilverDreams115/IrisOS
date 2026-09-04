@@ -50,6 +50,13 @@ struct task {
      * omitted it would compile the donation out of the host suite — the one
      * place the accounting can be checked deterministically. */
     struct KSchedContext *sched_ctx;
+    /* Stage 8-cap / D-2: the root CSpace and the guard on the capability to
+     * it.  Present in the stub because the resolver reads them; the host suite
+     * has no current task, so the lookup is inert and the walk behaves exactly
+     * as it did before guards existed — which is what the suite asserts. */
+    struct KCNode        *cspace_root;
+    uint64_t              cspace_root_guard;
+    uint8_t               cspace_root_guard_bits;
     uint8_t           home_cpu;
 };
 
