@@ -53,6 +53,18 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
         struct task *t = ktcb_registry[j].tcb;
         if (t->wake_tick != 0 && t->wake_tick < min_wake)
             min_wake = t->wake_tick;
+        /*
+         * Stage 8-mcs: a budget-exhausted thread is woken by a REPLENISHMENT
+         * falling due, and a replenishment has no wake_tick.  Without this it
+         * would never be a fast-forward target, so on a tickless-looking guest
+         * (QEMU TCG delivers no IRQs while ring 0 spins) an exhausted thread
+         * would sleep for ever and the system would look wedged.
+         */
+        if (t->state == TASK_BUDGET_EXHAUSTED && t->sched_ctx &&
+            t->sched_ctx->refill_count > 0) {
+            uint64_t due = t->sched_ctx->refills[t->sched_ctx->refill_head].at;
+            if (due < min_wake) min_wake = due;
+        }
     }
     if (min_wake != UINT64_MAX && min_wake > scheduler_ticks)
         scheduler_ticks = min_wake;
@@ -67,11 +79,11 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
             t->wake_tick <= scheduler_ticks) {
             t->wake_tick = 0;
             task_wakeup(t);
-        } else if (t->state == TASK_BUDGET_EXHAUSTED &&
-                   t->wake_tick != 0 &&
-                   t->wake_tick <= scheduler_ticks) {
-            if (t->sched_ctx)
-                t->sched_ctx->remaining_budget = t->sched_ctx->budget_ticks;
+        } else if (t->state == TASK_BUDGET_EXHAUSTED && t->sched_ctx &&
+                   kschedctx_apply_refills(t->sched_ctx, scheduler_ticks)) {
+            /* Stage 8-mcs: woken by a REPLENISHMENT coming due, not by a
+             * period-boundary reset.  The thread gets back exactly what it
+             * spent, one period after it spent it. */
             t->wake_tick = 0;
             task_wakeup(t);
         } else if ((t->state == TASK_BLOCKED_IPC ||
@@ -139,6 +151,24 @@ void task_yield(void) {
             }
         }
     }
+
+    /*
+     * Stage 8-mcs — the thread is leaving the CPU, so close its accounting
+     * run: whatever it consumed becomes a replenishment due one period after
+     * the consumption started.
+     *
+     * This is the edit that fixes the old model's real defect.  Before it, a
+     * thread that BLOCKED before exhausting carried its remainder forward for
+     * ever — the only refill was the exhaustion branch — so a server that
+     * handled a request in 2 of its 5 ticks and waited on its endpoint kept 3,
+     * then 1, then stalled, and its bandwidth fell the more often it did the
+     * right thing.  Flushing here is what makes the budget a per-period
+     * guarantee for every thread instead of only for the ones that burn it
+     * all in one go.
+     *
+     * Idempotent when nothing was consumed, so it is safe on every switch.
+     */
+    if (old->sched_ctx) kschedctx_flush_run(old->sched_ctx);
 
     /* Re-enqueue old if it was preempted (state still RUNNING) so it
      * stays schedulable; do this after finding chosen to avoid dequeuing
@@ -250,19 +280,19 @@ void scheduler_tick(void) {
 
     if (!current_task) return;
 
-    /* Ph75: budget enforcement — decrement remaining_budget for current task */
+    /* Ph75 / Stage 8-mcs: charge one tick to the running thread's SC.  The
+     * charge is recorded with the tick it happened on, so the replenishment it
+     * earns comes due exactly one period later. */
     if (current_task->sched_ctx && current_task->state == TASK_RUNNING) {
         struct KSchedContext *sc = current_task->sched_ctx;
-        if (sc->remaining_budget > 0)
-            sc->remaining_budget--;
-        if (sc->remaining_budget == 0) {
+        if (kschedctx_charge_tick(sc, scheduler_ticks)) {
             /*
              * Stage 8-mcs — a TIMEOUT FAULT, when one is armed.
              *
-             * Without a handler this is what it always was: block the thread
-             * and refill it at the period boundary.  Nobody is told, so no
-             * principal can react to a thread overrunning — which is the gap
-             * that makes budget enforcement not yet MCS.
+             * Without a handler the thread simply blocks until a
+             * replenishment falls due.  Nobody is told, so no principal can
+             * react to a thread overrunning — which is the gap that makes
+             * budget enforcement not yet MCS.
              *
              * With a handler, the temporal supervisor is told and decides.
              * The delivery does NOT happen here: signalling a notification
@@ -275,8 +305,13 @@ void scheduler_tick(void) {
                 current_task->need_resched    = 1;
                 return;
             }
+            /* Turn what was just spent into a pending replenishment before
+             * parking: the thread is woken by that refill coming due, not by
+             * a period-boundary reset that would hand back a full budget it
+             * did not earn. */
+            kschedctx_flush_run(sc);
             current_task->state        = TASK_BUDGET_EXHAUSTED;
-            current_task->wake_tick    = scheduler_ticks + sc->period_ticks;
+            current_task->wake_tick    = 0;
             current_task->need_resched = 1;
             return;
         }

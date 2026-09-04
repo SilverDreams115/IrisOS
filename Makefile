@@ -214,6 +214,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_root_bootinfo.c \
     tests/kernel/test_pagetable.c \
     tests/kernel/test_cnode_guard.c \
+    tests/kernel/test_schedctx_refill.c \
     tests/kernel/test_klog.c \
     kernel/core/klog/klog.c \
     services/vfs/vfs_ep.c \

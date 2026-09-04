@@ -141,7 +141,11 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (target->sched_ctx != sc) {
         kobject_retain(&sc->base);       /* target's SC ref */
         target->sched_ctx = sc;
+        /* Stage 8-mcs: a fresh binding starts with the whole budget available
+         * and no replenishments outstanding — anything queued was earned by a
+         * different thread's execution and must not follow the SC. */
         sc->remaining_budget = sc->budget_ticks;
+        kschedctx_refill_reset(sc);
     }
 
     kobject_release(tcb_obj);
@@ -190,8 +194,10 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     t->sched_ctx = new_sc;
 
     /* Initialize budget from current configuration */
-    if (new_sc)
+    if (new_sc) {
         new_sc->remaining_budget = new_sc->budget_ticks;
+        kschedctx_refill_reset(new_sc);
+    }
 
     return 0;
 }

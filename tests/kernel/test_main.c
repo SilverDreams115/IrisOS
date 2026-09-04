@@ -24,6 +24,7 @@ void test_vfs_ep(void);
 void test_root_bootinfo(void);
 void test_pagetable(void);
 void test_cnode_guard(void);
+void test_schedctx_refill(void);
 
 int main(void) {
     test_rights();
@@ -46,6 +47,7 @@ int main(void) {
     test_root_bootinfo();
     test_pagetable();
     test_cnode_guard();
+    test_schedctx_refill();
 
     printf("\nresult: %d passed, %d failed\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

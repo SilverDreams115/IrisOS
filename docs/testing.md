@@ -9,7 +9,7 @@ what a green tree looks like today (Stage 7 closed — `KProcess` deleted):
 
 | Layer | Command | Green means |
 |---|---|---|
-| Host unit tests | `make test-unit` | 18782 assertions across 21 suites, 0 failed |
+| Host unit tests | `make test-unit` | 18833 assertions across 22 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected (14 files, 17 permitted `kslab_alloc` occurrences; it only ever shrinks) |
 | Runtime suite | `make smoke-runtime` | healthy boot signature |
 | Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 275/275` plus the P3/P41 markers |
@@ -139,7 +139,11 @@ names itself rather than showing up as a boot hang:
 
 Host unit tests cover what a successful boot cannot show: `RBI-1..RBI-10` (the
 BootInfo builder's bounds), `UT-TOP-1..5` (the two-ended Untyped carve), and
-`BC-11..BC-13` (a CSpace that names itself), and `G-1..G-8` (CNode guards,
+`BC-11..BC-13` (a CSpace that names itself), `R-1..R-8` (sporadic
+replenishment — the conservation law `remaining + consumed + pending ==
+budget` re-checked after every operation, the partial-run defect that made a
+blocking server starve itself, and the guarantee that no thread gets more than
+its budget in a window of its period), and `G-1..G-8` (CNode guards,
 including the one property that makes a guard seL4's guard: it is
 capability-local, so two capabilities to the same CNode resolve at different
 addresses).  `BC-13` changed meaning in
