@@ -94,6 +94,32 @@ void task_yield(void) {
 
     reap_pending_dead_task();
 
+    /*
+     * Stage 8-mcs — deliver a timeout fault the tick recorded.
+     *
+     * Here rather than in the tick because delivery signals a notification,
+     * which wakes the handler and enqueues it; doing that from the PIT ISR
+     * would touch the run queue from interrupt context.  Done BEFORE
+     * rq_dequeue_best so the woken handler is a candidate on this very
+     * scheduling decision instead of waiting for the next one.
+     *
+     * The thread goes to TASK_BLOCKED_FAULT exactly as an exception would
+     * leave it, so it is not runnable and its budget stops mattering until the
+     * supervisor answers with SYS_EXCEPTION_RESUME.  If the registration went
+     * away between the tick and here, fall back to the no-handler behaviour
+     * rather than losing the exhaustion.
+     */
+    if (current_task && current_task->timeout_pending) {
+        struct task *tf = current_task;
+        tf->timeout_pending = 0;
+        if (ktimeout_notify_fault(tf)) {
+            tf->state = TASK_BLOCKED_FAULT;
+        } else if (tf->sched_ctx) {
+            tf->state     = TASK_BUDGET_EXHAUSTED;
+            tf->wake_tick = scheduler_ticks + tf->sched_ctx->period_ticks;
+        }
+    }
+
     struct task *old  = current_task;
     struct task *idle = task_list_head;
 
@@ -230,6 +256,25 @@ void scheduler_tick(void) {
         if (sc->remaining_budget > 0)
             sc->remaining_budget--;
         if (sc->remaining_budget == 0) {
+            /*
+             * Stage 8-mcs — a TIMEOUT FAULT, when one is armed.
+             *
+             * Without a handler this is what it always was: block the thread
+             * and refill it at the period boundary.  Nobody is told, so no
+             * principal can react to a thread overrunning — which is the gap
+             * that makes budget enforcement not yet MCS.
+             *
+             * With a handler, the temporal supervisor is told and decides.
+             * The delivery does NOT happen here: signalling a notification
+             * wakes a task and touches the run queue, and this runs in the PIT
+             * ISR.  The tick records the fact; task_yield acts on it, the same
+             * discipline the timed-block path above already follows.
+             */
+            if (current_task->timeout_notif) {
+                current_task->timeout_pending = 1;
+                current_task->need_resched    = 1;
+                return;
+            }
             current_task->state        = TASK_BUDGET_EXHAUSTED;
             current_task->wake_tick    = scheduler_ticks + sc->period_ticks;
             current_task->need_resched = 1;

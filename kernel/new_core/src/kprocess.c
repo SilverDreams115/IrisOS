@@ -119,8 +119,24 @@ void kfault_resolve(struct task *ft, int killed) {
  * pointer KProcess kept is gone with the question it answered — a read names
  * the thread now, and the thread IS the record.
  */
-int kprocess_notify_fault(struct task *t, uint64_t vector,
-                           uint64_t error_code, uint64_t rip, uint64_t cr2) {
+/*
+ * Deliver a fault to one of the thread's two handler registrations.
+ *
+ * `timeout` selects WHICH registration is told, and nothing else differs: a
+ * timeout fault and an exception fault are the same delivery — record the
+ * fault on the thread, publish the thread's capability into the mailbox the
+ * registrant named, parent it to the slot the registration was made with,
+ * then signal.  Two field groups, one delivery path, for the same reason
+ * there is one registration path: a second copy is a second thing to drift.
+ *
+ * The two cannot collide on the shared record.  A thread that has taken an
+ * exception is TASK_BLOCKED_FAULT and is not running, so it cannot also be
+ * spending budget; a thread whose budget expired is suspended before this is
+ * called.  One record, one fault in flight.
+ */
+static int kfault_deliver(struct task *t, uint64_t vector,
+                          uint64_t error_code, uint64_t rip, uint64_t cr2,
+                          int timeout) {
     struct KNotification *notif;
     struct KCNode        *dest_cs = 0;
     uint32_t              dest_slot = 0;
@@ -130,8 +146,8 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
 
     if (!t) return 0;
 
-    notif = t->fault_notif;
-    bits  = t->fault_bits;
+    notif = timeout ? t->timeout_notif : t->fault_notif;
+    bits  = timeout ? t->timeout_bits  : t->fault_bits;
     if (!notif) return 0;
 
     t->fault_seq_counter++;
@@ -143,10 +159,10 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
     t->fault_seq    = t->fault_seq_counter;
     t->fault_valid  = 1;
 
-    dest_cs   = t->fault_cspace;
-    dest_slot = t->fault_slot;
-    src_cn    = t->fault_src_cn;
-    src_idx   = t->fault_src_idx;
+    dest_cs   = timeout ? t->timeout_cspace  : t->fault_cspace;
+    dest_slot = timeout ? t->timeout_slot    : t->fault_slot;
+    src_cn    = timeout ? t->timeout_src_cn  : t->fault_src_cn;
+    src_idx   = timeout ? t->timeout_src_idx : t->fault_src_idx;
     kobject_retain(&notif->base);
     if (dest_cs) {
         kobject_retain(&dest_cs->base);
@@ -195,6 +211,29 @@ int kprocess_notify_fault(struct task *t, uint64_t vector,
     kobject_release(&notif->base);
     atomic_fetch_add_explicit(&kfault_delivery, 1u, memory_order_relaxed);
     return 1;
+}
+
+int kprocess_notify_fault(struct task *t, uint64_t vector,
+                          uint64_t error_code, uint64_t rip, uint64_t cr2) {
+    return kfault_deliver(t, vector, error_code, rip, cr2, /*timeout=*/0);
+}
+
+/*
+ * Stage 8-mcs — a thread's scheduling context ran out of budget.
+ *
+ * Reported as a fault with a distinguished vector so a handler reads it with
+ * the same SYS_TCB_FAULT_INFO it already uses, and answers it with the same
+ * SYS_EXCEPTION_RESUME.  There is no rip/cr2 to report: the thread did not do
+ * anything wrong at an address, it ran out of time, and the fields the record
+ * cannot fill are zero rather than stale.
+ *
+ * Returns 0 when no timeout handler is armed, which is the default and the
+ * pre-Stage-8 behaviour: the caller then blocks the thread until its period
+ * refills the budget, and nobody is told.
+ */
+int ktimeout_notify_fault(struct task *t) {
+    return kfault_deliver(t, IRIS_FAULT_VECTOR_TIMEOUT, 0, 0, 0,
+                          /*timeout=*/1);
 }
 
 /* Ordering: emit_exit_watch (Track B: a KNotification signal) fires before

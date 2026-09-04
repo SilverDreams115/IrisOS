@@ -235,8 +235,43 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
  * (0 = its own root).  Required: without it the only way to answer a fault is
  * to name the thread by number, which Step 7 removed.
  */
-uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
-                                   uint64_t arg3) {
+/*
+ * Which of a thread's two handler registrations a call is writing.
+ *
+ * The exception handler and the timeout handler are the same MECHANISM — a
+ * fault delivered by publishing the thread's capability into a mailbox and
+ * signalling a notification — asked by different principals about different
+ * questions.  They are therefore two field groups and ONE registration path:
+ * duplicating the path would give the reference discipline below two copies to
+ * drift apart, which is the failure kobject.h's storage note describes.
+ */
+struct tcb_handler_fields {
+    struct KNotification **notif;
+    uint64_t              *bits;
+    struct KCNode        **cspace;
+    uint32_t              *slot;
+    struct KCNode        **src_cn;
+    uint32_t              *src_idx;
+    int                    is_timeout;
+};
+
+static void tcb_handler_select(struct task *t, int timeout,
+                               struct tcb_handler_fields *f) {
+    if (timeout) {
+        f->notif = &t->timeout_notif; f->bits = &t->timeout_bits;
+        f->cspace = &t->timeout_cspace; f->slot = &t->timeout_slot;
+        f->src_cn = &t->timeout_src_cn; f->src_idx = &t->timeout_src_idx;
+    } else {
+        f->notif = &t->fault_notif; f->bits = &t->fault_bits;
+        f->cspace = &t->fault_cspace; f->slot = &t->fault_slot;
+        f->src_cn = &t->fault_src_cn; f->src_idx = &t->fault_src_idx;
+    }
+    f->is_timeout = timeout;
+}
+
+static uint64_t tcb_register_handler(uint64_t arg0, uint64_t arg1,
+                                     uint64_t arg2, uint64_t arg3,
+                                     int timeout) {
     struct task *caller = task_current();
     if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (arg2 == 0u || arg3 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -294,6 +329,8 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     struct KCNode        *old_c = 0;
     struct KCNode        *old_s = 0;
     struct task          *pending = 0;
+    struct tcb_handler_fields f;
+    tcb_handler_select(target, timeout, &f);
 
     uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
     /* Under the lock, not before it: thread teardown empties these fields under
@@ -306,27 +343,32 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         kobject_release(n_obj); kobject_release(&target->base);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
-    old_n = (target->fault_notif == notif) ? 0 : target->fault_notif;
-    old_c = (target->fault_cspace == dest_cn) ? 0 : target->fault_cspace;
-    if (target->fault_notif != notif) {
+    old_n = (*f.notif == notif) ? 0 : *f.notif;
+    old_c = (*f.cspace == dest_cn) ? 0 : *f.cspace;
+    if (*f.notif != notif) {
         kobject_retain(&notif->base);
         kobject_active_retain(&notif->base);
-        target->fault_notif = notif;
-        target->fault_bits  = arg2;
+        *f.notif = notif;
+        *f.bits  = arg2;
+    } else {
+        *f.bits = arg2;
     }
-    if (target->fault_cspace != dest_cn) {
+    if (*f.cspace != dest_cn) {
         kobject_retain(&dest_cn->base);
         kobject_active_retain(&dest_cn->base);
-        target->fault_cspace = dest_cn;
+        *f.cspace = dest_cn;
     }
-    target->fault_slot = dest_slot;
-    old_s = (target->fault_src_cn == src_cn) ? 0 : target->fault_src_cn;
-    if (target->fault_src_cn != src_cn) {
+    *f.slot = dest_slot;
+    old_s = (*f.src_cn == src_cn) ? 0 : *f.src_cn;
+    if (*f.src_cn != src_cn) {
         if (src_cn) { kobject_retain(&src_cn->base); kobject_active_retain(&src_cn->base); }
-        target->fault_src_cn = src_cn;
+        *f.src_cn = src_cn;
     }
-    target->fault_src_idx = src_idx;
-    if (target->fault_valid) pending = target;
+    *f.src_idx = src_idx;
+    /* An outstanding record only moves with the EXCEPTION mailbox: a timeout
+     * registration answers a different question and must not adopt a page
+     * fault that is already in flight. */
+    if (!timeout && target->fault_valid) pending = target;
     irq_spinlock_unlock(&target->obj_lock, irqfl);
 
     if (old_n) { kobject_active_release(&old_n->base); kobject_release(&old_n->base); }
@@ -353,6 +395,31 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     kobject_release(n_obj);
     kobject_release(&target->base);
     return syscall_ok_u64(0);
+}
+
+uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                                   uint64_t arg3) {
+    return tcb_register_handler(arg0, arg1, arg2, arg3, /*timeout=*/0);
+}
+
+/*
+ * SYS_TCB_SET_TIMEOUT_HANDLER (128) — Stage 8-mcs.
+ *
+ * Arms the thread's TIMEOUT fault handler: when its scheduling context runs
+ * out of budget, the thread is suspended and the handler is told, instead of
+ * the thread silently blocking until the next period refills it.
+ *
+ * Identical arguments and identical authority to SYS_TCB_SET_FAULT_HANDLER —
+ * RIGHT_WRITE on the thread, RIGHT_WRITE on the notification, a mailbox the
+ * registrant names — because it is the same mechanism.  It is a SEPARATE
+ * registration because it is a different authority: a temporal supervisor
+ * answering "this thread overran" is not the pager answering "this thread
+ * touched an unmapped page", and one server holding both would hold power over
+ * the other's domain.  seL4 splits them for the same reason.
+ */
+uint64_t sys_tcb_set_timeout_handler(uint64_t arg0, uint64_t arg1,
+                                     uint64_t arg2, uint64_t arg3) {
+    return tcb_register_handler(arg0, arg1, arg2, arg3, /*timeout=*/1);
 }
 
 uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {

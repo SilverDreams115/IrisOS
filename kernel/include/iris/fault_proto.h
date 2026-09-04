@@ -39,4 +39,21 @@
 #define FAULT_OFF_CR2        24   /* uint64_t: #PF address (vector==14 only) */
 #define FAULT_MSG_LEN        32u
 
+/*
+ * Stage 8-mcs — the TIMEOUT fault vector.
+ *
+ * x86 defines vectors 0..31; 32..255 are the interrupt range and no CPU
+ * exception ever carries one, so a value above 255 cannot collide with a
+ * hardware fault now or later.  A handler that reads a fault record and finds
+ * this vector is being told "this thread's scheduling context ran out of
+ * budget", not that it faulted at an address: `rip`, `error_code` and `cr2`
+ * are 0, because there is nothing there to report.
+ *
+ * It is answered like any other fault — SYS_EXCEPTION_RESUME with the
+ * generation the handler observed — which is what lets a temporal supervisor
+ * decide the policy the kernel deliberately does not have: resume the thread
+ * (and give it more time by reconfiguring its SC first), or kill it.
+ */
+#define IRIS_FAULT_VECTOR_TIMEOUT  0x100u
+
 #endif /* IRIS_FAULT_PROTO_H */

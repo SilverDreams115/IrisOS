@@ -85,7 +85,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 |---|---|---|
 | S1 | TCB and SchedulingContext are separate objects | MET |
 | S2 | The TCB describes execution, not global process authority | **MET** — Stage 7-proc: there is no KProcess.  A "process" is threads configured with the same CSpace and the same VSpace, which is a fact about two capabilities rather than a third object |
-| S3 | The SC represents a delegable time budget/policy | MET (budget/period; donation pending — Stage 8) |
+| S3 | The SC represents a delegable time budget/policy | MET (budget/period enforced; **timeout faults landed Stage 8-mcs** — an overrun is delivered to a temporal supervisor that decides, rather than stalling invisibly.  Donation over IPC still pending — Stage 8) |
 | S4 | SC bind/unbind are capability-gated | MET (`SYS_SC_BIND` by CPtr; `THREAD_SET_SC` FROZEN) |
 | S5 | The kernel contains no service policy | MET (catalog/restart/manifests in svcmgr) |
 

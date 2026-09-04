@@ -1422,6 +1422,35 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_CSPACE_SET_GUARD 127
 
+/*
+ * SYS_TCB_SET_TIMEOUT_HANDLER(tcb_c, notif_c, signal_bits, dest) → 0 or error
+ *
+ * Stage 8-mcs — arm a thread's TIMEOUT fault handler.
+ *
+ * Identical arguments and identical authority to SYS_TCB_SET_FAULT_HANDLER
+ * (126): RIGHT_WRITE on the thread, a notification with RIGHT_WRITE, non-zero
+ * signal bits, and a mailbox in the `cnode|slot<<32` packing every publishing
+ * syscall uses, resolved in the REGISTRANT's CSpace.  It is the same mechanism
+ * — a fault delivered by publishing the thread's capability and signalling.
+ *
+ * It is a SEPARATE registration on purpose.  The principal that answers "this
+ * thread ran out of budget" is a temporal supervisor; the principal that
+ * answers "this thread touched an unmapped page" is a pager.  One handler for
+ * both would give the pager temporal authority over every thread it serves and
+ * give the scheduler the power to resume a thread out of a page fault.  seL4
+ * splits seL4_TCB_SetTimeoutEndpoint from the fault endpoint for this reason.
+ *
+ * When armed, budget exhaustion suspends the thread in TASK_BLOCKED_FAULT and
+ * tells the handler, with fault vector IRIS_FAULT_VECTOR_TIMEOUT and no
+ * rip/error/cr2 — there is no address involved.  Answered like any fault, with
+ * SYS_EXCEPTION_RESUME carrying the generation the handler observed, so the
+ * supervisor decides the policy the kernel deliberately does not have.
+ *
+ * Unarmed is the default and the pre-Stage-8 behaviour: the thread blocks
+ * until its period refills the budget and nobody is told.
+ */
+#define SYS_TCB_SET_TIMEOUT_HANDLER 128
+
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
 #define IRIS_UNTYPED_QUERY_ONE     2u

@@ -71,7 +71,7 @@ Kernel implementation note:
 
 ## Surface Summary
 
-Exported syscall number surface: **`0..127`** — 128 numbers, of which **69 are
+Exported syscall number surface: **`0..128`** — 129 numbers, of which **70 are
 live**, 56 are named in `syscall.h` and retired, and `9`–`11` were never
 assigned.
 
@@ -111,7 +111,7 @@ and the early Unix-shaped calls that predate the capability model.
 
 ### Threads (the whole of what a process used to be)
 
-`82` `SYS_THREAD_PRIORITY`, `85` `SYS_THREAD_SET_SC`, `96` `SYS_TCB_SELF`, `97` `SYS_TCB_SUSPEND`, `98` `SYS_TCB_RESUME`, `99` `SYS_TCB_SET_PRIORITY`, `100` `SYS_TCB_EXIT`, `101` `SYS_TCB_GET_INFO`, `120` `SYS_TCB_CONFIGURE`, `121` `SYS_TCB_WRITE_REGS`, `123` `SYS_TCB_FAULT_INFO`, `124` `SYS_TCB_WATCH`, `125` `SYS_TCB_EXIT_CODE`, `126` `SYS_TCB_SET_FAULT_HANDLER`
+`82` `SYS_THREAD_PRIORITY`, `85` `SYS_THREAD_SET_SC`, `96` `SYS_TCB_SELF`, `97` `SYS_TCB_SUSPEND`, `98` `SYS_TCB_RESUME`, `99` `SYS_TCB_SET_PRIORITY`, `100` `SYS_TCB_EXIT`, `101` `SYS_TCB_GET_INFO`, `120` `SYS_TCB_CONFIGURE`, `121` `SYS_TCB_WRITE_REGS`, `123` `SYS_TCB_FAULT_INFO`, `124` `SYS_TCB_WATCH`, `125` `SYS_TCB_EXIT_CODE`, `126` `SYS_TCB_SET_FAULT_HANDLER`, `128` `SYS_TCB_SET_TIMEOUT_HANDLER`
 
 ### Scheduling
 

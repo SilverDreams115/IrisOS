@@ -588,6 +588,14 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         struct KNotification *fn;
         struct KCNode        *fc;
         struct KCNode        *fs;
+        /* Stage 8-mcs: the TIMEOUT registration is a second, independent set
+         * of references and is emptied under the same lock hold.  Missing it
+         * would leak a notification and up to two CNodes per thread that ever
+         * armed a timeout handler — the exact shape of leak this block exists
+         * to prevent for the exception handler. */
+        struct KNotification *tn;
+        struct KCNode        *tc;
+        struct KCNode        *ts;
         int                   had_fault;
         uint64_t irqfl = irq_spinlock_lock(&t->obj_lock);
         had_fault      = t->fault_valid;
@@ -595,11 +603,18 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         fn = t->fault_notif; t->fault_notif = 0;
         fc = t->fault_cspace; t->fault_cspace = 0;
         fs = t->fault_src_cn; t->fault_src_cn = 0;
+        tn = t->timeout_notif; t->timeout_notif = 0;
+        tc = t->timeout_cspace; t->timeout_cspace = 0;
+        ts = t->timeout_src_cn; t->timeout_src_cn = 0;
+        t->timeout_pending = 0;
         irq_spinlock_unlock(&t->obj_lock, irqfl);
         if (had_fault) kprocess_fault_stat_cleanup();
         if (fn) { kobject_active_release(&fn->base); kobject_release(&fn->base); }
         if (fc) { kobject_active_release(&fc->base); kobject_release(&fc->base); }
         if (fs) { kobject_active_release(&fs->base); kobject_release(&fs->base); }
+        if (tn) { kobject_active_release(&tn->base); kobject_release(&tn->base); }
+        if (tc) { kobject_active_release(&tc->base); kobject_release(&tc->base); }
+        if (ts) { kobject_active_release(&ts->base); kobject_release(&ts->base); }
     }
 
     /* The watch's own reference, dropped after it has fired. */

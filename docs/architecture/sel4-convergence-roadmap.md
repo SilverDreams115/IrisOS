@@ -69,7 +69,7 @@ two halves and they are far apart:
 | IPC | **close** | endpoints, badges, reply objects, receive slots, no handle fallback.  Gaps: no combined `ReplyRecv`, no per-thread IPC buffer object (D-4) |
 | No ambient authority | **nearly met** | boot authority is one capability per authority; what remains is the ioport whitelist.  Every per-process quota is gone (Stage 7) |
 | No kernel heap | **nearly met** | 17 permitted `kslab_alloc` occurrences across 14 files, all boot path or objects still staged; seL4 has none at all |
-| MCS scheduling | **partial** | budget and period are enforced (a thread that exhausts its budget blocks until the next period).  Missing the parts that make MCS *MCS*: **no SC donation over IPC, no timeout faults, no sporadic refills** |
+| MCS scheduling | **partial** | budget and period are enforced, and **timeout faults landed in Stage 8-mcs**: a thread that overruns is suspended and a temporal supervisor is told (`SYS_TCB_SET_TIMEOUT_HANDLER`, T307), which is what lets overrun be a policy decision instead of an invisible stall.  Still missing: **no SC donation over IPC, no sporadic replenishment** |
 | ABI shape | **far, by decision** | 68 live numbered syscalls of 127 numbers, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  Registered permanent divergence (charter §6) |
 | Kernel architecture | **not started** | D-1: a kernel stack per thread, and threads block INSIDE the kernel |
 

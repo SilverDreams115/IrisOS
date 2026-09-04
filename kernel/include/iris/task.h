@@ -222,6 +222,45 @@ struct task {
      */
     struct KCNode    *fault_src_cn;   /* registrant's slot for THIS tcb */
     uint32_t          fault_src_idx;
+
+    /*
+     * Stage 8-mcs — the TIMEOUT fault handler, a SEPARATE registration.
+     *
+     * seL4 keeps seL4_TCB_SetTimeoutEndpoint apart from the fault endpoint,
+     * and the reason is authority rather than tidiness: the principal that
+     * answers "this thread ran out of time" is a temporal supervisor, and the
+     * principal that answers "this thread touched an unmapped page" is a
+     * pager.  Folding the two would hand the pager temporal authority over
+     * every thread it serves, and hand the scheduler the ability to resume a
+     * thread out of a page fault.  They are different questions asked by
+     * different servers, so they are different registrations.
+     *
+     * Same shape as the exception registration above — notification, bits,
+     * mailbox, and the source slot the delivered capability is parented to —
+     * because it IS the same mechanism: a fault delivered by naming the
+     * thread's capability.  Both are written by one shared registration path
+     * (tcb_register_handler), so the two cannot drift.
+     *
+     * Unregistered (notif == NULL) is the default and means what it meant
+     * before timeout faults existed: budget exhaustion blocks the thread until
+     * its period refills it, and nobody is told.
+     */
+    struct KNotification *timeout_notif;
+    uint64_t          timeout_bits;
+    struct KCNode    *timeout_cspace;
+    uint32_t          timeout_slot;
+    struct KCNode    *timeout_src_cn;
+    uint32_t          timeout_src_idx;
+    /*
+     * Set by the timer tick when the budget runs out and a timeout handler is
+     * armed; consumed in task context by task_yield.  The tick MUST NOT
+     * deliver: delivery signals a notification, which wakes a task and touches
+     * the run queue, and the tick runs in the PIT ISR.  Same discipline the
+     * timed-block path already follows two functions above — the ISR records
+     * the fact, task context acts on it.
+     */
+    uint8_t           timeout_pending;
+
     uint32_t          fault_seq_counter;
     struct KNotification *exit_notif;
     uint64_t          exit_bits;

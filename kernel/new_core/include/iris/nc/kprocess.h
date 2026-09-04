@@ -94,6 +94,10 @@ uint32_t         kprocess_quota_rollback_count(void);
 void             kprocess_quota_stat_rollback(void);
 int              kprocess_notify_fault(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
+/* Stage 8-mcs: deliver a TIMEOUT fault to the thread's timeout handler.
+ * Returns 0 when none is armed — the caller then falls back to blocking the
+ * thread until its period refills the budget. */
+int              ktimeout_notify_fault(struct task *t);
 /* Phase 20: fault-model instrumentation + resume-time pending-fault clear. */
 /* Drop `ft`'s pending fault record, and the process's pointer to it if that is
  * the one it names.  Takes the THREAD rather than its id: the caller has

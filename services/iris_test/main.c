@@ -10594,12 +10594,14 @@ static void test_t148(void) {
      * dies.  Stage 7 Step 12: 126 is SYS_TCB_SET_FAULT_HANDLER — faults armed
      * on the execution that takes them.  Stage 8-cap: 127 is
      * SYS_CSPACE_SET_GUARD, which installs a guard on a CNode capability
-     * (ledger D-2).  The first UNASSIGNED number moves up to 128.
+     * (ledger D-2).  Stage 8-mcs: 128 is SYS_TCB_SET_TIMEOUT_HANDLER — a
+     * thread's budget exhaustion delivered as a fault to a temporal
+     * supervisor.  The first UNASSIGNED number moves up to 129.
      *
      * This loop caught the guard syscall the moment it landed, which is what
      * it is for: growing the syscall surface has to be a deliberate, visible
      * act rather than something a diff can do quietly. */
-    for (long n = 128; ok && n <= 400; n++) {
+    for (long n = 129; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -21395,6 +21397,113 @@ static void test_t306(void) {
     if (ok) it_pass("T306"); else it_fail("T306", why);
 }
 
+/* ── T307: budget exhaustion is a FAULT a supervisor can answer (Stage 8-mcs)
+ *
+ * Ledger: the "MCS scheduling — partial" row.  IRIS enforced budget and period
+ * — a thread that spent its budget blocked until the period refilled it — but
+ * nothing was TOLD.  A temporal supervisor could not react to an overrun, and
+ * a scheduling model where overrun is invisible is budget enforcement, not
+ * MCS.  seL4 raises a Timeout fault to a handler the thread was given.
+ *
+ * This test is the proof that the mechanism actually fires, not merely that it
+ * compiles: it starts a thread that does nothing but spin, gives it a budget
+ * of one tick, arms a timeout handler, and waits.  What it asserts:
+ *
+ *   1. the handler is SIGNALLED — the thread really ran out and the kernel
+ *      really delivered, from task context rather than the timer ISR;
+ *   2. the record says IRIS_FAULT_VECTOR_TIMEOUT, so a handler can tell an
+ *      overrun from a page fault and answer the right question;
+ *   3. the thread is BLOCKED, not merely descheduled — it must not keep
+ *      running on a budget it does not have;
+ *   4. and the supervisor can end it, which is the authority the fault exists
+ *      to grant.
+ *
+ * A thread with NO handler armed is the default and the pre-Stage-8 path, and
+ * every other test in this suite is that case: they all still pass, which is
+ * what says this was additive.
+ */
+static uint8_t g_t307_stack[8192];
+static volatile int g_t307_spun;
+
+static void t307_burn(void) {
+    /* Spin.  The point is to be RUNNABLE and to consume ticks; the volatile
+     * write keeps the loop from being optimised away. */
+    for (;;) g_t307_spun++;
+}
+
+static void test_t307(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "timeout fault";
+
+    long notif = it_notify_create_slot();
+    if (notif < 0) { it_fail("T307", "notif"); return; }
+
+    uint64_t entry = (uint64_t)(uintptr_t)t307_burn;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t307_stack + sizeof(g_t307_stack))) & ~0xFULL;
+    long tcb = it_thread_create(entry, rsp, 0);
+    if (tcb < 0) { it_fail("T307", "thread"); return; }
+
+    /* One tick of budget in a long period: it overruns almost immediately and
+     * would not come back on its own for the rest of the period. */
+    long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                   IRIS_KOBJ_SCHED_CONTEXT, 0);
+    if (sc < 0) { it_fail("T307", "sc"); return; }
+    if (ok && it_sys3(SYS_SC_CONFIGURE, sc, 1, 1000) != 0) { ok = 0; why = "sc configure"; }
+    if (ok && it_sys2(SYS_SC_BIND, sc, tcb) != 0)          { ok = 0; why = "sc bind"; }
+
+    /* Arm the timeout handler: signal bit 1, and deliver the faulting thread's
+     * capability into a mailbox slot of our own root CNode. */
+    const uint32_t mailbox = 190u;
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)mailbox);
+    if (ok && it_sys4(SYS_TCB_SET_TIMEOUT_HANDLER, tcb, notif, 1L,
+                      (long)(((uint64_t)mailbox << 32) |
+                             (uint64_t)IT_OBJ_CNODE_SLOT)) != 0) {
+        ok = 0; why = "arm timeout handler";
+    }
+
+    /* (1) the handler is told.  Bounded wait — 2 s in nanoseconds — so a
+     * mechanism that never fires reports TIMED_OUT instead of hanging the
+     * suite.  The bits argument is an OUT pointer, not a mask. */
+    uint64_t t307_bits = 0;
+    if (ok && it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, notif,
+                      (long)(uintptr_t)&t307_bits, 2000000000L) != 0) {
+        ok = 0; why = "timeout fault never delivered";
+    }
+    if (ok && (t307_bits & 1u) == 0u) { ok = 0; why = "wrong signal bits"; }
+
+    /* (2) it is a TIMEOUT, distinguishable from an exception. */
+    if (ok) {
+        uint8_t b[FAULT_MSG_LEN];
+        if (it_sys2(SYS_TCB_FAULT_INFO, tcb, (long)(uintptr_t)b) != 0) {
+            ok = 0; why = "no fault record";
+        } else {
+            uint32_t vec = (uint32_t)b[FAULT_OFF_VECTOR] |
+                           ((uint32_t)b[FAULT_OFF_VECTOR + 1] << 8) |
+                           ((uint32_t)b[FAULT_OFF_VECTOR + 2] << 16) |
+                           ((uint32_t)b[FAULT_OFF_VECTOR + 3] << 24);
+            if (vec != IRIS_FAULT_VECTOR_TIMEOUT) { ok = 0; why = "wrong fault vector"; }
+        }
+    }
+
+    /* (3) the thread is blocked on the fault, not still burning budget. */
+    if (ok) {
+        int before = g_t307_spun;
+        for (volatile int i = 0; i < 200000; i++) { }
+        (void)it_sys0(SYS_YIELD);
+        if (g_t307_spun != before) { ok = 0; why = "thread still running after overrun"; }
+    }
+
+    /* (4) the supervisor ends it — the authority the fault delivers. */
+    if (ok && it_sys2(SYS_EXCEPTION_RESUME, tcb, 1L) != 0) {
+        ok = 0; why = "kill after timeout fault";
+    }
+
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)mailbox);
+    it_quiesce_reaper();
+    if (ok) it_pass("T307"); else it_fail("T307", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -21931,6 +22040,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t304();
     test_t305();
     test_t306();
+    test_t307();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

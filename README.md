@@ -322,7 +322,7 @@ ever run — seL4's "revoke the Untyped you used", in the form IRIS has.
 
 ## Syscall surface
 
-**69 live syscalls** out of 128 numbers (0–127): 125 are named in
+**70 live syscalls** out of 129 numbers (0–128): 126 are named in
 `kernel/include/iris/syscall.h`, 56 of those are retired, and 9–11 were never
 assigned. A retired number answers `IRIS_ERR_NOT_SUPPORTED` and is **never
 reused**, so a stale caller gets a refusal rather than somebody else's
@@ -332,8 +332,10 @@ operation. Highlights by area:
   and the address space — `seL4_TCB_Configure`'s shape), `TCB_WRITE_REGS`,
   `TCB_SUSPEND/RESUME`, `TCB_SET_PRIORITY`, `TCB_GET_INFO`, `TCB_EXIT`,
   `TCB_WATCH`, `TCB_EXIT_CODE`, `TCB_FAULT_INFO`, `TCB_SET_FAULT_HANDLER`,
-  plus `EXIT`, `GETPID`, `YIELD`, `SLEEP`, `CLOCK_GET`, `CLOCK_NANOSLEEP`,
-  `FUTEX_WAIT/WAKE`.
+  `TCB_SET_TIMEOUT_HANDLER` (budget exhaustion as a fault — a *separate*
+  registration from the exception handler, because a temporal supervisor is not
+  the pager), plus `EXIT`, `GETPID`, `YIELD`, `SLEEP`, `CLOCK_GET`,
+  `CLOCK_NANOSLEEP`, `FUTEX_WAIT/WAKE`.
 - **Capabilities / CSpace**: `CSPACE_MINT` (copy/mint slot→slot, with a
   destination CNode — including a child's root, which is how a spawner delegates
   before the child runs), `CSPACE_REVOKE` (recursive, across CNodes and address
@@ -458,7 +460,7 @@ Three independently-gating layers, run on every change:
   the file-grant layer, …). They cover what a successful boot cannot show:
   buffer bounds on a page about to be mapped into ring 3, a CSpace that names
   itself, and an allocator's two ends meeting exactly once.
-- **Runtime tests** — booted under QEMU headless: **274 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **275 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
@@ -471,7 +473,8 @@ Three independently-gating layers, run on every change:
   retype leaving its budget untouched (T301), the page table as a capability
   (T302), a running thread outliving every capability to it (T303), the retired
   live-process ceiling (T304), every capability tracing to an ancestor
-  (T305), and a CNode capability carrying a guard (T306).
+  (T305), a CNode capability carrying a guard (T306), and budget exhaustion
+  delivered as a fault a supervisor can answer (T307).
 - **Purity gate** — `make check-purity`: the frozen legacy-consumer allowlist.
   Nothing handle-table-shaped is left in it (Stage 4 deleted the namespace);
   what it holds is the kslab inventory — 14 files, 17 permitted occurrences —
@@ -484,7 +487,7 @@ make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
 make test-unit                                             # host unit suites (18782)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (274/274)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (275/275)
 make run                                                   # interactive QEMU
 ```
 
