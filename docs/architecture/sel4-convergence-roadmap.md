@@ -20,7 +20,9 @@ path still depends on the mechanism it retires (charter §3.10).
 | 6 — Remaining memory and objects | ✅ CLOSED |
 | 6-pure — the user retypes what the kernel charged | ✅ CLOSED (5 steps) |
 | 7 — KProcess retirement | ✅ CLOSED (15 steps + 7-mem + 7-proc) |
-| 8 — Full MCS scheduling | pending |
+| 8-mcs — Full MCS scheduling | ✅ CLOSED |
+| 8-cap — the capability model's last gaps | 🔶 IN PROGRESS (CNode guards landed below the root; D-4 open) |
+| 9-evt — the event kernel (D-1) | pending — the last structural divergence, and the precondition for 9 |
 | 9 — SMP | pending |
 | 10 — General-purpose platform | pending |
 
@@ -1541,19 +1543,58 @@ spawner holds, and holding that budget is the authority, as it is in seL4.
 Retiring the argument belongs with retiring `IRIS_CPTR_PROC_CONTROL`, which is
 Stage 10-abi's business.
 
-## Stage 8 — Full MCS scheduling
+## Stage 8-mcs — Full MCS scheduling  ✅ CLOSED
 
 Precondition: Stages 0–2 (canonical SC/TCB + CSpace-only IPC).
 
-- SC delegation and donation during IPC where appropriate; timeouts;
-  replenishment; revised priority semantics; budget tests.
-- Revisit the "no combined ReplyRecv" divergence here (charter §6).
+What the stage asked for, and what landed:
 
-## Stage 8-cap — the capability model's last gaps  ← NOT STARTED
+| asked | landed |
+|---|---|
+| replenishment | **sporadic**: every tick consumed returns exactly one period after it was spent, so a thread can never spend more than its budget in any window of its period.  Host R-1..R-8 |
+| timeouts | **timeout faults**: budget exhaustion suspends the thread and tells a temporal supervisor, which decides.  A SEPARATE registration from the exception handler, because the principal answering "this overran" is not the pager.  `SYS_TCB_SET_TIMEOUT_HANDLER` (128), T307 |
+| SC delegation and donation during IPC | **donation to passive servers**: a thread with no SC of its own runs on the requester's time, recorded on the reply object and returned by every path that ends a binding.  `SYS_REPLY_RECV` (129) closes the window where the server would otherwise be runnable with no SC at all.  T308, T309 |
+| revisit "no combined ReplyRecv" | done — it is implemented, not merely revisited |
+
+Three defects surfaced doing it, each of which had been silent:
+
+1. **Budget was a leaky bucket that only refilled when empty.**  The single
+   refill site was the exhaustion branch, so a thread that BLOCKED before
+   exhausting carried its remainder forward for ever.  A server handling a
+   request in 2 of its 5 ticks and waiting on its endpoint kept 3, then 1, then
+   stalled — its bandwidth fell the more often it did the right thing.
+2. **A thread with no scheduling context was never charged at all**, so it ran
+   with unlimited time.  Donation is what makes an SC-less thread mean
+   "passive" rather than "exempt".
+3. **Donation was wired into two of the three rendezvous paths**, so a server
+   ran budgeted or not depending on which side of the rendezvous arrived
+   first.  All three now go through one helper.
+
+Not seL4's yet: `refill_max` is a compile-time constant (8 entries) rather than
+a per-SC configuration chosen at retype.  At tick granularity with a coalescing
+flush it has not been reachable; recorded rather than claimed closed.
+
+## Stage 8-cap — the capability model's last gaps  ← IN PROGRESS
 
 Four items, each a registered divergence or a measured hole.  All are additive:
 none of them is a rewrite, which is why they are grouped rather than staged
 separately.
+
+**Landed: CNode guards below the root (D-2).**  A CNode CAPABILITY carries a
+guard — `SYS_CSPACE_SET_GUARD` (127), `KCSlot.guard`/`guard_bits`, checked by
+the walk.  Additive by construction: `guard_bits == 0` is every slot's initial
+state and resolves exactly as the pre-guard kernel did, which is why 273
+runtime tests and 18738 host assertions passed unchanged on the landing commit.
+Capability-local, not object-local — two capabilities to one CNode can be
+guarded differently, which is the property that makes it seL4's guard rather
+than a lookalike (host G-7).  Pinned by T306 and `test_cnode_guard` G-1..G-8.
+
+**Still open in D-2: the ROOT guard.**  A thread reaches its root CNode through
+a structural pointer rather than a slot, so there is no capability there to
+carry one.  Closing it means making the root a real capability — every
+resolver would take the guard alongside the CNode — so it is mechanical but
+wide, and it has no consumer in tree yet.  Until it lands a CSpace can be
+sparse below the root but not at it.
 
 - **A9 / D-6 — LEGACY_ROOTs to zero.**  ✅ **The defect class is CLOSED.**
   T305 measures 43 live roots of 335 MDB nodes at Stage 7 close, and the
