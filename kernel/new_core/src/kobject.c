@@ -1,9 +1,17 @@
 #include <iris/nc/kobject.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/kslab.h>
+#include <iris/panic.h>
 
 void kobject_init(struct KObject *obj, kobject_type_t type,
                   const struct KObjectOps *ops) {
+    /* "ops != NULL for every initialized KObject" — the header states it as an
+     * invariant and kobject_release dereferences ops->destroy unconditionally,
+     * so a NULL here is a jump through a null pointer at some unrelated later
+     * moment.  Checked where it is established, not where it is used. */
+    IRIS_ASSERT(obj != 0, "kobject_init: NULL object");
+    IRIS_ASSERT(ops != 0 && ops->destroy != 0,
+                "kobject_init: object with no destructor");
     obj->type = type;
     obj->ops  = ops;
     obj->ut_block_bytes = 0u;          /* kernel-slab storage */
@@ -35,8 +43,16 @@ void kobject_retain(struct KObject *obj) {
      * The required acquire happens on the subsequent use of the object. */
     uint32_t prev = atomic_fetch_add_explicit(&obj->refcount, 1u,
                                               memory_order_relaxed);
-    (void)prev;
-    /* assert(prev >= 1) — never retain from refcount 0 */
+    /*
+     * Retaining from zero is resurrection: the destructor has run or is
+     * running, and the storage may already be back in its Untyped.  Every
+     * caller reaches this through a reference it already holds, so a zero here
+     * means one was dropped twice somewhere upstream — and the symptom without
+     * this check is a use-after-free that surfaces as an unrelated object
+     * behaving strangely much later.  This was a comment for the whole life of
+     * the file; it is the check now.
+     */
+    IRIS_ASSERT(prev >= 1u, "kobject_retain: resurrect from refcount 0");
 }
 
 void kobject_release(struct KObject *obj) {
@@ -44,6 +60,7 @@ void kobject_release(struct KObject *obj) {
      * destructor that may run on another thread. */
     uint32_t prev = atomic_fetch_sub_explicit(&obj->refcount, 1u,
                                               memory_order_release);
+    IRIS_ASSERT(prev >= 1u, "kobject_release: refcount underflow");
     if (prev == 1u) {
         /* acquire fence: ensures this thread sees all writes that preceded
          * the release decrements issued by other threads. */
@@ -61,6 +78,7 @@ void kobject_active_retain(struct KObject *obj) {
 void kobject_active_release(struct KObject *obj) {
     uint32_t prev = atomic_fetch_sub_explicit(&obj->active_refs, 1u,
                                               memory_order_release);
+    IRIS_ASSERT(prev >= 1u, "kobject_active_release: active_refs underflow");
     if (prev == 1u) {
         atomic_thread_fence(memory_order_acquire);
         if (obj->ops->close) {

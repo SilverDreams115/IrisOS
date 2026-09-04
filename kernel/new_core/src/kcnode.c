@@ -24,6 +24,7 @@
 #include <iris/kslab.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <iris/panic.h>
 
 static _Atomic uint32_t kcnode_live;
 
@@ -141,12 +142,29 @@ static void mdb_unlink_from_parent(struct KCSlot *s) {
 /* Clear every MDB field of a slot (must already be unlinked and childless).
  * mdb_lock held. */
 static void mdb_clear_node(struct KCSlot *s) {
+    /*
+     * B.3-1: an emptied slot must have NO children left in the graph.
+     *
+     * The links are direct slot pointers, and a KCNode's storage returns to
+     * its Untyped when the object dies.  A child still pointing at a cleared
+     * parent is a pointer into memory that can be handed out again, so a later
+     * revoke would walk into whatever now occupies it.  Every path here
+     * detaches first (mdb_detach_reparent / mdb_unlink_from_parent); this is
+     * the check that none of them ever forgets.
+     */
+    IRIS_ASSERT(s->mdb_first_child == 0,
+                "mdb_clear_node: slot cleared with live children");
     s->mdb_parent      = 0;
     s->mdb_first_child = 0;
     s->mdb_next_sib    = 0;
     s->mdb_prev_sib    = 0;
     s->mdb_cnode       = 0;
     s->mdb_flags       = 0;
+    /* Guard the slot's own guard too: a stale guard on an emptied slot would
+     * be inherited by whatever capability is installed next, silently changing
+     * how CPtrs resolve through it (Stage 8-cap). */
+    s->guard           = 0;
+    s->guard_bits      = 0;
 }
 
 /*
@@ -491,6 +509,15 @@ static void mdb_relocate(struct KCSlot *from, struct KCNode *from_cn,
     if (to->mdb_next_sib) to->mdb_next_sib->mdb_prev_sib = to;
     for (struct KCSlot *c = to->mdb_first_child; c; c = c->mdb_next_sib)
         c->mdb_parent = to;
+
+    /*
+     * The children MOVED with the capability — they were not abandoned — so
+     * say that here rather than letting mdb_clear_node zero the field as a
+     * side effect.  The difference matters: "cleared with live children" is a
+     * bug everywhere else in this file, and leaving the head set made the one
+     * legitimate case indistinguishable from the dangerous one.
+     */
+    from->mdb_first_child = 0;
 
     mdb_clear_node(from);
 }

@@ -4,6 +4,7 @@
 #include <iris/paging.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <iris/panic.h>
 
 static _Atomic uint32_t kuntyped_live;
 
@@ -218,6 +219,17 @@ void *kuntyped_alloc_child_top(struct KUntyped *u, uint64_t obj_bytes) {
     }
     u->used_top += need;
     uint64_t offset = u->total_size - u->used_top;     /* block start */
+    /*
+     * The two ends must meet exactly once.  This is the invariant the whole
+     * two-ended carve rests on: the bottom grows up from phys_base and the top
+     * grows down from the end, and if they ever cross, two live objects share
+     * bytes and one of them is a kernel object header.  The bounds check above
+     * is what prevents it; this is the check that the check worked, because
+     * the failure is silent and the corruption it produces is arbitrary.
+     */
+    IRIS_ASSERT(u->used + u->used_top <= u->total_size,
+                "kuntyped: carve ends crossed");
+    IRIS_ASSERT(offset >= u->used, "kuntyped: top carve below bottom bump");
     irq_spinlock_unlock(&u->lock, flags);
 
     uint8_t *block = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(u->phys_base + offset);

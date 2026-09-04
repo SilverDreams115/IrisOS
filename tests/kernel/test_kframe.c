@@ -152,6 +152,26 @@ static struct KCNode *fr_setup_root(struct cs_fixture *p) {
     return root;
 }
 
+/*
+ * A note on references, because this file had it wrong for its whole life and
+ * the kobject_active_release underflow assertion found it in one run.
+ *
+ * `kframe_alloc` returns ONE reference: the lifecycle one.  It takes no ACTIVE
+ * reference — that is taken when the capability is installed in a CSpace slot
+ * (kcnode_mint) or handed out by a resolver, and these fixtures mostly do
+ * neither.  The paired `kobject_active_release(); kobject_release();` idiom
+ * belongs to objects that came from a RESOLVER, which returns both.
+ *
+ * Using the pair on a freshly allocated frame released an active reference
+ * that was never taken, so the unsigned counter wrapped to ~0 and the close
+ * hook became unreachable for that object.  Every assertion below about frame
+ * teardown was therefore being made against an object whose close path could
+ * not fire.  Forty-odd sites, silent, until the invariant was checked.
+ *
+ * The two sites that legitimately release an active reference are kept: `out`
+ * comes from cspace_resolve_frame, and the CSpace root takes an explicit
+ * kobject_active_retain in fr_setup_root.
+ */
 static struct KUntyped *fr_make_untyped(uint64_t phys, uint64_t size) {
     /* 4-KiB minimum so the bump allocator can carve at least one page. */
     struct KUntyped *u = kuntyped_create(phys, size, 0);
@@ -180,7 +200,6 @@ void test_kframe(void) {
         ASSERT_EQ(f->size,  (uint64_t)4096);
         ASSERT_EQ(f->alloc_parent, u);
         ASSERT_EQ(f->base.type, KOBJ_FRAME);
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kobject_release(&u->base);
     }
@@ -195,7 +214,6 @@ void test_kframe(void) {
         ASSERT_NOT_NULL(f);
         ASSERT_EQ((int)atomic_load(&u->child_count), (int)(cc_before + 1));
         ASSERT_EQ((int)atomic_load(&u->base.refcount), (int)(rc_before + 1));
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kobject_release(&u->base);
     }
@@ -223,7 +241,6 @@ void test_kframe(void) {
         struct KFrame *f = kframe_alloc(0x200000, 4096, NULL);
         ASSERT_NOT_NULL(f);
         ASSERT_NULL(f->alloc_parent);
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
     }
 
@@ -234,7 +251,6 @@ void test_kframe(void) {
         struct KFrame *f = kframe_alloc(0x300000, 4096, u);
         ASSERT_NOT_NULL(f);
         ASSERT_EQ((int)atomic_load(&u->child_count), 1);
-        kobject_active_release(&f->base);
         kobject_release(&f->base); /* triggers destroy */
         ASSERT_EQ((int)atomic_load(&u->child_count), 0);
         kobject_release(&u->base);
@@ -447,7 +463,6 @@ void test_kframe(void) {
         ASSERT_EQ(paging_virt_to_phys_in(0xBEEF000ULL, USER_PRIVATE_BASE), (uint64_t)0x300000ULL);
 
         kframe_unmap_page(f, vs, USER_PRIVATE_BASE);
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -475,9 +490,7 @@ void test_kframe(void) {
         ASSERT_EQ(paging_virt_to_phys_in(0xBEEF001ULL, USER_PRIVATE_BASE), (uint64_t)0x400000ULL);
 
         kframe_unmap_page(f1, vs, USER_PRIVATE_BASE);
-        kobject_active_release(&f1->base);
         kobject_release(&f1->base);
-        kobject_active_release(&f2->base);
         kobject_release(&f2->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -500,7 +513,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
         ASSERT_EQ(paging_virt_to_phys_in(0xBEEF002ULL, USER_PRIVATE_BASE), (uint64_t)0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -519,7 +531,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)ie, (int)IRIS_ERR_NOT_FOUND);
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -545,9 +556,7 @@ void test_kframe(void) {
         ASSERT_EQ(paging_virt_to_phys_in(0xBEEF004ULL, USER_PRIVATE_BASE), (uint64_t)0x800000ULL);
 
         kframe_unmap_page(f1, vs, USER_PRIVATE_BASE);
-        kobject_active_release(&f1->base);
         kobject_release(&f1->base);
-        kobject_active_release(&f2->base);
         kobject_release(&f2->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -566,7 +575,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
         ASSERT_EQ(paging_virt_to_phys_in(0xBEEF005ULL, USER_PRIVATE_BASE + 1u), (uint64_t)0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -586,7 +594,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)ie, (int)IRIS_ERR_BAD_HANDLE);
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kobject_release(&vs->base); /* drop extra ref */
         kvspace_free(vs);           /* drop alloc ref → destroy */
@@ -617,7 +624,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)kframe_unmap_page(f, vs, USER_PRIVATE_BASE), (int)IRIS_ERR_BAD_HANDLE);
 
         /* Frame destroy succeeds: mapped_count == 0. */
-        kobject_active_release(&f->base);
         kobject_release(&f->base);  /* triggers destroy; IRIS_ASSERT passes */
         kobject_release(&vs->base); /* extra retain */
         kvspace_free(vs);           /* alloc ref → destroy */
@@ -638,7 +644,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
         ASSERT_EQ(paging_virt_to_phys_in(0xBEEF008ULL, USER_PRIVATE_BASE), (uint64_t)0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -663,7 +668,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
         ASSERT_EQ((int)atomic_load(&u->child_count), 1); /* still unaffected */
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base); /* destroy: child_count → 0 */
         ASSERT_EQ((int)atomic_load(&u->child_count), 0);
         kobject_release(&u->base);
@@ -676,7 +680,6 @@ void test_kframe(void) {
         struct KFrame *f = kframe_alloc(0xF00000ULL, 4096, NULL);
         ASSERT_NOT_NULL(f);
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0u);
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
     }
 
@@ -699,7 +702,6 @@ void test_kframe(void) {
             ASSERT_EQ(paging_virt_to_phys_in(0xBEEF00AULL, USER_PRIVATE_BASE), (uint64_t)0);
         }
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -725,7 +727,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)vs->mapping_count, 0);
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -760,8 +761,8 @@ void test_kframe(void) {
         ASSERT_EQ(paging_virt_to_phys_in(0xBEEF00CULL, va2), (uint64_t)0);
 
         /* Frames can be destroyed without panic (mapped_count == 0). */
-        kobject_active_release(&f1->base); kobject_release(&f1->base);
-        kobject_active_release(&f2->base); kobject_release(&f2->base);
+        kobject_release(&f1->base);
+        kobject_release(&f2->base);
         kobject_release(&vs->base); /* extra retain */
         kvspace_free(vs);
         paging_stub_reset();
@@ -811,7 +812,6 @@ void test_kframe(void) {
 
         /* Frames can now be destroyed cleanly. */
         for (i = 0; i < FR40_COUNT; i++) {
-            kobject_active_release(&frames[i]->base);
             kobject_release(&frames[i]->base);
         }
         kobject_release(&vs->base); /* extra retain */
@@ -843,7 +843,6 @@ void test_kframe(void) {
         ASSERT_EQ(paging_virt_to_phys_in(0xFA110ULL, USER_PRIVATE_BASE), (uint64_t)0);
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -861,7 +860,6 @@ void test_kframe(void) {
         uint64_t user_va = USER_PRIVATE_BASE + 0x1000ULL;
         struct KFrame *f = bootstrap_kframe_map(vs, paddr, user_va, 0u);
         ASSERT_NOT_NULL(f);
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -878,7 +876,6 @@ void test_kframe(void) {
         struct KFrame *f = bootstrap_kframe_map(vs, paddr, user_va, 0u);
         ASSERT_NOT_NULL(f);
         ASSERT_EQ(paging_virt_to_phys_in(cr3, user_va), paddr);
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -895,7 +892,6 @@ void test_kframe(void) {
             vs, 0xE000000ULL, USER_PRIVATE_BASE + 0x3000ULL, 1u /* WRITABLE */);
         ASSERT_NOT_NULL(f);
         ASSERT_EQ((int)vs->mapping_count, 1);
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -911,7 +907,6 @@ void test_kframe(void) {
             vs, 0xF000000ULL, USER_PRIVATE_BASE + 0x4000ULL, 2u /* EXEC */);
         ASSERT_NOT_NULL(f);
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 1);
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -953,7 +948,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)vs->mapping_count, 1);
         ASSERT_EQ((int)atomic_load(&f1->mapped_count), 1);
 
-        kobject_active_release(&f1->base);
         kobject_release(&f1->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -981,7 +975,6 @@ void test_kframe(void) {
         ASSERT_EQ(paging_virt_to_phys_in(cr3, user_va), (uint64_t)0);
 
         /* Release the alloc retain (maps are gone, so mapped_count==0). */
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -1000,7 +993,6 @@ void test_kframe(void) {
                   (int)IRIS_ERR_INVALID_ARG);
         ASSERT_EQ((int)vs->bootstrap_frame_count, 0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
     }
@@ -1036,7 +1028,6 @@ void test_kframe(void) {
 
         /* Stage 7-proc: the address space releases its own bootstrap frames
          * when it settles — no process reaches into it to do that. */
-        kobject_active_release(&f_extra->base);
         kobject_release(&f_extra->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -1057,9 +1048,7 @@ void test_kframe(void) {
         ASSERT_NOT_NULL(f2);
         ASSERT_EQ(f2->vmo_owner, v);
 
-        kobject_active_release(&f1->base);
         kobject_release(&f1->base);
-        kobject_active_release(&f2->base);
         kobject_release(&f2->base); /* triggers kframe_obj_destroy → releases vmo retain */
         kobject_release(&v->base);  /* drop alloc retain */
     }
@@ -1083,7 +1072,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)(rc_before + 1));
 
         /* Release frame alloc retain.  kframe_obj_destroy → kobject_release(vmo). */
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)rc_before);
 
@@ -1112,7 +1100,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
         ASSERT_EQ(paging_virt_to_phys_in(cr3, va), (uint64_t)0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -1250,9 +1237,7 @@ void test_kframe(void) {
         kvspace_unmap_page(vs, va2);
         ASSERT_EQ((int)vs->mapping_count, 0);
 
-        kobject_active_release(&fa->base);
         kobject_release(&fa->base);
-        kobject_active_release(&fb->base);
         kobject_release(&fb->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -1306,7 +1291,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
         ASSERT_EQ(paging_virt_to_phys_in(0xCC8000ULL, USER_PRIVATE_BASE), (uint64_t)0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -1343,7 +1327,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)vs->mapping_count, 0);
         for (i = 0; i < FR62_COUNT; i++) {
             ASSERT_EQ((int)atomic_load(&frames[i]->mapped_count), 0);
-            kobject_active_release(&frames[i]->base);
             kobject_release(&frames[i]->base);
         }
         kobject_release(&vs->base);
@@ -1423,7 +1406,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
         ASSERT_EQ(paging_virt_to_phys_in(cr3, va), (uint64_t)0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -1451,7 +1433,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
         ASSERT_EQ(paging_virt_to_phys_in(cr3, va), (uint64_t)0);
 
-        kobject_active_release(&f->base);
         kobject_release(&f->base);
         kvspace_free(vs);
         paging_stub_reset();
@@ -1504,7 +1485,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)vs->mapping_count, 0);
         for (i = 0; i < FR66_TOTAL; i++) {
             ASSERT_EQ((int)atomic_load(&frames[i]->mapped_count), 0);
-            kobject_active_release(&frames[i]->base);
             kobject_release(&frames[i]->base);
         }
         kobject_release(&vs->base);
@@ -1572,7 +1552,6 @@ void test_kframe(void) {
             ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
             ASSERT_EQ(paging_virt_to_phys_in(cr3, va), (uint64_t)0);
 
-            kobject_active_release(&f->base);
             kobject_release(&f->base);
         }
 
@@ -1616,7 +1595,6 @@ void test_kframe(void) {
         ASSERT_EQ((int)vs->mapping_count, 0);
 
         for (i = 0; i < FR69_N; i++) {
-            kobject_active_release(&frames[i]->base);
             kobject_release(&frames[i]->base);
         }
         kobject_release(&vs->base);
