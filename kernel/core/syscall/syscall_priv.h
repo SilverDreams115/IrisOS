@@ -422,6 +422,8 @@ uint64_t sys_cspace_set_guard(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* Stage 8-mcs — arm a thread's timeout fault handler. */
 uint64_t sys_tcb_set_timeout_handler(uint64_t arg0, uint64_t arg1,
                                      uint64_t arg2, uint64_t arg3);
+/* Stage 8-mcs — atomic reply-then-receive (seL4_ReplyRecv). */
+uint64_t sys_reply_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,

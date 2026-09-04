@@ -10596,12 +10596,15 @@ static void test_t148(void) {
      * SYS_CSPACE_SET_GUARD, which installs a guard on a CNode capability
      * (ledger D-2).  Stage 8-mcs: 128 is SYS_TCB_SET_TIMEOUT_HANDLER — a
      * thread's budget exhaustion delivered as a fault to a temporal
-     * supervisor.  The first UNASSIGNED number moves up to 129.
+     * supervisor.  Stage 8-mcs: 129 is SYS_REPLY_RECV — seL4's ReplyRecv,
+     * which a passive server needs so it never crosses the gap between giving
+     * its donated time back and blocking again.  The first UNASSIGNED number
+     * moves up to 130.
      *
      * This loop caught the guard syscall the moment it landed, which is what
      * it is for: growing the syscall surface has to be a deliberate, visible
      * act rather than something a diff can do quietly. */
-    for (long n = 129; ok && n <= 400; n++) {
+    for (long n = 130; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -21634,6 +21637,113 @@ static void test_t308(void) {
     if (ok) it_pass("T308"); else it_fail("T308", why);
 }
 
+/* ── T309: a passive server serves a LOOP on donated time (Stage 8-mcs) ───
+ *
+ * seL4's ReplyRecv, and the reason it is one syscall rather than two.
+ *
+ * A passive server runs on time its caller donated, and SYS_REPLY gives that
+ * time back.  Reply and receive as two separate calls therefore leave the
+ * server, between them, runnable with NO scheduling context — and a thread
+ * with no SC is not charged, so it runs unbudgeted for exactly as long as it
+ * takes to make the second syscall.  That is the hole donation exists to
+ * close, reopened one instruction after closing it.  SYS_REPLY_RECV removes
+ * the gap: the server goes from running on donated time straight to blocked,
+ * and is never in between.
+ *
+ * What this asserts is that the loop actually works over many requests: the
+ * donation is re-established on every call, the reply object is re-staged
+ * without being reallocated, and each answer reaches the right caller.  A
+ * server that leaked its donation would stop after one request; one that
+ * failed to re-stage would fail the second EP_CALL with NOT_SUPPORTED.
+ */
+#define T309_ROUNDS 8
+static uint8_t g_t309_srv_stack[8192];
+static uint8_t g_t309_cli_stack[8192];
+static volatile long g_t309_ep;
+static volatile long g_t309_reply;
+static volatile int  g_t309_replies;
+static volatile int  g_t309_bad;
+static volatile int  g_t309_done;
+
+static void t309_server(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    /* Passive: no SC of its own.  Blocks until a client donates the time. */
+    if (it_sys3(SYS_EP_RECV, (long)g_t309_ep, (long)&m, (long)g_t309_reply) != 0) {
+        for (;;) { }
+    }
+    for (;;) {
+        /* Answer this one and wait for the next, atomically. */
+        m.label = m.label + 1ULL;              /* the service: n -> n+1 */
+        if (it_sys3(SYS_REPLY_RECV, (long)g_t309_reply, (long)&m,
+                    (long)g_t309_ep) != 0)
+            break;
+    }
+    for (;;) { }
+}
+
+static void t309_client(void) {
+    for (int i = 0; i < T309_ROUNDS; i++) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label = (uint64_t)(0x300 + i);
+        if (it_sys2(SYS_EP_CALL, (long)g_t309_ep, (long)&m) != 0) { g_t309_bad = 1; break; }
+        if (m.label != (uint64_t)(0x300 + i + 1)) { g_t309_bad = 1; break; }
+        g_t309_replies++;
+    }
+    g_t309_done = 1;
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) { }
+}
+
+static void test_t309(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "reply_recv loop";
+
+    long ep = it_ep_create_slot();
+    long rp = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
+    if (ep < 0 || rp < 0) { it_fail("T309", "objects"); return; }
+    g_t309_ep = ep; g_t309_reply = rp;
+    g_t309_replies = 0; g_t309_bad = 0; g_t309_done = 0;
+
+    long srv = it_thread_create((uint64_t)(uintptr_t)t309_server,
+                                ((uint64_t)(uintptr_t)(g_t309_srv_stack +
+                                    sizeof(g_t309_srv_stack))) & ~0xFULL, 0);
+    if (srv < 0) { it_fail("T309", "server thread"); return; }
+
+    long cli = it_thread_create((uint64_t)(uintptr_t)t309_client,
+                                ((uint64_t)(uintptr_t)(g_t309_cli_stack +
+                                    sizeof(g_t309_cli_stack))) & ~0xFULL, 0);
+    if (cli < 0) { it_fail("T309", "client thread"); return; }
+
+    /* Give the client real time to donate: a budget large enough for the whole
+     * conversation, so what is being tested is the loop and not exhaustion. */
+    long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                   IRIS_KOBJ_SCHED_CONTEXT, 0);
+    if (sc < 0) { it_fail("T309", "sc"); return; }
+    if (ok && it_sys3(SYS_SC_CONFIGURE, sc, 200, 400) != 0) { ok = 0; why = "sc configure"; }
+    if (ok && it_sys2(SYS_SC_BIND, sc, cli) != 0)           { ok = 0; why = "sc bind"; }
+
+    /* Bounded: a server that stops after one request never sets done. */
+    for (int i = 0; ok && i < 4000 && !g_t309_done; i++) (void)it_sys0(SYS_YIELD);
+
+    if (ok && !g_t309_done) {
+        ok = 0;
+        why = (g_t309_replies == 0) ? "no request served at all"
+            : (g_t309_bad ? "wrong reply payload" : "server stopped mid-loop");
+        it_fz_note("T309", (uint32_t)g_t309_replies, (uint32_t)g_t309_bad, 0u);
+    }
+    if (ok && g_t309_bad)                   { ok = 0; why = "wrong reply payload"; }
+    if (ok && g_t309_replies != T309_ROUNDS) { ok = 0; why = "server stopped early"; }
+
+    (void)it_sys2(SYS_SC_BIND, sc, 0L);
+    (void)it_sys1(SYS_TCB_EXIT, srv);
+    it_quiesce_reaper();
+
+    if (ok) it_pass("T309"); else it_fail("T309", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -22172,6 +22282,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t306();
     test_t307();
     test_t308();
+    test_t309();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

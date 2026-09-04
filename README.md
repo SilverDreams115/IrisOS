@@ -322,7 +322,7 @@ ever run — seL4's "revoke the Untyped you used", in the form IRIS has.
 
 ## Syscall surface
 
-**70 live syscalls** out of 129 numbers (0–128): 126 are named in
+**71 live syscalls** out of 130 numbers (0–129): 127 are named in
 `kernel/include/iris/syscall.h`, 56 of those are retired, and 9–11 were never
 assigned. A retired number answers `IRIS_ERR_NOT_SUPPORTED` and is **never
 reused**, so a stale caller gets a refusal rather than somebody else's
@@ -344,7 +344,9 @@ operation. Highlights by area:
   differently), `CSPACE_SELF`, `CNODE_DELETE`, `CNODE_SWAP`, `CAP_IDENTIFY`,
   `CAP_SAME_OBJECT`.
 - **Endpoint IPC**: `EP_SEND`, `EP_RECV`, `EP_NB_SEND`, `EP_NB_RECV`,
-  `EP_CALL`, `REPLY`.
+  `EP_CALL`, `REPLY`, `REPLY_RECV` (seL4's `ReplyRecv` — atomic, so a passive
+  server never crosses the gap between giving its donated time back and
+  blocking again).
 - **Memory / untyped / frames**: `UNTYPED_RETYPE2` (the one way an object is
   born), `UNTYPED_INFO`, `UNTYPED_QUERY`, `UNTYPED_RESET`,
   `VMO_CREATE/MAP/MAP_INTO/MAP_PAGE/UNMAP/SIZE`, `FRAME_MAP/UNMAP`,
@@ -460,7 +462,7 @@ Three independently-gating layers, run on every change:
   the file-grant layer, …). They cover what a successful boot cannot show:
   buffer bounds on a page about to be mapped into ring 3, a CSpace that names
   itself, and an allocator's two ends meeting exactly once.
-- **Runtime tests** — booted under QEMU headless: **276 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **277 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
@@ -475,7 +477,8 @@ Three independently-gating layers, run on every change:
   live-process ceiling (T304), every capability tracing to an ancestor
   (T305), a CNode capability carrying a guard (T306), budget exhaustion
   delivered as a fault a supervisor can answer (T307), and a passive server
-  running on its client's donated scheduling context (T308).
+  running on its client's donated scheduling context (T308), and that server
+  serving a whole loop of requests through `REPLY_RECV` (T309).
 - **Purity gate** — `make check-purity`: the frozen legacy-consumer allowlist.
   Nothing handle-table-shaped is left in it (Stage 4 deleted the namespace);
   what it holds is the kslab inventory — 14 files, 17 permitted occurrences —
@@ -488,7 +491,7 @@ make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
 make test-unit                                             # host unit suites (18852)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (276/276)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (277/277)
 make run                                                   # interactive QEMU
 ```
 

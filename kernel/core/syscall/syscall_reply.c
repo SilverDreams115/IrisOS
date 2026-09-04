@@ -428,3 +428,60 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     kobject_release(&rp->base); /* drop resolve lifecycle ref */
     return syscall_ok_u64(0);
 }
+
+/*
+ * SYS_REPLY_RECV (129) — Stage 8-mcs, seL4's seL4_ReplyRecv.
+ *
+ * Answer the outstanding call and wait for the next one with no scheduling
+ * point in between.  See the contract in <iris/syscall.h> for why that gap is
+ * the thing being closed rather than a latency tweak: a passive server crossing
+ * it is runnable with no scheduling context, and a thread with no SC is not
+ * charged, so the server would run unbudgeted for exactly as long as it took
+ * to make the second syscall.
+ *
+ * Composed from the two halves rather than reimplementing either.  The kernel
+ * is non-preemptive here — interrupts are off for the syscall and sys_reply
+ * only marks the woken client READY, it does not yield — so the two run back
+ * to back with nothing scheduled between them.  That is where the atomicity
+ * comes from; there is no lock to hold and nothing to unwind.
+ *
+ * Sequencing note: the reply is NOT rolled back if the receive half fails.
+ * The client has been answered and unblocked; pretending otherwise would make
+ * the return value describe something that did not happen.  An error here
+ * means "answered, but not now waiting", and a server that gets one re-arms by
+ * calling receive again.
+ */
+uint64_t sys_reply_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    /*
+     * The buffer arrives holding the kernel's OWN echo: EP_RECV writes the
+     * staged reply CPtr into attached_handle so the server knows which object
+     * to answer with.  Handing that straight to the reply half would ask the
+     * kernel to TRANSFER the reply object to the client as a capability — the
+     * server would be giving away the very thing it replies with, and the call
+     * would fail for want of RIGHT_TRANSFER on a cap it never meant to send.
+     *
+     * Every server writing this loop would hit it, so the syscall clears the
+     * field rather than documenting a footgun.  The consequence is stated in
+     * the contract: REPLY_RECV does not carry a capability on the reply.  A
+     * server that needs to is doing two different things and should say so
+     * with two calls.
+     */
+    struct IrisMsg m;
+    if (!user_range_readable(arg1, (uint32_t)sizeof(m)) ||
+        !user_range_writable(arg1, (uint32_t)sizeof(m)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!copy_from_user_checked(&m, arg1, (uint32_t)sizeof(m)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (m.attached_handle != IRIS_MSG_NO_CAP && m.attached_handle != 0u) {
+        m.attached_handle = IRIS_MSG_NO_CAP;
+        if (!copy_to_user_checked(arg1, &m, (uint32_t)sizeof(m)))
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    uint64_t r = sys_reply(arg0, arg1, 0);
+    if ((int64_t)r < 0) return r;          /* nothing replied, nothing staged */
+    /* Re-stage the SAME reply object for the next caller: a server keeps one
+     * for its whole life, which is what makes this a loop rather than a
+     * per-request allocation. */
+    return sys_ep_recv(arg2, arg1, arg0);
+}

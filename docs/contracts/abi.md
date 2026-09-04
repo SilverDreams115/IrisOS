@@ -71,7 +71,7 @@ Kernel implementation note:
 
 ## Surface Summary
 
-Exported syscall number surface: **`0..128`** — 129 numbers, of which **70 are
+Exported syscall number surface: **`0..129`** — 130 numbers, of which **71 are
 live**, 56 are named in `syscall.h` and retired, and `9`–`11` were never
 assigned.
 
@@ -95,7 +95,7 @@ and the early Unix-shaped calls that predate the capability model.
 
 ### Endpoint IPC
 
-`74` `SYS_EP_SEND`, `75` `SYS_EP_RECV`, `76` `SYS_EP_NB_SEND`, `77` `SYS_EP_NB_RECV`, `93` `SYS_EP_CALL`, `94` `SYS_REPLY`
+`74` `SYS_EP_SEND`, `75` `SYS_EP_RECV`, `76` `SYS_EP_NB_SEND`, `77` `SYS_EP_NB_RECV`, `93` `SYS_EP_CALL`, `94` `SYS_REPLY`, `129` `SYS_REPLY_RECV`
 
 ### Notifications and faults
 

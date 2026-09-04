@@ -1451,6 +1451,41 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_TCB_SET_TIMEOUT_HANDLER 128
 
+/*
+ * SYS_REPLY_RECV(reply_cptr, msg_uptr, ep_cptr) → 0 or iris_error_t
+ *
+ * Stage 8-mcs — seL4's `seL4_ReplyRecv`: answer the outstanding call and wait
+ * for the next one, with NO scheduling point in between.
+ *
+ * The atomicity is not an optimisation, it is what makes a PASSIVE server
+ * work.  A passive server runs on time donated by whoever called it, and
+ * SYS_REPLY gives that time back.  Doing reply and recv as two syscalls
+ * therefore leaves the server, between them, runnable with no scheduling
+ * context at all — and a thread with no SC is not charged, so it runs
+ * unbudgeted.  That is the exact hole donation exists to close, reopened
+ * one instruction after it was closed.  Here the server goes from "running on
+ * donated time" straight to "blocked waiting", and is never in between.
+ *
+ *   reply_cptr  the KOBJ_REPLY holding the caller, with RIGHT_WRITE.  It is
+ *               consumed by the reply and RE-STAGED for the next call, so a
+ *               server keeps one reply object for its whole life.
+ *   msg_uptr    carries the reply out and the next request back in — one
+ *               buffer, as in seL4, which is why the operation is one call.
+ *   ep_cptr     the endpoint to wait on, with RIGHT_READ.
+ *
+ * The reply half happens first and is not undone if the receive half fails:
+ * the client has been answered, and reporting otherwise would be a lie.  An
+ * error therefore means "answered, but not now waiting".
+ *
+ * REPLY_RECV does NOT carry a capability on the reply.  The buffer arrives
+ * holding the kernel's own echo of the staged reply CPtr in attached_handle,
+ * and passing that on would ask the kernel to transfer the reply object
+ * itself; the field is cleared rather than left as a trap every server would
+ * spring.  A server that means to send a capability is doing two things and
+ * says so with SYS_REPLY and SYS_EP_RECV.
+ */
+#define SYS_REPLY_RECV 129
+
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
 #define IRIS_UNTYPED_QUERY_ONE     2u
