@@ -45,13 +45,46 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
+    /*
+     * Woken because the notification CLOSED under us.  Checked before the
+     * capability is resolved, because the close is usually the last capability
+     * going away — the slot is empty now, and re-resolving would report
+     * NOT_FOUND for something that actually closed.  Preserves the contract
+     * the parked form had, which could tell the two apart only because it
+     * never let go of the object.
+     */
+    if (t->sc_reentry && t->ipc_ep_closed) {
+        t->ipc_ep_closed = 0u;
+        return syscall_err(IRIS_ERR_CLOSED);
+    }
+
     struct KNotification *notif; iris_rights_t notif_r;
     iris_error_t r = cspace_resolve_only_notification(t->cspace_root, (iris_cptr_t)arg0,
                                                             RIGHT_WAIT, &notif, &notif_r);
     if (r != IRIS_OK) return syscall_err(r);
+
+    /*
+     * Stage 9-evt Step 1 — RESTARTABLE (ledger D-1).
+     *
+     * One non-blocking attempt; if it would block, the thread is enqueued on
+     * the notification and parked, and the DISPATCHER re-executes this syscall
+     * when it runs again.  The continuation is the waiter registration, which
+     * lives on the notification and the thread — not on a kernel stack, which
+     * is the whole point.
+     *
+     * The capability is re-resolved on every entry rather than held across the
+     * block.  That is not overhead, it is the correct semantics: a capability
+     * deleted while the thread was parked should not still be waited on, and
+     * the parked form could not notice.
+     */
     uint64_t bits = 0;
-    r = knotification_wait(notif, &bits);
+    r = knotification_wait_step(notif, &bits);
     kobject_release(&notif->base);
+
+    if (r == IRIS_ERR_WOULD_BLOCK) {
+        syscall_request_restart(t);
+        return 0;   /* unused: the dispatcher re-enters instead of returning */
+    }
     if (r == IRIS_OK && !copy_u64_to_user_checked(arg1, bits))
         return syscall_err(IRIS_ERR_INVALID_ARG);
     return syscall_err(r);
@@ -74,6 +107,12 @@ uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
 
+    if (t->sc_reentry && t->ipc_ep_closed) {
+        t->ipc_ep_closed = 0u;
+        t->wake_tick = 0u; t->timed_out = 0u;
+        return syscall_err(IRIS_ERR_CLOSED);
+    }
+
     struct KNotification *notif; iris_rights_t notif_r;
     iris_error_t r = cspace_resolve_only_notification(t->cspace_root, (iris_cptr_t)arg0,
                                                             RIGHT_WAIT, &notif, &notif_r);
@@ -85,9 +124,17 @@ uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_OVERFLOW);
     }
 
+    /* Stage 9-evt Step 1 — RESTARTABLE, same shape as SYS_NOTIFY_WAIT with a
+     * deadline armed on the first attempt only. */
     uint64_t bits = 0;
-    r = knotification_wait_timeout(notif, &bits, deadline_ticks);
+    r = knotification_wait_timeout_step(notif, &bits, deadline_ticks,
+                                        /*first=*/!t->sc_reentry);
     kobject_release(&notif->base);
+
+    if (r == IRIS_ERR_WOULD_BLOCK) {
+        syscall_request_restart(t);
+        return 0;
+    }
     if (r == IRIS_OK) {
         if (!copy_u64_to_user_checked(arg1, bits))
             return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -116,7 +163,21 @@ uint64_t sys_futex_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (arg2 != 0 && !timeout_ns_to_deadline_ticks(arg2, &deadline_ticks))
         return syscall_err(IRIS_ERR_OVERFLOW);
 
-    return syscall_err(futex_wait(uaddr, expected, deadline_ticks));
+    /*
+     * Stage 9-evt Step 1 — RESTARTABLE (ledger D-1).  The continuation is the
+     * bucket entry; IRIS_ERR_BUSY from the step means "parked, re-execute me",
+     * which is deliberately distinct from IRIS_ERR_WOULD_BLOCK — that one is
+     * the caller's answer ("the value did not match"), and collapsing the two
+     * is how a futex loses a wakeup.
+     */
+    struct task *t = task_current();
+    iris_error_t fr = futex_wait_step(uaddr, expected, deadline_ticks,
+                                      /*first=*/!t || !t->sc_reentry);
+    if (fr == IRIS_ERR_BUSY) {
+        syscall_request_restart(t);
+        return 0;
+    }
+    return syscall_err(fr);
 }
 
 

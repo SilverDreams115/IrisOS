@@ -13,6 +13,9 @@ struct task;
  *   Called from task_cancel_blocked_waits during task teardown.
  */
 iris_error_t futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline_ticks);
+/* Stage 9-evt Step 1 — restartable half; IRIS_ERR_BUSY means "parked, re-execute". */
+iris_error_t futex_wait_step(uint64_t uaddr, uint32_t expected,
+                             uint64_t deadline_ticks, int first);
 uint32_t     futex_wake(uint64_t uaddr, uint32_t count);
 void         futex_cancel_waiter(struct task *t);
 

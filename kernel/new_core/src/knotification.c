@@ -72,8 +72,22 @@ static void knotif_waiters_wake_all(struct KNotification *n) {
     for (uint32_t i = 0; i < KNOTIF_WAITERS_MAX; i++) {
         struct task *w = n->waiters[i];
         n->waiters[i] = 0;
-        if (w && w->state == TASK_BLOCKED_IRQ)
+        if (w && w->state == TASK_BLOCKED_IRQ) {
+            /*
+             * Stage 9-evt Step 1: tell the waiter WHY it woke.
+             *
+             * A restartable wait re-executes the syscall, which re-resolves the
+             * capability — and the reason this wake happened is usually that
+             * the last capability was just deleted, so the re-resolution would
+             * fail with NOT_FOUND and the caller would learn "no such slot"
+             * instead of "the thing you were waiting on closed".  The parked
+             * form could tell them apart because it never let go of the
+             * object; the restartable one needs the fact recorded on the
+             * thread.  Same marker and same reason as the endpoint path.
+             */
+            w->ipc_ep_closed = 1u;
             task_wakeup(w);
+        }
     }
     n->waiter_count = 0;
 }
@@ -204,6 +218,98 @@ iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits) {
             spinlock_unlock(&n->base.lock);
         }
     }
+}
+
+/*
+ * Stage 9-evt Step 1 — one non-blocking attempt, then park.
+ *
+ * This is knotification_wait's loop body with the loop and the task_yield
+ * removed: the retry is the DISPATCHER re-executing the syscall, and the
+ * position in the waiter list is the continuation.  Nothing is held across the
+ * block, which is what makes the caller's stack frame disposable.
+ *
+ * A signal that arrives between the enqueue here and the reschedule is not
+ * lost and does not need to be: knotification_signal sets pending bits on the
+ * OBJECT and wakes the waiter, so a re-execution sees the bits.  The restart
+ * model is if anything more robust than the parked one here, because there is
+ * no window in which the handler holds a decision it made before sleeping.
+ */
+iris_error_t knotification_wait_step(struct KNotification *n, uint64_t *out_bits) {
+    struct task *t = task_current();
+
+    /* Leave the list before deciding anything: a previous park may have left
+     * us on it, and a stale registration would take a signal meant for the
+     * attempt we are about to make. */
+    if (t) {
+        spinlock_lock(&n->base.lock);
+        knotif_waiters_remove(n, t);
+        spinlock_unlock(&n->base.lock);
+    }
+
+    uint64_t bits = atomic_load_explicit(&n->signal_bits, memory_order_acquire);
+    if (bits != 0) {
+        uint64_t got = atomic_exchange_explicit(&n->signal_bits, 0,
+                                                memory_order_acq_rel);
+        if (got != 0) { *out_bits = got; return IRIS_OK; }
+    }
+
+    spinlock_lock(&n->base.lock);
+    bits = atomic_load_explicit(&n->signal_bits, memory_order_acquire);
+    if (bits != 0) {
+        spinlock_unlock(&n->base.lock);
+        return IRIS_ERR_WOULD_BLOCK;   /* re-execute; the fast path will take it */
+    }
+    if (n->closed) {
+        spinlock_unlock(&n->base.lock);
+        return IRIS_ERR_CLOSED;
+    }
+    if (t) {
+        iris_error_t r = knotif_waiters_enqueue(n, t);
+        if (r != IRIS_OK) {
+            spinlock_unlock(&n->base.lock);
+            return r;                  /* waiter table full */
+        }
+        t->state = TASK_BLOCKED_IRQ;
+    }
+    spinlock_unlock(&n->base.lock);
+    return IRIS_ERR_WOULD_BLOCK;
+}
+
+/*
+ * Stage 9-evt Step 1 — one attempt of a timed wait, then park.
+ *
+ * knotification_wait_step plus a deadline.  The deadline is armed on the FIRST
+ * attempt only: re-arming it on every re-execution would make the timeout
+ * restart with the thread and never expire, which is the same trap SYS_SLEEP
+ * fell into when its continuation was a duration instead of an instant.
+ */
+iris_error_t knotification_wait_timeout_step(struct KNotification *n,
+                                             uint64_t *out_bits,
+                                             uint64_t deadline_ticks,
+                                             int first) {
+    struct task *t = task_current();
+
+    if (t && t->timed_out) {
+        t->timed_out = 0;
+        t->wake_tick = 0;
+        spinlock_lock(&n->base.lock);
+        knotif_waiters_remove(n, t);
+        spinlock_unlock(&n->base.lock);
+        return IRIS_ERR_TIMED_OUT;
+    }
+
+    iris_error_t r = knotification_wait_step(n, out_bits);
+    if (r != IRIS_ERR_WOULD_BLOCK) {
+        if (t) { t->wake_tick = 0; t->timed_out = 0; }
+        return r;
+    }
+
+    /* Parked by the step above; arm the deadline the first time only. */
+    if (t && first) {
+        t->wake_tick = deadline_ticks;
+        t->timed_out = 0;
+    }
+    return IRIS_ERR_WOULD_BLOCK;
 }
 
 /*

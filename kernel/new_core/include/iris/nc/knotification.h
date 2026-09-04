@@ -52,6 +52,33 @@ void         knotification_signal(struct KNotification *n, uint64_t bits);
  * and returns them in *out_bits. Up to KNOTIF_WAITERS_MAX tasks may block
  * concurrently; returns IRIS_ERR_BUSY if the waiter table is full. */
 iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits);
+/*
+ * Stage 9-evt Step 1 — the RESTARTABLE half of knotification_wait.
+ *
+ * Does one non-blocking attempt.  Returns IRIS_OK with the bits, IRIS_ERR_CLOSED,
+ * IRIS_ERR_BUSY (waiter table full), or IRIS_ERR_WOULD_BLOCK meaning "you are
+ * enqueued and parked — ask to be re-executed".  It holds nothing across the
+ * block: the caller's continuation is its membership of the waiter list, which
+ * is state on the NOTIFICATION and the THREAD, not on a kernel stack.
+ *
+ * It removes the caller from the waiter list on entry, so a re-execution after
+ * any kind of wake — signal, close, or a spurious one — starts from a clean
+ * position rather than accumulating registrations.
+ */
+iris_error_t knotification_wait_step(struct KNotification *n, uint64_t *out_bits);
+/*
+ * Stage 9-evt Step 1 — the restartable half of knotification_wait_timeout.
+ *
+ * Same contract as knotification_wait_step, plus a deadline: on the first
+ * attempt it arms `wake_tick`, and it reports IRIS_ERR_TIMED_OUT when the
+ * scheduler has marked the thread timed out.  `first` distinguishes the two
+ * entries, because the waker CLEARS the state the handler parked on and a
+ * handler cannot infer "resuming" from what is left.
+ */
+iris_error_t knotification_wait_timeout_step(struct KNotification *n,
+                                             uint64_t *out_bits,
+                                             uint64_t deadline_ticks,
+                                             int first);
 iris_error_t knotification_wait_timeout(struct KNotification *n, uint64_t *out_bits,
                                         uint64_t deadline_ticks);
 

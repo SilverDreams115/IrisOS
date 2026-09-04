@@ -102,6 +102,80 @@ iris_error_t futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline_tic
     return IRIS_OK;
 }
 
+/*
+ * Stage 9-evt Step 1 — the RESTARTABLE half of futex_wait (ledger D-1).
+ *
+ * The loop body without the task_yield: the retry is the dispatcher
+ * re-executing the syscall, and the continuation is the bucket entry — state
+ * on the FUTEX and the thread, not on a kernel stack.
+ *
+ * Returns IRIS_OK (woken), IRIS_ERR_TIMED_OUT, IRIS_ERR_WOULD_BLOCK meaning
+ * "the value did not match, do not block" (the caller's contract, unchanged),
+ * or IRIS_ERR_BUSY meaning "enqueued and parked — ask to be re-executed".
+ * Those last two are deliberately different: one is an answer, the other is
+ * not an answer yet, and collapsing them is how a futex loses a wakeup.
+ */
+iris_error_t futex_wait_step(uint64_t uaddr, uint32_t expected,
+                             uint64_t deadline_ticks, int first) {
+    struct task *t = task_current();
+    if (!t) return IRIS_ERR_INVALID_ARG;
+
+    if (!first) {
+        /* Resuming.  The only two ways out of the park are the deadline and a
+         * futex_wake, and the waker removes the bucket entry, so there is
+         * nothing to re-check: which one happened is the whole answer. */
+        if (t->timed_out) {
+            t->timed_out = 0;
+            t->wake_tick = 0;
+            futex_cancel_waiter(t);
+            return IRIS_ERR_TIMED_OUT;
+        }
+        t->wake_tick = 0;
+        return IRIS_OK;
+    }
+
+    uint32_t val;
+    if (!copy_from_user_checked(&val, uaddr, sizeof(val)))
+        return IRIS_ERR_INVALID_ARG;
+    if (val != expected)
+        return IRIS_ERR_WOULD_BLOCK;
+
+    struct futex_bucket *bucket = &futex_buckets[futex_hash(uaddr)];
+    uint64_t saved = irq_spinlock_lock(&bucket->lock);
+
+    /* Re-read under the lock to close the TOCTOU window. */
+    if (!copy_from_user_checked(&val, uaddr, sizeof(val))) {
+        irq_spinlock_unlock(&bucket->lock, saved);
+        return IRIS_ERR_INVALID_ARG;
+    }
+    if (val != expected) {
+        irq_spinlock_unlock(&bucket->lock, saved);
+        return IRIS_ERR_WOULD_BLOCK;
+    }
+
+    int slot = -1;
+    for (int i = 0; i < (int)FUTEX_BUCKET_CAP; i++) {
+        if (bucket->entries[i].uaddr == 0) { slot = i; break; }
+    }
+    if (slot < 0) {
+        irq_spinlock_unlock(&bucket->lock, saved);
+        return IRIS_ERR_TABLE_FULL;
+    }
+    if (!t->vspace) {
+        irq_spinlock_unlock(&bucket->lock, saved);
+        return IRIS_ERR_INVALID_ARG;
+    }
+
+    bucket->entries[slot].uaddr  = uaddr;
+    bucket->entries[slot].waiter = t;
+    bucket->entries[slot].owner  = t->vspace;
+    t->state     = TASK_BLOCKED_IPC;
+    t->wake_tick = deadline_ticks;
+    t->timed_out = 0;
+    irq_spinlock_unlock(&bucket->lock, saved);
+    return IRIS_ERR_BUSY;      /* parked: re-execute me */
+}
+
 uint32_t futex_wake(uint64_t uaddr, uint32_t count) {
     struct task *t = task_current();
     if (!t || !t->vspace) return 0;
