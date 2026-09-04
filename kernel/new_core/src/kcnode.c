@@ -583,12 +583,45 @@ iris_error_t kcnode_slot_delete(struct KCNode *cn, uint32_t slot_idx) {
 
 iris_error_t kcnode_slot_revoke(struct KCNode *cn, uint32_t slot_idx,
                                 uint32_t *out_revoked) {
+    return kcnode_slot_revoke_bounded(cn, slot_idx, 0u /* unbounded */,
+                                      out_revoked, 0);
+}
+
+/*
+ * Stage 9-evt / D-8 — the bounded form.
+ *
+ * `budget == 0` means unbounded, which is what the kernel-internal callers
+ * (CNode teardown) want: they are not running on a ring-3 principal's behalf
+ * and have nowhere to return to.  A syscall passes a real budget and comes
+ * back, which is the preemption point seL4 gets from zombie capabilities and
+ * this kernel now gets from a restartable syscall.
+ *
+ * Termination without a cursor: each slice destroys the capabilities it
+ * revoked, so the subtree is strictly smaller on re-entry.  There is nothing
+ * to remember between slices except how many have gone, and that is the
+ * caller's running total rather than this function's.
+ */
+iris_error_t kcnode_slot_revoke_bounded(struct KCNode *cn, uint32_t slot_idx,
+                                        uint32_t budget, uint32_t *out_revoked,
+                                        int *out_more) {
     if (!cn || slot_idx >= cn->slot_count) return IRIS_ERR_INVALID_ARG;
 
     uint32_t revoked = 0;
+    if (out_more) *out_more = 0;
     atomic_fetch_add_explicit(&cdt_revoke_count, 1u, memory_order_relaxed);
 
     for (;;) {
+        if (budget != 0u && revoked >= budget) {
+            /* Slice spent.  Is there more to do?  Answering here, under the
+             * same lock the loop uses, is what keeps "more" from racing with
+             * a concurrent delete. */
+            uint64_t pf = irq_spinlock_lock(&mdb_lock);
+            struct KCSlot *root = &cn->slots[slot_idx];
+            int more = root->object && root->mdb_first_child;
+            irq_spinlock_unlock(&mdb_lock, pf);
+            if (out_more) *out_more = more;
+            break;
+        }
         struct KObject *victim_obj = 0;
 
         uint64_t mf = irq_spinlock_lock(&mdb_lock);

@@ -319,6 +319,15 @@ struct task {
      * carrying state rather than a continuation.
      */
     struct KObject   *sc_held;
+    /*
+     * A running total a restartable syscall carries across its slices.
+     *
+     * A preemptible operation that reports "how much did you do" cannot report
+     * per-slice — the caller asked once and expects one answer.  This is where
+     * the partial answer lives between re-executions, for the same reason
+     * everything else here does: the frame that used to hold it is gone.
+     */
+    uint64_t          sc_acc;
     uint64_t          sc_num;
     uint64_t          sc_arg0, sc_arg1, sc_arg2, sc_arg3;
     uint32_t          sc_restart_count;  /* diagnostic: restarts observed */

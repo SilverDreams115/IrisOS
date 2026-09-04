@@ -437,6 +437,17 @@ uint64_t sys_reply_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 void syscall_request_restart(struct task *t);
 /* Global count of syscall re-executions (diagnostic). */
 uint32_t syscall_restart_count(void);
+
+/*
+ * Stage 9-evt / D-8 — capabilities revoked per preemptible slice.
+ *
+ * Chosen for the shape of the bound rather than for throughput: each victim
+ * costs one mdb_lock acquisition plus a lifecycle release taken OUTSIDE that
+ * lock, so a slice of 16 bounds the syscall's uninterrupted run at a small
+ * multiple of a single delete.  Larger would blunt the preemption point;
+ * smaller would pay a reschedule for almost no work.
+ */
+#define IRIS_REVOKE_SLICE 16u
 uint64_t sys_cspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,

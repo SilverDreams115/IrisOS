@@ -198,12 +198,40 @@ uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                            &cn, &idx);
     if (err != IRIS_OK) return syscall_err(err);
 
+    /*
+     * Stage 9-evt / ledger D-8 — PREEMPTIBLE.
+     *
+     * Revoke used to run until the invoked capability's subtree was exhausted,
+     * and nothing bounded the subtree: a ring-3 principal that could build a
+     * wide derivation tree could hold the CPU for as long as that tree was
+     * large.  It was the one in-kernel operation with no latency bound, and
+     * the ledger recorded it as blocked on the event kernel because a
+     * preemptible delete needs somewhere to park a continuation.
+     *
+     * Step 1 of that conversion built exactly that, and this is the first
+     * thing to use it.  The slice is bounded; if descendants remain the
+     * syscall asks to be re-executed, and the dispatcher reschedules in
+     * between — which is the preemption point.  The continuation needs no
+     * cursor: every slice destroys what it revoked, so the tree is strictly
+     * smaller on re-entry and the same arguments mean less work each time.
+     * The only thing carried across is the running total, because the caller
+     * asked once and expects one answer.
+     */
+    if (!t->sc_reentry) t->sc_acc = 0;
+
     uint32_t revoked = 0;
-    err = kcnode_slot_revoke(cn, idx, &revoked);
+    int more = 0;
+    err = kcnode_slot_revoke_bounded(cn, idx, IRIS_REVOKE_SLICE, &revoked, &more);
     kobject_active_release(&cn->base);
     kobject_release(&cn->base);
     if (err != IRIS_OK) return syscall_err(err);
-    return (uint64_t)revoked;
+
+    t->sc_acc += revoked;
+    if (more) {
+        syscall_request_restart(t);
+        return 0;
+    }
+    return t->sc_acc;
 }
 
 /*

@@ -1596,6 +1596,11 @@ resolver would take the guard alongside the CNode — so it is mechanical but
 wide, and it has no consumer in tree yet.  Until it lands a CSpace can be
 sparse below the root but not at it.
 
+- **D-8 — revoke is preemptible.**  ✅ **CLOSED (Stage 9-evt).**  Bounded
+  slices plus the restart machinery step 1 built; no cursor and no zombie
+  capabilities needed, because each slice destroys whole capabilities and
+  leaves nothing half-deleted to name.  T311.
+
 - **A9 / D-6 — LEGACY_ROOTs to zero.**  ✅ **The defect class is CLOSED.**
   T305 measures 43 live roots of 335 MDB nodes at Stage 7 close, and the
   fault-delivery class — the one that was a defect — is fixed.  What remains is

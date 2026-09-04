@@ -21802,6 +21802,84 @@ static void test_t310(void) {
     if (ok) it_pass("T310"); else it_fail("T310", why);
 }
 
+/* ── T311: revoke is PREEMPTIBLE (ledger D-8) ────────────────────────────
+ *
+ * SYS_CSPACE_REVOKE used to run until the invoked capability's subtree was
+ * exhausted, and nothing bounded the subtree.  A ring-3 principal that could
+ * build a wide derivation tree could hold the CPU for as long as that tree was
+ * large: the one in-kernel operation with no latency bound.  seL4 answers this
+ * with zombie capabilities and a preemption point; the ledger recorded it as
+ * blocked on the event kernel, because a preemptible delete needs somewhere to
+ * park a continuation.
+ *
+ * Stage 9-evt step 1 built that somewhere, and revoke is the first thing to
+ * use it.  This test builds a derivation subtree WIDER than one slice and
+ * asserts two things that together mean "preemptible" rather than "still
+ * atomic, just slower":
+ *
+ *   1. the syscall's restart counter ADVANCES — the operation really did give
+ *      the CPU up part-way and come back;
+ *   2. the ANSWER is still whole — it reports every capability it destroyed,
+ *      not the count from its last slice, which is the accounting mistake a
+ *      sliced operation invites.
+ *
+ * And the subtree really is gone afterwards, because a preemption point that
+ * loses work is worse than none.
+ */
+#define T311_COPIES 24u
+
+static void test_t311(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "preemptible revoke";
+
+    /* A source capability worth deriving from: a fresh endpoint. */
+    long src = it_ep_create_slot();
+    if (src < 0) { it_fail("T311", "source"); return; }
+
+    /* Fan out more children than one slice can revoke. */
+    uint32_t made = 0;
+    for (uint32_t i = 0; ok && i < T311_COPIES; i++) {
+        uint32_t leaf = 100u + i;
+        (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+        if (it_sys3(SYS_CSPACE_MINT, src,
+                    (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
+                    (long)RIGHT_SAME_RIGHTS) == 0)
+            made++;
+    }
+    if (ok && made < T311_COPIES) { ok = 0; why = "could not build the subtree"; }
+
+    struct it_utq_global g0, g1;
+    if (ok && !it_utq_g(&g0)) { ok = 0; why = "query"; }
+
+    long revoked = 0;
+    if (ok) revoked = it_sys1(SYS_CSPACE_REVOKE, src);
+    if (ok && revoked < 0) { ok = 0; why = "revoke failed"; }
+
+    if (ok && !it_utq_g(&g1)) { ok = 0; why = "query"; }
+
+    /* (1) it really gave the CPU up part-way. */
+    if (ok && g1.syscall_restarts <= g0.syscall_restarts) {
+        ok = 0; why = "revoke ran to completion without preempting";
+    }
+    /* (2) and still answered for the whole job, not just the last slice. */
+    if (ok && (uint32_t)revoked != made) {
+        ok = 0; why = "sliced revoke lost part of its count";
+    }
+    /* the subtree is actually gone */
+    if (ok) {
+        for (uint32_t i = 0; ok && i < T311_COPIES; i++) {
+            if (it_sys3(SYS_CAP_IDENTIFY, (long)IT_OBJ_CPTR(100u + i), 0, 0) >= 0) {
+                ok = 0; why = "descendant survived the revoke";
+            }
+        }
+    }
+
+    it_slot_delete((uint32_t)src);
+    it_quiesce_reaper();
+    if (ok) it_pass("T311"); else it_fail("T311", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -22342,6 +22420,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t308();
     test_t309();
     test_t310();
+    test_t311();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

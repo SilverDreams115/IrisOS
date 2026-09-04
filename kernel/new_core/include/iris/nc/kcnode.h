@@ -233,6 +233,23 @@ iris_error_t kcnode_slot_delete(struct KCNode *cn, uint32_t slot_idx);
  * and processes — in deterministic deepest-leftmost-first order.  The
  * invoked slot itself survives.  Siblings are untouched.  out_revoked
  * (optional) receives the number of capabilities destroyed. */
+/*
+ * Stage 9-evt / ledger D-8 — revoke at most `budget` capabilities, then stop.
+ *
+ * `*out_more` says whether the subtree still has descendants, i.e. whether the
+ * caller must come back.  Unbounded revoke is the one in-kernel operation a
+ * ring-3 principal could make arbitrarily long simply by building a wide
+ * derivation tree, and seL4 answers it with a preemption point rather than a
+ * faster loop.  So does this: the slice is bounded, the caller re-executes,
+ * and the tree is strictly smaller every time — which is what makes the
+ * re-execution terminate without needing a cursor.
+ *
+ * `budget == 0` means unbounded, for the kernel-internal callers that are not
+ * running on a principal's behalf and have nowhere to return to.
+ */
+iris_error_t kcnode_slot_revoke_bounded(struct KCNode *cn, uint32_t slot_idx,
+                                        uint32_t budget, uint32_t *out_revoked,
+                                        int *out_more);
 iris_error_t kcnode_slot_revoke(struct KCNode *cn, uint32_t slot_idx,
                                 uint32_t *out_revoked);
 
