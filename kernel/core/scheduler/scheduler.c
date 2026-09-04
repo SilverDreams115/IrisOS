@@ -98,7 +98,36 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
     *out_chosen = rq_dequeue_best();
 }
 
-void task_yield(void) {
+/*
+ * Stage 9-evt Step 2 — the abandoning park (ledger D-1).
+ *
+ * `abandon` means: do not preserve this frame.  The outgoing thread is set to
+ * resume at syscall_restart_trampoline on a FRESH stack, and the integer
+ * context the switch would normally save is thrown away — so the kernel stack
+ * of a blocked thread holds nothing, which is the property D-1 exists to get.
+ *
+ * The FPU state is still saved into the real buffer.  The thread parked with
+ * its user's SSE registers live, and losing them would corrupt a computation
+ * that merely happened to make a blocking syscall — the frame is disposable,
+ * the user's registers are not.
+ *
+ * `old->ctx.rflags` is set to interrupts-off, which is the state a syscall
+ * runs in (SFMASK clears IF at entry).  Resuming the trampoline with interrupts
+ * on would let a timer land on a stack that is being rebuilt.
+ */
+static int task_yield_impl(int abandon);
+
+/* Defined in syscall_dispatch.c; declared here because the abandoning park is
+ * the only thing that ever names it, and scheduler_priv.h is not the syscall
+ * layer's header. */
+__attribute__((noreturn)) void syscall_restart_trampoline(void);
+
+void task_yield(void) { (void)task_yield_impl(0); }
+
+/* Returns only if it could NOT switch away — see syscall_run's fallback. */
+void task_park_restart(void) { (void)task_yield_impl(1); }
+
+static int task_yield_impl(int abandon) {
     uint64_t saved_flags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(saved_flags) : : "memory");
 
@@ -147,7 +176,7 @@ void task_yield(void) {
                 chosen = idle;
             } else {
                 __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
-                return;
+                return 0;
             }
         }
     }
@@ -183,7 +212,7 @@ void task_yield(void) {
     if (chosen == old) {
         old->state = TASK_RUNNING;
         __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
-        return;
+        return 0;
     }
 
     if (old->state == TASK_DEAD)
@@ -214,11 +243,31 @@ void task_yield(void) {
 
     /* Phase S2: kernel RSP save/restore lives inside the TCB backing — no
      * index-keyed task_rsp[] array, no (old - tasks) pointer arithmetic. */
+    if (abandon && old->kstack) {
+        /*
+         * Abandon: point the outgoing thread at the trampoline on a fresh
+         * stack and throw the integer context away.  saved_krsp is one word
+         * below the top because context_switch writes the resume address
+         * there and returns into it.
+         */
+        struct cpu_context discard;
+        uint64_t           discard_rsp;
+        old->ctx.rip    = (uint64_t)(uintptr_t)syscall_restart_trampoline;
+        old->ctx.rflags = 0x2u;      /* reserved bit set, IF clear */
+        old->saved_krsp = (uint64_t)(uintptr_t)(old->kstack + TASK_STACK_SIZE) - 8u;
+        context_switch(&discard, &chosen->ctx,
+                       &discard_rsp, chosen->saved_krsp,
+                       old->fpu_state, chosen->fpu_state);
+        /* Unreachable: this thread resumes at the trampoline, not here. */
+        for (;;) { }
+    }
+
     context_switch(&old->ctx, &chosen->ctx,
                    &old->saved_krsp, chosen->saved_krsp,
                    old->fpu_state, chosen->fpu_state);
 
     __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
+    return 1;
 }
 
 void scheduler_init(void) {

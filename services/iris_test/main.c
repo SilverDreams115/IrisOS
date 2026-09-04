@@ -17723,8 +17723,10 @@ struct it_utq_global {
      * end most tests read them to prove nothing leaked. */
     uint32_t kslab_used_bytes, kslab_total_bytes, kslab_failed_allocs;
     uint32_t global_failed_charges, global_rollbacks;
-    /* Stage 9-evt Step 1: syscall re-executions (ledger D-1). */
+    /* Stage 9-evt: syscall re-executions, and those that resumed on a FRESH
+     * kernel stack with their original frame abandoned (ledger D-1). */
     uint32_t syscall_restarts;
+    uint32_t syscall_abandons;
 };
 struct it_utq_one {
     uint32_t version, struct_size;
@@ -21798,6 +21800,21 @@ static void test_t310(void) {
         ok = 0; why = "blocking sleep did not re-execute";
     }
     if (ok && t_after <= t_before) { ok = 0; why = "sleep did not sleep"; }
+
+    /*
+     * (4) Stage 9-evt Step 2: the blocking sleep resumed on a FRESH kernel
+     * stack, its original frame abandoned.
+     *
+     * This is the assertion that separates step 2 from step 1.  A restart that
+     * yielded through its own frame and one that threw it away are identical
+     * from ring 3 and both advance the restart gauge; only the abandonment
+     * advances this one, because the trampoline is the only way an abandoned
+     * syscall can complete.  Without it, "no thread blocks in the kernel"
+     * would be a claim about the handlers and not about the stacks.
+     */
+    if (ok && g2.syscall_abandons <= g1.syscall_abandons) {
+        ok = 0; why = "blocking sleep kept its kernel frame";
+    }
 
     if (ok) it_pass("T310"); else it_fail("T310", why);
 }

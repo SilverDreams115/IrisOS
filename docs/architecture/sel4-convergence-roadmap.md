@@ -22,7 +22,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 7 — KProcess retirement | ✅ CLOSED (15 steps + 7-mem + 7-proc) |
 | 8-mcs — Full MCS scheduling | ✅ CLOSED |
 | 8-cap — the capability model's last gaps | 🔶 IN PROGRESS (CNode guards landed below the root; D-4 open) |
-| 9-evt — the event kernel (D-1) | 🔶 IN PROGRESS — **step 1 of 3 CLOSED**: every blocking syscall is restart-safe and no handler yields (T310).  Step 2 (abandon the frame) and step 3 (one stack per core) remain |
+| 9-evt — the event kernel (D-1) | 🔶 IN PROGRESS — **steps 1 and 2 CLOSED**: every blocking syscall is restart-safe, and a parked one ABANDONS its kernel frame and resumes on a fresh stack (T310).  Step 3 (one stack per core) needs the preemption path converted first |
 | 9 — SMP | pending |
 | 10 — General-purpose platform | pending |
 
@@ -73,7 +73,7 @@ two halves and they are far apart:
 | No kernel heap | **nearly met** | 17 permitted `kslab_alloc` occurrences across 14 files, all boot path or objects still staged; seL4 has none at all |
 | MCS scheduling | **close** | all four pillars are in as of Stage 8-mcs.  Budget and period are enforced; **sporadic replenishment** returns every tick consumed exactly one period later, so a thread can never spend more than its budget in any window of its period (host R-1..R-8); **timeout faults** make an overrun a policy decision a temporal supervisor takes rather than an invisible stall (`SYS_TCB_SET_TIMEOUT_HANDLER`, T307); and **SC donation** lends a client's scheduling context to a PASSIVE server for the duration of a Call, so an SC-less thread runs on the requester's time instead of — as it did before — running unbudgeted (T308).  `SYS_REPLY_RECV` closes the last of them (T309): without it a passive server is, between reply and receive, runnable with no scheduling context — and an SC-less thread is not charged, so it runs unbudgeted for exactly as long as the second syscall takes.  What is still not seL4's: `refill_max` is a constant rather than a per-SC configuration |
 | ABI shape | **far, by decision** | 68 live numbered syscalls of 127 numbers, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  Registered permanent divergence (charter §6) |
-| Kernel architecture | **not started** | D-1: a kernel stack per thread, and threads block INSIDE the kernel |
+| Kernel architecture | **two thirds** | D-1, and the only one of these that is a rewrite rather than an increment.  Steps 1 and 2 are closed: no blocking syscall keeps live state across its block, and a parked one ABANDONS its kernel frame and resumes on a fresh stack from the TCB (T310).  Step 3 — one kernel stack per CORE — is still open, and needs the PREEMPTION path converted before the stacks can go |
 
 ### The two that no further stage closes
 
@@ -1638,32 +1638,64 @@ differently.
 defect class in it, and every §6 row is either permanent-deliberate or has a
 live trigger.
 
-## Stage 9-evt — the event kernel  ← NOT STARTED, and the largest single item
+## Stage 9-evt — the event kernel  ← STEPS 1 AND 2 CLOSED; STEP 3 OPEN
 
-This is ledger **D-1**, which has carried "ACTIVE_LEGACY — no stage assigned"
-since Stage 5.  Assigning it a stage is the point of this section; the ledger's
-own words are that it "is the structural reason seL4 can bound in-kernel
-latency (and be verified) while IRIS cannot claim either".
+This is ledger **D-1**, which carried "ACTIVE_LEGACY — no stage assigned" from
+Stage 5 until this stage was opened.  The ledger's own words are that it "is
+the structural reason seL4 can bound in-kernel latency (and be verified) while
+IRIS cannot claim either".
 
-Today every thread gets 8 KiB of kernel stack plus a guard page from the PMM
-reserve, and a blocking syscall parks the thread with its kernel state live on
-that stack (`saved_krsp`, `TASK_BLOCKED_*`).  seL4 has ONE kernel stack per
-core and no thread ever blocks inside the kernel: a long operation returns to a
-preemption point and the syscall is restarted.
+It decomposes into three steps whose ORDER is forced rather than preferred.
 
-What it requires, honestly:
+**Step 1 — blocking handlers are RESTART-SAFE. ✅ CLOSED.**  No syscall holds a
+live C local across a block.  Each one expresses its continuation in thread
+state and is proven by actually being re-executed, not by inspection: the
+dispatcher re-enters the handler with the same arguments and the handler must
+reach the same answer.  Getting there found real defects, all of the same
+shape — state that looked like a local and was actually a decision already
+taken.  A restarted `SYS_SLEEP` recomputed its deadline and slept forever; a
+restarted `NOTIFY_WAIT` re-resolved a CPtr whose object had since closed and
+reported NOT_FOUND where the caller was owed CLOSED; a restarted `REPLY_RECV`
+re-ran both halves.  The dispatcher-owned `sc_reentry` flag is what
+distinguishes "first entry" from "re-entry" without any handler having to
+invent its own marker.
 
-- Rewriting every blocking path — IPC send/recv/call/reply, notification wait,
-  futex, timeouts — as a state machine that stores its progress in the TCB and
-  returns, rather than as a call that yields with a live C stack frame.
-- Defining preemption points and proving every partial operation is either
-  restartable or committed, which is the same discipline the charter already
-  demands of RETYPE2 and IPC staging (invariant M4), applied to the whole
-  kernel.
-- Deleting per-thread kernel stacks: kernel memory stops scaling with thread
-  count, and a retyped TCB stops costing memory its payer did not pay for.
+**Step 2 — the syscall frame is ABANDONED, not parked. ✅ CLOSED.**  A parking
+thread now has its outgoing integer context thrown into a discard buffer, its
+kernel stack reset to the top, and its resume RIP set to a trampoline: a
+blocked thread's kernel stack holds NOTHING.  It resumes on a fresh stack,
+re-runs the syscall from thread state, and returns to ring 3 through an iretq
+built entirely from the TCB.  The whole user context is saved at syscall entry
+now — including the six callee-saved registers, which a procedural kernel
+preserves for free by obeying the C ABI and an event kernel must save
+explicitly, because the frame those spills lived on is exactly what step 2
+throws away.  That is the bill seL4 pays on every entry, and there is no
+cheaper version of it.  There is one honest fallback: when nobody else can run,
+the park declines and yields through its own frame as step 1 did — abandoning
+buys nothing when the alternative is idling on the same stack.  `syscall_abandons`
+counts only real abandonment, separately from `syscall_restarts`, because the
+two are indistinguishable from ring 3 and only one is what D-1 is about.
 
-What it buys, and why it is not optional for a serious product:
+**Step 2 already paid for itself**: it is what made ledger **D-8** closable.  A
+preemptible revoke needs somewhere to park a continuation, and step 1 built it.
+
+**Step 3 — ONE kernel stack per core. ⬜ OPEN.**  What remains, and the first
+analysis of this stage missed it: it is not enough for syscalls to stop keeping
+state on the stack.  A timer interrupt fires while a task runs in USER mode and
+lands on the kernel stack named by `TSS.RSP0`; if that stack is per-core and
+the ISR then preempts to another task, the outgoing task's interrupt frame sits
+on a stack the incoming task is about to use.  So step 3 additionally requires
+the IRQ path to save the full user context into the TCB rather than leave it on
+a kernel stack — a second conversion, of the preemption path, comparable in
+size to the first.  Syscalls themselves are not the obstacle: `SFMASK` clears
+IF, so no syscall is ever preempted mid-flight, and step 1's restart points are
+the only places a thread gives up the CPU inside the kernel.
+
+Then, and only then, the per-thread stacks can go: kernel memory stops scaling
+with thread count, and a retyped TCB stops costing memory its payer did not pay
+for.
+
+What the whole stage buys, and why it is not optional for a serious product:
 
 - **A bounded in-kernel latency claim.**  Without it, the longest a thread can
   be kept out of the CPU is "however long the longest kernel path takes", which

@@ -289,6 +289,41 @@ struct task {
      * with the SAME arguments — which is why they are saved here rather than
      * re-read from the user's registers, whose frame step 2 will discard.
      */
+    /*
+     * Stage 9-evt Step 2 — the user context a syscall must return to.
+     *
+     * It lives on the thread's kernel stack today, pushed by syscall_entry
+     * before the dispatch call.  That is precisely the frame step 2 abandons
+     * when a handler parks, so the return address, flags and stack pointer
+     * have to be somewhere the abandonment does not destroy.
+     *
+     * Saved on every syscall entry, which costs three stores on a path that
+     * already does eight pushes.  Cheap enough that making it conditional
+     * would be a worse trade than the branch.
+     */
+    uint64_t          sc_user_rip;
+    uint64_t          sc_user_rflags;
+    uint64_t          sc_user_rsp;
+    /*
+     * The user's CALLEE-SAVED registers, and the reason an event kernel has no
+     * choice but to save them.
+     *
+     * A syscall preserves rbx, rbp and r12-r15 for its caller; the kernel does
+     * that for free by obeying the C ABI, because the values stay in registers
+     * or get spilled onto the syscall's own frame.  Abandoning that frame
+     * throws the spills away, so a thread resumed on a fresh stack would return
+     * to ring 3 with whatever the kernel last left in those registers.
+     *
+     * The symptom was precise and worth recording: a service came back from a
+     * blocking syscall with a kernel stack address in rbp and wrote through it
+     * on its next frame access — a userland page fault at 0xFFFF8001..., which
+     * reads like a wild pointer and is actually a register restore that never
+     * happened.
+     *
+     * Order matches struct cpu_context so the two can be read side by side:
+     * r15, r14, r13, r12, rbx, rbp.
+     */
+    uint64_t          sc_user_regs[6];
     uint8_t           sc_restart;
     /*
      * Set by the dispatcher before a RE-dispatch, clear on first entry.

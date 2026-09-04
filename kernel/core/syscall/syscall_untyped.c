@@ -123,8 +123,24 @@ uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  */
 static iris_error_t retype_sub_untyped(struct KUntyped *ut, uint64_t obj_arg,
                                        struct KObject **out) {
+    /*
+     * The region is carved PAGE-aligned, not merely 64-byte aligned.
+     *
+     * A sub-untyped's size is already required to be a page multiple, so a
+     * base that is not page-aligned makes the region agree with nothing: every
+     * frame, page table and VSpace retyped out of it has to re-align upward,
+     * so the FIRST such retype silently burns up to a page that the child's
+     * `available` still counted.  The waste is invisible from ring 3 — a
+     * caller who buys 256 KiB and spends it on frames simply gets one fewer
+     * than arithmetic says — and it moves whenever an unrelated kernel struct
+     * changes size, because that shifts the parent's bump pointer.
+     *
+     * seL4 has no such case: an untyped object is always naturally aligned to
+     * its own size, which is what makes the retype arithmetic there exact.
+     * Page granularity is the weaker property IRIS needs and can afford.
+     */
     if (ut->is_device) {
-        uint64_t phys = kuntyped_bump_alloc_phys(ut, obj_arg);
+        uint64_t phys = kuntyped_bump_alloc_phys_page(ut, obj_arg);
         if (!phys) return IRIS_ERR_NO_MEMORY;
         struct KUntyped *sub = kuntyped_create(phys, obj_arg, 1);
         if (!sub) return IRIS_ERR_NO_MEMORY;
@@ -137,7 +153,7 @@ static iris_error_t retype_sub_untyped(struct KUntyped *ut, uint64_t obj_arg,
 
     void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KUntyped));
     if (!hdr) return IRIS_ERR_NO_MEMORY;
-    uint64_t phys = kuntyped_bump_alloc_phys(ut, obj_arg);
+    uint64_t phys = kuntyped_bump_alloc_phys_page(ut, obj_arg);
     if (!phys) {
         kuntyped_release_child(hdr, sizeof(struct KUntyped));
         return IRIS_ERR_NO_MEMORY;
@@ -634,6 +650,7 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             q.global_failed_charges = kprocess_quota_failed_count();
             q.global_rollbacks      = kprocess_quota_rollback_count();
             q.syscall_restarts      = syscall_restart_count();
+            q.syscall_abandons      = syscall_abandon_count();
             return syscall_err(copy_versioned_to_user(buf_uptr, user_size, user_version,
                                &q, (uint32_t)sizeof(q), IRIS_UNTYPED_QUERY_VERSION));
         }

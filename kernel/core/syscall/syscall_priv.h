@@ -437,6 +437,20 @@ uint64_t sys_reply_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 void syscall_request_restart(struct task *t);
 /* Global count of syscall re-executions (diagnostic). */
 uint32_t syscall_restart_count(void);
+/* Syscalls that resumed on a FRESH stack — the abandonment gauge. */
+uint32_t syscall_abandon_count(void);
+
+/* Stage 9-evt Step 2 — return to ring 3 with no syscall frame (assembly). */
+__attribute__((noreturn)) void syscall_return_to_user(uint64_t rax_value,
+                                                      uint64_t user_rip,
+                                                      uint64_t user_rflags,
+                                                      uint64_t user_rsp,
+                                                      const uint64_t *callee_saved);
+/* Where an abandoned syscall resumes, on a fresh stack. */
+__attribute__((noreturn)) void syscall_restart_trampoline(void);
+/* Park the caller so it resumes at the trampoline, abandoning this frame.
+ * Returns if it could not switch away — see syscall_run. */
+void task_park_restart(void);
 
 /*
  * Stage 9-evt / D-8 — capabilities revoked per preemptible slice.

@@ -1535,6 +1535,15 @@ struct iris_untyped_query_global {
      * is to watch the counter move.
      */
     uint32_t syscall_restarts;
+    /*
+     * Stage 9-evt Step 2 — syscalls that resumed on a FRESH kernel stack,
+     * their original frame abandoned (ledger D-1).
+     *
+     * Separate from `syscall_restarts` because a restart that yielded through
+     * its own frame and one that threw it away are indistinguishable from
+     * outside, and only the second is what D-1 is about.
+     */
+    uint32_t syscall_abandons;
 };
 
 struct iris_untyped_query_one {

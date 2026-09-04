@@ -444,6 +444,26 @@ uint32_t sched_run_queue_hwm(void)           { return 0; }
 uint64_t sched_wall_ticks(void)              { return 0; }
 
 void     scheduler_sleep_current(uint64_t ticks) { (void)ticks; }
+
+/*
+ * Stage 9-evt Step 2 — the abandoning park and the frameless return.
+ *
+ * A unit test has one stack and no scheduler, so there is nothing to abandon
+ * TO: the park declines, which is exactly the fallback the real one takes when
+ * nobody else can run, and syscall_run then re-dispatches through its own
+ * frame.  That is why the suite can drive a restart loop by hand at all.
+ *
+ * The return path is unreachable here — nothing in a unit test returns to
+ * ring 3 — and aborts rather than pretending, so a test that reaches it fails
+ * loudly instead of returning into nothing.
+ */
+void task_park_restart(void) { }
+__attribute__((noreturn)) void syscall_return_to_user(uint64_t a, uint64_t b,
+                                                      uint64_t c, uint64_t d,
+                                                      const uint64_t *e) {
+    (void)a; (void)b; (void)c; (void)d; (void)e;
+    iris_panic("syscall_return_to_user reached in a unit test");
+}
 uint32_t sched_yield_count(void)             { return 0; }
 void     task_backing_free_on_destroy(struct task *t) { (void)t; }
 uint64_t tsc_boot(void)                      { return 0; }

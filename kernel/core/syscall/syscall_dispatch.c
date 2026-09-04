@@ -6,6 +6,8 @@
  * All sys_* implementations live in the syscall_*.c subsystem files.
  */
 #include "syscall_priv.h"
+#include <iris/panic.h>
+#include <iris/serial.h>
 #include <stdatomic.h>
 #include <iris/cpu_local.h>
 
@@ -34,6 +36,60 @@ static inline void _sc_putc(char c) {
     do { __asm__ volatile ("inb %1,%0":"=a"(s):"Nd"((uint16_t)0x3FD)); } while (!(s&0x20));
     __asm__ volatile ("outb %0,%1"::"a"((uint8_t)c),"Nd"((uint16_t)0x3F8));
 }
+/*
+ * Stage 9-evt Step 2 — the syscall frame, as C sees it.
+ *
+ * syscall_entry pushes this and then calls into C.  Naming the layout HERE,
+ * next to the only code that reads it, is what lets the user context be copied
+ * into the TCB without hard-coding `struct task` offsets in assembly — which
+ * is how a struct field added in C silently corrupts a register save.
+ *
+ * Offsets are from the stack pointer AFTER the 16-byte alignment adjustment,
+ * which is where syscall_entry calls from.
+ */
+struct syscall_frame {
+    uint64_t pad;          /*   0 — alignment                       */
+    uint64_t num;          /*   8 — rax                             */
+    uint64_t arg0;         /*  16 — rdi                             */
+    uint64_t arg1;         /*  24 — rsi                             */
+    uint64_t arg2;         /*  32 — rdx                             */
+    uint64_t arg3;         /*  40 — r10                             */
+    uint64_t user_rip;     /*  48 — rcx, set by the syscall insn    */
+    uint64_t user_rflags;  /*  56 — r11, set by the syscall insn    */
+    uint64_t user_rsp;     /*  64 — the caller's stack              */
+    /* Callee-saved, pushed FIRST so the offsets above did not move. */
+    uint64_t user_r15;     /*  72 */
+    uint64_t user_r14;     /*  80 */
+    uint64_t user_r13;     /*  88 */
+    uint64_t user_r12;     /*  96 */
+    uint64_t user_rbx;     /* 104 */
+    uint64_t user_rbp;     /* 112 */
+};
+
+/*
+ * Copy the user context out of the frame and into the thread.
+ *
+ * Called once per syscall entry.  The frame is where it lives today and where
+ * the return path still reads it from; this is the copy that survives the
+ * frame, so that a parked syscall can be resumed by re-entering the dispatcher
+ * on a fresh stack rather than by returning through a preserved one.
+ */
+void syscall_save_user_ctx(struct syscall_frame *f) {
+    struct task *t = task_current();
+    if (!t || !f) return;
+    t->sc_user_rip    = f->user_rip;
+    t->sc_user_rflags = f->user_rflags;
+    t->sc_user_rsp    = f->user_rsp;
+    /* Callee-saved too: abandoning the frame throws away the spills that
+     * would otherwise have preserved them for the caller. */
+    t->sc_user_regs[0] = f->user_r15;
+    t->sc_user_regs[1] = f->user_r14;
+    t->sc_user_regs[2] = f->user_r13;
+    t->sc_user_regs[3] = f->user_r12;
+    t->sc_user_regs[4] = f->user_rbx;
+    t->sc_user_regs[5] = f->user_rbp;
+}
+
 /*
  * Stage 9-evt Step 1 — the restart loop (ledger D-1).
  *
@@ -71,6 +127,35 @@ void syscall_request_restart(struct task *t) {
     atomic_fetch_add_explicit(&syscall_restart_total, 1u, memory_order_relaxed);
 }
 
+/*
+ * Stage 9-evt Step 2 — run one syscall to completion, parking as needed.
+ *
+ * The preferred park ABANDONS this frame: task_park_restart schedules the
+ * thread to resume at syscall_restart_trampoline on a fresh stack and does not
+ * return, so nothing of this call survives the block.  That is the property
+ * D-1 is about — a blocked thread's kernel stack holds nothing.
+ *
+ * It can decline, and then the loop below is the fallback: yield through this
+ * frame and re-dispatch, which is exactly what step 1 did.  Declining happens
+ * when there is nobody else to run, and in that case there is no stack to save
+ * by leaving — the alternative to keeping this frame is idling on it.
+ */
+static uint64_t syscall_run(struct task *t, uint64_t num, uint64_t arg0,
+                            uint64_t arg1, uint64_t arg2, uint64_t arg3) {
+    for (;;) {
+        uint64_t r = syscall_dispatch_one(num, arg0, arg1, arg2, arg3);
+        if (!t || !t->sc_restart) { if (t) t->sc_reentry = 0u; return r; }
+
+        t->sc_restart = 0u;
+        task_park_restart();          /* usually does not return */
+
+        /* Fallback: nobody else to run, so this frame stays and re-dispatches. */
+        t->sc_reentry = 1u;
+        num  = t->sc_num;  arg0 = t->sc_arg0; arg1 = t->sc_arg1;
+        arg2 = t->sc_arg2; arg3 = t->sc_arg3;
+    }
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2, uint64_t arg3) {
     struct task *t = task_current();
@@ -79,19 +164,56 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         t->sc_arg2 = arg2; t->sc_arg3 = arg3; t->sc_restart = 0u;
         t->sc_reentry = 0u;
     }
+    return syscall_run(t, num, arg0, arg1, arg2, arg3);
+}
 
-    for (;;) {
-        uint64_t r = syscall_dispatch_one(num, arg0, arg1, arg2, arg3);
-        if (!t || !t->sc_restart) { if (t) t->sc_reentry = 0u; return r; }
+/*
+ * Where an abandoned syscall comes back to life.
+ *
+ * Entered by the context switch on a FRESH kernel stack — the frame the
+ * original call ran on is gone, and everything this needs is in the thread:
+ * the syscall number and its arguments, and the user context to return to.
+ * That is the whole of what step 1 was for.
+ *
+ * Never returns: it goes straight to ring 3 through an iretq built from the
+ * saved user context, because there is no frame to return through.
+ */
+/*
+ * How many syscalls have resumed on a fresh stack.
+ *
+ * The only evidence that step 2 is doing anything: a restart that fell back to
+ * yielding through its own frame and one that abandoned it are identical from
+ * outside, and both advance the restart gauge.  This advances only for the
+ * abandonment, because the trampoline is the only way an abandoned syscall
+ * can complete.
+ */
+static _Atomic uint32_t syscall_abandon_total;
 
-        t->sc_restart = 0u;
-        /* The handler parked the thread; give the CPU up and come back to the
-         * top of the same syscall with the same arguments. */
-        task_yield();
-        t->sc_reentry = 1u;
-        num  = t->sc_num;  arg0 = t->sc_arg0; arg1 = t->sc_arg1;
-        arg2 = t->sc_arg2; arg3 = t->sc_arg3;
-    }
+uint32_t syscall_abandon_count(void) {
+    return atomic_load_explicit(&syscall_abandon_total, memory_order_relaxed);
+}
+
+__attribute__((noreturn)) void syscall_restart_trampoline(void) {
+    struct task *t = task_current();
+    /* Reached only from the abandon path in task_yield_impl, which sets this
+     * as the resume RIP for a task it is about to hand the CPU away from; a
+     * task cannot be scheduled without being current. */
+    IRIS_ASSERT(t && 1, "syscall restart trampoline with no current task");
+
+    atomic_fetch_add_explicit(&syscall_abandon_total, 1u, memory_order_relaxed);
+    t->sc_reentry = 1u;
+
+    uint64_t r = syscall_run(t, t->sc_num, t->sc_arg0, t->sc_arg1,
+                             t->sc_arg2, t->sc_arg3);
+
+    /*
+     * And return to ring 3 without a syscall frame — the whole point of step 2.
+     * Everything ring 3 needs came out of the TCB, where syscall_save_user_ctx
+     * put it at entry.
+     */
+    syscall_return_to_user(r, t->sc_user_rip, t->sc_user_rflags,
+                           t->sc_user_rsp, t->sc_user_regs);
+    __builtin_unreachable();
 }
 
 static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
