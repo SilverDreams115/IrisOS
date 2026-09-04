@@ -27,6 +27,7 @@ void test_cnode_guard(void);
 void test_schedctx_refill(void);
 void test_syscall_cspace(void);
 void test_syscall_retype(void);
+void test_syscall_tcb(void);
 
 int main(void) {
     test_rights();
@@ -52,6 +53,7 @@ int main(void) {
     test_schedctx_refill();
     test_syscall_cspace();
     test_syscall_retype();
+    test_syscall_tcb();
 
     printf("\nresult: %d passed, %d failed\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

@@ -9,7 +9,7 @@ what a green tree looks like today (Stage 7 closed — `KProcess` deleted):
 
 | Layer | Command | Green means |
 |---|---|---|
-| Host unit tests | `make test-unit` | 18938 assertions across 24 suites, 0 failed |
+| Host unit tests | `make test-unit` | 18971 assertions across 25 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected (14 files, 17 permitted `kslab_alloc` occurrences; it only ever shrinks) |
 | Runtime suite | `make smoke-runtime` | healthy boot signature |
 | Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 280/280` plus the P3/P41 markers |
@@ -152,8 +152,16 @@ rejected the malformed CPtr, the wrong type, the missing right.
 `test_syscall_cspace` (SC-1..SC-10) and `test_syscall_retype` (RT-1..RT-8)
 assert the refusals one at a time, each returning the specific error it
 promises rather than the nearest plausible one.  Host coverage of kernel `.c`
-moved **24% → 35%**; three of the twelve syscall translation units are in, and
+moved **24% → 40%**; five of the twelve syscall translation units are in, and
 the pattern applies to the rest.
+
+**The `struct task` stub is DELETED.**  The host suite compiled against a
+hand-written copy of the TCB that omitted whatever the object suites did not
+need, so a test could compile different code than the kernel and nobody would
+notice — the stub had already drifted three times in one week of this work.
+The real `<iris/task.h>` compiles on the host unchanged, so the suite uses it,
+and deleting the copy is what unblocked five syscall translation units at
+once.
 
 `test_syscall_retype` covers the narrowest place in the system: since Phase S1
 `SYS_UNTYPED_RETYPE2` is the only way a kernel object comes into existence, so

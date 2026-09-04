@@ -376,3 +376,20 @@ void ktcb_stats(uint32_t *live, uint32_t *hwm, uint32_t *retyped, uint32_t *dest
     if (retyped)   *retyped   = 0;
     if (destroyed) *destroyed = 0;
 }
+
+/*
+ * Scheduler-side operations the TCB syscalls delegate to once their argument
+ * and authority checks have PASSED.  The suite asserts refusals, so nothing
+ * here is reached by a passing test; a stub is the honest way to say "this
+ * subsystem is not what is under test" rather than linking the scheduler.
+ */
+iris_error_t ktcb_configure(struct task *t, struct KCNode *cs, struct KVSpace *vs) {
+    (void)t; (void)cs; (void)vs; return IRIS_ERR_NOT_SUPPORTED;
+}
+iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t rsp,
+                             uint64_t arg) {
+    (void)t; (void)entry; (void)rsp; (void)arg; return IRIS_ERR_NOT_SUPPORTED;
+}
+void task_suspend(struct task *t)        { (void)t; }
+void task_exit_current(void)             { }
+void task_kill_external(struct task *t)  { (void)t; }
