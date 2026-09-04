@@ -9,7 +9,7 @@ what a green tree looks like today (Stage 7 closed — `KProcess` deleted):
 
 | Layer | Command | Green means |
 |---|---|---|
-| Host unit tests | `make test-unit` | 18971 assertions across 25 suites, 0 failed |
+| Host unit tests | `make test-unit` | 19002 assertions across 26 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected (14 files, 17 permitted `kslab_alloc` occurrences; it only ever shrinks) |
 | Runtime suite | `make smoke-runtime` | healthy boot signature |
 | Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 280/280` plus the P3/P41 markers |
@@ -152,8 +152,17 @@ rejected the malformed CPtr, the wrong type, the missing right.
 `test_syscall_cspace` (SC-1..SC-10) and `test_syscall_retype` (RT-1..RT-8)
 assert the refusals one at a time, each returning the specific error it
 promises rather than the nearest plausible one.  Host coverage of kernel `.c`
-moved **24% → 40%**; five of the twelve syscall translation units are in, and
-the pattern applies to the rest.
+moved **24% → 53%**, and the syscall layer itself is **8 of 15 translation
+units, 4426 of 6601 lines**.
+
+What the host suite deliberately does NOT cover is the real `usercopy`: SMAP
+STAC/CLAC, the per-page PRESENT|USER|WRITABLE walk, the overflow check and the
+`USER_SPACE_TOP` bound are about an address space that does not exist in a unit
+test.  There "user memory" is host memory and the copy helpers are a checked
+memcpy, which is what makes the handlers exercisable at all — every one of them
+reads its message before doing anything else.  Pretending to test the real
+walk against a stub that cannot fail the way it can would be worse than not
+covering it; the runtime suite exercises it in a real address space.
 
 **The `struct task` stub is DELETED.**  The host suite compiled against a
 hand-written copy of the TCB that omitted whatever the object suites did not

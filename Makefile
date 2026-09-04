@@ -203,6 +203,9 @@ TEST_UNIT_SRCS  := \
     kernel/core/syscall/syscall_cap.c \
     kernel/core/syscall/syscall_tcb.c \
     kernel/core/syscall/syscall_sched.c \
+    kernel/core/syscall/syscall_reply.c \
+    kernel/core/syscall/syscall_endpoint.c \
+    kernel/core/syscall/syscall_proc.c \
     tests/kernel/test_rights.c \
     tests/kernel/test_kobject.c \
     tests/kernel/test_kcnode.c \
@@ -225,6 +228,7 @@ TEST_UNIT_SRCS  := \
     tests/kernel/test_syscall_cspace.c \
     tests/kernel/test_syscall_retype.c \
     tests/kernel/test_syscall_tcb.c \
+    tests/kernel/test_syscall_ipc.c \
     tests/kernel/test_klog.c \
     kernel/core/klog/klog.c \
     services/vfs/vfs_ep.c \

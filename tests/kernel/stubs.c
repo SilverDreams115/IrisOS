@@ -350,12 +350,46 @@ void irq_routing_unregister_notification(struct KNotification *n) { (void)n; }
  * returns nothing is not hiding a behaviour, it is declining to link a
  * subsystem the refusal cases never touch.
  */
+/*
+ * ── usercopy, host semantics ────────────────────────────────────────────
+ *
+ * In a unit test there is no ring 3, so "user memory" is host memory: a test
+ * passes the address of its own buffer and these behave as a checked memcpy.
+ * That is what makes the syscall handlers exercisable at all — every one of
+ * them reads its message or its output pointer before doing anything else.
+ *
+ * What this deliberately does NOT test is the real usercopy: SMAP STAC/CLAC,
+ * the per-page PRESENT|USER|WRITABLE walk, the overflow check, the
+ * USER_SPACE_TOP bound.  Those are about an address space that does not exist
+ * here, and pretending otherwise would be worse than not covering them —
+ * a green assertion against a stub that cannot fail the way the real one can.
+ * They are exercised by the runtime suite, in a real address space.
+ *
+ * A NULL pointer still fails, because that is the one rejection with the same
+ * meaning in both worlds and several handlers depend on it.
+ */
 #include <iris/usercopy.h>
+#include <string.h>
+int user_range_readable(uint64_t ptr, uint32_t len) {
+    (void)len; return ptr != 0;
+}
+int copy_from_user_checked(void *dst, uint64_t src_uptr, uint32_t len) {
+    if (!dst || !src_uptr) return 0;
+    memcpy(dst, (const void *)(uintptr_t)src_uptr, len);
+    return 1;
+}
 int copy_to_user_checked(uint64_t dst, const void *src, uint32_t len) {
-    (void)dst; (void)src; (void)len; return 0;   /* no user address space here */
+    if (!dst || !src) return 0;
+    memcpy((void *)(uintptr_t)dst, src, len);
+    return 1;
+}
+int copy_u64_to_user_checked(uint64_t dst, uint64_t val) {
+    if (!dst) return 0;
+    memcpy((void *)(uintptr_t)dst, &val, sizeof(val));
+    return 1;
 }
 int user_range_writable(uint64_t ptr, uint32_t len) {
-    (void)ptr; (void)len; return 0;              /* no user address space here */
+    (void)len; return ptr != 0;
 }
 uint32_t syscall_restart_count(void)         { return g_test_restarts; }
 uint32_t kprocess_quota_failed_count(void)   { return 0; }
@@ -391,5 +425,11 @@ iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t rsp,
     (void)t; (void)entry; (void)rsp; (void)arg; return IRIS_ERR_NOT_SUPPORTED;
 }
 void task_suspend(struct task *t)        { (void)t; }
+
+/* A monotonic tick source the tests can steer, so a timed path is
+ * deterministic rather than dependent on how long the suite has been running. */
+static uint64_t g_test_ticks;
+uint64_t sched_current_ticks(void)       { return g_test_ticks; }
+void     test_set_ticks(uint64_t t)      { g_test_ticks = t; }
 void task_exit_current(void)             { }
 void task_kill_external(struct task *t)  { (void)t; }
