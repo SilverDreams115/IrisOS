@@ -48,59 +48,15 @@ static inline uint32_t futex_hash(uint64_t uaddr) {
     return (uint32_t)((uaddr >> 2) ^ (uaddr >> 12)) & (FUTEX_BUCKETS - 1u);
 }
 
-iris_error_t futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline_ticks) {
-    uint32_t val;
-
-    /* Pre-check outside the lock — avoids the user copy under IRQ disable. */
-    if (!copy_from_user_checked(&val, uaddr, sizeof(val)))
-        return IRIS_ERR_INVALID_ARG;
-    if (val != expected)
-        return IRIS_ERR_WOULD_BLOCK;
-
-    struct futex_bucket *bucket = &futex_buckets[futex_hash(uaddr)];
-    uint64_t saved = irq_spinlock_lock(&bucket->lock);
-
-    /* Re-read under lock to close the TOCTOU window. */
-    if (!copy_from_user_checked(&val, uaddr, sizeof(val))) {
-        irq_spinlock_unlock(&bucket->lock, saved);
-        return IRIS_ERR_INVALID_ARG;
-    }
-    if (val != expected) {
-        irq_spinlock_unlock(&bucket->lock, saved);
-        return IRIS_ERR_WOULD_BLOCK;
-    }
-
-    int slot = -1;
-    for (int i = 0; i < (int)FUTEX_BUCKET_CAP; i++) {
-        if (bucket->entries[i].uaddr == 0) { slot = i; break; }
-    }
-    if (slot < 0) {
-        irq_spinlock_unlock(&bucket->lock, saved);
-        return IRIS_ERR_TABLE_FULL;
-    }
-
-    struct task *t = task_current();
-    if (!t || !t->vspace) {
-        irq_spinlock_unlock(&bucket->lock, saved);
-        return IRIS_ERR_INVALID_ARG;
-    }
-
-    bucket->entries[slot].uaddr  = uaddr;
-    bucket->entries[slot].waiter = t;
-    bucket->entries[slot].owner  = t->vspace;
-    t->state     = TASK_BLOCKED_IPC;
-    t->wake_tick = deadline_ticks;
-
-    irq_spinlock_unlock(&bucket->lock, saved);
-
-    task_yield();
-    if (t->timed_out) {
-        t->timed_out = 0;
-        futex_cancel_waiter(t);
-        return IRIS_ERR_TIMED_OUT;
-    }
-    return IRIS_OK;
-}
+/*
+ * futex_wait REMOVED (Stage 9-evt Step 1).
+ *
+ * It was the parked form: check the value, enqueue, task_yield, and interpret
+ * the wake — with the continuation living in this function's frame on the
+ * thread's kernel stack.  SYS_FUTEX_WAIT drives futex_wait_step now, and
+ * nothing else ever called this, so keeping it would have left a second
+ * blocking mechanism alive for no caller.
+ */
 
 /*
  * Stage 9-evt Step 1 — the RESTARTABLE half of futex_wait (ledger D-1).

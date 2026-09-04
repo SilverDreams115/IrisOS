@@ -46,10 +46,17 @@ static inline void copy_kbuf_r(uint8_t *dst, const uint8_t *src, uint32_t n) {
 
 /* ── SYS_EP_CALL ──────────────────────────────────────────────────────── */
 
+static uint64_t ep_call_complete(struct task *t, uint64_t arg1);
+
 uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /* Stage 9-evt Step 1: a re-execution runs only the completion.  The call
+     * was delivered and answered; repeating the send half would deliver the
+     * message a second time and transfer its capability twice. */
+    if (t->sc_reentry) return ep_call_complete(t, arg1);
 
     /* msg is both send (input) and reply (output) — must be readable and writable. */
     if (!user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)) ||
@@ -233,7 +240,13 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         /* Receiver is ready; caller blocks waiting for reply. */
         task_wakeup(receiver);
         t->state        = TASK_BLOCKED_REPLY;
-        task_yield(); /* resumes when sys_reply (or kreply_obj_close) sets TASK_READY */
+        /* Stage 9-evt Step 1: park and be re-executed, rather than holding
+         * this frame across the server's whole turn — which is the longest
+         * block in the system and therefore the most expensive stack to keep
+         * alive.  Everything the completion needs is thread state. */
+        t->sc_held = &ep->base;
+        syscall_request_restart(t);
+        return 0;
 
     } else {
         /* No receiver: queue sender and block as TASK_BLOCKED_SEND (ep_call_mode=1).
@@ -258,9 +271,27 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->state = TASK_BLOCKED_SEND;
         irq_spinlock_unlock(&ep->lock, flags);
 
-        task_yield(); /* stays blocked through SEND→REPLY; wakes at READY (sys_reply) */
+        /* Same park: queued as a sender, woken as a replied-to caller.  The
+         * transition SEND -> REPLY happens entirely in thread state, which is
+         * why one re-execution point serves both. */
+        t->sc_held = &ep->base;
+        syscall_request_restart(t);
+        return 0;
     }
 
+    /* Unreachable: both branches above park and are re-executed. */
+    return syscall_err(IRIS_ERR_INTERNAL);
+}
+
+/*
+ * The half of SYS_EP_CALL that runs after the reply.
+ *
+ * Reads only thread state — the reply message, the bulk staging, the pending
+ * reply object and the closed marker — because the SERVER writes its answer
+ * into the caller's thread at reply time.  A caller's continuation was never
+ * on its stack; the frame was holding the endpoint reference and nothing else.
+ */
+static uint64_t ep_call_complete(struct task *t, uint64_t arg1) {
     /* Phase S4 (Step 2): endpoint close leaves our source-slot refs for us to
      * drop (kendpoint_obj_close cannot release them under ep->lock).  Nothing
      * was delivered on that path — the source slot itself survives. */
@@ -270,7 +301,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         t->ep_cap_src_idx = 0;
     }
 
-    kobject_release(&ep->base);
+    if (t->sc_held) { kobject_release(t->sc_held); t->sc_held = 0; }
 
     /* ── Wake-up handling ─────────────────────────────────────────────── */
 
@@ -452,6 +483,24 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * calling receive again.
  */
 uint64_t sys_reply_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    /*
+     * Stage 9-evt Step 1: on a RE-EXECUTION only the receive half runs.
+     *
+     * The reply already happened on the first entry — it woke a client and
+     * consumed a one-shot reply object — and a composed syscall must not
+     * repeat the half of itself that had effects.  Replying twice would find
+     * the object free and fail with NOT_FOUND, turning a successful
+     * conversation into an error the server never caused; worse, if the object
+     * had been re-staged and re-bound in between, it would answer somebody
+     * else's call with this one's payload.
+     *
+     * sys_ep_recv makes the same distinction one level down: it sees the same
+     * flag and runs only its completion.
+     */
+    struct task *rr_t = task_current();
+    if (rr_t && rr_t->sc_reentry)
+        return sys_ep_recv(arg2, arg1, arg0);
+
     /*
      * The buffer arrives holding the kernel's OWN echo: EP_RECV writes the
      * staged reply CPtr into attached_handle so the server knows which object

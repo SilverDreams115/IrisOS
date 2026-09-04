@@ -304,6 +304,21 @@ struct task {
      * converted after this one gets it for free.
      */
     uint8_t           sc_reentry;
+    /*
+     * The ONE object reference a restartable syscall carries across its park.
+     *
+     * A parked handler kept its references in C locals, which the frame kept
+     * alive.  A restartable one returns, so a reference it still needs — the
+     * endpoint a queued receiver is waiting on, whose object must not be freed
+     * while the queue points at the thread — has to live somewhere the return
+     * does not destroy.  `blocking_ep` cannot serve: the wakers clear it, by
+     * design, and the reference would be lost exactly when it is needed.
+     *
+     * Released by the completion path on re-entry.  One slot, because no
+     * blocking syscall holds two, and a second would be a sign the handler is
+     * carrying state rather than a continuation.
+     */
+    struct KObject   *sc_held;
     uint64_t          sc_num;
     uint64_t          sc_arg0, sc_arg1, sc_arg2, sc_arg3;
     uint32_t          sc_restart_count;  /* diagnostic: restarts observed */

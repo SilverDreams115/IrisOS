@@ -349,10 +349,17 @@ uint64_t sys_endpoint_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /* ── SYS_EP_SEND ─────────────────────────────────────────────────────── */
 
+static uint64_t ep_send_complete(struct task *t);
+
 uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /* Stage 9-evt Step 1: a re-execution runs only the completion — the
+     * message is delivered or the endpoint closed, and every effect this
+     * syscall had is already done. */
+    if (t->sc_reentry) return ep_send_complete(t);
 
     if (!user_range_readable(arg1, (uint32_t)sizeof(struct IrisMsg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -491,9 +498,32 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     t->state = TASK_BLOCKED_SEND;
     irq_spinlock_unlock(&ep->lock, flags);
 
-    task_yield();
+    /*
+     * Stage 9-evt Step 1 — park and ask to be RE-EXECUTED (ledger D-1).
+     *
+     * A queued sender's whole continuation is already thread state: the
+     * message, the staged capability and its source slot, the bulk payload,
+     * and the closed marker.  The receiver takes them from the thread at
+     * rendezvous, not from this frame — which is why the frame only ever held
+     * the endpoint reference, and why moving that to the thread is the entire
+     * conversion.
+     */
+    t->sc_held = &ep->base;
+    syscall_request_restart(t);
+    return 0;
+}
 
-    kobject_release(&ep->base);
+/*
+ * The half of SYS_EP_SEND that runs after the block.
+ *
+ * Note what it does NOT do: re-stage the capability, re-copy the message, or
+ * re-queue.  A restartable handler must not repeat the part of itself that had
+ * effects, and a send that got as far as queueing has already consumed the
+ * sender's source slot on the delivery path or left it for this function to
+ * abort.  Repeating any of it would transfer a capability twice.
+ */
+static uint64_t ep_send_complete(struct task *t) {
+    if (t->sc_held) { kobject_release(t->sc_held); t->sc_held = 0; }
 
     /* Phase S4 (Step 2): if the endpoint closed under us, kendpoint_obj_close
      * left our source-slot refs for us to drop (it could not release them
@@ -587,12 +617,25 @@ static int ep_bind_call_reply(struct task *receiver, struct task *sender,
     return 1;
 }
 
+/* Forward: the post-block half, defined with the parking path it belongs to. */
+static uint64_t ep_recv_complete(struct task *t, uint64_t arg1);
+
 uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     if (!user_range_writable(arg1, (uint32_t)sizeof(struct IrisMsg)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /*
+     * Stage 9-evt Step 1: a re-execution after the park runs ONLY the
+     * completion.  Re-doing the setup would re-stage a reply object that is
+     * already staged (IRIS_ERR_BUSY) and re-declare a receive slot the
+     * rendezvous has already consumed — a restartable handler must not repeat
+     * the part of itself that had effects.
+     */
+    if (t->sc_reentry)
+        return ep_recv_complete(t, arg1);
 
     struct KEndpoint *ep; iris_rights_t _ep_r;
     iris_error_t err = cspace_resolve_only_endpoint(t->cspace_root, (iris_cptr_t)arg0,
@@ -764,9 +807,35 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     t->state = TASK_BLOCKED_RECV;
     irq_spinlock_unlock(&ep->lock, flags);
 
-    task_yield();
+    /*
+     * Stage 9-evt Step 1 — park and ask to be RE-EXECUTED (ledger D-1).
+     *
+     * Everything the completion below needs is already thread state: the
+     * delivered message, the staged reply object, the receive-slot
+     * declaration, the bulk-payload staging and the closed marker.  The
+     * handler was keeping only ONE thing in a C local that mattered — the
+     * endpoint reference — because releasing it here would let the object be
+     * freed while the endpoint's queue still points at this thread.
+     *
+     * So the reference moves to the thread and the frame becomes disposable.
+     * `blocking_ep` cannot hold it: the wakers clear that field by design.
+     */
+    t->sc_held = &ep->base;
+    syscall_request_restart(t);
+    return 0;
+}
 
-    kobject_release(&ep->base);
+/*
+ * The half of SYS_EP_RECV that runs after the block.
+ *
+ * Reads nothing but thread state, which is what made EP_RECV convertible at
+ * all: the sender writes the message into the receiver's `ipc_msg` at
+ * rendezvous, so a receiver's continuation was already a fact about the
+ * thread rather than about its stack — the parked frame was holding a
+ * reference, not information.
+ */
+static uint64_t ep_recv_complete(struct task *t, uint64_t arg1) {
+    if (t->sc_held) { kobject_release(t->sc_held); t->sc_held = 0; }
 
     /* A1.5: any routed delivery already consumed the declaration from the
      * sender's context; make sure it never survives this recv either way. */
