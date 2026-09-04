@@ -454,7 +454,7 @@ somebody's delegation.
 
 Three independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **18852 assertions** across 22 suites
+- **Host unit tests** — `make test-unit`: **18906 assertions** across 24 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   kendpoint, kreply, knotification, kuntyped including its two-ended carve,
   kschedctx, kframe, the MDB/CDT (structural + model-based fuzzing), rights,
@@ -493,7 +493,7 @@ Three independently-gating layers, run on every change:
 ```bash
 make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
-make test-unit                                             # host unit suites (18852)
+make test-unit                                             # host unit suites (18906)
 make smoke-runtime                                         # headless runtime lane
 ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (280/280)
 make run                                                   # interactive QEMU

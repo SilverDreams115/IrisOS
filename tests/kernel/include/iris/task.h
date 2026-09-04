@@ -54,6 +54,12 @@ struct task {
      * it.  Present in the stub because the resolver reads them; the host suite
      * has no current task, so the lookup is inert and the walk behaves exactly
      * as it did before guards existed — which is what the suite asserts. */
+    /* Stage 9-evt: the restart machinery's thread state.  Present in the stub
+     * because the syscall layer is compiled into the host suite and a
+     * restartable syscall reads them on every entry. */
+    uint8_t               sc_restart;
+    uint8_t               sc_reentry;
+    uint64_t              sc_acc;
     struct KCNode        *cspace_root;
     uint64_t              cspace_root_guard;
     uint8_t               cspace_root_guard_bits;

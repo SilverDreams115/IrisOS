@@ -62,4 +62,11 @@ void kslab_clear_fail(void);
 void paging_force_fail_next(void);
 void paging_clear_force_fail(void);
 
+/* Stage 8-cap: the VMO mapping window, needed by syscall_priv.h's range
+ * helper now that the syscall layer is compiled into the host suite. */
+#ifndef USER_VMO_BASE
+#define USER_VMO_BASE  0x0000700000000000ULL
+#define USER_VMO_TOP   0x0000700100000000ULL
+#endif
+
 #endif

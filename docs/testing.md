@@ -9,7 +9,7 @@ what a green tree looks like today (Stage 7 closed — `KProcess` deleted):
 
 | Layer | Command | Green means |
 |---|---|---|
-| Host unit tests | `make test-unit` | 18852 assertions across 22 suites, 0 failed |
+| Host unit tests | `make test-unit` | 18906 assertions across 23 suites, 0 failed |
 | Purity gate | `make check-purity` | allowlist respected (14 files, 17 permitted `kslab_alloc` occurrences; it only ever shrinks) |
 | Runtime suite | `make smoke-runtime` | healthy boot signature |
 | Runtime + kernel selftests | `make ENABLE_RUNTIME_SELFTESTS=1 smoke-runtime-selftests` | `SUITE PASS 280/280` plus the P3/P41 markers |
@@ -141,6 +141,18 @@ names itself rather than showing up as a boot hang:
 | T305 | Charter A9: every capability is traceable to an ancestor — reads `mdb_legacy_roots`, the gauge the ABI calls "must → 0", and pins it against growth across a spawn/kill and a mint/revoke cycle.  Reports the inventory (43 roots of 335 MDB nodes, max depth 6, at Stage 7 close) so the number is visible rather than assumed; the absolute count moves with what is alive, so the assertion is on the DELTA across the cycle |
 | T140–T147, T181–T238 (re-derived) | Stage 7: a fault is answered by naming the faulting THREAD's capability, delivered into a mailbox the registrant declared.  The suite's own targets deliver to the suite; a target handed to a pager is re-aimed to a CNode shared with it; a victim is never re-aimed, which is what makes a cross-target attempt fail for want of a capability rather than by a rejected id.  The pager manifests lost bit 20: it holds no process capability for any target it serves |
 | PT-1..PT-11 (host) | Stage 6-pure: the paging walk driven exhaustively — level order, spent-vs-complete, kernel-address refusal, dead VSpace, teardown returning every level, the bootstrap exception being one-way, a reused level entering the walk empty, teardown detaching exactly the holder's levels, and a failed composition giving its bind claim back |
+
+**The syscall layer is under host test as of Stage 8-cap.**  Until then 76% of
+the kernel's C had no unit tests and the largest untested piece was the layer
+whose entire job is validating arguments and checking authority — covered only
+through the syscall boundary, where a rejection and a crash look alike from
+ring 3 and where fault injection is unavailable.  That was the wrong way round:
+every assertion the object suites make assumes something upstream already
+rejected the malformed CPtr, the wrong type, the missing right.
+`test_syscall_cspace` (SC-1..SC-10) asserts the refusals one at a time, each
+returning the specific error it promises rather than the nearest plausible one.
+Host coverage of kernel `.c` moved 24% → 28% with the first file; the same
+pattern applies to the rest of the layer.
 
 Host unit tests cover what a successful boot cannot show: `RBI-1..RBI-10` (the
 BootInfo builder's bounds), `UT-TOP-1..5` (the two-ended Untyped carve), and

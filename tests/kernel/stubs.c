@@ -62,8 +62,37 @@ void kslab_free(void *ptr, uint32_t size) {
 /* ── task / scheduler stubs ─────────────────────────────────────────────── */
 #include <iris/task.h>
 void         task_wakeup(struct task *t) { (void)t; }
-struct task *task_current(void)          { return NULL; }
 void         task_yield(void)            { }
+
+/*
+ * The current task is SETTABLE now, because the syscall layer is compiled into
+ * this suite and every syscall begins by asking who is calling.
+ *
+ * NULL stays the default, and that matters: the object-layer suites were
+ * written against a kernel with no current task, and the CSpace walk's root
+ * guard is deliberately inert in that case.  A test that wants to exercise a
+ * syscall installs a task for the duration and takes it back down, so no suite
+ * can leak a caller into another.
+ */
+static struct task *g_test_current;
+struct task *task_current(void)          { return g_test_current; }
+void         test_set_current_task(struct task *t) { g_test_current = t; }
+
+/*
+ * The restart request, observable so a test can assert a syscall PARKED.
+ *
+ * In the kernel this sets a flag the dispatcher acts on; here there is no
+ * dispatcher, so it records the fact and the test reads it.  That is the
+ * distinction the host suite could not otherwise make: a handler that returns
+ * 0 having parked and one that returns 0 having finished look identical from
+ * the outside, and for a preemptible operation those are opposite answers.
+ */
+static uint32_t g_test_restarts;
+void syscall_request_restart(struct task *t) {
+    if (t) t->sc_restart = 1u;
+    g_test_restarts++;
+}
+uint32_t test_restart_count(void) { return g_test_restarts; }
 
 /* ── kprocess quota stubs (needed when compiling kchannel.c) ─────────────── */
 #include <iris/nc/kprocess.h>

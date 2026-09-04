@@ -25,6 +25,7 @@ void test_root_bootinfo(void);
 void test_pagetable(void);
 void test_cnode_guard(void);
 void test_schedctx_refill(void);
+void test_syscall_cspace(void);
 
 int main(void) {
     test_rights();
@@ -48,6 +49,7 @@ int main(void) {
     test_pagetable();
     test_cnode_guard();
     test_schedctx_refill();
+    test_syscall_cspace();
 
     printf("\nresult: %d passed, %d failed\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;
