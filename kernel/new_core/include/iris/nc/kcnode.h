@@ -14,6 +14,12 @@
 #define KCNODE_MAX_SLOTS     4096u
 #define KCNODE_DEFAULT_SLOTS  256u   /* used by UNTYPED_RETYPE when no count given */
 
+/* Stage 8-cap / D-2 — guard limits.  A CPtr owns the low 31 bits (the top of
+ * the value space is the retired handle range, see nc/handle.h), so a guard
+ * can never be wider than that and guard+radix must fit inside it. */
+#define CSPACE_CPTR_BITS       31u
+#define KCNODE_GUARD_BITS_MAX  ((uint8_t)CSPACE_CPTR_BITS)
+
 struct KCNode;
 
 /* Phase S3 — MDB flags (per-slot derivation metadata). */
@@ -44,6 +50,24 @@ struct KCSlot {
     struct KCSlot  *mdb_prev_sib;
     struct KCNode  *mdb_cnode;        /* owning CNode (set while occupied) */
     uint32_t        mdb_flags;
+
+    /*
+     * Stage 8-cap / D-2 — CNode GUARD, meaningful only when `object` is a
+     * KOBJ_CNODE.  seL4 puts the guard in the CAPABILITY, not in the CNode
+     * object (cap_cnode_cap_get_capCNodeGuard), so two capabilities to the
+     * same CNode can carry different guards.  A KCSlot IS the capability in
+     * IRIS, so the guard lives here.
+     *
+     * `guard_bits == 0` (the default for every slot ever installed) means "no
+     * guard", which is exactly the pre-guard walk.  That is what makes this
+     * additive: nothing in the tree sets a guard until it asks for one.
+     *
+     * Bit order within one level of a CPtr, MSB..LSB: [guard][index] — the
+     * same relative order seL4 resolves in, so a CSpace laid out for seL4
+     * addresses the same way here.
+     */
+    uint64_t        guard;
+    uint8_t         guard_bits;
 };
 
 /*
@@ -138,6 +162,23 @@ iris_error_t   kcnode_fetch_badged(struct KCNode *cn, uint32_t slot_idx,
                                     struct KObject **out_obj,
                                     iris_rights_t *out_rights,
                                     uint64_t *out_badge);
+/* Stage 8-cap: fetch that also reports the capability's GUARD.  Only the
+ * CSpace walk needs it, and only when the fetched capability is a CNode it is
+ * about to descend into; every other caller uses the badged form. */
+iris_error_t   kcnode_fetch_guarded(struct KCNode *cn, uint32_t slot_idx,
+                                    struct KObject **out_obj,
+                                    iris_rights_t *out_rights,
+                                    uint64_t *out_badge,
+                                    uint64_t *out_guard,
+                                    uint8_t  *out_guard_bits);
+
+/* Stage 8-cap: set the guard on a CNode capability already installed in a
+ * slot.  IRIS_ERR_WRONG_TYPE if the slot does not hold a KOBJ_CNODE;
+ * IRIS_ERR_INVALID_ARG if the guard does not fit its declared width or the
+ * level would exceed the CPtr space.  A guard is capability-local: setting it
+ * on one capability does not affect any other capability to the same CNode. */
+iris_error_t   kcnode_slot_set_guard(struct KCNode *cn, uint32_t slot_idx,
+                                     uint64_t guard, uint8_t guard_bits);
 iris_error_t   kcnode_delete(struct KCNode *cn, uint32_t slot_idx);
 iris_error_t   kcnode_swap(struct KCNode *cn, uint32_t slot_a, uint32_t slot_b);
 

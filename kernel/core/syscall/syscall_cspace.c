@@ -360,3 +360,35 @@ uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     kobject_release(obj_a);
     return syscall_ok_u64(same);
 }
+
+/*
+ * SYS_CSPACE_SET_GUARD (127) — install a guard on a CNode capability.
+ *
+ * Stage 8-cap, ledger D-2.  See the contract in <iris/syscall.h>.
+ *
+ * The authority is holding the SLOT: a guard changes how CPtrs resolve through
+ * that capability, which alters the holder's own capability address space and
+ * nothing outside it.  The guard is written into the slot, so a second
+ * capability to the same CNode — in this CSpace or another — keeps whatever
+ * guard it had.  That is what makes a guard a property of the capability
+ * rather than of the object, which is seL4's model and the reason a guard can
+ * make one holder's view sparse without touching anybody else's.
+ */
+uint64_t sys_cspace_set_guard(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    if (!cspace_only_cptr(arg0)) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (arg2 > KCNODE_GUARD_BITS_MAX) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KCNode *cn; uint32_t idx;
+    iris_error_t err = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
+                                           &cn, &idx);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    err = kcnode_slot_set_guard(cn, idx, arg1, (uint8_t)arg2);
+
+    kobject_active_release(&cn->base);
+    kobject_release(&cn->base);
+    return err == IRIS_OK ? syscall_ok_u64(0) : syscall_err(err);
+}

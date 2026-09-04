@@ -675,6 +675,91 @@ iris_error_t kcnode_fetch(struct KCNode *cn, uint32_t slot_idx,
     return kcnode_fetch_badged(cn, slot_idx, out_obj, out_rights, 0);
 }
 
+/*
+ * Stage 8-cap / D-2 — fetch a capability together with its GUARD.
+ *
+ * Same contract as kcnode_fetch_badged (both refs taken on success); the guard
+ * is only meaningful when the fetched object is a KOBJ_CNODE and is reported
+ * as 0/0 otherwise, which is the "no guard" encoding the walk treats as the
+ * pre-guard behaviour.
+ */
+iris_error_t kcnode_fetch_guarded(struct KCNode *cn, uint32_t slot_idx,
+                                  struct KObject **out_obj,
+                                  iris_rights_t *out_rights,
+                                  uint64_t *out_badge,
+                                  uint64_t *out_guard,
+                                  uint8_t  *out_guard_bits) {
+    if (!cn || !out_obj || !out_rights) return IRIS_ERR_INVALID_ARG;
+
+    uint64_t flags = irq_spinlock_lock(&cn->lock);
+
+    if (slot_idx >= cn->slot_count) {
+        irq_spinlock_unlock(&cn->lock, flags);
+        return IRIS_ERR_INVALID_ARG;
+    }
+
+    struct KObject *obj = cn->slots[slot_idx].object;
+    if (!obj) {
+        irq_spinlock_unlock(&cn->lock, flags);
+        return IRIS_ERR_NOT_FOUND;
+    }
+
+    kobject_retain(obj);
+    kobject_active_retain(obj);
+    *out_obj    = obj;
+    *out_rights = cn->slots[slot_idx].rights;
+    if (out_badge)      *out_badge      = cn->slots[slot_idx].badge;
+    if (out_guard)      *out_guard      = cn->slots[slot_idx].guard;
+    if (out_guard_bits) *out_guard_bits = cn->slots[slot_idx].guard_bits;
+
+    irq_spinlock_unlock(&cn->lock, flags);
+    return IRIS_OK;
+}
+
+/*
+ * Stage 8-cap / D-2 — install a guard on a CNode capability.
+ *
+ * The guard belongs to the CAPABILITY, not to the CNode: this writes one slot
+ * and nothing else, so another capability to the same CNode keeps whatever
+ * guard it had.  That is seL4's model and the reason a guard can make one
+ * holder's view of a CSpace sparse without changing anybody else's.
+ *
+ * Refused when the guard does not fit `guard_bits`, when the level (guard +
+ * radix) would not fit the CPtr space, or when the slot holds anything but a
+ * CNode — a guard on a non-CNode capability has no meaning and silently
+ * storing one would make the slot lie about how it resolves.
+ */
+iris_error_t kcnode_slot_set_guard(struct KCNode *cn, uint32_t slot_idx,
+                                   uint64_t guard, uint8_t guard_bits) {
+    if (!cn || slot_idx >= cn->slot_count) return IRIS_ERR_INVALID_ARG;
+    if (guard_bits > KCNODE_GUARD_BITS_MAX) return IRIS_ERR_INVALID_ARG;
+    /* A guard wider than its value is a caller error, not a zero-extension. */
+    if (guard_bits < 64u && (guard >> guard_bits) != 0u)
+        return IRIS_ERR_INVALID_ARG;
+
+    uint64_t flags = irq_spinlock_lock(&cn->lock);
+    struct KCSlot *s = &cn->slots[slot_idx];
+    if (!s->object) {
+        irq_spinlock_unlock(&cn->lock, flags);
+        return IRIS_ERR_NOT_FOUND;
+    }
+    if (s->object->type != KOBJ_CNODE) {
+        irq_spinlock_unlock(&cn->lock, flags);
+        return IRIS_ERR_WRONG_TYPE;
+    }
+    /* guard + radix must leave the level addressable inside a CPtr. */
+    struct KCNode *target = (struct KCNode *)s->object;
+    uint32_t radix = (uint32_t)__builtin_ctzll((uint64_t)target->slot_count);
+    if ((uint32_t)guard_bits + radix > CSPACE_CPTR_BITS) {
+        irq_spinlock_unlock(&cn->lock, flags);
+        return IRIS_ERR_INVALID_ARG;
+    }
+    s->guard      = guard;
+    s->guard_bits = guard_bits;
+    irq_spinlock_unlock(&cn->lock, flags);
+    return IRIS_OK;
+}
+
 iris_error_t kcnode_swap(struct KCNode *cn, uint32_t slot_a, uint32_t slot_b) {
     if (!cn || slot_a == slot_b) return IRIS_ERR_INVALID_ARG;
 

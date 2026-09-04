@@ -417,6 +417,8 @@ uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+/* Stage 8-cap / D-2 — install a guard on a CNode capability. */
+uint64_t sys_cspace_set_guard(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,

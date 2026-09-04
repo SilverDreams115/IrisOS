@@ -157,6 +157,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
         case SYS_CSPACE_MINT:         return sys_cspace_mint(arg0, arg1, arg2);
         case SYS_CSPACE_REVOKE:       return sys_cspace_revoke(arg0, arg1, arg2);
         case SYS_CSPACE_MINT_INTO:    return sys_cspace_mint_into(arg0, arg1, arg2, arg3);
+        case SYS_CSPACE_SET_GUARD:    return sys_cspace_set_guard(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }

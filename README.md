@@ -322,7 +322,7 @@ ever run — seL4's "revoke the Untyped you used", in the form IRIS has.
 
 ## Syscall surface
 
-**68 live syscalls** out of 127 numbers (0–126): 124 are named in
+**69 live syscalls** out of 128 numbers (0–127): 125 are named in
 `kernel/include/iris/syscall.h`, 56 of those are retired, and 9–11 were never
 assigned. A retired number answers `IRIS_ERR_NOT_SUPPORTED` and is **never
 reused**, so a stale caller gets a refusal rather than somebody else's
@@ -337,7 +337,9 @@ operation. Highlights by area:
 - **Capabilities / CSpace**: `CSPACE_MINT` (copy/mint slot→slot, with a
   destination CNode — including a child's root, which is how a spawner delegates
   before the child runs), `CSPACE_REVOKE` (recursive, across CNodes and address
-  spaces), `CSPACE_SELF`, `CNODE_DELETE`, `CNODE_SWAP`, `CAP_IDENTIFY`,
+  spaces), `CSPACE_SET_GUARD` (a **guard** on a CNode capability, seL4's sparse
+  addressing — capability-local, so two caps to one CNode can be guarded
+  differently), `CSPACE_SELF`, `CNODE_DELETE`, `CNODE_SWAP`, `CAP_IDENTIFY`,
   `CAP_SAME_OBJECT`.
 - **Endpoint IPC**: `EP_SEND`, `EP_RECV`, `EP_NB_SEND`, `EP_NB_RECV`,
   `EP_CALL`, `REPLY`.
@@ -448,7 +450,7 @@ somebody's delegation.
 
 Three independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **18738 assertions** across 20 suites
+- **Host unit tests** — `make test-unit`: **18782 assertions** across 21 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   kendpoint, kreply, knotification, kuntyped including its two-ended carve,
   kschedctx, kframe, the MDB/CDT (structural + model-based fuzzing), rights,
@@ -456,7 +458,7 @@ Three independently-gating layers, run on every change:
   the file-grant layer, …). They cover what a successful boot cannot show:
   buffer bounds on a page about to be mapped into ring 3, a CSpace that names
   itself, and an allocator's two ends meeting exactly once.
-- **Runtime tests** — booted under QEMU headless: **273 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **274 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
@@ -468,8 +470,8 @@ Three independently-gating layers, run on every change:
   (T297), the Stage 6 budget invariants (T298–T300), a refused address-space
   retype leaving its budget untouched (T301), the page table as a capability
   (T302), a running thread outliving every capability to it (T303), the retired
-  live-process ceiling (T304), and every capability tracing to an ancestor
-  (T305).
+  live-process ceiling (T304), every capability tracing to an ancestor
+  (T305), and a CNode capability carrying a guard (T306).
 - **Purity gate** — `make check-purity`: the frozen legacy-consumer allowlist.
   Nothing handle-table-shaped is left in it (Stage 4 deleted the namespace);
   what it holds is the kslab inventory — 14 files, 17 permitted occurrences —
@@ -480,9 +482,9 @@ Three independently-gating layers, run on every change:
 ```bash
 make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
-make test-unit                                             # host unit suites (18738)
+make test-unit                                             # host unit suites (18782)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (273/273)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (274/274)
 make run                                                   # interactive QEMU
 ```
 

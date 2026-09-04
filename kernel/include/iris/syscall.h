@@ -1391,6 +1391,37 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_TCB_SET_FAULT_HANDLER 126
 
+/*
+ * SYS_CSPACE_SET_GUARD(cptr, guard, guard_bits) → 0 or iris_error_t
+ *
+ * Stage 8-cap / ledger D-2 — install a GUARD on a CNode capability.
+ *
+ *   cptr        a CPtr, resolved in the caller's own CSpace, addressing the
+ *               SLOT that holds the CNode capability.  Holding the slot is the
+ *               authority: a guard changes how CPtrs resolve THROUGH that
+ *               capability, which is a change to the holder's own address
+ *               space and to nobody else's.
+ *   guard       the value the guard bits must match.
+ *   guard_bits  its width, 0..31.  Zero REMOVES the guard, which is the state
+ *               every capability starts in and the behaviour IRIS had before
+ *               guards existed.
+ *
+ * A guard is capability-local, exactly as in seL4: two capabilities to the
+ * same CNode can carry different guards, so one holder can see a sparse CSpace
+ * without changing anybody else's view.  Within one level a CPtr reads
+ * [guard][index] from MSB to LSB, the same relative order seL4 resolves in.
+ *
+ * Errors: WRONG_TYPE (the slot does not hold a CNode — a guard on anything
+ * else has no meaning and would make the slot lie about how it resolves),
+ * NOT_FOUND (empty slot), INVALID_ARG (guard does not fit guard_bits, or
+ * guard_bits + the target's radix would not fit the 31-bit CPtr space).
+ *
+ * Not yet expressible: a guard on the ROOT CNode capability.  A thread reaches
+ * its root through a structural pointer rather than a slot, so there is no
+ * capability to carry the guard.  That is the remaining half of D-2.
+ */
+#define SYS_CSPACE_SET_GUARD 127
+
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
 #define IRIS_UNTYPED_QUERY_ONE     2u

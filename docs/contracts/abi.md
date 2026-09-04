@@ -71,7 +71,7 @@ Kernel implementation note:
 
 ## Surface Summary
 
-Exported syscall number surface: **`0..126`** — 127 numbers, of which **68 are
+Exported syscall number surface: **`0..127`** — 128 numbers, of which **69 are
 live**, 56 are named in `syscall.h` and retired, and `9`–`11` were never
 assigned.
 
@@ -103,7 +103,7 @@ and the early Unix-shaped calls that predate the capability model.
 
 ### Capabilities and CSpace
 
-`91` `SYS_CNODE_DELETE`, `92` `SYS_CNODE_SWAP`, `114` `SYS_CSPACE_MINT`, `115` `SYS_CSPACE_REVOKE`, `117` `SYS_CAP_IDENTIFY`, `118` `SYS_CAP_SAME_OBJECT`, `119` `SYS_CSPACE_SELF`
+`91` `SYS_CNODE_DELETE`, `92` `SYS_CNODE_SWAP`, `114` `SYS_CSPACE_MINT`, `115` `SYS_CSPACE_REVOKE`, `117` `SYS_CAP_IDENTIFY`, `118` `SYS_CAP_SAME_OBJECT`, `119` `SYS_CSPACE_SELF`, `127` `SYS_CSPACE_SET_GUARD`
 
 ### Untyped, memory and address spaces
 

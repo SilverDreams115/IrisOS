@@ -36,16 +36,48 @@ iris_error_t cspace_resolve_cap_badged(struct KCNode     *root,
     kobject_active_retain(root_obj);
     struct KCNode *cur = (struct KCNode *)root_obj;
 
+    /*
+     * Stage 8-cap / D-2 — the guard of the capability we ENTERED `cur`
+     * through.  The root is entered through the thread's cspace_root, which is
+     * a structural pointer rather than a slot, so it has no guard yet: that is
+     * the one place a guard cannot be expressed until the root becomes a real
+     * capability.  Every descent below the root carries the guard of the CNode
+     * capability it went through.
+     */
+    uint64_t pending_guard      = 0;
+    uint8_t  pending_guard_bits = 0;
+
     for (uint32_t depth = 0; depth < CSPACE_MAX_DEPTH; depth++) {
         uint32_t radix = (uint32_t)__builtin_ctzll((uint64_t)cur->slot_count);
         uint32_t idx   = (uint32_t)(cptr & ((uint64_t)cur->slot_count - 1u));
         cptr >>= radix;
 
+        /*
+         * Consume and check the guard AFTER the index, which puts it in the
+         * more significant half of the level: MSB..LSB the level reads
+         * [guard][index], the same relative order seL4 resolves in.  A
+         * mismatch is a hard failure, never a fallthrough to another slot —
+         * that is the whole point of a guard.
+         */
+        if (pending_guard_bits) {
+            uint64_t mask = (pending_guard_bits >= 64u)
+                          ? ~(uint64_t)0
+                          : (((uint64_t)1 << pending_guard_bits) - 1u);
+            if ((cptr & mask) != pending_guard) {
+                kobject_active_release(&cur->base);
+                kobject_release(&cur->base);
+                return IRIS_ERR_NOT_FOUND;
+            }
+            cptr >>= pending_guard_bits;
+        }
+
         struct KObject *slot_obj;
         iris_rights_t   slot_rights;
         uint64_t slot_badge = 0;
-        err = kcnode_fetch_badged(cur, idx, &slot_obj, &slot_rights,
-                                  &slot_badge);
+        uint64_t next_guard = 0;
+        uint8_t  next_guard_bits = 0;
+        err = kcnode_fetch_guarded(cur, idx, &slot_obj, &slot_rights,
+                                   &slot_badge, &next_guard, &next_guard_bits);
         kobject_active_release(&cur->base);
         kobject_release(&cur->base);
         cur = 0;
@@ -85,8 +117,11 @@ iris_error_t cspace_resolve_cap_badged(struct KCNode     *root,
             return IRIS_OK;
         }
 
-        /* Intermediate CNode — descend one level. */
-        cur = (struct KCNode *)slot_obj;
+        /* Intermediate CNode — descend one level, carrying that capability's
+         * guard so the next iteration checks it before indexing. */
+        cur                = (struct KCNode *)slot_obj;
+        pending_guard      = next_guard;
+        pending_guard_bits = next_guard_bits;
     }
 
     /* Depth limit exhausted without reaching a terminal. */

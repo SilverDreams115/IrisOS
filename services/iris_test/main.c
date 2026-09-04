@@ -10592,9 +10592,14 @@ static void test_t148(void) {
      * SYS_TCB_FAULT_INFO, SYS_TCB_WATCH and SYS_TCB_EXIT_CODE — a fault read
      * off the thread that took it, and a death observed on the thread that
      * dies.  Stage 7 Step 12: 126 is SYS_TCB_SET_FAULT_HANDLER — faults armed
-     * on the execution that takes them.  The first UNASSIGNED number moves up
-     * to 127. */
-    for (long n = 127; ok && n <= 400; n++) {
+     * on the execution that takes them.  Stage 8-cap: 127 is
+     * SYS_CSPACE_SET_GUARD, which installs a guard on a CNode capability
+     * (ledger D-2).  The first UNASSIGNED number moves up to 128.
+     *
+     * This loop caught the guard syscall the moment it landed, which is what
+     * it is for: growing the syscall surface has to be a deliberate, visible
+     * act rather than something a diff can do quietly. */
+    for (long n = 128; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -21287,6 +21292,109 @@ static void test_t305(void) {
     if (ok) it_pass("T305"); else it_fail("T305", why);
 }
 
+/* ── T306: a CNode capability carries a GUARD (Stage 8-cap, ledger D-2) ───
+ *
+ * Until this stage IRIS resolved a CPtr as a pure radix walk: each level ate
+ * ctz(slot_count) bits and indexed.  seL4 puts a GUARD in the CNode
+ * capability — bits the address must carry to descend through it — which is
+ * what lets a CSpace be sparse and lets levels be skipped instead of costing
+ * their full radix.
+ *
+ * The property that makes it seL4's guard rather than some other feature is
+ * that it belongs to the CAPABILITY, not the CNode: two capabilities to one
+ * CNode can be guarded differently, so one holder's view can be made sparse
+ * without touching anybody else's.  The host suite asserts that directly
+ * (test_cnode_guard G-7); what this test adds is the ring-3 half — the guard
+ * is installed and observed THROUGH the syscall boundary, by a task that sees
+ * the kernel only as syscalls, which is the only place a CSpace addressing
+ * change can be proven not to have quietly aliased something.
+ *
+ * Asserted here:
+ *   1. the default is no guard and the plain address resolves (the additivity
+ *      claim: every CPtr that predates guards still means what it meant);
+ *   2. after installing one, the GUARDED address resolves;
+ *   3. and the plain address does NOT — the bits are really consumed and
+ *      compared, not merely stored;
+ *   4. a wrong guard fails, and fails as NOT_FOUND rather than landing on some
+ *      other slot;
+ *   5. width 0 removes it and restores the original address;
+ *   6. a guard is refused on a capability that is not a CNode.
+ */
+static void test_t306(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "cnode guard";
+
+    /* A fresh 8-slot CNode, left in its leaf slot: the capability IS the slot,
+     * and that slot is what carries the guard. */
+    long cn = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                   IRIS_KOBJ_CNODE, 8);
+    if (cn < 0) { it_fail("T306", "retype cnode"); return; }
+
+    /* Something to find on the far side of it: a copy of our own root CNode
+     * capability, minted into slot 3 of the new CNode. */
+    if (ok && it_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_TEST_UNTYPED,
+                      (long)((uint64_t)cn | ((uint64_t)3u << 32)),
+                      (long)RIGHT_READ) != 0) {
+        ok = 0; why = "mint into guarded cnode";
+    }
+
+    /* Path: root[80] -> obj cnode[leaf] -> new cnode[3].  `cn` already
+     * addresses the first two levels; slot 3 sits above them at bit 16. */
+    const long deep_plain = cn | (3L << 16);
+
+    if (ok && it_sys3(SYS_CAP_IDENTIFY, deep_plain, 0, 0) < 0) {
+        ok = 0; why = "plain address before guard";
+    }
+
+    /* Install a 2-bit guard of 0b10 on the CNode CAPABILITY (the slot `cn`
+     * addresses), then re-derive the address with the guard above slot 3. */
+    if (ok && it_sys3(SYS_CSPACE_SET_GUARD, cn, 0x2L, 2L) != 0) {
+        ok = 0; why = "set guard";
+    }
+    const long deep_guarded = cn | (3L << 16) | (0x2L << 19);
+    const long deep_wrong   = cn | (3L << 16) | (0x1L << 19);
+
+    if (ok && it_sys3(SYS_CAP_IDENTIFY, deep_guarded, 0, 0) < 0) {
+        ok = 0; why = "guarded address rejected";
+    }
+    if (ok && it_sys3(SYS_CAP_IDENTIFY, deep_plain, 0, 0) >= 0) {
+        ok = 0; why = "plain address still resolves under a guard";
+    }
+    if (ok && it_sys3(SYS_CAP_IDENTIFY, deep_wrong, 0, 0) >= 0) {
+        ok = 0; why = "wrong guard resolved";
+    }
+
+    /* Width 0 removes it; the address the CSpace had before guards existed
+     * comes back unchanged. */
+    if (ok && it_sys3(SYS_CSPACE_SET_GUARD, cn, 0L, 0L) != 0) {
+        ok = 0; why = "clear guard";
+    }
+    if (ok && it_sys3(SYS_CAP_IDENTIFY, deep_plain, 0, 0) < 0) {
+        ok = 0; why = "plain address not restored";
+    }
+
+    /* A guard on a non-CNode capability has no meaning and is refused, so it
+     * can never make a slot lie about how it resolves. */
+    if (ok && it_sys3(SYS_CSPACE_SET_GUARD, deep_plain, 0x1L, 1L)
+              != (long)IRIS_ERR_WRONG_TYPE) {
+        ok = 0; why = "guard accepted on non-cnode";
+    }
+
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
+                  (long)((uint32_t)cn >> 8));
+    it_quiesce_reaper();
+
+    /* The CNode is gone and nothing else was created, so every gauge must be
+     * back where it started: a guard is a field in a slot, not an allocation. */
+    if (ok) {
+        struct it_snap a = it_snap_take();
+        ok = it_snap_baseline(&b, &a, &why);
+    }
+    if (ok) it_pass("T306"); else it_fail("T306", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -21822,6 +21930,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t303();
     test_t304();
     test_t305();
+    test_t306();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
