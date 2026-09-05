@@ -1,5 +1,6 @@
 #include <iris/nc/kbootcap.h>
 #include <iris/kslab.h>
+#include <iris/nc/kuntyped.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -11,9 +12,19 @@ static void kbootcap_destroy(struct KObject *obj) {
     kslab_free((struct KBootstrapCap *)obj, (uint32_t)sizeof(struct KBootstrapCap));
 }
 
+/* Untyped-backed: the block goes back to the region it was carved from. */
+static void kbootcap_destroy_ut(struct KObject *obj) {
+    kuntyped_release_child(obj, (uint64_t)sizeof(struct KBootstrapCap));
+}
+
 static const struct KObjectOps kbootcap_ops = {
     .close = kbootcap_close,
     .destroy = kbootcap_destroy,
+};
+
+static const struct KObjectOps kbootcap_ops_ut = {
+    .close = kbootcap_close,
+    .destroy = kbootcap_destroy_ut,
 };
 
 struct KBootstrapCap *kbootcap_alloc_ports(uint32_t kind, uint16_t first,
@@ -41,6 +52,35 @@ struct KBootstrapCap *kbootcap_alloc(uint32_t kind) {
     /* The whole port space.  Only boot calls this: everyone else derives from
      * what it holds, which is the point of the range being on the capability. */
     return kbootcap_alloc_ports(kind, 0u, 0xFFFFu);
+}
+
+/*
+ * The same capability, charged to an Untyped the caller NAMED.
+ *
+ * This is the only form a ring-3 caller may reach.  `kbootcap_alloc_ports`
+ * takes its object from the kernel slab, which is correct for the boot path —
+ * bounded, once, before any Untyped exists — and would be a hole anywhere
+ * else: a service that can make the kernel allocate is a service that can
+ * exhaust it, and charter M3 says the kernel does not implicitly allocate
+ * memory on somebody's behalf.  A narrowed control capability is memory, so
+ * whoever asks for one pays for it, exactly as they do for the KIoPort the
+ * authority goes on to create.
+ */
+struct KBootstrapCap *kbootcap_alloc_from(struct KUntyped *pool, uint32_t kind,
+                                          uint16_t first, uint16_t last) {
+    if (!pool) return 0;
+    if (kind == 0u || (kind & (kind - 1u)) != 0u) return 0;
+    if (first > last) return 0;
+
+    struct KBootstrapCap *cap =
+        kuntyped_alloc_child_top(pool, sizeof(struct KBootstrapCap));
+    if (!cap) return 0;
+    kobject_init_in_untyped(&cap->base, KOBJ_BOOTSTRAP_CAP, &kbootcap_ops_ut,
+                            (uint32_t)sizeof(struct KBootstrapCap));
+    cap->kind       = kind;
+    cap->port_first = first;
+    cap->port_last  = last;
+    return cap;
 }
 
 void kbootcap_free(struct KBootstrapCap *cap) {

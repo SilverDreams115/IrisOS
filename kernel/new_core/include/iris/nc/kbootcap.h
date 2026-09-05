@@ -67,6 +67,11 @@ struct KBootstrapCap *kbootcap_alloc(uint32_t kind);
 /* ...and one over a sub-range, derived from a holder's own. */
 struct KBootstrapCap *kbootcap_alloc_ports(uint32_t kind, uint16_t first,
                                            uint16_t last);
+/* ...and the only form a ring-3 caller may reach: charged to a named Untyped,
+ * because a service that can make the kernel allocate can exhaust it. */
+struct KUntyped;
+struct KBootstrapCap *kbootcap_alloc_from(struct KUntyped *pool, uint32_t kind,
+                                          uint16_t first, uint16_t last);
 
 /* Is [base, base+count) inside what this capability authorises?  Non-IOPORT
  * kinds carry no range and answer 0: a range question about a capability that

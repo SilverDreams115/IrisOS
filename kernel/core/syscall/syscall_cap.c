@@ -382,13 +382,13 @@ uint64_t sys_handle_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * without it can use its range and cannot subdivide it further.
  */
 uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1,
-                                   uint64_t arg2) {
+                                   uint64_t arg2, uint64_t arg3) {
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     uint16_t first     = (uint16_t)(arg1 & 0xFFFFu);
     uint16_t last      = (uint16_t)((arg1 >> 16) & 0xFFFFu);
-    uint32_t dest_slot = (uint32_t)arg2;
+    uint32_t dest_slot = (uint32_t)arg3;
 
     if (first > last) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (dest_slot == 0u || dest_slot >= 1024u)
@@ -428,8 +428,19 @@ uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1,
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
+    /* The object comes out of a budget the caller NAMED, like every other
+     * device capability since Stage 7 Step 14.  A narrowed control capability
+     * is memory, and a syscall that let ring 3 spend the kernel's would be a
+     * hole in charter M3 opened by the very change that closed a policy one. */
+    struct KUntyped *pool;
+    err = dev_cap_budget(t, arg2, &pool);
+    if (err != IRIS_OK) {
+        dev_cap_auth_release(auth_cn);
+        return syscall_err(err);
+    }
     struct KBootstrapCap *narrow =
-        kbootcap_alloc_ports(IRIS_BOOTCAP_IOPORT_CONTROL, first, last);
+        kbootcap_alloc_from(pool, IRIS_BOOTCAP_IOPORT_CONTROL, first, last);
+    dev_cap_budget_release(pool);
     if (!narrow) {
         dev_cap_auth_release(auth_cn);
         return syscall_err(IRIS_ERR_NO_MEMORY);

@@ -1512,7 +1512,7 @@ static inline long iris_syscall0(long nr) {
 #define SYS_TCB_SET_IPC_BUFFER 130
 
 /*
- * SYS_IOPORT_CONTROL_NARROW(auth_cptr, first | last<<16, dest_slot)
+ * SYS_IOPORT_CONTROL_NARROW(auth_cptr, first | last<<16, budget_cptr, dest_slot)
  *   → 0 or negative iris_error_t
  *
  * Derive an I/O-port CONTROL capability over a SUB-RANGE of one you hold.
@@ -1537,6 +1537,11 @@ static inline long iris_syscall0(long nr) {
  *   first/last  the sub-range, inclusive, packed into arg1 — must be
  *               non-inverted and CONTAINED in the authority's own range, so a
  *               narrowing can only ever narrow
+ *   budget_cptr the KUntyped the object is carved from.  Required, like every
+ *               other device capability since Stage 7 Step 14: a narrowed
+ *               control capability is memory, and a syscall that let ring 3
+ *               spend the KERNEL's would open a charter M3 hole in the same
+ *               change that closed a policy one
  *   dest_slot   destination slot in the caller's root CNode
  *
  * The result is an MDB CHILD of the slot that authorised it, like every other

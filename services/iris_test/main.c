@@ -520,10 +520,10 @@ static long it_ioport_create(long auth, long base, long count, long dest) {
  * piece of its own. */
 static long it_ioport_narrow(long auth, long first, long last, uint32_t dest) {
     (void)it_sys2(SYS_CNODE_DELETE, 0, (long)dest);
-    return it_sys3(SYS_IOPORT_CONTROL_NARROW, auth,
+    return it_sys4(SYS_IOPORT_CONTROL_NARROW, auth,
                    (long)((uint64_t)(uint16_t)first |
                           ((uint64_t)(uint16_t)last << 16)),
-                   (long)dest);
+                   (long)IRIS_CPTR_TEST_UNTYPED, (long)dest);
 }
 
 static long it_irqcap_create(long auth, long irq, long dest) {
@@ -11844,6 +11844,31 @@ static void test_t164(void) {
                   != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "range spill not denied";
         }
+        /* The object is MEMORY, so it is charged to a budget the caller names.
+         * A syscall that let ring 3 spend the KERNEL's would open a charter M3
+         * hole in the same change that closed a policy one, so the budget is
+         * required and is checked as a capability rather than taken on trust. */
+        if (ok && it_sys4(SYS_IOPORT_CONTROL_NARROW,
+                          (long)IRIS_CPTR_IOPORT_CONTROL,
+                          (long)((uint64_t)IT_COM2_BASE |
+                                 ((uint64_t)(IT_COM2_BASE + IT_COM2_COUNT - 1) << 16)),
+                          0L, (long)IT_DEV_SLOT_B)
+                  != (long)IRIS_ERR_INVALID_ARG) {
+            ok = 0; why = "narrowing without a budget was accepted";
+        }
+        /* ...and it is a CAPABILITY, checked like one.  Naming the control
+         * capability itself is refused on RIGHTS before TYPE — it carries no
+         * RIGHT_WRITE, and a budget is written to — which is the earlier of
+         * the two refusals and the same kind of refusal. */
+        if (ok && it_sys4(SYS_IOPORT_CONTROL_NARROW,
+                          (long)IRIS_CPTR_IOPORT_CONTROL,
+                          (long)((uint64_t)IT_COM2_BASE |
+                                 ((uint64_t)(IT_COM2_BASE + IT_COM2_COUNT - 1) << 16)),
+                          (long)IRIS_CPTR_IOPORT_CONTROL, (long)IT_DEV_SLOT_B)
+                  != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "a non-untyped budget was accepted";
+        }
+
         /* And a narrowing can only ever narrow: asking for more than you hold
          * is refused, which is what keeps the chain monotonic. */
         if (ok && it_ioport_narrow((long)narrow_slot, 0x0, 0xFFFF,
