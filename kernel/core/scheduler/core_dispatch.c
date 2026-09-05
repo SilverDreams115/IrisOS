@@ -38,6 +38,8 @@
 #include <iris/cpu_local.h>
 #include <iris/klog.h>
 #include <iris/panic.h>
+#include <iris/tss.h>
+#include <iris/syscall.h>
 #include "scheduler_priv.h"
 
 /*
@@ -57,7 +59,16 @@ uint64_t core_stack_top_for(uint32_t cpu_id) {
 
 void core_dispatch_init(void) {
     struct iris_cpu_local *cl = cpu_self();
-    cl->core_stack_top = core_stack_top_for(cl->cpu_id);
+    uint64_t top = core_stack_top_for(cl->cpu_id);
+    cl->core_stack_top = top;
+    /*
+     * Every entry from ring 3 lands here from now on — the syscall path reads
+     * `%gs:48` and the CPU reads TSS.RSP0, and both are this, for the life of
+     * the core.  They used to be rewritten on every context switch, because
+     * the stack belonged to whichever thread was about to run.
+     */
+    tss_set_rsp0(top);
+    syscall_set_kstack(top);
 }
 
 /*

@@ -698,6 +698,31 @@ static void free_phys_pages_range(uint64_t base_phys, uint32_t page_count) {
     pmm_free_contig(base_phys, page_count);
 }
 
+
+/*
+ * Stage 9-evt step 3 — describe a thread's FIRST entry into ring 3 in its TCB.
+ *
+ * This used to be a frame pushed onto the thread's own kernel stack at
+ * creation — `[user_entry_trampoline, rip, cs, rflags, rsp, ss]` — which is
+ * one of the two reasons every thread needed a stack before it had ever run.
+ * The other was its saved ring-3 context, and that moved to `user_ctx` in the
+ * first half of step 3.  Both live in the TCB now, so the dispatcher can start
+ * a thread from the core's stack and a thread that has never run owns nothing.
+ */
+static void task_set_first_user_entry(struct task *t, uint64_t rip,
+                                      uint64_t rsp, uint64_t arg) {
+    for (unsigned i = 0; i < sizeof(t->user_ctx) / sizeof(uint64_t); i++)
+        ((uint64_t *)&t->user_ctx)[i] = 0;
+    t->user_ctx.rip    = rip;
+    t->user_ctx.cs     = 0x23;      /* user code   */
+    t->user_ctx.rflags = 0x202;     /* IF set      */
+    t->user_ctx.rsp    = rsp;
+    t->user_ctx.ss     = 0x1B;      /* user data   */
+    t->user_ctx.rbx    = arg;       /* the thread argument, by ABI */
+    t->resume_user     = TASK_RESUME_USER_FIRST;
+    t->kentry          = 0;
+}
+
 void setup_initial_context(struct task *t, void (*entry)(void)) {
     uint64_t stack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
     stack_top &= ~0xFULL;
@@ -717,6 +742,9 @@ void setup_initial_context(struct task *t, void (*entry)(void)) {
     t->ctx.rbp    = 0;
     t->ctx.rip    = (uint64_t)(uintptr_t)entry;
     t->ctx.rflags = 0x202ULL;
+    /* Step 3: a KERNEL thread's resume is a call on the core's stack. */
+    t->kentry      = entry;
+    t->resume_user = TASK_RESUME_KERNEL;
 }
 
 /* ── Task creation ───────────────────────────────────────────────────────── */
@@ -806,7 +834,7 @@ struct task *task_create(void (*entry)(void)) {
 
 void task_set_bootstrap_arg0(struct task *t, uint64_t arg0) {
     if (!t || t->ring != TASK_RING3 || !t->vspace || !t->vspace->cr3) return;
-    t->ctx.rbx = arg0;
+    t->user_ctx.rbx = arg0;   /* the first-entry context, not a saved switch */
     /* Write arg0 at the physical page corresponding to t->user_rsp.
      * RSP entropy may have shifted user_rsp below the original stack top, so
      * we compute the physical address from user_rsp rather than from
@@ -959,22 +987,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
         kobject_active_retain(&t->vspace->base);
     }
 
-    uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
-    kstack_top &= ~0xFULL;
-
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;  /* SS: user data (sysretq) */
-    kstack_top -= 8; *(uint64_t *)kstack_top = t->user_rsp;
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202;
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;  /* CS: user code (sysretq) */
-    kstack_top -= 8; *(uint64_t *)kstack_top = USER_TEXT_BASE;
-    kstack_top -= 8; *(uint64_t *)kstack_top = (uint64_t)(uintptr_t)user_entry_trampoline;
-
-    t->saved_krsp = kstack_top;
-
-    t->ctx.r15    = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
-    t->ctx.rbx    = 0; t->ctx.rbp = 0;
-    t->ctx.rip    = (uint64_t)(uintptr_t)user_entry_trampoline;
-    t->ctx.rflags = 0x202ULL;
+    task_set_first_user_entry(t, USER_TEXT_BASE, t->user_rsp, 0);
     task_set_bootstrap_arg0(t, arg0);
 
     t->utext_phys  = ub_copy_phys;
@@ -1191,24 +1204,7 @@ iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
     t->user_entry = entry;
     t->user_rsp   = sp;
 
-    uint64_t kstack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
-    kstack_top &= ~0xFULL;
-
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x1B;   /* SS: user data */
-    kstack_top -= 8; *(uint64_t *)kstack_top = sp;
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x0202; /* RFLAGS: IF */
-    kstack_top -= 8; *(uint64_t *)kstack_top = 0x23;   /* CS: user code */
-    kstack_top -= 8; *(uint64_t *)kstack_top = entry;
-    kstack_top -= 8; *(uint64_t *)kstack_top =
-        (uint64_t)(uintptr_t)user_entry_trampoline;
-
-    t->saved_krsp = kstack_top;
-
-    t->ctx.r15 = 0; t->ctx.r14 = 0; t->ctx.r13 = 0; t->ctx.r12 = 0;
-    t->ctx.rbp = 0;
-    t->ctx.rbx = arg;
-    t->ctx.rip = (uint64_t)(uintptr_t)user_entry_trampoline;
-    t->ctx.rflags = 0x202ULL;
+    task_set_first_user_entry(t, entry, sp, arg);
     return IRIS_OK;
 }
 

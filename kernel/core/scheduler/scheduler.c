@@ -1,4 +1,5 @@
 #include "scheduler_priv.h"
+#include <iris/panic.h>
 #include <iris/tss.h>
 #include <iris/paging.h>
 #include <iris/syscall.h>
@@ -146,11 +147,9 @@ void task_yield(void) { (void)task_yield_impl(0); }
  */
 __attribute__((noreturn)) void task_park_restart(void) {
     struct task *t = current_task;
-    if (t && t->kstack) {
-        t->ctx.rip     = (uint64_t)(uintptr_t)syscall_restart_trampoline;
-        t->ctx.rflags  = 0x2u;      /* reserved bit set, IF clear */
-        t->resume_user = 0u;        /* it resumes IN the kernel */
-        t->saved_krsp  = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE) - 8u;
+    if (t) {
+        t->kentry      = syscall_restart_trampoline;
+        t->resume_user = TASK_RESUME_KERNEL;
     }
     core_dispatch_enter(t);
 }
@@ -278,10 +277,8 @@ static int task_yield_impl(int abandon) {
          * below the top because context_switch writes the resume address
          * there and returns into it.
          */
-        old->ctx.rip     = (uint64_t)(uintptr_t)syscall_restart_trampoline;
-        old->ctx.rflags  = 0x2u;      /* reserved bit set, IF clear */
-        old->resume_user = 0u;        /* it resumes IN the kernel */
-        old->saved_krsp  = (uint64_t)(uintptr_t)(old->kstack + TASK_STACK_SIZE) - 8u;
+        old->kentry      = syscall_restart_trampoline;
+        old->resume_user = TASK_RESUME_KERNEL;
         sched_resume(chosen, old);
         /* Unreachable: this thread resumes at the trampoline, not here. */
         for (;;) { }
@@ -317,19 +314,25 @@ static int task_yield_impl(int abandon) {
  */
 __attribute__((noreturn))
 void sched_resume(struct task *next, struct task *outgoing) {
-    static struct cpu_context discard_ctx;
-    static uint64_t           discard_rsp;
-    static uint8_t            discard_fpu[512] __attribute__((aligned(16)));
+    if (outgoing) fpu_save_to(outgoing->fpu_state);
+    fpu_restore_from(next->fpu_state);
 
-    if (next->resume_user) {
-        if (outgoing) fpu_save_to(outgoing->fpu_state);
-        fpu_restore_from(next->fpu_state);
+    switch (next->resume_user) {
+    case TASK_RESUME_USER:
         restore_user_ctx_and_iretq(&next->user_ctx);
+    case TASK_RESUME_USER_FIRST:
+        start_user_ctx_and_iretq(&next->user_ctx);
+    default:
+        break;
     }
 
-    context_switch(&discard_ctx, &next->ctx, &discard_rsp, next->saved_krsp,
-                   outgoing ? outgoing->fpu_state : discard_fpu,
-                   next->fpu_state);
+    /*
+     * A kernel resume, called on the stack we are standing on — the core's.
+     * It does not return: a restart trampoline either reaches ring 3 or parks,
+     * and parking re-enters the dispatcher with the stack reset underneath it.
+     */
+    IRIS_ASSERT(next->kentry != 0, "sched_resume: kernel resume with no entry");
+    next->kentry();
     for (;;) { }
 }
 
@@ -391,10 +394,13 @@ struct task *sched_pick_for_dispatch(struct task *outgoing) {
     set_current_task(chosen);
     cpu_self()->context_switches++;
 
-    uint64_t new_kstack_top =
-        (uint64_t)(uintptr_t)(chosen->kstack + TASK_STACK_SIZE);
-    tss_set_rsp0(new_kstack_top);
-    syscall_set_kstack(new_kstack_top);
+    /*
+     * Step 3: the ring-3 entry stack is the CORE's, and it does not change
+     * when the thread does — which is the whole of "one kernel stack per
+     * core".  TSS.RSP0 and the syscall stack pointer are set once, at
+     * core_dispatch_init; what still changes per thread is only its address
+     * space.
+     */
     syscall_set_user_cr3(chosen->vspace ? chosen->vspace->user_cr3 : 0);
 
     if (chosen->vspace && chosen->vspace->cr3 != 0) {

@@ -575,20 +575,23 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (!target->configured) { kobject_release(&target->base); return syscall_err(IRIS_ERR_NOT_SUPPORTED); }
     /*
      * ...and neither must a CONFIGURED thread that was never told where to
-     * start.  CONFIGURE builds the storage a thread needs; WRITE_REGS builds
-     * the frame it returns THROUGH, and until it has run there is nothing on
-     * the kernel stack: saved_krsp is still the zero the retyped block arrived
-     * with.  Making that runnable puts `movq $0, %rsp` in context_switch and
-     * the next push is a ring-0 store through a null stack — a fault with no
-     * stack to take it on.
+     * start.  CONFIGURE builds the storage a thread needs; WRITE_REGS says
+     * where it begins, and until that has happened there is nowhere to resume
+     * it TO.
      *
-     * saved_krsp is the exact witness, not a proxy: every thread that has run
-     * has one (context_switch saves it), and every thread that has been given
-     * an entry frame has one (ktcb_write_regs sets it).  A pool-born thread is
-     * born with both.  Checked BEFORE `started` is set, so a refusal does not
-     * freeze the entry frame it just refused to run.
+     * The witness used to be `saved_krsp` — a thread's entry frame was pushed
+     * onto its own kernel stack, so a non-zero saved stack pointer meant "it
+     * has one".  Stage 9-evt step 3 moved that frame into the TCB, and the
+     * witness moved with it: `resume_user` is TASK_RESUME_KERNEL on a retyped
+     * block and becomes TASK_RESUME_USER_FIRST exactly when WRITE_REGS runs.
+     * Checking the old field after the frame stopped living there is how this
+     * failed to spot the change — a stale witness answers, it just answers
+     * about the wrong thing.
+     *
+     * Checked BEFORE `started` is set, so a refusal does not freeze the entry
+     * it just refused to run.
      */
-    if (!target->saved_krsp) {
+    if (target->resume_user == TASK_RESUME_KERNEL && !target->kentry) {
         kobject_release(&target->base);
         return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }

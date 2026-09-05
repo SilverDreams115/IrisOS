@@ -500,6 +500,16 @@ struct task {
      * interrupt saved — it has a syscall to finish.
      */
     uint32_t             resume_user;
+    /*
+     * Where a KERNEL resume enters (resume_user == 0).
+     *
+     * A parked syscall's restart trampoline, or a kernel thread's entry.  It
+     * runs ON THE CORE'S STACK, called by the dispatcher, which is what
+     * removed the second reason a thread needed a stack of its own: the first
+     * was its ring-3 context, which moved to `user_ctx`, and this was the
+     * other.
+     */
+    void               (*kentry)(void);
     /* Ph74: optional scheduling context — retained KSchedContext ref (NULL = best-effort) */
     struct KSchedContext *sched_ctx;
     /* Ph85: reply capability fields */
@@ -593,6 +603,17 @@ void fpu_restore_from(void *area);
 /* Resume a ring-3 context straight from a TCB (kernel/arch/x86_64). */
 __attribute__((noreturn))
 void restore_user_ctx_and_iretq(const struct iris_user_ctx *ctx);
+
+/* A thread's FIRST entry into ring 3, from its TCB (kernel/arch/x86_64).
+ * Differs from the above in what a thread that has never run still needs: data
+ * selectors, CR3, and IA32_KERNEL_GS_BASE for its first syscall's swapgs. */
+__attribute__((noreturn))
+void start_user_ctx_and_iretq(const struct iris_user_ctx *ctx);
+
+/* resume_user values. */
+#define TASK_RESUME_KERNEL     0u   /* kentry(), on the core stack */
+#define TASK_RESUME_USER       1u   /* iretq from user_ctx          */
+#define TASK_RESUME_USER_FIRST 2u   /* ...and set up ring 3 first   */
 
 /* Enter the per-core dispatcher on the core's stack; never returns. */
 __attribute__((noreturn))
