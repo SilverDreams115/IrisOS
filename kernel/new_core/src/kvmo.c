@@ -59,7 +59,10 @@ static struct KVmo *kvmo_alloc_in(struct KUntyped *pool) {
     return v;
 }
 
-static struct KVmo *kvmo_alloc(void) { return kvmo_alloc_in(0); }
+/* kvmo_alloc (the budget-less form) went with kvmo_wrap: every VMO that
+ * remains is charged to a pool its payer named, which is the whole of Stage 6
+ * Step 5.  A helper that allocated from nowhere had exactly one caller and it
+ * was the MMIO wrapper. */
 
 /*
  * Stage 6 Step 5 — one page of a VMO, from the budget that pays for it.
@@ -133,14 +136,12 @@ struct KVmo *kvmo_create(uint64_t size) {
     return kvmo_create_from(size, 0);
 }
 
-struct KVmo *kvmo_wrap(uint64_t phys, uint64_t size) {
-    struct KVmo *v = kvmo_alloc();
-    if (!v) return 0;
-    v->phys  = phys;
-    v->size  = size;
-    v->owned = 0;
-    return v;
-}
+/*
+ * kvmo_wrap is DELETED (Stage 6).  Its only caller was SYS_FRAMEBUFFER_VMO,
+ * which wrapped MMIO in a kernel-made object because there was no other way to
+ * hand a driver a physical region.  There is now: a DEVICE Untyped (ledger
+ * D-9), retyped by whoever holds it.
+ */
 
 
 

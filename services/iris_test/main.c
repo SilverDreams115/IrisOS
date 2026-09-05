@@ -17,6 +17,7 @@
 #include <iris/ipc_msg.h>
 #include <iris/ipc_recv_slot.h>
 #include <iris/endpoint_proto.h>
+#include <iris/fb_info.h>
 #include <iris/vfs_ep_proto.h>
 #include <iris/kbd_ep_proto.h>
 #include <iris/console_ep_proto.h>
@@ -10630,12 +10631,14 @@ static void test_t148(void) {
      * SYS_UNTYPED_SET_DEVICE_BUDGET — a DEVICE untyped cannot hold the headers
      * of objects carved from it (MMIO is not storage), so the holder names the
      * RAM that pays for them (ledger D-9).  The first UNASSIGNED number moves
-     * up to 133.
+     * Stage 6: 133 is SYS_FRAMEBUFFER_INFO — the geometry alone, separated
+     * from the VMO its predecessor fabricated in the same call.  The first
+     * UNASSIGNED number moves up to 134.
      *
      * This loop caught the guard syscall the moment it landed, which is what
      * it is for: growing the syscall surface has to be a deliberate, visible
      * act rather than something a diff can do quietly. */
-    for (long n = 133; ok && n <= 400; n++) {
+    for (long n = 134; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -12038,35 +12041,61 @@ static void test_t167(void) {
     if (ok) it_pass("T167"); else it_fail("T167", why);
 }
 
-/* ── T168: framebuffer / MMIO containment ───────────────────────────────────
- * Framebuffer authority is gated behind a FRAMEBUFFER-flagged bootstrap cap AND
- * is one-shot: the real fb service consumes the framebuffer VMO at boot, so even
- * iris_test's fully-privileged TEST spawn cap (which does carry FRAMEBUFFER)
- * cannot obtain a second handle — SYS_FRAMEBUFFER_VMO returns NOT_FOUND.  A
- * wrong-type auth cap is rejected ACCESS_DENIED.  Documented gap: because the
- * VMO is consumed and bounded to the framebuffer size, its mapping cannot be
- * exercised at runtime from iris_test; the bounded-range property is asserted at
- * the authority layer, and the absence of FRAMEBUFFER from productive services
- * is covered structurally by T162.  Invariants: D4, D5, D15, D16 (auth-level). */
+/* ── T168: framebuffer authority ────────────────────────────────────────────
+ * Framebuffer authority is a capability of its own (IRIS_CPTR_FB_CONTROL), and
+ * a wrong-type capability in its place is refused ACCESS_DENIED rather than
+ * being interpreted.
+ *
+ * This test used to assert something else: that the framebuffer was ONE-SHOT —
+ * `SYS_FRAMEBUFFER_VMO` cleared a valid flag, so the second caller got
+ * NOT_FOUND and the first got the region.  That was a GRANT wearing a query's
+ * clothes, and it is retired (ledger D-5): the region is a DEVICE Untyped now,
+ * exclusivity is whoever holds that capability, and what remains here is
+ * `SYS_FRAMEBUFFER_INFO` — a question about hardware, which anyone with the
+ * authority may ask twice and which creates nothing.
+ *
+ * So the one-shot leg becomes its opposite, deliberately: the query is
+ * IDEMPOTENT, and a test that still expected NOT_FOUND would be pinning a
+ * behaviour the model no longer has.  Invariants: D4, D5, D15, D16. */
 static void test_t168(void) {
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
     int ok = b.ok;
     const char *why = "framebuffer containment";
 
-    uint8_t fbbuf[64];
-    /* The framebuffer VMO was consumed by fb at boot → NOT_FOUND, even though
-     * the spawn cap carries FRAMEBUFFER (one-shot authority). */
-    if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, (long)IRIS_CPTR_FB_CONTROL, (long)(uintptr_t)fbbuf, 0)
-              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "framebuffer not one-shot"; }
+    struct iris_fb_params fb1, fb2;
+    /* Asking twice gives the same answer: it is a question, not a claim. */
+    if (ok && it_sys3(SYS_FRAMEBUFFER_INFO, (long)IRIS_CPTR_FB_CONTROL,
+                      (long)(uintptr_t)&fb1, 0) != 0) {
+        ok = 0; why = "framebuffer info refused";
+    }
+    if (ok && it_sys3(SYS_FRAMEBUFFER_INFO, (long)IRIS_CPTR_FB_CONTROL,
+                      (long)(uintptr_t)&fb2, 0) != 0) {
+        ok = 0; why = "framebuffer info was one-shot";
+    }
+    if (ok && (fb1.phys != fb2.phys || fb1.size != fb2.size ||
+               fb1.width != fb2.width || fb1.height != fb2.height)) {
+        ok = 0; why = "framebuffer geometry changed between asks";
+    }
+    /* And it describes something: a query that answers zeroes proves nothing. */
+    if (ok && (fb1.size == 0u || fb1.width == 0u || fb1.phys == 0u)) {
+        ok = 0; why = "framebuffer geometry empty";
+    }
     /* Wrong-type auth cap (a notification) → ACCESS_DENIED (not a bootstrap cap). */
     if (ok) {
         long n = it_notify_create();
         handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
         if (n < 0) { ok = 0; why = "notif fixture"; }
-        if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, n, (long)(uintptr_t)fbbuf, 0)
+        if (ok && it_sys3(SYS_FRAMEBUFFER_INFO, n, (long)(uintptr_t)&fb1, 0)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "wrong-type got framebuffer"; }
         it_close(&n_h);
+    }
+    /* The RETIRED half stays retired: a stale caller asking for a VMO over the
+     * framebuffer gets a refusal, not somebody else's operation. */
+    if (ok && it_sys3(SYS_FRAMEBUFFER_VMO, (long)IRIS_CPTR_FB_CONTROL,
+                      (long)(uintptr_t)&fb1, 0)
+              != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "the retired VMO half still answers";
     }
 
     it_quiesce_reaper();
@@ -22683,68 +22712,44 @@ static void test_t316(void) {
     if (ok && !q.is_device) { ok = 0; why = "not reported as device memory"; }
     if (ok && q.total_bytes == 0u) { ok = 0; why = "empty device region"; }
 
-    /* ── 2. unpaired, a retype is refused ────────────────────────────────*/
-    if (ok && it_frame_create_slot(dev, 4096u) != (long)IRIS_ERR_INVALID_ARG) {
-        ok = 0; why = "unpaired device retype was allowed";
+    /* ── 2. fb REALLY retyped the framebuffer out of it ──────────────────
+     * The end-to-end proof that D-5's last memory object is gone.  fb used to
+     * receive a KVMO the kernel fabricated inside SYS_FRAMEBUFFER_VMO; it now
+     * retypes one frame covering the whole region out of this Untyped, so the
+     * region reads as consumed and carries a child.  A migration that had
+     * quietly fallen back would leave it untouched, and every other test would
+     * still pass — the screen is painted either way. */
+    if (ok && q.child_count == 0u) {
+        ok = 0; why = "nobody retyped the framebuffer";
+    }
+    if (ok && q.used_bytes < 4096u) {
+        ok = 0; why = "the framebuffer region was never carved";
+        it_fz_note("T316", (uint32_t)q.used_bytes, (uint32_t)q.total_bytes, 0u);
     }
 
-    /* ── 3. paired, it works — and the two halves are charged correctly ──*/
+    /* ── 3. the pairing is SET ONCE ──────────────────────────────────────
+     * fb paired it at boot.  The budget is a property of the OBJECT — one
+     * physical region, one set of headers — so the first holder to pair
+     * decides for every holder, and a second attempt is refused rather than
+     * silently moving the headers of live frames to another region. */
     long ram = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
-                                    IRIS_KOBJ_UNTYPED, 64u * 1024u);
-    if (ok && ram < 0) { ok = 0; why = "header budget"; }
-
-    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, dev, ram) != 0) {
-        ok = 0; why = "pairing refused";
-    }
-
-    uint64_t ram_before = 0, ram_after = 0;
-    struct it_utq_one d0, d1;
-    if (ok && it_sys3(SYS_UNTYPED_INFO, ram, 0,
-                      (long)(uintptr_t)&ram_before) != 0) { ok = 0; why = "info"; }
-    if (ok && !it_utq_1(dev, &d0)) { ok = 0; why = "info dev"; }
-
-    long fr = -1;
-    if (ok) {
-        fr = it_frame_create_slot(dev, 4096u);
-        if (fr < 0) { ok = 0; why = "paired device retype failed"; }
-    }
-    if (ok && it_sys3(SYS_UNTYPED_INFO, ram, 0,
-                      (long)(uintptr_t)&ram_after) != 0) { ok = 0; why = "info2"; }
-    if (ok && !it_utq_1(dev, &d1)) { ok = 0; why = "info dev2"; }
-
-    if (ok) {
-        uint64_t hdr_cost  = ram_before - ram_after;
-        uint64_t page_cost = d1.used_bytes - d0.used_bytes;
-        /* The header is small and came from RAM... */
-        if (hdr_cost == 0u || hdr_cost >= 4096u) {
-            ok = 0; why = "header not charged to the RAM budget";
-            it_fz_note("T316", (uint32_t)hdr_cost, (uint32_t)page_cost, 0u);
-        }
-        /* ...and the page is a page and came from the device region. */
-        if (ok && page_cost < 4096u) {
-            ok = 0; why = "page not charged to the device region";
-            it_fz_note("T316", (uint32_t)hdr_cost, (uint32_t)page_cost, 0u);
-        }
-    }
-
-
-    /* ── 4. the pairing cannot move ──────────────────────────────────────*/
-    if (ok) {
-        long ram2 = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
-                                         IRIS_KOBJ_UNTYPED, 8u * 1024u);
-        if (ram2 < 0) { ok = 0; why = "second budget"; }
-        else if (it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, dev, ram2)
-                 != (long)IRIS_ERR_ALREADY_EXISTS) {
-            ok = 0; why = "the pairing moved";
-        }
+                                    IRIS_KOBJ_UNTYPED, 8u * 1024u);
+    if (ok && ram < 0) { ok = 0; why = "budget"; }
+    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, dev, ram)
+              != (long)IRIS_ERR_ALREADY_EXISTS) {
+        ok = 0; why = "the pairing moved";
     }
     /* A DEVICE region cannot pay for headers, not even its own. */
     if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, dev, dev)
               != (long)IRIS_ERR_INVALID_ARG) {
         ok = 0; why = "a device region was accepted as a header budget";
     }
+    /* Nor is a RAM Untyped something to pair: it carves its own headers. */
+    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, ram, ram)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "a RAM untyped accepted a header budget";
+    }
 
-    if (fr >= 0) it_slot_delete((uint32_t)fr);
     it_quiesce_reaper();
     if (ok) it_pass("T316"); else it_fail("T316", why);
 }

@@ -19,6 +19,7 @@
 #include "../common/iris_vspace.h"
 #include <iris/fb_info.h>
 #include <iris/nc/error.h>
+#include "../common/iris_map.h"
 #include <iris/paging.h>
 
 #define MAP_WRITABLE 1u
@@ -100,28 +101,60 @@ void fb_main_c(handle_id_t rbx_unused) {
      * instead of coming back as a handle.  fb's manifest is a single mint
      * (IRIS_CPTR_FB_CONTROL), so every other slot is free; 16 keeps a clear
      * gap from the well-known service range. */
-    const long  fb_vmo_slot = 16;
+    const long  fb_frame_slot = 16;
     long        vmo_cptr = -1;
     struct iris_fb_params params;
 
-    /* ── Claim framebuffer VMO ────────────────────────────────────── */
+    /*
+     * ── The framebuffer, as memory fb OWNS ────────────────────────────
+     *
+     * This used to be one call: SYS_FRAMEBUFFER_VMO answered "where and how
+     * big is it" and fabricated a KVMO over the region in the same breath, so
+     * the geometry could only be learned by accepting a kernel-made object —
+     * the last memory object in the system that nobody retyped (ledger D-5).
+     *
+     * Now the two halves are what they are.  The geometry is a fact boot
+     * discovered and SYS_FRAMEBUFFER_INFO reports it, creating nothing.  The
+     * REGION arrives as a DEVICE Untyped (D-9), and fb retypes a frame out of
+     * it exactly as it would out of RAM — one frame for the whole thing, since
+     * a frame maps as a whole (D-10).
+     *
+     * A device Untyped cannot hold the headers of objects carved from it —
+     * MMIO is not storage — so fb names the RAM that pays, out of the budget
+     * its spawner gave it.
+     */
     {
         uint8_t *raw = (uint8_t *)&params;
         uint32_t i;
         for (i = 0; i < (uint32_t)sizeof(params); i++) raw[i] = 0;
     }
-    {
-        long r = fb_sys4(SYS_FRAMEBUFFER_VMO, cap_cptr,
-                         (long)(uintptr_t)&params,
-                         (long)((uint64_t)fb_vmo_slot << 32), 0);
-        if (r < 0) goto out;
-        vmo_cptr = fb_vmo_slot;
-    }
+    if (fb_sys3(SYS_FRAMEBUFFER_INFO, cap_cptr,
+                (long)(uintptr_t)&params, 0) != IRIS_OK)
+        goto out;
     if (params.width == 0 || params.height == 0 || params.size == 0) goto out;
 
-    /* ── Map framebuffer ──────────────────────────────────────────── */
-    if (fb_sys3(SYS_VMO_MAP, vmo_cptr, (long)USER_VMO_BASE,
-                (long)MAP_WRITABLE) != IRIS_OK)
+    /* The headers of what comes out of MMIO are charged to fb's own budget. */
+    (void)fb_sys3(SYS_UNTYPED_SET_DEVICE_BUDGET,
+                  (long)IRIS_CPTR_DEVICE_UNTYPED,
+                  (long)IRIS_CPTR_OWN_UNTYPED, 0);
+
+    {
+        uint64_t bytes = (params.size + 0xFFFu) & ~0xFFFULL;
+        if (fb_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_DEVICE_UNTYPED,
+                    (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
+                    (long)((uint64_t)fb_frame_slot << 32),
+                    (long)bytes) != 0)
+            goto out;
+        vmo_cptr = fb_frame_slot;
+    }
+
+    /* ── Map framebuffer ──────────────────────────────────────────────
+     * The window is one nothing has touched, and the kernel creates no paging
+     * levels, so the helper supplies them — several, for a region this size. */
+    if (iris_map_frame((uint64_t)vmo_cptr, (uint64_t)fb_self_vs(),
+                       IRIS_CPTR_OWN_UNTYPED, FB_SLOT_PT,
+                       USER_VMO_BASE, (params.size + 0xFFFu) & ~0xFFFULL,
+                       1u /* writable */) != 0)
         goto out;
 
     /* ── Paint rainbow stripes ────────────────────────────────────── */
@@ -150,7 +183,8 @@ void fb_main_c(handle_id_t rbx_unused) {
     }
 
     /* ── Unmap (physical MMIO stays painted) ─────────────────────── */
-    (void)fb_sys2(SYS_VMO_UNMAP, (long)USER_VMO_BASE, (long)params.size);
+    (void)fb_sys3(SYS_FRAME_UNMAP, vmo_cptr, fb_self_vs(),
+                  (long)USER_VMO_BASE);
 
 out:
     /* The framebuffer cap is a CSpace slot now: fb is fire-and-forget and its

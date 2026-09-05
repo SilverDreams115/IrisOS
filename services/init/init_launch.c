@@ -38,13 +38,22 @@ void init_spawn_fb(void) {
      * object that also carried spawn and debug authority.  Delegating a
      * capability that means exactly one thing needs none of them. */
     {
-        struct svc_mint fb_mints[1] = { 0 };
+        struct svc_mint fb_mints[2] = { 0 };
         fb_mints[0].slot     = IRIS_CPTR_FB_CONTROL;
         fb_mints[0].src_cptr = IRIS_CPTR_FB_CONTROL;
         fb_mints[0].rights   = RIGHT_READ;
         fb_mints[0].badge    = 0;
+        /* Ledger D-5/D-9: the framebuffer REGION, as a device Untyped fb
+         * retypes its own frame from.  It used to come as a KVMO the kernel
+         * fabricated inside SYS_FRAMEBUFFER_VMO — the last memory object in
+         * the system nobody retyped.  The control capability above is now what
+         * it says it is: the authority to ask where the framebuffer IS. */
+        fb_mints[1].slot     = IRIS_CPTR_DEVICE_UNTYPED;
+        fb_mints[1].src_cptr = IRIS_CPTR_DEVICE_UNTYPED;
+        fb_mints[1].rights   = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
+        fb_mints[1].badge    = 0;
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
-                               "fb", &fb_proc_h, &fb_boot_h, fb_mints, 1u,
+                               "fb", &fb_proc_h, &fb_boot_h, fb_mints, 2u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
                                2u << 20,
                                /* fb maps the framebuffer into a window nothing

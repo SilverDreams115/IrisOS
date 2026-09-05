@@ -874,45 +874,50 @@ uint64_t sys_vmo_share(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 
 /*
- * sys_framebuffer_vmo(auth_h, info_uptr) → vmo_handle or iris_error_t
+ * sys_framebuffer_vmo is DELETED (Stage 6), not merely undispatched.
+ *
+ * It wrapped the framebuffer's physical range in a KVMO — the only caller of
+ * `kvmo_wrap`, and the last place the kernel fabricated a memory object over
+ * MMIO.  The region is a DEVICE Untyped now (ledger D-9) and `fb` retypes its
+ * own frame from it, so the code has no callers and no future: leaving it
+ * compiled would leave a second way to reach the framebuffer that nothing
+ * tests and nothing revokes.  The NUMBER stays reserved (syscall.h).
  */
-uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1,
-                                    uint64_t arg2, uint64_t arg3) {
-    (void)arg3;
+
+/*
+ * SYS_FRAMEBUFFER_INFO — the geometry, and only the geometry.
+ *
+ * `SYS_FRAMEBUFFER_VMO` answered this and fabricated a KVMO in the same call,
+ * so the only way to learn where the framebuffer was and how wide it is was to
+ * accept a kernel-made object over it.  Since the region became a DEVICE
+ * Untyped (D-9) a driver retypes its own frame, and the two halves separate
+ * cleanly: the geometry is a fact about hardware that boot discovered, and a
+ * capability is not.
+ *
+ * Idempotent, unlike its predecessor — that one cleared `valid` so the region
+ * could be claimed once, which was a one-shot GRANT wearing a query's clothes.
+ * The grant now lives where grants live: whoever holds the device Untyped.
+ */
+uint64_t sys_framebuffer_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject *auth_obj;
     iris_rights_t   auth_rights;
     iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                 RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
+                                             RIGHT_NONE, KOBJ_BOOTSTRAP_CAP,
+                                             &auth_obj, &auth_rights);
     if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
-    if (!kbootcap_is((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_FB_CONTROL)) {
-        kobject_release(auth_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
+    int ok = kbootcap_is((struct KBootstrapCap *)auth_obj,
+                         IRIS_BOOTCAP_FB_CONTROL);
     kobject_release(auth_obj);
+    if (!ok) return syscall_err(IRIS_ERR_ACCESS_DENIED);
 
-    if (!g_iris_fb_params_valid) return syscall_err(IRIS_ERR_NOT_FOUND);
-    g_iris_fb_params_valid = 0;
-    if (!copy_to_user_checked(arg1, &g_iris_fb_params, (uint32_t)sizeof(g_iris_fb_params)))
+    if (g_iris_fb_params.size == 0u) return syscall_err(IRIS_ERR_NOT_FOUND);
+    if (!copy_to_user_checked(arg1, &g_iris_fb_params,
+                              (uint32_t)sizeof(g_iris_fb_params)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KVmo *v = kvmo_wrap(g_iris_fb_params.phys, g_iris_fb_params.size);
-    if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
-    const iris_rights_t rights = RIGHT_READ | RIGHT_WRITE |
-                                 RIGHT_DUPLICATE | RIGHT_TRANSFER;
-
-    /* Stage 4: arg2 is a destination slot (RETYPE2 packing).  The framebuffer
-     * is authorised by the bootstrap cap in arg0, but that cap was resolved
-     * and released above, so the grant is published as a root rather than a
-     * child of it — the ancestry the device caps get is Stage 5 work. */
-    if (arg2 == 0u) {
-        kobject_release(&v->base);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-    iris_error_t pe = syscall_publish_slot(t, &v->base, rights, arg2, 0, 0);
-    if (pe != IRIS_OK) return syscall_err(pe);
     return syscall_ok_u64(0);
 }

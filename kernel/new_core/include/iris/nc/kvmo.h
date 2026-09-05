@@ -69,7 +69,8 @@ struct KVmo *kvmo_create_from(uint64_t size, struct KUntyped *pool);
 
 /* One page for a sparse VMO, from its pool when it has one. */
 uint64_t     kvmo_alloc_page(struct KVmo *v);             /* allocate from PMM */
-struct KVmo *kvmo_wrap  (uint64_t phys, uint64_t size); /* wrap existing phys (MMIO) */
+/* kvmo_wrap is DELETED (Stage 6): MMIO is a DEVICE Untyped now, not a
+ * kernel-fabricated object over somebody else's physical range (D-9). */
 void         kvmo_free  (struct KVmo *v);
 uint32_t     kvmo_live_count(void);
 

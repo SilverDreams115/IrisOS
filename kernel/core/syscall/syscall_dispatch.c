@@ -271,7 +271,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_VMO_MAP_INTO:  return sys_vmo_map_into(arg0, arg1, arg2, arg3);
         case SYS_THREAD_START:  return sys_thread_start(arg0, arg1, arg2, arg3);
         case SYS_HANDLE_INSERT: return sys_handle_insert(arg0, arg1, arg2, arg3);
-        case SYS_FRAMEBUFFER_VMO: return sys_framebuffer_vmo(arg0, arg1, arg2, arg3);
         case SYS_CLOCK_GET:           return sys_clock_get(arg0, arg1, arg2);
         /* SYS_CHAN_RECV_TIMEOUT retired — Phase 13/Track G, fall to default (NOT_SUPPORTED) */
         case SYS_NOTIFY_WAIT_TIMEOUT: return sys_notify_wait_timeout(arg0, arg1, arg2);
@@ -349,6 +348,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
                                       return sys_ioport_control_narrow(arg0, arg1, arg2, arg3);
         case SYS_UNTYPED_SET_DEVICE_BUDGET:
                                       return sys_untyped_set_device_budget(arg0, arg1, arg2);
+        case SYS_FRAMEBUFFER_INFO:    return sys_framebuffer_info(arg0, arg1, arg2);
         case SYS_REPLY_RECV:          return sys_reply_recv(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);

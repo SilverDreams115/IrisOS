@@ -200,7 +200,6 @@ uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_vmo_share(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_framebuffer_vmo(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 
@@ -407,6 +406,7 @@ uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                    uint64_t arg3);
 uint64_t sys_untyped_set_device_budget(uint64_t arg0, uint64_t arg1,
                                        uint64_t arg2);
+uint64_t sys_framebuffer_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* D-4 — bulk payload routing, defined in syscall_endpoint.c and shared with
  * syscall_reply.c.  See the comment block there. */

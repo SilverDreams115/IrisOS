@@ -387,6 +387,19 @@ static inline long iris_syscall0(long nr) {
  *   One-shot: the kernel clears the framebuffer-valid flag on first call so that
  *   only the first caller can claim the physical framebuffer window.
  */
+/*
+ * SYS_FRAMEBUFFER_VMO — RETIRED (Stage 6).  Permanently reserved.
+ *
+ * It answered "where is the framebuffer" AND fabricated a KVMO over the region
+ * in the same call, so the geometry could only be learned by accepting a
+ * kernel-made object — the last memory object in the system nobody retyped
+ * (ledger D-5).  It was also a one-shot GRANT wearing a query's clothes: the
+ * first caller consumed a valid flag and every later one got NOT_FOUND.
+ *
+ * The two halves are now what they are.  SYS_FRAMEBUFFER_INFO (133) reports
+ * the geometry and creates nothing; the REGION is a DEVICE Untyped published
+ * in BootInfo (D-9), and exclusivity is who holds that capability.
+ */
 #define SYS_FRAMEBUFFER_VMO 60
 
 /*
@@ -1583,6 +1596,29 @@ static inline long iris_syscall0(long nr) {
  * RIGHT_WRITE), ALREADY_EXISTS (already paired).
  */
 #define SYS_UNTYPED_SET_DEVICE_BUDGET 132
+
+/*
+ * SYS_FRAMEBUFFER_INFO(auth_cptr, info_uptr) → 0 or negative iris_error_t
+ *
+ * The framebuffer's GEOMETRY: width, height, stride, bpp and the physical
+ * region it occupies.  Nothing else — no object is created and nothing is
+ * consumed, so it can be asked twice.
+ *
+ * Its predecessor, `SYS_FRAMEBUFFER_VMO`, answered this question AND
+ * fabricated a KVMO over the region in the same call, which is why the
+ * geometry could only be learned by accepting a kernel-made object.  Since
+ * Stage 6 the region is published as a DEVICE Untyped (ledger D-9) and a
+ * driver retypes a frame from it, so the two halves are separable and only
+ * one of them is still the kernel's business: the geometry is a fact about the
+ * hardware that boot discovered, and a capability is not.
+ *
+ *   auth_cptr  the framebuffer control capability (IRIS_BOOTCAP_FB_CONTROL)
+ *   info_uptr  where to write `struct iris_fb_params`
+ *
+ * Errors: ACCESS_DENIED (not the framebuffer control capability), NOT_FOUND
+ * (the machine has no framebuffer), INVALID_ARG (unwritable buffer).
+ */
+#define SYS_FRAMEBUFFER_INFO 133
 
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
