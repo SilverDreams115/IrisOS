@@ -111,7 +111,7 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     while (m) {
         struct KFrameMapping *next = m->next;
         struct KFrame        *f    = m->frame;
-        if (cr3) paging_unmap_in(cr3, m->user_va);
+        if (cr3) kframe_unmap_all(cr3, f, m->user_va);
         kvspace_node_free(vs, m);
         atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
         kframe_stat_cleanup();
@@ -550,7 +550,7 @@ void kvspace_invalidate(struct KVSpace *vs) {
         struct KFrameMapping *m = list;
         struct KFrame        *f = m->frame;
         list = m->next;
-        if (saved_cr3) paging_unmap_in(saved_cr3, m->user_va);
+        if (saved_cr3) kframe_unmap_all(saved_cr3, f, m->user_va);
         kvspace_node_free(vs, m);
         atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
         kframe_stat_cleanup();
@@ -590,7 +590,7 @@ iris_error_t kvspace_unmap_page(struct KVSpace *vs, uint64_t user_va) {
         return IRIS_ERR_NOT_FOUND;
     }
     f = m->frame;
-    paging_unmap_in(cr3, user_va);
+    kframe_unmap_all(cr3, f, user_va);
     spinlock_unlock(&vs->lock);
 
     kvspace_node_free(vs, m);

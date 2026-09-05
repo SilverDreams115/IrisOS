@@ -22727,18 +22727,6 @@ static void test_t316(void) {
         }
     }
 
-    /* A frame larger than a page is REFUSED, not silently under-mapped.
-     * SYS_FRAME_MAP installs one PTE and never reads the frame's size, so a
-     * caller who bought sixteen pages would be charged for sixteen and able to
-     * reach one — with no error anywhere.  An ABI that refuses beats one that
-     * lies, and the refusal is where the asking happened. */
-    if (ok && it_frame_create_slot(dev, 8192u) != (long)IRIS_ERR_INVALID_ARG) {
-        ok = 0; why = "a multi-page frame was accepted";
-    }
-    if (ok && it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 65536u)
-              != (long)IRIS_ERR_INVALID_ARG) {
-        ok = 0; why = "a multi-page RAM frame was accepted";
-    }
 
     /* ── 4. the pairing cannot move ──────────────────────────────────────*/
     if (ok) {
@@ -22759,6 +22747,119 @@ static void test_t316(void) {
     if (fr >= 0) it_slot_delete((uint32_t)fr);
     it_quiesce_reaper();
     if (ok) it_pass("T316"); else it_fail("T316", why);
+}
+
+/* ── T317: a frame maps as a WHOLE, not just its first page (D-10) ───────
+ *
+ * `SYS_UNTYPED_RETYPE2` accepted any page multiple for a frame, and
+ * `SYS_FRAME_MAP` installed exactly ONE PTE: `kframe_map_page` mapped
+ * `f->paddr` and never read `f->size`.  A caller who bought a 64 KiB frame
+ * spent 64 KiB of its Untyped and could reach 4 KiB of it, with no error
+ * anywhere — the other fifteen pages were charged, owned, and unreachable.
+ * Nothing had ever asked for one, which is why it went unnoticed rather than
+ * why it was acceptable.
+ *
+ * seL4 has frame SIZES and a map covers the frame.  A map now installs every
+ * page, an unmap removes every page, and the three bulk teardown paths walk
+ * the frame rather than the mapping record's first address — because a
+ * cleanup that removed one page of sixteen would leave PTEs outliving the
+ * object that justified them, which is the one thing an unmap exists to
+ * prevent.
+ *
+ * Four assertions, and the last two are the ones that would have caught the
+ * original defect and its likely replacements:
+ *
+ *   1. a multi-page frame retypes and costs its whole size;
+ *   2. EVERY page of it is readable and writable after one map — the first,
+ *      the last, and a middle one, each with a distinct value so a mapping
+ *      that aliased them all onto one page fails here;
+ *   3. one unmap removes ALL of it: re-mapping the same window succeeds,
+ *      which it cannot if stale PTEs were left behind (the map refuses a VA
+ *      that is already occupied);
+ *   4. a map that would overlap an existing mapping anywhere in its range is
+ *      refused and changes NOTHING — the check runs over every page before
+ *      any PTE is installed, so a failure cannot leave half a frame mapped.
+ *
+ * Invariants: V1, V3, O2. */
+#define T317_VA    0x807C000000ULL
+#define T317_PAGES 4u
+#define T317_SIZE  (T317_PAGES * 4096u)
+
+static void test_t317(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "multi-page frame";
+
+    if (!it_setup_self_vspace()) { it_fail("T317", "vspace self"); return; }
+
+    long sub = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                    IRIS_KOBJ_UNTYPED, 256u * 1024u);
+    if (sub < 0) { it_fail("T317", "sub-untyped"); return; }
+
+    /* ── 1. it retypes, and it costs what it is ─────────────────────────*/
+    uint64_t before = 0, after = 0;
+    if (it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&before) != 0) {
+        it_fail("T317", "info"); return;
+    }
+    long fr = it_frame_create_slot(sub, T317_SIZE);
+    if (fr < 0) { it_fail("T317", "retype"); return; }
+    if (it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&after) != 0) {
+        it_fail("T317", "info2"); return;
+    }
+    if (ok && (before - after) < T317_SIZE) {
+        ok = 0; why = "a multi-page frame was not charged for its size";
+    }
+
+    /* ── 2. every page of it is there after ONE map ─────────────────────*/
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, IT_VS, (long)T317_VA,
+                      (long)IT_MAP_W) != 0) {
+        ok = 0; why = "map";
+    }
+    if (ok) {
+        for (uint32_t p = 0; ok && p < T317_PAGES; p++) {
+            volatile uint64_t *w =
+                (volatile uint64_t *)(uintptr_t)(T317_VA + p * 4096u);
+            if (w[0] != 0u) { ok = 0; why = "page not zero"; break; }
+            w[0] = 0xA5000000ULL + p;      /* distinct per page */
+        }
+        /* Read them all back: if the map had aliased every page onto the
+         * frame's first, they would all hold the last value written. */
+        for (uint32_t p = 0; ok && p < T317_PAGES; p++) {
+            volatile uint64_t *w =
+                (volatile uint64_t *)(uintptr_t)(T317_VA + p * 4096u);
+            if (w[0] != 0xA5000000ULL + p) {
+                ok = 0; why = "pages alias each other";
+                it_fz_note("T317", p, (uint32_t)w[0], 0u);
+            }
+        }
+    }
+
+    /* ── 4. an overlapping map is refused and changes nothing ───────────
+     * Asserted while the frame is still mapped: a second map one page into
+     * the window overlaps on three of its four pages.  If the occupancy check
+     * ran per page as it installed, the first page would be left behind. */
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, IT_VS, (long)(T317_VA + 4096u),
+                      (long)IT_MAP_W) == 0) {
+        ok = 0; why = "an overlapping map was allowed";
+    }
+
+    /* ── 3. one unmap removes all of it ─────────────────────────────────*/
+    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, IT_VS, (long)T317_VA) != 0) {
+        ok = 0; why = "unmap";
+    }
+    /* Re-mapping the same window proves every PTE went: the map refuses a VA
+     * that is already occupied, so a leftover anywhere in the range fails. */
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, IT_VS, (long)T317_VA,
+                      (long)IT_MAP_W) != 0) {
+        ok = 0; why = "unmap left pages behind";
+    }
+    if (ok && it_sys3(SYS_FRAME_UNMAP, fr, IT_VS, (long)T317_VA) != 0) {
+        ok = 0; why = "unmap2";
+    }
+
+    it_slot_delete((uint32_t)fr);
+    it_quiesce_reaper();
+    if (ok) it_pass("T317"); else it_fail("T317", why);
 }
 
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
@@ -23307,6 +23408,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t314();
     test_t315();
     test_t316();
+    test_t317();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

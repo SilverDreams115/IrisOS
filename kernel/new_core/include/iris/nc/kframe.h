@@ -56,6 +56,10 @@ struct KFrame {
 /* Forward declaration — full definition in iris/nc/kvspace.h. */
 struct KVSpace;
 
+/* D-10: remove every PTE of the frame mapped at base_va.  One mapping record
+ * covers a whole frame, so every teardown path walks the frame's pages. */
+void kframe_unmap_all(uint64_t cr3, const struct KFrame *f, uint64_t base_va);
+
 /* Allocate a KFrame header from the kernel slab allocator and initialise it.
  * Does NOT touch the physical region at paddr.
  * Increments alloc_parent->child_count and retains alloc_parent.

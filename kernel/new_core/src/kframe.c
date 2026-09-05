@@ -198,10 +198,25 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
         return IRIS_ERR_BAD_HANDLE;
     }
 
-    if (paging_virt_to_phys_in(vs->cr3, user_va) != 0) {
-        spinlock_unlock(&vs->lock);
-        kvspace_node_free(vs, m);
-        return IRIS_ERR_BUSY;
+    /*
+     * D-10: a map covers the WHOLE frame, and every page of it is checked
+     * before any of it is installed.
+     *
+     * Checking as we go would leave a partial mapping behind when page seven
+     * of sixteen turned out to be occupied — the caller would get an error and
+     * an address space with six pages of somebody's frame in it.  Two passes
+     * cost a walk and buy the property that a failed map changes nothing.
+     */
+    uint64_t pages = f->size >> 12;
+    if (pages == 0) pages = 1;
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t va = user_va + (i << 12);
+        if (!kframe_va_valid(va) ||
+            paging_virt_to_phys_in(vs->cr3, va) != 0) {
+            spinlock_unlock(&vs->lock);
+            kvspace_node_free(vs, m);
+            return IRIS_ERR_BUSY;
+        }
     }
 
     page_flags = PAGE_PRESENT | PAGE_USER;
@@ -224,20 +239,29 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
      * (kvspace_end_bootstrap), so it too supplies its own levels from then on
      * and no address space is implicitly funded while anyone is running.
      */
-    if (!vs->kernel_funded) {
-        r = paging_map_strict_in(vs->cr3, user_va, f->paddr, page_flags);
-        if (r > 0) {                      /* a level is missing; name it */
-            spinlock_unlock(&vs->lock);
-            kvspace_node_free(vs, m);
-            return IRIS_ERR_MISSING_TABLE;
+    r = 0;
+    uint64_t done = 0;
+    for (; done < pages; done++) {
+        uint64_t va = user_va + (done << 12);
+        uint64_t pa = f->paddr + (done << 12);
+        if (!vs->kernel_funded) {
+            r = paging_map_strict_in(vs->cr3, va, pa, page_flags);
+            if (r > 0) r = -1;            /* a level is missing; name it */
+        } else {
+            r = paging_map_checked_in(vs->cr3, va, pa, page_flags);
         }
-    } else {
-        r = paging_map_checked_in(vs->cr3, user_va, f->paddr, page_flags);
+        if (r != 0) break;
     }
     if (r != 0) {
+        /* Unwind exactly what went in.  A holder that has to retype a page
+         * table and retry must find the address space as it left it, or the
+         * retry hits BUSY on its own leftovers. */
+        for (uint64_t i = 0; i < done; i++)
+            paging_unmap_in(vs->cr3, user_va + (i << 12));
         spinlock_unlock(&vs->lock);
         kvspace_node_free(vs, m);
-        return IRIS_ERR_NO_MEMORY;
+        return (r > 0 || !vs->kernel_funded) ? IRIS_ERR_MISSING_TABLE
+                                             : IRIS_ERR_NO_MEMORY;
     }
 
     /* Retain the frame for the lifetime of this mapping record. */
@@ -268,6 +292,26 @@ struct KFrame *bootstrap_kframe_map(struct KVSpace *vs,
         return NULL;
     }
     return f;
+}
+
+/*
+ * Remove every PTE of a frame mapped at `base_va`.
+ *
+ * One mapping record covers a WHOLE frame (ledger D-10), so every teardown
+ * path has to walk the frame's pages rather than the record's first one.  A
+ * cleanup that removed only the first page would leave the rest of a large
+ * frame mapped in an address space being reclaimed — the PTEs would outlive
+ * the object that justified them, which is the one thing an unmap exists to
+ * prevent.  Shared by the explicit unmap and the three bulk teardowns for
+ * exactly that reason: four copies of this loop is three chances to fix it
+ * in one place only.
+ */
+void kframe_unmap_all(uint64_t cr3, const struct KFrame *f, uint64_t base_va) {
+    if (!cr3 || !f) return;
+    uint64_t pages = f->size >> 12;
+    if (pages == 0) pages = 1;
+    for (uint64_t i = 0; i < pages; i++)
+        paging_unmap_in(cr3, base_va + (i << 12));
 }
 
 iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
@@ -308,7 +352,7 @@ iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
         return IRIS_ERR_NOT_FOUND;
     }
 
-    paging_unmap_in(vs->cr3, user_va);
+    kframe_unmap_all(vs->cr3, f, user_va);
     spinlock_unlock(&vs->lock);
 
     kvspace_node_free(vs, m);
