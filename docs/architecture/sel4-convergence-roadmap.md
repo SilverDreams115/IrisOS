@@ -1620,11 +1620,14 @@ differently.
   constant, no user pointer is named on either side, and the buffer is a
   capability refused like one when it is not a writable frame (T313, host TB-9).
   It is also less work than the path it replaces: three copies and two pointer
-  validations become one copy.  What remains is not kernel work — the 256-byte
-  `ipc_kbuf` survives because every boot SERVICE still takes that path, having
-  no Untyped budget of its own to retype a frame from.  That is the memory
-  server (D-5/D-6), so this row now waits on that one rather than on anything
-  of its own.
+  validations become one copy.  What remains is not kernel work.  The first
+  blocker is gone — every service now holds a capability to the Untyped its
+  address space was already charged to, so it can retype a frame at all, which
+  it could not before — and console is migrated.  Two things are still owed:
+  an IPC buffer is per-THREAD, so a service with several IPC threads needs one
+  page each, and vfs composes its reply in a second buffer while the request is
+  still live, which one shared page cannot do without reading its protocol
+  first.  Until every service is across, `ipc_kbuf` stays.
 - **D-2 — CNode guards.**  Resolution is a pure radix walk, so a CPtr's meaning
   is fixed by the CNode sizes along the path: no sparse layouts, no
   depth-limited lookup, and a two-level CSpace costs the full radix of each
