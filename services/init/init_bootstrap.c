@@ -89,7 +89,7 @@ void init_retry_pause(void) {
  * page serves both directions, which is what an IPC buffer is.
  */
 static uint8_t  g_init_ep_buf[VFS_EP_DATA_MAX + 1u];
-static uint8_t *g_init_buf = g_init_ep_buf;
+uint8_t *g_init_buf = g_init_ep_buf;   /* shared with main.c's log path */
 
 /* Spare slots: init's own map runs 40..62. */
 #define INIT_SLOT_IPCBUF_FRAME  22u

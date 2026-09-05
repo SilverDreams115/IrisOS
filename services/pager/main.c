@@ -38,6 +38,7 @@
 #include <iris/fault_proto.h>
 #include <iris/vfs_ep_proto.h>
 #include "pager_proto.h"
+#include "../common/iris_ipc_buffer.h"
 
 #define PAGE_SZ    4096u
 #define PG_SCRATCH 0x8060000000ULL   /* pager-private scratch VA for page fills */
@@ -108,9 +109,28 @@ static long              g_self_vs = -1;
 static long pg_self_vs_now(void) { return g_self_vs > 0 ? g_self_vs : 0; }
 static uint64_t          g_pending = 0;   /* accumulated fault bits (bit i = target i) */
 
-/* IPC buffers (single-threaded service). */
-static uint8_t g_ctrl_buf[IRIS_IPC_BUF_SIZE];
-static uint8_t g_vfs_buf[IRIS_IPC_BUF_SIZE];
+/*
+ * IPC buffers (single-threaded service), and the shape ledger D-4 forces.
+ *
+ * The pager is a SERVER on its control endpoint and a CLIENT of vfs, on one
+ * thread.  With a registered IPC buffer there is one page and the kernel reads
+ * every send from offset 0 of it, so the two roles share it: `g_pg_buf` is
+ * where a vfs reply lands, where a diag reply is composed, and where an
+ * incoming control payload arrives.
+ *
+ * `g_ctrl_buf` stays a static array and becomes the COPY destination — the
+ * same answer vfs needed, for the same reason.  A control request's bytes are
+ * read as a struct while the handler may call vfs and compose a reply in the
+ * buffer, so the request has to leave the buffer before either happens.
+ */
+static uint8_t  g_ctrl_buf[IRIS_IPC_BUF_SIZE];
+static uint8_t  g_vfs_static[IRIS_IPC_BUF_SIZE];
+static uint8_t *g_pg_buf = g_vfs_static;
+static uint32_t g_pg_registered = 0u;
+
+/* Spare slots: the pager's target table ends at 51. */
+#define PGR_SLOT_IPCBUF_FRAME  52u
+#define PGR_SLOT_IPCBUF_PT     53u
 
 static struct pgr_diag g_diag;   /* counters (also the DIAG reply payload) */
 
@@ -147,7 +167,7 @@ static long pg_read_file(uint32_t grant_idx, uint64_t file_off,
         m.words[1]   = file_off + got;
         m.words[2]   = (want - got < VFS_EP_DATA_MAX) ? (want - got) : VFS_EP_DATA_MAX;
         m.word_count = 3u;
-        m.buf_uptr   = (uint64_t)(uintptr_t)g_vfs_buf;
+        m.buf_uptr   = (uint64_t)(uintptr_t)g_pg_buf;
         m.buf_len    = 0u;
         long r = pg_sys2(SYS_EP_CALL, (long)PGR_SLOT_VFS_EP, (long)&m);
         if (r != 0) return r;
@@ -158,7 +178,7 @@ static long pg_read_file(uint32_t grant_idx, uint64_t file_off,
         uint32_t n = (uint32_t)m.words[1];
         if (n == 0u) break;                 /* EOF */
         if (n > (want - got)) n = want - got;
-        for (uint32_t i = 0; i < n; i++) dst[got + i] = g_vfs_buf[i];
+        for (uint32_t i = 0; i < n; i++) dst[got + i] = g_pg_buf[i];
         got += n;
     }
     return (long)got;
@@ -521,15 +541,34 @@ void pager_main(handle_id_t bootstrap_ch_h) {
     g_self_vs = (pg_sys1(SYS_VSPACE_SELF,
                          (long)((uint64_t)PGR_SLOT_SELF_VS << 32)) == 0)
                 ? (long)PGR_SLOT_SELF_VS : -1;
+
+    /* D-4: a page the pager owns, registered as its IPC buffer.  Best-effort
+     * — a failure leaves the kernel staging path, which still works. */
+    {
+        void *b = iris_ipc_buffer_init(PGR_SLOT_IPCBUF_FRAME,
+                                       PGR_SLOT_IPCBUF_PT,
+                                       IRIS_IPC_BUFFER_VA);
+        if (b) { g_pg_buf = (uint8_t *)b; g_pg_registered = 1u; }
+    }
+
     g_diag.cache_capacity = PGR_CACHE_CAP;
 
     struct IrisMsg msg;
     for (;;) {
         pg_msg_zero(&msg);
-        msg.buf_uptr = (uint64_t)(uintptr_t)g_ctrl_buf;   /* receive bulk (region/backing reqs) */
+        msg.buf_uptr = (uint64_t)(uintptr_t)(g_pg_registered ? g_pg_buf
+                                                              : g_ctrl_buf);
         long rr = pg_sys3(SYS_EP_RECV, (long)PGR_SLOT_CTRL_EP, (long)&msg,
                           (long)PGR_SLOT_REPLY);
         if (rr != 0) { pg_sys1(SYS_EXIT, 0); for (;;) {} }
+
+        /* Take the request out of the buffer before anything below composes a
+         * reply there or calls vfs through it. */
+        if (g_pg_registered && msg.buf_len > 0u) {
+            uint32_t n = msg.buf_len;
+            if (n > IRIS_IPC_BUF_SIZE) n = IRIS_IPC_BUF_SIZE;
+            for (uint32_t i = 0; i < n; i++) g_ctrl_buf[i] = g_pg_buf[i];
+        }
 
         handle_id_t reply_h = (handle_id_t)msg.attached_handle;
         uint32_t op    = PGR_OP(msg.words[0]);
@@ -573,8 +612,8 @@ void pager_main(handle_id_t bootstrap_ch_h) {
             if (reply_diag) {
                 g_diag.cache_entries = pg_cache_entries();
                 g_diag.pending_mask  = (uint32_t)g_pending;
-                for (uint32_t i = 0; i < (uint32_t)sizeof(g_diag); i++) g_vfs_buf[i] = ((uint8_t *)&g_diag)[i];
-                reply.buf_uptr = (uint64_t)(uintptr_t)g_vfs_buf;
+                for (uint32_t i = 0; i < (uint32_t)sizeof(g_diag); i++) g_pg_buf[i] = ((uint8_t *)&g_diag)[i];
+                reply.buf_uptr = (uint64_t)(uintptr_t)g_pg_buf;
                 reply.buf_len  = (uint32_t)sizeof(g_diag);
             }
             /* Phase S1: reply_h is our reusable reply-object CPtr — no close. */

@@ -125,14 +125,23 @@ static inline int64_t vfs_syscall1(uint64_t num, uint64_t arg0) {
  * verified with a PING after bootstrap; pre-verification boot lines are
  * dropped (vfs no longer receives a legacy console cap). */
 static handle_id_t g_vfs_console_ep_h = HANDLE_INVALID;
-static uint8_t g_vfs_con_ep_buf[IRIS_IPC_BUF_SIZE];
+/* D-4: the console client marshals into the buffer it is given, and a thread
+ * with a registered IPC buffer must marshal into THAT — the kernel refuses a
+ * send that names any other address.  So the log path shares the service's one
+ * IPC buffer, which is what having one buffer means. */
+/* (every vfs_log call is bootstrap or fatal-exit, never while a reply is
+ * staged in the buffer) */
+
+/* Tentative declarations: the buffers are defined with the rest of the IPC
+ * state below, but the log path above them needs the name. */
+static uint8_t *g_vfs_reply;
 
 static void vfs_log(const char *msg) {
     /* Phase 13/Track G: vfs logs over console.ep only — the legacy console
      * KChannel writer is retired (vfs is endpoint_only; g_vfs_console_h was
      * always invalid). */
     if (g_vfs_console_ep_h != HANDLE_INVALID)
-        (void)console_ep_write(g_vfs_console_ep_h, g_vfs_con_ep_buf, msg);
+        (void)console_ep_write(g_vfs_console_ep_h, g_vfs_reply, msg);
 }
 
 static void vfs_copy_bytes(uint8_t *dst, const uint8_t *src, uint32_t len) {

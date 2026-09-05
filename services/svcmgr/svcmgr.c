@@ -238,9 +238,16 @@ static int64_t svcmgr_retype_to_slot(uint64_t ut_cptr, uint32_t obj_type,
 /* Phase 13: svcmgr logs over console.ep (CONSOLE_EP_OP_WRITE), not the legacy
  * KChannel console writer.  Synchronous per-write flush; if console.ep is not
  * yet wired the line is dropped (same as the old early-boot behaviour). */
-static uint8_t g_svcmgr_log_buf[IRIS_IPC_BUF_SIZE];
+/* D-4: the console client marshals into the buffer it is given, and a thread
+ * with a registered IPC buffer must marshal into THAT — the kernel refuses a
+ * send that names any other address.  So the log path shares the service's one
+ * IPC buffer, which is what having one buffer means. */
+/* Tentative declaration: defined with the rest of the IPC state below, but the
+ * log path above it needs the name. */
+static uint8_t *g_ep_buf;
+
 static void svcmgr_log(const char *msg) {
-    (void)console_ep_write(g_svcmgr_state.console_ep_c, g_svcmgr_log_buf, msg);
+    (void)console_ep_write(g_svcmgr_state.console_ep_c, g_ep_buf, msg);
 }
 
 static void svcmgr_log_u32(uint32_t value) {
@@ -1572,7 +1579,7 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
                                     4096u, IRIS_CPTR_DEBUG_CONTROL);
         if (n > 0 && state->console_ep_c != 0u) {
             klog_drain_buf[n] = 0u;
-            (void)console_ep_write(state->console_ep_c, g_svcmgr_log_buf,
+            (void)console_ep_write(state->console_ep_c, g_ep_buf,
                                    (const char *)klog_drain_buf);
         }
     }

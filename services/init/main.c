@@ -32,7 +32,10 @@
  * console KChannel write handle (g_init_console_h) is retired — init logs over
  * console.ep, with early-serial as the only pre-console.ep fallback. */
 handle_id_t g_init_console_ep_h = HANDLE_INVALID;
-static uint8_t g_init_con_ep_buf[IRIS_IPC_BUF_SIZE];
+/* D-4: the console client marshals into the buffer it is given, and a thread
+ * with a registered IPC buffer must marshal into THAT — the kernel refuses a
+ * send that names any other address.  So the log path shares the service's one
+ * IPC buffer, which is what having one buffer means. */
 
 /* Phase S1: init's untyped pool — the boot KUntyped userboot minted at slot 12.
  * Every kernel object init fabricates (console/svcmgr endpoints, reply
@@ -47,7 +50,7 @@ void init_log(const char *s) {
      * fallback after verification: a broken EP drops the gated markers and
      * fails smoke. */
     if (g_init_console_ep_h != HANDLE_INVALID) {
-        (void)console_ep_write(g_init_console_ep_h, g_init_con_ep_buf, s);
+        (void)console_ep_write(g_init_console_ep_h, g_init_buf, s);
         return;
     }
     init_early_serial_write(s);
@@ -189,7 +192,7 @@ void init_main(handle_id_t rbx_unused) {
      * still report LOUDLY over the direct UART (the missing OK marker fails
      * smoke either way — no legacy console KChannel fallback). */
     if (g_init_console_ep_h != HANDLE_INVALID) {
-        if (console_ep_write(g_init_console_ep_h, g_init_con_ep_buf,
+        if (console_ep_write(g_init_console_ep_h, g_init_buf,
                              "[USER] console ep OK\n") != 0) {
             init_close(&g_init_console_ep_h);
             init_early_serial_write("[USER] console ep FAILED\n");

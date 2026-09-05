@@ -51,8 +51,8 @@ uint32_t ipc_buf_capacity(struct task *t) {
  *
  * With a registered buffer there is NOTHING to do but agree on a length: the
  * user wrote its bytes into a page it owns and the kernel can already read
- * them.  `msg.buf_uptr` is ignored — a thread that has an IPC buffer sends
- * from it, and naming some other address would be asking for two buffers.
+ * them.  `msg.buf_uptr` may then be zero or the buffer's own address, and
+ * anything else is REFUSED — see below for what the silent version cost.
  */
 iris_error_t ipc_stage_out(struct task *t) {
     t->ipc_kbuf_len = 0;
@@ -62,7 +62,30 @@ iris_error_t ipc_stage_out(struct task *t) {
     uint32_t cap = ipc_buf_capacity(t);
     if (n > cap) n = cap;
 
-    if (!t->ipc_buffer) {
+    if (t->ipc_buffer) {
+        /*
+         * A thread with a registered buffer sends FROM it.  Naming some other
+         * address is refused, not silently ignored.
+         *
+         * The silent version of this cost a boot's worth of corrupted console
+         * output and did not fail a single test: the shared console client
+         * marshals into a buffer its caller passes, five services passed their
+         * own static array, and the kernel dutifully sent whatever happened to
+         * be at offset 0 of their IPC buffer instead.  Every log line came out
+         * as the last reply payload the service had composed.  Nothing
+         * asserted on log text, so nothing noticed.
+         *
+         * seL4 has no `buf_uptr` at all — there is one IPC buffer and that is
+         * where a message is marshalled.  IRIS keeps the field for threads
+         * that have not registered one, and for threads that HAVE, a pointer
+         * that disagrees with the buffer is a marshalling mistake.  Refusing
+         * it turns a silent corruption into an error at the call site that
+         * made it.
+         */
+        if (t->ipc_msg.buf_uptr != 0u &&
+            t->ipc_msg.buf_uptr != t->ipc_buffer_uvaddr)
+            return IRIS_ERR_INVALID_ARG;
+    } else {
         if (t->ipc_msg.buf_uptr == 0u) return IRIS_OK;
         if (!user_range_readable(t->ipc_msg.buf_uptr, n) ||
             !copy_from_user_checked(t->ipc_kbuf, t->ipc_msg.buf_uptr, n))
@@ -150,6 +173,14 @@ void ipc_transfer_reply(struct task *server, struct task *caller,
 
     const uint8_t *src = ipc_buf_kva(server);
     uint8_t       *dst = ipc_buf_kva(caller);
+
+    /* Same rule as a send: a server with a registered buffer replies FROM it,
+     * and a reply that names some other address is a marshalling mistake. */
+    if (src && reply_msg->buf_uptr != 0u &&
+        reply_msg->buf_uptr != server->ipc_buffer_uvaddr) {
+        caller->ipc_msg.buf_len = 0u;
+        return;
+    }
 
     /* Neither end may be asked to exceed what it owns. */
     if (src && n > ipc_buf_capacity(server)) n = ipc_buf_capacity(server);

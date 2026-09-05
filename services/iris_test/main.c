@@ -61,6 +61,10 @@ static inline long it_sys2(long nr, long a0, long a1) {
 #define IT_PT_SCRATCH    IT_OBJ_CPTR(201)  /* the level's capability */
 #define IT_PT_VS_SCRATCH IT_OBJ_CPTR(202)  /* a child's VSpace, for MAP_INTO */
 static int  it_setup_self_vspace(void);
+/* D-4: threads holding a registered IPC buffer, or 0xFFFFFFFF if unreadable.
+ * Declared here because the query struct it reads is defined much later and
+ * T201 needs the answer. */
+static uint32_t it_ipc_buffer_gauge(void);
 static long it_map_fixup(long nr, long a0, long a1, long a2, long a3);
 
 static inline long it_sys3(long nr, long a0, long a1, long a2) {
@@ -14807,10 +14811,25 @@ static void test_t201(void) {
 
     struct t27_pager p;
     handle_id_t vmos[1] = { vmo };
+    uint32_t pg0 = it_ipc_buffer_gauge();
     if (ok && !t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 1 /*register*/, &why)) { ok = 0; }
 
     /* PING via the direct control cap. */
     if (ok && t27_pager_call(p.ctrl_ep, PGR_OP_PING, 0, 0, 0, 0, 0) != 0) { ok = 0; why = "ping"; }
+
+    /* D-4: and it registered an IPC buffer of its own on the way up.  The
+     * pager is spawned per-test rather than at boot, so it is not in T313's
+     * standing count and this is where its migration is observable.  A
+     * registration that quietly failed would leave the pager on the kernel's
+     * 256-byte staging with every test still green — which is exactly how the
+     * first service's failure went unnoticed. */
+    {
+        uint32_t pg1 = it_ipc_buffer_gauge();
+        if (ok && pg0 != 0xFFFFFFFFu && pg1 != 0xFFFFFFFFu && pg1 <= pg0) {
+            ok = 0; why = "pager did not register an IPC buffer";
+            it_fz_note("T201", pg0, pg1, 0u);
+        }
+    }
 
     /* Manifest oracle: EXACTLY {ctrl 3, shared fault notif 5, vmo0 16,
      * target proc/vs presence (bits 20/21)}. */
@@ -21255,6 +21274,12 @@ static void test_t304(void) {
  *     IPC-delivered capability is a child of the sender's source slot
  *     (Stage 2).  Recorded in the roadmap as the A9 gap to close.
  * Invariants: A9. */
+static uint32_t it_ipc_buffer_gauge(void) {
+    struct it_utq_global q;
+    if (!it_utq_g(&q)) return 0xFFFFFFFFu;
+    return q.ipc_buffers;
+}
+
 static void test_t305(void) {
     struct it_utq_mdb q0, q1;
     int ok = 1;
@@ -22204,6 +22229,8 @@ static void test_t313(void) {
         ok = 0; why = "fewer services registered a buffer than expected";
         it_fz_note("T313", gb0.ipc_buffers, 5u, 0u);
     }
+    /* The pager is spawned per-test rather than at boot, so it is not in the
+     * standing count; T201's manifest run is where it registers. */
 
     long srv = it_thread_create((uint64_t)(uintptr_t)t313_server,
                                 ((uint64_t)(uintptr_t)(g_t313_srv_stack +
@@ -22246,6 +22273,40 @@ static void test_t313(void) {
         }
     }
 
+    /* ── 4b. a send that names some OTHER address is REFUSED ─────────────
+     * Not ignored — refused.  The silent version of this cost a boot's worth
+     * of corrupted console output and failed no test: the shared console
+     * client marshals into a buffer its caller passes, five services passed
+     * their own static array, and the kernel sent whatever was at offset 0 of
+     * their IPC buffer instead.  Every log line came out as the last reply
+     * payload the service had composed, and nothing asserts on log text.
+     *
+     * A thread has ONE IPC buffer.  Disagreeing with it is a marshalling
+     * mistake, and it fails at the call site that made it. */
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label    = 0x315;
+        m.buf_len  = 8u;
+        m.buf_uptr = (uint64_t)(uintptr_t)g_t313_stage_buf;   /* not the buffer */
+        if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m)
+            != (long)IRIS_ERR_INVALID_ARG) {
+            ok = 0; why = "a foreign payload pointer was accepted";
+        }
+    }
+    /* ...and naming the buffer's own address is fine, because that is what a
+     * caller who kept the field in sync would write. */
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label    = 0x316;
+        m.buf_len  = 8u;
+        m.buf_uptr = T313_CLI_VA;
+        if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m) != 0) {
+            ok = 0; why = "the buffer's own address was refused";
+        }
+    }
+
     /* ── 4. unregistering really goes back to the staging path ──────────*/
     if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0) != 0) {
         ok = 0; why = "unregister";
@@ -22267,7 +22328,7 @@ static void test_t313(void) {
             ok = 0; why = "staging path not clamped to the kernel constant";
             it_fz_note("T313", (uint32_t)m.buf_len, IRIS_IPC_BUF_SIZE, 0u);
         }
-        if (ok && g_t313_rounds != 2) { ok = 0; why = "server missed a round"; }
+        if (ok && g_t313_rounds != 3) { ok = 0; why = "server missed a round"; }
     }
 
     /* ...and unregistering gives it back, so the gauge is a LIVE count and not

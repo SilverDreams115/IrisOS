@@ -145,8 +145,10 @@ void init_close(handle_id_t *h);
 /* Initial-authority wiring (init_bootstrap.c). */
 void init_early_serial_start(void);
 void init_early_serial_write(const char *s);
-/* D-4: register init's own IPC buffer frame (best-effort). */
+/* D-4: register init's own IPC buffer frame (best-effort), and the buffer
+ * itself — the log path marshals into it too, because a thread has one. */
 void init_ipc_buffer_init(void);
+extern uint8_t *g_init_buf;
 void init_early_serial_stop(void);
 void init_retry_pause(void);
 handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name);

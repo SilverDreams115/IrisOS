@@ -74,11 +74,14 @@ static uint8_t *g_sh_buf = g_sh_ep_buf;
  * silent and every gated "[SH] ... OK" marker is missing, which fails the
  * smoke run. The `con` parameter is kept so call sites stay unchanged. */
 static handle_id_t g_sh_con_ep_h = (handle_id_t)IRIS_CPTR_CONSOLE_EP;
-static uint8_t g_sh_con_ep_buf[IRIS_IPC_BUF_SIZE];
+/* D-4: the console client marshals into the buffer it is given, and a thread
+ * with a registered IPC buffer must marshal into THAT — the kernel refuses a
+ * send that names any other address.  So the log path shares the service's one
+ * IPC buffer, which is what having one buffer means. */
 
 static void sh_cout(handle_id_t con, const char *s) {
     (void)con;
-    (void)console_ep_write(g_sh_con_ep_h, g_sh_con_ep_buf, s);
+    (void)console_ep_write(g_sh_con_ep_h, g_sh_buf, s);
 }
 
 /* ── PS/2 Set-1 scancode tables ──────────────────────────────────── */
