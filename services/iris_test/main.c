@@ -12002,15 +12002,19 @@ static void test_t164(void) {
             ok = 0; why = "narrowing without a budget was accepted";
         }
         /* ...and it is a CAPABILITY, checked like one.  Naming the control
-         * capability itself is refused on RIGHTS before TYPE — it carries no
-         * RIGHT_WRITE, and a budget is written to — which is the earlier of
-         * the two refusals and the same kind of refusal. */
+         * capability itself as the budget is WRONG_TYPE: it is an I/O-port
+         * control capability, not an Untyped, and that is the FIRST thing
+         * wrong with it.  This assertion used to expect ACCESS_DENIED and its
+         * comment explained why — rights were checked before type, so a
+         * capability of the wrong kind was refused for lacking rights on a
+         * kind it does not have.  seL4 checks type first, and so does the
+         * resolver now: rights are a property OF a type. */
         if (ok && it_sys4(SYS_IOPORT_CONTROL_NARROW,
                           (long)IRIS_CPTR_IOPORT_CONTROL,
                           (long)((uint64_t)IT_COM2_BASE |
                                  ((uint64_t)(IT_COM2_BASE + IT_COM2_COUNT - 1) << 16)),
                           (long)IRIS_CPTR_IOPORT_CONTROL, (long)IT_DEV_SLOT_B)
-                  != (long)IRIS_ERR_ACCESS_DENIED) {
+                  != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "a non-untyped budget was accepted";
         }
 
@@ -23290,6 +23294,81 @@ static void test_t318(void) {
  * it_slot_delete already warned about exactly this and six call sites did it
  * anyway.  Invariant: a capability the suite holds for its whole run is not
  * something any single test may release. */
+/* ── T320: type is checked before rights ─────────────────────────────────────
+ * A capability that is BOTH the wrong type AND missing the rights the
+ * operation needs must be refused as WRONG_TYPE.  Not ACCESS_DENIED: rights
+ * are a property OF a type, so "you lack RIGHT_READ on that frame" is a
+ * statement about a frame, and the thing named is not one.  seL4 decodes the
+ * capability type first and answers seL4_InvalidCapability; a resolver that
+ * checked rights first knew exactly what the caller had named and reported
+ * something else.
+ *
+ * Found closing D-5, and found the way these are always found: a "wrong type"
+ * assertion in T079 was passing on ACCESS_DENIED, because its fixture happened
+ * to lack a right the new call needed.  It was green and it was not testing
+ * what it said.  Every probe here is deliberately double-wrong, so it can only
+ * pass for the stated reason.  Invariants: M2, M9. */
+static void test_t320(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok && it_setup_self_vspace();
+    const char *why = "type before rights";
+
+    /* IRIS_CPTR_TEST_FIX_B is a svcmgr ENDPOINT carrying RIGHT_TRANSFER only:
+     * the wrong type everywhere below, and short of the right each call asks
+     * for as well. */
+    const long wrong = (long)IRIS_CPTR_TEST_FIX_B;
+
+    /* Frame resolver — SYS_FRAME_MAP wants RIGHT_READ on a KFrame. */
+    if (ok && it_sys4(SYS_FRAME_MAP, wrong, IT_VS, (long)T26_SELF_VA, 0L)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "frame slot"; }
+    /* ...and SYS_FRAME_SIZE, which wants RIGHT_READ too. */
+    if (ok && it_sys1(SYS_FRAME_SIZE, wrong)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "frame size"; }
+
+    /* VSpace resolver — a map target wants RIGHT_WRITE on a KVSpace. */
+    long fr = ok ? it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096) : -1;
+    handle_id_t fr_h = (fr >= 0) ? (handle_id_t)fr : HANDLE_INVALID;
+    if (ok && fr < 0) { ok = 0; why = "frame"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, fr, wrong, (long)T26_SELF_VA, 0L)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "vspace slot"; }
+
+    /* Untyped resolver — a budget wants RIGHT_WRITE on a KUntyped. */
+    if (ok && it_retype2_at(wrong, IRIS_KOBJ_FRAME, IT_SCRATCH_0, 1u, 4096)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "budget slot"; }
+    it_slot_delete(IT_SCRATCH_0);
+
+    /* Endpoint resolver — EP_SEND wants RIGHT_WRITE on a KEndpoint.  A
+     * READ-only derivation of a NOTIFICATION is double-wrong the same way. */
+    long n = ok ? it_notify_create() : -1;
+    handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
+    long n_ro = (n >= 0) ? it_cs_reduce(n, RIGHT_READ) : -1;
+    handle_id_t n_ro_h = (n_ro >= 0) ? (handle_id_t)n_ro : HANDLE_INVALID;
+    if (ok && (n < 0 || n_ro < 0)) { ok = 0; why = "notif"; }
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label = 0x320;
+        if (it_sys2(SYS_EP_NB_SEND, n_ro, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) {
+            ok = 0; why = "endpoint slot";
+        }
+    }
+
+    /* And the ordering does not swallow a real rights failure: the RIGHT type
+     * without the right is still ACCESS_DENIED. */
+    long fr_ro = ok ? it_cs_reduce(fr, RIGHT_READ) : -1;
+    handle_id_t fr_ro_h = (fr_ro >= 0) ? (handle_id_t)fr_ro : HANDLE_INVALID;
+    if (ok && fr_ro < 0) { ok = 0; why = "frame ro"; }
+    if (ok && it_sys4(SYS_FRAME_MAP, fr_ro, IT_VS, (long)T26_SELF_VA, 1L)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights no longer checked"; }
+
+    it_close(&fr_ro_h); it_close(&n_ro_h); it_close(&n_h); it_close(&fr_h);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T320"); else it_fail("T320", why);
+}
+
 static void test_t319(void) {
     if (g_it_slot_guard_hits == 0u) { it_pass("T319"); return; }
     it_fz_note("T319", g_it_slot_guard_hits, g_it_slot_guard_last, 0u);
@@ -23869,6 +23948,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t317();
     test_t318();
     test_t319();
+    test_t320();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

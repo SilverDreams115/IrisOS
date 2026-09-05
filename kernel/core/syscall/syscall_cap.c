@@ -159,10 +159,14 @@ static iris_error_t dev_cap_budget(struct task *t, uint64_t budget_cptr,
     *out = 0;
     if (budget_cptr == 0u) return IRIS_ERR_INVALID_ARG;
     iris_rights_t br;
-    iris_error_t e = cspace_resolve_only_untyped(t->cspace_root,
-                         (iris_cptr_t)budget_cptr, RIGHT_WRITE, out, &br);
-    if (e == IRIS_ERR_WRONG_TYPE) e = IRIS_ERR_INVALID_ARG;
-    return e;
+    /* WRONG_TYPE is reported as WRONG_TYPE.  This used to flatten it to
+     * INVALID_ARG, which said "something about your argument is wrong" about a
+     * capability the resolver had just identified exactly — the same defect the
+     * resolvers themselves carried until they started checking type before
+     * rights.  A caller that named an endpoint where a budget goes is told so. */
+    return cspace_resolve_only_untyped(t->cspace_root,
+                                       (iris_cptr_t)budget_cptr, RIGHT_WRITE,
+                                       out, &br);
 }
 
 static void dev_cap_budget_release(struct KUntyped *u) {

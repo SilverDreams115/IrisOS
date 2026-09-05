@@ -368,12 +368,24 @@ iris_error_t cspace_resolve_only_cnode(struct KCNode   *root,
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        err = cspace_resolve_cap(root, cptr_or_handle, required, &obj, &r);
+        /* TYPE before RIGHTS, which is the order seL4 checks them in and the
+         * order that answers the caller's actual question.  A resolve that
+         * checked rights first reported ACCESS_DENIED for a NOTIFICATION passed
+         * where a frame goes — "you lack rights on that frame", about something
+         * that is not a frame — and the resolver knew.  Rights are a property
+         * OF a type; asking about them before knowing the type is asking the
+         * wrong question first. */
+        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_CNODE) {
             kobject_active_release(obj);
             kobject_release(obj);
             return IRIS_ERR_WRONG_TYPE;
+        }
+        if (required != RIGHT_NONE && !rights_check(r, required)) {
+            kobject_active_release(obj);
+            kobject_release(obj);
+            return IRIS_ERR_ACCESS_DENIED;
         }
         *out = (struct KCNode *)obj;
         *rights_out = r;
@@ -406,11 +418,16 @@ iris_error_t fn(struct KCNode   *root, iris_cptr_t cptr_or_handle,              
     if (!root) return IRIS_ERR_NOT_FOUND;                \
     /* CPtr namespace (< 1024): CSpace only, no handle-table fallback. */         \
     if (cspace_value_is_cptr(cptr_or_handle)) {                                   \
-        err = cspace_resolve_cap(root, cptr_or_handle, required, &obj, &r);       \
+        /* TYPE before RIGHTS — see cspace_resolve_only_cnode. */                 \
+        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);     \
         if (err != IRIS_OK) return err;                                            \
         if (obj->type != (kobj_tag)) {                                            \
             kobject_active_release(obj); kobject_release(obj);                    \
             return IRIS_ERR_WRONG_TYPE;                                           \
+        }                                                                          \
+        if (required != RIGHT_NONE && !rights_check(r, required)) {               \
+            kobject_active_release(obj); kobject_release(obj);                    \
+            return IRIS_ERR_ACCESS_DENIED;                                        \
         }                                                                          \
         kobject_active_release(obj); /* IPC: must not hold active ref */          \
         *out = (member_type *)obj; *rights_out = r;                               \
@@ -450,12 +467,24 @@ iris_error_t cspace_resolve_only_untyped(struct KCNode    *root,
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        err = cspace_resolve_cap(root, cptr_or_handle, required, &obj, &r);
+        /* TYPE before RIGHTS, which is the order seL4 checks them in and the
+         * order that answers the caller's actual question.  A resolve that
+         * checked rights first reported ACCESS_DENIED for a NOTIFICATION passed
+         * where a frame goes — "you lack rights on that frame", about something
+         * that is not a frame — and the resolver knew.  Rights are a property
+         * OF a type; asking about them before knowing the type is asking the
+         * wrong question first. */
+        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_UNTYPED) {
             kobject_active_release(obj);
             kobject_release(obj);
             return IRIS_ERR_WRONG_TYPE;
+        }
+        if (required != RIGHT_NONE && !rights_check(r, required)) {
+            kobject_active_release(obj);
+            kobject_release(obj);
+            return IRIS_ERR_ACCESS_DENIED;
         }
         *out = (struct KUntyped *)obj;
         *rights_out = r;
@@ -489,12 +518,24 @@ iris_error_t cspace_resolve_only_frame(struct KCNode   *root,
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        err = cspace_resolve_cap(root, cptr_or_handle, required, &obj, &r);
+        /* TYPE before RIGHTS, which is the order seL4 checks them in and the
+         * order that answers the caller's actual question.  A resolve that
+         * checked rights first reported ACCESS_DENIED for a NOTIFICATION passed
+         * where a frame goes — "you lack rights on that frame", about something
+         * that is not a frame — and the resolver knew.  Rights are a property
+         * OF a type; asking about them before knowing the type is asking the
+         * wrong question first. */
+        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_FRAME) {
             kobject_active_release(obj);
             kobject_release(obj);
             return IRIS_ERR_WRONG_TYPE;
+        }
+        if (required != RIGHT_NONE && !rights_check(r, required)) {
+            kobject_active_release(obj);
+            kobject_release(obj);
+            return IRIS_ERR_ACCESS_DENIED;
         }
         *out = (struct KFrame *)obj;
         *rights_out = r;
@@ -532,12 +573,24 @@ iris_error_t cspace_resolve_only_vspace(struct KCNode   *root,
 
     /* CPtr namespace (< 1024): CSpace only — no handle-table fallback. */
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        err = cspace_resolve_cap(root, cptr_or_handle, required, &obj, &r);
+        /* TYPE before RIGHTS, which is the order seL4 checks them in and the
+         * order that answers the caller's actual question.  A resolve that
+         * checked rights first reported ACCESS_DENIED for a NOTIFICATION passed
+         * where a frame goes — "you lack rights on that frame", about something
+         * that is not a frame — and the resolver knew.  Rights are a property
+         * OF a type; asking about them before knowing the type is asking the
+         * wrong question first. */
+        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_VSPACE) {
             kobject_active_release(obj);
             kobject_release(obj);
             return IRIS_ERR_WRONG_TYPE;
+        }
+        if (required != RIGHT_NONE && !rights_check(r, required)) {
+            kobject_active_release(obj);
+            kobject_release(obj);
+            return IRIS_ERR_ACCESS_DENIED;
         }
         *out = (struct KVSpace *)obj;
         *rights_out = r;
@@ -576,12 +629,18 @@ iris_error_t cspace_resolve_only_obj(struct KCNode    *root,
     if (!root) return IRIS_ERR_NOT_FOUND;
 
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        err = cspace_resolve_cap(root, cptr_or_handle, required, &obj, &r);
+        /* TYPE before RIGHTS — see cspace_resolve_only_cnode. */
+        err = cspace_resolve_cap(root, cptr_or_handle, RIGHT_NONE, &obj, &r);
         if (err != IRIS_OK) return err;
         if (obj->type != expected_type) {
             kobject_active_release(obj);
             kobject_release(obj);
             return IRIS_ERR_WRONG_TYPE;
+        }
+        if (required != RIGHT_NONE && !rights_check(r, required)) {
+            kobject_active_release(obj);
+            kobject_release(obj);
+            return IRIS_ERR_ACCESS_DENIED;
         }
         /* Drop the traversal's active ref → lifecycle-only (handle contract). */
         kobject_active_release(obj);
@@ -617,12 +676,17 @@ iris_error_t cspace_resolve_only_endpoint_badged(struct KCNode    *root,
 
     /* CPtr namespace (< 1024): CSpace only, no handle-table fallback. */
     if (cspace_value_is_cptr(cptr_or_handle)) {
-        err = cspace_resolve_cap_badged(root, cptr_or_handle, required,
+        /* TYPE before RIGHTS — see cspace_resolve_only_cnode. */
+        err = cspace_resolve_cap_badged(root, cptr_or_handle, RIGHT_NONE,
                                         &obj, &r, &badge);
         if (err != IRIS_OK) return err;
         if (obj->type != KOBJ_ENDPOINT) {
             kobject_active_release(obj); kobject_release(obj);
             return IRIS_ERR_WRONG_TYPE;
+        }
+        if (required != RIGHT_NONE && !rights_check(r, required)) {
+            kobject_active_release(obj); kobject_release(obj);
+            return IRIS_ERR_ACCESS_DENIED;
         }
         kobject_active_release(obj); /* IPC: must not hold active ref */
         *out = (struct KEndpoint *)obj;
