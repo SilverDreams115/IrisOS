@@ -21,6 +21,10 @@
 #   cspace_or_handle_resolve_  — dual CPtr/handle resolution
 #   kslab_alloc                — kernel objects born from the global heap
 #
+# And a second, different check: whether any slab-allocating function is named
+# by a syscall handler at all.  The counts above froze a number; this asks the
+# question the charter actually asks, which is who can reach it.
+#
 # Test-only (excluded from the scan): services/iris_test, services/lifecycle_probe,
 # tests/. The charter forbids new PRODUCTIVE paths; the tests deliberately
 # exercise the legacy semantics for as long as they exist.
@@ -91,6 +95,58 @@ while read -r f p max; do
         progress=1
     fi
 done < "$ALLOWLIST"
+
+# ── Reachability: can ring 3 make the kernel allocate? ──────────────────────
+#
+# The count above is not the property the charter is about.  Charter M3 says
+# the kernel does not implicitly allocate memory on somebody's behalf, and a
+# per-file occurrence count cannot see WHO can reach an allocation — it stayed
+# green while a new syscall put `kslab_alloc` one call away from ring 3, which
+# is exactly the thing it exists to prevent.
+#
+# So: for every function that calls `kslab_alloc`, is that function called
+# directly from a syscall handler?  One level of indirection, which is what the
+# real case looked like (`sys_ioport_control_narrow` → `kbootcap_alloc_ports`).
+# It is an approximation and it is stated as one: a deeper chain slips through,
+# and the answer to that is to keep the chains shallow rather than to build a
+# call-graph analyser in bash.
+#
+# The exceptions are the object families the ledger still records as
+# kslab-backed, each of which IS reachable from ring 3 and has a row that says
+# so.  A new name here needs a ledger row in the same commit; the row is named
+# beside it so the exception cannot outlive its justification.
+#
+#   kvmo_alloc           ledger: "KVmo is fabricated, not retyped" (D-5)
+#   kframe_alloc         ledger: "KFrame header sidecar (kslab)"
+#   kframe_alloc_vmo_page  ditto — VMO pages have no Untyped to charge
+#   kuntyped_create      ledger D-9: a DEVICE untyped's headers, which cannot
+#                        be carved from the region they describe because that
+#                        region is MMIO and not RAM
+KSLAB_RING3_OK="kvmo_alloc kframe_alloc kframe_alloc_vmo_page kuntyped_create"
+
+mapfile -t ALLOC_FNS < <(
+    for f in kernel/new_core/src/*.c kernel/core/**/*.c kernel/mm/**/*.c; do
+        [ -f "$f" ] || continue
+        awk '/^[a-zA-Z_].*\(/ { fn = $0 }
+             /kslab_alloc/ { if (fn != "") print fn }' "$f"
+    done | grep -oE '\b[a-z_][a-z0-9_]*\(' | tr -d '(' | sort -u
+)
+
+for fn in "${ALLOC_FNS[@]}"; do
+    case " $KSLAB_RING3_OK " in *" $fn "*) continue ;; esac
+    callers=$(grep -rlE "\b$fn\b" kernel/core/syscall/*.c 2>/dev/null || true)
+    if [ -n "$callers" ]; then
+        echo "[purity] FAIL: '$fn' allocates from the kernel slab and is named by"
+        echo "         a syscall handler:"
+        echo "$callers" | sed 's/^/           /'
+        echo "         Charter M3: ring 3 cannot be given a way to spend the"
+        echo "         kernel's memory.  Carve the object from an Untyped the"
+        echo "         caller NAMES (see kbootcap_alloc_from / kioport_alloc_from),"
+        echo "         or add the name to KSLAB_RING3_OK with a ledger row in the"
+        echo "         same commit saying why it is allowed to stay."
+        fail=1
+    fi
+done
 
 if [ "$fail" -ne 0 ]; then
     echo "[purity] RESULT: FAIL"
