@@ -209,7 +209,23 @@ iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits) {
             t->state = TASK_BLOCKED_IRQ;
         }
         spinlock_unlock(&n->base.lock);
-        task_yield();
+        /*
+         * Stage 9-evt step 3: WAIT, do not yield.
+         *
+         * This is a KERNEL-internal wait — its only caller is the boot
+         * selftest, running on the boot thread before any other exists — and
+         * it used to `task_yield()`, which is how a kernel path handed the CPU
+         * away through its own frame.  There is no frame to hand away to any
+         * more: kernel stacks belong to the core.  With nothing else runnable
+         * the honest wait is the one the dispatcher does when idle, and the
+         * loop re-checks the condition on every wake, which is what makes a
+         * spurious interrupt harmless.
+         *
+         * `sti` takes effect after the NEXT instruction, so the pair cannot
+         * race: an interrupt arriving between them is taken after the hlt is
+         * entered, never before it.
+         */
+        __asm__ volatile ("sti; hlt; cli" : : : "memory");
         /* Resumed by knotification_signal() or knotification_close().
          * Remove self from waiters in case close woke us without removing. */
         if (t) {
@@ -356,7 +372,18 @@ iris_error_t knotification_wait_timeout(struct KNotification *n, uint64_t *out_b
         t->wake_tick = deadline_ticks;
         t->timed_out = 0;
         spinlock_unlock(&n->base.lock);
-        task_yield();
+        /*
+         * Stage 9-evt step 3: WAIT, do not yield.
+         *
+         * Same as the untimed wait above: a kernel-internal wait, on the
+         * boot thread, with nothing else to run.  The deadline is re-checked
+         * on every wake.
+         *
+         * `sti` takes effect after the NEXT instruction, so the pair cannot
+         * race: an interrupt arriving between them is taken after the hlt is
+         * entered, never before it.
+         */
+        __asm__ volatile ("sti; hlt; cli" : : : "memory");
 
         if (t->timed_out) {
             t->timed_out = 0;

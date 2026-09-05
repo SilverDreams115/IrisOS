@@ -192,7 +192,7 @@ records.  It was missing from this table until the Stage 7 code audit.
 
 | # | Divergence | IRIS | seL4 | Consequence | State |
 |---|---|---|---|---|---|
-| D-1 | **Per-thread kernel stack; threads block IN the kernel** (the memory SOURCE is the staged row "kernel stacks / PML4 from the PMM reserve" above; this entry is about the architecture, which is not staged) | Every thread gets `TASK_STACK_SIZE` (8 KiB) of kernel stack plus a guard page, allocated with `pmm_alloc_pages(2)` from the kernel's PMM reserve — including a TCB retyped from an Untyped, whose *payload* the user paid for but whose kernel stack the kernel still supplies.  A blocking syscall parks the thread with its kernel state live on that stack (`saved_krsp`, `TASK_BLOCKED_*`) | Event-based kernel: ONE kernel stack per core, no thread ever blocks in the kernel.  A long operation returns to a preemption point and the syscall is restarted | Cost per thread the user did not pay for; kernel memory that scales with thread count; and it is the structural reason seL4 can bound in-kernel latency (and be verified) while IRIS cannot claim either | **IN PROGRESS — Stage 9-evt, step 1 of 3.**  Converting IRIS to a single-stack event kernel is a rewrite of every blocking path, not an increment, and it must land BEFORE Stage 9 (SMP) so the atomicity properties are re-derived once rather than twice.  It decomposes into three steps whose ORDER is forced, not preferred: **(1) make blocking handlers RESTART-SAFE** — hold no live state across the block, express the continuation in thread state, and prove it by actually re-executing them; **(2) abandon the syscall frame** instead of parking it, so the stack is dead while blocked rather than live; **(3) one kernel stack per CORE**.  Step 2 is mechanical once step 1 holds everywhere and unsafe before it, because a handler keeping a local across a block needs the frame step 2 throws away.  **STEPS 1 AND 2 ARE COMPLETE.  STEP 3 IS A SUBPROJECT.**
+| D-1 | **Per-thread kernel stack; threads block IN the kernel** (the memory SOURCE is the staged row "kernel stacks / PML4 from the PMM reserve" above; this entry is about the architecture, which is not staged) | Every thread gets `TASK_STACK_SIZE` (8 KiB) of kernel stack plus a guard page, allocated with `pmm_alloc_pages(2)` from the kernel's PMM reserve — including a TCB retyped from an Untyped, whose *payload* the user paid for but whose kernel stack the kernel still supplies.  A blocking syscall parks the thread with its kernel state live on that stack (`saved_krsp`, `TASK_BLOCKED_*`) | Event-based kernel: ONE kernel stack per core, no thread ever blocks in the kernel.  A long operation returns to a preemption point and the syscall is restarted | Cost per thread the user did not pay for; kernel memory that scales with thread count; and it is the structural reason seL4 can bound in-kernel latency (and be verified) while IRIS cannot claim either | **CLOSED (Stage 9-evt).**  Converting IRIS to a single-stack event kernel is a rewrite of every blocking path, not an increment, and it must land BEFORE Stage 9 (SMP) so the atomicity properties are re-derived once rather than twice.  It decomposes into three steps whose ORDER is forced, not preferred: **(1) make blocking handlers RESTART-SAFE** — hold no live state across the block, express the continuation in thread state, and prove it by actually re-executing them; **(2) abandon the syscall frame** instead of parking it, so the stack is dead while blocked rather than live; **(3) one kernel stack per CORE**.  Step 2 is mechanical once step 1 holds everywhere and unsafe before it, because a handler keeping a local across a block needs the frame step 2 throws away.  **ALL THREE STEPS ARE COMPLETE.**  IRIS has ONE kernel stack per core and no thread blocks inside the kernel.
 
 Step 2 landed: a syscall that parks ABANDONS its frame.  `task_park_restart`
 points the outgoing thread at `syscall_restart_trampoline` with `saved_krsp`
@@ -264,13 +264,53 @@ checks every one of them.  That test cannot fail today.  It is written now so
 that when the frame stops being the authority, a restore that drops or
 transposes a register fails THERE.
 
-**What is left of step 3**: `TSS.RSP0` becomes a per-core stack, and the
-reschedule taken inside the timer ISR stops going through `context_switch` —
-which exists to swap kernel stacks — and becomes a choice of which TCB the exit
-path restores.  That last piece has two cases, and steps 1 and 2 are what make
-both expressible: a thread preempted in ring 3 resumes through the restore
-above, and a thread parked in a syscall resumes at its restart trampoline on
-the core's stack, holding nothing.  Syscalls themselves are not the obstacle: `SFMASK` clears IF, so no
+**Step 3 is closed, and the shape it took is worth recording.**
+
+`TSS.RSP0` and the syscall stack pointer are set ONCE, at `core_dispatch_init`,
+and never change: every entry from ring 3 lands on the core's stack, whichever
+thread it belongs to.  What made that possible is that nothing ties a thread to
+a stack any more.  Its ring-3 context went into the TCB in step 3's first half;
+its FIRST entry frame — initial rip, rsp, flags and argument, previously pushed
+onto its kernel stack at creation under `user_entry_trampoline`, which is why
+every thread needed a stack before it had ever run — went there too.
+
+The DISPATCHER replaced the switch.  It runs on the core's stack, resets that
+stack every time it is entered (which is what makes "abandon the frame" and
+"give the stack back" the same act rather than two that have to agree), and
+resumes a thread in one of three shapes: an iretq from its TCB, a first entry
+from its TCB, or a CALL — a parked syscall's restart trampoline, on the stack
+the dispatcher is already standing on.  **`context_switch` is deleted**; it is
+on no thread's path, and neither is any per-thread kernel stack.
+
+Every path that used to hand the CPU away through its own frame became a mark
+or a park.  The timer tick MARKS and the ISR's exit path dispatches, because a
+handler that switched would hand the CPU away with its interrupt frame live on
+a stack the incoming thread is about to use.  A userland fault marks the thread
+blocked.  `SYS_YIELD`, self-suspend and `SYS_CLOCK_NANOSLEEP` park.  A dying
+thread leaves through the dispatcher, which is what lets the reaper free its
+storage: nothing is standing on it by then.  `task_yield`, `task_yield_impl`
+and `scheduler_sleep_current` are deleted.
+
+**The idle task is gone.**  It was the boot thread yielding for ever, and it is
+why per-thread stacks could not go — idle was a thread with a stack like any
+other, and every "nobody else can run" answer had to be a switch to it.  The
+answer is a `hlt` on the core's own stack.
+
+**What it bought, measured**: `kstack_alloc` is deleted.  A thread owned two
+pages of kernel stack plus a guard page, taken from the kernel's physical
+reserve at creation — including a TCB retyped from an Untyped, whose payload
+its payer bought and whose kernel stack the kernel supplied anyway.  That was
+the largest standing exception to charter M3, and it was invisible from ring 3
+until this stage added the gauge that makes T318 possible: create eight threads
+and watch the kernel's reserve not move.  The old behaviour would show as two
+pages per thread, exactly.
+
+**One thing broke on the way and is worth the space.**  `SYS_TCB_RESUME`
+refused a thread that had never been told where to start, and its witness was
+`saved_krsp` being non-zero — true precisely because the entry frame lived on
+the thread's own stack.  Moving the frame left the witness answering about the
+wrong thing, and the boot died with NOT_SUPPORTED on the first spawn.  A stale
+witness does not go quiet; it answers.  Syscalls themselves are not the obstacle: `SFMASK` clears IF, so no
 syscall is ever preempted mid-flight and step 1's restart points are the only
 places a thread gives up the CPU inside the kernel.  Sequenced accordingly, and
 not started.  **Steps 1 and 2 have already paid for themselves**: step 1 is

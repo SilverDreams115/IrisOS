@@ -17925,6 +17925,8 @@ struct it_utq_global {
     uint32_t irq_ctx_saves;
     /* Stage 8-cap: threads holding a registered IPC buffer frame (D-4). */
     uint32_t ipc_buffers;
+    /* Stage 9-evt step 3: free pages in the kernel's physical allocator. */
+    uint32_t kernel_free_pages;
 };
 struct it_utq_one {
     uint32_t version, struct_size;
@@ -22867,6 +22869,84 @@ static void test_t317(void) {
     if (ok) it_pass("T317"); else it_fail("T317", why);
 }
 
+/* ── T318: kernel memory does not scale with thread count (D-1 step 3) ───
+ *
+ * The claim the event kernel was for, stated as a number.
+ *
+ * Every thread used to own 8 KiB of kernel stack plus a guard page, taken from
+ * the kernel's physical reserve when the thread was created — including a TCB
+ * the caller RETYPED from its own Untyped, whose payload it paid for and whose
+ * kernel stack the kernel supplied anyway.  Charter M3 says the kernel does
+ * not implicitly allocate memory on somebody's behalf, and that was the
+ * largest standing exception to it: 8 KiB per thread, invisible from ring 3,
+ * bounded only by how many threads anyone made.
+ *
+ * A thread owns no kernel stack now.  Its ring-3 context lives in its TCB, its
+ * first entry lives there too, a parked syscall holds nothing, and every
+ * kernel entry lands on the stack of the CORE.  So: make threads, and watch
+ * the kernel's reserve not move.
+ *
+ * The bar is deliberately loose in one direction and tight in the other.  A
+ * thread still costs memory — its TCB, its stack, its page tables — but all of
+ * it comes from an Untyped the CALLER named, which is a different pool from
+ * the one measured here.  What this asserts is that the KERNEL's pool does not
+ * pay, and the old behaviour would have shown up as 2 pages per thread exactly.
+ *
+ * Invariants: M3, and ledger D-1. */
+#define T318_THREADS 8u
+
+static uint8_t g_t318_stacks[T318_THREADS][2048];
+static volatile uint32_t g_t318_ran;
+
+static void t318_body(void) {
+    __atomic_fetch_add(&g_t318_ran, 1u, __ATOMIC_RELAXED);
+    it_sys1(SYS_THREAD_EXIT, 0);
+    for (;;) { }
+}
+
+static void test_t318(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "kernel memory per thread";
+
+    struct it_utq_global g0, g1;
+    if (!it_utq_g(&g0)) { it_fail("T318", "query"); return; }
+    if (g0.kernel_free_pages == 0u) { it_fail("T318", "no pmm gauge"); return; }
+
+    g_t318_ran = 0;
+    long tids[T318_THREADS];
+    uint32_t made = 0;
+    for (uint32_t i = 0; i < T318_THREADS; i++) {
+        tids[i] = it_thread_create((uint64_t)(uintptr_t)t318_body,
+                                   ((uint64_t)(uintptr_t)(g_t318_stacks[i] +
+                                       sizeof(g_t318_stacks[i]))) & ~0xFULL, 0);
+        if (tids[i] < 0) break;
+        made++;
+    }
+    if (made < 4u) { ok = 0; why = "could not make threads"; }
+
+    /* Let them run, so the measurement covers a thread that has ENTERED the
+     * kernel — a stack allocated lazily on first entry would show up here and
+     * not in a count taken before any of them ran. */
+    for (int i = 0; ok && i < 2000 && g_t318_ran < made; i++) (void)it_sys0(SYS_YIELD);
+
+    if (ok && !it_utq_g(&g1)) { ok = 0; why = "query2"; }
+    if (ok) {
+        uint32_t spent = (g0.kernel_free_pages > g1.kernel_free_pages)
+                       ? (g0.kernel_free_pages - g1.kernel_free_pages) : 0u;
+        /* Two pages per thread is exactly what a per-thread kernel stack cost.
+         * Anything at or above that is the old behaviour back. */
+        if (spent >= made * 2u) {
+            ok = 0; why = "the kernel paid for the threads' stacks";
+            it_fz_note("T318", spent, made, 0u);
+        }
+    }
+
+    for (uint32_t i = 0; i < made; i++) (void)it_sys1(SYS_TCB_EXIT, tids[i]);
+    it_quiesce_reaper();
+    if (ok) it_pass("T318"); else it_fail("T318", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -23414,6 +23494,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t315();
     test_t316();
     test_t317();
+    test_t318();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

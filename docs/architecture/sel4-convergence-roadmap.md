@@ -62,17 +62,25 @@ Measured against seL4's model rather than against this roadmap's own progress,
 because a roadmap that grades itself is not evidence.  The honest answer has
 two halves and they are far apart:
 
-**The authority model is essentially done.  The kernel architecture is not.**
+**The authority model is done.  So, now, is the kernel architecture.**
 
-Of the eight dimensions below, four are now met or as close as they will get:
+Of the eight dimensions below, five are met or as close as they will get:
 capabilities (no open gap — one registered permanent divergence, D-3, decided),
 MCS scheduling (nothing left that is not seL4's), no ambient authority (the
-kernel decides no device policy at all), and the ABI shape (far, by a recorded
-decision).  Two are near: the object model, waiting on three object types seL4
-has no equivalent for, and the kernel heap, at 17 permitted allocations.  IPC
-waits on a migration rather than a design.  **The one that is a rewrite rather
-than an increment is the kernel architecture**, and it is the one the whole
-roadmap is sequenced behind.
+kernel decides no device policy at all), the ABI shape (far, by a recorded
+decision), and — as of Stage 9-evt — the KERNEL ARCHITECTURE: one kernel stack
+per core, and no thread blocks inside the kernel.
+
+That last one was the item the whole roadmap was sequenced behind, and the only
+one that was a rewrite rather than an increment.  With it closed, IRIS can
+state the two things a blocking multi-stack kernel cannot: kernel memory does
+not scale with thread count (T318 measures it), and the longest a thread can be
+kept out of the CPU is the longest kernel path between preemption points, not
+"however long the longest kernel path takes".
+
+Three remain.  The object model waits on three object types seL4 has no
+equivalent for.  The kernel heap is at 17 permitted allocations, all boot path
+or those same types.  IPC waits on a migration rather than a design.
 
 | Dimension | State | Evidence |
 |---|---|---|
@@ -83,7 +91,7 @@ roadmap is sequenced behind.
 | No kernel heap | **nearly met** | 17 permitted `kslab_alloc` occurrences across 14 files, all boot path or objects still staged; seL4 has none at all |
 | MCS scheduling | **close** | all four pillars are in as of Stage 8-mcs.  Budget and period are enforced; **sporadic replenishment** returns every tick consumed exactly one period later, so a thread can never spend more than its budget in any window of its period (host R-1..R-8); **timeout faults** make an overrun a policy decision a temporal supervisor takes rather than an invisible stall (`SYS_TCB_SET_TIMEOUT_HANDLER`, T307); and **SC donation** lends a client's scheduling context to a PASSIVE server for the duration of a Call, so an SC-less thread runs on the requester's time instead of — as it did before — running unbudgeted (T308).  `SYS_REPLY_RECV` closes the last of them (T309): without it a passive server is, between reply and receive, runnable with no scheduling context — and an SC-less thread is not charged, so it runs unbudgeted for exactly as long as the second syscall takes.  `refill_max` is now the SC's own, chosen at RETYPE and sizing the object (T315): a passive server woken per request needs a deep replenishment queue and a periodic task needs two, and the memory is charged to whoever asked for the depth instead of every SC paying for the worst case out of the kernel.  **Nothing in this dimension is still not seL4's** |
 | ABI shape | **far, by decision** | 68 live numbered syscalls of 127 numbers, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  Registered permanent divergence (charter §6) |
-| Kernel architecture | **two thirds** | D-1, and the only one of these that is a rewrite rather than an increment.  Steps 1 and 2 are closed: no blocking syscall keeps live state across its block, and a parked one ABANDONS its kernel frame and resumes on a fresh stack from the TCB (T310).  Step 3 — one kernel stack per CORE — is half done: the whole ring-3 register context now lives in the TCB rather than on a kernel stack (T314), which is the precondition.  What is left is `TSS.RSP0` becoming per-core and the timer ISR's reschedule becoming a choice of which TCB to restore instead of a `context_switch` |
+| Kernel architecture | **met** | D-1, the only one of these that was a rewrite rather than an increment, is CLOSED.  IRIS has ONE kernel stack per core and no thread blocks inside the kernel.  No blocking syscall keeps live state across its block (step 1); a parked one abandons its frame (step 2, T310); the whole ring-3 register context lives in the TCB (step 3, T314); and `TSS.RSP0` is set once and never changes, because a DISPATCHER on the core's stack replaced `context_switch` — which is deleted, along with `task_yield`, `scheduler_sleep_current`, the idle task and `kstack_alloc`.  T318 measures the consequence from ring 3: eight threads, and the kernel's physical reserve does not move, where the old per-thread stacks would have cost two pages each |
 
 ### The two that no further stage closes
 

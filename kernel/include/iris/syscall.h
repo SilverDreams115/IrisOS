@@ -1699,6 +1699,16 @@ struct iris_untyped_query_global {
      * service tried.
      */
     uint32_t ipc_buffers;
+    /*
+     * Stage 9-evt step 3 — free pages in the kernel's physical allocator.
+     *
+     * Here because the claim step 3 makes is about MEMORY and was otherwise
+     * unobservable: every thread used to own two pages of kernel stack plus a
+     * guard page, taken from this reserve at creation, so kernel memory grew
+     * with the thread count and nothing from ring 3 could see it.  A thread
+     * owns no kernel stack now, and this is what lets a test say so.
+     */
+    uint32_t kernel_free_pages;
 };
 
 struct iris_untyped_query_one {

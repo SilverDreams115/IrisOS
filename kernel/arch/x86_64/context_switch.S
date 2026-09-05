@@ -29,55 +29,18 @@
  *   [48] rip
  *   [56] rflags
  */
-.global context_switch
-
-context_switch:
-    /* Save outgoing FPU/SSE state — must be first, before touching rsp */
-    fxsaveq (%r8)
-
-    /* Save outgoing RSP */
-    movq %rsp, (%rdx)
-
-    /* Save outgoing callee-saved integer registers */
-    movq %r15, 0(%rdi)
-    movq %r14, 8(%rdi)
-    movq %r13, 16(%rdi)
-    movq %r12, 24(%rdi)
-    movq %rbx, 32(%rdi)
-    movq %rbp, 40(%rdi)
-
-    /* Save RIP: the return address sitting on top of the outgoing stack */
-    movq (%rsp), %rax
-    movq %rax, 48(%rdi)
-
-    /* Save RFLAGS (preserves per-task IF state) */
-    pushfq
-    popq 56(%rdi)
-
-    /* Restore incoming callee-saved integer registers */
-    movq 0(%rsi),  %r15
-    movq 8(%rsi),  %r14
-    movq 16(%rsi), %r13
-    movq 24(%rsi), %r12
-    movq 32(%rsi), %rbx
-    movq 40(%rsi), %rbp
-
-    /* Switch to the incoming task's kernel stack BEFORE restoring RFLAGS.
-     * Any interrupt that fires after popfq will run on the correct stack. */
-    movq %rcx, %rsp
-
-    /* Restore incoming RFLAGS — uses the new stack for the transient push */
-    pushq 56(%rsi)
-    popfq
-
-    /* Restore incoming FPU/SSE state — r9 still holds new_fpu */
-    fxrstorq (%r9)
-
-    /* Write incoming RIP to the top of the new stack and return into it */
-    movq 48(%rsi), %rax
-    movq %rax, (%rsp)
-    ret
-
+/*
+ * context_switch is DELETED (Stage 9-evt step 3).
+ *
+ * It saved one thread's callee-saved registers and kernel stack pointer and
+ * restored another's — the only way the CPU changed hands, and the reason
+ * every thread needed a kernel stack to come back to.  Nothing calls it: a
+ * thread is resumed from its TCB (an iretq for ring 3, a call for a kernel
+ * resume), and the stack it runs on belongs to the core.
+ *
+ * What survives is the FPU half, which a switch used to do inline and which a
+ * TCB resume still needs.
+ */
 
 .section .text
 /*

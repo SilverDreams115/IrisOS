@@ -122,14 +122,22 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
  * runs in (SFMASK clears IF at entry).  Resuming the trampoline with interrupts
  * on would let a timer land on a stack that is being rebuilt.
  */
-static int task_yield_impl(int abandon);
+/*
+ * task_yield / task_yield_impl are DELETED (Stage 9-evt step 3).
+ *
+ * They were how a thread reached the scheduler: switch from inside the
+ * caller's frame, come back when the thread runs again.  Every caller is now
+ * either a park (the syscall layer), a mark (the timer), or a wait (the two
+ * kernel-internal notification waits, which had nothing to switch TO), and
+ * `context_switch` is on no thread's path at all.
+ *
+ * What made them impossible to keep is the same thing that made them
+ * necessary before: they need a stack to come back to, and a kernel stack
+ * belongs to the core now, not to whoever was standing on it.
+ */
 
-/* Defined in syscall_dispatch.c; declared here because the abandoning park is
- * the only thing that ever names it, and scheduler_priv.h is not the syscall
- * layer's header. */
+/* Defined in syscall_dispatch.c; the parked syscall's resume point. */
 __attribute__((noreturn)) void syscall_restart_trampoline(void);
-
-void task_yield(void) { (void)task_yield_impl(0); }
 
 /*
  * Stage 9-evt step 3 — parking leaves the thread's stack entirely.
@@ -154,144 +162,6 @@ __attribute__((noreturn)) void task_park_restart(void) {
     core_dispatch_enter(t);
 }
 
-static int task_yield_impl(int abandon) {
-    uint64_t saved_flags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(saved_flags) : : "memory");
-
-    atomic_fetch_add_explicit(&sched_yield_ctr, 1u, memory_order_relaxed);
-
-    reap_pending_dead_task();
-
-    /*
-     * Stage 8-mcs — deliver a timeout fault the tick recorded.
-     *
-     * Here rather than in the tick because delivery signals a notification,
-     * which wakes the handler and enqueues it; doing that from the PIT ISR
-     * would touch the run queue from interrupt context.  Done BEFORE
-     * rq_dequeue_best so the woken handler is a candidate on this very
-     * scheduling decision instead of waiting for the next one.
-     *
-     * The thread goes to TASK_BLOCKED_FAULT exactly as an exception would
-     * leave it, so it is not runnable and its budget stops mattering until the
-     * supervisor answers with SYS_EXCEPTION_RESUME.  If the registration went
-     * away between the tick and here, fall back to the no-handler behaviour
-     * rather than losing the exhaustion.
-     */
-    if (current_task && current_task->timeout_pending) {
-        struct task *tf = current_task;
-        tf->timeout_pending = 0;
-        if (ktimeout_notify_fault(tf)) {
-            tf->state = TASK_BLOCKED_FAULT;
-        } else if (tf->sched_ctx) {
-            tf->state     = TASK_BUDGET_EXHAUSTED;
-            tf->wake_tick = scheduler_ticks + tf->sched_ctx->period_ticks;
-        }
-    }
-
-    struct task *old  = current_task;
-    struct task *idle = task_list_head;
-
-    /* O(1): dequeue highest-priority READY non-idle task. */
-    struct task *chosen = rq_dequeue_best();
-
-    if (!chosen) {
-        if (old == idle)
-            sched_handle_idle(idle, &chosen);
-
-        if (!chosen) {
-            if (old != idle && task_is_runnable(idle->state)) {
-                chosen = idle;
-            } else {
-                __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
-                return 0;
-            }
-        }
-    }
-
-    /*
-     * Stage 8-mcs — the thread is leaving the CPU, so close its accounting
-     * run: whatever it consumed becomes a replenishment due one period after
-     * the consumption started.
-     *
-     * This is the edit that fixes the old model's real defect.  Before it, a
-     * thread that BLOCKED before exhausting carried its remainder forward for
-     * ever — the only refill was the exhaustion branch — so a server that
-     * handled a request in 2 of its 5 ticks and waited on its endpoint kept 3,
-     * then 1, then stalled, and its bandwidth fell the more often it did the
-     * right thing.  Flushing here is what makes the budget a per-period
-     * guarantee for every thread instead of only for the ones that burn it
-     * all in one go.
-     *
-     * Idempotent when nothing was consumed, so it is safe on every switch.
-     */
-    if (old->sched_ctx) kschedctx_flush_run(old->sched_ctx);
-
-    /* Re-enqueue old if it was preempted (state still RUNNING) so it
-     * stays schedulable; do this after finding chosen to avoid dequeuing
-     * old as the winner. */
-    if (old->state == TASK_RUNNING) {
-        old->state = TASK_READY;
-        if (old != idle)
-            rq_enqueue(old);
-    }
-
-    /* Avoid switching to ourselves (can occur if old == chosen after re-enqueue). */
-    if (chosen == old) {
-        old->state = TASK_RUNNING;
-        __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
-        return 0;
-    }
-
-    if (old->state == TASK_DEAD)
-        reap_enqueue_dead(old);
-
-    chosen->state      = TASK_RUNNING;
-    chosen->ticks_left = chosen->time_slice;
-    chosen->need_resched = 0;
-    set_current_task(chosen);
-    cpu_self()->context_switches++;
-
-    uint64_t new_kstack_top = (uint64_t)(uintptr_t)(chosen->kstack + TASK_STACK_SIZE);
-    tss_set_rsp0(new_kstack_top);
-    syscall_set_kstack(new_kstack_top);
-    /* Stage 7 Step 5: what a thread runs in is the thread's, and the tag is
-     * the address space's.  This used to read three fields off KProcess to
-     * answer a question about one walk. */
-    syscall_set_user_cr3(chosen->vspace ? chosen->vspace->user_cr3 : 0);
-
-    if (chosen->vspace && chosen->vspace->cr3 != 0) {
-        uint64_t cr3 = chosen->vspace->cr3;
-        if (iris_pcid_enabled)
-            cr3 |= (uint64_t)chosen->vspace->pcid;
-        __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
-    } else {
-        __asm__ volatile ("mov %0, %%cr3" : : "r"(kernel_cr3) : "memory");
-    }
-
-    /* Phase S2: kernel RSP save/restore lives inside the TCB backing — no
-     * index-keyed task_rsp[] array, no (old - tasks) pointer arithmetic. */
-    if (abandon && old->kstack) {
-        /*
-         * Abandon: point the outgoing thread at the trampoline on a fresh
-         * stack and throw the integer context away.  saved_krsp is one word
-         * below the top because context_switch writes the resume address
-         * there and returns into it.
-         */
-        old->kentry      = syscall_restart_trampoline;
-        old->resume_user = TASK_RESUME_KERNEL;
-        sched_resume(chosen, old);
-        /* Unreachable: this thread resumes at the trampoline, not here. */
-        for (;;) { }
-    }
-
-    context_switch(&old->ctx, &chosen->ctx,
-                   &old->saved_krsp, chosen->saved_krsp,
-                   old->fpu_state, chosen->fpu_state);
-
-    __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
-    return 1;
-}
-
 /*
  * Stage 9-evt step 3 — give the CPU to `next`, saving nothing of `outgoing`
  * but its FPU.
@@ -303,9 +173,8 @@ static int task_yield_impl(int abandon) {
  *     state is in its TCB and resuming it is an iretq off the core stack.  No
  *     kernel stack of its own is involved at any point.
  *   · otherwise — it is resuming INSIDE the kernel: a syscall that parked and
- *     must re-run from its restart trampoline, or a thread that has never run.
- *     Those still enter through `context_switch`, which is the last use of a
- *     per-thread kernel stack and the thing the rest of step 3 removes.
+ *     must re-run from its restart trampoline.  That is a CALL, on the stack
+ *     this is already standing on, which is the core's.
  *
  * `outgoing` may be NULL (the dispatcher was entered with no thread to account
  * for); its FPU is saved because the thread left ring 3 with its user's SSE

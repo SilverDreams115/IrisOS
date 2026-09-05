@@ -336,11 +336,19 @@ uint8_t initial_fpu_state[512] __attribute__((aligned(16)));
 
 /* ── Internal helpers ────────────────────────────────────────────────────── */
 
+/*
+ * The boot thread's entry, kept only because `task_list_head` is still the
+ * object the run queue excludes and the fast-forward skips.
+ *
+ * It used to be the IDLE LOOP, and that is why IRIS had an idle task at all:
+ * every "nobody else can run" answer had to be a switch to a thread, and a
+ * thread needs a stack.  Stage 9-evt step 3 made the answer a `hlt` on the
+ * core's own stack, so nothing schedules this and nothing ever enters it —
+ * `kernel_main` enters the dispatcher directly instead of falling into here.
+ * Reaching it would mean the run queue handed out a task it excludes.
+ */
 static void idle_task(void) {
-    for (;;) {
-        __asm__ volatile ("sti");
-        task_yield();
-    }
+    for (;;) __asm__ volatile ("sti; hlt; cli");
 }
 
 /*
@@ -506,7 +514,6 @@ static void task_execution_teardown_off_cpu(struct task *t) {
      * yet — and then this teardown unmaps the stack the new thread is running
      * on.  t is off-CPU here (the function's precondition), so nothing is
      * standing on the stack being freed. */
-    kstack_free(t);
     task_registry_release(t);
     t->awaiting_reap = 0;
     t->state    = TASK_TERMINATED;
@@ -723,17 +730,12 @@ static void task_set_first_user_entry(struct task *t, uint64_t rip,
     t->kentry          = 0;
 }
 
+/*
+ * A KERNEL thread's entry.  There is no stack to build a frame on any more —
+ * `kentry` is called by the dispatcher on the CORE's stack — so this records
+ * where, and nothing else.
+ */
 void setup_initial_context(struct task *t, void (*entry)(void)) {
-    uint64_t stack_top = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE);
-    stack_top &= ~0xFULL;
-
-    /* Stack layout for ret-based entry: [rsp+0]=entry, [rsp+8]=dummy return */
-    stack_top -= 16;
-    ((uint64_t *)stack_top)[0] = (uint64_t)(uintptr_t)entry;
-    ((uint64_t *)stack_top)[1] = 0;
-
-    t->saved_krsp = stack_top;
-
     t->ctx.r15    = 0;
     t->ctx.r14    = 0;
     t->ctx.r13    = 0;
@@ -783,9 +785,6 @@ void task_init(void) {
     idle->state = TASK_RUNNING;
     idle->next  = idle;
 
-    if (kstack_alloc(idle, 0) != 0)  /* registry slot 0 */
-        kstack_panic("cannot allocate idle task kstack");
-
     setup_initial_context(idle, idle_task);
     task_init_fpu_state(idle);
 
@@ -805,7 +804,6 @@ struct task *task_create(void (*entry)(void)) {
      * slot with state == TASK_DEAD, which is only reached already fully
      * zeroed (task_init at boot, or task_backing_free_on_destroy at death) —
      * re-zeroing now would wipe the t->reg_slot task_registry_alloc just set. */
-    if (kstack_alloc(t, t->reg_slot) != 0) return 0;
 
     task_init_fpu_state(t);
     t->id         = next_id++;
@@ -864,7 +862,6 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     if (!t) return 0;
 
     /* No task_reset_slot(t) here — see task_create. */
-    if (kstack_alloc(t, t->reg_slot) != 0) return 0;
 
     task_init_fpu_state(t);
     t->id         = next_id++;
@@ -1021,14 +1018,9 @@ fail:
     if (root_vs) kobject_release(&root_vs->base);
     if (root_cn) kobject_release(&root_cn->base);
     if (t) {
-        /* Every goto-fail above happens after kstack_alloc succeeded but
-         * before ktcb_object_init/rq_enqueue — undo exactly the registry
-         * claim + kstack alloc task_registry_find_free/kstack_alloc made
-         * (task_reset_slot no longer frees the kstack or touches the
-         * registry; see task_execution_teardown_off_cpu for the normal
-         * teardown this mirrors). */
-        kstack_free(t);
-        t->kstack = 0; t->kstack_phys = 0;
+        /* Every goto-fail above happens after the registry claim but before
+         * ktcb_object_init/rq_enqueue — undo exactly that.  There is no kernel
+         * stack to give back: a thread stopped owning one at step 3. */
         task_registry_release(t);
         task_reset_slot(t);
     }
@@ -1091,10 +1083,6 @@ iris_error_t ktcb_configure(struct task *t,
     if (t->configured || t->terminal) return IRIS_ERR_ALREADY_EXISTS;
 
     if (task_registry_alloc(t) != 0) return IRIS_ERR_NO_MEMORY;
-    if (kstack_alloc(t, t->reg_slot) != 0) {
-        task_registry_release(t);
-        return IRIS_ERR_NO_MEMORY;
-    }
 
     /*
      * Stage 7 Step 4: the thread takes the CSpace it was configured with.
@@ -1183,7 +1171,6 @@ iris_error_t ktcb_write_regs(struct task *t, uint64_t entry, uint64_t sp,
     if (!t) return IRIS_ERR_INVALID_ARG;
     if (!t->configured || t->terminal) return IRIS_ERR_NOT_SUPPORTED;
     if (t->state != TASK_SUSPENDED || t->started) return IRIS_ERR_BUSY;
-    if (!t->kstack) return IRIS_ERR_NOT_SUPPORTED;
 
     /*
      * Stage 7: the range checks live here now.

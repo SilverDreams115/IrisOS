@@ -21,36 +21,21 @@ void kstack_panic(const char *msg) {
     for (;;) __asm__ volatile ("hlt");
 }
 
-int kstack_alloc(struct task *t, int slot) {
-    uint64_t virt_base = KSTACK_VIRT_BASE + (uint64_t)slot * KSTACK_SLOT_SIZE;
-    uint64_t phys = pmm_alloc_pages(2);
-    if (phys == 0) return -1;
-
-    uint64_t virt_pg0 = virt_base + KSTACK_PAGE_SIZE;
-    uint64_t virt_pg1 = virt_base + KSTACK_PAGE_SIZE * 2;
-
-    if (paging_map_checked_in(kernel_cr3, virt_pg0, phys,
-                              PAGE_PRESENT | PAGE_WRITABLE | PAGE_NX) != 0 ||
-        paging_map_checked_in(kernel_cr3, virt_pg1, phys + KSTACK_PAGE_SIZE,
-                              PAGE_PRESENT | PAGE_WRITABLE | PAGE_NX) != 0) {
-        pmm_free_contig(phys, 2);
-        return -1;
-    }
-
-    t->kstack       = (uint8_t *)(uintptr_t)virt_pg0;
-    t->kstack_phys  = phys;
-    t->kstack_slot  = (int32_t)slot;
-    return 0;
-}
-
-void kstack_free(struct task *t) {
-    if (!t->kstack || t->kstack_phys == 0 || t->kstack_slot < 0) return;
-    uint64_t virt_base = KSTACK_VIRT_BASE +
-                         (uint64_t)t->kstack_slot * KSTACK_SLOT_SIZE;
-    paging_unmap_in(kernel_cr3, virt_base + KSTACK_PAGE_SIZE);
-    paging_unmap_in(kernel_cr3, virt_base + KSTACK_PAGE_SIZE * 2);
-    pmm_free_contig(t->kstack_phys, 2);
-    t->kstack      = 0;
-    t->kstack_phys = 0;
-    t->kstack_slot = -1;
-}
+/*
+ * kstack_alloc / kstack_free are DELETED (Stage 9-evt step 3).
+ *
+ * Every thread used to own two pages of kernel stack plus a guard page,
+ * allocated at creation from the PMM reserve — including a TCB retyped from an
+ * Untyped, whose payload the user paid for and whose kernel stack the kernel
+ * supplied anyway.  Charter M3 says the kernel does not implicitly allocate
+ * memory on somebody's behalf, and 8 KiB per thread was the largest standing
+ * exception to it.
+ *
+ * They are gone because nothing needs them: a thread's ring-3 context and its
+ * first entry both live in its TCB, a parked syscall holds nothing, and every
+ * kernel entry lands on the core's stack.  Kernel memory stops scaling with
+ * thread count, which is the thing step 3 was for.
+ *
+ * `kstack_panic` stays: the boot path still has one fatal condition to report
+ * and no console to report it through.
+ */
