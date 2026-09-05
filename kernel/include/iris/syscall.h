@@ -1569,6 +1569,17 @@ struct iris_untyped_query_global {
      * outside, and only the second is what D-1 is about.
      */
     uint32_t syscall_abandons;
+    /*
+     * Stage 9-evt Step 3 — ring-3 kernel entries whose user context was saved
+     * into the interrupted thread's TCB rather than left on a kernel stack
+     * (ledger D-1).
+     *
+     * Visible from ring 3 because the step it belongs to is otherwise
+     * invisible: with per-thread kernel stacks still in place the save and the
+     * restore are an identity, and a path that does nothing observable is a
+     * path that rots.  The counter is the one thing that proves it runs.
+     */
+    uint32_t irq_ctx_saves;
 };
 
 struct iris_untyped_query_one {

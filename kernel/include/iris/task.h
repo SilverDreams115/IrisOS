@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <iris/ipc_msg.h>
+#include <iris/user_ctx.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/error.h>
 #include <iris/nc/spinlock.h>
@@ -473,6 +474,16 @@ struct task {
      */
     struct KFrame      *ipc_buffer;
     uint64_t            ipc_buffer_uvaddr;
+    /*
+     * D-1 step 3 — the thread's ring-3 register state, saved on every kernel
+     * entry from user mode and restored on every return to it.
+     *
+     * It lives here rather than on a kernel stack because an event kernel has
+     * one stack per core: a handler that hands the CPU to another thread
+     * leaves nothing behind that the incoming thread will not overwrite.  See
+     * isr_save_user_ctx / isr_restore_user_ctx.
+     */
+    struct iris_user_ctx user_ctx;
     /* Ph74: optional scheduling context — retained KSchedContext ref (NULL = best-effort) */
     struct KSchedContext *sched_ctx;
     /* Ph85: reply capability fields */

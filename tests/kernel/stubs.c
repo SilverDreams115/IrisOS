@@ -464,6 +464,9 @@ __attribute__((noreturn)) void syscall_return_to_user(uint64_t a, uint64_t b,
     (void)a; (void)b; (void)c; (void)d; (void)e;
     iris_panic("syscall_return_to_user reached in a unit test");
 }
+/* D-1 step 3: the ring-3 entry path has no host analogue — there are no
+ * interrupts here — so the gauge reads zero rather than pretending. */
+uint64_t irq_user_ctx_saves(void)            { return 0; }
 uint32_t sched_yield_count(void)             { return 0; }
 void     task_backing_free_on_destroy(struct task *t) { (void)t; }
 uint64_t tsc_boot(void)                      { return 0; }

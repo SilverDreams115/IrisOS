@@ -15,4 +15,9 @@ struct interrupt_frame {
 
 void idt_init(void);
 
+/* Ledger D-1 step 3 — ring-3 kernel entries whose user context was saved into
+ * the interrupted thread's TCB.  Exposed through SYS_UNTYPED_QUERY because a
+ * path whose effect is currently an identity needs a way to be observed. */
+uint64_t irq_user_ctx_saves(void);
+
 #endif

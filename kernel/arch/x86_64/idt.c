@@ -1,4 +1,5 @@
 #include <iris/idt.h>
+#include <iris/user_ctx.h>
 #include <iris/pic.h>
 #include <iris/scheduler.h>
 #include <iris/task.h>
@@ -26,13 +27,9 @@ struct idt_descriptor {
     uint64_t offset;
 } __attribute__((packed));
 
-struct full_frame {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
-    uint64_t vector;
-    uint64_t error_code;
-    uint64_t rip, cs, rflags, rsp, ss;
-} __attribute__((packed));
+/* The frame isr_common builds IS a thread's user context; one definition,
+ * shared with struct task (ledger D-1 step 3). */
+#define full_frame iris_user_ctx
 
 static struct idt_entry idt[IDT_ENTRIES];
 static struct idt_descriptor idtr;
@@ -122,6 +119,59 @@ static void panic_dec(uint32_t v) {
     if (v == 0) { buf[--i] = '0'; }
     else { while (v) { buf[--i] = (char)('0' + v % 10); v /= 10; } }
     panic_write(buf + i);
+}
+
+/*
+ * ── Ledger D-1, step 3: the interrupted user context lives in the TCB ──────
+ *
+ * Every ring-3 kernel entry now copies the thread's whole register state into
+ * its own TCB, and every ring-3 exit rebuilds the frame from the TCB of
+ * whatever thread is current at that moment.
+ *
+ * Today the two are always the same thread, because kernel stacks are still
+ * per-thread: a handler that switches away switches stacks too, and comes back
+ * to this frame on this stack.  So this pass is, deliberately, a no-op that
+ * costs two 22-word copies per interrupt.
+ *
+ * It is the precondition for the change that is not a no-op.  With ONE kernel
+ * stack per core, a handler that hands the CPU to another thread leaves this
+ * frame on a stack the incoming thread is about to use — the outgoing thread's
+ * context has to already be somewhere else, and the incoming thread's has to
+ * come from somewhere other than the stack.  Both of those are the TCB.  Doing
+ * the move first, while the frame is still authoritative, means the switch to
+ * a per-core stack changes WHERE execution resumes and not WHAT is restored.
+ *
+ * Ring-0 entries are skipped: a kernel fault does not return to a user context
+ * and the idle loop has no TCB worth writing to.
+ */
+static _Atomic uint64_t irq_ctx_saves = 0;
+
+uint64_t irq_user_ctx_saves(void) {
+    return __atomic_load_n(&irq_ctx_saves, __ATOMIC_RELAXED);
+}
+
+void isr_save_user_ctx(struct full_frame *frame) {
+    if ((frame->cs & 3u) != 3u) return;
+    struct task *t = task_current();
+    if (!t) return;
+    t->user_ctx = *frame;
+    __atomic_fetch_add(&irq_ctx_saves, 1u, __ATOMIC_RELAXED);
+}
+
+void isr_restore_user_ctx(struct full_frame *frame) {
+    if ((frame->cs & 3u) != 3u) return;
+    struct task *t = task_current();
+    if (!t) return;
+    /*
+     * The vector and error code belong to THIS entry, not to the context: a
+     * thread resumed here may have been saved on a different vector, and
+     * handing the stubs somebody else's vector would pop the wrong amount of
+     * stack.  Everything the CPU and the thread care about comes from the TCB.
+     */
+    uint64_t vec = frame->vector, err = frame->error_code;
+    *frame = t->user_ctx;
+    frame->vector     = vec;
+    frame->error_code = err;
 }
 
 void isr_handler(struct full_frame *frame) {

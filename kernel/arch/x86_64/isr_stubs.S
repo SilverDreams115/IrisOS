@@ -1,5 +1,7 @@
 
 .extern isr_handler
+.extern isr_save_user_ctx
+.extern isr_restore_user_ctx
 
 /*
  * Macro for an ISR with no error code — the CPU does not push an error code
@@ -184,9 +186,25 @@ isr_common:
     movq %rdx, %rsp             /* continue on the task's kstack */
 .Lisr_no_migrate:
 
+    /*
+     * Ledger D-1 step 3: the thread's user context goes into its TCB before
+     * the handler runs, and comes back out of the TCB — of whatever thread is
+     * current by then — after it.  Done in C so no struct task offset is
+     * hard-coded here; see isr_save_user_ctx in idt.c for why the frame cannot
+     * stay the authority once there is one kernel stack per core.
+     *
+     * The C calls clobber only caller-saved registers, whose values are
+     * already in the frame below %rsp and are restored from it.
+     */
+    movq %rsp, %rdi
+    call isr_save_user_ctx
+
     /* rdi = pointer to the full frame on the stack */
     movq %rsp, %rdi
     call isr_handler
+
+    movq %rsp, %rdi
+    call isr_restore_user_ctx
 
     /* restore the registers */
     popq %r15

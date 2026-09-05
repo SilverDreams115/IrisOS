@@ -17729,6 +17729,9 @@ struct it_utq_global {
      * kernel stack with their original frame abandoned (ledger D-1). */
     uint32_t syscall_restarts;
     uint32_t syscall_abandons;
+    /* Stage 9-evt step 3: ring-3 kernel entries whose user context was saved
+     * into the interrupted thread's TCB instead of left on a kernel stack. */
+    uint32_t irq_ctx_saves;
 };
 struct it_utq_one {
     uint32_t version, struct_size;
@@ -22214,6 +22217,91 @@ static void test_t313(void) {
     if (ok) it_pass("T313"); else it_fail("T313", why);
 }
 
+/* ── T314: an interrupted thread's context lives in its TCB (D-1 step 3) ──
+ *
+ * The last step of the event kernel is ONE kernel stack per core, and the
+ * first analysis of it missed what makes it hard.  It is not enough for
+ * syscalls to stop keeping state on the stack: a timer interrupt fires while a
+ * thread runs in USER mode and lands on the stack named by TSS.RSP0.  If that
+ * stack is per-core and the handler then hands the CPU to another thread, the
+ * outgoing thread's interrupt frame is sitting on a stack the incoming thread
+ * is about to use.
+ *
+ * So the preemption path has to save the whole ring-3 register state into the
+ * TCB on the way in and rebuild it from the TCB on the way out.  That is what
+ * this asserts, and it asserts it in the only two ways ring 3 can:
+ *
+ *   1. the path RUNS.  With per-thread kernel stacks still in place the save
+ *      and the restore are an identity, so nothing about the machine changes
+ *      and only the counter can show it happened.  A step whose effect is
+ *      currently invisible is a step that rots silently; the gauge is the
+ *      thing that keeps it honest until the stacks go.
+ *   2. the restore is FAITHFUL.  A loop that keeps known values in the
+ *      callee-saved registers across thousands of preemptions and checks every
+ *      one of them afterwards.  Today this cannot fail, which is exactly why
+ *      it is written now: when the frame stops being the authority, a restore
+ *      that transposes two registers or drops one has to fail HERE and not in
+ *      a service three phases later, as a wild pointer with no explanation.
+ *
+ * Invariants: this is the same discipline M4 demands of a partial operation,
+ * applied to the one piece of state the kernel never used to own.
+ */
+/* Long enough that the timer fires inside it many times over, short enough
+ * that the suite does not notice.  What matters is only that the loop is
+ * preempted while those registers are live. */
+#define T314_SPINS 20000000ULL
+
+static void test_t314(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "irq user context";
+
+    struct it_utq_global g0, g1;
+    if (!it_utq_g(&g0)) { it_fail("T314", "query"); return; }
+
+    /* ── 2. register integrity across real preemption ───────────────────
+     * Values distinct in every byte, so a restore that shifted a register by
+     * one slot lands on something that cannot be mistaken for the right
+     * answer.  rbp is left alone deliberately: the compiler may be using it
+     * as this frame's pointer, and a test that breaks the frame it reports
+     * from reports nothing. */
+    uint64_t o12 = 0, o13 = 0, o14 = 0, o15 = 0, obx = 0;
+    uint64_t n = T314_SPINS;
+    __asm__ __volatile__(
+        "movq $0x3333333300000003, %%r12\n\t"
+        "movq $0x4444444400000004, %%r13\n\t"
+        "movq $0x5555555500000005, %%r14\n\t"
+        "movq $0x6666666600000006, %%r15\n\t"
+        "movq $0x1111111100000001, %%rbx\n\t"
+        "1:\n\t"
+        "decq %[n]\n\t"
+        "jnz 1b\n\t"
+        "movq %%r12, %[a]\n\t"
+        "movq %%r13, %[b]\n\t"
+        "movq %%r14, %[c]\n\t"
+        "movq %%r15, %[d]\n\t"
+        "movq %%rbx, %[e]\n\t"
+        : [a] "=m"(o12), [b] "=m"(o13), [c] "=m"(o14), [d] "=m"(o15),
+          [e] "=m"(obx), [n] "+r"(n)
+        :
+        : "r12", "r13", "r14", "r15", "rbx", "cc", "memory");
+
+    if (ok && obx != 0x1111111100000001ULL) { ok = 0; why = "rbx corrupted"; }
+    if (ok && o12 != 0x3333333300000003ULL) { ok = 0; why = "r12 corrupted"; }
+    if (ok && o13 != 0x4444444400000004ULL) { ok = 0; why = "r13 corrupted"; }
+    if (ok && o14 != 0x5555555500000005ULL) { ok = 0; why = "r14 corrupted"; }
+    if (ok && o15 != 0x6666666600000006ULL) { ok = 0; why = "r15 corrupted"; }
+
+    /* ── 1. the path ran while all that was happening ───────────────────*/
+    if (ok && !it_utq_g(&g1)) { ok = 0; why = "query"; }
+    if (ok && g1.irq_ctx_saves <= g0.irq_ctx_saves) {
+        ok = 0; why = "no ring-3 entry saved a user context";
+        it_fz_note("T314", g0.irq_ctx_saves, g1.irq_ctx_saves, 0u);
+    }
+
+    if (ok) it_pass("T314"); else it_fail("T314", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -22757,6 +22845,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t311();
     test_t312();
     test_t313();
+    test_t314();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

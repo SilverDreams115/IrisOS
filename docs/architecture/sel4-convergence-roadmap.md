@@ -1685,9 +1685,9 @@ two are indistinguishable from ring 3 and only one is what D-1 is about.
 **Step 2 already paid for itself**: it is what made ledger **D-8** closable.  A
 preemptible revoke needs somewhere to park a continuation, and step 1 built it.
 
-**Step 3 — ONE kernel stack per core. ⬜ OPEN.**  What remains, and the first
-analysis of this stage missed it: it is not enough for syscalls to stop keeping
-state on the stack.  A timer interrupt fires while a task runs in USER mode and
+**Step 3 — ONE kernel stack per core. 🔶 HALF DONE.**  What remains, and the
+first analysis of this stage missed it: it is not enough for syscalls to stop
+keeping state on the stack.  A timer interrupt fires while a task runs in USER mode and
 lands on the kernel stack named by `TSS.RSP0`; if that stack is per-core and
 the ISR then preempts to another task, the outgoing task's interrupt frame sits
 on a stack the incoming task is about to use.  So step 3 additionally requires
@@ -1696,6 +1696,25 @@ a kernel stack — a second conversion, of the preemption path, comparable in
 size to the first.  Syscalls themselves are not the obstacle: `SFMASK` clears
 IF, so no syscall is ever preempted mid-flight, and step 1's restart points are
 the only places a thread gives up the CPU inside the kernel.
+
+That conversion is now half done.  `struct iris_user_ctx` is a field of
+`struct task`, and every ring-3 kernel entry saves the thread's whole register
+state into its own TCB while every ring-3 exit rebuilds the frame from the TCB
+of whatever thread is current by then.  With per-thread stacks still in place
+the two are an identity — deliberately, because doing the move while the frame
+is still authoritative means the rest of step 3 changes where execution
+RESUMES and not what gets RESTORED.  It is measured rather than assumed
+(`irq_ctx_saves`, and T314's register-integrity spin across thousands of
+preemptions), because a path whose effect is currently invisible is a path
+that rots.
+
+What is left: `TSS.RSP0` becomes a per-core stack, and the reschedule taken
+inside the timer ISR stops going through `context_switch` — which exists to
+swap kernel stacks — and becomes a choice of which TCB the exit path restores.
+Two cases, and steps 1 and 2 are what make both expressible: a thread
+preempted in ring 3 resumes through that restore, and a thread parked in a
+syscall resumes at its restart trampoline on the core's stack, holding
+nothing.
 
 Then, and only then, the per-thread stacks can go: kernel memory stops scaling
 with thread count, and a retyped TCB stops costing memory its payer did not pay

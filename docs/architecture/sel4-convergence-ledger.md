@@ -238,7 +238,39 @@ preempts to another task, the outgoing task's interrupt frame is on a stack the
 incoming task is about to use.  So step 3 additionally requires the IRQ path to
 save the full user context into the TCB rather than leave it on a kernel stack
 — which is a second conversion, of the preemption path, comparable in size to
-the first.  Syscalls themselves are not the obstacle: `SFMASK` clears IF, so no
+the first.
+
+**Half of that is now done.**  `struct iris_user_ctx` is the 22-word frame
+`isr_common` builds, and it is a field of `struct task`: every ring-3 kernel
+entry copies the thread's whole register state into its own TCB, and every
+ring-3 exit rebuilds the frame from the TCB of whatever thread is current by
+then.  One definition is shared by the assembly, the C handler and the TCB,
+because three copies of a 22-field layout is three chances to transpose two of
+them.
+
+It is deliberately a no-op today, and that is the point.  Kernel stacks are
+still per-thread, so a handler that switches away switches stacks too and comes
+back to its own frame; the save and the restore are an identity that costs two
+word-copies per interrupt.  Doing the move WHILE the frame is still
+authoritative is what makes the remaining half a change to where execution
+resumes rather than a change to what gets restored — the two would otherwise
+land in the same commit, and a wrong restore would present as a service
+faulting on a wild pointer with nothing to bisect.
+
+A path whose effect is currently invisible is a path that rots, so it is
+measured: `irq_ctx_saves` in `SYS_UNTYPED_QUERY`, and T314, which spins in ring
+3 with known values in rbx and r12-r15 across thousands of preemptions and
+checks every one of them.  That test cannot fail today.  It is written now so
+that when the frame stops being the authority, a restore that drops or
+transposes a register fails THERE.
+
+**What is left of step 3**: `TSS.RSP0` becomes a per-core stack, and the
+reschedule taken inside the timer ISR stops going through `context_switch` —
+which exists to swap kernel stacks — and becomes a choice of which TCB the exit
+path restores.  That last piece has two cases, and steps 1 and 2 are what make
+both expressible: a thread preempted in ring 3 resumes through the restore
+above, and a thread parked in a syscall resumes at its restart trampoline on
+the core's stack, holding nothing.  Syscalls themselves are not the obstacle: `SFMASK` clears IF, so no
 syscall is ever preempted mid-flight and step 1's restart points are the only
 places a thread gives up the CPU inside the kernel.  Sequenced accordingly, and
 not started.  **Steps 1 and 2 have already paid for themselves**: step 1 is
