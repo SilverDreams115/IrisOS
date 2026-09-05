@@ -1,4 +1,5 @@
 #include <iris/kslab.h>
+#include <iris/panic.h>
 #include <iris/paging.h>
 #include <iris/nc/spinlock.h>
 #include <stdint.h>
@@ -48,8 +49,38 @@ void kslab_init(uint64_t phys_base, uint32_t num_pages) {
     for (uint32_t i = 0u; i < kslab_total; i++) kslab_base[i] = 0;
 }
 
+/*
+ * The kernel heap is a BOOT ARENA, and after boot it is sealed.
+ *
+ * seL4 has no kernel heap at all: its boot code carves the root task's initial
+ * objects out of a statically-known region and describes everything else as
+ * Untyped, after which the kernel allocates nothing, ever.  IRIS's kslab IS
+ * that region — the root CNode, the root address space, the boot capabilities
+ * and the initrd entries come out of it, before any Untyped capability exists
+ * to name instead.
+ *
+ * What made that a claim rather than a fact was that nothing stopped a later
+ * path from using it.  The purity gate proves no syscall handler can REACH the
+ * allocator below; this makes reaching it impossible rather than merely
+ * absent, which is the difference between a property that holds and one that
+ * holds until somebody adds a call.
+ *
+ * A panic rather than a refusal, deliberately: an allocation that should not
+ * exist returning NULL would be handled by an error path and disappear.  The
+ * kernel does not allocate after boot, and a build in which it tries is one to
+ * stop and look at.
+ *
+ * (The gate counts textual matches, so this note does not name the function.)
+ */
+static int kslab_sealed = 0;
+
+void kslab_seal(void) { kslab_sealed = 1; }
+int  kslab_is_sealed(void) { return kslab_sealed; }
+
 void *kslab_alloc(uint32_t size) {
     if (!size || !kslab_base) return 0;
+    IRIS_ASSERT(!kslab_sealed,
+                "kernel heap allocation after boot: the arena is sealed");
 
     uint32_t log2 = kslab_round(size);
     if (log2 > KSLAB_MAX_LOG2) return 0;

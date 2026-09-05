@@ -603,5 +603,14 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
      * enqueued (it is `task_list_head`, which the run queue excludes), and its
      * stack is never used again.
      */
+    /*
+     * Boot is over: seal the kernel heap.  From here the kernel allocates
+     * nothing — every object a running system creates comes out of an Untyped
+     * somebody named, and the purity gate proves no syscall handler can even
+     * reach the arena.  Sealing turns that from a property to check into one
+     * the build enforces.
+     */
+    kslab_seal();
+
     core_dispatch_enter(task_current());
 }

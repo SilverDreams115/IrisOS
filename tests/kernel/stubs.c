@@ -488,6 +488,9 @@ __attribute__((noreturn)) void syscall_return_to_user(uint64_t a, uint64_t b,
 /* No physical allocator on the host: the gauge reads zero rather than
  * inventing a number a test might come to believe. */
 uint64_t pmm_free_pages(void)                { return 0; }
+/* The host has no boot arena to seal; the gauge says so rather than
+ * pretending the property holds where it has no meaning. */
+int      kslab_is_sealed(void)               { return 0; }
 uint64_t irq_user_ctx_saves(void)            { return 0; }
 uint32_t sched_yield_count(void)             { return 0; }
 void     task_backing_free_on_destroy(struct task *t) { (void)t; }

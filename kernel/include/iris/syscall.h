@@ -1709,6 +1709,17 @@ struct iris_untyped_query_global {
      * owns no kernel stack now, and this is what lets a test say so.
      */
     uint32_t kernel_free_pages;
+    /*
+     * Stage 9-evt — 1 once the kernel's boot arena is SEALED.
+     *
+     * seL4 has no kernel heap: its boot code carves the root task's initial
+     * objects from a statically-known region and describes everything else as
+     * Untyped, after which the kernel allocates nothing.  IRIS's `kslab` is
+     * that region, and this says the door is shut — the kernel's slab
+     * allocator panics from here on.  Reported because a property nothing can observe is a property
+     * that stops being true without anyone noticing.
+     */
+    uint32_t kernel_heap_sealed;
 };
 
 struct iris_untyped_query_one {

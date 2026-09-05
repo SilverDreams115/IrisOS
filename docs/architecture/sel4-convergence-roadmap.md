@@ -78,12 +78,18 @@ not scale with thread count (T318 measures it), and the longest a thread can be
 kept out of the CPU is the longest kernel path between preemption points, not
 "however long the longest kernel path takes".
 
-Six of eight, with IPC joining them: `ipc_kbuf` is deleted, every thread sends
-from a frame it registered, and a payload with no buffer is an error.
+Seven of eight.  IPC joined them — `ipc_kbuf` is deleted, every thread sends
+from a frame it registered, and a payload with no buffer is an error — and so
+did the kernel heap: the slab is a boot arena, sealed at the end of boot, with
+no syscall handler able to reach it and the seal readable from ring 3.
 
-Two remain, and they are one problem.  The object model waits on three object
-types seL4 has no equivalent for; the kernel heap's 17 permitted allocations
-are the boot path and those same types.  `KVMO` is the one that matters.
+ONE remains: the object model, waiting on three object types seL4 has no
+equivalent for — `KVMO`, `KInitrdEntry` and `KBootstrapCap`.  They no longer
+cost the kernel memory (everything they allocate comes from a budget somebody
+named) and they are no longer how device memory is reached (D-9).  What is left
+is that they exist at all, and `KVMO` is the one that matters: retiring it is
+~170 call sites across the loader, the pager and vfs, and it is a project
+rather than a step.
 
 | Dimension | State | Evidence |
 |---|---|---|
@@ -91,7 +97,7 @@ are the boot path and those same types.  `KVMO` is the one that matters.
 | Capabilities (CSpace, CDT, revoke) | **close** | native CDT/MDB, recursive cross-process revoke, one namespace, and CNode GUARDS on the capability rather than the object — the root CSpace included, which is where a guard is load-bearing and where it was missed first (D-2, closed).  Revoke is preemptible (D-8, closed).  The rights set is different from seL4's and now permanently so (D-3, decided): `RIGHT_DUPLICATE` makes a delegation non-re-delegable, which seL4 cannot express — its derivation tree records what was derived, it does not prevent deriving.  Pinned by host RG-1..RG-5.  **No open gap in this dimension**, only a registered permanent divergence |
 | IPC | **met** | endpoints, badges, reply objects, receive slots, no handle fallback, and `SYS_REPLY_RECV` — seL4's combined `ReplyRecv`, which a passive server needs so it never crosses the gap between returning its donated time and blocking again (Stage 8-mcs, T309).  D-4 is CLOSED: `SYS_TCB_SET_IPC_BUFFER` is seL4's `seL4_TCB_SetIPCBuffer`, `ipc_kbuf` is deleted, and a payload with no registered buffer is an error. |
 | No ambient authority | **met** | boot authority is one capability per authority, every per-process quota is gone (Stage 7), and the kernel's hardcoded ioport whitelist is REMOVED (Stage 5): the range a holder may claim travels on the `IOPORT_CONTROL` capability, narrowed by derivation (`SYS_IOPORT_CONTROL_NARROW`, T164/T171).  The kernel decides no device policy at all |
-| No kernel heap | **nearly met** | 17 permitted `kslab_alloc` occurrences across 14 files, all boot path or objects still staged; seL4 has none at all |
+| No kernel heap | **met** | The kernel's slab is a BOOT ARENA and it is SEALED at the end of boot: allocating from it afterwards panics.  seL4 has no kernel heap because its boot code carves the root task's initial objects from a statically-known region and describes everything else as Untyped — which is exactly what this is, now that the door shuts behind it.  The purity gate's reachability check runs with ZERO exemptions: no syscall handler can reach the allocator at all, and T318 reads the seal from ring 3 so the property cannot stop being true unobserved |
 | MCS scheduling | **close** | all four pillars are in as of Stage 8-mcs.  Budget and period are enforced; **sporadic replenishment** returns every tick consumed exactly one period later, so a thread can never spend more than its budget in any window of its period (host R-1..R-8); **timeout faults** make an overrun a policy decision a temporal supervisor takes rather than an invisible stall (`SYS_TCB_SET_TIMEOUT_HANDLER`, T307); and **SC donation** lends a client's scheduling context to a PASSIVE server for the duration of a Call, so an SC-less thread runs on the requester's time instead of — as it did before — running unbudgeted (T308).  `SYS_REPLY_RECV` closes the last of them (T309): without it a passive server is, between reply and receive, runnable with no scheduling context — and an SC-less thread is not charged, so it runs unbudgeted for exactly as long as the second syscall takes.  `refill_max` is now the SC's own, chosen at RETYPE and sizing the object (T315): a passive server woken per request needs a deep replenishment queue and a periodic task needs two, and the memory is charged to whoever asked for the depth instead of every SC paying for the worst case out of the kernel.  **Nothing in this dimension is still not seL4's** |
 | ABI shape | **far, by decision** | 68 live numbered syscalls of 127 numbers, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  Registered permanent divergence (charter §6) |
 | Kernel architecture | **met** | D-1, the only one of these that was a rewrite rather than an increment, is CLOSED.  IRIS has ONE kernel stack per core and no thread blocks inside the kernel.  No blocking syscall keeps live state across its block (step 1); a parked one abandons its frame (step 2, T310); the whole ring-3 register context lives in the TCB (step 3, T314); and `TSS.RSP0` is set once and never changes, because a DISPATCHER on the core's stack replaced `context_switch` — which is deleted, along with `task_yield`, `scheduler_sleep_current`, the idle task and `kstack_alloc`.  T318 measures the consequence from ring 3: eight threads, and the kernel's physical reserve does not move, where the old per-thread stacks would have cost two pages each |

@@ -19,6 +19,12 @@
  */
 void  kslab_init (uint64_t phys_base, uint32_t num_pages);
 void *kslab_alloc(uint32_t size);
+
+/* Seal the boot arena: after this, the allocator above PANICS.  Called once, at the
+ * end of boot, so "the kernel does not allocate after boot" is a fact the
+ * build enforces rather than a property the reader has to check. */
+void kslab_seal(void);
+int  kslab_is_sealed(void);
 void  kslab_free (void *ptr, uint32_t size);
 
 /* Phase 29 — capacity-contract observability (see

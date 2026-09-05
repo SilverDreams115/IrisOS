@@ -18023,6 +18023,8 @@ struct it_utq_global {
     uint32_t ipc_buffers;
     /* Stage 9-evt step 3: free pages in the kernel's physical allocator. */
     uint32_t kernel_free_pages;
+    /* Stage 9-evt: 1 once the kernel's boot arena is sealed. */
+    uint32_t kernel_heap_sealed;
 };
 struct it_utq_one {
     uint32_t version, struct_size;
@@ -23077,6 +23079,13 @@ static void test_t318(void) {
     struct it_utq_global g0, g1;
     if (!it_utq_g(&g0)) { it_fail("T318", "query"); return; }
     if (g0.kernel_free_pages == 0u) { it_fail("T318", "no pmm gauge"); return; }
+
+    /* The kernel's HEAP is sealed too, and this is the only place ring 3 can
+     * see it.  seL4 has none at all; IRIS's is a boot arena, and after boot
+     * `kslab_alloc` panics — so "the kernel does not allocate after boot" is a
+     * fact the build enforces rather than one a reader has to check.  Every
+     * test after this one runs inside that claim. */
+    if (!g0.kernel_heap_sealed) { it_fail("T318", "kernel heap not sealed"); return; }
 
     g_t318_ran = 0;
     long tids[T318_THREADS];
