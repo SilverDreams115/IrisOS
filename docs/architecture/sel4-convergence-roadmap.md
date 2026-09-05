@@ -21,7 +21,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 6-pure — the user retypes what the kernel charged | ✅ CLOSED (5 steps) |
 | 7 — KProcess retirement | ✅ CLOSED (15 steps + 7-mem + 7-proc) |
 | 8-mcs — Full MCS scheduling | ✅ CLOSED |
-| 8-cap — the capability model's last gaps | 🔶 IN PROGRESS (CNode guards landed below the root; D-4 open) |
+| 8-cap — the capability model's last gaps | 🔶 IN PROGRESS — D-2 (CNode guards, root included) and D-8 (preemptible revoke) CLOSED; D-4's mechanism landed and now waits on the memory server; D-3 is a decision still owed |
 | 9-evt — the event kernel (D-1) | 🔶 IN PROGRESS — **steps 1 and 2 CLOSED**: every blocking syscall is restart-safe, and a parked one ABANDONS its kernel frame and resumes on a fresh stack (T310).  Step 3 (one stack per core) needs the preemption path converted first |
 | 9 — SMP | pending |
 | 10 — General-purpose platform | pending |
@@ -68,7 +68,7 @@ two halves and they are far apart:
 |---|---|---|
 | Object model and creation | **very close** | every canonical object is retyped from Untyped; address spaces and CSpaces are retyped by their HOLDER (Stage 6-pure).  `KProcess` — the largest of the four object types seL4 has no equivalent for — is DELETED (Stage 7-proc).  Three remain, `KVMO`, `KInitrdEntry` and `KBootstrapCap`, all staged |
 | Capabilities (CSpace, CDT, revoke) | **close** | native CDT/MDB, recursive cross-process revoke, one namespace.  Gaps: no CNode guards (D-2), and a different rights set (D-3) |
-| IPC | **close** | endpoints, badges, reply objects, receive slots, no handle fallback, and `SYS_REPLY_RECV` — seL4's combined `ReplyRecv`, which a passive server needs so it never crosses the gap between returning its donated time and blocking again (Stage 8-mcs, T309).  Remaining gap: no per-thread IPC buffer object (D-4) |
+| IPC | **close** | endpoints, badges, reply objects, receive slots, no handle fallback, and `SYS_REPLY_RECV` — seL4's combined `ReplyRecv`, which a passive server needs so it never crosses the gap between returning its donated time and blocking again (Stage 8-mcs, T309).  Remaining gap: D-4, where the MECHANISM now exists (`SYS_TCB_SET_IPC_BUFFER`, T313) but every boot service still uses the 256-byte kernel staging, because a service has no Untyped of its own to retype a frame from |
 | No ambient authority | **nearly met** | boot authority is one capability per authority; what remains is the ioport whitelist.  Every per-process quota is gone (Stage 7) |
 | No kernel heap | **nearly met** | 17 permitted `kslab_alloc` occurrences across 14 files, all boot path or objects still staged; seL4 has none at all |
 | MCS scheduling | **close** | all four pillars are in as of Stage 8-mcs.  Budget and period are enforced; **sporadic replenishment** returns every tick consumed exactly one period later, so a thread can never spend more than its budget in any window of its period (host R-1..R-8); **timeout faults** make an overrun a policy decision a temporal supervisor takes rather than an invisible stall (`SYS_TCB_SET_TIMEOUT_HANDLER`, T307); and **SC donation** lends a client's scheduling context to a PASSIVE server for the duration of a Call, so an SC-less thread runs on the requester's time instead of — as it did before — running unbudgeted (T308).  `SYS_REPLY_RECV` closes the last of them (T309): without it a passive server is, between reply and receive, runnable with no scheduling context — and an SC-less thread is not charged, so it runs unbudgeted for exactly as long as the second syscall takes.  What is still not seL4's: `refill_max` is a constant rather than a per-SC configuration |
@@ -1574,7 +1574,7 @@ Not seL4's yet: `refill_max` is a compile-time constant (8 entries) rather than
 a per-SC configuration chosen at retype.  At tick granularity with a coalescing
 flush it has not been reachable; recorded rather than claimed closed.
 
-## Stage 8-cap — the capability model's last gaps  ← IN PROGRESS (D-2 and D-8 closed; D-4 remains)
+## Stage 8-cap — the capability model's last gaps  ← IN PROGRESS (D-2 and D-8 closed; D-4's mechanism landed, its adoption waits on the memory server; D-3 is a decision still owed)
 
 Four items, each a registered divergence or a measured hole.  All are additive:
 none of them is a rewrite, which is why they are grouped rather than staged
@@ -1613,12 +1613,18 @@ differently.
   the delta across a spawn/kill and a mint/revoke cycle, which is the shape a
   new productive producer would have.  Nothing is left for this stage to do on
   D-6.
-- **D-4 — a per-thread IPC buffer.**  Its trigger (frames from Untyped) fired
-  at Stage 6 and nobody acted on it.  Today every TCB carries 256 B of kernel
-  staging (`task.ipc_kbuf`) the user did not choose and did not pay for.  With
-  frames retyped, the seL4 shape is available: the user registers an IPC buffer
-  FRAME per TCB, and the message-register count and the extra-capability slots
-  become properties of a page somebody owns.
+- **D-4 — a per-thread IPC buffer.**  🔶 **MECHANISM LANDED; BLOCKED ON D-5/D-6.**
+  `SYS_TCB_SET_IPC_BUFFER` is seL4's `seL4_TCB_SetIPCBuffer`: a thread registers
+  a FRAME it retyped and mapped, and the kernel moves payloads between the two
+  ends' frames through its own physical window.  The size stops being a kernel
+  constant, no user pointer is named on either side, and the buffer is a
+  capability refused like one when it is not a writable frame (T313, host TB-9).
+  It is also less work than the path it replaces: three copies and two pointer
+  validations become one copy.  What remains is not kernel work — the 256-byte
+  `ipc_kbuf` survives because every boot SERVICE still takes that path, having
+  no Untyped budget of its own to retype a frame from.  That is the memory
+  server (D-5/D-6), so this row now waits on that one rather than on anything
+  of its own.
 - **D-2 — CNode guards.**  Resolution is a pure radix walk, so a CPtr's meaning
   is fixed by the CNode sizes along the path: no sparse layouts, no
   depth-limited lookup, and a two-level CSpace costs the full radix of each

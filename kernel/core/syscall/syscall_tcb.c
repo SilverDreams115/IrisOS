@@ -660,3 +660,84 @@ uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return syscall_err(IRIS_ERR_INVALID_ARG);
     return 0;
 }
+
+/*
+ * SYS_TCB_SET_IPC_BUFFER(tcb_cptr, frame_cptr, uvaddr) — ledger D-4.
+ *
+ * seL4's `seL4_TCB_SetIPCBuffer`, and the reason IRIS needs it: a message's
+ * bulk payload is staged today in 256 bytes that live INSIDE every TCB.  The
+ * user did not choose that size, did not pay for that memory, and cannot name
+ * it with a capability — three properties the charter denies the kernel
+ * everywhere else, surviving here only because IPC predates the capability
+ * model.  A registered frame fixes all three at once: the size is the frame's,
+ * the memory came out of the caller's Untyped, and the buffer IS a capability.
+ *
+ * It also removes work from the IPC path rather than adding it.  The staging
+ * path copies user → kernel at send, kernel → kernel at rendezvous, kernel →
+ * user at receive, and validates a user pointer on two of those.  Two threads
+ * with registered buffers exchange one copy, frame to frame, through the
+ * kernel's own window — no user pointer is named, so none can be revoked
+ * between the check and the copy.
+ *
+ * Authority: WRITE on the TCB (this changes how a thread receives messages)
+ * and READ|WRITE on the frame (the kernel both reads and writes it).  A
+ * registration REPLACES any previous one; passing CPTR_NULL as the frame
+ * unregisters, which is how a thread gives the page back before deleting it.
+ *
+ * The frame must be at least one page.  `uvaddr` must be page-aligned and a
+ * user address: the kernel does not use it for the transfer, but a
+ * registration whose owner cannot say where the page is mapped is a mistake,
+ * and refusing it here is cheaper than debugging it in a service.
+ */
+uint64_t sys_tcb_set_ipc_buffer(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *caller = task_current();
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *target; iris_rights_t rights;
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
+                                   RIGHT_WRITE, &target, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    struct KFrame *fr = 0;
+    if (arg1 != CPTR_NULL) {
+        struct KObject *f_obj; iris_rights_t f_rights;
+        err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg1,
+                                      RIGHT_NONE, KOBJ_FRAME,
+                                      &f_obj, &f_rights);
+        if (err != IRIS_OK) {
+            kobject_release(&target->base);
+            return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG
+                                                          : err);
+        }
+        if (!rights_check(f_rights, RIGHT_READ | RIGHT_WRITE)) {
+            kobject_release(f_obj); kobject_release(&target->base);
+            return syscall_err(IRIS_ERR_ACCESS_DENIED);
+        }
+        fr = (struct KFrame *)f_obj;
+        if (fr->size < 4096u || (arg2 & 0xFFFu) != 0u || arg2 == 0u ||
+            arg2 >= 0x0000800000000000ULL) {
+            kobject_release(f_obj); kobject_release(&target->base);
+            return syscall_err(IRIS_ERR_INVALID_ARG);
+        }
+    } else if (arg2 != 0u) {
+        /* Unregistering names no address. */
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+
+    struct KFrame *old;
+    uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
+    old = target->ipc_buffer;
+    if (fr) {
+        kobject_retain(&fr->base);
+        kobject_active_retain(&fr->base);
+    }
+    target->ipc_buffer        = fr;
+    target->ipc_buffer_uvaddr = fr ? arg2 : 0u;
+    irq_spinlock_unlock(&target->obj_lock, irqfl);
+
+    if (old) { kobject_active_release(&old->base); kobject_release(&old->base); }
+    if (fr)  kobject_release(&fr->base);   /* the resolve's ref */
+    kobject_release(&target->base);
+    return syscall_ok_u64(0);
+}

@@ -37,6 +37,7 @@ uint64_t sys_tcb_set_timeout_handler(uint64_t a0, uint64_t a1, uint64_t a2, uint
 uint64_t sys_tcb_watch(uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t sys_tcb_exit_code(uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t sys_tcb_self(uint64_t a0, uint64_t a1, uint64_t a2);
+uint64_t sys_tcb_set_ipc_buffer(uint64_t a0, uint64_t a1, uint64_t a2);
 
 static long tb_err(uint64_t r) { return (long)(int64_t)r; }
 
@@ -213,6 +214,45 @@ void test_syscall_tcb(void) {
         struct task *t = tb_caller(&root, TCB_SLOT, &target);
         ASSERT_NOT_NULL(t);
         ASSERT_EQ(tb_err(sys_tcb_self(0, 0, 0)), (long)IRIS_ERR_INVALID_ARG);
+        test_set_current_task(NULL);
+    }
+
+    /* ── TB-9: the IPC buffer is a capability, checked like one (D-4) ─────
+     * A thread's IPC buffer replaces 256 bytes of kernel staging with a frame
+     * the user retyped and mapped.  That only holds if the kernel refuses
+     * everything that is not such a frame — otherwise a "buffer" is whatever
+     * the caller says it is, and the kernel writes message payloads into it.
+     *
+     * The address is validated for the same reason a mapping address is: the
+     * kernel does not use it for the transfer, but it hands it back to the
+     * RECEIVER as where its message landed, so a nonsense value here becomes
+     * a nonsense pointer in somebody else's message. */
+    {
+        struct KCNode *root; struct task *target;
+        struct task *t = tb_caller(&root, TCB_SLOT, &target);
+        ASSERT_NOT_NULL(t);
+
+        const uint64_t VA = 0x8000400000ULL;
+
+        /* Not a TCB in arg0 — the CNode's own slot names the root CNode. */
+        ASSERT_EQ(tb_err(sys_tcb_set_ipc_buffer(999, TCB_SLOT, VA)),
+                  (long)IRIS_ERR_NOT_FOUND);
+        /* A TCB in arg1, where a frame belongs. */
+        ASSERT_EQ(tb_err(sys_tcb_set_ipc_buffer(TCB_SLOT, TCB_SLOT, VA)),
+                  (long)IRIS_ERR_INVALID_ARG);
+        /* An unpopulated slot is not a frame either. */
+        ASSERT_EQ(tb_err(sys_tcb_set_ipc_buffer(TCB_SLOT, 77, VA)),
+                  (long)IRIS_ERR_NOT_FOUND);
+        /* Unregistering may not smuggle an address in: "give it back" and
+         * "move it" must not be the same call. */
+        ASSERT_EQ(tb_err(sys_tcb_set_ipc_buffer(TCB_SLOT, 0, VA)),
+                  (long)IRIS_ERR_INVALID_ARG);
+        /* Unregistering a thread that has no buffer is a no-op, not an error:
+         * a server tearing down should not have to remember whether it ever
+         * registered one. */
+        ASSERT_EQ(tb_err(sys_tcb_set_ipc_buffer(TCB_SLOT, 0, 0)), 0L);
+        ASSERT_NULL(target->ipc_buffer);
+
         test_set_current_task(NULL);
     }
 

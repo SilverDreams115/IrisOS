@@ -617,6 +617,17 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         if (ts) { kobject_active_release(&ts->base); kobject_release(&ts->base); }
     }
 
+    /* D-4: the registered IPC buffer.  Held with active+lifecycle refs, so a
+     * thread that dies still owning its buffer gives the frame back and its
+     * Untyped can be reset — the page was the user's, not the kernel's. */
+    if (t->ipc_buffer) {
+        struct KFrame *b = t->ipc_buffer;
+        t->ipc_buffer = 0;
+        t->ipc_buffer_uvaddr = 0u;
+        kobject_active_release(&b->base);
+        kobject_release(&b->base);
+    }
+
     /* The watch's own reference, dropped after it has fired. */
     if (t->exit_notif) {
         struct KNotification *n = t->exit_notif;

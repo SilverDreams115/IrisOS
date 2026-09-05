@@ -420,6 +420,17 @@ uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* Stage 8-cap / D-2 — install a guard on a CNode capability. */
 uint64_t sys_cspace_set_guard(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* Stage 8-mcs — arm a thread's timeout fault handler. */
+uint64_t sys_tcb_set_ipc_buffer(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+
+/* D-4 — bulk payload routing, defined in syscall_endpoint.c and shared with
+ * syscall_reply.c.  See the comment block there. */
+uint8_t     *ipc_buf_kva(struct task *t);
+uint32_t     ipc_buf_capacity(struct task *t);
+iris_error_t ipc_stage_out(struct task *t);
+void         ipc_transfer_bulk(struct task *sender, struct task *receiver,
+                               int receiver_current);
+void         ipc_transfer_reply(struct task *server, struct task *caller,
+                                const struct IrisMsg *reply_msg);
 uint64_t sys_tcb_set_timeout_handler(uint64_t arg0, uint64_t arg1,
                                      uint64_t arg2, uint64_t arg3);
 /* Stage 8-mcs — atomic reply-then-receive (seL4_ReplyRecv). */

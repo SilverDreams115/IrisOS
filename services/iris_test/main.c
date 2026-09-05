@@ -10598,13 +10598,15 @@ static void test_t148(void) {
      * thread's budget exhaustion delivered as a fault to a temporal
      * supervisor.  Stage 8-mcs: 129 is SYS_REPLY_RECV — seL4's ReplyRecv,
      * which a passive server needs so it never crosses the gap between giving
-     * its donated time back and blocking again.  The first UNASSIGNED number
-     * moves up to 130.
+     * its donated time back and blocking again.  Stage 8-cap: 130 is
+     * SYS_TCB_SET_IPC_BUFFER — a thread's bulk-payload buffer becomes a frame
+     * it owns instead of 256 bytes inside its TCB (ledger D-4).  The first
+     * UNASSIGNED number moves up to 131.
      *
      * This loop caught the guard syscall the moment it landed, which is what
      * it is for: growing the syscall surface has to be a deliberate, visible
      * act rather than something a diff can do quietly. */
-    for (long n = 130; ok && n <= 400; n++) {
+    for (long n = 131; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -22005,6 +22007,213 @@ static void test_t312(void) {
     if (ok) it_pass("T312"); else it_fail("T312", why);
 }
 
+/* ── T313: a thread's IPC buffer is a FRAME it owns (ledger D-4) ─────────
+ *
+ * The bulk payload of a message was staged in 256 bytes living INSIDE every
+ * TCB.  Three things were wrong with that at once, and they are exactly the
+ * three the charter denies the kernel everywhere else: the user did not choose
+ * the size, did not pay for the memory, and could not name it with a
+ * capability.  seL4 has no such object — a thread registers an IPC BUFFER
+ * frame (`seL4_TCB_SetIPCBuffer`) and the kernel transfers between the two
+ * ends' frames through its own window.
+ *
+ * Four things are asserted, and each one is a separate claim:
+ *
+ *   1. registration is AUTHORITY-CHECKED — a non-TCB, a non-frame and a
+ *      nonsense address are all refused, and unregistering may not smuggle an
+ *      address in;
+ *   2. the payload travels with NO USER POINTER NAMED.  The client sets
+ *      `buf_uptr = 0` and the bytes still arrive, which is the observable
+ *      difference: there is no address for the kernel to validate and none for
+ *      a second thread to invalidate between the check and the copy;
+ *   3. the SIZE IS THE FRAME'S.  The payload here is deliberately larger than
+ *      IRIS_IPC_BUF_SIZE, so it could not have gone through the staging path
+ *      at all — the one leg that cannot pass by accident;
+ *   4. UNREGISTERING really goes back.  The same oversized send, with the
+ *      buffer given up, is clamped to the kernel constant again.
+ *
+ * Leg 4 is what keeps the row honest: until the services migrate, the staging
+ * path is still there, and a test that only proved the new path worked would
+ * let the old one rot unobserved.
+ * Invariants: M3, O2, A6. */
+#define T313_CLI_VA  0x807A000000ULL
+#define T313_SRV_VA  0x807B000000ULL
+#define T313_LEN     600u    /* deliberately > IRIS_IPC_BUF_SIZE (256) */
+
+static uint8_t g_t313_srv_stack[8192];
+static volatile long g_t313_ep, g_t313_reply, g_t313_srv_frame;
+static volatile int  g_t313_srv_ready, g_t313_srv_err;
+static volatile int  g_t313_srv_len, g_t313_srv_uptr_ok, g_t313_rounds;
+
+static void t313_server(void) {
+    long self = it_tcb_self_slot();
+    if (self < 0) { g_t313_srv_err = 1; g_t313_srv_ready = 1; for (;;) { } }
+    if (it_sys3(SYS_TCB_SET_IPC_BUFFER, self, (long)g_t313_srv_frame,
+                (long)T313_SRV_VA) != 0) {
+        g_t313_srv_err = 2; g_t313_srv_ready = 1; for (;;) { }
+    }
+    g_t313_srv_ready = 1;
+
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    if (it_sys3(SYS_EP_RECV, (long)g_t313_ep, (long)&m, (long)g_t313_reply) != 0) {
+        g_t313_srv_err = 3; for (;;) { }
+    }
+    for (;;) {
+        volatile uint8_t *b = (volatile uint8_t *)(uintptr_t)T313_SRV_VA;
+        g_t313_srv_len     = (int)m.buf_len;
+        g_t313_srv_uptr_ok = (m.buf_uptr == T313_SRV_VA);
+        /* The service: invert every byte, in place, in a page the server owns. */
+        for (uint32_t i = 0; i < m.buf_len && i < 4096u; i++)
+            b[i] = (uint8_t)(b[i] ^ 0xFFu);
+        g_t313_rounds++;
+        m.buf_uptr = 0;              /* naming nothing, on purpose */
+        if (it_sys3(SYS_REPLY_RECV, (long)g_t313_reply, (long)&m,
+                    (long)g_t313_ep) != 0)
+            break;
+    }
+    for (;;) { }
+}
+
+static uint8_t g_t313_stage_buf[1024];
+
+static void test_t313(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "ipc buffer frame";
+
+    if (!it_setup_self_vspace()) { it_fail("T313", "vspace self"); return; }
+
+    long self = it_tcb_self_slot();
+    long cfr  = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096u);
+    long sfr  = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096u);
+    if (self < 0 || cfr < 0 || sfr < 0) { it_fail("T313", "objects"); return; }
+    if (it_sys4(SYS_FRAME_MAP, cfr, IT_VS, (long)T313_CLI_VA, (long)IT_MAP_W) != 0 ||
+        it_sys4(SYS_FRAME_MAP, sfr, IT_VS, (long)T313_SRV_VA, (long)IT_MAP_W) != 0) {
+        it_fail("T313", "map"); return;
+    }
+
+    /* ── 1. registration is authority-checked ───────────────────────────*/
+    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, (long)IRIS_CPTR_TEST_UNTYPED, cfr,
+                      (long)T313_CLI_VA) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "non-TCB accepted";
+    }
+    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, (long)IRIS_CPTR_TEST_UNTYPED,
+                      (long)T313_CLI_VA) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "non-frame accepted";
+    }
+    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, cfr,
+                      (long)(T313_CLI_VA + 8u)) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "unaligned address accepted";
+    }
+    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, cfr,
+                      (long)0xFFFF800000000000ULL) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "kernel address accepted";
+    }
+    /* Unregistering names no address — otherwise "give it back" and "move it"
+     * would be the same call with a field nobody reads. */
+    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L,
+                      (long)T313_CLI_VA) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "unregister with an address accepted";
+    }
+    /* A frame cap without WRITE cannot become a buffer the kernel writes. */
+    if (ok) {
+        long ro = it_cs_reduce(cfr, RIGHT_READ);
+        if (ro < 0) { ok = 0; why = "reduce"; }
+        else if (it_sys3(SYS_TCB_SET_IPC_BUFFER, self, ro, (long)T313_CLI_VA)
+                 != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "read-only frame accepted";
+        }
+    }
+    if (!ok) { it_fail("T313", why); return; }
+
+    /* ── 2 and 3: a payload larger than the staging buffer, with no pointer ──*/
+    g_t313_ep    = it_ep_create_slot();
+    g_t313_reply = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                        IRIS_KOBJ_REPLY, 0);
+    g_t313_srv_frame = sfr;
+    g_t313_srv_ready = 0; g_t313_srv_err = 0;
+    g_t313_srv_len = -1;  g_t313_srv_uptr_ok = 0; g_t313_rounds = 0;
+    if (g_t313_ep < 0 || g_t313_reply < 0) { it_fail("T313", "ep/reply"); return; }
+
+    if (it_sys3(SYS_TCB_SET_IPC_BUFFER, self, cfr, (long)T313_CLI_VA) != 0) {
+        it_fail("T313", "register self"); return;
+    }
+
+    long srv = it_thread_create((uint64_t)(uintptr_t)t313_server,
+                                ((uint64_t)(uintptr_t)(g_t313_srv_stack +
+                                    sizeof(g_t313_srv_stack))) & ~0xFULL, 0);
+    if (srv < 0) { ok = 0; why = "server thread"; }
+    for (int i = 0; ok && i < 2000 && !g_t313_srv_ready; i++) (void)it_sys0(SYS_YIELD);
+    if (ok && !g_t313_srv_ready) { ok = 0; why = "server never registered"; }
+    if (ok && g_t313_srv_err)    { ok = 0; why = "server registration failed"; }
+
+    volatile uint8_t *cb = (volatile uint8_t *)(uintptr_t)T313_CLI_VA;
+    if (ok) {
+        for (uint32_t i = 0; i < T313_LEN; i++) cb[i] = (uint8_t)(i * 7u + 3u);
+
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label    = 0x313;
+        m.buf_len  = T313_LEN;
+        m.buf_uptr = 0;                  /* the point: no address is named */
+        if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m) != 0) {
+            ok = 0; why = "call failed";
+        }
+        if (ok && g_t313_srv_len != (int)T313_LEN) {
+            ok = 0; why = "server saw the wrong length";
+            it_fz_note("T313", (uint32_t)g_t313_srv_len, T313_LEN, 0u);
+        }
+        if (ok && !g_t313_srv_uptr_ok) {
+            ok = 0; why = "server was not told where its buffer is";
+        }
+        if (ok && m.buf_uptr != T313_CLI_VA) {
+            ok = 0; why = "client was not told where its buffer is";
+        }
+        if (ok && m.buf_len != T313_LEN) { ok = 0; why = "reply length lost"; }
+        /* The whole oversized payload came back inverted, in the client's own
+         * page.  256 bytes of kernel staging could not have carried it. */
+        for (uint32_t i = 0; ok && i < T313_LEN; i++) {
+            if (cb[i] != (uint8_t)(~(uint8_t)(i * 7u + 3u))) {
+                ok = 0; why = "payload wrong";
+                it_fz_note("T313", i, cb[i], (uint8_t)(~(uint8_t)(i * 7u + 3u)));
+            }
+        }
+    }
+
+    /* ── 4. unregistering really goes back to the staging path ──────────*/
+    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0) != 0) {
+        ok = 0; why = "unregister";
+    }
+    if (ok) {
+        for (uint32_t i = 0; i < T313_LEN; i++)
+            g_t313_stage_buf[i] = (uint8_t)(i * 7u + 3u);
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label    = 0x314;
+        m.buf_len  = T313_LEN;
+        m.buf_uptr = (uint64_t)(uintptr_t)g_t313_stage_buf;
+        if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m) != 0) {
+            ok = 0; why = "staged call failed";
+        }
+        /* Clamped to the kernel constant — which is the cost the frame exists
+         * to remove, still measurable while the row is MIGRATING. */
+        if (ok && m.buf_len != IRIS_IPC_BUF_SIZE) {
+            ok = 0; why = "staging path not clamped to the kernel constant";
+            it_fz_note("T313", (uint32_t)m.buf_len, IRIS_IPC_BUF_SIZE, 0u);
+        }
+        if (ok && g_t313_rounds != 2) { ok = 0; why = "server missed a round"; }
+    }
+
+    (void)it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0);
+    (void)it_sys1(SYS_TCB_EXIT, srv);
+    it_quiesce_reaper();
+    (void)it_sys3(SYS_FRAME_UNMAP, cfr, IT_VS, (long)T313_CLI_VA);
+    (void)it_sys3(SYS_FRAME_UNMAP, sfr, IT_VS, (long)T313_SRV_VA);
+
+    if (ok) it_pass("T313"); else it_fail("T313", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -22547,6 +22756,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t310();
     test_t311();
     test_t312();
+    test_t313();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

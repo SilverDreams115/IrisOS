@@ -120,18 +120,10 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Save reply bulk destination before staging the send bulk (same buf_uptr field). */
     uint64_t reply_buf_uptr = t->ipc_msg.buf_uptr;
 
-    /* Stage send bulk payload. */
-    t->ipc_kbuf_len = 0u;
-    if (t->ipc_msg.buf_len > 0u && t->ipc_msg.buf_uptr != 0u) {
-        uint32_t n = t->ipc_msg.buf_len;
-        if (n > IRIS_IPC_BUF_SIZE) n = IRIS_IPC_BUF_SIZE;
-        if (!user_range_readable(t->ipc_msg.buf_uptr, n) ||
-            !copy_from_user_checked(t->ipc_kbuf, t->ipc_msg.buf_uptr, n)) {
-            kobject_release(&ep->base);
-            return syscall_err(IRIS_ERR_INVALID_ARG);
-        }
-        t->ipc_kbuf_len    = n;
-        t->ipc_msg.buf_len = n;
+    /* Stage send bulk payload (D-4: from the registered frame if there is one). */
+    if (ipc_stage_out(t) != IRIS_OK) {
+        kobject_release(&ep->base);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
     }
 
     t->ep_call_mode     = 1u;
@@ -183,12 +175,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         receiver->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
         receiver->ipc_msg_ready           = 1u;
 
-        if (t->ipc_kbuf_len > 0u) {
-            copy_kbuf_r(receiver->ipc_kbuf, t->ipc_kbuf, t->ipc_kbuf_len);
-            receiver->ipc_kbuf_len = t->ipc_kbuf_len;
-        } else {
-            receiver->ipc_kbuf_len = 0u;
-        }
+        ipc_transfer_bulk(t, receiver, 0);
 
         t->ep_call_mode = 0u;
         irq_spinlock_unlock(&ep->lock, flags);
@@ -424,19 +411,10 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             syscall_ipc_stage_cap_abort(xfer_src_cn);
     }
 
-    /* Stage reply bulk directly into caller's ipc_kbuf (server's CR3 → kernel memory). */
-    caller->ipc_kbuf_len = 0u;
-    if (reply_msg.buf_len > 0u && reply_msg.buf_uptr != 0u) {
-        uint32_t n = reply_msg.buf_len;
-        if (n > IRIS_IPC_BUF_SIZE) n = IRIS_IPC_BUF_SIZE;
-        if (user_range_readable(reply_msg.buf_uptr, n) &&
-            copy_from_user_checked(caller->ipc_kbuf, reply_msg.buf_uptr, n)) {
-            caller->ipc_kbuf_len    = n;
-            caller->ipc_msg.buf_len = n;
-        } else {
-            caller->ipc_msg.buf_len = 0u;
-        }
-    }
+    /* D-4: the reply payload reaches the caller from wherever the server keeps
+     * it — its registered frame, or its user memory while we are still in its
+     * address space. */
+    ipc_transfer_reply(t, caller, &reply_msg);
 
     /*
      * Stage 8-mcs — the lent scheduling context goes home BEFORE the caller

@@ -344,6 +344,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_CSPACE_SET_GUARD:    return sys_cspace_set_guard(arg0, arg1, arg2);
         case SYS_TCB_SET_TIMEOUT_HANDLER:
                                       return sys_tcb_set_timeout_handler(arg0, arg1, arg2, arg3);
+        case SYS_TCB_SET_IPC_BUFFER:  return sys_tcb_set_ipc_buffer(arg0, arg1, arg2);
         case SYS_REPLY_RECV:          return sys_reply_recv(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);

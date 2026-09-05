@@ -1486,6 +1486,31 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_REPLY_RECV 129
 
+/*
+ * SYS_TCB_SET_IPC_BUFFER(tcb_cptr, frame_cptr, uvaddr) → 0 or -iris_error_t
+ *
+ * Ledger D-4.  Give a thread an IPC BUFFER of its own: a frame it retyped, at
+ * a size it chose, mapped where it chose, that the kernel uses instead of the
+ * 256 bytes of staging every TCB carries today.
+ *
+ *   tcb_cptr    the thread to configure — needs RIGHT_WRITE
+ *   frame_cptr  a KOBJ_FRAME cap with RIGHT_READ|RIGHT_WRITE, at least one
+ *               page; IRIS_CPTR_NULL unregisters
+ *   uvaddr      where the owner mapped that frame; page-aligned, user range,
+ *               and 0 exactly when unregistering
+ *
+ * With buffers registered on BOTH ends, an endpoint transfer copies frame to
+ * frame through the kernel's own window: no user pointer is named, so none
+ * can be revoked between the check and the copy, and `msg.buf_uptr` is
+ * ignored.  A thread with no registered buffer keeps the staging path, so
+ * mixed systems work and the two ends need not agree.
+ *
+ * Errors: INVALID_ARG (not a TCB, not a frame, frame smaller than a page,
+ * uvaddr not a page-aligned user address, or an address given while
+ * unregistering), ACCESS_DENIED (missing rights on either capability).
+ */
+#define SYS_TCB_SET_IPC_BUFFER 130
+
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
 #define IRIS_UNTYPED_QUERY_ONE     2u

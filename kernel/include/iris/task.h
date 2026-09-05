@@ -13,6 +13,7 @@ struct KReply;
 struct KCNode;
 struct KVSpace;
 struct KNotification;
+struct KFrame;
 
 #define TASK_MAX              256
 #define TASK_STACK_SIZE       8192  /* kernel stack per task */
@@ -448,6 +449,30 @@ struct task {
      * cap delivery, so it can never leak across operations. */
     uint32_t            ep_recv_slot;
     uint8_t             ipc_kbuf[IRIS_IPC_BUF_SIZE]; /* kernel-side bulk payload staging */
+    /*
+     * D-4 — the thread's IPC buffer, as a capability.
+     *
+     * A registered frame REPLACES the staging above for this thread: the user
+     * writes its payload into a page it owns, mapped where it chose, and the
+     * kernel transfers buffer-to-buffer through its own window on the two
+     * frames.  No user pointer is named per call, nothing is validated per
+     * call, and the size is the frame's rather than a kernel constant.
+     *
+     * NULL means the thread has not registered one and still goes through the
+     * staging path; that fallback is what the ledger's D-4 row calls
+     * MIGRATING, and it is what the boot services still use.
+     *
+     * `ipc_buffer_uvaddr` is where the OWNER mapped it.  The kernel does not
+     * need it to do the copy — it uses the frame's physical address — and
+     * keeps it because a thread's IPC buffer address is part of what a
+     * debugger, a fault handler or the thread itself has to be able to ask
+     * for, and because registering a frame the caller cannot name a mapping
+     * for is a mistake worth refusing at the door.
+     *
+     * Carries active + lifecycle refs while set.
+     */
+    struct KFrame      *ipc_buffer;
+    uint64_t            ipc_buffer_uvaddr;
     /* Ph74: optional scheduling context — retained KSchedContext ref (NULL = best-effort) */
     struct KSchedContext *sched_ctx;
     /* Ph85: reply capability fields */
