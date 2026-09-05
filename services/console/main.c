@@ -22,6 +22,7 @@
 #include <iris/console_ep_proto.h>
 #include <iris/ipc_msg.h>
 #include <iris/nc/error.h>
+#include "../common/iris_ipc_buffer.h"
 
 static inline long con_sys2(long nr, long a0, long a1) {
     return iris_syscall4((long)nr, (long)a0, (long)a1, (long)0L, (long)0);
@@ -51,7 +52,38 @@ static void con_uart_write_byte(handle_id_t ioport_h, uint8_t byte) {
  * con_drain_chan, CONSOLE_MSG_WRITE/SYNC) is retired — console is endpoint-only.
  * Its sole writers (svcmgr klog drain, init logging) now use console.ep. */
 
-static uint8_t g_con_ep_buf[IRIS_IPC_BUF_SIZE];
+/*
+ * The request buffer, and the two forms it can take (ledger D-4).
+ *
+ * `g_con_ep_buf` is the fallback: 256 bytes of BSS matched to the kernel's own
+ * staging, which is what a thread with no registered IPC buffer gets.  At
+ * startup console retypes a page from the Untyped it owns and registers it,
+ * and `g_con_buf` points there instead — the kernel then writes incoming
+ * payloads straight into that page and no user pointer is named on either
+ * side.
+ *
+ * The pointer indirection is the whole migration: everything below reads
+ * `g_con_buf` and `g_con_buf_cap`, so the two paths differ in one assignment
+ * at startup rather than in every use.
+ */
+static uint8_t  g_con_ep_buf[IRIS_IPC_BUF_SIZE];
+static uint8_t *g_con_buf     = g_con_ep_buf;
+static uint32_t g_con_buf_cap = IRIS_IPC_BUF_SIZE;
+
+/* Spare slots from the per-service range (16..29 are unassigned). */
+#define CON_SLOT_IPCBUF_FRAME  16u
+#define CON_SLOT_SELF_VS       17u
+#define CON_SLOT_SELF_TCB      18u
+#define CON_SLOT_IPCBUF_PT     19u
+
+static void con_ipc_buffer_init(void) {
+    void *b = iris_ipc_buffer_init(CON_SLOT_IPCBUF_FRAME, CON_SLOT_SELF_VS,
+                                   CON_SLOT_SELF_TCB, CON_SLOT_IPCBUF_PT,
+                                   IRIS_IPC_BUFFER_VA);
+    if (!b) return;                 /* keep the staging path; not fatal */
+    g_con_buf     = (uint8_t *)b;
+    g_con_buf_cap = 4096u;
+}
 
 static void con_imsg_zero(struct IrisMsg *msg) {
     uint8_t *raw = (uint8_t *)msg;
@@ -74,9 +106,9 @@ static void con_serve_ep_msg(handle_id_t ioport_h, struct IrisMsg *req) {
     switch (req->label) {
     case CONSOLE_EP_OP_WRITE: {
         uint32_t len = req->buf_len;
-        if (len > (uint32_t)sizeof(g_con_ep_buf)) len = (uint32_t)sizeof(g_con_ep_buf);
+        if (len > g_con_buf_cap) len = g_con_buf_cap;
         for (uint32_t i = 0; i < len; i++)
-            con_uart_write_byte(ioport_h, g_con_ep_buf[i]);
+            con_uart_write_byte(ioport_h, g_con_buf[i]);
         con_imsg_zero(&reply);
         reply.label      = IRIS_EP_REPLY_OK;
         reply.word_count = 1u;
@@ -122,13 +154,17 @@ void console_main_c(handle_id_t rbx_unused) {
 
     (void)rbx_unused;   /* RBX = 0 since the KChannel bootstrap retired */
 
+    /* D-4: a page console owns, registered as its IPC buffer.  Best-effort —
+     * failing leaves the kernel staging path, which still works. */
+    con_ipc_buffer_init();
+
     /* Endpoint-only main loop: block on the KEndpoint, serve, reply.
      * Phase S1: the explicit reply object (init retypes it from its untyped
      * pool and mints it at IRIS_CPTR_OWN_REPLY) rides in recv arg2. */
     for (;;) {
         struct IrisMsg req;
         con_imsg_zero(&req);
-        req.buf_uptr = (uint64_t)(uintptr_t)g_con_ep_buf;
+        req.buf_uptr = (uint64_t)(uintptr_t)g_con_buf;
         if (con_sys3(SYS_EP_RECV, (long)ep_h, (long)&req,
                      (long)IRIS_CPTR_OWN_REPLY) != IRIS_OK)
             continue;

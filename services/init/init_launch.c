@@ -130,7 +130,16 @@ int init_spawn_console(void) {
                                "console", &con_proc_h, &con_boot_h,
                                con_mints, n,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
-                               2u << 20, /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+                               2u << 20,
+                               /* Stage 6/D-5: console owns memory.  A service
+                                * holding no Untyped can create nothing — not a
+                                * frame, not a page table, not an IPC buffer —
+                                * and everything it needs has to be made for it
+                                * by somebody else.  Naming the sub-untyped its
+                                * address space is already charged to costs
+                                * nothing and removes that. */
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
+                               /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
     }
     /* console's slot-13 mint is the only reply cap: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_CONSOLE_RPLY);

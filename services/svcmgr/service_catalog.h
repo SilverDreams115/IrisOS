@@ -109,6 +109,13 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         .ioport_count = 5u,
         .give_console = 0u,
         .give_irqcap = 1u,
+        /* Stage 6/D-5: kbd owns memory.  A service that holds no Untyped can
+         * create nothing — not a frame, not a page table, not an IPC buffer —
+         * and every object it needs has to be made for it by somebody else.
+         * That is the shape the memory server exists to remove, and the cost
+         * of removing it here is zero: the sub-untyped its address space is
+         * already charged to is simply named in its own CSpace. */
+        .own_budget_slot = 12u,
         /* Phase 7.4: kbd owns a KEndpoint ("kbd.ep"); sh pulls key events
          * through it. Phase 7.6: the IRQ reaches kbd as a KNotification.
          * Phase 13/Track I: the legacy service/reply KChannel pair is retired —
@@ -173,6 +180,8 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
          * bootstrap bag; everything sh needs arrives as well-known CSpace
          * slots 1..4. Readiness tracks proc_h (svcmgr_ready_service_count). */
         .endpoint_only = 1u,
+        /* Stage 6/D-5: sh owns memory too — see the note on kbd above. */
+        .own_budget_slot = 12u,
         /* Phase 22: sh is the shell — it drives svcmgr discovery, vfs, console
          * output and kbd input, so it legitimately holds all four client caps. */
         .client_eps = IRIS_SVC_CLIENT_EP_SVCMGR | IRIS_SVC_CLIENT_EP_VFS |
