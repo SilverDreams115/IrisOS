@@ -2,7 +2,6 @@
 #include <iris/nc/kobject.h>
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kuntyped.h>
-#include <iris/nc/kvmo.h>
 #include <iris/kslab.h>
 #include <iris/paging.h>
 #include <iris/panic.h>
@@ -63,14 +62,13 @@ static void kframe_obj_close(struct KObject *obj) {
 static void kframe_obj_destroy(struct KObject *obj) {
     struct KFrame   *f      = (struct KFrame *)obj;
     struct KUntyped *parent = f->alloc_parent;
-    struct KVmo     *vmo    = f->vmo_owner;
 
     IRIS_ASSERT(
         atomic_load_explicit(&f->mapped_count, memory_order_relaxed) == 0,
         "kframe: destroy with active mappings — caller must unmap before release");
 
     atomic_fetch_sub_explicit(&kframe_live, 1u, memory_order_relaxed);
-    /* Read vmo/parent BEFORE this: it returns the storage, which for an
+    /* Read `parent` BEFORE this: it returns the storage, which for an
      * Untyped-born frame means zeroing the block this struct lives in. */
     kobject_storage_free(obj, (uint32_t)sizeof(struct KFrame), 0);
 
@@ -79,13 +77,6 @@ static void kframe_obj_destroy(struct KObject *obj) {
     if (parent) {
         atomic_fetch_sub_explicit(&parent->child_count, 1u, memory_order_relaxed);
         kobject_release(&parent->base);
-    }
-    if (vmo) {
-        /* Release the VMO retain held since kframe_alloc_vmo_page.
-         * If this was the last retain, kvmo_destroy runs and frees the physical page.
-         * Ordering is safe: mapped_count was 0 before the storage went back, so
-         * no PTE can reference this physical address at this point. */
-        kobject_release(&vmo->base);
     }
 }
 
@@ -117,7 +108,6 @@ struct KFrame *kframe_alloc_at(void *mem, uint64_t paddr, uint64_t size) {
     f->paddr        = paddr;
     f->size         = size;
     f->alloc_parent = NULL;   /* the header block holds the child accounting */
-    f->vmo_owner    = NULL;
     atomic_store_explicit(&f->mapped_count, 0u, memory_order_relaxed);
     atomic_fetch_add_explicit(&kframe_live, 1u, memory_order_relaxed);
     return f;
@@ -134,7 +124,6 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
     f->paddr        = paddr;
     f->size         = size;
     f->alloc_parent = alloc_parent;
-    f->vmo_owner    = NULL;
     atomic_store_explicit(&f->mapped_count, 0u, memory_order_relaxed);
     atomic_fetch_add_explicit(&kframe_live, 1u, memory_order_relaxed);
 
@@ -145,25 +134,6 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
     return f;
 }
 
-struct KFrame *kframe_alloc_vmo_page(uint64_t paddr, struct KVmo *vmo) {
-    if (!vmo) return NULL;
-
-    /* Stage 6 Step 6: the header for a VMO page comes out of the VMO's own
-     * budget — the same one its page came from.  This is the frequent runtime
-     * path (one per mapped page), so leaving it on the kernel slab would mean
-     * a process could still grow kernel memory by mapping. */
-    /* Always the VMO's pool: a VMO cannot exist without one since
-     * `kvmo_alloc_in` stopped accepting NULL, and the slab fallback that used
-     * to be here had no reachable caller left. */
-    if (!vmo->pool) return NULL;
-    void *hdr = kuntyped_alloc_child_top(vmo->pool, sizeof(struct KFrame));
-    if (!hdr) return NULL;
-    struct KFrame *f = kframe_alloc_at(hdr, paddr, 4096u);
-    if (!f) { kuntyped_release_child(hdr, sizeof(struct KFrame)); return NULL; }
-    kobject_retain(&vmo->base);
-    f->vmo_owner = vmo;
-    return f;
-}
 
 iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
                               uint64_t user_va, uint64_t map_flags)

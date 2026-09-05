@@ -24,6 +24,9 @@ typedef enum {
     KOBJ_CHANNEL,
     KOBJ_NOTIFICATION,
     KOBJ_BOOTSTRAP_CAP,
+    /* KOBJ_VMO is RESERVED, not removed (ledger D-5), for the reason above:
+     * the enumerator's VALUE is the wire type SYS_CAP_IDENTIFY reports.
+     * struct KVmo is deleted and nothing creates one. */
     KOBJ_VMO,
     KOBJ_IRQ_CAP,      /* authorizes routing a specific hardware IRQ line */
     KOBJ_IOPORT,       /* authorizes IN/OUT access to a contiguous I/O port range */

@@ -19,9 +19,10 @@
  *
  *   Kernel-owned state (this header):
  *     Queried via SYS_DIAG_SNAPSHOT → iris_diag_snapshot written to user buffer.
- *     Includes: task count, KProcess/KNotification/KVmo live/max pressure,
- *     IRQ routes, and scheduler ticks.  (The KChannel slots are retired,
- *     Phase 13/Track G — kept at their offsets, always 0.)
+ *     Includes: task count, KNotification live/max pressure, IRQ routes,
+ *     and scheduler ticks.  (The KChannel slots are retired, Phase
+ *     13/Track G, and the KVmo slots with ledger D-5 — all kept at their
+ *     offsets, always 0.)
  *
  *   Service-owned state (per-service STATUS channels):
  *     svcmgr:  SVCMGR_MSG_STATUS → SVCMGR_MSG_STATUS_REPLY  (svcmgr_proto.h)
@@ -46,8 +47,8 @@
  *   off 44: uint32_t kchan_max       RETIRED — reserved slot, always 0
  *   off 48: uint32_t knotif_live     live KNotification objects
  *   off 52: uint32_t knotif_max      0 => no static allocator ceiling
- *   off 56: uint32_t kvmo_live       live KVmo objects
- *   off 60: uint32_t kvmo_max        0 => no static allocator ceiling
+ *   off 56: uint32_t _rsv_vmo_live   RESERVED (was kvmo_live; D-5)
+ *   off 60: uint32_t _rsv_vmo_max    RESERVED (was kvmo_max;  D-5)
  *
  * ── Version ──────────────────────────────────────────────────────────────────
  *   Bump IRIS_DIAG_VERSION when any field layout changes.
@@ -111,8 +112,8 @@ struct iris_diag_snapshot {
     uint32_t kchan_max;           /* RETIRED — reserved, 0                      */
     uint32_t knotif_live;         /* live KNotification objects                */
     uint32_t knotif_max;          /* 0 => no static allocator ceiling          */
-    uint32_t kvmo_live;           /* live KVmo objects                         */
-    uint32_t kvmo_max;            /* 0 => no static allocator ceiling          */
+    uint32_t _rsv_vmo_live;       /* RESERVED: was kvmo_live (ledger D-5)      */
+    uint32_t _rsv_vmo_max;        /* RESERVED: was kvmo_max  (ledger D-5)      */
 };  /* 64 bytes */
 
 #endif /* !__ASSEMBLER__ */

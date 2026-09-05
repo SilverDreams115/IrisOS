@@ -94,44 +94,9 @@ uint32_t test_restart_count(void) { return syscall_restart_count(); }
  * compiles — provides kvspace_register_bootstrap_frame for real.  A stub here
  * would shadow the thing under test. */
 
-/* ── Minimal test VMO stub ─────────────────────────────────────────────────
- * Creates a bare-bones KVmo (sparse=0, owned=0, no pages[], no PMM) suitable
- * for unit tests that exercise kframe_alloc_vmo_page / kframe_obj_destroy
- * without pulling full kvmo.c (which needs pmm_alloc_pages / PHYS_TO_VIRT).
- * Destroy calls kslab_free only — no PMM.
- * ─────────────────────────────────────────────────────────────────────────── */
-#include <iris/nc/kvmo.h>
-
-static void kvmo_stub_destroy(struct KObject *o) {
-    kslab_free(o, (uint32_t)sizeof(struct KVmo));
-}
-static const struct KObjectOps kvmo_stub_ops_val = {
-    .destroy = kvmo_stub_destroy,
-};
-
-/*
- * A VMO for the host suite, WITH a pool — because a VMO without one cannot
- * exist in the kernel any more.
- *
- * `kvmo_alloc_in` refuses a NULL budget and `kframe_alloc_vmo_page` carves its
- * header from the VMO's own, so a stub that left `pool` at zero was modelling
- * an object the kernel cannot construct: the frame allocation simply returned
- * NULL, which is the right answer to the wrong question.
- */
-struct KVmo *kvmo_make_stub(void) {
-    struct KVmo *v = (struct KVmo *)kslab_alloc((uint32_t)sizeof(struct KVmo));
-    if (!v) return NULL;
-    memset(v, 0, sizeof(*v));
-    kobject_init(&v->base, KOBJ_VMO, &kvmo_stub_ops_val);
-
-    void *region = aligned_alloc(4096u, 64u * 1024u);
-    if (region) {
-        struct KUntyped *pool =
-            kuntyped_create((uint64_t)(uintptr_t)region, 64u * 1024u, 0);
-        if (pool) v->pool = pool;      /* the stub keeps the reference */
-    }
-    return v;
-}
+/* The test VMO stub is DELETED with the object it modelled (ledger D-5).  It
+ * existed so kframe_alloc_vmo_page had something to retain; there is no such
+ * call, and no second owner for a frame's physical page. */
 
 /* ── iris_panic stub — calls abort() so lifecycle assertions are loud ────── */
 #include <iris/nc/kuntyped.h>

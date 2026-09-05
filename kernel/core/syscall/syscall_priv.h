@@ -14,7 +14,6 @@
 #include <iris/pmm.h>
 #include <iris/kslab.h>
 #include <iris/nc/kbootcap.h>
-#include <iris/nc/kvmo.h>
 #include <iris/nc/knotification.h>
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kirqcap.h>

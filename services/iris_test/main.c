@@ -4906,7 +4906,6 @@ static int it_task_live(uint32_t *out) {
  * per-process `vmos_usage` the retired SYS_RESOURCE_INFO reported, and it is
  * the stronger of the two: a leak by ANY principal shows here, where the
  * per-process form only ever caught the caller's own. */
-#define IT_S3_VMO     5u   /* KVmo objects live     */
 
 static int it_sched_ext3(uint32_t w3[6]) {
     uint8_t buf[136];
@@ -10597,7 +10596,6 @@ struct it_snap {
     uint32_t hlive, ghwm, hmax;    /* handle-table live / global hwm / max */
     uint32_t proclive, reply;      /* live processes / reply-caps-created (cumulative) */
     uint32_t ut, fr, ep, no, cn;   /* live untyped/frame/endpoint/notif/cnode */
-    uint32_t vmo;                  /* live KVmo objects (Stage 7-mem) */
     uint32_t vs, map;              /* live VSpace / mapping nodes */
     uint32_t fdeliver, fclean;     /* cumulative fault delivery / cleanup */
     uint8_t  ok;
@@ -10612,7 +10610,7 @@ static struct it_snap it_snap_take(void) {
     s.hlive = e[IT_SI_LIVE]; s.ghwm = e[IT_SI_GHWM]; s.hmax = e[IT_SI_MAX];
     s.proclive = e[IT_SI_PROCLIVE]; s.reply = e[IT_SI_REPLY];
     s.ut = w3[IT_S3_UNTYPED]; s.fr = w3[IT_S3_FRAME]; s.ep = w3[IT_S3_EP];
-    s.no = w3[IT_S3_NOTIF]; s.cn = w3[IT_S3_CNODE]; s.vmo = w3[IT_S3_VMO];
+    s.no = w3[IT_S3_NOTIF]; s.cn = w3[IT_S3_CNODE];
     s.vs = w4[IT_S4_VSLIVE]; s.map = w4[IT_S4_MAPLIVE];
     s.fdeliver = w5[IT_S5_DELIVER]; s.fclean = w5[IT_S5_CLEAN];
     s.ok = 1;
@@ -10658,7 +10656,7 @@ static int it_snap_baseline_live(const struct it_snap *a, const struct it_snap *
     if (b->hlive != a->hlive)      { *why = "handle leak"; return 0; }
     if (b->vs != a->vs)            { *why = "vspace drift"; return 0; }
     if (b->map != a->map)          { *why = "mapping drift"; return 0; }
-    if (b->vmo != a->vmo)          { *why = "vmo drift"; return 0; }
+    if (b->fr != a->fr)            { *why = "frame drift"; return 0; }
     return 1;
 }
 
@@ -18908,7 +18906,7 @@ static void test_t250(void) {
         if (ok) {
             struct it_snap rz = it_snap_take();
             if (!rz.ok) { ok = 0; why = "round rinfo"; }
-            else if (rz.vmo != s0.vmo) { ok = 0; why = "round vmo drift"; }
+            else if (rz.fr != s0.fr) { ok = 0; why = "round frame drift"; }
             struct it_snap r = it_snap_take();
             if (ok && !it_snap_baseline_live(&b, &r, &why)) ok = 0;
         }

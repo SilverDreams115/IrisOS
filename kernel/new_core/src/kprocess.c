@@ -3,7 +3,6 @@
 #include <iris/nc/kframe.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/knotification.h>
-#include <iris/nc/kvmo.h>
 #include <iris/nc/kvspace.h>
 #include <iris/nc/rights.h>
 #include <iris/irq_routing.h>

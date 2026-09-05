@@ -349,15 +349,16 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
              *     space and for the root task's pre-Untyped bootstrap maps.
              *     Every other user page table is charged to an Untyped since
              *     Stage 6 Step 2 (`paging_map_checked_in_from`).
-             *   • kvmo_create: pages[] metadata array (pmm_alloc_pages)
-             *   • sys_initrd_vmo: ELF copy pages (pmm_alloc_page × page_capacity)
-             *   • kstack_alloc: 2 pages per task kernel stack
              *   • paging_create_user: 1 page per process PML4
              *
-             * Phase 6: kernel-side demand paging has been removed.  User pages are
-             * now allocated eagerly in sys_vmo_map / sys_vmo_map_into and charged
-             * against the process quota at syscall time, not at fault time.  The
-             * PMM reserve covers only the kernel-internal allocators listed above.
+             * Ledger D-5 took three entries off this list — kvmo_create's page
+             * array, sys_initrd_vmo's ELF copy pages, and (with D-1) the
+             * per-task kernel stacks.  None of them was a kernel-internal
+             * allocation that a holder could not have made itself, which is
+             * what the reserve is for.
+             *
+             * Kernel-side demand paging is gone: user pages come from an
+             * Untyped a holder names, at the moment it says so.
              *
              * The post-alloc check (after pmm_alloc_block) handles the case
              * where a large block would push pmm_free_pages below the reserve;

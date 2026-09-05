@@ -66,17 +66,16 @@
  *           address space's own settle drops every retain (Stage 7-proc: the
  *           frames belong to the space they are mapped in, not to a process).
  *
- * Tests (FR-51..FR-62): Phase 6.3 — VMO-to-Frame capability migration.
- *   [FR-51] kframe_alloc_vmo_page sets vmo_owner; kframe_alloc sets vmo_owner=NULL.
- *   [FR-52] kframe_alloc_vmo_page returns NULL for NULL vmo.
- *   [FR-53] kframe_alloc_vmo_page retains VMO refcount; releasing last frame restores it.
+ * Tests (FR-54..FR-62): frame lifetime under mappings.
+ *   FR-51..FR-53 RETIRED with the KVmo (ledger D-5): they tested that a frame
+ *   retained the memory object owning its page.  Physical memory has one owner.
  *   [FR-54] kvspace_unmap_page removes PTE, decrements mapping_count, releases frame.
  *   [FR-55] kvspace_unmap_page returns IRIS_ERR_NOT_FOUND for unmapped VA.
  *   [FR-56] kvspace_unmap_page returns IRIS_ERR_BAD_HANDLE for invalidated VSpace.
- *   [FR-57] VMO retain released only after all KFrame mappings removed (destroy order).
- *   [FR-58] Same VMO mapped in two VSpaces; invalidating one does not affect the other.
+ *   [FR-57] A frame outlives its last CAPABILITY but not its last MAPPING.
+ *   [FR-58] Same page mapped in two VSpaces; invalidating one leaves the other.
  *   [FR-59] kvspace_unmap_page handles multiple distinct VAs in the same VSpace.
- *   [FR-60] kframe_alloc_vmo_page followed by kframe_map_page tracks in vs->mappings.
+ *   [FR-60] kframe_map_page registers in vs->mappings; invalidate gives it back.
  *   [FR-61] kframe_map_page with flags > 3 returns IRIS_ERR_INVALID_ARG.
  *   [FR-62] Dynamic pool can hold far more than 32 entries without failure.
  *
@@ -112,14 +111,11 @@
 #include <iris/nc/kprocess.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
-#include <iris/nc/kvmo.h>
 #include <iris/paging.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <stdlib.h>
 
-/* Declared in stubs.c — minimal KVmo with no PMM dependency, for unit tests. */
-struct KVmo *kvmo_make_stub(void);
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
@@ -1033,50 +1029,18 @@ void test_kframe(void) {
         paging_stub_reset();
     }
 
-    /* ── Phase 6.3: VMO-to-Frame capability migration tests ──────────────── */
-
-    /* FR-51: kframe_alloc_vmo_page sets vmo_owner; kframe_alloc sets vmo_owner=NULL. */
-    {
-        struct KVmo *v = kvmo_make_stub();
-        ASSERT_NOT_NULL(v);
-
-        struct KFrame *f1 = kframe_alloc(0x50000000ULL, 4096, NULL);
-        ASSERT_NOT_NULL(f1);
-        ASSERT_NULL(f1->vmo_owner);
-
-        struct KFrame *f2 = kframe_alloc_vmo_page(0x51000000ULL, v);
-        ASSERT_NOT_NULL(f2);
-        ASSERT_EQ(f2->vmo_owner, v);
-
-        kobject_release(&f1->base);
-        kobject_release(&f2->base); /* triggers kframe_obj_destroy → releases vmo retain */
-        kobject_release(&v->base);  /* drop alloc retain */
-    }
-
-    /* FR-52: kframe_alloc_vmo_page returns NULL for NULL vmo. */
-    {
-        struct KFrame *f = kframe_alloc_vmo_page(0x52000000ULL, NULL);
-        ASSERT_NULL(f);
-    }
-
-    /* FR-53: kframe_alloc_vmo_page retains VMO refcount; releasing last frame
-     * restores VMO refcount to its pre-alloc value. */
-    {
-        struct KVmo *v = kvmo_make_stub();
-        ASSERT_NOT_NULL(v);
-        uint32_t rc_before = atomic_load(&v->base.refcount);
-
-        struct KFrame *f = kframe_alloc_vmo_page(0x53000000ULL, v);
-        ASSERT_NOT_NULL(f);
-        /* kframe_alloc_vmo_page did kobject_retain(vmo) → refcount incremented. */
-        ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)(rc_before + 1));
-
-        /* Release frame alloc retain.  kframe_obj_destroy → kobject_release(vmo). */
-        kobject_release(&f->base);
-        ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)rc_before);
-
-        kobject_release(&v->base);
-    }
+    /* ── Phase 6.3: frame lifetime under mappings ─────────────────────────
+     *
+     * FR-51..FR-53 RETIRED with the object (ledger D-5).  Their subject was
+     * kframe_alloc_vmo_page: a frame that pointed at a KVmo owning its
+     * physical page, retaining it so the VMO outlived every frame over it.
+     * Physical memory has one owner now — the Untyped the frame was retyped
+     * from — so there is no second object for a frame to keep alive.
+     *
+     * What that chain was really proving is below, said about the frame: a
+     * mapping holds its frame, and the frame dies when the last mapping does,
+     * not when the last capability does.  That property did not retire; it
+     * moved down one level, which is where it always belonged. */
 
     /* FR-54: kvspace_unmap_page removes PTE, decrements mapping_count, and
      * releases the frame retain (mapped_count → 0). */
@@ -1130,48 +1094,44 @@ void test_kframe(void) {
         paging_stub_reset();
     }
 
-    /* FR-57: VMO retain released only after all KFrame mappings for that VMO
-     * are removed via kvspace_unmap_page.  Verifies correct destroy ordering:
-     * kvspace_unmap_page → mapped_count=0 → kframe_obj_destroy → vmo release. */
+    /* FR-57: a frame outlives its last CAPABILITY but not its last MAPPING.
+     * Dropping the alloc retain while a PTE points at the frame must leave it
+     * alive; kvspace_unmap_page then takes the mapping retain and the frame is
+     * destroyed exactly once, with mapped_count already back at zero. */
     {
         paging_stub_reset();
-        struct KVmo *v = kvmo_make_stub();
-        ASSERT_NOT_NULL(v);
-        uint32_t vmo_rc_alloc = atomic_load(&v->base.refcount);
-
         struct KVSpace *vs = kvspace_alloc(0xCC3000ULL);
         ASSERT_NOT_NULL(vs);
         uint64_t va = USER_PRIVATE_BASE + 0x2000ULL;
 
-        struct KFrame *f = kframe_alloc_vmo_page(0x57000000ULL, v);
+        struct KFrame *f = kframe_alloc(0x57000000ULL, 4096, NULL);
         ASSERT_NOT_NULL(f);
-        /* vmo retain count: vmo_rc_alloc+1 (frame retain). */
-        ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)(vmo_rc_alloc + 1));
+        uint32_t rc_alloc = atomic_load(&f->base.refcount);
 
         kframe_map_page(f, vs, va, 0u);
-        kobject_release(&f->base); /* drop alloc retain; mapping retain still holds */
-        /* Frame is still alive (mapping retain). VMO retain unchanged. */
-        ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)(vmo_rc_alloc + 1));
+        /* The mapping took a retain of its own. */
+        ASSERT_EQ((int)atomic_load(&f->base.refcount), (int)(rc_alloc + 1));
+        kobject_release(&f->base);   /* drop the alloc retain */
+        /* Still alive, still mapped: the PTE is holding it. */
+        ASSERT_EQ((int)atomic_load(&f->base.refcount), (int)rc_alloc);
+        ASSERT_EQ((int)atomic_load(&f->mapped_count), 1);
+        ASSERT_NE(paging_virt_to_phys_in(0xCC3000ULL, va), (uint64_t)0);
 
-        /* kvspace_unmap_page: removes mapping node, releases frame mapping retain.
-         * Frame refcount hits 0 → kframe_obj_destroy → kobject_release(vmo). */
+        /* Unmapping takes the last retain — kframe_obj_destroy asserts
+         * mapped_count == 0, so this also proves the decrement happens first. */
         kvspace_unmap_page(vs, va);
-        ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)vmo_rc_alloc);
+        ASSERT_EQ((int)vs->mapping_count, 0);
+        ASSERT_EQ(paging_virt_to_phys_in(0xCC3000ULL, va), (uint64_t)0);
 
         kvspace_free(vs);
-        kobject_release(&v->base); /* drop alloc retain → vmo destroy */
         paging_stub_reset();
     }
 
-    /* FR-58: Same VMO mapped in two VSpaces.  Invalidating one VSpace releases
-     * that VSpace's KFrame retain; the other VSpace and its frame retain remain
-     * live until it is also invalidated. */
+    /* FR-58: the same physical page mapped in two address spaces.  Each
+     * mapping holds its own frame; invalidating one space tears down only its
+     * own, and the other stays mapped and intact. */
     {
         paging_stub_reset();
-        struct KVmo *v = kvmo_make_stub();
-        ASSERT_NOT_NULL(v);
-        uint32_t vmo_rc_alloc = atomic_load(&v->base.refcount);
-
         uint64_t paddr = 0x58000000ULL;
         uint64_t va    = USER_PRIVATE_BASE + 0x3000ULL;
 
@@ -1182,31 +1142,32 @@ void test_kframe(void) {
         kobject_retain(&vs1->base);
         kobject_retain(&vs2->base);
 
-        struct KFrame *f1 = kframe_alloc_vmo_page(paddr, v);
-        struct KFrame *f2 = kframe_alloc_vmo_page(paddr, v);
+        struct KFrame *f1 = kframe_alloc(paddr, 4096, NULL);
+        struct KFrame *f2 = kframe_alloc(paddr, 4096, NULL);
         ASSERT_NOT_NULL(f1);
         ASSERT_NOT_NULL(f2);
-        /* Two frame retains on VMO. */
-        ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)(vmo_rc_alloc + 2));
 
         kframe_map_page(f1, vs1, va, 0u);
         kframe_map_page(f2, vs2, va, 0u);
         kobject_release(&f1->base); /* drop alloc retain; mapping retain lives */
         kobject_release(&f2->base);
+        ASSERT_EQ((int)vs1->mapping_count, 1);
+        ASSERT_EQ((int)vs2->mapping_count, 1);
 
-        /* Invalidate vs1: releases f1 mapping retain → kframe_obj_destroy → vmo--. */
         kvspace_invalidate(vs1);
-        ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)(vmo_rc_alloc + 1));
+        ASSERT_EQ((int)vs1->mapping_count, 0);
+        /* vs2 is untouched: its mapping, and its frame, are its own. */
+        ASSERT_EQ((int)vs2->mapping_count, 1);
+        ASSERT_EQ((int)atomic_load(&f2->mapped_count), 1);
+        ASSERT_NE(paging_virt_to_phys_in(0xCC5000ULL, va), (uint64_t)0);
 
-        /* vs2 still intact; f2 still holds VMO retain. */
         kvspace_invalidate(vs2);
-        ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)vmo_rc_alloc);
+        ASSERT_EQ((int)vs2->mapping_count, 0);
 
         kobject_release(&vs1->base);
         kobject_release(&vs2->base);
         kvspace_free(vs1);
         kvspace_free(vs2);
-        kobject_release(&v->base);
         paging_stub_reset();
     }
 
@@ -1243,35 +1204,32 @@ void test_kframe(void) {
         paging_stub_reset();
     }
 
-    /* FR-60: kframe_alloc_vmo_page + kframe_map_page registers in vs->mappings;
-     * kvspace_invalidate releases the VMO retain held via vmo_owner. */
+    /* FR-60: kframe_map_page registers in vs->mappings, and kvspace_invalidate
+     * releases every mapping retain the address space was holding. */
     {
         paging_stub_reset();
-        struct KVmo *v = kvmo_make_stub();
-        ASSERT_NOT_NULL(v);
-        uint32_t vmo_rc_alloc = atomic_load(&v->base.refcount);
-
         struct KVSpace *vs = kvspace_alloc(0xCC7000ULL);
         ASSERT_NOT_NULL(vs);
         kobject_retain(&vs->base);
         uint64_t va = USER_PRIVATE_BASE + 0x6000ULL;
 
-        struct KFrame *f = kframe_alloc_vmo_page(0x60000000ULL, v);
+        struct KFrame *f = kframe_alloc(0x60000000ULL, 4096, NULL);
         ASSERT_NOT_NULL(f);
-        ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)(vmo_rc_alloc + 1));
+        uint32_t rc_alloc = atomic_load(&f->base.refcount);
 
         kframe_map_page(f, vs, va, 0u);
-        kobject_release(&f->base); /* drop alloc retain */
+        ASSERT_EQ((int)atomic_load(&f->base.refcount), (int)(rc_alloc + 1));
         ASSERT_EQ((int)vs->mapping_count, 1);
 
         kvspace_invalidate(vs);
         ASSERT_EQ((int)vs->mapping_count, 0);
-        /* Frame destroy released vmo retain. */
-        ASSERT_EQ((int)atomic_load(&v->base.refcount), (int)vmo_rc_alloc);
+        /* The space gave the retain back; only the alloc retain is left. */
+        ASSERT_EQ((int)atomic_load(&f->base.refcount), (int)rc_alloc);
+        ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
 
+        kobject_release(&f->base);
         kobject_release(&vs->base);
         kvspace_free(vs);
-        kobject_release(&v->base);
         paging_stub_reset();
     }
 

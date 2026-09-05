@@ -8,8 +8,6 @@
 #include <iris/nc/rights.h>
 #include <iris/nc/kuntyped.h>
 
-/* Forward declaration — full definition in iris/nc/kvmo.h. */
-struct KVmo;
 
 /*
  * KFrame — Frame capability object (Phase 5).
@@ -31,12 +29,11 @@ struct KVmo;
  *   Physical memory lifetime is managed externally (task struct fields);
  *   KFrame destroy only calls kslab_free.
  *
- * VMO-backed frames (Phase 6.3):
- *   kframe_alloc_vmo_page creates a KFrame with alloc_parent=NULL and
- *   vmo_owner=v (retaining v).  Physical memory is owned by the VMO.
- *   kframe_obj_destroy releases the vmo_owner retain; this delays kvmo_destroy
- *   (and thus pmm_free_page on VMO pages) until all KFrames for the VMO's
- *   pages are destroyed, ensuring no use-after-free in the page table.
+ * VMO-backed frames are GONE (ledger D-5).  A KFrame used to be able to point
+ * at a KVmo that owned its physical page, so destroying the frame only delayed
+ * the VMO's destruction.  Physical memory has one owner now — the Untyped the
+ * frame was retyped from — and the frame either has an alloc_parent or is a
+ * bootstrap frame whose memory the boot path owns.
  *
  * Mapping lifecycle (Phase 5.1):
  *   mapped_count tracks how many PTEs currently point at this frame across
@@ -48,8 +45,7 @@ struct KFrame {
     struct KObject   base;          /* must be first */
     uint64_t         paddr;         /* physical base (PAGE_SIZE aligned) */
     uint64_t         size;          /* byte size (PAGE_SIZE multiple, >= 4096) */
-    struct KUntyped *alloc_parent;  /* parent for child_count bookkeeping; NULL for VMO/bootstrap frames */
-    struct KVmo     *vmo_owner;     /* VMO that owns the physical page; NULL if no VMO parent */
+    struct KUntyped *alloc_parent;  /* parent for child_count bookkeeping; NULL for bootstrap frames */
     _Atomic uint32_t mapped_count;  /* PTEs referencing this frame; must be 0 at destroy */
 };
 
@@ -86,20 +82,6 @@ struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
  */
 struct KFrame *kframe_alloc_at(void *mem, uint64_t paddr, uint64_t size);
 
-/*
- * kframe_alloc_vmo_page — Phase 6.3: allocate a 4-KiB KFrame backed by a VMO page.
- *
- * Creates a KFrame with alloc_parent=NULL and vmo_owner=vmo.  Retains vmo so
- * that the VMO is not destroyed while any KFrame for its pages remains alive.
- * Physical lifetime is managed by the VMO (pmm_free_page in kvmo_destroy).
- *
- * Returns NULL if vmo is NULL or kslab_alloc fails.
- * Caller holds the alloc lifecycle ref; typically released immediately after
- * kframe_map_page succeeds (the mapping retain is held by KVSpace.mappings).
- *
- * Do NOT pass a wrap (MMIO) VMO — use kframe_alloc(paddr, 4096, NULL) for those.
- */
-struct KFrame *kframe_alloc_vmo_page(uint64_t paddr, struct KVmo *vmo);
 
 /*
  * kframe_map_page — install one 4-KiB PTE for this frame in a VSpace.

@@ -231,9 +231,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         /* SYS_CHAN_CREATE(12)/SEND(13)/RECV(14) — retired Phase 13/Track G
          * (KChannel fully retired), fall to default → NOT_SUPPORTED */
         case SYS_HANDLE_CLOSE: return sys_handle_close(arg0, arg1, arg2);
-        case SYS_VMO_CREATE:  return sys_vmo_create(arg0, arg1, arg2);
-        case SYS_VMO_MAP:     return sys_vmo_map(arg0, arg1, arg2);
-        case SYS_VMO_UNMAP:   return sys_vmo_unmap(arg0, arg1, arg2);
         /* SYS_SPAWN(18), SYS_SPAWN_SERVICE(31) — retired, fall to default */
         case SYS_NOTIFY_CREATE: return sys_notify_create(arg0, arg1, arg2);
         case SYS_NOTIFY_SIGNAL: return sys_notify_signal(arg0, arg1, arg2);
@@ -259,7 +256,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_IOPORT_RESTRICT:      return sys_ioport_restrict(arg0, arg1, arg2);
         /* SYS_WAIT_ANY(44) — retired Phase 13/Track G (zero callers), fall to default */
         case SYS_BOOTCAP_RESTRICT:     return sys_bootcap_restrict(arg0, arg1, arg2);
-        case SYS_VMO_SHARE:            return sys_vmo_share(arg0, arg1, arg2);
         case SYS_EXCEPTION_HANDLER:    return sys_exception_handler(arg0, arg1, arg2, arg3);
         case SYS_THREAD_CREATE:        return sys_thread_create(arg0, arg1, arg2);
         case SYS_THREAD_EXIT:          return sys_thread_exit(arg0, arg1, arg2);
@@ -270,7 +266,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_POWEROFF:             return sys_poweroff(arg0, arg1, arg2);
         case SYS_INITRD_COUNT:  return sys_initrd_count(arg0, arg1, arg2, arg3);
         case SYS_PROCESS_CREATE: return sys_process_create(arg0, arg1, arg2, arg3);
-        case SYS_VMO_MAP_INTO:  return sys_vmo_map_into(arg0, arg1, arg2, arg3);
         case SYS_THREAD_START:  return sys_thread_start(arg0, arg1, arg2, arg3);
         case SYS_HANDLE_INSERT: return sys_handle_insert(arg0, arg1, arg2, arg3);
         case SYS_CLOCK_GET:           return sys_clock_get(arg0, arg1, arg2);
@@ -319,8 +314,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_FRAME_UNMAP:         return sys_frame_unmap(arg0, arg1, arg2);
         case SYS_VSPACE_SELF:         return sys_vspace_self(arg0, arg1, arg2);
         case SYS_PROCESS_VSPACE:      return sys_process_vspace(arg0, arg1, arg2);
-        case SYS_VMO_MAP_PAGE:        return sys_vmo_map_page(arg0, arg1, arg2, arg3);
-        case SYS_VMO_CREATE_FOR:      return sys_vmo_create_for(arg0, arg1, arg2, arg3);
         case SYS_RESOURCE_INFO:       return sys_resource_info(arg0, arg1, arg2);
         case SYS_UNTYPED_RETYPE2:     return sys_untyped_retype2(arg0, arg1, arg2, arg3);
         case SYS_UNTYPED_QUERY:       return sys_untyped_query(arg0, arg1, arg2);

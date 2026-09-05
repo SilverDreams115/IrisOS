@@ -119,27 +119,36 @@ static inline long iris_syscall0(long nr) {
 #define SYS_CHAN_RECV    14  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 #define SYS_HANDLE_CLOSE 15  /* (handle) → 0 or negative iris_error_t */
 /*
- * modern/conforming: Virtual Memory Objects
+ * Virtual Memory Objects — RETIRED (ledger D-5).
  *
- * SYS_VMO_CREATE(size, budget_cptr, dest) → 0 or negative iris_error_t
- *   size:        bytes, rounded up to whole pages.
- *   budget_cptr: Stage 6 Step 5 — the KUntyped (RIGHT_WRITE) this VMO's
- *                pages, page-address array and header are carved from.  A
- *                process holds several budgets and they are not
- *                interchangeable, which is why it says which one pays rather
- *                than the kernel guessing.  Stage 7 Step 14: REQUIRED — 0 used
- *                to mean "the budget my address space was built from", read
- *                off the KProcess, which is the guess this argument exists to
- *                remove.
- *   dest:        destination slot (cnode | slot<<32); required since Stage 4.
- *   The pages return to that Untyped's child count when the VMO is destroyed,
- *   so the region becomes RESET-able once nothing maps through it.
+ * SYS_VMO_CREATE(16), SYS_VMO_MAP(17), SYS_VMO_UNMAP(36), SYS_VMO_SHARE(46),
+ * SYS_VMO_MAP_INTO(57), SYS_VMO_MAP_PAGE(108) and SYS_VMO_CREATE_FOR(109) are
+ * permanently reserved and answer IRIS_ERR_NOT_SUPPORTED.
+ *
+ * A KVmo was a region the KERNEL owned on a holder's behalf: it allocated the
+ * pages lazily on a schedule nobody chose, kept a page-address array, and
+ * range-checked an offset into it.  That is a memory manager, and a microkernel
+ * does not have one — which is what every one of these calls was really asking
+ * it to be.
+ *
+ * What replaced each of them is a frame, which is the object seL4 has:
+ *
+ *   SYS_VMO_CREATE      → SYS_UNTYPED_RETYPE2 with IRIS_KOBJ_FRAME.  Whoever
+ *                         holds the budget decides when the memory exists.
+ *   SYS_VMO_MAP         → SYS_FRAME_MAP naming the caller's own VSpace.  The
+ *                         address space was implicit; now it is an argument,
+ *                         which is what made MAP and MAP_INTO one call.
+ *   SYS_VMO_MAP_INTO    → SYS_FRAME_MAP.  Same four arguments, same order.
+ *   SYS_VMO_MAP_PAGE    → SYS_FRAME_MAP.  The offset selected which page of a
+ *                         region; the capability selects it now, so a pager
+ *                         may install exactly the pages it was granted and the
+ *                         kernel has nothing to range-check.
+ *   SYS_VMO_UNMAP       → SYS_FRAME_UNMAP.  It took an address RANGE and no
+ *                         capability at all: "remove whatever is here".
+ *   SYS_VMO_SIZE        → SYS_FRAME_SIZE, the same number (67).
+ *   SYS_VMO_SHARE       → already retired (Stage 4): cross-process handle.
+ *   SYS_VMO_CREATE_FOR  → already retired (Stage 7-mem): payer argument.
  */
-#define SYS_VMO_CREATE   16  /* (size, budget, dest) → 0 or negative iris_error_t */
-#define SYS_VMO_MAP      17  /* (handle, virt_addr, flags) → 0 or negative iris_error_t
-                               * flags bit 0: MAP_WRITABLE  — map with PAGE_WRITABLE
-                               * flags bit 1: MAP_EXEC      — map without PAGE_NX (executable)
-                               * W^X enforced: bit 0 + bit 1 simultaneously → ERR_INVALID_ARG */
 /* SYS_SPAWN 18 retired in Phase 19 — permanently reserved, returns
  * IRIS_ERR_NOT_SUPPORTED. Healthy-path process creation now uses the
  * composable primitives rooted in SYS_INITRD_VMO / SYS_PROCESS_CREATE /
@@ -377,7 +386,7 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_INITRD_VMO      55
 #define SYS_PROCESS_CREATE  56
-#define SYS_VMO_MAP_INTO    57
+#define SYS_VMO_MAP_INTO    57  /* RETIRED (D-5) → IRIS_ERR_NOT_SUPPORTED */
 #define SYS_THREAD_START    58
 #define SYS_HANDLE_INSERT   59
 
@@ -484,25 +493,15 @@ static inline long iris_syscall0(long nr) {
 #define SYS_WAIT_ANY  44  /* RETIRED — reserved, returns IRIS_ERR_NOT_SUPPORTED */
 
 /*
- * VMO unmap — modern/conforming (iris_error_t).
+ * SYS_VMO_UNMAP(36) — RETIRED (ledger D-5).  Permanently reserved.
  *
- * SYS_VMO_UNMAP(vaddr, size) → 0 or negative iris_error_t
- *   Removes the virtual-to-physical mappings for [vaddr, vaddr+size) from the
- *   caller's address space.  Does NOT free the backing physical pages — those
- *   remain owned by the KVmo object and are released when the last handle to
- *   the VMO is closed.
- *
- *   Constraints:
- *     - vaddr and size must be page-aligned (4 KiB boundary).
- *     - [vaddr, vaddr+size) must lie entirely within [USER_VMO_BASE, USER_VMO_TOP).
- *     - Pages that are not currently mapped are silently skipped (idempotent).
- *     - No capability handle required: the caller owns their own address space.
- *
- *   Lifecycle contract:
- *     SYS_VMO_CREATE → SYS_VMO_MAP → (use) → SYS_VMO_UNMAP → SYS_HANDLE_CLOSE
- *     UNMAP removes the virtual alias; HANDLE_CLOSE triggers physical page free.
+ * It removed the mappings for an address RANGE from the caller's own address
+ * space, and took no capability at all — "remove whatever is here" — which is
+ * not a thing a caller should be able to say.  SYS_FRAME_UNMAP names the frame
+ * whose mapping is coming down, in the address space it names, which is the
+ * same authority the map needed.
  */
-#define SYS_VMO_UNMAP 36  /* (vaddr, size) → 0 or negative iris_error_t */
+#define SYS_VMO_UNMAP 36  /* RETIRED (D-5) → IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * SYS_CHAN_RECV_NB(34) — retired in Phase 13/Track G with the KChannel object.
@@ -1154,7 +1153,7 @@ static inline long iris_syscall0(long nr) {
  *   Returns IRIS_ERR_NO_MEMORY     — page/frame allocation or quota failure.
  *   Uses the 4-arg syscall ABI (offset_flags via r10).
  */
-#define SYS_VMO_MAP_PAGE 108
+#define SYS_VMO_MAP_PAGE 108  /* RETIRED (D-5) → IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * SYS_VMO_CREATE_FOR(size, charge_target, dest, budget_cptr) → 0 or iris_error_t

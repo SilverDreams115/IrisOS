@@ -12,7 +12,6 @@ kernel/include/iris/kslab.h kslab_alloc 3
 kernel/include/iris/syscall.h kslab_alloc 1
 kernel/kernel_main.c kslab_alloc 1
 kernel/mm/kslab/kslab.c kslab_alloc 1
-kernel/new_core/include/iris/nc/kframe.h kslab_alloc 1
 kernel/new_core/src/kbootcap.c kslab_alloc 1
 kernel/new_core/src/kcnode.c kslab_alloc 2
 kernel/new_core/src/kframe.c kslab_alloc 1

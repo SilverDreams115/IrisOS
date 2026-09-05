@@ -7,7 +7,6 @@
 #include <iris/task.h>
 #include <stdint.h>
 
-struct KVmo;
 struct KNotification;
 struct KVSpace;
 struct KFrame;
