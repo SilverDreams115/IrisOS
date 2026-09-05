@@ -514,6 +514,18 @@ static long it_ioport_create(long auth, long base, long count, long dest) {
                           ((uint64_t)(uint16_t)count << 16)),
                    (long)IRIS_CPTR_TEST_UNTYPED, dest);
 }
+/* Derive a narrowed I/O-port CONTROL capability into `dest` (Stage 5).  The
+ * kernel has no port whitelist any more; the range that bounds what a holder
+ * may claim travels on the authority, and this is how a holder hands out a
+ * piece of its own. */
+static long it_ioport_narrow(long auth, long first, long last, uint32_t dest) {
+    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)dest);
+    return it_sys3(SYS_IOPORT_CONTROL_NARROW, auth,
+                   (long)((uint64_t)(uint16_t)first |
+                          ((uint64_t)(uint16_t)last << 16)),
+                   (long)dest);
+}
+
 static long it_irqcap_create(long auth, long irq, long dest) {
     return it_sys4(SYS_CAP_CREATE_IRQCAP, auth, irq,
                    (long)IRIS_CPTR_TEST_UNTYPED, dest);
@@ -685,6 +697,12 @@ static void it_slot_delete(uint32_t slot) {
 #define IT_DEV_SLOT_B  IT_SCRATCH_1
 #define IT_DEV_MINT_A  IT_SCRATCH_2   /* derived device caps (native CDT) */
 #define IT_DEV_MINT_B  IT_SCRATCH_3
+
+/* Stage 5: a narrowed I/O-port CONTROL capability, derived by the suite from
+ * its own.  Its own slot rather than one of the device-cap scratch pair,
+ * because the narrowing tests use those as DESTINATIONS and a source that is
+ * also a destination gets deleted out from under itself. */
+#define IT_IOCTL_NARROW 251u
 
 #define IT_XFER_SLOT_A  247u
 #define IT_XFER_SLOT_B  248u
@@ -10604,13 +10622,16 @@ static void test_t148(void) {
      * which a passive server needs so it never crosses the gap between giving
      * its donated time back and blocking again.  Stage 8-cap: 130 is
      * SYS_TCB_SET_IPC_BUFFER — a thread's bulk-payload buffer becomes a frame
-     * it owns instead of 256 bytes inside its TCB (ledger D-4).  The first
-     * UNASSIGNED number moves up to 131.
+     * it owns instead of 256 bytes inside its TCB (ledger D-4).  Stage 5: 131
+     * is SYS_IOPORT_CONTROL_NARROW — the kernel's hardcoded port whitelist
+     * becomes a range carried ON the authority, so who may claim which ports
+     * is something a supervisor decides rather than something the kernel
+     * asserts for everyone.  The first UNASSIGNED number moves up to 132.
      *
      * This loop caught the guard syscall the moment it landed, which is what
      * it is for: growing the syscall surface has to be a deliberate, visible
      * act rather than something a diff can do quietly. */
-    for (long n = 131; ok && n <= 400; n++) {
+    for (long n = 132; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -11785,10 +11806,53 @@ static void test_t164(void) {
         }
     }
 
-    /* Non-whitelisted range cannot be created: CMOS (0x70) and a range that
-     * spills past the PS/2 whitelist entry. */
-    if (ok && it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, 0x70, 2, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "CMOS not denied"; }
-    if (ok && it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, 0x60, 100, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "range spill not denied"; }
+    /*
+     * A range outside the AUTHORITY cannot be created.
+     *
+     * This used to read "outside the kernel's whitelist", and the difference
+     * is the whole of Stage 5's last row.  The kernel had a table of four port
+     * ranges that applied to every holder equally, so it could not express the
+     * only useful restriction — that one component may claim a serial port and
+     * another may not.  The bound now travels on the capability, so the test
+     * has to CREATE the restriction it is testing, which is the point: the
+     * suite narrows its own control capability and then discovers it is
+     * narrowed.
+     */
+    if (ok) {
+        const uint32_t narrow_slot = IT_IOCTL_NARROW;
+        if (it_ioport_narrow((long)IRIS_CPTR_IOPORT_CONTROL,
+                             IT_COM2_BASE, IT_COM2_BASE + IT_COM2_COUNT - 1,
+                             narrow_slot) != 0) {
+            ok = 0; why = "narrow";
+        }
+        /* Inside the narrowed range: still allowed. */
+        if (ok) {
+            it_slot_delete((uint32_t)IT_DEV_SLOT_A);
+            long rc = it_ioport_create((long)narrow_slot, IT_COM2_BASE,
+                                       IT_COM2_COUNT, (long)IT_DEV_SLOT_A);
+            if (rc != 0) { ok = 0; why = "narrowed authority denied its own range"; }
+        }
+        if (ok) it_slot_delete((uint32_t)IT_DEV_SLOT_A);
+        /* Outside it: denied, whatever the port happens to be. */
+        if (ok && it_ioport_create((long)narrow_slot, 0x70, 2,
+                                   (long)IT_DEV_SLOT_A)
+                  != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "CMOS not denied";
+        }
+        if (ok && it_ioport_create((long)narrow_slot, IT_COM2_BASE, 100,
+                                   (long)IT_DEV_SLOT_A)
+                  != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "range spill not denied";
+        }
+        /* And a narrowing can only ever narrow: asking for more than you hold
+         * is refused, which is what keeps the chain monotonic. */
+        if (ok && it_ioport_narrow((long)narrow_slot, 0x0, 0xFFFF,
+                                   IT_DEV_SLOT_B)
+                  != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "a narrowing widened";
+        }
+        it_slot_delete(narrow_slot);
+    }
 
     it_slot_delete((uint32_t)io);
     it_quiesce_reaper();
@@ -12087,21 +12151,32 @@ static void test_t170(void) {
  * Invariants: D1–D3, D5–D10, D14, D15, D17–D19. */
 #define T171_SEED   0x23C0DE71u
 #define T171_ROUNDS 14u
+/* The narrowed authority the fuzz probes against: COM2 only, so every base in
+ * `bad_bases` is outside it by construction. */
+#define T171_NARROW_SLOT IT_IOCTL_NARROW
 static void test_t171(void) {
     it_quiesce_reaper();
     struct it_snap b = it_snap_take();
     int ok = b.ok;
     const char *why = "device fuzz";
     g_fz_seed = T171_SEED;
+    if (ok && it_ioport_narrow((long)IRIS_CPTR_IOPORT_CONTROL, IT_COM2_BASE,
+                               IT_COM2_BASE + IT_COM2_COUNT - 1,
+                               T171_NARROW_SLOT) != 0) {
+        it_fail("T171", "narrow"); return;
+    }
     uint32_t i = 0, op = 0;
 
     for (i = 0; ok && i < T171_ROUNDS; i++) {
-        /* Non-whitelisted create always denied. */
+        /* Outside the narrowed authority: always denied.  The authority is
+         * narrowed to COM2 once, above the loop; the kernel has no port table
+         * of its own any more, so what bounds a claim is what the caller
+         * holds. */
         op = 1;
         static const long bad_bases[] = { 0x70L, 0x80L, 0x3B0L, 0xCF8L };
         long bb = bad_bases[fz_rand() % 4u];
-        if (it_ioport_create((long)IRIS_CPTR_IOPORT_CONTROL, bb, 2, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) {
-            ok = 0; why = "non-whitelist created"; break;
+        if (it_ioport_create((long)T171_NARROW_SLOT, bb, 2, (long)IT_DEV_SLOT_A) != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "out-of-range create allowed"; break;
         }
 
         /* A valid COM2 cap, exercised in and out of range. */
@@ -12152,6 +12227,7 @@ static void test_t171(void) {
         if ((i & 3u) == 3u) it_quiesce_reaper();
     }
 
+    it_slot_delete((uint32_t)T171_NARROW_SLOT);
     it_quiesce_reaper();
     struct it_snap a = it_snap_take();
     if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
@@ -21531,7 +21607,13 @@ static void test_t307(void) {
 
     /* Arm the timeout handler: signal bit 1, and deliver the faulting thread's
      * capability into a mailbox slot of our own root CNode. */
-    const uint32_t mailbox = 190u;
+    /* Outside the rotating object pool (leaves 4..199) and below the fault
+     * mailbox leaves (201+).  It used to be 190, which is INSIDE the rotating
+     * range: the pool only reached it once the suite had allocated enough
+     * objects to wrap, so adding a test anywhere earlier moved the collision
+     * into view.  A fixed slot inside a rotating range is a latent failure
+     * waiting for the test count to change. */
+    const uint32_t mailbox = IT_OBJ_SLOT_SPAN;
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)mailbox);
     if (ok && it_sys4(SYS_TCB_SET_TIMEOUT_HANDLER, tcb, notif, 1L,
                       (long)(((uint64_t)mailbox << 32) |

@@ -1511,6 +1511,43 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_TCB_SET_IPC_BUFFER 130
 
+/*
+ * SYS_IOPORT_CONTROL_NARROW(auth_cptr, first | last<<16, dest_slot)
+ *   → 0 or negative iris_error_t
+ *
+ * Derive an I/O-port CONTROL capability over a SUB-RANGE of one you hold.
+ *
+ * This is what replaced the kernel's hardcoded port whitelist.  That table
+ * said which ports anybody could ever claim — PS/2, two serial ports, QEMU's
+ * ACPI block — and it was wrong in two ways at once.  The kernel had no basis
+ * for the list (which ports exist is a fact about a machine; who may claim
+ * them is a fact about who is trusted), and it applied to every holder
+ * equally, so it could not say the only useful thing: that init may claim a
+ * serial port and svcmgr may not.
+ *
+ * Boot issues the root task one control capability over the whole port space.
+ * A supervisor narrows it for each delegate, and `SYS_CAP_CREATE_IOPORT`
+ * checks a request against the authority the caller actually holds.
+ * Confinement becomes something a supervisor decides and can prove, instead of
+ * something the kernel asserts on everyone's behalf.
+ *
+ *   auth_cptr   an IRIS_BOOTCAP_IOPORT_CONTROL capability (RIGHT_DUPLICATE:
+ *               this creates a copy of an authority, which is what that right
+ *               governs everywhere else)
+ *   first/last  the sub-range, inclusive, packed into arg1 — must be
+ *               non-inverted and CONTAINED in the authority's own range, so a
+ *               narrowing can only ever narrow
+ *   dest_slot   destination slot in the caller's root CNode
+ *
+ * The result is an MDB CHILD of the slot that authorised it, like every other
+ * derived capability, so revoking the parent reaches it.
+ *
+ * Errors: INVALID_ARG (inverted range, no destination), ACCESS_DENIED (not an
+ * ioport control capability, missing RIGHT_DUPLICATE, or a range that is not
+ * contained in the caller's).
+ */
+#define SYS_IOPORT_CONTROL_NARROW 131
+
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
 #define IRIS_UNTYPED_QUERY_ONE     2u

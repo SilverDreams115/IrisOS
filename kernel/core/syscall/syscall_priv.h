@@ -159,24 +159,6 @@ static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr) {
  * A request must fall entirely within one entry ([base, base+count)).
  * The kernel itself owns PIC/PIT; those are not listed here.
  */
-static const struct { uint16_t base; uint16_t count; } kioport_whitelist[] = {
-    { 0x0060u, 5u },   /* PS/2: data(0x60) + status/cmd(0x64) */
-    { 0x02F8u, 8u },   /* COM2 serial */
-    { 0x03F8u, 8u },   /* COM1 serial */
-    { 0x0600u, 8u },   /* QEMU ACPI power management (0x604 poweroff) */
-};
-
-static inline int kioport_in_whitelist(uint16_t base, uint16_t count) {
-    uint32_t req_end = (uint32_t)base + (uint32_t)count;
-    for (uint32_t i = 0; i < sizeof(kioport_whitelist)/sizeof(kioport_whitelist[0]); i++) {
-        uint32_t wl_end = (uint32_t)kioport_whitelist[i].base +
-                          (uint32_t)kioport_whitelist[i].count;
-        if ((uint32_t)base >= (uint32_t)kioport_whitelist[i].base && req_end <= wl_end)
-            return 1;
-    }
-    return 0;
-}
-
 /* ── Forward declarations — proc ─────────────────────────────────── */
 uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -421,6 +403,7 @@ uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cspace_set_guard(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* Stage 8-mcs — arm a thread's timeout fault handler. */
 uint64_t sys_tcb_set_ipc_buffer(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* D-4 — bulk payload routing, defined in syscall_endpoint.c and shared with
  * syscall_reply.c.  See the comment block there. */

@@ -16,19 +16,31 @@ static const struct KObjectOps kbootcap_ops = {
     .destroy = kbootcap_destroy,
 };
 
-struct KBootstrapCap *kbootcap_alloc(uint32_t kind) {
+struct KBootstrapCap *kbootcap_alloc_ports(uint32_t kind, uint16_t first,
+                                           uint16_t last) {
     struct KBootstrapCap *cap;
 
     /* One authority, or no capability.  A zero kind authorises nothing and a
      * multi-bit kind is the monolith this stage retired, so both are refused
      * at the only place a boot capability can come into existence. */
     if (kind == 0u || (kind & (kind - 1u)) != 0u) return 0;
+    /* An inverted range authorises nothing and would read as "everything" to
+     * an unsigned comparison written the other way round. */
+    if (first > last) return 0;
 
     cap = kslab_alloc((uint32_t)sizeof(struct KBootstrapCap));
     if (!cap) return 0;
     kobject_init(&cap->base, KOBJ_BOOTSTRAP_CAP, &kbootcap_ops);
-    cap->kind = kind;
+    cap->kind       = kind;
+    cap->port_first = first;
+    cap->port_last  = last;
     return cap;
+}
+
+struct KBootstrapCap *kbootcap_alloc(uint32_t kind) {
+    /* The whole port space.  Only boot calls this: everyone else derives from
+     * what it holds, which is the point of the range being on the capability. */
+    return kbootcap_alloc_ports(kind, 0u, 0xFFFFu);
 }
 
 void kbootcap_free(struct KBootstrapCap *cap) {

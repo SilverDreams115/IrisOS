@@ -87,9 +87,14 @@ static iris_error_t dev_cap_publish(struct task *t, struct KObject *obj,
  * the machine off, and the only way to reduce that was to clone a narrowed
  * copy of the whole thing.  Now there are two capabilities and each authorises
  * exactly its own syscall. */
-static iris_error_t dev_cap_auth(struct task *t, uint64_t auth_cptr,
-                                 uint32_t kind,
-                                 struct KCNode **out_cn, uint32_t *out_idx) {
+/* `out_ports` (optional) receives the authorising capability's port range,
+ * read while the object is still held.  It is what an IOPORT_CONTROL check
+ * measures against now that the kernel has no table of its own. */
+static iris_error_t dev_cap_auth_ranged(struct task *t, uint64_t auth_cptr,
+                                        uint32_t kind,
+                                        struct KCNode **out_cn,
+                                        uint32_t *out_idx,
+                                        uint16_t out_ports[2]) {
     if (!cspace_only_cptr(auth_cptr)) return IRIS_ERR_INVALID_ARG;
 
     struct KCNode *cn; uint32_t idx;
@@ -106,6 +111,10 @@ static iris_error_t dev_cap_auth(struct task *t, uint64_t auth_cptr,
     }
     int ok = (auth->type == KOBJ_BOOTSTRAP_CAP) &&
              kbootcap_is((struct KBootstrapCap *)auth, kind);
+    if (ok && out_ports) {
+        out_ports[0] = ((struct KBootstrapCap *)auth)->port_first;
+        out_ports[1] = ((struct KBootstrapCap *)auth)->port_last;
+    }
     kobject_active_release(auth);
     kobject_release(auth);
     if (!ok) {
@@ -115,6 +124,12 @@ static iris_error_t dev_cap_auth(struct task *t, uint64_t auth_cptr,
     }
     *out_cn = cn; *out_idx = idx;   /* active+lifecycle held by caller */
     return IRIS_OK;
+}
+
+static iris_error_t dev_cap_auth(struct task *t, uint64_t auth_cptr,
+                                 uint32_t kind,
+                                 struct KCNode **out_cn, uint32_t *out_idx) {
+    return dev_cap_auth_ranged(t, auth_cptr, kind, out_cn, out_idx, 0);
 }
 
 static void dev_cap_auth_release(struct KCNode *cn) {
@@ -212,13 +227,37 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
         return syscall_err(IRIS_ERR_INVALID_ARG);
     if (dest_slot == 0u || dest_slot >= 1024u)
         return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (!kioport_in_whitelist(base, count))
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-
+    /*
+     * The range check is against the AUTHORITY, not against a table.
+     *
+     * It used to be `kioport_in_whitelist(base, count)` — four hardcoded
+     * ranges in syscall_priv.h — checked BEFORE the authority, so a caller
+     * with no authority at all got "denied because of the port" and one with
+     * full authority got "denied because of the port" too.  The kernel had no
+     * basis for that list: which ports exist is a fact about a machine, and
+     * who may claim them is a fact about who is trusted, and neither is the
+     * kernel's to know.  It also applied to everybody equally, so it could not
+     * express the one thing worth expressing — that init may claim a serial
+     * port and svcmgr may not.
+     *
+     * Now the authority carries a range and this asks whether the request is
+     * inside it.  Order matters and is deliberate: authority FIRST, so a
+     * caller learns it has no authority rather than learning something about
+     * the port map.
+     */
     struct KCNode *auth_cn; uint32_t auth_idx;
-    iris_error_t err = dev_cap_auth(t, arg0, IRIS_BOOTCAP_IOPORT_CONTROL,
-                                    &auth_cn, &auth_idx);
+    uint16_t auth_ports[2] = { 0u, 0u };
+    iris_error_t err = dev_cap_auth_ranged(t, arg0, IRIS_BOOTCAP_IOPORT_CONTROL,
+                                           &auth_cn, &auth_idx, auth_ports);
     if (err != IRIS_OK) return syscall_err(err);
+    {
+        uint32_t req_last = (uint32_t)base + (uint32_t)count - 1u;
+        if ((uint32_t)base < (uint32_t)auth_ports[0] ||
+            req_last > (uint32_t)auth_ports[1]) {
+            dev_cap_auth_release(auth_cn);
+            return syscall_err(IRIS_ERR_ACCESS_DENIED);
+        }
+    }
 
     struct KUntyped *pool;
     err = dev_cap_budget(t, arg2, &pool);
@@ -328,4 +367,82 @@ uint64_t sys_handle_type(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 uint64_t sys_handle_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg0; (void)arg1; (void)arg2;
     return syscall_err(IRIS_ERR_NOT_SUPPORTED);
+}
+
+/*
+ * SYS_IOPORT_CONTROL_NARROW — derive a narrower I/O-port control capability.
+ *
+ * The replacement for the kernel's port whitelist.  See the ABI note in
+ * syscall.h for why the table had to go; what this adds is the thing the table
+ * could not do — say WHO the restriction applies to.
+ *
+ * RIGHT_DUPLICATE on the source, because this creates a second capability
+ * carrying (part of) the same authority, which is exactly what that right
+ * governs everywhere else in IRIS.  A delegate handed a control capability
+ * without it can use its range and cannot subdivide it further.
+ */
+uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1,
+                                   uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    uint16_t first     = (uint16_t)(arg1 & 0xFFFFu);
+    uint16_t last      = (uint16_t)((arg1 >> 16) & 0xFFFFu);
+    uint32_t dest_slot = (uint32_t)arg2;
+
+    if (first > last) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (dest_slot == 0u || dest_slot >= 1024u)
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /* Resolve the authority and read both its kind and its range while it is
+     * held; the slot becomes the MDB parent of what comes out. */
+    if (!cspace_only_cptr(arg0)) return syscall_err(IRIS_ERR_INVALID_ARG);
+    struct KCNode *auth_cn; uint32_t auth_idx;
+    iris_error_t err = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
+                                           &auth_cn, &auth_idx);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    struct KObject *auth; iris_rights_t ar;
+    err = kcnode_fetch(auth_cn, auth_idx, &auth, &ar);
+    if (err != IRIS_OK) {
+        dev_cap_auth_release(auth_cn);
+        return syscall_err(err);
+    }
+
+    uint16_t src_first = 0u, src_last = 0u;
+    int ok = (auth->type == KOBJ_BOOTSTRAP_CAP) &&
+             kbootcap_is((struct KBootstrapCap *)auth,
+                         IRIS_BOOTCAP_IOPORT_CONTROL) &&
+             rights_check(ar, RIGHT_DUPLICATE);
+    if (ok) {
+        src_first = ((struct KBootstrapCap *)auth)->port_first;
+        src_last  = ((struct KBootstrapCap *)auth)->port_last;
+    }
+    kobject_active_release(auth);
+    kobject_release(auth);
+
+    /* A narrowing can only narrow.  Checked here rather than in the allocator
+     * because it is a fact about the pair, not about the new object. */
+    if (!ok || first < src_first || last > src_last) {
+        dev_cap_auth_release(auth_cn);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KBootstrapCap *narrow =
+        kbootcap_alloc_ports(IRIS_BOOTCAP_IOPORT_CONTROL, first, last);
+    if (!narrow) {
+        dev_cap_auth_release(auth_cn);
+        return syscall_err(IRIS_ERR_NO_MEMORY);
+    }
+
+    err = dev_cap_publish(t, &narrow->base,
+                          RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER,
+                          dest_slot, auth_cn, auth_idx);
+    dev_cap_auth_release(auth_cn);
+    if (err != IRIS_OK) {
+        kbootcap_free(narrow);
+        return syscall_err(err);
+    }
+    kobject_release(&narrow->base);
+    return syscall_ok_u64(0);
 }

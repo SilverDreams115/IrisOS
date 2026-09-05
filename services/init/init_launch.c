@@ -437,7 +437,14 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * the test names something that authorises exactly one syscall. */
         it_mints[8].slot = IRIS_CPTR_IOPORT_CONTROL;
         it_mints[8].src_cptr = IRIS_CPTR_IOPORT_CONTROL;
-        it_mints[8].rights = RIGHT_READ;
+        /* Stage 5: DUPLICATE as well as READ, because the suite has to be able
+         * to DERIVE a narrowed control capability — that is what replaced the
+         * kernel's port whitelist, and a test that cannot narrow cannot check
+         * that narrowing confines.  DUPLICATE is the right that governs making
+         * a second capability carrying the same authority, here as everywhere
+         * else; a delegate handed one without it may use its range and may not
+         * subdivide it. */
+        it_mints[8].rights = RIGHT_READ | RIGHT_DUPLICATE;
         it_mints[8].badge = 0;
         /* Phase 13 (Track I): the suite's operational authorities are pre-start
          * mints — no bootstrap KChannel send.  Stage 5 Step 2: they are three
