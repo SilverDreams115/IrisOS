@@ -151,18 +151,15 @@ struct KFrame *kframe_alloc_vmo_page(uint64_t paddr, struct KVmo *vmo) {
     /* Stage 6 Step 6: the header for a VMO page comes out of the VMO's own
      * budget — the same one its page came from.  This is the frequent runtime
      * path (one per mapped page), so leaving it on the kernel slab would mean
-     * a process could still grow kernel memory by mapping.  A VMO with no
-     * budget (a wrapped device region, the root task) keeps the slab. */
-    struct KFrame *f;
-    if (vmo->pool) {
-        void *hdr = kuntyped_alloc_child_top(vmo->pool, sizeof(struct KFrame));
-        if (!hdr) return NULL;
-        f = kframe_alloc_at(hdr, paddr, 4096u);
-        if (!f) { kuntyped_release_child(hdr, sizeof(struct KFrame)); return NULL; }
-    } else {
-        f = kframe_alloc(paddr, 4096u, NULL);
-        if (!f) return NULL;
-    }
+     * a process could still grow kernel memory by mapping. */
+    /* Always the VMO's pool: a VMO cannot exist without one since
+     * `kvmo_alloc_in` stopped accepting NULL, and the slab fallback that used
+     * to be here had no reachable caller left. */
+    if (!vmo->pool) return NULL;
+    void *hdr = kuntyped_alloc_child_top(vmo->pool, sizeof(struct KFrame));
+    if (!hdr) return NULL;
+    struct KFrame *f = kframe_alloc_at(hdr, paddr, 4096u);
+    if (!f) { kuntyped_release_child(hdr, sizeof(struct KFrame)); return NULL; }
     kobject_retain(&vmo->base);
     f->vmo_owner = vmo;
     return f;

@@ -116,10 +116,10 @@ done < "$ALLOWLIST"
 # so.  A new name here needs a ledger row in the same commit; the row is named
 # beside it so the exception cannot outlive its justification.
 #
-#   kvmo_alloc           ledger: "KVmo is fabricated, not retyped" (D-5)
-#   kframe_alloc         ledger: "KFrame header sidecar (kslab)"
-#   kframe_alloc_vmo_page  ditto — VMO pages have no Untyped to charge
-KSLAB_RING3_OK="kvmo_alloc kframe_alloc kframe_alloc_vmo_page"
+#   (none)  Every family that used to be here now carves its header from a
+#           budget somebody named.  A name added back needs a ledger row in the
+#           same commit saying why it is allowed to stay.
+KSLAB_RING3_OK=""
 
 mapfile -t ALLOC_FNS < <(
     for f in kernel/new_core/src/*.c kernel/core/**/*.c kernel/mm/**/*.c; do

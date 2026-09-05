@@ -354,9 +354,11 @@ uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     {
         uint64_t mapped_until = arg1;
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
-            /* MMIO pages are not PMM-owned; create a KFrame with no vmo_owner.
-             * kframe_obj_destroy will call only kslab_free — no physical free. */
-            struct KFrame *f = kframe_alloc(v->phys + off, 4096u, NULL);
+            /* The header comes from the VMO's own budget, not the kernel
+             * slab: this is a per-page runtime path a ring-3 caller drives,
+             * and leaving it on the slab would let a process grow kernel
+             * memory by mapping (charter M3). */
+            struct KFrame *f = kframe_alloc_vmo_page(v->phys + off, v);
             if (!f) {
                 rollback_vmo_maps(vs, arg1, mapped_until);
                 kobject_release(obj);
@@ -716,7 +718,10 @@ uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1,
     {
         uint64_t mapped_until = vaddr;
         for (uint64_t off = 0; off < map_size; off += PAGE_SIZE) {
-            struct KFrame *f = kframe_alloc(v->phys + off, 4096u, NULL);
+            /* The VMO's own budget, like every other per-page runtime path:
+             * a ring-3 caller must not be able to grow kernel memory by
+             * mapping (charter M3). */
+            struct KFrame *f = kframe_alloc_vmo_page(v->phys + off, v);
             if (!f) {
                 rollback_vmo_maps(target_vs, vaddr, mapped_until);
                 kobject_release(vmo_obj); kobject_active_release(&target_vs->base); kobject_release(&target_vs->base);
@@ -841,7 +846,7 @@ uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1,
     }
 
     /* Wrap/MMIO VMO: no PMM ownership, no vmo_owner retain on the frame. */
-    struct KFrame *f = kframe_alloc(v->phys + offset, 4096u, NULL);
+    struct KFrame *f = kframe_alloc_vmo_page(v->phys + offset, v);
     if (!f) {
         kobject_active_release(&vs->base); kobject_release(&vs->base);
         kobject_release(vmo_obj);

@@ -64,6 +64,10 @@ void kframe_unmap_all(uint64_t cr3, const struct KFrame *f, uint64_t base_va);
  * Does NOT touch the physical region at paddr.
  * Increments alloc_parent->child_count and retains alloc_parent.
  * Returns NULL on OOM.  Caller holds the alloc lifecycle ref (refcount=1). */
+/* Slab-backed, and the BOOT PATH's only: bootstrap mappings made before any
+ * Untyped capability exists.  Everything a ring-3 caller can reach carves its
+ * header from a budget somebody named (`kframe_alloc_at`), which is what
+ * charter M3 asks and what the purity gate's reachability check enforces. */
 struct KFrame *kframe_alloc(uint64_t paddr, uint64_t size,
                              struct KUntyped *alloc_parent);
 

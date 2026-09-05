@@ -20,5 +20,4 @@ kernel/new_core/src/kinitrdentry.c kslab_alloc 1
 kernel/new_core/src/kioport.c kslab_alloc 1
 kernel/new_core/src/kirqcap.c kslab_alloc 1
 kernel/new_core/src/kuntyped.c kslab_alloc 1
-kernel/new_core/src/kvmo.c kslab_alloc 1
 kernel/new_core/src/kvspace.c kslab_alloc 1

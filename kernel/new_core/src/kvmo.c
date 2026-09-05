@@ -1,6 +1,5 @@
 #include <iris/nc/kvmo.h>
 #include <iris/nc/kprocess.h>
-#include <iris/kslab.h>
 #include <iris/paging.h>
 #include <iris/pmm.h>
 #include <iris/nc/kuntyped.h>
@@ -42,19 +41,25 @@ static void kvmo_destroy(struct KObject *obj) {
 
 static const struct KObjectOps kvmo_ops = { .destroy = kvmo_destroy };
 
+/*
+ * A VMO's own object comes from the budget its payer named — always.
+ *
+ * There used to be a `pool == NULL` branch taking it from the kernel slab, and
+ * it had no callers left: both creation sites (`SYS_VMO_CREATE_FOR` and
+ * `SYS_INITRD_VMO`) REQUIRE a budget capability and refuse without one, which
+ * is Stage 7 Step 14's rule.  A fallback nothing can reach is a fallback that
+ * only exists to be reintroduced by accident.
+ */
 static struct KVmo *kvmo_alloc_in(struct KUntyped *pool) {
-    struct KVmo *v = pool ? kuntyped_alloc_child_top(pool, sizeof(struct KVmo))
-                          : kslab_alloc((uint32_t)sizeof(struct KVmo));
+    if (!pool) return 0;
+    struct KVmo *v = kuntyped_alloc_child_top(pool, sizeof(struct KVmo));
     if (!v) return 0;
-    if (pool) kobject_init_in_untyped(&v->base, KOBJ_VMO, &kvmo_ops,
-                                      (uint32_t)sizeof(struct KVmo));
-    else      kobject_init(&v->base, KOBJ_VMO, &kvmo_ops);
+    kobject_init_in_untyped(&v->base, KOBJ_VMO, &kvmo_ops,
+                            (uint32_t)sizeof(struct KVmo));
     for (uint32_t i = 0; i < KVMO_PAGE_SHARDS; i++)
         spinlock_init(&v->page_shards[i]);
-    if (pool) {
-        kobject_retain(&pool->base);
-        v->pool = pool;
-    }
+    kobject_retain(&pool->base);
+    v->pool = pool;
     atomic_fetch_add_explicit(&kvmo_live, 1u, memory_order_relaxed);
     return v;
 }
