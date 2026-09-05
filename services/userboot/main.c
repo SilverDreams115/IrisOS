@@ -322,7 +322,13 @@ void iris_userboot_main(uint64_t bootinfo_va) {
                                      init_mint_count,
                                      SVC_LOADER_WS(boot_untyped_c, ws_slot),
                                8u << 20,
-                                     /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+                                     /* init owns memory too, and with it its
+                                      * own address space and thread (D-6).
+                                      * The boot untypeds it receives by
+                                      * manifest are what it DISTRIBUTES; this
+                                      * is the budget it spends on itself. */
+                                     /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
+                                     /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
         if (lr < 0) {
             /* A failed init load used to be a SILENT dead system: userboot
              * jumped straight to exit, so the machine stopped with no output

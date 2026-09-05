@@ -14,7 +14,7 @@
  * boot-GATING checks — main.c exits (codes 9/10) if they fail, and their
  * retry loops double as the "wait until VFS is up" boot synchronization —
  * while init_test.c holds post-healthy-path probes that never gate boot.
- * They also share the VFS EP client (init_vfs_ep_call / g_init_ep_buf)
+ * They also share the VFS EP client (init_vfs_ep_call / g_init_buf)
  * with the discovery lookups above; moving them would split that client
  * across modules for no boundary gain.
  */
@@ -23,6 +23,7 @@
 #include <iris/endpoint_proto.h>
 #include <iris/ipc_recv_slot.h>
 #include <iris/vfs_ep_proto.h>
+#include "../common/iris_ipc_buffer.h"
 
 /* ── Early serial (pre-console.ep log fallback) ─────────────────────────── */
 
@@ -81,7 +82,24 @@ void init_retry_pause(void) {
 
 /* EP_CALL bulk buffer: the request path and the reply data share this buffer
  * (EP_CALL reuses buf_uptr in both directions). +1 for a guard NUL. */
-static uint8_t g_init_ep_buf[VFS_EP_DATA_MAX + 1u];
+/*
+ * Ledger D-4: `g_init_buf` starts at this static fallback and moves to a page
+ * init retypes from the budget its spawner gave it.  init is a pure client
+ * here — it calls vfs and reads the reply back out of the same buffer — so one
+ * page serves both directions, which is what an IPC buffer is.
+ */
+static uint8_t  g_init_ep_buf[VFS_EP_DATA_MAX + 1u];
+static uint8_t *g_init_buf = g_init_ep_buf;
+
+/* Spare slots: init's own map runs 40..62. */
+#define INIT_SLOT_IPCBUF_FRAME  22u
+#define INIT_SLOT_IPCBUF_PT     23u
+
+void init_ipc_buffer_init(void) {
+    void *b = iris_ipc_buffer_init(INIT_SLOT_IPCBUF_FRAME, INIT_SLOT_IPCBUF_PT,
+                                   IRIS_IPC_BUFFER_VA);
+    if (b) g_init_buf = (uint8_t *)b;
+}
 
 static void init_imsg_zero(struct IrisMsg *msg) {
     uint8_t *raw = (uint8_t *)msg;
@@ -107,15 +125,15 @@ handle_id_t init_ep_lookup_name_slot(handle_id_t svcmgr_ep_h,
     uint32_t n = 0;
 
     if (svcmgr_ep_h == HANDLE_INVALID || !name) return HANDLE_INVALID;
-    while (name[n] && n + 1u < (uint32_t)sizeof(g_init_ep_buf)) {
-        g_init_ep_buf[n] = (uint8_t)name[n];
+    while (name[n] && n + 1u < VFS_EP_DATA_MAX) {
+        g_init_buf[n] = (uint8_t)name[n];
         n++;
     }
-    g_init_ep_buf[n] = 0u;
+    g_init_buf[n] = 0u;
 
     init_imsg_zero(&msg);
     msg.label    = IRIS_SVCMGR_EP_LOOKUP_NAME;
-    msg.buf_uptr = (uint64_t)(uintptr_t)g_init_ep_buf;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_init_buf;
     msg.buf_len  = n + 1u;  /* includes NUL */
     iris_msg_declare_reply_slot(&msg, reply_slot);
 
@@ -134,17 +152,17 @@ handle_id_t init_ep_lookup_name(handle_id_t svcmgr_ep_h, const char *name) {
 
 /*
  * One VFS endpoint round trip. The path (when non-NULL) is staged into
- * g_init_ep_buf; reply bulk data lands in the same buffer.
+ * g_init_buf; reply bulk data lands in the same buffer.
  */
 static int init_vfs_ep_call(handle_id_t vfs_ep_h, struct IrisMsg *msg,
                             const char *path) {
-    msg->buf_uptr = (uint64_t)(uintptr_t)g_init_ep_buf;
+    msg->buf_uptr = (uint64_t)(uintptr_t)g_init_buf;
     if (path) {
         uint32_t plen = 0;
         while (path[plen]) plen++;
         if (plen + 1u > VFS_EP_PATH_MAX) return (int)IRIS_ERR_INVALID_ARG;
-        for (uint32_t i = 0; i < plen; i++) g_init_ep_buf[i] = (uint8_t)path[i];
-        g_init_ep_buf[plen] = 0u;
+        for (uint32_t i = 0; i < plen; i++) g_init_buf[i] = (uint8_t)path[i];
+        g_init_buf[plen] = 0u;
         msg->buf_len = plen + 1u;
     }
     return (int)init_sys2(SYS_EP_CALL, (long)vfs_ep_h, (long)msg);

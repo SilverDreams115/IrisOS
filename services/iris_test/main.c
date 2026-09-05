@@ -22194,15 +22194,15 @@ static void test_t313(void) {
      * number has to be re-stated as services migrate, the same way the first
      * unassigned syscall number does.
      *
-     * Migrated so far: console, sh, svcmgr.  Plus this thread, just now. */
+     * Migrated: init, console, sh, svcmgr, vfs.  Plus this thread. */
     if (ok && !it_utq_g(&gb1)) { ok = 0; why = "query"; }
     if (ok && gb1.ipc_buffers != gb0.ipc_buffers + 1u) {
         ok = 0; why = "registering did not move the gauge";
         it_fz_note("T313", gb0.ipc_buffers, gb1.ipc_buffers, 0u);
     }
-    if (ok && gb0.ipc_buffers < 3u) {
+    if (ok && gb0.ipc_buffers < 5u) {
         ok = 0; why = "fewer services registered a buffer than expected";
-        it_fz_note("T313", gb0.ipc_buffers, 3u, 0u);
+        it_fz_note("T313", gb0.ipc_buffers, 5u, 0u);
     }
 
     long srv = it_thread_create((uint64_t)(uintptr_t)t313_server,

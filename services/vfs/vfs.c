@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include "vfs_ep.h"
 #include "../common/console_client.h"
+#include "../common/iris_ipc_buffer.h"
 
 #define VFS_SERVICE_EXPORTS 20u
 
@@ -294,8 +295,36 @@ static void vfs_seed_fixture_exports(struct vfs_state *state) {
 }
 
 /* Single-threaded server: static IPC buffers, no stack pressure. */
-static uint8_t g_vfs_ep_req_buf[VFS_EP_DATA_MAX];
-static uint8_t g_vfs_ep_reply_buf[VFS_EP_DATA_MAX];
+/*
+ * The request and reply payload buffers, and why vfs is the one service whose
+ * migration was not mechanical (ledger D-4).
+ *
+ * An IPC buffer is ONE page per thread — that is what an IPC buffer is, in
+ * seL4 and here — and the kernel reads a send's payload from offset 0 of it,
+ * ignoring `buf_uptr` entirely.  vfs composes its reply while the REQUEST is
+ * still live: `vfs_ep_req_path` returns a pointer into the request bytes and
+ * the handlers resolve it before writing their answer.  Pointing both at the
+ * same page would work only for as long as every handler happens to finish
+ * with the path before it starts writing, which is a property nobody declared
+ * and nothing checks.
+ *
+ * So the request is COPIED out of the IPC buffer into `g_vfs_ep_req_buf` the
+ * moment it arrives, and the reply is composed in the buffer itself.  One
+ * 256-byte copy per request buys a property that holds no matter what a
+ * handler does — which is the right trade for a server that dispatches to a
+ * dozen of them.
+ */
+static uint8_t  g_vfs_ep_req_buf[VFS_EP_DATA_MAX];
+static uint8_t  g_vfs_ep_reply_static[VFS_EP_DATA_MAX];
+/* Where the kernel delivers, and where a reply is composed.  Both are the
+ * registered IPC buffer once there is one; until then, the static arrays. */
+static uint8_t *g_vfs_in    = g_vfs_ep_req_buf;
+static uint8_t *g_vfs_reply = g_vfs_ep_reply_static;
+static uint32_t g_vfs_registered = 0u;
+
+/* Spare slots: vfs uses 16 (initrd VMO) and 60/61. */
+#define VFS_SLOT_IPCBUF_FRAME  22u
+#define VFS_SLOT_IPCBUF_PT     23u
 
 /*
  * Handle one received EP request: dispatch, then reply exactly once on the
@@ -307,10 +336,18 @@ static uint8_t g_vfs_ep_reply_buf[VFS_EP_DATA_MAX];
 static void vfs_ep_serve(struct vfs_state *state, struct IrisMsg *req) {
     struct IrisMsg reply;
     handle_id_t reply_h = (handle_id_t)req->attached_handle;
+    /* Take the request out of the IPC buffer before the reply is composed
+     * there.  With no registered buffer the kernel already delivered into
+     * g_vfs_ep_req_buf and this is a no-op. */
+    if (g_vfs_registered && req->buf_len > 0u) {
+        uint32_t n = req->buf_len;
+        if (n > (uint32_t)sizeof(g_vfs_ep_req_buf)) n = (uint32_t)sizeof(g_vfs_ep_req_buf);
+        for (uint32_t i = 0; i < n; i++) g_vfs_ep_req_buf[i] = g_vfs_in[i];
+    }
     const uint8_t *req_buf =
         (req->buf_len > 0u && req->buf_uptr != 0u) ? g_vfs_ep_req_buf : 0;
 
-    vfs_ep_dispatch(&state->ep_state, req, req_buf, &reply, g_vfs_ep_reply_buf);
+    vfs_ep_dispatch(&state->ep_state, req, req_buf, &reply, g_vfs_reply);
 
     /* Phase S1: reply_h is the vfs's OWN reply-object CPtr (echoed by the
      * kernel from the recv arg2).  The object is reusable — never closed. */
@@ -323,6 +360,21 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
 
     /* svc_loader passes RBX = 0: there is no bootstrap handle to keep. */
     (void)rbx_unused;
+
+    /* D-4: a page vfs owns, registered as its IPC buffer.  Both the incoming
+     * payload and the outgoing reply live there; the request is copied out
+     * before the reply is composed (see the buffer declarations above).
+     * Best-effort — a failure leaves the kernel staging path, which works. */
+    {
+        void *b = iris_ipc_buffer_init(VFS_SLOT_IPCBUF_FRAME,
+                                       VFS_SLOT_IPCBUF_PT,
+                                       IRIS_IPC_BUFFER_VA);
+        if (b) {
+            g_vfs_in         = (uint8_t *)b;
+            g_vfs_reply      = (uint8_t *)b;
+            g_vfs_registered = 1u;
+        }
+    }
     for (uint32_t i = 0; i < (uint32_t)sizeof(state); i++) ((uint8_t *)&state)[i] = 0;
     state.console_h = HANDLE_INVALID;
     state.initrd_c = HANDLE_INVALID;
@@ -373,9 +425,9 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
         for (uint32_t i = 0; i < (uint32_t)sizeof(smsg); i++) p[i] = 0;
         static const char vfs_self_name[] = "vfs.ep";
         for (uint32_t i = 0; i < (uint32_t)sizeof(vfs_self_name); i++)
-            g_vfs_ep_reply_buf[i] = (uint8_t)vfs_self_name[i];
+            g_vfs_reply[i] = (uint8_t)vfs_self_name[i];
         smsg.label    = IRIS_SVCMGR_EP_STATUS;
-        smsg.buf_uptr = (uint64_t)(uintptr_t)g_vfs_ep_reply_buf;
+        smsg.buf_uptr = (uint64_t)(uintptr_t)g_vfs_reply;
         smsg.buf_len  = (uint32_t)sizeof(vfs_self_name);
         if (vfs_syscall2(SYS_EP_CALL, IRIS_CPTR_SVCMGR_EP,
                          (uint64_t)(uintptr_t)&smsg) == IRIS_OK &&
@@ -404,7 +456,7 @@ void vfs_server_main_c(handle_id_t rbx_unused) {
             uint8_t *raw = (uint8_t *)&req;
             for (uint32_t i = 0; i < (uint32_t)sizeof(req); i++) raw[i] = 0;
         }
-        req.buf_uptr = (uint64_t)(uintptr_t)g_vfs_ep_req_buf;
+        req.buf_uptr = (uint64_t)(uintptr_t)g_vfs_in;
 
         /* Phase S1: explicit reply object (svcmgr mints it at slot 13). */
         r = vfs_syscall3(SYS_EP_RECV, state.ep_h, (uint64_t)(uintptr_t)&req,

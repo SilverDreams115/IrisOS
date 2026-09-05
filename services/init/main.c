@@ -154,6 +154,11 @@ void init_main(handle_id_t rbx_unused) {
     (void)rbx_unused;   /* svc_loader passes RBX = 0 — not a handle */
     init_early_serial_start();
 
+    /* D-4: a page init owns, registered as its IPC buffer.  Retyped from the
+     * boot untyped at slot 12 — the same one every endpoint and reply object
+     * below comes out of.  Best-effort; a failure leaves the staging path. */
+    init_ipc_buffer_init();
+
     /* Phase S1: confirm the delegated boot untyped (slot 12) BEFORE any spawn —
      * console/svcmgr endpoints and reply objects are retyped from it.
      *
