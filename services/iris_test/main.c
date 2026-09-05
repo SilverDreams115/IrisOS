@@ -10626,12 +10626,16 @@ static void test_t148(void) {
      * is SYS_IOPORT_CONTROL_NARROW — the kernel's hardcoded port whitelist
      * becomes a range carried ON the authority, so who may claim which ports
      * is something a supervisor decides rather than something the kernel
-     * asserts for everyone.  The first UNASSIGNED number moves up to 132.
+     * asserts for everyone.  Stage 6: 132 is
+     * SYS_UNTYPED_SET_DEVICE_BUDGET — a DEVICE untyped cannot hold the headers
+     * of objects carved from it (MMIO is not storage), so the holder names the
+     * RAM that pays for them (ledger D-9).  The first UNASSIGNED number moves
+     * up to 133.
      *
      * This loop caught the guard syscall the moment it landed, which is what
      * it is for: growing the syscall surface has to be a deliberate, visible
      * act rather than something a diff can do quietly. */
-    for (long n = 132; ok && n <= 400; n++) {
+    for (long n = 133; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -22632,6 +22636,118 @@ static void test_t315(void) {
     if (ok) it_pass("T315"); else it_fail("T315", why);
 }
 
+/* ── T316: MMIO is handed over as a capability (ledger D-9) ──────────────
+ *
+ * seL4's BootInfo lists DEVICE Untypeds alongside RAM ones: that is how a
+ * driver is given an MMIO region and retypes frames from it.  IRIS described
+ * the shape and never used it — `iris_bootinfo_untyped.is_device` has been in
+ * the ABI since v1 and boot always wrote 0 — so no device Untyped could exist,
+ * the invariants about them (U11/U12) described an object the system could not
+ * construct, and IRIS reached device memory the other way: the kernel
+ * fabricating a KVMO over the framebuffer, which is the object family D-5
+ * still records as un-retyped.  The two gaps were one gap seen from opposite
+ * ends.
+ *
+ * What makes a device Untyped different, and the reason it took a syscall to
+ * make it usable: a device region cannot hold the HEADERS of objects carved
+ * from it.  MMIO is not storage — a `struct KFrame` written into a
+ * framebuffer is pixels, and read back it is whatever the display controller
+ * left there.  A RAM Untyped carves its objects' headers out of its own top
+ * end; a device one must be told which RAM pays.  The alternative the kernel
+ * used to take was its own slab, which is charter M3's exact prohibition.
+ *
+ * Four things asserted:
+ *
+ *   1. the capability EXISTS and reports itself as device memory;
+ *   2. retyping from it UNPAIRED is refused — the kernel does not guess whose
+ *      memory to spend, and the old behaviour (spend its own) is gone;
+ *   3. once paired, a frame retypes, and the HEADER is charged to the RAM
+ *      budget while the PAGE comes out of the device region.  Both halves are
+ *      measured, because charging the wrong one to the wrong region is the
+ *      mistake that would otherwise pass every other test;
+ *   4. the pairing is SET ONCE.  A pairing that could move would let a holder
+ *      point at a second budget and reset the first, reclaiming a region while
+ *      the headers describing live device frames were still in it.
+ *
+ * Invariants: M3, O2, U11, U12. */
+static void test_t316(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "device untyped";
+
+    const long dev = (long)IRIS_CPTR_DEVICE_UNTYPED;
+
+    /* ── 1. it exists, and it says it is device memory ───────────────────*/
+    struct it_utq_one q;
+    if (!it_utq_1(dev, &q)) { it_fail("T316", "no device untyped"); return; }
+    if (ok && !q.is_device) { ok = 0; why = "not reported as device memory"; }
+    if (ok && q.total_bytes == 0u) { ok = 0; why = "empty device region"; }
+
+    /* ── 2. unpaired, a retype is refused ────────────────────────────────*/
+    if (ok && it_frame_create_slot(dev, 4096u) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "unpaired device retype was allowed";
+    }
+
+    /* ── 3. paired, it works — and the two halves are charged correctly ──*/
+    long ram = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                    IRIS_KOBJ_UNTYPED, 64u * 1024u);
+    if (ok && ram < 0) { ok = 0; why = "header budget"; }
+
+    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, dev, ram) != 0) {
+        ok = 0; why = "pairing refused";
+    }
+
+    uint64_t ram_before = 0, ram_after = 0;
+    struct it_utq_one d0, d1;
+    if (ok && it_sys3(SYS_UNTYPED_INFO, ram, 0,
+                      (long)(uintptr_t)&ram_before) != 0) { ok = 0; why = "info"; }
+    if (ok && !it_utq_1(dev, &d0)) { ok = 0; why = "info dev"; }
+
+    long fr = -1;
+    if (ok) {
+        fr = it_frame_create_slot(dev, 4096u);
+        if (fr < 0) { ok = 0; why = "paired device retype failed"; }
+    }
+    if (ok && it_sys3(SYS_UNTYPED_INFO, ram, 0,
+                      (long)(uintptr_t)&ram_after) != 0) { ok = 0; why = "info2"; }
+    if (ok && !it_utq_1(dev, &d1)) { ok = 0; why = "info dev2"; }
+
+    if (ok) {
+        uint64_t hdr_cost  = ram_before - ram_after;
+        uint64_t page_cost = d1.used_bytes - d0.used_bytes;
+        /* The header is small and came from RAM... */
+        if (hdr_cost == 0u || hdr_cost >= 4096u) {
+            ok = 0; why = "header not charged to the RAM budget";
+            it_fz_note("T316", (uint32_t)hdr_cost, (uint32_t)page_cost, 0u);
+        }
+        /* ...and the page is a page and came from the device region. */
+        if (ok && page_cost < 4096u) {
+            ok = 0; why = "page not charged to the device region";
+            it_fz_note("T316", (uint32_t)hdr_cost, (uint32_t)page_cost, 0u);
+        }
+    }
+
+    /* ── 4. the pairing cannot move ──────────────────────────────────────*/
+    if (ok) {
+        long ram2 = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                         IRIS_KOBJ_UNTYPED, 8u * 1024u);
+        if (ram2 < 0) { ok = 0; why = "second budget"; }
+        else if (it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, dev, ram2)
+                 != (long)IRIS_ERR_ALREADY_EXISTS) {
+            ok = 0; why = "the pairing moved";
+        }
+    }
+    /* A DEVICE region cannot pay for headers, not even its own. */
+    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, dev, dev)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "a device region was accepted as a header budget";
+    }
+
+    if (fr >= 0) it_slot_delete((uint32_t)fr);
+    it_quiesce_reaper();
+    if (ok) it_pass("T316"); else it_fail("T316", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -23177,6 +23293,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t313();
     test_t314();
     test_t315();
+    test_t316();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

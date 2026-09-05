@@ -407,6 +407,20 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 #define IRIS_CPTR_OWN_VSPACE   ((uint64_t)18)
 #define IRIS_CPTR_OWN_TCB      ((uint64_t)19)
 /*
+ * A DEVICE Untyped — MMIO handed over as a capability (ledger D-9).
+ *
+ * seL4's BootInfo lists device Untypeds alongside RAM ones; that is how a
+ * driver is given an MMIO region and retypes frames from it.  IRIS published
+ * none until Stage 6, so it reached device memory the other way — the kernel
+ * fabricating a KVMO over the framebuffer — which is the object family D-5
+ * still records as un-retyped.  This slot is the first step off that path.
+ *
+ * A device Untyped cannot hold the headers of objects carved from it: MMIO is
+ * not storage.  Whoever holds one pairs it with a RAM Untyped
+ * (SYS_UNTYPED_SET_DEVICE_BUDGET) before the first retype.
+ */
+#define IRIS_CPTR_DEVICE_UNTYPED ((uint64_t)64)
+/*
  * Stage 6-pure Step 2 gave this slot a second, guaranteed occupant.
  *
  * The kernel no longer creates paging levels, so a task that maps anything

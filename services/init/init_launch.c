@@ -396,7 +396,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[17] = { 0 };
+        struct svc_mint it_mints[18] = { 0 };
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -508,13 +508,20 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[12].src_h = lk_vfs;
         it_mints[12].rights = RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         it_mints[12].badge = 0;
+        /* Ledger D-9: the DEVICE untyped, so the suite can exercise the path
+         * that hands MMIO over as a capability.  Delegated rather than
+         * duplicated — init keeps the parent, so revoking reaches it. */
+        it_mints[17].slot = IRIS_CPTR_DEVICE_UNTYPED;
+        it_mints[17].src_cptr = IRIS_CPTR_DEVICE_UNTYPED;
+        it_mints[17].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
+        it_mints[17].badge = 0;
         /* Step 4: the loader authority is our spawn-cap SLOT.  SYS_INITRD_VMO
          * and SYS_PROCESS_CREATE both resolve it either way, and the slot
          * outlives bootstrap_h by construction — which is the only reason the
          * retired duplicate had to exist. */
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "iris_test",
-                            &proc_h, &boot_h, it_mints, 17u,
+                            &proc_h, &boot_h, it_mints, 18u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
                                16u << 20, /*own_budget_slot=*/0, /* has TEST_UNTYPED */
                                /* Stage 7 Step 9: keep the suite's CSpace root

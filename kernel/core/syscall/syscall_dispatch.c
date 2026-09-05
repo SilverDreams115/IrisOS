@@ -347,6 +347,8 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_TCB_SET_IPC_BUFFER:  return sys_tcb_set_ipc_buffer(arg0, arg1, arg2);
         case SYS_IOPORT_CONTROL_NARROW:
                                       return sys_ioport_control_narrow(arg0, arg1, arg2, arg3);
+        case SYS_UNTYPED_SET_DEVICE_BUDGET:
+                                      return sys_untyped_set_device_budget(arg0, arg1, arg2);
         case SYS_REPLY_RECV:          return sys_reply_recv(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);

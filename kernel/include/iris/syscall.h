@@ -1553,6 +1553,37 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_IOPORT_CONTROL_NARROW 131
 
+/*
+ * SYS_UNTYPED_SET_DEVICE_BUDGET(device_ut_cptr, ram_ut_cptr)
+ *   → 0 or negative iris_error_t
+ *
+ * Name the RAM Untyped that pays for the object HEADERS of everything retyped
+ * out of a DEVICE Untyped (ledger D-9).
+ *
+ * A device region is MMIO.  The kernel can hand it out and a driver can map
+ * it, but nothing can be STORED in it: a `struct KFrame` written into a
+ * framebuffer is pixels, and read back it is whatever the display controller
+ * left there.  A RAM Untyped carves its objects' headers out of its own top
+ * end; a device one cannot, and the only answer that does not put the kernel
+ * back in the business of allocating on somebody's behalf is that the HOLDER
+ * names the memory.
+ *
+ * Both arguments need RIGHT_WRITE.  Set ONCE: a pairing that could move would
+ * let a holder point the device Untyped at a second budget and RESET the
+ * first, reclaiming a region while the headers describing live device frames
+ * were still in it.  The RAM Untyped is retained while paired, so its own
+ * RESET already refuses for as long as any header carved from it is alive.
+ *
+ * A device Untyped with no budget REFUSES to retype (INVALID_ARG) rather than
+ * falling back to kernel memory, which is the honest failure: the kernel does
+ * not know whose memory to spend and will not guess.
+ *
+ * Errors: INVALID_ARG (either is not an Untyped, the first is not a device
+ * region, the second IS one, or they are the same), ACCESS_DENIED (missing
+ * RIGHT_WRITE), ALREADY_EXISTS (already paired).
+ */
+#define SYS_UNTYPED_SET_DEVICE_BUDGET 132
+
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u
 #define IRIS_UNTYPED_QUERY_ONE     2u

@@ -119,13 +119,7 @@ done < "$ALLOWLIST"
 #   kvmo_alloc           ledger: "KVmo is fabricated, not retyped" (D-5)
 #   kframe_alloc         ledger: "KFrame header sidecar (kslab)"
 #   kframe_alloc_vmo_page  ditto — VMO pages have no Untyped to charge
-#   kuntyped_create      ledger D-9: reached only through the DEVICE branch of
-#                        retype, which nothing can reach — no device Untyped can
-#                        exist, because the only site that would set the flag
-#                        already requires one.  The exception is here so the
-#                        gate stays honest about WHY, not because the code is
-#                        acceptable — it is unreachable, which is different
-KSLAB_RING3_OK="kvmo_alloc kframe_alloc kframe_alloc_vmo_page kuntyped_create"
+KSLAB_RING3_OK="kvmo_alloc kframe_alloc kframe_alloc_vmo_page"
 
 mapfile -t ALLOC_FNS < <(
     for f in kernel/new_core/src/*.c kernel/core/**/*.c kernel/mm/**/*.c; do

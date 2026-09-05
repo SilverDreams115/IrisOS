@@ -256,7 +256,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
          * if the grant is absent the mint fails, the slot stays empty and the
          * authority tests FAIL loudly rather than silently skipping. */
-        struct svc_mint init_mints[8] = { 0 };
+        struct svc_mint init_mints[9] = { 0 };
         init_mints[0].slot     = IRIS_CPTR_PROC_CONTROL;
         init_mints[0].src_cptr = proc_control_c;
         init_mints[0].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
@@ -315,6 +315,26 @@ void iris_userboot_main(uint64_t bootinfo_va) {
                                      RIGHT_DUPLICATE | RIGHT_TRANSFER;
             init_mints[7].badge    = 0;
             init_mint_count = 8u;
+        }
+        /*
+         * Ledger D-9: the DEVICE untyped, when the kernel published one.
+         *
+         * Found by its flag rather than by position, because how many RAM
+         * blocks the drain produced is a property of the machine and this is
+         * not a fixed index into it.  init is where every other boot authority
+         * goes; whoever ends up driving the framebuffer gets it from there.
+         */
+        for (uint32_t i = 0; i < bi->untyped_count &&
+                             init_mint_count < 9u; i++) {
+            if (!bi->untyped[i].is_device) continue;
+            init_mints[init_mint_count].slot     = IRIS_CPTR_DEVICE_UNTYPED;
+            init_mints[init_mint_count].src_cptr = bi->untyped[i].cptr;
+            init_mints[init_mint_count].rights   = RIGHT_READ | RIGHT_WRITE |
+                                                   RIGHT_DUPLICATE |
+                                                   RIGHT_TRANSFER;
+            init_mints[init_mint_count].badge    = 0;
+            init_mint_count++;
+            break;
         }
 
         long lr = svc_load_minted_ws(proc_control_c, initrd_control_c, "init",

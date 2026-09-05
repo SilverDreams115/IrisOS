@@ -437,6 +437,56 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     ut_cspace_count++;
                     ut_count++;
                 }
+
+                /*
+                 * Ledger D-9 — the framebuffer, as a DEVICE Untyped.
+                 *
+                 * seL4's BootInfo lists device Untypeds alongside RAM ones;
+                 * that is how a driver is handed an MMIO region as a
+                 * capability and retypes frames from it.  IRIS described the
+                 * shape — `iris_bootinfo_untyped.is_device` has been in the
+                 * ABI since v1 — and always wrote 0, so no device Untyped
+                 * could exist and the invariants about them (U11/U12)
+                 * described an object the system could not construct.  The
+                 * framebuffer is the one MMIO region the kernel already knows
+                 * the bounds of, so it is the first.
+                 *
+                 * It is published like any other: minted into a slot and
+                 * described in BootInfo.  What it is NOT is usable on its own
+                 * — a device region cannot hold the headers of objects carved
+                 * from it, so the holder must pair it with a RAM Untyped
+                 * (`SYS_UNTYPED_SET_DEVICE_BUDGET`) before the first retype.
+                 * Unpaired, the retype refuses rather than quietly spending
+                 * the kernel's memory.
+                 */
+                if (bi_kva && ut->cspace_root && ut_count < bi_capacity &&
+                    g_iris_fb_params.phys != 0 && g_iris_fb_params.size != 0) {
+                    uint32_t fb_slot = BOOT_CPTR_UNTYPED_START + ut_count;
+                    if (fb_slot < KCNODE_DEFAULT_SLOTS) {
+                        uint64_t fb_phys = g_iris_fb_params.phys & ~0xFFFULL;
+                        uint64_t fb_size = (g_iris_fb_params.size + 0xFFFu)
+                                           & ~0xFFFULL;
+                        struct KUntyped *fb_ut =
+                            kuntyped_create(fb_phys, fb_size, /*is_device*/1);
+                        if (fb_ut) {
+                            iris_error_t fe = kcnode_mint(
+                                ut->cspace_root, fb_slot, &fb_ut->base,
+                                RIGHT_READ | RIGHT_WRITE |
+                                RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                            kobject_release(&fb_ut->base);
+                            if (fe == IRIS_OK) {
+                                (void)root_bootinfo_add_untyped(
+                                    bi_kva, IRIS_ROOT_BOOTINFO_BYTES,
+                                    (uint64_t)fb_slot, fb_phys, fb_size,
+                                    /*is_device*/1);
+                                ut_cspace_count++;
+                                ut_count++;
+                                klog_write("[IRIS][USER] framebuffer published "
+                                           "as a device untyped\n");
+                            }
+                        }
+                    }
+                }
                 klog_write("[IRIS][USER] boot untyped blocks handed to init: ");
                 klog_write_dec(ut_count);
                 klog_write("\n");

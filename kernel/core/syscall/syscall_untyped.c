@@ -141,11 +141,33 @@ static iris_error_t retype_sub_untyped(struct KUntyped *ut, uint64_t obj_arg,
      * Page granularity is the weaker property IRIS needs and can afford.
      */
     if (ut->is_device) {
+        /*
+         * D-9: the header comes from the RAM budget this device Untyped is
+         * PAIRED with, never from the kernel slab.  A device region is MMIO —
+         * a struct written into a framebuffer is pixels — so the header has to
+         * be RAM, and the only answer that does not put the kernel back in the
+         * business of allocating on somebody's behalf is that the holder named
+         * it.  Unpaired, this refuses: the kernel does not know whose memory to
+         * spend and will not guess.
+         */
+        if (!ut->hdr_budget) return IRIS_ERR_INVALID_ARG;
+        void *hdr = kuntyped_alloc_child_top(ut->hdr_budget,
+                                             sizeof(struct KUntyped));
+        if (!hdr) return IRIS_ERR_NO_MEMORY;
         uint64_t phys = kuntyped_bump_alloc_phys_page(ut, obj_arg);
-        if (!phys) return IRIS_ERR_NO_MEMORY;
-        struct KUntyped *sub = kuntyped_create(phys, obj_arg, 1);
-        if (!sub) return IRIS_ERR_NO_MEMORY;
-        sub->alloc_parent = ut;
+        if (!phys) {
+            kuntyped_release_child(hdr, sizeof(struct KUntyped));
+            return IRIS_ERR_NO_MEMORY;
+        }
+        struct KUntyped *sub = kuntyped_create_at(hdr, phys, obj_arg, 1);
+        if (!sub) {
+            kuntyped_release_child(hdr, sizeof(struct KUntyped));
+            return IRIS_ERR_NO_MEMORY;
+        }
+        /* The device region's own child accounting still belongs to the device
+         * Untyped: it is what RESET on the device region must refuse against.
+         * The header's accounting rides on the block, in the RAM budget. */
+        sub->alloc_parent = 0;
         kobject_retain(&ut->base);
         atomic_fetch_add_explicit(&ut->child_count, 1u, memory_order_relaxed);
         *out = &sub->base;
@@ -243,10 +265,24 @@ static iris_error_t retype_vspace(struct KUntyped *ut, uint64_t obj_arg,
 static iris_error_t retype_frame(struct KUntyped *ut, uint64_t obj_arg,
                                  struct KObject **out) {
     if (ut->is_device) {
+        /* D-9, same rule as a sub-untyped: the frame's header is RAM the
+         * holder named, or there is no frame. */
+        if (!ut->hdr_budget) return IRIS_ERR_INVALID_ARG;
+        void *hdr = kuntyped_alloc_child_top(ut->hdr_budget,
+                                             sizeof(struct KFrame));
+        if (!hdr) return IRIS_ERR_NO_MEMORY;
         uint64_t phys = kuntyped_bump_alloc_phys_page(ut, obj_arg);
-        if (!phys) return IRIS_ERR_NO_MEMORY;
-        struct KFrame *frm = kframe_alloc(phys, obj_arg, ut);
-        if (!frm) return IRIS_ERR_NO_MEMORY;
+        if (!phys) {
+            kuntyped_release_child(hdr, sizeof(struct KFrame));
+            return IRIS_ERR_NO_MEMORY;
+        }
+        struct KFrame *frm = kframe_alloc_at(hdr, phys, obj_arg);
+        if (!frm) {
+            kuntyped_release_child(hdr, sizeof(struct KFrame));
+            return IRIS_ERR_NO_MEMORY;
+        }
+        atomic_fetch_add_explicit(&ut->child_count, 1u, memory_order_relaxed);
+        kobject_retain(&ut->base);
         *out = &frm->base;
         return IRIS_OK;
     }
@@ -731,4 +767,44 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         default:
             return syscall_err(IRIS_ERR_INVALID_ARG);
     }
+}
+
+/*
+ * SYS_UNTYPED_SET_DEVICE_BUDGET — ledger D-9.
+ *
+ * See the ABI note in syscall.h for why a device Untyped needs a RAM one at
+ * all.  What is worth saying here is the ordering rule the pairing exists to
+ * protect: the budget is RETAINED while paired, so the RESET that would
+ * reclaim it already refuses while any header carved from it is alive, and the
+ * pairing cannot move, so no header can be stranded in a region that is then
+ * reset.  Both properties come from the retain; neither needs bookkeeping.
+ */
+uint64_t sys_untyped_set_device_budget(uint64_t arg0, uint64_t arg1,
+                                       uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KUntyped *dev; iris_rights_t dr;
+    iris_error_t err = cspace_resolve_only_untyped(t->cspace_root,
+                           (iris_cptr_t)arg0, RIGHT_WRITE, &dev, &dr);
+    if (err != IRIS_OK)
+        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+
+    struct KUntyped *ram; iris_rights_t rr;
+    err = cspace_resolve_only_untyped(t->cspace_root, (iris_cptr_t)arg1,
+                                      RIGHT_WRITE, &ram, &rr);
+    if (err != IRIS_OK) {
+        kobject_active_release(&dev->base);
+        kobject_release(&dev->base);
+        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+    }
+
+    err = kuntyped_set_hdr_budget(dev, ram);
+
+    kobject_active_release(&ram->base);
+    kobject_release(&ram->base);
+    kobject_active_release(&dev->base);
+    kobject_release(&dev->base);
+    return err == IRIS_OK ? syscall_ok_u64(0) : syscall_err(err);
 }

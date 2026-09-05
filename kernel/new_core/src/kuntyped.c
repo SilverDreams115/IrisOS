@@ -60,6 +60,7 @@ static void kuntyped_obj_close(struct KObject *obj) {
 static void kuntyped_obj_destroy(struct KObject *obj) {
     struct KUntyped *u      = (struct KUntyped *)obj;
     struct KUntyped *parent = u->alloc_parent;
+    struct KUntyped *hdrs   = u->hdr_budget;   /* D-9: read before the free */
 
     atomic_fetch_sub_explicit(&kuntyped_live, 1u, memory_order_relaxed);
     kobject_storage_free(obj, (uint32_t)sizeof(struct KUntyped), 0);
@@ -71,6 +72,9 @@ static void kuntyped_obj_destroy(struct KObject *obj) {
         atomic_fetch_sub_explicit(&parent->child_count, 1u, memory_order_relaxed);
         kobject_release(&parent->base);
     }
+    /* D-9: the paired RAM budget's reference, held for as long as this device
+     * Untyped could still carve headers out of it. */
+    if (hdrs) kobject_release(&hdrs->base);
 }
 
 static const struct KObjectOps kuntyped_ops = {
@@ -354,6 +358,37 @@ void kuntyped_unbump_exact(struct KUntyped *u, uint64_t start_used,
     if (u->used == end_used)
         u->used = start_used;
     irq_spinlock_unlock(&u->lock, flags);
+}
+
+/*
+ * D-9 — name the RAM that pays for a device Untyped's object headers.
+ *
+ * Set ONCE.  A pairing that could move would let a holder point a live device
+ * Untyped at a second budget and then RESET the first, stranding the headers
+ * that describe frames somebody is still mapping — the region would be
+ * reclaimed while the objects describing it stayed alive.  Refusing the second
+ * call is cheaper than tracking which headers went where.
+ *
+ * The RAM Untyped is RETAINED while paired, which is what makes the reset
+ * refusal automatic: it already refuses while it has live children, and every
+ * header carved from it is one.
+ */
+iris_error_t kuntyped_set_hdr_budget(struct KUntyped *dev, struct KUntyped *ram) {
+    if (!dev || !ram) return IRIS_ERR_INVALID_ARG;
+    if (!dev->is_device) return IRIS_ERR_INVALID_ARG;  /* RAM carves its own */
+    if (ram->is_device)  return IRIS_ERR_INVALID_ARG;  /* headers need RAM */
+    if (dev == ram)      return IRIS_ERR_INVALID_ARG;
+
+    iris_error_t r = IRIS_OK;
+    uint64_t flags = irq_spinlock_lock(&dev->lock);
+    if (dev->hdr_budget) {
+        r = IRIS_ERR_ALREADY_EXISTS;
+    } else {
+        kobject_retain(&ram->base);
+        dev->hdr_budget = ram;
+    }
+    irq_spinlock_unlock(&dev->lock, flags);
+    return r;
 }
 
 uint64_t kuntyped_available(struct KUntyped *u) {

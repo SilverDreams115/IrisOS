@@ -35,12 +35,36 @@ struct KUntyped {
     uint64_t            generation;  /* Phase S1: bumped on every successful RESET —
                                       * a reused region never shares a generation
                                       * with the objects that lived there before */
+    /*
+     * Where the HEADERS of objects retyped out of a DEVICE region come from
+     * (ledger D-9).  NULL for RAM Untypeds, which carve their own.
+     *
+     * A device region is MMIO.  The kernel can hand it out and a driver can
+     * map it, but nothing can be stored in it: a `struct KFrame` written into
+     * a framebuffer is pixels, and read back it is whatever the display
+     * controller left there.  So a device retype needs RAM from somewhere, and
+     * the only answer that does not put the kernel back in the business of
+     * allocating on somebody's behalf is that the HOLDER names it.
+     *
+     * Set once, by `SYS_UNTYPED_SET_DEVICE_BUDGET`, and retained while set —
+     * so the RAM Untyped cannot be RESET out from under headers that describe
+     * live device frames.  A device Untyped with none refuses to retype, which
+     * is the honest failure: the kernel does not know whose memory to spend
+     * and will not guess.
+     */
+    struct KUntyped    *hdr_budget;
 };
 
 /* Create a KUntyped covering [phys_base, phys_base+size).
  * Caller must have already removed the physical region from the PMM.
  * Returns NULL if the KUntyped header itself cannot be kpage_alloc'd. */
 struct KUntyped *kuntyped_create(uint64_t phys_base, uint64_t size, int is_device);
+
+/* D-9: name the RAM Untyped that pays for the headers of objects retyped out
+ * of this DEVICE Untyped.  Refuses on a RAM Untyped, on a device budget, and
+ * on a second call — a pairing that could move would let a holder strand the
+ * headers of live objects in a region it then reset. */
+iris_error_t kuntyped_set_hdr_budget(struct KUntyped *dev, struct KUntyped *ram);
 
 /* Stage 6 Step 4 — placement-init a sub-untyped whose header is a child block
  * of its parent (kuntyped_alloc_child_top).  The block carries the child_count
