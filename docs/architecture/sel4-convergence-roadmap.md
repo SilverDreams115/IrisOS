@@ -21,20 +21,23 @@ path still depends on the mechanism it retires (charter §3.10).
 | 6-pure — the user retypes what the kernel charged | ✅ CLOSED (5 steps) |
 | 7 — KProcess retirement | ✅ CLOSED (15 steps + 7-mem + 7-proc) |
 | 8-mcs — Full MCS scheduling | ✅ CLOSED |
-| 8-cap — the capability model's last gaps | 🔶 IN PROGRESS — D-2 (CNode guards, root included) and D-8 (preemptible revoke) CLOSED; D-4's mechanism landed and now waits on the memory server; D-3 is a decision still owed |
-| 9-evt — the event kernel (D-1) | 🔶 IN PROGRESS — **steps 1 and 2 CLOSED**: every blocking syscall is restart-safe, and a parked one ABANDONS its kernel frame and resumes on a fresh stack (T310).  Step 3 (one stack per core) needs the preemption path converted first |
+| 8-cap — the capability model's last gaps | ✅ CLOSED — D-2 (CNode guards, root included), D-8 (preemptible revoke) and D-4 (per-thread IPC buffer, every service migrated) CLOSED; D-3 decided and registered as a permanent divergence |
+| 9-evt — the event kernel (D-1) | ✅ CLOSED — one kernel stack per core, no thread blocks in the kernel, `context_switch`/`task_yield`/`kstack_alloc` deleted |
+| 10-mem — the memory server (D-5) | ✅ CLOSED — there is no KVmo.  A grant is a run of frame capabilities, one per page |
 | 9 — SMP | pending |
 | 10 — General-purpose platform | pending |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
 A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
 (scheduling); **M1–M5** (memory); **P1, P3** (policy); **S2** with the process
-object itself (Stage 7-proc).  **33 of the 36 are MET.**  Still PARTIAL:
-**A5** (ambient authority), **O1** (object *form* — a KVMO is still fabricated
-rather than retyped) and **P2** (mechanism, not policy).  Stage 5 moved A5 most
-of the way — boot authority is fine-grained and named, the monolith cannot be
-constructed — and Stage 7 retired every per-process quota there was, leaving
-the ioport whitelist as the remaining ambient policy.
+object itself (Stage 7-proc); **O1** (object *form*) with `KVmo` — the last
+object that was fabricated rather than retyped — deleted (D-5).  **34 of the
+36 are MET.**  Still PARTIAL: **A5** (ambient authority) and **P2**
+(mechanism, not policy).  Stage 5 moved A5 most of the way — boot authority is
+fine-grained and named, the monolith cannot be constructed — and Stage 7
+retired every per-process quota there was; the ioport whitelist that was the
+last ambient policy is gone too, so what keeps A5 partial is now stated
+narrowly rather than broadly.
 
 ### Where the line is now
 
@@ -83,18 +86,23 @@ from a frame it registered, and a payload with no buffer is an error — and so
 did the kernel heap: the slab is a boot arena, sealed at the end of boot, with
 no syscall handler able to reach it and the seal readable from ring 3.
 
-ONE remains: the object model, and it is now much smaller than the count of
-call sites suggested.
+The object model closed with them.
 
-`KVMO` is out of every production path.  The framebuffer is a device Untyped a
-driver retypes from (D-9); boot images are frames (`SYS_INITRD_FRAME`); a
-spawned image's segments and stack are frames retyped from the child's budget;
-vfs serves from frames; and the pager's own page cache and private pool are one
-capability per page out of its own budget.  What is left is a SINGLE path —
-`PGR_OP_MAP_RESUME`, mapping a page of a region the CLIENT granted at an offset
-the client names.  That is the one thing a VMO does that a frame does not, and
-replacing it means redefining what a grant is, against twenty tests written on
-the old shape.
+`KVMO` left every production path in stages — the framebuffer became a device
+Untyped a driver retypes from (D-9), boot images became frames
+(`SYS_INITRD_FRAME`), a spawned image's segments and stack became frames
+retyped from the child's budget, vfs served from frames, and the pager's own
+page cache and private pool became one capability per page out of its own
+budget — and the LAST path was `PGR_OP_MAP_RESUME`: mapping a page of a region
+the CLIENT granted, at an offset the client names.
+
+That was the one thing a VMO did that a frame did not, and replacing it meant
+redefining what a grant is.  **A grant is a run of frame capabilities, one per
+page.**  Then which pages a pager may install is the set of capabilities it
+holds, whether it may install one writable is `RIGHT_WRITE` on that page,
+revoking one page is deleting one slot, and "an offset past the end of the
+region" is an empty CSpace slot.  The offset argument disappears because the
+question it asked is answered by which capability you were given.
 
 `KInitrdEntry` and `KBootstrapCap` remain as objects, but neither costs the
 kernel memory any more and neither is how anything is reached: they are boot
@@ -102,9 +110,15 @@ capabilities that seL4 would express as capability TYPES with no backing
 object, which is a change to how a CNode slot is represented rather than to
 what the system can do.
 
+`KVmo` is gone (D-5).  It was the last object whose existence meant the KERNEL
+owned memory for somebody — allocating its pages on a schedule the holder did
+not choose, keeping a page-address array, and range-checking an offset into a
+region it managed.  A client that wants a pager to map page N of its memory
+grants the FRAME for page N.
+
 | Dimension | State | Evidence |
 |---|---|---|
-| Object model and creation | **very close** | every canonical object is retyped from Untyped; address spaces and CSpaces are retyped by their HOLDER (Stage 6-pure).  `KProcess` — the largest of the four object types seL4 has no equivalent for — is DELETED (Stage 7-proc).  MMIO is handed over as a DEVICE Untyped the way seL4's BootInfo does it, so the framebuffer stopped being a kernel-fabricated KVMO and `kvmo_wrap` is deleted (D-9, D-10, T316/T317).  Three object types remain, `KVMO` (anonymous memory and initrd images now, not physical regions), `KInitrdEntry` and `KBootstrapCap`, all staged |
+| Object model and creation | **met** | every canonical object is retyped from Untyped; address spaces and CSpaces are retyped by their HOLDER (Stage 6-pure).  `KProcess` — the largest of the four object types seL4 has no equivalent for — is DELETED (Stage 7-proc), and `KVmo` is DELETED with it (D-5): a grant is a run of frame capabilities, one per page, so which page a pager may install is which capability it holds and the kernel owns no memory on anybody's behalf.  MMIO is handed over as a DEVICE Untyped the way seL4's BootInfo does it (D-9, D-10, T316/T317).  What remains is `KInitrdEntry` and `KBootstrapCap`: neither costs kernel memory, neither is how anything is reached, and seL4 would express both as capability TYPES with no backing object — a change to how a CNode slot is represented, not to what the system can do |
 | Capabilities (CSpace, CDT, revoke) | **close** | native CDT/MDB, recursive cross-process revoke, one namespace, and CNode GUARDS on the capability rather than the object — the root CSpace included, which is where a guard is load-bearing and where it was missed first (D-2, closed).  Revoke is preemptible (D-8, closed).  The rights set is different from seL4's and now permanently so (D-3, decided): `RIGHT_DUPLICATE` makes a delegation non-re-delegable, which seL4 cannot express — its derivation tree records what was derived, it does not prevent deriving.  Pinned by host RG-1..RG-5.  **No open gap in this dimension**, only a registered permanent divergence |
 | IPC | **met** | endpoints, badges, reply objects, receive slots, no handle fallback, and `SYS_REPLY_RECV` — seL4's combined `ReplyRecv`, which a passive server needs so it never crosses the gap between returning its donated time and blocking again (Stage 8-mcs, T309).  D-4 is CLOSED: `SYS_TCB_SET_IPC_BUFFER` is seL4's `seL4_TCB_SetIPCBuffer`, `ipc_kbuf` is deleted, and a payload with no registered buffer is an error. |
 | No ambient authority | **met** | boot authority is one capability per authority, every per-process quota is gone (Stage 7), and the kernel's hardcoded ioport whitelist is REMOVED (Stage 5): the range a holder may claim travels on the `IOPORT_CONTROL` capability, narrowed by derivation (`SYS_IOPORT_CONTROL_NARROW`, T164/T171).  The kernel decides no device policy at all |
