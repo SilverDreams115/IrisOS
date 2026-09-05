@@ -533,8 +533,15 @@ static long it_irqcap_create(long auth, long irq, long dest) {
                    (long)IRIS_CPTR_TEST_UNTYPED, dest);
 }
 
-/* An initrd image capability published into a CSpace slot (SYS_INITRD_VMO's
- * arg2 destination).  Same rotating-pool contract as it_retype_slot_alloc. */
+/* An initrd image published into a CSpace slot as a FRAME (ledger D-5).  Same
+ * rotating-pool contract as it_retype_slot_alloc.  The call returns the image
+ * SIZE, so success is a positive number rather than zero. */
+/* The size of the image the last successful it_initrd_vmo_slot handed over.
+ * A frame does not answer "how big was the file" — the region is rounded to
+ * pages — and the call that produced it does, so the answer is kept here
+ * rather than asked for again. */
+static long g_it_initrd_size;
+
 static long it_initrd_vmo_slot(long auth_cptr, long index) {
     uint32_t leaf = IT_OBJ_POOL_FIRST +
                     (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
@@ -543,10 +550,12 @@ static long it_initrd_vmo_slot(long auth_cptr, long index) {
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
     /* Stage 6 Step 5: the image copy is charged to the suite's own budget,
      * not to the small per-child pool its address space came from. */
-    long r = it_sys4(SYS_INITRD_VMO, auth_cptr, index,
+    long r = it_sys4(SYS_INITRD_FRAME, auth_cptr, index,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
                      (long)IRIS_CPTR_TEST_UNTYPED);
-    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
+    if (r <= 0) return (r == 0) ? (long)IRIS_ERR_NOT_FOUND : r;
+    g_it_initrd_size = r;
+    return (long)IT_OBJ_CPTR(leaf);
 }
 
 /* SYS_TCB_SELF into a rotating leaf: the caller's own TCB as a capability. */
@@ -10726,13 +10735,16 @@ static void test_t148(void) {
      * of objects carved from it (MMIO is not storage), so the holder names the
      * RAM that pays for them (ledger D-9).  The first UNASSIGNED number moves
      * Stage 6: 133 is SYS_FRAMEBUFFER_INFO — the geometry alone, separated
-     * from the VMO its predecessor fabricated in the same call.  The first
-     * UNASSIGNED number moves up to 134.
+     * from the VMO its predecessor fabricated in the same call.  Stage 6/D-5:
+     * 134 is SYS_INITRD_FRAME — a boot image as a FRAME rather than a KVMO,
+     * which is how the loader and vfs stopped speaking a second memory ABI to
+     * read a file the kernel already had.  The first UNASSIGNED number moves
+     * up to 135.
      *
      * This loop caught the guard syscall the moment it landed, which is what
      * it is for: growing the syscall surface has to be a deliberate, visible
      * act rather than something a diff can do quietly. */
-    for (long n = 134; ok && n <= 400; n++) {
+    for (long n = 135; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -15768,7 +15780,9 @@ static void test_t211(void) {
         long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, i);
         if (v < 0) { ok = 0; why = "image vmo"; break; }
         handle_id_t vh = (handle_id_t)v;
-        if (it_sys1(SYS_VMO_SIZE, v) <= 0) { ok = 0; why = "image size"; }
+        /* D-5: the image is a frame, and the call that produced it said how
+         * big the FILE was — a frame only knows its region. */
+        if (g_it_initrd_size <= 0) { ok = 0; why = "image size"; }
         it_close(&vh);
     }
     /* Out-of-range indices fail cleanly. */
@@ -15801,13 +15815,15 @@ static void test_t212(void) {
         long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, i);
         if (v < 0) { ok = 0; why = "vmo"; break; }
         handle_id_t vh = (handle_id_t)v;
-        long sz = it_sys1(SYS_VMO_SIZE, v);
+        long sz = g_it_initrd_size;
         if (sz <= 0 || sz > (long)(64u * 1024u * 1024u)) { ok = 0; why = "size range"; }
-        /* Map page 0 read-only into our own VSpace at a scratch VA; a mappable
-         * VMO with a real backing proves the bounds are honest. */
-        if (ok && it_sys4(SYS_VMO_MAP_PAGE, v, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 0)) != 0) {
+        /* Map it read-only into our own VSpace at a scratch VA; a mappable
+         * image with a real backing proves the bounds are honest.  One map
+         * covers the whole frame (D-10), where a VMO needed a page at a
+         * time. */
+        if (ok && it_sys4(SYS_FRAME_MAP, v, IT_VS, (long)T26_SELF_VA, 0) != 0) {
             ok = 0; why = "map"; }
-        if (ok && it_sys2(SYS_VMO_UNMAP, (long)T26_SELF_VA, 0x1000L) != 0) { ok = 0; why = "unmap"; }
+        if (ok && it_sys3(SYS_FRAME_UNMAP, v, IT_VS, (long)T26_SELF_VA) != 0) { ok = 0; why = "unmap"; }
         it_close(&vh);
     }
 
@@ -16022,8 +16038,9 @@ static void test_t216(void) {
             long v = it_initrd_vmo_slot((long)IRIS_CPTR_INITRD_CONTROL, i);
             if (v < 0) { ok = 0; why = "map vmo"; break; }
             handle_id_t vh = (handle_id_t)v;
-            if (it_sys4(SYS_VMO_MAP_PAGE, v, IT_VS, (long)T26_SELF_VA, t26_ofs(0, 0)) != 0) { ok = 0; why = "map"; }
-            if (ok) (void)it_sys2(SYS_VMO_UNMAP, (long)T26_SELF_VA, 0x1000L);
+            /* D-5: a frame, mapped whole (D-10). */
+            if (it_sys4(SYS_FRAME_MAP, v, IT_VS, (long)T26_SELF_VA, 0) != 0) { ok = 0; why = "map"; }
+            if (ok) (void)it_sys3(SYS_FRAME_UNMAP, v, IT_VS, (long)T26_SELF_VA);
             it_close(&vh);
             break;
         }

@@ -367,6 +367,14 @@ static inline long iris_syscall0(long nr) {
  *   uses it (T082 keeps it covered as the dual-resolver compat path).
  *   New code uses SYS_PROC_CSPACE_MINT or an IPC receive-slot instead.
  */
+/*
+ * SYS_INITRD_VMO — RETIRED (Stage 6, ledger D-5).  Permanently reserved.
+ *
+ * It handed a boot image over as a KVMO, so the loader and vfs both had to
+ * speak a second memory ABI to read a file the kernel already had, and had to
+ * ask a separate syscall how big it was.  SYS_INITRD_FRAME (134) hands over a
+ * FRAME and answers the size; one map covers it.
+ */
 #define SYS_INITRD_VMO      55
 #define SYS_PROCESS_CREATE  56
 #define SYS_VMO_MAP_INTO    57
@@ -1619,6 +1627,34 @@ static inline long iris_syscall0(long nr) {
  * (the machine has no framebuffer), INVALID_ARG (unwritable buffer).
  */
 #define SYS_FRAMEBUFFER_INFO 133
+
+/*
+ * SYS_INITRD_FRAME(auth_cptr, index, dest_cnode|slot<<32, budget_cptr)
+ *   → image size in bytes, or negative iris_error_t
+ *
+ * A boot image, as a FRAME.
+ *
+ * Its predecessor `SYS_INITRD_VMO` handed out a KVMO — one of the three object
+ * types seL4 has no equivalent for, and the reason the loader and vfs both had
+ * to speak a second memory ABI to read a file the kernel already had.  seL4
+ * has no VMO and no initrd object: the root task is given its boot image as
+ * memory it can map, and everything above that is its own arrangement.
+ *
+ * The frame is a contiguous, page-aligned region carved from `budget_cptr`
+ * with the image copied into it and the tail zeroed, published RIGHT_READ as
+ * an MDB child of the slot that authorised the read — so revoking the initrd
+ * authority reaches the images it produced.  One `SYS_FRAME_MAP` maps the
+ * whole thing (a frame maps as a whole, ledger D-10), which is what makes the
+ * VMO's page-at-a-time machinery unnecessary here.
+ *
+ * The SIZE is the return value rather than a second syscall: a caller that has
+ * to ask how big the thing it was just given is has been given two things.
+ *
+ * Errors: ACCESS_DENIED (not the initrd control capability), NOT_FOUND (no
+ * such index), INVALID_ARG (no destination, no budget, or a budget that is not
+ * an Untyped), NO_MEMORY.
+ */
+#define SYS_INITRD_FRAME 134
 
 #define IRIS_UNTYPED_QUERY_VERSION 1u
 #define IRIS_UNTYPED_QUERY_GLOBAL  1u

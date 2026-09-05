@@ -56,9 +56,10 @@ void test_syscall_dispatch(void) {
      *   58  SYS_THREAD_START       — pool-born threads (Stage 7)
      *  104  SYS_PROC_CSPACE_MINT   — minting through a process (Step 9)
      *  109  SYS_RESOURCE_INFO      — the per-process resource domain (7-mem)
+     *   55  SYS_INITRD_VMO         — a boot image as a KVMO (Stage 6, D-5)
      */
     {
-        const uint64_t retired[] = { 15, 19, 25, 56, 58, 104, 109 };
+        const uint64_t retired[] = { 15, 19, 25, 55, 56, 58, 104, 109 };
         for (unsigned i = 0; i < sizeof(retired) / sizeof(retired[0]); i++)
             ASSERT_EQ(ds(retired[i]), (long)IRIS_ERR_NOT_SUPPORTED);
     }
@@ -82,7 +83,7 @@ void test_syscall_dispatch(void) {
      * must break this and be re-stated, the same way T148 forces it from ring
      * 3.  If this fails, check that the addition was deliberate. */
     {
-        ASSERT_EQ(ds(SYS_FRAMEBUFFER_INFO + 1u), (long)IRIS_ERR_NOT_SUPPORTED);
+        ASSERT_EQ(ds(SYS_INITRD_FRAME + 1u), (long)IRIS_ERR_NOT_SUPPORTED);
     }
 
     test_set_current_task(NULL);

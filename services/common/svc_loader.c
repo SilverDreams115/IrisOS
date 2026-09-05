@@ -432,15 +432,21 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                 r = (long)IRIS_ERR_NO_MEMORY; goto out;
             }
         }
-        r = sl_sys4(SYS_INITRD_VMO, (long)initrd_c, idx,
+        /* Ledger D-5: the image is a FRAME, and the call answers how big it
+         * is.  It used to be a KVMO — one of the object types seL4 has no
+         * equivalent for — which meant the loader had to speak a second memory
+         * ABI to read a file the kernel already had. */
+        r = sl_sys4(SYS_INITRD_FRAME, (long)initrd_c, idx,
                     sl_ws_dest(ws, SL_WS_ELF), pool);
-        if (r < 0) goto out;
+        if (r <= 0) { if (r == 0) r = (long)IRIS_ERR_NOT_FOUND; goto out; }
         elf_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_ELF);
     }
 
-    /* 2. Map ELF read-only at SL_ELF_VADDR for parsing.  The levels for the
-     *    parse window are the loader's own to supply now. */
-    r = iris_vspace_map(SYS_VMO_MAP, (long)elf_h, (long)SL_ELF_VADDR, 0, 0,
+    /* 2. Map ELF read-only at SL_ELF_VADDR for parsing.  One map covers the
+     *    whole frame (D-10); the levels for the parse window are the loader's
+     *    own to supply. */
+    r = iris_vspace_map(SYS_FRAME_MAP, (long)elf_h, self_vs,
+                        (long)SL_ELF_VADDR, 0,
                         self_vs, (long)SL_WS_UNTYPED(ws),
                         sl_ws_dest(ws, SL_WS_PTSCRATCH),
                         (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH),
@@ -728,7 +734,8 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         uint64_t elf_entry = eh->e_entry;
 
         /* 11. Unmap ELF from loader — no longer needed. */
-        sl_sys2(SYS_VMO_UNMAP, (long)SL_ELF_VADDR, (long)SL_SEG_SLOT_SIZE);
+        /* D-5: the parse window held a FRAME, so it comes down as one. */
+        sl_sys3(SYS_FRAME_UNMAP, (long)elf_h, self_vs, (long)SL_ELF_VADDR);
         elf_mapped = 0;
         sl_close_cap(elf_h);
         elf_h = HANDLE_INVALID;

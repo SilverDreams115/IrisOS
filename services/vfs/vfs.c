@@ -215,7 +215,7 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
 
     for (i = 0; i < count; i++) {
         uint32_t slot;
-        int64_t  vmo_h, sz_rc, map_rc;
+        int64_t  sz_rc, map_rc;
         uint64_t virt;
         struct vfs_export *exp;
 
@@ -231,16 +231,19 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
         vfs_slot_delete(VFS_SLOT_INITRD_VMO);
         /* Stage 7 Step 14: the budget the image copy is charged to is named,
          * not defaulted — VFS pays out of its own delegated pool. */
-        vmo_h = vfs_syscall4(SYS_INITRD_VMO, (uint64_t)state->initrd_c,
+        /* Ledger D-5: a boot image arrives as a FRAME, and the call that
+         * hands it over answers how big it is — a caller that has to ask the
+         * size of the thing it was just given has been given two things. */
+        sz_rc = vfs_syscall4(SYS_INITRD_FRAME, (uint64_t)state->initrd_c,
                              (uint64_t)i, VFS_INITRD_VMO_DEST,
                              IRIS_CPTR_OWN_UNTYPED);
-        if (vmo_h != 0) continue;
-
-        sz_rc = vfs_syscall1(SYS_VMO_SIZE, (uint64_t)VFS_SLOT_INITRD_VMO);
-        if (sz_rc <= 0) { vfs_slot_delete(VFS_SLOT_INITRD_VMO); continue; }
+        if (sz_rc <= 0) continue;
 
         virt = VFS_INITRD_MAP_BASE + (uint64_t)i * VFS_INITRD_MAP_SLOT;
-        map_rc = vfs_syscall3(SYS_VMO_MAP, (uint64_t)VFS_SLOT_INITRD_VMO, virt, 0);
+        /* One map covers the whole frame (D-10), so the page-at-a-time
+         * machinery a VMO needed is gone with the VMO. */
+        map_rc = vfs_syscall4(SYS_FRAME_MAP, (uint64_t)VFS_SLOT_INITRD_VMO,
+                              (uint64_t)vfs_self_vs(), virt, 0);
         vfs_slot_delete(VFS_SLOT_INITRD_VMO);
         if (map_rc != 0) continue;
 
@@ -261,7 +264,7 @@ static void vfs_seed_initrd_exports(struct vfs_state *state) {
 static int vfs_seed_one_fixture(struct vfs_state *state, uint32_t index,
                                 const char *name) {
     uint32_t slot;
-    int64_t  vmo_h, sz_rc, map_rc;
+    int64_t  sz_rc, map_rc;
     uint64_t virt;
 
     if (!state || state->initrd_c == HANDLE_INVALID) return 0;
@@ -270,15 +273,15 @@ static int vfs_seed_one_fixture(struct vfs_state *state, uint32_t index,
     if (slot == (uint32_t)(sizeof(state->exports)/sizeof(state->exports[0]))) return 0;
 
     vfs_slot_delete(VFS_SLOT_INITRD_VMO);
-    vmo_h = vfs_syscall4(SYS_INITRD_VMO, (uint64_t)state->initrd_c,
+    /* D-5: a frame, and the call answers its size. */
+    sz_rc = vfs_syscall4(SYS_INITRD_FRAME, (uint64_t)state->initrd_c,
                          (uint64_t)index, VFS_INITRD_VMO_DEST,
                          IRIS_CPTR_OWN_UNTYPED);
-    if (vmo_h != 0) return 0;
-    sz_rc = vfs_syscall1(SYS_VMO_SIZE, (uint64_t)VFS_SLOT_INITRD_VMO);
-    if (sz_rc <= 0) { vfs_slot_delete(VFS_SLOT_INITRD_VMO); return 0; }
+    if (sz_rc <= 0) return 0;
 
     virt = VFS_INITRD_MAP_BASE + (uint64_t)index * VFS_INITRD_MAP_SLOT;
-    map_rc = vfs_syscall3(SYS_VMO_MAP, (uint64_t)VFS_SLOT_INITRD_VMO, virt, 0);
+    map_rc = vfs_syscall4(SYS_FRAME_MAP, (uint64_t)VFS_SLOT_INITRD_VMO,
+                          (uint64_t)vfs_self_vs(), virt, 0);
     vfs_slot_delete(VFS_SLOT_INITRD_VMO);
     if (map_rc != 0) return 0;
 

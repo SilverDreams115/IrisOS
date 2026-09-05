@@ -449,106 +449,99 @@ uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 /* ── Phase 29 composable spawn primitives ────────────────────────── */
 
 /*
- * sys_initrd_vmo(auth_h, index) → vmo_handle or iris_error_t
+ * sys_initrd_vmo is DELETED (Stage 6, ledger D-5).
+ *
+ * It handed a boot image over as a KVMO — one of the three object types seL4
+ * has no equivalent for — which meant the loader and vfs both had to speak a
+ * second memory ABI to read a file the kernel already had, and had to ask a
+ * separate syscall how big it was.  `SYS_INITRD_FRAME` hands over a FRAME and
+ * answers the size, and one map covers it (D-10).
+ *
+ * The NUMBER stays reserved; the code does not, because a second way to obtain
+ * a boot image that nothing tests is worse than none.
  */
-uint64_t sys_initrd_vmo(uint64_t arg0, uint64_t arg1,
-                               uint64_t arg2, uint64_t arg3) {
-    uint64_t dest      = arg2;   /* Step 4: cnode | slot<<32 */
-    uint64_t pool_cptr = arg3;   /* Stage 6 Step 5: which budget pays */
+
+
+/*
+ * SYS_INITRD_FRAME — a boot image, as a frame.
+ *
+ * See the ABI note in syscall.h for why this replaced `SYS_INITRD_VMO`.  The
+ * shape is the same as a frame RETYPE and deliberately so: a contiguous
+ * page-aligned region from the bottom of the budget, its header from the top,
+ * the image copied in and the tail zeroed.  What makes it not a retype is that
+ * the CONTENT comes from the kernel — it is the one thing here only the kernel
+ * can see — and the memory it lands in is the caller's.
+ */
+uint64_t sys_initrd_frame(uint64_t arg0, uint64_t arg1,
+                          uint64_t arg2, uint64_t arg3) {
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
-    struct KObject   *auth_obj;
-    iris_rights_t     auth_rights;
-    /* Stage 5 Step 2: the authority is the INITRD capability — reading boot
-     * images, and nothing else.  vfs holds it and no longer carries the
-     * authority to create processes as a side effect. */
+    uint64_t dest      = arg2;
+    uint64_t pool_cptr = arg3;
+    if (dest == 0u || pool_cptr == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *auth_obj; iris_rights_t auth_rights;
     iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                 RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
+                                             RIGHT_NONE, KOBJ_BOOTSTRAP_CAP,
+                                             &auth_obj, &auth_rights);
     if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
-    if (!kbootcap_is((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_INITRD_CONTROL)) {
-        kobject_release(auth_obj);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
+    int ok = kbootcap_is((struct KBootstrapCap *)auth_obj,
+                         IRIS_BOOTCAP_INITRD_CONTROL);
     kobject_release(auth_obj);
+    if (!ok) return syscall_err(IRIS_ERR_ACCESS_DENIED);
 
     const void *elf_data = 0;
     uint32_t    elf_size = 0;
     if (!initrd_get((uint32_t)arg1, &elf_data, &elf_size))
         return syscall_err(IRIS_ERR_NOT_FOUND);
+    if (elf_size == 0u) return syscall_err(IRIS_ERR_NOT_FOUND);
 
-    /* Create a sparse VMO and copy ELF bytes into pre-populated pages.
-     * initrd_get returns a kernel virtual address (identity-mapped) that is
-     * NOT guaranteed to be page-aligned.  Rather than wrapping the raw
-     * physical address (which paging_map_checked_in would align down, causing
-     * a read offset bug), we copy into freshly-allocated page-aligned pages. */
-    /*
-     * Stage 6 Step 5: the boot image copy is charged to a budget.  Reading an
-     * initrd entry allocates as many kernel pages as the image is long, and
-     * that used to be free.
-     *
-     * `pool_cptr` says WHICH of the caller's budgets pays, because this
-     * allocation is transient for a loader — it parses the image and drops it —
-     * and a caller that points it at a scratch Untyped can RESET that region
-     * between spawns instead of consuming its whole pool one image at a time.
-     *
-     * Stage 7 Step 14: REQUIRED.  Zero used to mean "charge my own budget",
-     * read off the KProcess, which is the kernel picking whose memory pays for
-     * a caller that did not say — the last of three such sites.  A caller that
-     * wants its own budget names its own budget.
-     */
-    if (pool_cptr == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
     struct KUntyped *pool = 0;
     {
         iris_rights_t nr;
         iris_error_t ne = cspace_resolve_only_untyped(t->cspace_root,
                               (iris_cptr_t)pool_cptr, RIGHT_WRITE, &pool, &nr);
         if (ne != IRIS_OK)
-            return syscall_err(ne == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : ne);
+            return syscall_err(ne == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG
+                                                         : ne);
     }
-    struct KVmo *v = kvmo_create_from((uint64_t)elf_size, pool);
-    { kobject_active_release(&pool->base); kobject_release(&pool->base); }
-    if (!v) return syscall_err(IRIS_ERR_NO_MEMORY);
 
+    uint64_t bytes = ((uint64_t)elf_size + 0xFFFu) & ~0xFFFULL;
+    void *hdr = kuntyped_alloc_child_top(pool, sizeof(struct KFrame));
+    uint64_t phys = hdr ? kuntyped_bump_alloc_phys_page(pool, bytes) : 0;
+    struct KFrame *frm = 0;
+    if (phys) frm = kframe_alloc_at(hdr, phys, bytes);
+    if (!frm) {
+        if (hdr) kuntyped_release_child(hdr, sizeof(struct KFrame));
+        kobject_active_release(&pool->base); kobject_release(&pool->base);
+        return syscall_err(IRIS_ERR_NO_MEMORY);
+    }
+    kobject_active_release(&pool->base); kobject_release(&pool->base);
+
+    /* Copy through the kernel's own window, and zero the tail: a frame handed
+     * to ring 3 must not carry whatever the region held before. */
     {
+        uint8_t       *dst = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
         const uint8_t *src = (const uint8_t *)elf_data;
-        uint32_t pg;
-        for (pg = 0; pg < v->page_capacity; pg++) {
-            uint64_t phys = kvmo_alloc_page(v);
-            if (!phys) { kvmo_free(v); return syscall_err(IRIS_ERR_NO_MEMORY); }
-            uint8_t *dst = (uint8_t *)(uintptr_t)PHYS_TO_VIRT(phys);
-            uint64_t off = (uint64_t)pg * PAGE_SIZE;
-            uint64_t cp  = elf_size - (uint32_t)off;
-            if (cp > PAGE_SIZE) cp = PAGE_SIZE;
-            for (uint64_t j = 0; j < cp; j++)  dst[j] = src[off + j];
-            for (uint64_t j = cp; j < PAGE_SIZE; j++) dst[j] = 0;
-            v->pages[pg] = phys;
-        }
+        for (uint64_t i = 0; i < elf_size; i++)      dst[i] = src[i];
+        for (uint64_t i = elf_size; i < bytes; i++)  dst[i] = 0;
     }
 
-    /* Step 4: arg2 names a destination CSpace slot.  With one, the image VMO
-     * is published there as an MDB child of the spawn-cap slot that authorised
-     * the read, so the loader never holds a handle and the grant is revocable
-     * by whoever granted the spawn authority.  arg2 == 0 keeps the legacy
-     * handle for callers not yet migrated. */
-    /* Stage 4: a destination slot is REQUIRED — the handle result is retired. */
-    if (dest == 0u) { kvmo_free(v); return syscall_err(IRIS_ERR_INVALID_ARG); }
-    {
-        struct KCNode *auth_cn = 0; uint32_t auth_idx = 0;
-        if (cspace_value_is_cptr((iris_cptr_t)arg0) &&
-            cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
-                                &auth_cn, &auth_idx) != IRIS_OK)
-            auth_cn = 0;
-        iris_error_t pe = syscall_publish_slot(t, &v->base, RIGHT_READ,
-                                               dest, auth_cn, auth_idx);
-        if (auth_cn) {
-            kobject_active_release(&auth_cn->base);
-            kobject_release(&auth_cn->base);
-        }
-        if (pe != IRIS_OK) return syscall_err(pe);
-        return syscall_ok_u64(0);
+    struct KCNode *auth_cn = 0; uint32_t auth_idx = 0;
+    if (cspace_value_is_cptr((iris_cptr_t)arg0) &&
+        cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
+                            &auth_cn, &auth_idx) != IRIS_OK)
+        auth_cn = 0;
+    iris_error_t pe = syscall_publish_slot(t, &frm->base, RIGHT_READ,
+                                           dest, auth_cn, auth_idx);
+    if (auth_cn) {
+        kobject_active_release(&auth_cn->base);
+        kobject_release(&auth_cn->base);
     }
+    if (pe != IRIS_OK) return syscall_err(pe);
+    return syscall_ok_u64((uint64_t)elf_size);
 }
 
 

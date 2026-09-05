@@ -268,7 +268,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_HANDLE_TYPE:          return sys_handle_type(arg0, arg1, arg2);
         case SYS_HANDLE_SAME_OBJECT:   return sys_handle_same_object(arg0, arg1, arg2);
         case SYS_POWEROFF:             return sys_poweroff(arg0, arg1, arg2);
-        case SYS_INITRD_VMO:    return sys_initrd_vmo(arg0, arg1, arg2, arg3);
         case SYS_INITRD_COUNT:  return sys_initrd_count(arg0, arg1, arg2, arg3);
         case SYS_PROCESS_CREATE: return sys_process_create(arg0, arg1, arg2, arg3);
         case SYS_VMO_MAP_INTO:  return sys_vmo_map_into(arg0, arg1, arg2, arg3);
@@ -352,6 +351,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_UNTYPED_SET_DEVICE_BUDGET:
                                       return sys_untyped_set_device_budget(arg0, arg1, arg2);
         case SYS_FRAMEBUFFER_INFO:    return sys_framebuffer_info(arg0, arg1, arg2);
+        case SYS_INITRD_FRAME:        return sys_initrd_frame(arg0, arg1, arg2, arg3);
         case SYS_REPLY_RECV:          return sys_reply_recv(arg0, arg1, arg2);
         default:
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
