@@ -264,6 +264,25 @@ static iris_error_t retype_vspace(struct KUntyped *ut, uint64_t obj_arg,
 
 static iris_error_t retype_frame(struct KUntyped *ut, uint64_t obj_arg,
                                  struct KObject **out) {
+    /*
+     * ONE PAGE, and the refusal is the honest half of a defect.
+     *
+     * `obj_arg` was accepted at any page multiple, and `SYS_FRAME_MAP` maps
+     * exactly one page: `kframe_map_page` installs a single PTE for
+     * `f->paddr` and never looks at `f->size`.  So a caller who bought a
+     * 64 KiB frame spent 64 KiB of its Untyped and could reach 4 KiB of it,
+     * with no error anywhere — the other fifteen pages were charged, owned,
+     * and unreachable.  Nothing has ever asked for one, which is why it went
+     * unnoticed rather than why it was acceptable.
+     *
+     * seL4 has frame SIZES (4K, 2M, 1G) and a map covers the whole frame.
+     * Getting there means mapping every page of a frame and unmapping every
+     * page of it, with unwind on a partial failure — a real change to the path
+     * every address space depends on.  Until that exists, an ABI that refuses
+     * is better than one that lies: a caller asking for something the kernel
+     * cannot deliver is told so, at the call that asked.
+     */
+    if (obj_arg != 4096u) return IRIS_ERR_INVALID_ARG;
     if (ut->is_device) {
         /* D-9, same rule as a sub-untyped: the frame's header is RAM the
          * holder named, or there is no frame. */

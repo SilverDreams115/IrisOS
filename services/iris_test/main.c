@@ -22727,6 +22727,19 @@ static void test_t316(void) {
         }
     }
 
+    /* A frame larger than a page is REFUSED, not silently under-mapped.
+     * SYS_FRAME_MAP installs one PTE and never reads the frame's size, so a
+     * caller who bought sixteen pages would be charged for sixteen and able to
+     * reach one — with no error anywhere.  An ABI that refuses beats one that
+     * lies, and the refusal is where the asking happened. */
+    if (ok && it_frame_create_slot(dev, 8192u) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "a multi-page frame was accepted";
+    }
+    if (ok && it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 65536u)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "a multi-page RAM frame was accepted";
+    }
+
     /* ── 4. the pairing cannot move ──────────────────────────────────────*/
     if (ok) {
         long ram2 = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
