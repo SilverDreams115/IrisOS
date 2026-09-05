@@ -836,6 +836,50 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                               (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
         }
 
+        /*
+         * 18a2 (D-6). The child's own ADDRESS SPACE and own THREAD, delegated.
+         *
+         * Both were reachable already through SYS_VSPACE_SELF / SYS_TCB_SELF,
+         * and both arrived as MDB LEGACY_ROOTS when they did — capabilities
+         * with no parent, which SYS_CSPACE_REVOKE can never reach.  The loader
+         * retyped the address space and made the thread; it holds both right
+         * here.  Minting them puts the child's copies in the derivation tree
+         * as children of the loader's own slots, so revoking those reaches
+         * into the child the way it does for everything else.
+         *
+         * This is seL4's shape: a thread is given its VSpace and TCB by
+         * whoever configured it.  No new authority — the child could always
+         * name both — just an ancestor for the capability that says so.
+         *
+         * Gated on `own_budget_slot`, and the rule states itself: a service
+         * given MEMORY to create objects from is given the address space to
+         * map them into and the thread to configure.  A service given no
+         * budget creates nothing, so it needs neither, and its manifest stays
+         * exactly what its spawner declared — which several tests pin on
+         * purpose, and rightly: authority a child did not ask for is authority
+         * nobody decided to give it.
+         */
+        if (own_budget_slot && child_vs) {
+            int taken = 0;
+            for (uint32_t mi = 0; mints && mi < mint_count; mi++)
+                if (mints[mi].slot == (uint16_t)IRIS_CPTR_OWN_VSPACE) taken = 1;
+            if (!taken)
+                (void)sl_sys3(SYS_CSPACE_MINT, child_vs,
+                              (long)((uint64_t)child_cn |
+                                     (IRIS_CPTR_OWN_VSPACE << 32)),
+                              (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+        }
+        if (own_budget_slot && proc_h != HANDLE_INVALID) {
+            int taken = 0;
+            for (uint32_t mi = 0; mints && mi < mint_count; mi++)
+                if (mints[mi].slot == (uint16_t)IRIS_CPTR_OWN_TCB) taken = 1;
+            if (!taken)
+                (void)sl_sys3(SYS_CSPACE_MINT, (long)proc_h,
+                              (long)((uint64_t)child_cn |
+                                     (IRIS_CPTR_OWN_TCB << 32)),
+                              (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+        }
+
         /* 18b (Phase 8). Mint the well-known CSpace slots BEFORE the first
          * thread starts: the child sees its slots populated from its first
          * instruction — no bootstrap barrier, no retry loop, no race.

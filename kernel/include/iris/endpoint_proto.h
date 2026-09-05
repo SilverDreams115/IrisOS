@@ -171,7 +171,21 @@
  *              joins the dual resolver).
  *   7          IRQ KNotification WAIT side (irq_notify services: kbd).
  *   8..15      reserved for future core services.
- *   16..29     reserved (dynamic/per-service use, unassigned).
+ *   16..17     NOT free, despite having no constant here: services use them
+ *              as scratch (vfs publishes each initrd VMO into 16; the pager
+ *              keeps its VMO grants at 16..17).
+ *   18         the service's OWN address space (IRIS_CPTR_OWN_VSPACE), for a
+ *              service that was given a budget.
+ *   19         the service's OWN thread (IRIS_CPTR_OWN_TCB), likewise.
+ *   20..29     NOT free either: the pager's target table runs 20..51.
+ *
+ *              The note that used to cover 16..29 said "unassigned", which was
+ *              read as "available" and is not the same thing — a slot is
+ *              occupied by whoever WRITES to it, not by whoever named it here.
+ *              Minting into 16 broke vfs's entire catalog load, and 20 landed
+ *              on the pager's first target.  18 and 19 are free in all six
+ *              services that receive a budget, which is the only set that gets
+ *              these two.
  *   30..31     test fixtures (iris_test only; minted by init): wrong-type
  *              cap and insufficient-rights cap for CPtr failure tests.
  *   32..47     runtime-test dynamic mints and A1.5 receive-slots (iris_test
@@ -371,6 +385,27 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * can SYS_UNTYPED_RETYPE2 its own kernel objects.  IRIS_CPTR_INIT_UNTYPED is
  * the historical name for init's instance of the same slot. */
 #define IRIS_CPTR_OWN_UNTYPED  ((uint64_t)12)
+/*
+ * A service's own ADDRESS SPACE and own THREAD, delegated by its spawner.
+ *
+ * Both were reachable already, through SYS_VSPACE_SELF and SYS_TCB_SELF, and
+ * both arrived as MDB LEGACY_ROOTS when they did: a capability with no parent,
+ * which `SYS_CSPACE_REVOKE` can never reach because it walks descendants.  The
+ * kernel says so in as many words at the publish site — "the caller's own
+ * address space is an attribute of being a process, not something another slot
+ * granted" — and that is true of the OBJECT and false of the CAPABILITY.
+ *
+ * seL4 has no such syscall.  A thread is given its VSpace and its TCB by
+ * whoever configured it, as delegations, which is what makes them revocable by
+ * that same creator.  The loader retyped both and holds both through the spawn,
+ * so minting them into the child costs nothing and puts them in the derivation
+ * tree where every other capability lives.
+ *
+ * Same authority either way — a thread could always name both — reached
+ * through a parent instead of out of nowhere.
+ */
+#define IRIS_CPTR_OWN_VSPACE   ((uint64_t)18)
+#define IRIS_CPTR_OWN_TCB      ((uint64_t)19)
 /*
  * Stage 6-pure Step 2 gave this slot a second, guaranteed occupant.
  *

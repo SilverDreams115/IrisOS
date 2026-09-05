@@ -14829,6 +14829,17 @@ static void test_t201(void) {
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
                               * authority, which is why it belongs in this oracle. */ |
+                          (1u << IRIS_CPTR_OWN_VSPACE) |
+                          (1u << IRIS_CPTR_OWN_TCB) /* D-6: its own address
+                              * space and its own thread, DELEGATED by its
+                              * spawner instead of fabricated with
+                              * SYS_VSPACE_SELF / SYS_TCB_SELF, which publish
+                              * capabilities with no MDB parent that no revoke
+                              * can reach.  Not new authority — a thread could
+                              * always name both — but they are now in the
+                              * oracle, because a capability that exists in a
+                              * slot is authority whoever reads this must
+                              * account for. */ |
                           (1u << PGR_VSLOT(0)) | (1u << 21);
         /* Stage 7 Step 8: bit 20 (any target PROCESS capability) is GONE.  A
          * pager maps and answers faults; both name the address space and the
@@ -15102,6 +15113,17 @@ static void test_t205(void) {
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
                               * authority, which is why it belongs in this oracle. */ |
+                          (1u << IRIS_CPTR_OWN_VSPACE) |
+                          (1u << IRIS_CPTR_OWN_TCB) /* D-6: its own address
+                              * space and its own thread, DELEGATED by its
+                              * spawner instead of fabricated with
+                              * SYS_VSPACE_SELF / SYS_TCB_SELF, which publish
+                              * capabilities with no MDB parent that no revoke
+                              * can reach.  Not new authority — a thread could
+                              * always name both — but they are now in the
+                              * oracle, because a capability that exists in a
+                              * slot is authority whoever reads this must
+                              * account for. */ |
                           (1u << PGR_VSLOT(0)) | (1u << 21);
         /* Stage 7 Step 8: bit 20 (any target PROCESS capability) is GONE.  A
          * pager maps and answers faults; both name the address space and the
@@ -15691,6 +15713,17 @@ static void test_t215(void) {
                               * pager MAPS, and the kernel no longer creates paging
                               * levels, so it must be able to retype one.  A real
                               * authority, which is why it belongs in this oracle. */ |
+                          (1u << IRIS_CPTR_OWN_VSPACE) |
+                          (1u << IRIS_CPTR_OWN_TCB) /* D-6: its own address
+                              * space and its own thread, DELEGATED by its
+                              * spawner instead of fabricated with
+                              * SYS_VSPACE_SELF / SYS_TCB_SELF, which publish
+                              * capabilities with no MDB parent that no revoke
+                              * can reach.  Not new authority — a thread could
+                              * always name both — but they are now in the
+                              * oracle, because a capability that exists in a
+                              * slot is authority whoever reads this must
+                              * account for. */ |
                           (1u << PGR_VSLOT(0)) | (1u << 21);
         /* Stage 7 Step 8: bit 20 (any target PROCESS capability) is GONE.  A
          * pager maps and answers faults; both name the address space and the
@@ -16277,8 +16310,13 @@ static void test_t217(void) {
         /* Stage 6-pure Step 2 adds slot 12: the budget the pager's own
          * address space was built from.  It MAPS, and the kernel no longer
          * creates paging levels, so it must be able to retype one. */
+        /* D-6 adds 18 and 19: the pager's own address space and own thread,
+         * delegated by its spawner rather than fabricated with the *_SELF
+         * syscalls, which publish MDB roots nothing can revoke. */
         uint32_t expect = (1u<<3)|(1u<<4)|(1u<<5)|(1u<<IRIS_CPTR_OWN_UNTYPED)|
-                          (1u<<13)|(1u<<14)|(1u<<15)|(1u<<16)|(1u<<17)|(1u<<21);
+                          (1u<<13)|(1u<<14)|(1u<<15)|(1u<<16)|(1u<<17)|
+                          (1u<<IRIS_CPTR_OWN_VSPACE)|(1u<<IRIS_CPTR_OWN_TCB)|
+                          (1u<<21);
         if (mask < 0 || (uint32_t)mask != expect) { ok = 0; why = "manifest"; }
         if (ok && ((uint32_t)mask & ((1u<<6)|(1u<<24)|(1u<<26)|(1u<<27))) != 0) { ok = 0; why = "extra authority"; }
     }

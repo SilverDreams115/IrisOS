@@ -70,15 +70,12 @@ static uint8_t  g_con_ep_buf[IRIS_IPC_BUF_SIZE];
 static uint8_t *g_con_buf     = g_con_ep_buf;
 static uint32_t g_con_buf_cap = IRIS_IPC_BUF_SIZE;
 
-/* Spare slots from the per-service range (16..29 are unassigned). */
-#define CON_SLOT_IPCBUF_FRAME  16u
-#define CON_SLOT_SELF_VS       17u
-#define CON_SLOT_SELF_TCB      18u
-#define CON_SLOT_IPCBUF_PT     19u
+/* Spare slots from the per-service range (22..29 are unassigned). */
+#define CON_SLOT_IPCBUF_FRAME  22u
+#define CON_SLOT_IPCBUF_PT     23u
 
 static void con_ipc_buffer_init(void) {
-    void *b = iris_ipc_buffer_init(CON_SLOT_IPCBUF_FRAME, CON_SLOT_SELF_VS,
-                                   CON_SLOT_SELF_TCB, CON_SLOT_IPCBUF_PT,
+    void *b = iris_ipc_buffer_init(CON_SLOT_IPCBUF_FRAME, CON_SLOT_IPCBUF_PT,
                                    IRIS_IPC_BUFFER_VA);
     if (!b) return;                 /* keep the staging path; not fatal */
     g_con_buf     = (uint8_t *)b;

@@ -31,6 +31,7 @@
 #include <iris/endpoint_proto.h>
 #include <iris/vfs_ep_proto.h>
 #include "../common/console_client.h"
+#include "../common/iris_ipc_buffer.h"
 
 /* ── Syscall helpers ─────────────────────────────────────────────── */
 
@@ -51,9 +52,21 @@ static void sh_imsg_zero(struct IrisMsg *msg) {
  * VFS is unavailable — ls/cat fail loudly, there is no legacy fallback. */
 static handle_id_t g_sh_vfs_ep_h = HANDLE_INVALID;
 
-/* IPC bulk buffer for EP_CALL round trips (request payload and reply data
- * share the buffer — EP_CALL reuses buf_uptr in both directions). */
-static uint8_t g_sh_ep_buf[VFS_EP_DATA_MAX + 1u];
+/*
+ * IPC bulk buffer for EP_CALL round trips (request payload and reply data
+ * share the buffer — EP_CALL reuses buf_uptr in both directions).
+ *
+ * Ledger D-4: `g_sh_buf` starts at this static fallback and moves to a page sh
+ * retypes from the Untyped it owns, registered as its IPC buffer.  Sharing one
+ * page between the request and the reply is not a compromise here — it is what
+ * an IPC buffer IS, and sh's call/reply pattern already worked that way.
+ */
+static uint8_t  g_sh_ep_buf[VFS_EP_DATA_MAX + 1u];
+static uint8_t *g_sh_buf = g_sh_ep_buf;
+
+/* Spare slots from the per-service range (22..29 are unassigned). */
+#define SH_SLOT_IPCBUF_FRAME  22u
+#define SH_SLOT_IPCBUF_PT     23u
 
 /* Console endpoint path (Phase 8): sh is a pure CPtr-first client — ALL
  * console output goes through the well-known slot IRIS_CPTR_CONSOLE_EP.
@@ -150,17 +163,17 @@ static void sh_write_u32(handle_id_t con, uint32_t v) {
  * every core service cap is a well-known CSpace slot.) */
 
 /*
- * One VFS endpoint call. The path (when non-NULL) is staged into g_sh_ep_buf;
+ * One VFS endpoint call. The path (when non-NULL) is staged into g_sh_buf;
  * reply bulk data lands in the same buffer. Returns IRIS_OK and fills *msg on
  * a served round trip (msg->label distinguishes OK from protocol error).
  */
 static int sh_vfs_ep_call(struct IrisMsg *msg, const char *path) {
-    msg->buf_uptr = (uint64_t)(uintptr_t)g_sh_ep_buf;
+    msg->buf_uptr = (uint64_t)(uintptr_t)g_sh_buf;
     if (path) {
         uint32_t plen = sh_strlen(path);
         if (plen + 1u > VFS_EP_PATH_MAX) return (int)IRIS_ERR_INVALID_ARG;
-        for (uint32_t i = 0; i < plen; i++) g_sh_ep_buf[i] = (uint8_t)path[i];
-        g_sh_ep_buf[plen] = 0u;
+        for (uint32_t i = 0; i < plen; i++) g_sh_buf[i] = (uint8_t)path[i];
+        g_sh_buf[plen] = 0u;
         msg->buf_len = plen + 1u;
     }
     return (int)sh_sys2(SYS_EP_CALL, (long)g_sh_vfs_ep_h, (long)msg);
@@ -184,10 +197,10 @@ static void sh_cmd_ls_ep(handle_id_t con) {
         uint32_t size     = (uint32_t)msg.words[1];
         uint32_t name_len = (uint32_t)msg.words[2];
         if (name_len >= VFS_EP_PATH_MAX) name_len = VFS_EP_PATH_MAX - 1u;
-        g_sh_ep_buf[name_len] = 0u;
+        g_sh_buf[name_len] = 0u;
 
         sh_cout(con, "  ");
-        sh_cout(con, (const char *)g_sh_ep_buf);
+        sh_cout(con, (const char *)g_sh_buf);
         sh_cout(con, "  (");
         sh_write_u32(con, size);
         sh_cout(con, " bytes)\r\n");
@@ -222,8 +235,8 @@ static void sh_cmd_cat_ep(handle_id_t con, const char *path) {
         if (bytes == 0) return;  /* EOF */
         if (bytes > VFS_EP_DATA_MAX) bytes = VFS_EP_DATA_MAX;
 
-        g_sh_ep_buf[bytes] = 0u;
-        sh_cout(con, (const char *)g_sh_ep_buf);
+        g_sh_buf[bytes] = 0u;
+        sh_cout(con, (const char *)g_sh_buf);
 
         offset += bytes;
         if (offset >= total) return;
@@ -299,6 +312,14 @@ static void sh_dispatch(handle_id_t con, const char *line) {
 void sh_main_c(handle_id_t rbx_unused) {
     handle_id_t console_h     = HANDLE_INVALID;  /* unused: pure CPtr client */
     handle_id_t kbd_ep_h      = HANDLE_INVALID;
+
+    /* D-4: a page sh owns, registered as its IPC buffer.  Best-effort — a
+     * failure leaves the kernel staging path, which still works. */
+    {
+        void *b = iris_ipc_buffer_init(SH_SLOT_IPCBUF_FRAME, SH_SLOT_IPCBUF_PT,
+                                       IRIS_IPC_BUFFER_VA);
+        if (b) g_sh_buf = (uint8_t *)b;
+    }
 
     /* Phase 8: sh is a pure CPtr-first client. The bootstrap bag is empty
      * (catalog: endpoint_only without an own endpoint) — everything sh

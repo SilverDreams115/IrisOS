@@ -43,13 +43,18 @@ static inline long iris_ipcbuf_sys3(long nr, long a0, long a1, long a2) {
  * its own CSpace.  A service holding no Untyped can create nothing at all,
  * which is the shape the memory server exists to remove.
  *
- * The four slots are parameters rather than well-known constants because the
- * well-known range is nearly full and every service has a different idea of
- * which of 16..29 it has spare.  Three of them are scratch and may be reused
- * afterwards; only the FRAME capability has to keep existing, and it does —
- * the kernel holds its own reference from the moment it is registered.  The
- * page-table slot is reused across levels, which is why it is deleted before
- * each retype.
+ * The address space and the thread are named through `IRIS_CPTR_OWN_VSPACE`
+ * and `IRIS_CPTR_OWN_TCB` — the delegations the spawner minted — rather than
+ * fabricated with SYS_VSPACE_SELF / SYS_TCB_SELF, which publish MDB
+ * LEGACY_ROOTS: capabilities with no parent, which no revoke can reach.  A
+ * service should not have to create an unparented capability to use its own
+ * address space.
+ *
+ * The two remaining slots are the caller's scratch, from the per-service range
+ * (22..29 are unassigned).  Only the FRAME capability has to keep existing,
+ * and it does — the kernel holds its own reference from the moment it is
+ * registered.  The page-table slot is reused across levels, which is why it is
+ * deleted before each retype.
  *
  * Returns the buffer's address, or NULL.  A NULL is not fatal by itself: the
  * kernel staging path still works and is what a thread with no registered
@@ -57,18 +62,10 @@ static inline long iris_ipcbuf_sys3(long nr, long a0, long a1, long a2) {
  * fallback is the whole reason D-4 is MIGRATING rather than CLOSED.
  */
 static inline void *iris_ipc_buffer_init(uint32_t frame_slot,
-                                         uint32_t vspace_slot,
-                                         uint32_t tcb_slot,
                                          uint32_t pt_slot,
                                          uint64_t vaddr)
 {
-    if (!frame_slot || !vspace_slot || !tcb_slot || !pt_slot ||
-        (vaddr & 0xFFFu)) return 0;
-
-    /* The address space to map into has to be named as a capability, like
-     * everything else since Stage 6-pure. */
-    if (iris_ipcbuf_sys1(SYS_VSPACE_SELF, (long)((uint64_t)vspace_slot << 32)) != 0)
-        return 0;
+    if (!frame_slot || !pt_slot || (vaddr & 0xFFFu)) return 0;
 
     /* One page, retyped from memory this service owns. */
     if (iris_syscall4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_OWN_UNTYPED,
@@ -93,7 +90,7 @@ static inline void *iris_ipc_buffer_init(uint32_t frame_slot,
      */
     for (int level = 0; level < 4; level++) {
         long r = iris_syscall4(SYS_FRAME_MAP, (long)frame_slot,
-                               (long)vspace_slot, (long)vaddr, 1);
+                               (long)IRIS_CPTR_OWN_VSPACE, (long)vaddr, 1);
         if (r == 0) break;
         if (r != (long)IRIS_ERR_MISSING_TABLE || level == 3) return 0;
         /* One level, retyped and installed at whichever depth is missing. */
@@ -103,14 +100,11 @@ static inline void *iris_ipc_buffer_init(uint32_t frame_slot,
                           (long)((uint64_t)pt_slot << 32), 4096) != 0)
             return 0;
         if (iris_ipcbuf_sys3(SYS_VSPACE_MAP_TABLE, (long)pt_slot,
-                             (long)vspace_slot, (long)vaddr) != 0)
+                             (long)IRIS_CPTR_OWN_VSPACE, (long)vaddr) != 0)
             return 0;
     }
 
-    if (iris_ipcbuf_sys1(SYS_TCB_SELF, (long)((uint64_t)tcb_slot << 32)) != 0)
-        return 0;
-
-    if (iris_ipcbuf_sys3(SYS_TCB_SET_IPC_BUFFER, (long)tcb_slot,
+    if (iris_ipcbuf_sys3(SYS_TCB_SET_IPC_BUFFER, (long)IRIS_CPTR_OWN_TCB,
                          (long)frame_slot, (long)vaddr) != 0)
         return 0;
 
