@@ -457,7 +457,9 @@ void     scheduler_sleep_current(uint64_t ticks) { (void)ticks; }
  * ring 3 — and aborts rather than pretending, so a test that reaches it fails
  * loudly instead of returning into nothing.
  */
-void task_park_restart(void) { }
+__attribute__((noreturn)) void task_park_restart(void) {
+    iris_panic("task_park_restart reached in a unit test");
+}
 __attribute__((noreturn)) void syscall_return_to_user(uint64_t a, uint64_t b,
                                                       uint64_t c, uint64_t d,
                                                       const uint64_t *e) {

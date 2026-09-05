@@ -78,4 +78,32 @@ context_switch:
     movq %rax, (%rsp)
     ret
 
+
+.section .text
+/*
+ * fpu_save_to / fpu_restore_from — Stage 9-evt step 3.
+ *
+ * context_switch has always done these as part of a switch, because a switch
+ * was the only way the CPU changed hands.  A thread resumed from its TCB
+ * (`restore_user_ctx_and_iretq`) never goes through one, so the two halves
+ * have to be reachable on their own.
+ *
+ * Same instructions, same 512-byte 16-byte-aligned area.
+ */
+.global fpu_save_to
+fpu_save_to:
+    testq %rdi, %rdi
+    jz .Lfpu_save_none
+    fxsaveq (%rdi)
+.Lfpu_save_none:
+    ret
+
+.global fpu_restore_from
+fpu_restore_from:
+    testq %rdi, %rdi
+    jz .Lfpu_restore_none
+    fxrstorq (%rdi)
+.Lfpu_restore_none:
+    ret
+
 .section .note.GNU-stack,"",@progbits

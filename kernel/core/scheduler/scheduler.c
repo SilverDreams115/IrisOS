@@ -124,8 +124,30 @@ __attribute__((noreturn)) void syscall_restart_trampoline(void);
 
 void task_yield(void) { (void)task_yield_impl(0); }
 
-/* Returns only if it could NOT switch away — see syscall_run's fallback. */
-void task_park_restart(void) { (void)task_yield_impl(1); }
+/*
+ * Stage 9-evt step 3 — parking leaves the thread's stack entirely.
+ *
+ * Step 2 made the frame disposable; this stops using it at all.  The thread's
+ * resume point is recorded in its TCB and the CPU moves to the CORE's stack
+ * before a single further decision is made, so from here on nothing that
+ * matters is below the old rsp — which is the difference between a stack that
+ * is merely unused and one that belongs to the core.
+ *
+ * It does not return.  The fallback it used to have — "nobody else can run, so
+ * yield through your own frame" — is gone, because the dispatcher's answer to
+ * "nobody else can run" is to wait for an interrupt on the core's stack, which
+ * is what the idle task used to be for.
+ */
+__attribute__((noreturn)) void task_park_restart(void) {
+    struct task *t = current_task;
+    if (t && t->kstack) {
+        t->ctx.rip     = (uint64_t)(uintptr_t)syscall_restart_trampoline;
+        t->ctx.rflags  = 0x2u;      /* reserved bit set, IF clear */
+        t->resume_user = 0u;        /* it resumes IN the kernel */
+        t->saved_krsp  = (uint64_t)(uintptr_t)(t->kstack + TASK_STACK_SIZE) - 8u;
+    }
+    core_dispatch_enter(t);
+}
 
 static int task_yield_impl(int abandon) {
     uint64_t saved_flags;
@@ -250,14 +272,11 @@ static int task_yield_impl(int abandon) {
          * below the top because context_switch writes the resume address
          * there and returns into it.
          */
-        struct cpu_context discard;
-        uint64_t           discard_rsp;
-        old->ctx.rip    = (uint64_t)(uintptr_t)syscall_restart_trampoline;
-        old->ctx.rflags = 0x2u;      /* reserved bit set, IF clear */
-        old->saved_krsp = (uint64_t)(uintptr_t)(old->kstack + TASK_STACK_SIZE) - 8u;
-        context_switch(&discard, &chosen->ctx,
-                       &discard_rsp, chosen->saved_krsp,
-                       old->fpu_state, chosen->fpu_state);
+        old->ctx.rip     = (uint64_t)(uintptr_t)syscall_restart_trampoline;
+        old->ctx.rflags  = 0x2u;      /* reserved bit set, IF clear */
+        old->resume_user = 0u;        /* it resumes IN the kernel */
+        old->saved_krsp  = (uint64_t)(uintptr_t)(old->kstack + TASK_STACK_SIZE) - 8u;
+        sched_resume(chosen, old);
         /* Unreachable: this thread resumes at the trampoline, not here. */
         for (;;) { }
     }
@@ -268,6 +287,120 @@ static int task_yield_impl(int abandon) {
 
     __asm__ volatile ("pushq %0; popfq" : : "r"(saved_flags) : "memory");
     return 1;
+}
+
+/*
+ * Stage 9-evt step 3 — give the CPU to `next`, saving nothing of `outgoing`
+ * but its FPU.
+ *
+ * Two shapes, and which one applies is a fact about how the thread LEFT ring 3
+ * rather than a choice made here:
+ *
+ *   · `resume_user` — it was interrupted in ring 3, so its whole register
+ *     state is in its TCB and resuming it is an iretq off the core stack.  No
+ *     kernel stack of its own is involved at any point.
+ *   · otherwise — it is resuming INSIDE the kernel: a syscall that parked and
+ *     must re-run from its restart trampoline, or a thread that has never run.
+ *     Those still enter through `context_switch`, which is the last use of a
+ *     per-thread kernel stack and the thing the rest of step 3 removes.
+ *
+ * `outgoing` may be NULL (the dispatcher was entered with no thread to account
+ * for); its FPU is saved because the thread left ring 3 with its user's SSE
+ * registers live, and losing them would corrupt a computation that merely
+ * happened to be interrupted.
+ */
+__attribute__((noreturn))
+void sched_resume(struct task *next, struct task *outgoing) {
+    static struct cpu_context discard_ctx;
+    static uint64_t           discard_rsp;
+    static uint8_t            discard_fpu[512] __attribute__((aligned(16)));
+
+    if (next->resume_user) {
+        if (outgoing) fpu_save_to(outgoing->fpu_state);
+        fpu_restore_from(next->fpu_state);
+        restore_user_ctx_and_iretq(&next->user_ctx);
+    }
+
+    context_switch(&discard_ctx, &next->ctx, &discard_rsp, next->saved_krsp,
+                   outgoing ? outgoing->fpu_state : discard_fpu,
+                   next->fpu_state);
+    for (;;) { }
+}
+
+/*
+ * ── Stage 9-evt step 3: choosing a thread, for the DISPATCHER ───────────────
+ *
+ * The same decision `task_yield_impl` makes, without the half that assumes a
+ * stack to come back to.  It commits — current_task, TSS, the syscall stack
+ * pointer and CR3 are all correct by the time it returns — because the
+ * dispatcher's next act is to resume the thread and there is nowhere left to
+ * put a half-made decision.
+ *
+ * NULL means the core has nothing to run.  There is no idle TASK here: idle
+ * used to be the boot thread, which is why the scheduler had a special case
+ * for "the idle task is current" and why per-thread stacks could not go — idle
+ * was a thread with a stack like any other.  A core with nothing to run waits
+ * on the stack it already has.
+ *
+ * The clock fast-forward stays, and is not an optimisation: QEMU's TCG
+ * delivers no interrupts while ring 0 spins, so a guest with every thread
+ * asleep would never be woken by the timer it is waiting for.
+ */
+struct task *sched_pick_for_dispatch(struct task *outgoing) {
+    __asm__ volatile ("cli" : : : "memory");
+
+    reap_pending_dead_task();
+
+    if (outgoing && outgoing->timeout_pending) {
+        struct task *tf = outgoing;
+        tf->timeout_pending = 0;
+        if (ktimeout_notify_fault(tf)) {
+            tf->state = TASK_BLOCKED_FAULT;
+        } else if (tf->sched_ctx) {
+            tf->state     = TASK_BUDGET_EXHAUSTED;
+            tf->wake_tick = scheduler_ticks + tf->sched_ctx->period_ticks;
+        }
+    }
+
+    if (outgoing) {
+        if (outgoing->sched_ctx) kschedctx_flush_run(outgoing->sched_ctx);
+        if (outgoing->state == TASK_RUNNING) {
+            outgoing->state = TASK_READY;
+            if (outgoing != task_list_head) rq_enqueue(outgoing);
+        }
+        if (outgoing->state == TASK_DEAD) reap_enqueue_dead(outgoing);
+    }
+
+    struct task *chosen = rq_dequeue_best();
+    if (!chosen) {
+        sched_handle_idle(task_list_head, &chosen);
+        if (!chosen) return 0;
+    }
+
+    chosen->state        = TASK_RUNNING;
+    chosen->ticks_left   = chosen->time_slice;
+    chosen->need_resched = 0;
+    set_current_task(chosen);
+    cpu_self()->context_switches++;
+
+    uint64_t new_kstack_top =
+        (uint64_t)(uintptr_t)(chosen->kstack + TASK_STACK_SIZE);
+    tss_set_rsp0(new_kstack_top);
+    syscall_set_kstack(new_kstack_top);
+    syscall_set_user_cr3(chosen->vspace ? chosen->vspace->user_cr3 : 0);
+
+    if (chosen->vspace && chosen->vspace->cr3 != 0) {
+        uint64_t cr3 = chosen->vspace->cr3;
+        if (iris_pcid_enabled) cr3 |= (uint64_t)chosen->vspace->pcid;
+        __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
+    } else {
+        __asm__ volatile ("mov %0, %%cr3" : : "r"(kernel_cr3) : "memory");
+    }
+    return chosen;
+}
+
+void sched_idle_account(void) {
+    cpu_self()->idle_ticks++;
 }
 
 void scheduler_init(void) {

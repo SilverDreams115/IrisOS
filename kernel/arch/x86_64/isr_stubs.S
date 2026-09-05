@@ -236,4 +236,73 @@ isr_common:
     addq $16, %rsp
     iretq
 
+
+.section .text
+/*
+ * core_dispatch_enter(struct task *outgoing) — Stage 9-evt step 3.
+ *
+ * Leave whatever stack we are on and enter the dispatcher on the CORE's.
+ *
+ * This is the instruction that makes "abandon the frame" and "give the stack
+ * back" the same act.  Everything below the new rsp is gone — the parking
+ * thread's frame, the interrupt frame that decided to reschedule, whatever was
+ * there — because after step 2 nothing that matters lives on a kernel stack
+ * across a block.
+ *
+ * The stack top is read GS-relative (offset 64, cpu_local.core_stack_top) for
+ * the same reason the syscall path reads its own: a core has to be able to
+ * find its stack without dereferencing anything that might be being switched.
+ */
+.global core_dispatch_enter
+core_dispatch_enter:
+    movq %gs:64, %rsp
+    /* rdi already holds the outgoing task; a fresh frame starts here. */
+    call core_dispatch
+    /* core_dispatch never returns.  If it does, the machine is in a state
+     * nothing describes, and stopping is the only honest thing left. */
+    ud2
+
+/*
+ * restore_user_ctx_and_iretq(const struct iris_user_ctx *ctx) — step 3.
+ *
+ * Resume a thread that was preempted in RING 3, straight from its TCB.  Its
+ * whole register state has lived there since the first half of step 3, so this
+ * needs no stack of the thread's and touches nothing but the frame it builds
+ * here, on the core stack, and throws away by iretq-ing off it.
+ *
+ * The CR3 and GS switches were done by the dispatcher before this was called,
+ * because they are facts about which thread is current rather than about how
+ * it is resumed.
+ */
+.global restore_user_ctx_and_iretq
+restore_user_ctx_and_iretq:
+    movq %rdi, %rax             /* the context; rdi gets restored below */
+
+    /* Build the iretq frame: SS, RSP, RFLAGS, CS, RIP — offsets follow
+     * struct iris_user_ctx (r15 at 0 ... ss at 168). */
+    pushq 168(%rax)             /* ss     */
+    pushq 160(%rax)             /* rsp    */
+    pushq 152(%rax)             /* rflags */
+    pushq 144(%rax)             /* cs     */
+    pushq 136(%rax)             /* rip    */
+
+    movq   0(%rax), %r15
+    movq   8(%rax), %r14
+    movq  16(%rax), %r13
+    movq  24(%rax), %r12
+    movq  32(%rax), %r11
+    movq  40(%rax), %r10
+    movq  48(%rax), %r9
+    movq  56(%rax), %r8
+    movq  64(%rax), %rbp
+    movq  72(%rax), %rdi
+    movq  80(%rax), %rsi
+    movq  88(%rax), %rdx
+    movq  96(%rax), %rcx
+    movq 104(%rax), %rbx
+    movq 112(%rax), %rax        /* rax LAST: it was the pointer */
+
+    swapgs                      /* ring-3 GS: GS_BASE=0, KGS_BASE=&cpu_local */
+    iretq
+
 .section .note.GNU-stack,"",@progbits

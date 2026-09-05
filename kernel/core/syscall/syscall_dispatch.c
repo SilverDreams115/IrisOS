@@ -88,6 +88,13 @@ void syscall_save_user_ctx(struct syscall_frame *f) {
     t->sc_user_regs[3] = f->user_r12;
     t->sc_user_regs[4] = f->user_rbx;
     t->sc_user_regs[5] = f->user_rbp;
+    /*
+     * Step 3: a thread that made a SYSCALL resumes in the KERNEL, not at the
+     * ring-3 context some earlier interrupt saved.  It has a syscall to
+     * finish, and iretq-ing it back to where the timer caught it last would
+     * silently drop that.
+     */
+    t->resume_user = 0u;
 }
 
 /*
@@ -128,32 +135,28 @@ void syscall_request_restart(struct task *t) {
 }
 
 /*
- * Stage 9-evt Step 2 — run one syscall to completion, parking as needed.
+ * Stage 9-evt — run one syscall to completion, parking as needed.
  *
- * The preferred park ABANDONS this frame: task_park_restart schedules the
- * thread to resume at syscall_restart_trampoline on a fresh stack and does not
- * return, so nothing of this call survives the block.  That is the property
- * D-1 is about — a blocked thread's kernel stack holds nothing.
+ * Parking ABANDONS this frame and does not come back: `task_park_restart`
+ * records the thread's resume point in its TCB, moves the CPU to the CORE's
+ * kernel stack, and enters the dispatcher.  Nothing of this call survives the
+ * block, which is the property D-1 is about.
  *
- * It can decline, and then the loop below is the fallback: yield through this
- * frame and re-dispatch, which is exactly what step 1 did.  Declining happens
- * when there is nobody else to run, and in that case there is no stack to save
- * by leaving — the alternative to keeping this frame is idling on it.
+ * Step 2 had a fallback here — "nobody else to run, so keep this frame and
+ * re-dispatch" — and step 3 removed the condition it existed for.  The
+ * dispatcher's answer to "nobody else can run" is to wait for an interrupt on
+ * the core's stack, which is what the idle task used to be; there is no longer
+ * a case in which keeping a frame is cheaper than leaving.  The loop that
+ * remains is not a loop: it runs once and either returns or leaves.
  */
 static uint64_t syscall_run(struct task *t, uint64_t num, uint64_t arg0,
                             uint64_t arg1, uint64_t arg2, uint64_t arg3) {
-    for (;;) {
-        uint64_t r = syscall_dispatch_one(num, arg0, arg1, arg2, arg3);
-        if (!t || !t->sc_restart) { if (t) t->sc_reentry = 0u; return r; }
+    uint64_t r = syscall_dispatch_one(num, arg0, arg1, arg2, arg3);
+    if (!t || !t->sc_restart) { if (t) t->sc_reentry = 0u; return r; }
 
-        t->sc_restart = 0u;
-        task_park_restart();          /* usually does not return */
-
-        /* Fallback: nobody else to run, so this frame stays and re-dispatches. */
-        t->sc_reentry = 1u;
-        num  = t->sc_num;  arg0 = t->sc_arg0; arg1 = t->sc_arg1;
-        arg2 = t->sc_arg2; arg3 = t->sc_arg3;
-    }
+    t->sc_restart = 0u;
+    t->sc_reentry = 1u;
+    task_park_restart();              /* never returns */
 }
 
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,

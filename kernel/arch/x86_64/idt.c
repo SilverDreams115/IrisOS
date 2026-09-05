@@ -154,7 +154,10 @@ void isr_save_user_ctx(struct full_frame *frame) {
     if ((frame->cs & 3u) != 3u) return;
     struct task *t = task_current();
     if (!t) return;
-    t->user_ctx = *frame;
+    t->user_ctx    = *frame;
+    /* Step 3: this thread's resume is now an iretq from its TCB.  Written
+     * where it ENTERS the kernel, because that is the event that decides it. */
+    t->resume_user = 1u;
     __atomic_fetch_add(&irq_ctx_saves, 1u, __ATOMIC_RELAXED);
 }
 

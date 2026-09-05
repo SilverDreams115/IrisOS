@@ -164,6 +164,9 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     /* ── 7. Scheduler core ──────────────────────────────────────── */
     klog_write("[IRIS][SCHED] initializing...\n");
     scheduler_init();
+    /* Stage 9-evt step 3: publish this core's kernel stack before anything can
+     * park — the dispatcher reads it GS-relative and has no fallback. */
+    core_dispatch_init();
 
     /* ── 8. First user task ─────────────────────────────────────── */
     klog_write("[IRIS][USER] preparing bootstrap task...\n");

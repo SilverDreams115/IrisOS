@@ -447,7 +447,7 @@ __attribute__((noreturn)) void syscall_return_to_user(uint64_t rax_value,
 __attribute__((noreturn)) void syscall_restart_trampoline(void);
 /* Park the caller so it resumes at the trampoline, abandoning this frame.
  * Returns if it could not switch away — see syscall_run. */
-void task_park_restart(void);
+__attribute__((noreturn)) void task_park_restart(void);
 
 /*
  * Stage 9-evt / D-8 — capabilities revoked per preemptible slice.

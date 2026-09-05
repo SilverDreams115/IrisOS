@@ -50,4 +50,23 @@ uint64_t sched_wall_ticks(void);
 uint64_t sched_context_switches(void);
 uint64_t sched_idle_ticks(void);
 
+struct task;
+
+/*
+ * Stage 9-evt step 3 — the per-core dispatcher and the stack it runs on.
+ *
+ * core_dispatch_init:   publish this core's stack top into its cpu_local.
+ * core_stack_top_for:   that stack's top, for the boot path that has no
+ *                       cpu_local to read yet.
+ */
+void     core_dispatch_init(void);
+uint64_t core_stack_top_for(uint32_t cpu_id);
+/* The loop itself; entered only through core_dispatch_enter. */
+void     core_dispatch(struct task *outgoing);
+/* Choose the next thread and COMMIT to it — current_task, TSS, CR3 and the
+ * accounting are all done by the time it returns.  NULL means idle. */
+struct task *sched_pick_for_dispatch(struct task *outgoing);
+/* One tick's worth of "this core had nothing to do". */
+void     sched_idle_account(void);
+
 #endif

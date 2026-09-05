@@ -64,6 +64,20 @@ struct iris_cpu_local {
      */
     uint64_t               syscall_kstack;   /* offset 48 — current task's kstack top */
     uint64_t               syscall_user_cr3; /* offset 56 — current task's user CR3   */
+    /*
+     * Stage 9-evt step 3 — THE kernel stack of this core.
+     *
+     * seL4 has one per core and no thread ever blocks inside the kernel.  IRIS
+     * reached the second half first: since step 2 a parked thread abandons its
+     * frame and holds nothing, so the stack it was using is free the instant it
+     * parks.  This is where that stack lives once it stops belonging to a
+     * thread.
+     *
+     * `core_stack_top` is its top; the dispatcher resets rsp to it every time
+     * it is entered, which is what makes "abandon the frame" and "give the
+     * stack back" the same act.
+     */
+    uint64_t               core_stack_top;   /* offset 64 */
 };
 
 extern struct iris_cpu_local cpu_local[MAX_CPUS];

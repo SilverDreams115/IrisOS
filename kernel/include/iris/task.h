@@ -484,6 +484,22 @@ struct task {
      * isr_save_user_ctx / isr_restore_user_ctx.
      */
     struct iris_user_ctx user_ctx;
+    /*
+     * How this thread resumes (Stage 9-evt step 3).
+     *
+     * 1 — it was interrupted in RING 3, so `user_ctx` above is its whole state
+     *     and resuming it is an iretq off the core's stack.
+     * 0 — it resumes INSIDE the kernel: a syscall that parked and must re-run
+     *     from its restart trampoline, a thread that has never run, or a
+     *     kernel thread.
+     *
+     * Written where the thread ENTERS the kernel rather than where it leaves,
+     * because that is the event that decides the answer: `isr_save_user_ctx`
+     * sets it, `syscall_save_user_ctx` clears it.  A thread that made a
+     * syscall must not be iretq'd back to the ring-3 context some earlier
+     * interrupt saved — it has a syscall to finish.
+     */
+    uint32_t             resume_user;
     /* Ph74: optional scheduling context — retained KSchedContext ref (NULL = best-effort) */
     struct KSchedContext *sched_ctx;
     /* Ph85: reply capability fields */
@@ -563,6 +579,24 @@ void         task_yield(void);
  * buffer, and the teardown hook that keeps the count honest. */
 uint32_t ipc_buffers_registered(void);
 void     ipc_buffer_gauge_drop(void);
+
+/* Stage 9-evt step 3 — give the CPU to `next`; never returns.  Defined in
+ * scheduler.c, named by the dispatcher and by the abandoning park. */
+__attribute__((noreturn))
+void sched_resume(struct task *next, struct task *outgoing);
+
+/* The two halves of what context_switch used to do inline; a thread resumed
+ * from its TCB never goes through a switch (kernel/arch/x86_64). */
+void fpu_save_to(void *area);
+void fpu_restore_from(void *area);
+
+/* Resume a ring-3 context straight from a TCB (kernel/arch/x86_64). */
+__attribute__((noreturn))
+void restore_user_ctx_and_iretq(const struct iris_user_ctx *ctx);
+
+/* Enter the per-core dispatcher on the core's stack; never returns. */
+__attribute__((noreturn))
+void core_dispatch_enter(struct task *outgoing);
 
 struct task *task_current(void);
 
