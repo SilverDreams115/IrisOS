@@ -23369,6 +23369,100 @@ static void test_t320(void) {
     if (ok) it_pass("T320"); else it_fail("T320", why);
 }
 
+/* ── T321: a CSpace cycle is reclaimed by revoking its Untyped (D-7) ─────────
+ * The ledger records that a CNode reachable only through another CNode keeps
+ * its own reference count above zero and is never collected — refcounting is a
+ * strictly weaker collector than a derivation tree, and this is the case that
+ * shows it.  Nothing in the tree builds one, so it had never been exercised.
+ *
+ * This builds one and measures what actually happens, because the severity of
+ * that row depends on a fact nobody had checked: whether the memory comes
+ * BACK.  seL4's guarantee is not "unreachable objects are collected" — seL4
+ * has no idle collector either — it is "revoking the Untyped reclaims
+ * everything derived from it", and that holds through cycles because a
+ * capability's MDB parent is where it was DERIVED, not where it is STORED.
+ *
+ * Three assertions, in the order that makes the answer unambiguous:
+ *   1. with the cycle live and no external capability left, the budget is BUSY
+ *      — nothing collected it, which is the refcount statement;
+ *   2. revoking the Untyped's subtree destroys both CNodes anyway;
+ *   3. the region resets, so the memory is genuinely back.
+ * Invariants: O2, O6, M1. */
+static void test_t321(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "cspace cycle";
+
+    long pool = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                     IRIS_KOBJ_UNTYPED, 64u * 1024u);
+    if (pool < 0) { it_fail("T321", "pool"); return; }
+
+    uint64_t before = 0, after = 0;
+    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&before) != 0) {
+        ok = 0; why = "info"; }
+
+    /* Two CNodes out of that budget, and a capability to each in the suite. */
+    long ca = ok ? it_retype_slot_alloc(pool, IRIS_KOBJ_CNODE, 16) : -1;
+    long cb = ok ? it_retype_slot_alloc(pool, IRIS_KOBJ_CNODE, 16) : -1;
+    if (ok && (ca < 0 || cb < 0)) { ok = 0; why = "cnodes"; }
+
+    /* The cycle: A holds a capability to B, B holds one to A. */
+    if (ok && it_sys3(SYS_CSPACE_MINT, cb, IT_MINT_INTO(ca, 1),
+                      (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "A names B"; }
+    if (ok && it_sys3(SYS_CSPACE_MINT, ca, IT_MINT_INTO(cb, 1),
+                      (long)(RIGHT_READ | RIGHT_WRITE)) != 0) { ok = 0; why = "B names A"; }
+
+    struct it_utq_mdb m0, m1;
+    if (ok && !it_utq_mdb(&m0)) { ok = 0; why = "mdb0"; }
+
+    /* Let go of both.  Nothing outside the cycle names either CNode now. */
+    if (ca >= 0) it_slot_delete((uint32_t)ca);
+    if (cb >= 0) it_slot_delete((uint32_t)cb);
+    it_quiesce_reaper();
+    if (ok && !it_utq_mdb(&m1)) { ok = 0; why = "mdb1"; }
+    /* Deleting a capability that has MDB children hands them to its PARENT,
+     * not to nobody.  An orphan is a root, and a root is unreachable by every
+     * revoke there is — which is how a subtree stops being reclaimable. */
+    if (ok && m1.mdb_reparents - m0.mdb_reparents != 2u) {
+        it_fz_note("T321", m1.mdb_reparents - m0.mdb_reparents, 2u, 0u);
+        ok = 0; why = "children were not reparented";
+    }
+    if (ok && m1.mdb_orphan_promotions != m0.mdb_orphan_promotions) {
+        ok = 0; why = "children were orphaned";
+    }
+
+    /* 1. Nothing collected them: the budget still has live children. */
+    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) != (long)IRIS_ERR_BUSY) {
+        ok = 0; why = "an unreachable cycle was collected"; }
+    if (ok && it_sys3(SYS_UNTYPED_INFO, pool, 0, (long)(uintptr_t)&after) != 0) {
+        ok = 0; why = "info2"; }
+    if (ok && before <= after) { ok = 0; why = "the cycle cost nothing"; }
+
+    /* 2. Revoking the Untyped's subtree reaches them regardless, because the
+     *    MDB parent of each CNode capability is the slot holding `pool` — not
+     *    the slot inside the other CNode. */
+    long revoked = ok ? it_sys1(SYS_CSPACE_REVOKE, pool) : -1;
+    /* One is enough, and the count is honest at one: destroying the capability
+     * to A destroys A, whose close empties A's slots — and the capability to B
+     * lived in one of them.  A revoke reports what IT destroyed, not what died
+     * because of it.  Assertion 3 is what says both are gone. */
+    if (ok && revoked < 1) {
+        it_fz_note("T321", (uint32_t)(revoked & 0xFFFFu), 1u, 0u);
+        ok = 0; why = "revoke did not reach the cycle";
+    }
+    it_quiesce_reaper();
+
+    /* 3. ...and the memory is genuinely back. */
+    if (ok && it_sys1(SYS_UNTYPED_RESET, pool) != 0) { ok = 0; why = "region not reclaimed"; }
+
+    it_slot_delete((uint32_t)pool);
+    it_quiesce_reaper();
+    struct it_snap a = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a, &why)) ok = 0;
+    if (ok) it_pass("T321"); else it_fail("T321", why);
+}
+
 static void test_t319(void) {
     if (g_it_slot_guard_hits == 0u) { it_pass("T319"); return; }
     it_fz_note("T319", g_it_slot_guard_hits, g_it_slot_guard_last, 0u);
@@ -23949,6 +24043,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t318();
     test_t319();
     test_t320();
+    test_t321();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

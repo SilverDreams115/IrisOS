@@ -519,14 +519,22 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
     /* ── publish through the canonical slot primitive (Phase S3) ──
      * Each created cap is installed as an MDB CHILD of the source untyped's
-     * slot when the source was named by CPtr; a handle-named source has no
-     * CSpace ancestor, so the caps are explicit LEGACY roots (I.1, counted).
-     * Exclusive installs re-verify occupancy; a conflict unwinds the slots
-     * installed so far (fresh leaves — their delete has no reparent effect)
-     * and then rolls back objects + carve exactly (U14/U15). */
+     * slot.  Exclusive installs re-verify occupancy; a conflict unwinds the
+     * slots installed so far (fresh leaves — their delete has no reparent
+     * effect) and then rolls back objects + carve exactly (U14/U15).
+     *
+     * The predicate is `cspace_value_is_cptr`, and it used to be an open-coded
+     * `< 1024`.  That number was the handle-namespace split, and cspace.h says
+     * in words that nobody may open-code it — but it also means something
+     * else here: a SECOND-LEVEL CPtr is `(leaf << 8) | root_slot`, which is
+     * >= 1024 for every leaf above 3.  So every object retyped from an Untyped
+     * held below the root became a LEGACY ROOT: no MDB parent, unreachable by
+     * any revoke, and reclaimable only by resetting a region whose children
+     * nothing could destroy.  The suite holds all its budgets in a second-level
+     * CNode, so this was most of what it retyped.  T321 is the test. */
     struct KCNode *ut_slot_cn  = 0;
     uint32_t       ut_slot_idx = 0;
-    if (ut_cptr != 0u && ut_cptr < 1024u) {
+    if (cspace_value_is_cptr(ut_cptr)) {
         if (cspace_resolve_slot(t->cspace_root, ut_cptr, &ut_slot_cn, &ut_slot_idx)
                 != IRIS_OK)
             ut_slot_cn = 0;   /* defensive: fall back to legacy root */
