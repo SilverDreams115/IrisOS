@@ -62,7 +62,17 @@ Measured against seL4's model rather than against this roadmap's own progress,
 because a roadmap that grades itself is not evidence.  The honest answer has
 two halves and they are far apart:
 
-**The authority model is close.  The kernel architecture is not.**
+**The authority model is essentially done.  The kernel architecture is not.**
+
+Of the eight dimensions below, four are now met or as close as they will get:
+capabilities (no open gap — one registered permanent divergence, D-3, decided),
+MCS scheduling (nothing left that is not seL4's), no ambient authority (the
+kernel decides no device policy at all), and the ABI shape (far, by a recorded
+decision).  Two are near: the object model, waiting on three object types seL4
+has no equivalent for, and the kernel heap, at 17 permitted allocations.  IPC
+waits on a migration rather than a design.  **The one that is a rewrite rather
+than an increment is the kernel architecture**, and it is the one the whole
+roadmap is sequenced behind.
 
 | Dimension | State | Evidence |
 |---|---|---|
