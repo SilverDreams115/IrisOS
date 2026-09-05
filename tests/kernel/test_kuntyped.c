@@ -129,4 +129,58 @@ void test_kuntyped(void) {
     kuntyped_destroy_ref(u2);
     free(buf);
     free(buf2);
+
+    /*
+     * ── HB-1..HB-5: the DEVICE header budget (ledger D-9) ────────────────
+     *
+     * A device Untyped describes MMIO, and MMIO is not storage: a struct
+     * written into a framebuffer is pixels, and read back it is whatever the
+     * display controller left there.  So the headers of objects retyped out of
+     * a device region have to be RAM somebody named — the kernel taking them
+     * from its own slab is charter M3's exact prohibition.
+     *
+     * The pairing carries two properties that both come from one retain, and
+     * these assert the rules that make them hold.
+     */
+    {
+        void *rambuf = malloc(4096u);
+        ASSERT_NOT_NULL(rambuf);
+        struct KUntyped *ram = kuntyped_create((uint64_t)(uintptr_t)rambuf,
+                                               4096u, 0);
+        struct KUntyped *ram2 = kuntyped_create((uint64_t)(uintptr_t)rambuf,
+                                                4096u, 0);
+        struct KUntyped *dev = kuntyped_create(0xFD000000ull, 65536u, 1);
+        struct KUntyped *dev2 = kuntyped_create(0xFE000000ull, 65536u, 1);
+        ASSERT_NOT_NULL(ram); ASSERT_NOT_NULL(ram2);
+        ASSERT_NOT_NULL(dev); ASSERT_NOT_NULL(dev2);
+
+        /* HB-1: a fresh device Untyped has no budget, which is what makes a
+         * retype out of it refuse rather than fall back to kernel memory. */
+        ASSERT_NULL(dev->hdr_budget);
+
+        /* HB-2: a RAM Untyped is not something to pair — it carves its own. */
+        ASSERT_EQ(kuntyped_set_hdr_budget(ram, ram2),
+                  (long)IRIS_ERR_INVALID_ARG);
+        /* HB-3: nor is a DEVICE region a budget: it cannot hold headers, which
+         * is the entire reason the pairing exists. */
+        ASSERT_EQ(kuntyped_set_hdr_budget(dev, dev2),
+                  (long)IRIS_ERR_INVALID_ARG);
+        ASSERT_EQ(kuntyped_set_hdr_budget(dev, dev),
+                  (long)IRIS_ERR_INVALID_ARG);
+
+        /* HB-4: a valid pairing takes, and RETAINS — the retain is what makes
+         * the budget's own RESET refuse while headers carved from it are
+         * alive, without any bookkeeping to keep in step. */
+        uint32_t before = atomic_load(&ram->base.refcount);
+        ASSERT_EQ(kuntyped_set_hdr_budget(dev, ram), 0L);
+        ASSERT_TRUE(dev->hdr_budget == ram);
+        ASSERT_EQ(atomic_load(&ram->base.refcount), before + 1u);
+
+        /* HB-5: SET ONCE.  A pairing that could move would let a holder point
+         * at a second budget and reset the first, reclaiming a region while
+         * the headers describing live device frames were still in it. */
+        ASSERT_EQ(kuntyped_set_hdr_budget(dev, ram2),
+                  (long)IRIS_ERR_ALREADY_EXISTS);
+        ASSERT_TRUE(dev->hdr_budget == ram);
+    }
 }
