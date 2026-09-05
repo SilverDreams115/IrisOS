@@ -649,8 +649,14 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
              * Stage 7-mem: and that is the WHOLE of "charged to the child".
              * SYS_VMO_CREATE_FOR named a payer process on top of it, for a
              * per-process VMO ceiling that no longer exists. */
-            r = sl_sys3(SYS_VMO_CREATE, (long)seg_map_size[i], pool_c,
-                        sl_ws_dest(ws, SL_WS_SEG + i));
+            /* Ledger D-5: a FRAME retyped from the child's budget, not a
+             * KVMO fabricated by the kernel.  A frame of the segment's whole
+             * size, because a frame maps as a whole (D-10) — which is what
+             * makes the VMO's page-at-a-time population unnecessary. */
+            r = sl_sys4(SYS_UNTYPED_RETYPE2, pool_c,
+                        (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
+                        sl_ws_dest(ws, SL_WS_SEG + i),
+                        (long)seg_map_size[i]);
             if (r < 0) goto out;
             seg_vmo[i] = (handle_id_t)sl_ws_cptr(ws, SL_WS_SEG + i);
         }
@@ -663,7 +669,8 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                                          (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH),
                                          slot, seg_map_size[i]);
             if (r < 0) goto out;
-            r = sl_sys3(SYS_VMO_MAP, (long)seg_vmo[i], (long)slot, 1 /*WRITABLE*/);
+            r = sl_sys4(SYS_FRAME_MAP, (long)seg_vmo[i], self_vs,
+                        (long)slot, 1 /*WRITABLE*/);
             if (r < 0) goto out;
             segs_in_loader |= (1u << i);
         }
@@ -760,14 +767,15 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * made it, so it never stopped holding it. */
 
         /* 14. Create user stack sparse VMO (charged to the child) and map it in. */
-        r = sl_sys3(SYS_VMO_CREATE, (long)USER_STACK_SIZE, pool_c,
-                    sl_ws_dest(ws, SL_WS_STACK));
+        r = sl_sys4(SYS_UNTYPED_RETYPE2, pool_c,
+                    (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
+                    sl_ws_dest(ws, SL_WS_STACK), (long)USER_STACK_SIZE);
         if (r < 0) goto out;
         stack_vmo_h = (handle_id_t)sl_ws_cptr(ws, SL_WS_STACK);
 
         /* Stage 7 Step 9: the map names the child's ADDRESS SPACE, which the
          * loader retyped and still holds — not its process. */
-        r = iris_vspace_map(SYS_VMO_MAP_INTO,
+        r = iris_vspace_map(SYS_FRAME_MAP,
                             (long)stack_vmo_h, child_vs,
                             (long)USER_STACK_BASE, 1 /*WRITABLE*/,
                             child_vs, pool_c,
@@ -793,7 +801,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                                          (long)sl_ws_cptr(ws, SL_WS_PTSCRATCH_CH),
                                          bias + seg_map_base[i], seg_map_size[i]);
             if (r < 0) goto out;
-            r = sl_sys4(SYS_VMO_MAP_INTO,
+            r = sl_sys4(SYS_FRAME_MAP,
                         (long)seg_vmo[i], child_vs,
                         (long)(bias + seg_map_base[i]), flags);
             if (r < 0) goto out;
@@ -803,7 +811,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
         for (uint32_t i = 0; i < seg_count; i++) {
             if (!(segs_in_loader & (1u << i))) continue;
             uint64_t slot = SL_SEG_VADDR_BASE + (uint64_t)i * SL_SEG_SLOT_SIZE;
-            sl_sys2(SYS_VMO_UNMAP, (long)slot, (long)seg_p_memsz[i]);
+            sl_sys3(SYS_FRAME_UNMAP, (long)seg_vmo[i], self_vs, (long)slot);
             segs_in_loader &= ~(1u << i);
         }
 
@@ -1010,7 +1018,7 @@ out:
         if (!(segs_in_loader & (1u << i))) continue;
         uint64_t slot = SL_SEG_VADDR_BASE + (uint64_t)i * SL_SEG_SLOT_SIZE;
         if (seg_p_memsz[i] > 0)
-            sl_sys2(SYS_VMO_UNMAP, (long)slot, (long)seg_p_memsz[i]);
+            sl_sys3(SYS_FRAME_UNMAP, (long)seg_vmo[i], self_vs, (long)slot);
     }
     /* Close all handles. */
     sl_close_cap(elf_h);

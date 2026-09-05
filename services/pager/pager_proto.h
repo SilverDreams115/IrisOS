@@ -87,6 +87,30 @@
 #define PGR_VMO_BASE       16u
 #define PGR_VSLOT(j)       (PGR_VMO_BASE + (j))
 
+/*
+ * Ledger D-5 — the pager's pages are FRAMES it retypes, not VMOs it is granted.
+ *
+ * A KVMO is a lazily-populated array of pages, and `SYS_VMO_MAP_PAGE` was the
+ * only place that shape was actually used: everywhere else a VMO was a
+ * multi-page region that could have been a frame all along.  It is not needed
+ * here either — a pager OWNS memory (it has a budget like every other service)
+ * and a page is a frame.  What the VMO added was the kernel doing the
+ * allocating, on a schedule the pager did not choose.
+ *
+ * One CSpace slot per page, retyped on first use out of the pager's own
+ * Untyped.  Slots 70..85: above the target table (20..51), the IPC buffer
+ * scratch (52..53) and the page-table scratch (62) that the MISSING_TABLE
+ * fixup deletes and re-retypes.  The first pick was 54..69 and it OVERLAPPED
+ * that last one, so the fixup turned a private page into a page table under a
+ * pager that still believed it held a frame — every fault stopped resolving
+ * and no test could say why.  A slot range is not free because nobody named
+ * it.
+ */
+#define PGR_CACHE_CAP      8u   /* pages in the RO shared cache */
+#define PGR_PRIV_CAP       8u   /* pages in the private-writable pool */
+#define PGR_FRAME_BASE     70u
+#define PGR_FSLOT(kind, i) (PGR_FRAME_BASE + (kind) * PGR_CACHE_CAP + (i))
+
 /* Control op codes (msg.words[0] bits [7:0]). */
 #define PGR_OP_PING        1u
 #define PGR_OP_REPORT      2u
@@ -117,8 +141,6 @@
 
 #define PGR_MAX_BACKINGS   4u
 #define PGR_MAX_REGIONS    16u  /* Phase 28.1: one region per possible target */
-#define PGR_CACHE_CAP      8u   /* pages in the RO cache VMO */
-#define PGR_PRIV_CAP       8u   /* pages in the private-writable pool VMO */
 
 /* Mapping modes. */
 #define PGR_MODE_RO_SHARED         0u

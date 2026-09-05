@@ -184,29 +184,54 @@ static long pg_read_file(uint32_t grant_idx, uint64_t file_off,
     return (long)got;
 }
 
-/* ── page fill: fill VMO page (vmo grant slot, page_idx) with `fb` file bytes
+
+/*
+ * The frame behind one page slot, retyped on first use (ledger D-5).
+ *
+ * A VMO allocated its pages when the kernel felt like it; a pager allocates
+ * them when it decides to, out of the budget it holds.  Retyping into a slot
+ * that already holds a frame is refused (publication is exclusive), and that
+ * refusal is the "already there" answer — no separate bookkeeping.
+ */
+static uint32_t g_pg_frame_made;   /* bit (kind*PGR_CACHE_CAP + idx) */
+
+static long pg_page_frame(uint32_t kind, uint32_t idx) {
+    uint32_t bit  = kind * PGR_CACHE_CAP + idx;
+    uint32_t slot = PGR_FRAME_BASE + bit;
+    if (g_pg_frame_made & (1u << bit)) return (long)slot;
+    long r = pg_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_OWN_UNTYPED,
+                     (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
+                     (long)((uint64_t)slot << 32), 4096);
+    if (r != 0) { g_diag.page_fill_fail++; return r; }
+    g_pg_frame_made |= (1u << bit);
+    return (long)slot;
+}
+
+/* ── page fill: fill the page behind (kind, page_idx) with `fb` file bytes
  * from backing `bk` at `file_off`, zero the rest.  RW mapped into the pager's
  * own VSpace at PG_SCRATCH, written, then unmapped.  0 on success. */
-static long pg_fill_page(long vmo_slot, uint32_t page_idx, const struct pg_backing *bk,
+static long pg_fill_page(uint32_t kind, uint32_t page_idx, const struct pg_backing *bk,
                          uint64_t file_off, uint32_t fb) {
-    long r = pg_sys4(SYS_VMO_MAP_PAGE, vmo_slot, g_self_vs, (long)PG_SCRATCH,
-                     (long)(((uint64_t)page_idx * PAGE_SZ) | 1u /*W*/));
+    long fslot = pg_page_frame(kind, page_idx);
+    if (fslot < 0) { g_diag.page_fill_fail++; return fslot; }
+    long r = pg_sys4(SYS_FRAME_MAP, fslot, g_self_vs, (long)PG_SCRATCH,
+                     1 /*W*/);
     if (r != 0) { g_diag.page_fill_fail++; return r; }
     uint8_t *page = (uint8_t *)(uintptr_t)PG_SCRATCH;
     pg_zero(page, PAGE_SZ);                              /* zero-fill (F11/F12) */
     if (fb > PAGE_SZ) fb = PAGE_SZ;
     if (fb > 0u) {
         long got = pg_read_file(bk->grant_idx, file_off, page, fb);
-        if (got < 0) { (void)pg_sys2(SYS_VMO_UNMAP, (long)PG_SCRATCH, (long)PAGE_SZ); g_diag.page_fill_fail++; return got; }
+        if (got < 0) { (void)pg_sys3(SYS_FRAME_UNMAP, fslot, g_self_vs, (long)PG_SCRATCH); g_diag.page_fill_fail++; return got; }
         if ((uint32_t)got < fb) {
             /* Unexpected short read mid-file: zero the shortfall (already zero)
              * but report it — no partial PTE is installed by the caller. */
-            (void)pg_sys2(SYS_VMO_UNMAP, (long)PG_SCRATCH, (long)PAGE_SZ);
+            (void)pg_sys3(SYS_FRAME_UNMAP, fslot, g_self_vs, (long)PG_SCRATCH);
             g_diag.page_fill_fail++;
             return -(long)PGR_ERR_SHORT_READ;
         }
     }
-    r = pg_sys2(SYS_VMO_UNMAP, (long)PG_SCRATCH, (long)PAGE_SZ);
+    r = pg_sys3(SYS_FRAME_UNMAP, fslot, g_self_vs, (long)PG_SCRATCH);
     if (r != 0) { g_diag.page_fill_fail++; return r; }
     g_diag.page_fill++;
     return 0;
@@ -306,7 +331,7 @@ static long pg_resolve_region(uint32_t tidx) {
         else {
             slot = pg_cache_alloc();
             if (slot < 0) return -(long)PGR_ERR_CACHE_FULL;
-            long fr = pg_fill_page((long)PGR_VSLOT(PGR_VMO_CACHE), (uint32_t)slot, bk, file_off, fbytes);
+            long fr = pg_fill_page(PGR_VMO_CACHE, (uint32_t)slot, bk, file_off, fbytes);
             if (fr != 0) return fr;                             /* no PTE, no valid entry (F17/F38) */
             g_cache[slot].valid = 1;
             g_cache[slot].backing_id = bk->backing_id;
@@ -319,8 +344,9 @@ static long pg_resolve_region(uint32_t tidx) {
          * MAP_EXEC (bit 1) for an RX code segment.  Never writable (shared cache
          * pages are immutable); W^X already guaranteed at registration. */
         uint64_t mflags = (rg->prot & PGR_PROT_X) ? 2u : 0u;
-        long mr = pg_sys4(SYS_VMO_MAP_PAGE, (long)PGR_VSLOT(PGR_VMO_CACHE), tvs, (long)va,
-                          (long)(((uint64_t)slot * PAGE_SZ) | mflags));
+        long cfr = pg_page_frame(PGR_VMO_CACHE, (uint32_t)slot);
+        if (cfr < 0) return cfr;
+        long mr = pg_sys4(SYS_FRAME_MAP, cfr, tvs, (long)va, (long)mflags);
         if (mr != 0) return mr;
         /* Take a region ref on this cache slot (idempotent per region). */
         if (!(rg->cache_refmask & (1u << slot))) { rg->cache_refmask |= (1u << slot); g_cache[slot].refcount++; }
@@ -329,10 +355,11 @@ static long pg_resolve_region(uint32_t tidx) {
         int slot = -1;
         for (uint32_t i = 0; i < PGR_PRIV_CAP; i++) if (!g_priv_used[i]) { slot = (int)i; break; }
         if (slot < 0) return -(long)PGR_ERR_PRIVFULL;
-        long fr = pg_fill_page((long)PGR_VSLOT(PGR_VMO_PRIVATE), (uint32_t)slot, bk, file_off, fbytes);
+        long fr = pg_fill_page(PGR_VMO_PRIVATE, (uint32_t)slot, bk, file_off, fbytes);
         if (fr != 0) return fr;
-        long mr = pg_sys4(SYS_VMO_MAP_PAGE, (long)PGR_VSLOT(PGR_VMO_PRIVATE), tvs, (long)va,
-                          (long)(((uint64_t)slot * PAGE_SZ) | 1u /*W*/));
+        long pfr = pg_page_frame(PGR_VMO_PRIVATE, (uint32_t)slot);
+        if (pfr < 0) return pfr;
+        long mr = pg_sys4(SYS_FRAME_MAP, pfr, tvs, (long)va, 1 /*W*/);
         if (mr != 0) return mr;
         g_priv_used[slot] = 1;
         rg->priv_ownmask |= (1u << slot);
@@ -522,6 +549,22 @@ static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t fla
     if (vector != 14u || seq == 0u || task == 0u) return -(long)PGR_ERR_INFO;
     if (expect_cr2 != 0 && cr2 != expect_cr2) return -(long)PGR_ERR_CR2;
     if (op == PGR_OP_MAP_RESUME) {
+        /*
+         * The one path still on a KVMO, and the reason is worth stating.
+         *
+         * Everything the pager OWNS is frames now (ledger D-5): its page cache
+         * and its private pool are retyped from its own budget, one capability
+         * per page, because a pager holding a budget has no need of the kernel
+         * allocating for it.  This is different — it maps a page of a region
+         * the CLIENT granted, at an offset the client names, and that
+         * page-at-a-time shape over somebody else's multi-page region is the
+         * one thing a VMO does that a frame does not.
+         *
+         * The frame equivalent is one capability per page, granted by the
+         * client.  That is the right answer and it is not a smaller change: it
+         * redefines what a grant is, and twenty tests are written against the
+         * shape it replaces.  Recorded rather than rushed.
+         */
         uint64_t vva = cr2 & ~0xFFFULL, ofs = (offset & ~0xFFFULL) | (uint64_t)(flags & 0x3u);
         r = pg_sys4(SYS_VMO_MAP_PAGE, (long)PGR_VSLOT(vidx), tvs, (long)vva, (long)ofs);
         if (r != 0) return r;

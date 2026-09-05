@@ -83,13 +83,24 @@ from a frame it registered, and a payload with no buffer is an error — and so
 did the kernel heap: the slab is a boot arena, sealed at the end of boot, with
 no syscall handler able to reach it and the seal readable from ring 3.
 
-ONE remains: the object model, waiting on three object types seL4 has no
-equivalent for — `KVMO`, `KInitrdEntry` and `KBootstrapCap`.  They no longer
-cost the kernel memory (everything they allocate comes from a budget somebody
-named) and they are no longer how device memory is reached (D-9).  What is left
-is that they exist at all, and `KVMO` is the one that matters: retiring it is
-~170 call sites across the loader, the pager and vfs, and it is a project
-rather than a step.
+ONE remains: the object model, and it is now much smaller than the count of
+call sites suggested.
+
+`KVMO` is out of every production path.  The framebuffer is a device Untyped a
+driver retypes from (D-9); boot images are frames (`SYS_INITRD_FRAME`); a
+spawned image's segments and stack are frames retyped from the child's budget;
+vfs serves from frames; and the pager's own page cache and private pool are one
+capability per page out of its own budget.  What is left is a SINGLE path —
+`PGR_OP_MAP_RESUME`, mapping a page of a region the CLIENT granted at an offset
+the client names.  That is the one thing a VMO does that a frame does not, and
+replacing it means redefining what a grant is, against twenty tests written on
+the old shape.
+
+`KInitrdEntry` and `KBootstrapCap` remain as objects, but neither costs the
+kernel memory any more and neither is how anything is reached: they are boot
+capabilities that seL4 would express as capability TYPES with no backing
+object, which is a change to how a CNode slot is represented rather than to
+what the system can do.
 
 | Dimension | State | Evidence |
 |---|---|---|
