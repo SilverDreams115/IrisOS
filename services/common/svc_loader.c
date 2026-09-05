@@ -2,7 +2,7 @@
  * svc_loader.c — ring-3 ELF loader for IRIS services.
  *
  * Implements svc_load() using the Phase 29 composable spawn primitives:
- *   SYS_INITRD_VMO(55) + SYS_PROCESS_CREATE(56) + SYS_VMO_MAP_INTO(57) +
+ *   SYS_INITRD_FRAME(55) + SYS_PROCESS_CREATE(56) + SYS_FRAME_MAP(57) +
  *   SYS_THREAD_START(58); pre-start caps are SYS_PROC_CSPACE_MINT CSpace
  *   mints (Phase 8) — the legacy SYS_HANDLE_INSERT step is gone (A1.8).
  *
@@ -1010,9 +1010,12 @@ out:
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_PTSCRATCH_CH);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_VSPACE);
     (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_CHILD_CNODE);
-    /* Unmap ELF if still mapped. */
+    /* Unmap ELF if still mapped.  D-5: the window holds a FRAME, so it comes
+     * down the way the success path takes it down — by naming the frame, not
+     * by handing the kernel an address range and letting it find out what is
+     * there.  The range form had no capability in it at all. */
     if (elf_mapped)
-        sl_sys2(SYS_VMO_UNMAP, (long)SL_ELF_VADDR, (long)SL_SEG_SLOT_SIZE);
+        sl_sys3(SYS_FRAME_UNMAP, (long)elf_h, self_vs, (long)SL_ELF_VADDR);
     /* Unmap any segment slots still mapped in loader. */
     for (uint32_t i = 0; i < SL_MAX_SEGS; i++) {
         if (!(segs_in_loader & (1u << i))) continue;

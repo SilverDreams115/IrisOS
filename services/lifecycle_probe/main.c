@@ -147,14 +147,16 @@
  *   slot 15: fault notification  (WAIT — the delivery wake-up)
  *
  * LP_CMD_PAGER_SERVE — serve fault(s) of the authorized target:
- *   words[0]: low 8 bits = per-fault subaction (1 = map raw frame at cr2 then
+ *   words[0]: low 8 bits = per-fault subaction (1 = map the granted frame at
+ *             cr2 — WHICH page that is, is which capability the supervisor
+ *             minted into slot 14, so there is no offset to name — then
  *             seq-checked resume; 2 = seq-checked resume WITHOUT map — the
- *             clean-refault probe; 3 = seq-checked kill; 4 = map a VMO page
- *             (SYS_VMO_MAP_PAGE, Phase 26) at cr2 then seq-checked resume),
+ *             clean-refault probe; 3 = seq-checked kill.  Subaction 4 mapped a
+ *             VMO page at an offset; it retired with the object, because the
+ *             page a pager may install is the capability it was given),
  *             bits 8..15 = number of faults to serve (0 → 1).
- *   words[1]: map flags (bit 0 = W, bit 1 = X) for subactions 1 and 4.
- *   words[2]: subaction 1 = map VA override (0 = cr2 page); subaction 4 =
- *             VMO byte offset (page-aligned) to source the page from.
+ *   words[1]: map flags (bit 0 = W, bit 1 = X) for subaction 1.
+ *   words[2]: subaction 1 = map VA override (0 = cr2 page).
  *   words[3]: expected cr2 (0 = don't validate) — the pager's own honesty
  *             check that the fault info matches what the target touched.
  *   Exits LP_EXIT_PGR_BASE on full success, else base | low byte of the
@@ -198,36 +200,17 @@
 #define LP_PGR_ERR_INFO        0x7Eu   /* fault info dishonest (vector/seq) */
 #define LP_PGR_ERR_CR2         0x7Du   /* cr2 does not match expectation */
 
-/* Phase 27 — persistent PAGER SERVICE mode.  On LP_CMD_PAGER_SERVICE the probe
- * stops being a one-shot child and becomes a supervised user-pager service: it
- * loops on its control endpoint (slot 3) serving fault-resolution requests for
- * a manifest of target grants and VMO grants, driven request/reply by its
- * supervisor.  Its ENTIRE authority is minted before start into these slots;
- * it acquires nothing at runtime.  Must match iris_test's PS_* constants.
+/*
+ * Phase 27's persistent PAGER SERVICE mode is DELETED (ledger D-5).
  *
- *   slot 3            control endpoint (LP_CPTR_CMD_EP), served in a loop
- *   target i (0,1):   proc  LP_PS_TPROC(i)  = 8 + i*3   (READ|MANAGE)
- *                     vspace LP_PS_TVS(i)   = 9 + i*3   (WRITE)
- *                     notif  LP_PS_TNOTIF(i)= 10 + i*3  (WAIT)
- *   VMO j (0,1):      LP_PS_VMO(j) = 16 + j            (READ [+WRITE])
+ * It made this probe into a supervised user pager whose whole authority was a
+ * manifest of target grants and VMO grants.  Phase 28 replaced it with a real
+ * separate binary — services/pager — and iris_test has driven that one since;
+ * the code here kept compiling because nothing sent it LP_CMD_PAGER_SERVICE.
  *
- * Control op (words[0] bits [7:0]); words[1] = VMO offset; words[2] = expect cr2. */
-#define LP_CMD_PAGER_SERVICE   0x10A4u
-#define LP_PS_TPROC(i)   (8u + (i) * 3u)
-#define LP_PS_TVS(i)     (9u + (i) * 3u)
-#define LP_PS_TNOTIF(i)  (10u + (i) * 3u)
-#define LP_PS_VMO(j)     (16u + (j))
-#define LP_PS_MAX_TARGETS 2u
-#define LP_PS_MAX_VMOS    2u
-#define LP_PS_OP_PING       1u
-#define LP_PS_OP_REPORT     2u
-#define LP_PS_OP_MAP_RESUME 3u
-#define LP_PS_OP_KILL       4u
-#define LP_PS_OP_SHUTDOWN   5u
-#define LP_PS_ERR_BADOP    0x60u
-#define LP_PS_ERR_INFO     0x61u
-#define LP_PS_ERR_CR2      0x62u
-#define LP_PS_ERR_NOFAULT  0x63u
+ * It is going now rather than later because its grant slots held KVmos, and a
+ * dead code path is exactly where a retired object survives unnoticed.
+ */
 
 static inline long lp_sys1(long nr, long a0) {
     return iris_syscall4((long)nr, (long)a0, (long)0L, (long)0L, (long)0);
@@ -280,48 +263,6 @@ static inline uint64_t lp_rd64(const uint8_t *b, uint32_t off) {
     return v;
 }
 
-/* ── Phase 27 pager-service helpers ──────────────────────────────────────── */
-
-/* Resolve target[tidx]'s fault and (for MAP_RESUME) install vmo[vidx]'s page,
- * then seq-resolve.  Returns 0 or a negative error / -LP_PS_ERR_* marker. */
-static long lp_ps_serve(uint32_t op, uint32_t tidx, uint32_t vidx,
-                        uint32_t flags, uint64_t offset, uint64_t expect_cr2) {
-    if (tidx >= LP_PS_MAX_TARGETS) return -(long)LP_PS_ERR_BADOP;
-    if (op == LP_PS_OP_MAP_RESUME && vidx >= LP_PS_MAX_VMOS) return -(long)LP_PS_ERR_BADOP;
-
-    long tvs    = (long)LP_PS_TVS(tidx);
-    long tnotif = (long)LP_PS_TNOTIF(tidx);
-    long vmo    = (long)LP_PS_VMO(vidx);
-
-    uint64_t bits = 0;
-    long r = lp_sys3(SYS_NOTIFY_WAIT_TIMEOUT, tnotif, (long)(uintptr_t)&bits, 2000000000L);
-    if (r != 0) return -(long)LP_PS_ERR_NOFAULT;
-
-    uint8_t fb[FAULT_MSG_LEN];
-    /* Stage 7 Step 8: read off the thread the fault delivered. */
-    r = lp_sys2(SYS_TCB_FAULT_INFO, LP_PGR_FAULT_CPTR, (long)(uintptr_t)fb);
-    if (r != 0) return r;
-    uint32_t vector  = lp_rd32(fb, FAULT_OFF_VECTOR);
-    uint32_t task_id = lp_rd32(fb, FAULT_OFF_TASK_ID);
-    uint32_t seq     = lp_rd32(fb, FAULT_OFF_SEQ);
-    uint64_t cr2     = lp_rd64(fb, FAULT_OFF_CR2);
-    if (vector != 14u || seq == 0u || task_id == 0u) return -(long)LP_PS_ERR_INFO;
-    if (expect_cr2 != 0 && cr2 != expect_cr2)         return -(long)LP_PS_ERR_CR2;
-
-    if (op == LP_PS_OP_MAP_RESUME) {
-        uint64_t va  = cr2 & ~0xFFFULL;
-        uint64_t ofs = (offset & ~0xFFFULL) | (uint64_t)(flags & 0x3u);
-        r = lp_sys4(SYS_VMO_MAP_PAGE, vmo, tvs, (long)va, (long)ofs);
-        if (r != 0) return r;
-    }
-    uint64_t action = ((uint64_t)seq << 32) | ((op == LP_PS_OP_KILL) ? 3u : 2u);
-    /* Stage 7 Step 7: the faulting thread is the capability the fault
-     * delivered into the mailbox.  Stage 7 Step 8 took the READ off the
-     * process as well, so the fault path names only the thread. */
-    (void)task_id;
-    return lp_sys2(SYS_EXCEPTION_RESUME, LP_PGR_FAULT_CPTR, (long)action);
-}
-
 /* Manifest oracle: bitmask of slots 0..17 that resolve, plus high-authority
  * slots a minimal pager must never hold (bit24 spawn=6, bit26 untyped=55,
  * bit27 vspace-self=56). */
@@ -333,15 +274,6 @@ static int lp_slot_present(long cptr) {
     return lp_sys1(SYS_CAP_IDENTIFY, cptr) >= 0;
 }
 
-static uint32_t lp_ps_report(void) {
-    uint32_t mask = 0u;
-    for (uint32_t s = 0; s < 18u; s++)
-        if (lp_slot_present((long)s)) mask |= (1u << s);
-    if (lp_slot_present(6))  mask |= (1u << 24);
-    if (lp_slot_present(55)) mask |= (1u << 26);
-    if (lp_slot_present(56)) mask |= (1u << 27);
-    return mask;
-}
 
 /* Phase S1: recv with the explicit reply object at slot 13 when the parent
  * minted one; otherwise fall back to a reply-less recv (send-only fixtures).
@@ -366,46 +298,6 @@ void lp_main(handle_id_t bootstrap_ch_h) {
 
     /* Block until the parent sends/calls — or until the parent kills us. */
     (void)lp_recv(&msg);
-
-    /* Phase 27: persistent PAGER SERVICE mode.  Loop on the control endpoint
-     * serving fault-resolution requests inside the minted manifest, replying
-     * to each EP_CALL.  Exit on SHUTDOWN or when the control endpoint closes
-     * (supervisor dropped the master). */
-    if (msg.label == (uint64_t)LP_CMD_PAGER_SERVICE) {
-        for (;;) {
-            for (uint32_t i = 0; i < (uint32_t)sizeof(msg); i++) p[i] = 0;
-            long rr = lp_recv(&msg);
-            if (rr != 0) { lp_sys1(SYS_EXIT, 0); for (;;) {} }
-
-            handle_id_t reply_h = (handle_id_t)msg.attached_handle;
-            uint32_t op    = (uint32_t)(msg.words[0] & 0xFFu);
-            uint32_t tidx  = (uint32_t)((msg.words[0] >> 8) & 0xFFu);
-            uint32_t vidx  = (uint32_t)((msg.words[0] >> 16) & 0xFFu);
-            uint32_t flags = (uint32_t)((msg.words[0] >> 24) & 0x3u);
-            uint64_t offset = msg.words[1];
-            uint64_t expect = msg.words[2];
-
-            long result = 0;
-            int shutdown = 0;
-            if (op == LP_PS_OP_PING)            result = 0;
-            else if (op == LP_PS_OP_REPORT)     result = (long)lp_ps_report();
-            else if (op == LP_PS_OP_MAP_RESUME ||
-                     op == LP_PS_OP_KILL)       result = lp_ps_serve(op, tidx, vidx, flags, offset, expect);
-            else if (op == LP_PS_OP_SHUTDOWN) { result = 0; shutdown = 1; }
-            else                                result = -(long)LP_PS_ERR_BADOP;
-
-            if (reply_h != HANDLE_INVALID) {
-                struct IrisMsg reply;
-                for (uint32_t i = 0; i < (uint32_t)sizeof(reply); i++) ((uint8_t *)&reply)[i] = 0;
-                reply.label      = IRIS_EP_REPLY_OK;
-                reply.words[0]   = (uint64_t)result;
-                reply.word_count = 1u;
-                /* Phase S1: reply_h is our reusable reply-object CPtr — no close. */
-                (void)lp_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
-            }
-            if (shutdown) { lp_sys1(SYS_EXIT, 0); for (;;) {} }
-        }
-    }
 
     /* A1.9 receive-slot mode: a second recv with the parent-chosen slot
      * declared, then invoke + report the delivered cap (see header). */
@@ -513,14 +405,6 @@ void lp_main(handle_id_t bootstrap_ch_h) {
                 uint64_t va = va_ovr ? va_ovr : (cr2 & ~0xFFFULL);
                 r = lp_sys4(SYS_FRAME_MAP, (long)LP_PGR_SLOT_FRAME,
                             (long)LP_PGR_SLOT_TVS, (long)va, (long)mflags);
-                if (r != 0) { err = r; break; }
-            } else if (sub == 4u) {
-                /* Phase 26: install a VMO page (slot 14 = VMO) at the fault page,
-                 * sourcing byte offset words[2] within the VMO. */
-                uint64_t va  = cr2 & ~0xFFFULL;
-                uint64_t ofs = (va_ovr & ~0xFFFULL) | (mflags & 0x3ULL);
-                r = lp_sys4(SYS_VMO_MAP_PAGE, (long)LP_PGR_SLOT_FRAME,
-                            (long)LP_PGR_SLOT_TVS, (long)va, (long)ofs);
                 if (r != 0) { err = r; break; }
             }
             uint64_t action = ((uint64_t)seq << 32) | ((sub == 3u) ? 3u : 2u);

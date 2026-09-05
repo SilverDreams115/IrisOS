@@ -43,8 +43,8 @@
  *                               used to be a handle, which is why the manifest
  *                               oracle could not see it — the one piece of the
  *                               pager's authority the report was blind to.
- *   slot 16/17 PGR_VSLOT(j)     VMO grants (RO cache / private pool, or raw
- *                               Phase 27 VMOs), RIGHT_READ [+ RIGHT_WRITE]
+ *   slot 86.. PGR_PSLOT(j, p)    page p of grant j, one FRAME capability each,
+ *                               RIGHT_READ [+ RIGHT_WRITE]
  *   target i (i < PGR_MAX_TARGETS = 16):
  *     proc PGR_TSLOT_PROC(i) = 20 + i*2   RIGHT_READ | RIGHT_MANAGE
  *     vs   PGR_TSLOT_VS(i)   = 21 + i*2   RIGHT_WRITE  (map-into authority)
@@ -77,15 +77,39 @@
 #define PGR_FAULT_CPTR(i)     ((long)((((uint64_t)(i) + 1u) << 8) | PGR_SLOT_FAULT_CN))
 
 #define PGR_MAX_TARGETS    16u
-#define PGR_MAX_VMOS       2u
+#define PGR_MAX_GRANTS     2u
 
 #define PGR_TGT_BASE       20u
 #define PGR_TGT_STRIDE     2u
 #define PGR_TSLOT_PROC(i)  (PGR_TGT_BASE + (i) * PGR_TGT_STRIDE + 0u)
 #define PGR_TSLOT_VS(i)    (PGR_TGT_BASE + (i) * PGR_TGT_STRIDE + 1u)
 
-#define PGR_VMO_BASE       16u
-#define PGR_VSLOT(j)       (PGR_VMO_BASE + (j))
+/*
+ * Ledger D-5 — a GRANT is a run of frame capabilities, one per page.
+ *
+ * It was a KVMO: the client handed the pager one capability to a multi-page
+ * region and the pager mapped page N of it with SYS_VMO_MAP_PAGE.  That
+ * page-at-a-time reach into somebody else's region was the last thing a VMO
+ * did that a frame did not — and it did it by having the KERNEL own the
+ * region's pages and hand them out on a schedule nobody chose.
+ *
+ * A client that wants a page of its memory mapped grants the FRAME for that
+ * page.  Then which pages the pager may map is the set of capabilities it
+ * holds, not an offset the kernel range-checks; whether it may map one
+ * writable is RIGHT_WRITE on that frame, not a right on the whole region; and
+ * revoking one page is deleting one capability.  Every property the VMO
+ * enforced survives, stated where seL4 states it.
+ *
+ * PGR_GRANT_PAGES is the width of a grant, and it bounds nothing the kernel
+ * cares about: it is how many slots the client mints into, so the pager knows
+ * where grant j's page p is without being told.
+ *
+ * Slots 86..93, above the frame pool (70..85).  The target table (20..51),
+ * the IPC buffer (52..53) and the page-table scratch (62) are all below.
+ */
+#define PGR_GRANT_PAGES    4u
+#define PGR_GRANT_BASE     86u
+#define PGR_PSLOT(j, p)    (PGR_GRANT_BASE + (j) * PGR_GRANT_PAGES + (p))
 
 /*
  * Ledger D-5 — the pager's pages are FRAMES it retypes, not VMOs it is granted.
@@ -114,7 +138,7 @@
 /* Control op codes (msg.words[0] bits [7:0]). */
 #define PGR_OP_PING        1u
 #define PGR_OP_REPORT      2u
-#define PGR_OP_MAP_RESUME  3u   /* Phase 27: raw-VMO map from a VMO grant */
+#define PGR_OP_MAP_RESUME  3u   /* map page N of a frame grant */
 #define PGR_OP_KILL        4u
 #define PGR_OP_SHUTDOWN    5u
 #define PGR_OP_MAP_REGION  6u   /* Phase 28: resolve a file-backed fault (target tidx) */

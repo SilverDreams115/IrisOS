@@ -416,25 +416,24 @@ uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 
 /*
- * sys_vmo_size(vmo_h) → uint64_t byte size or iris_error_t
+ * sys_frame_size(frame_cptr) → uint64_t byte size or iris_error_t
  */
-uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+uint64_t sys_frame_size(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KObject  *obj;
     iris_rights_t    rights;
-    /* A1 Increment 1b: dual resolver — the VMO may be a CPtr slot or a handle. */
     iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
-                                 RIGHT_NONE, KOBJ_VMO, &obj, &rights);
+                                 RIGHT_NONE, KOBJ_FRAME, &obj, &rights);
     if (r != IRIS_OK) return syscall_err(r);
     if (!rights_check(rights, RIGHT_READ)) {
         kobject_release(obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
     }
 
-    uint64_t size = ((struct KVmo *)obj)->size;
+    uint64_t size = ((struct KFrame *)obj)->size;
     kobject_release(obj);
     return syscall_ok_u64(size);
 }

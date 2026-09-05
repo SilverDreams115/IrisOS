@@ -278,7 +278,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_NOTIFY_WAIT_TIMEOUT: return sys_notify_wait_timeout(arg0, arg1, arg2);
         case SYS_KLOG_DRAIN:          return sys_klog_drain(arg0, arg1, arg2);
         case SYS_EXCEPTION_RESUME:    return sys_exception_resume(arg0, arg1, arg2);
-        case SYS_VMO_SIZE:            return sys_vmo_size(arg0, arg1, arg2);
+        case SYS_FRAME_SIZE:          return sys_frame_size(arg0, arg1, arg2);
         case SYS_IRQ_ACK:             return sys_irq_ack(arg0, arg1, arg2);
         case SYS_SCHED_INFO:          return sys_sched_info(arg0, arg1, arg2);
         case SYS_CLOCK_NANOSLEEP:     return sys_clock_nanosleep(arg0, arg1, arg2);

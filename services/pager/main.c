@@ -524,6 +524,9 @@ static uint32_t pg_report_slots(void) {
         if (pg_slot_present((long)PGR_TSLOT_PROC(i))) mask |= (1u << 20);
         if (pg_slot_present((long)PGR_TSLOT_VS(i)))   mask |= (1u << 21);
     }
+    for (uint32_t j = 0; j < PGR_MAX_GRANTS; j++)
+        for (uint32_t pg = 0; pg < PGR_GRANT_PAGES; pg++)
+            if (pg_slot_present((long)PGR_PSLOT(j, pg))) mask |= (1u << 22);
     if (pg_slot_present(6))  mask |= (1u << 24);
     if (pg_slot_present(55)) mask |= (1u << 26);
     if (pg_slot_present(56)) mask |= (1u << 27);
@@ -535,7 +538,7 @@ static uint32_t pg_report_slots(void) {
 static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t flags,
                          uint64_t offset, uint64_t expect_cr2) {
     if (tidx >= PGR_MAX_TARGETS) return -(long)PGR_ERR_BADOP;
-    if (op == PGR_OP_MAP_RESUME && vidx >= PGR_MAX_VMOS) return -(long)PGR_ERR_BADOP;
+    if (op == PGR_OP_MAP_RESUME && vidx >= PGR_MAX_GRANTS) return -(long)PGR_ERR_BADOP;
     long tvs = (long)PGR_TSLOT_VS(tidx);
     long wr = pg_wait_fault(tidx);
     if (wr != 0) return wr;
@@ -550,23 +553,18 @@ static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t fla
     if (expect_cr2 != 0 && cr2 != expect_cr2) return -(long)PGR_ERR_CR2;
     if (op == PGR_OP_MAP_RESUME) {
         /*
-         * The one path still on a KVMO, and the reason is worth stating.
+         * Ledger D-5, closed: the pager maps a FRAME the client granted.
          *
-         * Everything the pager OWNS is frames now (ledger D-5): its page cache
-         * and its private pool are retyped from its own budget, one capability
-         * per page, because a pager holding a budget has no need of the kernel
-         * allocating for it.  This is different — it maps a page of a region
-         * the CLIENT granted, at an offset the client names, and that
-         * page-at-a-time shape over somebody else's multi-page region is the
-         * one thing a VMO does that a frame does not.
-         *
-         * The frame equivalent is one capability per page, granted by the
-         * client.  That is the right answer and it is not a smaller change: it
-         * redefines what a grant is, and twenty tests are written against the
-         * shape it replaces.  Recorded rather than rushed.
+         * The offset the client names selects WHICH capability, not a byte
+         * offset into a region the kernel walks — so the range check is
+         * `do I hold a slot for that page`, and the map is the same
+         * SYS_FRAME_MAP every other page in this service goes through.
          */
-        uint64_t vva = cr2 & ~0xFFFULL, ofs = (offset & ~0xFFFULL) | (uint64_t)(flags & 0x3u);
-        r = pg_sys4(SYS_VMO_MAP_PAGE, (long)PGR_VSLOT(vidx), tvs, (long)vva, (long)ofs);
+        uint64_t vva  = cr2 & ~0xFFFULL;
+        uint64_t page = (offset & ~0xFFFULL) >> 12;
+        if (page >= PGR_GRANT_PAGES) return -(long)PGR_ERR_RANGE;
+        r = pg_sys4(SYS_FRAME_MAP, (long)PGR_PSLOT(vidx, page), tvs,
+                    (long)vva, (long)(flags & 0x3u));
         if (r != 0) return r;
     }
     (void)task;

@@ -197,7 +197,7 @@ uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);  /* Phase 29 */
 uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_vmo_size(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_frame_size(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_vmo_share(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);

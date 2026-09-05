@@ -650,15 +650,20 @@ static inline long iris_syscall0(long nr) {
 #define SYS_EXCEPTION_RESUME   66
 
 /*
- * VMO size query — modern/conforming (iris_error_t).
+ * Frame size query — modern/conforming (iris_error_t).
  *
- * SYS_VMO_SIZE(vmo_h) → uint64_t byte size or negative iris_error_t
- *   vmo_h: KOBJ_VMO with RIGHT_READ.
- *   Returns the byte size of the VMO as it was created.
- *   For initrd VMOs this is the exact size of the embedded binary.
- *   For heap VMOs this is the value passed to SYS_VMO_CREATE.
+ * SYS_FRAME_SIZE(frame_cptr) → uint64_t byte size or negative iris_error_t
+ *   frame_cptr: KOBJ_FRAME with RIGHT_READ.
+ *   Returns the byte size of the frame as it was retyped.
+ *
+ * Ledger D-5: this was SYS_VMO_SIZE and asked a KVmo.  The number and the
+ * question are unchanged — how much memory does this capability name — and
+ * the answer matters for the same reason it always did: SYS_FRAME_MAP covers
+ * the WHOLE frame (D-10), so a caller supplying its own paging levels has to
+ * know how many 2 MiB regions the map will touch.  A frame carries its size,
+ * so this reads it off the object rather than making the holder remember.
  */
-#define SYS_VMO_SIZE   67
+#define SYS_FRAME_SIZE 67
 
 /*
  * IRQ deferred ACK — modern/conforming (iris_error_t).

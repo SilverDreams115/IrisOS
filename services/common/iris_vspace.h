@@ -114,14 +114,14 @@ static inline long iris_vspace_ensure(long vspace_c, long untyped_c,
 /*
  * Fill the walk for EVERY 2 MiB region a [vaddr, vaddr+bytes) range touches.
  *
- * The single-address form is not enough for the syscalls this header wraps.
- * SYS_VMO_MAP and SYS_VMO_MAP_INTO map a whole VMO in one call, and a VMO
- * larger than what one page table covers — a framebuffer, a service image —
- * crosses into a region whose PT nobody supplied.  The kernel reports
- * MISSING_TABLE, the caller ensures the FIRST address, retries, and fails at
- * exactly the same boundary: a fixup that cannot converge, and (because the
- * map rolls back) a silent one.  fb painted nothing above 2 MiB of
- * framebuffer and vfs dropped every initrd export that big.
+ * The single-address form is not enough for the syscall this header wraps.
+ * SYS_FRAME_MAP covers the WHOLE frame (D-10), and a frame larger than what
+ * one page table covers — a framebuffer, a service image — crosses into a
+ * region whose PT nobody supplied.  The kernel reports MISSING_TABLE, the
+ * caller ensures the FIRST address, retries, and fails at exactly the same
+ * boundary: a fixup that cannot converge, and (because the map rolls back) a
+ * silent one.  fb painted nothing above 2 MiB of framebuffer and vfs dropped
+ * every initrd export that big.
  */
 static inline long iris_vspace_ensure_range(long vspace_c, long untyped_c,
                                             long dest, long slot_c,
@@ -140,14 +140,13 @@ static inline long iris_vspace_ensure_range(long vspace_c, long untyped_c,
  * How many bytes a mapping syscall will cover, so the fixup knows how much of
  * the walk it owes.
  *
- * The whole-VMO maps say it themselves: SYS_VMO_SIZE reads the size off the
- * capability being mapped, which is the same number the kernel loops over.
- * The page-granular ones cover exactly one page by construction.  Guessing one
- * page for the whole-VMO forms is what made the fixup unable to converge.
+ * The map says it itself: SYS_FRAME_SIZE reads the size off the capability
+ * being mapped, which is the same number the kernel loops over.  Guessing one
+ * page is what made the fixup unable to converge for anything bigger.
  */
-static inline uint64_t iris_vspace_map_span(long nr, long vmo_c) {
-    if (nr == SYS_VMO_MAP || nr == SYS_VMO_MAP_INTO) {
-        long sz = iris_syscall1(SYS_VMO_SIZE, vmo_c);
+static inline uint64_t iris_vspace_map_span(long nr, long frame_c) {
+    if (nr == SYS_FRAME_MAP) {
+        long sz = iris_syscall1(SYS_FRAME_SIZE, frame_c);
         if (sz > 0) return (uint64_t)sz;
     }
     return 4096ULL;
@@ -176,15 +175,18 @@ static inline long iris_vspace_map(long nr, long a0, long a1, long a2, long a3,
  * The same thing, for a service that would rather fix this once at its syscall
  * wrapper than at every map site.
  *
- * Each mapping syscall says where its target address space and virtual address
- * are, so the decode is a fact about the ABI rather than a guess: SYS_VMO_MAP
- * maps into the CALLER's own address space, and SYS_FRAME_MAP,
- * SYS_VMO_MAP_PAGE and SYS_VMO_MAP_INTO all name theirs in a1.  Anything else
- * that returned MISSING_TABLE would be a kernel bug, so it is passed through
- * unchanged.
+ * The mapping syscall says where its target address space and virtual address
+ * are, so the decode is a fact about the ABI rather than a guess: SYS_FRAME_MAP
+ * names the address space in a1 and the VA in a2.  Anything else that returned
+ * MISSING_TABLE would be a kernel bug, so it is passed through unchanged.
  *
- *   self_vs:   the caller's own KOBJ_VSPACE (SYS_VSPACE_SELF), or 0 if it has
- *              not got one — SYS_VMO_MAP then cannot be fixed up.
+ * Ledger D-5: there used to be three more forms here, and the difference
+ * between them was where each hid its address space — SYS_VMO_MAP in the
+ * caller's own, SYS_VMO_MAP_INTO once inside a PROCESS capability.  One map
+ * syscall that names the address space is the whole of what they said.
+ *
+ *   self_vs:   unused since the caller-implicit form went; kept while callers
+ *              still pass it.
  *   untyped_c: the budget levels are retyped from.  For a child of svc_loader
  *              this is IRIS_CPTR_OWN_VSPACE_POOL, the region its own address
  *              space was built from.
@@ -200,18 +202,9 @@ static inline long iris_vspace_fixup(long nr, long a0, long a1, long a2, long a3
                                      long pt_dest, long pt_slot,
                                      long vs_dest, long vs_slot) {
     long vs, va;
-    if (nr == SYS_VMO_MAP) {
-        if (!self_vs) return (long)IRIS_ERR_MISSING_TABLE;
-        vs = self_vs; va = a1;
-    } else if (nr == SYS_FRAME_MAP || nr == SYS_VMO_MAP_PAGE ||
-               nr == SYS_VMO_MAP_INTO) {
-        /* Stage 7 Step 9: all three name the ADDRESS SPACE in a1.
-         * SYS_VMO_MAP_INTO used to name a PROCESS, so this had to fetch the
-         * child's VSpace out of it with SYS_PROCESS_VSPACE, into a scratch
-         * slot it then had to remember to drop — a whole borrow-and-return
-         * dance to reach a capability the caller already held. */
+    (void)self_vs; (void)vs_dest; (void)vs_slot;
+    if (nr == SYS_FRAME_MAP) {
         vs = a1; va = a2;
-        (void)vs_dest; (void)vs_slot;
     } else {
         return (long)IRIS_ERR_MISSING_TABLE;
     }

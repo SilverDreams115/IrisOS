@@ -424,7 +424,12 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[3].badge = IRIS_BADGE_IRIS_TEST;
         it_mints[4].slot = IRIS_CPTR_TEST_FIX_A;
         it_mints[4].src_cptr = fix_wrongtype;          /* wrong type (KNotification, not endpoint) */
-        it_mints[4].rights = RIGHT_WRITE;              /* WRITE so EP_CALL fails on TYPE, not rights */
+        /* READ|WRITE so the probes that use it fail on TYPE, not rights —
+         * which is the whole reason this fixture exists.  It carried WRITE
+         * alone, chosen when the only probe was EP_CALL; SYS_FRAME_MAP asks
+         * for READ as well, so a "wrong type" assertion was being answered
+         * ACCESS_DENIED and passing for the wrong reason elsewhere. */
+        it_mints[4].rights = RIGHT_READ | RIGHT_WRITE;
         it_mints[4].badge = 0;
         it_mints[5].slot = IRIS_CPTR_TEST_FIX_B;
         it_mints[5].src_h = lk_svcmgr;                 /* TRANSFER only */
