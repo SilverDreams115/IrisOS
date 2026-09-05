@@ -589,14 +589,19 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     klog_write("====================================\n");
     __asm__ volatile ("sti");
 
-    /* Let the first wave of bootstrap tasks start before the idle loop. */
-    task_yield();
-    task_yield();
-    task_yield();
-    task_yield();
-
-    for (;;) {
-        __asm__ volatile ("sti");
-        task_yield();
-    }
+    /*
+     * Stage 9-evt step 3 — boot ends by entering the DISPATCHER, and does not
+     * come back.
+     *
+     * This used to be the idle loop: the boot thread yielding for ever, which
+     * is why IRIS had an idle TASK at all, and why a per-thread kernel stack
+     * could not go — idle was a thread with a stack like any other, and every
+     * "nobody else can run" answer had to be a switch to it.
+     *
+     * The dispatcher's answer is a `hlt` on the core's own stack.  The boot
+     * thread stops being current the moment anything else is picked, is never
+     * enqueued (it is `task_list_head`, which the run queue excludes), and its
+     * stack is never used again.
+     */
+    core_dispatch_enter(task_current());
 }

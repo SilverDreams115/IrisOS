@@ -526,6 +526,9 @@ uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *caller = task_current();
     if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+    /* Re-entry after a self-suspend: somebody resumed us, and the suspension
+     * is over.  Redoing the resolve would suspend the thread again. */
+    if (caller->sc_reentry) return 0;
 
     struct task *target; iris_rights_t rights;
     iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
@@ -541,7 +544,18 @@ uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     task_suspend(target);
     kobject_release(&target->base);
 
-    if (is_self) task_yield();
+    /*
+     * Suspending YOURSELF blocks, so it parks like every other blocking
+     * syscall (Stage 9-evt).  It used to yield from inside this frame and
+     * return here when somebody resumed the thread — the continuation being
+     * "the rest of this function" on the thread's kernel stack, for however
+     * long the suspension lasted.
+     *
+     * The re-entry does not redo the work above: `sc_reentry` is checked at
+     * the top, because a restarted suspend that resolved and suspended again
+     * would put the thread straight back to sleep the instant it was resumed.
+     */
+    if (is_self) syscall_request_restart(caller);
     return 0;
 }
 

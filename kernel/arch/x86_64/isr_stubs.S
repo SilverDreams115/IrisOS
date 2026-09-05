@@ -1,6 +1,7 @@
 
 .extern isr_handler
 .extern isr_save_user_ctx
+.extern isr_maybe_dispatch
 .extern isr_restore_user_ctx
 
 /*
@@ -202,6 +203,11 @@ isr_common:
     /* rdi = pointer to the full frame on the stack */
     movq %rsp, %rdi
     call isr_handler
+
+    /* Stage 9-evt step 3: leave through the dispatcher if this thread should
+     * not go straight back.  Does not return when it decides to. */
+    movq %rsp, %rdi
+    call isr_maybe_dispatch
 
     movq %rsp, %rdi
     call isr_restore_user_ctx

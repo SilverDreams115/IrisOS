@@ -21,12 +21,41 @@ uint64_t sys_clock_get(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
+/*
+ * SYS_CLOCK_NANOSLEEP — restartable, the same shape as SYS_SLEEP.
+ *
+ * It called `scheduler_sleep_current`, which yielded from inside this frame,
+ * so the continuation was "the rest of this function" living on the thread's
+ * kernel stack for the whole sleep — the last such path outside the IPC layer.
+ * The continuation is a DEADLINE now, which is a fact about the thread, and
+ * the re-entry reads that rather than the duration: re-reading a duration is
+ * how a restarted sleep starts over and never ends.
+ */
 uint64_t sys_clock_nanosleep(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (!t) return syscall_ok_u64(0);
     if (arg0 == 0) return syscall_ok_u64(0);
-    uint64_t ticks = arg0 / 10000000ULL;
-    if (ticks == 0) ticks = 1;
-    scheduler_sleep_current(ticks);
+
+    if (!t->sc_reentry) {
+        uint64_t ticks = arg0 / 10000000ULL;
+        if (ticks == 0) ticks = 1;
+        uint64_t deadline = sched_current_ticks() + ticks;
+        if (deadline < ticks) deadline = UINT64_MAX;
+        t->wake_tick = deadline;
+    } else if (t->wake_tick == 0u) {
+        /* The scheduler woke us and cleared the deadline as it did. */
+        return syscall_ok_u64(0);
+    }
+
+    if (sched_current_ticks() >= t->wake_tick) {
+        t->wake_tick = 0u;
+        return syscall_ok_u64(0);
+    }
+
+    t->state        = TASK_SLEEPING;
+    t->need_resched = 1;
+    syscall_request_restart(t);
     return syscall_ok_u64(0);
 }
 

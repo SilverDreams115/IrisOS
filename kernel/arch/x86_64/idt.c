@@ -1,5 +1,6 @@
 #include <iris/idt.h>
 #include <iris/user_ctx.h>
+#include <iris/cpu_local.h>
 #include <iris/pic.h>
 #include <iris/scheduler.h>
 #include <iris/task.h>
@@ -161,6 +162,35 @@ void isr_save_user_ctx(struct full_frame *frame) {
     __atomic_fetch_add(&irq_ctx_saves, 1u, __ATOMIC_RELAXED);
 }
 
+/*
+ * Stage 9-evt step 3 — the exit decision.
+ *
+ * Called after the handler and before the restore.  If this interrupt came
+ * from RING 3 and the thread it interrupted should not go straight back —
+ * because its quantum expired, or the handler blocked it, or it died — the CPU
+ * goes to the dispatcher instead of returning through this frame.
+ *
+ * Doing it HERE rather than inside the handler is the whole of step 3's second
+ * half.  A handler that switched would hand the CPU away with this interrupt
+ * frame live on the stack, and once that stack belongs to the core rather than
+ * to the thread, the incoming thread is about to overwrite it.  Leaving from
+ * the exit path means the frame is finished with: everything the thread needs
+ * is already in its TCB, put there by isr_save_user_ctx on the way in.
+ *
+ * A ring-0 interrupt never dispatches.  The only ring-0 code that runs with
+ * interrupts enabled is the dispatcher's own idle wait, and an interrupt there
+ * must return to the `hlt` so the loop can ask again — the loop IS the
+ * scheduler at that point, and jumping into it from inside itself would
+ * abandon a stack frame it is standing on.
+ */
+void isr_maybe_dispatch(struct full_frame *frame) {
+    if ((frame->cs & 3u) != 3u) return;
+    struct task *t = task_current();
+    if (!t) return;
+    if (t->state == TASK_RUNNING && !t->need_resched) return;
+    core_dispatch_enter(t);          /* never returns */
+}
+
 void isr_restore_user_ctx(struct full_frame *frame) {
     if ((frame->cs & 3u) != 3u) return;
     struct task *t = task_current();
@@ -184,9 +214,12 @@ void isr_handler(struct full_frame *frame) {
         scheduler_tick();
         /* Preemptive: if the quantum expired, yield from the IRQ context.
          * RFLAGS is saved/restored in context_switch for each task. */
-        struct task *ct = task_current();
-        if (ct && ct->need_resched)
-            task_yield();
+        /*
+         * Step 3: the tick does not SWITCH.  It marks, and the exit path
+         * below dispatches — because switching here would hand the CPU away
+         * with this interrupt frame live on the stack, and once that stack
+         * belongs to the core the incoming thread is about to use it.
+         */
         return;
     }
     if (frame->vector == 33) {
@@ -240,8 +273,9 @@ void isr_handler(struct full_frame *frame) {
                                                      frame->error_code,
                                                      frame->rip, cr2);
                 if (notified) {
+                    /* Blocked, not switched: the exit path sees a thread that
+                     * is no longer runnable and dispatches past it. */
                     ct->state = TASK_BLOCKED_FAULT;
-                    task_yield();
                     return;
                 }
             }

@@ -1247,7 +1247,18 @@ void task_exit_current(void) {
      * sched_ctx ref and the live count (found by T112 spawn/exit churn). */
     t->awaiting_reap = 1;
     t->state = TASK_DEAD;
-    for (;;) task_yield();
+    /*
+     * Stage 9-evt step 3: leave through the dispatcher rather than looping on
+     * a yield.  The loop existed because a yield could decline and come back,
+     * and a dead thread had to keep asking; the dispatcher cannot come back —
+     * it resets the core stack under itself — so asking once is asking.
+     *
+     * The thread's own stack is finished with at this instruction, which is
+     * what lets the reaper free it: `sched_pick_for_dispatch` sees TASK_DEAD
+     * and enqueues it, and the reaper runs on the NEXT dispatch, by which time
+     * nothing is standing on the stack it is about to return.
+     */
+    core_dispatch_enter(t);
 }
 
 /*

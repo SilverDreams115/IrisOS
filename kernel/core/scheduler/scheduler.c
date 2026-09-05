@@ -18,11 +18,17 @@
 volatile uint64_t scheduler_ticks = 0;
 
 /*
- * Phase 17 — yield counter (additive instrumentation, exposed via the
- * SYS_SCHED_INFO ext2 tier).  Incremented once per task_yield() entry.  A
- * strictly-monotonic progress signal used by the T119/T122 selftests to prove
- * cooperative tasks actually reach the scheduler (no lost/stuck worker).  It
- * never influences scheduling.
+ * Phase 17 — scheduling-decision counter (additive instrumentation, exposed
+ * via the SYS_SCHED_INFO ext2 tier).  A strictly-monotonic progress signal
+ * used by the T119/T122 selftests to prove cooperative tasks actually reach
+ * the scheduler (no lost/stuck worker).  It never influences scheduling.
+ *
+ * It counted `task_yield()` entries until Stage 9-evt step 3, when a yield
+ * stopped being how a thread reaches the scheduler: SYS_YIELD parks and the
+ * DISPATCHER makes the decision, on the core's stack.  Counting both entry
+ * points keeps the signal meaning what the tests read it as — "the scheduler
+ * ran" — rather than "a particular function was called", which is what made
+ * it break when the function stopped being the one.
  */
 static _Atomic uint32_t sched_yield_ctr;
 
@@ -349,6 +355,8 @@ void sched_resume(struct task *next, struct task *outgoing) {
 struct task *sched_pick_for_dispatch(struct task *outgoing) {
     __asm__ volatile ("cli" : : : "memory");
 
+    atomic_fetch_add_explicit(&sched_yield_ctr, 1u, memory_order_relaxed);
+
     reap_pending_dead_task();
 
     if (outgoing && outgoing->timeout_pending) {
@@ -515,17 +523,16 @@ void scheduler_add_task(void (*entry)(void)) {
     task_create(entry);
 }
 
-void scheduler_sleep_current(uint64_t ticks) {
-    struct task *t = task_current();
-    if (!t || ticks == 0) return;
-
-    t->wake_tick = scheduler_ticks + ticks;
-    if (t->wake_tick < scheduler_ticks)
-        t->wake_tick = UINT64_MAX;
-    t->state        = TASK_SLEEPING;
-    t->need_resched = 1;
-    task_yield();
-}
+/*
+ * scheduler_sleep_current is DELETED (Stage 9-evt step 3).
+ *
+ * It was the shape every blocking path used to have: set a deadline, then
+ * yield from inside the caller's frame and return there when the thread woke
+ * — so the continuation was "the rest of the caller", on the thread's kernel
+ * stack, for the whole sleep.  Both its callers (SYS_SLEEP, then
+ * SYS_CLOCK_NANOSLEEP) are restartable now and keep the deadline in the TCB,
+ * which leaves this with nothing to do and nowhere to return to.
+ */
 
 uint32_t sched_live_task_count(void) {
     return atomic_load_explicit(&sched_live_count, memory_order_relaxed);
