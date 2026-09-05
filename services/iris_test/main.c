@@ -654,12 +654,7 @@ static long it_reply_create_at(uint32_t slot) {
  * the single-level case and addresses the root directly.  Getting this wrong
  * is silent and severe — the masked value points AT the child CNode, so the
  * delete destroys the whole level instead of one capability. */
-static void it_slot_delete(uint32_t slot) {
-    if (slot >= 256u)
-        (void)it_sys2(SYS_CNODE_DELETE, (long)(slot & 0xFFu), (long)(slot >> 8));
-    else
-        (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
-}
+static void it_slot_delete(uint32_t slot);
 
 /* ── Phase S4 (Step 2): CSpace-sourced cap transfer ───────────────────────
  * The IPC transfer SOURCE is a CSpace slot, never a handle (charter §3.6/A6).
@@ -719,6 +714,59 @@ static void it_slot_delete(uint32_t slot) {
 #define IT_XFER_SLOT_B  248u
 #define IT_XFER_SLOT_C  249u
 #define IT_XFER_SLOT_D  250u
+
+/* ...and the guard that says so out loud.
+ *
+ * The dangerous direction is the one the comment above does NOT cover: a
+ * caller that already holds a two-level CPtr and computes `cptr >> 8` before
+ * calling, producing a LEAF index (4..199) that is indistinguishable from a
+ * root slot.  The delete then lands on the root CNode, at a slot the suite's
+ * well-known map owns — and the capability it destroys belongs to some test
+ * that has not run yet.  Nothing fails where the mistake is.
+ *
+ * So the suite states which root slots it ever means to delete.  Everything
+ * else at root level is refused and counted, and T319 asserts the count is
+ * zero: the class becomes a test failure instead of a later NOT_FOUND with no
+ * author. */
+static uint32_t g_it_slot_guard_hits = 0;
+static uint32_t g_it_slot_guard_last = 0;
+
+/* The root slots the suite must still hold when the last test runs: the
+ * bootstrap capabilities, its own fixtures, its delegated untyped, and the two
+ * CNodes every fabrication goes through.  Stated as what must SURVIVE rather
+ * than as what may be deleted, because the scratch slots are many, churn, and
+ * are harmless — while these are few, fixed, and fatal. */
+static int it_root_slot_is_load_bearing(uint32_t s) {
+    if (s >= 1u && s <= 15u) return 1;      /* well-known bootstrap caps    */
+    if (s == 18u || s == 19u) return 1;     /* OWN_VSPACE / OWN_TCB         */
+    if (s == 24u || s == 25u || s == 26u) return 1;
+    if (s >= 27u && s <= 28u) return 1;     /* TEST_SUPER / TEST_FIX_C      */
+    if (s == 30u || s == 31u) return 1;     /* TEST_FIX_A / TEST_FIX_B      */
+    if (s == (uint32_t)IRIS_CPTR_TEST_UNTYPED) return 1;          /* 55 */
+    if (s == 56u || s == 58u || s == 59u) return 1;               /* vspace, vfs */
+    if (s == (uint32_t)IRIS_CPTR_DEVICE_UNTYPED) return 1;        /* 64 */
+    if (s == 66u) return 1;   /* IT_IPCBUF_CNODE_SLOT, asserted below */
+    if (s == IT_OBJ_CNODE_SLOT) return 1;                         /* 80 */
+    if (s == (uint32_t)IRIS_CPTR_FB_CONTROL) return 1;            /* 99 */
+    if (s == IT_SERIAL_SLOT) return 1;                            /* 255 */
+    return 0;
+}
+
+static void it_slot_delete(uint32_t slot) {
+    if (slot >= 256u) {
+        (void)it_sys2(SYS_CNODE_DELETE, (long)(slot & 0xFFu), (long)(slot >> 8));
+        return;
+    }
+    if (it_root_slot_is_load_bearing(slot)) {
+        __atomic_fetch_add(&g_it_slot_guard_hits, 1u, __ATOMIC_RELAXED);
+        g_it_slot_guard_last = slot;
+        it_serial_write("[slot-guard] refused root delete of slot ");
+        it_log_num(slot);
+        it_serial_write("\n");
+        return;
+    }
+    (void)it_sys2(SYS_CNODE_DELETE, 0, (long)slot);
+}
 
 /* Stage 4: naming iris_test's OWN root CNode.  This used to probe the handle
  * table for the first CNODE-typed generation-1 id, which only worked because
@@ -5075,6 +5123,8 @@ static long     g_it_ipcbuf_ut = -1;   /* a pool of its own; see below */
  * capability that must outlive every test in the suite does not belong in
  * either.  Root slot 66 is free; leaves 0..127 inside it are all ours. */
 #define IT_IPCBUF_CNODE_SLOT 66u
+_Static_assert(IT_IPCBUF_CNODE_SLOT == 66u,
+               "the slot guard names 66 by value; keep the two together");
 #define IT_IPCBUF_CPTR(leaf) ((uint32_t)(((leaf) << 8) | IT_IPCBUF_CNODE_SLOT))
 #define IT_IPCBUF_MAX        96u
 
@@ -18313,8 +18363,8 @@ static void test_t239(void) {
     it_close(&vch);
 
     it_quiesce_reaper();
-    if (cpool >= 0) it_slot_delete((uint32_t)(((uint64_t)cpool) >> 8));
-    if (pool  >= 0) it_slot_delete((uint32_t)(((uint64_t)pool) >> 8));
+    if (cpool >= 0) it_slot_delete((uint32_t)cpool);
+    if (pool  >= 0) it_slot_delete((uint32_t)pool);
     it_quiesce_reaper();
     struct it_snap a = it_snap_take();
     if (ok && !it_snap_baseline_live(&b, &a, &why)) ok = 0;
@@ -18561,8 +18611,8 @@ static void test_t245(void) {
     it_quiesce_reaper();
     if (ok && it_sys1(SYS_UNTYPED_RESET, poolB) != 0) { ok = 0; why = "B did not come back"; }
     it_bare_kill(&cmdB, &procB);
-    if (poolA >= 0) it_slot_delete((uint32_t)(((uint64_t)poolA) >> 8));
-    if (poolB >= 0) it_slot_delete((uint32_t)(((uint64_t)poolB) >> 8));
+    if (poolA >= 0) it_slot_delete((uint32_t)poolA);
+    if (poolB >= 0) it_slot_delete((uint32_t)poolB);
 
     it_quiesce_reaper();
     struct it_snap a = it_snap_take();
@@ -18755,7 +18805,7 @@ static void test_t250(void) {
             for (uint32_t i = 0; i < made; i++) it_close(&vv[i]);
             it_quiesce_reaper();
             if (ok && it_sys1(SYS_UNTYPED_RESET, small) != 0) { ok = 0; why = "s2 no recovery"; }
-            it_slot_delete((uint32_t)(((uint64_t)small) >> 8));
+            it_slot_delete((uint32_t)small);
             break;
         }
         default: {
@@ -20986,7 +21036,7 @@ static void test_t299(void) {
     }
 
     it_slot_delete(T299_SLOT_PROC);
-    it_slot_delete((uint32_t)(pool >= 0 ? (uint32_t)(((uint64_t)pool) >> 8) : 0u));
+    it_slot_delete((uint32_t)(pool >= 0 ? (uint32_t)pool : 0u));
     if (ok) it_pass("T299"); else it_fail("T299", why);
 }
 
@@ -23138,6 +23188,32 @@ static void test_t318(void) {
     if (ok) it_pass("T318"); else it_fail("T318", why);
 }
 
+/* ── T319: no test destroys a capability another test needs ──────────────────
+ * The suite fabricates from a rotating pool of leaves in a second-level CNode,
+ * and a two-level CPtr is (leaf << 8) | root_slot.  Six call sites undid that
+ * arithmetic before releasing a pool capability — `cptr >> 8` — and handed the
+ * LEAF index to a delete that reads a bare number as a ROOT slot.  Leaves run
+ * 4..199; the root slots the suite depends on live at 1..15, 55, 66, 80, 99.
+ * So every run silently deleted a handful of root capabilities, and the run
+ * survived only because the counter happened to miss the fatal ones.
+ *
+ * It stopped missing them the moment the pager fixtures became real frames:
+ * the extra allocations shifted the counter, a delete landed on slot 80, and
+ * sixty tests failed at once resolving a CNode that had been fine an hour
+ * earlier — with 98 MiB free, so it never looked like memory.
+ *
+ * The arithmetic is gone.  What is left is this: it_slot_delete refuses a
+ * root-level delete of a load-bearing slot and counts it, and the count must
+ * be zero.  A gauge rather than a comment, because the comment above
+ * it_slot_delete already warned about exactly this and six call sites did it
+ * anyway.  Invariant: a capability the suite holds for its whole run is not
+ * something any single test may release. */
+static void test_t319(void) {
+    if (g_it_slot_guard_hits == 0u) { it_pass("T319"); return; }
+    it_fz_note("T319", g_it_slot_guard_hits, g_it_slot_guard_last, 0u);
+    it_fail("T319", "a test deleted a load-bearing root capability");
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -23710,6 +23786,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t316();
     test_t317();
     test_t318();
+    test_t319();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);
