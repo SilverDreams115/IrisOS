@@ -626,6 +626,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         t->ipc_buffer_uvaddr = 0u;
         kobject_active_release(&b->base);
         kobject_release(&b->base);
+        ipc_buffer_gauge_drop();
     }
 
     /* The watch's own reference, dropped after it has fired. */

@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include "../common/svc_loader.h"
 #include "../common/console_client.h"
+#include "../common/iris_ipc_buffer.h"
 
 /*
  * Runtime-published services are bounded by the same per-process handle-table
@@ -629,8 +630,19 @@ static void svcmgr_dynamic_clear(struct svcmgr_dynamic_service *svc, int seal) {
  * CHAN_RECV_TIMEOUT wakeup) to handle queued endpoint requests.
  * ──────────────────────────────────────────────────────────────────────── */
 
-/* Receive buffer for bulk kbuf (service name) in EP_NB_RECV drain */
-static uint8_t g_ep_recv_buf[IRIS_EP_SVCNAME_MAX];
+/*
+ * Receive buffer for bulk kbuf (service name) in EP_NB_RECV drain.
+ *
+ * Ledger D-4: `g_ep_buf` starts at this static fallback and moves to a page
+ * svcmgr retypes from the Untyped it owns, registered as its IPC buffer.  Names
+ * then arrive in a page svcmgr owns, with no user pointer named on either side.
+ */
+static uint8_t  g_ep_recv_buf[IRIS_EP_SVCNAME_MAX];
+static uint8_t *g_ep_buf = g_ep_recv_buf;
+
+/* Spare slots: svcmgr's own map starts at 48. */
+#define SVCMGR_SLOT_IPCBUF_FRAME  22u
+#define SVCMGR_SLOT_IPCBUF_PT     23u
 
 /* Phase 10: dynamic (runtime-registered) service ids are reported as
  * SVCMGR_DYNAMIC_ID_BASE + slot_index so they never collide with the small
@@ -714,10 +726,10 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
 
     switch (msg->label) {
     case IRIS_SVCMGR_EP_LOOKUP_NAME: {
-        /* Name is in g_ep_recv_buf (set up before EP_NB_RECV call); NUL-terminate. */
+        /* Name is in g_ep_buf (set up before EP_NB_RECV call); NUL-terminate. */
         uint32_t namelen = msg->buf_len < IRIS_EP_SVCNAME_MAX
                            ? msg->buf_len : IRIS_EP_SVCNAME_MAX - 1u;
-        g_ep_recv_buf[namelen] = '\0';
+        g_ep_buf[namelen] = '\0';
 
         handle_id_t master_h  = HANDLE_INVALID;
         iris_rights_t granted = RIGHT_NONE;
@@ -726,12 +738,12 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
         uint32_t    src_cptr  = 0u;
 
         /* Reserved "<name>.ep" endpoint names resolve first (Phase 7.1). */
-        if (!svcmgr_resolve_ep_name(state, (const char *)g_ep_recv_buf,
+        if (!svcmgr_resolve_ep_name(state, (const char *)g_ep_buf,
                                     &master_h, &granted, &src_cptr)) {
             struct svcmgr_dynamic_service *dyn =
-                svcmgr_dynamic_find_name(state, (const char *)g_ep_recv_buf);
+                svcmgr_dynamic_find_name(state, (const char *)g_ep_buf);
             const struct iris_service_catalog_entry *cat =
-                (!dyn) ? svcmgr_catalog_find_name((const char *)g_ep_recv_buf) : 0;
+                (!dyn) ? svcmgr_catalog_find_name((const char *)g_ep_buf) : 0;
 
             if (dyn && dyn->public_cptr != 0u) {
                 /* Phase S4: CSpace-backed registration — the source IS a slot;
@@ -805,8 +817,8 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
         uint32_t nl = msg->buf_len < IRIS_EP_SVCNAME_MAX
                       ? msg->buf_len : IRIS_EP_SVCNAME_MAX - 1u;
         uint32_t alive = 0u, gen = 0u;
-        g_ep_recv_buf[nl] = '\0';
-        if (svcmgr_name_status(state, (const char *)g_ep_recv_buf, &alive, &gen)) {
+        g_ep_buf[nl] = '\0';
+        if (svcmgr_name_status(state, (const char *)g_ep_buf, &alive, &gen)) {
             reply.label      = IRIS_EP_REPLY_OK;
             reply.words[0]   = alive;
             reply.words[1]   = gen;
@@ -822,13 +834,13 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
                 char base2[SVCMGR_SERVICE_NAME_CAP];
                 const struct iris_service_catalog_entry *pc = 0;
                 uint32_t l2 = 0;
-                while (l2 < SVCMGR_SERVICE_NAME_CAP && g_ep_recv_buf[l2]) l2++;
-                if (svcmgr_name_has_ep_suffix((const char *)g_ep_recv_buf) && l2 > 3u) {
-                    for (uint32_t k = 0; k < l2 - 3u; k++) base2[k] = g_ep_recv_buf[k];
+                while (l2 < SVCMGR_SERVICE_NAME_CAP && g_ep_buf[l2]) l2++;
+                if (svcmgr_name_has_ep_suffix((const char *)g_ep_buf) && l2 > 3u) {
+                    for (uint32_t k = 0; k < l2 - 3u; k++) base2[k] = g_ep_buf[k];
                     base2[l2 - 3u] = '\0';
                     pc = svcmgr_catalog_find_name(base2);
                 } else {
-                    pc = svcmgr_catalog_find_name((const char *)g_ep_recv_buf);
+                    pc = svcmgr_catalog_find_name((const char *)g_ep_buf);
                 }
                 if (pc) {
                     struct svcmgr_service_state *ps = svcmgr_service_state(state, pc->service_id);
@@ -893,10 +905,10 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
          * a cap is required. */
         uint32_t nl = msg->buf_len < IRIS_EP_SVCNAME_MAX
                       ? msg->buf_len : IRIS_EP_SVCNAME_MAX - 1u;
-        const char *nm   = (const char *)g_ep_recv_buf;
+        const char *nm   = (const char *)g_ep_buf;
         uint32_t cap_v   = msg->attached_cap;
         iris_error_t rej  = IRIS_OK;
-        g_ep_recv_buf[nl] = '\0';
+        g_ep_buf[nl] = '\0';
 
         if (nl == 0u || svcmgr_name_has_ep_suffix(nm) || svcmgr_name_is_catalog(nm))
             rej = IRIS_ERR_ACCESS_DENIED;            /* reserved name (T061) */
@@ -1461,6 +1473,15 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
      * not been a handle since; closing it was closing handle 0. */
     (void)rbx_unused;
 
+    /* D-4: a page svcmgr owns, registered as its IPC buffer.  Best-effort — a
+     * failure leaves the kernel staging path, which still works. */
+    {
+        void *b = iris_ipc_buffer_init(SVCMGR_SLOT_IPCBUF_FRAME,
+                                       SVCMGR_SLOT_IPCBUF_PT,
+                                       IRIS_IPC_BUFFER_VA);
+        if (b) g_ep_buf = (uint8_t *)b;
+    }
+
     for (uint32_t i = 0; i < (uint32_t)sizeof(*state); i++) ((uint8_t *)state)[i] = 0;
 
     state->proc_cap_c   = 0u;
@@ -1603,12 +1624,12 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
             struct IrisMsg ep_msg;
             int64_t ep_r;
             uint32_t k;
-            for (k = 0; k < IRIS_EP_SVCNAME_MAX; k++) g_ep_recv_buf[k] = 0;
+            for (k = 0; k < IRIS_EP_SVCNAME_MAX; k++) g_ep_buf[k] = 0;
             {
                 uint8_t *p = (uint8_t *)&ep_msg;
                 for (k = 0; k < (uint32_t)sizeof(ep_msg); k++) p[k] = 0;
             }
-            ep_msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_recv_buf;
+            ep_msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_buf;
             /* A1.6: declare a registration receive-slot so a REGISTER cap
              * lands in the CSpace pool instead of the handle table.  0 (pool
              * exhausted / no root CNode) keeps legacy handle delivery. */

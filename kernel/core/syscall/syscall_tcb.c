@@ -689,6 +689,28 @@ uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * registration whose owner cannot say where the page is mapped is a mistake,
  * and refusing it here is cheaper than debugging it in a service.
  */
+/*
+ * How many threads currently hold a registered IPC buffer.
+ *
+ * A live gauge, not a counter of events: it rises on registration and falls on
+ * replacement, unregistration and thread teardown.  It exists because the
+ * migration off `ipc_kbuf` is the kind that fails SILENTLY — a service whose
+ * registration is refused simply keeps working on the staging path, and the
+ * whole suite passes either way.  That happened, on the first service tried,
+ * and only a deliberate check caught it.  So the fact is measured from ring 3
+ * and asserted (T313), and a service that stops registering has to explain
+ * itself instead of quietly regressing.
+ */
+static _Atomic uint32_t ipc_buffers_live = 0;
+
+uint32_t ipc_buffers_registered(void) {
+    return atomic_load_explicit(&ipc_buffers_live, memory_order_relaxed);
+}
+
+void ipc_buffer_gauge_drop(void) {
+    atomic_fetch_sub_explicit(&ipc_buffers_live, 1u, memory_order_relaxed);
+}
+
 uint64_t sys_tcb_set_ipc_buffer(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *caller = task_current();
     if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
@@ -735,6 +757,11 @@ uint64_t sys_tcb_set_ipc_buffer(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     target->ipc_buffer        = fr;
     target->ipc_buffer_uvaddr = fr ? arg2 : 0u;
     irq_spinlock_unlock(&target->obj_lock, irqfl);
+
+    if (fr && !old)  atomic_fetch_add_explicit(&ipc_buffers_live, 1u,
+                                               memory_order_relaxed);
+    if (!fr && old)  atomic_fetch_sub_explicit(&ipc_buffers_live, 1u,
+                                               memory_order_relaxed);
 
     if (old) { kobject_active_release(&old->base); kobject_release(&old->base); }
     if (fr)  kobject_release(&fr->base);   /* the resolve's ref */

@@ -17770,6 +17770,8 @@ struct it_utq_global {
     /* Stage 9-evt step 3: ring-3 kernel entries whose user context was saved
      * into the interrupted thread's TCB instead of left on a kernel stack. */
     uint32_t irq_ctx_saves;
+    /* Stage 8-cap: threads holding a registered IPC buffer frame (D-4). */
+    uint32_t ipc_buffers;
 };
 struct it_utq_one {
     uint32_t version, struct_size;
@@ -22177,8 +22179,30 @@ static void test_t313(void) {
     g_t313_srv_len = -1;  g_t313_srv_uptr_ok = 0; g_t313_rounds = 0;
     if (g_t313_ep < 0 || g_t313_reply < 0) { it_fail("T313", "ep/reply"); return; }
 
+    struct it_utq_global gb0, gb1, gb2;
+    if (!it_utq_g(&gb0)) { it_fail("T313", "query"); return; }
+
     if (it_sys3(SYS_TCB_SET_IPC_BUFFER, self, cfr, (long)T313_CLI_VA) != 0) {
         it_fail("T313", "register self"); return;
+    }
+    /* ── 5. the SERVICES really registered, and so did we ────────────────
+     * This leg exists because the migration off the kernel's 256-byte staging
+     * fails silently: a service whose registration is refused keeps working on
+     * the old path, and the whole suite passes either way.  That is not a
+     * hypothetical — it happened on the first service tried, and only a
+     * deliberate check found it.  So the live count is asserted, and the
+     * number has to be re-stated as services migrate, the same way the first
+     * unassigned syscall number does.
+     *
+     * Migrated so far: console, sh, svcmgr.  Plus this thread, just now. */
+    if (ok && !it_utq_g(&gb1)) { ok = 0; why = "query"; }
+    if (ok && gb1.ipc_buffers != gb0.ipc_buffers + 1u) {
+        ok = 0; why = "registering did not move the gauge";
+        it_fz_note("T313", gb0.ipc_buffers, gb1.ipc_buffers, 0u);
+    }
+    if (ok && gb0.ipc_buffers < 3u) {
+        ok = 0; why = "fewer services registered a buffer than expected";
+        it_fz_note("T313", gb0.ipc_buffers, 3u, 0u);
     }
 
     long srv = it_thread_create((uint64_t)(uintptr_t)t313_server,
@@ -22244,6 +22268,12 @@ static void test_t313(void) {
             it_fz_note("T313", (uint32_t)m.buf_len, IRIS_IPC_BUF_SIZE, 0u);
         }
         if (ok && g_t313_rounds != 2) { ok = 0; why = "server missed a round"; }
+    }
+
+    /* ...and unregistering gives it back, so the gauge is a LIVE count and not
+     * a tally of registrations that only ever grows. */
+    if (ok && it_utq_g(&gb2) && gb2.ipc_buffers != gb0.ipc_buffers + 1u) {
+        ok = 0; why = "server's buffer left the gauge wrong";
     }
 
     (void)it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0);

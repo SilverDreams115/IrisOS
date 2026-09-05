@@ -1580,6 +1580,16 @@ struct iris_untyped_query_global {
      * path that rots.  The counter is the one thing that proves it runs.
      */
     uint32_t irq_ctx_saves;
+    /*
+     * Stage 8-cap — threads currently holding a registered IPC buffer frame
+     * (ledger D-4).  A LIVE count, not a total.
+     *
+     * Here because the migration off the kernel's 256-byte staging fails
+     * silently by design: a service whose registration is refused keeps
+     * working on the old path and nothing notices.  It happened on the first
+     * service tried.
+     */
+    uint32_t ipc_buffers;
 };
 
 struct iris_untyped_query_one {

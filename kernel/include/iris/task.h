@@ -559,6 +559,11 @@ void         task_set_bootstrap_arg0(struct task *t, uint64_t arg0);
 void         task_abort_spawned_user(struct task *t);
 void         task_exit_current(void);
 void         task_yield(void);
+/* D-4 gauges, defined in syscall_tcb.c: how many threads hold a registered IPC
+ * buffer, and the teardown hook that keeps the count honest. */
+uint32_t ipc_buffers_registered(void);
+void     ipc_buffer_gauge_drop(void);
+
 struct task *task_current(void);
 
 /*

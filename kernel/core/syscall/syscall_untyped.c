@@ -653,6 +653,7 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             q.syscall_restarts      = syscall_restart_count();
             q.syscall_abandons      = syscall_abandon_count();
             q.irq_ctx_saves         = (uint32_t)irq_user_ctx_saves();
+            q.ipc_buffers           = ipc_buffers_registered();
             return syscall_err(copy_versioned_to_user(buf_uptr, user_size, user_version,
                                &q, (uint32_t)sizeof(q), IRIS_UNTYPED_QUERY_VERSION));
         }

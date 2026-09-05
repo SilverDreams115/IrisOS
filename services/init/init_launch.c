@@ -278,7 +278,15 @@ handle_id_t init_spawn_svcmgr(void) {
                                "svcmgr", &svcmgr_proc_h,
                             &svcmgr_chan_h, sm_mints, n,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
-                               8u << 20, /*own_budget_slot=*/0, /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);  /* has slot 12 already */
+                               8u << 20,
+                               /* svcmgr's budget arrives as an explicit
+                                * manifest mint above, which the loader's
+                                * duplicate guard sees and honours.  Asking for
+                                * it here anyway is what says "this child owns
+                                * memory", and that is the gate on being given
+                                * its own address space and thread (D-6). */
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
+                               /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
     }
     /* svcmgr's slot-12 mint keeps the pool alive: drop ours. */
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_SM_UNTYPED);
