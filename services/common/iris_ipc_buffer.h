@@ -61,14 +61,18 @@ static inline long iris_ipcbuf_sys3(long nr, long a0, long a1, long a2) {
  * buffer gets, so a caller may simply keep using its static buffer.  That
  * fallback is the whole reason D-4 is MIGRATING rather than CLOSED.
  */
-static inline void *iris_ipc_buffer_init(uint32_t frame_slot,
-                                         uint32_t pt_slot,
-                                         uint64_t vaddr)
+static inline void *iris_ipc_buffer_init_from(uint64_t untyped_c,
+                                              uint64_t vspace_c,
+                                              uint64_t tcb_c,
+                                              uint32_t frame_slot,
+                                              uint32_t pt_slot,
+                                              uint64_t vaddr)
 {
     if (!frame_slot || !pt_slot || (vaddr & 0xFFFu)) return 0;
+    if (!untyped_c || !vspace_c || !tcb_c) return 0;
 
     /* One page, retyped from memory this service owns. */
-    if (iris_syscall4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_OWN_UNTYPED,
+    if (iris_syscall4(SYS_UNTYPED_RETYPE2, (long)untyped_c,
                       (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
                       (long)((uint64_t)frame_slot << 32), 4096) != 0)
         return 0;
@@ -90,25 +94,44 @@ static inline void *iris_ipc_buffer_init(uint32_t frame_slot,
      */
     for (int level = 0; level < 4; level++) {
         long r = iris_syscall4(SYS_FRAME_MAP, (long)frame_slot,
-                               (long)IRIS_CPTR_OWN_VSPACE, (long)vaddr, 1);
+                               (long)vspace_c, (long)vaddr, 1);
         if (r == 0) break;
         if (r != (long)IRIS_ERR_MISSING_TABLE || level == 3) return 0;
         /* One level, retyped and installed at whichever depth is missing. */
         (void)iris_ipcbuf_sys3(SYS_CNODE_DELETE, 0, (long)pt_slot, 0);
-        if (iris_syscall4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_OWN_UNTYPED,
+        if (iris_syscall4(SYS_UNTYPED_RETYPE2, (long)untyped_c,
                           (long)((uint64_t)IRIS_KOBJ_PAGE_TABLE | (1ULL << 32)),
                           (long)((uint64_t)pt_slot << 32), 4096) != 0)
             return 0;
         if (iris_ipcbuf_sys3(SYS_VSPACE_MAP_TABLE, (long)pt_slot,
-                             (long)IRIS_CPTR_OWN_VSPACE, (long)vaddr) != 0)
+                             (long)vspace_c, (long)vaddr) != 0)
             return 0;
     }
 
-    if (iris_ipcbuf_sys3(SYS_TCB_SET_IPC_BUFFER, (long)IRIS_CPTR_OWN_TCB,
+    if (iris_ipcbuf_sys3(SYS_TCB_SET_IPC_BUFFER, (long)tcb_c,
                          (long)frame_slot, (long)vaddr) != 0)
         return 0;
 
     return (void *)(uintptr_t)vaddr;
+}
+
+/*
+ * The common case: a service spawned by the loader, which was given a budget
+ * and therefore also its own address space and thread (ledger D-6).
+ *
+ * The general form above exists because not every holder is one of those — the
+ * test suite owns a named Untyped of its own and no slot-12 budget, and
+ * hardcoding the well-known CPtrs made its registration fail silently, which
+ * left it on a staging path the kernel was about to stop having.
+ */
+static inline void *iris_ipc_buffer_init(uint32_t frame_slot,
+                                         uint32_t pt_slot,
+                                         uint64_t vaddr)
+{
+    return iris_ipc_buffer_init_from(IRIS_CPTR_OWN_UNTYPED,
+                                     IRIS_CPTR_OWN_VSPACE,
+                                     IRIS_CPTR_OWN_TCB,
+                                     frame_slot, pt_slot, vaddr);
 }
 
 #endif /* IRIS_COMMON_IPC_BUFFER_H */

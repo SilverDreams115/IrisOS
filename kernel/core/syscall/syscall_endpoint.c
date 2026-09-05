@@ -55,7 +55,6 @@ uint32_t ipc_buf_capacity(struct task *t) {
  * anything else is REFUSED — see below for what the silent version cost.
  */
 iris_error_t ipc_stage_out(struct task *t) {
-    t->ipc_kbuf_len = 0;
     uint32_t n = t->ipc_msg.buf_len;
     if (n == 0u) return IRIS_OK;
 
@@ -86,12 +85,15 @@ iris_error_t ipc_stage_out(struct task *t) {
             t->ipc_msg.buf_uptr != t->ipc_buffer_uvaddr)
             return IRIS_ERR_INVALID_ARG;
     } else {
-        if (t->ipc_msg.buf_uptr == 0u) return IRIS_OK;
-        if (!user_range_readable(t->ipc_msg.buf_uptr, n) ||
-            !copy_from_user_checked(t->ipc_kbuf, t->ipc_msg.buf_uptr, n))
-            return IRIS_ERR_INVALID_ARG;
+        /*
+         * No buffer, no payload.  seL4's answer, and now IRIS's: the message
+         * registers travel in registers, and anything longer needs somewhere
+         * to live that somebody owns.  The kernel used to stage it in 256
+         * bytes inside the TCB — memory the user did not choose, did not pay
+         * for, and could not name — and that is what ledger D-4 was about.
+         */
+        return IRIS_ERR_INVALID_ARG;
     }
-    t->ipc_kbuf_len    = n;
     t->ipc_msg.buf_len = n;
     return IRIS_OK;
 }
@@ -110,44 +112,27 @@ iris_error_t ipc_stage_out(struct task *t) {
  */
 void ipc_transfer_bulk(struct task *sender, struct task *receiver,
                        int receiver_current) {
-    uint32_t n = sender->ipc_kbuf_len;
-    receiver->ipc_kbuf_len = 0u;
-    sender->ipc_kbuf_len   = 0u;
+    (void)receiver_current;
+    uint32_t n = sender->ipc_msg.buf_len;
     if (n == 0u) return;
 
     const uint8_t *src = ipc_buf_kva(sender);
-    if (!src) src = sender->ipc_kbuf;
-
-    uint8_t *dst = ipc_buf_kva(receiver);
-    if (dst) {
-        uint32_t cap = ipc_buf_capacity(receiver);
-        if (n > cap) n = cap;
-        copy_kbuf(dst, src, n);
+    uint8_t       *dst = ipc_buf_kva(receiver);
+    if (!src || !dst) {
+        /* One end has no buffer.  The sender cannot have got here without one
+         * (ipc_stage_out refuses), so this is a RECEIVER with none: it is told
+         * how many bytes it could not be given rather than being handed a
+         * pointer into somebody else's memory. */
         receiver->ipc_msg.buf_len  = n;
-        receiver->ipc_msg.buf_uptr = receiver->ipc_buffer_uvaddr;
+        receiver->ipc_msg.buf_uptr = 0u;
         return;
     }
 
-    if (n > IRIS_IPC_BUF_SIZE) n = IRIS_IPC_BUF_SIZE;
-
-    if (receiver_current) {
-        uint64_t recv_buf = receiver->ep_recv_buf_uptr;
-        if (recv_buf != 0u && user_range_writable(recv_buf, n) &&
-            copy_to_user_checked(recv_buf, src, n)) {
-            receiver->ipc_msg.buf_len  = n;
-            receiver->ipc_msg.buf_uptr = recv_buf;
-        } else {
-            /* Report what was available even when it could not be written:
-             * a receiver that named no buffer, or too small a one, still has
-             * to learn that a payload existed. */
-            receiver->ipc_msg.buf_len  = n;
-            receiver->ipc_msg.buf_uptr = 0u;
-        }
-        return;
-    }
-
-    copy_kbuf(receiver->ipc_kbuf, src, n);
-    receiver->ipc_kbuf_len = n;
+    uint32_t cap = ipc_buf_capacity(receiver);
+    if (n > cap) n = cap;
+    copy_kbuf(dst, src, n);
+    receiver->ipc_msg.buf_len  = n;
+    receiver->ipc_msg.buf_uptr = receiver->ipc_buffer_uvaddr;
 }
 
 /*
@@ -158,7 +143,7 @@ void ipc_transfer_bulk(struct task *sender, struct task *receiver,
  * IrisMsg` and the kernel is still in the server's address space, so it can
  * read the server's user memory directly and skip a copy.  That shortcut is
  * why this cannot just call ipc_transfer_bulk — the source is not
- * `server->ipc_kbuf`.
+ * the sender's TCB.
  *
  * A server WITH a registered buffer takes the same shortcut for free and more
  * safely: its payload is already in a frame the kernel can read from any
@@ -167,42 +152,26 @@ void ipc_transfer_bulk(struct task *sender, struct task *receiver,
  */
 void ipc_transfer_reply(struct task *server, struct task *caller,
                         const struct IrisMsg *reply_msg) {
-    caller->ipc_kbuf_len = 0u;
     uint32_t n = reply_msg->buf_len;
     if (n == 0u) return;
 
     const uint8_t *src = ipc_buf_kva(server);
     uint8_t       *dst = ipc_buf_kva(caller);
+    if (!src || !dst) { caller->ipc_msg.buf_len = 0u; return; }
 
-    /* Same rule as a send: a server with a registered buffer replies FROM it,
-     * and a reply that names some other address is a marshalling mistake. */
-    if (src && reply_msg->buf_uptr != 0u &&
+    /* A server with a registered buffer replies FROM it; naming any other
+     * address is a marshalling mistake, refused rather than substituted. */
+    if (reply_msg->buf_uptr != 0u &&
         reply_msg->buf_uptr != server->ipc_buffer_uvaddr) {
         caller->ipc_msg.buf_len = 0u;
         return;
     }
 
-    /* Neither end may be asked to exceed what it owns. */
-    if (src && n > ipc_buf_capacity(server)) n = ipc_buf_capacity(server);
-    if (dst) { if (n > ipc_buf_capacity(caller)) n = ipc_buf_capacity(caller); }
-    else     { if (n > IRIS_IPC_BUF_SIZE)        n = IRIS_IPC_BUF_SIZE; }
-
-    uint8_t *into = dst ? dst : caller->ipc_kbuf;
-
-    if (src) {
-        copy_kbuf(into, src, n);
-    } else {
-        if (reply_msg->buf_uptr == 0u ||
-            !user_range_readable(reply_msg->buf_uptr, n) ||
-            !copy_from_user_checked(into, reply_msg->buf_uptr, n)) {
-            caller->ipc_msg.buf_len = 0u;
-            return;
-        }
-    }
-
-    caller->ipc_msg.buf_len = n;
-    if (dst) caller->ipc_msg.buf_uptr = caller->ipc_buffer_uvaddr;
-    else     caller->ipc_kbuf_len     = n;
+    if (n > ipc_buf_capacity(server)) n = ipc_buf_capacity(server);
+    if (n > ipc_buf_capacity(caller)) n = ipc_buf_capacity(caller);
+    copy_kbuf(dst, src, n);
+    caller->ipc_msg.buf_len  = n;
+    caller->ipc_msg.buf_uptr = caller->ipc_buffer_uvaddr;
 }
 
 /* ep_get removed — use cspace_resolve_only_endpoint (Phase 3.2) */
@@ -479,7 +448,6 @@ static int ep_send_fastpath(struct task *t, struct KEndpoint *ep) {
     irismsg_copy64(&receiver->ipc_msg, &t->ipc_msg);
     receiver->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
     receiver->ipc_msg_ready           = 1;
-    receiver->ipc_kbuf_len            = 0;
 
     irq_spinlock_unlock(&ep->lock, fl);
     task_wakeup(receiver);
@@ -499,7 +467,7 @@ static int ep_recv_fastpath(struct task *t, struct KEndpoint *ep) {
         return 0;
     }
     struct task *sender = ep->queue_head;
-    if (sender->ep_cap_obj || sender->ipc_kbuf_len || sender->ep_call_mode) {
+    if (sender->ep_cap_obj || sender->ipc_msg.buf_len || sender->ep_call_mode) {
         irq_spinlock_unlock(&ep->lock, fl);
         return 0;
     }
@@ -510,8 +478,6 @@ static int ep_recv_fastpath(struct task *t, struct KEndpoint *ep) {
 
     irismsg_copy64(&t->ipc_msg, &sender->ipc_msg);
     t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
-    t->ipc_kbuf_len            = 0;
-    sender->ipc_kbuf_len       = 0;
 
     irq_spinlock_unlock(&ep->lock, fl);
     task_wakeup(sender);
@@ -818,7 +784,6 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     /* Ph69: read receiver's hints (buf_uptr = where to put bulk data).
      * A1.5: attached_cap is a second hint — the receive-slot declaration. */
     t->ep_recv_buf_uptr = 0;
-    t->ipc_kbuf_len     = 0;
     t->ep_recv_slot     = 0;
     {
         struct IrisMsg hints;
@@ -1010,16 +975,9 @@ static uint64_t ep_recv_complete(struct task *t, uint64_t arg1) {
 
     if (t->ipc_ep_closed) { t->ipc_ep_closed = 0; return syscall_err(IRIS_ERR_CLOSED); }
 
-    /* Ph69: copy staged kbuf to receiver's user space now that we're in receiver's CR3. */
-    if (t->ipc_kbuf_len > 0 && t->ep_recv_buf_uptr != 0 &&
-        user_range_writable(t->ep_recv_buf_uptr, t->ipc_kbuf_len) &&
-        copy_to_user_checked(t->ep_recv_buf_uptr, t->ipc_kbuf, t->ipc_kbuf_len)) {
-        t->ipc_msg.buf_len  = t->ipc_kbuf_len;
-        t->ipc_msg.buf_uptr = t->ep_recv_buf_uptr;
-    } else if (t->ipc_kbuf_len > 0) {
-        t->ipc_msg.buf_len = t->ipc_kbuf_len; /* report available, even if unwritten */
-    }
-    t->ipc_kbuf_len     = 0;
+    /* D-4: nothing to copy out.  The payload was written straight into this
+     * thread's own IPC buffer at rendezvous, and `ipc_msg.buf_uptr` already
+     * says where — there is no kernel staging left to drain. */
     t->ep_recv_buf_uptr = 0;
 
     if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))

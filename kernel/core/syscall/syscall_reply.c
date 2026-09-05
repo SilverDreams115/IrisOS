@@ -9,7 +9,8 @@
  *   - EP_CALL does NOT support simultaneous capability transfer (use EP_SEND for that).
  *
  * SYS_REPLY: invoke a KReply handle to unblock its caller with a reply message.
- *   - Stages the reply message + bulk payload in the caller's ipc_kbuf.
+ *   - Delivers the reply message, and its payload into the caller's own
+ *     IPC buffer (ledger D-4).
  *   - Clears caller->pending_kreply (releases task's own KReply ref).
  *   - Transitions caller to TASK_READY.
  *   - Returns IRIS_ERR_NOT_FOUND if the KReply was already invoked.
@@ -307,16 +308,8 @@ static uint64_t ep_call_complete(struct task *t, uint64_t arg1) {
         return syscall_err(IRIS_ERR_CLOSED);
     }
 
-    /* Deliver reply bulk from ipc_kbuf to caller's user space. */
-    if (t->ipc_kbuf_len > 0u && t->ep_recv_buf_uptr != 0u &&
-        user_range_writable(t->ep_recv_buf_uptr, t->ipc_kbuf_len) &&
-        copy_to_user_checked(t->ep_recv_buf_uptr, t->ipc_kbuf, t->ipc_kbuf_len)) {
-        t->ipc_msg.buf_len  = t->ipc_kbuf_len;
-        t->ipc_msg.buf_uptr = t->ep_recv_buf_uptr;
-    } else if (t->ipc_kbuf_len > 0u) {
-        t->ipc_msg.buf_len = t->ipc_kbuf_len;
-    }
-    t->ipc_kbuf_len     = 0u;
+    /* D-4: nothing to drain.  The reply's payload went straight into this
+     * thread's own IPC buffer, and `ipc_msg.buf_uptr` says where. */
     t->ep_recv_buf_uptr = 0u;
 
     if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))

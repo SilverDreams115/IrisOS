@@ -18,6 +18,7 @@
 #include <iris/ipc_recv_slot.h>
 #include <iris/endpoint_proto.h>
 #include <iris/fb_info.h>
+#include "../common/iris_ipc_buffer.h"
 #include <iris/vfs_ep_proto.h>
 #include <iris/kbd_ep_proto.h>
 #include <iris/console_ep_proto.h>
@@ -1391,6 +1392,10 @@ static void test_t021(void) {
         it_fail("T021", "reply-twice");
 }
 
+/* Tentative declaration: the main thread's bulk buffer is defined with the
+ * rest of the EP helpers below, but T022 is above them. */
+static uint8_t *g_ep_io_buf;
+
 /* ── T022: EP_CALL + bulk kbuf round-trip ───────────────────────────────── */
 
 static handle_id_t g_t022_ep_h   = HANDLE_INVALID;
@@ -1398,34 +1403,35 @@ static volatile int g_t022_done  = 0;
 static          int g_t022_ok    = 0;
 static uint8_t      g_t022_stack[8192];
 
-static uint8_t g_t022_srv_recv[4];
-static uint8_t g_t022_srv_reply[4];
-
 static void t022_server(void) {
     struct IrisMsg rmsg;
     it_iris_msg_zero(&rmsg);
-    rmsg.buf_uptr = (uint64_t)(uintptr_t)g_t022_srv_recv;
+    /* D-4: the payload lands in this thread's OWN IPC buffer, and the kernel
+     * says where that is — `buf_uptr` comes back as the registered address.
+     * Naming a static array here would be a marshalling mistake the kernel
+     * refuses, which is the point of it refusing. */
     long r = it_sys3(SYS_EP_RECV, (long)g_t022_ep_h, (long)&rmsg, 90);
-    if (r < 0 || rmsg.buf_len != 4u ||
+    if (r < 0 || rmsg.buf_len != 4u || rmsg.buf_uptr == 0u ||
             rmsg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
         g_t022_done = 1;
         it_sys1(SYS_THREAD_EXIT, 0);
         for (;;) {}
     }
 
-    int recv_ok = (g_t022_srv_recv[0] == 0x10 && g_t022_srv_recv[1] == 0x20 &&
-                   g_t022_srv_recv[2] == 0x30 && g_t022_srv_recv[3] == 0x40);
+    volatile uint8_t *b = (volatile uint8_t *)(uintptr_t)rmsg.buf_uptr;
+    int recv_ok = (b[0] == 0x10 && b[1] == 0x20 &&
+                   b[2] == 0x30 && b[3] == 0x40);
 
-    g_t022_srv_reply[0] = (uint8_t)(g_t022_srv_recv[0] + 1u);
-    g_t022_srv_reply[1] = (uint8_t)(g_t022_srv_recv[1] + 1u);
-    g_t022_srv_reply[2] = (uint8_t)(g_t022_srv_recv[2] + 1u);
-    g_t022_srv_reply[3] = (uint8_t)(g_t022_srv_recv[3] + 1u);
+    b[0] = (uint8_t)(b[0] + 1u);
+    b[1] = (uint8_t)(b[1] + 1u);
+    b[2] = (uint8_t)(b[2] + 1u);
+    b[3] = (uint8_t)(b[3] + 1u);
 
     handle_id_t reply_h = (handle_id_t)rmsg.attached_handle;
     struct IrisMsg repl;
     it_iris_msg_zero(&repl);
     repl.label   = 0xB01FULL;
-    repl.buf_uptr = (uint64_t)(uintptr_t)g_t022_srv_reply;
+    repl.buf_uptr = rmsg.buf_uptr;    /* its own buffer, which is accepted */
     repl.buf_len  = 4u;
     long rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&repl);
 
@@ -1456,14 +1462,13 @@ static void test_t022(void) {
     }
     handle_id_t tid_h = (handle_id_t)tid;
 
-    uint8_t client_buf[4];
-    client_buf[0] = 0x10; client_buf[1] = 0x20;
-    client_buf[2] = 0x30; client_buf[3] = 0x40;
+    g_ep_io_buf[0] = 0x10; g_ep_io_buf[1] = 0x20;
+    g_ep_io_buf[2] = 0x30; g_ep_io_buf[3] = 0x40;
 
     struct IrisMsg msg;
     it_iris_msg_zero(&msg);
     msg.label    = 0xCA11ULL;
-    msg.buf_uptr = (uint64_t)(uintptr_t)client_buf;
+    msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     msg.buf_len  = 4u;
     long r = it_sys2(SYS_EP_CALL, ep_raw, (long)&msg);
 
@@ -1474,8 +1479,8 @@ static void test_t022(void) {
     it_close(&g_t022_ep_h);
     it_slot_delete(90);
 
-    int bulk_ok = (client_buf[0] == 0x11 && client_buf[1] == 0x21 &&
-                   client_buf[2] == 0x31 && client_buf[3] == 0x41);
+    int bulk_ok = (g_ep_io_buf[0] == 0x11 && g_ep_io_buf[1] == 0x21 &&
+                   g_ep_io_buf[2] == 0x31 && g_ep_io_buf[3] == 0x41);
 
     if (r == 0 && g_t022_ok && bulk_ok)
         it_pass("T022");
@@ -1738,11 +1743,23 @@ static handle_id_t g_kbd_ep_h    = HANDLE_INVALID;  /* from T034 lookup   */
 static handle_id_t g_con_ep_h    = HANDLE_INVALID;  /* from T036 lookup   */
 
 /* EP_CALL buffer reuse: request payload AND reply bulk destination. */
-static uint8_t g_ep_io_buf[VFS_EP_DATA_MAX];
+/*
+ * The main test thread's bulk-payload buffer (ledger D-4).
+ *
+ * A pointer, not an array, because it moves: it starts at the static fallback
+ * and becomes the thread's REGISTERED IPC buffer at suite start.  Every one of
+ * the forty sites below writes through it and names it in `msg.buf_uptr`, so
+ * the migration is one assignment rather than forty edits — and naming the
+ * registered address is what the kernel accepts, a foreign pointer being a
+ * marshalling mistake it refuses.
+ */
+static uint8_t  g_ep_io_static[VFS_EP_DATA_MAX];
+static uint8_t *g_ep_io_buf = g_ep_io_static;
+#define IT_EP_IO_CAP ((uint32_t)VFS_EP_DATA_MAX)
 
 static uint32_t it_stage_path(const char *path) {
     uint32_t n = 0;
-    while (path[n] && n + 1u < (uint32_t)sizeof(g_ep_io_buf)) {
+    while (path[n] && n + 1u < IT_EP_IO_CAP) {
         g_ep_io_buf[n] = (uint8_t)path[n];
         n++;
     }
@@ -4981,6 +4998,8 @@ static long it_cspace_self(void) {
     return (long)g_it_cspace_c;
 }
 
+static long it_thread_ipc_buffer(long tcb);
+
 static long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
     if (!it_setup_self_vspace()) return (long)IRIS_ERR_NOT_FOUND;
     long cs = it_cspace_self();
@@ -4994,6 +5013,7 @@ static long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
     if (r != 0) return r;
     r = it_sys4(SYS_TCB_WRITE_REGS, tcb, (long)entry, (long)rsp, (long)arg);
     if (r != 0) return r;
+    (void)it_thread_ipc_buffer(tcb);   /* best-effort while D-4 is migrating */
     r = it_sys1(SYS_TCB_RESUME, tcb);
     if (r != 0) return r;
     return tcb;
@@ -5007,6 +5027,80 @@ static long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
 #define T138_VA     0x8075000000ULL
 #define T139_VA_BASE 0x8078000000ULL
 #define IT_MAP_W    1ULL   /* SYS_FRAME_MAP flags: bit0 = WRITABLE */
+
+/*
+ * Every thread the suite makes gets an IPC BUFFER of its own (ledger D-4).
+ *
+ * Registration takes a TCB capability, so the CREATOR can do it — which is
+ * what makes this one place instead of forty.  It happens between WRITE_REGS
+ * and RESUME, while the thread is configured and not yet running: a thread
+ * that started first would have a window in which it could send a bulk payload
+ * with no buffer, and that window is exactly what the kernel is about to stop
+ * having an answer for.
+ *
+ * One page per thread, at IRIS_IPC_BUFFER_VA + n*4096, out of the suite's own
+ * Untyped.  The address space is shared with every other thread here, so the
+ * windows have to be distinct; the counter never rewinds, which is what keeps
+ * a reused TCB from inheriting a page a dead thread's buffer still names.
+ */
+static uint32_t g_it_ipcbuf_next;
+static long     g_it_ipcbuf_ut = -1;   /* a pool of its own; see below */
+
+/*
+ * The frames come from a DEDICATED sub-untyped and land in DEDICATED slots,
+ * not the suite's rotating object pool.
+ *
+ * The pool rotates by DELETING the slot it is about to reuse, and several
+ * tests REVOKE the untyped everything else is carved from.  Either would take
+ * a live IPC buffer's capability away from a running thread — the kernel keeps
+ * its own reference so the object survives, but a buffer whose capability has
+ * been revoked is a buffer nobody can account for, and the first version of
+ * this panicked the kernel on an active-reference underflow within three tests.
+ *
+ * A pool of its own is the right shape regardless: an IPC buffer outlives
+ * every operation in a test, so borrowing a slot that rotates is borrowing
+ * something with a shorter life than the thing put in it.
+ */
+/* A CNode of its own too, for the same reason the untyped is: the object CNode
+ * hands out leaves from a rotating pool and names two dozen fixed ones, and a
+ * capability that must outlive every test in the suite does not belong in
+ * either.  Root slot 66 is free; leaves 0..127 inside it are all ours. */
+#define IT_IPCBUF_CNODE_SLOT 66u
+#define IT_IPCBUF_CPTR(leaf) ((uint32_t)(((leaf) << 8) | IT_IPCBUF_CNODE_SLOT))
+#define IT_IPCBUF_MAX        96u
+
+static long it_thread_ipc_buffer(long tcb) {
+    if (g_it_ipcbuf_ut < 0) {
+        long ut = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                       IRIS_KOBJ_UNTYPED, 128u * 1024u);
+        if (ut < 0) return ut;
+        if (it_sys4(SYS_UNTYPED_RETYPE2, ut,
+                    (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
+                    (long)((uint64_t)IT_IPCBUF_CNODE_SLOT << 32), 128) != 0)
+            return (long)IRIS_ERR_TABLE_FULL;
+        g_it_ipcbuf_ut = ut;
+    }
+    uint32_t n = g_it_ipcbuf_next++;
+    if (n >= IT_IPCBUF_MAX) return (long)IRIS_ERR_NO_MEMORY;
+
+    /* Leaf n+1: slot 0 of a CNode is the null slot and refuses publication,
+     * which is a thing to remember rather than rediscover. */
+    uint32_t leaf = n + 1u;
+    uint64_t va   = IRIS_IPC_BUFFER_VA + (uint64_t)leaf * 4096u;
+    if (it_sys4(SYS_UNTYPED_RETYPE2, g_it_ipcbuf_ut,
+                (long)((uint64_t)IRIS_KOBJ_FRAME | (1ULL << 32)),
+                (long)(((uint64_t)leaf << 32) | (uint64_t)IT_IPCBUF_CNODE_SLOT),
+                4096) != 0)
+        return (long)IRIS_ERR_NO_MEMORY;
+
+    long fr = (long)IT_IPCBUF_CPTR(leaf);
+    long r  = it_sys4(SYS_FRAME_MAP, fr, IT_VS, (long)va, (long)IT_MAP_W);
+    if (r != 0) return r;
+    r = it_sys3(SYS_TCB_SET_IPC_BUFFER, tcb, fr, (long)va);
+    if (r != 0) return r;
+    return (long)va;          /* where the thread will find it */
+}
+
 
 static int it_sched_ext2(uint32_t w2[4]) {
     uint8_t buf[112];
@@ -16100,7 +16194,9 @@ struct t28_fbk {
 /* A VFS-issued file grant as seen by the supervisor (GRANT_OPEN reply). */
 struct t28_grant { uint32_t idx; uint64_t bid; uint64_t gen; };
 
-static uint8_t g_t28_buf[128];   /* pager-request staging buffer */
+/* The pager-request staging buffer is the thread's own IPC buffer (D-4): a
+ * static array here would be a foreign pointer, which the kernel refuses. */
+#define g_t28_buf g_ep_io_buf
 
 /* Materialize the two supervisor-side file-grant caps init pre-minted:
  *   slot 59 (IRIS_CPTR_TEST_VFS_MINT) — UNBADGED WRITE|DUPLICATE|TRANSFER
@@ -16155,7 +16251,7 @@ static handle_id_t t28_session_cap(uint32_t session) {
 static long t28_stat(handle_id_t vfs_cap, const char *name) {
     struct IrisMsg m;
     it_iris_msg_zero(&m);
-    uint32_t n = 0; while (name[n] && n + 1u < sizeof(g_ep_io_buf)) { g_ep_io_buf[n] = (uint8_t)name[n]; n++; }
+    uint32_t n = 0; while (name[n] && n + 1u < IT_EP_IO_CAP) { g_ep_io_buf[n] = (uint8_t)name[n]; n++; }
     g_ep_io_buf[n] = 0;
     m.label = VFS_EP_OP_STAT; m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf; m.buf_len = n + 1u;
     if (it_sys2(SYS_EP_CALL, (long)vfs_cap, (long)&m) != 0) return -1;
@@ -16176,7 +16272,7 @@ static long t28_gcall(handle_id_t cap, uint64_t label, uint64_t w0, uint64_t w1,
     m.buf_uptr = (uint64_t)(uintptr_t)g_ep_io_buf;
     if (name) {
         uint32_t n = 0;
-        while (name[n] && n + 1u < sizeof(g_ep_io_buf)) { g_ep_io_buf[n] = (uint8_t)name[n]; n++; }
+        while (name[n] && n + 1u < IT_EP_IO_CAP) { g_ep_io_buf[n] = (uint8_t)name[n]; n++; }
         g_ep_io_buf[n] = 0;
         m.buf_len = n + 1u;
     }
@@ -22347,6 +22443,11 @@ static void test_t313(void) {
     if (g_t313_ep < 0 || g_t313_reply < 0) { it_fail("T313", "ep/reply"); return; }
 
     struct it_utq_global gb0, gb1, gb2;
+    /* This thread already holds a buffer — the suite gives every thread one —
+     * so give it up first: registering over an existing one is a REPLACEMENT
+     * and the gauge is a live count, not a tally.  Measuring the move means
+     * measuring an actual arrival. */
+    (void)it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0);
     if (!it_utq_g(&gb0)) { it_fail("T313", "query"); return; }
 
     if (it_sys3(SYS_TCB_SET_IPC_BUFFER, self, cfr, (long)T313_CLI_VA) != 0) {
@@ -22449,41 +22550,105 @@ static void test_t313(void) {
         }
     }
 
-    /* ── 4. unregistering really goes back to the staging path ──────────*/
+    /* ── 4. no buffer, no payload ────────────────────────────────────────
+     * The closing half of D-4, and the assertion that replaced its opposite.
+     *
+     * This leg used to check that giving the buffer up fell back to the
+     * kernel's 256 bytes of staging — the memory inside every TCB that the
+     * user did not choose, did not pay for and could not name.  There is no
+     * fallback now: the message registers travel in registers, and anything
+     * longer needs somewhere to live that somebody owns.  That is seL4's
+     * answer, and a test still expecting a clamp would be pinning the very
+     * thing the row was opened to remove.
+     */
     if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0) != 0) {
         ok = 0; why = "unregister";
     }
     if (ok) {
-        for (uint32_t i = 0; i < T313_LEN; i++)
-            g_t313_stage_buf[i] = (uint8_t)(i * 7u + 3u);
         struct IrisMsg m;
         it_iris_msg_zero(&m);
-        m.label    = 0x314;
-        m.buf_len  = T313_LEN;
-        m.buf_uptr = (uint64_t)(uintptr_t)g_t313_stage_buf;
-        if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m) != 0) {
-            ok = 0; why = "staged call failed";
+        m.label   = 0x314;
+        m.buf_len = 8u;
+        if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m)
+            != (long)IRIS_ERR_INVALID_ARG) {
+            ok = 0; why = "a payload with no buffer was accepted";
         }
-        /* Clamped to the kernel constant — which is the cost the frame exists
-         * to remove, still measurable while the row is MIGRATING. */
-        if (ok && m.buf_len != IRIS_IPC_BUF_SIZE) {
-            ok = 0; why = "staging path not clamped to the kernel constant";
-            it_fz_note("T313", (uint32_t)m.buf_len, IRIS_IPC_BUF_SIZE, 0u);
+        /* ...and a message with NO payload still goes: the registers are not
+         * the buffer, and losing one must not cost the other. */
+        it_iris_msg_zero(&m);
+        m.label = 0x318;
+        if (ok && it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m) != 0) {
+            ok = 0; why = "a register-only message was refused";
         }
         if (ok && g_t313_rounds != 3) { ok = 0; why = "server missed a round"; }
     }
 
-    /* ...and unregistering gives it back, so the gauge is a LIVE count and not
-     * a tally of registrations that only ever grows. */
-    if (ok && it_utq_g(&gb2) && gb2.ipc_buffers != gb0.ipc_buffers + 1u) {
-        ok = 0; why = "server's buffer left the gauge wrong";
+    /* ── 6. the frame's CAPABILITY can go while the kernel still holds it ─
+     * The registration takes its own reference, so deleting the slot that
+     * named the frame must not destroy it under a thread that is about to
+     * send through it.  Probed here because the first version of the suite's
+     * per-thread buffers took its frames from a rotating slot pool and the
+     * kernel panicked on an active-reference underflow within three tests. */
+    if (ok) {
+        long probe_fr = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096u);
+        long probe_va = (long)(T313_CLI_VA + 0x10000ULL);
+        if (probe_fr < 0) { ok = 0; why = "probe frame"; }
+        else if (it_sys4(SYS_FRAME_MAP, probe_fr, IT_VS, probe_va,
+                         (long)IT_MAP_W) != 0) {
+            ok = 0; why = "probe map";
+        } else if (it_sys3(SYS_TCB_SET_IPC_BUFFER, self, probe_fr,
+                           probe_va) != 0) {
+            ok = 0; why = "probe register";
+        } else {
+            /* The capability goes; the buffer must not. */
+            it_slot_delete((uint32_t)probe_fr);
+            struct IrisMsg m;
+            it_iris_msg_zero(&m);
+            m.label   = 0x317;
+            m.buf_len = 8u;
+            if (it_sys2(SYS_EP_CALL, (long)g_t313_ep, (long)&m) != 0) {
+                ok = 0; why = "a buffer died with its capability";
+            }
+            (void)it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0);
+            (void)it_sys3(SYS_FRAME_UNMAP, probe_fr, IT_VS, probe_va);
+        }
+        /* Put the real buffer back for the legs below. */
+        if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, cfr,
+                          (long)T313_CLI_VA) != 0) {
+            ok = 0; why = "re-register";
+        }
     }
 
+    /* ...and unregistering gives it back, so the gauge is a LIVE count and not
+     * a tally of registrations that only ever grows.
+     *
+     * Measured immediately AROUND the act rather than across the whole test:
+     * the first version compared against a sample taken at the top, which made
+     * it an assertion about how many other threads happened to be alive — and
+     * it broke the moment the suite started giving every thread a buffer,
+     * which is a fact about the suite and not about the gauge. */
+    if (ok && !it_utq_g(&gb2)) { ok = 0; why = "query"; }
     (void)it_sys3(SYS_TCB_SET_IPC_BUFFER, self, 0L, 0);
+    if (ok) {
+        struct it_utq_global gb3;
+        if (!it_utq_g(&gb3) || gb3.ipc_buffers + 1u != gb2.ipc_buffers) {
+            ok = 0; why = "unregistering did not give the gauge back";
+        }
+    }
+
     (void)it_sys1(SYS_TCB_EXIT, srv);
     it_quiesce_reaper();
     (void)it_sys3(SYS_FRAME_UNMAP, cfr, IT_VS, (long)T313_CLI_VA);
     (void)it_sys3(SYS_FRAME_UNMAP, sfr, IT_VS, (long)T313_SRV_VA);
+    /* Give this thread its own buffer back: every test after this one sends
+     * through it, and a thread without one can no longer send a payload. */
+    {
+        long tcb_self = it_tcb_self_slot();
+        if (tcb_self >= 0) {
+            long va = it_thread_ipc_buffer(tcb_self);
+            if (va > 0) g_ep_io_buf = (uint8_t *)(uintptr_t)va;
+        }
+    }
 
     if (ok) it_pass("T313"); else it_fail("T313", why);
 }
@@ -23186,6 +23351,30 @@ void iris_test_main(handle_id_t rbx_unused) {
     }
 
     it_serial_write("[IRIS][TEST] start\n");
+
+    /*
+     * D-4: the main thread's own IPC buffer, before any test runs.
+     *
+     * The buffer lands
+     * at IRIS_IPC_BUFFER_VA, and every thread this suite creates gets the next
+     * page after it (it_thread_ipc_buffer).  Best-effort while the row is
+     * migrating — a failure leaves the static fallback, which is the path the
+     * kernel is about to stop having.
+     */
+    {
+        /* Through the same helper the suite's other threads use, so the frame
+         * lands in the dedicated CNode and NO root slot is consumed.
+         *
+         * Consuming two was the first attempt, and it broke four tests that
+         * measure when the root CSpace fills — an assertion about how many
+         * slots are free is an assertion this had no business changing. */
+        long tcb_self = it_tcb_self_slot();
+        if (it_setup_self_vspace() && tcb_self >= 0) {
+            long va = it_thread_ipc_buffer(tcb_self);
+            if (va > 0) g_ep_io_buf = (uint8_t *)(uintptr_t)va;
+
+        }
+    }
 
     /* Run all tests */
     test_t001();

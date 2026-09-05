@@ -442,14 +442,25 @@ struct task {
     struct KCNode      *ep_cap_src_cn;
     uint32_t            ep_cap_src_idx;
     /* Ph69: IPC buffer staging */
-    uint32_t            ipc_kbuf_len;    /* valid bytes in ipc_kbuf */
     uint64_t            ep_recv_buf_uptr;/* receiver's output buffer user addr (set at EP_RECV) */
     /* A1.5: receiver-declared receive-slot (direct root-CNode CPtr, 1..1023;
      * 0 = none/legacy).  Written by EVERY recv-family syscall entry
      * (EP_RECV / EP_NB_RECV / EP_CALL) and consumed by at most one routed
      * cap delivery, so it can never leak across operations. */
     uint32_t            ep_recv_slot;
-    uint8_t             ipc_kbuf[IRIS_IPC_BUF_SIZE]; /* kernel-side bulk payload staging */
+    /*
+     * `ipc_kbuf` is DELETED (ledger D-4).
+     *
+     * 256 bytes inside every TCB, where the kernel staged a message's bulk
+     * payload: a size the user did not choose, memory it did not pay for, and
+     * a buffer it could not name with a capability.  Every thread carried it
+     * whether it sent a payload or not.
+     *
+     * A payload now lives in a FRAME the thread registered, and a thread with
+     * none cannot send one — which is seL4's answer, where the message
+     * registers travel in registers and anything longer needs somewhere that
+     * somebody owns.
+     */
     /*
      * D-4 — the thread's IPC buffer, as a capability.
      *
