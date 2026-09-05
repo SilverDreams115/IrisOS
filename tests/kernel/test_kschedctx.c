@@ -7,7 +7,10 @@ void test_kschedctx(void) {
     TEST_SUITE("kschedctx");
 
     /* ── Phase S2: retype (untyped-child fixture) starts UNCONFIGURED ── */
-    struct KSchedContext *sc = TEST_UT_ALLOC(struct KSchedContext, kschedctx_alloc_at);
+    /* The refill array is the object's tail (seL4's refill_max), so the block
+     * is sized by kschedctx_bytes rather than by sizeof. */
+    struct KSchedContext *sc =
+        kschedctx_alloc_at(test_untyped_child_block((size_t)kschedctx_bytes(0)), 0);
     ASSERT_NOT_NULL(sc);
     ASSERT_EQ(atomic_load(&sc->base.refcount),    1u);
     ASSERT_EQ(atomic_load(&sc->base.active_refs), 0u);

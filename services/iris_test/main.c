@@ -22431,6 +22431,100 @@ static void test_t314(void) {
     if (ok) it_pass("T314"); else it_fail("T314", why);
 }
 
+/* ── T315: the replenishment depth is the SC's, and it is paid for ───────
+ *
+ * The last thing MCS scheduling was still doing seL4's way in shape but not in
+ * substance: `refill_max` was a kernel constant of 8, so every scheduling
+ * context carried storage for eight pending replenishments whether it needed
+ * two or sixty.
+ *
+ * How many a thread needs is a fact about the THREAD.  A passive server woken
+ * once per request produces one replenishment per request and needs a deep
+ * queue to keep them distinct; a periodic task needs two.  When the queue
+ * fills, entries merge and part of a replenishment arrives late — never early,
+ * so the guarantee survives, but the thread runs less than it paid for.  seL4
+ * makes the depth a parameter and sizes the object to match; IRIS does it at
+ * RETYPE, where every other object's size is already chosen.
+ *
+ * Three things are asserted, and the second is the one that matters:
+ *
+ *   1. the depth is CHECKED — below the floor of two and above the ceiling are
+ *      refused, because one replenishment can be in flight while the current
+ *      run accumulates another and a queue of one cannot hold both;
+ *   2. a deeper SC COSTS MORE out of the Untyped that made it.  That is the
+ *      whole point: the memory is charged to whoever asked for the depth,
+ *      instead of every SC paying for the worst case out of the kernel;
+ *   3. an SC retyped with an explicit depth still schedules — it is a working
+ *      scheduling context, not just a differently sized allocation.
+ *
+ * Invariants: M3, O2. */
+static void test_t315(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "per-SC refill depth";
+
+    /* A dedicated sub-untyped, so the measurement is not perturbed by whatever
+     * else the suite fabricates from its pool. */
+    long sub = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                    IRIS_KOBJ_UNTYPED, 64u * 1024u);
+    if (sub < 0) { it_fail("T315", "sub-untyped"); return; }
+
+    /* ── 1. the depth is checked ────────────────────────────────────────*/
+    if (ok && it_retype_slot_alloc(sub, IRIS_KOBJ_SCHED_CONTEXT, 1)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "a depth of one was accepted";
+    }
+    if (ok && it_retype_slot_alloc(sub, IRIS_KOBJ_SCHED_CONTEXT, 65)
+              != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "a depth above the ceiling was accepted";
+    }
+
+    /* ── 2. a deeper context costs more ─────────────────────────────────*/
+    uint64_t a0 = 0, a1 = 0, a2 = 0;
+    long shallow = -1, deep = -1;
+    if (ok && it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&a0) != 0) {
+        ok = 0; why = "info";
+    }
+    if (ok) {
+        shallow = it_retype_slot_alloc(sub, IRIS_KOBJ_SCHED_CONTEXT, 2);
+        if (shallow < 0) { ok = 0; why = "shallow retype"; }
+    }
+    if (ok && it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&a1) != 0) {
+        ok = 0; why = "info2";
+    }
+    if (ok) {
+        deep = it_retype_slot_alloc(sub, IRIS_KOBJ_SCHED_CONTEXT, 64);
+        if (deep < 0) { ok = 0; why = "deep retype"; }
+    }
+    if (ok && it_sys3(SYS_UNTYPED_INFO, sub, 0, (long)(uintptr_t)&a2) != 0) {
+        ok = 0; why = "info3";
+    }
+    if (ok) {
+        uint64_t cost_shallow = a0 - a1;
+        uint64_t cost_deep    = a1 - a2;
+        /* 62 extra slots of 16 bytes each is 992 bytes; the carve rounds, so
+         * the assertion is on the ORDER rather than the exact figure. */
+        if (cost_deep <= cost_shallow) {
+            ok = 0; why = "a deeper context cost no more";
+            it_fz_note("T315", (uint32_t)cost_shallow, (uint32_t)cost_deep, 0u);
+        }
+        if (ok && cost_deep - cost_shallow < 900u) {
+            ok = 0; why = "the extra depth was not actually charged";
+            it_fz_note("T315", (uint32_t)cost_shallow, (uint32_t)cost_deep, 0u);
+        }
+    }
+
+    /* ── 3. and it is a working scheduling context ──────────────────────*/
+    if (ok && it_sys3(SYS_SC_CONFIGURE, deep, 40, 200) != 0) {
+        ok = 0; why = "configure";
+    }
+    if (ok && it_sys3(SYS_SC_CONFIGURE, shallow, 40, 200) != 0) {
+        ok = 0; why = "configure shallow";
+    }
+
+    if (ok) it_pass("T315"); else it_fail("T315", why);
+}
+
 /* ── T296: one capability, one authority (Stage 5 Step 2) ───────────────
  * Device authority used to be a BIT (IRIS_BOOTCAP_HW_ACCESS) on the same
  * capability that carries spawn, debug and framebuffer authority.  Holding the
@@ -22975,6 +23069,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t312();
     test_t313();
     test_t314();
+    test_t315();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

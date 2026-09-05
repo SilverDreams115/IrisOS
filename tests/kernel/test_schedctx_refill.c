@@ -25,10 +25,10 @@
 #include <string.h>
 
 static struct KSchedContext *rf_sc(uint64_t budget, uint64_t period) {
-    void *mem = kpage_alloc((uint32_t)sizeof(struct KSchedContext));
+    void *mem = kpage_alloc((uint32_t)kschedctx_bytes(0));
     if (!mem) return NULL;
-    memset(mem, 0, sizeof(struct KSchedContext));
-    struct KSchedContext *sc = kschedctx_alloc_at(mem);
+    memset(mem, 0, (size_t)kschedctx_bytes(0));
+    struct KSchedContext *sc = kschedctx_alloc_at(mem, 0);
     if (!sc) return NULL;
     if (kschedctx_configure(sc, budget, period) != IRIS_OK) return NULL;
     return sc;
@@ -38,7 +38,7 @@ static struct KSchedContext *rf_sc(uint64_t budget, uint64_t period) {
 static uint64_t rf_total(const struct KSchedContext *sc) {
     uint64_t sum = sc->remaining_budget + sc->consumed_run;
     for (uint32_t i = 0; i < sc->refill_count; i++)
-        sum += sc->refills[(sc->refill_head + i) % KSCHEDCTX_REFILL_MAX].amount;
+        sum += sc->refills[(sc->refill_head + i) % sc->refill_max].amount;
     return sum;
 }
 
@@ -148,7 +148,7 @@ void test_schedctx_refill(void) {
             (void)kschedctx_charge_tick(sc, (uint64_t)(200 + i * 2));
             kschedctx_flush_run(sc);
         }
-        ASSERT_EQ(sc->refill_count, KSCHEDCTX_REFILL_MAX);
+        ASSERT_EQ(sc->refill_count, sc->refill_max);
         ASSERT_EQ(rf_total(sc), 32u);           /* nothing lost to the merge */
 
         /* The last run began at t=218, so nothing merged into that entry may

@@ -312,7 +312,21 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
             break;
         }
         case KOBJ_SCHED_CONTEXT:
-            payload    = sizeof(struct KSchedContext);
+            /*
+             * Stage 8-mcs: `obj_arg` is the REFILL DEPTH, seL4's `refill_max`,
+             * and it sizes the object.  A passive server woken per request
+             * needs many pending replenishments; a periodic task needs two.
+             * Making it a kernel constant would put that memory back in the
+             * kernel's hands and charge every SC for the worst case, which is
+             * the arrangement Stage 6 exists to remove.  0 asks for the
+             * default, so a caller that does not care does not have to decide.
+             */
+            if (obj_arg != 0u && (obj_arg < KSCHEDCTX_REFILL_MIN ||
+                                  obj_arg > KSCHEDCTX_REFILL_LIMIT)) {
+                kuntyped_stat_retype_failure();
+                return syscall_err(IRIS_ERR_INVALID_ARG);
+            }
+            payload    = (uint32_t)kschedctx_bytes((uint32_t)obj_arg);
             new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
             break;
         case KOBJ_TCB:
@@ -451,7 +465,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                     case KOBJ_TCB:
                         objs[i] = &ktcb_alloc_at(ptrs[i])->base;                  break;
                     default: /* KOBJ_SCHED_CONTEXT */
-                        objs[i] = &kschedctx_alloc_at(ptrs[i])->base;             break;
+                        objs[i] = &kschedctx_alloc_at(ptrs[i], (uint32_t)obj_arg)->base;             break;
                 }
             }
         }

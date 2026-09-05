@@ -44,7 +44,8 @@ static void kschedctx_obj_close(struct KObject *obj) {
 static void kschedctx_obj_destroy_ut(struct KObject *obj) {
     atomic_fetch_sub_explicit(&kschedctx_live, 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&kschedctx_destroyed, 1u, memory_order_relaxed);
-    kuntyped_release_child(obj, sizeof(struct KSchedContext));
+    struct KSchedContext *sc = (struct KSchedContext *)obj;
+    kuntyped_release_child(obj, kschedctx_bytes(sc->refill_max));
 }
 
 static const struct KObjectOps kschedctx_ops_ut = {
@@ -52,9 +53,15 @@ static const struct KObjectOps kschedctx_ops_ut = {
     .destroy = kschedctx_obj_destroy_ut,
 };
 
-struct KSchedContext *kschedctx_alloc_at(void *mem) {
+struct KSchedContext *kschedctx_alloc_at(void *mem, uint32_t refill_max) {
     if (!mem) return 0;
+    if (refill_max == 0u) refill_max = KSCHEDCTX_REFILL_DEFAULT;
     struct KSchedContext *sc = (struct KSchedContext *)mem;
+    sc->refill_max       = refill_max;
+    sc->refill_head      = 0;
+    sc->refill_count     = 0;
+    sc->consumed_run     = 0;
+    sc->consume_start    = 0;
     kobject_init(&sc->base, KOBJ_SCHED_CONTEXT, &kschedctx_ops_ut);
     irq_spinlock_init(&sc->lock);
     /* Phase S2 (B2): a freshly retyped SC is born UNCONFIGURED and unbound —
@@ -161,8 +168,8 @@ void kschedctx_flush_run(struct KSchedContext *sc) {
     sc->consumed_run  = 0;
     sc->consume_start = 0;
 
-    if (sc->refill_count < KSCHEDCTX_REFILL_MAX) {
-        uint32_t idx = (sc->refill_head + sc->refill_count) % KSCHEDCTX_REFILL_MAX;
+    if (sc->refill_count < sc->refill_max) {
+        uint32_t idx = (sc->refill_head + sc->refill_count) % sc->refill_max;
         sc->refills[idx].at     = due;
         sc->refills[idx].amount = amt;
         sc->refill_count++;
@@ -179,7 +186,7 @@ void kschedctx_flush_run(struct KSchedContext *sc) {
      * period, and the cost of that is a slightly later refill rather than a
      * lost one.
      */
-    uint32_t last = (sc->refill_head + sc->refill_count - 1u) % KSCHEDCTX_REFILL_MAX;
+    uint32_t last = (sc->refill_head + sc->refill_count - 1u) % sc->refill_max;
     if (due > sc->refills[last].at) sc->refills[last].at = due;
     sc->refills[last].amount += amt;
 }
@@ -189,7 +196,7 @@ int kschedctx_apply_refills(struct KSchedContext *sc, uint64_t now) {
     int gained = 0;
     while (sc->refill_count > 0 && sc->refills[sc->refill_head].at <= now) {
         sc->remaining_budget += sc->refills[sc->refill_head].amount;
-        sc->refill_head = (sc->refill_head + 1u) % KSCHEDCTX_REFILL_MAX;
+        sc->refill_head = (sc->refill_head + 1u) % sc->refill_max;
         sc->refill_count--;
         gained = 1;
     }

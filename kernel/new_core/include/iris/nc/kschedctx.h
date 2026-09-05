@@ -34,7 +34,30 @@ struct task;
  * than `budget` in any window of `period` — which is the bandwidth isolation
  * the old model silently did not provide.
  */
-#define KSCHEDCTX_REFILL_MAX  8u
+/*
+ * How many pending replenishments a scheduling context can hold, and why it is
+ * a property of the OBJECT rather than a kernel constant.
+ *
+ * A thread that blocks and resumes N times inside one period produces N
+ * replenishments, each due one period after the run it accounts for.  The
+ * queue is what keeps them distinct; when it fills, entries merge and part of
+ * a replenishment arrives LATE — never early, so the guarantee holds, but the
+ * thread runs less than it paid for.
+ *
+ * How many a thread needs is a fact about the thread: a passive server woken
+ * per request needs many, a periodic task needs two.  seL4 makes it a
+ * parameter of `seL4_SchedControl_ConfigureFlags` and sizes the object to
+ * match, so the memory is charged to whoever asked for it.  IRIS does the same
+ * at RETYPE, where every other object's size is already chosen: the count is
+ * `obj_arg`, and the refill array is the object's tail.
+ *
+ * Two is the floor because one replenishment can be in flight while the
+ * current run accumulates another.  A constant here would put the memory back
+ * in the kernel's hands, which is the whole thing Stage 6 was about.
+ */
+#define KSCHEDCTX_REFILL_MIN      2u
+#define KSCHEDCTX_REFILL_DEFAULT  8u
+#define KSCHEDCTX_REFILL_LIMIT    64u
 
 struct KRefill {
     uint64_t at;      /* tick at which `amount` becomes available again */
@@ -52,8 +75,10 @@ struct KSchedContext {
     struct task    *bound_task;
     uint8_t         configured;        /* Phase S2: 0 until SC_CONFIGURE (B2) */
 
-    /* Pending replenishments, ordered oldest-first in a ring. */
-    struct KRefill  refills[KSCHEDCTX_REFILL_MAX];
+    /* Pending replenishments, ordered oldest-first in a ring.  `refill_max` is
+     * chosen at retype and the array is the object's tail, so the storage is
+     * paid for by whoever asked for the depth. */
+    uint32_t        refill_max;
     uint32_t        refill_head;
     uint32_t        refill_count;
     /* The run being accounted: how much has been consumed and when that
@@ -62,7 +87,15 @@ struct KSchedContext {
      * than one per tick. */
     uint64_t        consumed_run;
     uint64_t        consume_start;
+    struct KRefill  refills[];      /* refill_max entries */
 };
+
+/* Bytes an SC with `n` refill slots occupies.  `n` == 0 means the default. */
+static inline uint64_t kschedctx_bytes(uint32_t n) {
+    if (n == 0u) n = KSCHEDCTX_REFILL_DEFAULT;
+    return (uint64_t)sizeof(struct KSchedContext) +
+           (uint64_t)n * (uint64_t)sizeof(struct KRefill);
+}
 
 /* Charge one tick of execution at `now`.  Returns 1 if the budget is now
  * exhausted (caller suspends the thread), 0 otherwise. */
@@ -79,7 +112,7 @@ void kschedctx_refill_reset(struct KSchedContext *sc);
 
 /* Phase S2: Untyped retype is the ONLY creation path (kslab kschedctx_alloc
  * retired; SYS_SC_CREATE returns NOT_SUPPORTED). */
-struct KSchedContext *kschedctx_alloc_at(void *mem); /* untyped-backed */
+struct KSchedContext *kschedctx_alloc_at(void *mem, uint32_t refill_max); /* untyped-backed */
 void                  kschedctx_close(struct KSchedContext *sc);
 iris_error_t          kschedctx_configure(struct KSchedContext *sc,
                                            uint64_t budget, uint64_t period);
