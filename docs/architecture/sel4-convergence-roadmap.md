@@ -67,13 +67,13 @@ two halves and they are far apart:
 | Dimension | State | Evidence |
 |---|---|---|
 | Object model and creation | **very close** | every canonical object is retyped from Untyped; address spaces and CSpaces are retyped by their HOLDER (Stage 6-pure).  `KProcess` — the largest of the four object types seL4 has no equivalent for — is DELETED (Stage 7-proc).  Three remain, `KVMO`, `KInitrdEntry` and `KBootstrapCap`, all staged |
-| Capabilities (CSpace, CDT, revoke) | **close** | native CDT/MDB, recursive cross-process revoke, one namespace.  Gaps: no CNode guards (D-2), and a different rights set (D-3) |
-| IPC | **close** | endpoints, badges, reply objects, receive slots, no handle fallback, and `SYS_REPLY_RECV` — seL4's combined `ReplyRecv`, which a passive server needs so it never crosses the gap between returning its donated time and blocking again (Stage 8-mcs, T309).  Remaining gap: D-4, where the MECHANISM now exists (`SYS_TCB_SET_IPC_BUFFER`, T313) but every boot service still uses the 256-byte kernel staging, because a service has no Untyped of its own to retype a frame from |
+| Capabilities (CSpace, CDT, revoke) | **close** | native CDT/MDB, recursive cross-process revoke, one namespace, and CNode GUARDS on the capability rather than the object — the root CSpace included, which is where a guard is load-bearing and where it was missed first (D-2, closed).  Revoke is preemptible (D-8, closed).  One gap left: a different rights set (D-3), which is a decision still owed |
+| IPC | **close** | endpoints, badges, reply objects, receive slots, no handle fallback, and `SYS_REPLY_RECV` — seL4's combined `ReplyRecv`, which a passive server needs so it never crosses the gap between returning its donated time and blocking again (Stage 8-mcs, T309).  Remaining gap: D-4, and it is now a migration rather than a design.  `SYS_TCB_SET_IPC_BUFFER` is seL4's `seL4_TCB_SetIPCBuffer` (T313), every service owns an Untyped it can retype a frame from, and console, sh and svcmgr are across — measured by a live gauge, because this migration fails silently and did.  `ipc_kbuf` stays until vfs, init and the pager follow; vfs is the one that is not mechanical, because it composes a reply while the request is still live and a single IPC buffer cannot hold both |
 | No ambient authority | **nearly met** | boot authority is one capability per authority; what remains is the ioport whitelist.  Every per-process quota is gone (Stage 7) |
 | No kernel heap | **nearly met** | 17 permitted `kslab_alloc` occurrences across 14 files, all boot path or objects still staged; seL4 has none at all |
 | MCS scheduling | **close** | all four pillars are in as of Stage 8-mcs.  Budget and period are enforced; **sporadic replenishment** returns every tick consumed exactly one period later, so a thread can never spend more than its budget in any window of its period (host R-1..R-8); **timeout faults** make an overrun a policy decision a temporal supervisor takes rather than an invisible stall (`SYS_TCB_SET_TIMEOUT_HANDLER`, T307); and **SC donation** lends a client's scheduling context to a PASSIVE server for the duration of a Call, so an SC-less thread runs on the requester's time instead of — as it did before — running unbudgeted (T308).  `SYS_REPLY_RECV` closes the last of them (T309): without it a passive server is, between reply and receive, runnable with no scheduling context — and an SC-less thread is not charged, so it runs unbudgeted for exactly as long as the second syscall takes.  What is still not seL4's: `refill_max` is a constant rather than a per-SC configuration |
 | ABI shape | **far, by decision** | 68 live numbered syscalls of 127 numbers, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  Registered permanent divergence (charter §6) |
-| Kernel architecture | **two thirds** | D-1, and the only one of these that is a rewrite rather than an increment.  Steps 1 and 2 are closed: no blocking syscall keeps live state across its block, and a parked one ABANDONS its kernel frame and resumes on a fresh stack from the TCB (T310).  Step 3 — one kernel stack per CORE — is still open, and needs the PREEMPTION path converted before the stacks can go |
+| Kernel architecture | **two thirds** | D-1, and the only one of these that is a rewrite rather than an increment.  Steps 1 and 2 are closed: no blocking syscall keeps live state across its block, and a parked one ABANDONS its kernel frame and resumes on a fresh stack from the TCB (T310).  Step 3 — one kernel stack per CORE — is half done: the whole ring-3 register context now lives in the TCB rather than on a kernel stack (T314), which is the precondition.  What is left is `TSS.RSP0` becoming per-core and the timer ISR's reschedule becoming a choice of which TCB to restore instead of a `context_switch` |
 
 ### The two that no further stage closes
 
@@ -1635,13 +1635,21 @@ differently.
   Stage 4 Step 6b's injectivity rule re-derived.  Stage 7 paid for its absence
   repeatedly — leaf exhaustion, the "a mint source must be a root CPtr" rule,
   and a whole extra CNode for a supervisor's child table.
-- **D-3 — the rights set.**  A decision, not necessarily a change.
-  `RIGHT_DUPLICATE` and `RIGHT_TRANSFER` are load-bearing: they are what makes
-  a delegation non-re-delegable, which seL4 expresses through the MDB instead.
-  Either adopt `Read/Write/Grant/GrantReply` and move non-re-delegation into
-  the tree, or keep the current set and move the row from "revisable" to
-  "permanent, deliberate" with the reasoning written down.  What is not
-  acceptable is leaving it revisable forever.
+- **D-3 — the rights set.**  ✅ **DECIDED: kept, and now PERMANENT.**  The two
+  choices were to adopt `Read/Write/Grant/GrantReply` and move
+  non-re-delegation into the derivation tree, or to keep the current set and
+  say why.  The first is not actually available: the tree RECORDS what was
+  derived, it does not PREVENT deriving, so moving `RIGHT_DUPLICATE` there
+  would delete the property rather than relocate it.  seL4 lets any holder copy
+  anything it holds, on the reasoning that copying grants no authority the
+  holder did not already have — true of authority, false of confinement, since
+  a child that can copy its endpoint capability can seed a third party with it.
+  IRIS refuses the copy.  `RIGHT_TRANSFER` is seL4's `Grant` moved from the
+  endpoint to the capability being sent, and `GrantReply` needs no equivalent
+  because the reply capability is a separate object.  The cost is stated rather
+  than hidden: **"IRIS uses seL4's rights" is never a correct sentence**, and
+  the set is pinned by host RG-1..RG-5 so a permanent declaration is about
+  something that cannot drift.
 
 **Exit criterion:** `mdb_legacy_roots` is a bounded, named inventory with no
 defect class in it, and every §6 row is either permanent-deliberate or has a
