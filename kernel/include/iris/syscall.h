@@ -258,21 +258,23 @@ static inline long iris_syscall0(long nr) {
  * argument; IOPORT did not, so its two 16-bit device facts share arg1, which
  * is what they always were: one range, described in one word.
  *
- * SYS_CAP_CREATE_IRQCAP(auth_cptr, irq_num, budget_cptr, dest_slot) → 0 or negative iris_error_t
+ * SYS_CAP_CREATE_IRQCAP(auth_cptr, irq_num, budget_cptr, dest) → 0 or negative iris_error_t
  *   auth_cptr: KOBJ_BOOTSTRAP_CAP whose authority is exactly
  *     IRIS_BOOTCAP_IRQ_CONTROL; becomes the MDB parent of the new cap.
  *   irq_num: hardware IRQ line (0–15).
  *   budget_cptr: KUntyped (RIGHT_WRITE) the KIrqCap is carved from.  Required.
- *   dest_slot: root-CNode slot receiving a KIrqCap with
+ *   dest:      destination (cnode | slot<<32; cnode 0 = the caller's own
+ *              root), receiving a KIrqCap with
  *     RIGHT_ROUTE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
  *
- * SYS_CAP_CREATE_IOPORT(auth_cptr, base|count<<16, budget_cptr, dest_slot) → 0 or negative iris_error_t
+ * SYS_CAP_CREATE_IOPORT(auth_cptr, base|count<<16, budget_cptr, dest) → 0 or negative iris_error_t
  *   auth_cptr: KOBJ_BOOTSTRAP_CAP whose authority is exactly
  *     IRIS_BOOTCAP_IOPORT_CONTROL.
  *   arg1 low 16:  first I/O port in the range (0–0xFFFF).
  *   arg1 high 16: number of consecutive ports (1–0x10000, base+count ≤ 0x10000).
  *   budget_cptr: KUntyped (RIGHT_WRITE) the KIoPort is carved from.  Required.
- *   dest_slot: root-CNode slot receiving a KIoPort with
+ *   dest:      destination (cnode | slot<<32; cnode 0 = the caller's own
+ *              root), receiving a KIoPort with
  *     RIGHT_READ|RIGHT_WRITE|RIGHT_DUPLICATE|RIGHT_TRANSFER.
  */
 #define SYS_CAP_CREATE_IRQCAP  39
@@ -1537,7 +1539,7 @@ static inline long iris_syscall0(long nr) {
 #define SYS_TCB_SET_IPC_BUFFER 130
 
 /*
- * SYS_IOPORT_CONTROL_NARROW(auth_cptr, first | last<<16, budget_cptr, dest_slot)
+ * SYS_IOPORT_CONTROL_NARROW(auth_cptr, first | last<<16, budget_cptr, dest)
  *   → 0 or negative iris_error_t
  *
  * Derive an I/O-port CONTROL capability over a SUB-RANGE of one you hold.
@@ -1567,7 +1569,13 @@ static inline long iris_syscall0(long nr) {
  *               control capability is memory, and a syscall that let ring 3
  *               spend the KERNEL's would open a charter M3 hole in the same
  *               change that closed a policy one
- *   dest_slot   destination slot in the caller's root CNode
+ *   dest        destination (cnode | slot<<32; cnode 0 = the caller's own
+ *               root) — the packing every publishing syscall uses.  It was
+ *               a bare ROOT slot refused above 1024, so a service holding
+ *               its working capabilities in a second-level CNode could not
+ *               receive a device capability at all.  seL4's
+ *               seL4_IRQControl_Get names the destination CNode for the
+ *               same reason
  *
  * The result is an MDB CHILD of the slot that authorised it, like every other
  * derived capability, so revoking the parent reaches it.

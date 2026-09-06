@@ -56,7 +56,7 @@ void init_early_serial_start(void) {
      * its own boot block; nothing is charged to a pool the kernel picked. */
     if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
                   (long)(0x3F8u | (8u << 16)), (long)IRIS_CPTR_INIT_UNTYPED,
-                  (long)INIT_EARLY_SERIAL_SLOT) != 0) return;
+                  (long)((uint64_t)INIT_EARLY_SERIAL_SLOT << 32)) != 0) return;
     g_init_early_serial_h = (handle_id_t)INIT_EARLY_SERIAL_SLOT;
 }
 

@@ -57,22 +57,37 @@ uint64_t sys_handle_dup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * is seL4's IRQControl semantics.  The authority argument must consequently
  * be a CPtr — a handle cannot be an MDB parent (charter §3.6/A9).
  *
- * dev_cap_publish installs `obj` into the caller's root CNode at dest_slot
- * parented to (auth_cn, auth_idx).  It consumes the caller's reference to
- * obj on every path.
+ * dev_cap_publish installs `obj` at `dest` parented to (auth_cn, auth_idx).
+ * The caller keeps its own reference to obj and releases it afterwards.
+ *
+ * `dest` follows the RETYPE2 convention every other publishing syscall uses —
+ * destination CNode in the low 32 bits (0 = the caller's own root), slot index
+ * in the high 32.  It was a bare ROOT slot index, refused above 1024, which
+ * meant a device capability could only ever land in the caller's root CNode:
+ * a service holding its working capabilities in a second-level CNode — which
+ * is what a spawner does, and what the root CSpace's 256 slots force — could
+ * not receive one at all.  seL4's `seL4_IRQControl_Get` names the destination
+ * CNode for the same reason.
  */
 static iris_error_t dev_cap_publish(struct task *t, struct KObject *obj,
-                                    iris_rights_t rights, uint32_t dest_slot,
+                                    iris_rights_t rights, uint64_t dest,
                                     struct KCNode *auth_cn, uint32_t auth_idx) {
-    struct KCNode *root = 0;
-    iris_error_t err = cspace_own_root(t->cspace_root, &root);
+    uint64_t dest_cnode = dest & 0xFFFFFFFFu;
+    uint32_t dest_slot  = (uint32_t)(dest >> 32);
+    if (dest_slot == 0u) return IRIS_ERR_INVALID_ARG;
+
+    struct KCNode *cn = 0;
+    iris_error_t err = (dest_cnode == 0u)
+        ? cspace_own_root(t->cspace_root, &cn)
+        : cspace_resolve_cnode_for_publish(t->cspace_root,
+                                           (iris_cptr_t)dest_cnode, &cn);
     if (err != IRIS_OK) return err;
 
-    err = kcnode_slot_install_linked(root, dest_slot, obj, rights, 0,
+    err = kcnode_slot_install_linked(cn, dest_slot, obj, rights, 0,
                                      auth_cn, auth_idx,
                                      /*exclusive*/1, /*legacy*/0);
-    kobject_active_release(&root->base);
-    kobject_release(&root->base);
+    kobject_active_release(&cn->base);
+    kobject_release(&cn->base);
     return err;
 }
 
@@ -178,13 +193,12 @@ static void dev_cap_budget_release(struct KUntyped *u) {
 uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                uint64_t arg3) {
     uint8_t      irq_num   = (uint8_t)(arg1 & 0xFFu);
-    uint32_t     dest_slot = (uint32_t)arg3;
+    uint64_t     dest      = arg3;
     struct task *t         = task_current();
 
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (irq_num > 15u)     return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (dest_slot == 0u || dest_slot >= 1024u)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if ((uint32_t)(dest >> 32) == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct KCNode *auth_cn; uint32_t auth_idx;
     iris_error_t err = dev_cap_auth(t, arg0, IRIS_BOOTCAP_IRQ_CONTROL,
@@ -206,7 +220,7 @@ uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
     err = dev_cap_publish(t, &irqcap->base,
                           RIGHT_ROUTE | RIGHT_DUPLICATE | RIGHT_TRANSFER,
-                          dest_slot, auth_cn, auth_idx);
+                          dest, auth_cn, auth_idx);
     dev_cap_auth_release(auth_cn);
     if (err != IRIS_OK) {
         kirqcap_free(irqcap);
@@ -223,14 +237,13 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
      * the high half — which frees arg2 to say which budget pays. */
     uint16_t     base      = (uint16_t)(arg1 & 0xFFFFu);
     uint16_t     count     = (uint16_t)((arg1 >> 16) & 0xFFFFu);
-    uint32_t     dest_slot = (uint32_t)arg3;
+    uint64_t     dest      = arg3;
     struct task *t         = task_current();
 
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
     if (count == 0u || (uint32_t)base + count > 0x10000u)
         return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (dest_slot == 0u || dest_slot >= 1024u)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if ((uint32_t)(dest >> 32) == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
     /*
      * The range check is against the AUTHORITY, not against a table.
      *
@@ -278,7 +291,7 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 
     err = dev_cap_publish(t, &ioport->base,
                           RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER,
-                          dest_slot, auth_cn, auth_idx);
+                          dest, auth_cn, auth_idx);
     dev_cap_auth_release(auth_cn);
     if (err != IRIS_OK) {
         kioport_free(ioport);
@@ -392,11 +405,10 @@ uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1,
 
     uint16_t first     = (uint16_t)(arg1 & 0xFFFFu);
     uint16_t last      = (uint16_t)((arg1 >> 16) & 0xFFFFu);
-    uint32_t dest_slot = (uint32_t)arg3;
+    uint64_t dest      = arg3;
 
     if (first > last) return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (dest_slot == 0u || dest_slot >= 1024u)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
+    if ((uint32_t)(dest >> 32) == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     /* Resolve the authority and read both its kind and its range while it is
      * held; the slot becomes the MDB parent of what comes out. */
@@ -452,7 +464,7 @@ uint64_t sys_ioport_control_narrow(uint64_t arg0, uint64_t arg1,
 
     err = dev_cap_publish(t, &narrow->base,
                           RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER,
-                          dest_slot, auth_cn, auth_idx);
+                          dest, auth_cn, auth_idx);
     dev_cap_auth_release(auth_cn);
     if (err != IRIS_OK) {
         kbootcap_free(narrow);

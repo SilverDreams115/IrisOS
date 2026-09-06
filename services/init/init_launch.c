@@ -97,7 +97,7 @@ int init_spawn_console(void) {
      * Stage 5 Step 2: the authority is the ioport control capability. */
     if (init_sys4(SYS_CAP_CREATE_IOPORT, (long)IRIS_CPTR_IOPORT_CONTROL,
                   (long)(0x3F8u | (8u << 16)), (long)IRIS_CPTR_INIT_UNTYPED,
-                  (long)INIT_CONSOLE_IOPORT_SLOT) != 0) {
+                  (long)((uint64_t)INIT_CONSOLE_IOPORT_SLOT << 32)) != 0) {
         init_early_serial_write(init_console_ioport_fail);
         goto fail;
     }

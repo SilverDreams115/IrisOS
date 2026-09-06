@@ -173,12 +173,16 @@ void test_syscall_retype(void) {
     {
         struct task *t = rt_caller();
         ASSERT_NOT_NULL(t);
-        ASSERT_EQ(rt_err(sys_cap_create_irqcap(1, 16, 4, 0)),   /* IRQ > 15 */
+        /* arg3 is the standard destination packing (cnode | slot<<32); a
+         * destination of 0 is slot 0, which is CPTR_NULL and refused. */
+        ASSERT_EQ(rt_err(sys_cap_create_irqcap(1, 16, 4, 4ULL << 32)), /* IRQ > 15 */
                   (long)IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(rt_err(sys_cap_create_irqcap(1, 1, 0, 0)),    /* slot 0   */
                   (long)IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ(rt_err(sys_cap_create_irqcap(1, 1, 1024, 0)), /* slot OOR */
-                  (long)IRIS_ERR_INVALID_ARG);
+        /* A destination CNode that resolves to nothing is refused too — the
+         * bound that used to live here was `slot < 1024`, which existed only
+         * because the destination was always the caller's root. */
+        ASSERT_EQ(rt_err(sys_cap_create_irqcap(1, 1, 4, (4ULL << 32) | 999u)) < 0, 1);
         test_set_current_task(NULL);
     }
 
@@ -189,8 +193,8 @@ void test_syscall_retype(void) {
     {
         struct task *t = rt_caller();
         ASSERT_NOT_NULL(t);
-        ASSERT_EQ(rt_err(sys_cap_create_irqcap(9, 1, 4, 0)) < 0, 1);
-        ASSERT_EQ(rt_err(sys_cap_create_ioport(9, 0x3F8, 8, 4)) < 0, 1);
+        ASSERT_EQ(rt_err(sys_cap_create_irqcap(9, 1, 4, 4ULL << 32)) < 0, 1);
+        ASSERT_EQ(rt_err(sys_cap_create_ioport(9, 0x3F8, 8, 4ULL << 32)) < 0, 1);
         test_set_current_task(NULL);
     }
 

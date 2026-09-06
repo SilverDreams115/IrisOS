@@ -519,11 +519,14 @@ static long it_cs_reduce(long src_cptr, uint32_t rights) {
  * sites are testing is AUTHORITY — which control capability creates which
  * device — and the packing is not the subject of a single one of them.
  */
+/* `dest` is a SLOT of the caller's own root here; the syscall takes the
+ * standard destination packing (cnode | slot<<32), so the wrapper does the
+ * shift and the eighteen call sites keep saying which slot they mean. */
 static long it_ioport_create(long auth, long base, long count, long dest) {
     return it_sys4(SYS_CAP_CREATE_IOPORT, auth,
                    (long)((uint64_t)(uint16_t)base |
                           ((uint64_t)(uint16_t)count << 16)),
-                   (long)IRIS_CPTR_TEST_UNTYPED, dest);
+                   (long)IRIS_CPTR_TEST_UNTYPED, (long)((uint64_t)dest << 32));
 }
 /* Derive a narrowed I/O-port CONTROL capability into `dest` (Stage 5).  The
  * kernel has no port whitelist any more; the range that bounds what a holder
@@ -534,12 +537,12 @@ static long it_ioport_narrow(long auth, long first, long last, uint32_t dest) {
     return it_sys4(SYS_IOPORT_CONTROL_NARROW, auth,
                    (long)((uint64_t)(uint16_t)first |
                           ((uint64_t)(uint16_t)last << 16)),
-                   (long)IRIS_CPTR_TEST_UNTYPED, (long)dest);
+                   (long)IRIS_CPTR_TEST_UNTYPED, (long)((uint64_t)dest << 32));
 }
 
 static long it_irqcap_create(long auth, long irq, long dest) {
     return it_sys4(SYS_CAP_CREATE_IRQCAP, auth, irq,
-                   (long)IRIS_CPTR_TEST_UNTYPED, dest);
+                   (long)IRIS_CPTR_TEST_UNTYPED, (long)((uint64_t)dest << 32));
 }
 
 /* An initrd image published into a CSpace slot as a FRAME (ledger D-5).  Same
@@ -11997,7 +12000,7 @@ static void test_t164(void) {
                           (long)IRIS_CPTR_IOPORT_CONTROL,
                           (long)((uint64_t)IT_COM2_BASE |
                                  ((uint64_t)(IT_COM2_BASE + IT_COM2_COUNT - 1) << 16)),
-                          0L, (long)IT_DEV_SLOT_B)
+                          0L, (long)((uint64_t)IT_DEV_SLOT_B << 32))
                   != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "narrowing without a budget was accepted";
         }
@@ -12013,7 +12016,8 @@ static void test_t164(void) {
                           (long)IRIS_CPTR_IOPORT_CONTROL,
                           (long)((uint64_t)IT_COM2_BASE |
                                  ((uint64_t)(IT_COM2_BASE + IT_COM2_COUNT - 1) << 16)),
-                          (long)IRIS_CPTR_IOPORT_CONTROL, (long)IT_DEV_SLOT_B)
+                          (long)IRIS_CPTR_IOPORT_CONTROL,
+                          (long)((uint64_t)IT_DEV_SLOT_B << 32))
                   != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "a non-untyped budget was accepted";
         }

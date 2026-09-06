@@ -315,7 +315,8 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
              * to — svcmgr's own delegated pool, not one the kernel picked. */
             int64_t r = svcmgr_syscall4(SYS_CAP_CREATE_IRQCAP,
                                         IRIS_CPTR_IRQ_CONTROL, e->irq_num,
-                                        IRIS_CPTR_OWN_UNTYPED, slot);
+                                        IRIS_CPTR_OWN_UNTYPED,
+                                        (uint64_t)slot << 32);
             if (r == 0) state->irq_caps[e->irq_num] = slot;
         }
 
@@ -326,7 +327,8 @@ static void svcmgr_request_hardware_caps(struct svcmgr_state *state) {
                                         IRIS_CPTR_IOPORT_CONTROL,
                                         (uint64_t)e->ioport_base |
                                             ((uint64_t)e->ioport_count << 16),
-                                        IRIS_CPTR_OWN_UNTYPED, slot);
+                                        IRIS_CPTR_OWN_UNTYPED,
+                                        (uint64_t)slot << 32);
             if (r == 0) state->ioport_caps[e->service_id] = slot;
         }
     }

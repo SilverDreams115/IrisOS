@@ -64,7 +64,8 @@ static void ub_boot_panic(uint64_t ioport_control_cptr, uint64_t ioport_slot,
      */
     long r = ub_sys4(SYS_CAP_CREATE_IOPORT, (long)ioport_control_cptr,
                      (long)(0x3F8u | (8u << 16)),
-                     (long)BOOT_CPTR_UNTYPED_START, (long)ioport_slot);
+                     (long)BOOT_CPTR_UNTYPED_START,
+                     (long)((uint64_t)ioport_slot << 32));
     if (r == 0) {
         long io = (long)ioport_slot;
         for (const char *p = msg; *p; p++) {
