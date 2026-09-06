@@ -579,8 +579,11 @@ void pager_main(handle_id_t bootstrap_ch_h) {
      * handle for it.  The manifest oracle reports slot 15 from here on — the
      * pager's authority is now fully described by its CSpace, which is the
      * property the oracle exists to prove. */
-    g_self_vs = (pg_sys1(SYS_VSPACE_SELF,
-                         (long)((uint64_t)PGR_SLOT_SELF_VS << 32)) == 0)
+    /* D-6/A5: derived from the address space the spawner delegated, published
+     * into the slot the manifest oracle already reports. */
+    g_self_vs = (pg_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_OWN_VSPACE,
+                         (long)((uint64_t)PGR_SLOT_SELF_VS << 32),
+                         (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) == 0)
                 ? (long)PGR_SLOT_SELF_VS : -1;
 
     /* D-4: a page the pager owns, registered as its IPC buffer.  Best-effort

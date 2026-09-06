@@ -329,11 +329,24 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                      * already created and bootstrap maps are registered.
                      */
                     if (ut->vspace && ut->cspace_root) {
+                        /*
+                         * RIGHT_WRITE, like the root CNode and TCB above.
+                         *
+                         * It was READ|DUPLICATE|TRANSFER, and a VSpace without
+                         * WRITE cannot be mapped into — so the root task could
+                         * not use the address-space capability its own BootInfo
+                         * handed it, and reached its address space through
+                         * SYS_VSPACE_SELF instead.  An ambient syscall was
+                         * covering for an under-powered BootInfo slot, which is
+                         * why retiring the syscall is what exposed it.  seL4's
+                         * seL4_CapInitThreadVSpace is a full capability.
+                         */
                         iris_error_t vme = kcnode_mint(
                             ut->cspace_root,
                             BOOT_CPTR_VSPACE,
                             &ut->vspace->base,
-                            RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER);
+                            RIGHT_READ | RIGHT_WRITE |
+                            RIGHT_DUPLICATE | RIGHT_TRANSFER);
                         if (vme == IRIS_OK)
                             klog_write("[IRIS][USER] boot vspace"
                                        " CSpace grants OK\n");

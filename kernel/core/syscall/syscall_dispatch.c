@@ -312,7 +312,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_TCB_GET_INFO:        return sys_tcb_get_info(arg0, arg1, arg2);
         case SYS_FRAME_MAP:           return sys_frame_map(arg0, arg1, arg2, arg3);
         case SYS_FRAME_UNMAP:         return sys_frame_unmap(arg0, arg1, arg2);
-        case SYS_VSPACE_SELF:         return sys_vspace_self(arg0, arg1, arg2);
         case SYS_PROCESS_VSPACE:      return sys_process_vspace(arg0, arg1, arg2);
         case SYS_RESOURCE_INFO:       return sys_resource_info(arg0, arg1, arg2);
         case SYS_UNTYPED_RETYPE2:     return sys_untyped_retype2(arg0, arg1, arg2, arg3);
@@ -322,7 +321,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_CAP_IDENTIFY:        return sys_cap_identify(arg0, arg1, arg2);
         case SYS_CAP_SAME_OBJECT:     return sys_cap_same_object(arg0, arg1, arg2);
         /* Stage 5 Step 4: execution for a TCB retyped from an Untyped. */
-        case SYS_CSPACE_SELF:         return sys_cspace_self(arg0, arg1, arg2);
         /* Stage 6-pure: a page table the holder retyped, installed by name. */
         case SYS_VSPACE_MAP_TABLE:    return sys_vspace_map_table(arg0, arg1, arg2);
         case SYS_TCB_FAULT_INFO:      return sys_tcb_fault_info(arg0, arg1, arg2);

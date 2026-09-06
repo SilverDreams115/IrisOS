@@ -7,6 +7,7 @@
  * to the pre-Phase-14 monolith.
  */
 
+#include <iris/endpoint_proto.h>
 #include "init.h"
 #include <iris/fault_proto.h>
 
@@ -68,10 +69,17 @@ void init_selftest_exception(void) {
      * silent non-test. */
     uint64_t entry = (uint64_t)(uintptr_t)s8_ud2_fn;
     uint64_t rsp   = (uint64_t)(uintptr_t)(s8_thread_stack + sizeof(s8_thread_stack));
-    if (init_sys1(SYS_CSPACE_SELF,
-                  (long)((uint64_t)INIT_SLOT_OWN_CSPACE << 32)) != 0 ||
-        init_sys1(SYS_VSPACE_SELF,
-                  (long)((uint64_t)INIT_SLOT_OWN_VSPACE << 32)) != 0) {
+    /* D-6/A5: init's own CSpace and address space are DELEGATED by its
+     * spawner (userboot, through svc_loader) at the well-known slots.  They
+     * used to be fabricated by SYS_CSPACE_SELF / SYS_VSPACE_SELF — capabilities
+     * handed over on request, with no capability asked for and no ancestor to
+     * revoke them through. */
+    if (init_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_OWN_CSPACE,
+                  (long)((uint64_t)INIT_SLOT_OWN_CSPACE << 32),
+                  (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0 ||
+        init_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_OWN_VSPACE,
+                  (long)((uint64_t)INIT_SLOT_OWN_VSPACE << 32),
+                  (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0) {
         init_log("[USER][INIT][S8] SKIP: self caps\n"); return;
     }
     (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_S8_TCB);

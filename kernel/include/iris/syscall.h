@@ -1093,7 +1093,7 @@ static inline long iris_syscall0(long nr) {
  *   Returns IRIS_ERR_INVALID_ARG if the caller has no address space.
  *   Returns IRIS_ERR_NO_MEMORY if the handle table is full.
  */
-#define SYS_VSPACE_SELF 106
+#define SYS_VSPACE_SELF 106  /* RETIRED (D-6/A5) → IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * SYS_PROCESS_VSPACE (107) — RETIRED (Stage 7 Step 15).  Number permanently
@@ -1340,7 +1340,7 @@ static inline long iris_syscall0(long nr) {
  *   (NOT_SUPPORTED): a thread with no entry frame has no kernel stack pointer
  *   to switch to, and making it runnable would take the CPU onto a null stack.
  */
-#define SYS_CSPACE_SELF      119
+#define SYS_CSPACE_SELF      119  /* RETIRED (D-6/A5) → IRIS_ERR_NOT_SUPPORTED */
 #define SYS_TCB_CONFIGURE    120
 #define SYS_TCB_WRITE_REGS   121
 /*

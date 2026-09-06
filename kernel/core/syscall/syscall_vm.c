@@ -6,38 +6,19 @@
 
 
 /*
- * SYS_VSPACE_SELF — hand the caller a capability to its own address space.
+ * sys_vspace_self — RETIRED (ledger D-6 / charter A5).
  *
- * Phase 19: self-authority only.  A process already fully controls its own
- * address space through the VMO map/unmap syscalls, so a cap to its own VSpace
- * is not new authority — it exists so ring-3 code can mint the cap into a
- * CSpace slot and exercise SYS_FRAME_MAP / SYS_FRAME_UNMAP on itself by CPtr
- * (the resolvers for those syscalls require a VSpace CPtr).  No argument names
- * another VSpace; there is no cross-process reach here.
+ * It handed the caller a capability to its own address space, asking for NO
+ * capability at all: ambient authority, which seL4 does not have.  It also
+ * published an MDB LEGACY ROOT — a capability with no ancestor, which no
+ * revoke can reach.
+ *
+ * A thread is given its address space by whoever configured it.  Every service
+ * receives one at IRIS_CPTR_OWN_VSPACE before its first instruction, and the ROOT TASK
+ * finds its own in BootInfo — which is exactly seL4's arrangement:
+ * seL4_CapInitThreadVSpace and seL4_CapInitThreadCNode are BootInfo slots,
+ * not syscalls.  The number stays permanently reserved.
  */
-uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    if (!t || !t->vspace)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KVSpace *vs = t->vspace;
-    const iris_rights_t rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
-
-    /* Stage 4: arg0 is a destination slot (RETYPE2 packing).  The VSpace is
-     * borrowed from the process, so publish_slot's consuming release needs a
-     * reference of its own.  A LEGACY_ROOT: the caller's own address space is
-     * an attribute of being a process, not something another slot granted. */
-    /* Stage 4: a destination slot is REQUIRED.  The handle result is retired,
-     * so arg0 == 0 names no destination and is an error rather than a silent
-     * fall back to the other namespace. */
-    if (arg0 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    kobject_retain(&vs->base);
-    iris_error_t pe = syscall_publish_slot(t, &vs->base, rights, arg0, 0, 0);
-    if (pe != IRIS_OK) return syscall_err(pe);
-    return syscall_ok_u64(0);
-}
 
 
 /*

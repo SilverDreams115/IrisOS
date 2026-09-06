@@ -757,6 +757,55 @@ inside.  That is precisely why the number is capped rather than explained: the
 ones that are defects are indistinguishable until they cost something, and four
 slot collisions in this convergence are what they cost.
 
+### A-18 — the last ambient authority, named and mostly removed
+
+`SYS_VSPACE_SELF`, `SYS_CSPACE_SELF` and `SYS_TCB_SELF` handed a thread
+capabilities to its own address space, CSpace and thread **on request, asking
+for no capability at all**.  That is ambient authority — charter A5's subject —
+and seL4 has none of it: a thread is given those by whoever configured it, and
+the root task finds them in BootInfo.  They also published MDB LEGACY ROOTS, so
+D-6 and A5 were the same defect seen from two sides.
+
+**Two of the three are RETIRED.**  An address space and a CSpace are facts about
+the PROCESS, so one delegation covers every thread in it: the loader mints
+`IRIS_CPTR_OWN_VSPACE`, `IRIS_CPTR_OWN_TCB` and now `IRIS_CPTR_OWN_CSPACE`
+before the child's first instruction, and the root task uses the BootInfo slots
+it already had.  Every caller — the loader itself, fb, vfs, the pager, init's
+selftest and the whole suite — now derives from the delegated capability, which
+makes each of them a child in the derivation tree instead of a root.
+
+Removing them exposed three things that had been hiding behind them.
+
+**The delegation was gated on the wrong question.**  It read `own_budget_slot`
+— the slot THIS loader mints its pool into — so a child handed a budget by any
+other route counted as one that creates nothing and was denied its own address
+space, thread and CSpace.  `iris_test` is exactly that child: it is given
+`IRIS_CPTR_TEST_UNTYPED` by init and creates thousands of objects from it.  The
+gate now asks the question it meant to ask — is any capability this child gets
+an Untyped — of the capabilities the child actually gets.
+
+**The root task's own BootInfo slot was under-powered.**  `BOOT_CPTR_VSPACE`
+carried `READ | DUPLICATE | TRANSFER` and no `RIGHT_WRITE`, so the root task
+could not map into the address space its own BootInfo handed it — and reached
+it through the ambient syscall instead.  An ambient call was covering for a
+capability that did not work.  seL4's `seL4_CapInitThreadVSpace` is a full
+capability, and so is this one now.
+
+**A slot's emptiness expires.**  T079 named slot 18 as "never minted — must not
+resolve"; 18 became `IRIS_CPTR_OWN_VSPACE`, and the test kept passing because a
+VSpace answers WRONG_TYPE, which is also negative.  T080 named 19, which became
+`IRIS_CPTR_OWN_TCB`, and there the exclusive mint failed loudly.  One of the two
+told us; the other did not.
+
+**`SYS_TCB_SELF` stays, and what it would take is written down.**
+`IRIS_CPTR_OWN_TCB` is the thread the spawner configured — the process's first
+one — so deriving from it answers a different question than a HELPER THREAD
+asking about itself, which two of the suite's callers do.  Delegation cannot
+reach them: the loader never saw those threads, and a thread has no per-thread
+channel to be told its own slot through (the entry argument arrives in a
+register C cannot read).  Closing it means handing a thread its own TCB
+capability at creation, which needs somewhere per-thread to put it.
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a

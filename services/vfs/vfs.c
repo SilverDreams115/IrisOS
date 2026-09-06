@@ -105,7 +105,10 @@ static inline int64_t vfs_syscall3(uint64_t num, uint64_t arg0, uint64_t arg1, u
 static long vfs_self_vs(void) {
     static int ready = 0;
     if (!ready) {
-        if (iris_syscall1(SYS_VSPACE_SELF, (long)((uint64_t)VFS_SLOT_SELF_VS << 32)) != 0)
+        /* D-6/A5: derived from the address space the spawner delegated. */
+        if (iris_syscall3(SYS_CSPACE_MINT, (long)IRIS_CPTR_OWN_VSPACE,
+                          (long)((uint64_t)VFS_SLOT_SELF_VS << 32),
+                          (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
             return 0;
         ready = 1;
     }

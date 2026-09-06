@@ -39,7 +39,6 @@ uint64_t sys_cspace_revoke(uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t sys_cspace_set_guard(uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t sys_cap_identify(uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t sys_cap_same_object(uint64_t a0, uint64_t a1, uint64_t a2);
-uint64_t sys_cspace_self(uint64_t a0, uint64_t a1, uint64_t a2);
 
 /* A syscall's negative return is the error, sign-extended into 64 bits. */
 static long sc_err(uint64_t r) { return (long)(int64_t)r; }
@@ -212,15 +211,12 @@ void test_syscall_cspace(void) {
         sk_teardown();
     }
 
-    /* ── SC-9: CSPACE_SELF needs a destination and refuses slot 0 ────────
-     * Every capability is created INTO a slot since Stage 4; a creator with no
-     * destination has nowhere to put its result and must not invent one. */
-    {
-        struct KCNode *root; struct task *t = sk_caller(&root);
-        ASSERT_NOT_NULL(t);
-        ASSERT_EQ(sc_err(sys_cspace_self(0, 0, 0)), (long)IRIS_ERR_INVALID_ARG);
-        sk_teardown();
-    }
+    /* SC-9 RETIRED with SYS_CSPACE_SELF (ledger D-6 / charter A5).  Its
+     * subject was that the syscall needs a destination slot; the syscall is
+     * gone, because handing a thread its own CSpace on request is ambient
+     * authority and a thread is given its CSpace by whoever configured it.
+     * The property that outlives it — every capability is created INTO a slot
+     * — is asserted by every other creator in this file. */
 
     /* ── SC-10: revoke PARKS when the subtree is wider than one slice ────
      * The unit-level half of T311.  From ring 3 a revoke that finished and one

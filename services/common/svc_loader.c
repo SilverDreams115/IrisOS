@@ -10,6 +10,7 @@
  * RELA relocations.  RDTSC-seeded Xorshift64 ASLR bias applied per spawn.
  */
 
+#include <iris/boot_info.h>
 #include "svc_loader.h"
 #include "iris_vspace.h"
 #include <iris/endpoint_proto.h>
@@ -392,13 +393,24 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
      * quietly producing capabilities the caller cannot address. */
     if (!sl_ws_ensure(ws)) return (long)IRIS_ERR_INVALID_ARG;
 
-    /* The loader's own address space, for the parse windows below.  Not fatal
-     * if it cannot be had: the ONE address space with no budget is the root
-     * task's, whose maps the kernel still funds, and that is also the only
-     * caller for which SYS_VSPACE_SELF is not needed. */
-    (void)sl_sys2(SYS_CNODE_DELETE, (long)SL_WS_SLOT(ws), (long)SL_WS_SELF_VSPACE);
-    if (sl_sys1(SYS_VSPACE_SELF, sl_ws_dest(ws, SL_WS_SELF_VSPACE)) == 0)
-        self_vs = (long)sl_ws_cptr(ws, SL_WS_SELF_VSPACE);
+    /* The loader's own address space, for the parse windows below — the one
+     * its spawner DELEGATED, not one fabricated by SYS_VSPACE_SELF.  Not fatal
+     * if it is absent: the ONE address space with no budget is the root task's,
+     * whose maps the kernel still funds, and that is also the only caller that
+     * does not need it. */
+    /*
+     * Two places, because there are two kinds of caller and each finds its own
+     * address space where its creator put it.  A SPAWNED service has it at
+     * IRIS_CPTR_OWN_VSPACE, minted by whoever configured it.  The ROOT TASK has
+     * it in BootInfo at BOOT_CPTR_VSPACE — which is exactly seL4's shape:
+     * seL4_CapInitThreadVSpace is a BootInfo slot, not a syscall.
+     */
+    if (sl_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_OWN_VSPACE) ==
+        (long)IRIS_HANDLE_TYPE_VSPACE)
+        self_vs = (long)IRIS_CPTR_OWN_VSPACE;
+    else if (sl_sys1(SYS_CAP_IDENTIFY, (long)BOOT_CPTR_VSPACE) ==
+             (long)IRIS_HANDLE_TYPE_VSPACE)
+        self_vs = (long)BOOT_CPTR_VSPACE;
 
     /* 1. Get read-only eager VMO wrapping the ELF bytes in the initrd.
      *
@@ -874,7 +886,30 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
          * purpose, and rightly: authority a child did not ask for is authority
          * nobody decided to give it.
          */
-        if (own_budget_slot && child_vs) {
+        /*
+         * "Given a budget" is a fact about the CHILD, not about which slot the
+         * spawner chose to put it in.
+         *
+         * The gate used to read `own_budget_slot`, which is the slot this
+         * loader mints ITS pool into — so a child handed a budget by any other
+         * route was treated as one that creates nothing and was denied its own
+         * address space, thread and CSpace.  iris_test is exactly that child:
+         * it is given IRIS_CPTR_TEST_UNTYPED by init and creates thousands of
+         * objects from it, and it was reaching its own objects through the
+         * SELF syscalls because the delegation had decided it had no budget.
+         *
+         * So the question is asked of the capabilities the child actually
+         * gets: if any of them is an Untyped, it has a budget.
+         */
+        int has_budget = (own_budget_slot != 0u);
+        for (uint32_t mi = 0; !has_budget && mints && mi < mint_count; mi++) {
+            uint64_t src = mints[mi].src_cptr;
+            if (!src) continue;
+            if (sl_sys1(SYS_CAP_IDENTIFY, (long)src) ==
+                (long)IRIS_HANDLE_TYPE_UNTYPED) has_budget = 1;
+        }
+
+        if (has_budget && child_vs) {
             int taken = 0;
             for (uint32_t mi = 0; mints && mi < mint_count; mi++)
                 if (mints[mi].slot == (uint16_t)IRIS_CPTR_OWN_VSPACE) taken = 1;
@@ -884,7 +919,7 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                                      (IRIS_CPTR_OWN_VSPACE << 32)),
                               (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
         }
-        if (own_budget_slot && proc_h != HANDLE_INVALID) {
+        if (has_budget && proc_h != HANDLE_INVALID) {
             int taken = 0;
             for (uint32_t mi = 0; mints && mi < mint_count; mi++)
                 if (mints[mi].slot == (uint16_t)IRIS_CPTR_OWN_TCB) taken = 1;
@@ -892,6 +927,18 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
                 (void)sl_sys3(SYS_CSPACE_MINT, (long)proc_h,
                               (long)((uint64_t)child_cn |
                                      (IRIS_CPTR_OWN_TCB << 32)),
+                              (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
+        }
+        /* ...and its own root CSpace, which SYS_CSPACE_SELF used to hand over
+         * on request without asking for any capability at all. */
+        if (has_budget && child_cn) {
+            int taken = 0;
+            for (uint32_t mi = 0; mints && mi < mint_count; mi++)
+                if (mints[mi].slot == (uint16_t)IRIS_CPTR_OWN_CSPACE) taken = 1;
+            if (!taken)
+                (void)sl_sys3(SYS_CSPACE_MINT, child_cn,
+                              (long)((uint64_t)child_cn |
+                                     (IRIS_CPTR_OWN_CSPACE << 32)),
                               (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
         }
 

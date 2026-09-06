@@ -316,42 +316,19 @@ uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
- * SYS_CSPACE_SELF — a capability to the caller's OWN root CNode.
+ * sys_cspace_self — RETIRED (ledger D-6 / charter A5).
  *
- * The CNode counterpart of SYS_TCB_SELF, and added for the same reason: the
- * root task received a capability to its own root CNode from the kernel
- * (Stage 5 Step 3), but every other process could only reach its CSpace
- * through the "arg0 == 0 means my own root" convention.  SYS_TCB_CONFIGURE
- * takes the CSpace as a CAPABILITY, so a process that cannot name its own
- * root CNode could only have been handed a convention where the signature
- * says capability.
+ * It handed the caller a capability to its own root CSpace, asking for NO
+ * capability at all: ambient authority, which seL4 does not have.  It also
+ * published an MDB LEGACY ROOT — a capability with no ancestor, which no
+ * revoke can reach.
  *
- * It confers nothing new: the caller already resolves every CPtr through this
- * CNode, and nothing here can name another process's CSpace.  What it adds is
- * the ability to SAY which CSpace you mean — including to delegate it, which
- * is how a supervisor will hand a child its CSpace root once processes are
- * composed rather than created (Stage 7).
+ * A thread is given its CSpace by whoever configured it.  Every service
+ * receives one at IRIS_CPTR_OWN_CSPACE before its first instruction, and the ROOT TASK
+ * finds its own in BootInfo — which is exactly seL4's arrangement:
+ * seL4_CapInitThreadVSpace and seL4_CapInitThreadCNode are BootInfo slots,
+ * not syscalls.  The number stays permanently reserved.
  */
-uint64_t sys_cspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct KCNode *root = 0;
-    iris_error_t err = cspace_own_root(t->cspace_root, &root);
-    if (err != IRIS_OK) return syscall_err(err);
-
-    /* cspace_own_root hands back an active+lifecycle pair; publish_slot takes
-     * its own references and consumes the lifecycle one, so the active half is
-     * released here. */
-    kobject_active_release(&root->base);
-    err = syscall_publish_slot(t, &root->base,
-                               RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE |
-                               RIGHT_TRANSFER,
-                               arg0, 0, 0);
-    if (err != IRIS_OK) return syscall_err(err);
-    return syscall_ok_u64(0);
-}
 
 uint64_t sys_cap_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;

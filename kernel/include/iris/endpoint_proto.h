@@ -407,6 +407,18 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
 #define IRIS_CPTR_OWN_VSPACE   ((uint64_t)18)
 #define IRIS_CPTR_OWN_TCB      ((uint64_t)19)
 /*
+ * ...and the service's OWN root CSpace, delegated the same way and for the
+ * same reason (ledger D-6).  `SYS_CSPACE_SELF` handed it over on request,
+ * asking for no capability at all — ambient authority, which seL4 does not
+ * have: a thread is given its CSpace by whoever configured it.
+ *
+ * Slot 65, which is free in every service's map: below it are the well-known
+ * bootstrap capabilities and the pager's target table (20..51), above it are
+ * iris_test's device untyped (64), IPC-buffer CNode (66) and thread CNode
+ * (67).
+ */
+#define IRIS_CPTR_OWN_CSPACE   ((uint64_t)65)
+/*
  * A DEVICE Untyped — MMIO handed over as a capability (ledger D-9).
  *
  * seL4's BootInfo lists device Untypeds alongside RAM ones; that is how a

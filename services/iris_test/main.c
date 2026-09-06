@@ -612,6 +612,24 @@ static long it_initrd_vmo_slot(long auth_cptr, long index) {
  * T083 asks for a capability it can close and revoke on its own, and a shared
  * one makes that the suite's.
  */
+/*
+ * `SYS_TCB_SELF` stays, and the reason is exact.
+ *
+ * IRIS_CPTR_OWN_TCB is the thread the SPAWNER configured — the process's first
+ * thread — and deriving from it gives every caller that one.  Two callers here
+ * are HELPER THREADS asking about themselves (t083_helper, t313_server), and
+ * for them the answer is a different object.  Delegation cannot reach them:
+ * the loader never saw those threads, and a thread has no per-thread channel
+ * to be told its own slot through — the entry argument arrives in a register C
+ * cannot read.
+ *
+ * So this is the last ambient authority in the system, it is one syscall, and
+ * what it would take to remove is written down rather than waved at: a thread
+ * needs to be handed its own TCB capability by whoever created it, which needs
+ * somewhere per-thread to put it.  Its two siblings, SYS_VSPACE_SELF and
+ * SYS_CSPACE_SELF, are RETIRED — an address space and a CSpace are facts about
+ * the PROCESS, so the spawner's delegation covers every thread in it.
+ */
 static long it_tcb_self_slot(void) {
     uint32_t leaf = it_pool_leaf_take();
     long r = it_sys1(SYS_TCB_SELF,
@@ -625,10 +643,8 @@ static long it_tcb_self_slot(void) {
  * a PROCESS for an address space — the self case being the only one that
  * survives, because the others are held by whoever spawned the child. */
 static long it_vspace_self_slot(void) {
-    uint32_t leaf = it_pool_leaf_take();
-    long r = it_sys1(SYS_VSPACE_SELF,
-                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
-    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
+    return it_cs_reduce((long)IRIS_CPTR_OWN_VSPACE,
+                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
 }
 
 /*
@@ -3573,9 +3589,15 @@ static void test_t076(void) {
  * KNotification → WRONG_TYPE), insufficient rights (read-only mint + writable
  * map flags → ACCESS_DENIED). */
 
-#define T079_SLOT_RW    16L               /* dynamic slot: VMO, READ|WRITE */
-#define T079_SLOT_RO    17L               /* dynamic slot: VMO, READ only  */
-#define T079_SLOT_EMPTY 18L               /* never minted — must not resolve */
+/* Dynamic slots for this fixture, and they must be slots NOBODY ELSE writes.
+ * They were 16/17/18: 18 became IRIS_CPTR_OWN_VSPACE when D-6 delegated a
+ * service its own address space, so "never minted — must not resolve" stopped
+ * being true and this test kept passing because a VSpace answers WRONG_TYPE,
+ * which is also negative.  A slot's emptiness is a claim about the whole
+ * system, and it expires. */
+#define T079_SLOT_RW    16L               /* dynamic slot: frame, READ|WRITE */
+#define T079_SLOT_RO    17L               /* dynamic slot: frame, READ only  */
+#define T079_SLOT_EMPTY 20L               /* never minted — must not resolve */
 #define T079_VA_CPTR    0x8060000000ULL
 #define T079_VA_HANDLE  0x8061000000ULL
 
@@ -3647,8 +3669,12 @@ static void test_t079(void) {
  *             ACCESS_DENIED; empty slot / wrong type fail.  (Handle-path
  *             MAP_INTO stays covered by T076.) */
 
-#define T080_SLOT_RWD   19L               /* dynamic slot: VMO, READ|WRITE|DUP */
-#define T080_SLOT_RO    20L               /* dynamic slot: VMO, READ only      */
+/* 19/20 before: 19 became IRIS_CPTR_OWN_TCB (D-6) and the exclusive mint into
+ * an occupied slot fails, which is how this was found.  21/22 was the next
+ * guess and it collides with T081 — the low range is full, so these live in
+ * the S1 scratch window (64..87) at two slots nothing else names. */
+#define T080_SLOT_RWD   68L               /* dynamic slot: frame, READ|WRITE|DUP */
+#define T080_SLOT_RO    69L               /* dynamic slot: frame, READ only      */
 /* Destination slots in the spawned child's root CNode.  lifecycle_probe
  * children only receive the LP_CPTR_CMD_EP=3 mint, so 60..62 are empty —
  * the same window T097/T098 use. */
@@ -5015,7 +5041,12 @@ static int it_setup_self_vspace(void) {
     /* Stage 4: SYS_VSPACE_SELF publishes into a destination slot, so the
      * suite's own address space is a capability from the moment it exists —
      * it used to arrive as a handle that had to be minted onward and closed. */
-    long r = it_sys1(SYS_VSPACE_SELF, (long)(IRIS_CPTR_TEST_VSPACE << 32));
+    /* Derived from the address space the spawner delegated, not fabricated by
+     * SYS_VSPACE_SELF — so IT_VS is a child of the loader's slot and a revoke
+     * there reaches it, which is the whole of D-6. */
+    long r = it_sys3(SYS_CSPACE_MINT, (long)IRIS_CPTR_OWN_VSPACE,
+                     IT_MINT_SELF(IRIS_CPTR_TEST_VSPACE),
+                     (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE));
     if (r != 0) return 0;
     g_it_vspace_ready = 1;
     return 1;
@@ -5054,7 +5085,6 @@ static long it_map_fixup(long nr, long a0, long a1, long a2, long a3) {
  * capability to it goes and its execution has ended — the rotating leaf pool
  * does that on reuse.
  */
-static uint64_t g_it_cspace_c;        /* capability to our own root CNode */
 
 /* Leaf 255 of the object CNode: OUTSIDE the rotating pool (leaves 1..200), so
  * the capability the suite holds to its own CSpace is not recycled out from
@@ -5064,14 +5094,12 @@ static uint64_t g_it_cspace_c;        /* capability to our own root CNode */
 #define IT_CSPACE_LEAF 255u
 
 static long it_cspace_self(void) {
-    if (g_it_cspace_c != 0u) return (long)g_it_cspace_c;
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)IT_CSPACE_LEAF);
-    long r = it_sys1(SYS_CSPACE_SELF,
-                     (long)((uint64_t)IT_OBJ_CNODE_SLOT |
-                            ((uint64_t)IT_CSPACE_LEAF << 32)));
-    if (r != 0) return r;
-    g_it_cspace_c = (uint64_t)IT_OBJ_CPTR(IT_CSPACE_LEAF);
-    return (long)g_it_cspace_c;
+    /* Delegated, not fabricated (ledger D-6/A5).  `SYS_CSPACE_SELF` handed a
+     * thread its own root CNode on request, asking for no capability at all —
+     * ambient authority, and an MDB root nothing could revoke.  The loader
+     * holds this CSpace: it made it, and it mints it at IRIS_CPTR_OWN_CSPACE
+     * before the child's first instruction. */
+    return (long)IRIS_CPTR_OWN_CSPACE;
 }
 
 static long it_thread_ipc_buffer(long tcb);
