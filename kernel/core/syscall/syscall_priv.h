@@ -492,7 +492,6 @@ uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2);  /* Ph
 uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);  /* Phase 26 */
 
 /* ── Forward declarations — TCB caps (Ph96-101) ──────────────────── */
-uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2);

@@ -38,7 +38,7 @@ user_entry_trampoline:
     xorq %rcx, %rcx
     xorq %rdx, %rdx
     xorq %rsi, %rsi
-    xorq %rdi, %rdi
+    movq %rbx, %rdi             /* the argument again, where C reads it */
     xorq %r8,  %r8
     xorq %r9,  %r9
     xorq %r10, %r10
@@ -83,9 +83,18 @@ start_user_ctx_and_iretq:
     pushq 144(%rdi)             /* cs     */
     pushq 136(%rdi)             /* rip    */
 
-    /* rbx is the thread's argument, and the ONE register that survives the
-     * zeroing below — the trampoline this replaces carried it in the same
-     * register for the same reason. */
+    /* rbx is the thread's argument, and the trampoline this replaces carried
+     * it in the same register for the same reason: it survives the zeroing
+     * below.  It is ALSO delivered in rdi — the System V first argument — so a
+     * thread written in C can read it as a parameter.
+     *
+     * That is not a convenience.  A thread cannot be handed its own TCB
+     * capability without somewhere per-thread to put it, and the entry
+     * register is the only such place a freshly started thread has; without it
+     * the only way for a thread to name itself is SYS_TCB_SELF, which hands
+     * out a capability asking for none (charter A5, ledger A-18).  rdi is
+     * loaded LAST, after the zeroing, for the same reason rbx is.
+     */
     movq 104(%rdi), %rbx
 
     movw $0x1B, %ax             /* user data selector (GDT[3]) */
@@ -110,7 +119,7 @@ start_user_ctx_and_iretq:
     xorq %rcx, %rcx
     xorq %rdx, %rdx
     xorq %rsi, %rsi
-    xorq %rdi, %rdi
+    movq %rbx, %rdi             /* the argument again, where C reads it */
     xorq %r8,  %r8
     xorq %r9,  %r9
     xorq %r10, %r10

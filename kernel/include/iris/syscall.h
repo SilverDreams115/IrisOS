@@ -1863,7 +1863,7 @@ struct iris_untyped_query_taskobj {
  * SYS_TCB_GET_INFO(tcb_h, info_uptr) → 0 or negative iris_error_t
  *   Requires RIGHT_READ.  Writes struct iris_tcb_info at info_uptr.
  */
-#define SYS_TCB_SELF          96
+#define SYS_TCB_SELF          96  /* RETIRED (D-6/A5) → IRIS_ERR_NOT_SUPPORTED */
 #define SYS_TCB_SUSPEND       97
 #define SYS_TCB_RESUME        98
 #define SYS_TCB_SET_PRIORITY  99

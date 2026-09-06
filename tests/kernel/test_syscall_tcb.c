@@ -36,7 +36,6 @@ uint64_t sys_tcb_set_fault_handler(uint64_t a0, uint64_t a1, uint64_t a2, uint64
 uint64_t sys_tcb_set_timeout_handler(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);
 uint64_t sys_tcb_watch(uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t sys_tcb_exit_code(uint64_t a0, uint64_t a1, uint64_t a2);
-uint64_t sys_tcb_self(uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t sys_tcb_set_ipc_buffer(uint64_t a0, uint64_t a1, uint64_t a2);
 
 static long tb_err(uint64_t r) { return (long)(int64_t)r; }
@@ -86,8 +85,6 @@ void test_syscall_tcb(void) {
                   (long)IRIS_ERR_INVALID_ARG);
         ASSERT_EQ(tb_err(sys_tcb_watch(TCB_SLOT, 1, 1)),
                   (long)IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ(tb_err(sys_tcb_self(4, 0, 0)),
-                  (long)IRIS_ERR_NOT_FOUND);
     }
 
     /* ── TB-2: CONFIGURE takes CAPABILITIES, and a handle value is not one ─
@@ -206,16 +203,13 @@ void test_syscall_tcb(void) {
         test_set_current_task(NULL);
     }
 
-    /* ── TB-8: SYS_TCB_SELF needs a destination slot ─────────────────────
-     * Every capability is created INTO a slot since Stage 4.  A creator with
-     * no destination has nowhere to put its result and must not invent one. */
-    {
-        struct KCNode *root; struct task *target;
-        struct task *t = tb_caller(&root, TCB_SLOT, &target);
-        ASSERT_NOT_NULL(t);
-        ASSERT_EQ(tb_err(sys_tcb_self(0, 0, 0)), (long)IRIS_ERR_INVALID_ARG);
-        test_set_current_task(NULL);
-    }
+    /* TB-8 RETIRED with SYS_TCB_SELF (ledger A-18 / charter A5).  Its subject
+     * was that the syscall needs a destination slot; the syscall is gone,
+     * because handing a thread a capability to itself for the asking is
+     * ambient authority.  A thread is told which thread it is by whoever
+     * created it — in the entry register, the one per-thread channel a freshly
+     * started thread has.  The surviving property, that every capability is
+     * created INTO a slot, is asserted by every other creator here. */
 
     /* ── TB-9: the IPC buffer is a capability, checked like one (D-4) ─────
      * A thread's IPC buffer replaces 256 bytes of kernel staging with a frame

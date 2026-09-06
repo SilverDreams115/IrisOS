@@ -36,27 +36,19 @@ static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
     return IRIS_OK;
 }
 
-uint64_t sys_tcb_self(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg1; (void)arg2;
-
-    struct task *t = task_current();
-    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_NOT_FOUND);
-
-    /* The calling thread IS its own KTCB — hand out a cap to &t->base. */
-    const iris_rights_t rights =
-        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
-
-    /* Stage 4: arg0 is a destination slot (RETYPE2 packing).  The TCB is the
-     * caller itself, borrowed, so publish_slot's consuming release needs a
-     * reference of its own. */
-    /* Stage 4: a destination slot is REQUIRED — the handle result is retired. */
-    if (arg0 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    kobject_retain(&t->base);
-    iris_error_t pe = syscall_publish_slot(t, &t->base, rights, arg0, 0, 0);
-    if (pe != IRIS_OK) return syscall_err(pe);
-    return syscall_ok_u64(0);
-}
+/*
+ * sys_tcb_self — RETIRED (ledger A-18 / charter A5).
+ *
+ * It handed a thread a capability to ITSELF, asking for no capability at all:
+ * ambient authority, which seL4 does not have.  It also published an MDB
+ * LEGACY ROOT — no ancestor, no revoke reaches it.
+ *
+ * A thread is told which thread it is by whoever CREATED it.  For the first
+ * thread of a process that is IRIS_CPTR_OWN_TCB, minted by its spawner before
+ * it runs; for every other thread it is the entry register, which is the one
+ * per-thread channel a freshly started thread has and is why this could be
+ * removed at all.  The number stays permanently reserved.
+ */
 
 /*
  * SYS_TCB_CONFIGURE(tcb_cptr, cspace_cptr, vspace_cptr)

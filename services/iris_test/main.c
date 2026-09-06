@@ -504,6 +504,9 @@ static uint32_t it_pool_leaf_take(void) {
 
 /* Stage 5 Step 4: threads are retyped from an Untyped and configured with
  * CSpace/VSpace capabilities — defined next to the VSpace helpers it needs. */
+/* A thread argument asking to be told which thread you are: whoever creates
+ * a thread holds its TCB, and hands it over in the entry register. */
+#define IT_THREAD_ARG_SELF_TCB 0xFFFFFFFFFFFFFFFFULL
 static long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg);
 
 static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
@@ -613,28 +616,23 @@ static long it_initrd_vmo_slot(long auth_cptr, long index) {
  * one makes that the suite's.
  */
 /*
- * `SYS_TCB_SELF` stays, and the reason is exact.
+ * The caller's own TCB, DERIVED from the one its spawner delegated.
  *
- * IRIS_CPTR_OWN_TCB is the thread the SPAWNER configured — the process's first
- * thread — and deriving from it gives every caller that one.  Two callers here
- * are HELPER THREADS asking about themselves (t083_helper, t313_server), and
- * for them the answer is a different object.  Delegation cannot reach them:
- * the loader never saw those threads, and a thread has no per-thread channel
- * to be told its own slot through — the entry argument arrives in a register C
- * cannot read.
+ * `SYS_TCB_SELF` is retired (ledger A-18): it handed a thread a capability to
+ * itself asking for no capability at all, and published an MDB root nothing
+ * could revoke.  The main thread's TCB is the one the loader configured, which
+ * arrives at IRIS_CPTR_OWN_TCB, so this is a mint of it — a FRESH capability
+ * the caller can close and revoke on its own account, which is what T083 and
+ * the fuzz batteries want, and now with a parent.
  *
- * So this is the last ambient authority in the system, it is one syscall, and
- * what it would take to remove is written down rather than waved at: a thread
- * needs to be handed its own TCB capability by whoever created it, which needs
- * somewhere per-thread to put it.  Its two siblings, SYS_VSPACE_SELF and
- * SYS_CSPACE_SELF, are RETIRED — an address space and a CSpace are facts about
- * the PROCESS, so the spawner's delegation covers every thread in it.
+ * A HELPER thread cannot use this: OWN_TCB names the process's first thread,
+ * not whoever asks.  Those are handed their own TCB by their creator, in the
+ * entry register (IT_THREAD_ARG_SELF_TCB) — the one per-thread channel a
+ * freshly started thread has.
  */
-static long it_tcb_self_slot(void) {
-    uint32_t leaf = it_pool_leaf_take();
-    long r = it_sys1(SYS_TCB_SELF,
-                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
-    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
+static long it_own_tcb_derived(void) {
+    return it_cs_reduce((long)IRIS_CPTR_OWN_TCB,
+                        RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE);
 }
 
 
@@ -4013,8 +4011,10 @@ static volatile int      g_t083_ready = 0;
 static long              g_t083_tcb   = -1;
 static uint8_t           g_t083_stack[8192];
 
-static void t083_helper(void) {
-    g_t083_tcb   = it_tcb_self_slot();
+static void t083_helper(uint64_t self_tcb) {
+    /* Handed in by whoever created this thread, in the entry register.  It used
+     * to be SYS_TCB_SELF: a capability to yourself, for the asking. */
+    g_t083_tcb   = (long)self_tcb;
     g_t083_ready = 1;
     for (;;) {
         g_t083_count++;
@@ -4027,7 +4027,7 @@ static void test_t083(void) {
 
     uint64_t entry = (uint64_t)(uintptr_t)t083_helper;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t083_stack + sizeof(g_t083_stack))) & ~0xFULL;
-    long tid = it_thread_create(entry, rsp, 0);
+    long tid = it_thread_create(entry, rsp, IT_THREAD_ARG_SELF_TCB);
     if (tid < 0) { it_fail("T083", "thread create"); return; }
 
     for (int i = 0; i < 200 && !g_t083_ready; i++) it_sys0(SYS_YIELD);
@@ -4565,9 +4565,9 @@ static uint8_t           g_t088_stack1[8192];
 static uint8_t           g_t088_stack2[8192];
 static uint8_t           g_t088_stack3[8192];
 
-static void t088_recv1(void) {   /* killed while blocked with slot declared */
+static void t088_recv1(uint64_t self_tcb) {   /* killed while blocked with slot declared */
     struct IrisMsg m;
-    g_t088_r1_tcb   = it_tcb_self_slot();
+    g_t088_r1_tcb   = (long)self_tcb;
     g_t088_r1_ready = 1;
     it_iris_msg_zero(&m);
     m.attached_cap = T088_SLOT_A;
@@ -4618,7 +4618,7 @@ static void test_t088(void) {
     {
         uint64_t entry = (uint64_t)(uintptr_t)t088_recv1;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack1 + sizeof(g_t088_stack1))) & ~0xFULL;
-        if (it_thread_create(entry, rsp, 0) < 0) ok = 0;
+        if (it_thread_create(entry, rsp, IT_THREAD_ARG_SELF_TCB) < 0) ok = 0;
         for (int i = 0; i < 200 && !g_t088_r1_ready; i++) it_sys0(SYS_YIELD);
         it_sys1(SYS_SLEEP, 2);            /* let it block in EP_RECV */
         if (ok && (g_t088_r1_tcb < 0 ||
@@ -5172,6 +5172,14 @@ static long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
     r = it_sys4(SYS_TCB_WRITE_REGS, tcb, (long)entry, (long)rsp, (long)arg);
     if (r != 0) return r;
     (void)it_thread_ipc_buffer(tcb);   /* best-effort while D-4 is migrating */
+    if (arg == IT_THREAD_ARG_SELF_TCB) {
+        /* The thread is handed its OWN TCB capability as its entry argument —
+         * the only per-thread channel a freshly started thread has, and the
+         * reason SYS_TCB_SELF can go (ledger A-18).  Whoever creates a thread
+         * holds its TCB; telling it which one it is costs a register. */
+        r = it_sys4(SYS_TCB_WRITE_REGS, tcb, (long)entry, (long)rsp, tcb);
+        if (r != 0) return r;
+    }
     r = it_sys1(SYS_TCB_RESUME, tcb);
     if (r != 0) return r;
     return tcb;
@@ -11037,7 +11045,7 @@ static void test_t150(void) {
          * FRESH capability every call, into the rotating pool, and calling it
          * per iteration abandoned one per iteration — which the allocator then
          * evicted laps later.  T324 counted 33 of those a run. */
-        long self_tcb = it_tcb_self_slot();
+        long self_tcb = it_own_tcb_derived();
         for (int i = 0; ok && i < NB; i++) {
             if (it_sys2(SYS_TCB_FAULT_INFO, self_tcb, bad_ptr[i])
                 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info bad dst"; break; }
@@ -11151,7 +11159,7 @@ static void test_t151(void) {
             if (rr >= 0) { ok = 0; why = "random cptr resumed something"; break; }
         }
         op = 6;
-        {   long self_tcb = it_tcb_self_slot();
+        {   long self_tcb = it_own_tcb_derived();
             long fr2 = it_sys2(SYS_TCB_FAULT_INFO, self_tcb, 0L);
             if (self_tcb >= 0) it_slot_delete((uint32_t)self_tcb);
             if (fr2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info null ok"; break; }
@@ -19980,7 +19988,7 @@ static void test_t267(void) {
     if (ok && k1.kslab_used_bytes != k0.kslab_used_bytes) { ok = 0; why = "sc from kslab (S2.13)"; }
 
     /* Unconfigured SC cannot bind (B2/B3). */
-    long self_tcb = ok ? it_tcb_self_slot() : -1;
+    long self_tcb = ok ? it_own_tcb_derived() : -1;
     handle_id_t self_h = (self_tcb >= 0) ? (handle_id_t)self_tcb : HANDLE_INVALID;
     if (ok && self_tcb < 0) { ok = 0; why = "tcb self"; }
     if (ok && it_sys2(SYS_SC_BIND, (long)S1_SLOT_A, (long)self_h) != (long)IRIS_ERR_INVALID_ARG) {
@@ -20222,8 +20230,8 @@ static volatile int g_t285_ready = 0;
 static long         g_t285_tcb   = -1;
 static uint8_t      g_t285_stack[8192];
 
-static void t285_helper(void) {
-    g_t285_tcb   = it_tcb_self_slot();
+static void t285_helper(uint64_t self_tcb) {
+    g_t285_tcb   = (long)self_tcb;
     g_t285_ready = 1;
     it_sys0(SYS_THREAD_EXIT);
     for (;;) {}
@@ -20239,7 +20247,7 @@ static void test_t285(void) {
     g_t285_ready = 0; g_t285_tcb = -1;
     uint64_t entry = (uint64_t)(uintptr_t)t285_helper;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t285_stack + sizeof(g_t285_stack))) & ~0xFULL;
-    long tid = it_thread_create(entry, rsp, 0);
+    long tid = it_thread_create(entry, rsp, IT_THREAD_ARG_SELF_TCB);
     if (tid < 0) { it_fail("T285", "thread create"); return; }
 
     for (int i = 0; i < 200 && !g_t285_ready; i++) it_sys0(SYS_YIELD);
@@ -20382,8 +20390,8 @@ static volatile uint64_t g_t287_count = 0;
 static long              g_t287_tcb   = -1;
 static uint8_t           g_t287_stack[8192];
 
-static void t287_helper(void) {
-    g_t287_tcb   = it_tcb_self_slot();
+static void t287_helper(uint64_t self_tcb) {
+    g_t287_tcb   = (long)self_tcb;
     g_t287_ready = 1;
     for (;;) { g_t287_count++; it_sys0(SYS_YIELD); }
 }
@@ -20396,7 +20404,7 @@ static void test_t287(void) {
     g_t285_ready = 0; g_t285_tcb = -1;
     uint64_t entry_a = (uint64_t)(uintptr_t)t285_helper;
     uint64_t rsp_a   = ((uint64_t)(uintptr_t)(g_t285_stack + sizeof(g_t285_stack))) & ~0xFULL;
-    long tid_a = it_thread_create(entry_a, rsp_a, 0);
+    long tid_a = it_thread_create(entry_a, rsp_a, IT_THREAD_ARG_SELF_TCB);
     if (tid_a < 0) { it_fail("T287", "thread A create"); return; }
     for (int i = 0; i < 200 && !g_t285_ready; i++) it_sys0(SYS_YIELD);
     if (!g_t285_ready || g_t285_tcb < 0) { it_fail("T287", "A tcb self"); return; }
@@ -20422,7 +20430,7 @@ static void test_t287(void) {
         g_t287_ready = 0; g_t287_count = 0; g_t287_tcb = -1;
         uint64_t entry_b = (uint64_t)(uintptr_t)t287_helper;
         uint64_t rsp_b   = ((uint64_t)(uintptr_t)(g_t287_stack + sizeof(g_t287_stack))) & ~0xFULL;
-        long tid_b = it_thread_create(entry_b, rsp_b, 0);
+        long tid_b = it_thread_create(entry_b, rsp_b, IT_THREAD_ARG_SELF_TCB);
         if (tid_b < 0) { ok = 0; why = "thread B create"; }
         for (int i = 0; ok && i < 200 && !g_t287_ready; i++) it_sys0(SYS_YIELD);
         if (ok && (!g_t287_ready || g_t287_tcb < 0)) { ok = 0; why = "B never ran"; }
@@ -21805,9 +21813,11 @@ static uint32_t it_ipc_buffer_gauge(void) {
     return q.ipc_buffers;
 }
 
-/* The boot path's own roots, measured.  A-14 took it from 43 to 32 by
- * giving every object retyped from a second-level Untyped its MDB parent. */
-#define IT_MDB_LEGACY_ROOT_CEILING 32u
+/* The boot path's own roots, measured.  A-14 took it from 43 to 32 by giving
+ * every object retyped from a second-level Untyped its MDB parent; A-18 took
+ * it to 23 by retiring the three SELF syscalls, each of which published an
+ * unparented capability every time it was called. */
+#define IT_MDB_LEGACY_ROOT_CEILING 23u
 
 static void test_t305(void) {
     struct it_utq_mdb q0, q1;
@@ -22682,9 +22692,9 @@ static volatile long g_t313_ep, g_t313_reply, g_t313_srv_frame;
 static volatile int  g_t313_srv_ready, g_t313_srv_err;
 static volatile int  g_t313_srv_len, g_t313_srv_uptr_ok, g_t313_rounds;
 
-static void t313_server(void) {
-    long self = it_tcb_self_slot();
-    if (self < 0) { g_t313_srv_err = 1; g_t313_srv_ready = 1; for (;;) { } }
+static void t313_server(uint64_t self_tcb) {
+    long self = (long)self_tcb;
+    if (self <= 0) { g_t313_srv_err = 1; g_t313_srv_ready = 1; for (;;) { } }
     if (it_sys3(SYS_TCB_SET_IPC_BUFFER, self, (long)g_t313_srv_frame,
                 (long)T313_SRV_VA) != 0) {
         g_t313_srv_err = 2; g_t313_srv_ready = 1; for (;;) { }
@@ -22721,7 +22731,7 @@ static void test_t313(void) {
 
     if (!it_setup_self_vspace()) { it_fail("T313", "vspace self"); return; }
 
-    long self = it_tcb_self_slot();
+    long self = it_own_tcb_derived();
     long cfr  = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096u);
     long sfr  = it_frame_create_slot((long)IRIS_CPTR_TEST_UNTYPED, 4096u);
     if (self < 0 || cfr < 0 || sfr < 0) { it_fail("T313", "objects"); return; }
@@ -22808,7 +22818,7 @@ static void test_t313(void) {
 
     long srv = it_thread_create((uint64_t)(uintptr_t)t313_server,
                                 ((uint64_t)(uintptr_t)(g_t313_srv_stack +
-                                    sizeof(g_t313_srv_stack))) & ~0xFULL, 0);
+                                    sizeof(g_t313_srv_stack))) & ~0xFULL, IT_THREAD_ARG_SELF_TCB);
     if (srv < 0) { ok = 0; why = "server thread"; }
     for (int i = 0; ok && i < 2000 && !g_t313_srv_ready; i++) (void)it_sys0(SYS_YIELD);
     if (ok && !g_t313_srv_ready) { ok = 0; why = "server never registered"; }
@@ -22974,7 +22984,7 @@ static void test_t313(void) {
     /* Give this thread its own buffer back: every test after this one sends
      * through it, and a thread without one can no longer send a payload. */
     {
-        long tcb_self = it_tcb_self_slot();
+        long tcb_self = it_own_tcb_derived();
         if (tcb_self >= 0) {
             long va = it_thread_ipc_buffer(tcb_self);
             if (va > 0) g_ep_io_buf = (uint8_t *)(uintptr_t)va;
@@ -23870,7 +23880,7 @@ static void test_t323(void) {
  * it is a DEBT, not a design: every entry is a test that kept a leaf of a pool
  * that recycles.  It goes down as they are paid.
  */
-#define IT_POOL_HELD_CEILING 30u
+#define IT_POOL_HELD_CEILING 26u
 
 /*
  * ...and the number that matters more.
@@ -23888,7 +23898,7 @@ static void test_t323(void) {
  * that ARE defects are indistinguishable until they cost something, and four
  * slot collisions in this convergence are what they cost.
  */
-#define IT_POOL_EVICT_CEILING 8u
+#define IT_POOL_EVICT_CEILING 6u
 
 static void test_t324(void) {
     it_quiesce_reaper();
@@ -24195,7 +24205,7 @@ void iris_test_main(handle_id_t rbx_unused) {
          * Consuming two was the first attempt, and it broke four tests that
          * measure when the root CSpace fills — an assertion about how many
          * slots are free is an assertion this had no business changing. */
-        long tcb_self = it_tcb_self_slot();
+        long tcb_self = it_own_tcb_derived();
         if (it_setup_self_vspace() && tcb_self >= 0) {
             long va = it_thread_ipc_buffer(tcb_self);
             if (va > 0) g_ep_io_buf = (uint8_t *)(uintptr_t)va;

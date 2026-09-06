@@ -797,14 +797,21 @@ VSpace answers WRONG_TYPE, which is also negative.  T080 named 19, which became
 `IRIS_CPTR_OWN_TCB`, and there the exclusive mint failed loudly.  One of the two
 told us; the other did not.
 
-**`SYS_TCB_SELF` stays, and what it would take is written down.**
-`IRIS_CPTR_OWN_TCB` is the thread the spawner configured — the process's first
-one — so deriving from it answers a different question than a HELPER THREAD
-asking about itself, which two of the suite's callers do.  Delegation cannot
-reach them: the loader never saw those threads, and a thread has no per-thread
-channel to be told its own slot through (the entry argument arrives in a
-register C cannot read).  Closing it means handing a thread its own TCB
-capability at creation, which needs somewhere per-thread to put it.
+**`SYS_TCB_SELF` went too, and the thing that had blocked it was one register.**
+`IRIS_CPTR_OWN_TCB` names the thread the spawner configured — the process's
+first one — so deriving from it answers a different question than a HELPER
+THREAD asking about itself, which five of the suite's callers do.  Delegation
+could not reach them: the loader never saw those threads, and the entry
+argument arrived only in `rbx`, which a C entry point cannot read.
+
+So the trampoline delivers it in `rdi` as well — the System V first argument —
+and a thread written in C reads its own TCB capability as a parameter.  That is
+the one per-thread channel a freshly started thread has, and with it, whoever
+creates a thread tells it which thread it is.  All three syscalls are retired,
+their numbers permanently reserved.
+
+Measured: `mdb_legacy_roots` 32 → **23**.  Nine unparented capabilities a run
+were these three calls.
 
 ## Charter amendments
 
