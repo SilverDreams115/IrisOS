@@ -909,6 +909,19 @@ asking whether each recorded item is done.
 It found six things no row had named, and two of them contradict claims this
 repo was making.
 
+**FIXED — all three authority holes are closed; the rest of this row records
+what the audit found and what it cost.**  `IRIS_BOOTCAP_SCHED_CONTROL` is a
+boot control capability like the IRQ and ioport ones, published at
+`BOOT_CPTR_SCHED_CONTROL` and carried in BootInfo (v6) exactly as seL4 carries
+`seL4_CapSchedControl`; `SYS_SC_CONFIGURE` takes it as a fourth argument and
+refuses without it.  `SYS_TCB_SET_PRIORITY` takes an AUTHORITY and refuses a
+priority above that authority's ceiling, and a thread inherits the ceiling of
+whoever configured it, so a bound travels with delegation instead of being a
+number the kernel hands out.  `SYS_THREAD_PRIORITY` is retired.  T327 is the
+gauge for all three, and it proves the priority bound with an authority whose
+ceiling is ZERO — a retyped but unconfigured TCB — because a bound tested only
+with values that happen to fit is not tested.
+
 **No `SchedControl` — time is not a delegated authority.**  seL4 hands the root
 task one `SchedControl` capability per core, and `seL4_SchedControl_Configure`
 is how a budget and period get onto a scheduling context: the authority over
@@ -951,6 +964,13 @@ still take signals; IRIS cannot.  And seL4 has
 `seL4_CNode_CancelBadgedSends`, which cancels the IN-FLIGHT sends of one badge
 after revoking a delegation; IRIS revokes the capability and leaves whatever is
 already queued.
+
+**A fourth flattening.**  `tcb_resolve` turned WRONG_TYPE into INVALID_ARG —
+"something about your argument is wrong", from a resolver that had just
+identified the capability exactly.  The typed resolvers had it until A-20's
+type-before-rights fix and `dev_cap_budget` had it until D-5; this is the third
+place and it was found by a test asserting the new behaviour and being told the
+old one.  Six assertions across both suites had pinned the flattening.
 
 **And the timed calls.**  `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP` and
 `SYS_NOTIFY_WAIT_TIMEOUT` block on TIME inside the kernel.  seL4 has no timed

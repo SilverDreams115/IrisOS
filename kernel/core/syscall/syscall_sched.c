@@ -1,19 +1,19 @@
 #include "syscall_priv.h"
 
-uint64_t sys_thread_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    uint32_t new_prio = (uint32_t)arg0;
-    (void)arg1; (void)arg2;
-
-    if (new_prio > TASK_PRIORITY_MAX)
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    struct task *t = task_current();
-    if (!t) return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    uint8_t old = t->priority;
-    t->priority  = (uint8_t)new_prio;
-    return (uint64_t)old;
-}
+/*
+ * sys_thread_priority — RETIRED (charter A5, ledger A-20).
+ *
+ * It set the CALLER's own priority, up to TASK_PRIORITY_MAX, taking NO
+ * CAPABILITY at all — ambient authority over the scheduler, and the strongest
+ * kind, because priority 255 starves everything below it.  It is the same
+ * shape as the three SELF syscalls A-18 retired, sitting on the scheduler
+ * instead of on the CSpace, and it had no callers.
+ *
+ * `SYS_TCB_SET_PRIORITY` is the capability-based call that already did this
+ * properly, and since A-20 it also takes an AUTHORITY and refuses to grant a
+ * priority above that authority's ceiling — which is what seL4 means by
+ * setting a priority.  The number stays permanently reserved.
+ */
 
 /*
  * Phase S2: SYS_SC_CREATE (83) RETIRED — it fabricated a KSchedContext from
@@ -26,7 +26,8 @@ uint64_t sys_sc_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
-uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                          uint64_t arg3) {
     handle_id_t sc_h    = (handle_id_t)arg0;
     uint64_t    budget  = arg1;
     uint64_t    period  = arg2;
@@ -35,6 +36,17 @@ uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     struct task *t = task_current();
     if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /*
+     * arg3 is the SCHEDCONTROL capability — the authority over CPU TIME
+     * (ledger A-20).  seL4 makes this the whole point of
+     * `seL4_SchedControl_Configure`: a budget and a period do not come from
+     * holding the scheduling context, they come from being granted time.
+     * Holding the SC says WHICH context to configure; holding this says you
+     * may configure one at all.
+     */
+    if (!syscall_has_bootcap(t, arg3, IRIS_BOOTCAP_SCHED_CONTROL))
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
 
     struct KObject *obj;
     iris_rights_t   rights;

@@ -188,8 +188,11 @@ void test_syscall_tcb(void) {
         kobject_init(ep, KOBJ_ENDPOINT, &tb_ops);
         ASSERT_EQ(kcnode_mint(root, 12, ep, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
 
-        ASSERT_EQ(tb_err(sys_tcb_configure(12, 1, 2, 0)), (long)IRIS_ERR_INVALID_ARG);
-        ASSERT_EQ(tb_err(sys_tcb_exit_code(12, 0, 0)),    (long)IRIS_ERR_INVALID_ARG);
+        /* WRONG_TYPE, not INVALID_ARG: the resolver identified the capability
+         * exactly, and ledger A-20 stopped it flattening that into "something
+         * about your argument is wrong". */
+        ASSERT_EQ(tb_err(sys_tcb_configure(12, 1, 2, 0)), (long)IRIS_ERR_WRONG_TYPE);
+        ASSERT_EQ(tb_err(sys_tcb_exit_code(12, 0, 0)),    (long)IRIS_ERR_WRONG_TYPE);
         test_set_current_task(NULL);
     }
 

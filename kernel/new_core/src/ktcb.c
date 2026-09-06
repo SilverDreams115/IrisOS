@@ -88,6 +88,9 @@ struct task *ktcb_alloc_at(void *mem) {
     t->state      = TASK_SUSPENDED;         /* inactive until TCB_CONFIGURE */
     t->ring       = TASK_RING3;
     t->priority   = TASK_PRIORITY_DEFAULT;
+    /* A retyped TCB grants nothing until it is configured; ktcb_configure
+     * gives it the ceiling of whoever configured it (ledger A-20). */
+    t->mcp        = 0;
     t->reg_slot   = -1;                     /* no scheduler identity */
     t->configured = 0;                      /* execution gate: stays closed */
     t->started    = 0;                      /* never runnable yet */

@@ -112,6 +112,20 @@ struct task {
     task_state_t      state;
     task_ring_t       ring;
     uint8_t           priority;  /* Ph73: 0=lowest, 255=highest; idle=0, user=128 */
+    /*
+     * The MAXIMUM CONTROLLED PRIORITY — the ceiling this thread may grant.
+     *
+     * seL4's rule (ledger A-20): `seL4_TCB_SetPriority(tcb, authority, prio)`
+     * refuses a priority above the AUTHORITY thread's MCP, so priority is
+     * delegated downward and never invented.  Without it, a holder of any TCB
+     * capability can set 255 and starve the system, which is what IRIS did.
+     *
+     * A thread inherits the MCP of whoever CONFIGURED it, which is what makes
+     * the ceiling travel with delegation: a supervisor given 100 can create
+     * threads that can grant at most 100, for ever downward.  The root task
+     * starts at TASK_PRIORITY_MAX because somebody has to.
+     */
+    uint8_t           mcp;
     uint8_t           awaiting_reap; /* A1.11: TASK_DEAD but still queued for the
                                       * deferred reaper — the slot is NOT free yet.
                                       * Set by task_exit_current, cleared by the

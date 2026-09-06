@@ -238,6 +238,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                 { IRIS_BOOTCAP_PROC_CONTROL,   BOOT_CPTR_PROC_CONTROL },
                 { IRIS_BOOTCAP_INITRD_CONTROL, BOOT_CPTR_INITRD_CONTROL },
                 { IRIS_BOOTCAP_FB_CONTROL,     BOOT_CPTR_FB_CONTROL },
+                { IRIS_BOOTCAP_SCHED_CONTROL,  BOOT_CPTR_SCHED_CONTROL },
             };
             for (uint32_t i = 0;
                  ut && i < sizeof(boot_controls) / sizeof(boot_controls[0]);

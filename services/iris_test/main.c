@@ -3831,7 +3831,7 @@ static void test_t081(void) {
     if (ok && it_tcb_alive(T081_SLOT_RO) != 1) { ok = 0; why = "alive ro"; }
     if (ok && it_tcb_alive(T079_SLOT_EMPTY) >= 0) { ok = 0; why = "alive empty"; }
     if (ok && it_tcb_alive((long)IRIS_CPTR_TEST_FIX_A) !=
-              (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "alive wrong-type"; }
+              (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "alive wrong-type"; }
 
     /* EXIT_CODE by CPtr while alive → WOULD_BLOCK; FAULT_INFO → WOULD_BLOCK. */
     if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb(proc_h)) !=
@@ -4086,7 +4086,7 @@ static void test_t083(void) {
               (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
     if (ok && it_sys1(SYS_TCB_SUSPEND, T079_SLOT_EMPTY) >= 0) ok = 0;
     if (ok && it_sys1(SYS_TCB_SUSPEND, (long)IRIS_CPTR_TEST_FIX_A) !=
-              (long)IRIS_ERR_INVALID_ARG) ok = 0;
+              (long)IRIS_ERR_WRONG_TYPE) ok = 0;
 
     /* ── SchedContext (Phase S2: SYS_SC_CREATE retired → RETYPE2) ── */
     if (ok && it_sys0(SYS_SC_CREATE) != (long)IRIS_ERR_NOT_SUPPORTED) ok = 0;
@@ -4100,12 +4100,12 @@ static void test_t083(void) {
         ok = 0;
 
     /* SC_CONFIGURE by CPtr (budget < period required); handle path too. */
-    if (ok && it_sys3(SYS_SC_CONFIGURE, T083_SLOT_SC, 50, 100) != 0) ok = 0;
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc_h, 50, 100) != 0) ok = 0;
-    if (ok && it_sys3(SYS_SC_CONFIGURE, T083_SLOT_SC_RO, 50, 100) !=
+    if (ok && it_sys4(SYS_SC_CONFIGURE, T083_SLOT_SC, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) ok = 0;
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc_h, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) ok = 0;
+    if (ok && it_sys4(SYS_SC_CONFIGURE, T083_SLOT_SC_RO, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) !=
               (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
-    if (ok && it_sys3(SYS_SC_CONFIGURE, T079_SLOT_EMPTY, 50, 100) >= 0) ok = 0;
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)IRIS_CPTR_TEST_FIX_A, 50, 100) !=
+    if (ok && it_sys4(SYS_SC_CONFIGURE, T079_SLOT_EMPTY, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) >= 0) ok = 0;
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)IRIS_CPTR_TEST_FIX_A, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) !=
               (long)IRIS_ERR_INVALID_ARG) ok = 0;
 
     /* THREAD_SET_SC by CPtr: bind the calling thread, then unbind (0). */
@@ -8697,21 +8697,21 @@ static void test_t123(void) {
     if (ok && s2a[IT_S2_SCLIVE] != sc_base + 2u) { ok = 0; why = "sc not counted"; }
 
     /* SC_CONFIGURE validation (S10). */
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 100) != 0)   { ok = 0; why = "configure valid"; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 0, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 0)  != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "period 0"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0)   { ok = 0; why = "configure valid"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 0, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 10, 0, (long)IRIS_CPTR_SCHED_CONTROL)  != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "period 0"; }
     /* Phase S2 (fix I1): budget == period is a full CPU reservation, VALID
      * (MCS style).  Only budget > period is rejected. */
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 100, 100) != 0) { ok = 0; why = "budget==period rejected"; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 100) != 0) { ok = 0; why = "reconfigure back"; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 200, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 100, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "budget==period rejected"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "reconfigure back"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 200, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
 
     /* Wrong object type: an endpoint handle is not a SchedContext. */
     if (ok) {
         long ep = it_ep_create();
         handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         if (ep_h == HANDLE_INVALID) { ok = 0; why = "ep create"; }
-        if (ok && it_sys3(SYS_SC_CONFIGURE, (long)ep_h, 10, 100) != (long)IRIS_ERR_INVALID_ARG) {
+        if (ok && it_sys4(SYS_SC_CONFIGURE, (long)ep_h, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) {
             ok = 0; why = "wrong type";
         }
         if (ok && it_sys1(SYS_THREAD_SET_SC, (long)ep_h) != (long)IRIS_ERR_INVALID_ARG) {
@@ -8725,7 +8725,7 @@ static void test_t123(void) {
         long ro = it_cs_reduce((long)sc, RIGHT_READ);
         handle_id_t ro_h = (ro >= 0) ? (handle_id_t)ro : HANDLE_INVALID;
         if (ro_h == HANDLE_INVALID) { ok = 0; why = "ro dup"; }
-        if (ok && it_sys3(SYS_SC_CONFIGURE, (long)ro_h, 10, 100) != (long)IRIS_ERR_ACCESS_DENIED) {
+        if (ok && it_sys4(SYS_SC_CONFIGURE, (long)ro_h, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_ACCESS_DENIED) {
             ok = 0; why = "rights not enforced";
         }
         it_close(&ro_h);
@@ -8924,7 +8924,7 @@ static void test_t125(void) {
         }
     }
     if (ok && it_sys3(SYS_UNTYPED_INFO, (long)sub, 0, 0) != 0) { ok = 0; why = "sub not usable"; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)sc, 10, 100) != 0) { ok = 0; why = "sc not usable"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)sc, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc not usable"; }
 
     /* Live per-type counts rose by exactly the objects we made. */
     if (ok && !it_sched_ext3(s3a)) { ok = 0; why = "ext3 mid"; }
@@ -10085,7 +10085,7 @@ static void test_t140(void) {
      * while the mailbox half reports WRONG_TYPE, because one is the object the
      * syscall is invoked ON and the other is an object it is handed. */
     if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, n1, n1, 1, IT_FAULT_DEST(0))
-              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "tcb wrong-type"; }
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "tcb wrong-type"; }
     /* Reduced rights, both slots — ACCESS_DENIED, no fallback.  Stage 7
      * Step 12: the reduced half that matters is the THREAD's, because arming
      * where an execution's faults go is a write to that execution. */
@@ -10962,7 +10962,7 @@ static void test_t149(void) {
     if (ok && it_sys2(SYS_NOTIFY_SIGNAL, ep, 1) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "signal on ep"; }
     /* Stage 7 Step 13: killing names a THREAD, and the TCB family answers
      * INVALID_ARG for an argument that is not one. */
-    if (ok && it_sys1(SYS_TCB_EXIT, ep) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kill on ep"; }
+    if (ok && it_sys1(SYS_TCB_EXIT, ep) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "kill on ep"; }
     if (ok && it_retype_slot_alloc(no, IT_KOBJ_FRAME, 4096) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "retype on notif"; }
     /* (frame_map wrong-type coverage against a real VSpace is in T151/T152.) */
 
@@ -19992,13 +19992,13 @@ static void test_t267(void) {
         ok = 0; why = "unconfigured bind allowed";
     }
     /* Configure validation (S2.8). */
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100) != 0) { ok = 0; why = "configure"; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 0, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "configure"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 0, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget 0"; }
     /* Phase S2: budget==period accepted (full reservation); budget>period not. */
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 100, 100) != 0) { ok = 0; why = "budget==period rejected"; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 200, 100) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100) != 0) { ok = 0; why = "reconfigure A"; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_B, 5, 100) != 0) { ok = 0; why = "configure B"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 100, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "budget==period rejected"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 200, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "budget>period"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_A, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "reconfigure A"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_B, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "configure B"; }
 
     /* Bind SC_A to our own TCB, then a SECOND SC to the same TCB must fail
      * BUSY (one-to-one: the target already holds SC_A).  Unbind immediately
@@ -20182,7 +20182,7 @@ static void test_t284(void) {
     if (ok && it_sys1(SYS_TCB_EXIT,    (long)S1_SLOT_A) != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "exit allowed"; }
     if (ok) {
         if (it_retype2_at(su, IRIS_KOBJ_SCHED_CONTEXT, S1_SLOT_B, 1u, 0) != 0 ||
-            it_sys3(SYS_SC_CONFIGURE, (long)S1_SLOT_B, 5, 100) != 0) { ok = 0; why = "sc setup"; }
+            it_sys4(SYS_SC_CONFIGURE, (long)S1_SLOT_B, 5, 100, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc setup"; }
         else if (it_sys2(SYS_SC_BIND, (long)S1_SLOT_B, (long)S1_SLOT_A) !=
                  (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "bind to unconfigured allowed"; }
     }
@@ -21813,8 +21813,11 @@ static uint32_t it_ipc_buffer_gauge(void) {
 /* The boot path's own roots, measured.  A-14 took it from 43 to 32 by giving
  * every object retyped from a second-level Untyped its MDB parent; A-18 took
  * it to 23 by retiring the three SELF syscalls, each of which published an
- * unparented capability every time it was called. */
-#define IT_MDB_LEGACY_ROOT_CEILING 23u
+ * unparented capability every time it was called.  A-20 adds ONE back: the
+ * SchedControl capability boot mints for the root task, which is a boot-path
+ * root like every other authority in BootInfo — seL4's are roots too.  Every
+ * delegation of it downward is a child, so it costs exactly one. */
+#define IT_MDB_LEGACY_ROOT_CEILING 24u
 
 static void test_t305(void) {
     struct it_utq_mdb q0, q1;
@@ -22085,7 +22088,7 @@ static void test_t307(void) {
     long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
                                    IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) { it_fail("T307", "sc"); return; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, sc, 1, 1000) != 0) { ok = 0; why = "sc configure"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 1, 1000, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc configure"; }
     if (ok && it_sys2(SYS_SC_BIND, sc, tcb) != 0)          { ok = 0; why = "sc bind"; }
 
     /* Arm the timeout handler: signal bit 1, and deliver the faulting thread's
@@ -22238,7 +22241,7 @@ static void test_t308(void) {
     long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
                                    IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) { it_fail("T308", "sc"); return; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, sc, 3, 4000) != 0) { ok = 0; why = "sc configure"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 3, 4000, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc configure"; }
     if (ok && it_sys2(SYS_SC_BIND, sc, cli) != 0)          { ok = 0; why = "sc bind"; }
 
     /*
@@ -22368,7 +22371,7 @@ static void test_t309(void) {
     long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
                                    IRIS_KOBJ_SCHED_CONTEXT, 0);
     if (sc < 0) { it_fail("T309", "sc"); return; }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, sc, 200, 400) != 0) { ok = 0; why = "sc configure"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 200, 400, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc configure"; }
     if (ok && it_sys2(SYS_SC_BIND, sc, cli) != 0)           { ok = 0; why = "sc bind"; }
 
     /* Bounded: a server that stops after one request never sets done. */
@@ -22739,7 +22742,7 @@ static void test_t313(void) {
 
     /* ── 1. registration is authority-checked ───────────────────────────*/
     if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, (long)IRIS_CPTR_TEST_UNTYPED, cfr,
-                      (long)T313_CLI_VA) != (long)IRIS_ERR_INVALID_ARG) {
+                      (long)T313_CLI_VA) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "non-TCB accepted";
     }
     if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, (long)IRIS_CPTR_TEST_UNTYPED,
@@ -23164,10 +23167,10 @@ static void test_t315(void) {
     }
 
     /* ── 3. and it is a working scheduling context ──────────────────────*/
-    if (ok && it_sys3(SYS_SC_CONFIGURE, deep, 40, 200) != 0) {
+    if (ok && it_sys4(SYS_SC_CONFIGURE, deep, 40, 200, (long)IRIS_CPTR_SCHED_CONTROL) != 0) {
         ok = 0; why = "configure";
     }
-    if (ok && it_sys3(SYS_SC_CONFIGURE, shallow, 40, 200) != 0) {
+    if (ok && it_sys4(SYS_SC_CONFIGURE, shallow, 40, 200, (long)IRIS_CPTR_SCHED_CONTROL) != 0) {
         ok = 0; why = "configure shallow";
     }
 
@@ -23980,6 +23983,102 @@ static void test_t326(void) {
     if (ok) it_pass("T326"); else it_fail("T326", why);
 }
 
+/* ── T327: time and priority are authorities you are GRANTED (A-20) ─────────
+ * Three holes an audit against seL4's actual API found, and this is the gauge
+ * that stops them coming back.
+ *
+ * 1. `SYS_SC_CONFIGURE` needs the SCHEDCONTROL capability.  seL4 hands the
+ *    root task one per core and `seL4_SchedControl_Configure` is the only way
+ *    a budget reaches a scheduling context: holding the SC says WHICH one to
+ *    configure, holding this says you may configure one at all.  IRIS needed
+ *    only RIGHT_WRITE on the SC, so anyone who could retype one out of an
+ *    Untyped they held could grant themselves any budget over any period.
+ *
+ * 2. `SYS_TCB_SET_PRIORITY` refuses a priority above the AUTHORITY's ceiling.
+ *    seL4 bounds it by the authority thread's MCP so priority is delegated
+ *    downward and never invented; IRIS took no authority and no bound, and a
+ *    holder of any TCB capability could set 255 and starve the system.
+ *
+ * 3. `SYS_THREAD_PRIORITY` is RETIRED.  It set the caller's own priority for
+ *    the asking — ambient authority on the scheduler, the same shape as the
+ *    SELF syscalls (A-18) — and answers NOT_SUPPORTED.
+ * Invariants: A1, A5, S1. */
+static void test_t327(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "granted time and priority";
+
+    /* ── 1. a budget without the authority ── */
+    long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                   IRIS_KOBJ_SCHED_CONTEXT, 0);
+    if (sc < 0) { it_fail("T327", "sc"); return; }
+
+    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 10, 100, 0L)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "budget with no authority"; }
+    /* ...and a capability that is not the SchedControl does not stand in for
+     * it, however much else it authorises. */
+    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 10, 100,
+                      (long)IRIS_CPTR_DEBUG_CONTROL)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "wrong authority accepted"; }
+    if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 10, 100,
+                      (long)IRIS_CPTR_SCHED_CONTROL) != 0) {
+        ok = 0; why = "the granted authority was refused";
+    }
+
+    /*
+     * ── 2. a priority above the authority's ceiling ──
+     *
+     * The bound is proved with an authority whose ceiling is ZERO: a retyped
+     * but UNCONFIGURED TCB grants nothing, because a thread's ceiling is the
+     * one its configurer had and it has not been configured.  Any priority
+     * above 0 named through it must be refused, and that is the bound doing
+     * its job rather than a value happening to fit.
+     *
+     * The target is a FRESH thread, never this one.  Lowering the suite
+     * thread's own priority below the helpers it has running is how this test
+     * hung the first time it was written: it stopped being scheduled and never
+     * reported.  A test that can starve its own reporter is not measuring
+     * authority, it is measuring luck.
+     */
+    long victim = ok ? it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                            IRIS_KOBJ_TCB, 0) : -1;
+    long zero_auth = ok ? it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                               IRIS_KOBJ_TCB, 0) : -1;
+    if (ok && (victim < 0 || zero_auth < 0)) { ok = 0; why = "tcbs"; }
+
+    if (ok && it_sys3(SYS_TCB_SET_PRIORITY, victim, 1, zero_auth)
+              != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "a priority above the authority's ceiling was granted";
+    }
+    /* ...and 0 is within even that ceiling, so the refusal is the BOUND and
+     * not the authority being rejected outright. */
+    if (ok && it_sys3(SYS_TCB_SET_PRIORITY, victim, 0, zero_auth) != 0) {
+        ok = 0; why = "a priority within the ceiling was refused";
+    }
+    /* This thread's own ceiling is what its spawner had, so it can still grant
+     * what it holds — the bound delegates downward, it does not forbid. */
+    if (ok && it_sys3(SYS_TCB_SET_PRIORITY, victim, 128, 0L) != 0) {
+        ok = 0; why = "own ceiling did not authorise";
+    }
+    /* An authority that is not a TCB is not an authority. */
+    if (ok && it_sys3(SYS_TCB_SET_PRIORITY, victim, 100,
+                      (long)IRIS_CPTR_TEST_FIX_A) != (long)IRIS_ERR_WRONG_TYPE) {
+        ok = 0; why = "a non-TCB authority was accepted";
+    }
+    if (victim >= 0)    it_slot_delete((uint32_t)victim);
+    if (zero_auth >= 0) it_slot_delete((uint32_t)zero_auth);
+
+    /* ── 3. the ambient call is gone ── */
+    if (ok && it_sys1(SYS_THREAD_PRIORITY, 255)
+              != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "a thread set its own priority for the asking";
+    }
+
+    it_slot_delete((uint32_t)sc);
+    it_quiesce_reaper();
+    if (ok) it_pass("T327"); else it_fail("T327", why);
+}
+
 /* ── T324: what the rotating object pool is still holding ──────────────────
  * The pool's contract is one sentence — delete before use, never hold a slot
  * across a test boundary — and until now nothing read it back.  The pool is
@@ -24661,6 +24760,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t323();
     test_t325();
     test_t326();
+    test_t327();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

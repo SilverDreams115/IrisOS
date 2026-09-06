@@ -24,9 +24,13 @@ static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
                                 iris_rights_t required,
                                 struct task **out, iris_rights_t *rights_out) {
     struct KObject *obj;
+    /* WRONG_TYPE is reported as WRONG_TYPE.  This flattened it to INVALID_ARG
+     * — "something about your argument is wrong", said by a resolver that had
+     * just identified the capability exactly.  Third instance of the same
+     * defect: the typed resolvers had it until A-20's type-before-rights fix,
+     * and `dev_cap_budget` had it until D-5. */
     iris_error_t err = cspace_resolve_only_obj(root, cptr, RIGHT_NONE,
                                                     KOBJ_TCB, &obj, rights_out);
-    if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return err;
     if (required != RIGHT_NONE && !rights_check(*rights_out, required)) {
         kobject_release(obj);
@@ -599,10 +603,34 @@ uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    /*
+     * arg2 is the AUTHORITY: a TCB capability whose ceiling bounds what may be
+     * granted (ledger A-20).  seL4 spells it
+     * `seL4_TCB_SetPriority(service, authority, priority)` and refuses a
+     * priority above the authority's MCP — priority is delegated downward and
+     * never invented.  IRIS took no authority and no bound, so a holder of any
+     * TCB capability could set 255 and starve everything below it.
+     *
+     * arg2 == 0 means "myself as the authority", which is the common case and
+     * is not a loophole: a thread's own ceiling is the one it was configured
+     * with, and it can never exceed that.
+     */
     uint8_t prio = (uint8_t)(arg1 & 0xFFu);
-    (void)arg2;
     struct task *caller = task_current();
     if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    uint8_t ceiling;
+    if (arg2 == 0u) {
+        ceiling = caller->mcp;
+    } else {
+        struct task *auth; iris_rights_t auth_rights;
+        iris_error_t aerr = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg2,
+                                        RIGHT_READ, &auth, &auth_rights);
+        if (aerr != IRIS_OK) return syscall_err(aerr);
+        ceiling = auth->mcp;
+        kobject_release(&auth->base);
+    }
+    if (prio > ceiling) return syscall_err(IRIS_ERR_ACCESS_DENIED);
 
     struct task *target; iris_rights_t rights;
     iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,

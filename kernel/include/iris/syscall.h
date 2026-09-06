@@ -892,7 +892,7 @@ static inline long iris_syscall0(long nr) {
  *   RIGHT_WRITE on both.  It is the canonical binding path for building tasks
  *   from user space (SYS_THREAD_SET_SC is the self-bind).
  */
-#define SYS_THREAD_PRIORITY 82
+#define SYS_THREAD_PRIORITY 82  /* RETIRED (A5/A-20) → IRIS_ERR_NOT_SUPPORTED */
 #define SYS_SC_CREATE       83
 #define SYS_SC_CONFIGURE    84
 #define SYS_THREAD_SET_SC   85

@@ -44,7 +44,7 @@
  */
 
 #define IRIS_ROOT_BOOTINFO_MAGIC   0x49524953524F4F54ULL  /* "IRISROOT" */
-#define IRIS_ROOT_BOOTINFO_VERSION 5u
+#define IRIS_ROOT_BOOTINFO_VERSION 6u
 
 /* Size of the region the kernel maps.  Two pages, and the reason is a rule
  * rather than a round number: the description must be able to cover every
@@ -84,6 +84,10 @@ struct iris_root_bootinfo {
     uint64_t cap_proc_control;   /* SYS_PROCESS_CREATE */
     uint64_t cap_initrd_control; /* SYS_INITRD_COUNT / SYS_INITRD_VMO */
     uint64_t cap_fb_control;     /* SYS_FRAMEBUFFER_VMO (one-shot) */
+    /* v6: authority over CPU TIME (ledger A-20).  seL4 puts its SchedControl
+     * capability in BootInfo for the same reason every other authority is
+     * there: the root task cannot be given time by anyone else. */
+    uint64_t cap_sched_control;  /* SYS_SC_CONFIGURE */
 
     /* The CSpace as it was handed over. */
     uint32_t cnode_slots;      /* slot count of the root CNode */

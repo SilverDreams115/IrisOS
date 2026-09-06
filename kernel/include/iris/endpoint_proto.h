@@ -419,6 +419,21 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  */
 #define IRIS_CPTR_OWN_CSPACE   ((uint64_t)65)
 /*
+ * Authority over CPU TIME, delegated the way every other boot control is
+ * (ledger A-20).  `SYS_SC_CONFIGURE` refuses without it: holding a scheduling
+ * context says WHICH one to configure, holding this says you may configure one
+ * at all — seL4's `SchedControl`.
+ *
+ * Slot 98, and finding a free one is the whole difficulty: a WELL-KNOWN slot
+ * has to be free in EVERY service at once.  61 was the first pick and it is
+ * `INIT_SLOT_TEST_CNODE` in init; the low range is the bootstrap capabilities,
+ * 20..53 is the pager's target table, 57..62 is init's, 64..69 and the
+ * rotating pools are the suite's, and 70..93 is the pager's frames.  98 sits
+ * between the suite's fixed reply objects (88..97) and the framebuffer
+ * control capability (99).
+ */
+#define IRIS_CPTR_SCHED_CONTROL ((uint64_t)98)
+/*
  * A DEVICE Untyped — MMIO handed over as a capability (ledger D-9).
  *
  * seL4's BootInfo lists device Untypeds alongside RAM ones; that is how a

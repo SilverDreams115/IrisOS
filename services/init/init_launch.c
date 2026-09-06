@@ -405,7 +405,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[18] = { 0 };
+        struct svc_mint it_mints[19] = { 0 };
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -525,6 +525,13 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         /* Ledger D-9: the DEVICE untyped, so the suite can exercise the path
          * that hands MMIO over as a capability.  Delegated rather than
          * duplicated — init keeps the parent, so revoking reaches it. */
+        /* Ledger A-20: authority over CPU time.  The suite configures
+         * scheduling contexts (T083, T267, T308, T309, T315) and without this
+         * it cannot — which is the point: a budget is granted, not taken. */
+        it_mints[18].slot = IRIS_CPTR_SCHED_CONTROL;
+        it_mints[18].src_cptr = IRIS_CPTR_SCHED_CONTROL;
+        it_mints[18].rights = RIGHT_READ | RIGHT_DUPLICATE;
+        it_mints[18].badge = 0;
         it_mints[17].slot = IRIS_CPTR_DEVICE_UNTYPED;
         it_mints[17].src_cptr = IRIS_CPTR_DEVICE_UNTYPED;
         it_mints[17].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
@@ -535,7 +542,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * retired duplicate had to exist. */
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "iris_test",
-                            &proc_h, &boot_h, it_mints, 18u,
+                            &proc_h, &boot_h, it_mints, 19u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
                                16u << 20, /*own_budget_slot=*/0, /* has TEST_UNTYPED */
                                /* Stage 7 Step 9: keep the suite's CSpace root

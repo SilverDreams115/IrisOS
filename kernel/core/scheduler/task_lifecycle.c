@@ -832,6 +832,9 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     t->state      = TASK_READY;
     t->ring       = TASK_RING3;
     t->priority   = TASK_PRIORITY_DEFAULT;
+    /* The root task is the one thread nobody configured, so its ceiling comes
+     * from boot — the same place seL4's root task gets its MCP. */
+    t->mcp        = (uint8_t)TASK_PRIORITY_MAX;
     t->time_slice = TASK_DEFAULT_SLICE;
     t->ticks_left = TASK_DEFAULT_SLICE;
     t->home_cpu   = 0;
@@ -1047,6 +1050,21 @@ iris_error_t ktcb_configure(struct task *t,
     if (t->configured || t->terminal) return IRIS_ERR_ALREADY_EXISTS;
 
     if (task_registry_alloc(t) != 0) return IRIS_ERR_NO_MEMORY;
+
+    /*
+     * The thread inherits the CEILING of whoever configured it (ledger A-20).
+     *
+     * This is what makes a priority bound travel with delegation instead of
+     * being a number the kernel hands out: a supervisor given 100 configures
+     * threads that can grant at most 100, and so on downward, for ever.  seL4
+     * spells it `seL4_TCB_SetMCPriority` and requires an authority for that
+     * too; inheriting at configure time is the same rule with the common case
+     * built in.
+     */
+    {
+        struct task *by = task_current();
+        t->mcp = by ? by->mcp : (uint8_t)TASK_PRIORITY_MAX;
+    }
 
     /*
      * Stage 7 Step 4: the thread takes the CSpace it was configured with.

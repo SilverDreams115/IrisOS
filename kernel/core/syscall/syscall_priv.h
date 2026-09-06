@@ -152,6 +152,28 @@ static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr) {
     return ok;
 }
 
+/*
+ * The same question, for any boot control capability: does the caller name a
+ * capability of EXACTLY this kind?  `task_kdebug_cap_named` is this with the
+ * kind fixed, and stays as its own name because charter A7 wants the debug
+ * authority spelled at its call sites.
+ */
+static inline int syscall_has_bootcap(struct task *t, uint64_t auth_cptr,
+                                      uint32_t kind) {
+    if (!t || !t->cspace_root) return 0;
+    if (auth_cptr == 0u) return 0;   /* authority must be named */
+    if (!cspace_value_is_cptr((iris_cptr_t)auth_cptr)) return 0;
+
+    struct KObject *obj; iris_rights_t r;
+    if (cspace_resolve_cap(t->cspace_root, (iris_cptr_t)auth_cptr, RIGHT_READ,
+                           &obj, &r) != IRIS_OK) return 0;
+    int ok = (obj->type == KOBJ_BOOTSTRAP_CAP) &&
+             kbootcap_is((struct KBootstrapCap *)obj, kind);
+    kobject_active_release(obj);
+    kobject_release(obj);
+    return ok;
+}
+
 /* ── Forward declarations — proc ─────────────────────────────────── */
 uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -462,9 +484,9 @@ uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                               uint64_t arg3);
 
 /* ── Forward declarations — Block 3 scheduler (Ph73-75) ─────────── */
-uint64_t sys_thread_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                          uint64_t arg3);
 uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2);         /* Phase S2 */
 

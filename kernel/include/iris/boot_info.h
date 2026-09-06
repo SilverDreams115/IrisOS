@@ -55,6 +55,10 @@
  * finds seL4_CapInitThreadCNode and seL4_CapInitThreadTCB in its CSpace. */
 #define BOOT_CPTR_CNODE           9u    /* the root task's own root CNode */
 #define BOOT_CPTR_TCB            10u    /* the root task's initial thread */
+/* Authority over CPU time, delegated onward like every other boot control
+ * (ledger A-20).  Convention-only, as BOOT_CPTR_CNODE and _TCB are: the root
+ * task knows the slot, and the BootInfo struct does not change. */
+#define BOOT_CPTR_SCHED_CONTROL  11u    /* SYS_SC_CONFIGURE authority */
 #define BOOT_CPTR_RES_END         15u   /* inclusive; slots 1-15 are reserved */
 #define BOOT_CPTR_UNTYPED_START   16u   /* first boot KUntyped CPtr */
 #define BOOT_CPTR_UNTYPED_END    255u   /* last boot KUntyped CPtr (root CNode has 256 slots) */

@@ -287,9 +287,8 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_CAP_REVOKE:          return sys_cap_revoke(arg0, arg1, arg2);
         case SYS_CNODE_CREATE:        return sys_cnode_create(arg0, arg1, arg2);
         case SYS_CNODE_MINT:          return sys_cnode_mint(arg0, arg1, arg2, arg3);
-        case SYS_THREAD_PRIORITY:     return sys_thread_priority(arg0, arg1, arg2);
         case SYS_SC_CREATE:           return sys_sc_create(arg0, arg1, arg2);
-        case SYS_SC_CONFIGURE:        return sys_sc_configure(arg0, arg1, arg2);
+        case SYS_SC_CONFIGURE:        return sys_sc_configure(arg0, arg1, arg2, arg3);
         case SYS_THREAD_SET_SC:       return sys_thread_set_sc(arg0, arg1, arg2);
         case SYS_UNTYPED_INFO:        return sys_untyped_info(arg0, arg1, arg2);
         case SYS_UNTYPED_RETYPE:      return sys_untyped_retype(arg0, arg1, arg2);

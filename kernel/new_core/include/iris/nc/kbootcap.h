@@ -29,6 +29,19 @@
 #define IRIS_BOOTCAP_IRQ_CONTROL    (1u << 4)  /* SYS_CAP_CREATE_IRQCAP */
 #define IRIS_BOOTCAP_IOPORT_CONTROL (1u << 5)  /* SYS_CAP_CREATE_IOPORT */
 #define IRIS_BOOTCAP_INITRD_CONTROL (1u << 6)  /* SYS_INITRD_COUNT / SYS_INITRD_VMO */
+/*
+ * Authority over CPU TIME (ledger A-20).
+ *
+ * seL4 hands the root task one `SchedControl` capability per core, and
+ * `seL4_SchedControl_Configure` is the ONLY way a budget and a period reach a
+ * scheduling context — so time is something you are GIVEN, delegated the same
+ * way an IRQ line or an I/O port is.  IRIS's `SYS_SC_CONFIGURE` used to need
+ * only RIGHT_WRITE on the scheduling context itself, which meant anyone who
+ * could retype one out of an Untyped they held could grant themselves any
+ * budget over any period.  A capability model in which the CPU is the one
+ * resource nobody has to be granted is not a capability model.
+ */
+#define IRIS_BOOTCAP_SCHED_CONTROL  (1u << 7)  /* SYS_SC_CONFIGURE */
 
 struct KBootstrapCap {
     struct KObject base;
