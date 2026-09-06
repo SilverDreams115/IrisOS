@@ -899,6 +899,65 @@ a non-zero reading means somebody put a ceiling back.
 
 **P2 is MET.**  36 of 36.
 
+### A-20 — a file-by-file audit against seL4, and what it found
+
+The convergence rows had been closed one at a time, each against the mechanism
+it named.  This is the other direction: read the whole kernel and the whole
+test suite against seL4's actual API and ask what is missing, rather than
+asking whether each recorded item is done.
+
+It found six things no row had named, and two of them contradict claims this
+repo was making.
+
+**No `SchedControl` — time is not a delegated authority.**  seL4 hands the root
+task one `SchedControl` capability per core, and `seL4_SchedControl_Configure`
+is how a budget and period get onto a scheduling context: the authority over
+CPU TIME is a capability you are given.  IRIS's `SYS_SC_CONFIGURE` requires
+only `RIGHT_WRITE` on the scheduling context itself, so anyone who can retype
+an SC out of an Untyped they hold can grant themselves any budget over any
+period.  The roadmap said of MCS "nothing in this dimension is still not
+seL4's"; that was wrong, and the row now says what is.
+
+**No maximum controlled priority.**  `seL4_TCB_SetPriority(tcb, authority,
+prio)` bounds the new priority by the AUTHORITY thread's MCP — you cannot grant
+a priority above the one you were granted.  IRIS's takes no authority argument
+and no bound.
+
+**`SYS_THREAD_PRIORITY` is ambient authority.**  It sets the CALLER's own
+priority, up to 255, taking no capability at all — exactly the shape A-18 spent
+its length removing from the CSpace side, sitting on the scheduler.  Priority
+255 starves everything below it.  `SYS_TCB_SET_PRIORITY` is the capability-based
+call that already does this correctly, so this one is a capability-free
+duplicate.  Charter A5 goes back to PARTIAL for it.
+
+**No ASID capability model.**  seL4 has `ASIDControl` and `ASIDPool`: an address
+space must be assigned an ASID out of a pool somebody holds, which makes
+creating one an authority and bounds how many can exist.  IRIS enables PCID in
+the kernel and a retyped VSpace simply works.  Address-space identity is
+kernel-managed, not capability-managed.
+
+**Faults are not IPC.**  In seL4 a fault is an IPC MESSAGE on the faulting
+thread's fault endpoint: the handler `Recv`s it, gets an implicit reply
+capability, and REPLYING resumes the thread — a fault handler is just a server,
+and the authority to resume is the reply capability.  IRIS signals a
+notification, publishes the faulting TCB into a mailbox CNode, and the handler
+reads the record with `SYS_TCB_FAULT_INFO` and resumes with
+`SYS_EXCEPTION_RESUME` and a sequence number.  Equivalent in what it can
+express, and a different structure: three mechanisms where seL4 reuses one.
+
+**Two smaller absences.**  seL4 binds a notification to a TCB
+(`seL4_TCB_BindNotification`) so a passive server blocked on an endpoint can
+still take signals; IRIS cannot.  And seL4 has
+`seL4_CNode_CancelBadgedSends`, which cancels the IN-FLIGHT sends of one badge
+after revoking a delegation; IRIS revokes the capability and leaves whatever is
+already queued.
+
+**And the timed calls.**  `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP` and
+`SYS_NOTIFY_WAIT_TIMEOUT` block on TIME inside the kernel.  seL4 has no timed
+blocking at all: a timer driver holds the hardware and a client waits on a
+notification the driver signals.  This is deliberate in IRIS and it is a real
+divergence, because a kernel that can block on time owns a policy about time.
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a
