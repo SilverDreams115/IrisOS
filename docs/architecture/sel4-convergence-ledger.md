@@ -733,6 +733,21 @@ rotating pool when its life is a TEST's, and in a dedicated CNode when its life
 is a THREAD's or the run's.**  Getting that backwards trades a capability that
 gets deleted too early for one that can never be revoked at all.
 
+**And the debt at rest was the wrong number to chase.**  27 capabilities left
+in the pool are harmless until the allocator comes round to them, so the
+allocator was consolidated — five copies of the same five lines — and made to
+COUNT the coming round: how many times a leaf was recycled while it still held
+something.  35 a run.  Thirty-three of those were `SYS_TCB_SELF` publications
+made inside loops, one abandoned per iteration; the calls hoisted out and
+released took it to 5, and the at-rest count to 26.
+
+Both are asserted ceilings now, so both can only go down.  Not all five
+remaining evictions are defects — recycling what a finished test abandoned is
+what the pool is FOR — and the allocator cannot tell the two apart from the
+inside.  That is precisely why the number is capped rather than explained: the
+ones that are defects are indistinguishable until they cost something, and four
+slot collisions in this convergence are what they cost.
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a

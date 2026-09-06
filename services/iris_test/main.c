@@ -469,16 +469,45 @@ static long it_retype2_at(long ut, uint32_t obj_type, uint32_t slot,
         else                                     (m).src_h    = (handle_id_t)_v; \
     } while (0)
 
+/*
+ * Take the next leaf of the rotating object pool.
+ *
+ * Every fabrication helper below had this same five lines inlined, and they
+ * all did the same dangerous thing silently: delete whatever is in the leaf
+ * before installing.  That delete is correct when the previous occupant was
+ * abandoned by a finished test — which is the pool's contract — and it
+ * DESTROYS A LIVE CAPABILITY when it was not.
+ *
+ * So the take is counted.  `g_it_pool_evictions` is the number of times this
+ * run the allocator recycled a leaf that still held something, which is the
+ * measurement that matters: T324 counts the debt AT REST, and a debt at rest
+ * is harmless until the counter comes round to it.  This counts the coming
+ * round.
+ */
+static uint32_t g_it_pool_evictions = 0;
+static uint32_t g_it_pool_evict_by_type[20] = { 0 };
+
+static uint32_t it_pool_leaf_take(void) {
+    uint32_t leaf = IT_OBJ_POOL_FIRST +
+                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
+                                        __ATOMIC_RELAXED) %
+                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
+    long t = it_sys1(SYS_CAP_IDENTIFY, (long)IT_OBJ_CPTR(leaf));
+    if (t >= 0) {
+        __atomic_fetch_add(&g_it_pool_evictions, 1u, __ATOMIC_RELAXED);
+        if (t < 20) __atomic_fetch_add(&g_it_pool_evict_by_type[t], 1u,
+                                       __ATOMIC_RELAXED);
+    }
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    return leaf;
+}
+
 /* Stage 5 Step 4: threads are retyped from an Untyped and configured with
  * CSpace/VSpace capabilities — defined next to the VSpace helpers it needs. */
 static long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg);
 
 static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
-    uint32_t leaf = IT_OBJ_POOL_FIRST +
-                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                        __ATOMIC_RELAXED) %
-                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    uint32_t leaf = it_pool_leaf_take();
     long r = it_sys4(SYS_UNTYPED_RETYPE2, ut,
                      (long)((uint64_t)obj_type | (1ULL << 32)),
                      (long)((uint64_t)IT_OBJ_CNODE_SLOT |
@@ -495,11 +524,7 @@ static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
  * capability the suite fabricates.  Same rotating-pool contract as
  * it_retype_slot_alloc: delete before minting, never hold across a test. */
 static long it_cs_reduce(long src_cptr, uint32_t rights) {
-    uint32_t leaf = IT_OBJ_POOL_FIRST +
-                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                        __ATOMIC_RELAXED) %
-                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    uint32_t leaf = it_pool_leaf_take();
     long r = it_sys3(SYS_CSPACE_MINT, src_cptr,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
                      (long)rights);
@@ -559,11 +584,7 @@ static long it_irqcap_create(long auth, long irq, long dest) {
 static long g_it_initrd_size;
 
 static long it_initrd_vmo_slot(long auth_cptr, long index) {
-    uint32_t leaf = IT_OBJ_POOL_FIRST +
-                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                        __ATOMIC_RELAXED) %
-                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    uint32_t leaf = it_pool_leaf_take();
     /* Stage 6 Step 5: the image copy is charged to the suite's own budget,
      * not to the small per-child pool its address space came from. */
     long r = it_sys4(SYS_INITRD_FRAME, auth_cptr, index,
@@ -592,11 +613,7 @@ static long it_initrd_vmo_slot(long auth_cptr, long index) {
  * one makes that the suite's.
  */
 static long it_tcb_self_slot(void) {
-    uint32_t leaf = IT_OBJ_POOL_FIRST +
-                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                        __ATOMIC_RELAXED) %
-                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    uint32_t leaf = it_pool_leaf_take();
     long r = it_sys1(SYS_TCB_SELF,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
@@ -608,11 +625,7 @@ static long it_tcb_self_slot(void) {
  * a PROCESS for an address space — the self case being the only one that
  * survives, because the others are held by whoever spawned the child. */
 static long it_vspace_self_slot(void) {
-    uint32_t leaf = IT_OBJ_POOL_FIRST +
-                    (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
-                                        __ATOMIC_RELAXED) %
-                     (IT_OBJ_SLOT_SPAN - IT_OBJ_POOL_FIRST));
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
+    uint32_t leaf = it_pool_leaf_take();
     long r = it_sys1(SYS_VSPACE_SELF,
                      (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT));
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
@@ -10992,9 +11005,16 @@ static void test_t150(void) {
     }
     /* SYS_PROCESS_FAULT_INFO (self) writes 32 bytes: hostile dst → INVALID_ARG
      * (the pointer is validated before the fault lookup). */
-    for (int i = 0; ok && i < NB; i++) {
-        if (it_sys2(SYS_TCB_FAULT_INFO, it_tcb_self_slot(), bad_ptr[i])
-            != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info bad dst"; break; }
+    {   /* One publication for the whole battery.  SYS_TCB_SELF hands back a
+         * FRESH capability every call, into the rotating pool, and calling it
+         * per iteration abandoned one per iteration — which the allocator then
+         * evicted laps later.  T324 counted 33 of those a run. */
+        long self_tcb = it_tcb_self_slot();
+        for (int i = 0; ok && i < NB; i++) {
+            if (it_sys2(SYS_TCB_FAULT_INFO, self_tcb, bad_ptr[i])
+                != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info bad dst"; break; }
+        }
+        if (self_tcb >= 0) it_slot_delete((uint32_t)self_tcb);
     }
     /* SYS_UNTYPED_INFO writes two OPTIONAL out params (a null pointer means
      * "skip this field" and is legal), so only a NON-NULL hostile pointer must
@@ -11103,8 +11123,11 @@ static void test_t151(void) {
             if (rr >= 0) { ok = 0; why = "random cptr resumed something"; break; }
         }
         op = 6;
-        if (it_sys2(SYS_TCB_FAULT_INFO, it_tcb_self_slot(), 0L)
-            != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info null ok"; break; }
+        {   long self_tcb = it_tcb_self_slot();
+            long fr2 = it_sys2(SYS_TCB_FAULT_INFO, self_tcb, 0L);
+            if (self_tcb >= 0) it_slot_delete((uint32_t)self_tcb);
+            if (fr2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info null ok"; break; }
+        }
 
         /* --- well-formed batch (must all succeed and be observable) --- */
         op = 10;
@@ -22927,6 +22950,10 @@ static void test_t313(void) {
         if (tcb_self >= 0) {
             long va = it_thread_ipc_buffer(tcb_self);
             if (va > 0) g_ep_io_buf = (uint8_t *)(uintptr_t)va;
+            /* The registration is on the THREAD; this capability was only how
+             * to name it, and leaving it in a recycling pool is a capability
+             * waiting to be evicted under somebody else. */
+            it_slot_delete((uint32_t)tcb_self);
         }
     }
 
@@ -23815,7 +23842,25 @@ static void test_t323(void) {
  * it is a DEBT, not a design: every entry is a test that kept a leaf of a pool
  * that recycles.  It goes down as they are paid.
  */
-#define IT_POOL_HELD_CEILING 36u
+#define IT_POOL_HELD_CEILING 30u
+
+/*
+ * ...and the number that matters more.
+ *
+ * The debt at rest is harmless until the allocator comes round to it.  This is
+ * the coming round: how many times, this run, a rotating leaf was recycled
+ * while it still held something.  35 when it was first measured — 33 of them
+ * SYS_TCB_SELF publications made inside loops and abandoned one per iteration
+ * — and 5 once those released what they took.
+ *
+ * Not all five are defects: the pool exists to recycle what a finished test
+ * abandoned, and an eviction of a genuinely abandoned capability is the pool
+ * doing its job.  The allocator cannot tell the two apart from the inside, and
+ * that is exactly why the number is capped rather than explained: the ones
+ * that ARE defects are indistinguishable until they cost something, and four
+ * slot collisions in this convergence are what they cost.
+ */
+#define IT_POOL_EVICT_CEILING 8u
 
 static void test_t324(void) {
     it_quiesce_reaper();
@@ -23832,6 +23877,7 @@ static void test_t324(void) {
     }
 
     it_serial_write("[IRIS][TEST] T324 pool_held="); it_log_num(occupied);
+    it_serial_write(" evictions="); it_log_num(g_it_pool_evictions);
     it_serial_write(" ceiling="); it_log_num(IT_POOL_HELD_CEILING);
     /* Broken down by type, because "52 capabilities" is a number and "38 of
      * them are TCBs" is a lead. */
@@ -23841,7 +23887,19 @@ static void test_t324(void) {
         it_serial_write("="); it_log_num(by_type[ty]);
     }
     it_serial_write("\n");
+    it_serial_write("[IRIS][TEST] T324 evicted");
+    for (uint32_t ty = 0; ty < 20u; ty++) {
+        if (!g_it_pool_evict_by_type[ty]) continue;
+        it_serial_write(" t"); it_log_num(ty);
+        it_serial_write("="); it_log_num(g_it_pool_evict_by_type[ty]);
+    }
+    it_serial_write("\n");
 
+    if (g_it_pool_evictions > IT_POOL_EVICT_CEILING) {
+        it_fz_note("T324", g_it_pool_evictions, IT_POOL_EVICT_CEILING, 0u);
+        it_fail("T324", "the allocator recycled more live leaves than recorded");
+        return;
+    }
     if (occupied <= IT_POOL_HELD_CEILING) { it_pass("T324"); return; }
     it_fz_note("T324", occupied, first_leaf, (uint32_t)first_type);
     it_fail("T324", "the pool is holding more than the recorded debt");
@@ -24113,7 +24171,7 @@ void iris_test_main(handle_id_t rbx_unused) {
         if (it_setup_self_vspace() && tcb_self >= 0) {
             long va = it_thread_ipc_buffer(tcb_self);
             if (va > 0) g_ep_io_buf = (uint8_t *)(uintptr_t)va;
-
+            it_slot_delete((uint32_t)tcb_self);
         }
     }
 
