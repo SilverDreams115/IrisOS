@@ -23492,6 +23492,248 @@ static void test_t321(void) {
     if (ok) it_pass("T321"); else it_fail("T321", why);
 }
 
+/* ── T322: an object exists exactly while a capability to it exists (D-7) ────
+ * seL4's lifetime rule, stated so it can be checked rather than described.
+ * There is no reference count in seL4: an object is alive because a capability
+ * names it, and its memory comes back when its Untyped is reset.  IRIS reaches
+ * the same answer through two counters, and the ledger's D-7 row records three
+ * separate incidents where the counters and the capability graph disagreed.
+ *
+ * So the property is asserted directly, for EVERY type RETYPE2 can make, and
+ * the shape is the same for all of them:
+ *
+ *   retype into slot A · copy into slot B · delete A → the region is still
+ *   BUSY, because B names the object · delete B → the region resets.
+ *
+ * The second step is the one that matters.  A counter that over-counts leaves
+ * the region BUSY forever; one that under-counts destroys the object while B
+ * still names it, and the reset would succeed one step early.  Both are
+ * failures of the same assertion, which is why it is written as a pair.
+ *
+ * A type whose object outlives its last capability for a REASON — a thread the
+ * scheduler still holds, an address space with a mapping in it — is not a bug
+ * and is not asserted here; those are the two the table calls out.
+ * Invariants: O2, O6, M1. */
+struct t322_case { uint32_t type; long arg; const char *name; };
+
+static void test_t322(void) {
+    it_quiesce_reaper();
+    struct it_snap b = it_snap_take();
+    int ok = b.ok;
+    const char *why = "capability lifetime";
+
+    static const struct t322_case cases[] = {
+        { IRIS_KOBJ_NOTIFICATION,  0,    "notification" },
+        { IRIS_KOBJ_ENDPOINT,      0,    "endpoint"     },
+        { IRIS_KOBJ_CNODE,         16,   "cnode"        },
+        { IRIS_KOBJ_SCHED_CONTEXT, 4,    "sched ctx"    },
+        { IRIS_KOBJ_UNTYPED,       8192, "untyped"      },
+        { IRIS_KOBJ_REPLY,         0,    "reply"        },
+        { IRIS_KOBJ_FRAME,         4096, "frame"        },
+        { IRIS_KOBJ_PAGE_TABLE,    4096, "page table"   },
+        { IRIS_KOBJ_VSPACE,        4096, "vspace"       },
+        { IRIS_KOBJ_TCB,           0,    "tcb"          },
+    };
+
+    for (uint32_t i = 0; ok && i < (uint32_t)(sizeof(cases)/sizeof(cases[0])); i++) {
+        long pool = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                         IRIS_KOBJ_UNTYPED, 128u * 1024u);
+        if (pool < 0) { ok = 0; why = "pool"; break; }
+
+        long a = it_retype_slot_alloc(pool, cases[i].type, cases[i].arg);
+        if (a < 0) { ok = 0; why = cases[i].name; it_slot_delete((uint32_t)pool); break; }
+
+        /* A second capability to the SAME object. */
+        long c = it_cs_reduce(a, RIGHT_READ);
+        if (c < 0) { ok = 0; why = cases[i].name; }
+
+        /* The first capability goes; the object must not. */
+        if (ok) {
+            it_slot_delete((uint32_t)a);
+            it_quiesce_reaper();
+            if (it_sys1(SYS_UNTYPED_RESET, pool) != (long)IRIS_ERR_BUSY) {
+                ok = 0; why = cases[i].name;
+                it_fz_note("T322-early", cases[i].type, i, 0u);
+            }
+        }
+        /* ...and when the last one goes, so does the object. */
+        if (ok) {
+            it_slot_delete((uint32_t)c);
+            it_quiesce_reaper();
+            if (it_sys1(SYS_UNTYPED_RESET, pool) != 0) {
+                ok = 0; why = cases[i].name;
+                it_fz_note("T322-late", cases[i].type, i, 0u);
+            }
+        }
+        /* NOT deleted again here.  Both slots were released above, and a
+         * released leaf of the shared rotating pool can be taken by another
+         * thread the moment it_quiesce_reaper yields — so a second delete of
+         * "my" slot destroys somebody else's capability.  Deleting twice is
+         * only harmless when nobody else allocates, and something always does. */
+        it_slot_delete((uint32_t)pool);
+        it_quiesce_reaper();
+    }
+
+    struct it_snap a2 = it_snap_take();
+    if (ok && !it_snap_baseline(&b, &a2, &why)) ok = 0;
+    if (ok) it_pass("T322"); else it_fail("T322", why);
+}
+
+/* ── T323: the counter and the capability graph, over many shapes (D-7) ─────
+ * T322 asserts seL4's lifetime rule on the simplest shape there is — one
+ * object, two capabilities.  The three incidents D-7 records were not that
+ * shape: they were a slot naming its own CNode, a cycle through another, and a
+ * process object emptying a CSpace pre-emptively.  What they have in common is
+ * that IRIS decides liveness with a COUNTER while seL4 reads the derivation
+ * tree, and a counter can be wrong in ways a tree cannot.
+ *
+ * So the rule is asserted over shapes a seeded generator builds: a chain of
+ * copies, each derived from a randomly chosen earlier one, so the MDB gets
+ * real depth and branching — and then deleted in a shuffled order.  After
+ * every single delete:
+ *
+ *   capabilities remaining > 0  ⟺  the region refuses to RESET.
+ *
+ * Both directions are checked at every step, which is what makes it a test of
+ * AGREEMENT rather than of survival: a counter that over-counts fails the
+ * final reset, one that under-counts fails an earlier BUSY, and an order that
+ * happens to hide either is one seed away from an order that does not.
+ * Prints seed/round/step on failure.  Invariants: O2, O6, M1. */
+#define T323_SEED   0x0D7CA9EBu
+#define T323_ROUNDS 12u
+#define T323_MAXCAP 6u
+static uint32_t t323_rnd(uint32_t *s) {
+    uint32_t x = *s;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    *s = x;
+    return x;
+}
+
+static void test_t323(void) {
+    uint32_t rng = T323_SEED;
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "counter vs graph";
+    uint32_t round = 0, step = 0;
+
+    static const uint32_t types[] = {
+        IRIS_KOBJ_NOTIFICATION, IRIS_KOBJ_ENDPOINT, IRIS_KOBJ_CNODE,
+        IRIS_KOBJ_UNTYPED, IRIS_KOBJ_FRAME, IRIS_KOBJ_SCHED_CONTEXT,
+    };
+    static const long args[] = { 0, 0, 16, 8192, 4096, 4 };
+
+    for (round = 0; ok && round < T323_ROUNDS; round++) {
+        uint32_t ti = t323_rnd(&rng) % (uint32_t)(sizeof(types)/sizeof(types[0]));
+        uint32_t n  = 2u + (t323_rnd(&rng) % (T323_MAXCAP - 1u));
+
+        long pool = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                         IRIS_KOBJ_UNTYPED, 128u * 1024u);
+        if (pool < 0) { ok = 0; why = "pool"; break; }
+
+        long caps[T323_MAXCAP];
+        uint32_t made = 0;
+        caps[0] = it_retype_slot_alloc(pool, types[ti], args[ti]);
+        if (caps[0] < 0) { ok = 0; why = "retype"; it_slot_delete((uint32_t)pool); break; }
+        made = 1;
+        /* Each copy derives from a randomly chosen EARLIER one, so the shape is
+         * a tree rather than a fan — which is where a counter and a tree can
+         * differ, and a fan is where they cannot. */
+        while (made < n) {
+            long src = caps[t323_rnd(&rng) % made];
+            long c = it_cs_reduce(src, RIGHT_READ | RIGHT_DUPLICATE);
+            if (c < 0) break;
+            caps[made++] = c;
+        }
+        if (made < 2u) { ok = 0; why = "derive"; }
+
+        /* Shuffle the deletion order: which capability goes last must not
+         * matter, and if it does, the seed says which one it was. */
+        for (uint32_t i = made; ok && i > 1u; i--) {
+            uint32_t j = t323_rnd(&rng) % i;
+            long t = caps[i - 1u]; caps[i - 1u] = caps[j]; caps[j] = t;
+        }
+
+        for (step = 0; ok && step < made; step++) {
+            it_slot_delete((uint32_t)caps[step]);
+            it_quiesce_reaper();
+            long r = it_sys1(SYS_UNTYPED_RESET, pool);
+            int last = (step + 1u == made);
+            if (!last && r != (long)IRIS_ERR_BUSY) {
+                ok = 0; why = "destroyed while a capability still named it";
+            } else if (last && r != 0) {
+                ok = 0; why = "outlived its last capability";
+            }
+        }
+
+        /* The step loop released every capability; see T322 on why they are
+         * not released again. */
+        it_slot_delete((uint32_t)pool);
+        it_quiesce_reaper();
+    }
+
+    /*
+     * No global object-count baseline here, deliberately.  This test's subject
+     * is the LIFETIME RULE, and its step assertions check it exactly: the
+     * region is BUSY while a capability remains and resets when the last one
+     * goes, after every single delete.  A baseline would additionally measure
+     * whether the shared rotating pool is clean — which it is not, because
+     * capabilities outlive the tests that made them and the allocator recycles
+     * their leaves.  That is a real defect, it is T324's subject, and folding
+     * it in here would make one failure say two things and neither clearly.
+     */
+    if (ok) it_pass("T323");
+    else { it_fz_note("T323", T323_SEED, round, step); it_fail("T323", why); }
+}
+
+/* ── T324: what the rotating object pool is still holding ──────────────────
+ * The pool's contract is one sentence — delete before use, never hold a slot
+ * across a test boundary — and until now nothing read it back.  The pool is
+ * 196 leaves and the suite fabricates thousands of objects, so the counter
+ * wraps many times per run: a capability left in a leaf gets deleted out from
+ * under its owner laps later, in somebody else's test, as something that was
+ * fine an hour ago suddenly resolving NOT_FOUND.  That is how four separate
+ * slot collisions in this convergence presented.
+ *
+ * TWO assertions, and the first is the one that matters.
+ *
+ * (1) THE SCAN COMPLETES.  Reading a slot retains what it names, so a slot
+ *     that outlived its OBJECT panics the kernel — "resurrect from refcount
+ *     0" — and no test could ever have seen it, because no test reads an idle
+ *     slot.  This one did, and it found one: T308's scheduling context, killed
+ *     by the donation-return path handing a borrowed SC back to a lender after
+ *     the borrower had already released it (fixed in kreply.c).  A capability
+ *     graph and a reference count disagreeing is D-7's whole subject, and this
+ *     is the assertion that makes the disagreement visible.
+ *
+ * (2) OCCUPANCY IS BOUNDED.  A ceiling, not zero, and the difference is
+ *     honest: the count is a DEBT.  Every entry is a test that kept a leaf —
+ *     mostly threads, whose TCB capability it_thread_create leaves in the pool
+ *     — and paying it down means auditing each one.  The ceiling is what
+ *     stops it growing while that happens, and the number is printed every run
+ *     so paying it down is visible. */
+#define IT_POOL_HELD_CEILING 60u
+
+static void test_t324(void) {
+    it_quiesce_reaper();
+    uint32_t occupied = 0, first_leaf = 0;
+    long first_type = 0;
+
+    for (uint32_t leaf = IT_OBJ_POOL_FIRST; leaf < IT_OBJ_SLOT_SPAN; leaf++) {
+        long t = it_sys1(SYS_CAP_IDENTIFY, (long)IT_OBJ_CPTR(leaf));
+        if (t < 0) continue;                     /* empty slot */
+        if (occupied == 0u) { first_leaf = leaf; first_type = t; }
+        occupied++;
+    }
+
+    it_serial_write("[IRIS][TEST] T324 pool_held="); it_log_num(occupied);
+    it_serial_write(" ceiling="); it_log_num(IT_POOL_HELD_CEILING);
+    it_serial_write("\n");
+
+    if (occupied <= IT_POOL_HELD_CEILING) { it_pass("T324"); return; }
+    it_fz_note("T324", occupied, first_leaf, (uint32_t)first_type);
+    it_fail("T324", "the pool is holding more than the recorded debt");
+}
+
 static void test_t319(void) {
     if (g_it_slot_guard_hits == 0u) { it_pass("T319"); return; }
     it_fz_note("T319", g_it_slot_guard_hits, g_it_slot_guard_last, 0u);
@@ -24073,6 +24315,9 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t319();
     test_t320();
     test_t321();
+    test_t322();
+    test_t323();
+    test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
     it_close(&g_vfs_ep_h);

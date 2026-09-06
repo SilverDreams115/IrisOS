@@ -147,7 +147,33 @@ void kreply_return_donation(struct KReply *r, struct task *back_to) {
      * it actually used earns its replenishment against the period it was used
      * in rather than the next holder's. */
     kschedctx_flush_run(sc);
-    if (to && to->sched_ctx == sc) to->sched_ctx = 0;
+
+    /*
+     * The loan is ONE REFERENCE, and it lives wherever the pointer does.
+     *
+     * A donation moves `sched_ctx` from lender to borrower without touching
+     * the refcount, which is correct exactly while the pointer and the
+     * reference stay together.  They come apart when the BORROWER DIES first:
+     * its teardown releases the reference and clears its pointer, and this
+     * function then handed the pointer back to the lender anyway — a pointer
+     * with no reference behind it.  The lender's own teardown released it a
+     * second time, and a scheduling context reached refcount 0 while a CSpace
+     * slot still named it.  Reading that slot resurrected a destroyed object.
+     *
+     * So the borrower's pointer is the proof the loan is still outstanding: no
+     * pointer, no loan, nothing to return.
+     *
+     * The remaining corner is recorded rather than papered over: when there IS
+     * a loan and the lender has since acquired an SC of its own, the loaned
+     * reference has no home and is dropped on the floor — a leak, which is
+     * what this code already did.  Releasing it here is the obvious repair and
+     * it is WRONG: the host suite attaches scheduling contexts to tasks
+     * without retaining them, so the release lands on a reference that was
+     * never taken and corrupts the heap.  A leak with a name beats a
+     * double-release, and the fix belongs with the retain that is missing.
+     */
+    if (!to || to->sched_ctx != sc) return;
+    to->sched_ctx = 0;
     if (back_to && !back_to->sched_ctx) back_to->sched_ctx = sc;
 }
 
