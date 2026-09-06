@@ -153,11 +153,6 @@ static inline int task_kdebug_cap_named(struct task *t, uint64_t auth_cptr) {
     return ok;
 }
 
-/*
- * Whitelist of port ranges ring-3 services may claim via SYS_CAP_CREATE_IOPORT.
- * A request must fall entirely within one entry ([base, base+count)).
- * The kernel itself owns PIC/PIT; those are not listed here.
- */
 /* ── Forward declarations — proc ─────────────────────────────────── */
 uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2);

@@ -32,13 +32,16 @@ Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
 A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
 (scheduling); **M1–M5** (memory); **P1, P3** (policy); **S2** with the process
 object itself (Stage 7-proc); **O1** (object *form*) with `KVmo` — the last
-object that was fabricated rather than retyped — deleted (D-5).  **34 of the
-36 are MET.**  Still PARTIAL: **A5** (ambient authority) and **P2**
-(mechanism, not policy).  Stage 5 moved A5 most of the way — boot authority is
-fine-grained and named, the monolith cannot be constructed — and Stage 7
-retired every per-process quota there was; the ioport whitelist that was the
-last ambient policy is gone too, so what keeps A5 partial is now stated
-narrowly rather than broadly.
+object that was fabricated rather than retyped — deleted (D-5); **A5** (no
+ambient authority) with the three SELF syscalls retired (A-18).  **35 of the 36
+are MET.**
+
+The one still PARTIAL is **P2** (mechanism, not policy), and it is partial for
+an honest reason rather than a known one: the cause the charter row named — the
+kernel's ioport whitelist — was removed in Stage 5, and the per-process quotas
+went with the resource domain in Stage 7.  Nobody has re-audited it since.  It
+says PARTIAL because nobody has looked, which is a different claim from
+something being wrong, and the row now says which.
 
 ### Where the line is now
 
