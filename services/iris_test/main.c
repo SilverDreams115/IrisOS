@@ -382,6 +382,10 @@ static long it_alive(long proc_cptr) {
 #define IT_CHILD_CN_CPTR(i)  ((long)IT_OBJ_CPTR(IT_CHILD_CN_LEAF(i)))
 #define IT_CHILD_CN_DEST(i) \
     ((uint64_t)IT_OBJ_CNODE_SLOT | ((uint64_t)IT_CHILD_CN_LEAF(i) << 32))
+#define IT_TCB_CNODE_SLOT 67u
+#define IT_TCB_SLOTS      128u
+#define IT_TCB_CPTR(leaf) ((uint32_t)(((leaf) << 8) | IT_TCB_CNODE_SLOT))
+
 #define IT_OBJ_POOL_FIRST    4u
 /*
  * Stage 7 Step 7 — the fault mailbox.
@@ -571,6 +575,22 @@ static long it_initrd_vmo_slot(long auth_cptr, long index) {
 }
 
 /* SYS_TCB_SELF into a rotating leaf: the caller's own TCB as a capability. */
+/*
+ * The caller's own TCB, in the ROTATING pool — and that is the right pool for
+ * it, which is the distinction the thread CNode exists to draw.
+ *
+ * A capability belongs in the rotating pool when its life is a test's, and in
+ * the thread CNode when its life is a THREAD's.  `SYS_TCB_SELF` hands back a
+ * fresh capability each call (an MDB LEGACY ROOT — ledger D-6, no ancestor,
+ * unreachable by any revoke), and tests take it, use it and abandon it.  Left
+ * in the thread CNode those accumulate forever, one unrevocable root per call,
+ * with two of the eleven call sites inside loops: measured at +36 roots.
+ * Recycled, they cost nothing.
+ *
+ * Publishing it once and memoising was the other repair, and it is wrong here:
+ * T083 asks for a capability it can close and revoke on its own, and a shared
+ * one makes that the suite's.
+ */
 static long it_tcb_self_slot(void) {
     uint32_t leaf = IT_OBJ_POOL_FIRST +
                     (__atomic_fetch_add(&g_it_obj_slot_next, 1u,
@@ -5043,14 +5063,68 @@ static long it_cspace_self(void) {
 
 static long it_thread_ipc_buffer(long tcb);
 
+/*
+ * Threads live in their OWN CNode, not in the rotating object pool.
+ *
+ * `it_thread_create` retyped its TCB into a rotating leaf and returned the
+ * CPtr — and 47 call sites later, most of them discard it (`if
+ * (it_thread_create(...) < 0)`).  A slot nobody kept is a slot nobody can
+ * release, so every thread the suite ever made left its capability in a pool
+ * that recycles: T324 counted 22 of them, and the allocator wraps many times
+ * per run, so each one was waiting to be deleted out from under a live thread
+ * in somebody else's test.  That is the shape of four separate slot collisions
+ * this convergence has already paid for.
+ *
+ * The contract could not be fixed at the call sites, so it moved into the
+ * helper.  A leaf here is reused only when the thread it names is PROVABLY
+ * gone — asked, not assumed, because "the test that made it has finished" is
+ * not the same statement as "the thread has exited", and the rotating pool's
+ * whole defect was treating them as one.
+ */
+
+static uint32_t g_it_tcb_next  = 0;
+static int      g_it_tcb_ready = 0;
+
+/* A leaf of the thread CNode that is free, or that holds a dead thread.
+ * Returns the leaf index, or a negative error when every leaf is live. */
+static long it_tcb_leaf_alloc(void) {
+    if (!g_it_tcb_ready) {
+        if (it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
+                    (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
+                    (long)((uint64_t)IT_TCB_CNODE_SLOT << 32),
+                    (long)IT_TCB_SLOTS) != 0)
+            return (long)IRIS_ERR_NO_MEMORY;
+        g_it_tcb_ready = 1;
+    }
+    /* Leaf 0 is CPTR_NULL and refuses publication — start at 1. */
+    uint32_t span  = IT_TCB_SLOTS - 1u;
+    uint32_t start = __atomic_fetch_add(&g_it_tcb_next, 1u, __ATOMIC_RELAXED);
+    for (uint32_t i = 0; i < span; i++) {
+        uint32_t leaf = 1u + ((start + i) % span);
+        long t = it_sys1(SYS_CAP_IDENTIFY, (long)IT_TCB_CPTR(leaf));
+        if (t < 0) return (long)leaf;                       /* empty */
+        if (t == (long)IRIS_HANDLE_TYPE_TCB &&
+            it_tcb_alive((long)IT_TCB_CPTR(leaf)) == 0) {   /* dead: reclaim */
+            (void)it_sys2(SYS_CNODE_DELETE, (long)IT_TCB_CNODE_SLOT, (long)leaf);
+            return (long)leaf;
+        }
+    }
+    return (long)IRIS_ERR_NO_MEMORY;   /* every leaf holds a LIVE thread */
+}
+
 static long it_thread_create(uint64_t entry, uint64_t rsp, uint64_t arg) {
     if (!it_setup_self_vspace()) return (long)IRIS_ERR_NOT_FOUND;
     long cs = it_cspace_self();
     if (cs < 0) return cs;
 
-    long tcb = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
-                                    IRIS_KOBJ_TCB, 0);
-    if (tcb < 0) return tcb;
+    long leaf = it_tcb_leaf_alloc();
+    if (leaf < 0) return leaf;
+    if (it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
+                (long)((uint64_t)IRIS_KOBJ_TCB | (1ULL << 32)),
+                (long)(((uint64_t)leaf << 32) | (uint64_t)IT_TCB_CNODE_SLOT),
+                0) != 0)
+        return (long)IRIS_ERR_NO_MEMORY;
+    long tcb = (long)IT_TCB_CPTR((uint32_t)leaf);
 
     long r = it_sys3(SYS_TCB_CONFIGURE, tcb, cs, IT_VS);
     if (r != 0) return r;
@@ -5116,6 +5190,9 @@ _Static_assert(IT_IPCBUF_CNODE_SLOT == 66u,
 
 static long it_thread_ipc_buffer(long tcb) {
     if (g_it_ipcbuf_ut < 0) {
+        /* Carved into a rotating leaf only long enough to build the CNode it
+         * pays for, then MOVED to a leaf of that CNode — because it is held
+         * for the whole run, and the rotating pool recycles. */
         long ut = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
                                        IRIS_KOBJ_UNTYPED, 128u * 1024u);
         if (ut < 0) return ut;
@@ -5123,7 +5200,13 @@ static long it_thread_ipc_buffer(long tcb) {
                     (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
                     (long)((uint64_t)IT_IPCBUF_CNODE_SLOT << 32), 128) != 0)
             return (long)IRIS_ERR_TABLE_FULL;
-        g_it_ipcbuf_ut = ut;
+        uint32_t home = IT_IPCBUF_MAX + 1u;      /* above every buffer leaf */
+        if (it_sys3(SYS_CSPACE_MINT, ut,
+                    (long)(((uint64_t)home << 32) | (uint64_t)IT_IPCBUF_CNODE_SLOT),
+                    (long)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE)) != 0)
+            return (long)IRIS_ERR_TABLE_FULL;
+        it_slot_delete((uint32_t)ut);
+        g_it_ipcbuf_ut = (long)IT_IPCBUF_CPTR(home);
     }
     uint32_t n = g_it_ipcbuf_next++;
     if (n >= IT_IPCBUF_MAX) return (long)IRIS_ERR_NO_MEMORY;
@@ -21708,6 +21791,8 @@ static void test_t305(void) {
     it_log_num(q0.mdb_legacy_roots);
     it_serial_write(" nodes_live="); it_log_num(q0.mdb_nodes_live);
     it_serial_write(" max_depth="); it_log_num(q0.mdb_max_depth);
+    it_serial_write(" orphans="); it_log_num(q0.mdb_orphan_promotions);
+    it_serial_write(" reparents="); it_log_num(q0.mdb_reparents);
     it_serial_write("\n");
 
     /* A full spawn/kill cycle plus a mint/revoke cycle: between them these
@@ -22127,8 +22212,15 @@ static void test_t308(void) {
     (void)it_sys2(SYS_EXCEPTION_RESUME, srv, 1L);
     (void)it_sys2(SYS_SC_BIND, sc, 0L);
     (void)it_sys1(SYS_TCB_EXIT, cli);
+    (void)it_sys1(SYS_TCB_EXIT, srv);
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)mailbox);
     it_quiesce_reaper();
+    /* Release what this test made.  It used to leave all of it in the rotating
+     * pool, where the allocator would delete it under a later test. */
+    it_slot_delete((uint32_t)sc);
+    it_slot_delete((uint32_t)notif);
+    it_slot_delete((uint32_t)rp);
+    it_slot_delete((uint32_t)ep);
 
     if (ok) it_pass("T308"); else it_fail("T308", why);
 }
@@ -22235,7 +22327,11 @@ static void test_t309(void) {
 
     (void)it_sys2(SYS_SC_BIND, sc, 0L);
     (void)it_sys1(SYS_TCB_EXIT, srv);
+    (void)it_sys1(SYS_TCB_EXIT, cli);
     it_quiesce_reaper();
+    it_slot_delete((uint32_t)sc);
+    it_slot_delete((uint32_t)rp);
+    it_slot_delete((uint32_t)ep);
 
     if (ok) it_pass("T309"); else it_fail("T309", why);
 }
@@ -23711,22 +23807,39 @@ static void test_t323(void) {
  *     — and paying it down means auditing each one.  The ceiling is what
  *     stops it growing while that happens, and the number is printed every run
  *     so paying it down is visible. */
-#define IT_POOL_HELD_CEILING 60u
+/*
+ * The debt, measured: 52 when this test was written, 27 once threads got a
+ * CNode of their own and T308/T309 released what they made.  The ceiling has
+ * headroom for run-to-run variance — the count includes capabilities to
+ * threads that may or may not have been reaped by the time the scan runs — and
+ * it is a DEBT, not a design: every entry is a test that kept a leaf of a pool
+ * that recycles.  It goes down as they are paid.
+ */
+#define IT_POOL_HELD_CEILING 36u
 
 static void test_t324(void) {
     it_quiesce_reaper();
     uint32_t occupied = 0, first_leaf = 0;
     long first_type = 0;
+    uint32_t by_type[20] = { 0 };
 
     for (uint32_t leaf = IT_OBJ_POOL_FIRST; leaf < IT_OBJ_SLOT_SPAN; leaf++) {
         long t = it_sys1(SYS_CAP_IDENTIFY, (long)IT_OBJ_CPTR(leaf));
         if (t < 0) continue;                     /* empty slot */
         if (occupied == 0u) { first_leaf = leaf; first_type = t; }
+        if (t < 20) by_type[t]++;
         occupied++;
     }
 
     it_serial_write("[IRIS][TEST] T324 pool_held="); it_log_num(occupied);
     it_serial_write(" ceiling="); it_log_num(IT_POOL_HELD_CEILING);
+    /* Broken down by type, because "52 capabilities" is a number and "38 of
+     * them are TCBs" is a lead. */
+    for (uint32_t ty = 0; ty < 20u; ty++) {
+        if (!by_type[ty]) continue;
+        it_serial_write(" t"); it_log_num(ty);
+        it_serial_write("="); it_log_num(by_type[ty]);
+    }
     it_serial_write("\n");
 
     if (occupied <= IT_POOL_HELD_CEILING) { it_pass("T324"); return; }

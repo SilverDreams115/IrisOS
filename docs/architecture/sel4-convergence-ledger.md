@@ -699,6 +699,40 @@ body is on that line was invisible, and the probe that motivated the check went
 on passing after the check was written.  Found by re-running the probe against
 the fix instead of assuming the fix worked.
 
+### A-17 — a capability belongs to the pool that matches its LIFE
+
+T324 counted 52 capabilities left in the suite's rotating object pool, and the
+histogram named the biggest holder immediately: 22 TCBs.  `it_thread_create`
+retyped each thread's TCB into a rotating leaf and returned the CPtr — and of
+its 47 call sites, most discard it (`if (it_thread_create(...) < 0)`).  A slot
+nobody keeps is a slot nobody can release, so the contract could not be fixed
+where it was broken.
+
+Threads have their own CNode now, and a leaf there is reused only when the
+thread it names is PROVABLY gone — asked with `SYS_TCB_GET_INFO`, not assumed,
+because "the test that made it has finished" and "the thread has exited" are
+different statements and the rotating pool's whole defect was treating them as
+one.  52 → 27, with T308 and T309 also releasing the endpoints, replies,
+notifications and scheduling contexts they had been abandoning.
+
+The instructive part is the repair that did NOT work, and why.
+
+Moving `it_tcb_self_slot` to the same CNode looked identical — a capability the
+suite holds, out of a recycling pool — and it added **36 unrevocable MDB roots**.
+`SYS_TCB_SELF` publishes a LEGACY ROOT every call (D-6: no ancestor, no revoke
+reaches it), eleven call sites use it, two inside loops, and tests take it, use
+it and abandon it.  In the rotating pool those are recycled and cost nothing;
+in a stable CNode they accumulate forever.  T305's ceiling caught it in one run.
+
+Memoising it — publish once, hand the CPtr back — was the other obvious repair
+and it hung the suite: T083 asks for a capability it can close and revoke on its
+own account, and a shared one makes that the suite's.
+
+So the rule is not "stable slots are better".  **A capability belongs in the
+rotating pool when its life is a TEST's, and in a dedicated CNode when its life
+is a THREAD's or the run's.**  Getting that backwards trades a capability that
+gets deleted too early for one that can never be revoked at all.
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a
