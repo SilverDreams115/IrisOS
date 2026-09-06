@@ -28,51 +28,59 @@ static void knotif_live_unlink(struct KNotification *n) {
     spinlock_unlock(&live_lock);
 }
 
-/* ── waiter array helpers ─────────────────────────────────────── */
+/* ── waiter queue helpers — intrusive through the TCB, no ceiling ─── */
 
 static iris_error_t knotif_waiters_enqueue(struct KNotification *n, struct task *t) {
-    for (uint32_t i = 0; i < KNOTIF_WAITERS_MAX; i++) {
-        if (n->waiters[i] == t) return IRIS_OK; /* already queued */
-    }
-    for (uint32_t i = 0; i < KNOTIF_WAITERS_MAX; i++) {
-        if (!n->waiters[i]) {
-            n->waiters[i] = t;
-            n->waiter_count++;
-            return IRIS_OK;
-        }
-    }
-    return IRIS_ERR_BUSY; /* table full */
+    if (t->notif_next || n->queue_tail == t) return IRIS_OK;  /* already queued */
+    for (struct task *w = n->queue_head; w; w = w->notif_next)
+        if (w == t) return IRIS_OK;
+    t->notif_next = 0;
+    if (n->queue_tail) n->queue_tail->notif_next = t;
+    else               n->queue_head = t;
+    n->queue_tail = t;
+    n->waiter_count++;
+    return IRIS_OK;
 }
 
 static void knotif_waiters_remove(struct KNotification *n, struct task *t) {
-    for (uint32_t i = 0; i < KNOTIF_WAITERS_MAX; i++) {
-        if (n->waiters[i] != t) continue;
-        n->waiters[i] = 0;
+    struct task *prev = 0;
+    for (struct task *w = n->queue_head; w; prev = w, w = w->notif_next) {
+        if (w != t) continue;
+        if (prev) prev->notif_next = w->notif_next;
+        else      n->queue_head    = w->notif_next;
+        if (n->queue_tail == w) n->queue_tail = prev;
+        w->notif_next = 0;
         if (n->waiter_count) n->waiter_count--;
         return;
     }
 }
 
-/* Wake the first blocked waiter; remove it from the array. */
+/* Wake the first blocked waiter; remove it from the queue. */
 static void knotif_waiters_wake_one(struct KNotification *n) {
-    for (uint32_t i = 0; i < KNOTIF_WAITERS_MAX; i++) {
-        struct task *w = n->waiters[i];
-        if (!w) continue;
-        if (w->state == TASK_BLOCKED_IRQ) {
-            n->waiters[i] = 0;
-            if (n->waiter_count) n->waiter_count--;
-            task_wakeup(w);
-            return;
-        }
+    struct task *prev = 0;
+    for (struct task *w = n->queue_head; w; prev = w, w = w->notif_next) {
+        if (w->state != TASK_BLOCKED_IRQ) continue;
+        struct task *next = w->notif_next;
+        if (prev) prev->notif_next = next;
+        else      n->queue_head    = next;
+        if (n->queue_tail == w) n->queue_tail = prev;
+        w->notif_next = 0;
+        if (n->waiter_count) n->waiter_count--;
+        task_wakeup(w);
+        return;
     }
 }
 
-/* Wake all blocked waiters; clear the array. Used on close. */
+/* Wake every blocked waiter and empty the queue.  Used on close. */
 static void knotif_waiters_wake_all(struct KNotification *n) {
-    for (uint32_t i = 0; i < KNOTIF_WAITERS_MAX; i++) {
-        struct task *w = n->waiters[i];
-        n->waiters[i] = 0;
-        if (w && w->state == TASK_BLOCKED_IRQ) {
+    struct task *w = n->queue_head;
+    n->queue_head = 0;
+    n->queue_tail = 0;
+    n->waiter_count = 0;
+    while (w) {
+        struct task *next = w->notif_next;
+        w->notif_next = 0;
+        if (w->state == TASK_BLOCKED_IRQ) {
             /*
              * Stage 9-evt Step 1: tell the waiter WHY it woke.
              *
@@ -88,8 +96,8 @@ static void knotif_waiters_wake_all(struct KNotification *n) {
             w->ipc_ep_closed = 1u;
             task_wakeup(w);
         }
+        w = next;
     }
-    n->waiter_count = 0;
 }
 
 /* ── KObject ops ──────────────────────────────────────────────── */

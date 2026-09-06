@@ -81,22 +81,22 @@ static int phase3_notification_selftest(void) {
 
     for (uint32_t i = 0; i < sizeof(fake_waiter); i++) ((uint8_t *)&fake_waiter)[i] = 0;
     fake_waiter.state = TASK_BLOCKED_IRQ;
-    n->waiters[0] = &fake_waiter;
+    n->queue_head = n->queue_tail = &fake_waiter;
     n->waiter_count = 1;
     kobject_active_retain(&n->base);
     kobject_active_release(&n->base);
     if (!n->closed) goto out;
     if (fake_waiter.state != TASK_READY) goto out;
-    if (n->waiters[0] != 0) goto out;
+    if (n->queue_head != 0) goto out;
     if (knotification_wait(n, &bits) != IRIS_ERR_CLOSED) goto out;
 
     n->closed = 0;
     for (uint32_t i = 0; i < sizeof(cancelled_waiter); i++) ((uint8_t *)&cancelled_waiter)[i] = 0;
     cancelled_waiter.state = TASK_BLOCKED_IRQ;
-    n->waiters[0] = &cancelled_waiter;
+    n->queue_head = n->queue_tail = &cancelled_waiter;
     n->waiter_count = 1;
     knotification_cancel_waiter(&cancelled_waiter);
-    if (n->waiters[0] != 0) goto out;
+    if (n->queue_head != 0) goto out;
 
     ok = 1;
 out:

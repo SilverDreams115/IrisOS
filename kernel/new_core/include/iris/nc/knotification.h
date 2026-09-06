@@ -25,7 +25,20 @@
  */
 
 #define KNOTIF_POOL_SIZE     0  /* no static pool — kpage-backed; 0 = unbounded allocator ceiling */
-#define KNOTIF_WAITERS_MAX   4  /* max tasks blocked on one notification at once */
+/*
+ * There is no waiter ceiling.
+ *
+ * It was KNOTIF_WAITERS_MAX = 4: a fixed array inside the object, and a fifth
+ * waiter got IRIS_ERR_BUSY.  The kernel was deciding how many threads may wait
+ * on a notification — a number it invented, of the same class as the
+ * per-process quotas Stage 7 removed (charter P2).  seL4 queues waiters on an
+ * intrusive list through the TCB and has no such limit.
+ *
+ * So does IRIS, and it always did: KEndpoint has queued its waiters that way
+ * since Phase 9 (`queue_head`/`queue_tail` + `task.ep_next`).  The same kernel
+ * was answering the same question two ways, and the unbounded answer was in
+ * the file next door.
+ */
 
 struct task; /* forward */
 
@@ -34,7 +47,8 @@ struct KNotification {
     _Atomic uint64_t    signal_bits;                 /* pending signals — bit N = signal N */
     uint8_t             closed;
     uint32_t            waiter_count;
-    struct task        *waiters[KNOTIF_WAITERS_MAX]; /* tasks blocked on wait */
+    struct task        *queue_head;                  /* tasks blocked on wait */
+    struct task        *queue_tail;
     struct KNotification *live_prev;
     struct KNotification *live_next;
 };
@@ -56,7 +70,7 @@ iris_error_t knotification_wait(struct KNotification *n, uint64_t *out_bits);
  * Stage 9-evt Step 1 — the RESTARTABLE half of knotification_wait.
  *
  * Does one non-blocking attempt.  Returns IRIS_OK with the bits, IRIS_ERR_CLOSED,
- * IRIS_ERR_BUSY (waiter table full), or IRIS_ERR_WOULD_BLOCK meaning "you are
+ * or IRIS_ERR_WOULD_BLOCK meaning "you are
  * enqueued and parked — ask to be re-executed".  It holds nothing across the
  * block: the caller's continuation is its membership of the waiter list, which
  * is state on the NOTIFICATION and the THREAD, not on a kernel stack.

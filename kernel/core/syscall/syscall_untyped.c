@@ -341,7 +341,21 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
             new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER | RIGHT_DUPLICATE;
             break;
         case KOBJ_CNODE: {
-            uint64_t num_slots = obj_arg ? obj_arg : KCNODE_DEFAULT_SLOTS;
+            /*
+             * The CALLER says how big, and 0 is not an answer.
+             *
+             * It used to mean KCNODE_DEFAULT_SLOTS — the kernel picking 256
+             * slots, and the memory for them, on behalf of somebody who did
+             * not say.  seL4's Untyped_Retype takes size_bits and has no
+             * default: a caller that has not decided how big its CSpace is has
+             * not decided, and guessing for it is product policy (charter P2).
+             * Every caller in this system already passes a size.
+             */
+            if (obj_arg == 0u) {
+                kuntyped_stat_retype_failure();
+                return syscall_err(IRIS_ERR_INVALID_ARG);
+            }
+            uint64_t num_slots = obj_arg;
             if (num_slots == 0u || num_slots > KCNODE_MAX_SLOTS ||
                 (num_slots & (num_slots - 1u)) != 0u)
                 { kuntyped_stat_retype_failure(); return syscall_err(IRIS_ERR_INVALID_ARG); }
@@ -498,8 +512,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                         objs[i] = &kreply_alloc_at(ptrs[i])->base;                break;
                     case KOBJ_CNODE:
                         objs[i] = &kcnode_alloc_at(ptrs[i],
-                                    (uint32_t)(obj_arg ? obj_arg
-                                                       : KCNODE_DEFAULT_SLOTS))->base; break;
+                                    (uint32_t)obj_arg)->base; break;
                     case KOBJ_TCB:
                         objs[i] = &ktcb_alloc_at(ptrs[i])->base;                  break;
                     default: /* KOBJ_SCHED_CONTEXT */

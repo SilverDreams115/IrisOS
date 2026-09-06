@@ -23846,6 +23846,76 @@ static void test_t323(void) {
     else { it_fz_note("T323", T323_SEED, round, step); it_fail("T323", why); }
 }
 
+/* ── T325: a notification has no waiter ceiling (charter P2) ────────────────
+ * `KNOTIF_WAITERS_MAX` was 4 — a fixed array inside the object, and a fifth
+ * waiter got IRIS_ERR_BUSY.  The kernel was deciding how many threads may wait
+ * on a notification: a number it invented, of the same class as the
+ * per-process quotas Stage 7 removed.  seL4 queues waiters intrusively through
+ * the TCB and has no such limit, and so did IRIS's ENDPOINTS all along — the
+ * same kernel answered the same question two ways.
+ *
+ * Six threads, which is two more than the ceiling that used to be here, so the
+ * test fails against the old code rather than merely passing against the new.
+ * Each blocks, each is woken by its own signal, and all six report.
+ * Invariants: I3, P2. */
+#define T325_THREADS 6u
+static volatile long     g_t325_notif;
+static volatile uint32_t g_t325_woke;
+static volatile uint32_t g_t325_blocked;
+static uint8_t           g_t325_stacks[T325_THREADS][4096];
+
+static void t325_body(void) {
+    uint64_t bits = 0;
+    __atomic_fetch_add(&g_t325_blocked, 1u, __ATOMIC_RELAXED);
+    if (it_sys2(SYS_NOTIFY_WAIT, (long)g_t325_notif, (long)(uintptr_t)&bits) == 0)
+        __atomic_fetch_add(&g_t325_woke, 1u, __ATOMIC_RELAXED);
+    for (;;) it_sys0(SYS_YIELD);
+}
+
+static void test_t325(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "notification waiters";
+
+    long n = it_notify_create_slot();
+    if (n < 0) { it_fail("T325", "notif"); return; }
+    g_t325_notif = n; g_t325_woke = 0; g_t325_blocked = 0;
+
+    long tids[T325_THREADS];
+    uint32_t made = 0;
+    for (uint32_t i = 0; i < T325_THREADS; i++) {
+        tids[i] = it_thread_create((uint64_t)(uintptr_t)t325_body,
+                                   ((uint64_t)(uintptr_t)(g_t325_stacks[i] +
+                                       sizeof(g_t325_stacks[i]))) & ~0xFULL, 0);
+        if (tids[i] < 0) break;
+        made++;
+    }
+    if (made != T325_THREADS) { ok = 0; why = "threads"; }
+
+    /* All six must reach the wait before any signal, so a signal cannot be
+     * consumed by a thread that had not queued yet. */
+    for (int i = 0; ok && i < 4000 && g_t325_blocked < T325_THREADS; i++)
+        (void)it_sys0(SYS_YIELD);
+    if (ok && g_t325_blocked != T325_THREADS) { ok = 0; why = "not all blocked"; }
+    for (int i = 0; ok && i < 200; i++) (void)it_sys0(SYS_YIELD);
+
+    /* One signal per waiter: a wait clears every pending bit, so a signal
+     * wakes exactly one. */
+    for (uint32_t i = 0; ok && i < T325_THREADS; i++) {
+        if (it_sys2(SYS_NOTIFY_SIGNAL, n, 1) != 0) { ok = 0; why = "signal"; break; }
+        for (int k = 0; k < 400 && g_t325_woke < i + 1u; k++) (void)it_sys0(SYS_YIELD);
+    }
+    if (ok && g_t325_woke != T325_THREADS) {
+        it_fz_note("T325", g_t325_woke, T325_THREADS, 0u);
+        ok = 0; why = "a waiter past the old ceiling never woke";
+    }
+
+    for (uint32_t i = 0; i < made; i++) (void)it_sys1(SYS_TCB_EXIT, tids[i]);
+    it_quiesce_reaper();
+    it_slot_delete((uint32_t)n);
+    if (ok) it_pass("T325"); else it_fail("T325", why);
+}
+
 /* ── T324: what the rotating object pool is still holding ──────────────────
  * The pool's contract is one sentence — delete before use, never hold a slot
  * across a test boundary — and until now nothing read it back.  The pool is
@@ -24526,6 +24596,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t321();
     test_t322();
     test_t323();
+    test_t325();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

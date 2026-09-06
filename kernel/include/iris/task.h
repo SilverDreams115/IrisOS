@@ -426,6 +426,14 @@ struct task {
     uint32_t            ipc_msg_ready;   /* set by sender on successful rendezvous */
     uint32_t            ipc_ep_closed;   /* set by kendpoint_close while task was blocked */
     struct task        *ep_next;         /* intrusive link for endpoint queue */
+    /*
+     * ...and for the notification queue.  A separate link rather than a shared
+     * one, because a thread's membership of the two is a different fact and
+     * sharing the field would make "is it queued anywhere" unanswerable from
+     * either side.  Costs one pointer per thread and removes a ceiling that
+     * cost four per notification.
+     */
+    struct task        *notif_next;      /* intrusive link for notification queue */
     struct KEndpoint   *blocking_ep;     /* endpoint where task is blocked, or NULL */
     /* Ph68: capability staged for transfer during a blocking send */
     struct KObject     *ep_cap_obj;      /* kobject being transferred; NULL = none */

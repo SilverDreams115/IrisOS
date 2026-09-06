@@ -7,8 +7,6 @@
 #include <iris/nc/error.h>
 #include <stdint.h>
 
-#define KSCHEDCTX_DEFAULT_BUDGET  5u   /* 50ms at 100Hz */
-#define KSCHEDCTX_DEFAULT_PERIOD  20u  /* 200ms at 100Hz */
 
 struct task;
 

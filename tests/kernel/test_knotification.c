@@ -73,14 +73,19 @@ void test_knotification(void) {
     struct task waiter;
     for (uint32_t i = 0; i < sizeof(waiter); i++) ((uint8_t *)&waiter)[i] = 0;
     waiter.state = TASK_BLOCKED_IRQ;          /* simulate a blocked waiter */
-    n4->waiters[0]   = &waiter;
+    n4->queue_head = n4->queue_tail = &waiter;
     n4->waiter_count = 1u;
-    /* Fire the close op (active_refs → 0): wake-all must clear the array. */
+    /* Fire the close op (active_refs → 0): wake-all must empty the queue. */
     kobject_active_retain(&n4->base);
     kobject_active_release(&n4->base);
     ASSERT_EQ(n4->closed, 1u);
     ASSERT_EQ(n4->waiter_count, 0u);
-    ASSERT_NULL(n4->waiters[0]);
+    ASSERT_NULL(n4->queue_head);
+    ASSERT_NULL(n4->queue_tail);
+    /* ...and the waiter's own link is cleared, so it can queue somewhere else.
+     * A stale link is how an intrusive queue turns into two queues sharing a
+     * thread. */
+    ASSERT_NULL(waiter.notif_next);
     /* Idempotent: a post-close wait returns CLOSED, never hangs. */
     uint64_t got4 = 7;
     ASSERT_EQ(knotification_wait(n4, &got4), IRIS_ERR_CLOSED);
