@@ -31,6 +31,22 @@ static struct KSchedContext *rf_sc(uint64_t budget, uint64_t period) {
     struct KSchedContext *sc = kschedctx_alloc_at(mem, 0);
     if (!sc) return NULL;
     if (kschedctx_configure(sc, budget, period) != IRIS_OK) return NULL;
+    /*
+     * A second reference, standing for the CSPACE SLOT.
+     *
+     * A retyped object always has one: the slot that named it is what made it.
+     * Without this the fixture models a scheduling context whose ONLY holder is
+     * a donation — which the kernel cannot construct — and the moment a test
+     * exercises the path where a loan comes back to nobody and is released,
+     * the object is destroyed.  Its storage came from kpage_alloc rather than
+     * an Untyped, so the destructor reads a block header that is not there and
+     * corrupts the host heap.
+     *
+     * The point is not the crash; it is that the fixture was modelling a
+     * lifetime the kernel does not have, and the kernel could not enforce the
+     * rule while its own tests broke it.
+     */
+    kobject_retain(&sc->base);
     return sc;
 }
 

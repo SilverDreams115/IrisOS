@@ -163,18 +163,19 @@ void kreply_return_donation(struct KReply *r, struct task *back_to) {
      * So the borrower's pointer is the proof the loan is still outstanding: no
      * pointer, no loan, nothing to return.
      *
-     * The remaining corner is recorded rather than papered over: when there IS
-     * a loan and the lender has since acquired an SC of its own, the loaned
-     * reference has no home and is dropped on the floor — a leak, which is
-     * what this code already did.  Releasing it here is the obvious repair and
-     * it is WRONG: the host suite attaches scheduling contexts to tasks
-     * without retaining them, so the release lands on a reference that was
-     * never taken and corrupts the heap.  A leak with a name beats a
-     * double-release, and the fix belongs with the retain that is missing.
+     * And when there IS a loan with nowhere to go — the lender is gone, or has
+     * acquired a scheduling context of its own while it waited — the reference
+     * is RELEASED rather than dropped on the floor.  It used to leak, and the
+     * repair was blocked by the host suite: its fixture modelled a scheduling
+     * context whose only holder was the donation, which the kernel cannot
+     * construct, so the release destroyed an object whose storage never came
+     * from an Untyped.  The fixture models the CSpace slot now, and the rule
+     * can be enforced.
      */
     if (!to || to->sched_ctx != sc) return;
     to->sched_ctx = 0;
     if (back_to && !back_to->sched_ctx) back_to->sched_ctx = sc;
+    else                                kobject_release(&sc->base);
 }
 
 void kreply_cancel_caller(struct KReply *r) {
