@@ -33,7 +33,6 @@
 #include <iris/irq_routing.h>
 #include <iris/scheduler.h>
 #include <iris/usercopy.h>
-#include <iris/futex.h>
 #include <iris/initrd.h>
 #include <iris/tsc.h>
 #include <iris/klog.h>
@@ -181,8 +180,6 @@ uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* sys_wait_any / sys_wait_any_timeout retired — Phase 13/Track G */
-uint64_t sys_futex_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_futex_wake(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — VM ───────────────────────────────────── */
 uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);

@@ -36,12 +36,14 @@ object that was fabricated rather than retyped — deleted (D-5); **A5** (no
 ambient authority) with the three SELF syscalls retired (A-18).  **35 of the 36
 are MET.**
 
-The one still PARTIAL is **P2** (mechanism, not policy), and it is partial for
-an honest reason rather than a known one: the cause the charter row named — the
-kernel's ioport whitelist — was removed in Stage 5, and the per-process quotas
-went with the resource domain in Stage 7.  Nobody has re-audited it since.  It
-says PARTIAL because nobody has looked, which is a different claim from
-something being wrong, and the row now says which.
+The one still PARTIAL is **P2** (mechanism, not policy), and it has now been
+AUDITED (ledger A-19) rather than assumed.  Four things the kernel was deciding
+for somebody else are gone — a futex, a notification waiter ceiling, a default
+CSpace size and two dead scheduling defaults — and the rest is classified as
+mechanism with the reason for each.  What remains is one item: `TASK_MAX` = 256
+is a real ceiling on live threads, because the scheduler keeps an index-keyed
+identity registry.  seL4 has no thread limit.  The run queue stopped being
+index-keyed in Phase S2, so what is left is the registry alone.
 
 ### Where the line is now
 

@@ -751,24 +751,21 @@ static inline long iris_syscall0(long nr) {
 #define SYS_THREAD_EXIT  49
 
 /*
- * Futex wait/wake — modern/conforming (iris_error_t).
+ * SYS_FUTEX_WAIT(50) and SYS_FUTEX_WAKE(51) — RETIRED (charter P2).
  *
- * SYS_FUTEX_WAIT(uaddr, expected) → 0 or negative iris_error_t
- *   uaddr:    user pointer to a 4-byte aligned uint32_t in the caller's aspace.
- *   expected: the value the kernel checks at *uaddr before blocking.
- *   If *uaddr == expected, the calling thread blocks until woken by
- *   SYS_FUTEX_WAKE on the same uaddr.
- *   If *uaddr != expected, returns IRIS_ERR_WOULD_BLOCK immediately.
- *   Returns 0 on successful wake.
+ * A futex is a synchronization PRODUCT, and it was implemented in the kernel:
+ * a hash table of 32 buckets by 8 slots, a ceiling of 256 waiters the kernel
+ * invented, and a blocking wait keyed on a raw user address rather than on a
+ * capability.  seL4 has no futex.  One is built in user space out of a shared
+ * FRAME for the word and a NOTIFICATION for the sleep — both of which this
+ * kernel already provides as mechanism, and the notification wait has taken a
+ * timeout since Phase 13.
  *
- * SYS_FUTEX_WAKE(uaddr, count) → number of threads woken (≥ 0)
- *   uaddr: must be 4-byte aligned; identifies the wait queue.
- *   count: maximum number of waiting threads to wake.
- *   Returns the number of threads actually woken (0 if none were waiting).
- *   Does NOT access *uaddr — only uses the address as a wait queue key.
+ * Nothing in the system used them: the only caller was one test, whose subject
+ * was the futex itself.  The numbers stay permanently reserved.
  */
-#define SYS_FUTEX_WAIT  50
-#define SYS_FUTEX_WAKE  51
+#define SYS_FUTEX_WAIT  50  /* RETIRED (P2) → IRIS_ERR_NOT_SUPPORTED */
+#define SYS_FUTEX_WAKE  51  /* RETIRED (P2) → IRIS_ERR_NOT_SUPPORTED */
 
 /*
  * Handle inspection helpers — modern/conforming (iris_error_t).

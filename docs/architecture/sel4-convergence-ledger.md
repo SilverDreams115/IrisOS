@@ -813,6 +813,66 @@ their numbers permanently reserved.
 Measured: `mdb_legacy_roots` 32 → **23**.  Nine unparented capabilities a run
 were these three calls.
 
+### A-19 — P2 audited: what the kernel was deciding for somebody else
+
+The charter row for P2 (the kernel implements mechanism, not product policy)
+said PARTIAL and named the ioport whitelist, which Stage 5 had removed.  Nobody
+had re-audited it since.  This is the audit: every fixed limit, default and
+subsystem in `kernel/` read against the question "who decided this, and should
+they have".
+
+**Removed — the kernel was deciding.**
+
+*A futex.*  `SYS_FUTEX_WAIT`/`SYS_FUTEX_WAKE` and 176 lines of hash table:
+32 buckets by 8 slots, a ceiling of 256 waiters the kernel invented, and a
+blocking wait keyed on a raw user ADDRESS rather than on a capability.  A futex
+is a synchronization PRODUCT.  seL4 has none: one is built in user space from a
+shared frame for the word and a notification for the sleep, both of which this
+kernel already provides, and the notification wait has taken a timeout since
+Phase 13.  Nothing in the system used it — the only caller was one test whose
+subject was the futex itself, retired with it.
+
+*A waiter ceiling.*  `KNOTIF_WAITERS_MAX` was 4, a fixed array inside the
+object, and a fifth waiter got BUSY.  The kernel was deciding how many threads
+may wait on a notification.  The unbounded mechanism was in the file next door:
+`KEndpoint` has queued its waiters intrusively through the TCB since Phase 9.
+The same kernel was answering the same question two ways.  T325 blocks six
+threads on one notification — two past the old limit, so it fails against the
+old code rather than merely passing against the new.
+
+*A CSpace size.*  Retyping a CNode with `obj_arg == 0` meant 256 slots, and the
+memory for them, chosen for a caller who had not said.  `seL4_Untyped_Retype`
+takes `size_bits` and has no default.
+
+*Two dead constants.*  `KSCHEDCTX_DEFAULT_BUDGET` and `_PERIOD` had no users at
+all — policy the kernel carried without applying.
+
+**Classified as mechanism — the kernel is not deciding for anybody.**
+
+`CSPACE_MAX_DEPTH` and `KCNODE_MAX_SLOTS` bound a resolver walk and one
+object's size; seL4 bounds both.  `KUNTYPED_RETYPE_MAX_COUNT`/`_BYTES` bound
+one IRQ-off window, which is a latency property, and seL4 bounds retype by
+preemption for the same reason.  `IRQ_ROUTE_MAX` is 16 because the legacy PIC
+has 16 lines — a hardware fact.  `TASK_PRIORITY_MAX` (255) and a round-robin
+time slice are seL4's arrangement too.  `MAX_CPUS`, `MAX_ORDER` and
+`PMM_MAX_PAGES` are build and hardware bounds.  The kernel's `0x3F8` writes are
+its panic serial, which seL4 also compiles in.
+
+**What is left, named.**  `TASK_MAX` is 256 and it is a REAL ceiling: the
+scheduler keeps an index-keyed registry (`ktcb_registry[]`) for thread
+identity, and `task_registry_alloc` returns NO_MEMORY when it is full.  seL4
+has no thread limit — a TCB exists because somebody retyped one, and the
+scheduler reaches it through the capability.  The run queue is already
+intrusive (the index-keyed `next[TASK_MAX]` arrays went in Phase S2), so what
+remains is the identity registry alone: a pointer, a generation and an occupied
+flag per slot, used to validate a thread pointer against a stale id.  Whether
+the generation check survives at all is the real question — a TCB is a
+capability now, and a capability's own lifetime already answers "is this thread
+still the one you meant".
+
+So **P2 stays PARTIAL, and for a stated reason rather than an unexamined one**:
+one kernel-invented ceiling, on threads, with the shape of its removal known.
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a

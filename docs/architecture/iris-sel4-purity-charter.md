@@ -104,7 +104,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 | # | Invariant | Today |
 |---|---|---|
 | P1 | Discovery, restart, FS, pager, drivers, service quotas and manifests live in user space | MET |
-| P2 | The kernel implements mechanism, not product policy | PARTIAL — and the cause this row named is GONE: the ioport whitelist was removed in Stage 5 (the range a holder may claim travels on the capability), and the per-process quotas went with the resource domain in Stage 7.  What keeps it partial has not been re-audited since, so the row says PARTIAL because nobody has looked, not because something is known to be wrong |
+| P2 | The kernel implements mechanism, not product policy | PARTIAL — **audited (ledger A-19)**.  Removed: the kernel FUTEX (a synchronization product, 176 lines and a 256-waiter ceiling, keyed on a raw user address rather than a capability — seL4 has none), the notification waiter ceiling (`KNOTIF_WAITERS_MAX` = 4; endpoints already queued intrusively through the TCB), the default CNode size (0 meant 256 slots the caller never asked for), and two dead scheduling defaults.  Classified as mechanism and left: resolver and object bounds, the retype batch's IRQ-off window, the PIC's 16 lines, seL4's own priority range and time slice.  **What remains is one item: `TASK_MAX` = 256**, a real ceiling — the scheduler's index-keyed identity registry returns NO_MEMORY when full, and seL4 has no thread limit |
 | P3 | A hardcoded whitelist is tolerated only as temporary bootstrap with a ledger entry | MET (entry added) |
 
 ## 3. Permanent prohibitions

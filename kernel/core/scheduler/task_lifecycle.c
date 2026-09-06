@@ -14,7 +14,6 @@
 #include <iris/nc/kreply.h>
 #include <iris/nc/ktcb.h>
 #include <iris/nc/rights.h>
-#include <iris/futex.h>
 #include <iris/initrd.h>
 #include <stdint.h>
 
@@ -435,7 +434,6 @@ static void task_cancel_blocked_waits(struct task *t) {
     /* Phase 13/Track G: kchannel_cancel_waiter retired — no task blocks on a
      * KChannel (the object is gone). */
     knotification_cancel_waiter(t);
-    futex_cancel_waiter(t);
     kendpoint_cancel_waiter(t);
     /* Ph85: cancel pending KReply (task was in TASK_BLOCKED_REPLY). */
     if (t->pending_kreply) {

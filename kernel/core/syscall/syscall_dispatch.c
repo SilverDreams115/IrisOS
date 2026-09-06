@@ -259,8 +259,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_EXCEPTION_HANDLER:    return sys_exception_handler(arg0, arg1, arg2, arg3);
         case SYS_THREAD_CREATE:        return sys_thread_create(arg0, arg1, arg2);
         case SYS_THREAD_EXIT:          return sys_thread_exit(arg0, arg1, arg2);
-        case SYS_FUTEX_WAIT:           return sys_futex_wait(arg0, arg1, arg2);
-        case SYS_FUTEX_WAKE:           return sys_futex_wake(arg0, arg1, arg2);
         case SYS_HANDLE_TYPE:          return sys_handle_type(arg0, arg1, arg2);
         case SYS_HANDLE_SAME_OBJECT:   return sys_handle_same_object(arg0, arg1, arg2);
         case SYS_POWEROFF:             return sys_poweroff(arg0, arg1, arg2);

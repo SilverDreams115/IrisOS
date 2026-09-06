@@ -1613,22 +1613,19 @@ static void test_t023(void) {
         it_fail("T023", "expected ACCESS_DENIED");
 }
 
-/* ── T017: FUTEX_WAIT timeout ───────────────────────────────────────────── */
-
-static volatile uint32_t g_t017_futex = 99u;
-
-static void test_t017(void) {
-    g_t017_futex = 99u;
-    /* FUTEX_WAIT(&g_t017_futex, expected=99, timeout=50ms) → TIMED_OUT */
-    long r = it_sys3(SYS_FUTEX_WAIT,
-                     (long)(uintptr_t)&g_t017_futex,
-                     99,
-                     50000000L);
-    if (r == (long)IRIS_ERR_TIMED_OUT)
-        it_pass("T017");
-    else
-        it_fail("T017", "expected TIMED_OUT");
-}
+/* ── T017 — RETIRED with the kernel futex (charter P2) ─────────────────
+ * Its subject was SYS_FUTEX_WAIT's timeout.  A futex is a synchronization
+ * PRODUCT and it was in the kernel — a hash table, a kernel-invented ceiling
+ * of 256 waiters, and a blocking wait keyed on a raw user address instead of a
+ * capability.  seL4 has none; one is built in user space from a shared FRAME
+ * for the word and a NOTIFICATION for the sleep.
+ *
+ * The property that outlives it — a blocking wait that returns TIMED_OUT
+ * rather than hanging — is T010's, on SYS_NOTIFY_WAIT_TIMEOUT, which is the
+ * mechanism a user-space futex would sleep on.
+ *
+ * The Stage 4 rule, unchanged: a test whose SUBJECT is the retired mechanism
+ * dies with it; one asserting a property that survives is rewritten. */
 
 /* ── T024: SYS_REPLY transfers an attached cap to the EP_CALL caller ────── */
 
@@ -24299,7 +24296,6 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t014();
     test_t015();
     test_t016();
-    test_t017();
     test_t018();
     test_t019();
     test_t020();
