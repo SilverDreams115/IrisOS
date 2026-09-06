@@ -133,7 +133,7 @@ grants the FRAME for page N.
 | No ambient authority | **met** | boot authority is one capability per authority, every per-process quota is gone (Stage 7), and the kernel's hardcoded ioport whitelist is REMOVED (Stage 5): the range a holder may claim travels on the `IOPORT_CONTROL` capability, narrowed by derivation (`SYS_IOPORT_CONTROL_NARROW`, T164/T171).  The kernel decides no device policy at all.  A-18 removed the LAST ambient authority: `SYS_VSPACE_SELF`, `SYS_CSPACE_SELF` and `SYS_TCB_SELF` handed a thread capabilities to its own address space, CSpace and thread asking for no capability at all.  All three are RETIRED — delegated at `IRIS_CPTR_OWN_VSPACE`/`OWN_CSPACE`/`OWN_TCB` for services, in BootInfo for the root task (which is seL4's arrangement), and for a thread the loader never saw, in the ENTRY REGISTER: the trampoline delivers the thread argument in `rdi` as well as `rbx`, so a thread written in C reads its own TCB capability as a parameter.  `mdb_legacy_roots` 32 → 23 |
 | No kernel heap | **met** | The kernel's slab is a BOOT ARENA and it is SEALED at the end of boot: allocating from it afterwards panics.  seL4 has no kernel heap because its boot code carves the root task's initial objects from a statically-known region and describes everything else as Untyped — which is exactly what this is, now that the door shuts behind it.  The purity gate's reachability check runs with ZERO exemptions and over the TRANSITIVE closure (A-16): no syscall handler can reach the allocator through any chain of calls, not merely by naming its caller, and T318 reads the seal from ring 3 so the property cannot stop being true unobserved |
 | MCS scheduling | **close** | all four pillars are in as of Stage 8-mcs.  Budget and period are enforced; **sporadic replenishment** returns every tick consumed exactly one period later, so a thread can never spend more than its budget in any window of its period (host R-1..R-8); **timeout faults** make an overrun a policy decision a temporal supervisor takes rather than an invisible stall (`SYS_TCB_SET_TIMEOUT_HANDLER`, T307); and **SC donation** lends a client's scheduling context to a PASSIVE server for the duration of a Call, so an SC-less thread runs on the requester's time instead of — as it did before — running unbudgeted (T308).  `SYS_REPLY_RECV` closes the last of them (T309): without it a passive server is, between reply and receive, runnable with no scheduling context — and an SC-less thread is not charged, so it runs unbudgeted for exactly as long as the second syscall takes.  `refill_max` is now the SC's own, chosen at RETYPE and sizing the object (T315): a passive server woken per request needs a deep replenishment queue and a periodic task needs two, and the memory is charged to whoever asked for the depth instead of every SC paying for the worst case out of the kernel.  **Nothing in this dimension is still not seL4's** |
-| ABI shape | **far, by decision** | 68 live numbered syscalls of 127 numbers, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  Registered permanent divergence (charter §6) |
+| ABI shape | **far, by decision** | 96 live numbered syscalls, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  Registered permanent divergence (charter §6) |
 | Object lifetime | **close** | seL4 has no per-object reference count: an object exists while a capability to it exists, and `cteDelete`/`finaliseCap` walk the derivation tree.  IRIS reaches the same ANSWER through two counters, and that is now measured rather than asserted — T322 checks the rule for every retypeable type, T323 over generated derivation shapes, T321 through a CSpace cycle (where IRIS and seL4 behave identically: neither collects it idly, both reclaim it when the Untyped is revoked).  The mechanism difference is registered and permanent (D-7).  What it cost is recorded too: a donated scheduling context was released twice because the loan moved a pointer and not a reference, and the object hit refcount 0 with a slot still naming it — found by T324, which reads every pool slot because nothing else ever reads an idle one |
 | Kernel architecture | **met** | D-1, the only one of these that was a rewrite rather than an increment, is CLOSED.  IRIS has ONE kernel stack per core and no thread blocks inside the kernel.  No blocking syscall keeps live state across its block (step 1); a parked one abandons its frame (step 2, T310); the whole ring-3 register context lives in the TCB (step 3, T314); and `TSS.RSP0` is set once and never changes, because a DISPATCHER on the core's stack replaced `context_switch` — which is deleted, along with `task_yield`, `scheduler_sleep_current`, the idle task and `kstack_alloc`.  T318 measures the consequence from ring 3: eight threads, and the kernel's physical reserve does not move, where the old per-thread stacks would have cost two pages each |
 
@@ -1636,7 +1636,7 @@ Not seL4's yet: `refill_max` is a compile-time constant (8 entries) rather than
 a per-SC configuration chosen at retype.  At tick granularity with a coalescing
 flush it has not been reachable; recorded rather than claimed closed.
 
-## Stage 8-cap — the capability model's last gaps  ← IN PROGRESS (D-2 and D-8 closed; D-4's mechanism landed, its adoption waits on the memory server; D-3 is a decision still owed)
+## Stage 8-cap — the capability model's last gaps  ← CLOSED (D-2, D-8 and D-4 closed; D-3 decided and registered as a permanent divergence)
 
 Four items, each a registered divergence or a measured hole.  All are additive:
 none of them is a rewrite, which is why they are grouped rather than staged
@@ -1717,7 +1717,7 @@ differently.
 defect class in it, and every §6 row is either permanent-deliberate or has a
 live trigger.
 
-## Stage 9-evt — the event kernel  ← STEPS 1 AND 2 CLOSED; STEP 3 OPEN
+## Stage 9-evt — the event kernel  ← CLOSED (all three steps)
 
 This is ledger **D-1**, which carried "ACTIVE_LEGACY — no stage assigned" from
 Stage 5 until this stage was opened.  The ledger's own words are that it "is
@@ -1843,15 +1843,15 @@ fiction, and IRIS's driver-isolation document says so only implicitly.
   by whoever grants them, revocable.  This is seL4's shape (`seL4_X86_IOSpace`)
   and it is the only thing that makes an ioport or IRQ capability safe to
   delegate.
-- **Retire the kernel's I/O port whitelist** (charter A5/P2, both PARTIAL for
-  this reason).  It exists because the kernel cannot otherwise bound what a
-  port grant can reach; with per-device domains the bound is a capability and
-  the hardcoded table — kernel policy, charter P3 — goes.
+- The I/O port whitelist is already gone (Stage 5): the range a holder may
+  claim travels on the `IOPORT_CONTROL` capability and is narrowed by
+  derivation.  What per-device domains would add is the same bound for DMA,
+  which is the one reach a port or IRQ capability still cannot express.
 
 ## Stage 10-abi — freeze the ABI  ← NOT STARTED
 
 A product that other people build on has a versioned, stable ABI.  IRIS today
-has 71 live syscalls and **43 retired-but-reserved numbers**, which is the
+has **96 live syscalls** and a long list of retired-but-reserved numbers, which is the
 correct state for a system in convergence and the wrong state to ship.
 
 - A declared 1.0 syscall surface, with the reserved numbers either reclaimed
