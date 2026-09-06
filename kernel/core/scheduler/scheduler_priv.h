@@ -56,15 +56,23 @@ struct CpuRunQueue {
  * generation bumps on every slot reset so a stale index/token is detectable;
  * it never substitutes for capability authority.
  */
-typedef struct KTcbRegistrySlot {
-    struct task *tcb;         /* NULL only before init; else the TCB backing */
-    uint32_t     generation;  /* +1 on every reset — stale-token witness */
-    uint8_t      occupied;    /* 1 while a live/reaping task holds the slot */
-    uint8_t      bootstrap;   /* 1 for the idle task (slot 0) — never retyped */
-} KTcbRegistrySlot;
-
-extern KTcbRegistrySlot    ktcb_registry[TASK_MAX];
-extern struct task         ktcb_backing[TASK_MAX]; /* Step C scaffolding (REMOVE in D) */
+/*
+ * The scheduler's list of live threads (ledger A-19).
+ *
+ * It was `ktcb_registry[TASK_MAX]`, an array of identity slots — and that made
+ * TASK_MAX a ceiling on how many threads may exist, which the kernel had no
+ * business deciding.  Everything that read it was walking it: three sweeps
+ * looking for a thread whose sleep or replenishment is due.  A walk wants a
+ * list, a list has no ceiling, and removal is O(1) because the links are in
+ * the TCB.
+ *
+ * The `generation` field went with the array.  It existed so a stale index
+ * could be detected, and there are no indices; a TCB is a capability, and a
+ * capability's own lifetime already answers "is this still the thread you
+ * meant".
+ */
+extern struct task        *sched_thread_list;   /* head; NULL before init */
+extern struct task         ktcb_backing[TASK_BOOTSTRAP_MAX]; /* idle + root task */
 extern struct task        *current_task;
 extern struct task        *task_list_head;
 extern struct task        *task_list_tail;

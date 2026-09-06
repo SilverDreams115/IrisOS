@@ -24,6 +24,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 8-cap — the capability model's last gaps | ✅ CLOSED — D-2 (CNode guards, root included), D-8 (preemptible revoke) and D-4 (per-thread IPC buffer, every service migrated) CLOSED; D-3 decided and registered as a permanent divergence |
 | 9-evt — the event kernel (D-1) | ✅ CLOSED — one kernel stack per core, no thread blocks in the kernel, `context_switch`/`task_yield`/`kstack_alloc` deleted |
 | 10-mem — the memory server (D-5) | ✅ CLOSED — there is no KVmo.  A grant is a run of frame capabilities, one per page |
+| 12-pol — mechanism, not policy (P2) | ✅ CLOSED — the kernel futex, the notification waiter ceiling, the default CSpace size and the THREAD ceiling are gone; what is left is classified as mechanism with a reason each (A-19) |
 | 11-life — object lifetime (D-7) | ✅ SEMANTICS CLOSED — an object exists exactly while a capability names it, measured for every type (T322), over generated MDB shapes (T323) and through a CSpace cycle (T321).  The MECHANISM stays a refcount, registered as a permanent divergence; the one disagreement it produced (a donated scheduling context released twice) is fixed and T324 reads every pool slot each run to catch the next |
 | 9 — SMP | pending |
 | 10 — General-purpose platform | pending |
@@ -33,17 +34,19 @@ A9, A10** (authority); **O2–O6** (objects); **I1–I7** (IPC); **S1–S5**
 (scheduling); **M1–M5** (memory); **P1, P3** (policy); **S2** with the process
 object itself (Stage 7-proc); **O1** (object *form*) with `KVmo` — the last
 object that was fabricated rather than retyped — deleted (D-5); **A5** (no
-ambient authority) with the three SELF syscalls retired (A-18).  **35 of the 36
-are MET.**
+ambient authority) with the three SELF syscalls retired (A-18); **P2**
+(mechanism, not policy) with the audit that closed it (A-19).
 
-The one still PARTIAL is **P2** (mechanism, not policy), and it has now been
-AUDITED (ledger A-19) rather than assumed.  Four things the kernel was deciding
-for somebody else are gone — a futex, a notification waiter ceiling, a default
-CSpace size and two dead scheduling defaults — and the rest is classified as
-mechanism with the reason for each.  What remains is one item: `TASK_MAX` = 256
-is a real ceiling on live threads, because the scheduler keeps an index-keyed
-identity registry.  seL4 has no thread limit.  The run queue stopped being
-index-keyed in Phase S2, so what is left is the registry alone.
+**P2** (mechanism, not policy) was AUDITED (ledger A-19) rather than assumed,
+and closed.  Five things the kernel was deciding for somebody else are gone: a
+futex, a notification waiter ceiling, a default CSpace size, two dead scheduling
+defaults, and the THREAD CEILING — `ktcb_registry[TASK_MAX]` refused a thread
+when its array filled, and everything that read it was walking it, so it is an
+intrusive list now.  The static task pool shrank from 256 entries to two: the
+idle thread and the root task, which is the same bootstrap exception seL4's root
+task is.  The rest is classified as mechanism with the reason for each.
+
+**36 of the 36 charter invariants are MET.**
 
 ### Where the line is now
 

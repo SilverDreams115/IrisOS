@@ -96,7 +96,9 @@
  * Both are within PML4 entry 256, sharing the kernel PDPT, so
  * mappings added here propagate to every process address space.
  *
- * Total virtual footprint: TASK_MAX * KSTACK_SLOT_SIZE = 256 * 12288 = 3 MB.
+ * The window is sized for 256 slots; per-thread kernel stacks are gone
+ * (ledger D-1) and threads have no ceiling (A-19), so it is a reservation, not
+ * a limit on anything.
  * ─────────────────────────────────────────────────────────────────── */
 #define KSTACK_VIRT_BASE  (KERNEL_PHYS_WINDOW_BASE + PHYS_WINDOW_END)  /* 0xFFFF800100000000 */
 #define KSTACK_SLOT_SIZE  (3ULL * 4096ULL)   /* guard + 2 stack pages = 12 288 bytes */

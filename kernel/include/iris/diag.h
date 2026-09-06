@@ -35,7 +35,7 @@
  *   off  0: uint32_t magic           IRIS_DIAG_MAGIC — integrity marker
  *   off  4: uint32_t version         IRIS_DIAG_VERSION (2)
  *   off  8: uint32_t tasks_live      non-DEAD scheduler tasks
- *   off 12: uint32_t tasks_max       TASK_MAX ceiling
+ *   off 12: uint32_t tasks_max       0 — there is NO thread ceiling (A-19)
  *   off 16: uint32_t kproc_live      live KProcess objects
  *   off 20: uint32_t kproc_max       0 => no static allocator ceiling
  *   off 24: uint32_t irq_routes_active  routed hardware IRQ lines
@@ -101,7 +101,7 @@ struct iris_diag_snapshot {
     uint32_t magic;               /* IRIS_DIAG_MAGIC: integrity marker         */
     uint32_t version;             /* IRIS_DIAG_VERSION (2)                     */
     uint32_t tasks_live;          /* tasks in non-DEAD scheduler states        */
-    uint32_t tasks_max;           /* TASK_MAX ceiling                          */
+    uint32_t tasks_max;           /* 0 = no ceiling (ledger A-19)              */
     uint32_t kproc_live;          /* live KProcess objects                     */
     uint32_t kproc_max;           /* 0 => no static allocator ceiling          */
     uint32_t irq_routes_active;   /* hardware IRQ lines with active channel    */

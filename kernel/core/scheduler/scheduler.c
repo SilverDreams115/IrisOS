@@ -55,9 +55,7 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
      * identity is its registry reference, never a position in tasks[]. */
     /* Fast-forward clock to nearest deadline so timed tasks wake even with no IRQs. */
     uint64_t min_wake = UINT64_MAX;
-    for (int j = 0; j < TASK_MAX; j++) {
-        if (!ktcb_registry[j].occupied) continue;
-        struct task *t = ktcb_registry[j].tcb;
+    for (struct task *t = sched_thread_list; t; t = t->sched_next) {
         if (t->wake_tick != 0 && t->wake_tick < min_wake)
             min_wake = t->wake_tick;
         /*
@@ -77,9 +75,7 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
         scheduler_ticks = min_wake;
 
     /* Wake any tasks whose deadlines passed and enqueue them. */
-    for (int j = 0; j < TASK_MAX; j++) {
-        if (!ktcb_registry[j].occupied) continue;
-        struct task *t = ktcb_registry[j].tcb;
+    for (struct task *t = sched_thread_list; t; t = t->sched_next) {
         if (t == idle) continue;
         if (t->state == TASK_SLEEPING &&
             t->wake_tick != 0 &&
@@ -301,8 +297,10 @@ void scheduler_tick(void) {
     /*
      * O(N) timeout scan — Phase 1 TODO:
      *   Replace with a min-heap (binary heap or pairing heap) keyed on wake_tick.
-     *   Current complexity: O(TASK_MAX=256) per tick at 100 Hz = 25,600 comparisons/s.
-     *   Acceptable for Phase 0; becomes a bottleneck at higher TASK_MAX or tick rate.
+     *   Current complexity: O(live threads) per tick — the walk is a list now,
+     *   so it costs what the system actually has rather than a fixed 256.  It
+     *   is still a scan; the shape that removes it is seL4's release queue,
+     *   ordered by wake time, where the tick looks at the head and stops.
      *
      *   SMP concern: this loop runs under CLI on the IRQ-handling CPU only.  On SMP,
      *   tasks homed to other CPUs can have their wake_tick expire here, but task_wakeup
@@ -312,9 +310,7 @@ void scheduler_tick(void) {
      *   Do NOT restructure this loop as a "shortcut early exit" — tasks[i].wake_tick == 0
      *   is the common case for non-sleeping tasks and the branch predictor handles it well.
      */
-    for (int i = 0; i < TASK_MAX; i++) {
-        if (!ktcb_registry[i].occupied) continue;
-        struct task *t = ktcb_registry[i].tcb;
+    for (struct task *t = sched_thread_list; t; t = t->sched_next) {
         if (t->state == TASK_SLEEPING && t->wake_tick <= scheduler_ticks) {
             t->wake_tick = 0;
             task_wakeup(t);
@@ -394,9 +390,9 @@ void scheduler_tick(void) {
         current_task->need_resched = 1;
 }
 
-void scheduler_add_task(void (*entry)(void)) {
-    task_create(entry);
-}
+/* scheduler_add_task / task_create are DELETED: nothing called them.  A kernel
+ * thread built from the static pool was the last non-retyped way to make a
+ * thread, and the pool it drew from is the bootstrap pair now. */
 
 /*
  * scheduler_sleep_current is DELETED (Stage 9-evt step 3).

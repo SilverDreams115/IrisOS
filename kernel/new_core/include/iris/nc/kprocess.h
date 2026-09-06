@@ -26,7 +26,8 @@ struct KFrame;
  *   - the creator's Untyped, which pays for the KProcess header, the root
  *     CNode, the PML4 and every paging level (a bump allocator that does not
  *     rewind, so the bound is real and the holder can measure it);
- *   - TASK_MAX (256), the thread registry, for a process that runs a thread —
+ *   - the thread registry, for a process that runs a thread (a LIST now,
+ *     with no ceiling — ledger A-19) —
  *     a separate resource with a separate ceiling, which is why conflating the
  *     two in one constant was wrong even as an approximation;
  *   - the PCID pool (1..4094) when PCID is enabled, which is hardware.

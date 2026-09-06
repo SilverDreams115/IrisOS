@@ -5,7 +5,6 @@
 
 void     scheduler_init(void);
 void     scheduler_tick(void);
-void     scheduler_add_task(void (*entry)(void));
 
 /*
  * Diagnostics accessors — cheap, read-only, safe to call from syscall context.

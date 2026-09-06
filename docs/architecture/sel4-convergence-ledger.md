@@ -870,8 +870,34 @@ the generation check survives at all is the real question — a TCB is a
 capability now, and a capability's own lifetime already answers "is this thread
 still the one you meant".
 
-So **P2 stays PARTIAL, and for a stated reason rather than an unexamined one**:
-one kernel-invented ceiling, on threads, with the shape of its removal known.
+**And then that one was removed too.**
+
+`ktcb_registry[TASK_MAX]` is gone.  Everything that read it was WALKING it —
+three sweeps looking for a thread whose sleep or replenishment is due — so it is
+an intrusive list through the TCB now (`sched_thread_list`), removal is O(1),
+and `task_registry_alloc` cannot fail.  The tick's scan costs what the system
+actually has rather than a fixed 256; the shape that removes the scan entirely
+is seL4's release queue, ordered by wake time, and that is a separate change
+with a separate reason.
+
+The `generation` field went with the array.  It existed so a stale INDEX could
+be detected, and there are no indices; a TCB is a capability, and a capability's
+own lifetime already answers "is this still the thread you meant".
+
+`task_create` and `scheduler_add_task` went too — a kernel thread built from the
+static pool, with no callers, and the last way to make a thread that was not
+retyped from an Untyped somebody holds.  With them gone the static pool shrinks
+from 256 entries to **two**: the idle thread and the root task, built by boot
+code out of memory no Untyped exists for yet, which is exactly the exception
+seL4's root task is.
+
+T326 asserts it the only way that is honest.  Not "count to 257" — that would
+need 256 live threads with a stack each and would measure the suite's budget
+rather than the kernel's rule.  It asserts that the EXHAUSTION counter is zero
+and stays zero, because the only code that could increment it was the refusal;
+a non-zero reading means somebody put a ceiling back.
+
+**P2 is MET.**  36 of 36.
 
 ## Charter amendments
 

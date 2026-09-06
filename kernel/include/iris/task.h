@@ -16,6 +16,25 @@ struct KVSpace;
 struct KNotification;
 struct KFrame;
 
+/*
+ * There is no ceiling on live threads (ledger A-19).
+ *
+ * TASK_MAX was 256 and it bounded two things: a static backing pool, and the
+ * scheduler's identity registry — which returned NO_MEMORY when full, so the
+ * kernel decided how many threads a system may have.  seL4 decides no such
+ * thing: a TCB exists because somebody retyped one out of memory they hold.
+ *
+ * What is left is the BOOTSTRAP pair, and it is static for the reason seL4's
+ * root task is: the idle thread and the root task are built by boot code, out
+ * of memory no Untyped exists for yet.  Every other thread is retyped.
+ *
+ * The number survives only as a diagnostic field (`tasks_max`), where it now
+ * reports 0 — no ceiling — rather than a limit that no longer exists.
+ */
+#define TASK_BOOTSTRAP_MAX      2
+
+/* Retired as a ceiling; kept for the kstack-window comment in paging.h and the
+ * diagnostic field, both of which say so. */
 #define TASK_MAX              256
 #define TASK_STACK_SIZE       8192  /* kernel stack per task */
 #define TASK_DEFAULT_SLICE    2     /* ticks per quantum at 100 Hz = 20ms */
@@ -551,7 +570,19 @@ struct task {
                                   * live state and the entry frame must not be
                                   * rewritten (TCB_WRITE_REGS refuses) */
     uint8_t        terminal;     /* execution ended (TERMINATED) */
-    int32_t        reg_slot;     /* registry index while registered, else -1 */
+    /*
+     * Scheduler membership, as a LIST rather than an index.
+     *
+     * It was `reg_slot`, an index into ktcb_registry[TASK_MAX] — which made
+     * TASK_MAX a ceiling on live threads, and `task_registry_alloc` returned
+     * NO_MEMORY when the array filled.  seL4 has no thread limit: a TCB exists
+     * because somebody retyped one.  The registry's only remaining job was to
+     * let the scheduler WALK every live thread looking for expired deadlines,
+     * and a walk wants a list (charter P2, ledger A-19).
+     */
+    int32_t        reg_slot;     /* 1 while on the scheduler list, else -1 */
+    struct task   *sched_prev;   /* intrusive links for that list */
+    struct task   *sched_next;
     /* Stage 5 Step 4: which kernel-stack slot of the KSTACK_VIRT_BASE region
      * this thread owns, or -1.  It used to be implied — the backing-array
      * index of the pool slot the task was carved from — which only exists for
@@ -582,7 +613,6 @@ _Static_assert(sizeof(struct cpu_context) == 64u,
                "cpu_context layout is ABI (context_switch.S offsets 0..56)");
 
 void         task_init(void);
-struct task *task_create(void (*entry)(void));
 struct task *task_spawn_user(uint64_t arg0);
 /* Stage 5 Step 4 — execution for a TCB retyped from an Untyped.
  *

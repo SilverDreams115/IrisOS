@@ -27,22 +27,21 @@
 /* ── Shared state definitions ────────────────────────────────────────────── */
 
 /*
- * Phase S2 D2 — two independent pools with separated lifetimes:
- *   ktcb_backing[]  — the KTCB objects (backing storage).  A slot is free when
- *                     state == TASK_DEAD; it is freed by the OBJECT destructor
- *                     (last reference), NOT at thread termination.  A
- *                     TERMINATED-but-cap-held TCB pins its backing slot.
- *   ktcb_registry[] — scheduler identity (pointer+generation+occupied).  A slot
- *                     is held only while the thread is registered (runnable/
- *                     alive) and RELEASED AT TERMINATION, so a surviving cap to
- *                     a terminated TCB never consumes scheduler capacity.
- * Every other translation unit now goes through ktcb_registry[i].tcb (see
- * scheduler.c) — there is no remaining external reference to the raw backing
- * array by position, so ktcb_backing[] is the sole name; it is scaffolding
- * removed in D/E when backing moves to Untyped.
+ * Ledger A-19 — no ceiling, and one static pair.
+ *
+ * `ktcb_registry[TASK_MAX]` is gone.  It held scheduler identity, it filled,
+ * and `task_registry_alloc` then told a holder with memory and a capability
+ * that it could not have another thread — a limit the kernel invented, which
+ * seL4 does not have.  Everything that read it was WALKING it, so it is a list
+ * now (`sched_thread_list`, linked through the TCB) and removal is O(1).
+ *
+ * `ktcb_backing[]` survives at TASK_BOOTSTRAP_MAX = 2: the idle thread and the
+ * root task, built by boot code out of memory no Untyped exists for yet.  That
+ * is the same exception seL4's root task is.  Every other thread is retyped
+ * from an Untyped somebody holds, and its storage is that region's.
  */
-struct task         ktcb_backing[TASK_MAX];  /* backing pool (D/E → Untyped) */
-KTcbRegistrySlot    ktcb_registry[TASK_MAX];
+struct task         ktcb_backing[TASK_BOOTSTRAP_MAX];  /* idle + root task */
+struct task        *sched_thread_list = 0;
 struct task        *current_task    = 0;
 
 /* ── Phase S2 D2 — registry + backing instrumentation (QUERY kind 4) ── */
@@ -67,50 +66,45 @@ void task_registry_stats(uint32_t *active, uint32_t *hwm,
  * in t->reg_slot.  Returns 0 on success, -1 (exhaustion) otherwise.
  */
 static int task_registry_alloc(struct task *t) {
-    for (int i = 1; i < TASK_MAX; i++) {   /* slot 0 = idle bootstrap */
-        if (!ktcb_registry[i].occupied) {
-            ktcb_registry[i].tcb      = t;
-            ktcb_registry[i].occupied = 1;
-            t->reg_slot = i;
-            uint32_t n = atomic_fetch_add_explicit(&reg_active, 1u, memory_order_relaxed) + 1u;
-            uint32_t hw = atomic_load_explicit(&reg_hwm, memory_order_relaxed);
-            while (n > hw &&
-                   !atomic_compare_exchange_weak_explicit(&reg_hwm, &hw, n,
-                                                          memory_order_relaxed,
-                                                          memory_order_relaxed)) { }
-            return 0;
-        }
-    }
-    atomic_fetch_add_explicit(&reg_exhaustions, 1u, memory_order_relaxed);
-    return -1;
+    /* Cannot fail.  It used to scan ktcb_registry[TASK_MAX] and return -1 when
+     * the array was full — the kernel telling a holder with memory and a
+     * capability that it may not have another thread. */
+    if (t->reg_slot >= 0) return 0;              /* already listed */
+    t->sched_prev = 0;
+    t->sched_next = sched_thread_list;
+    if (sched_thread_list) sched_thread_list->sched_prev = t;
+    sched_thread_list = t;
+    t->reg_slot = 1;
+    uint32_t n = atomic_fetch_add_explicit(&reg_active, 1u, memory_order_relaxed) + 1u;
+    uint32_t hw = atomic_load_explicit(&reg_hwm, memory_order_relaxed);
+    while (n > hw &&
+           !atomic_compare_exchange_weak_explicit(&reg_hwm, &hw, n,
+                                                  memory_order_relaxed,
+                                                  memory_order_relaxed)) { }
+    return 0;
 }
 
-/* Registry lifetime end — release t's scheduler-identity slot (at termination).
- * Bumps generation so a stale registry token is detectable.  The object stays
- * alive if caps reference it; only its scheduler identity is gone. */
+/* Scheduler membership ends at TERMINATION, not at destruction: a surviving
+ * capability to a terminated TCB keeps the object, never a place in the walk. */
 static void task_registry_release(struct task *t) {
-    int i = t ? t->reg_slot : -1;
-    if (i < 0 || i >= TASK_MAX) return;
-    if (ktcb_registry[i].tcb == t && ktcb_registry[i].occupied) {
-        ktcb_registry[i].occupied = 0;
-        ktcb_registry[i].tcb      = 0;
-        ktcb_registry[i].generation++;
-        atomic_fetch_sub_explicit(&reg_active, 1u, memory_order_relaxed);
-    }
-    t->reg_slot = -1;
+    if (!t || t->reg_slot < 0) return;
+    if (t->sched_prev) t->sched_prev->sched_next = t->sched_next;
+    else               sched_thread_list         = t->sched_next;
+    if (t->sched_next) t->sched_next->sched_prev = t->sched_prev;
+    t->sched_prev = 0;
+    t->sched_next = 0;
+    t->reg_slot   = -1;
+    atomic_fetch_sub_explicit(&reg_active, 1u, memory_order_relaxed);
 }
 
-/* Bootstrap: bind registry slot 0 to the idle task (never reused).  Idle is
- * the single BOOTSTRAP_EXCEPTION of the ledger: static backing, no cap-visible
- * object, never retyped; marked configured so no execution gate can ever
- * misread it as an inactive retyped TCB. */
+/* Bootstrap: the idle thread joins the list like anything else.  It is the
+ * single BOOTSTRAP_EXCEPTION of the ledger: static backing, no cap-visible
+ * object, never retyped; marked configured so no execution gate can misread it
+ * as an inactive retyped TCB. */
 static void task_registry_bind_idle(struct task *idle) {
-    ktcb_registry[0].tcb       = idle;
-    ktcb_registry[0].occupied  = 1;
-    ktcb_registry[0].bootstrap = 1;
-    idle->reg_slot   = 0;
+    idle->reg_slot = -1;
+    (void)task_registry_alloc(idle);
     idle->configured = 1;
-    atomic_fetch_add_explicit(&reg_active, 1u, memory_order_relaxed);
 }
 
 /* Storage lifetime — find a free backing slot (state == TASK_DEAD).  Slot 0 is
@@ -120,7 +114,7 @@ static void task_registry_bind_idle(struct task *idle) {
  * t->process out from under the pending reap).  Returns NULL when the
  * backing pool is full. */
 static struct task *task_backing_find_free(void) {
-    for (int i = 1; i < TASK_MAX; i++) {
+    for (int i = 1; i < TASK_BOOTSTRAP_MAX; i++) {
         if (ktcb_backing[i].state == TASK_DEAD && !ktcb_backing[i].awaiting_reap)
             return &ktcb_backing[i];
     }
@@ -137,10 +131,12 @@ static struct task *task_backing_find_free(void) {
  * TCB retyped from an Untyped has no such index.  The kstack is keyed by the
  * registry slot now, which every executing thread has by definition.
  */
+/* The bootstrap pair's allocator: the root task takes the one slot idle does
+ * not.  Every other thread is retyped and joins the list at configure time. */
 static struct task *task_registry_find_free(void) {
     struct task *t = task_backing_find_free();
     if (!t) return 0;
-    if (task_registry_alloc(t) != 0) return 0;
+    (void)task_registry_alloc(t);
     return t;
 }
 
@@ -490,7 +486,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     /*
      * Make t unreachable and unwakeable FIRST, atomically with respect to a
      * timer IRQ, before any of the slower calls below (the CSpace and address
-     * space releases especially) that can run long enough to be interrupted.  scheduler_tick and sched_handle_idle iterate ktcb_registry
+     * space releases especially) that can run long enough to be interrupted.  scheduler_tick and sched_handle_idle walk sched_thread_list
      * for occupied slots and call task_wakeup() on whatever they find
      * sleeping, blocked, or budget-exhausted with an elapsed wake_tick; if
      * that scan still finds t occupied, with its pre-kill blocked state and
@@ -764,18 +760,13 @@ void task_init(void) {
 
     atomic_store_explicit(&sched_live_count, 1u, memory_order_relaxed); /* idle */
 
-    /* Step C: wire every registry slot to its backing before use.  In this
-     * checkpoint tcb == &ktcb_backing[i]; Step D re-points these at Untyped
-     * objects. */
-    for (int i = 0; i < TASK_MAX; i++) {
-        ktcb_registry[i].tcb        = &ktcb_backing[i];
-        ktcb_registry[i].generation = 0;
-        ktcb_registry[i].occupied   = 0;
-        ktcb_registry[i].bootstrap  = 0;
+    /* The bootstrap pair: idle and the root task.  Every other thread is a TCB
+     * retyped from an Untyped, and joins the scheduler's list when it is
+     * configured — there is no array to wire. */
+    for (int i = 0; i < TASK_BOOTSTRAP_MAX; i++)
         task_reset_slot(&ktcb_backing[i]);
-    }
 
-    struct task *idle = ktcb_registry[0].tcb;
+    struct task *idle = &ktcb_backing[0];
     /* Idle is the single bootstrap exception: static backing, never retyped,
      * never reused, not built by the productive task builder. */
     task_registry_bind_idle(idle);
@@ -794,39 +785,14 @@ void task_init(void) {
     cpu_local[0].current_task = idle;
 }
 
-struct task *task_create(void (*entry)(void)) {
-    struct task *t = task_registry_find_free();
-    if (!t) return 0;
-
-    /* No task_reset_slot(t) here: task_backing_find_free only ever returns a
-     * slot with state == TASK_DEAD, which is only reached already fully
-     * zeroed (task_init at boot, or task_backing_free_on_destroy at death) —
-     * re-zeroing now would wipe the t->reg_slot task_registry_alloc just set. */
-
-    task_init_fpu_state(t);
-    t->id         = next_id++;
-    t->state      = TASK_READY;
-    t->priority   = TASK_PRIORITY_DEFAULT;
-    t->time_slice = TASK_DEFAULT_SLICE;
-    t->ticks_left = TASK_DEFAULT_SLICE;
-    t->home_cpu   = 0;
-
-    setup_initial_context(t, entry);
-
-    /* Phase S2 D2: object init — the scheduler's own execution reference,
-     * dropped by task_execution_teardown_off_cpu at termination.  No process
-     * handle table for a plain kernel task, so no separate handle is minted. */
-    ktcb_object_init(t);
-
-    rq_enqueue(t);
-    atomic_fetch_add_explicit(&sched_live_count, 1u, memory_order_relaxed);
-
-    task_list_tail->next = t;
-    t->next              = task_list_head;
-    task_list_tail       = t;
-
-    return t;
-}
+/*
+ * task_create — DELETED (ledger A-19).
+ *
+ * It built a KERNEL thread out of the static backing pool, and nothing called
+ * it: `scheduler_add_task` was its only caller and had none of its own.  It was
+ * also the last way to make a thread that was not retyped from an Untyped
+ * somebody holds, which is what let the pool shrink to the bootstrap pair.
+ */
 
 void task_set_bootstrap_arg0(struct task *t, uint64_t arg0) {
     if (!t || t->ring != TASK_RING3 || !t->vspace || !t->vspace->cr3) return;

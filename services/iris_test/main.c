@@ -23913,6 +23913,73 @@ static void test_t325(void) {
     if (ok) it_pass("T325"); else it_fail("T325", why);
 }
 
+/* ── T326: there is no ceiling on live threads (charter P2) ─────────────────
+ * `TASK_MAX` was 256 and it was real: the scheduler kept an index-keyed
+ * identity registry, and `task_registry_alloc` returned NO_MEMORY when the
+ * array filled — the kernel telling a holder with memory and a capability that
+ * it may not have another thread.  seL4 decides no such thing: a TCB exists
+ * because somebody retyped one.  Everything that read the registry was WALKING
+ * it, so it is an intrusive list now and removal is O(1).
+ *
+ * Two assertions, and neither is "count to 257" — that would need 256 live
+ * threads with a stack and an IPC buffer each, and would measure the suite's
+ * budget rather than the kernel's rule.
+ *
+ *   1. the EXHAUSTION counter is zero and stays zero.  It could only ever be
+ *      incremented by the code path that refused a thread, and that path is
+ *      gone; a non-zero reading means somebody put a ceiling back.
+ *   2. a burst of threads well past what any array-index assumption would
+ *      survive runs, and the registry returns to exactly where it started.
+ * Invariants: P2, S1. */
+#define T326_THREADS 24u
+static volatile uint32_t g_t326_ran;
+static uint8_t           g_t326_stacks[T326_THREADS][2048];
+
+static void t326_body(void) {
+    __atomic_fetch_add(&g_t326_ran, 1u, __ATOMIC_RELAXED);
+    for (;;) it_sys0(SYS_YIELD);
+}
+
+static void test_t326(void) {
+    it_quiesce_reaper();
+    struct it_utq_taskobj t0, t1;
+    int ok = it_utq_t(&t0);
+    const char *why = "thread ceiling";
+
+    if (ok && t0.tcb_registry_exhaustions != 0u) {
+        it_fz_note("T326", t0.tcb_registry_exhaustions, 0u, 0u);
+        ok = 0; why = "a thread was refused for lack of registry space";
+    }
+
+    long tids[T326_THREADS];
+    uint32_t made = 0;
+    g_t326_ran = 0;
+    for (uint32_t i = 0; ok && i < T326_THREADS; i++) {
+        tids[i] = it_thread_create((uint64_t)(uintptr_t)t326_body,
+                                   ((uint64_t)(uintptr_t)(g_t326_stacks[i] +
+                                       sizeof(g_t326_stacks[i]))) & ~0xFULL, 0);
+        if (tids[i] < 0) break;
+        made++;
+    }
+    if (ok && made != T326_THREADS) { ok = 0; why = "thread create"; }
+    for (int i = 0; ok && i < 6000 && g_t326_ran < made; i++) (void)it_sys0(SYS_YIELD);
+    if (ok && g_t326_ran != made) { ok = 0; why = "a thread never ran"; }
+
+    for (uint32_t i = 0; i < made; i++) (void)it_sys1(SYS_TCB_EXIT, tids[i]);
+    it_quiesce_reaper();
+
+    if (ok && !it_utq_t(&t1)) { ok = 0; why = "query"; }
+    if (ok && t1.tcb_registry_exhaustions != 0u) {
+        ok = 0; why = "the ceiling came back";
+    }
+    /* Scheduler membership ends at TERMINATION, so the count returns exactly. */
+    if (ok && t1.tcb_registry_active != t0.tcb_registry_active) {
+        it_fz_note("T326", t1.tcb_registry_active, t0.tcb_registry_active, made);
+        ok = 0; why = "registry drift";
+    }
+    if (ok) it_pass("T326"); else it_fail("T326", why);
+}
+
 /* ── T324: what the rotating object pool is still holding ──────────────────
  * The pool's contract is one sentence — delete before use, never hold a slot
  * across a test boundary — and until now nothing read it back.  The pool is
@@ -24593,6 +24660,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t322();
     test_t323();
     test_t325();
+    test_t326();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
