@@ -21671,6 +21671,10 @@ static uint32_t it_ipc_buffer_gauge(void) {
     return q.ipc_buffers;
 }
 
+/* The boot path's own roots, measured.  A-14 took it from 43 to 32 by
+ * giving every object retyped from a second-level Untyped its MDB parent. */
+#define IT_MDB_LEGACY_ROOT_CEILING 32u
+
 static void test_t305(void) {
     struct it_utq_mdb q0, q1;
     int ok = 1;
@@ -21678,6 +21682,27 @@ static void test_t305(void) {
 
     it_quiesce_reaper();
     if (!it_utq_mdb(&q0)) { it_fail("T305", "query"); return; }
+
+    /*
+     * A CEILING, not just a no-growth check.
+     *
+     * The no-growth check below catches a NEW producer of unparented
+     * capabilities appearing during the cycle it runs.  It cannot catch one
+     * that was there at boot, and that is exactly what A-14 was: an open-coded
+     * `< 1024` in RETYPE2 published every object retyped from a second-level
+     * Untyped as a root, for the whole life of the system, and this test
+     * printed the number and passed.
+     *
+     * What is left is the BOOT PATH, which is legitimate and permanent —
+     * seL4's BootInfo capabilities are roots too — plus a fault delivery whose
+     * registration slot no longer holds the thread, which is the documented
+     * honest failure.  The number may go DOWN.  If it goes up, something
+     * started publishing without an ancestor and the change that did it is the
+     * one to look at.
+     */
+    if (q0.mdb_legacy_roots > IT_MDB_LEGACY_ROOT_CEILING) {
+        ok = 0; why = "legacy roots above the boot-path ceiling";
+    }
 
     it_serial_write("[IRIS][TEST] T305 mdb_legacy_roots=");
     it_log_num(q0.mdb_legacy_roots);
