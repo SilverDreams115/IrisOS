@@ -121,19 +121,82 @@ done < "$ALLOWLIST"
 #           same commit saying why it is allowed to stay.
 KSLAB_RING3_OK=""
 
-mapfile -t ALLOC_FNS < <(
+# ── the transitive closure, because one level was not the property ────────
+#
+# The check below used to ask ONE question: does a syscall handler name a
+# function whose body calls the slab allocator?  That is the shape the real
+# incident had (`sys_ioport_control_narrow` -> `kbootcap_alloc_ports`), and the
+# comment above said plainly that a deeper chain slips through.
+#
+# It was tested, and it does.  A handler calling a helper that calls
+# `kcnode_alloc` reaches the kernel slab in two hops and this gate said OK —
+# with no new occurrence of the token anywhere, so the count check stayed quiet
+# too.  "Keep the chains shallow" was a hope, not an enforcement, on the
+# invariant the whole purity model rests on.
+#
+# So the set is CLOSED instead: seed it with every function whose body names
+# the allocator, then repeatedly add every function whose body names something
+# already in the set.  Bounded at CLOSURE_ROUNDS, and the round it stops at is
+# printed — an approximation that says how far it went beats one that does not
+# say it stopped.
+CLOSURE_ROUNDS=6
+
+alloc_seed() {
     for f in kernel/new_core/src/*.c kernel/core/**/*.c kernel/mm/**/*.c; do
         [ -f "$f" ] || continue
         awk '/^[a-zA-Z_].*\(/ { fn = $0 }
              /kslab_alloc/ { if (fn != "") print fn }' "$f"
     done | grep -oE '\b[a-z_][a-z0-9_]*\(' | tr -d '(' | sort -u
-)
+}
+
+# Functions defined OUTSIDE the syscall layer whose body names one of `names`.
+# The syscall layer is the boundary being tested, not a hop inside the chain.
+alloc_callers() {
+    local re="$1"
+    for f in kernel/new_core/src/*.c kernel/core/**/*.c kernel/mm/**/*.c; do
+        [ -f "$f" ] || continue
+        case "$f" in kernel/core/syscall/*) continue ;; esac
+        # No `next` after recording the definition line: a one-line function
+        # body lives ON that line, and skipping it made every such function
+        # invisible to the closure — which is how the two-hop probe that
+        # motivated this check went on passing after the check was written.
+        awk -v names="$re" '
+            /^[a-zA-Z_].*\(/ { fn = $0 }
+            $0 ~ names { if (fn != "") print fn }' "$f"
+    done | grep -oE '\b[a-z_][a-z0-9_]*\(' | tr -d '(' | sort -u
+}
+
+mapfile -t ALLOC_FNS < <(alloc_seed)
+closure_round=0
+while [ "$closure_round" -lt "$CLOSURE_ROUNDS" ]; do
+    alt=$(printf '%s|' "${ALLOC_FNS[@]}"); alt="${alt%|}"
+    re="(^|[^A-Za-z0-9_])($alt)([^A-Za-z0-9_]|$)"
+    mapfile -t GROWN < <( { printf '%s\n' "${ALLOC_FNS[@]}"; alloc_callers "$re"; } | sort -u )
+    [ "${#GROWN[@]}" -eq "${#ALLOC_FNS[@]}" ] && break
+    ALLOC_FNS=("${GROWN[@]}")
+    closure_round=$((closure_round + 1))
+done
+if [ -n "${PURITY_DEBUG:-}" ]; then printf '  [closure] %s\n' "${ALLOC_FNS[@]}"; fi
+echo "[purity] slab-reachable closure: ${#ALLOC_FNS[@]} functions after $closure_round round(s)$( [ "$closure_round" -eq "$CLOSURE_ROUNDS" ] && echo ' — HIT THE BOUND, the set may be incomplete')"
 
 for fn in "${ALLOC_FNS[@]}"; do
     case " $KSLAB_RING3_OK " in *" $fn "*) continue ;; esac
-    callers=$(grep -rlE "\b$fn\b" kernel/core/syscall/*.c 2>/dev/null || true)
+    # Strip comments first: the name of an allocator appears in prose all over
+    # this layer, and a gate that cries wolf gets an exemption written for it.
+    callers=""
+    for sf in kernel/core/syscall/*.c; do
+        [ -f "$sf" ] || continue
+        if sed 's://.*::' "$sf" \
+           | awk '/\/\*/{inc=1} {if(!inc) print; } /\*\//{inc=0}' \
+           | grep -qE "(^|[^A-Za-z0-9_])$fn([^A-Za-z0-9_]|$)"; then
+            callers="$callers$sf
+"
+        fi
+    done
+    callers="${callers%
+}"
     if [ -n "$callers" ]; then
-        echo "[purity] FAIL: '$fn' allocates from the kernel slab and is named by"
+        echo "[purity] FAIL: '$fn' can reach the kernel slab and is named by"
         echo "         a syscall handler:"
         echo "$callers" | sed 's/^/           /'
         echo "         Charter M3: ring 3 cannot be given a way to spend the"

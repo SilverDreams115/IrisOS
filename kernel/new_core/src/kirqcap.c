@@ -30,17 +30,12 @@ static const struct KObjectOps kirqcap_ops = {
  * is the deeper divergence the ledger records — charging is what IRIS can do
  * without changing what a capability IS.
  */
-struct KIrqCap *kirqcap_alloc(uint8_t irq_num) {
-    struct KIrqCap *cap = kslab_alloc((uint32_t)sizeof(struct KIrqCap));
-    if (!cap) return 0;
-    kobject_init(&cap->base, KOBJ_IRQ_CAP, &kirqcap_ops);
-    cap->irq_num = irq_num;
-    atomic_fetch_add_explicit(&kirqcap_live, 1u, memory_order_relaxed);
-    return cap;
-}
-
+/*
+ * `kirqcap_alloc` — DELETED, for the reason in kioport.c: slab-backed, and its
+ * only caller was the `!pool` fallback below.
+ */
 struct KIrqCap *kirqcap_alloc_from(struct KUntyped *pool, uint8_t irq_num) {
-    if (!pool) return kirqcap_alloc(irq_num);
+    if (!pool) return 0;   /* no budget, no object — see kioport.c */
     struct KIrqCap *cap = kuntyped_alloc_child_top(pool, sizeof(struct KIrqCap));
     if (!cap) return 0;
     kobject_init_in_untyped(&cap->base, KOBJ_IRQ_CAP, &kirqcap_ops,

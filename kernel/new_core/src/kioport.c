@@ -30,21 +30,19 @@ static const struct KObjectOps kioport_ops = {
     .destroy = kioport_destroy,
 };
 
-struct KIoPort *kioport_alloc(uint16_t base_port, uint16_t count) {
-    if (count == 0) return 0;
-    struct KIoPort *port = kslab_alloc((uint32_t)sizeof(struct KIoPort));
-    if (!port) return 0;
-    kobject_init(&port->base, KOBJ_IOPORT, &kioport_ops);
-    port->base_port = base_port;
-    port->count     = count;
-    atomic_fetch_add_explicit(&kioport_live, 1u, memory_order_relaxed);
-    return port;
-}
-
+/*
+ * `kioport_alloc` — DELETED.  It took the object's header from the kernel
+ * slab, and its only caller was the `!pool` fallback below.
+ */
 struct KIoPort *kioport_alloc_from(struct KUntyped *pool, uint16_t base_port,
                                    uint16_t count) {
     if (count == 0) return 0;
-    if (!pool) return kioport_alloc(base_port, count);
+    /* No budget, no object.  This used to fall back to the kernel slab, which
+     * is charter M3's exact prohibition — the kernel spending its own memory
+     * because the caller did not say whose to spend — and it is the same hole
+     * D-9 closed for device Untypeds, left open here because nothing named a
+     * NULL pool.  "Unreachable today" is how the last one was described too. */
+    if (!pool) return 0;
     struct KIoPort *port = kuntyped_alloc_child_top(pool, sizeof(struct KIoPort));
     if (!port) return 0;
     kobject_init_in_untyped(&port->base, KOBJ_IOPORT, &kioport_ops,

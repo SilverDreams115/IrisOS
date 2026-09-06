@@ -35,7 +35,8 @@ struct KIoPort {
 };
 
 #ifdef __KERNEL__
-struct KIoPort *kioport_alloc(uint16_t base_port, uint16_t count);
+/* kioport_alloc / kirqcap_alloc are DELETED (charter M3): an object's
+ * header comes from a budget the caller NAMES, and there is no fallback. */
 
 /* Stage 6 Step 6 — the same object, charged to `pool` (NULL = kernel slab,
  * which is the boot path).  Claiming hardware fabricates a kernel object, and
