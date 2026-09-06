@@ -226,7 +226,7 @@ handle_id_t init_spawn_svcmgr(void) {
     }
 
     {
-        struct svc_mint sm_mints[8] = { 0 };
+        struct svc_mint sm_mints[9] = { 0 };
         uint32_t n = 0;
         sm_mints[n].slot   = IRIS_CPTR_CONSOLE_EP;
         sm_mints[n].src_cptr = g_init_console_ep_h;
@@ -273,6 +273,14 @@ handle_id_t init_spawn_svcmgr(void) {
         sm_mints[n].slot     = IRIS_CPTR_DEBUG_CONTROL;
         sm_mints[n].src_cptr = IRIS_CPTR_DEBUG_CONTROL;
         sm_mints[n].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[n].badge  = 0;
+        n++;
+        /* Ledger A-21: svcmgr loads services, and loading one means naming
+         * its address space.  The POOL travels, the CONTROL does not: svcmgr
+         * fills a namespace it was granted, it does not mint new ones. */
+        sm_mints[n].slot     = IRIS_CPTR_ASID_POOL;
+        sm_mints[n].src_cptr = IRIS_CPTR_ASID_POOL;
+        sm_mints[n].rights   = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
         sm_mints[n].badge  = 0;
         n++;
         if (sm_untyped_h != HANDLE_INVALID) {
@@ -405,7 +413,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[19] = { 0 };
+        struct svc_mint it_mints[20] = { 0 };
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -532,6 +540,14 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         it_mints[18].src_cptr = IRIS_CPTR_SCHED_CONTROL;
         it_mints[18].rights = RIGHT_READ | RIGHT_DUPLICATE;
         it_mints[18].badge = 0;
+        /* Ledger A-21: the suite builds address spaces (T079, T328) and has
+         * to be able to name them.  It receives the POOL and not the CONTROL,
+         * so T328 can also assert that carving a pool without ASIDControl is
+         * refused — the negative half of the same grant. */
+        it_mints[19].slot = IRIS_CPTR_ASID_POOL;
+        it_mints[19].src_cptr = IRIS_CPTR_ASID_POOL;
+        it_mints[19].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
+        it_mints[19].badge = 0;
         it_mints[17].slot = IRIS_CPTR_DEVICE_UNTYPED;
         it_mints[17].src_cptr = IRIS_CPTR_DEVICE_UNTYPED;
         it_mints[17].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
@@ -542,7 +558,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * retired duplicate had to exist. */
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "iris_test",
-                            &proc_h, &boot_h, it_mints, 19u,
+                            &proc_h, &boot_h, it_mints, 20u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
                                16u << 20, /*own_budget_slot=*/0, /* has TEST_UNTYPED */
                                /* Stage 7 Step 9: keep the suite's CSpace root

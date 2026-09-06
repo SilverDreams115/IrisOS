@@ -158,7 +158,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     fb_control_c     = bi->cap_fb_control;
     if (irq_control_c == 0u || ioport_control_c == 0u ||
         debug_control_c == 0u || proc_control_c == 0u ||
-        bi->cap_sched_control == 0u ||
+        bi->cap_sched_control == 0u || bi->cap_asid_control == 0u ||
         initrd_control_c == 0u || fb_control_c == 0u) {
         ub_boot_panic(BOOT_CPTR_IOPORT_CONTROL, UB_PANIC_IOPORT_SLOT,
                       "[USERBOOT] FATAL: BootInfo grants no boot "
@@ -252,13 +252,46 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * MDB CHILD of our slot, so init's founding capabilities are revocable by
      * userboot (and by the kernel bootstrap slot above it) instead of being
      * handed over forever. */
+    /*
+     * Ledger A-21: carve the address-space identifier pool.
+     *
+     * This has to happen before init is loaded, because loading anything now
+     * means giving its address space a NAME, and a name comes out of a pool
+     * somebody holds.  userboot is the only task that ever holds ASIDControl
+     * outright — it received it in the BootInfo — and the pool it makes here
+     * is what every loader downstream assigns from.
+     *
+     * Fatal on failure: with no pool nothing can be bound to an address
+     * space, so the alternative to saying so is a machine that loads init and
+     * then refuses to start its first thread for no stated reason.
+     */
+    /*
+     * It goes in IRIS_CPTR_ASID_POOL because that is where the LOADER looks,
+     * in whichever task is running it, and userboot is running one.  The slot
+     * is checked against the free range the kernel declared rather than
+     * assumed to be free: userboot's own CNode is laid out by the kernel
+     * (BOOT_CPTR_*), and a retype over an occupied slot is exactly the kind of
+     * silent collision the BootInfo inventory exists to make impossible.
+     */
+    if (IRIS_CPTR_ASID_POOL < bi->empty_slot_first ||
+        IRIS_CPTR_ASID_POOL >= bi->empty_slot_end  ||
+        ub_sys4(SYS_UNTYPED_RETYPE2, (long)boot_untyped_c,
+                (long)((uint64_t)IRIS_KOBJ_ASID_POOL | (1ULL << 32)),
+                (long)(own_cnode_c | (IRIS_CPTR_ASID_POOL << 32)),
+                (long)bi->cap_asid_control) != 0) {
+        ub_boot_panic(ioport_control_c, panic_slot,
+                      "[USERBOOT] FATAL: no address-space identifier pool; "
+                      "halting boot\n");
+        goto fail;
+    }
+
     {
         /* Phase 18: forward ONE boot KUntyped into init so it can be handed on
          * to iris_test for the ring-3 authority suite (T125–T131).  Full rights
          * so retype (WRITE) and onward mint (DUPLICATE) both work.  Non-fatal:
          * if the grant is absent the mint fails, the slot stays empty and the
          * authority tests FAIL loudly rather than silently skipping. */
-        struct svc_mint init_mints[10] = { 0 };
+        struct svc_mint init_mints[12] = { 0 };
         init_mints[0].slot     = IRIS_CPTR_PROC_CONTROL;
         init_mints[0].src_cptr = proc_control_c;
         init_mints[0].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
@@ -316,14 +349,32 @@ void iris_userboot_main(uint64_t bootinfo_va) {
         init_mints[7].src_cptr = bi->cap_sched_control;
         init_mints[7].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
         init_mints[7].badge    = 0;
-        uint32_t init_mint_count = 8u;
+        /*
+         * Ledger A-21: authority over address-space NAMES, in its two halves.
+         *
+         * init receives the pool because it loads services and every service
+         * needs its address space named, and the control because it is the
+         * one task below userboot that may have to carve a second pool.  What
+         * it passes on further is only ever the pool: a service builds address
+         * spaces for its children, it does not mint new namespaces.
+         */
+        init_mints[8].slot     = IRIS_CPTR_ASID_POOL;
+        init_mints[8].src_cptr = IRIS_CPTR_ASID_POOL;
+        init_mints[8].rights   = RIGHT_READ | RIGHT_WRITE |
+                                 RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        init_mints[8].badge    = 0;
+        init_mints[9].slot     = IRIS_CPTR_ASID_CONTROL;
+        init_mints[9].src_cptr = bi->cap_asid_control;
+        init_mints[9].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        init_mints[9].badge    = 0;
+        uint32_t init_mint_count = 10u;
         if (bi->untyped_count > 1u) {
-            init_mints[8].slot     = IRIS_CPTR_INIT_UNTYPED2;
-            init_mints[8].src_cptr = bi->untyped[1].cptr;
-            init_mints[8].rights   = RIGHT_READ | RIGHT_WRITE |
-                                     RIGHT_DUPLICATE | RIGHT_TRANSFER;
-            init_mints[8].badge    = 0;
-            init_mint_count = 9u;
+            init_mints[10].slot     = IRIS_CPTR_INIT_UNTYPED2;
+            init_mints[10].src_cptr = bi->untyped[1].cptr;
+            init_mints[10].rights   = RIGHT_READ | RIGHT_WRITE |
+                                      RIGHT_DUPLICATE | RIGHT_TRANSFER;
+            init_mints[10].badge    = 0;
+            init_mint_count = 11u;
         }
         /*
          * Ledger D-9: the DEVICE untyped, when the kernel published one.
@@ -334,7 +385,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
          * goes; whoever ends up driving the framebuffer gets it from there.
          */
         for (uint32_t i = 0; i < bi->untyped_count &&
-                             init_mint_count < 10u; i++) {
+                             init_mint_count < 12u; i++) {
             if (!bi->untyped[i].is_device) continue;
             init_mints[init_mint_count].slot     = IRIS_CPTR_DEVICE_UNTYPED;
             init_mints[init_mint_count].src_cptr = bi->untyped[i].cptr;

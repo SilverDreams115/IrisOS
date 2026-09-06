@@ -10902,13 +10902,16 @@ static void test_t148(void) {
      * from the VMO its predecessor fabricated in the same call.  Stage 6/D-5:
      * 134 is SYS_INITRD_FRAME — a boot image as a FRAME rather than a KVMO,
      * which is how the loader and vfs stopped speaking a second memory ABI to
-     * read a file the kernel already had.  The first UNASSIGNED number moves
-     * up to 135.
+     * read a file the kernel already had.  Ledger A-21: 135 is
+     * SYS_ASID_POOL_ASSIGN — an address space gets its hardware identifier
+     * from a POOL somebody holds, so building one and making one RUNNABLE
+     * became two grants instead of a kernel-side bitmap nobody could name.
+     * The first UNASSIGNED number moves up to 136.
      *
      * This loop caught the guard syscall the moment it landed, which is what
      * it is for: growing the syscall surface has to be a deliberate, visible
      * act rather than something a diff can do quietly. */
-    for (long n = 135; ok && n <= 400; n++) {
+    for (long n = 136; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -19086,9 +19089,9 @@ static void test_t250(void) {
 
 /* ── T251: canonical object model manifest ──────────────────────────────────
  * RETYPE2 accepts EXACTLY the canonical creatable set {NOTIFICATION,
- * ENDPOINT, CNODE, SCHED_CONTEXT, UNTYPED, REPLY, FRAME} and refuses every
- * other type code (0..31) with NOT_SUPPORTED — an unregistered KOBJ_* can
- * never be born.  Every created object reports its declared type through the
+ * ENDPOINT, CNODE, SCHED_CONTEXT, UNTYPED, REPLY, FRAME, TCB, PAGE_TABLE,
+ * VSPACE, ASID_POOL} and refuses every other type code (0..31) with
+ * NOT_SUPPORTED — an unregistered KOBJ_* can never be born.  Every created object reports its declared type through the
  * sanctioned bridge, and the migrated family has a retirement witness: the
  * legacy handle-first retype refuses it (S19/S20/S21). */
 static void test_t251(void) {
@@ -19126,9 +19129,22 @@ static void test_t251(void) {
         }
         it_slot_delete(S1_SLOT_A);
     }
+    /*
+     * Ledger A-21: the eleventh canonical type, and the only one this suite
+     * cannot create.  An ASID pool is born only to a holder of ASIDControl,
+     * and iris_test was deliberately given the POOL and not the CONTROL — so
+     * what it witnesses here is the DISTINCTION: a registered type it may not
+     * make is ACCESS_DENIED, an unregistered one is NOT_SUPPORTED.  Collapsing
+     * those two would let a retired type code come back as an authority error
+     * and vice versa.
+     */
+    if (ok && it_retype2_at(su, IRIS_KOBJ_ASID_POOL, S1_SLOT_A, 1u, 0) !=
+              (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "asid pool without ASIDControl";
+    }
     /* Everything else in 0..31 is refused — the manifest is CLOSED. */
     for (uint32_t t = 0; ok && t < 32u; t++) {
-        int is_canon = 0;
+        int is_canon = (t == IRIS_KOBJ_ASID_POOL);
         for (uint32_t i = 0; i < 10u; i++) if (canon[i].t == t) is_canon = 1;
         if (is_canon) continue;
         if (it_retype2_at(su, t, S1_SLOT_A, 1u, 4096) != (long)IRIS_ERR_NOT_SUPPORTED) {
@@ -21816,8 +21832,12 @@ static uint32_t it_ipc_buffer_gauge(void) {
  * unparented capability every time it was called.  A-20 adds ONE back: the
  * SchedControl capability boot mints for the root task, which is a boot-path
  * root like every other authority in BootInfo — seL4's are roots too.  Every
- * delegation of it downward is a child, so it costs exactly one. */
-#define IT_MDB_LEGACY_ROOT_CEILING 24u
+ * delegation of it downward is a child, so it costs exactly one.  A-21 adds
+ * ONE more for the same reason: ASIDControl, the authority to carve
+ * address-space identifier pools.  The POOL userboot carves from it is NOT a
+ * root — it is retyped from an Untyped and parented there, which is the whole
+ * point of the split. */
+#define IT_MDB_LEGACY_ROOT_CEILING 25u
 
 static void test_t305(void) {
     struct it_utq_mdb q0, q1;
@@ -24079,6 +24099,137 @@ static void test_t327(void) {
     if (ok) it_pass("T327"); else it_fail("T327", why);
 }
 
+
+/* ── T328: an address space has to be NAMED before a thread can enter it ────
+ * Ledger A-21, and the gauge for it.
+ *
+ * IRIS used to hand every VSpace a hardware identifier out of a kernel-global
+ * bitmap the moment it was retyped.  Nobody could name that bitmap, nobody
+ * could be refused from it, and when it ran out the kernel simply stopped
+ * being able to build address spaces for reasons no ring-3 program could see
+ * or account for.  seL4 has never worked that way: ASIDControl carves POOLS,
+ * an ASIDPool ISSUES identifiers, and `seL4_X86_ASIDPool_Assign` is the step
+ * between "I retyped a page directory" and "a thread can run in it".
+ *
+ * Five claims, and the first is the one that makes the rest mean anything:
+ *
+ *  1. a freshly retyped VSpace is UNNAMED, and binding a thread to it is
+ *     refused.  If this ever passes by accident the whole model is decorative.
+ *  2. assigning from a pool this task HOLDS makes it bindable.
+ *  3. assigning twice is refused — an identifier is what the hardware has
+ *     cached translations under, so re-naming a live space would leave them
+ *     reachable under a name somebody else now holds.
+ *  4. the pool argument is a capability: a wrong type is not a pool, and a
+ *     pool without WRITE is not authority to issue from it.
+ *  5. the identifiers come BACK.  A space that is destroyed returns its name
+ *     to the pool that issued it, which is the property that makes "how many
+ *     address spaces may exist" a question about the capability graph instead
+ *     of about a number compiled into the kernel.
+ *
+ * Claim 5 is asserted by exhausting nothing: the loop below builds and
+ * destroys more address spaces than a pool holds identifiers, which can only
+ * finish if every one was returned.
+ * Invariants: A1, A5, O1. */
+#define T328_ROUNDS   (IRIS_ASID_POOL_SIZE + 8u)
+#define T328_SLOT_VS  S1_SLOT_E
+
+static void test_t328(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "address spaces are named from a pool";
+
+    /* The pool init minted us.  Not the CONTROL — carving a pool is a
+     * different grant, and T251 witnesses that this suite is refused it. */
+    if (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_ASID_POOL) !=
+        (long)IRIS_HANDLE_TYPE_ASID_POOL) {
+        it_fail("T328", "no pool granted"); return;
+    }
+
+    long vs  = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                    IRIS_KOBJ_VSPACE, 4096);
+    long cs  = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                    IRIS_KOBJ_CNODE, 4);
+    long tcb = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                    IRIS_KOBJ_TCB, 0);
+    if (vs < 0 || cs < 0 || tcb < 0) { it_fail("T328", "objects"); return; }
+
+    /* 1. unnamed, so unusable. */
+    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, cs, vs)
+              != (long)IRIS_ERR_ACCESS_DENIED) {
+        ok = 0; why = "unnamed vspace accepted";
+    }
+
+    /* 4. the authority is a capability, checked as one — before the assign
+     *    that succeeds, so a pass here cannot be an already-named space. */
+    if (ok && it_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_DEBUG_CONTROL, vs)
+              != (long)IRIS_ERR_WRONG_TYPE) {
+        ok = 0; why = "non-pool accepted as pool";
+    }
+    if (ok) {
+        long ro = it_cs_reduce((long)IRIS_CPTR_ASID_POOL, RIGHT_READ);
+        if (ro < 0) { ok = 0; why = "reduce"; }
+        else if (it_sys2(SYS_ASID_POOL_ASSIGN, ro, vs)
+                 != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "read-only pool issued a name";
+        }
+    }
+    /* ...and so is the space: naming something that is not one is refused. */
+    if (ok && it_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_ASID_POOL, cs)
+              != (long)IRIS_ERR_WRONG_TYPE) {
+        ok = 0; why = "cnode named as a vspace";
+    }
+
+    /* 2. named, so bindable. */
+    if (ok && it_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_ASID_POOL, vs) != 0) {
+        ok = 0; why = "assign refused";
+    }
+    /* 3. and named once. */
+    if (ok && it_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_ASID_POOL, vs)
+              != (long)IRIS_ERR_ALREADY_EXISTS) {
+        ok = 0; why = "renamed a live space";
+    }
+    if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, cs, vs) != 0) {
+        ok = 0; why = "named vspace refused";
+    }
+
+    /* 5. more address spaces than the pool has identifiers, one at a time.
+     *    Every round destroys the previous space by deleting its capability,
+     *    so the only way past round KASID_POOL_SIZE is the name coming back. */
+    uint32_t made = 0;
+    it_slot_delete(T328_SLOT_VS);
+    for (uint32_t i = 0; ok && i < T328_ROUNDS; i++) {
+        /* One STABLE slot, reused: the rotating object pool is a fixed number
+         * of leaves and 136 rounds would wrap it, which T324 measures and
+         * would rightly call an eviction storm.  What is being proved here is
+         * about identifiers, not about slots. */
+        if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_VSPACE,
+                          T328_SLOT_VS, 1u, 4096) != 0) {
+            ok = 0; why = "vspace carve"; break;
+        }
+        if (it_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_ASID_POOL,
+                    (long)T328_SLOT_VS) != 0) {
+            ok = 0; why = "pool ran dry"; break;
+        }
+        made++;
+        it_slot_delete(T328_SLOT_VS);
+        it_quiesce_reaper();
+    }
+    if (ok && made < T328_ROUNDS) { ok = 0; why = "identifiers not returned"; }
+
+    /* Give the leaves back: the rotating pool is a measured resource (T324)
+     * and a test that keeps three of them forever is a test that spends
+     * somebody else's headroom. */
+    it_slot_delete(T328_SLOT_VS);
+    if (tcb > 0) it_slot_delete((uint32_t)tcb);
+    if (cs  > 0) it_slot_delete((uint32_t)cs);
+    if (vs  > 0) it_slot_delete((uint32_t)vs);
+    it_quiesce_reaper();
+
+    it_fz_note("T328", made, T328_ROUNDS, 0);
+    if (ok) it_pass("T328"); else it_fail("T328", why);
+}
+
+
 /* ── T324: what the rotating object pool is still holding ──────────────────
  * The pool's contract is one sentence — delete before use, never hold a slot
  * across a test boundary — and until now nothing read it back.  The pool is
@@ -24761,6 +24912,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t325();
     test_t326();
     test_t327();
+    test_t328();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

@@ -859,6 +859,8 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     {
         struct KVSpace *vs = kvspace_alloc(root_cr3);
         if (!vs) goto fail;
+        /* The root task's space predates every pool; boot stamps it (A-21). */
+        kvspace_tag_bootstrap(vs);
         kobject_retain(&vs->base);
         root_vs = vs;
         kobject_release(&vs->base);
@@ -1048,6 +1050,13 @@ iris_error_t ktcb_configure(struct task *t,
                             struct KCNode *cspace, struct KVSpace *vspace) {
     if (!t || !vspace || !vspace->cr3) return IRIS_ERR_INVALID_ARG;
     if (t->configured || t->terminal) return IRIS_ERR_ALREADY_EXISTS;
+    /*
+     * A-21: an address space with no identifier cannot be run in.  A holder
+     * who retyped a VSpace has built one; making it runnable is a second grant
+     * (an ASIDPool), and this is where the two meet.  seL4 answers the same
+     * question at the same place.
+     */
+    if (!kvspace_has_asid(vspace)) return IRIS_ERR_ACCESS_DENIED;
 
     if (task_registry_alloc(t) != 0) return IRIS_ERR_NO_MEMORY;
 

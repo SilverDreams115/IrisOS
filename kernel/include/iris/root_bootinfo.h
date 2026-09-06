@@ -44,7 +44,7 @@
  */
 
 #define IRIS_ROOT_BOOTINFO_MAGIC   0x49524953524F4F54ULL  /* "IRISROOT" */
-#define IRIS_ROOT_BOOTINFO_VERSION 6u
+#define IRIS_ROOT_BOOTINFO_VERSION 7u
 
 /* Size of the region the kernel maps.  Two pages, and the reason is a rule
  * rather than a round number: the description must be able to cover every
@@ -88,6 +88,8 @@ struct iris_root_bootinfo {
      * capability in BootInfo for the same reason every other authority is
      * there: the root task cannot be given time by anyone else. */
     uint64_t cap_sched_control;  /* SYS_SC_CONFIGURE */
+    /* v7: authority to carve address-space identifier pools (A-21). */
+    uint64_t cap_asid_control;   /* IRIS_KOBJ_ASID_POOL retype */
 
     /* The CSpace as it was handed over. */
     uint32_t cnode_slots;      /* slot count of the root CNode */

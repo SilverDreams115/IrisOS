@@ -596,6 +596,21 @@ long svc_load_minted_ws(uint64_t proc_c, uint64_t initrd_c, const char *name,
             }
             child_vs = (long)sl_ws_cptr(ws, SL_WS_CHILD_VSPACE);
 
+            /*
+             * Ledger A-21: NAME it, out of a pool this loader holds.
+             *
+             * A retyped address space has no identifier, and a thread cannot
+             * be bound to an unnamed one — so this is not an optimisation for
+             * hardware with tagged TLBs, it is the step that makes the space
+             * usable, and the authority for it is a capability the loader was
+             * granted rather than a kernel-side counter it can always draw on.
+             */
+            if (sl_sys2(SYS_ASID_POOL_ASSIGN, (long)IRIS_CPTR_ASID_POOL,
+                        child_vs) != 0) {
+                r = (long)IRIS_ERR_ACCESS_DENIED;
+                break;
+            }
+
             /* ...and its root CSpace.  256 slots because that is the width the
              * well-known slot map assumes: services are minted into slots up
              * to 99 and svcmgr's receive pool runs to 255.  The spawner picks

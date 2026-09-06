@@ -434,6 +434,19 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  */
 #define IRIS_CPTR_SCHED_CONTROL ((uint64_t)98)
 /*
+ * Ledger A-21: the two address-space-identifier authorities.
+ *
+ * ASID_CONTROL carves POOLS out of Untyped and travels only as far as a task
+ * that has to make one — userboot holds it, init is given it, services are
+ * not.  ASID_POOL issues the identifiers themselves, and travels to every
+ * task that builds an address space for somebody else, because a VSpace with
+ * no name cannot have a thread bound to it.  Splitting them is the whole
+ * point: making pools and filling them are different rights, the same way
+ * seL4 separates ASIDControl from an ASIDPool.
+ */
+#define IRIS_CPTR_ASID_CONTROL  ((uint64_t)85)
+#define IRIS_CPTR_ASID_POOL     ((uint64_t)86)
+/*
  * A DEVICE Untyped — MMIO handed over as a capability (ledger D-9).
  *
  * seL4's BootInfo lists device Untypeds alongside RAM ones; that is how a

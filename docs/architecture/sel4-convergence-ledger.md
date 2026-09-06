@@ -978,6 +978,94 @@ blocking at all: a timer driver holds the hardware and a client waits on a
 notification the driver signals.  This is deliberate in IRIS and it is a real
 divergence, because a kernel that can block on time owns a policy about time.
 
+
+### A-21 — address-space identity becomes a capability (ASIDControl / ASIDPool)
+
+A-20 found it and did not fix it: *"IRIS enables PCID in the kernel and a
+retyped VSpace simply works.  Address-space identity is kernel-managed, not
+capability-managed."*  This closes it.
+
+**What was there.**  `kvspace_alloc` called `kvspace_tag`, which took the next
+free bit out of a kernel-global PCID bitmap and wrote it into the VSpace's
+CR3.  Three consequences, none of them visible from ring 3:
+
+  - Creating an address space required no authority beyond the memory it was
+    carved from.  The identifier arrived with the object.
+  - How many address spaces the system could hold was a constant compiled into
+    the kernel.  When the bitmap ran out, the kernel stopped being able to
+    build address spaces, and nothing in ring 3 could see it coming, account
+    for it, or be told it was their turn to stop.
+  - There was nothing to revoke.  A namespace nobody holds is a namespace
+    nobody can take away.
+
+**What is there now**, which is seL4's arrangement:
+
+  - `IRIS_BOOTCAP_ASID_CONTROL` is a boot control capability like the IRQ,
+    ioport, debug and (A-20) SchedControl ones — published at
+    `BOOT_CPTR_ASID_CONTROL` and carried in BootInfo, now v7.  It authorises
+    exactly one thing: carving pools.  This is `seL4_CapASIDControl`.
+  - `KOBJ_ASID_POOL` is a real object, retyped from an Untyped somebody holds,
+    that owns a contiguous range of `IRIS_ASID_POOL_SIZE` identifiers.  The
+    retype refuses without ASIDControl — holding the memory is not the
+    authority.  This is `seL4_X86_ASIDControl_MakePool`.
+  - `SYS_ASID_POOL_ASSIGN(pool, vspace)` issues one identifier from a pool the
+    caller holds into an address space the caller holds.  This is
+    `seL4_X86_ASIDPool_Assign`.
+  - `ktcb_configure` refuses a VSpace that has not been assigned one.  This is
+    the step that makes the rest mean anything: an unnamed address space is
+    memory, not somewhere a thread can run.
+
+**Two design points worth stating, because both could have gone the easy way.**
+
+*The rule does not depend on the hardware.*  `kvspace_has_asid` deliberately
+does not consult `iris_pcid_enabled`.  A machine with no PCID allocates the
+same identifiers from the same pools and merely drops them on the way to CR3,
+so the rule a program has to obey is the same everywhere.  The alternative —
+skip the check where the tag register does not exist — would have made the
+whole model decorative on exactly the configurations where it is cheapest to
+be wrong about it.
+
+*Identifiers are carved forward and never rewound.*  A destroyed pool does not
+return its range to the global counter, because identifiers it handed out may
+still be cached in a TLB under a walk that is gone.  Individual identifiers DO
+come back to their own pool when the address space they named is destroyed, and
+the pool outlives every space it named (the space holds a reference to it) —
+so the recycling is bounded by the pool's own lifetime and never crosses it.
+
+**The bootstrap exception, named.**  The root task's address space is built
+before any Untyped exists, so there is no pool to assign from and nobody to
+hold one.  It takes identifier `KASID_BOOTSTRAP` (1), stamped by boot, and
+pools carve from 2 upward so no pool can ever issue it.  This is the same
+exception the root task's CNode and TCB already are, and it is one line in one
+place rather than a fallback path.
+
+**The delegation chain.**  userboot receives ASIDControl in BootInfo, carves
+ONE pool from its boot Untyped into `IRIS_CPTR_ASID_POOL`, and passes init both
+halves.  init passes the POOL — never the control — to svcmgr and iris_test,
+the two tasks below it that load children.  Leaf services get neither: a
+service that never builds an address space for anybody else has no use for the
+authority to name one.  `svc_loader` assigns an identifier to every child
+VSpace it retypes, in the one place it retypes them.
+
+**Gauges.**  T328 is the new one and its first claim is the load-bearing one:
+a freshly retyped VSpace is refused by `TCB_CONFIGURE`.  If that ever passes by
+accident the model is decorative.  It also proves the identifiers come back, by
+building and destroying `IRIS_ASID_POOL_SIZE + 8` address spaces one at a time
+through a single pool — a loop that can only finish if every name was returned.
+T251's manifest grew an eleventh canonical type and, with it, the distinction
+this row is about: a registered type you may not create is ACCESS_DENIED, an
+unregistered one is NOT_SUPPORTED, and collapsing those two would let a retired
+type code come back disguised as an authority error.  T305's legacy-root
+ceiling goes 24 -> 25 for ASIDControl; the pool itself is NOT a root, because it
+is retyped from an Untyped and parented there, which is the whole point of the
+split.
+
+**The recurring lesson, again.**  Nothing here broke a test.  295 runtime tests
+and 19k host assertions passed with a kernel-global bitmap handing out
+address-space identity to anyone who could retype a page.  Every property in
+this row exists because an assertion was deliberately written for it.
+
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a
@@ -1032,9 +1120,36 @@ migrated while their *notification* argument was left behind.  Any syscall
 taking a notification alongside an already-dual argument should be assumed to
 have it until checked.
 
+
+### A-3 — A1, A5 and O1 restated for the ASID capability model
+
+**Change**: charter §2.1 A1 and A5, and §2.2 O1.  A1 gains the two operations
+that did not require a capability until A-20 and A-21 (configuring a budget,
+naming an address space) and now do.  A5 records that the kernel-global PCID
+bitmap was an ambient RESOURCE and is gone.  O1 gains the eleventh canonical
+type, `ASIDPool`, and extends "born from Untyped" to cover an address space's
+NAME as well as its storage.
+
+**Justification**: ledger A-21.  A1 read "MET" flatly while `SYS_SC_CONFIGURE`
+took no authority and every retyped VSpace was named for free by the kernel;
+both are now capability-gated and refused without the grant, so the invariant's
+"Today" column has to say which operations were the last to get there and what
+they take.  A5's list of ambient authorities was complete for SYSCALLS and
+silent about RESOURCES — a namespace the kernel hands out to anyone who asks is
+ambient authority whether or not a syscall names it.
+
+**Scope**: three "Today" cells restated to match shipped mechanism.  No
+invariant changes state — A1, A5 and O1 were all MET and all remain MET — no
+allowlist entry moves, no prohibition is added or lifted.
+
+
 ## Non-regression guard
 
-- T251 pins the closed manifest of RETYPE2-creatable types.
+- T251 pins the closed manifest of RETYPE2-creatable types, and the boundary
+  between a type you may not create (ACCESS_DENIED) and one that does not
+  exist (NOT_SUPPORTED).
+- T328 pins the ASID model: an unnamed address space cannot be entered, and
+  identifiers return to the pool that issued them.
 - T260 pins the retirement of the create syscalls and their no-effect.
 - T125/T126 pin the rejection of the migrated family on the legacy retype.
 - The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.

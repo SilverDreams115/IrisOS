@@ -929,6 +929,11 @@ static inline long iris_syscall0(long nr) {
 #define IRIS_KOBJ_TCB           13u
 #define IRIS_KOBJ_FRAME         15u
 #define IRIS_KOBJ_PAGE_TABLE    16u
+#define IRIS_KOBJ_ASID_POOL     17u  /* A-21: address-space identifiers */
+/* How many identifiers one pool issues.  Part of the ABI because a holder has
+ * to be able to size its own address-space budget without asking the kernel
+ * how big its objects are. */
+#define IRIS_ASID_POOL_SIZE    128u
 #define IRIS_KOBJ_VSPACE        14u  /* Stage 6-pure: an address space the holder retypes */
 
 /*
@@ -1638,6 +1643,21 @@ static inline long iris_syscall0(long nr) {
 #define SYS_FRAMEBUFFER_INFO 133
 
 /*
+ * SYS_ASID_POOL_ASSIGN(pool_cptr, vspace_cptr) → 0 or negative iris_error_t
+ *
+ * Give one address-space identifier from `pool` to `vspace` (ledger A-21).
+ * An address space that has not been assigned one cannot be bound to a thread:
+ * it is a page and a header until somebody who holds a pool says otherwise.
+ * seL4 spells it `seL4_X86_ASIDPool_Assign`, and the reason is the same — the
+ * tag a walk runs under is a resource, and a resource in a capability system
+ * is something you are granted.
+ *
+ * A pool is retyped from an Untyped (IRIS_KOBJ_ASID_POOL) by a holder of the
+ * ASID CONTROL capability, which boot hands the root task in BootInfo.
+ */
+#define SYS_ASID_POOL_ASSIGN 135
+
+/*
  * SYS_INITRD_FRAME(auth_cptr, index, dest_cnode|slot<<32, budget_cptr)
  *   → image size in bytes, or negative iris_error_t
  *
@@ -1893,6 +1913,7 @@ struct iris_tcb_info {
 #define IRIS_HANDLE_TYPE_VSPACE         14u  /* Phase 4: KVSpace — virtual address space */
 #define IRIS_HANDLE_TYPE_FRAME          15u  /* Phase 5: KFrame  — physical memory frame */
 #define IRIS_HANDLE_TYPE_PAGE_TABLE     16u  /* Stage 6-pure: a retyped paging level */
+#define IRIS_HANDLE_TYPE_ASID_POOL      17u  /* A-21: a range of address-space ids */
 
 #ifndef __ASSEMBLER__
 /* struct iris_resource_info DELETED (Stage 7-mem) with SYS_RESOURCE_INFO.

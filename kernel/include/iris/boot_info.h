@@ -59,6 +59,9 @@
  * (ledger A-20).  Convention-only, as BOOT_CPTR_CNODE and _TCB are: the root
  * task knows the slot, and the BootInfo struct does not change. */
 #define BOOT_CPTR_SCHED_CONTROL  11u    /* SYS_SC_CONFIGURE authority */
+/* Authority to carve address-space identifier pools (ledger A-21), seL4's
+ * ASIDControl.  Convention-only, like the two above. */
+#define BOOT_CPTR_ASID_CONTROL   12u
 #define BOOT_CPTR_RES_END         15u   /* inclusive; slots 1-15 are reserved */
 #define BOOT_CPTR_UNTYPED_START   16u   /* first boot KUntyped CPtr */
 #define BOOT_CPTR_UNTYPED_END    255u   /* last boot KUntyped CPtr (root CNode has 256 slots) */

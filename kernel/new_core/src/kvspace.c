@@ -1,3 +1,4 @@
+#include <iris/nc/kasidpool.h>
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kframe.h>
 #include <iris/nc/kpagetable.h>
@@ -15,54 +16,85 @@ static _Atomic uint32_t kvspace_live;
 static void kvspace_release_nodes(struct KVSpace *vs);
 
 /*
- * Stage 7 Step 5 — the address-space tag belongs to the address space.
+ * The kernel-global PCID bitmap is GONE (ledger A-21).
  *
- * A PCID is x86's name for what seL4 calls an ASID: it tags TLB entries with
- * the WALK they belong to.  It was allocated per KProcess and stored there, so
- * the tag for a walk lived on an object that is not the walk, was assigned
- * before the walk existed, and was duplicated in both KProcess allocators —
- * a pool with two copies of its own allocation loop.
- *
- * PCIDs 1..4094 are available; bit 0 (the kernel's) and bit 4095 (reserved)
- * are pre-set.  irq_spinlock because a free can run from any context.
+ * It allocated an identifier the moment a KVSpace was retyped, which made the
+ * right to create an address space arrive with the memory to build one — and
+ * put the ceiling on how many the system could hold inside the kernel, where
+ * nobody could see it or be granted more.  Identifiers come from an ASIDPool
+ * now: a retyped object, carved by a holder of the ASID CONTROL capability,
+ * that a holder ASSIGNS to an address space.  A VSpace with pcid == 0 has not
+ * been assigned one and cannot be bound to a thread.
  */
-#define PCID_BITMAP_WORDS 64u
-static uint64_t       pcid_bitmap[PCID_BITMAP_WORDS] = {
-    [0]  = 1ULL,           /* PCID 0 = kernel, always reserved */
-    [63] = (1ULL << 63),   /* PCID 4095, reserved */
-};
-static irq_spinlock_t pcid_lock;   /* BSS zero = unlocked */
-
-static uint16_t kvspace_pcid_alloc(void) {
-    uint16_t pcid = 0;
-    uint64_t flags = irq_spinlock_lock(&pcid_lock);
-    for (uint32_t w = 0; w < PCID_BITMAP_WORDS && !pcid; w++) {
-        uint64_t free_bits = ~pcid_bitmap[w];
-        if (!free_bits) continue;
-        uint32_t bit = (uint32_t)__builtin_ctzll(free_bits);
-        uint32_t id  = w * 64u + bit;
-        if (id >= 1u && id <= 4094u) {
-            pcid_bitmap[w] |= (1ULL << bit);
-            pcid = (uint16_t)id;
-        }
-    }
-    irq_spinlock_unlock(&pcid_lock, flags);
-    return pcid;
-}
-
-static void kvspace_pcid_free(uint16_t pcid) {
-    if (!pcid) return;
-    uint64_t flags = irq_spinlock_lock(&pcid_lock);
-    pcid_bitmap[pcid / 64u] &= ~(1ULL << (pcid % 64u));
-    irq_spinlock_unlock(&pcid_lock, flags);
-}
-
 /* Give this address space its tag and the no-flush CR3 the iretq path loads.
  * Called once, by whichever constructor established cr3.  A machine without
  * PCID gets pcid 0 and a plain cr3, which is what user_cr3 then is. */
-static void kvspace_tag(struct KVSpace *vs) {
-    vs->pcid     = iris_pcid_enabled ? kvspace_pcid_alloc() : 0u;
+/*
+ * The BOOTSTRAP identifier, and the whole of the exception.
+ *
+ * The root task's address space is built before any Untyped exists, so there
+ * is no pool to assign from and nobody to hold one — the same exception its
+ * CNode and TCB already are.  It takes identifier 1, which no pool can carve
+ * because carving starts above it.
+ */
+void kvspace_tag_bootstrap(struct KVSpace *vs) {
+    if (!vs) return;
+    vs->pcid     = KASID_BOOTSTRAP;
     vs->user_cr3 = paging_make_user_cr3(vs->cr3, vs->pcid);
+}
+
+static void kvspace_tag(struct KVSpace *vs) {
+    /* No identifier yet: one is ASSIGNED from a pool somebody holds (A-21).
+     * Until then the space has no name, and no thread can be bound to it. */
+    vs->pcid     = 0u;
+    vs->user_cr3 = paging_make_user_cr3(vs->cr3, 0u);
+}
+
+/*
+ * Assign one identifier from a pool.  Idempotent per address space: a VSpace
+ * takes its tag once and keeps it until it is destroyed, because the tag is
+ * what the hardware has cached translations under and re-tagging a live walk
+ * would leave them reachable under a name somebody else now holds.
+ */
+iris_error_t kvspace_assign_asid(struct KVSpace *vs, struct KAsidPool *pool) {
+    if (!vs || !pool) return IRIS_ERR_INVALID_ARG;
+    if (!vs->cr3) return IRIS_ERR_BAD_HANDLE;
+    iris_error_t r = IRIS_OK;
+    spinlock_lock(&vs->lock);
+    if (vs->pcid) {
+        r = IRIS_ERR_ALREADY_EXISTS;
+    } else {
+        uint16_t id = kasidpool_take(pool);
+        if (!id) {
+            r = IRIS_ERR_NO_MEMORY;
+        } else {
+            vs->pcid     = id;
+            /* The space now holds the pool: the identifier is only meaningful
+             * as an index into the pool that issued it, so the pool must
+             * outlive every space it named, whatever happens to the
+             * capabilities pointing at it. */
+            kobject_retain(&pool->base);
+            vs->asid_pool = pool;
+            vs->user_cr3 = paging_make_user_cr3(vs->cr3, id);
+        }
+    }
+    spinlock_unlock(&vs->lock);
+    return r;
+}
+
+/*
+ * Whether this address space has been NAMED yet.
+ *
+ * Deliberately independent of `iris_pcid_enabled`: the identifier is an
+ * authority-derived name, and hardware that has no tag register to put it in
+ * does not get to skip the authority.  A machine without PCID allocates the
+ * same identifiers from the same pools and merely drops them on the way to
+ * CR3 (paging_make_user_cr3), so the rule a program has to obey is the same
+ * everywhere.
+ */
+int kvspace_has_asid(const struct KVSpace *vs) {
+    if (!vs) return 0;
+    return vs->pcid != 0u;
 }
 
 uint32_t kvspace_live_count(void) {
@@ -181,7 +213,15 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
         vs->pml4_from_pool = 0;
     }
     vs->pt_pool = 0;
-    kvspace_pcid_free(vs->pcid);
+    /* The identifier goes back to the POOL it came from, not to a kernel
+     * bitmap — that is what makes "how many address spaces" a question about
+     * the capability graph. */
+    if (vs->asid_pool) {
+        struct KAsidPool *issuer = vs->asid_pool;
+        vs->asid_pool = 0;
+        kasidpool_put(issuer, vs->pcid);
+        kobject_release(&issuer->base);
+    }
     vs->pcid     = 0;
     vs->user_cr3 = 0;
     atomic_fetch_sub_explicit(&kvspace_live, 1u, memory_order_relaxed);

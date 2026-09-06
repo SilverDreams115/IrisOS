@@ -1,4 +1,5 @@
 #include "syscall_priv.h"
+#include <iris/nc/kasidpool.h>
 #include <iris/nc/kframe.h>
 #include <iris/nc/kvspace.h>
 #include <stddef.h>
@@ -327,4 +328,37 @@ uint64_t sys_framebuffer_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                               (uint32_t)sizeof(g_iris_fb_params)))
         return syscall_err(IRIS_ERR_INVALID_ARG);
     return syscall_ok_u64(0);
+}
+
+/*
+ * sys_asid_pool_assign(pool_cptr, vspace_cptr) — ledger A-21.
+ *
+ * seL4's `seL4_X86_ASIDPool_Assign`.  An address space is a page and a header
+ * until somebody who holds a pool gives it a hardware identifier; a thread
+ * cannot be configured with one that has none.  Splitting this from retyping
+ * the VSpace is the point: holding memory lets you BUILD an address space,
+ * holding a pool lets you make one RUNNABLE, and they are different grants.
+ */
+uint64_t sys_asid_pool_assign(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *pool_obj; iris_rights_t pr;
+    iris_error_t err = cspace_resolve_only_obj(t->cspace_root,
+                                               (iris_cptr_t)arg0, RIGHT_WRITE,
+                                               KOBJ_ASID_POOL, &pool_obj, &pr);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    struct KVSpace *vs; iris_rights_t vr;
+    err = cspace_resolve_only_vspace(t->cspace_root, (iris_cptr_t)arg1,
+                                     RIGHT_WRITE, &vs, &vr);
+    if (err != IRIS_OK) { kobject_release(pool_obj); return syscall_err(err); }
+
+    err = kvspace_assign_asid(vs, (struct KAsidPool *)pool_obj);
+
+    kobject_active_release(&vs->base);
+    kobject_release(&vs->base);
+    kobject_release(pool_obj);
+    return (err == IRIS_OK) ? syscall_ok_u64(0) : syscall_err(err);
 }

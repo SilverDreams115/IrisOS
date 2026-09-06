@@ -53,6 +53,8 @@ struct KUntyped;
  * ask for them (the root task's text and stack). */
 #define KVSPACE_BOOTSTRAP_FRAME_MAX 32u
 
+struct KAsidPool;
+
 struct KVSpace {
     struct KObject        base;          /* must be first */
     spinlock_t            lock;          /* guards all fields below */
@@ -62,7 +64,9 @@ struct KVSpace {
      * allocated per KProcess, before the address space existed, out of a pool
      * whose allocation loop was written twice. */
     uint64_t              user_cr3;      /* cr3 | pcid | NOFLUSH */
-    uint16_t              pcid;          /* 0 when PCID is disabled */
+    uint16_t              pcid;          /* 0 = no identifier assigned yet */
+    /* The pool the identifier came from, so it can be given back (A-21). */
+    struct KAsidPool     *asid_pool;
     int                   valid;         /* 1 = live, 0 = reaped */
     uint32_t              mapping_count; /* number of live KFrameMapping nodes */
     struct KFrameMapping *mappings;      /* singly-linked list head; NULL = empty */
@@ -237,6 +241,12 @@ iris_error_t kvspace_unmap_page(struct KVSpace *vs, uint64_t user_va);
 void kvspace_free(struct KVSpace *vs);
 
 /* Phase 19: live KVSpace object count (additive diagnostics; see kvspace.c). */
+/* A-21: an address space is given its hardware identifier by a holder of an
+ * ASIDPool, and cannot be bound to a thread until it has one. */
+iris_error_t kvspace_assign_asid(struct KVSpace *vs, struct KAsidPool *pool);
+void         kvspace_tag_bootstrap(struct KVSpace *vs);
+int          kvspace_has_asid(const struct KVSpace *vs);
+
 uint32_t kvspace_live_count(void);
 
 #endif /* __KERNEL__ */

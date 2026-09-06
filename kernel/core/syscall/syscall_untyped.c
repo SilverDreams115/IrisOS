@@ -35,6 +35,7 @@
  * exactly, so a failed batch consumes nothing.
  */
 #include "syscall_priv.h"
+#include <iris/nc/kasidpool.h>
 #include <iris/pmm.h>
 #include <iris/kslab.h>
 #include <iris/idt.h>
@@ -91,6 +92,7 @@ _Static_assert(IRIS_KOBJ_UNTYPED       == (uint32_t)KOBJ_UNTYPED,       "KOBJ AB
 _Static_assert(IRIS_KOBJ_REPLY         == (uint32_t)KOBJ_REPLY,         "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_FRAME         == (uint32_t)KOBJ_FRAME,         "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_PAGE_TABLE    == (uint32_t)KOBJ_PAGE_TABLE,    "KOBJ ABI");
+_Static_assert(IRIS_KOBJ_ASID_POOL     == (uint32_t)KOBJ_ASID_POOL,     "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_VSPACE        == (uint32_t)KOBJ_VSPACE,        "KOBJ ABI");
 _Static_assert(IRIS_KOBJ_TCB           == (uint32_t)KOBJ_TCB,           "KOBJ ABI");
 
@@ -363,6 +365,21 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
             new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
             break;
         }
+        case KOBJ_ASID_POOL:
+            /*
+             * A-21: carving a pool needs the ASID CONTROL capability, which
+             * `obj_arg` names.  Retyping the memory is not the authority —
+             * anyone can hold an Untyped; issuing address-space identifiers is
+             * a separate grant, exactly as seL4 splits
+             * `seL4_X86_ASIDControl_MakePool` from the Untyped it carves from.
+             */
+            if (!syscall_has_bootcap(t, obj_arg, IRIS_BOOTCAP_ASID_CONTROL)) {
+                kuntyped_stat_retype_failure();
+                return syscall_err(IRIS_ERR_ACCESS_DENIED);
+            }
+            payload    = sizeof(struct KAsidPool);
+            new_rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+            break;
         case KOBJ_SCHED_CONTEXT:
             /*
              * Stage 8-mcs: `obj_arg` is the REFILL DEPTH, seL4's `refill_max`,
@@ -515,6 +532,14 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                     (uint32_t)obj_arg)->base; break;
                     case KOBJ_TCB:
                         objs[i] = &ktcb_alloc_at(ptrs[i])->base;                  break;
+                    case KOBJ_ASID_POOL: {
+                        uint16_t af = 0, ac = 0;
+                        if (kasidpool_carve_range(&af, &ac) != IRIS_OK) {
+                            objs[i] = 0; err = IRIS_ERR_NO_MEMORY; break;
+                        }
+                        objs[i] = &kasidpool_alloc_at(ptrs[i], af, ac)->base;
+                        break;
+                    }
                     default: /* KOBJ_SCHED_CONTEXT */
                         objs[i] = &kschedctx_alloc_at(ptrs[i], (uint32_t)obj_arg)->base;             break;
                 }

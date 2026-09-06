@@ -40,6 +40,7 @@ typedef enum {
     KOBJ_VSPACE,         /* Phase 4: virtual address space capability — wraps a process PML4 */
     KOBJ_FRAME,          /* Phase 5: physical memory frame capability — typed region from KUntyped */
     KOBJ_PAGE_TABLE,     /* Stage 6-pure: a paging level the USER retyped and maps explicitly */
+    KOBJ_ASID_POOL,      /* A-21: a range of address-space identifiers, retyped */
 } kobject_type_t;
 
 struct KObject;

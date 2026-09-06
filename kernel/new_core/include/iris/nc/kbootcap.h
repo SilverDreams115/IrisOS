@@ -42,6 +42,16 @@
  * resource nobody has to be granted is not a capability model.
  */
 #define IRIS_BOOTCAP_SCHED_CONTROL  (1u << 7)  /* SYS_SC_CONFIGURE */
+/*
+ * Authority to carve ADDRESS-SPACE IDENTIFIER pools (ledger A-21).
+ *
+ * seL4's `ASIDControl`: one capability, in BootInfo, whose only power is
+ * making pools.  Holding an Untyped lets you build the object; holding this
+ * lets the object issue identifiers, and an address space with no identifier
+ * cannot be run in.  Splitting the two is what stops "I have memory" from
+ * meaning "I may have as many address spaces as I like".
+ */
+#define IRIS_BOOTCAP_ASID_CONTROL   (1u << 8)  /* IRIS_KOBJ_ASID_POOL retype */
 
 struct KBootstrapCap {
     struct KObject base;

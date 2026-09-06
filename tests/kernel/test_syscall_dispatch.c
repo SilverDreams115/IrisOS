@@ -83,7 +83,7 @@ void test_syscall_dispatch(void) {
      * must break this and be re-stated, the same way T148 forces it from ring
      * 3.  If this fails, check that the addition was deliberate. */
     {
-        ASSERT_EQ(ds(SYS_INITRD_FRAME + 1u), (long)IRIS_ERR_NOT_SUPPORTED);
+        ASSERT_EQ(ds(SYS_ASID_POOL_ASSIGN + 1u), (long)IRIS_ERR_NOT_SUPPORTED);
     }
 
     test_set_current_task(NULL);
