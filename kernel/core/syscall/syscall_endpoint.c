@@ -1179,6 +1179,94 @@ static uint64_t ep_recv_complete(struct task *t, uint64_t arg1) {
     return syscall_ok_u64(0);
 }
 
+/*
+ * SYS_EP_CANCEL_BADGED_SENDS(ep_cptr, badge) — ledger A-25.
+ *
+ * seL4's `seL4_CNode_CancelBadgedSends`, and the half of revocation IRIS was
+ * missing.  Revoking a badged capability stops a client sending anything NEW;
+ * what it already sent is still queued on the endpoint and is delivered
+ * afterwards, to a server that has been told this client is gone.
+ *
+ * Every queued sender carrying `badge` is dequeued and woken with CLOSED — the
+ * answer a sender to a closed endpoint already gets, because from the sender's
+ * side that is exactly what happened: the endpoint stopped existing for it.  A
+ * staged capability is released without consuming its source slot, the same
+ * rule cancellation follows everywhere else: nothing was delivered, so nothing
+ * is spent.
+ *
+ * A CALLER (ep_call_mode) is cancelled too.  It is waiting for a reply that its
+ * badge is no longer entitled to ask for.
+ *
+ * Returns how many were cancelled, which is what makes this observable: a
+ * supervisor can tell "the revoke had a tail" from "it did not".
+ */
+uint64_t sys_ep_cancel_badged_sends(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KEndpoint *ep; iris_rights_t ep_r; uint64_t inv_badge = 0;
+    iris_error_t err = cspace_resolve_only_endpoint_badged(t->cspace_root,
+                            (iris_cptr_t)arg0, RIGHT_WRITE, &ep, &ep_r, &inv_badge);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    /* The invoked capability must be UNBADGED.  A badged one names one client,
+     * and cancelling by badge through it would let that client silence any
+     * other by naming their number. */
+    if (inv_badge != 0u) {
+        kobject_release(&ep->base);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    uint64_t badge = arg1;
+    uint32_t cancelled = 0;
+    struct task *woken_head = 0;
+
+    uint64_t flags = irq_spinlock_lock(&ep->lock);
+    if (ep->ep_state == EP_STATE_SEND) {
+        struct task *prev = 0, *w = ep->queue_head;
+        while (w) {
+            struct task *next = w->ep_next;
+            if (w->ipc_msg.sender_badge != badge) { prev = w; w = next; continue; }
+            if (prev) prev->ep_next = next;
+            else      ep->queue_head = next;
+            if (ep->queue_tail == w) ep->queue_tail = prev;
+            w->ep_next     = 0;
+            w->blocking_ep = 0;
+            w->ipc_ep_closed = 1u;
+            w->ep_call_mode  = 0u;
+            /* Chained through notif_next, which a blocked SENDER never uses:
+             * the wake and the staged-capability release both have to happen
+             * outside this lock, and the list is how they get there. */
+            w->notif_next = woken_head;
+            woken_head = w;
+            cancelled++;
+            w = next;
+        }
+        if (!ep->queue_head) { ep->queue_tail = 0; ep->ep_state = EP_STATE_IDLE; }
+    }
+    irq_spinlock_unlock(&ep->lock, flags);
+
+    while (woken_head) {
+        struct task *w = woken_head;
+        woken_head = w->notif_next;
+        w->notif_next = 0;
+        struct KObject *staged = w->ep_cap_obj;
+        struct KCNode  *src_cn = w->ep_cap_src_cn;
+        w->ep_cap_obj = 0; w->ep_cap_rights = 0; w->ep_cap_badge = 0;
+        w->ep_cap_src_cn = 0; w->ep_cap_src_idx = 0;
+        if (staged) kobject_release(staged);
+        if (src_cn) {
+            kobject_active_release(&src_cn->base);
+            kobject_release(&src_cn->base);
+        }
+        task_wakeup(w);
+    }
+
+    kobject_release(&ep->base);
+    return syscall_ok_u64((uint64_t)cancelled);
+}
+
 /* ── SYS_EP_NB_SEND ──────────────────────────────────────────────────── */
 
 uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {

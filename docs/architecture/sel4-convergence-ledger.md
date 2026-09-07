@@ -1296,6 +1296,50 @@ first bounded wait in the suite hung, which is the correct amount of noticing
 for a bug that silent.
 
 
+
+### A-25 — revocation without a tail (CancelBadgedSends)
+
+The second of A-20's "two smaller absences", and the last item that audit
+found: *"seL4 has `seL4_CNode_CancelBadgedSends`, which cancels the IN-FLIGHT
+sends of one badge after revoking a delegation; IRIS revokes the capability and
+leaves whatever is already queued."*
+
+**Why it is not small either.**  Revoking a badged capability stops a client
+sending anything NEW.  It does nothing about what is already in the endpoint's
+send queue — a message sent a moment before the revoke is delivered afterwards,
+to a server that has just been told this client no longer exists.  A supervisor
+that revokes and then assumes silence is wrong, and nothing in the system told
+it so.  Revocation with a tail is not revocation.
+
+`SYS_EP_CANCEL_BADGED_SENDS(ep, badge)` dequeues every waiting sender carrying
+that badge and wakes it with CLOSED — which is what actually happened from the
+sender's side: the endpoint stopped existing for it.  A staged capability is
+released without consuming its source slot, the rule cancellation follows
+everywhere else: nothing was delivered, so nothing is spent.  A blocked CALLER
+is cancelled too; it is waiting for a reply its badge is no longer entitled to
+ask for.
+
+**The capability must be UNBADGED**, and that is the whole authority argument.
+A badged capability names one client; cancelling by badge through it would let
+that client silence any other by naming their number — the same reason a badge
+can never be re-badged (A8).  Being able to say "everything from THAT client"
+is a property of holding the endpoint itself.
+
+**It returns a COUNT**, which is what makes it observable: a supervisor can
+tell a revoke that had a tail from one that did not, instead of assuming.
+
+**Gauge.**  T332, four claims — the count, that a different badge is untouched
+(one client is silenced, not the endpoint), that a cancelled sender learns its
+send did not happen rather than believing it was delivered, and that a badged
+capability is refused.
+
+**With this row, every item A-20's file-by-file audit found is closed.**  Three
+authority holes (A-20), address-space identity (A-21), faults as IPC (A-22), the
+bound notification (A-23), timed blocking (A-24), and this.  What remains from
+that audit is the ABI SHAPE, which the charter has always carried as a
+permanent deliberate divergence and now says so with the other three settled.
+
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a
@@ -1408,6 +1452,23 @@ holds a capability to or does not.
 changes state, no allowlist entry moves, no prohibition is added or lifted.
 
 
+
+### A-6 — the ABI-shape divergence restated as the last one open
+
+**Change**: charter §4, the "Own ABI (not seL4)" row — restated to say that it
+is the last of the four form divergences A-20's audit named and the only one
+still open, and to give the actual trade rather than only the fact.
+
+**Justification**: ledger A-21, A-22, A-24 closed the other three.  The row
+described a shape difference in the abstract; with its three neighbours settled
+it is the whole of what "IRIS is not seL4 in form" now means, and a charter that
+carries one permanent divergence should say what it buys and what it costs
+rather than only that it exists.
+
+**Scope**: one divergence row restated.  Nothing changes state; the divergence
+was permanent and deliberate before and remains so.
+
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types, and the boundary
@@ -1422,6 +1483,8 @@ changes state, no allowlist entry moves, no prohibition is added or lifted.
   endpoint, and a pending one is consulted on the way in.
 - T331 pins that waiting is a service: the timer service fires, the authority
   is its endpoint, and the three timed syscalls answer NOT_SUPPORTED.
+- T332 pins revocation without a tail: queued sends of one badge are
+  cancelled, another badge's are not, and a badged capability cannot do it.
 - T260 pins the retirement of the create syscalls and their no-effect.
 - T125/T126 pin the rejection of the migrated family on the legacy retype.
 - The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.

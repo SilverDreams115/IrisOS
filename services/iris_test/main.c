@@ -11161,7 +11161,7 @@ static void test_t148(void) {
      * This loop caught the guard syscall the moment it landed, which is what
      * it is for: growing the syscall surface has to be a deliberate, visible
      * act rather than something a diff can do quietly. */
-    for (long n = 138; ok && n <= 400; n++) {
+    for (long n = 139; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -24972,6 +24972,138 @@ static void test_t331(void) {
     if (ok) it_pass("T331"); else it_fail("T331", why);
 }
 
+
+/* T332's senders: three threads that BLOCK in a send, which is the only way to
+ * be queued on an endpoint and therefore the only way to have a tail. */
+static long     g_t332_ep_a, g_t332_ep_b;
+static long     g_t332_tcb[3];
+static uint8_t  g_t332_stacks[3][4096];
+static volatile int  g_t332_done, g_t332_done_b;
+static volatile long g_t332_err_a;
+
+static void t332_sender_a(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label = 0x332;
+    long r = it_sys2(SYS_EP_SEND, g_t332_ep_a, (long)(uintptr_t)&m);
+    g_t332_err_a = r;
+    __atomic_fetch_add((int *)&g_t332_done, 1, __ATOMIC_RELAXED);
+    for (;;) (void)it_sys1(SYS_YIELD, 0);
+}
+
+static void t332_sender_b(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label = 0x332;
+    (void)it_sys2(SYS_EP_SEND, g_t332_ep_b, (long)(uintptr_t)&m);
+    g_t332_done_b = 1;
+    for (;;) (void)it_sys1(SYS_YIELD, 0);
+}
+
+
+/* ── T332: revocation with no tail (A-25) ───────────────────────────────────
+ *
+ * seL4's `seL4_CNode_CancelBadgedSends`, and the half of revocation IRIS was
+ * missing.  Revoking a badged capability stops a client sending anything NEW.
+ * It does nothing about what is already QUEUED: a message sent a moment before
+ * the revoke sits in the endpoint's send queue and is delivered afterwards, to
+ * a server that has just been told this client no longer exists.  Revocation
+ * with a tail is not revocation.
+ *
+ * Four claims:
+ *  1. queued sends carrying the named badge are cancelled, and the count says
+ *     how many — so a supervisor can tell a revoke that had a tail from one
+ *     that did not;
+ *  2. sends carrying a DIFFERENT badge are untouched, which is what makes this
+ *     usable at all: one client is silenced, not the endpoint;
+ *  3. a cancelled sender learns its send did not happen (CLOSED), rather than
+ *     believing it was delivered;
+ *  4. the capability must be UNBADGED.  A badged one names one client, and
+ *     cancelling through it would let that client silence any other by naming
+ *     their number — the same reason a badge can never be re-badged.
+ * Invariants: A8, A10. */
+static void test_t332(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "cancel badged sends";
+
+    long ep = it_ep_create();
+    if (ep < 0) { it_fail("T332", "ep"); return; }
+
+    /* Two clients, two badges, on one endpoint. */
+    long b1 = it_cs_badge(ep, RIGHT_READ | RIGHT_WRITE, 0x11u);
+    long b2 = it_cs_badge(ep, RIGHT_READ | RIGHT_WRITE, 0x22u);
+    if (b1 < 0 || b2 < 0) { it_fail("T332", "badges"); return; }
+
+    /* 4. a badged capability cannot cancel by badge. */
+    if (ok && it_sys2(SYS_EP_CANCEL_BADGED_SENDS, b1, 0x22u)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "badged cap cancelled"; }
+    /* ...and it takes RIGHT_WRITE on the endpoint. */
+    if (ok) {
+        long ro = it_cs_reduce(ep, RIGHT_READ);
+        if (ro < 0) { ok = 0; why = "ro dup"; }
+        else if (it_sys2(SYS_EP_CANCEL_BADGED_SENDS, ro, 0x11u)
+                 != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read-only cancelled"; }
+        if (ro >= 0) it_slot_delete((uint32_t)ro);
+    }
+
+    /* Nothing queued: cancelling is a clean zero, not an error. */
+    if (ok && it_sys2(SYS_EP_CANCEL_BADGED_SENDS, ep, 0x11u) != 0) {
+        ok = 0; why = "empty queue not zero";
+    }
+
+    /* Queue two senders under badge 0x11 and one under 0x22.  Threads,
+     * because a blocking send is the only way to BE queued. */
+    if (ok) {
+        g_t332_ep_a = b1; g_t332_ep_b = b2; g_t332_done = 0;
+        for (uint32_t i = 0; ok && i < 3u; i++) {
+            long tcb = it_thread_create((uint64_t)(uintptr_t)
+                                        (i < 2u ? t332_sender_a : t332_sender_b),
+                                        ((uint64_t)(uintptr_t)(g_t332_stacks[i] +
+                                            sizeof(g_t332_stacks[0]))) & ~0xFULL, 0);
+            if (tcb < 0) { ok = 0; why = "sender thread"; }
+            else g_t332_tcb[i] = tcb;
+        }
+        /* Let all three reach their blocking send. */
+        for (uint32_t i = 0; i < 400u; i++) (void)it_sys1(SYS_YIELD, 0);
+    }
+
+    /* 1 + 2: exactly the two under 0x11 are cancelled. */
+    if (ok) {
+        long n = it_sys2(SYS_EP_CANCEL_BADGED_SENDS, ep, 0x11u);
+        if (n != 2) { it_fz_note("T332", (uint32_t)n, 2u, 0u); ok = 0; why = "wrong cancel count"; }
+    }
+    /* 3: they learned it did not happen. */
+    if (ok) {
+        for (uint32_t i = 0; i < 400u && g_t332_done < 2; i++) (void)it_sys1(SYS_YIELD, 0);
+        if (g_t332_done != 2) { ok = 0; why = "cancelled senders not woken"; }
+        if (ok && g_t332_err_a != (long)IRIS_ERR_CLOSED) { ok = 0; why = "wrong error"; }
+    }
+    /* 2, asserted: the 0x22 sender is still queued and still waiting. */
+    if (ok && g_t332_done_b != 0) { ok = 0; why = "other badge cancelled too"; }
+    /* ...and it can still be served. */
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        if (it_sys3(SYS_EP_NB_RECV, ep, (long)(uintptr_t)&m, 0L) != 0) {
+            ok = 0; why = "survivor not receivable";
+        } else if (m.sender_badge != 0x22u) {
+            ok = 0; why = "wrong survivor";
+        }
+    }
+
+    for (uint32_t i = 0; i < 3u; i++)
+        if (g_t332_tcb[i] > 0) (void)it_sys1(SYS_TCB_EXIT, g_t332_tcb[i]);
+    it_quiesce_reaper();
+    for (uint32_t i = 0; i < 3u; i++)
+        if (g_t332_tcb[i] > 0) it_slot_delete((uint32_t)g_t332_tcb[i]);
+    it_slot_delete((uint32_t)b2);
+    it_slot_delete((uint32_t)b1);
+    { handle_id_t h = (handle_id_t)ep; it_close(&h); }
+    it_quiesce_reaper();
+    if (ok) it_pass("T332"); else it_fail("T332", why);
+}
+
 /* ── T324: what the rotating object pool is still holding ──────────────────
  * The pool's contract is one sentence — delete before use, never hold a slot
  * across a test boundary — and until now nothing read it back.  The pool is
@@ -25658,6 +25790,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t329();
     test_t330();
     test_t331();
+    test_t332();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

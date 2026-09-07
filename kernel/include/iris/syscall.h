@@ -1690,6 +1690,27 @@ static inline long iris_syscall0(long nr) {
 #define SYS_NOTIFY_POLL 137
 
 /*
+ * SYS_EP_CANCEL_BADGED_SENDS(ep_cptr, badge) → number cancelled, or negative
+ *   ledger A-25 — seL4's `seL4_CNode_CancelBadgedSends`.
+ *
+ *   ep_cptr: the endpoint, UNBADGED, with RIGHT_WRITE.
+ *   badge:   the badge whose in-flight sends are to be cancelled.
+ *
+ * Revoking a badged delegation stops a client sending anything NEW.  It does
+ * nothing about what is already queued: a message sent before the revoke sits
+ * in the endpoint's send queue and is delivered afterwards, to a server that
+ * has been told this client no longer exists.  Revocation without this is
+ * revocation with a tail.
+ *
+ * The capability must be UNBADGED.  A badged one names a client, and letting a
+ * client cancel by badge would let it cancel any other client's traffic by
+ * naming their number — the same reason a badge can never be re-badged.  Being
+ * able to say "everything from THAT client" is a property of holding the
+ * endpoint itself.
+ */
+#define SYS_EP_CANCEL_BADGED_SENDS 138
+
+/*
  * SYS_INITRD_FRAME(auth_cptr, index, dest_cnode|slot<<32, budget_cptr)
  *   → image size in bytes, or negative iris_error_t
  *
