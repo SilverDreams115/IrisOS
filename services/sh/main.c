@@ -263,7 +263,7 @@ static void sh_dispatch(handle_id_t con, const char *line) {
         sh_cout(con, "IRIS Phase 55 — pure microkernel shell\r\n"
                            "  kernel:   x86_64 ring-0/3, cooperative+preemptive\r\n"
                            "  services: init svcmgr kbd vfs console fb sh\r\n"
-                           "  syscalls: SYS_KLOG_DRAIN(65) SYS_EXCEPTION_RESUME(66) SYS_VMO_SIZE(67)\r\n");
+                           "  syscalls: SYS_KLOG_DRAIN(65) SYS_REPLY(85) SYS_FRAME_SIZE(67)\r\n");
         return;
     }
     if (sh_word_eq(line, "uptime")) {

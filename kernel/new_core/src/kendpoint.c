@@ -1,4 +1,5 @@
 #include <iris/nc/kendpoint.h>
+#include <iris/nc/kprocess.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kuntyped.h>
@@ -40,7 +41,21 @@ static void kendpoint_obj_close(struct KObject *obj) {
         t->ep_next       = 0;
         t->blocking_ep   = 0;
         t->ipc_ep_closed = 1;
-        task_wakeup(t);
+        /*
+         * Ledger A-22: a FAULT caller queued here has no syscall to return
+         * CLOSED to — waking it resumes it at the instruction that faulted,
+         * which faults again into an endpoint that is now closed.  Its
+         * handler is gone, so this is the "no handler" case arriving late,
+         * and it gets the same answer.
+         */
+        if (t->ep_fault_call) {
+            t->ep_fault_call = 0u;
+            t->ep_call_mode  = 0u;
+            kfault_resolve(t, /*killed=*/1);
+            task_kill_external(t);
+        } else {
+            task_wakeup(t);
+        }
         t = nxt;
     }
     ep->queue_head = 0;
@@ -128,6 +143,10 @@ void kendpoint_cancel_waiter(struct task *t) {
     t->ep_cap_badge   = 0;
     t->ep_cap_src_cn  = 0;
     t->ep_cap_src_idx = 0;
+    /* A-22: the fault this thread was delivering dies with the thread — the
+     * cancel path only runs on a forcible kill.  Cleared so a recycled TCB
+     * cannot inherit a call mode it never made. */
+    t->ep_fault_call  = 0u;
 
     irq_spinlock_unlock(&ep->lock, flags);
 

@@ -224,42 +224,40 @@ struct task {
     /*
      * Stage 7 Step 12 — the fault HANDLER is the thread's too.
      *
-     * Registration named a PROCESS, so the kernel kept the handler, the
-     * mailbox and the generation counter on KProcess and pointed at "whoever
-     * faulted last" to answer a read.  Every one of those is a property of an
-     * execution: which handler to tell, where to put the thread, and which
-     * generation this fault is.  On the thread they need no last-faulter
-     * pointer, because the thread IS the record — and a supervisor that arms a
-     * thread's faults already holds that thread.
+     * Registration named a PROCESS, so the kernel kept the handler and the
+     * generation counter on KProcess and pointed at "whoever faulted last" to
+     * answer a read.  Both are properties of an execution — and a supervisor
+     * that arms a thread's faults already holds that thread.
      */
-    struct KNotification *fault_notif;
-    uint64_t          fault_bits;
-    struct KCNode    *fault_cspace;   /* mailbox CNode, retained */
-    uint32_t          fault_slot;
     /*
-     * Stage 8-cap / D-6 — where the delivered capability's AUTHORITY came
-     * from, so the copy the kernel publishes has an ancestor.
+     * Ledger A-22 — a fault is an IPC MESSAGE on an ENDPOINT.
      *
-     * A fault used to publish the faulting thread into a mailbox as an MDB
-     * LEGACY_ROOT: a capability with no parent, which SYS_CSPACE_REVOKE can
-     * never reach because revoke walks descendants.  Revoking the supervisor's
-     * thread capability therefore did not reach the copies the kernel had
-     * handed to handlers.
+     * It used to be three mechanisms where seL4 reuses one: a notification was
+     * signalled, the faulting thread's capability was published into a mailbox
+     * CNode the registrant declared, the handler read the record with
+     * SYS_TCB_FAULT_INFO and answered with SYS_EXCEPTION_RESUME carrying a
+     * generation number.  Equivalent in what it could express, and a different
+     * structure — which meant a fault handler was not a server, "may resume
+     * this thread" was not a capability, and the one-shot-ness of an answer had
+     * to be rebuilt out of a sequence counter.
      *
-     * The ancestor is the slot the REGISTRANT named when it armed the handler
-     * — the same rule Stage 2 set for IPC, where a delivered capability is a
-     * child of the sender's SOURCE slot.  Recorded here with the CNode
-     * retained, and verified by IDENTITY at delivery (kcnode_slot_holds): a
-     * slot is a reusable location, and between arming and faulting it can be
-     * refilled with something that never authorised anything.  A registration
-     * whose source slot no longer holds this thread is a delegation made with
-     * a capability that no longer exists, and is treated as no handler at all.
+     * Now the faulting thread performs a CALL on this endpoint.  The handler
+     * receives it like any other request and gets a REPLY capability; replying
+     * resumes the thread.  The authority to resume is that capability and
+     * nothing else, so it cannot be replayed, forged or guessed, and a handler
+     * that drops it can never accidentally answer a later fault.
+     *
+     * `fault_ep_badge` is the badge on the capability the REGISTRANT used, and
+     * it travels in every fault message as `sender_badge` — which is how the
+     * handler knows which of its clients faulted.  seL4 identifies the faulter
+     * exactly this way, and it is why the delivery no longer has to mint a
+     * thread capability into somebody's CSpace on every fault.
      */
-    struct KCNode    *fault_src_cn;   /* registrant's slot for THIS tcb */
-    uint32_t          fault_src_idx;
+    struct KEndpoint *fault_ep;
+    uint64_t          fault_ep_badge;
 
     /*
-     * Stage 8-mcs — the TIMEOUT fault handler, a SEPARATE registration.
+     * Stage 8-mcs — the TIMEOUT fault endpoint, a SEPARATE registration.
      *
      * seL4 keeps seL4_TCB_SetTimeoutEndpoint apart from the fault endpoint,
      * and the reason is authority rather than tidiness: the principal that
@@ -270,30 +268,12 @@ struct task {
      * thread out of a page fault.  They are different questions asked by
      * different servers, so they are different registrations.
      *
-     * Same shape as the exception registration above — notification, bits,
-     * mailbox, and the source slot the delivered capability is parented to —
-     * because it IS the same mechanism: a fault delivered by naming the
-     * thread's capability.  Both are written by one shared registration path
-     * (tcb_register_handler), so the two cannot drift.
-     *
-     * Unregistered (notif == NULL) is the default and means what it meant
-     * before timeout faults existed: budget exhaustion blocks the thread until
-     * its period refills it, and nobody is told.
+     * Unregistered (ep == NULL) is the default and means what it meant before
+     * timeout faults existed: budget exhaustion blocks the thread until its
+     * period refills it, and nobody is told.
      */
-    struct KNotification *timeout_notif;
-    uint64_t          timeout_bits;
-    struct KCNode    *timeout_cspace;
-    uint32_t          timeout_slot;
-    struct KCNode    *timeout_src_cn;
-    uint32_t          timeout_src_idx;
-    /*
-     * Set by the timer tick when the budget runs out and a timeout handler is
-     * armed; consumed in task context by task_yield.  The tick MUST NOT
-     * deliver: delivery signals a notification, which wakes a task and touches
-     * the run queue, and the tick runs in the PIT ISR.  Same discipline the
-     * timed-block path already follows two functions above — the ISR records
-     * the fact, task context acts on it.
-     */
+    struct KEndpoint *timeout_ep;
+    uint64_t          timeout_ep_badge;
     uint8_t           timeout_pending;
 
     /*
@@ -566,6 +546,20 @@ struct task {
     struct KSchedContext *sched_ctx;
     /* Ph85: reply capability fields */
     uint32_t       ep_call_mode;    /* 1 if task entered EP via SYS_EP_CALL (wants reply) */
+    /*
+     * Ledger A-22: 1 if the call queued on this endpoint is a FAULT, not a
+     * syscall.  The endpoint machinery treats it like any other call — that is
+     * the whole point — but the two ends differ, and both differences are
+     * about there being no syscall frame underneath it:
+     *
+     *   - nothing is restarted on wake-up.  A fault caller resumes at the
+     *     instruction that faulted, from the trap frame the CPU pushed, so
+     *     the reply must NOT write a message back into user memory or return
+     *     a syscall value; it just makes the thread runnable again.
+     *   - the message was built by the kernel, so there is no staged bulk
+     *     payload and no capability to transfer.
+     */
+    uint32_t       ep_fault_call;
     struct KReply *pending_kreply;  /* non-NULL while state == TASK_BLOCKED_REPLY (task holds a ref) */
     /* Phase S1: explicit MCS-style reply object staged by the receiver.
      * Set at EP_RECV / EP_NB_RECV entry from the reply CPtr in arg2 (the

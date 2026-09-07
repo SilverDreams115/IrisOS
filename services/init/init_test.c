@@ -9,6 +9,7 @@
 
 #include <iris/endpoint_proto.h>
 #include "init.h"
+#include <iris/ipc_msg.h>
 #include <iris/fault_proto.h>
 
 static const char init_stage_exception[] = "[USER][INIT][S8] exception delivery OK\n";
@@ -41,24 +42,22 @@ static void __attribute__((noinline)) s8_ud2_fn(void) {
     for (;;) {}
 }
 
-/* Phase 13 (Track I): exception delivery is a KNotification now — the kernel
- * records the fault and signals the handler's notification; init reads the
- * details with SYS_PROCESS_FAULT_INFO.  No KChannel. */
+/* Ledger A-22: exception delivery is IPC.  The faulting thread CALLS the
+ * endpoint its supervisor armed; init receives the record as an ordinary
+ * message and holds the reply capability that would resume it. */
 void init_selftest_exception(void) {
-    uint8_t fbuf[FAULT_MSG_LEN];
-    long n_raw, tid_raw, r;
-    handle_id_t notif_h;
+    long ep_raw, rp_raw, tid_raw, r;
     uint32_t vec, task_id;
-    uint64_t bits = 0;
+    struct IrisMsg fm;
 
-    n_raw = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
-                             INIT_SLOT_S8_NOTIF, 0);
-    if (n_raw < 0) { init_log("[USER][INIT][S8] SKIP: notify create\n"); return; }
-    /* Stage 4: INIT_SLOT_S8_NOTIF is a CSpace slot init retyped into, not a
-     * handle.  The SYS_HANDLE_CLOSE calls that used to guard every early
-     * return here were asking the handle table to close a CPtr — a failed
-     * call that read as cleanup.  The slot is init's for the whole run. */
-    notif_h = (handle_id_t)INIT_SLOT_S8_NOTIF;
+    ep_raw = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
+                              INIT_SLOT_S8_FAULT_EP, 0);
+    if (ep_raw < 0) { init_log("[USER][INIT][S8] SKIP: ep create\n"); return; }
+    /* A fault is a CALL, so answering one needs reply authority staged at the
+     * receive.  The object is init's for the whole run, like the endpoint. */
+    rp_raw = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
+                              INIT_SLOT_S8_REPLY, 0);
+    if (rp_raw < 0) { init_log("[USER][INIT][S8] SKIP: reply create\n"); return; }
 
     /* Spawn a thread that immediately executes ud2 (#UD, vector 6).
      *
@@ -89,16 +88,12 @@ void init_selftest_exception(void) {
         init_log("[USER][INIT][S8] SKIP: tcb retype\n"); return;
     }
     /*
-     * Stage 7 Step 12: arm the faults of the THREAD that is about to take one,
-     * which is why this moved below the retype — there was no thread to name
-     * before it.  Registration used to name init's PROCESS and catch whatever
-     * of it faulted; it names the execution now, and the mailbox
-     * (INIT_SLOT_S8_FAULT, in init's own root CNode) is where that thread's
-     * capability lands so SYS_EXCEPTION_RESUME can answer.
+     * Ledger A-22: point the thread's faults at the endpoint above.  It moved
+     * below the retype in Stage 7 Step 12 for the reason it stays there: there
+     * is no thread to name before it.
      */
     if (init_sys4(SYS_TCB_SET_FAULT_HANDLER, (long)INIT_SLOT_S8_TCB,
-                  (long)notif_h, 1,
-                  (long)((uint64_t)INIT_SLOT_S8_FAULT << 32)) != 0) {
+                  (long)INIT_SLOT_S8_FAULT_EP, 0, 0) != 0) {
         init_log("[USER][INIT][S8] SKIP: handler reg\n"); return;
     }
     if (init_sys3(SYS_TCB_CONFIGURE, (long)INIT_SLOT_S8_TCB,
@@ -109,35 +104,36 @@ void init_selftest_exception(void) {
         init_log("[USER][INIT][S8] SKIP: thread create\n"); return;
     }
 
-    /* Wait up to 1 s for the fault notification, then read the fault details. */
-    r = init_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)notif_h, (long)&bits, 1000000000L);
+    /* Receive the fault.  One call, where it used to be a timed notification
+     * wait followed by a second syscall to fetch what the signal did not
+     * carry. */
+    for (uint32_t i = 0; i < (uint32_t)sizeof(fm); i++) ((uint8_t *)&fm)[i] = 0;
+    r = init_sys3(SYS_EP_RECV, (long)INIT_SLOT_S8_FAULT_EP, (long)&fm,
+                  (long)INIT_SLOT_S8_REPLY);
     if (r < 0) {
-        init_log("[USER][INIT][S8] FAIL: no fault signal\n"); return;
+        init_log("[USER][INIT][S8] FAIL: no fault message\n"); return;
     }
 
-    for (uint32_t i = 0; i < (uint32_t)sizeof(fbuf); i++) fbuf[i] = 0;
-    /* Stage 7 Step 8: the record comes off the thread whose capability the
-     * fault delivered into INIT_SLOT_S8_FAULT. */
-    r = init_sys2(SYS_TCB_FAULT_INFO, (long)INIT_SLOT_S8_FAULT, (long)fbuf);
-    if (r < 0) {
-        init_log("[USER][INIT][S8] FAIL: no fault info\n"); return;
+    {
+        const uint8_t *fbuf = (const uint8_t *)fm.words;
+        vec = (uint32_t)fbuf[FAULT_OFF_VECTOR]
+            | ((uint32_t)fbuf[FAULT_OFF_VECTOR + 1] << 8)
+            | ((uint32_t)fbuf[FAULT_OFF_VECTOR + 2] << 16)
+            | ((uint32_t)fbuf[FAULT_OFF_VECTOR + 3] << 24);
+        task_id = (uint32_t)fbuf[FAULT_OFF_TASK_ID]
+                | ((uint32_t)fbuf[FAULT_OFF_TASK_ID + 1] << 8)
+                | ((uint32_t)fbuf[FAULT_OFF_TASK_ID + 2] << 16)
+                | ((uint32_t)fbuf[FAULT_OFF_TASK_ID + 3] << 24);
     }
-    vec = (uint32_t)fbuf[FAULT_OFF_VECTOR]
-        | ((uint32_t)fbuf[FAULT_OFF_VECTOR + 1] << 8)
-        | ((uint32_t)fbuf[FAULT_OFF_VECTOR + 2] << 16)
-        | ((uint32_t)fbuf[FAULT_OFF_VECTOR + 3] << 24);
-    task_id = (uint32_t)fbuf[FAULT_OFF_TASK_ID]
-            | ((uint32_t)fbuf[FAULT_OFF_TASK_ID + 1] << 8)
-            | ((uint32_t)fbuf[FAULT_OFF_TASK_ID + 2] << 16)
-            | ((uint32_t)fbuf[FAULT_OFF_TASK_ID + 3] << 24);
 
     if (vec != 6u) {
-        init_log("[USER][INIT][S8] FAIL: wrong fault\n"); return;
+        init_log("[USER][INIT][S8] FAIL: wrong vector\n"); return;
     }
 
-    /* Kill the faulting thread — named by the capability the fault delivered,
-     * not by the id the record still reports for diagnostics. */
-    (void)init_sys2(SYS_EXCEPTION_RESUME, (long)INIT_SLOT_S8_FAULT, 1);
+    /* Kill the faulting thread by REFUSING to answer it: dropping the reply
+     * object is how a handler says "this one does not resume", and the kernel
+     * destroys a thread whose fault nobody will ever answer. */
+    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_S8_REPLY);
     (void)task_id;
 
 

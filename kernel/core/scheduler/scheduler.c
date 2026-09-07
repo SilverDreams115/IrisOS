@@ -356,12 +356,12 @@ void scheduler_tick(void) {
              * budget enforcement not yet MCS.
              *
              * With a handler, the temporal supervisor is told and decides.
-             * The delivery does NOT happen here: signalling a notification
-             * wakes a task and touches the run queue, and this runs in the PIT
+             * The delivery does NOT happen here: an endpoint call dequeues a
+             * receiver and touches the run queue, and this runs in the PIT
              * ISR.  The tick records the fact; task_yield acts on it, the same
              * discipline the timed-block path above already follows.
              */
-            if (current_task->timeout_notif) {
+            if (current_task->timeout_ep) {
                 current_task->timeout_pending = 1;
                 current_task->need_resched    = 1;
                 return;

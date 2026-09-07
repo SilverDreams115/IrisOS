@@ -176,23 +176,22 @@
 #define LP_PGR_SLOT_TPROC      12u
 #define LP_PGR_SLOT_TVS        13u
 #define LP_PGR_SLOT_FRAME      14u
-#define LP_PGR_SLOT_NOTIF      15u
+#define LP_PGR_SLOT_FAULT_EP   15u  /* A-22: the fault ENDPOINT, RIGHT_READ */
 /*
- * Stage 7 Step 7 — the fault mailbox.
+ * Ledger A-22 — the fault REPLY objects.
  *
- * A CNode the SUPERVISOR retypes and mints here, and registers each target's
- * exception handler to deliver into.  It is how a pager learns WHICH thread
- * faulted in a form it can act on: SYS_EXCEPTION_RESUME names the thread by
- * capability now, and the capability arrives in a leaf of this CNode.
+ * A CNode the SUPERVISOR retypes and fills with KReply objects.  A fault is a
+ * CALL, so serving one means receiving with reply authority staged, and once
+ * bound, that leaf IS "the authority to resume the thread that faulted".
  *
  * It is inside the window lp_ps_report scans, deliberately and for the same
  * reason PGR_SLOT_SELF_VS is: it is authority the pager holds, so the manifest
  * oracle must account for it rather than be blind to it.
  *
- * Leaf 1 is the pager's own target.  Leaf 2 is the VICTIM's and is never
- * filled — the supervisor does not arm the victim's faults here — which is
- * what makes the XPROBE battery's "resolve somebody else's fault" attempts
- * fail for the right reason: no capability, rather than a rejected id.
+ * Leaf 1 is the pager's own target.  Leaf 2 is EMPTY and stays empty — the
+ * supervisor never arms the victim's faults here — which is what makes the
+ * XPROBE battery's "resolve somebody else's fault" attempts fail for the right
+ * reason: no capability at all, rather than a rejected id.
  */
 #define LP_PGR_SLOT_FAULTCN    17u
 #define LP_PGR_FAULT_CPTR      ((long)((1u << 8) | LP_PGR_SLOT_FAULTCN))
@@ -287,6 +286,11 @@ static long lp_recv(struct IrisMsg *m) {
     if (r < 0 && r != (long)IRIS_ERR_CLOSED)
         r = lp_sys3(SYS_EP_RECV, (long)LP_CPTR_CMD_EP, (long)(uintptr_t)m, 0);
     return r;
+}
+
+static void lp_msg_zero(struct IrisMsg *m) {
+    uint8_t *b = (uint8_t *)m;
+    for (uint32_t i = 0; i < (uint32_t)sizeof(*m); i++) b[i] = 0;
 }
 
 void lp_main(handle_id_t bootstrap_ch_h);
@@ -386,14 +390,15 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         long err = 0;
         if (count == 0u) count = 1u;
         for (uint32_t n = 0; n < count && err == 0; n++) {
-            uint64_t bits = 0;
-            long r = lp_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)LP_PGR_SLOT_NOTIF,
-                             (long)(uintptr_t)&bits, 2000000000L);
+            /* A-22: RECEIVE the fault.  The record is the message and the
+             * reply object staged here is the authority to resume — two
+             * syscalls and a mailbox became one receive. */
+            struct IrisMsg fm;
+            lp_msg_zero(&fm);
+            long r = lp_sys3(SYS_EP_RECV, (long)LP_PGR_SLOT_FAULT_EP,
+                             (long)(uintptr_t)&fm, LP_PGR_FAULT_CPTR);
             if (r != 0) { err = r; break; }
-            uint8_t fb[FAULT_MSG_LEN];
-            r = lp_sys2(SYS_TCB_FAULT_INFO, LP_PGR_FAULT_CPTR,
-                        (long)(uintptr_t)fb);
-            if (r != 0) { err = r; break; }
+            const uint8_t *fb = (const uint8_t *)fm.words;
             uint32_t vector  = lp_rd32(fb, FAULT_OFF_VECTOR);
             uint32_t task_id = lp_rd32(fb, FAULT_OFF_TASK_ID);
             uint32_t seq     = lp_rd32(fb, FAULT_OFF_SEQ);
@@ -409,8 +414,17 @@ void lp_main(handle_id_t bootstrap_ch_h) {
                             (long)LP_PGR_SLOT_TVS, (long)va, (long)mflags);
                 if (r != 0) { err = r; break; }
             }
-            uint64_t action = ((uint64_t)seq << 32) | ((sub == 3u) ? 3u : 2u);
-            r = lp_sys2(SYS_EXCEPTION_RESUME, LP_PGR_FAULT_CPTR, (long)action);
+            /* Answer it, or refuse to: replying resumes the thread, and
+             * destroying the reply object leaves the fault unanswerable, which
+             * is what the kill mode is now — a pager holds no thread
+             * authority, so it cannot kill anything directly. */
+            if (sub == 3u) {
+                r = lp_sys2(SYS_CNODE_DELETE, (long)LP_PGR_SLOT_FAULTCN, 1);
+            } else {
+                struct IrisMsg rm;
+                lp_msg_zero(&rm);
+                r = lp_sys2(SYS_REPLY, LP_PGR_FAULT_CPTR, (long)(uintptr_t)&rm);
+            }
             if (r != 0) { err = r; break; }
         }
         lp_sys1(SYS_EXIT, (long)(LP_EXIT_PGR_BASE | ((uint32_t)-err & 0xFFu)));
@@ -425,15 +439,31 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         uint32_t breach = 0u;
         uint32_t vtid = (uint32_t)msg.words[0];
         uint64_t va   = msg.words[1];
-        uint64_t vseq = msg.words[2];
-        /* Stage 7 Step 7: resolving somebody else's fault now fails for a
-         * better reason than a rejected id — the pager holds NO capability to
-         * the victim's faulting thread.  The victim's mailbox leaf is never
-         * armed, so these resolve nothing at all. */
-        if (lp_sys2(SYS_EXCEPTION_RESUME, LP_PGR_XFAULT_CPTR,
-                    (long)((vseq << 32) | 2u)) >= 0) breach |= (1u << 0);
-        if (lp_sys2(SYS_EXCEPTION_RESUME, LP_PGR_XFAULT_CPTR,
-                    (long)((vseq << 32) | 3u)) >= 0) breach |= (1u << 1);
+        uint64_t vseq = msg.words[2]; (void)vseq;
+        /* Ledger A-22: resolving somebody else's fault fails for the best
+         * reason there is — resuming a thread is spending a REPLY capability,
+         * and this pager was never given one for the victim.  The generation
+         * number these probes used to carry is gone with the syscall that took
+         * it: a one-shot capability needs no sequence check. */
+        {
+            /*
+             * A-22: resuming a thread is spending a REPLY capability, and the
+             * supervisor never gave this pager one for the victim.  Leaf 2 is
+             * empty, so the attempt fails on the capability rather than on a
+             * rejected id — which is the containment this battery asserts.
+             *
+             * The second attempt is the sharper one: the pager DOES hold a
+             * valid reply object (leaf 1, its own target's).  Spending it
+             * cannot resume the victim, because a reply answers the one call
+             * bound to it and nothing else — and nothing is bound to this one.
+             */
+            struct IrisMsg xm;
+            lp_msg_zero(&xm);
+            if (lp_sys2(SYS_REPLY, LP_PGR_XFAULT_CPTR,
+                        (long)(uintptr_t)&xm) >= 0) breach |= (1u << 0);
+            if (lp_sys2(SYS_REPLY, LP_PGR_FAULT_CPTR,
+                        (long)(uintptr_t)&xm) >= 0) breach |= (1u << 1);
+        }
         /* map / unmap in the victim VSpace through a no-WRITE vspace cap */
         if (lp_sys4(SYS_FRAME_MAP, (long)LP_PGR_SLOT_FRAME, (long)LP_PGR_SLOT_XVS,
                     (long)va, 0) >= 0) breach |= (1u << 2);
@@ -442,14 +472,26 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         /* ...and the pager's OWN target capability resolves nothing about the
          * victim either: a process capability is not a thread, and a thread is
          * the only thing RESUME accepts. */
-        if (lp_sys2(SYS_EXCEPTION_RESUME, (long)LP_PGR_SLOT_TPROC,
-                    (long)((vseq << 32) | 2u)) >= 0) breach |= (1u << 4);
+        {
+            /* ...and the pager's OWN target capability is not reply authority
+             * either: a thread capability is not a reply, and SYS_REPLY takes
+             * nothing else. */
+            struct IrisMsg tm;
+            lp_msg_zero(&tm);
+            if (lp_sys2(SYS_REPLY, (long)LP_PGR_SLOT_TPROC,
+                        (long)(uintptr_t)&tm) >= 0) breach |= (1u << 4);
+        }
         (void)vtid;
         /* the victim's fault must not appear through the unrelated target cap */
         {
-            uint8_t fb[FAULT_MSG_LEN];
-            if (lp_sys2(SYS_TCB_FAULT_INFO, LP_PGR_XFAULT_CPTR,
-                        (long)(uintptr_t)fb) == 0) breach |= (1u << 5);
+            /* ...and the victim's fault never ARRIVES here: it is a call on an
+             * endpoint this pager was never given, so a receive on the one it
+             * does hold cannot produce it. */
+            struct IrisMsg pm;
+            lp_msg_zero(&pm);
+            if (lp_sys3(SYS_EP_NB_RECV, (long)LP_PGR_SLOT_FAULT_EP,
+                        (long)(uintptr_t)&pm, LP_PGR_FAULT_CPTR) == 0)
+                breach |= (1u << 5);
         }
         /* device/spawn forgery — a pager holds neither */
         if (lp_sys4(SYS_CAP_CREATE_IOPORT, 6, (long)(0x2F8u | (8u << 16)),

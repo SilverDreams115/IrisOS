@@ -1066,6 +1066,104 @@ address-space identity to anyone who could retype a page.  Every property in
 this row exists because an assertion was deliberately written for it.
 
 
+
+### A-22 — a fault becomes an IPC message on an endpoint
+
+A-20 found it and A-21's neighbour in the same audit: *"In seL4 a fault is an
+IPC MESSAGE on the faulting thread's fault endpoint... IRIS signals a
+notification, publishes the faulting TCB into a mailbox CNode, and the handler
+reads the record with `SYS_TCB_FAULT_INFO` and resumes with
+`SYS_EXCEPTION_RESUME` and a sequence number.  Equivalent in what it can
+express, and a different structure: three mechanisms where seL4 reuses one."*
+This closes it.
+
+**What the three mechanisms each were, and what each of them was re-inventing.**
+
+  - *The notification* carried the fact and nothing else, which is why a second
+    mechanism was needed to carry the content.
+  - *The mailbox* was a hand-rolled capability delivery: a CNode slot the
+    registrant declared, that the kernel minted the faulting thread's
+    capability into on every fault.  It needed its own parent tracking
+    (`fault_src_cn`/`fault_src_idx`, verified by identity at delivery) so that
+    revoking the supervisor's thread capability would reach the copies the
+    kernel had handed out — a rule IPC already had, rebuilt for one caller.
+    And it meant a pager held a TCB capability for every target it served,
+    which authorises everything a thread can be made to do, in order to do the
+    one thing it needed.
+  - *The generation number* was a hand-rolled one-shot token.  "May resume this
+    thread" was `RIGHT_WRITE` on a TCB capability — permanent, copyable, and
+    just as valid for the next fault as for the one it was handed for — so a
+    counter had to be bolted on and echoed back to tell a current answer from a
+    stale one.
+
+**What is there now.**  The faulting thread performs a CALL on an endpoint.
+`SYS_TCB_SET_FAULT_HANDLER(tcb, ep)` points its faults there and captures the
+BADGE on the capability used; every fault message carries that badge, which is
+how a handler serving many clients on one endpoint knows whose fault it is.
+The handler receives it like any other request, gets a reply capability with
+it, and REPLYING resumes the thread.  `SYS_EXCEPTION_RESUME` and
+`SYS_TCB_FAULT_INFO` are retired.  The wire layout of the record is unchanged
+(`fault_proto.h`): it travels in the message registers instead of sitting in
+the kernel waiting to be fetched.
+
+**Three consequences worth stating, because each replaced something.**
+
+*Nothing is minted into anybody's CSpace when a thread faults.*  The badge does
+what the mailbox did, and it rides on the message.  `kfault_deliver`'s
+capability-publishing half is gone, with its parent tracking, its identity
+check and the two CNode references every armed thread used to hold.
+
+*The one-shot is structural.*  A reply capability answers the one call bound to
+it; a second use is NOT_FOUND because there is nothing left to answer.  T185
+now proves this the hard way: it keeps a COPY of a reply capability while it is
+still live, spends the original, lets the thread refault, and shows the copy
+answers neither fault.  The generation number survives in the record for a
+handler correlating logs, and gates nothing.
+
+*A pager holds strictly less.*  It receives on an endpoint and answers with a
+reply; it holds no capability to any thread it serves.  "Kill the faulting
+thread", which used to be action 1 of `SYS_EXCEPTION_RESUME`, is now the
+ABSENCE of an answer — a handler that drops the reply object leaves the fault
+unanswerable, and the kernel destroys a thread nobody will answer, counting it
+as a kill.  That choice is IRIS's and is stated here rather than assumed: seL4
+would leave such a thread blocked forever.  Waking it instead would resume it
+at the instruction that faulted, which faults again — a livelock nobody can
+see — so the alternatives were a livelock, a permanent block, or the honest
+report that the fault ended without being served.
+
+**One property was genuinely lost, and it is the point.**  A supervisor used to
+be able to LOOK at a fault it intended somebody else to serve, by polling
+`SYS_TCB_FAULT_INFO` without consuming the notification.  Observation and
+delivery were separate because they were separate mechanisms.  They are one
+mechanism now, so receiving a fault IS taking delivery of it, and a fault taken
+by the supervisor is one the pager will never see.  Six tests were built on the
+peek and are rebuilt on what a supervisor can honestly do: watch the kernel's
+delivery counter, and check the thread.
+
+**Gauges.**  T329 is the new one, and its third claim is the one the mailbox
+existed for: two threads armed on ONE endpoint through differently badged
+copies produce distinguishable faults.  It also pins that `RIGHT_READ` on the
+endpoint is what takes delivery — a write-only copy can ARM a thread's faults
+and never see one — and that both retired numbers answer NOT_SUPPORTED to a
+caller holding every capability there is to hold about the thread.  T140 keeps
+the registration authority, T144 moves the resume semantics onto the reply
+capability, T145/T146/T147 keep the teardown and churn contracts, T184 keeps
+pager containment, and T307/T308 carry the timeout fault across unchanged.
+
+**And a latent bug this shook out.**  T311 fanned 24 capabilities into leaves
+100..123 of the suite's object CNode — inside the ROTATING pool it also draws
+its source endpoint from.  Once the rotation reached leaf 117 the test deleted
+its own source half way through the fan-out.  It had been correct only for as
+long as nobody changed how many objects earlier tests allocate.  The codebase
+had already named this hazard once, for T307's mailbox slot; this is the second
+occurrence, and both are now above the pool.
+
+**The recurring lesson, again.**  Nothing here broke a test either.  295
+runtime tests and 27k host assertions passed with faults delivered by three
+mechanisms, a TCB capability minted into a mailbox on every fault, and a
+sequence number standing in for a one-shot capability.
+
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a
@@ -1143,6 +1241,24 @@ invariant changes state — A1, A5 and O1 were all MET and all remain MET — no
 allowlist entry moves, no prohibition is added or lifted.
 
 
+
+### A-4 — A9 and I-invariants restated for fault IPC
+
+**Change**: charter §2.1 A9 — the FAULT DELIVERY entry in the LEGACY_ROOT
+history is restated: the class is not merely fixed but GONE, because a fault no
+longer delivers a capability at all.
+
+**Justification**: ledger A-22.  A9's "Today" column described fault delivery
+as a legacy-root producer that had been fixed by parenting the published
+capability to the registrant's slot.  There is nothing to parent: the badge
+identifies the faulting client and the reply capability authorises resuming it,
+so no capability is published on a fault.  Leaving the old wording would credit
+a fix for a mechanism that no longer exists.
+
+**Scope**: one "Today" cell restated to match shipped mechanism.  A9 was MET
+and remains MET; no allowlist entry moves, no prohibition is added or lifted.
+
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types, and the boundary
@@ -1150,6 +1266,9 @@ allowlist entry moves, no prohibition is added or lifted.
   exist (NOT_SUPPORTED).
 - T328 pins the ASID model: an unnamed address space cannot be entered, and
   identifiers return to the pool that issued them.
+- T329 pins fault IPC: a fault is a badged message on an endpoint, the reply
+  capability is the only authority that resumes, and the two retired syscalls
+  answer NOT_SUPPORTED.
 - T260 pins the retirement of the create syscalls and their no-effect.
 - T125/T126 pin the rejection of the migrated family on the legacy retype.
 - The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.

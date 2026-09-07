@@ -626,27 +626,23 @@ static inline long iris_syscall0(long nr) {
 #define SYS_PROCESS_FAULT_INFO 105
 
 /*
- * Exception resume — modern/conforming (iris_error_t).
+ * SYS_EXCEPTION_RESUME — RETIRED (ledger A-22).  A fault is answered by
+ * REPLYING to it; the number returns NOT_SUPPORTED.
  *
- * SYS_EXCEPTION_RESUME(tcb_cptr, action) → 0 or negative iris_error_t
- *   tcb_cptr: the FAULTING THREAD, as a capability, with RIGHT_WRITE — the
- *             one SYS_EXCEPTION_HANDLER's mailbox was filled with.
- *   action:   0 = resume the thread at the faulting RIP; 1 = kill it.
- *   The thread must be in BLOCKED_FAULT; otherwise IRIS_ERR_NOT_FOUND.
+ * It was the third of the three mechanisms a fault used to need, and the one
+ * that most clearly duplicated something IPC already had.  "May resume this
+ * thread" was not a capability: it was RIGHT_WRITE on a TCB the kernel had
+ * minted into a mailbox, plus a GENERATION NUMBER the handler had to echo back
+ * so a stale answer could not resolve a fault nobody had observed.  A reply
+ * capability is both of those things at once — one-shot by construction,
+ * holdable, delegable, revocable — and it is the object every other server in
+ * the system already answers with.
  *
- *   Stage 7 Step 7: this took (proc_h, task_id, action).  Authority came from
- *   the process capability and the id was checked against it, so the number
- *   conferred nothing — but it SELECTED a kernel object, which charter
- *   §3.4/§3.5 forbid, and a supervisor could not hold, delegate or revoke
- *   "that thread" the way it holds everything else.  RIGHT_WRITE on the thread
- *   is now the whole authority: deciding whether an execution continues is a
- *   property of that execution.
- *
- *   Phase 25 (additive): action 2 = resume, action 3 = kill, each with a fault
- *   generation check — bits [63:32] of the action argument must equal the
- *   fault_seq the caller read at FAULT_OFF_SEQ.  A generation of 0 is
- *   INVALID_ARG; a mismatch (the thread refaulted since, or the caller replays
- *   a stale record) is NOT_FOUND with no side effect.
+ * The kill half is not lost either, and did not need a syscall of its own: a
+ * supervisor that wants the thread dead rather than resumed holds its TCB and
+ * calls SYS_TCB_EXIT, then drops the reply capability.  That is seL4's
+ * arrangement, and it makes "resume" and "destroy" two different authorities
+ * instead of two values of one argument.
  */
 #define SYS_EXCEPTION_RESUME   66
 
@@ -1377,17 +1373,19 @@ static inline long iris_syscall0(long nr) {
  */
 #define SYS_VSPACE_MAP_TABLE 122
 /*
- * SYS_TCB_FAULT_INFO(tcb_cptr, out_uptr) → 0 or negative iris_error_t
+ * SYS_TCB_FAULT_INFO — RETIRED (ledger A-22).  The fault record IS the
+ * message; the number returns NOT_SUPPORTED.
  *
- * Stage 7 Step 8: the fault record read off the THREAD that took it, with
- * RIGHT_READ on that thread as the whole authority.  Replaces
- * SYS_PROCESS_FAULT_INFO (71, now NOT_SUPPORTED), which asked a process and
- * answered with whichever of its threads faulted last — and which was the one
- * remaining reason a fault handler needed a PROCESS capability at all.
+ * A handler used to be signalled, then have to come BACK to the kernel with a
+ * capability to the faulting thread to find out what had happened to it —
+ * which is the only reason every fault had to mint one into a mailbox.  The
+ * record now arrives in the message registers, in the same wire layout
+ * (fault_proto.h, FAULT_OFF_*), so a handler reads it out of `words[]` where
+ * it used to read it out of a 32-byte buffer the kernel filled.
  *
- * Layout is unchanged (<iris/fault_proto.h>, FAULT_MSG_LEN bytes).  A thread
- * with no pending fault answers IRIS_ERR_WOULD_BLOCK, which is what a handler
- * polling the mailbox capability for delivery wants.
+ * The polling use is gone with it, and that is the point rather than a
+ * casualty: "has this thread faulted yet" was a question a supervisor asked
+ * because a signal carried no information.  A message carries the fault.
  */
 #define SYS_TCB_FAULT_INFO   123
 /*

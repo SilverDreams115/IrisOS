@@ -3,6 +3,7 @@
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kschedctx.h>
 #include <iris/task.h>
+#include <iris/nc/kprocess.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -11,6 +12,35 @@ static _Atomic uint32_t kreply_live;
 /* Phase 18/S1 — live KReply object count (additive diagnostics). */
 uint32_t kreply_live_count(void) {
     return atomic_load_explicit(&kreply_live, memory_order_relaxed);
+}
+
+/*
+ * Ledger A-22 — a FAULT caller cannot be woken with an error.
+ *
+ * Every other caller returns from a syscall, so "your server dropped the reply
+ * authority" is an error code it reads and handles.  A faulting thread has no
+ * syscall to return from: waking it resumes it at the instruction that
+ * faulted, which faults again, and again, for as long as nothing kills it.
+ *
+ * So an unanswerable fault is the same situation as no handler at all, and it
+ * gets the same answer — the thread is destroyed, and the counter that says
+ * how many faults ended in a kill counts it.  Losing reply authority over a
+ * blocked thread is a real failure of the handler, and it is reported as one
+ * rather than converted into a livelock nobody can see.
+ */
+static void kreply_abandon_caller(struct task *caller) {
+    if (!caller) return;
+    if (caller->ep_fault_call) {
+        caller->ep_fault_call = 0u;
+        kfault_resolve(caller, /*killed=*/1);
+        /* Not when the thread is ALREADY being torn down: teardown itself
+         * cancels the reply binding, so killing from here would re-enter the
+         * path that called us. */
+        if (!caller->terminal) task_kill_external(caller);
+        return;
+    }
+    caller->ipc_ep_closed = 1;
+    task_wakeup(caller);
 }
 
 /*
@@ -29,11 +59,9 @@ static void kreply_obj_close(struct KObject *obj) {
     r->staged             = 0;
     irq_spinlock_unlock(&r->lock, flags);
 
-    if (caller) {
-        /* sys_ep_call wake-up path reads ipc_ep_closed and returns IRIS_ERR_CLOSED. */
-        caller->ipc_ep_closed = 1;
-        task_wakeup(caller);
-    }
+    /* sys_ep_call wake-up path reads ipc_ep_closed and returns IRIS_ERR_CLOSED;
+     * a fault caller has no such path and is killed instead. */
+    kreply_abandon_caller(caller);
 }
 
 /* Phase S1: the ONLY KReply storage is untyped-backed — payload returns to the
@@ -188,9 +216,6 @@ void kreply_cancel_caller(struct KReply *r) {
     /* Whatever ended the binding, the lent time goes home first. */
     kreply_return_donation(r, caller);
 
-    if (caller) {
-        caller->ipc_ep_closed = 1;
-        /* caller->pending_kreply is managed by the teardown path; do not touch here. */
-        task_wakeup(caller);
-    }
+    /* caller->pending_kreply is managed by the teardown path; not touched here. */
+    kreply_abandon_caller(caller);
 }

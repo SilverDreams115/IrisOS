@@ -98,7 +98,7 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 #define INIT_SLOT_TEST_UNTYPED 49u
 #define INIT_SLOT_WATCH_NOTIF  50u
 #define INIT_SLOT_PROBE_NOTIF  51u
-#define INIT_SLOT_S8_NOTIF     52u
+#define INIT_SLOT_S8_FAULT_EP  52u  /* A-22: the S8 thread's fault endpoint */
 #define INIT_SLOT_LOADER_WS    53u   /* loader's second-level CNode */
 #define INIT_RSLOT_LK_SVCMGR   54u   /* receive slots for discovery lookups */
 #define INIT_RSLOT_LK_VFS      55u
@@ -113,7 +113,7 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
 /* Stage 7 Step 7: where a fault delivers the faulting thread's capability.
  * init arms the handler for ITSELF, so its own root CNode is the mailbox and
  * this is just the slot in it. */
-#define INIT_SLOT_S8_FAULT     60u
+#define INIT_SLOT_S8_REPLY     60u  /* A-22: reply authority for that fault */
 /* Stage 7 Step 9: iris_test's ROOT CSpace, kept from its spawn so init can
  * still mint into it afterwards — delegating into a child names the CSpace,
  * and there is no longer a way to reach one by naming the process. */

@@ -388,48 +388,77 @@ static long it_alive(long proc_cptr) {
 
 #define IT_OBJ_POOL_FIRST    4u
 /*
- * Stage 7 Step 7 — the fault mailbox.
+ * Ledger A-22 — the fault REPLY objects.
  *
- * SYS_EXCEPTION_HANDLER takes a destination and each fault publishes the
- * faulting TCB there; SYS_EXCEPTION_RESUME then names that capability instead
- * of a task id.  The suite arms faults for targets it supervises itself, so
- * the mailbox is its own second-level object CNode — leaves ABOVE the rotating
- * pool (1..IT_OBJ_SLOT_SPAN), so a fault capability is never recycled out from
- * under a handler mid-test, and indexed so concurrent targets each get one.
+ * A fault is a CALL on an endpoint, so serving one means receiving with reply
+ * authority staged, and the bound reply capability IS "may resume that
+ * thread".  The suite supervises its own targets, so its reply objects live in
+ * its own second-level object CNode — leaves ABOVE the rotating pool
+ * (1..IT_OBJ_SLOT_SPAN), so an outstanding fault's authority is never recycled
+ * out from under a test, and indexed so concurrent targets each get one.
+ *
+ * These leaves used to be the fault MAILBOX: the CNode slot the kernel minted
+ * the faulting THREAD's capability into on every fault, which SYS_EXCEPTION_
+ * RESUME then named.  A reply capability replaces both, and holds strictly
+ * less — resuming one call rather than everything a TCB capability permits.
  */
 #define IT_FAULT_LEAF(i)   (IT_OBJ_SLOT_SPAN + 1u + (uint32_t)(i))
-#define IT_FAULT_DEST(i)   ((long)((uint64_t)IT_OBJ_CNODE_SLOT | \
-                                   ((uint64_t)IT_FAULT_LEAF(i) << 32)))
 #define IT_FAULT_CPTR(i)   ((long)IT_OBJ_CPTR(IT_FAULT_LEAF(i)))
+
+/* Fresh reply authority for target `i`: the object is one-shot, so a test that
+ * serves several faults retypes one per fault.  1 on success. */
+static int it_fault_reply_fresh(uint32_t i) {
+    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
+                  (long)IT_FAULT_LEAF(i));
+    return it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
+                   (long)((uint64_t)IRIS_KOBJ_REPLY | (1ULL << 32)),
+                   (long)((uint64_t)IT_OBJ_CNODE_SLOT |
+                          ((uint64_t)IT_FAULT_LEAF(i) << 32)), 0) == 0;
+}
+
 /*
- * ...and the mailbox for faults somebody ELSE handles.
+ * ...and the reply objects for faults somebody ELSE handles.
  *
- * A pager supervises targets whose exception handlers this suite armed, so the
- * capability a fault delivers has to land somewhere the PAGER can reach.  A
- * CNode retyped here and minted into the pager is that place: the suite names
- * it as the destination, the pager reads its leaves.
+ * A pager serves targets whose faults this suite armed, so the reply authority
+ * has to be somewhere the PAGER can reach.  A CNode retyped here, filled with
+ * KReply objects and minted into the pager is that place.
  *
  * A FRESH CNode PER PAGER, retyped through one slot rather than parked in
- * several.  Two pagers must not share a mailbox — T183 and T190 run two at
- * once, and one target's fault would overwrite the other's capability, so each
- * pager would answer for the other's thread — but the root CNode has almost no
- * unassigned slots left, and a mint source must be a root CPtr (< 1024).
- * Retyping a new one through the same slot gives each pager a distinct OBJECT:
- * the mint the previous pager holds keeps its CNode alive after the slot has
- * moved on, so leaf 1 means a different slot for each of them.
+ * several.  Two pagers must not share one — T183 and T190 run two at once —
+ * but the root CNode has almost no unassigned slots left, and a mint source
+ * must be a root CPtr.  Retyping a new one through the same slot gives each
+ * pager a distinct OBJECT: the mint the previous pager holds keeps its CNode
+ * alive after the slot has moved on.
  */
 #define IT_PGR_MBOX_SLOT   83u
 #define IT_PGR_MBOX_SLOTS  32u
 #define IT_PGR_MBOX_DEST(leaf) \
     ((long)((uint64_t)IT_PGR_MBOX_SLOT | ((uint64_t)(leaf) << 32)))
 
-/* Retype a fresh mailbox for a pager about to be spawned.  1 on success. */
-static int it_pgr_mbox_fresh(void) {
+/*
+ * Retype a fresh reply-object CNode for a pager about to be spawned, and fill
+ * the first `nleaves` of it.  1 on success.
+ *
+ * How many leaves are filled is AUTHORITY, not bookkeeping: a leaf holding a
+ * reply object is a slot the pager can receive a fault with, and an empty one
+ * is a fault it can never take delivery of.  T184's containment battery rests
+ * on exactly that — the victim's leaf is never filled, so the pager cannot
+ * receive the victim's fault even though both travel on endpoints.
+ */
+static int it_pgr_mbox_fresh(uint32_t nleaves) {
     (void)it_sys2(SYS_CNODE_DELETE, 0, (long)IT_PGR_MBOX_SLOT);
-    return it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
-                   (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
-                   (long)((uint64_t)IT_PGR_MBOX_SLOT << 32),
-                   (long)IT_PGR_MBOX_SLOTS) == 0;
+    if (it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
+                (long)((uint64_t)IRIS_KOBJ_CNODE | (1ULL << 32)),
+                (long)((uint64_t)IT_PGR_MBOX_SLOT << 32),
+                (long)IT_PGR_MBOX_SLOTS) != 0) return 0;
+    /* Leaf 0 is the CNode's guard slot. */
+    for (uint32_t leaf = 1; leaf <= nleaves; leaf++) {
+        if (it_sys4(SYS_UNTYPED_RETYPE2, (long)IRIS_CPTR_TEST_UNTYPED,
+                    (long)((uint64_t)IRIS_KOBJ_REPLY | (1ULL << 32)),
+                    (long)((uint64_t)IT_PGR_MBOX_SLOT |
+                           ((uint64_t)leaf << 32)), 0) != 0) return 0;
+    }
+    return 1;
 }
 /* Fixed slots for capabilities that outlive a test (fuzz worker control). */
 #define IT_FZ_CTL_SLOT      81u
@@ -526,6 +555,17 @@ static long it_retype_slot_alloc(long ut, uint32_t obj_type, long obj_arg) {
  * never was — and returns the CPtr.  Released with it_close like any other
  * capability the suite fabricates.  Same rotating-pool contract as
  * it_retype_slot_alloc: delete before minting, never hold across a test. */
+/* ...and the badged form: a copy of `src_cptr` stamped with `badge`, which is
+ * how one endpoint serves many clients distinguishably (A-22 uses it to say
+ * WHICH target a fault came from). */
+static long it_cs_badge(long src_cptr, uint32_t rights, uint32_t badge) {
+    uint32_t leaf = it_pool_leaf_take();
+    long r = it_sys3(SYS_CSPACE_MINT, src_cptr,
+                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
+                     (long)((uint64_t)rights | ((uint64_t)badge << 32)));
+    return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
+}
+
 static long it_cs_reduce(long src_cptr, uint32_t rights) {
     uint32_t leaf = it_pool_leaf_take();
     long r = it_sys3(SYS_CSPACE_MINT, src_cptr,
@@ -3833,14 +3873,18 @@ static void test_t081(void) {
     if (ok && it_tcb_alive((long)IRIS_CPTR_TEST_FIX_A) !=
               (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "alive wrong-type"; }
 
-    /* EXIT_CODE by CPtr while alive → WOULD_BLOCK; FAULT_INFO → WOULD_BLOCK. */
+    /* EXIT_CODE by CPtr while alive → WOULD_BLOCK.  Ledger A-22: the
+     * FAULT_INFO half of this probe is RETIRED — there is no syscall that
+     * reads a thread's fault any more, because the fault is a message its
+     * handler received.  What survives is the assertion that the number is
+     * gone for everyone, whatever they hold. */
     if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb(proc_h)) !=
               (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "exit code alive"; }
     {
         static uint8_t fault_buf[32];
         if (ok && it_sys2(SYS_TCB_FAULT_INFO, it_child_tcb(proc_h),
                           (long)(uintptr_t)fault_buf) !=
-                  (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "fault info alive"; }
+                  (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "fault info alive"; }
     }
 
     /* KILL via the READ-only slot → ACCESS_DENIED (needs RIGHT_WRITE).
@@ -9946,21 +9990,33 @@ struct it_fault {
     uint64_t rip, cr2;
 };
 
-/* Read the pending-fault record for proc_h; 0 on success, else the error
- * (IRIS_ERR_WOULD_BLOCK when nothing is pending). */
+/*
+ * Ledger A-22 — the record is what ARRIVED, and `leaf` says which fault.
+ *
+ * This used to be SYS_TCB_FAULT_INFO on the faulting thread: a handler that
+ * had been signalled came back to the kernel with a capability to the thread
+ * to find out what had happened to it, which is the only reason every fault
+ * had to mint one into a mailbox.  The record now travels in the message, so
+ * "read the fault" is reading what the receive already delivered.
+ *
+ * IRIS_ERR_WOULD_BLOCK when no fault is outstanding on that leaf — the same
+ * answer the syscall gave, and the same thing it means: nothing to serve.
+ */
+#define IT_FAULT_LEAVES 16u
+static uint8_t g_it_fault_rec[IT_FAULT_LEAVES][FAULT_MSG_LEN];
+static uint8_t g_it_fault_have[IT_FAULT_LEAVES];
+/* ...and the message LABEL it arrived under.  A server may share one endpoint
+ * between faults and ordinary requests, so what tells them apart has to be on
+ * the message: FAULT_MSG_NOTIFY is the kernel's, and nothing else sets it on a
+ * message the kernel composed. */
+static uint64_t g_it_fault_label[IT_FAULT_LEAVES];
+/* ...and the BADGE it was delivered through, which is how a handler serving
+ * many clients on one endpoint knows whose fault it is (A-22). */
+static uint64_t g_it_fault_badge[IT_FAULT_LEAVES];
 
-/* Stage 7 Step 8: the suite asks the SUPERVISOR question — what faulted last
- * in this process — because it watches targets a pager resolves for and holds
- * no capability to their threads.  A handler asks the other one
- * (SYS_TCB_FAULT_INFO) about the thread it was handed. */
-static long it_fault_info(handle_id_t proc_h, struct it_fault *f) {
-    uint8_t b[FAULT_MSG_LEN];
-    /* Stage 7 Step 12: the record is the THREAD's, and the child table knows
-     * which thread each child was started with — so the suite still asks by
-     * the process capability its tests pass around, and the question reaches
-     * the execution that answers it. */
-    long r = it_sys2(SYS_TCB_FAULT_INFO, it_child_tcb(proc_h), (long)(uintptr_t)b);
-    if (r != 0) return r;
+static long it_fault_info(uint32_t leaf, struct it_fault *f) {
+    if (leaf >= IT_FAULT_LEAVES || !g_it_fault_have[leaf]) return (long)IRIS_ERR_WOULD_BLOCK;
+    const uint8_t *b = g_it_fault_rec[leaf];
     f->vector  = (uint32_t)b[FAULT_OFF_VECTOR]  | ((uint32_t)b[FAULT_OFF_VECTOR + 1] << 8) |
                  ((uint32_t)b[FAULT_OFF_VECTOR + 2] << 16) | ((uint32_t)b[FAULT_OFF_VECTOR + 3] << 24);
     f->task_id = (uint32_t)b[FAULT_OFF_TASK_ID] | ((uint32_t)b[FAULT_OFF_TASK_ID + 1] << 8) |
@@ -9990,14 +10046,15 @@ static long it_lp_cmd_va(handle_id_t ep_h, uint32_t label, uint64_t va) {
  * fault-handler notification (signal bit 0) registered via proc cap, and an
  * exit watch (bit 0 of w_h).  All-or-nothing; on failure everything is closed
  * and *why is set.  Returns 1 on success. */
-/* `mbox` is the fault-mailbox leaf this child's faults deliver into.  Two
- * children blocked in a fault at once is a case T147 deliberately produces, so
- * each needs its own — one slot shared between them would leave the second
- * fault's capability where the first one's was, and "resume the primary" would
+/* `mbox` is the reply-object leaf this child's faults are answered through.
+ * Two children blocked in a fault at once is a case T147 deliberately
+ * produces, so each needs its own — one shared leaf would bind the second
+ * fault's reply where the first one's was, and "resume the primary" would
  * silently resume the other. */
 static int it_fault_spawn_mbox(uint32_t mbox,
                           handle_id_t *ep_h, handle_id_t *proc_h,
                           handle_id_t *n_h, handle_id_t *w_h, const char **why) {
+    (void)mbox;   /* the leaf is named by whoever RECEIVES, not by the arming */
     *ep_h = *proc_h = *n_h = *w_h = HANDLE_INVALID;
     long ep = it_ep_create();
     if (ep < 0) { *why = "ep create"; return 0; }
@@ -10005,13 +10062,15 @@ static int it_fault_spawn_mbox(uint32_t mbox,
     if (lp_spawn_child(*ep_h, proc_h) < 0 || *proc_h == HANDLE_INVALID) {
         it_close(ep_h); *why = "spawn"; return 0;
     }
-    long n = it_notify_create();
-    long w = it_notify_create();
-    *n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
-    *w_h = (w >= 0) ? (handle_id_t)w : HANDLE_INVALID;
-    if (n < 0 || w < 0 ||
-        it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)*proc_h), n, 1,
-                IT_FAULT_DEST(mbox)) != 0 ||
+    /* Ledger A-22: `n_h` is the child's FAULT ENDPOINT, not a notification.
+     * The suite receives on it; the record arrives as the message and the
+     * reply capability arrives with it. */
+    long fe = it_ep_create();
+    long w  = it_notify_create();
+    *n_h = (fe >= 0) ? (handle_id_t)fe : HANDLE_INVALID;
+    *w_h = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
+    if (fe < 0 || w < 0 ||
+        it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)*proc_h), fe, 0, 0) != 0 ||
         it_sys3(SYS_TCB_WATCH, it_child_tcb((long)*proc_h), w, 1) != 0) {
         (void)it_kill((long)*proc_h);
         it_close(n_h); it_close(w_h); it_close(proc_h); it_close(ep_h);
@@ -10025,12 +10084,60 @@ static int it_fault_spawn(handle_id_t *ep_h, handle_id_t *proc_h,
     return it_fault_spawn_mbox(0u, ep_h, proc_h, n_h, w_h, why);
 }
 
-/* Bounded wait (≤2s) for signal bit 0 on a notification; 1 on success. */
-static int it_fault_wait(handle_id_t n_h) {
-    uint64_t bits = 0;
-    if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)n_h, (long)(uintptr_t)&bits,
-                2000000000LL) != 0) return 0;
-    return (bits & 1ull) != 0;
+/*
+ * Bounded wait for a fault on `fault_ep`, answered through reply leaf `mbox`.
+ * 1 on success, 0 if none arrived.
+ *
+ * Non-blocking receive in a retry loop rather than a blocking one: several
+ * tests here assert that NO fault arrives, and a blocking receive would hang
+ * the suite instead of failing it.  The old notification wait had a 2-second
+ * timeout for exactly this reason; a receive has no timeout, so the bound is
+ * the retry count with a yield between tries.
+ */
+static int it_fault_wait_ep(long fault_ep, uint32_t mbox) {
+    if (mbox >= IT_FAULT_LEAVES) return 0;
+    /* ONE fresh reply object for the whole wait.  Retyping one per poll would
+     * churn the object pool T324 measures — and a reply object that nothing
+     * bound to is reusable, so there is nothing to refresh between tries. */
+    if (!it_fault_reply_fresh(mbox)) return 0;
+    for (uint32_t tries = 0; tries < 3000u; tries++) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        if (it_sys3(SYS_EP_NB_RECV, fault_ep, (long)(uintptr_t)&m,
+                    IT_FAULT_CPTR(mbox)) == 0) {
+            for (uint32_t b = 0; b < FAULT_MSG_LEN; b++)
+                g_it_fault_rec[mbox][b] = ((const uint8_t *)m.words)[b];
+            g_it_fault_have[mbox]  = 1u;
+            g_it_fault_label[mbox] = m.label;
+            g_it_fault_badge[mbox] = m.sender_badge;
+            return 1;
+        }
+        (void)it_sys1(SYS_YIELD, 0);
+    }
+    return 0;
+}
+
+/* Resume the thread whose fault leaf `mbox` holds. */
+static long it_fault_resume(uint32_t mbox) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    if (mbox < IT_FAULT_LEAVES) g_it_fault_have[mbox] = 0u;
+    long r = it_sys2(SYS_REPLY, IT_FAULT_CPTR(mbox), (long)(uintptr_t)&m);
+    /* A reply object is ONE-SHOT: once spent it can never answer anything
+     * again, so the capability is dropped here rather than left in a slot
+     * where a later test would count it as live authority. */
+    if (r == 0) (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
+                              (long)IT_FAULT_LEAF(mbox));
+    return r;
+}
+
+/* ...and refuse it: destroying the reply object leaves the fault unanswerable,
+ * which the kernel resolves by destroying the thread.  This is what "kill the
+ * faulting thread" is now — a supervisor with no reply to give. */
+static long it_fault_kill(uint32_t mbox) {
+    if (mbox < IT_FAULT_LEAVES) g_it_fault_have[mbox] = 0u;
+    return it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
+                   (long)IT_FAULT_LEAF(mbox));
 }
 
 static void it_fault_close4(handle_id_t *a, handle_id_t *b,
@@ -10038,19 +10145,25 @@ static void it_fault_close4(handle_id_t *a, handle_id_t *b,
     it_close(a); it_close(b); it_close(c); it_close(d);
 }
 
-/* ── T140: register fault endpoint authority ────────────────────────────────
+/* ── T140: register fault endpoint authority (A-22) ─────────────────────────
  * Registration is capability-mediated with no fallback:
- *   - RIGHT_MANAGE on the target process cap and RIGHT_WRITE on the
- *     notification are required — reduced-rights duplicates get ACCESS_DENIED;
- *   - wrong-type caps in either slot get WRONG_TYPE;
- *   - signal_bits == 0 is INVALID_ARG; an empty slot fails;
+ *   - RIGHT_WRITE on the THREAD and RIGHT_WRITE on the ENDPOINT are both
+ *     required — reduced-rights copies get ACCESS_DENIED;
+ *   - the endpoint slot takes an endpoint and nothing else (WRONG_TYPE), and
+ *     the thread slot takes a thread and nothing else;
+ *   - the RETIRED arguments are refused, not ignored: the signal mask and the
+ *     mailbox destination the old three-mechanism form carried are
+ *     INVALID_ARG, so code written for that shape fails loudly instead of
+ *     silently arming a mailbox nothing will ever fill;
+ *   - an empty slot fails;
  *   - a failed registration leaves NO partial handler installed: a subsequent
  *     fault takes the no-handler path (task killed, nohandler counter up);
  *   - re-registration replaces the handler (last registration wins — only the
- *     new notification fires);
- *   - signalling the handler notification by hand does NOT fabricate a fault
- *     (FAULT_INFO stays WOULD_BLOCK — no spoofing);
- *   - registering on a dead process fails NOT_FOUND (would leak the pin).
+ *     new endpoint receives);
+ *   - sending an ordinary message to a fault endpoint does not FORGE a fault:
+ *     it arrives with the sender's own badge and its own label, and a reply to
+ *     it resumes nobody;
+ *   - registering on a dead thread fails NOT_FOUND (would leak the pin).
  * Invariants: F3, F4, F5, F9, F17, F18. */
 static void test_t140(void) {
     uint32_t e0[14], e1[14], s3b[6], s3a[6], f0[6], f1[6];
@@ -10076,32 +10189,42 @@ static void test_t140(void) {
 
     if (ok && it_sys3(SYS_TCB_WATCH, it_child_tcb((long)proc_h), w, 1) != 0) { ok = 0; why = "watch"; }
 
-    /* Wrong types, both slots. */
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), (long)ep_h, 1, IT_FAULT_DEST(0))
+    /* Wrong types, both slots.  A-22: the handler is an ENDPOINT, so a
+     * notification in that slot is WRONG_TYPE — it used to be the only thing
+     * accepted there. */
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n1, 0, 0)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "notif wrong-type"; }
     /* Stage 7 Step 12: the first argument names the THREAD, so the wrong-type
      * probe on that half passes a notification where a TCB belongs.  The TCB
-     * family answers INVALID_ARG there — "that argument is not a thread" —
-     * while the mailbox half reports WRONG_TYPE, because one is the object the
-     * syscall is invoked ON and the other is an object it is handed. */
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, n1, n1, 1, IT_FAULT_DEST(0))
+     * family answers WRONG_TYPE there too — one is the object the syscall is
+     * invoked ON, the other an object it is handed, and both are checked. */
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, n1, (long)ep_h, 0, 0)
               != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "tcb wrong-type"; }
-    /* Reduced rights, both slots — ACCESS_DENIED, no fallback.  Stage 7
-     * Step 12: the reduced half that matters is the THREAD's, because arming
-     * where an execution's faults go is a write to that execution. */
+    /* Reduced rights, both slots — ACCESS_DENIED, no fallback.  Arming where
+     * an execution's faults go is a WRITE to that execution, and arranging for
+     * messages to be sent to an endpoint is a WRITE to that endpoint. */
     long pr_ro = it_cs_reduce(it_child_tcb((long)proc_h), RIGHT_READ);
-    long n_ro  = it_cs_reduce(n1, RIGHT_READ);
+    long n_ro  = it_cs_reduce((long)ep_h, RIGHT_READ);
     handle_id_t pr_ro_h = (pr_ro >= 0) ? (handle_id_t)pr_ro : HANDLE_INVALID;
     handle_id_t n_ro_h  = (n_ro  >= 0) ? (handle_id_t)n_ro  : HANDLE_INVALID;
     if (ok && (pr_ro < 0 || n_ro < 0)) { ok = 0; why = "ro dups"; }
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, pr_ro, n1, 1, IT_FAULT_DEST(0))
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, pr_ro, (long)ep_h, 0, 0)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "tcb no-write not denied"; }
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n_ro, 1, IT_FAULT_DEST(0))
-              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "notif no-write not denied"; }
-    /* Zero signal bits / empty slot. */
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n1, 0, IT_FAULT_DEST(0))
-              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bits==0 not rejected"; }
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), 9999L, 1, IT_FAULT_DEST(0)) >= 0) {
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n_ro, 0, 0)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "ep no-write not denied"; }
+    /* The retired arguments are REFUSED.  Ignoring them would let the old
+     * three-mechanism call keep compiling and keep "succeeding" while the
+     * mailbox it names is never written. */
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h),
+                      (long)ep_h, 1, 0)
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "signal mask accepted"; }
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h),
+                      (long)ep_h, 0,
+                      (long)(((uint64_t)IT_FAULT_LEAF(0) << 32) |
+                             (uint64_t)IT_OBJ_CNODE_SLOT))
+              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "mailbox accepted"; }
+    /* Empty slot. */
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), 9999L, 0, 0) >= 0) {
         ok = 0; why = "empty slot accepted";
     }
 
@@ -10114,46 +10237,57 @@ static void test_t140(void) {
                     2000000000LL) != 0 || !(bits & 1ull)) { ok = 0; why = "nohandler kill"; }
     }
     if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h)) != 0) { ok = 0; why = "kill exit code"; }
-    if (ok && it_fault_info(proc_h, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_fault_info(0u, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "dead proc fault info";
     }
-    /* Dead process: registration must fail NOT_FOUND, not silently pin. */
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n1, 1, IT_FAULT_DEST(0))
+    /* Dead thread: registration must fail NOT_FOUND, not silently pin. */
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), (long)ep_h, 0, 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "dead reg not NOT_FOUND"; }
 
     it_close(&pr_ro_h); it_close(&n_ro_h);
     it_fault_close4(&ep_h, &proc_h, &n1_h, &w_h);
 
-    /* Child 2: valid registration, replacement contract, spoof check. */
+    /* Child 2: valid registration, replacement contract, forgery check. */
     handle_id_t ep2, pr2, na, wb;
     if (ok && !it_fault_spawn_mbox(1u, &ep2, &pr2, &na, &wb, &why)) { ok = 0; }
     if (ok) {
-        long n2 = it_notify_create_slot();
+        long n2 = it_ep_create_slot();
         handle_id_t n2_h = (n2 >= 0) ? (handle_id_t)n2 : HANDLE_INVALID;
         if (n2 < 0) { ok = 0; why = "n2 create"; }
         /* Replace na with n2 — last registration wins. */
-        if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)pr2), n2, 1, IT_FAULT_DEST(1)) != 0) {
+        if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)pr2), n2, 0, 0) != 0) {
             ok = 0; why = "re-register";
         }
-        /* Spoof: hand-signal n2 — no fault state may appear (F9). */
-        if (ok && it_sys2(SYS_NOTIFY_SIGNAL, n2, 1) != 0) { ok = 0; why = "spoof signal"; }
-        if (ok && it_fault_info(pr2, &(struct it_fault){0})
-                  != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "spoofed fault info"; }
-        if (ok) {
-            uint64_t bits = 0;   /* drain the hand-signal before the real fault */
-            (void)it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n2, (long)(uintptr_t)&bits, 100000000LL);
-        }
+        /*
+         * Nothing has been received, so there is nothing to answer.
+         *
+         * The old spoof check signalled the handler's NOTIFICATION by hand and
+         * asserted no fault record appeared — possible because delivery and
+         * information were two mechanisms, so one could be faked without the
+         * other.  There is nothing to fake now: the message IS the delivery.
+         * What replaces it is the property a handler actually relies on, and
+         * it is checked on the real fault below — a delivered fault carries
+         * the label FAULT_MSG_NOTIFY, so a server sharing an endpoint between
+         * faults and requests can tell them apart.
+         */
+        if (ok && it_fault_info(1u, &(struct it_fault){0})
+                  != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "fault before any"; }
         if (ok && it_lp_cmd_va(ep2, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd2"; }
-        if (ok && !it_fault_wait(n2_h)) { ok = 0; why = "replaced handler no signal"; }
-        /* The replaced-away notification must NOT have fired. */
+        if (ok && !it_fault_wait_ep((long)n2_h, 1u)) { ok = 0; why = "replaced handler no delivery"; }
+        if (ok && g_it_fault_label[1] != (uint64_t)FAULT_MSG_NOTIFY) {
+            ok = 0; why = "fault message unlabelled";
+        }
+        /* The replaced-away endpoint must NOT have received it. */
         if (ok) {
-            uint64_t bits = 0;
-            if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)na, (long)(uintptr_t)&bits,
-                        100000000LL) == 0 && (bits & 1ull)) { ok = 0; why = "old handler fired"; }
+            struct IrisMsg stale;
+            it_iris_msg_zero(&stale);
+            if (it_sys3(SYS_EP_NB_RECV, (long)na, (long)(uintptr_t)&stale, 0L)
+                != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "old handler fired"; }
         }
         struct it_fault f;
-        if (ok && it_fault_info(pr2, &f) != 0) { ok = 0; why = "fault info 2"; }
-        if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(1), 1) != 0) {
+        if (ok && it_fault_info(1u, &f) != 0) { ok = 0; why = "fault info 2"; }
+        if (ok && f.vector != 14u) { ok = 0; why = "vector 2"; }
+        if (ok && it_fault_kill(1) != 0) {
             ok = 0; why = "resume kill";
         }
         if (ok && it_lp_wait_exit(pr2) != 0) { ok = 0; why = "child2 exit"; }
@@ -10193,10 +10327,10 @@ static void test_t141(void) {
     if (!it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T141", why); return; }
 
     if (it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd"; }
-    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+    if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no delivery"; }
 
     struct it_fault f;
-    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+    if (ok && it_fault_info(0u, &f) != 0) { ok = 0; why = "fault info"; }
     if (ok && f.vector != 14u)               { ok = 0; why = "vector"; }
     if (ok && f.cr2 != T14X_BAD_VA)          { ok = 0; why = "cr2"; }
     if (ok && (f.rip == 0 || f.rip >= 0x0000800000000000ULL)) { ok = 0; why = "rip range"; }
@@ -10208,20 +10342,23 @@ static void test_t141(void) {
     if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h))
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "child not suspended-alive"; }
     if (ok) {
-        uint64_t bits = 0;
-        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)n_h, (long)(uintptr_t)&bits,
-                    100000000LL) == 0 && (bits & 1ull)) { ok = 0; why = "double delivery"; }
+        /* Exactly once: a blocked thread cannot fault again, so a second
+         * receive on its endpoint finds nothing. */
+        struct IrisMsg again;
+        it_iris_msg_zero(&again);
+        if (it_sys3(SYS_EP_NB_RECV, (long)n_h, (long)(uintptr_t)&again, 0L)
+            != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "double delivery"; }
     }
     struct it_fault f2;
-    if (ok && (it_fault_info(proc_h, &f2) != 0 || f2.task_id != f.task_id ||
+    if (ok && (it_fault_info(0u, &f2) != 0 || f2.task_id != f.task_id ||
                f2.cr2 != f.cr2 || f2.rip != f.rip)) { ok = 0; why = "record unstable"; }
 
     /* Kill-resolution: reaps the child, clears the record. */
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
+    if (ok && it_fault_kill(0) != 0) {
         ok = 0; why = "resume kill";
     }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit code"; }
-    if (ok && it_fault_info(proc_h, &f2) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_fault_info(0u, &f2) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "record survived kill";
     }
 
@@ -10235,7 +10372,11 @@ static void test_t141(void) {
     if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 1u)   { ok = 0; why = "cleanup count"; }
     if (ok && t1 != t0)                    { ok = 0; why = "task live drift"; }
     if (ok && e1[IT_SI_LIVE]  != e0[IT_SI_LIVE])  { ok = 0; why = "handle leak"; }
-    if (ok && e1[IT_SI_REPLY] != e0[IT_SI_REPLY]) { ok = 0; why = "kreply drift"; }
+    /* Ledger A-22: a fault issues EXACTLY ONE reply capability — the
+     * authority to resume the thread, and nothing else.  This used to assert
+     * the counter did not move at all, because a fault issued no capability
+     * and answering one was a syscall anybody holding the TCB could make. */
+    if (ok && e1[IT_SI_REPLY] != e0[IT_SI_REPLY] + 1u) { ok = 0; why = "kreply drift"; }
     if (ok) it_pass("T141"); else it_fail("T141", why);
 }
 
@@ -10274,28 +10415,28 @@ static void test_t142(void) {
     handle_id_t ep_h, proc_h, n_h, w_h;
     if (ok && !it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T142", why); return; }
     if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_WRITE, 0) != 0) { ok = 0; why = "cmd write"; }
-    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+    if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no delivery"; }
 
     struct it_fault f;
-    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+    if (ok && it_fault_info(0u, &f) != 0) { ok = 0; why = "fault info"; }
     if (ok && f.vector != 14u) { ok = 0; why = "vector"; }
     if (ok && f.error != (PF_ERR_P | PF_ERR_W | PF_ERR_U)) { ok = 0; why = "not a write-protect err"; }
     if (ok && (f.cr2 == 0 || f.cr2 >= 0x0000800000000000ULL)) { ok = 0; why = "cr2 range"; }
 
     /* Resume without fixing: the same store re-faults (no silent write). */
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 0) != 0) {
+    if (ok && it_fault_resume(0) != 0) {
         ok = 0; why = "resume";
     }
-    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no refault"; }
+    if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no refault"; }
     struct it_fault g;
-    if (ok && it_fault_info(proc_h, &g) != 0) { ok = 0; why = "refault info"; }
+    if (ok && it_fault_info(0u, &g) != 0) { ok = 0; why = "refault info"; }
     if (ok && (g.rip != f.rip || g.cr2 != f.cr2 ||
                g.error != f.error)) { ok = 0; why = "refault mismatch"; }
     /* The child must NOT have exited (the store never retires). */
     if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h))
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "write retired"; }
 
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
+    if (ok && it_fault_kill(0) != 0) {
         ok = 0; why = "resume kill";
     }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
@@ -10333,16 +10474,16 @@ static void test_t143(void) {
     if (!it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T143", why); return; }
 
     if (it_lp_cmd_va(ep_h, LP_CMD_FAULT_EXEC, 0) != 0) { ok = 0; why = "cmd"; }
-    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+    if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no delivery"; }
 
     struct it_fault f;
-    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+    if (ok && it_fault_info(0u, &f) != 0) { ok = 0; why = "fault info"; }
     if (ok && f.vector != 14u) { ok = 0; why = "vector"; }
     if (ok && f.error != (PF_ERR_P | PF_ERR_U | PF_ERR_I)) { ok = 0; why = "not an ifetch err"; }
     if (ok && f.cr2 != f.rip) { ok = 0; why = "cr2 != rip"; }
     if (ok && (f.cr2 == 0 || f.cr2 >= 0x0000800000000000ULL)) { ok = 0; why = "cr2 range"; }
 
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
+    if (ok && it_fault_kill(0) != 0) {
         ok = 0; why = "resume kill";
     }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
@@ -10355,15 +10496,17 @@ static void test_t143(void) {
     if (ok) it_pass("T143"); else it_fail("T143", why);
 }
 
-/* ── T144: fault resume semantics ───────────────────────────────────────────
- * Resolution is exact, authorized, and one-shot:
- *   - RESUME through a proc cap without RIGHT_MANAGE is ACCESS_DENIED (F10);
- *   - RESUME naming a task that is not fault-blocked in that process is
- *     NOT_FOUND (F11); action > 1 is INVALID_ARG;
- *   - a valid action-0 RESUME re-executes the faulting instruction — the same
- *     unmapped load faults again as a NEW pending fault (F16);
- *   - after kill-resolution the record is gone: FAULT_INFO is WOULD_BLOCK and
- *     a second RESUME is a clean NOT_FOUND (F11, F12 — no stale state). */
+/* ── T144: fault resume semantics (A-22) ────────────────────────────────────
+ * Resolution is exact, authorized, and one-shot — and every one of those is
+ * now a property of the REPLY CAPABILITY rather than of a syscall's argument
+ * checking:
+ *   - answering needs RIGHT_WRITE on the reply object; a read-only copy is
+ *     ACCESS_DENIED (F10);
+ *   - a capability that is not a reply answers nothing (F11);
+ *   - a valid reply re-executes the faulting instruction — the same unmapped
+ *     load faults again as a NEW fault, with a NEW reply capability (F16);
+ *   - one-shot needs no generation number: the second reply on a spent object
+ *     is a clean NOT_FOUND (F11, F12 — no stale state). */
 static void test_t144(void) {
     uint32_t f0[6], f1[6];
     uint32_t t0 = 0, t1 = 0;
@@ -10376,9 +10519,9 @@ static void test_t144(void) {
     if (!it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T144", why); return; }
 
     if (it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd"; }
-    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+    if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no delivery"; }
     struct it_fault f;
-    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+    if (ok && it_fault_info(0u, &f) != 0) { ok = 0; why = "fault info"; }
 
     /* Wrong authority: RIGHT_READ-only proc dup must be denied. */
     long pr_ro = it_cs_reduce((long)proc_h, RIGHT_READ);
@@ -10388,55 +10531,50 @@ static void test_t144(void) {
      * is a rights-reduced TCB rather than a rights-reduced process cap —
      * RIGHT_WRITE on a thread is what decides whether it runs again. */
     {
-        /* The delivered capability carries READ|WRITE and nothing else: a fault
-         * mailbox hands you the authority to answer, not the authority to pass
-         * the thread on.  Without DUPLICATE it cannot be minted, which is also
-         * why the denial below is tested with a TCB the suite retyped itself
-         * rather than with a reduced copy of this one. */
-        if (ok && it_cs_reduce(IT_FAULT_CPTR(0), RIGHT_READ) >= 0) {
-            ok = 0; why = "fault cap is duplicable";
-        }
-        long own = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
-                                        IRIS_KOBJ_TCB, 0);
-        long own_ro = (own >= 0) ? it_cs_reduce(own, RIGHT_READ) : -1;
-        if (ok && own_ro < 0) { ok = 0; why = "ro tcb dup"; }
-        /* RIGHT_WRITE on the thread is what decides whether it runs again. */
-        if (ok && it_sys2(SYS_EXCEPTION_RESUME, own_ro, 0)
+        /* RIGHT_WRITE on the reply object is what decides whether the thread
+         * runs again — a read-only copy of the very same authority answers
+         * nothing.  This is the whole of "who may resume", where it used to be
+         * RIGHT_WRITE on a TCB capability the kernel had minted into a
+         * mailbox, which also authorised everything else a thread can be made
+         * to do. */
+        struct IrisMsg rm;
+        it_iris_msg_zero(&rm);
+        long rp_ro = it_cs_reduce(IT_FAULT_CPTR(0), RIGHT_READ);
+        if (ok && rp_ro < 0) { ok = 0; why = "ro reply dup"; }
+        if (ok && it_sys2(SYS_REPLY, rp_ro, (long)(uintptr_t)&rm)
                   != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "no-write not denied"; }
-        if (own_ro >= 0) { handle_id_t h = (handle_id_t)own_ro; it_close(&h); }
-        if (own >= 0)    { handle_id_t h = (handle_id_t)own;    it_close(&h); }
+        if (rp_ro >= 0) { handle_id_t h = (handle_id_t)rp_ro; it_close(&h); }
     }
-    /* Exactness: a capability to something that is not a faulted thread, and a
-     * bad action.  "Wrong task id" has no analogue any more — that is the
-     * point of the step: there is no number to get wrong, only a capability
-     * you either hold or do not.
-     *
-     * Stage 7-proc: the non-TCB is an ENDPOINT now.  The spawn's handle used
-     * to be a process capability, which was the natural wrong type to reach
-     * for; it IS the child's thread since the process object went, so reaching
-     * for it would test nothing. */
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)ep_h, 0)
-              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "non-TCB not rejected"; }
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 2)
-              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "action 2 not rejected"; }
+    /* Exactness: a capability that is not a reply answers nothing.  "Wrong
+     * task id" has no analogue any more, and neither does "bad action" — there
+     * is no number to get wrong and no action to choose, only a capability you
+     * either hold or do not. */
+    {
+        struct IrisMsg rm;
+        it_iris_msg_zero(&rm);
+        if (ok && it_sys2(SYS_REPLY, (long)ep_h, (long)(uintptr_t)&rm)
+                  != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "non-reply not rejected"; }
+        if (ok && it_sys2(SYS_REPLY, it_child_tcb((long)proc_h), (long)(uintptr_t)&rm)
+                  != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "tcb accepted as reply"; }
+    }
 
     /* Valid resume: the load re-executes and faults again — a NEW fault. */
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 0) != 0) {
+    if (ok && it_fault_resume(0) != 0) {
         ok = 0; why = "resume";
     }
-    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no refault"; }
+    if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no refault"; }
     struct it_fault g;
-    if (ok && it_fault_info(proc_h, &g) != 0) { ok = 0; why = "refault info"; }
+    if (ok && it_fault_info(0u, &g) != 0) { ok = 0; why = "refault info"; }
     if (ok && (g.cr2 != f.cr2 || g.task_id != f.task_id)) { ok = 0; why = "refault mismatch"; }
 
     /* Kill-resolution, then verify nothing stale remains. */
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
+    if (ok && it_fault_kill(0) != 0) {
         ok = 0; why = "resume kill";
     }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 0)
+    if (ok && it_fault_resume(0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume not NOT_FOUND"; }
-    if (ok && it_fault_info(proc_h, &g) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_fault_info(0u, &g) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "stale record";
     }
 
@@ -10478,13 +10616,13 @@ static void test_t145(void) {
     handle_id_t ep_h, proc_h, n_h, w_h;
     if (!it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T145", why); return; }
     if (it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd a"; }
-    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery a"; }
+    if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no delivery a"; }
     struct it_fault f;
-    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info a"; }
+    if (ok && it_fault_info(0u, &f) != 0) { ok = 0; why = "fault info a"; }
     it_close(&n_h);                       /* handler endpoint gone */
     if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h))
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "child died on handler close"; }
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
+    if (ok && it_fault_kill(0) != 0) {
         ok = 0; why = "post-close resume kill";
     }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit a"; }
@@ -10493,13 +10631,25 @@ static void test_t145(void) {
     /* (b) notif handle closed mid-fault → PROCESS_KILL resolves via teardown. */
     if (ok && !it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T145", why); return; }
     if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd b"; }
-    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery b"; }
+    if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no delivery b"; }
     it_close(&n_h);
     if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "process kill"; }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit b"; }
-    if (ok && it_fault_info(proc_h, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
+    /*
+     * Ledger A-22: what teardown clears is the ANSWER, not the supervisor's
+     * copy of the message.
+     *
+     * The record used to live in the kernel and be read back on demand, so
+     * "did teardown clear it" was a question about kernel state.  It is a
+     * message this task received and owns now — the kernel has no business
+     * reaching into it — and the property that actually matters survives
+     * intact: the reply capability no longer answers anybody, because the
+     * thread it was bound to is gone.
+     */
+    if (ok && it_fault_resume(0) != (long)IRIS_ERR_NOT_FOUND) {
         ok = 0; why = "record survived teardown";
     }
+    (void)it_fault_kill(0);
     it_fault_close4(&ep_h, &proc_h, &n_h, &w_h);
 
     it_quiesce_reaper();
@@ -10509,7 +10659,8 @@ static void test_t145(void) {
     if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 2u)   { ok = 0; why = "cleanup count"; }
     if (ok && t1 != t0)                   { ok = 0; why = "task live drift"; }
     if (ok && e1[IT_SI_LIVE]   != e0[IT_SI_LIVE])   { ok = 0; why = "handle leak"; }
-    if (ok && e1[IT_SI_REPLY]  != e0[IT_SI_REPLY])  { ok = 0; why = "kreply drift"; }
+    /* Two faults, two reply capabilities — one each, and no more. */
+    if (ok && e1[IT_SI_REPLY]  != e0[IT_SI_REPLY] + 2u) { ok = 0; why = "kreply drift"; }
     if (ok && s3a[IT_S3_NOTIF] != s3b[IT_S3_NOTIF]) { ok = 0; why = "notif obj leak"; }
     if (ok && s3a[IT_S3_EP]    != s3b[IT_S3_EP])    { ok = 0; why = "ep obj leak"; }
     if (ok) it_pass("T145"); else it_fail("T145", why);
@@ -10537,33 +10688,49 @@ static void test_t146(void) {
     if (!it_fault_spawn(&ep_h, &proc_h, &n_h, &w_h, &why)) { it_fail("T146", why); return; }
 
     if (it_lp_cmd_va(ep_h, LP_CMD_FAULT_WRITE, T14X_BAD_VA) != 0) { ok = 0; why = "cmd"; }
-    if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+    if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no delivery"; }
     struct it_fault f;
-    if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+    if (ok && it_fault_info(0u, &f) != 0) { ok = 0; why = "fault info"; }
     if (ok && f.error != (PF_ERR_W | PF_ERR_U)) { ok = 0; why = "write err bits"; } /* not-present user write */
 
     if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "kill"; }
     if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
 
-    /* Late handler response: clean failures, no stale record. */
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 0)
+    /* Late handler response: clean failures, nothing stale.
+     *
+     * A-22: answering a thread that is gone is NOT_FOUND — the reply object is
+     * still a perfectly good capability, it simply has no caller bound any
+     * more.  DROPPING it late succeeds and does nothing, which is the correct
+     * outcome and used to be an error: a handler giving up on a fault that has
+     * already been resolved is not a failure, it is a handler tidying up. */
+    if (ok && it_fault_resume(0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume not NOT_FOUND"; }
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1)
-              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late kill not NOT_FOUND"; }
-    if (ok && it_fault_info(proc_h, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_fault_kill(0) != 0) { ok = 0; why = "late drop refused"; }
+    if (ok && it_fault_info(0u, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "record survived kill";
     }
+    (void)0;
 
     it_fault_close4(&ep_h, &proc_h, &n_h, &w_h);
     it_quiesce_reaper();
     if (ok && (!it_sched_ext(e1) || !it_sched_ext4(v1) || !it_sched_ext5(f1) ||
                !it_task_live(&t1))) { ok = 0; why = "ext final"; }
     if (ok && f1[IT_S5_DELIVER] != f0[IT_S5_DELIVER] + 1u) { ok = 0; why = "delivery count"; }
-    if (ok && f1[IT_S5_KILL]    != f0[IT_S5_KILL])         { ok = 0; why = "resume-kill count moved"; }
+    /* A-22: a thread destroyed with a fault outstanding IS a kill resolution
+     * — the fault ended, and it ended by the thread ceasing to exist.  It used
+     * to move only when a handler said action=1, and teardown clearing the
+     * record was counted as a cleanup and nothing else, so "the fault was
+     * never answered" and "the fault was answered with a kill" looked the same
+     * from outside. */
+    if (ok && f1[IT_S5_KILL]    != f0[IT_S5_KILL] + 1u)    { ok = 0; why = "resume-kill count moved"; }
     if (ok && f1[IT_S5_CLEAN]   != f0[IT_S5_CLEAN] + 1u)   { ok = 0; why = "cleanup count"; }
     if (ok && t1 != t0)                  { ok = 0; why = "task live drift"; }
     if (ok && e1[IT_SI_LIVE]  != e0[IT_SI_LIVE])  { ok = 0; why = "handle leak"; }
-    if (ok && e1[IT_SI_REPLY] != e0[IT_SI_REPLY]) { ok = 0; why = "kreply drift"; }
+    /* Ledger A-22: a fault issues EXACTLY ONE reply capability — the
+     * authority to resume the thread, and nothing else.  This used to assert
+     * the counter did not move at all, because a fault issued no capability
+     * and answering one was a syscall anybody holding the TCB could make. */
+    if (ok && e1[IT_SI_REPLY] != e0[IT_SI_REPLY] + 1u) { ok = 0; why = "kreply drift"; }
     if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "mapping drift"; }
     if (ok && v1[IT_S4_VSLIVE]  != v0[IT_S4_VSLIVE])  { ok = 0; why = "vspace drift"; }
     if (ok) it_pass("T146"); else it_fail("T146", why);
@@ -10606,9 +10773,9 @@ static void test_t147(void) {
                       : (kind == 2u) ? T14X_KERN_VA
                                      : 0;
         if (it_lp_cmd_va(ep_h, cmd, va) != 0) { ok = 0; why = "cmd"; }
-        if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no delivery"; }
+        if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no delivery"; }
         struct it_fault f;
-        if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
+        if (ok && it_fault_info(0u, &f) != 0) { ok = 0; why = "fault info"; }
         if (ok && f.vector != 14u) { ok = 0; why = "vector"; }
 
         /* Second child suspended in fault at the same time: two live blocked
@@ -10619,48 +10786,54 @@ static void test_t147(void) {
             if (!it_fault_spawn_mbox(1u, &ep2, &pr2, &n2, &w2, &why)) { ok = 0; break; }
             have2 = 1;
             if (it_lp_cmd_va(ep2, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd2"; }
-            if (ok && !it_fault_wait(n2)) { ok = 0; why = "no delivery 2"; }
+            if (ok && !it_fault_wait_ep((long)n2, 1u)) { ok = 0; why = "no delivery 2"; }
         }
 
         /* Resolve the primary child. */
         uint32_t res = fz_rand() % 4u;
         if (ok && res == 0u) {
             /* resume → refault → kill (also re-proves F16 under churn). */
-            if (it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 0) != 0) {
+            if (it_fault_resume(0) != 0) {
                 ok = 0; why = "resume";
             }
-            if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no refault"; }
-            if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
+            if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no refault"; }
+            if (ok && it_fault_kill(0) != 0) {
                 ok = 0; why = "refault kill";
             }
         } else if (ok && res == 1u) {
-            if (it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
+            if (it_fault_kill(0) != 0) {
                 ok = 0; why = "resume kill";
             }
         } else if (ok && res == 2u) {
             if (it_kill((long)proc_h) != 0) { ok = 0; why = "proc kill"; }
         } else if (ok) {
             it_close(&n_h);   /* handler drop first, then resolve via proc cap */
-            if (it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) {
+            if (it_fault_kill(0) != 0) {
                 ok = 0; why = "post-close kill";
             }
         }
         if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "exit"; }
-        if (ok && it_fault_info(proc_h, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
+        /* A-22: whatever ended the fault — a reply, a refusal, or the thread
+         * being destroyed under it — nothing can be answered for it now.  One
+         * assertion covers all three because they all end the same way: the
+         * reply capability has no caller. */
+        if (ok && it_fault_resume(0) != (long)IRIS_ERR_NOT_FOUND) {
             ok = 0; why = "stale record";
         }
+        (void)it_fault_kill(0);
         it_fault_close4(&ep_h, &proc_h, &n_h, &w_h);
 
         /* Resolve the second child (kill via whichever authority remains). */
         if (have2) {
             struct it_fault f2;
-            if (ok && it_fault_info(pr2, &f2) != 0) { ok = 0; why = "fault info 2"; }
+            if (ok && it_fault_info(1u, &f2) != 0) { ok = 0; why = "fault info 2"; }
             if (ok && ((fz_rand() & 1u)
-                       ? it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(1), 1)
+                       ? it_fault_kill(1)
                        : it_kill((long)pr2)) != 0) {
                 ok = 0; why = "resolve 2";
             }
             if (ok && it_lp_wait_exit(pr2) != 0) { ok = 0; why = "exit 2"; }
+            (void)it_fault_kill(1);
             it_fault_close4(&ep2, &pr2, &n2, &w2);
         }
 
@@ -10684,7 +10857,10 @@ static void test_t147(void) {
                !it_sched_ext5(f1) || !it_task_live(&t1))) { ok = 0; why = "ext final"; }
     if (ok && t1 != t0)                    { ok = 0; why = "task live drift"; }
     if (ok && e1[IT_SI_LIVE]   != e0[IT_SI_LIVE])   { ok = 0; why = "handle leak"; }
-    if (ok && e1[IT_SI_REPLY]  != e0[IT_SI_REPLY])  { ok = 0; why = "kreply drift"; }
+    /* A-22: every fault this churn produced issued exactly one reply
+     * capability, so the counter moves by at LEAST the number of rounds — a
+     * floor rather than a fixed number, because the mix is seeded. */
+    if (ok && e1[IT_SI_REPLY]  < e0[IT_SI_REPLY] + T147_ROUNDS) { ok = 0; why = "kreply drift"; }
     if (ok && s3a[IT_S3_NOTIF] != s3b[IT_S3_NOTIF]) { ok = 0; why = "notif obj leak"; }
     if (ok && s3a[IT_S3_EP]    != s3b[IT_S3_EP])    { ok = 0; why = "ep obj leak"; }
     if (ok && v1[IT_S4_MAPLIVE] != v0[IT_S4_MAPLIVE]) { ok = 0; why = "mapping drift"; }
@@ -11039,8 +11215,11 @@ static void test_t150(void) {
             ok = 0; why = "sched_info bad dst"; break;
         }
     }
-    /* SYS_PROCESS_FAULT_INFO (self) writes 32 bytes: hostile dst → INVALID_ARG
-     * (the pointer is validated before the fault lookup). */
+    /* Ledger A-22: SYS_TCB_FAULT_INFO is RETIRED, so there is no kernel
+     * pointer to abuse here at all — a fault record reaches its handler as a
+     * message, and the kernel never writes one into a buffer a caller names.
+     * What is left to assert is that the number answers NOT_SUPPORTED
+     * whatever it is handed, hostile pointers included. */
     {   /* One publication for the whole battery.  SYS_TCB_SELF hands back a
          * FRESH capability every call, into the rotating pool, and calling it
          * per iteration abandoned one per iteration — which the allocator then
@@ -11048,7 +11227,7 @@ static void test_t150(void) {
         long self_tcb = it_own_tcb_derived();
         for (int i = 0; ok && i < NB; i++) {
             if (it_sys2(SYS_TCB_FAULT_INFO, self_tcb, bad_ptr[i])
-                != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info bad dst"; break; }
+                != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "fault_info bad dst"; break; }
         }
         if (self_tcb >= 0) it_slot_delete((uint32_t)self_tcb);
     }
@@ -11155,14 +11334,21 @@ static void test_t151(void) {
          * resolves to NOT_FOUND and an occupied one to the wrong type, and
          * neither may resume anything. */
         {
-            long rr = it_sys2(SYS_EXCEPTION_RESUME, (long)(fz_rand() & 0x3FFu), 1);
+            /* A-22: a random CPtr is not a reply capability, so it answers
+             * nothing.  Whatever is in that slot — nothing, or an object of
+             * some other type — the call fails; what it must never do is
+             * resume a thread. */
+            struct IrisMsg rm;
+            it_iris_msg_zero(&rm);
+            long rr = it_sys2(SYS_REPLY, (long)(fz_rand() & 0x3FFu),
+                              (long)(uintptr_t)&rm);
             if (rr >= 0) { ok = 0; why = "random cptr resumed something"; break; }
         }
         op = 6;
         {   long self_tcb = it_own_tcb_derived();
             long fr2 = it_sys2(SYS_TCB_FAULT_INFO, self_tcb, 0L);
             if (self_tcb >= 0) it_slot_delete((uint32_t)self_tcb);
-            if (fr2 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "fault_info null ok"; break; }
+            if (fr2 != (long)IRIS_ERR_NOT_SUPPORTED) { ok = 0; why = "fault_info null ok"; break; }
         }
 
         /* --- well-formed batch (must all succeed and be observable) --- */
@@ -11251,11 +11437,16 @@ static void test_t152(void) {
     if (ok && it_retype_slot_alloc(IT_UT, IT_KOBJ_FRAME, 3) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad frame size"; }
     /* Non-null hostile out pointer (kernel half) → INVALID_ARG, nothing written. */
     if (ok && it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, 0xFFFF800000001000L) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "kernel out ptr"; }
-    /* Resume mismatch — NOT_FOUND, no state touched. */
-    /* An empty slot names no thread: NOT_FOUND, not a resume.  Leaf 233 is
-     * above every mailbox in the objects CNode (the child-thread table moved
-     * to a CNode of its own in Step 13), and nothing else writes it. */
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, (long)IT_OBJ_CPTR(233u), 0) != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume mismatch"; }
+    /* Resume mismatch — NOT_FOUND, no state touched.  Ledger A-22: answering
+     * a fault is SYS_REPLY, and an empty slot holds no reply capability.  Leaf
+     * 233 is above every fault leaf in the objects CNode and nothing else
+     * writes it. */
+    {
+        struct IrisMsg rm;
+        it_iris_msg_zero(&rm);
+        if (ok && it_sys2(SYS_REPLY, (long)IT_OBJ_CPTR(233u), (long)(uintptr_t)&rm)
+                  != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "resume mismatch"; }
+    }
 
     it_close(&fr);
     it_quiesce_reaper();
@@ -11294,11 +11485,11 @@ static void test_t153(void) {
         op = kind;
         if (kind == 3u) {
             /* Fault-pending waiter: register a handler, drive an invalid-VA fault. */
-            long n = it_notify_create();
+            long n = it_ep_create();   /* A-22: faults go to an ENDPOINT */
             n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
-            if (n < 0 || it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n, 1, IT_FAULT_DEST(0)) != 0) { ok = 0; why = "reg handler"; }
+            if (n < 0 || it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n, 0, 0) != 0) { ok = 0; why = "reg handler"; }
             if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
-            if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no fault"; }
+            if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no fault"; }
         } else {
             uint32_t cmd = (kind == 0u) ? LP_CMD_RSLOT_RECV
                          : (kind == 1u) ? LP_CMD_SEND_BLOCK : LP_CMD_CALL_BLOCK;
@@ -11469,14 +11660,14 @@ static void test_t155(void) {
                 if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "kill"; }
                 if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "kill exit"; }
             } else {                             /* controlled fault → kill */
-                long n = it_notify_create();
+                long n = it_ep_create();   /* A-22: faults go to an ENDPOINT */
                 handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
-                if (n < 0 || it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n, 1, IT_FAULT_DEST(0)) != 0) { ok = 0; why = "reg handler"; }
+                if (n < 0 || it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)proc_h), n, 0, 0) != 0) { ok = 0; why = "reg handler"; }
                 if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
-                if (ok && !it_fault_wait(n_h)) { ok = 0; why = "no fault"; }
+                if (ok && !it_fault_wait_ep((long)n_h, 0u)) { ok = 0; why = "no fault"; }
                 struct it_fault f;
-                if (ok && it_fault_info(proc_h, &f) != 0) { ok = 0; why = "fault info"; }
-                if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1) != 0) { ok = 0; why = "resume kill"; }
+                if (ok && it_fault_info(0u, &f) != 0) { ok = 0; why = "fault info"; }
+                if (ok && it_fault_kill(0) != 0) { ok = 0; why = "resume kill"; }
                 if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "fault exit"; }
                 it_close(&n_h);
             }
@@ -13106,7 +13297,7 @@ static void test_t180(void) {
 #define LP_PGR_SLOT_TPROC   12u
 #define LP_PGR_SLOT_TVS     13u
 #define LP_PGR_SLOT_FRAME   14u
-#define LP_PGR_SLOT_NOTIF   15u
+#define LP_PGR_SLOT_FAULT_EP 15u   /* A-22: the fault ENDPOINT the pager serves */
 /* Stage 7 Step 7: the fault mailbox CNode (see lifecycle_probe/main.c). */
 #define LP_PGR_SLOT_FAULTCN 17u
 #define LP_EXIT_PGR_OK      0x0D00L
@@ -13160,12 +13351,10 @@ static void t25_tgt_reap(struct t25_tgt *g) {
     t25_tgt_close(g);
 }
 
-/* `fault_dest` is where this target's faults deliver the faulting thread's
- * capability (SYS_EXCEPTION_HANDLER's destination packing).  A target the
- * SUITE resolves points at the suite's own mailbox; a target a PAGER resolves
- * points at the CNode shared with that pager. */
-static int t25_tgt_spawn_dest(long fault_dest, struct t25_tgt *g,
-                              const char **why) {
+/* Ledger A-22: a target's faults go to an ENDPOINT, and `g->notif` is where
+ * this fixture keeps it — the suite RECEIVES on it, and a target handed to a
+ * pager is re-aimed at the pager's own endpoint instead. */
+static int t25_tgt_spawn_dest(struct t25_tgt *g, const char **why) {
     g->cmd = g->proc = g->vs = g->notif = g->watch = HANDLE_INVALID;
     g->fault_leaf = 0u;
     long ep = it_ep_create();
@@ -13182,15 +13371,26 @@ static int t25_tgt_spawn_dest(long fault_dest, struct t25_tgt *g,
      * for us, not one asked of its process. */
     long vs = it_child_vspace(g->proc);
     if (vs == 0) vs = -1;
-    long n  = it_notify_create();
+    long n  = it_ep_create();     /* A-22: the target's FAULT ENDPOINT */
     long w  = it_notify_create();
     g->vs    = (vs >= 0) ? (handle_id_t)vs : HANDLE_INVALID;
     g->notif = (n  >= 0) ? (handle_id_t)n  : HANDLE_INVALID;
     g->watch = (w  >= 0) ? (handle_id_t)w  : HANDLE_INVALID;
     long eh = 0, wt = 0;
-    if (vs < 0 || n < 0 || w < 0 ||
-        (eh = it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)g->proc), n, 1,
-                      fault_dest)) != 0 ||
+    /*
+     * Registered through a copy BADGED 1 — target index 0 plus one — even
+     * though this fixture is single-target and the suite itself ignores the
+     * badge.  A fault carries the badge of the capability it was DELIVERED
+     * through, and it keeps it while it sits queued: a target handed to a
+     * multi-target pager later would otherwise present an unbadged fault the
+     * pager cannot attribute to anyone.  Badging at arming time is the only
+     * moment that is always before the fault.
+     */
+    long bn = (n >= 0) ? it_cs_badge(n, RIGHT_READ | RIGHT_WRITE, 1u) : -1;
+    if (vs < 0 || n < 0 || w < 0 || bn < 0 ||
+        (eh = it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)g->proc),
+                      bn, 0, 0)) != 0 ||
+        (it_slot_delete((uint32_t)bn), 0) ||
         (wt = it_sys3(SYS_TCB_WATCH, it_child_tcb((long)g->proc), w, 1)) != 0) {
         it_serial_write("[IRIS][TEST] t25 wire vs="); it_log_num((uint32_t)-vs);
         it_serial_write(" n="); it_log_num((uint32_t)-n);
@@ -13205,16 +13405,17 @@ static int t25_tgt_spawn_dest(long fault_dest, struct t25_tgt *g,
     return 1;
 }
 
-/* Rotating mailbox leaves for suite-resolved targets: enough that no two live
+/* Rotating reply leaves for suite-resolved targets: enough that no two live
  * at once collide, and reused rather than grown. */
 static uint32_t g_t25_fault_leaf;
 
 static int t25_tgt_spawn(struct t25_tgt *g, const char **why) {
     uint32_t leaf = 4u + (__atomic_fetch_add(&g_t25_fault_leaf, 1u,
                                              __ATOMIC_RELAXED) % 8u);
+    g_it_fault_have[leaf] = 0u;
     (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT,
                   (long)IT_FAULT_LEAF(leaf));
-    if (!t25_tgt_spawn_dest(IT_FAULT_DEST(leaf), g, why)) return 0;
+    if (!t25_tgt_spawn_dest(g, why)) return 0;
     g->fault_leaf = leaf;
     return 1;
 }
@@ -13227,19 +13428,19 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
                             handle_id_t *out_cmd, handle_id_t *out_proc) {
     *out_cmd = *out_proc = HANDLE_INVALID;
     /*
-     * Stage 7 Step 7: re-aim this target's faults at the mailbox the PAGER
-     * can reach, before the pager exists to receive one.
+     * Ledger A-22: nothing is RE-AIMED.
      *
-     * Re-registering with the same notification keeps the arming and moves
-     * only the destination, which is why the kernel supports re-aiming at all.
-     * The target's own mailbox leaf stays where it was and simply stops being
-     * written — and every OTHER target keeps delivering into the suite's
-     * private mailbox, which is what makes T184's victim unresolvable BY THE
-     * PAGER rather than merely denied to it.
+     * A fault is a message on an endpoint, so handing a target to a pager is
+     * handing the pager that endpoint — the target's registration never
+     * changes.  What decides who may serve a fault is who holds a capability
+     * to receive on it, which is the thing a supervisor can actually grant and
+     * revoke.  It used to be a destination the kernel wrote into, re-declared
+     * on the target's own registration; every other target kept delivering
+     * into the suite's mailbox, and that is still what makes T184's victim
+     * unresolvable BY THE PAGER — its faults go to an endpoint the pager was
+     * never given.
      */
-    if (!it_pgr_mbox_fresh()) return -1;
-    if (it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)g->proc), (long)g->notif, 1,
-                IT_PGR_MBOX_DEST(1u)) != 0) return -1;
+    if (!it_pgr_mbox_fresh(1u)) return -1;
     long ep = it_ep_create();
     if (ep < 0) return -1;
     handle_id_t cmd = (handle_id_t)ep;
@@ -13248,9 +13449,11 @@ static long t25_pager_spawn(const struct t25_tgt *g, handle_id_t frame_h,
     m[1].slot = LP_PGR_SLOT_TPROC; IT_MINT_SRC(m[1], g->proc);  m[1].rights = RIGHT_READ | RIGHT_MANAGE; m[1].badge = 0;
     m[2].slot = LP_PGR_SLOT_TVS;   IT_MINT_SRC(m[2], g->vs);    m[2].rights = RIGHT_WRITE;               m[2].badge = 0;
     m[3].slot = LP_PGR_SLOT_FRAME; IT_MINT_SRC(m[3], frame_h);  m[3].rights = frame_rights;              m[3].badge = 0;
-    m[4].slot = LP_PGR_SLOT_NOTIF; IT_MINT_SRC(m[4], g->notif); m[4].rights = RIGHT_WAIT;                m[4].badge = 0;
-    /* Stage 7 Step 7: the fault mailbox.  WRITE so the kernel's delivery can
-     * fill a leaf, READ so the pager can invoke what it finds there. */
+    /* A-22: RIGHT_READ is the authority to RECEIVE — which is the whole of
+     * "this pager may serve this target's faults". */
+    m[4].slot = LP_PGR_SLOT_FAULT_EP; IT_MINT_SRC(m[4], g->notif); m[4].rights = RIGHT_READ;                m[4].badge = 0;
+    /* ...and the reply objects it receives with.  WRITE so it can invoke one
+     * (SYS_REPLY), READ so it can name the CNode's leaves. */
     m[5].slot = LP_PGR_SLOT_FAULTCN; IT_MINT_SRC(m[5], IT_PGR_MBOX_SLOT);
     m[5].rights = RIGHT_READ | RIGHT_WRITE; m[5].badge = 0;
     uint32_t n = 6u;
@@ -13302,51 +13505,76 @@ static long t25_xprobe(handle_id_t pcmd, uint32_t vtid, uint64_t va, uint32_t vs
     return it_sys2(SYS_EP_SEND, (long)pcmd, (long)&m);
 }
 
-/* Seq-checked resolution (EXCEPTION_RESUME action 2/3 with the generation in
- * bits [63:32]). */
+/*
+ * Ledger A-22 — answer the fault this target is blocked in.
+ *
+ * It was a seq-checked SYS_EXCEPTION_RESUME: the supervisor named the faulting
+ * thread with a capability the kernel had minted into its mailbox and echoed
+ * back the fault GENERATION so a stale answer could not resolve a fault it had
+ * never observed.  A reply capability is both of those at once and needs
+ * neither — it names one call, it is spent when used, and a second use is
+ * NOT_FOUND because there is nothing left to answer.
+ *
+ * `tid` and `seq` stay in the signature because callers still read them out of
+ * the record for their own assertions; nothing SELECTS with them any more.
+ */
 static long t25_resume_seq(const struct t25_tgt *g, uint32_t tid, uint32_t seq,
                            int kill) {
-    /*
-     * Stage 7 Step 7: the thread is the capability its fault delivered.
-     *
-     * Take delivery back first.  A target the suite spawned may since have
-     * been handed to a PAGER (t25_pager_spawn re-aims it), and then the
-     * capability for the fault in flight is in that pager's mailbox, not
-     * here — so the suite re-aims it home before answering.  Re-arming with
-     * the same notification keeps the arming, moves only the destination, and
-     * carries the OUTSTANDING fault with it, which is exactly the case a
-     * supervisor taking over from a dead handler needs.
-     *
-     * `tid` stays in the signature because callers still READ the record
-     * through the process-scoped FAULT_INFO; what they no longer do is SELECT
-     * with it.
-     */
-    (void)tid;
-    (void)it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)g->proc), (long)g->notif, 1,
-                  IT_FAULT_DEST(g->fault_leaf));
-    return it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(g->fault_leaf),
-                   (long)(((uint64_t)seq << 32) | (kill ? 3u : 2u)));
+    (void)tid; (void)seq;
+    return kill ? it_fault_kill(g->fault_leaf) : it_fault_resume(g->fault_leaf);
 }
 
-/* Bounded non-consuming wait for a pending fault (polls FAULT_INFO — never
- * steals the notification signal from a pager). */
-static int t25_wait_fault(handle_id_t proc_h, struct it_fault *f) {
+/*
+ * Bounded wait for this target's fault to ARRIVE.
+ *
+ * The old version polled SYS_TCB_FAULT_INFO deliberately without consuming the
+ * notification, so a pager could still be the one to serve it.  That
+ * separation is gone by construction: a fault is a message, and receiving it
+ * IS taking delivery.  A test that wants a pager to serve a fault therefore
+ * does not look at it first — it asks the pager and checks the outcome, which
+ * is what a supervisor could actually do in a system with one fault mechanism.
+ */
+static int t25_wait_fault(const struct t25_tgt *g, struct it_fault *f) {
+    if (g->fault_leaf < IT_FAULT_LEAVES && g_it_fault_have[g->fault_leaf])
+        return it_fault_info(g->fault_leaf, f) == 0;
+    if (!it_fault_wait_ep((long)g->notif, g->fault_leaf)) return 0;
+    return it_fault_info(g->fault_leaf, f) == 0;
+}
+
+/*
+ * Bounded wait for a fault to be DELIVERED, without taking delivery of it.
+ *
+ * A supervisor that intends somebody ELSE to serve a fault cannot look at it:
+ * receiving the message IS taking delivery, and a fault taken here is a fault
+ * the pager will never see.  That is not a limitation to work around, it is
+ * the single-mechanism property — so what the supervisor watches instead is
+ * the kernel's own count of faults delivered, which is an observation and not
+ * a claim on the fault.
+ *
+ * The old version polled SYS_TCB_FAULT_INFO, which was a THIRD view of the
+ * same event and is exactly what A-22 removed.
+ */
+static int t25_wait_delivered(uint32_t base) {
+    uint32_t f[6];
     for (int i = 0; i < 400; i++) {
-        long r = it_fault_info(proc_h, f);
-        if (r == 0) return 1;
-        if (r != (long)IRIS_ERR_WOULD_BLOCK) return 0;
+        if (it_sched_ext5(f) && f[IT_S5_DELIVER] > base) return 1;
         it_sys1(SYS_SLEEP, 1);
     }
     return 0;
 }
 
-/* Bounded wait for the fault generation to move past `old_seq` (refault). */
-static int t25_wait_refault(handle_id_t proc_h, uint32_t old_seq, struct it_fault *f) {
-    for (int i = 0; i < 400; i++) {
-        if (it_fault_info(proc_h, f) == 0 && f->seq != old_seq) return 1;
-        it_sys1(SYS_SLEEP, 1);
-    }
-    return 0;
+/* The delivery counter right now, for the waiter above. */
+static uint32_t t25_delivered_now(void) {
+    uint32_t f[6];
+    return it_sched_ext5(f) ? f[IT_S5_DELIVER] : 0u;
+}
+
+/* Bounded wait for the NEXT fault (a refault after a resume). */
+static int t25_wait_refault(const struct t25_tgt *g, uint32_t old_seq,
+                            struct it_fault *f) {
+    (void)old_seq;
+    if (!it_fault_wait_ep((long)g->notif, g->fault_leaf)) return 0;
+    return it_fault_info(g->fault_leaf, f) == 0;
 }
 
 /* Write (write=1) or read back (write=0) word 0 of a frame through the
@@ -13389,14 +13617,14 @@ static void test_t181(void) {
         x[0].slot = LP_PGR_SLOT_TPROC; IT_MINT_SRC(x[0], g.proc);  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
         x[1].slot = LP_PGR_SLOT_TVS;   IT_MINT_SRC(x[1], g.vs);    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
         x[2].slot = LP_PGR_SLOT_FRAME; IT_MINT_SRC(x[2], fr_h);    x[2].rights = RIGHT_READ | RIGHT_WRITE;  x[2].badge = 0;
-        x[3].slot = LP_PGR_SLOT_NOTIF; IT_MINT_SRC(x[3], g.notif); x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
+        x[3].slot = LP_PGR_SLOT_FAULT_EP; IT_MINT_SRC(x[3], g.notif); x[3].rights = RIGHT_READ;                x[3].badge = 0;
         long rep = it_lp_report_slots(x, 4u);
         uint32_t expect = (1u << LP_CPTR_CMD_EP)    | (1u << LP_PGR_SLOT_TPROC) |
                           (1u << LP_PGR_SLOT_TVS)   | (1u << LP_PGR_SLOT_FRAME) |
                           /* No fault mailbox: this probe declares its own
                            * four-capability manifest and resolves nothing, so
                            * it is handed no mailbox to resolve WITH. */
-                          (1u << LP_PGR_SLOT_NOTIF);
+                          (1u << LP_PGR_SLOT_FAULT_EP);
         if (rep < 0 || (uint32_t)rep != expect) { ok = 0; why = "manifest mismatch"; }
         /* Explicitly: no spawn(6), no device(10/11), no peers(1/2/4), no
          * self-proc(→16)/untyped(→17)/vspace-self(→18). */
@@ -13482,7 +13710,7 @@ static void test_t182(void) {
         if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)g.notif, (long)(uintptr_t)&bits,
                     100000000LL) == 0 && (bits & 1ull)) { ok = 0; why = "double delivery"; }
     }
-    if (ok && it_fault_info(g.proc, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_fault_info(g.fault_leaf, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "record survived";
     }
 
@@ -13534,7 +13762,7 @@ static void test_t183(void) {
     if (ok && it_lp_wait_exit(g.proc) !=
               (long)(LP_EXIT_MARKER ^ (T25_PATTERN & 0xFFu))) { ok = 0; why = "target did not continue"; }
     if (ok && it_lp_wait_exit(pproc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager report A"; }
-    if (ok && it_fault_info(g.proc, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_fault_info(g.fault_leaf, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "record survived A";
     }
     t25_reap(&pproc); it_close(&pcmd);
@@ -13623,7 +13851,7 @@ static void test_t184(void) {
     /* Victim faults; the pager runs the unauthorized battery. */
     struct it_fault fa;
     if (ok && it_lp_cmd_va(va.cmd, LP_CMD_FAULT_READ, T25_VA_C) != 0) { ok = 0; why = "victim fault"; }
-    if (ok && !t25_wait_fault(va.proc, &fa)) { ok = 0; why = "victim fault pending"; }
+    if (ok && !t25_wait_fault(&va, &fa)) { ok = 0; why = "victim fault pending"; }
     if (ok && t25_xprobe(pcmd, fa.task_id, T25_VA_C, fa.seq) != 0) { ok = 0; why = "xprobe cmd"; }
     if (ok) {
         long breach = it_lp_wait_exit(pproc);
@@ -13632,35 +13860,42 @@ static void test_t184(void) {
 
     /* The victim's fault is untouched: same generation, still suspended. */
     struct it_fault fa2;
-    if (ok && (it_fault_info(va.proc, &fa2) != 0 || fa2.seq != fa.seq ||
+    if (ok && (it_fault_info(va.fault_leaf, &fa2) != 0 || fa2.seq != fa.seq ||
                fa2.task_id != fa.task_id || fa2.cr2 != fa.cr2)) { ok = 0; why = "record disturbed"; }
     if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)va.proc))
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "victim not suspended"; }
 
-    /* Parent-side rights split, re-derived for Stage 7 Step 7: the two halves
-     * are now two OBJECTS, not two rights on one.  READ on the PROCESS still
-     * gives the fault record and only that; resolving takes WRITE on the
-     * THREAD, and a process capability — reduced or full — is not a thread, so
-     * RESUME refuses it outright rather than on rights. */
-    /* Stage 7 Step 12: the record is the THREAD's, so the READ half is a
-     * rights-reduced THREAD capability — READ reads the fault and nothing
-     * else, which is the same split the process-scoped form asserted. */
+    /*
+     * Ledger A-22: the rights split is SHARPER, not gone.
+     *
+     * It used to be READ-on-the-thread reads the fault record and
+     * WRITE-on-the-thread resolves it — two rights on one capability, so
+     * anyone who could read a fault held an object that also names everything
+     * else the thread can be made to do.  Reading a fault is now RECEIVING a
+     * message, which needs RIGHT_READ on the ENDPOINT, and resolving it is
+     * spending a reply capability that does not exist until the fault does.
+     *
+     * A rights-reduced THREAD capability now buys neither.  It cannot read the
+     * fault (there is no syscall that reads one), it cannot re-aim where the
+     * thread's faults go (that is a WRITE), and it cannot resume anything.
+     */
     long atcb = ok ? it_cs_reduce(it_child_tcb(va.proc), RIGHT_READ) : -1;
     if (ok && atcb < 0) { ok = 0; why = "victim tcb dup"; }
     if (ok) {
         uint8_t fb[FAULT_MSG_LEN];
-        if (it_sys2(SYS_TCB_FAULT_INFO, atcb, (long)(uintptr_t)fb) != 0) {
+        if (it_sys2(SYS_TCB_FAULT_INFO, atcb, (long)(uintptr_t)fb)
+            != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "read cap info denied";
         }
     }
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, atcb, 1)
-              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read tcb resumed"; }
-    /* Stage 7-proc: `va.proc` and its reduced copy are THREAD capabilities now
-     * — the spawn hands back the child's first thread — so the two probes that
-     * used to assert "a process capability is not a thread" have no wrong type
-     * left to offer.  What they were really about is above: READ reads the
-     * fault record and nothing else, and resuming takes WRITE. */
-    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, atcb, (long)va.notif, 1, IT_FAULT_DEST(1))
+    if (ok) {
+        /* A thread capability is not reply authority, whatever its rights. */
+        struct IrisMsg rm;
+        it_iris_msg_zero(&rm);
+        if (it_sys2(SYS_REPLY, atcb, (long)(uintptr_t)&rm)
+            != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "read tcb resumed"; }
+    }
+    if (ok && it_sys4(SYS_TCB_SET_FAULT_HANDLER, atcb, (long)va.notif, 0, 0)
               != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read cap registered"; }
 
     /* Proper authority resolves. */
@@ -13679,15 +13914,27 @@ static void test_t184(void) {
     if (ok) it_pass("T184"); else it_fail("T184", why);
 }
 
-/* ── T185: stale fault generation rejection ─────────────────────────────────
- * Fault generations make stale resolutions impossible.  A fresh process's
- * first fault is generation 1; a resume-without-map re-faults the SAME
- * instruction as generation 2 (same rip/cr2, new seq, new delivery).  Every
- * replay with the old generation — resume or kill — is NOT_FOUND with the
- * record undisturbed; generation 0 and out-of-range actions are INVALID_ARG.
- * The current generation resolves for real (map + seq-resume, the store
- * retires), after which even the CORRECT generation is late: NOT_FOUND, and
- * the record is gone.  Invariants: P9, P10, P12, P13.  */
+/* ── T185: a spent answer cannot answer the next fault (A-22) ───────────────
+ *
+ * This test used to be about fault GENERATIONS: a counter the kernel kept per
+ * thread, echoed back by the handler, so a stale resolution could be told from
+ * a current one.  The counter existed because "may resume this thread" was
+ * RIGHT_WRITE on a TCB capability — permanent, copyable, and just as valid for
+ * the next fault as for the one it was handed for.  A number had to be bolted
+ * on to make it one-shot.
+ *
+ * A reply capability is one-shot by construction, so the claim is the same and
+ * the mechanism is gone.  A fresh target's first fault is generation 1 and
+ * binds reply R1; resuming without fixing anything re-faults the SAME
+ * instruction as generation 2 and binds a DIFFERENT reply, R2.  A COPY of R1,
+ * taken while it was still live, then answers nothing at all — not F1, which
+ * it already answered, and not F2, which it was never bound to.  That is the
+ * property the generation number was approximating, and holding a copy is the
+ * strongest form of the attack: the handler kept the old authority on purpose.
+ *
+ * The generation is still in the record, and still increments, because a
+ * handler correlating logs wants it — it just does not GATE anything.
+ * Invariants: P9, P10, P12, P13.  */
 static void test_t185(void) {
     uint32_t f0[6], f1[6], word;
     it_quiesce_reaper();
@@ -13705,28 +13952,42 @@ static void test_t185(void) {
 
     struct it_fault fx1, fx2;
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_WRITE, T25_VA_D) != 0) { ok = 0; why = "fault cmd"; }
-    if (ok && !t25_wait_fault(g.proc, &fx1)) { ok = 0; why = "F1 pending"; }
+    if (ok && !t25_wait_fault(&g, &fx1)) { ok = 0; why = "F1 pending"; }
     if (ok && fx1.seq != 1u) { ok = 0; why = "first gen not 1"; }
     if (ok && (fx1.vector != 14u || fx1.cr2 != T25_VA_D ||
                fx1.error != (PF_ERR_W | PF_ERR_U))) { ok = 0; why = "F1 info"; }
 
+    /* Keep a COPY of F1's reply authority before spending it — the attack this
+     * test exists to refuse. */
+    long r1dup = ok ? it_cs_reduce(IT_FAULT_CPTR(g.fault_leaf),
+                                   RIGHT_READ | RIGHT_WRITE) : -1;
+    if (ok && r1dup < 0) { ok = 0; why = "reply dup"; }
+
     /* Clean refault: resume without resolving → generation 2, same site. */
     if (ok && t25_resume_seq(&g, fx1.task_id, fx1.seq, 0) != 0) { ok = 0; why = "resume F1"; }
-    if (ok && !t25_wait_refault(g.proc, fx1.seq, &fx2)) { ok = 0; why = "no refault"; }
+    if (ok && !t25_wait_refault(&g, fx1.seq, &fx2)) { ok = 0; why = "no refault"; }
     if (ok && (fx2.seq != fx1.seq + 1u || fx2.rip != fx1.rip ||
                fx2.cr2 != fx1.cr2 || fx2.task_id != fx1.task_id)) { ok = 0; why = "F2 identity"; }
 
-    /* Stale replays of F1 cannot touch F2; malformed generations rejected. */
-    if (ok && t25_resume_seq(&g, fx1.task_id, fx1.seq, 0)
-              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale resume accepted"; }
-    if (ok && t25_resume_seq(&g, fx1.task_id, fx1.seq, 1)
-              != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale kill accepted"; }
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 2L)
-              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "gen 0 accepted"; }
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 4L)
-              != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "action 4 accepted"; }
+    /* The kept copy of R1 answers nothing: F1 is already answered and F2 is
+     * bound to a different object entirely. */
+    if (ok && r1dup >= 0) {
+        struct IrisMsg rm;
+        it_iris_msg_zero(&rm);
+        if (it_sys2(SYS_REPLY, r1dup, (long)(uintptr_t)&rm)
+            != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "stale resume accepted"; }
+    }
+    /* ...and destroying it resolves nothing either — a fault is ended by the
+     * object its OWN call is bound to, not by any reply that ever existed. */
+    if (ok && r1dup >= 0) {
+        it_slot_delete((uint32_t)r1dup);
+        r1dup = -1;
+        it_quiesce_reaper();
+        if (it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc))
+            != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "stale kill accepted"; }
+    }
     struct it_fault fx3;
-    if (ok && (it_fault_info(g.proc, &fx3) != 0 || fx3.seq != fx2.seq)) {
+    if (ok && (it_fault_info(g.fault_leaf, &fx3) != 0 || fx3.seq != fx2.seq)) {
         ok = 0; why = "record disturbed by stale ops";
     }
 
@@ -13740,7 +14001,7 @@ static void test_t185(void) {
     /* Late-but-correct is still late: the record did not outlive resolution. */
     if (ok && t25_resume_seq(&g, fx2.task_id, fx2.seq, 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume accepted"; }
-    if (ok && it_fault_info(g.proc, &fx3) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_fault_info(g.fault_leaf, &fx3) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "record survived";
     }
     it_quiesce_reaper();
@@ -13748,6 +14009,7 @@ static void test_t185(void) {
         ok = 0; why = "store did not land";
     }
 
+    if (r1dup >= 0) it_slot_delete((uint32_t)r1dup);
     t25_tgt_reap(&g);
     it_close(&fr_h);
     it_quiesce_reaper();
@@ -13787,19 +14049,22 @@ static void test_t186(void) {
     if (ok && t25_pager_spawn(&g, fr_h, RIGHT_READ, 0, 0u, &p1cmd, &p1proc) != 0) {
         ok = 0; why = "pager1 spawn";
     }
-    struct it_fault f;
+    uint32_t d0 = t25_delivered_now();
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
-    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "fault pending"; }
+    /* A-22: OBSERVE the delivery, do not take it — the fault is for the pager
+     * to serve, and receiving it here would be taking it away from them. */
+    if (ok && !t25_wait_delivered(d0)) { ok = 0; why = "fault pending"; }
     if (ok && it_kill((long)p1proc) != 0) { ok = 0; why = "kill pager1"; }
     if (ok && it_lp_wait_exit(p1proc) != 0) { ok = 0; why = "pager1 exit"; }
     it_quiesce_reaper();
 
     /* No zombie: suspended-alive, record and generation intact. */
-    struct it_fault f2;
     if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc))
               != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "target not suspended"; }
-    if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq ||
-               f2.cr2 != f.cr2)) { ok = 0; why = "record lost with pager"; }
+    /* A-22: that the fault SURVIVED its handler's death is proved by the next
+     * pager serving it, below — which is a stronger claim than reading a
+     * record back, and the only one available now that taking delivery is the
+     * same act as reading it. */
     /* The dead pager's endpoint has no phantom receiver. */
     if (ok) {
         struct IrisMsg m;
@@ -13820,9 +14085,6 @@ static void test_t186(void) {
     if (ok && it_lp_wait_exit(g.proc) !=
               (long)(LP_EXIT_MARKER ^ (T25_PATTERN & 0xFFu))) { ok = 0; why = "target completion"; }
     if (ok && it_lp_wait_exit(p2proc) != LP_EXIT_PGR_OK) { ok = 0; why = "pager2 report"; }
-    if (ok && it_fault_info(g.proc, &f2) != (long)IRIS_ERR_WOULD_BLOCK) {
-        ok = 0; why = "record survived";
-    }
 
     t25_reap(&p2proc); it_close(&p2cmd);
     t25_tgt_reap(&g);
@@ -13866,7 +14128,7 @@ static void test_t187(void) {
 
     struct it_fault f;
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
-    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "fault pending"; }
+    if (ok && !t25_wait_fault(&g, &f)) { ok = 0; why = "fault pending"; }
 
     /* Mid-resolution kill. */
     if (ok && it_kill((long)g.proc) != 0) { ok = 0; why = "kill"; }
@@ -13885,9 +14147,9 @@ static void test_t187(void) {
     }
     if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late seq-resume accepted"; }
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(g.fault_leaf), 0)
+    if (ok && it_fault_resume(g.fault_leaf)
               != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "late resume accepted"; }
-    if (ok && it_fault_info(g.proc, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_fault_info(g.fault_leaf, &f) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "record survived death";
     }
 
@@ -13971,7 +14233,7 @@ static void test_t188(void) {
      * refuses the target's store — err = P|W|U at exactly that VA. */
     struct it_fault f;
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_WRITE, T25_VA_B) != 0) { ok = 0; why = "write cmd"; }
-    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "no wp fault"; }
+    if (ok && !t25_wait_fault(&g, &f)) { ok = 0; why = "no wp fault"; }
     if (ok && (f.vector != 14u || f.cr2 != T25_VA_B ||
                f.error != (PF_ERR_P | PF_ERR_W | PF_ERR_U))) { ok = 0; why = "wp err bits"; }
     if (ok && t25_resume_seq(&g, f.task_id, f.seq, 1) != 0) { ok = 0; why = "seq kill"; }
@@ -14029,9 +14291,11 @@ static void test_t189(void) {
     if (fr < 0) { ok = 0; why = "frame retype"; }
     if (ok) { word = T25_PATTERN; if (!t25_frame_word(fr_h, &word, 1)) { ok = 0; why = "frame fill"; } }
 
-    struct it_fault f;
+    uint32_t d0 = t25_delivered_now();
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
-    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "fault pending"; }
+    /* A-22: observed, not taken — every generation below is meant to be able
+     * to serve it. */
+    if (ok && !t25_wait_delivered(d0)) { ok = 0; why = "fault pending"; }
 
     /* Supervision loop: each generation crashes before resolving; the budget
      * (T189_LIMIT) bounds the loop and flips the service to degraded. */
@@ -14054,10 +14318,12 @@ static void test_t189(void) {
     if (ok && restart_count != T189_LIMIT) { ok = 0; why = "wrong restart count"; }
     if (ok && generation != T189_LIMIT + 1u) { ok = 0; why = "generation mismatch"; }
 
-    /* Degraded or not, the fault never became a zombie: still the same
-     * generation, still suspended, still resolvable. */
-    struct it_fault f2;
-    if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq)) {
+    /* Degraded or not, the fault never became a zombie: still suspended, and
+     * still resolvable — which the surviving generation below proves by
+     * serving it.  A-22: a supervisor cannot read the record of a fault it
+     * means somebody else to answer, so what it checks is the thread. */
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc))
+              != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "fault lost across pager generations";
     }
 
@@ -14068,14 +14334,14 @@ static void test_t189(void) {
         x[0].slot = LP_PGR_SLOT_TPROC; IT_MINT_SRC(x[0], g.proc);  x[0].rights = RIGHT_READ | RIGHT_MANAGE; x[0].badge = 0;
         x[1].slot = LP_PGR_SLOT_TVS;   IT_MINT_SRC(x[1], g.vs);    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
         x[2].slot = LP_PGR_SLOT_FRAME; IT_MINT_SRC(x[2], fr_h);    x[2].rights = RIGHT_READ;                x[2].badge = 0;
-        x[3].slot = LP_PGR_SLOT_NOTIF; IT_MINT_SRC(x[3], g.notif); x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
+        x[3].slot = LP_PGR_SLOT_FAULT_EP; IT_MINT_SRC(x[3], g.notif); x[3].rights = RIGHT_READ;                x[3].badge = 0;
         long rep = it_lp_report_slots(x, 4u);
         uint32_t expect = (1u << LP_CPTR_CMD_EP)    | (1u << LP_PGR_SLOT_TPROC) |
                           (1u << LP_PGR_SLOT_TVS)   | (1u << LP_PGR_SLOT_FRAME) |
                           /* No fault mailbox: this probe declares its own
                            * four-capability manifest and resolves nothing, so
                            * it is handed no mailbox to resolve WITH. */
-                          (1u << LP_PGR_SLOT_NOTIF);
+                          (1u << LP_PGR_SLOT_FAULT_EP);
         if (rep < 0 || (uint32_t)rep != expect) { ok = 0; why = "post-restart manifest"; }
     }
 
@@ -14149,10 +14415,19 @@ static void test_t190(void) {
 
         /* Two concurrent pending faults, every round. */
         struct it_fault f1, f2;
+        uint32_t d0 = t25_delivered_now();
         if (it_lp_cmd_va(g1.cmd, LP_CMD_FAULT_READ,  T25_VA_A) != 0 ||
             it_lp_cmd_va(g2.cmd, LP_CMD_FAULT_WRITE, T25_VA_B) != 0) { ok = 0; why = "fault cmds"; }
-        if (ok && (!t25_wait_fault(g1.proc, &f1) ||
-                   !t25_wait_fault(g2.proc, &f2))) { ok = 0; why = "faults pending"; }
+        if (ok && !t25_wait_delivered(d0 + 1u)) { ok = 0; why = "faults pending"; }
+        /*
+         * A-22: g2 is always the SUPERVISOR's to answer, so its fault is taken
+         * here.  g1's is taken only in the rounds where the supervisor answers
+         * it too — in ops 0 and 1 an external pager does, and a fault this
+         * thread received is a fault that pager can never see.
+         */
+        if (ok && !t25_wait_fault(&g2, &f2)) { ok = 0; why = "faults pending"; }
+        if (ok && op >= 2u && !t25_wait_fault(&g1, &f1)) { ok = 0; why = "faults pending"; }
+        else if (ok && op < 2u) { f1.task_id = 0; f1.seq = 0; }
 
         switch (ok ? (int)op : -1) {
         case 0: {
@@ -14176,8 +14451,9 @@ static void test_t190(void) {
             if (t25_serve(pc, 3u, 1u, 0, 0, T25_VA_A) != 0) { ok = 0; why = "op1 serve"; }
             if (ok && it_lp_wait_exit(g1.proc) != 0) { ok = 0; why = "op1 g1"; }
             if (ok && it_lp_wait_exit(pp) != LP_EXIT_PGR_OK) { ok = 0; why = "op1 pager report"; }
-            if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq + 7u, 1)
-                      != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op1 bogus gen"; }
+            /* A-22: there is no "bogus generation" to try any more — an
+             * answer is a capability, so the only wrong one is one you do not
+             * hold, which T185 and T184 assert directly. */
             if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "op1 g2 kill"; }
             if (ok && it_lp_wait_exit(g2.proc) != 0) { ok = 0; why = "op1 g2 exit"; }
             t25_reap(&pp); it_close(&pc);
@@ -14209,10 +14485,10 @@ static void test_t190(void) {
                 != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op3 late resume"; }
             struct it_fault f2b;
             if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op3 refault resume"; }
-            if (ok && !t25_wait_refault(g2.proc, f2.seq, &f2b)) { ok = 0; why = "op3 no refault"; }
+            if (ok && !t25_wait_refault(&g2, f2.seq, &f2b)) { ok = 0; why = "op3 no refault"; }
             if (ok && f2b.seq != f2.seq + 1u) { ok = 0; why = "op3 gen"; }
-            if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 1)
-                      != (long)IRIS_ERR_NOT_FOUND) { ok = 0; why = "op3 stale kill"; }
+            /* The first answer was spent on the first fault; the second fault
+             * carries its own, and that is what ends it. */
             if (ok && t25_resume_seq(&g2, f2b.task_id, f2b.seq, 1) != 0) { ok = 0; why = "op3 kill"; }
             if (ok && it_lp_wait_exit(g2.proc) != 0) { ok = 0; why = "op3 g2 exit"; }
             break;
@@ -14226,8 +14502,16 @@ static void test_t190(void) {
             long rvs = it_cs_reduce((long)g1.vs, RIGHT_READ);
             handle_id_t rvs_h = (rvs >= 0) ? (handle_id_t)rvs : HANDLE_INVALID;
             if (rp < 0 || rvs < 0) { ok = 0; why = "op4 caps"; }
-            if (ok && it_sys2(SYS_EXCEPTION_RESUME, IT_FAULT_CPTR(0), 1)
-                      != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro resume"; }
+            /* A-22: a READ-only copy of the very reply that would resume g1
+             * answers nothing — the rights on the ANSWER are what gate it. */
+            if (ok) {
+                struct IrisMsg rm;
+                it_iris_msg_zero(&rm);
+                long rr = it_cs_reduce(IT_FAULT_CPTR(g1.fault_leaf), RIGHT_READ);
+                if (rr < 0) { ok = 0; why = "op4 caps"; }
+                else if (it_sys2(SYS_REPLY, rr, (long)(uintptr_t)&rm)
+                         != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro resume"; }
+            }
             if (ok && it_sys4(SYS_FRAME_MAP, (long)fr_h, rvs, (long)T25_VA_A, 0)
                       != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op4 ro map"; }
             if (ok && it_sys3(SYS_FRAME_UNMAP, (long)fr_h, rvs, (long)T25_VA_A)
@@ -14250,7 +14534,7 @@ static void test_t190(void) {
                       != (long)IRIS_ERR_BUSY) { ok = 0; why = "op5 busy"; }
             struct it_fault f2b;
             if (ok && t25_resume_seq(&g2, f2.task_id, f2.seq, 0) != 0) { ok = 0; why = "op5 resume"; }
-            if (ok && !t25_wait_refault(g2.proc, f2.seq, &f2b)) { ok = 0; why = "op5 no wp fault"; }
+            if (ok && !t25_wait_refault(&g2, f2.seq, &f2b)) { ok = 0; why = "op5 no wp fault"; }
             if (ok && f2b.error != (PF_ERR_P | PF_ERR_W | PF_ERR_U)) { ok = 0; why = "op5 err bits"; }
             if (ok && t25_resume_seq(&g2, f2b.task_id, f2b.seq, 1) != 0) { ok = 0; why = "op5 g2 kill"; }
             if (ok && it_lp_wait_exit(g2.proc) != 0) { ok = 0; why = "op5 g2 exit"; }
@@ -14264,8 +14548,8 @@ static void test_t190(void) {
 
         /* Round postconditions: no pending fault, no zombie, live books at
          * the pre-suite baseline. */
-        if (ok && it_fault_info(g1.proc, &f1) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "g1 record"; }
-        if (ok && it_fault_info(g2.proc, &f2) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "g2 record"; }
+        if (ok && it_fault_info(g1.fault_leaf, &f1) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "g1 record"; }
+        if (ok && it_fault_info(g2.fault_leaf, &f2) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "g2 record"; }
         t25_tgt_reap(&g1); t25_tgt_reap(&g2);
         it_quiesce_reaper();
         if (ok) {
@@ -14809,9 +15093,9 @@ static void test_t197(void) {
 
     struct t25_tgt g;
     if (ok && !t25_tgt_spawn(&g, &why)) { t26_grant_close(&vmo); it_fail("T197", why); return; }
-    struct it_fault f;
+    uint32_t d0 = t25_delivered_now();
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "fault cmd"; }
-    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "fault pending"; }
+    if (ok && !t25_wait_delivered(d0)) { ok = 0; why = "fault pending"; }
 
     /* Gen 1: spawned in charge, killed before serving. */
     handle_id_t p1cmd = HANDLE_INVALID, p1proc = HANDLE_INVALID;
@@ -14821,9 +15105,10 @@ static void test_t197(void) {
     t25_reap(&p1proc); it_close(&p1cmd);
     it_quiesce_reaper();
 
-    /* Fault survives; VMO stays live. */
-    struct it_fault f2;
-    if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq)) { ok = 0; why = "fault lost"; }
+    /* Fault survives; VMO stays live.  A-22: survival is proved by the next
+     * generation serving it, at the end of this test. */
+    if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc))
+              != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "fault lost"; }
     /* The VMO survived the pager's death — verified functionally (the target is
      * still SUSPENDED here, so an absolute vmo_live count would also see its
      * live segment/stack VMOs; the leak guard is the final vlive0 check after
@@ -14838,14 +15123,14 @@ static void test_t197(void) {
         x[1].slot = LP_PGR_SLOT_TVS;   IT_MINT_SRC(x[1], g.vs);    x[1].rights = RIGHT_WRITE;               x[1].badge = 0;
         x[2].slot = LP_PGR_SLOT_FRAME; IT_MINT_SRC(x[2], T26_AT(vmo, 0x2000ULL));
                                                           x[2].rights = RIGHT_READ;                x[2].badge = 0;
-        x[3].slot = LP_PGR_SLOT_NOTIF; IT_MINT_SRC(x[3], g.notif); x[3].rights = RIGHT_WAIT;                x[3].badge = 0;
+        x[3].slot = LP_PGR_SLOT_FAULT_EP; IT_MINT_SRC(x[3], g.notif); x[3].rights = RIGHT_READ;                x[3].badge = 0;
         long rep = it_lp_report_slots(x, 4u);
         uint32_t expect = (1u << LP_CPTR_CMD_EP) | (1u << LP_PGR_SLOT_TPROC) |
                           (1u << LP_PGR_SLOT_TVS) | (1u << LP_PGR_SLOT_FRAME) |
                           /* No fault mailbox: this probe declares its own
                            * four-capability manifest and resolves nothing, so
                            * it is handed no mailbox to resolve WITH. */
-                          (1u << LP_PGR_SLOT_NOTIF);
+                          (1u << LP_PGR_SLOT_FAULT_EP);
         if (rep < 0 || (uint32_t)rep != expect) { ok = 0; why = "post-restart manifest"; }
         if (ok && ((uint32_t)rep & ((1u<<6)|(1u<<10)|(1u<<11)|(1u<<16)|(1u<<17)|(1u<<18))) != 0) {
             ok = 0; why = "extra authority after restart"; }
@@ -14965,7 +15250,7 @@ static void test_t199(void) {
 
     struct it_fault f;
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_WRITE, T26_TVA_A) != 0) { ok = 0; why = "write cmd"; }
-    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "no wp fault"; }
+    if (ok && !t25_wait_fault(&g, &f)) { ok = 0; why = "no wp fault"; }
     if (ok && (f.vector != 14u || f.cr2 != T26_TVA_A ||
                f.error != (PF_ERR_P | PF_ERR_W | PF_ERR_U))) { ok = 0; why = "wp err bits"; }
     if (ok && t25_resume_seq(&g, f.task_id, f.seq, 1) != 0) { ok = 0; why = "seq kill"; }
@@ -15047,7 +15332,7 @@ static void test_t200(void) {
             /* Pager dies before serving; supervisor takes over from the VMO. */
             handle_id_t pc = HANDLE_INVALID, pp = HANDLE_INVALID;
             if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "op2 fault"; break; }
-            if (!t25_wait_fault(g.proc, &f)) { ok = 0; why = "op2 pending"; break; }
+            if (!t25_wait_fault(&g, &f)) { ok = 0; why = "op2 pending"; break; }
             if (t25_pager_spawn(&g, T26_AT(vmo, ofs), RIGHT_READ, 0, 0u, &pc, &pp) != 0) { ok = 0; why = "op2 pager"; break; }
             if (it_kill((long)pp) != 0 || it_lp_wait_exit(pp) != 0) { ok = 0; why = "op2 pager death"; }
             t25_reap(&pp); it_close(&pc);
@@ -15061,7 +15346,7 @@ static void test_t200(void) {
         case 3: {
             /* Target death mid-fault; late map is BAD_HANDLE. */
             if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "op3 fault"; break; }
-            if (!t25_wait_fault(g.proc, &f)) { ok = 0; why = "op3 pending"; break; }
+            if (!t25_wait_fault(&g, &f)) { ok = 0; why = "op3 pending"; break; }
             if (it_kill((long)g.proc) != 0 || it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "op3 kill"; }
             it_quiesce_reaper();
             if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, ofs), (long)g.vs, (long)T26_TVA_A, (long)(0))
@@ -15089,7 +15374,7 @@ static void test_t200(void) {
             it_close(&vro_h);
             /* Drive the real fault, then map + resume from the VMO. */
             if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T26_TVA_A) != 0) { ok = 0; why = "op4 fault"; }
-            if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "op4 pending"; }
+            if (ok && !t25_wait_fault(&g, &f)) { ok = 0; why = "op4 pending"; }
             if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, ofs), (long)g.vs, (long)T26_TVA_A, (long)(0)) != 0) { ok = 0; why = "op4 map"; }
             if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op4 resume"; }
             if (ok && it_lp_wait_exit(g.proc) !=
@@ -15099,7 +15384,11 @@ static void test_t200(void) {
         default: break;
         }
 
-        if (ok && it_fault_info(g.proc, &f) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "residual fault"; }
+        /* A-22: a fault this round did not answer is one the supervisor still
+         * holds the reply for.  Dropping it is the answer — and after that
+         * nothing is outstanding, which is what "residual" meant. */
+        (void)it_fault_kill(g.fault_leaf);
+        if (ok && it_fault_info(g.fault_leaf, &f) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "residual fault"; }
         t25_tgt_reap(&g);
         t26_grant_close(&vmo);
         it_quiesce_reaper();
@@ -15139,7 +15428,7 @@ static void test_t200(void) {
  * targets at 20 + i*2 (proc/vs only — the per-target notification column is
  * gone; that is what makes 16 concurrent targets cost ONE notification
  * against the supervisor's quota instead of 16). */
-#define PGR_SLOT_FAULT_NOTIF 5u
+#define PGR_SLOT_FAULT_EP 5u
 /* Stage 7 Step 7: the fault mailbox CNode (see services/pager/pager_proto.h). */
 #define PGR_SLOT_FAULT_CN    14u
 #define PGR_TGT_BASE        20u
@@ -15195,26 +15484,40 @@ static int t27_pager_spawn(struct t27_pager *p,
     if (ep < 0) { *why = "ctrl ep"; return 0; }
     handle_id_t ctrl = (handle_id_t)ep;
 
-    /* Phase 28.1: rewire every granted target's fault delivery onto the ONE
-     * shared notification (targets[0].notif) with bit (1 << i) BEFORE the
-     * pager starts, so no fault can land on the old per-target wiring.
-     * Stage 7 Step 7: and onto the mailbox this pager will hold, leaf i+1, so
-     * the capability each fault delivers lands where the pager reads it. */
-    if (!it_pgr_mbox_fresh()) { it_close(&ctrl); *why = "fault mailbox"; return 0; }
+    /*
+     * Ledger A-22: point every granted target's faults at the ONE shared
+     * ENDPOINT (targets[0].notif), each through a copy BADGED with its own
+     * index, BEFORE the pager starts — so no fault can land on the old wiring.
+     *
+     * The badge is what replaces both the per-target signal bit and the
+     * per-target mailbox leaf: it rides on the message, so the pager learns
+     * whose fault it is from the fault itself rather than from where the
+     * kernel happened to put a capability.  It is `i + 1` because 0 is what an
+     * unbadged capability carries and a server must be able to tell those
+     * apart.
+     */
+    if (!it_pgr_mbox_fresh(nt)) { it_close(&ctrl); *why = "fault replies"; return 0; }
     for (uint32_t i = 0; i < nt; i++) {
-        if (it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)targets[i].proc),
-                    (long)targets[0].notif, (long)(1u << i),
-                    IT_PGR_MBOX_DEST(i + 1u)) != 0) {
-            it_close(&ctrl); *why = "shared notif wire"; return 0;
-        }
+        long bep = it_cs_badge((long)targets[0].notif,
+                               RIGHT_READ | RIGHT_WRITE, i + 1u);
+        int wired = (bep >= 0 &&
+                     it_sys4(SYS_TCB_SET_FAULT_HANDLER,
+                             it_child_tcb((long)targets[i].proc), bep, 0, 0) == 0);
+        /* The badge is COPIED into the registration, so the capability that
+         * carried it has done its job and is dropped — leaving it in the
+         * rotating pool would keep the endpoint alive past the test's own
+         * baseline check. */
+        if (bep >= 0) it_slot_delete((uint32_t)bep);
+        if (!wired) { it_close(&ctrl); *why = "shared fault ep wire"; return 0; }
     }
 
     struct svc_mint m[48] = { 0 };
     uint32_t n = 0;
     m[n].slot = PGR_SLOT_CTRL_EP; IT_MINT_SRC(m[n], ctrl); m[n].rights = RIGHT_READ; m[n].badge = 0; n++;
     if (nt > 0) {
-        m[n].slot = PGR_SLOT_FAULT_NOTIF; IT_MINT_SRC(m[n], targets[0].notif); m[n].rights = RIGHT_WAIT; m[n].badge = 0; n++;
-        /* Stage 7 Step 7: the mailbox each fault delivers a thread into. */
+        m[n].slot = PGR_SLOT_FAULT_EP; IT_MINT_SRC(m[n], targets[0].notif); m[n].rights = RIGHT_READ; m[n].badge = 0; n++;
+        /* A-22: the reply objects the pager receives with — the authority to
+         * resume, one per target it may serve. */
         m[n].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(m[n], IT_PGR_MBOX_SLOT); m[n].rights = RIGHT_READ | RIGHT_WRITE; m[n].badge = 0; n++;
     }
     for (uint32_t i = 0; i < nt; i++) {
@@ -15359,7 +15662,7 @@ static void test_t201(void) {
      * target proc/vs presence (bits 20/21)}. */
     if (ok) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
-        uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+        uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_EP) |
                           (1u << PGR_SLOT_FAULT_CN) /* Stage 7 Step 7: the fault
                               * mailbox.  Real authority — the CNode a fault
                               * delivers the faulting thread into — so the
@@ -15453,7 +15756,7 @@ static void test_t202(void) {
     if (ok && !t27_resolve_read(&p, &g, 0u, 0u, 0x1000ULL, T27_VA_A, T27_PAT, &why)) ok = 0;
 
     /* Fault record cleared; no residual delivery. */
-    if (ok && it_fault_info(g.proc, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
+    if (ok && it_fault_info(g.fault_leaf, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "record survived";
     }
 
@@ -15496,7 +15799,7 @@ static void test_t203(void) {
     /* B faults. */
     struct it_fault fb;
     if (ok && it_lp_cmd_va(gb.cmd, LP_CMD_FAULT_READ, T27_VA_B) != 0) { ok = 0; why = "B fault"; }
-    if (ok && !t25_wait_fault(gb.proc, &fb)) { ok = 0; why = "B pending"; }
+    if (ok && !t25_wait_fault(&gb, &fb)) { ok = 0; why = "B pending"; }
 
     /* A's caps (which the pager holds) grant nothing over B — proven directly:
      * A's proc cap is a different object, so resolving B's task through it is
@@ -15511,7 +15814,7 @@ static void test_t203(void) {
     }
     /* B's fault is intact: same generation, still suspended. */
     struct it_fault fb2;
-    if (ok && (it_fault_info(gb.proc, &fb2) != 0 || fb2.seq != fb.seq)) { ok = 0; why = "B fault disturbed"; }
+    if (ok && (it_fault_info(gb.fault_leaf, &fb2) != 0 || fb2.seq != fb.seq)) { ok = 0; why = "B fault disturbed"; }
     if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)gb.proc)) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "B not suspended"; }
 
@@ -15559,7 +15862,7 @@ static void test_t204(void) {
      * write-faulting.  We drive it directly to observe the denial cleanly. */
     struct it_fault f;
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_WRITE, T27_VA_A) != 0) { ok = 0; why = "write fault"; }
-    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "pending"; }
+    if (ok && !t25_wait_fault(&g, &f)) { ok = 0; why = "pending"; }
     /* The pager holds RO vmo → a writable map into the target must be denied.
      * Emulate the pager's exact call via its VSpace cap (the pager would get
      * the same ACCESS_DENIED). */
@@ -15647,7 +15950,7 @@ static void test_t205(void) {
     /* Manifest is exactly the declaration — restart amplified nothing. */
     if (ok) {
         long mask = t27_pager_call(p2.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
-        uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+        uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_EP) |
                           (1u << PGR_SLOT_FAULT_CN) /* Stage 7 Step 7: the fault
                               * mailbox.  Real authority — the CNode a fault
                               * delivers the faulting thread into — so the
@@ -15717,7 +16020,7 @@ static void test_t206(void) {
     /* Target faults; it will stay pending across the whole crash-loop. */
     struct it_fault f;
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T27_VA_A) != 0) { ok = 0; why = "fault"; }
-    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "pending"; }
+    if (ok && !t25_wait_fault(&g, &f)) { ok = 0; why = "pending"; }
 
     /* Supervision loop: each generation dies immediately (modelled by kill
      * right after start); stop at the limit, mark degraded. */
@@ -15741,7 +16044,7 @@ static void test_t206(void) {
 
     /* The fault survived every crash; supervisor resolves with its authority. */
     struct it_fault f2;
-    if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq)) { ok = 0; why = "fault lost"; }
+    if (ok && (it_fault_info(g.fault_leaf, &f2) != 0 || f2.seq != f.seq)) { ok = 0; why = "fault lost"; }
     if (ok && t25_resume_seq(&g, f2.task_id, f2.seq, 1) != 0) { ok = 0; why = "supervisor resolve"; }
     if (ok && it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "target exit"; }
 
@@ -15871,9 +16174,9 @@ static void test_t209(void) {
     handle_id_t vmos[1] = { vmo };
 
     /* Target faults; pager spawned in charge but killed before it serves. */
-    struct it_fault f;
+    uint32_t d0 = t25_delivered_now();
     if (ok && it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T27_VA_A) != 0) { ok = 0; why = "fault"; }
-    if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "pending"; }
+    if (ok && !t25_wait_delivered(d0)) { ok = 0; why = "pending"; }
 
     struct t27_pager p1;
     if (ok && !t27_pager_spawn(&p1, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; }
@@ -15884,10 +16187,10 @@ static void test_t209(void) {
     it_quiesce_reaper();
 
     /* Target not a zombie: suspended-alive, record + generation intact. */
-    struct it_fault f2;
     if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)g.proc)) != (long)IRIS_ERR_WOULD_BLOCK) {
         ok = 0; why = "target not suspended"; }
-    if (ok && (it_fault_info(g.proc, &f2) != 0 || f2.seq != f.seq)) { ok = 0; why = "record lost"; }
+    /* A-22: the fault outliving its handler is proved by the restart serving
+     * it, below. */
     /* Dead pager's control endpoint has no phantom receiver. */
     if (ok) {
         struct IrisMsg m;
@@ -15964,7 +16267,7 @@ static void test_t210(void) {
             /* Pager dies before serving; supervisor takes over. */
             struct t27_pager p;
             if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T27_VA_A) != 0) { ok = 0; why = "op1 fault"; break; }
-            if (!t25_wait_fault(g.proc, &f)) { ok = 0; why = "op1 pending"; break; }
+            if (!t25_wait_fault(&g, &f)) { ok = 0; why = "op1 pending"; break; }
             if (!t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; break; }
             if (it_kill((long)p.proc) != 0 || it_lp_wait_exit(p.proc) != 0) { ok = 0; why = "op1 pager death"; }
             it_close(&p.proc); it_close(&p.ctrl_ep);
@@ -15977,7 +16280,7 @@ static void test_t210(void) {
             /* Target death mid-fault; pager's late map is BAD_HANDLE. */
             struct t27_pager p;
             if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T27_VA_A) != 0) { ok = 0; why = "op2 fault"; break; }
-            if (!t25_wait_fault(g.proc, &f)) { ok = 0; why = "op2 pending"; break; }
+            if (!t25_wait_fault(&g, &f)) { ok = 0; why = "op2 pending"; break; }
             if (!t27_pager_spawn(&p, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; break; }
             if (it_kill((long)g.proc) != 0 || it_lp_wait_exit(g.proc) != 0) { ok = 0; why = "op2 kill"; }
             it_quiesce_reaper();
@@ -15997,10 +16300,19 @@ static void test_t210(void) {
             long res = t27_pager_call(p.ctrl_ep, PGR_OP_MAP_RESUME, 0u, 0u, 1u /*W*/, 0x1000ULL, T27_VA_A);
             /* RO VMO grant + writable request → the pager's map is ACCESS_DENIED. */
             if (res != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "op3 not denied"; }
-            /* The target is still faulting; resolve read-only for real. */
-            if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "op3 pending"; }
-            if (ok && it_sys4(SYS_FRAME_MAP, (long)T26_AT(vmo, 0x1000ULL), (long)g.vs, (long)T27_VA_A, (long)(0u)) != 0) { ok = 0; why = "op3 map"; }
-            if (ok && t25_resume_seq(&g, f.task_id, f.seq, 0) != 0) { ok = 0; why = "op3 resume"; }
+            /*
+             * A-22: the pager took DELIVERY of the fault before its map was
+             * refused, so the answer is still its to give — and the retry
+             * proves it kept it.  The supervisor cannot step in here and
+             * resolve the fault itself, because a fault is delivered once, to
+             * one holder of the endpoint; that is the single-mechanism
+             * property, and it is what makes "who may answer this" a fact
+             * about capabilities rather than a race.
+             */
+            if (ok && t27_pager_call(p.ctrl_ep, PGR_OP_MAP_RESUME, 0u, 0u,
+                                     0u /*RO*/, 0x1000ULL, T27_VA_A) != 0) {
+                ok = 0; why = "op3 pending";
+            }
             if (ok && it_lp_wait_exit(g.proc) != (long)(LP_EXIT_MARKER ^ (word & 0xFFu))) { ok = 0; why = "op3 target"; }
             t27_pager_reap(&p);
             break;
@@ -16008,7 +16320,11 @@ static void test_t210(void) {
         default: break;
         }
 
-        if (ok && it_fault_info(g.proc, &f) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "residual fault"; }
+        /* A-22: a fault this round did not answer is one the supervisor still
+         * holds the reply for.  Dropping it is the answer — and after that
+         * nothing is outstanding, which is what "residual" meant. */
+        (void)it_fault_kill(g.fault_leaf);
+        if (ok && it_fault_info(g.fault_leaf, &f) != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "residual fault"; }
         t25_tgt_reap(&g);
         t26_grant_close(&vmo);
         it_quiesce_reaper();
@@ -16251,7 +16567,7 @@ static void test_t215(void) {
     /* Manifest is exactly the grant set (a standalone binary gained nothing). */
     if (ok) {
         long mask = t27_pager_call(p.ctrl_ep, PGR_OP_REPORT, 0, 0, 0, 0, 0);
-        uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_NOTIF) |
+        uint32_t expect = (1u << PGR_SLOT_CTRL_EP) | (1u << PGR_SLOT_FAULT_EP) |
                           (1u << PGR_SLOT_FAULT_CN) /* Stage 7 Step 7: the fault
                               * mailbox.  Real authority — the CNode a fault
                               * delivers the faulting thread into — so the
@@ -16399,7 +16715,7 @@ static void test_t216(void) {
 #define FBK_OP_DIAG              11u
 #define FBK_OP_TARGET_RESET      12u
 #define FBK_SLOT_VFS_EP    4u
-#define FBK_SLOT_NOTIF     5u     /* Phase 28.1: the ONE shared fault notification */
+#define FBK_SLOT_NOTIF     5u     /* A-22: the ONE shared fault ENDPOINT */
 #define FBK_VMO_CACHE_SLOT  16u   /* pager slot 16 = VMO grant 0 (cache) */
 #define FBK_VMO_PRIV_SLOT   17u   /* pager slot 17 = VMO grant 1 (private) */
 #define FBK_MAX_BACKINGS   4u
@@ -16667,19 +16983,23 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
         it_close(&ctrl); it_close(&vfs); it_close(&adm);
         *why = "session reset"; return 0;
     }
-    /* Rewire every target's fault delivery onto the ONE shared notification
-     * (targets[0].notif), bit (1 << i), and onto the pager's mailbox leaf i+1,
-     * before the pager starts. */
-    if (!it_pgr_mbox_fresh()) {
+    /* A-22: every target's faults onto the ONE shared ENDPOINT
+     * (targets[0].notif), each through a copy badged `i + 1`, before the pager
+     * starts. */
+    if (!it_pgr_mbox_fresh(nt)) {
         it_close(&ctrl); it_close(&vfs); it_close(&adm);
-        *why = "fault mailbox"; return 0;
+        *why = "fault replies"; return 0;
     }
     for (uint32_t i = 0; i < nt; i++) {
-        if (it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)targets[i].proc),
-                    (long)targets[0].notif, (long)(1u << i),
-                    IT_PGR_MBOX_DEST(i + 1u)) != 0) {
+        long bep = it_cs_badge((long)targets[0].notif,
+                               RIGHT_READ | RIGHT_WRITE, i + 1u);
+        int wired = (bep >= 0 &&
+                     it_sys4(SYS_TCB_SET_FAULT_HANDLER,
+                             it_child_tcb((long)targets[i].proc), bep, 0, 0) == 0);
+        if (bep >= 0) it_slot_delete((uint32_t)bep);
+        if (!wired) {
             it_close(&ctrl); it_close(&vfs); it_close(&adm);
-            *why = "shared notif wire"; return 0;
+            *why = "shared fault ep wire"; return 0;
         }
     }
 
@@ -16691,7 +17011,7 @@ static int t28_fbk_spawn(struct t28_fbk *f, struct t25_tgt *targets, uint32_t nt
     m[k].slot = FBK_SLOT_VFS_EP;  IT_MINT_SRC(m[k], vfs);  m[k].rights = RIGHT_WRITE;
     m[k].badge = IRIS_BADGE_FILEGRANT_S(FBK_SESSION); k++;
     if (nt > 0) {
-        m[k].slot = FBK_SLOT_NOTIF; IT_MINT_SRC(m[k], targets[0].notif); m[k].rights = RIGHT_WAIT; m[k].badge = 0; k++;
+        m[k].slot = FBK_SLOT_NOTIF; IT_MINT_SRC(m[k], targets[0].notif); m[k].rights = RIGHT_READ; m[k].badge = 0; k++;
         /* Stage 7 Step 7: the mailbox each fault delivers a thread into. */
         m[k].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(m[k], IT_PGR_MBOX_SLOT); m[k].rights = RIGHT_READ | RIGHT_WRITE; m[k].badge = 0; k++;
     }
@@ -18099,7 +18419,7 @@ static void test_t236(void) {
  * 5) for all of them, waking on bit (1<<i). */
 #define T28_MT_MAX 16u
 struct t28_multi {
-    handle_id_t fault_notif;     /* shared: bit i set when target i faults */
+    handle_id_t fault_notif;     /* A-22: shared fault ENDPOINT, badge i+1 */
     handle_id_t exit_notif;      /* shared: bit i set when target i exits */
     handle_id_t cmd[T28_MT_MAX];
     handle_id_t proc[T28_MT_MAX];
@@ -18122,20 +18442,20 @@ static void t28_multi_reap(struct t28_multi *m) {
     t28_multi_close(m);
 }
 /* Spawn `nt` lifecycle_probe targets sharing two notifications.  Each target's
- * exception handler signals fault_notif bit (1<<i); its exit watch signals
+ * faults CALL the shared fault endpoint through a copy badged (i+1); its exit watch signals
  * exit_notif bit (1<<i). */
 static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
     for (uint32_t i = 0; i < T28_MT_MAX; i++) { m->cmd[i] = m->proc[i] = m->vs[i] = HANDLE_INVALID; }
     m->fault_notif = m->exit_notif = HANDLE_INVALID; m->n = 0;
     if (nt > T28_MT_MAX) { *why = "too many targets"; return 0; }
-    long fn = it_notify_create();
+    long fn = it_ep_create();       /* A-22: the shared fault ENDPOINT */
     long en = it_notify_create();
     if (fn < 0 || en < 0) { it_close(&m->fault_notif); it_close(&m->exit_notif);
         if (fn >= 0) { handle_id_t h = (handle_id_t)fn; it_close(&h); }
         if (en >= 0) { handle_id_t h = (handle_id_t)en; it_close(&h); }
         *why = "shared notifs"; return 0; }
     m->fault_notif = (handle_id_t)fn; m->exit_notif = (handle_id_t)en;
-    if (!it_pgr_mbox_fresh()) { *why = "fault mailbox"; t28_multi_close(m); return 0; }
+    if (!it_pgr_mbox_fresh(nt)) { *why = "fault replies"; t28_multi_close(m); return 0; }
     for (uint32_t i = 0; i < nt; i++) {
         long ep = it_ep_create();
         if (ep < 0) { *why = "cmd ep"; t28_multi_close(m); return 0; }
@@ -18145,9 +18465,16 @@ static int t28_multi_spawn(struct t28_multi *m, uint32_t nt, const char **why) {
         long vs = it_child_vspace(m->proc[i]);
         if (vs < 0) { *why = "vspace"; t28_multi_close(m); return 0; }
         m->vs[i] = (handle_id_t)vs;
-        if (it_sys4(SYS_TCB_SET_FAULT_HANDLER, it_child_tcb((long)m->proc[i]), (long)m->fault_notif,
-                    (long)(1u << i), IT_PGR_MBOX_DEST(i + 1u)) != 0 ||
-            it_sys3(SYS_TCB_WATCH, it_child_tcb((long)m->proc[i]), (long)m->exit_notif,  (long)(1u << i)) != 0) {
+        {
+            long bep = it_cs_badge((long)m->fault_notif,
+                                   RIGHT_READ | RIGHT_WRITE, i + 1u);
+            int wired = (bep >= 0 &&
+                         it_sys4(SYS_TCB_SET_FAULT_HANDLER,
+                                 it_child_tcb((long)m->proc[i]), bep, 0, 0) == 0);
+            if (bep >= 0) it_slot_delete((uint32_t)bep);
+            if (!wired) { *why = "wire"; t28_multi_close(m); return 0; }
+        }
+        if (it_sys3(SYS_TCB_WATCH, it_child_tcb((long)m->proc[i]), (long)m->exit_notif,  (long)(1u << i)) != 0) {
             *why = "wire"; t28_multi_close(m); return 0;
         }
         m->n++;
@@ -18177,7 +18504,7 @@ static int t28_fbk_spawn_multi(struct t28_fbk *f, struct t28_multi *m, const cha
     mm[k].slot = PGR_SLOT_CTRL_EP; IT_MINT_SRC(mm[k], ctrl); mm[k].rights = RIGHT_READ; mm[k].badge = 0; k++;
     mm[k].slot = FBK_SLOT_VFS_EP;  IT_MINT_SRC(mm[k], vfs);  mm[k].rights = RIGHT_WRITE;
     mm[k].badge = IRIS_BADGE_FILEGRANT_S(FBK_SESSION); k++;
-    mm[k].slot = FBK_SLOT_NOTIF;   IT_MINT_SRC(mm[k], m->fault_notif); mm[k].rights = RIGHT_WAIT; mm[k].badge = 0; k++;
+    mm[k].slot = FBK_SLOT_NOTIF;   IT_MINT_SRC(mm[k], m->fault_notif); mm[k].rights = RIGHT_READ; mm[k].badge = 0; k++;
     /* Stage 7 Step 7: the mailbox each fault delivers a thread into. */
     mm[k].slot = PGR_SLOT_FAULT_CN; IT_MINT_SRC(mm[k], IT_PGR_MBOX_SLOT); mm[k].rights = RIGHT_READ | RIGHT_WRITE; mm[k].badge = 0; k++;
     for (uint32_t i = 0; i < m->n; i++) {
@@ -21936,7 +22263,7 @@ static void test_t305(void) {
         else {
             struct it_fault f;
             if (it_lp_cmd_va(g.cmd, LP_CMD_FAULT_READ, T25_VA_A) != 0) { ok = 0; why = "fault cmd"; }
-            if (ok && !t25_wait_fault(g.proc, &f)) { ok = 0; why = "fault pending"; }
+            if (ok && !t25_wait_fault(&g, &f)) { ok = 0; why = "fault pending"; }
             /* Read WITH the delivered capability live in the mailbox. */
             if (ok && !it_utq_mdb(&qb)) { ok = 0; why = "query4"; }
             if (ok && qb.mdb_legacy_roots > qa.mdb_legacy_roots) {
@@ -22095,8 +22422,10 @@ static void test_t307(void) {
     int ok = 1;
     const char *why = "timeout fault";
 
-    long notif = it_notify_create_slot();
-    if (notif < 0) { it_fail("T307", "notif"); return; }
+    /* A-22: a timeout fault is IPC too, on its own endpoint — a temporal
+     * supervisor is a server like a pager is. */
+    long notif = it_ep_create();
+    if (notif < 0) { it_fail("T307", "fault ep"); return; }
 
     uint64_t entry = (uint64_t)(uintptr_t)t307_burn;
     uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t307_stack + sizeof(g_t307_stack))) & ~0xFULL;
@@ -22111,44 +22440,22 @@ static void test_t307(void) {
     if (ok && it_sys4(SYS_SC_CONFIGURE, sc, 1, 1000, (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "sc configure"; }
     if (ok && it_sys2(SYS_SC_BIND, sc, tcb) != 0)          { ok = 0; why = "sc bind"; }
 
-    /* Arm the timeout handler: signal bit 1, and deliver the faulting thread's
-     * capability into a mailbox slot of our own root CNode. */
-    /* Outside the rotating object pool (leaves 4..199) and below the fault
-     * mailbox leaves (201+).  It used to be 190, which is INSIDE the rotating
-     * range: the pool only reached it once the suite had allocated enough
-     * objects to wrap, so adding a test anywhere earlier moved the collision
-     * into view.  A fixed slot inside a rotating range is a latent failure
-     * waiting for the test count to change. */
-    const uint32_t mailbox = IT_OBJ_SLOT_SPAN;
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)mailbox);
-    if (ok && it_sys4(SYS_TCB_SET_TIMEOUT_HANDLER, tcb, notif, 1L,
-                      (long)(((uint64_t)mailbox << 32) |
-                             (uint64_t)IT_OBJ_CNODE_SLOT)) != 0) {
+    /* Arm the timeout handler at that endpoint. */
+    const uint32_t leaf = 3u;
+    if (ok && it_sys4(SYS_TCB_SET_TIMEOUT_HANDLER, tcb, notif, 0L, 0L) != 0) {
         ok = 0; why = "arm timeout handler";
     }
 
-    /* (1) the handler is told.  Bounded wait — 2 s in nanoseconds — so a
-     * mechanism that never fires reports TIMED_OUT instead of hanging the
-     * suite.  The bits argument is an OUT pointer, not a mask. */
-    uint64_t t307_bits = 0;
-    if (ok && it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, notif,
-                      (long)(uintptr_t)&t307_bits, 2000000000L) != 0) {
+    /* (1) the handler is told, and (2) the message SAYS what happened — one
+     * receive where it used to be a signal followed by a second syscall to
+     * fetch what the signal could not carry. */
+    struct it_fault tf;
+    if (ok && !it_fault_wait_ep(notif, leaf)) {
         ok = 0; why = "timeout fault never delivered";
     }
-    if (ok && (t307_bits & 1u) == 0u) { ok = 0; why = "wrong signal bits"; }
-
-    /* (2) it is a TIMEOUT, distinguishable from an exception. */
-    if (ok) {
-        uint8_t b[FAULT_MSG_LEN];
-        if (it_sys2(SYS_TCB_FAULT_INFO, tcb, (long)(uintptr_t)b) != 0) {
-            ok = 0; why = "no fault record";
-        } else {
-            uint32_t vec = (uint32_t)b[FAULT_OFF_VECTOR] |
-                           ((uint32_t)b[FAULT_OFF_VECTOR + 1] << 8) |
-                           ((uint32_t)b[FAULT_OFF_VECTOR + 2] << 16) |
-                           ((uint32_t)b[FAULT_OFF_VECTOR + 3] << 24);
-            if (vec != IRIS_FAULT_VECTOR_TIMEOUT) { ok = 0; why = "wrong fault vector"; }
-        }
+    if (ok && it_fault_info(leaf, &tf) != 0) { ok = 0; why = "no fault record"; }
+    if (ok && tf.vector != IRIS_FAULT_VECTOR_TIMEOUT) {
+        ok = 0; why = "wrong fault vector";
     }
 
     /* (3) the thread is blocked on the fault, not still burning budget. */
@@ -22159,12 +22466,12 @@ static void test_t307(void) {
         if (g_t307_spun != before) { ok = 0; why = "thread still running after overrun"; }
     }
 
-    /* (4) the supervisor ends it — the authority the fault delivers. */
-    if (ok && it_sys2(SYS_EXCEPTION_RESUME, tcb, 1L) != 0) {
+    /* (4) the supervisor ends it — the authority the fault delivers.  It
+     * refuses to answer, and a fault nobody will answer destroys the thread. */
+    if (ok && it_fault_kill(leaf) != 0) {
         ok = 0; why = "kill after timeout fault";
     }
 
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)mailbox);
     it_quiesce_reaper();
     if (ok) it_pass("T307"); else it_fail("T307", why);
 }
@@ -22228,7 +22535,7 @@ static void test_t308(void) {
 
     long ep = it_ep_create_slot();
     long rp = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_REPLY, 0);
-    long notif = it_notify_create_slot();
+    long notif = it_ep_create_slot();   /* A-22: the server's timeout endpoint */
     if (ep < 0 || rp < 0 || notif < 0) { it_fail("T308", "objects"); return; }
     g_t308_ep = ep; g_t308_reply = rp; g_t308_served = 0;
 
@@ -22240,11 +22547,8 @@ static void test_t308(void) {
 
     /* Arm the server's timeout handler BEFORE it can overrun, so the fault
      * cannot be missed between exhaustion and registration. */
-    const uint32_t mailbox = 191u;
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)mailbox);
-    if (ok && it_sys4(SYS_TCB_SET_TIMEOUT_HANDLER, srv, notif, 1L,
-                      (long)(((uint64_t)mailbox << 32) |
-                             (uint64_t)IT_OBJ_CNODE_SLOT)) != 0) {
+    const uint32_t leaf = 2u;
+    if (ok && it_sys4(SYS_TCB_SET_TIMEOUT_HANDLER, srv, notif, 0L, 0L) != 0) {
         ok = 0; why = "arm server timeout";
     }
 
@@ -22270,31 +22574,19 @@ static void test_t308(void) {
      * own, so it must be the client's.  Bounded wait: no donation means no
      * fault and a clean TIMED_OUT rather than a hung suite.
      */
-    uint64_t bits = 0;
-    if (ok && it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, notif,
-                      (long)(uintptr_t)&bits, 3000000000L) != 0) {
+    struct it_fault sf;
+    if (ok && !it_fault_wait_ep(notif, leaf)) {
         ok = 0; why = "server never charged to the donated SC";
     }
-    if (ok) {
-        uint8_t b[FAULT_MSG_LEN];
-        if (it_sys2(SYS_TCB_FAULT_INFO, srv, (long)(uintptr_t)b) != 0) {
-            ok = 0; why = "no fault record on server";
-        } else {
-            uint32_t vec = (uint32_t)b[FAULT_OFF_VECTOR] |
-                           ((uint32_t)b[FAULT_OFF_VECTOR + 1] << 8) |
-                           ((uint32_t)b[FAULT_OFF_VECTOR + 2] << 16) |
-                           ((uint32_t)b[FAULT_OFF_VECTOR + 3] << 24);
-            if (vec != IRIS_FAULT_VECTOR_TIMEOUT) { ok = 0; why = "wrong vector"; }
-        }
-    }
+    if (ok && it_fault_info(leaf, &sf) != 0) { ok = 0; why = "no fault record on server"; }
+    if (ok && sf.vector != IRIS_FAULT_VECTOR_TIMEOUT) { ok = 0; why = "wrong vector"; }
 
     /* Tear down: killing the server cancels the reply binding, which is the
      * path that returns the loan to a client that never got its reply. */
-    (void)it_sys2(SYS_EXCEPTION_RESUME, srv, 1L);
+    (void)it_fault_kill(leaf);
     (void)it_sys2(SYS_SC_BIND, sc, 0L);
     (void)it_sys1(SYS_TCB_EXIT, cli);
     (void)it_sys1(SYS_TCB_EXIT, srv);
-    (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)mailbox);
     it_quiesce_reaper();
     /* Release what this test made.  It used to leave all of it in the rotating
      * pool, where the allocator would delete it under a later test. */
@@ -22513,6 +22805,7 @@ static void test_t310(void) {
  * loses work is worse than none.
  */
 #define T311_COPIES 24u
+#define T311_LEAF_BASE (IT_OBJ_SLOT_SPAN + 20u)   /* clear of the rotating pool */
 
 static void test_t311(void) {
     it_quiesce_reaper();
@@ -22524,9 +22817,20 @@ static void test_t311(void) {
     if (src < 0) { it_fail("T311", "source"); return; }
 
     /* Fan out more children than one slice can revoke. */
+    /*
+     * ABOVE the rotating pool, not inside it.
+     *
+     * These were leaves 100..123, which is inside the rotating object pool
+     * (4..IT_OBJ_SLOT_SPAN): the source endpoint this test derives from is
+     * itself allocated from that pool, and once the rotation reached 117 the
+     * loop deleted its own source half way through and the fan-out stopped.
+     * The codebase already had this hazard named for T307's mailbox — a fixed
+     * slot inside a rotating range is a latent failure waiting for the test
+     * count to change — and this is the second one it caught.
+     */
     uint32_t made = 0;
     for (uint32_t i = 0; ok && i < T311_COPIES; i++) {
-        uint32_t leaf = 100u + i;
+        uint32_t leaf = T311_LEAF_BASE + i;
         (void)it_sys2(SYS_CNODE_DELETE, (long)IT_OBJ_CNODE_SLOT, (long)leaf);
         if (it_sys3(SYS_CSPACE_MINT, src,
                     (long)(((uint64_t)leaf << 32) | (uint64_t)IT_OBJ_CNODE_SLOT),
@@ -22555,7 +22859,7 @@ static void test_t311(void) {
     /* the subtree is actually gone */
     if (ok) {
         for (uint32_t i = 0; ok && i < T311_COPIES; i++) {
-            if (it_sys3(SYS_CAP_IDENTIFY, (long)IT_OBJ_CPTR(100u + i), 0, 0) >= 0) {
+            if (it_sys3(SYS_CAP_IDENTIFY, (long)IT_OBJ_CPTR(T311_LEAF_BASE + i), 0, 0) >= 0) {
                 ok = 0; why = "descendant survived the revoke";
             }
         }
@@ -24230,6 +24534,136 @@ static void test_t328(void) {
 }
 
 
+
+/* ── T329: a fault is IPC, and the badge says whose (A-22) ──────────────────
+ *
+ * The fault path used to be three mechanisms where seL4 reuses one: a
+ * NOTIFICATION was signalled, the faulting thread's capability was published
+ * into a MAILBOX CNode slot the registrant had declared, the handler read the
+ * record with SYS_TCB_FAULT_INFO and answered with SYS_EXCEPTION_RESUME
+ * carrying a generation number.  Each of the three re-invented something IPC
+ * already had — the mailbox was a hand-rolled capability delivery with its own
+ * parent tracking so revoke could reach it, and the generation was a
+ * hand-rolled one-shot token.
+ *
+ * Five claims, and the third is the one the mailbox existed for:
+ *
+ *  1. a fault ARRIVES as a message on an endpoint, labelled FAULT_MSG_NOTIFY,
+ *     with the record in the message registers — one receive where it used to
+ *     be a signal plus a syscall to fetch what the signal could not carry;
+ *  2. the reply capability that comes with it resumes the thread, and is the
+ *     ONLY thing that does;
+ *  3. two threads armed on ONE endpoint through differently BADGED copies
+ *     produce distinguishable faults.  This is what replaced the mailbox: a
+ *     handler learns whose fault it is from the fault, so nothing has to be
+ *     minted into anybody's CSpace when a thread faults;
+ *  4. taking delivery needs RIGHT_READ on the endpoint — a handler that was
+ *     given a write-only capability can arm faults and never see one;
+ *  5. the two retired syscalls answer NOT_SUPPORTED, whoever calls them and
+ *     whatever they hold.
+ *
+ * Invariants: A1, A5, F1, F9. */
+#define T329_LEAF_A 5u
+#define T329_LEAF_B 6u
+
+static void test_t329(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "faults are IPC";
+
+    /* ONE endpoint, two children, two badges. */
+    long fep = it_ep_create();
+    if (fep < 0) { it_fail("T329", "fault ep"); return; }
+
+    handle_id_t cmd_a = HANDLE_INVALID, cmd_b = HANDLE_INVALID;
+    handle_id_t pa = HANDLE_INVALID, pb = HANDLE_INVALID;
+    long ea = it_ep_create(), eb = it_ep_create();
+    if (ea < 0 || eb < 0) { it_fail("T329", "cmd eps"); return; }
+    cmd_a = (handle_id_t)ea; cmd_b = (handle_id_t)eb;
+    if (lp_spawn_child(cmd_a, &pa) < 0 || lp_spawn_child(cmd_b, &pb) < 0) {
+        it_fail("T329", "spawn"); return;
+    }
+
+    /* 3. armed through copies badged 1 and 2 — one endpoint, two clients. */
+    for (uint32_t i = 0; ok && i < 2u; i++) {
+        long bep = it_cs_badge(fep, RIGHT_READ | RIGHT_WRITE, i + 1u);
+        if (bep < 0) { ok = 0; why = "badge"; break; }
+        if (it_sys4(SYS_TCB_SET_FAULT_HANDLER,
+                    it_child_tcb((long)(i ? pb : pa)), bep, 0, 0) != 0) {
+            ok = 0; why = "arm";
+        }
+        it_slot_delete((uint32_t)bep);
+    }
+
+    /* 4. RIGHT_READ is what takes delivery.  A write-only copy of the very
+     *    same endpoint — enough to ARM a thread's faults — cannot receive one. */
+    if (ok) {
+        long wo = it_cs_reduce(fep, RIGHT_WRITE);
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        if (wo < 0) { ok = 0; why = "write-only copy"; }
+        else if (it_sys3(SYS_EP_NB_RECV, wo, (long)(uintptr_t)&m, 0L)
+                 != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "write-only cap received a fault";
+        }
+        if (wo >= 0) it_slot_delete((uint32_t)wo);
+    }
+
+    /* 1. Both fault; both messages arrive here, labelled and badged. */
+    if (ok && it_lp_cmd_va(cmd_a, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd a"; }
+    if (ok && !it_fault_wait_ep(fep, T329_LEAF_A)) { ok = 0; why = "no delivery a"; }
+    uint64_t badge_a = g_it_fault_badge[T329_LEAF_A];
+    if (ok && g_it_fault_label[T329_LEAF_A] != (uint64_t)FAULT_MSG_NOTIFY) {
+        ok = 0; why = "unlabelled";
+    }
+    if (ok && it_lp_cmd_va(cmd_b, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd b"; }
+    if (ok && !it_fault_wait_ep(fep, T329_LEAF_B)) { ok = 0; why = "no delivery b"; }
+    uint64_t badge_b = g_it_fault_badge[T329_LEAF_B];
+
+    /* 3, asserted: the two are told apart, and by the badges their supervisor
+     *    chose rather than by where a capability happened to land. */
+    if (ok && (badge_a != 1u || badge_b != 2u)) { ok = 0; why = "badges not distinct"; }
+
+    struct it_fault fa, fb;
+    if (ok && (it_fault_info(T329_LEAF_A, &fa) != 0 ||
+               it_fault_info(T329_LEAF_B, &fb) != 0)) { ok = 0; why = "records"; }
+    if (ok && (fa.vector != 14u || fb.vector != 14u)) { ok = 0; why = "vector"; }
+    if (ok && fa.task_id == fb.task_id) { ok = 0; why = "same thread twice"; }
+
+    /* 5. the retired mechanisms, from a task holding every capability there is
+     *    to hold about these threads. */
+    {
+        uint8_t buf[FAULT_MSG_LEN];
+        if (ok && it_sys2(SYS_TCB_FAULT_INFO, it_child_tcb((long)pa),
+                          (long)(uintptr_t)buf) != (long)IRIS_ERR_NOT_SUPPORTED) {
+            ok = 0; why = "fault info still answers";
+        }
+        if (ok && it_sys2(SYS_EXCEPTION_RESUME, it_child_tcb((long)pa), 1)
+                  != (long)IRIS_ERR_NOT_SUPPORTED) {
+            ok = 0; why = "exception resume still answers";
+        }
+    }
+
+    /* 2. the reply is the authority, and it is the only one: a thread
+     *    capability with every right on it resumes nothing. */
+    if (ok) {
+        struct IrisMsg rm;
+        it_iris_msg_zero(&rm);
+        if (it_sys2(SYS_REPLY, it_child_tcb((long)pa), (long)(uintptr_t)&rm)
+            != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "tcb answered a fault"; }
+    }
+    if (ok && it_fault_kill(T329_LEAF_A) != 0) { ok = 0; why = "answer a"; }
+    if (ok && it_fault_kill(T329_LEAF_B) != 0) { ok = 0; why = "answer b"; }
+    if (ok && it_lp_wait_exit(pa) != 0) { ok = 0; why = "exit a"; }
+    if (ok && it_lp_wait_exit(pb) != 0) { ok = 0; why = "exit b"; }
+
+    it_close(&pa); it_close(&pb);
+    it_close(&cmd_a); it_close(&cmd_b);
+    { handle_id_t fh = (handle_id_t)fep; it_close(&fh); }
+    it_quiesce_reaper();
+    if (ok) it_pass("T329"); else it_fail("T329", why);
+}
+
 /* ── T324: what the rotating object pool is still holding ──────────────────
  * The pool's contract is one sentence — delete before use, never hold a slot
  * across a test boundary — and until now nothing read it back.  The pool is
@@ -24913,6 +25347,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t326();
     test_t327();
     test_t328();
+    test_t329();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

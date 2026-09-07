@@ -273,9 +273,18 @@ void isr_handler(struct full_frame *frame) {
                                                      frame->error_code,
                                                      frame->rip, cr2);
                 if (notified) {
-                    /* Blocked, not switched: the exit path sees a thread that
-                     * is no longer runnable and dispatches past it. */
-                    ct->state = TASK_BLOCKED_FAULT;
+                    /*
+                     * Blocked, not switched: the exit path sees a thread that
+                     * is no longer runnable and dispatches past it.
+                     *
+                     * Ledger A-22: the STATE is the delivery's to set, not
+                     * this path's.  A fault is a call on an endpoint, so the
+                     * thread is either queued on it (BLOCKED_SEND) or already
+                     * taken by a waiting handler and owed a reply
+                     * (BLOCKED_REPLY).  Stamping BLOCKED_FAULT over either
+                     * would take it out of the queue the endpoint still
+                     * believes it is in.
+                     */
                     return;
                 }
             }

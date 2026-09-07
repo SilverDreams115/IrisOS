@@ -270,7 +270,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         /* SYS_CHAN_RECV_TIMEOUT retired — Phase 13/Track G, fall to default (NOT_SUPPORTED) */
         case SYS_NOTIFY_WAIT_TIMEOUT: return sys_notify_wait_timeout(arg0, arg1, arg2);
         case SYS_KLOG_DRAIN:          return sys_klog_drain(arg0, arg1, arg2);
-        case SYS_EXCEPTION_RESUME:    return sys_exception_resume(arg0, arg1, arg2);
+
         case SYS_FRAME_SIZE:          return sys_frame_size(arg0, arg1, arg2);
         case SYS_ASID_POOL_ASSIGN:    return sys_asid_pool_assign(arg0, arg1, arg2);
         case SYS_IRQ_ACK:             return sys_irq_ack(arg0, arg1, arg2);
@@ -320,7 +320,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         /* Stage 5 Step 4: execution for a TCB retyped from an Untyped. */
         /* Stage 6-pure: a page table the holder retyped, installed by name. */
         case SYS_VSPACE_MAP_TABLE:    return sys_vspace_map_table(arg0, arg1, arg2);
-        case SYS_TCB_FAULT_INFO:      return sys_tcb_fault_info(arg0, arg1, arg2);
+
         case SYS_TCB_WATCH:           return sys_tcb_watch(arg0, arg1, arg2);
         case SYS_TCB_SET_FAULT_HANDLER:
                                       return sys_tcb_set_fault_handler(arg0, arg1, arg2, arg3);

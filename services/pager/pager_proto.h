@@ -24,16 +24,18 @@
  *                               name-based op, so the slot carries exactly
  *                               "the backings my supervisor granted me" and
  *                               nothing else, even if this pager is hostile.
- *   slot 5  PGR_SLOT_FAULT_NOTIF the SHARED fault notification (RIGHT_WAIT).
- *                               One KNotification for ALL targets: the
- *                               supervisor registers each target's exception
- *                               handler on it with signal bit (1 << tidx).
- *                               Phase 28.1: replaces the per-target
- *                               notification column — 16 concurrent targets
- *                               cost ONE notification, not 16.  (It was
- *                               introduced to fit the per-process notification
- *                               quota, retired in Phase S1; the shared
- *                               notification is kept because it is cheaper.)
+ *   slot 5  PGR_SLOT_FAULT_EP   the SHARED fault ENDPOINT (RIGHT_READ).
+ *                               Ledger A-22: a fault is an IPC message, so a
+ *                               pager is a server and this is the endpoint it
+ *                               serves.  One KEndpoint for ALL targets: the
+ *                               supervisor registers each target's faults on a
+ *                               copy of it BADGED with the target index, and
+ *                               the badge on the arriving message is how the
+ *                               pager knows whose fault it is.  It used to be
+ *                               a notification plus a mailbox plus two
+ *                               syscalls; the message carries the record and
+ *                               the reply capability carries the authority to
+ *                               resume.
  *   slot 15 PGR_SLOT_SELF_VS      the pager's OWN address space, published by
  *                               SYS_VSPACE_SELF at start-up (Stage 4).  It is
  *                               not minted by the supervisor: a process's own
@@ -55,7 +57,7 @@
 
 #define PGR_SLOT_CTRL_EP      3u
 #define PGR_SLOT_VFS_EP       4u
-#define PGR_SLOT_FAULT_NOTIF  5u
+#define PGR_SLOT_FAULT_EP     5u
 /* Phase S1: the pager's explicit reply object (supervisor retypes it from its
  * untyped pool and mints it here); passed as arg2 of every ctrl-EP recv. */
 #define PGR_SLOT_REPLY        13u
@@ -64,16 +66,26 @@
  * pager holds and the report must account for it. */
 #define PGR_SLOT_SELF_VS      15u
 /*
- * Stage 7 Step 7 — the fault mailbox.
+ * Ledger A-22 — the fault REPLY objects.
  *
- * A CNode the SUPERVISOR retypes and mints here, and registers each target's
- * exception handler to deliver into.  SYS_EXCEPTION_RESUME names the faulting
- * thread by CAPABILITY now, and leaf (i+1) of this CNode is where target i's
- * arrives.  Inside the 0..19 window the manifest oracle reports, deliberately
- * and for the same reason PGR_SLOT_SELF_VS is: it is authority the pager
- * holds, and the report must account for it rather than be blind to it.
+ * A CNode the SUPERVISOR retypes and fills with one KReply per target, minted
+ * here.  A fault arrives as a call, so serving it means receiving WITH reply
+ * authority staged; leaf (i+1) holds the object the pager receives with, and
+ * once a fault is bound to it, that leaf IS "the authority to resume target
+ * i".  Replying resumes the thread; DELETING the leaf destroys the reply
+ * object, which is how the pager refuses a fault it will not serve.
+ *
+ * This slot used to be the fault MAILBOX — a CNode the kernel minted the
+ * faulting thread's capability into on every fault, so the pager held a TCB
+ * capability for every target it served.  It holds none now: a reply
+ * capability authorises resuming exactly one call and nothing else, where a
+ * TCB capability authorises everything a thread can be made to do.  Strictly
+ * less authority, for strictly the same job.
+ *
+ * Inside the 0..19 window the manifest oracle reports, deliberately and for
+ * the same reason PGR_SLOT_SELF_VS is.
  */
-#define PGR_SLOT_FAULT_CN     14u
+#define PGR_SLOT_FAULT_CN     14u   /* CNode of per-target KReply objects */
 #define PGR_FAULT_CPTR(i)     ((long)((((uint64_t)(i) + 1u) << 8) | PGR_SLOT_FAULT_CN))
 
 #define PGR_MAX_TARGETS    16u

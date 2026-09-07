@@ -756,6 +756,115 @@ static int ep_bind_call_reply(struct task *receiver, struct task *sender,
     return 1;
 }
 
+
+/*
+ * ── Ledger A-22: a FAULT is a call on an endpoint ──────────────────────────
+ *
+ * kendpoint_fault_call — deliver `msg` from the faulting thread `t` to `ep`
+ * as if `t` had made a CALL, and leave `t` blocked waiting for the reply.
+ *
+ * This is not a convenience wrapper over SYS_EP_CALL: it is the same
+ * rendezvous with everything a syscall brings stripped out.  A fault has no
+ * user message to read, no bulk payload to stage, no capability to transfer
+ * and no receive slot to declare, because the kernel wrote the message.  What
+ * it keeps is the part that matters — the queueing, the reply binding and the
+ * scheduling-context donation — so a fault handler is a server in exactly the
+ * sense every other server is, and the endpoint machinery has ONE call path
+ * rather than a second one that looks almost like it.
+ *
+ * Returns 1 when the fault was delivered or queued (the caller must leave the
+ * thread blocked); 0 when the endpoint is closed and there is nobody to tell.
+ *
+ * Runs with interrupts off, from the exception path, in the faulting thread's
+ * own context.  The only lock taken is the endpoint's.
+ */
+int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
+                         const struct IrisMsg *msg) {
+    if (!t || !ep || !msg) return 0;
+
+    irismsg_copy64(&t->ipc_msg, msg);
+    t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+    t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
+    t->ipc_msg_ready           = 0u;
+    t->ipc_ep_closed           = 0u;
+    /* No staged anything: the kernel composed this message.  buf_len 0 is
+     * what makes ipc_transfer_bulk a no-op at the rendezvous — a fault has no
+     * payload beyond the record, and pointing at one would name memory in an
+     * address space that is, by construction, in trouble. */
+    t->ipc_msg.buf_len  = 0u;
+    t->ipc_msg.buf_uptr = 0u;
+    t->ep_cap_obj     = 0;
+    t->ep_cap_rights  = 0;
+    t->ep_cap_badge   = 0;
+    t->ep_cap_src_cn  = 0;
+    t->ep_cap_src_idx = 0;
+    t->ep_recv_buf_uptr = 0;
+    t->ep_recv_slot     = 0;
+    t->ep_call_mode   = 1u;
+    t->ep_fault_call  = 1u;
+
+    uint64_t flags = irq_spinlock_lock(&ep->lock);
+
+    if (ep->closed) {
+        irq_spinlock_unlock(&ep->lock, flags);
+        t->ep_call_mode  = 0u;
+        t->ep_fault_call = 0u;
+        return 0;
+    }
+
+    if (ep->ep_state == EP_STATE_RECV && ep->queue_head &&
+        ep->queue_head->ep_reply_obj) {
+        /*
+         * A handler is already waiting WITH reply authority staged.  Both
+         * halves of that condition are load-bearing: a receiver that staged no
+         * reply object cannot answer a call, and handing it one anyway is the
+         * implicit-KReply fabrication Phase S1 retired.  When it has none the
+         * fault falls through and QUEUES instead, which is the honest outcome
+         * — the handler is simply not ready to answer yet.
+         */
+        struct task *receiver = ep->queue_head;
+
+        ep->queue_head = receiver->ep_next;
+        if (!ep->queue_head) { ep->queue_tail = 0; ep->ep_state = EP_STATE_IDLE; }
+        receiver->ep_next     = 0;
+        receiver->blocking_ep = 0;
+
+        irismsg_copy64(&receiver->ipc_msg, &t->ipc_msg);
+        receiver->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
+        receiver->ipc_msg_ready        = 1u;
+
+        irq_spinlock_unlock(&ep->lock, flags);
+
+        t->ep_call_mode = 0u;
+        uint32_t reply_attach = IRIS_MSG_NO_CAP;
+        if (ep_bind_call_reply(receiver, t, &reply_attach)) {
+            ipc_stat_bump(&iris_ipc_stat_reply_caps);
+            receiver->ipc_msg.attached_handle = reply_attach;
+            t->state = TASK_BLOCKED_REPLY;
+            task_wakeup(receiver);
+            return 1;
+        }
+        /* The staged reply object went away between the check and the bind.
+         * The handler is woken (its message is already there) and the fault is
+         * unanswerable, which is reported as "no handler" rather than left as
+         * a thread blocked on a reply nobody holds. */
+        task_wakeup(receiver);
+        t->ep_fault_call = 0u;
+        return 0;
+    }
+
+    /* Nobody ready: queue as a call-mode sender.  sys_ep_recv takes it like
+     * any other queued caller and binds its own reply object. */
+    ep->ep_state   = EP_STATE_SEND;
+    t->ep_next     = 0;
+    t->blocking_ep = ep;
+    if (ep->queue_tail) { ep->queue_tail->ep_next = t; ep->queue_tail = t; }
+    else                { ep->queue_head = t; ep->queue_tail = t; }
+    t->state = TASK_BLOCKED_SEND;
+    irq_spinlock_unlock(&ep->lock, flags);
+    return 1;
+}
+
 /* Forward: the post-block half, defined with the parking path it belongs to. */
 static uint64_t ep_recv_complete(struct task *t, uint64_t arg1);
 

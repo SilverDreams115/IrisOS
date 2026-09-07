@@ -258,26 +258,104 @@ static uint32_t pg_cache_entries(void) {
     uint32_t n = 0; for (uint32_t i = 0; i < PGR_CACHE_CAP; i++) if (g_cache[i].valid) n++; return n;
 }
 
-/* ── shared fault notification: wait-any with a pending-bits accumulator ────
- * Phase 28.1: every target signals the ONE notification at slot 5 with bit
- * (1 << tidx).  Waiting for a specific target consumes ONLY that target's
- * bit; bits that arrive for other targets are accumulated, never dropped, so
- * interleaved faults from many targets survive any service order.  0 on
- * success, NOFAULT marker on timeout. */
+/* ── the fault endpoint: receive, sort by badge, keep the reply ─────────────
+ *
+ * Ledger A-22: every target's faults arrive as CALLS on the one endpoint at
+ * PGR_SLOT_FAULT_EP, on a copy of it BADGED with the target index, so the
+ * badge on the message says whose fault it is.  Serving one means holding its
+ * REPLY capability until the supervisor says what to do, and a reply object
+ * can hold one caller — so there is one per target, in the CNode at
+ * PGR_SLOT_FAULT_CN, and `g_fault_leaf[i]` records which leaf is currently
+ * bound to target i's outstanding fault (0 = none).
+ *
+ * Faults for targets nobody has asked about yet are NOT dropped: their record
+ * and their reply binding are kept, which is the same accumulator the shared
+ * notification needed and for the same reason — interleaved faults from many
+ * targets must survive any service order.
+ */
+static uint32_t g_fault_leaf[PGR_MAX_TARGETS];         /* 0 = no fault held */
+static uint8_t  g_fault_rec[PGR_MAX_TARGETS][FAULT_MSG_LEN];
+static uint32_t g_leaf_busy;                            /* bit k = leaf k+1 in use */
+
+static uint32_t pg_leaf_take(void) {
+    for (uint32_t k = 0; k < PGR_MAX_TARGETS; k++)
+        if (!(g_leaf_busy & (1u << k))) { g_leaf_busy |= (1u << k); return k + 1u; }
+    return 0;
+}
+static void pg_leaf_give(uint32_t leaf) {
+    if (leaf) g_leaf_busy &= ~(1u << (leaf - 1u));
+}
+
+/*
+ * Wait for target `tidx` to fault.  0 on success, NOFAULT marker otherwise.
+ *
+ * Non-blocking receive in a bounded retry loop rather than a blocking one:
+ * this runs inside a control request that ASSERTS a fault is there, and a
+ * blocking receive would wedge the pager's only thread against a target that
+ * never faults — which is a thing the tests deliberately arrange.  The old
+ * notification wait had a timeout for exactly this reason; a receive has no
+ * timeout, so the bound is the retry count and a yield between tries.
+ */
 static long pg_wait_fault(uint32_t tidx) {
-    uint64_t bit = 1ull << tidx;
-    if (g_pending & bit) { g_pending &= ~bit; return 0; }
-    for (uint32_t tries = 0; tries < 64u; tries++) {
-        uint64_t bits = 0;
+    if (tidx >= PGR_MAX_TARGETS) return -(long)PGR_ERR_BADOP;
+    if (g_fault_leaf[tidx]) return 0;
+
+    for (uint32_t tries = 0; tries < 4096u; tries++) {
+        uint32_t leaf = pg_leaf_take();
+        if (!leaf) return -(long)PGR_ERR_NOFAULT;   /* every reply already held */
+
+        struct IrisMsg m;
+        pg_msg_zero(&m);
         g_diag.notif_waits++;
-        if (pg_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)PGR_SLOT_FAULT_NOTIF,
-                    (long)(uintptr_t)&bits, 2000000000L) != 0)
-            return -(long)PGR_ERR_NOFAULT;
+        long r = pg_sys3(SYS_EP_NB_RECV, (long)PGR_SLOT_FAULT_EP,
+                         (long)(uintptr_t)&m, PGR_FAULT_CPTR(leaf - 1u));
+        if (r != 0) {
+            pg_leaf_give(leaf);
+            (void)pg_sys1(SYS_YIELD, 0);
+            continue;
+        }
         g_diag.notif_wakeups++;
-        g_pending |= bits;
-        if (g_pending & bit) { g_pending &= ~bit; return 0; }
+
+        /* The badge is the target index PLUS ONE: 0 is what an UNBADGED
+         * capability carries, and a pager must be able to tell "target 0"
+         * from "somebody sent this through a capability nobody badged". */
+        uint64_t badge = m.sender_badge;
+        uint32_t who   = (uint32_t)(badge - 1u);
+        if (badge == 0u || badge > (uint64_t)PGR_MAX_TARGETS ||
+            g_fault_leaf[who]) {
+            /* A badge outside the target table, or a second fault from a
+             * target whose first is still unanswered.  Neither can be served,
+             * and dropping the reply object's binding is what tells the kernel
+             * so — the thread is killed rather than left blocked on an answer
+             * that will never come. */
+            (void)pg_sys2(SYS_CNODE_DELETE, (long)PGR_SLOT_FAULT_CN, (long)leaf);
+            pg_leaf_give(leaf);
+            continue;
+        }
+        for (uint32_t b = 0; b < FAULT_MSG_LEN; b++)
+            g_fault_rec[who][b] = ((const uint8_t *)m.words)[b];
+        g_fault_leaf[who] = leaf;
+        if (who == tidx) return 0;
     }
     return -(long)PGR_ERR_NOFAULT;
+}
+
+/* Answer the fault held for `tidx`: reply (resume) or drop the reply object
+ * (refuse, and the kernel destroys the thread nobody will answer). */
+static long pg_fault_answer(uint32_t tidx, int resume) {
+    uint32_t leaf = g_fault_leaf[tidx];
+    if (!leaf) return -(long)PGR_ERR_NOFAULT;
+    g_fault_leaf[tidx] = 0;
+    long r;
+    if (resume) {
+        struct IrisMsg m;
+        pg_msg_zero(&m);
+        r = pg_sys2(SYS_REPLY, PGR_FAULT_CPTR(leaf - 1u), (long)(uintptr_t)&m);
+    } else {
+        r = pg_sys2(SYS_CNODE_DELETE, (long)PGR_SLOT_FAULT_CN, (long)leaf);
+    }
+    pg_leaf_give(leaf);
+    return r;
 }
 
 /* ── region resolution ──────────────────────────────────────────────────── */
@@ -288,11 +366,10 @@ static long pg_resolve_region(uint32_t tidx) {
     long wr = pg_wait_fault(tidx);
     if (wr != 0) return wr;
 
-    uint8_t fb[FAULT_MSG_LEN];
-    /* Stage 7 Step 8: the record is read off the THREAD the fault delivered,
-     * so the target's PROCESS capability is not in this path at all. */
-    long r = pg_sys2(SYS_TCB_FAULT_INFO, PGR_FAULT_CPTR(tidx), (long)(uintptr_t)fb);
-    if (r != 0) return r;
+    /* Ledger A-22: the record ARRIVED with the fault — pg_wait_fault kept it.
+     * The pager holds no capability to the faulting thread at all now; what it
+     * holds is the reply that resumes it. */
+    const uint8_t *fb = g_fault_rec[tidx];
     uint32_t vector = pg_rd32(fb, FAULT_OFF_VECTOR);
     uint32_t task   = pg_rd32(fb, FAULT_OFF_TASK_ID);
     uint32_t seq    = pg_rd32(fb, FAULT_OFF_SEQ);
@@ -368,15 +445,10 @@ static long pg_resolve_region(uint32_t tidx) {
         return -(long)PGR_ERR_MODE;                             /* shared-writable (F16) */
     }
 
-    /* seq-checked resume — the target continues. */
-    /* Stage 7 Step 7: the faulting thread is the capability its fault
-     * delivered into this target's mailbox leaf.  Stage 7 Step 8 took the READ
-     * off the process too, so the target's process capability is no longer in
-     * the fault path at all — it is held only for the manifest oracle to
-     * report, and for the operations that genuinely are process-scoped. */
-    (void)task;
-    return pg_sys2(SYS_EXCEPTION_RESUME, PGR_FAULT_CPTR(tidx),
-                   (long)(((uint64_t)seq << 32) | 2u));
+    /* Answered — the target continues.  The authority is the reply capability
+     * this fault bound, and spending it is the whole of the resume. */
+    (void)task; (void)seq;
+    return pg_fault_answer(tidx, /*resume=*/1);
 }
 
 /* Drop a region's cache/private references (on unregister / target death). */
@@ -542,11 +614,8 @@ static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t fla
     long tvs = (long)PGR_TSLOT_VS(tidx);
     long wr = pg_wait_fault(tidx);
     if (wr != 0) return wr;
-    uint8_t fb[FAULT_MSG_LEN];
-    /* Stage 7 Step 8: the record is read off the THREAD the fault delivered,
-     * so the target's PROCESS capability is not in this path at all. */
-    long r = pg_sys2(SYS_TCB_FAULT_INFO, PGR_FAULT_CPTR(tidx), (long)(uintptr_t)fb);
-    if (r != 0) return r;
+    const uint8_t *fb = g_fault_rec[tidx];
+    long r;
     uint32_t vector = pg_rd32(fb, FAULT_OFF_VECTOR), task = pg_rd32(fb, FAULT_OFF_TASK_ID), seq = pg_rd32(fb, FAULT_OFF_SEQ);
     uint64_t cr2 = pg_rd64(fb, FAULT_OFF_CR2);
     if (vector != 14u || seq == 0u || task == 0u) return -(long)PGR_ERR_INFO;
@@ -567,9 +636,18 @@ static long pg_serve_raw(uint32_t op, uint32_t tidx, uint32_t vidx, uint32_t fla
                     (long)vva, (long)(flags & 0x3u));
         if (r != 0) return r;
     }
-    (void)task;
-    return pg_sys2(SYS_EXCEPTION_RESUME, PGR_FAULT_CPTR(tidx),
-                   (long)(((uint64_t)seq << 32) | ((op == PGR_OP_KILL) ? 3u : 2u)));
+    /*
+     * KILL is now the ABSENCE of an answer.
+     *
+     * It used to be action 3 of SYS_EXCEPTION_RESUME, which needed a
+     * capability to the faulting thread — the reason a pager was handed one on
+     * every fault.  A pager that will not serve a fault drops the reply object
+     * instead, and the kernel destroys the thread nobody will answer.  The
+     * pager therefore holds no thread authority whatsoever, which is what the
+     * manifest oracle now reports.
+     */
+    (void)task; (void)seq;
+    return pg_fault_answer(tidx, /*resume=*/(op != PGR_OP_KILL));
 }
 
 void pager_main(handle_id_t bootstrap_ch_h);

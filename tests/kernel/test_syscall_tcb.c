@@ -149,28 +149,42 @@ void test_syscall_tcb(void) {
         test_set_current_task(NULL);
     }
 
-    /* ── TB-5: the handler mailbox must be a NOTIFICATION ────────────────
-     * WRONG_TYPE travels rather than being flattened: "that is not a
-     * notification" is what a supervisor needs to hear, and the family has
-     * reported it that way since Stage 7 Step 4. */
+    /* ── TB-5: the fault handler must be an ENDPOINT (ledger A-22) ───────
+     * WRONG_TYPE travels rather than being flattened: "that is not an
+     * endpoint" is what a supervisor needs to hear, and the family has
+     * reported it that way since Stage 7 Step 4.  A NOTIFICATION is the
+     * natural wrong type to offer, because it is what this argument took
+     * before a fault became an IPC message. */
     {
         struct KCNode *root; struct task *target;
         struct task *t = tb_caller(&root, TCB_SLOT, &target);
         ASSERT_NOT_NULL(t);
-        /* slot 9 holds an endpoint, not a notification */
-        struct KObject *ep = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
-        ASSERT_NOT_NULL(ep);
-        kobject_init(ep, KOBJ_ENDPOINT, &tb_ops);
-        ASSERT_EQ(kcnode_mint(root, 9, ep, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
+        /* slot 9 holds a notification, not an endpoint */
+        struct KObject *nt = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
+        ASSERT_NOT_NULL(nt);
+        kobject_init(nt, KOBJ_NOTIFICATION, &tb_ops);
+        ASSERT_EQ(kcnode_mint(root, 9, nt, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
 
-        ASSERT_EQ(tb_err(sys_tcb_set_fault_handler(TCB_SLOT, 9, 1,
-                         ((uint64_t)4 << 32))),
+        ASSERT_EQ(tb_err(sys_tcb_set_fault_handler(TCB_SLOT, 9, 0, 0)),
                   (long)IRIS_ERR_WRONG_TYPE);
-        ASSERT_EQ(tb_err(sys_tcb_set_timeout_handler(TCB_SLOT, 9, 1,
-                         ((uint64_t)4 << 32))),
+        ASSERT_EQ(tb_err(sys_tcb_set_timeout_handler(TCB_SLOT, 9, 0, 0)),
                   (long)IRIS_ERR_WRONG_TYPE);
-        /* watch flattens it to INVALID_ARG, which is its documented contract */
-        ASSERT_EQ(tb_err(sys_tcb_watch(TCB_SLOT, 9, 1)),
+        /* ...and the two RETIRED arguments are refused rather than ignored:
+         * code written for the notification+mailbox form must fail loudly, not
+         * arm a mailbox nothing will fill. */
+        ASSERT_EQ(tb_err(sys_tcb_set_fault_handler(TCB_SLOT, 9, 1, 0)),
+                  (long)IRIS_ERR_INVALID_ARG);
+        ASSERT_EQ(tb_err(sys_tcb_set_fault_handler(TCB_SLOT, 9, 0,
+                         ((uint64_t)4 << 32))),
+                  (long)IRIS_ERR_INVALID_ARG);
+        /* watch still takes a NOTIFICATION, and flattens a wrong type to
+         * INVALID_ARG — its documented contract, and the reason the two
+         * arguments could not simply swap meanings. */
+        struct KObject *wep = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
+        ASSERT_NOT_NULL(wep);
+        kobject_init(wep, KOBJ_ENDPOINT, &tb_ops);
+        ASSERT_EQ(kcnode_mint(root, 10, wep, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
+        ASSERT_EQ(tb_err(sys_tcb_watch(TCB_SLOT, 10, 1)),
                   (long)IRIS_ERR_INVALID_ARG);
         test_set_current_task(NULL);
     }

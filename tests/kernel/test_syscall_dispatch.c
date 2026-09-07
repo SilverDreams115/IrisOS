@@ -59,7 +59,11 @@ void test_syscall_dispatch(void) {
      *   55  SYS_INITRD_VMO         — a boot image as a KVMO (Stage 6, D-5)
      */
     {
-        const uint64_t retired[] = { 15, 19, 25, 55, 56, 58, 104, 109 };
+        /* Ledger A-22 adds two: 66 (SYS_EXCEPTION_RESUME) and 123
+         * (SYS_TCB_FAULT_INFO).  A fault is answered by REPLYING to it and
+         * read out of the message it arrived in, so both numbers are gone —
+         * and gone means NOT_SUPPORTED for everyone, not repurposed. */
+        const uint64_t retired[] = { 15, 19, 25, 55, 56, 58, 66, 104, 109, 123 };
         for (unsigned i = 0; i < sizeof(retired) / sizeof(retired[0]); i++)
             ASSERT_EQ(ds(retired[i]), (long)IRIS_ERR_NOT_SUPPORTED);
     }

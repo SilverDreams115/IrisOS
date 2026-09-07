@@ -11,6 +11,8 @@
 #include <iris/pmm.h>
 #include <iris/paging.h>
 #include <iris/fault_proto.h>
+#include <iris/nc/kendpoint.h>
+#include <iris/ipc_msg.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -110,6 +112,17 @@ void kfault_resolve(struct task *ft, int killed) {
  */
 
 
+/* The fault record's wire layout is byte-offset based (fault_proto.h), and the
+ * message body is not guaranteed aligned for a 32/64-bit store at every offset,
+ * so it is written a byte at a time.  Little-endian, matching every other
+ * multi-byte field IRIS puts on a wire. */
+static void kfault_wr32(uint8_t *p, uint32_t v) {
+    for (uint32_t i = 0; i < 4u; i++) p[i] = (uint8_t)(v >> (8u * i));
+}
+static void kfault_wr64(uint8_t *p, uint64_t v) {
+    for (uint32_t i = 0; i < 8u; i++) p[i] = (uint8_t)(v >> (8u * i));
+}
+
 /*
  * Stage 7 Step 12 — a fault is delivered by the THREAD's own registration.
  *
@@ -136,18 +149,14 @@ void kfault_resolve(struct task *ft, int killed) {
 static int kfault_deliver(struct task *t, uint64_t vector,
                           uint64_t error_code, uint64_t rip, uint64_t cr2,
                           int timeout) {
-    struct KNotification *notif;
-    struct KCNode        *dest_cs = 0;
-    uint32_t              dest_slot = 0;
-    struct KCNode        *src_cn = 0;
-    uint32_t              src_idx = 0;
-    uint64_t              bits;
+    struct KEndpoint *ep;
+    uint64_t          badge;
 
     if (!t) return 0;
 
-    notif = timeout ? t->timeout_notif : t->fault_notif;
-    bits  = timeout ? t->timeout_bits  : t->fault_bits;
-    if (!notif) return 0;
+    ep    = timeout ? t->timeout_ep       : t->fault_ep;
+    badge = timeout ? t->timeout_ep_badge : t->fault_ep_badge;
+    if (!ep) return 0;
 
     t->fault_seq_counter++;
     if (t->fault_seq_counter == 0) t->fault_seq_counter = 1;
@@ -158,56 +167,54 @@ static int kfault_deliver(struct task *t, uint64_t vector,
     t->fault_seq    = t->fault_seq_counter;
     t->fault_valid  = 1;
 
-    dest_cs   = timeout ? t->timeout_cspace  : t->fault_cspace;
-    dest_slot = timeout ? t->timeout_slot    : t->fault_slot;
-    src_cn    = timeout ? t->timeout_src_cn  : t->fault_src_cn;
-    src_idx   = timeout ? t->timeout_src_idx : t->fault_src_idx;
-    kobject_retain(&notif->base);
-    if (dest_cs) {
-        kobject_retain(&dest_cs->base);
-        kobject_active_retain(&dest_cs->base);
-        if (src_cn) {
-            kobject_retain(&src_cn->base);
-            kobject_active_retain(&src_cn->base);
-        }
+    /*
+     * The record IS the message.
+     *
+     * It used to be written here and read back later through
+     * SYS_TCB_FAULT_INFO, which meant a handler needed a capability to the
+     * faulting thread just to find out what had happened to it — so every
+     * fault minted one into a mailbox.  The wire layout is unchanged
+     * (fault_proto.h): what changed is that it travels in the IPC rather than
+     * sitting in the kernel waiting to be fetched.
+     */
+    struct IrisMsg msg;
+    for (uint32_t i = 0; i < sizeof(msg) / sizeof(uint64_t); i++)
+        ((uint64_t *)&msg)[i] = 0;
+    msg.label        = FAULT_MSG_NOTIFY;
+    msg.word_count   = FAULT_MSG_LEN / sizeof(uint64_t);
+    msg.sender_badge = badge;
+    {
+        uint8_t *d = (uint8_t *)msg.words;
+        _Static_assert(FAULT_MSG_LEN <= IRIS_MSG_WORDS * sizeof(uint64_t),
+                       "the fault record must fit in the message registers");
+        kfault_wr32(d + FAULT_OFF_VECTOR, (uint32_t)vector);
+        kfault_wr32(d + FAULT_OFF_TASK_ID, t->id);
+        kfault_wr64(d + FAULT_OFF_RIP,     rip);
+        kfault_wr32(d + FAULT_OFF_ERROR,  (uint32_t)error_code);
+        kfault_wr32(d + FAULT_OFF_SEQ,     t->fault_seq);
+        kfault_wr64(d + FAULT_OFF_CR2,     cr2);
     }
 
     /*
-     * Hand the handler the faulting THREAD, as a capability, BEFORE the
-     * signal — a handler woken by it finds the mailbox already filled.  Not
-     * exclusive: the slot is a mailbox, and a previous fault's capability
-     * still in it means the handler already answered that one.
+     * Ledger A-22 — the thread CALLS its fault handler.
+     *
+     * A failure here means the endpoint is closed: there is a registration but
+     * nobody behind it, which is the same situation as no registration at all
+     * and is reported the same way, so the caller kills the thread instead of
+     * leaving it blocked on an answer that can never come.
+     *
+     * The scheduling context travels with the call for exception faults, so a
+     * pager runs on the time of the client it is serving — kendpoint_fault_call
+     * uses the same donation every passive server gets.  A TIMEOUT fault is the
+     * one case where it must not: the whole message is "this thread's budget
+     * ran out", and donating an exhausted budget to the handler would starve
+     * the one principal able to do something about it.
      */
-    if (dest_cs) {
-        /*
-         * Stage 8-cap / D-6: as a CHILD of the slot the registration was made
-         * with, so revoking that capability reaches every copy the kernel
-         * handed out.  Verified by IDENTITY, not occupancy — between arming
-         * and faulting the registrant's slot can have been deleted and
-         * refilled, and a child under the new occupant would hang off an
-         * ancestor that never authorised it.
-         *
-         * When it does not hold, the capability is still delivered (a handler
-         * with a signal and no thread to answer with is a deadlock dressed as
-         * a working handler) but as a root, and the gauge T305 watches counts
-         * it.  That is the honest failure: the delegation outlived the
-         * capability it was made with, and the count says so.
-         */
-        int parented = src_cn && kcnode_slot_holds(src_cn, src_idx, &t->base);
-        (void)kcnode_slot_install_linked(dest_cs, dest_slot, &t->base,
-                                         RIGHT_READ | RIGHT_WRITE, 0,
-                                         parented ? src_cn : 0, src_idx,
-                                         /*exclusive=*/0, /*legacy=*/!parented);
-        kobject_active_release(&dest_cs->base);
-        kobject_release(&dest_cs->base);
-        if (src_cn) {
-            kobject_active_release(&src_cn->base);
-            kobject_release(&src_cn->base);
-        }
+    if (!kendpoint_fault_call(t, ep, &msg)) {
+        t->fault_valid = 0;
+        return 0;
     }
 
-    knotification_signal(notif, bits);
-    kobject_release(&notif->base);
     atomic_fetch_add_explicit(&kfault_delivery, 1u, memory_order_relaxed);
     return 1;
 }

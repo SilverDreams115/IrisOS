@@ -30,5 +30,15 @@ void              kendpoint_close(struct KEndpoint *ep);
 uint32_t          kendpoint_live_count(void);
 void              kendpoint_cancel_waiter(struct task *t);
 
+/*
+ * Ledger A-22 — deliver a FAULT as a call on this endpoint.  See the
+ * definition in syscall_endpoint.c: same rendezvous as SYS_EP_CALL with
+ * everything a syscall brings stripped out, because the kernel composed the
+ * message and there is no syscall frame under the caller.
+ */
+struct IrisMsg;
+int               kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
+                                       const struct IrisMsg *msg);
+
 #endif /* __KERNEL__ */
 #endif /* IRIS_NC_KENDPOINT_H */

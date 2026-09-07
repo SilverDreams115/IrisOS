@@ -32,6 +32,7 @@
 #include <iris/nc/kreply.h>
 #include <iris/nc/kendpoint.h>
 #include <iris/ipc_msg.h>
+#include <iris/nc/kprocess.h>
 
 static inline void copy_irismsg_r(struct IrisMsg *dst, const struct IrisMsg *src) {
     uint8_t       *d = (uint8_t *)dst;
@@ -379,6 +380,43 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
         kobject_release(&rp->base);
         return syscall_err(IRIS_ERR_NOT_FOUND);
+    }
+
+    /*
+     * Ledger A-22 — answering a FAULT.
+     *
+     * There is no syscall frame under this caller: it is a thread the CPU
+     * trapped, and what "resume" means for it is the trap frame, not a return
+     * value.  So the reply message is not delivered anywhere — writing one
+     * would be writing into an address space whose thread is about to continue
+     * at the instruction that faulted, expecting its registers untouched — and
+     * the payload transfer and receive-slot routing below are skipped for the
+     * same reason.
+     *
+     * What still happens is everything that makes the reply an ANSWER: the
+     * one-shot reply object is spent (the caller was taken out of it above),
+     * the donated scheduling context goes home, the pending-fault record is
+     * cleared so the diagnostics stop reporting it, and the thread runs again.
+     */
+    if (caller->ep_fault_call) {
+        caller->ep_fault_call = 0u;
+        if (xfer_obj) {
+            /* A capability attached to a fault reply has nowhere to land: the
+             * caller declared no receive slot, because it never made a call.
+             * Dropped rather than delivered somewhere arbitrary, and the
+             * server keeps its own copy. */
+            kobject_release(xfer_obj);
+            syscall_ipc_stage_cap_abort(xfer_src_cn);
+        }
+        kreply_return_donation(rp, caller);
+        if (caller->pending_kreply) {
+            kobject_release(&caller->pending_kreply->base);
+            caller->pending_kreply = 0;
+        }
+        kfault_resolve(caller, /*killed=*/0);
+        task_wakeup(caller);
+        kobject_release(&rp->base);
+        return syscall_ok_u64(0);
     }
 
     /* Deliver reply message into caller's staging (caller is blocked — safe). */

@@ -241,186 +241,108 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
  * forever — a supervisor that lost the race still learns the answer.
  */
 /*
- * SYS_TCB_SET_FAULT_HANDLER(tcb_cptr, notif_cptr, signal_bits, dest)
+ * SYS_TCB_SET_FAULT_HANDLER(tcb_cptr, ep_cptr) — ledger A-22.
  *
- * Stage 7 Step 12: arm THIS THREAD's faults.
+ * Point a thread's faults at an ENDPOINT.  When it faults, the thread CALLS
+ * that endpoint: the handler receives the record as an ordinary message, gets
+ * a reply capability with it, and replying is what resumes the thread.
  *
- * SYS_EXCEPTION_HANDLER named a PROCESS, so the handler, the mailbox and the
- * fault generation lived on KProcess and a read had to be answered by pointing
- * at whoever faulted last.  All three are properties of an execution.  A
- * supervisor arming a thread's faults already holds that thread — it retyped
- * the TCB — so nothing is reached for that was not already held.
+ * This used to take a notification, a signal-bit mask and a MAILBOX — a CNode
+ * slot the kernel published the faulting thread's capability into on every
+ * fault — and the handler then read the record with SYS_TCB_FAULT_INFO and
+ * answered with SYS_EXCEPTION_RESUME plus a generation number.  Three
+ * mechanisms doing what seL4 does with one, and each of the three had to
+ * reinvent something IPC already had: the mailbox was a hand-rolled capability
+ * delivery (with its own parent-tracking so revoke could reach it), and the
+ * generation number was a hand-rolled one-shot token.  A reply capability is
+ * both, and is the same object every server in the system already uses.
  *
- * `dest` is the mailbox each fault delivers the faulting thread's capability
- * into, cnode|slot<<32, the CNode half resolved in the REGISTRANT's CSpace
- * (0 = its own root).  Required: without it the only way to answer a fault is
- * to name the thread by number, which Step 7 removed.
+ * The BADGE on `ep_cptr` is captured and stamped into every fault message this
+ * thread produces.  That is how the handler knows WHICH client faulted, and it
+ * is why nothing has to be minted into anyone's CSpace at fault time.  A
+ * supervisor arming several threads mints itself several badged capabilities to
+ * one endpoint, which is exactly seL4's arrangement.
+ *
+ * RIGHT_WRITE on the endpoint is required: arming a thread's faults means
+ * arranging for messages to be SENT there.
  */
-/*
- * Which of a thread's two handler registrations a call is writing.
- *
- * The exception handler and the timeout handler are the same MECHANISM — a
- * fault delivered by publishing the thread's capability into a mailbox and
- * signalling a notification — asked by different principals about different
- * questions.  They are therefore two field groups and ONE registration path:
- * duplicating the path would give the reference discipline below two copies to
- * drift apart, which is the failure kobject.h's storage note describes.
- */
-struct tcb_handler_fields {
-    struct KNotification **notif;
-    uint64_t              *bits;
-    struct KCNode        **cspace;
-    uint32_t              *slot;
-    struct KCNode        **src_cn;
-    uint32_t              *src_idx;
-    int                    is_timeout;
-};
-
-static void tcb_handler_select(struct task *t, int timeout,
-                               struct tcb_handler_fields *f) {
-    if (timeout) {
-        f->notif = &t->timeout_notif; f->bits = &t->timeout_bits;
-        f->cspace = &t->timeout_cspace; f->slot = &t->timeout_slot;
-        f->src_cn = &t->timeout_src_cn; f->src_idx = &t->timeout_src_idx;
-    } else {
-        f->notif = &t->fault_notif; f->bits = &t->fault_bits;
-        f->cspace = &t->fault_cspace; f->slot = &t->fault_slot;
-        f->src_cn = &t->fault_src_cn; f->src_idx = &t->fault_src_idx;
-    }
-    f->is_timeout = timeout;
-}
-
-static uint64_t tcb_register_handler(uint64_t arg0, uint64_t arg1,
-                                     uint64_t arg2, uint64_t arg3,
-                                     int timeout) {
+static uint64_t tcb_register_handler(uint64_t arg0, uint64_t arg1, int timeout) {
     struct task *caller = task_current();
     if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (arg2 == 0u || arg3 == 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
 
     struct task *target; iris_rights_t rights;
     iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
                                    RIGHT_WRITE, &target, &rights);
     if (err != IRIS_OK) return syscall_err(err);
 
-    struct KObject *n_obj; iris_rights_t n_rights;
-    /* WRONG_TYPE travels: "that is not a notification" is what the caller needs
+    struct KEndpoint *ep; iris_rights_t ep_rights; uint64_t badge = 0;
+    /* WRONG_TYPE travels: "that is not an endpoint" is what the caller needs
      * to hear, and the family has reported it since Step 4. */
-    err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg1,
-                                  RIGHT_NONE, KOBJ_NOTIFICATION, &n_obj, &n_rights);
+    err = cspace_resolve_only_endpoint_badged(caller->cspace_root,
+                                              (iris_cptr_t)arg1, RIGHT_WRITE,
+                                              &ep, &ep_rights, &badge);
     if (err != IRIS_OK) {
         kobject_release(&target->base);
         return syscall_err(err);
     }
-    if (!rights_check(n_rights, RIGHT_WRITE)) {
-        kobject_release(n_obj); kobject_release(&target->base);
-        return syscall_err(IRIS_ERR_ACCESS_DENIED);
-    }
 
-    struct KCNode *dest_cn = 0;
-    uint64_t dest_cptr = arg3 & 0xFFFFFFFFu;
-    uint32_t dest_slot = (uint32_t)(arg3 >> 32);
-    if (dest_cptr == 0u) err = cspace_own_root(caller->cspace_root, &dest_cn);
-    else                 err = cspace_resolve_cnode_for_publish(caller->cspace_root,
-                                    (iris_cptr_t)dest_cptr, &dest_cn);
-    if (err != IRIS_OK) {
-        kobject_release(n_obj); kobject_release(&target->base);
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
-    }
-    if (dest_slot == 0u || dest_slot >= dest_cn->slot_count) {
-        kobject_active_release(&dest_cn->base); kobject_release(&dest_cn->base);
-        kobject_release(n_obj); kobject_release(&target->base);
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-
-    /*
-     * Stage 8-cap / D-6: the SOURCE slot, so the capability each fault
-     * publishes has an ancestor.  Resolved here because this is where the
-     * authority is exercised — the same moment IPC records a sender's source
-     * slot as the parent of what it delivers.  Failing to resolve it is not
-     * fatal to the registration: cspace_resolve_slot needs the terminal slot
-     * occupied, and it was, since tcb_resolve just read a TCB out of it.
-     */
-    struct KCNode *src_cn = 0; uint32_t src_idx = 0;
-    if (cspace_resolve_slot(caller->cspace_root, (iris_cptr_t)arg0,
-                            &src_cn, &src_idx) != IRIS_OK)
-        src_cn = 0;
-
-    struct KNotification *notif = (struct KNotification *)n_obj;
-    struct KNotification *old_n = 0;
-    struct KCNode        *old_c = 0;
-    struct KCNode        *old_s = 0;
-    struct task          *pending = 0;
-    struct tcb_handler_fields f;
-    tcb_handler_select(target, timeout, &f);
-
+    struct KEndpoint *old = 0;
     uint64_t irqfl = irq_spinlock_lock(&target->obj_lock);
     /* Under the lock, not before it: thread teardown empties these fields under
      * the same lock, so a check outside it could pass just as teardown starts
-     * and leave the references installed below with nobody to release them. */
+     * and leave the reference installed below with nobody to release it. */
     if (target->terminal) {
         irq_spinlock_unlock(&target->obj_lock, irqfl);
-        if (src_cn) { kobject_active_release(&src_cn->base); kobject_release(&src_cn->base); }
-        kobject_active_release(&dest_cn->base); kobject_release(&dest_cn->base);
-        kobject_release(n_obj); kobject_release(&target->base);
+        kobject_release(&ep->base);
+        kobject_release(&target->base);
         return syscall_err(IRIS_ERR_NOT_FOUND);
     }
-    old_n = (*f.notif == notif) ? 0 : *f.notif;
-    old_c = (*f.cspace == dest_cn) ? 0 : *f.cspace;
-    if (*f.notif != notif) {
-        kobject_retain(&notif->base);
-        kobject_active_retain(&notif->base);
-        *f.notif = notif;
-        *f.bits  = arg2;
+    if (timeout) {
+        old = (target->timeout_ep == ep) ? 0 : target->timeout_ep;
+        if (target->timeout_ep != ep) {
+            kobject_retain(&ep->base);
+            kobject_active_retain(&ep->base);
+            target->timeout_ep = ep;
+        }
+        target->timeout_ep_badge = badge;
     } else {
-        *f.bits = arg2;
+        old = (target->fault_ep == ep) ? 0 : target->fault_ep;
+        if (target->fault_ep != ep) {
+            kobject_retain(&ep->base);
+            kobject_active_retain(&ep->base);
+            target->fault_ep = ep;
+        }
+        target->fault_ep_badge = badge;
     }
-    if (*f.cspace != dest_cn) {
-        kobject_retain(&dest_cn->base);
-        kobject_active_retain(&dest_cn->base);
-        *f.cspace = dest_cn;
-    }
-    *f.slot = dest_slot;
-    old_s = (*f.src_cn == src_cn) ? 0 : *f.src_cn;
-    if (*f.src_cn != src_cn) {
-        if (src_cn) { kobject_retain(&src_cn->base); kobject_active_retain(&src_cn->base); }
-        *f.src_cn = src_cn;
-    }
-    *f.src_idx = src_idx;
-    /* An outstanding record only moves with the EXCEPTION mailbox: a timeout
-     * registration answers a different question and must not adopt a page
-     * fault that is already in flight. */
-    if (!timeout && target->fault_valid) pending = target;
     irq_spinlock_unlock(&target->obj_lock, irqfl);
 
-    if (old_n) { kobject_active_release(&old_n->base); kobject_release(&old_n->base); }
-    if (old_c) { kobject_active_release(&old_c->base); kobject_release(&old_c->base); }
-    if (old_s) { kobject_active_release(&old_s->base); kobject_release(&old_s->base); }
+    if (old) { kobject_active_release(&old->base); kobject_release(&old->base); }
 
-    /* An OUTSTANDING fault moves with the mailbox: a supervisor taking over
-     * from a dead handler must be able to answer the fault in flight, not just
-     * see that one is pending. */
-    if (pending) {
-        /* Same ancestry rule as a fresh delivery: a child of the slot this
-         * registration was made with, or nothing. */
-        int parented = src_cn && kcnode_slot_holds(src_cn, src_idx, &target->base);
-        (void)kcnode_slot_install_linked(dest_cn, dest_slot, &target->base,
-                                         RIGHT_READ | RIGHT_WRITE, 0,
-                                         parented ? src_cn : 0, src_idx,
-                                         /*exclusive=*/0, /*legacy=*/!parented);
-    }
-
-    /* The task took its own pair on src_cn above; this is the resolve's. */
-    if (src_cn) { kobject_active_release(&src_cn->base); kobject_release(&src_cn->base); }
-    kobject_active_release(&dest_cn->base);
-    kobject_release(&dest_cn->base);
-    kobject_release(n_obj);
+    /*
+     * An outstanding fault does NOT move with a re-aimed endpoint.
+     *
+     * It used to: the mailbox was re-filled so a supervisor taking over from a
+     * dead handler could answer the fault in flight.  It cannot move now, and
+     * that is the correct answer rather than a lost feature — the fault is a
+     * CALL that is already queued on, or already answered through, the old
+     * endpoint, and the authority to answer it is a reply capability somebody
+     * holds.  Re-aiming decides where the NEXT fault goes.  A supervisor that
+     * wants the blocked thread back kills it with the TCB capability it just
+     * used to re-aim it.
+     */
+    kobject_release(&ep->base);
     kobject_release(&target->base);
     return syscall_ok_u64(0);
 }
 
 uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                    uint64_t arg3) {
-    return tcb_register_handler(arg0, arg1, arg2, arg3, /*timeout=*/0);
+    /* A-22: the mailbox and the signal mask are gone.  Refusing a caller that
+     * still passes them is deliberate — silently ignoring two arguments would
+     * let code written for the old shape keep compiling and keep "working"
+     * while the mailbox it names is never filled. */
+    if (arg2 != 0u || arg3 != 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
+    return tcb_register_handler(arg0, arg1, /*timeout=*/0);
 }
 
 /*
@@ -431,8 +353,8 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
  * the thread silently blocking until the next period refills it.
  *
  * Identical arguments and identical authority to SYS_TCB_SET_FAULT_HANDLER —
- * RIGHT_WRITE on the thread, RIGHT_WRITE on the notification, a mailbox the
- * registrant names — because it is the same mechanism.  It is a SEPARATE
+ * RIGHT_WRITE on the thread and RIGHT_WRITE on the endpoint — because it is
+ * the same mechanism.  It is a SEPARATE
  * registration because it is a different authority: a temporal supervisor
  * answering "this thread overran" is not the pager answering "this thread
  * touched an unmapped page", and one server holding both would hold power over
@@ -440,7 +362,8 @@ uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
  */
 uint64_t sys_tcb_set_timeout_handler(uint64_t arg0, uint64_t arg1,
                                      uint64_t arg2, uint64_t arg3) {
-    return tcb_register_handler(arg0, arg1, arg2, arg3, /*timeout=*/1);
+    if (arg2 != 0u || arg3 != 0u) return syscall_err(IRIS_ERR_INVALID_ARG);
+    return tcb_register_handler(arg0, arg1, /*timeout=*/1);
 }
 
 uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
