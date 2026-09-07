@@ -40,5 +40,13 @@ struct IrisMsg;
 int               kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
                                        const struct IrisMsg *msg);
 
+/*
+ * Ledger A-23 — hand a BOUND NOTIFICATION's signal to a thread that is blocked
+ * receiving on an endpoint.  Returns 1 if it was delivered (the thread was
+ * dequeued and woken), 0 if the thread was not blocked on an endpoint, in
+ * which case the caller keeps the bits.
+ */
+int               kendpoint_deliver_notification(struct task *t, uint64_t bits);
+
 #endif /* __KERNEL__ */
 #endif /* IRIS_NC_KENDPOINT_H */

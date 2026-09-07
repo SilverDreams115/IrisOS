@@ -66,6 +66,8 @@ extern const uint8_t _binary_services_iris_test_iris_test_elf_end[];
 extern const uint8_t _binary_services_lifecycle_probe_lifecycle_probe_elf_start[];
 extern const uint8_t _binary_services_lifecycle_probe_lifecycle_probe_elf_end[];
 
+extern const uint8_t _binary_services_timer_timer_elf_start[];
+extern const uint8_t _binary_services_timer_timer_elf_end[];
 extern const uint8_t _binary_services_pager_pager_elf_start[];
 extern const uint8_t _binary_services_pager_pager_elf_end[];
 
@@ -135,6 +137,12 @@ static const struct initrd_entry g_initrd[] = {
      * EOF / short-file zero-fill edge (T220) and empty-tail reads.  "small.dat". */
     { _binary_services_filebk_small_dat_start,
       _binary_services_filebk_small_dat_end  },
+    /* [16] timer — the ring-3 TIMER SERVICE (ledger A-24).  The kernel has no
+     * timed blocking; this holds the timer interrupt and signals a client's
+     * notification when its deadline passes.  Appended rather than inserted:
+     * every index below is a compile-time agreement with ring 3. */
+    { _binary_services_timer_timer_elf_start,
+      _binary_services_timer_timer_elf_end  },
 };
 
 #define INITRD_ENTRY_COUNT \

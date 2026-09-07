@@ -32,6 +32,7 @@
  * console KChannel write handle (g_init_console_h) is retired — init logs over
  * console.ep, with early-serial as the only pre-console.ep fallback. */
 handle_id_t g_init_console_ep_h = HANDLE_INVALID;
+handle_id_t g_init_timer_ep_h   = HANDLE_INVALID;
 /* D-4: the console client marshals into the buffer it is given, and a thread
  * with a registered IPC buffer must marshal into THAT — the kernel refuses a
  * send that names any other address.  So the log path shares the service's one
@@ -137,8 +138,24 @@ void init_close(handle_id_t *h) {
  * the process never exits (which would tear it down). */
 static void init_idle_loop(void) {
     init_log("[USER] init idle loop start\n");
+    /*
+     * Ledger A-24: idling is not a request about TIME.
+     *
+     * This was SYS_SLEEP(100) in a loop — init waking a hundred times a second
+     * to do nothing, because a timed block was the only way it knew to stop.
+     * What it actually wants is never to run again, which is a wait on a
+     * notification nobody holds: the thread blocks once and stays blocked, and
+     * the scheduler never looks at it.
+     */
+    long n = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
+                              INIT_SLOT_IDLE_NOTIF, 0);
     for (;;) {
-        init_sys1(SYS_SLEEP, 100);
+        uint64_t bits = 0;
+        if (n < 0 || init_sys2(SYS_NOTIFY_WAIT, (long)INIT_SLOT_IDLE_NOTIF,
+                               (long)&bits) != 0) {
+            /* No notification to hold still on: yield rather than spin hot. */
+            (void)init_sys1(SYS_YIELD, 0);
+        }
     }
 }
 
@@ -204,6 +221,12 @@ void init_main(handle_id_t rbx_unused) {
     /* From here all init_log() calls go through console.ep. */
 
     init_log("[USER] init bootstrap start\n");
+
+    /* A-24: the timer service, before anything that waits.  A failure is not
+     * fatal on its own — it is fatal to whoever tries to wait, and they say so
+     * where it matters rather than here. */
+    if (!init_spawn_timer())
+        init_log("[USER] timer spawn FAILED\n");
 
     sm_h = init_spawn_svcmgr();
     if (sm_h == HANDLE_INVALID) {

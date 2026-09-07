@@ -606,6 +606,11 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         if (te) { kobject_active_release(&te->base); kobject_release(&te->base); }
     }
 
+    /* A-23: the BOUND notification.  Broken from the thread's side, because a
+     * notification that outlives its bound thread would keep signalling into a
+     * pointer that is about to be freed. */
+    knotification_unbind_task(t);
+
     /* D-4: the registered IPC buffer.  Held with active+lifecycle refs, so a
      * thread that dies still owning its buffer gives the frame back and its
      * Untyped can be reset — the page was the user's, not the kernel's. */

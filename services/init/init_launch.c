@@ -9,6 +9,8 @@
  */
 
 #include "init.h"
+#include "../timer/timer_proto.h"
+#include "../common/iris_timer.h"
 #include <iris/endpoint_proto.h>
 #include "../common/svc_loader.h"
 
@@ -65,6 +67,95 @@ void init_spawn_fb(void) {
 
     init_close(&fb_proc_h);
     init_close(&fb_boot_h);
+}
+
+
+/* ── timer spawn (ledger A-24: waiting is a service, not a syscall) ──────── */
+
+/*
+ * The kernel cannot block a thread on TIME any more, so somebody in ring 3 has
+ * to be able to.  init builds that somebody here, before svcmgr and before
+ * anything that waits: a control endpoint it keeps a copy of, the timer IRQ
+ * claimed out of the IRQ control capability, the notification that interrupt
+ * is routed into, a reply object, a CNode for the client notifications it will
+ * be handed, and a budget.
+ *
+ * Nothing else.  A timer service that can only measure time is the whole
+ * point: what a task can wait on is now a capability somebody granted it,
+ * where it used to be three syscall numbers every task could reach for.
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+int init_spawn_timer(void) {
+    handle_id_t tm_proc_h = HANDLE_INVALID;
+    handle_id_t tm_boot_h = HANDLE_INVALID;
+    long r;
+
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_ENDPOINT,
+                         INIT_SLOT_TIMER_EP, 0) < 0) { init_log("[USER] timer: ep\n"); return 0; }
+    g_init_timer_ep_h = (handle_id_t)INIT_SLOT_TIMER_EP;
+
+    /* The timer INTERRUPT, claimed as a capability out of the IRQ control one
+     * — the same path svcmgr uses for every other line.  Line 0 is the tick
+     * the kernel also uses for preemption; being told about it is not being
+     * given it, which is why the kernel does not mask it for this holder. */
+    {
+        long ir = init_sys4(SYS_CAP_CREATE_IRQCAP, (long)IRIS_CPTR_IRQ_CONTROL, 0,
+                            (long)IRIS_CPTR_INIT_UNTYPED,
+                            (long)((uint64_t)INIT_SLOT_TIMER_IRQCAP << 32));
+        if (ir != 0) {
+            char m[40] = "[USER] timer: irqcap err ";
+            uint32_t k = 0; while (m[k]) k++;
+            long e = -ir; if (e < 0) e = 0; if (e > 99) e = 99;
+            m[k++] = (char)('0' + e / 10); m[k++] = (char)('0' + e % 10);
+            m[k++] = '\n'; m[k] = 0;
+            init_log(m);
+            return 0;
+        }
+    }
+
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
+                         INIT_SLOT_TIMER_NOTIF, 0) < 0) { init_log("[USER] timer: notif\n"); return 0; }
+    if (init_sys3(SYS_IRQ_ROUTE_REGISTER, (long)INIT_SLOT_TIMER_IRQCAP,
+                  (long)INIT_SLOT_TIMER_NOTIF, 0) != 0) { init_log("[USER] timer: route\n"); return 0; }
+
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_REPLY,
+                         INIT_SLOT_TIMER_REPLY, 0) < 0) { init_log("[USER] timer: reply\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_CNODE,
+                         INIT_SLOT_TIMER_CN, (long)TMR_CN_SLOTS) < 0) { init_log("[USER] timer: cn\n"); return 0; }
+    if (init_retype_slot(g_init_untyped_c, IRIS_KOBJ_UNTYPED,
+                         INIT_SLOT_TIMER_UT, 1 << 20) < 0) { init_log("[USER] timer: ut\n"); return 0; }
+
+    {
+        struct svc_mint tm[6] = { 0 };
+        uint32_t n = 0;
+        tm[n].slot = TMR_SLOT_CTRL_EP;   tm[n].src_cptr = INIT_SLOT_TIMER_EP;
+        tm[n].rights = RIGHT_READ;       tm[n].badge = 0; n++;
+        tm[n].slot = TMR_SLOT_IRQ_CAP;   tm[n].src_cptr = INIT_SLOT_TIMER_IRQCAP;
+        tm[n].rights = RIGHT_READ | RIGHT_ROUTE; tm[n].badge = 0; n++;
+        tm[n].slot = TMR_SLOT_IRQ_NOTIF; tm[n].src_cptr = INIT_SLOT_TIMER_NOTIF;
+        tm[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT; tm[n].badge = 0; n++;
+        tm[n].slot = TMR_SLOT_REPLY;     tm[n].src_cptr = INIT_SLOT_TIMER_REPLY;
+        tm[n].rights = RIGHT_READ | RIGHT_WRITE; tm[n].badge = 0; n++;
+        tm[n].slot = TMR_SLOT_CN;        tm[n].src_cptr = INIT_SLOT_TIMER_CN;
+        tm[n].rights = RIGHT_READ | RIGHT_WRITE; tm[n].badge = 0; n++;
+        tm[n].slot = IRIS_CPTR_OWN_UNTYPED; tm[n].src_cptr = INIT_SLOT_TIMER_UT;
+        tm[n].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        tm[n].badge = 0; n++;
+
+        r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
+                               "timer", &tm_proc_h, &tm_boot_h, tm, n,
+                               SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
+                               2u << 20,
+                               /*own_budget_slot=*/IRIS_CPTR_OWN_UNTYPED,
+                               /*keep_cnode_dest=*/0u, /*keep_tcb_dest=*/0u, 0);
+    }
+    /* The service holds the mints now; init keeps only the control endpoint,
+     * which is what it hands on to whoever needs to wait. */
+    (void)init_sys2(SYS_CNODE_DELETE, 0, (long)INIT_SLOT_TIMER_REPLY);
+    init_close(&tm_proc_h);
+    init_close(&tm_boot_h);
+    return r >= 0;
 }
 
 /* ── console spawn (Phase 30: ring-3 serial console service) ────────────── */
@@ -226,7 +317,7 @@ handle_id_t init_spawn_svcmgr(void) {
     }
 
     {
-        struct svc_mint sm_mints[9] = { 0 };
+        struct svc_mint sm_mints[10] = { 0 };
         uint32_t n = 0;
         sm_mints[n].slot   = IRIS_CPTR_CONSOLE_EP;
         sm_mints[n].src_cptr = g_init_console_ep_h;
@@ -273,6 +364,15 @@ handle_id_t init_spawn_svcmgr(void) {
         sm_mints[n].slot     = IRIS_CPTR_DEBUG_CONTROL;
         sm_mints[n].src_cptr = IRIS_CPTR_DEBUG_CONTROL;
         sm_mints[n].rights   = RIGHT_READ | RIGHT_DUPLICATE | RIGHT_TRANSFER;
+        sm_mints[n].badge  = 0;
+        n++;
+        /* Ledger A-24: the authority to WAIT.  svcmgr's idle loop blocks on a
+         * death notification, and the kernel no longer has a timeout to hand
+         * it — so waiting is a request to a server, and this is the capability
+         * that lets it make one. */
+        sm_mints[n].slot     = IRIS_CPTR_TIMER_EP;
+        sm_mints[n].src_cptr = INIT_SLOT_TIMER_EP;
+        sm_mints[n].rights   = RIGHT_WRITE | RIGHT_DUPLICATE;
         sm_mints[n].badge  = 0;
         n++;
         /* Ledger A-21: svcmgr loads services, and loading one means naming
@@ -413,7 +513,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * verify who is calling; slot 28 is a SECOND cap to the svcmgr
          * endpoint with a different badge (T053: two caps, same endpoint,
          * different identities). */
-        struct svc_mint it_mints[20] = { 0 };
+        struct svc_mint it_mints[21] = { 0 };
         it_mints[0].slot = IRIS_CPTR_SVCMGR_EP;
         it_mints[0].src_h = lk_svcmgr;
         it_mints[0].rights = RIGHT_WRITE;
@@ -544,6 +644,13 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * to be able to name them.  It receives the POOL and not the CONTROL,
          * so T328 can also assert that carving a pool without ASIDControl is
          * refused — the negative half of the same grant. */
+        /* Ledger A-24: the suite's bounded waits are requests to the timer
+         * service now — every one of them, which is why this mint is not
+         * optional for it. */
+        it_mints[20].slot = IRIS_CPTR_TIMER_EP;
+        it_mints[20].src_cptr = INIT_SLOT_TIMER_EP;
+        it_mints[20].rights = RIGHT_WRITE | RIGHT_DUPLICATE;
+        it_mints[20].badge = 0;
         it_mints[19].slot = IRIS_CPTR_ASID_POOL;
         it_mints[19].src_cptr = IRIS_CPTR_ASID_POOL;
         it_mints[19].rights = RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE;
@@ -558,7 +665,7 @@ void init_spawn_iris_test(handle_id_t sm_h) {
          * retired duplicate had to exist. */
         r = svc_load_minted_ws(IRIS_CPTR_PROC_CONTROL, IRIS_CPTR_INITRD_CONTROL,
                                "iris_test",
-                            &proc_h, &boot_h, it_mints, 20u,
+                            &proc_h, &boot_h, it_mints, 21u,
                                SVC_LOADER_WS(g_init_untyped_c, INIT_SLOT_LOADER_WS),
                                16u << 20, /*own_budget_slot=*/0, /* has TEST_UNTYPED */
                                /* Stage 7 Step 9: keep the suite's CSpace root
@@ -614,11 +721,32 @@ void init_spawn_iris_test(handle_id_t sm_h) {
         goto out;
     }
 
-    /* Wait up to 12 seconds for iris_test to exit */
+    /*
+     * Wait for iris_test to exit, with a bound.
+     *
+     * Ledger A-24: the bound is a request to the TIMER SERVICE, because the
+     * kernel cannot block on time any more.  A derived copy of the watch
+     * notification is handed over — the transfer is a move — and the timeout
+     * arrives on it as a reserved bit, told apart from the exit signal the
+     * watch raises.
+     */
     {
         uint64_t bits = 0;
-        r = init_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)watch_base_h,
-                      (long)&bits, 12000000000LL);
+        long give = init_sys3(SYS_CSPACE_MINT, (long)watch_base_h,
+                              (long)(((uint64_t)INIT_SLOT_TIMER_GIVE << 32) | 0u),
+                              (long)(RIGHT_WRITE | RIGHT_TRANSFER));
+        uint64_t tok = 0;
+        if (give == 0)
+            (void)iris_timer_arm((long)INIT_SLOT_TIMER_EP,
+                                 (long)INIT_SLOT_TIMER_GIVE, IRIS_TIMER_BIT,
+                                 25000000000ull, &tok);
+        for (;;) {
+            r = init_sys2(SYS_NOTIFY_WAIT, (long)watch_base_h, (long)&bits);
+            if (r != 0) break;
+            if (bits & ~IRIS_TIMER_BIT) { r = 0; break; }
+            if (bits & IRIS_TIMER_BIT)  { r = (long)IRIS_ERR_TIMED_OUT; break; }
+        }
+        if (r == 0 && tok) (void)iris_timer_cancel((long)INIT_SLOT_TIMER_EP, tok);
     }
     if (r < 0) {
         init_log("[USER][INIT] iris_test wait TIMEOUT\n");

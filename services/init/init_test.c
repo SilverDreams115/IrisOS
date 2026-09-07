@@ -15,14 +15,14 @@
 static const char init_stage_exception[] = "[USER][INIT][S8] exception delivery OK\n";
 
 /* Phase 13 (Track I): the invalid-userptr selftest now exercises the kernel's
- * user-pointer validation over a KNotification (SYS_NOTIFY_WAIT_TIMEOUT with a
+ * user-pointer validation over a KNotification (A-24: SYS_NOTIFY_POLL, with a
  * bogus out_bits pointer → IRIS_ERR_INVALID_ARG) instead of a KChannel. */
 void init_runtime_probe_invalid_userptr(void) {
     long n = init_retype_slot(g_init_untyped_c, IRIS_KOBJ_NOTIFICATION,
                               INIT_SLOT_PROBE_NOTIF, 0);
     if (n < 0) return;
     n = (long)INIT_SLOT_PROBE_NOTIF;
-    long r = init_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, 1 /* bogus user ptr */, 50000000L);
+    long r = init_sys2(SYS_NOTIFY_POLL, n, 1 /* bogus user ptr */);
     if (r == (long)IRIS_ERR_INVALID_ARG)
         init_log("[USER][INIT][SELFTEST] invalid-userptr OK\n");
     else

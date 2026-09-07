@@ -1656,6 +1656,40 @@ static inline long iris_syscall0(long nr) {
 #define SYS_ASID_POOL_ASSIGN 135
 
 /*
+ * SYS_TCB_BIND_NOTIFICATION(tcb_cptr, notif_cptr) → 0 or negative iris_error_t
+ *   ledger A-23 — seL4's `seL4_TCB_BindNotification`.
+ *
+ *   tcb_cptr:   the thread, with RIGHT_WRITE.
+ *   notif_cptr: the notification, with RIGHT_WRITE.  0 UNBINDS.
+ *
+ * Binds a notification to a thread.  While that thread is blocked RECEIVING on
+ * an endpoint, a signal to the bound notification wakes it and arrives as a
+ * message labelled IRIS_MSG_LABEL_NOTIFICATION with the bits in words[0].
+ *
+ * This is what lets a server multiplex an interrupt and a request queue on ONE
+ * thread, which every real driver needs and IRIS had no way to express: a
+ * service holding both an IRQ notification and a control endpoint had to
+ * choose which one to block on, or spend a second thread.  A-20's audit found
+ * the absence; the timer service (A-24) is the first thing that needed it.
+ *
+ * At most one notification per thread and one thread per notification: a
+ * second bind either way is IRIS_ERR_ALREADY_EXISTS, because "which thread
+ * does a signal wake" must have exactly one answer.
+ */
+#define SYS_TCB_BIND_NOTIFICATION 136
+
+/*
+ * SYS_NOTIFY_POLL(notif_cptr, out_bits) → 0, or IRIS_ERR_WOULD_BLOCK
+ *   ledger A-24 — seL4's `seL4_Poll`.
+ *
+ * Take whatever is pending on a notification and return; never block.  A
+ * caller that used SYS_NOTIFY_WAIT_TIMEOUT with a zero timeout was asking this
+ * question and getting it answered by the kernel's timed-block machinery; the
+ * machinery is retired and the question is not.
+ */
+#define SYS_NOTIFY_POLL 137
+
+/*
  * SYS_INITRD_FRAME(auth_cptr, index, dest_cnode|slot<<32, budget_cptr)
  *   → image size in bytes, or negative iris_error_t
  *

@@ -366,6 +366,58 @@ uint64_t sys_tcb_set_timeout_handler(uint64_t arg0, uint64_t arg1,
     return tcb_register_handler(arg0, arg1, /*timeout=*/1);
 }
 
+/*
+ * SYS_TCB_BIND_NOTIFICATION(tcb_cptr, notif_cptr) — ledger A-23.
+ *
+ * seL4's `seL4_TCB_BindNotification`.  A thread blocked receiving on an
+ * endpoint is otherwise deaf to signals — it is in the endpoint's queue and
+ * nothing else can reach it — which forced every server that needs both an
+ * interrupt and a request queue to spend a second thread on the choice.  A
+ * driver IS that server, so the absence was structural rather than a
+ * convenience: the timer service (A-24) is the first thing that could not be
+ * written without it.
+ *
+ * `notif_cptr == 0` unbinds.  RIGHT_WRITE on both: which thread a signal wakes
+ * is a property of that thread, and being the target of a delivery is a write
+ * to the notification.
+ */
+uint64_t sys_tcb_bind_notification(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *caller = task_current();
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *target; iris_rights_t rights;
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
+                                   RIGHT_WRITE, &target, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    if (arg1 == 0u) {
+        /* Unbind.  Idempotent: a thread that was not bound is already in the
+         * state the caller asked for. */
+        knotification_unbind_task(target);
+        kobject_release(&target->base);
+        return syscall_ok_u64(0);
+    }
+
+    struct KObject *n_obj; iris_rights_t n_rights;
+    err = cspace_resolve_only_obj(caller->cspace_root, (iris_cptr_t)arg1,
+                                  RIGHT_NONE, KOBJ_NOTIFICATION, &n_obj, &n_rights);
+    if (err != IRIS_OK) { kobject_release(&target->base); return syscall_err(err); }
+    if (!rights_check(n_rights, RIGHT_WRITE)) {
+        kobject_release(n_obj); kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    if (target->terminal) {
+        kobject_release(n_obj); kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+    }
+
+    err = knotification_bind((struct KNotification *)n_obj, target);
+    kobject_release(n_obj);
+    kobject_release(&target->base);
+    return (err == IRIS_OK) ? syscall_ok_u64(0) : syscall_err(err);
+}
+
 uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *caller = task_current();
     if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);

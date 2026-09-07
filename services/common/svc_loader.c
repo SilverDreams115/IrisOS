@@ -208,6 +208,8 @@ static long sl_name_to_index(const char *name) {
     if (sl_streq(name, "lifecycle_probe")) return 9;
     if (sl_streq(name, "pager"))    return 10;
     if (sl_streq(name, "badelf"))   return 11;
+    /* A-24: appended at 16, past the fixtures, so no index below moved. */
+    if (sl_streq(name, "timer"))    return 16;
     return -1;
 }
 

@@ -43,9 +43,16 @@ static volatile uint64_t wall_ticks = 0;
 
 /*
  * sched_handle_idle — fast-forward clock when the idle task is current and no
- * non-idle task is runnable.  Advances scheduler_ticks to the nearest sleeping
- * task's wake_tick so timed-out tasks become READY even when the timer ISR does
- * not fire (QEMU TCG: no IRQs delivered during ring-0 spin).
+ * non-idle task is runnable.  Advances scheduler_ticks to the nearest
+ * REPLENISHMENT so a budget-exhausted thread becomes READY even when the timer
+ * ISR does not fire (QEMU TCG: no IRQs delivered during ring-0 spin).
+ *
+ * Ledger A-24: what is left here is MCS accounting and nothing else.  It used
+ * to fast-forward to the nearest SLEEPING thread's deadline too, and to time
+ * out blocked IPC waits — the kernel keeping a list of who wanted to be woken
+ * when, on their behalf.  That is a service now, so the only deadline the
+ * scheduler still knows about is when a scheduling context gets its budget
+ * back, which is a fact about the budget rather than about anybody's patience.
  *
  * On return *out_chosen is set to the first runnable non-idle task found after
  * the fast-forward, or remains NULL if none.
@@ -74,26 +81,14 @@ static void sched_handle_idle(struct task *idle, struct task **out_chosen) {
     if (min_wake != UINT64_MAX && min_wake > scheduler_ticks)
         scheduler_ticks = min_wake;
 
-    /* Wake any tasks whose deadlines passed and enqueue them. */
+    /* Wake any thread whose BUDGET came back and enqueue it. */
     for (struct task *t = sched_thread_list; t; t = t->sched_next) {
         if (t == idle) continue;
-        if (t->state == TASK_SLEEPING &&
-            t->wake_tick != 0 &&
-            t->wake_tick <= scheduler_ticks) {
-            t->wake_tick = 0;
-            task_wakeup(t);
-        } else if (t->state == TASK_BUDGET_EXHAUSTED && t->sched_ctx &&
-                   kschedctx_apply_refills(t->sched_ctx, scheduler_ticks)) {
+        if (t->state == TASK_BUDGET_EXHAUSTED && t->sched_ctx &&
+            kschedctx_apply_refills(t->sched_ctx, scheduler_ticks)) {
             /* Stage 8-mcs: woken by a REPLENISHMENT coming due, not by a
              * period-boundary reset.  The thread gets back exactly what it
              * spent, one period after it spent it. */
-            t->wake_tick = 0;
-            task_wakeup(t);
-        } else if ((t->state == TASK_BLOCKED_IPC ||
-                    t->state == TASK_BLOCKED_IRQ) &&
-                   t->wake_tick != 0 &&
-                   t->wake_tick <= scheduler_ticks) {
-            t->timed_out = 1;
             t->wake_tick = 0;
             task_wakeup(t);
         }
@@ -295,45 +290,29 @@ void scheduler_tick(void) {
         cpu_self()->idle_ticks++;
 
     /*
-     * O(N) timeout scan — Phase 1 TODO:
-     *   Replace with a min-heap (binary heap or pairing heap) keyed on wake_tick.
-     *   Current complexity: O(live threads) per tick — the walk is a list now,
-     *   so it costs what the system actually has rather than a fixed 256.  It
-     *   is still a scan; the shape that removes it is seL4's release queue,
-     *   ordered by wake time, where the tick looks at the head and stops.
+     * O(N) replenishment scan — Phase 1 TODO:
+     *   Replace with a min-heap keyed on the next replenishment.  Current
+     *   complexity: O(live threads) per tick — the walk is a list now, so it
+     *   costs what the system actually has rather than a fixed 256.  The shape
+     *   that removes it is seL4's release queue, ordered by release time, where
+     *   the tick looks at the head and stops.
      *
-     *   SMP concern: this loop runs under CLI on the IRQ-handling CPU only.  On SMP,
-     *   tasks homed to other CPUs can have their wake_tick expire here, but task_wakeup
-     *   sends an IPI to the home CPU — correct but wastes IRQ budget.  A per-CPU timer
-     *   wheel (one wheel per CPU, drained on that CPU's tick) removes the cross-CPU IPI.
+     *   Ledger A-24: this scan used to look at SLEEPING threads too, and there
+     *   is no such state any more — the kernel does not hold anybody's deadline
+     *   but a scheduling context's.
      *
-     *   Do NOT restructure this loop as a "shortcut early exit" — tasks[i].wake_tick == 0
-     *   is the common case for non-sleeping tasks and the branch predictor handles it well.
+     *   SMP concern: this loop runs under CLI on the IRQ-handling CPU only.  On
+     *   SMP, threads homed to other CPUs can have a replenishment fall due here,
+     *   and task_wakeup sends an IPI to the home CPU — correct but wastes IRQ
+     *   budget.  A per-CPU timer wheel removes the cross-CPU IPI.
      */
     for (struct task *t = sched_thread_list; t; t = t->sched_next) {
-        if (t->state == TASK_SLEEPING && t->wake_tick <= scheduler_ticks) {
-            t->wake_tick = 0;
-            task_wakeup(t);
-        }
         /* Ph75: refill budget for exhausted tasks whose period has elapsed */
         if (t->state == TASK_BUDGET_EXHAUSTED &&
             t->wake_tick != 0 &&
             t->wake_tick <= scheduler_ticks) {
             if (t->sched_ctx)
                 t->sched_ctx->remaining_budget = t->sched_ctx->budget_ticks;
-            t->wake_tick = 0;
-            task_wakeup(t);
-        }
-        /* Timed block expired (channel or notification).
-         * spinlock_lock uses CAS without CLI — calling kchannel_cancel_waiter /
-         * knotification_cancel_waiter here would deadlock if any task holds
-         * live_lock at this IRQ boundary.  We only set the signal; the woken
-         * task removes itself from the waiter list in task context. */
-        if ((t->state == TASK_BLOCKED_IPC ||
-             t->state == TASK_BLOCKED_IRQ) &&
-            t->wake_tick != 0 &&
-            t->wake_tick <= scheduler_ticks) {
-            t->timed_out = 1;
             t->wake_tick = 0;
             task_wakeup(t);
         }

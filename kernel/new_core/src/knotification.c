@@ -1,4 +1,5 @@
 #include <iris/nc/knotification.h>
+#include <iris/nc/kendpoint.h>
 #include <iris/irq_routing.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/task.h>
@@ -55,8 +56,10 @@ static void knotif_waiters_remove(struct KNotification *n, struct task *t) {
     }
 }
 
-/* Wake the first blocked waiter; remove it from the queue. */
-static void knotif_waiters_wake_one(struct KNotification *n) {
+/* Wake the first blocked waiter; remove it from the queue.  1 if one was
+ * woken, 0 if nobody was waiting — which is what decides whether the BOUND
+ * thread (A-23) gets the signal instead. */
+static int knotif_waiters_wake_one(struct KNotification *n) {
     struct task *prev = 0;
     for (struct task *w = n->queue_head; w; prev = w, w = w->notif_next) {
         if (w->state != TASK_BLOCKED_IRQ) continue;
@@ -67,8 +70,9 @@ static void knotif_waiters_wake_one(struct KNotification *n) {
         w->notif_next = 0;
         if (n->waiter_count) n->waiter_count--;
         task_wakeup(w);
-        return;
+        return 1;
     }
+    return 0;
 }
 
 /* Wake every blocked waiter and empty the queue.  Used on close. */
@@ -112,6 +116,11 @@ static void knotification_close(struct KObject *obj) {
      * binding is the notification's, so the last capability to it going is
      * what unbinds — seL4's rule, and the reason an IRQ route needs no owner. */
     irq_routing_unregister_notification(n);
+    /* A-23: and the same for a bound THREAD.  The bind holds an active+
+     * lifecycle pair on this object, so `close` firing means the last OTHER
+     * capability went; breaking the binding here is what lets the object
+     * actually die instead of being kept alive by its own thread. */
+    knotification_unbind(n);
 }
 
 /*
@@ -177,8 +186,88 @@ void knotification_signal(struct KNotification *n, uint64_t bits) {
         return;
     }
     atomic_fetch_or_explicit(&n->signal_bits, bits, memory_order_release);
-    knotif_waiters_wake_one(n);
+    int woke = knotif_waiters_wake_one(n);
+    struct task *bound = woke ? 0 : n->bound_tcb;
     spinlock_unlock(&n->base.lock);
+
+    /*
+     * Ledger A-23 — nobody was WAITING, so the bound thread gets it.
+     *
+     * Outside the notification's lock on purpose: delivering takes the
+     * endpoint's lock to dequeue the thread, and taking the two in this order
+     * here while some other path takes them in the other order is how a
+     * deadlock is built.  Nothing between the unlock and the delivery can
+     * invalidate it — the bits are already set, so a thread that consumes them
+     * first simply makes the delivery a no-op.
+     */
+    if (bound) {
+        uint64_t got = atomic_exchange_explicit(&n->signal_bits, 0,
+                                                memory_order_acq_rel);
+        if (got != 0 && !kendpoint_deliver_notification(bound, got)) {
+            /* It was not blocked on an endpoint after all: put the bits back
+             * for whoever does come to wait, rather than swallowing them. */
+            atomic_fetch_or_explicit(&n->signal_bits, got, memory_order_release);
+        }
+    }
+}
+
+/* A-23: take whatever is pending, atomically.  Used on the way into an
+ * endpoint receive by a thread with a bound notification. */
+uint64_t knotification_take_pending(struct KNotification *n) {
+    if (!n) return 0;
+    return atomic_exchange_explicit(&n->signal_bits, 0, memory_order_acq_rel);
+}
+
+/*
+ * A-23 — bind / unbind.
+ *
+ * One notification per thread and one thread per notification.  A second bind
+ * either way is refused rather than silently replacing, because "which thread
+ * does a signal wake" is not a question a system should answer differently
+ * depending on the order two supervisors happened to make their calls.
+ */
+iris_error_t knotification_bind(struct KNotification *n, struct task *t) {
+    if (!n || !t) return IRIS_ERR_INVALID_ARG;
+    iris_error_t r = IRIS_OK;
+    spinlock_lock(&n->base.lock);
+    if (n->closed)                            r = IRIS_ERR_CLOSED;
+    else if (n->bound_tcb && n->bound_tcb != t) r = IRIS_ERR_ALREADY_EXISTS;
+    else if (t->bound_notif && t->bound_notif != n) r = IRIS_ERR_ALREADY_EXISTS;
+    else if (n->bound_tcb == t)               r = IRIS_ERR_ALREADY_EXISTS;
+    else {
+        /*
+         * A LIFECYCLE reference, not an active one.
+         *
+         * An active reference is what keeps an object OPEN, and taking one
+         * here would mean a notification could never be closed while a thread
+         * was bound to it — the binding would keep alive the very thing it
+         * points at, forever.  The lifecycle reference is enough: it keeps the
+         * storage valid, `close` still fires when the last capability goes,
+         * and `close` breaks the binding.
+         */
+        kobject_retain(&n->base);
+        n->bound_tcb  = t;
+        t->bound_notif = n;
+    }
+    spinlock_unlock(&n->base.lock);
+    return r;
+}
+
+void knotification_unbind(struct KNotification *n) {
+    if (!n) return;
+    struct task *t;
+    spinlock_lock(&n->base.lock);
+    t = n->bound_tcb;
+    n->bound_tcb = 0;
+    if (t && t->bound_notif == n) t->bound_notif = 0;
+    spinlock_unlock(&n->base.lock);
+    if (t) kobject_release(&n->base);
+}
+
+/* The thread side of the same break, for teardown. */
+void knotification_unbind_task(struct task *t) {
+    if (!t || !t->bound_notif) return;
+    knotification_unbind(t->bound_notif);
 }
 
 /*
@@ -299,115 +388,7 @@ iris_error_t knotification_wait_step(struct KNotification *n, uint64_t *out_bits
     return IRIS_ERR_WOULD_BLOCK;
 }
 
-/*
- * Stage 9-evt Step 1 — one attempt of a timed wait, then park.
- *
- * knotification_wait_step plus a deadline.  The deadline is armed on the FIRST
- * attempt only: re-arming it on every re-execution would make the timeout
- * restart with the thread and never expire, which is the same trap SYS_SLEEP
- * fell into when its continuation was a duration instead of an instant.
- */
-iris_error_t knotification_wait_timeout_step(struct KNotification *n,
-                                             uint64_t *out_bits,
-                                             uint64_t deadline_ticks,
-                                             int first) {
-    struct task *t = task_current();
 
-    if (t && t->timed_out) {
-        t->timed_out = 0;
-        t->wake_tick = 0;
-        spinlock_lock(&n->base.lock);
-        knotif_waiters_remove(n, t);
-        spinlock_unlock(&n->base.lock);
-        return IRIS_ERR_TIMED_OUT;
-    }
-
-    iris_error_t r = knotification_wait_step(n, out_bits);
-    if (r != IRIS_ERR_WOULD_BLOCK) {
-        if (t) { t->wake_tick = 0; t->timed_out = 0; }
-        return r;
-    }
-
-    /* Parked by the step above; arm the deadline the first time only. */
-    if (t && first) {
-        t->wake_tick = deadline_ticks;
-        t->timed_out = 0;
-    }
-    return IRIS_ERR_WOULD_BLOCK;
-}
-
-/*
- * knotification_wait_timeout — blocking wait with tick deadline.
- *
- * Identical to knotification_wait() but returns IRIS_ERR_TIMED_OUT when
- * deadline_ticks (absolute scheduler_ticks value) is reached before any
- * signal arrives.  out_bits is written only on IRIS_OK.
- */
-iris_error_t knotification_wait_timeout(struct KNotification *n, uint64_t *out_bits,
-                                        uint64_t deadline_ticks) {
-    for (;;) {
-        uint64_t bits = atomic_load_explicit(&n->signal_bits, memory_order_acquire);
-        if (bits != 0) {
-            uint64_t got = atomic_exchange_explicit(&n->signal_bits, 0,
-                                                    memory_order_acq_rel);
-            if (got != 0) {
-                *out_bits = got;
-                return IRIS_OK;
-            }
-        }
-
-        spinlock_lock(&n->base.lock);
-        bits = atomic_load_explicit(&n->signal_bits, memory_order_acquire);
-        if (bits == 0 && n->closed) {
-            spinlock_unlock(&n->base.lock);
-            return IRIS_ERR_CLOSED;
-        }
-        if (bits != 0) {
-            spinlock_unlock(&n->base.lock);
-            continue;
-        }
-        struct task *t = task_current();
-        if (!t) {
-            spinlock_unlock(&n->base.lock);
-            return IRIS_ERR_INTERNAL;
-        }
-        iris_error_t r = knotif_waiters_enqueue(n, t);
-        if (r != IRIS_OK) {
-            spinlock_unlock(&n->base.lock);
-            return r;
-        }
-        t->state     = TASK_BLOCKED_IRQ;
-        t->wake_tick = deadline_ticks;
-        t->timed_out = 0;
-        spinlock_unlock(&n->base.lock);
-        /*
-         * Stage 9-evt step 3: WAIT, do not yield.
-         *
-         * Same as the untimed wait above: a kernel-internal wait, on the
-         * boot thread, with nothing else to run.  The deadline is re-checked
-         * on every wake.
-         *
-         * `sti` takes effect after the NEXT instruction, so the pair cannot
-         * race: an interrupt arriving between them is taken after the hlt is
-         * entered, never before it.
-         */
-        __asm__ volatile ("sti; hlt; cli" : : : "memory");
-
-        if (t->timed_out) {
-            t->timed_out = 0;
-            t->wake_tick = 0;
-            spinlock_lock(&n->base.lock);
-            knotif_waiters_remove(n, t);
-            spinlock_unlock(&n->base.lock);
-            return IRIS_ERR_TIMED_OUT;
-        }
-
-        /* Woken by signal or close; remove self in case close didn't. */
-        spinlock_lock(&n->base.lock);
-        knotif_waiters_remove(n, t);
-        spinlock_unlock(&n->base.lock);
-    }
-}
 
 uint64_t knotification_poll(struct KNotification *n) {
     uint64_t bits = atomic_load_explicit(&n->signal_bits, memory_order_acquire);

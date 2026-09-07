@@ -227,7 +227,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_GETPID: return sys_getpid(arg0, arg1, arg2);
         case SYS_EXIT:  return sys_exit(arg0, arg1, arg2);
         case SYS_YIELD: return sys_yield(arg0, arg1, arg2);
-        case SYS_SLEEP: return sys_sleep(arg0, arg1, arg2);
         /* SYS_CHAN_CREATE(12)/SEND(13)/RECV(14) — retired Phase 13/Track G
          * (KChannel fully retired), fall to default → NOT_SUPPORTED */
         case SYS_HANDLE_CLOSE: return sys_handle_close(arg0, arg1, arg2);
@@ -268,14 +267,14 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_HANDLE_INSERT: return sys_handle_insert(arg0, arg1, arg2, arg3);
         case SYS_CLOCK_GET:           return sys_clock_get(arg0, arg1, arg2);
         /* SYS_CHAN_RECV_TIMEOUT retired — Phase 13/Track G, fall to default (NOT_SUPPORTED) */
-        case SYS_NOTIFY_WAIT_TIMEOUT: return sys_notify_wait_timeout(arg0, arg1, arg2);
         case SYS_KLOG_DRAIN:          return sys_klog_drain(arg0, arg1, arg2);
 
         case SYS_FRAME_SIZE:          return sys_frame_size(arg0, arg1, arg2);
         case SYS_ASID_POOL_ASSIGN:    return sys_asid_pool_assign(arg0, arg1, arg2);
+        case SYS_TCB_BIND_NOTIFICATION: return sys_tcb_bind_notification(arg0, arg1, arg2);
+        case SYS_NOTIFY_POLL:         return sys_notify_poll(arg0, arg1, arg2);
         case SYS_IRQ_ACK:             return sys_irq_ack(arg0, arg1, arg2);
         case SYS_SCHED_INFO:          return sys_sched_info(arg0, arg1, arg2);
-        case SYS_CLOCK_NANOSLEEP:     return sys_clock_nanosleep(arg0, arg1, arg2);
         case SYS_PROCESS_EXIT_CODE:   return sys_process_exit_code(arg0, arg1, arg2);
         case SYS_PROCESS_FAULT_INFO:  return sys_process_fault_info(arg0, arg1, arg2);
         /* SYS_WAIT_ANY_TIMEOUT(72) — retired Phase 13/Track G (zero callers), fall to default */

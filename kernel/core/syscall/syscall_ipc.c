@@ -38,6 +38,37 @@ uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
+/*
+ * SYS_NOTIFY_POLL(notif_cptr, out_bits) — ledger A-24, seL4's `seL4_Poll`.
+ *
+ * Take whatever is pending and return; never block.  It exists because
+ * SYS_NOTIFY_WAIT_TIMEOUT is retired: a caller that used a zero timeout to ask
+ * "is anything there" had that question answered by the kernel's timed-block
+ * machinery, and the question is legitimate even though the machinery was not.
+ *
+ * IRIS_ERR_WOULD_BLOCK when nothing is pending — the same answer, in the same
+ * words, that SYS_EP_NB_RECV gives for the same situation.
+ */
+uint64_t sys_notify_poll(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KNotification *notif; iris_rights_t notif_r;
+    iris_error_t r = cspace_resolve_only_notification(t->cspace_root,
+                            (iris_cptr_t)arg0, RIGHT_WAIT, &notif, &notif_r);
+    if (r != IRIS_OK) return syscall_err(r);
+
+    uint64_t bits = knotification_take_pending(notif);
+    kobject_release(&notif->base);
+    if (bits == 0u) return syscall_err(IRIS_ERR_WOULD_BLOCK);
+    if (!copy_to_user_checked(arg1, &bits, (uint32_t)sizeof(bits)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    return syscall_ok_u64(0);
+}
+
 uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg2;
     struct task *t = task_current();
@@ -95,51 +126,5 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * fully retired); the syscall numbers fall to the dispatch default. */
 
 
-/*
- * sys_notify_wait_timeout(notify_h, bits_uptr, timeout_ns) → 0 or iris_error_t
- *
- * Identical to SYS_NOTIFY_WAIT but returns IRIS_ERR_TIMED_OUT (-15) if no
- * signal arrives within timeout_ns nanoseconds.
- */
-uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    struct task *t = task_current();
-    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
-    if (!user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
-        return syscall_err(IRIS_ERR_INVALID_ARG);
-
-    if (t->sc_reentry && t->ipc_ep_closed) {
-        t->ipc_ep_closed = 0u;
-        t->wake_tick = 0u; t->timed_out = 0u;
-        return syscall_err(IRIS_ERR_CLOSED);
-    }
-
-    struct KNotification *notif; iris_rights_t notif_r;
-    iris_error_t r = cspace_resolve_only_notification(t->cspace_root, (iris_cptr_t)arg0,
-                                                            RIGHT_WAIT, &notif, &notif_r);
-    if (r != IRIS_OK) return syscall_err(r);
-
-    uint64_t deadline_ticks = 0;
-    if (!timeout_ns_to_deadline_ticks(arg2, &deadline_ticks)) {
-        kobject_release(&notif->base);
-        return syscall_err(IRIS_ERR_OVERFLOW);
-    }
-
-    /* Stage 9-evt Step 1 — RESTARTABLE, same shape as SYS_NOTIFY_WAIT with a
-     * deadline armed on the first attempt only. */
-    uint64_t bits = 0;
-    r = knotification_wait_timeout_step(notif, &bits, deadline_ticks,
-                                        /*first=*/!t->sc_reentry);
-    kobject_release(&notif->base);
-
-    if (r == IRIS_ERR_WOULD_BLOCK) {
-        syscall_request_restart(t);
-        return 0;
-    }
-    if (r == IRIS_OK) {
-        if (!copy_u64_to_user_checked(arg1, bits))
-            return syscall_err(IRIS_ERR_INVALID_ARG);
-    }
-    return syscall_err(r);
-}
 
 

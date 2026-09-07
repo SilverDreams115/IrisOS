@@ -57,11 +57,16 @@ void test_knotification(void) {
 
     kobject_release(&n2->base);
 
-    /* ── wait_timeout with null task and no bits returns IRIS_ERR_INTERNAL ── */
+    /* ── Ledger A-24: the TIMED wait is gone, and taking what is pending
+     * without blocking is what replaced its zero-timeout use.  Nothing
+     * pending reads as nothing, and it never blocks — which is the whole of
+     * seL4's `seL4_Poll` and the whole of SYS_NOTIFY_POLL. ── */
     struct KNotification *n3 = TEST_UT_ALLOC(struct KNotification, knotification_alloc_at);
     ASSERT_NOT_NULL(n3);
-    uint64_t got3 = 0;
-    ASSERT_EQ(knotification_wait_timeout(n3, &got3, 0), IRIS_ERR_INTERNAL);
+    ASSERT_EQ(knotification_take_pending(n3), (uint64_t)0);
+    knotification_signal(n3, 0x12);
+    ASSERT_EQ(knotification_take_pending(n3), (uint64_t)0x12);
+    ASSERT_EQ(knotification_take_pending(n3), (uint64_t)0);
     kobject_release(&n3->base);
 
     /* ── Phase 10: close WHILE a waiter is blocked wakes + clears it ──

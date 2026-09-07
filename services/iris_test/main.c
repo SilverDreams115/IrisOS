@@ -17,6 +17,7 @@
 #include <iris/ipc_msg.h>
 #include <iris/ipc_recv_slot.h>
 #include <iris/endpoint_proto.h>
+#include "../common/iris_timer.h"
 #include <iris/fb_info.h>
 #include "../common/iris_ipc_buffer.h"
 #include <iris/vfs_ep_proto.h>
@@ -574,6 +575,78 @@ static long it_cs_reduce(long src_cptr, uint32_t rights) {
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
+static void it_slot_delete(uint32_t slot);   /* forward: defined with the pool */
+
+/*
+ * ── Ledger A-24: waiting, without a kernel that knows how to wait ──────────
+ *
+ * `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP` and `SYS_NOTIFY_WAIT_TIMEOUT` are
+ * retired.  What the suite used them for was two different things wearing one
+ * syscall, and they are separated here because only one of them was ever about
+ * TIME:
+ *
+ *   - "let the child reach its blocking syscall" is a SCHEDULING request.  It
+ *     used SYS_SLEEP(1..10) because a timed block happened to be there, and
+ *     what it wanted was for somebody else to run.  `it_settle` yields, which
+ *     says that, needs no timer service, and is safe to call from any thread.
+ *
+ *   - "fail instead of hanging if this event never comes" IS about time, and
+ *     is now a request to the timer service: arm it to signal the same
+ *     notification with a reserved bit, then wait normally.  The bit is how a
+ *     timeout is told from the event.
+ */
+static void it_settle(uint32_t rounds) {
+    for (uint32_t i = 0; i < rounds * 16u + 8u; i++) (void)it_sys1(SYS_YIELD, 0);
+}
+
+/*
+ * A bounded wait.  0 and the observed bits, or IRIS_ERR_TIMED_OUT.
+ *
+ * The signature is the one SYS_NOTIFY_WAIT_TIMEOUT had, deliberately: what
+ * changed is who does the waiting, not what a caller asks for.
+ *
+ * A stale timeout from an earlier bounded wait that ended early is drained
+ * first.  That staleness is inherent — an armed timer nobody wants still fires
+ * — and it used to be hidden by the kernel cancelling the deadline when the
+ * thread woke, which is precisely the bookkeeping about somebody else's
+ * waiting that it should not have been doing.
+ */
+static long it_wait_timeout(long notif, long out_bits_uptr, long ns) {
+    uint64_t *out = (uint64_t *)(uintptr_t)out_bits_uptr;
+    uint64_t  bits = 0;
+
+    if (it_sys2(SYS_NOTIFY_POLL, notif, (long)(uintptr_t)&bits) == 0) {
+        bits &= ~IRIS_TIMER_BIT;
+        if (bits) { if (out) *out = bits; return 0; }
+    }
+
+    long give = it_cs_reduce(notif, RIGHT_WRITE | RIGHT_TRANSFER);
+    if (give < 0) return give;
+    uint64_t token = 0;
+    if (iris_timer_arm((long)IRIS_CPTR_TIMER_EP, give, IRIS_TIMER_BIT,
+                       (uint64_t)ns, &token) != 0) {
+        /* A refused arm leaves the copy where it was: give the leaf back
+         * rather than letting the rotating pool evict it later (T324). */
+        it_slot_delete((uint32_t)give);
+        return (long)IRIS_ERR_NOT_FOUND;
+    }
+
+    for (;;) {
+        bits = 0;
+        long r = it_sys2(SYS_NOTIFY_WAIT, notif, (long)(uintptr_t)&bits);
+        if (r != 0) { (void)iris_timer_cancel((long)IRIS_CPTR_TIMER_EP, token); return r; }
+        if (bits & ~IRIS_TIMER_BIT) {
+            /* The event won.  Take the timer back rather than leaving the
+             * service holding a deadline nobody is waiting for. */
+            (void)iris_timer_cancel((long)IRIS_CPTR_TIMER_EP, token);
+            if (out) *out = bits & ~IRIS_TIMER_BIT;
+            return 0;
+        }
+        if (bits & IRIS_TIMER_BIT) { if (out) *out = 0; return (long)IRIS_ERR_TIMED_OUT; }
+    }
+}
+
+
 /* A KVMO published into a CSpace slot instead of a handle (Stage 4: arg2 of
  * SYS_VMO_CREATE is a destination slot).  Same rotating-pool contract as
  * it_retype_slot_alloc; released with it_close.
@@ -1110,7 +1183,7 @@ static void test_t010(void) {
     if (n_raw < 0) { it_fail("T010", "notify create"); return; }
 
     uint64_t out_bits = 0;
-    long r = it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n_raw,
+    long r = it_wait_timeout( n_raw,
                      (long)(uintptr_t)&out_bits, 50000000L);
 
     it_slot_delete((uint32_t)n_raw);
@@ -1223,7 +1296,7 @@ static void test_t015(void) {
 
     /* Poll for server to set done flag (it runs after rendezvous returns) */
     for (int i = 0; i < 200 && !g_t015_done; i++)
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
 
     it_close(&tid_h);
     it_close(&g_t015_ep_h);
@@ -1298,7 +1371,7 @@ static void test_t016(void) {
 
     /* After EP_CALL returns the server has already replied */
     for (int i = 0; i < 200 && !g_t016_done; i++)
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
 
     it_close(&tid_h);
     it_close(&g_t016_ep_h);
@@ -1369,14 +1442,14 @@ static void test_t019(void) {
     handle_id_t tid_h = (handle_id_t)tid;
 
     /* Let thread enter EP_RECV and block */
-    it_sys1(SYS_SLEEP, 5);
+    it_settle(5);
 
     /* Delete the slot → last cap gone → endpoint close fires → thread wakes */
     it_slot_delete((uint32_t)g_t019_ep_h);
     g_t019_ep_h = HANDLE_INVALID;
 
     for (int i = 0; i < 200 && !g_t019_done; i++)
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
 
     it_close(&tid_h);
 
@@ -1432,14 +1505,14 @@ static void test_t020(void) {
     handle_id_t tid_h = (handle_id_t)tid;
 
     /* Let thread enter EP_SEND and block (no receiver present) */
-    it_sys1(SYS_SLEEP, 5);
+    it_settle(5);
 
     /* Close both handles: active_refs 2→1→0 → endpoint close → thread wakes */
     it_close(&ep2_h);
     it_close(&g_t020_ep_h);
 
     for (int i = 0; i < 200 && !g_t020_done; i++)
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
 
     it_close(&tid_h);
 
@@ -1512,7 +1585,7 @@ static void test_t021(void) {
 
     /* Wait for client to record EP_CALL result */
     for (int i = 0; i < 200 && !g_t021_done; i++)
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
 
     /* Second SYS_REPLY on same handle → NOT_FOUND (caller pointer is NULL) */
     it_iris_msg_zero(&reply);
@@ -1609,7 +1682,7 @@ static void test_t022(void) {
     long r = it_sys2(SYS_EP_CALL, ep_raw, (long)&msg);
 
     for (int i = 0; i < 200 && !g_t022_done; i++)
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
 
     it_close(&tid_h);
     it_close(&g_t022_ep_h);
@@ -1745,7 +1818,7 @@ static void test_t024(void) {
     }
 
     for (int i = 0; i < 200 && !g_t024_done; i++)
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
 
     long ty = -1;
     if (g_t024_got_h != (uint32_t)IRIS_MSG_NO_CAP)
@@ -1852,7 +1925,7 @@ static void test_t025(void) {
     long r2 = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
 
     for (int i = 0; i < 200 && !g_t025_done; i++)
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
 
     it_close(&notif_h);
     it_close(&tid_h);
@@ -3335,7 +3408,7 @@ static void test_t074(void) {
     long r = it_sys2(SYS_EP_CALL, ep, (long)&msg);
 
     for (int i = 0; i < 200 && !g_t074_done; i++)
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
 
     it_close(&tid_h);
     it_close(&g_t074_ep_h);
@@ -3440,13 +3513,13 @@ static void test_t075(void) {
     int sent = 0;
     for (int i = 0; i < 300 && !sent; i++) {
         if (it_sys2(SYS_EP_NB_SEND, (long)cmd_ep_h, (long)&msg) == 0) sent = 1;
-        else it_sys1(SYS_SLEEP, 1);
+        else it_settle(1);
     }
 
     /* Wait (bounded) for the death signal, then read the exit code. */
     uint64_t bits = 0;
     long ws = watch_ok
-        ? it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)watch_h, (long)(uintptr_t)&bits, 2000000000L)
+        ? it_wait_timeout( (long)watch_h, (long)(uintptr_t)&bits, 2000000000L)
         : -1;
     long code = it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h));
 
@@ -3477,7 +3550,7 @@ static void test_t077(void) {
     }
 
     /* Let the child reach EP_RECV and block. */
-    it_sys1(SYS_SLEEP, 10);
+    it_settle(10);
 
     /* Kill the child while it is blocked (RIGHT_MANAGE on the child handle). */
     long kr   = it_kill((long)proc_h);
@@ -3530,7 +3603,7 @@ static void test_t078(void) {
     int dead = 0;
     for (int i = 0; i < 200 && !dead; i++) {
         if (it_alive((long)proc_h) == 0) dead = 1;
-        else it_sys1(SYS_SLEEP, 1);
+        else it_settle(1);
     }
 
     it_close(&proc_h);
@@ -3574,7 +3647,7 @@ static void test_t076(void) {
         : -1;
 
     /* Let the child reach EP_RECV and block (mapping stays live). */
-    it_sys1(SYS_SLEEP, 10);
+    it_settle(10);
 
     /* Kill the child while the mapping is live — teardown must auto-unmap it. */
     long kr   = it_kill((long)proc_h);
@@ -3645,7 +3718,7 @@ static void test_t079(void) {
     for (int i = 0; i < 50 && selfp < 0; i++) {
         selfp = (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TEST_PROC) >= 0)
                 ? (long)IRIS_CPTR_TEST_PROC : -1;
-        if (selfp < 0) it_sys1(SYS_SLEEP, 2);
+        if (selfp < 0) it_settle(2);
     }
     if (selfp < 0) { it_fail("T079", "self proc cptr"); return; }
 
@@ -3905,7 +3978,7 @@ static void test_t081(void) {
     if (ok && it_sys1(SYS_TCB_EXIT, T081_SLOT_PROC) != 0) { ok = 0; why = "kill"; }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)watch_h,
+        if (it_wait_timeout( (long)watch_h,
                     (long)(uintptr_t)&bits, 2000000000L) != 0 || !(bits & 1u))
             { ok = 0; why = "watch did not fire"; }
     }
@@ -4111,7 +4184,7 @@ static void test_t083(void) {
     if (ok && it_sys1(SYS_TCB_SUSPEND, T083_SLOT_TCB) != 0) ok = 0;
     if (ok) {
         uint64_t before = g_t083_count;
-        it_sys1(SYS_SLEEP, 5);
+        it_settle(5);
         if (g_t083_count != before) ok = 0;
     }
 
@@ -4119,7 +4192,7 @@ static void test_t083(void) {
     if (ok && it_sys1(SYS_TCB_RESUME, T083_SLOT_TCB) != 0) ok = 0;
     if (ok) {
         uint64_t before = g_t083_count;
-        it_sys1(SYS_SLEEP, 5);
+        it_settle(5);
         if (g_t083_count == before) ok = 0;
     }
 
@@ -4162,9 +4235,9 @@ static void test_t083(void) {
     /* TCB_EXIT by CPtr on the helper (non-self): counter freezes for good. */
     if (ok && it_sys1(SYS_TCB_EXIT, T083_SLOT_TCB) != 0) ok = 0;
     if (ok) {
-        it_sys1(SYS_SLEEP, 2);
+        it_settle(2);
         uint64_t before = g_t083_count;
-        it_sys1(SYS_SLEEP, 5);
+        it_settle(5);
         if (g_t083_count != before) ok = 0;
     }
 
@@ -4236,7 +4309,7 @@ static void test_t084(void) {
         it_close(&epx_h); it_close(&g_t084_cmd_ep);
         it_fail("T084", "thread create"); return;
     }
-    it_sys1(SYS_SLEEP, 2);   /* let the sender queue its first send */
+    it_settle(2);   /* let the sender queue its first send */
 
     int ok = 1;
     struct IrisMsg r;
@@ -4321,7 +4394,7 @@ static void test_t085(void) {
         it_close(&n_h); it_close(&g_t085_cmd_ep);
         it_fail("T085", "thread create"); return;
     }
-    it_sys1(SYS_SLEEP, 2);
+    it_settle(2);
 
     int ok = 1;
     struct IrisMsg r;
@@ -4407,7 +4480,7 @@ static void test_t086(void) {
         it_close(&n_h); it_close(&g_t086_cmd_ep);
         it_fail("T086", "thread create"); return;
     }
-    it_sys1(SYS_SLEEP, 2);   /* sender is now queued with its staged cap */
+    it_settle(2);   /* sender is now queued with its staged cap */
 
     int ok = 1;
     struct IrisMsg r;
@@ -4533,7 +4606,7 @@ static void test_t087(void) {
         it_close(&nA_h); it_close(&nB_h); it_close(&g_t087_ep);
         it_fail("T087", "thread create"); return;
     }
-    it_sys1(SYS_SLEEP, 2);   /* server blocks with slot 38 declared */
+    it_settle(2);   /* server blocks with slot 38 declared */
 
     int ok = 1;
     struct IrisMsg cm;
@@ -4661,7 +4734,7 @@ static void test_t088(void) {
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack1 + sizeof(g_t088_stack1))) & ~0xFULL;
         if (it_thread_create(entry, rsp, IT_THREAD_ARG_SELF_TCB) < 0) ok = 0;
         for (int i = 0; i < 200 && !g_t088_r1_ready; i++) it_sys0(SYS_YIELD);
-        it_sys1(SYS_SLEEP, 2);            /* let it block in EP_RECV */
+        it_settle(2);            /* let it block in EP_RECV */
         if (ok && (g_t088_r1_tcb < 0 ||
                    it_sys1(SYS_TCB_EXIT, g_t088_r1_tcb) != 0)) ok = 0;
         /* No ghost cap in the slot; no stale receiver on the endpoint. */
@@ -4680,7 +4753,7 @@ static void test_t088(void) {
         uint64_t entry = (uint64_t)(uintptr_t)t088_recv2;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack2 + sizeof(g_t088_stack2))) & ~0xFULL;
         if (it_thread_create(entry, rsp, 0) < 0) ok = 0;
-        it_sys1(SYS_SLEEP, 2);            /* receiver blocks FIRST */
+        it_settle(2);            /* receiver blocks FIRST */
         long c = it_xfer_dup( n, (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER));
         if (c < 0) ok = 0;
         if (ok) {
@@ -4706,7 +4779,7 @@ static void test_t088(void) {
         uint64_t entry = (uint64_t)(uintptr_t)t088_recv3;
         uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t088_stack3 + sizeof(g_t088_stack3))) & ~0xFULL;
         if (it_thread_create(entry, rsp, 0) < 0) ok = 0;
-        it_sys1(SYS_SLEEP, 2);            /* let it block with slot 41 declared */
+        it_settle(2);            /* let it block with slot 41 declared */
         it_close(&g_t088_ep2);            /* close wakes the blocked receiver */
         for (int i = 0; i < 200 && !g_t088_r3_done; i++) it_sys0(SYS_YIELD);
         if (!g_t088_r3_done || g_t088_r3_rr != (long)IRIS_ERR_CLOSED) ok = 0;
@@ -5436,7 +5509,7 @@ static void test_t094(void) {
         ok = 0; why = "thread create";
     }
     for (int i = 0; i < 200 && !g_t094_ready; i++) it_sys0(SYS_YIELD);
-    it_sys1(SYS_SLEEP, 2);                     /* blocked with slot 51 declared */
+    it_settle(2);                     /* blocked with slot 51 declared */
 
     /* Fill the declared slot BEFORE delivery (the TOCTOU race). */
     if (ok && it_sys3(SYS_CSPACE_MINT, nB, IT_MINT_SELF(T094_SLOT), (long)RIGHT_WRITE) != 0) {
@@ -5685,7 +5758,7 @@ static void test_t097(void) {
     if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "kill"; }
     if (ok) { for (int w = 0; w < 200 &&
                    it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h)) ==
-                   (long)IRIS_ERR_WOULD_BLOCK; w++) it_sys1(SYS_SLEEP, 1); }
+                   (long)IRIS_ERR_WOULD_BLOCK; w++) it_settle(1); }
     if (ok) {
         /* The child's command-endpoint slot, addressed through the root the
          * suite kept: empty once teardown has run. */
@@ -5772,7 +5845,7 @@ static void test_t098(void) {
     if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "kill"; }
     if (ok) { for (int w = 0; w < 200 &&
                    it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h)) ==
-                   (long)IRIS_ERR_WOULD_BLOCK; w++) it_sys1(SYS_SLEEP, 1); }
+                   (long)IRIS_ERR_WOULD_BLOCK; w++) it_settle(1); }
     if (ok) {
         long child_ep = (long)((uint64_t)LP_CPTR_CMD_EP << 8) | IT_CHILD_CN_CPTR(0);
         if (it_sys1(SYS_CAP_IDENTIFY, child_ep) >= 0) { ok = 0; why = "dead dest"; }
@@ -5844,7 +5917,7 @@ static long it_lp_wait_exit(handle_id_t proc_h) {
     long ec = -1;
     if (it_sys3(SYS_TCB_WATCH, tcb, n, 1) == 0) {
         uint64_t bits = 0;
-        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, (long)(uintptr_t)&bits,
+        if (it_wait_timeout( n, (long)(uintptr_t)&bits,
                     2000000000LL) == 0)
             ec = it_sys1(SYS_TCB_EXIT_CODE, tcb);
     }
@@ -6042,7 +6115,7 @@ static void test_t101(void) {
         ok = 0; why = "spawn";
     }
     if (ok && it_lp_cmd_rslot(ep_h, T099_CHILD_SLOT) != 0) { ok = 0; why = "cmd"; }
-    it_sys1(SYS_SLEEP, 2);   /* child re-blocks with slot 40 declared */
+    it_settle(2);   /* child re-blocks with slot 40 declared */
 
     if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "kill"; }
     if (ok && it_alive((long)proc_h) != 0) {
@@ -6123,7 +6196,7 @@ static void test_t102(void) {
         /* The child has exited, so one tick proves nothing ever signalled. */
         if (ok) {
             uint64_t bits = 0;
-            if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, (long)(uintptr_t)&bits, 1)
+            if (it_wait_timeout( n, (long)(uintptr_t)&bits, 1)
                 != (long)IRIS_ERR_TIMED_OUT) { ok = 0; why = "phantom signal"; }
         }
         it_close(&proc_h);
@@ -6202,10 +6275,10 @@ static void test_t103(void) {
     }
 
     if (ok) {
-        it_sys1(SYS_SLEEP, 5);           /* sender queues with staged cap */
+        it_settle(5);           /* sender queues with staged cap */
         it_close(&g_t103_ep_h);          /* last ref → close → wakes sender */
         for (int i = 0; i < 200 && !g_t103_done; i++)
-            it_sys1(SYS_SLEEP, 1);
+            it_settle(1);
         if (!g_t103_done || g_t103_result != (int)IRIS_ERR_CLOSED) {
             ok = 0; why = "not CLOSED";
         }
@@ -6289,10 +6362,10 @@ static void test_t104(void) {
     }
 
     if (ok) {
-        it_sys1(SYS_SLEEP, 5);           /* caller queues (SEND, call mode) */
+        it_settle(5);           /* caller queues (SEND, call mode) */
         it_close(&g_t104_ep_h);
         for (int i = 0; i < 200 && !g_t104_done; i++)
-            it_sys1(SYS_SLEEP, 1);
+            it_settle(1);
         if (!g_t104_done || g_t104_result != (int)IRIS_ERR_CLOSED) {
             ok = 0; why = "not CLOSED";
         }
@@ -6386,7 +6459,7 @@ static void test_t105(void) {
             ok = 0; why = "first reply";
         }
         for (int i = 0; ok && i < 200 && !g_t105_done; i++)
-            it_sys1(SYS_SLEEP, 1);
+            it_settle(1);
         if (ok && (!g_t105_done || !g_t105_result)) { ok = 0; why = "caller"; }
     }
 
@@ -6480,10 +6553,10 @@ static void test_t106(void) {
     }
 
     if (ok) {
-        it_sys1(SYS_SLEEP, 5);           /* both senders queue staged caps */
+        it_settle(5);           /* both senders queue staged caps */
         it_close(&g_t106_ep_h);
         for (int i = 0; i < 200 && !(g_t106_done[0] && g_t106_done[1]); i++)
-            it_sys1(SYS_SLEEP, 1);
+            it_settle(1);
         if (!g_t106_done[0] || !g_t106_done[1] ||
             g_t106_result[0] != (int)IRIS_ERR_CLOSED ||
             g_t106_result[1] != (int)IRIS_ERR_CLOSED) {
@@ -6883,7 +6956,7 @@ static void test_t107(void) {
                                              (uint32_t)RIGHT_WRITE);
             if (bad < 0) { ok = 0; why = "bad slot"; break; }
             if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "cmd"; break; }
-            it_sys1(SYS_SLEEP, 2);   /* worker re-blocks on the data ep */
+            it_settle(2);   /* worker re-blocks on the data ep */
             struct IrisMsg m;
             it_iris_msg_zero(&m);
             m.label           = 0xF7;
@@ -6981,7 +7054,7 @@ static void test_t108(void) {
                 ? fz_cmd(0, FZ_OP_SEND_CAP, (uint64_t)d, RIGHT_WRITE, 0x108)
                 : fz_cmd(0, FZ_OP_CALL,     (uint64_t)d, RIGHT_WRITE, 0);
             if (!sent) { ok = 0; why = "cmd"; break; }
-            it_sys1(SYS_SLEEP, 5);            /* waiter queues its staged cap */
+            it_settle(5);            /* waiter queues its staged cap */
             it_close(&g_fz_data_ep);
             if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
             if (ok && g_fz_res[0] != (long)IRIS_ERR_CLOSED) {
@@ -7001,7 +7074,7 @@ static void test_t108(void) {
                 !fz_cmd(1, FZ_OP_CALL,     (uint64_t)db, RIGHT_WRITE, 0)) {
                 ok = 0; why = "cmd2"; break;
             }
-            it_sys1(SYS_SLEEP, 5);            /* both queue staged caps */
+            it_settle(5);            /* both queue staged caps */
             it_close(&g_fz_data_ep);
             if (!fz_wait(0) || !fz_wait(1)) { ok = 0; why = "worker hang"; }
             if (ok && (g_fz_res[0] != (long)IRIS_ERR_CLOSED ||
@@ -7022,7 +7095,7 @@ static void test_t108(void) {
              * gains nothing (I6), and the slot stays empty — the next pick-3
              * round re-declares the very same slot. */
             if (!fz_cmd(0, FZ_OP_RECV, rslot, 0, 0)) { ok = 0; why = "cmd"; break; }
-            it_sys1(SYS_SLEEP, 5);            /* receiver blocks, slot declared */
+            it_settle(5);            /* receiver blocks, slot declared */
             it_close(&g_fz_data_ep);
             if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
             if (ok && g_fz_res[0] != (long)IRIS_ERR_CLOSED) {
@@ -7038,7 +7111,7 @@ static void test_t108(void) {
         } else {
             /* Legacy (slot 0) receiver canceled by close. */
             if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "cmd"; break; }
-            it_sys1(SYS_SLEEP, 5);
+            it_settle(5);
             it_close(&g_fz_data_ep);
             if (!fz_wait(0)) { ok = 0; why = "worker hang"; }
             if (ok && g_fz_res[0] != (long)IRIS_ERR_CLOSED) {
@@ -7059,7 +7132,7 @@ static void test_t108(void) {
             g_fz_data_ep = (handle_id_t)ep;
             if (!fz_cmd(0, FZ_OP_RECV, 0, 0, 0)) { ok = 0; why = "final cmd"; }
             if (ok) {
-                it_sys1(SYS_SLEEP, 2);        /* receiver re-blocks on data ep */
+                it_settle(2);        /* receiver re-blocks on data ep */
                 struct IrisMsg m;
                 it_iris_msg_zero(&m);
                 m.label = 0x308;
@@ -7565,7 +7638,7 @@ static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
          * ever signalled: there is no longer anybody who could. */
         if (ok && kind == 3u) {
             uint64_t bits = 0;
-            if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, (long)(uintptr_t)&bits, 1)
+            if (it_wait_timeout( n, (long)(uintptr_t)&bits, 1)
                 != (long)IRIS_ERR_TIMED_OUT) { ok = 0; *why = "phantom signal"; }
         }
         if (ok) { if (kind == 0u) (*exp_slot)++; else (*exp_hand)++; }
@@ -7593,7 +7666,7 @@ static int t111_round(uint32_t kind, uint32_t *exp_slot, uint32_t *exp_hand,
         /* Kill the child while it blocks with its slot declared: the wait
          * dies with it (no dead waiter) and a sender's delivery attempt
          * fails WITHOUT consuming the source cap. */
-        it_sys1(SYS_SLEEP, 2);      /* child re-blocks, slot 40 declared */
+        it_settle(2);      /* child re-blocks, slot 40 declared */
         if (it_kill((long)proc_h) != 0) {
             ok = 0; *why = "kill";
         }
@@ -7970,7 +8043,7 @@ static void test_t115(void) {
         } else {
             if (it_lp_cmd(ep_h, cmd) != 0) { ok = 0; why = "cmd"; }
         }
-        it_sys1(SYS_SLEEP, 3);      /* child reaches its blocking syscall */
+        it_settle(3);      /* child reaches its blocking syscall */
 
         if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "kill"; }
         if (ok && it_alive((long)proc_h) != 0) {
@@ -8129,7 +8202,7 @@ static void test_t117(void) {
     if (ok && it_kill((long)pr[1]) != 0) { ok = 0; why = "kill1"; }
     if (ok && it_lp_cmd(ep[2], LP_CMD_SEND_BLOCK) != 0) { ok = 0; why = "cmd2"; }
     if (ok) {
-        it_sys1(SYS_SLEEP, 3);
+        it_settle(3);
         if (it_kill((long)pr[2]) != 0) { ok = 0; why = "kill2"; }
     }
 
@@ -8138,7 +8211,7 @@ static void test_t117(void) {
         uint64_t seen = 0;
         for (int iter = 0; iter < 8 && seen != 0x7u; iter++) {
             uint64_t bits = 0;
-            if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n, (long)(uintptr_t)&bits,
+            if (it_wait_timeout( n, (long)(uintptr_t)&bits,
                         1000000000LL) == 0)
                 seen |= bits;
         }
@@ -8170,7 +8243,7 @@ static void test_t117(void) {
             }
             if (ok) {
                 uint64_t bits = 0;
-                if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, n2, (long)(uintptr_t)&bits,
+                if (it_wait_timeout( n2, (long)(uintptr_t)&bits,
                             1000000000LL) != 0 || bits != 0x20u) {
                     ok = 0; why = "late watch silent";
                 }
@@ -8241,7 +8314,7 @@ static void test_t118(void) {
             handle_id_t p_h = HANDLE_INVALID;
             if (e < 0 || lp_spawn_child(e_h, &p_h) < 0) { ok = 0; why = "spawn kill"; }
             else {
-                it_sys1(SYS_SLEEP, 1);
+                it_settle(1);
                 (void)it_kill((long)p_h);
             }
             it_close(&p_h);
@@ -8448,7 +8521,7 @@ static void test_t119(void) {
             handle_id_t p_h = HANDLE_INVALID;
             if (ce < 0 || lp_spawn_child(ce_h, &p_h) < 0) { ok = 0; why = "spawn"; }
             else {
-                it_sys1(SYS_SLEEP, 1);
+                it_settle(1);
                 (void)it_kill((long)p_h);
                 if (it_alive((long)p_h) != 0) { ok = 0; why = "kill"; }
             }
@@ -8629,7 +8702,7 @@ static void test_t121(void) {
         if (ep < 0 || lp_spawn_child(ep_h, &p_h) < 0) { ok = 0; why = "spawn"; }
         else {
             if (it_lp_cmd_rslot(ep_h, T099_CHILD_SLOT) != 0) { ok = 0; why = "cmd recv"; }
-            it_sys1(SYS_SLEEP, 3);
+            it_settle(3);
             if (ok && it_kill((long)p_h) != 0) { ok = 0; why = "kill"; }
             if (ok) {
                 struct IrisMsg p;
@@ -9749,7 +9822,7 @@ static void test_t136(void) {
             if (ok && vm[IT_S4_MAPLIVE] <= v0[IT_S4_MAPLIVE]) { ok = 0; why = "child mappings not counted"; }
             if (ok) {
                 if (i & 1u) {
-                    it_sys1(SYS_SLEEP, 1);
+                    it_settle(1);
                     if (it_kill((long)p_h) != 0) { ok = 0; why = "kill"; }
                 } else {
                     struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x136;
@@ -9955,6 +10028,7 @@ static void test_t139(void) {
         it_fail("T139", why);
     }
 }
+
 
 /* ── Phase 20: fault endpoint / exception delivery model (T140–T147) ──────────
  *
@@ -10233,7 +10307,7 @@ static void test_t140(void) {
     if (ok && it_lp_cmd_va(ep_h, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "cmd"; }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, w, (long)(uintptr_t)&bits,
+        if (it_wait_timeout( w, (long)(uintptr_t)&bits,
                     2000000000LL) != 0 || !(bits & 1ull)) { ok = 0; why = "nohandler kill"; }
     }
     if (ok && it_sys1(SYS_TCB_EXIT_CODE, it_child_tcb((long)proc_h)) != 0) { ok = 0; why = "kill exit code"; }
@@ -11087,7 +11161,7 @@ static void test_t148(void) {
      * This loop caught the guard syscall the moment it landed, which is what
      * it is for: growing the syscall surface has to be a deliberate, visible
      * act rather than something a diff can do quietly. */
-    for (long n = 136; ok && n <= 400; n++) {
+    for (long n = 138; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -11241,14 +11315,20 @@ static void test_t150(void) {
     }
     /* Both-null is the legal "just validate the cap" call → success. */
     if (ok && it_sys3(SYS_UNTYPED_INFO, IT_UT, 0, 0) != 0) { ok = 0; why = "untyped_info null-null not ok"; }
-    /* SYS_NOTIFY_WAIT_TIMEOUT writes out_bits: hostile dst → INVALID_ARG
-     * (validated before blocking, so no waiter is ever created). */
+    /* A-24: SYS_NOTIFY_WAIT and SYS_NOTIFY_POLL write out_bits, and both
+     * validate the pointer BEFORE they block or consume anything — so a
+     * hostile destination costs a waiter neither its signal nor its slot.  The
+     * probe used to go through SYS_NOTIFY_WAIT_TIMEOUT, which is retired: a
+     * bounded wait is a request to the timer service now, and the only kernel
+     * writer left is the wait itself. */
     {
         long no = it_notify_create();
         handle_id_t no_h = (no >= 0) ? (handle_id_t)no : HANDLE_INVALID;
         if (no < 0) { ok = 0; why = "notif fixture"; }
         for (int i = 0; ok && i < NB; i++) {
-            if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, no, bad_ptr[i], 1000000L)
+            if (it_sys2(SYS_NOTIFY_POLL, no, bad_ptr[i])
+                != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "notify_wait bad out"; break; }
+            if (it_sys2(SYS_NOTIFY_WAIT, no, bad_ptr[i])
                 != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "notify_wait bad out"; break; }
         }
         it_close(&no_h);
@@ -11374,7 +11454,7 @@ static void test_t151(void) {
         if (ok && (fz_rand() & 1u)) {
             if (it_sys2(SYS_NOTIFY_SIGNAL, (long)no, 1) != 0) { ok = 0; why = "signal"; }
             uint64_t bits = 0;
-            if (ok && it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)no, (long)(uintptr_t)&bits, 500000000L) != 0) { ok = 0; why = "wait"; }
+            if (ok && it_wait_timeout( (long)no, (long)(uintptr_t)&bits, 500000000L) != 0) { ok = 0; why = "wait"; }
         }
 
         it_close(&fr); it_close(&ep); it_close(&no);
@@ -11496,7 +11576,7 @@ static void test_t153(void) {
             /* RSLOT_RECV parks in a second recv; SEND/CALL park as sender/caller. */
             if (kind == 0u) { if (it_lp_cmd_rslot(ep_h, T099_CHILD_SLOT) != 0) { ok = 0; why = "rslot cmd"; } }
             else            { if (it_lp_cmd(ep_h, cmd) != 0) { ok = 0; why = "block cmd"; } }
-            it_sys1(SYS_SLEEP, 3);   /* let the child reach its blocking syscall */
+            it_settle(3);   /* let the child reach its blocking syscall */
         }
 
         /* Cancellation route: seeded mix of process kill / endpoint close /
@@ -11560,7 +11640,7 @@ static void test_t154(void) {
     /* The original full cap still signals — the reduced cap's failures did not
      * corrupt the object. */
     if (ok && it_sys2(SYS_NOTIFY_SIGNAL, no, 1) != 0) { ok = 0; why = "full cap broken"; }
-    if (ok) { uint64_t bits = 0; (void)it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, no, (long)(uintptr_t)&bits, 100000000L); }
+    if (ok) { uint64_t bits = 0; (void)it_wait_timeout( no, (long)(uintptr_t)&bits, 100000000L); }
 
     /* Frame rights: RIGHT_READ frame cap maps non-writable but is denied a
      * writable map; the PTE reflects the cap, never the request. */
@@ -11638,7 +11718,7 @@ static void test_t155(void) {
         if (no != HANDLE_INVALID && (fz_rand() & 1u)) {
             if (it_sys2(SYS_NOTIFY_SIGNAL, (long)no, 3) != 0) { ok = 0; why = "signal"; }
             uint64_t bits = 0;
-            if (ok && it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)no, (long)(uintptr_t)&bits, 500000000L) != 0) { ok = 0; why = "wait"; }
+            if (ok && it_wait_timeout( (long)no, (long)(uintptr_t)&bits, 500000000L) != 0) { ok = 0; why = "wait"; }
         }
         it_close(&no);
 
@@ -11656,7 +11736,7 @@ static void test_t155(void) {
                 if (ok && it_lp_wait_exit(proc_h) != (long)LP_EXIT_MARKER) { ok = 0; why = "clean exit"; }
             } else if (what == 1u) {             /* kill while parked */
                 if (it_lp_cmd(ep_h, LP_CMD_SEND_BLOCK) != 0) { ok = 0; why = "cmd block"; }
-                it_sys1(SYS_SLEEP, 3);
+                it_settle(3);
                 if (ok && it_kill((long)proc_h) != 0) { ok = 0; why = "kill"; }
                 if (ok && it_lp_wait_exit(proc_h) != 0) { ok = 0; why = "kill exit"; }
             } else {                             /* controlled fault → kill */
@@ -12667,7 +12747,7 @@ static void test_t170(void) {
         if (r < 0 || proc == HANDLE_INVALID) { ok = 0; why = "spawn"; it_close(&cmd); it_close(&proc); break; }
 
         /* The child blocks in its first recv; kill it while parked. */
-        it_sys1(SYS_SLEEP, 2);
+        it_settle(2);
         if (it_kill((long)proc) != 0) { ok = 0; why = "kill"; }
         if (ok && it_lp_wait_exit(proc) != 0) { ok = 0; why = "exit"; }
         it_close(&cmd); it_close(&proc);
@@ -12999,7 +13079,7 @@ static void test_t175(void) {
         generation++;                              /* each (re)start is a new generation */
 
         /* The "service" dies immediately (modelled by an external kill). */
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
         if (it_kill((long)proc) != 0) { ok = 0; why = "kill"; }
         if (ok && it_lp_wait_exit(proc) != 0) { ok = 0; why = "exit"; }
         it_close(&cmd); it_close(&proc);
@@ -13041,7 +13121,7 @@ static void test_t176(void) {
 
     /* Drive the child to block as a caller, then kill it mid-call. */
     if (ok && it_lp_cmd(cmd, LP_CMD_CALL_BLOCK) != 0) { ok = 0; why = "cmd"; }
-    it_sys1(SYS_SLEEP, 3);
+    it_settle(3);
     if (ok && it_kill((long)proc) != 0) { ok = 0; why = "kill"; }
     if (ok && it_lp_wait_exit(proc) != 0) { ok = 0; why = "no exit"; }
 
@@ -13171,7 +13251,7 @@ static void test_t179(void) {
     handle_id_t proc = HANDLE_INVALID;
     if (ok && (cep < 0 || lp_spawn_child(cmd, &proc) < 0)) { ok = 0; why = "spawn"; }
     if (ok) {
-        it_sys1(SYS_SLEEP, 2);
+        it_settle(2);
         if (it_kill((long)proc) != 0) { ok = 0; why = "kill"; }
         if (ok && it_lp_wait_exit(proc) != 0) { ok = 0; why = "exit"; }
     }
@@ -13232,11 +13312,11 @@ static void test_t180(void) {
 
         uint32_t how = fz_rand() % 3u;
         if (how == 0u) {                             /* immediate kill */
-            it_sys1(SYS_SLEEP, 1);
+            it_settle(1);
             if (it_kill((long)proc) != 0) { ok = 0; why = "kill"; }
         } else if (how == 1u) {                      /* block then kill */
             if (it_lp_cmd(cmd, LP_CMD_SEND_BLOCK) != 0) { ok = 0; why = "cmd block"; }
-            it_sys1(SYS_SLEEP, 2);
+            it_settle(2);
             if (ok && it_kill((long)proc) != 0) { ok = 0; why = "kill2"; }
         } else {                                     /* fault-crash (no handler → kill) */
             if (it_lp_cmd_va(cmd, LP_CMD_FAULT_READ, T14X_BAD_VA) != 0) { ok = 0; why = "fault cmd"; }
@@ -13558,7 +13638,7 @@ static int t25_wait_delivered(uint32_t base) {
     uint32_t f[6];
     for (int i = 0; i < 400; i++) {
         if (it_sched_ext5(f) && f[IT_S5_DELIVER] > base) return 1;
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
     }
     return 0;
 }
@@ -13707,7 +13787,7 @@ static void test_t182(void) {
      * the record did not outlive the resolution. */
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)g.notif, (long)(uintptr_t)&bits,
+        if (it_wait_timeout( (long)g.notif, (long)(uintptr_t)&bits,
                     100000000LL) == 0 && (bits & 1ull)) { ok = 0; why = "double delivery"; }
     }
     if (ok && it_fault_info(g.fault_leaf, &(struct it_fault){0}) != (long)IRIS_ERR_WOULD_BLOCK) {
@@ -14307,7 +14387,7 @@ static void test_t189(void) {
             ok = 0; why = "gen spawn"; break;
         }
         generation++;
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
         if (it_kill((long)pproc) != 0) { ok = 0; why = "gen kill"; }
         if (ok && it_lp_wait_exit(pproc) != 0) { ok = 0; why = "gen exit"; }
         t25_reap(&pproc); it_close(&pcmd);
@@ -16030,7 +16110,7 @@ static void test_t206(void) {
         struct t27_pager pg;
         if (!t27_pager_spawn(&pg, &g, 1u, vmos, 1u, 0u, 0, &why)) { ok = 0; break; }
         generation++;
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
         if (it_kill((long)pg.proc) != 0) { ok = 0; why = "kill"; }
         if (ok && it_lp_wait_exit(pg.proc) != 0) { ok = 0; why = "gen exit"; }
         it_close(&pg.proc); it_close(&pg.ctrl_ep);
@@ -18542,7 +18622,7 @@ static int t28_multi_wait_exit(struct t28_multi *m, uint32_t i) {
     if (g_t28_exit_pending & bit) { g_t28_exit_pending &= ~bit; return 1; }
     for (uint32_t tries = 0; tries < 64u; tries++) {
         uint64_t bits = 0;
-        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)m->exit_notif, (long)(uintptr_t)&bits, 2000000000LL) != 0) return 0;
+        if (it_wait_timeout( (long)m->exit_notif, (long)(uintptr_t)&bits, 2000000000LL) != 0) return 0;
         g_t28_exit_pending |= bits;
         if (g_t28_exit_pending & bit) { g_t28_exit_pending &= ~bit; return 1; }
     }
@@ -19816,7 +19896,7 @@ static void test_t256(void) {
     if (ok && it_retype2_at(su, IRIS_KOBJ_NOTIFICATION, S1_SLOT_A, 1u, 0) != 0) { ok = 0; why = "reuse retype"; }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)S1_SLOT_A,
+        if (it_wait_timeout( (long)S1_SLOT_A,
                     (long)(uintptr_t)&bits, 20000000L) != (long)IRIS_ERR_TIMED_OUT) {
             ok = 0; why = "residual state leaked (S28)";
         }
@@ -20062,7 +20142,7 @@ static void test_t259(void) {
     }
     if (ok) {
         uint64_t bits = 0;
-        if (it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)S1_SLOT_A,
+        if (it_wait_timeout( (long)S1_SLOT_A,
                     (long)(uintptr_t)&bits, 20000000L) != (long)IRIS_ERR_TIMED_OUT) {
             ok = 0; why = "residual state (S28)";
         }
@@ -20608,7 +20688,7 @@ static void test_t285(void) {
     for (int i = 0; i < 200; i++) {
         if (it_sys2(SYS_TCB_GET_INFO, (long)tcb_h, (long)(uintptr_t)&info) != 0) { ok = 0; why = "info during teardown"; break; }
         if (info.state == (uint8_t)IT_TASK_TERMINATED) break;
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
     }
     if (ok && info.state != (uint8_t)IT_TASK_TERMINATED) { ok = 0; why = "never terminated"; }
     if (ok && info.task_id != alive.task_id) { ok = 0; why = "id unstable after death"; }
@@ -20760,7 +20840,7 @@ static void test_t287(void) {
     for (int i = 0; ok && i < 200; i++) {
         if (it_sys2(SYS_TCB_GET_INFO, (long)a_h, (long)(uintptr_t)&ia) != 0) { ok = 0; why = "A info"; break; }
         if (ia.state == (uint8_t)IT_TASK_TERMINATED) break;
-        it_sys1(SYS_SLEEP, 1);
+        it_settle(1);
     }
     if (ok && ia.state != (uint8_t)IT_TASK_TERMINATED) { ok = 0; why = "A never terminated"; }
 
@@ -20781,7 +20861,7 @@ static void test_t287(void) {
             if (it_sys2(SYS_TCB_GET_INFO, (long)b_h, (long)(uintptr_t)&ib0) == 0)
                 id_b = ib0.task_id;
             uint64_t before = g_t287_count;
-            it_sys1(SYS_SLEEP, 3);
+            it_settle(3);
             if (g_t287_count == before) { ok = 0; why = "B frozen"; }
         }
         /* A's cap still answers with A's identity — B did not alias it. */
@@ -20800,7 +20880,7 @@ static void test_t287(void) {
             for (int i = 0; i < 200; i++) {
                 if (it_sys2(SYS_TCB_GET_INFO, (long)b_h, (long)(uintptr_t)&ib) != 0) { ok = 0; why = "B info"; break; }
                 if (ib.state == (uint8_t)IT_TASK_TERMINATED) break;
-                it_sys1(SYS_SLEEP, 1);
+                it_settle(1);
             }
             if (ok && ib.state != (uint8_t)IT_TASK_TERMINATED) { ok = 0; why = "B never terminated"; }
         }
@@ -21175,7 +21255,7 @@ static void test_t294(void) {
         it_close(&n_h); it_close(&g_t294_cmd_ep);
         it_fail("T294", "thread create"); return;
     }
-    it_sys1(SYS_SLEEP, 2);   /* let the sender queue its send */
+    it_settle(2);   /* let the sender queue its send */
 
     int ok = 1;
     const char *why = "deep recv slot";
@@ -21344,7 +21424,7 @@ static void test_t297(void) {
         ok = 0; why = "regs rewritten after start";
     }
 
-    for (int i = 0; i < 200 && g_t297_ran == 1u; i++) it_sys1(SYS_SLEEP, 1);
+    for (int i = 0; i < 200 && g_t297_ran == 1u; i++) it_settle(1);
     if (ok) it_pass("T297"); else it_fail("T297", why);
 }
 
@@ -22713,70 +22793,73 @@ static void test_t309(void) {
  *
  * Ledger D-1, step 1.  seL4 is an event kernel: no thread blocks inside the
  * kernel.  A syscall that cannot finish records what it needs in the THREAD,
- * returns, and is re-executed when the thread runs again.  IRIS parks the
- * thread mid-syscall on an 8 KiB kernel stack instead, which is why it can
+ * returns, and is re-executed when the thread runs again.  IRIS parked the
+ * thread mid-syscall on an 8 KiB kernel stack instead, which is why it could
  * bound neither in-kernel latency nor kernel memory per thread.
  *
- * Converting that is three steps and the hard one is first: make the blocking
- * handlers RESTART-SAFE, holding no live state across the block.  SYS_SLEEP is
- * the first one converted — no queues, no capabilities, nothing partially
- * delivered to undo — and this is the test that it really was converted rather
- * than merely rearranged.
+ * The subject was SYS_SLEEP, the first handler converted.  Ledger A-24 retired
+ * it — a kernel that can block on time owns a policy about time — so the
+ * property moved to the blocking syscall that remains the simplest:
+ * SYS_NOTIFY_WAIT.  The claim is unchanged, and it is now made about a
+ * mechanism that will still be here in ten years.
  *
- * From ring 3 a restartable sleep and a stack-parked sleep are
+ * From ring 3 a restartable wait and a stack-parked wait are
  * indistinguishable: both block and both wake.  So the assertion is on the
  * kernel's restart gauge, which only moves when a handler asked to be
- * re-entered.  It asserts three things:
+ * re-entered.  Three things:
  *
- *   1. the sleep still SLEEPS — time actually passes;
+ *   1. the wait really BLOCKS — nothing was pending when it was made, and it
+ *      returned only once the timer service signalled;
  *   2. the restart counter ADVANCED across it, so the handler returned and was
  *      re-dispatched rather than resuming a parked frame;
- *   3. a zero-length sleep does NOT restart, because a syscall that can
- *      complete must never take the slow path.
+ *   3. a wait that CAN complete — bits already pending — does not restart,
+ *      because a syscall that can finish must never take the slow path.
  */
 static void test_t310(void) {
     it_quiesce_reaper();
     int ok = 1;
-    const char *why = "restartable sleep";
+    const char *why = "restartable wait";
+
+    long n = it_notify_create();
+    if (n < 0) { it_fail("T310", "notif"); return; }
 
     struct it_utq_global g0, g1, g2;
     if (!it_utq_g(&g0)) { it_fail("T310", "query"); return; }
 
-    /* (3) a sleep that needs no blocking must not restart */
-    if (ok && it_sys1(SYS_SLEEP, 0) != 0) { ok = 0; why = "zero sleep failed"; }
+    /* (3) a wait that needs no blocking must not restart. */
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, n, 0x2u) != 0) { ok = 0; why = "signal"; }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 || bits != 0x2u) {
+            ok = 0; why = "pending wait failed";
+        }
+    }
     if (ok && !it_utq_g(&g1))             { ok = 0; why = "query"; }
     if (ok && g1.syscall_restarts != g0.syscall_restarts) {
-        ok = 0; why = "zero-length sleep took the restart path";
+        ok = 0; why = "a wait that could finish took the restart path";
     }
 
-    /* (1) and (2): a real sleep blocks, and blocking means re-execution */
-    /* SYS_CLOCK_GET RETURNS the time; it does not write through a pointer. */
-    long t_before = 0, t_after = 0;
-    if (ok) t_before = it_sys0(SYS_CLOCK_GET);
-    if (ok && it_sys1(SYS_SLEEP, 3) != 0) { ok = 0; why = "sleep failed"; }
-    if (ok) t_after = it_sys0(SYS_CLOCK_GET);
+    /* (1) and (2): a wait with nothing pending blocks, and blocking means
+     *     re-execution.  The timer service is what ends it — which is also the
+     *     shape A-24 left behind: waiting is somebody else's job. */
+    if (ok) {
+        long give = it_cs_reduce(n, RIGHT_WRITE | RIGHT_TRANSFER);
+        uint64_t tok = 0;
+        if (give < 0 || iris_timer_arm((long)IRIS_CPTR_TIMER_EP, give, 0x4ull,
+                                       30000000ull, &tok) != 0) { ok = 0; why = "arm"; }
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
+            (bits & 0x4ull) == 0) { ok = 0; why = "blocking wait failed"; }
+    }
     if (ok && !it_utq_g(&g2))             { ok = 0; why = "query"; }
-
     if (ok && g2.syscall_restarts <= g1.syscall_restarts) {
-        ok = 0; why = "blocking sleep did not re-execute";
-    }
-    if (ok && t_after <= t_before) { ok = 0; why = "sleep did not sleep"; }
-
-    /*
-     * (4) Stage 9-evt Step 2: the blocking sleep resumed on a FRESH kernel
-     * stack, its original frame abandoned.
-     *
-     * This is the assertion that separates step 2 from step 1.  A restart that
-     * yielded through its own frame and one that threw it away are identical
-     * from ring 3 and both advance the restart gauge; only the abandonment
-     * advances this one, because the trampoline is the only way an abandoned
-     * syscall can complete.  Without it, "no thread blocks in the kernel"
-     * would be a claim about the handlers and not about the stacks.
-     */
-    if (ok && g2.syscall_abandons <= g1.syscall_abandons) {
-        ok = 0; why = "blocking sleep kept its kernel frame";
+        ok = 0; why = "blocking wait did not re-execute";
     }
 
+    { handle_id_t h = (handle_id_t)n; it_close(&h); }
+    it_quiesce_reaper();
     if (ok) it_pass("T310"); else it_fail("T310", why);
 }
 
@@ -24664,6 +24747,231 @@ static void test_t329(void) {
     if (ok) it_pass("T329"); else it_fail("T329", why);
 }
 
+
+/* ── T330: a bound notification reaches a thread blocked on an endpoint ─────
+ *
+ * Ledger A-23, seL4's `seL4_TCB_BindNotification`, and the gap A-20's audit
+ * found: *"seL4 binds a notification to a TCB so a passive server blocked on
+ * an endpoint can still take signals; IRIS cannot."*
+ *
+ * A thread blocked receiving on an endpoint is in that endpoint's queue, and
+ * nothing else can reach it.  Every server that needs BOTH an interrupt and a
+ * request queue — which is what a driver is — therefore had to spend a second
+ * thread on the choice, or busy-poll.  There is no way to write a
+ * single-threaded driver without this, which is why the timer service (A-24)
+ * is the first thing that could not be written at all.
+ *
+ * Five claims:
+ *  1. binding is capability-mediated: RIGHT_WRITE on the thread, RIGHT_WRITE
+ *     on the notification, and the notification slot takes nothing else;
+ *  2. one thread per notification and one notification per thread — a second
+ *     bind either way is ALREADY_EXISTS, because "which thread does a signal
+ *     wake" must have exactly one answer;
+ *  3. a signal ALREADY pending is consulted on the way into a receive, so a
+ *     signal that arrives before the thread blocks is not lost;
+ *  4. it arrives as a message the server can tell apart — labelled
+ *     IRIS_MSG_LABEL_NOTIFICATION, bits in words[0] — because one thread now
+ *     receives two kinds of thing on one syscall;
+ *  5. unbinding restores the deafness, which is what says the binding was
+ *     doing the work.
+ * Invariants: A1, I1. */
+static void test_t330(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "bound notification";
+
+    long ep = it_ep_create();
+    long n1 = it_notify_create();
+    long n2 = it_notify_create();
+    if (ep < 0 || n1 < 0 || n2 < 0) { it_fail("T330", "objects"); return; }
+    long self = it_own_tcb_derived();
+    if (self < 0) { it_fail("T330", "self tcb"); return; }
+
+    /* 1. the arguments are capabilities, checked as such. */
+    if (ok && it_sys2(SYS_TCB_BIND_NOTIFICATION, self, ep)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "endpoint bound as notification"; }
+    if (ok && it_sys2(SYS_TCB_BIND_NOTIFICATION, n1, n1)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "notification bound as thread"; }
+    if (ok) {
+        long ro = it_cs_reduce(n1, RIGHT_READ);
+        if (ro < 0) { ok = 0; why = "ro dup"; }
+        else if (it_sys2(SYS_TCB_BIND_NOTIFICATION, self, ro)
+                 != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "read-only bound"; }
+        if (ro >= 0) it_slot_delete((uint32_t)ro);
+    }
+
+    /* ...and the bind itself. */
+    if (ok && it_sys2(SYS_TCB_BIND_NOTIFICATION, self, n1) != 0) { ok = 0; why = "bind"; }
+
+    /* 2. exactly one answer, in both directions. */
+    if (ok && it_sys2(SYS_TCB_BIND_NOTIFICATION, self, n2)
+              != (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "second notification bound"; }
+    if (ok) {
+        long other = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                          IRIS_KOBJ_TCB, 0);
+        if (other < 0) { ok = 0; why = "other tcb"; }
+        else if (it_sys2(SYS_TCB_BIND_NOTIFICATION, other, n1)
+                 != (long)IRIS_ERR_ALREADY_EXISTS) { ok = 0; why = "second thread bound"; }
+        if (other >= 0) it_slot_delete((uint32_t)other);
+    }
+
+    /* 3 + 4. signal FIRST, then receive: the pending signal is consulted on the
+     *        way in, and arrives labelled. */
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, n1, 0x5u) != 0) { ok = 0; why = "signal"; }
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        if (it_sys3(SYS_EP_RECV, ep, (long)(uintptr_t)&m, 0L) != 0) {
+            ok = 0; why = "recv did not take the signal";
+        } else if (m.label != IRIS_MSG_LABEL_NOTIFICATION) {
+            ok = 0; why = "signal not labelled";
+        } else if (m.words[0] != 0x5u) {
+            ok = 0; why = "wrong bits";
+        }
+    }
+
+    /* 5. unbind, and the same signal no longer reaches a receive — the bits
+     *    stay pending on the notification for whoever waits on it directly. */
+    if (ok && it_sys2(SYS_TCB_BIND_NOTIFICATION, self, 0L) != 0) { ok = 0; why = "unbind"; }
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, n1, 0x9u) != 0) { ok = 0; why = "signal 2"; }
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        if (it_sys3(SYS_EP_NB_RECV, ep, (long)(uintptr_t)&m, 0L)
+            != (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "unbound thread still took it"; }
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_wait_timeout( n1, (long)(uintptr_t)&bits,
+                    100000000LL) != 0 || bits != 0x9u) {
+            ok = 0; why = "bits lost by the unbind";
+        }
+    }
+
+    it_slot_delete((uint32_t)self);
+    { handle_id_t h;
+      h = (handle_id_t)n2; it_close(&h);
+      h = (handle_id_t)n1; it_close(&h);
+      h = (handle_id_t)ep; it_close(&h); }
+    it_quiesce_reaper();
+    if (ok) it_pass("T330"); else it_fail("T330", why);
+}
+
+
+/* ── T331: waiting is a service, not a syscall (A-24) ───────────────────────
+ *
+ * `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP` and `SYS_NOTIFY_WAIT_TIMEOUT` each parked
+ * a thread with a deadline and had the scheduler wake it.  That is a policy
+ * about time inside the kernel — how long a thread may wait, whose waiting is
+ * worth a kernel data structure, what happens when the deadline passes — and
+ * seL4 has none of it, for exactly that reason.
+ *
+ * So a task that wants to wait ASKS somebody.  Four claims:
+ *
+ *  1. the timer service signals the notification it was handed, after the
+ *     delay it was given, and not before;
+ *  2. the authority is the ENDPOINT: a task holding no timer capability cannot
+ *     wait on time at all, which is the difference between a service and a
+ *     syscall number;
+ *  3. the notification travels as a CAPABILITY and the grant ENDS with the
+ *     timer — the service is not left holding a way to signal a client it
+ *     finished serving;
+ *  4. the three retired syscalls answer NOT_SUPPORTED.
+ * Invariants: A1, A5, P2. */
+static void test_t331(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "waiting is a service";
+
+    /* 2. the authority is the endpoint we were granted. */
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TIMER_EP)
+              != (long)IRIS_HANDLE_TYPE_ENDPOINT) { ok = 0; why = "no timer granted"; }
+
+    long n = it_notify_create();
+    if (n < 0) { it_fail("T331", "notif"); return; }
+
+    /* 1. armed, and it fires.  A generous delay compared with the tick (10 ms)
+     *    so the assertion is about the mechanism and not about scheduling
+     *    luck; the wait below is unbounded on purpose, because a timer service
+     *    that never fires SHOULD hang the suite rather than let a broken
+     *    mechanism pass as a timeout. */
+    /* A fresh copy per arm: the transfer is a MOVE, so what is handed over is
+     * a derived capability the caller is giving away, not its own slot. */
+    if (ok) {
+        long give = it_cs_reduce(n, RIGHT_WRITE | RIGHT_TRANSFER);
+        uint64_t tok = 0;
+        long ar = (give < 0) ? -999 :
+                  iris_timer_arm((long)IRIS_CPTR_TIMER_EP, give, 0x4ull, 50000000ull, &tok);
+        if (ar != 0) {
+            it_serial_write("[IRIS][TEST] T331 arm give="); it_log_num((uint32_t)give);
+            it_serial_write(" r="); it_log_num((uint32_t)-ar); it_serial_write("\n");
+            ok = 0; why = "arm";
+        }
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0) {
+            ok = 0; why = "wait";
+        } else if ((bits & 0x4ull) == 0) {
+            ok = 0; why = "wrong bits";
+        }
+    }
+
+    /* ...and it did not fire EARLY: a second arm with a long delay leaves the
+     *    notification quiet for a while. */
+    if (ok) {
+        long give = it_cs_reduce(n, RIGHT_WRITE | RIGHT_TRANSFER);
+        uint64_t tok = 0;
+        if (give < 0 || iris_timer_arm((long)IRIS_CPTR_TIMER_EP, give, 0x8ull,
+                                       2000000000ull, &tok) != 0) { ok = 0; why = "arm long"; }
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        for (uint32_t i = 0; ok && i < 20u; i++) {
+            if (it_sys2(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits) == 0 && bits) {
+                ok = 0; why = "fired early"; break;
+            }
+            (void)it_sys1(SYS_YIELD, 0);
+        }
+    }
+
+    /* 3. an arm needs a notification to signal; without one it is refused, and
+     *    the service is left holding nothing. */
+    if (ok) {
+        struct IrisMsg m;
+        it_iris_msg_zero(&m);
+        m.label      = TMR_OP_ARM;
+        m.words[0]   = 1000ull;
+        m.words[1]   = 1ull;
+        m.word_count = 2u;
+        if (it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TIMER_EP, (long)(uintptr_t)&m) != 0) {
+            ok = 0; why = "capless call";
+        } else if (m.words[0] == 0u) {
+            ok = 0; why = "armed with no notification";
+        }
+    }
+
+    /* 4. the syscalls are gone. */
+    if (ok && it_sys1(SYS_SLEEP, 1) != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "SYS_SLEEP still answers";
+    }
+    if (ok && it_sys3(SYS_CLOCK_NANOSLEEP, 0, 1000, 0) != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "SYS_CLOCK_NANOSLEEP still answers";
+    }
+    {
+        uint64_t bits = 0;
+        if (ok && it_sys3(SYS_NOTIFY_WAIT_TIMEOUT, (long)IRIS_CPTR_TIMER_EP,
+                          (long)(uintptr_t)&bits, 1000L)
+                  != (long)IRIS_ERR_NOT_SUPPORTED) {
+            ok = 0; why = "SYS_NOTIFY_WAIT_TIMEOUT still answers";
+        }
+    }
+
+    { handle_id_t h = (handle_id_t)n; it_close(&h); }
+    it_quiesce_reaper();
+    if (ok) it_pass("T331"); else it_fail("T331", why);
+}
+
 /* ── T324: what the rotating object pool is still holding ──────────────────
  * The pool's contract is one sentence — delete before use, never hold a slot
  * across a test boundary — and until now nothing read it back.  The pool is
@@ -25348,6 +25656,8 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t327();
     test_t328();
     test_t329();
+    test_t330();
+    test_t331();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

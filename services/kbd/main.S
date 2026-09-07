@@ -154,15 +154,30 @@ _start:
     syscall
 
 /* ── Main service loop (Fase 13/Track I: endpoint + IRQ notification only) ──
- *   1. drain all pending endpoint requests (SYS_EP_NB_RECV);
- *   2. block on the IRQ KNotification (10 ms timeout) so the endpoint drain
- *      keeps running even with no key traffic.
+ *
+ * Ledger A-23/A-24: ONE blocking receive takes both kinds of event.
+ *
+ * It used to drain the endpoint non-blockingly and then sleep 10 ms on the IRQ
+ * notification, because a thread blocked receiving on an endpoint was deaf to
+ * signals and the only way to serve both was to keep waking up.  A hundred
+ * wakeups a second, to find nothing, forever.
+ *
+ * The notification is BOUND to this thread now, so a keystroke wakes it out of
+ * the endpoint receive and arrives as a message labelled
+ * IRIS_MSG_LABEL_NOTIFICATION.  Idle costs nothing.
  */
+    movl  kbd_notif_h(%rip), %esi      /* bind the IRQ notification to us  */
+    testl %esi, %esi
+    jz    .kbd_recv
+    movl  $19, %edi                    /* IRIS_CPTR_OWN_TCB */
+    movq  $SYS_TCB_BIND_NOTIFICATION, %rax
+    syscall
+
 .kbd_recv:
 .kbd_ep_drain:
     movl  kbd_ep_h(%rip), %edi
     testl %edi, %edi
-    jz    .kbd_wait                    /* no endpoint granted: wait on IRQ */
+    jz    .kbd_no_ep                   /* no endpoint granted              */
     leaq  kbd_ep_msg(%rip), %rsi       /* zero IrisMsg, stage bulk buffer  */
     movq  $0,  0(%rsi)
     movq  $0,  8(%rsi)
@@ -183,11 +198,16 @@ _start:
     jne   .kbd_reply_pick_done
     movl  $14, %edx
 .kbd_reply_pick_done:
-    movq  $SYS_EP_NB_RECV, %rax
-    syscall
+    movq  $SYS_EP_RECV, %rax           /* BLOCKING: the bound notification  */
+    syscall                            /* wakes us for a keystroke too      */
     testq %rax, %rax
-    jnz   .kbd_wait               /* WOULD_BLOCK/err: nothing pending */
+    jnz   .kbd_recv               /* error: retry rather than spin     */
 
+    leaq  kbd_ep_msg(%rip), %rsi
+    movq  0(%rsi), %rax                /* a SIGNAL, not a call?            */
+    movq  $0xF0000002, %rcx            /* IRIS_MSG_LABEL_NOTIFICATION      */
+    cmpq  %rcx, %rax
+    je    .kbd_scancode
     leaq  kbd_ep_msg(%rip), %rsi
     movl  56(%rsi), %eax               /* per-call KReply capability       */
     movl  %eax, 92(%rsp)               /* stash reply cap                  */
@@ -287,21 +307,19 @@ _start:
     /* Fase S1: the reply CPtr (slot 13/14) is a reusable object — no close. */
     jmp   .kbd_ep_drain
 
-/* ── Wait on the IRQ KNotification (Fase 13/Track I) ──────────────────────
- * The endpoint drain above is non-blocking; the only blocking point is the IRQ
- * KNotification (10 ms timeout so the EP drain keeps running with no key
- * traffic).  No legacy service KChannel — clients use the endpoint. */
-.kbd_wait:
-    movl  kbd_notif_h(%rip), %edi      /* block on the IRQ notification    */
+/* No endpoint was granted: the IRQ notification is all there is to wait for,
+ * so wait on it directly.  A driver with nothing to serve still has a line to
+ * watch. */
+.kbd_no_ep:
+    movl  kbd_notif_h(%rip), %edi
     testl %edi, %edi
     jz    .kbd_recv
     leaq  kbd_notif_bits(%rip), %rsi
-    movq  $SYS_NOTIFY_WAIT_TIMEOUT, %rax
-    movq  $10000000, %rdx              /* 10 ms */
+    movq  $SYS_NOTIFY_WAIT, %rax
     syscall
-    testq %rax,  %rax
-    jz    .kbd_scancode                /* IRQ fired: consume the byte      */
-    jmp   .kbd_recv                    /* TIMED_OUT/err: quiet loop        */
+    testq %rax, %rax
+    jz    .kbd_scancode
+    jmp   .kbd_recv
 
 /* ── Scancode path: woken by the IRQ KNotification (Fase 7.6) ────────────
  * The kernel masks IRQ1, signals the notification and EOIs; ring-3 reads

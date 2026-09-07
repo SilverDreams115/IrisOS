@@ -109,6 +109,18 @@ static inline long init_retype_slot(uint64_t ut_cptr, uint32_t obj_type,
  * pool is no longer reachable from userland. */
 #define INIT_SLOT_OWN_CSPACE   57u
 #define INIT_SLOT_OWN_VSPACE   58u
+/* A-24: the timer service's fixtures, held by init for its whole run. */
+#define INIT_SLOT_TIMER_EP     63u   /* the control endpoint init serves it on */
+/* 64/65 are IRIS_CPTR_DEVICE_UNTYPED / OWN_CSPACE in init's own root CNode —
+ * the first draft put the IRQ capability on top of the device untyped and got
+ * ALREADY_EXISTS, which is the slot map doing its job. */
+#define INIT_SLOT_TIMER_IRQCAP 71u   /* the timer IRQ, claimed from IRQ control */
+#define INIT_SLOT_TIMER_NOTIF  72u   /* the notification that IRQ routes into */
+#define INIT_SLOT_TIMER_REPLY  73u   /* the service's reply object */
+#define INIT_SLOT_TIMER_CN     74u   /* its CNode of client notifications */
+#define INIT_SLOT_TIMER_UT     75u   /* its budget */
+#define INIT_SLOT_TIMER_GIVE   76u   /* the derived copy init hands over per arm */
+#define INIT_SLOT_IDLE_NOTIF   77u   /* A-24: what init stops on, forever */
 #define INIT_SLOT_S8_TCB       59u
 /* Stage 7 Step 7: where a fault delivers the faulting thread's capability.
  * init arms the handler for ITSELF, so its own root CNode is the mailbox and
@@ -137,6 +149,9 @@ void init_log(const char *s);
  * sink): created by init_spawn_console, read by init_log, re-minted into
  * children by the launch module. */
 extern handle_id_t g_init_console_ep_h;
+/* A-24: the timer service's control endpoint, init's own copy. */
+extern handle_id_t g_init_timer_ep_h;
+int init_spawn_timer(void);
 
 /* Tiny process utilities (main.c). */
 void init_exit(long code);

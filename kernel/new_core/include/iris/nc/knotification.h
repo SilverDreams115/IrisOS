@@ -47,6 +47,13 @@ struct KNotification {
     _Atomic uint64_t    signal_bits;                 /* pending signals — bit N = signal N */
     uint8_t             closed;
     uint32_t            waiter_count;
+    /*
+     * A-23: the thread this notification is BOUND to, if any.  A signal that
+     * finds no waiter is delivered to it even while it is blocked on an
+     * endpoint.  One thread, because "which thread does a signal wake" must
+     * have exactly one answer.
+     */
+    struct task        *bound_tcb;
     struct task        *queue_head;                  /* tasks blocked on wait */
     struct task        *queue_tail;
     struct KNotification *live_prev;
@@ -58,6 +65,13 @@ struct KNotification {
 struct KNotification *knotification_alloc_at(void *mem);
 void                  knotification_free (struct KNotification *n);
 void                  knotification_cancel_waiter(struct task *t);
+
+/* A-23: bind/unbind, and the teardown hooks that keep the two pointers from
+ * outliving each other. */
+iris_error_t          knotification_bind(struct KNotification *n, struct task *t);
+void                  knotification_unbind(struct KNotification *n);
+void                  knotification_unbind_task(struct task *t);
+uint64_t              knotification_take_pending(struct KNotification *n);
 
 /* Set one or more bits. Safe from IRQ context. */
 void         knotification_signal(struct KNotification *n, uint64_t bits);
@@ -89,12 +103,6 @@ iris_error_t knotification_wait_step(struct KNotification *n, uint64_t *out_bits
  * entries, because the waker CLEARS the state the handler parked on and a
  * handler cannot infer "resuming" from what is left.
  */
-iris_error_t knotification_wait_timeout_step(struct KNotification *n,
-                                             uint64_t *out_bits,
-                                             uint64_t deadline_ticks,
-                                             int first);
-iris_error_t knotification_wait_timeout(struct KNotification *n, uint64_t *out_bits,
-                                        uint64_t deadline_ticks);
 
 /* Non-blocking: returns pending bits (clearing them) or 0 if none pending. */
 uint64_t     knotification_poll(struct KNotification *n);

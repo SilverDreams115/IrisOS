@@ -47,7 +47,13 @@ typedef enum {
     TASK_RUNNING,
     TASK_BLOCKED_IPC,       /* blocked waiting for an endpoint IPC rendezvous */
     TASK_BLOCKED_IRQ,       /* blocked waiting for a KNotification signal */
-    TASK_SLEEPING,          /* blocked until a timer tick count is reached */
+    /*
+     * Ledger A-24: TASK_SLEEPING is RETIRED and its number is kept so no other
+     * state silently inherits it.  A thread blocked on time was the kernel
+     * holding a deadline on somebody's behalf; waiting is a service now, and a
+     * thread waiting for one is blocked on a NOTIFICATION like any other.
+     */
+    TASK_SLEEPING_RETIRED,
     TASK_BLOCKED_FAULT,     /* suspended pending exception handler decision */
     TASK_BLOCKED_SEND,      /* blocked waiting for a receiver on a KEndpoint */
     TASK_BLOCKED_RECV,      /* blocked waiting for a sender on a KEndpoint */
@@ -274,6 +280,18 @@ struct task {
      */
     struct KEndpoint *timeout_ep;
     uint64_t          timeout_ep_badge;
+
+    /*
+     * Ledger A-23 — the BOUND notification (seL4's seL4_TCB_BindNotification).
+     *
+     * A thread blocked receiving on an endpoint is, without this, deaf to
+     * signals: it is in the endpoint's queue and nothing else can reach it.
+     * That forced every server that needs both — an interrupt and a request
+     * queue, which is what a driver IS — to spend a second thread on the
+     * choice.  A signal to this notification wakes the thread out of the
+     * endpoint queue and is delivered as a message it can tell apart.
+     */
+    struct KNotification *bound_notif;
     uint8_t           timeout_pending;
 
     /*
@@ -431,8 +449,11 @@ struct task {
     uint32_t          time_slice;   /* ticks per quantum (default TASK_DEFAULT_SLICE) */
     uint32_t          ticks_left;   /* ticks remaining before need_resched */
     uint32_t          need_resched; /* set by scheduler_tick when ticks_left hits 0 */
-    uint32_t          timed_out;   /* set by scheduler_tick when a timed block expires */
-    uint64_t          wake_tick;   /* deadline tick: valid for TASK_SLEEPING and timed BLOCKED_IPC/IRQ */
+    /* A-24: the ONE deadline the kernel still keeps, and it is not a thread's
+     * — it is when a scheduling context's budget comes back (TASK_BUDGET_
+     * EXHAUSTED).  It used to also carry SYS_SLEEP's wake time and every timed
+     * IPC wait's. */
+    uint64_t          wake_tick;
 
     /* Synchronous endpoint IPC staging (Ph66+). */
     struct IrisMsg      ipc_msg;         /* 64-byte staging/delivery buffer */

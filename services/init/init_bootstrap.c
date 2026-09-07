@@ -64,8 +64,15 @@ void init_early_serial_stop(void) {
     init_close(&g_init_early_serial_h);
 }
 
+/*
+ * Ledger A-24: a retry pause is "let whatever I am waiting for get a turn",
+ * which is a SCHEDULING request and not one about time.  It used SYS_SLEEP
+ * because a timed block was there; yielding says what is meant, and works
+ * during bootstrap when there is no timer service yet.
+ */
 void init_retry_pause(void) {
-    (void)init_sys1(SYS_SLEEP, INIT_RETRY_SLEEP_TICKS);
+    for (uint32_t i = 0; i < INIT_RETRY_SLEEP_TICKS * 16u; i++)
+        (void)init_sys1(SYS_YIELD, 0);
 }
 
 /* Phase 13 (Track I): init's spawn/bootstrap KBootstrapCap arrives as the

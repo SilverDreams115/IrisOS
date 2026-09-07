@@ -80,12 +80,32 @@ static void ub_boot_panic(uint64_t ioport_control_cptr, uint64_t ioport_slot,
 /* ub_send_spawn_cap retired — Phase 13/Track I (init's spawn cap is a pre-start
  * IRIS_CPTR_PROC_CONTROL mint now, no KChannel SPAWN_CAP send). */
 
-static void ub_park_root_bootstrap(void) {
-    /* Root bootstrap task policy:
-     * after delegating authority it keeps no live handles and remains parked.
-     * That makes the lifecycle explicit without putting first-task teardown
-     * back on the critical healthy-path IPC boundary. */
-    for (;;) (void)ub_sys1(SYS_SLEEP, 60000);
+static void ub_park_root_bootstrap(uint64_t boot_untyped_c, uint64_t own_cnode_c,
+                                   uint64_t park_slot) {
+    /*
+     * Root bootstrap task policy: after delegating authority it keeps no live
+     * handles and remains parked.  That makes the lifecycle explicit without
+     * putting first-task teardown back on the critical healthy-path IPC
+     * boundary.
+     *
+     * Ledger A-24: parked means BLOCKED, not sleeping in a loop.  It was
+     * SYS_SLEEP(60000) forever — the root task waking on a timer it had no use
+     * for, because a timed block was the only way it knew to stop.  A wait on
+     * a notification nobody holds blocks once and never returns, which is
+     * what "parked" meant all along.
+     */
+    if (ub_sys4(SYS_UNTYPED_RETYPE2, (long)boot_untyped_c,
+                (long)((uint64_t)IRIS_KOBJ_NOTIFICATION | (1ULL << 32)),
+                (long)(own_cnode_c | ((uint64_t)park_slot << 32)), 0) == 0) {
+        uint64_t bits = 0;
+        for (;;) {
+            if (ub_sys2(SYS_NOTIFY_WAIT, (long)park_slot, (long)(uintptr_t)&bits) != 0)
+                break;
+        }
+    }
+    /* No notification to hold still on (a boot that got this far without one
+     * is already broken): yield rather than spin hot. */
+    for (;;) (void)ub_sys1(SYS_YIELD, 0);
 }
 
 /* Stage 5: validate one BootInfo untyped descriptor against the capability it
@@ -134,6 +154,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
     uint64_t    boot_untyped_c;
     uint64_t    own_cnode_c;  /* this task's own root CNode, as a capability */
     uint64_t    ws_slot;      /* loader workspace CNode — first free slot */
+    uint64_t    park_slot;    /* A-24: the notification the root task parks on */
     uint64_t    panic_slot;   /* serial KIoPort for a boot diagnostic — last */
 
     if (!bi || bi->magic != IRIS_ROOT_BOOTINFO_MAGIC ||
@@ -173,14 +194,17 @@ void iris_userboot_main(uint64_t bootinfo_va) {
      * announce itself: a mint into an occupied slot fails, or worse, succeeds
      * over a capability that was in use.  Two slots are needed — the loader
      * workspace and the diagnostic KIoPort — and they are taken from opposite
-     * ends so they cannot be the same slot. */
-    if (bi->empty_slot_end < bi->empty_slot_first + 2u) {
+     * ends so they cannot be the same slot.  A third is where the root task
+     * PARKS: A-24 made that a wait on a notification instead of an endless
+     * sleep, and a notification needs somewhere to live. */
+    if (bi->empty_slot_end < bi->empty_slot_first + 3u) {
         ub_boot_panic(ioport_control_c, UB_PANIC_IOPORT_SLOT,
                       "[USERBOOT] FATAL: BootInfo leaves no free slots to "
                       "work in; halting boot\n");
         goto fail;
     }
     ws_slot    = bi->empty_slot_first;
+    park_slot  = (uint64_t)bi->empty_slot_first + 1u;
     panic_slot = (uint64_t)bi->empty_slot_end - 1u;
 
     /* Stage 5 Step 3: the root task holds a capability to its own root CNode
@@ -426,7 +450,7 @@ void iris_userboot_main(uint64_t bootinfo_va) {
 
     ub_close(init_boot_h);
     ub_close(init_proc_h);
-    ub_park_root_bootstrap();
+    ub_park_root_bootstrap(boot_untyped_c, own_cnode_c, park_slot);
 
 fail:
     ub_close(init_boot_h);

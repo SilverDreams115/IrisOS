@@ -444,6 +444,15 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * point: making pools and filling them are different rights, the same way
  * seL4 separates ASIDControl from an ASIDPool.
  */
+/*
+ * Ledger A-24 — the TIMER service's control endpoint.
+ *
+ * The kernel cannot block a thread on time any more, so waiting is a request
+ * to a server: "signal this notification in N nanoseconds".  A task that holds
+ * this slot can wait; one that does not, cannot — which is the point.  It used
+ * to be three syscall numbers every task could reach for.
+ */
+#define IRIS_CPTR_TIMER_EP      ((uint64_t)70)
 #define IRIS_CPTR_ASID_CONTROL  ((uint64_t)85)
 #define IRIS_CPTR_ASID_POOL     ((uint64_t)86)
 /*

@@ -1164,6 +1164,138 @@ mechanisms, a TCB capability minted into a mailbox on every fault, and a
 sequence number standing in for a one-shot capability.
 
 
+
+### A-23 — a bound notification, so one thread can be a driver
+
+A-20's audit listed this as one of "two smaller absences": *"seL4 binds a
+notification to a TCB (`seL4_TCB_BindNotification`) so a passive server blocked
+on an endpoint can still take signals; IRIS cannot."*  It is not small.
+
+**What the absence cost.**  A thread blocked receiving on an endpoint is in
+that endpoint's queue, and nothing else can reach it.  Every server that needs
+BOTH an interrupt and a request queue — which is what a DRIVER is — therefore
+had to choose one to block on.  Both drivers in this system chose the same way
+out, and both paid for it with a timeout:
+
+  - `kbd` drained its endpoint non-blockingly and then slept 10 ms on its IRQ
+    notification, so the drain kept running with no key traffic.  A hundred
+    wakeups a second, to find nothing, forever.
+  - `svcmgr` did exactly the same with its service-death notification.
+
+Both were busy-waits with a kernel timeout standing in for a thing they could
+not say.  Neither is a timeout in any real sense: nothing was being given a
+deadline, and nobody wanted to know that time had passed.
+
+**What is there now.**  `SYS_TCB_BIND_NOTIFICATION(tcb, ntfn)` binds one
+notification to one thread.  A signal that finds no waiter is delivered to the
+bound thread even while it is blocked on an endpoint: it is dequeued from the
+endpoint and given a message labelled `IRIS_MSG_LABEL_NOTIFICATION` with the
+bits in `words[0]`.  A pending signal is also consulted on the way INTO a
+receive, so a signal that arrives before the thread blocks is not lost.  One
+notification per thread and one thread per notification, because "which thread
+does a signal wake" must have exactly one answer; a second bind either way is
+ALREADY_EXISTS.
+
+**One design point.**  The binding takes a LIFECYCLE reference on the
+notification and not an ACTIVE one.  An active reference is what keeps an
+object open, so taking one here would mean a notification could never be closed
+while a thread was bound to it — the binding keeping alive the very thing it
+points at.  The lifecycle reference keeps the storage valid, `close` still
+fires when the last capability goes, and `close` breaks the binding.
+
+**Gauges.**  T330, five claims, of which the third is the one the absence was
+about: a signal that arrives BEFORE the receive is consulted on the way in.
+`kbd` and `svcmgr` are the two real users, and both lost their timeout with the
+bind — the second-order proof that this was the missing piece rather than a
+convenience.
+
+### A-24 — waiting becomes a service, and the kernel forgets how
+
+A-20 found it and named it precisely: *"`SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP` and
+`SYS_NOTIFY_WAIT_TIMEOUT` block on TIME inside the kernel.  seL4 has no timed
+blocking at all... This is deliberate in IRIS and it is a real divergence,
+because a kernel that can block on time owns a policy about time."*  It is no
+longer deliberate.
+
+**What the kernel was deciding.**  Three syscalls parked a thread with a
+deadline and had the scheduler wake it.  That is a set of policies, none of
+which a microkernel should hold: how long a thread may wait, whose waiting is
+worth a kernel data structure, what "the deadline passed" means, and what
+happens to a deadline nobody wants any more.  Every thread carried a
+`wake_tick`; the tick swept the whole thread list for expiries; there was a
+`TASK_SLEEPING` state and a `timed_out` flag and a fast-forward path in the
+idle loop to make sleepers wake on a guest that delivers no interrupts.
+
+**What is there now.**  A TIMER SERVICE, in ring 3.  It holds the timer
+interrupt, takes "signal this notification in N nanoseconds" over an endpoint,
+and signals.  A client waits the way it waits for anything else.  What used to
+be a syscall number every task could reach for is a capability somebody granted
+— delegable, revocable, replaceable, and refusable.
+
+The kernel keeps the timer interrupt for preemption and MCS accounting, which
+is what seL4's kernel does with its own; what it stopped doing is deciding who
+waits.  The tick is OFFERED to ring 3 through the ordinary IRQ routing, so a
+holder of an IRQ capability for line 0 gets a time base.  The kernel does not
+mask that line for its holder, because it needs the interrupt itself: a handler
+that never acknowledges slows nothing down, it simply stops being told.
+
+**What the kernel lost, concretely.**  `TASK_SLEEPING`, `timed_out`,
+`timeout_ns_to_deadline_ticks`, `knotification_wait_timeout`,
+`knotification_wait_timeout_step`, the expiry sweep in `scheduler_tick`, and
+the sleeper half of the idle fast-forward.  `wake_tick` survives with one
+meaning instead of three: when a scheduling context's budget comes back, which
+is a fact about the budget.
+
+**The service is single-threaded, and could not have been before A-23.**  A
+driver has to take both an interrupt and a request queue.  The timer service is
+the first thing in this system that could not be written at all without the
+bound notification, which is why the two rows are adjacent.
+
+**Two additions the retirement required, both seL4's.**  `SYS_NOTIFY_POLL` is
+`seL4_Poll`: a caller that used a zero timeout was asking "is anything there"
+and having it answered by the timed-block machinery — the machinery went, the
+question did not.  And `TMR_OP_CANCEL`, because a bounded wait that ends early
+leaves a timer armed and a service never told holds one table entry and one
+capability per abandoned wait.  Whose timer it is, is decided by the BADGE on
+the capability the request arrived through, not by the token: a token is a
+number, and a number is not authority.
+
+**Three things a caller now sees that the kernel used to hide.**
+
+  - *A stale timeout still fires.*  An armed timer nobody wants signals anyway
+    unless it is cancelled, so `IRIS_TIMER_BIT` is reserved and callers mask it
+    out.  The kernel used to cancel the deadline as it woke the thread, which
+    is exactly the bookkeeping about somebody else's waiting it should not have
+    been doing.
+  - *A notification handed to the service is GIVEN AWAY.*  IPC capability
+    transfer in IRIS is a move, so a caller derives a fresh copy per arm.  The
+    service can signal what it was handed and nothing else, and the grant ends
+    when the timer fires and the service deletes its copy.
+  - *Waiting can be REFUSED.*  A task with no timer capability cannot wait on
+    time.  That was never true of a syscall number.
+
+**And a distinction the conversion forced.**  The suite's 71 `SYS_SLEEP` calls
+turned out to be two different things wearing one syscall.  "Let the child
+reach its blocking syscall" is a SCHEDULING request and became a yield; only
+"fail instead of hanging if this never comes" was about time.  The kernel's
+timed block had been standing in for a yield in most of its uses, which is the
+kind of thing you only find out by taking it away.
+
+**Gauges.**  T331 proves the service fires, that the authority is the endpoint,
+that an arm without a notification is refused, and that all three numbers
+answer NOT_SUPPORTED.  T310's subject moved from `SYS_SLEEP` to
+`SYS_NOTIFY_WAIT` — the restartable-syscall claim is unchanged and is now made
+about a mechanism that will still be here.  T150's hostile-pointer battery
+moved to `SYS_NOTIFY_POLL` and `SYS_NOTIFY_WAIT`, the only kernel writers left.
+
+**A bug this shook out.**  The timer service's first token encoding was the raw
+slot index, so arming into slot 0 with generation 0 produced token 0 — which
+the cleanup path reads as "nothing was armed" and used to delete the client's
+notification out from under a timer that then fired into an empty slot.  The
+first bounded wait in the suite hung, which is the correct amount of noticing
+for a bug that silent.
+
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a
@@ -1259,6 +1391,23 @@ a fix for a mechanism that no longer exists.
 and remains MET; no allowlist entry moves, no prohibition is added or lifted.
 
 
+
+### A-5 — P1 and P2 restated for retired timed blocking
+
+**Change**: charter §2.6 P1/P2 (mechanism, not policy) — the "Today" columns
+gain the timed-blocking retirement: the kernel no longer holds a deadline on
+any thread's behalf, and waiting is a capability to a service.
+
+**Justification**: ledger A-24.  P2 says the kernel decides no policy that a
+holder could decide.  Three syscalls decided how long a thread may wait, whose
+waiting is worth a kernel data structure, and what happens to a deadline nobody
+wants — all of them policy, all of them now in a ring-3 service a task either
+holds a capability to or does not.
+
+**Scope**: two "Today" cells restated to match shipped mechanism.  No invariant
+changes state, no allowlist entry moves, no prohibition is added or lifted.
+
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types, and the boundary
@@ -1269,6 +1418,10 @@ and remains MET; no allowlist entry moves, no prohibition is added or lifted.
 - T329 pins fault IPC: a fault is a badged message on an endpoint, the reply
   capability is the only authority that resumes, and the two retired syscalls
   answer NOT_SUPPORTED.
+- T330 pins the bound notification: a signal reaches a thread blocked on an
+  endpoint, and a pending one is consulted on the way in.
+- T331 pins that waiting is a service: the timer service fires, the authority
+  is its endpoint, and the three timed syscalls answer NOT_SUPPORTED.
 - T260 pins the retirement of the create syscalls and their no-effect.
 - T125/T126 pin the rejection of the migrated family on the legacy retype.
 - The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.

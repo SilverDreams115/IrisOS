@@ -63,7 +63,11 @@ void test_syscall_dispatch(void) {
          * (SYS_TCB_FAULT_INFO).  A fault is answered by REPLYING to it and
          * read out of the message it arrived in, so both numbers are gone —
          * and gone means NOT_SUPPORTED for everyone, not repurposed. */
-        const uint64_t retired[] = { 15, 19, 25, 55, 56, 58, 66, 104, 109, 123 };
+        /* Ledger A-24 adds three: 8 (SYS_SLEEP), 64 (SYS_NOTIFY_WAIT_TIMEOUT)
+         * and 70 (SYS_CLOCK_NANOSLEEP).  A kernel that can block a thread on
+         * time owns a policy about time; waiting is a service now. */
+        const uint64_t retired[] = { 8, 15, 19, 25, 55, 56, 58, 64, 66, 70,
+                                     104, 109, 123 };
         for (unsigned i = 0; i < sizeof(retired) / sizeof(retired[0]); i++)
             ASSERT_EQ(ds(retired[i]), (long)IRIS_ERR_NOT_SUPPORTED);
     }
@@ -87,7 +91,7 @@ void test_syscall_dispatch(void) {
      * must break this and be re-stated, the same way T148 forces it from ring
      * 3.  If this fails, check that the addition was deliberate. */
     {
-        ASSERT_EQ(ds(SYS_ASID_POOL_ASSIGN + 1u), (long)IRIS_ERR_NOT_SUPPORTED);
+        ASSERT_EQ(ds(SYS_NOTIFY_POLL + 1u), (long)IRIS_ERR_NOT_SUPPORTED);
     }
 
     test_set_current_task(NULL);

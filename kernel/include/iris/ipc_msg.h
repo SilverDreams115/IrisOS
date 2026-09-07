@@ -27,6 +27,18 @@
  *                    reply identity is implied by the one-shot KReply.
  *                    0 = unbadged capability (legacy / master cap).
  */
+/*
+ * Ledger A-23 — the label a BOUND NOTIFICATION arrives under.
+ *
+ * A thread with a bound notification can be blocked receiving on an ENDPOINT
+ * and still take signals: the signal wakes it out of the endpoint queue and is
+ * delivered as a message.  A server therefore has to be able to tell "somebody
+ * called me" from "somebody signalled me" on one receive, and the label is how
+ * — the same way FAULT_MSG_NOTIFY distinguishes a fault (A-22).  words[0]
+ * carries the signal bits.
+ */
+#define IRIS_MSG_LABEL_NOTIFICATION 0xF0000002ull
+
 struct IrisMsg {
     uint64_t label;
     uint64_t words[IRIS_MSG_WORDS];

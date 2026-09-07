@@ -56,7 +56,8 @@ static inline uint64_t syscall_ok_u64(uint64_t value) {
 }
 
 /* Phase 13/Track G: user_kchanmsg_* / copy_kchanmsg_* helpers retired with the
- * KChannel object. */
+ * KChannel object.  Ledger A-24 took timeout_ns_to_deadline_ticks with the
+ * timed-block machinery it existed for. */
 
 static inline int copy_u32_to_user_checked(uint64_t dst_uptr, uint32_t value) {
     return copy_to_user_checked(dst_uptr, &value, (uint32_t)sizeof(value));
@@ -66,18 +67,6 @@ static inline int copy_u64_to_user_checked(uint64_t dst_uptr, uint64_t value) {
     return copy_to_user_checked(dst_uptr, &value, (uint32_t)sizeof(value));
 }
 
-static inline int timeout_ns_to_deadline_ticks(uint64_t timeout_ns,
-                                                uint64_t *out_deadline_ticks) {
-    uint64_t now_ticks;
-    uint64_t timeout_ticks;
-
-    if (!out_deadline_ticks) return 0;
-    now_ticks = sched_current_ticks();
-    timeout_ticks = timeout_ns / 10000000ULL;
-    if (timeout_ticks > UINT64_MAX - now_ticks - 1ULL) return 0;
-    *out_deadline_ticks = now_ticks + timeout_ticks + 1ULL;
-    return 1;
-}
 
 static inline int user_vmo_range_valid(uint64_t virt, uint64_t size) {
     uint64_t end;
@@ -185,6 +174,8 @@ uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_tcb_bind_notification(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_notify_poll(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                    uint64_t arg3);
 uint64_t sys_tcb_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -192,14 +183,12 @@ uint64_t sys_process_create(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_
 uint64_t sys_thread_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_thread_start(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_thread_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_sleep(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — IPC ──────────────────────────────────── */
 /* sys_chan_call retired — Phase 13/Track G */
 uint64_t sys_notify_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_notify_wait_timeout(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* sys_wait_any / sys_wait_any_timeout retired — Phase 13/Track G */
 
 /* ── Forward declarations — VM ───────────────────────────────────── */
@@ -513,7 +502,6 @@ uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — diag ─────────────────────────────────── */
 uint64_t sys_clock_get(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_clock_nanosleep(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_poweroff(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);

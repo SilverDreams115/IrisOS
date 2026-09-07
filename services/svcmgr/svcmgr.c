@@ -1627,52 +1627,68 @@ void svcmgr_main_c(handle_id_t rbx_unused) {
     if (state->ep_c != 0u)
         svcmgr_log(sm_str_ep_ready);
 
+    /*
+     * Ledger A-23 — one thread, two kinds of event.
+     *
+     * svcmgr has to take REQUESTS on its endpoint and service DEATHS on a
+     * notification, and a thread blocked receiving on an endpoint used to be
+     * deaf to signals.  So the loop drained the endpoint non-blockingly and
+     * then slept 10 ms on the notification, waking a hundred times a second to
+     * find nothing — a busy-wait with a kernel timeout standing in for the
+     * thing it could not express.
+     *
+     * Binding the notification to this thread is that thing.  One blocking
+     * receive now takes both, and the message label says which arrived.  There
+     * is no polling, no timeout, and no service to depend on for either.
+     */
+    if (state->death_notif_c != 0u)
+        (void)svcmgr_syscall2(SYS_TCB_BIND_NOTIFICATION,
+                              IRIS_CPTR_OWN_TCB, state->death_notif_c);
+
     for (;;) {
-        /* Drain all pending EP_CALL requests before blocking on KChannel. */
-        while (state->ep_c != 0u) {
-            struct IrisMsg ep_msg;
-            int64_t ep_r;
-            uint32_t k;
-            for (k = 0; k < IRIS_EP_SVCNAME_MAX; k++) g_ep_buf[k] = 0;
-            {
-                uint8_t *p = (uint8_t *)&ep_msg;
-                for (k = 0; k < (uint32_t)sizeof(ep_msg); k++) p[k] = 0;
-            }
-            ep_msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_buf;
-            /* A1.6: declare a registration receive-slot so a REGISTER cap
-             * lands in the CSpace pool instead of the handle table.  0 (pool
-             * exhausted / no root CNode) keeps legacy handle delivery. */
-            iris_msg_declare_recv_slot(&ep_msg, svcmgr_next_recv_slot(state));
-            /* Phase S1: our explicit reply object rides in recv arg2. */
-            ep_r = svcmgr_syscall3(SYS_EP_NB_RECV, state->ep_c,
-                                   (uint64_t)(uintptr_t)&ep_msg,
-                                   IRIS_CPTR_OWN_REPLY);
-            if (ep_r != IRIS_OK) break;
-            svcmgr_handle_ep_request(state, &ep_msg);
-        }
+        struct IrisMsg ep_msg;
+        int64_t ep_r;
+        uint32_t k;
 
-        /* Phase 13 (Track I): the legacy bootstrap KChannel is fully retired —
-         * discovery is the cap-backed EP API (IRIS_SVCMGR_EP_LOOKUP_NAME, served
-         * in svcmgr_handle_ep_request above) and death is a KNotification.
-         * svcmgr has no productive SYS_CHAN. */
-
-        /* Track B: block on the death notification (10ms) — this is the loop's
-         * idle driver, replacing the old CHAN_RECV_TIMEOUT.  Each set bit is a
-         * service exit; the bit index is the service_id. */
-        {
+        if (state->ep_c == 0u) {
+            /* No endpoint to serve: deaths are all there is to wait for. */
             uint64_t bits = 0;
-            int64_t nr = svcmgr_syscall3(SYS_NOTIFY_WAIT_TIMEOUT,
-                                         state->death_notif_c,
-                                         (uint64_t)(uintptr_t)&bits, 10000000ULL);
-            if (nr == IRIS_OK) {
-                for (uint32_t sid = 0; sid < 64u && bits; sid++) {
-                    if (bits & ((uint64_t)1u << sid))
-                        svcmgr_handle_service_death(state, sid);
-                    bits &= ~((uint64_t)1u << sid);
-                }
-            } else if (nr != (int64_t)IRIS_ERR_TIMED_OUT) {
-                svcmgr_log(sm_str_recverr);
+            if (state->death_notif_c == 0u) { (void)svcmgr_syscall1(SYS_YIELD, 0); continue; }
+            if (svcmgr_syscall2(SYS_NOTIFY_WAIT, state->death_notif_c,
+                                (uint64_t)(uintptr_t)&bits) != IRIS_OK) continue;
+            for (uint32_t sid = 0; sid < 64u && bits; sid++) {
+                if (bits & ((uint64_t)1u << sid)) svcmgr_handle_service_death(state, sid);
+                bits &= ~((uint64_t)1u << sid);
             }
+            continue;
         }
+
+        for (k = 0; k < IRIS_EP_SVCNAME_MAX; k++) g_ep_buf[k] = 0;
+        {
+            uint8_t *p = (uint8_t *)&ep_msg;
+            for (k = 0; k < (uint32_t)sizeof(ep_msg); k++) p[k] = 0;
+        }
+        ep_msg.buf_uptr = (uint64_t)(uintptr_t)g_ep_buf;
+        /* A1.6: declare a registration receive-slot so a REGISTER cap lands in
+         * the CSpace pool instead of the handle table. */
+        iris_msg_declare_recv_slot(&ep_msg, svcmgr_next_recv_slot(state));
+        /* Phase S1: our explicit reply object rides in recv arg2. */
+        ep_r = svcmgr_syscall3(SYS_EP_RECV, state->ep_c,
+                               (uint64_t)(uintptr_t)&ep_msg,
+                               IRIS_CPTR_OWN_REPLY);
+        if (ep_r != IRIS_OK) { svcmgr_log(sm_str_recverr); continue; }
+
+        if (ep_msg.label == IRIS_MSG_LABEL_NOTIFICATION) {
+            /* A service died.  Each set bit is one, and the bit index is the
+             * service_id.  No reply is owed: a signal is not a call. */
+            uint64_t bits = ep_msg.words[0];
+            for (uint32_t sid = 0; sid < 64u && bits; sid++) {
+                if (bits & ((uint64_t)1u << sid)) svcmgr_handle_service_death(state, sid);
+                bits &= ~((uint64_t)1u << sid);
+            }
+            continue;
+        }
+
+        svcmgr_handle_ep_request(state, &ep_msg);
     }
 }

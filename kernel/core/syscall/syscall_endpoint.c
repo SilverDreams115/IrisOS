@@ -865,6 +865,63 @@ int kendpoint_fault_call(struct task *t, struct KEndpoint *ep,
     return 1;
 }
 
+/*
+ * ── Ledger A-23: a signal reaches a thread blocked on an ENDPOINT ──────────
+ *
+ * The thread is in the endpoint's receive queue, so nothing but the endpoint
+ * can reach it — which is exactly the deafness a bound notification exists to
+ * cure.  Delivering means taking it OUT of that queue and giving it a message
+ * it can tell apart from a call: label IRIS_MSG_LABEL_NOTIFICATION, bits in
+ * words[0].
+ *
+ * Its staged reply object is left alone.  A signal is not a call and owes no
+ * answer, so `ep_recv_complete` unstages it on the way out, exactly as it does
+ * for a plain send.
+ *
+ * Returns 0 without touching anything when the thread is not blocked on an
+ * endpoint; the caller then keeps the bits for whoever does come to wait.
+ */
+int kendpoint_deliver_notification(struct task *t, uint64_t bits) {
+    if (!t) return 0;
+    struct KEndpoint *ep = t->blocking_ep;
+    if (!ep || t->state != TASK_BLOCKED_RECV) return 0;
+
+    uint64_t flags = irq_spinlock_lock(&ep->lock);
+    /* Re-checked under the lock: between the test above and here the thread
+     * may have been dequeued by a real sender. */
+    if (t->blocking_ep != ep || t->state != TASK_BLOCKED_RECV) {
+        irq_spinlock_unlock(&ep->lock, flags);
+        return 0;
+    }
+    if (ep->queue_head == t) {
+        ep->queue_head = t->ep_next;
+        if (!ep->queue_head) { ep->queue_tail = 0; ep->ep_state = EP_STATE_IDLE; }
+    } else {
+        struct task *prev = ep->queue_head;
+        while (prev && prev->ep_next != t) prev = prev->ep_next;
+        if (!prev) { irq_spinlock_unlock(&ep->lock, flags); return 0; }
+        prev->ep_next = t->ep_next;
+        if (ep->queue_tail == t) ep->queue_tail = prev;
+        if (!ep->queue_head) ep->ep_state = EP_STATE_IDLE;
+    }
+    t->ep_next     = 0;
+    t->blocking_ep = 0;
+
+    for (uint32_t i = 0; i < sizeof(t->ipc_msg) / sizeof(uint64_t); i++)
+        ((uint64_t *)&t->ipc_msg)[i] = 0;
+    t->ipc_msg.label          = IRIS_MSG_LABEL_NOTIFICATION;
+    t->ipc_msg.words[0]       = bits;
+    t->ipc_msg.word_count     = 1u;
+    t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+    t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
+    t->ipc_msg_ready          = 1u;
+    t->ipc_ep_closed          = 0u;
+
+    irq_spinlock_unlock(&ep->lock, flags);
+    task_wakeup(t);
+    return 1;
+}
+
 /* Forward: the post-block half, defined with the parking path it belongs to. */
 static uint64_t ep_recv_complete(struct task *t, uint64_t arg1);
 
@@ -925,6 +982,34 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
             return syscall_err(IRIS_ERR_INVALID_ARG);
         return syscall_ok_u64(0);
+    }
+
+    /*
+     * Ledger A-23 — a bound notification that is ALREADY signalled.
+     *
+     * The delivery path only reaches a thread that is blocked, so bits set
+     * before this receive would sit pending until the next signal — the thread
+     * would block on the endpoint holding a signal it had already been sent.
+     * Checked here, before the endpoint is touched, which is also seL4's
+     * order: a bound notification is consulted on the way into a receive.
+     */
+    if (t->bound_notif) {
+        uint64_t got = knotification_take_pending(t->bound_notif);
+        if (got != 0) {
+            ep_recv_reply_unstage(t);
+            t->ep_recv_slot = 0;
+            kobject_release(&ep->base);
+            for (uint32_t i = 0; i < sizeof(t->ipc_msg) / sizeof(uint64_t); i++)
+                ((uint64_t *)&t->ipc_msg)[i] = 0;
+            t->ipc_msg.label           = IRIS_MSG_LABEL_NOTIFICATION;
+            t->ipc_msg.words[0]        = got;
+            t->ipc_msg.word_count      = 1u;
+            t->ipc_msg.attached_handle = IRIS_MSG_NO_CAP;
+            t->ipc_msg.attached_cap    = IRIS_MSG_NO_CAP;
+            if (!copy_to_user_checked(arg1, &t->ipc_msg, (uint32_t)sizeof(struct IrisMsg)))
+                return syscall_err(IRIS_ERR_INVALID_ARG);
+            return syscall_ok_u64(0);
+        }
     }
 
     uint64_t flags = irq_spinlock_lock(&ep->lock);

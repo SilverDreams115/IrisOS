@@ -212,6 +212,22 @@ void isr_handler(struct full_frame *frame) {
         /* IRQ0 — timer tick. Send EOI first so the PIC is not blocked. */
         pic_eoi(0);
         scheduler_tick();
+        /*
+         * Ledger A-24 — and the tick is offered to RING 3.
+         *
+         * The kernel keeps this interrupt for preemption and for MCS budget
+         * accounting, which is what seL4's kernel does with its own timer.
+         * What it no longer does is decide who WAITS and for how long: that is
+         * a service, and the service needs a time base.  So the same tick is
+         * routed to whoever holds an IRQ capability for line 0 — normally the
+         * timer service — exactly as every other line is.
+         *
+         * Not masked before the signal, unlike the deferred-ACK lines below:
+         * the kernel needs this interrupt itself and cannot let a ring-3
+         * handler decide when it comes back.  A handler that never ACKs
+         * therefore slows nothing down; it simply stops being told.
+         */
+        (void)irq_routing_signal(0, 0);
         /* Preemptive: if the quantum expired, yield from the IRQ context.
          * RFLAGS is saved/restored in context_switch for each task. */
         /*
