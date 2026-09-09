@@ -7,6 +7,31 @@ The [ledger](sel4-convergence-ledger.md) maps every transitional mechanism to
 its retirement stage. No stage may be declared closed while its productive
 path still depends on the mechanism it retires (charter §3.10).
 
+## Where this is, in one paragraph
+
+**Every convergence stage in this document is closed.**  The authority model,
+the object model and the kernel architecture are seL4's; the last four
+differences that were about SHAPE rather than substance turned out to be three
+pieces of substance (closed: A-21, A-22, A-24) and one decision (the ABI).
+What is left on this roadmap is not convergence — it is FORWARD work on a
+system that has arrived: SMP (prepared, not started — per-CPU run queues and
+stacks exist, no AP is brought up), DMA containment (**a security hole, not a
+feature**: zero IOMMU references in the tree, so a driver holding an ioport or
+IRQ capability can program a device to write any physical address, and the
+containment user-space drivers are supposed to give is fiction until
+`seL4_X86_IOSpace`'s shape exists), and an ABI freeze.
+
+Two things no stage closes, and both were always going to be that way: the ABI
+shape, which is a recorded decision, and formal verification, which is seL4's
+identity.  A system that converges on seL4's model without the proof has
+converged on the design, not on the guarantee, and this document says so
+wherever it is tempted to claim otherwise.
+
+Measured, not recalled (ledger A-26): 62 live syscalls of 94 dispatched
+numbers, 11 retypeable object types all of them seL4's, 299 runtime tests, 27
+host suites, 27417 host assertions, 36 of 36 charter invariants MET, purity
+gate clean over the transitive closure with zero exemptions.
+
 ## Status
 
 | Stage | State |
