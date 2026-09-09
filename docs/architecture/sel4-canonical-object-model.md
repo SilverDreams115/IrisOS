@@ -19,19 +19,31 @@ is no mechanized formal verification; the convergence is architectural.
 ## Final canonical set
 
 ```
-Untyped            (KUntyped     — implemented, canonical)
-CNode              (KCNode       — implemented, canonical)
-TCB                (task         — canonical since S2; execution path still uses the static pool → migration pending)
-SchedulingContext  (KSchedContext— canonical; storage from Untyped, legacy retype ABI pending removal)
-Endpoint           (KEndpoint    — implemented, canonical, Untyped-only since S1)
-Notification       (KNotification— implemented, canonical, Untyped-only since S1)
-Reply              (KReply       — implemented, canonical, Untyped-only + explicit since S1)
-Frame              (KFrame       — canonical physical region; header sidecar still kslab)
-VSpaceRoot         (KVSpace      — present; storage still kslab → migration pending)
-PageTable          (implicit in paging — explicit object pending)
-IRQControl         (implicit in spawn-cap/IRQ setup — explicit object pending)
-IRQHandler         (KIrqCap      — present; storage still kslab)
+Untyped            (KUntyped     — canonical)
+CNode              (KCNode       — canonical)
+TCB                (task         — canonical; RETYPE2 and the EXECUTION path both, since Stage 7)
+SchedulingContext  (KSchedContext— canonical; refill depth chosen at retype and sizing the object)
+Endpoint           (KEndpoint    — canonical, Untyped-only since S1)
+Notification       (KNotification— canonical, Untyped-only since S1)
+Reply              (KReply       — canonical, Untyped-only + explicit since S1)
+Frame              (KFrame       — canonical physical region, Untyped-backed)
+VSpaceRoot         (KVSpace      — canonical; retyped by its HOLDER since Stage 6-pure)
+PageTable          (KPageTable   — canonical since Stage 6-pure: an explicit object the
+                                   holder retypes and installs, not something the kernel makes)
+ASIDPool           (KAsidPool    — canonical since ledger A-21: carved from an Untyped by a
+                                   holder of ASIDControl, and the source of the identifier
+                                   without which no thread can be bound to an address space)
+IRQHandler         (KIrqCap      — canonical, Untyped-backed)
+IOPort             (KIoPort      — canonical arch object, Untyped-backed)
 ```
+
+Two capability types have no backing object in seL4 and do in IRIS —
+`KInitrdEntry` (a boot image) and `KBootstrapCap` (a boot authority).  Neither
+costs kernel memory and neither is how anything is reached; seL4 expresses both
+as capability TYPES with no object, which is a difference in how a CNode slot
+is represented rather than in what the system can do.  `ASIDControl` and
+`SchedControl` ARE that shape already: boot capabilities with no object behind
+them.
 
 No additional strictly-mechanical object was identified that must live in the
 kernel: I/O ports (KIoPort) are device authority (equivalent to the
@@ -50,23 +62,37 @@ composed in user space.
 | KSchedContext | CANONICAL | — | S2+ (storage already Untyped via retype; legacy SYS_SC_CREATE to retire) | time |
 | task (TCB) | CANONICAL (TCB) | TCB from Untyped | S2 + Stage 7 (`RETYPE2(KOBJ_TCB)` and the EXECUTION path both done; `SYS_THREAD_START` retired, `task_thread_create` deleted).  Since Stage 7 the TCB also carries its own CSpace root, address space, fault record, death and exit code | thread |
 | KFrame | CANONICAL (Frame) | header inside Untyped | frame/page-table phase | physical memory |
-| KVSpace | CANONICAL (VSpaceRoot) | storage from Untyped | frame/page-table phase | address space |
-| KIrqCap | CANONICAL (IRQHandler) | storage from Untyped | device phase | IRQ routing |
-| KIoPort | CANONICAL (arch) | storage from Untyped | device phase | port authority |
+| KVSpace | CANONICAL (VSpaceRoot) | done — retyped by its HOLDER (Stage 6-pure), and NAMED from an ASIDPool (A-21) before a thread can be bound to it | done | address space |
+| KPageTable | CANONICAL (PageTable) | done — Stage 6-pure Step 1: an explicit object the holder retypes and installs; a map whose walk is incomplete says `IRIS_ERR_MISSING_TABLE` instead of quietly spending a budget | done | paging level |
+| KAsidPool | CANONICAL (ASIDPool) | done — ledger A-21 | done | address-space identity is a grant, not a kernel bitmap |
+| KIrqCap | CANONICAL (IRQHandler) | storage from Untyped | done | IRQ routing |
+| KIoPort | CANONICAL (arch) | storage from Untyped | done | port authority |
 | KProcess | **REMOVED (Stage 7-proc)** | nothing — a process IS threads configured with the same CSpace and the same VSpace | done | process = policy |
-| KVMO | LEGACY_TO_REMOVE | user-space memory server (Frames+pager) | memory-server phase | memory object = policy |
+| KChannel | **REMOVED (Phase 13)** | endpoints and notifications | done | a third IPC mechanism |
+| KVMO | **REMOVED (ledger D-5)** | a grant is a run of FRAME capabilities, one per page — which page a pager may install is which capability it holds | done | the last object whose existence meant the kernel owned memory for somebody |
 | handle table / handles | **REMOVED (Stage 4)** | CSpace-only invocation | done | second namespace |
 | per-process quota domains (VMO/page) | **REMOVED (Stage 7 / 7-mem)** | Untyped as the budget | done | quota ≠ explicit memory |
 | notification quota | REMOVED (S1) | Untyped | S1 | retired |
 | KBootstrapCap | BOOTSTRAP_EXCEPTION | structured BootInfo | root-task phase | bootstrap authority |
-| KInitrdEntry | USERLAND_POLICY | user-space VFS/loader | Stage 10 (platform) | filesystem-aware state |
+| KInitrdEntry | BOOTSTRAP_EXCEPTION | a capability type with no object, as in seL4 | Stage 10 (platform) | boot image; costs no kernel memory and is not how anything is reached |
 | process metadata / parent-child / supervision | USERLAND_POLICY | svcmgr/init | already in user space | policy |
 | file-backed regions / page cache / private-shared | USERLAND_POLICY | pager+VFS | already in user space (Phase 28) | policy |
 | loader metadata | USERLAND_POLICY | svc_loader | already in user space | policy |
-| kslab (for dynamic objects) | LEGACY_TO_REMOVE | Untyped retype | per family (ledger) | hidden allocator |
+| kslab (for dynamic objects) | **REMOVED as a runtime allocator (ledger A-16)** | Untyped retype | done | it is a BOOT ARENA now, SEALED at the end of boot: allocating from it afterwards panics, no syscall handler can reach it through any chain of calls (purity gate, transitive closure, zero exemptions), and T318 reads the seal from ring 3 |
 
 `NOT_AN_OBJECT`: scheduler queues, IRQ paths, klog buffers — internal kernel
-state, not authority. `UNJUSTIFIED`: none found in the S1 audit.
+state, not authority. `UNJUSTIFIED`: none found in the S1 audit, and none in
+the A-26 re-read either.
+
+**The count, as of ledger A-26.**  Eleven RETYPEABLE types (Untyped, CNode,
+TCB, Endpoint, Notification, Reply, SchedContext, Frame, PageTable, VSpace,
+ASIDPool), every one of them seL4's and every one born only through
+`SYS_UNTYPED_RETYPE2`.  Four more that are not retypeable: `KIrqCap` and
+`KIoPort` come from a budget through `SYS_CAP_CREATE_IRQCAP`/`IOPORT`, which is
+seL4's arrangement rather than a divergence (`IRQControl_Get` is not a retype
+either); `KInitrdEntry` and `KBootstrapCap` are IRIS's, and seL4 would express
+both as capability types with no backing object.  Three enumerators reserved
+and dead: `KOBJ_PROCESS`, `KOBJ_VMO`, `KOBJ_CHANNEL`.
 
 ## Central rule (S1)
 

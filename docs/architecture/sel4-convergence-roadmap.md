@@ -26,6 +26,7 @@ path still depends on the mechanism it retires (charter §3.10).
 | 10-mem — the memory server (D-5) | ✅ CLOSED — there is no KVmo.  A grant is a run of frame capabilities, one per page |
 | 12-pol — mechanism, not policy (P2) | ✅ CLOSED — the kernel futex, the notification waiter ceiling, the default CSpace size and the THREAD ceiling are gone; what is left is classified as mechanism with a reason each (A-19) |
 | 11-life — object lifetime (D-7) | ✅ SEMANTICS CLOSED — an object exists exactly while a capability names it, measured for every type (T322), over generated MDB shapes (T323) and through a CSpace cycle (T321).  The MECHANISM stays a refcount, registered as a permanent divergence; the one disagreement it produced (a donated scheduling context released twice) is fixed and T324 reads every pool slot each run to catch the next |
+| 13-form — the four FORM divergences (A-20's audit) | ✅ 3 of 4 CLOSED, the fourth decided.  **A-21** address-space identity is `ASIDControl`/`ASIDPool`; **A-22** a fault is an IPC message on an endpoint answered by a reply capability; **A-24** the kernel cannot block a thread on time — waiting is a ring-3 service — with **A-23** (`seL4_TCB_BindNotification`) as its enabler and **A-25** (`CancelBadgedSends`) closing the audit's last item.  The fourth, the ABI SHAPE, is a permanent deliberate divergence (charter §4) |
 | 9 — SMP | pending |
 | 10 — General-purpose platform | pending |
 
@@ -47,6 +48,13 @@ idle thread and the root task, which is the same bootstrap exception seL4's root
 task is.  The rest is classified as mechanism with the reason for each.
 
 **36 of the 36 charter invariants are MET.**
+
+**Every item A-20's file-by-file audit found is closed.**  It found six things
+no row had named — three authority holes (`SchedControl`, MCP, ambient
+priority; closed in A-20 itself), the ASID capability model (A-21), faults as
+IPC (A-22), the bound notification (A-23), timed blocking (A-24) and
+`CancelBadgedSends` (A-25).  What remains from that audit is the ABI shape,
+which was a decision before it was a finding.
 
 ### Where the line is now
 
@@ -71,103 +79,114 @@ same VSpace.
 ## How close is this to seL4
 
 Measured against seL4's model rather than against this roadmap's own progress,
-because a roadmap that grades itself is not evidence.  The honest answer has
-two halves and they are far apart:
+because a roadmap that grades itself is not evidence.
 
-**The authority model is done.  So, now, is the kernel architecture.**
+**The authority model is done.  So is the kernel architecture.  So, now, is the
+FORM.**
 
-Of the eight dimensions below, five are met or as close as they will get:
-capabilities (no open gap — one registered permanent divergence, D-3, decided),
-MCS scheduling (nothing left that is not seL4's), no ambient authority (the
-kernel decides no device policy at all), the ABI shape (far, by a recorded
-decision), and — as of Stage 9-evt — the KERNEL ARCHITECTURE: one kernel stack
-per core, and no thread blocks inside the kernel.
+Of the eight dimensions below, seven are met and the eighth — the ABI shape —
+is far by a recorded decision rather than by an open gap.  That has been true
+of the first six for a while; what changed is the seventh and the framing of
+the eighth.
 
-That last one was the item the whole roadmap was sequenced behind, and the only
-one that was a rewrite rather than an increment.  With it closed, IRIS can
-state the two things a blocking multi-stack kernel cannot: kernel memory does
-not scale with thread count (T318 measures it), and the longest a thread can be
-kept out of the CPU is the longest kernel path between preemption points, not
-"however long the longest kernel path takes".
+Until the A-20 audit, "IRIS has seL4's semantics in a different shape" was a
+claim with four unexamined items behind it, and three of them turned out to be
+substance rather than shape:
 
-Seven of eight.  IPC joined them — `ipc_kbuf` is deleted, every thread sends
-from a frame it registered, and a payload with no buffer is an error — and so
-did the kernel heap: the slab is a boot arena, sealed at the end of boot, with
-no syscall handler able to reach it and the seal readable from ring 3.
+  - **Address-space identity** (A-21) was not a shape difference at all.  The
+    kernel handed every retyped VSpace a hardware identifier out of a global
+    bitmap nobody could name, be refused from, or account for.  It is
+    `ASIDControl` and `ASIDPool` now, and a thread cannot be bound to an
+    unnamed address space.
+  - **Faults** (A-22) were three mechanisms where seL4 reuses one — a
+    notification, a mailbox the kernel minted a TCB capability into on every
+    fault, and a generation number standing in for a one-shot token.  A fault
+    is an IPC message on an endpoint, answered by replying to it.
+  - **Timed blocking** (A-24) was the last product living in the kernel.
+    Three syscalls parked a thread with a deadline and had the scheduler wake
+    it — a kernel deciding how long a thread may wait and whose waiting is
+    worth a data structure.  Waiting is a ring-3 service; the kernel keeps the
+    timer interrupt for preemption and MCS accounting, as seL4's does.
 
-The object model closed with them.
+Two smaller absences from the same audit closed with them, and neither was
+small.  `seL4_TCB_BindNotification` (A-23) is what lets ONE thread be a driver:
+without it, a thread blocked receiving on an endpoint is deaf to signals, so
+both drivers in this system busy-waited on a kernel timeout to serve an
+interrupt and a request queue at once.  And `CancelBadgedSends` (A-25) is the
+half of revocation that was missing — revoking a badged capability stopped a
+client sending anything new and left whatever it had already queued to be
+delivered afterwards.
 
-`KVMO` left every production path in stages — the framebuffer became a device
-Untyped a driver retypes from (D-9), boot images became frames
-(`SYS_INITRD_FRAME`), a spawned image's segments and stack became frames
-retyped from the child's budget, vfs served from frames, and the pager's own
-page cache and private pool became one capability per page out of its own
-budget — and the LAST path was `PGR_OP_MAP_RESUME`: mapping a page of a region
-the CLIENT granted, at an offset the client names.
-
-That was the one thing a VMO did that a frame did not, and replacing it meant
-redefining what a grant is.  **A grant is a run of frame capabilities, one per
-page.**  Then which pages a pager may install is the set of capabilities it
-holds, whether it may install one writable is `RIGHT_WRITE` on that page,
-revoking one page is deleting one slot, and "an offset past the end of the
-region" is an empty CSpace slot.  The offset argument disappears because the
-question it asked is answered by which capability you were given.
-
-`KInitrdEntry` and `KBootstrapCap` remain as objects, but neither costs the
-kernel memory any more and neither is how anything is reached: they are boot
-capabilities that seL4 would express as capability TYPES with no backing
-object, which is a change to how a CNode slot is represented rather than to
-what the system can do.
-
-`KVmo` is gone (D-5).  It was the last object whose existence meant the KERNEL
-owned memory for somebody — allocating its pages on a schedule the holder did
-not choose, keeping a page-address array, and range-checking an offset into a
-region it managed.  A client that wants a pager to map page N of its memory
-grants the FRAME for page N.
+**The fourth item is the ABI shape, and it is a decision.**  62 live numbered
+syscalls, each taking CPtrs and checking rights itself, where seL4 has a
+handful and expresses every other operation as an invocation on a capability
+carrying a method label.  The authority SEMANTICS are equivalent — nothing is
+reachable without naming a capability, every operation checks rights on the
+object it acts on, and a syscall number selects a METHOD and never an object —
+but the verification surface is not, and no convergence work changes that.
 
 | Dimension | State | Evidence |
 |---|---|---|
-| Object model and creation | **met** | every canonical object is retyped from Untyped; address spaces and CSpaces are retyped by their HOLDER (Stage 6-pure).  `KProcess` — the largest of the four object types seL4 has no equivalent for — is DELETED (Stage 7-proc), and `KVmo` is DELETED with it (D-5): a grant is a run of frame capabilities, one per page, so which page a pager may install is which capability it holds and the kernel owns no memory on anybody's behalf.  MMIO is handed over as a DEVICE Untyped the way seL4's BootInfo does it (D-9, D-10, T316/T317).  What remains is `KInitrdEntry` and `KBootstrapCap`: neither costs kernel memory, neither is how anything is reached, and seL4 would express both as capability TYPES with no backing object — a change to how a CNode slot is represented, not to what the system can do |
-| Capabilities (CSpace, CDT, revoke) | **close** | native CDT/MDB, recursive cross-process revoke, one namespace, and CNode GUARDS on the capability rather than the object — the root CSpace included, which is where a guard is load-bearing and where it was missed first (D-2, closed).  Revoke is preemptible (D-8, closed).  The rights set is different from seL4's and now permanently so (D-3, decided): `RIGHT_DUPLICATE` makes a delegation non-re-delegable, which seL4 cannot express — its derivation tree records what was derived, it does not prevent deriving.  Pinned by host RG-1..RG-5.  **No open gap in this dimension**, only a registered permanent divergence |
-| IPC | **met** | endpoints, badges, reply objects, receive slots, no handle fallback, and `SYS_REPLY_RECV` — seL4's combined `ReplyRecv`, which a passive server needs so it never crosses the gap between returning its donated time and blocking again (Stage 8-mcs, T309).  D-4 is CLOSED: `SYS_TCB_SET_IPC_BUFFER` is seL4's `seL4_TCB_SetIPCBuffer`, `ipc_kbuf` is deleted, and a payload with no registered buffer is an error. |
-| No ambient authority | **met** | boot authority is one capability per authority, every per-process quota is gone (Stage 7), and the kernel's hardcoded ioport whitelist is REMOVED (Stage 5): the range a holder may claim travels on the `IOPORT_CONTROL` capability, narrowed by derivation (`SYS_IOPORT_CONTROL_NARROW`, T164/T171).  The kernel decides no device policy at all.  A-18 removed the LAST ambient authority: `SYS_VSPACE_SELF`, `SYS_CSPACE_SELF` and `SYS_TCB_SELF` handed a thread capabilities to its own address space, CSpace and thread asking for no capability at all.  All three are RETIRED — delegated at `IRIS_CPTR_OWN_VSPACE`/`OWN_CSPACE`/`OWN_TCB` for services, in BootInfo for the root task (which is seL4's arrangement), and for a thread the loader never saw, in the ENTRY REGISTER: the trampoline delivers the thread argument in `rdi` as well as `rbx`, so a thread written in C reads its own TCB capability as a parameter.  `mdb_legacy_roots` 32 → 23 |
+| Object model and creation | **met** | every canonical object is retyped from Untyped; address spaces and CSpaces are retyped by their HOLDER (Stage 6-pure).  `KProcess` — the largest of the four object types seL4 has no equivalent for — is DELETED (Stage 7-proc), and `KVmo` is DELETED with it (D-5): a grant is a run of frame capabilities, one per page, so which page a pager may install is which capability it holds and the kernel owns no memory on anybody's behalf.  MMIO is handed over as a DEVICE Untyped the way seL4's BootInfo does it (D-9, D-10, T316/T317).  **A-21 ADDED one**, and it is seL4's: `KAsidPool`.  Address-space identity used to come from a kernel-global bitmap nobody could name; it is now a pool retyped from an Untyped by a holder of `ASIDControl`, and a thread cannot be bound to an address space that has not been assigned an identifier from one.  What remains that seL4 has no equivalent for is `KInitrdEntry` and `KBootstrapCap`: neither costs kernel memory, neither is how anything is reached, and seL4 would express both as capability TYPES with no backing object — a change to how a CNode slot is represented, not to what the system can do |
+| Capabilities (CSpace, CDT, revoke) | **close** | native CDT/MDB, recursive cross-process revoke, one namespace, and CNode GUARDS on the capability rather than the object — the root CSpace included, which is where a guard is load-bearing and where it was missed first (D-2, closed).  Revoke is preemptible (D-8, closed).  The rights set is different from seL4's and now permanently so (D-3, decided): `RIGHT_DUPLICATE` makes a delegation non-re-delegable, which seL4 cannot express — its derivation tree records what was derived, it does not prevent deriving.  Pinned by host RG-1..RG-5.  **A-25 closed the last operation seL4 had and IRIS did not**: `SYS_EP_CANCEL_BADGED_SENDS` cancels the in-flight sends of one badge, because revoking a badged delegation used to stop new sends and leave whatever was already queued to be delivered afterwards — revocation with a tail.  One divergence in this dimension that is not a rights question and was not written down until this review: IPC capability transfer is a MOVE (the sender's slot is emptied) where seL4's is a COPY.  **No open gap**, two registered permanent divergences |
+| IPC | **met** | endpoints, badges, reply objects, receive slots, no handle fallback, and `SYS_REPLY_RECV` — seL4's combined `ReplyRecv`, which a passive server needs so it never crosses the gap between returning its donated time and blocking again (Stage 8-mcs, T309).  D-4 is CLOSED: `SYS_TCB_SET_IPC_BUFFER` is seL4's `seL4_TCB_SetIPCBuffer`, `ipc_kbuf` is deleted, and a payload with no registered buffer is an error.  **A-22 made FAULTS use it**: a faulting thread CALLS an endpoint, the handler receives the record as an ordinary message with a reply capability, and replying resumes it — where there used to be a notification, a mailbox the kernel minted a TCB capability into on every fault, and a generation number standing in for a one-shot token.  **A-23 added `seL4_TCB_BindNotification`**, without which a thread blocked receiving on an endpoint is deaf to signals and no server can take both an interrupt and a request queue on one thread |
+| No ambient authority | **met** | boot authority is one capability per authority, every per-process quota is gone (Stage 7), and the kernel's hardcoded ioport whitelist is REMOVED (Stage 5): the range a holder may claim travels on the `IOPORT_CONTROL` capability, narrowed by derivation (`SYS_IOPORT_CONTROL_NARROW`, T164/T171).  The kernel decides no device policy at all.  A-18 removed the LAST ambient authority: `SYS_VSPACE_SELF`, `SYS_CSPACE_SELF` and `SYS_TCB_SELF` handed a thread capabilities to its own address space, CSpace and thread asking for no capability at all.  All three are RETIRED — delegated at `IRIS_CPTR_OWN_VSPACE`/`OWN_CSPACE`/`OWN_TCB` for services, in BootInfo for the root task (which is seL4's arrangement), and for a thread the loader never saw, in the ENTRY REGISTER: the trampoline delivers the thread argument in `rdi` as well as `rbx`, so a thread written in C reads its own TCB capability as a parameter.  **A-21 removed the last ambient RESOURCE** — the kernel-global PCID bitmap that named every address space for free — and **A-24 the last ambient SERVICE**: `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP` and `SYS_NOTIFY_WAIT_TIMEOUT` let any thread ask the kernel to hold a deadline for it, and waiting is now a capability to a ring-3 timer service that can also be refused.  `mdb_legacy_roots` 32 → 25 (A-20 and A-21 each add one permanent boot-path root, `SchedControl` and `ASIDControl`) |
 | No kernel heap | **met** | The kernel's slab is a BOOT ARENA and it is SEALED at the end of boot: allocating from it afterwards panics.  seL4 has no kernel heap because its boot code carves the root task's initial objects from a statically-known region and describes everything else as Untyped — which is exactly what this is, now that the door shuts behind it.  The purity gate's reachability check runs with ZERO exemptions and over the TRANSITIVE closure (A-16): no syscall handler can reach the allocator through any chain of calls, not merely by naming its caller, and T318 reads the seal from ring 3 so the property cannot stop being true unobserved |
-| MCS scheduling | **met** | all four pillars are in as of Stage 8-mcs.  Budget and period are enforced; **sporadic replenishment** returns every tick consumed exactly one period later, so a thread can never spend more than its budget in any window of its period (host R-1..R-8); **timeout faults** make an overrun a policy decision a temporal supervisor takes rather than an invisible stall (`SYS_TCB_SET_TIMEOUT_HANDLER`, T307); and **SC donation** lends a client's scheduling context to a PASSIVE server for the duration of a Call, so an SC-less thread runs on the requester's time instead of — as it did before — running unbudgeted (T308).  `SYS_REPLY_RECV` closes the last of them (T309): without it a passive server is, between reply and receive, runnable with no scheduling context — and an SC-less thread is not charged, so it runs unbudgeted for exactly as long as the second syscall takes.  `refill_max` is now the SC's own, chosen at RETYPE and sizing the object (T315): a passive server woken per request needs a deep replenishment queue and a periodic task needs two, and the memory is charged to whoever asked for the depth instead of every SC paying for the worst case out of the kernel.  **`SchedControl` landed with the A-20 audit that found it missing.**  A budget and a period reach a scheduling context only through `IRIS_BOOTCAP_SCHED_CONTROL` — a boot capability carried in BootInfo the way seL4 carries `seL4_CapSchedControl` — so holding the SC says WHICH context to configure and holding this says you may configure one at all.  Priority is bounded the same way: `SYS_TCB_SET_PRIORITY` takes an AUTHORITY and refuses above its ceiling, a thread inherits the ceiling of whoever configured it, and the capability-free `SYS_THREAD_PRIORITY` is retired (T327) |
-| ABI shape | **far, by decision** | 96 live numbered syscalls, each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  Registered permanent divergence (charter §6) |
+| MCS scheduling | **met** | all four pillars are in as of Stage 8-mcs, and A-22 changed how the fourth is DELIVERED: a timeout fault is an IPC message on its own endpoint, like every other fault, so a temporal supervisor is a server.  Budget and period are enforced; **sporadic replenishment** returns every tick consumed exactly one period later, so a thread can never spend more than its budget in any window of its period (host R-1..R-8); **timeout faults** make an overrun a policy decision a temporal supervisor takes rather than an invisible stall (`SYS_TCB_SET_TIMEOUT_HANDLER`, T307); and **SC donation** lends a client's scheduling context to a PASSIVE server for the duration of a Call, so an SC-less thread runs on the requester's time instead of — as it did before — running unbudgeted (T308).  `SYS_REPLY_RECV` closes the last of them (T309): without it a passive server is, between reply and receive, runnable with no scheduling context — and an SC-less thread is not charged, so it runs unbudgeted for exactly as long as the second syscall takes.  `refill_max` is now the SC's own, chosen at RETYPE and sizing the object (T315): a passive server woken per request needs a deep replenishment queue and a periodic task needs two, and the memory is charged to whoever asked for the depth instead of every SC paying for the worst case out of the kernel.  **`SchedControl` landed with the A-20 audit that found it missing.**  A budget and a period reach a scheduling context only through `IRIS_BOOTCAP_SCHED_CONTROL` — a boot capability carried in BootInfo the way seL4 carries `seL4_CapSchedControl` — so holding the SC says WHICH context to configure and holding this says you may configure one at all.  Priority is bounded the same way: `SYS_TCB_SET_PRIORITY` takes an AUTHORITY and refuses above its ceiling, a thread inherits the ceiling of whoever configured it, and the capability-free `SYS_THREAD_PRIORITY` is retired (T327) |
+| ABI shape | **far, by decision** | 62 live numbered syscalls (94 numbers dispatched, 32 of them retirement stubs answering NOT_SUPPORTED), each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  The authority semantics are equivalent; the verification surface is not.  Registered permanent divergence (charter §4), and since A-21/A-22/A-24 closed the other three form items, the only one left |
 | Object lifetime | **close** | seL4 has no per-object reference count: an object exists while a capability to it exists, and `cteDelete`/`finaliseCap` walk the derivation tree.  IRIS reaches the same ANSWER through two counters, and that is now measured rather than asserted — T322 checks the rule for every retypeable type, T323 over generated derivation shapes, T321 through a CSpace cycle (where IRIS and seL4 behave identically: neither collects it idly, both reclaim it when the Untyped is revoked).  The mechanism difference is registered and permanent (D-7).  What it cost is recorded too: a donated scheduling context was released twice because the loan moved a pointer and not a reference, and the object hit refcount 0 with a slot still naming it — found by T324, which reads every pool slot because nothing else ever reads an idle one |
 | Kernel architecture | **met** | D-1, the only one of these that was a rewrite rather than an increment, is CLOSED.  IRIS has ONE kernel stack per core and no thread blocks inside the kernel.  No blocking syscall keeps live state across its block (step 1); a parked one abandons its frame (step 2, T310); the whole ring-3 register context lives in the TCB (step 3, T314); and `TSS.RSP0` is set once and never changes, because a DISPATCHER on the core's stack replaced `context_switch` — which is deleted, along with `task_yield`, `scheduler_sleep_current`, the idle task and `kstack_alloc`.  T318 measures the consequence from ring 3: eight threads, and the kernel's physical reserve does not move, where the old per-thread stacks would have cost two pages each |
 
-### The two that no further stage closes
+### What no further stage closes
 
-**D-1 is the structural one.**  seL4 is an event kernel: one stack per core,
-no thread ever blocks in the kernel, a long operation returns to a preemption
-point and the syscall restarts.  IRIS gives every thread 8 KiB of kernel stack
-and parks it there with live state.  That is the reason seL4 can bound in-kernel
-latency and be verified, and converting to it is a rewrite of every blocking
-path (IPC, futex, notification wait, reply) — not an increment.  The ledger
-assigns it no stage deliberately.
-
-**The ABI shape is permanent by choice.**  In seL4 there is one way to exercise
-authority: invoke a capability.  In IRIS there are 68 entry points, each
-validating its own arguments.  The authority SEMANTICS are equivalent — nothing
-is reachable without naming a capability — but the verification surface is not,
-and no convergence work changes that.
+**The ABI shape**, and it is the only one left.  This section used to name two,
+and the other was D-1 — the event-kernel rewrite, described here as "the reason
+seL4 can bound in-kernel latency and be verified, and converting to it is a
+rewrite of every blocking path... not an increment".  It was a rewrite, it was
+done (Stage 9-evt), and the text describing it as open outlived it by several
+stages.  That is worth leaving on the record: a roadmap's stalest paragraph is
+usually the one that was most confidently written.
 
 ### If it needs a number
 
-**Roughly 75% on capability semantics, 25% on kernel architecture.**  Stages
-5 through 7 moved the first a long way and the second not at all, because the
-second does not move in stages.  Anyone quoting a single figure for "how seL4
-is IRIS" is averaging two things that should not be averaged.
+**Capability semantics: done, with two registered permanent divergences (the
+rights set, D-3, and refcount lifetime, D-7) and one open shape difference (the
+ABI).  Kernel architecture: done.**
 
-### Remaining work, by real size
+The old figure here — 75% on semantics, 25% on architecture, with the advice
+not to average them — was honest when D-1 was open and is not a description of
+anything now.  A single number was the wrong instrument then and there is
+nothing left for it to measure.
 
-1. **MCS proper** — donation, timeout faults, refills (Stage 8).  The largest
-   piece of genuinely stage-able convergence left.
-2. **`KProcess` and `KVMO` retirement** with the process and memory servers
-   (Stage 7) — closes the rest of D-5 and the last kernel-side policy.
-3. **CNode guards** (D-2) — additive, and nothing currently needs them.
-4. **D-1** — a separate project, not a stage.
+### What this review found still open
+
+A file-by-file re-read after the form divergences closed (ledger A-26).  None
+of these is a hole in the authority model; all are named so the next reader
+does not have to find them again.
+
+1. **IPC capability transfer is a MOVE.**  Sending a capability over an
+   endpoint deletes the sender's source slot.  seL4 COPIES: the sender keeps
+   its capability, gated by the Grant right.  Both are coherent — IRIS's is
+   strictly more conservative — but a client that wants to keep what it sends
+   must derive a copy per send, and nothing in the documentation said so until
+   the timer client (A-24) ran into it.
+2. **Two live syscalls are leftovers.**  `SYS_GETPID` hands a thread its own
+   id for the asking — ambient INFORMATION rather than authority, so no
+   invariant is violated, but seL4 has no equivalent and nothing productive
+   uses it.  `SYS_THREAD_EXIT` duplicates `SYS_EXIT`, which also records the
+   exit code.  Both are small retirements nobody has needed yet.
+3. **`SYS_CLOCK_GET` is an ambient read of the clock.**  Every task can read
+   the time with no capability.  seL4 has no such call; a timer driver reads
+   its own hardware.  The timer service (A-24) is the only productive user.
+4. **Four seL4 invocations have no equivalent**, none load-bearing for anything
+   IRIS does today: `seL4_TCB_ReadRegisters`/`CopyRegisters` (a supervisor can
+   write a thread's registers but not read them),
+   `seL4_SchedContext_YieldTo`/`Consumed`, `seL4_IRQHandler_Clear`, and
+   cross-CNode `seL4_CNode_Move` (IRIS moves within a CNode with
+   `SYS_CNODE_SWAP`; across CNodes it is a mint-then-delete, which reaches the
+   same place with a different derivation shape).
+5. **`kprocess.c` is misnamed.**  `struct KProcess` was deleted in Stage
+   7-proc; the file is now fault delivery and its counters.
 
 ## Stage 0 — TCB consolidation  ✅ CLOSED (Phase S2 inc.2)
 
@@ -1806,6 +1825,107 @@ What the whole stage buys, and why it is not optional for a serious product:
   property, and re-deriving them twice — once for a blocking kernel, once for
   an event kernel — is the kind of work that gets done badly the second time.
 
+## Stage 13-form — the four FORM divergences  ✅ 3 of 4 CLOSED, the fourth decided
+
+The A-20 audit read the whole kernel and the whole test suite against seL4's
+actual API and asked what was MISSING, rather than whether each recorded item
+was done.  It found six things no row had named.  Three authority holes closed
+in A-20 itself.  The rest were called "form divergences" — differences in shape
+rather than in what the system can express — and three of them turned out not
+to be about shape at all.
+
+### Step 1 — address-space identity is a capability  ✅ DONE (A-21)
+
+`ASIDControl` carves POOLS; an `ASIDPool` is a retyped object owning a range of
+identifiers; `SYS_ASID_POOL_ASSIGN` issues one; `ktcb_configure` refuses a
+VSpace that has not been given one.  Before this the kernel handed every
+retyped VSpace an identifier out of a global bitmap: creating an address space
+required no authority beyond the memory, how many could exist was a constant
+compiled into the kernel, and when it ran out nothing in ring 3 could see it
+coming.
+
+The check is deliberately independent of `iris_pcid_enabled`.  A machine with
+no tag register allocates the same identifiers from the same pools and drops
+them on the way to CR3, so the rule a program obeys is the same everywhere —
+the alternative would have made the model decorative on exactly the
+configurations where it is cheapest to be wrong about it.
+
+**Gauge**: T328, whose first claim is the load-bearing one — a freshly retyped
+VSpace is refused by `TCB_CONFIGURE` — plus `IRIS_ASID_POOL_SIZE + 8`
+build-and-destroy rounds through one pool, which can only finish if every
+identifier came back.
+
+### Step 2 — a fault is an IPC message  ✅ DONE (A-22)
+
+The faulting thread CALLS an endpoint.  The handler receives the record as an
+ordinary message, gets a reply capability with it, and replying resumes the
+thread.  `SYS_EXCEPTION_RESUME` and `SYS_TCB_FAULT_INFO` are retired.
+
+What went with them is the point.  The mailbox was a hand-rolled capability
+delivery, with its own parent tracking so revoke could reach the copies the
+kernel handed out, and it meant a pager held a TCB capability — authority over
+everything a thread can be made to do — for every target it served.  The
+generation number was a hand-rolled one-shot token.  A badge does the first and
+a reply capability is the second.
+
+One property was genuinely lost, and it is the point: a supervisor could PEEK
+at a fault it intended somebody else to serve, because observation and delivery
+were separate mechanisms.  They are one now.
+
+**Gauges**: T329 (a badged fault on a shared endpoint, `RIGHT_READ` as the
+authority to take delivery), and T185, which keeps a COPY of a live reply
+capability, spends the original, lets the thread refault, and shows the copy
+answers neither fault.
+
+### Step 3 — the kernel cannot block a thread on time  ✅ DONE (A-24, A-23)
+
+`SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP` and `SYS_NOTIFY_WAIT_TIMEOUT` are retired,
+and with them `TASK_SLEEPING`, `timed_out`, both timed notification waits, the
+expiry sweep in the tick and the sleeper half of the idle fast-forward.
+`wake_tick` survives with one meaning instead of three: when a scheduling
+context's budget comes back.
+
+Waiting is a ring-3 SERVICE.  It holds the timer interrupt — the kernel offers
+the tick through the ordinary IRQ routing, keeping it for preemption and MCS
+accounting as seL4's kernel does with its own — takes "signal this notification
+in N nanoseconds" over an endpoint, and signals.  A task that holds no timer
+capability cannot wait on time, which was never true of a syscall number.
+
+The service is single-threaded and could not have been written at all before
+`SYS_TCB_BIND_NOTIFICATION` (A-23): a thread blocked receiving on an endpoint
+was deaf to signals, so both drivers in this system busy-waited on a kernel
+timeout to serve an interrupt and a request queue at once.  Both lost their
+timeout with the bind, which is the second-order proof that it was the missing
+piece rather than a convenience.
+
+**Gauges**: T331 (the service fires, the endpoint is the authority, all three
+numbers answer NOT_SUPPORTED), T330 (a signal reaches a thread blocked on an
+endpoint, and a pending one is consulted on the way in), and T310, whose
+restartable-syscall claim moved from `SYS_SLEEP` to `SYS_NOTIFY_WAIT`
+unchanged.
+
+### Step 4 — the ABI shape  ← DECIDED, permanent
+
+62 live numbered syscalls against seL4's handful of invocations on capabilities.
+The authority semantics are equivalent; the verification surface is not.  What
+an invocation ABI would buy is a smaller kernel entry surface and one place to
+check authority instead of sixty; what it would cost is rewriting every caller
+in the system to gain nothing this charter measures.  Charter §4, permanent and
+deliberate.
+
+### And the audit's last item  ✅ DONE (A-25)
+
+`seL4_CNode_CancelBadgedSends`.  Revoking a badged capability stopped a client
+sending anything NEW and left whatever it had already queued to be delivered
+afterwards, to a server that had just been told this client no longer exists.
+`SYS_EP_CANCEL_BADGED_SENDS` dequeues them and returns a count, so a supervisor
+can tell a revoke that had a tail from one that did not.  The capability must
+be UNBADGED: a badged one names a client, and cancelling by badge through it
+would let that client silence any other by naming their number.
+
+**Gauge**: T332.
+
+
 ## Stage 9 — SMP
 
 Hard precondition: single authority namespace (4), CDT (1), lifecycle (0),
@@ -1896,13 +2016,25 @@ without euphemism: *the proof is seL4's identity*.  A system that converges on
 seL4's model without it has converged on the design, not on the guarantee.
 Stage 9-evt is the only item here that would even make the question askable.
 
-**3. Everything else in this document is reachable.**  Stages 7-mem through
-10-abi close every measured divergence: the object model becomes Frames and
-Untypeds, the derivation tree has no unparented capabilities, the kernel stops
-blocking, device authority becomes containable, and the ABI becomes something
-to build on.  What remains after that is a microkernel with seL4's authority
+**3. Everything else in this document has been reached.**  The object model is
+Frames and Untypeds, the derivation tree's unparented capabilities are down to
+the boot path seL4 has too, the kernel stops blocking, and the form divergences
+are closed or decided.  What is here now is a microkernel with seL4's authority
 model, seL4's object model, seL4's execution model and its own ABI — which is
-an honest and defensible thing to be, and is what this project should claim.
+an honest and defensible thing to be, and is what this project claims.
+
+The sentence above used to be in the future tense.  Moving it is the whole
+result of Stages 9-evt through 13-form, and it is worth noticing that the two
+items that stayed in the ceiling are the two that were always going to: the ABI
+shape, which is a decision, and the proof, which is seL4's identity.
+
+**Still open, and small** (ledger A-26, this review): IPC capability transfer is
+a MOVE where seL4's is a COPY; `SYS_GETPID`, `SYS_THREAD_EXIT` and
+`SYS_CLOCK_GET` are ambient leftovers no invariant forbids; four seL4
+invocations have no equivalent (`TCB_ReadRegisters`, `SchedContext_YieldTo`,
+`IRQHandler_Clear`, cross-CNode `CNode_Move`).  None of these is load-bearing
+for anything IRIS does, and all of them are named so nobody has to find them
+twice.
 
 ---
 

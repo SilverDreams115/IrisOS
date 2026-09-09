@@ -1340,6 +1340,99 @@ that audit is the ABI SHAPE, which the charter has always carried as a
 permanent deliberate divergence and now says so with the other three settled.
 
 
+
+### A-26 — the review after the form divergences, file by file
+
+A-20 read the system against seL4 and found six things.  All six are closed
+(A-20 itself, A-21, A-22, A-23, A-24, A-25).  This is the re-read afterwards,
+asking the same question of a system that has changed a great deal since: what
+is still not seL4's, and what does the documentation now say that is no longer
+true.
+
+**The documentation was the biggest finding.**  The roadmap's "How close is
+this to seL4" section contradicted its own status table.  It said D-1 — the
+event-kernel rewrite — was one of "the two that no further stage closes", and
+described converting to it as a rewrite of every blocking path; the table three
+screens above said Stage 9-evt was CLOSED, which it was, several stages
+earlier.  It also carried "roughly 75% on capability semantics, 25% on kernel
+architecture" and a remaining-work list whose four items were all done.  A
+roadmap's stalest paragraph is usually the one that was written most
+confidently, and both of those were.
+
+**Five things the code review found.**  None is a hole in the authority model;
+all are recorded so the next reader does not have to find them again.
+
+1. *IPC capability transfer is a MOVE.*  `syscall_ipc_stage_cap_commit` deletes
+   the sender's source slot at the delivery point.  seL4 COPIES — the sender
+   keeps its capability, gated by the Grant right.  Both are coherent, and
+   IRIS's is strictly the more conservative of the two: nothing can be
+   delegated without the delegator giving it up.  But it is a real difference
+   in what an endpoint IS, it was never written down, and the way it surfaced
+   is the reason it belongs here — the timer client (A-24) handed the service a
+   notification and then could not signal its own object.  A caller that wants
+   to keep what it sends derives a copy per send.
+
+2. *`SYS_GETPID` is an ambient read.*  It hands a thread its own task id for
+   the asking.  Information rather than authority, so A5 is not violated and
+   the number confers nothing — but seL4 has no equivalent, in a capability
+   system a task's identity is what OTHERS hold about it, and the only caller
+   is the test that tests it.
+
+3. *`SYS_THREAD_EXIT` duplicates `SYS_EXIT`.*  Two entry points that end a
+   thread, one of which also records the exit code.  The duplicate is used only
+   by test threads that have no code to record.
+
+4. *`SYS_CLOCK_GET` is an ambient read of the clock.*  Every task can read the
+   time holding nothing.  seL4 has no such call: a timer driver reads its own
+   hardware, and everybody else asks the driver.  A-24 built the driver; the
+   syscall it reads the time with is the last piece of that arrangement still
+   in the kernel, and the timer service is its only productive caller.
+
+5. *Four seL4 invocations have no equivalent.*
+   `seL4_TCB_ReadRegisters`/`CopyRegisters` — a supervisor can WRITE a thread's
+   registers (`SYS_TCB_WRITE_REGS`) and not read them, which is the asymmetry a
+   debugger would notice first.  `seL4_SchedContext_YieldTo`/`Consumed`.
+   `seL4_IRQHandler_Clear`.  And cross-CNode `seL4_CNode_Move`: IRIS moves
+   within a CNode (`SYS_CNODE_SWAP` against an empty slot) and across CNodes
+   only as mint-then-delete, which reaches the same place with a different
+   derivation shape.
+
+**And one cosmetic.**  `kernel/new_core/src/kprocess.c` holds fault delivery
+and its counters; `struct KProcess` was deleted in Stage 7-proc.  The file
+name is the last thing in the tree still asserting that a process object
+exists.
+
+**What the review measured**, counted rather than recalled:
+
+  - **62 live syscalls out of 94 dispatched numbers.**  The other 32 are
+    retirement stubs answering NOT_SUPPORTED, which is how this system records
+    that a number is SPENT rather than reusing it.
+  - **11 retypeable object types** — Untyped, CNode, TCB, Endpoint,
+    Notification, Reply, SchedContext, Frame, PageTable, VSpace, ASIDPool —
+    every one of which is seL4's, and all 11 born only through
+    `SYS_UNTYPED_RETYPE2`.
+  - **4 more object types that are not retypeable**, and two of those are
+    seL4's arrangement rather than a divergence: `KIrqCap` and `KIoPort` come
+    from a budget through `SYS_CAP_CREATE_IRQCAP`/`IOPORT`, which is how seL4
+    makes an IRQHandler (`IRQControl_Get`, not a retype).  The two that ARE
+    IRIS's are `KInitrdEntry` and `KBootstrapCap`, which seL4 would express as
+    capability types with no backing object.
+  - **3 enumerators reserved and dead**: `KOBJ_PROCESS` (Stage 7-proc),
+    `KOBJ_VMO` (D-5), `KOBJ_CHANNEL` (Phase 13).  No live capability carries
+    any of them.
+  - **299 runtime tests, 27 host suites, 27417 host assertions, 36 of 36
+    charter invariants MET**, and the purity gate clean over the transitive
+    closure with zero exemptions.
+
+**The honest summary.**  IRIS has seL4's authority model, seL4's object model
+and seL4's execution model.  It has its own ABI, its own rights set (D-3), a
+refcount where seL4 walks the derivation tree (D-7), and a move where seL4
+copies.  Each of those four is written down with the reasoning rather than the
+conclusion.  It does not have the proof, and the proof is seL4's identity —
+which is the one sentence about this system that no amount of further work
+changes.
+
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a
@@ -1467,6 +1560,27 @@ rather than only that it exists.
 
 **Scope**: one divergence row restated.  Nothing changes state; the divergence
 was permanent and deliberate before and remains so.
+
+
+
+### A-7 — A9, A10 and a divergence row, restated after the review
+
+**Change**: charter §2.1 A9 (the LEGACY_ROOT count, 43 → 23 becomes 43 → 25),
+A10 (gains `CancelBadgedSends` and what it covers that the MET claim did not),
+and §4 gains one divergence row: IPC capability transfer is a MOVE.
+
+**Justification**: ledger A-25 and A-26.  The A9 figure was measured before
+`SchedControl` (A-20) and `ASIDControl` (A-21) each added one permanent
+boot-path root, so the number in the charter was two behind the number T305
+prints every run.  A10 claimed revocation was complete while a revoked client's
+queued sends were still delivered afterwards.  And the transfer-is-a-move
+difference had been the behaviour since Stage 2 without being written anywhere
+— found by A-26's re-read, and by the timer client running into it.
+
+**Scope**: two "Today" cells restated to match measured mechanism, one
+divergence recorded that already existed.  No invariant changes state — A9 and
+A10 were MET and remain MET — no allowlist entry moves, no prohibition is added
+or lifted.
 
 
 ## Non-regression guard

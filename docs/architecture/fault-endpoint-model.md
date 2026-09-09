@@ -1,6 +1,19 @@
 # Phase 20 — Fault endpoint / exception delivery model
 
-Status: ACCEPTED — implemented in this phase.  Companion to
+> **SUPERSEDED by ledger A-22.**  The model this document describes — a
+> notification signalled, the faulting thread's capability published into a
+> MAILBOX CNode slot, `SYS_TCB_FAULT_INFO` to read the record and
+> `SYS_EXCEPTION_RESUME` with a generation number to answer — is DELETED.  A
+> fault is an IPC message on an endpoint now: the thread CALLS, the handler
+> receives the record as an ordinary message with a reply capability, and
+> replying resumes it.  Both retired syscalls answer `NOT_SUPPORTED`.
+>
+> The document is kept because the reasoning in it is still the reasoning — a
+> user fault is an authority event, and who may answer one is a capability
+> question — and because the three mechanisms it built are what A-22 replaced
+> with one.  Read it as history, and read A-22 for what is there.
+
+Status: SUPERSEDED (A-22).  Was ACCEPTED — implemented in this phase.  Companion to
 `vspace-frame-hardening.md` (Phase 19), `lifecycle-hardening.md` (Phase 16) and
 `scheduler-hardening.md` (Phase 17).  Phase 20 closes the gap Phase 19 left
 explicit: ring 3 can now observe and drive write-protection / NX / invalid-VA

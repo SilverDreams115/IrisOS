@@ -28,6 +28,7 @@ UEFI → BOOTX64.EFI → KERNEL.ELF
                 every capability the kernel installed in its CSpace, and
                 validates it against that CSpace before delegating anything)
       → init            (orchestration, CPtr-first mint handoff, boot self-tests)
+        → timer         (the timer interrupt; waiting is a service, not a syscall)
         → fb            (framebuffer painter, fire-and-forget)
         → console       (serial output service, endpoint)
         → svcmgr        (service manager + supervisor, endpoint-first)
@@ -42,7 +43,8 @@ spawning is seL4's composition, and the whole of it is retyping:
 
 ```
 UNTYPED_RETYPE2 → VSpace + root CNode + TCB   (the spawner retypes all three)
-INITRD_VMO / VMO_CREATE → VMO_MAP_INTO        (image and stack into that VSpace)
+INITRD_FRAME / RETYPE2(FRAME) → FRAME_MAP     (image and stack into that VSpace)
+ASID_POOL_ASSIGN(pool, vspace)                (name it, or nothing can run in it)
 CSPACE_MINT → the child's root CNode          (well-known caps, before it runs)
 TCB_CONFIGURE(tcb, cnode, vspace)             (seL4_TCB_Configure's shape)
 TCB_WRITE_REGS → TCB_RESUME                   (entry point, then it runs)
@@ -84,8 +86,9 @@ authorised it, so both are revocable by their grantor. See
 | `KOBJ_FRAME` | Physical frame capability; mapped into a VSpace. |
 | `KOBJ_VSPACE` | Address space (CR3 + PCID). **Retyped by its holder** since Stage 6-pure: its 4 KiB region IS the PML4, and `SYS_TCB_CONFIGURE` names one rather than the kernel building it. Since Stage 7 it outlives its threads — it comes down when its last capability does, as a page directory does in seL4 — so a late map into a dead target's space succeeds. |
 | `KOBJ_PAGE_TABLE` | A paging level, retyped like any other object and installed with `SYS_VSPACE_MAP_TABLE` (seL4's `PageTable_Map`). The kernel creates none: a map whose walk is incomplete answers `IRIS_ERR_MISSING_TABLE` and the holder supplies the level. |
-| `KOBJ_VMO` | Memory object; sparse (populated at map time), page-granular map, or MMIO wrap. |
-| `KOBJ_NOTIFICATION` | Lightweight signal/wait; used for IRQ delivery, process-exit watch, and fault delivery. |
+| `KOBJ_ASID_POOL` | Address-space identifiers. Carved from an Untyped by a holder of `ASIDControl` (seL4's `ASIDControl_MakePool`); `SYS_ASID_POOL_ASSIGN` issues one, and a VSpace that has not been given one is refused by `SYS_TCB_CONFIGURE`. Naming an address space is a grant, not a kernel bitmap. |
+| `KOBJ_VMO` | **Removed (ledger D-5).** It was the last object whose existence meant the kernel owned memory for somebody. A grant is a run of `KOBJ_FRAME` capabilities, one per page. |
+| `KOBJ_NOTIFICATION` | Lightweight signal/wait; used for IRQ delivery and exit watches. Can be BOUND to a thread (`SYS_TCB_BIND_NOTIFICATION`, seL4's), so a server blocked receiving on an endpoint still takes signals — which is what lets one thread be a driver. Faults no longer travel this way: a fault is an IPC message on an endpoint (ledger A-22). |
 | `KOBJ_PROCESS` | **Removed (Stage 7).** `struct KProcess` is deleted; nothing in the kernel allocates, owns or names a process. The enumerator is reserved and no live capability carries it; `SYS_PROCESS_CREATE` answers `NOT_SUPPORTED`. |
 | `KOBJ_IRQ_CAP` / `KOBJ_IOPORT` | Capability-gated hardware access. |
 | `KOBJ_BOOTSTRAP_CAP` | Boot authority, **one capability per authority** since Stage 5 — process, initrd, IRQ control, ioport control, debug, framebuffer. Matched by exact equality; a capability carrying two of them cannot be constructed. |
@@ -128,9 +131,12 @@ one** capability: leftover bits at a non-CNode terminal are `INVALID_ARG`, not
 a silent alias of a shallower slot. Receive slots are full CPtrs too, so a
 process whose root CNode is full can still be handed a capability.
 
-Every capability is created *into* a slot. `SYS_VMO_CREATE`,
-`SYS_UNTYPED_RETYPE2`, `SYS_TCB_SELF`, `SYS_VSPACE_SELF`, `SYS_CSPACE_SELF` and
-the rest take a destination and refuse to run without one.
+Every capability is created *into* a slot. `SYS_UNTYPED_RETYPE2`,
+`SYS_CSPACE_MINT`, `SYS_CAP_CREATE_IRQCAP` and the rest take a destination and
+refuse to run without one.  (The three `*_SELF` syscalls that used to hand a
+thread capabilities to its own address space, CSpace and thread for the asking
+are retired — ledger A-18; they are delegated at well-known slots before a
+service runs, and carried in BootInfo for the root task.)
 
 Well-known child slots: `1` svcmgr EP, `2` vfs EP, `3` console EP, `4` kbd EP,
 `5` own EP (recv), `6` process control (vestigial — it authorised
@@ -229,17 +235,21 @@ is no silent fallback to the legacy path.
 Demand fault resolution runs entirely in ring 3. A supervised **pager** service
 resolves page faults for the threads it is granted, backing them from files
 served by the VFS — with **no new kernel syscall**; it composes from
-`SYS_VMO_MAP_PAGE`, the target's address-space capability (handed over by the
-spawner that retyped it), fault generations, seq-checked resume, and the VFS
-grant protocol.
+`SYS_FRAME_MAP`, the target's address-space capability (handed over by the
+spawner that retyped it), the reply capability each fault arrives with, and the
+VFS grant protocol.  Since ledger A-22 it holds **no capability to any thread
+it serves**: a fault arrives as a message and is answered by replying, where it
+used to need a TCB capability the kernel minted into a mailbox.
 
-- **Fault delivery**: a faulting THREAD's exception is delivered as a
-  `KNotification` signal, armed on that thread with
-  `SYS_TCB_SET_FAULT_HANDLER`, which also names the mailbox the faulting
-  thread's capability lands in.  The pager reads the fault off that capability
-  with `SYS_TCB_FAULT_INFO`, maps a page, and resumes the target with a
-  seq-checked `SYS_EXCEPTION_RESUME` — every step naming the execution, never
-  an id.
+- **Fault delivery**: a faulting THREAD **calls** the endpoint its supervisor
+  armed with `SYS_TCB_SET_FAULT_HANDLER`.  The pager receives the fault record
+  as an ordinary IPC message with a **reply capability**, maps a page, and
+  resumes the target by replying.  The badge on the capability the thread was
+  armed through says whose fault it is, so one endpoint serves many targets and
+  nothing is minted into anybody's CSpace when a thread faults.  It used to be
+  three mechanisms — a notification, a mailbox the kernel published the
+  faulting TCB into, and a generation number — which is what ledger A-22
+  replaced with one.
 - **File-backed regions**: read-only shared (a bounded, evicting page cache),
   private-writable (copy-at-fill), exact EOF / zero-fill, and W^X-checked
   segment shapes (RX code / R rodata / RW data / BSS) as ELF-loading groundwork.
@@ -277,16 +287,15 @@ ceiling along with `KProcess`: what an allocation costs is memory, what pays
 for it is an `Untyped` the caller names, and what bounds it is how much
 somebody delegated — never a number the kernel invented.
 
-- `SYS_VMO_CREATE(size, budget, dest)` carves the VMO's pages, its
-  page-address array and its header out of the budget named in `budget`. So do
-  page tables, PML4s, `KVSpace` headers, root CNodes, TCBs, mapping records and
-  device capabilities. Each carve is a *child* of that Untyped, so
-  `SYS_UNTYPED_RESET` refuses while it lives and reclaims the whole region once
-  it does not.
+- `SYS_UNTYPED_RETYPE2(ut, type, dest, arg)` carves the object's storage out of
+  the Untyped named in `ut` — a frame's page, a page table, a PML4, a `KVSpace`
+  header, a root CNode, a TCB, a scheduling context, an ASID pool, a device
+  capability. Each carve is a *child* of that Untyped, so `SYS_UNTYPED_RESET`
+  refuses while it lives and reclaims the whole region once it does not.
 - A loader spends **the child's budget** on the child's image, address space,
   CSpace and first thread, so a supervisor launching many children accumulates
   nothing against itself — and reclaims a whole child by resetting one Untyped.
-- Sparse VMO pages are paid **once**, at first touch, out of that budget;
+- Frames are paid for when they are retyped, out of that budget;
   mapping the VMO into more address spaces does not pay again.
 - Every numeric per-process quota is gone. The notification quota retired in
   Phase S1, the page ceiling and the live-process ceiling in Stage 7 Steps 2–3,
@@ -331,11 +340,15 @@ operation. Highlights by area:
 - **Threads and execution**: `TCB_SELF`, `TCB_CONFIGURE` (names the CSpace root
   and the address space — `seL4_TCB_Configure`'s shape), `TCB_WRITE_REGS`,
   `TCB_SUSPEND/RESUME`, `TCB_SET_PRIORITY`, `TCB_GET_INFO`, `TCB_EXIT`,
-  `TCB_WATCH`, `TCB_EXIT_CODE`, `TCB_FAULT_INFO`, `TCB_SET_FAULT_HANDLER`,
-  `TCB_SET_TIMEOUT_HANDLER` (budget exhaustion as a fault — a *separate*
-  registration from the exception handler, because a temporal supervisor is not
-  the pager), plus `EXIT`, `GETPID`, `YIELD`, `SLEEP`, `CLOCK_GET`,
-  `CLOCK_NANOSLEEP`, `FUTEX_WAIT/WAKE`.
+  `TCB_WATCH`, `TCB_EXIT_CODE`, `TCB_SET_FAULT_HANDLER` (names the ENDPOINT a
+  fault is delivered to), `TCB_SET_TIMEOUT_HANDLER` (budget exhaustion as a
+  fault — a *separate* registration, because a temporal supervisor is not the
+  pager), `TCB_BIND_NOTIFICATION` (seL4's — a thread blocked receiving on an
+  endpoint still takes signals, which is what lets one thread be a driver),
+  plus `EXIT`, `YIELD`, `CLOCK_GET`.
+  Retired: `SLEEP`, `CLOCK_NANOSLEEP`, `NOTIFY_WAIT_TIMEOUT` (ledger A-24 — the
+  kernel cannot block a thread on time; waiting is a ring-3 service),
+  `TCB_FAULT_INFO`, `EXCEPTION_RESUME` (A-22), `TCB_SELF`, `FUTEX_WAIT/WAKE`.
 - **Capabilities / CSpace**: `CSPACE_MINT` (copy/mint slot→slot, with a
   destination CNode — including a child's root, which is how a spawner delegates
   before the child runs), `CSPACE_REVOKE` (recursive, across CNodes and address
@@ -346,15 +359,19 @@ operation. Highlights by area:
 - **Endpoint IPC**: `EP_SEND`, `EP_RECV`, `EP_NB_SEND`, `EP_NB_RECV`,
   `EP_CALL`, `REPLY`, `REPLY_RECV` (seL4's `ReplyRecv` — atomic, so a passive
   server never crosses the gap between giving its donated time back and
-  blocking again).
+  blocking again), `EP_CANCEL_BADGED_SENDS` (seL4's `CancelBadgedSends` — the
+  half of revocation that was missing: revoking a badged capability used to
+  leave whatever that client had already queued to be delivered afterwards).
 - **Memory / untyped / frames**: `UNTYPED_RETYPE2` (the one way an object is
   born), `UNTYPED_INFO`, `UNTYPED_QUERY`, `UNTYPED_RESET`,
-  `VMO_CREATE/MAP/MAP_INTO/MAP_PAGE/UNMAP/SIZE`, `FRAME_MAP/UNMAP`,
-  `VSPACE_SELF`, `VSPACE_MAP_TABLE` (install one retyped paging level).
-- **Faults / notifications**: `NOTIFY_SIGNAL`, `NOTIFY_WAIT`,
-  `NOTIFY_WAIT_TIMEOUT`, `EXCEPTION_RESUME`.
-- **Scheduling**: `SC_CONFIGURE`, `SC_BIND`, `THREAD_SET_SC`,
-  `THREAD_PRIORITY`, `SCHED_INFO`.
+  `FRAME_MAP/UNMAP/SIZE`, `VSPACE_MAP_TABLE` (install one retyped paging
+  level), `ASID_POOL_ASSIGN` (name an address space out of a pool you hold, so
+  a thread can be bound to it).  The `VMO_*` family is retired with the object
+  (D-5): a grant is a run of frame capabilities, one per page.
+- **Notifications**: `NOTIFY_SIGNAL`, `NOTIFY_WAIT`, `NOTIFY_POLL` (seL4's
+  `Poll` — take what is pending, never block).
+- **Scheduling**: `SC_CONFIGURE` (requires the `SchedControl` boot capability,
+  as seL4 does), `SC_BIND`, `THREAD_SET_SC`, `SCHED_INFO`.
 - **Hardware / bootstrap (cap-gated)**: `CAP_CREATE_IRQCAP`, `CAP_CREATE_IOPORT`
   (each requires ITS OWN control capability — Stage 5's one-capability-one-
   authority split — and publishes the new cap into a caller-named CSpace slot
@@ -373,7 +390,10 @@ replaced them rather than by when they went:
 | the fabricating creators — `ENDPOINT_CREATE`, `NOTIFY_CREATE`, `CNODE_CREATE`, `SC_CREATE`, `UNTYPED_RETYPE` (Phases S1–S2) | `UNTYPED_RETYPE2`: an object is retyped from a budget, never conjured |
 | the process surface — `PROCESS_CREATE`, `PROCESS_WATCH`, `PROCESS_KILL`, `PROCESS_STATUS`, `PROCESS_EXIT_CODE`, `PROCESS_VSPACE`, `PROCESS_FAULT_INFO`, `PROCESS_SELF`, `THREAD_CREATE`, `THREAD_START`, `EXCEPTION_HANDLER` (Stage 7) | the `TCB_*` calls above: a supervisor names the **execution** it holds |
 | `PROC_CSPACE_MINT` (Stage 7 Step 9) | `CSPACE_MINT` with the child's root CNode as the destination — the spawner has it because it retyped it |
-| `RESOURCE_INFO`, `VMO_CREATE_FOR` (Stage 7-mem) | `UNTYPED_INFO` / `UNTYPED_QUERY`, and the budget argument on `VMO_CREATE` |
+| `RESOURCE_INFO`, `VMO_CREATE_FOR` (Stage 7-mem) | `UNTYPED_INFO` / `UNTYPED_QUERY`, and the budget argument on every retype |
+| the whole `VMO_*` family (ledger D-5) | `KOBJ_FRAME` — a grant is a run of frame capabilities, one per page |
+| `SLEEP`, `CLOCK_NANOSLEEP`, `NOTIFY_WAIT_TIMEOUT` (ledger A-24) | the ring-3 **timer service**: waiting is a request to a server, and a capability that can be refused |
+| `TCB_FAULT_INFO`, `EXCEPTION_RESUME` (ledger A-22) | the fault message itself, and the reply capability it carries |
 | `BOOTCAP_RESTRICT`, `IOPORT_RESTRICT` (Stage 5) | one capability per authority — a monolithic boot capability cannot be constructed, so there is nothing to narrow |
 | `CSPACE_MINT_INTO` | `CSPACE_MINT`, once it took a destination CNode |
 | the early Unix-shaped calls — `SYS_WRITE`, `SYS_BRK`, `SYS_SPAWN`, `SYS_SPAWN_ELF`, `SYS_NS_REGISTER`, `SYS_NS_LOOKUP`, the `CHAN_*` family (Phase 13) | endpoints, CSpace discovery and the retype-configure-resume spawn |
@@ -402,10 +422,10 @@ replaced them rather than by when they went:
 
 ## Memory & hardware
 
-- **Memory model**: sparse VMOs with map-time allocation plus page-granular
-  mapping (`SYS_VMO_MAP_PAGE`) for the user pager — **no kernel demand paging**;
-  page faults are resolved in ring 3. usercopy validates via the VMO mapping
-  list and PTEs; it never allocates.
+- **Memory model**: frames retyped from an Untyped and mapped by capability
+  (`SYS_FRAME_MAP`) — **no kernel demand paging**; page faults are resolved in
+  ring 3.  usercopy validates via the mapping list and PTEs; it never
+  allocates.
 - **Every allocation names its budget** (Stage 6). An address space's page
   tables and PML4, the `KVSpace` header, the child's root CNode, its first
   thread, a VMO's pages and metadata, per-mapping records and device
@@ -454,7 +474,7 @@ somebody's delegation.
 
 Three independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **19018 assertions** across 27 suites
+- **Host unit tests** — `make test-unit`: **27417 assertions** across 27 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   kendpoint, kreply, knotification, kuntyped including its two-ended carve,
   kschedctx, kframe, the MDB/CDT (structural + model-based fuzzing), rights,
@@ -495,7 +515,7 @@ make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
 make test-unit                                             # host unit suites (19018)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (280/280)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (299/299)
 make run                                                   # interactive QEMU
 ```
 

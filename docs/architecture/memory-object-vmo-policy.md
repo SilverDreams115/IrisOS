@@ -1,6 +1,14 @@
 # Phase 26 — Memory object / VMO policy expansion
 
-Status: ACCEPTED — implemented in this phase.  Companion to
+> **SUPERSEDED by ledger D-5.**  `KVmo` is DELETED — it was the last object
+> whose existence meant the KERNEL owned memory for somebody.  A grant is a run
+> of FRAME capabilities, one per page: which page a pager may install is which
+> capability it holds, whether it may install one writable is `RIGHT_WRITE` on
+> that page, and "an offset past the end of the region" is an empty CSpace
+> slot.  The policy this document defends is still the policy; the object it
+> defended it on no longer exists.
+
+Status: SUPERSEDED (D-5).  Was ACCEPTED — implemented in this phase.  Companion to
 `user-pager-vm-policy.md` (Phase 25), `vspace-frame-hardening.md` (Phase 19)
 and `fault-endpoint-model.md` (Phase 20).  Phase 25 fixed the pager *authority*
 contract with a raw frame as the page source; Phase 26 makes the source a
