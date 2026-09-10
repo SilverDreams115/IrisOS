@@ -272,6 +272,11 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_TCB_BIND_NOTIFICATION: return sys_tcb_bind_notification(arg0, arg1, arg2);
         case SYS_NOTIFY_POLL:         return sys_notify_poll(arg0, arg1, arg2);
         case SYS_EP_CANCEL_BADGED_SENDS: return sys_ep_cancel_badged_sends(arg0, arg1, arg2);
+        case SYS_TCB_READ_REGS:       return sys_tcb_read_regs(arg0, arg1, arg2);
+        case SYS_CSPACE_MOVE:         return sys_cspace_move(arg0, arg1, arg2);
+        case SYS_SC_CONSUMED:         return sys_sc_consumed(arg0, arg1, arg2);
+        case SYS_SC_YIELD_TO:         return sys_sc_yield_to(arg0, arg1, arg2);
+        case SYS_IRQ_CLEAR:           return sys_irq_clear(arg0, arg1, arg2);
         case SYS_IRQ_ACK:             return sys_irq_ack(arg0, arg1, arg2);
         case SYS_SCHED_INFO:          return sys_sched_info(arg0, arg1, arg2);
         case SYS_PROCESS_EXIT_CODE:   return sys_process_exit_code(arg0, arg1, arg2);

@@ -96,6 +96,35 @@ void irq_routing_ack(uint8_t irq) {
  * notification's CLOSE hook — the moment its last CSpace slot goes — so an
  * interrupt stops being delivered to an object nobody can reach.
  */
+/*
+ * irq_routing_clear — ledger A-28, seL4's `seL4_IRQHandler_Clear`.
+ *
+ * A route could be installed and never taken back except by destroying the
+ * notification: the binding is the notification's, so the only way to stop
+ * being told about a line was to give up the object that was told.  A driver
+ * that wants to hand the line on, or to stop serving it and keep its
+ * notification for something else, had no way to say so.
+ *
+ * Returns 1 if a route was cleared, 0 if the line had none.
+ */
+int irq_routing_clear(uint8_t irq) {
+    struct KNotification *old = 0;
+    if (irq >= IRQ_ROUTE_MAX) return 0;
+
+    spinlock_lock(&irq_lock);
+    old = irq_table[irq].notif;
+    irq_table[irq].notif = 0;
+    spinlock_unlock(&irq_lock);
+
+    if (!old) return 0;
+    kobject_release(&old->base);
+    /* Masked on the way out: a line with no route delivers to nobody, and
+     * leaving it unmasked would spin the handler on an interrupt the kernel
+     * then drops.  The same thing unregister does when the notification dies. */
+    if (irq < 16u) pic_set_irq_mask(irq, 1);
+    return 1;
+}
+
 void irq_routing_unregister_notification(struct KNotification *n) {
     if (!n) return;
 

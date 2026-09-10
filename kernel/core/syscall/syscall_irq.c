@@ -95,6 +95,34 @@ uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *
  * Authority: irqcap_handle — KOBJ_IRQ_CAP with RIGHT_ROUTE.
  */
+/*
+ * sys_irq_clear(irqcap_cptr) — ledger A-28, seL4's `seL4_IRQHandler_Clear`.
+ *
+ * The counterpart `SYS_IRQ_ROUTE_REGISTER` never had: a route could be
+ * installed and only ever taken back by destroying the notification it pointed
+ * at.  Same authority as installing one, because taking a route back is the
+ * same power over the same line.
+ */
+uint64_t sys_irq_clear(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject  *obj;
+    iris_rights_t    rights;
+    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_IRQ_CAP, &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (!rights_check(rights, RIGHT_ROUTE)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    uint8_t irq_num = ((struct KIrqCap *)obj)->irq_num;
+    kobject_release(obj);
+
+    return syscall_ok_u64((uint64_t)irq_routing_clear(irq_num));
+}
+
 uint64_t sys_irq_ack(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *t = task_current();

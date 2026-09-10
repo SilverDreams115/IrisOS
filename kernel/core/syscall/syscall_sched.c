@@ -213,3 +213,107 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     return 0;
 }
+
+/*
+ * SYS_SC_CONSUMED(sc_cptr, out_uptr) — ledger A-28.
+ *
+ * seL4's `seL4_SchedContext_Consumed`.  MCS gave IRIS the machinery to say what
+ * a context is OWED — the refill queue — and nothing to say what it SPENT.  A
+ * temporal supervisor deciding whether a server deserves its budget was holding
+ * the wrong half of the ledger.
+ *
+ * Zeroed by the read: "since I last looked" is the question, and a monotonic
+ * total only moves the subtraction into every caller.
+ */
+uint64_t sys_sc_consumed(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *obj; iris_rights_t r;
+    iris_error_t err = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
+                                               RIGHT_READ, KOBJ_SCHED_CONTEXT,
+                                               &obj, &r);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    struct KSchedContext *sc = (struct KSchedContext *)obj;
+    uint64_t fl = irq_spinlock_lock(&sc->lock);
+    /* The run in flight counts too: a supervisor asking about a thread that is
+     * on a CPU right now should not be told it has spent nothing. */
+    uint64_t spent = sc->consumed_total + sc->consumed_run;
+    sc->consumed_total = 0;
+    sc->consumed_run   = 0;
+    if (sc->consume_start) sc->consume_start = sched_current_ticks();
+    irq_spinlock_unlock(&sc->lock, fl);
+    kobject_release(obj);
+
+    if (!copy_u64_to_user_checked(arg1, spent))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    return syscall_ok_u64(0);
+}
+
+/*
+ * SYS_SC_YIELD_TO(sc_cptr, out_uptr) — ledger A-28.
+ *
+ * seL4's `seL4_SchedContext_YieldTo`: give the rest of this turn to the thread
+ * bound to that context.  Not donation — an endpoint Call donates a scheduling
+ * context for the length of a request (T308) and this does not; the caller
+ * keeps its budget and simply stops running first.
+ *
+ * Bounded by the caller's MCP for the reason every priority operation is: a
+ * thread that could not RAISE another to a priority must not be able to
+ * schedule one already at it on demand, or the ceiling is a number rather than
+ * a rule.
+ */
+uint64_t sys_sc_yield_to(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (arg1 != 0u && !user_range_writable(arg1, (uint32_t)sizeof(uint64_t)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *obj; iris_rights_t r;
+    iris_error_t err = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
+                                               RIGHT_WRITE, KOBJ_SCHED_CONTEXT,
+                                               &obj, &r);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    struct KSchedContext *sc = (struct KSchedContext *)obj;
+    struct task *target = sc->bound_task;
+    if (!target || target == t) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    }
+    if (target->priority > t->mcp) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+    if (target->terminal || target->state == TASK_DEAD) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+    }
+
+    uint64_t spent = 0;
+    if (t->sched_ctx) {
+        uint64_t fl = irq_spinlock_lock(&t->sched_ctx->lock);
+        spent = t->sched_ctx->consumed_total + t->sched_ctx->consumed_run;
+        irq_spinlock_unlock(&t->sched_ctx->lock, fl);
+    }
+    kobject_release(obj);
+
+    if (arg1 != 0u && !copy_u64_to_user_checked(arg1, spent))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    /*
+     * Give up the CPU.  The target is READY or blocked; if it is ready the
+     * dispatcher picks it by priority, which is the only ordering this kernel
+     * has and the one the MCP check above makes safe to ask for.  Yielding to a
+     * BLOCKED thread is not an error — it is a request that becomes a plain
+     * yield, because unblocking somebody else's thread is not something a
+     * scheduling-context capability says you may do.
+     */
+    t->need_resched = 1;
+    return sys_yield(0, 0, 0);
+}

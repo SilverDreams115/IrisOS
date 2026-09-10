@@ -224,6 +224,55 @@ uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 }
 
 /*
+ * SYS_TCB_READ_REGS(tcb_cptr, out_uptr) — ledger A-28.
+ *
+ * seL4's `seL4_TCB_ReadRegisters`, and the other half of an asymmetry: a
+ * supervisor could point a thread anywhere it liked and never ask where it
+ * was.  A fault handler gets the rip and the faulting address in the message
+ * (A-22); which REGISTER held the bad pointer was unreachable from ring 3 by
+ * any means.
+ *
+ * RIGHT_READ deliberately.  Observing a thread is not changing it, and a
+ * supervisor that may only watch should be expressible — which is why seL4
+ * makes this its own invocation instead of a direction flag on the write.
+ */
+uint64_t sys_tcb_read_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *caller = task_current();
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+    if (!user_range_writable(arg1, (uint32_t)sizeof(struct iris_user_ctx)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct task *target; iris_rights_t rights;
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
+                                   RIGHT_READ, &target, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    if (!target->configured || target->terminal) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_NOT_SUPPORTED);
+    }
+    /*
+     * A RUNNING thread's registers are in the CPU, not the TCB (D-1 step 3):
+     * the saved frame is whatever it looked like when it last left a core, and
+     * handing that back as "the current state" would be a lie a debugger acts
+     * on.  Reading YOURSELF is the same situation and is refused for the same
+     * reason — the frame you would read is the one this syscall entered on.
+     */
+    if (target == caller || target->state == TASK_RUNNING) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_BUSY);
+    }
+
+    struct iris_user_ctx snapshot = target->user_ctx;
+    kobject_release(&target->base);
+
+    if (!copy_to_user_checked(arg1, &snapshot, (uint32_t)sizeof(snapshot)))
+        return syscall_err(IRIS_ERR_INVALID_ARG);
+    return syscall_ok_u64(0);
+}
+
+/*
  * SYS_TCB_WATCH(tcb_cptr, notif_cptr, signal_bits) → 0 or iris_error_t
  *
  * Stage 7 Step 10: be told when THIS THREAD dies.

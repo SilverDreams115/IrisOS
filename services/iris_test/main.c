@@ -15,6 +15,7 @@
 #include <iris/svcmgr_proto.h>
 #include <iris/fault_proto.h>
 #include <iris/ipc_msg.h>
+#include <iris/user_ctx.h>
 #include <iris/ipc_recv_slot.h>
 #include <iris/endpoint_proto.h>
 #include "../common/iris_timer.h"
@@ -11217,7 +11218,7 @@ static void test_t148(void) {
      * This loop caught the guard syscall the moment it landed, which is what
      * it is for: growing the syscall surface has to be a deliberate, visible
      * act rather than something a diff can do quietly. */
-    for (long n = 139; ok && n <= 400; n++) {
+    for (long n = 144; ok && n <= 400; n++) {
         if (it_sys3(n, (long)fz_rand(), (long)fz_rand(), (long)fz_rand())
             != (long)IRIS_ERR_NOT_SUPPORTED) {
             ok = 0; why = "high not NOT_SUPPORTED";
@@ -25160,6 +25161,200 @@ static void test_t332(void) {
     if (ok) it_pass("T332"); else it_fail("T332", why);
 }
 
+
+/* T333's victim: a thread whose registers are read while it is suspended. */
+static uint8_t g_t333_stack[4096];
+static volatile int g_t333_ran;
+#define T333_DST_SLOT  IT_SCRATCH_3
+
+static void t333_victim(void) {
+    g_t333_ran = 1;
+    for (;;) (void)it_sys1(SYS_YIELD, 0);
+}
+
+
+/* ── T333: the five invocations seL4 has and IRIS could not express (A-28) ──
+ *
+ * A file-by-file re-read (A-26) found five operations with no equivalent here.
+ * None was load-bearing for anything IRIS did, which is exactly why they went
+ * unnoticed — an API gap only hurts when somebody reaches for it, and nobody
+ * had.  Each is a thing a supervisor should be able to say and could not.
+ *
+ *  1. `TCB_ReadRegisters` — a supervisor could point a thread anywhere and
+ *     never ask where it was.  RIGHT_READ, because observing is not changing,
+ *     and refused for a RUNNING thread, whose registers are in the CPU rather
+ *     than the TCB (D-1 step 3) — handing back the stale frame would be a lie
+ *     a debugger acts on.
+ *  2. `CNode_Move` across CNodes.  Within one, a move was a swap against an
+ *     empty slot; between them the only route was mint-then-delete, which for
+ *     the length of two calls records a delegation that never happened.
+ *  3. `SchedContext_Consumed` — MCS could say what a context was OWED and not
+ *     what it SPENT.
+ *  4. `SchedContext_YieldTo`, bounded by the caller's MCP: a thread that could
+ *     not raise another to a priority must not be able to schedule one already
+ *     at it on demand.
+ *  5. `IRQHandler_Clear` — a route could be installed and taken back only by
+ *     destroying the notification it pointed at.
+ * Invariants: A1, A7, S1. */
+static void test_t333(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "the five missing invocations";
+
+    /* ── 1. read a thread's registers ── */
+    {
+        struct iris_user_ctx ctx;
+        long tcb = it_thread_create((uint64_t)(uintptr_t)t333_victim,
+                                    ((uint64_t)(uintptr_t)(g_t333_stack +
+                                        sizeof(g_t333_stack))) & ~0xFULL, 0);
+        if (tcb < 0) { it_fail("T333", "victim"); return; }
+        /* Let it run and then stop it: a RUNNING thread's registers are in the
+         * CPU, which is the case the syscall refuses. */
+        for (uint32_t i = 0; i < 200u && !g_t333_ran; i++) (void)it_sys1(SYS_YIELD, 0);
+        if (ok && it_sys1(SYS_TCB_SUSPEND, tcb) != 0) { ok = 0; why = "suspend"; }
+        if (ok && it_sys2(SYS_TCB_READ_REGS, tcb, (long)(uintptr_t)&ctx) != 0) {
+            ok = 0; why = "read regs";
+        }
+        /* It was running our victim, so its rip is inside this image and its
+         * stack pointer inside the stack we gave it. */
+        if (ok && (ctx.rip == 0 || ctx.rip >= 0x0000800000000000ULL)) {
+            ok = 0; why = "rip not a user address";
+        }
+        if (ok && (ctx.rsp < (uint64_t)(uintptr_t)g_t333_stack ||
+                   ctx.rsp > (uint64_t)(uintptr_t)(g_t333_stack + sizeof(g_t333_stack)))) {
+            ok = 0; why = "rsp not in its stack";
+        }
+        /* Reading YOURSELF is refused for the same reason: the frame you would
+         * read is the one this syscall entered on. */
+        if (ok) {
+            long self = it_own_tcb_derived();
+            if (self < 0) { ok = 0; why = "self tcb"; }
+            else if (it_sys2(SYS_TCB_READ_REGS, self, (long)(uintptr_t)&ctx)
+                     != (long)IRIS_ERR_BUSY) { ok = 0; why = "read self"; }
+            if (self >= 0) it_slot_delete((uint32_t)self);
+        }
+        /* RIGHT_READ is the authority, and a capability without it is refused
+         * even though it may WRITE the same registers. */
+        if (ok) {
+            /* A ROOT scratch slot, not a rotating pool leaf: T324 measures how
+             * often the pool recycles a live leaf, and a new test should not
+             * spend that budget on three rights-reduced copies. */
+            long wo = it_cdt_derive(tcb, IT_SCRATCH_0, RIGHT_WRITE);
+            if (wo < 0) { ok = 0; why = "write-only dup"; }
+            else if (it_sys2(SYS_TCB_READ_REGS, wo, (long)(uintptr_t)&ctx)
+                     != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "write-only read"; }
+            it_slot_delete(IT_SCRATCH_0);
+        }
+        (void)it_sys1(SYS_TCB_EXIT, tcb);
+        it_quiesce_reaper();
+        if (tcb > 0) it_slot_delete((uint32_t)tcb);
+    }
+
+    /* ── 2. move a capability BETWEEN CNodes ── */
+    if (ok) {
+        long n = it_notify_create();          /* something to move */
+        if (n < 0) { ok = 0; why = "notif"; }
+        else {
+            /* The badge travels, which is the reason a move is not a mint: a
+             * badged capability can never be re-badged (A8). */
+            it_slot_delete(IT_SCRATCH_1);
+            long src = (it_sys3(SYS_CSPACE_MINT, n,
+                                (long)((uint64_t)IT_SCRATCH_1 << 32),
+                                (long)((uint64_t)(RIGHT_READ | RIGHT_WRITE) |
+                                       (0x5Aull << 32))) == 0)
+                       ? (long)IT_SCRATCH_1 : -1;
+            if (src < 0) { ok = 0; why = "badged source"; }
+            else {
+                it_slot_delete(T333_DST_SLOT);
+                if (it_sys2(SYS_CSPACE_MOVE, src,
+                            (long)((uint64_t)T333_DST_SLOT << 32)) != 0) {
+                    ok = 0; why = "move";
+                }
+                /* The source slot is EMPTY and the destination holds it. */
+                if (ok && it_sys1(SYS_CAP_IDENTIFY, src) >= 0) {
+                    ok = 0; why = "source survived the move";
+                }
+                if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T333_DST_SLOT)
+                          != (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+                    ok = 0; why = "destination empty";
+                }
+                /* ...with its badge intact. */
+                if (ok) {
+                    uint64_t got = 0;
+                    if (it_ping_badge((long)T333_DST_SLOT, &got) == 0 && got != 0x5Au) {
+                        ok = 0; why = "badge lost in the move";
+                    }
+                }
+                /* An OCCUPIED destination is refused, not overwritten. */
+                if (ok) {
+                    it_slot_delete(IT_SCRATCH_2);
+                    long again = (it_sys3(SYS_CSPACE_MINT, n,
+                                          (long)((uint64_t)IT_SCRATCH_2 << 32),
+                                          (long)((uint64_t)(RIGHT_READ | RIGHT_WRITE) |
+                                                 (0x5Bull << 32))) == 0)
+                                 ? (long)IT_SCRATCH_2 : -1;
+                    if (again >= 0 &&
+                        it_sys2(SYS_CSPACE_MOVE, again,
+                                (long)((uint64_t)T333_DST_SLOT << 32))
+                        != (long)IRIS_ERR_ALREADY_EXISTS) {
+                        ok = 0; why = "move over an occupied slot";
+                    }
+                    it_slot_delete(IT_SCRATCH_2);
+                }
+                it_slot_delete(T333_DST_SLOT);
+            }
+            { handle_id_t h = (handle_id_t)n; it_close(&h); }
+        }
+    }
+
+    /* ── 3. what a scheduling context SPENT ── */
+    if (ok) {
+        long sc = it_retype_slot_alloc((long)IRIS_CPTR_TEST_UNTYPED,
+                                       IRIS_KOBJ_SCHED_CONTEXT, 0);
+        uint64_t spent = 0;
+        if (sc < 0) { ok = 0; why = "sc"; }
+        else {
+            if (it_sys4(SYS_SC_CONFIGURE, sc, 10, 100,
+                        (long)IRIS_CPTR_SCHED_CONTROL) != 0) { ok = 0; why = "configure"; }
+            /* Nothing has run on it, so nothing was spent — and the read is a
+             * READ: a write-only copy cannot ask. */
+            if (ok && it_sys2(SYS_SC_CONSUMED, sc, (long)(uintptr_t)&spent) != 0) {
+                ok = 0; why = "consumed";
+            }
+            if (ok && spent != 0u) { ok = 0; why = "unused context spent time"; }
+            if (ok) {
+                long wo = it_cdt_derive(sc, IT_SCRATCH_0, RIGHT_WRITE);
+                if (wo >= 0 && it_sys2(SYS_SC_CONSUMED, wo, (long)(uintptr_t)&spent)
+                    != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "write-only consumed"; }
+                it_slot_delete(IT_SCRATCH_0);
+            }
+            /* 4. yielding to a context with NO thread bound is INVALID_ARG —
+             *    there is nobody to yield to. */
+            if (ok && it_sys2(SYS_SC_YIELD_TO, sc, 0L) != (long)IRIS_ERR_INVALID_ARG) {
+                ok = 0; why = "yield to an unbound context";
+            }
+            it_slot_delete((uint32_t)sc);
+        }
+    }
+
+    /* ── 5. take an IRQ route back ── */
+    if (ok) {
+        /* This suite holds no IRQ capability, and that IS the assertion: the
+         * authority to clear a route is the authority to install one, so a task
+         * that cannot route cannot un-route either. */
+        if (it_sys1(SYS_IRQ_CLEAR, (long)IRIS_CPTR_IRQ_CAP) >= 0) {
+            ok = 0; why = "cleared a route with no IRQ capability";
+        }
+        /* ...and a capability that is not an IRQ capability is refused by type,
+         * not by rights. */
+        if (ok && it_sys1(SYS_IRQ_CLEAR, (long)IRIS_CPTR_TEST_UNTYPED)
+                  != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "untyped cleared a route"; }
+    }
+
+    it_quiesce_reaper();
+    if (ok) it_pass("T333"); else it_fail("T333", why);
+}
+
 /* ── T324: what the rotating object pool is still holding ──────────────────
  * The pool's contract is one sentence — delete before use, never hold a slot
  * across a test boundary — and until now nothing read it back.  The pool is
@@ -25847,6 +26042,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t330();
     test_t331();
     test_t332();
+    test_t333();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

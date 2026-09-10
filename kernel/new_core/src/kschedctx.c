@@ -167,6 +167,8 @@ void kschedctx_flush_run(struct KSchedContext *sc) {
     uint64_t amt = sc->consumed_run;
     sc->consumed_run  = 0;
     sc->consume_start = 0;
+    /* A-28: what was SPENT, as distinct from what is owed back. */
+    sc->consumed_total += amt;
 
     if (sc->refill_count < sc->refill_max) {
         uint32_t idx = (sc->refill_head + sc->refill_count) % sc->refill_max;

@@ -1747,6 +1747,117 @@ static inline long iris_syscall0(long nr) {
 #define SYS_EP_CANCEL_BADGED_SENDS 138
 
 /*
+ * SYS_TCB_READ_REGS(tcb_cptr, out_uptr) → 0 or negative iris_error_t
+ *   ledger A-28 — seL4's `seL4_TCB_ReadRegisters`.
+ *
+ *   tcb_cptr: the thread, with RIGHT_READ.
+ *   out_uptr: where to write `struct iris_user_ctx` (22 words, user_ctx.h).
+ *
+ * A supervisor could WRITE a thread's registers and not read them.  That
+ * asymmetry is the first thing a debugger notices and the second thing a fault
+ * handler wants: A-22 gives it the faulting rip and cr2 in the message, and
+ * anything more — which register held the bad pointer — was unreachable.
+ *
+ * RIGHT_READ, not RIGHT_WRITE, because reading a thread's state is not
+ * changing it, and a supervisor that may only observe should be expressible.
+ * That split is the whole reason this is a separate invocation in seL4 rather
+ * than a flag on the write.
+ *
+ * The thread must not be RUNNING on another core: its context lives in the TCB
+ * only while it is not on a CPU (ledger D-1 step 3), so reading a running
+ * thread would return a frame the hardware has already moved past.  Answered
+ * IRIS_ERR_BUSY, which is what a caller can act on — suspend it first.
+ */
+#define SYS_TCB_READ_REGS 139
+
+/*
+ * SYS_CSPACE_MOVE(src_cptr, dest_cnode|slot<<32) → 0 or negative iris_error_t
+ *   ledger A-28 — seL4's `seL4_CNode_Move`, across CSpaces.
+ *
+ *   src_cptr:   the capability to move; its slot is EMPTIED.
+ *   dest:       CNode CPtr in the low half (0 = the caller's own root), slot in
+ *               the high half.  Must be empty.
+ *
+ * IRIS could move a capability WITHIN one CNode (`SYS_CNODE_SWAP` against an
+ * empty slot) and not between them.  Across CNodes the only route was
+ * mint-then-delete, which reaches the same place with a different derivation
+ * shape: the copy is a CHILD of the source, so for one moment the tree records
+ * a delegation that never happened, and a revoke racing that moment reaches
+ * something the mover intended to keep.
+ *
+ * A move relocates the MDB node — parent, siblings, children all travel with
+ * it — so the tree after is the tree before with one slot renamed.  That is
+ * what makes it a different operation from a copy and not a shortcut for one.
+ *
+ * The BADGE travels unchanged, which is the reason this cannot be expressed as
+ * mint: a badged capability can never be re-badged (charter A8), so minting a
+ * badged one somewhere else is only possible because the badge is preserved —
+ * and then deleting the original leaves two histories where there was one.
+ *
+ * Authority: RIGHT_WRITE on the destination CNode.  The source needs no right
+ * beyond being addressable, because you already hold it — moving a capability
+ * you hold from one of your slots to another takes nothing you did not have.
+ */
+#define SYS_CSPACE_MOVE 140
+
+/*
+ * SYS_SC_CONSUMED(sc_cptr, out_uptr) → 0 or negative iris_error_t
+ *   ledger A-28 — seL4's `seL4_SchedContext_Consumed`.
+ *
+ *   sc_cptr:  the scheduling context, with RIGHT_READ.
+ *   out_uptr: where to write the consumed TICKS (uint64_t).
+ *
+ * How much this context has spent SINCE THE LAST TIME ANYBODY ASKED.  The
+ * refill queue records what is owed back and says nothing about what was
+ * spent, so a temporal supervisor deciding whether a server is worth its budget
+ * had the wrong half of the accounting and no way to get the other.
+ *
+ * The read ZEROES the counter, because the question a supervisor asks is
+ * "since I last looked", and a monotonic total makes every caller keep its own
+ * previous value to subtract — which is the same state in a worse place.
+ *
+ * RIGHT_READ: knowing what a context spent is not spending it.
+ */
+#define SYS_SC_CONSUMED 141
+
+/*
+ * SYS_SC_YIELD_TO(sc_cptr, out_uptr) → 0 or negative iris_error_t
+ *   ledger A-28 — seL4's `seL4_SchedContext_YieldTo`.
+ *
+ *   sc_cptr:  a scheduling context with a thread bound to it, RIGHT_WRITE.
+ *   out_uptr: where to write what the CALLER consumed (uint64_t), or 0.
+ *
+ * Give the rest of this thread's turn to the thread bound to that context.
+ * The caller keeps its budget — this is not donation, which is what an
+ * endpoint Call does (A-20/T308) — it gives up the CPU in the target's favour
+ * and is rescheduled normally afterwards.
+ *
+ * Bounded by the caller's MAXIMUM CONTROLLED PRIORITY, exactly as
+ * `SYS_TCB_SET_PRIORITY` is: yielding to a thread you could not have raised to
+ * that priority would let a low-priority task schedule a high-priority one on
+ * demand, which is the ceiling being walked around rather than enforced.
+ */
+#define SYS_SC_YIELD_TO 142
+
+/*
+ * SYS_IRQ_CLEAR(irqcap_cptr) → 1 if a route was cleared, 0 if none, or negative
+ *   ledger A-28 — seL4's `seL4_IRQHandler_Clear`.
+ *
+ *   irqcap_cptr: the IRQ capability, with RIGHT_ROUTE — the same authority that
+ *                installs a route, because taking one back is the same power.
+ *
+ * A route could be installed (`SYS_IRQ_ROUTE_REGISTER`) and never taken back
+ * except by destroying the notification it pointed at: the binding is the
+ * notification's, so the only way to stop being told about a line was to give
+ * up the object that was being told.  A driver handing a line on, or one that
+ * wants to keep its notification for something else, had no way to say so.
+ *
+ * The line is MASKED on the way out.  A line with no route delivers to nobody,
+ * and leaving it unmasked would spin the kernel on an interrupt it then drops.
+ */
+#define SYS_IRQ_CLEAR 143
+
+/*
  * SYS_INITRD_FRAME(auth_cptr, index, dest_cnode|slot<<32, budget_cptr)
  *   → image size in bytes, or negative iris_error_t
  *

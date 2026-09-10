@@ -128,6 +128,55 @@ iris_error_t cspace_own_root(struct KCNode *root, struct KCNode **out) {
 }
 
 /*
+ * SYS_CSPACE_MOVE(src_cptr, dest) — ledger A-28.
+ *
+ * seL4's `seL4_CNode_Move`.  IRIS could move a capability within one CNode
+ * (swap against an empty slot) and not between them; across CNodes the only
+ * route was mint-then-delete, which is not the same operation.  A copy is a
+ * CHILD of its source, so mint-then-delete records — for as long as the two
+ * calls take — a delegation that never happened, and a revoke arriving in that
+ * window reaches something the mover meant to keep.
+ *
+ * `kcnode_slot_move` relocates the MDB node itself: parent, siblings and
+ * children travel with it, so the tree after is the tree before with one slot
+ * renamed.  It has been in the tree since Phase S3 with host coverage and no
+ * way for ring 3 to reach it.
+ */
+uint64_t sys_cspace_move(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    iris_cptr_t dest_cnode = (iris_cptr_t)(arg1 & 0xFFFFFFFFu);
+    uint32_t    dest_slot  = (uint32_t)(arg1 >> 32);
+
+    /* The SOURCE slot, not the source object: a move is about where a
+     * capability lives, and the object never learns it happened. */
+    struct KCNode *src_cn = 0; uint32_t src_idx = 0;
+    iris_error_t err = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
+                                           &src_cn, &src_idx);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    struct KCNode *dst_cn = 0;
+    if (dest_cnode == 0u) err = cspace_own_root(t->cspace_root, &dst_cn);
+    else                  err = cspace_resolve_cnode_for_publish(t->cspace_root,
+                                        dest_cnode, &dst_cn);
+    if (err != IRIS_OK) {
+        kobject_active_release(&src_cn->base);
+        kobject_release(&src_cn->base);
+        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_WRONG_TYPE : err);
+    }
+
+    err = kcnode_slot_move(src_cn, src_idx, dst_cn, dest_slot);
+
+    kobject_active_release(&dst_cn->base);
+    kobject_release(&dst_cn->base);
+    kobject_active_release(&src_cn->base);
+    kobject_release(&src_cn->base);
+    return (err == IRIS_OK) ? syscall_ok_u64(0) : syscall_err(err);
+}
+
+/*
  * SYS_CSPACE_MINT (114) — copy/mint slot→slot within the caller's CSpace.
  *   arg0 = source CPtr (CSpace only)
  *   arg1 = dest CNode CPtr (low 32; 0 = caller's root; CSpace only) |

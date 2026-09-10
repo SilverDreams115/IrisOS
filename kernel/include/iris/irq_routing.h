@@ -43,6 +43,8 @@ int32_t irq_routing_signal  (uint8_t irq, uint8_t data_byte);
  * CLOSE hook, so dropping the last capability to a notification unbinds the
  * interrupt — the binding belongs to the object, not to a resource domain. */
 void irq_routing_unregister_notification(struct KNotification *n);
+/* A-28: clear ONE line's route, named by the IRQ capability that holds it. */
+int  irq_routing_clear(uint8_t irq);
 
 /* Called from sys_irq_ack: unmask the hardware IRQ line so new interrupts
  * can fire.  No-op if irq >= IRQ_ROUTE_MAX.  This is the "re-enable" half of

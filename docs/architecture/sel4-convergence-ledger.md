@@ -1500,6 +1500,78 @@ silently.**  A thread that will not exit is not caught by any test that does not
 count threads.
 
 
+
+### A-28 — the five invocations seL4 has and IRIS could not express
+
+A-26's re-read listed four operations with no equivalent here and called none
+of them load-bearing.  That was true and it is the wrong test: an API gap only
+hurts when somebody reaches for it, and nobody had.  Each of these is something
+a supervisor should be able to SAY, and the fact that no code in the tree said
+it is a statement about the tree, not about the gap.
+
+**`SYS_TCB_READ_REGS` (139) — `seL4_TCB_ReadRegisters`.**  A supervisor could
+point a thread anywhere it liked and never ask where it was.  A fault handler
+gets the rip and the faulting address in the message (A-22); WHICH REGISTER held
+the bad pointer was unreachable from ring 3 by any means at all.
+
+Three things it gets right that a flag on the write would not.  `RIGHT_READ`,
+because observing a thread is not changing it and a supervisor that may only
+watch should be expressible — which is why seL4 makes this its own invocation.
+`IRIS_ERR_BUSY` for a RUNNING thread, because since D-1 step 3 a running
+thread's registers are in the CPU and the TCB holds whatever it looked like
+when it last left a core; handing that back as current state is a lie a
+debugger acts on.  And the same refusal for reading YOURSELF, where the frame
+you would read is the one the syscall entered on.
+
+**`SYS_CSPACE_MOVE` (140) — `seL4_CNode_Move`, across CSpaces.**  A capability
+could move WITHIN a CNode (`SYS_CNODE_SWAP` against an empty slot) and not
+between them.  Across CNodes the only route was mint-then-delete, and that is
+not the same operation: a copy is a CHILD of its source, so for as long as the
+two calls take, the derivation tree records a delegation that never happened —
+and a revoke arriving in that window reaches something the mover meant to keep.
+
+`kcnode_slot_move` has relocated MDB nodes since Phase S3, with host coverage
+and no way for ring 3 to reach it.  The tree after a move is the tree before
+with one slot renamed.  The BADGE travels, which is the sharper reason this
+cannot be a mint: a badged capability can never be re-badged (A8), so a move is
+the only way to relocate one and keep one history instead of two.
+
+**`SYS_SC_CONSUMED` (141) — `seL4_SchedContext_Consumed`.**  MCS gave IRIS the
+machinery to say what a scheduling context is OWED — the refill queue — and
+nothing at all to say what it SPENT.  A temporal supervisor deciding whether a
+server deserves its budget was holding the wrong half of the ledger.  The read
+zeroes the counter, because "since I last looked" is the question and a
+monotonic total only moves the subtraction into every caller.
+
+**`SYS_SC_YIELD_TO` (142) — `seL4_SchedContext_YieldTo`.**  Give the rest of
+this turn to the thread bound to a context.  Not donation: an endpoint Call
+donates a scheduling context for the length of a request (T308) and this does
+not — the caller keeps its budget and stops running first.  Bounded by the
+caller's MCP for the reason every priority operation is: a thread that could not
+RAISE another to a priority must not be able to schedule one already at it on
+demand, or the ceiling is a number rather than a rule.
+
+**`SYS_IRQ_CLEAR` (143) — `seL4_IRQHandler_Clear`.**  A route could be installed
+and taken back only by DESTROYING the notification it pointed at, because the
+binding is the notification's.  A driver handing a line on, or one that wants to
+keep its notification for something else, had no way to say so.  Same authority
+as installing a route, because taking one back is the same power over the same
+line; and the line is masked on the way out, since a line with no route
+delivers to nobody and an unmasked one would spin the kernel on an interrupt it
+then drops.
+
+**Gauge.**  T333, one claim per invocation, and the two that assert a REFUSAL
+are the ones worth reading: a write-only capability cannot read registers, and
+a task holding no IRQ capability cannot clear a route — which is this suite's
+situation and therefore an assertion it can actually make.
+
+**A note on the cost.**  T333 first spent eight rotating pool leaves on
+rights-reduced copies and pushed T324's eviction count from 4 to 7 against a
+ceiling of 6 — a new test spending a budget that exists to measure something
+else.  It uses fixed root scratch slots now.  The gauge caught it on the first
+run, which is what it is for.
+
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a
@@ -1668,6 +1740,9 @@ or lifted.
   cancelled, another badge's are not, and a badged capability cannot do it.
 - T001 pins that `SYS_GETPID` and `SYS_THREAD_EXIT` answer NOT_SUPPORTED;
   T002 that a granted clock can be asked of its owner and that it advances.
+- T333 pins the five invocations of A-28, including the two refusals: a
+  write-only capability cannot read registers, and a task with no IRQ
+  capability cannot clear a route.
 - T260 pins the retirement of the create syscalls and their no-effect.
 - T125/T126 pin the rejection of the migrated family on the legacy retype.
 - The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.

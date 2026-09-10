@@ -85,6 +85,17 @@ struct KSchedContext {
      * than one per tick. */
     uint64_t        consumed_run;
     uint64_t        consume_start;
+    /*
+     * Ledger A-28: how much this scheduling context has spent SINCE ANYBODY
+     * ASKED — seL4's `seL4_SchedContext_Consumed`.
+     *
+     * The refill queue records what is owed BACK and says nothing about what
+     * was spent; a temporal supervisor deciding whether a server is worth its
+     * budget needs the second number and had no way to get it.  Accumulated
+     * when a run is flushed, and zeroed by the read, because "since you last
+     * asked" is the question a supervisor is actually asking.
+     */
+    uint64_t        consumed_total;
     struct KRefill  refills[];      /* refill_max entries */
 };
 
