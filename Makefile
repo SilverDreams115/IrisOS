@@ -719,10 +719,15 @@ $(KERNEL_SH_BIN_OBJ): $(SERVICE_SH_ELF) | dirs
 $(BUILD_DIR)/iris_test_entry.o: services/iris_test/entry.S | dirs
 	gcc $(SERVICE_ASFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/iris_test_main.o: services/iris_test/main.c | dirs
+# The suite is nine translation units split by area (see it_priv.h); one
+# pattern rule builds them all, and adding a tenth is adding a file.
+IRIS_TEST_SRCS := $(sort $(wildcard services/iris_test/*.c))
+IRIS_TEST_OBJS := $(patsubst services/iris_test/%.c,$(BUILD_DIR)/iris_test_%.o,$(IRIS_TEST_SRCS))
+
+$(BUILD_DIR)/iris_test_%.o: services/iris_test/%.c services/iris_test/it_priv.h | dirs
 	gcc $(SERVICE_CFLAGS) -c $< -o $@
 
-$(SERVICE_IRIS_TEST_ELF): $(BUILD_DIR)/iris_test_entry.o $(BUILD_DIR)/iris_test_main.o $(BUILD_DIR)/svc_loader.o $(STACK_GUARD_OBJ)
+$(SERVICE_IRIS_TEST_ELF): $(BUILD_DIR)/iris_test_entry.o $(IRIS_TEST_OBJS) $(BUILD_DIR)/svc_loader.o $(STACK_GUARD_OBJ)
 	ld $(SERVICE_LDFLAGS) $^ -o $@
 	strip --strip-all $@
 

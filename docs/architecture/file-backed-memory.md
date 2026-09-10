@@ -33,7 +33,7 @@ lives in the ring-3 pager service.  Companion to `boot-image-growth.md`,
 | Revocation (generation bump, drop unreferenced) | `pg_revoke_backing` |
 | Content fixtures (deterministic patterns) | `services/filebk/*.dat`, `scripts/gen_fixtures.py` |
 | VFS export of fixtures by name | `services/vfs/vfs.c` (`vfs_seed_fixture_exports`) |
-| End-to-end tests | `services/iris_test/main.c` (T217–T230) |
+| End-to-end tests | `services/iris_test/it_t210_t238.c` (T217–T230) |
 
 ---
 

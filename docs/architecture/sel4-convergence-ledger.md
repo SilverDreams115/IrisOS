@@ -1868,6 +1868,61 @@ asking `SYS_CAP_IDENTIFY` for the type it was just told, because that is the
 whole argument in one line.
 
 
+## A-31 — the suite gets an interface to itself
+
+**Before**: `services/iris_test/main.c`, 26,572 lines, one translation unit,
+802 `static` declarations, 303 tests.  Every helper, every piece of per-test
+state and every worker-thread entry point in one namespace, in the order they
+were written.
+
+**After**: twelve files.  `it_priv.h` is the interface; `it_base.c` holds what
+every test is built out of (serial, accounting, the slot helpers, the rotating
+object pool, object fabrication, the bounded wait that asks the timer service);
+`main.c` is the entry point and the running order; and the tests are in ten
+files of ~2,400 lines each, named for the range of test numbers they hold, so a
+`[IRIS][TEST] T157 FAIL` line names its own file.
+
+**How, and why it is checkable.**  The split was done by a program, not by
+hand, and the program asserts the thing that matters: **every line of the
+original file lands in exactly one output file.**  26,572 in, 26,541 out, 31
+dropped — and the 31 are forward declarations of functions the header now
+declares, which is the only category allowed to disappear.  A hand split of a
+26,000-line file is a diff nobody can read; a mechanical one with a
+conservation law is a diff nobody has to.
+
+**What is exported, and what is not.**  Only symbols actually referenced
+outside the file that defines them: 465 declarations out of 802 statics.  The
+other 337 stayed `static`, which is the part of this that is worth something —
+per-test state that used to be visible to 302 other tests is now visible to the
+handful in its own file.  Three cases the analysis had to get right, each found
+by the compiler rather than guessed at:
+
+- a symbol named only by a MACRO in the shared header (`#define IT_UT
+  (it_auth_ut())`) is reachable from every file, so a mention from the header
+  counts as a mention from everywhere;
+- `extern const long x[];` is an incomplete type and `IT_FZ_BAD_H_N` takes its
+  `sizeof`, so an unsized array's bound is counted from its initializer and put
+  back;
+- a `;`-terminated chunk is a forward declaration when it is a function and a
+  DEFINITION when it is a variable — dropping the second kind deletes the
+  object.
+
+**The boundaries are by line count, not by test count.**  T083–T119 is 37 tests
+and 4,000 lines where T001–T044 is 37 tests and 1,500; what makes a file hard
+to read is its length.  Boundaries are then nudged until adjacent files' number
+ranges stop overlapping, which works everywhere except one file: T295, T296,
+T319 and T324 sit physically at the end of the suite, hundreds of tests after
+their numeric neighbours, because that is where they were written.  That file's
+name overlaps its neighbours' and its header says so.
+
+**What this does not do.**  It does not rename a single test, change a single
+assertion, or reorder anything: the running order in `main.c` is the order it
+was, and the suite passes 303/303 before and after.  Narrowing `it_priv.h` from
+465 declarations to the ones that deserve to be an interface is a separate
+change — one that can now be made a piece at a time, because there is an
+interface to narrow.
+
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types, and the boundary

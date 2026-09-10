@@ -10,7 +10,7 @@ bug (deferred-reap slot reuse — see "Bugs found" below).
 
 ## Harness
 
-All of it lives in `services/iris_test/main.c` (T107–T112 section).
+All of it lives in `services/iris_test/it_t101_t120.c` (T107–T112 section).
 
 - **PRNG**: xorshift32, one `g_fz_seed` per test, seeded with a FIXED
   constant (`0xA111010 7/8/9`, `0xA1110110/111`).  The operation sequence is

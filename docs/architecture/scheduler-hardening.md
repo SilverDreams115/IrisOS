@@ -226,7 +226,7 @@ that it is zero.
 
 ## Tests T119–T124
 
-All run as ring-3 selftests in `services/iris_test/main.c`, observing the
+All run as ring-3 selftests in the `services/iris_test/it_tNNN_tNNN.c` files, observing the
 scheduler only through `SYS_SCHED_INFO`.  In-process worker threads are TCBs
 retyped from the suite's Untyped and configured with CSpace/VSpace capabilities
 (Stage 5 Step 4; `SYS_THREAD_CREATE` is retired), so these tests assert
