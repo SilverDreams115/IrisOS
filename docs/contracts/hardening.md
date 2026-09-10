@@ -42,9 +42,10 @@ Handle movement paths today:
   - object retained into a new slot
   - source handle remains valid
 - transfer:
-  - destination handle inserted first
-  - source handle closed only after destination insert succeeds
-  - transfer is move semantics, not copy semantics
+  - destination cap inserted first, as an MDB child of the source slot
+  - the source slot is NOT consumed: transfer is copy semantics (ledger A-29),
+    as in seL4.  A sender giving a capability away derives a copy, sends it,
+    and deletes its own slot.
 - channel-attached transfer:
   - sender must hold `RIGHT_TRANSFER`
   - queued rights are reduced before enqueue

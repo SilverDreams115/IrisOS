@@ -726,9 +726,14 @@ void init_spawn_iris_test(handle_id_t sm_h) {
      *
      * Ledger A-24: the bound is a request to the TIMER SERVICE, because the
      * kernel cannot block on time any more.  A derived copy of the watch
-     * notification is handed over — the transfer is a move — and the timeout
-     * arrives on it as a reserved bit, told apart from the exit signal the
-     * watch raises.
+     * notification is handed over and the timeout arrives on it as a reserved
+     * bit, told apart from the exit signal the watch raises.
+     *
+     * Ledger A-29: transfer is a COPY, so INIT_SLOT_TIMER_GIVE still holds
+     * init's own capability afterwards.  It is left there deliberately — this
+     * is init's last wait before it parks, the slot is reserved for exactly
+     * this, and holding the parent of the grant is what would let init revoke
+     * the timer's reach if it ever needed to.
      */
     {
         uint64_t bits = 0;

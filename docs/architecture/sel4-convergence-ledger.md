@@ -1267,10 +1267,13 @@ number, and a number is not authority.
     out.  The kernel used to cancel the deadline as it woke the thread, which
     is exactly the bookkeeping about somebody else's waiting it should not have
     been doing.
-  - *A notification handed to the service is GIVEN AWAY.*  IPC capability
-    transfer in IRIS is a move, so a caller derives a fresh copy per arm.  The
-    service can signal what it was handed and nothing else, and the grant ends
-    when the timer fires and the service deletes its copy.
+  - *A notification handed to the service is GIVEN AWAY.*  A caller derives a
+    fresh copy per arm.  The service can signal what it was handed and nothing
+    else, and the grant ends when the timer fires and the service deletes its
+    copy.  (*Amended by A-29*: this said "transfer in IRIS is a move, so a
+    caller derives a fresh copy per arm."  Transfer is a copy now, and the
+    caller deletes its own slot after the arm — the same two steps, with the
+    second one written down.)
   - *Waiting can be REFUSED.*  A task with no timer capability cannot wait on
     time.  That was never true of a syscall number.
 
@@ -1362,7 +1365,9 @@ confidently, and both of those were.
 **Five things the code review found.**  None is a hole in the authority model;
 all are recorded so the next reader does not have to find them again.
 
-1. *IPC capability transfer is a MOVE.*  `syscall_ipc_stage_cap_commit` deletes
+1. *IPC capability transfer is a MOVE.*  **— CLOSED by A-29, which also
+   reversed the "permanent, deliberate" call this finding led to.**
+   `syscall_ipc_stage_cap_commit` deletes
    the sender's source slot at the delivery point.  seL4 COPIES — the sender
    keeps its capability, gated by the Grant right.  Both are coherent, and
    IRIS's is strictly the more conservative of the two: nothing can be
@@ -1722,6 +1727,81 @@ A10 were MET and remain MET — no allowlist entry moves, no prohibition is adde
 or lifted.
 
 
+## A-29 — the tree was right and the operation was wrong
+
+**Before**: sending a capability over an endpoint EMPTIED the sender's slot.
+`syscall_ipc_stage_cap_commit` called `kcnode_slot_delete` on the source at the
+delivery point, on all four transfer paths (`EP_SEND`, `EP_NB_SEND`, `EP_CALL`,
+`SYS_REPLY`).  A-26 found this, wrote it down, and A-7 registered it in the
+charter as a permanent, deliberate divergence: seL4 COPIES, IRIS moves, both
+are coherent and IRIS's is strictly the more conservative of the two.
+
+**After**: transfer is a COPY.  The sender keeps its capability whether the
+message landed or not, and the receiver's capability is a derivation CHILD of
+the sender's slot.  A sender that means to give a capability away derives a
+copy, sends it, and deletes its own slot — two steps that both belong to it.
+
+**Why the "permanent, deliberate" call was wrong.**  Not because seL4 does it
+differently.  Because the kernel already disagreed with itself.
+`syscall_ipc_deliver_cap_routed` installs the delivered capability with
+`kcnode_slot_install_linked(..., src_cn, src_idx, ...)` — linked to the
+sender's slot, an MDB parent-child edge, which is a statement that only means
+something if the parent continues to exist.  The delivery recorded that
+relationship and the commit immediately deleted the parent, reparenting the
+child onto whatever happened to be above it.  The move and the ancestry were
+two different theories of the same operation, shipped together.  One of them
+had to go, and it was not going to be the tree: the ancestry is what makes an
+IPC delegation revocable from the delegator, which is the property the whole
+CDT exists to provide.
+
+The conservatism argument does not survive either.  "Nothing can be delegated
+without the delegator giving it up" was never enforced — a sender derives a
+copy first and gives THAT up, which is what every caller in the system already
+did.  What the move actually bought was one less `CNode_Delete` in clients that
+wanted move semantics, at the cost of a lie in the derivation tree.
+
+**Scope**:
+- `syscall_ipc_stage_cap_commit` and `syscall_ipc_stage_cap_abort` collapse
+  into one `syscall_ipc_stage_cap_release(src_cn)`.  They had become identical
+  bodies, and keeping two names for them would have preserved a distinction the
+  kernel no longer makes: there is no longer anything for a delivered exit and
+  a non-delivered exit to disagree about.  Nine call sites lose their
+  `if (new_h != IRIS_MSG_NO_CAP)` branch.
+- The DELIVER-first ordering rule (Phase S4 Step 2) is unchanged and is now the
+  whole story rather than half of it: parenting needs the source slot occupied
+  at delivery time, and it stays occupied afterwards.
+- `services/common/iris_timer.h`, `services/svcmgr/svcmgr.c` and
+  `services/init/init_launch.c` are the productive callers.  svcmgr now deletes
+  its lookup scratch slot after replying; the timer client documents the
+  send-then-delete pair; init keeps its slot deliberately, because holding the
+  parent of a grant is how it could revoke the timer's reach.
+- Charter §6 loses the divergence row (retired, not restated).
+
+**What it cost to find, and what that says.**  Thirteen tests failed on the
+first build, and not one of them was asserting move semantics on purpose.  Two
+said "dup not consumed" — a genuine assertion of the old rule, inverted here.
+The other eleven were arithmetic: object counts that no longer balanced because
+senders kept what they used to lose, and a rotating slot pool that began
+evicting live capabilities mid-test.  A behaviour with two direct assertions in
+a 301-test suite, and both of them written as an afterthought inside a fuzzer.
+
+**T334 is the test that would have caught it.**  Three claims, each of which
+fails under a different mutation of the kernel: the sender still holds what it
+sent (fails if the commit deletes the slot — verified), the receiver's
+capability is a child of the sender's slot (fails if the delivery installs a
+LEGACY_ROOT instead — verified), and deleting the sender's slot leaves the
+receiver's copy alive while revoking it does not.  That last pair is the
+difference between delegation and disposal, and nothing in the suite had ever
+asked for it.
+
+**This is the third defect in this convergence that surfaced as something other
+than a failure** — after the timer token that read as a hang and the retired
+`SYS_THREAD_EXIT` that read as a slowdown.  The pattern is now explicit enough
+to state as a rule: *when a behaviour is chosen deliberately, the same commit
+adds the test that fails if it is chosen differently.*  A divergence row in a
+charter is documentation; a test is the only thing that keeps the row true.
+
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types, and the boundary
@@ -1743,6 +1823,9 @@ or lifted.
 - T333 pins the five invocations of A-28, including the two refusals: a
   write-only capability cannot read registers, and a task with no IRQ
   capability cannot clear a route.
+- T334 pins that IPC capability transfer is a COPY (A-29): the sender keeps
+  what it sent, the receiver's capability is a revocable derivation child of
+  the sender's slot, and deleting that slot is not revoking it.
 - T260 pins the retirement of the create syscalls and their no-effect.
 - T125/T126 pin the rejection of the migrated family on the legacy retype.
 - The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.

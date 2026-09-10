@@ -36,12 +36,14 @@
  * 0 on success, negative on failure (including "no timer service granted",
  * which is a missing capability and reads as one).
  *
- * `notif_give` is a capability the caller GIVES AWAY.  IPC capability transfer
- * in IRIS is a move, so the slot named here is empty when this returns —
- * callers derive a fresh copy of their notification per arm — with
+ * `notif_give` is a capability the caller gives away.  Transfer is a COPY
+ * (ledger A-29), as it is in seL4, so giving something away is two steps and
+ * both belong to the caller: derive a fresh copy of the notification per arm —
  * RIGHT_WRITE (the service signals it) and RIGHT_TRANSFER (it may be handed
- * over at all) — and give that away.  That is not a wart to route around: the service can signal what it
- * was handed and nothing else, and the grant ends when the timer fires and the
+ * over at all) — and delete that slot once this returns 0.  What the service
+ * keeps is a derivation CHILD of it, which is the point: the service can
+ * signal what it was handed and nothing else, the caller can revoke the grant
+ * at any time, and the grant ends on its own when the timer fires and the
  * service deletes its copy.
  */
 static inline long iris_timer_arm(long timer_ep, long notif_give,

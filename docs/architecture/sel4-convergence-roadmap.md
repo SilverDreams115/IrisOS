@@ -27,10 +27,10 @@ identity.  A system that converges on seL4's model without the proof has
 converged on the design, not on the guarantee, and this document says so
 wherever it is tempted to claim otherwise.
 
-Measured, not recalled (ledger A-26): 62 live syscalls of 94 dispatched
-numbers, 11 retypeable object types all of them seL4's, 299 runtime tests, 27
-host suites, 27417 host assertions, 36 of 36 charter invariants MET, purity
-gate clean over the transitive closure with zero exemptions.
+Measured, not recalled (ledger A-26, recounted at A-29): 62 live syscalls of 94
+dispatched numbers, 11 retypeable object types all of them seL4's, 301 runtime
+tests, 27 host suites, 27419 host assertions, 36 of 36 charter invariants MET,
+purity gate clean over the transitive closure with zero exemptions.
 
 ## Status
 
@@ -153,7 +153,7 @@ but the verification surface is not, and no convergence work changes that.
 | Dimension | State | Evidence |
 |---|---|---|
 | Object model and creation | **met** | every canonical object is retyped from Untyped; address spaces and CSpaces are retyped by their HOLDER (Stage 6-pure).  `KProcess` — the largest of the four object types seL4 has no equivalent for — is DELETED (Stage 7-proc), and `KVmo` is DELETED with it (D-5): a grant is a run of frame capabilities, one per page, so which page a pager may install is which capability it holds and the kernel owns no memory on anybody's behalf.  MMIO is handed over as a DEVICE Untyped the way seL4's BootInfo does it (D-9, D-10, T316/T317).  **A-21 ADDED one**, and it is seL4's: `KAsidPool`.  Address-space identity used to come from a kernel-global bitmap nobody could name; it is now a pool retyped from an Untyped by a holder of `ASIDControl`, and a thread cannot be bound to an address space that has not been assigned an identifier from one.  What remains that seL4 has no equivalent for is `KInitrdEntry` and `KBootstrapCap`: neither costs kernel memory, neither is how anything is reached, and seL4 would express both as capability TYPES with no backing object — a change to how a CNode slot is represented, not to what the system can do |
-| Capabilities (CSpace, CDT, revoke) | **close** | native CDT/MDB, recursive cross-process revoke, one namespace, and CNode GUARDS on the capability rather than the object — the root CSpace included, which is where a guard is load-bearing and where it was missed first (D-2, closed).  Revoke is preemptible (D-8, closed).  The rights set is different from seL4's and now permanently so (D-3, decided): `RIGHT_DUPLICATE` makes a delegation non-re-delegable, which seL4 cannot express — its derivation tree records what was derived, it does not prevent deriving.  Pinned by host RG-1..RG-5.  **A-25 closed the last operation seL4 had and IRIS did not**: `SYS_EP_CANCEL_BADGED_SENDS` cancels the in-flight sends of one badge, because revoking a badged delegation used to stop new sends and leave whatever was already queued to be delivered afterwards — revocation with a tail.  One divergence in this dimension that is not a rights question and was not written down until this review: IPC capability transfer is a MOVE (the sender's slot is emptied) where seL4's is a COPY.  **No open gap**, two registered permanent divergences |
+| Capabilities (CSpace, CDT, revoke) | **close** | native CDT/MDB, recursive cross-process revoke, one namespace, and CNode GUARDS on the capability rather than the object — the root CSpace included, which is where a guard is load-bearing and where it was missed first (D-2, closed).  Revoke is preemptible (D-8, closed).  The rights set is different from seL4's and now permanently so (D-3, decided): `RIGHT_DUPLICATE` makes a delegation non-re-delegable, which seL4 cannot express — its derivation tree records what was derived, it does not prevent deriving.  Pinned by host RG-1..RG-5.  **A-25 closed the last operation seL4 had and IRIS did not**: `SYS_EP_CANCEL_BADGED_SENDS` cancels the in-flight sends of one badge, because revoking a badged delegation used to stop new sends and leave whatever was already queued to be delivered afterwards — revocation with a tail.  One divergence in this dimension went unwritten until the A-26 review and was closed by **A-29**: IPC capability transfer used to be a MOVE (the sender's slot was emptied) where seL4's is a COPY.  It is a copy now, and the delivered capability is a revocable MDB child of the sender's slot — which is what the kernel had been recording all along while deleting the parent.  **No open gap**, one registered permanent divergence (the rights set) |
 | IPC | **met** | endpoints, badges, reply objects, receive slots, no handle fallback, and `SYS_REPLY_RECV` — seL4's combined `ReplyRecv`, which a passive server needs so it never crosses the gap between returning its donated time and blocking again (Stage 8-mcs, T309).  D-4 is CLOSED: `SYS_TCB_SET_IPC_BUFFER` is seL4's `seL4_TCB_SetIPCBuffer`, `ipc_kbuf` is deleted, and a payload with no registered buffer is an error.  **A-22 made FAULTS use it**: a faulting thread CALLS an endpoint, the handler receives the record as an ordinary message with a reply capability, and replying resumes it — where there used to be a notification, a mailbox the kernel minted a TCB capability into on every fault, and a generation number standing in for a one-shot token.  **A-23 added `seL4_TCB_BindNotification`**, without which a thread blocked receiving on an endpoint is deaf to signals and no server can take both an interrupt and a request queue on one thread |
 | No ambient authority | **met** | boot authority is one capability per authority, every per-process quota is gone (Stage 7), and the kernel's hardcoded ioport whitelist is REMOVED (Stage 5): the range a holder may claim travels on the `IOPORT_CONTROL` capability, narrowed by derivation (`SYS_IOPORT_CONTROL_NARROW`, T164/T171).  The kernel decides no device policy at all.  A-18 removed the LAST ambient authority: `SYS_VSPACE_SELF`, `SYS_CSPACE_SELF` and `SYS_TCB_SELF` handed a thread capabilities to its own address space, CSpace and thread asking for no capability at all.  All three are RETIRED — delegated at `IRIS_CPTR_OWN_VSPACE`/`OWN_CSPACE`/`OWN_TCB` for services, in BootInfo for the root task (which is seL4's arrangement), and for a thread the loader never saw, in the ENTRY REGISTER: the trampoline delivers the thread argument in `rdi` as well as `rbx`, so a thread written in C reads its own TCB capability as a parameter.  **A-21 removed the last ambient RESOURCE** — the kernel-global PCID bitmap that named every address space for free — and **A-24 the last ambient SERVICE**: `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP` and `SYS_NOTIFY_WAIT_TIMEOUT` let any thread ask the kernel to hold a deadline for it, and waiting is now a capability to a ring-3 timer service that can also be refused.  `mdb_legacy_roots` 32 → 25 (A-20 and A-21 each add one permanent boot-path root, `SchedControl` and `ASIDControl`) |
 | No kernel heap | **met** | The kernel's slab is a BOOT ARENA and it is SEALED at the end of boot: allocating from it afterwards panics.  seL4 has no kernel heap because its boot code carves the root task's initial objects from a statically-known region and describes everything else as Untyped — which is exactly what this is, now that the door shuts behind it.  The purity gate's reachability check runs with ZERO exemptions and over the TRANSITIVE closure (A-16): no syscall handler can reach the allocator through any chain of calls, not merely by naming its caller, and T318 reads the seal from ring 3 so the property cannot stop being true unobserved |
@@ -189,12 +189,15 @@ A file-by-file re-read after the form divergences closed (ledger A-26).  None
 of these is a hole in the authority model; all are named so the next reader
 does not have to find them again.
 
-1. **IPC capability transfer is a MOVE.**  Sending a capability over an
-   endpoint deletes the sender's source slot.  seL4 COPIES: the sender keeps
-   its capability, gated by the Grant right.  Both are coherent — IRIS's is
-   strictly more conservative — but a client that wants to keep what it sends
-   must derive a copy per send, and nothing in the documentation said so until
-   the timer client (A-24) ran into it.
+1. **IPC capability transfer is a MOVE.**  ***Closed by ledger A-29 — transfer
+   is a COPY now.***  Sending a capability over an endpoint deleted the
+   sender's source slot.  seL4 COPIES: the sender keeps its capability, gated
+   by the Grant right.  Both are coherent — IRIS's was strictly more
+   conservative — but a client that wanted to keep what it sent had to derive a
+   copy per send, and nothing in the documentation said so until the timer
+   client (A-24) ran into it.  What settled it was not the seL4 comparison but
+   the kernel's own tree: the delivered capability was already installed as an
+   MDB child of the sender's slot, and then the parent was deleted.
 2. **Two live syscalls are leftovers.**  `SYS_GETPID` hands a thread its own
    id for the asking — ambient INFORMATION rather than authority, so no
    invariant is violated, but seL4 has no equivalent and nothing productive
@@ -269,11 +272,11 @@ Precondition: Stage 1 (closed).
 - The delivered cap is installed with `kcnode_slot_install_linked` as an MDB
   **child of the source slot**, not a LEGACY_ROOT: an IPC delegation is now
   revocable from the sender or any of its ancestors.
-- Order: DELIVER, then commit.  MDB parenting needs the source slot occupied,
-  so the source is consumed only after the child exists; move semantics are
-  preserved because `kcnode_slot_delete` reparents the delivered cap to the
-  grandparent.  A cap revoked while staged is never delivered (entry
-  invariant 4).
+- Order: DELIVER, then release the staging refs.  MDB parenting needs the
+  source slot occupied — and since ledger A-29 it stays occupied, because the
+  transfer is a COPY (seL4's semantics).  There is no longer a commit/abort
+  distinction: the sender keeps its capability whether the message landed or
+  not.  A cap revoked while staged is never delivered (entry invariant 4).
 - The TOCTOU slot→handle degradation is REMOVED — the last CPtr→handle
   fallback in the kernel.  A raced/occupied destination fails closed: the
   message arrives with no capability and the source slot is untouched.
@@ -2053,13 +2056,14 @@ result of Stages 9-evt through 13-form, and it is worth noticing that the two
 items that stayed in the ceiling are the two that were always going to: the ABI
 shape, which is a decision, and the proof, which is seL4's identity.
 
-**Still open, and small** (ledger A-26, this review): IPC capability transfer is
-a MOVE where seL4's is a COPY; `SYS_GETPID`, `SYS_THREAD_EXIT` and
-`SYS_CLOCK_GET` are ambient leftovers no invariant forbids; four seL4
-invocations have no equivalent (`TCB_ReadRegisters`, `SchedContext_YieldTo`,
-`IRQHandler_Clear`, cross-CNode `CNode_Move`).  None of these is load-bearing
-for anything IRIS does, and all of them are named so nobody has to find them
-twice.
+**What A-26 listed as still open is now closed.**  Transfer is a COPY (A-29);
+`SYS_GETPID` and `SYS_THREAD_EXIT` are retired and `SYS_CLOCK_GET` was
+answered rather than retired, because `rdtsc` is unprivileged on x86 and
+removing the syscall would have bought nothing (A-27); the four missing seL4
+invocations exist (`TCB_ReadRegisters`, `SchedContext_YieldTo`,
+`IRQHandler_Clear`, cross-CNode `CNode_Move` — A-28).  What remains in the
+ceiling is what was always going to remain: the ABI shape, which is a decision,
+and the proof, which is seL4's identity.
 
 ---
 

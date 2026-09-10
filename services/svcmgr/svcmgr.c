@@ -786,8 +786,9 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
             /* Phase S4 (Step 2): the transfer SOURCE is a CSpace slot, never a
              * handle.  Mint the master into svcmgr's scratch slot and hand the
              * CPtr to the kernel; the delivered cap becomes an MDB child of
-             * that slot, so this grant is revocable from svcmgr.  The kernel
-             * consumes (deletes) the scratch slot on a committed delivery. */
+             * that slot, so this grant is revocable from svcmgr.  Ledger A-29:
+             * the transfer is a COPY, so the scratch slot survives the reply
+             * and svcmgr drops it itself once the reply has landed. */
             (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, SVCMGR_XFER_SLOT);
             /* Stage 4: the registry master is a CSpace slot, so serving a
              * lookup is a slot-to-slot mint.  The SYS_CNODE_MINT branch for a
@@ -991,15 +992,16 @@ static void svcmgr_handle_ep_request(struct svcmgr_state *state, struct IrisMsg 
     {
         int64_t rr = svcmgr_syscall2(SYS_REPLY, (uint64_t)reply_h,
                                      (uint64_t)(uintptr_t)&reply);
-        /* Reply-cap contract (SYS_REPLY, Phase 7.1): on success the attached
-         * dup is consumed; on IRIS_ERR_NOT_FOUND it was staged and destroyed.
-         * Any other error happens before staging — close the dup here so a
-         * failed reply does not leak the looked-up cap into svcmgr's table. */
-        if (rr != IRIS_OK && rr != (int64_t)IRIS_ERR_NOT_FOUND &&
-            reply.attached_handle != (uint32_t)IRIS_MSG_NO_CAP) {
-            handle_id_t orphan = (handle_id_t)reply.attached_handle;
-            svcmgr_close_handle_if_valid(&orphan);
-        }
+        /* Reply-cap contract, ledger A-29: the transfer is a COPY, so the
+         * scratch slot holds svcmgr's own capability whether the reply landed
+         * or not.  Drop it here on every path.  Delivered or not, what the
+         * client got (if anything) is a derivation CHILD and survives this
+         * delete; what svcmgr must not do is keep a slot pointing at a service
+         * it only meant to pass along.  (void) because an empty slot is not an
+         * error worth branching on.) */
+        (void)rr;
+        if (reply.attached_handle != (uint32_t)IRIS_MSG_NO_CAP)
+            (void)svcmgr_syscall2(SYS_CNODE_DELETE, 0, SVCMGR_XFER_SLOT);
     }
     /* A1.6: the CSpace slot keeps the authority; the resolved master was a
      * per-request working handle only.  Phase S1: reply_h is svcmgr's OWN

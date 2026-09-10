@@ -649,6 +649,13 @@ static long it_wait_timeout(long notif, long out_bits_uptr, long ns) {
         it_slot_delete((uint32_t)give);
         return (long)IRIS_ERR_NOT_FOUND;
     }
+    /* Ledger A-29: the transfer is a COPY — the service now holds a derivation
+     * CHILD of `give`, and this slot is ours to drop.  Dropping it is the whole
+     * point of deriving it: what the service keeps is a capability to signal
+     * this notification and nothing else, and it stops being reachable from
+     * here.  (Under the old MOVE the send consumed the slot for us, which is
+     * why leaving it behind went unnoticed until the counts moved.) */
+    it_slot_delete((uint32_t)give);
 
     for (;;) {
         bits = 0;
@@ -832,8 +839,9 @@ static void it_slot_delete(uint32_t slot);
  * it_xfer_slot mints the cap behind src_h into `slot` of iris_test's own root
  * CNode and returns the CPtr to hand to EP_SEND / EP_CALL / SYS_REPLY.
  * Requires RIGHT_DUPLICATE on src_h (the mint) and grants RIGHT_TRANSFER on
- * the slot (the transfer itself).  The kernel CONSUMES the slot on a
- * committed delivery — exactly the move semantics the handle source had.
+ * the slot (the transfer itself).  Ledger A-29: the transfer is a COPY, so
+ * the slot SURVIVES the delivery holding the parent of what the receiver got;
+ * a sender giving the capability away calls it_xfer_release afterwards.
  * The slot is deleted up front so re-entry (and any stale occupant) is clean.
  * 247..250 sits ABOVE every reserved pool — S1 scratch (64..87), the fixed
  * reply-object slots (88..97) and the fuzzing pool (100..239) — and inside the
@@ -1035,6 +1043,15 @@ static long it_xfer_dup(long src_h, uint32_t rights) {
         (__atomic_fetch_add(&g_it_xfer_next, 1u, __ATOMIC_RELAXED)
          % IT_XFER_SLOT_SPAN);
     return it_xfer_slot((handle_id_t)src_h, slot, rights);
+}
+
+/* Ledger A-29: the transfer is a COPY, so a sender that meant to give the
+ * capability away drops its own copy once the send has landed — send-then-
+ * delete is seL4's move.  Every site that expects its transfer to succeed
+ * calls this; the sites that expect it to FAIL keep the copy on purpose and
+ * assert it is still there. */
+static void it_xfer_release(long cptr) {
+    if (cptr >= 0) it_slot_delete((uint32_t)cptr);
 }
 
 static void it_pass(const char *id) {
@@ -1868,6 +1885,7 @@ static void test_t024(void) {
             reply.attached_handle = (uint32_t)src;
             reply.attached_rights = RIGHT_WRITE | RIGHT_WAIT;
             rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
+            it_xfer_release(src);
         }
         /* the master notification handle is ours regardless of the transfer */
         handle_id_t nh = (handle_id_t)notif_raw;
@@ -2837,7 +2855,8 @@ static handle_id_t g_ltst_ep = (handle_id_t)0;   /* HANDLE_INVALID */
 static uint32_t    g_ltst_id = 0;
 
 /* Register endpoint `ep` under `name` via EP_CALL cap-transfer (attached_cap).
- * The dup is consumed by staging; returns the dynamic id, or -(error code). */
+ * The dup is a give-away, released once the call lands (A-29); returns the
+ * dynamic id, or -(error code). */
 static long it_register_ep(const char *name, handle_id_t ep) {
     /* The master svcmgr keeps must carry DUPLICATE so it can hand each client a
      * fresh WRITE cap on lookup (+TRANSFER so the cap is deliverable to it). */
@@ -2854,6 +2873,7 @@ static long it_register_ep(const char *name, handle_id_t ep) {
     msg.attached_cap        = (uint32_t)d;
     msg.attached_cap_rights = (uint32_t)mr;
     long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    it_xfer_release(d);
     if (r != 0) return r;
     if (msg.label != IRIS_EP_REPLY_OK) return -(long)(uint32_t)msg.words[0];
     return (long)(uint32_t)msg.words[0];
@@ -3110,6 +3130,7 @@ static void test_t064(void) {
     msg.attached_cap        = (uint32_t)d;
     msg.attached_cap_rights = (uint32_t)(RIGHT_WRITE | RIGHT_TRANSFER);
     r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_SVCMGR_EP, (long)&msg);
+    it_xfer_release(d);
     if (!(r == 0 && msg.label == IRIS_EP_REPLY_ERR &&
           msg.words[0] == (uint64_t)(uint32_t)IRIS_ERR_INVALID_ARG)) ok = 0;
     it_close(&notif);
@@ -4478,6 +4499,7 @@ static void test_t085(void) {
     for (int i = 0; i < 200 && !g_t085_done; i++) it_sys0(SYS_YIELD);
     if (!g_t085_done || g_t085_s1 != 0) ok = 0;
 
+    it_xfer_release((long)g_t085_cap);   /* A-29: sender's copy survived */
     it_close(&n_h);
     it_close(&g_t085_cmd_ep);
 
@@ -4582,6 +4604,7 @@ static void test_t086(void) {
     for (int i = 0; i < 200 && !g_t086_done; i++) it_sys0(SYS_YIELD);
     if (!g_t086_done || g_t086_s1 != 0) ok = 0;
 
+    it_xfer_release((long)g_t086_cap);   /* A-29 */
     it_close(&n_h);
     it_close(&g_t086_cmd_ep);
 
@@ -4700,6 +4723,8 @@ static void test_t087(void) {
     if (ok && g_t087_r1 != 0) ok = 0;                       /* first reply ok */
     if (ok && g_t087_r2 != (int)IRIS_ERR_NOT_FOUND) ok = 0; /* one-shot (T074) */
 
+    it_xfer_release(cA);                 /* A-29: both copies survived */
+    it_xfer_release((long)g_t087_capB);
     it_close(&nA_h);
     it_close(&nB_h);
     it_close(&g_t087_ep);
@@ -4821,6 +4846,7 @@ static void test_t088(void) {
             m.attached_rights = RIGHT_WRITE;
             if (it_sys2(SYS_EP_SEND, (long)g_t088_ep, (long)&m) != 0) ok = 0;
         }
+        it_xfer_release(c);
         for (int i = 0; i < 200 && !g_t088_r2_done; i++) it_sys0(SYS_YIELD);
         if (!g_t088_r2_done || g_t088_r2_got != T088_SLOT_A ||
             g_t088_r2_sig != 0) ok = 0;
@@ -5948,7 +5974,9 @@ static long it_lp_send_cap(handle_id_t cmd_ep_h, long notif) {
     m.label           = 0x99;
     m.attached_handle = (uint32_t)d;
     m.attached_rights = RIGHT_WRITE;
-    return it_sys2(SYS_EP_SEND, (long)cmd_ep_h, (long)&m);
+    long r = it_sys2(SYS_EP_SEND, (long)cmd_ep_h, (long)&m);
+    it_xfer_release(d);
+    return r;
 }
 
 /* Phase 16: send a bare command label to a child (no payload). */
@@ -6893,10 +6921,14 @@ static void test_t107(void) {
                 if (it_sys2(SYS_EP_NB_SEND, (long)s, (long)&pm) !=
                     (long)IRIS_ERR_WOULD_BLOCK) { ok = 0; why = "cptr ep"; }
             }
-            /* move semantics: source dup consumed at delivery commit */
-            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) >= 0) {
-                ok = 0; why = "dup not consumed";
+            /* Ledger A-29: COPY semantics — the sender KEEPS what it sent,
+             * as seL4 does, and the receiver's capability is a derivation
+             * child of this slot.  It used to be a move, and the delivery
+             * installed the child and then deleted its parent. */
+            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) < 0) {
+                ok = 0; why = "source lost on transfer";
             }
+            it_xfer_release(d);          /* meant as a give-away: drop it */
             exp_slot++;
 
         } else if (pick == 2u) {
@@ -6921,10 +6953,11 @@ static void test_t107(void) {
             if (ok && (g_fz_res[0] != 0 || g_fz_att[0] != s)) {
                 ok = 0; why = "nb slot landing";
             }
-            /* A1.9 commit rule: NB source consumed once delivery commits. */
-            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) >= 0) {
-                ok = 0; why = "nb dup not consumed";
+            /* A-29: NB_SEND transfers by copy too — same rule, same tree. */
+            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) < 0) {
+                ok = 0; why = "nb source lost on transfer";
             }
+            it_xfer_release(d);
             exp_slot++;
 
         } else if (pick == 3u) {
@@ -7336,9 +7369,11 @@ static void test_t109(void) {
             if (ok && (it_sys2(SYS_NOTIFY_SIGNAL, (long)s, 1) != 0 ||
                        it_sys2(SYS_NOTIFY_WAIT, n, (long)(uintptr_t)&bits) != 0 ||
                        bits != 1u)) { ok = 0; why = "cptr dead"; }
-            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) >= 0) {
-                ok = 0; why = "dup not consumed";
+            /* A-29: the sender keeps its copy (seL4's transfer is a COPY). */
+            if (ok && it_sys1(SYS_CAP_IDENTIFY, d) < 0) {
+                ok = 0; why = "source lost on reply transfer";
             }
+            it_xfer_release(d);
             if (ok) { d = -1; exp_slot++; }
         } else if (ok) {
             /* I1 on the reply path: no declared slot, no capability. */
@@ -22904,6 +22939,7 @@ static void test_t310(void) {
         uint64_t tok = 0;
         if (give < 0 || iris_timer_arm((long)IRIS_CPTR_TIMER_EP, give, 0x4ull,
                                        30000000ull, &tok) != 0) { ok = 0; why = "arm"; }
+        it_xfer_release(give);       /* A-29: the copy was ours to give away */
     }
     if (ok) {
         uint64_t bits = 0;
@@ -24952,13 +24988,16 @@ static void test_t331(void) {
      *    luck; the wait below is unbounded on purpose, because a timer service
      *    that never fires SHOULD hang the suite rather than let a broken
      *    mechanism pass as a timeout. */
-    /* A fresh copy per arm: the transfer is a MOVE, so what is handed over is
-     * a derived capability the caller is giving away, not its own slot. */
+    /* A fresh copy per arm, dropped as soon as the arm lands: the transfer is
+     * a COPY (A-29), so "giving it away" is deriving a capability and then
+     * deleting your own slot.  What the service keeps is a derivation CHILD —
+     * which is also how claim 3 below can be checked at all. */
     if (ok) {
         long give = it_cs_reduce(n, RIGHT_WRITE | RIGHT_TRANSFER);
         uint64_t tok = 0;
         long ar = (give < 0) ? -999 :
                   iris_timer_arm((long)IRIS_CPTR_TIMER_EP, give, 0x4ull, 50000000ull, &tok);
+        it_xfer_release(give);
         if (ar != 0) {
             it_serial_write("[IRIS][TEST] T331 arm give="); it_log_num((uint32_t)give);
             it_serial_write(" r="); it_log_num((uint32_t)-ar); it_serial_write("\n");
@@ -24981,6 +25020,7 @@ static void test_t331(void) {
         uint64_t tok = 0;
         if (give < 0 || iris_timer_arm((long)IRIS_CPTR_TIMER_EP, give, 0x8ull,
                                        2000000000ull, &tok) != 0) { ok = 0; why = "arm long"; }
+        it_xfer_release(give);
     }
     if (ok) {
         uint64_t bits = 0;
@@ -25353,6 +25393,157 @@ static void test_t333(void) {
 
     it_quiesce_reaper();
     if (ok) it_pass("T333"); else it_fail("T333", why);
+}
+
+/* ── T334: a transfer is a COPY, and what the receiver got is a CHILD ───────
+ *
+ * Ledger A-29.  Sending a capability over an endpoint used to EMPTY the
+ * sender's slot, and the reason that survived so long is that nothing here
+ * ever asked the question — every caller in the system happened to be giving
+ * the capability away, so a move and a copy-then-delete looked identical from
+ * the outside.  What gave it away was not a test but a contradiction inside
+ * the kernel: the delivered capability was installed as an MDB **child** of
+ * the sender's slot, and then the parent was deleted.  Ancestry that only
+ * means something for a copy, recorded and then thrown away.
+ *
+ * So this is the test that would have caught it.  Three claims:
+ *
+ *  1. the sender still holds what it sent, and it still works;
+ *  2. the receiver's capability is a DERIVATION CHILD of the sender's slot —
+ *     revoking that slot destroys the receiver's copy, and the sender's own
+ *     capability survives its own revoke (children only);
+ *  3. giving a capability away is still possible, and is two steps that both
+ *     belong to the sender: send, then delete.  The receiver's copy outlives
+ *     the sender's slot, because deleting a parent is not revoking it.
+ *
+ * Invariants: A1, A3, A8, O4. */
+#define T334_SRC_SLOT  IT_SCRATCH_0
+#define T334_DST_SLOT  IT_SCRATCH_3
+
+static handle_id_t  g_t334_ep   = HANDLE_INVALID;
+static long         g_t334_src  = -1;
+static volatile int g_t334_done = 0;
+static          int g_t334_res  = 999;
+static uint8_t      g_t334_stack[8192];
+
+static void t334_sender(void) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label           = 0x334;
+    m.attached_handle = (uint32_t)g_t334_src;
+    m.attached_rights = RIGHT_WRITE;
+    g_t334_res  = (int)it_sys2(SYS_EP_SEND, (long)g_t334_ep, (long)&m);
+    g_t334_done = 1;
+    it_sys1(SYS_EXIT, 0);
+    for (;;) {}
+}
+
+/* One transfer: derive a fresh source, hand it over from another thread, and
+ * receive it into T334_DST_SLOT.  Leaves both slots occupied on success —
+ * which is the whole point, and what the caller then interrogates. */
+static int t334_transfer(long n, const char **why) {
+    g_t334_done = 0;
+    g_t334_res  = 999;
+    it_slot_delete(T334_DST_SLOT);
+    g_t334_src = it_cdt_derive(n, T334_SRC_SLOT, RIGHT_WRITE | RIGHT_TRANSFER);
+    if (g_t334_src < 0) { *why = "derive source"; return 0; }
+
+    uint64_t entry = (uint64_t)(uintptr_t)t334_sender;
+    uint64_t rsp   = ((uint64_t)(uintptr_t)(g_t334_stack + sizeof(g_t334_stack))) & ~0xFULL;
+    if (it_thread_create(entry, rsp, 0) < 0) { *why = "thread"; return 0; }
+
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.attached_cap = T334_DST_SLOT;          /* declared receive slot */
+    if (it_sys2(SYS_EP_RECV, (long)g_t334_ep, (long)&m) != 0) { *why = "recv"; return 0; }
+    if (m.attached_handle != T334_DST_SLOT)  { *why = "landing"; return 0; }
+    for (int i = 0; i < 400 && !g_t334_done; i++) it_settle(1);
+    if (!g_t334_done || g_t334_res != 0)     { *why = "send"; return 0; }
+    return 1;
+}
+
+static void test_t334(void) {
+    it_quiesce_reaper();
+    uint32_t before[6], after[6];
+    if (!it_sched_ext3(before)) { it_fail("T334", "sched ext3"); return; }
+    int ok = 1;
+    const char *why = "transfer is a copy";
+
+    long n  = it_notify_create_slot();
+    long ep = it_ep_create_slot();
+    if (n < 0 || ep < 0) { it_fail("T334", "create"); return; }
+    g_t334_ep = (handle_id_t)ep;
+
+    /* ── 1. the sender still holds what it sent ── */
+    if (ok && !t334_transfer(n, &why)) ok = 0;
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T334_SRC_SLOT)
+              != (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+        ok = 0; why = "sender lost its capability";
+    }
+    /* ...and it is a capability, not a husk: signal through it and observe on
+     * the master.  A slot that resolves but cannot act would pass the check
+     * above and mean nothing. */
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T334_SRC_SLOT, 0x1u) != 0) {
+        ok = 0; why = "sender's capability is dead";
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits) != 0 ||
+            (bits & 0x1u) == 0u) { ok = 0; why = "signal did not reach the object"; }
+    }
+    /* The receiver's copy is the same object, reached from its own slot. */
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T334_DST_SLOT, 0x2u) != 0) {
+        ok = 0; why = "delivered capability is dead";
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits) != 0 ||
+            (bits & 0x2u) == 0u) { ok = 0; why = "delivered capability is not the object"; }
+    }
+
+    /* ── 2. the delivered capability is a CHILD of the sender's slot ── */
+    if (ok && it_cdt_revoke((long)T334_SRC_SLOT) < 0) { ok = 0; why = "revoke"; }
+    if (ok && it_cdt_alive((long)T334_DST_SLOT)) {
+        ok = 0; why = "the delivered capability was not a child";
+    }
+    /* Revoke takes the descendants and leaves the invoked slot: the sender is
+     * still holding its own capability afterwards. */
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)T334_SRC_SLOT)
+              != (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+        ok = 0; why = "revoke ate the slot it was invoked on";
+    }
+    it_slot_delete(T334_SRC_SLOT);
+
+    /* ── 3. giving it away: send, then delete ── */
+    if (ok && !t334_transfer(n, &why)) ok = 0;
+    if (ok) it_slot_delete(T334_SRC_SLOT);
+    if (ok && it_cdt_alive((long)T334_SRC_SLOT)) { ok = 0; why = "delete kept the slot"; }
+    /* Deleting a parent is not revoking it — the receiver keeps what it was
+     * given, and can still act with it. */
+    if (ok && !it_cdt_alive((long)T334_DST_SLOT)) {
+        ok = 0; why = "deleting the sender's slot took the receiver's copy";
+    }
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, (long)T334_DST_SLOT, 0x4u) != 0) {
+        ok = 0; why = "the given-away capability stopped working";
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits) != 0 ||
+            (bits & 0x4u) == 0u) { ok = 0; why = "given-away signal lost"; }
+    }
+
+    it_slot_delete(T334_DST_SLOT);
+    it_slot_delete(T334_SRC_SLOT);
+    { handle_id_t h = (handle_id_t)n; it_close(&h); }
+    it_close(&g_t334_ep);
+    it_quiesce_reaper();
+
+    /* Nothing was left alive by either round. */
+    if (ok && !it_sched_ext3(after)) { ok = 0; why = "sched ext3 final"; }
+    for (uint32_t i = 0; ok && i < 6u; i++)
+        if (after[i] != before[i]) { ok = 0; why = "object leak"; }
+
+    if (ok) it_pass("T334"); else it_fail("T334", why);
 }
 
 /* ── T324: what the rotating object pool is still holding ──────────────────
@@ -26043,6 +26234,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t331();
     test_t332();
     test_t333();
+    test_t334();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

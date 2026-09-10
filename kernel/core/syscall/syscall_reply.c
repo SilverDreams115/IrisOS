@@ -142,7 +142,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * of the staged ref on this exit). */
         if (xfer_obj) {
             kobject_release(xfer_obj);
-            syscall_ipc_stage_cap_abort(xfer_src_cn);
+            syscall_ipc_stage_cap_release(xfer_src_cn);
         }
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_CLOSED);
@@ -161,7 +161,7 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             t->ep_call_mode = 0u;
             if (xfer_obj) {
                 kobject_release(xfer_obj);
-                syscall_ipc_stage_cap_abort(xfer_src_cn);
+                syscall_ipc_stage_cap_release(xfer_src_cn);
             }
             kobject_release(&ep->base);
             return syscall_err(IRIS_ERR_NOT_SUPPORTED);
@@ -185,18 +185,15 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         /* Phase 11: deliver the staged transferred cap into the receiver's
          * attached_cap (the reply cap below takes attached_handle).
          * A1.5: routed — lands in the receiver's declared receive-slot
-         * (CPtr) or its handle table.  A1.10: receiver dequeued → delivery
-         * committed; consume the caller's source handle now. */
+         * (CPtr) or its handle table.  A-29: the caller keeps its source
+         * capability — what the receiver gets is a derivation child of it. */
         if (xfer_obj) {
             uint32_t nh = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                          xfer_rights, xfer_badge,
                                                          xfer_src_cn, xfer_src_idx);
             receiver->ipc_msg.attached_cap        = nh;
             receiver->ipc_msg.attached_cap_rights = xfer_rights;
-            if (nh != IRIS_MSG_NO_CAP)
-                syscall_ipc_stage_cap_commit(t, xfer_src_cn, xfer_src_idx);
-            else
-                syscall_ipc_stage_cap_abort(xfer_src_cn);
+                            syscall_ipc_stage_cap_release(xfer_src_cn);
         }
 
         /* Phase S1: bind the receiver's staged explicit reply object to this
@@ -285,7 +282,7 @@ static uint64_t ep_call_complete(struct task *t, uint64_t arg1) {
      * drop (kendpoint_obj_close cannot release them under ep->lock).  Nothing
      * was delivered on that path — the source slot itself survives. */
     if (t->ep_cap_src_cn) {
-        syscall_ipc_stage_cap_abort(t->ep_cap_src_cn);
+        syscall_ipc_stage_cap_release(t->ep_cap_src_cn);
         t->ep_cap_src_cn  = 0;
         t->ep_cap_src_idx = 0;
     }
@@ -376,7 +373,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * staging ref is dropped and the server KEEPS its source handle. */
         if (xfer_obj) {
             kobject_release(xfer_obj);
-            syscall_ipc_stage_cap_abort(xfer_src_cn);
+            syscall_ipc_stage_cap_release(xfer_src_cn);
         }
         kobject_release(&rp->base);
         return syscall_err(IRIS_ERR_NOT_FOUND);
@@ -406,7 +403,7 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
              * Dropped rather than delivered somewhere arbitrary, and the
              * server keeps its own copy. */
             kobject_release(xfer_obj);
-            syscall_ipc_stage_cap_abort(xfer_src_cn);
+            syscall_ipc_stage_cap_release(xfer_src_cn);
         }
         kreply_return_donation(rp, caller);
         if (caller->pending_kreply) {
@@ -434,12 +431,9 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                                         xfer_rights, xfer_badge,
                                                         xfer_src_cn, xfer_src_idx);
         caller->ipc_msg.attached_handle = new_h;
-        /* Phase S4 (Step 2): caller determined and still blocked — delivery
-         * committed, so consume the server's source slot (outside rp->lock). */
-        if (new_h != IRIS_MSG_NO_CAP)
-            syscall_ipc_stage_cap_commit(t, xfer_src_cn, xfer_src_idx);
-        else
-            syscall_ipc_stage_cap_abort(xfer_src_cn);
+        /* A-29: the server keeps its source slot; the caller's copy is a
+         * derivation child of it (released outside rp->lock). */
+        syscall_ipc_stage_cap_release(xfer_src_cn);
     }
 
     /* D-4: the reply payload reaches the caller from wherever the server keeps

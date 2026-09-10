@@ -334,8 +334,7 @@ static inline int cspace_only_cptr(uint64_t v) {
  * terminal slot — never a handle.  The slot identity (out_src_cn/out_src_idx)
  * rides with the staged object so delivery can parent the delivered cap to it
  * in the MDB.  out_src_cn carries active+lifecycle refs; release them with
- * syscall_ipc_stage_cap_commit (delivery) or syscall_ipc_stage_cap_abort
- * (any non-delivery exit). */
+ * syscall_ipc_stage_cap_release, on every exit. */
 iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr,
                                                uint32_t requested_rights,
                                                struct KObject **out_obj,
@@ -343,14 +342,11 @@ iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr
                                                uint64_t *out_badge,
                                                struct KCNode **out_src_cn,
                                                uint32_t *out_src_idx);
-/* Delivery committed: consume the source slot (move semantics).  Children of
- * the deleted source — including the cap just delivered — are reparented to
- * its grandparent, so every surviving ancestor keeps revocation authority.
- * Releases the CNode refs taken by peek. */
-void syscall_ipc_stage_cap_commit(struct task *t, struct KCNode *src_cn,
-                                  uint32_t src_idx);
-/* Non-delivery exit: release the CNode refs WITHOUT touching the slot. */
-void syscall_ipc_stage_cap_abort(struct KCNode *src_cn);
+/* End of staging, delivered or not: release the CNode refs peek took and
+ * leave the source slot alone.  Ledger A-29 merged the old commit/abort pair
+ * here — transfer is a COPY, so the sender keeps its capability either way and
+ * the delivered cap stays a true MDB child of a slot that still exists. */
+void syscall_ipc_stage_cap_release(struct KCNode *src_cn);
 /* A1.5: receive-slot support (defined in syscall_endpoint.c).
  * _recv_slot_declare validates + records a receiver-declared CSpace slot
  * (fail-fast; endpoint untouched on error).  _deliver_cap_routed installs a

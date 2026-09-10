@@ -185,15 +185,17 @@ void ipc_transfer_reply(struct task *server, struct task *caller,
  * WOULD_BLOCK / endpoint close / waiter cancel / lost one-shot reply race)
  * release it and call _abort, and the sender keeps its cap.
  *
- * commit: consume the source SLOT only once delivery is committed — the
- * receiver is dequeued (immediate rendezvous) or the receiver takes the
- * staged cap from a queued sender.  Blocking paths carry the source slot in
- * task->ep_cap_src_cn / ep_cap_src_idx next to the staged object.
+ * release: drop the refs peek took.  Ledger A-29 collapsed what used to be
+ * two exits — a "commit" that deleted the sender's slot and an "abort" that
+ * did not — into this one: the transfer is a COPY, so the sender keeps its
+ * capability whether the message was delivered or not, and there is nothing
+ * left for the two paths to disagree about.  Blocking paths carry the source
+ * slot in task->ep_cap_src_cn / ep_cap_src_idx next to the staged object.
  *
- * Phase S4 (Step 2) ordering rule: DELIVER first, commit second.  The MDB
- * parents the delivered cap to the source slot, which must still be occupied
- * at delivery time; the subsequent delete reparents the delivered cap to the
- * grandparent, preserving move semantics. */
+ * Phase S4 (Step 2) ordering rule survives unchanged and is now the whole
+ * story: DELIVER first.  The MDB parents the delivered capability to the
+ * source slot, which must still be occupied at delivery time — and now stays
+ * occupied afterwards, which is what makes the recorded ancestry true. */
 iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr,
                                                uint32_t requested_rights,
                                                struct KObject **out_obj,
@@ -250,21 +252,26 @@ iris_error_t syscall_ipc_stage_cap_peek_badged(struct task *t, uint32_t src_cptr
     return IRIS_OK;
 }
 
-/* Consume the peeked source slot once delivery is committed (move semantics).
- * kcnode_slot_delete is idempotent on an empty slot, so a source revoked
- * while staged is a benign no-op here — the delivery itself already failed
- * closed in _deliver_cap_routed. */
-void syscall_ipc_stage_cap_commit(struct task *t, struct KCNode *src_cn,
-                                  uint32_t src_idx) {
-    (void)t;
-    if (!src_cn) return;
-    (void)kcnode_slot_delete(src_cn, src_idx);
-    kobject_active_release(&src_cn->base);
-    kobject_release(&src_cn->base);
-}
-
-/* Non-delivery exit: the sender keeps its cap — release the CNode refs only. */
-void syscall_ipc_stage_cap_abort(struct KCNode *src_cn) {
+/*
+ * Staging is over — delivered or not — so drop the refs peek took and LEAVE
+ * THE SENDER'S SLOT ALONE.
+ *
+ * Ledger A-29: the delivered path used to delete it.  Sending a capability
+ * over an endpoint was a MOVE, where seL4's is a COPY: the sender keeps what
+ * it sent, gated by the Grant right, and the receiver's copy is a derivation
+ * CHILD of the sender's slot.
+ *
+ * The parenting was already seL4's — `syscall_ipc_deliver_cap_routed` installs
+ * the delivered capability linked to `src_cn`/`src_idx`, which only makes sense
+ * for a copy — so the tree recorded a parent-child relationship and then
+ * deleted the parent, leaving the child reparented onto whatever was above it.
+ * The move and the ancestry disagreed, and the ancestry was right.
+ *
+ * A sender that means to give a capability away still can, in two steps that
+ * are both its own: derive a copy, send it, delete the copy.  That is what the
+ * timer client (A-24) does, and it is how the difference was noticed at all.
+ */
+void syscall_ipc_stage_cap_release(struct KCNode *src_cn) {
     if (!src_cn) return;
     kobject_active_release(&src_cn->base);
     kobject_release(&src_cn->base);
@@ -568,7 +575,7 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         irq_spinlock_unlock(&ep->lock, flags);
         if (xfer_obj) {                            /* source slot NOT consumed */
             kobject_release(xfer_obj);
-            syscall_ipc_stage_cap_abort(xfer_src_cn);
+            syscall_ipc_stage_cap_release(xfer_src_cn);
         }
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_CLOSED);
@@ -596,19 +603,14 @@ uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Ph68: install cap (outside lock).  A1.5: routed — lands in the
          * receiver's declared receive-slot (CPtr) or its handle table.
-         * Phase S4 (Step 2): DELIVER FIRST, then commit — the MDB parenting
-         * requires the source slot to still be occupied, so the source is
-         * consumed only after the child cap exists (move semantics
-         * preserved: delete reparents the delivered cap to the grandparent). */
+         * Phase S4 (Step 2): DELIVER FIRST — the MDB parenting requires the
+         * source slot to still be occupied.  A-29: it stays occupied. */
         if (xfer_obj) {
             uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                             xfer_rights, xfer_badge,
                                                             xfer_src_cn, xfer_src_idx);
             receiver->ipc_msg.attached_handle = new_h;
-            if (new_h != IRIS_MSG_NO_CAP)
-                syscall_ipc_stage_cap_commit(t, xfer_src_cn, xfer_src_idx);
-            else
-                syscall_ipc_stage_cap_abort(xfer_src_cn);
+            syscall_ipc_stage_cap_release(xfer_src_cn);
         }
 
         /* Wake receiver only after all data is consistent. */
@@ -668,7 +670,7 @@ static uint64_t ep_send_complete(struct task *t) {
      * left our source-slot refs for us to drop (it could not release them
      * under ep->lock).  Nothing was delivered — the slot itself survives. */
     if (t->ep_cap_src_cn) {
-        syscall_ipc_stage_cap_abort(t->ep_cap_src_cn);
+        syscall_ipc_stage_cap_release(t->ep_cap_src_cn);
         t->ep_cap_src_cn  = 0;
         t->ep_cap_src_idx = 0;
     }
@@ -1065,10 +1067,10 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
          * reply cap takes attached_handle, so the transferred cap is delivered
          * into the separate attached_cap field; EP_SEND keeps attached_handle.
          * A1.5: routed — honours our declared receive-slot (CPtr < 1024).
-         * Phase S4 (Step 2): deliver first (MDB child of the sender's source
-         * slot), then consume that slot.  Outside ep->lock: slot delete can
-         * fire object close callbacks that take endpoint locks (cn->lock →
-         * ep->lock ordering must not invert). */
+         * Phase S4 (Step 2): deliver first — the delivered cap is an MDB child
+         * of the sender's source slot (A-29: which the sender keeps).  Outside
+         * ep->lock: installing into a slot can fire object close callbacks
+         * that take endpoint locks (cn->lock → ep->lock must not invert). */
         t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
         if (xfer_obj) {
             uint32_t new_h = syscall_ipc_deliver_cap_routed(t, xfer_obj,
@@ -1080,10 +1082,7 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             } else {
                 t->ipc_msg.attached_handle = new_h;
             }
-            if (new_h != IRIS_MSG_NO_CAP)
-                syscall_ipc_stage_cap_commit(sender, xfer_src_cn, xfer_src_idx);
-            else
-                syscall_ipc_stage_cap_abort(xfer_src_cn);
+            syscall_ipc_stage_cap_release(xfer_src_cn);
         }
         t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 
@@ -1321,7 +1320,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         irq_spinlock_unlock(&ep->lock, flags);
         if (xfer_obj) {                            /* source slot NOT consumed */
             kobject_release(xfer_obj);
-            syscall_ipc_stage_cap_abort(xfer_src_cn);
+            syscall_ipc_stage_cap_release(xfer_src_cn);
         }
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_CLOSED);
@@ -1331,7 +1330,7 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         irq_spinlock_unlock(&ep->lock, flags);
         if (xfer_obj) {                            /* source slot NOT consumed */
             kobject_release(xfer_obj);
-            syscall_ipc_stage_cap_abort(xfer_src_cn);
+            syscall_ipc_stage_cap_release(xfer_src_cn);
         }
         kobject_release(&ep->base);
         return syscall_err(IRIS_ERR_WOULD_BLOCK);
@@ -1352,17 +1351,14 @@ uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     irq_spinlock_unlock(&ep->lock, flags);
 
     /* A1.5: routed — receiver's declared receive-slot or handle table.
-     * Phase S4 (Step 2): deliver first (MDB child of the source slot), then
-     * consume the source slot (move semantics preserved). */
+     * Phase S4 (Step 2): deliver first, so the delivered cap is an MDB child
+     * of the source slot (A-29: the sender keeps it). */
     if (xfer_obj) {
         uint32_t new_h = syscall_ipc_deliver_cap_routed(receiver, xfer_obj,
                                                         xfer_rights, xfer_badge,
                                                         xfer_src_cn, xfer_src_idx);
         receiver->ipc_msg.attached_handle = new_h;
-        if (new_h != IRIS_MSG_NO_CAP)
-            syscall_ipc_stage_cap_commit(t, xfer_src_cn, xfer_src_idx);
-        else
-            syscall_ipc_stage_cap_abort(xfer_src_cn);
+        syscall_ipc_stage_cap_release(xfer_src_cn);
     }
 
     task_wakeup(receiver);
@@ -1467,8 +1463,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     /* Phase 11: EP_CALL transferred cap → attached_cap; EP_SEND → attached_handle.
      * A1.5: routed — honours our declared receive-slot (CPtr < 1024).
-     * Phase S4 (Step 2): deliver first, then consume the source slot
-     * (outside ep->lock — see sys_ep_recv). */
+     * Phase S4 (Step 2): deliver first, outside ep->lock (see sys_ep_recv). */
     t->ipc_msg.attached_cap = IRIS_MSG_NO_CAP;
     if (xfer_obj) {
         uint32_t new_h = syscall_ipc_deliver_cap_routed(t, xfer_obj,
@@ -1480,10 +1475,7 @@ uint64_t sys_ep_nb_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         } else {
             t->ipc_msg.attached_handle = new_h;
         }
-        if (new_h != IRIS_MSG_NO_CAP)
-            syscall_ipc_stage_cap_commit(sender, xfer_src_cn, xfer_src_idx);
-        else
-            syscall_ipc_stage_cap_abort(xfer_src_cn);
+        syscall_ipc_stage_cap_release(xfer_src_cn);
     }
     t->ep_recv_slot = 0;   /* declaration is per-recv; never outlives it */
 
