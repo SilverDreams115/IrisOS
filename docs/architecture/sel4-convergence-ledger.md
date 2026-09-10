@@ -1433,6 +1433,73 @@ which is the one sentence about this system that no amount of further work
 changes.
 
 
+
+### A-27 — two ambient answers retired, and one that could not be
+
+A-26's re-read found three syscalls that answered a question from NOTHING.
+Two are gone; the third stayed, and the reason it stayed is the more useful
+half of this row.
+
+**`SYS_GETPID` — RETIRED.**  It handed a thread its own task id for the asking.
+Not authority: the number selected no object and conferred no right.  But in a
+capability system a task's identity is what OTHERS hold about it, and a call
+that answers "who am I" from nothing is the shape A-18 spent its length
+removing from the CSpace — only handing out a number instead of a capability.
+seL4 has no equivalent, and nothing in the tree used it but the test that
+tested it.
+
+**`SYS_THREAD_EXIT` — RETIRED.**  It ended the calling thread, which is what
+`SYS_EXIT` does — and `SYS_EXIT` also RECORDS the exit code, so the two were one
+operation with one of them throwing information away.  It dated from when a
+thread and a process were different things to end; since Stage 7-proc they are
+not, and a thread that exits without saying why is a thread whose supervisor
+learns nothing.  41 call sites in the suite moved to `SYS_EXIT`.
+
+**`SYS_CLOCK_GET` — KEPT, and A-26 overstated the finding.**  It looked like the
+last ungated read in the kernel: any task gets a monotonic timestamp holding
+nothing, and seL4 has no such call because a timer driver reads its hardware
+and everybody else asks the driver.  IRIS has that driver since A-24, so
+retiring it looked free.
+
+It is not gateable.  On x86 `rdtsc` is an UNPRIVILEGED instruction: any task
+can read a monotonic counter with no capability and no syscall whatsoever.
+Retiring the syscall would have moved the same ungated read into an instruction
+and bought nothing — the appearance of a capability check over something the
+hardware hands out for free.  What CAN be gated is WAITING — how long a thread
+is kept off the CPU, and who decides — and A-24 gated it.  **Reading a counter
+is not authority; blocking on one is.**
+
+The timer service keeps `TMR_OP_UPTIME` anyway, because a client that was
+granted a clock should be able to ask its owner rather than reaching around it,
+and `sh` asks it that way now.  `IRIS_TICK_HZ` became an ABI fact shared by the
+kernel that programs the PIT and the service that reads the line, where it had
+been `pit_init(100)` in one file and `10000000` in another.
+
+**And the attempt that failed, because it is the interesting part.**  The first
+implementation had the timer service count the ticks it received instead of
+reading a clock — a driver that receives every tick, the reasoning went, does
+not need to be told the time.  It does.  A notification carries BITS, not a
+count: ticks arriving while the service is not scheduled COALESCE into one
+wake-up, so counting wake-ups is a clock that runs slow exactly when the system
+is busy, which is when a deadline matters most.  The suite went from 6.3 s to
+over 120 s and the cause was three layers down from the symptom.
+
+**What the same change shook out.**  Converting the suite's thread exits, the
+first pass matched `it_sys1(SYS_THREAD_EXIT, 0)` and missed
+`it_sys0(SYS_THREAD_EXIT)` — 21 sites, all of them helper threads whose next
+statement is `for (;;) {}`.  Those threads took NOT_SUPPORTED and span forever.
+Nothing FAILED: every test still passed, and the suite simply got slower and
+slower as each leaked spinner competed with the next test's yield loop.  It was
+found by printing the live thread count next to each test's elapsed time and
+watching it climb 10 → 16 and never come down.
+
+That is the third time in this convergence that a defect surfaced as a
+performance number rather than a failure, and the lesson is the same one A-21
+and A-22 recorded: **a property nothing asserts is a property that degrades
+silently.**  A thread that will not exit is not caught by any test that does not
+count threads.
+
+
 ## Charter amendments
 
 The [purity charter](iris-sel4-purity-charter.md) may only be amended in a
@@ -1599,6 +1666,8 @@ or lifted.
   is its endpoint, and the three timed syscalls answer NOT_SUPPORTED.
 - T332 pins revocation without a tail: queued sends of one badge are
   cancelled, another badge's are not, and a badged capability cannot do it.
+- T001 pins that `SYS_GETPID` and `SYS_THREAD_EXIT` answer NOT_SUPPORTED;
+  T002 that a granted clock can be asked of its owner and that it advances.
 - T260 pins the retirement of the create syscalls and their no-effect.
 - T125/T126 pin the rejection of the migrated family on the legacy retype.
 - The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.

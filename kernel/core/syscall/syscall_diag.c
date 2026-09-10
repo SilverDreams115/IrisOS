@@ -3,25 +3,19 @@
 
 
 
-/*
- * sys_clock_get() → uint64_t nanoseconds since boot or iris_error_t
- *
- * Returns a monotonically increasing timestamp derived from the scheduler tick
- * counter (100 Hz; 10 ms resolution).  No capability required — any task may
- * query.  Does not block.
- */
+
+
+
+
 uint64_t sys_clock_get(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg0; (void)arg1; (void)arg2;
     if (tsc_hz == 0)
-        return syscall_ok_u64(sched_wall_ticks() * 10000000ULL);
+        return syscall_ok_u64(sched_wall_ticks() * IRIS_TICK_NS);
     uint64_t delta = iris_rdtsc() - tsc_boot;
     uint64_t sec   = delta / tsc_hz;
     uint64_t rem   = delta % tsc_hz;
     return syscall_ok_u64(sec * 1000000000ULL + rem * 1000000000ULL / tsc_hz);
 }
-
-
-
 
 uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct task *t = task_current();

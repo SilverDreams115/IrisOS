@@ -166,7 +166,6 @@ static inline int syscall_has_bootcap(struct task *t, uint64_t auth_cptr,
 /* ── Forward declarations — proc ─────────────────────────────────── */
 uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_status(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -183,7 +182,6 @@ uint64_t sys_tcb_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_process_create(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_thread_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_thread_start(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
-uint64_t sys_thread_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — IPC ──────────────────────────────────── */
 /* sys_chan_call retired — Phase 13/Track G */

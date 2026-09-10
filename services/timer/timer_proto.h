@@ -61,6 +61,23 @@
  * able to do and there is no reason to be able to do it.
  */
 #define TMR_OP_CANCEL     0x544D5202ull   /* 'TMR' 2 */
+
+/* ── uptime ──────────────────────────────────────────────────────────────
+ * label    = TMR_OP_UPTIME
+ * reply words[0] = nanoseconds since this service started counting
+ *
+ * A client that was granted a clock should be able to ASK it, rather than
+ * reaching around it to the kernel.  That is the whole of this operation: it
+ * answers with the same monotonic nanoseconds `SYS_CLOCK_GET` reports, from the
+ * task that owns the timer line.
+ *
+ * Ledger A-27 records why the syscall itself stayed: on x86 `rdtsc` is an
+ * unprivileged instruction, so a monotonic read cannot be gated by anything —
+ * retiring the syscall would have moved the same ungated read into an
+ * instruction.  What is gateable is WAITING, and A-24 gated it.
+ */
+#define TMR_OP_UPTIME     0x544D5203ull   /* 'TMR' 3 */
+
 #define TMR_ERR_NOTYOURS  4u
 
 #define TMR_ERR_FULL      1u   /* no free timer slot */

@@ -63,9 +63,28 @@ struct tm_entry {
 
 static struct tm_entry g_timers[TMR_MAX_TIMERS];
 
+/*
+ * How many ticks this service has been WOKEN for — a diagnostic, and not a
+ * clock.
+ *
+ * Ledger A-27 tried to make it one, on the reasoning that a driver receiving
+ * every tick of a line does not need to be told the time.  It does: a
+ * notification carries BITS, not a count, so ticks arriving while the service
+ * is not scheduled COALESCE into one wake-up.  Counting wake-ups is a clock
+ * that runs slow exactly when the system is busy, which is when a deadline
+ * matters most — and the suite took five times as long to run before the cause
+ * was obvious.
+ *
+ * Deadlines are in nanoseconds from `SYS_CLOCK_GET`, which is monotonic and
+ * cannot be missed.  A-27 records why that syscall stayed.
+ */
+static uint64_t g_wakes;
+
 /* Diagnostics, readable only through what the service reports; it holds no
  * debug authority of its own. */
-static uint32_t g_armed, g_fired, g_ticks;
+static uint32_t g_armed, g_fired;
+/* silence the unused warning on a counter kept for its documentation value */
+#define TM_TOUCH_WAKES() ((void)g_wakes)
 
 /*
  * (slot + 1) | generation, so a token that outlived its timer names nothing —
@@ -90,7 +109,7 @@ static uint32_t tm_free_slot(void) {
 static void tm_tick(void) {
     long now = tm_sys1(SYS_CLOCK_GET, 0);
     if (now < 0) return;
-    g_ticks++;
+    g_wakes++;
     for (uint32_t i = 0; i < TMR_MAX_TIMERS; i++) {
         if (!g_timers[i].used) continue;
         if ((uint64_t)now < g_timers[i].deadline_ns) continue;
@@ -142,7 +161,11 @@ void timer_main(handle_id_t bootstrap_ch_h) {
 
         uint32_t err = 0u;
         uint64_t token = 0u;
-        if (m.label == TMR_OP_CANCEL) {
+        uint64_t uptime = 0u;
+        if (m.label == TMR_OP_UPTIME) {
+            long now = tm_sys1(SYS_CLOCK_GET, 0);
+            uptime = (now < 0) ? 0u : (uint64_t)now;
+        } else if (m.label == TMR_OP_CANCEL) {
             uint32_t k1  = (uint32_t)(m.words[0] & 0xFFFFFFFFu);
             uint32_t k   = k1 - 1u;
             uint32_t gen = (uint32_t)(m.words[0] >> 32);
@@ -175,7 +198,7 @@ void timer_main(handle_id_t bootstrap_ch_h) {
 
         struct IrisMsg rep;
         tm_msg_zero(&rep);
-        rep.words[0]   = err;
+        rep.words[0]   = (m.label == TMR_OP_UPTIME) ? uptime : (uint64_t)err;
         rep.words[1]   = token;
         rep.word_count = 2u;
         (void)tm_sys2(SYS_REPLY, (long)TMR_SLOT_REPLY, (long)(uintptr_t)&rep);

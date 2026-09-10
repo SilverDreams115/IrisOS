@@ -40,11 +40,6 @@ uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
-uint64_t sys_getpid(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    struct task *t = task_current();
-    return t ? t->id : 0;
-}
 
 
 /*
@@ -260,11 +255,6 @@ uint64_t sys_thread_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 
-uint64_t sys_thread_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    task_exit_current();
-    return 0;  /* unreachable */
-}
 
 /*
  * SYS_PROCESS_EXIT_CODE (70) — RETIRED (Stage 7 Step 10).  Number

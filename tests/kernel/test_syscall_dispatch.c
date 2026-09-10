@@ -66,8 +66,11 @@ void test_syscall_dispatch(void) {
         /* Ledger A-24 adds three: 8 (SYS_SLEEP), 64 (SYS_NOTIFY_WAIT_TIMEOUT)
          * and 70 (SYS_CLOCK_NANOSLEEP).  A kernel that can block a thread on
          * time owns a policy about time; waiting is a service now. */
-        const uint64_t retired[] = { 8, 15, 19, 25, 55, 56, 58, 64, 66, 70,
-                                     104, 109, 123 };
+        /* Ledger A-27 adds two: 2 (SYS_GETPID) and 49 (SYS_THREAD_EXIT).  A
+         * thread's own id answered from nothing, and an exit that recorded no
+         * code where SYS_EXIT records one. */
+        const uint64_t retired[] = { 2, 8, 15, 19, 25, 49, 55, 56, 58, 64, 66,
+                                     70, 104, 109, 123 };
         for (unsigned i = 0; i < sizeof(retired) / sizeof(retired[0]); i++)
             ASSERT_EQ(ds(retired[i]), (long)IRIS_ERR_NOT_SUPPORTED);
     }

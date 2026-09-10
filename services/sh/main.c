@@ -29,6 +29,7 @@
 #include <iris/kbd_ep_proto.h>
 #include <iris/ipc_msg.h>
 #include <iris/endpoint_proto.h>
+#include "../timer/timer_proto.h"
 #include <iris/vfs_ep_proto.h>
 #include "../common/console_client.h"
 #include "../common/iris_ipc_buffer.h"
@@ -263,15 +264,25 @@ static void sh_dispatch(handle_id_t con, const char *line) {
         sh_cout(con, "IRIS Phase 55 — pure microkernel shell\r\n"
                            "  kernel:   x86_64 ring-0/3, cooperative+preemptive\r\n"
                            "  services: init svcmgr kbd vfs console fb sh\r\n"
-                           "  syscalls: SYS_KLOG_DRAIN(65) SYS_REPLY(85) SYS_FRAME_SIZE(67)\r\n");
+                           "  time:     a ring-3 service; the kernel cannot block on it\r\n");
         return;
     }
     if (sh_word_eq(line, "uptime")) {
-        long ns = sh_sys0(SYS_CLOCK_GET);
-        if (ns < 0) {
-            sh_cout(con, "uptime: clock unavailable\r\n");
+        /*
+         * Ledger A-27: the clock is a SERVICE.  `SYS_CLOCK_GET` handed any task
+         * a timestamp for the asking; what time it is, is something you are
+         * told by whoever holds the hardware, and a shell that was not granted
+         * the timer capability says so rather than being told anyway.
+         */
+        struct IrisMsg m;
+        uint8_t *b = (uint8_t *)&m;
+        for (uint32_t i = 0; i < (uint32_t)sizeof(m); i++) b[i] = 0;
+        m.label = TMR_OP_UPTIME;
+        long r = sh_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TIMER_EP, (long)(uintptr_t)&m);
+        if (r != 0) {
+            sh_cout(con, "uptime: no clock granted\r\n");
         } else {
-            uint64_t secs = (uint64_t)ns / 1000000000ULL;
+            uint64_t secs = m.words[0] / 1000000000ULL;
             sh_cout(con, "uptime: ");
             sh_write_u32(con, (uint32_t)secs);
             sh_cout(con, " s\r\n");

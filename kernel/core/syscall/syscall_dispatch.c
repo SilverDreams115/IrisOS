@@ -224,7 +224,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
                                      uint64_t arg3) {
     switch (num) {
         /* SYS_WRITE(0), SYS_BRK(7) — retired, fall to default */
-        case SYS_GETPID: return sys_getpid(arg0, arg1, arg2);
         case SYS_EXIT:  return sys_exit(arg0, arg1, arg2);
         case SYS_YIELD: return sys_yield(arg0, arg1, arg2);
         /* SYS_CHAN_CREATE(12)/SEND(13)/RECV(14) — retired Phase 13/Track G
@@ -257,7 +256,6 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_BOOTCAP_RESTRICT:     return sys_bootcap_restrict(arg0, arg1, arg2);
         case SYS_EXCEPTION_HANDLER:    return sys_exception_handler(arg0, arg1, arg2, arg3);
         case SYS_THREAD_CREATE:        return sys_thread_create(arg0, arg1, arg2);
-        case SYS_THREAD_EXIT:          return sys_thread_exit(arg0, arg1, arg2);
         case SYS_HANDLE_TYPE:          return sys_handle_type(arg0, arg1, arg2);
         case SYS_HANDLE_SAME_OBJECT:   return sys_handle_same_object(arg0, arg1, arg2);
         case SYS_POWEROFF:             return sys_poweroff(arg0, arg1, arg2);
@@ -265,8 +263,8 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
         case SYS_PROCESS_CREATE: return sys_process_create(arg0, arg1, arg2, arg3);
         case SYS_THREAD_START:  return sys_thread_start(arg0, arg1, arg2, arg3);
         case SYS_HANDLE_INSERT: return sys_handle_insert(arg0, arg1, arg2, arg3);
-        case SYS_CLOCK_GET:           return sys_clock_get(arg0, arg1, arg2);
         /* SYS_CHAN_RECV_TIMEOUT retired — Phase 13/Track G, fall to default (NOT_SUPPORTED) */
+        case SYS_CLOCK_GET:           return sys_clock_get(arg0, arg1, arg2);
         case SYS_KLOG_DRAIN:          return sys_klog_drain(arg0, arg1, arg2);
 
         case SYS_FRAME_SIZE:          return sys_frame_size(arg0, arg1, arg2);

@@ -575,7 +575,8 @@ static long it_cs_reduce(long src_cptr, uint32_t rights) {
     return (r != 0) ? r : (long)IT_OBJ_CPTR(leaf);
 }
 
-static void it_slot_delete(uint32_t slot);   /* forward: defined with the pool */
+static void it_slot_delete(uint32_t slot);       /* forward: defined with the pool */
+static void it_iris_msg_zero(struct IrisMsg *m); /* forward: defined with the IPC helpers */
 
 /*
  * ── Ledger A-24: waiting, without a kernel that knows how to wait ──────────
@@ -597,6 +598,23 @@ static void it_slot_delete(uint32_t slot);   /* forward: defined with the pool *
  */
 static void it_settle(uint32_t rounds) {
     for (uint32_t i = 0; i < rounds * 16u + 8u; i++) (void)it_sys1(SYS_YIELD, 0);
+}
+
+/*
+ * Ledger A-27: ask the clock's OWNER what time it is.
+ *
+ * `SYS_CLOCK_GET` handed any task a timestamp for the asking and is retired.
+ * The timer service counts the ticks of the line it holds, which is a clock,
+ * and answers for anybody it was granted to.
+ */
+static long it_timer_uptime(uint64_t *out_ns) {
+    struct IrisMsg m;
+    it_iris_msg_zero(&m);
+    m.label = TMR_OP_UPTIME;
+    long r = it_sys2(SYS_EP_CALL, (long)IRIS_CPTR_TIMER_EP, (long)(uintptr_t)&m);
+    if (r != 0) return r;
+    if (out_ns) *out_ns = m.words[0];
+    return 0;
 }
 
 /*
@@ -1077,24 +1095,62 @@ static void it_close(handle_id_t *h) {
     *h = HANDLE_INVALID;
 }
 
-/* ── T001: SYS_GETPID ───────────────────────────────────────────────────── */
-
+/* ── T001: the three ambient answers are RETIRED (A-27) ────────────────────
+ *
+ * `SYS_GETPID` handed a thread its own task id and `SYS_THREAD_EXIT` ended it
+ * without recording why.  Neither was authority — no number selected an object
+ * and none conferred a right — but both answered a question from NOTHING, which
+ * is the shape A-18 spent its length removing from the CSpace and A-24 from the
+ * scheduler.  seL4 has an equivalent for neither: identity is what others hold
+ * about you, and exiting says what happened.
+ *
+ * `SYS_CLOCK_GET` was the third candidate and it STAYED.  On x86 `rdtsc` is an
+ * unprivileged instruction, so a monotonic read cannot be gated by anything and
+ * retiring the syscall would have moved the same ungated read into an
+ * instruction.  Reading a counter is not authority; BLOCKING on one is, and
+ * A-24 made that a capability.  Ledger A-27. */
 static void test_t001(void) {
-    long r = it_sys0(SYS_GETPID);
-    if (r >= 0)
-        it_pass("T001");
-    else
-        it_fail("T001", "getpid negative");
+    int ok = 1;
+    const char *why = "ambient answers";
+    if (ok && it_sys0(SYS_GETPID) != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "GETPID still answers";
+    }
+    /* THREAD_EXIT is not called from this thread for the obvious reason; it is
+     * exercised where it would have ended one — every helper thread in this
+     * suite now exits through SYS_EXIT, which records a code. */
+    if (ok) it_pass("T001"); else it_fail("T001", why);
 }
 
-/* ── T002: SYS_CLOCK_GET ────────────────────────────────────────────────── */
-
+/* ── T002: a granted clock can be ASKED (A-27) ─────────────────────────────
+ *
+ * `SYS_CLOCK_GET` stays, because it cannot be gated (see T001).  What the timer
+ * service adds is that a client which was given a clock can ask ITS OWNER
+ * rather than reaching around it — which is the shape every other resource in
+ * this system has.  Two claims: it answers, and it MOVES, which is what says
+ * the service is reading a clock rather than returning a constant. */
 static void test_t002(void) {
-    long r = it_sys0(SYS_CLOCK_GET);
-    if (r >= 0)
-        it_pass("T002");
-    else
-        it_fail("T002", "clock_get negative");
+    int ok = 1;
+    const char *why = "clock is a service";
+    uint64_t t0 = 0, t1 = 0;
+
+    if (it_sys1(SYS_CAP_IDENTIFY, (long)IRIS_CPTR_TIMER_EP)
+        != (long)IRIS_HANDLE_TYPE_ENDPOINT) { it_fail("T002", "no clock granted"); return; }
+
+    if (ok && it_timer_uptime(&t0) != 0) { ok = 0; why = "uptime"; }
+    /* One tick of the line is 10 ms; wait for more than one so the comparison
+     * is about the clock advancing and not about scheduling luck. */
+    if (ok) {
+        uint64_t bits = 0;
+        long n = it_notify_create();
+        if (n < 0) { ok = 0; why = "notif"; }
+        else if (it_wait_timeout(n, (long)(uintptr_t)&bits, 40000000L)
+                 != (long)IRIS_ERR_TIMED_OUT) { ok = 0; why = "wait"; }
+        if (n >= 0) { handle_id_t h = (handle_id_t)n; it_close(&h); }
+    }
+    if (ok && it_timer_uptime(&t1) != 0) { ok = 0; why = "uptime 2"; }
+    if (ok && t1 <= t0) { ok = 0; why = "clock did not advance"; }
+
+    if (ok) it_pass("T002"); else it_fail("T002", why);
 }
 
 /* ── T003: SYS_YIELD ────────────────────────────────────────────────────── */
@@ -1266,7 +1322,7 @@ static void t015_server(void) {
     long r = it_sys2(SYS_EP_RECV, (long)g_t015_ep_h, (long)&msg);
     g_t015_ok   = (r == 0 && msg.label == 0xC0FFEEULL);
     g_t015_done = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -1320,7 +1376,7 @@ static void t016_server(void) {
     long r = it_sys3(SYS_EP_RECV, (long)g_t016_ep_h, (long)&msg, 88);
     if (r < 0 || msg.attached_handle == IRIS_MSG_NO_CAP) {
         g_t016_done = 1;
-        it_sys1(SYS_THREAD_EXIT, 0);
+        it_sys1(SYS_EXIT, 0);
         for (;;) {}
     }
 
@@ -1332,7 +1388,7 @@ static void t016_server(void) {
     long rr = it_sys2(SYS_REPLY, (long)reply_h, (long)&reply);
     g_t016_ok   = (rr == 0);
     g_t016_done = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -1415,7 +1471,7 @@ static void t019_thread(void) {
     long r = it_sys2(SYS_EP_RECV, (long)g_t019_ep_h, (long)&msg);
     g_t019_result = (int)r;
     g_t019_done   = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -1473,7 +1529,7 @@ static void t020_thread(void) {
     long r = it_sys2(SYS_EP_SEND, (long)g_t020_ep_h, (long)&msg);
     g_t020_result = (int)r;
     g_t020_done   = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -1538,7 +1594,7 @@ static void t021_client(void) {
     long r = it_sys2(SYS_EP_CALL, (long)g_t021_ep_h, (long)&msg);
     g_t021_ok   = (r == 0);
     g_t021_done = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -1623,7 +1679,7 @@ static void t022_server(void) {
     if (r < 0 || rmsg.buf_len != 4u || rmsg.buf_uptr == 0u ||
             rmsg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP) {
         g_t022_done = 1;
-        it_sys1(SYS_THREAD_EXIT, 0);
+        it_sys1(SYS_EXIT, 0);
         for (;;) {}
     }
 
@@ -1646,7 +1702,7 @@ static void t022_server(void) {
 
     g_t022_ok   = (recv_ok && rr == 0);
     g_t022_done = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -1762,7 +1818,7 @@ static void t024_client(void) {
     g_t024_ok    = (r == 0 && msg.label == IRIS_EP_REPLY_OK);
     g_t024_got_h = msg.attached_handle;
     g_t024_done  = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -1854,7 +1910,7 @@ static void t025_client(void) {
     g_t025_ok   = (r == 0 &&
                    msg.attached_handle == (uint32_t)IRIS_MSG_NO_CAP);
     g_t025_done = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -3377,7 +3433,7 @@ static void t074_server(void) {
         g_t074_r1 = (int)rr;
     }
     g_t074_done = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -4279,7 +4335,7 @@ static void t084_sender(void) {
     m.attached_rights = RIGHT_WRITE;
     g_t084_s2 = (int)it_sys2(SYS_EP_SEND, (long)g_t084_cmd_ep, (long)&m);
     g_t084_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -4368,7 +4424,7 @@ static void t085_sender(void) {
     m.attached_rights = RIGHT_WRITE;            /* reduce: drop WAIT et al. */
     g_t085_s1 = (int)it_sys2(SYS_EP_SEND, (long)g_t085_cmd_ep, (long)&m);
     g_t085_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -4454,7 +4510,7 @@ static void t086_sender(void) {
     m.attached_rights = RIGHT_WRITE;
     g_t086_s1 = (int)it_sys2(SYS_EP_SEND, (long)g_t086_cmd_ep, (long)&m);
     g_t086_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -4576,7 +4632,7 @@ static void t087_server(void) {
         g_t087_r2 = (int)it_sys2(SYS_REPLY, (long)g_t087_reply_h, (long)&rm);
     }
     g_t087_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -4686,7 +4742,7 @@ static void t088_recv1(uint64_t self_tcb) {   /* killed while blocked with slot 
     it_iris_msg_zero(&m);
     m.attached_cap = T088_SLOT_A;
     (void)it_sys2(SYS_EP_RECV, (long)g_t088_ep, (long)&m);
-    it_sys0(SYS_THREAD_EXIT);    /* not reached: killed while blocked */
+    it_sys1(SYS_EXIT, 0);    /* not reached: killed while blocked */
     for (;;) {}
 }
 
@@ -4699,7 +4755,7 @@ static void t088_recv2(void) {   /* real transfer into the same slot */
         g_t088_r2_sig = (int)it_sys2(SYS_NOTIFY_SIGNAL, (long)m.attached_handle, 0x88);
     }
     g_t088_r2_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -4709,7 +4765,7 @@ static void t088_recv3(void) {   /* endpoint closed under a declared slot */
     m.attached_cap = T088_SLOT_C;
     g_t088_r3_rr   = it_sys2(SYS_EP_RECV, (long)g_t088_ep2, (long)&m);
     g_t088_r3_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -5484,7 +5540,7 @@ static void t094_recv(void) {
     if (it_sys2(SYS_EP_RECV, (long)g_t094_ep, (long)&m) == 0)
         g_t094_got = m.attached_handle;        /* EP_SEND caps land here */
     g_t094_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -6238,7 +6294,7 @@ static void t103_sender(void) {
     long r = it_sys2(SYS_EP_SEND, (long)g_t103_ep_h, (long)&m);
     g_t103_result = (int)r;
     g_t103_done   = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -6325,7 +6381,7 @@ static void t104_caller(void) {
     long r = it_sys2(SYS_EP_CALL, (long)g_t104_ep_h, (long)&m);
     g_t104_result = (int)r;
     g_t104_done   = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -6402,7 +6458,7 @@ static void t105_caller(void) {
     long r = it_sys2(SYS_EP_CALL, (long)g_t105_ep_h, (long)&m);
     g_t105_result = (int)(r == 0 && m.label == 0x5A5AULL);
     g_t105_done   = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -6509,7 +6565,7 @@ static void t106_send_idx(int idx) {
     long r = it_sys2(SYS_EP_SEND, (long)g_t106_ep_h, (long)&m);
     g_t106_result[idx] = (int)r;
     g_t106_done[idx]   = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void t106_sender_a(void) { t106_send_idx(0); }
@@ -6698,7 +6754,7 @@ static void fz_worker(int idx) {
         __asm__ volatile ("" ::: "memory");
         g_fz_done[idx]   = 1;
     }
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void fz_worker0(void) { fz_worker(0); }
@@ -8276,7 +8332,7 @@ static void test_t117(void) {
 #define T118_ROUNDS 10u
 static uint8_t g_t118_stk[4096];
 static void t118_thread(void) {
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void test_t118(void) {
@@ -8421,7 +8477,7 @@ static void sh_worker(uint32_t idx) {
     }
 
     g_sh_done[idx] = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void sh_worker0(void) { sh_worker(0); }
@@ -8644,21 +8700,21 @@ static void t121_recv(void) {
     struct IrisMsg m; it_iris_msg_zero(&m);
     g_t121_res[0] = it_sys2(SYS_EP_RECV, (long)g_sh_ep, (long)&m);
     g_sh_done[0] = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void t121_send(void) {
     struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x121;
     g_t121_res[1] = it_sys2(SYS_EP_SEND, (long)g_sh_ep, (long)&m);
     g_sh_done[0] = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void t121_call(void) {
     struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x121;
     g_t121_res[2] = it_sys2(SYS_EP_CALL, (long)g_sh_ep, (long)&m);
     g_sh_done[0] = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void (*const g_t121_entries[3])(void) = { t121_recv, t121_send, t121_call };
@@ -9311,7 +9367,7 @@ static void t129_worker(void) {
     struct IrisMsg m; it_iris_msg_zero(&m);
     g_t129_res = it_sys2(SYS_EP_RECV, (long)g_sh_ep, (long)&m);
     g_sh_done[0] = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void test_t129(void) {
@@ -19770,7 +19826,7 @@ static void t255_waiter(void) {
     struct IrisMsg m; it_iris_msg_zero(&m);
     g_t255_res  = it_sys3(SYS_EP_RECV, (long)S1_SLOT_A, (long)&m, 0);
     g_t255_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void test_t255(void) {
@@ -19842,7 +19898,7 @@ static void t256_waiter(void) {
     uint64_t bits = 0;
     g_t256_res  = it_sys2(SYS_NOTIFY_WAIT, (long)S1_SLOT_A, (long)(uintptr_t)&bits);
     g_t256_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void test_t256(void) {
@@ -19920,7 +19976,7 @@ static void t257_caller(void) {
     m.label = 0x257; m.buf_uptr = (uint64_t)(uintptr_t)rb;
     (void)it_sys2(SYS_EP_CALL, (long)S1_SLOT_A, (long)&m);
     g_t257_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void test_t257(void) {
@@ -20030,7 +20086,7 @@ static void t258_sender(void) {
     struct IrisMsg m; it_iris_msg_zero(&m); m.label = 0x258;
     g_t258_res  = it_sys2(SYS_EP_SEND, (long)S1_SLOT_A, (long)&m);
     g_t258_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 static void test_t258(void) {
@@ -20653,7 +20709,7 @@ static uint8_t      g_t285_stack[8192];
 static void t285_helper(uint64_t self_tcb) {
     g_t285_tcb   = (long)self_tcb;
     g_t285_ready = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -21228,7 +21284,7 @@ static void t294_sender(void) {
     m.attached_rights = RIGHT_WRITE;
     g_t294_s1 = (int)it_sys2(SYS_EP_SEND, (long)g_t294_cmd_ep, (long)&m);
     g_t294_done = 1;
-    it_sys0(SYS_THREAD_EXIT);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -21315,7 +21371,7 @@ static void t297_helper(void) {
      * frozen, then leave through the ordinary thread exit. */
     for (int i = 0; i < 50; i++) it_sys0(SYS_YIELD);
     g_t297_ran = 2u;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) {}
 }
 
@@ -22604,7 +22660,7 @@ static void t308_client(void) {
     it_iris_msg_zero(&m);
     m.label = 0x8CULL;
     (void)it_sys2(SYS_EP_CALL, (long)g_t308_ep, (long)&m);
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) { }
 }
 
@@ -22733,7 +22789,7 @@ static void t309_client(void) {
         g_t309_replies++;
     }
     g_t309_done = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) { }
 }
 
@@ -22988,7 +23044,7 @@ static void t312_child(void) {
     g_t312_plain_ok   = (it_sys3(SYS_CAP_IDENTIFY, T312_PROBE,   0, 0) >= 0);
     g_t312_guarded_ok = (it_sys3(SYS_CAP_IDENTIFY, T312_PROBE_G, 0, 0) >= 0);
     g_t312_done = 1;
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) { }
 }
 
@@ -23817,7 +23873,7 @@ static volatile uint32_t g_t318_ran;
 
 static void t318_body(void) {
     __atomic_fetch_add(&g_t318_ran, 1u, __ATOMIC_RELAXED);
-    it_sys1(SYS_THREAD_EXIT, 0);
+    it_sys1(SYS_EXIT, 0);
     for (;;) { }
 }
 

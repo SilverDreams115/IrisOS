@@ -128,7 +128,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
     klog_write("[IRIS][PIC] remapping IRQs...\n");
     pic_init();
     klog_write("[IRIS][PIT] timer at 100 Hz...\n");
-    pit_init(100);
+    pit_init(IRIS_TICK_HZ);   /* ABI fact, shared with the timer service */
 
     klog_write("[IRIS][IDT] initializing...\n");
     idt_init();

@@ -145,6 +145,7 @@ static struct svcmgr_state g_svcmgr_state;
 static const char sm_str_started[]      = "[SVCMGR] started\n";
 static const char sm_str_ready[]        = "[SVCMGR] ready\n";
 static const char sm_str_recverr[]      = "[SVCMGR] recv error, retrying\n";
+static const char sm_str_mint_overflow[] = "[SVCMGR] FATAL: core mint table overflow\n";
 static const char sm_str_spawnok[]      = "[SVCMGR] service spawned\n";
 static const char sm_str_spawnfail[]    = "[SVCMGR] WARN: spawn failed\n";
 static const char sm_str_bootok[]       = "[SVCMGR] child bootstrap OK\n";
@@ -1029,7 +1030,11 @@ static int64_t svcmgr_bootstrap_child(struct svcmgr_state *state,
  * is consumed by svc_load_minted, which mints BEFORE the child's first
  * thread starts — no bootstrap-message barrier is needed.
  */
-#define SVCMGR_CORE_MINT_MAX 12u  /* Phase S1: +2 reply-object mints (slots 13/14) */
+/* Phase S1: +2 reply-object mints (slots 13/14).  Ledger A-27: +1 for the
+ * timer, which `sh` needs because reading a clock is a request to a server now.
+ * The bound is asserted below rather than trusted: a manifest that asks for
+ * more than fits used to walk off the array. */
+#define SVCMGR_CORE_MINT_MAX 14u
 static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
                                         const struct iris_service_catalog_entry *manifest,
                                         struct svc_mint *mints) {
@@ -1082,6 +1087,18 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         mints[n].src_cptr = kbd_ep;
         mints[n].rights = RIGHT_WRITE;
         mints[n].badge = child_badge;
+        n++;
+    }
+    /* Ledger A-27: the clock is a service.  Unbadged, because the timer scopes
+     * a cancel by the badge on the capability the request arrived through
+     * (A-24) and every child sharing svcmgr's badge would let one take back
+     * another's timer. */
+    if ((manifest->client_eps & IRIS_SVC_CLIENT_EP_TIMER) &&
+        svcmgr_delivered_cap_type(IRIS_CPTR_TIMER_EP) >= 0) {
+        mints[n].slot = IRIS_CPTR_TIMER_EP;
+        mints[n].src_cptr = IRIS_CPTR_TIMER_EP;
+        mints[n].rights = RIGHT_WRITE | RIGHT_DUPLICATE;
+        mints[n].badge = 0;
         n++;
     }
     if (manifest->own_service_ep && svc) {
@@ -1137,6 +1154,10 @@ static uint32_t svcmgr_build_core_mints(struct svcmgr_state *state,
         mints[n].badge = 0;
         n++;
     }
+    /* The builder writes one entry per manifest kind, and the array is sized
+     * for all of them.  Asserted rather than counted by a reader: this grew by
+     * one in A-27 and the bound had been a comment nobody re-derived. */
+    if (n > SVCMGR_CORE_MINT_MAX) svcmgr_log(sm_str_mint_overflow);
     return n;
 }
 

@@ -94,7 +94,18 @@ static inline long iris_syscall0(long nr) {
  * KEndpoint ("console.ep", iris/console_ep_proto.h). */
 #define SYS_WRITE   0
 #define SYS_EXIT    1   /* modern/conforming: success path does not return */
-#define SYS_GETPID  2   /* modern/conforming: returns pid >= 0 */
+/*
+ * SYS_GETPID — RETIRED (ledger A-27).  Number permanently reserved; answers
+ * IRIS_ERR_NOT_SUPPORTED.
+ *
+ * It handed a thread its own task id for the asking.  Not authority — the
+ * number conferred nothing and selected nothing — but in a capability system a
+ * task's identity is what OTHERS hold about it, and a call that answers "who am
+ * I" from nothing at all is the same shape as the three SELF syscalls A-18
+ * retired, only handing out a number instead of a capability.  seL4 has no
+ * equivalent, and nothing in this system used it but the test that tested it.
+ */
+#define SYS_GETPID  2
 #define SYS_YIELD   3   /* modern/conforming: returns 0 on success */
 /* Numbers 4, 5, 6 are permanently reserved; the dispatch returns
  * IRIS_ERR_NOT_SUPPORTED.  File I/O uses the VFS service over its KEndpoint
@@ -438,14 +449,37 @@ static inline long iris_syscall0(long nr) {
  * Monotonic clock — modern/conforming (iris_error_t).
  *
  * SYS_CLOCK_GET() → uint64_t nanoseconds since boot, or negative iris_error_t.
- *   No arguments required.  Returns a monotonically increasing nanosecond
- *   timestamp.  When the TSC has been calibrated at boot (via PIT CH2 one-shot),
- *   the value is derived from RDTSC and carries sub-millisecond resolution.
- *   When calibration fails, the implementation falls back to the 100 Hz scheduler
- *   tick counter (10 ms resolution).  Safe to call from any ring-3 context; does
- *   not block.  Overflow wraps at UINT64_MAX.
+ *   No arguments.  Monotonic.  Derived from RDTSC when the TSC was calibrated
+ *   at boot, from the tick counter otherwise.  Does not block.
+ *
+ * KEPT DELIBERATELY, and ledger A-27 records why, because the first answer was
+ * to retire it.  seL4 has no such syscall — a timer driver reads its hardware
+ * and everybody else asks the driver — so this looked like the last ambient
+ * read in the kernel.  It is not gateable: on x86 `rdtsc` is an UNPRIVILEGED
+ * instruction, so any task can read a monotonic counter with no capability and
+ * no syscall whatsoever.  Retiring this would have moved the same ungated read
+ * from a syscall into an instruction and bought nothing.
+ *
+ * What CAN be gated is WAITING — how long a thread is kept off the CPU, and
+ * who decides — and ledger A-24 gated it: `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP`
+ * and `SYS_NOTIFY_WAIT_TIMEOUT` are retired and waiting is a capability to a
+ * service.  Reading a counter is not authority; blocking on one is.
+ *
+ * The timer service still offers `TMR_OP_UPTIME`, because a client that has
+ * been given a clock should be able to ask it rather than reaching around it.
  */
 #define SYS_CLOCK_GET       62
+
+/*
+ * The tick rate, as an ABI fact rather than two numbers that must agree.
+ *
+ * The kernel programs the PIT with it (`pit_init`) and the timer service
+ * converts nanoseconds to ticks with it.  It was written twice — `pit_init(100)`
+ * in the kernel and `10000000` in the clock syscall — which is the shape of
+ * agreement that stops being agreement the moment somebody changes one.
+ */
+#define IRIS_TICK_HZ        100u
+#define IRIS_TICK_NS        (1000000000ull / IRIS_TICK_HZ)
 
 /*
  * SYS_CHAN_RECV_TIMEOUT(63) — retired in Phase 13/Track G with the KChannel
@@ -737,12 +771,14 @@ static inline long iris_syscall0(long nr) {
 #define SYS_THREAD_CREATE  48
 
 /*
- * Thread exit — modern/conforming (iris_error_t).
+ * SYS_THREAD_EXIT — RETIRED (ledger A-27).  Number permanently reserved;
+ * answers IRIS_ERR_NOT_SUPPORTED.
  *
- * SYS_THREAD_EXIT() — does not return.
- *   Exits the calling thread.  If this is the last thread in the process,
- *   the process is torn down (equivalent to SYS_EXIT).
- *   Pending blocked waits (IPC, futex) on this thread are cancelled.
+ * It ended the calling thread, which is what SYS_EXIT does — and SYS_EXIT also
+ * RECORDS the exit code, so the two were one operation with one of them
+ * throwing information away.  It dated from when a "thread" and a "process"
+ * were different things to end; since Stage 7-proc they are not, and a thread
+ * that exits without saying why is a thread whose supervisor learns nothing.
  */
 #define SYS_THREAD_EXIT  49
 

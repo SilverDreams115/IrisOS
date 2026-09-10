@@ -22,6 +22,11 @@
 #define IRIS_SVC_CLIENT_EP_VFS      0x2u
 #define IRIS_SVC_CLIENT_EP_CONSOLE  0x4u
 #define IRIS_SVC_CLIENT_EP_KBD      0x8u
+/* Ledger A-27: the TIMER service.  Reading a clock and waiting on time are
+ * requests to a server now, so a service that needs either declares it here
+ * and one that does not cannot do either — which is the difference between a
+ * capability and a syscall number. */
+#define IRIS_SVC_CLIENT_EP_TIMER    0x10u
 
 /* Phase 24: explicit supervision-policy classification.  Restartability is
  * already encoded by restart_on_exit + restart_limit; criticality records the
@@ -185,7 +190,8 @@ static const struct iris_service_catalog_entry g_iris_service_catalog[] = {
         /* Phase 22: sh is the shell — it drives svcmgr discovery, vfs, console
          * output and kbd input, so it legitimately holds all four client caps. */
         .client_eps = IRIS_SVC_CLIENT_EP_SVCMGR | IRIS_SVC_CLIENT_EP_VFS |
-                      IRIS_SVC_CLIENT_EP_CONSOLE | IRIS_SVC_CLIENT_EP_KBD,
+                      IRIS_SVC_CLIENT_EP_CONSOLE | IRIS_SVC_CLIENT_EP_KBD |
+                      IRIS_SVC_CLIENT_EP_TIMER,   /* `uptime` asks the clock's owner */
         .supervision = IRIS_SUPERVISION_OPTIONAL_NO_RESTART,  /* Phase 24: user shell, not auto-restarted */
     },
 };
