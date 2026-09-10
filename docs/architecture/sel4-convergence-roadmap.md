@@ -13,6 +13,16 @@ path still depends on the mechanism it retires (charter §3.10).
 the object model and the kernel architecture are seL4's; the last four
 differences that were about SHAPE rather than substance turned out to be three
 pieces of substance (closed: A-21, A-22, A-24) and one decision (the ABI).
+The review that followed them found five more things and all five are closed
+too: IPC capability transfer is a COPY as seL4's is, and the delivered
+capability is a revocable derivation child of the sender's slot (A-29); a
+capability of the wrong type is answered as `WRONG_TYPE` rather than flattened
+to `INVALID_ARG`, with `ACCESS_DENIED` kept for the right type without the
+authority (A-30); two files whose names had outlived their subjects are
+renamed and two orphaned headers deleted, and the "123 dead #defines" that
+audit reported turned out to be two (A-31 notes); `SYS_CNODE_SWAP` has ring-3
+coverage for the first time (T336); and the 26,572-line test suite is twelve
+files with an interface (A-31).
 What is left on this roadmap is not convergence — it is FORWARD work on a
 system that has arrived: SMP (prepared, not started — per-CPU run queues and
 stacks exist, no AP is brought up), DMA containment (**a security hole, not a
@@ -183,11 +193,15 @@ not to average them — was honest when D-1 was open and is not a description of
 anything now.  A single number was the wrong instrument then and there is
 nothing left for it to measure.
 
-### What this review found still open
+### What this review found — all of it now closed
 
 A file-by-file re-read after the form divergences closed (ledger A-26).  None
-of these is a hole in the authority model; all are named so the next reader
-does not have to find them again.
+of these was a hole in the authority model; all are kept here with what closing
+them found, because the finding and the fix are more useful together than the
+fix alone.  Two of the five turned out to be wrong as stated: the transfer
+divergence was recorded as permanent and should not have been (A-29), and the
+"123 dead `#define`s" was a count of unreferenced table entries rather than of
+dead code (A-31 notes, item 5).
 
 1. **IPC capability transfer is a MOVE.**  ***Closed by ledger A-29 — transfer
    is a COPY now.***  Sending a capability over an endpoint deleted the
@@ -198,16 +212,21 @@ does not have to find them again.
    client (A-24) ran into it.  What settled it was not the seL4 comparison but
    the kernel's own tree: the delivered capability was already installed as an
    MDB child of the sender's slot, and then the parent was deleted.
-2. **Two live syscalls are leftovers.**  `SYS_GETPID` hands a thread its own
-   id for the asking — ambient INFORMATION rather than authority, so no
+2. **Two live syscalls are leftovers.**  ***Closed: both retired (A-27), and
+   T001 pins that they answer NOT_SUPPORTED.***  `SYS_GETPID` handed a thread
+   its own id for the asking — ambient INFORMATION rather than authority, so no
    invariant is violated, but seL4 has no equivalent and nothing productive
    uses it.  `SYS_THREAD_EXIT` duplicates `SYS_EXIT`, which also records the
    exit code.  Both are small retirements nobody has needed yet.
-3. **`SYS_CLOCK_GET` is an ambient read of the clock.**  Every task can read
-   the time with no capability.  seL4 has no such call; a timer driver reads
-   its own hardware.  The timer service (A-24) is the only productive user.
-4. **Four seL4 invocations have no equivalent**, none load-bearing for anything
-   IRIS does today: `seL4_TCB_ReadRegisters`/`CopyRegisters` (a supervisor can
+3. **`SYS_CLOCK_GET` is an ambient read of the clock.**  ***Closed by being
+   ANSWERED rather than retired (A-27).***  Retiring it buys nothing: `rdtsc`
+   is unprivileged on x86 and IRIS never sets `CR4.TSD`, so any task can read a
+   monotonic counter with one instruction whether the syscall exists or not.
+   The call is now a capability question — ask the clock's owner — and T002
+   pins that a granted clock answers and advances.
+4. **Four seL4 invocations have no equivalent.**  ***Closed: five now exist
+   (A-28), pinned by T333.***  None was load-bearing for anything IRIS did,
+   which is exactly why they went unnoticed: `seL4_TCB_ReadRegisters`/`CopyRegisters` (a supervisor can
    write a thread's registers but not read them),
    `seL4_SchedContext_YieldTo`/`Consumed`, `seL4_IRQHandler_Clear`, and
    cross-CNode `seL4_CNode_Move` (IRIS moves within a CNode with
