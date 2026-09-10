@@ -965,7 +965,9 @@ still take signals; IRIS cannot.  And seL4 has
 after revoking a delegation; IRIS revokes the capability and leaves whatever is
 already queued.
 
-**A fourth flattening.**  `tcb_resolve` turned WRONG_TYPE into INVALID_ARG —
+**A fourth flattening.**  *(The counting stopped here and should not have:
+A-30 found eighteen more and removed the convention outright.)*
+`tcb_resolve` turned WRONG_TYPE into INVALID_ARG —
 "something about your argument is wrong", from a resolver that had just
 identified the capability exactly.  The typed resolvers had it until A-20's
 type-before-rights fix and `dev_cap_budget` had it until D-5; this is the third
@@ -1802,6 +1804,69 @@ adds the test that fails if it is chosen differently.*  A divergence row in a
 charter is documentation; a test is the only thing that keeps the row true.
 
 
+## A-30 — a wrong type, answered as a wrong type
+
+**Before**: twenty-two resolver results were rewritten on their way out of the
+syscall layer.  Sixteen `WRONG_TYPE → INVALID_ARG`, three
+`WRONG_TYPE → ACCESS_DENIED`, and three ternaries that mapped `WRONG_TYPE` to
+itself — dead code, and the clearest evidence of what this was: a conversion
+done three separate times and finished none of them.
+
+**After**: the resolvers' answer travels.  One rule, both halves of it:
+
+> a capability of the WRONG TYPE is `WRONG_TYPE`;
+> a capability of the RIGHT type without the authority is `ACCESS_DENIED`.
+
+**Why it was wrong, and it is not the seL4 comparison.**  Three things.
+
+*It was already the position here, applied piecemeal.*  A-20 fixed the typed
+resolvers to check type before rights.  D-5 fixed `dev_cap_budget`, with the
+comment "a caller that named an endpoint where a budget goes is told so".  The
+TCB family fixed `tcb_resolve` at Step 4, and its comment counted itself as the
+"third instance of the same defect".  Three fixes, three write-ups, and the
+other twenty-two sites untouched — because each time the fix was made where
+somebody was looking rather than where the pattern was.
+
+*It was inconsistent inside a single syscall.*  `SYS_TCB_SET_IPC_BUFFER`
+answered `WRONG_TYPE` for a non-TCB in arg0 and `INVALID_ARG` for a non-frame
+in arg1.  One call, one kind of caller mistake, two different answers,
+asserted both ways in T313.
+
+*It protected nothing.*  The confidentiality argument for flattening is that
+naming a type discloses something.  It does not: `SYS_CAP_IDENTIFY` takes
+`RIGHT_NONE`, costs no capability, and reports the type of any slot the caller
+holds — and every one of these twenty-two resolutions runs against the
+CALLER'S OWN CSpace, never a foreign one.  So "that is a notification, not a
+frame" tells a caller something it can read for itself in one syscall, while
+`INVALID_ARG` told it strictly less than the kernel knew and left it unable to
+tell a malformed number from a well-formed capability of the wrong kind.  Two
+different bugs with two different fixes, given one answer.
+
+**The three `ACCESS_DENIED` sites deserved their own look**, because there the
+flattening had a real argument: arg0 is an authority (`KOBJ_BOOTSTRAP_CAP`),
+and the next line answers `ACCESS_DENIED` when it IS a bootstrap capability of
+the wrong flavour.  Making both answers the same hides which one happened.  But
+that argument gives the caller less than `CAP_IDENTIFY` already does, and it
+costs the distinction that matters: presenting a notification where an
+authority belongs is not a failed authority check — the check never ran.  The
+flavour stays hidden either way, and that is the part that is actually secret.
+
+**Scope**: 22 sites across `syscall_cspace.c`, `syscall_cnode_ops.c`,
+`syscall_vm.c`, `syscall_tcb.c`, `syscall_untyped.c`, `syscall_sched.c`.  No
+resolver changes; no rights check changes; no authority moves.  Eight runtime
+assertions and two host assertions changed the code they expect — every one of
+them a test that had written down the flattening as though it were the
+contract, which is how a convention becomes an invariant nobody chose.
+
+**T335 pins it**, both halves: fifteen wrong-type invocations across the six
+families that answer `WRONG_TYPE`, and the boundary that keeps the rule from
+degenerating into "say `WRONG_TYPE` more often" — a read-only SchedContext
+still answers `ACCESS_DENIED` to `SC_CONFIGURE`, and a real framebuffer-control
+capability still answers `ACCESS_DENIED` to `SYS_INITRD_COUNT`.  It ends by
+asking `SYS_CAP_IDENTIFY` for the type it was just told, because that is the
+whole argument in one line.
+
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types, and the boundary
@@ -1826,6 +1891,9 @@ charter is documentation; a test is the only thing that keeps the row true.
 - T334 pins that IPC capability transfer is a COPY (A-29): the sender keeps
   what it sent, the receiver's capability is a revocable derivation child of
   the sender's slot, and deleting that slot is not revoking it.
+- T335 pins the error-code rule of A-30: a capability of the wrong type is
+  WRONG_TYPE, a capability of the right type without the authority is
+  ACCESS_DENIED, and nothing about either is a secret from the caller.
 - T260 pins the retirement of the create syscalls and their no-effect.
 - T125/T126 pin the rejection of the migrated family on the legacy retype.
 - The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.

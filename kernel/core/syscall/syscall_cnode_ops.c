@@ -58,7 +58,7 @@ uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         err = cspace_resolve_only_cnode(t->cspace_root, cptr_or_h,
                                              RIGHT_WRITE, &cn, &cn_rights);
         if (err != IRIS_OK)
-            return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+            return syscall_err(err);
     }
 
     err = kcnode_delete(cn, slot_idx);
@@ -83,7 +83,7 @@ uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_error_t err = cspace_resolve_only_cnode(t->cspace_root, cptr_or_h,
                                                        RIGHT_WRITE, &cn, &cn_rights);
     if (err != IRIS_OK)
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+        return syscall_err(err);
 
     /* Phase S3: swap goes through the canonical primitive — the MDB links of
      * both capabilities (parent, siblings, children) travel with them. */

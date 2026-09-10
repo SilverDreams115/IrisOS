@@ -164,7 +164,7 @@ uint64_t sys_cspace_move(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     if (err != IRIS_OK) {
         kobject_active_release(&src_cn->base);
         kobject_release(&src_cn->base);
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_WRONG_TYPE : err);
+        return syscall_err(err);
     }
 
     err = kcnode_slot_move(src_cn, src_idx, dst_cn, dest_slot);
@@ -211,7 +211,6 @@ uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         iris_rights_t dr;
         err = cspace_resolve_cnode(t->cspace_root, (iris_cptr_t)dest_cnode,
                                    RIGHT_WRITE, &dst_cn, &dr);
-        if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     }
     if (err != IRIS_OK) {
         kobject_active_release(&src_cn->base);

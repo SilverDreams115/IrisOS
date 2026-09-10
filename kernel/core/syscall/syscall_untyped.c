@@ -468,7 +468,7 @@ uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
             kobject_active_release(&ut->base);
             kobject_release(&ut->base);
             kuntyped_stat_retype_failure();
-            return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+            return syscall_err(err);
         }
     }
 
@@ -839,7 +839,7 @@ uint64_t sys_untyped_set_device_budget(uint64_t arg0, uint64_t arg1,
     iris_error_t err = cspace_resolve_only_untyped(t->cspace_root,
                            (iris_cptr_t)arg0, RIGHT_WRITE, &dev, &dr);
     if (err != IRIS_OK)
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+        return syscall_err(err);
 
     struct KUntyped *ram; iris_rights_t rr;
     err = cspace_resolve_only_untyped(t->cspace_root, (iris_cptr_t)arg1,
@@ -847,7 +847,7 @@ uint64_t sys_untyped_set_device_budget(uint64_t arg0, uint64_t arg1,
     if (err != IRIS_OK) {
         kobject_active_release(&dev->base);
         kobject_release(&dev->base);
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+        return syscall_err(err);
     }
 
     err = kuntyped_set_hdr_budget(dev, ram);

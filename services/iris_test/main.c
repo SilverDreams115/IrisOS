@@ -4300,14 +4300,15 @@ static void test_t083(void) {
     if (ok && it_sys4(SYS_SC_CONFIGURE, T083_SLOT_SC_RO, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) !=
               (long)IRIS_ERR_ACCESS_DENIED) ok = 0;
     if (ok && it_sys4(SYS_SC_CONFIGURE, T079_SLOT_EMPTY, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) >= 0) ok = 0;
+    /* A-30: an endpoint where a SchedContext belongs is named, not flattened. */
     if (ok && it_sys4(SYS_SC_CONFIGURE, (long)IRIS_CPTR_TEST_FIX_A, 50, 100, (long)IRIS_CPTR_SCHED_CONTROL) !=
-              (long)IRIS_ERR_INVALID_ARG) ok = 0;
+              (long)IRIS_ERR_WRONG_TYPE) ok = 0;
 
     /* THREAD_SET_SC by CPtr: bind the calling thread, then unbind (0). */
     if (ok && it_sys1(SYS_THREAD_SET_SC, T083_SLOT_SC) != 0) ok = 0;
     if (ok && it_sys1(SYS_THREAD_SET_SC, 0) != 0) ok = 0;
     if (ok && it_sys1(SYS_THREAD_SET_SC, (long)IRIS_CPTR_TEST_FIX_A) !=
-              (long)IRIS_ERR_INVALID_ARG) ok = 0;
+              (long)IRIS_ERR_WRONG_TYPE) ok = 0;
     if (ok && it_sys1(SYS_THREAD_SET_SC, T079_SLOT_EMPTY) >= 0) ok = 0;
 
     /* TCB_EXIT by CPtr on the helper (non-self): counter freezes for good. */
@@ -5811,13 +5812,14 @@ static void test_t097(void) {
             it_close(&roh);
         }
     }
-    /* Wrong-type destination (the slot-30 KNotification fixture).  Stage 7
-     * Step 9: the destination is a CNODE, and SYS_CSPACE_MINT reports a
-     * non-CNode there as INVALID_ARG — the argument is wrong, not the type of
-     * a capability that was otherwise right. */
+    /* Wrong-type destination (the slot-30 KNotification fixture).  The
+     * destination is a CNODE, and A-30 stopped the flattening: a non-CNode
+     * named there is WRONG_TYPE, because the resolver identified it exactly
+     * and "something about your argument is wrong" was a weaker answer than
+     * the kernel already had. */
     if (ok && it_sys3(SYS_CSPACE_MINT, vmo,
                       IT_MINT_INTO((long)IRIS_CPTR_TEST_FIX_A, T097_DST_SLOT2), (long)RIGHT_READ) !=
-        (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "wrong type"; }
+        (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong type"; }
     /* The retired legacy producer is gone: NOT_SUPPORTED, nothing placed. */
     if (ok && it_sys3(SYS_HANDLE_TRANSFER, vmo, (long)proc_h,
                       (long)RIGHT_READ) !=
@@ -8920,10 +8922,10 @@ static void test_t123(void) {
         long ep = it_ep_create();
         handle_id_t ep_h = (ep >= 0) ? (handle_id_t)ep : HANDLE_INVALID;
         if (ep_h == HANDLE_INVALID) { ok = 0; why = "ep create"; }
-        if (ok && it_sys4(SYS_SC_CONFIGURE, (long)ep_h, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_INVALID_ARG) {
+        if (ok && it_sys4(SYS_SC_CONFIGURE, (long)ep_h, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL) != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "wrong type";
         }
-        if (ok && it_sys1(SYS_THREAD_SET_SC, (long)ep_h) != (long)IRIS_ERR_INVALID_ARG) {
+        if (ok && it_sys1(SYS_THREAD_SET_SC, (long)ep_h) != (long)IRIS_ERR_WRONG_TYPE) {
             ok = 0; why = "set_sc wrong type";
         }
         it_close(&ep_h);
@@ -12732,13 +12734,17 @@ static void test_t168(void) {
     if (ok && (fb1.size == 0u || fb1.width == 0u || fb1.phys == 0u)) {
         ok = 0; why = "framebuffer geometry empty";
     }
-    /* Wrong-type auth cap (a notification) → ACCESS_DENIED (not a bootstrap cap). */
+    /* Wrong-type auth cap (a notification).  A-30: the type is answered as a
+     * type — WRONG_TYPE, not ACCESS_DENIED.  Nothing is disclosed by it: the
+     * caller can ask SYS_CAP_IDENTIFY about its own slot for free.  What stays
+     * ACCESS_DENIED is a real bootstrap capability of the wrong FLAVOUR, which
+     * is an authority answer and not a type one. */
     if (ok) {
         long n = it_notify_create();
         handle_id_t n_h = (n >= 0) ? (handle_id_t)n : HANDLE_INVALID;
         if (n < 0) { ok = 0; why = "notif fixture"; }
         if (ok && it_sys3(SYS_FRAMEBUFFER_INFO, n, (long)(uintptr_t)&fb1, 0)
-                  != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "wrong-type got framebuffer"; }
+                  != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "wrong-type got framebuffer"; }
         it_close(&n_h);
     }
     /* The RETIRED half stays retired: a stale caller asking for a VMO over the
@@ -19819,11 +19825,12 @@ static void test_t254(void) {
             it_slot_delete(IT_SCRATCH_0);
         }
     }
-    /* Destination that is not a CNode (the notification at S1_SLOT_A). */
+    /* Destination that is not a CNode (the notification at S1_SLOT_A) — A-30:
+     * WRONG_TYPE, because that is what the resolver found. */
     if (ok && it_sys4(SYS_UNTYPED_RETYPE2, su,
                       (long)((uint64_t)IRIS_KOBJ_ENDPOINT | (1ULL << 32)),
                       (long)((uint64_t)S1_SLOT_A | ((uint64_t)S1_SLOT_B << 32)),
-                      0) != (long)IRIS_ERR_INVALID_ARG) { ok = 0; why = "bad dest cnode"; }
+                      0) != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "bad dest cnode"; }
     /* Released untyped cap: delete the slot, then retype through the dead
      * CPtr.  Stage 4: an emptied slot answers NOT_FOUND — the CSpace form of
      * the BAD_HANDLE this asserted while the untyped was a handle.  The
@@ -21464,11 +21471,11 @@ static void test_t297(void) {
 
     /* 3. the arguments are capabilities, and their type and identity matter. */
     if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, IT_VS, IT_VS)
-              != (long)IRIS_ERR_INVALID_ARG) {
+              != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "vspace accepted as cspace";
     }
     if (ok && it_sys3(SYS_TCB_CONFIGURE, tcb, cs, cs)
-              != (long)IRIS_ERR_INVALID_ARG) {
+              != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "cnode accepted as vspace";
     }
     /*
@@ -23245,8 +23252,11 @@ static void test_t313(void) {
                       (long)T313_CLI_VA) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "non-TCB accepted";
     }
+    /* A-30: the same syscall used to answer WRONG_TYPE for arg0 and
+     * INVALID_ARG for arg1 — one call, two answers for one kind of mistake.
+     * Both are WRONG_TYPE now. */
     if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, (long)IRIS_CPTR_TEST_UNTYPED,
-                      (long)T313_CLI_VA) != (long)IRIS_ERR_INVALID_ARG) {
+                      (long)T313_CLI_VA) != (long)IRIS_ERR_WRONG_TYPE) {
         ok = 0; why = "non-frame accepted";
     }
     if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, self, cfr,
@@ -25546,6 +25556,143 @@ static void test_t334(void) {
     if (ok) it_pass("T334"); else it_fail("T334", why);
 }
 
+/* ── T335: a wrong type is answered as a wrong type (A-30) ──────────────────
+ *
+ * Twenty-two resolver results used to be rewritten on their way out: sixteen
+ * `WRONG_TYPE → INVALID_ARG`, three `WRONG_TYPE → ACCESS_DENIED`, and three
+ * ternaries that mapped WRONG_TYPE to itself — the residue of a conversion
+ * that was done three separate times and never finished (A-20's
+ * type-before-rights fix, D-5's `dev_cap_budget`, and the TCB family at Step
+ * 4).  `SYS_TCB_SET_IPC_BUFFER` was the clearest symptom: one call answering
+ * WRONG_TYPE for a bad arg0 and INVALID_ARG for a bad arg1, for the same kind
+ * of mistake.
+ *
+ * The rule this pins is one sentence, and the boundary is the point of it:
+ *
+ *   a capability of the WRONG TYPE is `WRONG_TYPE`;
+ *   a capability of the RIGHT type without the authority is `ACCESS_DENIED`.
+ *
+ * Flattening protected nothing.  A caller can already ask `SYS_CAP_IDENTIFY`
+ * about any slot it holds, with `RIGHT_NONE` and no capability spent, and
+ * every one of these resolutions runs against the caller's OWN CSpace — so
+ * "that is a notification, not a frame" tells a caller something it can read
+ * for itself, while INVALID_ARG told it something less than the kernel knew.
+ * Invariants: A1, A7. */
+static void test_t335(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "a wrong type is answered as a wrong type";
+
+    /* Fixed root scratch slots, not the rotating object pool: four capabilities
+     * held across one test is four leaves the pool cannot hand out, and T324
+     * counts exactly that. */
+    const long UT = (long)IRIS_CPTR_TEST_UNTYPED;   /* an Untyped */
+    it_slot_delete(IT_SCRATCH_0); it_slot_delete(IT_SCRATCH_1);
+    it_slot_delete(IT_SCRATCH_2); it_slot_delete(IT_SCRATCH_3);
+    long ep = it_retype2_at(UT, IRIS_KOBJ_ENDPOINT,      IT_SCRATCH_0, 1u, 0);
+    long nt = it_retype2_at(UT, IRIS_KOBJ_NOTIFICATION,  IT_SCRATCH_1, 1u, 0);
+    long fr = it_retype2_at(UT, IRIS_KOBJ_FRAME,         IT_SCRATCH_2, 1u, 4096);
+    long sc = it_retype2_at(UT, IRIS_KOBJ_SCHED_CONTEXT, IT_SCRATCH_3, 1u, 0);
+    if (ep != 0 || nt != 0 || fr != 0 || sc != 0) { it_fail("T335", "fixtures"); return; }
+    ep = (long)IT_SCRATCH_0; nt = (long)IT_SCRATCH_1;
+    fr = (long)IT_SCRATCH_2; sc = (long)IT_SCRATCH_3;
+
+
+    /* ── the sixteen that said INVALID_ARG ── */
+
+    /* scheduling: the context argument, and the one THREAD_SET_SC takes. */
+    if (ok && it_sys4(SYS_SC_CONFIGURE, ep, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "sc_configure"; }
+    if (ok && it_sys1(SYS_THREAD_SET_SC, ep) != (long)IRIS_ERR_WRONG_TYPE) {
+        ok = 0; why = "thread_set_sc";
+    }
+    if (ok && it_sys2(SYS_SC_BIND, sc, ep) != (long)IRIS_ERR_WRONG_TYPE) {
+        ok = 0; why = "sc_bind (the TCB argument)";
+    }
+    if (ok && it_sys2(SYS_SC_BIND, ep, (long)IRIS_CPTR_OWN_TCB)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "sc_bind (the SC argument)"; }
+
+    /* threads: the CSpace and VSpace a TCB is configured with, its IPC frame,
+     * and the notification a watch signals. */
+    if (ok && it_sys3(SYS_TCB_SET_IPC_BUFFER, (long)IRIS_CPTR_OWN_TCB, UT, 0x8000600000L)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "set_ipc_buffer frame"; }
+    if (ok && it_sys3(SYS_TCB_WATCH, (long)IRIS_CPTR_OWN_TCB, ep, 1)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "tcb_watch notification"; }
+
+    /* CNodes: the CNode a delete or a swap is invoked on. */
+    if (ok && it_sys3(SYS_CNODE_DELETE, ep, 1, 0) != (long)IRIS_ERR_WRONG_TYPE) {
+        ok = 0; why = "cnode_delete";
+    }
+    if (ok && it_sys3(SYS_CNODE_SWAP, ep, 1, 2) != (long)IRIS_ERR_WRONG_TYPE) {
+        ok = 0; why = "cnode_swap";
+    }
+
+    /* CSpace: the destination CNode of a mint and of a move. */
+    if (ok && it_sys3(SYS_CSPACE_MINT, nt, IT_MINT_INTO(ep, 1u), (long)RIGHT_READ)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "mint destination"; }
+    if (ok && it_sys2(SYS_CSPACE_MOVE, nt, IT_MINT_INTO(ep, 1u))
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "move destination"; }
+
+    /* Untyped: the destination CNode of a retype, and the budget arguments. */
+    if (ok && it_sys4(SYS_UNTYPED_RETYPE2, UT,
+                      (long)((uint64_t)IRIS_KOBJ_ENDPOINT | (1ULL << 32)),
+                      (long)((uint64_t)(uint32_t)ep | (1ULL << 32)), 0)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "retype destination"; }
+    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, ep, UT)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "device budget (device)"; }
+    if (ok && it_sys2(SYS_UNTYPED_SET_DEVICE_BUDGET, UT, ep)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "device budget (ram)"; }
+
+    /* Virtual memory: the page table and the address space it is hung in. */
+    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, ep, IT_VS, 0x8000700000L)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "map_table page table"; }
+    if (ok && it_sys3(SYS_VSPACE_MAP_TABLE, fr, ep, 0x8000700000L)
+              != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "map_table vspace"; }
+
+    /* ── the three that said ACCESS_DENIED ──
+     * An authority argument is still a capability with a type.  Presenting a
+     * notification where a bootstrap capability belongs is not a failed
+     * authority check — the check never ran. */
+    if (ok && it_sys3(SYS_INITRD_COUNT, nt, 0, 0) != (long)IRIS_ERR_WRONG_TYPE) {
+        ok = 0; why = "initrd_count authority";
+    }
+    if (ok) {
+        struct iris_fb_params fb;
+        if (it_sys3(SYS_FRAMEBUFFER_INFO, nt, (long)(uintptr_t)&fb, 0)
+            != (long)IRIS_ERR_WRONG_TYPE) { ok = 0; why = "framebuffer authority"; }
+    }
+
+    /* ── and the boundary the rule exists to keep ──
+     * Right type, missing right: that IS an authority answer, and it does not
+     * move.  Without this half the rule would read "say WRONG_TYPE more
+     * often", which is not what was decided. */
+    if (ok) {
+        it_slot_delete((uint32_t)fr);   /* the map_table checks are done with it */
+        long ro = it_cdt_derive(sc, (uint32_t)fr, RIGHT_READ);
+        if (ro < 0) { ok = 0; why = "read-only derive"; }
+        if (ok && it_sys4(SYS_SC_CONFIGURE, ro, 10, 100, (long)IRIS_CPTR_SCHED_CONTROL)
+                  != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "rights answer moved"; }
+    }
+    /* A real bootstrap capability of the wrong FLAVOUR is likewise an
+     * authority answer: the framebuffer control capability cannot read the
+     * initrd, and being the right TYPE is exactly why. */
+    if (ok && it_sys3(SYS_INITRD_COUNT, (long)IRIS_CPTR_FB_CONTROL, 0, 0)
+              != (long)IRIS_ERR_ACCESS_DENIED) { ok = 0; why = "flavour answer moved"; }
+
+    /* ...and nothing here is a secret: the caller can name every one of those
+     * types itself, for free, which is why flattening bought no confidentiality
+     * in the first place. */
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, ep) != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+        ok = 0; why = "identify is the free answer flattening was hiding";
+    }
+
+    it_slot_delete((uint32_t)ep); it_slot_delete((uint32_t)nt);
+    it_slot_delete((uint32_t)fr); it_slot_delete((uint32_t)sc);
+    it_quiesce_reaper();
+
+    if (ok) it_pass("T335"); else it_fail("T335", why);
+}
+
 /* ── T324: what the rotating object pool is still holding ──────────────────
  * The pool's contract is one sentence — delete before use, never hold a slot
  * across a test boundary — and until now nothing read it back.  The pool is
@@ -25580,7 +25727,19 @@ static void test_t334(void) {
  * it is a DEBT, not a design: every entry is a test that kept a leaf of a pool
  * that recycles.  It goes down as they are paid.
  */
-#define IT_POOL_HELD_CEILING 26u
+/*
+ * 26 → 28 at A-30, and the reason is arithmetic rather than tolerance.  T335
+ * was written using the rotating pool and moved to fixed scratch slots, which
+ * removed four rotations from the run.  Held went 21 → 25 and evictions went
+ * 9 → 5: 21+9 and 25+5 are the same thirty capabilities, so nothing new is
+ * being kept — four that used to be recycled now sit still, which is the state
+ * the pool exists to make visible.  The eviction count, the one the comment
+ * below says matters more, went DOWN.
+ *
+ * The 2 of headroom is deliberate: a ceiling reached exactly is a ceiling that
+ * gets bumped by the next person rather than explained.
+ */
+#define IT_POOL_HELD_CEILING 28u
 
 /*
  * ...and the number that matters more.
@@ -26235,6 +26394,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t332();
     test_t333();
     test_t334();
+    test_t335();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */

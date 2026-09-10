@@ -115,11 +115,13 @@ does not apply to it.
 
 ## Implementation nuances (discovered during increments)
 
-- **Error-code preservation**: the TCB and SchedContext families
-  historically return `IRIS_ERR_INVALID_ARG` (not `WRONG_TYPE`) on a
-  type mismatch.  The migrated sites remap `WRONG_TYPE → INVALID_ARG`
-  after the resolver so the handle path stays bit-for-bit compatible
-  (and the CPtr path follows the same per-family convention).
+- **Error-code preservation** *(retired — ledger A-30)*: the TCB and
+  SchedContext families historically returned `IRIS_ERR_INVALID_ARG` (not
+  `WRONG_TYPE`) on a type mismatch, and the migrated sites remapped
+  `WRONG_TYPE → INVALID_ARG` after the resolver so the handle path stayed
+  bit-for-bit compatible.  The handle path is gone and the per-family
+  convention with it: a capability of the wrong type is `WRONG_TYPE`
+  everywhere, and only a right-type/no-authority answer is `ACCESS_DENIED`.
 - **`SYS_THREAD_SET_SC` takes no TCB argument**: it always binds the
   *calling* thread; its single cap argument is the SchedContext (now
   dual).  `0` remains the unbind path (`HANDLE_INVALID == CPTR_NULL ==
@@ -266,10 +268,12 @@ notification secondary args above which have a sanctioned CSpace path.
   created/materialized by the producers table above.  New code that
   inserts into a handle table outside those categories is a design
   regression, not a convenience.
-- **I9 — per-family error codes survive migration**: where a family
-  used `INVALID_ARG` for type mismatch (TCB, SchedContext), the dual
-  sites remap `WRONG_TYPE → INVALID_ARG`; nothing observable changed on
-  the handle path.
+- **I9 — per-family error codes survive migration** *(held then, retired by
+  ledger A-30)*: where a family used `INVALID_ARG` for type mismatch (TCB,
+  SchedContext), the dual sites remapped `WRONG_TYPE → INVALID_ARG` and
+  nothing observable changed on the handle path.  Preserving the convention
+  was the right call while both paths existed; keeping it after the handle
+  path was retired was the part nobody revisited.
 
 All of I1–I7 held through increments 1–2b with zero exceptions; I8/I9
 were added at closeout from implementation experience.

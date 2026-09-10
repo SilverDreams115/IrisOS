@@ -18,8 +18,7 @@
  */
 #include "syscall_priv.h"
 
-/* Resolve a KOBJ_TCB cap → struct task (lifecycle ref held on success).
- * WRONG_TYPE maps to INVALID_ARG to preserve this family's error code. */
+/* Resolve a KOBJ_TCB cap → struct task (lifecycle ref held on success). */
 static iris_error_t tcb_resolve(struct KCNode *root, iris_cptr_t cptr,
                                 iris_rights_t required,
                                 struct task **out, iris_rights_t *rights_out) {
@@ -138,7 +137,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                   KOBJ_CNODE, &cs_obj, &cs_rights);
     if (err != IRIS_OK) {
         kobject_release(&target->base);
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+        return syscall_err(err);
     }
     /* cspace_resolve_only_obj hands back a LIFECYCLE-only reference — it has
      * already dropped the traversal's active ref.  Releasing an active ref
@@ -154,7 +153,7 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                   RIGHT_NONE, KOBJ_VSPACE, &vs_obj, &vs_rights);
     if (err != IRIS_OK) {
         kobject_release(&target->base);
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+        return syscall_err(err);
     }
     struct KVSpace *vspace = (struct KVSpace *)vs_obj;
     kobject_release(vs_obj);
@@ -483,7 +482,7 @@ uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                   &n_obj, &n_rights);
     if (err != IRIS_OK) {
         kobject_release(&target->base);
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+        return syscall_err(err);
     }
     if (!rights_check(n_rights, RIGHT_WRITE)) {
         kobject_release(n_obj); kobject_release(&target->base);
@@ -789,8 +788,7 @@ uint64_t sys_tcb_set_ipc_buffer(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                       &f_obj, &f_rights);
         if (err != IRIS_OK) {
             kobject_release(&target->base);
-            return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG
-                                                          : err);
+            return syscall_err(err);
         }
         if (!rights_check(f_rights, RIGHT_READ | RIGHT_WRITE)) {
             kobject_release(f_obj); kobject_release(&target->base);

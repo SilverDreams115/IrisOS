@@ -482,7 +482,7 @@ Three independently-gating layers, run on every change:
   the file-grant layer, …). They cover what a successful boot cannot show:
   buffer bounds on a page about to be mapped into ring 3, a CSpace that names
   itself, and an allocator's two ends meeting exactly once.
-- **Runtime tests** — booted under QEMU headless: **301 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **302 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
@@ -515,7 +515,7 @@ make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
 make test-unit                                             # host unit suites (27419)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (301/301)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (302/302)
 make run                                                   # interactive QEMU
 ```
 

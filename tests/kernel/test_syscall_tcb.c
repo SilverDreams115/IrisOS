@@ -177,15 +177,16 @@ void test_syscall_tcb(void) {
         ASSERT_EQ(tb_err(sys_tcb_set_fault_handler(TCB_SLOT, 9, 0,
                          ((uint64_t)4 << 32))),
                   (long)IRIS_ERR_INVALID_ARG);
-        /* watch still takes a NOTIFICATION, and flattens a wrong type to
-         * INVALID_ARG — its documented contract, and the reason the two
-         * arguments could not simply swap meanings. */
+        /* watch still takes a NOTIFICATION, and says so: A-30 stopped the
+         * flattening, so an endpoint where a notification belongs is
+         * WRONG_TYPE — which is also the reason the two arguments could not
+         * simply swap meanings. */
         struct KObject *wep = (struct KObject *)kpage_alloc((uint32_t)sizeof(struct KObject));
         ASSERT_NOT_NULL(wep);
         kobject_init(wep, KOBJ_ENDPOINT, &tb_ops);
         ASSERT_EQ(kcnode_mint(root, 10, wep, RIGHT_READ | RIGHT_WRITE), IRIS_OK);
         ASSERT_EQ(tb_err(sys_tcb_watch(TCB_SLOT, 10, 1)),
-                  (long)IRIS_ERR_INVALID_ARG);
+                  (long)IRIS_ERR_WRONG_TYPE);
         test_set_current_task(NULL);
     }
 
@@ -248,9 +249,9 @@ void test_syscall_tcb(void) {
         /* Not a TCB in arg0 — the CNode's own slot names the root CNode. */
         ASSERT_EQ(tb_err(sys_tcb_set_ipc_buffer(999, TCB_SLOT, VA)),
                   (long)IRIS_ERR_NOT_FOUND);
-        /* A TCB in arg1, where a frame belongs. */
+        /* A TCB in arg1, where a frame belongs — named exactly (A-30). */
         ASSERT_EQ(tb_err(sys_tcb_set_ipc_buffer(TCB_SLOT, TCB_SLOT, VA)),
-                  (long)IRIS_ERR_INVALID_ARG);
+                  (long)IRIS_ERR_WRONG_TYPE);
         /* An unpopulated slot is not a frame either. */
         ASSERT_EQ(tb_err(sys_tcb_set_ipc_buffer(TCB_SLOT, 77, VA)),
                   (long)IRIS_ERR_NOT_FOUND);

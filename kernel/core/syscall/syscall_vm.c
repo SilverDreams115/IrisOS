@@ -55,7 +55,7 @@ uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_error_t err = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                             RIGHT_NONE, KOBJ_PAGE_TABLE, &pt_obj, &pt_rights);
     if (err != IRIS_OK)
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+        return syscall_err(err);
     if (!rights_check(pt_rights, RIGHT_WRITE)) {
         kobject_release(pt_obj);
         return syscall_err(IRIS_ERR_ACCESS_DENIED);
@@ -71,7 +71,7 @@ uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
                                      RIGHT_WRITE, &vs, &vs_rights);
     if (err != IRIS_OK) {
         kobject_release(pt_obj);
-        return syscall_err(err == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG : err);
+        return syscall_err(err);
     }
 
     err = kvspace_map_table(vs, (struct KPageTable *)pt_obj, arg2);
@@ -188,7 +188,6 @@ uint64_t sys_initrd_frame(uint64_t arg0, uint64_t arg1,
     iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                                              RIGHT_NONE, KOBJ_BOOTSTRAP_CAP,
                                              &auth_obj, &auth_rights);
-    if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
     int ok = kbootcap_is((struct KBootstrapCap *)auth_obj,
                          IRIS_BOOTCAP_INITRD_CONTROL);
@@ -207,8 +206,7 @@ uint64_t sys_initrd_frame(uint64_t arg0, uint64_t arg1,
         iris_error_t ne = cspace_resolve_only_untyped(t->cspace_root,
                               (iris_cptr_t)pool_cptr, RIGHT_WRITE, &pool, &nr);
         if (ne != IRIS_OK)
-            return syscall_err(ne == IRIS_ERR_WRONG_TYPE ? IRIS_ERR_INVALID_ARG
-                                                         : ne);
+            return syscall_err(ne);
     }
 
     uint64_t bytes = ((uint64_t)elf_size + 0xFFFu) & ~0xFFFULL;
@@ -264,7 +262,6 @@ uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1,
      * authority to create processes as a side effect. */
     iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                                  RIGHT_NONE, KOBJ_BOOTSTRAP_CAP, &auth_obj, &auth_rights);
-    if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
     if (!kbootcap_is((struct KBootstrapCap *)auth_obj, IRIS_BOOTCAP_INITRD_CONTROL)) {
         kobject_release(auth_obj);
@@ -316,7 +313,6 @@ uint64_t sys_framebuffer_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
                                              RIGHT_NONE, KOBJ_BOOTSTRAP_CAP,
                                              &auth_obj, &auth_rights);
-    if (r == IRIS_ERR_WRONG_TYPE) r = IRIS_ERR_ACCESS_DENIED;
     if (r != IRIS_OK) return syscall_err(r);
     int ok = kbootcap_is((struct KBootstrapCap *)auth_obj,
                          IRIS_BOOTCAP_FB_CONTROL);

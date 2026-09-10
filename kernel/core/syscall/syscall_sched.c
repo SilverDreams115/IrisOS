@@ -51,10 +51,9 @@ uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
     struct KObject *obj;
     iris_rights_t   rights;
     /* A1 Increment 2b: dual resolver — the SchedContext may be a CPtr slot or
-     * a handle.  WRONG_TYPE maps to INVALID_ARG (this family's error code). */
+     * a handle.  A-30: WRONG_TYPE travels. */
     iris_error_t err = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)sc_h,
                                  RIGHT_NONE, KOBJ_SCHED_CONTEXT, &obj, &rights);
-    if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return syscall_err(err);
 
     if (!rights_check(rights, RIGHT_WRITE)) {
@@ -86,7 +85,6 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct KObject *sc_obj; iris_rights_t sc_r;
     iris_error_t err = cspace_resolve_only_obj(caller->cspace_root, sc_cptr,
                                  RIGHT_NONE, KOBJ_SCHED_CONTEXT, &sc_obj, &sc_r);
-    if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) return syscall_err(err);
     if (!rights_check(sc_r, RIGHT_WRITE)) {
         kobject_release(sc_obj);
@@ -111,7 +109,6 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     struct KObject *tcb_obj; iris_rights_t tcb_r;
     err = cspace_resolve_only_obj(caller->cspace_root, tcb_cptr,
                                  RIGHT_NONE, KOBJ_TCB, &tcb_obj, &tcb_r);
-    if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
     if (err != IRIS_OK) { kobject_release(sc_obj); return syscall_err(err); }
     if (!rights_check(tcb_r, RIGHT_WRITE)) {
         kobject_release(tcb_obj); kobject_release(sc_obj);
@@ -178,10 +175,9 @@ uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         struct KObject *obj;
         iris_rights_t   rights;
         /* A1 Increment 2b: dual resolver (CPtr slot or handle); sc_h == 0
-         * stays the unbind path above.  WRONG_TYPE maps to INVALID_ARG. */
+         * stays the unbind path above.  A-30: WRONG_TYPE travels. */
         iris_error_t err = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)sc_h,
                                      RIGHT_NONE, KOBJ_SCHED_CONTEXT, &obj, &rights);
-        if (err == IRIS_ERR_WRONG_TYPE) err = IRIS_ERR_INVALID_ARG;
         if (err != IRIS_OK) return syscall_err(err);
 
         /* Ownership of the retained ref (lifecycle-only, same contract as
