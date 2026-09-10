@@ -216,7 +216,7 @@
  */
 #define VFS_EP_OP_GRANT_SESSION_RESET UINT64_C(0x0116)
 
-/* Maximum path length including NUL (matches legacy VFS_MAX_NAME). */
+/* Maximum path length including NUL. */
 #define VFS_EP_PATH_MAX    64u
 
 /* Boot contract: number of exports seeded before "[VFS] ep ready" (the

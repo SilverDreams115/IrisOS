@@ -507,7 +507,7 @@ Three independently-gating layers, run on every change:
   Nothing handle-table-shaped is left in it (Stage 4 deleted the namespace);
   what it holds is the kslab inventory — 14 files, 17 permitted occurrences —
   which Stage 6 reduced to the boot path and Stage 7 reduced again when
-  `kprocess.c` left it. It can only shrink, and refusing a change that MOVES a
+  `kfault.c` (then named `kprocess.c`) left it. It can only shrink, and refusing a change that MOVES a
   use from one file to another is part of how it does that.
 
 ```bash

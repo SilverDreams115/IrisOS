@@ -213,8 +213,25 @@ does not have to find them again.
    cross-CNode `seL4_CNode_Move` (IRIS moves within a CNode with
    `SYS_CNODE_SWAP`; across CNodes it is a mint-then-delete, which reaches the
    same place with a different derivation shape).
-5. **`kprocess.c` is misnamed.**  `struct KProcess` was deleted in Stage
-   7-proc; the file is now fault delivery and its counters.
+5. **`kprocess.c` is misnamed.**  ***Closed: it is `kfault.c` now, and
+   `context_switch.S` — which has held only the FPU save/restore since Stage
+   9-evt deleted the switch — is `fpu_switch.S`.***  `struct KProcess` was
+   deleted in Stage 7-proc and the file was fault delivery and its counters
+   for four stages under the old name.
+
+   The same audit listed "123 dead `#define`s" alongside these, and that count
+   did not survive being looked at.  Measured properly there are 87
+   unreferenced object-like macros, and almost none of them are dead code: 83
+   belong to `svcmgr_proto.h` and `kbd_proto.h`, two headers describing RETIRED
+   KChannel protocols whose own text says they are kept as historical wire
+   records; the rest are permanently-reserved syscall numbers, entries of the
+   `SYS_CAP_IDENTIFY` wire-type table, `*_POOL_SIZE 0u` markers stating per
+   type that nothing is slab-allocated, and halves of pairs (`USER_SPACE_BASE`
+   with `_TOP`, `TASK_PRIORITY_MIN` with `_MAX`, two of seven named badges).
+   Pruning a table to its referenced entries makes a specification worse, not
+   smaller.  Exactly two were genuinely dead — `KSTACK_PAGE_SIZE` and
+   `PGR_FSLOT` — and are gone.  If the retired protocol headers should go, they
+   go whole, and that is a separate decision from this one.
 
 ## Stage 0 — TCB consolidation  ✅ CLOSED (Phase S2 inc.2)
 

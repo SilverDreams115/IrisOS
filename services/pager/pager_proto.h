@@ -145,7 +145,6 @@
 #define PGR_CACHE_CAP      8u   /* pages in the RO shared cache */
 #define PGR_PRIV_CAP       8u   /* pages in the private-writable pool */
 #define PGR_FRAME_BASE     70u
-#define PGR_FSLOT(kind, i) (PGR_FRAME_BASE + (kind) * PGR_CACHE_CAP + (i))
 
 /* Control op codes (msg.words[0] bits [7:0]). */
 #define PGR_OP_PING        1u

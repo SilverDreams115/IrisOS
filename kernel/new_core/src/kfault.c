@@ -1,3 +1,13 @@
+/*
+ * kfault.c — delivering a fault to the handler a thread named, and the two
+ * counters that make quota exhaustion and fault handling observable.
+ *
+ * This file was kprocess.c.  `struct KProcess` was deleted in Stage 7-proc and
+ * the name stayed for four stages, pointing readers at an object that does not
+ * exist.  The `kprocess_` prefix on the counter accessors is kept on purpose:
+ * it is the name `sys_sched_info` reports them under, and renaming a wire
+ * label to tidy a file is the trade the other way round.
+ */
 #include <iris/nc/kprocess.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kframe.h>

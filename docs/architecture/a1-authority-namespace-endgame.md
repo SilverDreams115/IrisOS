@@ -49,7 +49,7 @@ Phase 8 (`CSPACE_DIRECT_CPTR_LIMIT` in `kernel/new_core/src/cspace.c`):
 
 - **CPtr namespace (`value < 1024`)** — resolved by walking the process
   root CNode (`proc->cspace_root`, created in `kprocess_alloc`,
-  `kernel/new_core/src/kprocess.c`). CSpace-only: a missing slot fails
+  `kernel/new_core/src/kfault.c`, then named `kprocess.c`). CSpace-only: a missing slot fails
   cleanly, `ACCESS_DENIED` is a hard stop, no handle-table fallback.
 - **Handle namespace (`value >= 1024`)** — `slot | generation << 10`
   with generation ≥ 1, resolved through `HandleTable`

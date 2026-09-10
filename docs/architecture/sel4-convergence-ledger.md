@@ -1404,7 +1404,8 @@ all are recorded so the next reader does not have to find them again.
    only as mint-then-delete, which reaches the same place with a different
    derivation shape.
 
-**And one cosmetic.**  `kernel/new_core/src/kprocess.c` holds fault delivery
+**And one cosmetic.** *(Closed: the file is `kfault.c`.)*
+`kernel/new_core/src/kprocess.c` holds fault delivery
 and its counters; `struct KProcess` was deleted in Stage 7-proc.  The file
 name is the last thing in the tree still asserting that a process object
 exists.

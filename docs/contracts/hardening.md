@@ -64,7 +64,7 @@ Ownership source:
 
 - `kernel/core/irq/irq_routing.c`
 - `kernel/core/syscall/syscall.c`
-- `kernel/new_core/src/kprocess.c`
+- `kernel/new_core/src/kfault.c` (named `kprocess.c` when this was written)
 
 Current enforced invariants:
 

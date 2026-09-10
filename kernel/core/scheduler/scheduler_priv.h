@@ -112,8 +112,6 @@ extern void context_switch(struct cpu_context *old,
 
 /* ── kstack.c ────────────────────────────────────────────────────────────── */
 
-#define KSTACK_PAGE_SIZE 0x1000ULL
-
 void kstack_panic(const char *msg);
 /* Stage 5 Step 4: the kstack slot is RECORDED in the task (t->kstack_slot),
  * not derived from where its storage lives — a retyped TCB's storage is inside

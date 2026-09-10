@@ -1,33 +1,9 @@
 /*
- * context_switch(struct cpu_context *old,  // rdi
- *                struct cpu_context *new,  // rsi
- *                uint64_t *old_rsp,        // rdx
- *                uint64_t  new_rsp,        // rcx
- *                uint8_t  *old_fpu,        // r8  — 512-byte FXSAVE buffer, 16-byte aligned
- *                uint8_t  *new_fpu)        // r9  — 512-byte FXSAVE buffer, 16-byte aligned
+ * fpu_switch.S — saving and restoring the FPU/SSE state across a resume.
  *
- * Saves the FPU/SSE state (FXSAVE), callee-saved integer registers,
- * kernel RSP, RIP, and RFLAGS of the outgoing task, then restores
- * the same set for the incoming task (FXRSTOR).
- *
- * RSP is switched to the new task's kernel stack BEFORE restoring RFLAGS.
- * This ensures that if an interrupt fires after RFLAGS is restored (with
- * IF possibly re-enabled), the CPU is already on the correct kernel stack
- * for the incoming task.
- *
- * r8 (old_fpu) and r9 (new_fpu) are caller-saved registers not included in
- * cpu_context, so they retain their parameter values through the entire
- * function body.
- *
- * cpu_context layout:
- *   [0]  r15
- *   [8]  r14
- *   [16] r13
- *   [24] r12
- *   [32] rbx
- *   [40] rbp
- *   [48] rip
- *   [56] rflags
+ * This file was context_switch.S, and the name outlived its subject by four
+ * stages.  What is here is the FPU half and nothing else; the header block
+ * below records what the other half was and why it went.
  */
 /*
  * context_switch is DELETED (Stage 9-evt step 3).
