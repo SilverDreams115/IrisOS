@@ -1895,6 +1895,11 @@ whole argument in one line.
 - T335 pins the error-code rule of A-30: a capability of the wrong type is
   WRONG_TYPE, a capability of the right type without the authority is
   ACCESS_DENIED, and nothing about either is a secret from the caller.
+- T336 pins `SYS_CNODE_SWAP`, which had no ring-3 coverage at all: two slots
+  exchange occupants by identity, a swap against an empty slot is a move, and
+  the derivation edges travel with the capability — including a parent swapped
+  with its own child, the case the implementation's stack temporary exists
+  for.  A naive content-only swap fails it.
 - T260 pins the retirement of the create syscalls and their no-effect.
 - T125/T126 pin the rejection of the migrated family on the legacy retype.
 - The `IRIS_KOBJ_* == KOBJ_*` asserts pin the type ABI.

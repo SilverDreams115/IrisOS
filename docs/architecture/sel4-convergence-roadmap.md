@@ -28,7 +28,7 @@ converged on the design, not on the guarantee, and this document says so
 wherever it is tempted to claim otherwise.
 
 Measured, not recalled (ledger A-26, recounted at A-29): 62 live syscalls of 94
-dispatched numbers, 11 retypeable object types all of them seL4's, 302 runtime
+dispatched numbers, 11 retypeable object types all of them seL4's, 303 runtime
 tests, 27 host suites, 27419 host assertions, 36 of 36 charter invariants MET,
 purity gate clean over the transitive closure with zero exemptions.
 

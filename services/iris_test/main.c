@@ -25693,6 +25693,151 @@ static void test_t335(void) {
     if (ok) it_pass("T335"); else it_fail("T335", why);
 }
 
+/* ── T336: swapping two slots moves the capabilities, tree and all ──────────
+ *
+ * `SYS_CNODE_SWAP` had no ring-3 coverage at all.  It is exercised by the
+ * host MDB suite and by nothing a booted system ever ran, which is a strange
+ * place for a capability-moving primitive to sit: within one CNode it is the
+ * only way to move a capability, and the ledger describes a move as "a swap
+ * against an empty slot".
+ *
+ * What matters about it is not that the contents change places — that is the
+ * easy half — but that the DERIVATION TREE goes with them.  `kcnode_swap`
+ * does the exchange through a stack temporary in one critical section so that
+ * `mdb_relocate` can rewrite every edge, and its comment singles out the case
+ * that makes the temporary necessary: swapping a parent with its own child.
+ * Nothing outside the host suite had ever asked for that.
+ *
+ * Five claims:
+ *
+ *  1. two occupied slots exchange their occupants, by IDENTITY and not merely
+ *     by type;
+ *  2. against an empty slot, a swap is a move: the source is left empty and
+ *     the capability is invocable at its new address;
+ *  3. the tree travels with the capability.  Revoking through the slot a
+ *     parent ARRIVED in destroys its child; revoking the slot it LEFT does
+ *     nothing, because a slot is an address and the ancestry is not stored in
+ *     the address;
+ *  4. a parent and its own child can be swapped, and every edge survives it;
+ *  5. the refusals: the same slot twice, a slot past the end, and a CNode
+ *     capability without RIGHT_WRITE.
+ * Invariants: A1, A3, O4. */
+static void test_t336(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "cnode swap";
+    const long UT = (long)IRIS_CPTR_TEST_UNTYPED;
+
+    it_slot_delete(IT_SCRATCH_0); it_slot_delete(IT_SCRATCH_1);
+    it_slot_delete(IT_SCRATCH_2); it_slot_delete(IT_SCRATCH_3);
+
+    /* A CNode of our own to swap inside — the suite's root and object CNodes
+     * are live working sets, and this test rearranges what it touches. */
+    if (it_retype2_at(UT, IRIS_KOBJ_CNODE, IT_SCRATCH_0, 1u, 16) != 0) {
+        it_fail("T336", "cnode"); return;
+    }
+    long ep = it_retype2_at(UT, IRIS_KOBJ_ENDPOINT,     IT_SCRATCH_2, 1u, 0);
+    long nt = it_retype2_at(UT, IRIS_KOBJ_NOTIFICATION, IT_SCRATCH_3, 1u, 0);
+    if (ep != 0 || nt != 0) { it_fail("T336", "fixtures"); return; }
+    ep = (long)IT_SCRATCH_2; nt = (long)IT_SCRATCH_3;
+    const long CN = (long)IT_SCRATCH_0;
+#define T336_AT(i)  ((long)(((uint32_t)(i) << 8) | IT_SCRATCH_0))
+    const iris_rights_t FULL =
+        (iris_rights_t)(RIGHT_READ | RIGHT_WRITE | RIGHT_DUPLICATE | RIGHT_WAIT);
+
+    /* ── 1. two occupants exchange, by identity ── */
+    if (ok && it_sys3(SYS_CSPACE_MINT, ep, IT_MINT_INTO(CN, 1u), (long)FULL) != 0) {
+        ok = 0; why = "mint ep";
+    }
+    if (ok && it_sys3(SYS_CSPACE_MINT, nt, IT_MINT_INTO(CN, 2u), (long)FULL) != 0) {
+        ok = 0; why = "mint nt";
+    }
+    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 1, 2) != 0) { ok = 0; why = "swap"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, T336_AT(1))
+              != (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "slot 1 type"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, T336_AT(2))
+              != (long)IRIS_HANDLE_TYPE_ENDPOINT) { ok = 0; why = "slot 2 type"; }
+    /* Type is not identity: two notifications would pass the check above. */
+    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, T336_AT(1), nt) != 1) {
+        ok = 0; why = "slot 1 is not the notification we put there";
+    }
+    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, T336_AT(2), ep) != 1) {
+        ok = 0; why = "slot 2 is not the endpoint we put there";
+    }
+    /* And it still works from its new address. */
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, T336_AT(1), 0x1u) != 0) {
+        ok = 0; why = "moved capability is dead";
+    }
+
+    /* ── 2. against an empty slot, a swap is a move ── */
+    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 1, 5) != 0) { ok = 0; why = "move"; }
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, T336_AT(1)) >= 0) {
+        ok = 0; why = "the source slot kept a ghost";
+    }
+    if (ok && it_sys2(SYS_CAP_SAME_OBJECT, T336_AT(5), nt) != 1) {
+        ok = 0; why = "move lost the capability";
+    }
+
+    /* ── 3. the tree travels with the capability, not the slot ── */
+    if (ok && it_sys3(SYS_CSPACE_MINT, T336_AT(5), IT_MINT_INTO(CN, 6u),
+                      (long)RIGHT_WRITE) != 0) { ok = 0; why = "derive child"; }
+    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 5, 9) != 0) { ok = 0; why = "swap parent away"; }
+    /* Revoking the slot the parent LEFT reaches nothing: the slot is empty and
+     * the child's parent pointer went with the capability. */
+    if (ok && it_cdt_alive(T336_AT(5))) { ok = 0; why = "the parent left a copy behind"; }
+    if (ok && !it_cdt_alive(T336_AT(6))) { ok = 0; why = "the child died on the swap"; }
+    /* Revoking through the slot the parent ARRIVED in takes the child. */
+    if (ok && it_cdt_revoke(T336_AT(9)) < 0) { ok = 0; why = "revoke at the new address"; }
+    if (ok && it_cdt_alive(T336_AT(6))) { ok = 0; why = "the child outlived its parent's revoke"; }
+    if (ok && !it_cdt_alive(T336_AT(9))) { ok = 0; why = "revoke ate the slot it was invoked on"; }
+
+    /* ── 4. a parent swapped with its own child ──
+     * The case the implementation's stack temporary exists for: relocating A
+     * onto B while B's parent pointer still names A. */
+    if (ok && it_sys3(SYS_CSPACE_MINT, T336_AT(9), IT_MINT_INTO(CN, 10u),
+                      (long)RIGHT_WRITE) != 0) { ok = 0; why = "derive for parent swap"; }
+    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 9, 10) != 0) { ok = 0; why = "parent-child swap"; }
+    if (ok && (!it_cdt_alive(T336_AT(9)) || !it_cdt_alive(T336_AT(10)))) {
+        ok = 0; why = "parent-child swap lost a capability";
+    }
+    /* The parent is in slot 10 now.  Revoking IT takes the child in slot 9;
+     * had the edges not been rewritten, this would either reach nothing or
+     * revoke in the wrong direction. */
+    if (ok && it_cdt_revoke(T336_AT(10)) < 0) { ok = 0; why = "revoke after parent-child swap"; }
+    if (ok && it_cdt_alive(T336_AT(9))) { ok = 0; why = "the child survived, so the edge did not move"; }
+    if (ok && !it_cdt_alive(T336_AT(10))) { ok = 0; why = "the parent did not survive its own revoke"; }
+
+    /* ── 5. the refusals ── */
+    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 3, 3) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "a slot swapped with itself";
+    }
+    if (ok && it_sys3(SYS_CNODE_SWAP, CN, 1, 16) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "a slot past the end of the CNode";
+    }
+    if (ok && it_sys3(SYS_CNODE_SWAP, 0, 1, 2) != (long)IRIS_ERR_INVALID_ARG) {
+        ok = 0; why = "swap with no CNode named";
+    }
+    if (ok) {
+        /* Rearranging a CSpace is a write to it.  A read-only capability to
+         * the same CNode cannot do it — the authority is on the capability,
+         * not on holding the CNode at all. */
+        long ro = it_cdt_derive(CN, IT_SCRATCH_1, RIGHT_READ);
+        if (ro < 0) { ok = 0; why = "read-only cnode derive"; }
+        if (ok && it_sys3(SYS_CNODE_SWAP, ro, 1, 2) != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "a read-only CNode capability rearranged a CSpace";
+        }
+        it_slot_delete(IT_SCRATCH_1);
+    }
+#undef T336_AT
+
+    it_slot_delete(IT_SCRATCH_0);   /* takes the CNode and everything in it */
+    it_slot_delete(IT_SCRATCH_2);
+    it_slot_delete(IT_SCRATCH_3);
+    it_quiesce_reaper();
+
+    if (ok) it_pass("T336"); else it_fail("T336", why);
+}
+
 /* ── T324: what the rotating object pool is still holding ──────────────────
  * The pool's contract is one sentence — delete before use, never hold a slot
  * across a test boundary — and until now nothing read it back.  The pool is
@@ -26395,6 +26540,7 @@ void iris_test_main(handle_id_t rbx_unused) {
     test_t333();
     test_t334();
     test_t335();
+    test_t336();
     test_t324();
 
     /* g_svcmgr_ep_h is a CPtr slot (not a handle): nothing to close. */
