@@ -71,7 +71,7 @@ against seL4 turned up, including one A9 defect it fixed.
 | 12-pol — mechanism, not policy (P2) | ✅ CLOSED — the kernel futex, the notification waiter ceiling, the default CSpace size and the THREAD ceiling are gone; what is left is classified as mechanism with a reason each (A-19) |
 | 11-life — object lifetime (D-7) | ✅ SEMANTICS CLOSED — an object exists exactly while a capability names it, measured for every type (T322), over generated MDB shapes (T323) and through a CSpace cycle (T321).  The MECHANISM stays a refcount, registered as a permanent divergence; the one disagreement it produced (a donated scheduling context released twice) is fixed and T324 reads every pool slot each run to catch the next |
 | 13-form — the four FORM divergences (A-20's audit) | ✅ 3 of 4 CLOSED, the fourth decided.  **A-21** address-space identity is `ASIDControl`/`ASIDPool`; **A-22** a fault is an IPC message on an endpoint answered by a reply capability; **A-24** the kernel cannot block a thread on time — waiting is a ring-3 service — with **A-23** (`seL4_TCB_BindNotification`) as its enabler and **A-25** (`CancelBadgedSends`) closing the audit's last item.  The fourth, the ABI SHAPE, is a permanent deliberate divergence (charter §4) |
-| 9 — SMP | pending |
+| 9 — SMP | **PLANNED** — the locking model precondition is written (§9.1 hierarchy, §9.2 catalog, §9.3 five steps).  Not started |
 | 10 — General-purpose platform | pending |
 
 Charter invariants closed so far by this roadmap: **A2, A3, A4, A6, A7, A8,
@@ -2027,18 +2027,162 @@ would let that client silence any other by naming their number.
 ## Stage 9 — SMP
 
 Hard precondition: single authority namespace (4), CDT (1), lifecycle (0),
-CSpace-only IPC (2), a documented locking model, **and Stage 9-evt**.
+CSpace-only IPC (2), **a documented locking model**, and Stage 9-evt.
 
-- Re-derive EVERY atomicity property that today depends on the
-  non-preemptive uniprocessor kernel (catalog: IPC staging, RETYPE2, reply
-  bind, teardown). Per-CPU run-queue ownership. No correctness may still be
-  argued "because the kernel is non-preemptive".
+The 9-evt precondition was not a preference: every atomicity property here is
+re-derived against the kernel's execution model, and doing it once against a
+blocking multi-stack kernel and again against an event kernel means doing it
+twice, with the second pass carrying the assumptions of the first.  That is
+closed.
 
-The 9-evt precondition is new and it is not a preference: every one of those
-properties is re-derived against the kernel's execution model, and doing it
-once against a blocking multi-stack kernel and again against an event kernel
-means doing it twice, with the second pass carrying the assumptions of the
-first.
+The LOCKING MODEL precondition was not, and this section is it.  What follows
+was measured against the tree, not designed for it: the hierarchy is the order
+the code already takes locks in, and the catalog is what a grep for shared
+mutable state actually returns.  A plan that invented either would be worse
+than none, because it would disagree with the code in ways nobody would notice
+until a deadlock.
+
+### 9.0 — What is already there
+
+More than the "pending" label suggests, and it changes the shape of the work:
+
+| Present | State |
+|---|---|
+| Spinlocks | REAL — `atomic_flag` with acquire/release, not uniprocessor no-ops |
+| Per-CPU data | `cpu_local[MAX_CPUS]`, GS-relative with a self-pointer, offsets pinned by `syscall_entry.S` |
+| Per-CPU TSS + IST stacks | Arrays already indexed by `cpu_id` and sized `MAX_CPUS` |
+| Per-CPU run queues | `cpu_rqs[MAX_CPUS]`, each with its own lock; threads carry `home_cpu` |
+| Per-CPU kernel stacks | `core_stacks[MAX_CPUS]` — Stage 9-evt's whole point |
+| IPI | `lapic_send_ipi` and a reschedule vector wired into the IDT |
+| AP bring-up recipe | Written down in `gdt.c`, four steps, never executed |
+
+| Absent | Consequence |
+|---|---|
+| AP startup | No MADT parse, no trampoline, no INIT-SIPI-SIPI.  `lapic_send_ipi` does FIXED delivery only |
+| TLB shootdown | `paging.c` says so in as many words.  An unmap is one `invlpg` on the CPU that ran it |
+| Per-CPU timer | The tick is the PIT: one global source, one CPU |
+| A lock on `sched_thread_list` | There is none, and it is walked twice per idle |
+
+### 9.1 — The lock hierarchy
+
+**Every acquisition must go down this list, never up.**  The order is not
+chosen: each edge below was read out of a call path that exists today, and the
+file:line is given so a future change can check whether its claim is still
+true.
+
+| # | Lock | Scope |
+|---|---|---|
+| 1 | `mdb_lock` | global — the one derivation tree |
+| 2 | `KEndpoint.lock` | per object |
+| 3 | `KVSpace.lock` | per object |
+| 4 | `live_lock` (knotification registry) | global |
+| 5 | `KCNode.lock`, `KObject.lock`, `KAsidPool.lock`, `task.obj_lock` | per object |
+| 6 | `CpuRunQueue.lock` | per CPU — **leaf, nothing may be taken under it** |
+
+**Enforced**: `make check-locks` (`scripts/check_lock_order.py`) holds the
+table above as data and reports any edge that goes up it, following calls three
+hops deep.  It runs in CI next to the purity gate.  A static check rather than
+a test, for the reason the whole section exists — an inversion cannot happen on
+one core, so there is nothing for a test to observe until the day it is a hang.
+Changing the order means changing that table and saying why.
+
+Observed edges, all of them:
+
+| Order | Where |
+|---|---|
+| `mdb_lock` → `KCNode.lock` | `kcnode.c` 381→401, and `mdb_relocate` 488/493 under a caller's `mdb_lock` |
+| `KEndpoint.lock` → `task.obj_lock` | `kendpoint.c:54`, via `kfault_resolve` |
+| `KEndpoint.lock` → `CpuRunQueue.lock` | `kendpoint.c:57`, via `task_wakeup` → `rq_enqueue` |
+| `KVSpace.lock` → `KAsidPool.lock` | `kvspace.c:63→67`, via `kasidpool_take` |
+| `live_lock` → `KObject.lock` | `knotification.c:166` |
+
+Three locks are BOOT-ONLY and cannot contend once the system is running, which
+is worth stating because it removes them from the analysis rather than leaving
+them to be reasoned about every time:
+
+- `kslab_lock` — the arena is SEALED after boot (`kslab_seal`), and an
+  allocation after that asserts;
+- `pmm_lock` — every `pmm_alloc_*` caller is on the boot path, and
+  `check_purity` now proves no syscall handler can reach one;
+- `kvspace_boot_lock` — the pre-boot mapping arena.
+
+The rest (`klog_lock`, `irq_lock`, `reap_queue_lock`) are leaves.
+
+### 9.2 — The catalog: shared mutable state
+
+This is what Stage 9's one-line "re-derive EVERY atomicity property" expands
+to.  The old catalog named four items (IPC staging, RETYPE2, reply bind,
+teardown); it was not wrong, it was a quarter of the list.
+
+**Unprotected, and that is only safe on one core:**
+
+| State | Today | Why it is exposed |
+|---|---|---|
+| `sched_thread_list` | plain pointer, no lock | walked three times in `scheduler.c` (idle fast-forward, budget replenishment, diagnostics) and mutated on every thread create/destroy |
+| `scheduler_ticks`, `wall_ticks` | `volatile uint64_t` | `volatile` orders nothing and is not atomic; written by whichever CPU takes the tick, read everywhere |
+| `iris_cur_domain`, `dom_sched_idx`, `dom_ticks_left` | plain | written by the tick CPU, read by every CPU's dispatcher on every switch (A-34) |
+| `next_id` | plain `uint32_t` | incremented per thread creation |
+| `reap_queue_hwm` | plain | diagnostic, but a torn read is still a wrong number |
+
+**Protected, but by an argument rather than a lock** — ten sites whose comment
+says the kernel is uniprocessor or non-preemptive.  Each needs re-deriving, and
+each is listed so "all of them" is checkable:
+
+| Site | Subject |
+|---|---|
+| `syscall_untyped.c:30` | RETYPE2's validate-then-act window |
+| `kuntyped.c:311` | retype's all-or-nothing child allocation |
+| `kcnode.c:346` | delete-with-reparent |
+| `kcnode.c:715` | a case called impossible on this path |
+| `syscall_reply.c:198` | check-then-bind on a reply object |
+| `syscall_reply.c:469` | reply's IRQ-off assumption |
+| `syscall_endpoint.c:1189` | a wake that "cannot fail" |
+| `syscall_frame.c:31`, `syscall.h:1116` | TLB invalidation is one `invlpg`, local |
+
+**Already SMP-shaped**, and worth recording so the audit does not revisit them:
+`cpu_local[].current_task` is per-CPU; the `_Atomic` statistics counters are
+relaxed and independent; `kernel_cr3` is write-once at boot.
+
+### 9.3 — The steps, and why this order
+
+**Step 1 — make the one-core kernel SMP-correct, before a second core exists.**
+Lock `sched_thread_list`; give the reaper per-CPU dead lists (its own TODO);
+make the tick and domain-schedule state atomic; close all ten arguments in
+9.2.  Every one of these is a change that can be made, reviewed and tested on
+one core.  Doing it after bring-up means debugging races and bring-up at once,
+with no way to tell which is lying.  **Gate: the three existing gates stay
+green, and 9.2's "unprotected" table is empty.**
+
+**Step 2 — TLB shootdown.**  Must exist before a second CPU can hold a
+different CR3.  The IPI mechanism is there; the protocol is not.  **Gate: an
+unmap on one CPU is observable as unmapped on another** — which needs step 3
+to test, so the implementation lands here and the test lands after.
+
+**Step 3 — discover and start the APs.**  ACPI MADT to enumerate them, a
+real-mode trampoline, INIT-SIPI-SIPI (the LAPIC driver needs delivery modes it
+does not have), then the four steps already written in `gdt.c`.  **The APs end
+this step parked in idle, scheduling nothing.**  That is deliberate: "N cores
+are up" is a marker that can fail on its own, separately from anything about
+dispatch.
+
+**Step 4 — let the APs schedule.**  Decide the tick: per-CPU LAPIC timers, or
+keep the PIT as the single source and IPI the others.  Threads distribute over
+`home_cpu`, which already exists and is already read by `rq_enqueue`.
+
+**Step 5 — the adversarial phase.**  Concurrent syscalls from several cores
+against the same objects; the model-based fuzzer extended to N cores; the
+lifecycle and revocation suites run cross-core.
+
+### 9.4 — What this stage cannot prove
+
+**QEMU/TCG does not reproduce memory-ordering bugs.**  It interleaves, so it
+finds logic races, and it will not find a wrong `memory_order` on a relaxed
+atomic.  Steps 1–4 are verifiable here; step 5 tells us when the system LOOKS
+correct on this emulator, which is not the same claim and should not be written
+up as one.  Saying so now is cheaper than discovering it in a ledger row later.
+
+**The deadlock direction is untestable until step 3.**  A lock-order inversion
+cannot happen on one core, so §9.1 is enforced by review until there are two.
 
 ## Stage 10-dma — device authority must be containable  ← NOT STARTED
 

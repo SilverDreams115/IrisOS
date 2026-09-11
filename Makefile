@@ -750,6 +750,12 @@ check: config-sync $(KERNEL_ELF)
 check-purity:
 	bash scripts/check_purity.sh
 
+# The lock hierarchy of the SMP roadmap (§9.1).  Checked statically because a
+# lock-order inversion cannot happen on one core: it is invisible until the
+# second one starts, and then it is a hang.
+check-locks:
+	python3 scripts/check_lock_order.py
+
 smoke:
 	bash scripts/smoke_local.sh
 

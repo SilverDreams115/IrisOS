@@ -29,6 +29,9 @@ jobs:
       - name: Purity gate (frozen legacy-consumer allowlist)
         run: make check-purity
 
+      - name: Lock-order gate (SMP roadmap 9.1)
+        run: make check-locks
+
       - name: Host unit suites
         run: make test-unit
 
