@@ -15,22 +15,6 @@
 #include "syscall_priv.h"
 #include <iris/nc/cspace.h>
 
-/*
- * SYS_CNODE_MOVE (89) — RETIRED (Stage 4).  Number permanently reserved;
- * returns NOT_SUPPORTED.  Its SOURCE was a handle, which is the direction this
- * stage deletes: SYS_CSPACE_MINT followed by SYS_CNODE_DELETE expresses the
- * same move between slots and keeps the derivation tree consistent.
- */
-uint64_t sys_cnode_move(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-uint64_t sys_cnode_fetch(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
 uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     iris_cptr_t cptr_or_h = (iris_cptr_t)arg0;
     uint32_t    slot_idx  = (uint32_t)arg1;

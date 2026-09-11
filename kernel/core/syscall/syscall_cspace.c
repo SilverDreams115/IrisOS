@@ -4,97 +4,6 @@
 /* A1.7: successful SYS_CSPACE_RESOLVE materializations (diagnostic). */
 uint32_t iris_cspace_stat_resolves = 0u;
 
-/*
- * Phase S4 (Step 3): SYS_CAP_DERIVE (78) and SYS_CAP_REVOKE (79) are RETIRED.
- *
- * They were the last consumers of the handle table's parallel derivation tree
- * (`derivation_parent[]`), which duplicated — badly — what the native CSpace
- * CDT does properly: the handle tree was per-process, invisible to CSpace,
- * and could not express a cross-process ancestry.  Every productive path now
- * uses SYS_CSPACE_MINT (derive slot→slot, installing a real MDB child) and
- * SYS_CSPACE_REVOKE (recursive, cross-CNode and cross-process).
- *
- * The syscall numbers stay permanently reserved and answer NOT_SUPPORTED;
- * the table's derived-insert, revoke-children entry points and the
- * `derivation_parent[]` array are deleted.  There is now exactly ONE
- * derivation tree in the system (charter A9/A10).
- */
-uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-uint64_t sys_cap_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-/*
- * Phase S1: SYS_CNODE_CREATE (80) is RETIRED — runtime CNodes are created ONLY
- * via SYS_UNTYPED_RETYPE2.  The single remaining kslab CNode is the per-process
- * root CNode fabricated at kprocess_alloc (bootstrap exception, ledger-tracked).
- */
-uint64_t sys_cnode_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-/*
- * SYS_CSPACE_RESOLVE (95) — RETIRED (Stage 4).  Number permanently reserved;
- * returns NOT_SUPPORTED.
- *
- * It was the sanctioned CSpace→handle bridge: materialise the capability in a
- * slot as a handle so it could be used by a path that only spoke handles.
- * There are no such paths.  Every question it was used to answer is answered
- * natively — SYS_CAP_IDENTIFY for a type, SYS_CAP_SAME_OBJECT for identity,
- * SYS_CSPACE_MINT for a second reference — and each of those is strictly
- * weaker than handing out authority.
- *
- * `iris_cspace_stat_resolves` stays in the SYS_SCHED_INFO layout as the
- * retirement witness: a structural zero, like the IPC handle-delivery and
- * TOCTOU counters beside it.
- */
-uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-/*
- * SYS_CNODE_MINT (81) — RETIRED (Stage 4).  Number permanently reserved;
- * returns NOT_SUPPORTED.  Its SOURCE was a handle, so the capability it
- * installed had no MDB relationship to anything: an independent LEGACY_ROOT
- * that a revoke of the "original" could not reach.  SYS_CSPACE_MINT is the
- * slot-to-slot form and records the derivation edge.
- */
-uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
-    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-/*
- * SYS_PROC_CSPACE_MINT (88) — RETIRED (Stage 7 Step 9).  Number permanently
- * reserved; answers NOT_SUPPORTED.
- *
- * It minted into a CSpace named by the PROCESS that owned it, and the kernel
- * read `child->cspace_root` out of that process.  So a spawner reached a
- * capability namespace it did not hold by naming something else that pointed
- * at it — the one shape left where a process capability granted access to an
- * object the holder had never been given.
- *
- * SYS_CSPACE_MINT has taken a destination CNode since Phase S3, including
- * dest_cnode 0 for the caller's own root.  Minting into a child is that, with
- * the child's root CNode as the destination — which a spawner HAS, because it
- * retyped it (Stage 6-pure Step 5) and handed it to SYS_PROCESS_CREATE.  A
- * spawner that means to keep delegating keeps it; one that does not holds no
- * authority over its child's namespace at all, which is a distinction the
- * process-shaped form could not express.
- */
-uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2,
-                              uint64_t arg3) {
-    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
 /* ════════════════════════════════════════════════════════════════════════
  * Phase S3 — CSpace-only derivation syscalls (native MDB/CDT).
  *
@@ -280,30 +189,6 @@ uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         return 0;
     }
     return t->sc_acc;
-}
-
-/*
- * SYS_CSPACE_MINT_INTO (116) — RETIRED (Stage 7 Step 9).  Number permanently
- * reserved; answers NOT_SUPPORTED.
- *
- * It minted into a CSpace named by the PROCESS that owned it, and the kernel
- * read `child->cspace_root` out of that process.  So a spawner reached a
- * capability namespace it did not hold by naming something else that pointed
- * at it — the one shape left where a process capability granted access to an
- * object the holder had never been given.
- *
- * SYS_CSPACE_MINT has taken a destination CNode since Phase S3, including
- * dest_cnode 0 for the caller's own root.  Minting into a child is that, with
- * the child's root CNode as the destination — which a spawner HAS, because it
- * retyped it (Stage 6-pure Step 5) and handed it to SYS_PROCESS_CREATE.  A
- * spawner that means to keep delegating keeps it; one that does not holds no
- * authority over its child's namespace at all, which is a distinction the
- * process-shaped form could not express.
- */
-uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
-                              uint64_t arg3) {
-    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
 }
 
 /*

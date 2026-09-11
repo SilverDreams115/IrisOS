@@ -15,17 +15,6 @@
  * setting a priority.  The number stays permanently reserved.
  */
 
-/*
- * Phase S2: SYS_SC_CREATE (83) RETIRED — it fabricated a KSchedContext from
- * kslab and returned a handle: two non-seL4 mechanisms.  SchedulingContexts
- * are created ONLY via SYS_UNTYPED_RETYPE2 (Untyped storage, cap in CSpace)
- * and configured with SYS_SC_CONFIGURE.  Number reserved; no effect.
- */
-uint64_t sys_sc_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
 uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                           uint64_t arg3) {
     handle_id_t sc_h    = (handle_id_t)arg0;

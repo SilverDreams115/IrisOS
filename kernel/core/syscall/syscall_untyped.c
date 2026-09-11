@@ -97,18 +97,6 @@ _Static_assert(IRIS_KOBJ_VSPACE        == (uint32_t)KOBJ_VSPACE,        "KOBJ AB
 _Static_assert(IRIS_KOBJ_TCB           == (uint32_t)KOBJ_TCB,           "KOBJ ABI");
 
 /*
- * SYS_UNTYPED_RETYPE (87) — LEGACY, handle-publishing, single object.
- * Phase S1: migrated types are rejected with NOT_SUPPORTED (they must be born
- * via RETYPE2 into CSpace).  Remaining legal types: KOBJ_UNTYPED (sub-region),
- * KOBJ_FRAME, KOBJ_SCHED_CONTEXT — all still untyped-funded, ledger-tracked
- * as MIGRATING until their own convergence phase.
- */
-uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-/*
  * The two physical-region types, carved.
  *
  * Stage 6 Step 1/4: BOTH halves come from this Untyped — the region from the

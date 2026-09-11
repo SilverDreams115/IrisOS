@@ -102,6 +102,32 @@ void test_syscall_dispatch(void) {
         ASSERT_EQ(ds(SYS_INVOKE + 1u), (long)IRIS_ERR_NOT_SUPPORTED);
     }
 
+    /* ── DS-6: the numbered table is CLOSED (ledger A-31) ────────────────
+     * Every number from 0 to 400 answers NOT_SUPPORTED except four: the
+     * invocation door, and the three calls that invoke nothing and therefore
+     * could never be methods of anything.
+     *
+     * This is the assertion the whole conversion was for, and it is made here
+     * rather than from ring 3 because only here can every number be tried —
+     * including the ones a live handler would act on.  It subsumes DS-2: a
+     * retired number is refused because NO number reaches a method any more.
+     */
+    {
+        for (uint64_t n = 0; n <= 400u; n++) {
+            if (n == SYS_INVOKE || n == SYS_EXIT || n == SYS_YIELD ||
+                n == SYS_CLOCK_GET)
+                continue;
+            if (ds(n) != (long)IRIS_ERR_NOT_SUPPORTED) {
+                /* Name the survivor rather than only failing: a number that
+                 * still reaches a method is a family that was missed. */
+                ASSERT_EQ((long)n, (long)IRIS_ERR_NOT_SUPPORTED);
+            }
+        }
+        ASSERT_EQ(ds(87), (long)IRIS_ERR_NOT_SUPPORTED);  /* UNTYPED_RETYPE */
+        ASSERT_EQ(ds(111), (long)IRIS_ERR_NOT_SUPPORTED); /* UNTYPED_RETYPE2 */
+        ASSERT_EQ(ds(97), (long)IRIS_ERR_NOT_SUPPORTED);  /* TCB_SUSPEND */
+    }
+
     /* ── DS-5: the invocation door is wired to the label table ───────────
      * A real label must REACH its method.  With no current task the method
      * refuses on its first line with INVALID_ARG — which is the point: an

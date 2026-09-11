@@ -82,31 +82,6 @@ uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_ok_u64(0);
 }
 
-/*
- * SYS_PROCESS_VSPACE — RETIRED (Stage 7 Step 15).
- *
- * It answered "give me that process's address space", and the kernel answered
- * by reading `child->vspace` out of a KProcess — a supervisor reaching an
- * object it did not hold by naming a different one.  The same shape Step 9
- * removed for CSpaces, one object over.
- *
- * The spawner already has it.  Since Stage 6-pure Step 4 the loader RETYPES
- * the child's VSpace and holds it through the entire spawn; it just threw the
- * capability away at the end, which is what made this syscall necessary.  It
- * hands it over now (`svc_load_minted_ws`'s `keep_vspace_dest`), opt-in
- * because keeping one has a cost: a VSpace capability keeps that address space
- * and every page table in it alive past the child's death, blocking the RESET
- * of the budget they are charged to.
- *
- * The self case was documented as "equivalent to SYS_VSPACE_SELF" for as long
- * as it existed.  That is the syscall to call.
- */
-uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-
 /* ── VMO syscalls ─────────────────────────────────────────────────── */
 
 

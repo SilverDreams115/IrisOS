@@ -265,136 +265,34 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
                                   memory_order_relaxed);
 
     switch (num) {
-        /* SYS_WRITE(0), SYS_BRK(7) — retired, fall to default */
-        case SYS_EXIT:  return sys_exit(arg0, arg1, arg2);
-        case SYS_YIELD: return sys_yield(arg0, arg1, arg2);
-        /* SYS_CHAN_CREATE(12)/SEND(13)/RECV(14) — retired Phase 13/Track G
-         * (KChannel fully retired), fall to default → NOT_SUPPORTED */
-        case SYS_HANDLE_CLOSE: return sys_handle_close(arg0, arg1, arg2);
-        /* SYS_SPAWN(18), SYS_SPAWN_SERVICE(31) — retired, fall to default */
-        case SYS_NOTIFY_CREATE: return sys_notify_create(arg0, arg1, arg2);
-        case SYS_NOTIFY_SIGNAL: return sys_notify_signal(arg0, arg1, arg2);
-        case SYS_NOTIFY_WAIT:   return sys_notify_wait(arg0, arg1, arg2);
-        case SYS_HANDLE_DUP:    return sys_handle_dup(arg0, arg1, arg2);
-        /* SYS_HANDLE_TRANSFER(23) — retired A1.8 (zero in-tree callers; the
-         * cross-process placement path is SYS_PROC_CSPACE_MINT), fall to
-         * default (NOT_SUPPORTED).  Number permanently reserved. */
-        case SYS_PROCESS_SELF:    return sys_process_self(arg0, arg1, arg2);
-        case SYS_PROCESS_STATUS:  return sys_process_status(arg0, arg1, arg2);
-        case SYS_PROCESS_WATCH:   return sys_process_watch(arg0, arg1, arg2);
-        case SYS_IRQ_ROUTE_REGISTER: return sys_irq_route_register(arg0, arg1, arg2);
-        case SYS_IOPORT_IN:          return sys_ioport_in(arg0, arg1, arg2);
-        case SYS_IOPORT_OUT:         return sys_ioport_out(arg0, arg1, arg2);
-        /* SYS_CHAN_RECV_NB retired — Phase 13/Track G, fall to default (NOT_SUPPORTED) */
-        case SYS_PROCESS_KILL:        return sys_process_kill(arg0, arg1, arg2);
-        /* SYS_DIAG_SNAPSHOT(30) — retired, fall to default */
-        /* SYS_CHAN_SEAL retired — Phase 13/Track G, fall to default (NOT_SUPPORTED) */
-        /* SYS_CHAN_CALL(38) — retired Phase 13/Track G (zero callers), fall to default */
-        case SYS_CAP_CREATE_IRQCAP:   return sys_cap_create_irqcap(arg0, arg1, arg2, arg3);
-        case SYS_CAP_CREATE_IOPORT:   return sys_cap_create_ioport(arg0, arg1, arg2, arg3);
-        /* SYS_INITRD_LOOKUP(41), SYS_SPAWN_ELF(42) — retired, fall to default */
-        case SYS_IOPORT_RESTRICT:      return sys_ioport_restrict(arg0, arg1, arg2);
-        /* SYS_WAIT_ANY(44) — retired Phase 13/Track G (zero callers), fall to default */
-        case SYS_BOOTCAP_RESTRICT:     return sys_bootcap_restrict(arg0, arg1, arg2);
-        case SYS_EXCEPTION_HANDLER:    return sys_exception_handler(arg0, arg1, arg2, arg3);
-        case SYS_THREAD_CREATE:        return sys_thread_create(arg0, arg1, arg2);
-        case SYS_HANDLE_TYPE:          return sys_handle_type(arg0, arg1, arg2);
-        case SYS_HANDLE_SAME_OBJECT:   return sys_handle_same_object(arg0, arg1, arg2);
-        case SYS_POWEROFF:             return sys_poweroff(arg0, arg1, arg2);
-        case SYS_INITRD_COUNT:  return sys_initrd_count(arg0, arg1, arg2, arg3);
-        case SYS_PROCESS_CREATE: return sys_process_create(arg0, arg1, arg2, arg3);
-        case SYS_THREAD_START:  return sys_thread_start(arg0, arg1, arg2, arg3);
-        case SYS_HANDLE_INSERT: return sys_handle_insert(arg0, arg1, arg2, arg3);
-        /* SYS_CHAN_RECV_TIMEOUT retired — Phase 13/Track G, fall to default (NOT_SUPPORTED) */
-        case SYS_CLOCK_GET:           return sys_clock_get(arg0, arg1, arg2);
-        case SYS_KLOG_DRAIN:          return sys_klog_drain(arg0, arg1, arg2);
-
-        case SYS_FRAME_SIZE:          return sys_frame_size(arg0, arg1, arg2);
-        case SYS_ASID_POOL_ASSIGN:    return sys_asid_pool_assign(arg0, arg1, arg2);
-        case SYS_TCB_BIND_NOTIFICATION: return sys_tcb_bind_notification(arg0, arg1, arg2);
-        case SYS_NOTIFY_POLL:         return sys_notify_poll(arg0, arg1, arg2);
-        case SYS_EP_CANCEL_BADGED_SENDS: return sys_ep_cancel_badged_sends(arg0, arg1, arg2);
-        case SYS_TCB_READ_REGS:       return sys_tcb_read_regs(arg0, arg1, arg2);
-        case SYS_CSPACE_MOVE:         return sys_cspace_move(arg0, arg1, arg2);
-        case SYS_SC_CONSUMED:         return sys_sc_consumed(arg0, arg1, arg2);
-        case SYS_SC_YIELD_TO:         return sys_sc_yield_to(arg0, arg1, arg2);
-        case SYS_IRQ_CLEAR:           return sys_irq_clear(arg0, arg1, arg2);
-        case SYS_IRQ_ACK:             return sys_irq_ack(arg0, arg1, arg2);
-        case SYS_SCHED_INFO:          return sys_sched_info(arg0, arg1, arg2);
-        case SYS_PROCESS_EXIT_CODE:   return sys_process_exit_code(arg0, arg1, arg2);
-        case SYS_PROCESS_FAULT_INFO:  return sys_process_fault_info(arg0, arg1, arg2);
-        /* SYS_WAIT_ANY_TIMEOUT(72) — retired Phase 13/Track G (zero callers), fall to default */
-        case SYS_ENDPOINT_CREATE:     return sys_endpoint_create(arg0, arg1, arg2);
-        case SYS_EP_SEND:             return sys_ep_send(arg0, arg1, arg2);
-        case SYS_EP_RECV:             return sys_ep_recv(arg0, arg1, arg2);
-        case SYS_EP_NB_SEND:          return sys_ep_nb_send(arg0, arg1, arg2);
-        case SYS_EP_NB_RECV:          return sys_ep_nb_recv(arg0, arg1, arg2);
-        case SYS_CAP_DERIVE:          return sys_cap_derive(arg0, arg1, arg2);
-        case SYS_CAP_REVOKE:          return sys_cap_revoke(arg0, arg1, arg2);
-        case SYS_CNODE_CREATE:        return sys_cnode_create(arg0, arg1, arg2);
-        case SYS_CNODE_MINT:          return sys_cnode_mint(arg0, arg1, arg2, arg3);
-        case SYS_SC_CREATE:           return sys_sc_create(arg0, arg1, arg2);
-        case SYS_SC_CONFIGURE:        return sys_sc_configure(arg0, arg1, arg2, arg3);
-        case SYS_THREAD_SET_SC:       return sys_thread_set_sc(arg0, arg1, arg2);
-        case SYS_UNTYPED_INFO:        return sys_untyped_info(arg0, arg1, arg2);
-        case SYS_UNTYPED_RETYPE:      return sys_untyped_retype(arg0, arg1, arg2);
-        case SYS_UNTYPED_RESET:       return sys_untyped_reset(arg0, arg1, arg2);
-        case SYS_CNODE_MOVE:          return sys_cnode_move(arg0, arg1, arg2);
-        case SYS_CNODE_FETCH:         return sys_cnode_fetch(arg0, arg1, arg2);
-        case SYS_CNODE_DELETE:        return sys_cnode_delete(arg0, arg1, arg2);
-        case SYS_CNODE_SWAP:          return sys_cnode_swap(arg0, arg1, arg2);
-        case SYS_EP_CALL:             return sys_ep_call(arg0, arg1, arg2);
-        case SYS_REPLY:               return sys_reply(arg0, arg1, arg2);
-        case SYS_CSPACE_RESOLVE:      return sys_cspace_resolve(arg0, arg1, arg2);
-        case SYS_PROC_CSPACE_MINT:    return sys_proc_cspace_mint(arg0, arg1, arg2, arg3);
-        case SYS_TCB_SUSPEND:         return sys_tcb_suspend(arg0, arg1, arg2);
-        case SYS_TCB_RESUME:          return sys_tcb_resume(arg0, arg1, arg2);
-        case SYS_TCB_SET_PRIORITY:    return sys_tcb_set_priority(arg0, arg1, arg2);
-        case SYS_TCB_EXIT:            return sys_tcb_exit(arg0, arg1, arg2);
-        case SYS_TCB_GET_INFO:        return sys_tcb_get_info(arg0, arg1, arg2);
-        case SYS_FRAME_MAP:           return sys_frame_map(arg0, arg1, arg2, arg3);
-        case SYS_FRAME_UNMAP:         return sys_frame_unmap(arg0, arg1, arg2);
-        case SYS_PROCESS_VSPACE:      return sys_process_vspace(arg0, arg1, arg2);
-        case SYS_RESOURCE_INFO:       return sys_resource_info(arg0, arg1, arg2);
-        case SYS_UNTYPED_RETYPE2:     return sys_untyped_retype2(arg0, arg1, arg2, arg3);
-        case SYS_UNTYPED_QUERY:       return sys_untyped_query(arg0, arg1, arg2);
-        case SYS_SC_BIND:             return sys_sc_bind(arg0, arg1, arg2);
-        /* Phase S3 — CSpace-only MDB/CDT derivation surface. */
-        case SYS_CAP_IDENTIFY:        return sys_cap_identify(arg0, arg1, arg2);
-        case SYS_CAP_SAME_OBJECT:     return sys_cap_same_object(arg0, arg1, arg2);
-        /* Stage 5 Step 4: execution for a TCB retyped from an Untyped. */
-        /* Stage 6-pure: a page table the holder retyped, installed by name. */
-        case SYS_VSPACE_MAP_TABLE:    return sys_vspace_map_table(arg0, arg1, arg2);
-
-        case SYS_TCB_WATCH:           return sys_tcb_watch(arg0, arg1, arg2);
-        case SYS_TCB_SET_FAULT_HANDLER:
-                                      return sys_tcb_set_fault_handler(arg0, arg1, arg2, arg3);
-        case SYS_TCB_EXIT_CODE:       return sys_tcb_exit_code(arg0, arg1, arg2);
-        case SYS_TCB_CONFIGURE:       return sys_tcb_configure(arg0, arg1, arg2, arg3);
-        case SYS_TCB_WRITE_REGS:      return sys_tcb_write_regs(arg0, arg1, arg2, arg3);
-        case SYS_CSPACE_MINT:         return sys_cspace_mint(arg0, arg1, arg2);
-        case SYS_CSPACE_REVOKE:       return sys_cspace_revoke(arg0, arg1, arg2);
-        case SYS_CSPACE_MINT_INTO:    return sys_cspace_mint_into(arg0, arg1, arg2, arg3);
-        case SYS_CSPACE_SET_GUARD:    return sys_cspace_set_guard(arg0, arg1, arg2);
-        case SYS_TCB_SET_TIMEOUT_HANDLER:
-                                      return sys_tcb_set_timeout_handler(arg0, arg1, arg2, arg3);
-        case SYS_TCB_SET_IPC_BUFFER:  return sys_tcb_set_ipc_buffer(arg0, arg1, arg2);
-        case SYS_IOPORT_CONTROL_NARROW:
-                                      return sys_ioport_control_narrow(arg0, arg1, arg2, arg3);
-        case SYS_UNTYPED_SET_DEVICE_BUDGET:
-                                      return sys_untyped_set_device_budget(arg0, arg1, arg2);
-        case SYS_FRAMEBUFFER_INFO:    return sys_framebuffer_info(arg0, arg1, arg2);
-        case SYS_INITRD_FRAME:        return sys_initrd_frame(arg0, arg1, arg2, arg3);
-        case SYS_REPLY_RECV:          return sys_reply_recv(arg0, arg1, arg2);
-        default:
-            /* A number that names nothing.  It reached no method, so it does
-             * not count as a caller still using the numbered door — take the
-             * increment above back.  The distinction matters because T148
-             * fuzzes every hole in the table on purpose, and a gauge that
-             * counted those would read as if the migration had stalled. */
-            atomic_fetch_sub_explicit(&syscall_numbered_calls, 1u,
-                                      memory_order_relaxed);
-            return syscall_err(IRIS_ERR_NOT_SUPPORTED);
+    /*
+     * What is left of the numbered table (ledger A-31).
+     *
+     * Three calls, and each is here because it invokes NOTHING.  seL4 keeps
+     * `seL4_Yield` as a real syscall for exactly this reason: there is no
+     * capability it could be a method of.  A thread ending itself names no
+     * object either, and `SYS_CLOCK_GET` reads a counter that A-27 established
+     * is unprivileged on this architecture anyway — retiring it would have
+     * bought nothing, so it was answered rather than removed.
+     *
+     * Everything else is a method, reached by naming the capability it acts
+     * on.  The ninety-odd cases that used to be here are gone, and with them
+     * the thirty-two stubs whose entire body was a refusal: a number that
+     * names nothing is refused by this switch having no case for it, which is
+     * the same answer with nothing to maintain.
+     */
+    case SYS_EXIT:      return sys_exit(arg0, arg1, arg2);
+    case SYS_YIELD:     return sys_yield(arg0, arg1, arg2);
+    case SYS_CLOCK_GET: return sys_clock_get(arg0, arg1, arg2);
+    default:
+        /* A number that names nothing.  It reached no method, so it does not
+         * count as a caller still using the numbered door — take the increment
+         * above back.  The distinction matters because T148 fuzzes every hole
+         * in the table on purpose, and a gauge that counted those would read
+         * as if the migration had stalled. */
+        atomic_fetch_sub_explicit(&syscall_numbered_calls, 1u,
+                                  memory_order_relaxed);
+        return syscall_err(IRIS_ERR_NOT_SUPPORTED);
     }
 }
 

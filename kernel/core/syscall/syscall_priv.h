@@ -166,12 +166,6 @@ static inline int syscall_has_bootcap(struct task *t, uint64_t auth_cptr,
 /* ── Forward declarations — proc ─────────────────────────────────── */
 uint64_t sys_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_process_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_process_status(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_process_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_process_kill(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_process_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_process_fault_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_watch(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_bind_notification(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_poll(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -184,13 +178,9 @@ uint64_t sys_irq_clear(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_set_fault_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                    uint64_t arg3);
 uint64_t sys_tcb_exit_code(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_process_create(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
-uint64_t sys_thread_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_thread_start(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 
 /* ── Forward declarations — IPC ──────────────────────────────────── */
 /* sys_chan_call retired — Phase 13/Track G */
-uint64_t sys_notify_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_signal(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* sys_wait_any / sys_wait_any_timeout retired — Phase 13/Track G */
@@ -199,7 +189,6 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                             uint64_t arg3); /* Phase 29; Stage 7 Step 14: arg3 = budget */
-uint64_t sys_resource_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);  /* Phase 29 */
 uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_frame_size(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -209,12 +198,7 @@ uint64_t sys_vmo_share(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 
 /* ── Forward declarations — cap / handle ─────────────────────────── */
-uint64_t sys_handle_close(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_handle_dup(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* sys_handle_transfer retired — A1.8 (dispatcher falls to NOT_SUPPORTED). */
-uint64_t sys_handle_insert(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
-uint64_t sys_handle_type(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_handle_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* Caller's root CNode with active+lifecycle refs (defined in syscall_cspace.c). */
 iris_error_t cspace_own_root(struct KCNode *root, struct KCNode **out);
 
@@ -287,19 +271,14 @@ static inline iris_error_t syscall_publish_slot(struct task *t,
 
 uint64_t sys_cap_create_irqcap(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
-uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_bootcap_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
 /* ── Forward declarations — IRQ / exception ──────────────────────── */
 uint64_t sys_irq_route_register(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_irq_ack(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ioport_in(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
-                               uint64_t arg3);
 
 /* ── Forward declarations — endpoint IPC ─────────────────────────── */
-uint64_t sys_endpoint_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ep_send(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ep_nb_send(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -384,16 +363,8 @@ extern uint32_t iris_ipc_stat_reply_caps;
 extern uint32_t iris_cspace_stat_resolves;        /* syscall_cspace.c */
 
 /* ── Forward declarations — CSpace (Ph70-72, Ph82-84, Ph95) ─────── */
-uint64_t sys_cap_derive(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_cap_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_cnode_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_cnode_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
-uint64_t sys_proc_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
-uint64_t sys_cnode_move(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_cnode_fetch(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_delete(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cnode_swap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_cspace_resolve(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* Phase S3 — CSpace-only MDB/CDT derivation surface. */
 uint64_t sys_cspace_mint(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cap_identify(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -468,11 +439,8 @@ uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                             uint64_t arg3);
 uint64_t sys_cspace_revoke(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_cspace_mint_into(uint64_t arg0, uint64_t arg1, uint64_t arg2,
-                              uint64_t arg3);
 
 /* ── Forward declarations — Block 3 scheduler (Ph73-75) ─────────── */
-uint64_t sys_sc_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                           uint64_t arg3);
 uint64_t sys_thread_set_sc(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -480,7 +448,6 @@ uint64_t sys_sc_bind(uint64_t arg0, uint64_t arg1, uint64_t arg2);         /* Ph
 
 /* ── Forward declarations — Block 4+5 untyped memory (Ph76-81) ───── */
 uint64_t sys_untyped_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_untyped_retype(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_untyped_retype2(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                              uint64_t arg3);                               /* Phase S1 */
 uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2);   /* Phase S1 */
@@ -490,7 +457,6 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_frame_map  (uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_frame_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_process_vspace(uint64_t arg0, uint64_t arg1, uint64_t arg2);  /* Phase 25 */
 uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);  /* Phase 26 */
 
 /* ── Forward declarations — TCB caps (Ph96-101) ──────────────────── */

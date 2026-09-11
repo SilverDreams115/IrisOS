@@ -339,8 +339,8 @@ void lp_main(handle_id_t bootstrap_ch_h) {
         struct IrisMsg w;
         for (uint32_t i = 0; i < (uint32_t)sizeof(w); i++) ((uint8_t *)&w)[i] = 0;
         w.label = is_call ? 0x5CULL : 0x5BULL;
-        long r = lp_sys2(is_call ? SYS_EP_CALL : SYS_EP_SEND,
-                         (long)LP_CPTR_CMD_EP, (long)&w);
+        long r = lp_invoke1((long)LP_CPTR_CMD_EP,
+                            is_call ? INV_EP_CALL : INV_EP_SEND, (long)&w);
         lp_sys1(SYS_EXIT, (long)(LP_EXIT_IPC_BASE | ((uint32_t)-r & 0xFFu)));
         for (;;) {}
     }

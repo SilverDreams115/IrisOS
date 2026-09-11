@@ -1520,10 +1520,11 @@ void test_t295(void) {
  * question this test exists to answer is whether they are the SAME door from
  * the inside.  Four claims:
  *
- *  1. an invocation reaches the same method the number reached, and returns
- *     the same answer — checked on operations with three different shapes: a
- *     read that returns a value, a state change that a later read can see, and
- *     a refusal;
+ *  1. THE NUMBERED DOOR IS CLOSED.  Every method that had a syscall number
+ *     answers NOT_SUPPORTED when called by one; the only numbers left are the
+ *     three calls that invoke nothing, and they still work.  This claim used
+ *     to be the opposite — that both doors reached the same rooms and agreed
+ *     on the answer — and it was true for four commits while ring 3 migrated;
  *  2. a label sent to the WRONG KIND of capability is refused, and refused by
  *     TYPE.  Labels are globally unique, as seL4's are, so nothing at the door
  *     disambiguates them — what stops `TCB_Suspend` reaching a notification is
@@ -1556,43 +1557,57 @@ void test_t337(void) {
                       T337_NOTIF, 1u, 0) != 0) { it_fail("T337", "notif"); return; }
     long n = (long)T337_NOTIF;
 
-    /* The numbered half is spelled with the RAW wrapper on purpose.  The
-     * suite's own helpers invoke now (stage D), so asking them for the
-     * numbered door would compare it with itself — which is what a mechanical
-     * conversion of this test did, leaving the claim standing and empty. */
-    if (ok && iris_syscall4(SYS_CAP_IDENTIFY, n, 0, 0, 0) !=
-              iris_invoke0(n, INV_CAP_IDENTIFY)) { ok = 0; why = "identify differs"; }
+    /* The raw wrapper on purpose: the suite's own helpers invoke now, so
+     * asking them for the numbered door would ask the wrong question.
+     *
+     * One number per family, because the table was deleted in one edit and a
+     * survivor would most likely be a whole family that was missed.  Each of
+     * these was a live, load-bearing syscall four commits ago. */
+    static const long closed[] = {
+        SYS_CAP_IDENTIFY, SYS_NOTIFY_SIGNAL, SYS_NOTIFY_POLL, SYS_EP_SEND,
+        SYS_EP_RECV, SYS_REPLY, SYS_TCB_SUSPEND, SYS_TCB_CONFIGURE,
+        SYS_UNTYPED_RETYPE2, SYS_UNTYPED_QUERY, SYS_CNODE_DELETE,
+        SYS_CSPACE_MINT, SYS_CSPACE_REVOKE, SYS_FRAME_MAP, SYS_FRAME_SIZE,
+        SYS_SC_CONFIGURE, SYS_IRQ_ACK, SYS_IOPORT_IN, SYS_VSPACE_MAP_TABLE,
+        SYS_ASID_POOL_ASSIGN, SYS_INITRD_COUNT, SYS_KLOG_DRAIN, SYS_POWEROFF,
+    };
+    for (uint32_t i = 0; ok && i < (uint32_t)(sizeof(closed)/sizeof(closed[0])); i++) {
+        /* Arguments that WOULD have worked: `n` is a real notification and the
+         * pointers are writable, so a number that still reached its method
+         * would succeed rather than fail for some unrelated reason. */
+        if (iris_syscall4(closed[i], n, 0, 0, 0) != (long)IRIS_ERR_NOT_SUPPORTED) {
+            it_fz_note("T337", (uint32_t)closed[i], i, 0u);
+            ok = 0; why = "a method still has a syscall number";
+        }
+    }
+
+    /* ── 1b. the three that stay are calls that invoke NOTHING ──
+     * seL4 keeps `seL4_Yield` for exactly this reason: there is no capability
+     * it could be a method of.  A thread ending itself names no object either,
+     * and the clock is a counter A-27 established is unprivileged anyway. */
+    if (ok && it_invoke0(0, 0) == 0) { ok = 0; why = "a null invocation succeeded"; }
+    if (ok && iris_syscall4(SYS_YIELD, 0, 0, 0, 0) != 0) { ok = 0; why = "yield retired"; }
+    if (ok && iris_syscall4(SYS_CLOCK_GET, 0, 0, 0, 0) <= 0) {
+        ok = 0; why = "clock retired";
+    }
+
+    /* ── 1c. and the invocation door does all of the above ── */
     if (ok && iris_invoke0(n, INV_CAP_IDENTIFY) !=
               (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "identify wrong"; }
-
-    /* ── 1b. a state change made at one door, seen at the other ── */
     if (ok && iris_invoke1(n, INV_NOTIFY_SIGNAL, 0x21) != 0) {
         ok = 0; why = "invoked signal";
     }
     if (ok) {
         uint64_t bits = 0;
-        if (iris_syscall4(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits, 0, 0) != 0 ||
+        if (iris_invoke1(n, INV_NOTIFY_POLL, (long)(uintptr_t)&bits) != 0 ||
             (bits & 0x21u) == 0u) { ok = 0; why = "invoked signal did not land"; }
     }
-    /* ...and the reverse: signalled by number, observed by invocation. */
-    if (ok && iris_syscall4(SYS_NOTIFY_SIGNAL, n, 0x42, 0, 0) != 0) {
-        ok = 0; why = "numbered signal";
-    }
-    if (ok) {
-        uint64_t bits = 0;
-        if (iris_invoke1(n, INV_NOTIFY_POLL, (long)(uintptr_t)&bits) != 0 ||
-            (bits & 0x42u) == 0u) { ok = 0; why = "invoked poll"; }
-    }
-
-    /* ── 1c. a refusal travels identically ── */
     if (ok) {
         long ro = it_cdt_derive(n, T337_RO, RIGHT_READ); /* no WRITE: cannot signal */
         if (ro < 0) { ok = 0; why = "reduce"; }
         else {
-            long a = iris_syscall4(SYS_NOTIFY_SIGNAL, ro, 1, 0, 0);
-            long b = iris_invoke1(ro, INV_NOTIFY_SIGNAL, 1);
-            if (a != (long)IRIS_ERR_ACCESS_DENIED || b != a) {
-                ok = 0; why = "refusal differs";
+            if (iris_invoke1(ro, INV_NOTIFY_SIGNAL, 1) != (long)IRIS_ERR_ACCESS_DENIED) {
+                ok = 0; why = "rights not checked at the invocation door";
             }
             it_slot_delete((uint32_t)ro);
         }
@@ -1669,50 +1684,23 @@ void test_t337(void) {
         it_slot_delete(IT_SCRATCH_0);
     }
 
-    /* ── the instrument ──
-     * The gauge counts what still comes through the numbered door, and the
-     * migration is finished when it stops moving.  Two halves:
+    /* ── the instrument, and what became of it ──
+     * It counted calls that still named a method by number, so that the
+     * migration would be a quantity rather than an impression: 438,901 on the
+     * first reading, 399 once the calls that are meant to stay numbers stopped
+     * being counted, 59 once holes in the table stopped counting as callers,
+     * and 0 here, because there is no method left for a number to name.
      *
-     *   - it still COUNTS.  Three deliberate numbered calls, three counts.  A
-     *     gauge that had quietly stopped incrementing would otherwise read
-     *     exactly like a migration that had finished;
-     *   - an invocation does NOT count, which is what makes the number a
-     *     measure of the migration rather than of traffic.
-     *
-     * `it_utq_g` invokes now, so the query itself no longer disturbs what it
-     * is measuring — which is why the arithmetic below is exact rather than
-     * off by the cost of asking. */
-    if (ok) {
-        struct it_utq_global g0, g1, g2;
-        if (!it_utq_g(&g0)) { ok = 0; why = "query"; }
-        if (ok) {
-            (void)iris_syscall4(SYS_CAP_IDENTIFY, n, 0, 0, 0);
-            (void)iris_syscall4(SYS_CAP_IDENTIFY, n, 0, 0, 0);
-            (void)iris_syscall4(SYS_CAP_IDENTIFY, n, 0, 0, 0);
-        }
-        if (ok && !it_utq_g(&g1)) { ok = 0; why = "query 2"; }
-        if (ok && g1.syscall_numbered_calls != g0.syscall_numbered_calls + 3u) {
-            ok = 0; why = "the numbered-door gauge is not counting";
-        }
-        if (ok) {
-            (void)iris_invoke0(n, INV_CAP_IDENTIFY);
-            (void)iris_invoke0(n, INV_CAP_IDENTIFY);
-            if (!it_utq_g(&g2)) { ok = 0; why = "query 3"; }
-            else if (g2.syscall_numbered_calls != g1.syscall_numbered_calls) {
-                ok = 0; why = "an invocation was counted as a numbered call";
-            }
-        }
-    }
-
-    /* And the number itself, printed rather than only asserted: the migration
-     * is a quantity that has to fall, and a quantity nobody can see is one
-     * that stops falling without anyone noticing. */
+     * A structural zero, kept as a retirement witness — the same shape as
+     * `iris_ipc_stat_toctou_fallbacks`.  Asserting it is what makes putting a
+     * method back behind a number a test failure rather than a decision
+     * nobody notices. */
     if (ok) {
         struct it_utq_global g;
-        if (it_utq_g(&g)) {
-            it_serial_write("[IRIS][TEST] T337 numbered-door calls this run: ");
-            it_log_num((uint32_t)g.syscall_numbered_calls);
-            it_serial_write("\n");
+        if (!it_utq_g(&g)) { ok = 0; why = "query"; }
+        else if (g.syscall_numbered_calls != 0u) {
+            it_fz_note("T337", (uint32_t)g.syscall_numbered_calls, 0u, 0u);
+            ok = 0; why = "a method is still reachable by number";
         }
     }
 

@@ -34,7 +34,6 @@
 void test_set_current_task(struct task *t);
 
 uint64_t sys_untyped_retype2(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);
-uint64_t sys_untyped_retype(uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t sys_cap_create_irqcap(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);
 uint64_t sys_cap_create_ioport(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);
 
@@ -153,16 +152,16 @@ void test_syscall_retype(void) {
     }
 
     /* ── RT-6: the legacy handle-publishing retype is gone for good ──────
-     * SYS_UNTYPED_RETYPE (87) predates capabilities living in CSpace.  It is
-     * retired rather than fixed, and a caller that still finds it must get a
-     * refusal rather than a second object-creation path. */
-    {
-        struct task *t = rt_caller();
-        ASSERT_NOT_NULL(t);
-        ASSERT_EQ(rt_err(sys_untyped_retype(1, 2, 3)),
-                  (long)IRIS_ERR_NOT_SUPPORTED);
-        test_set_current_task(NULL);
-    }
+     * SYS_UNTYPED_RETYPE (87) predates capabilities living in CSpace.  It was
+     * retired rather than fixed, and for several stages it kept a four-line
+     * body whose whole content was a refusal.
+     *
+     * Ledger A-31 deleted that body along with thirty-one others: with the
+     * numbered table closed, a number that names nothing is refused by the
+     * dispatcher having no case for it, which is the same answer with nothing
+     * to maintain.  The assertion moved to where it can still be made — the
+     * dispatch table, by number, in test_syscall_dispatch's DS-2 — and what
+     * is left here is the record of why this block is empty. */
 
     /* ── RT-7: device capabilities check their argument before authority ──
      * These two syscalls are the boundary between holding a boot control

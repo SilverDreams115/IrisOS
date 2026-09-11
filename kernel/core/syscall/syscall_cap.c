@@ -2,34 +2,7 @@
 
 
 
-/*
- * SYS_HANDLE_CLOSE (15) — RETIRED (Stage 4).  Number permanently reserved.
- * Releasing a capability is deleting the slot that holds it
- * (SYS_CNODE_DELETE), which is also what makes the release visible to the
- * derivation tree.
- */
-uint64_t sys_handle_close(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-
 /* ── Handle duplication ───────────────────────────────────────────── */
-
-/*
- * sys_handle_dup(src_handle, new_rights) → new_handle_id
- *
- * Duplicates src_handle into a new handle in the caller's own table.
- * new_rights must be a subset of the caller's existing rights on src_handle.
- * RETIRED (Stage 4).  Number permanently reserved; returns NOT_SUPPORTED.
- * A rights-reduced copy of a capability is SYS_CSPACE_MINT slot->slot, which
- * additionally records the derivation edge the handle dup could not express:
- * the copy is an MDB child of its source and is revocable from it.
- */
-uint64_t sys_handle_dup(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
 
 /* ── Handle transfer ──────────────────────────────────────────────── */
 
@@ -310,81 +283,7 @@ uint64_t sys_cap_create_ioport(uint64_t arg0, uint64_t arg1, uint64_t arg2,
  * RIGHT_TRANSFER on obj_h. The source handle is NOT consumed.
  * Returns the new handle_id assigned in the target process.
  */
-/*
- * SYS_HANDLE_INSERT (59) — RETIRED (Stage 4).  Number permanently reserved;
- * returns NOT_SUPPORTED.
- *
- * It inserted a capability directly into ANOTHER process's handle table: a
- * cross-process handle producer.  The receiver could not name the result in
- * its CSpace, and the inserted entry had no MDB edge to the sender's
- * capability, so the grantor could not revoke what it had given.
- * SYS_PROC_CSPACE_MINT / SYS_CSPACE_MINT_INTO install into the target's root
- * CNode as an MDB child of the caller's source slot instead.
- */
-uint64_t sys_handle_insert(uint64_t arg0, uint64_t arg1,
-                           uint64_t arg2, uint64_t arg3) {
-    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-
 /* ── I/O port sub-delegation (A4) ───────────────────────────────────── */
-
-/*
- * SYS_IOPORT_RESTRICT (43) — RETIRED (Stage 4).  The number stays permanently
- * reserved and answers NOT_SUPPORTED.
- *
- * It narrowed a KIoPort by fabricating a NEW KIoPort from kslab and publishing
- * it as a handle — device authority with no capability ancestor, so it could
- * be neither traced to its grantor nor revoked by one.  That is the exact
- * defect Phase S4 fixed for SYS_CAP_CREATE_IOPORT, which now publishes into a
- * CSpace slot as an MDB child of the bootstrap cap that authorised it.
- * Nothing in the tree ever called this — not even a test — so it retires
- * rather than acquiring a destination slot it would be the only user of.
- */
-uint64_t sys_ioport_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-
-/* ── SYS_BOOTCAP_RESTRICT — RETIRED (Stage 5 Step 2) ─────────────────
- *
- * Number 45 stays permanently reserved and answers NOT_SUPPORTED.
- *
- * It narrowed a boot capability by deriving a weaker CLONE of it — the only
- * way to give up part of your authority when one object carried several
- * authorities at once.  Every boot capability now carries exactly one, so
- * there is nothing to narrow: a holder that wants less deletes the slot
- * holding what it no longer needs (svcmgr does exactly that after claiming the
- * catalog's hardware), and a granter that wants it back revokes through the
- * CDT, which reaches every delegated copy.
- *
- * The mechanism it implemented is not merely unused, it is unrepresentable:
- * kbootcap_alloc refuses a multi-bit kind, so a capability that could be
- * narrowed cannot be constructed.
- */
-uint64_t sys_bootcap_restrict(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-
-/*
- * SYS_HANDLE_TYPE (52) and SYS_HANDLE_SAME_OBJECT (53) — RETIRED (Stage 4).
- * Numbers permanently reserved.  Both questions survive, asked of the slot
- * instead of a handle: SYS_CAP_IDENTIFY and SYS_CAP_SAME_OBJECT.
- */
-uint64_t sys_handle_type(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-
-uint64_t sys_handle_same_object(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
 
 /*
  * SYS_IOPORT_CONTROL_NARROW — derive a narrower I/O-port control capability.

@@ -493,16 +493,6 @@ static int ep_recv_fastpath(struct task *t, struct KEndpoint *ep) {
 
 /* ── SYS_ENDPOINT_CREATE ─────────────────────────────────────────────── */
 
-/*
- * Phase S1: SYS_ENDPOINT_CREATE (74) is RETIRED — endpoints are created ONLY
- * via SYS_UNTYPED_RETYPE2 (storage inside the source Untyped, capability
- * directly in CSpace).  The number stays reserved; the path creates nothing.
- */
-uint64_t sys_endpoint_create(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    (void)arg0; (void)arg1; (void)arg2;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
 /* ── SYS_EP_SEND ─────────────────────────────────────────────────────── */
 
 static uint64_t ep_send_complete(struct task *t);

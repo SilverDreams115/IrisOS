@@ -223,28 +223,5 @@ uint64_t sys_ioport_out(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 /* ── B5: exception handler registration ───────────────────────────── */
 
-/*
- * SYS_EXCEPTION_HANDLER — RETIRED (Stage 7 Step 12).
- *
- * It armed a PROCESS: every thread in it faulted into one mailbox, one
- * notification, one set of signal bits, and a handler holding the registration
- * could not tell two executions apart except by reading an id out of the
- * record.  That is the shape the charter calls a global identifier standing in
- * for a capability, one level up — the process was standing in for the thread.
- *
- * SYS_TCB_SET_FAULT_HANDLER (126) arms the EXECUTION that takes the fault.
- * Two threads of one process can have two handlers, or one and none, because
- * whose faults go where is now said with a capability to the thread rather
- * than inferred from what it belongs to.  The destination packing, the
- * registrant-names-the-mailbox rule Step 7 established, and the delivered TCB
- * capability all carry over unchanged — only the object being armed moved.
- */
-uint64_t sys_exception_handler(uint64_t arg0, uint64_t arg1, uint64_t arg2,
-                               uint64_t arg3) {
-    (void)arg0; (void)arg1; (void)arg2; (void)arg3;
-    return syscall_err(IRIS_ERR_NOT_SUPPORTED);
-}
-
-
 /* ── B6: exception resume ──────────────────────────────────────────── */
 
