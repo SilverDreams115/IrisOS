@@ -3014,6 +3014,7 @@ void test_t340(void);
 void test_t341(void);
 void test_t342(void);
 void test_t343(void);
+void test_t344(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);

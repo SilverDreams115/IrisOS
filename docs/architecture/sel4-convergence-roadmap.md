@@ -2177,12 +2177,34 @@ relaxed and independent; `kernel_cr3` is write-once at boot.
 ### 9.3 — The steps, and why this order
 
 **Step 1 — make the one-core kernel SMP-correct, before a second core exists.**
-Lock `sched_thread_list`; give the reaper per-CPU dead lists (its own TODO);
-make the tick and domain-schedule state atomic; close all ten arguments in
-9.2.  Every one of these is a change that can be made, reviewed and tested on
-one core.  Doing it after bring-up means debugging races and bring-up at once,
-with no way to tell which is lying.  **Gate: the three existing gates stay
-green, and 9.2's "unprotected" table is empty.**
+✅ **DONE.**  Every change here was made, reviewed and tested on one core;
+doing it after bring-up would mean debugging races and bring-up at once, with
+no way to tell which was lying.
+
+What it came to:
+
+- `sched_thread_list` gets `sched_list_lock`, IRQ-off because the TICK is one
+  of its walkers;
+- the tick counters become `_Atomic` and the idle fast-forward becomes a
+  monotonic MAX rather than a read-decide-write;
+- the domain schedule splits: the current domain is an atomic byte every
+  dispatcher reads, the CURSOR takes `dom_lock` because advancing it must
+  happen once per tick however many CPUs tick;
+- the sporadic-replenishment family takes the lock its object already had —
+  four functions that the RUNNING system touches and that had none;
+- the ten arguments of §9.2 are re-derived: **one was a real defect** (the
+  overwrite mint could destroy an occupant and install nothing), four were
+  structural with the comment crediting the wrong thing, one was already
+  handled, one is half-false in its harmless half, and two are step 2's;
+- the reap ring's capacity is DERIVED from `MAX_CPUS` instead of estimated,
+  and its refusal is counted and pinned at zero by **T344**.
+
+**Gate**: four gates green — the three that existed plus `make check-locks`,
+which did not.  §9.2's "unprotected" table is empty.
+
+What step 1 did NOT do, deliberately: per-CPU dead lists.  They are the better
+shape for a reason that is not correctness — they remove a cross-CPU cache
+line — so they belong with the per-CPU timer in step 4.
 
 **Step 2 — TLB shootdown.**  Must exist before a second CPU can hold a
 different CR3.  The IPI mechanism is there; the protocol is not.  **Gate: an

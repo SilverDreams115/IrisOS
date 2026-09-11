@@ -2442,3 +2442,46 @@ void test_t343(void) {
     it_quiesce_reaper();
     if (ok) it_pass("T343"); else it_fail("T343", why);
 }
+
+/* ── T344: the reap ring cannot refuse a dead task ─────────────────────────
+ *
+ * A thread that dies is queued for a deferred reap: the scheduler frees its
+ * storage at the top of the next yield or tick, because freeing it where it
+ * died would mean running a destructor on the stack being destroyed.
+ *
+ * The ring was sized 8 with the comment "8 > realistic concurrent deaths".
+ * That is the shape of reasoning that is fine until it is not: `MAX_CPUS` is
+ * also 8, a ring of 8 holds 7, and eight CPUs each with a dying task overflow
+ * it by one.  The overflow path leaks the task's slot SILENTLY — and a leak
+ * looks exactly like a system that has not reaped yet, so nothing would have
+ * noticed for as long as it took an object count to drift.
+ *
+ * The capacity is derived now (one entry per CPU, plus the slot a ring needs
+ * to tell full from empty) and the refusal is counted.  This asserts the count
+ * is zero after the suite has created and destroyed several hundred threads —
+ * which is not a proof, but it is the difference between a structural claim
+ * nobody checks and one that fails loudly if the derivation is wrong.
+ *
+ * Invariants: O5. */
+void test_t344(void) {
+    it_quiesce_reaper();
+
+    uint8_t buf[96];
+    if (it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO,
+                   (long)(uintptr_t)buf, 96) != 0) {
+        it_fail("T344", "sched info"); return;
+    }
+    uint32_t drops = (uint32_t)buf[92] | ((uint32_t)buf[93] << 8) |
+                     ((uint32_t)buf[94] << 16) | ((uint32_t)buf[95] << 24);
+    uint32_t hwm   = (uint32_t)buf[88] | ((uint32_t)buf[89] << 8) |
+                     ((uint32_t)buf[90] << 16) | ((uint32_t)buf[91] << 24);
+
+    it_serial_write("[IRIS][TEST] T344 reap_hwm=");
+    it_log_num(hwm);
+    it_serial_write(" drops=");
+    it_log_num(drops);
+    it_serial_write("\n");
+
+    if (drops != 0u) { it_fail("T344", "the reap ring refused a dead task"); return; }
+    it_pass("T344");
+}

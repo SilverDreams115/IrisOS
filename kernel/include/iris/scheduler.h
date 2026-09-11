@@ -18,6 +18,9 @@ void     scheduler_tick(void);
  *   Use the low 32 bits for short-lived deltas; use both halves for absolute timestamps.
  */
 uint32_t sched_live_task_count(void);
+/* Dead tasks the reap ring could not take.  Structurally zero: the ring holds
+ * one entry per CPU and a task dies on the CPU it ran on. */
+uint32_t sched_reap_queue_drops(void);
 
 /* Scheduling domains (seL4's top-level time partition; see iris/domain.h).
  * sched_set_domain requeues the thread, because its queue is keyed on

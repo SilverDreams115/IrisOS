@@ -181,14 +181,27 @@ uint64_t            kernel_cr3      = 0;
  * and frees one entry per call; it is invoked at the top of every task_yield()
  * and every scheduler_tick().
  *
- * Single-CPU correctness: only one task runs at a time, so only one task can
- * be dying between two reap calls.  REAP_QUEUE_SIZE > 1 provides headroom and
- * correctness under SMP where multiple CPUs can each have a dying task.
+ * CAPACITY IS DERIVED, not guessed.  A task enters this queue by dying, and a
+ * task dies on the CPU it was running on — so between two reap calls there can
+ * be at most one new entry per CPU.  `MAX_CPUS` entries is therefore not a
+ * headroom estimate but a bound, and a ring needs one slot more than it holds.
  *
- * SMP TODO (Phase 1): replace with per-CPU dead lists drained on each CPU's
- * scheduler tick; cross-CPU reap then requires an IPI or a work queue.
+ * It used to be 8 with the comment "8 > realistic concurrent deaths", which is
+ * the shape of reasoning that is fine until it is not: `MAX_CPUS` is also 8, a
+ * ring of 8 holds 7, and eight CPUs each with a dying task overflow it by one.
+ * The overflow path leaks the task's slot silently, which is the kind of bug
+ * that shows up as a slow drift in an object count months later.
+ *
+ * The per-CPU dead lists this TODO used to name are still the better shape for
+ * a different reason — they remove the cross-CPU cache line, not a correctness
+ * problem — and they belong with the per-CPU timer in §9.3 step 4.
  */
-#define REAP_QUEUE_SIZE 8  /* power of two; 8 > realistic concurrent deaths */
+#define REAP_QUEUE_SIZE 16u   /* power of two, > MAX_CPUS: see above */
+_Static_assert(REAP_QUEUE_SIZE > MAX_CPUS,
+               "the reap ring must hold one dying task per CPU, plus the "
+               "empty slot a ring needs to tell full from empty");
+_Static_assert((REAP_QUEUE_SIZE & (REAP_QUEUE_SIZE - 1u)) == 0u,
+               "REAP_QUEUE_SIZE is used as a mask");
 static struct task    *reap_queue[REAP_QUEUE_SIZE];
 static unsigned int    reap_queue_head = 0;   /* producer index (write) */
 static unsigned int    reap_queue_tail = 0;   /* consumer index (read)  */
@@ -723,6 +736,13 @@ static void task_execution_teardown_off_cpu(struct task *t) {
  * broken and dead tasks would leak their slots. */
 /* Written under reap_queue_lock, read without it — the type now says so. */
 static _Atomic uint32_t reap_queue_hwm = 0u;
+/* Entries the ring could not take.  Structurally zero (see REAP_QUEUE_SIZE);
+ * kept because a leak and an un-drained queue look identical from outside. */
+static _Atomic uint32_t reap_queue_drops = 0u;
+
+uint32_t sched_reap_queue_drops(void) {
+    return atomic_load_explicit(&reap_queue_drops, memory_order_relaxed);
+}
 
 uint32_t sched_reap_queue_hwm(void) {
     return __atomic_load_n(&reap_queue_hwm, __ATOMIC_RELAXED);
@@ -739,9 +759,17 @@ void reap_enqueue_dead(struct task *t) {
         if (depth > atomic_load_explicit(&reap_queue_hwm, memory_order_relaxed))
             atomic_store_explicit(&reap_queue_hwm, depth, memory_order_relaxed);
     }
-    /* Queue full: slot leaks until a subsequent reap drains it.  One core
-     * cannot reach it (one death per yield interval); several can, and that is
-     * what the per-CPU dead lists in SMP roadmap §9.3 step 1 are for. */
+    else {
+        /*
+         * Unreachable by the capacity argument above, and counted anyway.
+         *
+         * If this ever moves, the argument is wrong and a dead task's slot is
+         * leaking — which is otherwise invisible, because a leak looks exactly
+         * like a system that has not reaped yet.  A counter turns "should not
+         * happen" into something a test can assert is still zero.
+         */
+        atomic_fetch_add_explicit(&reap_queue_drops, 1u, memory_order_relaxed);
+    }
     irq_spinlock_unlock(&reap_queue_lock, flags);
 }
 

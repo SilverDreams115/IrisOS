@@ -429,6 +429,9 @@ uint64_t sched_context_switches(void)        { return 0; }
 uint32_t sched_duplicate_enqueue_count(void) { return 0; }
 uint64_t sched_idle_ticks(void)              { return 0; }
 uint32_t sched_live_task_count(void)         { return 0; }
+/* The reap ring is the scheduler's; the host links no scheduler.  Zero is also
+ * what the real one is structurally required to return (SMP step 1). */
+uint32_t sched_reap_queue_drops(void)        { return 0u; }
 uint32_t sched_reap_queue_hwm(void)          { return 0; }
 uint32_t sched_run_queue_hwm(void)           { return 0; }
 uint64_t sched_wall_ticks(void)              { return 0; }
