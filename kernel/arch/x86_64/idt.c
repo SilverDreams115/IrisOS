@@ -45,7 +45,7 @@ DECLARE_ISR(20) DECLARE_ISR(21) DECLARE_ISR(22) DECLARE_ISR(23)
 DECLARE_ISR(24) DECLARE_ISR(25) DECLARE_ISR(26) DECLARE_ISR(27)
 DECLARE_ISR(28) DECLARE_ISR(29) DECLARE_ISR(30) DECLARE_ISR(31)
 extern void isr32(void); /* IRQ0 — timer */
-extern void isr33(void); /* IRQ1 — keyboard */
+extern void isr33(void);
 /* IRQ2-15: covered so a spurious or unexpected IRQ cannot triple-fault */
 extern void isr34(void); extern void isr35(void); extern void isr36(void);
 extern void isr37(void); extern void isr38(void); extern void isr39(void);
@@ -238,18 +238,6 @@ void isr_handler(struct full_frame *frame) {
          */
         return;
     }
-    if (frame->vector == 33) {
-        /* IRQ1 — PS/2 keyboard: seL4-style deferred ACK.
-         * Mask the IRQ line BEFORE sending EOI so the PIC cannot re-assert
-         * IRQ1 between EOI and ring-3 reading port 0x60.  The handler calls
-         * SYS_IRQ_ACK to unmask after consuming the byte. */
-        pic_set_irq_mask(1, 1);
-        pic_eoi(1);
-        if (irq_routing_signal(1, 0) < 0)
-            pic_set_irq_mask(1, 0); /* no handler: unmask immediately */
-        return;
-    }
-
     if (frame->vector == RESCHEDULE_IPI_VECTOR) {
         lapic_eoi();
         struct task *ct = task_current();
@@ -257,12 +245,25 @@ void isr_handler(struct full_frame *frame) {
         return;
     }
 
-    if (frame->vector >= 34 && frame->vector <= 47) {
+    /*
+     * Every other line, and the kernel knows nothing about any of them.
+     *
+     * Vector 33 used to be handled above by name — "IRQ1 — PS/2 keyboard" —
+     * with a body identical to this one, which is how a device ended up named
+     * in a kernel whose whole claim is that drivers are ring 3.  It was not a
+     * special case; it was this case, written twice.
+     *
+     * Deferred ACK, which is seL4's arrangement: MASK the line before the EOI
+     * so the controller cannot re-assert it between the EOI and ring 3 reading
+     * the device, signal whoever holds the capability, and let that handler
+     * call IRQ_Ack when it is done.  A line nobody holds is unmasked again
+     * immediately, so an unclaimed device cannot wedge the controller.
+     */
+    if (frame->vector >= 33 && frame->vector <= 47) {
         uint8_t irq = (uint8_t)(frame->vector - 32);
         /* IRQ7/IRQ15 can be spurious; discard without EOI to avoid
          * acknowledging a real IRQ that hasn't fired. */
         if (irq == 7 || irq == 15) return;
-        /* Deferred ACK: mask before EOI, signal, unmask if undelivered. */
         pic_set_irq_mask(irq, 1);
         pic_eoi(irq);
         if (irq_routing_signal(irq, 0) < 0)
@@ -365,11 +366,12 @@ void idt_init(void) {
      * overwrite the live handler frame, garbling the crash dump. */
     idt[8].ist  = 3;   /* Double Fault */
 
-    /* IRQ0 — timer, IRQ1 — keyboard */
+    /* IRQ0 is the kernel's own: preemption and MCS budget accounting, which is
+     * what seL4's kernel keeps its timer for.  IRQ1..15 are generic — a line
+     * belongs to whoever holds a capability for it. */
     idt_set_entry(32, isr32);
-    idt_set_entry(33, isr33);
-    /* IRQ2-15: generic handlers for the full PIC */
-    idt_set_entry(34, isr34); idt_set_entry(35, isr35); idt_set_entry(36, isr36);
+    idt_set_entry(33, isr33); idt_set_entry(34, isr34);
+    idt_set_entry(35, isr35); idt_set_entry(36, isr36);
     idt_set_entry(37, isr37); idt_set_entry(38, isr38); idt_set_entry(39, isr39);
     idt_set_entry(40, isr40); idt_set_entry(41, isr41); idt_set_entry(42, isr42);
     idt_set_entry(43, isr43); idt_set_entry(44, isr44); idt_set_entry(45, isr45);
