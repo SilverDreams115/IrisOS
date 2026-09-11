@@ -4,6 +4,7 @@
 #include <iris/nc/kuntyped.h>
 #include <iris/kslab.h>
 #include <iris/paging.h>
+#include <iris/pmm.h>
 #include <iris/panic.h>
 #include <stdatomic.h>
 #include <stddef.h>
@@ -191,32 +192,32 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
     if (writable)    page_flags |= PAGE_WRITABLE;
 
     /*
-     * Stage 6-pure Step 2: the kernel does not create paging levels.
+     * Stage 6-pure Step 2: the kernel does not create paging levels — and
+     * since the purity gate learned to follow the PMM as well as the slab,
+     * that is true of this function with no runtime condition attached.
      *
-     * A VSpace whose holder was given a budget (every spawned process) is
-     * mapped STRICTLY: a missing level is reported, not carved.  The holder
-     * retypes a KOBJ_PAGE_TABLE and installs it with SYS_VSPACE_MAP_TABLE,
-     * then retries — which is what makes the level an object it owns rather
-     * than a side effect it paid for (ledger D-5).
+     * A missing level is REPORTED, not carved.  The holder retypes a
+     * KOBJ_PAGE_TABLE, installs it with `PageTable_Map`, and retries — which
+     * is what makes the level an object it owns rather than a side effect it
+     * paid for (ledger D-5).
      *
-     * The exception is bounded to the root task's BOOTSTRAP maps — its text,
-     * stack and BootInfo, mapped before it exists, with no userland to ask.
-     * Those come from the PMM reserve.  Stage 6-pure Step 3 ends the
-     * exception the moment the root task can speak for itself
-     * (kvspace_end_bootstrap), so it too supplies its own levels from then on
-     * and no address space is implicitly funded while anyone is running.
+     * It used to branch on `vs->kernel_funded`, so that the root task's
+     * bootstrap maps — its text, stack and BootInfo, installed before there is
+     * any userland to ask — could allocate levels from the PMM reserve.  The
+     * branch was unreachable after boot (the only constructor that sets the
+     * flag allocates from the sealed slab), but it left a STATIC path from a
+     * syscall handler to the kernel's page allocator, which is a property held
+     * by a runtime flag rather than by construction.  `bootstrap_kframe_map`
+     * fills its own levels now, exactly as a ring-3 holder does, and this
+     * function has one behaviour for everybody.
      */
     r = 0;
     uint64_t done = 0;
     for (; done < pages; done++) {
         uint64_t va = user_va + (done << 12);
         uint64_t pa = f->paddr + (done << 12);
-        if (!vs->kernel_funded) {
-            r = paging_map_strict_in(vs->cr3, va, pa, page_flags);
-            if (r > 0) r = -1;            /* a level is missing; name it */
-        } else {
-            r = paging_map_checked_in(vs->cr3, va, pa, page_flags);
-        }
+        r = paging_map_strict_in(vs->cr3, va, pa, page_flags);
+        if (r > 0) r = -1;                /* a level is missing; name it */
         if (r != 0) break;
     }
     if (r != 0) {
@@ -227,8 +228,7 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
             paging_unmap_in(vs->cr3, user_va + (i << 12));
         spinlock_unlock(&vs->lock);
         kvspace_node_free(vs, m);
-        return (r > 0 || !vs->kernel_funded) ? IRIS_ERR_MISSING_TABLE
-                                             : IRIS_ERR_NO_MEMORY;
+        return IRIS_ERR_MISSING_TABLE;
     }
 
     /* Retain the frame for the lifetime of this mapping record. */
@@ -246,11 +246,51 @@ iris_error_t kframe_map_page(struct KFrame *f, struct KVSpace *vs,
     return IRIS_OK;
 }
 
+/*
+ * The root task's maps, and the ONE place the kernel still supplies a paging
+ * level.
+ *
+ * Boot is the holder here: there is no userland yet to retype a table and
+ * install it, so this does by hand what `PageTable_Map` does for everybody
+ * else — walk to the first missing level, take a page from the PMM reserve,
+ * and install it.  Then the map itself is the same strict map a ring-3 caller
+ * gets.
+ *
+ * Doing it HERE rather than inside `kframe_map_page` is the whole point: this
+ * function is named by boot and by nothing in `kernel/core/syscall/`, so the
+ * purity gate's reachability closure can see that no syscall handler reaches
+ * the page allocator.  Before, the two shared one function and the separation
+ * was a flag tested at runtime.
+ */
+static int bootstrap_fill_levels(struct KVSpace *vs, uint64_t user_va) {
+    /* Intermediate levels of a USER mapping carry the USER bit; the leaf's own
+     * permissions are set by the map. */
+    const uint64_t tbl_flags = PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
+
+    for (int guard = 0; guard < 3; guard++) {
+        int level = paging_missing_level_in(vs->cr3, user_va);
+        if (level <= 0) return level;          /* complete, or a bad address */
+
+        uint64_t page = pmm_alloc_page();
+        if (page == 0) return -1;
+        uint64_t *tbl = (uint64_t *)(uintptr_t)PHYS_TO_VIRT(page);
+        for (uint64_t i = 0; i < 512; i++) tbl[i] = 0;
+
+        if (paging_install_table_in(vs->cr3, user_va, page, tbl_flags) < 0) {
+            pmm_free_page(page);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 struct KFrame *bootstrap_kframe_map(struct KVSpace *vs,
                                      uint64_t       paddr,
                                      uint64_t       user_va,
                                      uint64_t       map_flags)
 {
+    if (!vs || bootstrap_fill_levels(vs, user_va) != 0) return NULL;
+
     struct KFrame *f = kframe_alloc(paddr, 4096u, NULL);
     if (!f) return NULL;
     iris_error_t r = kframe_map_page(f, vs, user_va, map_flags);

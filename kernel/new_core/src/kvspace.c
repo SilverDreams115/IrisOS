@@ -306,7 +306,6 @@ struct KVSpace *kvspace_alloc_at(void *mem, uint64_t cr3) {
     vs->mappings      = 0;
     vs->pt_pool        = 0;
     vs->pml4_from_pool = 0;
-    vs->kernel_funded  = 0;   /* a spawned process owes its own levels */
     vs->bound          = 0;
     kvspace_tag(vs);
     atomic_fetch_add_explicit(&kvspace_live, 1u, memory_order_relaxed);
@@ -325,8 +324,9 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
     vs->pt_pool        = 0;
     vs->pml4_from_pool = 0;
     /* The root task's address space, and the only one: built before any
-     * Untyped exists, so the kernel supplies its levels until it can speak. */
-    vs->kernel_funded  = 1;
+     * Untyped exists.  Boot supplies its levels the way any holder does —
+     * `bootstrap_kframe_map` walks to the missing level and installs a page —
+     * so there is no flag here saying the kernel may allocate on its behalf. */
     vs->bound          = 1;   /* the root task's, and only its */
     vs->free_nodes     = 0;
     kvspace_tag(vs);
@@ -351,8 +351,8 @@ struct KVSpace *kvspace_alloc(uint64_t cr3) {
  * handful of pages" while svc_loader maps whole images into the loader's own
  * address space.  Stage 6-pure Step 3 makes it a bound instead: the arena now
  * serves ONLY the pre-boot maps, because the root task is handed its own
- * budget the moment it can speak (kvspace_end_bootstrap) and everything it
- * maps after that comes from there.  Every pre-boot map is registered in
+ * budget the moment it can speak and everything it maps after that comes from
+ * there.  Every pre-boot map is registered in
  * KVSpace.bootstrap_frames[], which is capped, so the arena cannot be asked
  * for more than that many records however large the root image grows.
  *
@@ -545,12 +545,10 @@ void kvspace_set_pt_pool(struct KVSpace *vs, struct KUntyped *pool) {
     vs->pt_pool = pool;
 }
 
-void kvspace_end_bootstrap(struct KVSpace *vs) {
-    if (!vs) return;
-    spinlock_lock(&vs->lock);
-    vs->kernel_funded = 0;
-    spinlock_unlock(&vs->lock);
-}
+/* kvspace_end_bootstrap is GONE.  It cleared `kernel_funded`, the flag that
+ * decided whether `kframe_map_page` could carve a paging level — and the map
+ * is strict for every address space now, so the flag had nothing to turn off.
+ * Boot fills the root task's levels itself (bootstrap_kframe_map). */
 
 /* Zero cr3/valid, grab the entire mapping list, then process it outside the
  * lock.  Since valid=0 prevents new kframe_map_page calls from succeeding,

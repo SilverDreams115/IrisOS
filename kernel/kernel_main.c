@@ -576,7 +576,6 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
                     if (ut->vspace) {
                         if (root_budget)
                             kvspace_set_pt_pool(ut->vspace, root_budget);
-                        kvspace_end_bootstrap(ut->vspace);
                     }
                     klog_write("[IRIS][USER] boot info page mapped, untypeds: ");
                     klog_write_dec(ut_count);

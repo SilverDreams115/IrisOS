@@ -1369,9 +1369,16 @@ void test_kframe(void) {
         paging_stub_reset();
     }
 
-    /* FR-65: paging_map_checked_in failure after successful kslab_alloc inside
-     * kframe_map_page.  The KFrameMapping node must be freed (no leak); no PTE
-     * installed; mapping_count and mapped_count unchanged. */
+    /* FR-65: a PAGING failure after the mapping record was already allocated.
+     * The record must be freed (no leak); no PTE installed; mapping_count and
+     * mapped_count unchanged.
+     *
+     * The ERROR changed and the change is the point: the map is strict for
+     * every address space now, so a map that cannot complete always means the
+     * holder still owes a table.  It used to be able to mean NO_MEMORY, which
+     * was the kernel reporting that IT had failed to allocate a paging level —
+     * an answer only reachable through the bootstrap branch that no longer
+     * exists. */
     {
         paging_stub_reset();
         uint64_t cr3 = 0xCD2000ULL;
@@ -1386,7 +1393,7 @@ void test_kframe(void) {
         iris_error_t ie = kframe_map_page(f, vs, va, 0u);
         paging_clear_force_fail();
 
-        ASSERT_EQ((int)ie, (int)IRIS_ERR_NO_MEMORY);
+        ASSERT_EQ((int)ie, (int)IRIS_ERR_MISSING_TABLE);
         ASSERT_EQ((int)vs->mapping_count, 0);
         ASSERT_EQ((int)atomic_load(&f->mapped_count), 0);
         ASSERT_EQ(paging_virt_to_phys_in(cr3, va), (uint64_t)0);

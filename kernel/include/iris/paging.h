@@ -123,10 +123,10 @@ struct KUntyped;
  *
  * The predecessor took `tables_pooled` and chose between two recursive
  * teardowns on it, which was a guess about the WHOLE walk made from one fact
- * about the TOP of it.  The root task falsified the guess: its PML4 is a PMM
- * page (pml4_pooled == 0) while every level it installs after
- * kvspace_end_bootstrap comes from an Untyped, so the "not pooled" teardown
- * pmm_free_page()d memory that a live Untyped still owned.  Detaching first
+ * about the TOP of it.  The root task falsified the guess: its PML4 and its
+ * pre-boot levels are PMM pages (pml4_pooled == 0) while every level it
+ * installs once it is running comes from an Untyped, so the "not pooled"
+ * teardown pmm_free_page()d memory that a live Untyped still owned.  Detaching first
  * removes the question instead of answering it per address space.
  */
 void     paging_destroy_user_space_from(uint64_t cr3, int pml4_pooled);

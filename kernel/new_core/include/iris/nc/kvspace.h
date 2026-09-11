@@ -75,10 +75,11 @@ struct KVSpace {
      * in.  Retained for as long as the VSpace lives.
      *
      * Stage 6-pure Step 3: this is no longer "who pays for page tables" —
-     * nobody does, because the kernel does not create them.  It also no longer
-     * decides whether a map is strict; that is `kernel_funded` below.  One
-     * field answering three questions is why the root task could not be strict
-     * without also being charged, and vice versa. */
+     * nobody does, because the kernel does not create them.  It stopped
+     * deciding whether a map is strict too: every map is strict now, for every
+     * address space, so there is no second question for this field to answer
+     * wrongly.  One field answering three of them is why the root task could
+     * not be strict without also being charged, and vice versa. */
     struct KUntyped      *pt_pool;
     /* The PML4 is a page child of pt_pool rather than a PMM page, so teardown
      * must return its child entry.  Replaces the old pt_count, which counted
@@ -99,7 +100,6 @@ struct KVSpace {
      * from the moment it is created, so it owes its own levels from the first
      * map — there is no window in which the kernel would have to guess.
      */
-    uint8_t               kernel_funded;
     /* Stage 6-pure Step 4: an address space the HOLDER retyped is bound to at
      * most one process.  Binding is what gives it a cr3 to be — before that it
      * is a page and a header — and two processes sharing one would be two
@@ -154,8 +154,8 @@ iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
  * that function no longer has to decide where a level came from: after this,
  * everything still reachable from the PML4 was carved by the kernel, whatever
  * kind of address space this is.  The root task is the case that forced it —
- * its PML4 is a PMM page while the levels it installs after
- * kvspace_end_bootstrap come from its own Untyped, so a per-address-space
+ * its PML4 and its pre-boot levels are PMM pages while everything it installs
+ * once it is running comes from its own Untyped, so a per-address-space
  * "pooled or not" answer was wrong for it in both directions.
  *
  * `cr3` is passed rather than read from `vs` because kvspace_invalidate has
@@ -179,7 +179,6 @@ void kvspace_set_pt_pool(struct KVSpace *vs, struct KUntyped *pool);
 /* End the bootstrap exception: from here on this address space supplies its
  * own paging levels like every other.  Called once, when the root task becomes
  * able to speak for itself. */
-void kvspace_end_bootstrap(struct KVSpace *vs);
 
 /* Allocate a new KVSpace wrapping the given cr3. Returns NULL on OOM.
  * Caller holds the alloc lifecycle ref (refcount=1, active_refs=0) on return. */

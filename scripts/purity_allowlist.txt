@@ -17,3 +17,22 @@ kernel/new_core/src/kcnode.c kslab_alloc 2
 kernel/new_core/src/kframe.c kslab_alloc 1
 kernel/new_core/src/kuntyped.c kslab_alloc 1
 kernel/new_core/src/kvspace.c kslab_alloc 1
+
+# The PMM half, frozen at this audit.
+#
+# `pmm_alloc_page`/`_pages`/`_block` is the kernel's OTHER way to memory — the
+# physical reserve — and it is not sealed the way the slab is, because the
+# buddy allocator is what hands regions to Untypeds in the first place.  Every
+# row below is boot: the arena the slab is carved from, the root task's image
+# and stack, the BootInfo region, and the paging levels those need before there
+# is any userland to ask for them.
+#
+# Nothing in kernel/core/syscall/ can reach any of it, and that is now CHECKED
+# rather than asserted: the reachability closure follows the PMM as well as the
+# slab.  This list is the inventory; the closure is the property.
+kernel/include/iris/pmm.h pmm_alloc 4
+kernel/mm/pmm/pmm.c pmm_alloc 3
+kernel/kernel_main.c pmm_alloc 4
+kernel/core/scheduler/task_lifecycle.c pmm_alloc 2
+kernel/arch/x86_64/paging.c pmm_alloc 2
+kernel/new_core/src/kframe.c pmm_alloc 1

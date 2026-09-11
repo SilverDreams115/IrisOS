@@ -152,35 +152,37 @@ void test_pagetable(void) {
     if (e) kobject_release(&e->base);
 
     /*
-     * [PT-8] the bootstrap exception, and the fact that it ends.
+     * [PT-8] there is no bootstrap exception left to end.
      *
-     * The root task's text, stack and BootInfo are mapped before it exists, so
-     * there is nobody to ask for the levels and the kernel supplies them.
-     * That is the ONLY address space this is ever true of, and only until it
-     * can speak for itself — which is what kvspace_end_bootstrap says.  A test
-     * for it is worth having because the flag is invisible from userland: a
-     * kernel that silently kept funding the root task forever would look
-     * exactly like one that stopped.
+     * This used to assert a FLAG.  `kvspace_alloc` — the root task's
+     * constructor — set `kernel_funded = 1`, which let `kframe_map_page` carve
+     * a paging level out of the PMM for that one address space, and
+     * `kvspace_end_bootstrap` cleared it once the root task could speak for
+     * itself.  The flag was invisible from userland, so a kernel that kept
+     * funding the root task forever would have looked exactly like one that
+     * stopped, which is why it was worth a test.
+     *
+     * The flag is gone, and so is what it gated: every map is strict, for
+     * every address space, and boot supplies the root task's levels itself
+     * (`bootstrap_kframe_map`).  What replaced the assertion is stronger than
+     * the assertion was — `make check-purity` follows the PMM as well as the
+     * slab now, and would FAIL the build if any function a syscall handler can
+     * name could reach the page allocator again.
+     *
+     * So what is asserted here is the property, not the flag: an address space
+     * built either way reports a missing level rather than filling it.
      */
     {
         struct KVSpace *boot = kvspace_alloc(cr3 + 0x1000ULL);
         ASSERT_NOT_NULL(boot);
         if (boot) {
-            /* kvspace_alloc is the root task's constructor: kernel-funded. */
-            ASSERT_EQ((int)boot->kernel_funded, 1);
-            /* ...and kvspace_alloc_at, every other address space, is not. */
             void *hdr = kuntyped_alloc_child_top(ut, sizeof(struct KVSpace));
             ASSERT_NOT_NULL(hdr);
             if (hdr) {
                 struct KVSpace *spawned = kvspace_alloc_at(hdr, cr3 + 0x2000ULL);
                 ASSERT_NOT_NULL(spawned);
-                if (spawned) {
-                    ASSERT_EQ((int)spawned->kernel_funded, 0);
-                    kobject_release(&spawned->base);
-                }
+                if (spawned) kobject_release(&spawned->base);
             }
-            kvspace_end_bootstrap(boot);
-            ASSERT_EQ((int)boot->kernel_funded, 0);
             kobject_release(&boot->base);
         }
     }
@@ -227,7 +229,7 @@ void test_pagetable(void) {
      * the PMM without asking where anything came from: after the detach the
      * only thing still reachable is what the kernel itself carved.  The root
      * task is why it has to be per-TABLE and not per-address-space — its PML4
-     * is a PMM page while every level it installs after kvspace_end_bootstrap
+     * is a PMM page while every level it installs once it is running
      * comes from an Untyped, so one answer for the whole walk is wrong for it
      * whichever way it is given.
      */

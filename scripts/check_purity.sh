@@ -20,6 +20,7 @@
 #   handle_table_get_object    — handle consumers
 #   cspace_or_handle_resolve_  — dual CPtr/handle resolution
 #   kslab_alloc                — kernel objects born from the global heap
+#   pmm_alloc_page(s)/_block   — PAGES born from the kernel's physical reserve
 #
 # And a second, different check: whether any slab-allocating function is named
 # by a syscall handler at all.  The counts above froze a number; this asks the
@@ -35,7 +36,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 ALLOWLIST="scripts/purity_allowlist.txt"
-PATTERNS=(handle_table_insert handle_table_get_object cspace_or_handle_resolve_ kslab_alloc)
+PATTERNS=(handle_table_insert handle_table_get_object cspace_or_handle_resolve_ kslab_alloc pmm_alloc)
 
 if [ ! -f "$ALLOWLIST" ]; then
     echo "[purity] FAIL: allowlist $ALLOWLIST does not exist"
@@ -49,6 +50,37 @@ mapfile -t FILES < <(find kernel services \
 
 fail=0
 progress=0
+
+# ── stripping comments without losing the code beside them ────────────────
+#
+# The first version of this was `awk '/\/\*/{inc=1} {if(!inc) print} /\*\//{inc=0}'`,
+# which drops the WHOLE line whenever a comment opens on it — so
+# `f(x);  /* why */` vanished, call included.  Every call site in this tree
+# that carries a trailing comment was invisible to the gate, which is most of
+# the interesting ones.  Proven by probe: a call added to a syscall handler on
+# such a line did not trip the check.
+#
+# This removes /* ... */ (single- and multi-line) and // and keeps everything
+# else on the line, so a call stays visible and prose does not.
+strip_comments() {
+    sed 's://.*::' "$1" | awk '
+        {
+            line = $0; out = ""
+            while (1) {
+                if (inblk) {
+                    e = index(line, "*/")
+                    if (e == 0) { line = ""; break }
+                    line = substr(line, e + 2); inblk = 0
+                } else {
+                    b = index(line, "/*")
+                    if (b == 0) { out = out line; break }
+                    out = out substr(line, 1, b - 1)
+                    line = substr(line, b + 2); inblk = 1
+                }
+            }
+            print out
+        }'
+}
 
 count_in_file() {
     # grep -c counts lines; -o counts occurrences — we use -o | wc -l.
@@ -141,11 +173,23 @@ KSLAB_RING3_OK=""
 # say it stopped.
 CLOSURE_ROUNDS=6
 
+#
+# The seed is BOTH allocators, and the second one was missing.
+#
+# `kslab_alloc` is the kernel's object heap and it is sealed after boot, which
+# is the strongest form this check can take.  `pmm_alloc_page`/`_pages`/
+# `_block` is the other way to kernel memory — the physical reserve — and it is
+# NOT sealed, because the buddy allocator is what hands regions to Untypeds in
+# the first place.  Nothing in a syscall path reaches it today; that is the
+# property, and until now nothing checked it.
 alloc_seed() {
-    for f in kernel/new_core/src/*.c kernel/core/**/*.c kernel/mm/**/*.c; do
+    for f in kernel/new_core/src/*.c kernel/core/**/*.c kernel/mm/**/*.c \
+             kernel/arch/x86_64/*.c; do
         [ -f "$f" ] || continue
-        awk '/^[a-zA-Z_].*\(/ { fn = $0 }
-             /kslab_alloc/ { if (fn != "") print fn }' "$f"
+        strip_comments "$f" \
+          | awk '/^[a-zA-Z_].*\(/ { fn = $0 }
+                 /kslab_alloc|pmm_alloc_page|pmm_alloc_pages|pmm_alloc_block/ {
+                     if (fn != "") print fn }'
     done | grep -oE '\b[a-z_][a-z0-9_]*\(' | tr -d '(' | sort -u
 }
 
@@ -153,16 +197,24 @@ alloc_seed() {
 # The syscall layer is the boundary being tested, not a hop inside the chain.
 alloc_callers() {
     local re="$1"
-    for f in kernel/new_core/src/*.c kernel/core/**/*.c kernel/mm/**/*.c; do
+    for f in kernel/new_core/src/*.c kernel/core/**/*.c kernel/mm/**/*.c \
+             kernel/arch/x86_64/*.c; do
         [ -f "$f" ] || continue
         case "$f" in kernel/core/syscall/*) continue ;; esac
+        # Comments are stripped FIRST, as they are for the syscall scan.  A
+        # function whose body is one return was being pulled into the closure
+        # because the PROSE under it mentioned a function that was in the set —
+        # and a gate that cries wolf gets an exemption written for it, which is
+        # the failure mode this whole check exists to avoid.
+        #
         # No `next` after recording the definition line: a one-line function
         # body lives ON that line, and skipping it made every such function
         # invisible to the closure — which is how the two-hop probe that
         # motivated this check went on passing after the check was written.
-        awk -v names="$re" '
-            /^[a-zA-Z_].*\(/ { fn = $0 }
-            $0 ~ names { if (fn != "") print fn }' "$f"
+        strip_comments "$f" \
+          | awk -v names="$re" '
+                /^[a-zA-Z_].*\(/ { fn = $0 }
+                $0 ~ names { if (fn != "") print fn }'
     done | grep -oE '\b[a-z_][a-z0-9_]*\(' | tr -d '(' | sort -u
 }
 
@@ -177,7 +229,7 @@ while [ "$closure_round" -lt "$CLOSURE_ROUNDS" ]; do
     closure_round=$((closure_round + 1))
 done
 if [ -n "${PURITY_DEBUG:-}" ]; then printf '  [closure] %s\n' "${ALLOC_FNS[@]}"; fi
-echo "[purity] slab-reachable closure: ${#ALLOC_FNS[@]} functions after $closure_round round(s)$( [ "$closure_round" -eq "$CLOSURE_ROUNDS" ] && echo ' — HIT THE BOUND, the set may be incomplete')"
+echo "[purity] kernel-memory-reachable closure: ${#ALLOC_FNS[@]} functions after $closure_round round(s)$( [ "$closure_round" -eq "$CLOSURE_ROUNDS" ] && echo ' — HIT THE BOUND, the set may be incomplete')"
 
 for fn in "${ALLOC_FNS[@]}"; do
     case " $KSLAB_RING3_OK " in *" $fn "*) continue ;; esac
@@ -186,8 +238,7 @@ for fn in "${ALLOC_FNS[@]}"; do
     callers=""
     for sf in kernel/core/syscall/*.c; do
         [ -f "$sf" ] || continue
-        if sed 's://.*::' "$sf" \
-           | awk '/\/\*/{inc=1} {if(!inc) print; } /\*\//{inc=0}' \
+        if strip_comments "$sf" \
            | grep -qE "(^|[^A-Za-z0-9_])$fn([^A-Za-z0-9_]|$)"; then
             callers="$callers$sf
 "
@@ -196,8 +247,8 @@ for fn in "${ALLOC_FNS[@]}"; do
     callers="${callers%
 }"
     if [ -n "$callers" ]; then
-        echo "[purity] FAIL: '$fn' can reach the kernel slab and is named by"
-        echo "         a syscall handler:"
+        echo "[purity] FAIL: '$fn' can reach kernel memory (slab or PMM) and is"
+        echo "         named by a syscall handler:"
         echo "$callers" | sed 's/^/           /'
         echo "         Charter M3: ring 3 cannot be given a way to spend the"
         echo "         kernel's memory.  Carve the object from an Untyped the"
