@@ -7,9 +7,10 @@ a commit that cites it explicitly and updates the
 [ledger](sel4-convergence-ledger.md) in the same change.
 **Sibling documents**: the [convergence roadmap](sel4-convergence-roadmap.md)
 orders the stages; the [ledger](sel4-convergence-ledger.md) records every
-transitional mechanism and its retirement condition; the executable guard
-`make check-purity` (`scripts/check_purity.sh`) freezes the existing legacy
-consumers.
+transitional mechanism and its retirement condition; the
+[purity audit](sel4-purity-audit.md) is the file-by-file measurement of how
+far the two models still differ; the executable guard `make check-purity`
+(`scripts/check_purity.sh`) freezes the existing legacy consumers.
 
 ## 1. Official identity
 
