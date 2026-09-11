@@ -2054,7 +2054,7 @@ void test_t340(void) {
             if (ok && it_invoke0(frame, INV_FRAME_GET_ADDRESS) != pa) {
                 ok = 0; why = "the address changed under a map";
             }
-            (void)it_invoke1(frame, INV_FRAME_UNMAP, (long)T340_VA);
+            (void)it_invoke2(frame, INV_FRAME_UNMAP, IT_VS, (long)T340_VA);
         }
     }
 
@@ -2083,4 +2083,248 @@ void test_t340(void) {
     it_slot_delete(T340_FRAME);
     it_quiesce_reaper();
     if (ok) it_pass("T340"); else it_fail("T340", why);
+}
+
+/* ── T341: PageTable_Unmap (seL4_X86_PageTable_Unmap) ──────────────────────
+ *
+ * `PageTable_Map` shipped without a counterpart: a level went into a walk and
+ * came out only when the whole address space died.  A holder wanting to
+ * rearrange its own address space — or reclaim a table installed for a mapping
+ * it then abandoned — had to destroy the VSpace to do it, which is not a
+ * reclamation.
+ *
+ * Four claims:
+ *  1. a level that is installed comes back out, and the capability is
+ *     reusable afterwards — installing it again is the proof, because
+ *     `PageTable_Map` answers BUSY for a table that is still spent;
+ *  2. it REFUSES while the subtree is live.  This is the deliberate difference
+ *     from seL4, which unmaps the table and invalidates the mappings under it:
+ *     IRIS answers BUSY, because a detached level whose PTEs are still
+ *     described by the VSpace leaves the bookkeeping asserting mappings the
+ *     hardware cannot reach.  Same rule `Untyped_Reset` already has;
+ *  3. a table that is not installed HERE answers NOT_FOUND rather than
+ *     silently clearing a record that describes some other walk;
+ *  4. the mapping under it is untouched by a refused unmap — a refusal that
+ *     half-detached would be worse than no unmap at all.
+ * Invariants: A1, M1, M4. */
+#define T341_PT    IT_SCRATCH_0
+#define T341_PT2   IT_SCRATCH_1
+#define T341_FRAME IT_SCRATCH_2
+#define T341_VA    (0x0000600000000000ULL + 0x40000000ULL)
+
+void test_t341(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "a level comes back out";
+
+    if (!it_setup_self_vspace()) { it_fail("T341", "vspace self"); return; }
+
+    it_slot_delete(T341_PT); it_slot_delete(T341_PT2);
+    it_slot_delete(T341_FRAME);
+
+    /* Fill the walk for T341_VA, keeping the LAST level we installed: that is
+     * the one with nothing under it, which is the one an unmap may take. */
+    long last = -1;
+    int  complete = 0;
+    for (int lvl = 0; ok && lvl < 4 && !complete; lvl++) {
+        uint32_t slot = (lvl & 1) ? T341_PT2 : T341_PT;
+        it_slot_delete(slot);
+        if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_PAGE_TABLE,
+                          slot, 1u, 4096) != 0) { ok = 0; why = "retype"; break; }
+        long r = it_invoke2((long)slot, INV_PAGE_TABLE_MAP, IT_VS, (long)T341_VA);
+        if (r == 0)                                  last = (long)slot;
+        else if (r == (long)IRIS_ERR_ALREADY_EXISTS) complete = 1;
+        else { ok = 0; why = "install"; }
+    }
+    if (ok && last < 0) { ok = 0; why = "the walk needed no level"; }
+
+    /* 3. not installed in the VSpace named. */
+    if (ok) {
+        uint32_t spare = (last == (long)T341_PT) ? T341_PT2 : T341_PT;
+        it_slot_delete(spare);
+        if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_PAGE_TABLE,
+                          spare, 1u, 4096) != 0) { ok = 0; why = "retype spare"; }
+        else if (it_invoke1((long)spare, INV_PAGE_TABLE_UNMAP, IT_VS)
+                 != (long)IRIS_ERR_NOT_FOUND) {
+            ok = 0; why = "an uninstalled table was unmapped";
+        }
+        it_slot_delete(spare);
+    }
+
+    /* 2. BUSY while something is mapped under it. */
+    if (ok) {
+        if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_FRAME,
+                          T341_FRAME, 1u, 4096) != 0) { ok = 0; why = "retype frame"; }
+        else if (it_invoke((long)T341_FRAME, INV_FRAME_MAP, IT_VS,
+                           (long)T341_VA, 1) != 0) { ok = 0; why = "map frame"; }
+        else {
+            if (it_invoke1(last, INV_PAGE_TABLE_UNMAP, IT_VS)
+                != (long)IRIS_ERR_BUSY) {
+                ok = 0; why = "a level with a live mapping under it was taken";
+            }
+            /* 4. and the refusal changed nothing: the mapping still works. */
+            if (ok) {
+                volatile uint64_t *p = (volatile uint64_t *)(uintptr_t)T341_VA;
+                *p = 0x341FEEDULL;
+                if (*p != 0x341FEEDULL) { ok = 0; why = "a refused unmap broke the mapping"; }
+            }
+            (void)it_invoke2((long)T341_FRAME, INV_FRAME_UNMAP, IT_VS, (long)T341_VA);
+        }
+    }
+
+    /* 1. with the subtree empty it comes out — and the capability is live
+     *    again, which `PAGE_TABLE_MAP` proves by NOT answering BUSY. */
+    if (ok) {
+        if (it_invoke1(last, INV_PAGE_TABLE_UNMAP, IT_VS) != 0) {
+            ok = 0; why = "unmap";
+        }
+    }
+    if (ok) {
+        long r = it_invoke2(last, INV_PAGE_TABLE_MAP, IT_VS, (long)T341_VA);
+        if (r == (long)IRIS_ERR_BUSY) { ok = 0; why = "still spent after unmap"; }
+        else if (r != 0)              { ok = 0; why = "reinstall"; }
+        else (void)it_invoke1(last, INV_PAGE_TABLE_UNMAP, IT_VS);
+    }
+
+    it_slot_delete(T341_FRAME);
+    it_slot_delete(T341_PT2); it_slot_delete(T341_PT);
+    it_quiesce_reaper();
+    if (ok) it_pass("T341"); else it_fail("T341", why);
+}
+
+/* ── T342: CSpace_Rotate (seL4_CNode_Rotate) ───────────────────────────────
+ *
+ *   before:  src = S     pivot = P     dest = empty (or dest IS src)
+ *   after:   src = —     pivot = S     dest = P
+ *
+ * WHY IT IS NOT TWO MOVES.  Moving S onto an occupied slot needs that slot
+ * emptied first, so the two-call version needs a FOURTH slot to park P in —
+ * and a CSpace full enough to need rearranging is exactly the one without a
+ * spare.  The sequence is also observable: between the calls a capability is
+ * somewhere neither the holder nor a revoke expects, and a failure halfway
+ * leaves a CSpace nobody asked for.
+ *
+ * Five claims:
+ *  1. the three-slot rotation happens, and the OBJECTS are the ones expected —
+ *     checked by type, with two different types so a mix-up cannot pass;
+ *  2. `dest == src` is the SWAP, the case that cannot be expressed as
+ *     relocations at all because both slots are occupied;
+ *  3. an occupied dest is refused ALREADY_EXISTS, and refused whole: nothing
+ *     moved;
+ *  4. an empty src or pivot is NOT_FOUND — a rotate needs two capabilities;
+ *  5. the DERIVATION TREE travels.  A rotated capability's children are still
+ *     its children, which is the claim a plain content-copy would fail: revoke
+ *     the parent after rotating it and the child must die with it.
+ * Invariants: A7, A9, A10. */
+#define T342_EP    IT_SCRATCH_0
+#define T342_NOTIF IT_SCRATCH_1
+#define T342_DEST  IT_SCRATCH_2
+#define T342_CHILD IT_SCRATCH_3
+
+/* dest CNode 0 = the caller's root, slot in the high half — CSpace_Move's
+ * packing, because a rotate IS two moves. */
+#define T342_DESTARG(slot) ((long)((uint64_t)(slot) << 32))
+
+void test_t342(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "three slots, two moves";
+
+    it_slot_delete(T342_EP); it_slot_delete(T342_NOTIF);
+    it_slot_delete(T342_DEST); it_slot_delete(T342_CHILD);
+
+    /* src = an ENDPOINT, pivot = a NOTIFICATION.  Two types, so "the right
+     * capability arrived" is answerable rather than assumed. */
+    if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT,
+                      T342_EP, 1u, 0) != 0) { it_fail("T342", "ep"); return; }
+    if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION,
+                      T342_NOTIF, 1u, 0) != 0) { it_fail("T342", "notif"); return; }
+
+    /* 4. a rotate needs two capabilities. */
+    if (ok && it_invoke2((long)T342_DEST, INV_CSPACE_ROTATE,
+                         (long)T342_NOTIF, T342_DESTARG(T342_CHILD))
+              != (long)IRIS_ERR_NOT_FOUND) {
+        ok = 0; why = "an empty src rotated";
+    }
+    if (ok && it_invoke2((long)T342_EP, INV_CSPACE_ROTATE,
+                         (long)T342_DEST, T342_DESTARG(T342_CHILD))
+              != (long)IRIS_ERR_NOT_FOUND) {
+        ok = 0; why = "an empty pivot rotated";
+    }
+
+    /* 3. an occupied dest is refused, and refused whole. */
+    if (ok && it_invoke2((long)T342_EP, INV_CSPACE_ROTATE,
+                         (long)T342_NOTIF, T342_DESTARG(IT_SERIAL_SLOT))
+              != (long)IRIS_ERR_ALREADY_EXISTS) {
+        ok = 0; why = "an occupied dest was overwritten";
+    }
+    if (ok && (it_invoke0((long)T342_EP, INV_CAP_IDENTIFY)
+                 != (long)IRIS_HANDLE_TYPE_ENDPOINT ||
+               it_invoke0((long)T342_NOTIF, INV_CAP_IDENTIFY)
+                 != (long)IRIS_HANDLE_TYPE_NOTIFICATION)) {
+        ok = 0; why = "a refused rotate moved something";
+    }
+
+    /* 5. the derivation tree travels — set up BEFORE the rotate so the child
+     *    is a child of the capability while it is still in the src slot. */
+    if (ok && it_cdt_derive((long)T342_EP, T342_CHILD, RIGHT_WRITE) < 0) {
+        ok = 0; why = "derive child";
+    }
+
+    /* 1. the rotation itself: src(EP) -> pivot, pivot(NOTIF) -> dest. */
+    if (ok && it_invoke2((long)T342_EP, INV_CSPACE_ROTATE,
+                         (long)T342_NOTIF, T342_DESTARG(T342_DEST)) != 0) {
+        ok = 0; why = "rotate";
+    }
+    if (ok && it_invoke0((long)T342_EP, INV_CAP_IDENTIFY) >= 0) {
+        ok = 0; why = "src not emptied";
+    }
+    if (ok && it_invoke0((long)T342_NOTIF, INV_CAP_IDENTIFY)
+              != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+        ok = 0; why = "the pivot did not take src's capability";
+    }
+    if (ok && it_invoke0((long)T342_DEST, INV_CAP_IDENTIFY)
+              != (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+        ok = 0; why = "dest did not take the pivot's capability";
+    }
+
+    /* 2. dest == src is the swap: rotate the two back the other way. */
+    if (ok) {
+        /* now: pivot slot holds the EP, dest slot holds the NOTIF.
+         * swap them by rotating with dest == src. */
+        if (it_invoke2((long)T342_NOTIF, INV_CSPACE_ROTATE,
+                       (long)T342_DEST, T342_DESTARG(T342_NOTIF)) != 0) {
+            ok = 0; why = "swap rotate";
+        }
+        else if (it_invoke0((long)T342_NOTIF, INV_CAP_IDENTIFY)
+                 != (long)IRIS_HANDLE_TYPE_NOTIFICATION) {
+            ok = 0; why = "swap did not bring the notification back";
+        }
+        else if (it_invoke0((long)T342_DEST, INV_CAP_IDENTIFY)
+                 != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+            ok = 0; why = "swap did not move the endpoint";
+        }
+    }
+
+    /* 5. ...and the endpoint — now in T342_DEST, two rotations from where its
+     *    child was derived — still OWNS that child.  A rotate that copied
+     *    content and left the MDB node behind would pass everything above and
+     *    fail here. */
+    if (ok && it_invoke0((long)T342_CHILD, INV_CAP_IDENTIFY)
+              != (long)IRIS_HANDLE_TYPE_ENDPOINT) {
+        ok = 0; why = "the child did not survive the rotation";
+    }
+    /* Revoke returns the COUNT destroyed, so "one child died" is the
+     * assertion, not "it returned success". */
+    if (ok && it_invoke0((long)T342_DEST, INV_CSPACE_REVOKE) != 1) {
+        ok = 0; why = "revoke did not destroy exactly the one child";
+    }
+    if (ok && it_invoke0((long)T342_CHILD, INV_CAP_IDENTIFY) >= 0) {
+        ok = 0; why = "revoking the rotated parent did not reach its child";
+    }
+
+    it_slot_delete(T342_CHILD); it_slot_delete(T342_DEST);
+    it_slot_delete(T342_NOTIF); it_slot_delete(T342_EP);
+    it_quiesce_reaper();
+    if (ok) it_pass("T342"); else it_fail("T342", why);
 }
