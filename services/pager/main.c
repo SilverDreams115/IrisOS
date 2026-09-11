@@ -62,7 +62,7 @@ static inline long pg_sys3(long nr, long a0, long a1, long a2) {
  * issues. */
 #define PG_SLOT_PT 62u
 static long pg_self_vs_now(void);
-/* Ledger A-31: a label, not a syscall number. */
+/* Ledger A-32: a label, not a syscall number. */
 static inline long pg_invoke(long c, unsigned long label, long a1, long a2, long a3) {
     long r = iris_invoke(c, label, a1, a2, a3);
     if (r == (long)IRIS_ERR_MISSING_TABLE)

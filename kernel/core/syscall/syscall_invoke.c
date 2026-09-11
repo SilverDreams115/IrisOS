@@ -1,5 +1,5 @@
 /*
- * syscall_invoke.c — the invocation door (ledger A-31).
+ * syscall_invoke.c — the invocation door (ledger A-32).
  *
  * ONE syscall reaches every method in the kernel: `SYS_INVOKE(cptr, label,
  * a1, a2, a3)`.  The capability says WHAT is being acted on, the label says
@@ -37,7 +37,7 @@
  * Six of the seven methods that act before resolving are the blocking ones.
  * Hoisting the resolve would break precisely those, for an architectural
  * reason rather than an incidental one, so it is not scheduled: it is refused,
- * and A-31 records why.
+ * and A-32 records why.
  *
  * So WHERE is the type checked?  Where it always was — inside the method, by
  * the resolver that fetches the capability with the type it requires.  A label

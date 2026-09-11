@@ -79,7 +79,7 @@ struct iris_cpu_local {
      */
     uint64_t               core_stack_top;   /* offset 64 */
     /*
-     * Ledger A-31 — where the user's stack pointer waits while the kernel
+     * Ledger A-32 — where the user's stack pointer waits while the kernel
      * takes its own.
      *
      * It used to live in r8 for the three instructions between SWAPGS and the

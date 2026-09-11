@@ -75,7 +75,7 @@ static inline long iris_syscall4(long nr, long a0, long a1, long a2, long a3) {
     return ret;
 }
 /*
- * Five user words (ledger A-31): the invocation ABI needs a capability, a
+ * Five user words (ledger A-32): the invocation ABI needs a capability, a
  * label and three method arguments where the numbered ABI needed four
  * arguments.  r8 is the fifth by the same convention that put the first four
  * in rdi/rsi/rdx/r10 — and taking it cost the entry path its scratch register,
@@ -1878,7 +1878,7 @@ static inline long iris_syscall0(long nr) {
 
 /*
  * SYS_INVOKE(cptr, label, a1, a2, a3) → whatever the method returns
- *   ledger A-31 — the invocation door.
+ *   ledger A-32 — the invocation door.
  *
  *   cptr:  the capability being invoked.  It is not an argument TO the method
  *          so much as the thing the method is a method OF: the kernel resolves
@@ -2054,7 +2054,7 @@ struct iris_untyped_query_global {
     uint32_t kernel_heap_sealed;
     uint32_t _pad1;
     /*
-     * Ledger A-31 — calls that still came through the NUMBERED door.
+     * Ledger A-32 — calls that still came through the NUMBERED door.
      *
      * A total, not a live count, and it must be FALLING while the invocation
      * ABI is adopted and ZERO when it closes.  It does NOT count the calls
@@ -2213,7 +2213,7 @@ void syscall_set_kstack(uint64_t kstack_top);
 void syscall_set_user_cr3(uint64_t val);
 
 /* Called from ASM handler — 6 params: num + 5 user args (arg3 via r10,
- * arg4 via r8; ledger A-31). */
+ * arg4 via r8; ledger A-32). */
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
                           uint64_t arg1, uint64_t arg2, uint64_t arg3,
                           uint64_t arg4);

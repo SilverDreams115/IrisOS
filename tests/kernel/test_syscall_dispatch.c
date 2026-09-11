@@ -95,14 +95,14 @@ void test_syscall_dispatch(void) {
      * must break this and be re-stated, the same way T148 forces it from ring
      * 3.  If this fails, check that the addition was deliberate.
      *
-     * It fired once, for A-31: 144 became SYS_INVOKE, the door every other
+     * It fired once, for A-32: 144 became SYS_INVOKE, the door every other
      * number is being folded into.  That is the last number this table is
      * expected to gain — the conversion SHRINKS it. */
     {
         ASSERT_EQ(ds(SYS_INVOKE + 1u), (long)IRIS_ERR_NOT_SUPPORTED);
     }
 
-    /* ── DS-6: the numbered table is CLOSED (ledger A-31) ────────────────
+    /* ── DS-6: the numbered table is CLOSED (ledger A-32) ────────────────
      * Every number from 0 to 400 answers NOT_SUPPORTED except four: the
      * invocation door, and the three calls that invoke nothing and therefore
      * could never be methods of anything.

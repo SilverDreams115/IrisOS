@@ -156,7 +156,7 @@ void test_syscall_retype(void) {
      * retired rather than fixed, and for several stages it kept a four-line
      * body whose whole content was a refusal.
      *
-     * Ledger A-31 deleted that body along with thirty-one others: with the
+     * Ledger A-32 deleted that body along with thirty-one others: with the
      * numbered table closed, a number that names nothing is refused by the
      * dispatcher having no case for it, which is the same answer with nothing
      * to maintain.  The assertion moved to where it can still be made — the

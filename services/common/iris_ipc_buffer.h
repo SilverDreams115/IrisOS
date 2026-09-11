@@ -8,7 +8,7 @@
 #include <iris/nc/rights.h>
 #include <iris/nc/error.h>
 
-/* Ledger A-31: this header used to carry two arity wrappers of its own, so it
+/* Ledger A-32: this header used to carry two arity wrappers of its own, so it
  * could name syscall numbers without depending on a service's helpers.  It
  * names METHODS now, and `iris_invoke*` comes with the ABI. */
 

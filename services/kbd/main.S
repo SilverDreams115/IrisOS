@@ -82,7 +82,7 @@ _start:
 
     /* The bootstrap KChannel handle in entry RBX had a close here.  The handle
      * namespace is gone and SYS_HANDLE_CLOSE answers NOT_SUPPORTED, so the
-     * call did nothing; it goes with the numbered ABI (A-31) rather than being
+     * call did nothing; it goes with the numbered ABI (A-32) rather than being
      * carried across as an invocation of a method that does not exist. */
 
     movq  $10, %r14                    /* IRIS_CPTR_IOPORT  (CPtr) */
@@ -201,7 +201,7 @@ _start:
     jne   .kbd_reply_pick_done
     movl  $14, %r10d
 .kbd_reply_pick_done:
-    /* Ledger A-31: rdi = the endpoint being invoked, rsi = the method,
+    /* Ledger A-32: rdi = the endpoint being invoked, rsi = the method,
      * rdx = the message buffer, r10 = the reply object picked above. */
     movq  %rsi, %rdx                   /* message buffer, out of rsi's way */
     movq  $INV_EP_RECV, %rsi

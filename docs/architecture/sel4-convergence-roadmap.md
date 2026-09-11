@@ -31,16 +31,19 @@ IRQ capability can program a device to write any physical address, and the
 containment user-space drivers are supposed to give is fiction until
 `seL4_X86_IOSpace`'s shape exists), and an ABI freeze.
 
-Two things no stage closes, and both were always going to be that way: the ABI
-shape, which is a recorded decision, and formal verification, which is seL4's
-identity.  A system that converges on seL4's model without the proof has
-converged on the design, not on the guarantee, and this document says so
-wherever it is tempted to claim otherwise.
+ONE thing no stage closes, and it was always going to be that way: formal
+verification, which is seL4's identity.  A system that converges on seL4's
+model without the proof has converged on the design, not on the guarantee, and
+this document says so wherever it is tempted to claim otherwise.  This
+paragraph named two until A-32 — the other was the ABI shape, carried as a
+permanent decision on a cost estimate that was right and a gain estimate that
+was not.
 
-Measured, not recalled (ledger A-26, recounted at A-29): 62 live syscalls of 94
-dispatched numbers, 11 retypeable object types all of them seL4's, 303 runtime
-tests, 27 host suites, 27419 host assertions, 36 of 36 charter invariants MET,
-purity gate clean over the transitive closure with zero exemptions.
+Measured, not recalled (recounted at A-32): **one** invocation door and three
+syscalls that invoke nothing, 62 methods reached by label, 11 retypeable object
+types all of them seL4's, 304 runtime tests, 27 host suites, 27423 host
+assertions, 36 of 36 charter invariants MET, purity gate clean over the
+transitive closure with zero exemptions.
 
 ## Status
 
@@ -88,8 +91,10 @@ task is.  The rest is classified as mechanism with the reason for each.
 no row had named — three authority holes (`SchedControl`, MCP, ambient
 priority; closed in A-20 itself), the ASID capability model (A-21), faults as
 IPC (A-22), the bound notification (A-23), timed blocking (A-24) and
-`CancelBadgedSends` (A-25).  What remains from that audit is the ABI shape,
-which was a decision before it was a finding.
+`CancelBadgedSends` (A-25).  The last of them was the ABI shape, which was a
+decision before it was a finding and stopped being either at **A-32**: a method
+is named by sending a label to the capability it acts on, and the numbered
+table is three calls that invoke nothing.
 
 ### Where the line is now
 
@@ -119,10 +124,10 @@ because a roadmap that grades itself is not evidence.
 **The authority model is done.  So is the kernel architecture.  So, now, is the
 FORM.**
 
-Of the eight dimensions below, seven are met and the eighth — the ABI shape —
-is far by a recorded decision rather than by an open gap.  That has been true
-of the first six for a while; what changed is the seventh and the framing of
-the eighth.
+All eight dimensions below are met.  The eighth was the ABI shape, carried for
+most of this project's life as a recorded permanent decision; A-32 closed it.
+What is left is not a dimension of this table — it is the proof, which is
+seL4's identity and was never on it.
 
 Until the A-20 audit, "IRIS has seL4's semantics in a different shape" was a
 claim with four unexamined items behind it, and three of them turned out to be
@@ -152,13 +157,17 @@ half of revocation that was missing — revoking a badged capability stopped a
 client sending anything new and left whatever it had already queued to be
 delivered afterwards.
 
-**The fourth item is the ABI shape, and it is a decision.**  62 live numbered
-syscalls, each taking CPtrs and checking rights itself, where seL4 has a
-handful and expresses every other operation as an invocation on a capability
-carrying a method label.  The authority SEMANTICS are equivalent — nothing is
-reachable without naming a capability, every operation checks rights on the
-object it acts on, and a syscall number selects a METHOD and never an object —
-but the verification surface is not, and no convergence work changes that.
+**The fourth item was the ABI shape, and it is closed (A-32).**  It used to
+read: 62 live numbered syscalls, each taking CPtrs and checking rights itself,
+where seL4 has a handful and expresses every other operation as an invocation
+on a capability carrying a method label.  The authority SEMANTICS were already
+equivalent — nothing reachable without naming a capability, every operation
+checking rights on the object it acts on, and a syscall number selecting a
+METHOD and never an object — but a rule the kernel obeyed and nothing checked
+is a different thing from a rule the shape enforces, and that is what changed.
+`SYS_INVOKE(cptr, label, …)` is the surface; three numbers survive, each
+because it invokes nothing.  What remains that no convergence work changes is
+the verification surface, and that was never this row.
 
 | Dimension | State | Evidence |
 |---|---|---|
@@ -168,25 +177,35 @@ but the verification surface is not, and no convergence work changes that.
 | No ambient authority | **met** | boot authority is one capability per authority, every per-process quota is gone (Stage 7), and the kernel's hardcoded ioport whitelist is REMOVED (Stage 5): the range a holder may claim travels on the `IOPORT_CONTROL` capability, narrowed by derivation (`SYS_IOPORT_CONTROL_NARROW`, T164/T171).  The kernel decides no device policy at all.  A-18 removed the LAST ambient authority: `SYS_VSPACE_SELF`, `SYS_CSPACE_SELF` and `SYS_TCB_SELF` handed a thread capabilities to its own address space, CSpace and thread asking for no capability at all.  All three are RETIRED — delegated at `IRIS_CPTR_OWN_VSPACE`/`OWN_CSPACE`/`OWN_TCB` for services, in BootInfo for the root task (which is seL4's arrangement), and for a thread the loader never saw, in the ENTRY REGISTER: the trampoline delivers the thread argument in `rdi` as well as `rbx`, so a thread written in C reads its own TCB capability as a parameter.  **A-21 removed the last ambient RESOURCE** — the kernel-global PCID bitmap that named every address space for free — and **A-24 the last ambient SERVICE**: `SYS_SLEEP`, `SYS_CLOCK_NANOSLEEP` and `SYS_NOTIFY_WAIT_TIMEOUT` let any thread ask the kernel to hold a deadline for it, and waiting is now a capability to a ring-3 timer service that can also be refused.  `mdb_legacy_roots` 32 → 25 (A-20 and A-21 each add one permanent boot-path root, `SchedControl` and `ASIDControl`) |
 | No kernel heap | **met** | The kernel's slab is a BOOT ARENA and it is SEALED at the end of boot: allocating from it afterwards panics.  seL4 has no kernel heap because its boot code carves the root task's initial objects from a statically-known region and describes everything else as Untyped — which is exactly what this is, now that the door shuts behind it.  The purity gate's reachability check runs with ZERO exemptions and over the TRANSITIVE closure (A-16): no syscall handler can reach the allocator through any chain of calls, not merely by naming its caller, and T318 reads the seal from ring 3 so the property cannot stop being true unobserved |
 | MCS scheduling | **met** | all four pillars are in as of Stage 8-mcs, and A-22 changed how the fourth is DELIVERED: a timeout fault is an IPC message on its own endpoint, like every other fault, so a temporal supervisor is a server.  Budget and period are enforced; **sporadic replenishment** returns every tick consumed exactly one period later, so a thread can never spend more than its budget in any window of its period (host R-1..R-8); **timeout faults** make an overrun a policy decision a temporal supervisor takes rather than an invisible stall (`SYS_TCB_SET_TIMEOUT_HANDLER`, T307); and **SC donation** lends a client's scheduling context to a PASSIVE server for the duration of a Call, so an SC-less thread runs on the requester's time instead of — as it did before — running unbudgeted (T308).  `SYS_REPLY_RECV` closes the last of them (T309): without it a passive server is, between reply and receive, runnable with no scheduling context — and an SC-less thread is not charged, so it runs unbudgeted for exactly as long as the second syscall takes.  `refill_max` is now the SC's own, chosen at RETYPE and sizing the object (T315): a passive server woken per request needs a deep replenishment queue and a periodic task needs two, and the memory is charged to whoever asked for the depth instead of every SC paying for the worst case out of the kernel.  **`SchedControl` landed with the A-20 audit that found it missing.**  A budget and a period reach a scheduling context only through `IRIS_BOOTCAP_SCHED_CONTROL` — a boot capability carried in BootInfo the way seL4 carries `seL4_CapSchedControl` — so holding the SC says WHICH context to configure and holding this says you may configure one at all.  Priority is bounded the same way: `SYS_TCB_SET_PRIORITY` takes an AUTHORITY and refuses above its ceiling, a thread inherits the ceiling of whoever configured it, and the capability-free `SYS_THREAD_PRIORITY` is retired (T327) |
-| ABI shape | **far, by decision** | 62 live numbered syscalls (94 numbers dispatched, 32 of them retirement stubs answering NOT_SUPPORTED), each taking CPtrs and checking rights itself, where seL4 has a handful and expresses every other operation as an INVOCATION on a capability.  The authority semantics are equivalent; the verification surface is not.  Registered permanent divergence (charter §4), and since A-21/A-22/A-24 closed the other three form items, the only one left |
+| ABI shape | **met** | `SYS_INVOKE(cptr, label, a1, a2, a3)` — one door, and a method cannot be named without naming the capability it acts on.  The numbered table is three calls that invoke nothing (`EXIT`, `YIELD`, `CLOCK_GET`), which is why seL4 keeps `seL4_Yield`.  Labels are one flat list, as seL4's are; the type is checked inside the method by the resolver that asks for what it needs, answering WRONG_TYPE (A-30) where seL4 answers IllegalOperation.  Closed at **A-32** after five stages with both doors open and a counter of numbered calls that had to reach zero; it did.  Pinned by T337 and by `test_syscall_dispatch` DS-6, which tries every number from 0 to 400.  Two divergences recorded rather than rounded away: IRIS folds seL4's IPC syscalls into the same door, and the slot methods hang off the slot rather than off a CNode.  Binary compatibility was never sought and still is not |
 | Object lifetime | **close** | seL4 has no per-object reference count: an object exists while a capability to it exists, and `cteDelete`/`finaliseCap` walk the derivation tree.  IRIS reaches the same ANSWER through two counters, and that is now measured rather than asserted — T322 checks the rule for every retypeable type, T323 over generated derivation shapes, T321 through a CSpace cycle (where IRIS and seL4 behave identically: neither collects it idly, both reclaim it when the Untyped is revoked).  The mechanism difference is registered and permanent (D-7).  What it cost is recorded too: a donated scheduling context was released twice because the loan moved a pointer and not a reference, and the object hit refcount 0 with a slot still naming it — found by T324, which reads every pool slot because nothing else ever reads an idle one |
 | Kernel architecture | **met** | D-1, the only one of these that was a rewrite rather than an increment, is CLOSED.  IRIS has ONE kernel stack per core and no thread blocks inside the kernel.  No blocking syscall keeps live state across its block (step 1); a parked one abandons its frame (step 2, T310); the whole ring-3 register context lives in the TCB (step 3, T314); and `TSS.RSP0` is set once and never changes, because a DISPATCHER on the core's stack replaced `context_switch` — which is deleted, along with `task_yield`, `scheduler_sleep_current`, the idle task and `kstack_alloc`.  T318 measures the consequence from ring 3: eight threads, and the kernel's physical reserve does not move, where the old per-thread stacks would have cost two pages each |
 
 ### What no further stage closes
 
-**The ABI shape**, and it is the only one left.  This section used to name two,
-and the other was D-1 — the event-kernel rewrite, described here as "the reason
+**The proof, and it is the only one left.**  This section has named three
+things over its life and two of them turned out to be work rather than
+identity.
+
+The first was D-1 — the event-kernel rewrite, described here as "the reason
 seL4 can bound in-kernel latency and be verified, and converting to it is a
 rewrite of every blocking path... not an increment".  It was a rewrite, it was
 done (Stage 9-evt), and the text describing it as open outlived it by several
-stages.  That is worth leaving on the record: a roadmap's stalest paragraph is
-usually the one that was most confidently written.
+stages.
+
+The second was the ABI shape, carried as a permanent decision on the grounds
+that converting would rewrite every caller to gain nothing measurable.  The
+cost estimate was right; the gain was undervalued, and A-32 closed it.
+
+Both are worth leaving on the record for the same reason: a roadmap's stalest
+paragraph is usually the one that was written most confidently, and twice now
+it has been the paragraph explaining why something would not be done.
 
 ### If it needs a number
 
 **Capability semantics: done, with two registered permanent divergences (the
-rights set, D-3, and refcount lifetime, D-7) and one open shape difference (the
-ABI).  Kernel architecture: done.**
+rights set, D-3, and refcount lifetime, D-7).  Kernel architecture: done.  ABI
+shape: done (A-32).**
 
 The old figure here — 75% on semantics, 25% on architecture, with the advice
 not to average them — was honest when D-1 was open and is not a description of
@@ -1968,14 +1987,19 @@ endpoint, and a pending one is consulted on the way in), and T310, whose
 restartable-syscall claim moved from `SYS_SLEEP` to `SYS_NOTIFY_WAIT`
 unchanged.
 
-### Step 4 — the ABI shape  ← DECIDED, permanent
+### Step 4 — the ABI shape  ✅ DONE (A-32)
 
-62 live numbered syscalls against seL4's handful of invocations on capabilities.
-The authority semantics are equivalent; the verification surface is not.  What
-an invocation ABI would buy is a smaller kernel entry surface and one place to
-check authority instead of sixty; what it would cost is rewriting every caller
-in the system to gain nothing this charter measures.  Charter §4, permanent and
-deliberate.
+It read: 62 live numbered syscalls against seL4's handful of invocations on
+capabilities; the authority semantics are equivalent, the verification surface
+is not; what an invocation ABI would buy is a smaller kernel entry surface and
+one place to check authority instead of sixty, and what it would cost is
+rewriting every caller in the system to gain nothing this charter measures.
+
+The cost was as advertised: five stages, every service, the assembly driver and
+1,139 sites in the suite.  The gain was not what the row predicted.  A smaller
+entry surface was the smaller half; the larger half is that "a syscall selects
+a method and never an object" stopped being a rule the kernel obeyed and
+nothing checked, and became the only thing the ABI can express.
 
 ### And the audit's last item  ✅ DONE (A-25)
 

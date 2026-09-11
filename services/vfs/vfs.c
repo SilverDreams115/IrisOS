@@ -82,7 +82,7 @@ static long vfs_self_vs(void);
  * syscall boundary rather than at each map site. */
 #define VFS_SLOT_SELF_VS  60u
 #define VFS_SLOT_PT       61u
-/* Ledger A-31: a label, not a syscall number.  The fixup is the same one —
+/* Ledger A-32: a label, not a syscall number.  The fixup is the same one —
  * what changed is that the operation is now named by the capability it acts
  * on, so the wrapper passes a method rather than a table index. */
 static inline int64_t vfs_invoke(uint64_t c, unsigned long label, uint64_t a1,

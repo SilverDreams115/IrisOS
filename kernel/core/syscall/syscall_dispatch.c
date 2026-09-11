@@ -57,7 +57,7 @@ struct syscall_frame {
     uint64_t user_rip;     /*  48 — rcx, set by the syscall insn    */
     uint64_t user_rflags;  /*  56 — r11, set by the syscall insn    */
     uint64_t user_rsp;     /*  64 — the caller's stack              */
-    uint64_t arg4;         /*  72 — r8  (ledger A-31)               */
+    uint64_t arg4;         /*  72 — r8  (ledger A-32)               */
     /* Callee-saved, pushed FIRST so the offsets above did not move. */
     uint64_t user_r15;     /*  80 */
     uint64_t user_r14;     /*  88 */
@@ -224,7 +224,7 @@ __attribute__((noreturn)) void syscall_restart_trampoline(void) {
 }
 
 /*
- * Ledger A-31 — how many calls still came through the numbered door.
+ * Ledger A-32 — how many calls still came through the numbered door.
  *
  * The invocation ABI is adopted one caller at a time, and a caller that was
  * never migrated keeps working: that is what makes the migration safe and also
@@ -266,7 +266,7 @@ static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
 
     switch (num) {
     /*
-     * What is left of the numbered table (ledger A-31).
+     * What is left of the numbered table (ledger A-32).
      *
      * Three calls, and each is here because it invokes NOTHING.  seL4 keeps
      * `seL4_Yield` as a real syscall for exactly this reason: there is no

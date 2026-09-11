@@ -1,7 +1,7 @@
 #ifndef IRIS_INVOKE_H
 #define IRIS_INVOKE_H
 /*
- * invoke.h — the invocation label space (ledger A-31).
+ * invoke.h — the invocation label space (ledger A-32).
  *
  * THE SHAPE THIS ADOPTS
  *
@@ -154,7 +154,7 @@
  * expresses them as CNode invocations, with the CNode as the object and
  * (index, depth) as arguments; IRIS invokes them on the slot directly.  That
  * difference is about WHICH object a method hangs off, not about whether a
- * method needs one, and A-31 records it rather than rounding it away.
+ * method needs one, and A-32 records it rather than rounding it away.
  */
 #define INV_CAP_IDENTIFY                   57u
 #define INV_CAP_SAME_OBJECT                58u

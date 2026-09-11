@@ -44,7 +44,7 @@ syscall_entry:
     /*
      * Park the user stack pointer in the per-CPU scratch and take the kernel
      * stack.  This used to be `movq %rsp, %r8`; r8 is the FIFTH ARGUMENT
-     * REGISTER now (ledger A-31), and there is no other register free here —
+     * REGISTER now (ledger A-32), and there is no other register free here —
      * rcx and r11 carry the user's RIP and RFLAGS, rax the syscall number, and
      * rdi/rsi/rdx/r10/r8 are the five arguments.  Pushed straight out of
      * memory below, so it never occupies a register at all.
@@ -59,7 +59,7 @@ syscall_entry:
      *   [rsp+96]  user r13   │
      *   [rsp+88]  user r14   │
      *   [rsp+80]  user r15   ┘
-     *   [rsp+72] arg4        (r8, 5th user arg — A-31)
+     *   [rsp+72] arg4        (r8, 5th user arg — A-32)
      *   [rsp+64] user rsp    (from %gs:72)
      *   [rsp+56] user rflags (r11, set by syscall insn)
      *   [rsp+48] user rip    (rcx, set by syscall insn)
@@ -93,7 +93,7 @@ syscall_entry:
     pushq %r13
     pushq %r14
     pushq %r15
-    pushq %r8         /* arg4 (A-31) */
+    pushq %r8         /* arg4 (A-32) */
     pushq %gs:72      /* user rsp    */
     pushq %r11        /* user rflags */
     pushq %rcx        /* user rip    */

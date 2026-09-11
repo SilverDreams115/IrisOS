@@ -1234,7 +1234,7 @@ long it_map_fixup_inv(unsigned long label, long c, long a1, long a2, long a3) {
 }
 
 /* The numbered wrappers still reach the fixup while the suite migrates
- * (ledger A-31).  One translation, and it goes with the last `it_sysN`. */
+ * (ledger A-32).  One translation, and it goes with the last `it_sysN`. */
 long it_map_fixup(long nr, long a0, long a1, long a2, long a3) {
     return it_map_fixup_inv((nr == SYS_FRAME_MAP) ? (unsigned long)INV_FRAME_MAP
                                                   : 0ul,

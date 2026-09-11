@@ -331,11 +331,33 @@ ever run — seL4's "revoke the Untyped you used", in the form IRIS has.
 
 ## Syscall surface
 
-**71 live syscalls** out of 130 numbers (0–129): 127 are named in
-`kernel/include/iris/syscall.h`, 56 of those are retired, and 9–11 were never
-assigned. A retired number answers `IRIS_ERR_NOT_SUPPORTED` and is **never
-reused**, so a stale caller gets a refusal rather than somebody else's
-operation. Highlights by area:
+**One syscall, and three that invoke nothing.**
+
+```c
+SYS_INVOKE(cptr, label, a1, a2, a3)
+```
+
+A method is named by sending a label to the capability it acts on, which is
+seL4's arrangement and, since ledger A-32, IRIS's. The label space is one flat
+list (`kernel/include/iris/invoke.h`), as seL4's `invocation_label` is; the
+type is checked inside the method, by the resolver that asks for the type it
+needs, and a label sent to the wrong kind of capability answers `WRONG_TYPE`.
+
+The three survivors are `EXIT`, `YIELD` and `CLOCK_GET`, each because there is
+no capability it could be a method *of* — which is the same reason seL4 keeps
+`seL4_Yield`. Every other number answers `IRIS_ERR_NOT_SUPPORTED` and is
+**never reused**, so a stale caller gets a refusal rather than somebody else's
+operation. `test_syscall_dispatch` DS-6 tries every number from 0 to 400 and
+asserts exactly four exceptions.
+
+Two places IRIS differs from seL4's shape and says so rather than rounding it
+away: seL4 keeps `Send`/`Recv`/`Call`/`Reply` as real syscalls because
+`msgInfo`'s label is application data, while IRIS's message carries its own
+label and so `EP_Send` is a method like any other; and the slot methods
+(`Mint`, `Move`, `Revoke`, `SetGuard`) are invoked on the slot rather than on a
+CNode with an index and a depth.
+
+**62 methods**, by area:
 
 - **Threads and execution**: `TCB_SELF`, `TCB_CONFIGURE` (names the CSpace root
   and the address space — `seL4_TCB_Configure`'s shape), `TCB_WRITE_REGS`,
@@ -382,7 +404,10 @@ operation. Highlights by area:
 ### What the retirements say
 
 The reserved numbers are the convergence history, and they are grouped by what
-replaced them rather than by when they went:
+replaced them rather than by when they went.  Since A-32 they are ALL reserved
+numbers — the table that used to dispatch them is three cases — so what follows
+is a record of which methods stopped existing, not of which numbers stopped
+working:
 
 | Retired | Replaced by |
 |---|---|
@@ -474,7 +499,7 @@ somebody's delegation.
 
 Three independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **27419 assertions** across 27 suites
+- **Host unit tests** — `make test-unit`: **27423 assertions** across 27 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   kendpoint, kreply, knotification, kuntyped including its two-ended carve,
   kschedctx, kframe, the MDB/CDT (structural + model-based fuzzing), rights,
@@ -482,7 +507,7 @@ Three independently-gating layers, run on every change:
   the file-grant layer, …). They cover what a successful boot cannot show:
   buffer bounds on a page about to be mapped into ring 3, a CSpace that names
   itself, and an allocator's two ends meeting exactly once.
-- **Runtime tests** — booted under QEMU headless: **303 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **304 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
@@ -513,9 +538,9 @@ Three independently-gating layers, run on every change:
 ```bash
 make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
-make test-unit                                             # host unit suites (27419)
+make test-unit                                             # host unit suites (27423)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (303/303)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (304/304)
 make run                                                   # interactive QEMU
 ```
 

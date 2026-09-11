@@ -472,7 +472,7 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_poweroff(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
-/* ── The invocation door (ledger A-31, syscall_invoke.c) ─────────── */
+/* ── The invocation door (ledger A-32, syscall_invoke.c) ─────────── */
 uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
                         uint64_t a1, uint64_t a2, uint64_t a3);
 /* How many calls still came through the numbered door (syscall_dispatch.c).

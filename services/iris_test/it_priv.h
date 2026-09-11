@@ -1690,7 +1690,7 @@ struct it_utq_global {
     /* Stage 9-evt: 1 once the kernel's boot arena is sealed. */
     uint32_t kernel_heap_sealed;
     uint32_t _pad1;
-    /* Ledger A-31: calls that still came through the NUMBERED door.  Must be
+    /* Ledger A-32: calls that still came through the NUMBERED door.  Must be
      * falling while the invocation ABI is adopted, and zero when it closes. */
     uint64_t syscall_numbered_calls;
 };
@@ -2992,7 +2992,7 @@ static inline long it_sys4(long nr, long a0, long a1, long a2, long a3) {
 }
 
 /*
- * ── Ledger A-31: the suite invokes capabilities ──────────────────────────
+ * ── Ledger A-32: the suite invokes capabilities ──────────────────────────
  *
  * `it_sysN(SYS_X, cap, …)` becomes `it_invokeN(cap, INV_X, …)`.  The shape of
  * a call site changes in one way that is the whole point of the conversion:

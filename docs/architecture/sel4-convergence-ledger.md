@@ -1923,6 +1923,139 @@ change — one that can now be made a piece at a time, because there is an
 interface to narrow.
 
 
+## A-32 — a method you cannot name without naming what it acts on
+
+**Before**: 93 syscall numbers dispatched, 62 of them live.  A number selected
+a method; the capability it acted on was its first argument, like any other
+argument.  Charter §6 recorded this as "Own ABI (not seL4)" — permanent and
+deliberate, on the grounds that the authority semantics were equivalent and
+that a conversion would rewrite every caller in the system to gain nothing the
+charter measures.
+
+**After**: one invocation door.  `SYS_INVOKE(cptr, label, a1, a2, a3)` names a
+capability and a method, and the method cannot be named without it.  Three
+numbers survive — `SYS_EXIT`, `SYS_YIELD`, `SYS_CLOCK_GET` — each because it
+invokes nothing, which is the same reason seL4 keeps `seL4_Yield`.
+
+**What the conversion was actually worth.**  The charter row was right that the
+authority semantics do not change: nothing was reachable without a capability
+before and nothing is now, and not one of the 36 invariants moved.  What it
+undervalued is the difference between a property that holds and a property the
+shape enforces.  Under numbers, "a syscall selects a method and never an
+object" was a rule the kernel obeyed and nothing checked.  It is now the only
+thing the ABI can express.
+
+**The five stages, and what each cost.**
+
+*A — the door.*  A second entry point, resolving the capability to learn its
+type and dispatching on (type, label), with every number still working.  The
+syscall entry grew a fifth argument register: an invocation needs a capability,
+a label and three method arguments where the numbered ABI needed four
+arguments, and three arguments is what `Untyped_Retype`, `TCB_Configure` and
+`Frame_Map` each take.  `r8` was the scratch holding the user stack pointer for
+three instructions after SWAPGS; it waits in a per-CPU slot now and is pushed
+straight out of memory, so it occupies no register at all.
+
+*B — the labels went flat, and the plan was wrong twice.*  The first cut scoped
+labels to the invoked type, so `TCB_Suspend` and `EP_Send` were both 1.  That
+is not seL4's arrangement — `enum invocation_label` is one flat list — and it
+is not free: a scoped space forces the door to learn the type before it can
+pick the method, which is a CSpace walk the method then repeats.  Two walks per
+invocation, forever, for a disambiguation seL4 does not need.
+
+The plan said the repeat would go the other way: hoist the resolve out of sixty
+function bodies and hand each the object it needs.  **The code refused, for an
+architectural reason.**  Under the event kernel (D-1), WHEN a method resolves is
+part of its contract.  `sys_notify_wait` checks for a notification that closed
+under it BEFORE resolving, because the close is usually the last capability
+going away and a resolve would report NOT_FOUND for something that actually
+closed.  `sys_tcb_suspend` returns on re-entry before resolving, because a
+restarted suspend that resolved and suspended again would put the thread back
+to sleep the instant it was resumed.  Six of the seven methods that act before
+resolving are the blocking ones — `ep_send`, `ep_recv`, `ep_call`,
+`reply_recv` among them.  Hoisting would have broken exactly the hot path.  It
+is refused rather than scheduled, and this is the record of why.
+
+So the type is checked where it always was: inside the method, by the resolver
+that asks for what it needs.  A label sent to the wrong kind of capability
+answers `IRIS_ERR_WRONG_TYPE`, which names what is wrong — a better answer than
+seL4's `IllegalOperation`, and one the kernel only became able to give
+consistently at A-30, three commits earlier.
+
+*C — ring 3.*  Every service, the loader, the shared headers and the assembly
+driver.  `iris_vspace`'s map fixup took a syscall number and dispatched on it;
+it takes a label.  `iris_ipc_buffer` and `svc_loader` dropped the arity wrappers
+they carried only so they could name numbers.  kbd is where the change is
+visible as what it is: a syscall was `rax=number, rdi=capability`, an invocation
+is `rax=SYS_INVOKE, rdi=capability, rsi=method`, so every site shifts one
+register and `EP_RECV`'s reply object moves into the fifth.  That also forced
+the labels out of an enum and into defines — a label is ABI, and the assembler
+has to read it.
+
+*D — the suite.*  1,139 call sites across eleven files.
+
+*E — the door closed.*  The switch and thirty-two functions whose entire body
+was a refusal: the residue of retirements that kept a stub so the number would
+answer NOT_SUPPORTED.  A number that names nothing is refused by the dispatcher
+having no case for it.  737 lines deleted, 28 added.
+
+**The instrument, and the three times it earned its place.**  The migration
+fails silently by construction — a caller that is never converted keeps
+working, and every test passes.  D-4's IPC-buffer migration had exactly this
+shape and the first service tried was quietly not migrated.  So a counter of
+calls that still named a method by number went in with the first commit, and
+`SYS_UNTYPED_QUERY` reports it.
+
+It read **438,901**, which was not a stalled migration: it was `SYS_YIELD`,
+which the settle loops spin on and which is never going anywhere.  A number
+that cannot reach zero is not a progress bar, so the three permanent syscalls
+stopped being counted.  It read **399**, and the rest was T148 fuzzing every
+hole in the table on purpose; a number that names nothing reaches no method, so
+the default branch takes its increment back.  It read **59**, which was the
+retirement assertions and T337's own probes.  It reads **0**.
+
+**The one caller the mechanical pass missed**, and how.  lifecycle_probe chose
+between `EP_CALL` and `EP_SEND` with a ternary, so the first argument was not a
+literal and the converter could not see it.  Closing the door turned it into
+NOT_SUPPORTED, the child never blocked, and T113 hung.  It hung rather than
+failing quietly, which is the only reason it cost minutes — and the gauge would
+have said so too, if it had been read before the door was closed rather than
+after.
+
+**What did NOT change, and is worth saying because the row claimed it would.**
+Not one of the 36 invariants moved.  No authority is reachable that was not, and
+none is unreachable that was.  Every method resolves its own capability and
+checks its own rights, exactly as it did when a number selected it.
+
+**Two divergences from seL4 that this created or kept, recorded rather than
+rounded away.**
+
+1. *IRIS folds seL4's IPC syscalls into the invocation door too.*  seL4 keeps
+   `Send`, `Recv`, `Call`, `Reply`, `ReplyRecv`, `NBSend` and `NBRecv` as real
+   syscalls, because `msgInfo`'s label is application data and the syscall
+   number is what says which IPC verb was meant.  IRIS's message carries its own
+   label, so the number is not needed for that, and `EP_Send` is a method like
+   any other.  One entry point rather than eight.  More uniform than seL4, and
+   different from it either way.
+2. *The slot methods hang off the slot.*  `Mint`, `Move`, `Revoke`,
+   `SetGuard`, `Identify` and `SameObject` act on a slot rather than on the
+   object in it.  seL4 expresses them as CNode invocations, with the CNode as
+   the object and (index, depth) as arguments; IRIS invokes them on the slot
+   directly.  A difference about which object a method hangs off, not about
+   whether a method needs one.
+
+**Still open, named rather than dropped: `struct IrisMsg` is the message ABI.**
+A message is an 80-byte struct in user memory named by a pointer, where seL4's
+is a `MessageInfo` word plus message registers plus the IPC buffer.  It is a
+divergence about how a MESSAGE is carried, not about how a METHOD is named, and
+the charter records the buffer half of it separately as D-4 (closed at Stage
+8-cap; every service that sends a bulk payload is migrated).  Retiring the
+struct is 339 ring-3 sites and 130 kernel references — the same size as this
+whole conversion — and it buys nothing this charter measures beyond what D-4
+already bought.  **Not scheduled, and that is a decision rather than an
+oversight.**
+
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types, and the boundary
@@ -1947,6 +2080,13 @@ interface to narrow.
 - T334 pins that IPC capability transfer is a COPY (A-29): the sender keeps
   what it sent, the receiver's capability is a revocable derivation child of
   the sender's slot, and deleting that slot is not revoking it.
+- T337 pins the invocation ABI (A-32): every method that had a syscall number
+  answers NOT_SUPPORTED when called by one, the three calls that invoke nothing
+  still work, a label sent to the wrong kind of capability is refused by type,
+  a label that names no method is refused, the fifth argument register arrives,
+  and the numbered-door gauge is a structural zero.  `test_syscall_dispatch`
+  makes the stronger version from inside the kernel: every number from 0 to 400
+  answers NOT_SUPPORTED except four.
 - T335 pins the error-code rule of A-30: a capability of the wrong type is
   WRONG_TYPE, a capability of the right type without the authority is
   ACCESS_DENIED, and nothing about either is a secret from the caller.

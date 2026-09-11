@@ -243,7 +243,7 @@ static inline long lp_sys2(long nr, long a0, long a1) {
 /* A free slot for the device-authority probes to aim at: they must be refused
  * for want of a capability, so everything else about them has to be valid. */
 #define LP_SLOT_DEVPROBE 45u
-/* Ledger A-31: a label, not a syscall number. */
+/* Ledger A-32: a label, not a syscall number. */
 static inline long lp_invoke(long c, unsigned long label, long a1, long a2, long a3) {
     long r = iris_invoke(c, label, a1, a2, a3);
     if (r == (long)IRIS_ERR_MISSING_TABLE)

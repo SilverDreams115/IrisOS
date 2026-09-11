@@ -1509,7 +1509,7 @@ void test_t295(void) {
 #define T337_EP     IT_SCRATCH_2
 #define T337_RO     IT_SCRATCH_3
 
-/* ── T337: two doors, one set of rooms (ledger A-31, stage A) ──────────────
+/* ── T337: two doors, one set of rooms (ledger A-32, stage A) ──────────────
  *
  * The syscall number is being retired as the thing that selects a method.  In
  * its place: `SYS_INVOKE(cptr, label, …)`, which resolves the capability,
