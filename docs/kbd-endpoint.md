@@ -2,8 +2,9 @@
 
 The keyboard service delivers key events to sh **exclusively** over KEndpoint
 (`"kbd.ep"`). The wire format is `kernel/include/iris/kbd_ep_proto.h`; the
-server is `services/kbd/main.S` (ring-3 assembly). This replaces the Class D
-KChannel debt `kbd event channel (sh ← kbd)` from `docs/kchannel-migration.md`.
+server is `services/kbd/main.S` (ring-3 assembly). It replaced the Class D
+KChannel debt `kbd event channel (sh ← kbd)` from `docs/kchannel-migration.md`,
+and since Phase 13 there is nothing else left: kbd is endpoint-only.
 
 ## Design: pull with parked reply (seL4-style deferred reply)
 
@@ -17,16 +18,18 @@ Design questions and answers that selected this shape:
    when the consumer is slow — unacceptable for the IRQ service path. With
    pull, kbd never blocks on delivery and backpressure is exactly one
    in-flight event per consumer call.
-4. **How does the consumer block without polling?** The kernel creates a
-   per-call **KReply** for every `EP_CALL`; the receiver may answer it
-   *later* (`SYS_REPLY` on the stashed cap). kbd parks the reply cap when no
-   event is buffered and answers it from the next IRQ scancode. The
-   consumer's `EP_CALL(KBD_EP_OP_READ)` therefore doubles as the blocking
-   wait — no busy-poll, no sleep loops, no extra notification object.
+4. **How does the consumer block without polling?** Every `EP_Call` binds a
+   **KReply**, which the receiver may answer *later* (Phase S1: the object is
+   the server's own, passed to the receive and handed back in `got_cap`). kbd
+   parks the reply object when no event is buffered and answers it from the
+   next IRQ scancode. The consumer's `EP_Call(KBD_EP_OP_READ)` therefore
+   doubles as the blocking wait — no busy-poll, no sleep loops, no extra
+   notification object.
 5. **Bursts?** A 16-deep scancode ring absorbs typing while the consumer is
    processing; on overflow the OLDEST event is dropped (newest kept).
-6. **Consumer dies?** kbd's deferred `SYS_REPLY` fails; the cap is closed,
-   nothing leaks, no event is delivered twice.
+6. **Consumer dies?** the binding is dropped, so kbd's deferred `Reply`
+   answers `NOT_FOUND`; the object returns to free and is reusable, nothing
+   leaks, and no event is delivered twice.
 7. **kbd dies?** KReply teardown wakes the parked caller with an error; sh
    retries (yield + re-call) and svcmgr's restart policy respawns kbd. The
    endpoint cap stays valid across restarts (svcmgr keeps the master).
@@ -43,10 +46,12 @@ Non-blocking fetch. Reply OK with `words[1]` = oldest buffered scancode, or
 
 ### KBD_EP_OP_READ (0x0202)
 
-Blocking pull. Ring non-empty → immediate reply. Ring empty → the per-call
-KReply cap is **parked** (at most one; a second concurrent READ gets
-`IRIS_ERR_WOULD_BLOCK`) and answered from the next IRQ scancode. Single
-interactive consumer (sh) by design.
+Blocking pull. Ring non-empty → immediate reply. Ring empty → the reply
+object is **parked** (at most one; a second concurrent READ gets
+`IRIS_ERR_WOULD_BLOCK`) and answered from the next IRQ scancode. kbd owns TWO
+reply objects (slots 13/14) and receives with whichever is not parked, which
+is what lets it keep serving while one caller waits. Single interactive
+consumer (sh) by design.
 
 ### IRIS_EP_OP_PING (0xFF01)
 
@@ -55,27 +60,33 @@ Health check; replies `IRIS_EP_REPLY_OK`. Served even while a READ is parked.
 ## Server loop (services/kbd/main.S)
 
 ```
+TCB_BindNotification(OWN_TCB, irq_notification)   /* once, at startup */
 for (;;) {
-    while (SYS_EP_NB_RECV(kbd_ep_h) == OK)   /* drain EP requests */
-        dispatch → SYS_REPLY (or park);
-    SYS_CHAN_RECV_NB(service_h);             /* legacy probes only (7.6) */
-    on HELLO/STATUS/SUBSCRIBE: dispatch;
-    SYS_NOTIFY_WAIT_TIMEOUT(notif_h, 10ms);  /* IRQ KNotification (7.6) */
-    on signal:
-        read port 0x60, SYS_IRQ_ACK;
-        parked reply? answer it : push ring (drop-oldest);
-        forward to legacy subscriber if one is registered;
+    EP_Recv(kbd_ep, no_recv_slot, free_reply_object)   /* BLOCKING */
+    label == IRIS_MSG_LABEL_NOTIFICATION ?             /* a keystroke */
+        read port 0x60 via the KIoPort cap; IRQ_Ack;
+        parked reply? answer it : push ring (drop-oldest)
+      : dispatch POLL / READ / PING → Reply (or park)
 }
 ```
 
-Phase 7.6 moved the blocking point from the legacy channel to the IRQ
-KNotification: the channel is drained non-blocking (probes only), and the
-10 ms timeout on `SYS_NOTIFY_WAIT_TIMEOUT` keeps both drains alive.
+**One blocking point, and idle costs nothing.** This is ledger A-23's whole
+point. The loop used to drain the endpoint non-blockingly and then sleep 10 ms
+on the IRQ notification, because a thread blocked receiving on an endpoint was
+deaf to signals and serving both meant waking up to check: a hundred wakeups a
+second, to find nothing, forever. The notification is BOUND to the thread now,
+so a keystroke wakes it out of the endpoint receive and arrives as a message
+labelled `IRIS_MSG_LABEL_NOTIFICATION` — which is how a server tells "somebody
+called me" from "somebody signalled me" on one receive.
 
-EP constants are mirrored as plain hex for the assembler
-(`KBD_EP_PING_OP`, `KBD_EP_E_*`, `KBD_EP_KIND_SERVICE_EP`) and sync-checked
-against `endpoint_proto.h`/`nc/error.h` with `_Static_assert` when the header
-is included from C (iris_test does).
+kbd reads the ABI the same way C does: `iris/invoke.h` and `iris/ipc_msg.h`
+are both assembler-safe on purpose (plain `#define`s, no `u` suffixes, the
+C-only parts behind `#ifndef __ASSEMBLER__`), so the driver shifts by
+`IRIS_MI_LABEL_SHIFT` and invokes `INV_EP_RECV` rather than mirroring hex
+constants that could drift. The remaining service-protocol mirrors
+(`KBD_EP_PING_OP`, `KBD_EP_E_*`) are sync-checked against
+`endpoint_proto.h`/`nc/error.h` with `_Static_assert` when the header is
+included from C (iris_test does).
 
 ## Discovery and bootstrap
 
@@ -87,6 +98,8 @@ is included from C (iris_test does).
   `scripts/run_qemu_headless.sh`; no silent fallback, no lookup).
 - `SVCMGR_BOOTSTRAP_KIND_KBD_CAP` (9) and the `give_kbd` catalog flag are
   retired; svcmgr no longer forwards the kbd write-end to sh.
+- kbd's own TCB is `IRIS_CPTR_OWN_TCB` (slot 19) — it has to name itself to
+  bind its notification, which is what a thread capability is for.
 
 ## IRQ delivery (Phase 7.6: KNotification)
 
@@ -97,17 +110,16 @@ catalog flags kbd `irq_notify = 1`: svcmgr creates a KNotification master
 Phase 7.6) and pre-start-mints the WAIT side at `IRIS_CPTR_IRQ_NOTIFY`
 (slot 7; bootstrap kind 0x23 retired in Phase 8 — kbd uses the slot as a
 constant). On each IRQ the kernel masks the line, signals bit `1 << irq`
-(signal-only — safe from IRQ context, no allocation) and EOIs; kbd wakes
-from `SYS_NOTIFY_WAIT_TIMEOUT`, reads port 0x60 via its KIoPort cap and
-re-arms with `SYS_IRQ_ACK`. `KBD_MSG_IRQ_SCANCODE` is no longer dispatched.
+(signal-only — safe from IRQ context, no allocation) and EOIs; kbd wakes out
+of its endpoint receive (A-23), reads port 0x60 via its KIoPort cap and
+re-arms with `IRQ_Ack`. `KBD_MSG_IRQ_SCANCODE` is no longer dispatched.
 
-## What remains on KChannel (Class D residue)
+## What remains on KChannel
 
-- **init S2/S7 probes** (`HELLO`, `SUBSCRIBE`) and **svcmgr STATUS** stay on
-  the legacy pair. init **unsubscribes after the S7 gate** so sh's EP pull is
-  the only live key consumer (no double echo); the subscriber path remains
-  only as a probed legacy mechanism.
-- The bootstrap one-shot channel (Class B, like every service).
+Nothing. The legacy probe pair (`HELLO`, `SUBSCRIBE`, svcmgr `STATUS`) and the
+bootstrap one-shot channel went with KChannel in Phase 13; every capability
+kbd holds is a pre-start CSpace mint and every message it serves is an
+endpoint message.
 
 ## Tests
 

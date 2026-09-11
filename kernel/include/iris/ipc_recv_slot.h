@@ -7,33 +7,31 @@
  * Stage 4 the declaration is a full CPtr, not a direct root index, so a
  * process whose root CNode is full can still receive capabilities — into a
  * second-level CNode, the way a real CSpace hierarchy works.
- * A-33: the declaration is an argument register of its own (it reused two dead
- * message fields before, which is why the old text said "no ABI
- * change — see docs/architecture/a1-5-ipc-receive-slot.md):
  *
- *   SYS_EP_RECV / SYS_EP_NB_RECV : input hint msg.attached_cap
- *   SYS_EP_CALL                  : input field msg.attached_handle
- *                                  (the slot for a cap the REPLY transfers)
+ * A-33 gave the declaration an argument register of its own.  It used to ride
+ * in two dead message fields whose identity depended on the operation
+ * (`attached_cap` for a receive, `attached_handle` for a Call), which is why
+ * the old text here said "no ABI change" and why there used to be two helpers
+ * to choose between.  There is one place to put it now: `msg.recv_slot`.
  *
- * Output discriminator (both attached_handle and attached_cap), shared with
- * the CPtr/handle namespace split:
+ * What a receiver gets back is `msg.got_cap` — a CPtr, or `IRIS_MSG_NO_CAP`
+ * when nothing travelled.  There is no second outcome any more: handle
+ * materialization was the fallback for a receiver that declared nothing, and
+ * Stage 4 retired it along with the handle table.  A receive that declares no
+ * slot is delivered the MESSAGE without the capability, which is the same
+ * fail-closed shape an occupied or broken slot has.
  *
- *   0                      no cap delivered
- *   HANDLE_TAG bit clear   cap installed in the receiver's CSpace (CPtr)
- *   HANDLE_TAG bit set     cap materialized as a handle (legacy / fallback)
+ * The classifier below survives because the boundary it tests is still real:
+ * a value with the handle TAG BIT set is not a CPtr.  It used to be tested as
+ * the literal 1024, which was correct only while handles were encoded as
+ * `slot | gen << 10`; handles carry bit 31 now (see nc/handle.h) and CPtrs own
+ * the whole low 31 bits, so a two-level CPtr such as (leaf << 8) | 80 is
+ * routinely above 1024 and is NOT a handle.  Keeping the old test would have
+ * classified every multi-level delivery as a handle.
  *
- * The boundary is the handle TAG BIT, not a magnitude.  It used to be the
- * literal 1024, which was correct only while handles were encoded as
- * `slot | gen << 10` and therefore always >= 1024.  Handles carry bit 31 now
- * (see nc/handle.h), and CPtrs own the whole low 31 bits — a two-level CPtr
- * such as (leaf << 8) | 80 is routinely above 1024 and is NOT a handle.
- * Keeping the old test would have classified every multi-level delivery as a
- * handle.
- *
- * Declaring slot 0 (or not declaring) keeps bit-for-bit legacy behavior.
- * These helpers only write input fields and read outputs; they never bypass
- * kernel validation (occupied slot → IRIS_ERR_ALREADY_EXISTS fail-fast,
- * broken/occupied destination at delivery → no cap delivered, fail closed).
+ * These helpers only read outputs; they never bypass kernel validation
+ * (occupied slot → IRIS_ERR_ALREADY_EXISTS fail-fast, broken/occupied
+ * destination at delivery → no cap delivered, fail closed).
  */
 
 #ifndef IRIS_IPC_RECV_SLOT_H
@@ -50,17 +48,6 @@
  * correct, and it agrees with CSPACE_DIRECT_CPTR_LIMIT in nc/cspace.h, which
  * is the kernel-side definition of the same boundary. */
 #define IRIS_CPTR_LIMIT ((uint32_t)HANDLE_TAG)
-
-/*
- * A-33: the two "declare a receive slot" helpers are gone.
- *
- * They existed because the field a receive slot went in DEPENDED on which call
- * was going to read it — `attached_cap` for a receive, `attached_handle` for a
- * Call — and a caller that used the wrong one silently declared nothing.  The
- * message ABI gives a receive slot its own register and `struct iris_msg` its
- * own field, so there is one place to put it and no pair of helpers to choose
- * between.
- */
 
 /* Is this a delivered capability?  A receive reports `IRIS_MSG_NO_CAP` when
  * nothing came, and a CPtr when something did. */

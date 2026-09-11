@@ -186,15 +186,12 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 /* sys_wait_any / sys_wait_any_timeout retired — Phase 13/Track G */
 
 /* ── Forward declarations — VM ───────────────────────────────────── */
-uint64_t sys_vmo_create(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_vmo_create_for(uint64_t arg0, uint64_t arg1, uint64_t arg2,
-                            uint64_t arg3); /* Phase 29; Stage 7 Step 14: arg3 = budget */
-uint64_t sys_vmo_map(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_vmo_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+/* The sys_vmo_* declarations are gone with the KVMO: no definition, no caller,
+ * and no label reaches them.  A frame is retyped and mapped as a whole
+ * (ledger D-10), which is what made the VMO's page-at-a-time surface
+ * unnecessary. */
 uint64_t sys_frame_size(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_asid_pool_assign(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_vmo_map_into(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
-uint64_t sys_vmo_share(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 
 /* ── Forward declarations — cap / handle ─────────────────────────── */
@@ -462,7 +459,6 @@ uint64_t sys_untyped_reset(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_frame_map  (uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 uint64_t sys_frame_unmap(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
-uint64_t sys_vmo_map_page(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);  /* Phase 26 */
 
 /* ── Forward declarations — TCB caps (Ph96-101) ──────────────────── */
 uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2);

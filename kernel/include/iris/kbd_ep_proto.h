@@ -28,10 +28,10 @@
  * KBD_EP_OP_READ — blocking pull (deferred reply).
  *   If the ring has an event, replies immediately. Otherwise kbd PARKS the
  *   per-call KReply capability and answers it from the next IRQ scancode:
- *   the caller stays blocked in SYS_EP_CALL until a key arrives. Exactly one
+ *   the caller stays blocked in its EP_Call until a key arrives. Exactly one
  *   reply may be parked; a second READ while one is parked gets ERR
  *   IRIS_ERR_WOULD_BLOCK (single interactive consumer by design — sh).
- *   If the parked caller dies, kbd's deferred SYS_REPLY fails and the
+ *   If the parked caller dies, kbd's deferred Reply fails and the
  *   capability is closed; no event is delivered twice.
  *
  * IRIS_EP_OP_PING (0xFF01, endpoint_proto.h) is also served: reply OK.

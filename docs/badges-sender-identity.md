@@ -22,27 +22,25 @@ and the retirement of the svcmgr legacy loop.
 
 ## Delivery (anti-spoofing)
 
-`struct IrisMsg` grew to 72 bytes with a final `uint64_t sender_badge`
-field (offsets of all prior fields unchanged — asm consumers verified by
-`_Static_assert`s in `iris/ipc_msg.h`).
+A badge is not a field a sender can write. Since ledger **A-33** it is a
+RETURN register of a receive (`IRIS_MSGR_BADGE`, the first one), so there is
+no place in a message for a sender to put one — the anti-spoofing that T051
+proves is now structural rather than enforced by overwriting.
 
-- On **EP_SEND / EP_NB_SEND / EP_CALL** the kernel resolves the invoked
-  cap through the badge-aware dual resolver
-  (`cspace_or_handle_resolve_endpoint_badged`) and **overwrites**
-  `msg.sender_badge` with the cap's badge after copying the message from
-  user space. Whatever the sender wrote there is discarded — a badge can
-  never be forged from payload (runtime-proven by T051).
-- On **EP_RECV / EP_NB_RECV** the receiver reads the stamped value.
-- On **SYS_REPLY** the kernel forces `sender_badge = 0` in the caller's
-  reply: reply identity is implied by the one-shot KReply, and a server
+- On **EP_Send / EP_NBSend / EP_Call** the kernel resolves the invoked cap
+  through the badge-aware CSpace resolver
+  (`cspace_resolve_only_endpoint_badged`) and stages the cap's badge for
+  delivery. Nothing the sender wrote is consulted (runtime-proven by T051).
+- On **EP_Recv / EP_NBRecv** the receiver reads it out of the badge register.
+- On **Reply** and the reply half of **ReplyRecv** the kernel delivers
+  `badge = 0`: reply identity is implied by the one-shot KReply, and a server
   cannot spoof a badge into its caller.
 
 ## Minting and derivation rules
 
-`SYS_CSPACE_MINT(src, dest_slot, arg2, dest_cnode)` packs arg2 as
-`rights | badge << 32` (until Stage 7 Step 9 this was
-`SYS_PROC_CSPACE_MINT(proc, slot, src, arg3)`, which named the process owning
-the destination CSpace instead of the CNode itself):
+`CSpace_Mint` — since ledger A-32 the label `INV_CSPACE_MINT` invoked on the
+source capability, with the destination slot and `rights | badge << 32` as
+arguments — applies:
 
 | Case | Result |
 |---|---|
@@ -52,13 +50,12 @@ the destination CSpace instead of the CNode itself):
 | badge != 0, wrong object type | INVALID_ARG |
 | occupied destination slot | ALREADY_EXISTS (no clobber) |
 
-Preservation everywhere else: `SYS_HANDLE_DUP` copies the badge;
-CNode MOVE/SWAP preserve slot badges; `SYS_CSPACE_RESOLVE` materializes a
-slot into a handle **with** its badge; cap transfer (send-side attach and
+Preservation everywhere else: a mint with badge 0 copies the badge; CNode
+MOVE/SWAP preserve slot badges; cap transfer (send-side attach and
 reply-cap transfer) carries the badge through staging
 (`syscall_ipc_stage_cap_badged` → `task.ep_cap_badge` →
-`syscall_ipc_deliver_cap_badged`). Closing a cap never affects the badge
-of any other cap; slot/handle reuse always clears the badge.
+`syscall_ipc_deliver_cap_badged`). Deleting a cap never affects the badge
+of any other cap; slot reuse always clears the badge.
 
 ## Trust model (current phase)
 
@@ -97,8 +94,8 @@ assembly) replies to `IRIS_EP_OP_PING` with
 | T047–T050 | svcmgr/vfs/console/kbd each observe `IRIS_BADGE_IRIS_TEST` on the minted slots |
 | T051 | payload spoofing impossible (forged field overwritten by kernel) |
 | T052 | legacy lookup caps stay unbadged (badge 0) and functional |
-| T053 | two caps to the SAME endpoint deliver different badges (slots 1 vs 28); badged TRANSFER-only cap still fails EP_CALL with ACCESS_DENIED, no fallback |
-| Host tests | slot/handle badge storage, swap/delete isolation, badged resolver, unbadged = 0, no badge leak on ACCESS_DENIED (test_ipc_cspace.c) |
+| T053 | two caps to the SAME endpoint deliver different badges (slots 1 vs 28); badged TRANSFER-only cap still fails EP_Call with ACCESS_DENIED, no fallback |
+| Host tests | slot badge storage, swap/delete isolation, badged resolver, unbadged = 0, no badge leak on ACCESS_DENIED (test_ipc_cspace.c) |
 
 ## What this unlocks
 
@@ -116,6 +113,6 @@ Phase 10 consumes these badges as **policy** (see
 [service-lifecycle.md](service-lifecycle.md)): `iris_badge_is_supervisor()`
 gates `.ep` lookup DUPLICATE grants and the privileged RESTART op; EP REGISTER
 binds an `owner_badge`; UNREGISTER checks it; and the STATUS/generation oracle
-plus respawn driven by a real kill — `SYS_TCB_EXIT` on the child's first
-thread since Stage 7, `SYS_PROCESS_KILL` when Phase 10 was written — give
-death detection and relookup.
+plus respawn driven by a real kill — `TCB_Exit` on the child's first thread
+since Stage 7, `SYS_PROCESS_KILL` when Phase 10 was written — give death
+detection and relookup.

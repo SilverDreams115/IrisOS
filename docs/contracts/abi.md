@@ -2,163 +2,173 @@
 
 ## Purpose
 
-Defines the current syscall compatibility surface implemented by the live IRIS tree.
+Defines the current syscall compatibility surface implemented by the live IRIS
+tree.
 
-This document is descriptive, not aspirational. If code and docs disagree, code wins until the docs are corrected.
+This document is descriptive, not aspirational. If code and docs disagree,
+code wins until the docs are corrected.
+
+## The shape of the surface
+
+Since ledger **A-32** there are **three syscall numbers**, and each is there
+because it invokes nothing:
+
+| Number | Name | Why it is a number |
+|---|---|---|
+| 1 | `SYS_EXIT` | a thread ending itself names no object |
+| 3 | `SYS_YIELD` | seL4 keeps `seL4_Yield` for exactly this reason |
+| 62 | `SYS_CLOCK_GET` | A-27 established it is unprivileged on this architecture; retiring it would have bought nothing, so it was answered rather than removed |
+
+Everything else is an **invocation**:
+
+```
+SYS_INVOKE(cptr, label, a1 … a7)      /* number 144 */
+```
+
+The capability says WHAT is being acted on, the label says WHICH method, and
+neither can be given without the other. That is the property the syscall
+number could never have: a number named a method and nothing else.
+
+Every other number in the table answers `IRIS_ERR_NOT_SUPPORTED` — the
+dispatcher's switch has no case for it. A number is never reused.
 
 ## Register convention
 
-Arguments travel in RDI, RSI, RDX and R10 (arg0..arg3); the syscall number is
-in RAX.
-
-A caller that passes fewer than four arguments **must still present a defined
-R10 — zero.**  A syscall that later grows a fourth argument reads that
-register, and what the compiler left in it is not zero.  This is not a
-theoretical rule: it is how `SYS_INITRD_VMO`'s budget argument (Stage 6) broke
-every three-argument caller until their stubs were fixed.  Zero has a defined
-meaning wherever an argument has been added so far ("no destination", "my own
-budget"), so a stub that zeroes R10 degrades to the previous behaviour instead
-of resolving garbage.
-
-## Memory budgets (Stage 6)
-
-Two syscalls take a **budget**: a `KUntyped` CPtr, with `RIGHT_WRITE`, that the
-memory they allocate is carved from.
-
-| Syscall | Argument | Required? | What it pays for |
-|---|---|---|---|
-| `SYS_VMO_CREATE` | arg1 | no (0 = own budget) | the VMO's pages, page-address array and header |
-| `SYS_INITRD_VMO` | arg3 | no (0 = own budget) | the private copy of the boot image |
-
-`SYS_PROCESS_CREATE` used to be a third, and is not any more: Stage 6-pure made
-the caller RETYPE what it used to buy, and Stage 7-proc retired the syscall
-outright.  Everything else that allocates — a TCB, a CNode, a VSpace, a page
-table — comes through `SYS_UNTYPED_RETYPE2`, which names its budget by
-construction.
-
-## Composed objects (Stage 6-pure)
-
-The kernel does not create an address space, a paging level or a CSpace.  A
-holder retypes each from its own Untyped and passes it in.
-
-| Syscall | Arguments | What the caller supplies |
+| Register | Raw arg | For an invocation |
 |---|---|---|
-| `SYS_TCB_CONFIGURE` (120) | tcb, cspace, vspace | the CSpace root and the address space the thread runs in, both retyped by the caller.  This is `seL4_TCB_Configure`: since Stage 7-proc there is no identity check against a third object, and threads sharing a CSpace and a VSpace is what a "process" IS |
-| `SYS_VSPACE_MAP_TABLE` (122) | pt, vspace, vaddr | an `IRIS_KOBJ_PAGE_TABLE` to fill the first level missing for `vaddr` |
+| `rax` | — | the syscall number |
+| `rdi` | arg0 | the capability |
+| `rsi` | arg1 | the label |
+| `rdx` | arg2 | a1 |
+| `r10` | arg3 | a2 |
+| `r8` | arg4 | a3 |
+| `r9` | arg5 | a4 |
+| `r15` | arg6 | a5 (ledger A-33) |
+| `r14` | arg7 | a6 (ledger A-33) |
+| `r13` | arg8 | a7 (ledger A-33) |
 
-A map whose walk is incomplete answers `IRIS_ERR_MISSING_TABLE` and names
-nothing else — the holder supplies the level and retries.  A task that maps
-therefore needs a budget to retype levels from, which is why `svc_load_minted_ws`
-takes the slot to mint the child its own.
+`rcx` and `r11` are the machine's: `syscall` puts the user's RIP and RFLAGS
+there, and `sysret` takes them back.
 
-Everything carved this way is a **child** of that Untyped, so
-`SYS_UNTYPED_RESET` refuses while it lives and reclaims the whole region once
-it does not.  A bump allocator does not rewind: reclamation is by RESET, which
-is why spawners recycle budgets rather than sizing them for a whole run.
+Nine argument registers is what the MESSAGE ABI needs, not what a method
+needs: a send carries a MessageInfo word, four message registers, a capability
+to transfer and a receive slot, and an invocation's own `cptr`/`label` sit in
+front of all of it. No method takes more than three arguments of its own.
 
-## Error Model
+A caller that passes fewer arguments than the widest form **must still present
+defined registers — zero.** A method that later reads a further argument reads
+that register, and what the compiler left in it is not zero. Zero has a
+defined meaning wherever an argument has been added ("no destination", "my own
+budget"), so a stub that zeroes the tail degrades to the previous behaviour
+instead of resolving garbage.
 
-The current syscall ABI target is:
+## The label space
+
+`kernel/include/iris/invoke.h` holds it: **62 labels**, `INV_INVALID` = 0, one
+FLAT list. seL4's `enum invocation_label` is flat for a reason worth
+restating — a type-scoped label space forces the dispatcher to learn the
+capability's type before it can pick the method, which is a CSpace walk the
+method then repeats. Flat labels route on the label alone and the method does
+the one walk it always did.
+
+The type is checked where it always was: inside the method, by the resolver
+that fetches the capability with the type it requires. A label sent to the
+wrong kind of capability answers `IRIS_ERR_WRONG_TYPE` (ledger A-30) — which
+says what is actually wrong, and is a better answer than seL4's
+`IllegalOperation` for the same mistake.
+
+| Group | Labels |
+|---|---|
+| TCB | 1–14: Suspend, Resume, SetPriority, Exit, GetInfo, ReadRegs, WriteRegs, Configure, Watch, SetFaultHandler, SetTimeoutHandler, ExitCode, SetIPCBuffer, BindNotification |
+| Endpoint | 15–21: Send, NBSend, Recv, NBRecv, Call, CancelBadgedSends, ReplyRecv |
+| Notification | 22–24: Signal, Wait, Poll |
+| Reply | 25: Send |
+| Untyped | 26–30: Info, Query, Reset, Retype, SetDeviceBudget |
+| CNode | 31–32: Delete, Swap |
+| Scheduling context | 33–37: Bind, Consumed, YieldTo, Configure, SetOnCaller |
+| Frame | 38–40: Map, Unmap, Size |
+| PageTable | 41: Map |
+| ASIDPool | 42: Assign |
+| IRQ | 43–45: SetNotification, Ack, Clear |
+| IOPort | 46–47: In, Out |
+| Boot authority | 48–56: FramebufferInfo, InitrdCount, InitrdFrame, IOPortNarrow, CreateIOPort, CreateIRQCap, KlogDrain, SchedInfo, Poweroff |
+| Slot methods | 57–62: CapIdentify, CapSameObject, CSpaceMint, CSpaceMove, CSpaceRevoke, CSpaceSetGuard |
+
+The last group acts on the SLOT rather than on what it holds, which is why
+those labels are valid whatever the capability is.
+
+## The message ABI
+
+Since ledger **A-33** a message is a MessageInfo word plus message registers,
+and a payload longer than that lives in the sending thread's registered IPC
+buffer. There is no message struct in the ABI and no pointer to one.
+`kernel/include/iris/ipc_msg.h` is the layout; `docs/ipc.md` is the prose.
+
+## Error model
 
 - every syscall returns a signed long in the architectural ABI sense
 - success is non-negative
 - failure is a negative `iris_error_t`
 
-Kernel implementation note:
+Kernel implementation note: the dispatcher still moves return values through
+`uint64_t` internally. That does not change the external contract.
 
-- the dispatcher still moves return values through `uint64_t` internally
-- that does not change the external contract; failure values must still encode as negative `iris_error_t`
+## Memory budgets
 
-## Surface Summary
+Every allocation names the Untyped it is carved from. `Untyped_Retype` names
+its budget by construction, and `Boot_InitrdFrame` takes one as an argument
+(0 = the caller's own). `SYS_VMO_CREATE` and `SYS_INITRD_VMO` were the other
+two and went with the VMO; `SYS_PROCESS_CREATE` went with the process object
+(Stage 7-proc).
 
-Exported syscall number surface: **`0..129`** — 130 numbers, of which **71 are
-live**, 56 are named in `syscall.h` and retired, and `9`–`11` were never
-assigned.
+Everything carved from an Untyped is a **child** of it, so `Untyped_Reset`
+refuses while it lives and reclaims the whole region once it does not. A bump
+allocator does not rewind: reclamation is by RESET, which is why spawners
+recycle budgets rather than sizing them for a whole run.
 
-Classification used here:
+## Composed objects
 
-- **live**: dispatched to a real implementation
-- **retired**: permanently reserved; the dispatcher either has no case or the
-  implementation is a stub, and either way the caller gets
-  `IRIS_ERR_NOT_SUPPORTED`.  **A retired number is never reused.**
+The kernel does not create an address space, a paging level or a CSpace. A
+holder retypes each from its own Untyped and passes it in.
 
-The retirements are the convergence history in ABI form: the handle namespace
-(Stage 4), the fabricating creators superseded by `SYS_UNTYPED_RETYPE2`
-(Phases S1–S2), the KChannel family (Phase 13), the process surface (Stage 7),
-and the early Unix-shaped calls that predate the capability model.
+| Method | Arguments | What the caller supplies |
+|---|---|---|
+| `TCB_Configure` | tcb, cspace, vspace | the CSpace root and the address space the thread runs in, both retyped by the caller. This is `seL4_TCB_Configure`: since Stage 7-proc there is no identity check against a third object, and threads sharing a CSpace and a VSpace is what a "process" IS |
+| `PageTable_Map` | pt, vspace, vaddr | a `IRIS_KOBJ_PAGE_TABLE` to fill the first level missing for `vaddr` |
 
-## Live Surface By Area
+A map whose walk is incomplete answers `IRIS_ERR_MISSING_TABLE` and names
+nothing else — the holder supplies the level and retries. A task that maps
+therefore needs a budget to retype levels from, which is why
+`svc_load_minted_ws` takes the slot to mint the child its own.
 
-### Core, time and futex
+## Current architectural reading
 
-`1` `SYS_EXIT`, `2` `SYS_GETPID`, `3` `SYS_YIELD`, `8` `SYS_SLEEP`, `49` `SYS_THREAD_EXIT`, `50` `SYS_FUTEX_WAIT`, `51` `SYS_FUTEX_WAKE`, `62` `SYS_CLOCK_GET`, `70` `SYS_CLOCK_NANOSLEEP`
-
-### Endpoint IPC
-
-`74` `SYS_EP_SEND`, `75` `SYS_EP_RECV`, `76` `SYS_EP_NB_SEND`, `77` `SYS_EP_NB_RECV`, `93` `SYS_EP_CALL`, `94` `SYS_REPLY`, `129` `SYS_REPLY_RECV`
-
-### Notifications and faults
-
-`20` `SYS_NOTIFY_SIGNAL`, `21` `SYS_NOTIFY_WAIT`, `64` `SYS_NOTIFY_WAIT_TIMEOUT`, `66` `SYS_EXCEPTION_RESUME`
-
-### Capabilities and CSpace
-
-`91` `SYS_CNODE_DELETE`, `92` `SYS_CNODE_SWAP`, `114` `SYS_CSPACE_MINT`, `115` `SYS_CSPACE_REVOKE`, `117` `SYS_CAP_IDENTIFY`, `118` `SYS_CAP_SAME_OBJECT`, `119` `SYS_CSPACE_SELF`, `127` `SYS_CSPACE_SET_GUARD`
-
-### Untyped, memory and address spaces
-
-`16` `SYS_VMO_CREATE`, `17` `SYS_VMO_MAP`, `36` `SYS_VMO_UNMAP`, `55` `SYS_INITRD_VMO`, `57` `SYS_VMO_MAP_INTO`, `67` `SYS_VMO_SIZE`, `86` `SYS_UNTYPED_INFO`, `88` `SYS_UNTYPED_RESET`, `102` `SYS_FRAME_MAP`, `103` `SYS_FRAME_UNMAP`, `106` `SYS_VSPACE_SELF`, `108` `SYS_VMO_MAP_PAGE`, `111` `SYS_UNTYPED_RETYPE2`, `112` `SYS_UNTYPED_QUERY`, `122` `SYS_VSPACE_MAP_TABLE`
-
-### Threads (the whole of what a process used to be)
-
-`82` `SYS_THREAD_PRIORITY`, `85` `SYS_THREAD_SET_SC`, `96` `SYS_TCB_SELF`, `97` `SYS_TCB_SUSPEND`, `98` `SYS_TCB_RESUME`, `99` `SYS_TCB_SET_PRIORITY`, `100` `SYS_TCB_EXIT`, `101` `SYS_TCB_GET_INFO`, `120` `SYS_TCB_CONFIGURE`, `121` `SYS_TCB_WRITE_REGS`, `123` `SYS_TCB_FAULT_INFO`, `124` `SYS_TCB_WATCH`, `125` `SYS_TCB_EXIT_CODE`, `126` `SYS_TCB_SET_FAULT_HANDLER`, `128` `SYS_TCB_SET_TIMEOUT_HANDLER`
-
-### Scheduling
-
-`69` `SYS_SCHED_INFO`, `84` `SYS_SC_CONFIGURE`, `113` `SYS_SC_BIND`
-
-### Hardware and bootstrap (capability-gated)
-
-`27` `SYS_IRQ_ROUTE_REGISTER`, `32` `SYS_IOPORT_IN`, `33` `SYS_IOPORT_OUT`, `39` `SYS_CAP_CREATE_IRQCAP`, `40` `SYS_CAP_CREATE_IOPORT`, `54` `SYS_POWEROFF`, `60` `SYS_FRAMEBUFFER_VMO`, `61` `SYS_INITRD_COUNT`, `65` `SYS_KLOG_DRAIN`, `68` `SYS_IRQ_ACK`
-
-### Retired numbers
-
-Never reused, always `IRIS_ERR_NOT_SUPPORTED`:
-
-`0`, `4`, `5`, `6`, `7`, `12`, `13`, `14`, `15`, `18`, `19`, `22`, `23`, `24`, `25`, `26`, `28`, `29`, `30`, `31`, `34`, `35`, `37`, `38`, `41`, `42`, `43`, `44`, `45`, `46`, `47`, `48`, `52`, `53`, `56`, `58`, `59`, `63`, `71`, `72`, `73`, `78`, `79`, `80`, `81`, `83`, `87`, `89`, `90`, `95`, `104`, `105`, `107`, `109`, `110`, `116`
-
-`9`, `10` and `11` were never assigned.
-
-## Current Architectural Reading
-
-The live syscall surface reflects the current architecture:
-
-- file I/O is not a kernel syscall surface anymore
-- service discovery is not a kernel namespace syscall surface anymore
-- ELF loading is not a kernel spawn syscall surface anymore
+- file I/O is not a kernel surface
+- service discovery is not a kernel namespace surface
+- ELF loading is not a kernel spawn surface
 - **process construction is not a syscall at all**: a ring-3 loader retypes a
   VSpace, a root CNode and a TCB from a budget it holds, configures the thread
   with the first two, writes its registers and resumes it
-- accounting is not a syscall about a process either — a budget answers for
-  itself (`SYS_UNTYPED_INFO` / `SYS_UNTYPED_QUERY`)
-- hardware access remains capability-gated
+- accounting is not a call about a process either — a budget answers for
+  itself (`Untyped_Info` / `Untyped_Query`)
+- hardware access is capability-gated, and the capability is the argument
+- **naming a method requires naming the object**, which is the whole of A-32
 
-## Top Hardening-Risk Families
-
-These syscall families carry the highest near-term hardening risk and should be audited first:
+## Top hardening-risk families
 
 1. endpoint send/recv/call/reply paths, including staged capability transfer
-2. VMO map/unmap/map-into/map-page paths
+2. frame map/unmap and the page-table walk
 3. retype, configure and resume — the thread-construction path
-4. notification wait and timed wait paths
-5. `SYS_KLOG_DRAIN`, `SYS_UNTYPED_QUERY` and other user-buffer write-back paths
+4. notification wait paths
+5. `Boot_KlogDrain`, `Untyped_Query` and the other user-buffer write-back paths
 
-## Canonical Sources
+## Canonical sources
 
-- `kernel/include/iris/syscall.h` (numbers, contracts and retirement notes)
-- `kernel/core/syscall/syscall_dispatch.c` (what is actually dispatched)
-- `kernel/include/iris/svcmgr_proto.h`
-- `kernel/include/iris/vfs_ep_proto.h` (replaced `vfs_proto.h`, removed in Phase 7.5)
-- `kernel/include/iris/kbd_proto.h` (legacy probes) + `kbd_ep_proto.h` (event ABI, Phase 7.4)
-- `kernel/include/iris/console_proto.h` (legacy writer) + `console_ep_proto.h` (EP ABI, Phase 7.3)
-- `kernel/include/iris/endpoint_proto.h` (endpoint/bootstrap-kind/CPtr ABI)
+- `kernel/include/iris/invoke.h` — the label space
+- `kernel/include/iris/ipc_msg.h` — the message ABI
+- `kernel/include/iris/syscall.h` — the three numbers, and the retirement notes
+- `kernel/core/syscall/syscall_invoke.c` — what each label dispatches to
+- `kernel/core/syscall/syscall_dispatch.c` — what the numbered door still does
+- `kernel/include/iris/endpoint_proto.h` — endpoint/CPtr service ABI
+- `kernel/include/iris/vfs_ep_proto.h`, `kbd_ep_proto.h`, `console_ep_proto.h`
+  — the service protocols

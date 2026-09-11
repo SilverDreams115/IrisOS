@@ -1,7 +1,8 @@
 # VFS Endpoint Protocol (Phase 7.1; endpoint-only since Phase 7.5)
 
 The VFS service serves file requests **exclusively** over KEndpoint
-(`SYS_EP_CALL` + `SYS_REPLY`). The wire format is defined in
+(`EP_Call` + `Reply`, labels on `SYS_INVOKE` since ledger A-32). The wire
+format is defined in
 `kernel/include/iris/vfs_ep_proto.h`; the dispatcher lives in
 `services/vfs/vfs_ep.c` and is unit-tested on the host
 (`tests/kernel/test_vfs_ep.c`). The legacy stateful KChannel protocol
@@ -9,38 +10,39 @@ The VFS service serves file requests **exclusively** over KEndpoint
 
 ## Design: stateless by construction
 
-`struct IrisMsg` carries **no kernel-stamped sender identity** (no badge, no
-sender_id — unlike `KChanMsg`). A stateful protocol (open/read/close with a
-server-side file table) would have no safe way to bind file descriptors to
-clients: any caller could read or close another client's descriptor, and a dead
-client would leak table entries with no death notification to reclaim them.
+When this protocol was designed a message carried **no kernel-stamped sender
+identity**, so a stateful protocol (open/read/close with a server-side file
+table) had no safe way to bind file descriptors to clients: any caller could
+read or close another client's descriptor, and a dead client would leak table
+entries with no death notification to reclaim them. Phase 9 added badges and
+the constraint was lifted — but statelessness turned out to be worth keeping
+on its own terms, so the protocol stayed as it is.
 
 The EP protocol therefore carries full addressing in every request:
 
 - `READ_AT(path, offset, len)` instead of `OPEN` + `READ(fd)` + `CLOSE(fd)`.
 - The server keeps **zero** per-client state on the EP path.
-- A client crashing mid-sequence leaves nothing behind; its in-flight EP_CALL
+- A client crashing mid-sequence leaves nothing behind; its in-flight Call
   is woken with `IRIS_ERR_CLOSED` by KReply teardown.
 
 The stateful open/read/close protocol was removed in Phase 7.5: `vfs_proto.h`
 is deleted, the catalog marks vfs `endpoint_only = 1` (svcmgr creates no
 legacy service/reply pair, bootstrap kinds 10/11 are retired) and iris_test
 T032 asserts the bare `"vfs"` name no longer resolves. Requests and replies
-never transfer capabilities (the kernel forbids request-side cap transfer on
-`EP_CALL`; the VFS replies carry only inline data).
+carry no capabilities — a Call can transfer one (A-33), and svcmgr's REGISTER
+does, but every VFS answer is inline data.
 
 ## Endpoint ownership and discovery
 
 The VFS does **not** create its own endpoint. svcmgr creates one KEndpoint per
-catalog service with `own_service_ep = 1` (today: vfs), keeps the master handle
+catalog service with `own_service_ep = 1` (today: vfs), keeps the master cap
 across restarts, and:
 
 - pre-start-mints the **receive side** (`RIGHT_READ`) into the service's
   root CNode at `IRIS_CPTR_OWN_EP` (slot 5; bootstrap kind 0x21 retired in
   Phase 8);
 - publishes the **send side** (`RIGHT_WRITE`) under the reserved name
-  `"vfs.ep"`, resolvable through both `IRIS_SVCMGR_EP_LOOKUP_NAME` and the
-  legacy `SVCMGR_MSG_LOOKUP_NAME`.
+  `"vfs.ep"`, resolvable through `IRIS_SVCMGR_EP_LOOKUP_NAME`.
 
 Because svcmgr owns the master, client caps stay valid when the VFS is
 respawned; callers blocked on a dying VFS wake with `IRIS_ERR_CLOSED`. Dynamic
@@ -64,14 +66,14 @@ Enumerate ready exports by visible index.
 | Request | `words[0]` | index (`word_count >= 1`) |
 | Reply OK | `words[1]` | export size in bytes |
 | Reply OK | `words[2]` | name length (excluding NUL) |
-| Reply OK | kbuf | NUL-terminated export name (`buf_len = name_len + 1`) |
+| Reply OK | payload | NUL-terminated export name (`buf_len = name_len + 1`) |
 | Reply ERR | `IRIS_ERR_NOT_FOUND` | index past the last ready export — the normal end-of-listing condition |
 
 ### VFS_EP_OP_STAT (0x0102)
 
 | Direction | Field | Meaning |
 |-----------|-------|---------|
-| Request | kbuf | NUL-terminated path, `1 <= buf_len <= VFS_EP_PATH_MAX` (includes NUL) |
+| Request | payload | NUL-terminated path, `1 <= buf_len <= VFS_EP_PATH_MAX` (includes NUL) |
 | Reply OK | `words[1]` | export size in bytes |
 | Reply ERR | `NOT_FOUND` / `INVALID_ARG` | unknown name / malformed path |
 
@@ -81,20 +83,24 @@ Stateless positional read.
 
 | Direction | Field | Meaning |
 |-----------|-------|---------|
-| Request | kbuf | NUL-terminated path (as STAT) |
+| Request | payload | NUL-terminated path (as STAT) |
 | Request | `words[0]` | byte offset |
 | Request | `words[1]` | requested length (server clamps to `VFS_EP_DATA_MAX` = 256) |
 | Reply OK | `words[1]` | bytes read; **0 = EOF** (`offset >= size` is EOF, not an error) |
 | Reply OK | `words[2]` | total export size |
-| Reply OK | kbuf | data (`buf_len` = bytes read) |
+| Reply OK | payload | data (`buf_len` = bytes read) |
 
-`EP_CALL` buffer reuse: `msg.buf_uptr` is both the request payload (path) and
-the reply bulk destination (data). Clients must re-stage the path before every
-call (see `sh_vfs_ep_call` in `services/sh/main.c`).
+Buffer reuse: a Call's request payload (the path) and its reply payload (the
+data) both live in the caller's registered IPC buffer, which is one page per
+thread (ledger D-4) — there is no `buf_uptr` to point one of them somewhere
+else, and since A-33 there is no pointer on the message path at all. Clients
+must therefore re-stage the path before every call (see `sh_vfs_ep_call` in
+`services/sh/main.c`), and the server does the mirror image: it copies the
+request out of the buffer before composing its reply there.
 
 ### VFS_EP_OP_STATUS (0x0104, Phase 7.5)
 
-Service health summary, used by svcmgr's DIAG aggregation (it EP_CALLs the
+Service health summary, used by svcmgr's DIAG aggregation (it Calls the
 master ep cap it already holds). Request: no words; a bulk payload is
 rejected (`IRIS_ERR_INVALID_ARG`). Reply OK: `words[1]` = ready exports,
 `words[2]` = total exported bytes. The stateless protocol has no open-file
@@ -121,16 +127,17 @@ Exactly one reply is produced for every request, including malformed ones.
 
 ```
 for (;;) {
-    SYS_EP_RECV(ep_h, &req);     /* blocking; bootstrap channel is closed */
-    vfs_ep_dispatch(...);
-    SYS_REPLY(reply_cap, &reply);
+    req.reply = IRIS_CPTR_OWN_REPLY;        /* the explicit reply object (S1) */
+    iris_msg_recv(IRIS_CPTR_OWN_EP, &req);  /* blocking                       */
+    copy the request out of the IPC buffer; vfs_ep_dispatch(...);
+    iris_msg_reply(req.got_cap, &reply);
 }
 ```
 
-- Each EP request is answered with `SYS_REPLY` **exactly once**; the reply cap
-  is closed afterwards. A request without a reply cap (plain `EP_SEND`) is
-  served and dropped.
-- An EP_RECV failure halts the service loudly; there is no legacy fallback to
+- Each request is answered **exactly once**. The reply object is the service's
+  own, arrives back in `req.got_cap`, and is REUSABLE — it is never closed
+  (Phase S1). A request without one (plain `EP_Send`) is served and dropped.
+- A receive failure halts the service loudly; there is no legacy fallback to
   hide a broken endpoint.
 - Marker `[VFS] ep ready` is logged before `VFS ready` and gated by
   `scripts/run_qemu_headless.sh`.
@@ -143,7 +150,7 @@ for (;;) {
   exclusively — the legacy fallback was removed in Phase 7.2. A broken slot
   fails the `[SH] vfs cptr OK` smoke gate instead of being masked.
 - **init**: the S5/S6 healthy-path probes (Phase 7.2) resolve `"svcmgr.ep"`
-  over the legacy lookup once, then EP_CALL `LOOKUP_NAME("vfs.ep")` with the
+  once, then Call `LOOKUP_NAME("vfs.ep")` with the
   standard retry/pause loop. S5 checks LIST 0–2 + out-of-range `NOT_FOUND`;
   S6 checks STAT + full READ_AT + EOF semantics + missing-file `NOT_FOUND`.
   Fail-fast: exit codes 4 (`svcmgr.ep`), 5 (`vfs.ep`), 9 (S5), 10 (S6); no
@@ -157,5 +164,5 @@ for (;;) {
 | Constant | Value |
 |----------|-------|
 | `VFS_EP_PATH_MAX` | 64 bytes including NUL (= legacy `VFS_MAX_NAME`, enforced by `_Static_assert` in vfs.c) |
-| `VFS_EP_DATA_MAX` | 256 bytes per READ_AT reply (= `IRIS_IPC_BUF_SIZE`) |
+| `VFS_EP_DATA_MAX` | 256 bytes per READ_AT reply |
 | Service name | `VFS_EP_SVC_NAME` = `"vfs.ep"` |

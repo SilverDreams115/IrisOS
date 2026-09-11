@@ -1,22 +1,25 @@
 /*
  * vfs_ep_proto.h — VFS service protocol over KEndpoint (Phase 7.1).
  *
- * Wire format: struct iris_msg (iris/ipc_msg.h) following the conventions in
- * iris/endpoint_proto.h. All operations are EP_CALL + SYS_REPLY round trips.
+ * Wire format: a MessageInfo word plus message registers (iris/ipc_msg.h),
+ * following the conventions in iris/endpoint_proto.h.  All operations are
+ * EP_Call + Reply round trips.
  *
  * Design notes:
  *   - The endpoint protocol is STATELESS: there is no open-file table on the
  *     EP path. Reads carry an explicit (path, offset, len) triple, so a dead
  *     client leaves no server-side state behind and no sender identity is
- *     required (the message carried no kernel-stamped sender id / badge yet).
+ *     required (it was designed before badges; Phase 9 lifted the constraint
+ *     and statelessness stayed on its own merits).
  *   - This is the ONLY VFS protocol (Phase 7.5): the legacy stateful KChannel
  *     open/read/close protocol (iris/vfs_proto.h) was removed with its last
  *     clients; VFS no longer owns a legacy service channel.
- *   - Requests never transfer capabilities (EP_CALL forbids request-side cap
- *     transfer); replies never transfer capabilities either.
+ *   - Requests and replies never transfer capabilities.  A Call CAN carry one
+ *     (A-33) and svcmgr's REGISTER does; every VFS answer is inline data.
  *
  * Reply convention (see endpoint_proto.h):
- *   reply.label == IRIS_EP_REPLY_OK  → words[0] = 0, payload in words[1..]/kbuf
+ *   reply.label == IRIS_EP_REPLY_OK  → words[0] = 0, payload in words[1..] or
+ *                                       the IPC buffer
  *   reply.label == IRIS_EP_REPLY_ERR → words[0] = (uint64_t)(uint32_t)iris_error_t
  *
  * Error semantics (all ops):
@@ -40,7 +43,7 @@
  *   Request:  words[0] = index, word_count >= 1. No bulk payload.
  *   Reply OK: words[1] = export size in bytes
  *             words[2] = name length (excluding NUL)
- *             kbuf     = NUL-terminated export name (buf_len = name_len + 1)
+ *             payload  = NUL-terminated export name (buf_len = name_len + 1)
  *   Reply ERR: IRIS_ERR_NOT_FOUND when index >= number of ready exports
  *              (this is the normal end-of-listing condition).
  */
@@ -48,7 +51,7 @@
 
 /*
  * VFS_EP_OP_STAT — look up an export by name.
- *   Request:  kbuf = NUL-terminated path; 1 <= buf_len <= VFS_EP_PATH_MAX
+ *   Request:  payload = NUL-terminated path; 1 <= buf_len <= VFS_EP_PATH_MAX
  *             (buf_len includes the NUL).
  *   Reply OK: words[1] = export size in bytes.
  *   Reply ERR: IRIS_ERR_NOT_FOUND / IRIS_ERR_INVALID_ARG.
@@ -57,18 +60,20 @@
 
 /*
  * VFS_EP_OP_READ_AT — stateless positional read.
- *   Request:  kbuf     = NUL-terminated path (as STAT)
+ *   Request:  payload  = NUL-terminated path (as STAT)
  *             words[0] = byte offset
  *             words[1] = requested length (server clamps to VFS_EP_DATA_MAX)
  *             word_count >= 2.
  *   Reply OK: words[1] = bytes read (0 = EOF; offset >= size is EOF, not error)
  *             words[2] = total export size in bytes
- *             kbuf     = data (buf_len = bytes read)
+ *             payload  = data (buf_len = bytes read)
  *   Reply ERR: IRIS_ERR_NOT_FOUND / IRIS_ERR_INVALID_ARG.
  *
- *   Note (EP_CALL buffer reuse): msg.buf_uptr is both the request payload
- *   (path) and the reply bulk destination (data) — the client must re-stage
- *   the path before every call.
+ *   Note (buffer reuse): the request payload (path) and the reply payload
+ *   (data) both live in the caller's registered IPC buffer, which is one page
+ *   per thread (D-4) — there is no buf_uptr to point one of them elsewhere,
+ *   and since A-33 no pointer on the message path at all.  The client must
+ *   re-stage the path before every call.
  */
 #define VFS_EP_OP_READ_AT  UINT64_C(0x0103)
 
@@ -152,7 +157,7 @@
 /*
  * VFS_EP_OP_GRANT_OPEN — create a grant (ADMIN badge only).
  *   Request:  words[0] = session index, words[1] = rights mask (nonempty,
- *             subset of VFS_FILE_RIGHT_ALL); kbuf = NUL-terminated export name.
+ *             subset of VFS_FILE_RIGHT_ALL); payload = NUL-terminated export name.
  *             The pathname appears HERE ONLY — at grant creation, presented by
  *             the admin; the session holder never sends a name again.
  *   Reply OK: words[1] = grant index (session-scoped),
@@ -175,7 +180,7 @@
  *   Request:  words[0] = grant index, words[1] = byte offset,
  *             words[2] = length (clamped to VFS_EP_DATA_MAX).
  *   Reply OK: words[1] = bytes read (0 = EOF), words[2] = file size,
- *             kbuf = data.
+ *             payload = data.
  */
 #define VFS_EP_OP_GRANT_READ_AT       UINT64_C(0x0112)
 
@@ -201,7 +206,7 @@
 /*
  * VFS_EP_OP_GRANT_REVOKE — revoke a BACKING (all grants on it, all sessions).
  * Bumps the export generation; existing grants fail CLOSED from now on.
- *   ADMIN badge:   kbuf = NUL-terminated export name.
+ *   ADMIN badge:   payload = NUL-terminated export name.
  *   SESSION badge: words[0] = grant index; requires FILE_RIGHT_REVOKE.
  *   Reply OK: words[1] = new generation.
  */

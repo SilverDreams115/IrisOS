@@ -21,23 +21,24 @@ read-only namespace service (since Phase 7.2/7.5).
 - export metadata (name, size, readiness)
 
 `vfs` deliberately owns **no per-client state**: the endpoint protocol is
-stateless (full addressing in every request), because `IrisMsg` carries no
-sender identity. There are no `file_id`s, no open-file table, and therefore
-no dead-client reclaim — nothing to reclaim.
+stateless (full addressing in every request). It was designed that way
+because a message carried no sender identity; badges (Phase 9) lifted that
+constraint and it stayed, because there are no `file_id`s, no open-file table,
+and therefore no dead-client reclaim — nothing to reclaim.
 
 ## Bootstrap contract
 
 `vfs` is spawned by `svcmgr` as a catalog service with `own_service_ep = 1`
 and `endpoint_only = 1`:
 
-- it receives in `RBX` a private bootstrap channel handle;
-- (Phase 8) its well-known CSpace slots are **pre-start-minted**: slot 5
+- it receives `RBX` = 0: the bootstrap channel retired with KChannel
+  (Phase 13) and there is no handle to keep;
+- its well-known CSpace slots are **pre-start-minted**: slot 5
   (`IRIS_CPTR_OWN_EP`) = the receive side of its KEndpoint (`RIGHT_READ`),
   slot 3 = the console endpoint, slots 1/2/4 = the other core service
   endpoints (see `docs/cptr-first-services.md`);
-- over the bootstrap channel it receives ONLY one `KBootstrapCap`
-  (INITRD_CAP kind, `RIGHT_READ`) for initrd VMO access — the documented
-  handle boundary (bootstrap caps are outside the dual resolver);
+- slot 8 (`IRIS_CPTR_INITRD_CONTROL`) is the capability that authorizes
+  initrd access; it is a CSpace slot like every other, resolved by CPtr;
 - **no legacy service/reply channel pair is created** (`endpoint_only`).
 
 The endpoint is mandatory: without it the service has no request surface and
@@ -45,7 +46,8 @@ the smoke gate (`[VFS] ep ready`) fails.
 
 ## Request/response surface (current ABI)
 
-Wire format `struct IrisMsg` over `SYS_EP_CALL` / `SYS_REPLY`; opcodes in
+Wire format: a MessageInfo word plus message registers (ledger A-33) over
+`EP_Call` / `Reply` (labels on `SYS_INVOKE`, ledger A-32); opcodes in
 `iris/vfs_ep_proto.h`; full semantics in `docs/vfs-endpoint.md`:
 
 - `VFS_EP_OP_LIST` (0x0101) — enumerate exports by visible index
@@ -64,15 +66,18 @@ requests fail cleanly with `IRIS_ERR_INVALID_ARG`.
 - At runtime `vfs` seeds 8 additional initrd-backed exports (one per initrd
   image: userboot, init, svcmgr, kbd, vfs, console, fb, sh) — total 12 of a
   capacity of `VFS_SERVICE_EXPORTS` (16).
-- Initrd-backed exports are read through eagerly-established VMO mappings
-  (`SYS_INITRD_VMO` + `SYS_VMO_MAP` at seed time; `is_mapped`/`virt_base` in
-  `struct vfs_export`). There is **no** fault-driven mapping involved.
+- Initrd-backed exports are read through eagerly-established mappings: a boot
+  image arrives as a FRAME from `Boot_InitrdFrame`, which answers its size in
+  the same call (ledger D-5), and one `Frame_Map` covers the whole frame
+  (ledger D-10) — the page-at-a-time machinery went with the VMO.
+  `is_mapped`/`virt_base` in `struct vfs_export`; there is **no** fault-driven
+  mapping involved.
 - Total exported bytes are not a fixed invariant; initrd ELF sizes vary by
   build.
 
 ## Clients
 
-- `sh`: `ls` / `cat` via EP_CALL on `"vfs.ep"` (endpoint-only since 7.2).
+- `sh`: `ls` / `cat` via `EP_Call` on `"vfs.ep"` (endpoint-only since 7.2).
 - `init`: S5/S6 healthy-path probes (LIST / STAT / READ_AT), fail-fast.
 - `svcmgr`: diagnostics via `VFS_EP_OP_STATUS` (Phase 7.5).
 - `iris_test`: T026–T030 protocol conformance, T031 `.ep` anti-spoof.

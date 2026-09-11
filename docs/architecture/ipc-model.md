@@ -8,46 +8,52 @@ seL4-MCS-style reply objects. Complements `a1-5-ipc-receive-slot.md` and
 
 No change to the rendezvous semantics, staged caps (A1.10 two-phase), badges
 (Phase 9) or bulk (Ph69). What changes is the object's ORIGIN: only
-`SYS_UNTYPED_RETYPE2`.
+`UntypedRetype`.
 
 ## Explicit reply objects (S1)
 
-The kernel NO LONGER fabricates a KReply per EP_CALL. The model:
+The kernel NO LONGER fabricates a KReply per Call. The model:
 
 ```
-server:  RETYPE2(…, KOBJ_REPLY, …)   → reply cap in its CSpace
-server:  SYS_EP_RECV(ep, msg, reply_cptr)   ← new arg2
+server:  UntypedRetype(…, KOBJ_REPLY, …)      → reply cap in its CSpace
+server:  EP_Recv(ep, recv_slot, reply_cptr)
 kernel:  stage (exclusive claim; BUSY if already staged/bound)
-rendezvous with EP_CALL:
-         bind(caller); msg.attached_handle = reply_cptr (echoed)
-server:  SYS_REPLY(msg.attached_handle, reply)
+rendezvous with EP_Call:
+         bind(caller); the reply object is delivered in the receive's
+         capability register, and the caller's gift lands in recv_slot
+server:  Reply(reply_cptr, msg)
 kernel:  one-shot per binding; the OBJECT returns to free and is reusable
 ```
 
-- A recv with no reply (arg2 = 0) cannot serve CALLs: the CALL fails
+- A recv with no reply (reply cptr = 0) cannot serve Calls: the Call fails
   `NOT_SUPPORTED` without consuming anything (the blocked receiver stays
   queued; a queued call-mode sender is not dequeued). S22: the legacy path
   creates no hidden objects.
 - A server that "parks" a reply while it keeps serving uses TWO reply objects
   and alternates (kbd: slots 13/14).
-- Caller death → unbind (object reusable; SYS_REPLY → NOT_FOUND).
+- Caller death → unbind (object reusable; `Reply` → NOT_FOUND).
 - The reply's last cap deleted with a caller bound → the caller wakes CLOSED.
 - A supervisor that mints the reply into a child must DROP its own copy: a
   retained copy would suppress close-wakes-caller on the child's death.
 
-ABI: `SYS_EP_RECV`/`SYS_EP_NB_RECV` arg2 passes the reply CPtr (0 = none).
-Justified, documented change: some in-tree callers passed uninitialized
-garbage in rdx through 2-arg wrappers; all migrated to explicit 3-arg
-wrappers. `SYS_REPLY` does not change (dual-resolve of the echoed value).
-`SYS_EP_CALL` does not change.
+ABI (ledgers A-32, A-33): every one of these is a label on `SYS_INVOKE`, and a
+message is a MessageInfo word plus message registers — `INV_EP_RECV` /
+`INV_EP_NB_RECV` take the receive slot in a1 and the reply object in a2;
+`INV_EP_CALL` and `INV_EP_SEND` take MessageInfo in a1, mr0..mr3 in a2..a5, a
+transferred capability in a6 and a receive slot in a7; `INV_EP_REPLY_RECV`
+takes the reply object in the capability word, because it is one operation and
+needs both halves' arguments at once. A receive returns badge, MessageInfo and
+the delivered capability alongside its message registers, so a server's loop
+shuffles nothing.
 
 ## Notification
 
-No semantic change (signal/wait/timeout, pending bits, IRQ delivery, shared
-pager notification). Origin: only RETYPE2. The notification quota was retired:
-creating notifications requires Untyped + slots.
+No semantic change (signal/wait, pending bits, IRQ delivery, shared pager
+notification; timed waits went to ring 3 in A-24). Origin: only
+`UntypedRetype`. The notification quota was retired: creating notifications
+requires Untyped + slots.
 
 ## Counters
 
-`iris_ipc_stat_reply_caps` counts reply BINDINGS (one per CALL rendezvous),
+`iris_ipc_stat_reply_caps` counts reply BINDINGS (one per Call rendezvous),
 preserving the exact balances of I16–I18 and of T109/T110.

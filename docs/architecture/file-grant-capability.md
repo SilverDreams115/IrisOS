@@ -47,11 +47,12 @@ authority** and removes the pager's ability to name files at all.
 The unforgeable grant is built from three guarantees the kernel already
 provides — no new syscall, no new kernel object:
 
-1. **`IrisMsg.sender_badge` is kernel-stamped** from the invoked capability
-   (Phase 9).  A client cannot write it.
-2. **A badged endpoint cap can never be re-badged** (`SYS_PROC_CSPACE_MINT`,
-   Phase 9): a fresh badge may be minted only from an *unbadged* source, which
-   under the Phase 10 grant-tightening rule only a supervisor holds.
+1. **The badge is kernel-delivered** from the invoked capability (Phase 9),
+   and since ledger A-33 it is a RETURN register of a receive — there is no
+   field in a message for a client to write it into.
+2. **A badged endpoint cap can never be re-badged** (`CSpace_Mint`, Phase 9):
+   a fresh badge may be minted only from an *unbadged* source, which under the
+   Phase 10 grant-tightening rule only a supervisor holds.
 3. **Rights reduce monotonically** on every mint/derive.
 
 From these, the VFS classifies every caller by badge and confines it:
@@ -205,8 +206,8 @@ and a pager that skips its bookkeeping still cannot read the revoked backing —
 see `resource-ownership-accounting.md`.  The shared-notification design below
 outlived it because it is cheaper, not because a quota forces it.)
 
-`SYS_EXCEPTION_HANDLER` binds a process's fault to a KNotification signalled on
-fault; `SYS_NOTIFY_CREATE` charges the notification to its **creator**.  In
+`SYS_EXCEPTION_HANDLER` bound a process's fault to a KNotification signalled on
+fault; `SYS_NOTIFY_CREATE` charged the notification to its **creator**.  In
 Phase 28 each target had its own fault notification, all created by the
 supervisor, against the supervisor's `KPROCESS_NOTIFICATION_QUOTA = 16`.  With
 ~8 already held at baseline, four concurrent targets (one notification each)
@@ -237,7 +238,7 @@ quota:
 
 - the kernel object slab (`kslab`) was grown 4 MB → **16 MB** (3% of the 512 MB
   guest): each process consumes several KB–32 KB of kernel objects (KProcess +
-  256-slot root KCNode + KVSpace + page tables + handle table);
+  256-slot root KCNode + KVSpace + page tables);
 - `KPROCESS_VMO_QUOTA` was raised 32 → **128**: a *loader* creates each child's
   segment+stack VMOs under **its own** ownership (`kvmo_bind_owner` binds the
   caller), and the quota releases only when the child dies and drops its

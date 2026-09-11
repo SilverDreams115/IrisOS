@@ -958,13 +958,12 @@ static inline long iris_syscall0(long nr) {
  *   Writes phys_base and available bytes to the provided user pointers
  *   (either may be NULL to skip that field).
  *
- * SYS_UNTYPED_RETYPE(ut_h, obj_type, obj_arg) → handle_id or error
- *   LEGACY single-object retype returning a handle (Phase S1: TRANSITIONAL).
- *   Restricted to the non-migrated types: KOBJ_UNTYPED (obj_arg = sub-region
- *   bytes, page-aligned), KOBJ_FRAME (obj_arg = bytes, page-aligned) and
- *   KOBJ_SCHED_CONTEXT.  The migrated family (ENDPOINT / NOTIFICATION /
- *   REPLY / CNODE) returns IRIS_ERR_NOT_SUPPORTED here — those objects can
- *   only be born via SYS_UNTYPED_RETYPE2 (never through a handle: S20).
+ * SYS_UNTYPED_RETYPE — RETIRED.  It was the single-object retype that returned
+ *   a HANDLE, kept during Phase S1 for the types that had not migrated yet.
+ *   Stage 4 deleted the handle table and there is nothing left for it to
+ *   return; every type is born the same way now, into a CSpace slot.  The one
+ *   retype is `INV_UNTYPED_RETYPE` (ledger A-32), which is what
+ *   SYS_UNTYPED_RETYPE2 became.
  */
 #define SYS_UNTYPED_INFO   86
 #define SYS_UNTYPED_RETYPE 87
@@ -1879,22 +1878,26 @@ static inline long iris_syscall0(long nr) {
 #define SYS_IRQ_CLEAR 143
 
 /*
- * SYS_INVOKE(cptr, label, a1, a2, a3) → whatever the method returns
+ * SYS_INVOKE(cptr, label, a1 .. a7) -> whatever the method returns
  *   ledger A-32 — the invocation door.
  *
  *   cptr:  the capability being invoked.  It is not an argument TO the method
- *          so much as the thing the method is a method OF: the kernel resolves
- *          it, reads its TYPE, and the pair (type, label) selects what runs.
- *   label: the method, scoped to that type (`iris/invoke.h`).  The same number
- *          means different things on different kinds of capability — labels in
- *          0x100 and up are the exception, being methods on the SLOT rather
- *          than on the object, and valid whatever it holds.
- *   a1-a3: the method's arguments.  Three is the widest any of them needs.
+ *          so much as the thing the method is a method OF.
+ *   label: the method — one FLAT list in `iris/invoke.h`, globally unique, the
+ *          way seL4's `enum invocation_label` is.  The dispatcher routes on
+ *          the label alone; the TYPE is checked inside the method, by the
+ *          resolver that fetches the capability with the type it requires, and
+ *          a label sent to the wrong kind answers IRIS_ERR_WRONG_TYPE (A-30).
+ *          Labels 57..62 are methods on the SLOT rather than on the object,
+ *          and are valid whatever it holds.
+ *   a1-a3: the method's arguments.  Three is the widest any METHOD needs.
+ *   a4-a7: the MESSAGE, for the IPC labels — a MessageInfo word, four message
+ *          registers, a capability to transfer and a receive slot do not fit
+ *          in three (ledger A-33, `iris/ipc_msg.h`).
  *
- * This is the ONE syscall that is not IPC and not a bare machine operation,
- * and the whole numbered table below is being folded into it.  Both doors are
- * open while that happens; `SYS_UNTYPED_QUERY` reports how many calls still
- * take the numbered one, and the migration is finished when that is zero.
+ * This is the door.  The numbered table is closed: `SYS_EXIT`, `SYS_YIELD` and
+ * `SYS_CLOCK_GET` are what is left of it, each because it invokes nothing, and
+ * `SYS_UNTYPED_QUERY`'s numbered-call gauge reads zero.
  *
  * What it is NOT: a change of authority.  Every method reached here resolves
  * its own capability and checks its own rights, exactly as it did when a

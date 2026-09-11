@@ -4,18 +4,23 @@
  * This header defines the wire protocol for services that communicate via
  * KEndpoint (seL4-style synchronous IPC) rather than KChannel ring buffers.
  *
- * Protocol model:
- *   - Clients call SYS_EP_CALL(service_ep, msg) to send a request and block.
- *   - Servers loop on SYS_EP_RECV, process requests, then SYS_REPLY(reply_h, reply).
- *   - msg.label identifies the operation.
- *   - msg.words[0..3] carry fixed-size arguments (up to 4 × uint64_t).
- *   - Variable-length data goes in the bulk kbuf (msg.buf_uptr / msg.buf_len).
+ * Protocol model (labels on SYS_INVOKE since A-32; a MessageInfo word plus
+ * message registers since A-33):
+ *   - Clients EP_Call the service endpoint to send a request and block.
+ *   - Servers loop on EP_Recv, process requests, then Reply on the reply
+ *     object the receive delivered.
+ *   - msg.label identifies the operation — it is the MessageInfo label field.
+ *   - msg.words[0..3] carry fixed-size arguments (the message registers).
+ *   - Variable-length data goes in the sender's registered IPC buffer, and the
+ *     message carries msg.buf_len — a length, never an address.
  *
  * Reply format:
  *   - reply.label == IRIS_EP_REPLY_OK for success.
  *   - reply.label == IRIS_EP_REPLY_ERR for failure; reply.words[0] = iris_error_t.
- *   - reply.words[1..3] and kbuf carry operation-specific return values.
- *   - reply.attached_handle carries a transferred capability when applicable.
+ *   - reply.words[1..3] and the payload carry operation-specific return values.
+ *   - reply.cap carries a transferred capability when applicable; it lands in
+ *     the slot the caller declared in msg.recv_slot and is reported back in
+ *     msg.got_cap.
  *
  * Opcodes 0x0000–0x00FF are reserved for the standard protocol.
  * Opcodes 0x0100–0xEFFF are for individual services.
@@ -42,17 +47,17 @@
 
 /*
  * IRIS_SVCMGR_EP_LOOKUP_NAME — resolve a service by name.
- *   Request:  kbuf = NUL-terminated service name; buf_len includes the NUL.
- *   Reply OK: attached_handle = endpoint cap for the service (caller-owned).
- *             words[0] = service_id (uint32_t) for future reference.
+ *   Request:  payload = NUL-terminated service name; buf_len includes the NUL.
+ *   Reply OK: the endpoint cap lands in the caller's declared recv_slot
+ *             (reported in got_cap); words[0] = service_id (uint32_t).
  *   Reply ERR: words[0] = IRIS_ERR_NOT_FOUND or other error code.
  */
 #define IRIS_SVCMGR_EP_LOOKUP_NAME  UINT64_C(0xF001)
 
 /*
  * IRIS_SVCMGR_EP_REGISTER — register a service endpoint.
- *   Request:  attached_handle = endpoint cap to register (transferred to svcmgr).
- *             kbuf = NUL-terminated service name; buf_len includes the NUL.
+ *   Request:  msg.cap = endpoint cap to register (transferred to svcmgr).
+ *             payload = NUL-terminated service name; buf_len includes the NUL.
  *   Reply OK: words[0] = assigned service_id (uint32_t).
  *   Reply ERR: words[0] = error code (e.g. IRIS_ERR_BUSY if name taken).
  */
@@ -69,7 +74,7 @@
 /*
  * IRIS_SVCMGR_EP_LOOKUP_ID — resolve a service by numeric ID.
  *   Request:  words[0] = service_id (uint32_t).
- *   Reply OK: attached_handle = endpoint cap for the service.
+ *   Reply OK: the endpoint cap lands in the caller's declared recv_slot.
  *   Reply ERR: words[0] = IRIS_ERR_NOT_FOUND or other error code.
  */
 #define IRIS_SVCMGR_EP_LOOKUP_ID    UINT64_C(0xF004)
@@ -146,17 +151,11 @@
 /*
  * Well-known CSpace slots (Phase 8: CPtr-first bootstrap handoff).
  *
- * The spawner mints capabilities into the child's root CNode via
- * SYS_PROC_CSPACE_MINT; the child invokes them directly by CPtr — e.g.
- * SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg) — with no KChannel handle
- * transfer. CPtrs and handle_ids share one argument namespace: handles are
- * always >= 1024 (slot | generation<<10, generation >= 1).  Since Phase 8
- * the dual resolvers ENFORCE the split (kernel/new_core/src/cspace.c):
- * values < 1024 resolve through the CSpace ONLY (no handle-table fallback;
- * missing slot fails cleanly, ACCESS_DENIED is a hard stop) and values
- * >= 1024 resolve through the handle table ONLY (they never walk the
- * CSpace, so populated low slots cannot be aliased by handle bit patterns).
- * Slot 0 is the null slot.
+ * The spawner mints capabilities into the child's root CNode with
+ * CSpace_Mint; the child invokes them directly by CPtr — e.g. an EP_Call on
+ * IRIS_CPTR_SVCMGR_EP — with no bootstrap transfer of any kind.  Stage 4
+ * deleted the handle table, so there is one authority namespace: an argument
+ * is a CPtr or it is INVALID_ARG.  Slot 0 is the null slot.
  *
  * Layout (root CNode has KCNODE_DEFAULT_SLOTS = 256 slots):
  *   0          CPTR_NULL (always invalid)
@@ -208,7 +207,7 @@
  * the sender badge on every EP_SEND / EP_NB_SEND / EP_CALL — it is
  * taken from the capability the sender invoked, never from the payload,
  * so it cannot be forged by writing the field.  Badges are assigned at
- * mint time by the spawner (SYS_PROC_CSPACE_MINT arg3 high bits); a badged
+ * mint time by the spawner (CSpace_Mint, the badge in the high bits of its rights argument); a badged
  * cap can never be re-badged.  0 = unbadged (legacy / master caps; servers
  * treat it as "unidentified legacy client").
  *
@@ -361,7 +360,7 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * is retired: what it existed to prove is now proven with a capability that
  * authorises exactly one thing. */
 /* A1 Increment 1: iris_test's OWN process cap (RIGHT_WRITE|RIGHT_DUPLICATE),
- * minted by init post-load, so the suite can SYS_PROC_CSPACE_MINT runtime-made
+ * minted by init post-load, so the suite can CSpace_Mint runtime-made
  * caps into its own CSpace slots (T079 mints a VMO and maps it by CPtr). */
 #define IRIS_CPTR_TEST_PROC   ((uint64_t)25)
 /* Phase 18: one boot KUntyped forwarded down the boot chain (userboot → init →
@@ -488,9 +487,9 @@ static inline int iris_badge_is_supervisor(uint64_t badge) {
  * meanings, and this is the one whose meaning already fits.
  */
 /* Phase S1: explicit MCS-style reply objects.  The kernel no longer fabricates
- * a KReply at EP_CALL rendezvous: a server passes its reply-object CPtr as
- * arg2 of SYS_EP_RECV / SYS_EP_NB_RECV and later invokes SYS_REPLY on the
- * value echoed in msg.attached_handle.  The supervisor that boots a serving
+ * a KReply at Call rendezvous: a server passes its reply-object CPtr as the
+ * reply argument of EP_Recv / EP_NBRecv and later invokes Reply on the value
+ * the receive delivered in msg.got_cap.  The supervisor that boots a serving
  * child retypes the reply object(s) from its untyped pool and mints them
  * here.  OWN_REPLY2 exists for servers that PARK one reply while continuing
  * to serve (kbd): they alternate between the two slots. */

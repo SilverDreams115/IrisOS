@@ -34,19 +34,19 @@ privileged lifecycle ops (RESTART).
 
 ## REGISTER / UNREGISTER policy
 
-`svcmgr` enforces, on **both** transports:
+`svcmgr` enforces:
 
 - **Reserved names** — `<image>.ep` endpoint names and catalog service names
   (`vfs`, `kbd`, `sh`, …) can never be registered at runtime
   (`IRIS_ERR_ACCESS_DENIED`). This is the anti-spoofing rule that keeps a
   looked-up `vfs.ep` authoritative.
 - **EP REGISTER** (`0xF002`) is **badge-authenticated and cap-backed** (Phase 11):
-  the caller transfers its service endpoint in `IrisMsg.attached_cap`; svcmgr
-  validates it is an endpoint and stores the real cap, so `LOOKUP_NAME` returns
-  a usable cap. The kernel-stamped `sender_badge` becomes the `owner_badge`. A
-  REGISTER without a cap, or with a wrong-type cap, fails. (The legacy KChannel
-  REGISTER remains only as a compatibility boundary, `owner_badge = 0`.)
-- **EP UNREGISTER** (`0xF003`) requires `sender_badge == owner_badge` (or a
+  the caller transfers its service endpoint with the message (`msg.cap`, in
+  the capability argument word since ledger A-33); svcmgr validates it is an
+  endpoint and stores the real cap, so `LOOKUP_NAME` returns a usable cap.
+  The kernel-delivered badge becomes the `owner_badge`. A REGISTER without a
+  cap, or with a wrong-type cap, fails.
+- **EP UNREGISTER** (`0xF003`) requires `badge == owner_badge` (or a
   supervisor) — a client cannot unregister another identity's service.
 
 ## `.ep` lookup grant tightening
@@ -54,9 +54,8 @@ privileged lifecycle ops (RESTART).
 `IRIS_SVCMGR_EP_LOOKUP_NAME` previously returned `WRITE|DUPLICATE` to every
 caller. Now an ordinary client receives a **call-only** cap (`RIGHT_WRITE`);
 `RIGHT_DUPLICATE`/`RIGHT_TRANSFER` (re-mint/forward authority) is granted
-only to supervisor badges. The **legacy KChannel lookup** keeps the wide
-grant for bootstrap re-minting (init mints `vfs.ep`/`kbd.ep` into children),
-preserving T046.
+only to supervisor badges — init, which mints `vfs.ep`/`kbd.ep` into
+children, holds one (T046).
 
 ## Death model, generation & STATUS oracle
 
@@ -98,15 +97,14 @@ close, so a waiter observes `IRIS_ERR_CLOSED` (no leak, no deadlock,
 idempotent). Covered by a dedicated host test (`test_knotification.c`); the
 kbd IRQ-notification path is unaffected.
 
-## Legacy svcmgr loop (compatibility boundary)
+## Legacy svcmgr loop (retired)
 
-The KChannel `SVCMGR_MSG_*` loop is **retained** (T001–T012, T046). It is now
-classified as a compatibility boundary: reserved-name policy applies to it,
-registrations are `owner_badge = 0`, and authenticated lifecycle ops live on
-the EP path. Full retirement awaits a later phase.
+The KChannel `SVCMGR_MSG_*` loop was the second transport this document was
+written to describe. It went with KChannel itself in Phase 13: there is one
+endpoint protocol, every registration carries a real `owner_badge`, and every
+number that loop used answers `NOT_SUPPORTED` — as does every other retired
+number, since ledger A-32 left exactly three (`EXIT`, `YIELD`, `CLOCK_GET`).
 
 ## What remains (debt)
 
-Formal/recursive revocation; full svcmgr legacy-loop retirement; cap-backed
-authenticated REGISTER over EP (needs an EP_CALL cap-transfer extension);
-init deconstruction; KChannel retirement; SMP IPC; fuzzing.
+Formal/recursive revocation; init deconstruction; SMP IPC; fuzzing.

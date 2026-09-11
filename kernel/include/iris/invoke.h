@@ -41,10 +41,13 @@
  *
  * ARGUMENTS
  *
- * An invocation is `(cptr, label, a1, a2, a3)`.  Three method arguments is
- * what the widest existing operation needs — `Untyped_Retype`,
- * `TCB_Configure`, `Frame_Map` — and it is why the syscall entry grew a fifth
- * register.
+ * An invocation is `(cptr, label, a1 .. a7)`.  Three method arguments is what
+ * the widest existing METHOD needs — `Untyped_Retype`, `TCB_Configure`,
+ * `Frame_Map` — and it is why the syscall entry grew a fifth register.  The
+ * four beyond that are the MESSAGE, not a method's arguments: ledger A-33 made
+ * a message a MessageInfo word plus four message registers plus a capability
+ * to transfer plus a receive slot, and the entry grew to nine argument
+ * registers to carry it (`iris/ipc_msg.h` maps them).
  *
  * This header is shared by the kernel and ring 3 on purpose: a label is ABI.
  * A label is never reused, for the same reason a syscall number never was.

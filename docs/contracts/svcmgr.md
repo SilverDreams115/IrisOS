@@ -2,7 +2,14 @@
 
 ## Purpose
 
-Defines the current service-manager contract for discovery, runtime publication, bootstrap delegation, supervision, and global status aggregation.
+Defines the current service-manager contract for discovery, runtime
+publication, bootstrap delegation, supervision, and global status aggregation.
+
+> The KChannel half of this contract — `SVCMGR_MSG_LOOKUP`, `LOOKUP_NAME`,
+> `REGISTER`, `UNREGISTER`, `STATUS`, `DIAG` and the reply messages — was
+> retired with KChannel itself in Phase 13. The opcodes stay defined in
+> `iris/svcmgr_proto.h` as retirement witnesses; nothing serves them. What
+> follows is the endpoint contract, which is the whole contract.
 
 ## Responsibilities
 
@@ -10,9 +17,10 @@ Defines the current service-manager contract for discovery, runtime publication,
 
 - autostart of built-in userland services from the service catalog
 - runtime service discovery for normal clients
-- first-cut dynamic runtime publication of extra service endpoints
+- dynamic runtime publication of extra service endpoints
 - service endpoint rights reduction for lookup replies
-- service lifecycle supervision through `SYS_TCB_WATCH` on the child's first thread (`SYS_PROCESS_WATCH` retired with the process object, Stage 7)
+- service lifecycle supervision through `TCB_Watch` on the child's first
+  thread (`SYS_PROCESS_WATCH` retired with the process object, Stage 7)
 - bounded restart policy for autostart services
 - global aggregated diagnostics over kernel and service-local status surfaces
 
@@ -25,195 +33,132 @@ Defines the current service-manager contract for discovery, runtime publication,
 
 ## Bootstrap prerequisites
 
-`svcmgr` must receive at minimum:
+Everything `svcmgr` needs arrives as a **pre-start CSpace mint**, and `RBX` is
+0 — the bootstrap channel went with KChannel:
 
-- one private bootstrap channel handle in `RBX`
-- one spawn capability message (`SVCMGR_BOOTSTRAP_KIND_SPAWN_CAP`)
-
-Optional bootstrap inputs:
-
-- one `KIrqCap` per declared IRQ-routed service
-- one `KIoPort` capability per declared hardware-I/O service
-
-Without the spawn capability, `svcmgr` exits immediately after logging a fatal bootstrap error.
+- `IRIS_CPTR_SPAWN_CAP` — the spawn/hardware authority. Without it, `svcmgr`
+  logs a fatal bootstrap error and exits.
+- `IRIS_CPTR_OWN_EP` — the receive side of its own endpoint.
+- `IRIS_CPTR_CONSOLE_EP` — the console it logs through.
+- one `KIrqCap` per declared IRQ-routed service, one `KIoPort` per declared
+  hardware-I/O service.
 
 ## Runtime endpoint model
 
-Discovery now supports both:
+Discovery is by name or by numeric id, over the endpoint. A published entry
+is `(service_id, name, master cap, client_rights, owner_badge, generation)`.
+Built-in entries come from the service catalog; dynamic ones are registered
+at runtime and take ids ≥ 0x40.
 
-- fixed endpoint lookup (`SVCMGR_MSG_LOOKUP`)
-- fixed/dynamic name lookup (`SVCMGR_MSG_LOOKUP_NAME`)
+## Wire format
 
-Current endpoints:
+A MessageInfo word plus message registers (ledger A-33) over `EP_Call` /
+`Reply` — labels on `SYS_INVOKE` since ledger A-32. A request's opcode is the
+message LABEL; `words[]` are the message registers; a name travels as the bulk
+payload in the caller's registered IPC buffer; a capability travels in
+`msg.cap` and arrives in the slot the receiver declared.
 
-- `SVCMGR_ENDPOINT_KBD`
-- `SVCMGR_ENDPOINT_KBD_REPLY`
-- `SVCMGR_ENDPOINT_VFS`
-- `SVCMGR_ENDPOINT_VFS_REPLY`
-- `SVCMGR_ENDPOINT_SH`
-- `SVCMGR_ENDPOINT_SH_REPLY`
+Replies are `IRIS_EP_REPLY_OK` or `IRIS_EP_REPLY_ERR` with
+`words[0] = (uint32_t)iris_error_t`. Exactly one reply per request, malformed
+ones included.
 
-Built-in endpoints resolve through the service catalog to one service master handle and one allowed-rights mask.
-Runtime-published endpoints are stored in `svcmgr` state as `(endpoint, name, public_h, client_rights)` entries.
+## Lookup contract — `IRIS_SVCMGR_EP_LOOKUP_NAME` (0xF001)
 
-## Lookup contract
+- Request: payload = NUL-terminated service name (`buf_len` includes the NUL).
+- Reply OK: the endpoint cap in the caller's receive slot; `words[0]` =
+  `service_id`.
+- Unknown name → `IRIS_ERR_NOT_FOUND`, and no capability travels.
 
-Client request:
+Rights granted: `RIGHT_WRITE` to an ordinary client. `RIGHT_DUPLICATE` and
+`RIGHT_TRANSFER` — re-mint and forward authority — are granted only to a
+supervisor badge (`iris_badge_is_supervisor()`: init, svcmgr, unbadged).
 
-- message type: `SVCMGR_MSG_LOOKUP`
-- payload:
-  - endpoint id
-  - requested rights mask
-- attached handle:
-  - reply channel moved into `svcmgr`
-  - rights must include `RIGHT_WRITE`
-
-Lookup behavior:
-
-- unknown endpoint -> `IRIS_ERR_NOT_FOUND`
-- known endpoint but unavailable master handle -> `IRIS_ERR_INVALID_ARG`
-- granted rights = `requested & allowed`, except `RIGHT_SAME_RIGHTS` maps to full allowed set
-- `svcmgr` duplicates the selected master handle with `granted | RIGHT_TRANSFER`
-- the duplicate is returned via `SVCMGR_MSG_LOOKUP_REPLY`
-
-Client-facing allowed rights currently come from the service catalog:
-
-- `kbd`
-  - service endpoint: `RIGHT_WRITE`
-  - reply endpoint: `RIGHT_READ`
-- `vfs`
-  - service endpoint: `RIGHT_WRITE | RIGHT_DUPLICATE`
-  - reply endpoint: `RIGHT_READ | RIGHT_DUPLICATE`
-- `sh`
-  - service endpoint: `RIGHT_WRITE`
-  - reply endpoint: `RIGHT_READ`
+`IRIS_SVCMGR_EP_LOOKUP_ID` (0xF004) is the same lookup keyed on
+`words[0] = service_id`.
 
 ## Dynamic publication contract
 
-`SVCMGR_MSG_REGISTER` / `SVCMGR_MSG_UNREGISTER` are the first cut of a general runtime registry.
+### `IRIS_SVCMGR_EP_REGISTER` (0xF002)
 
-Publisher request:
+- Request: payload = NUL-terminated name; `msg.cap` = the endpoint capability
+  to publish, transferred to svcmgr.
+- Reply OK: `words[0]` = assigned `service_id`.
+- The transferred capability is validated `KOBJ_ENDPOINT`; the badge the
+  kernel delivered becomes the entry's `owner_badge`.
+- Rejections, all of which release the transferred capability rather than
+  leaking it: reserved name (`*.ep`, catalog names) → `ACCESS_DENIED`; no cap
+  or wrong type → `INVALID_ARG`; name or id already taken → `BUSY`.
 
-- message type: `SVCMGR_MSG_REGISTER`
-- payload:
-  - runtime endpoint id
-  - allowed client-rights mask
-  - fixed-size service name
-- attached handle:
-  - one service master handle moved into `svcmgr`
-  - attached rights must include `RIGHT_DUPLICATE`
+Registration is **cap-backed**, not possession-of-a-channel: a lookup returns
+a same-object capability to what was registered, so publishing something
+means handing over the real authority.
 
-Registration behavior:
+### `IRIS_SVCMGR_EP_UNREGISTER` (0xF003)
 
-- collisions with built-in endpoint ids are rejected
-- collisions with built-in names (`kbd`, `vfs`) are rejected
-- collisions with existing runtime endpoint ids or names are rejected
-- only `KChannel` publications are accepted in this cut
+- Request: `words[0]` = `service_id`.
+- Requires `badge == owner_badge`, or a supervisor badge.
+- The stored capability is closed, which invalidates already-distributed
+  derivations with `IRIS_ERR_CLOSED`; repeat unregister of a removed entry is
+  a no-op.
+- Automatic cleanup on publisher death is not implemented.
 
-Current first-cut semantics:
+## Lifecycle contract (Phase 10)
 
-- publication is possession-based: if the caller can move a duplicable handle into `svcmgr`, it can publish it
-- lookup by endpoint and lookup by name both work for dynamic entries
-- unregister is proof-of-possession based: the caller must move a handle for the same published channel object
-- successful unregister seals the published channel before dropping the registry entry
-- sealing invalidates already-distributed channel duplicates with `IRIS_ERR_CLOSED`
-- repeated unregister of an already-removed entry is a no-op
-- automatic cleanup on publisher death is not implemented in this cut
+### `IRIS_SVCMGR_EP_STATUS` (0xF005)
 
-## Status contract
+`words[0]` = service_id → `words[0]` = alive (1/0), `words[1]` = generation.
+Open to any caller: it is a read-only liveness oracle, and it is what lets a
+client poll a restart instead of blocking on a dead endpoint. The generation
+bumps on every restart or revoke, so a client can detect a stale capability.
 
-`SVCMGR_MSG_STATUS` returns manager-local health, not full system health.
+### `IRIS_SVCMGR_EP_RESTART` (0xF006)
 
-Current reply fields:
+`words[0]` = service_id → `words[0]` = the new generation. **Privileged**:
+only a supervisor badge; anything else gets `ACCESS_DENIED`. Kills the
+service and lets the watch-driven respawn path bring it back.
 
-- protocol version
-- manifest entry count
-- ready service count
-- active supervision slot count
-- service catalog version
+## Diagnostics contract — `IRIS_SVCMGR_EP_DIAG` (0xF007)
 
-`ready_services` currently means the service has both a public master handle and a reply master handle installed in `svcmgr` state.
+Open to any caller. Reply: `words[0]` = catalog service count, `[1]` = ready
+services, `[2]` = active dynamic registrations, `[3]` = catalog version.
 
-## Diagnostics contract
+It is svcmgr-local by construction: four counters svcmgr already has, no
+round-trip to anybody. The wider view is assembled by whoever wants it —
+`vfs` answers `VFS_EP_OP_STATUS` on its own endpoint, and a client that needs
+both makes both calls. `SYS_DIAG_SNAPSHOT` is not called; it was retired in
+Phase 51. Service-local status remains the source of truth.
 
-`SVCMGR_MSG_DIAG` is the current global health entry point.
-
-To satisfy it, `svcmgr` must:
-
-1. query `vfs` with `VFS_EP_OP_STATUS` over `"vfs.ep"` (EP_CALL; the legacy `VFS_MSG_STATUS` was retired with `vfs_proto.h` in Phase 7.5)
-2. query `kbd` with `KBD_MSG_STATUS`
-3. combine those results with its own internal counters (task count, process count, IRQ routes, tick snapshot)
-
-`SYS_DIAG_SNAPSHOT` is not called; it was retired in Phase 51 and returns `IRIS_ERR_NOT_SUPPORTED`.
-The reply is a compact aggregate view. It does not replace service-local status as source of truth.
+Unknown or malformed opcodes fail with `INVALID_ARG` — there is no silent
+fallback anywhere (T068).
 
 ## Supervision and restart contract
 
-For each tracked service slot, `svcmgr` stores:
+For each tracked service slot, `svcmgr` stores the first thread's TCB, the
+IRQ number, the service id and a short name.
 
-- `proc_h`
-- `irq_num`
-- `service_id`
-- short service name
+On the death notification (Phase 13 / Track B — the kernel signals bit
+`1 << service_id` on `svcmgr`'s death notification, so the bit index names the
+exiting slot directly):
 
-On the death KNotification signal (Phase 13 / Track B — the kernel signals
-bit `1<<service_id` on `svcmgr`'s death notification; the bit index names
-the exiting slot directly):
+- the current master capabilities for that service are closed, which wakes
+  blocked clients with `CLOSED` rather than leaving them queued on a corpse;
+- the tracked thread reference is released;
+- if the service is autostarted and restart budget remains, `svcmgr` respawns
+  it and bumps the generation.
 
-- current master service handles for that service are sealed and closed
-- the tracked `proc_h` is released
-- if the service is autostarted and restart budget remains, `svcmgr` respawns it
-
-Restart policy is declarative:
-
-- controlled by `autostart`
-- controlled by `restart_on_exit`
-- bounded by `restart_limit`
-
-Current built-in services:
-
-- `kbd`: restart up to 3 times
-- `vfs`: restart up to 3 times
-- `sh`: autostarted, no restart budget in the current catalog
+Restart policy is declarative: `autostart`, `restart_on_exit`,
+`restart_limit`. Current built-in services: `kbd` and `vfs` restart up to 3
+times; `sh` is autostarted with no restart budget.
 
 ## Current invariants
 
 - `svcmgr` is the healthy-path discovery authority for `kbd`, `vfs`, and `sh`.
-- `svcmgr` supervises service exit by watch events, not by polling.
-- Stale master endpoints are sealed before replacement so blocked clients fail fast.
-- `svcmgr` can aggregate health only if both kernel diagnostics and service-local status paths are functioning.
+- `svcmgr` supervises service exit by notification, not by polling.
+- Stale master endpoints are closed before replacement so blocked clients fail
+  fast.
+- Reserved names (`*.ep`, catalog names) are never runtime-registrable.
+- `svcmgr` can aggregate health only if both kernel diagnostics and
+  service-local status paths are functioning.
 
-## Phase 10 — lifecycle & badge policy
-
-- EP opcodes added: `IRIS_SVCMGR_EP_STATUS` (0xF005, open: name → {alive,
-  generation}), `IRIS_SVCMGR_EP_RESTART` (0xF006, **supervisor-only**: kill +
-  watch-driven respawn, bumps generation), badge-authenticated
-  `IRIS_SVCMGR_EP_REGISTER`/`UNREGISTER` (name claim + `owner_badge`).
-- `.ep` lookups grant `RIGHT_WRITE` only to ordinary clients; `DUPLICATE`/
-  `TRANSFER` requires `iris_badge_is_supervisor()` (init/svcmgr/unbadged).
-- Reserved names (`*.ep`, catalog names) are never runtime-registrable on
-  either transport. The legacy KChannel loop is a compatibility boundary
-  (`owner_badge = 0`). See [service-lifecycle.md](../service-lifecycle.md).
-
-## Phase 11 — endpoint cap-transfer & REGISTER over EP
-
-- `IrisMsg.attached_cap` (offset 72, ABI 80 B) carries a capability transferred
-  by an `EP_CALL` (the reply cap keeps `attached_handle`). Kernel-staged,
-  anti-spoof, KReply-compatible.
-- `IRIS_SVCMGR_EP_REGISTER` now consumes a real transferred **endpoint** cap
-  (validated `KOBJ_ENDPOINT`); LOOKUP returns a same-object cap. Reject paths:
-  reserved name → ACCESS_DENIED, no cap / wrong type → INVALID_ARG, name taken
-  → BUSY (transferred cap closed on every reject, no leak).
-- `UNREGISTER` over EP requires the owner badge (or a supervisor); the stored
-  cap is closed on unregister. Legacy KChannel REGISTER/UNREGISTER is a
-  compatibility boundary (`owner_badge = 0`).
-
-## Phase 12 — endpoint-first svcmgr
-
-- `IRIS_SVCMGR_EP_DIAG` (0xF007) is the productive snapshot path (replaces
-  legacy `SVCMGR_MSG_DIAG`): words[0]=catalog count, [1]=ready, [2]=active
-  dynamic, [3]=catalog version. No KChannel.
-- Unknown/malformed EP opcodes fail with `INVALID_ARG` — never a silent
-  fallback to the legacy loop (T068).
-- Legacy KChannel REGISTER/UNREGISTER/LOOKUP/DIAG are a compatibility/test
-  boundary (init self-tests + T046); `SVCMGR_MSG_STATUS` retired.
+See [service-lifecycle.md](../service-lifecycle.md) for the badge policy this
+contract enforces.

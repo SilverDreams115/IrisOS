@@ -6,8 +6,13 @@
 > `INVALID_ARG` — so every "dual resolver", "handle-only" and "still a handle"
 > statement below describes a state that no longer exists.  Several objects it
 > names are gone too: `KChannel` (Phase 13) and `KProcess` (Stage 7-proc).
-> Kept because the resolution matrix and the working-set analysis are what made
-> the deletion safe to attempt.
+> The message shape is gone too: ledger A-33 deleted `struct IrisMsg` from the
+> ABI, so `attached_cap`, `attached_handle` and `buf_uptr` are kernel-internal
+> staging fields at most (`iris/ipc_stage.h`) and in one case nothing at all.
+> What A1.5 decided SURVIVED all of it: the receiver declares where a
+> capability lands, and one that declares nothing is delivered the message
+> without the capability.  Kept because the resolution matrix and the
+> working-set analysis are what made the deletion safe to attempt.
 
 Status: ACCEPTED — implemented in this phase.  Companion to
 `a1-authority-namespace-endgame.md`: after A1 made every persistent object

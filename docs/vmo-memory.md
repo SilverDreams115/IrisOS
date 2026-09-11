@@ -1,6 +1,20 @@
 # VMO Memory Model (Phase 6.3, budgeted in Stage 6)
 
-> **Stage 6 Step 5.**  A VMO's pages, its page-address array and its object
+> **Historical — the KVMO is retired.**  seL4 has no VMO: memory is Untyped
+> that a holder retypes into FRAMES and maps.  IRIS's VMO was one of the three
+> object types with no seL4 equivalent, and it was the reason the loader and
+> vfs both had to speak a second memory ABI to read a file the kernel already
+> had.  A boot image now arrives as a frame from `Boot_InitrdFrame`, which
+> answers its size in the same call (ledger D-5), and ONE `Frame_Map` covers
+> the whole frame (ledger D-10) — which is what made the page-at-a-time
+> machinery below unnecessary.  No `sys_vmo_*` implementation, declaration or
+> label survives; `SYS_VMO_CREATE`, `SYS_VMO_MAP`, `SYS_VMO_MAP_INTO`,
+> `SYS_VMO_MAP_PAGE`, `SYS_VMO_UNMAP`, `SYS_VMO_SIZE`, `SYS_VMO_SHARE` and
+> `SYS_INITRD_VMO` are retired numbers that answer `NOT_SUPPORTED`.  Kept
+> because the ownership and teardown reasoning is what the frame model
+> inherited.
+>
+> **Stage 6 Step 5 (while it lived).**  A VMO's pages, its page-address array and its object
 > header are carved from an **Untyped the caller names** — `SYS_VMO_CREATE`'s
 > second argument, `SYS_INITRD_VMO`'s fourth — not from the PMM.  Zero means
 > "the budget my address space was built from".  Everything below still

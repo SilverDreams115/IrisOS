@@ -6,8 +6,11 @@
 > renamings happened after this document was written: the per-process exit
 > watch it describes became `SYS_TCB_WATCH` on the child's first thread
 > (Stage 7 Step 10), and `SYS_PROCESS_EXIT_CODE` became `SYS_TCB_EXIT_CODE`.
-> Kept as the record of how each user was moved off, and of the debt
-> classification that made the removal orderly.
+> The syscall names throughout are retired in form as well as in fact: ledger
+> A-32 replaced all 93 numbers with one invocation door and a flat label list,
+> and A-33 replaced the message struct with a MessageInfo word and message
+> registers.  Kept as the record of how each user was moved off, and of the
+> debt classification that made the removal orderly.
 
 KChannel was the legacy IPC mechanism in IRIS (ring buffer, 128 msgs × 84 bytes). This document tracks the migration to KEndpoint and documents the debt classification for each KChannel user.
 

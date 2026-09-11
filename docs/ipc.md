@@ -1,171 +1,154 @@
 # IRIS IPC Architecture
 
-IRIS supports two IPC mechanisms: **KChannel** (legacy ring-buffer) and **KEndpoint** (seL4-style synchronous rendezvous). New code should use KEndpoint.
+IRIS has one IPC mechanism for messages — the **KEndpoint**, a synchronous
+rendezvous — and one for signals, the **KNotification**. Both are seL4's.
 
-## KEndpoint (seL4-style, preferred)
+This document described two mechanisms for most of its life: KChannel, an
+asynchronous ring buffer, was the original and is fully retired (Phase 13). Its
+syscall numbers are permanently reserved and answer `NOT_SUPPORTED`. What
+follows is what exists.
 
-KEndpoint provides synchronous rendezvous IPC. The sender blocks until a receiver is ready and vice versa — there is no message queue.
+## How an operation is named
 
-### State machine
+Since ledger **A-32** there is one syscall for everything that acts on an
+object:
 
-```
-        EP_SEND (sender(s) queued)
-       /                          \
-IDLE --                             -- IDLE (after rendezvous)
-       \                          /
-        EP_RECV (receiver(s) queued)
-```
-
-- `EP_STATE_IDLE`: no waiters.
-- `EP_STATE_SEND`: one or more senders blocked waiting for a receiver.
-- `EP_STATE_RECV`: one or more receivers blocked waiting for a sender.
-
-### Syscalls
-
-| Syscall | Number | Description |
-|---------|--------|-------------|
-| `SYS_ENDPOINT_CREATE` | 73 | Create a new endpoint (returns handle with all rights) |
-| `SYS_EP_SEND` | 74 | Blocking send (blocks until rendezvous) |
-| `SYS_EP_RECV` | 75 | Blocking receive (blocks until rendezvous) |
-| `SYS_EP_NB_SEND` | 76 | Non-blocking send (returns `WOULD_BLOCK` if no receiver) |
-| `SYS_EP_NB_RECV` | 77 | Non-blocking receive (returns `WOULD_BLOCK` if no sender) |
-| `SYS_EP_CALL` | 93 | Send + block for reply (creates KReply, delivers to server) |
-| `SYS_REPLY` | 94 | Invoke KReply to unblock the EP_CALL caller |
-
-### Message format (`struct IrisMsg`, 64 bytes)
-
-```
-label        (8 bytes): operation identifier
-words[4]     (32 bytes): fixed-size arguments
-word_count   (4 bytes): number of valid words
-buf_len      (4 bytes): bulk data length (0 = no bulk)
-buf_uptr     (8 bytes): user address of bulk data buffer
-attached_handle (4 bytes): handle to transfer (IRIS_MSG_NO_CAP = none)
-attached_rights (4 bytes): rights to grant on attached handle
+```c
+SYS_INVOKE(cptr, label, a1, a2, a3)
 ```
 
-### Bulk data (kbuf)
+The capability says WHAT is being acted on, the label says WHICH method, and
+neither can be given without the other. `EP_Send`, `EP_Recv`, `EP_Call`,
+`Reply` and `ReplyRecv` are labels like any other — `kernel/include/iris/invoke.h`
+is the list. Three syscall numbers survive (`EXIT`, `YIELD`, `CLOCK_GET`) and
+each is there because it invokes nothing, which is why seL4 keeps `seL4_Yield`.
 
-Up to `IRIS_IPC_BUF_SIZE` (256) bytes of bulk data can be transferred per message. The sender sets `msg.buf_uptr` to point to the source buffer and `msg.buf_len` to the byte count. The receiver sets `msg.buf_uptr` to point to the destination buffer before calling `EP_RECV` or `EP_NB_RECV`.
+## How a message is carried
 
-For `EP_CALL`, `msg.buf_uptr` is used for both the send buffer (outbound) and the reply receive buffer (inbound). After `EP_CALL` returns, the same buffer contains the server's reply data.
+Since ledger **A-33** a message is a **MessageInfo word plus message
+registers**, and a payload longer than that lives in the sending thread's
+registered IPC buffer. There is no message struct in the ABI and no pointer to
+one.
+
+```
+MessageInfo:  bits  0.. 3  length   — message words carried, 0..4
+              bits  4..11  caps     — on a send, 1 if a capability travels;
+                                       on a receive, the RIGHTS it landed with
+              bits 12..24  buf      — bulk payload bytes in the IPC buffer
+              bits 25..63  label    — the application's
+```
+
+`kernel/include/iris/ipc_msg.h` holds the layout and the register map, and is
+shared by the kernel, the C services and the assembler — `kbd` is a driver
+written in assembly and reads a message the same way C does.
+
+`services/common/iris_msg.h` provides `struct iris_msg` and `iris_msg_send` /
+`_recv` / `_call` / `_reply` / `_reply_recv`. That struct is ring-3
+marshalling, the way seL4's `seL4_MessageInfo_t` and `seL4_SetMR` are; the
+kernel has never seen it and holds no pointer to it.
+
+What that buys: there is no address on the message path, so there is nothing to
+validate and nothing for a second thread to unmap between the check and the
+copy; and a short message never touches memory at either end.
+
+### Bulk payloads
+
+A payload lives in the page the sending thread registered with
+`TCB_SetIPCBuffer` (ledger D-4), and the message carries a **length**, not an
+address. **Both ends need a registered buffer**: the payload is copied from the
+sender's page to the receiver's, so two threads of one process each need their
+own. A thread with no buffer cannot send a payload at all — that is seL4's
+answer and now IRIS's, and it replaced 256 bytes of kernel staging inside every
+TCB that the user did not choose and could not name.
 
 ### Capability transfer
 
-A single capability can be transferred per message by setting `msg.attached_handle` and `msg.attached_rights`. The sender's handle is consumed at staging time (it must carry `RIGHT_TRANSFER`; the transferred rights are reduced to `attached_rights`). The receiver's message carries the newly installed handle in `msg.attached_handle`.
+A message carries at most one capability, in `msg.cap` with `msg.cap_rights`.
+The kernel stages it: the sender must really hold it, the rights are reduced to
+what was asked for, and the badge is preserved, so the number a sender writes
+is never delivered as written.
 
-`EP_CALL` does **not** support request-side capability transfer; use `EP_SEND`/`EP_RECV` for that. The **reply** direction does support it — see below.
+Since **A-29** the transfer is a **COPY**. The sender keeps what it sent and
+the receiver's capability is a revocable derivation child of the sender's slot.
+Giving a capability away is send-then-delete — two steps that both belong to
+the sender.
 
-### Reply caps (KReply)
+A receiver says where a capability should land in `msg.recv_slot` and learns
+what arrived in `msg.got_caps`: the RIGHTS it landed with, or zero for nothing.
+Zero is unambiguous because a capability with no rights cannot be transferred
+at all. It is not told WHERE, because it declared the slot.
 
-When `EP_CALL` is used:
-1. Caller sends message and transitions to `TASK_BLOCKED_REPLY`.
-2. Server receives via `EP_RECV` and gets a `KReply` handle in `msg.attached_handle`.
-3. Server calls `SYS_REPLY(reply_h, reply_msg)` exactly once to unblock the caller.
-4. If the server closes the reply handle without replying, the caller wakes with `IRIS_ERR_CLOSED`.
-5. A second `SYS_REPLY` on the same handle returns `IRIS_ERR_NOT_FOUND` (one-shot guarantee).
+A **Call** hands the receiving side two capabilities — the caller's gift, in
+the declared slot, and the reply object it is now owed, in `msg.got_cap`. They
+shared one field until A-33 gave each its own.
 
-### Reply-cap transfer (Phase 7.1 ABI extension)
+## Reply objects (KReply)
 
-`SYS_REPLY` can transfer one capability to the EP_CALL caller via
-`reply_msg.attached_handle` / `attached_rights`, with the same staging
-semantics as `EP_SEND` (the server's handle needs `RIGHT_TRANSFER`, is
-consumed, and rights are reduced). Consumption contract:
+`EP_Call` blocks the caller and hands the receiver a reply capability, which is
+**one-shot**: the second `Reply` on the same object answers `NOT_FOUND`, because
+by then it may be bound to a different caller and a second reply would answer
+somebody else's call with this one's payload.
 
-| Outcome | Server handle | Caller sees |
-|---------|--------------|-------------|
-| Success | consumed | new handle in `msg.attached_handle` |
-| Staging error (`BAD_HANDLE`, `ACCESS_DENIED`, …) | **not** consumed; KReply still usable | still blocked |
-| Caller already gone (`NOT_FOUND`) | consumed (cap destroyed) | — |
-| Caller handle table full | consumed (cap destroyed) | `IRIS_MSG_NO_CAP` |
+A reply may be **deferred**: a server can stash the reply object and answer
+later. `kbd` does this for blocking key reads — `KBD_EP_OP_READ` parks the
+reply and answers it from the next IRQ scancode. The caller stays blocked until
+that reply, or wakes with `CLOSED` if the object is torn down.
 
-This is what allows `IRIS_SVCMGR_EP_LOOKUP_NAME` to return service endpoint
-caps over the EP path (used by sh, init and iris_test for `"vfs.ep"` —
-endpoint-only for VFS operations since Phase 7.2 — and `"kbd.ep"`, Phase 7.4).
-Covered by runtime tests T024/T025.
+A reply always delivers `sender_badge = 0`. Reply identity is implied by the
+one-shot object, never by a badge a server could write.
 
-Reply caps may also be answered **deferred**: the server stashes the KReply
-handle and replies later. kbd uses this for blocking key pulls
-(`KBD_EP_OP_READ` parks the reply and answers it from the next IRQ scancode
-— see `docs/kbd-endpoint.md`). The caller stays in `TASK_BLOCKED_REPLY`
-until the deferred `SYS_REPLY` (or wakes with `IRIS_ERR_CLOSED` on KReply
-teardown).
+`ReplyRecv` is seL4's combined operation, and a passive server needs it: it
+must not cross the gap between giving its donated time back and blocking again.
+It carries no capability on the reply half, and the syscall enforces that — a
+server's loop hands back the words its receive delivered, and those include the
+reply object it must not give away.
 
-### Close semantics
+## Close semantics
 
-When all handles to an endpoint are closed (`active_refs → 0`), `kendpoint_obj_close` fires:
-- All blocked senders and receivers wake with `IRIS_ERR_CLOSED`.
-- Staged caps are released.
-- The endpoint queue is cleared.
+When the last capability to an endpoint goes away, every blocked sender and
+receiver wakes with `IRIS_ERR_CLOSED`, staged capabilities are released without
+being consumed, and the queue is cleared.
 
-### Rights
+`EP_CancelBadgedSends` (ledger A-25) cancels the in-flight sends of ONE badge.
+Without it, revoking a badged delegation stopped a client sending anything new
+and left whatever it had already queued to be delivered afterwards —
+revocation with a tail.
+
+## Rights
 
 | Right | Effect |
 |-------|--------|
-| `RIGHT_WRITE` | Required for `EP_SEND`, `EP_NB_SEND`, `EP_CALL` |
-| `RIGHT_READ` | Required for `EP_RECV`, `EP_NB_RECV` |
+| `RIGHT_WRITE` | `EP_Send`, `EP_NBSend`, `EP_Call` |
+| `RIGHT_READ` | `EP_Recv`, `EP_NBRecv` |
+| `RIGHT_TRANSFER` | required on a capability being handed over |
 
----
+## Notifications
 
-## KChannel (legacy, scheduled for migration)
+A `KNotification` carries signal BITS, OR-ed together — not counts, and not
+messages. `IRQ_SetNotification` routes a hardware line to one: the kernel masks
+the line, signals `1 << irq` from interrupt context (no allocation, nothing
+that can block) and the driver drains its device through its `KIoPort`
+capability and re-arms with `IRQ_Ack`.
 
-KChannel provides asynchronous buffered IPC via a ring buffer (128 messages × 84 bytes). It uses `SYS_CHAN_RECV` / `SYS_CHAN_SEND` with a blocking waiter set.
+`TCB_BindNotification` (ledger A-23) is what lets ONE thread be a driver: a
+thread blocked receiving on an endpoint still takes signals, and they arrive as
+a message labelled `IRIS_MSG_LABEL_NOTIFICATION`. Without it a server had to
+poll its endpoint and then sleep on its notification — a hundred wakeups a
+second to find nothing.
 
-KChannel remains fully supported. See `docs/kchannel-migration.md` for the migration plan.
+## Faults
 
----
+A fault is a message (ledger A-22). A faulting thread CALLs the endpoint its
+supervisor registered with `TCB_SetFaultHandler`, the handler receives the
+record as an ordinary message with a reply capability, and replying resumes the
+thread. The badge on the endpoint capability says which target faulted.
+Budget exhaustion is a separate registration (`TCB_SetTimeoutHandler`), because
+a temporal supervisor is not the pager.
 
-## KNotification
+## Waiting on time
 
-KNotification provides signal-bit signaling (bitmask OR semantics). Used for IRQ delivery and async events. See `kernel/new_core/include/iris/nc/knotification.h`.
-
-Since Phase 7.6, `SYS_IRQ_ROUTE_REGISTER` accepts a KNotification destination
-(`RIGHT_WRITE`) in addition to the legacy KChannel: the kernel then signals
-bit `1 << irq` from IRQ context (signal-only — no allocation, no blocking)
-instead of enqueuing a message. The service blocks on
-`SYS_NOTIFY_WAIT_TIMEOUT`, drains device state through its KIoPort cap and
-re-arms with `SYS_IRQ_ACK`. A route holds either a channel or a
-notification, never both (registering one replaces the other). First user:
-kbd (catalog flag `irq_notify = 1`, WAIT side delivered at bootstrap kind
-0x23).
-
----
-
-## CPtr-first invocation (Phase 8)
-
-The IPC, CNode, Untyped and Frame syscalls (via `cspace_or_handle_resolve_*`)
-take one capability argument with a kernel-enforced namespace split (Phase 8):
-values below 1024 are root-CNode slot indices (CPtrs) and resolve through
-the CSpace **only** — a missing slot fails cleanly and `ACCESS_DENIED` is a
-hard stop, with no handle-table fallback; values ≥ 1024 are handle ids
-(`slot | generation << 10`, generation ≥ 1) and resolve through the handle
-table **only** — they never walk the CSpace, so handle bit patterns cannot
-alias populated slots. (Before the split, the radix walker masked the index
-and a handle like 1027 could alias slot 3 — found and fixed in Phase 8;
-regression-tested in `test_ipc_cspace.c`.)
-
-A spawner mints caps directly into a child's root CNode with
-`SYS_CSPACE_MINT`, naming that CNode as the destination — it holds it because
-it retyped it (exclusive: occupied slot → `ALREADY_EXISTS`).  Minting happens
-**pre-start** via `svc_load_minted` so the child sees its slots from its first
-instruction.  (`SYS_PROC_CSPACE_MINT`, syscall 104, did this by naming the
-PROCESS that owned the CSpace, and is retired: it let a spawner reach a
-namespace it did not hold by naming something that pointed at it.) The child invokes them by CPtr —
-e.g. `SYS_EP_CALL(IRIS_CPTR_SVCMGR_EP, &msg)` — with no KChannel handle
-transfer. See `docs/cptr-first-services.md` for the slot map, per-service
-bootstrap flows and runtime coverage (T039–T046).
-
----
-
-## Choosing between KEndpoint and KChannel
-
-| Property | KEndpoint | KChannel |
-|----------|-----------|----------|
-| Semantics | Synchronous rendezvous | Async ring buffer |
-| Capacity | No queue (O(1) space) | 128 messages |
-| Bulk data | ≤256 bytes per call | ≤64 bytes per message |
-| Reply pattern | Built-in (KReply) | Manual second channel |
-| Multi-client | Yes (queue of callers) | Yes (multiple senders) |
-| Close behavior | Wakes all blocked tasks | Seals: receivers get CLOSED |
-| IRQ delivery | Not supported (cannot block in IRQ context) | Legacy route; new routes use KNotification (Phase 7.6) |
-| Status | **Preferred for new code** | **Legacy, use in existing code** |
+There is none in the kernel. `SLEEP`, `CLOCK_NANOSLEEP` and
+`NOTIFY_WAIT_TIMEOUT` are retired (ledger A-24): a bounded wait is a request to
+the ring-3 **timer service**, carrying a capability to the notification it
+should signal — so waiting is an authority that can be refused, which a syscall
+number never was.
