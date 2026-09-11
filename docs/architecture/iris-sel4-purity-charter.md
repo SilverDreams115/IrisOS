@@ -181,7 +181,7 @@ proven:
       `SYS_GETPID`) are diagnostics that confer nothing.
 - [x] Adversarial lifecycle and revocation suite (creation, cross death,
       chained revocation, storage reuse, stale caps) as a permanent gate —
-      305 runtime tests including model-based syscall fuzzing, 27418 host
+      306 runtime tests including model-based syscall fuzzing, 27415 host
       assertions, and `check_purity` as a hard gate on every build.
 
 ## 5. Governing priority
