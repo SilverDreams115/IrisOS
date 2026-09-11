@@ -1525,3 +1525,185 @@ void test_t295(void) {
 
     if (ok) it_pass("T295"); else it_fail("T295", why);
 }
+
+#define T337_NOTIF  IT_SCRATCH_1
+#define T337_EP     IT_SCRATCH_2
+#define T337_RO     IT_SCRATCH_3
+
+/* ── T337: two doors, one set of rooms (ledger A-31, stage A) ──────────────
+ *
+ * The syscall number is being retired as the thing that selects a method.  In
+ * its place: `SYS_INVOKE(cptr, label, …)`, which resolves the capability,
+ * reads its TYPE, and lets the pair (type, label) say what runs — seL4's
+ * `decodeInvocation`, and the last piece of IRIS's shape that was not seL4's.
+ *
+ * The conversion is done one caller at a time with both doors open, so the
+ * question this test exists to answer is whether they are the SAME door from
+ * the inside.  Four claims:
+ *
+ *  1. an invocation reaches the same method the number reached, and returns
+ *     the same answer — checked on operations with three different shapes: a
+ *     read that returns a value, a state change that a later read can see, and
+ *     a refusal;
+ *  2. the label is scoped to the TYPE.  INV_TCB_SUSPEND and INV_EP_SEND are
+ *     both 1, so sending 1 to the wrong kind of capability must not land on
+ *     the method that number happens to mean there.  This is the claim that
+ *     makes the type switch load-bearing rather than decorative, and it is the
+ *     one a global label space would silently give up;
+ *  3. a method that does not exist on a type is refused, and a capability of a
+ *     type with no methods at all is refused — seL4's IllegalOperation;
+ *  4. the fifth argument arrives.  The entry grew a register for the
+ *     invocation ABI, and an operation that needs all three method arguments
+ *     proves the last one is not landing as zero.
+ *
+ * And the instrument the migration needs: the numbered-door counter exists and
+ * moves.  It has to be here from the first commit, because a caller that never
+ * migrates keeps working and nothing else would ever say so.
+ * Invariants: A1, A6, A7. */
+void test_t337(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "the invocation door";
+
+    /* ── 1a. a read: the same question, asked both ways ──
+     * Fixed scratch slots throughout, not the rotating object pool: this test
+     * would otherwise advance the rotation past leaves earlier tests
+     * abandoned, and T324 counts those evictions against a ceiling. */
+    it_slot_delete(T337_NOTIF);
+    it_slot_delete(T337_EP);
+    it_slot_delete(T337_RO);
+    if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION,
+                      T337_NOTIF, 1u, 0) != 0) { it_fail("T337", "notif"); return; }
+    long n = (long)T337_NOTIF;
+
+    if (ok && it_sys1(SYS_CAP_IDENTIFY, n) !=
+              iris_invoke0(n, INV_CAP_IDENTIFY)) { ok = 0; why = "identify differs"; }
+    if (ok && iris_invoke0(n, INV_CAP_IDENTIFY) !=
+              (long)IRIS_HANDLE_TYPE_NOTIFICATION) { ok = 0; why = "identify wrong"; }
+
+    /* ── 1b. a state change, observed through the OTHER door ── */
+    if (ok && iris_invoke2(n, INV_NOTIFY_SIGNAL, 0x21, 0) != 0) {
+        ok = 0; why = "invoked signal";
+    }
+    if (ok) {
+        uint64_t bits = 0;
+        if (it_sys2(SYS_NOTIFY_POLL, n, (long)(uintptr_t)&bits) != 0 ||
+            (bits & 0x21u) == 0u) { ok = 0; why = "invoked signal did not land"; }
+    }
+    /* ...and the reverse: signalled by number, observed by invocation. */
+    if (ok && it_sys2(SYS_NOTIFY_SIGNAL, n, 0x42) != 0) { ok = 0; why = "numbered signal"; }
+    if (ok) {
+        uint64_t bits = 0;
+        if (iris_invoke1(n, INV_NOTIFY_POLL, (long)(uintptr_t)&bits) != 0 ||
+            (bits & 0x42u) == 0u) { ok = 0; why = "invoked poll"; }
+    }
+
+    /* ── 1c. a refusal travels identically ── */
+    if (ok) {
+        long ro = it_cdt_derive(n, T337_RO, RIGHT_READ); /* no WRITE: cannot signal */
+        if (ro < 0) { ok = 0; why = "reduce"; }
+        else {
+            long a = it_sys2(SYS_NOTIFY_SIGNAL, ro, 1);
+            long b = iris_invoke2(ro, INV_NOTIFY_SIGNAL, 1, 0);
+            if (a != (long)IRIS_ERR_ACCESS_DENIED || b != a) {
+                ok = 0; why = "refusal differs";
+            }
+            it_slot_delete((uint32_t)ro);
+        }
+    }
+
+    /* ── 2. the label is scoped to the type ──
+     * 1 is INV_NOTIFY_SIGNAL on a notification and INV_TCB_SUSPEND on a TCB.
+     * Asking a notification to do what label 3 means on an endpoint (RECV)
+     * must not reach EP_RECV; on a notification, 3 is POLL and needs a
+     * writable pointer, so a NULL one is refused by POLL rather than
+     * rendezvousing on something that is not an endpoint. */
+    if (ok) {
+        long ep = (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT,
+                                 T337_EP, 1u, 0) == 0) ? (long)T337_EP : -1;
+        if (ep < 0) { ok = 0; why = "ep"; }
+        else {
+            /* INV_NOTIFY_SIGNAL (1) sent to an ENDPOINT is INV_EP_SEND (1),
+             * which needs a message pointer — and must NOT signal anything.
+             * What matters is that it did not take the notification path. */
+            if (ok && iris_invoke2(ep, INV_NOTIFY_SIGNAL, 1, 0) !=
+                      (long)IRIS_ERR_INVALID_ARG) {
+                ok = 0; why = "endpoint took a notification method";
+            }
+            /* A label no endpoint has at all. */
+            if (ok && iris_invoke0(ep, 200u) != (long)IRIS_ERR_NOT_SUPPORTED) {
+                ok = 0; why = "endpoint answered a label it has not";
+            }
+            it_slot_delete(T337_EP);
+        }
+    }
+    /* A label no NOTIFICATION has. */
+    if (ok && iris_invoke0(n, 99u) != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "notification answered a label it has not";
+    }
+    /* ── 3. a capability whose type has no invocations at all ── */
+    if (ok && iris_invoke0((long)IRIS_CPTR_OWN_VSPACE, 1u)
+              != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "a VSpace answered an invocation";
+    }
+    /* An empty slot is NOT_FOUND, not a method refusal: the door resolves
+     * before it dispatches, which is the whole reason it knows the type. */
+    it_slot_delete(IT_SCRATCH_0);
+    if (ok && iris_invoke0((long)IT_SCRATCH_0, 1u) >= 0) {
+        ok = 0; why = "an empty slot was invoked";
+    }
+
+    /* ── 4. the fifth argument arrives ──
+     * Retype needs all three method arguments (type, size, destination), so a
+     * fifth register that landed as zero would put the object in slot 0 of the
+     * caller's root — which is the null slot, and would fail.  It succeeding at
+     * the slot asked for IS the assertion. */
+    if (ok) {
+        it_slot_delete(IT_SCRATCH_0);
+        long r = iris_invoke((long)IRIS_CPTR_TEST_UNTYPED, INV_UNTYPED_RETYPE,
+                             (long)IRIS_KOBJ_CNODE,
+                             (long)(((uint64_t)IT_SCRATCH_0 << 32) | 0u),
+                             4);                    /* obj_arg: 4 slots */
+        if (r != 0) { ok = 0; why = "invoked retype"; }
+        if (ok && it_sys1(SYS_CAP_IDENTIFY, (long)IT_SCRATCH_0)
+                  != (long)IT_KOBJ_CNODE) {
+            ok = 0; why = "the third method argument was lost";
+        }
+        it_slot_delete(IT_SCRATCH_0);
+    }
+
+    /* ── the instrument ──
+     * Every it_sysN above went through the numbered door, so the counter must
+     * have moved.  Nothing asserts a VALUE: what this pins is that the gauge
+     * exists and is live, so that stage E can assert it reached zero and the
+     * stages before it can watch it fall. */
+    if (ok) {
+        struct it_utq_global g0, g1;
+        if (!it_utq_g(&g0)) { ok = 0; why = "query"; }
+        if (ok && it_sys0(SYS_YIELD) != 0) { ok = 0; why = "yield"; }
+        if (ok && !it_utq_g(&g1)) { ok = 0; why = "query 2"; }
+        if (ok && g1.syscall_numbered_calls <= g0.syscall_numbered_calls) {
+            ok = 0; why = "the numbered-door gauge is not counting";
+        }
+        /* ...and an invocation does NOT advance it: that is what makes the
+         * number meaningful as a migration measure rather than a call count. */
+        if (ok) {
+            struct it_utq_global g2;
+            uint64_t base = g1.syscall_numbered_calls;
+            (void)iris_invoke0(n, INV_CAP_IDENTIFY);
+            (void)iris_invoke0(n, INV_CAP_IDENTIFY);
+            if (!it_utq_g(&g2)) { ok = 0; why = "query 3"; }
+            /* it_utq_g itself is a numbered call, so the gauge moves by that
+             * one and not by the two invocations. */
+            else if (g2.syscall_numbered_calls != base + 1u) {
+                ok = 0; why = "an invocation was counted as a numbered call";
+            }
+        }
+    }
+
+    it_slot_delete(T337_RO);
+    it_slot_delete(T337_EP);
+    it_slot_delete(T337_NOTIF);
+    it_quiesce_reaper();
+    if (ok) it_pass("T337"); else it_fail("T337", why);
+}

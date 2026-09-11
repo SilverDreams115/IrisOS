@@ -24,10 +24,10 @@
 
 void test_set_current_task(struct task *t);
 uint64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1,
-                          uint64_t a2, uint64_t a3);
+                          uint64_t a2, uint64_t a3, uint64_t a4);
 
 static long ds(uint64_t num) {
-    return (long)(int64_t)syscall_dispatch(num, 0, 0, 0, 0);
+    return (long)(int64_t)syscall_dispatch(num, 0, 0, 0, 0, 0);
 }
 
 void test_syscall_dispatch(void) {
@@ -92,9 +92,22 @@ void test_syscall_dispatch(void) {
     /* ── DS-4: the first unassigned number is where the ABI says it is ───
      * A guard against growing the syscall surface silently: adding a number
      * must break this and be re-stated, the same way T148 forces it from ring
-     * 3.  If this fails, check that the addition was deliberate. */
+     * 3.  If this fails, check that the addition was deliberate.
+     *
+     * It fired once, for A-31: 144 became SYS_INVOKE, the door every other
+     * number is being folded into.  That is the last number this table is
+     * expected to gain — the conversion SHRINKS it. */
     {
-        ASSERT_EQ(ds(SYS_IRQ_CLEAR + 1u), (long)IRIS_ERR_NOT_SUPPORTED);
+        ASSERT_EQ(ds(SYS_INVOKE + 1u), (long)IRIS_ERR_NOT_SUPPORTED);
+    }
+
+    /* ── DS-5: the invocation door refuses what it cannot name ───────────
+     * With no current task there is no CSpace to resolve against, so this
+     * asserts only the shape: SYS_INVOKE is dispatched (not NOT_SUPPORTED,
+     * which is what every unassigned number answers) and it fails cleanly. */
+    {
+        ASSERT_EQ((long)(int64_t)syscall_dispatch(SYS_INVOKE, 0, 0, 0, 0, 0),
+                  (long)IRIS_ERR_INVALID_ARG);
     }
 
     test_set_current_task(NULL);

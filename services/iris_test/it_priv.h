@@ -18,6 +18,7 @@
 
 #include <stdint.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/error.h>
 #include "../common/iris_vspace.h"
 #include <iris/nc/handle.h>
@@ -1688,6 +1689,10 @@ struct it_utq_global {
     uint32_t kernel_free_pages;
     /* Stage 9-evt: 1 once the kernel's boot arena is sealed. */
     uint32_t kernel_heap_sealed;
+    uint32_t _pad1;
+    /* Ledger A-31: calls that still came through the NUMBERED door.  Must be
+     * falling while the invocation ABI is adopted, and zero when it closes. */
+    uint64_t syscall_numbered_calls;
 };
 struct it_utq_one {
     uint32_t version, struct_size;
@@ -2947,6 +2952,7 @@ void test_t333(void);
 void test_t334(void);
 void test_t335(void);
 void test_t336(void);
+void test_t337(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);

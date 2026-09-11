@@ -506,4 +506,11 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_poweroff(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
+/* ── The invocation door (ledger A-31, syscall_invoke.c) ─────────── */
+uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
+                        uint64_t a1, uint64_t a2, uint64_t a3);
+/* How many calls still came through the numbered door (syscall_dispatch.c).
+ * Reported by SYS_UNTYPED_QUERY; must be 0 when the conversion closes. */
+uint64_t syscall_numbered_call_count(void);
+
 #endif /* IRIS_SYSCALL_PRIV_H */

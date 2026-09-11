@@ -57,13 +57,14 @@ struct syscall_frame {
     uint64_t user_rip;     /*  48 — rcx, set by the syscall insn    */
     uint64_t user_rflags;  /*  56 — r11, set by the syscall insn    */
     uint64_t user_rsp;     /*  64 — the caller's stack              */
+    uint64_t arg4;         /*  72 — r8  (ledger A-31)               */
     /* Callee-saved, pushed FIRST so the offsets above did not move. */
-    uint64_t user_r15;     /*  72 */
-    uint64_t user_r14;     /*  80 */
-    uint64_t user_r13;     /*  88 */
-    uint64_t user_r12;     /*  96 */
-    uint64_t user_rbx;     /* 104 */
-    uint64_t user_rbp;     /* 112 */
+    uint64_t user_r15;     /*  80 */
+    uint64_t user_r14;     /*  88 */
+    uint64_t user_r13;     /*  96 */
+    uint64_t user_r12;     /* 104 */
+    uint64_t user_rbx;     /* 112 */
+    uint64_t user_rbp;     /* 120 */
 };
 
 /*
@@ -117,7 +118,7 @@ void syscall_save_user_ctx(struct syscall_frame *f) {
  */
 static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
                                      uint64_t arg1, uint64_t arg2,
-                                     uint64_t arg3);
+                                     uint64_t arg3, uint64_t arg4);
 
 /* Global restart gauge — the only way, from outside, to tell a restartable
  * blocking path from a stack-parked one. */
@@ -150,8 +151,9 @@ void syscall_request_restart(struct task *t) {
  * remains is not a loop: it runs once and either returns or leaves.
  */
 static uint64_t syscall_run(struct task *t, uint64_t num, uint64_t arg0,
-                            uint64_t arg1, uint64_t arg2, uint64_t arg3) {
-    uint64_t r = syscall_dispatch_one(num, arg0, arg1, arg2, arg3);
+                            uint64_t arg1, uint64_t arg2, uint64_t arg3,
+                            uint64_t arg4) {
+    uint64_t r = syscall_dispatch_one(num, arg0, arg1, arg2, arg3, arg4);
     if (!t || !t->sc_restart) { if (t) t->sc_reentry = 0u; return r; }
 
     t->sc_restart = 0u;
@@ -160,14 +162,16 @@ static uint64_t syscall_run(struct task *t, uint64_t num, uint64_t arg0,
 }
 
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
-                          uint64_t arg1, uint64_t arg2, uint64_t arg3) {
+                          uint64_t arg1, uint64_t arg2, uint64_t arg3,
+                          uint64_t arg4) {
     struct task *t = task_current();
     if (t) {
         t->sc_num  = num;  t->sc_arg0 = arg0; t->sc_arg1 = arg1;
-        t->sc_arg2 = arg2; t->sc_arg3 = arg3; t->sc_restart = 0u;
+        t->sc_arg2 = arg2; t->sc_arg3 = arg3; t->sc_arg4 = arg4;
+        t->sc_restart = 0u;
         t->sc_reentry = 0u;
     }
-    return syscall_run(t, num, arg0, arg1, arg2, arg3);
+    return syscall_run(t, num, arg0, arg1, arg2, arg3, arg4);
 }
 
 /*
@@ -207,7 +211,7 @@ __attribute__((noreturn)) void syscall_restart_trampoline(void) {
     t->sc_reentry = 1u;
 
     uint64_t r = syscall_run(t, t->sc_num, t->sc_arg0, t->sc_arg1,
-                             t->sc_arg2, t->sc_arg3);
+                             t->sc_arg2, t->sc_arg3, t->sc_arg4);
 
     /*
      * And return to ring 3 without a syscall frame — the whole point of step 2.
@@ -219,9 +223,33 @@ __attribute__((noreturn)) void syscall_restart_trampoline(void) {
     __builtin_unreachable();
 }
 
+/*
+ * Ledger A-31 — how many calls still came through the numbered door.
+ *
+ * The invocation ABI is adopted one caller at a time, and a caller that was
+ * never migrated keeps working: that is what makes the migration safe and also
+ * what makes it fail SILENTLY.  D-4 already recorded this exact shape — a
+ * service whose IPC-buffer registration was refused kept using the staging
+ * path and the whole suite passed either way.  So this counts, from the first
+ * commit of the conversion, and `SYS_UNTYPED_QUERY` reports it: the number
+ * must be falling while stage C runs and zero when stage E closes.
+ *
+ * Relaxed: nothing branches on it.
+ */
+static _Atomic uint64_t syscall_numbered_calls;
+
+uint64_t syscall_numbered_call_count(void) {
+    return atomic_load_explicit(&syscall_numbered_calls, memory_order_relaxed);
+}
+
 static uint64_t syscall_dispatch_one(uint64_t num, uint64_t arg0,
                                      uint64_t arg1, uint64_t arg2,
-                                     uint64_t arg3) {
+                                     uint64_t arg3, uint64_t arg4) {
+    /* The invocation door.  Everything below it is the numbered door, and
+     * every call that takes it is counted. */
+    if (num == SYS_INVOKE) return syscall_invoke(arg0, arg1, arg2, arg3, arg4);
+    atomic_fetch_add_explicit(&syscall_numbered_calls, 1u, memory_order_relaxed);
+
     switch (num) {
         /* SYS_WRITE(0), SYS_BRK(7) — retired, fall to default */
         case SYS_EXIT:  return sys_exit(arg0, arg1, arg2);

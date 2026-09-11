@@ -413,6 +413,7 @@ struct task {
     uint8_t           cspace_root_guard_bits;
     uint64_t          sc_num;
     uint64_t          sc_arg0, sc_arg1, sc_arg2, sc_arg3;
+    uint64_t          sc_arg4;   /* A-31: the fifth, for invocations */
     uint32_t          sc_restart_count;  /* diagnostic: restarts observed */
 
     uint32_t          fault_seq_counter;

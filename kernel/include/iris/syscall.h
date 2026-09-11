@@ -74,6 +74,25 @@ static inline long iris_syscall4(long nr, long a0, long a1, long a2, long a3) {
         : "rcx", "r11", "memory");
     return ret;
 }
+/*
+ * Five user words (ledger A-31): the invocation ABI needs a capability, a
+ * label and three method arguments where the numbered ABI needed four
+ * arguments.  r8 is the fifth by the same convention that put the first four
+ * in rdi/rsi/rdx/r10 — and taking it cost the entry path its scratch register,
+ * which now waits in a per-CPU slot instead (`syscall_entry.S`).
+ */
+static inline long iris_syscall5(long nr, long a0, long a1, long a2, long a3,
+                                 long a4) {
+    long ret;
+    register long _a3 __asm__("r10") = a3;
+    register long _a4 __asm__("r8")  = a4;
+    __asm__ volatile ("syscall"
+        : "=a"(ret)
+        : "a"(nr), "D"(a0), "S"(a1), "d"(a2), "r"(_a3), "r"(_a4)
+        : "rcx", "r11", "memory");
+    return ret;
+}
+
 static inline long iris_syscall3(long nr, long a0, long a1, long a2) {
     return iris_syscall4(nr, a0, a1, a2, 0);
 }
@@ -1858,6 +1877,54 @@ static inline long iris_syscall0(long nr) {
 #define SYS_IRQ_CLEAR 143
 
 /*
+ * SYS_INVOKE(cptr, label, a1, a2, a3) → whatever the method returns
+ *   ledger A-31 — the invocation door.
+ *
+ *   cptr:  the capability being invoked.  It is not an argument TO the method
+ *          so much as the thing the method is a method OF: the kernel resolves
+ *          it, reads its TYPE, and the pair (type, label) selects what runs.
+ *   label: the method, scoped to that type (`iris/invoke.h`).  The same number
+ *          means different things on different kinds of capability — labels in
+ *          0x100 and up are the exception, being methods on the SLOT rather
+ *          than on the object, and valid whatever it holds.
+ *   a1-a3: the method's arguments.  Three is the widest any of them needs.
+ *
+ * This is the ONE syscall that is not IPC and not a bare machine operation,
+ * and the whole numbered table below is being folded into it.  Both doors are
+ * open while that happens; `SYS_UNTYPED_QUERY` reports how many calls still
+ * take the numbered one, and the migration is finished when that is zero.
+ *
+ * What it is NOT: a change of authority.  Every method reached here resolves
+ * its own capability and checks its own rights, exactly as it did when a
+ * number selected it.  What changes is that a method can no longer be named
+ * without naming the object it acts on.
+ */
+#define SYS_INVOKE 144
+
+#if !defined(__KERNEL__) && !defined(__ASSEMBLER__)
+/*
+ * iris_invoke — send `label` to the capability `cptr`.
+ *
+ * The shape every caller in the system is moving to.  Named rather than spelled
+ * out at the call sites because what a call site is about is WHICH method on
+ * WHICH capability, and never about which register the label travels in.
+ */
+static inline long iris_invoke(long cptr, unsigned long label,
+                               long a1, long a2, long a3) {
+    return iris_syscall5(SYS_INVOKE, cptr, (long)label, a1, a2, a3);
+}
+static inline long iris_invoke0(long cptr, unsigned long label) {
+    return iris_invoke(cptr, label, 0, 0, 0);
+}
+static inline long iris_invoke1(long cptr, unsigned long label, long a1) {
+    return iris_invoke(cptr, label, a1, 0, 0);
+}
+static inline long iris_invoke2(long cptr, unsigned long label, long a1, long a2) {
+    return iris_invoke(cptr, label, a1, a2, 0);
+}
+#endif
+
+/*
  * SYS_INITRD_FRAME(auth_cptr, index, dest_cnode|slot<<32, budget_cptr)
  *   → image size in bytes, or negative iris_error_t
  *
@@ -1985,6 +2052,20 @@ struct iris_untyped_query_global {
      * that stops being true without anyone noticing.
      */
     uint32_t kernel_heap_sealed;
+    uint32_t _pad1;
+    /*
+     * Ledger A-31 — calls that still came through the NUMBERED door.
+     *
+     * A total, not a live count, and it must be FALLING while the invocation
+     * ABI is adopted and ZERO when it closes.  It exists because that
+     * migration fails silently by construction: a caller that was never
+     * converted keeps working, every test passes, and nothing says which door
+     * it took.  D-4's IPC-buffer migration had exactly this shape and the
+     * first service tried was quietly not migrated — which is why this counter
+     * is here from the conversion's first commit rather than from the day
+     * somebody wondered.
+     */
+    uint64_t syscall_numbered_calls;
 };
 
 struct iris_untyped_query_one {
@@ -2128,9 +2209,11 @@ void syscall_init(void);
 void syscall_set_kstack(uint64_t kstack_top);
 void syscall_set_user_cr3(uint64_t val);
 
-/* Called from ASM handler — 5 params: num + 4 user args (arg3 via r10) */
+/* Called from ASM handler — 6 params: num + 5 user args (arg3 via r10,
+ * arg4 via r8; ledger A-31). */
 uint64_t syscall_dispatch(uint64_t num, uint64_t arg0,
-                          uint64_t arg1, uint64_t arg2, uint64_t arg3);
+                          uint64_t arg1, uint64_t arg2, uint64_t arg3,
+                          uint64_t arg4);
 #endif /* __KERNEL__ */
 #endif /* __ASSEMBLER__ */
 

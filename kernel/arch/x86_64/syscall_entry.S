@@ -35,23 +35,32 @@ syscall_user_cr3:
  *   Offsets used:
  *     %gs:48  = cpu_local.syscall_kstack   (kernel stack top for current task)
  *     %gs:56  = cpu_local.syscall_user_cr3 (user CR3 for current task)
+ *     %gs:72  = cpu_local.syscall_user_rsp (scratch: see below)
  */
 syscall_entry:
     /* SWAPGS first: GS_BASE ↔ KERNEL_GS_BASE → %gs = &cpu_local[0] */
     swapgs
 
-    /* save user rsp in r8 (caller-saved scratch); load kernel stack */
-    movq %rsp, %r8
+    /*
+     * Park the user stack pointer in the per-CPU scratch and take the kernel
+     * stack.  This used to be `movq %rsp, %r8`; r8 is the FIFTH ARGUMENT
+     * REGISTER now (ledger A-31), and there is no other register free here —
+     * rcx and r11 carry the user's RIP and RFLAGS, rax the syscall number, and
+     * rdi/rsi/rdx/r10/r8 are the five arguments.  Pushed straight out of
+     * memory below, so it never occupies a register at all.
+     */
+    movq %rsp, %gs:72           /* cpu_local.syscall_user_rsp */
     movq %gs:48, %rsp           /* cpu_local.syscall_kstack */
 
     /* save the syscall frame:
-     *   [rsp+112] user rbp   ┐
-     *   [rsp+104] user rbx   │ callee-saved (see below)
-     *   [rsp+96]  user r12   │
-     *   [rsp+88]  user r13   │
-     *   [rsp+80]  user r14   │
-     *   [rsp+72]  user r15   ┘
-     *   [rsp+64] user rsp    (saved from r8)
+     *   [rsp+120] user rbp   ┐
+     *   [rsp+112] user rbx   │ callee-saved (see below)
+     *   [rsp+104] user r12   │
+     *   [rsp+96]  user r13   │
+     *   [rsp+88]  user r14   │
+     *   [rsp+80]  user r15   ┘
+     *   [rsp+72] arg4        (r8, 5th user arg — A-31)
+     *   [rsp+64] user rsp    (from %gs:72)
      *   [rsp+56] user rflags (r11, set by syscall insn)
      *   [rsp+48] user rip    (rcx, set by syscall insn)
      *   [rsp+40] arg3        (r10, 4th user arg)
@@ -63,6 +72,11 @@ syscall_entry:
      *
      * The callee-saved registers are pushed FIRST, above everything else, so
      * that every offset the rest of this file uses stayed where it was.
+     *
+     * arg4 is pushed with the callee-saved block rather than next to its four
+     * siblings so that every offset below it — and every instruction in this
+     * file that names one — stayed exactly where it was when the fifth
+     * argument arrived.
      *
      * A procedural kernel does not need them here: it obeys the C ABI, so the
      * user's rbx/rbp/r12-r15 either stay in registers or get spilled onto this
@@ -79,7 +93,8 @@ syscall_entry:
     pushq %r13
     pushq %r14
     pushq %r15
-    pushq %r8         /* user rsp    */
+    pushq %r8         /* arg4 (A-31) */
+    pushq %gs:72      /* user rsp    */
     pushq %r11        /* user rflags */
     pushq %rcx        /* user rip    */
     pushq %r10        /* arg3        */
@@ -104,12 +119,13 @@ syscall_entry:
     movq %rsp, %rdi
     call syscall_save_user_ctx
 
-    /* syscall_dispatch(num, arg0, arg1, arg2, arg3) */
+    /* syscall_dispatch(num, arg0, arg1, arg2, arg3, arg4) */
     movq  8(%rsp), %rdi   /* num  */
     movq 16(%rsp), %rsi   /* arg0 */
     movq 24(%rsp), %rdx   /* arg1 */
     movq 32(%rsp), %rcx   /* arg2 */
     movq 40(%rsp), %r8    /* arg3 */
+    movq 72(%rsp), %r9    /* arg4 */
     call syscall_dispatch
     /* return value in rax */
 

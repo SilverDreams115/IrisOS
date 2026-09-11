@@ -754,6 +754,7 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             q.ipc_buffers           = ipc_buffers_registered();
             q.kernel_free_pages     = (uint32_t)pmm_free_pages();
             q.kernel_heap_sealed    = (uint32_t)kslab_is_sealed();
+            q.syscall_numbered_calls = syscall_numbered_call_count();
             return syscall_err(copy_versioned_to_user(buf_uptr, user_size, user_version,
                                &q, (uint32_t)sizeof(q), IRIS_UNTYPED_QUERY_VERSION));
         }

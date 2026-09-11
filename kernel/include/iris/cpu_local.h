@@ -78,6 +78,24 @@ struct iris_cpu_local {
      * stack back" the same act.
      */
     uint64_t               core_stack_top;   /* offset 64 */
+    /*
+     * Ledger A-31 — where the user's stack pointer waits while the kernel
+     * takes its own.
+     *
+     * It used to live in r8 for the three instructions between SWAPGS and the
+     * frame push.  r8 is a syscall ARGUMENT register now: the invocation ABI
+     * needs five user words (capability, label, three method arguments) where
+     * the numbered ABI needed four, and r8 is the fifth by the same
+     * convention that put the first four in rdi/rsi/rdx/r10.
+     *
+     * Per-CPU rather than a register because there is no register left that is
+     * both free at entry and not already carrying something the frame needs:
+     * rcx and r11 hold the user's RIP and RFLAGS, rax holds the syscall
+     * number, and everything else is an argument.
+     *
+     * DO NOT change this offset without updating syscall_entry.S (%gs:72).
+     */
+    uint64_t               syscall_user_rsp; /* offset 72 */
 };
 
 extern struct iris_cpu_local cpu_local[MAX_CPUS];
