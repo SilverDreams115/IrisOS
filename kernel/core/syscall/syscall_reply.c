@@ -194,8 +194,12 @@ uint64_t sys_ep_call(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         }
 
         /* Phase S1: bind the receiver's staged explicit reply object to this
-         * caller (verified non-NULL before the receiver was dequeued; the
-         * kernel is non-preemptive between that check and this bind).  The
+         * caller.  It was verified non-NULL before the receiver was DEQUEUED,
+         * and the dequeue is what makes the check still true here: a receiver
+         * off the endpoint's queue is not being delivered to by anyone else,
+         * and the only thread that could change its staged reply object is
+         * the receiver itself, which is blocked.  That argument never needed
+         * the core count, though the comment here used to cite it.  The
          * receiver's staging lifecycle ref transfers to t->pending_kreply;
          * the receiver observes its own reply CPtr in msg.attached_handle. */
         {
@@ -465,11 +469,23 @@ uint64_t sys_reply(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * charged, so the server would run unbudgeted for exactly as long as it took
  * to make the second syscall.
  *
- * Composed from the two halves rather than reimplementing either.  The kernel
- * is non-preemptive here — interrupts are off for the syscall and sys_reply
- * only marks the woken client READY, it does not yield — so the two run back
- * to back with nothing scheduled between them.  That is where the atomicity
- * comes from; there is no lock to hold and nothing to unwind.
+ * Composed from the two halves rather than reimplementing either, and the
+ * atomicity comes from WHERE THE SERVER IS, not from how many CPUs there are.
+ *
+ * The window being closed is the server running with no scheduling context:
+ * the reply half hands the donation back to the client, and until the receive
+ * half blocks it, the server is a runnable thread nobody is charging.  It
+ * cannot be scheduled in that window because it is ON-CPU executing this
+ * syscall, and a thread runs on one CPU at a time — and IF is cleared on
+ * syscall entry (`MSR_SFMASK`), so not even an interrupt on its own CPU can
+ * take it away.  Neither fact is about the core count.
+ *
+ * What the old wording claimed — "nothing is scheduled between them" — is the
+ * part that does NOT survive a second core: `sys_reply` marks the client READY
+ * and another CPU may dispatch it before this one reaches the receive.  That
+ * is harmless, and it is harmless for a reason worth writing down rather than
+ * discovering: the client got its scheduling context back before the wakeup,
+ * so a client running early runs on its own time.
  *
  * Sequencing note: the reply is NOT rolled back if the receive half fails.
  * The client has been answered and unblocked; pretending otherwise would make

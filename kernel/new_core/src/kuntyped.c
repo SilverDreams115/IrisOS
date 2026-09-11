@@ -308,8 +308,13 @@ void kuntyped_release_child(void *obj_ptr, uint64_t obj_bytes) {
  *
  * The whole batch is validated and carved under ONE u->lock hold: either every
  * child block exists (zeroed, parent pointer written, child_count and parent
- * retains taken) or the untyped is untouched.  IRIS today is uniprocessor with
- * IRQ-off spinlocks, so this section is also atomic against IRQ handlers.
+ * retains taken) or the untyped is untouched.
+ *
+ * The lock is IRQ-off, which buys two different exclusions that are worth
+ * naming separately because the old comment ran them together: the spinlock
+ * excludes other CPUs, and disabling interrupts excludes a handler on THIS
+ * one.  Only the second needed "uniprocessor" as a premise, and it never
+ * did — an IRQ-off spinlock gives both on any number of cores.
  */
 iris_error_t kuntyped_alloc_children_atomic(struct KUntyped *u,
                                             uint64_t obj_bytes,

@@ -1113,7 +1113,8 @@ static inline long iris_syscall0(long nr) {
  * SYS_FRAME_UNMAP(frame_cptr, vspace_cptr, user_va) → 0 or negative iris_error_t
  *   Removes the PTE at user_va in the given VSpace, but only if it maps
  *   exactly this frame's physical page (paddr).  Decrements frame->mapped_count.
- *   Issues invlpg for the unmapped VA (TLB invalidation; sufficient for single-core).
+ *   Issues invlpg for the unmapped VA — sufficient for ONE core.  Cross-CPU
+ *   shootdown is SMP roadmap §9.3 step 2 and does not exist yet.
  *
  *   frame_cptr:  KOBJ_FRAME with RIGHT_READ.
  *   vspace_cptr: KOBJ_VSPACE with RIGHT_WRITE (dual resolver since Phase 25).

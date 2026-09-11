@@ -333,6 +333,12 @@ int kcnode_slot_holds(struct KCNode *cn, uint32_t slot_idx,
     return held;
 }
 
+/* Defined with the delete family below; the overwrite path here needs both. */
+static iris_error_t kcnode_slot_delete_locked(struct KCNode *cn,
+                                              uint32_t slot_idx,
+                                              struct KObject **out_old);
+static void kcnode_slot_drop_old(struct KCNode *cn, struct KObject *old);
+
 iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
                                         struct KObject *obj,
                                         iris_rights_t rights, uint64_t badge,
@@ -342,16 +348,7 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
     if (!cn || !obj || rights == RIGHT_NONE) return IRIS_ERR_INVALID_ARG;
     if (parent_cn && parent_idx >= parent_cn->slot_count) return IRIS_ERR_INVALID_ARG;
 
-    /* Overwrite semantics (legacy kcnode_mint): clear the old occupant first
-     * with full delete-with-reparent semantics.  Uniprocessor, non-preemptive
-     * syscall context: no mutator can slip between the delete and the
-     * exclusive install below (and if one ever could, the install fails
-     * cleanly with ALREADY_EXISTS instead of corrupting the graph). */
-    if (!exclusive) {
-        if (slot_idx >= cn->slot_count) return IRIS_ERR_INVALID_ARG;
-        iris_error_t de = kcnode_slot_delete(cn, slot_idx);
-        if (de != IRIS_OK) return de;
-    }
+    if (!exclusive && slot_idx >= cn->slot_count) return IRIS_ERR_INVALID_ARG;
 
     /*
      * Stage 7-proc: a slot naming its OWN CNode takes no ACTIVE reference.
@@ -380,8 +377,37 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
 
     uint64_t mf = irq_spinlock_lock(&mdb_lock);
 
+    /*
+     * OVERWRITE semantics (legacy `kcnode_mint`): the old occupant is cleared
+     * with full delete-with-reparent, and it happens under the SAME `mdb_lock`
+     * hold as the install below.
+     *
+     * It used to be a separate `kcnode_slot_delete` call before the lock, and
+     * the comment said no mutator could slip between the two because the
+     * kernel is uniprocessor and non-preemptive — adding that if one ever
+     * could, the install would fail cleanly with ALREADY_EXISTS.  That second
+     * half is not clean: the delete has already happened, so a caller whose
+     * install loses the race is left with a slot holding NEITHER capability.
+     * It destroyed the occupant and installed nothing, and the error it gets
+     * back says "occupied", which is the one thing the slot is not.
+     *
+     * One hold makes delete-and-install a single act, so the slot goes from
+     * the old capability to the new one with nothing observable in between.
+     */
+    struct KObject *old = 0;
+    if (!exclusive) {
+        iris_error_t de = kcnode_slot_delete_locked(cn, slot_idx, &old);
+        if (de != IRIS_OK) {
+            irq_spinlock_unlock(&mdb_lock, mf);
+            if (!self_ref) kobject_active_release(obj);
+            kobject_release(obj);
+            return de;
+        }
+    }
+
     if (slot_idx >= cn->slot_count) {
         irq_spinlock_unlock(&mdb_lock, mf);
+        kcnode_slot_drop_old(cn, old);
         if (!self_ref) kobject_active_release(obj);
         kobject_release(obj);
         return IRIS_ERR_INVALID_ARG;
@@ -392,6 +418,7 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
         parent = &parent_cn->slots[parent_idx];
         if (!parent->object || parent == s) {
             irq_spinlock_unlock(&mdb_lock, mf);
+            kcnode_slot_drop_old(cn, old);
             if (!self_ref) kobject_active_release(obj);
             kobject_release(obj);
             return IRIS_ERR_INVALID_ARG;
@@ -402,6 +429,7 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
     if (s->object) {
         irq_spinlock_unlock(&cn->lock, cf);
         irq_spinlock_unlock(&mdb_lock, mf);
+        kcnode_slot_drop_old(cn, old);
         if (!self_ref) kobject_active_release(obj);
         kobject_release(obj);
         return IRIS_ERR_ALREADY_EXISTS;
@@ -431,6 +459,10 @@ iris_error_t kcnode_slot_install_linked(struct KCNode *cn, uint32_t slot_idx,
     mdb_node_count_inc();
 
     irq_spinlock_unlock(&mdb_lock, mf);
+    /* The overwritten occupant, released OUTSIDE the tree's lock: a release
+     * can run a destructor that tears down a CNode recursively, and holding
+     * the global derivation lock across that is unbounded. */
+    kcnode_slot_drop_old(cn, old);
     return IRIS_OK;
 }
 
@@ -629,20 +661,26 @@ iris_error_t kcnode_slot_rotate(struct KCNode *dest_cn, uint32_t dest_idx,
     return IRIS_OK;
 }
 
-iris_error_t kcnode_slot_delete(struct KCNode *cn, uint32_t slot_idx) {
-    if (!cn) return IRIS_ERR_INVALID_ARG;
+/*
+ * The delete, with `mdb_lock` ALREADY HELD, handing the old occupant back to
+ * the caller to release outside the lock.
+ *
+ * It is split out so an OVERWRITE mint can do its delete and its install under
+ * one hold of `mdb_lock` — see `kcnode_slot_install_linked`.  Releasing `old`
+ * is deliberately NOT done here: a release can run a destructor that tears
+ * down a whole CNode recursively, and doing that under the derivation tree's
+ * global lock would hold it for an unbounded time.
+ */
+static iris_error_t kcnode_slot_delete_locked(struct KCNode *cn,
+                                              uint32_t slot_idx,
+                                              struct KObject **out_old) {
+    *out_old = 0;
+    if (slot_idx >= cn->slot_count) return IRIS_ERR_INVALID_ARG;
 
-    struct KObject *old = 0;
-
-    uint64_t mf = irq_spinlock_lock(&mdb_lock);
-    if (slot_idx >= cn->slot_count) {
-        irq_spinlock_unlock(&mdb_lock, mf);
-        return IRIS_ERR_INVALID_ARG;
-    }
     struct KCSlot *s = &cn->slots[slot_idx];
     if (s->object) {
         uint64_t cf = irq_spinlock_lock(&cn->lock);
-        old = s->object;
+        *out_old  = s->object;
         s->object = 0;
         s->rights = RIGHT_NONE;
         s->badge  = 0;
@@ -654,14 +692,27 @@ iris_error_t kcnode_slot_delete(struct KCNode *cn, uint32_t slot_idx) {
             mdb_detach_reparent(s);
         atomic_fetch_add_explicit(&cdt_delete_count, 1u, memory_order_relaxed);
     }
+    return IRIS_OK;
+}
+
+/* Release an occupant taken out by the helper above.  Mirrors the install: a
+ * self-naming slot never took an active reference. */
+static void kcnode_slot_drop_old(struct KCNode *cn, struct KObject *old) {
+    if (!old) return;
+    if (old != &cn->base) kobject_active_release(old);
+    kobject_release(old);
+}
+
+iris_error_t kcnode_slot_delete(struct KCNode *cn, uint32_t slot_idx) {
+    if (!cn) return IRIS_ERR_INVALID_ARG;
+
+    struct KObject *old = 0;
+    uint64_t mf = irq_spinlock_lock(&mdb_lock);
+    iris_error_t r = kcnode_slot_delete_locked(cn, slot_idx, &old);
     irq_spinlock_unlock(&mdb_lock, mf);
 
-    if (old) {
-        /* Mirrors the install: a self-naming slot never took an active ref. */
-        if (old != &cn->base) kobject_active_release(old);
-        kobject_release(old);
-    }
-    return IRIS_OK;
+    kcnode_slot_drop_old(cn, old);
+    return r;
 }
 
 iris_error_t kcnode_slot_revoke(struct KCNode *cn, uint32_t slot_idx,
@@ -710,9 +761,24 @@ iris_error_t kcnode_slot_revoke_bounded(struct KCNode *cn, uint32_t slot_idx,
         uint64_t mf = irq_spinlock_lock(&mdb_lock);
         struct KCSlot *root = &cn->slots[slot_idx];
         if (!root->object) {
-            /* Invoked slot must exist (revoke keeps it; empty = NOT_FOUND
-             * only when nothing was revoked yet — a mid-revoke vanish is
-             * impossible on this uniprocessor path). */
+            /*
+             * The invoked slot went away mid-revoke, which this revoke is
+             * built to survive rather than to prevent.
+             *
+             * A revoke DROPS `mdb_lock` between batches — that is what makes
+             * it preemptible (D-8) — so the slot it was invoked on can be
+             * deleted underneath it by another CPU.  The answer is the honest
+             * one: NOT_FOUND if nothing had been revoked yet, and otherwise
+             * stop and report what was.  A revoke that destroyed half a
+             * subtree and then found its own root gone has still destroyed
+             * half a subtree, and saying so beats pretending either that it
+             * finished or that it never started.
+             *
+             * The comment here used to call this case impossible on a
+             * uniprocessor path.  It was impossible, the code handled it
+             * anyway, and the handling is the reason this needs nothing doing
+             * to it now.
+             */
             irq_spinlock_unlock(&mdb_lock, mf);
             if (revoked == 0) return IRIS_ERR_NOT_FOUND;
             break;

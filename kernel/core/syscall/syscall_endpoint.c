@@ -1184,10 +1184,16 @@ uint64_t sys_ep_recv(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
         /* Ph85/Phase S1: if sender used EP_CALL, bind the receiver's staged
          * explicit reply object and keep the sender blocked.  The kernel no
-         * longer fabricates a KReply here — the availability of the staged
-         * object was verified before the sender was dequeued, so the bind
-         * cannot fail on this non-preemptive path (defensive fallback wakes
-         * the sender with CLOSED). */
+         * longer fabricates a KReply here.
+         *
+         * The staged object was verified available before the sender was
+         * DEQUEUED, and it is still available here because it belongs to `t`
+         * — the receiver, which is the thread running this syscall and so is
+         * on-CPU and cannot be changing its own staging.  The comment used to
+         * credit that to the path being non-preemptive; it is really about
+         * whose object it is.  The defensive fallback (wake the sender with
+         * CLOSED) stays, because a defence that costs one branch and covers a
+         * bind failure nobody has reasoned about is worth the branch. */
         if (sender->ep_call_mode) {
             sender->ep_call_mode = 0u;
             uint32_t reply_attach = IRIS_MSG_NO_CAP;

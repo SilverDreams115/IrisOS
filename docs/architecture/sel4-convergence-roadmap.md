@@ -2142,19 +2142,33 @@ reentrant, so a single locking version would have deadlocked the configure
 path against itself on its first call.
 
 **Protected, but by an argument rather than a lock** — ten sites whose comment
-says the kernel is uniprocessor or non-preemptive.  Each needs re-deriving, and
-each is listed so "all of them" is checkable:
+said the kernel is uniprocessor or non-preemptive.  ✅ **All re-derived, step
+1.**  The outcome is worth recording as three different outcomes rather than
+one, because "we checked them" says less than what checking found:
 
-| Site | Subject |
-|---|---|
-| `syscall_untyped.c:30` | RETYPE2's validate-then-act window |
-| `kuntyped.c:311` | retype's all-or-nothing child allocation |
-| `kcnode.c:346` | delete-with-reparent |
-| `kcnode.c:715` | a case called impossible on this path |
-| `syscall_reply.c:198` | check-then-bind on a reply object |
-| `syscall_reply.c:469` | reply's IRQ-off assumption |
-| `syscall_endpoint.c:1189` | a wake that "cannot fail" |
-| `syscall_frame.c:31`, `syscall.h:1116` | TLB invalidation is one `invlpg`, local |
+| Site | Subject | Outcome |
+|---|---|---|
+| `syscall_untyped.c` | RETYPE2's validate-then-act window | **Comment wrong, code right.**  The occupancy scan is an optimisation; the authoritative check is the exclusive install under the tree's lock, and a lost race rolls back every object and un-bumps the carve exactly |
+| `kuntyped.c` | retype's all-or-nothing child allocation | **Comment conflated two exclusions.**  An IRQ-off spinlock excludes other CPUs *and* a handler on this one; only the second ever needed a premise, and it was never "uniprocessor" |
+| `kcnode.c` overwrite mint | delete-with-reparent | **REAL DEFECT — fixed.**  See below |
+| `kcnode.c` revoke | a case called impossible | **Comment wrong, code already correct.**  A preemptible revoke DROPS the tree lock between batches, so its own root can be deleted underneath it — and the code already answers NOT_FOUND or stops and reports what it revoked |
+| `syscall_reply.c` bind | check-then-bind on a reply object | **Structural, not temporal.**  The receiver was dequeued, so nobody else delivers to it, and only the receiver could change its staged object — and it is blocked |
+| `syscall_reply.c` ReplyRecv | the composed reply-then-receive | **Half the claim fails, and it is the harmless half.**  "Nothing is scheduled between them" is false with two cores — `sys_reply` marks the client READY and another CPU may dispatch it.  That is fine: the client got its scheduling context back *before* the wakeup, so it runs on its own time.  The property that matters — the server never running unbudgeted in the gap — holds because the server is ON-CPU with IF cleared (`MSR_SFMASK`), which is not about the core count |
+| `syscall_endpoint.c` | a bind that "cannot fail" | **Structural.**  The staged object belongs to the receiver, which is the thread executing the syscall |
+| `syscall_frame.c`, `syscall.h` | TLB invalidation is one local `invlpg` | **Genuinely step 2.**  Relabelled as such rather than left reading like a closed question |
+
+**The one real defect**: the overwrite mint (`kcnode_slot_install_linked` with
+`exclusive == 0`) deleted the old occupant in one lock hold and installed the
+new capability in another.  The comment said no mutator could slip between
+them because the kernel is uniprocessor — adding that if one ever could, the
+install would fail cleanly with `ALREADY_EXISTS`.
+
+That second half is not clean.  The delete has already happened, so a caller
+whose install loses the race is left with a slot holding NEITHER capability:
+it destroyed the occupant, installed nothing, and got back an error saying
+"occupied", which is the one thing the slot is not.  Delete and install now
+happen under ONE hold of `mdb_lock`, so the slot goes from the old capability
+to the new one with nothing observable in between.
 
 **Already SMP-shaped**, and worth recording so the audit does not revisit them:
 `cpu_local[].current_task` is per-CPU; the `_Atomic` statistics counters are

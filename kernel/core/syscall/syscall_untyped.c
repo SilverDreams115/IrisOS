@@ -27,12 +27,22 @@
  * handle value through the handle table only; ACCESS_DENIED is a hard stop,
  * no fallback).
  *
- * Atomicity note (U14/U15): IRIS is uniprocessor with IRQ-off spinlocks and a
- * non-preemptive kernel (no yield inside retype).  RETYPE2 validates
- * everything before mutating: capacity+carve are one critical section
- * (kuntyped_alloc_children_atomic) and slot publication re-checks occupancy;
- * a publication conflict rolls back every object and un-bumps the carve
- * exactly, so a failed batch consumes nothing.
+ * Atomicity note (U14/U15).  The property is STRUCTURAL and does not rest on
+ * the core count, which is what this comment used to say it rested on.
+ *
+ * Capacity and carve are one critical section under the untyped's own lock
+ * (`kuntyped_alloc_children_atomic`): either every child block exists or the
+ * untyped is untouched.  The occupancy scan before publication is an
+ * optimisation — it fails early and cheaply — and the AUTHORITATIVE check is
+ * the publication itself, which installs exclusively under the derivation
+ * tree's lock.  A slot filled by another CPU between the scan and the install
+ * makes the install fail, and the failure rolls back every object and un-bumps
+ * the carve exactly, so a failed batch consumes nothing.
+ *
+ * That argument holds with any number of CPUs.  The old wording cited
+ * "uniprocessor, non-preemptive" beside it, which made a structural guarantee
+ * read as a consequence of the machine — the kind of sentence that is true
+ * when written and silently false later.
  */
 #include "syscall_priv.h"
 #include <iris/nc/kasidpool.h>

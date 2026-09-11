@@ -28,7 +28,7 @@
  *   kframe_obj_destroy() panics if mapped_count > 0 at destruction time.
  *   This eliminates silent stale PTEs that Phase 5 allowed.
  *
- * TLB (single-core):
+ * TLB (SMP roadmap §9.3 step 2 — shootdown is NOT implemented; one core):
  *   Map: no flush needed (new PTE; no stale entry).
  *   Unmap: invlpg issued inside paging_unmap_in().
  *   SMP TLB shootdown deferred to Phase 6.
