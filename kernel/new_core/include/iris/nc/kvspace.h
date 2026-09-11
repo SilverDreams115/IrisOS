@@ -144,6 +144,9 @@ struct KPageTable;
  *                          already installed somewhere.
  * IRIS_ERR_INVALID_ARG     a huge-page leaf covers `vaddr`, or vs is dead.
  */
+/* Take one installed level back out of a LIVE walk; BUSY while anything is
+ * mapped under it.  seL4's seL4_X86_PageTable_Unmap — see kvspace.c. */
+iris_error_t kvspace_unmap_table(struct KVSpace *vs, struct KPageTable *pt);
 iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
                                uint64_t vaddr);
 

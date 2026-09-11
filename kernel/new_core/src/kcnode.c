@@ -546,6 +546,89 @@ iris_error_t kcnode_slot_move(struct KCNode *src_cn, uint32_t src_idx,
     return IRIS_OK;
 }
 
+/*
+ * kcnode_slot_rotate — seL4's `seL4_CNode_Rotate`: three slots, two moves, one
+ * critical section.
+ *
+ *   before:  src = S     pivot = P     dest = (empty, or dest IS src)
+ *   after:   src = —     pivot = S     dest = P
+ *
+ * WHY IT IS NOT TWO MOVES.  Moving S onto an occupied slot needs that slot
+ * emptied first, so the two-call version needs a FOURTH slot to park P in —
+ * and a CSpace that is full, which is exactly when a holder wants to
+ * rearrange, does not have one.  Worse, the sequence is observable: between
+ * the calls the capability is somewhere neither the holder nor a revoke
+ * expects, and a failure halfway leaves a CSpace the caller did not ask for.
+ *
+ * Rotate needs no spare slot and no window.  Everything is validated before
+ * anything moves, and `mdb_relocate` is total — parent, siblings and children
+ * travel with the node — so once validation passes neither move can fail.
+ *
+ * `dest == src` is allowed and is the SWAP: S and P exchange places.  It is
+ * the one case that cannot be done with plain relocations, because both slots
+ * are occupied, so it goes through the same stack-resident temporary
+ * `kcnode_swap` uses — generalised here to work across CNodes.
+ *
+ * BADGES TRAVEL, they are not arguments.  seL4's rotate takes a new badge for
+ * each destination; IRIS preserves what each capability carried, because
+ * charter A8 says a badged capability is never re-badged — a badge argument
+ * here would have to be refused in every case where it differed, which is an
+ * argument that exists to be rejected.
+ */
+iris_error_t kcnode_slot_rotate(struct KCNode *dest_cn, uint32_t dest_idx,
+                                struct KCNode *pivot_cn, uint32_t pivot_idx,
+                                struct KCNode *src_cn, uint32_t src_idx) {
+    if (!dest_cn || !pivot_cn || !src_cn) return IRIS_ERR_INVALID_ARG;
+    if (dest_idx  >= dest_cn->slot_count  ||
+        pivot_idx >= pivot_cn->slot_count ||
+        src_idx   >= src_cn->slot_count) return IRIS_ERR_INVALID_ARG;
+
+    uint64_t mf = irq_spinlock_lock(&mdb_lock);
+
+    struct KCSlot *dest  = &dest_cn->slots[dest_idx];
+    struct KCSlot *pivot = &pivot_cn->slots[pivot_idx];
+    struct KCSlot *src   = &src_cn->slots[src_idx];
+
+    /* Distinctness is about the SLOT, not the (cnode, index) pair as written:
+     * the same slot can be named by two different CPtrs through two different
+     * paths, and a rotate that moved a capability onto itself would clear the
+     * node it had just written. */
+    if (src == pivot || dest == pivot) {
+        irq_spinlock_unlock(&mdb_lock, mf);
+        return IRIS_ERR_INVALID_ARG;
+    }
+    if (!src->object || !pivot->object) {
+        irq_spinlock_unlock(&mdb_lock, mf);
+        return IRIS_ERR_NOT_FOUND;
+    }
+    if (dest != src && dest->object) {
+        irq_spinlock_unlock(&mdb_lock, mf);
+        return IRIS_ERR_ALREADY_EXISTS;
+    }
+
+    if (dest == src) {
+        /* The swap.  Both are occupied, so one has to stand aside; the
+         * temporary never leaves this function and no reader can observe it
+         * (readers see slot content under the CNode lock, which relocate
+         * takes). */
+        struct KCSlot tmp;
+        tmp.object = 0; tmp.rights = RIGHT_NONE; tmp.badge = 0;
+        tmp.mdb_parent = 0; tmp.mdb_first_child = 0;
+        tmp.mdb_next_sib = 0; tmp.mdb_prev_sib = 0;
+        tmp.mdb_cnode = 0; tmp.mdb_flags = 0;
+        mdb_relocate(src,   src_cn,   &tmp,  src_cn);
+        mdb_relocate(pivot, pivot_cn, dest,  dest_cn);
+        mdb_relocate(&tmp,  src_cn,   pivot, pivot_cn);
+    } else {
+        mdb_relocate(pivot, pivot_cn, dest,  dest_cn);
+        mdb_relocate(src,   src_cn,   pivot, pivot_cn);
+    }
+
+    atomic_fetch_add_explicit(&mdb_moves, 2u, memory_order_relaxed);
+    irq_spinlock_unlock(&mdb_lock, mf);
+    return IRIS_OK;
+}
+
 iris_error_t kcnode_slot_delete(struct KCNode *cn, uint32_t slot_idx) {
     if (!cn) return IRIS_ERR_INVALID_ARG;
 

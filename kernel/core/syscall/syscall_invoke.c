@@ -64,6 +64,7 @@ uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
     case INV_TCB_SUSPEND:              return sys_tcb_suspend(cptr, a1, a2);
     case INV_TCB_RESUME:               return sys_tcb_resume(cptr, a1, a2);
     case INV_TCB_SET_PRIORITY:         return sys_tcb_set_priority(cptr, a1, a2);
+    case INV_TCB_SET_MCPRIORITY:       return sys_tcb_set_mcpriority(cptr, a1, a2);
     case INV_TCB_EXIT:                 return sys_tcb_exit(cptr, a1, a2);
     case INV_TCB_GET_INFO:             return sys_tcb_get_info(cptr, a1, a2);
     case INV_TCB_READ_REGS:            return sys_tcb_read_regs(cptr, a1, a2);
@@ -122,9 +123,11 @@ uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
     case INV_FRAME_MAP:                return sys_frame_map(cptr, a1, a2, a3);
     case INV_FRAME_UNMAP:              return sys_frame_unmap(cptr, a1, a2);
     case INV_FRAME_SIZE:               return sys_frame_size(cptr, a1, a2);
+    case INV_FRAME_GET_ADDRESS:        return sys_frame_get_address(cptr, a1, a2);
 
     /* ── KOBJ_PAGE_TABLE / KOBJ_ASID_POOL ─────────────────────────────── */
     case INV_PAGE_TABLE_MAP:           return sys_vspace_map_table(cptr, a1, a2);
+    case INV_PAGE_TABLE_UNMAP:         return sys_vspace_unmap_table(cptr, a1, a2);
     case INV_ASID_POOL_ASSIGN:         return sys_asid_pool_assign(cptr, a1, a2);
 
     /* ── KOBJ_IRQ_CAP ─────────────────────────────────────────────────── */
@@ -155,6 +158,7 @@ uint64_t syscall_invoke(uint64_t cptr, uint64_t label,
     case INV_CAP_SAME_OBJECT:          return sys_cap_same_object(cptr, a1, a2);
     case INV_CSPACE_MINT:              return sys_cspace_mint(cptr, a1, a2);
     case INV_CSPACE_MOVE:              return sys_cspace_move(cptr, a1, a2);
+    case INV_CSPACE_ROTATE:            return sys_cspace_rotate(cptr, a1, a2);
     case INV_CSPACE_REVOKE:            return sys_cspace_revoke(cptr, a1, a2);
     case INV_CSPACE_SET_GUARD:         return sys_cspace_set_guard(cptr, a1, a2);
 

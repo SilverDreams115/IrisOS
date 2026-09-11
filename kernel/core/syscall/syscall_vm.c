@@ -82,6 +82,57 @@ uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return syscall_ok_u64(0);
 }
 
+/*
+ * sys_vspace_unmap_table(pt_cptr, vspace_cptr) — seL4's
+ * `seL4_X86_PageTable_Unmap`, and the counterpart `PageTable_Map` shipped
+ * without.
+ *
+ * A level went into a walk and came out only when the whole address space
+ * died.  So a holder that wanted to rearrange its own address space — or
+ * reclaim a table it had installed for a mapping it then abandoned — had to
+ * destroy the VSpace to do it, which is not reclamation.
+ *
+ * Both capabilities, both RIGHT_WRITE, exactly as the map requires: taking a
+ * level out changes what the address space can map just as much as putting one
+ * in.  The VSpace is named rather than read out of the table's `mapped_vs`,
+ * for the reason every invocation in this kernel names what it acts on — a
+ * holder that may edit a table must also hold the address space it is editing,
+ * or a table capability alone would let one process reach into another's walk.
+ *
+ * BUSY while anything is mapped under the level (see kvspace_unmap_table);
+ * NOT_FOUND when the table is not installed in the VSpace named.
+ */
+uint64_t sys_vspace_unmap_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject *pt_obj;  iris_rights_t pt_rights;
+    iris_error_t err = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
+                            RIGHT_NONE, KOBJ_PAGE_TABLE, &pt_obj, &pt_rights);
+    if (err != IRIS_OK)
+        return syscall_err(err);
+    if (!rights_check(pt_rights, RIGHT_WRITE)) {
+        kobject_release(pt_obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    struct KVSpace *vs;  iris_rights_t vs_rights;
+    err = cspace_resolve_only_vspace(t->cspace_root, (iris_cptr_t)arg1,
+                                     RIGHT_WRITE, &vs, &vs_rights);
+    if (err != IRIS_OK) {
+        kobject_release(pt_obj);
+        return syscall_err(err);
+    }
+
+    err = kvspace_unmap_table(vs, (struct KPageTable *)pt_obj);
+    kobject_active_release(&vs->base);
+    kobject_release(&vs->base);
+    kobject_release(pt_obj);
+    if (err != IRIS_OK) return syscall_err(err);
+    return syscall_ok_u64(0);
+}
+
 /* ── VMO syscalls ─────────────────────────────────────────────────── */
 
 
@@ -93,6 +144,48 @@ uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
 
 
+
+/*
+ * sys_frame_get_address(frame_cptr) → physical base address, or iris_error_t
+ *
+ * seL4's `seL4_X86_Page_GetAddress`, and the reason it exists there is the
+ * reason it exists here: a holder that has to program a device needs the
+ * PHYSICAL address of the memory it is pointing that device at, and nothing
+ * else in the system can tell it.  A DMA descriptor takes a physical address;
+ * a page table the holder builds for a device takes physical addresses; the
+ * framebuffer's stride calculations take one.  Without this, a ring-3 driver
+ * has to be handed its physical address out of band by whoever retyped the
+ * frame — which is a fact travelling outside the capability that carries the
+ * authority, and the whole point of the model is that those do not separate.
+ *
+ * RIGHT_READ, and that is the whole check: learning where a frame IS confers
+ * nothing over it.  A holder that may not read the frame may not ask either,
+ * because "which physical page is this" is exactly the question that turns an
+ * opaque capability into an address somebody can correlate.
+ *
+ * IRIS answers the address only; seL4's version reports it alone too.  The
+ * SIZE is `Frame_Size`, because a frame here can be many pages (D-10) and the
+ * two are different questions.
+ */
+uint64_t sys_frame_get_address(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    (void)arg1; (void)arg2;
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    struct KObject  *obj;
+    iris_rights_t    rights;
+    iris_error_t r = cspace_resolve_only_obj(t->cspace_root, (iris_cptr_t)arg0,
+                                 RIGHT_NONE, KOBJ_FRAME, &obj, &rights);
+    if (r != IRIS_OK) return syscall_err(r);
+    if (!rights_check(rights, RIGHT_READ)) {
+        kobject_release(obj);
+        return syscall_err(IRIS_ERR_ACCESS_DENIED);
+    }
+
+    uint64_t pa = ((struct KFrame *)obj)->paddr;
+    kobject_release(obj);
+    return syscall_ok_u64(pa);
+}
 
 /*
  * sys_frame_size(frame_cptr) → uint64_t byte size or iris_error_t

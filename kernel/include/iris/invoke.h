@@ -166,9 +166,20 @@
 #define INV_CSPACE_REVOKE                  61u
 #define INV_CSPACE_SET_GUARD               62u
 
+/* ── added after the first cut; a label is appended, never inserted ──
+ *
+ * The list is ordered by when a method was added, not by what it acts on.
+ * Grouping it by type would be prettier and would mean renumbering, and a
+ * label is ABI: a stale caller must get a refusal, not somebody else's
+ * method. */
+#define INV_FRAME_GET_ADDRESS              63u
+#define INV_TCB_SET_MCPRIORITY             64u
+#define INV_PAGE_TABLE_UNMAP               65u
+#define INV_CSPACE_ROTATE                  66u
+
 /* First unassigned.  A label is never reused, for the same reason a syscall
  * number never was: a stale caller must get a refusal, not somebody else's
  * method. */
-#define INV_LABEL_COUNT                    63u
+#define INV_LABEL_COUNT                    67u
 
 #endif /* IRIS_INVOKE_H */

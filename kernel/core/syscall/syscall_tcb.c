@@ -666,6 +666,74 @@ uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     return 0;
 }
 
+/*
+ * sys_tcb_set_mcpriority(tcb_cptr, mcp, authority_cptr)
+ *   ledger A-20's other half — seL4's `seL4_TCB_SetMCPriority`.
+ *
+ * A thread's MCP is the CEILING on what it may grant: `TCB_SetPriority` reads
+ * the authority's `mcp` and refuses anything above it, so a supervisor given
+ * 100 configures threads that can grant at most 100, downward, for ever.
+ *
+ * Until now that ceiling could only be INHERITED — `TCB_Configure` stamps the
+ * configurer's `mcp` on the thread — and inheriting it is the common case, so
+ * A-20 shipped with only that and recorded the gap.  What it could not express
+ * is LOWERING one afterwards: a supervisor that wants to hand a subtree less
+ * authority than it holds had to have been configured with less, which means
+ * deciding the whole hierarchy before building any of it.
+ *
+ * Same rule as the priority it bounds, and for the same reason: the new
+ * ceiling may not exceed the AUTHORITY's ceiling.  Otherwise a thread could
+ * raise its own MCP to 255 and then grant itself any priority — which is the
+ * exact starvation A-20 closed, reached one step further round.
+ *
+ * `authority_cptr == 0` means "myself", which is not a loophole: a thread's
+ * own ceiling bounds it, so self-authorised the operation can only ever lower
+ * or preserve.
+ *
+ * RIGHT_WRITE on the target (it is a change), RIGHT_READ on the authority
+ * (it is only being consulted) — the same split `TCB_SetPriority` uses.
+ */
+uint64_t sys_tcb_set_mcpriority(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    uint8_t mcp = (uint8_t)(arg1 & 0xFFu);
+    struct task *caller = task_current();
+    if (!caller || !caller->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    uint8_t ceiling;
+    if (arg2 == 0u) {
+        ceiling = caller->mcp;
+    } else {
+        struct task *auth; iris_rights_t auth_rights;
+        iris_error_t aerr = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg2,
+                                        RIGHT_READ, &auth, &auth_rights);
+        if (aerr != IRIS_OK) return syscall_err(aerr);
+        ceiling = auth->mcp;
+        kobject_release(&auth->base);
+    }
+    if (mcp > ceiling) return syscall_err(IRIS_ERR_ACCESS_DENIED);
+
+    struct task *target; iris_rights_t rights;
+    iris_error_t err = tcb_resolve(caller->cspace_root, (iris_cptr_t)arg0,
+                                   RIGHT_WRITE, &target, &rights);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    if (target->terminal) {
+        kobject_release(&target->base);
+        return syscall_err(IRIS_ERR_NOT_FOUND);
+    }
+    target->mcp = mcp;
+    /*
+     * A running priority above the new ceiling is brought down with it.
+     *
+     * Leaving it would make the ceiling a rule about FUTURE grants only, and
+     * the thread would keep running at an authority its supervisor has just
+     * taken away — which is the difference between lowering a ceiling and
+     * asking politely.
+     */
+    if (target->priority > mcp) target->priority = mcp;
+    kobject_release(&target->base);
+    return 0;
+}
+
 uint64_t sys_tcb_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     (void)arg1; (void)arg2;
     struct task *caller = task_current();

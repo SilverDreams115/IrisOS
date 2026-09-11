@@ -249,6 +249,13 @@ int paging_install_table_in(uint64_t cr3, uint64_t virt, uint64_t table_phys,
 
 /* Stage 6-pure: the level leaves the walk again.  Identity-checked like the
  * real one, so a test can prove a stale (va, level) record detaches nothing. */
+void paging_flush_table_walk(uint64_t virt) {
+    /* No MMU on the host.  The kernel owes this after detaching an interior
+     * entry from a live walk; what the host models is the WALK (see the
+     * paging stub below), and a paging-structure cache is not part of it. */
+    (void)virt;
+}
+
 int paging_detach_table_in(uint64_t cr3, uint64_t virt, int level,
                            uint64_t table_phys) {
     if (!cr3 || !table_phys || level < 1 || level > 3) return -1;

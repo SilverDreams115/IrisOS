@@ -236,12 +236,21 @@ int paging_detach_table_in(uint64_t cr3, uint64_t virt, int level,
     }
 out:
     __asm__ volatile ("pushq %0; popfq" : : "r"(rflags) : "memory");
-    /* No TLB shootdown: the only caller is address-space teardown, where this
-     * CR3 is not loaded on any CPU and the next context switch reloads CR3
-     * wholesale.  A future caller that detaches a level from a LIVE address
-     * space owes a flush of the whole subtree, not one invlpg of `virt`. */
+    /*
+     * No TLB work HERE, and the two callers are why.
+     *
+     * Address-space teardown detaches with this CR3 not loaded on any CPU, and
+     * the next context switch reloads CR3 wholesale.  `PageTable_Unmap`
+     * detaches from a LIVE address space and owes the flush this function does
+     * not do — it calls `paging_flush_table_walk` right after, which is the
+     * "flush of the whole subtree" this comment used to say a future caller
+     * would owe.  Keeping the two apart is deliberate: the detach is a
+     * bookkeeping edit and the flush is a machine event, and teardown needs
+     * exactly one of them.
+     */
     return rc;
 }
+
 
 /*
  * A map that allocates NOTHING.  Returns -1 for a bad address space and the
@@ -504,6 +513,26 @@ void paging_unmap_in(uint64_t cr3, uint64_t virt) {
     uint64_t *pt = walk_pt(cr3, virt);
     if (!pt) return;
     pt[PT_IDX(virt)] = 0;
+    __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
+    __atomic_fetch_add(&paging_tlb_invlpg, 1u, __ATOMIC_RELAXED);
+}
+
+/*
+ * Invalidate the paging-structure caches for one walk.
+ *
+ * Removing an interior entry is not the same as removing a leaf.  The CPU
+ * caches the TRANSLATION PATH as well as the final page — Intel calls them
+ * paging-structure caches — so a PDE that pointed at a page table can still be
+ * held after the PDE is cleared.  Install a different table at the same
+ * address afterwards and the walk may use the old one.
+ *
+ * INVLPG invalidates the TLB entry AND the paging-structure cache entries for
+ * the linear address's path, which is what makes one instruction enough for a
+ * level whose subtree is empty — and `PageTable_Unmap` refuses to detach a
+ * level whose subtree is NOT empty, so that precondition is enforced rather
+ * than assumed.
+ */
+void paging_flush_table_walk(uint64_t virt) {
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
     __atomic_fetch_add(&paging_tlb_invlpg, 1u, __ATOMIC_RELAXED);
 }

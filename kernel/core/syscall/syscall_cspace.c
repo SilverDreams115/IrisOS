@@ -86,6 +86,71 @@ uint64_t sys_cspace_move(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 }
 
 /*
+ * CSpace_Rotate — seL4's `seL4_CNode_Rotate`.
+ *   cptr = the SOURCE slot (whose capability ends up in the pivot)
+ *   a1   = the PIVOT slot CPtr (whose capability ends up in dest)
+ *   a2   = dest CNode CPtr (low 32; 0 = caller's root) | dest slot (high 32)
+ *
+ * Invoked on the source, packed like `CSpace_Move`, because a rotate IS two
+ * moves and a caller that knows one should not have to learn a second
+ * encoding for the other.
+ *
+ * What it buys over calling move twice: no spare slot and no window.  Moving
+ * onto an occupied slot needs that slot emptied first, so two-call rearranging
+ * needs a FOURTH slot to park the displaced capability in — and a CSpace full
+ * enough to need rearranging is exactly the one without a spare.  Between two
+ * calls the capability is also somewhere neither the holder nor a revoke
+ * expects, and a failure halfway leaves a CSpace nobody asked for.
+ *
+ * `dest == src` is the swap, and is the case that cannot be expressed as
+ * relocations at all because both slots are occupied.
+ */
+uint64_t sys_cspace_rotate(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
+    struct task *t = task_current();
+    if (!t || !t->cspace_root) return syscall_err(IRIS_ERR_INVALID_ARG);
+
+    iris_cptr_t dest_cnode = (iris_cptr_t)(arg2 & 0xFFFFFFFFu);
+    uint32_t    dest_slot  = (uint32_t)(arg2 >> 32);
+
+    struct KCNode *src_cn = 0;   uint32_t src_idx = 0;
+    iris_error_t err = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg0,
+                                           &src_cn, &src_idx);
+    if (err != IRIS_OK) return syscall_err(err);
+
+    struct KCNode *pivot_cn = 0; uint32_t pivot_idx = 0;
+    err = cspace_resolve_slot(t->cspace_root, (iris_cptr_t)arg1,
+                              &pivot_cn, &pivot_idx);
+    if (err != IRIS_OK) {
+        kobject_active_release(&src_cn->base);
+        kobject_release(&src_cn->base);
+        return syscall_err(err);
+    }
+
+    struct KCNode *dst_cn = 0;
+    if (dest_cnode == 0u) err = cspace_own_root(t->cspace_root, &dst_cn);
+    else                  err = cspace_resolve_cnode_for_publish(t->cspace_root,
+                                        dest_cnode, &dst_cn);
+    if (err != IRIS_OK) {
+        kobject_active_release(&pivot_cn->base);
+        kobject_release(&pivot_cn->base);
+        kobject_active_release(&src_cn->base);
+        kobject_release(&src_cn->base);
+        return syscall_err(err);
+    }
+
+    err = kcnode_slot_rotate(dst_cn, dest_slot, pivot_cn, pivot_idx,
+                             src_cn, src_idx);
+
+    kobject_active_release(&dst_cn->base);
+    kobject_release(&dst_cn->base);
+    kobject_active_release(&pivot_cn->base);
+    kobject_release(&pivot_cn->base);
+    kobject_active_release(&src_cn->base);
+    kobject_release(&src_cn->base);
+    return (err == IRIS_OK) ? syscall_ok_u64(0) : syscall_err(err);
+}
+
+/*
  * SYS_CSPACE_MINT (114) — copy/mint slot→slot within the caller's CSpace.
  *   arg0 = source CPtr (CSpace only)
  *   arg1 = dest CNode CPtr (low 32; 0 = caller's root; CSpace only) |

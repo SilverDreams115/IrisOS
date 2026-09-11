@@ -539,6 +539,94 @@ iris_error_t kvspace_map_table(struct KVSpace *vs, struct KPageTable *pt,
     return IRIS_OK;
 }
 
+/*
+ * kvspace_unmap_table — take one holder-installed level back OUT of a LIVE
+ * address space.  seL4's `seL4_X86_PageTable_Unmap`.
+ *
+ * `PageTable_Map` had no counterpart: a level went into a walk and came out
+ * only when the whole address space died.  A holder that wanted to rearrange
+ * its own address space, or reclaim a table it had installed speculatively,
+ * had to destroy the VSpace to do it — which is not a reclamation, it is a
+ * demolition.
+ *
+ * REFUSES WHILE THE SUBTREE IS LIVE, and that is a deliberate difference from
+ * seL4.  seL4 unmaps the table and invalidates the frame mappings underneath
+ * it, because it tracks each frame's mapping and can walk them.  IRIS answers
+ * BUSY instead: the holder unmaps what it mapped, then takes the level back.
+ *
+ * Two reasons, and the second is the real one.  A detached level whose PTEs
+ * are still described by `vs->mappings` leaves the bookkeeping asserting
+ * mappings the hardware cannot reach — `mapped_count` on every frame under it
+ * would be wrong, and teardown would unmap addresses that are not there.  And
+ * it is the same shape `Untyped_Reset` already has: `child_count != 0` is
+ * BUSY, because a reclamation that silently invalidates what somebody else is
+ * holding is not a reclamation either.  One rule, stated once.
+ *
+ * The span a level covers is 512^level pages: a PT serves 2 MiB, a PD 1 GiB, a
+ * PDPT 512 GiB.  Anything mapped in that window — a frame OR a lower-level
+ * table — is under this one.
+ */
+iris_error_t kvspace_unmap_table(struct KVSpace *vs, struct KPageTable *pt) {
+    if (!vs || !pt) return IRIS_ERR_INVALID_ARG;
+
+    spinlock_lock(&vs->lock);
+
+    if (pt->mapped_vs != vs) {
+        spinlock_unlock(&vs->lock);
+        /* Not installed here.  NOT_FOUND rather than INVALID_ARG: the
+         * arguments are well formed and the answer is about the WALK. */
+        return IRIS_ERR_NOT_FOUND;
+    }
+    if (!vs->valid || !vs->cr3) {
+        spinlock_unlock(&vs->lock);
+        return IRIS_ERR_BAD_HANDLE;
+    }
+
+    const uint64_t span = 4096ULL << (9u * pt->level);
+    const uint64_t base = pt->mapped_va & ~(span - 1ULL);
+
+    for (struct KFrameMapping *m = vs->mappings; m; m = m->next) {
+        if (m->user_va >= base && m->user_va < base + span) {
+            spinlock_unlock(&vs->lock);
+            return IRIS_ERR_BUSY;
+        }
+    }
+    for (struct KPageTable *t = vs->tables; t; t = t->next) {
+        if (t == pt) continue;
+        if (t->level < pt->level &&
+            t->mapped_va >= base && t->mapped_va < base + span) {
+            spinlock_unlock(&vs->lock);
+            return IRIS_ERR_BUSY;
+        }
+    }
+
+    if (paging_detach_table_in(vs->cr3, pt->mapped_va, (int)pt->level,
+                               pt->paddr) != 0) {
+        spinlock_unlock(&vs->lock);
+        /* The record no longer describes the walk.  Nothing was changed, and
+         * the caller is told rather than having the record quietly cleared. */
+        return IRIS_ERR_NOT_FOUND;
+    }
+    /* Owed by every detach from a live address space — see paging.c. */
+    paging_flush_table_walk(pt->mapped_va);
+
+    for (struct KPageTable **link = &vs->tables; *link; link = &(*link)->next) {
+        if (*link == pt) { *link = pt->next; break; }
+    }
+    pt->next      = 0;
+    pt->mapped_vs = 0;
+    pt->mapped_va = 0;
+    pt->level     = KPT_LEVEL_UNMAPPED;
+
+    spinlock_unlock(&vs->lock);
+    /* The VSpace's retain, taken at install.  The holder keeps its own
+     * capability; what it gets back is a table it can install elsewhere — and
+     * `kvspace_map_table` zeroes on install, so what it held before cannot
+     * follow it (PT-9). */
+    kobject_release(&pt->base);
+    return IRIS_OK;
+}
+
 void kvspace_set_pt_pool(struct KVSpace *vs, struct KUntyped *pool) {
     if (!vs || !pool || vs->pt_pool) return;
     kobject_retain(&pool->base);

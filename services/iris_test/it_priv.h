@@ -2957,6 +2957,7 @@ void test_t336(void);
 void test_t337(void);
 void test_t338(void);
 void test_t339(void);
+void test_t340(void);
 void test_t324(void);
 void test_t319(void);
 void test_t296(void);

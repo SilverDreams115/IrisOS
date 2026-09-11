@@ -218,6 +218,16 @@ iris_error_t kcnode_slot_derive(struct KCNode *src_cn, uint32_t src_idx,
 iris_error_t kcnode_slot_move(struct KCNode *src_cn, uint32_t src_idx,
                               struct KCNode *dst_cn, uint32_t dst_idx);
 
+/* Three slots, two moves, one critical section: dest takes the pivot's
+ * capability and the pivot takes src's, so no spare slot is needed and no
+ * window exists where a capability is somewhere unexpected.  `dest == src` is
+ * the SWAP — the case that cannot be expressed as relocations because both
+ * slots are occupied.  seL4_CNode_Rotate; badges travel rather than being
+ * arguments (charter A8). */
+iris_error_t kcnode_slot_rotate(struct KCNode *dest_cn, uint32_t dest_idx,
+                                struct KCNode *pivot_cn, uint32_t pivot_idx,
+                                struct KCNode *src_cn, uint32_t src_idx);
+
 /* Delete ONLY this capability.  Children are spliced into the deleted
  * node's parent (grandparent adoption) so every surviving ancestor keeps
  * revocation authority; if the deleted node was a root, children are

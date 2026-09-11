@@ -171,6 +171,7 @@ uint64_t sys_notify_poll(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_ep_cancel_badged_sends(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_read_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_cspace_move(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_cspace_rotate(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_consumed(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_sc_yield_to(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_irq_clear(uint64_t arg0, uint64_t arg1, uint64_t arg2);
@@ -190,6 +191,7 @@ uint64_t sys_notify_wait(uint64_t arg0, uint64_t arg1, uint64_t arg2);
  * (ledger D-10), which is what made the VMO's page-at-a-time surface
  * unnecessary. */
 uint64_t sys_frame_size(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_frame_get_address(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_asid_pool_assign(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_initrd_count(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
 
@@ -435,6 +437,7 @@ __attribute__((noreturn)) void task_park_restart(void);
 #define IRIS_REVOKE_SLICE 16u
 uint64_t sys_cspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_vspace_map_table(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_vspace_unmap_table(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_configure(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                            uint64_t arg3);
 uint64_t sys_tcb_write_regs(uint64_t arg0, uint64_t arg1, uint64_t arg2,
@@ -463,6 +466,7 @@ uint64_t sys_vspace_self(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_suspend(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_resume(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_set_priority(uint64_t arg0, uint64_t arg1, uint64_t arg2);
+uint64_t sys_tcb_set_mcpriority(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_exit(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t sys_tcb_get_info(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 

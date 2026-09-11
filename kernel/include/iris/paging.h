@@ -137,6 +137,9 @@ void     paging_destroy_user_space_from(uint64_t cr3, int pml4_pooled);
  * in the path, or a different table there now) — so it is idempotent and
  * cannot detach somebody else's level from a stale record.
  */
+/* Invalidate the paging-structure caches for one walk — owed by any caller
+ * that detaches an interior entry from a LIVE address space. */
+void     paging_flush_table_walk(uint64_t virt);
 int      paging_detach_table_in(uint64_t cr3, uint64_t virt, int level,
                                 uint64_t table_phys);
 /* Stage 6-pure Step 4: initialise a page the HOLDER supplied as a user PML4 —

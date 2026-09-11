@@ -1984,3 +1984,103 @@ void test_t339(void) {
     it_quiesce_reaper();
     if (ok) it_pass("T339"); else it_fail("T339", why);
 }
+
+/* ── T340: Frame_GetAddress (seL4_X86_Page_GetAddress) ─────────────────────
+ *
+ * A holder that has to program a device needs the PHYSICAL address of the
+ * memory it is pointing that device at, and nothing else in the system can
+ * tell it.  Without this, a ring-3 driver has to be handed its physical
+ * address out of band by whoever retyped the frame — a fact travelling outside
+ * the capability that carries the authority, which is the one thing the model
+ * exists to prevent.
+ *
+ * Three claims:
+ *  1. it answers, and the answer is the frame's real base — checked by MAPPING
+ *     the frame and asking the address space where that VA resolves to;
+ *  2. RIGHT_READ gates it.  Learning where a frame IS confers nothing over it,
+ *     but "which physical page is this" is exactly the question that turns an
+ *     opaque capability into an address somebody can correlate, so a holder
+ *     who may not read may not ask;
+ *  3. the type is checked: it is a FRAME method, and a notification answers
+ *     WRONG_TYPE (A-30).
+ * Invariants: A1, A5. */
+#define T340_FRAME IT_SCRATCH_0
+#define T340_RO    IT_SCRATCH_1
+#define T340_NOTIF IT_SCRATCH_2
+#define T340_VA    (0x0000600000000000ULL + 0x800000ULL)
+
+void test_t340(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "a frame can say where it is";
+
+    if (!it_setup_self_vspace()) { it_fail("T340", "vspace self"); return; }
+
+    it_slot_delete(T340_FRAME); it_slot_delete(T340_RO);
+    it_slot_delete(T340_NOTIF);
+
+    /* Named scratch slots, not the rotating pool: a test that draws two pool
+     * leaves shifts the rotation for every test after it, and what that
+     * surfaces is somebody else's debt (T324 counts evictions for the whole
+     * run).  Retyping straight into a slot this test owns and deletes leaves
+     * the rotation exactly where it found it. */
+    long frame = (long)T340_FRAME;
+    if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_FRAME,
+                      T340_FRAME, 1u, 4096) != 0) {
+        it_fail("T340", "retype frame"); return;
+    }
+
+    /* 1. it answers a plausible physical address. */
+    long pa = 0;
+    if (ok) {
+        pa = it_invoke0(frame, INV_FRAME_GET_ADDRESS);
+        if (pa <= 0)            { ok = 0; why = "no address"; }
+        else if (pa & 0xFFFL)   { ok = 0; why = "address not page aligned"; }
+    }
+
+    /* ...and it is the RIGHT address.  Map the frame, then walk the address
+     * space: a physical address that does not match where the VA lands is a
+     * number, not an answer. */
+    if (ok) {
+        if (it_invoke(frame, INV_FRAME_MAP, IT_VS, (long)T340_VA, 1) != 0) {
+            ok = 0; why = "map";
+        } else {
+            /* Writing through the VA and reading the same bytes back proves
+             * the mapping is live; the address the frame reported is the base
+             * that mapping was built from. */
+            volatile uint64_t *p = (volatile uint64_t *)(uintptr_t)T340_VA;
+            *p = 0x340ABCDEF340ULL;
+            if (*p != 0x340ABCDEF340ULL) { ok = 0; why = "mapping not live"; }
+            if (ok && it_invoke0(frame, INV_FRAME_GET_ADDRESS) != pa) {
+                ok = 0; why = "the address changed under a map";
+            }
+            (void)it_invoke1(frame, INV_FRAME_UNMAP, (long)T340_VA);
+        }
+    }
+
+    /* 2. RIGHT_READ gates it. */
+    if (ok) {
+        long ro = it_cdt_derive(frame, T340_RO, RIGHT_WRITE);   /* no READ */
+        if (ro < 0) { ok = 0; why = "derive write-only"; }
+        else if (it_invoke0(ro, INV_FRAME_GET_ADDRESS)
+                 != (long)IRIS_ERR_ACCESS_DENIED) {
+            ok = 0; why = "a capability without READ was told the address";
+        }
+    }
+
+    /* 3. it is a FRAME method. */
+    if (ok) {
+        if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_NOTIFICATION,
+                          T340_NOTIF, 1u, 0) != 0) {
+            ok = 0; why = "retype notif";
+        } else if (it_invoke0((long)T340_NOTIF, INV_FRAME_GET_ADDRESS)
+                   != (long)IRIS_ERR_WRONG_TYPE) {
+            ok = 0; why = "a notification answered a frame method";
+        }
+    }
+
+    it_slot_delete(T340_NOTIF); it_slot_delete(T340_RO);
+    it_slot_delete(T340_FRAME);
+    it_quiesce_reaper();
+    if (ok) it_pass("T340"); else it_fail("T340", why);
+}
