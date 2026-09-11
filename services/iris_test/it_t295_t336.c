@@ -1545,13 +1545,14 @@ void test_t295(void) {
  *     the same answer — checked on operations with three different shapes: a
  *     read that returns a value, a state change that a later read can see, and
  *     a refusal;
- *  2. the label is scoped to the TYPE.  INV_TCB_SUSPEND and INV_EP_SEND are
- *     both 1, so sending 1 to the wrong kind of capability must not land on
- *     the method that number happens to mean there.  This is the claim that
- *     makes the type switch load-bearing rather than decorative, and it is the
- *     one a global label space would silently give up;
- *  3. a method that does not exist on a type is refused, and a capability of a
- *     type with no methods at all is refused — seL4's IllegalOperation;
+ *  2. a label sent to the WRONG KIND of capability is refused, and refused by
+ *     TYPE.  Labels are globally unique, as seL4's are, so nothing at the door
+ *     disambiguates them — what stops `TCB_Suspend` reaching a notification is
+ *     the method's own resolver, asking for the type it needs and answering
+ *     WRONG_TYPE (A-30).  That is the check the whole door rests on, and the
+ *     one that would rot unnoticed if nothing asked;
+ *  3. a label that names no method at all is NOT_SUPPORTED — seL4's
+ *     IllegalOperation;
  *  4. the fifth argument arrives.  The entry grew a register for the
  *     invocation ABI, and an operation that needs all three method arguments
  *     proves the last one is not landing as zero.
@@ -1612,44 +1613,55 @@ void test_t337(void) {
         }
     }
 
-    /* ── 2. the label is scoped to the type ──
-     * 1 is INV_NOTIFY_SIGNAL on a notification and INV_TCB_SUSPEND on a TCB.
-     * Asking a notification to do what label 3 means on an endpoint (RECV)
-     * must not reach EP_RECV; on a notification, 3 is POLL and needs a
-     * writable pointer, so a NULL one is refused by POLL rather than
-     * rendezvousing on something that is not an endpoint. */
+    /* ── 2. the wrong kind of capability is refused, and refused BY TYPE ──
+     * Nothing at the door stops this: labels are globally unique, the switch
+     * routes on the label alone, and the method is entered.  What refuses it is
+     * the method's own resolver, asking for the type it needs.  Three families,
+     * because they go through three different resolvers and a regression in one
+     * would not show in another. */
     if (ok) {
         long ep = (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_ENDPOINT,
                                  T337_EP, 1u, 0) == 0) ? (long)T337_EP : -1;
         if (ep < 0) { ok = 0; why = "ep"; }
         else {
-            /* INV_NOTIFY_SIGNAL (1) sent to an ENDPOINT is INV_EP_SEND (1),
-             * which needs a message pointer — and must NOT signal anything.
-             * What matters is that it did not take the notification path. */
-            if (ok && iris_invoke2(ep, INV_NOTIFY_SIGNAL, 1, 0) !=
-                      (long)IRIS_ERR_INVALID_ARG) {
+            if (ok && iris_invoke2(ep, INV_NOTIFY_SIGNAL, 1, 0)
+                      != (long)IRIS_ERR_WRONG_TYPE) {
                 ok = 0; why = "endpoint took a notification method";
             }
-            /* A label no endpoint has at all. */
-            if (ok && iris_invoke0(ep, 200u) != (long)IRIS_ERR_NOT_SUPPORTED) {
-                ok = 0; why = "endpoint answered a label it has not";
+            if (ok && iris_invoke0(ep, INV_TCB_SUSPEND)
+                      != (long)IRIS_ERR_WRONG_TYPE) {
+                ok = 0; why = "endpoint took a TCB method";
+            }
+            if (ok && iris_invoke1(ep, INV_UNTYPED_RESET, 0)
+                      != (long)IRIS_ERR_WRONG_TYPE) {
+                ok = 0; why = "endpoint took an untyped method";
             }
             it_slot_delete(T337_EP);
         }
     }
-    /* A label no NOTIFICATION has. */
-    if (ok && iris_invoke0(n, 99u) != (long)IRIS_ERR_NOT_SUPPORTED) {
-        ok = 0; why = "notification answered a label it has not";
+    /* ...and the other way round: an endpoint method on a notification. */
+    if (ok) {
+        struct IrisMsg m; it_iris_msg_zero(&m);
+        if (iris_invoke1(n, INV_EP_NB_SEND, (long)&m) != (long)IRIS_ERR_WRONG_TYPE) {
+            ok = 0; why = "notification took an endpoint method";
+        }
     }
-    /* ── 3. a capability whose type has no invocations at all ── */
-    if (ok && iris_invoke0((long)IRIS_CPTR_OWN_VSPACE, 1u)
+    /* ── 3. a label that names no method ── */
+    if (ok && iris_invoke0(n, (unsigned long)INV_LABEL_COUNT)
               != (long)IRIS_ERR_NOT_SUPPORTED) {
-        ok = 0; why = "a VSpace answered an invocation";
+        ok = 0; why = "an unassigned label was dispatched";
     }
-    /* An empty slot is NOT_FOUND, not a method refusal: the door resolves
-     * before it dispatches, which is the whole reason it knows the type. */
+    if (ok && iris_invoke0(n, 5000u) != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "a label far past the table was dispatched";
+    }
+    /* Label 0 names nothing, deliberately: a zeroed message must not invoke
+     * the first method in the table. */
+    if (ok && iris_invoke0(n, INV_INVALID) != (long)IRIS_ERR_NOT_SUPPORTED) {
+        ok = 0; why = "label zero reached a method";
+    }
+    /* An empty slot resolves to nothing, and the method says so. */
     it_slot_delete(IT_SCRATCH_0);
-    if (ok && iris_invoke0((long)IT_SCRATCH_0, 1u) >= 0) {
+    if (ok && iris_invoke0((long)IT_SCRATCH_0, INV_CAP_IDENTIFY) >= 0) {
         ok = 0; why = "an empty slot was invoked";
     }
 

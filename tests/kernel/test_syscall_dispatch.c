@@ -20,6 +20,7 @@
 #include "framework.h"
 #include <iris/task.h>
 #include <iris/syscall.h>
+#include <iris/invoke.h>
 #include <iris/nc/error.h>
 
 void test_set_current_task(struct task *t);
@@ -101,13 +102,24 @@ void test_syscall_dispatch(void) {
         ASSERT_EQ(ds(SYS_INVOKE + 1u), (long)IRIS_ERR_NOT_SUPPORTED);
     }
 
-    /* ── DS-5: the invocation door refuses what it cannot name ───────────
-     * With no current task there is no CSpace to resolve against, so this
-     * asserts only the shape: SYS_INVOKE is dispatched (not NOT_SUPPORTED,
-     * which is what every unassigned number answers) and it fails cleanly. */
+    /* ── DS-5: the invocation door is wired to the label table ───────────
+     * A real label must REACH its method.  With no current task the method
+     * refuses on its first line with INVALID_ARG — which is the point: an
+     * unassigned number and an unassigned label both answer NOT_SUPPORTED, so
+     * only a method that was actually entered tells them apart.
+     *
+     * Label 0 names nothing on purpose, and gets the same answer an
+     * unassigned syscall number does. */
     {
-        ASSERT_EQ((long)(int64_t)syscall_dispatch(SYS_INVOKE, 0, 0, 0, 0, 0),
+        ASSERT_EQ((long)(int64_t)syscall_dispatch(SYS_INVOKE, 0, INV_CAP_IDENTIFY,
+                                                  0, 0, 0),
                   (long)IRIS_ERR_INVALID_ARG);
+        ASSERT_EQ((long)(int64_t)syscall_dispatch(SYS_INVOKE, 0, INV_INVALID,
+                                                  0, 0, 0),
+                  (long)IRIS_ERR_NOT_SUPPORTED);
+        ASSERT_EQ((long)(int64_t)syscall_dispatch(SYS_INVOKE, 0,
+                                                  (uint64_t)INV_LABEL_COUNT, 0, 0, 0),
+                  (long)IRIS_ERR_NOT_SUPPORTED);
     }
 
     test_set_current_task(NULL);

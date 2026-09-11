@@ -8,142 +8,157 @@
  * seL4 has a handful of real syscalls and they are all IPC.  Everything else —
  * configuring a thread, retyping memory, routing an interrupt — is an
  * INVOCATION: a message sent to a capability, whose LABEL names the method.
- * The kernel resolves the capability, switches on its TYPE, and then switches
- * on the label.  A method therefore cannot be reached without naming the
- * object it acts on, and the same label means different things on different
- * kinds of capability, because it is scoped to the type.
+ * A method therefore cannot be named without naming the object it acts on,
+ * which is the property; the syscall NUMBER, which named a method and nothing
+ * else, is what IRIS is retiring.
  *
- * IRIS has always checked authority that way — every live syscall already
- * resolves a CPtr and checks rights on it — but it SELECTED the method with a
- * global syscall number, which is the one thing about its shape that is not
- * seL4's.  This header is where that stops.
+ * THE LABELS ARE GLOBALLY UNIQUE, AND THAT IS seL4'S ARRANGEMENT
  *
- * THE LABEL SPACE
+ * The first cut of this header scoped labels to the invoked TYPE, so that
+ * `TCB_Suspend` and `EP_Send` were both 1 and the pair named the method.  That
+ * is not what seL4 does: `enum invocation_label` is one flat list —
+ * `UntypedRetype`, `TCBSuspend`, `CNodeRevoke`, `IRQIssueIRQHandler` — with
+ * arch-specific labels continuing after the generic ones.  seL4's kernel still
+ * switches on the capability's type first, but that switch is there to reach
+ * the decoder that knows how to read the arguments, not to disambiguate a
+ * number that would otherwise be ambiguous.
  *
- * Two ranges, and the split is not cosmetic:
+ * Unique labels are not merely more faithful here, they are cheaper, and the
+ * reason is specific to this kernel.  A scoped label space forces the
+ * dispatcher to learn the type before it can choose the method, which means a
+ * CSpace walk that the method then repeats when it resolves the capability
+ * properly.  Two walks per invocation, forever, for a disambiguation seL4 does
+ * not need.  With unique labels the dispatcher routes on the label alone and
+ * the method does the ONE walk it always did.
  *
- *   1..0xFF      per-TYPE methods.  The number alone means nothing; the pair
- *                (type, label) names the method.  INV_TCB_SUSPEND and
- *                INV_EP_SEND are both 1, and that is the point — it is what
- *                makes the type check load-bearing rather than decorative.
- *
- *   0x100..0x1FF GENERIC methods, valid on a capability of ANY type, because
- *                what they act on is the SLOT rather than the object in it:
- *                copy this capability, move it, revoke what came from it, ask
- *                what it is.  seL4 expresses these as CNode invocations, with
- *                the CNode as the object and (index, depth) as arguments;
- *                IRIS invokes them on the slot directly.  That difference is
- *                real and is recorded rather than hidden — see A-31 — but it
- *                is a difference about WHICH object a method hangs off, not
- *                about whether a method needs one.
+ * So WHERE is the type checked?  Where it always was: inside the method, by
+ * the resolver that fetches the capability with the type it requires.  A label
+ * sent to the wrong kind of capability gets `IRIS_ERR_WRONG_TYPE` — which says
+ * what is actually wrong, and which the kernel only became able to say
+ * consistently at A-30.  That is a better answer than seL4's
+ * `IllegalOperation` for the same mistake, and it costs nothing extra because
+ * the check was already being made.
  *
  * ARGUMENTS
  *
  * An invocation is `(cptr, label, a1, a2, a3)`.  Three method arguments is
- * what the widest existing operation needs (`Untyped_Retype`, `TCB_Configure`,
- * `Frame_Map`), and it is why the syscall entry grew a fifth register.
+ * what the widest existing operation needs — `Untyped_Retype`,
+ * `TCB_Configure`, `Frame_Map` — and it is why the syscall entry grew a fifth
+ * register.
  *
  * This header is shared by the kernel and ring 3 on purpose: a label is ABI.
+ * A label is never reused, for the same reason a syscall number never was.
  */
 
-/* ── KOBJ_TCB ───────────────────────────────────────────────────────────── */
-#define INV_TCB_SUSPEND               1u
-#define INV_TCB_RESUME                2u
-#define INV_TCB_SET_PRIORITY          3u
-#define INV_TCB_EXIT                  4u
-#define INV_TCB_GET_INFO              5u
-#define INV_TCB_READ_REGS             6u
-#define INV_TCB_WRITE_REGS            7u
-#define INV_TCB_CONFIGURE             8u
-#define INV_TCB_WATCH                 9u
-#define INV_TCB_SET_FAULT_HANDLER    10u
-#define INV_TCB_SET_TIMEOUT_HANDLER  11u
-#define INV_TCB_EXIT_CODE            12u
-#define INV_TCB_SET_IPC_BUFFER       13u
-#define INV_TCB_BIND_NOTIFICATION    14u
+enum iris_invocation_label {
+    INV_INVALID = 0,
 
-/* ── KOBJ_ENDPOINT ──────────────────────────────────────────────────────── */
-#define INV_EP_SEND                   1u
-#define INV_EP_NB_SEND                2u
-#define INV_EP_RECV                   3u
-#define INV_EP_NB_RECV                4u
-#define INV_EP_CALL                   5u
-#define INV_EP_CANCEL_BADGED_SENDS    6u
-#define INV_EP_REPLY_RECV             7u
+    /* ── KOBJ_TCB ──────────────────────────────────────────────────────── */
+    INV_TCB_SUSPEND = 1,
+    INV_TCB_RESUME,
+    INV_TCB_SET_PRIORITY,
+    INV_TCB_EXIT,
+    INV_TCB_GET_INFO,
+    INV_TCB_READ_REGS,
+    INV_TCB_WRITE_REGS,
+    INV_TCB_CONFIGURE,
+    INV_TCB_WATCH,
+    INV_TCB_SET_FAULT_HANDLER,
+    INV_TCB_SET_TIMEOUT_HANDLER,
+    INV_TCB_EXIT_CODE,
+    INV_TCB_SET_IPC_BUFFER,
+    INV_TCB_BIND_NOTIFICATION,
 
-/* ── KOBJ_NOTIFICATION ──────────────────────────────────────────────────── */
-#define INV_NOTIFY_SIGNAL             1u
-#define INV_NOTIFY_WAIT               2u
-#define INV_NOTIFY_POLL               3u
+    /* ── KOBJ_ENDPOINT ─────────────────────────────────────────────────── */
+    INV_EP_SEND,
+    INV_EP_NB_SEND,
+    INV_EP_RECV,
+    INV_EP_NB_RECV,
+    INV_EP_CALL,
+    INV_EP_CANCEL_BADGED_SENDS,
+    INV_EP_REPLY_RECV,
 
-/* ── KOBJ_REPLY ─────────────────────────────────────────────────────────── */
-#define INV_REPLY_SEND                1u
+    /* ── KOBJ_NOTIFICATION ─────────────────────────────────────────────── */
+    INV_NOTIFY_SIGNAL,
+    INV_NOTIFY_WAIT,
+    INV_NOTIFY_POLL,
 
-/* ── KOBJ_UNTYPED ───────────────────────────────────────────────────────── */
-#define INV_UNTYPED_INFO              1u
-#define INV_UNTYPED_QUERY             2u
-#define INV_UNTYPED_RESET             3u
-#define INV_UNTYPED_RETYPE            4u
-#define INV_UNTYPED_SET_DEVICE_BUDGET 5u
+    /* ── KOBJ_REPLY ────────────────────────────────────────────────────── */
+    INV_REPLY_SEND,
 
-/* ── KOBJ_CNODE ─────────────────────────────────────────────────────────── */
-#define INV_CNODE_DELETE              1u
-#define INV_CNODE_SWAP                2u
+    /* ── KOBJ_UNTYPED ──────────────────────────────────────────────────── */
+    INV_UNTYPED_INFO,
+    INV_UNTYPED_QUERY,
+    INV_UNTYPED_RESET,
+    INV_UNTYPED_RETYPE,
+    INV_UNTYPED_SET_DEVICE_BUDGET,
 
-/* ── KOBJ_SCHED_CONTEXT ─────────────────────────────────────────────────── */
-#define INV_SC_BIND                   1u
-#define INV_SC_CONSUMED               2u
-#define INV_SC_YIELD_TO               3u
-#define INV_SC_CONFIGURE              4u
-#define INV_SC_SET_ON_CALLER          5u
+    /* ── KOBJ_CNODE ────────────────────────────────────────────────────── */
+    INV_CNODE_DELETE,
+    INV_CNODE_SWAP,
 
-/* ── KOBJ_FRAME ─────────────────────────────────────────────────────────── */
-#define INV_FRAME_MAP                 1u
-#define INV_FRAME_UNMAP               2u
-#define INV_FRAME_SIZE                3u
+    /* ── KOBJ_SCHED_CONTEXT ────────────────────────────────────────────── */
+    INV_SC_BIND,
+    INV_SC_CONSUMED,
+    INV_SC_YIELD_TO,
+    INV_SC_CONFIGURE,
+    INV_SC_SET_ON_CALLER,
 
-/* ── KOBJ_PAGE_TABLE ────────────────────────────────────────────────────── */
-#define INV_PAGE_TABLE_MAP            1u
+    /* ── KOBJ_FRAME ────────────────────────────────────────────────────── */
+    INV_FRAME_MAP,
+    INV_FRAME_UNMAP,
+    INV_FRAME_SIZE,
 
-/* ── KOBJ_ASID_POOL ─────────────────────────────────────────────────────── */
-#define INV_ASID_POOL_ASSIGN          1u
+    /* ── KOBJ_PAGE_TABLE ───────────────────────────────────────────────── */
+    INV_PAGE_TABLE_MAP,
 
-/* ── KOBJ_IRQ_CAP ───────────────────────────────────────────────────────── */
-#define INV_IRQ_SET_NOTIFICATION      1u
-#define INV_IRQ_ACK                   2u
-#define INV_IRQ_CLEAR                 3u
+    /* ── KOBJ_ASID_POOL ────────────────────────────────────────────────── */
+    INV_ASID_POOL_ASSIGN,
 
-/* ── KOBJ_IOPORT ────────────────────────────────────────────────────────── */
-#define INV_IOPORT_IN                 1u
-#define INV_IOPORT_OUT                2u
+    /* ── KOBJ_IRQ_CAP ──────────────────────────────────────────────────── */
+    INV_IRQ_SET_NOTIFICATION,
+    INV_IRQ_ACK,
+    INV_IRQ_CLEAR,
 
-/* ── KOBJ_VSPACE ────────────────────────────────────────────────────────── */
-/* (none yet: a VSpace is named BY the mapping invocations, never invoked) */
+    /* ── KOBJ_IOPORT ───────────────────────────────────────────────────── */
+    INV_IOPORT_IN,
+    INV_IOPORT_OUT,
 
-/*
- * ── KOBJ_BOOTSTRAP_CAP ─────────────────────────────────────────────────────
- * One capability type, several distinct authorities told apart by a tag the
- * kernel checks (`kbootcap_is`).  The label says which METHOD; the tag on the
- * capability says whether this holder may ask.  Both are checked.
- */
-#define INV_BOOT_FRAMEBUFFER_INFO     1u
-#define INV_BOOT_INITRD_COUNT         2u
-#define INV_BOOT_INITRD_FRAME         3u
-#define INV_BOOT_IOPORT_NARROW        4u
-#define INV_BOOT_CREATE_IOPORT        5u
-#define INV_BOOT_CREATE_IRQCAP        6u
-#define INV_BOOT_KLOG_DRAIN           7u
-#define INV_BOOT_SCHED_INFO           8u
-#define INV_BOOT_POWEROFF             9u
+    /*
+     * ── KOBJ_BOOTSTRAP_CAP ─────────────────────────────────────────────
+     * One capability type carrying several distinct authorities, told apart by
+     * a tag the kernel checks (`kbootcap_is`).  The label says which METHOD;
+     * the tag says whether this holder may ask.  Both are checked, and they
+     * are different questions.
+     */
+    INV_BOOT_FRAMEBUFFER_INFO,
+    INV_BOOT_INITRD_COUNT,
+    INV_BOOT_INITRD_FRAME,
+    INV_BOOT_IOPORT_NARROW,
+    INV_BOOT_CREATE_IOPORT,
+    INV_BOOT_CREATE_IRQCAP,
+    INV_BOOT_KLOG_DRAIN,
+    INV_BOOT_SCHED_INFO,
+    INV_BOOT_POWEROFF,
 
-/* ── generic: the SLOT, whatever it holds ───────────────────────────────── */
-#define INV_GENERIC_BASE          0x100u
-#define INV_CAP_IDENTIFY          0x100u
-#define INV_CAP_SAME_OBJECT       0x101u
-#define INV_CSPACE_MINT           0x102u
-#define INV_CSPACE_MOVE           0x103u
-#define INV_CSPACE_REVOKE         0x104u
-#define INV_CSPACE_SET_GUARD      0x105u
-#define INV_GENERIC_LAST          0x105u
+    /*
+     * ── the SLOT, whatever it holds ────────────────────────────────────
+     * What these act on is the slot rather than the object in it: copy this
+     * capability, move it, revoke what came from it, ask what it is.  seL4
+     * expresses them as CNode invocations, with the CNode as the object and
+     * (index, depth) as arguments; IRIS invokes them on the slot directly.
+     * That difference is about WHICH object a method hangs off, not about
+     * whether a method needs one, and it is recorded in A-31 rather than
+     * rounded away.
+     */
+    INV_CAP_IDENTIFY,
+    INV_CAP_SAME_OBJECT,
+    INV_CSPACE_MINT,
+    INV_CSPACE_MOVE,
+    INV_CSPACE_REVOKE,
+    INV_CSPACE_SET_GUARD,
+
+    INV_LABEL_COUNT   /* first unassigned; never reuse a retired label */
+};
 
 #endif /* IRIS_INVOKE_H */
