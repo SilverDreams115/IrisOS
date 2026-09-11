@@ -88,6 +88,7 @@ ISR_NOERR 46
 ISR_NOERR 47  /* IRQ15 — spurious PIC2 */
 
 ISR_NOERR 240 /* RESCHEDULE_IPI_VECTOR (0xF0) — cross-CPU reschedule */
+ISR_NOERR 241 /* TLB_SHOOTDOWN_IPI_VECTOR (0xF1) — drop a translation */
 
 isr_common:
     /*

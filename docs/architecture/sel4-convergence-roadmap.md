@@ -2206,10 +2206,41 @@ What step 1 did NOT do, deliberately: per-CPU dead lists.  They are the better
 shape for a reason that is not correctness — they remove a cross-CPU cache
 line — so they belong with the per-CPU timer in step 4.
 
-**Step 2 — TLB shootdown.**  Must exist before a second CPU can hold a
-different CR3.  The IPI mechanism is there; the protocol is not.  **Gate: an
-unmap on one CPU is observable as unmapped on another** — which needs step 3
-to test, so the implementation lands here and the test lands after.
+**Step 2 — TLB shootdown.**  ✅ **DONE**, with the honest caveat below.
+
+The design turned out smaller than expected, and the reason is worth keeping.
+IRIS loads CR3 on every dispatch with **bit 63 clear**, and with `CR4.PCIDE`
+set that invalidates every TLB entry for the PCID being loaded.  So a CPU that
+switches INTO an address space throws away what it had cached for it on the
+way in, free, on a write it was making anyway.  Without PCID a CR3 write
+flushes everything — the same conclusion, more bluntly.
+
+That leaves exactly one case needing an IPI: a CPU running a thread in that
+address space RIGHT NOW, which will not reload CR3 until it switches away.  So
+the shootdown targets the CPUs whose `current_task` names the VSpace, and on a
+machine where nobody else is in it, it sends nothing and takes no lock.
+
+Synchronous, with no timeout and no fallback: the caller's next act is usually
+to free the frame, and a CPU that does not answer is a CPU that is wedged with
+interrupts off.  Continuing past it would mean freeing memory it can still
+write.  Hanging is a worse-looking failure and a better one.
+
+Wired into the two places that remove an entry from a LIVE address space:
+`kframe_unmap_all` (which now takes the VSpace as well as the CR3 — teardown
+paths pass NULL, because a VSpace dies when its last capability goes and a
+running thread holds one through its TCB) and `PageTable_Unmap`, where an
+interior entry is exactly what a paging-structure cache holds.
+
+**The caveat, stated rather than implied**: there is one CPU, so the target set
+is always empty and the cross-CPU path has never executed.  **T345** pins what
+CAN be checked — that an unmap still issues its local `invlpg`, and that zero
+IPIs are sent.  The second is not a formality: the target scan skips the
+CALLING CPU, and without that skip a shootdown would IPI itself and spin for an
+acknowledgement it cannot deliver, with interrupts off.  The first unmap would
+hang the machine.  Zero is the evidence the skip works.
+
+The cross-CPU behaviour is **step 3's to test**, when there is a second CPU to
+test it with.
 
 **Step 3 — discover and start the APs.**  ACPI MADT to enumerate them, a
 real-mode trampoline, INIT-SIPI-SIPI (the LAPIC driver needs delivery modes it

@@ -2485,3 +2485,87 @@ void test_t344(void) {
     if (drops != 0u) { it_fail("T344", "the reap ring refused a dead task"); return; }
     it_pass("T344");
 }
+
+/* ── T345: the TLB shootdown costs nothing on one core ─────────────────────
+ *
+ * An unmap on CPU A must reach every CPU that can still use the translation,
+ * or it is not an unmap.  IRIS's shootdown targets only the CPUs whose current
+ * thread is IN the address space being changed — every other CPU either never
+ * returns to it, or flushes it on the way in, because a CR3 load with bit 63
+ * clear invalidates the PCID it loads.
+ *
+ * With one CPU that set is always empty, so what this test pins is the SHAPE
+ * of the mechanism rather than its cross-CPU behaviour, which cannot run yet:
+ *
+ *  1. `tlb_shootdown_count` is ZERO after the suite has unmapped a great many
+ *     pages.  Not a formality — the target scan skips the CALLING CPU, and if
+ *     it did not, a shootdown would IPI itself and then spin waiting for an
+ *     acknowledgement it cannot deliver, with interrupts off.  The first unmap
+ *     would hang the machine.  A zero here is the evidence that skip works;
+ *  2. the LOCAL invalidation still happens, so the mechanism was added beside
+ *     the existing `invlpg` rather than in place of it.  An unmap bumps the
+ *     local counter, which is what makes the pair meaningful: many local
+ *     invalidations, zero cross-CPU ones, is exactly the one-core regime.
+ *
+ * The cross-CPU half is SMP roadmap §9.3 step 3's to test, when there is a
+ * second CPU to test it with.  Saying that here beats a test name implying
+ * coverage that does not exist.
+ * Invariants: M2. */
+#define T345_FRAME IT_SCRATCH_0
+#define T345_VA    (0x0000600000000000ULL + 0xC00000ULL)
+
+void test_t345(void) {
+    it_quiesce_reaper();
+    int ok = 1;
+    const char *why = "one core sends no shootdown";
+
+    if (!it_setup_self_vspace()) { it_fail("T345", "vspace self"); return; }
+    it_slot_delete(T345_FRAME);
+
+    uint8_t buf[160];
+    uint32_t local0 = 0, shoot0 = 0;
+    if (it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO,
+                   (long)(uintptr_t)buf, 160) != 0) {
+        it_fail("T345", "sched info"); return;
+    }
+    local0 = (uint32_t)buf[152] | ((uint32_t)buf[153] << 8) |
+             ((uint32_t)buf[154] << 16) | ((uint32_t)buf[155] << 24);
+    shoot0 = (uint32_t)buf[156] | ((uint32_t)buf[157] << 8) |
+             ((uint32_t)buf[158] << 16) | ((uint32_t)buf[159] << 24);
+
+    /* Map and unmap — the unmap is what calls the shootdown. */
+    if (it_retype2_at((long)IRIS_CPTR_TEST_UNTYPED, IRIS_KOBJ_FRAME,
+                      T345_FRAME, 1u, 4096) != 0) { ok = 0; why = "retype"; }
+    if (ok && it_invoke((long)T345_FRAME, INV_FRAME_MAP, IT_VS,
+                        (long)T345_VA, 1) != 0) { ok = 0; why = "map"; }
+    if (ok && it_invoke2((long)T345_FRAME, INV_FRAME_UNMAP, IT_VS,
+                         (long)T345_VA) != 0) { ok = 0; why = "unmap"; }
+
+    if (ok) {
+        if (it_invoke2((long)IRIS_CPTR_DEBUG_CONTROL, INV_BOOT_SCHED_INFO,
+                       (long)(uintptr_t)buf, 160) != 0) { ok = 0; why = "sched info 2"; }
+    }
+    if (ok) {
+        uint32_t local1 = (uint32_t)buf[152] | ((uint32_t)buf[153] << 8) |
+                          ((uint32_t)buf[154] << 16) | ((uint32_t)buf[155] << 24);
+        uint32_t shoot1 = (uint32_t)buf[156] | ((uint32_t)buf[157] << 8) |
+                          ((uint32_t)buf[158] << 16) | ((uint32_t)buf[159] << 24);
+
+        it_serial_write("[IRIS][TEST] T345 local_invlpg=");
+        it_log_num(local1);
+        it_serial_write(" shootdowns=");
+        it_log_num(shoot1);
+        it_serial_write("\n");
+
+        /* 2. the local invalidation still happens. */
+        if (local1 <= local0) { ok = 0; why = "an unmap issued no local invlpg"; }
+        /* 1. and nothing was sent anywhere. */
+        if (ok && (shoot0 != 0u || shoot1 != 0u)) {
+            ok = 0; why = "a shootdown IPI was sent with one CPU running";
+        }
+    }
+
+    it_slot_delete(T345_FRAME);
+    it_quiesce_reaper();
+    if (ok) it_pass("T345"); else it_fail("T345", why);
+}

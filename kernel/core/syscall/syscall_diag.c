@@ -1,4 +1,5 @@
 #include "syscall_priv.h"
+#include <iris/tlb.h>
 #include <iris/cpu_local.h>
 
 
@@ -104,7 +105,8 @@ uint64_t sys_klog_drain(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  *   offset 144: uint32_t map_success_count   — Phase 19 (successful maps, cumulative)
  *   offset 148: uint32_t unmap_success_count — Phase 19 (explicit unmaps, cumulative)
  *   offset 152: uint32_t tlb_invalidate_count— Phase 19 (local invlpg, cumulative)
- *   offset 156: uint32_t _pad2
+ *   offset 156: uint32_t tlb_shootdown_count— SMP step 2 (cross-CPU IPIs sent;
+ *                                             structurally 0 on one core)
  * Extended-4 total: 160 bytes.
  *
  * Phase 20 additive fault-model tier — written ONLY when the caller passes
@@ -217,9 +219,14 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
         uint32_t v2 = kframe_map_success_count();
         uint32_t v3 = kframe_unmap_success_count();
         uint32_t v4 = paging_tlb_invalidate_count();
+        /* Next to the LOCAL invalidation count on purpose: the pair says how
+         * many translations this CPU dropped and how many other CPUs had to be
+         * told.  The second is zero until there is a second CPU, and a reader
+         * comparing them can see at a glance which regime the machine is in. */
+        uint32_t v5 = tlb_shootdown_count();
         buf[17] = (uint64_t)v0 | ((uint64_t)v1 << 32);
         buf[18] = (uint64_t)v2 | ((uint64_t)v3 << 32);
-        buf[19] = (uint64_t)v4;   /* high half = _pad2 (0) */
+        buf[19] = (uint64_t)v4 | ((uint64_t)v5 << 32);
     }
 
     if (want >= SCHED_INFO_EXT5_BYTES) {

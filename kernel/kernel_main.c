@@ -13,6 +13,7 @@
 #include <iris/syscall.h>
 #include <iris/fb_info.h>
 #include <iris/irq_routing.h>
+#include <iris/tlb.h>
 #include <iris/nc/kbootcap.h>
 #include <iris/root_bootinfo.h>
 #include <iris/nc/kfault.h>
@@ -156,6 +157,11 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
 
     klog_write("[IRIS][IRQ] initializing routing table...\n");
     irq_routing_init();
+
+    /* Cross-CPU TLB invalidation (SMP roadmap §9.3 step 2).  Its lock is the
+     * only state; the mechanism itself does nothing until a second CPU can be
+     * inside an address space somebody else is unmapping from. */
+    tlb_init();
 
 #ifdef IRIS_ENABLE_RUNTIME_SELFTESTS
     phase3_selftest_run();

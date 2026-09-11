@@ -432,6 +432,12 @@ uint32_t sched_live_task_count(void)         { return 0; }
 /* The reap ring is the scheduler's; the host links no scheduler.  Zero is also
  * what the real one is structurally required to return (SMP step 1). */
 uint32_t sched_reap_queue_drops(void)        { return 0u; }
+/* Cross-CPU TLB shootdown (SMP step 2): there are no CPUs on the host and no
+ * LAPIC to send an IPI through.  The unmap paths under test call it; what they
+ * are testing is the mapping bookkeeping, which is the same either way. */
+void tlb_shootdown_page(struct KVSpace *vs, uint64_t va) { (void)vs; (void)va; }
+uint32_t tlb_shootdown_count(void)       { return 0u; }
+uint32_t tlb_shootdown_max_targets(void) { return 0u; }
 uint32_t sched_reap_queue_hwm(void)          { return 0; }
 uint32_t sched_run_queue_hwm(void)           { return 0; }
 uint64_t sched_wall_ticks(void)              { return 0; }

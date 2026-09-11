@@ -3,6 +3,7 @@
 #include <iris/nc/kframe.h>
 #include <iris/nc/kpagetable.h>
 #include <iris/paging.h>
+#include <iris/tlb.h>
 #include <iris/kslab.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kfault.h>
@@ -143,7 +144,8 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     while (m) {
         struct KFrameMapping *next = m->next;
         struct KFrame        *f    = m->frame;
-        if (cr3) kframe_unmap_all(cr3, f, m->user_va);
+        /* Teardown: this VSpace is dying, so no CPU is inside it. */
+        if (cr3) kframe_unmap_all(0, cr3, f, m->user_va);
         kvspace_node_free(vs, m);
         atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
         kframe_stat_cleanup();
@@ -607,8 +609,12 @@ iris_error_t kvspace_unmap_table(struct KVSpace *vs, struct KPageTable *pt) {
          * the caller is told rather than having the record quietly cleared. */
         return IRIS_ERR_NOT_FOUND;
     }
-    /* Owed by every detach from a live address space — see paging.c. */
+    /* Owed by every detach from a live address space — see paging.c.  Local
+     * first, then every other CPU inside this address space: an interior entry
+     * is exactly the kind a paging-structure cache holds, and a CPU still
+     * running here could walk through a table the holder is about to reuse. */
     paging_flush_table_walk(pt->mapped_va);
+    tlb_shootdown_page(vs, pt->mapped_va);
 
     for (struct KPageTable **link = &vs->tables; *link; link = &(*link)->next) {
         if (*link == pt) { *link = pt->next; break; }
@@ -676,7 +682,7 @@ void kvspace_invalidate(struct KVSpace *vs) {
         struct KFrameMapping *m = list;
         struct KFrame        *f = m->frame;
         list = m->next;
-        if (saved_cr3) kframe_unmap_all(saved_cr3, f, m->user_va);
+        if (saved_cr3) kframe_unmap_all(0, saved_cr3, f, m->user_va);
         kvspace_node_free(vs, m);
         atomic_fetch_sub_explicit(&f->mapped_count, 1u, memory_order_relaxed);
         kframe_stat_cleanup();
@@ -716,7 +722,7 @@ iris_error_t kvspace_unmap_page(struct KVSpace *vs, uint64_t user_va) {
         return IRIS_ERR_NOT_FOUND;
     }
     f = m->frame;
-    kframe_unmap_all(cr3, f, user_va);
+    kframe_unmap_all(0, cr3, f, user_va);
     spinlock_unlock(&vs->lock);
 
     kvspace_node_free(vs, m);

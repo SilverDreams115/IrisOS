@@ -4,6 +4,7 @@
 #include <iris/nc/kuntyped.h>
 #include <iris/kslab.h>
 #include <iris/paging.h>
+#include <iris/tlb.h>
 #include <iris/pmm.h>
 #include <iris/panic.h>
 #include <stdatomic.h>
@@ -313,12 +314,16 @@ struct KFrame *bootstrap_kframe_map(struct KVSpace *vs,
  * exactly that reason: four copies of this loop is three chances to fix it
  * in one place only.
  */
-void kframe_unmap_all(uint64_t cr3, const struct KFrame *f, uint64_t base_va) {
+void kframe_unmap_all(struct KVSpace *vs, uint64_t cr3,
+                      const struct KFrame *f, uint64_t base_va) {
     if (!cr3 || !f) return;
     uint64_t pages = f->size >> 12;
     if (pages == 0) pages = 1;
-    for (uint64_t i = 0; i < pages; i++)
-        paging_unmap_in(cr3, base_va + (i << 12));
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t va = base_va + (i << 12);
+        paging_unmap_in(cr3, va);          /* this CPU */
+        tlb_shootdown_page(vs, va);        /* every other CPU inside `vs` */
+    }
 }
 
 iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
@@ -359,7 +364,7 @@ iris_error_t kframe_unmap_page(struct KFrame *f, struct KVSpace *vs,
         return IRIS_ERR_NOT_FOUND;
     }
 
-    kframe_unmap_all(vs->cr3, f, user_va);
+    kframe_unmap_all(vs, vs->cr3, f, user_va);
     spinlock_unlock(&vs->lock);
 
     kvspace_node_free(vs, m);

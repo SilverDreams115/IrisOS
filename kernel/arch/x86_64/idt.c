@@ -6,6 +6,7 @@
 #include <iris/task.h>
 #include <iris/irq_routing.h>
 #include <iris/lapic.h>
+#include <iris/tlb.h>
 #include <iris/nc/kfault.h>
 #include <stdint.h>
 
@@ -53,6 +54,7 @@ extern void isr40(void); extern void isr41(void); extern void isr42(void);
 extern void isr43(void); extern void isr44(void); extern void isr45(void);
 extern void isr46(void); extern void isr47(void);
 extern void isr240(void); /* RESCHEDULE_IPI_VECTOR */
+extern void isr241(void); /* TLB_SHOOTDOWN_IPI_VECTOR */
 
 extern void idt_flush(uint64_t idtr_addr);
 
@@ -238,6 +240,15 @@ void isr_handler(struct full_frame *frame) {
          */
         return;
     }
+    if (frame->vector == TLB_SHOOTDOWN_IPI_VECTOR) {
+        /* Acknowledge the LAPIC first: the requester is spinning on our ack
+         * bit, not on the EOI, but leaving the interrupt unacknowledged would
+         * block every later IPI to this CPU — including the next shootdown. */
+        lapic_eoi();
+        tlb_shootdown_ipi();
+        return;
+    }
+
     if (frame->vector == RESCHEDULE_IPI_VECTOR) {
         lapic_eoi();
         struct task *ct = task_current();
@@ -377,6 +388,7 @@ void idt_init(void) {
     idt_set_entry(43, isr43); idt_set_entry(44, isr44); idt_set_entry(45, isr45);
     idt_set_entry(46, isr46); idt_set_entry(47, isr47);
     idt_set_entry(RESCHEDULE_IPI_VECTOR, isr240);
+    idt_set_entry(TLB_SHOOTDOWN_IPI_VECTOR, isr241);
 
     idtr.size   = sizeof(idt) - 1;
     idtr.offset = (uint64_t)(uintptr_t)&idt;

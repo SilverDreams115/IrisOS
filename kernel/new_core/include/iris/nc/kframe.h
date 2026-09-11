@@ -54,7 +54,17 @@ struct KVSpace;
 
 /* D-10: remove every PTE of the frame mapped at base_va.  One mapping record
  * covers a whole frame, so every teardown path walks the frame's pages. */
-void kframe_unmap_all(uint64_t cr3, const struct KFrame *f, uint64_t base_va);
+/*
+ * `vs` and `cr3` are BOTH taken, which looks redundant and is not: a teardown
+ * has already zeroed `vs->cr3` and carries the saved value, while a live unmap
+ * has the VSpace and needs it for the cross-CPU shootdown.  `vs == NULL` means
+ * "no CPU can be inside this address space" and skips the shootdown — true of
+ * every teardown path, where the VSpace is dying because its last capability
+ * went and a running thread holds one through its TCB.
+ */
+struct KVSpace;
+void kframe_unmap_all(struct KVSpace *vs, uint64_t cr3,
+                      const struct KFrame *f, uint64_t base_va);
 
 /* Allocate a KFrame header from the kernel slab allocator and initialise it.
  * Does NOT touch the physical region at paddr.
