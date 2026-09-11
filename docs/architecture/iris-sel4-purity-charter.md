@@ -89,6 +89,7 @@ in the ledger), or `PENDING` (a roadmap stage).
 | S3 | The SC represents a delegable time budget/policy | **MET** — Stage 8-mcs made the word *delegable* true.  Budget and period are enforced with **sporadic replenishment**, so the budget is a real per-period guarantee; **timeout faults** deliver an overrun to a temporal supervisor that decides; and **donation** lends the SC to a passive server across a Call, which is delegation of time as an authority rather than a property a thread is born with |
 | S4 | SC bind/unbind are capability-gated | MET (`SYS_SC_BIND` by CPtr; `THREAD_SET_SC` FROZEN) |
 | S5 | The kernel contains no service policy | MET (catalog/restart/manifests in svcmgr) |
+| S6 | Time can be PARTITIONED, not only prioritised | **MET.**  Scheduling domains: a fixed schedule says which domain owns the CPU for how long, and a thread runs only while its own is current — whatever its priority.  Priority orders threads that COMPETE and leaks through when they get to run; a partition does not, because the boundary is a schedule rather than a comparison.  Run queues are per (domain, priority) so dispatch never reads another domain's threads, which is both why it is O(1) and why the cost of running a domain does not depend on what the others hold.  The schedule is fixed at build time, as seL4's is: one somebody can influence is one that carries information.  `Domain_Set` takes its own boot authority, separate from the thread's capability |
 
 ### 2.5 Memory
 
@@ -181,7 +182,7 @@ proven:
       `SYS_GETPID`) are diagnostics that confer nothing.
 - [x] Adversarial lifecycle and revocation suite (creation, cross death,
       chained revocation, storage reuse, stale caps) as a permanent gate —
-      306 runtime tests including model-based syscall fuzzing, 27415 host
+      310 runtime tests including model-based syscall fuzzing, 27414 host
       assertions, and `check_purity` as a hard gate on every build.
 
 ## 5. Governing priority

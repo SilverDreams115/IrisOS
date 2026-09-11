@@ -8,9 +8,14 @@ and it found things the layer view could not.
 the measurements the tree takes of itself. Where the answer is a number, the
 number is the tree's, not an estimate.
 
-**Gates**: 306/306 runtime tests, 27415 host assertions, `check_purity` OK
+**Gates**: 310/310 runtime tests, 27414 host assertions, `check_purity` OK
 with the kernel-memory-reachable closure at 23 functions and **zero ring-3
 exemptions**.
+
+> **THIRD PASS — the five gaps are closed.** Every generic seL4 invocation
+> IRIS was missing now exists, and so does the domain scheduler. Part 5's
+> "absent" lists have shrunk to SMP, IOMMU and formal verification. Details
+> in Part 7.
 
 > **What the second pass changed.** One real defect (charter A9, fixed and
 > regression-tested), one gap in the enforcement itself (the purity gate
@@ -281,22 +286,21 @@ step 1 built exactly the mechanism it needed.
 
 Four kinds of gap. None of them is model debt.
 
-### 5.1 — Absent seL4 invocations (4)
+### 5.1 — Absent seL4 invocations: **none**
 
-| Missing | Consequence |
-|---|---|
-| `PageTable_Unmap` | a paging level comes out only with its VSpace |
-| `Frame_GetAddress` | a frame's physical address is not askable |
-| `CNode_Rotate` | the three-slot atomic move; IRIS has Delete/Swap/Move/Mint/Revoke |
-| `TCB_SetMCPriority` | a ceiling is inherited at configure time (A-20) and cannot be lowered afterwards |
+All four were implemented in the third pass (Part 7). `Frame_GetAddress`,
+`TCB_SetMCPriority`, `PageTable_Unmap` and `CSpace_Rotate` exist, each with a
+runtime test.
 
-### 5.2 — Absent subsystems (3)
+### 5.2 — Absent subsystems (2)
 
 | Missing | State |
 |---|---|
 | **SMP** | `cpu_local[]` exists, GS-relative per-core state is wired, the event kernel landed *specifically* so SMP atomicity is derived once — but **no AP is ever started**. Single core. |
-| **Domain scheduler** | seL4's top-level time partitioning. Zero references in IRIS. |
-| **IOMMU / IOSpace** | zero references. A device with DMA is trusted with memory, which is the one place IRIS's isolation is weaker than seL4-on-x86-with-VT-d. |
+| **IOMMU / IOSpace** | zero references. A device with DMA is trusted with memory, which is the one place IRIS's isolation is weaker than seL4-on-x86-with-VT-d. Needs PCI enumeration first, which IRIS also does not have. |
+
+The **domain scheduler** was the third item on this list and is now
+implemented — see Part 7.5.
 
 ### 5.3 — Deliberate and permanent (2)
 
@@ -314,8 +318,8 @@ Plus the two IPC differences in Part 3, which are additions rather than gaps.
 ### 5.4 — Not comparable (1)
 
 **seL4 is formally verified. IRIS is not, and does not claim to be.** Its
-invariants are proven by construction plus adversarial gates: 306 runtime
-tests including model-based syscall fuzzing, 27415 host assertions, and
+invariants are proven by construction plus adversarial gates: 310 runtime
+tests including model-based syscall fuzzing, 27414 host assertions, and
 `check_purity` on every build. That is a different kind of assurance, and the
 charter says so in its first section rather than at the end.
 
@@ -411,6 +415,109 @@ function has a caller.
 
 ---
 
+## Part 7 — the third pass: closing the five
+
+Five gaps, all small, all closed with tests. What each is FOR, since "seL4 has
+it" is not a reason:
+
+### 7.1 — `Frame_GetAddress`
+
+A holder programming a device needs the PHYSICAL address of the memory it is
+pointing that device at, and nothing else in the system can tell it. Without
+it a ring-3 driver has to be handed its address out of band by whoever retyped
+the frame — a fact travelling outside the capability that carries the
+authority, which is the one thing the model exists to prevent.
+
+`RIGHT_READ` gates it. Learning where a frame IS confers nothing over it, but
+"which physical page is this" is exactly the question that turns an opaque
+capability into an address somebody can correlate. **T340.**
+
+### 7.2 — `TCB_SetMCPriority`
+
+A-20 made a thread's MCP the ceiling on what it may grant, and shipped with
+the ceiling only INHERITABLE. That covers the common case and cannot express
+LOWERING one afterwards, so a supervisor wanting to hand a subtree less
+authority than it holds had to have been configured with less — deciding the
+whole hierarchy before building any of it.
+
+A running priority above the new ceiling comes down with it: leaving it would
+make the ceiling a rule about future grants only, and the thread would keep
+running at an authority just taken away.
+
+### 7.3 — `PageTable_Unmap`
+
+`PageTable_Map` had no counterpart: a level went into a walk and came out only
+when the address space died, so rearranging your own address space meant
+destroying it.
+
+**Deliberate difference**: it REFUSES while the subtree is live. seL4 unmaps
+the table and invalidates the frame mappings underneath it; IRIS answers BUSY,
+because a detached level whose PTEs are still described by the VSpace leaves
+the bookkeeping asserting mappings the hardware cannot reach. It is also the
+rule `Untyped_Reset` already has — one rule stated once.
+
+It pays a debt `paging_detach_table_in` recorded against itself ("a future
+caller that detaches from a LIVE address space owes a flush of the whole
+subtree"). Removing an interior entry is not removing a leaf: the CPU caches
+the translation PATH, so a cleared PDE can still be held. One INVLPG suffices
+precisely because the unmap refuses a non-empty subtree. **T341.**
+
+### 7.4 — `CSpace_Rotate`
+
+Three slots, two moves, one critical section. Moving onto an occupied slot
+needs that slot emptied first, so the two-call version needs a FOURTH slot to
+park the displaced capability in — and a CSpace full enough to need
+rearranging is exactly the one without a spare. Between two calls the
+capability is also somewhere neither the holder nor a revoke expects.
+
+`dest == src` is the SWAP, the one case that cannot be expressed as
+relocations because both slots are occupied.
+
+**Badges travel rather than being arguments.** seL4's rotate takes a new badge
+per destination; charter A8 says a badged capability is never re-badged, so a
+badge argument would have to be refused whenever it differed — an argument
+that exists to be rejected.
+
+**T342**, whose fifth claim is the one a content-copy implementation would
+fail: derive a child, rotate the parent twice, revoke — the child must die
+with it, because the MDB node travelled and not just the bytes.
+
+### 7.5 — Scheduling domains
+
+The top-level time partition, and the largest of the five.
+
+A domain is not a priority. Priority orders threads that COMPETE; a domain
+decides whether they compete at all. Priority also LEAKS — two threads at
+different priorities can measure each other through when they get to run, and
+the bandwidth depends on how busy the other is. A time partition does not,
+because the boundary is a SCHEDULE rather than a comparison.
+
+Run queues are per (domain, priority). Searching one set and skipping the
+wrong domain's threads would give the same answer and make the cost of running
+a domain depend on how many threads the OTHERS have — exactly the leak a
+partition closes.
+
+The schedule is FIXED, as seL4's is: a schedule somebody can influence is a
+schedule that carries information. `Domain_Set` places a thread in a domain,
+gated by its own boot capability — a separate authority from the thread's own,
+because ordering a thread within your time and moving it into somebody else's
+are different questions.
+
+**T343** proves the partition rather than the plumbing: a worker counting in
+domain 0, moved to a domain the schedule never runs, must STOP — completely,
+not slow down, which is what a priority would do — and start again when moved
+back.
+
+### 7.6 — What implementing them turned up
+
+| Found | Was |
+|---|---|
+| `root_bootinfo_set_control_cap` had no case for a new authority kind | It returned INVALID_ARG, boot turned that into FATAL, and the root task was aborted before the scheduler ran. The host test for that function had **never covered SchedControl or ASIDControl either** — all three now are, so the next authority is caught at build time |
+| A capability delivered at load time, gone by mid-run | `iris_test` receives DomainControl at a different slot from everyone else: 97 is free everywhere except the suite, where 88..97 is the reply-object range and T113 deletes 97. The suite's own documented free slot, 99, turned out to be `IRIS_CPTR_FB_CONTROL`, which init also mints — the second mint silently replaced the first |
+| T305's LEGACY_ROOT ceiling, 25 → 26 | DomainControl is a boot authority like SchedControl and ASIDControl: minted once, unparented because nothing is above it. The note now says what makes those three acceptable and why a root anywhere else is not |
+
+---
+
 ## The number
 
 If the question is *how close to 100% pure seL4*, the honest decomposition is:
@@ -422,8 +529,9 @@ If the question is *how close to 100% pure seL4*, the honest decomposition is:
   permanent divergence twice and retired twice, both times because the row had
   priced the work correctly and the gain not at all.
 - **The kernel architecture: complete**, as of D-1.
-- **Feature coverage: roughly three-quarters.** SMP, domains and IOMMU are
-  three real subsystems seL4 has and IRIS has not built, plus four invocations.
+- **Invocation coverage: complete.** Every generic seL4 invocation exists.
+- **Feature coverage: two subsystems short.** SMP and IOMMU are what seL4 has
+  and IRIS has not built. Domains were the third and are done.
 - **Verification: not started, and out of scope by charter.**
 
 The gap that remains is **work IRIS has not done**, not shape IRIS got wrong.
@@ -455,6 +563,8 @@ looking for.
 | 2 | Seven pieces of scaffolding removed, including two kernel allocators and an address-space reservation (§6.3) |
 | 2 | The kernel's one named device merged into the generic IRQ path (§6.4) |
 | 2 | `nc/kprocess.h` → `nc/kfault.h`, closing a debt the file recorded against itself |
+| 3 | **The five gaps closed**: `Frame_GetAddress`, `TCB_SetMCPriority`, `PageTable_Unmap`, `CSpace_Rotate` and the domain scheduler, with T340–T343 (§7) |
+| 3 | A host test that had never covered three of the boot authorities now covers all of them — the gap that let a missing BootInfo case reach runtime |
 
 Net: **62 files changed, 544 insertions, 706 deletions** across the second
 pass; 306 runtime tests, 27415 host assertions, purity clean.

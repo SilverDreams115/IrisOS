@@ -40,14 +40,15 @@ permanent decision on a cost estimate that was right and a gain estimate that
 was not.
 
 Measured, not recalled (recounted at the file-by-file audit): **one**
-invocation door and three syscalls that invoke nothing, 62 methods reached by
-label, a message that is a MessageInfo word and message registers with no
-pointer anywhere on the path — and no pointer the KERNEL reads either, since
-the audit found the user-copy read side had lost its last caller — 11
-retypeable object types all of them seL4's, 306 runtime tests, 27 host suites,
-27415 host assertions, 36 of 36 charter invariants MET, and a purity gate that
-now follows BOTH kernel allocators over the transitive closure with zero
-exemptions.  See [the audit](sel4-purity-audit.md) for what reading every file
+invocation door and three syscalls that invoke nothing, 67 methods reached by
+label — **and every generic seL4 invocation now exists**, the last five closed
+after the file-by-file audit named them — a message that is a MessageInfo word
+and message registers with no pointer anywhere on the path, and no pointer the
+KERNEL reads either, since the audit found the user-copy read side had lost its
+last caller; 11 retypeable object types all of them seL4's, scheduling domains
+partitioning time above priority, 310 runtime tests, 27 host suites, 27414 host
+assertions, 37 of 37 charter invariants MET, and a purity gate that now follows
+BOTH kernel allocators over the transitive closure with zero exemptions.  See [the audit](sel4-purity-audit.md) for what reading every file
 against seL4 turned up, including one A9 defect it fixed.
 
 ## Status

@@ -2167,6 +2167,97 @@ zero comes back when nothing was delivered; and a failed receive delivers no
 message at all.
 
 
+## A-34 — the five the audit named
+
+**Before**: the file-by-file audit (`sel4-purity-audit.md`) ended by saying the
+remaining distance to seL4 was work not done rather than shape got wrong, and
+listed what that work was.  Five items were small: four generic invocations
+IRIS did not answer, and the domain scheduler.
+
+**After**: all five exist, each with a runtime test.  What each is FOR, since
+"seL4 has it" is not a reason to add anything:
+
+- **`Frame_GetAddress`** — a holder programming a device needs the PHYSICAL
+  address of the memory it points that device at, and nothing else can tell
+  it.  Without this a driver is handed its address out of band by whoever
+  retyped the frame: a fact travelling outside the capability that carries the
+  authority.  `RIGHT_READ` gates it, because "which physical page is this" is
+  the question that turns an opaque capability into something correlatable.
+
+- **`TCB_SetMCPriority`** — A-20 made the MCP a ceiling on what a thread may
+  grant and shipped with it only INHERITABLE, which cannot express LOWERING
+  one.  A supervisor wanting to hand a subtree less authority than it holds
+  had to have been configured with less, deciding the whole hierarchy before
+  building any of it.  A running priority above the new ceiling comes down
+  with it: otherwise the ceiling would bind future grants only, and the thread
+  would keep running at an authority just taken away.
+
+- **`PageTable_Unmap`** — `PageTable_Map` had no counterpart, so rearranging
+  an address space meant destroying it.  It REFUSES while the subtree is live,
+  which is a DELIBERATE difference: seL4 unmaps the table and invalidates the
+  mappings under it, IRIS answers BUSY because a detached level whose PTEs the
+  VSpace still describes leaves the bookkeeping asserting mappings the hardware
+  cannot reach.  Same rule `Untyped_Reset` has.  It also pays the debt
+  `paging_detach_table_in` recorded against itself: an interior entry removed
+  from a LIVE walk owes a paging-structure flush, and one INVLPG is enough
+  precisely because the unmap refuses a non-empty subtree.
+
+- **`CSpace_Rotate`** — three slots, two moves, one critical section.  The
+  two-call version needs a FOURTH slot to park the displaced capability in,
+  and a CSpace full enough to need rearranging is the one without a spare;
+  between the calls the capability is also somewhere neither the holder nor a
+  revoke expects.  `dest == src` is the swap, the case that cannot be done
+  with relocations because both slots are occupied.  BADGES TRAVEL rather than
+  being arguments — seL4 takes a new badge per destination, and charter A8
+  says a badged capability is never re-badged, so such an argument would exist
+  to be rejected.
+
+- **Scheduling domains** — the top-level time partition, and a new charter
+  invariant (S6).  A domain is not a priority: priority orders threads that
+  COMPETE and leaks through when they get to run, while a partition does not,
+  because the boundary is a SCHEDULE rather than a comparison.  Run queues are
+  per (domain, priority), so dispatch never reads another domain's threads —
+  which is why it stays O(1) and why the cost of running a domain does not
+  depend on what the others hold.  The schedule is FIXED as seL4's is: one
+  somebody can influence is one that carries information.  `Domain_Set` takes
+  its own boot authority, because ordering a thread within the time you were
+  given and moving it into somebody else's are different questions.
+
+**What implementing them turned up**, which is the part worth keeping:
+
+`root_bootinfo_set_control_cap` had no case for a new authority kind, so it
+answered INVALID_ARG, the boot path turned that into FATAL, and the root task
+was aborted before the scheduler ran.  Its host test had never covered
+SchedControl or ASIDControl either — all three are covered now, so the next
+authority is caught at build time rather than by a silent boot.
+
+`iris_test` receives the domain authority at a different slot from every other
+task.  97 is free everywhere except the suite, where 88..97 is the fixed
+reply-object range and T113 deletes 97 on its way out — so the capability was
+delivered, survived most of the run, and was gone by the time a late test
+looked.  The suite's own documented free slot, 99, turned out to be
+`IRIS_CPTR_FB_CONTROL`, which init also mints, so the second mint silently
+replaced the first.  Both are recorded where the constant is defined.
+
+**Pinned by**: T340 (GetAddress: answers, survives a map, refused without
+READ, WRONG_TYPE on a notification), T341 (Unmap: comes out, capability
+reusable, BUSY with a live mapping under it and the mapping still works after
+the refusal, NOT_FOUND when not installed here), T342 (Rotate: the rotation,
+the swap, occupied dest refused whole, empty src/pivot NOT_FOUND, and the
+derivation tree travelling — revoke after two rotations still reaches the
+child), T343 (Domains: a thread in an unscheduled domain stops completely and
+resumes when moved back; a domain outside the set and a non-domain capability
+are both refused).
+
+**T305's LEGACY_ROOT ceiling: 25 → 26.**  DomainControl is a boot authority
+like SchedControl (A-20) and ASIDControl (A-21) — minted once, in BootInfo,
+unparented because nothing is above it to be a child of, every delegation
+downward a child.  The note at the ceiling now states what makes those three
+acceptable and why a root anywhere else is not.
+
+**What is left after this**: SMP, IOMMU and formal verification.  None of the
+three is shape IRIS got wrong.
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types, and the boundary

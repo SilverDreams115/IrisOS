@@ -64,7 +64,7 @@ instead of resolving garbage.
 
 ## The label space
 
-`kernel/include/iris/invoke.h` holds it: **62 labels**, `INV_INVALID` = 0, one
+`kernel/include/iris/invoke.h` holds it: **67 labels**, `INV_INVALID` = 0, one
 FLAT list. seL4's `enum invocation_label` is flat for a reason worth
 restating — a type-scoped label space forces the dispatcher to learn the
 capability's type before it can pick the method, which is a CSpace walk the
@@ -93,6 +93,12 @@ says what is actually wrong, and is a better answer than seL4's
 | IOPort | 46–47: In, Out |
 | Boot authority | 48–56: FramebufferInfo, InitrdCount, InitrdFrame, IOPortNarrow, CreateIOPort, CreateIRQCap, KlogDrain, SchedInfo, Poweroff |
 | Slot methods | 57–62: CapIdentify, CapSameObject, CSpaceMint, CSpaceMove, CSpaceRevoke, CSpaceSetGuard |
+| Added after the first cut | 63 Frame_GetAddress, 64 TCB_SetMCPriority, 65 PageTable_Unmap, 66 CSpace_Rotate, 67 Domain_Set |
+
+A label is APPENDED, never inserted, and the list is therefore ordered by when
+a method was added rather than by what it acts on. Grouping it would be
+prettier and would mean renumbering, and a label is ABI: a stale caller must
+get a refusal, not somebody else's method.
 
 The last group acts on the SLOT rather than on what it holds, which is why
 those labels are valid whatever the capability is.
@@ -153,6 +159,24 @@ therefore needs a budget to retype levels from, which is why
   itself (`Untyped_Info` / `Untyped_Query`)
 - hardware access is capability-gated, and the capability is the argument
 - **naming a method requires naming the object**, which is the whole of A-32
+
+## Scheduling domains
+
+seL4's top-level time partition. A fixed schedule says which domain owns the
+CPU for how long; a thread runs only while its own domain is current,
+whatever its priority. Run queues are per (domain, priority), so dispatch
+never reads another domain's threads — which is both why it is O(1) and why
+the cost of running a domain does not depend on what the others hold.
+
+The schedule is fixed at build time (`IRIS_NUM_DOMAINS`, the table in
+`scheduler.c`), because a schedule somebody can influence is a schedule that
+carries information. `Domain_Set` places a THREAD in a domain and takes the
+`DomainControl` boot capability — a separate authority from the thread's own
+capability, because ordering a thread within the time you were given and
+moving it into somebody else's are different questions.
+
+The default is one domain and one schedule entry, so a system that configures
+nothing dispatches exactly as it did before domains existed.
 
 ## Top hardening-risk families
 
