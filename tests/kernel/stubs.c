@@ -341,14 +341,6 @@ struct KNotification;
  */
 #include <iris/usercopy.h>
 #include <string.h>
-int user_range_readable(uint64_t ptr, uint32_t len) {
-    (void)len; return ptr != 0;
-}
-int copy_from_user_checked(void *dst, uint64_t src_uptr, uint32_t len) {
-    if (!dst || !src_uptr) return 0;
-    memcpy(dst, (const void *)(uintptr_t)src_uptr, len);
-    return 1;
-}
 int copy_to_user_checked(uint64_t dst, const void *src, uint32_t len) {
     if (!dst || !src) return 0;
     memcpy((void *)(uintptr_t)dst, src, len);

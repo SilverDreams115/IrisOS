@@ -132,8 +132,11 @@ void test_syscall_ipc(void) {
      * stood between the kernel and a user address it was about to dereference.
      * A message has no address: it is a MessageInfo word and message
      * registers, so there is nothing to validate and nothing for a second
-     * thread to unmap between the check and the copy.  The absence of
-     * `user_range_readable` on every send path is what replaced it. */
+     * thread to unmap between the check and the copy.  What replaced it is
+     * an absence that can be checked once instead of per path: the kernel has
+     * no user-pointer READ at all now — `user_range_readable` and
+     * `copy_from_user_checked` are deleted, and every surviving access to user
+     * memory is a write-back. */
 
     /* ── IP-3: SEND needs WRITE, RECV needs READ ─────────────────────────
      * The same endpoint OBJECT through three capabilities, so a refusal can
