@@ -5,7 +5,7 @@
 #include <iris/paging.h>
 #include <iris/syscall.h>
 #include <iris/nc/knotification.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kframe.h>
 #include <iris/nc/kvspace.h>
@@ -552,8 +552,8 @@ static void task_execution_teardown_off_cpu(struct task *t) {
     }
 
     /* Stage 7 Step 4: the thread's own CSpace reference goes with its
-     * execution.  Dropped BEFORE kprocess_free below, so a process whose last
-     * thread is exiting still has its root emptied by kprocess_teardown and
+     * execution.  Dropped BEFORE the TCB release below, so a process whose last
+     * thread is exiting still has its root emptied by thread teardown and
      * not by this release racing it. */
     if (t->cspace_root) {
         struct KCNode *cs = t->cspace_root;
@@ -561,7 +561,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         kobject_active_release(&cs->base);
         kobject_release(&cs->base);
     }
-    /* ...and its address space, after kprocess_reap_address_space above has
+    /* ...and its address space, after the address-space reap above has
      * torn the walk down.  Releasing here is dropping a reference, not
      * reaping: the object survives while any capability to it does. */
     if (t->vspace) {
@@ -574,7 +574,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
      * Stage 7 Step 12: a dead thread has no pending fault, and its handler
      * registration goes with it.
      *
-     * kprocess_teardown used to clear the process's record so a late read
+     * thread teardown used to clear the process's record so a late read
      * honestly answered WOULD_BLOCK; the record is the thread's now, so the
      * clearing is too — and the counter that made that observable
      * (kfault_cleanup) still counts exactly the records actually cleared.
@@ -601,7 +601,7 @@ static void task_execution_teardown_off_cpu(struct task *t) {
         te = t->timeout_ep; t->timeout_ep = 0;
         t->timeout_pending = 0;
         irq_spinlock_unlock(&t->obj_lock, irqfl);
-        if (had_fault) kprocess_fault_stat_cleanup();
+        if (had_fault) kfault_stat_cleanup();
         if (fe) { kobject_active_release(&fe->base); kobject_release(&fe->base); }
         if (te) { kobject_active_release(&te->base); kobject_release(&te->base); }
     }
@@ -878,7 +878,7 @@ static struct task *task_create_user_impl(uint64_t arg0) {
     /* Phase 6.2: Bootstrap Frame-backed mapping: userboot text (r--x).
      * Each page gets a KFrame (alloc_parent=NULL) mapped via kframe_map_page.
      * The alloc retain is stored in proc->bootstrap_frames[] and released by
-     * kprocess_release_bootstrap_frames inside kprocess_reap_address_space,
+     * the bootstrap-frame release inside the address-space reap,
      * after kvspace_invalidate has decremented mapped_count to 0.
      * Physical memory lifetime tracked by t->utext_phys; freed by
      * free_user_text_pages on the teardown paths that precede reap. */

@@ -53,7 +53,7 @@ uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * Lifecycle contract:
  *   - Returns 1 while the process is running or blocked (main_thread alive).
  *   - Returns 0 once the process has called SYS_EXIT or been reaped;
- *     kprocess_teardown has run and TASK_DEAD has been set.
+ *     thread teardown has run and TASK_DEAD has been set.
  *   - The handle remains valid after death until the caller closes it;
  *     this allows the caller to detect and then clean up in one pass.
  *   - Closing the handle (SYS_HANDLE_CLOSE) is the caller's responsibility
@@ -68,7 +68,7 @@ uint64_t sys_yield(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
  * Cannot be used for self-termination — use SYS_EXIT for that (IRIS_ERR_INVALID_ARG).
  * Idempotent: if the target is already dead, returns 0 immediately.
  *
- * Internally calls task_kill_external which: runs kprocess_teardown (fires exit
+ * Internally calls task_kill_external which: runs thread teardown (fires exit
  * watches, closes the process's own handle table, unregisters IRQ routes),
  * frees user stack pages, reaps the address space (safe since the caller's CR3
  * is different from the target's), and releases the kernel's creation reference.

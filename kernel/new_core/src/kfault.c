@@ -4,11 +4,20 @@
  *
  * This file was kprocess.c.  `struct KProcess` was deleted in Stage 7-proc and
  * the name stayed for four stages, pointing readers at an object that does not
- * exist.  The `kprocess_` prefix on the counter accessors is kept on purpose:
- * it is the name `sys_sched_info` reports them under, and renaming a wire
- * label to tidy a file is the trade the other way round.
+ * exist.
+ *
+ * The header went the same way: `nc/kprocess.h` declared this fault API and
+ * these gauges, was included by a dozen kernel files, and named an object none
+ * of them could reach.  It said so itself — "the file keeps its name until the
+ * symbols are renamed" — which is the debt this closes.
+ *
+ * The `kprocess_` prefix on the accessors was kept on the grounds that it was
+ * "the name `sys_sched_info` reports them under".  It was not: the extended
+ * sched-info layout is a byte-offset record, so what ring 3 reads is a
+ * position, not an identifier.  There was no wire label to protect and the
+ * prefix was only a name, so it is `kfault_` now.
  */
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kframe.h>
 #include <iris/nc/kcnode.h>
@@ -35,9 +44,9 @@
 static _Atomic uint32_t kquota_failed_charges;
 static _Atomic uint32_t kquota_rollbacks;
 
-uint32_t kprocess_quota_failed_count(void)  { return atomic_load_explicit(&kquota_failed_charges, memory_order_relaxed); }
-uint32_t kprocess_quota_rollback_count(void){ return atomic_load_explicit(&kquota_rollbacks,      memory_order_relaxed); }
-void     kprocess_quota_stat_rollback(void) { atomic_fetch_add_explicit(&kquota_rollbacks, 1u, memory_order_relaxed); }
+uint32_t kfault_quota_failed_count(void)  { return atomic_load_explicit(&kquota_failed_charges, memory_order_relaxed); }
+uint32_t kfault_quota_rollback_count(void){ return atomic_load_explicit(&kquota_rollbacks,      memory_order_relaxed); }
+void     kfault_quota_stat_rollback(void) { atomic_fetch_add_explicit(&kquota_rollbacks, 1u, memory_order_relaxed); }
 
 /* Phase 20 — fault-model instrumentation (additive, exposed via SYS_SCHED_INFO
  * ext5 tier).  Silent; makes fault delivery/resolution observable to the
@@ -53,22 +62,22 @@ static _Atomic uint32_t kfault_resume;
 static _Atomic uint32_t kfault_kill;
 static _Atomic uint32_t kfault_cleanup;
 
-uint32_t kprocess_fault_delivery_count(void)  { return atomic_load_explicit(&kfault_delivery,  memory_order_relaxed); }
-uint32_t kprocess_fault_nohandler_count(void) { return atomic_load_explicit(&kfault_nohandler, memory_order_relaxed); }
-uint32_t kprocess_fault_resume_count(void)    { return atomic_load_explicit(&kfault_resume,    memory_order_relaxed); }
-uint32_t kprocess_fault_kill_count(void)      { return atomic_load_explicit(&kfault_kill,      memory_order_relaxed); }
-uint32_t kprocess_fault_cleanup_count(void)   { return atomic_load_explicit(&kfault_cleanup,   memory_order_relaxed); }
+uint32_t kfault_delivery_count(void)  { return atomic_load_explicit(&kfault_delivery,  memory_order_relaxed); }
+uint32_t kfault_nohandler_count(void) { return atomic_load_explicit(&kfault_nohandler, memory_order_relaxed); }
+uint32_t kfault_resume_count(void)    { return atomic_load_explicit(&kfault_resume,    memory_order_relaxed); }
+uint32_t kfault_kill_count(void)      { return atomic_load_explicit(&kfault_kill,      memory_order_relaxed); }
+uint32_t kfault_cleanup_count(void)   { return atomic_load_explicit(&kfault_cleanup,   memory_order_relaxed); }
 /* Stage 7 Step 12: the record is the thread's, so thread teardown is what
  * clears it — and this counts the same thing it always did, records actually
  * cleared, from the one place that now does the clearing. */
-void kprocess_fault_stat_cleanup(void) {
+void kfault_stat_cleanup(void) {
     atomic_fetch_add_explicit(&kfault_cleanup, 1u, memory_order_relaxed);
 }
 
-void kprocess_fault_stat_nohandler(void) { atomic_fetch_add_explicit(&kfault_nohandler, 1u, memory_order_relaxed); }
+void kfault_stat_nohandler(void) { atomic_fetch_add_explicit(&kfault_nohandler, 1u, memory_order_relaxed); }
 
 /*
- * kprocess_fault_clear — drop the pending-fault record for process p if it
+ * kfault_resolve — drop the pending-fault record for process p if it
  * belongs to task_id.  Phase 20: SYS_EXCEPTION_RESUME calls this so a resolved
  * fault stops being reported by SYS_PROCESS_FAULT_INFO (which must return
  * WOULD_BLOCK when nothing is pending).  `killed` selects the resume/kill
@@ -115,7 +124,7 @@ void kfault_resolve(struct task *ft, int killed) {
 
 
 /*
- * kprocess_watch_exit — REMOVED (Stage 7 Step 10) with SYS_PROCESS_WATCH.
+ * TCB_Watch — REMOVED (Stage 7 Step 10) with SYS_PROCESS_WATCH.
  * A death is watched on the THREAD that dies (SYS_TCB_WATCH), by whoever holds
  * its TCB.  The emit/clear pair below stays only as long as the watch ARRAY
  * does, and both go with KProcess.
@@ -232,7 +241,7 @@ static int kfault_deliver(struct task *t, uint64_t vector,
     return 1;
 }
 
-int kprocess_notify_fault(struct task *t, uint64_t vector,
+int kfault_notify(struct task *t, uint64_t vector,
                           uint64_t error_code, uint64_t rip, uint64_t cr2) {
     return kfault_deliver(t, vector, error_code, rip, cr2, /*timeout=*/0);
 }
@@ -258,7 +267,7 @@ int ktimeout_notify_fault(struct task *t) {
 /* Ordering: emit_exit_watch (Track B: a KNotification signal) fires before
  * handle_table_close_all so the exit_code is already set when watchers wake.
  * teardown_complete provides idempotency; this function is called from both
- * task_exit_current (normal exit) and kprocess_destroy (fallback path). */
+ * task_exit_current (normal exit) and the object destructor (fallback path). */
 
 
 

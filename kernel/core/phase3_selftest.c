@@ -7,7 +7,7 @@
 #include <iris/nc/knotification.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kbootcap.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/paging.h>
 #include <stdatomic.h>

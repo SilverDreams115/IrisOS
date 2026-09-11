@@ -15,7 +15,7 @@
 #include <iris/irq_routing.h>
 #include <iris/nc/kbootcap.h>
 #include <iris/root_bootinfo.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kuntyped.h>
@@ -278,7 +278,7 @@ void iris_kernel_main(struct iris_boot_info *boot_info) {
              * seL4_CapInitThreadCNode and seL4_CapInitThreadTCB in its CSpace.
              *
              * The root CNode capability lives INSIDE the CNode it names.  That
-             * makes the CSpace reachable from itself, which kprocess_teardown
+             * makes the CSpace reachable from itself, which thread teardown
              * handles by emptying the root's slots before dropping its refs
              * (kcnode_teardown_slots) — a cycle cannot be collected by a
              * refcount the cycle is holding up.

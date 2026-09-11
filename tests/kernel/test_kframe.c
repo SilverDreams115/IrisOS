@@ -108,7 +108,7 @@
 #include <iris/nc/kframe.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kbootcap.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
 #include <iris/paging.h>

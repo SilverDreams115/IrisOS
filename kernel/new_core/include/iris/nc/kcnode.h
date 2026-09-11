@@ -87,7 +87,7 @@ struct KCSlot {
  * `is_root` REMOVED (Stage 7-proc cleanup).
  *
  * It marked a CNode as some process's root CSpace and made the claim
- * exclusive, because teardown was per-process: `kprocess_teardown` emptied a
+ * exclusive, because teardown was per-process: `thread teardown` emptied a
  * root's slots before dropping its refs, so two processes sharing one root
  * CNode would have had the first one's death empty the second's CSpace.
  *

@@ -7,7 +7,7 @@
  * Phase 3.4: Bootstrap CSpace slot layout.
  *
  * These CPtr values are reserved in the root CNode of the initial task.
- * The root CNode is created by kprocess_alloc with KCNODE_DEFAULT_SLOTS=256
+ * The root CNode is created by the root task's construction with KCNODE_DEFAULT_SLOTS=256
  * slots (indices 0..255).
  *
  *   Slot 0                       — CPTR_NULL; never populated (kernel invariant).

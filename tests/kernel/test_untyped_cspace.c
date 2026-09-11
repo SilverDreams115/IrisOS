@@ -18,7 +18,7 @@
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kendpoint.h>
 #include <iris/nc/kuntyped.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
 #include <iris/kpage.h>

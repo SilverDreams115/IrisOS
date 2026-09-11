@@ -734,8 +734,8 @@ uint64_t sys_untyped_query(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
             q.kslab_used_bytes      = kslab_used_bytes();
             q.kslab_total_bytes     = kslab_total_bytes();
             q.kslab_failed_allocs   = kslab_fail_count();
-            q.global_failed_charges = kprocess_quota_failed_count();
-            q.global_rollbacks      = kprocess_quota_rollback_count();
+            q.global_failed_charges = kfault_quota_failed_count();
+            q.global_rollbacks      = kfault_quota_rollback_count();
             q.syscall_restarts      = syscall_restart_count();
             q.syscall_abandons      = syscall_abandon_count();
             q.irq_ctx_saves         = (uint32_t)irq_user_ctx_saves();

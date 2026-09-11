@@ -3,7 +3,7 @@
 #include <iris/tss.h>
 #include <iris/paging.h>
 #include <iris/syscall.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <iris/nc/kschedctx.h>
 #include <iris/nc/kvspace.h>
 #include <stdatomic.h>

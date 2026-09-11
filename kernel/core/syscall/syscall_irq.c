@@ -13,7 +13,7 @@
  * kernel encoded into the capability at boot.
  *
  * The route is owned by the KProcess behind proc_handle: when that process
- * exits, kprocess_teardown → irq_routing_unregister_owner clears the route
+ * exits, thread teardown → irq_routing_unregister_owner clears the route
  * automatically.
  *
  * The irqcap_handle is not consumed — svcmgr may reuse it across service

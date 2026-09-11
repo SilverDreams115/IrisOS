@@ -230,7 +230,7 @@
                                         *   SYS_IRQ_ROUTE_REGISTER(irqcap_h, chan_h, proc_h)
                                         *   after spawn to transfer route ownership
                                         *   from svcmgr to the child process, so that
-                                        *   kprocess_teardown auto-clears the route
+                                        *   thread teardown auto-clears the route
                                         *   when the service exits.
                                         *   irqcap_h is received at bootstrap time via
                                         *   SVCMGR_BOOTSTRAP_KIND_IRQ_CAP.         */

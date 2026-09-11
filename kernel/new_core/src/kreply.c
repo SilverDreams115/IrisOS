@@ -3,7 +3,7 @@
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kschedctx.h>
 #include <iris/task.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <stdatomic.h>
 #include <stdint.h>
 

@@ -594,7 +594,7 @@ static inline long iris_syscall0(long nr) {
                                    *   chan_handle: KOBJ_CHANNEL with RIGHT_READ|RIGHT_WRITE.
                                    *     IRQ signals are delivered here.
                                    *   proc_handle: KOBJ_PROCESS with RIGHT_READ|RIGHT_ROUTE.
-                                   *     Owns the route; kprocess_teardown auto-clears it. */
+                                   *     Owns the route; thread teardown auto-clears it. */
 
 /* Numbers 24, 25 permanently reserved; dispatch returns IRIS_ERR_NOT_SUPPORTED.
  * Service discovery uses svcmgr IPC over its KEndpoint (endpoint_proto.h). */

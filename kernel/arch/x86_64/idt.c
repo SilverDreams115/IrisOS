@@ -6,7 +6,7 @@
 #include <iris/task.h>
 #include <iris/irq_routing.h>
 #include <iris/lapic.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <stdint.h>
 
 #define IDT_ENTRIES        256
@@ -286,7 +286,7 @@ void isr_handler(struct full_frame *frame) {
             struct task *ct = task_current();
             if (ct) {
                 uint64_t cr2 = (frame->vector == 14) ? read_cr2() : 0;
-                int notified = kprocess_notify_fault(ct, frame->vector,
+                int notified = kfault_notify(ct, frame->vector,
                                                      frame->error_code,
                                                      frame->rip, cr2);
                 if (notified) {
@@ -306,7 +306,7 @@ void isr_handler(struct full_frame *frame) {
                 }
             }
             /* No exception handler registered — log and terminate the task. */
-            kprocess_fault_stat_nohandler();
+            kfault_stat_nohandler();
             panic_write("[IRIS][FAULT] userland exception: ");
             panic_write(exception_names[frame->vector]);
             panic_write(" task=");

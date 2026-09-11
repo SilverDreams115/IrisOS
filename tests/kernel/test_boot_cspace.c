@@ -30,7 +30,7 @@
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kbootcap.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
 #include <iris/boot_info.h>
@@ -64,7 +64,7 @@ static struct KCNode *bc_setup_root(struct cs_fixture *p) {
     struct KCNode *root = kcnode_alloc(KCNODE_DEFAULT_SLOTS);
     if (!root) return NULL;
     /* kcnode_alloc's ref becomes the lifecycle ref; add the active ref the
-     * handle used to contribute (mirrors kprocess_alloc). */
+     * handle used to contribute (mirrors the root task's construction). */
     kobject_active_retain(&root->base);
     p->cspace_root = root;
     return root;
@@ -373,7 +373,7 @@ void test_boot_cspace(void) {
             ASSERT_EQ(kcnode_mint(cn, 1u, &cn->base, RIGHT_READ), IRIS_OK);
             ASSERT_EQ(kcnode_live_count(), before + 1u);
 
-            /* Exactly what kprocess_teardown does, in that order. */
+            /* Exactly what thread teardown does, in that order. */
             kcnode_teardown_slots(cn);
             kobject_active_release(&cn->base);
             kobject_release(&cn->base);

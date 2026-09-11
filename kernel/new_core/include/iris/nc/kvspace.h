@@ -125,7 +125,7 @@ struct KVSpace {
      * They are the KFrames the kernel mapped into this address space before
      * anything existed that could ask for them — the root task's text and
      * stack.  They were registered on the process and released by
-     * kprocess_reap_address_space, which is to say a THIRD object held
+     * the address-space reap, which is to say a THIRD object held
      * references to frames mapped in THIS one.  They belong to the address
      * space they are mapped in, and go when it does.
      */
@@ -222,7 +222,7 @@ iris_error_t kvspace_bind(struct KVSpace *vs);
  * not an unbind of a process that actually ran. */
 void kvspace_unbind(struct KVSpace *vs);
 
-/* Mark the VSpace invalid and zero cr3.  Called by kprocess_reap_address_space
+/* Mark the VSpace invalid and zero cr3.  Called by the address-space reap
  * before paging_destroy_user_space so no capability holder can read a freed cr3. */
 void kvspace_invalidate(struct KVSpace *vs);
 /* Stage 7-proc: a frame the kernel mapped into this address space before its

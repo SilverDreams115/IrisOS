@@ -1,5 +1,5 @@
 #include <iris/nc/kendpoint.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <iris/nc/kobject.h>
 #include <iris/nc/kcnode.h>
 #include <iris/nc/kuntyped.h>

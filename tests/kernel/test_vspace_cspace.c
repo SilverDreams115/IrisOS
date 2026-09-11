@@ -23,7 +23,7 @@
 #include <iris/nc/kvspace.h>
 #include <iris/nc/kuntyped.h>
 #include <iris/nc/kbootcap.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <iris/nc/rights.h>
 #include <iris/nc/cspace.h>
 #include <iris/boot_info.h>
@@ -398,7 +398,7 @@ void test_vspace_cspace(void) {
         kobject_release(root_obj);
         /* State: refcount=2, active_refs=1 */
 
-        /* Simulate kprocess_reap_address_space: invalidate then release process
+        /* Simulate the address-space reap: invalidate then release process
          * ref.  Stage 7 Step 11: invalidation makes the address space unusable
          * and nothing more — cr3 stays for the destructor, which is what tears
          * the walk down once the LAST capability goes, not the process. */

@@ -5,7 +5,7 @@
 #include <iris/paging.h>
 #include <iris/kslab.h>
 #include <iris/nc/kuntyped.h>
-#include <iris/nc/kprocess.h>   /* KPROCESS_BOOTSTRAP_FRAME_MAX — boot arena bound */
+#include <iris/nc/kfault.h>
 #include <stdatomic.h>
 
 /* Phase 19 — live KVSpace object count (additive diagnostics, SYS_SCHED_INFO
@@ -107,7 +107,7 @@ uint32_t kvspace_live_count(void) {
  *
  * `close` fires at exactly that moment — the last CSpace slot holding this
  * VSpace was emptied — so this is where `valid` drops and the mappings are
- * swept.  It used to be kprocess_reap_address_space, called from the last
+ * swept.  It used to be the address-space reap, called from the last
  * thread's exit through a per-process thread count, which made an address
  * space's usability a property of a THIRD object's bookkeeping.
  *
@@ -168,7 +168,7 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
      * other retyped object, and the holder can then RESET.
      *
      * Detach first when there is still a walk to detach from.  Teardown
-     * through kprocess_reap_address_space has already done it (and zeroed
+     * through the address-space reap has already done it (and zeroed
      * cr3); a VSpace destroyed by its LAST CAPABILITY going away, with no
      * process behind it, reaches here with a live cr3 and levels still hanging
      * off it, and must not hand those pages back with the PML4 still pointing
@@ -190,7 +190,7 @@ static void kvspace_settle(struct KVSpace *vs, struct KUntyped *pool) {
     /*
      * Stage 7 Step 11: the WALK comes down here, with the object.
      *
-     * It used to come down in kprocess_reap_address_space, which is to say
+     * It used to come down in the address-space reap, which is to say
      * when the PROCESS died — so a walk's lifetime was a property of an object
      * that is not the walk, and an address space outliving its process (a
      * holder kept a capability) kept a live walk nobody could reach.  Now it

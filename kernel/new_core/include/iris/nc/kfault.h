@@ -1,5 +1,5 @@
-#ifndef IRIS_NC_KPROCESS_H
-#define IRIS_NC_KPROCESS_H
+#ifndef IRIS_NC_KFAULT_H
+#define IRIS_NC_KFAULT_H
 
 #include <iris/nc/kobject.h>
 #include <iris/nc/error.h>
@@ -68,7 +68,6 @@ struct KFrame;
  * symbols are renamed; nothing here allocates, owns or names a process.
  */
 
-#define KPROCESS_POOL_SIZE 0u  /* no static pool — kpage-backed; 0 = unbounded allocator ceiling */
 
 
 /*
@@ -89,10 +88,10 @@ struct KFrame;
 /* Phase S1: kprocess_quota_{acquire,release}_notification retired (Untyped is
  * the budget for notifications).  VMO/page quotas remain for legacy objects. */
 /* Phase 29 — global resource-accounting gauges (SYS_RESOURCE_INFO). */
-uint32_t         kprocess_quota_failed_count(void);
-uint32_t         kprocess_quota_rollback_count(void);
-void             kprocess_quota_stat_rollback(void);
-int              kprocess_notify_fault(struct task *t, uint64_t vector,
+uint32_t         kfault_quota_failed_count(void);
+uint32_t         kfault_quota_rollback_count(void);
+void             kfault_quota_stat_rollback(void);
+int              kfault_notify(struct task *t, uint64_t vector,
                                        uint64_t error_code, uint64_t rip, uint64_t cr2);
 /* Stage 8-mcs: deliver a TIMEOUT fault to the thread's timeout handler.
  * Returns 0 when none is armed — the caller then falls back to blocking the
@@ -104,13 +103,13 @@ int              ktimeout_notify_fault(struct task *t);
  * already resolved it, and an id comparison here was a second place the
  * kernel selected a thread by number. */
 void             kfault_resolve(struct task *ft, int killed);
-void             kprocess_fault_stat_nohandler(void);
-uint32_t         kprocess_fault_delivery_count(void);
-uint32_t         kprocess_fault_nohandler_count(void);
-uint32_t         kprocess_fault_resume_count(void);
-uint32_t         kprocess_fault_kill_count(void);
-uint32_t         kprocess_fault_cleanup_count(void);
-void             kprocess_fault_stat_cleanup(void);
+void             kfault_stat_nohandler(void);
+uint32_t         kfault_delivery_count(void);
+uint32_t         kfault_nohandler_count(void);
+uint32_t         kfault_resume_count(void);
+uint32_t         kfault_kill_count(void);
+uint32_t         kfault_cleanup_count(void);
+void             kfault_stat_cleanup(void);
 /* Phase 6.2: Bootstrap frame tracking.
  * kprocess_register_bootstrap_frame stores one alloc retain in bootstrap_frames[].
  * kprocess_release_bootstrap_frames drops all alloc retains; must be called after

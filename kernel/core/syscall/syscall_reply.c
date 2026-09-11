@@ -32,7 +32,7 @@
 #include <iris/nc/kreply.h>
 #include <iris/nc/kendpoint.h>
 #include <iris/ipc_msg.h>
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 
 static inline void copy_irismsg_r(struct ipc_stage *dst, const struct ipc_stage *src) {
     uint8_t       *d = (uint8_t *)dst;

@@ -85,7 +85,7 @@ uint32_t syscall_restart_count(void);
 uint32_t test_restart_count(void) { return syscall_restart_count(); }
 
 /* ── kprocess quota stubs (needed when compiling kchannel.c) ─────────────── */
-#include <iris/nc/kprocess.h>
+#include <iris/nc/kfault.h>
 #include <iris/nc/kframe.h>
 #include <iris/nc/kobject.h>
 

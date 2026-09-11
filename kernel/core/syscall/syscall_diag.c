@@ -219,11 +219,11 @@ uint64_t sys_sched_info(uint64_t arg0, uint64_t arg1, uint64_t arg2) {
 
     if (want >= SCHED_INFO_EXT5_BYTES) {
         /* Phase 20 fault-model words (offsets 160..176). */
-        uint32_t g0 = kprocess_fault_delivery_count();
-        uint32_t g1 = kprocess_fault_nohandler_count();
-        uint32_t g2 = kprocess_fault_resume_count();
-        uint32_t g3 = kprocess_fault_kill_count();
-        uint32_t g4 = kprocess_fault_cleanup_count();
+        uint32_t g0 = kfault_delivery_count();
+        uint32_t g1 = kfault_nohandler_count();
+        uint32_t g2 = kfault_resume_count();
+        uint32_t g3 = kfault_kill_count();
+        uint32_t g4 = kfault_cleanup_count();
         buf[20] = (uint64_t)g0 | ((uint64_t)g1 << 32);
         buf[21] = (uint64_t)g2 | ((uint64_t)g3 << 32);
         buf[22] = (uint64_t)g4;   /* high half = _pad3 (0) */
