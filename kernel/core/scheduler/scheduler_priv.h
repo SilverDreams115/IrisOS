@@ -3,7 +3,7 @@
 
 /*
  * scheduler_priv.h — internal declarations shared across the three scheduler
- * translation units: kstack.c, task_lifecycle.c, scheduler_core.c (scheduler.c).
+ * translation units: task_lifecycle.c and scheduler_core.c (scheduler.c).
  *
  * Nothing in this header is part of the public kernel API.  Include
  * <iris/task.h> or <iris/scheduler.h> from external callers instead.
@@ -110,15 +110,11 @@ extern void context_switch(struct cpu_context *old,
                             uint8_t  *old_fpu,
                             uint8_t  *new_fpu);
 
-/* ── kstack.c ────────────────────────────────────────────────────────────── */
-
-void kstack_panic(const char *msg);
-/* Stage 5 Step 4: the kstack slot is RECORDED in the task (t->kstack_slot),
- * not derived from where its storage lives — a retyped TCB's storage is inside
- * an Untyped and has no pool index.  Every executing task holds a registry
- * slot, so the registry index is what keys the region. */
-int  kstack_alloc(struct task *t, int slot);
-void kstack_free (struct task *t);
+/* kstack.c is GONE (ledger D-1, step 3).  A thread owned two pages of kernel
+ * stack plus a guard page and every kernel entry landed on them; entries land
+ * on the CORE's stack now, so there was a file, an allocator, a free, a fatal
+ * reporter and a reserved virtual region left over with nothing calling any of
+ * them. */
 
 /* ── task_lifecycle.c (cross-file helpers) ───────────────────────────────── */
 

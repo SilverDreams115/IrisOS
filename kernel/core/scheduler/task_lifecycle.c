@@ -376,7 +376,7 @@ void task_reset_slot(struct task *t) {
     t->state    = TASK_DEAD;
     t->ring     = TASK_RING0;
     t->reg_slot = -1;
-    t->kstack_slot = -1;
+
     t->saved_krsp = 0;
 }
 

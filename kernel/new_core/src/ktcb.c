@@ -94,7 +94,7 @@ struct task *ktcb_alloc_at(void *mem) {
     t->reg_slot   = -1;                     /* no scheduler identity */
     t->configured = 0;                      /* execution gate: stays closed */
     t->started    = 0;                      /* never runnable yet */
-    t->kstack_slot = -1;                    /* owns no kernel-stack slot */
+
     ktcb_live_inc();
     return t;
 }

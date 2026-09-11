@@ -81,27 +81,14 @@
 #define IDENTITY_MAP_END    (64ULL * 1024 * 1024)  /* 64 MB */
 #define PHYS_WINDOW_END     (4ULL * 1024 * 1024 * 1024) /* 4 GB */
 
-/* ── Kernel stack virtual region ───────────────────────────────────
+/* The KERNEL STACK VIRTUAL REGION is gone (ledger D-1, step 3).
  *
- * Each task gets a slot of KSTACK_SLOT_SIZE bytes:
- *   [slot_base + 0               ..  slot_base + PAGE_SIZE)      guard page — NOT mapped
- *   [slot_base + PAGE_SIZE       ..  slot_base + PAGE_SIZE*2)    kstack page 0
- *   [slot_base + PAGE_SIZE*2     ..  slot_base + PAGE_SIZE*3)    kstack page 1
- *
- * A stack overflow that writes past kstack[0] immediately hits the
- * unmapped guard page, producing a #PF instead of silent corruption.
- *
- * Region starts at PHYS_WINDOW_END (= PHYS_TO_VIRT(4 GB)), which is
- * right above the physmap window and well below KERNEL_VIRT_BASE.
- * Both are within PML4 entry 256, sharing the kernel PDPT, so
- * mappings added here propagate to every process address space.
- *
- * The window is sized for 256 slots; per-thread kernel stacks are gone
- * (ledger D-1) and threads have no ceiling (A-19), so it is a reservation, not
- * a limit on anything.
+ * It reserved three pages per task above the physmap window — a guard page and
+ * two stack pages — so that a kernel stack overflow hit an unmapped page
+ * instead of corrupting something.  There is one kernel stack per CORE now and
+ * it lives in .bss, so the region described nothing: the last thread stopped
+ * owning a slot in it several stages before the macros were removed.
  * ─────────────────────────────────────────────────────────────────── */
-#define KSTACK_VIRT_BASE  (KERNEL_PHYS_WINDOW_BASE + PHYS_WINDOW_END)  /* 0xFFFF800100000000 */
-#define KSTACK_SLOT_SIZE  (3ULL * 4096ULL)   /* guard + 2 stack pages = 12 288 bytes */
 
 /* Set to 1 by paging_init() when SMAP is active in CR4.
  * Checked by usercopy.c to emit STAC/CLAC around user memory accesses. */

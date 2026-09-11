@@ -632,12 +632,10 @@ struct task {
     int32_t        reg_slot;     /* 1 while on the scheduler list, else -1 */
     struct task   *sched_prev;   /* intrusive links for that list */
     struct task   *sched_next;
-    /* Stage 5 Step 4: which kernel-stack slot of the KSTACK_VIRT_BASE region
-     * this thread owns, or -1.  It used to be implied — the backing-array
-     * index of the pool slot the task was carved from — which only exists for
-     * a task that lives IN the pool.  A TCB retyped from an Untyped has no
-     * such index, so ownership is recorded instead of derived. */
-    int32_t        kstack_slot;
+    /* `kstack_slot` is GONE with the per-thread kernel stack (D-1, step 3).
+     * It recorded which slot of the KSTACK_VIRT_BASE region a thread owned;
+     * after the region went, two sites still set it to -1 and nothing ever
+     * read it. */
 
     /* SMP: CPU this task is homed to (its run queue owner).
      * Set at creation time; stays constant for the task's lifetime. */
