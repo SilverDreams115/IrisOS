@@ -145,11 +145,14 @@ static void kfault_wr64(uint8_t *p, uint64_t v) {
  * Deliver a fault to one of the thread's two handler registrations.
  *
  * `timeout` selects WHICH registration is told, and nothing else differs: a
- * timeout fault and an exception fault are the same delivery — record the
- * fault on the thread, publish the thread's capability into the mailbox the
- * registrant named, parent it to the slot the registration was made with,
- * then signal.  Two field groups, one delivery path, for the same reason
- * there is one registration path: a second copy is a second thing to drift.
+ * timeout fault and an exception fault are the same delivery — compose the
+ * record as a MESSAGE and Call the endpoint the registrant named, with the
+ * badge on the capability it armed the thread through saying whose fault it
+ * is.  Two field groups, one delivery path, for the same reason there is one
+ * registration path: a second copy is a second thing to drift.
+ *
+ * "Publish the thread's capability into a mailbox" is what this used to do,
+ * and A-22 is why it no longer does: see the note on the record below.
  *
  * The two cannot collide on the shared record.  A thread that has taken an
  * exception is TASK_BLOCKED_FAULT and is not running, so it cannot also be

@@ -11,7 +11,7 @@ void     scheduler_tick(void);
  *
  * sched_live_task_count: number of scheduler task slots in any non-DEAD state.
  *   Includes the idle task.  Useful as a coarse live-process indicator.
- *   Cost: O(TASK_MAX) scan.
+ *   Cost: O(live threads) walk of the intrusive scheduler list (A-19).
  *
  * sched_current_ticks: current scheduler tick counter value.
  *   Incremented at TASK_DEFAULT_SLICE Hz; wraps at UINT64_MAX (>5000 years at 100Hz).

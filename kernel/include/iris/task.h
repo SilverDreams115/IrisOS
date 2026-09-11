@@ -29,15 +29,15 @@ struct KFrame;
  * root task is: the idle thread and the root task are built by boot code, out
  * of memory no Untyped exists for yet.  Every other thread is retyped.
  *
- * The number survives only as a diagnostic field (`tasks_max`), where it now
- * reports 0 — no ceiling — rather than a limit that no longer exists.
+ * `TASK_MAX` and `TASK_STACK_SIZE` are gone with it.  They were kept for two
+ * consumers that have since gone themselves: the kernel-stack window in
+ * paging.h, which D-1 step 3 deleted along with per-thread kernel stacks, and
+ * a `tasks_max` diagnostic field that reported the ceiling as 0.  A number
+ * kept for readers that no longer read it is a ceiling waiting to be
+ * reintroduced by someone who finds it and assumes it means something.
  */
 #define TASK_BOOTSTRAP_MAX      2
 
-/* Retired as a ceiling; kept for the kstack-window comment in paging.h and the
- * diagnostic field, both of which say so. */
-#define TASK_MAX              256
-#define TASK_STACK_SIZE       8192  /* kernel stack per task */
 #define TASK_DEFAULT_SLICE    2     /* ticks per quantum at 100 Hz = 20ms */
 #define TASK_PRIORITY_DEFAULT 128u  /* default scheduling priority */
 #define TASK_PRIORITY_MAX     255u  /* highest scheduling priority */
