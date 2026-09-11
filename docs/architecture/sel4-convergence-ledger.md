@@ -2056,6 +2056,117 @@ already bought.  **Not scheduled, and that is a decision rather than an
 oversight.**
 
 
+## A-33 — a message is registers
+
+**Before**: `struct IrisMsg` was the message ABI.  Eighty bytes in user memory,
+named by a pointer; the kernel validated the range and copied the struct in,
+and on a receive copied it back out.  A-32 recorded it as a permanent
+divergence with the numbers attached — 339 ring-3 sites, 130 kernel references,
+"the same size as the whole invocation conversion, and it buys nothing this
+charter measures beyond what D-4 already bought."
+
+**After**: a message is a MessageInfo word and message registers, and anything
+longer lives in the page the sending thread registered.  `struct IrisMsg` does
+not exist; what survives is `struct ipc_stage`, the place a message waits
+INSIDE the kernel between a sender being queued and a receiver taking it, which
+is what it always really was.
+
+**What the row got wrong, which is the same thing A-32's row got wrong.**  It
+priced the work correctly and the gain not at all.  Three things change, and
+none of them is tidiness:
+
+1. *There is no address on the message path.*  Nothing to validate, nothing for
+   a second thread to unmap between the check and the copy.  `user_range_readable`
+   is gone from every send path in the kernel, and the host suite's IP-2 —
+   "the message pointer is required" — is retired because its subject is gone.
+2. *A short message never touches memory* at either end.  Two words used to
+   cost an eighty-byte copy each way.
+3. *The shape of a message is a register map, not a struct layout.*  `kbd` is a
+   driver written in assembly and it used to know field offsets; it reads a
+   message the same way C does now, which is why `iris/ipc_msg.h` is shared by
+   the kernel, the C services and the assembler.
+
+**`buf_uptr` is deleted rather than carried.**  D-4 had already made it
+vestigial: with a registered buffer it could only hold one value and the kernel
+refused every other, which is what turned a boot's worth of silently corrupted
+console output into an error at the call site that caused it.  A-33 removes the
+question.  A message carries a LENGTH; the bytes are in the page the thread
+registered, because there is nowhere else they could be.
+
+**The register map**, and why it is shaped this way.  The entry carries nine
+user words and the exit hands seven back.  `r15`, `r14` and `r13` cost nothing
+to take: the event kernel has pushed them on every entry since it started
+saving the full user context (abandoning a frame throws away the spills a C-ABI
+kernel would rely on), so carrying them as arguments is the same three stores
+with a different name.  seL4 uses `r15` as a message register on x86-64 for
+exactly this reason.  A receive returns in the SAME registers the message
+registers went out in, which is seL4's arrangement and is what makes a server's
+reply loop free of shuffling.
+
+**Two things the conversion had to DECIDE rather than translate.**
+
+*A receiver must be able to tell whether a capability arrived.*  seL4 answers
+with `extraCaps`, a count.  IRIS answers with the RIGHTS the capability landed
+with, and zero is unambiguous because a capability with no rights cannot be
+transferred at all — the staging refuses `RIGHT_NONE`.  That is more than seL4
+reports, and the reason is worth stating: a receiver that has to ask a second
+time about a capability it was just handed is a receiver that can be told a
+different answer in between.
+
+*A receive of a Call is handed TWO capabilities* — the caller's gift and the
+reply object it is now owed.  They used to share `attached_handle`, told apart
+by which half of the conversation was looking at it.  The gift lands in the
+slot the receiver DECLARED, which it knows without being told; `got_cap` is the
+reply object.  One field per question.
+
+**Six defects, each of which passed a build.**  They are listed because the
+shape of them is the lesson, not because the list is interesting:
+
+- *A register variable must not live across a function call.*  `iris_mi` and
+  `iris_capw` were not inlined, so the syscall left carrying whatever those
+  calls had spilled into r10, r8 and r9.  Every wrapper computes into ordinary
+  locals now and assigns the register variables last.
+- *`sys_ep_recv` still validated `arg1` as a user pointer* after `arg1` became
+  the receive slot.  Every receive answered INVALID_ARG and no server ever
+  received anything.
+- *`ipc_msg_store_call` was inverted.*  It gave a Call's completion the
+  capability from `attached_cap`, which is where a SERVER finds a caller's
+  gift; a CLIENT finds what the reply transferred in `attached_handle`.  It
+  returned NO_CAP for every lookup in the system — and a lookup that gets no
+  capability RETRIES, so the symptom was a receive slot that was already full
+  rather than a capability that was missing.
+- *`ReplyRecv` took its receive slot from the wrong word.*  It is a send
+  followed by a receive, so its words are laid out like a send's — and a plain
+  receive's slot occupies the same argument index as a send's MessageInfo.
+- *A failed receive was unpacked anyway.*  The kernel writes no return words on
+  an error path, so the wrapper handed back the arguments it had sent: a
+  refused receive came back carrying its own MessageInfo and looking like a
+  delivered capability.
+- *`kbd`'s object had no header dependency in the Makefile.*  A MessageInfo
+  layout change left a stale assembly driver in the build, and six tests with
+  nothing to do with kbd failed — reply-object accounting, because a driver
+  replying with a malformed MessageInfo leaks reply objects system-wide.
+
+And two in the assembly written for this row: the exit dropped the alignment
+pad before reading the frame, so `sysretq` took RFLAGS for RIP; and the abandon
+path used `r9` as its CR3 scratch, which A-33 had just made the pointer to the
+return message — it overwrote it with a page-table root and dereferenced that.
+
+**What a payload now requires, said plainly.**  Both ends must own a registered
+IPC buffer, because a payload lives in the sender's and is copied to the
+receiver's.  Two threads of one process each need their own; T022 found this
+the hard way, its server having written into the page the MAIN thread
+registered.  The old ABI told a receiver where its buffer was, in `buf_uptr`.
+A thread that registered one already knows.
+
+**T338 pins it**, and each claim fails under its own mutation of the kernel:
+the MessageInfo round-trips and its fields do not bleed into each other at
+their limits; a hostile address in a message word is a WORD and is not refused,
+because nothing dereferences it; a delivered capability's rights come back, and
+zero comes back when nothing was delivered; and a failed receive delivers no
+message at all.
+
+
 ## Non-regression guard
 
 - T251 pins the closed manifest of RETYPE2-creatable types, and the boundary
@@ -2080,6 +2191,10 @@ oversight.**
 - T334 pins that IPC capability transfer is a COPY (A-29): the sender keeps
   what it sent, the receiver's capability is a revocable derivation child of
   the sender's slot, and deleting that slot is not revoking it.
+- T338 pins the message ABI (A-33): the MessageInfo round-trips and its fields
+  do not overlap at their limits, a hostile address in a message word is a word
+  and not an address, a delivered capability's RIGHTS come back with it and
+  zero comes back when nothing did, and a failed receive delivers nothing.
 - T337 pins the invocation ABI (A-32): every method that had a syscall number
   answers NOT_SUPPORTED when called by one, the three calls that invoke nothing
   still work, a label sent to the wrong kind of capability is refused by type,

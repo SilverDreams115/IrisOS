@@ -350,12 +350,21 @@ no capability it could be a method *of* — which is the same reason seL4 keeps
 operation. `test_syscall_dispatch` DS-6 tries every number from 0 to 400 and
 asserts exactly four exceptions.
 
-Two places IRIS differs from seL4's shape and says so rather than rounding it
+**A message is a MessageInfo word and message registers** (`kernel/include/iris/ipc_msg.h`),
+and a payload longer than that lives in the page the sending thread registered
+(`seL4_TCB_SetIPCBuffer`, ledger D-4).  There is no message pointer: nothing
+for the kernel to validate, nothing for a second thread to unmap between the
+check and the copy, and a short message never touches memory at either end.
+The header is shared by the kernel, the C services and the assembler, because
+`kbd` is a driver written in assembly and reads a message the same way.
+
+Three places IRIS differs from seL4's shape and says so rather than rounding it
 away: seL4 keeps `Send`/`Recv`/`Call`/`Reply` as real syscalls because
 `msgInfo`'s label is application data, while IRIS's message carries its own
-label and so `EP_Send` is a method like any other; and the slot methods
-(`Mint`, `Move`, `Revoke`, `SetGuard`) are invoked on the slot rather than on a
-CNode with an index and a depth.
+label and so `EP_Send` is a method like any other; the slot methods (`Mint`,
+`Move`, `Revoke`, `SetGuard`) are invoked on the slot rather than on a CNode
+with an index and a depth; and a receive is told the RIGHTS a delivered
+capability landed with, where seL4's `extraCaps` reports only that one did.
 
 **62 methods**, by area:
 
@@ -499,7 +508,7 @@ somebody's delegation.
 
 Three independently-gating layers, run on every change:
 
-- **Host unit tests** — `make test-unit`: **27423 assertions** across 27 suites
+- **Host unit tests** — `make test-unit`: **27418 assertions** across 27 suites
   that exercise the kernel objects and pure logic directly (cspace, cnode,
   kendpoint, kreply, knotification, kuntyped including its two-ended carve,
   kschedctx, kframe, the MDB/CDT (structural + model-based fuzzing), rights,
@@ -507,7 +516,7 @@ Three independently-gating layers, run on every change:
   the file-grant layer, …). They cover what a successful boot cannot show:
   buffer bounds on a page about to be mapped into ring 3, a CSpace that names
   itself, and an allocator's two ends meeting exactly once.
-- **Runtime tests** — booted under QEMU headless: **304 tests** covering IPC and
+- **Runtime tests** — booted under QEMU headless: **305 tests** covering IPC and
   syscall basics, CPtr-first slots, badges & sender identity, service lifecycle /
   death-restart / relookup, endpoint cap-transfer, device/driver isolation,
   service supervision, the user pager and fault model, file-backed memory,
@@ -538,9 +547,9 @@ Three independently-gating layers, run on every change:
 ```bash
 make                                                       # zero-warning build
 make check-purity                                          # seL4 purity allowlist
-make test-unit                                             # host unit suites (27423)
+make test-unit                                             # host unit suites (27418)
 make smoke-runtime                                         # headless runtime lane
-ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (304/304)
+ENABLE_RUNTIME_SELFTESTS=1 make smoke-runtime-selftests    # + full self-test suite (305/305)
 make run                                                   # interactive QEMU
 ```
 
